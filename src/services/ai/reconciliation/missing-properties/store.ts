@@ -123,7 +123,7 @@ interface Traceability {
 }
 
 interface RunRecord extends ObjectKey, Traceability {
-  assetId: number;
+  assetId: number | null;
   contextFp: string;
   promptVersion: string;
   contractVersion: string;
@@ -208,7 +208,7 @@ export async function saveRun(r: RunRecord): Promise<number> {
 
 interface DecisionRecord extends ObjectKey {
   runId: number;
-  assetId: number;
+  assetId: number | null;
   fieldKey: string;
   questionFp: string;
   contextFp: string;
@@ -248,7 +248,7 @@ export async function saveDecision(d: DecisionRecord): Promise<number> {
 }
 
 interface OutcomeRecord extends ObjectKey, Traceability {
-  assetId: number;
+  assetId: number | null;
   /** Empreinte du contexte courant (`''` quand l'objet n'a pas pu être lu : non sélectionné). */
   contextFp: string;
   promptVersion: string;

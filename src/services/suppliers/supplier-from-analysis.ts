@@ -18,10 +18,11 @@
  *
  *   1. document absent, supprimé, fournisseur édité par l'utilisateur sur le
  *      document (`user_edited_fields.supplier` — posé aussi quand il RETIRE
- *      le lien, `DELETE /api/documents/[id]/supplier`) ou DÉJÀ lié à un
- *      fournisseur (lien posé par l'utilisateur ou par une analyse
- *      précédente) : RIEN — idempotent, une réanalyse ne crée ni doublon, ni
- *      second lien, ni ne recrée un lien retiré. Tous les fichiers du groupe
+ *      le lien, `DELETE /api/documents/[id]/supplier`) : RIEN. Document DÉJÀ
+ *      lié à un fournisseur (lien posé par l'utilisateur ou par une analyse
+ *      précédente) : aucun nouveau lien ni nouvelle fiche (idempotent), MAIS
+ *      l'enrichissement des coordonnées continue (lot 111X : rattachement ≠
+ *      complétude) — statut `already_linked`. Tous les fichiers du groupe
  *      T1 sont traités (le principal d'abord). Limite : l'enregistrement du
  *      tiroir remplace `user_edited_fields` en entier (route PATCH du
  *      document) ; si le client renvoie l'objet sans `supplier`, la trace
@@ -33,9 +34,15 @@
  *                      « À traiter » SUPPLIER-IDENTITY), comme avant ;
  *        · nouveau   → fournisseur créé (`source = document_extraction`) ;
  *   3. fiche existante : un champ renseigné n'est JAMAIS remplacé (SIRET
- *      différent → revue `contact_conflict`) ; un champ vide n'est complété
- *      que sur une fiche créée par l'analyse — jamais sur une fiche saisie
- *      par l'utilisateur (`source <> 'document_extraction'`) ;
+ *      différent → revue `contact_conflict`) ; lot 111X : un champ vide est
+ *      complété quelle que soit l'origine de la fiche, SAUF effacement
+ *      volontaire de l'utilisateur (protection PAR CHAMP,
+ *      `suppliers.user_field_decisions`) ;
+ *   3 bis. lot 111X : coordonnées (téléphone, e-mail, adresse, TVA, site,
+ *      IBAN) — seconde chance T3 sur la connaissance PERSISTÉE du document
+ *      (faits `target_type = SUPPLIER`, données structurées, unités sources ;
+ *      `missing-properties/supplier-service.ts`), qui les passe au même
+ *      `consolidateCoordinates` avec preuves et historique par champ ;
  *   4. observation (`supplier_contact_observations`), portée Duo, liens
  *      équipement : comme la chaîne historique.
  *
@@ -51,8 +58,9 @@ import { db } from '@/db';
 import {
   assetFiles, documentSuppliers, suppliers, supplierContactObservations, supplierReviewItems,
 } from '@/db/schema';
+import { pgClient } from '@/db';
 import {
-  assessMatch, classifySirenSiret, consolidateCoordinates, findCandidates, normalizeName,
+  assessMatch, classifySirenSiret, consolidateCoordinates, findCandidates, normalizeName, openContactConflicts,
   propagateScopeIfNeeded, recalculateEquipmentSuppliers, type SupplierQueryRunner,
 } from './supplier-service';
 
@@ -65,8 +73,9 @@ interface AnalyzedSupplier {
 }
 
 type SupplierFeedResult =
-  | { status: 'skipped'; reason: 'NO_SUPPLIER' | 'LOW_CONFIDENCE' | 'DOCUMENT_NOT_FOUND' | 'USER_EDITED_DOCUMENT' | 'ALREADY_LINKED' }
-  | { status: 'linked' | 'created' | 'created_uncertain'; supplierId: number; conflicts: number };
+  | { status: 'skipped'; reason: 'NO_SUPPLIER' | 'LOW_CONFIDENCE' | 'DOCUMENT_NOT_FOUND' | 'USER_EDITED_DOCUMENT' | 'SUPPLIER_INACTIVE' }
+  /** Lot 111X : `already_linked` = document déjà rattaché — aucun lien ni fiche nouveaux, coordonnées enrichies. */
+  | { status: 'linked' | 'created' | 'created_uncertain' | 'already_linked'; supplierId: number; conflicts: number };
 
 /** Espace du verrou consultatif (deux entiers : espace, compte). */
 const VERROU_FOURNISSEURS = 22410;
@@ -85,6 +94,8 @@ export async function feedSupplierFromAnalysis(p: {
   userId: number;
   documentId: number;
   supplier: AnalyzedSupplier | null | undefined;
+  /** Lot 111X : seconde chance des coordonnées après le rattachement (défaut : oui ; tests ciblés : non). */
+  enrich?: boolean;
 }): Promise<SupplierFeedResult> {
   const nom = p.supplier?.name?.trim() ?? '';
   if (!nom) return { status: 'skipped', reason: 'NO_SUPPLIER' };
@@ -112,11 +123,20 @@ export async function feedSupplierFromAnalysis(p: {
       return;
     }
     const [lien] = await q
-      .select({ supplierId: documentSuppliers.supplierId })
+      .select({ supplierId: documentSuppliers.supplierId, status: suppliers.status })
       .from(documentSuppliers)
+      .innerJoin(suppliers, and(eq(suppliers.id, documentSuppliers.supplierId), eq(suppliers.accountId, p.accountId)))
       .where(eq(documentSuppliers.documentId, p.documentId))
       .limit(1);
-    if (lien) { out = { status: 'skipped', reason: 'ALREADY_LINKED' }; return; }
+    // Lot 111X : rattachement ≠ complétude — le lien existant est conservé tel quel (aucun doublon) ;
+    // l'identité (SIREN / SIRET) est comparée et les coordonnées reprises par la seconde chance.
+    if (lien) {
+      if (lien.status !== 'active') { out = { status: 'skipped', reason: 'SUPPLIER_INACTIVE' }; return; }
+      const r = await consolidateCoordinates(lien.supplierId, observation, { q });
+      const n = await openContactConflicts(q, { accountId: p.accountId, supplierId: lien.supplierId, documentId: p.documentId, observationId: null, conflicts: r.conflicts });
+      out = { status: 'already_linked', supplierId: lien.supplierId, conflicts: n };
+      return;
+    }
     scope = doc.scope ?? null;
 
     const candidates = await findCandidates(p.accountId, normalizedName, siren, siret, null, q);
@@ -126,9 +146,8 @@ export async function feedSupplierFromAnalysis(p: {
     let conflicts: Array<{ field: string; currentValue: string | null; detectedValue: string | null }> = [];
     if (decision === 'certain') {
       supplierId = candidates[0].id;
-      const [fiche] = await q.select({ source: suppliers.source }).from(suppliers).where(eq(suppliers.id, supplierId)).limit(1);
-      // Fiche saisie par l'utilisateur : jamais complétée, seulement comparée.
-      const r = await consolidateCoordinates(supplierId, observation, { q, fill: fiche?.source === 'document_extraction' });
+      // Lot 111X : protection PAR CHAMP (saisie / effacement volontaire) au lieu du blocage « fiche manuelle ».
+      const r = await consolidateCoordinates(supplierId, observation, { q });
       conflicts = r.conflicts;
     } else {
       const [cree] = await q.insert(suppliers).values({
@@ -175,34 +194,8 @@ export async function feedSupplierFromAnalysis(p: {
       createdAt: new Date(),
     }).returning({ id: supplierContactObservations.id });
 
-    // Conflits : une revue ouverte par (fournisseur, champ, valeur relevée).
-    for (const c of conflicts) {
-      const [deja] = await q
-        .select({ id: supplierReviewItems.id })
-        .from(supplierReviewItems)
-        .where(and(
-          eq(supplierReviewItems.supplierId, supplierId),
-          eq(supplierReviewItems.itemType, 'contact_conflict'),
-          eq(supplierReviewItems.status, 'open'),
-          eq(supplierReviewItems.conflictingField, c.field),
-          eq(supplierReviewItems.detectedValue, c.detectedValue ?? ''),
-        ))
-        .limit(1);
-      if (deja) continue;
-      await q.insert(supplierReviewItems).values({
-        accountId: p.accountId,
-        itemType: 'contact_conflict',
-        status: 'open',
-        supplierId,
-        documentId: p.documentId,
-        observationId: obs.id,
-        conflictingField: c.field,
-        currentValue: c.currentValue,
-        detectedValue: c.detectedValue,
-        createdAt: new Date(),
-        updatedAt: new Date(),
-      });
-    }
+    // Conflits : une revue ouverte par (fournisseur, champ, valeur relevée) — valeur déjà tranchée jamais reproposée.
+    await openContactConflicts(q, { accountId: p.accountId, supplierId, documentId: p.documentId, observationId: obs.id, conflicts });
 
     out = {
       status: decision === 'certain' ? 'linked' : decision === 'uncertain' ? 'created_uncertain' : 'created',
@@ -212,7 +205,16 @@ export async function feedSupplierFromAnalysis(p: {
   });
 
   const res = out as SupplierFeedResult;
-  if (res.status !== 'skipped') {
+  if (res.status !== 'skipped' && p.enrich !== false) {
+    // Lot 111X : seconde chance T3 des coordonnées sur la connaissance PERSISTÉE (jamais bloquante pour l'analyse).
+    try {
+      const { recoverSupplierCoordinates } = await import('@/services/ai/reconciliation/missing-properties/supplier-service');
+      await recoverSupplierCoordinates({ accountId: p.accountId, supplierId: res.supplierId, trigger: 'SOURCE_ANALYZED', runRef: `document:${p.documentId}` });
+    } catch (e) {
+      console.error(`[fournisseurs] coordonnées du fournisseur ${res.supplierId} (document ${p.documentId}) non reprises :`, (e as Error).message);
+    }
+  }
+  if (res.status !== 'skipped' && res.status !== 'already_linked') {
     // Hors transaction (exécutant global) : portée Duo, liens équipement, caches.
     if (scope) await propagateScopeIfNeeded(res.supplierId, scope);
     await recalculateEquipmentSuppliers(p.documentId);
@@ -245,6 +247,16 @@ export async function registerSupplierReferentialHandler(): Promise<void> {
     // retrouvent la fiche qu'il a créée (rapprochement certain) ; mêmes règles
     // par fichier (fournisseur modifié ou lien retiré à la main : ignoré).
     const fichiers = [e.leadSourceId, ...(e.result.sourceGroup?.sourceIds ?? []).filter((id) => id !== e.leadSourceId)];
+    // Lot 111X : coordonnées de l'émetteur lues par T1 (contrat facultatif) conservées avec l'extraction
+    // (`metadata.supplierContacts`) — relues par la seconde chance et par les reprises, jamais perdues.
+    const contacts = s.value.contacts;
+    if (contacts && Object.values(contacts).some((v) => typeof v === 'string' && v.trim())) {
+      try {
+        await pgClient.unsafe(
+          `UPDATE document_extractions SET metadata = COALESCE(metadata, '{}'::jsonb) || jsonb_build_object('supplierContacts', $3::jsonb)
+            WHERE file_id = $1 AND account_id = $2`, [e.leadSourceId, e.accountId, JSON.stringify(contacts)] as never[]);
+      } catch (err) { console.error('[fournisseurs] coordonnées T1 non conservées :', (err as Error).message); }
+    }
     for (const documentId of [...new Set(fichiers)]) {
       const r = await feedSupplierFromAnalysis({
         accountId: e.accountId,
@@ -253,7 +265,7 @@ export async function registerSupplierReferentialHandler(): Promise<void> {
         supplier: { name: s.value.name, siret: s.value.siret ?? null, confidence: s.confidence },
       });
       if (r.status !== 'skipped') {
-        console.info(`[fournisseurs] document ${documentId} : ${r.status} (fournisseur ${r.supplierId}).`);
+        console.info(`[fournisseurs] document ${documentId} : ${r.status} (fournisseur ${r.supplierId}, ${r.conflicts} conflit(s)).`);
       }
     }
   });

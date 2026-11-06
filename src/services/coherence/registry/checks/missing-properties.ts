@@ -62,7 +62,7 @@ import { hashOf, idsOf, intArray, rows } from '../util';
 import type { ObjectRecoveryState } from '@/services/ai/reconciliation/missing-properties/service';
 import {
   MISSING_PROPERTIES_CHECK_ID, MISSING_PROPERTIES_CONTRACT_VERSION as MISSING_PROPERTIES_PENDING_CONTRACT_MARKER, MISSING_PROPERTIES_EQUIPMENT_CHECK_ID,
-  MISSING_PROPERTIES_PENDING_CONTRACT, contractStateOf, type SubjectType,
+  MISSING_PROPERTIES_PENDING_CONTRACT, contractStateOf, type CanonicalSubjectType as SubjectType,
 } from '@/services/ai/reconciliation/missing-properties/contract';
 import { subjectSourcesSql } from '@/services/ai/reconciliation/missing-properties/sql';
 import type { GateStatus } from '@/services/ai/reconciliation/missing-properties/store';

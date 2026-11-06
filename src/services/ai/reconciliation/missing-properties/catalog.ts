@@ -16,7 +16,7 @@
  * PROTÉGÉE : jamais soumise, jamais écrite.
  */
 import { isFieldApplicableToAsset, listFields, toAssetFamily, type CanonicalFieldDef } from '@/services/canonical/registry';
-import { questionValueType, type PropertyQuestion, type SubjectType } from './contract';
+import { questionValueType, type PropertyQuestion, type CanonicalSubjectType as SubjectType } from './contract';
 
 export type ExclusionReason = 'NOT_APPLICABLE' | 'INPUT_ONLY' | 'FREE_TEXT' | 'SENSITIVE' | 'STRUCTURED_JSON';
 export type ProtectionReason = 'USER_CLEARED' | 'USER_DECISION' | 'OPEN_ARBITRATION';

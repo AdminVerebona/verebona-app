@@ -135,13 +135,13 @@ export function backfillLayer(p: {
     origin: 'BACKFILL',
   });
   const linker = new SourceUnitLinker(units);
-  const provenance = p.facts.map((f) => ({ id: Number(f.id), ids: linker.link(evidenceOfStored(f)), confidence: f.confidence }));
+  const provenance = p.facts.map((f) => ({ id: Number(f.id), ids: linker.link(evidenceOfStored(f)), confidence: f.confidence, values: evidenceOfStored(f).values }));
   const meta = new Set<string>();
   for (const v of Object.values(e.structural_evidence ?? {})) {
     if (v?.excerpt) for (const id of linker.link({ excerpt: v.excerpt })) if (!id.startsWith('doc:')) meta.add(id);
   }
   const cov = computeCoverage(units, {
-    facts: provenance.map((x) => ({ unitIds: x.ids, confidence: x.confidence })),
+    facts: provenance.map((x) => ({ unitIds: x.ids, confidence: x.confidence, values: x.values })),
     metadataUnitIds: meta,
   });
   const report = buildCompletenessReport(cov, {

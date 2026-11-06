@@ -383,6 +383,23 @@ export const T1AnalyzeDocumentOutput = z.object({
       siret: z.string().regex(/^\d{14}$/).nullable().optional(),
       confidence,
       evidence: t1Evidence.default({}),
+      /**
+       * Lot 111X (contrat facultatif `t1-supplier-contacts-v1`, étape 19 du
+       * guide des prompts) : coordonnées de l'ÉMETTEUR lues explicitement.
+       * ABSENT = contrat non porté : la seconde chance T3 lit alors les faits
+       * et unités persistés. Jamais une valeur déduite (IBAN, site).
+       */
+      contacts: z.object({
+        phone: z.string().max(40).nullable().optional(),
+        email: z.string().max(200).nullable().optional(),
+        website: z.string().max(300).nullable().optional(),
+        vatNumber: z.string().max(40).nullable().optional(),
+        iban: z.string().max(50).nullable().optional(),
+        addressLine1: z.string().max(300).nullable().optional(),
+        postalCode: z.string().max(20).nullable().optional(),
+        city: z.string().max(120).nullable().optional(),
+        country: z.string().max(80).nullable().optional(),
+      }).optional(),
     }).optional(),
     /** Montant DOCUMENTAIRE, toujours en centimes — distinct des montants métier. */
     amountCents: meta(z.number().int()).optional(),

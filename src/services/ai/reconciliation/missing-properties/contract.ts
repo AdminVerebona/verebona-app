@@ -52,7 +52,28 @@ export const MISSING_PROPERTIES_SOURCE_TYPE = 'coherence_missing_property';
 /** Version des règles de collecte / décision : entre dans l'empreinte de la question. */
 export const MISSING_PROPERTIES_RULES_VERSION = 'l88b-v1';
 
-export type SubjectType = 'ASSET' | 'EQUIPMENT';
+/**
+ * Lot 111X : `SUPPLIER` — seconde chance des COORDONNÉES fournisseurs
+ * (`supplier.ts`, `supplier-service.ts`). Les biens et équipements gardent le
+ * registre canonique et le writer canonique ; un fournisseur passe par les
+ * services `suppliers` (validations, protections par champ, conflits sourcés).
+ */
+export type SubjectType = 'ASSET' | 'EQUIPMENT' | 'SUPPLIER';
+/** Sujets du registre canonique (biens, équipements) — jamais un fournisseur. */
+export type CanonicalSubjectType = Exclude<SubjectType, 'SUPPLIER'>;
+
+/** Lot 111X — contrôle de cohérence des coordonnées fournisseurs (fin de registre, après COH-CIL-DOCUMENT-PROJECTION). */
+export const SUPPLIER_COORDINATES_CHECK_ID = 'COH-SUPPLIER-COORDINATES';
+/**
+ * Lot 111X — contrat d'ENTRÉE KNOWLEDGE_QUERY pour un fournisseur (découpage
+ * d'une unité à plusieurs champs) : marqueur attendu dans le prompt T3 actif.
+ * Absent : AUCUN appel, issue CONTRACT_PENDING persistée (jamais un faux
+ * succès). Texte proposé au PO : étape 19 du guide des prompts.
+ */
+export const SUPPLIER_COORDINATES_CONTRACT_VERSION = 't3-knowledge-query-v3';
+export const SUPPLIER_COORDINATES_PENDING_CONTRACT = '111X-t3-coordonnees-fournisseur';
+/** Version des règles de lecture / décision des coordonnées (empreinte du contexte). */
+export const SUPPLIER_COORDINATES_RULES_VERSION = 'l111x-v1';
 
 /**
  * Lot 91B — état du contrat d'entrée dans le prompt T3 actif, en clair pour

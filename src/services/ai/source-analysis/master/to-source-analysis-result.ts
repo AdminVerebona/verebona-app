@@ -164,7 +164,7 @@ export function toSourceAnalysisResult(p: MasterResultInput): SourceAnalysisResu
       amountCents: toEvidence(d.amountCents),
       supplier: d.supplier
         ? {
-            value: { name: d.supplier.name, ...(d.supplier.siret ? { siret: d.supplier.siret } : {}), supplierId: null },
+            value: { name: d.supplier.name, ...(d.supplier.siret ? { siret: d.supplier.siret } : {}), ...(d.supplier.contacts ? { contacts: d.supplier.contacts } : {}), supplierId: null },
             confidence: d.supplier.confidence,
             excerpt: d.supplier.evidence?.excerpt ?? '',
             location: {},

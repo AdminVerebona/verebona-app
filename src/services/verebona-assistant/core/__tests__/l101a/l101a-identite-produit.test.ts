@@ -151,7 +151,9 @@ describe('L101A-U-COH-IDENTITY — contrôle de cohérence de l’identité prod
       // Lot 111S : acquisition documentaire établie sans Opération active ni historique « Achat » (fin de registre).
       'COH-OPS-ACQUISITION-DOCUMENT',
       // Lot 111U : projection documentaire CIL (fin de registre).
-      'COH-CIL-DOCUMENT-PROJECTION']);
+      'COH-CIL-DOCUMENT-PROJECTION',
+      // Lot 111X : coordonnées des fournisseurs issues des documents actifs (fin de registre).
+      'COH-SUPPLIER-COORDINATES']);
     expect(COVERAGE_INVENTORY.find((d) => d.domain === 'equipements')!.checks).toContain('COH-EQUIPMENT-IDENTITY');
     expect(equipmentIdentityCheck.forbiddenRepairs.join(' ')).toMatch(/utilisateur/);
   });

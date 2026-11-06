@@ -164,11 +164,12 @@ scenario('L93', 'Connexion Google / Apple — CDC 18 §7.2, §8, §9, §10.2, §
 
   it('L93-ACT boutons et routes : actifs avec les variables, 404 et boutons masqués sans elles', async () => {
     const r = await R();
-    expect(await (await r.providers.GET()).json()).toEqual({ google: true, apple: true });
+    // Lot 111W : + statut global WebAuthn du serveur (`passkey`), sans donnée de compte.
+    expect(await (await r.providers.GET()).json()).toEqual({ google: true, apple: true, passkey: expect.any(Boolean) });
     const id = process.env.GOOGLE_OAUTH_CLIENT_ID;
     delete process.env.GOOGLE_OAUTH_CLIENT_ID;
     try {
-      expect(await (await r.providers.GET()).json()).toEqual({ google: false, apple: true });
+      expect(await (await r.providers.GET()).json()).toEqual({ google: false, apple: true, passkey: expect.any(Boolean) });
       const b = new Browser();
       expect((await r.start.GET(b.req('/api/auth/oauth/google/start'), p('google'))).status).toBe(404);
       expect((await r.callback.GET(b.req('/api/auth/oauth/google/callback?state=x&code=y'), p('google'))).status).toBe(404);

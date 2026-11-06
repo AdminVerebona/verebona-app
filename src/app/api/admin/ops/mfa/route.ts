@@ -4,6 +4,7 @@ import { guardAdmin, NO_STORE, opsError } from '../_shared';
 import { readMfaEnforcementSettings, writeMfaEnforcementSetting } from '@/lib/auth/mfa/policy';
 import { keyRingStatus } from '@/lib/auth/mfa/secret-box';
 import { webAuthnStatus } from '@/lib/auth/mfa/passkeys';
+import { checkMfaCoherence } from '@/lib/auth/mfa/environment';
 import { MFA_ENFORCEMENT_SCOPES, type MfaEnforcementScope } from '@/lib/auth/mfa/constants';
 import { logAdminAction } from '@/lib/admin-audit';
 import { logUserActivity } from '@/lib/audit-logger';
@@ -19,7 +20,11 @@ const CONFIRMATION = 'ACTIVER';
  * GET : réglages (date d'entrée en vigueur par population, `null` = non
  * activée), état de la configuration (trousseau de chiffrement, origines
  * WebAuthn — noms et identifiants seulement, jamais une valeur secrète),
- * nombre de comptes protégés.
+ * nombre de comptes protégés. Lot 111W : environnement APPLICATIF effectif
+ * (`NEXT_PUBLIC_APP_ENV`, « Inconnu / configuration à vérifier » sinon —
+ * jamais « production » par défaut) distinct du mode d'exécution `NODE_ENV`,
+ * et contrôle de cohérence environnement / origine applicative / RP ID /
+ * origines WebAuthn (noms, hôtes et origines seulement).
  *
  * PUT { scope: 'users' | 'admins', enforcedFrom: ISO | null, confirm? } :
  * programme (date future, affichable pour la communication), active
@@ -41,6 +46,7 @@ export async function GET(request: NextRequest) {
              COUNT(*) FILTER (WHERE u.role IN ('ADMIN', 'SUPER_ADMIN') AND m.enabled_at IS NOT NULL)::int AS admins_protected
         FROM users u LEFT JOIN user_mfa_state m ON m.user_id = u.id`;
     const now = Date.now();
+    const coherence = checkMfaCoherence();
     const view = (d: Date | null) => ({ enforcedFrom: d?.toISOString() ?? null, active: !!d && d.getTime() <= now, scheduled: !!d && d.getTime() > now });
     return NextResponse.json({
       users: view(settings.users),
@@ -48,7 +54,9 @@ export async function GET(request: NextRequest) {
       counts: c ?? { users: 0, users_protected: 0, admins: 0, admins_protected: 0 },
       totpKeys: keyRingStatus(),
       webauthn: webAuthnStatus(),
-      environment: process.env.VEREBONA_ENV ?? process.env.NODE_ENV ?? 'inconnu',
+      environment: coherence.environment,
+      appOrigin: coherence.appOrigin,
+      coherence: { verdict: coherence.verdict, issues: coherence.issues },
     }, { headers: NO_STORE });
   } catch (e) {
     return opsError(e, 'double authentification', 'OPS_MFA_FAILED');

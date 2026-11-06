@@ -66,8 +66,12 @@ export async function POST(
       if (!colName) {
         return apiError(400, 'INVALID_INPUT', 'Champ de conflit non autorisé');
       }
+      // Lot 111X : valeur CHOISIE par l'utilisateur — protégée par champ (jamais remplacée par un document).
+      const decision = JSON.stringify({ [item.conflictingField]: { action: 'SET', at: new Date().toISOString(), userId: session.userId ?? null } });
       await db.execute(
-        sql`UPDATE suppliers SET ${sql.raw(colName)} = ${item.detectedValue}, updated_at = NOW() WHERE id = ${item.supplierId} AND account_id = ${accountId}`
+        sql`UPDATE suppliers SET ${sql.raw(colName)} = ${item.detectedValue}, updated_at = NOW(),
+                   user_field_decisions = COALESCE(user_field_decisions, '{}'::jsonb) || ${decision}::jsonb
+             WHERE id = ${item.supplierId} AND account_id = ${accountId}`
       );
     }
 

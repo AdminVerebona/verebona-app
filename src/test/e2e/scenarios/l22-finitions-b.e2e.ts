@@ -204,9 +204,10 @@ scenario('L22-B', 'Lot 22 — finitions (journal des entités, cache T4, cohére
     // Même fournisseur sur un autre document (SIRET) : lien, aucune nouvelle fiche.
     expect(await feedSupplierFromAnalysis({ ...base, documentId: d2.id, supplier: { name: 'CHAUFFAGE MARTIN', siret: '12345678900012', confidence: 'probable' } }))
       .toMatchObject({ status: 'linked', supplierId: f.id });
-    // Réanalyse : rien (idempotent).
+    // Réanalyse : aucun nouveau lien ni nouvelle fiche (idempotent) ; lot 111X — l'enrichissement des coordonnées
+    // continue sur le lien existant (rattachement ≠ complétude) : statut `already_linked`.
     expect(await feedSupplierFromAnalysis({ ...base, documentId: d1.id, supplier: { name: 'Chauffage Martin SARL', siret: '12345678900012' } }))
-      .toEqual({ status: 'skipped', reason: 'ALREADY_LINKED' });
+      .toEqual({ status: 'already_linked', supplierId: f.id, conflicts: 0 });
     const liens = await sql<{ document_id: number; supplier_id: number; is_confirmed: boolean }[]>`
       SELECT document_id, supplier_id, is_confirmed FROM document_suppliers WHERE supplier_id = ${f.id} ORDER BY document_id`;
     expect(liens.map((l) => l.document_id)).toEqual([d1.id, d2.id]);

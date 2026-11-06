@@ -6,7 +6,7 @@ import { eq, and, ne } from 'drizzle-orm';
 import { SessionService } from '@/lib/session-service';
 import { refuserSiLectureSeule } from '@/lib/write-access-guard';
 import { apiError } from '@/lib/api-errors';
-import { normalizeName } from '@/services/suppliers/supplier-service';
+import { normalizeName, userFieldDecisionsAfterPatch, type UserFieldDecisions } from '@/services/suppliers/supplier-service';
 import { getSupplierDetail } from '@/services/suppliers/supplier-detail.service';
 import { validateSupplierPatch } from '@/services/suppliers/supplier-validation';
 
@@ -63,7 +63,7 @@ export async function PATCH(
     const supplierId = Number(id);
 
     const [existing] = await db
-      .select({ id: suppliers.id })
+      .select()
       .from(suppliers)
       .where(and(eq(suppliers.id, supplierId), eq(suppliers.accountId, accountId), ne(suppliers.status, 'deleted')))
       .limit(1);
@@ -76,6 +76,10 @@ export async function PATCH(
 
     const updates: Record<string, unknown> = { ...v.updates, updatedAt: new Date() };
     if (typeof v.updates.name === 'string') updates.normalizedName = normalizeName(v.updates.name);
+    // Lot 111X : protection PAR CHAMP — une saisie ou un effacement volontaire n'est jamais remplacé ni
+    // réintroduit par un document (seul un champ dont la valeur CHANGE est une décision).
+    updates.userFieldDecisions = userFieldDecisionsAfterPatch(
+      existing as unknown as Record<string, unknown>, v.updates, existing.userFieldDecisions as UserFieldDecisions, session.userId ?? null);
 
     await db.update(suppliers)
       .set(updates as Partial<typeof suppliers.$inferInsert>)

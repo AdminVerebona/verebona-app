@@ -27,14 +27,27 @@ export function mfaError(status: number, code: string, message: string): NextRes
 
 export const expiredResponse = () => mfaError(401, 'MFA_EXPIRED', MFA_MESSAGES.expired);
 
+/**
+ * Messages de configuration indisponible — lot 111W : NEUTRES (aucune
+ * méthode de repli désignée par le serveur). Chaque écran ajoute lui-même
+ * les alternatives réellement possibles dans SON contexte (connexion
+ * anonyme : e-mail / mot de passe, Google, Apple ; étape de vérification :
+ * facteurs enrôlés et disponibles, sinon récupération) — l'ancien « Utilisez
+ * l'application d'authentification » était faux quand elle n'était ni
+ * configurée côté serveur ni enrôlée par le compte.
+ */
+export const MFA_UNAVAILABLE_MESSAGES = {
+  passkey: 'Les clés d’accès ne sont pas disponibles pour le moment.',
+  totp: 'L’application d’authentification n’est pas disponible pour le moment.',
+} as const;
+
 /** Erreurs de configuration (clé de chiffrement, origines WebAuthn) : 503 explicite, sans détail. */
 export function mfaUnavailable(error: unknown, what: 'totp' | 'passkey'): NextResponse | null {
   if (error instanceof MfaKeyUnavailableError || error instanceof WebAuthnUnavailableError) {
     console.error(`[mfa] méthode indisponible : configuration incomplète (${(error as Error).name}).`);
     void what;
-    return mfaError(503, 'MFA_METHOD_UNAVAILABLE', error instanceof WebAuthnUnavailableError
-      ? 'Les clés d’accès ne sont pas disponibles pour le moment. Utilisez l’application d’authentification.'
-      : 'L’application d’authentification n’est pas disponible pour le moment. Réessayez plus tard.');
+    const method = error instanceof WebAuthnUnavailableError ? 'passkey' : 'totp';
+    return mfaJson({ error: 'MFA_METHOD_UNAVAILABLE', code: 'MFA_METHOD_UNAVAILABLE', method, message: MFA_UNAVAILABLE_MESSAGES[method] }, 503);
   }
   return null;
 }

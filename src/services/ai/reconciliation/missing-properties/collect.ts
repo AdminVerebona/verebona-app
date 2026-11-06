@@ -34,7 +34,7 @@ import type { KnowledgeConfidence } from '../knowledge-query/contract';
 import type { ProtectionReason } from './catalog';
 import {
   MISSING_PROPERTIES_PROJECTION_RULE,
-  type ContextLayer, type ElementProvenance, type PropertyContextDocument, type PropertyContextElement, type SubjectType,
+  type ContextLayer, type ElementProvenance, type PropertyContextDocument, type PropertyContextElement, type CanonicalSubjectType as SubjectType,
 } from './contract';
 
 type Row = Record<string, unknown>;
@@ -510,4 +510,204 @@ export async function collectSubjectContext(
   }
 
   return { documents, elements, collectionDropped: dropped, missingLayers };
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Lot 111X — FOURNISSEURS : connaissance documentaire persistée d'une fiche
+// ═══════════════════════════════════════════════════════════════════════════
+//
+// Seconde chance T3 des coordonnées (téléphone, e-mail, adresse, TVA, site,
+// IBAN). Lecture seule, bornée au COMPTE, jamais le fichier ni une relance T1 :
+//   1. fiche ACTIVE du compte (archivée, fusionnée : rien) ;
+//   2. documents ACTIFS liés par `document_suppliers` (jamais un document
+//      supprimé, regroupé dans un autre ou d'un autre compte ; un lien retiré
+//      par l'utilisateur n'existe plus) ;
+//   3. dans l'ordre : données structurées de `document_extractions`
+//      (émetteur, coordonnées T1), faits ACTIFS `target_type = SUPPLIER`,
+//      faits non intégrés, unités sources (COVERED, UNRESOLVED, UNCERTAIN),
+//      texte extrait persisté (document sans unités seulement) ;
+//   4. marques du DESTINATAIRE (membres du compte, adresses de ses biens) :
+//      l'adresse du client n'est jamais celle du fournisseur.
+
+export interface SupplierRow {
+  id: number; accountId: number; status: string; source: string; name: string;
+  siren: string | null; siret: string | null; email: string | null; phone: string | null; website: string | null;
+  addressLine1: string | null; postalCode: string | null; city: string | null; country: string | null;
+  vatNumber: string | null; iban: string | null;
+  userFieldDecisions: Record<string, { action: string }>;
+}
+
+/** Élément de connaissance d'un document (référence stable, couche, texte, confiance). */
+export interface SupplierKnowledgeItem {
+  ref: string;
+  fileId: number;
+  layer: 'STRUCTURED' | 'FACT' | 'UNRESOLVED_FACT' | 'SOURCE_UNIT' | 'EXTRACTED_TEXT';
+  /** Identifiant persisté (fait, fait non intégré, unité, extraction). */
+  sourceId: number;
+  unitId: string | null;
+  page: number | null;
+  kind: string;
+  label: string | null;
+  text: string;
+  /** Couverture de l'unité, confiance du fait. */
+  coverage: string | null;
+  confidence: KnowledgeConfidence;
+  /** Fait ciblé sur un fournisseur : identifiant vérifié et libellé lu. */
+  targetEntityId?: number | null;
+  targetLabel?: string | null;
+  extractionId: number | null;
+}
+
+export interface SupplierKnowledge {
+  supplier: SupplierRow;
+  documents: Array<{ fileId: number; extractionId: number | null; supplierName: string | null; supplierSiret: string | null }>;
+  items: SupplierKnowledgeItem[];
+  recipient: { names: string[]; emails: string[]; addresses: Array<{ postalCode: string | null; line: string | null }> };
+  /** Troncature des bornes déclarées (contexte incomplet). */
+  dropped: number;
+}
+
+const SUPPLIER_BOUNDS = { documents: 30, facts: 200, unresolved: 100, units: 400, textChars: 20_000 } as const;
+
+/** Fiche fournisseur du compte (null : absente). Lève sur une lecture en échec. */
+export async function loadSupplierRow(accountId: number, supplierId: number): Promise<SupplierRow | null> {
+  const [r] = await q<Row>(
+    `SELECT id, account_id, status, source, name, siren, siret, email, phone, website, address_line_1, postal_code, city, country,
+            vat_number, iban, COALESCE(to_jsonb(s) -> 'user_field_decisions', '{}'::jsonb) AS ufd
+       FROM suppliers s WHERE id = $1 AND account_id = $2`, [supplierId, accountId]);
+  if (!r) return null;
+  const s = (v: unknown) => (typeof v === 'string' && v.trim() ? v : null);
+  return {
+    id: Number(r.id), accountId: Number(r.account_id), status: String(r.status), source: String(r.source), name: String(r.name),
+    siren: s(r.siren), siret: s(r.siret), email: s(r.email), phone: s(r.phone), website: s(r.website), addressLine1: s(r.address_line_1),
+    postalCode: s(r.postal_code), city: s(r.city), country: s(r.country), vatNumber: s(r.vat_number), iban: s(r.iban),
+    userFieldDecisions: (r.ufd && typeof r.ufd === 'object' ? r.ufd : {}) as SupplierRow['userFieldDecisions'],
+  };
+}
+
+/** Connaissance documentaire ACTIVE d'une fiche fournisseur (voir l'en-tête). Lève sur une lecture en échec. */
+export async function collectSupplierKnowledge(accountId: number, supplier: SupplierRow): Promise<SupplierKnowledge> {
+  let dropped = 0;
+  const docs = await q<Row>(
+    `SELECT f.id, e.id AS extraction_id, e.supplier_name, e.supplier_siret, count(*) OVER () AS total
+       FROM document_suppliers ds
+       JOIN asset_files f ON f.id = ds.document_id AND f.account_id = $1
+       LEFT JOIN document_extractions e ON e.file_id = f.id AND e.account_id = f.account_id
+      WHERE ds.supplier_id = $2 AND f.deleted_at IS NULL AND f.grouped_into_file_id IS NULL
+      ORDER BY f.id LIMIT ${SUPPLIER_BOUNDS.documents}`, [accountId, supplier.id]);
+  if (docs.length) dropped += Math.max(0, Number(docs[0].total) - docs.length);
+  const documents = docs.map((d) => ({
+    fileId: Number(d.id), extractionId: d.extraction_id == null ? null : Number(d.extraction_id),
+    supplierName: texte(d.supplier_name), supplierSiret: texte(d.supplier_siret),
+  }));
+  const fileIds = documents.map((d) => d.fileId);
+  const items: SupplierKnowledgeItem[] = [];
+  const extractionOf = new Map(documents.map((d) => [d.fileId, d.extractionId]));
+
+  if (fileIds.length) {
+    // 1. Données structurées de l'extraction (coordonnées de l'émetteur lues par T1, contrat facultatif).
+    const structures = await q<Row>(
+      `SELECT e.id, e.file_id, e.metadata -> 'supplierContacts' AS contacts FROM document_extractions e
+        WHERE e.account_id = $1 AND e.file_id = ANY($2::int[]) AND jsonb_typeof(e.metadata -> 'supplierContacts') = 'object'`, [accountId, fileIds]);
+    for (const s of structures) {
+      const c = (s.contacts ?? {}) as Record<string, unknown>;
+      const parts = Object.entries(c).filter(([, v]) => typeof v === 'string' && v.trim()).map(([k, v]) => `${k}: ${String(v).trim()}`);
+      if (!parts.length) continue;
+      items.push({ ref: `X-${s.id}`, fileId: Number(s.file_id), layer: 'STRUCTURED', sourceId: Number(s.id), unitId: null, page: null,
+        kind: 'supplier.contacts', label: null, text: parts.join('\n'), coverage: null, confidence: 'certain', extractionId: Number(s.id) });
+    }
+    // 2. Faits ACTIFS ciblés sur un fournisseur.
+    const faits = await q<Row>(
+      `SELECT id, file_id, extraction_id, fact_key, label, value_text, normalized_value, raw_value, excerpt, confidence, location,
+              to_jsonb(f) ->> 'target_entity_id' AS target_entity_id, to_jsonb(f) ->> 'target_entity_label' AS target_label,
+              count(*) OVER () AS total
+         FROM document_facts f
+        WHERE f.account_id = $1 AND f.file_id = ANY($2::int[]) AND f.status = 'active' AND (to_jsonb(f) ->> 'target_type') = 'SUPPLIER'
+        ORDER BY f.file_id, f.id LIMIT ${SUPPLIER_BOUNDS.facts}`, [accountId, fileIds]);
+    if (faits.length) dropped += Math.max(0, Number(faits[0].total) - faits.length);
+    for (const f of faits) {
+      const valeur = texte(f.value_text) ?? texte(f.normalized_value) ?? texte(f.raw_value);
+      if (!valeur) continue;
+      const loc = (f.location ?? {}) as { page?: unknown };
+      items.push({
+        ref: `F-${f.id}`, fileId: Number(f.file_id), layer: 'FACT', sourceId: Number(f.id), unitId: null,
+        page: typeof loc.page === 'number' ? loc.page : null, kind: String(f.fact_key), label: texte(f.label), text: valeur,
+        coverage: null, confidence: confianceFait(f.confidence),
+        targetEntityId: f.target_entity_id == null ? null : Number(f.target_entity_id), targetLabel: texte(f.target_label),
+        extractionId: Number(f.extraction_id),
+      });
+    }
+    // 3. Faits non intégrés (valeur lue, écartée par la projection).
+    const nonIntegres = await q<Row>(
+      `SELECT id, file_id, extraction_id, raw_key, raw_value, count(*) OVER () AS total FROM document_unresolved_facts
+        WHERE account_id = $1 AND file_id = ANY($2::int[]) AND status IN ('UNRESOLVED', 'RETAINED') AND raw_value IS NOT NULL
+        ORDER BY file_id, id LIMIT ${SUPPLIER_BOUNDS.unresolved}`, [accountId, fileIds]);
+    if (nonIntegres.length) dropped += Math.max(0, Number(nonIntegres[0].total) - nonIntegres.length);
+    for (const n of nonIntegres) {
+      const v = texte(n.raw_value);
+      if (!v) continue;
+      items.push({ ref: `N-${n.id}`, fileId: Number(n.file_id), layer: 'UNRESOLVED_FACT', sourceId: Number(n.id), unitId: null, page: null,
+        kind: String(n.raw_key ?? 'unresolved'), label: texte(n.raw_key), text: v, coverage: 'UNRESOLVED', confidence: 'probable',
+        extractionId: n.extraction_id == null ? null : Number(n.extraction_id) });
+    }
+    // 4. Unités sources (UNCERTAIN transmise mais jamais une preuve seule).
+    const unites = await q<Row>(
+      `SELECT id, file_id, extraction_id, source_unit_id, kind, page, content_text, label, value_text, coverage_status, coverage_reason, count(*) OVER () AS total
+         FROM document_source_units
+        WHERE account_id = $1 AND file_id = ANY($2::int[])
+          AND (coverage_status IN ('COVERED', 'UNRESOLVED', 'UNCERTAIN')
+               -- Réparation ciblée T1 en échec : le TEXTE lu de l'unité reste intact (seule l'interprétation IA a échoué).
+               OR (coverage_status = 'FAILED' AND coverage_reason LIKE 'repair_failed%'))
+          AND kind IN ('TEXT_BLOCK', 'LABEL_VALUE', 'FORM_FIELD', 'TABLE_ROW', 'DOCUMENT_METADATA')
+        ORDER BY file_id, ordinal LIMIT ${SUPPLIER_BOUNDS.units}`, [accountId, fileIds]);
+    if (unites.length) dropped += Math.max(0, Number(unites[0].total) - unites.length);
+    const avecUnites = new Set<number>();
+    for (const u of unites) {
+      const t = (typeof u.content_text === 'string' && u.content_text.trim()) ? u.content_text
+        : [u.label, u.value_text].filter((x) => typeof x === 'string' && x.trim()).join(' : ');
+      avecUnites.add(Number(u.file_id));
+      if (!t || !String(t).trim()) continue;
+      items.push({
+        ref: `U-${u.id}`, fileId: Number(u.file_id), layer: 'SOURCE_UNIT', sourceId: Number(u.id), unitId: String(u.source_unit_id),
+        page: u.page == null ? null : Number(u.page), kind: String(u.kind), label: texte(u.label), text: String(t),
+        coverage: String(u.coverage_status), confidence: u.coverage_status === 'FAILED' ? 'certain' : confianceUnite(u.coverage_status),
+        extractionId: u.extraction_id == null ? extractionOf.get(Number(u.file_id)) ?? null : Number(u.extraction_id),
+      });
+    }
+    // 5. Texte extrait persisté : seulement pour un document SANS unités (document historique), par paragraphe.
+    const sansUnites = documents.filter((d) => d.extractionId !== null && !avecUnites.has(d.fileId)).map((d) => d.fileId);
+    if (sansUnites.length) {
+      const textes = await q<Row>(
+        `SELECT id, file_id, left(full_text, ${SUPPLIER_BOUNDS.textChars}) AS t FROM document_extractions
+          WHERE account_id = $1 AND file_id = ANY($2::int[]) AND full_text IS NOT NULL`, [accountId, sansUnites]);
+      for (const x of textes) {
+        String(x.t ?? '').split(/\n\s*\n/).map((p) => p.trim()).filter((p) => p.length >= 6).forEach((p, i) => {
+          items.push({ ref: `T-${x.id}-${i}`, fileId: Number(x.file_id), layer: 'EXTRACTED_TEXT', sourceId: Number(x.id), unitId: `text:${i}`,
+            page: null, kind: 'TEXT_BLOCK', label: null, text: p, coverage: null, confidence: 'certain', extractionId: Number(x.id) });
+        });
+      }
+    }
+  }
+
+  // Marques du destinataire : membres du compte (nom, e-mail), adresses des biens du compte.
+  const membres = await q<Row>(
+    `SELECT u.last_name, u.email FROM users u
+      WHERE u.id IN (SELECT owner_user_id FROM accounts WHERE id = $1
+                     UNION SELECT user_id FROM account_memberships WHERE account_id = $1 AND user_id IS NOT NULL AND removed_at IS NULL)`, [accountId]);
+  const biens = await q<Row>(
+    `SELECT postal_code, address FROM assets WHERE account_id = $1 AND deleted_at IS NULL AND (postal_code IS NOT NULL OR address IS NOT NULL) LIMIT 200`, [accountId]);
+  const premiereVoie = (a: unknown) => {
+    const t = texte(a);
+    if (!t) return null;
+    const m = /\d{1,4}\s*(?:bis|ter)?\s*,?\s*([^\d,]{3,60})/i.exec(t);
+    return m ? m[1].trim() : null;
+  };
+  return {
+    supplier, documents, items, dropped,
+    recipient: {
+      names: membres.map((m) => texte(m.last_name)).filter((x): x is string => !!x && x.length >= 3),
+      emails: membres.map((m) => texte(m.email)).filter((x): x is string => !!x),
+      addresses: biens.map((b) => ({ postalCode: texte(b.postal_code), line: premiereVoie(b.address) })),
+    },
+  };
 }

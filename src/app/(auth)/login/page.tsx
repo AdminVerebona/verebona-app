@@ -26,6 +26,10 @@ import { socialErrorMessage } from '@/lib/auth/oauth/messages';
 import { KeyRound } from 'lucide-react';
 import { AUTOFILL, formFieldValue } from '@/lib/auth/autofill';
 import { PASSKEY_ERROR_TEXT, getPasskeyAssertion, lastLocalMethod, mfaPost, passkeysUsableHere, rememberLocalMethod } from '@/lib/auth/mfa/client';
+import {
+  LOGIN_STATUS_RETRY_TEXT, NETWORK_ERROR_TEXT, SERVICE_TEMPORARY_TEXT, classifyMfaFailure, fetchLoginMethodsStatus,
+  loginPasskeyOffer, loginPasskeyUnavailableText, type ServerLoginStatus,
+} from '@/lib/auth/mfa/availability';
 
 function LoginForm() {
   const searchParams = useSearchParams();
@@ -62,32 +66,64 @@ function LoginForm() {
   // Lot 110B : connexion par clé d'accès (selon compatibilité de cette vue) ;
   // proposée en tête seulement si c'est la dernière méthode employée ICI
   // (préférence locale, aucun privilège — ticket MFA §3).
-  const [passkeyHere, setPasskeyHere] = useState(false);
-  const [passkeyFirst, setPasskeyFirst] = useState(false);
+  // Lot 111W : bouton proposé seulement si la VUE prend en charge WebAuthn ET
+  // si le SERVICE WebAuthn du serveur est configuré (statut global anonyme,
+  // aucune donnée de compte). Statut illisible (réseau) : message distinct +
+  // « Réessayer », sans bloquer les autres méthodes.
+  const [clientPasskey, setClientPasskey] = useState<boolean | null>(null);
+  const [serverStatus, setServerStatus] = useState<ServerLoginStatus | null>(null);
+  const [lastWasPasskey, setLastWasPasskey] = useState(false);
   const [passkeyBusy, setPasskeyBusy] = useState(false);
+  const [passkeyRetry, setPasskeyRetry] = useState(false);
+  const checkServerStatus = async () => {
+    setServerStatus(null);
+    setServerStatus(await fetchLoginMethodsStatus());
+  };
   useEffect(() => {
     void passkeysUsableHere().then((ok) => {
-      setPasskeyHere(ok);
-      setPasskeyFirst(ok && lastLocalMethod() === 'passkey');
+      setClientPasskey(ok);
+      setLastWasPasskey(lastLocalMethod() === 'passkey');
     });
+    void fetchLoginMethodsStatus().then(setServerStatus);
   }, []);
+  const passkeyOffer = loginPasskeyOffer(clientPasskey, serverStatus);
+  const passkeyHere = passkeyOffer === 'show';
+  const passkeyFirst = passkeyHere && lastWasPasskey;
+  const socials = serverStatus?.state === 'ready' ? { google: serverStatus.google, apple: serverStatus.apple } : {};
+  // Configuration serveur indisponible constatée à l'usage : bouton retiré, autres méthodes de CONNEXION proposées.
+  const passkeyUnavailable = () => {
+    setServerStatus((st) => (st?.state === 'ready' ? { ...st, passkey: false } : { state: 'ready', passkey: false, google: false, apple: false }));
+    setError(loginPasskeyUnavailableText(socials));
+    setErrorCode('MFA_METHOD_UNAVAILABLE');
+  };
+  const passkeyFailed = (res: { status: number; data: { code?: string; message?: string } }) => {
+    const kind = classifyMfaFailure(res.status, res.data.code);
+    if (kind === 'unavailable') return passkeyUnavailable();
+    if (kind === 'temporary') { setError(SERVICE_TEMPORARY_TEXT); setErrorCode(res.data.code || 'SERVICE_UNAVAILABLE'); setPasskeyRetry(true); return; }
+    setError(res.data.message || PASSKEY_ERROR_TEXT.failed);
+    setErrorCode(res.data.code ?? '');
+  };
 
   const signInWithPasskey = async () => {
     if (passkeyBusy || isLoading) return;
     setPasskeyBusy(true);
     setError('');
     setErrorCode('');
+    setPasskeyRetry(false);
     try {
       const o = await mfaPost<{ options: unknown; challengeId: string }>('/api/auth/mfa/passkey/options', { mode: 'login' });
-      if (!o.ok) { setError(o.data.message || PASSKEY_ERROR_TEXT.failed); return; }
+      if (!o.ok) { passkeyFailed(o); return; }
       const a = await getPasskeyAssertion(o.data.options);
       if (!a.ok) { setError(PASSKEY_ERROR_TEXT[a.error]); return; }
       const v = await mfaPost<{ redirectTo?: string }>('/api/auth/mfa/passkey/verify', { mode: 'login', challengeId: o.data.challengeId, response: a.response, returnUrl });
-      if (!v.ok) { setError(v.data.message || PASSKEY_ERROR_TEXT.failed); setErrorCode(v.data.code ?? ''); return; }
+      if (!v.ok) { passkeyFailed(v); return; }
       rememberLocalMethod('passkey');
       router.push(typeof v.data.redirectTo === 'string' && v.data.redirectTo.startsWith('/') ? v.data.redirectTo : returnUrl);
     } catch {
-      setError('Connexion au serveur impossible. Vérifiez votre réseau puis réessayez.');
+      // Coupure ponctuelle : état distinct et nouvel essai possible (rien n'est verrouillé).
+      setError(NETWORK_ERROR_TEXT);
+      setErrorCode('NETWORK_ERROR');
+      setPasskeyRetry(true);
     } finally {
       setPasskeyBusy(false);
     }
@@ -135,6 +171,7 @@ function LoginForm() {
     // Nouvelle tentative : aucun message ni code de la précédente ne subsiste.
     setError('');
     setErrorCode('');
+    setPasskeyRetry(false);
     setDiagCode(null);
     setResendState('idle');
     setIsLoading(true);
@@ -296,6 +333,11 @@ function LoginForm() {
                         Code de diagnostic : <span className="font-mono select-all" data-testid="login-diag-code">{diagCode}</span>
                       </p>
                     )}
+                    {passkeyRetry && (
+                      <Button type="button" size="sm" variant="outline" className="mt-2" onClick={() => void signInWithPasskey()} disabled={isLoading || passkeyBusy} data-testid="login-passkey-retry">
+                        Réessayer
+                      </Button>
+                    )}
                   </div>
                 </div>
               )}
@@ -336,6 +378,12 @@ function LoginForm() {
                 <Button type="button" variant="outline" className="w-full" onClick={() => void signInWithPasskey()} disabled={isLoading || passkeyBusy} data-testid="login-passkey">
                   <KeyRound className="w-4 h-4 mr-2" />{passkeyBusy ? 'Connexion…' : 'Se connecter avec une clé d’accès'}
                 </Button>
+              )}
+              {passkeyOffer === 'retry' && (
+                <div className="flex flex-wrap items-center justify-center gap-x-2 gap-y-1 text-xs text-[color:var(--text-muted)] text-center" role="status" data-testid="login-passkey-status-error">
+                  <span>{LOGIN_STATUS_RETRY_TEXT}</span>
+                  <Button type="button" size="sm" variant="ghost" onClick={() => void checkServerStatus()} data-testid="login-passkey-status-retry">Réessayer</Button>
+                </div>
               )}
 
               <div className="text-center space-y-2 text-sm">

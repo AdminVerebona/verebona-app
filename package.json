@@ -103,6 +103,7 @@
     "test:e2e:fournisseurs-fiche": "vitest --run --config vitest.e2e.config.ts src/test/e2e/scenarios/l109b-fournisseurs-fiche-unique.e2e.ts src/test/e2e/scenarios/l103e-agenda-fournisseurs.e2e.ts src/test/e2e/scenarios/l49-sec-p0-intercomptes.e2e.ts src/test/e2e/scenarios/l87d-titres-documents.e2e.ts",
     "test:e2e:agenda-fournisseurs": "vitest --run --config vitest.e2e.config.ts src/test/e2e/scenarios/l103e-agenda-fournisseurs.e2e.ts src/test/e2e/scenarios/l100e-agenda-recherche-periode.e2e.ts src/test/e2e/scenarios/l97c-recherche-locale.e2e.ts src/test/e2e/scenarios/l40-duo-donnees-bien.e2e.ts src/test/e2e/scenarios/l22-finitions-b.e2e.ts",
     "test:e2e:mfa": "vitest --run --config vitest.e2e.config.ts src/test/e2e/scenarios/l110b-mfa.e2e.ts src/test/e2e/scenarios/l92-sessions-reauth.e2e.ts src/test/e2e/scenarios/l96b-securite-connexions.e2e.ts src/test/e2e/scenarios/l93-connexion-google-apple.e2e.ts",
+    "test:e2e:mfa-preprod": "vitest --run --config vitest.e2e.config.ts src/test/e2e/scenarios/l111w-mfa-preprod.e2e.ts",
     "test:e2e:auth-social": "vitest --run --config vitest.e2e.config.ts src/test/e2e/scenarios/l97b-app-liaison-sociale.e2e.ts src/test/e2e/scenarios/l96b-reauth-sociale.e2e.ts src/test/e2e/scenarios/l93-connexion-google-apple.e2e.ts src/test/e2e/scenarios/l53a-securite-cdc18.e2e.ts src/test/e2e/scenarios/l37-securite-comptes.e2e.ts",
     "test:e2e:tco-financement": "vitest --run --config vitest.e2e.config.ts src/test/e2e/scenarios/l111f-tco-financement.e2e.ts",
     "test:e2e:tco-anomalies": "vitest --run --config vitest.e2e.config.ts src/test/e2e/scenarios/l111v-tco-anomalies.e2e.ts src/test/e2e/scenarios/l80a-tco-decisions.e2e.ts src/test/e2e/scenarios/l109c-tco-diagnostics.e2e.ts src/test/e2e/scenarios/l108b-montants-manquants.e2e.ts",
@@ -135,7 +136,8 @@
     "test:e2e:t3-nommage-6033": "vitest --run --config vitest.e2e.config.ts src/test/e2e/scenarios/l109j-t3-nommage-6033.e2e.ts",
     "test:e2e:t1-couverture-propagation": "vitest --run --config vitest.e2e.config.ts src/test/e2e/scenarios/l109k-t1-couverture-propagation.e2e.ts",
     "test:e2e:acquisition-bout-en-bout": "vitest --run --config vitest.e2e.config.ts src/test/e2e/scenarios/l111s-acquisition-bout-en-bout.e2e.ts",
-    "test:e2e:cil-dpe": "vitest --run --config vitest.e2e.config.ts src/test/e2e/scenarios/l111u-cil-dpe.e2e.ts"
+    "test:e2e:cil-dpe": "vitest --run --config vitest.e2e.config.ts src/test/e2e/scenarios/l111u-cil-dpe.e2e.ts",
+    "test:e2e:fournisseurs-coordonnees": "vitest --run --config vitest.e2e.config.ts src/test/e2e/scenarios/l111x-fournisseurs-coordonnees.e2e.ts"
   },
   "dependencies": {
     "@aws-sdk/client-s3": "^3.934.0",

@@ -77,6 +77,7 @@ import { documentTargetsCheck } from './checks/document-targets';
 import { operationsAcquisitionDocumentCheck } from './checks/operations-acquisition-document';
 // Lot 111U : faits documentaires CIL (DPE…) projetés dans les structures spécialisées (fin de registre ; après 111S à la fusion).
 import { cilDocumentProjectionCheck } from './checks/cil-document-projection';
+import { supplierCoordinatesCheck } from './checks/supplier-coordinates';
 
 export const COHERENCE_REGISTRY: readonly CoherenceCheck[] = [
   toProcessDocumentFieldsCheck,
@@ -162,6 +163,8 @@ export const COHERENCE_REGISTRY: readonly CoherenceCheck[] = [
   operationsAcquisitionDocumentCheck,
   // Lot 111U (ticket « CIL : chaîne DPE et données structurées ») : ajouté EN FIN de registre (après COH-OPS-ACQUISITION-DOCUMENT de 111S à la fusion).
   cilDocumentProjectionCheck,
+  // Lot 111X (ticket « Fournisseurs — coordonnées documentaires ») : ajouté EN FIN de registre, après COH-CIL-DOCUMENT-PROJECTION (111U).
+  supplierCoordinatesCheck,
 ];
 
 /** Contrôles exécutés par l'orchestrateur (les points d'extension PLANNED sont exclus). */

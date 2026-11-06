@@ -2,7 +2,7 @@
  * Lot 88B — fragments SQL PURS partagés (énumération du contrôle de
  * cohérence) : aucun accès base ici, importable par le registre.
  */
-import { MISSING_PROPERTIES_PROJECTION_RULE, type SubjectType } from './contract';
+import { MISSING_PROPERTIES_PROJECTION_RULE, type CanonicalSubjectType as SubjectType } from './contract';
 
 /** L'objet a-t-il au moins une source à examiner ? (énumération du contrôle : SQL partagé.) */
 export function subjectSourcesSql(type: SubjectType, alias: string): string {

@@ -6,6 +6,11 @@
  * documents tant qu'il n'est pas terminé) : après l'inscription ou
  * l'activation, à la première connexion après l'activation de l'obligation,
  * ou après une récupération d'accès. Textes exacts du ticket.
+ *
+ * Lot 111W : chaque carte n'offre sa méthode que si elle est disponible côté
+ * serveur (et, pour la clé d'accès, prise en charge par la vue) ; sinon une
+ * mention exacte, sans renvoyer vers une méthode elle-même indisponible.
+ * Coupure réseau : message distinct + « Réessayer ». Jamais de contournement.
  */
 import { Suspense, useCallback, useEffect, useState } from 'react';
 import Link from 'next/link';
@@ -18,6 +23,7 @@ import { TotpSetup, type TotpStart } from '@/components/auth/mfa/TotpSetup';
 import { PASSKEY_ERROR_TEXT, createPasskey, mfaPost, passkeysUsableHere, rememberLocalMethod } from '@/lib/auth/mfa/client';
 import { publicSiteUrl } from '@/lib/external-urls';
 import { safeReturnUrl } from '@/lib/safe-redirect';
+import { NETWORK_ERROR_TEXT, SERVICE_TEMPORARY_TEXT, classifyMfaFailure, enrollmentChoices } from '@/lib/auth/mfa/availability';
 import { PASSKEY_CARD_TEXT, PASSKEY_CARD_TITLE, SECURE_ACCOUNT_INTRO, SECURE_ACCOUNT_TITLE, TOTP_CARD_TITLE } from '@/components/auth/mfa/texts';
 
 interface MfaState {
@@ -25,11 +31,13 @@ interface MfaState {
   primaryMethod: string;
   hasPassword: boolean;
   passkeysAvailable: boolean;
+  /** Lot 111W (absent sur un serveur antérieur = disponible). */
+  totpAvailable?: boolean;
   factorEnrolled: boolean;
   recovered: boolean;
 }
 
-type View = 'loading' | 'expired' | 'choose' | 'totp' | 'passkey' | 'codes' | 'done';
+type View = 'loading' | 'offline' | 'expired' | 'choose' | 'totp' | 'passkey' | 'codes' | 'done';
 
 
 function SecureAccount() {
@@ -48,8 +56,10 @@ function SecureAccount() {
   useEffect(() => { void passkeysUsableHere().then(setWebauthnHere); }, []);
 
   const load = useCallback(async () => {
+    setView('loading');
     const res = await fetch('/api/auth/mfa/state', { credentials: 'include', cache: 'no-store' }).catch(() => null);
-    if (!res || !res.ok) { setView('expired'); return; }
+    if (!res || res.status >= 500) { setView('offline'); return; }
+    if (!res.ok) { setView('expired'); return; }
     const s = await res.json() as MfaState;
     if (s.step === 'challenge') { router.replace(`/verification?returnUrl=${encodeURIComponent(returnUrl)}`); return; }
     setState(s);
@@ -89,16 +99,29 @@ function SecureAccount() {
   const enrollPasskey = async () => {
     setBusy(true);
     setError(null);
+    const failed = (res: { status: number; data: { code?: string; message?: string } }) => {
+      if (res.status === 401 && res.data.code === 'MFA_EXPIRED') { setView('expired'); return; }
+      const kind = classifyMfaFailure(res.status, res.data.code);
+      if (kind === 'unavailable') {
+        setState((st) => (st ? { ...st, passkeysAvailable: false } : st));
+        // Sans autre méthode, l'avis « Aucune méthode… Réessayer » prend le relais.
+        setError(state?.totpAvailable !== false ? 'Les clés d’accès ne sont pas disponibles pour le moment. Choisissez le code de sécurité.' : null);
+        return;
+      }
+      setError(kind === 'temporary' ? SERVICE_TEMPORARY_TEXT : res.data.message || PASSKEY_ERROR_TEXT.failed);
+    };
     try {
       const o = await mfaPost<{ options: unknown; challengeId: string }>('/api/auth/mfa/passkey/register', { stage: 'options' });
-      if (!o.ok) { setError(o.data.message || 'Les clés d’accès ne sont pas disponibles pour le moment.'); return; }
+      if (!o.ok) { failed(o); return; }
       const c = await createPasskey(o.data.options);
       if (!c.ok) { setError(PASSKEY_ERROR_TEXT[c.error]); return; }
       const v = await mfaPost<{ recoveryCodes?: string[] }>('/api/auth/mfa/passkey/register', { stage: 'verify', challengeId: o.data.challengeId, response: c.response });
-      if (!v.ok) { setError(v.data.message || PASSKEY_ERROR_TEXT.failed); return; }
+      if (!v.ok) { failed(v); return; }
       setFactor('passkey');
       setCodes(v.data.recoveryCodes ?? []);
       setView('codes');
+    } catch {
+      setError(NETWORK_ERROR_TEXT);
     } finally {
       setBusy(false);
     }
@@ -114,6 +137,16 @@ function SecureAccount() {
 
   if (view === 'loading') {
     return <MfaAuthCard title={SECURE_ACCOUNT_TITLE}><div className="flex justify-center py-8"><Loader2 className="w-6 h-6 animate-spin text-[color:var(--text-muted)]" /></div></MfaAuthCard>;
+  }
+  if (view === 'offline') {
+    return (
+      <MfaAuthCard title={SECURE_ACCOUNT_TITLE}>
+        <div className="space-y-4">
+          <MfaAlert>{NETWORK_ERROR_TEXT}</MfaAlert>
+          <Button className="w-full" onClick={() => void load()} data-testid="mfa-state-retry">Réessayer</Button>
+        </div>
+      </MfaAuthCard>
+    );
   }
   if (view === 'expired') {
     return (
@@ -155,12 +188,19 @@ function SecureAccount() {
   }
 
   const social = state?.primaryMethod === 'google' || state?.primaryMethod === 'apple';
-  const passkeyPossible = !!state?.passkeysAvailable && webauthnHere;
+  const choices = enrollmentChoices({ passkeysAvailable: !!state?.passkeysAvailable, totpAvailable: state?.totpAvailable, webauthnHere });
+  const passkeyPossible = choices.passkey;
   return (
     <MfaAuthCard title={SECURE_ACCOUNT_TITLE} description={SECURE_ACCOUNT_INTRO} wide>
       <div className="space-y-4">
         {state?.recovered && <MfaAlert tone="info">Accès vérifié. Configurez maintenant une nouvelle méthode de sécurité.</MfaAlert>}
         {error && <MfaAlert>{error}</MfaAlert>}
+        {choices.notice && (
+          <MfaAlert tone="info">
+            <span data-testid="mfa-enroll-notice">{choices.notice}</span>
+            <span className="block mt-2"><Button type="button" size="sm" variant="outline" onClick={() => void load()}>Réessayer</Button></span>
+          </MfaAlert>
+        )}
         <div className="grid gap-3 sm:grid-cols-2">
           <section className="rounded-xl border border-[color:var(--border-subtle)] p-4 space-y-3 flex flex-col" data-testid="mfa-card-passkey">
             <div className="flex items-center gap-2">
@@ -171,7 +211,7 @@ function SecureAccount() {
             <p className="text-sm text-[color:var(--text-muted)] flex-1">{PASSKEY_CARD_TEXT}</p>
             {passkeyPossible
               ? <Button onClick={() => void enrollPasskey()} disabled={busy}>{busy && <Loader2 className="w-4 h-4 mr-2 animate-spin" />}Créer une clé d’accès</Button>
-              : <p className="text-xs text-[color:var(--text-muted)]">Non disponible sur cet appareil : choisissez le code de sécurité.</p>}
+              : <p className="text-xs text-[color:var(--text-muted)]" data-testid="mfa-passkey-note">{choices.passkeyNote}</p>}
           </section>
           <section className="rounded-xl border border-[color:var(--border-subtle)] p-4 space-y-3 flex flex-col" data-testid="mfa-card-totp">
             <div className="flex items-center gap-2">
@@ -183,7 +223,9 @@ function SecureAccount() {
                 ? 'Vous vous connectez avec Google ou Apple : un code généré par une application d’authentification complètera chaque connexion. Vous pourrez ajouter un mot de passe ensuite dans Mon compte › Sécurité.'
                 : 'Votre mot de passe, puis un code à 6 chiffres généré par une application d’authentification sur votre téléphone.'}
             </p>
-            <Button variant="outline" onClick={() => { setError(null); setView('totp'); }} disabled={busy}>Configurer le code de sécurité</Button>
+            {choices.totp
+              ? <Button variant="outline" onClick={() => { setError(null); setView('totp'); }} disabled={busy}>Configurer le code de sécurité</Button>
+              : <p className="text-xs text-[color:var(--text-muted)]" data-testid="mfa-totp-note">{choices.totpNote}</p>}
           </section>
         </div>
         <p className="text-xs text-[color:var(--text-muted)] flex items-start gap-1.5">

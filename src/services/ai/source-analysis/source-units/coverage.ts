@@ -22,6 +22,7 @@ import type {
 } from './types';
 import { T1_COMPLETENESS_ANOMALIES } from './types';
 import type { SourceVerification } from './source-verification';
+import { readContactValues } from '@/services/suppliers/supplier-contact-reading';
 
 /** Preuve d'un fait, telle que la portent `T1Fact`, `ProjectedFact` ou un fait persisté. */
 export interface EvidenceRef {
@@ -38,6 +39,8 @@ export interface EvidenceRef {
 }
 
 const TEXTUELLES = new Set(['TEXT_BLOCK', 'LABEL_VALUE', 'FORM_FIELD', 'TABLE_ROW', 'DOCUMENT_METADATA']);
+/** Lot 111X : unités de texte libre dont toutes les valeurs de contact doivent être structurées ou écartées. */
+const CONTACT_KINDS = new Set(['TEXT_BLOCK', 'LABEL_VALUE', 'FORM_FIELD']);
 /** Longueur minimale (forme de comparaison) d'une unité retrouvée À L'INTÉRIEUR d'un extrait. */
 const MIN_INCLUSION = 4;
 
@@ -148,6 +151,24 @@ export interface FactLink {
   confidence: 'certain' | 'probable' | 'conflictual';
   /** Lot 49B : fait d'une réparation ciblée (vérification d'une ligne de tableau incertaine). */
   repair?: boolean;
+  /** Lot 111X : valeurs portées par le fait (brute, normalisée) — contrôle des unités à plusieurs valeurs. */
+  values?: ReadonlyArray<string | number | boolean | null | undefined>;
+}
+
+/**
+ * Lot 111X (ticket fournisseurs, AC11) — valeurs de CONTACT (e-mail, téléphone,
+ * n° de TVA, IBAN, site) d'une unité qui ne sont représentées par AUCUNE
+ * donnée structurée (valeur d'un fait rattaché, métadonnée structurée) ni
+ * écartées avec motif (télécopie, clé invalide). Pure. Une unité « couverte »
+ * par un seul de ses champs (le nom de l'émetteur, son SIRET) n'est plus
+ * déclarée intégralement exploitée.
+ */
+export function unstructuredContactValues(text: string | null | undefined, represented: Iterable<string>): string[] {
+  const vals = readContactValues(text).filter((v) => !v.excluded && v.field !== 'siret');
+  if (vals.length === 0) return [];
+  const forme = (x: string) => x.toLowerCase().replace(/[\s.\-()]/g, '').replace(/^\+33/, '0').replace(/^0033/, '0');
+  const reps = [...represented].map((x) => forme(String(x))).filter((x) => x.length >= 4);
+  return vals.filter((v) => { const f = forme(v.value); return !reps.some((r) => r.includes(f) || (r.length >= 8 && f.includes(r))); }).map((v) => v.value);
 }
 
 interface CoverageInput {
@@ -158,6 +179,8 @@ interface CoverageInput {
   entityUnitIds?: Iterable<string>;
   /** Unités d'un fait écarté non retrouvé (`document_unresolved_facts`). */
   droppedUnitIds?: Iterable<string>;
+  /** Lot 111X : valeurs structurées hors faits (coordonnées de l'émetteur lues par T1, métadonnées). */
+  structuredValues?: Iterable<string>;
   /** Unités en échec d'analyse, et si une nouvelle tentative est permise. */
   failed?: ReadonlyMap<string, { reason: string; retryable: boolean }>;
   repairAttempts?: ReadonlyMap<string, number>;
@@ -183,6 +206,13 @@ export function computeCoverage(units: readonly SourceUnit[], c: CoverageInput):
     }
   }
   const meta = new Set(c.metadataUnitIds ?? []);
+  // Lot 111X : valeurs des faits par unité, pour le contrôle des unités à plusieurs valeurs de contact.
+  const valeursParUnite = new Map<string, string[]>();
+  for (const f of c.facts) {
+    const vs = (f.values ?? []).filter((v) => v !== null && v !== undefined && String(v).trim()).map(String);
+    for (const id of new Set(f.unitIds.map(unitOfCell))) valeursParUnite.set(id, [...(valeursParUnite.get(id) ?? []), ...vs]);
+  }
+  const structurees = [...(c.structuredValues ?? [])].map(String);
   const entites = new Set(c.entityUnitIds ?? []);
   const ecartes = new Set([...(c.droppedUnitIds ?? [])].map(unitOfCell));
   const tableIncertaine = new Map<string, boolean>();
@@ -219,6 +249,12 @@ export function computeCoverage(units: readonly SourceUnit[], c: CoverageInput):
     else if (entites.has(u.sourceUnitId)) r = cov('COVERED', 'entity');
     else if (ecartes.has(u.sourceUnitId)) r = cov('UNRESOLVED', 'fact_dropped');
     else r = cov('UNRESOLVED', u.salient ? 'not_extracted' : 'not_structured');
+    // Lot 111X (AC11) : unité de texte « couverte » par un seul de ses champs — les valeurs de contact ni structurées
+    // ni écartées avec motif la laissent NON RÉSOLUE (réparation ciblée possible, `values_not_structured`).
+    if (r.status === 'COVERED' && CONTACT_KINDS.has(u.kind)
+      && unstructuredContactValues(u.text, [...(valeursParUnite.get(u.sourceUnitId) ?? []), ...structurees]).length > 0) {
+      r = cov('UNRESOLVED', 'values_not_structured');
+    }
     return { ...u, ...r, repairAttempts: c.repairAttempts?.get(u.sourceUnitId) ?? 0 };
   }));
 }
@@ -275,7 +311,7 @@ const REPARABLES = new Set(['TEXT_BLOCK', 'LABEL_VALUE', 'FORM_FIELD']);
 export function selectRepairUnits(units: readonly CoveredSourceUnit[], maxAttempts: number): CoveredSourceUnit[] {
   return units.filter((u) => u.text && u.repairAttempts < maxAttempts && (
     (REPARABLES.has(u.kind) && (
-      (u.status === 'UNRESOLVED' && (u.salient || u.reason === 'fact_dropped'))
+      (u.status === 'UNRESOLVED' && (u.salient || u.reason === 'fact_dropped' || u.reason === 'values_not_structured'))
       || (u.status === 'UNCERTAIN' && u.reason === 'fact_conflictual')
       || (u.status === 'FAILED' && u.reason === 'repair_failed:retryable')))
     || (u.kind === 'TABLE_ROW' && u.salient && (u.status === 'UNCERTAIN' || (u.status === 'FAILED' && u.reason === 'repair_failed:retryable')))

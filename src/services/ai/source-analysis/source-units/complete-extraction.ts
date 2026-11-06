@@ -66,6 +66,8 @@ interface SourceLayerDraft {
   linker: SourceUnitLinker;
   metadataUnitIds: Set<string>;
   entityUnitIds: Set<string>;
+  /** Lot 111X : valeurs structurées hors faits (SIRET et coordonnées de l'émetteur lus par T1). */
+  structuredValues: string[];
   failed: Map<string, { reason: string; retryable: boolean }>;
   attempts: Map<string, number>;
   unresolved: UnresolvedFactRecord[];
@@ -189,6 +191,7 @@ export async function completeT1Extraction(p: {
 
   const draft: SourceLayerDraft = {
     units, linker, metadataUnitIds: meta, entityUnitIds: entites, failed: new Map(), attempts: new Map(),
+    structuredValues: [d.supplier?.siret ?? null, ...Object.values(d.supplier?.contacts ?? {})].filter((v): v is string => typeof v === 'string' && !!v.trim()),
     unresolved, repairPassCount: 0, repairCalls: 0, extras: x,
     pending: new Set(), attempted: new Set(), repairFacts: new Set(), confirmed: new Set(),
   };
@@ -240,6 +243,7 @@ function factLinks(draft: SourceLayerDraft, facts: readonly T1Fact[]): FactLink[
   return facts.map((f) => ({
     unitIds: draft.linker.link(evidenceOf(f)),
     confidence: draft.confirmed.has(f) ? 'certain' as const : f.confidence,
+    values: [f.rawValue, f.normalizedValue],
     ...(draft.repairFacts.has(f) || draft.confirmed.has(f) ? { repair: true } : {}),
   }));
 }
@@ -325,6 +329,8 @@ function coverageOf(draft: SourceLayerDraft, facts: readonly T1Fact[]) {
     metadataUnitIds: draft.metadataUnitIds,
     entityUnitIds: draft.entityUnitIds,
     droppedUnitIds: draft.unresolved.filter((u) => u.status === 'UNRESOLVED' && DROP_REASONS.has(u.reason)).flatMap((u) => u.sourceUnitIds),
+    // Lot 111X : coordonnées structurées par T1 et valeurs écartées AVEC MOTIF (faits non intégrés) — jamais une omission silencieuse.
+    structuredValues: [...draft.structuredValues, ...draft.unresolved.map((u) => u.rawValue).filter((v): v is string => typeof v === 'string' && v.length <= 300)],
     failed: draft.failed,
     repairAttempts: draft.attempts,
   });

@@ -26,8 +26,9 @@
  *   WEBAUTHN_RP_NAME   nom affiché (défaut « Verebona »).
  *
  * Production sans configuration valable : clés d'accès indisponibles (les
- * écrans proposent l'application d'authentification) — jamais une origine
- * devinée. Hors production : `localhost` par défaut.
+ * écrans ne proposent que les méthodes réellement possibles — lot 111W :
+ * statut global anonyme `passkey` de GET /api/auth/oauth/providers) — jamais
+ * une origine devinée. Hors production : `localhost` par défaut.
  * ══════════════════════════════════════════════════════════════════════════
  *
  * Stockage : identifiant de credential, clé publique COSE (base64url),

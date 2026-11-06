@@ -7,6 +7,12 @@
  * configurées (jamais une méthode non enrôlée). La dernière méthode employée
  * SUR CET APPAREIL est proposée en premier (préférence locale, sans
  * privilège). Aucune méthode possible → récupération.
+ *
+ * Lot 111W : une méthode n'est proposée que si elle est enrôlée ET
+ * disponible côté serveur ET (clé d'accès) prise en charge par la vue ; un
+ * 503 de configuration n'oriente que vers l'autre facteur réellement
+ * utilisable, sinon la récupération ; une coupure réseau a son propre
+ * message et « Réessayer ». Jamais de contournement.
  */
 import { Suspense, useCallback, useEffect, useState } from 'react';
 import Link from 'next/link';
@@ -20,8 +26,14 @@ import {
   PASSKEY_ERROR_TEXT, getPasskeyAssertion, lastLocalMethod, mfaPost, passkeysUsableHere, rememberLocalMethod,
 } from '@/lib/auth/mfa/client';
 import { safeReturnUrl } from '@/lib/safe-redirect';
+import {
+  NETWORK_ERROR_TEXT, SERVICE_TEMPORARY_TEXT, classifyMfaFailure, verificationChoices, verificationUnavailableText,
+} from '@/lib/auth/mfa/availability';
 
-interface MfaState { step: 'challenge' | 'enroll'; primaryMethod: string; methods: { passkey: boolean; totp: boolean }; passkeysAvailable: boolean }
+interface MfaState {
+  step: 'challenge' | 'enroll'; primaryMethod: string; methods: { passkey: boolean; totp: boolean };
+  passkeysAvailable: boolean; totpAvailable?: boolean;
+}
 
 function Verification() {
   const router = useRouter();
@@ -33,17 +45,27 @@ function Verification() {
   const [busy, setBusy] = useState<'code' | 'passkey' | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [webauthnHere, setWebauthnHere] = useState(false);
+  const [offline, setOffline] = useState(false);
+  const [retry, setRetry] = useState<null | 'passkey' | 'code'>(null);
 
   useEffect(() => { void passkeysUsableHere().then(setWebauthnHere); }, []);
 
   const load = useCallback(async () => {
+    setOffline(false);
     const res = await fetch('/api/auth/mfa/state', { credentials: 'include', cache: 'no-store' }).catch(() => null);
-    if (!res || !res.ok) { setExpired(true); return; }
+    // Coupure réseau ou panne passagère ≠ étape expirée : nouvel essai possible.
+    if (!res || res.status >= 500) { setOffline(true); return; }
+    if (!res.ok) { setExpired(true); return; }
     const s = await res.json() as MfaState;
     if (s.step === 'enroll') { router.replace(`/securiser-mon-compte?returnUrl=${encodeURIComponent(returnUrl)}`); return; }
     setState(s);
   }, [router, returnUrl]);
   useEffect(() => { void load(); }, [load]);
+
+  // Facteurs proposés : enrôlés ET disponibles côté serveur ET (clé d'accès) pris en charge ici.
+  const choices = state
+    ? verificationChoices({ methods: state.methods, passkeysAvailable: state.passkeysAvailable, totpAvailable: state.totpAvailable, webauthnHere })
+    : null;
 
   const finish = (redirectTo: unknown, method: 'passkey' | 'totp') => {
     rememberLocalMethod(method);
@@ -53,27 +75,50 @@ function Verification() {
   const submitCode = async (e: React.FormEvent) => {
     e.preventDefault();
     if (busy) return;
-    setBusy('code'); setError(null);
-    const r = await mfaPost<{ redirectTo?: string }>('/api/auth/mfa/totp/verify', { code: code.replace(/\s+/g, '') });
+    setBusy('code'); setError(null); setRetry(null);
+    const r = await mfaPost<{ redirectTo?: string }>('/api/auth/mfa/totp/verify', { code: code.replace(/\s+/g, '') }).catch(() => null);
     setBusy(null);
+    if (!r) { setError(NETWORK_ERROR_TEXT); setRetry('code'); return; }
     if (r.ok) return finish(r.data.redirectTo, 'totp');
     if (r.data.code === 'MFA_EXPIRED') { setExpired(true); return; }
+    const kind = classifyMfaFailure(r.status, r.data.code);
+    if (kind === 'unavailable') {
+      // L'avis permanent (récupération) prend le relais si aucun autre facteur n'est utilisable.
+      setState((st) => (st ? { ...st, totpAvailable: false } : st));
+      setError(choices?.passkey ? verificationUnavailableText('totp', true) : null);
+      return;
+    }
+    if (kind === 'temporary') { setError(SERVICE_TEMPORARY_TEXT); setRetry('code'); return; }
     setError(r.data.message || 'Code incorrect.');
     setCode('');
   };
 
   const signInWithPasskey = async () => {
     if (busy) return;
-    setBusy('passkey'); setError(null);
+    setBusy('passkey'); setError(null); setRetry(null);
+    const failed = (res: { status: number; data: { code?: string; message?: string } }) => {
+      if (res.data.code === 'MFA_EXPIRED') { setExpired(true); return; }
+      const kind = classifyMfaFailure(res.status, res.data.code);
+      if (kind === 'unavailable') {
+        // Configuration serveur indisponible : clé retirée de l'écran ; seul l'AUTRE facteur réellement utilisable, sinon la récupération.
+        setState((st) => (st ? { ...st, passkeysAvailable: false } : st));
+        setError(choices?.totp ? verificationUnavailableText('passkey', true) : null);
+        return;
+      }
+      if (kind === 'temporary') { setError(SERVICE_TEMPORARY_TEXT); setRetry('passkey'); return; }
+      setError(res.data.message || PASSKEY_ERROR_TEXT.failed);
+    };
     try {
       const o = await mfaPost<{ options: unknown; challengeId: string }>('/api/auth/mfa/passkey/options', { mode: 'pending' });
-      if (!o.ok) { if (o.data.code === 'MFA_EXPIRED') setExpired(true); else setError(o.data.message || PASSKEY_ERROR_TEXT.failed); return; }
+      if (!o.ok) { failed(o); return; }
       const a = await getPasskeyAssertion(o.data.options);
       if (!a.ok) { setError(PASSKEY_ERROR_TEXT[a.error]); return; }
       const v = await mfaPost<{ redirectTo?: string }>('/api/auth/mfa/passkey/verify', { mode: 'pending', challengeId: o.data.challengeId, response: a.response });
       if (v.ok) return finish(v.data.redirectTo, 'passkey');
-      if (v.data.code === 'MFA_EXPIRED') { setExpired(true); return; }
-      setError(v.data.message || PASSKEY_ERROR_TEXT.failed);
+      failed(v);
+    } catch {
+      setError(NETWORK_ERROR_TEXT);
+      setRetry('passkey');
     } finally {
       setBusy(null);
     }
@@ -94,19 +139,30 @@ function Verification() {
       </MfaAuthCard>
     );
   }
+  if (offline) {
+    return (
+      <MfaAuthCard title="Confirmez votre connexion">
+        <div className="space-y-4">
+          <MfaAlert>{NETWORK_ERROR_TEXT}</MfaAlert>
+          <Button className="w-full" onClick={() => void load()} data-testid="mfa-state-retry">Réessayer</Button>
+        </div>
+      </MfaAuthCard>
+    );
+  }
   if (!state) {
     return <MfaAuthCard title="Confirmez votre connexion"><div className="flex justify-center py-8"><Loader2 className="w-6 h-6 animate-spin text-[color:var(--text-muted)]" /></div></MfaAuthCard>;
   }
 
-  const passkeyUsable = state.methods.passkey && state.passkeysAvailable && webauthnHere;
-  const passkeyFirst = passkeyUsable && (lastLocalMethod() !== 'totp' || !state.methods.totp);
+  const passkeyUsable = choices!.passkey;
+  const totpUsable = choices!.totp;
+  const passkeyFirst = passkeyUsable && (lastLocalMethod() !== 'totp' || !totpUsable);
   const passkeyBlock = passkeyUsable && (
     <Button key="pk" type="button" className="w-full" variant={passkeyFirst ? 'default' : 'outline'} onClick={() => void signInWithPasskey()} disabled={busy !== null}>
       {busy === 'passkey' ? <Loader2 className="w-4 h-4 mr-2 animate-spin" /> : <KeyRound className="w-4 h-4 mr-2" />}
       Utiliser ma clé d’accès
     </Button>
   );
-  const codeBlock = state.methods.totp && (
+  const codeBlock = totpUsable && (
     <form key="code" onSubmit={submitCode} className="space-y-3">
       <div className="space-y-1">
         <Label htmlFor="mfa-code">Code de votre application d’authentification</Label>
@@ -119,19 +175,24 @@ function Verification() {
     </form>
   );
   const blocks = passkeyFirst ? [passkeyBlock, codeBlock] : [codeBlock, passkeyBlock];
-  const nothing = !passkeyUsable && !state.methods.totp;
 
   return (
     <MfaAuthCard title="Confirmez votre connexion" description="Pour protéger vos biens et vos documents, confirmez votre identité avec votre méthode de sécurité.">
       <div className="space-y-4">
-        {error && <MfaAlert>{error}</MfaAlert>}
-        {nothing && (
-          <MfaAlert tone="info">
-            {state.methods.passkey
-              ? 'Votre clé d’accès ne peut pas être utilisée sur cet appareil. Utilisez un appareil où elle est disponible, ou un code de récupération.'
-              : 'Aucune méthode de sécurité n’est utilisable ici. Utilisez un code de récupération.'}
+        {error && (
+          <MfaAlert>
+            {error}
+            {retry && (
+              <span className="block mt-2">
+                <Button type="button" size="sm" variant="outline" disabled={busy !== null} data-testid="mfa-retry"
+                  onClick={() => { if (retry === 'passkey') void signInWithPasskey(); else setError(null); }}>
+                  Réessayer
+                </Button>
+              </span>
+            )}
           </MfaAlert>
         )}
+        {choices!.notice && <MfaAlert tone="info"><span data-testid="mfa-verification-notice">{choices!.notice}</span></MfaAlert>}
         {blocks.filter(Boolean).map((b, i) => (
           <div key={i}>{i > 0 && <div className="vb-or-separator mb-3" role="separator">ou</div>}{b}</div>
         ))}

@@ -2201,6 +2201,9 @@ export const suppliers = pgTable('suppliers', {
   // retrait physique de la colonne en deux temps, voir migration 1105 et
   // docs/exploitation/recette-109b-fournisseurs-fiche-unique.md.
   status: text('status').notNull().default('active'),
+  // Lot 111X (1335) : protection PAR CHAMP des saisies / effacements de l'utilisateur, provenance des remplissages automatiques.
+  userFieldDecisions: jsonb('user_field_decisions').$type<Record<string, { action: 'SET' | 'CLEARED'; at: string; userId: number | null }>>().notNull().default({}),
+  fieldProvenance: jsonb('field_provenance').$type<Record<string, Record<string, unknown>>>().notNull().default({}),
   createdAt: tstz('created_at'),
   updatedAt: tstz('updated_at'),
 }, (table) => ({
@@ -2228,6 +2231,9 @@ export const supplierContactObservations = pgTable('supplier_contact_observation
   observedIban: text('observed_iban'),
   observedIbanHolderName: text('observed_iban_holder_name'),
   confidenceScore: numeric('confidence_score'),
+  // Lot 111X (1335) : origine (T1_ANALYSIS, T3_SECOND_CHANCE) et preuves par champ.
+  origin: text('origin'),
+  evidence: jsonb('evidence'),
   createdAt: tstz('created_at'),
 }, (table) => ({
   supplierIdIdx: index('supplier_contact_observations_supplier_id_idx').on(table.supplierId),

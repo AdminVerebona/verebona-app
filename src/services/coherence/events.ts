@@ -36,6 +36,8 @@ export const COHERENCE_BUSINESS_EVENTS: ReadonlySet<string> = new Set([
   // Lot 105D : création d'un bien (POST /api/assets, déplacement d'espace) — les documents historiquement sans
   // bien deviennent potentiellement rattachables (COH-DOC-PRIMARY-LINK). Distinct du déclencheur T3 (fonctionnel).
   'ASSET_CREATED',
+  // Lot 111X : fiche fournisseur modifiée (saisie, effacement, conflit tranché) — COH-SUPPLIER-COORDINATES.
+  'SUPPLIER_CHANGED',
 ]);
 
 /** Lot 83B : type relayé pour toute écriture d'une Opération (bus des Opérations). */

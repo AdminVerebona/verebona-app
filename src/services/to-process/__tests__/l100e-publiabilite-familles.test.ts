@@ -184,7 +184,9 @@ describe('L100E-U-COH — COH-TODO-PUBLISHABILITY (nettoyage rétroactif, point 
       // Lot 111S : acquisition documentaire établie sans Opération active ni historique « Achat » (fin de registre).
       'COH-OPS-ACQUISITION-DOCUMENT',
       // Lot 111U : projection documentaire CIL (fin de registre).
-      'COH-CIL-DOCUMENT-PROJECTION']);
+      'COH-CIL-DOCUMENT-PROJECTION',
+      // Lot 111X : coordonnées des fournisseurs issues des documents actifs (fin de registre).
+      'COH-SUPPLIER-COORDINATES']);
     const c = getCheck(PUBLISHABILITY_CHECK_ID)!;
     expect(c).toMatchObject({ status: 'ACTIVE', version: 1, objectType: 'to_process_action' });
     expect(c.forbiddenRepairs).toEqual(expect.arrayContaining(['écrire une valeur de l’objet', 'fermer une carte retenue pour cause technique', 'rouvrir une carte fermée par l’utilisateur']));

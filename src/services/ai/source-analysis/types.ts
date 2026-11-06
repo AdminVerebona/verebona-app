@@ -327,6 +327,8 @@ export interface SupplierCandidate {
   siret?: string;
   /** Identifiant `suppliers.id` si le fournisseur existe déjà, après vérification. */
   supplierId?: number | null;
+  /** Lot 111X : coordonnées de l'émetteur lues par T1 (contrat facultatif `t1-supplier-contacts-v1`). */
+  contacts?: Partial<Record<'phone' | 'email' | 'website' | 'vatNumber' | 'iban' | 'addressLine1' | 'postalCode' | 'city' | 'country', string | null>>;
 }
 
 /** Trace technique de l'analyse — rattachement usage / opérations (§5.5). */

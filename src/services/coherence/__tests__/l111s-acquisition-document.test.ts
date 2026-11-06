@@ -173,10 +173,10 @@ describe('L111S-U-VERDICT — COH-OPS-ACQUISITION-DOCUMENT', () => {
 });
 
 describe('L111S-U-REGISTRE — déclaration', () => {
-  it('en fin de registre (avant le contrôle CIL 111U), ACTIF, couvert par le domaine « operations », interdits explicites', () => {
-    // Intégration lot 111 : 111U ajoute COH-CIL-DOCUMENT-PROJECTION APRÈS ce contrôle.
-    const ids = COHERENCE_REGISTRY.map((x) => x.id);
-    expect(ids.slice(-2)).toEqual(['COH-OPS-ACQUISITION-DOCUMENT', 'COH-CIL-DOCUMENT-PROJECTION']);
+  it('en fin de registre (suivi des contrôles 111U et 111X), ACTIF, couvert par le domaine « operations », interdits explicites', () => {
+    // Fusion du lot 111 : 111U (COH-CIL-DOCUMENT-PROJECTION) puis 111X (COH-SUPPLIER-COORDINATES) ajoutés après lui.
+    const ids = COHERENCE_REGISTRY.map((c) => c.id);
+    expect(ids.slice(ids.indexOf('COH-OPS-ACQUISITION-DOCUMENT'))).toEqual(['COH-OPS-ACQUISITION-DOCUMENT', 'COH-CIL-DOCUMENT-PROJECTION', 'COH-SUPPLIER-COORDINATES']);
     const c = operationsAcquisitionDocumentCheck;
     expect(c).toMatchObject({ status: 'ACTIVE', version: 1, objectType: 'document', criticality: 'HIGH' });
     expect(c.triggers).toEqual(expect.arrayContaining(['SOURCE_ANALYZED', 'DOCUMENT_UPDATED', 'ASSET_CREATED', 'ASSET_UPDATED', 'BUSINESS_OPERATION_CHANGED']));

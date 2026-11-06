@@ -144,6 +144,16 @@ export const COVERAGE_INVENTORY: readonly CoverageEntry[] = [
       planned: 'persistance durable des décisions T4 (même point d’extension que COH-AGENDA-T4-DOCUMENT-DEADLINES)',
     } },
   {
+    // Lot 111X : coordonnées des fournisseurs reprises des documents actifs (seconde chance T3, protection par champ, conflits sourcés).
+    domain: 'fournisseurs', label: 'Fournisseurs (coordonnées issues des documents)',
+    checks: ['COH-SUPPLIER-COORDINATES'],
+    gap: {
+      what: 'découpage d’une unité à plusieurs champs non lisible par format : en attente du contrat T3 t3-knowledge-query-v3 (constat SUPPLIER_COORDINATES_CONTRACT_PENDING) ; identité et doublons de fournisseurs (ticket #706, hors de ce contrôle)',
+      existingMechanism: 'lecture déterministe de la connaissance T1 persistée (faits SUPPLIER, unités, texte) ; revues « À traiter » SUPPLIER-IDENTITY et conflits de coordonnées',
+      planned: 'demande IA 111X-t3-coordonnees-fournisseur (étape 19 du guide des prompts)',
+    },
+  },
+  {
     // Lot 86E : classement documentaire (Rubrique / Type) — nomenclature courante, type identifié = type enregistré.
     domain: 'documents-classement', label: 'Classement documentaire (Rubrique, Type)',
     checks: ['COH-DOC-CLASSIFICATION'],

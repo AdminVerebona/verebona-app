@@ -10,7 +10,7 @@
  */
 
 import { db } from '@/db';
-import { suppliers } from '@/db/schema';
+import { suppliers, supplierReviewItems } from '@/db/schema';
 import { eq, and, sql } from 'drizzle-orm';
 
 /** Exécutant drizzle : `db`, ou la transaction en cours. */
@@ -73,7 +73,7 @@ function normalizeTextField(v: string): string {
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
-interface ExtractedSupplierData {
+export interface ExtractedSupplierData {
   name: string;
   email?: string | null;
   phone?: string | null;
@@ -130,6 +130,8 @@ type MatchDecision = 'certain' | 'uncertain' | 'new';
 export interface ConsolidationResult {
   updated: boolean;
   conflicts: ConflictFieldInfo[];
+  /** Lot 111X : décision par champ observé (historique). */
+  outcomes: ConsolidationOutcome[];
 }
 
 interface ConflictFieldInfo {
@@ -225,6 +227,69 @@ export function assessMatch(candidates: Candidate[]): MatchDecision {
 
 // ─── Consolidate coordinates ──────────────────────────────────────────────────
 
+/**
+ * Lot 111X — décision par champ d'une consolidation (historique, diagnostic) :
+ *   FILLED        champ vide complété ;
+ *   SAME          même valeur déjà enregistrée (rien à faire) ;
+ *   COMPATIBLE    SIREN / SIRET compatibles (pas un conflit) ;
+ *   CONFLICT      valeur enregistrée différente : jamais écrasée, revue sourcée ;
+ *   USER_CLEARED  champ effacé volontairement par l'utilisateur : jamais réintroduit ;
+ *   ADDRESS_MIXED adresse partiellement renseignée et différente : aucun mélange
+ *                 de deux adresses (code postal de l'une, ville de l'autre) ;
+ *   IDENTITY_CONFLICT SIRET observé différent du SIRET enregistré : le SIREN
+ *                 n'est pas complété depuis cette observation ;
+ *   COMPARE_ONLY  appel en comparaison seule (`fill: false`).
+ */
+export type ConsolidationDecision = 'FILLED' | 'SAME' | 'COMPATIBLE' | 'CONFLICT' | 'USER_CLEARED' | 'ADDRESS_MIXED' | 'IDENTITY_CONFLICT' | 'COMPARE_ONLY';
+
+export interface ConsolidationOutcome {
+  field: string;
+  decision: ConsolidationDecision;
+  before: string | null;
+  after: string | null;
+  observed: string;
+}
+
+/** Décisions de l'utilisateur par champ (`suppliers.user_field_decisions`, migration 1335). */
+export type UserFieldDecisions = Record<string, { action: 'SET' | 'CLEARED'; at: string; userId: number | null }>;
+
+/**
+ * Lot 111X — décisions de l'utilisateur après une modification de la fiche
+ * (pure) : seul un champ dont la valeur CHANGE est une décision (un
+ * enregistrement du formulaire qui renvoie un champ vide resté vide n'est pas
+ * un effacement volontaire). Valeur vidée → CLEARED ; valeur saisie → SET.
+ */
+export function userFieldDecisionsAfterPatch(
+  current: Record<string, unknown>,
+  updates: Record<string, string | null | undefined>,
+  previous: UserFieldDecisions | null | undefined,
+  userId: number | null,
+  at: Date = new Date(),
+): UserFieldDecisions {
+  const out: UserFieldDecisions = { ...(previous ?? {}) };
+  for (const [field, v] of Object.entries(updates)) {
+    if (field === 'name' || v === undefined) continue;
+    const avant = typeof current[field] === 'string' ? (current[field] as string).trim() : '';
+    const apres = typeof v === 'string' ? v.trim() : '';
+    if (avant === apres) continue;
+    out[field] = { action: apres ? 'SET' : 'CLEARED', at: at.toISOString(), userId };
+  }
+  return out;
+}
+
+/** Forme ENREGISTRÉE d'une valeur lue (jamais reformulée au-delà d'un nettoyage). */
+const storageForm: Partial<Record<string, (v: string) => string>> = {
+  email: (v) => v.trim().toLowerCase(),
+  phone: (v) => { const s = v.replace(/[\s.\-()]/g, ''); return s.startsWith('0033') ? `+${s.slice(2)}` : s; },
+  website: (v) => v.trim().replace(/\/$/, ''),
+  vatNumber: (v) => v.replace(/\s/g, '').toUpperCase(),
+  iban: (v) => v.replace(/\s/g, '').toUpperCase(),
+  siren: (v) => v.replace(/[\s\-.]/g, ''),
+  siret: (v) => v.replace(/[\s\-.]/g, ''),
+  postalCode: (v) => v.trim().toUpperCase(),
+};
+const stocker = (key: string, v: string) => (storageForm[key] ?? ((x: string) => x.trim().replace(/\s+/g, ' ')))(v);
+
 export async function consolidateCoordinates(
   supplierId: number,
   observation: ExtractedSupplierData,
@@ -232,10 +297,14 @@ export async function consolidateCoordinates(
     q?: SupplierQueryRunner;
     /**
      * Remplir les champs VIDES (défaut : oui). Faux : seulement relever les
-     * conflits — fiche saisie par l'utilisateur, jamais complétée en silence.
-     * Un champ renseigné n'est, lui, JAMAIS remplacé (conflit à la place).
+     * conflits. Un champ renseigné n'est JAMAIS remplacé (conflit à la place).
+     * Lot 111X : la protection est PAR CHAMP (`user_field_decisions`) — un
+     * champ effacé volontairement n'est jamais réintroduit ; une fiche
+     * créée à la main complète ses champs jamais renseignés.
      */
     fill?: boolean;
+    /** Lot 111X : provenance des champs complétés (`suppliers.field_provenance`). */
+    provenance?: (field: string) => Record<string, unknown> | null;
   } = {},
 ): Promise<ConsolidationResult> {
   const q = opts.q ?? db;
@@ -245,10 +314,12 @@ export async function consolidateCoordinates(
     .where(eq(suppliers.id, supplierId))
     .limit(1);
 
-  if (!supplier) return { updated: false, conflicts: [] };
+  if (!supplier) return { updated: false, conflicts: [], outcomes: [] };
 
   const updates: Partial<typeof suppliers.$inferInsert> = {};
   const conflicts: ConflictFieldInfo[] = [];
+  const outcomes: ConsolidationOutcome[] = [];
+  const decisionsUtilisateur = (supplier.userFieldDecisions ?? {}) as UserFieldDecisions;
 
   type SupplierField = keyof typeof supplier;
   const fields: { key: SupplierField; obsKey: keyof ExtractedSupplierData }[] = [
@@ -283,6 +354,16 @@ export async function consolidateCoordinates(
     ibanHolderName: normalizeTextField,
   };
 
+  // Adresse : un seul ensemble cohérent — si une partie déjà renseignée diffère, aucun champ d'adresse n'est complété.
+  const ADRESSE: SupplierField[] = ['addressLine1', 'addressLine2', 'postalCode', 'city'];
+  const adresseMelangee = ADRESSE.some((k) => {
+    const cur = supplier[k] as string | null;
+    const obs = observation[k as keyof ExtractedSupplierData] as string | null | undefined;
+    const norm = normalizers[k]!;
+    return !!cur && !!obs && norm(cur) !== norm(obs);
+  });
+
+  const provenance: Record<string, Record<string, unknown>> = { ...((supplier.fieldProvenance ?? {}) as Record<string, Record<string, unknown>>) };
   for (const { key, obsKey } of fields) {
     const current = supplier[key] as string | null | undefined;
     const observed = observation[obsKey] as string | null | undefined;
@@ -290,34 +371,93 @@ export async function consolidateCoordinates(
     if (!observed) continue;
 
     const norm = normalizers[key] ?? ((v: string) => v.trim());
+    const out = (decision: ConsolidationDecision, after: string | null = current ?? null) =>
+      outcomes.push({ field: key as string, decision, before: current ?? null, after, observed });
 
     if (!current) {
-      if (opts.fill === false) continue;
-      // Champ vide → remplir avec la valeur normalisée
+      // Lot 111X : effacement volontaire de l'utilisateur respecté à chaque reprise.
+      if (decisionsUtilisateur[key as string]?.action === 'CLEARED') { out('USER_CLEARED'); continue; }
+      if (opts.fill === false) { out('COMPARE_ONLY'); continue; }
       // Exception : si on a un SIREN détecté et un SIRET déjà stocké (compatible), on ne touche pas au SIREN
       if (key === 'siren' && supplier.siret && isSirenSiretCompatible(observed, supplier.siret)) {
-        // Le SIREN est le préfixe du SIRET stocké : on peut le dériver, pas de remplissage nécessaire
+        out('COMPATIBLE');
         continue;
       }
-      (updates as Record<string, unknown>)[key] = norm(observed);
+      if (ADRESSE.includes(key) && adresseMelangee) { out('ADDRESS_MIXED'); continue; }
+      if (key === 'siren' && supplier.siret && observation.siret && normalizeSiret(supplier.siret) !== normalizeSiret(observation.siret)) { out('IDENTITY_CONFLICT'); continue; }
+      const v = stocker(key as string, observed);
+      (updates as Record<string, unknown>)[key] = v;
+      const pv = opts.provenance?.(key as string);
+      if (pv) provenance[key as string] = pv;
+      out('FILLED', v);
     } else if (norm(current) !== norm(observed)) {
       // Valeurs différentes → potentiel conflit
       // Exception SIREN/SIRET : un SIREN détecté compatible avec un SIRET stocké n'est pas un conflit
-      if (key === 'siret' && supplier.siret && isSirenSiretCompatible(observed, supplier.siret)) continue;
-      if (key === 'siren' && supplier.siret && isSirenSiretCompatible(observed, supplier.siret)) continue;
-      if (key === 'siret' && supplier.siren && isSirenSiretCompatible(supplier.siren, observed)) continue;
+      if (key === 'siret' && supplier.siret && isSirenSiretCompatible(observed, supplier.siret)) { out('COMPATIBLE'); continue; }
+      if (key === 'siren' && supplier.siret && isSirenSiretCompatible(observed, supplier.siret)) { out('COMPATIBLE'); continue; }
+      if (key === 'siret' && supplier.siren && isSirenSiretCompatible(supplier.siren, observed)) { out('COMPATIBLE'); continue; }
       // Éviter les faux positifs : si la valeur normalisée est vide, ce n'est pas un vrai conflit
       if (!norm(current).trim() || !norm(observed).trim()) continue;
       conflicts.push({ field: key, currentValue: current || null, detectedValue: observed || null });
+      out('CONFLICT');
+    } else {
+      out('SAME');
     }
   }
 
   if (Object.keys(updates).length > 0) {
     updates.updatedAt = new Date();
+    if (opts.provenance) updates.fieldProvenance = provenance;
     await q.update(suppliers).set(updates).where(eq(suppliers.id, supplierId));
   }
 
-  return { updated: Object.keys(updates).length > 0, conflicts };
+  return { updated: Object.keys(updates).length > 0, conflicts, outcomes };
+}
+
+/**
+ * Lot 111X — revues de conflit de VALEUR (`contact_conflict`), sourcées par le
+ * document et l'observation (distinctes du doute d'identité `deduplication`,
+ * ticket #706). Une par (fournisseur, champ, valeur relevée) ouverte ; une
+ * valeur déjà tranchée par l'utilisateur (« garder l'actuelle », « ignorer »)
+ * n'est jamais reproposée. Rend le nombre de revues ouvertes.
+ */
+export async function openContactConflicts(q: SupplierQueryRunner, p: {
+  accountId: number; supplierId: number; documentId: number | null; observationId: number | null;
+  conflicts: ReadonlyArray<{ field: string; currentValue: string | null; detectedValue: string | null }>;
+}): Promise<number> {
+  let n = 0;
+  // IBAN : jamais en clair dans une revue (ni appliqué d'un clic, lot 109B) — valeurs masquées.
+  const { maskIban } = await import('@/lib/suppliers/supplier-fiche-config');
+  for (const brut of p.conflicts) {
+    const c = brut.field === 'iban' ? { ...brut, currentValue: maskIban(brut.currentValue), detectedValue: maskIban(brut.detectedValue) } : brut;
+    const [deja] = await q
+      .select({ id: supplierReviewItems.id, status: supplierReviewItems.status })
+      .from(supplierReviewItems)
+      .where(and(
+        eq(supplierReviewItems.supplierId, p.supplierId),
+        eq(supplierReviewItems.itemType, 'contact_conflict'),
+        eq(supplierReviewItems.conflictingField, c.field),
+        eq(supplierReviewItems.detectedValue, c.detectedValue ?? ''),
+        sql`(${supplierReviewItems.status} = 'open' OR ${supplierReviewItems.resolution} IN ('keep_current', 'ignored'))`,
+      ))
+      .limit(1);
+    if (deja) continue;
+    await q.insert(supplierReviewItems).values({
+      accountId: p.accountId,
+      itemType: 'contact_conflict',
+      status: 'open',
+      supplierId: p.supplierId,
+      documentId: p.documentId,
+      observationId: p.observationId,
+      conflictingField: c.field,
+      currentValue: c.currentValue,
+      detectedValue: c.detectedValue,
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    });
+    n += 1;
+  }
+  return n;
 }
 
 // ─── Propagate scope ──────────────────────────────────────────────────────────

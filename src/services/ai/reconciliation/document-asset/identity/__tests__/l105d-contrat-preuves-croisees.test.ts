@@ -161,7 +161,9 @@ describe('L105D-U-COH — cohérence : ASSET_CREATED relayé, contrôle spécial
       // Lot 111S : acquisition documentaire établie sans Opération active ni historique « Achat » (fin de registre).
       'COH-OPS-ACQUISITION-DOCUMENT',
       // Lot 111U : projection documentaire CIL (fin de registre).
-      'COH-CIL-DOCUMENT-PROJECTION']);
+      'COH-CIL-DOCUMENT-PROJECTION',
+      // Lot 111X : coordonnées des fournisseurs issues des documents actifs (fin de registre).
+      'COH-SUPPLIER-COORDINATES']);
     expect(ids.filter((x) => x === 'COH-DOC-PRIMARY-LINK')).toHaveLength(1);
     const c = COHERENCE_REGISTRY.find((x) => x.id === 'COH-DOC-PRIMARY-LINK')!;
     expect(c.triggers).toEqual(expect.arrayContaining(['ASSET_CREATED', 'ASSET_UPDATED', 'SOURCE_ANALYZED']));
