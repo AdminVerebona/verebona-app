@@ -329,8 +329,9 @@ export default function SupplierPage() {
               key={d.id}
               title={d.title}
               /* Lot 108D : sous-titre = Type seul ; UNE date à droite, la date du document (sinon « – »).
-                 Lot 109B : un rattachement non confirmé le reste (preuve locale de la relation). */
-              subtitle={[userFacingLabel(d.documentTypeLabel), DOCUMENT_ROW_SUBTITLE_INCLUDES_ASSET ? d.assetName : null, d.isConfirmed ? null : 'Rattachement à confirmer'].filter(Boolean).join(' · ')}
+                 Lot 113G (#706) : plus de « Rattachement à confirmer » déduit de la seule fiabilité du lien — un vrai
+                 doute d'identité est signalé par le bandeau ci-dessus (carte « À traiter » actionnable). */
+              subtitle={[userFacingLabel(d.documentTypeLabel), DOCUMENT_ROW_SUBTITLE_INCLUDES_ASSET ? d.assetName : null].filter(Boolean).join(' · ')}
               aside={<DocumentDateCell value={d.documentDate} className="w-[74px] text-xs text-muted-foreground sm:w-[90px]" />}
               onOpen={() => openDrawer({ kind: 'document', id: d.id })}
               unavailable={!d.available}

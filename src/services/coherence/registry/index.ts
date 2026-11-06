@@ -78,6 +78,8 @@ import { operationsAcquisitionDocumentCheck } from './checks/operations-acquisit
 // Lot 111U : faits documentaires CIL (DPE…) projetés dans les structures spécialisées (fin de registre ; après 111S à la fusion).
 import { cilDocumentProjectionCheck } from './checks/cil-document-projection';
 import { supplierCoordinatesCheck } from './checks/supplier-coordinates';
+// Lot 113G : identité des fiches fournisseur — doublons réels soumis une fois par paire (fin de registre).
+import { supplierIdentityCheck } from './checks/supplier-identity';
 
 export const COHERENCE_REGISTRY: readonly CoherenceCheck[] = [
   toProcessDocumentFieldsCheck,
@@ -165,6 +167,8 @@ export const COHERENCE_REGISTRY: readonly CoherenceCheck[] = [
   cilDocumentProjectionCheck,
   // Lot 111X (ticket « Fournisseurs — coordonnées documentaires ») : ajouté EN FIN de registre, après COH-CIL-DOCUMENT-PROJECTION (111U).
   supplierCoordinatesCheck,
+  // Lot 113G (ticket #706 « Fournisseurs — création automatique, arbitrage des doublons uniquement ») : ajouté EN FIN de registre, après COH-SUPPLIER-COORDINATES (111X).
+  supplierIdentityCheck,
 ];
 
 /** Contrôles exécutés par l'orchestrateur (les points d'extension PLANNED sont exclus). */

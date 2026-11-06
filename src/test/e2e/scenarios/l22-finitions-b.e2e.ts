@@ -214,18 +214,21 @@ scenario('L22-B', 'Lot 22 — finitions (journal des entités, cache T4, cohére
     const [{ n: fiches }] = await sql<{ n: number }[]>`SELECT count(*)::int AS n FROM suppliers WHERE account_id = ${compte.id}`;
     expect(fiches).toBe(1);
 
-    // Fiche SAISIE par l'utilisateur, autre SIRET : rapprochée par le nom, jamais modifiée ; conflit en revue.
+    // Fiche SAISIE par l'utilisateur, même nom mais SIREN DIFFÉRENT : jamais modifiée. Lot 113G (#706) : des
+    // identifiants contradictoires ne prouvent pas l'identité — le document n'est plus rattaché d'office à cette
+    // fiche ; une fiche distincte est créée et la paire soumise à l'utilisateur (« S’agit-il du même fournisseur ? »).
     const [u] = await sql<{ id: number }[]>`
       INSERT INTO suppliers (account_id, created_by_user_id, name, normalized_name, siret, source, created_at, updated_at)
       VALUES (${compte.id}, ${compte.ownerUserId}, 'Plomberie Durand', 'plomberie durand', '98765432100019', 'manual', now(), now()) RETURNING id`;
     const d3 = await make.assetFile(compte, { assetId: bien.id });
-    expect(await feedSupplierFromAnalysis({ ...base, documentId: d3.id, supplier: { name: 'Plomberie Durand', siret: '11122233300044' } }))
-      .toMatchObject({ status: 'linked', supplierId: u.id, conflicts: 1 });
+    const r3 = await feedSupplierFromAnalysis({ ...base, documentId: d3.id, supplier: { name: 'Plomberie Durand', siret: '11122233300044' } });
+    expect(r3).toMatchObject({ status: 'created_uncertain', conflicts: 0 });
+    expect((r3 as { supplierId: number }).supplierId).not.toBe(u.id);
     const [fu] = await sql<{ siret: string; siren: string | null }[]>`SELECT siret, siren FROM suppliers WHERE id = ${u.id}`;
     expect(fu).toEqual({ siret: '98765432100019', siren: null });
-    const revues = await sql<{ item_type: string; conflicting_field: string; current_value: string; detected_value: string }[]>`
-      SELECT item_type, conflicting_field, current_value, detected_value FROM supplier_review_items WHERE supplier_id = ${u.id}`;
-    expect(revues).toEqual([{ item_type: 'contact_conflict', conflicting_field: 'siret', current_value: '98765432100019', detected_value: '11122233300044' }]);
+    const revues = await sql<{ item_type: string; supplier_id: number; candidate_supplier_ids: number[] }[]>`
+      SELECT item_type, supplier_id, candidate_supplier_ids FROM supplier_review_items WHERE supplier_id IN (${u.id}, ${(r3 as { supplierId: number }).supplierId})`;
+    expect(revues).toEqual([{ item_type: 'deduplication', supplier_id: (r3 as { supplierId: number }).supplierId, candidate_supplier_ids: [u.id] }]);
 
     // Groupe T1 : les autres fichiers du groupe sont reliés au même fournisseur.
     const g1 = await make.assetFile(compte, { assetId: bien.id });

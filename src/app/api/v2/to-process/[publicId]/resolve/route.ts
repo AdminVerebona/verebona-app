@@ -101,5 +101,6 @@ export async function POST(
 
   // CDC Assistant §25.7 : événement métier (caches de l'assistant).
   await emitBusinessEvent({ type: 'TO_PROCESS_ITEM_UPDATED', accountId, entityId: publicId });
-  return NextResponse.json({ ok: true, previousValue: result.previousValue });
+  // Lot 113G : `undoable: false` — décision sans annulation (fusion / séparation de fournisseurs).
+  return NextResponse.json({ ok: true, previousValue: result.previousValue, ...(result.undoable === false ? { undoable: false } : {}) });
 }

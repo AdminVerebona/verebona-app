@@ -82,6 +82,7 @@ export const RECETTE_TABLES: Readonly<Record<string, { domain: Exclude<RecetteDo
   suppliers: { domain: 'biens', description: 'Fournisseurs du compte.' },
   supplier_review_items: { domain: 'biens', description: 'Fournisseurs à revoir.' },
   supplier_contact_observations: { domain: 'biens', description: 'Observations de coordonnées fournisseur.' },
+  supplier_identity_decisions: { domain: 'biens', description: 'Décisions de l’utilisateur sur une paire de fournisseurs : même fournisseur (fusion) ou fournisseurs distincts (lot 113G).' },
   // ── Pièces ─────────────────────────────────────────────────────────────
   substructures: { domain: 'pieces', description: 'Pièces des biens (terme métier « Pièce » ; nom technique historique).' },
   rooms: { domain: 'pieces', description: 'Ancien modèle des pièces (avant fusion dans `substructures`).' },

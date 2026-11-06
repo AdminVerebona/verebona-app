@@ -8,7 +8,7 @@
   "scripts": {
     "predev": "node scripts/sync-pdf-worker.mjs",
     "dev": "next dev --turbopack",
-    "prebuild": "node scripts/check-repo-structure.mjs && node scripts/sync-pdf-worker.mjs",
+    "prebuild": "node scripts/check-repo-structure.mjs && node scripts/update-disposable-domains.mjs --verify && node scripts/sync-pdf-worker.mjs",
     "postinstall": "node scripts/install-chromium.mjs",
     "build": "next build",
     "postbuild": "node scripts/prune-image.mjs",
@@ -50,6 +50,7 @@
     "test:e2e:rappels-statut-effectif": "vitest --run --config vitest.e2e.config.ts src/test/e2e/scenarios/l112g-rappels-statut-effectif.e2e.ts",
     "test:e2e:rattachement-multiple": "vitest --run --config vitest.e2e.config.ts src/test/e2e/scenarios/l111i-rattachement-multiple.e2e.ts",
     "test:e2e:partage-natif": "vitest --run --config vitest.e2e.config.ts src/test/e2e/scenarios/l110a-partage-natif.e2e.ts src/test/e2e/scenarios/l111p-partage-renouvellement.e2e.ts src/test/e2e/scenarios/depot-idempotent.e2e.ts",
+    "test:e2e:bo-fournisseurs": "vitest --run --config vitest.e2e.config.ts src/test/e2e/scenarios/l113e-bo-fournisseurs.e2e.ts src/test/e2e/scenarios/l75n-bo-donnees-compte.e2e.ts src/test/e2e/scenarios/l81c-bo-exports-exhaustifs.e2e.ts",
     "test:e2e:legal": "vitest --run --config vitest.e2e.config.ts src/test/e2e/scenarios/l102b-source-juridique.e2e.ts",
     "test:e2e:inscription-cguv": "vitest --run --config vitest.e2e.config.ts src/test/e2e/scenarios/l111o-inscription-cguv.e2e.ts src/test/e2e/scenarios/l108h-parrainage-liens.e2e.ts src/test/e2e/scenarios/l104a-legal-finition.e2e.ts src/test/e2e/scenarios/l102b-source-juridique.e2e.ts",
     "test:e2e:legal-finition": "vitest --run --config vitest.e2e.config.ts src/test/e2e/scenarios/l104a-legal-finition.e2e.ts src/test/e2e/scenarios/l102b-source-juridique.e2e.ts src/test/e2e/scenarios/l102c-conformite-technique.e2e.ts src/test/e2e/scenarios/l102a-cycle-vie-comptes.e2e.ts",
@@ -123,7 +124,8 @@
     "ai:check-legacy": "node scripts/check-legacy-ai.mjs",
     "prompts:check": "tsx scripts/check-prompt-files.ts",
     "disposable-domains:update": "node scripts/update-disposable-domains.mjs",
-    "test:e2e:emails-jetables": "vitest --run --config vitest.e2e.config.ts src/test/e2e/scenarios/l109f-emails-jetables.e2e.ts",
+    "disposable-domains:verify": "node scripts/update-disposable-domains.mjs --verify",
+    "test:e2e:emails-jetables": "vitest --run --config vitest.e2e.config.ts src/test/e2e/scenarios/l109f-emails-jetables.e2e.ts src/test/e2e/scenarios/l113h-emails-jetables-oauth.e2e.ts",
     "ai:corpus": "tsx scripts/run-master-corpus.ts",
     "ai:corpus:manifest": "tsx scripts/ai-corpus-manifest.ts",
     "ai:corpus:import": "tsx scripts/ai-corpus-import.ts",
@@ -146,7 +148,8 @@
     "test:e2e:cil-pose": "vitest --run --config vitest.e2e.config.ts src/test/e2e/scenarios/l112f-cil-pose.e2e.ts",
     "test:e2e:fournisseurs-coordonnees": "vitest --run --config vitest.e2e.config.ts src/test/e2e/scenarios/l111x-fournisseurs-coordonnees.e2e.ts",
     "test:e2e:tco-standard-cta": "vitest --run --config vitest.e2e.config.ts src/test/e2e/scenarios/l113b-tco-standard-cta.e2e.ts src/test/e2e/scenarios/l112c-t2-tco-droits.e2e.ts",
-    "test:e2e:assistant-actions": "vitest --run --config vitest.e2e.config.ts src/test/e2e/scenarios/l113f-assistant-actions.e2e.ts"
+    "test:e2e:assistant-actions": "vitest --run --config vitest.e2e.config.ts src/test/e2e/scenarios/l113f-assistant-actions.e2e.ts",
+    "test:e2e:fournisseurs-doublons": "vitest --run --config vitest.e2e.config.ts src/test/e2e/scenarios/l113g-fournisseurs-doublons.e2e.ts"
   },
   "dependencies": {
     "@aws-sdk/client-s3": "^3.934.0",

@@ -81,6 +81,8 @@ const run = async (sql: string, params: unknown[]) => {
   if (q.includes('FROM suppliers')) return SUPPLIERS.filter((s) => s.id === supplierId && s.accountId === accountId).map(({ accountId: _a, ...s }) => s);
   if (q.includes('FROM supplier_review_items r')) return pour(LIES.conflicts);
   if (q.includes('FROM supplier_review_items')) return [{ n: 0 }];
+  // Lot 113G : doute d'identité réel = carte « S’agit-il du même fournisseur ? » vivante (to_process_actions).
+  if (q.includes('FROM to_process_actions a')) return [{ n: 0 }];
   if (q.includes('FROM assets a WHERE a.account_id = $2')) return pour(LIES.assets);
   if (q.includes('FROM document_suppliers ds JOIN asset_files f')) return pour(LIES.documents);
   if (q.includes('FROM equipment_suppliers es JOIN equipments')) return pour(LIES.equipments);

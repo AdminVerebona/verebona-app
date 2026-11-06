@@ -32,9 +32,9 @@
  * persistées sont exploitées.
  * ══════════════════════════════════════════════════════════════════════════
  */
-import { sql, type SQL } from 'drizzle-orm';
+import { and, eq, inArray, sql, type SQL } from 'drizzle-orm';
 import { db } from '@/db';
-import { suppliers, supplierReviewItems } from '@/db/schema';
+import { suppliers } from '@/db/schema';
 import {
   AGENDA_SUPPLIER_PROVENANCE_RANK, AGENDA_SUPPLIER_RULES, findSupplierMentions, isEmptySyncPlan, planAgendaSupplierSync,
   type AgendaSupplierEvidence, type AgendaSupplierProvenance, type AgendaSupplierSyncPlan, type AgendaSuppliersPayload,
@@ -163,13 +163,26 @@ export async function resolveSupplierForUser(
     source: 'manual', status: 'active', createdAt: new Date(), updatedAt: new Date(),
   }).returning({ id: suppliers.id });
   if (decision === 'uncertain' && !p.confirmNew) {
-    await tx.insert(supplierReviewItems).values({
-      accountId: p.accountId, itemType: 'deduplication', status: 'open', supplierId: cree.id, detectedName: nom,
-      candidateSupplierIds: candidats.slice(0, 3).map((c) => c.id), createdAt: new Date(), updatedAt: new Date(),
-    });
-    return { supplierId: cree.id, outcome: 'created_uncertain' };
+    // Lot 113G : revue seulement pour une paire plausible non tranchée, jamais en double (`openIdentityReview`).
+    const { openIdentityReview } = await import('@/services/suppliers/supplier-identity-reviews');
+    const r = await openIdentityReview(q, { accountId: p.accountId, supplierId: cree.id, documentId: null, detectedName: nom, candidateIds: candidats.map((c) => c.id) });
+    if (r.reviewId !== null) return { supplierId: cree.id, outcome: 'created_uncertain' };
+  } else if (decision === 'uncertain' && p.confirmNew) {
+    // Lot 113G : « Créer quand même » = identités DISTINCTES décidées par l'utilisateur (jamais reproposées).
+    await recordDistinctFromCandidates(q, p.accountId, cree.id, candidats.map((c) => c.id), p.userId);
   }
   return { supplierId: cree.id, outcome: 'created' };
+}
+
+/** Lot 113G : fiche créée malgré des fiches proches (choix explicite) — séparation mémorisée par paire. */
+export async function recordDistinctFromCandidates(q: SupplierQueryRunner, accountId: number, supplierId: number, candidateIds: readonly number[], userId: number | null): Promise<void> {
+  const ids = [...new Set(candidateIds.filter((x) => Number.isInteger(x) && x > 0 && x !== supplierId))].slice(0, 10);
+  if (!ids.length) return;
+  const { recordPairDecision } = await import('@/services/suppliers/supplier-identity-reviews');
+  const fiches = await q.select().from(suppliers).where(and(eq(suppliers.accountId, accountId), inArray(suppliers.id, [supplierId, ...ids])));
+  const a = fiches.find((f) => f.id === supplierId);
+  if (!a) return;
+  for (const b of fiches) if (b.id !== a.id) await recordPairDecision(q, { accountId, a, b, decision: 'DISTINCT', reviewId: null, userId, evidence: { reason: 'CREATED_ANYWAY' } });
 }
 
 // ── Écritures utilisateur ─────────────────────────────────────────────────

@@ -585,6 +585,23 @@ export async function requestOperationSupplierResync(accountId: number, fileIds:
 }
 
 /**
+ * Lot 113G — même report, dans la transaction EXISTANTE de la fusion de fiches
+ * (`supplier-merge.ts`, « Oui » sur « S'agit-il du même fournisseur ? ») : ce
+ * module reste le SEUL à ouvrir l'écriture Opération (INV-FINAL-009). Les
+ * événements rendus sont publiés par l'appelant APRÈS le commit.
+ */
+export async function mergeOperationSupplierRecordsInTx(
+  tx: unknown, p: { accountId: number; fromSupplierId: number; toSupplierId: number; actorUserId?: number | null },
+): Promise<{ merged: number; events: unknown[] }> {
+  const { drizzleRunner } = await import('@/services/business-operations/grouping/runner');
+  const { withBusinessOperationWriteInTx } = await import('@/services/business-operations/write');
+  const { result, events } = await withBusinessOperationWriteInTx(tx as never, [p.accountId], async (s) => mergeOperationSupplierRecords(drizzleRunner(s.tx), {
+    accountId: p.accountId, fromSupplierId: p.fromSupplierId, toSupplierId: p.toSupplierId, actorUserId: p.actorUserId ?? null, correlationId: s.correlationId,
+  }));
+  return { merged: Number(result) || 0, events };
+}
+
+/**
  * Intégration lot 109 — fusion de deux fiches fournisseur (décision de
  * l'utilisateur dans « À traiter ») : liens Opération ↔ fournisseur reportés
  * sur la fiche conservée, sous le verrou d'écriture des Opérations du compte,

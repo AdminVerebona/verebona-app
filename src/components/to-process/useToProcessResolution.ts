@@ -106,13 +106,15 @@ export function useToProcessResolution(cb: ResolutionCallbacks = {}) {
     setBusyId(action.publicId);
     ref.current.onRemove?.(action);
     try {
-      const res = await apiClient.post<{ ok: boolean; previousValue: unknown }>(
+      const res = await apiClient.post<{ ok: boolean; previousValue: unknown; undoable?: boolean }>(
         `/api/v2/to-process/${action.publicId}/resolve`,
         { mode: 'arbitrate', value: proposal.value },
       );
       ref.current.onResolved?.(action);
       notifyToProcessChanged();
-      toast.success(resolutionToastText(action, proposal), {
+      // Lot 113G : décision sans annulation (fusion / séparation de fournisseurs) — aucun « Annuler » trompeur.
+      if (res?.undoable === false) toast.success(resolutionToastText(action, proposal));
+      else toast.success(resolutionToastText(action, proposal), {
         action: { label: 'Annuler', onClick: () => void undo(action, res.previousValue) },
       });
       const suite = saleFollowUpFor(action, proposal.value);

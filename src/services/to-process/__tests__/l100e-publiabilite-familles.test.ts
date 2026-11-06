@@ -112,7 +112,8 @@ describe('L100E-U-PUB — une seule définition « publiable », toutes familles
     // Équipements : rattaché à un bien vivant, ou inactif.
     expect(n).toMatch(/'LINK-EQUIP-ASSET' AND EXISTS \(SELECT 1 FROM equipments e[\s\S]*s\.deleted_at IS NULL\) OR e\.archived_at IS NOT NULL/);
     // Fournisseurs : plus aucune revue ouverte.
-    expect(n).toMatch(/'SUPPLIER-IDENTITY' AND NOT EXISTS \(SELECT 1 FROM supplier_review_items r[\s\S]*r\.status = 'open'/);
+    // Lot 113G : la prémisse fournisseur est groupée (revue d'identité ouverte, ou paire dont une fiche n'est plus active).
+    expect(n).toMatch(/'SUPPLIER-IDENTITY' AND \(?NOT EXISTS \(SELECT 1 FROM supplier_review_items r[\s\S]*r\.status = 'open'/);
     // Événements de référence : fusionnés / invalidés, candidat disparu.
     expect(n).toMatch(/'OPERATION-AMOUNT' AND EXISTS \(SELECT 1 FROM business_operations o[\s\S]*merged_into_operation_id IS NOT NULL OR o\.invalidated_at IS NOT NULL/);
     expect(n).toMatch(/'OPERATION-MATCH' AND NOT EXISTS \(SELECT 1 FROM document_operation_candidates c/);
@@ -186,7 +187,9 @@ describe('L100E-U-COH — COH-TODO-PUBLISHABILITY (nettoyage rétroactif, point 
       // Lot 111U : projection documentaire CIL (fin de registre).
       'COH-CIL-DOCUMENT-PROJECTION',
       // Lot 111X : coordonnées des fournisseurs issues des documents actifs (fin de registre).
-      'COH-SUPPLIER-COORDINATES']);
+      'COH-SUPPLIER-COORDINATES',
+      // Lot 113G : identité des fiches fournisseur, doublons réels soumis une fois par paire (fin de registre).
+      'COH-SUPPLIER-IDENTITY']);
     const c = getCheck(PUBLISHABILITY_CHECK_ID)!;
     expect(c).toMatchObject({ status: 'ACTIVE', version: 1, objectType: 'to_process_action' });
     expect(c.forbiddenRepairs).toEqual(expect.arrayContaining(['écrire une valeur de l’objet', 'fermer une carte retenue pour cause technique', 'rouvrir une carte fermée par l’utilisateur']));

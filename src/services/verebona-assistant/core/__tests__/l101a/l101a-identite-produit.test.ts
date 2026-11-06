@@ -153,7 +153,9 @@ describe('L101A-U-COH-IDENTITY — contrôle de cohérence de l’identité prod
       // Lot 111U : projection documentaire CIL (fin de registre).
       'COH-CIL-DOCUMENT-PROJECTION',
       // Lot 111X : coordonnées des fournisseurs issues des documents actifs (fin de registre).
-      'COH-SUPPLIER-COORDINATES']);
+      'COH-SUPPLIER-COORDINATES',
+      // Lot 113G : identité des fiches fournisseur, doublons réels soumis une fois par paire (fin de registre).
+      'COH-SUPPLIER-IDENTITY']);
     expect(COVERAGE_INVENTORY.find((d) => d.domain === 'equipements')!.checks).toContain('COH-EQUIPMENT-IDENTITY');
     expect(equipmentIdentityCheck.forbiddenRepairs.join(' ')).toMatch(/utilisateur/);
   });

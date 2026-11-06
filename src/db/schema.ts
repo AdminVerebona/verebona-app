@@ -2195,6 +2195,8 @@ export const suppliers = pgTable('suppliers', {
   // Lot 111X (1335) : protection PAR CHAMP des saisies / effacements de l'utilisateur, provenance des remplissages automatiques.
   userFieldDecisions: jsonb('user_field_decisions').$type<Record<string, { action: 'SET' | 'CLEARED'; at: string; userId: number | null }>>().notNull().default({}),
   fieldProvenance: jsonb('field_provenance').$type<Record<string, Record<string, unknown>>>().notNull().default({}),
+  // Lot 113G (1470) : fiche conservée après une fusion décidée par l'utilisateur (identifiant de référence).
+  mergedIntoSupplierId: integer('merged_into_supplier_id'),
   createdAt: tstz('created_at'),
   updatedAt: tstz('updated_at'),
 }, (table) => ({
@@ -2237,6 +2239,9 @@ export const documentSuppliers = pgTable('document_suppliers', {
   role: text('role'),
   confidenceScore: numeric('confidence_score'),
   isConfirmed: boolean('is_confirmed').notNull().default(false),
+  // Lot 113G (1470) : base du rattachement (NEW_SUPPLIER, IDENTIFIER, EXACT_NAME, UNCERTAIN_NEW, USER, MERGED) ;
+  // distincte de la fiabilité réelle (`is_confirmed`, `confidence_score`, jamais promues). NULL : lien antérieur.
+  matchBasis: text('match_basis'),
 }, (t) => ({
   pk: primaryKey({ columns: [t.documentId, t.supplierId] }),
   documentIdIdx: index('document_suppliers_document_id_idx').on(t.documentId),
@@ -2289,6 +2294,37 @@ export const supplierReviewItems = pgTable('supplier_review_items', {
   accountStatusIdx: index('idx_supplier_review_items_account_status').on(table.accountId, table.status),
   supplierIdIdx: index('supplier_review_items_supplier_id_idx').on(table.supplierId),
   publicIdIdx: index('supplier_review_items_public_id_idx').on(table.publicId),
+}));
+
+/**
+ * Lot 113G (1470) — décision de l'utilisateur sur une PAIRE de fiches
+ * fournisseur (paire normalisée non ordonnée : `supplierLowId < supplierHighId`).
+ * SAME = fusion décidée ; DISTINCT = identités différentes, respectée par T1,
+ * T3, la cohérence et les nouveaux documents ; réouverture seulement sur
+ * preuve objective nouvelle (`reopenedAt`, `reopenReason`). Déclencheur
+ * `supplier_identity_decisions_same_account` : aucune paire intercomptes.
+ */
+export const supplierIdentityDecisions = pgTable('supplier_identity_decisions', {
+  id: bigserial('id', { mode: 'number' }).primaryKey(),
+  accountId: integer('account_id').notNull().references(() => accounts.id, { onDelete: 'cascade' }),
+  supplierLowId: integer('supplier_low_id').notNull().references(() => suppliers.id, { onDelete: 'cascade' }),
+  supplierHighId: integer('supplier_high_id').notNull().references(() => suppliers.id, { onDelete: 'cascade' }),
+  decision: text('decision').notNull(),
+  basis: text('basis'),
+  evidenceFingerprint: text('evidence_fingerprint'),
+  evidence: jsonb('evidence').notNull().default({}),
+  reviewId: integer('review_id').references(() => supplierReviewItems.id, { onDelete: 'set null' }),
+  decidedByUserId: integer('decided_by_user_id').references(() => users.id, { onDelete: 'set null' }),
+  decidedAt: tstz('decided_at'),
+  reopenedAt: tstzOptional('reopened_at'),
+  reopenReason: text('reopen_reason'),
+  createdAt: tstz('created_at'),
+  updatedAt: tstz('updated_at'),
+}, (t) => ({
+  pairChk: check('supplier_identity_decisions_pair_chk', sql`${t.supplierLowId} < ${t.supplierHighId}`),
+  decisionChk: check('supplier_identity_decisions_decision_chk', sql`${t.decision} IN ('SAME', 'DISTINCT')`),
+  pairKey: unique('supplier_identity_decisions_pair_key').on(t.accountId, t.supplierLowId, t.supplierHighId),
+  highIdx: index('supplier_identity_decisions_high_idx').on(t.supplierHighId),
 }));
 
 // ─── Lot 103E : fournisseurs / intervenants des éléments d'Agenda (0950) ──────

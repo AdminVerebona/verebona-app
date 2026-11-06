@@ -28,11 +28,23 @@
  *      document) ; si le client renvoie l'objet sans `supplier`, la trace
  *      d'un retrait est perdue ;
  *   2. rapprochement (`findCandidates` : SIRET / SIREN, puis nom normalisé)
- *      et décision (`assessMatch`) :
- *        · certain   → lien au fournisseur existant ;
- *        · incertain → nouveau fournisseur + revue de doublon (carte
- *                      « À traiter » SUPPLIER-IDENTITY), comme avant ;
- *        · nouveau   → fournisseur créé (`source = document_extraction`) ;
+ *      et décision (`assessMatch`) — lot 113G (#706), règle commune
+ *      `supplier-identity.ts` :
+ *        · certain   → lien à la fiche CANONIQUE existante (identifiant
+ *                      identique, ou même raison sociale sans identifiant
+ *                      contradictoire), aucune fiche ni sollicitation ;
+ *        · incertain → nouvelle fiche + revue de doublon (carte « À traiter »
+ *                      SUPPLIER-IDENTITY « S'agit-il du même fournisseur ? »)
+ *                      SEULEMENT pour une paire plausible non tranchée
+ *                      (`openIdentityReview`) ; aucune fusion automatique ;
+ *        · nouveau   → fiche créée (`source = document_extraction`) et liée,
+ *                      SANS confirmation demandée ;
+ *      Le lien garde sa fiabilité RÉELLE (`is_confirmed` = rapprochement
+ *      certain seulement, `confidence_score` = confiance T1, jamais promus) et
+ *      sa base (`match_basis`) ; « à confirmer » n'est plus déduit de
+ *      `is_confirmed` mais d'une revue de doublon vivante ;
+ *      Un nom qui est celui d'un MEMBRE du compte (client, destinataire)
+ *      n'alimente jamais le référentiel (règle 6 du ticket) ;
  *   3. fiche existante : un champ renseigné n'est JAMAIS remplacé (SIRET
  *      différent → revue `contact_conflict`) ; lot 111X : un champ vide est
  *      complété quelle que soit l'origine de la fiche, SAUF effacement
@@ -56,9 +68,10 @@
 import { sql, eq, and } from 'drizzle-orm';
 import { db } from '@/db';
 import {
-  assetFiles, documentSuppliers, suppliers, supplierContactObservations, supplierReviewItems,
+  assetFiles, documentSuppliers, suppliers, supplierContactObservations,
 } from '@/db/schema';
 import { pgClient } from '@/db';
+import { openIdentityReview } from './supplier-identity-reviews';
 import {
   assessMatch, classifySirenSiret, consolidateCoordinates, findCandidates, normalizeName, openContactConflicts,
   propagateScopeIfNeeded, recalculateEquipmentSuppliers, type SupplierQueryRunner,
@@ -73,7 +86,7 @@ interface AnalyzedSupplier {
 }
 
 type SupplierFeedResult =
-  | { status: 'skipped'; reason: 'NO_SUPPLIER' | 'LOW_CONFIDENCE' | 'DOCUMENT_NOT_FOUND' | 'USER_EDITED_DOCUMENT' | 'SUPPLIER_INACTIVE' }
+  | { status: 'skipped'; reason: 'NO_SUPPLIER' | 'LOW_CONFIDENCE' | 'DOCUMENT_NOT_FOUND' | 'USER_EDITED_DOCUMENT' | 'SUPPLIER_INACTIVE' | 'ACCOUNT_PARTY' }
   /** Lot 111X : `already_linked` = document déjà rattaché — aucun lien ni fiche nouveaux, coordonnées enrichies. */
   | { status: 'linked' | 'created' | 'created_uncertain' | 'already_linked'; supplierId: number; conflicts: number };
 
@@ -139,8 +152,11 @@ export async function feedSupplierFromAnalysis(p: {
     }
     scope = doc.scope ?? null;
 
+    // Lot 113G (règle 6) : le nom d'un membre du compte (client, destinataire cité) n'est pas un fournisseur.
+    if (await isAccountPartyName(tx, p.accountId, normalizedName)) { out = { status: 'skipped', reason: 'ACCOUNT_PARTY' }; return; }
+
     const candidates = await findCandidates(p.accountId, normalizedName, siren, siret, null, q);
-    const decision = assessMatch(candidates);
+    let decision = assessMatch(candidates);
 
     let supplierId: number;
     let conflicts: Array<{ field: string; currentValue: string | null; detectedValue: string | null }> = [];
@@ -164,25 +180,24 @@ export async function feedSupplierFromAnalysis(p: {
       }).returning({ id: suppliers.id });
       supplierId = cree.id;
       if (decision === 'uncertain') {
-        await q.insert(supplierReviewItems).values({
-          accountId: p.accountId,
-          itemType: 'deduplication',
-          status: 'open',
-          supplierId,
-          documentId: p.documentId,
-          detectedName: nom,
-          candidateSupplierIds: candidates.slice(0, 3).map((c) => c.id),
-          createdAt: new Date(),
-          updatedAt: new Date(),
+        // Lot 113G : revue seulement pour les paires plausibles NON tranchées (décision « distinctes »
+        // respectée, paire déjà en revue jamais dupliquée) ; sinon la fiche est simplement nouvelle.
+        const r = await openIdentityReview(q, {
+          accountId: p.accountId, supplierId, documentId: p.documentId, detectedName: nom, candidateIds: candidates.map((c) => c.id),
         });
+        if (r.reviewId === null) decision = 'new';
       }
     }
 
     await q.insert(documentSuppliers).values({
       documentId: p.documentId,
       supplierId,
+      // Fiabilité RÉELLE du lien (lot 113G) : jamais promue du seul fait d'une création sans doublon.
       isConfirmed: decision === 'certain',
       confidenceScore: p.supplier?.confidence === 'certain' ? '1' : p.supplier?.confidence === 'probable' ? '0.7' : null,
+      matchBasis: decision === 'certain'
+        ? (candidates[0].basis === 'IDENTIFIER' ? 'IDENTIFIER' : 'EXACT_NAME')
+        : decision === 'uncertain' ? 'UNCERTAIN_NEW' : 'NEW_SUPPLIER',
     }).onConflictDoNothing();
 
     const [obs] = await q.insert(supplierContactObservations).values({
@@ -227,6 +242,26 @@ export async function feedSupplierFromAnalysis(p: {
     } catch { /* non bloquant */ }
   }
   return res;
+}
+
+/**
+ * Lot 113G (règle 6) — le nom lu est-il celui d'un MEMBRE du compte (titulaire
+ * ou membre actif : « Prénom Nom » ou « Nom Prénom ») ? Un devis cite le client :
+ * ce nom n'est jamais un fournisseur. Comparaison sur le nom complet normalisé
+ * seulement (« Durand Plomberie » reste un fournisseur pour M. Durand).
+ */
+async function isAccountPartyName(tx: { execute: typeof db.execute }, accountId: number, normalizedName: string): Promise<boolean> {
+  if (!normalizedName.includes(' ')) return false;
+  const rows = await tx.execute(sql`
+    SELECT u.first_name, u.last_name FROM users u
+     WHERE u.id IN (SELECT owner_user_id FROM accounts WHERE id = ${accountId}
+                    UNION SELECT user_id FROM account_memberships WHERE account_id = ${accountId} AND user_id IS NOT NULL AND removed_at IS NULL)`);
+  for (const r of rows as unknown as Array<{ first_name: string | null; last_name: string | null }>) {
+    const prenom = normalizeName(r.first_name ?? ''); const nomFamille = normalizeName(r.last_name ?? '');
+    if (!prenom || !nomFamille) continue;
+    if (normalizedName === `${prenom} ${nomFamille}` || normalizedName === `${nomFamille} ${prenom}`) return true;
+  }
+  return false;
 }
 
 let enregistre = false;

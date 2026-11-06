@@ -82,6 +82,14 @@ export async function POST(request: NextRequest) {
       updatedAt: new Date(),
     }).returning({ id: suppliers.id, publicId: suppliers.publicId, name: suppliers.name, status: suppliers.status });
 
+    // Lot 113G (#706) : « Créer quand même » malgré des fiches proches = identités DISTINCTES décidées par
+    // l'utilisateur, mémorisées par paire (jamais reproposées par la cohérence ni un nouveau document).
+    if (newSupplier && Array.isArray(body.confirmedDistinctFrom) && body.confirmedDistinctFrom.length) {
+      const { recordDistinctFromCandidates } = await import('@/services/agenda/agenda-suppliers');
+      const ids = (body.confirmedDistinctFrom as unknown[]).map(Number).filter((x) => Number.isSafeInteger(x) && x > 0);
+      await recordDistinctFromCandidates(db as never, accountId, newSupplier.id, ids, session.userId ?? null);
+    }
+
     // CDC Assistant §31.7 : modification d'un fournisseur (signal hors catalogue §25.7).
     await emitBusinessEvent({ type: 'SUPPLIER_CHANGED', accountId, entityId: newSupplier?.id ?? null });
     return NextResponse.json({ supplier: newSupplier }, { status: 201 });

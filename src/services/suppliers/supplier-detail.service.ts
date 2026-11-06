@@ -311,9 +311,13 @@ export async function getSupplierDetail(
         ORDER BY r.created_at DESC NULLS LAST, r.id DESC`,
       [supplierId, accountId],
     ),
+    // Lot 113G (#706) : doute d'identité RÉEL = carte « S’agit-il du même fournisseur ? » vivante qui
+    // implique cette fiche (détectée ou déjà connue) — jamais une revue sans carte actionnable.
     run(
-      `SELECT count(*)::int AS n FROM supplier_review_items
-        WHERE supplier_id = $1 AND account_id = $2 AND status = 'open' AND item_type = 'deduplication'`,
+      `SELECT count(*)::int AS n FROM to_process_actions a
+        WHERE a.account_id = $2 AND a.rule_code = 'SUPPLIER-IDENTITY' AND a.resolved_at IS NULL
+          AND a.trigger_context->>'kind' = 'supplier_pair'
+          AND (a.target_id = $1 OR a.trigger_context->>'knownSupplierId' = $1::text)`,
       [supplierId, accountId],
     ),
     listSupplierDocumentsViaOperation(accountId, supplierId, first),

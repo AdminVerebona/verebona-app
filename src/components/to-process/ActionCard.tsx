@@ -40,6 +40,8 @@ import { openCardDocumentPreview, previewAriaLabel } from './document-preview';
 import type { CardLinks as CardLinksData } from '@/services/to-process/card-links';
 import { CardLinkButton, CardLinks } from './CardLinks';
 import type { OperationReferencesView } from '@/services/to-process/operation-match-binary';
+import type { SupplierPairView } from '@/services/to-process/supplier-identity-cards';
+import { SupplierPairDetails } from './SupplierPairDetails';
 import { clearDraft, getDraft, setDraft } from './return-state';
 import type { AssetLinkChoicesView } from '@/services/to-process/asset-link-choices';
 import { AssetLinkChoices } from './AssetLinkChoices';
@@ -89,6 +91,8 @@ export interface ActionView {
    * pouvant recevoir le document, en boutons nommés (aucun « Ouvrir »).
    */
   assetChoices?: AssetLinkChoicesView;
+  /** Lot 113G — « S’agit-il du même fournisseur ? » : les deux fiches de la paire (contexte, jamais des réponses). */
+  supplierPair?: SupplierPairView;
 }
 
 interface Handlers {
@@ -473,6 +477,7 @@ function CardBody({ action, ...handlers }: { action: ActionView } & Handlers) {
 
       {/* Lot 110D : références en contexte, entre la question et les réponses. */}
       {action.references && <OperationReferences cardId={action.publicId} references={action.references} navigate={handlers.navigate} />}
+      {action.supplierPair && <SupplierPairDetails pair={action.supplierPair} />}
 
       <div className="mt-3">
         <Controls action={action} {...handlers} />

@@ -246,6 +246,8 @@ export interface ResolveResult {
    * rien n'est écrit.
    */
   error?: 'NOT_FOUND' | 'ALREADY_RESOLVED' | 'FIELD_NOT_RESOLVABLE' | 'INVALID_VALUE' | 'STALE' | 'FIELD_NOT_APPLICABLE';
+  /** Lot 113G : faux = aucune annulation proposée (fusion / séparation de fournisseurs). Absent : annulable. */
+  undoable?: boolean;
 }
 
 export interface ResolveOptions {
@@ -348,6 +350,13 @@ export async function resolveArbitration(
     if (action.ruleCode === 'AGENDA-PROJECTION-MATCH') {
       const { resolveAgendaProjectionMatch } = await import('./agenda-projection-cards');
       return resolveAgendaProjectionMatch(tx, action, value, accountId, options);
+    }
+
+    // Identité de deux fiches fournisseur (lot 113G, #706) : « Oui » fusionne, « Non » mémorise
+    // la séparation de la paire — jamais de fusion automatique.
+    if (action.ruleCode === 'SUPPLIER-IDENTITY' && (action.triggerContext as { kind?: string } | null)?.kind === 'supplier_pair') {
+      const { resolveSupplierIdentityCard } = await import('./supplier-identity-cards');
+      return resolveSupplierIdentityCard(tx as never, action, value, accountId, options);
     }
 
     // Intervention réelle sur un document (lot 61) : « C'est fait » /

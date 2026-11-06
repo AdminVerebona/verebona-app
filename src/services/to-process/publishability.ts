@@ -242,8 +242,13 @@ export const PUBLISHABILITY_CONTRACTS: Readonly<Record<string, PublishabilityCon
   // ── Fournisseurs ───────────────────────────────────────────────────────
   'SUPPLIER-IDENTITY': {
     family: 'FOURNISSEURS', decisions: 'FAMILY_DECISION', reason: 'SUPPLIER_REVIEW_CLOSED', atCreation: true,
-    noLongerUseful: (a) => `NOT EXISTS (SELECT 1 FROM supplier_review_items r WHERE r.account_id = ${a}.account_id AND r.status = 'open'
-                                         AND COALESCE(r.supplier_id, r.id) = ${a}.target_id)`,
+    // Lot 113G : un conflit de coordonnées (111X) ne justifie pas une carte d'identité ; une carte de PAIRE
+    // n'a plus d'objet dès que l'une des deux fiches n'est plus active (fusionnée, archivée).
+    noLongerUseful: (a) => `(NOT EXISTS (SELECT 1 FROM supplier_review_items r WHERE r.account_id = ${a}.account_id AND r.status = 'open'
+                                          AND r.item_type <> 'contact_conflict' AND COALESCE(r.supplier_id, r.id) = ${a}.target_id)
+                            OR (${a}.trigger_context->>'kind' = 'supplier_pair' AND EXISTS (
+                                  SELECT 1 FROM suppliers s WHERE s.account_id = ${a}.account_id AND s.status <> 'active'
+                                     AND s.id IN ((${a}.trigger_context->>'detectedSupplierId')::int, (${a}.trigger_context->>'knownSupplierId')::int))))`,
     cleanup: { by: PUBLISHABILITY_CHECK_ID, service: 'produceSupplierActions' },
   },
 

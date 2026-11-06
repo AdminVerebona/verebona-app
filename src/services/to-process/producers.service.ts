@@ -46,6 +46,7 @@ import {
   equipments,
   rooms,
   supplierReviewItems,
+  suppliers as suppliersTable,
   toProcessActionEvents,
   toProcessActions,
 } from '@/db/schema';
@@ -565,6 +566,22 @@ export function supplierIdentityAdmissibility(f: SupplierReviewFacts): Admissibi
 }
 
 /**
+ * Lot 113G (#706) — admissibilité d'une carte de PAIRE (pure) : une revue de
+ * doublon n'ouvre une carte que pour une paire plausible, active et non
+ * tranchée. Paire tranchée par l'utilisateur : décision respectée ; aucune
+ * paire crédible : rien à demander (aucune confirmation purement formelle).
+ */
+export function supplierPairAdmissibility(f: { pair: boolean; decided: boolean }): AdmissibilityDecision {
+  return decideAdmissibility({
+    ruleCode: 'SUPPLIER-IDENTITY',
+    checks: { realProblem: f.pair || f.decided, neededForUse: null, autoResolvable: null, userActionNeeded: f.pair, timely: true, userDecided: f.decided && !f.pair },
+    notApplicable: ['neededForUse', 'autoResolvable'],
+    motives: { userDecided: 'PAIR_DECIDED_BY_USER', realProblem: 'NO_CREDIBLE_CANDIDATE', userActionNeeded: 'NO_CREDIBLE_CANDIDATE' },
+    justifications: { realProblem: 'PLAUSIBLE_DUPLICATE', userActionNeeded: 'PAIR_TO_ARBITRATE', timely: 'OPEN_REVIEW', userDecided: 'PAIR_NOT_DECIDED' },
+  });
+}
+
+/**
  * Fournisseurs à confirmer — règle SUPPLIER-IDENTITY.
  *
  * Une revue ouverte devient un arbitrage dès qu'elle porte des candidats, et
@@ -573,12 +590,21 @@ export function supplierIdentityAdmissibility(f: SupplierReviewFacts): Admissibi
  *
  * Lot 72 (C4) : contrôle d'admissibilité commun — jamais de confirmation
  * facultative sans proposition exploitable ; chaque décision est tracée.
+ *
+ * Lot 113G (#706) : une revue de DOUBLON devient une carte de PAIRE
+ * « S’agit-il du même fournisseur ? » (Oui / Non, `supplier-identity-cards.ts`)
+ * seulement pour une paire plausible, active et non tranchée — une carte par
+ * fiche détectée, paire par paire ; une même paire n'a qu'une carte même si
+ * plusieurs revues la portent. Les conflits de coordonnées (111X) n'ouvrent
+ * plus cette carte (ils se tranchent sur la fiche fournisseur).
  */
 export async function produceSupplierActions(accountId: number, opts: ProducerRunOptions = {}): Promise<ProducerReport> {
   const revues = (await db
     .select({
       id: supplierReviewItems.id,
+      itemType: supplierReviewItems.itemType,
       supplierId: supplierReviewItems.supplierId,
+      documentId: supplierReviewItems.documentId,
       detectedName: supplierReviewItems.detectedName,
       currentValue: supplierReviewItems.currentValue,
       detectedValue: supplierReviewItems.detectedValue,
@@ -589,16 +615,94 @@ export async function produceSupplierActions(accountId: number, opts: ProducerRu
       and(
         eq(supplierReviewItems.accountId, accountId),
         eq(supplierReviewItems.status, 'open'),
+        // Lot 113G : un conflit de COORDONNÉES (111X) n'est pas un doute d'identité — il se tranche sur la
+        // fiche fournisseur (« Garder » / « Utiliser la valeur détectée »), jamais par cette carte.
+        sql`${supplierReviewItems.itemType} <> 'contact_conflict'`,
       ),
-    )).filter((r) => !opts.only || opts.only.includes(r.supplierId ?? r.id));
+    )
+    .orderBy(supplierReviewItems.id)).filter((r) => !opts.only || opts.only.includes(r.supplierId ?? r.id));
 
   const report: ProducerReport = { ...EMPTY, errorDetails: [] };
   const traites: number[] = [];
   const trigger = opts.trigger ?? 'SWEEP';
   const actives = await activeTargets(accountId, 'SUPPLIER', 'identity');
+  const pairs = await import('./supplier-identity-cards');
+  const ident = await import('@/services/suppliers/supplier-identity-reviews');
+  // Paires déjà montrées (cartes actives) : gardées telles quelles tant qu'elles restent à trancher (aucune oscillation).
+  const montrees = new Map((await pairs.activeSupplierPairCards(accountId)).map((c) => [c.targetId, c.ctx]));
+  const pairesDuPassage = new Set<string>();
+
+  // Revues de doublon regroupées par fiche détectée : candidats de toutes ses revues, dans l'ordre d'ouverture.
+  const groupes = new Map<number, { reviewIds: number[]; candidats: Array<{ id: number; reviewId: number }>; supplierId: number | null }>();
+  for (const r of revues) {
+    if (r.itemType !== 'deduplication') continue;
+    const cle = r.supplierId ?? -r.id;
+    const g = groupes.get(cle) ?? { reviewIds: [], candidats: [], supplierId: r.supplierId };
+    g.reviewIds.push(r.id);
+    for (const c of ident.reviewCandidateIds(r.candidateIds)) if (c !== r.supplierId && !g.candidats.some((x) => x.id === c)) g.candidats.push({ id: c, reviewId: r.id });
+    groupes.set(cle, g);
+  }
+  for (const [cle, g] of groupes) {
+    // Lot 113G (#706) : une carte = UNE paire explicite (fiche détectée A / fiche déjà connue B) ; une carte par fiche,
+    // la paire suivante après la décision.
+    const cible = g.supplierId ?? -cle;
+    let choix: { knownId: number; reviewId: number; basis: import('@/services/suppliers/supplier-identity').PairBasis } | null = null;
+    let decided = false;
+    if (g.supplierId != null) {
+      const deja = montrees.get(g.supplierId);
+      const ordre = deja && g.candidats.some((c) => c.id === deja.knownSupplierId)
+        ? [...g.candidats.filter((c) => c.id === deja.knownSupplierId), ...g.candidats.filter((c) => c.id !== deja.knownSupplierId)] : g.candidats;
+      const fiches = new Map((await db.select({
+        id: suppliersTable.id, name: suppliersTable.name, normalizedName: suppliersTable.normalizedName, siren: suppliersTable.siren,
+        siret: suppliersTable.siret, vatNumber: suppliersTable.vatNumber, status: suppliersTable.status,
+      }).from(suppliersTable).where(and(eq(suppliersTable.accountId, accountId), inArray(suppliersTable.id, [g.supplierId, ...ordre.map((c) => c.id)])))).map((f) => [f.id, f]));
+      const a = fiches.get(g.supplierId);
+      const decisions = await ident.loadPairDecisions(db, accountId, [g.supplierId]);
+      for (const c of a && a.status === 'active' ? ordre : []) {
+        const b = fiches.get(c.id);
+        if (!a || !b || b.status !== 'active') continue;
+        const key = `${Math.min(a.id, b.id)}:${Math.max(a.id, b.id)}`;
+        // Même paire déjà portée par une autre carte (sens inverse) ou par ce passage : une seule carte (AC06).
+        const inverse = montrees.get(b.id);
+        if (pairesDuPassage.has(key) || (inverse && inverse.knownSupplierId === a.id)) continue;
+        const e = ident.pairEligibility(a, b, decisions.get(key));
+        if (!e.eligible) { if (e.reason === 'DECIDED_DISTINCT' || e.reason === 'DECIDED_SAME') decided = true; continue; }
+        choix = { knownId: b.id, reviewId: c.reviewId, basis: e.assessment.basis };
+        pairesDuPassage.add(key);
+        break;
+      }
+    }
+    const decision = supplierPairAdmissibility({ pair: !!choix, decided });
+    const evidence = { reviewIds: g.reviewIds, supplierId: g.supplierId, knownSupplierId: choix?.knownId ?? null, basis: choix?.basis ?? null, candidates: g.candidats.length };
+    const trace = async (effect: FamilyDecisionRecord['effect'], actionIds: FamilyDecisionRecord['actionIds'] = null) =>
+      traceFailure(report, accountId, 'SUPPLIER', cible, 'SUPPLIER-IDENTITY',
+        await recordFamilyDecision({ accountId, targetType: 'SUPPLIER', targetId: cible, ruleCode: 'SUPPLIER-IDENTITY', dataKey: 'identity', trigger, runRef: opts.runRef, decision, evidence, effect, actionIds }));
+    if (!choix || g.supplierId == null) {
+      const fermees = actives.has(cible) ? await closeObsoleteTraced(accountId, 'SUPPLIER', 'identity', [cible], { reason: decision.reason, outcome: decision.outcome }) : [];
+      report.closed += fermees.length;
+      traites.push(cible);
+      await trace(fermees.length ? 'CLOSED' : 'NONE', fermees.length ? { closed: fermees } : null);
+      continue;
+    }
+    const ctx: import('./supplier-identity-cards').SupplierPairContext = {
+      kind: 'supplier_pair', reviewId: choix.reviewId, detectedSupplierId: g.supplierId, knownSupplierId: choix.knownId, basis: choix.basis,
+      fileIds: await pairs.pairSourceFiles(accountId, g.supplierId, choix.knownId),
+    };
+    const result = await upsertAction({
+      accountId, targetType: 'SUPPLIER', targetId: cible, fieldKey: 'identity', actionKind: 'ARBITRATE', ruleCode: 'SUPPLIER-IDENTITY',
+      proposals: pairs.supplierPairProposals(), question: pairs.SUPPLIER_IDENTITY_QUESTION, triggerContext: ctx as unknown as Record<string, unknown>,
+    });
+    if (result.status === 'CREATED') report.created += 1;
+    else if (result.status === 'UPDATED') report.updated += 1;
+    if (result.status === 'CREATED' || result.status === 'UPDATED') traites.push(cible);
+    await trace(result.status === 'CREATED' ? 'CREATED' : result.status === 'UPDATED' ? 'KEPT' : 'NONE',
+      result.actionId ? { [result.status === 'CREATED' ? 'created' : 'kept']: [result.actionId] } : null);
+  }
 
   for (const revue of revues) {
+    if (revue.itemType === 'deduplication') continue;
     const cible = revue.supplierId ?? revue.id;
+    // Revue héritée d'un autre type (valeur détectée / valeur actuelle) : contrôle d'admissibilité d'origine (lot 72).
     const decision = supplierIdentityAdmissibility(revue);
     const evidence = { reviewId: revue.id, supplierId: revue.supplierId, hasDetected: !!revue.detectedValue, hasCurrent: !!revue.currentValue,
       candidates: Array.isArray(revue.candidateIds) ? (revue.candidateIds as unknown[]).length : 0 };

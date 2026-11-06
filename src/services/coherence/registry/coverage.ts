@@ -146,10 +146,11 @@ export const COVERAGE_INVENTORY: readonly CoverageEntry[] = [
   {
     // Lot 111X : coordonnées des fournisseurs reprises des documents actifs (seconde chance T3, protection par champ, conflits sourcés).
     domain: 'fournisseurs', label: 'Fournisseurs (coordonnées issues des documents)',
-    checks: ['COH-SUPPLIER-COORDINATES'],
+    // Lot 113G : identité des fiches (doublons réels, une fois par paire, décisions respectées).
+    checks: ['COH-SUPPLIER-COORDINATES', 'COH-SUPPLIER-IDENTITY'],
     gap: {
-      what: 'découpage d’une unité à plusieurs champs non lisible par format : en attente du contrat T3 t3-knowledge-query-v3 (constat SUPPLIER_COORDINATES_CONTRACT_PENDING) ; identité et doublons de fournisseurs (ticket #706, hors de ce contrôle)',
-      existingMechanism: 'lecture déterministe de la connaissance T1 persistée (faits SUPPLIER, unités, texte) ; revues « À traiter » SUPPLIER-IDENTITY et conflits de coordonnées',
+      what: 'découpage d’une unité à plusieurs champs non lisible par format : en attente du contrat T3 t3-knowledge-query-v3 (constat SUPPLIER_COORDINATES_CONTRACT_PENDING) ; identité : deux fiches saisies toutes deux par l’utilisateur ne sont jamais soumises (ses choix), et un nom lu sans aucun identifiant ni ressemblance ne peut révéler un doublon',
+      existingMechanism: 'lecture déterministe de la connaissance T1 persistée (faits SUPPLIER, unités, texte) ; cartes « À traiter » SUPPLIER-IDENTITY « S’agit-il du même fournisseur ? » (Oui / Non, paire par paire) et conflits de coordonnées',
       planned: 'demande IA 111X-t3-coordonnees-fournisseur (étape 19 du guide des prompts)',
     },
   },

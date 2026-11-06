@@ -50,6 +50,7 @@ import { buildAssetLinkChoices, isAssetLinkChoiceCard, loadEligibleLinkAssets, t
 import {
   binaryMatchQuestion, isBinaryMatchContext, loadOperationReferences, referencesForCard, referencesView, type OperationReferencesView,
 } from './operation-match-binary';
+import { isSupplierPairContext, loadSupplierPairViews, type SupplierPairView } from './supplier-identity-cards';
 
 /** Contexte objet affiché sur la carte (§8.4). */
 interface ActionTargetContext {
@@ -120,6 +121,8 @@ export interface ToProcessActionView {
    * Fournis seulement sur demande (`withAssetChoices`, page « À traiter »).
    */
   assetChoices?: AssetLinkChoicesView;
+  /** Lot 113G — « S’agit-il du même fournisseur ? » : les DEUX fiches de la paire (relues à l'affichage). */
+  supplierPair?: SupplierPairView;
 }
 
 /** Périmètre d'une carte groupée lu dans son contexte (pure, borné). */
@@ -287,6 +290,18 @@ export async function getToProcessPage(
     }
     const parCarte = new Map(rattachements.map((row) => [row.publicId, choix(row)] as const));
     views = views.map((v) => (ids.has(v.publicId) ? { ...v, assetChoices: parCarte.get(v.publicId)! } : v));
+  }
+  // Lot 113G : cartes de PAIRE de fournisseurs — Oui / Non seulement, les deux fiches relues (compte de la session).
+  const pairesFournisseurs = rows.filter((row) => row.ruleCode === 'SUPPLIER-IDENTITY' && isSupplierPairContext(row.triggerContext));
+  if (pairesFournisseurs.length) {
+    const ids = new Set(pairesFournisseurs.map((row) => row.publicId));
+    let vues = new Map<string, SupplierPairView>();
+    try {
+      vues = await loadSupplierPairViews(accountId, pairesFournisseurs);
+    } catch (e) {
+      console.error('[to-process] fiches des paires de fournisseurs indisponibles :', (e as Error).message);
+    }
+    views = views.map((v) => (ids.has(v.publicId) ? { ...v, choiceMode: 'BINARY' as const, ...(vues.has(v.publicId) ? { supplierPair: vues.get(v.publicId)! } : {}) } : v));
   }
 
   // Lot 107E : liens directs, depuis les propositions BRUTES affichées (la

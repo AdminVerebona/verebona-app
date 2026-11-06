@@ -306,7 +306,9 @@ describe('L109B-STAT — invariants', () => {
     expect(field).toMatch(/\/api\/documents\/\$\{documentId\}\/supplier/);
     // La création n'existe que dans l'action volontaire, après la vérification à blanc.
     expect(field.indexOf("dryRun: true")).toBeGreaterThan(-1);
-    expect(field.indexOf("dryRun: true")).toBeLessThan(field.indexOf("'/api/suppliers', { name, source: 'manual' }"));
+    // Lot 113G : le corps de création peut porter la séparation décidée (« Créer quand même ») — préfixe comparé.
+    expect(field.indexOf("'/api/suppliers', { name, source: 'manual'")).toBeGreaterThan(-1);
+    expect(field.indexOf("dryRun: true")).toBeLessThan(field.indexOf("'/api/suppliers', { name, source: 'manual'"));
     const eq = lire('src/components/assets/EquipmentDrawer.tsx');
     expect(eq).toMatch(/kind="fournisseur"/);
     expect(eq).not.toMatch(/setSupplierDrawer/);

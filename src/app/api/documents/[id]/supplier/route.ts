@@ -11,7 +11,9 @@ import { requestOperationSupplierResync } from '@/services/relations/operation-s
 
 // GET /api/documents/[id]/supplier — lot 109B : fournisseur(s) RATTACHÉ(S) au
 // document (relation persistée `document_suppliers`, du compte, non supprimés),
-// avec la preuve locale de la relation (`isConfirmed`, `confidenceScore`).
+// avec la preuve locale de la relation (`isConfirmed`, `confidenceScore`) et,
+// lot 113G, sa base (`matchBasis`) ; « à confirmer » n'est plus affiché d'après
+// `isConfirmed` (un vrai doute d'identité est une carte « À traiter »).
 // Le tiroir document ouvre la fiche par cet identifiant : plus jamais de
 // recherche par nom, de premier résultat pris au hasard ni de création
 // implicite. Plusieurs rattachements : tous rendus (aucun choix arbitraire).
@@ -44,6 +46,7 @@ export async function GET(
         role: documentSuppliers.role,
         isConfirmed: documentSuppliers.isConfirmed,
         confidenceScore: documentSuppliers.confidenceScore,
+        matchBasis: documentSuppliers.matchBasis,
       })
       .from(documentSuppliers)
       .innerJoin(suppliers, and(eq(suppliers.id, documentSuppliers.supplierId), eq(suppliers.accountId, accountId), ne(suppliers.status, 'deleted')))
@@ -116,10 +119,12 @@ export async function PUT(
         documentId,
         supplierId,
         isConfirmed: true,
+        // Lot 113G : base du rattachement — choix de l'utilisateur.
+        matchBasis: 'USER',
       });
     } else {
       await db.update(documentSuppliers)
-        .set({ isConfirmed: true })
+        .set({ isConfirmed: true, matchBasis: 'USER' })
         .where(and(
           eq(documentSuppliers.documentId, documentId),
           eq(documentSuppliers.supplierId, supplierId),

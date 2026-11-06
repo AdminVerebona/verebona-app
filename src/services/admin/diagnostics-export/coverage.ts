@@ -136,6 +136,8 @@ export const DIAG_TABLE_COVERAGE: Readonly<Record<string, DiagTableCoverage>> = 
   suppliers: C('etat-metier'),
   supplier_review_items: C('etat-metier'),
   supplier_contact_observations: C('etat-metier', { filter: `t.supplier_id IN ${SUPPLIERS}` }),
+  // Lot 113G (1470) : décisions de l'utilisateur sur une paire de fiches fournisseur (fusion / identités distinctes).
+  supplier_identity_decisions: C('etat-metier'),
   substructures: C('etat-metier', { filter: `t.asset_id IN ${ASSETS}` }),
   rooms: C('etat-metier'),
   equipments: C('etat-metier', { filter: `t.asset_id IN ${ASSETS}` }),

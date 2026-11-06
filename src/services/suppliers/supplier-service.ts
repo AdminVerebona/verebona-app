@@ -12,6 +12,7 @@
 import { db } from '@/db';
 import { suppliers, supplierReviewItems } from '@/db/schema';
 import { eq, and, sql } from 'drizzle-orm';
+import { assessSupplierPair, type PairBasis } from './supplier-identity';
 
 /** Exécutant drizzle : `db`, ou la transaction en cours. */
 export type SupplierQueryRunner = Pick<typeof db, 'select' | 'insert' | 'update'>;
@@ -123,6 +124,8 @@ export interface Candidate {
   siret: string | null;
   vatNumber: string | null;
   score: number;
+  /** Lot 113G : base du rapprochement (`supplier-identity.ts`). */
+  basis?: PairBasis;
 }
 
 type MatchDecision = 'certain' | 'uncertain' | 'new';
@@ -166,63 +169,71 @@ export async function findCandidates(
       eq(suppliers.status, 'active'),
     ));
 
+  // Lot 113G : MÊME règle de paire que la carte « À traiter » et la cohérence
+  // (`supplier-identity.ts`) — identifiants identiques = certain, identifiants
+  // contradictoires = jamais candidat, nom exact = certain, nom PROCHE =
+  // plausible seulement (jamais une certitude), sinon aucun candidat.
+  const observed = { id: 0, name: normalizedName, normalizedName, siren: siren ?? null, siret: siret ?? null, vatNumber: vatNumber ?? null };
   const candidates: Candidate[] = [];
-
   for (const row of rows) {
-    let score = 0;
+    const a = assessSupplierPair(observed, row);
+    if (a.verdict === 'CERTAIN' || a.verdict === 'PLAUSIBLE') candidates.push({ ...row, score: a.score, basis: a.basis });
+  }
 
-    // Exact SIRET match → certain
-    if (siret && row.siret && normalizeSiret(siret) === normalizeSiret(row.siret)) score += 100;
-    // SIREN match (exact, or SIREN compatible avec SIRET stocké) → certain
-    if (siren && row.siret && isSirenSiretCompatible(siren, row.siret)) score += 100;
-    if (siren && row.siren && normalizeSiret(siren) === normalizeSiret(row.siren)) score += 100;
-    // Exact VAT match → certain
-    if (vatNumber && row.vatNumber && vatNumber === row.vatNumber) score += 100;
-
-    // Name similarity
-    if (row.normalizedName === normalizedName) {
-      score += 80;
-    } else if (
-      row.normalizedName.includes(normalizedName) ||
-      normalizedName.includes(row.normalizedName)
-    ) {
-      score += 50;
-    } else {
-      // Token overlap
-      const aTokens = new Set(normalizedName.split(' '));
-      const bTokens = new Set(row.normalizedName.split(' '));
-      const intersection = [...aTokens].filter(t => bTokens.has(t) && t.length > 2);
-      if (intersection.length > 0) {
-        score += Math.min(40, intersection.length * 15);
+  // Lot 113G : une fiche FUSIONNÉE par l'utilisateur (« Oui ») garde sa raison sociale et ses identifiants
+  // comme preuves de la fiche conservée : un nouveau document à ce nom exact (ou à cet identifiant) est
+  // rattaché à la fiche CANONIQUE — jamais une nouvelle fiche ni la même question reposée.
+  const fusionnees = await q
+    .select({
+      id: suppliers.id, name: suppliers.name, normalizedName: suppliers.normalizedName, siren: suppliers.siren, siret: suppliers.siret,
+      vatNumber: suppliers.vatNumber, mergedInto: suppliers.mergedIntoSupplierId,
+    })
+    .from(suppliers)
+    .where(and(eq(suppliers.accountId, accountId), eq(suppliers.status, 'archived'), sql`${suppliers.mergedIntoSupplierId} IS NOT NULL`));
+  if (fusionnees.length) {
+    const actives = new Map(rows.map((r) => [r.id, r]));
+    const fusionDe = new Map(fusionnees.map((f) => [f.id, f.mergedInto]));
+    const canonique = (id: number | null): number | null => {
+      // Chaîne de fusions (A → B → C) suivie jusqu'à une fiche active, bornée.
+      let cur = id;
+      for (let i = 0; i < 10 && cur != null; i++) {
+        if (actives.has(cur)) return cur;
+        cur = fusionDe.get(cur) ?? null;
       }
-    }
-
-    if (score > 20) {
-      candidates.push({ ...row, score });
+      return null;
+    };
+    for (const f of fusionnees) {
+      const a = assessSupplierPair(observed, f);
+      if (a.verdict !== 'CERTAIN') continue;
+      const id = canonique(f.mergedInto);
+      const cible = id == null ? undefined : actives.get(id);
+      if (!cible) continue;
+      // Contradiction d'identifiant avec la fiche conservée : pas de certitude empruntée.
+      if (assessSupplierPair(observed, cible).verdict === 'DISTINCT') continue;
+      const deja = candidates.find((c) => c.id === cible.id);
+      if (deja && deja.score >= a.score) continue;
+      if (deja) { deja.score = a.score; deja.basis = a.basis; } else candidates.push({ ...cible, score: a.score, basis: a.basis });
     }
   }
 
-  return candidates.sort((a, b) => b.score - a.score);
+  return candidates.sort((a, b) => b.score - a.score || a.id - b.id);
 }
 
 // ─── Assess match ─────────────────────────────────────────────────────────────
 
+/**
+ * Lot 113G : décision de rapprochement d'un fournisseur lu.
+ *   certain   identifiant identique, ou raison sociale normalisée identique
+ *             sans identifiant contradictoire (fiche la plus ancienne retenue) ;
+ *   uncertain nom PROCHE seulement — un nom similaire n'est jamais une certitude ;
+ *   new       aucun candidat crédible.
+ */
 export function assessMatch(candidates: Candidate[]): MatchDecision {
   if (candidates.length === 0) return 'new';
-
   const top = candidates[0];
-
-  // Certain: SIRET or VAT exact match, or score ≥ 100
-  if (top.score >= 100) return 'certain';
-
-  // Certain: exact normalized name match with high score
-  // (même avec plusieurs candidats — le nom exact est fiable)
-  if (top.score >= 80) return 'certain';
-
-  // Uncertain: plausible match but not definitive
-  if (top.score >= 40) return 'uncertain';
-
-  return 'new';
+  if (top.basis === 'IDENTIFIER' || top.basis === 'EXACT_NAME') return 'certain';
+  if (top.basis === undefined && top.score >= 80) return 'certain'; // candidat construit hors `findCandidates` (compatibilité)
+  return 'uncertain';
 }
 
 // ─── Consolidate coordinates ──────────────────────────────────────────────────

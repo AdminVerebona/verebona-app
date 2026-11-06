@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { emitBusinessEvent } from '@/services/verebona-assistant/events/business-events';
 import { db } from '@/db';
-import { supplierReviewItems, suppliers, documentSuppliers, assetFiles } from '@/db/schema';
+import { supplierReviewItems, suppliers } from '@/db/schema';
 import { eq, and, sql } from 'drizzle-orm';
 import { SessionService } from '@/lib/session-service';
 import { refuserSiLectureSeule } from '@/lib/write-access-guard';
@@ -10,6 +10,8 @@ import { refsInAccount } from '@/services/security/account-ownership';
 import { SUPPLIER_CONFLICT_APPLICABLE_FIELDS } from '@/lib/suppliers/supplier-fiche-config';
 
 // POST /api/to-process/suppliers/[id]/resolve
+// Lot 113G (#706) : fusion par la procédure unique `mergeSuppliersInTx` ;
+// « nouvelle fiche » / « ignorer » d'un doute d'identité mémorisés par paire.
 // Lot 49 (SEC-03, « autres relations fournisseurs ») : la fiche cible d'une
 // fusion et la fiche de l'élément sont du compte actif, vérifiées avant toute
 // écriture ; chaque écriture porte la condition de compte (un document d'un
@@ -75,58 +77,36 @@ export async function POST(
       );
     }
 
-    if (resolution === 'merged' && targetSupplierId && item.supplierId && item.supplierId !== targetSupplierId) {
-      // Migrate document links from item.supplierId to targetSupplierId
-      // Documents DU COMPTE seulement (une relation incorrecte en base n'est
-      // jamais reportée sur la fiche cible).
-      const docLinks = await db
-        .select({ documentId: documentSuppliers.documentId })
-        .from(documentSuppliers)
-        .innerJoin(assetFiles, and(eq(assetFiles.id, documentSuppliers.documentId), eq(assetFiles.accountId, accountId)))
-        .where(eq(documentSuppliers.supplierId, item.supplierId));
-
-      for (const { documentId } of docLinks) {
-        const existingTarget = await db
-          .select()
-          .from(documentSuppliers)
-          .where(and(
-            eq(documentSuppliers.documentId, documentId),
-            eq(documentSuppliers.supplierId, targetSupplierId),
-          ))
-          .limit(1);
-
-        if (existingTarget.length === 0) {
-          await db.insert(documentSuppliers).values({
-            documentId,
-            supplierId: targetSupplierId,
-            isConfirmed: true,
-          });
-        }
-        await db.delete(documentSuppliers).where(and(
-          eq(documentSuppliers.documentId, documentId),
-          eq(documentSuppliers.supplierId, item.supplierId),
-        ));
+    if (resolution === 'merged' && targetSupplierId && item.supplierId && item.supplierId !== Number(targetSupplierId)) {
+      // Lot 113G (#706) : procédure UNIQUE de fusion (`mergeSuppliersInTx`), dans une transaction —
+      // documents (fiabilité réelle conservée), biens, équipements, observations, Agenda, Opérations,
+      // revues, décisions et coordonnées non conflictuelles ; jamais de fusion « à moitié ».
+      const { mergeSuppliersInTx, afterSupplierMerge, SupplierMergeError } = await import('@/services/suppliers/supplier-merge');
+      try {
+        const r = await db.transaction((tx) => mergeSuppliersInTx(tx, {
+          accountId, fromId: item.supplierId!, toId: Number(targetSupplierId), actorUserId: session.userId ?? null, reviewId: item.id,
+        }));
+        await afterSupplierMerge(accountId, r);
+      } catch (e) {
+        if (e instanceof SupplierMergeError) return apiError(e.code === 'NOT_FOUND' ? 404 : 409, e.code === 'NOT_FOUND' ? 'NOT_FOUND' : 'INVALID_STATE', 'Supplier merge refused');
+        throw e;
       }
+    }
 
-      // Lot 103E : fournisseurs / intervenants des éléments d'Agenda reportés sur la fiche conservée
-      // (provenance la plus forte, retraits manuels conservés, sans doublon ni lien orphelin).
-      const { mergeAgendaSupplierLinksInTx } = await import('@/services/agenda/agenda-suppliers');
-      await db.transaction((tx) => mergeAgendaSupplierLinksInTx(tx, {
-        accountId, fromSupplierId: item.supplierId!, toSupplierId: Number(targetSupplierId), actorUserId: session.userId ?? null,
-      }));
-
-      // Lot 109A : liens Opération ↔ fournisseur reportés sur la fiche conservée (décision de l'utilisateur la
-      // plus forte, sans doublon), puis réévaluation T3 durable des Opérations des documents reportés.
-      const { mergeOperationSuppliersAfterSupplierMerge } = await import('@/services/relations/operation-suppliers');
-      await mergeOperationSuppliersAfterSupplierMerge({
-        accountId, fromSupplierId: item.supplierId!, toSupplierId: Number(targetSupplierId), actorUserId: session.userId ?? null,
-        documentIds: docLinks.map((d) => d.documentId),
-      });
-
-      // Archive old supplier
-      await db.update(suppliers)
-        .set({ status: 'archived', updatedAt: new Date() })
-        .where(and(eq(suppliers.id, item.supplierId), eq(suppliers.accountId, accountId)));
+    // Lot 113G : « nouvelle fiche » / « ignorer » sur un doute d'identité = identités DISTINCTES, mémorisées
+    // par paire — jamais reproposées par T1, T3, la cohérence ou un nouveau document sans preuve nouvelle.
+    if (item.itemType === 'deduplication' && item.supplierId && (resolution === 'created_new' || resolution === 'ignored')) {
+      const { reviewCandidateIds, recordPairDecision } = await import('@/services/suppliers/supplier-identity-reviews');
+      const ids = reviewCandidateIds(item.candidateSupplierIds).filter((x) => x !== item.supplierId);
+      if (ids.length) {
+        const fiches = await db.select().from(suppliers)
+          .where(and(eq(suppliers.accountId, accountId), sql`${suppliers.id} = ANY(${`{${[item.supplierId, ...ids].join(',')}}`}::int[])`));
+        const a = fiches.find((f) => f.id === item.supplierId);
+        for (const b of fiches) {
+          if (!a || b.id === a.id) continue;
+          await recordPairDecision(db, { accountId, a, b, decision: 'DISTINCT', reviewId: item.id, userId: session.userId ?? null, evidence: { resolution } });
+        }
+      }
     }
 
     await db.update(supplierReviewItems)

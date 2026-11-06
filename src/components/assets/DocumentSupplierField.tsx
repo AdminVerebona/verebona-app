@@ -18,8 +18,16 @@
  *     action VOLONTAIRE et distincte « Rattacher à un fournisseur » qui passe
  *     par le référentiel (recherche, puis création seulement après la
  *     vérification de doublon du référentiel) ;
- *   · un rattachement non confirmé reste signalé comme tel (preuve locale de
- *     la relation, jamais rendue « certaine » par l'affichage).
+ *   · lot 113G (#706) : AUCUN « Rattachement à confirmer » — un fournisseur
+ *     créé automatiquement sans doublon suspecté n'appelle aucune action, et
+ *     un vrai doute d'identité se tranche par la carte « À traiter »
+ *     « S’agit-il du même fournisseur ? » (jamais un état orphelin, sans
+ *     bouton, dans ce tiroir). La fiabilité du lien reste en base
+ *     (`is_confirmed`, `confidence_score`), jamais promue par l'affichage ;
+ *   · lot 113G : nom affiché en minuscules, plus petit et discret (simple
+ *     transformation d'affichage : la raison sociale stockée, la recherche, les
+ *     identifiants et les exports gardent la casse d'origine ; le texte lu par
+ *     un lecteur d'écran est la raison sociale d'origine).
  * ══════════════════════════════════════════════════════════════════════════
  */
 import { useCallback, useEffect, useState } from 'react';
@@ -52,7 +60,9 @@ export function documentSupplierState(linked: readonly LinkedSupplier[] | null):
   return linked.length === 1 ? 'single' : 'multiple';
 }
 
-const LINK_CLS = 'font-medium text-[color:var(--accent)] hover:underline text-sm text-right';
+/** Lot 113G : discret — petit, minuscules à l'AFFICHAGE seulement (CSS), lien vers la fiche réellement rattachée. */
+const LINK_CLS = 'text-xs lowercase text-[color:var(--accent)] underline-offset-2 hover:underline focus-visible:underline text-right';
+const NAME_CLS = 'text-xs lowercase';
 
 export function DocumentSupplierField({ documentId, detectedName, detectedByAnalysis, onLinked }: {
   documentId: number;
@@ -88,8 +98,8 @@ export function DocumentSupplierField({ documentId, detectedName, detectedByAnal
       <span className="flex items-center gap-1.5 text-muted-foreground shrink-0"><User className="w-3.5 h-3.5" />Fournisseur</span>
       <div className="flex min-w-0 flex-col items-end gap-1">
         {state === 'loading' && (
-          <span className="flex items-center gap-1 text-sm">
-            {detectedName ?? <span className="text-muted-foreground">Non renseigné</span>}
+          <span className="flex items-center gap-1 text-xs">
+            {detectedName ? <span className={NAME_CLS}>{detectedName}</span> : <span className="text-muted-foreground">Non renseigné</span>}
             <Loader2 className="w-3 h-3 animate-spin text-muted-foreground" aria-label="Chargement" />
           </span>
         )}
@@ -102,23 +112,20 @@ export function DocumentSupplierField({ documentId, detectedName, detectedByAnal
             {sparkle}
           </span>
         )}
-        {state === 'single' && linked && !linked[0].isConfirmed && (
-          <span className="text-[11px] text-muted-foreground">Rattachement à confirmer</span>
-        )}
         {state === 'multiple' && linked && (
           <>
             <span className="text-[11px] text-muted-foreground">Plusieurs fournisseurs rattachés :</span>
             {linked.map((s) => (
               <a key={s.id} href={supplierHref(s.id)} className={`${LINK_CLS} truncate max-w-full`} data-testid="document-supplier-link">
-                {s.name}{s.isConfirmed ? '' : ' (à confirmer)'}
+                {s.name}
               </a>
             ))}
           </>
         )}
         {state === 'none' && (
           <>
-            <span className="flex items-center gap-1 text-sm">
-              {detectedName ? <span className="font-medium">{detectedName}</span> : <span className="text-muted-foreground">Non renseigné</span>}
+            <span className="flex items-center gap-1 text-xs">
+              {detectedName ? <span className={NAME_CLS}>{detectedName}</span> : <span className="text-muted-foreground">Non renseigné</span>}
               {detectedName && sparkle}
             </span>
             {failed ? (
@@ -225,7 +232,9 @@ function SupplierAttachDialog({ open, onOpenChange, documentId, initialQuery, on
           if (check?.decision === 'certain' && candidats[0]) { setBusy(false); attach(candidats[0].id); return; }
           if (check?.decision === 'uncertain' && candidats.length) { setProches(candidats); setBusy(false); return; }
         }
-        const created = await apiClient.post<{ supplier: { id: number } }>('/api/suppliers', { name, source: 'manual' });
+        // Lot 113G : « Créer quand même » — séparation des fiches proches mémorisée (jamais reproposée).
+        const distinct = confirmNew && proches?.length ? { confirmedDistinctFrom: proches.map((c) => c.id) } : {};
+        const created = await apiClient.post<{ supplier: { id: number } }>('/api/suppliers', { name, source: 'manual', ...distinct });
         await apiClient.put(`/api/documents/${documentId}/supplier`, { supplierId: created.supplier.id });
         toast.success('Fournisseur créé et rattaché au document');
         onDone();
