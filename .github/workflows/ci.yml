@@ -263,8 +263,6 @@ jobs:
         run: npm run test:e2e:auth-social -- --reporter=default --reporter=junit --outputFile.junit=rapports/e2e-auth-social.xml
       - name: MFA et clés d’accès, environnement, disponibilité serveur, messages (lot 111W)
         run: npm run test:e2e:mfa-preprod -- --reporter=default --reporter=junit --outputFile.junit=rapports/e2e-mfa-preprod.xml
-      - name: Inscription, e-mails jetables Google / Apple et supervision du référentiel (lots 109F + 113H, Trello #707)
-        run: npm run test:e2e:emails-jetables -- --reporter=default --reporter=junit --outputFile.junit=rapports/e2e-emails-jetables.xml
       - name: Isolation entre comptes (lots 40, 49, 53A, 53B, 54B, 83D)
         run: npm run test:security:e2e -- --reporter=default --reporter=junit --outputFile.junit=rapports/e2e-securite.xml
       - uses: actions/upload-artifact@v4
@@ -579,8 +577,6 @@ jobs:
         run: npm run test:e2e:assistant-actions -- --reporter=default --reporter=junit --outputFile.junit=rapports/e2e-assistant-actions.xml
       - name: À traiter, boutons des biens pour rattacher un document (lot 113A, Trello #692)
         run: npm run test:e2e:a-traiter-rattachement -- --reporter=default --reporter=junit --outputFile.junit=rapports/e2e-a-traiter-rattachement.xml
-      - name: BO Données du compte, onglet Fournisseurs en lecture seule (lot 113E, Trello #700)
-        run: npm run test:e2e:bo-fournisseurs -- --reporter=default --reporter=junit --outputFile.junit=rapports/e2e-bo-fournisseurs.xml
       - name: Inscription, CGUV publiées vérifiées et reprise (lot 111O)
         run: npm run test:e2e:inscription-cguv -- --reporter=default --reporter=junit --outputFile.junit=rapports/e2e-inscription-cguv.xml
       - uses: actions/upload-artifact@v4

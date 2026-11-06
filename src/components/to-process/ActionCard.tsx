@@ -41,6 +41,10 @@ import type { CardLinks as CardLinksData } from '@/services/to-process/card-link
 import { CardLinkButton, CardLinks } from './CardLinks';
 import type { OperationReferencesView } from '@/services/to-process/operation-match-binary';
 import { clearDraft, getDraft, setDraft } from './return-state';
+import type { AssetLinkChoicesView } from '@/services/to-process/asset-link-choices';
+import { AssetLinkChoices } from './AssetLinkChoices';
+import { PROPOSAL_BUTTON_CLASS } from './proposal-button';
+import { notifyToProcessChanged } from './useToProcessResolution';
 
 export interface ActionProposalView {
   value: string | number | boolean | null;
@@ -80,6 +84,11 @@ export interface ActionView {
   choiceMode?: 'BINARY';
   /** Lot 110D — références de l'événement de référence candidat, en contexte cliquable (jamais des réponses). */
   references?: OperationReferencesView;
+  /**
+   * Lot 113A (#692) — carte « À quel bien rattacher ce document ? » : biens
+   * pouvant recevoir le document, en boutons nommés (aucun « Ouvrir »).
+   */
+  assetChoices?: AssetLinkChoicesView;
 }
 
 interface Handlers {
@@ -203,13 +212,10 @@ function Tags({ action, className = '' }: { action: ActionView; className?: stri
 }
 
 /**
- * Classes d'un bouton de proposition (lot 60A, point 7) : 36 px de haut AU
- * MOINS (zone tactile, §16.1) mais hauteur libre, libellé sur plusieurs
- * lignes (jamais `whitespace-nowrap` ni troncature), largeur bornée à la
- * carte, coupure des mots trop longs. Coins adoucis plutôt qu'en pilule pour
- * un libellé sur deux lignes.
+ * Classes d'un bouton de proposition (lot 60A, point 7) — lot 113A : définies
+ * dans `proposal-button.ts` (partagées avec `AssetLinkChoices`), réexportées ici.
  */
-export const PROPOSAL_BUTTON_CLASS = 'h-auto min-h-9 max-w-full whitespace-normal rounded-2xl py-1.5 text-left leading-snug';
+export { PROPOSAL_BUTTON_CLASS };
 
 /**
  * Contrôles de résolution. Les zones tactiles restent à 36 px de haut au
@@ -217,6 +223,19 @@ export const PROPOSAL_BUTTON_CLASS = 'h-auto min-h-9 max-w-full whitespace-norma
  * (§16.1).
  */
 function Controls({ action, onChoose, onOpenTarget, busy }: { action: ActionView } & Handlers) {
+  // Lot 113A (#692) : rattachement document → bien — un bouton par bien
+  // éligible, quelle que soit la nature (ARBITRATE avec candidats, COMPLETE
+  // sans) ; le clic suit le parcours commun (`onChoose`, route `/resolve`).
+  if (action.assetChoices) {
+    return (
+      <AssetLinkChoices
+        choices={action.assetChoices}
+        busy={busy}
+        onPick={(c) => onChoose(action, { value: c.assetId, label: c.label })}
+        onRetry={notifyToProcessChanged}
+      />
+    );
+  }
   if (action.actionKind === 'COMPLETE' && action.inputType) {
     return <InlineCompletion action={action} onChoose={onChoose} onOpenTarget={onOpenTarget} busy={busy} />;
   }

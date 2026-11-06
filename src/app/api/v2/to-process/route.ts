@@ -74,6 +74,8 @@ export async function GET(req: NextRequest) {
     withThumbnails: true,
     // Lot 107E : liens directs (objet, justificatifs exacts, source de chaque proposition).
     withLinks: true,
+    // Lot 113A (#692) : biens proposés directement sur les cartes de rattachement document → bien.
+    withAssetChoices: true,
   });
 
   return NextResponse.json(page, {

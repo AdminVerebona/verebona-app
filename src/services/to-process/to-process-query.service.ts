@@ -46,6 +46,7 @@ import { sortActions, type OrderMode } from './priority';
 import { presentCardLabels, targetFallbackLabel } from './card-labels';
 import { publishableCardCondition } from './publishability';
 import { resolveCardLinks, type CardLinks } from './card-links';
+import { buildAssetLinkChoices, isAssetLinkChoiceCard, loadEligibleLinkAssets, type AssetLinkChoicesView } from './asset-link-choices';
 import {
   binaryMatchQuestion, isBinaryMatchContext, loadOperationReferences, referencesForCard, referencesView, type OperationReferencesView,
 } from './operation-match-binary';
@@ -113,6 +114,12 @@ export interface ToProcessActionView {
    */
   choiceMode?: 'BINARY';
   references?: OperationReferencesView;
+  /**
+   * Lot 113A (#692) — carte LINK-ASSET : biens du compte pouvant recevoir le
+   * document, candidats de l'analyse d'abord (`asset-link-choices.ts`).
+   * Fournis seulement sur demande (`withAssetChoices`, page « À traiter »).
+   */
+  assetChoices?: AssetLinkChoicesView;
 }
 
 /** Périmètre d'une carte groupée lu dans son contexte (pure, borné). */
@@ -160,6 +167,8 @@ export async function getToProcessPage(
     withThumbnails?: boolean;
     /** Lot 107E — liens directs des cartes (page « À traiter »). */
     withLinks?: boolean;
+    /** Lot 113A — biens proposés sur les cartes « À quel bien rattacher ce document ? » (page « À traiter »). */
+    withAssetChoices?: boolean;
   } = {},
 ): Promise<ToProcessPage> {
   // §8.2 : « Par priorité » est la vue par défaut à CHAQUE visite ; le choix
@@ -259,6 +268,25 @@ export async function getToProcessPage(
       const ids = new Set(binaires.map((row) => row.publicId));
       views = views.map((v) => (ids.has(v.publicId) ? { ...v, choiceMode: 'BINARY' as const } : v));
     }
+  }
+
+  // Lot 113A (#692) : cartes « À quel bien rattacher ce document ? » — biens
+  // du compte pouvant recevoir le document (une lecture, seulement si une
+  // telle carte est présente), candidats de l'analyse d'abord. Liste
+  // illisible : état ERROR explicite, jamais un bouton trompeur.
+  const rattachements = options.withAssetChoices ? rows.filter((row) => isAssetLinkChoiceCard(row)) : [];
+  if (rattachements.length) {
+    const ids = new Set(rattachements.map((row) => row.publicId));
+    let choix: (row: (typeof rows)[number]) => AssetLinkChoicesView;
+    try {
+      const eligibles = await loadEligibleLinkAssets(accountId);
+      choix = (row) => buildAssetLinkChoices((row.proposalsJson as ActionProposal[] | null) ?? [], eligibles);
+    } catch (e) {
+      console.error('[to-process] biens proposables des cartes de rattachement indisponibles :', (e as Error).message);
+      choix = () => ({ status: 'ERROR', items: [] });
+    }
+    const parCarte = new Map(rattachements.map((row) => [row.publicId, choix(row)] as const));
+    views = views.map((v) => (ids.has(v.publicId) ? { ...v, assetChoices: parCarte.get(v.publicId)! } : v));
   }
 
   // Lot 107E : liens directs, depuis les propositions BRUTES affichées (la

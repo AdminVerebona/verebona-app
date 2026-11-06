@@ -288,6 +288,23 @@ const SUPPLIER_SLOT: DocumentSlot = {
 
 // ── assetIds : rattachement à un bien (LINK-ASSET) ──────────────────────────
 
+/**
+ * Lot 113A : bien pouvant RECEVOIR un document choisi par l'utilisateur — du
+ * compte, non supprimé, ni archivé ni verrouillé (même règle `writable` que
+ * les sélecteurs de cibles 111I et la liste de la carte LINK-ASSET).
+ */
+async function assetWritableOfAccount(client: SlotClient, accountId: number, assetId: number): Promise<boolean> {
+  const [a] = await client
+    .select({ id: assets.id })
+    .from(assets)
+    .where(and(
+      eq(assets.id, assetId), eq(assets.accountId, accountId), isNull(assets.deletedAt),
+      sql`${assets.status} IS DISTINCT FROM 'ARCHIVED'`, sql`COALESCE(${assets.lockState}, 'NONE') = 'NONE'`,
+    ))
+    .limit(1);
+  return !!a;
+}
+
 /** Bien du compte, non supprimé. */
 async function assetOfAccount(client: SlotClient, accountId: number, assetId: number): Promise<boolean> {
   const [a] = await client
@@ -307,7 +324,7 @@ export const ASSET_LINK_SLOT: DocumentSlot = {
   normalize: asPositiveId,
   check: async (client, accountId, fileId, value) => {
     const id = asPositiveId(value);
-    return id !== null && (await documentExists(client, accountId, fileId)) && assetOfAccount(client, accountId, id);
+    return id !== null && (await documentExists(client, accountId, fileId)) && assetWritableOfAccount(client, accountId, id);
   },
   async read(client, accountId, fileId) {
     const [f] = await client

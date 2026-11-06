@@ -71,6 +71,17 @@ export function saleFollowUpFor(action: ActionView, value: ActionProposalView['v
   return prompt ? { assetId: action.targetId, assetName: action.target.assetName ?? action.target.label ?? null, prompt } : null;
 }
 
+/**
+ * Lot 113A (#692) — messages d'une carte de rattachement document → bien
+ * (pure) : le succès nomme le bien ; un bien devenu inéligible entre-temps
+ * (supprimé, archivé, verrouillé) n'invite pas à un « Autre » absent de la
+ * carte — la liste est rechargée.
+ */
+export const ASSET_LINK_REFUSED_MESSAGE = 'Ce bien ne peut plus recevoir ce document : la liste des biens a été actualisée.';
+export function resolutionToastText(action: Pick<ActionView, 'assetChoices'>, proposal: Pick<ActionProposalView, 'label'>): string {
+  return action.assetChoices ? `Document rattaché à « ${proposal.label} »` : 'Valeur mise à jour';
+}
+
 export function useToProcessResolution(cb: ResolutionCallbacks = {}) {
   const router = useRouter();
   const [busyId, setBusyId] = useState<string | null>(null);
@@ -101,7 +112,7 @@ export function useToProcessResolution(cb: ResolutionCallbacks = {}) {
       );
       ref.current.onResolved?.(action);
       notifyToProcessChanged();
-      toast.success('Valeur mise à jour', {
+      toast.success(resolutionToastText(action, proposal), {
         action: { label: 'Annuler', onClick: () => void undo(action, res.previousValue) },
       });
       const suite = saleFollowUpFor(action, proposal.value);
@@ -113,6 +124,11 @@ export function useToProcessResolution(cb: ResolutionCallbacks = {}) {
         // La carte n'est plus active côté serveur : elle ne revient pas.
         notifyToProcessChanged();
         toast.info(resolveErrorMessage(code));
+      } else if (action.assetChoices && code === 'INVALID_VALUE') {
+        // Lot 113A : la carte revient avec la liste à jour des biens éligibles.
+        ref.current.onRollback?.(action);
+        notifyToProcessChanged();
+        toast.error(ASSET_LINK_REFUSED_MESSAGE);
       } else {
         ref.current.onRollback?.(action);
         toast.error(resolveErrorMessage(code));
