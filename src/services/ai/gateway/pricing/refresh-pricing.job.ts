@@ -53,6 +53,12 @@ export async function modelsToPrice(): Promise<string[]> {
   try {
     for (const m of await modelsActuallyUsed(30)) out.add(m);
   } catch { /* table illisible */ }
+  // Lot 113O : modèles SERVIS par l'API pour un alias (`modelVersion` des
+  // traces) — tarifés à leur identifiant exact, jamais par ressemblance.
+  try {
+    const { servedModelsObserved } = await import('./pricing-supervision');
+    for (const m of (await servedModelsObserved(30)).values()) for (const servi of m.keys()) out.add(servi);
+  } catch { /* table illisible */ }
   return [...out].sort();
 }
 

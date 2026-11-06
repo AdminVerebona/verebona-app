@@ -86,6 +86,8 @@ export function decideEvent(c: DiagnosedCall): PlanItem {
     priceRef: {
       id: c.price.id, source: c.price.source, verified: c.price.verified, inputMicros: c.price.inputMicros, outputMicros: c.price.outputMicros,
       tiers: c.price.tiers, effectiveFrom: c.price.effectiveFrom, method: c.priceMethod, thoughtsIncluded: (c.thoughtsTokens ?? 0) > 0,
+      // Lot 113O : identifiant tarifé (modèle servi d'un alias résolu par l'API).
+      ...(c.pricedModel && c.pricedModel !== c.model ? { pricedModel: c.pricedModel, basis: 'served_model' } : {}),
     },
     correctedCostMicros: r.costMicros, correctedExactMicros: r.exactMicros,
   };

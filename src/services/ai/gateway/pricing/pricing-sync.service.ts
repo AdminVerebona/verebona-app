@@ -31,6 +31,25 @@
  * Ne lève jamais : une panne de la source tarifaire ne bloque ni le démarrage,
  * ni la synchronisation des modèles, ni l'utilisation d'un modèle.
  *
+ * LOT 113O (carte #713, alertes persistantes après 109L)
+ *   · CONTENU INTÉGRAL reçu conservé (`ai_model_pricing_page_snapshots`,
+ *     dédoublonné par empreinte, sans secret) — y compris le corps d'une
+ *     réponse HTTP en erreur : la page réellement lue est consultable et
+ *     téléchargeable au BO, et rejouable par le parseur courant ;
+ *   · ABSENCE VÉRIFIÉE ≠ ÉCHEC D'EXTRACTION : `ABSENT` seulement si
+ *     l'identifiant exact n'apparaît nulle part dans la page reçue ; sinon
+ *     `NOT_PARSED` (jamais compté comme une lecture « sans le modèle ») ;
+ *   · CHUTE DE COUVERTURE mesurée aussi contre la DERNIÈRE LECTURE SAINE
+ *     (identifiants de modèles extraits, `page_model_ids`) : si plus de
+ *     `COVERAGE_DROP_RATIO` des identifiants disparaissent, la lecture est
+ *     REJETÉE (échec documenté, KNOWN → STALE, aucun retrait) ;
+ *   · ALIAS : un identifiant absent de la page mais dont l'API a renvoyé un
+ *     autre modèle servi (`modelVersion` des traces) est marqué `ALIAS` ; les
+ *     modèles servis sont tarifés à part (jamais par ressemblance de nom) ;
+ *   · alertes : recontrôle complet après chaque synchronisation
+ *     (`pricing-supervision.ts`) — une alerte par condition, résolue quand la
+ *     condition disparaît.
+ *
  * Grille du compte (Cloud Billing) : désactivée par défaut — elle n'est pas
  * démontrée représentative de la facture Gemini Developer API (voir
  * `gemini-pricing.source.ts`). Aucune dépendance à Vertex AI.
@@ -43,6 +62,7 @@ import {
   type PageFormat, type PriceReasonCode, type PriceTier, type ResolvedPrice,
 } from './google-pricing-page.adapter';
 import { bumpPricingVersion, invalidatePublicPrices, loadPricingCache, upsertPrice } from './pricing.repository';
+import { servedModelsObserved } from './pricing-supervision';
 import type { PricingSource } from './pricing-source.port';
 
 type Row = Record<string, unknown>;
@@ -72,6 +92,9 @@ interface PriceStatusRow {
 /** Échec global de la source (lot 109L) : code stable. */
 export type PricingFailureCode = 'FETCH_FAILED' | 'HTTP_ERROR' | PriceReasonCode | 'NO_PRICES' | 'COVERAGE_DROP';
 
+/** Lot 113O : couverture de la dernière lecture SAINE (référence de la suivante). */
+export interface CoverageReference { logId: number; modelIds: string[]; sections: number }
+
 export interface PricingSyncResult {
   status: 'completed' | 'partial' | 'failed' | 'skipped';
   /** Page lue et reconnue. */
@@ -97,6 +120,10 @@ export interface PageCapture {
   format: PageFormat;
   sample: string;
   coverage: { sections: number; modelIds: number; known: number };
+  /** Lot 113O : contenu intégral conservé (identifiant du snapshot). */
+  snapshotId?: number | null;
+  /** Lot 113O : identifiants de modèles extraits de la page. */
+  modelIds?: string[];
 }
 
 /** Page lue : texte seul (tests) ou réponse capturée. */
@@ -108,7 +135,7 @@ export interface PricingSyncDeps {
   now?: () => Date;
   /** Grille du compte (facultative). */
   billing?: PricingSource | null;
-  /** Lot 109L : alerte d'exploitation, injectable en test. */
+  /** Lot 109L : alerte d'exploitation. Lot 113O : inutilisé (alertes tenues par `pricing-supervision.ts`), conservé pour compatibilité. */
   raiseAlert?: (a: import('../../alerts/alerts.repository').AlertInput) => Promise<boolean>;
   trigger?: string;
 }
@@ -120,14 +147,81 @@ export const COVERAGE_DROP_MIN_MODELS = 3;
 /** Lectures saines successives sans le modèle avant de pouvoir confirmer son retrait. */
 export const RETIREMENT_MIN_ABSENT_READS = 2;
 
-class HttpError extends Error { constructor(readonly status: number, readonly finalUrl: string | null, readonly contentType: string | null) { super(`page tarifaire : HTTP ${status}`); } }
+class HttpError extends Error {
+  constructor(readonly status: number, readonly finalUrl: string | null, readonly contentType: string | null, readonly body: string = '') { super(`page tarifaire : HTTP ${status}`); }
+}
+
+/** Taille maximale du contenu conservé (octets UTF-16 ≈ caractères). */
+export const SNAPSHOT_MAX_CHARS = 4_000_000;
+/** Empreintes distinctes conservées (les plus récentes). */
+export const SNAPSHOT_KEEP = 30;
 
 async function fetchOfficialPage(): Promise<FetchedPage> {
+  // Aucune clé ni en-tête d'authentification : page publique.
   const res = await fetch(GOOGLE_PRICING_SOURCE_URL, { signal: AbortSignal.timeout(15_000), redirect: 'follow' });
   const finalUrl = res.url || null;
   const contentType = res.headers.get('content-type');
-  if (!res.ok) throw new HttpError(res.status, finalUrl, contentType);
+  if (!res.ok) throw new HttpError(res.status, finalUrl, contentType, (await res.text().catch(() => '')).slice(0, 200_000));
   return { text: await res.text(), finalUrl, status: res.status, contentType };
+}
+
+/** URL sans paramètres de requête ni fragment (aucun jeton éventuel), pour le journal. */
+export function safeUrl(u: string | null | undefined): string | null {
+  if (!u) return null;
+  try { const x = new URL(u); return `${x.origin}${x.pathname}`; } catch { return String(u).split(/[?#]/)[0].slice(0, 500); }
+}
+
+/**
+ * Masque par précaution tout motif de secret (clé d'API Google, jeton
+ * porteur, paramètre `key=`) — la page est publique et aucune clé n'est
+ * envoyée, mais le contenu conservé est exporté au BO (pur, testé).
+ */
+export function redactSecrets(text: string): { text: string; redactions: number } {
+  let n = 0;
+  const out = text
+    .replace(/AIza[0-9A-Za-z_-]{30,}/g, () => { n++; return '[clé masquée]'; })
+    .replace(/\b(Bearer)\s+[A-Za-z0-9._~+/-]{20,}=*/g, (_m, b) => { n++; return `${b} [jeton masqué]`; })
+    .replace(/([?&](?:key|api_key|access_token)=)[^&\s"'<>]{8,}/gi, (_m, p) => { n++; return `${p}[masqué]`; });
+  return { text: out, redactions: n };
+}
+
+/** Conserve le contenu intégral reçu (dédoublonné par empreinte). Ne lève jamais : `null` si impossible. */
+async function storeSnapshot(text: string, c: PageCapture): Promise<number | null> {
+  if (!c.fingerprint) return null;
+  try {
+    const r = redactSecrets(text ?? '');
+    const truncated = r.text.length > SNAPSHOT_MAX_CHARS;
+    const rows = (await pgClient.unsafe(
+      `INSERT INTO ai_model_pricing_page_snapshots
+         (fingerprint, requested_url, final_url, http_status, content_type, page_bytes, page_format, body, truncated, redactions)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+       ON CONFLICT (fingerprint) DO UPDATE SET last_seen_at = NOW(), seen_count = ai_model_pricing_page_snapshots.seen_count + 1,
+         final_url = EXCLUDED.final_url, http_status = EXCLUDED.http_status, content_type = EXCLUDED.content_type
+       RETURNING id`,
+      [c.fingerprint, safeUrl(c.requestedUrl), safeUrl(c.finalUrl), c.httpStatus, c.contentType?.slice(0, 120) ?? null, c.bytes, c.format,
+        truncated ? r.text.slice(0, SNAPSHOT_MAX_CHARS) : r.text, truncated, r.redactions] as never[],
+    )) as unknown as Array<{ id: number }>;
+    const id = rows?.[0]?.id != null ? Number(rows[0].id) : null;
+    await pgClient.unsafe(
+      `DELETE FROM ai_model_pricing_page_snapshots WHERE id NOT IN (SELECT id FROM ai_model_pricing_page_snapshots ORDER BY last_seen_at DESC LIMIT $1)`,
+      [SNAPSHOT_KEEP] as never[],
+    ).catch(() => undefined);
+    return id;
+  } catch { return null; /* migration 1520 absente : extrait seul, comme avant */ }
+}
+
+/** Couverture de la dernière lecture saine (lot 113O). `null` : aucune (ou migration absente). */
+export async function loadCoverageReference(): Promise<CoverageReference | null> {
+  try {
+    const rows = (await pgClient.unsafe(
+      `SELECT id, page_model_ids, page_sections FROM ai_model_pricing_refresh_log
+        WHERE status IN ('completed', 'partial') AND page_model_ids IS NOT NULL AND jsonb_typeof(page_model_ids) = 'array'
+        ORDER BY id DESC LIMIT 1`,
+    )) as unknown as Row[];
+    const r = rows?.[0];
+    if (!r) return null;
+    return { logId: Number(r.id), modelIds: (r.page_model_ids as unknown[]).map(String), sections: Number(r.page_sections ?? 0) };
+  } catch { return null; }
 }
 
 const num = (v: unknown) => (v == null ? null : Number(v));
@@ -198,10 +292,23 @@ export function validatePricingSource(
   page: ReturnType<typeof parseGooglePricingMarkdown>,
   previouslyKnown: readonly string[],
   asOf: Date,
+  reference: CoverageReference | null = null,
 ): { code: PricingFailureCode; reason: string } | null {
   if (!page.ok) return { code: page.code ?? 'PAGE_UNRECOGNIZED', reason: page.reason };
   const cov = pageCoverage(page, asOf);
   if (cov.known === 0) return { code: 'NO_PRICES', reason: 'aucun prix lisible sur la page (format modifié ?)' };
+  // Lot 113O : identifiants de la dernière lecture SAINE disparus en masse
+  // (sections perdues, lecture partielle) — échec documenté, jamais un retrait.
+  if (reference && reference.modelIds.length >= COVERAGE_DROP_MIN_MODELS) {
+    const presents = new Set(page.sections.flatMap((s) => s.modelIds));
+    const perdus = reference.modelIds.filter((m) => !presents.has(m));
+    if (perdus.length / reference.modelIds.length > COVERAGE_DROP_RATIO) {
+      return {
+        code: 'COVERAGE_DROP',
+        reason: `couverture en chute brutale : ${perdus.length} des ${reference.modelIds.length} identifiants de la dernière lecture saine ne sont plus extraits (${perdus.slice(0, 6).join(', ')}) — source jugée non fiable`,
+      };
+    }
+  }
   if (previouslyKnown.length >= COVERAGE_DROP_MIN_MODELS) {
     const perdus = previouslyKnown.filter((m) => resolveModelPrice(page, m, asOf).status !== 'KNOWN');
     if (perdus.length / previouslyKnown.length > COVERAGE_DROP_RATIO) {
@@ -247,6 +354,12 @@ async function closeLog(id: number | null, r: PricingSyncResult): Promise<void> 
       JSON.stringify([...r.unknown, ...(r.stale ?? [])].map((u) => ({ model: u.model, code: u.code ?? null, reason: u.reason }))),
       r.failureCode ?? null] as never[],
   ).catch(() => undefined);
+  // Lot 113O (migration 1520) : contenu intégral, identifiants extraits, couverture.
+  await pgClient.unsafe(
+    `UPDATE ai_model_pricing_refresh_log SET snapshot_id = $2, page_model_ids = $3::jsonb, page_sections = $4, coverage = $5::jsonb WHERE id = $1`,
+    [id, c?.snapshotId ?? null, c?.modelIds ? JSON.stringify(c.modelIds) : null, c?.coverage.sections ?? null,
+      c ? JSON.stringify(c.coverage) : null] as never[],
+  ).catch(() => undefined);
 }
 
 /** Une ligne publique valide existe-t-elle pour ce modèle (aux mêmes montants) ? */
@@ -275,6 +388,7 @@ export async function syncPricingCatalog(models: readonly string[], deps: Pricin
   let ecrit = false;
 
   let page: ReturnType<typeof parseGooglePricingMarkdown>;
+  let rawText = '';
   const capture: PageCapture = {
     requestedUrl: GOOGLE_PRICING_SOURCE_URL, finalUrl: null, httpStatus: null, contentType: null, bytes: 0,
     fingerprint: null, format: 'empty', sample: '', coverage: { sections: 0, modelIds: 0, known: 0 },
@@ -292,9 +406,22 @@ export async function syncPricingCatalog(models: readonly string[], deps: Pricin
     capture.sample = pageSample(fp.text ?? '');
     page = parseGooglePricingMarkdown(fp.text ?? '');
     capture.coverage = pageCoverage(page, now);
+    rawText = fp.text ?? '';
+    capture.modelIds = page.ok ? [...new Set(page.sections.flatMap((x) => x.modelIds))].sort() : [];
+    capture.snapshotId = await storeSnapshot(rawText, capture);
   } catch (e) {
     const http = e instanceof HttpError ? e : null;
-    if (http) { capture.httpStatus = http.status; capture.finalUrl = http.finalUrl; capture.contentType = http.contentType; }
+    if (http) {
+      capture.httpStatus = http.status; capture.finalUrl = http.finalUrl; capture.contentType = http.contentType;
+      // Lot 113O : le corps reçu en erreur est conservé (page de consentement, erreur…).
+      if (http.body) {
+        capture.bytes = Buffer.byteLength(http.body, 'utf8');
+        capture.fingerprint = pageFingerprint(http.body);
+        capture.format = detectPricingFormat(http.body);
+        capture.sample = pageSample(http.body);
+        capture.snapshotId = await storeSnapshot(http.body, capture);
+      }
+    }
     fetchFailure = { code: http ? 'HTTP_ERROR' : 'FETCH_FAILED', reason: `page tarifaire injoignable : ${(e as Error).message.slice(0, 200)}` };
     page = { ok: false, reason: fetchFailure.reason };
   }
@@ -302,7 +429,10 @@ export async function syncPricingCatalog(models: readonly string[], deps: Pricin
 
   const prev = await loadPriceStatuses();
   const previouslyKnown = wanted.filter((m) => prev.get(m)?.status === 'KNOWN');
-  const failure = fetchFailure ?? validatePricingSource(page, previouslyKnown, now);
+  const reference = await loadCoverageReference();
+  const failure = fetchFailure ?? validatePricingSource(page, previouslyKnown, now, reference);
+  // Lot 113O : alias résolus par l'API (modèles servis observés dans les traces).
+  const servis = await servedModelsObserved(30).catch(() => new Map<string, Map<string, number>>());
 
   if (failure) {
     // ── Échec GLOBAL : rien n'est retiré, rien n'est écrit ; KNOWN → STALE ──
@@ -323,13 +453,16 @@ export async function syncPricingCatalog(models: readonly string[], deps: Pricin
         result.unknown.push({ model, reason: avant?.reason ?? failure.reason, code: avant?.reasonCode ?? failure.code });
       }
     }
-    await raisePricingAlert(`ai:pricing-source:${now.toISOString().slice(0, 10)}`, 'ai_pricing_source_unreadable',
-      `Tarifs IA : source officielle Google rejetée (${failure.code} — ${failure.reason.slice(0, 200)}) — tarifs connus conservés (non confirmés), aucun retrait.`,
-      { reason: failure.reason, code: failure.code, source: GOOGLE_PRICING_SOURCE_URL, fingerprint: capture.fingerprint, format: capture.format }, deps);
+    // Alerte « source rejetée » : levée (une seule tant que l'échec dure) par le recontrôle final.
   } else {
     result.sourceRead = true;
     for (const model of wanted) {
-      const r = resolveModelPrice(page, model, now);
+      let r = resolveModelPrice(page, model, now, rawText);
+      // Lot 113O : identifiant absent de la page mais servi par un autre modèle (preuve : `modelVersion`).
+      const servisPar = [...(servis.get(model)?.keys() ?? [])].sort();
+      if (r.status === 'UNKNOWN' && r.code === 'ABSENT' && servisPar.length > 0) {
+        r = { status: 'UNKNOWN', model, code: 'ALIAS', reason: `alias : appels servis par ${servisPar.join(', ')} (tarif appliqué à l’identifiant servi, jamais à l’alias)` };
+      }
       const avant = prev.get(model);
       try {
         if (r.status === 'KNOWN') {
@@ -401,7 +534,9 @@ export async function syncPricingCatalog(models: readonly string[], deps: Pricin
   if (ecrit) await bumpPricingVersion('pricing-sync');
   await loadPricingCache().catch(() => 0);
   await closeLog(logId, result);
-  await alertUnpricedModelsInUse(result, now, deps);
+  // Lot 113O : recontrôle complet des alertes tarifaires (résolution comprise).
+  const { reconcilePricingAlerts } = await import('./pricing-supervision');
+  await reconcilePricingAlerts(`pricing-sync:${deps.trigger ?? 'auto'}`, { now });
   return result;
 }
 
@@ -531,36 +666,6 @@ async function defaultBilling(): Promise<PricingSource | null> {
     const { GeminiPricingSource } = await import('./gemini-pricing.source');
     return new GeminiPricingSource();
   } catch { return null; }
-}
-
-async function raisePricingAlert(dedupeKey: string, code: string, message: string, details: Record<string, unknown>, deps: PricingSyncDeps): Promise<void> {
-  try {
-    const raise = deps.raiseAlert ?? (await import('../../alerts/alerts.repository')).raiseAlert;
-    await raise({ kind: 'anomaly', code, severity: 'warning', message, details, drilldownHref: '/admin/ai-provider#tarifs', dedupeKey });
-  } catch { /* alerte best effort */ }
-}
-
-/**
- * Lot 109L (point E) : modèle RÉELLEMENT utilisé (appelé sur 7 jours, ou dans
- * une chaîne active) devenu non tarifé ou non confirmé — UNE alerte par modèle,
- * par état et par jour (clé de déduplication), jamais une par appel.
- */
-async function alertUnpricedModelsInUse(r: PricingSyncResult, now: Date, deps: PricingSyncDeps): Promise<void> {
-  const concernes = [...r.unknown.map((u) => ({ ...u, etat: 'UNKNOWN' })), ...(r.stale ?? []).map((u) => ({ ...u, etat: 'STALE' }))];
-  if (concernes.length === 0) return;
-  const utilises = await modelsActuallyUsed(7).catch(() => new Set<string>());
-  try {
-    const { loadActiveChains } = await import('../../provider/active-model-anomalies');
-    for (const c of await loadActiveChains()) utilises.add(c.model);
-  } catch { /* chaînes illisibles */ }
-  const jour = now.toISOString().slice(0, 10);
-  for (const c of concernes.filter((x) => utilises.has(x.model))) {
-    await raisePricingAlert(`ai:pricing-model:${c.model}:${c.etat}:${jour}`, 'ai_pricing_model_unpriced',
-      c.etat === 'UNKNOWN'
-        ? `Tarif IA inconnu pour ${c.model}, modèle utilisé : ses appels sont non chiffrés (${c.code ?? '—'} — ${c.reason.slice(0, 160)}).`
-        : `Tarif IA non confirmé (STALE) pour ${c.model}, modèle utilisé : dernier montant documenté appliqué (${c.code ?? '—'} — ${c.reason.slice(0, 160)}).`,
-      { model: c.model, status: c.etat, code: c.code ?? null, reason: c.reason }, deps);
-  }
 }
 
 /** Modèles réellement appelés (provider gemini) sur `days` jours. Lecture seule. */

@@ -61,6 +61,7 @@ import {
 import { EmergencyStopControl } from './_components/AiEnvBanner';
 import { ObservabilityPanel } from './_components/ObservabilityPanel';
 import { CachesPanel } from './_components/CachesPanel';
+import { PricingSummaryPanel, type PricingSummaryView } from './_components/PricingSummaryPanel';
 import type { TreatmentSummary } from '@/services/ai/business-execution/types';
 
 type Treatment = 'T1' | 'T2' | 'T3' | 'T4' | 'T6';
@@ -113,6 +114,8 @@ interface VersionRef {
 }
 
 interface Dashboard {
+  /** Lot 113O : synthèse tarifaire groupée (absente : serveur antérieur ou source indisponible). */
+  pricingSummary?: PricingSummaryView | null;
   environment: string;
   isProduction: boolean;
   emergencyStop: { active: boolean; reason: string | null };
@@ -296,6 +299,9 @@ export default function AiDashboardPage() {
           </p>
         </div>
       )}
+
+      {/* Lot 113O : tarification IA — UNE synthèse groupée, au lieu d'un bandeau par modèle et par jour. */}
+      {data.pricingSummary && <PricingSummaryPanel summary={data.pricingSummary} />}
 
       {/* Alertes — chacune mène à sa vue */}
       {data.alerts.length > 0 && (

@@ -331,6 +331,8 @@ export const RECETTE_EXCLUDED: Readonly<Record<string, string>> = {
   ai_master_prompt_versions: 'configuration IA (prompts)', ai_model_catalog: 'catalogue des modèles', ai_model_catalog_refresh: 'catalogue des modèles',
   ai_model_operational_status: 'catalogue des modèles', ai_model_price_changes: 'tarifs des modèles', ai_model_price_status: 'tarifs des modèles',
   ai_model_pricing: 'tarifs des modèles', ai_model_pricing_refresh_log: 'tarifs des modèles', ai_model_qualification: 'qualification IA',
+  // Lot 113O : page tarifaire réellement reçue et cache tarifaire par instance.
+  ai_model_pricing_page_snapshots: 'tarifs des modèles (page reçue)', ai_pricing_cache_instances: 'tarifs des modèles (cache par instance)',
   // Lot 85C (Pilotage IA V2 P4) : journal des changements de capacités des modèles.
   ai_model_capability_changes: 'configuration IA (journal des capacités des modèles)',
   // Lot 86A (Pilotage IA V2 P5) : qualification par couple — journaux techniques (empreintes, jamais de contenu).
@@ -347,6 +349,10 @@ export const RECETTE_EXCLUDED: Readonly<Record<string, string>> = {
   ai_corpus_a1_assessments: 'qualification IA (journal du verrou A1 de couverture)',
   // Lot 105B : journal de la promotion automatique IA (identifiants, empreintes, motifs ; aucun contenu de document).
   ai_promotion_events: 'qualification IA (journal de la promotion automatique : revalidation, A1, surveillance, retours arrière)',
+  // Lot 113I : amélioration automatique IA (objectifs, engagements budgétaires, politique) — identifiants, montants, empreintes ; aucun contenu.
+  ai_improvement_objectives: 'qualification IA (objectifs d’amélioration automatique : file FIFO, variantes)',
+  ai_improvement_budget_reservations: 'qualification IA (engagements du budget d’amélioration : réservations, règlements)',
+  ai_improvement_policy_revisions: 'qualification IA (politique administrée de l’amélioration automatique)',
   // Lot 110E : décisions de revue du journal « Questions sans réponse » (empreinte de groupe, statut, note expurgée ; aucun compte).
   t2_unanswered_reviews: 'assistant T2 (revue des questions sans réponse)',
   // Ancien harnais de mesure (cron `corpus-run`, retiré au lot 86A : absorbé par la qualification par couple) — table inerte, créée à la volée en préproduction.

@@ -107,6 +107,12 @@ export interface ProviderResponseMeta {
   /** Jetons de raisonnement (comptés dans le plafond de sortie chez Gemini). */
   thoughtsTokens?: number | null;
   totalTokens?: number | null;
+  /**
+   * Lot 113O : jetons PAR MODALITÉ (`usageMetadata.promptTokensDetails` /
+   * `candidatesTokensDetails`), clés en minuscules (text, image, audio, video,
+   * pdf). Sert au chiffrage des tarifs par modalité ; absent si non remonté.
+   */
+  tokensByModality?: { input?: Record<string, number>; output?: Record<string, number> } | null;
 }
 
 export interface AiProvider {

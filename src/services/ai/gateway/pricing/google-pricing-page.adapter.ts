@@ -55,6 +55,29 @@
  *     durée, hors du calcul au jeton) ; devise USD uniquement.
  * Toute autre forme, toute ambiguïté → UNKNOWN avec un CODE et une raison.
  *
+ * ══════════════════════════════════════════════════════════════════════════
+ * LOT 113O (carte #713, alertes persistantes après 109L)
+ *
+ *   · ABSENCE VÉRIFIÉE ≠ ÉCHEC D'EXTRACTION : `ABSENT` n'est rendu que si
+ *     l'identifiant exact n'apparaît NULLE PART dans le texte réellement reçu
+ *     (`mentionsModelId`). S'il y figure sans être rattaché à un tableau de
+ *     prix lisible, le code est `NOT_PARSED` (jamais une preuve de retrait) ;
+ *   · sous-sections `###` portant leurs propres identifiants (regroupement
+ *     « ## Gemini 2.5 » › « ### Gemini 2.5 Flash-Lite ») : chacune devient une
+ *     section de modèle — l'ancien lecteur arrêtait la recherche des
+ *     identifiants au premier `###` et rendait ces modèles ABSENT ;
+ *   · lignes d'identifiants reconnues en italique, gras, liste d'identifiants
+ *     ou lien `[id](…/models/id)` ; les balises `{% tabs %}` / `{% tab %}` qui
+ *     précèdent le tableau n'interrompent plus la recherche ;
+ *   · PRIX PAR MODALITÉ (`kind: 'modality'`) : taux par modalité conservés
+ *     (texte, image, audio, vidéo, PDF, raisonnement). Quand texte et
+ *     image/PDF n'ont pas le même prix en entrée, ou quand la sortie a
+ *     plusieurs taux (texte ≠ image générée), `requiresBreakdown: true` : le
+ *     coût n'est calculé qu'avec la consommation PAR MODALITÉ mesurée, sinon il
+ *     reste inconnu avec un motif précis (`cost-catalog.ts`) — jamais un tarif
+ *     textuel appliqué à des images. Les mentions « Equivalent to $x per … »
+ *     sont des équivalences indicatives, ignorées.
+ *
  * Module PUR (aucun accès réseau ni base), testé sur des fixtures
  * (`__tests__/fixtures/google-pricing-*`), provenance et date en tête de
  * chaque fixture.
@@ -76,11 +99,20 @@ export type PriceReasonCode =
   | 'ABSENT' | 'AMBIGUOUS_SECTIONS' | 'NO_STANDARD_TIER' | 'MULTIPLE_STANDARD_TIERS'
   | 'NO_PRICE_TABLE' | 'MISSING_INPUT_ROW' | 'MISSING_OUTPUT_ROW' | 'DUPLICATE_ROW' | 'NO_PAID_COLUMN'
   | 'UNSUPPORTED_CELL' | 'MODALITY_DEPENDENT' | 'PER_UNIT_PRICING' | 'NO_DATED_PRICE_IN_FORCE'
-  | 'TIER_MISMATCH' | 'CURRENCY';
+  | 'TIER_MISMATCH' | 'CURRENCY'
+  /** Lot 113O : identifiant présent dans la page reçue, non rattaché à un tableau de prix lisible. */
+  | 'NOT_PARSED'
+  /** Lot 113O : identifiant absent de la page, servi par un autre modèle (alias résolu par l'API). */
+  | 'ALIAS';
 
 export type PriceTier =
   | { kind: 'prompt_tokens_above'; thresholdTokens: number; inputPerMillion: number; outputPerMillion: number }
-  | { kind: 'dated'; from: string | null; to: string | null; inputPerMillion: number | null; outputPerMillion: number | null };
+  | { kind: 'dated'; from: string | null; to: string | null; inputPerMillion: number | null; outputPerMillion: number | null }
+  /**
+   * Lot 113O : taux par modalité ($ / million de jetons) d'un côté de l'appel.
+   * `requiresBreakdown` : le coût exige la consommation par modalité mesurée.
+   */
+  | { kind: 'modality'; side: 'input' | 'output'; rates: Record<string, number>; requiresBreakdown: boolean };
 
 export type ResolvedPrice =
   | {
@@ -189,23 +221,69 @@ function blocksOf(lines: string[]): Block[] {
     if (tab) { blocks.push({ title: tab[1].trim(), lines: [] }); inTab = true; continue; }
     if (/^\s*\{%\s*(\/tab|endtab)\s*%\}/.test(l)) { if (inTab) blocks.push({ title: null, lines: [] }); inTab = false; continue; }
     if (/^\s*\{%\s*(tabs|\/tabs|endtabs)\b[^%]*%\}/.test(l)) continue;
-    const h3 = /^###\s+(.+?)\s*#*\s*$/.exec(l);
+    const h3 = /^#{3,4}\s+(.+?)\s*#*\s*$/.exec(l);
     if (h3 && !inTab) { blocks.push({ title: unescapeMd(h3[1]).trim(), lines: [] }); continue; }
     blocks[blocks.length - 1].lines.push(l);
   }
   return blocks.map((b) => ({ title: b.title, tables: tablesOf(b.lines) })).filter((b) => b.title !== null || b.tables.length > 0);
 }
 
-/** Identifiants exacts : lignes en italique (`*…*`, `_…_`, `<em>`) portant des accents graves. */
+const ID_RE = /`([a-z0-9][a-z0-9.\-]*[a-z0-9])`/gi;
+const LINK_ID_RE = /\[([a-z0-9][a-z0-9.\-]*[a-z0-9])\]\(([^)\s]+)\)/gi;
+
+/**
+ * Ligne d'identifiants (pur) : une fois retirés les identifiants (`id`, lien
+ * `[id](…/models/id)`), la mise en forme (italique, gras, `<em>`, puce) et les
+ * séparateurs (virgules, « and », « or », « & »), il ne reste rien. Une phrase
+ * de description qui cite un modèle n'en est donc jamais une.
+ */
+function idLineIds(l: string): string[] {
+  const ids: string[] = [];
+  for (const m of l.matchAll(ID_RE)) if (!ids.includes(m[1])) ids.push(m[1]);
+  for (const m of l.matchAll(LINK_ID_RE)) {
+    const fin = /\/models\/([a-z0-9][a-z0-9.\-]*[a-z0-9])(?:[?#].*)?$/i.exec(m[2]);
+    if (fin && fin[1] === m[1] && !ids.includes(m[1])) ids.push(m[1]);
+  }
+  if (ids.length === 0) return [];
+  const reste = l
+    .replace(/\[`[^`]*`\]\([^)]*\)/g, '')
+    .replace(LINK_ID_RE, '')
+    .replace(ID_RE, '')
+    .replace(/<\/?(em|strong|b|i|code)>/gi, '')
+    .replace(/\b(and|or)\b/gi, '')
+    .replace(/[*_,&;:.()\-\s]/g, '');
+  // Règle historique conservée (lot 109L) : ligne en italique (`*…*`, `_…_`,
+  // `<em>`) portant des identifiants, même avec un commentaire.
+  const italique = /^\s*(?:[*_](?![\s*])|<em>)/.test(l);
+  return reste === '' || italique ? ids : [];
+}
+
+/**
+ * Identifiants exacts d'une section (pur) : lignes d'identifiants AVANT le
+ * premier tableau (`{% table %}` ou tableau à barres) ou sous-titre. Les
+ * balises d'onglets (`{% tabs %}`, `{% tab … %}`) sont traversées (lot 113O).
+ */
 function idsOf(lines: string[]): string[] {
   const ids: string[] = [];
   for (const l of lines) {
-    if (/^\s*\|/.test(l) || /^###/.test(l) || /^\s*\{%/.test(l)) break;
-    // Italique (`*[`…`]*`, `_…_`) — jamais un élément de liste « * texte ».
-    if (!/^\s*(?:[*_](?![\s*])|<em>)/.test(l)) continue;
-    for (const m of l.matchAll(/`([a-z0-9][a-z0-9.\-]*[a-z0-9])`/gi)) if (!ids.includes(m[1])) ids.push(m[1]);
+    if (/^\s*\|/.test(l) || /^#{2,}\s/.test(l) || /^\s*\{%\s*table\b/.test(l)) break;
+    if (/^\s*\{%/.test(l)) continue;
+    for (const id of idLineIds(l)) if (!ids.includes(id)) ids.push(id);
   }
   return ids;
+}
+
+/**
+ * L'identifiant EXACT figure-t-il quelque part dans le texte reçu ? (pur, lot
+ * 113O) — bornes strictes : `gemini-2.5-flash` n'est pas trouvé dans
+ * `gemini-2.5-flash-lite` ni dans `gemini-2.5-flash-preview`. Sert à
+ * distinguer une absence VÉRIFIÉE d'un défaut d'extraction ; jamais à
+ * attribuer un tarif.
+ */
+export function mentionsModelId(text: string, model: string): boolean {
+  if (!text || !model) return false;
+  const esc = model.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  return new RegExp(`(?<![A-Za-z0-9_.-])${esc}(?![A-Za-z0-9_-]|\\.[A-Za-z0-9])`).test(text);
 }
 
 /** Analyse la structure de la page (pure). */
@@ -218,10 +296,24 @@ export function parseGooglePricingMarkdown(md: string): ParsedPricingPage {
   const lines = md.replace(/\r\n?/g, '\n').split('\n');
   const sections: Array<{ heading: string; lines: string[] }> = [];
   let cur: { heading: string; lines: string[] } | null = null;
-  for (const line of lines) {
+  let h2Title: string | null = null;
+  for (let k = 0; k < lines.length; k++) {
+    const line = lines[k];
     const h2 = /^##\s+(?!#)(.+?)\s*#*\s*$/.exec(line);
-    if (h2) { cur = { heading: unescapeMd(h2[1]).trim(), lines: [] }; sections.push(cur); continue; }
-    if (/^#\s/.test(line)) { cur = null; continue; }
+    if (h2) { h2Title = unescapeMd(h2[1]).trim(); cur = { heading: h2Title, lines: [] }; sections.push(cur); continue; }
+    if (/^#\s/.test(line)) { cur = null; h2Title = null; continue; }
+    // Lot 113O : un `###` suivi de SES propres identifiants est une section de
+    // modèle (regroupement par famille) ; sinon c'est un palier (Standard, Batch…).
+    const h3 = /^###\s+(?!#)(.+?)\s*#*\s*$/.exec(line);
+    if (h3 && cur) {
+      const suite: string[] = [];
+      for (let j = k + 1; j < lines.length && !/^#{1,3}\s/.test(lines[j]); j++) suite.push(lines[j]);
+      if (idsOf(suite).length > 0) {
+        cur = { heading: `${h2Title ?? ''} › ${unescapeMd(h3[1]).trim()}`.replace(/^ › /, ''), lines: [] };
+        sections.push(cur);
+        continue;
+      }
+    }
     cur?.lines.push(line);
   }
 
@@ -304,7 +396,7 @@ type Qualif =
 function classify(q: string): Qualif | null {
   const s = q.trim().replace(/^[,;:]\s*/, '').replace(/[;,.]\s*$/, '').trim().toLowerCase();
   if (s === '') return { kind: 'plain' };
-  const mod = /^\(?\s*((?:text|image|images|video|audio|pdf)(?:\s*(?:\/|,|&|and)\s*(?:text|image|images|video|audio|pdf))*)\s*\)?$/.exec(s);
+  const mod = /^\(?\s*((?:text|image|images|video|videos|audio|pdf|thinking)(?:\s*(?:\/|,|&|and)\s*(?:text|image|images|video|videos|audio|pdf|thinking))*)\s*\)?$/.exec(s);
   if (mod) return { kind: 'modality', mods: new Set(mod[1].split(/\s*(?:\/|,|&|and)\s*/).map((x) => x.replace(/s$/, ''))) };
   const tier = /^prompts?\s*(<=|≤|<|up to|>|above|over|longer than)\s*(\d+(?:\.\d+)?)\s*(k|m)?\s*(?:tokens?)?$/.exec(s);
   if (tier) {
@@ -319,7 +411,11 @@ function classify(q: string): Qualif | null {
 }
 
 type CellPrice =
-  | { ok: true; amount: number; tier: { thresholdTokens: number; amount: number } | null; dated: Array<{ from: string | null; to: string | null; amount: number }> }
+  | {
+    ok: true; amount: number; tier: { thresholdTokens: number; amount: number } | null; dated: Array<{ from: string | null; to: string | null; amount: number }>;
+    /** Lot 113O : taux par modalité lus dans la cellule (absent : montant unique). */
+    rates?: Record<string, number>;
+  }
   | { ok: false; reason: string; code?: PriceReasonCode };
 
 /**
@@ -330,11 +426,17 @@ export function parsePriceCell(cell: string, asOf: Date): CellPrice {
   let s = unescapeMd(cell).replace(/<br\s*\/?>/gi, ' ').replace(/\s+/g, ' ').trim();
   if (/[€£¥]/.test(s)) return { ok: false, reason: 'devise autre que USD', code: 'CURRENCY' };
   if (!s.includes('$')) return { ok: false, reason: `aucun montant (« ${s.slice(0, 60)} »)`, code: 'UNSUPPORTED_CELL' };
+  // Lot 113O : « Equivalent to $0.045 per 0.5K image » est une équivalence
+  // INDICATIVE du prix au jeton (déjà donné) : ignorée, jamais un second prix.
+  s = s.replace(/\s*\(?\s*equivalent to\s+\$\s?\d+(?:\.\d+)?[^$]*/gi, ' ').replace(/\s*\*\s*$/, '').trim();
   // Alternatives à la durée / à l'unité (« or $0.005/min ») : hors calcul au jeton.
   s = s.replace(/\s*\bor\s+\$\s?\d+(?:\.\d+)?\s*\/\s*(?:min|minute|sec|second|image|request)\b/gi, '');
   if (/\$\s?\d+(?:\.\d+)?\s*(?:\/|per\s+)(?:min|minute|sec|second|image|request|hour)/i.test(s)) {
     return { ok: false, reason: 'tarif à l’unité ou à la durée, hors calcul au jeton', code: 'PER_UNIT_PRICING' };
   }
+  // Lot 113O : aucun texte libre avant le premier montant (« see docs $0.50 »).
+  const avant = s.slice(0, s.indexOf('$')).replace(/[\s,;:]/g, '');
+  if (avant !== '') return { ok: false, reason: `texte non reconnu avant le montant (« ${s.slice(0, 60)} »)`, code: 'UNSUPPORTED_CELL' };
   const segs: Array<{ amount: number; q: Qualif }> = [];
   for (const m of s.matchAll(/\$\s?(\d+(?:\.\d+)?)([^$]*)/g)) {
     const q = classify(m[2]);
@@ -351,12 +453,19 @@ export function parsePriceCell(cell: string, asOf: Date): CellPrice {
     return segs.length === 1 ? { ok: true, amount: segs[0].amount, tier: null, dated: [] } : { ok: false, reason: 'plusieurs montants sans condition', code: 'UNSUPPORTED_CELL' };
   }
   if (kind === 'modality') {
-    const texte = segs.filter((x) => (x.q as { mods: Set<string> }).mods.has('text'));
-    const image = segs.filter((x) => (x.q as { mods: Set<string> }).mods.has('image') || (x.q as { mods: Set<string> }).mods.has('pdf'));
-    if (texte.length !== 1) return { ok: false, reason: 'prix du texte introuvable ou multiple', code: 'MODALITY_DEPENDENT' };
-    // Verebona envoie texte ET images/PDF : un seul prix doit couvrir les deux.
-    if (image.length !== 1 || image[0].amount !== texte[0].amount) return { ok: false, reason: 'tarif dépendant de la modalité (texte ≠ image)', code: 'MODALITY_DEPENDENT' };
-    return { ok: true, amount: texte[0].amount, tier: null, dated: [] };
+    // Lot 113O : taux PAR MODALITÉ conservés. Le montant de base est celui du
+    // texte (ou le seul montant de la cellule) ; la décision « calculable sans
+    // consommation par modalité » est prise par `resolveModelPrice`.
+    const rates: Record<string, number> = {};
+    for (const x of segs) {
+      for (const m of (x.q as { mods: Set<string> }).mods) {
+        if (rates[m] !== undefined && rates[m] !== x.amount) return { ok: false, reason: `plusieurs prix pour la modalité ${m}`, code: 'MODALITY_DEPENDENT' };
+        rates[m] = x.amount;
+      }
+    }
+    const base = rates.text ?? (segs.length === 1 ? segs[0].amount : undefined);
+    if (base === undefined) return { ok: false, reason: 'prix du texte introuvable (plusieurs modalités sans prix texte)', code: 'MODALITY_DEPENDENT' };
+    return { ok: true, amount: base, tier: null, dated: [], rates };
   }
   if (kind === 'tier') {
     const le = segs.filter((x) => (x.q as { op: string }).op === 'le');
@@ -377,11 +486,35 @@ export function parsePriceCell(cell: string, asOf: Date): CellPrice {
 
 // ── Tarif d'un modèle ───────────────────────────────────────────────────────
 
-/** Tarif d'un modèle à la date `asOf` (pur). */
-export function resolveModelPrice(page: ParsedPricingPage, model: string, asOf: Date = new Date()): ResolvedPrice {
+/**
+ * Modalités que la passerelle Verebona envoie en entrée (texte, images, PDF).
+ * Un PDF est facturé comme ses pages-images par Gemini : faute de taux « pdf »
+ * publié, le taux « image » s'applique (`rateFor`).
+ */
+export const SENT_INPUT_MODALITIES = ['text', 'image', 'pdf'] as const;
+
+/** Taux d'une modalité (pur) : taux publié, PDF → image, sinon `undefined`. */
+export function rateFor(rates: Readonly<Record<string, number>>, modality: string): number | undefined {
+  if (rates[modality] !== undefined) return rates[modality];
+  if (modality === 'pdf') return rates.image;
+  if (modality === 'thinking') return rates.text;
+  return undefined;
+}
+
+/**
+ * Tarif d'un modèle à la date `asOf` (pur). Lot 113O : `rawText` (texte
+ * réellement reçu) distingue l'absence VÉRIFIÉE (`ABSENT` : identifiant exact
+ * nulle part dans la page) d'un défaut d'extraction (`NOT_PARSED`).
+ */
+export function resolveModelPrice(page: ParsedPricingPage, model: string, asOf: Date = new Date(), rawText?: string): ResolvedPrice {
   if (!page.ok) return { status: 'UNKNOWN', model, reason: page.reason, code: page.code ?? 'PAGE_UNRECOGNIZED' };
   const sections = page.sections.filter((s) => s.modelIds.includes(model));
-  if (sections.length === 0) return { status: 'UNKNOWN', model, reason: 'absent de la page tarifaire officielle', code: 'ABSENT' };
+  if (sections.length === 0) {
+    if (rawText !== undefined && mentionsModelId(rawText, model)) {
+      return { status: 'UNKNOWN', model, reason: 'identifiant présent dans la page reçue mais rattaché à aucun tableau de prix lisible (défaut d’extraction, pas une absence)', code: 'NOT_PARSED' };
+    }
+    return { status: 'UNKNOWN', model, reason: 'absent de la page tarifaire officielle', code: 'ABSENT' };
+  }
   if (sections.length > 1) return { status: 'UNKNOWN', model, reason: 'présent dans plusieurs sections de la page (correspondance ambiguë)', code: 'AMBIGUOUS_SECTIONS' };
   const s = sections[0];
   if (s.problem || !s.input || !s.output) return { status: 'UNKNOWN', model, reason: s.problem ?? 'prix introuvables', code: s.problemCode ?? 'NO_PRICE_TABLE' };
@@ -389,6 +522,8 @@ export function resolveModelPrice(page: ParsedPricingPage, model: string, asOf: 
   if (!i.ok) return { status: 'UNKNOWN', model, reason: `entrée : ${i.reason}`, code: i.code ?? 'UNSUPPORTED_CELL' };
   const o = parsePriceCell(s.output, asOf);
   if (!o.ok) return { status: 'UNKNOWN', model, reason: `sortie : ${o.reason}`, code: o.code ?? 'UNSUPPORTED_CELL' };
+  // Verebona envoie toujours du texte : sans prix texte en entrée, rien n'est calculable.
+  if (i.rates && i.rates.text === undefined) return { status: 'UNKNOWN', model, reason: 'entrée : prix du texte introuvable', code: 'MODALITY_DEPENDENT' };
 
   const tiers: PriceTier[] = [];
   if (i.tier || o.tier) {
@@ -411,6 +546,21 @@ export function resolveModelPrice(page: ParsedPricingPage, model: string, asOf: 
     }
   }
   for (const e of bornes.values()) tiers.push({ kind: 'dated', ...e });
+  // Lot 113O : prix par modalité. Entrée : Verebona envoie du texte, des images
+  // et des PDF (`SENT_INPUT_MODALITIES`) — sans consommation par modalité, le
+  // montant de base ne vaut que si ces modalités ont toutes ce prix. Sortie :
+  // plusieurs taux distincts (texte ≠ image générée) → consommation exigée.
+  const modal = (side: 'input' | 'output', c: { amount: number; rates?: Record<string, number> }) => {
+    if (!c.rates) return;
+    const vals = Object.values(c.rates);
+    const requiresBreakdown = side === 'input'
+      ? SENT_INPUT_MODALITIES.some((m) => rateFor(c.rates!, m) !== c.amount)
+      : new Set(vals).size > 1;
+    if (!requiresBreakdown && vals.every((v) => v === c.amount)) return;
+    tiers.push({ kind: 'modality', side, rates: { ...c.rates }, requiresBreakdown });
+  };
+  modal('input', i);
+  modal('output', o);
 
   const thinkingIncluded = /including thinking|thinking tokens/i.test(s.outputLabel ?? '') || /text and thinking/i.test(s.output);
   return {

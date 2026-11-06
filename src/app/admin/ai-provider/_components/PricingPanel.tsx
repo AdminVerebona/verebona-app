@@ -11,6 +11,11 @@
  * l'écart avec la page, le retrait vérifiable ; saisie d'un tarif DOCUMENTÉ
  * (source officielle, date, palier, modalité) quand l'automatisation échoue ;
  * historique des changements. Aucun montant n'est accepté sans source.
+ *
+ * Lot 113O (carte #713) : contenu INTÉGRAL de la page réellement reçue
+ * (téléchargement) et RAPPORT DE RÉCONCILIATION de chaque identifiant signalé
+ * (cause prouvée, appels, prix applicable ou motif, action ; JSON / CSV), pour
+ * un diagnostic sans accès à la base.
  */
 import { useCallback, useEffect, useState } from 'react';
 import { Loader2, RefreshCw, AlertTriangle, CheckCircle2, History } from 'lucide-react';
@@ -39,6 +44,21 @@ interface PricingData {
   history: Array<{ id: number; model: string; old_status: string | null; new_status: string; old_input: string | null; new_input: string | null; old_output: string | null; new_output: string | null; reason: string | null; reason_code: string | null; source: string; detected_at: string }>;
   priorityRule: string;
   cache: { loadedAt: string | null; degraded: boolean; size: number; version?: number | null };
+  snapshot?: { id: number; href: string } | null;
+  reconciliation?: { json: string; csv: string };
+}
+
+interface ReconRow {
+  model: string; primaryCause: string; causeLabel: string; causes: string[]; action: string; pricing: string;
+  page: { verdict: string; code: string | null; mentioned: boolean };
+  calls: { total: number; unknownCost: number; lastAt: string | null };
+  regularizable: number; activeUsages: string[]; alerts: { open: number; resolved: number };
+}
+interface Recon {
+  generatedAt: string; models: ReconRow[]; totals: Record<string, number>;
+  snapshot: { id: number; fingerprint: string; bytes: number; format: string | null; sections: number; modelIds: number } | null;
+  migrations: Array<{ migration: string; object: string; present: boolean }>;
+  cache: { sharedVersion: number | null; consistent: boolean | null; instances: Array<{ instanceId: string; version: number | null; updatedAt: string | null }> };
 }
 
 const STATUS_LABEL: Record<ModelRow['pageStatus'], string> = {
@@ -54,6 +74,15 @@ export function PricingPanel() {
   const [busy, setBusy] = useState(false);
   const [form, setForm] = useState(EMPTY_FORM);
   const [showHistory, setShowHistory] = useState(false);
+  const [recon, setRecon] = useState<Recon | null>(null);
+  const [extraModels, setExtraModels] = useState('');
+  const modelsParam = extraModels.split(/[\s,;]+/).filter(Boolean).join(',');
+  const reconUrl = (base: string) => `${base}${modelsParam ? `${base.includes('?') ? '&' : '?'}models=${encodeURIComponent(modelsParam)}` : ''}`;
+  const loadRecon = async () => {
+    setBusy(true);
+    try { setRecon(await apiClient.get<Recon>(reconUrl('/api/admin/ai/provider/pricing/reconciliation'))); }
+    catch { toast.error('Rapport de réconciliation indisponible.'); } finally { setBusy(false); }
+  };
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -153,6 +182,46 @@ export function PricingPanel() {
           {data.coverage.usedWithStalePrice.length > 0 && <>Modèles utilisés sur un tarif non confirmé : {data.coverage.usedWithStalePrice.join(', ')}.</>}
         </p>
       )}
+
+      <div data-testid="pricing-reconciliation" className="rounded-lg border border-[color:var(--border-subtle)] p-3 space-y-2">
+        <h3 className="text-sm font-semibold text-[color:var(--text-primary)]">Rapport de réconciliation (diagnostic avant / après)</h3>
+        <p className="text-xs text-[color:var(--text-muted)]">
+          Pour chaque identifiant signalé : présence exacte sur la page réellement reçue, statut enregistré, tarif appliqué et cache,
+          chaînes actives, appels sur 30 jours et cause prouvée. Ajoutez au besoin les identifiants relevés dans une capture.
+        </p>
+        <Input placeholder="Identifiants supplémentaires (séparés par des virgules)" value={extraModels} onChange={(e) => setExtraModels(e.target.value)} className="bg-[color:var(--bg-input)] font-mono" />
+        <div className="flex flex-wrap gap-2">
+          <Button size="sm" variant="outline" onClick={loadRecon} disabled={busy}>Afficher le rapport</Button>
+          <a className="text-xs self-center text-[color:var(--accent)] hover:underline" href={reconUrl(`${data.reconciliation?.json ?? '/api/admin/ai/provider/pricing/reconciliation'}?download=1`)}>Exporter (JSON)</a>
+          <a className="text-xs self-center text-[color:var(--accent)] hover:underline" href={reconUrl(data.reconciliation?.csv ?? '/api/admin/ai/provider/pricing/reconciliation?format=csv')}>Exporter (CSV)</a>
+          {data.snapshot && <a className="text-xs self-center text-[color:var(--accent)] hover:underline" href={data.snapshot.href}>Page réellement reçue (contenu intégral)</a>}
+        </div>
+        {recon && (
+          <div className="space-y-2">
+            <p className="text-xs text-[color:var(--text-muted)] break-words">
+              Généré le {fr(recon.generatedAt)} · page reçue : {recon.snapshot ? `${recon.snapshot.bytes} octets, format ${recon.snapshot.format ?? '—'}, ${recon.snapshot.sections} section(s), ${recon.snapshot.modelIds} identifiant(s), empreinte ${recon.snapshot.fingerprint.slice(0, 12)}` : 'aucun contenu conservé — synchronisez d’abord'}
+              {' '}· cache : version partagée {recon.cache.sharedVersion ?? '—'}, {recon.cache.consistent === null ? 'cohérence non mesurable' : recon.cache.consistent ? 'instances cohérentes' : 'instances DÉSYNCHRONISÉES'} ({recon.cache.instances.length} instance(s))
+              {recon.migrations.some((m) => !m.present) && <> · migrations manquantes : {recon.migrations.filter((m) => !m.present).map((m) => `${m.migration} (${m.object})`).join(', ')}</>}
+            </p>
+            <ul className="space-y-1.5">
+              {recon.models.map((m) => (
+                <li key={m.model} className="text-xs border-b border-[color:var(--border-subtle)] pb-1.5 break-words">
+                  <span className="font-mono font-semibold text-[color:var(--text-primary)] break-all">{m.model}</span>
+                  {' · '}<span className={m.primaryCause === 'PRICED_OK' || m.primaryCause === 'ALERT_RESOLVED' || m.primaryCause === 'ALIAS_RESOLVED' ? 'text-[color:var(--text-secondary)]' : 'text-[color:var(--text-warning-soft)]'}>{m.causeLabel}</span>
+                  <span className="block text-[color:var(--text-muted)]">
+                    Page reçue : {m.page.verdict}{m.page.code ? ` (${m.page.code})` : ''}{m.page.mentioned ? ', identifiant présent' : ', identifiant introuvable'}
+                    {' · '}{m.calls.total} appel(s) sur 30 j dont {m.calls.unknownCost} non chiffré(s){m.regularizable ? `, ${m.regularizable} régularisable(s)` : ''}
+                    {m.activeUsages.length ? ` · chaîne active : ${m.activeUsages.join(', ')}` : ' · hors chaînes actives'}
+                    {' · '}alertes ouvertes {m.alerts.open}, résolues {m.alerts.resolved}
+                  </span>
+                  <span className="block text-[color:var(--text-secondary)]">Prix : {m.pricing}</span>
+                  <span className="block text-[color:var(--text-muted)]">Action : {m.action}</span>
+                </li>
+              ))}
+            </ul>
+          </div>
+        )}
+      </div>
 
       <div className="space-y-1.5">
         {data.models.map((m) => (

@@ -92,8 +92,12 @@ describe('CAT-07 — ambiguïté → UNKNOWN, jamais un tarif inventé', () => {
   it('modèle absent de la page', () => {
     expect(resolveModelPrice(PAGE, 'gemini-9-flash', OCT)).toEqual({ status: 'UNKNOWN', model: 'gemini-9-flash', reason: 'absent de la page tarifaire officielle', code: 'ABSENT' });
   });
-  it('texte et image à des prix différents (modèles Live)', () => {
-    expect(resolveModelPrice(PAGE, 'gemini-3.8-live', OCT)).toMatchObject({ status: 'UNKNOWN', reason: expect.stringMatching(/modalité/) });
+  // Lot 113O : ALIGNÉ (voir l109l-pricing-formats.test.ts) — taux par modalité
+  // conservés, coût inconnu sans consommation par modalité mesurée.
+  it('texte et image à des prix différents (modèles Live) : taux par modalité, consommation exigée', () => {
+    expect(resolveModelPrice(PAGE, 'gemini-3.8-live', OCT)).toMatchObject({
+      status: 'KNOWN', tiers: expect.arrayContaining([expect.objectContaining({ kind: 'modality', side: 'input', requiresBreakdown: true })]),
+    });
   });
   it('sortie facturée à l’image', () => {
     expect(resolveModelPrice(PAGE, 'gemini-3.1-flash-image', OCT)).toMatchObject({ status: 'UNKNOWN', reason: expect.stringMatching(/unité ou à la durée/) });

@@ -59,11 +59,14 @@ export async function POST(req: NextRequest) {
       const r = await applyRegularization(b.dryRunId, adminId);
       await logAdminAction({ adminId, action: 'OPS_BACKFILL_APPLY', targetType: 'OPS_BACKFILL', targetId: r.runId, result: r.refused ? 'FAILURE' : 'SUCCESS',
         details: { scope: 'ai-cost-regularization', dryRunId: b.dryRunId, refused: r.refused ?? null, summary: r.summary } });
+      // Lot 113O : recontrôle des alertes tarifaires (appels régularisés → alerte résolue).
+      if (!r.refused) await (await import('@/services/ai/gateway/pricing/pricing-supervision')).reconcilePricingAlerts('regularization-apply');
       return NextResponse.json(r, { status: r.refused ? 409 : 200 });
     }
     const r = await revertRegularization(b.applyRunId, adminId);
     await logAdminAction({ adminId, action: 'OPS_BACKFILL_RESTORE', targetType: 'OPS_BACKFILL', targetId: r.runId, result: r.refused ? 'FAILURE' : 'SUCCESS',
       details: { scope: 'ai-cost-regularization', applyRunId: b.applyRunId, reason: b.reason, summary: r.summary } });
+    if (!r.refused) await (await import('@/services/ai/gateway/pricing/pricing-supervision')).reconcilePricingAlerts('regularization-revert');
     return NextResponse.json(r, { status: r.refused ? 404 : 200 });
   } catch (e) {
     return toErrorResponse(e, 'POST /api/admin/ai/costs/regularization');

@@ -41,6 +41,9 @@ const FIXTURES = resolve(__dirname, 'fixtures');
 const EMAIL = 'camille@exemple.fr';
 const SECRET = 'Motdepasse-Test-1!';
 
+// Correctif 113 (suite complète sous charge, 06/11) : le délai par défaut de expect.poll (1 s) ne suffit pas
+// quand la machine est chargée — l'envoi arrive, plus tard. Délai borné, l'attendu ne change pas.
+const POLL_MS = 10_000;
 type Mode = 'natif' | 'naif' | 'silencieux';
 
 describe.skipIf(!EXE)('L111E — remplissage automatique puis envoi (navigateur)', () => {
@@ -134,7 +137,7 @@ describe.skipIf(!EXE)('L111E — remplissage automatique puis envoi (navigateur)
       await remplir('input[name="password"]', SECRET, mode);
       if (mode === 'naif') await page.waitForTimeout(50); // resynchronisation de l'état contrôlé
       await page.getByRole('button', { name: 'Se connecter', exact: true }).click();
-      await expect.poll(() => sent.filter((s) => s.url === '/api/auth/login').length).toBe(1);
+      await expect.poll(() => sent.filter((s) => s.url === '/api/auth/login').length, { timeout: POLL_MS }).toBe(1);
       const body = sent.find((s) => s.url === '/api/auth/login')!.body;
       expect(body.email).toBe(EMAIL);
       expect(body.password).toBe(SECRET);
@@ -154,7 +157,7 @@ describe.skipIf(!EXE)('L111E — remplissage automatique puis envoi (navigateur)
     await page.getByRole('button', { name: 'Afficher le mot de passe' }).click();
     expect(await page.locator('#password').getAttribute('type')).toBe('text');
     await page.getByRole('button', { name: 'Se connecter', exact: true }).click();
-    await expect.poll(() => sent.length).toBe(1);
+    await expect.poll(() => sent.length, { timeout: POLL_MS }).toBe(1);
     expect(await page.locator('#password').getAttribute('type')).toBe('password');
   });
 
@@ -180,7 +183,7 @@ describe.skipIf(!EXE)('L111E — remplissage automatique puis envoi (navigateur)
       }
       await page.getByRole('button', { name: 'Modifier mon mot de passe' }).click();
       // Valeurs lues dans le formulaire à l'envoi (même sans événement).
-      await expect.poll(() => sent.filter((s) => s.url === '/api/auth/reset-password').length).toBe(1);
+      await expect.poll(() => sent.filter((s) => s.url === '/api/auth/reset-password').length, { timeout: POLL_MS }).toBe(1);
       expect(sent[0].body.newPassword).toBe(SECRET);
       expect(await page.getByText('Les deux mots de passe ne correspondent pas.').count()).toBe(0);
     });
@@ -195,7 +198,7 @@ describe.skipIf(!EXE)('L111E — remplissage automatique puis envoi (navigateur)
     const bouton = page.getByRole('button', { name: 'Activer mon compte' });
     expect(await bouton.isEnabled()).toBe(true);
     await bouton.click();
-    await expect.poll(() => sent.filter((s) => s.url === '/api/auth/verify-email').length).toBe(1);
+    await expect.poll(() => sent.filter((s) => s.url === '/api/auth/verify-email').length, { timeout: POLL_MS }).toBe(1);
     expect(sent[0].body.password).toBe(SECRET);
   });
 
@@ -223,7 +226,7 @@ describe.skipIf(!EXE)('L111E — remplissage automatique puis envoi (navigateur)
       }
     }, SECRET);
     // Sans resynchronisation, React ignorerait l'événement : critères repliés, état vide.
-    await expect.poll(() => page.getByTestId('password-requirements').getAttribute('data-mode')).toBe('detailed');
+    await expect.poll(() => page.getByTestId('password-requirements').getAttribute('data-mode'), { timeout: POLL_MS }).toBe('detailed');
     expect(await page.locator('input[name="new-password"]').inputValue()).toBe(SECRET);
     expect(await page.locator('input[name="confirm-password"]').inputValue()).toBe(SECRET);
   });

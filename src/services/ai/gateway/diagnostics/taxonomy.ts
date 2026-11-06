@@ -176,6 +176,8 @@ export interface ProviderCallMetadata {
   /** `requested_schema` | `json_mode` | `none` | `schema_rejected_retried_without`. */
   structuredOutputStatus?: string | null;
   tokenUsage?: { input: number; output: number; thoughts?: number | null; total?: number | null };
+  /** Lot 113O : jetons par modalité (chiffrage des tarifs par modalité). */
+  tokensByModality?: { input?: Record<string, number>; output?: Record<string, number> } | null;
   latencyMs?: number | null;
   /** Plafond de sortie configuré pour l'appel (`null` : défaut du fournisseur). */
   configuredMaxOutputTokens?: number | null;

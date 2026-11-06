@@ -173,6 +173,7 @@ function markStage(e: unknown, stage: string): unknown {
  */
 export function responseMeta(response: Pick<GenerateContentResponse, 'candidates' | 'promptFeedback' | 'usageMetadata'> & { responseId?: string; modelVersion?: string }): ProviderResponseMeta {
   const c = response.candidates?.[0];
+  const parModalite = tokensByModality(response.usageMetadata);
   const ratings = (c?.safetyRatings ?? []).filter((r) => r.blocked);
   return {
     providerRequestId: response.responseId ?? null,
@@ -184,7 +185,31 @@ export function responseMeta(response: Pick<GenerateContentResponse, 'candidates
       ?? null,
     thoughtsTokens: response.usageMetadata?.thoughtsTokenCount ?? null,
     totalTokens: response.usageMetadata?.totalTokenCount ?? null,
+    // Lot 113O : jetons par modalité, seulement s'ils sont remontés.
+    ...(parModalite ? { tokensByModality: parModalite } : {}),
   };
+}
+
+/**
+ * Lot 113O : jetons par modalité (pur). `DOCUMENT` → `pdf` ; modalité inconnue
+ * conservée en minuscules (le chiffrage la refusera faute de prix publié).
+ * `null` si Gemini ne remonte aucun détail.
+ */
+export function tokensByModality(u: GenerateContentResponse['usageMetadata'] | undefined): { input?: Record<string, number>; output?: Record<string, number> } | null {
+  const lire = (l: Array<{ modality?: string; tokenCount?: number }> | undefined) => {
+    if (!Array.isArray(l) || l.length === 0) return undefined;
+    const out: Record<string, number> = {};
+    for (const d of l) {
+      const m = String(d?.modality ?? '').toLowerCase();
+      if (!m || m === 'modality_unspecified' || typeof d.tokenCount !== 'number') continue;
+      const k = m === 'document' ? 'pdf' : m;
+      out[k] = (out[k] ?? 0) + d.tokenCount;
+    }
+    return Object.keys(out).length ? out : undefined;
+  };
+  const input = lire(u?.promptTokensDetails as Array<{ modality?: string; tokenCount?: number }> | undefined);
+  const output = lire(u?.candidatesTokensDetails as Array<{ modality?: string; tokenCount?: number }> | undefined);
+  return input || output ? { ...(input ? { input } : {}), ...(output ? { output } : {}) } : null;
 }
 
 async function withTimeout<T>(p: Promise<T>, ms: number, model: string, onTimeout?: () => void): Promise<T> {

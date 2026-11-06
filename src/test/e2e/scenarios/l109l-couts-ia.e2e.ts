@@ -47,7 +47,7 @@ scenario('L109L', 'Tarifs Gemini et coûts IA : lecture, STALE, priorité, statu
     for (const t of ['ai_cost_corrections', 'ai_cost_regularization_items', 'ai_cost_regularization_runs', 'ai_model_price_status', 'ai_model_price_changes', 'ai_model_pricing']) {
       await sql.unsafe(`DELETE FROM ${t}`);
     }
-    await sql`DELETE FROM ai_alerts WHERE code IN ('ai_pricing_source_unreadable', 'ai_pricing_model_unpriced')`;
+    await sql`DELETE FROM ai_alerts WHERE code IN ('ai_pricing_source_unreadable', 'ai_pricing_model_unpriced', 'ai_pricing_unpriced_calls', 'ai_pricing_active_unpriced', 'ai_pricing_stale')`;
     const { clearPricingCache } = await import('@/services/ai/gateway/pricing/pricing.repository');
     clearPricingCache();
   });
@@ -174,8 +174,11 @@ scenario('L109L', 'Tarifs Gemini et coûts IA : lecture, STALE, priorité, statu
     expect(arr).toMatchObject({ pricing_status: 'zero_or_rounded', cost_micros: 0 });
     expect(Number(arr.cost_exact_micros)).toBeGreaterThan(0);
     expect(await st(ids.sortie)).toMatchObject({ pricing_status: 'missing' });
+    // Lot 113O (carte #713) : ALIGNÉ — l'alerte « appels non chiffrés » porte
+    // le code dédié `ai_pricing_unpriced_calls` (distinct des chaînes actives
+    // sans tarif) et reste UNIQUE par modèle tant que la condition dure.
     await vi.waitFor(async () => {
-      const [{ n }] = await sql<Array<{ n: number }>>`SELECT COUNT(*)::int AS n FROM ai_alerts WHERE code = 'ai_pricing_model_unpriced' AND details->>'model' = 'gemini-l109l-inconnu'`;
+      const [{ n }] = await sql<Array<{ n: number }>>`SELECT COUNT(*)::int AS n FROM ai_alerts WHERE code = 'ai_pricing_unpriced_calls' AND details->>'model' = 'gemini-l109l-inconnu'`;
       expect(n).toBe(1);
     }, { timeout: 3000 });
   });

@@ -20,7 +20,7 @@
 import { listLlmOperations } from '../registry/operations';
 import { AI_USE_CASE_CODES } from '../registry/use-cases';
 import { getCachedPrice, getCacheState, loadPricingCache, startPricingCacheWatcher, type CachedPrice } from './pricing/pricing.repository';
-import type { PriceTier } from './pricing/google-pricing-page.adapter';
+import { rateFor, type PriceTier } from './pricing/google-pricing-page.adapter';
 
 const warnedModels = new Set<string>();
 
@@ -45,6 +45,12 @@ export function calcCostMicros(
   provider = 'gemini',
 ): number | null {
   const price = getCachedPrice(provider, model);
+  if (price && requiresModalityUsage(price)) {
+    // Lot 113O : tarif par modalité (texte ≠ image…) — la passerelle ne connaît
+    // pas ici la consommation par modalité ; la trace la chiffre si elle est
+    // mesurée (`trace-pricing.ts`), sinon le coût reste inconnu, jamais estimé.
+    return null;
+  }
   if (!price) {
     const key = `${provider}/${model}`;
     if (!warnedModels.has(key)) {
@@ -94,11 +100,80 @@ export function exactCostMicros(
   return inputTokens * inMicros + (outputTokens + Math.max(0, thoughtsTokens || 0)) * outMicros;
 }
 
+/**
+ * Lot 113O — consommation PAR MODALITÉ (jetons), telle que Gemini la remonte
+ * (`usageMetadata.promptTokensDetails` / `candidatesTokensDetails`), clés en
+ * minuscules : text, image, audio, video, pdf (DOCUMENT).
+ */
+export interface ModalityUsage { input?: Record<string, number> | null; output?: Record<string, number> | null }
+
+type ModalityTier = Extract<PriceTier, { kind: 'modality' }>;
+
+/** Le tarif exige-t-il la consommation par modalité ? (pur) */
+export function requiresModalityUsage(price: Pick<CachedPrice, 'tiers'>): boolean {
+  return (price.tiers ?? []).some((t) => t.kind === 'modality' && t.requiresBreakdown);
+}
+
+const somme = (r: Record<string, number>) => Object.values(r).reduce((a, b) => a + (Number.isFinite(b) ? b : 0), 0);
+
+/**
+ * Coût EXACT avec prix par modalité (pur, lot 113O). Sans palier de modalité :
+ * identique à `exactCostMicros`. Avec : chaque côté (entrée / sortie) est
+ * chiffré modalité par modalité si la consommation par modalité est mesurée et
+ * cohérente avec le total ; sinon, si le côté exige cette consommation, le coût
+ * est INCONNU avec un motif précis (jamais un tarif textuel appliqué à une
+ * image ou à de l'audio). Raisonnement : taux « thinking » sinon texte.
+ */
+export function modalityAwareCost(
+  price: Pick<CachedPrice, 'inputMicros' | 'outputMicros' | 'tiers'>,
+  inputTokens: number,
+  outputTokens: number,
+  thoughtsTokens: number,
+  at: Date,
+  usage?: ModalityUsage | null,
+): { ok: true; exact: number } | { ok: false; code: 'MODALITY_USAGE_UNMEASURED' | 'MODALITY_NOT_PRICED'; reason: string } {
+  const mods = (price.tiers ?? []).filter((t): t is ModalityTier => t.kind === 'modality');
+  if (mods.length === 0) return { ok: true, exact: exactCostMicros(price, inputTokens, outputTokens, thoughtsTokens, at) };
+  const autres = (price.tiers ?? []).filter((t) => t.kind !== 'modality');
+  const base = { inputMicros: price.inputMicros, outputMicros: price.outputMicros, tiers: autres };
+  const thoughts = Math.max(0, thoughtsTokens || 0);
+  let exact = 0;
+  for (const side of ['input', 'output'] as const) {
+    const tier = mods.find((t) => t.side === side);
+    const tokens = side === 'input' ? inputTokens : outputTokens;
+    const mesure = side === 'input' ? usage?.input : usage?.output;
+    // Côté sans taux par modalité : montant de base (paliers datés / d'invite compris).
+    // (la sortie est calculée par différence : le palier d'invite dépend des jetons d'ENTRÉE).
+    const entree = exactCostMicros(base, inputTokens, 0, 0, at);
+    const coutBase = side === 'input' ? entree : exactCostMicros(base, inputTokens, outputTokens, thoughts, at) - entree;
+    if (!tier) { exact += coutBase; continue; }
+    const coherent = mesure && Object.keys(mesure).length > 0 && somme(mesure) === tokens;
+    if (!coherent) {
+      if (tier.requiresBreakdown && tokens > 0) {
+        return { ok: false, code: 'MODALITY_USAGE_UNMEASURED', reason: `tarif ${side === 'input' ? 'd’entrée' : 'de sortie'} par modalité : consommation par modalité non mesurée` };
+      }
+      exact += coutBase;
+      continue;
+    }
+    for (const [m, n] of Object.entries(mesure!)) {
+      if (!n) continue;
+      const taux = rateFor(tier.rates, m) ?? (tier.requiresBreakdown ? undefined : (side === 'input' ? price.inputMicros : price.outputMicros));
+      if (taux === undefined) return { ok: false, code: 'MODALITY_NOT_PRICED', reason: `modalité « ${m} » sans prix publié (${side === 'input' ? 'entrée' : 'sortie'})` };
+      exact += n * taux;
+    }
+    if (side === 'output' && thoughts > 0) exact += thoughts * (rateFor(tier.rates, 'thinking') ?? price.outputMicros);
+  }
+  return { ok: true, exact };
+}
+
 export interface CallPricing {
   /** `null` : aucun tarif applicable (coût non calculable, jamais estimé). */
   costMicros: number | null;
   exactMicros: number | null;
   price: CachedPrice | null;
+  /** Lot 113O : tarif connu mais coût non calculable (consommation par modalité). */
+  unknownCode?: 'MODALITY_USAGE_UNMEASURED' | 'MODALITY_NOT_PRICED';
+  unknownReason?: string;
 }
 
 /**
@@ -107,11 +182,14 @@ export interface CallPricing {
  */
 export function priceCall(p: {
   provider: string; model: string; inputTokens: number; outputTokens: number; thoughtsTokens?: number | null; at?: Date;
+  /** Lot 113O : consommation par modalité mesurée (facultative). */
+  modality?: ModalityUsage | null;
 }): CallPricing {
   const price = getCachedPrice(p.provider, p.model);
   if (!price) return { costMicros: null, exactMicros: null, price: null };
-  const exact = exactCostMicros(price, p.inputTokens, p.outputTokens, p.thoughtsTokens ?? 0, p.at ?? new Date());
-  return { costMicros: Math.round(exact), exactMicros: exact, price };
+  const c = modalityAwareCost(price, p.inputTokens, p.outputTokens, p.thoughtsTokens ?? 0, p.at ?? new Date(), p.modality);
+  if (!c.ok) return { costMicros: null, exactMicros: null, price, unknownCode: c.code, unknownReason: c.reason };
+  return { costMicros: Math.round(c.exact), exactMicros: c.exact, price };
 }
 
 /**

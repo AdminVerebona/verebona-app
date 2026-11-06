@@ -454,6 +454,10 @@ export const DIAG_TABLE_COVERAGE: Readonly<Record<string, DiagTableCoverage>> = 
   ai_corpus_a1_assessments: T('technique', 'corpus de qualification IA : journal du verrou A1 (globale)'),
   // Lot 105B : journal de la promotion automatique IA (revalidation d'activation, A1, surveillance post-activation, retours arrière) — globale, sans compte.
   ai_promotion_events: T('technique', 'promotion automatique IA : journal (globale)'),
+  // Lot 113I : objectifs, engagements budgétaires et politique administrée de l'amélioration automatique IA — globales, sans compte.
+  ai_improvement_objectives: T('technique', 'amélioration automatique IA : objectifs (globale)'),
+  ai_improvement_budget_reservations: T('technique', 'amélioration automatique IA : engagements du budget 100 € (globale)'),
+  ai_improvement_policy_revisions: T('technique', 'amélioration automatique IA : politique administrée (globale)'),
   ai_master_prompt_test_runs: T('technique', 'qualification IA (tests de prompts)'),
   ai_prompt_test_runs: T('technique', 'qualification IA (tests de prompts)'),
   ai_corpus_baseline: T('technique', 'ancien harnais de mesure retiré (table inerte)'),
@@ -502,6 +506,9 @@ export const DIAG_TABLE_COVERAGE: Readonly<Record<string, DiagTableCoverage>> = 
   ai_model_price_status: T('referentiels', 'tarifs des modèles'),
   ai_model_pricing: T('referentiels', 'tarifs des modèles'),
   ai_model_pricing_refresh_log: T('referentiels', 'tarifs des modèles'),
+  // Lot 113O : page tarifaire réellement reçue (publique, sans secret) et état du cache par instance.
+  ai_model_pricing_page_snapshots: T('referentiels', 'tarifs des modèles : page reçue'),
+  ai_pricing_cache_instances: T('technique', 'tarifs des modèles : cache par instance'),
   // Lot 109L : régularisation des coûts IA (exécutions, plan, corrections — multi-comptes).
   ai_cost_regularization_runs: T('technique', 'régularisation des coûts IA'),
   ai_cost_regularization_items: T('technique', 'régularisation des coûts IA'),

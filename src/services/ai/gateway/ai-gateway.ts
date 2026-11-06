@@ -1499,6 +1499,7 @@ function providerMetaOf(
     safetyReason: meta?.safetyReason ?? null,
     structuredOutputStatus,
     tokenUsage: { input: tokens.input, output: tokens.output, thoughts: meta?.thoughtsTokens ?? null, total: meta?.totalTokens ?? null },
+    ...(meta?.tokensByModality ? { tokensByModality: meta.tokensByModality } : {}),
     latencyMs,
     configuredMaxOutputTokens: maxOutputTokens ?? null,
     providerErrorCode: c?.providerErrorCode ?? null,
@@ -1583,6 +1584,8 @@ function compactProviderMeta(m: ProviderCallMetadata): Record<string, unknown> {
   return Object.fromEntries(Object.entries({
     finishReason: m.finishReason, providerRequestId: m.providerRequestId, modelVersion: m.modelVersion,
     thoughtsTokens: m.tokenUsage?.thoughts, structuredOutput: m.structuredOutputStatus, safetyReason: m.safetyReason,
+    // Lot 113O : jetons par modalité (chiffrage des tarifs par modalité).
+    tokensByModality: m.tokensByModality,
   }).filter(([, v]) => v !== null && v !== undefined));
 }
 

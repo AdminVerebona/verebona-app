@@ -34,6 +34,7 @@ import { unavailableModels } from '@/services/ai/config/config-validation.servic
 import { GEMINI_PUBLIC_CATALOG } from '@/services/ai/gateway/pricing/gemini-public-catalog';
 import { getModelAlerts } from '@/services/ai/queue/circuit-breaker.repository';
 import { listAlerts } from '@/services/ai/alerts/alerts.repository';
+import { ALL_PRICING_ALERT_CODES, pricingSummaryForDashboard } from '@/services/ai/gateway/pricing/pricing-supervision';
 import { getTreatmentActivity } from '@/services/ai/telemetry/treatment-activity.repository';
 import { listDraftSummaries } from '@/services/ai/config/draft-summary.repository';
 import {
@@ -102,19 +103,24 @@ export async function GET(req: NextRequest) {
       getModelAlerts(),
       // Alertes système ouvertes : garde-fous, budgets, anomalies de coût
       // (T1-UI-09, WF-22, WF-44, ALT-01). Onzième source, isolée.
-      listAlerts({ openOnly: true, limit: 20 }),
+      // Lot 113O : alertes TARIFAIRES exclues ici — présentées en UNE synthèse
+      // groupée (`pricingSummary`), jamais un bandeau par modèle et par jour.
+      listAlerts({ openOnly: true, limit: 20, excludeCodes: ALL_PRICING_ALERT_CODES }),
       // HLT-01, PER-01, VOL-01 (lot IA 2) : volumes 24 h / 7 j / 30 j, taux de
       // succès, dernier appel, par traitement. Douzième source, isolée.
       getTreatmentActivity(),
       // DRF-01 : brouillons détaillés (base, auteur). Treizième source, isolée.
       listDraftSummaries(environment, 20),
+      // Lot 113O : synthèse tarifaire RECONTRÔLÉE au chargement (résolution des
+      // alertes dont la condition a disparu). Quatorzième source, isolée.
+      pricingSummaryForDashboard(new URL(req.url).searchParams.get('recheck') === '1'),
     ]);
 
     const NOMS = [
       'versions', 'version active', 'version effective', 'imports',
       'file d’attente', 'états des traitements', 'arrêt d’urgence',
       'exécutions métier', 'coûts', 'alertes modèles', 'alertes système',
-      'activité par traitement', 'brouillons',
+      'activité par traitement', 'brouillons', 'tarification IA',
     ];
 
     const degraded: Array<{ source: string; message: string }> = [];
@@ -155,6 +161,7 @@ export async function GET(req: NextRequest) {
     const systemAlerts = valeur(10, [] as Awaited<ReturnType<typeof listAlerts>>);
     const activity = valeur(11, [] as Awaited<ReturnType<typeof getTreatmentActivity>>);
     const drafts = valeur(12, [] as Awaited<ReturnType<typeof listDraftSummaries>>);
+    const pricingSummary = valeur(13, null as Awaited<ReturnType<typeof pricingSummaryForDashboard>>);
 
     const alerts: DashboardAlert[] = [];
 
@@ -245,7 +252,8 @@ export async function GET(req: NextRequest) {
       }
     }
 
-    if (costs.incomplete) {
+    // Lot 113O : déjà compté dans la synthèse tarifaire (appels non chiffrés) quand elle est disponible.
+    if (costs.incomplete && !pricingSummary) {
       alerts.push({
         severity: 'warning',
         message: `${costs.totals.unpricedCalls} appel(s) sans tarif : la dépense affichée est incomplète.`,
@@ -333,6 +341,8 @@ export async function GET(req: NextRequest) {
       // GST-01 : « Opérationnel » ou « Arrêt d'urgence », rien d'autre.
       globalStatus: globalAiStatus(Boolean(stop.active)),
       windowDays,
+      // Lot 113O : synthèse tarifaire groupée (null : source indisponible, voir `degraded`).
+      pricingSummary,
       // VER-01 : vN, libellé, UID abrégé et date d'activation.
       activeVersion: active
         ? {

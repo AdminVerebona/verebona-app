@@ -72,11 +72,19 @@ describe.each([
     expect(resolveModelPrice(page, 'gemini-3.1-pro-preview-customtools', NOV)).toMatchObject({ status: 'KNOWN', inputPerMillion: 2, outputPerMillion: 12 });
   });
 
-  it('texte/image/PDF : même prix exigé ; audio ignoré ; texte ≠ image → UNKNOWN', () => {
+  // Lot 113O (carte #713, « couvrir les prix multimodaux lorsqu'ils sont
+  // mesurables ») : ALIGNÉ. Texte ≠ image n'est plus un UNKNOWN global : les
+  // taux par modalité sont conservés avec `requiresBreakdown: true`, et le coût
+  // reste INCONNU tant que la consommation par modalité n'est pas mesurée
+  // (cost-catalog, l113o-*.test.ts) — jamais un tarif textuel appliqué à une image.
+  it('texte/image/PDF : même prix → base ; texte ≠ image ou sortie image → taux par modalité, consommation exigée', () => {
     expect(resolveModelPrice(page, 'gemini-2.5-flash', NOV)).toMatchObject({ status: 'KNOWN', inputPerMillion: 0.3 });
-    expect(resolveModelPrice(page, 'gemini-3.8-live', NOV)).toMatchObject({ status: 'UNKNOWN', code: 'MODALITY_DEPENDENT' });
-    // Sortie image facturée à l'image : jamais un montant au jeton deviné.
-    expect(resolveModelPrice(page, 'gemini-3.1-flash-image', NOV)).toMatchObject({ status: 'UNKNOWN' });
+    expect(resolveModelPrice(page, 'gemini-3.8-live', NOV)).toMatchObject({
+      status: 'KNOWN', tiers: expect.arrayContaining([expect.objectContaining({ kind: 'modality', side: 'input', requiresBreakdown: true })]),
+    });
+    expect(resolveModelPrice(page, 'gemini-3.1-flash-image', NOV)).toMatchObject({
+      status: 'KNOWN', tiers: expect.arrayContaining([expect.objectContaining({ kind: 'modality', side: 'output', requiresBreakdown: true, rates: expect.objectContaining({ image: 60 }) })]),
+    });
   });
 
   it('couverture globale mesurée', () => {

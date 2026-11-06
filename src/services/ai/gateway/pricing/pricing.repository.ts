@@ -29,6 +29,7 @@
  * la référence tarifaire de la trace — jamais présenté comme certifié courant.
  * ══════════════════════════════════════════════════════════════════════════
  */
+import { hostname } from 'node:os';
 import { pgClient } from '@/db';
 import type { ModelPrice } from './pricing-source.port';
 import type { PriceTier } from './google-pricing-page.adapter';
@@ -168,6 +169,7 @@ export async function loadPricingCache(): Promise<number> {
     } else {
       console.error(`[ai-cost] Catalogue tarifaire illisible : ${lastError}`);
     }
+    void recordCacheInstance();
     return 0;
   }
 
@@ -180,7 +182,33 @@ export async function loadPricingCache(): Promise<number> {
   lastError = null;
   loadedVersion = version;
   lastVersionCheckAt = Date.now();
+  void recordCacheInstance();
   return cache.size;
+}
+
+/** Identifiant de cette instance (conteneur Scalingo `CONTAINER`, sinon hôte) et processus. */
+export function pricingInstanceId(): string {
+  let host = process.env.CONTAINER || process.env.HOSTNAME || '';
+  if (!host) { try { host = hostname(); } catch { host = 'instance'; } }
+  return `${host}#${process.pid}`.slice(0, 120);
+}
+
+/**
+ * Lot 113O (migration 1522) : état du cache de CETTE instance (version
+ * partagée chargée, heure, taille, dégradé) — comparé entre instances par le
+ * rapport de réconciliation. Ne lève jamais.
+ */
+async function recordCacheInstance(): Promise<void> {
+  if (process.env.NODE_ENV === 'test' && !process.env.E2E_DATABASE_URL) return;
+  try {
+    await pgClient.unsafe(
+      `INSERT INTO ai_pricing_cache_instances (instance_id, version, loaded_at, prices, degraded, last_error, updated_at)
+       VALUES ($1, $2, $3, $4, $5, $6, NOW())
+       ON CONFLICT (instance_id) DO UPDATE SET version = EXCLUDED.version, loaded_at = EXCLUDED.loaded_at, prices = EXCLUDED.prices,
+         degraded = EXCLUDED.degraded, last_error = EXCLUDED.last_error, updated_at = NOW()`,
+      [pricingInstanceId(), loadedVersion, (loadedAt ?? new Date()).toISOString(), cache.size, degraded, lastError?.slice(0, 300) ?? null] as never[],
+    );
+  } catch { /* migration 1522 absente : sans effet */ }
 }
 
 /**

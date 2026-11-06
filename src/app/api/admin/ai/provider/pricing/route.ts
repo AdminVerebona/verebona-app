@@ -95,6 +95,9 @@ export async function GET(req: NextRequest) {
       models, history, manual,
       priorityRule: 'Saisie manuelle vérifiée > grille du compte vérifiée (désactivée par défaut) > page officielle synchronisée > saisie non vérifiée.',
       cache: { ...getCacheState(), loadedAt: getCacheState().loadedAt?.toISOString() ?? null },
+      // Lot 113O : contenu intégral réellement reçu (téléchargeable) et rapport de réconciliation.
+      snapshot: last?.snapshot_id != null ? { id: Number(last.snapshot_id), href: `/api/admin/ai/provider/pricing/snapshot?id=${Number(last.snapshot_id)}` } : null,
+      reconciliation: { json: '/api/admin/ai/provider/pricing/reconciliation', csv: '/api/admin/ai/provider/pricing/reconciliation?format=csv' },
     }, { headers: { 'cache-control': 'no-store' } });
   } catch (e) {
     return toErrorResponse(e, 'GET /api/admin/ai/provider/pricing');
@@ -141,6 +144,7 @@ export async function POST(req: NextRequest) {
     }
     if (b.action === 'confirm_retirement') {
       const r = await confirmModelRetirement(b.model, adminId, b.note);
+      if (r.ok) await (await import('@/services/ai/gateway/pricing/pricing-supervision')).reconcilePricingAlerts('retirement');
       await logAdminAction({ adminId, action: 'AI_PRICING_UPDATE', targetType: 'AI_PRICING', targetId: null, result: r.ok ? 'SUCCESS' : 'FAILURE',
         details: { kind: 'confirm_retirement', model: b.model, note: b.note, ...(r.ok ? { invalidated: r.invalidated } : { code: r.code }) } });
       return NextResponse.json(r, { status: r.ok ? 200 : 409 });
@@ -173,6 +177,9 @@ export async function POST(req: NextRequest) {
         `saisie manuelle vérifiée : ${b.note}`.slice(0, 500), adminId, JSON.stringify(evidence)] as never[],
     );
     await loadPricingCache();
+    // Lot 113O : recontrôle des alertes (tarif redevenu applicable → alerte résolue).
+    const { reconcilePricingAlerts } = await import('@/services/ai/gateway/pricing/pricing-supervision');
+    await reconcilePricingAlerts('manual-price');
     await logAdminAction({ adminId, action: 'AI_PRICING_UPDATE', targetType: 'AI_PRICING', targetId: id, result: 'SUCCESS',
       before: before ? { inputPerMillion: before.inputMicros, outputPerMillion: before.outputMicros, source: before.source } : null,
       after: { model: b.model, inputPerMillion: b.inputPerMillion, outputPerMillion: b.outputPerMillion, effectiveFrom: b.effectiveFrom ?? today },
