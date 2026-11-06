@@ -214,6 +214,12 @@ export async function applyPurge(tx: postgres.TransactionSql, accountId: number,
   const out: Record<string, number> = {};
   const now = p.now.toISOString();
   // 1. Décisions TCO : clé stable (la plus récente l'emporte sur une même clé).
+  // Lot 113N : une ligne de la table peut porter une décision d'inclusion / exclusion (`decision`) et / ou une
+  // confirmation « conservée sans date » (`date_decision`, 1515) — en cas de fusion, chacune est gardée séparément
+  // (la plus récente de chaque nature), jamais l'une perdue au profit de l'autre.
+  const [c1515] = await tx<{ n: number }[]>`SELECT count(*)::int AS n FROM information_schema.columns
+                                            WHERE table_name = 'asset_cost_line_decisions' AND column_name = 'date_decision'`;
+  const dates = Number(c1515?.n ?? 0) > 0;
   let rekeyed = 0;
   for (const d of plan.tcoDecisionsRekeyed) {
     const [cur] = await tx<{ asset_id: number; decided_at: string }[]>`SELECT asset_id, decided_at::text AS decided_at FROM asset_cost_line_decisions WHERE id = ${d.id} AND account_id = ${accountId}`;
@@ -221,6 +227,11 @@ export async function applyPurge(tx: postgres.TransactionSql, accountId: number,
     const [autre] = await tx<{ id: number; decided_at: string }[]>`
       SELECT id::int AS id, decided_at::text AS decided_at FROM asset_cost_line_decisions
        WHERE account_id = ${accountId} AND asset_id = ${cur.asset_id} AND line_key = ${d.to} AND id <> ${d.id}`;
+    if (autre && dates) {
+      await mergeTcoDecisionRows(tx, d.id, autre.id, d.to, now);
+      rekeyed++;
+      continue;
+    }
     if (autre) {
       if (autre.decided_at >= cur.decided_at) { await tx`DELETE FROM asset_cost_line_decisions WHERE id = ${d.id}`; rekeyed++; continue; }
       await tx`DELETE FROM asset_cost_line_decisions WHERE id = ${autre.id}`;
@@ -277,3 +288,33 @@ export async function applyPurge(tx: postgres.TransactionSql, accountId: number,
   return out;
 }
 
+
+/**
+ * Lot 113N — fusion de deux lignes de décision TCO re-clées sur la même clé stable : la décision d'inclusion /
+ * exclusion la plus récente (lignes où `decision` est renseignée) et la confirmation « sans date » la plus récente
+ * (`date_decision`) sont gardées, chacune de son côté, sur UNE ligne ; l'autre est supprimée.
+ */
+async function mergeTcoDecisionRows(tx: postgres.TransactionSql, rekeyedId: number, otherId: number, to: string, now: string): Promise<void> {
+  type R = { id: number; decision: string | null; decided_at: string; date_decision: string | null; date_decided_at: string | null };
+  const rs = await tx<R[]>`
+    SELECT id::int AS id, decision, decided_at::text AS decided_at, date_decision, date_decided_at::text AS date_decided_at
+      FROM asset_cost_line_decisions WHERE id IN (${rekeyedId}, ${otherId})`;
+  const a = rs.find((r) => r.id === rekeyedId);
+  const b = rs.find((r) => r.id === otherId);
+  if (!a || !b) return;
+  const plusRecente = (x: R | null, y: R | null, f: (r: R) => string | null): R | null => {
+    if (!x || !f(x)) return y && f(y) ? y : null;
+    if (!y || !f(y)) return x;
+    return (f(y) as string) >= (f(x) as string) ? y : x;
+  };
+  const inclusion = plusRecente(a.decision ? a : null, b.decision ? b : null, (r) => r.decided_at);
+  const date = plusRecente(a.date_decision ? a : null, b.date_decision ? b : null, (r) => r.date_decided_at);
+  const garde = inclusion ?? date ?? b;
+  const jetee = garde.id === a.id ? b : a;
+  if (date && date.id !== garde.id) {
+    await tx`UPDATE asset_cost_line_decisions g SET date_decision = s.date_decision, date_decided_at = s.date_decided_at, date_decided_by = s.date_decided_by
+               FROM asset_cost_line_decisions s WHERE g.id = ${garde.id} AND s.id = ${date.id}`;
+  }
+  await tx`DELETE FROM asset_cost_line_decisions WHERE id = ${jetee.id}`;
+  if (garde.id === rekeyedId) await tx`UPDATE asset_cost_line_decisions SET line_key = ${to}, updated_at = ${now}::timestamptz WHERE id = ${rekeyedId}`;
+}

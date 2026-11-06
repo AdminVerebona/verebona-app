@@ -90,6 +90,7 @@ import { TcoJustificatif } from './tco-justificatif';
 import { TcoAmountRecoveryNotice } from './tco-amount-recovery';
 import { TcoDecidedDiagnostics, TcoInformationDiagnostics, TcoOpenDiagnostics, type TcoDiagnosticsDecide } from './tco-diagnostics';
 import { TcoDecisionActions, type TcoArbitrate } from './tco-decision-actions';
+import { TCO_UNDATED_LABELS } from '@/services/business-operations/tco/user-decisions';
 import { AMOUNT_RECOVERY_PENDING_STATES } from '@/services/business-operations/tco/amount-recovery';
 import type { TcoDiagnosticSource } from '@/services/business-operations/tco/diagnostics';
 import { TcoUsageSection } from './TcoUsageSection';
@@ -152,6 +153,8 @@ const MESSAGES_CHOIX: Readonly<Record<string, string>> = {
   INCLUDE: 'Dépense ajoutée au coût de possession', EXCLUDE: 'Dépense retirée du coût de possession',
   CONFIRM_EXCLUSION: 'Exclusion confirmée', SAME_FACT: 'Même dépense confirmée : comptée une seule fois',
   DISTINCT_FACTS: 'Dépenses distinctes confirmées', REQUALIFY: 'Dépense comptée dans le coût de possession', REVERT: 'Votre choix est annulé',
+  // Lot 113N : décision sur la date (la dépense reste comptée).
+  CONFIRM_UNDATED: 'Dépense conservée sans date', REVERT_UNDATED: 'Votre choix est annulé',
 };
 
 const RETENUE = new Set(['RETAINED_DIRECT', 'RETAINED_CONSOLIDATED']);
@@ -314,6 +317,10 @@ function LigneDepense({ l, t, canEdit = false, onDecide, review = false, focused
       )}
       {parUtilisateur === 'INCLUDE' && retenue && (
         <p className="text-xs text-primary mt-0.5" data-tco-line-user-decision="INCLUDE">Ajoutée au coût de possession par vous.</p>
+      )}
+      {/* Lot 113N : dépense conservée sans date par l'utilisateur (mention « Date non établie » conservée ci-dessus). */}
+      {retenue && l.undatedConfirmation && (
+        <p className="text-xs text-muted-foreground mt-0.5" data-tco-line-undated-confirmed>{TCO_UNDATED_LABELS.decided}</p>
       )}
       {l.uncertain
         ? <p className="text-xs text-[color:var(--attention-on-soft)] mt-0.5" data-tco-line-uncertain>À vérifier : {l.note}</p>

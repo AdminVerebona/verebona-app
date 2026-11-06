@@ -3,6 +3,7 @@
  * TCO » sur une ligne du coût de possession (lot 80A).
  *
  * Corps : `{ lineId, lineKey?, action: 'INCLUDE' | 'EXCLUDE', confirmDuplicate? }`.
+ * Lot 111V : arbitrages et REVERT ; lot 113N : CONFIRM_UNDATED / REVERT_UNDATED (dépense conservée sans date).
  * Décision de l'utilisateur, persistée par compte et par bien, réversible
  * (le geste inverse annule une décision), journalisée (qui, quand), prioritaire
  * sur les règles automatiques ; un ajout qui crée un doublon présumé est

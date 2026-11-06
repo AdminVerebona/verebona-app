@@ -41,11 +41,19 @@
  * plus ; `AMOUNTS_UNKNOWN` n'est levé qu'après l'échec réel de la récupération
  * (108B) ; `AMOUNTS_RECOVERY_PENDING` est un traitement en cours ; une
  * identité économique prouvée (108A) est une information.
+ * Lot 113N (carte #712) : `ECONOMIC_DATE_UNDETERMINED` porte, pour chaque
+ * dépense retenue non datée, « Conserver dans le TCO sans date », « Renseigner
+ * la date » (si sa date se saisit) et « Retirer du TCO » ; une dépense
+ * confirmée sans date passe dans les choix confirmés (CONFIRM_UNDATED) — seul
+ * ce point est clos, jamais un autre constat de la ligne.
  * ══════════════════════════════════════════════════════════════════════════
  */
 import { AMOUNT_RECOVERY_PENDING_STATES, AMOUNT_RECOVERY_VIEW_LABELS, type AmountRecoveryViewState } from './amount-recovery';
 import type { TcoEconomicLine, TcoResult, TcoWarning } from './model';
-import { TCO_ARBITRATION_DECISIONS, tcoLineDecisionOptions, type TcoDecisionOption, type TcoUserDecisionValue } from './user-decisions';
+import {
+  TCO_ARBITRATION_DECISIONS, TCO_DATE_ACTIONS, TCO_UNDATED_LABELS, tcoLineDecisionOptions, tcoLineUndated,
+  type TcoDateDecisionValue, type TcoDecisionOption, type TcoUserDecisionValue,
+} from './user-decisions';
 
 export type TcoDiagnosticNature = 'ANOMALY' | 'COVERAGE' | 'INFORMATION';
 export type TcoDiagnosticStatus = 'OPEN' | 'IN_PROGRESS' | 'INFORMATIONAL' | 'DECIDED';
@@ -87,8 +95,11 @@ export interface TcoDiagnosticSource {
   actions?: TcoDecisionOption[];
   /** Lot 111V : ligne comptée à la place (doublon présumé) — libellé, date et montant retenu, pour comparer. */
   counterpart?: { label: string; date: string | null; amountCents: number | null; fileId: number | null } | null;
-  /** Lot 111V : choix de l'utilisateur porté par la ligne (groupe « choix confirmé »). */
-  decision?: { value: TcoUserDecisionValue; contradicted: boolean } | null;
+  /**
+   * Lot 111V : choix de l'utilisateur porté par la ligne (groupe « choix confirmé »). Lot 113N : aussi la
+   * confirmation « conservée sans date » (CONFIRM_UNDATED), distincte de tout choix d'inclusion / exclusion.
+   */
+  decision?: { value: TcoUserDecisionValue | TcoDateDecisionValue; contradicted: boolean } | null;
 }
 
 export interface TcoDiagnostic {
@@ -391,6 +402,13 @@ function occurrences(t: TcoResult, hidden: ReadonlySet<string>): Map<TcoDiagnost
   const ajoutee = (l: TcoEconomicLine) => !!l.userDecision?.applied && l.userDecision.decision === 'INCLUDE';
 
   for (const l of t.lines) {
+    // Lot 113N : date non établie d'une dépense RETENUE — évaluée pour toute ligne (y compris arbitrée : un arbitrage
+    // ne clôt que son propre point). Confirmée « sans date » par l'utilisateur : choix confirmé, plus un cas ouvert ;
+    // sinon point ouvert (conserver sans date, renseigner la date, retirer). Aucun autre constat n'est neutralisé.
+    if (tcoLineUndated(l)) {
+      if (l.undatedConfirmation) add('USER_DECISIONS', { ...deLigne(l, vis(l), TCO_UNDATED_LABELS.decided, l.includedCents), decision: { value: 'CONFIRM_UNDATED', contradicted: false } });
+      else add('ECONOMIC_DATE_UNDETERMINED', deLigne(l, vis(l), l.dateLabel ?? null, l.includedCents));
+    }
     // Lot 111V : ligne arbitrée par l'utilisateur — aucun cas ouvert pour le point qu'il a clos ; choix rouvert par une preuve nouvelle.
     if (arbitree(l)) continue;
     if (l.userDecision?.contradicted) {
@@ -417,7 +435,6 @@ function occurrences(t: TcoResult, hidden: ReadonlySet<string>): Map<TcoDiagnost
     if (l.status === 'UNCONVERTED') add('UNCONVERTED_AMOUNTS', deLigne(l, vis(l), `${(l.amountMinor / 100).toLocaleString('fr-FR', { minimumFractionDigits: 2 })} ${l.currency}`, null));
     if (l.status === 'UNALLOCATED') add('UNALLOCATED_AMOUNTS', deLigne(l, vis(l)));
     if (l.reason === 'NOT_OWNERSHIP_COST') add('NOT_OWNERSHIP_COSTS', deLigne(l, vis(l), l.note));
-    if (RETENUE(l) && !l.date && l.economicDate?.status === 'UNDETERMINED') add('ECONOMIC_DATE_UNDETERMINED', deLigne(l, vis(l), l.dateLabel ?? null, l.includedCents));
     if (l.userDecision?.applied) {
       add('USER_DECISIONS', deLigne(l, vis(l), CHOIX[l.userDecision.decision]));
       if (ajoutee(l) && l.note?.startsWith(`${NOTE_AJOUT} `)) add('USER_INCLUDED_DUPLICATES', deLigne(l, vis(l), l.note.slice(NOTE_AJOUT.length + 1), l.includedCents));
@@ -492,14 +509,24 @@ export function computeTcoDiagnostics(t: TcoResult, opts: { hidden?: ReadonlySet
   // Lot 111V : gestes contextuels de chaque source (mêmes règles que les listes de dépenses, lignes montrées).
   const parId = new Map(t.lines.map((l) => [l.id, l]));
   const montrees = t.lines.filter((l) => !hidden.has(l.id));
-  const gestes = (s: TcoDiagnosticSource): TcoDiagnosticSource => {
+  // Lot 113N : les gestes de la DATE ne figurent que sous le point « date non établie » (avec « Retirer du TCO »,
+  // choix autonome) ; ce point ne propose aucun autre arbitrage de la ligne. Choix confirmés : tous les gestes
+  // (l'interface n'y montre que l'annulation du choix concerné).
+  const pourCode = (code: TcoDiagnosticCode, status: TcoDiagnosticStatus, o: TcoDecisionOption): boolean => {
+    if (status === 'DECIDED') return true;
+    const date = TCO_DATE_ACTIONS.has(o.action) || o.dateEntry === true;
+    return code === 'ECONOMIC_DATE_UNDETERMINED' ? date || o.action === 'EXCLUDE' : !date;
+  };
+  const gestes = (code: TcoDiagnosticCode, status: TcoDiagnosticStatus) => (s: TcoDiagnosticSource): TcoDiagnosticSource => {
     const l = s.lineId ? parId.get(s.lineId) : undefined;
-    return l && s.visible ? { ...s, actions: tcoLineDecisionOptions(l, montrees) } : { ...s, actions: [] };
+    return l && s.visible ? { ...s, actions: tcoLineDecisionOptions(l, montrees).filter((o) => pourCode(code, status, o)) } : { ...s, actions: [] };
   };
   // Codes levés par le moteur dont toutes les occurrences ont été arbitrées par l'utilisateur : clos (jamais « non tracé »).
-  const closParChoix = (code: TcoDiagnosticCode): boolean => (code === 'PRESUMED_DUPLICATES' || code === 'UNCERTAIN_MATCHES' || code === 'DOCUMENTS_NOT_QUALIFIED'
+  const closParChoix = (code: TcoDiagnosticCode): boolean => ((code === 'PRESUMED_DUPLICATES' || code === 'UNCERTAIN_MATCHES' || code === 'DOCUMENTS_NOT_QUALIFIED'
     || code === 'UNCONFIRMED_ASSET_EXPENSES' || code === 'UNCONVERTED_AMOUNTS' || code === 'UNALLOCATED_AMOUNTS' || code === 'AMOUNTS_UNKNOWN')
-    && t.lines.some((l) => arbitree(l));
+    && t.lines.some((l) => arbitree(l)))
+    // Lot 113N : toutes les dépenses sans date retenues ont été confirmées « sans date » — point clos (jamais « non tracé »).
+    || (code === 'ECONOMIC_DATE_UNDETERMINED' && t.lines.some((l) => tcoLineUndated(l) && !!l.undatedConfirmation));
   const warnings = new Set<string>(t.reliability.warnings);
   const items: TcoDiagnostic[] = [];
   const review = new Set<string>();
@@ -519,7 +546,7 @@ export function computeTcoDiagnostics(t: TcoResult, opts: { hidden?: ReadonlySet
     const montants = sources.map((s) => s.amountCents).filter((v): v is number => v != null);
     const status: TcoDiagnosticStatus = CHOIX_CONFIRMES.has(code) ? 'DECIDED' : m.nature === 'INFORMATION' ? 'INFORMATIONAL' : code === 'AMOUNTS_RECOVERY_PENDING' ? 'IN_PROGRESS' : 'OPEN';
     if (status === 'OPEN') for (const s of sources) if (s.lineId) review.add(s.lineId);
-    if (status === 'OPEN' || status === 'DECIDED') sources = sources.map(gestes);
+    if (status === 'OPEN' || status === 'DECIDED') sources = sources.map(gestes(code, status));
     items.push({
       code, nature: m.nature, status, impact: m.impact, count, traced,
       amountCents: montants.length ? montants.reduce((a, b) => a + Math.abs(b), 0) : null,

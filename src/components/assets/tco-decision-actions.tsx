@@ -14,7 +14,10 @@
  *     phrase d'effet exacte, catégorie à choisir pour une nature confirmée ;
  *   · « Corriger le document » / « Indiquer le montant » : ouvre le tiroir du
  *     document existant (formulaire de correction), jamais une page en
- *     lecture seule.
+ *     lecture seule ;
+ *   · lot 113N : « Conserver dans le TCO sans date » / « Annuler mon choix »
+ *     (décision sur la date, confirmée dans le contexte) et « Renseigner la
+ *     date » (tiroir du justificatif, ou champ « date d'achat » de la fiche).
  * Accessibilité : boutons nommés, groupe de confirmation étiqueté, message
  * d'avertissement en `role="alert"`, cibles de 44 px sur mobile ; jamais la
  * couleur seule (jetons de la charte Sérénité, aucune couleur brute).
@@ -23,11 +26,11 @@ import { useId, useState } from 'react';
 import { Loader2 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { drawerHref } from '@/lib/drawers';
-import type { TcoDecisionOption, TcoDecisionOptionAction } from '@/services/business-operations/tco/user-decisions';
+import type { TcoDecisionOption, TcoDecisionOptionAction, TcoDecisionSubmitAction } from '@/services/business-operations/tco/user-decisions';
 import { openTcoJustificatif } from './tco-justificatif';
 
 /** Geste envoyé au serveur (`POST /api/assets/[id]/tco/decisions`). */
-export type TcoArbitrate = (x: { lineId: string; lineKey: string | null; action: Exclude<TcoDecisionOptionAction, 'EDIT_DOCUMENT'>; category?: string | null; confirmDuplicate?: boolean })
+export type TcoArbitrate = (x: { lineId: string; lineKey: string | null; action: TcoDecisionSubmitAction; category?: string | null; confirmDuplicate?: boolean })
   => Promise<{ ok: true } | { ok: false; duplicateWarning?: string }>;
 
 interface Props {
@@ -42,6 +45,9 @@ interface Props {
   exclude?: readonly TcoDecisionOptionAction[];
 }
 
+/** Lot 113N : geste envoyé au serveur (les autres ouvrent un formulaire existant). */
+const soumis = (a: TcoDecisionOptionAction): a is TcoDecisionSubmitAction => a !== 'EDIT_DOCUMENT' && a !== 'EDIT_ASSET_FIELD';
+
 export function TcoDecisionActions({ lineId, lineKey, options, onDecide, categoryLabels = {}, categories = [], exclude = [] }: Props) {
   const [choix, setChoix] = useState<TcoDecisionOption | null>(null);
   const [categorie, setCategorie] = useState<string>('');
@@ -52,7 +58,7 @@ export function TcoDecisionActions({ lineId, lineKey, options, onDecide, categor
   if (!visibles.length) return null;
 
   const valider = async () => {
-    if (!choix || choix.action === 'EDIT_DOCUMENT') return;
+    if (!choix || !soumis(choix.action)) return;
     setBusy(true);
     try {
       const r = await onDecide({
@@ -71,21 +77,39 @@ export function TcoDecisionActions({ lineId, lineKey, options, onDecide, categor
     <div className="mt-1 space-y-1.5" data-tco-decision-actions={lineId}>
       {!choix && (
         <div className="flex flex-wrap items-center gap-x-3 gap-y-1" role="group" aria-label="Que faire de cette ligne ?">
-          {visibles.map((o) => (o.action === 'EDIT_DOCUMENT' ? (
+          {visibles.map((o, i) => (o.action === 'EDIT_ASSET_FIELD' ? (
+            <a
+              key={`${o.action}:${i}`}
+              href={`?tab=details&highlight=${encodeURIComponent(o.field ?? 'acquisitionDate')}`}
+              onClick={(e) => {
+                // Même page : section « Informations » de la fiche (champ à renseigner), sinon lien profond.
+                const el = document.getElementById('asset-section-common');
+                if (!el || e.metaKey || e.ctrlKey || e.shiftKey) return;
+                e.preventDefault();
+                el.scrollIntoView({ behavior: 'smooth', block: 'start' });
+              }}
+              className="inline-flex min-h-[44px] md:min-h-0 items-center text-xs font-medium text-primary hover:underline"
+              data-tco-arbitration="EDIT_ASSET_FIELD"
+              data-tco-date-entry={o.field ?? ''}
+            >
+              {o.label}
+            </a>
+          ) : o.action === 'EDIT_DOCUMENT' ? (
             o.fileId ? (
               <a
-                key={o.action}
+                key={`${o.action}:${i}`}
                 href={drawerHref({ kind: 'document', id: o.fileId }, '/documents')}
                 onClick={(e) => { void openTcoJustificatif(e, o.fileId!); }}
                 className="inline-flex min-h-[44px] md:min-h-0 items-center text-xs font-medium text-primary hover:underline"
                 data-tco-arbitration="EDIT_DOCUMENT"
+                {...(o.dateEntry ? { 'data-tco-date-entry': 'document' } : {})}
               >
                 {o.label}
               </a>
             ) : null
           ) : (
             <button
-              key={o.action}
+              key={`${o.action}:${i}`}
               type="button"
               onClick={() => { setChoix(o); setAvertissement(o.duplicateWarning ?? null); setCategorie(''); }}
               className="inline-flex min-h-[44px] md:min-h-0 items-center text-xs font-medium text-primary hover:underline"
@@ -96,7 +120,7 @@ export function TcoDecisionActions({ lineId, lineKey, options, onDecide, categor
           )))}
         </div>
       )}
-      {choix && choix.action !== 'EDIT_DOCUMENT' && (
+      {choix && soumis(choix.action) && (
         <div className="rounded-lg border border-border bg-muted/30 p-3 space-y-2" role="group" aria-label={choix.label} data-tco-arbitration-confirm={choix.action}>
           {avertissement && (
             <p className="text-xs text-[color:var(--attention-on-soft)]" role="alert" data-tco-arbitration-warning>{avertissement}</p>

@@ -85,6 +85,29 @@ export const TCO_ARBITRATION_DECISIONS: ReadonlySet<TcoUserDecisionValue> = new 
 /** Lot 111V : décisions dont le résultat voulu est « la ligne compte » (T2 la compte aussi). */
 export const TCO_COUNTING_DECISIONS: ReadonlySet<TcoUserDecisionValue> = new Set(['INCLUDE', 'DISTINCT_FACTS', 'REQUALIFY']);
 
+/**
+ * Lot 113N (carte #712 « TCO — confirmer une dépense conservée sans date ») — décision TYPÉE sur la DATE
+ * d'une dépense RETENUE, DISTINCTE de l'inclusion / exclusion (colonnes propres `date_decision` de la
+ * migration 1515, même clé stable de ligne) :
+ *   · CONFIRM_UNDATED — « je conserve cette dépense sans date économique établie » : montant, rattachement,
+ *     total et ventilation inchangés (aucune année artificielle) ; ne clôt QUE le point
+ *     `ECONOMIC_DATE_UNDETERMINED` de cette ligne, jamais un autre constat (doublon, montant, bien…).
+ * Elle ne remplace ni n'écrase jamais une décision INCLUDE / EXCLUDE / arbitrage portée par la même clé.
+ */
+export type TcoDateDecisionValue = 'CONFIRM_UNDATED';
+
+/** Lot 113N : confirmation persistée (clé stable de la ligne, auteur, horodatage). */
+export interface TcoUndatedConfirmation {
+  key: string;
+  confirmedAt: string;
+  confirmedByUserId: number | null;
+}
+
+/** Lot 113N : dépense RETENUE dont la date économique n'est pas établie (comptée, rattachée à aucune année). */
+export function tcoLineUndated(l: Pick<TcoEconomicLine, 'status' | 'date'> & Partial<Pick<TcoEconomicLine, 'economicDate' | 'undated'>>): boolean {
+  return RETENUE(l.status) && !l.date && (l.undated === true || l.economicDate?.status === 'UNDETERMINED');
+}
+
 /** Décision persistée (table `asset_cost_line_decisions`, migration 0623, étendue 1320). */
 export interface TcoUserDecision {
   key: string;
@@ -273,7 +296,15 @@ export function tcoAddDuplicateRisk(
  *     date ou bien concerné (formulaire existant du document) ;
  *   · REVERT : annuler un arbitrage (retour au traitement automatique).
  */
-export type TcoDecisionOptionAction = TcoUserDecisionValue | 'REVERT' | 'EDIT_DOCUMENT';
+export type TcoDecisionOptionAction = TcoUserDecisionValue | 'REVERT' | 'EDIT_DOCUMENT'
+  // Lot 113N : confirmation « sans date » (et son annulation), saisie de la date dans le champ de la fiche du bien.
+  | TcoDateDecisionValue | 'REVERT_UNDATED' | 'EDIT_ASSET_FIELD';
+
+/** Lot 113N : gestes envoyés au serveur (les autres ouvrent un formulaire existant). */
+export type TcoDecisionSubmitAction = Exclude<TcoDecisionOptionAction, 'EDIT_DOCUMENT' | 'EDIT_ASSET_FIELD'>;
+
+/** Lot 113N : gestes relatifs à la DATE d'une dépense retenue (point `ECONOMIC_DATE_UNDETERMINED` seulement). */
+export const TCO_DATE_ACTIONS: ReadonlySet<TcoDecisionOptionAction> = new Set(['CONFIRM_UNDATED', 'REVERT_UNDATED']);
 
 export interface TcoDecisionOption {
   action: TcoDecisionOptionAction;
@@ -286,6 +317,36 @@ export interface TcoDecisionOption {
   duplicateWarning?: string | null;
   /** EDIT_DOCUMENT : justificatif à ouvrir. */
   fileId?: number | null;
+  /** Lot 113N : EDIT_ASSET_FIELD — champ de la fiche du bien à renseigner. */
+  field?: 'acquisitionDate';
+  /** Lot 113N : geste de saisie de la DATE de la dépense (« Renseigner la date »). */
+  dateEntry?: true;
+}
+
+/** Lot 113N : textes des gestes « sans date » (libellés du ticket repris à l'identique). */
+export const TCO_UNDATED_LABELS = {
+  confirm: 'Conserver dans le TCO sans date',
+  confirmEffect: 'Conserver cette dépense dans le coût de possession sans date : son montant et le total sont inchangés, elle n’est rattachée à aucune année. Le point est clos.',
+  enterDate: 'Renseigner la date',
+  revert: 'Annuler mon choix',
+  revertEffect: 'Annuler votre choix ? La dépense reste comptée ; sa date non établie redevient un point à vérifier.',
+  decided: 'Conservée sans date, confirmé par vous.',
+} as const;
+
+/**
+ * Lot 113N : gestes de la DATE d'une dépense retenue non datée (pure) — confirmer la conservation sans date
+ * (ou l'annuler), et « Renseigner la date » seulement si le moteur a établi où la date de CETTE dépense se
+ * saisit (`dateEntry` : champ de la fiche, date du justificatif qui établit le montant) ; jamais une date
+ * d'échéance ou de document qui ne prouve pas la dépense.
+ */
+function tcoUndatedOptions(l: OptionLine): TcoDecisionOption[] {
+  if (!tcoLineUndated(l)) return [];
+  if (l.undatedConfirmation) return [{ action: 'REVERT_UNDATED', label: TCO_UNDATED_LABELS.revert, confirm: TCO_UNDATED_LABELS.revertEffect }];
+  const out: TcoDecisionOption[] = [{ action: 'CONFIRM_UNDATED', label: TCO_UNDATED_LABELS.confirm, confirm: TCO_UNDATED_LABELS.confirmEffect }];
+  const e = l.dateEntry;
+  if (e?.kind === 'ASSET_FIELD') out.push({ action: 'EDIT_ASSET_FIELD', label: TCO_UNDATED_LABELS.enterDate, confirm: '', field: e.field, dateEntry: true });
+  else if (e?.kind === 'DOCUMENT') out.push({ action: 'EDIT_DOCUMENT', label: TCO_UNDATED_LABELS.enterDate, confirm: '', fileId: e.fileId, dateEntry: true });
+  return out;
 }
 
 type OptionLine = TcoEconomicLine;
@@ -297,9 +358,12 @@ export const tcoPresumedDuplicate = (l: Pick<TcoEconomicLine, 'status' | 'reason
 export function tcoLineDecisionOptions(l: OptionLine, lines: readonly OptionLine[]): TcoDecisionOption[] {
   const out: TcoDecisionOption[] = [];
   const d = l.userDecision;
+  // Lot 113N : gestes de la date (indépendants de tout arbitrage porté par la même ligne).
+  const dates = tcoUndatedOptions(l);
   if (d && TCO_ARBITRATION_DECISIONS.has(d.decision) && (d.applied || d.contradicted)) {
     if (d.contradicted && d.applied) out.push({ action: d.decision, label: 'Garder mon choix', confirm: 'Confirmer de nouveau votre choix malgré la nouvelle information.' });
     out.push({ action: 'REVERT', label: 'Annuler mon choix', confirm: 'Annuler votre choix ? La ligne retrouve le traitement automatique.' });
+    out.push(...dates);
     return out;
   }
   const doc = l.fileId ?? l.sourceFileIds?.[0] ?? null;
@@ -310,6 +374,7 @@ export function tcoLineDecisionOptions(l: OptionLine, lines: readonly OptionLine
       out.push({ action: 'SAME_FACT', label: 'C’est la même dépense', confirm: 'Compter une seule fois : cette ligne sort du coût de possession, son justificatif reste consultable.' });
       out.push({ action: 'DISTINCT_FACTS', label: 'Dépenses distinctes', confirm: 'Confirmer qu’il s’agit de deux dépenses différentes : cette ligne reste comptée.' });
     }
+    out.push(...dates);
     if (tcoLineRemovable(l)) out.push({ action: 'EXCLUDE', label: 'Retirer du TCO', confirm: 'Retirer cette dépense du coût de possession ? Vous pourrez l’ajouter de nouveau.' });
     return out;
   }
@@ -370,6 +435,51 @@ export function tcoDecisionContradicted(d: Pick<TcoUserDecision, 'decision' | 'b
 
 /** Clé sans la nature (`f:<fichier>:*:<montant>:<devise>`) : un arbitrage survit à la requalification de la ligne. */
 const sansNature = (k: string): string | null => { const m = /^f:(\d+):[^:]+:(.+)$/.exec(k); return m ? `f:${m[1]}:*:${m[2]}` : null; };
+
+/**
+ * Lot 113N — applique les confirmations « conservée sans date » aux lignes (mutation, APRÈS les décisions
+ * d'inclusion / exclusion, AVANT les diagnostics). AUCUN effet sur le grand livre : ni montant, ni total, ni
+ * année (la ligne reste rattachée à aucune année). Même rattachement au fait que les décisions : clé
+ * principale, sinon clé secondaire (fait repris par une autre ligne — consolidation T3), sinon même
+ * justificatif et même montant (nature requalifiée). Une confirmation ne s'applique qu'à une ligne RETENUE
+ * dont la date reste non établie : une ligne datée depuis (preuve nouvelle) ou retirée n'en porte aucune — la
+ * confirmation est conservée sans objet, jamais un point rouvert ni une date inventée.
+ */
+export function applyTcoUndatedConfirmations(
+  lines: TcoEconomicLine[], confirmations: readonly TcoUndatedConfirmation[],
+): { applied: number; orphans: TcoUndatedConfirmation[] } {
+  const orphans: TcoUndatedConfirmation[] = [];
+  if (!confirmations.length) return { applied: 0, orphans };
+  const index = (m: Map<string, TcoEconomicLine[]>, k: string, l: TcoEconomicLine) => m.set(k, [...(m.get(k) ?? []), l]);
+  const parPrincipale = new Map<string, TcoEconomicLine[]>();
+  const parSecondaire = new Map<string, TcoEconomicLine[]>();
+  const parSansNature = new Map<string, TcoEconomicLine[]>();
+  for (const l of lines) {
+    const k = tcoLineKeys(l);
+    index(parPrincipale, k.primary, l);
+    for (const s of k.secondary) index(parSecondaire, s, l);
+    const a = sansNature(k.primary);
+    if (a) index(parSansNature, a, l);
+  }
+  let applied = 0;
+  const ordre = [...confirmations].sort((a, b) => b.confirmedAt.localeCompare(a.confirmedAt) || a.key.localeCompare(b.key));
+  for (const c of ordre) {
+    const libres = (ls: readonly TcoEconomicLine[] | undefined) => (ls ?? []).filter((l) => !l.undatedConfirmation && tcoLineUndated(l));
+    const a = sansNature(c.key);
+    let cibles = libres(parPrincipale.get(c.key));
+    if (!cibles.length) cibles = libres(parSecondaire.get(c.key));
+    if (!cibles.length && a && !parPrincipale.has(c.key) && !parSecondaire.has(c.key)) cibles = libres(parSansNature.get(a));
+    if (!cibles.length) {
+      if (!parPrincipale.has(c.key) && !parSecondaire.has(c.key) && !(a && parSansNature.has(a))) orphans.push(c);
+      continue;
+    }
+    for (const l of cibles) {
+      l.undatedConfirmation = { key: c.key, confirmedAt: c.confirmedAt, confirmedByUserId: c.confirmedByUserId };
+      applied += 1;
+    }
+  }
+  return { applied, orphans };
+}
 
 /**
  * Applique les décisions aux lignes et aux entrées du grand livre (mutation,

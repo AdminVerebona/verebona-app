@@ -31,7 +31,7 @@ import { readUsageAssignments, readUsageBudgets } from './usage-budgets.service'
 import type { TcoFinancingDetails } from './financing';
 import { readLoanEvidence } from './loan-terms.service';
 import { presumedDuplicateComponents, unjustifiedComponent, type ComponentProvenance } from './fact-identity';
-import { TCO_COUNTING_DECISIONS, TCO_STABLE_SOURCE_KINDS, type TcoUserDecision } from './user-decisions';
+import { TCO_COUNTING_DECISIONS, TCO_STABLE_SOURCE_KINDS, type TcoUndatedConfirmation, type TcoUserDecision } from './user-decisions';
 import { civilDateParis, type LedgerComponent } from '../finance/engine';
 import { operationCoverage, type EconomicDocumentInput, type EconomicHint } from '../finance/economic-lines';
 import { readCanonicalValue, type AssetRowJson } from '@/services/canonical/asset-state/canonical-asset-view';
@@ -207,7 +207,7 @@ export async function readAssetTco(accountId: number, assetId: number, opts: { t
   // Lot 108C : classements « dépense d'usage » de l'utilisateur (rapprochement forfait / réel).
   const usageAssignments = await readUsageAssignments(r, accountId, assetId);
   // Lot 80A : décisions « Ajouter / Retirer du TCO » de l'utilisateur pour ce bien.
-  const userDecisions = await readTcoLineDecisions(r, accountId, assetId);
+  const { decisions: userDecisions, undatedConfirmations } = await readTcoLineDecisions(r, accountId, assetId);
   const historique = Array.isArray(kc.valuationHistory) ? (kc.valuationHistory as Array<Record<string, unknown>>) : [];
   // Lot 111F : date de valorisation et date d'ajout distinctes (sélection par date de valorisation, jamais par ordre d'ajout).
   const valuationHistory = historique.length ? historique.map((v) => ({
@@ -229,7 +229,7 @@ export async function readAssetTco(accountId: number, assetId: number, opts: { t
     ...(dates.acquisitionMeta ? { assetAcquisitionDateMeta: { ...dates.acquisitionMeta, lastWrite: dates.acquisitionDate ? await lastAcquisitionDateWrite(r, accountId, assetId) : null } } : {}),
     valuationHistory, desiredSalePriceCents: desired, budgets, readComplete: readComplete && doc.complete && equipementsComplets,
     documents: doc.documents, assetPrice, equipmentPrices, acquisitionExpected,
-    assetCategory: txt(asset.category), componentProvenance, userDecisions, usageAssignments, financingDetails, loanEvidence,
+    assetCategory: txt(asset.category), componentProvenance, userDecisions, undatedConfirmations, usageAssignments, financingDetails, loanEvidence,
   });
   // Lot 68 : diagnostic BO — justificatifs qui CITENT seulement le bien (exclus des sources, expliqués).
   // Lot 108B : état PERSISTÉ de la récupération des montants inconnus (lecture seule : jamais d'IA à la consultation).
@@ -890,9 +890,13 @@ async function tableDecisionsPresente(r: Runner): Promise<boolean> {
   return Boolean(t?.ok);
 }
 
-/** Décisions actives de l'utilisateur sur les lignes du TCO d'un bien du compte (lecture seule). */
-async function readTcoLineDecisions(r: Runner, accountId: number, assetId: number): Promise<TcoUserDecision[]> {
-  if (!(await tableDecisionsPresente(r))) return [];
+/**
+ * Décisions actives de l'utilisateur sur les lignes du TCO d'un bien du compte (lecture seule). Lot 113N : avec
+ * les confirmations « conservée sans date » (colonnes 1515, lues sans dépendre de leur présence) — décision
+ * distincte : une ligne de la table peut porter l'une, l'autre ou les deux.
+ */
+async function readTcoLineDecisions(r: Runner, accountId: number, assetId: number): Promise<{ decisions: TcoUserDecision[]; undatedConfirmations: TcoUndatedConfirmation[] }> {
+  if (!(await tableDecisionsPresente(r))) return { decisions: [], undatedConfirmations: [] };
   const x = await rows(r, sql`
     SELECT d.line_key, d.decision, to_char(d.decided_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"') AS decided_at, d.decided_by,
            -- Lot 111V : colonnes d'arbitrage (migration 1320) lues sans dépendre de leur présence (déploiement en cours).
@@ -900,7 +904,16 @@ async function readTcoLineDecisions(r: Runner, accountId: number, assetId: numbe
       FROM asset_cost_line_decisions d JOIN assets a ON a.id = d.asset_id AND a.account_id = d.account_id
      WHERE d.account_id = ${accountId} AND d.asset_id = ${assetId}
      ORDER BY d.decided_at DESC, d.id DESC LIMIT 5000`);
-  return x
+  const undatedConfirmations: TcoUndatedConfirmation[] = [];
+  for (const d of x) {
+    const j = (d.j && typeof d.j === 'object' ? d.j : {}) as Record<string, unknown>;
+    if (j.date_decision !== 'CONFIRM_UNDATED' || typeof j.date_decided_at !== 'string') continue;
+    undatedConfirmations.push({
+      key: String(d.line_key), confirmedAt: new Date(j.date_decided_at).toISOString(),
+      confirmedByUserId: j.date_decided_by == null ? null : Number(j.date_decided_by),
+    });
+  }
+  const decisions = x
     .filter((d) => TCO_DECISION_VALUES.has(String(d.decision)))
     .map((d) => {
       const j = (d.j && typeof d.j === 'object' ? d.j : {}) as Record<string, unknown>;
@@ -913,6 +926,7 @@ async function readTcoLineDecisions(r: Runner, accountId: number, assetId: numbe
         ...(typeof j.automatic_reason === 'string' ? { basisReason: j.automatic_reason } : {}),
       };
     });
+  return { decisions, undatedConfirmations };
 }
 
 /** Décisions lues (lot 80A + arbitrages 111V) ; toute autre valeur est ignorée (jamais appliquée). */

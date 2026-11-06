@@ -135,7 +135,9 @@ import {
 import {
   presumedDuplicateComponents, purchaseIsOwnershipCost, structuredDocumentPurchaseAssessment, unjustifiedComponent, type ComponentProvenance, type PresumedDuplicate,
 } from './fact-identity';
-import { applyTcoUserDecisions, type TcoLineUserDecision, type TcoUserDecision } from './user-decisions';
+import {
+  applyTcoUndatedConfirmations, applyTcoUserDecisions, tcoLineUndated, type TcoLineUserDecision, type TcoUndatedConfirmation, type TcoUserDecision,
+} from './user-decisions';
 import { assessSamePurchase, pickSameFact, purchaseDatesCompatible, type PurchaseFact, type SameFactAssessment } from './fact-matching';
 import { computeUsageComplement, type UsageComplement, type UsageLineAssignment } from './usage-complement';
 import { consolidateFinancing, planFinancingComponents, TCO_FINANCING_BASIS_LABEL, type FinancingComponentTreatment, type TcoFinancingDetails } from './financing';
@@ -144,7 +146,8 @@ import type { LoanEvidence } from './loan-evidence';
 import { assessValuations, assetAcquisitionPrice, computeOwnershipIndicators, type TcoIndicators, type ValuationHistoryInput } from './ownership-indicators';
 import { multiEquipmentPurchaseCoverage } from './multi-equipment-attribution';
 import {
-  economicDateLabel, resolveOperationEconomicDates, type EconomicDateDocument, type EconomicDateEvidence, type EconomicDateResolution, type OwnDateOrigin,
+  documentDateCanDate, economicDateLabel, resolveEconomicDate, resolveOperationEconomicDates,
+  type EconomicDateDocument, type EconomicDateEvidence, type EconomicDateResolution, type OwnDateOrigin,
 } from '../finance/economic-date';
 
 // ── Entrées ────────────────────────────────────────────────────────────────
@@ -276,6 +279,11 @@ export interface TcoInput {
    * priment sur les règles automatiques pour la ligne concernée.
    */
   userDecisions?: readonly TcoUserDecision[];
+  /**
+   * Lot 113N : confirmations « dépense conservée sans date » (clé stable de la ligne) — décision distincte de
+   * l'inclusion / exclusion, sans effet sur les montants (`applyTcoUndatedConfirmations`).
+   */
+  undatedConfirmations?: readonly TcoUndatedConfirmation[];
   /** Lot 108C : classements « dépense d'usage » de l'utilisateur (clé stable de la ligne). */
   usageAssignments?: readonly UsageLineAssignment[];
 }
@@ -400,6 +408,18 @@ export interface TcoEconomicLine {
   mergedFacts?: Array<{ kind: string; amountMinor: number; currency: string }>;
   /** Lot 111F : échéance d'un prêt comptée selon l'échéancier contractuel (présumée honorée, paiement non vérifié). */
   financingBasis?: 'SCHEDULE';
+  /**
+   * Lot 113N : date économique NON ÉTABLIE (résolution `UNDETERMINED`, aucune date) — posé par le moteur,
+   * conservé dans la vue de la fiche (qui ne reçoit pas la résolution complète).
+   */
+  undated?: true;
+  /** Lot 113N : l'utilisateur a confirmé conserver cette dépense sans date (point `ECONOMIC_DATE_UNDETERMINED` clos). */
+  undatedConfirmation?: TcoUndatedConfirmation;
+  /**
+   * Lot 113N : où la date de CETTE dépense se saisit, quand le moteur l'établit (« Renseigner la date ») :
+   * date d'achat de la fiche du bien (prix de la fiche), ou date du justificatif qui établit seul le montant.
+   */
+  dateEntry?: { kind: 'ASSET_FIELD'; field: 'acquisitionDate' } | { kind: 'DOCUMENT'; fileId: number };
 }
 
 export interface TcoResult {
@@ -493,6 +513,8 @@ export interface TcoResult {
   annual: TcoAnnual;
   /** Lot 80A : décisions de l'utilisateur appliquées, doublons présumés ajoutés, décisions sans ligne (BO). */
   userDecisions: { applied: number; includedDuplicates: number; orphans: TcoUserDecision[] };
+  /** Lot 113N : confirmations « conservée sans date » appliquées et sans ligne correspondante (BO). */
+  undatedConfirmations?: { applied: number; orphans: TcoUndatedConfirmation[] };
   /**
    * Lot 111F : indicateurs de la fiche (coût total, coût annuel moyen de
    * possession, coût net estimé, financement) et motif de chaque valeur non
@@ -731,6 +753,23 @@ export function computeTco(input: TcoInput): TcoResult {
   const nonJustifiees = new Map<number, 'AMOUNT_NOT_ON_SOURCES' | 'SOURCES_WITHDRAWN'>();
   const autresBiens = new Set<number>();
 
+  // Lot 113N (§D) — correction AVANT sollicitation : le prix d'achat de la FICHE repris par une Opération (source
+  // structurée `ASSET_DATA:<bien>:ACQUISITION`, même montant) a pour date propre la date d'achat de cette même fiche,
+  // quand elle est valide (stricte, au plus tard aujourd'hui et à la cession) et qu'aucune autre preuve ne la contredit
+  // (date non établie faute de preuve seulement) — fondement « date indiquée pour ce montant par sa source » du
+  // modèle de date économique (86F, étape 2). Jamais pour une autre dépense, jamais une date supposée.
+  const ficheDate = prixDate && (!dateCession || prixDate <= dateCession) ? prixDate : null;
+  const ficheCle = `ASSET_DATA:${input.assetId}:ACQUISITION`;
+  const datableParFiche = (c0: LedgerComponent, res: EconomicDateResolution): EconomicDateResolution => {
+    if (!prix || !ficheDate || res.status !== 'UNDETERMINED' || (res.reason !== 'NO_EVIDENCE' && res.reason !== 'OPERATION_DATE_NOT_RELEVANT')) return res;
+    if (c0.kind !== 'REALIZED_COST' || c0.amountMinor !== prix.amountMinor || c0.currency.trim().toUpperCase() !== prix.currency.trim().toUpperCase()) return res;
+    if (!(prov.get(c0.id)?.otherSourceKeys ?? []).includes(ficheCle)) return res;
+    const r = resolveEconomicDate({
+      kind: c0.kind, amountMinor: c0.amountMinor, currency: c0.currency, ownDate: ficheDate, ownDateOrigin: 'STRUCTURED',
+      periodStart: c0.periodStart ?? null, periodEnd: c0.periodEnd ?? null,
+    });
+    return r.status === 'ESTABLISHED' ? r : res;
+  };
   const datesEco = new Map<number, EconomicDateResolution>();
   const traitementsPret = new Map<number, FinancingComponentTreatment>();
   for (const op of ops) {
@@ -740,7 +779,7 @@ export function computeTco(input: TcoInput): TcoResult {
     const resolutions = resolveOperationEconomicDates(op, tcoDateEvidence(op, prov));
     const planPret = plansPret.get(op.id) ?? null;
     for (const c0 of op.components) {
-      const res = resolutions.get(c0.id)!;
+      const res = datableParFiche(c0, resolutions.get(c0.id)!);
       datesEco.set(c0.id, res);
       const pt0 = planPret?.get(c0.id);
       // Un coût déjà daté par un paiement prouvé reste un fait payé (jamais rétrogradé en « présumé honoré »).
@@ -1305,9 +1344,32 @@ export function computeTco(input: TcoInput): TcoResult {
   // aujourd'hui » le sont (la trace `contradiction` de la ligne reste inchangée, diagnostic BO).
   if (toutesLignes.some((l) => l.contradiction === 'PLANNED_WITH_PAYMENT' || l.contradiction === 'REALIZED_FUTURE_DATE')) warnings.add('STATUS_CONTRADICTIONS');
   if (entries.some((e) => e.dateRejected)) warnings.add('INVALID_DATES');
-  // Lot 86F : dépense retenue sans date économique établie — comptée, rattachée à aucune année (signalée).
-  if (toutesLignes.some((l) => l.economicDate?.status === 'UNDETERMINED' && !l.date && (l.status === 'RETAINED_CONSOLIDATED' || l.status === 'RETAINED_DIRECT'))) {
-    warnings.add('ECONOMIC_DATE_UNDETERMINED');
+  // Lot 113N : date économique non établie, posée sur la ligne (la vue de la fiche ne reçoit pas la résolution) ;
+  // « Renseigner la date » seulement là où la date de CETTE dépense se saisit : la date d'achat de la fiche pour le
+  // prix de la fiche (absente, sinon la ligne est déjà datée ci-dessus), ou la date du justificatif UNIQUE qui
+  // établit le montant, aujourd'hui absente, quand aucune autre preuve n'existe (jamais une preuve de règlement, un
+  // devis, un échéancier de prêt présumé honoré, ni une date d'échéance ou une période couverte).
+  const dateEntryOf = (l: TcoEconomicLine): TcoEconomicLine['dateEntry'] | null => {
+    if (l.kind !== 'REALIZED_COST' || l.financingBasis) return null;
+    if (l.source === 'OPERATION' && (l.sourceIdentities ?? []).includes(ficheCle)) return ficheDate ? null : { kind: 'ASSET_FIELD', field: 'acquisitionDate' };
+    if (l.economicDate ? l.economicDate.reason !== 'NO_EVIDENCE' : l.source !== 'DOCUMENT') return null;
+    if (l.source === 'DOCUMENT' && l.fileId != null) return docsParId.get(l.fileId)?.date ? null : { kind: 'DOCUMENT', fileId: l.fileId };
+    if (l.source === 'OPERATION' && (l.sourceFileIds ?? []).length === 1) {
+      const f = l.sourceFileIds![0];
+      const doc = ops.find((o) => o.id === l.operationId)?.documents.find((d) => d.fileId === f);
+      if (!doc || doc.date || !documentDateCanDate(l.kind, doc.role)) return null;
+      return { kind: 'DOCUMENT', fileId: f };
+    }
+    return null;
+  };
+  // Justificatif sans résolution de date (ligne non retenue par les règles automatiques, sans date) : s'il est ajouté
+  // au coût de possession par l'utilisateur, il compte sans année — même point que toute dépense sans date établie.
+  const sansResolution = (l: TcoEconomicLine) => !l.economicDate && l.source === 'DOCUMENT' && l.kind === 'REALIZED_COST' && !l.notRealized;
+  for (const l of toutesLignes) {
+    if (l.date || (l.economicDate?.status !== 'UNDETERMINED' && !sansResolution(l))) continue;
+    l.undated = true;
+    const entree = dateEntryOf(l);
+    if (entree) l.dateEntry = entree;
   }
 
   // ── Lot 80A : décisions de l'utilisateur (Ajouter / Retirer du TCO) — AVANT les totaux, priment sur les règles ──
@@ -1315,6 +1377,12 @@ export function computeTco(input: TcoInput): TcoResult {
     lines: toutesLignes, entries, decisions: input.userDecisions ?? [], warnings,
     operationCategory: new Map(ops.map((o) => [o.id, tcoCategoryOf(o)])),
   });
+  // Lot 86F : dépense retenue sans date économique établie — comptée, rattachée à aucune année (signalée).
+  // Lot 113N : évalué APRÈS les décisions (une dépense retirée ne laisse aucun signalement orphelin) ; une dépense
+  // confirmée « sans date » reste signalée ici (information de couverture des montants par année), le point de
+  // décision qu'elle portait est clos par le diagnostic (`./diagnostics`).
+  if (toutesLignes.some((l) => tcoLineUndated(l))) warnings.add('ECONOMIC_DATE_UNDETERMINED');
+  const confirmationsSansDate = applyTcoUndatedConfirmations(toutesLignes, input.undatedConfirmations ?? []);
 
   // Lot 80A : une ligne que l'utilisateur a lui-même ajoutée au TCO ne rend plus le total incomplet pour son motif d'origine.
   // Lot 111V : de même pour un arbitrage appliqué (exclusion confirmée, nature confirmée, même fait / faits distincts).
@@ -1481,6 +1549,7 @@ export function computeTco(input: TcoInput): TcoResult {
     entries,
     annual,
     userDecisions: decisionsUtilisateur,
+    ...(input.undatedConfirmations?.length ? { undatedConfirmations: confirmationsSansDate } : {}),
     indicators,
     valuations: evaluationValeurs,
   };

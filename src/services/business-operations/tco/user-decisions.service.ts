@@ -23,6 +23,15 @@
  * moment du choix), même journal, même relecture par le moteur. Le geste doit
  * figurer parmi les gestes proposés par le serveur pour CETTE ligne
  * (`tcoLineDecisionOptions`) : jamais un arbitrage hors contexte.
+ *
+ * Lot 113N — `CONFIRM_UNDATED` (« Conserver dans le TCO sans date ») et
+ * `REVERT_UNDATED` (annulation) : décision sur la DATE, dans les colonnes
+ * propres de la migration 1515 (`date_decision`, `date_decided_at`,
+ * `date_decided_by`) de la MÊME ligne de table (même clé stable) — elle ne
+ * touche jamais `decision` (INCLUDE / EXCLUDE / arbitrage), et réciproquement
+ * un geste d'inclusion / exclusion ou son annulation ne supprime jamais une
+ * confirmation « sans date » (la ligne de table n'est supprimée que lorsque
+ * plus aucune des deux décisions n'y figure). Même journal.
  */
 import { sql, type SQL } from 'drizzle-orm';
 import { db } from '@/db';
@@ -30,7 +39,8 @@ import { readAssetTco } from './service';
 import { tcoUserView } from './dto';
 import type { TcoCategory, TcoEconomicLine, TcoResult } from './model';
 import {
-  TCO_ARBITRATION_DECISIONS, TCO_REQUALIFY_CATEGORIES, tcoAddDuplicateRisk, tcoLineAddable, tcoLineDecisionOptions, tcoLineKeys, tcoLineRemovable, type TcoUserDecisionValue,
+  TCO_ARBITRATION_DECISIONS, TCO_REQUALIFY_CATEGORIES, tcoAddDuplicateRisk, tcoLineAddable, tcoLineDecisionOptions, tcoLineKeys, tcoLineRemovable,
+  type TcoDecisionSubmitAction, type TcoUserDecisionValue,
 } from './user-decisions';
 
 interface Runner { execute: (q: SQL) => Promise<unknown> }
@@ -45,10 +55,12 @@ export class TcoDecisionError extends Error {
   }
 }
 
-/** Geste demandé : décision (lot 80A, arbitrages 111V) ou annulation explicite d'un arbitrage. */
-type TcoDecisionAction = TcoUserDecisionValue | 'REVERT';
+/** Geste demandé : décision (lot 80A, arbitrages 111V), annulation explicite d'un arbitrage, ou décision sur la date (113N). */
+type TcoDecisionAction = TcoDecisionSubmitAction;
 
-const ACTIONS: ReadonlySet<string> = new Set(['INCLUDE', 'EXCLUDE', 'CONFIRM_EXCLUSION', 'SAME_FACT', 'DISTINCT_FACTS', 'REQUALIFY', 'REVERT']);
+const ACTIONS: ReadonlySet<string> = new Set(['INCLUDE', 'EXCLUDE', 'CONFIRM_EXCLUSION', 'SAME_FACT', 'DISTINCT_FACTS', 'REQUALIFY', 'REVERT', 'CONFIRM_UNDATED', 'REVERT_UNDATED']);
+/** Lot 113N : gestes sur la DATE d'une dépense retenue (colonnes 1515). */
+const DATE_ACTIONS: ReadonlySet<string> = new Set(['CONFIRM_UNDATED', 'REVERT_UNDATED']);
 
 interface TcoDecisionInput {
   lineId: string;
@@ -91,6 +103,36 @@ async function arbitrationColumnsReady(): Promise<boolean> {
   return Number(c?.n ?? 0) === 4;
 }
 
+/** Lot 113N : colonnes de la décision sur la date présentes (migration 1515 appliquée). */
+async function dateDecisionColumnsReady(): Promise<boolean> {
+  const [c] = await rows<{ n: number }>(db, sql`
+    SELECT count(*)::int AS n FROM information_schema.columns
+     WHERE table_name = 'asset_cost_line_decisions' AND column_name IN ('date_decision', 'date_decided_at', 'date_decided_by')`);
+  return Number(c?.n ?? 0) === 3;
+}
+
+/**
+ * Lot 113N : retire la décision d'inclusion / exclusion / arbitrage des clés données SANS jamais supprimer une
+ * confirmation « sans date » portée par la même ligne de table (la ligne est supprimée seulement si plus rien n'y
+ * figure). Avant la migration 1515 : suppression simple (comportement antérieur).
+ */
+async function clearInclusionDecision(r: Runner, accountId: number, assetId: number, where: SQL, dateColumns: boolean): Promise<void> {
+  if (!dateColumns) { await r.execute(sql`DELETE FROM asset_cost_line_decisions WHERE account_id = ${accountId} AND asset_id = ${assetId} AND ${where}`); return; }
+  await r.execute(sql`DELETE FROM asset_cost_line_decisions WHERE account_id = ${accountId} AND asset_id = ${assetId} AND ${where} AND date_decision IS NULL`);
+  await r.execute(sql`
+    UPDATE asset_cost_line_decisions
+       SET decision = NULL, related_line_keys = NULL, requalified_category = NULL, automatic_status = NULL, automatic_reason = NULL, updated_at = now()
+     WHERE account_id = ${accountId} AND asset_id = ${assetId} AND ${where} AND date_decision IS NOT NULL`);
+}
+
+/** Lot 113N : idem pour la confirmation « sans date » (la décision d'inclusion de la même clé est conservée). */
+async function clearDateDecision(r: Runner, accountId: number, assetId: number, where: SQL): Promise<void> {
+  await r.execute(sql`DELETE FROM asset_cost_line_decisions WHERE account_id = ${accountId} AND asset_id = ${assetId} AND ${where} AND decision IS NULL`);
+  await r.execute(sql`
+    UPDATE asset_cost_line_decisions SET date_decision = NULL, date_decided_at = NULL, date_decided_by = NULL, updated_at = now()
+     WHERE account_id = ${accountId} AND asset_id = ${assetId} AND ${where} AND date_decision IS NOT NULL`);
+}
+
 /** Enregistre (ou annule) une décision et rend le TCO recalculé. */
 export async function decideTcoLine(
   accountId: number, assetId: number, userId: number | null, input: TcoDecisionInput, opts: { today?: string } = {},
@@ -101,6 +143,10 @@ export async function decideTcoLine(
   if (arbitrage && !(await arbitrationColumnsReady())) {
     throw new TcoDecisionError('UNAVAILABLE', 'Cette fonction sera disponible après la mise à jour en cours. Réessayez dans quelques minutes.', 503);
   }
+  const colonnesDate = await dateDecisionColumnsReady();
+  if (DATE_ACTIONS.has(input.action) && (!colonnesDate || !(await arbitrationColumnsReady()))) {
+    throw new TcoDecisionError('UNAVAILABLE', 'Cette fonction sera disponible après la mise à jour en cours. Réessayez dans quelques minutes.', 503);
+  }
   const avant = await readAssetTco(accountId, assetId, { today: opts.today });
   const vue = tcoUserView(avant.lines);
   const montrees = vue.lines;
@@ -109,6 +155,7 @@ export async function decideTcoLine(
   const keys = tcoLineKeys(line);
   const toutes = [keys.primary, ...keys.secondary];
   const decision = line.userDecision;
+  if (DATE_ACTIONS.has(input.action)) return decideUndated(accountId, assetId, userId, input, { avant, line, montrees, keys, today: opts.today });
 
   let geste: 'SET' | 'REVERT' | null = null;
   let avertissement: string | null = null;
@@ -150,11 +197,11 @@ export async function decideTcoLine(
   await db.transaction(async (tx) => {
     const r = tx as unknown as Runner;
     if (geste === 'REVERT') {
-      await r.execute(sql`DELETE FROM asset_cost_line_decisions WHERE account_id = ${accountId} AND asset_id = ${assetId} AND line_key = ${decision!.key}`);
+      // Lot 113N : une confirmation « sans date » de la même clé est conservée.
+      await clearInclusionDecision(r, accountId, assetId, sql`line_key = ${decision!.key}`, colonnesDate);
     } else {
       // Une seule décision par fait : les clés secondaires (justificatifs du même fait) sont remplacées.
-      await r.execute(sql`DELETE FROM asset_cost_line_decisions WHERE account_id = ${accountId} AND asset_id = ${assetId}
-                            AND line_key = ANY(${keysParam}::text[]) AND line_key <> ${keys.primary}`);
+      await clearInclusionDecision(r, accountId, assetId, sql`line_key = ANY(${keysParam}::text[]) AND line_key <> ${keys.primary}`, colonnesDate);
       const ok = arbitrage
         ? await rows(r, sql`
           INSERT INTO asset_cost_line_decisions (account_id, asset_id, line_key, decision, line_id, amount_minor, currency, label, file_id, decided_by, decided_at, updated_at,
@@ -202,4 +249,54 @@ export async function decideTcoLine(
   });
   const result = await readAssetTco(accountId, assetId, { today: opts.today });
   return { result, outcome: geste === 'REVERT' ? 'REVERTED' : 'SET', line: result.lines.find((l) => l.decisionKey === keys.primary) ?? null };
+}
+
+/**
+ * Lot 113N — « Conserver dans le TCO sans date » / « Annuler mon choix » sur une dépense RETENUE dont la date
+ * économique n'est pas établie. Le geste doit figurer parmi ceux que le serveur propose pour CETTE ligne. Aucune
+ * écriture de montant, de date ni de décision d'inclusion : seules les colonnes `date_*` (1515) de la clé stable
+ * de la ligne changent ; journal `asset_cost_line_decision_events` (CONFIRM_UNDATED / REVERT_UNDATED).
+ */
+async function decideUndated(
+  accountId: number, assetId: number, userId: number | null, input: TcoDecisionInput,
+  ctx: { avant: TcoResult; line: TcoEconomicLine; montrees: readonly TcoEconomicLine[]; keys: { primary: string; secondary: string[] }; today?: string },
+): Promise<{ result: TcoResult; outcome: TcoDecisionOutcome; line: TcoEconomicLine | null }> {
+  const { avant, line, montrees, keys } = ctx;
+  const confirmee = line.undatedConfirmation;
+  if (input.action === 'CONFIRM_UNDATED' && confirmee) return { result: avant, outcome: 'UNCHANGED', line };
+  if (input.action === 'REVERT_UNDATED' && !confirmee) return { result: avant, outcome: 'UNCHANGED', line };
+  const proposes = tcoLineDecisionOptions(line, montrees).map((o) => o.action);
+  if (!proposes.includes(input.action)) {
+    throw new TcoDecisionError('NOT_APPLICABLE', 'Ce choix ne s’applique pas à cette ligne : la liste a été rechargée.', 422, { options: proposes });
+  }
+  const cle = input.action === 'REVERT_UNDATED' ? confirmee!.key : keys.primary;
+  const keysParam = pgArray([keys.primary, ...keys.secondary]);
+  await db.transaction(async (tx) => {
+    const r = tx as unknown as Runner;
+    if (input.action === 'REVERT_UNDATED') await clearDateDecision(r, accountId, assetId, sql`line_key = ${cle}`);
+    else {
+      // Une seule confirmation par fait : celles des clés secondaires (mêmes justificatifs) sont remplacées.
+      await clearDateDecision(r, accountId, assetId, sql`line_key = ANY(${keysParam}::text[]) AND line_key <> ${keys.primary}`);
+      const ok = await rows(r, sql`
+        INSERT INTO asset_cost_line_decisions (account_id, asset_id, line_key, decision, line_id, amount_minor, currency, label, file_id, decided_by, decided_at, updated_at,
+                                               date_decision, date_decided_at, date_decided_by)
+        SELECT a.account_id, a.id, ${cle}, NULL, ${line.id}, ${line.amountMinor}, ${line.currency.slice(0, 3)}, ${line.label.slice(0, 300)},
+               ${line.fileId}, NULL, now(), now(), 'CONFIRM_UNDATED', now(), ${userId}
+          FROM assets a WHERE a.id = ${assetId} AND a.account_id = ${accountId} AND a.deleted_at IS NULL
+        ON CONFLICT (account_id, asset_id, line_key) DO UPDATE
+          SET date_decision = 'CONFIRM_UNDATED', date_decided_at = now(), date_decided_by = EXCLUDED.date_decided_by, updated_at = now()
+        RETURNING id`);
+      if (!ok.length) throw new TcoDecisionError('LINE_NOT_FOUND', 'Bien introuvable.', 404);
+    }
+    await r.execute(sql`
+      INSERT INTO asset_cost_line_decision_events
+        (account_id, asset_id, line_key, action, previous_decision, line_id, amount_minor, currency, label, file_id,
+         automatic_status, automatic_reason, duplicate_warning, user_id, related_line_keys, detail)
+      VALUES (${accountId}, ${assetId}, ${cle}, ${input.action}, ${input.action === 'REVERT_UNDATED' ? 'CONFIRM_UNDATED' : null},
+              ${line.id}, ${line.amountMinor}, ${line.currency.slice(0, 3)}, ${line.label.slice(0, 300)}, ${line.fileId},
+              ${line.status}, ${line.reason}, NULL, ${userId}, '{}'::text[],
+              ${JSON.stringify({ scope: 'ECONOMIC_DATE', includedCents: line.includedCents, ...(line.userDecision?.applied ? { inclusionDecision: line.userDecision.decision } : {}) })}::jsonb)`);
+  });
+  const result = await readAssetTco(accountId, assetId, { today: ctx.today });
+  return { result, outcome: input.action === 'REVERT_UNDATED' ? 'REVERTED' : 'SET', line: result.lines.find((l) => l.decisionKey === keys.primary) ?? null };
 }

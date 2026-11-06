@@ -19,6 +19,11 @@
  *     doublon, la dépense comptée à sa place (date, montant retenu) ;
  *     « Vos choix confirmés » (`TcoDecidedDiagnostics`) : groupe distinct,
  *     réversible (« Annuler mon choix »). Lecture seule : aucun geste.
+ *   · Lot 113N : « Dépenses sans date établie » — chaque dépense retenue non
+ *     datée propose « Conserver dans le TCO sans date », « Renseigner la date »
+ *     (si sa date se saisit) et « Retirer du TCO » ; une dépense confirmée
+ *     passe dans « Vos choix confirmés » (annulable), le compteur des choix à
+ *     faire est celui du serveur.
  * Accessible : libellés de nature écrits (la couleur n'est jamais seule),
  * listes sémantiques, cibles de 44 px sur mobile. Desktop et mobile : même
  * composant, retour à la ligne.
@@ -214,8 +219,11 @@ export function TcoDecidedDiagnostics({ diagnostics, onShowLine, decide }: { dia
   const sources = choix.flatMap((d) => d.sources);
   const [ouvert, setOuvert] = useState(false);
   if (!sources.length) return null;
+  // Lot 113N : une même ligne peut porter deux choix distincts (arbitrage et « conservée sans date ») — un par choix.
   const vus = new Set<string>();
-  const uniques = sources.filter((s) => { const k = s.lineId ?? s.label; if (vus.has(k)) return false; vus.add(k); return true; });
+  const uniques = sources.filter((s) => { const k = `${s.lineId ?? s.label}|${s.decision?.value ?? ''}`; if (vus.has(k)) return false; vus.add(k); return true; });
+  /** Annulation propre au choix montré (jamais l'annulation d'un autre choix de la même ligne). */
+  const annulation = (s: TcoDiagnosticSource) => (s.actions ?? []).filter((o) => o.action === (s.decision?.value === 'CONFIRM_UNDATED' ? 'REVERT_UNDATED' : 'REVERT'));
   return (
     <section className="space-y-1.5" aria-labelledby="tco-choix-titre" data-tco-diagnostics-decided={uniques.length}>
       <h3 id="tco-choix-titre" className="vb-app-subsection m-0 flex items-center gap-1.5">
@@ -243,8 +251,8 @@ export function TcoDecidedDiagnostics({ diagnostics, onShowLine, decide }: { dia
                   </button>
                 )}
               </div>
-              {decide && s.lineId && (s.actions ?? []).some((o) => o.action === 'REVERT') && (
-                <TcoDecisionActions lineId={s.lineId} lineKey={s.lineKey ?? null} options={(s.actions ?? []).filter((o) => o.action === 'REVERT')} onDecide={decide.onDecide} />
+              {decide && s.lineId && annulation(s).length > 0 && (
+                <TcoDecisionActions lineId={s.lineId} lineKey={s.lineKey ?? null} options={annulation(s)} onDecide={decide.onDecide} />
               )}
             </li>
           ))}

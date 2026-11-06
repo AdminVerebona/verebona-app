@@ -583,6 +583,10 @@ jobs:
         run: npm run test:e2e:bo-fournisseurs -- --reporter=default --reporter=junit --outputFile.junit=rapports/e2e-bo-fournisseurs.xml
       - name: Fournisseurs, doublons arbitrés et fusion (lot 113G, Trello #706)
         run: npm run test:e2e:fournisseurs-doublons -- --reporter=default --reporter=junit --outputFile.junit=rapports/e2e-fournisseurs-doublons.xml
+      - name: Rattachement documentaire, indices arbitrés par l'IA (lot 113L, Trello #711)
+        run: npm run test:e2e:rattachement-indices-ia -- --reporter=default --reporter=junit --outputFile.junit=rapports/e2e-rattachement-indices-ia.xml
+      - name: TCO, dépense conservée sans date (lot 113N, Trello #712)
+        run: npm run test:e2e:tco-sans-date -- --reporter=default --reporter=junit --outputFile.junit=rapports/e2e-tco-sans-date.xml
       - name: Inscription, CGUV publiées vérifiées et reprise (lot 111O)
         run: npm run test:e2e:inscription-cguv -- --reporter=default --reporter=junit --outputFile.junit=rapports/e2e-inscription-cguv.xml
       - uses: actions/upload-artifact@v4

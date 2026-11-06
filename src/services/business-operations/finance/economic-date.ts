@@ -159,6 +159,12 @@ const PONCTUELLES = new Set<string | null>(['ACQUISITION', 'INTERVENTION', 'DISP
 /** Rôles de source qui n'établissent jamais le montant d'une dépense (prévision, preuve de règlement, pièce annexe). */
 const ROLES_SANS_ENGAGEMENT = new Set(['QUOTE', 'ORDER', 'CONTRACT_DOCUMENT', 'PAYMENT_PROOF', 'OTHER_EVIDENCE']);
 const ROLES_SANS_PREVISION = new Set(['PAYMENT_PROOF', 'OTHER_EVIDENCE']);
+/**
+ * Lot 113N : la date d'un justificatif de ce rôle peut-elle dater cette composante (étape 3) ? Même règle que
+ * `resolveEconomicDate` — sert à ne proposer « Renseigner la date » que là où elle établirait la dépense.
+ */
+export const documentDateCanDate = (kind: string, role: string | null | undefined): boolean =>
+  !(kind === 'FORECAST_COST' ? ROLES_SANS_PREVISION : ROLES_SANS_ENGAGEMENT).has(String(role ?? ''));
 
 const jour = (d: string | null | undefined): string | null => (isIsoDate(d) ? d.slice(0, 10) : null);
 const an = (d: string) => Number(d.slice(0, 4));
