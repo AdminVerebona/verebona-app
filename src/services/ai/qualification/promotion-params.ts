@@ -21,8 +21,13 @@ export interface PromotionParams {
     maxPerCandidate: number;
   };
   watch: {
-    /** Durée de la fenêtre de surveillance après une activation automatique. */
+    /**
+     * Fenêtre INITIALE de référence (72 h). Lot 113I (CDC V2 MON-01, C-002) : un JALON d'observation, jamais une
+     * échéance — la surveillance passive continue tant que la candidate reste effective.
+     */
     windowMs: number;
+    /** Lot 113I : bilan d'observabilité à J+7 (jamais une clôture, jamais un rejet). */
+    sevenDayReviewMs: number;
     /** Appels minimum (après ET avant) pour conclure sur un signal d'usage ; en dessous : données insuffisantes. */
     minCalls: number;
     /** Hausse ABSOLUE minimale du taux de sorties refusées par les contrôles serveur (0,05 = 5 points). */
@@ -33,7 +38,7 @@ export interface PromotionParams {
     latencyAlertRatio: number;
     /** Dégradation relative du coût par résultat valide déclenchant une ALERTE. */
     costAlertRatio: number;
-    /** Rejeu des cas certifiés après activation : délai depuis l'activation (0 : désactivé). */
+    /** Rejeu des cas certifiés : délai minimal depuis l'activation (0 : désactivé). Lot 113I : seulement sur SUSPICION (MON-06). */
     replayAfterMs: number;
     /** Régressions certifiées (cas réussi par l'ancienne version, en ÉCHEC avec la candidate) pour conclure. */
     minCertifiedRegressions: number;
@@ -45,11 +50,11 @@ export interface PromotionParams {
 const HOUR = 3_600_000;
 
 export const PROMOTION_PARAMS_DEFAULTS: PromotionParams = Object.freeze({
-  version: 'promotion-ia-v1',
+  version: 'promotion-ia-v2-113i',
   gate: { maxAssessmentAgeMs: 6 * HOUR },
   relaunch: { maxPerCandidate: 5 },
   watch: {
-    windowMs: 72 * HOUR, minCalls: 20, invalidRateIncrease: 0.05, errorRateIncrease: 0.05,
+    windowMs: 72 * HOUR, sevenDayReviewMs: 7 * 24 * HOUR, minCalls: 20, invalidRateIncrease: 0.05, errorRateIncrease: 0.05,
     latencyAlertRatio: 0.3, costAlertRatio: 0.3, replayAfterMs: 12 * HOUR, minCertifiedRegressions: 1, maxReplays: 1,
   },
 }) as PromotionParams;

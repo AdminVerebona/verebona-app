@@ -71,7 +71,9 @@ const sansTotaux = { ...inv.EXPECTED_INVENTORY, totals: { historical: 0, toReval
 afterEach(() => inv.__setExpectedInventoryForTests(null));
 
 describe('L105B-INV — référentiel d’inventaire attendu versionné : tout manque BLOQUE la promotion', () => {
-  it('scène T6 complète, toutes approuvées et réussies : autorisée (référentiel sans totaux ZIP) ; avec les totaux #601 : bloquée', () => {
+  // Lot 113I (CDC V2 EC-03, COR-03, CORP-01, REC-039) — RÈGLE DÉLIBÉRÉMENT CHANGÉE : les totaux globaux du ZIP #601 sont
+  // un INDICATEUR (exigences listées « non satisfaites ») et ne bloquent plus un traitement dont le périmètre est couvert.
+  it('scène T6 complète, toutes approuvées et réussies : autorisée — avec les totaux #601 incomplets aussi (indicateur, plus de blocage croisé)', () => {
     const l = sceneT6();
     const approvals = l.map(approve);
     const statusOf = (e: Entry) => effectiveStatus(e, approvals).status;
@@ -79,10 +81,12 @@ describe('L105B-INV — référentiel d’inventaire attendu versionné : tout m
     const ok = assessA1({ treatments: ['T6'], entries: l, statusOf, results, operations: T6_OPS, inventory: sansTotaux });
     expect(ok.blockers).toEqual([]);
     expect(ok.allowed).toBe(true);
-    const ko = assessA1({ treatments: ['T6'], entries: l, statusOf, results, operations: T6_OPS });
-    expect(ko.allowed).toBe(false);
-    expect(ko.blockers.filter((b) => b.code === 'INVENTORY_INCOMPLETE').map((b) => b.requirement).sort()).toEqual(['totals.historical', 'totals.newScenarios', 'totals.pairs', 'totals.stress', 'totals.toRevalidate']);
-    expect(structuralBlockers(ko).length).toBe(5);
+    const avecTotaux = assessA1({ treatments: ['T6'], entries: l, statusOf, results, operations: T6_OPS });
+    expect(avecTotaux.allowed).toBe(true);
+    expect(avecTotaux.blockers.filter((b) => b.code === 'INVENTORY_INCOMPLETE')).toEqual([]);
+    expect(structuralBlockers(avecTotaux).length).toBe(0);
+    // L'incomplétude reste VISIBLE (exigences non satisfaites), jamais masquée.
+    expect(avecTotaux.inventory!.requirements.filter((r) => r.id.startsWith('totals.') && !r.met).map((r) => r.id).sort()).toEqual(['totals.historical', 'totals.newScenarios', 'totals.pairs', 'totals.stress', 'totals.toRevalidate']);
   });
 
   it('difficulté, type de test, paire, cas obligatoire absents → blocages structurels distincts ; cas non approuvé → CASE_NOT_APPROVED', () => {

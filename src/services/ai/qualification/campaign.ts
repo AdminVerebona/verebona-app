@@ -72,8 +72,8 @@ import type { CoupleDescriptor } from './couples';
 import * as repo from './repository';
 import { runCoupleCases, type GatewayCall, type Observation } from './runner';
 import { sha256 } from './signature';
-import { optimizationPriority, QUALIFICATION_THRESHOLDS, type QualificationThresholds } from './thresholds';
-import { chooseCandidate, decideCoupleVerdict, establishedGain, percentile, type CandidateAssessment, type Reason, type Verdict } from './verdict';
+import { QUALIFICATION_THRESHOLDS, type QualificationThresholds } from './thresholds';
+import { chooseCandidatesByTreatment, decideCoupleVerdict, lexicographicGain, percentile, type CandidateAssessment, type Reason, type Verdict } from './verdict';
 import { assessNonRegression, type NonRegressionAssessment, type OperationRun } from './non-regression';
 import { withRuntimeLimits } from './limits';
 import type { CorpusAccountCode, CorpusAccountStatus } from './technical-account';
@@ -100,6 +100,12 @@ export interface CampaignDeps {
   accounts?: () => Promise<number[]>;
   thresholds?: QualificationThresholds;
   log?: (m: string) => void;
+  /**
+   * Lot 113I (CDC V2 BUD-03/04) : port de réservation budgétaire par essai. Absent : registre RÉEL dès que l'appel est
+   * celui de la passerelle de production (aucun `call` injecté) ; `null` : aucune réservation (fournisseur simulé des
+   * tests). Les tests manuels de l'administrateur (MANUAL) ne relèvent pas de l'enveloppe d'amélioration automatique.
+   */
+  budgetPort?: ((c: { phase: import('./improvement-budget').BudgetPhase; purpose: import('./improvement-budget').BudgetPurpose; campaignId: number; objectiveOf: (candidateVersionId: number | null) => number | null }) => import('./improvement-budget').AttemptBudget) | null;
 }
 
 interface ManualCoupleRequest { versionId?: number | null; treatment: Treatment; operationCode: string; rank: number }
@@ -142,6 +148,9 @@ export interface CampaignPrerequisite {
 
 /** Préfixe stable de l'état d'une candidate automatique bloquée par un prérequis (reprise automatique). */
 export const PREREQUISITE_CANDIDATE_PREFIX = 'PREREQUISITE:';
+
+/** Lot 113I : préfixe stable d'une candidate non concluante FAUTE DE BUDGET (reprise sans nouvelle variante, EVT-06). */
+export const BUDGET_CANDIDATE_PREFIX = 'WAITING_BUDGET:';
 
 async function defaultRestorePoint(label: string, trigger: 'admin' | 'scheduler'): Promise<{ backupId: string; finishedAt: string }> {
   const { isS3Configured } = await import('@/lib/s3-config');
@@ -306,6 +315,8 @@ interface CampaignResult {
   couplesTested: number;
   evidenceIds: number[];
   activatedVersionId: number | null;
+  /** Lot 113I : toutes les candidates promues (une au plus par traitement). */
+  activatedVersionIds?: number[];
   /** Lot 99B : évaluation de non-régression (campagne CONFORMITY). */
   conformity?: NonRegressionAssessment;
   /** Lot 103G : blocage par un prérequis d'exploitation (compte technique), distinct d'un refus métier. */
@@ -364,6 +375,13 @@ async function runCampaign(campaignId: number, deps: CampaignDeps = {}): Promise
     const cfg = await import('../config/config-version.repository');
     const active = await cfg.getActiveVersion(env);
     const caseOpts = { readMasterFile, corpusCases: deps.corpusCases, includeT1Reference: deps.includeT1Reference };
+    // Lot 113I : objectif de chaque candidate (réservations attribuées, BUD-07) et port budgétaire de la campagne.
+    const objectiveOfCandidate = new Map<number, number>();
+    const fabrique = deps.budgetPort === undefined ? (deps.call ? null : (await import('./improvement-budget')).improvementAttemptBudget) : deps.budgetPort;
+    const budget = campaign.kind === 'MANUAL' || !fabrique ? null : fabrique({
+      phase: campaign.kind === 'POST_CHECK' ? 'MONITOR' : 'EXPERIMENT', purpose: campaign.kind === 'POST_CHECK' ? 'MONITOR_CHECK' : 'VALIDATION', campaignId,
+      objectiveOf: (id) => (id == null ? null : objectiveOfCandidate.get(id) ?? null),
+    });
 
     // 2. Plan.
     const plan: PlannedCouple[] = [];
@@ -427,16 +445,49 @@ async function runCampaign(campaignId: number, deps: CampaignDeps = {}): Promise
         else plan.push({ couple: c, role: 'CANDIDATE', referenceKey: addRef(c.operationCode), candidateVersionId: null });
       }
       // Candidates (VER-01) : au plus N par traitement, jamais une proposition identique déjà jugée.
+      // Lot 113I (EVT-03/05/08, LIF-009/010) : chaque proposition est un OBJECTIF dédupliqué (événement × référence du
+      // traitement) ; file FIFO (retrait officiel du modèle courant en tête) ; variantes bornées par la politique.
       const svc = await import('../config/config-version.service');
       const { capabilitiesOf, capabilitiesSha256 } = await import('../provider/model-capabilities');
+      const obj = await import('./improvement-objectives');
+      const { loadPolicy } = await import('./improvement-policy');
+      const politique = await loadPolicy(env);
+      const { listSupersededModels } = await import('../gateway/pricing/gemini-public-catalog');
+      const retires = new Set(listSupersededModels().map((x) => x.model));
+      const propositions: Array<{ e: typeof active.entries[number]; model: string; key: string; objectiveId: number | null; priority: 'RETIREMENT' | 'FIFO'; createdAt: string; id: number }> = [];
       for (const e of active.entries) {
         if (!e.primaryModel) continue;
         const chain = [e.primaryModel, e.fallback1, e.fallback2].filter((m): m is string => Boolean(m));
         const proposes = (await (deps.proposeModels ?? defaultProposals)(e.treatment, chain).catch(() => [] as string[])).filter((m) => !chain.includes(m));
-        let pris = 0;
+        const reference = await cfg.activeTreatmentFingerprint(env, e.treatment).catch(() => null);
         for (const model of proposes) {
-          if (pris >= th.campaign.maxCandidatesPerTreatment) break;
           const key = sha256(`${e.treatment}|${model}|${active.currentRevisionId}|${capabilitiesSha256(capabilitiesOf(model))}|${th.version}`);
+          const priority = retires.has(e.primaryModel) ? 'RETIREMENT' as const : 'FIFO' as const;
+          let objectiveId: number | null = null;
+          let createdAt = now().toISOString();
+          if (reference) {
+            const eventFingerprint = sha256(`${priority === 'RETIREMENT' ? 'PROVIDER_DEPRECATION' : 'STABLE_MODEL_AVAILABLE'}|${model}|${capabilitiesSha256(capabilitiesOf(model))}`);
+            try {
+              const r = await obj.registerObjective({
+                environment: env, treatment: e.treatment, kind: priority === 'RETIREMENT' ? 'PROVIDER_DEPRECATION' : 'STABLE_MODEL_AVAILABLE', priority,
+                sourceRef: `catalogue:${model}`, eventFingerprint, baselineFingerprint: reference.fingerprint, detail: { model, currentPrimary: e.primaryModel, candidateKey: key },
+              });
+              objectiveId = r.objective.id;
+              createdAt = r.objective.createdAt;
+              // Objectif déjà en cours d'expérimentation / qualification, ou en attente d'un mois budgétaire futur : rien.
+              const moisOk = r.objective.status !== 'WAITING_BUDGET' || !r.objective.nextEligibleMonth || r.objective.nextEligibleMonth <= now().toISOString().slice(0, 7);
+              if (!['QUEUED', 'WAITING_BUDGET', 'BLOCKED'].includes(r.objective.status) || !moisOk) continue;
+            } catch (err) {
+              if (String((err as { code?: string })?.code) !== '42P01') throw err;
+            }
+          }
+          propositions.push({ e, model, key, objectiveId, priority, createdAt, id: objectiveId ?? Number.MAX_SAFE_INTEGER });
+        }
+      }
+      const pris = new Map<Treatment, number>();
+      for (const { e, model, key, objectiveId } of obj.queueOrder(propositions)) {
+        {
+          if ((pris.get(e.treatment) ?? 0) >= th.campaign.maxCandidatesPerTreatment) continue;
           const deja = await cfg.findCandidateByKey(env, key);
           // Lot 105B : candidate qualifiée MÉTIER mais bloquée par le verrou A1 — relance ciblée (même version, même
           // modèle) seulement si le contexte A1 du traitement a changé et qu'aucun manque structurel ne subsiste.
@@ -444,7 +495,8 @@ async function runCampaign(campaignId: number, deps: CampaignDeps = {}): Promise
             const relance = await relaunchBlockedA1(deja.id, e.treatment, campaignId, env, now);
             if (relance) {
               candidates.push({ versionId: relance.id, treatment: e.treatment, model });
-              pris += 1;
+              if (objectiveId != null) objectiveOfCandidate.set(relance.id, objectiveId);
+              pris.set(e.treatment, (pris.get(e.treatment) ?? 0) + 1);
               for (const c of (await couplesWithState(relance, { ...caseOpts, treatments: [e.treatment] })).filter((x) => x.rank === 0)) {
                 plan.push({ couple: c, role: 'CANDIDATE', referenceKey: addRef(c.operationCode), candidateVersionId: relance.id });
               }
@@ -452,15 +504,41 @@ async function runCampaign(campaignId: number, deps: CampaignDeps = {}): Promise
             continue;
           }
           // Lot 103G : une candidate non concluante faute de compte technique est reproposée dès que le compte est utilisable.
-          const prerequis = deja?.state === 'INCONCLUSIVE' && (deja.reason ?? '').startsWith(PREREQUISITE_CANDIDATE_PREFIX);
-          if (deja && !(deja.state === 'INCONCLUSIVE' && (prerequis || now().getTime() - deja.createdAt.getTime() >= th.campaign.inconclusiveRetryAfterMs))) continue;
-          const v = await svc.createAutomaticCandidate({
-            treatment: e.treatment, primaryModel: model, key, campaignId,
-            reason: `Optimisation de préproduction : ${model} proposé en principal de ${e.treatment} à la place de ${e.primaryModel} (modèle utilisable, non testé sur ce couple).`,
-          });
+          // Lot 113I (EVT-06/09) : la même candidate est REPRISE (même version) quand elle attendait un prérequis ou le
+          // budget ; une candidate non concluante pour une autre cause n'est plus relancée sur simple délai.
+          const reprise = deja?.state === 'INCONCLUSIVE' && ((deja.reason ?? '').startsWith(PREREQUISITE_CANDIDATE_PREFIX) || (deja.reason ?? '').startsWith(BUDGET_CANDIDATE_PREFIX));
+          if (deja && !reprise) continue;
+          let v: ConfigVersionWithEntries | null = null;
+          if (reprise && deja) {
+            v = await cfg.getVersion(deja.id);
+            await cfg.setCandidateCampaign(deja.id, campaignId);
+          } else {
+            // Variante n de l'objectif, bornée (aucune quatrième candidate, REC-023).
+            const variante = objectiveId != null ? await obj.nextVariant(objectiveId, politique.variants.maxPerObjective) : null;
+            if (objectiveId != null && variante == null) {
+              await obj.transitionObjective(objectiveId, ['QUEUED', 'WAITING_BUDGET', 'BLOCKED'], 'INCONCLUSIVE', { reason: `quota de ${politique.variants.maxPerObjective} variante(s) atteint sans conclusion : en attente d’un événement nouveau` });
+              continue;
+            }
+            try {
+              v = await svc.createAutomaticCandidate({
+                treatment: e.treatment, primaryModel: model, key, campaignId, objective: objectiveId != null ? { id: objectiveId, variant: variante! } : null,
+                reason: `Optimisation de préproduction : ${model} proposé en principal de ${e.treatment} à la place de ${e.primaryModel} (modèle utilisable, non testé sur ce couple).`,
+              });
+            } catch (err) {
+              log(`candidate ${e.treatment} · ${model} refusée avant création : ${(err as Error).message}`);
+              if (objectiveId != null) await obj.transitionObjective(objectiveId, ['QUEUED', 'WAITING_BUDGET', 'BLOCKED'], 'ABANDONED', { reason: (err as Error).message.slice(0, 500) });
+              continue;
+            }
+          }
+          if (!v) continue;
+          if (objectiveId != null) {
+            objectiveOfCandidate.set(v.id, objectiveId);
+            await obj.transitionObjective(objectiveId, ['QUEUED', 'WAITING_BUDGET', 'BLOCKED'], 'QUEUED').catch(() => undefined);
+            await obj.transitionObjective(objectiveId, ['QUEUED'], 'EXPERIMENTING', { detail: { campaignId, candidateVersionId: v.id } });
+          }
           await cfg.setCandidateState(v.id, 'QUALIFYING');
           candidates.push({ versionId: v.id, treatment: e.treatment, model });
-          pris += 1;
+          pris.set(e.treatment, (pris.get(e.treatment) ?? 0) + 1);
           for (const c of (await couplesWithState(v, { ...caseOpts, treatments: [e.treatment] })).filter((x) => x.rank === 0)) {
             plan.push({ couple: c, role: 'CANDIDATE', referenceKey: addRef(c.operationCode), candidateVersionId: v.id });
           }
@@ -475,8 +553,9 @@ async function runCampaign(campaignId: number, deps: CampaignDeps = {}): Promise
     }
     await repo.updateCampaign(campaignId, {
       candidateVersionId: candidates[0]?.versionId ?? null,
-      request: { ...campaign.request, coupleKeys: plan.map((x) => keyOf(x.couple)), candidates: candidates.map((c) => c.versionId) },
+      request: { ...campaign.request, coupleKeys: plan.map((x) => keyOf(x.couple)), candidates: candidates.map((c) => c.versionId), objectives: [...new Set(objectiveOfCandidate.values())] },
     });
+    if (new Set(objectiveOfCandidate.values()).size === 1) await repo.setCampaignObjective(campaignId, [...objectiveOfCandidate.values()][0]).catch(() => undefined);
 
     // 3. Comptes existants éligibles, verrouillés ; entrées capturées.
     const ops = [...new Set(plan.map((x) => x.couple.operationCode))];
@@ -522,7 +601,7 @@ async function runCampaign(campaignId: number, deps: CampaignDeps = {}): Promise
       // Lot 103G : appels dans le contexte serveur du compte technique VÉRIFIÉ (seule source d'exemption).
       const run = c.technicalRefusal ? null : await runWithTechnicalAccount(corpus, `campagne ${campaignId}`, () => runCoupleCases({
         couple: c, cases: casSet.cases, observations: campaign.kind === 'AUTO' ? th.campaign.observationsAuto : th.campaign.observationsManual,
-        campaignId, technicalAccountId: tech, masterText: masterTextReader(version as ConfigVersionWithEntries, prompts), call: deps.call, thresholds: th,
+        campaignId, technicalAccountId: tech, masterText: masterTextReader(version as ConfigVersionWithEntries, prompts), call: deps.call, thresholds: th, budget,
       }));
       await repo.heartbeat(campaignId);
       const obs = run?.observations ?? [];
@@ -559,6 +638,13 @@ async function runCampaign(campaignId: number, deps: CampaignDeps = {}): Promise
           advisory: { observations: obs.length - decisives.length, defects: obs.filter((o) => o.advisory).reduce((n, o) => n + o.defects.length, 0) },
           sources: Object.fromEntries(['CORPUS_FIXTURE', 'T1_REFERENCE', 'PREPROD_REPLAY'].map((s) => [s, new Set(obs.filter((o) => o.source === s).map((o) => o.caseId)).size])),
           campaignKind: campaign.kind,
+          // Lot 113I (EVA-015) : compteurs distincts — essais non appelés faute de budget, réponses de cache, coûts inconnus.
+          counts: {
+            planned: obs.length, budgetRefused: obs.filter((o) => o.blockedBy === 'BUDGET').length, cached: obs.filter((o) => o.fromCache).length,
+            providerCalled: obs.filter((o) => o.traceId && !o.fromCache).length, costKnown: obs.filter((o) => o.traceId && o.costMicros != null).length,
+            costUnknown: obs.filter((o) => o.traceId && o.costMicros == null).length, passed: obs.filter((o) => o.outcome === 'PASSED').length,
+            failed: obs.filter((o) => o.outcome === 'FAILED').length, inconclusive: obs.filter((o) => o.outcome === 'INCONCLUSIVE').length,
+          },
           ...(bloques.length ? { prerequisite: { code: 'CORPUS_ACCOUNT_INVALID', cases: [...new Set(bloques)].slice(0, 50) } } : {}),
         },
         referenceEvidenceId: ref?.evidenceId ?? null,
@@ -584,7 +670,9 @@ async function runCampaign(campaignId: number, deps: CampaignDeps = {}): Promise
       });
       const couverture = conformityCoverage.get(campaignId) ?? null;
       const caseIds = couverture ? [...caseSets.values()].flatMap((set) => set.cases.filter((x) => couverture.matches({ variables: x.variables, operationCode: x.operationCode })).map((x) => x.caseId)) : [];
-      const assessment: NonRegressionAssessment = assessNonRegression({ runs: opRuns, coverage: couverture ? { label: couverture.label, caseIds } : null, thresholds: th });
+      const tConf = (campaign.request.conformity as { treatment: Treatment }).treatment;
+      const economie = (await (await import('./improvement-policy')).loadPolicy(env)).economics[tConf] ?? null;
+      const assessment: NonRegressionAssessment = assessNonRegression({ runs: opRuns, coverage: couverture ? { label: couverture.label, caseIds } : null, thresholds: th, economics: economie });
       // Lot 100B — verrou A1 (couverture du corpus #601) : une révision non régressive ne s'active pas pour autant
       // si la couverture métier de son traitement est insuffisante (même avec un excellent score global).
       {
@@ -633,29 +721,52 @@ async function runCampaign(campaignId: number, deps: CampaignDeps = {}): Promise
     // 5. Candidates : activation automatique en préproduction si qualifiée et gain établi.
     const summaryCandidates: Array<Record<string, unknown>> = [];
     if (candidates.length) {
-      const assessments: CandidateAssessment[] = candidates.map((cand) => {
+      // Lot 113I (DEC-01..05) : gain LEXICOGRAPHIQUE qualité > coût > latence, plafond de latence administré par traitement.
+      const { loadPolicy: chargerPolitique } = await import('./improvement-policy');
+      const politiqueDecision = await chargerPolitique(env);
+      const assessments: Array<CandidateAssessment & { treatment: Treatment }> = candidates.map((cand) => {
         const items = plan.filter((x) => x.candidateVersionId === cand.versionId);
         const verdicts = items.map((x) => runs.get(keyOf(x.couple))?.verdict ?? 'INCONCLUSIVE');
         const gains = items.map((x) => {
           const mine = runs.get(keyOf(x.couple))?.observations ?? [];
           const theirs = (x.referenceKey ? runs.get(x.referenceKey)?.observations : null) ?? [];
-          return { operationCode: x.couple.operationCode, outcome: establishedGain(theirs, mine, optimizationPriority(x.couple.operationCode)).outcome };
+          const g = lexicographicGain(theirs, mine, { maxP95Ms: politiqueDecision.economics[cand.treatment]?.maxP95Ms ?? null, percentileRank: th.latency.percentile });
+          return { operationCode: x.couple.operationCode, outcome: g.outcome, basis: g.basis, detail: g.detail };
         });
-        const ratios = items.map((x) => {
-          const pri = optimizationPriority(x.couple.operationCode);
-          const moy = (l: Observation[]) => { const v = l.map((o) => (pri === 'LATENCY' ? o.durationMs : o.costMicros)).filter((n): n is number => n != null); return v.length ? v.reduce((s, n) => s + n, 0) / v.length : null; };
-          const a = moy(runs.get(keyOf(x.couple))?.observations ?? []);
-          const b = moy((x.referenceKey ? runs.get(x.referenceKey)?.observations : null) ?? []);
-          return a != null && b ? a / b : null;
-        }).filter((n): n is number => n != null);
-        return { key: String(cand.versionId), verdicts, gains, score: ratios.length ? ratios.reduce((s, n) => s + n, 0) / ratios.length : null };
+        // Départage (même traitement) : coût d'abord, latence ensuite — jamais l'inverse.
+        const moy = (l: Observation[], f: (o: Observation) => number | null) => { const v = l.map(f).filter((n): n is number => n != null); return v.length ? v.reduce((s, n) => s + n, 0) / v.length : null; };
+        const ratio = (f: (o: Observation) => number | null) => {
+          const r = items.map((x) => { const a = moy(runs.get(keyOf(x.couple))?.observations ?? [], f); const b = moy((x.referenceKey ? runs.get(x.referenceKey)?.observations : null) ?? [], f); return a != null && b ? a / b : null; }).filter((n): n is number => n != null);
+          return r.length ? r.reduce((s, n) => s + n, 0) / r.length : null;
+        };
+        const rc = ratio((o) => o.costMicros);
+        const rl = ratio((o) => o.durationMs);
+        return { key: String(cand.versionId), treatment: cand.treatment, verdicts, gains, score: rc != null ? rc + (rl ?? 1) * 1e-6 : rl };
       });
-      const choix = chooseCandidate(assessments);
+      // Lot 113I (EC-01, REC-063) : une décision PAR TRAITEMENT — jamais un gagnant global unique.
+      const choix = chooseCandidatesByTreatment(assessments);
+      const elus = new Set(choix.chosen.values());
       for (const a of assessments) {
         const cand = candidates.find((c) => String(c.versionId) === a.key)!;
-        const etat = a.verdicts.includes('REFUSED') ? 'REFUSED' : a.verdicts.every((v) => v === 'ADMISSIBLE') ? (choix.chosen === a.key ? 'QUALIFIED' : 'NOT_CHOSEN') : 'INCONCLUSIVE';
-        const bloquee = etat === 'INCONCLUSIVE' && plan.some((x) => x.candidateVersionId === cand.versionId && (runs.get(keyOf(x.couple))?.all ?? []).some((o) => o.blockedBy === 'TECHNICAL_ACCOUNT'));
-        await cfg.setCandidateState(cand.versionId, etat, bloquee ? `${PREREQUISITE_CANDIDATE_PREFIX}CORPUS_ACCOUNT_INVALID — compte technique de qualification non éligible pendant la campagne : non concluante faute de prérequis (reprise automatique au prochain passage).` : choix.reasons[a.key] ?? null);
+        const etat = a.verdicts.includes('REFUSED') ? 'REFUSED' : a.verdicts.every((v) => v === 'ADMISSIBLE') ? (elus.has(a.key) ? 'QUALIFIED' : 'NOT_CHOSEN') : 'INCONCLUSIVE';
+        const obsCand = plan.filter((x) => x.candidateVersionId === cand.versionId).flatMap((x) => runs.get(keyOf(x.couple))?.all ?? []);
+        const bloquee = etat === 'INCONCLUSIVE' && obsCand.some((o) => o.blockedBy === 'TECHNICAL_ACCOUNT');
+        const sansBudget = etat === 'INCONCLUSIVE' && !bloquee && obsCand.some((o) => o.blockedBy === 'BUDGET');
+        await cfg.setCandidateState(cand.versionId, etat, bloquee ? `${PREREQUISITE_CANDIDATE_PREFIX}CORPUS_ACCOUNT_INVALID — compte technique de qualification non éligible pendant la campagne : non concluante faute de prérequis (reprise automatique au prochain passage).`
+          : sansBudget ? `${BUDGET_CANDIDATE_PREFIX} ${obsCand.find((o) => o.blockedBy === 'BUDGET')?.inconclusiveReason ?? 'budget d’amélioration indisponible'} — en attente du budget (aucun appel, pas un défaut).`.slice(0, 1000)
+            : choix.reasons[a.key] ?? null);
+        const oid = objectiveOfCandidate.get(cand.versionId);
+        if (oid != null) {
+          const obj = await import('./improvement-objectives');
+          if (sansBudget) {
+            const prochain = new Date(Date.UTC(now().getUTCFullYear(), now().getUTCMonth() + 1, 1)).toISOString().slice(0, 7);
+            const blocage = obsCand.find((o) => o.blockedBy === 'BUDGET')?.inconclusiveReason ?? '';
+            await obj.transitionObjective(oid, ['EXPERIMENTING'], 'WAITING_BUDGET', { reason: blocage.slice(0, 500), nextEligibleMonth: /BUDGET_UNAVAILABLE/.test(blocage) ? prochain : null });
+          } else if (bloquee) await obj.transitionObjective(oid, ['EXPERIMENTING'], 'QUEUED', { reason: 'compte technique non éligible : reprise au prochain passage' });
+          else if (etat === 'QUALIFIED') await obj.transitionObjective(oid, ['EXPERIMENTING'], 'QUALIFYING', { reason: 'candidate qualifiée : promotion ciblée en cours' });
+          else if (etat === 'INCONCLUSIVE') await obj.transitionObjective(oid, ['EXPERIMENTING'], 'INCONCLUSIVE', { reason: (choix.reasons[a.key] ?? 'qualification non concluante').slice(0, 500) });
+          else await obj.transitionObjective(oid, ['EXPERIMENTING'], 'COMPLETED_NO_GAIN', { reason: (choix.reasons[a.key] ?? etat).slice(0, 500) });
+        }
         // Lot 105B : qualification MÉTIER enregistrée par le serveur (lue par la revalidation d'activation), à part de l'A1.
         await recordBusinessQualification(cand.versionId, {
           campaignId, treatment: cand.treatment, state: etat, gains: a.gains, excluded: [], reasons: [choix.reasons[a.key] ?? ''].filter(Boolean), at: now().toISOString(),
@@ -663,32 +774,39 @@ async function runCampaign(campaignId: number, deps: CampaignDeps = {}): Promise
         });
         summaryCandidates.push({ versionId: cand.versionId, treatment: cand.treatment, model: cand.model, state: etat, reason: choix.reasons[a.key] ?? null, gains: a.gains });
       }
-      if (choix.chosen) {
+      for (const chosenKey of choix.chosen.values()) {
         const { activateQualifiedCandidate } = await import('../config/config-version.service');
         // Lot 100B — verrou A1 sur les résultats de la candidate retenue (mêmes cas, même campagne).
-        const cand = candidates.find((c) => String(c.versionId) === choix.chosen)!;
+        const cand = candidates.find((c) => String(c.versionId) === chosenKey)!;
+        const oid = objectiveOfCandidate.get(cand.versionId) ?? null;
+        const objectif = async (next: 'COMPLETED_WITH_PROMOTION' | 'BLOCKED', reason: string) => {
+          if (oid != null) await (await import('./improvement-objectives')).transitionObjective(oid, ['QUALIFYING'], next, { reason: reason.slice(0, 500) });
+        };
         const items = plan.filter((x) => x.candidateVersionId === cand.versionId);
         const { assessPromotion, a1RefusalMessage } = await import('../governance/master-corpus/certification/promotion');
         const a1 = await assessPromotion({
           context: 'AUTO_CANDIDATE', environment: env, treatments: [cand.treatment], campaignId, candidateVersionId: cand.versionId,
           observations: items.flatMap((x) => runs.get(keyOf(x.couple))?.all ?? []),
-          gains: assessments.find((a) => a.key === choix.chosen)?.gains ?? [],
+          gains: (assessments.find((a) => a.key === chosenKey)?.gains ?? []).map((g) => ({ operationCode: g.operationCode, outcome: g.outcome === 'POLICY_NOT_CONFIGURED' ? 'NONE' : g.outcome })) as never,
         });
-        const s0 = summaryCandidates.find((x) => String(x.versionId) === choix.chosen);
+        const s0 = summaryCandidates.find((x) => String(x.versionId) === chosenKey);
         if (s0) s0.a1 = { allowed: a1.assessment.allowed, blockers: a1.assessment.blockers.slice(0, 20).map((b) => b.message), assessmentId: a1.assessmentId };
         if (!a1.token) {
           // Lot 105B : qualifiée MÉTIER, refusée par A1 → BLOCKED_A1 (jamais laissée QUALIFIED activable).
           await cfg.setCandidateState(cand.versionId, 'BLOCKED_A1', `Qualification métier réussie ; promotion bloquée par le verrou A1 (couverture du corpus) — pas un refus métier. ${a1RefusalMessage(a1.assessment)}`.slice(0, 1000));
           await recordA1Block(cand.versionId, { campaignId, treatment: cand.treatment, env, a1, now });
           if (s0) { s0.state = 'BLOCKED_A1'; s0.activationRefused = a1RefusalMessage(a1.assessment); }
-          log(`candidate ${choix.chosen} bloquée par le verrou A1`);
+          await objectif('BLOCKED', 'qualifiée métier, promotion bloquée par le verrou A1 (couverture du traitement)');
+          log(`candidate ${chosenKey} bloquée par le verrou A1`);
         } else {
           try {
-            const r = await activateQualifiedCandidate(Number(choix.chosen), { a1: a1.token, caseOptions: caseOpts });
-            result.activatedVersionId = Number(choix.chosen);
+            // Lot 113I (SQL-006) : la surveillance est créée DANS la transaction de promotion ciblée.
+            await activateQualifiedCandidate(Number(chosenKey), { a1: a1.token, caseOptions: caseOpts, watch: { campaignId, operations: items.map((x) => x.couple.operationCode), now: now() } });
+            result.activatedVersionId ??= Number(chosenKey);
+            (result.activatedVersionIds ??= []).push(Number(chosenKey));
             if (s0) s0.state = 'ACTIVATED';
-            await startWatch(cand.versionId, { treatment: cand.treatment, previousVersionId: r.previousId, campaignId, operations: items.map((x) => x.couple.operationCode), now });
-            log(`candidate ${choix.chosen} activée (préproduction)`);
+            await objectif('COMPLETED_WITH_PROMOTION', `promotion ciblée de ${cand.treatment} effectuée (surveillance ouverte ; pas encore « validée en usage »)`);
+            log(`candidate ${chosenKey} activée (préproduction)`);
           } catch (e) {
             const gateCode = ((e as { details?: { gateCode?: string } }).details?.gateCode) ?? null;
             const a1Cause = gateCode != null && A1_GATE_CODES.has(gateCode);
@@ -696,6 +814,7 @@ async function runCampaign(campaignId: number, deps: CampaignDeps = {}): Promise
               `${a1Cause ? 'Qualification métier réussie ; promotion bloquée à la revalidation A1' : `${ACTIVATION_REFUSED_PREFIX} qualification métier réussie, activation refusée`} : ${(e as Error).message}`.slice(0, 1000));
             if (a1Cause) await recordA1Block(cand.versionId, { campaignId, treatment: cand.treatment, env, a1: { ...a1, gateCode }, now });
             if (s0) { s0.state = a1Cause ? 'BLOCKED_A1' : 'QUALIFIED_NOT_ACTIVATED'; s0.activationRefused = (e as Error).message; }
+            await objectif('BLOCKED', `activation refusée : ${(e as Error).message}`);
             log(`activation refusée : ${(e as Error).message}`);
           }
         }
@@ -810,17 +929,4 @@ export async function relaunchBlockedA1(versionId: number, treatment: Treatment,
   await recordPromotionEvent({ environment: env, kind: 'A1_RELAUNCH', candidateVersionId: versionId, campaignId, treatment, allowed: null, code: null,
     message: `Relance automatique de la candidate ${versionId} (contexte A1 changé, aucun manque structurel) : requalification sur les mêmes cas, même modèle.`, reference: { contextFingerprint: ctx.fingerprint, previous: a1.contextFingerprint ?? null } });
   return cfg.getVersion(versionId);
-}
-
-/** Début de la surveillance post-activation d'une candidate activée automatiquement. */
-async function startWatch(versionId: number, p: { treatment: Treatment; previousVersionId: number | null; campaignId: number; operations: string[]; now: () => Date }): Promise<void> {
-  const { promotionParams } = await import('./promotion-params');
-  const cfg = await import('../config/config-version.repository');
-  const t = p.now();
-  await cfg.mergeCandidatePromotion(versionId, {
-    watch: {
-      status: 'WATCHING', activatedAt: t.toISOString(), watchUntil: new Date(t.getTime() + promotionParams().watch.windowMs).toISOString(),
-      previousVersionId: p.previousVersionId, treatment: p.treatment, operations: [...new Set(p.operations)], campaignId: p.campaignId, replays: 0, alerts: [], checks: 0,
-    },
-  });
 }

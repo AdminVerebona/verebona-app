@@ -41,6 +41,11 @@ export interface AiJobContext {
    * distingue ainsi les tentatives du job des appels de la cascade.
    */
   jobAttempt?: number | null;
+  /**
+   * Lot 113I (CDC V2 BUD-05, BUD-07) : clé de l'ESSAI d'amélioration (réservation budgétaire) — tracée avec l'appel
+   * pour rapprocher le coût réel de la réservation, même quand l'appel échoue après facturation.
+   */
+  improvementAttemptKey?: string | null;
   treatment: Treatment | null;
   /**
    * Version de configuration figée pour toute l'exécution. `null` = aucune

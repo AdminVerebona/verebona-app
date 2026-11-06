@@ -387,7 +387,16 @@ async function correctIssue(
   // a. Point de départ : la version ACTIVE réelle (créée v1 depuis le texte en service si besoin).
   let active: import('../master-prompts/master-prompt.repository').MasterPromptVersionRow;
   try {
-    active = await svc.ensureActivePromptVersion(c.treatment, env);
+    // Lot 113I (CDC V2 PRD-01, ENV-TEST-02) : en PRODUCTION, lecture seule — la version active est lue, jamais créée ;
+    // sans historique, le texte effectivement servi sert de base au diagnostic (aucune ligne écrite).
+    const lu = env === 'production' ? await repo.getActive(env, c.treatment) : null;
+    active = env === 'production'
+      ? lu ?? ({
+        id: 0, environment: env, treatment: c.treatment, masterPromptCode: c.masterPromptCode, versionNumber: 0, status: 'ACTIVE', content: effective.text,
+        contentSha256: sha(effective.text), origin: 'initial_file', basedOnId: null, createdBy: null, createdAt: now(), updatedBy: null, updatedAt: now(),
+        activatedBy: null, activatedAt: null, firstActivatedAt: null, execution: effective.execution,
+      } as unknown as import('../master-prompts/master-prompt.repository').MasterPromptVersionRow)
+      : await svc.ensureActivePromptVersion(c.treatment, env);
   } catch (e) {
     const fp = sha(`unavailable|${(e as Error).message}`);
     if (FINAL_UNCHANGED.includes(issue.status) && issue.contextFingerprint === fp && !issue.retryRequestedAt) return 'SKIPPED_UNCHANGED';
@@ -468,6 +477,16 @@ async function correctIssue(
     return fin('DONE');
   }
 
+  // Lot 113I (CDC V2 PRD-01, EC-08, REC-003, ENV-TEST-02) : en PRODUCTION, diagnostic SEULEMENT — la correction
+  // proposée (diff) est conservée dans le journal de l'incompatibilité, mais AUCUNE version de prompt, aucune
+  // candidate de configuration, aucune campagne ni activation n'est écrite. La production reçoit la configuration
+  // par l'import manuel du fichier global (PRD-02).
+  if (env === 'production') {
+    await store.transition(issue, 'BLOCKED', { kind: 'ACTIVATION_REFUSED', message: `${m.note} : correction proposée et diagnostiquée (diff conservé), aucune version écrite en production.`, payload: { diff: correction.diff } },
+      { correction, decision: 'Production : diagnostic seulement — aucune version de prompt ni candidate créée ; appliquer la correction en préproduction puis importer le fichier global.' });
+    return fin('DONE');
+  }
+
   // d. Révision de prompt candidate + candidate de configuration (86A), non actives.
   const activeCfg = await cfg.getActiveVersion(env).catch(() => null);
   if (!activeCfg) {
@@ -490,7 +509,8 @@ async function correctIssue(
   // Lot 105B : une candidate BLOCKED_A1 est REPRISE telle quelle (même version : aucune version créée en boucle).
   const candidate = deja && ['CREATED', 'QUALIFYING', 'QUALIFIED', 'INCONCLUSIVE', 'BLOCKED_A1'].includes(String(deja.state)) ? await cfg.getVersion(deja.id) : await cfg.createVersion({
     userId: null, environment: env, label: `Conformité ${c.treatment} · ${c.id}`.slice(0, 200), description: reason.slice(0, 1000), source: { active: true },
-    candidate: { key, reason, campaignId: null, transform: (s) => ({ ...s, masterPrompts: { ...s.masterPrompts, [c.treatment]: ref } }) },
+    // Lot 113I (LIF-007) : delta d'UN traitement vérifié et enregistré avec sa référence à la création.
+    candidate: { key, reason, campaignId: null, treatment: c.treatment, transform: (s) => ({ ...s, masterPrompts: { ...s.masterPrompts, [c.treatment]: ref } }) },
   });
   issue = await store.updateIssue(issue.id, { candidatePromptVersionId: version.id, candidateConfigVersionId: candidate!.id, correction });
   await store.addEvent(issue, {
@@ -499,9 +519,9 @@ async function correctIssue(
   });
   log(`${c.id} : candidate v${version.versionNumber} (configuration ${candidate!.id})`);
 
-  if (m.mode === 'candidate' || env === 'production') {
+  if (m.mode === 'candidate') {
     await store.transition(issue, 'BLOCKED', { kind: 'ACTIVATION_REFUSED', message: `${m.note} : candidate préparée et diagnostiquée, aucune campagne ni activation.` },
-      { decision: `${env === 'production' ? 'Production' : 'Mode candidate'} : candidate préparée, non active — qualification et activation en préproduction seulement.` });
+      { decision: 'Mode candidate : candidate préparée, non active — qualification et activation en préproduction seulement.' });
     return fin('DONE');
   }
 
@@ -812,11 +832,21 @@ async function rollback(issue: store.IssueRow, c: PromptContract, env: AiEnviron
   const active = await cfg.getActiveVersion(env).catch(() => null);
   let methode = '';
   try {
-    if (active && active.id === issue.candidateConfigVersionId && issue.previousConfigVersionId) {
-      const r = await cfg.activateVersion(issue.previousConfigVersionId, null, undefined, { summary: `Retour arrière automatique ${c.id} : ${motif}`.slice(0, 300) });
-      const { afterCommit } = await import('../config/config-version.service');
-      await afterCommit(`rollback-conformity:${issue.previousConfigVersionId}`, r.masterPromptSwitches);
-      methode = `configuration ${issue.previousConfigVersionId} réactivée`;
+    // Lot 113I (CDC V2 SQL-007/008, EC-16) : MÊME service de restauration ciblée que la surveillance des modèles —
+    // seule la configuration (prompt) de ce traitement revient à son état antérieur ; jamais une ancienne version
+    // globale réactivée (les autres traitements, modifiés entre-temps, sont conservés).
+    const cible = issue.candidateConfigVersionId
+      ? await (await import('../config/config-version.service')).rollbackPromotedTreatment(issue.candidateConfigVersionId, { reason: `mise en conformité ${c.id} : ${motif}`.slice(0, 900), evidence: postCheck, legacyFallback: true, now })
+      : null;
+    void active;
+    if (cible && (cible.status === 'ROLLED_BACK' || cible.status === 'ALREADY_ROLLED_BACK')) {
+      methode = `configuration de ${c.treatment} restaurée (retour arrière ciblé)`;
+    } else if (cible && cible.status === 'REPLACED') {
+      await store.transition(issue, 'BLOCKED', { kind: 'POST_CHECK', message: `Retour arrière non appliqué : la configuration de ${c.treatment} a été modifiée entre-temps (${cible.message}). Révision la plus récente conservée.`, payload: postCheck },
+        { postCheck, decision: 'Anomalie constatée mais configuration remplacée entre-temps : intervention humaine respectée, aucun écrasement.' });
+      return;
+    } else if (cible && cible.code !== 'NO_PREVIOUS_STATE') {
+      throw new Error(cible.message);
     } else if (issue.activePromptVersionId) {
       const repo = await import('../master-prompts/master-prompt.repository');
       const r = await repo.switchActivePrompt({

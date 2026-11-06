@@ -31,7 +31,7 @@
  * Seul « QUALIFIED » autorise une activation (préproduction seulement).
  */
 import type { Observation } from './runner';
-import { QUALIFICATION_THRESHOLDS, type QualificationThresholds } from './thresholds';
+import type { QualificationThresholds } from './thresholds';
 import type { Reason, Verdict } from './verdict';
 
 export type NonRegressionDecision = 'QUALIFIED' | 'REFUSED' | 'INCONCLUSIVE';
@@ -108,13 +108,22 @@ const coutParValide = (obs: readonly Observation[]): number | null => {
   return valides ? conclus.reduce((s, o) => s + (o.costMicros ?? 0), 0) / valides : null;
 };
 
+/** Lot 113I : code stable d'un paramètre administratif indispensable absent (EVA-006). */
+export const POLICY_NOT_CONFIGURED = 'POLICY_NOT_CONFIGURED';
+
 export function assessNonRegression(p: {
   runs: readonly OperationRun[];
   /** Cas qui exercent la NOUVELLE branche (prédicat du contrat) ; null : aucune exigence propre. */
   coverage: { label: string; caseIds: readonly string[] } | null;
   thresholds?: QualificationThresholds;
+  /**
+   * Lot 113I (CDC V2 DEC-02, EVA-006) : borne économique ADMINISTRÉE du traitement — hausse absolue admissible du coût
+   * par résultat valide (micro-unités de la grille). `null` / absent : une hausse de coût bloque la promotion
+   * (POLICY_NOT_CONFIGURED) ; plus aucun seuil uniforme « +20 % ».
+   */
+  economics?: { maxExtraCostMicrosPerCall: number | null } | null;
 }): NonRegressionAssessment {
-  const th = p.thresholds ?? QUALIFICATION_THRESHOLDS;
+  // Lot 113I : les seuils ne portent plus de règle de coût (borne économique administrée, `economics`).
   const operations: OperationAssessment[] = [];
   for (const r of p.runs) {
     const reasons: string[] = [];
@@ -159,8 +168,14 @@ export function assessNonRegression(p: {
     for (const x of inconclusive.filter((y) => !regressions.includes(y)).slice(0, 5)) {
       if (x.mandatory) bloque(`cas obligatoire ${x.caseId} non concluant (${x.inconclusive ?? 'non exécuté'})`);
     }
-    if (ratio != null && ratio > 1 + th.latency.maxP95Degradation) {
-      refuse(`coût par résultat valide +${Math.round((ratio - 1) * 100)} % (seuil +${Math.round(th.latency.maxP95Degradation * 100)} %)`);
+    if (ratio != null && ratio > 1 && cCand != null && cRef != null) {
+      const extra = cCand - cRef;
+      const borne = p.economics?.maxExtraCostMicrosPerCall ?? null;
+      if (borne == null) {
+        bloque(`${POLICY_NOT_CONFIGURED} : coût par résultat valide en hausse (+${Math.round((ratio - 1) * 100)} %, +${Math.round(extra)} micro-unités par résultat) — borne économique du traitement À DÉFINIR PAR ADMINISTRATEUR`);
+      } else if (extra > borne) {
+        refuse(`coût par résultat valide +${Math.round(extra)} micro-unités par résultat, au-delà de la borne administrée (${borne})`);
+      }
     }
     operations.push({
       operationCode: r.operationCode, referenceVerdict: r.reference?.verdict ?? null, candidateVerdict: r.candidate?.verdict ?? null,

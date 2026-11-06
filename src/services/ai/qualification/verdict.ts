@@ -213,7 +213,10 @@ export function decideCoupleVerdict(input: CoupleVerdictInput): CoupleVerdict {
     if (ref == null) {
       add('LATENCY', 'INCONCLUSIVE', 'REFERENCE_NOT_MEASURED', 'P95 de la référence non mesuré sur les mêmes cas : comparaison impossible.');
     } else if (degradation != null && degradation > th.latency.maxP95Degradation) {
-      add('LATENCY', 'BLOCKING', 'P95_DEGRADED', `P95 ${p95} ms contre ${ref} ms pour la référence (+${Math.round(degradation * 100)} %, maximum +${Math.round(th.latency.maxP95Degradation * 100)} %).`);
+      // Lot 113I (CDC V2 DEC-03, EC-09) : une latence plus élevée n'est plus un refus uniforme du couple — l'arbitrage
+      // qualité > coût > latence se fait au niveau du traitement contre le plafond ADMINISTRÉ (`lexicographicGain`).
+      // Le plafond technique de l'opération (ci-dessus) reste bloquant.
+      if (!overCap.length) add('LATENCY', 'OK', 'P95_HIGHER', `P95 ${p95} ms contre ${ref} ms pour la référence (+${Math.round(degradation * 100)} %) : arbitrée au niveau du traitement (plafond de latence administré), pas un refus du couple.`);
     } else if (!overCap.length) {
       add('LATENCY', 'OK', 'LATENCY_MET', `P95 ${p95} ms${input.reference.isSelf ? ' (référence)' : ` contre ${ref} ms pour la référence`} ; tous les appels sous le plafond.`);
     }
@@ -246,7 +249,7 @@ type Priority = 'LATENCY' | 'COST';
 
 interface Measure { caseId: string; durationMs: number | null; costMicros: number | null; outcome: CaseOutcome }
 
-export type GainOutcome = 'GAIN' | 'LOSS' | 'NONE' | 'NOT_COMPARABLE';
+export type GainOutcome = 'GAIN' | 'LOSS' | 'NONE' | 'NOT_COMPARABLE' | 'POLICY_NOT_CONFIGURED';
 
 /**
  * Compare candidate et référence pour une opération, sur les cas réussis des
@@ -286,6 +289,44 @@ export function establishedGain(
   return { outcome: 'NONE', comparableCases: okR.length, detail: 'écart non établi (fluctuation)' };
 }
 
+/**
+ * Lot 113I (CDC V2 DEC-01..05, EVA-005/006, EC-09) — GAIN LEXICOGRAPHIQUE qualité > coût > latence, pour une
+ * opération dont la QUALITÉ est déjà équivalente (couples admissibles sur les mêmes cas ; un gain de qualité
+ * sémantique exige un juge calibré — C-006 — et n'est pas établi ici). Aucune priorité « latence » pour T2/T6,
+ * aucun seuil uniforme « +20 % » :
+ *   · coût non comparable (inconnu, périmètre différent) → NOT_COMPARABLE ;
+ *   · coût en HAUSSE établie (sans gain de qualité) → LOSS, même si plus rapide (DEC-04, REC-050) ;
+ *   · coût en BAISSE établie : latence non dégradée → GAIN ; latence dégradée → admissible seulement sous le
+ *     plafond P95 ADMINISTRÉ du traitement (DEC-03) ; plafond À DÉFINIR → POLICY_NOT_CONFIGURED ;
+ *   · coût non établi : gain de LATENCE retenu seulement si le coût moyen n'est pas supérieur (DEC-04) ;
+ *   · sinon NONE (aucun gain : la configuration courante est conservée).
+ */
+export function lexicographicGain(
+  reference: readonly Measure[], candidate: readonly Measure[], opts: { maxP95Ms: number | null; minObservations?: number; percentileRank?: number },
+): { outcome: GainOutcome; basis: 'COST' | 'LATENCY' | null; detail: string } {
+  const cout = establishedGain(reference, candidate, 'COST', opts.minObservations);
+  if (cout.outcome === 'NOT_COMPARABLE') return { outcome: 'NOT_COMPARABLE', basis: null, detail: `coût : ${cout.detail} (un coût inconnu ne vaut jamais zéro)` };
+  const delai = establishedGain(reference, candidate, 'LATENCY', opts.minObservations);
+  if (cout.outcome === 'LOSS') return { outcome: 'LOSS', basis: 'COST', detail: `coût : ${cout.detail} — sans gain de qualité prouvé, une hausse de coût n’est pas admissible (plus rapide ou non)` };
+  if (cout.outcome === 'GAIN') {
+    if (delai.outcome !== 'LOSS') return { outcome: 'GAIN', basis: 'COST', detail: `coût : ${cout.detail} ; latence non dégradée` };
+    if (opts.maxP95Ms == null) return { outcome: 'POLICY_NOT_CONFIGURED', basis: 'COST', detail: 'baisse de coût avec latence en hausse : plafond de latence P95 du traitement À DÉFINIR PAR ADMINISTRATEUR (POLICY_NOT_CONFIGURED)' };
+    const p95 = percentile(candidate.filter((m) => m.outcome === 'PASSED' && m.durationMs != null).map((m) => m.durationMs!), opts.percentileRank ?? 95);
+    if (p95 == null) return { outcome: 'NOT_COMPARABLE', basis: 'COST', detail: 'latence de la candidate non mesurable' };
+    return p95 <= opts.maxP95Ms
+      ? { outcome: 'GAIN', basis: 'COST', detail: `coût : ${cout.detail} ; latence en hausse mais P95 ${Math.round(p95)} ms ≤ plafond ${opts.maxP95Ms} ms` }
+      : { outcome: 'LOSS', basis: 'LATENCY', detail: `P95 ${Math.round(p95)} ms au-delà du plafond administré ${opts.maxP95Ms} ms du traitement` };
+  }
+  if (delai.outcome === 'GAIN') {
+    const moy = (l: readonly Measure[]) => { const v = l.filter((m) => m.outcome === 'PASSED' && m.costMicros != null).map((m) => m.costMicros!); return v.length ? v.reduce((a, b) => a + b, 0) / v.length : null; };
+    const cr = moy(reference);
+    const cc = moy(candidate);
+    if (cr != null && cc != null && cc <= cr) return { outcome: 'GAIN', basis: 'LATENCY', detail: `latence : ${delai.detail} ; coût moyen non supérieur` };
+    return { outcome: 'NONE', basis: null, detail: 'plus rapide mais coût non démontré inférieur ou égal : aucun gain admissible' };
+  }
+  return { outcome: 'NONE', basis: null, detail: `aucun gain établi (coût : ${cout.detail} ; latence : ${delai.detail})` };
+}
+
 export interface CandidateAssessment {
   key: string;
   /** Verdict de chaque couple de la candidate (toutes ses opérations). */
@@ -312,6 +353,7 @@ export function chooseCandidate(cands: readonly CandidateAssessment[]): { chosen
     }
     if (c.gains.some((g) => g.outcome === 'LOSS')) { reasons[c.key] = 'perte établie sur une opération : choix courant conservé'; continue; }
     if (c.gains.some((g) => g.outcome === 'NOT_COMPARABLE')) { reasons[c.key] = 'comparaison non fiable (cas non comparables) : choix courant conservé'; continue; }
+    if (c.gains.some((g) => g.outcome === 'POLICY_NOT_CONFIGURED')) { reasons[c.key] = 'politique administrative requise non configurée (POLICY_NOT_CONFIGURED) : choix courant conservé'; continue; }
     if (!c.gains.some((g) => g.outcome === 'GAIN')) { reasons[c.key] = 'aucun gain établi (égalité ou fluctuation) : choix courant conservé'; continue; }
     eligibles.push(c);
     reasons[c.key] = 'gain établi';
@@ -320,4 +362,22 @@ export function chooseCandidate(cands: readonly CandidateAssessment[]): { chosen
   const best = [...eligibles].sort((a, b) => (a.score ?? Number.POSITIVE_INFINITY) - (b.score ?? Number.POSITIVE_INFINITY))[0];
   for (const c of eligibles) if (c.key !== best.key) reasons[c.key] = 'gain établi, mais une autre candidate fait mieux';
   return { chosen: best.key, reasons };
+}
+
+/**
+ * Lot 113I (CDC V2 EC-01, REC-063) : DÉCISION PAR TRAITEMENT — chaque traitement choisit au plus une candidate parmi
+ * les SIENNES ; la décision d'un traitement ne dépend jamais des candidates d'un autre. Rend le choix de chaque
+ * traitement et les motifs de toutes les candidates.
+ */
+export function chooseCandidatesByTreatment<T extends string>(cands: ReadonlyArray<CandidateAssessment & { treatment: T }>): { chosen: Map<T, string>; reasons: Record<string, string> } {
+  const parT = new Map<T, Array<CandidateAssessment & { treatment: T }>>();
+  for (const c of cands) parT.set(c.treatment, [...(parT.get(c.treatment) ?? []), c]);
+  const chosen = new Map<T, string>();
+  const reasons: Record<string, string> = {};
+  for (const [t, l] of parT) {
+    const r = chooseCandidate(l);
+    Object.assign(reasons, r.reasons);
+    if (r.chosen) chosen.set(t, r.chosen);
+  }
+  return { chosen, reasons };
 }

@@ -80,11 +80,15 @@ describe('L86A-U02 — verdict d’un couple', () => {
     expect(v.verdict).toBe('REFUSED');
     expect(v.reasons.find((r) => r.code === 'OVER_OPERATION_CAP')?.outcome).toBe('BLOCKING');
   });
-  it('P95 : +20 % accepté, au-delà refusé ; référence non mesurée → non concluant', () => {
+  // Lot 113I (CDC V2 DEC-03, EC-09) — RÈGLE DÉLIBÉRÉMENT CHANGÉE : une latence plus élevée que la référence n'est plus
+  // un refus uniforme du couple (+20 %) ; elle est arbitrée au niveau du traitement contre le plafond ADMINISTRÉ
+  // (`lexicographicGain`). Le plafond technique de l'opération reste bloquant.
+  it('P95 : plus lent que la référence → admissible, signalé P95_HIGHER (arbitrage au traitement) ; référence non mesurée → non concluant', () => {
     const at = (d: number) => decideCoupleVerdict({ observations: [obs({ durationMs: d }), obs({ caseId: 'c2', durationMs: d })], reference: { p95Ms: 1000, isSelf: false }, concurrency: conc() });
     expect(at(1200).verdict).toBe('ADMISSIBLE');
-    expect(at(1201).verdict).toBe('REFUSED');
-    expect(at(1201).reasons.find((r) => r.code === 'P95_DEGRADED')).toBeTruthy();
+    expect(at(1201).verdict).toBe('ADMISSIBLE');
+    expect(at(1201).reasons.find((r) => r.code === 'P95_HIGHER')).toBeTruthy();
+    expect(at(1201).reasons.find((r) => r.code === 'P95_DEGRADED')).toBeFalsy();
     const sans = decideCoupleVerdict({ observations: [obs()], reference: { p95Ms: null, isSelf: false }, concurrency: conc() });
     expect(sans.verdict).toBe('INCONCLUSIVE');
     expect(sans.reasons.find((r) => r.code === 'REFERENCE_NOT_MEASURED')).toBeTruthy();

@@ -54,7 +54,9 @@ type Row = Record<string, unknown>;
 export type GateCode =
   | 'NOT_PREPROD' | 'CLAIM_MALFORMED' | 'CANDIDATE_MISMATCH' | 'CANDIDATE_NOT_QUALIFIED' | 'CAMPAIGN_MISMATCH' | 'TREATMENT_MISMATCH'
   | 'A1_ASSESSMENT_MISSING' | 'A1_ASSESSMENT_REFUSED' | 'A1_ASSESSMENT_MISMATCH' | 'A1_RULES_CHANGED' | 'A1_EXPIRED' | 'A1_CONTEXT_CHANGED' | 'A1_NOW_REFUSED'
-  | 'EVIDENCE_MISSING' | 'EVIDENCE_NOT_ADMISSIBLE' | 'EVIDENCE_STALE' | 'FROZEN' | 'CONCURRENT_CHANGE';
+  | 'EVIDENCE_MISSING' | 'EVIDENCE_NOT_ADMISSIBLE' | 'EVIDENCE_STALE' | 'FROZEN' | 'CONCURRENT_CHANGE'
+  // Lot 113I (CDC V2 PRO-01, PRO-07, C-004, BUD-05) :
+  | 'PROMOTION_GUARD_UNAVAILABLE' | 'MODEL_VERSION_UNVERIFIABLE' | 'CANDIDATE_STALE' | 'COST_UNRECONCILED';
 
 export const GATE_CODE_LABELS: Readonly<Record<GateCode, string>> = {
   NOT_PREPROD: 'activation automatique hors préproduction',
@@ -75,6 +77,10 @@ export const GATE_CODE_LABELS: Readonly<Record<GateCode, string>> = {
   EVIDENCE_STALE: 'preuve signée avec une empreinte différente de la configuration courante',
   FROZEN: 'configuration gelée par un administrateur',
   CONCURRENT_CHANGE: 'changement concurrent entre la revalidation et l’activation',
+  PROMOTION_GUARD_UNAVAILABLE: 'lecture des gels administratifs impossible : promotion bloquée (fail-closed, jamais « aucun gel »)',
+  MODEL_VERSION_UNVERIFIABLE: 'stabilité officielle / version effective du modèle non prouvée (présomption par le nom refusée)',
+  CANDIDATE_STALE: 'configuration effective du traitement changée depuis la qualification (intervention humaine ou autre promotion)',
+  COST_UNRECONCILED: 'coût d’appels d’amélioration inconnu ou sous-estimé non rapproché : aucune promotion fondée sur ces mesures',
 };
 
 /** Version de référence d'une décision de revalidation (journalisée, rejouée dans la transaction). */
@@ -159,7 +165,36 @@ async function persistedResults(evidenceIds: readonly number[], entries: Readonl
  * Revalidation COMPLÈTE depuis la base (frontière d'activation). Rend la décision et sa version de référence ;
  * journalise toujours (acceptée ou refusée).
  */
-export async function revalidatePromotion(p: { versionId: number; claim: unknown; caseOptions?: GateCaseOptions; now?: Date }): Promise<GateDecision> {
+/** Statut de cycle de vie du catalogue (lecture ; absent → null). */
+async function catalogLifecycle(model: string): Promise<{ lifecycle: string | null; basis: 'structured' | 'name_rule' | null } | null> {
+  try {
+    const [r] = await q(pgClient as unknown as SqlLike, `SELECT lifecycle, lifecycle_basis FROM ai_model_catalog WHERE model = $1 ORDER BY last_seen_at DESC NULLS LAST LIMIT 1`, [model]);
+    if (!r) return null;
+    return { lifecycle: r.lifecycle == null ? null : String(r.lifecycle), basis: r.lifecycle_basis === 'structured' ? 'structured' : r.lifecycle_basis == null ? null : 'name_rule' };
+  } catch { return null; }
+}
+
+/** Engagements budgétaires bloquants (coût inconnu, sous-estimation) ; table absente : aucun. */
+async function budgetBlockers(environment: string): Promise<string | null> {
+  try {
+    const [r] = await q(pgClient as unknown as SqlLike,
+      `SELECT count(*) FILTER (WHERE state = 'UNRECONCILED')::int AS u, count(*) FILTER (WHERE underestimated AND anomaly_resolved_at IS NULL)::int AS s
+         FROM ai_improvement_budget_reservations WHERE environment = $1`, [environment]);
+    const u = Number(r?.u ?? 0);
+    const s = Number(r?.s ?? 0);
+    return u || s ? `${u} engagement(s) au coût inconnu, ${s} sous-estimation(s) non résolue(s) (BO › Promotion automatique › Budget)` : null;
+  } catch (e) {
+    if (String((e as { code?: string })?.code) === '42P01') return null;
+    return `registre budgétaire illisible (${(e as Error).message.slice(0, 120)})`;
+  }
+}
+
+export async function revalidatePromotion(p: {
+  versionId: number; claim: unknown; caseOptions?: GateCaseOptions; now?: Date;
+  /** Tests : lecture des gels (défaut : base). Une erreur levée = garde illisible. */
+  readInterventions?: (environment: string) => Promise<Array<import('../config/config-interventions.service').Intervention>>;
+  readCatalogLifecycle?: (model: string) => Promise<{ lifecycle: string | null; basis: 'structured' | 'name_rule' | null } | null>;
+}): Promise<GateDecision> {
   const params = promotionParams();
   const environment = getAiEnvironment();
   const now = p.now ?? new Date();
@@ -278,10 +313,36 @@ export async function revalidatePromotion(p: { versionId: number; claim: unknown
     if (!a.allowed) return decide('A1_NOW_REFUSED', a.blockers.slice(0, 5).map((b) => b.message));
   }
 
-  // Gel (respect du choix humain).
+  // Gel (respect du choix humain). Lot 113I (PRO-07, EC-07) : une lecture impossible BLOQUE — jamais « aucun gel ».
   const { listActiveInterventions, freezeFor } = await import('../config/config-interventions.service');
-  const gel = freezeFor(treatment, await listActiveInterventions(environment).catch(() => []));
+  let interventions: Awaited<ReturnType<typeof listActiveInterventions>>;
+  try {
+    interventions = await (p.readInterventions ?? listActiveInterventions)(environment);
+  } catch (e) {
+    return decide('PROMOTION_GUARD_UNAVAILABLE', [`gels administratifs illisibles (${(e as Error).message.slice(0, 200)})`]);
+  }
+  const gel = freezeFor(treatment, interventions);
   if (gel) return decide('FROZEN', [`gel ${gel.treatment ?? 'global'} posé le ${gel.createdAt.slice(0, 10)} : ${gel.reason}`.slice(0, 300)]);
+
+  // Lot 113I (PRO-01, C-004, MOD-03/04) : un NOUVEAU modèle principal n'est promu automatiquement que si sa stabilité
+  // officielle est prouvée (statut structuré du fournisseur ou attestation administrative) — jamais présumée par le nom.
+  const delta = (row.promotion.delta ?? null) as { axes?: string[] } | null;
+  const entree = version.entries.find((e) => e.treatment === treatment);
+  if (entree?.primaryModel && (!delta || (delta.axes ?? []).includes('MODEL'))) {
+    const active = await cfg.getActiveVersion(environment).catch(() => null);
+    const actuel = active?.entries.find((e) => e.treatment === treatment)?.primaryModel ?? null;
+    if (entree.primaryModel !== actuel) {
+      const { loadPolicy, stabilityProof } = await import('./improvement-policy');
+      const policy = await loadPolicy(environment);
+      const cat = await (p.readCatalogLifecycle ?? catalogLifecycle)(entree.primaryModel);
+      const preuve = stabilityProof(entree.primaryModel, cat, policy);
+      if (!preuve.verified) return decide('MODEL_VERSION_UNVERIFIABLE', [preuve.detail]);
+    }
+  }
+
+  // Lot 113I (BUD-05, FIN-006) : mesures dont le coût est inconnu / sous-estimé non rapproché → aucune promotion.
+  const bloquants = await budgetBlockers(environment);
+  if (bloquants) return decide('COST_UNRECONCILED', [bloquants]);
 
   reference.certificationStamp = await stampOf(pgClient as unknown as SqlLike);
   reference.activeVersionId = (await cfg.getActiveVersion(environment).catch(() => null))?.id ?? null;
@@ -302,14 +363,20 @@ export function transactionGuard(ref: GateReference): (sql: SqlLike) => Promise<
     }
     const stamp = await stampOf(sql);
     if (stamp !== ref.certificationStamp) refuse('CONCURRENT_CHANGE', `certification du corpus modifiée (${ref.certificationStamp} → ${stamp})`);
-    const [act] = await q(sql, `SELECT id FROM ai_config_versions WHERE environment = $1 AND status = 'ACTIVE' ORDER BY id DESC LIMIT 1`, [ref.environment]);
-    const actif = act ? Number(act.id) : null;
-    if (actif !== ref.activeVersionId) refuse('CONCURRENT_CHANGE', `configuration active changée (${ref.activeVersionId ?? '—'} → ${actif ?? '—'})`);
+    // Lot 113I (PRO-04, REC-064) : la configuration active PEUT avoir changé pour un AUTRE traitement — la promotion
+    // ciblée fusionne sur la dernière active. Le conflit sur le traitement CIBLÉ est jugé par empreinte dans
+    // `promoteTreatment` (CANDIDATE_STALE).
     const [v] = await q(sql, `SELECT candidate_state, candidate_campaign_id, current_revision_id FROM ai_config_versions WHERE id = $1`, [ref.candidateVersionId]);
     if (!v || String(v.candidate_state) !== 'QUALIFIED' || Number(v.candidate_campaign_id) !== ref.campaignId || Number(v.current_revision_id) !== ref.candidateRevisionId) {
       refuse('CONCURRENT_CHANGE', `candidate modifiée (état ${String(v?.candidate_state ?? '—')}, campagne ${String(v?.candidate_campaign_id ?? '—')}, révision ${String(v?.current_revision_id ?? '—')})`);
     }
     const { listActiveInterventions, freezeFor } = await import('../config/config-interventions.service');
-    if (freezeFor(ref.treatment, await listActiveInterventions(ref.environment, sql).catch(() => []))) refuse('FROZEN', 'gel posé pendant l’activation');
+    let interventions: Awaited<ReturnType<typeof listActiveInterventions>> = [];
+    try {
+      interventions = await listActiveInterventions(ref.environment, sql);
+    } catch (e) {
+      refuse('PROMOTION_GUARD_UNAVAILABLE', `gels administratifs illisibles dans la transaction (${(e as Error).message.slice(0, 200)})`);
+    }
+    if (freezeFor(ref.treatment, interventions)) refuse('FROZEN', 'gel posé pendant l’activation');
   };
 }

@@ -193,3 +193,117 @@ export function mergeSnapshot(
   }
   return buildSnapshot([...byT.values()], masterPrompts);
 }
+
+// ══════════════════════════════════════════════════════════════════════════
+// Lot 113I — UNITÉ DE CHANGEMENT PAR TRAITEMENT (CDC V2 §2.3, PRO-03/05,
+// SQL-005, LIF-007/008). La configuration reste GLOBALE (une version active) ;
+// une promotion ou un retour arrière automatiques ne portent que sur la part
+// d'UN traitement (ligne de configuration + prompt maître piloté), fusionnée
+// sur la DERNIÈRE active avec `mergeSnapshot`. Pur.
+// ══════════════════════════════════════════════════════════════════════════
+
+/** Part d'un traitement dans un instantané : sa ligne et son prompt maître piloté (null : non piloté). */
+export interface TreatmentPart {
+  treatment: Treatment;
+  entry: TreatmentConfig | null;
+  masterPrompt: MasterPromptRef | null;
+}
+
+export function treatmentPart(s: ConfigSnapshot, t: Treatment): TreatmentPart {
+  const n = normalizeSnapshot(s);
+  return { treatment: t, entry: n.entries.find((e) => e.treatment === t) ?? null, masterPrompt: n.masterPrompts[t] ?? null };
+}
+
+/** Empreinte de la part d'un traitement (prompt comparé par référence + empreinte de texte, comme `snapshotSha256`). */
+export function treatmentFingerprint(s: ConfigSnapshot, t: Treatment): string {
+  const p = treatmentPart(s, t);
+  return sha256(canonicalJson({
+    treatment: t, entry: p.entry,
+    masterPrompt: p.masterPrompt ? { versionId: p.masterPrompt.versionId, contentSha256: p.masterPrompt.contentSha256 } : null,
+  }));
+}
+
+/** Traitements dont la part diffère entre deux instantanés. */
+export function changedTreatments(a: ConfigSnapshot, b: ConfigSnapshot): Treatment[] {
+  return TREATMENTS.filter((t) => treatmentFingerprint(a, t) !== treatmentFingerprint(b, t));
+}
+
+/** Axes modifiés d'une part de traitement (GEN-02 : delta structuré). */
+export type ChangeAxis = 'MODEL' | 'PROMPT' | 'INFERENCE_PROFILE' | 'FALLBACK_CHAIN';
+
+export function changedAxes(before: TreatmentPart, after: TreatmentPart): ChangeAxis[] {
+  const axes = new Set<ChangeAxis>();
+  const a = before.entry;
+  const b = after.entry;
+  if ((a?.primaryModel ?? null) !== (b?.primaryModel ?? null)) axes.add('MODEL');
+  if ((a?.fallback1 ?? null) !== (b?.fallback1 ?? null) || (a?.fallback2 ?? null) !== (b?.fallback2 ?? null)) axes.add('FALLBACK_CHAIN');
+  const profil = (e: TreatmentConfig | null) => canonicalJson(e ? {
+    rp: e.reasoningPrimary, r1: e.reasoningFallback1, r2: e.reasoningFallback2, mot: e.maxOutputTokens, op: e.operationProfiles ?? null,
+  } : null);
+  if (profil(a) !== profil(b)) axes.add('INFERENCE_PROFILE');
+  const prompt = (p: TreatmentPart) => canonicalJson({ prompt: p.entry?.prompt ?? '', master: p.entry?.masterPrompt ?? null, ref: p.masterPrompt ? p.masterPrompt.contentSha256 : null });
+  if (prompt(before) !== prompt(after)) axes.add('PROMPT');
+  return [...axes];
+}
+
+/**
+ * Champs d'une ligne qu'aucun changement AUTOMATIQUE ne peut toucher (CDC §1.3 : garde-fous, déclencheurs, cascade
+ * T2 — règles de sécurité / fonctionnement administrées). Un delta qui les modifie est refusé (LIF-007, SEC-02).
+ */
+export const PROTECTED_ENTRY_FIELDS = ['guardrails', 'triggers', 'cascade', 'promptArchitecture'] as const;
+
+export class TreatmentDeltaRefused extends Error {
+  constructor(readonly code: 'MULTI_TREATMENT_DELTA' | 'FORBIDDEN_CHANGE' | 'NO_EFFECT', message: string) {
+    super(message);
+    this.name = 'TreatmentDeltaRefused';
+  }
+}
+
+/** Delta structuré d'un seul traitement entre la référence et la candidate (vérifié par différence structurelle). */
+export interface TreatmentDelta {
+  treatment: Treatment;
+  beforeFingerprint: string;
+  afterFingerprint: string;
+  axes: ChangeAxis[];
+  after: TreatmentPart;
+}
+
+/**
+ * LIF-007 : la candidate ne diffère de sa référence QUE par la part du traitement ciblé (sinon refus avant toute
+ * création de version), sans toucher aux champs protégés, et diffère réellement (sinon NO_EFFECT).
+ */
+export function assertOnlyTreatmentChanged(base: ConfigSnapshot, next: ConfigSnapshot, t: Treatment, opts: { allowNoEffect?: boolean } = {}): TreatmentDelta {
+  const autres = changedTreatments(base, next).filter((x) => x !== t);
+  if (autres.length) {
+    throw new TreatmentDeltaRefused('MULTI_TREATMENT_DELTA', `Delta automatique refusé : il modifie aussi ${autres.join(', ')} (une candidate ne porte qu'un traitement : ${t}).`);
+  }
+  const before = treatmentPart(base, t);
+  const after = treatmentPart(next, t);
+  for (const f of PROTECTED_ENTRY_FIELDS) {
+    if (canonicalJson(before.entry?.[f] ?? null) !== canonicalJson(after.entry?.[f] ?? null)) {
+      throw new TreatmentDeltaRefused('FORBIDDEN_CHANGE', `Delta automatique refusé : champ protégé « ${f} » de ${t} modifié (garde-fous et règles administrées non auto-modifiables).`);
+    }
+  }
+  const beforeFingerprint = treatmentFingerprint(base, t);
+  const afterFingerprint = treatmentFingerprint(next, t);
+  if (beforeFingerprint === afterFingerprint && !opts.allowNoEffect) {
+    throw new TreatmentDeltaRefused('NO_EFFECT', `Delta automatique sans effet sur ${t} : aucune candidate créée.`);
+  }
+  return { treatment: t, beforeFingerprint, afterFingerprint, axes: changedAxes(before, after), after };
+}
+
+/**
+ * Instantané courant où SEULE la part du traitement est remplacée (promotion : part de la candidate ; retour
+ * arrière : part antérieure). Vérifie que les autres traitements sont strictement identiques (SQL-005).
+ */
+export function replaceTreatmentPart(current: ConfigSnapshot, part: TreatmentPart): ConfigSnapshot {
+  const t = part.treatment;
+  const entries = normalizeSnapshot(current).entries.filter((e) => e.treatment !== t);
+  if (part.entry) entries.push(snapshotEntry({ ...part.entry, treatment: t }));
+  const masterPrompts = { ...normalizeSnapshot(current).masterPrompts };
+  if (part.masterPrompt) masterPrompts[t] = part.masterPrompt; else delete masterPrompts[t];
+  const next = buildSnapshot(entries, masterPrompts);
+  const touches = changedTreatments(current, next).filter((x) => x !== t);
+  if (touches.length) throw new TreatmentDeltaRefused('MULTI_TREATMENT_DELTA', `Fusion refusée : ${touches.join(', ')} modifié(s) par une opération ciblée sur ${t}.`);
+  return next;
+}

@@ -232,9 +232,16 @@ describe('L99B-U06 — non-régression (jamais la sortie du candidat comme véri
     expect(a.decision).toBe('INCONCLUSIVE');
     expect(a.blockingReasons.join(' ')).toMatch(/couverture de la nouvelle branche insuffisante/);
   });
-  it('coût par résultat valide au-delà du seuil → REFUSED', () => {
-    const a = assessNonRegression({ runs: [run('t3_a', [obs('c1', 'PASSED')], [obs('c1', 'PASSED', { costMicros: 20 })])], coverage: null });
-    expect(a.decision).toBe('REFUSED');
+  // Lot 113I (CDC V2 DEC-02, EVA-006, EVALT-04) — RÈGLE DÉLIBÉRÉMENT CHANGÉE : plus de seuil uniforme « +20 % ». Sans
+  // borne économique administrée, une hausse de coût BLOQUE (POLICY_NOT_CONFIGURED, non concluant) ; au-delà de la
+  // borne administrée : REFUSED ; sous la borne : admissible.
+  it('coût par résultat valide en hausse : POLICY_NOT_CONFIGURED sans borne ; au-delà de la borne administrée → REFUSED ; sous la borne → QUALIFIED', () => {
+    const runs = [run('t3_a', [obs('c1', 'PASSED')], [obs('c1', 'PASSED', { costMicros: 20 })])];
+    const sans = assessNonRegression({ runs, coverage: null });
+    expect(sans.decision).toBe('INCONCLUSIVE');
+    expect(sans.blockingReasons.join(' ')).toMatch(/POLICY_NOT_CONFIGURED/);
+    expect(assessNonRegression({ runs, coverage: null, economics: { maxExtraCostMicrosPerCall: 1 } }).decision).toBe('REFUSED');
+    expect(assessNonRegression({ runs, coverage: null, economics: { maxExtraCostMicrosPerCall: 1_000 } }).decision).toBe('QUALIFIED');
   });
   it('non concluant chez le candidat sur un cas réussi avant → bloquant', () => {
     const a = assessNonRegression({ runs: [run('t3_a', [obs('c1', 'PASSED')], [obs('c1', 'INCONCLUSIVE')], 'INCONCLUSIVE')], coverage: null });

@@ -39,15 +39,25 @@ export interface UsageWindow {
   providerErrors: number;
   p95Ms: number | null;
   costPerValid: number | null;
+  /** Lot 113I (EC-11, QUA-10) : erreurs NON classées (ni contrôle serveur, ni fournisseur) — jamais imputées. */
+  unclassifiedErrors?: number;
+  /** Lot 113I (MON-02, OPS-06) : télémétrie illisible — ce n'est PAS « zéro usage ». */
+  unavailable?: boolean;
 }
 
 export const EMPTY_USAGE: UsageWindow = Object.freeze({ calls: 0, success: 0, invalid: 0, providerErrors: 0, p95Ms: null, costPerValid: null }) as UsageWindow;
 
 const CONTROL_CODES = ['INVALID_OUTPUT', 'RUNTIME_CONTRACT_MISMATCH'];
+/** Lot 113I (QUA-10) : indisponibilité FOURNISSEUR / modèle (classée par la passerelle). Le reste n'est pas imputé. */
+export const PROVIDER_ERROR_CODES = ['PROVIDER_UNAVAILABLE', 'TIMEOUT', 'QUOTA_EXCEEDED', 'ALL_MODELS_FAILED', 'ECONNRESET', 'PROVIDER_REQUEST_REJECTED', 'MODEL_PARAMETERS_INCOMPATIBLE'];
 
-/** Signaux d'usage attribués EXACTEMENT à une version de configuration, sur une période (lecture seule). */
-export async function usageSignals(p: { operations: readonly string[]; versionId: number | null; from: Date; to: Date; query?: Query }): Promise<UsageWindow> {
-  if (!p.versionId || !p.operations.length || p.to <= p.from) return { ...EMPTY_USAGE };
+/**
+ * Signaux d'usage attribués EXACTEMENT à une ou plusieurs versions de configuration (lot 113I : toutes les versions
+ * globales qui ont servi la MÊME configuration du traitement), sur une période (lecture seule).
+ */
+export async function usageSignals(p: { operations: readonly string[]; versionId?: number | null; versionIds?: readonly number[]; from: Date; to: Date; query?: Query }): Promise<UsageWindow> {
+  const ids = [...new Set([...(p.versionIds ?? []), ...(p.versionId ? [p.versionId] : [])])].filter((x) => Number.isInteger(x) && x > 0);
+  if (!ids.length || !p.operations.length || p.to <= p.from) return { ...EMPTY_USAGE };
   const query: Query = p.query ?? (async (t, params) => {
     const { pgClient } = await import('@/db');
     return (await pgClient.unsafe(t, params as never[])) as unknown as Row[];
@@ -57,23 +67,26 @@ export async function usageSignals(p: { operations: readonly string[]; versionId
       `SELECT count(*)::int AS calls,
               count(*) FILTER (WHERE status = 'success')::int AS success,
               count(*) FILTER (WHERE status <> 'success' AND error_code = ANY($5::text[]))::int AS invalid,
-              count(*) FILTER (WHERE status = 'error' AND COALESCE(error_code, '') <> ALL($5::text[]))::int AS provider_errors,
+              count(*) FILTER (WHERE status = 'error' AND error_code = ANY($6::text[]))::int AS provider_errors,
+              count(*) FILTER (WHERE status <> 'success' AND COALESCE(error_code, '') <> ALL($5::text[]) AND COALESCE(error_code, '') <> ALL($6::text[]))::int AS unclassified,
               percentile_cont(0.95) WITHIN GROUP (ORDER BY duration_ms) FILTER (WHERE status = 'success' AND duration_ms IS NOT NULL) AS p95,
               sum(cost_micros) FILTER (WHERE cost_micros IS NOT NULL)::bigint AS cost,
               count(*) FILTER (WHERE cost_micros IS NULL)::int AS unknown_cost
          FROM ai_usage_event
-        WHERE operation_code = ANY($1::text[]) AND config_version_id = $2 AND created_at >= $3::timestamptz AND created_at < $4::timestamptz
+        WHERE operation_code = ANY($1::text[]) AND config_version_id = ANY($2::int[]) AND created_at >= $3::timestamptz AND created_at < $4::timestamptz
           AND COALESCE(metadata->>'trigger', '') <> 'qualification'`,
-      [[...p.operations], p.versionId, p.from.toISOString(), p.to.toISOString(), CONTROL_CODES],
+      [[...p.operations], ids, p.from.toISOString(), p.to.toISOString(), CONTROL_CODES, PROVIDER_ERROR_CODES],
     );
     const success = Number(r?.success ?? 0);
     return {
       calls: Number(r?.calls ?? 0), success, invalid: Number(r?.invalid ?? 0), providerErrors: Number(r?.provider_errors ?? 0),
       p95Ms: r?.p95 == null ? null : Number(r.p95),
       costPerValid: success && Number(r?.unknown_cost ?? 0) === 0 && r?.cost != null ? Number(r.cost) / success : null,
+      unclassifiedErrors: Number(r?.unclassified ?? 0),
     };
   } catch {
-    return { ...EMPTY_USAGE };
+    // Lot 113I (EC-11) : une panne de lecture n'est jamais une fenêtre vide.
+    return { ...EMPTY_USAGE, unavailable: true };
   }
 }
 
@@ -86,7 +99,7 @@ export function certifiedRegressions(a: NonRegressionAssessment | null): Array<{
 
 export type SignalOutcome = 'DEGRADED' | 'ALERT' | 'OK' | 'INSUFFICIENT';
 export interface Signal { code: string; label: string; outcome: SignalOutcome; imputable: boolean; detail: string }
-export type PostVerdict = 'DEGRADED_IMPUTABLE' | 'ALERT' | 'OK' | 'INSUFFICIENT_DATA' | 'NOT_IMPUTABLE';
+export type PostVerdict = 'DEGRADED_IMPUTABLE' | 'ALERT' | 'OK' | 'INSUFFICIENT_DATA' | 'NOT_IMPUTABLE' | 'OBSERVATION_UNAVAILABLE';
 
 export interface ReplayResult {
   campaignId: number | null;
@@ -108,10 +121,13 @@ export function assessPostActivation(p: {
     return { verdict: 'NOT_IMPUTABLE', rollback: false, signals: [], reasons: ['candidate remplacée (choix humain ou autre activation) : aucune dégradation ne lui est imputée, aucun retour arrière'] };
   }
   const signals: Signal[] = [];
-  const assez = p.after.calls >= w.minCalls && p.before.calls >= w.minCalls;
+  const illisible = Boolean(p.after.unavailable || p.before.unavailable);
+  const assez = !illisible && p.after.calls >= w.minCalls && p.before.calls >= w.minCalls;
   const pct = (x: number) => `${(x * 100).toFixed(1)} %`;
   const taux = (n: number, d: number) => (d ? n / d : 0);
-  if (!assez) {
+  if (illisible) {
+    signals.push({ code: 'USAGE', label: 'signaux d’usage', outcome: 'INSUFFICIENT', imputable: false, detail: 'télémétrie illisible : observation indisponible (ni zéro usage, ni régression)' });
+  } else if (!assez) {
     signals.push({ code: 'USAGE', label: 'signaux d’usage', outcome: 'INSUFFICIENT', imputable: false, detail: `${p.after.calls} appel(s) sous la candidate, ${p.before.calls} sous la version précédente (minimum ${w.minCalls} de chaque côté)` });
   } else {
     const iA = taux(p.after.invalid, p.after.calls);
@@ -151,7 +167,7 @@ export function assessPostActivation(p: {
   const degrades = signals.filter((s) => s.outcome === 'DEGRADED' && s.imputable);
   const alertes = signals.filter((s) => s.outcome === 'ALERT');
   const concluants = signals.filter((s) => s.outcome !== 'INSUFFICIENT');
-  const verdict: PostVerdict = degrades.length ? 'DEGRADED_IMPUTABLE' : alertes.length ? 'ALERT' : concluants.length ? 'OK' : 'INSUFFICIENT_DATA';
+  const verdict: PostVerdict = degrades.length ? 'DEGRADED_IMPUTABLE' : alertes.length ? 'ALERT' : concluants.length ? 'OK' : illisible ? 'OBSERVATION_UNAVAILABLE' : 'INSUFFICIENT_DATA';
   return {
     verdict, rollback: verdict === 'DEGRADED_IMPUTABLE', signals,
     reasons: degrades.length ? degrades.map((s) => `${s.label} : ${s.detail}`) : alertes.map((s) => `${s.label} : ${s.detail}`),
@@ -162,22 +178,40 @@ export function assessPostActivation(p: {
  * Évaluation complète d'une candidate activée (signaux d'usage attribués + rejeu des cas certifiés si dû).
  * Le rejeu est au plus `maxReplays` fois par activation, après `replayAfterMs` (0 : désactivé).
  */
+/**
+ * Lot 113I (MON-06) : un rejeu payant n'est dû que sur SUSPICION née des observations (alerte, hausse des sorties
+ * refusées ou des erreurs fournisseur sous le seuil de conclusion) — jamais parce que du temps s'est écoulé.
+ */
+export function replaySuspicion(before: UsageWindow, after: UsageWindow, signals: readonly Signal[]): string | null {
+  if (after.unavailable || before.unavailable) return null;
+  const alerte = signals.find((s) => s.outcome === 'ALERT');
+  if (alerte) return `alerte ${alerte.label}`;
+  const taux = (n: number, d: number) => (d ? n / d : 0);
+  if (after.invalid > 0 && taux(after.invalid, after.calls) > taux(before.invalid, before.calls)) return `sorties refusées en hausse (${after.invalid}/${after.calls})`;
+  if (after.providerErrors > 0 && taux(after.providerErrors, after.calls) > taux(before.providerErrors, before.calls)) return `erreurs fournisseur en hausse (${after.providerErrors}/${after.calls})`;
+  return null;
+}
+
 export async function evaluatePostActivation(p: {
   treatment: Treatment; operations: readonly string[]; candidateVersionId: number; previousVersionId: number | null;
+  /** Lot 113I : versions globales ayant servi la configuration promue du traitement (défaut : la candidate). */
+  servingVersionIds?: readonly number[];
   activatedAt: Date; now: Date; replaysDone: number; candidateActive: boolean;
   replay?: (x: { treatment: Treatment; candidateVersionId: number; referenceVersionId: number; reason: string }) => Promise<{ campaignId: number | null; status: string; refusal: string | null; assessment: NonRegressionAssessment | null }>;
   query?: Query; params?: PromotionParams['watch'];
 }): Promise<{ assessment: ReturnType<typeof assessPostActivation>; before: UsageWindow; after: UsageWindow; replay: ReplayResult | null }> {
   const w = p.params ?? promotionParams().watch;
   const ecoule = Math.max(60_000, p.now.getTime() - p.activatedAt.getTime());
-  const after = await usageSignals({ operations: p.operations, versionId: p.candidateVersionId, from: p.activatedAt, to: new Date(p.now.getTime() + 1000), query: p.query });
+  const after = await usageSignals({ operations: p.operations, versionIds: [p.candidateVersionId, ...(p.servingVersionIds ?? [])], from: p.activatedAt, to: new Date(p.now.getTime() + 1000), query: p.query });
   const before = await usageSignals({ operations: p.operations, versionId: p.previousVersionId, from: new Date(p.activatedAt.getTime() - Math.max(ecoule, 7 * 86_400_000)), to: p.activatedAt, query: p.query });
   let replay: ReplayResult | null = null;
-  const du = w.replayAfterMs > 0 && p.replaysDone < w.maxReplays && p.previousVersionId != null && p.candidateActive && p.now.getTime() - p.activatedAt.getTime() >= w.replayAfterMs;
+  const prealable = assessPostActivation({ before, after, replay: null, candidateActive: p.candidateActive, params: w });
+  const suspicion = replaySuspicion(before, after, prealable.signals);
+  const du = suspicion != null && w.replayAfterMs > 0 && p.replaysDone < w.maxReplays && p.previousVersionId != null && p.candidateActive && p.now.getTime() - p.activatedAt.getTime() >= w.replayAfterMs;
   if (du) {
     const run = p.replay ?? (async (x) => (await import('./campaign')).requestPostActivationReplay(x));
     try {
-      const r = await run({ treatment: p.treatment, candidateVersionId: p.candidateVersionId, referenceVersionId: p.previousVersionId!, reason: `Contrôle post-activation de la candidate ${p.candidateVersionId} : rejeu des cas certifiés (ancienne configuration ${p.previousVersionId} ↔ candidate).` });
+      const r = await run({ treatment: p.treatment, candidateVersionId: p.candidateVersionId, referenceVersionId: p.previousVersionId!, reason: `Contrôle post-activation de la candidate ${p.candidateVersionId} sur suspicion (${suspicion}) : rejeu des cas certifiés (ancienne configuration ${p.previousVersionId} ↔ candidate).` });
       const concluant = r.status === 'COMPLETED' && r.assessment != null;
       replay = { campaignId: r.campaignId, status: r.status, regressions: concluant ? certifiedRegressions(r.assessment) : null, reason: concluant ? null : r.refusal ?? r.status };
     } catch (e) {

@@ -645,7 +645,9 @@ export const SCHEDULED_TASKS: readonly ScheduledTaskDef[] = [
       const { runPromotionWatch } = await import('@/services/ai/qualification/promotion-watch');
       const r = await runPromotionWatch({ trigger: `scheduler:${trigger}` });
       if (r.skipped) return { note: r.skipped };
-      return { note: `${r.watched} candidate(s) surveillée(s) · ${r.replays} rejeu(x) de cas certifiés · ${r.alerts} alerte(s) · ${r.rolledBack} retour(s) arrière · ${r.resolved} résolue(s) · ${r.replaced} remplacée(s)` };
+      // Lot 113I (CDC V2 MON-01, OPS-05) : aucune clôture par le temps — états de surveillance distincts dans la note ;
+      // le balayage des réservations budgétaires orphelines (FIN-005) est fait par le même passage.
+      return { note: `${r.watched} candidate(s) surveillée(s) · ${r.validated} validée(s) en usage · ${r.insufficient} usage insuffisant (conservées) · ${r.unavailable} observation(s) indisponible(s) · ${r.replays} rejeu(x) sur suspicion · ${r.alerts} alerte(s) · ${r.rolledBack} retour(s) arrière ciblé(s) · ${r.rollbackFailed} impossible(s) · ${r.replaced} remplacée(s)` };
     },
   },
   {

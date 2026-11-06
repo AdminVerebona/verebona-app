@@ -12,6 +12,48 @@ import { requireAdminContext, toErrorResponse } from '../config-versions/_shared
 
 export const dynamic = 'force-dynamic';
 
+/**
+ * Lot 113I (CDC V2 BO-08, UI-002, API-03/04, APIX-001) — gestes administratifs manquants, sur les services existants :
+ *   · `suspend-objective` { objectiveId, expectedStatus, reason } : aucune nouvelle dépense pour l'objectif, la
+ *     configuration active n'est PAS modifiée ;
+ *   · `reconcile-reservation` { reservationId, costMicros?, currency?, resolveUnderestimation?, reason } : rapprochement
+ *     d'un coût inconnu (facture) ou levée motivée d'une anomalie de sous-estimation (historisé).
+ * Codes stables, jamais un 200 portant une erreur.
+ */
+export async function POST(req: NextRequest) {
+  const guard = await requireAdminContext(req);
+  if (!guard.ok) return guard.response;
+  const body = await req.json().catch(() => null) as Record<string, unknown> | null;
+  if (!body || typeof body.action !== 'string') return NextResponse.json({ error: 'INVALID_BODY' }, { status: 400 });
+  const reason = typeof body.reason === 'string' ? body.reason.trim() : '';
+  if (reason.length < 3) return NextResponse.json({ error: 'REASON_REQUIRED', message: 'Motif obligatoire (audit).' }, { status: 400 });
+  try {
+    const { recordConfigAudit } = await import('@/services/ai/config/config-entry.audit');
+    if (body.action === 'suspend-objective') {
+      const { suspendObjective, OBJECTIVE_STATUSES } = await import('@/services/ai/qualification/improvement-objectives');
+      const id = Number(body.objectiveId);
+      const expected = String(body.expectedStatus ?? '');
+      if (!Number.isInteger(id) || !(OBJECTIVE_STATUSES as readonly string[]).includes(expected)) return NextResponse.json({ error: 'INVALID_BODY' }, { status: 400 });
+      const r = await suspendObjective({ id, expectedStatus: expected as never, userId: guard.ctx.adminUserId, reason });
+      if (!r.ok) return NextResponse.json({ error: 'OBJECTIVE_TRANSITION_REFUSED', message: r.message, current: r.current }, { status: 409 });
+      await recordConfigAudit('ai_improvement_objective_suspend', guard.ctx.adminUserId, { objectiveId: id, status: expected }, { status: r.objective.status, reason: reason.slice(0, 300) }).catch(() => undefined);
+      return NextResponse.json({ objective: r.objective });
+    }
+    if (body.action === 'reconcile-reservation') {
+      const { adminReconcile } = await import('@/services/ai/qualification/improvement-budget');
+      const id = Number(body.reservationId);
+      const cost = body.costMicros == null ? null : Number(body.costMicros);
+      if (!Number.isInteger(id) || (cost != null && (!Number.isFinite(cost) || cost < 0))) return NextResponse.json({ error: 'INVALID_BODY' }, { status: 400 });
+      await adminReconcile({ reservationId: id, costMicros: cost, currency: typeof body.currency === 'string' ? body.currency : undefined, resolveUnderestimation: body.resolveUnderestimation === true, userId: guard.ctx.adminUserId, note: reason });
+      await recordConfigAudit('ai_improvement_reservation_reconcile', guard.ctx.adminUserId, { reservationId: id }, { costMicros: cost, resolveUnderestimation: body.resolveUnderestimation === true, reason: reason.slice(0, 300) }).catch(() => undefined);
+      return NextResponse.json({ reconciled: true });
+    }
+    return NextResponse.json({ error: 'UNKNOWN_ACTION' }, { status: 400 });
+  } catch (e) {
+    return toErrorResponse(e, 'POST /api/admin/ai/promotion');
+  }
+}
+
 export async function GET(req: NextRequest) {
   const guard = await requireAdminContext(req);
   if (!guard.ok) return guard.response;

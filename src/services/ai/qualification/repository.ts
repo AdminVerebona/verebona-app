@@ -65,6 +65,15 @@ export async function createCampaign(p: {
   return Number(r.id);
 }
 
+/** Lot 113I : objectif d'amélioration servi par la campagne (colonne 1485 absente : ignoré). */
+export async function setCampaignObjective(id: number, objectiveId: number): Promise<void> {
+  try {
+    await q(`UPDATE ai_qualification_campaigns SET objective_id = $2 WHERE id = $1`, [id, objectiveId]);
+  } catch (e) {
+    if ((e as { code?: string })?.code !== '42703') throw e;
+  }
+}
+
 export async function updateCampaign(id: number, patch: Partial<{
   status: CampaignStatus; startedAt: Date; finishedAt: Date; restorePointId: string | null; restorePointAt: string | null;
   summary: Record<string, unknown>; refusal: string | null; error: string | null; candidateVersionId: number | null; request: Record<string, unknown>;

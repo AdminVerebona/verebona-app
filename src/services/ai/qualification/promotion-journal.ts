@@ -9,7 +9,9 @@ import { pgClient } from '@/db';
 
 export type PromotionEventKind =
   | 'ACTIVATION_GATE' | 'ACTIVATION_TX' | 'A1_BLOCKED' | 'A1_RELAUNCH' | 'A1_WAITING' | 'ACTIVATED'
-  | 'POST_CHECK' | 'POST_ALERT' | 'ROLLBACK' | 'ROLLBACK_FAILED' | 'WATCH_END';
+  | 'POST_CHECK' | 'POST_ALERT' | 'ROLLBACK' | 'ROLLBACK_FAILED' | 'WATCH_END'
+  // Lot 113I (migration 1488) : promotion / retour arrière CIBLÉS, refus de rollback, états de surveillance, budget.
+  | 'TARGETED_PROMOTION' | 'TARGETED_ROLLBACK' | 'ROLLBACK_REFUSED' | 'WATCH_STATE' | 'BUDGET';
 
 export interface PromotionEvent {
   id: number;

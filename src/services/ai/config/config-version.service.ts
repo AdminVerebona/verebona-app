@@ -566,12 +566,14 @@ export async function restoreDeletedVersion(versionId: number, userId: number): 
  */
 export async function createAutomaticCandidate(p: {
   treatment: Treatment; primaryModel: string; key: string; reason: string; campaignId: number | null;
+  /** Lot 113I : objectif d'amélioration et numéro de variante (≤ maximum administré). */
+  objective?: { id: number; variant: number } | null;
 }): Promise<ConfigVersionWithEntries> {
   const v = await repo.createVersion({
     userId: null, label: `Candidate automatique ${p.treatment} · ${p.primaryModel}`.slice(0, 200), description: p.reason.slice(0, 1000),
     source: { active: true },
     candidate: {
-      key: p.key, reason: p.reason, campaignId: p.campaignId,
+      key: p.key, reason: p.reason, campaignId: p.campaignId, treatment: p.treatment, objective: p.objective ?? null,
       transform: (s) => ({ ...s, entries: s.entries.map((e) => (e.treatment === p.treatment ? { ...e, primaryModel: p.primaryModel } : e)) }),
     },
   }).catch(asRefusal);
@@ -603,7 +605,9 @@ export async function activateQualifiedCandidate(versionId: number, opts: {
   a1?: unknown;
   /** Lot 105B : options de cas de la campagne (mêmes empreintes de corpus que la qualification). */
   caseOptions?: import('../qualification/promotion-gate').GateCaseOptions;
-} = {}): Promise<SwitchResult & { reference?: import('../qualification/promotion-gate').GateReference }> {
+  /** Lot 113I : contexte de la surveillance persistée dans la transaction de promotion (SQL-006). */
+  watch?: { campaignId?: number | null; operations?: string[]; now?: Date };
+} = {}): Promise<SwitchResult & { reference?: import('../qualification/promotion-gate').GateReference; targeted?: repo.TargetedPromotionRecord | null }> {
   if (getAiEnvironment() === 'production') {
     throw new ConfigOperationRefused('CANDIDATE_ACTIVATION_PREPROD_ONLY',
       'Activation automatique d’une candidate refusée : elle n’a lieu qu’en préproduction (la production importe le fichier global, décision 06).');
@@ -629,9 +633,15 @@ export async function activateQualifiedCandidate(versionId: number, opts: {
   }
   await assertVersionTechnicallyCompatible(version);
   const { recordPromotionEvent } = await import('../qualification/promotion-journal');
-  let r: Awaited<ReturnType<typeof repo.activateVersion>>;
+  // Lot 113I (PRO-03..05, SQL-004..006) : promotion CIBLÉE — seule la part du traitement qualifié est fusionnée sur la
+  // DERNIÈRE configuration active ; état antérieur du traitement et surveillance WATCHING dans le même commit.
+  const { initialWatch } = await import('../qualification/promotion-watch');
+  let r: Awaited<ReturnType<typeof repo.promoteTreatment>>;
   try {
-    r = await repo.activateVersion(versionId, null, undefined, { candidate: true, summary: opts.summary, guard: gate.transactionGuard(d.reference) });
+    r = await repo.promoteTreatment(versionId, {
+      summary: opts.summary, guard: gate.transactionGuard(d.reference), now: opts.watch?.now,
+      watch: (t) => initialWatch(t, { campaignId: opts.watch?.campaignId ?? d.reference.campaignId, operations: opts.watch?.operations, previousVersionId: t.globalActiveBefore?.versionId ?? null, now: opts.watch?.now }) as unknown as Record<string, unknown>,
+    });
   } catch (e) {
     const code = e instanceof gate.PromotionGateRefused ? e.gateCode : (e as { code?: string }).code ?? 'ERROR';
     await recordPromotionEvent({
@@ -641,11 +651,63 @@ export async function activateQualifiedCandidate(versionId: number, opts: {
     if (e instanceof gate.PromotionGateRefused) throw new ConfigOperationRefused('PROMOTION_REVALIDATION_REFUSED', e.message, { gateCode: e.gateCode, reference: d.reference });
     asRefusal(e);
   }
-  if (!r.alreadyActive) await afterCommit(`activate-candidate:${versionId}:r${r.revisionNumber}`, r.masterPromptSwitches);
+  // Après commit : invalidations et journal NON bloquants (la surveillance est déjà persistée, PRO-03 point 6).
+  if (!r.alreadyActive) await afterCommit(`activate-candidate:${versionId}:r${r.revisionNumber}`, r.masterPromptSwitches).catch(() => undefined);
   await recordPromotionEvent({
-    environment: d.reference.environment, kind: 'ACTIVATED', candidateVersionId: versionId, campaignId: d.reference.campaignId, treatment: d.reference.treatment,
-    allowed: true, code: null, message: `Candidate ${versionId} activée automatiquement en préproduction (configuration précédente ${r.previousId ?? '—'}).`,
-    reference: { ...d.reference, previousVersionId: r.previousId } as unknown as Record<string, unknown>,
+    environment: d.reference.environment, kind: r.alreadyActive ? 'ACTIVATED' : 'TARGETED_PROMOTION', candidateVersionId: versionId, campaignId: d.reference.campaignId, treatment: d.reference.treatment,
+    allowed: true, code: r.alreadyActive ? 'ALREADY_ACTIVE' : null,
+    message: r.alreadyActive ? `Candidate ${versionId} déjà active : aucune seconde activation (idempotent).`
+      : `Candidate ${versionId} promue en préproduction : seule la configuration de ${r.targeted?.treatment ?? d.reference.treatment} est remplacée (axes ${r.targeted?.axes.join(', ') || '—'}), autres traitements conservés depuis la configuration ${r.previousId ?? '—'} ; surveillance ouverte.`,
+    reference: { ...d.reference, previousVersionId: r.previousId, targeted: r.targeted ? { treatment: r.targeted.treatment, baselineFingerprint: r.targeted.baselineFingerprint, afterFingerprint: r.targeted.afterFingerprint, globalActiveBefore: r.targeted.globalActiveBefore, globalActiveAfter: r.targeted.globalActiveAfter } : null } as unknown as Record<string, unknown>,
   });
-  return { previousId: r.previousId, interrupts: false, requeuedJobs: 0, revisionNumber: r.revisionNumber, alreadyActive: r.alreadyActive, reference: d.reference };
+  return { previousId: r.previousId, interrupts: false, requeuedJobs: 0, revisionNumber: r.revisionNumber, alreadyActive: r.alreadyActive, reference: d.reference, targeted: r.targeted };
+}
+
+/**
+ * Lot 113I — SERVICE UNIQUE DE RESTAURATION CIBLÉE (CDC V2 SQL-007/008/009, PRO-05/06, MON-03, EC-16). Utilisé par la
+ * surveillance des modèles ET par la mise en conformité des prompts : seule la part du traitement promu revient à son
+ * état antérieur, dans une nouvelle révision de la configuration active ; les autres traitements sont conservés.
+ *   · empreinte courante ≠ empreinte promue (geste humain, nouvelle promotion) → refus, surveillance REPLACED
+ *     (preuve de régression conservée, aucune révision humaine écrasée) ;
+ *   · gel actif ou illisible → refus, ROLLBACK_FAILED + alerte critique (l'état réel reste affiché) ;
+ *   · déjà effectué → idempotent.
+ * Jamais en production ; jamais par réactivation d'une ancienne version globale.
+ */
+export async function rollbackPromotedTreatment(candidateVersionId: number, p: {
+  reason: string; evidence?: Record<string, unknown>; watch?: Record<string, unknown> | null; now?: Date;
+  /** Promotion antérieure au lot 113I (aucune référence ciblée) : rendre NO_PREVIOUS_STATE sans effet, l'appelant a un repli. */
+  legacyFallback?: boolean;
+}): Promise<{ status: 'ROLLED_BACK' | 'REPLACED' | 'ROLLBACK_FAILED' | 'ALREADY_ROLLED_BACK'; message: string; activeVersionId?: number; code?: string }> {
+  const env = getAiEnvironment();
+  const { recordPromotionEvent } = await import('../qualification/promotion-journal');
+  const now = p.now ?? new Date();
+  const base = { ...(p.watch ?? {}) };
+  if (env === 'production') return { status: 'ROLLBACK_FAILED', message: 'Production : aucun retour arrière automatique (PRD-01).' };
+  const r = await repo.rollbackTreatment(candidateVersionId, {
+    reason: p.reason,
+    watchPatch: ({ activeVersionId, revisionNumber }) => ({ ...base, status: 'ROLLED_BACK', endedAt: now.toISOString(), endReason: `Retour arrière ciblé : ${p.reason}`.slice(0, 1000), rollback: { activeVersionId, revisionNumber, at: now.toISOString(), evidence: p.evidence ?? null } }),
+  });
+  if (r.ok) {
+    await afterCommit(`rollback-cible:${r.treatment}:${r.activeVersionId}:r${r.revisionNumber}`, r.masterPromptSwitches).catch(() => undefined);
+    await recordPromotionEvent({ environment: env, kind: 'TARGETED_ROLLBACK', candidateVersionId, treatment: r.treatment, allowed: true, code: 'ROLLED_BACK',
+      message: `Retour arrière automatique CIBLÉ de ${r.treatment} (configuration active ${r.activeVersionId}, révision ${r.revisionNumber}) : ${p.reason}. Autres traitements inchangés.`.slice(0, 2000),
+      reference: { activeVersionId: r.activeVersionId, revisionNumber: r.revisionNumber, evidence: p.evidence ?? null } });
+    return { status: 'ROLLED_BACK', message: `Retour arrière ciblé de ${r.treatment} effectué.`, activeVersionId: r.activeVersionId };
+  }
+  if (r.code === 'ALREADY_ROLLED_BACK') return { status: 'ALREADY_ROLLED_BACK', message: r.message, code: r.code };
+  if (r.code === 'NO_PREVIOUS_STATE' && p.legacyFallback && !r.treatment) return { status: 'ROLLBACK_FAILED', message: r.message, code: r.code };
+  const remplace = r.code === 'ROLLBACK_CONFLICT';
+  const statut = remplace ? 'REPLACED' : 'ROLLBACK_FAILED';
+  await repo.mergeCandidatePromotion(candidateVersionId, {
+    watch: { ...base, status: statut, endedAt: now.toISOString(), endReason: `${remplace ? 'Remplacée avant le retour arrière (révision la plus récente conservée)' : 'Régression prouvée, retour arrière impossible'} : ${r.message}`.slice(0, 1000), regressionEvidence: { reason: p.reason, evidence: p.evidence ?? null } },
+  }).catch(() => undefined);
+  await recordPromotionEvent({ environment: env, kind: remplace ? 'ROLLBACK_REFUSED' : 'ROLLBACK_FAILED', candidateVersionId, treatment: r.treatment, allowed: false, code: r.code,
+    message: `${remplace ? 'Retour arrière refusé' : 'Retour arrière IMPOSSIBLE'} (${r.code}) : ${r.message} — motif initial : ${p.reason}`.slice(0, 2000), reference: { evidence: p.evidence ?? null } });
+  if (!remplace) {
+    const { raiseAlert } = await import('../alerts/alerts.repository');
+    await raiseAlert({ kind: 'guardrail', code: 'IMPROVEMENT_ROLLBACK_FAILED', severity: 'critical', treatment: r.treatment ?? null,
+      message: `Régression imputable prouvée sur ${r.treatment ?? 'un traitement'} (candidate ${candidateVersionId}) mais retour arrière automatique impossible (${r.code}) : réactiver l’état précédent à la main (BO › Configuration IA).`,
+      details: { candidateVersionId, code: r.code }, dedupeKey: `improvement-rollback-failed:${env}:${candidateVersionId}`, drilldownHref: '/admin/ai-config#auto-promotion' }).catch(() => undefined);
+  }
+  return { status: statut, message: r.message, code: r.code };
 }

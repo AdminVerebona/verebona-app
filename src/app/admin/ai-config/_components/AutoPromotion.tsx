@@ -22,6 +22,7 @@ import { RefreshCw } from 'lucide-react';
 import { apiClient } from '@/lib/api-client';
 import { formatDateTime } from '@/lib/admin/format';
 import { Button } from '@/components/ui/button';
+import { ImprovementPanel, type ImprovementView } from './ImprovementPanel';
 
 interface Status {
   readAt: string; environment: string;
@@ -31,10 +32,13 @@ interface Status {
   inventory: { version: string; counts: Record<string, number>; expected: Record<string, number>; zipReceived: boolean; manifestVersion: number; entries: number } | null;
   coverage: Array<{ treatment: string; blockers: number; structural: number; byCode: Array<{ code: string; label: string; n: number }>; requirements: { met: number; total: number; waived: Array<{ id: string; reason: string }> } }>;
   blocks: { a1Candidates: number; a1PromptIssues: number; openPromptIssues: number; account: { code: string; label: string; nextAction: string | null } | null; operationsWithEvidence30d: number; a1StructuralTreatments: string[] };
-  candidates: { days: number; created: number; qualifying: number; qualified: number; blockedA1: number; refused: number; inconclusive: number; notChosen: number; activated: number; watching: number; rolledBack: number; suspended: number };
+  candidates: { days: number; created: number; qualifying: number; qualified: number; blockedA1: number; refused: number; inconclusive: number; notChosen: number; activated: number; watching: number; rolledBack: number; suspended: number;
+    insufficientUsage?: number; validatedInUsage?: number; observationUnavailable?: number; watchAlert?: number; rollbackFailed?: number; replaced?: number };
   events: Array<{ id: number; kind: string; candidateVersionId: number | null; treatment: string | null; allowed: boolean | null; code: string | null; message: string; createdAt: string }>;
   deferred: Array<{ title: string; needs: string[] }>;
   manualFlows: { manualActivation: string; production: string };
+  /** Lot 113I : vue d'amélioration (budget, traitements, file, politique) — ou erreur de lecture. */
+  improvement?: ImprovementView | { error: string };
 }
 
 const TONE = {
@@ -102,7 +106,7 @@ export function AutoPromotion() {
           <section className="space-y-1" aria-label="Tests réellement exécutés">
             <h3 className="text-sm font-medium text-[color:var(--text-primary)]">(b) Tests réellement exécutés ({x.days} jours)</h3>
             <p className="text-xs text-[color:var(--text-secondary)] break-words" data-testid="auto-promotion-executions">
-              {x.campaigns} campagne(s) · {x.concludedCases} cas concluant(s) · {x.inconclusiveCases} non concluant(s) · {x.providerCalls} appel(s) fournisseur · coût {(x.costMicros / 1_000_000).toFixed(4)} €
+              {x.campaigns} campagne(s) · {x.concludedCases} cas concluant(s) · {x.inconclusiveCases} non concluant(s) · {x.providerCalls} appel(s) fournisseur · coût {(x.costMicros / 1_000_000).toFixed(4)} $ (devise de la grille tarifaire, non convertie)
               {x.blockedByPrerequisite ? ` · ${x.blockedByPrerequisite} campagne(s) bloquée(s) par un prérequis` : ''}
               {' '}· compte technique : {x.technicalAccount ? `${x.technicalAccount.code}${x.technicalAccount.ok ? ' (valide)' : ` — ${x.technicalAccount.label}`}` : 'état illisible'}
               {x.lastCampaignAt ? ` · dernière campagne ${formatDateTime(x.lastCampaignAt)}` : ''}.
@@ -142,9 +146,14 @@ export function AutoPromotion() {
             <h3 className="text-sm font-medium text-[color:var(--text-primary)]">(e) Candidates ({c.days} jours)</h3>
             <p className="text-xs text-[color:var(--text-secondary)] break-words" data-testid="auto-promotion-candidates">
               {c.created} créée(s) · {c.qualifying} en test · {c.qualified} qualifiée(s) · {c.blockedA1} bloquée(s) A1 · {c.refused} refusée(s) · {c.inconclusive} non concluante(s) · {c.notChosen} non retenue(s)
-              {' '}· {c.activated} activée(s) · {c.watching} surveillée(s) · {c.rolledBack} restaurée(s) (retour arrière) · {c.suspended} suspendue(s).
+              {' '}· {c.activated} activée(s) · {c.watching} surveillée(s) · {c.rolledBack} restaurée(s) (retour arrière) · {c.suspended} suspendue(s)
+              {c.insufficientUsage != null ? ` · ${c.insufficientUsage} « qualification acquise ; observations d’usage insuffisantes ; configuration conservée » · ${c.validatedInUsage ?? 0} validée(s) en usage · ${c.observationUnavailable ?? 0} observation(s) indisponible(s) · ${c.rollbackFailed ?? 0} retour(s) arrière impossible(s) · ${c.replaced ?? 0} remplacée(s)` : ''}.
             </p>
           </section>
+
+          {data.improvement && ('error' in data.improvement
+            ? <p className="text-xs text-[color:var(--text-warning)]">(f) Amélioration automatique : {data.improvement.error}</p>
+            : <ImprovementPanel view={data.improvement} onSaved={() => void load()} />)}
 
           {data.events.length > 0 && (
             <details>

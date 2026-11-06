@@ -145,6 +145,11 @@ scenario('L105B', 'Promotion automatique IA sur preuves : BLOCKED_A1, relance, r
     await svc.activate(v.id, adminId);
     baseVersionId = v.id;
     await preparerCorpus();
+    // Lot 113I (CDC V2 C-004, MOD-03, PRO-01) : stabilité officielle des modèles candidats ATTESTÉE par un administrateur
+    // (jamais déduite du nom) — sans cette preuve, la promotion autonome est refusée (MODEL_VERSION_UNVERIFIABLE).
+    await sql`INSERT INTO ai_improvement_policy_revisions (environment, revision, policy, sha256, created_by, reason)
+              VALUES (${env}, 1, ${JSON.stringify({ verifiedStableModels: ['gemini-3.1-flash-lite', 'gemini-3.6-flash'].map((model) => ({ model, source: 'e2e : attestation administrateur (C-004)' })) })}::jsonb, 'e2e', ${adminId}, 'e2e l105b')
+              ON CONFLICT DO NOTHING`;
     const { QUALIFICATION_THRESHOLDS } = await import('@/services/ai/qualification/thresholds');
     th = { ...QUALIFICATION_THRESHOLDS, campaign: { ...QUALIFICATION_THRESHOLDS.campaign, maxCouplesPerCampaign: 0 } };
     const promo = await import('@/services/ai/governance/master-corpus/certification/promotion');
@@ -279,7 +284,10 @@ scenario('L105B', 'Promotion automatique IA sur preuves : BLOCKED_A1, relance, r
     expect(gate.at(-1)).toMatchObject({ allowed: true, code: null });
     expect(gate.at(-1)!.reference).toMatchObject({ candidateVersionId: candidate, campaignId: Number(r.campaignId), treatment: 'T6', activeVersionId: avant });
     expect(gate.at(-1)!.reference.evidence).toHaveLength(2);
-    expect(await evenements('ACTIVATED', candidate)).toHaveLength(1);
+    // Lot 113I (PRO-03..05) : promotion CIBLÉE journalisée, état antérieur de T6 et surveillance persistés dans le même commit.
+    expect(await evenements('TARGETED_PROMOTION', candidate)).toHaveLength(1);
+    expect(v.candidate_promotion.targeted).toMatchObject({ treatment: 'T6', globalActiveBefore: { versionId: avant } });
+    expect(v.candidate_promotion.targeted.previous.entry.primaryModel).toBe('gemini-3.5-flash');
   });
 
   it('L105B-E06 (R8) — surveillance : sans preuve aucun retour arrière ; régression certifiée imputable → retour arrière atomique et journalisé', async () => {
@@ -291,24 +299,37 @@ scenario('L105B', 'Promotion automatique IA sur preuves : BLOCKED_A1, relance, r
     expect(r1).toMatchObject({ watched: 1, rolledBack: 0, replays: 0 });
     expect(await actif()).toBe(candidate);
     expect((await version(candidate)).candidate_promotion.watch).toMatchObject({ status: 'WATCHING', lastVerdict: 'INSUFFICIENT_DATA' });
-    // 13 h après : rejeu des cas certifiés ; la candidate rend désormais des sorties fausses, l'ancienne version reste juste.
+    // Lot 113I (CDC V2 MON-06) — RÈGLE DÉLIBÉRÉMENT CHANGÉE : aucun rejeu payant « parce que 12 h sont passées ». Sans
+    // suspicion, 13 h après : aucun rejeu, aucun retour arrière (les 72 h ne sont qu'un jalon).
+    const r13 = await runPromotionWatch({ trigger: 'e2e', skipLease: true, now: () => new Date(t0 + 13 * 3_600_000), campaign: deps() });
+    expect(r13).toMatchObject({ replays: 0, rolledBack: 0 });
+    // Suspicion née de l'usage : une sortie refusée par les contrôles serveur sous la candidate (sous le seuil de conclusion).
+    const [tech1] = await sql<Json[]>`SELECT id FROM accounts ORDER BY id LIMIT 1`;
+    await sql`INSERT INTO ai_usage_event (account_id, operation_type, operation_code, provider, model, status, error_code, config_version_id, environment, created_at, metadata)
+              VALUES (${tech1?.id ?? null}, 't6_formulate', 't6_formulate', 'gemini', 'gemini-3.1-flash-lite', 'error', 'INVALID_OUTPUT', ${candidate}, ${env}, ${new Date(t0 + 14 * 3_600_000).toISOString()}::timestamptz, '{}'::jsonb)`;
+    // Rejeu des cas certifiés sur suspicion ; la candidate rend désormais des sorties fausses, l'ancienne version reste juste.
     comportement.set('gemini-3.1-flash-lite', { mode: 'BAD', delayMs: 5 });
-    const r2 = await runPromotionWatch({ trigger: 'e2e', skipLease: true, now: () => new Date(t0 + 13 * 3_600_000), campaign: deps() });
+    const r2 = await runPromotionWatch({ trigger: 'e2e', skipLease: true, now: () => new Date(t0 + 15 * 3_600_000), campaign: deps() });
     expect(r2).toMatchObject({ replays: 1, rolledBack: 1 });
-    expect(await actif()).toBe(Number(w0.previousVersionId));
+    // Lot 113I (SQL-007/008) : retour arrière CIBLÉ — la configuration active reste la version globale courante, seule
+    // la part T6 revient à son état antérieur (nouvelle révision « restore ») ; aucune ancienne version réactivée.
+    expect(await actif()).toBe(candidate);
+    const [snap] = await sql<Json[]>`SELECT r.snapshot, r.kind FROM ai_config_versions v JOIN ai_config_revisions r ON r.id = v.current_revision_id WHERE v.id = ${candidate}`;
+    expect(snap.kind).toBe('restore');
+    expect((snap.snapshot.entries as Json[]).find((e) => e.treatment === 'T6')!.primaryModel).toBe('gemini-3.5-flash');
     const v = await version(candidate);
-    expect(v).toMatchObject({ status: 'INACTIVE', candidate_state: 'SUSPENDED' });
+    expect(v).toMatchObject({ status: 'ACTIVE', candidate_state: 'SUSPENDED' });
     expect(v.candidate_promotion.watch).toMatchObject({ status: 'ROLLED_BACK', replays: 1 });
     const [pc] = await sql<Json[]>`SELECT id, status FROM ai_qualification_campaigns WHERE kind = 'POST_CHECK' ORDER BY id DESC LIMIT 1`;
     expect(pc.status).toBe('COMPLETED');
     const post = await evenements('POST_CHECK', candidate);
     expect(post.at(-1)).toMatchObject({ code: 'DEGRADED_IMPUTABLE', allowed: false });
     expect(post.at(-1)!.message).toMatch(/régression\(s\) certifiée\(s\)/);
-    expect(await evenements('ROLLBACK', candidate)).toHaveLength(1);
+    expect(await evenements('TARGETED_ROLLBACK', candidate)).toHaveLength(1);
     const { collectAiConditions } = await import('@/services/admin/supervision-sweep.service');
     expect((await collectAiConditions()).some((x) => x.fingerprint === `ai:promotion:rollback:${candidate}`)).toBe(true);
     // Surveillance terminée : un nouveau passage ne refait rien.
-    const r3 = await runPromotionWatch({ trigger: 'e2e', skipLease: true, now: () => new Date(t0 + 14 * 3_600_000), campaign: deps() });
+    const r3 = await runPromotionWatch({ trigger: 'e2e', skipLease: true, now: () => new Date(t0 + 16 * 3_600_000), campaign: deps() });
     expect(r3.watched).toBe(0);
     comportement.set('gemini-3.1-flash-lite', { mode: 'GOOD', delayMs: 5 });
   });
@@ -361,16 +382,22 @@ scenario('L105B', 'Promotion automatique IA sur preuves : BLOCKED_A1, relance, r
     expect(await refus(token)).toBe('A1_NOW_REFUSED');
     a1 = 'LEVE';
     // Changement CONCURRENT entre la revalidation et la transaction : certification, puis configuration active.
+    // Lot 113I : la transaction est la PROMOTION CIBLÉE (`promoteTreatment`), jamais l'activation de l'instantané complet.
     const d1 = await gate.revalidatePromotion({ versionId: cand, claim: token });
     expect(d1.ok).toBe(true);
     await decision('REJETEE', 'H-P-T6-EV-01-DECISION-VALIDE');
-    await expect(cfg.activateVersion(cand, null, undefined, { candidate: true, guard: gate.transactionGuard(d1.reference) })).rejects.toMatchObject({ gateCode: 'CONCURRENT_CHANGE' });
+    await expect(cfg.promoteTreatment(cand, { guard: gate.transactionGuard(d1.reference), watch: () => ({}) })).rejects.toMatchObject({ gateCode: 'CONCURRENT_CHANGE' });
     await decision('RETABLIE', 'H-P-T6-EV-01-DECISION-VALIDE');
     const d2 = await gate.revalidatePromotion({ versionId: cand, claim: token });
     expect(d2.ok).toBe(true);
+    // Lot 113I (CDC V2 PRO-04, LIF-011, REC-064/065) — RÈGLE DÉLIBÉRÉMENT CHANGÉE : une activation concurrente ne bloque
+    // que si elle CHANGE le traitement ciblé (l'humain gagne : CANDIDATE_STALE) ; un changement d'un autre traitement
+    // est conservé par la fusion ciblée (scénario 113I dédié).
     const autre = await svc.createConfigVersion(adminId, { label: 'e2e-l105b activation concurrente' });
+    const t6Autre = autre.entries.filter((e) => e.treatment === 'T6').map((e) => ({ ...e, primaryModel: 'gemini-3.5-flash', fallback1: null, reasoningFallback1: null, operationProfiles: {} }));
+    await svc.saveConfiguration(autre.id, { expectedRevision: autre.currentRevisionNumber, entries: t6Autre }, adminId);
     await svc.activate(autre.id, adminId);
-    await expect(cfg.activateVersion(cand, null, undefined, { candidate: true, guard: gate.transactionGuard(d2.reference) })).rejects.toMatchObject({ gateCode: 'CONCURRENT_CHANGE' });
+    await expect(cfg.promoteTreatment(cand, { guard: gate.transactionGuard(d2.reference), watch: () => ({}) })).rejects.toMatchObject({ code: 'CANDIDATE_STALE' });
     await svc.activate(baseVersionId, adminId);
     expect((await version(cand))).toMatchObject({ status: 'INACTIVE', candidate_state: 'QUALIFIED' });
     // Refus journalisés avec la version de référence.

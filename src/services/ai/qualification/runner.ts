@@ -47,7 +47,16 @@ export const productionGatewayCall: GatewayCall = async (req, ctx) => {
  * jamais « non établie ») — compte technique de qualification (corpus) ou
  * compte de données d'un rejeu devenu non éligible (C-Q10).
  */
-export type PrerequisiteBlock = 'TECHNICAL_ACCOUNT' | 'REPLAY_ACCOUNT';
+export type PrerequisiteBlock = 'TECHNICAL_ACCOUNT' | 'REPLAY_ACCOUNT' | 'BUDGET';
+
+/** Lot 113I : préfixe stable d'un essai NON appelé faute de réservation budgétaire (WAITING_BUDGET, jamais un défaut). */
+export const BUDGET_REASON_PREFIX = 'budget d’amélioration';
+
+/**
+ * Lot 113I : codes d'échec levés AVANT tout contact fournisseur (aucune facturation possible) — la réservation est
+ * libérée. Tout autre échec est réputé « appel envoyé, coût à rapprocher » (FIN-005).
+ */
+const NOT_SENT = new Set(['ACCOUNT_INELIGIBLE', 'REQUEST_BUILD_FAILED', 'AI_SUSPENDED', 'COST_CAP_REACHED', 'MASTER_PROMPT_INVALID']);
 
 export type Observation = CaseObservation & { advisory: boolean; blockedBy?: PrerequisiteBlock };
 
@@ -83,6 +92,11 @@ export async function runCoupleCases(p: {
   masterText: MasterFileReader;
   call?: GatewayCall;
   thresholds?: QualificationThresholds;
+  /**
+   * Lot 113I (CDC V2 BUD-03/04, FIN-004) : réservation du budget d'amélioration AVANT CHAQUE essai d'appel, règlement
+   * après. `null` / absent : aucun appel payant d'amélioration (test manuel administrateur, fournisseur simulé).
+   */
+  budget?: import('./improvement-budget').AttemptBudget | null;
 }): Promise<CoupleRun> {
   const th = p.thresholds ?? QUALIFICATION_THRESHOLDS;
   const call = p.call ?? productionGatewayCall;
@@ -121,15 +135,32 @@ export async function runCoupleCases(p: {
     let derniere = '';
     for (let essai = 0; essai <= th.transientRetries; essai += 1) {
       base.attempts = essai + 1;
+      const idempotencyKey = `qualif:${p.campaignId}:${p.couple.signature.slice(0, 16)}:${c.caseId}:${obs}:${essai}`;
+      // Lot 113I : réservation AVANT l'appel ; refus → aucun appel (WAITING_BUDGET / COST_UNKNOWN), jamais un défaut.
+      let reservationId: number | null = null;
+      if (p.budget) {
+        const r = await p.budget.reserve({
+          attemptKey: idempotencyKey, treatment: p.couple.treatment, operationCode: c.operationCode, model: p.couple.model,
+          variables: c.variables, attachments: c.attachments?.length ?? 0, maxOutputTokens: p.couple.profile.maxOutputTokens, candidateVersionId: p.couple.versionId,
+        }).catch((e) => ({ ok: false as const, code: 'BUDGET_UNAVAILABLE' as const, message: `registre budgétaire illisible (${(e as Error).message.slice(0, 160)}) : aucun appel (fail-closed)` }));
+        if (!r.ok) return { ...base, blockedBy: 'BUDGET', inconclusiveReason: `${BUDGET_REASON_PREFIX} (${r.code}) : ${r.message}` };
+        if (r.reused) return { ...base, inconclusiveReason: `essai ${idempotencyKey} déjà engagé (${r.state}) : jamais rejoué à l’aveugle (LIF-005)` };
+        reservationId = r.reservationId;
+      }
+      const regler = async (x: { sent: boolean; costMicros: number | null; traceId?: string | null }) => {
+        if (reservationId != null && p.budget) await p.budget.settle(reservationId, x).catch((e) => console.error('[qualification] règlement budgétaire :', (e as Error).message));
+      };
       try {
         const res = await call({
           useCaseCode: op.useCaseCode, operationCode: c.operationCode, accountId, promptVariables: c.variables,
           // Lot 100B : fichiers RÉELS du cas multimodal (jamais un nom de fichier seul).
           ...(c.attachments?.length ? { attachments: c.attachments } : {}),
           outputSchema: c.outputSchema, acceptedOutputSchemas: c.acceptedOutputSchemas,
-          idempotencyKey: `qualif:${p.campaignId}:${p.couple.signature.slice(0, 16)}:${c.caseId}:${obs}:${essai}`,
+          idempotencyKey,
+          // costCapExempt : plafond du COMPTE technique seulement (C-Q10) — jamais l'enveloppe d'amélioration, réservée ci-dessus.
           firstModelIndex: p.couple.rank, maxModelAttempts: 1, costCapExempt: true, triggerCode: 'qualification',
-        }, ctx);
+        }, { ...ctx, improvementAttemptKey: reservationId != null ? idempotencyKey : null });
+        await regler({ sent: !res.fromCache, costMicros: res.fromCache ? 0 : Number.isFinite(res.costMicros) ? res.costMicros : null, traceId: res.traceId });
         const vu: Observation = {
           ...base, durationMs: res.durationMs, costMicros: Number.isFinite(res.costMicros) ? res.costMicros : null, servedModel: res.model,
           traceId: res.traceId, observedSha256: outputSha256(res.data),
@@ -150,6 +181,8 @@ export async function runCoupleCases(p: {
         return { ...lu, outcome: 'PASSED' };
       } catch (e) {
         const code = failureCodeOf(e);
+        // Lot 113I : échec avant contact fournisseur → libérée ; sinon coût à rapprocher (jamais converti en zéro).
+        await regler({ sent: !NOT_SENT.has(code), costMicros: null });
         derniere = `${code} : ${String((e as Error)?.message ?? e).slice(0, 200)}`;
         if (code === 'INVALID_OUTPUT') {
           return { ...base, outcome: 'FAILED', defects: [{ category: 'SCHEMA', message: `sortie non conforme : ${String((e as Error).message).slice(0, 300)}` }] };

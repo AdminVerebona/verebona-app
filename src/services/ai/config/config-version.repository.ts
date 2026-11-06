@@ -44,7 +44,8 @@ import {
 import type { ConfigVersionStatus } from './version-state-machine';
 import {
   buildSnapshot, normalizeSnapshot, snapshotSha256, snapshotsEqual, sha256,
-  type ConfigSnapshot, type MasterPromptRef,
+  assertOnlyTreatmentChanged, replaceTreatmentPart, treatmentFingerprint, treatmentPart, TreatmentDeltaRefused,
+  type ConfigSnapshot, type MasterPromptRef, type TreatmentPart,
 } from './config-snapshot';
 import type { MasterExecutionConfig } from '../master-prompts/structured-context';
 import { normalizeOperationProfiles } from './operation-profiles';
@@ -647,7 +648,17 @@ export async function createVersion(p: {
    * de la source modifié par `transform` dans la même transaction (aucune
    * version partielle visible), origine `auto`, état `CREATED`.
    */
-  candidate?: { key: string; reason: string; campaignId: number | null; transform: (s: ConfigSnapshot) => ConfigSnapshot } | null;
+  candidate?: {
+    key: string; reason: string; campaignId: number | null; transform: (s: ConfigSnapshot) => ConfigSnapshot;
+    /**
+     * Lot 113I (LIF-007, DATA-04) : traitement ciblé. Fourni : le delta est vérifié par différence structurelle
+     * (un seul traitement, aucun champ protégé, effet réel) et enregistré AVEC son empreinte de référence dans la
+     * transaction de création (`candidate_promotion.delta`).
+     */
+    treatment?: Treatment;
+    /** Lot 113I : objectif d'amélioration auquel la candidate se rattache (variante n). */
+    objective?: { id: number; variant: number } | null;
+  } | null;
 }): Promise<ConfigVersionWithEntries> {
   const environment = p.environment ?? getAiEnvironment();
   const id = await pgClient.begin(async (tx) => {
@@ -675,7 +686,22 @@ export async function createVersion(p: {
         snapshot = cur.snapshot; kind = 'duplicate'; sourceVersionId = Number(a.id); restoredFrom = cur.id;
       }
     }
+    const reference = snapshot;
     if (p.candidate) snapshot = normalizeSnapshot(p.candidate.transform(snapshot));
+    let delta: Record<string, unknown> | null = null;
+    if (p.candidate?.treatment) {
+      try {
+        const d = assertOnlyTreatmentChanged(reference, snapshot, p.candidate.treatment);
+        delta = {
+          treatment: d.treatment, baselineRevisionId: restoredFrom, baselineVersionId: sourceVersionId,
+          baselineFingerprint: d.beforeFingerprint, afterFingerprint: d.afterFingerprint, axes: d.axes,
+          objectiveId: p.candidate.objective?.id ?? null, variant: p.candidate.objective?.variant ?? null, at: new Date().toISOString(),
+        };
+      } catch (e) {
+        if (e instanceof TreatmentDeltaRefused) throw new ConfigVersionRefused(e.code, e.message);
+        throw e;
+      }
+    }
     const n = Number((await q(sql,
       `SELECT COALESCE(MAX(visible_number), 0) + 1 AS n FROM ai_config_versions WHERE environment = $1`, [environment]))[0].n);
     const v = (await q(sql,
@@ -688,6 +714,10 @@ export async function createVersion(p: {
         `UPDATE ai_config_versions SET origin = 'auto', candidate_state = 'CREATED', candidate_key = $2, candidate_reason = $3,
                 candidate_campaign_id = $4, candidate_base_revision_id = $5 WHERE id = $1`,
         [versionId, p.candidate.key, p.candidate.reason, p.candidate.campaignId, restoredFrom] as never[]);
+      if (delta) {
+        await sql.unsafe(`UPDATE ai_config_versions SET candidate_promotion = COALESCE(candidate_promotion, '{}'::jsonb) || $2::jsonb WHERE id = $1`,
+          [versionId, JSON.stringify({ delta })] as never[]);
+      }
     }
     const email = await userEmail(sql, p.userId);
     const revId = await insertRevision(sql, {
@@ -900,6 +930,220 @@ export async function activateVersionInTx(sql: SqlLike, environment: string, ver
     previousId: anciennes[0] ? Number(anciennes[0].id) : null, alreadyActive: false,
     revisionId: cur.id, revisionNumber: cur.number, masterPromptSwitches: switches,
   };
+}
+
+// ══════════════════════════════════════════════════════════════════════════
+// Lot 113I — PROMOTION ET RETOUR ARRIÈRE CIBLÉS PAR TRAITEMENT (CDC V2 §11.2,
+// §11.3, §30.3, §30.4 : PRO-03..08, SQL-004..009, DATA-05, LIF-011).
+//
+// Sous le verrou EXISTANT de l'environnement, dans UNE transaction :
+//   promotion — relit la dernière configuration active ; refuse si l'empreinte
+//   du traitement ciblé n'est plus celle sur laquelle la candidate a été
+//   qualifiée (CANDIDATE_STALE : intervention humaine ou autre promotion du
+//   MÊME traitement entre-temps — l'humain gagne) ; fusionne la SEULE part du
+//   traitement sur la dernière active (les autres traitements sont conservés
+//   et vérifiés identiques) ; écrit la révision fusionnée sur la candidate, qui
+//   devient la version globale active (une seule active) ; enregistre l'état
+//   antérieur du traitement (référence de restauration) ET la surveillance
+//   initiale WATCHING dans le même commit (aucune dépendance à un appel après
+//   commit).
+//   retour arrière — remplace la SEULE part du traitement dans la
+//   configuration active courante par son état antérieur, nouvelle révision
+//   (« restore ») de la version active, seulement si l'empreinte courante est
+//   toujours celle promue (sinon ROLLBACK_CONFLICT : rien n'est écrasé) et si
+//   le gel est lisible et absent. Jamais de réactivation d'une ancienne
+//   version globale (SQL-008).
+// ══════════════════════════════════════════════════════════════════════════
+
+/** Référence de restauration et identité d'une promotion ciblée (`candidate_promotion.targeted`). */
+export interface TargetedPromotionRecord {
+  treatment: Treatment;
+  baselineFingerprint: string;
+  afterFingerprint: string;
+  axes: string[];
+  previous: TreatmentPart;
+  promoted: TreatmentPart;
+  globalActiveBefore: { versionId: number; revisionId: number; revisionNumber: number } | null;
+  globalActiveAfter: { versionId: number; revisionId: number; revisionNumber: number };
+  promotedAt: string;
+}
+
+function readPromotion(r: Row): Record<string, any> {
+  const raw = r.candidate_promotion;
+  if (raw && typeof raw === 'object') return raw as Record<string, any>;
+  if (typeof raw === 'string') { try { return JSON.parse(raw) as Record<string, any>; } catch { return {}; } }
+  return {};
+}
+
+/** Promotion ciblée d'une candidate QUALIFIÉE (préproduction ; l'appelant a revalidé la frontière). */
+export async function promoteTreatment(versionId: number, opts: {
+  summary?: string;
+  /** Revalidation finale (gate 105B) — après le verrou, avant toute écriture ; lève pour tout annuler. */
+  guard?: (sql: SqlLike) => Promise<void>;
+  /** Surveillance initiale persistée dans la même transaction (SQL-006). */
+  watch: (t: TargetedPromotionRecord) => Record<string, unknown>;
+  now?: Date;
+}): Promise<{
+  previousId: number | null; alreadyActive: boolean; revisionNumber: number;
+  masterPromptSwitches: WriteOutcome['masterPromptSwitches']; targeted: TargetedPromotionRecord | null;
+}> {
+  const environment = await environmentOf(versionId);
+  return pgClient.begin(async (tx) => {
+    const sql = tx as unknown as SqlLike;
+    await lockEnvironment(sql, environment);
+    if (environment === 'production') throw new ConfigVersionRefused('PREPROD_ONLY', 'Promotion automatique refusée : la production n’est jamais modifiée automatiquement (PRD-01).');
+    const r = await lockedVersion(sql, versionId);
+    const extra = (await q(sql, `SELECT COALESCE(to_jsonb(v)->'candidate_promotion', '{}'::jsonb) AS candidate_promotion, candidate_base_revision_id FROM ai_config_versions v WHERE id = $1`, [versionId]))[0] ?? {};
+    const promo = readPromotion(extra);
+    if (r.deleted_at != null) throw new ConfigVersionRefused('VERSION_DELETED', 'Cette version a été supprimée : aucune promotion.');
+    if (String(r.status) === 'ACTIVE') {
+      // PRO-08 : double demande / relance après commit — idempotent, aucune seconde version effective.
+      const cur = await ensureCurrentRevision(sql, r);
+      return { previousId: null, alreadyActive: true, revisionNumber: cur.number, masterPromptSwitches: [], targeted: (promo.targeted ?? null) as TargetedPromotionRecord | null };
+    }
+    if (r.origin !== 'auto' || r.candidate_state !== 'QUALIFIED') {
+      throw new ConfigVersionRefused('CANDIDATE_NOT_QUALIFIED',
+        `Version ${versionId} : seule une candidate automatique QUALIFIÉE peut être promue (origine ${String(r.origin ?? 'manual')}, état ${String(r.candidate_state ?? 'aucun')}).`);
+    }
+    if (opts.guard) await opts.guard(sql);
+    const cand = await ensureCurrentRevision(sql, r);
+    const delta = (promo.delta ?? null) as { treatment?: string; baselineFingerprint?: string; axes?: string[] } | null;
+    const treatment = (delta?.treatment ?? (promo.qualification as { treatment?: string } | undefined)?.treatment ?? null) as Treatment | null;
+    if (!treatment || !isTreatment(treatment)) throw new ConfigVersionRefused('CANDIDATE_NOT_QUALIFIED', `Candidate ${versionId} : traitement ciblé inconnu (delta absent).`);
+    // Empreinte de référence : enregistrée à la création (113I) ; candidates antérieures : relue sur la révision
+    // source IMMUABLE (`candidate_base_revision_id`), jamais supposée.
+    let baseline = delta?.baselineFingerprint ?? null;
+    if (!baseline && extra.candidate_base_revision_id != null) {
+      const rev = await getRevision(Number(extra.candidate_base_revision_id), sql);
+      if (rev) baseline = treatmentFingerprint(rev.snapshot, treatment);
+    }
+    if (!baseline) throw new ConfigVersionRefused('CANDIDATE_STALE', `Candidate ${versionId} : référence de qualification de ${treatment} introuvable — requalification exigée.`);
+    const activeRow = (await q(sql, `SELECT ${COLS} FROM ai_config_versions v WHERE v.environment = $1 AND v.status = 'ACTIVE' FOR UPDATE`, [environment]))[0];
+    const activeCur = activeRow ? await ensureCurrentRevision(sql, activeRow) : null;
+    const courante = activeCur ? treatmentFingerprint(activeCur.snapshot, treatment) : null;
+    if (courante !== baseline) {
+      throw new ConfigVersionRefused('CANDIDATE_STALE',
+        `Promotion refusée : la configuration effective de ${treatment} a changé depuis la qualification (intervention administrative ou autre promotion du même traitement) — la candidate est obsolète, aucune modification.`,
+        { treatment, baselineFingerprint: baseline, currentFingerprint: courante });
+    }
+    const promoted = treatmentPart(cand.snapshot, treatment);
+    const previous = activeCur ? treatmentPart(activeCur.snapshot, treatment) : { treatment, entry: null, masterPrompt: null };
+    let next: ConfigSnapshot;
+    try {
+      next = activeCur ? replaceTreatmentPart(activeCur.snapshot, promoted) : cand.snapshot;
+    } catch (e) {
+      if (e instanceof TreatmentDeltaRefused) throw new ConfigVersionRefused(e.code, e.message);
+      throw e;
+    }
+    const email = await userEmail(sql, null);
+    let revisionId = cand.id;
+    let revisionNumber = cand.number;
+    if (!snapshotsEqual(next, cand.snapshot)) {
+      revisionNumber = cand.number + 1;
+      revisionId = await insertRevision(sql, {
+        versionId, number: revisionNumber, snapshot: next, kind: 'save', userId: null, email,
+        sourceVersionId: activeRow ? Number(activeRow.id) : null, restoredFrom: activeCur?.id ?? null,
+        comment: `Promotion automatique ciblée ${treatment} : delta qualifié fusionné sur la configuration active${activeRow ? ` v${String(activeRow.visible_number ?? activeRow.id)} r${activeCur!.number}` : ''} (autres traitements inchangés).`,
+      });
+      await materializeEntries(sql, versionId, next.entries, null);
+      await sql.unsafe(`UPDATE ai_config_versions SET current_revision_id = $2, current_revision_number = $3, updated_at = now() WHERE id = $1`,
+        [versionId, revisionId, revisionNumber] as never[]);
+    }
+    const act = await activateVersionInTx(sql, environment, versionId, null, { candidate: true, summary: opts.summary });
+    const targeted: TargetedPromotionRecord = {
+      treatment, baselineFingerprint: baseline, afterFingerprint: treatmentFingerprint(next, treatment), axes: delta?.axes ?? [],
+      previous, promoted,
+      globalActiveBefore: activeRow && activeCur ? { versionId: Number(activeRow.id), revisionId: activeCur.id, revisionNumber: activeCur.number } : null,
+      globalActiveAfter: { versionId, revisionId, revisionNumber },
+      promotedAt: (opts.now ?? new Date()).toISOString(),
+    };
+    await sql.unsafe(`UPDATE ai_config_versions SET candidate_promotion = COALESCE(candidate_promotion, '{}'::jsonb) || $2::jsonb WHERE id = $1`,
+      [versionId, JSON.stringify({ targeted, watch: opts.watch(targeted) })] as never[]);
+    return { previousId: act.previousId, alreadyActive: false, revisionNumber: act.revisionNumber, masterPromptSwitches: act.masterPromptSwitches, targeted };
+  }) as never;
+}
+
+export type TargetedRollbackCode = 'ROLLBACK_CONFLICT' | 'ALREADY_ROLLED_BACK' | 'NO_PREVIOUS_STATE' | 'PREPROD_ONLY' | 'FROZEN' | 'PROMOTION_GUARD_UNAVAILABLE' | 'NO_ACTIVE_CONFIGURATION';
+
+/** Retour arrière ciblé du traitement d'une promotion automatique (préproduction). */
+export async function rollbackTreatment(candidateVersionId: number, opts: {
+  reason: string;
+  /** État de surveillance écrit dans la même transaction en cas de succès. */
+  watchPatch: (p: { activeVersionId: number; revisionNumber: number }) => Record<string, unknown>;
+}): Promise<
+  | { ok: true; activeVersionId: number; revisionNumber: number; treatment: Treatment; masterPromptSwitches: WriteOutcome['masterPromptSwitches'] }
+  | { ok: false; code: TargetedRollbackCode; message: string; treatment: Treatment | null }
+> {
+  const environment = await environmentOf(candidateVersionId);
+  return pgClient.begin(async (tx) => {
+    const sql = tx as unknown as SqlLike;
+    await lockEnvironment(sql, environment);
+    if (environment === 'production') return { ok: false, code: 'PREPROD_ONLY', message: 'Aucun retour arrière automatique en production.', treatment: null };
+    await lockedVersion(sql, candidateVersionId);
+    const extra = (await q(sql, `SELECT COALESCE(to_jsonb(v)->'candidate_promotion', '{}'::jsonb) AS candidate_promotion FROM ai_config_versions v WHERE id = $1`, [candidateVersionId]))[0] ?? {};
+    const promo = readPromotion(extra);
+    const t = (promo.targeted ?? null) as TargetedPromotionRecord | null;
+    if (!t || !isTreatment(t.treatment)) {
+      return { ok: false, code: 'NO_PREVIOUS_STATE', message: 'Aucune référence de restauration ciblée (promotion antérieure au lot 113I) : réactivation manuelle (BO › Configuration IA).', treatment: null };
+    }
+    if ((promo.watch as { status?: string } | undefined)?.status === 'ROLLED_BACK') {
+      return { ok: false, code: 'ALREADY_ROLLED_BACK', message: 'Retour arrière déjà effectué (idempotent).', treatment: t.treatment };
+    }
+    // Gel administratif : lecture obligatoire (fail-closed, PRO-07) ; un gel actif interdit toute modification automatique.
+    let gel: { treatment: string | null; reason: string } | null = null;
+    try {
+      const { listActiveInterventions, freezeFor } = await import('./config-interventions.service');
+      gel = freezeFor(t.treatment, await listActiveInterventions(environment, sql));
+    } catch (e) {
+      return { ok: false, code: 'PROMOTION_GUARD_UNAVAILABLE', message: `Lecture des gels administratifs impossible (${(e as Error).message.slice(0, 200)}) : retour arrière automatique bloqué.`, treatment: t.treatment };
+    }
+    if (gel) return { ok: false, code: 'FROZEN', message: `Gel administratif ${gel.treatment ?? 'global'} actif (${gel.reason}) : aucune modification automatique.`, treatment: t.treatment };
+    const activeRow = (await q(sql, `SELECT ${COLS} FROM ai_config_versions v WHERE v.environment = $1 AND v.status = 'ACTIVE' FOR UPDATE`, [environment]))[0];
+    if (!activeRow) return { ok: false, code: 'NO_ACTIVE_CONFIGURATION', message: 'Aucune configuration active.', treatment: t.treatment };
+    const cur = await ensureCurrentRevision(sql, activeRow);
+    const courante = treatmentFingerprint(cur.snapshot, t.treatment);
+    if (courante !== t.afterFingerprint) {
+      return { ok: false, code: 'ROLLBACK_CONFLICT', message: `La configuration de ${t.treatment} a changé depuis la promotion (intervention administrative ou nouvelle promotion) : retour arrière refusé, la révision la plus récente est conservée.`, treatment: t.treatment };
+    }
+    if (!t.previous.entry || (t.promoted.masterPrompt && !t.previous.masterPrompt)) {
+      return { ok: false, code: 'NO_PREVIOUS_STATE', message: `État antérieur de ${t.treatment} incomplet : restauration ciblée impossible.`, treatment: t.treatment };
+    }
+    let next: ConfigSnapshot;
+    try {
+      next = replaceTreatmentPart(cur.snapshot, t.previous);
+    } catch (e) {
+      if (e instanceof TreatmentDeltaRefused) return { ok: false, code: 'ROLLBACK_CONFLICT', message: e.message, treatment: t.treatment };
+      throw e;
+    }
+    const versionId = Number(activeRow.id);
+    const number = cur.number + 1;
+    const revisionId = await insertRevision(sql, {
+      versionId, number, snapshot: next, kind: 'restore', userId: null, email: null, restoredFrom: null,
+      comment: `Retour arrière automatique ciblé de ${t.treatment} (candidate ${candidateVersionId}) : ${opts.reason}`.slice(0, 1000),
+    });
+    await materializeEntries(sql, versionId, next.entries, null);
+    await sql.unsafe(`UPDATE ai_config_versions SET current_revision_id = $2, current_revision_number = $3, updated_at = now() WHERE id = $1`,
+      [versionId, revisionId, number] as never[]);
+    const switches = await applyMasterPromptRefs(sql, environment, next.masterPrompts, {
+      userId: null, email: null, summary: `Retour arrière automatique ciblé ${t.treatment} (candidate ${candidateVersionId})`,
+    });
+    await bumpCacheInTx(sql, `cfg:rollback-ciblé:${t.treatment}:${versionId}:r${number}`);
+    await sql.unsafe(
+      `UPDATE ai_config_versions SET candidate_state = 'SUSPENDED', candidate_reason = $2,
+              candidate_promotion = COALESCE(candidate_promotion, '{}'::jsonb) || $3::jsonb, updated_at = now() WHERE id = $1`,
+      [candidateVersionId, `Retour arrière automatique ciblé : ${opts.reason}`.slice(0, 1000), JSON.stringify({ watch: opts.watchPatch({ activeVersionId: versionId, revisionNumber: number }) })] as never[]);
+    return { ok: true, activeVersionId: versionId, revisionNumber: number, treatment: t.treatment, masterPromptSwitches: switches };
+  }) as never;
+}
+
+/** Empreinte de la part d'un traitement dans la configuration active (lecture). */
+export async function activeTreatmentFingerprint(environment: string, treatment: Treatment, sql: SqlLike = pgClient as unknown as SqlLike): Promise<{ versionId: number; fingerprint: string } | null> {
+  const r = (await q(sql, `SELECT ${COLS} FROM ai_config_versions v WHERE v.environment = $1 AND v.status = 'ACTIVE' ORDER BY id DESC LIMIT 1`, [environment]))[0];
+  if (!r) return null;
+  const id = numOrNull(r.current_revision_id);
+  const rev = id ? await getRevision(id, sql) : null;
+  const snapshot = rev?.snapshot ?? buildSnapshot((await readEntries(Number(r.id), sql)).entries, await readActiveMasterPromptRefs(sql, environment));
+  return { versionId: Number(r.id), fingerprint: treatmentFingerprint(snapshot, treatment) };
 }
 
 /** Lot 86A : état d'une candidate automatique (jamais sur une version manuelle). */

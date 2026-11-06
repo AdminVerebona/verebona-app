@@ -70,7 +70,7 @@ const TYPES_QUALITE: readonly TestType[] = ['QUALITE_MODELE', 'PAIRE_ADVERSARIAL
  * traitement n'a réellement aucune paire, ajouter une EXCLUSION motivée, jamais retirer l'exigence).
  */
 export const EXPECTED_INVENTORY: ExpectedInventory = Object.freeze({
-  version: 'inventaire-attendu-v1',
+  version: 'inventaire-attendu-v2',
   source: '#601 (ZIP annoncé le 27/10/2026 : 401 scénarios dont 86 historiques, 20 à revalider, 295 nouveaux ; 110 paires ; 15 stress) · CDC 4 §35.3 (T2) · ticket IA auto-amélioration du 02/11/2026',
   totals: { historical: 86, toRevalidate: 20, newScenarios: 295, stress: 15, pairs: 110 },
   perTreatment: {
@@ -166,14 +166,16 @@ export function assessInventory(p: {
   const inScope = p.entries.filter((e) => e.operationCode && opCodes.has(e.operationCode));
   const approved = (e: ManifestEntry) => p.statusOf(e) === 'REFERENCE_APPROUVEE';
 
-  // 1. Totaux du ZIP #601 (globaux : un corpus incomplet bloque TOUT traitement).
+  // 1. Totaux du ZIP #601 — Lot 113I (CDC V2 EC-03, COR-03, CORP-01, REC-039) : INDICATEUR de progression
+  // d'intégration, affiché « incomplet », JAMAIS une garde croisée : la promotion d'un traitement dépend des
+  // exigences de SON périmètre (difficultés, types de test, paires, cas obligatoires, approbations, résultats
+  // ci-dessous), pas de la complétude des autres traitements. Aucune exigence critique n'est abaissée.
   const n = inventoryCounts(p.entries);
   for (const k of Object.keys(inv.totals) as Array<keyof ExpectedInventory['totals']>) {
     const attendu = inv.totals[k];
     if (attendu <= 0) continue;
     const met = n[k] >= attendu;
-    exiger({ id: `totals.${k}`, label: `${attendu} ${TOTAL_LABELS[k]} (#601)`, treatment: null, met, detail: `${n[k]} au manifeste / ${attendu} attendus` },
-      { code: 'INVENTORY_INCOMPLETE', operationCode: null, caseId: null, structural: true, message: `inventaire #601 incomplet : ${n[k]} ${TOTAL_LABELS[k]} au manifeste sur ${attendu} attendus` });
+    exiger({ id: `totals.${k}`, label: `${attendu} ${TOTAL_LABELS[k]} (#601, indicateur global)`, treatment: null, met, detail: `${n[k]} au manifeste / ${attendu} attendus${met ? '' : ' — intégration incomplète (indicateur, ne bloque pas un traitement couvert)'}` }, null);
   }
 
   for (const t of p.treatments) {

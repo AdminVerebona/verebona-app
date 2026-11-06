@@ -54,7 +54,9 @@ scenario('L103G', 'Compte technique de qualification : précontrôle, sécurité
   let provider: import('@/services/ai/gateway/providers').FakeProvider;
   let avantProvider: import('@/services/ai/gateway/providers/provider.port').AiProvider;
   const takeRestorePoint = async (label: string) => { restorePoints.push(label); return { backupId: `rp-${restorePoints.length}`, finishedAt: new Date().toISOString() }; };
-  const campaignDeps = () => ({ takeRestorePoint, accounts: async () => [] as number[] });
+  // Lot 113I (CDC V2 BUD-03/04) : le fournisseur est SIMULÉ (aucun appel payant) — aucune réservation du budget
+  // d'amélioration ici (`budgetPort: null`) ; la réservation réelle est recettée par le scénario L113I.
+  const campaignDeps = () => ({ takeRestorePoint, accounts: async () => [] as number[], budgetPort: null });
   const passage = async () => (await import('@/services/ai/prompt-conformity/service')).runPromptConformityPass({ trigger: 'e2e' }, { skipLease: true, campaign: campaignDeps() });
   const issue = async () => (await sql<Json[]>`SELECT * FROM ai_prompt_conformity_issues WHERE environment = 'preprod' AND contract_id = ${CONTRAT}`)[0];
   const evenements = async (id: number) => sql<Json[]>`SELECT kind, message, payload FROM ai_prompt_conformity_events WHERE issue_id = ${id} ORDER BY id`;

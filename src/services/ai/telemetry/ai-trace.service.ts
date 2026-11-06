@@ -306,10 +306,7 @@ export async function recordCallTrace(t0: CallTrace): Promise<number | null> {
         // COST-007 (§9.1, lot IA 2) : référence tarifaire FIGÉE avec l'appel —
         // le tarif appliqué reste lisible même après une révision de grille.
         // `null` = aucun tarif connu (coût non calculable, COST-008).
-        // Lot 113O : référence du tarif RÉELLEMENT appliqué (modèle servi pour un alias résolu par l'API).
-        pricing: pricingRef(t.provider, tarif.pricedModel ?? t.model),
-        ...(tarif.pricingBasis === 'served_model' ? { pricedModel: tarif.pricedModel, pricingBasis: 'served_model' } : {}),
-        ...(tarif.reasonCode ? { pricingReason: tarif.reasonCode } : {}),
+        pricing: pricingRef(t.provider, t.model),
         // Lot 109L : compteurs utiles au prix et statut tarifaire, figés.
         pricingStatus: tarif.status,
         ...(tarif.exactMicros !== null ? { costExactMicros: tarif.exactMicros } : {}),
@@ -355,7 +352,7 @@ export async function recordCallTrace(t0: CallTrace): Promise<number | null> {
     await writeMasterFields('ai_usage_event', rows?.[0]?.id, master);
     const id = rows?.[0]?.id ?? null;
     await writeTracePricing(id, tarif);
-    if (tarif.status === 'missing' || tarif.reasonCode) void alertMissingPrice(t.provider, t.model);
+    if (tarif.status === 'missing') void alertMissingPrice(t.provider, t.model);
     void refreshPricing();
     await writeBusinessExecution(id, execution.id);
     await captureOf(t, id, execution.id);

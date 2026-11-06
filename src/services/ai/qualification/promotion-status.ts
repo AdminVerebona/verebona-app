@@ -136,7 +136,13 @@ export async function promotionStatus(opts: { query?: Query; environment?: strin
   const cands = await safe(query,
     `SELECT candidate_state AS state, count(*)::int AS n,
             count(*) FILTER (WHERE COALESCE(to_jsonb(v)->'candidate_promotion'->'watch'->>'status', '') = 'WATCHING')::int AS watching,
-            count(*) FILTER (WHERE COALESCE(to_jsonb(v)->'candidate_promotion'->'watch'->>'status', '') = 'ROLLED_BACK')::int AS rolled_back
+            count(*) FILTER (WHERE COALESCE(to_jsonb(v)->'candidate_promotion'->'watch'->>'status', '') = 'ROLLED_BACK')::int AS rolled_back,
+            count(*) FILTER (WHERE COALESCE(to_jsonb(v)->'candidate_promotion'->'watch'->>'status', '') = 'INSUFFICIENT_USAGE')::int AS insufficient_usage,
+            count(*) FILTER (WHERE COALESCE(to_jsonb(v)->'candidate_promotion'->'watch'->>'status', '') = 'VALIDATED_IN_USAGE')::int AS validated_in_usage,
+            count(*) FILTER (WHERE COALESCE(to_jsonb(v)->'candidate_promotion'->'watch'->>'status', '') = 'OBSERVATION_UNAVAILABLE')::int AS observation_unavailable,
+            count(*) FILTER (WHERE COALESCE(to_jsonb(v)->'candidate_promotion'->'watch'->>'status', '') = 'ALERT')::int AS watch_alert,
+            count(*) FILTER (WHERE COALESCE(to_jsonb(v)->'candidate_promotion'->'watch'->>'status', '') = 'ROLLBACK_FAILED')::int AS rollback_failed,
+            count(*) FILTER (WHERE COALESCE(to_jsonb(v)->'candidate_promotion'->'watch'->>'status', '') = 'REPLACED')::int AS replaced
        FROM ai_config_versions v WHERE environment = $1 AND origin = 'auto' AND created_at >= $2::timestamptz GROUP BY candidate_state`, [environment, since30]);
   const nb = (s: string) => Number(cands.find((r) => r.state === s)?.n ?? 0);
   const candidates = {
@@ -144,6 +150,13 @@ export async function promotionStatus(opts: { query?: Query; environment?: strin
     inconclusive: nb('INCONCLUSIVE'), notChosen: nb('NOT_CHOSEN'), activated: nb('ACTIVATED') + nb('SUSPENDED'), suspended: nb('SUSPENDED'),
     watching: cands.reduce((n, r) => n + Number(r.watching ?? 0), 0), rolledBack: cands.reduce((n, r) => n + Number(r.rolled_back ?? 0), 0),
     qualifying: nb('QUALIFYING') + nb('CREATED'),
+    // Lot 113I (BO-07, OPS-05) : états de surveillance DISTINCTS (jamais « rejetée » pour un manque d'usage).
+    insufficientUsage: cands.reduce((n, r) => n + Number(r.insufficient_usage ?? 0), 0),
+    validatedInUsage: cands.reduce((n, r) => n + Number(r.validated_in_usage ?? 0), 0),
+    observationUnavailable: cands.reduce((n, r) => n + Number(r.observation_unavailable ?? 0), 0),
+    watchAlert: cands.reduce((n, r) => n + Number(r.watch_alert ?? 0), 0),
+    rollbackFailed: cands.reduce((n, r) => n + Number(r.rollback_failed ?? 0), 0),
+    replaced: cands.reduce((n, r) => n + Number(r.replaced ?? 0), 0),
   };
   const conf = await safe(query,
     `SELECT count(*) FILTER (WHERE (qualification->>'a1Blocked')::boolean IS TRUE AND status NOT IN ('RESOLVED', 'ACTIVATED'))::int AS a1,
@@ -175,8 +188,9 @@ export async function promotionStatus(opts: { query?: Query; environment?: strin
 
   let events: PromotionEvent[] = [];
   events = await listPromotionEvents({ environment, limit: 30, query });
+  const improvement = await improvementOverview({ environment, coverage }).catch((e) => ({ error: `lecture impossible : ${(e as Error).message.slice(0, 200)}` }));
   return {
-    readAt: new Date().toISOString(), environment, params: promotionParams(), health, scheduler, executions, inventory, coverage, blocks, candidates, events,
+    readAt: new Date().toISOString(), environment, params: promotionParams(), health, scheduler, executions, inventory, coverage, blocks, candidates, events, improvement,
     deferred: DEFERRED_P2,
     manualFlows: { manualActivation: 'Activation manuelle (#345) inchangée : la matrice A1 est affichée, jamais bloquante.', production: 'Production : export instantané de préproduction puis import manuel validé (config-export / config-import), preuve, journal, retour arrière.' },
   };
@@ -187,4 +201,54 @@ export type PromotionStatus = Awaited<ReturnType<typeof promotionStatus>>;
 /** Ligne de santé courte (note des tâches planifiées). */
 export function promotionHealthNote(h: PromotionHealth): string {
   return `Santé promotion : ${h.automatic ? 'AUTOMATIQUE (progrès effectif)' : h.code} — ${h.label}${h.cause ? ` · cause : ${h.cause}` : ''}${h.nextAction ? ` · geste : ${h.nextAction}` : ''}`;
+}
+
+// ══════════════════════════════════════════════════════════════════════════
+// Lot 113I — VUE D'AMÉLIORATION PAR TRAITEMENT (CDC V2 BO-02, BO-04, BO-07,
+// MAN-02, RLS-004, API-02) : projection CALCULÉE des preuves, gardes et
+// prérequis — jamais une seconde source de configuration.
+// ══════════════════════════════════════════════════════════════════════════
+
+export type CapabilityState = 'OBSERVATION_ONLY' | 'QUALIFICATION_AVAILABLE' | 'AUTONOMOUS_PROMOTION_READY' | 'AUTONOMOUS_ACTIVE' | 'BLOCKED';
+
+/** État de capacité d'un traitement (pur, RLS-004). */
+export function capabilityState(p: { environment: string; budgetBlocked: string | null; structuralA1: number; activeWatch: boolean }): { state: CapabilityState; cause: string | null } {
+  if (p.environment === 'production') return { state: 'OBSERVATION_ONLY', cause: 'production : lecture et diagnostic seulement (PRD-01)' };
+  if (p.budgetBlocked) return { state: 'BLOCKED', cause: p.budgetBlocked };
+  if (p.activeWatch) return { state: 'AUTONOMOUS_ACTIVE', cause: null };
+  if (p.structuralA1 > 0) return { state: 'QUALIFICATION_AVAILABLE', cause: `${p.structuralA1} manque(s) structurel(s) de couverture A1 du traitement : qualification possible, promotion bloquée` };
+  return { state: 'AUTONOMOUS_PROMOTION_READY', cause: null };
+}
+
+export async function improvementOverview(p: { environment?: string; coverage?: ReadonlyArray<{ treatment: string; structural: number }> } = {}) {
+  const environment = p.environment ?? getAiEnvironment();
+  const [{ budgetSummary }, { loadPolicy, POLICY_SUGGESTIONS }, { listQueue }, cfg, watchMod] = await Promise.all([
+    import('./improvement-budget'), import('./improvement-policy'), import('./improvement-objectives'), import('../config/config-version.repository'), import('./promotion-watch'),
+  ]);
+  const [budget, policy, queue] = await Promise.all([budgetSummary({ environment }), loadPolicy(environment), listQueue(environment, ['QUEUED', 'WAITING_BUDGET', 'WAITING_PREREQUISITE', 'EXPERIMENTING', 'QUALIFYING', 'BLOCKED'])]);
+  const promues = await cfg.listCandidates(environment, ['ACTIVATED']);
+  const treatments = await Promise.all(TREATMENTS.map(async (t) => {
+    const eff = await cfg.activeTreatmentFingerprint(environment, t).catch(() => null);
+    const surv = promues.find((c) => (c.promotion.watch as { treatment?: string; fingerprint?: string } | undefined)?.treatment === t
+      && watchMod.ACTIVE_WATCH_STATES.includes((c.promotion.watch as { status?: string }).status as never));
+    const qualifiee = Boolean(eff && promues.some((c) => (c.promotion.targeted as { afterFingerprint?: string } | undefined)?.afterFingerprint === eff.fingerprint));
+    const w = surv?.promotion.watch as { status?: string; activatedAt?: string; sevenDayReviewAt?: string; lastObservedAt?: string | null } | undefined;
+    const tete = queue.find((o) => o.treatment === t) ?? null;
+    const cap = capabilityState({ environment, budgetBlocked: budget.blocked, structuralA1: p.coverage?.find((c) => c.treatment === t)?.structural ?? 0, activeWatch: Boolean(surv) });
+    return {
+      treatment: t, effectiveVersionId: eff?.versionId ?? null, fingerprint: eff?.fingerprint?.slice(0, 16) ?? null,
+      // MAN-02 : configuration effective issue d'une promotion qualifiée, ou « non qualifiée métier » (geste manuel).
+      qualification: qualifiee ? 'QUALIFIED_ON_CORPUS' : 'NOT_BUSINESS_QUALIFIED',
+      qualificationLabel: qualifiee ? 'Qualifiée sur corpus (promotion automatique)' : 'Non qualifiée métier (configuration manuelle ou de départ)',
+      watch: surv ? { candidateVersionId: surv.id, status: w?.status ?? null, label: watchMod.WATCH_STATUS_LABELS[(w?.status ?? 'WATCHING') as keyof typeof watchMod.WATCH_STATUS_LABELS], activatedAt: w?.activatedAt ?? null, sevenDayReviewAt: w?.sevenDayReviewAt ?? null, lastObservedAt: w?.lastObservedAt ?? null } : null,
+      headObjective: tete ? { id: tete.id, kind: tete.kind, status: tete.status, priority: tete.priority, createdAt: tete.createdAt, reason: tete.reason } : null,
+      capability: cap,
+    };
+  }));
+  return {
+    budget,
+    policy: { version: policy.version, sha256: policy.sha256, updatedAt: policy.updatedAt, budget: policy.budget, fx: policy.fx, costBound: policy.costBound, variants: policy.variants, economics: policy.economics, usage: policy.usage, verifiedStableModels: policy.verifiedStableModels, judges: policy.judges, semanticGainThreshold: policy.semanticGainThreshold, suggestions: POLICY_SUGGESTIONS },
+    queue: queue.slice(0, 50).map((o) => ({ id: o.id, treatment: o.treatment, kind: o.kind, status: o.status, priority: o.priority, variantCount: o.variantCount, nextEligibleMonth: o.nextEligibleMonth, createdAt: o.createdAt, reason: o.reason })),
+    treatments,
+  };
 }

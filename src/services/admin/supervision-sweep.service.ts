@@ -206,7 +206,9 @@ export async function collectAiConditions(): Promise<Condition[]> {
   try {
     const { getAiEnvironment } = await import('@/services/ai/config/environment');
     const { listPromotionEvents } = await import('@/services/ai/qualification/promotion-journal');
-    const evs = await listPromotionEvents({ environment: getAiEnvironment(), kinds: ['ROLLBACK', 'ROLLBACK_FAILED', 'POST_ALERT'], sinceMs: 7 * 86_400_000, limit: 50 });
+    // Lot 113I : le retour arrière CIBLÉ (TARGETED_ROLLBACK) est un retour arrière — même anomalie, même empreinte.
+    const evs = (await listPromotionEvents({ environment: getAiEnvironment(), kinds: ['ROLLBACK', 'TARGETED_ROLLBACK', 'ROLLBACK_FAILED', 'POST_ALERT'], sinceMs: 7 * 86_400_000, limit: 50 }))
+      .map((e) => (e.kind === 'TARGETED_ROLLBACK' ? { ...e, kind: 'ROLLBACK' as const } : e));
     const vus = new Set<string>();
     for (const e of evs) {
       const fp = `ai:promotion:${e.kind.toLowerCase()}:${e.candidateVersionId ?? 0}${e.kind === 'POST_ALERT' ? `:${e.code ?? ''}` : ''}`;

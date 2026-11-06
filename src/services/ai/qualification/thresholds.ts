@@ -131,6 +131,9 @@ export function isSynchronousTreatment(t: Treatment, th: QualificationThresholds
 /**
  * Priorité d'optimisation (OPT-02) : rapidité pour les usages interactifs
  * (T2, T6 FORMULATE), coût par résultat valide pour l'arrière-plan.
+ *
+ * @deprecated Lot 113I (CDC V2 DEC-01, EC-09) : NE SERT PLUS À AUCUNE DÉCISION — l'ordre est qualité > coût >
+ * latence pour TOUS les traitements (`verdict.lexicographicGain`). Conservée pour l'affichage historique.
  */
 export function optimizationPriority(operationCode: string): 'LATENCY' | 'COST' {
   return /^t2_/.test(operationCode) || operationCode === 't6_formulate' ? 'LATENCY' : 'COST';

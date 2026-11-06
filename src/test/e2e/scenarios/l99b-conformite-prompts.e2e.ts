@@ -309,6 +309,20 @@ describe('L99B — Mise en conformité automatique des prompts IA (préproductio
       expect(p).toMatchObject({ last_result: 'FINDING', finding: expect.objectContaining({ anomaly: 'MISSING_PROPERTY_ARBITRATION_PENDING' }) });
     }
 
+    // Lot 113I (CDC V2 PRD-01, EC-08, REC-003, ENV-TEST-02) : le MÊME passage exécuté en PRODUCTION = diagnostic
+    // seulement — correction proposée conservée au journal, mais zéro version de prompt, zéro candidate de
+    // configuration, zéro campagne, configuration active inchangée.
+    const compte = async (t: string) => Number((await sql.unsafe(`SELECT count(*)::int AS n FROM ${t}`))[0].n);
+    const [pv0, cv0, qc0, act0] = [await compte('ai_master_prompt_versions'), await compte('ai_config_versions'), await compte('ai_qualification_campaigns'), await configActive()];
+    const { runPromptConformityPass } = await import('@/services/ai/prompt-conformity/service');
+    await runPromptConformityPass({ trigger: 'e2e-production' }, { ...deps(), environment: 'production' } as never);
+    expect([await compte('ai_master_prompt_versions'), await compte('ai_config_versions'), await compte('ai_qualification_campaigns'), await configActive()]).toEqual([pv0, cv0, qc0, act0]);
+    const [ip] = await sql<Json[]>`SELECT status, decision, candidate_prompt_version_id, candidate_config_version_id, correction FROM ai_prompt_conformity_issues WHERE environment = 'production' AND contract_id = ${CONTRAT}`;
+    expect(ip).toBeTruthy();
+    expect(ip).toMatchObject({ status: 'BLOCKED', candidate_prompt_version_id: null, candidate_config_version_id: null });
+    expect(ip.decision).toMatch(/Production : diagnostic seulement/);
+    expect(ip.correction.diff.added).toBeGreaterThan(0);
+
     const avantCfg = await configActive();
     const r = await passage();
     expect(r.mode).toBe('auto');
@@ -477,10 +491,16 @@ describe('L99B — Mise en conformité automatique des prompts IA (préproductio
     expect(i.status, pourquoi(i)).toBe('ROLLED_BACK');
     expect(i.decision).toMatch(/Retour arrière automatique/);
     expect(i.post_check.after.invalid).toBeGreaterThan(0);
-    expect(await configActive()).toBe(Number(i0.previous_config_version_id));
+    // Lot 113I (CDC V2 SQL-007/008, EC-16) — RÈGLE DÉLIBÉRÉMENT CHANGÉE : retour arrière CIBLÉ par le service commun —
+    // la version globale active reste la courante (nouvelle révision « restore »), seul le prompt T3 revient à sa
+    // version précédente ; aucune ancienne version globale n'est réactivée (autres traitements conservés).
+    expect(await configActive()).toBe(Number(i0.candidate_config_version_id));
     expect((await t3Actif()).id).toBe(t3ActifId);
     const [cv] = await sql<Json[]>`SELECT status, candidate_state FROM ai_config_versions WHERE id = ${i0.candidate_config_version_id}`;
-    expect(cv).toMatchObject({ status: 'INACTIVE', candidate_state: 'SUSPENDED' });
+    expect(cv).toMatchObject({ status: 'ACTIVE', candidate_state: 'SUSPENDED' });
+    const [rv] = await sql<Json[]>`SELECT r.kind, r.snapshot FROM ai_config_versions v JOIN ai_config_revisions r ON r.id = v.current_revision_id WHERE v.id = ${i0.candidate_config_version_id}`;
+    expect(rv.kind).toBe('restore');
+    expect(Number(rv.snapshot.masterPrompts.T3.versionId)).toBe(t3ActifId);
     expect((await evenements(i.id)).map((e) => e.kind)).toContain('ROLLED_BACK');
     // Diagnostics et preuves conservés ; contexte inchangé : aucun nouvel essai.
     expect(i.qualification.decision).toBe('QUALIFIED');

@@ -386,7 +386,13 @@ scenario('L86A', 'Qualification par couple et candidates automatiques (Pilotage 
     expect((await sql<{ id: number }[]>`SELECT id FROM ai_config_versions WHERE environment = ${env} AND status = 'ACTIVE'`)[0].id).toBe(activeAvantE07);
     expect((await sql<any[]>`SELECT verdict FROM ai_qualification_evidence WHERE campaign_id = ${a.campaignId} AND role = 'CANDIDATE'`).map((e) => e.verdict)).toContain('REFUSED');
 
-    // b) Candidate rapide et juste (gemini-3.1-flash-lite) : admissible sur T6 FORMULATE et EVALUATE, gain établi sur le délai (interactif).
+    // b) Candidate rapide et juste (gemini-3.1-flash-lite) : admissible sur T6 FORMULATE et EVALUATE, gain établi sur le délai
+    //    à coût non supérieur (lot 113I, DEC-04 : qualité > coût > latence pour TOUS les traitements).
+    // Lot 113I (CDC V2 C-004, MOD-03, PRO-01) : un nouveau modèle principal n'est promu automatiquement que si sa
+    // stabilité officielle est PROUVÉE — ici attestée par un administrateur dans la politique d'amélioration.
+    await sql`INSERT INTO ai_improvement_policy_revisions (environment, revision, policy, sha256, created_by, reason)
+              VALUES (${env}, 1, ${JSON.stringify({ verifiedStableModels: [{ model: 'gemini-3.1-flash-lite', source: 'e2e : attestation administrateur (C-004)' }] })}::jsonb, 'e2e', ${adminId}, 'e2e l86a')
+              ON CONFLICT DO NOTHING`;
     comportement.set('gemini-3.5-flash', { mode: 'GOOD', delayMs: 400 });
     comportement.set('gemini-3.1-flash-lite', { mode: 'GOOD', delayMs: 5 });
     pendantCandidate.length = 0;
