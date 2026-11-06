@@ -1,29 +1,22 @@
 /**
- * Invitation « Autoriser les notifications » à la première connexion — lot 109G.
+ * Notifications à la première connexion — lot 109G, revu au lot 113J.
  *
  * ══════════════════════════════════════════════════════════════════════════
- * RÈGLES
+ * LOT 113J (décision PO du 06/11/2026) : plus AUCUNE fenêtre Verebona
+ * « Autoriser les notifications ? » (PushOnboardingCard et son contrôleur
+ * supprimés, textes de la fenêtre retirés). La demande NATIVE du téléphone est
+ * lancée directement, APRÈS l'étape biométrique : `native-permissions-flow`.
+ * Ce module ne garde que :
  *
- *   · Socle push INCHANGÉ (`lib/native/push`) : `nativePushPermission`,
- *     `requestNativePush` / `enableNativePush`, `syncNativePush`, feature flag
- *     serveur `push`. Aucun Web Push, aucune demande avant authentification.
- *   · Proposée UNE fois par compte ET par installation quand la permission du
- *     téléphone est encore indéterminée (`prompt`) : première session de ce
- *     compte sur l'installation, ou compte déjà connecté au déploiement du
- *     lot 109G. Un autre compte sur le même téléphone a sa propre décision.
- *   · Affichée seulement sur un écran utilisable de l'app (mêmes écrans que
- *     la proposition biométrique), jamais pendant la réacceptation des CGUV,
- *     le verrou, un écran bloquant (mise à jour, environnement, commerce) ni
- *     hors ligne.
- *   · UNE invitation à la fois, BIOMÉTRIE D'ABORD (lot 111T, remplace la
- *     priorité push du lot 109G) : tant que l'étape biométrique n'est pas
- *     terminée (`held`, voir `biometric-offer-flow`), l'invitation attend ;
- *     elle est présentée ensuite dans la MÊME session, sans relancement.
- *   · Notée une fois RÉELLEMENT affichée (`presented` → `offered`) : jamais de
- *     boucle, même si l'app est fermée sans réponse, mais une ouverture
- *     interrompue avant l'affichage ne fait pas perdre l'invitation ;
- *     « Plus tard » → `later` ; réponse → `answered`.
- *     La demande système n'est faite que sur « Autoriser les notifications ».
+ *   · la MÉMORISATION par compte ET par installation (« proposé » noté au
+ *     déclenchement natif, « répondu » avec l'issue système ; « Plus tard »
+ *     n'est plus produit mais reste lu : décision antérieure respectée) ;
+ *   · la DÉCISION pure : demande native seulement si la permission du
+ *     téléphone est indéterminée (`prompt`) ET rien n'est noté ici ;
+ *   · les textes de Mon compte › Notifications (état de ce téléphone,
+ *     réactivation après refus, issue d'une demande volontaire).
+ *
+ * Socle push INCHANGÉ (`lib/native/push`). Aucun Web Push.
  *
  * STOCKAGE : stockage sécurisé de l'app (purgé à la réinstallation), lié à
  * l'identifiant d'installation ; repli `localStorage` si le stockage sécurisé
@@ -34,18 +27,14 @@
 import { isBiometricOfferPath } from './biometric-consent';
 import { initInstallationId } from './shell-info';
 import { SECURE_KEYS, secureGet, secureSet } from './secure-store';
-import {
-  nativePushPermission, requestNativePush, type NativePushRequest, type NativePushState,
-} from './push';
+import type { NativePushRequest, NativePushState } from './push';
 import type { NativePlatform } from './bridge';
 
 // ── Textes (ticket 109G, exacts) ────────────────────────────────────────────
+// Lot 113J : titre, texte et « Plus tard » de l'ancienne fenêtre supprimés ;
+// seul le libellé du bouton de Mon compte › Notifications reste.
 
-export const PUSH_ONBOARDING_TITLE = 'Autoriser les notifications ?';
-export const PUSH_ONBOARDING_TEXT =
-  'Recevez vos rappels d’échéances et les informations utiles de Verebona sur ce téléphone. Vous pourrez choisir les notifications reçues dans Mon compte.';
 export const PUSH_ONBOARDING_ALLOW = 'Autoriser les notifications';
-export const PUSH_ONBOARDING_LATER = 'Plus tard';
 
 /** Comment réactiver après un refus, selon le système (pur, testé). */
 export function pushReenableHelp(platform: NativePlatform | null): string {
@@ -180,159 +169,12 @@ export function clearLegacyPushPromptKey(): void {
 
 // ── Décisions (pures, testées) ─────────────────────────────────────────────
 
-/** Faut-il inviter ce compte ? Seulement permission indéterminée ET jamais proposé ici. */
+/** Faut-il faire la demande native pour ce compte ? Seulement permission indéterminée ET rien de noté ici. */
 export function pushOnboardingDecision(i: { permission: NativePushState; record: PushOnboardingRecord | null }): 'offer' | 'none' {
   return i.permission === 'prompt' && !i.record ? 'offer' : 'none';
 }
 
-export interface PushOnboardingContext {
-  /** Compte de la session AUTHENTIFIÉE, sinon null. */
-  userId: number | null;
-  /** Feature flag serveur `push` (configuration non lue : actif). */
-  featureOn: boolean;
-  pathname: string | null | undefined;
-  /** CGUV à réaccepter (écran obligatoire). */
-  legalRequired: boolean;
-  /** Verrou, mise à jour requise, environnement, page commerciale. */
-  blocked: boolean;
-  offline: boolean;
-  /** Lot 111T : l'étape biométrique n'est pas terminée (évaluation, fenêtre, transition). */
-  held: boolean;
-}
-
-/** Écran utilisable pour une invitation (pur, testé). */
-export function pushOnboardingScreenAllowed(c: Pick<PushOnboardingContext, 'pathname' | 'legalRequired' | 'blocked' | 'offline'>): boolean {
+/** Écran utilisable pour une demande native de notifications (pur, testé). */
+export function pushOnboardingScreenAllowed(c: { pathname: string | null | undefined; legalRequired: boolean; blocked: boolean; offline: boolean }): boolean {
   return !c.legalRequired && !c.blocked && !c.offline && isBiometricOfferPath(c.pathname);
-}
-
-// ── Parcours (contrôleur sans React, utilisé par `usePushOnboarding`) ──────
-
-type Decision = 'pending' | 'offer' | 'none';
-
-export interface PushOnboardingSnapshot {
-  decisions: Readonly<Record<number, Decision>>;
-  /** Compte dont l'invitation est présentée, ou null. */
-  shown: number | null;
-  /** L'invitation de `shown` a été réellement affichée (et notée). */
-  presented: boolean;
-  busy: boolean;
-}
-
-export interface PushOnboardingView {
-  visible: boolean;
-  busy: boolean;
-}
-
-export interface PushOnboardingDeps {
-  permission: () => Promise<NativePushState>;
-  read: (userId: number) => Promise<PushOnboardingRecord | null>;
-  record: (userId: number, s: PushOnboardingStored, r?: NativePushState) => Promise<boolean>;
-  request: () => Promise<NativePushRequest>;
-}
-
-const defaultDeps: PushOnboardingDeps = {
-  permission: nativePushPermission,
-  read: readPushOnboarding,
-  record: recordPushOnboarding,
-  request: requestNativePush,
-};
-
-/** Vue dérivée (pure, testée). */
-export function pushOnboardingView(s: PushOnboardingSnapshot, c: PushOnboardingContext): PushOnboardingView {
-  const u = c.userId;
-  if (u === null || !c.featureOn) return { visible: false, busy: s.busy };
-  return { visible: s.shown === u && pushOnboardingScreenAllowed(c) && !c.held, busy: s.busy };
-}
-
-export function createPushOnboarding(deps: PushOnboardingDeps = defaultDeps) {
-  let snap: PushOnboardingSnapshot = { decisions: {}, shown: null, presented: false, busy: false };
-  const listeners = new Set<() => void>();
-  const set = (patch: Partial<PushOnboardingSnapshot>) => {
-    snap = { ...snap, ...patch };
-    listeners.forEach((l) => l());
-  };
-  const decide = (userId: number, d: Decision) => set({ decisions: { ...snap.decisions, [userId]: d } });
-
-  return {
-    getSnapshot: () => snap,
-    subscribe(l: () => void): () => void {
-      listeners.add(l);
-      return () => { listeners.delete(l); };
-    },
-
-    /** Lecture de la permission OS et de la décision du compte — une fois par compte et par lancement. */
-    async evaluate(userId: number): Promise<Decision> {
-      if (snap.decisions[userId] !== undefined) return snap.decisions[userId];
-      decide(userId, 'pending');
-      let d: Decision = 'none';
-      try {
-        const [permission, record] = await Promise.all([deps.permission(), deps.read(userId)]);
-        d = pushOnboardingDecision({ permission, record });
-      } catch {
-        d = 'none';
-      }
-      decide(userId, d);
-      return d;
-    },
-
-    /**
-     * Présente l'invitation si tout le permet (étape biométrique terminée).
-     * Retire l'invitation d'un autre compte (changement de compte) ; jamais
-     * affichée, elle reste due à ce compte.
-     */
-    sync(c: PushOnboardingContext): void {
-      // Session momentanément indisponible (userId null) : masquée seulement, pas perdue.
-      const prev = snap.shown;
-      if (prev !== null && c.userId !== null && prev !== c.userId && !snap.busy) {
-        const wasPresented = snap.presented;
-        set({ shown: null, presented: false });
-        if (!wasPresented) decide(prev, 'offer');
-      }
-      const u = c.userId;
-      if (u === null || !c.featureOn || snap.shown !== null) return;
-      if (snap.decisions[u] !== 'offer' || c.held || !pushOnboardingScreenAllowed(c)) return;
-      decide(u, 'none'); // jamais reproposée pendant ce lancement
-      set({ shown: u, presented: false });
-    },
-
-    /** Fenêtre réellement affichée : invitation notée (une fois). */
-    presented(userId: number): void {
-      if (snap.shown !== userId || snap.presented) return;
-      set({ presented: true });
-      void deps.record(userId, 'offered');
-    },
-
-    /** « Autoriser les notifications » : une seule demande système, issue réelle. */
-    async allow(): Promise<NativePushRequest | null> {
-      const u = snap.shown;
-      if (u === null || snap.busy) return null;
-      set({ busy: true });
-      let r: NativePushRequest = { state: 'unavailable', registered: false };
-      try {
-        r = await deps.request();
-      } finally {
-        await deps.record(u, 'answered', r.state).catch(() => false);
-        set({ busy: false, shown: snap.shown === u ? null : snap.shown, presented: false });
-      }
-      return r;
-    },
-
-    /** « Plus tard » : aucune demande système, mémorisé pour ce compte sur cette installation. */
-    later(): void {
-      const u = snap.shown;
-      if (u === null || snap.busy) return;
-      set({ shown: null, presented: false });
-      void deps.record(u, 'later');
-    },
-  };
-}
-
-export type PushOnboardingController = ReturnType<typeof createPushOnboarding>;
-
-let shared: PushOnboardingController | null = null;
-
-/** Contrôleur unique du lancement (l'hôte natif n'est monté qu'une fois). */
-export function sharedPushOnboarding(): PushOnboardingController {
-  if (!shared) shared = createPushOnboarding();
-  return shared;
 }

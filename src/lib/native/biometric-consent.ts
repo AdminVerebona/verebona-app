@@ -175,6 +175,23 @@ export interface BiometricSetting {
   shortLabel: string;
   /** `BiometryType` du plugin. */
   type: number | null;
+  /**
+   * Lot 113J : Face ID refusé à Verebona dans les réglages du téléphone
+   * (iOS : capteur Face ID présent, `biometryNotAvailable`). Seule une
+   * action dans Réglages › Verebona peut le débloquer.
+   */
+  blockedBySettings: boolean;
+}
+
+/**
+ * Lot 113J — Face ID bloqué pour l'app par les réglages (pur, testé). iOS
+ * seulement : Touch ID et la biométrie Android n'ont pas d'autorisation par
+ * application. `biometryType` reste « Face ID » après un refus (LAContext le
+ * renseigne quel que soit le résultat), le code est `biometryNotAvailable`
+ * (≠ `biometryNotEnrolled` : aucun visage enregistré).
+ */
+export function biometryBlockedBySettings(platform: 'ios' | 'android' | null, dev: { available: boolean; type: number | null; code?: string | null }): boolean {
+  return platform === 'ios' && !dev.available && dev.type === 2 && dev.code === 'biometryNotAvailable';
 }
 
 /** État RÉEL : relu à chaque affichage (l'utilisateur a pu changer les réglages du téléphone). */
@@ -193,6 +210,7 @@ export async function readBiometricSetting(platform: 'ios' | 'android' | null, u
     label: biometryLabel(dev.type, platform),
     shortLabel: biometryShortLabel(dev.type, platform),
     type: dev.type,
+    blockedBySettings: supported && biometryBlockedBySettings(platform, dev),
   };
 }
 
@@ -227,12 +245,14 @@ export async function changeBiometrics(enabled: boolean, userId: number): Promis
  * Proposition affichée / « Plus tard » / refus : le compte passe à « reporté »
  * s'il n'avait encore aucun choix (jamais d'écrasement d'un choix actif).
  */
-export async function deferBiometrics(userId: number, why: DeferReason): Promise<void> {
-  await mutate((doc) => {
+export async function deferBiometrics(userId: number, why: DeferReason): Promise<boolean> {
+  // Lot 113J : `false` si la note n'a pas pu être écrite (lecture ou écriture en échec).
+  const { ok } = await mutate((doc) => {
     const cur = doc.users[key(userId)];
     if (cur && (cur.s === 'active' || why === 'offered')) return { doc: null, result: null };
     return { doc: { v: 1, users: { ...doc.users, [key(userId)]: { s: cur?.s === 'reactivate' ? 'reactivate' : 'deferred', at: now(), why } } }, result: null };
   });
+  return ok;
 }
 
 export interface UnlockBiometry {
@@ -311,9 +331,13 @@ export function nativeSignOutBiometrics(): (() => Promise<void>) | undefined {
   return isNativeApp() ? clearBiometricsOnSignOut : undefined;
 }
 
-// ── Proposition après la première connexion (#640) ─────────────────────────
+// ── Sollicitation après la première connexion (#640, lot 113J) ─────────────
+// Lot 113J : plus aucune fenêtre Verebona de proposition — la demande NATIVE
+// est lancée directement (`native-permissions-flow`). Les titres et le texte
+// de l'ancienne fenêtre (`biometricOfferTitle`, `BIOMETRIC_OFFER_DESCRIPTION`)
+// sont supprimés.
 
-/** Écrans où la proposition peut apparaître (jamais sur un écran de connexion, de consentement ou de suppression). */
+/** Écrans où la sollicitation native peut être lancée (jamais sur un écran de connexion, de consentement ou de suppression). */
 export const BIOMETRIC_OFFER_PATH_PREFIXES: readonly string[] = [
   '/accueil', '/dashboard', '/assets', '/documents', '/agenda', '/fournisseurs', '/duos', '/mon-compte',
 ];
@@ -323,7 +347,7 @@ export function isBiometricOfferPath(pathname: string | null | undefined): boole
   return BIOMETRIC_OFFER_PATH_PREFIXES.some((p) => pathname === p || pathname.startsWith(`${p}/`));
 }
 
-/** Proposer l'activation maintenant ? (pur, testé) */
+/** Lancer le parcours natif d'activation maintenant ? (pur, testé) */
 export function shouldOfferBiometrics(i: {
   featureOn: boolean;
   sessionStatus: string;
@@ -340,16 +364,6 @@ export function shouldOfferBiometrics(i: {
   const s = i.setting;
   return !!s && s.supported && s.available && s.state === 'never';
 }
-
-/** Titre de la proposition, adapté au capteur (pur, testé). */
-export function biometricOfferTitle(type: number | null | undefined): string {
-  if (type === 2) return 'Activer Face ID pour les prochaines connexions ?';
-  if (type === 1) return 'Activer Touch ID ?';
-  return 'Activer la biométrie ?';
-}
-
-export const BIOMETRIC_OFFER_DESCRIPTION =
-  'Déverrouillez Verebona plus rapidement sur cet appareil. Vous pourrez désactiver cette option dans Mon compte.';
 
 /** Appareil partagé (#640) : la biométrie du téléphone ne prouve pas l'identité du titulaire du compte. */
 export const BIOMETRIC_SHARED_DEVICE_NOTE =

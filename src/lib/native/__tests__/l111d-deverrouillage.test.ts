@@ -495,11 +495,13 @@ describe('L111D-SRC — câblage et périmètre', () => {
     expect(src).toMatch(/reason=mfa_required/);
   });
 
-  it('une seule logique : la machine 107A est corrigée, pas doublée ; modale de proposition (111G) non touchée', () => {
+  it('une seule logique : la machine 107A est corrigée, pas doublée ; sollicitation de première connexion distincte', () => {
     const runtime = read('src/components/native/NativeBridgeRuntime.tsx');
     expect(runtime.match(/useNativeUnlock\(/g)).toHaveLength(1);
-    expect(read('src/components/native/BiometricOfferCard.tsx')).not.toMatch(/unlock-machine|111D/);
-    expect(read('src/components/native/useBiometricOffer.ts')).not.toMatch(/111D/);
+    // Lot 113J : la modale de proposition (111G) est supprimée (décision PO du
+    // 06/11/2026) ; la demande native de première connexion ne touche pas au verrou.
+    expect(read('src/lib/native/native-permissions-flow.ts')).not.toMatch(/unlock-machine|unlock-controller/);
+    expect(read('src/components/native/useNativePermissionsFlow.ts')).not.toMatch(/unlock-machine|unlock-controller/);
     for (const f of ['src/lib/native/unlock-machine.ts', 'src/lib/native/unlock-controller.ts']) {
       expect(read(f)).not.toMatch(/localStorage|document\.|window\./); // modules purs (hors commentaires inclus)
     }

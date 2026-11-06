@@ -155,13 +155,18 @@ function appLauncher(): AppLauncherLike | null {
   return p && typeof p.openUrl === 'function' ? p : null;
 }
 
-export function canOpenNativeNotificationSettings(): boolean {
+/**
+ * Lot 113J : réglages de l'app (Réglages › Verebona, qui contient Notifications
+ * ET Face ID), ouverts UNIQUEMENT sur action de l'utilisateur, jamais
+ * automatiquement. iOS seulement (voir ci-dessus pour Android).
+ */
+export function canOpenNativeAppSettings(): boolean {
   return nativePlatform() === 'ios' && appLauncher() !== null;
 }
 
 /** Ouvre les réglages de l'app (iOS). `false` si impossible. Ne lève jamais. */
-export async function openNativeNotificationSettings(): Promise<boolean> {
-  if (!canOpenNativeNotificationSettings()) return false;
+export async function openNativeAppSettings(): Promise<boolean> {
+  if (!canOpenNativeAppSettings()) return false;
   try {
     const r = await appLauncher()!.openUrl({ url: IOS_APP_SETTINGS_URL });
     return r?.completed !== false;
@@ -169,6 +174,9 @@ export async function openNativeNotificationSettings(): Promise<boolean> {
     return false;
   }
 }
+
+export const canOpenNativeNotificationSettings = canOpenNativeAppSettings;
+export const openNativeNotificationSettings = openNativeAppSettings;
 
 /** Rotation du jeton (PUSH-09) : réenregistrement automatique. */
 export function watchPushTokenRotation(): Promise<() => void> {

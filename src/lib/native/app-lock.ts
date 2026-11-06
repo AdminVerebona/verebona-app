@@ -71,7 +71,7 @@ export function clearBackgroundAt(): void {
 // ── Biométrie (plugin @aparajita/capacitor-biometric-auth) ─────────────────
 
 export interface BiometricPlugin {
-  checkBiometry(): Promise<{ isAvailable: boolean; deviceIsSecure: boolean; biometryType: number }>;
+  checkBiometry(): Promise<{ isAvailable: boolean; deviceIsSecure: boolean; biometryType: number; code?: string }>;
   internalAuthenticate(o: Record<string, unknown>): Promise<void>;
 }
 
@@ -79,14 +79,25 @@ export function biometric(): BiometricPlugin | null {
   return nativePlugin<BiometricPlugin>(NATIVE_PLUGINS.biometric);
 }
 
-export interface BiometryAvailability { available: boolean; deviceSecure: boolean; type: number | null }
+export interface BiometryAvailability {
+  available: boolean;
+  deviceSecure: boolean;
+  type: number | null;
+  /** Lot 113J : raison d'indisponibilité du plugin (`biometryNotAvailable`, `biometryNotEnrolled`…), sinon null. */
+  code?: string | null;
+}
 
 export async function biometryAvailability(): Promise<BiometryAvailability> {
   const b = biometric();
   if (!b) return { available: false, deviceSecure: false, type: null };
   try {
     const r = await b.checkBiometry();
-    return { available: !!r.isAvailable, deviceSecure: !!r.deviceIsSecure, type: typeof r.biometryType === 'number' ? r.biometryType : null };
+    return {
+      available: !!r.isAvailable,
+      deviceSecure: !!r.deviceIsSecure,
+      type: typeof r.biometryType === 'number' ? r.biometryType : null,
+      code: typeof r.code === 'string' && r.code !== '' ? r.code : null,
+    };
   } catch {
     return { available: false, deviceSecure: false, type: null };
   }

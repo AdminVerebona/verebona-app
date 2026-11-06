@@ -3,12 +3,12 @@
  * connexion mobile. Pont natif SIMULÉ (Firebase Messaging, stockage sécurisé,
  * AppLauncher) ; le Web reste inchangé.
  *
- *   L109G-TXT   textes exacts du ticket, messages de réactivation iOS / Android ;
+ *   L109G-TXT   textes conservés (Mon compte), messages de réactivation iOS / Android ;
  *   L109G-RULE  décision (permission × décision enregistrée), écrans utilisables ;
- *   L109G-FLOW  parcours : APRÈS la biométrie (lot 111T, remplace la priorité
- *               push), « Plus tard », « Autoriser »,
- *               une seule demande, comptes A / B, gardes (CGUV, verrou, hors ligne,
- *               fonction coupée) ;
+ *   (L109G-FLOW supprimé au lot 113J — décision PO du 06/11/2026 : plus de
+ *               fenêtre « Autoriser les notifications ? », demande NATIVE
+ *               directe après la biométrie ; parcours couvert par
+ *               l113j-autorisations-natives.test.ts) ;
  *   L109G-STORE persistance par compte × installation, ancienne clé globale ;
  *   L109G-NATIVE socle push réel : une seule demande système, jeton enregistré,
  *               pas de faux « activé », réglages iOS ;
@@ -19,18 +19,18 @@ import { resolve } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import {
-  LEGACY_PUSH_PROMPT_DISMISSED_KEY, PUSH_ONBOARDING_ALLOW, PUSH_ONBOARDING_LATER, PUSH_ONBOARDING_LOCAL_KEY,
-  PUSH_ONBOARDING_TEXT, PUSH_ONBOARDING_TITLE, clearLegacyPushPromptKey, createPushOnboarding, devicePushStatusText,
-  parsePushOnboardingDoc, pushOnboardingDecision, pushOnboardingScreenAllowed, pushOnboardingView, pushReenableHelp,
+  LEGACY_PUSH_PROMPT_DISMISSED_KEY, PUSH_ONBOARDING_ALLOW, PUSH_ONBOARDING_LOCAL_KEY,
+  clearLegacyPushPromptKey, devicePushStatusText,
+  parsePushOnboardingDoc, pushOnboardingDecision, pushOnboardingScreenAllowed, pushReenableHelp,
   pushRequestOutcomeMessage, readPushOnboarding, recordPushOnboarding,
-  type PushOnboardingContext, type PushOnboardingDeps, type PushOnboardingRecord,
 } from '@/lib/native/push-onboarding';
+import { createNativePermissions } from '@/lib/native/native-permissions-flow';
 import {
   IOS_APP_SETTINGS_URL, canOpenNativeNotificationSettings, enableNativePush, openNativeNotificationSettings, requestNativePush,
 } from '@/lib/native/push';
 import { SECURE_KEYS, SECURE_PREFIX } from '@/lib/native/secure-store';
 import { __resetShellInfoForTests } from '@/lib/native/shell-info';
-import type { NativePushRequest, NativePushState } from '@/lib/native/push';
+import type { NativePushState } from '@/lib/native/push';
 
 const ROOT = resolve(__dirname, '../../../..');
 const read = (p: string) => readFileSync(resolve(ROOT, p), 'utf8');
@@ -85,27 +85,13 @@ function installNative(plugins: Record<string, unknown>, platform: 'ios' | 'andr
   return ls;
 }
 
-function ctx(o: Partial<PushOnboardingContext> = {}): PushOnboardingContext {
-  return {
-    userId: 1, featureOn: true, pathname: '/accueil', legalRequired: false, blocked: false, offline: false, held: false, ...o,
-  };
-}
-
-function fakeDeps(o: { permission?: NativePushState; records?: Record<number, PushOnboardingRecord>; answer?: NativePushRequest } = {}) {
-  const records: Record<number, PushOnboardingRecord> = { ...(o.records ?? {}) };
-  let release: (() => void) | null = null;
-  const deps = {
-    permission: vi.fn(async () => o.permission ?? 'prompt'),
-    read: vi.fn(async (u: number) => records[u] ?? null),
-    record: vi.fn(async (u: number, s: PushOnboardingRecord['s'], r?: NativePushState) => {
-      records[u] = { s, at: 'now', ...(r ? { r } : {}) };
-      return true;
-    }),
-    request: vi.fn(() => new Promise<NativePushRequest>((res) => {
-      release = () => res(o.answer ?? { state: 'granted', registered: true });
-    })),
-  } satisfies PushOnboardingDeps;
-  return { deps, records, answer: () => { release?.(); } };
+/** Lot 113J : contrôleur réel (biométrie absente du pont simulé → notifications directement). */
+async function runRealFlow(userId: number) {
+  const ctl = createNativePermissions();
+  const c = { userId, biometricsOn: true, pushOn: true, pathname: '/accueil', legalRequired: false, blocked: false, offline: false };
+  ctl.sync(c);
+  for (let i = 0; i < 40 && (ctl.getSnapshot().push[userId] !== 'done'); i++) { await flush(); ctl.sync(c); }
+  return ctl.getSnapshot().outcomes[userId]?.push;
 }
 
 afterEach(() => {
@@ -116,16 +102,15 @@ afterEach(() => {
 // ── L109G-TXT ───────────────────────────────────────────────────────────────
 
 describe('L109G-TXT — textes', () => {
-  it('titre, texte et actions EXACTS du ticket', () => {
-    expect(PUSH_ONBOARDING_TITLE).toBe('Autoriser les notifications ?');
-    expect(PUSH_ONBOARDING_TEXT).toBe('Recevez vos rappels d’échéances et les informations utiles de Verebona sur ce téléphone. Vous pourrez choisir les notifications reçues dans Mon compte.');
+  // Lot 113J (décision PO du 06/11/2026) : la fenêtre « Autoriser les
+  // notifications ? » et ses textes (titre, texte, « Plus tard ») sont
+  // supprimés ; seul le libellé du bouton de Mon compte › Notifications reste.
+  it('libellé du bouton de Mon compte conservé ; textes de la fenêtre supprimés', async () => {
     expect(PUSH_ONBOARDING_ALLOW).toBe('Autoriser les notifications');
-    expect(PUSH_ONBOARDING_LATER).toBe('Plus tard');
-    const card = read('src/components/native/PushOnboardingCard.tsx');
-    for (const c of ['PUSH_ONBOARDING_TITLE', 'PUSH_ONBOARDING_TEXT', 'PUSH_ONBOARDING_ALLOW', 'PUSH_ONBOARDING_LATER']) expect(card).toContain(`{${c}}`);
-    // Lot 111T : fenêtre centrée commune (boutons inactifs pendant la demande).
-    expect(card).toMatch(/<NativeOfferDialog/);
-    expect(read('src/components/native/NativeOfferDialog.tsx')).toMatch(/disabled=\{busy\}/);
+    const mod = await import('@/lib/native/push-onboarding') as Record<string, unknown>;
+    for (const k of ['PUSH_ONBOARDING_TITLE', 'PUSH_ONBOARDING_TEXT', 'PUSH_ONBOARDING_LATER', 'createPushOnboarding', 'sharedPushOnboarding']) {
+      expect(mod[k], k).toBeUndefined();
+    }
   });
 
   it('réactivation adaptée au système', () => {
@@ -164,175 +149,6 @@ describe('L109G-RULE — décision et écrans', () => {
     expect(pushOnboardingScreenAllowed({ pathname: '/accueil', legalRequired: true, blocked: false, offline: false })).toBe(false);
     expect(pushOnboardingScreenAllowed({ pathname: '/accueil', legalRequired: false, blocked: true, offline: false })).toBe(false);
     expect(pushOnboardingScreenAllowed({ pathname: '/accueil', legalRequired: false, blocked: false, offline: true })).toBe(false);
-  });
-
-  it('sans session ou fonction coupée par le serveur : rien', () => {
-    const s = { decisions: { 1: 'offer' as const }, shown: 1, presented: true, busy: false };
-    expect(pushOnboardingView(s, ctx({ userId: null }))).toEqual({ visible: false, busy: false });
-    expect(pushOnboardingView(s, ctx({ featureOn: false }))).toEqual({ visible: false, busy: false });
-    // Lot 111T : étape biométrique pas terminée → invitation retenue.
-    expect(pushOnboardingView(s, ctx({ held: true }))).toEqual({ visible: false, busy: false });
-    expect(pushOnboardingView(s, ctx())).toEqual({ visible: true, busy: false });
-  });
-});
-
-// ── L109G-FLOW ──────────────────────────────────────────────────────────────
-
-describe('L109G-FLOW — parcours de première connexion', () => {
-  it('première connexion (lot 111T) : biométrie d’abord, puis invitation dans la même session, « Plus tard » sans demande OS', async () => {
-    const { deps, records } = fakeDeps();
-    const ctl = createPushOnboarding(deps);
-    await ctl.evaluate(1);
-    // Étape biométrique en cours (évaluation, fenêtre, vérification native) : attente, rien n'est noté.
-    ctl.sync(ctx({ held: true }));
-    expect(ctl.getSnapshot().shown).toBeNull();
-    expect(deps.record).not.toHaveBeenCalled();
-    // Encore sur l'écran de connexion (redirection en cours) : rien.
-    ctl.sync(ctx({ pathname: '/login' }));
-    expect(pushOnboardingView(ctl.getSnapshot(), ctx({ pathname: '/login' })).visible).toBe(false);
-    // Étape biométrique terminée : invitation présentée sans relancement.
-    ctl.sync(ctx());
-    const v = pushOnboardingView(ctl.getSnapshot(), ctx());
-    expect(v).toEqual({ visible: true, busy: false });
-    await flush();
-    expect(records[1]).toBeUndefined(); // pas encore réellement affichée
-    ctl.presented(1);
-    ctl.presented(1);
-    await flush();
-    expect(records[1].s).toBe('offered'); // noté à l'affichage réel, une fois
-    expect(deps.record).toHaveBeenCalledTimes(1);
-    ctl.later();
-    await flush();
-    expect(records[1].s).toBe('later');
-    expect(deps.request).not.toHaveBeenCalled();
-    expect(pushOnboardingView(ctl.getSnapshot(), ctx()).visible).toBe(false);
-    // Navigation : jamais reproposée pendant ce lancement.
-    ctl.sync(ctx({ pathname: '/documents' }));
-    expect(pushOnboardingView(ctl.getSnapshot(), ctx({ pathname: '/documents' })).visible).toBe(false);
-  });
-
-  it('lancement suivant : décision « Plus tard » lue → aucune invitation', async () => {
-    const { deps } = fakeDeps({ records: { 1: { s: 'later', at: 'x' } } });
-    const ctl = createPushOnboarding(deps);
-    await ctl.evaluate(1);
-    ctl.sync(ctx());
-    expect(pushOnboardingView(ctl.getSnapshot(), ctx())).toEqual({ visible: false, busy: false });
-  });
-
-  it('« Autoriser » : UNE seule demande même sur double appui, boutons inactifs, réponse notée', async () => {
-    const { deps, records, answer } = fakeDeps();
-    const ctl = createPushOnboarding(deps);
-    await ctl.evaluate(1);
-    ctl.sync(ctx());
-    const p1 = ctl.allow();
-    const p2 = ctl.allow();
-    ctl.later(); // ignoré pendant la demande
-    expect(pushOnboardingView(ctl.getSnapshot(), ctx()).busy).toBe(true);
-    expect(await p2).toBeNull();
-    answer();
-    expect(await p1).toEqual({ state: 'granted', registered: true });
-    expect(deps.request).toHaveBeenCalledTimes(1);
-    expect(records[1]).toMatchObject({ s: 'answered', r: 'granted' });
-    expect(pushOnboardingView(ctl.getSnapshot(), ctx()).visible).toBe(false);
-  });
-
-  it('autorisation déjà accordée ou refusée : aucune invitation', async () => {
-    for (const permission of ['granted', 'denied'] as const) {
-      const { deps } = fakeDeps({ permission });
-      const ctl = createPushOnboarding(deps);
-      await ctl.evaluate(1);
-      ctl.sync(ctx());
-      expect(pushOnboardingView(ctl.getSnapshot(), ctx())).toEqual({ visible: false, busy: false });
-      expect(deps.record).not.toHaveBeenCalled();
-    }
-  });
-
-  it('compte A « Plus tard » puis compte B sur le même téléphone : B a sa propre invitation', async () => {
-    const { deps, records } = fakeDeps();
-    const ctl = createPushOnboarding(deps);
-    await ctl.evaluate(1);
-    ctl.sync(ctx({ userId: 1 }));
-    ctl.presented(1);
-    ctl.later();
-    await flush();
-    // Déconnexion puis B.
-    ctl.sync(ctx({ userId: null }));
-    await ctl.evaluate(2);
-    ctl.sync(ctx({ userId: 2 }));
-    expect(pushOnboardingView(ctl.getSnapshot(), ctx({ userId: 2 })).visible).toBe(true);
-    ctl.presented(2);
-    await flush();
-    expect(records[1].s).toBe('later');
-    expect(records[2].s).toBe('offered');
-  });
-
-  it('changement de compte pendant l’affichage : l’invitation de A disparaît', async () => {
-    const { deps } = fakeDeps({ records: { 2: { s: 'later', at: 'x' } } });
-    const ctl = createPushOnboarding(deps);
-    await ctl.evaluate(1);
-    ctl.sync(ctx({ userId: 1 }));
-    await ctl.evaluate(2);
-    ctl.sync(ctx({ userId: 2 }));
-    expect(ctl.getSnapshot().shown).toBeNull();
-    expect(pushOnboardingView(ctl.getSnapshot(), ctx({ userId: 1 })).visible).toBe(false);
-  });
-
-  it('lot 111T — interrompue AVANT l’affichage réel (changement de compte, redirection) : pas perdue, rien de noté', async () => {
-    const { deps, records } = fakeDeps({ records: { 2: { s: 'later', at: 'x' } } });
-    const ctl = createPushOnboarding(deps);
-    await ctl.evaluate(1);
-    ctl.sync(ctx({ userId: 1 })); // prête, mais la fenêtre n'a pas encore été rendue
-    await ctl.evaluate(2);
-    ctl.sync(ctx({ userId: 2 }));
-    await flush();
-    expect(records[1]).toBeUndefined();
-    // Retour du compte 1 dans la même session : l'invitation revient.
-    ctl.sync(ctx({ userId: 1 }));
-    expect(pushOnboardingView(ctl.getSnapshot(), ctx({ userId: 1 })).visible).toBe(true);
-    // Rendue puis interrompue : notée, jamais reproposée.
-    ctl.presented(1);
-    ctl.sync(ctx({ userId: 2 }));
-    ctl.sync(ctx({ userId: 1 }));
-    await flush();
-    expect(records[1].s).toBe('offered');
-    expect(ctl.getSnapshot().shown).toBeNull();
-  });
-
-  it('CGUV à réaccepter, verrou, hors ligne, étape biométrique en cours : attente, puis affichage sur écran utile', async () => {
-    const { deps } = fakeDeps();
-    const ctl = createPushOnboarding(deps);
-    await ctl.evaluate(1);
-    for (const c of [{ legalRequired: true }, { blocked: true }, { offline: true }, { held: true }, { featureOn: false }]) {
-      ctl.sync(ctx(c));
-      expect(ctl.getSnapshot().shown, JSON.stringify(c)).toBeNull();
-    }
-    expect(deps.record).not.toHaveBeenCalled();
-    ctl.sync(ctx());
-    expect(ctl.getSnapshot().shown).toBe(1);
-    // Session momentanément indisponible : masquée, pas perdue.
-    ctl.sync(ctx({ userId: null }));
-    expect(ctl.getSnapshot().shown).toBe(1);
-    expect(pushOnboardingView(ctl.getSnapshot(), ctx({ userId: null })).visible).toBe(false);
-    // Verrou après coup : masquée (pas détruite), revient au déverrouillage.
-    expect(pushOnboardingView(ctl.getSnapshot(), ctx({ blocked: true })).visible).toBe(false);
-    expect(pushOnboardingView(ctl.getSnapshot(), ctx()).visible).toBe(true);
-  });
-
-  it('lecture en échec : aucune invitation', async () => {
-    const { deps } = fakeDeps();
-    deps.permission.mockRejectedValueOnce(new Error('x'));
-    const ctl = createPushOnboarding(deps);
-    expect(await ctl.evaluate(1)).toBe('none');
-    ctl.sync(ctx());
-    expect(pushOnboardingView(ctl.getSnapshot(), ctx()).visible).toBe(false);
-  });
-
-  it('évaluée une fois par compte et par lancement', async () => {
-    const { deps } = fakeDeps();
-    const ctl = createPushOnboarding(deps);
-    await Promise.all([ctl.evaluate(1), ctl.evaluate(1)]);
-    await ctl.evaluate(1);
-    expect(deps.permission).toHaveBeenCalledTimes(1);
   });
 });
 
@@ -385,8 +201,9 @@ describe('L109G-STORE — persistance par compte × installation', () => {
     ls.setItem(LEGACY_PUSH_PROMPT_DISMISSED_KEY, '1');
     clearLegacyPushPromptKey();
     expect(ls.getItem(LEGACY_PUSH_PROMPT_DISMISSED_KEY)).toBeNull();
-    const ctl = createPushOnboarding();
-    expect(await ctl.evaluate(7)).toBe('offer');
+    // Lot 113J : la demande native est faite (ancienne clé ignorée).
+    vi.stubGlobal('fetch', vi.fn(async () => new Response('{}', { status: 200 })));
+    expect(await runRealFlow(7)).toBe('granted');
   });
 
   it('stockage sécurisé indisponible : repli local, toujours par compte', async () => {
@@ -434,26 +251,25 @@ describe('L109G-NATIVE — socle push réel (lib/native/push)', () => {
     expect(m.getToken).not.toHaveBeenCalled();
   });
 
-  it('parcours complet avec le socle réel : invitation, accord, réponse notée, plus d’invitation au lancement suivant', async () => {
+  it('lot 113J — parcours complet avec le socle réel : demande NATIVE directe, réponse notée, rien au lancement suivant', async () => {
     const sec = fakeSecureStorage();
     const m = fakeMessaging({ check: 'prompt-with-rationale', answer: 'granted' }); // Android 13+ après un premier refus
     const ls = installNative({ SecureStorage: sec, FirebaseMessaging: m }, 'android');
     vi.stubGlobal('fetch', vi.fn(async () => new Response('{}', { status: 200 })));
-    const ctl = createPushOnboarding();
-    expect(await ctl.evaluate(1)).toBe('offer');
-    ctl.sync(ctx());
-    expect(await ctl.allow()).toEqual({ state: 'granted', registered: true });
+    expect(await runRealFlow(1)).toBe('granted');
+    expect(m.requestPermissions).toHaveBeenCalledTimes(1);
     expect((await readPushOnboarding(1))).toMatchObject({ s: 'answered', r: 'granted' });
-    // Lancement suivant (même installation) : autorisation accordée → aucune invitation.
+    // Lancement suivant (même installation) : autorisation accordée → aucune demande.
     __resetShellInfoForTests();
     installNative({ SecureStorage: sec, FirebaseMessaging: m }, 'android', ls);
-    expect(await createPushOnboarding().evaluate(1)).toBe('none');
+    expect(await runRealFlow(1)).toBe('already_granted');
+    expect(m.requestPermissions).toHaveBeenCalledTimes(1);
   });
 
-  it('Web : aucune demande, aucune invitation', async () => {
+  it('Web : aucune demande', async () => {
     vi.stubGlobal('window', Object.assign(new EventTarget(), { location: { origin: 'https://app.verebona.fr' } }));
     expect(await requestNativePush()).toEqual({ state: 'unavailable', registered: false });
-    expect(await createPushOnboarding().evaluate(1)).toBe('none');
+    expect(await runRealFlow(1)).toBe('not_applicable');
     expect(canOpenNativeNotificationSettings()).toBe(false);
   });
 
@@ -479,21 +295,15 @@ describe('L109G-NATIVE — socle push réel (lib/native/push)', () => {
 describe('L109G-SRC — branchements et binaires', () => {
   const runtime = read('src/components/native/NativeBridgeRuntime.tsx');
 
-  it('runtime : plus de clé globale ; lot 111T biométrie d’abord, notifications ensuite', () => {
+  it('runtime : plus de clé globale ; lot 113J demandes natives seules via le contrôleur commun', () => {
     expect(runtime).not.toMatch(/push-prompt-dismissed|PUSH_PROMPT_DISMISSED_KEY/);
     expect(runtime).not.toMatch(/shownThisRun|holdBiometrics|bioVisible/);
-    expect(runtime).toMatch(/useBiometricOffer\(features, blocked\)/);
-    expect(runtime).toMatch(/usePushOnboarding\(featureOn\(features, 'push'\), blocked, offline, offer\.holdsPush\)/);
-    expect(runtime).toMatch(/push\.visible && !offer\.visible/);
+    expect(runtime).toMatch(/useNativePermissionsFlow\(features, blocked, offline\)/);
+    expect(runtime).not.toMatch(/PushOnboardingCard|BiometricOfferCard|usePushOnboarding|useBiometricOffer/);
     expect(runtime).toMatch(/const blocked = locked \|\| commerce \|\| envMismatch \|\| updateRequired/);
     expect(runtime).toMatch(/APP_UPDATE_REQUIRED_EVENT/);
-    expect(runtime).not.toMatch(/enableNativePush|requestPermissions/); // jamais de demande automatique
-  });
-
-  it('lot 111T : plus de report de la biométrie au lancement suivant', () => {
-    const src = read('src/lib/native/push-onboarding.ts') + read('src/components/native/useBiometricOffer.ts');
-    expect(src).not.toMatch(/holdBiometrics|shownThisRun/);
-    expect(read('src/components/native/useBiometricOffer.ts')).not.toMatch(/held = false/);
+    // La demande native passe par le socle (`requestNativePush`), jamais directement par le runtime.
+    expect(runtime).not.toMatch(/enableNativePush|requestPermissions/);
   });
 
   it('Mon compte › Notifications : accès « Ce téléphone » distinct des préférences, app native seulement', () => {
@@ -508,7 +318,7 @@ describe('L109G-SRC — branchements et binaires', () => {
 
   it('aucun Web Push réintroduit', () => {
     for (const f of [
-      'src/lib/native/push-onboarding.ts', 'src/components/native/usePushOnboarding.ts', 'src/components/native/PushOnboardingCard.tsx',
+      'src/lib/native/push-onboarding.ts', 'src/lib/native/native-permissions-flow.ts', 'src/components/native/useNativePermissionsFlow.ts',
       'src/components/native/NativePushDeviceSettings.tsx', 'src/app/(dashboard)/mon-compte/notifications/page.tsx',
     ]) {
       expect(read(f), f).not.toMatch(/Notification\.requestPermission|pushManager|PushManager/);

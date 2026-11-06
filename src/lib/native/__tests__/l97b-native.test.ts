@@ -344,6 +344,7 @@ describe('L97B-BIO — réglage Biométrie (Mon compte › Sécurité, app seule
     installNative({ plugins: { SecureStorage: fakeSecureStorage(), BiometricAuthNative: bio } });
     expect(await readBiometricSetting('ios', 7)).toEqual({
       supported: true, available: true, deviceSecure: true, enabled: false, label: 'Face ID', state: 'never', stored: 'never', shortLabel: 'Face ID', type: 2,
+      blockedBySettings: false, // lot 113J : champ ajouté (Face ID bloqué dans les réglages)
     });
     bio.checkBiometry.mockResolvedValueOnce({ isAvailable: false, deviceIsSecure: true, biometryType: 0 });
     expect(await readBiometricSetting('ios', 7)).toMatchObject({ available: false, label: 'Face ID ou Touch ID' });
@@ -388,7 +389,7 @@ describe('L97B-BIO — réglage Biométrie (Mon compte › Sécurité, app seule
   it('textes d’état (bloc)', () => {
     const base = {
       supported: true, available: true, deviceSecure: true, enabled: true, label: 'Face ID', shortLabel: 'Face ID', type: 2,
-      state: 'active' as const, stored: 'active' as const,
+      state: 'active' as const, stored: 'active' as const, blockedBySettings: false,
     };
     expect(biometricsStatusText(base, true)).toBe('Activé : Face ID déverrouille Verebona sur ce téléphone.');
     expect(biometricsStatusText({ ...base, enabled: false, state: 'deferred', stored: 'deferred' }, true)).toMatch(/^Désactivé/);

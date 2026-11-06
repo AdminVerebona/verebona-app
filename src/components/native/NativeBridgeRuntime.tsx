@@ -10,13 +10,14 @@
  *   · « Connexion Internet indisponible » + « Réessayer » (NET-01/02, lot 108G) ;
  *   · verrouillage après 5 min en arrière-plan ; lot 107A : Face ID / Touch ID
  *     / biométrie Android lancé AUTOMATIQUEMENT si activé, écran de secours
- *     seulement en cas d'échec (`useNativeUnlock`), proposition unique
- *     d'activation après connexion (`useBiometricOffer`) (AUTH-05/06/09) ;
+ *     seulement en cas d'échec (`useNativeUnlock`) (AUTH-05/06/09) ;
  *   · liens universels / App Links et retour Google / Apple (§19, M1) ;
  *   · notifications : enregistrement, demande contextualisée, ouverture de
- *     l'écran ciblé (PUSH-02/04/09) ; lot 109G : invitation « Autoriser les
- *     notifications ? » à la première connexion, par compte et installation,
- *     prioritaire sur la proposition biométrique (`usePushOnboarding`) ;
+ *     l'écran ciblé (PUSH-02/04/09) ;
+ *   · lot 113J : après connexion, demandes NATIVES seules — parcours
+ *     biométrique du système puis autorisation des notifications, l'une après
+ *     l'autre, sans aucune fenêtre Verebona (`useNativePermissionsFlow`,
+ *     remplace les propositions 107A / 109G / 111G / 111T) ;
  *   · partage entrant → formulaire d'ajout habituel (IMP-02..04) ; lot 108G :
  *     reprise depuis la FILE TECHNIQUE locale (`lib/native/share-inbox`) après
  *     Face ID / connexion — plus de fichiers gardés en mémoire seulement ;
@@ -55,11 +56,8 @@ import { nativeUploadSender } from '@/lib/native/native-upload';
 import { setNativeFeatures, setNativeOAuthReturn } from '@/lib/native/features';
 import { NATIVE_COMMERCE_INFO_PATH, NATIVE_COMMERCE_MESSAGE, isCommercePath } from '@/lib/native/commerce';
 import { useNativeUnlock } from './useNativeUnlock';
-import { useBiometricOffer } from './useBiometricOffer';
-import { usePushOnboarding } from './usePushOnboarding';
-import { PushOnboardingCard } from './PushOnboardingCard';
+import { useNativePermissionsFlow } from './useNativePermissionsFlow';
 import { NativeUnlockScreen } from './NativeUnlockScreen';
-import { BiometricOfferCard } from './BiometricOfferCard';
 import { useShareImport } from './useShareImport';
 import { ShareImportStatusCard } from './ShareImportStatusCard';
 import { SHARE_IMPORT_TRACKING_PATH, sessionAccountKey } from '@/lib/native/share-import';
@@ -95,7 +93,7 @@ export default function NativeBridgeRuntime() {
   const [retrying, setRetrying] = useState(false);
   // Lot 112E : identifiant d'installation obtenu après un report (téléphone verrouillé).
   const [installationReady, setInstallationReady] = useState(0);
-  // Lot 109G : écran bloquant « Mise à jour requise » (AppUpdateRequiredGate) — aucune invitation dessous.
+  // Lot 109G : écran bloquant « Mise à jour requise » (AppUpdateRequiredGate) — aucune demande dessous.
   const [updateRequired, setUpdateRequired] = useState(false);
 
   // Lot 108G : file technique des partages (persistante), éléments déjà proposés pendant ce lancement.
@@ -399,16 +397,13 @@ export default function NativeBridgeRuntime() {
     if (commerce) router.replace(NATIVE_COMMERCE_INFO_PATH);
   }, [commerce, router]);
 
-  // ── Proposition d'activation biométrique (lot 107A, #640) ───────────────
+  // ── Autorisations natives de première connexion (lot 113J) ──────────────
+  // Biométrie puis notifications : demandes du SYSTÈME seulement, jamais deux
+  // à la fois, jamais sous le verrou, les CGUV, la mise à jour obligatoire ou
+  // un écran bloquant ; notifications hors ligne : attente du réseau.
   const locked = unlock.locked && status !== 'unauthenticated';
   const blocked = locked || commerce || envMismatch || updateRequired;
-
-  // ── Invitation notifications (lot 109G), APRÈS la biométrie (lot 111T) ──
-  // Une seule invitation à la fois : tant que l'étape biométrique n'est pas
-  // terminée (évaluation, fenêtre ou vérification native, transition), les
-  // notifications attendent ; elles suivent dans la même session.
-  const offer = useBiometricOffer(features, blocked);
-  const push = usePushOnboarding(featureOn(features, 'push'), blocked, offline, offer.holdsPush);
+  useNativePermissionsFlow(features, blocked, offline);
 
   // ── Rendu ───────────────────────────────────────────────────────────────
   if (commerce) {
@@ -485,16 +480,6 @@ export default function NativeBridgeRuntime() {
       {/* Lot 110A : état des imports du partage natif (jamais de seconde confirmation). */}
       {!locked && partagesEnAttente.length === 0 && !pathname?.startsWith(SHARE_IMPORT_TRACKING_PATH) && (
         <ShareImportStatusCard items={shareImport.items} provision={shareImport.provision} lastCode={shareImport.lastCode} onOpen={ouvrir} onClose={(id) => { void shareImport.acknowledge(id); }} />
-      )}
-
-      {offer.visible && (
-        <BiometricOfferCard type={offer.type} busy={offer.busy} onActivate={offer.activate} onLater={offer.later} />
-      )}
-
-      {/* Lot 111T : une seule invitation à la fois, biométrie d'abord puis
-          notifications (deux fenêtres centrées, jamais superposées). */}
-      {push.visible && !offer.visible && (
-        <PushOnboardingCard busy={push.busy} onAllow={push.allow} onLater={push.later} />
       )}
 
       {/* Lot 107A : plus d'écran statique de verrouillage dans le parcours normal — voile

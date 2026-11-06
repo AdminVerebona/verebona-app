@@ -16,14 +16,20 @@
  *     à déverrouiller l'app. Il ne remplace jamais la confirmation d'identité
  *     de 5 minutes demandée pour les réglages de sécurité ; ce n'est pas une
  *     double authentification ;
- *   · interrupteur serveur `biometrics` coupé : réglage indisponible.
+ *   · interrupteur serveur `biometrics` coupé : réglage indisponible ;
+ *   · lot 113J : Face ID refusé à Verebona dans les réglages du téléphone →
+ *     explication + bouton « Ouvrir les réglages » (jamais ouvert
+ *     automatiquement) ; état relu au retour au premier plan (`appStateChange`
+ *     de la coque, en plus de `visibilitychange`).
  */
 import { useCallback, useEffect, useState } from 'react';
 import { toast } from 'sonner';
 import { Loader2 } from 'lucide-react';
+import { Button } from '@/components/ui/button';
 import { Switch } from '@/components/ui/switch';
 import { useSession } from '@/hooks/useSession';
-import { nativePlatform } from '@/lib/native/bridge';
+import { NATIVE_PLUGINS, listenNative, nativePlatform, nativePlugin } from '@/lib/native/bridge';
+import { canOpenNativeAppSettings, openNativeAppSettings } from '@/lib/native/push';
 import {
   BIOMETRIC_SHARED_DEVICE_NOTE, changeBiometrics, readBiometricSetting, type BiometricSetting,
 } from '@/lib/native/biometric-consent';
@@ -39,6 +45,10 @@ export function biometricsStatusText(s: BiometricSetting, featureOn: boolean): s
   if (!s.supported) return 'Ce téléphone ne permet pas à Verebona d’utiliser la biométrie.';
   if (s.state === 'reactivate') {
     return `À réactiver : les visages ou empreintes enregistrés dans ce téléphone ont changé. Réactivez l’option pour utiliser de nouveau ${s.label}.`;
+  }
+  if (s.blockedBySettings) {
+    // Lot 113J : même forme que l'aide de réactivation des notifications (lot 109G).
+    return 'Face ID est bloqué pour Verebona sur ce téléphone. Pour l’utiliser : ouvrez Réglages › Verebona, puis activez « Face ID ».';
   }
   if (!s.available) {
     return s.stored === 'active'
@@ -57,8 +67,10 @@ export function BiometricsBlock() {
   const [busy, setBusy] = useState(false);
   const featureOn = nativeFeatureOn('biometrics');
 
-  const reload = useCallback(async () => {
-    setSetting(await readBiometricSetting(nativePlatform(), userId, featureOn));
+  const reload = useCallback(async (): Promise<BiometricSetting> => {
+    const next = await readBiometricSetting(nativePlatform(), userId, featureOn);
+    setSetting(next);
+    return next;
   }, [userId, featureOn]);
 
   useEffect(() => {
@@ -66,22 +78,35 @@ export function BiometricsBlock() {
     // Retour dans l'app : l'utilisateur a pu modifier les réglages du téléphone.
     const onVisible = () => { if (document.visibilityState === 'visible') void reload(); };
     document.addEventListener('visibilitychange', onVisible);
-    return () => document.removeEventListener('visibilitychange', onVisible);
+    // Lot 113J : retour depuis Réglages › Verebona (événement de la coque, plus fiable dans la WebView iOS).
+    const off = listenNative<{ isActive: boolean }>(nativePlugin(NATIVE_PLUGINS.app), 'appStateChange', (st) => {
+      if (st.isActive) void reload();
+    });
+    return () => {
+      document.removeEventListener('visibilitychange', onVisible);
+      void off.then((f) => f());
+    };
   }, [reload]);
+
+  const ouvrirReglages = async () => {
+    if (!(await openNativeAppSettings())) toast.error('Les réglages n’ont pas pu être ouverts. Ouvrez l’app Réglages du téléphone.');
+  };
 
   const toggle = async (next: boolean) => {
     if (busy || !setting || userId === null) return;
     setBusy(true);
+    let r: Awaited<ReturnType<typeof changeBiometrics>> | null = null;
     try {
-      const r = await changeBiometrics(next, userId);
+      r = await changeBiometrics(next, userId);
       if (r === 'enabled') toast.success(`${capital(setting.label)} déverrouillera Verebona sur ce téléphone.`);
       // Désactivation : l'interrupteur relu montre l'état ; pas de toast de confirmation redondant (107B).
       else if (r === 'disabled') { /* état visible sur l'interrupteur */ }
       else if (r === 'refused') toast.message('Vérification non aboutie : rien n’a été modifié.');
-      else if (r === 'unavailable') toast.error('Aucune biométrie n’est utilisable sur ce téléphone pour le moment.');
-      else toast.error('Le réglage n’a pas pu être enregistré sur ce téléphone. Réessayez.');
+      else if (r === 'storage_error') toast.error('Le réglage n’a pas pu être enregistré sur ce téléphone. Réessayez.');
     } finally {
-      await reload();
+      const now = await reload();
+      // Lot 113J : Face ID refusé dans la demande du système → l'état relu l'explique (bouton vers les réglages).
+      if (r === 'unavailable' && !now.blockedBySettings) toast.error('Aucune biométrie n’est utilisable sur ce téléphone pour le moment.');
       setBusy(false);
     }
   };
@@ -108,6 +133,9 @@ export function BiometricsBlock() {
           aria-label={`Déverrouillage biométrique avec ${setting.label}`}
         />
       </div>
+      {setting.blockedBySettings && featureOn && canOpenNativeAppSettings() && (
+        <Button size="sm" variant="outline" data-testid="biometrics-open-settings" onClick={() => { void ouvrirReglages(); }}>Ouvrir les réglages</Button>
+      )}
       <p className="text-xs text-[color:var(--text-muted)]">
         Ce réglage ne concerne que ce téléphone et votre compte. {BIOMETRIC_SHARED_DEVICE_NOTE} Verebona ne reçoit jamais vos
         données biométriques, et la biométrie ne remplace pas la confirmation d’identité demandée pour les réglages de sécurité.
