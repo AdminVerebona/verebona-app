@@ -8,6 +8,12 @@
  *
  * Opérations : liste du `OperationDiagnosticsService` (réutilisée telle
  * quelle, filtre compte + recherche), aucune requête parallèle.
+ *
+ * Lot 113E — Fournisseurs : référentiel `suppliers` du compte (aucune autre
+ * source, aucun rapprochement par nom). « Tous » suit la règle de la liste
+ * applicative (`/fournisseurs`, lot 109B) : actifs + archivés, jamais un
+ * fournisseur au statut `deleted` (consultable seulement par son filtre).
+ * Aucune coordonnée bancaire n'est lue par la liste (ni IBAN, ni titulaire).
  */
 import { containsPattern } from '@/services/admin/list-params';
 import { OperationDiagnosticsService, readOnlyExecutor, type DiagExecutor, type DiagQuery } from '@/services/business-operations/diagnostics/service';
@@ -39,6 +45,8 @@ export interface ListItem {
   state: string;
   parent: { type: EntityType; id: number; label: string } | null;
   dates: Array<{ label: string; value: string | null }>;
+  /** Lot 113E — informations utiles de la ligne (fournisseurs : coordonnées publiques, relations persistées). */
+  details?: Array<{ label: string; value: string }>;
 }
 
 export interface ListResult {
@@ -63,6 +71,7 @@ export const LIST_FILTERS: Readonly<Record<Category, ReadonlyArray<{ value: stri
   documents: [{ value: 'all', label: 'Tous' }, { value: 'active', label: 'Actifs' }, { value: 'archived', label: 'Regroupés / ignorés' }, { value: 'deleted', label: 'Supprimés' }],
   echeances: [{ value: 'agenda', label: 'Agenda (actif)' }, { value: 'deadlines', label: 'Historique deadlines' }],
   operations: [{ value: 'all', label: 'Toutes' }, { value: 'active', label: 'Actives' }, { value: 'invalidated', label: 'Invalidées' }, { value: 'merged', label: 'Fusionnées' }],
+  fournisseurs: [{ value: 'all', label: 'Tous (actifs et archivés)' }, { value: 'active', label: 'Actifs' }, { value: 'archived', label: 'Archivés' }, { value: 'deleted', label: 'Supprimés (hors total)' }],
 };
 
 export const LIST_SORTS: Readonly<Record<Category, readonly string[]>> = {
@@ -72,6 +81,7 @@ export const LIST_SORTS: Readonly<Record<Category, readonly string[]>> = {
   documents: ['uploaded', 'id', 'name', 'date', 'updated'],
   echeances: ['date', 'id', 'name', 'created'],
   operations: ['created'],
+  fournisseurs: ['created', 'id', 'name', 'updated'],
 };
 
 type Params = { get(name: string): string | null };
@@ -105,9 +115,15 @@ interface CategorySql {
   order: Record<string, string>;
   columns: string;
   map: (r: Row) => ListItem;
+  /** États exclus de « Tous » et de son compteur (consultables par leur propre filtre). */
+  excludedFromAll?: readonly string[];
 }
 
 const ASSET_STATE = `CASE WHEN x.deleted_at IS NOT NULL THEN 'deleted' WHEN x.status IN ('VENDU', 'TRANSMIS', 'ARCHIVED') THEN 'archived' ELSE 'active' END`;
+
+/** Lot 113E — statuts du référentiel fournisseurs (`active`, `archived`, `deleted` : règle de `/api/suppliers`). */
+const SUPPLIER_STATE = `CASE WHEN x.status = 'deleted' THEN 'deleted' WHEN x.status = 'archived' THEN 'archived' ELSE 'active' END`;
+const SUPPLIER_STATUS_LABELS: Readonly<Record<string, string>> = { active: 'Actif', archived: 'Archivé', deleted: 'Supprimé' };
 
 const SQL: Readonly<Record<Exclude<Category, 'operations' | 'echeances'> | 'agenda' | 'deadlines', CategorySql>> = {
   biens: {
@@ -169,6 +185,38 @@ const SQL: Readonly<Record<Exclude<Category, 'operations' | 'echeances'> | 'agen
       dates: [{ label: 'Document', value: str(r.document_date) }, { label: 'Dépôt', value: ts(r.uploaded_at) }, ...(r.deleted_at ? [{ label: 'Supprimé', value: ts(r.deleted_at) }] : [])],
     }),
   },
+  // Lot 113E — référentiel fournisseurs du compte. Relations comptées par les liens PERSISTÉS seulement
+  // (document_suppliers vers un document non supprimé du compte ; business_operation_suppliers ACTIVE).
+  fournisseurs: {
+    from: `FROM suppliers x WHERE x.account_id = $1`,
+    stateExpr: SUPPLIER_STATE,
+    excludedFromAll: ['deleted'],
+    search: `(x.name ILIKE $2 OR x.normalized_name ILIKE $2 OR x.email ILIKE $2 OR x.city ILIKE $2 OR x.vat_number ILIKE $2
+              OR replace(x.siren, ' ', '') ILIKE replace($2, ' ', '') OR replace(x.siret, ' ', '') ILIKE replace($2, ' ', '')
+              OR x.public_id::text ILIKE $2 OR x.id = $3::int)`,
+    order: { created: 'x.created_at', id: 'x.id', name: 'lower(x.name)', updated: 'x.updated_at' },
+    columns: `x.id, x.public_id::text AS public_id, x.name, x.scope, x.source, x.status, x.email, x.phone, x.website, x.postal_code, x.city,
+              x.siren, x.siret, x.vat_number, x.created_at, x.updated_at,
+              (SELECT count(*) FROM document_suppliers ds JOIN asset_files f ON f.id = ds.document_id AND f.account_id = x.account_id AND f.deleted_at IS NULL
+                WHERE ds.supplier_id = x.id)::int AS docs_direct,
+              (SELECT count(DISTINCT l.operation_id) FROM business_operation_suppliers l
+                WHERE l.supplier_id = x.id AND l.account_id = x.account_id AND l.status = 'ACTIVE')::int AS ops_active`,
+    map: (r) => ({
+      type: 'supplier', id: int(r.id), name: str(r.name) ?? `Fournisseur #${r.id}`,
+      kind: [r.siret ? `SIRET ${str(r.siret)}` : r.siren ? `SIREN ${str(r.siren)}` : null, r.vat_number ? `TVA ${str(r.vat_number)}` : null].filter(Boolean).join(' · ') || null,
+      status: str(r.status), statusLabel: SUPPLIER_STATUS_LABELS[String(r.status)] ?? str(r.status), state: String(r.etat), parent: null,
+      dates: [{ label: 'Créé', value: ts(r.created_at) }, { label: 'Modifié', value: ts(r.updated_at) }],
+      details: [
+        ...(r.email ? [{ label: 'E-mail', value: String(r.email) }] : []),
+        ...(r.phone ? [{ label: 'Téléphone', value: String(r.phone) }] : []),
+        ...(r.website ? [{ label: 'Site', value: String(r.website) }] : []),
+        ...(r.postal_code || r.city ? [{ label: 'Ville', value: [str(r.postal_code), str(r.city)].filter(Boolean).join(' ') }] : []),
+        { label: 'Origine', value: [str(r.source), str(r.scope)].filter(Boolean).join(' · ') || '—' },
+        { label: 'Liens', value: `${int(r.docs_direct)} document(s) direct(s) · ${int(r.ops_active)} Opération(s) active(s)` },
+        ...(r.public_id ? [{ label: 'Identifiant public', value: String(r.public_id) }] : []),
+      ],
+    }),
+  },
   agenda: {
     from: `FROM agenda_items x WHERE x.account_id = $1`,
     stateExpr: `'active'`,
@@ -216,7 +264,10 @@ async function listSql(q: DiagQuery, key: keyof typeof SQL, accountId: number, l
   }
   const filtered = lq.state !== 'all' && lq.state !== 'agenda' && lq.state !== 'deadlines';
   params.push(filtered ? lq.state : null);
-  const stateCond = filtered ? `AND (${c.stateExpr}) = $4::text` : 'AND $4::text IS NULL';
+  // Lot 113E : « Tous » exclut les états hors périmètre (fournisseurs supprimés), compteur compris.
+  const excluded = c.excludedFromAll ?? [];
+  const allCond = !filtered && excluded.length ? ` AND (${c.stateExpr}) NOT IN (${excluded.map((e) => `'${e.replace(/[^a-z_]/g, '')}'`).join(', ')})` : '';
+  const stateCond = filtered ? `AND (${c.stateExpr}) = $4::text` : `AND $4::text IS NULL${allCond}`;
   const [{ n }] = await q(`SELECT count(*)::int AS n ${c.from} ${searchCond} ${stateCond}`, params);
   const total = int(n);
   const totalPages = Math.max(1, Math.ceil(total / lq.pageSize));
@@ -230,7 +281,7 @@ async function listSql(q: DiagQuery, key: keyof typeof SQL, accountId: number, l
   );
   const counts = await q(`SELECT (${c.stateExpr}) AS etat, count(*)::int AS n ${c.from} GROUP BY 1`, [accountId]);
   const by = new Map(counts.map((r) => [String(r.etat), int(r.n)]));
-  const all = [...by.values()].reduce((a, b) => a + b, 0);
+  const all = [...by.entries()].filter(([k]) => !excluded.includes(k)).reduce((a, [, b]) => a + b, 0);
   return {
     items: rows.map(c.map), page, total, totalPages,
     counters: counterValues.map((f) => ({ value: f.value, label: f.label, count: f.value === 'all' ? all : by.get(f.value) ?? 0 })),

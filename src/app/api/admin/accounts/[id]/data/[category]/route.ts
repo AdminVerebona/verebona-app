@@ -11,8 +11,8 @@ type Ctx = { params: Promise<{ id: string; category: string }> };
 /**
  * GET /api/admin/accounts/:id/data/:category?q=&sort=&dir=&page=&pageSize=&state=
  * — BO › fiche compte › « Données du compte » (lot 75N) : liste paginée côté
- * serveur d'une des six catégories (biens, equipements, pieces, documents,
- * echeances, operations), recherche par nom / référence / identifiant, tri et
+ * serveur d'une des sept catégories (biens, equipements, pieces, documents,
+ * echeances, operations, fournisseurs — lot 113E), recherche par nom / référence / identifiant, tri et
  * filtre d'état en liste blanche, compteurs réels. Lecture seule.
  */
 export async function GET(request: NextRequest, { params }: Ctx) {

@@ -41,35 +41,36 @@ export const ACCOUNT_DATA_SCHEMA = 'verebona.bo.donnees-compte/1';
 
 // ── Catégories et types d'entité ────────────────────────────────────────────
 
-const ENTITY_TYPES = ['asset', 'equipment', 'room', 'document', 'agenda', 'deadline', 'operation'] as const;
+// Lot 113E : `supplier` (référentiel `suppliers`, septième catégorie « Fournisseurs »).
+const ENTITY_TYPES = ['asset', 'equipment', 'room', 'document', 'agenda', 'deadline', 'operation', 'supplier'] as const;
 export type EntityType = (typeof ENTITY_TYPES)[number];
 
-export const CATEGORIES = ['biens', 'equipements', 'pieces', 'documents', 'echeances', 'operations'] as const;
+export const CATEGORIES = ['biens', 'equipements', 'pieces', 'documents', 'echeances', 'operations', 'fournisseurs'] as const;
 export type Category = (typeof CATEGORIES)[number];
 
 export const CATEGORY_LABELS: Readonly<Record<Category, string>> = {
-  biens: 'Biens', equipements: 'Équipements', pieces: 'Pièces', documents: 'Documents', echeances: 'Échéances', operations: 'Opérations',
+  biens: 'Biens', equipements: 'Équipements', pieces: 'Pièces', documents: 'Documents', echeances: 'Échéances', operations: 'Opérations', fournisseurs: 'Fournisseurs',
 };
 
 /** Type d'entité principal de chaque catégorie (Échéances : agenda + historique `deadlines`). */
 export const CATEGORY_TYPES: Readonly<Record<Category, readonly EntityType[]>> = {
-  biens: ['asset'], equipements: ['equipment'], pieces: ['room'], documents: ['document'], echeances: ['agenda', 'deadline'], operations: ['operation'],
+  biens: ['asset'], equipements: ['equipment'], pieces: ['room'], documents: ['document'], echeances: ['agenda', 'deadline'], operations: ['operation'], fournisseurs: ['supplier'],
 };
 
 export const ENTITY_LABELS: Readonly<Record<EntityType, string>> = {
   asset: 'Bien', equipment: 'Équipement', room: 'Pièce', document: 'Document', agenda: 'Échéance',
-  deadline: 'Échéance historique (deadlines)', operation: 'Opération',
+  deadline: 'Échéance historique (deadlines)', operation: 'Opération', supplier: 'Fournisseur',
 };
 
 /** Segment du nom de fichier (`verebona-compte-123-equipement-456-2026-10-20.json`). */
 const ENTITY_SLUGS: Readonly<Record<EntityType, string>> = {
-  asset: 'bien', equipment: 'equipement', room: 'piece', document: 'document', agenda: 'echeance', deadline: 'echeance-historique', operation: 'operation',
+  asset: 'bien', equipment: 'equipement', room: 'piece', document: 'document', agenda: 'echeance', deadline: 'echeance-historique', operation: 'operation', supplier: 'fournisseur',
 };
 
 /** Table principale de chaque type (ticket §4). */
 export const ENTITY_TABLES: Readonly<Record<EntityType, string>> = {
   asset: 'assets', equipment: 'equipments', room: 'substructures', document: 'asset_files', agenda: 'agenda_items',
-  deadline: 'deadlines', operation: 'business_operations',
+  deadline: 'deadlines', operation: 'business_operations', supplier: 'suppliers',
 };
 
 export function isEntityType(v: unknown): v is EntityType {
@@ -340,7 +341,8 @@ const MASK_RULES: ReadonlyArray<{ test: RegExp; motif: string; length?: boolean 
   { test: /^(filename|original_?filename|file_?name)$/i, motif: 'nom du fichier original' },
   { test: /(^url$|_url$|Url$)/, motif: 'URL de fichier ou de lien' },
   { test: /(password|secret|token|api_?key|credential|signature_?key)/i, motif: 'secret ou jeton' },
-  { test: /^(iban|bic|swift|rib)$/i, motif: 'coordonnées bancaires' },
+  // Lot 113E : aussi l'IBAN relevé sur un document (`observed_iban`) et le titulaire du compte (fournisseurs).
+  { test: /^(observed_?)?(iban|bic|swift|rib|iban_?holder_?name)$/i, motif: 'coordonnées bancaires' },
   { test: /^(extracted_text|full_text|raw_response_json|content_base64)$/i, motif: 'contenu intégral du document', length: true },
 ];
 
@@ -396,12 +398,22 @@ const VALUE_COLUMNS = new Set([
  * ligne porte une clé canonique sensible, ses colonnes de valeur → marqueur ;
  * le reste est masqué en profondeur (JSON).
  */
+/**
+ * Lot 113E — colonnes de valeur d'une ligne de conflit / revue dont le champ
+ * (`conflicting_field`, ex. revues fournisseurs `iban`, `ibanHolderName`)
+ * est une coordonnée bancaire : jamais rendues.
+ */
+const FIELD_NAME_COLUMNS = ['conflicting_field'] as const;
+const FIELD_VALUE_COLUMNS = new Set(['current_value', 'detected_value']);
+
 export function maskRow(row: Record<string, unknown>, opts: MaskOptions = {}): Record<string, unknown> {
   const sensitiveRow = !!opts.isSensitiveKey && KEY_COLUMNS.some((c) => typeof row[c] === 'string' && opts.isSensitiveKey!(String(row[c])));
+  const bankRow = FIELD_NAME_COLUMNS.map((c) => (typeof row[c] === 'string' ? maskRuleFor(String(row[c])) : null)).find((r) => !!r) ?? null;
   const out: Record<string, unknown> = {};
   for (const [k, v] of Object.entries(row)) {
     const rule = maskRuleFor(k);
     if (rule && v !== null && v !== undefined) out[k] = masked(rule.motif, rule.length ? lengthOf(v) : undefined);
+    else if (bankRow && FIELD_VALUE_COLUMNS.has(k) && v !== null && v !== undefined) out[k] = masked(bankRow.motif);
     else if (sensitiveRow && VALUE_COLUMNS.has(k) && v !== null && v !== undefined) out[k] = masked('donnée sensible (registre)');
     else out[k] = maskDeep(v, opts);
   }

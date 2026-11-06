@@ -601,3 +601,19 @@ export function listSupplierOperations(accountId: number, supplierId: number, ru
 export function countSupplierRelations(accountId: number, supplierId: number, runner?: GroupingRunner): Promise<EntityRelationCounts | null> {
   return countEntityRelations(accountId, { kind: 'supplier', id: supplierId }, runner);
 }
+
+// ── Lot 113E : périmètres exposés en LECTURE au back-office ────────────────
+
+/**
+ * Périmètres (CTE) d'un FOURNISSEUR, tels quels — `$1` compte, `$2`
+ * fournisseur ; colonnes : obj, provenance (DIRECT / VIA_OPERATION),
+ * operation_id, kind, role, origin, proof, membership. Exposés pour la vue
+ * BO « Données du compte » › Fournisseurs (lot 113E), qui les lit dans sa
+ * transaction READ ONLY : mêmes règles DIRECT / VIA_OPERATION que les fiches,
+ * aucune seconde définition des relations.
+ */
+export const SUPPLIER_RELATION_PERIMETERS: Readonly<{ documents: string; agendaItems: string; equipments: string }> = Object.freeze({
+  documents: REL_DOCUMENTS.supplier,
+  agendaItems: REL_AGENDA.supplier,
+  equipments: REL_SUPPLIER_EQUIPMENTS,
+});

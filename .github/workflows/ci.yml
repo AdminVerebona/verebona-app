@@ -575,6 +575,10 @@ jobs:
         run: npm run test:e2e:suggestions-exploiter -- --reporter=default --reporter=junit --outputFile.junit=rapports/e2e-suggestions-exploiter.xml
       - name: Assistant, actions de navigation sans doublon (lot 113F, Trello #689)
         run: npm run test:e2e:assistant-actions -- --reporter=default --reporter=junit --outputFile.junit=rapports/e2e-assistant-actions.xml
+      - name: À traiter, boutons des biens pour rattacher un document (lot 113A, Trello #692)
+        run: npm run test:e2e:a-traiter-rattachement -- --reporter=default --reporter=junit --outputFile.junit=rapports/e2e-a-traiter-rattachement.xml
+      - name: BO Données du compte, onglet Fournisseurs en lecture seule (lot 113E, Trello #700)
+        run: npm run test:e2e:bo-fournisseurs -- --reporter=default --reporter=junit --outputFile.junit=rapports/e2e-bo-fournisseurs.xml
       - name: Inscription, CGUV publiées vérifiées et reprise (lot 111O)
         run: npm run test:e2e:inscription-cguv -- --reporter=default --reporter=junit --outputFile.junit=rapports/e2e-inscription-cguv.xml
       - uses: actions/upload-artifact@v4

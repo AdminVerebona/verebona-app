@@ -172,8 +172,8 @@ describe('L75N-U04 formatage, nommage, liens profonds, navigation', () => {
     expect(parseEntityRef(entityRef('operation', 9))).toEqual({ type: 'operation', id: 9 });
     for (const bad of ['users-1', 'equipment-0', 'equipment-1;drop', 'asset-12345678901', '', null]) expect(parseEntityRef(bad as string)).toBeNull();
   });
-  it('six catégories ; navigation : historique du tiroir unique', () => {
-    expect(CATEGORIES).toEqual(['biens', 'equipements', 'pieces', 'documents', 'echeances', 'operations']);
+  it('catégories (six d’origine, lot 113E : Fournisseurs en septième) ; navigation : historique du tiroir unique', () => {
+    expect(CATEGORIES).toEqual(['biens', 'equipements', 'pieces', 'documents', 'echeances', 'operations', 'fournisseurs']);
     expect(CATEGORY_TYPES.echeances).toEqual(['agenda', 'deadline']);
     const a = { type: 'equipment' as const, id: 1 };
     const b = { type: 'document' as const, id: 2 };

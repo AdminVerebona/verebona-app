@@ -957,7 +957,7 @@ export default function AccountDetailPage() {
 
       </div>
 
-      {/* ── Lot 75N : Données du compte — six catégories, tiroir commun (ACC-D06, ACC-D07 adaptés) ── */}
+      {/* ── Lot 75N : Données du compte — sept catégories (lot 113E : Fournisseurs), tiroir commun (ACC-D06, ACC-D07 adaptés) ── */}
       <AccountDataSection accountId={account.id} />
     </div>
   );

@@ -4,8 +4,9 @@
  * BO › Comptes › fiche d'un compte › « Données du compte » (lot 75N).
  *
  * Section UNIQUE qui remplace les anciennes listes de la fiche (« Biens » non
- * cliquables, tableau des documents en métadonnées) : six catégories (Biens,
- * Équipements, Pièces, Documents, Échéances, Opérations), listes paginées,
+ * cliquables, tableau des documents en métadonnées) : sept catégories (Biens,
+ * Équipements, Pièces, Documents, Échéances, Opérations et, lot 113E,
+ * Fournisseurs), listes paginées,
  * triées et filtrées CÔTÉ SERVEUR, compteurs réels, actualisation
  * indépendante par catégorie. Un clic ouvre le tiroir commun (`EntityDrawer`)
  * sans perdre la liste (filtres, page et sélection conservés).
@@ -31,8 +32,8 @@ import { EntityDrawer, type EntityRefValue } from './EntityDrawer';
 
 /** Filtres et tris proposés (miroir des listes blanches serveur `LIST_FILTERS` / `LIST_SORTS`). */
 const SORT_LABELS: Record<string, string> = { created: 'Création', uploaded: 'Dépôt', id: 'Id', name: 'Nom', updated: 'Modification', date: 'Date' };
-const DEFAULT_SORT: Record<Category, string> = { biens: 'created', equipements: 'created', pieces: 'created', documents: 'uploaded', echeances: 'date', operations: 'created' };
-const DEFAULT_STATE: Record<Category, string> = { biens: 'all', equipements: 'all', pieces: 'all', documents: 'all', echeances: 'agenda', operations: 'all' };
+const DEFAULT_SORT: Record<Category, string> = { biens: 'created', equipements: 'created', pieces: 'created', documents: 'uploaded', echeances: 'date', operations: 'created', fournisseurs: 'created' };
+const DEFAULT_STATE: Record<Category, string> = { biens: 'all', equipements: 'all', pieces: 'all', documents: 'all', echeances: 'agenda', operations: 'all', fournisseurs: 'all' };
 
 interface QueryState { q: string; sort: string; dir: 'asc' | 'desc'; page: number; state: string }
 const initialQuery = (c: Category): QueryState => ({ q: '', sort: DEFAULT_SORT[c], dir: 'desc', page: 1, state: DEFAULT_STATE[c] });
@@ -182,7 +183,9 @@ export function AccountDataSection({ accountId }: { accountId: number }) {
       ) : !data || data.category !== category ? (
         <div className="flex justify-center py-8"><Loader2 className="h-5 w-5 animate-spin text-muted-foreground" /></div>
       ) : data.total === 0 ? (
-        <p className="px-5 py-6 text-center text-muted-foreground italic text-xs">Aucun élément{query.q ? ` pour « ${query.q} »` : ''}.</p>
+        <p className="px-5 py-6 text-center text-muted-foreground italic text-xs" data-empty-state={category}>
+          {category === 'fournisseurs' && !query.q && query.state === 'all' ? 'Aucun fournisseur enregistré sur ce compte.' : `Aucun élément${query.q ? ` pour « ${query.q} »` : ''}.`}
+        </p>
       ) : (
         <div className={`space-y-3 pb-3 ${loading === category ? 'opacity-60' : ''}`}>
           {/* Desktop */}
@@ -194,7 +197,7 @@ export function AccountDataSection({ accountId }: { accountId: number }) {
                   <th className="px-4 py-2 text-left">{sorts.includes('name') ? <SortHeader label="Nom" sortKey="name" current={query.sort} dir={query.dir} onSort={(k) => update({ ...nextSort(query.sort, query.dir, k), page: 1 })} /> : 'Nom'}</th>
                   <th className="px-4 py-2 text-left font-medium">Type</th>
                   <th className="px-4 py-2 text-left font-medium">Statut</th>
-                  <th className="px-4 py-2 text-left font-medium">Rattachement</th>
+                  <th className="px-4 py-2 text-left font-medium">{category === 'fournisseurs' ? 'Coordonnées et liens' : 'Rattachement'}</th>
                   <th className="px-4 py-2 text-left"><SortHeader label="Dates" sortKey={sorts[0]} current={query.sort} dir={query.dir} onSort={(k) => update({ ...nextSort(query.sort, query.dir, k), page: 1 })} /></th>
                 </tr>
               </thead>
@@ -214,7 +217,9 @@ export function AccountDataSection({ accountId }: { accountId: number }) {
                     <td className="px-4 py-2 font-medium">{i.name}</td>
                     <td className="px-4 py-2">{i.kind ?? '—'}</td>
                     <td className="px-4 py-2">{i.statusLabel ?? '—'}{i.state !== 'active' && <span className="ml-1 text-muted-foreground">({STATE_LABELS[i.state] ?? i.state})</span>}</td>
-                    <td className="px-4 py-2">{i.parent ? `${ENTITY_LABELS[i.parent.type]} #${i.parent.id} — ${i.parent.label}` : '—'}</td>
+                    <td className="px-4 py-2">{i.details?.length
+                      ? i.details.map((d) => <span key={d.label} className="block break-all">{d.label} : {d.value}</span>)
+                      : i.parent ? `${ENTITY_LABELS[i.parent.type]} #${i.parent.id} — ${i.parent.label}` : '—'}</td>
                     <td className="px-4 py-2 whitespace-nowrap">{i.dates.map((d) => <span key={d.label} className="block">{d.label} : {dateText(d.value)}</span>)}</td>
                   </tr>
                 ))}
@@ -237,6 +242,7 @@ export function AccountDataSection({ accountId }: { accountId: number }) {
                   </span>
                   <span className="block text-[11px] text-muted-foreground">{[i.kind, i.statusLabel, i.state !== 'active' ? STATE_LABELS[i.state] ?? i.state : null].filter(Boolean).join(' · ')}</span>
                   {i.parent && <span className="block text-[11px] text-muted-foreground">{ENTITY_LABELS[i.parent.type]} : {i.parent.label}</span>}
+                  {i.details?.map((d) => <span key={d.label} className="block text-[11px] text-muted-foreground break-all">{d.label} : {d.value}</span>)}
                   <span className="block text-[11px] text-muted-foreground">{i.dates.map((d) => `${d.label} ${dateText(d.value)}`).join(' · ')}</span>
                 </button>
               </li>

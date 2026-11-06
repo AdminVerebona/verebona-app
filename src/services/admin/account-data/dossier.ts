@@ -40,6 +40,7 @@ import {
   type EntityType, type MaskOptions, type Tab,
 } from './model';
 import { countRows, decodeJsonRow, jsonBatches, withReadSession, type ReadSession, type SessionWrap } from './session';
+import { SUPPLIER_RELATION_PERIMETERS } from '@/services/relations/read-contract';
 
 export class EntityNotFoundError extends Error {
   constructor() { super('Entité introuvable dans ce compte'); }
@@ -912,6 +913,139 @@ async function operationDossier(ctx: Ctx, id: number, withDetail: boolean): Prom
   };
 }
 
+// ── Lot 113E : fournisseur (référentiel `suppliers`) ────────────────────────
+
+/** Champs d'un objet JSON persisté (une ligne par clé, masquage profond : clés bancaires masquées). */
+function jsonKeyFields(table: string, column: string, raw: unknown): DossierField[] {
+  if (raw === null || raw === undefined) return [columnField(table, column, raw)];
+  const obj = typeof raw === 'string' ? (() => { try { return JSON.parse(raw) as unknown; } catch { return raw; } })() : raw;
+  if (!obj || typeof obj !== 'object' || Array.isArray(obj)) return [columnField(table, column, maskDeep(obj, MASK))];
+  const m = maskDeep(obj, MASK) as Row;
+  const keys = Object.keys(m).sort();
+  if (!keys.length) return [{ ...columnField(table, column, m), note: 'objet vide' }];
+  return keys.map((k) => { const f = columnField(table, column, m[k], m, k); f.path = k; return f; });
+}
+
+/** Libellé de document des relations (titre retenu, type, sinon générique). */
+const DOC_LABEL = `coalesce(f.retained_title, f.document_type_code, f.document_type, 'Document')`;
+const DOC_STATUS = `coalesce(f.analysis_state, '') || CASE WHEN f.deleted_at IS NOT NULL THEN ' (supprimé)' ELSE '' END`;
+const ASSET_STATUS_SQL = (a: string) => `coalesce(${a}.status, '') || CASE WHEN ${a}.deleted_at IS NOT NULL THEN ' (supprimé)' ELSE '' END`;
+const VIA_NATURE = `'via Opération #' || r.operation_id || ' — fournisseur ' || coalesce(r.role, 'rôle non renseigné')`;
+
+/**
+ * Dossier d'un FOURNISSEUR du compte (lot 113E). Lecture seule, dans la
+ * transaction READ ONLY du dossier ; relu PAR LE COMPTE (404 sinon).
+ *
+ * Relations : UNIQUEMENT les liens persistés. Les périmètres DIRECT /
+ * VIA_OPERATION sont ceux du contrat de lecture 109A
+ * (`SUPPLIER_RELATION_PERIMETERS`) ; les deux niveaux sont rendus dans des
+ * sections DISTINCTES, jamais fusionnés. Aucune relation n'est déduite d'une
+ * similarité de nom (`asset_files.supplier` texte n'est jamais lu ici).
+ * Coordonnées bancaires : IBAN et titulaire masqués (présence seule), y
+ * compris dans les observations et les revues de conflit.
+ */
+async function supplierDossier(ctx: Ctx, id: number): Promise<EntityDossier['entity']> {
+  const A = ctx.accountId;
+  const row = await oneRow(ctx.q, `SELECT * FROM suppliers WHERE id = $1 AND account_id = $2`, [id, A]);
+  if (!row) throw new EntityNotFoundError();
+  const status = str(row.status);
+  const statusLabel = status === 'archived' ? 'archived — archivé' : status === 'deleted' ? 'deleted — supprimé (hors liste applicative)' : (status ?? 'NULL');
+
+  await section(ctx, { id: 'identite', tab: 'synthese', title: 'Fournisseur : identité, coordonnées publiques et état',
+    description: 'Référentiel `suppliers` du compte. Coordonnées bancaires (IBAN, titulaire) jamais rendues : seule leur présence est indiquée (masqué / NULL en base).' }, async () => ({
+    fields: pick('suppliers', row, [['id', 'Identifiant'], ['public_id', 'Identifiant public'], ['name', 'Nom'], ['normalized_name', 'Nom normalisé (rapprochement)'],
+      ['status', 'Statut'], ['scope', 'Portée (personnel / partagé Duo)'], ['source', 'Provenance de la fiche'], ['email', 'E-mail'], ['phone', 'Téléphone'], ['website', 'Site web'],
+      ['address_line_1', 'Adresse'], ['address_line_2', 'Complément d’adresse'], ['postal_code', 'Code postal'], ['city', 'Ville'], ['country', 'Pays'],
+      ['siren', 'SIREN'], ['siret', 'SIRET'], ['vat_number', 'N° de TVA'], ['iban', 'IBAN'], ['iban_holder_name', 'Titulaire du compte'],
+      ['created_by_user_id', 'Créé par (utilisateur)'], ['created_at', 'Créé le'], ['updated_at', 'Modifié le']]),
+  }));
+  await section(ctx, { id: 'provenance', tab: 'synthese', title: 'Provenance des champs et décisions de l’utilisateur (lot 111X)',
+    description: 'field_provenance : document / observation à l’origine d’un champ complété automatiquement ; user_field_decisions : saisies (SET) et effacements (CLEARED) protégés par champ.' }, async () => ({
+    fields: [...jsonKeyFields('suppliers', 'field_provenance', row.field_provenance), ...jsonKeyFields('suppliers', 'user_field_decisions', row.user_field_decisions)],
+  }));
+  await section(ctx, { id: 'bdd-suppliers', tab: 'bdd', title: 'suppliers — colonnes persistées' }, async () => ({ fields: bddFields('suppliers', row) }));
+
+  const P = SUPPLIER_RELATION_PERIMETERS;
+  await relSection(ctx, 'rel-documents-direct', 'Documents — liens DIRECTS (document_suppliers : émetteur du document)', `
+    SELECT 'document' AS type, f.id, ${DOC_LABEL} AS label,
+           'lien direct — ' || coalesce(r.role, 'rôle non renseigné') || CASE WHEN r.origin = 'USER_CONFIRMED' THEN ' (confirmé)' ELSE ' (analyse)' END AS nature,
+           ${DOC_STATUS} AS status, r.origin, 'document_suppliers' AS via
+      FROM (${P.documents}) r JOIN asset_files f ON f.id = r.obj AND f.account_id = $1
+     WHERE r.provenance = 'DIRECT'`, [A, id]);
+  await relSection(ctx, 'rel-documents-via', 'Documents — VIA Opération (documents des Opérations actives du fournisseur, jamais émis par lui)', `
+    SELECT 'document' AS type, f.id, ${DOC_LABEL} AS label,
+           ${VIA_NATURE} || ' ; document ' || coalesce(array_to_string(r.membership, ','), '') AS nature,
+           ${DOC_STATUS} AS status, r.origin, 'business_operation_suppliers × business_operation_documents' AS via
+      FROM (${P.documents}) r JOIN asset_files f ON f.id = r.obj AND f.account_id = $1
+     WHERE r.provenance = 'VIA_OPERATION'`, [A, id]);
+  await relSection(ctx, 'rel-biens-direct', 'Biens — lien direct (asset_suppliers) et biens des documents / équipements DIRECTEMENT liés', `
+    SELECT * FROM (
+      SELECT 'asset' AS type, a.id, a.name AS label, 'lien direct (asset_suppliers, ' || coalesce(x.source_type, '') || ')' AS nature,
+             ${ASSET_STATUS_SQL('a')} AS status, x.source_type AS origin, 'asset_suppliers' AS via
+        FROM asset_suppliers x JOIN assets a ON a.id = x.asset_id AND a.account_id = $1 WHERE x.supplier_id = $2
+      UNION ALL
+      SELECT 'asset', a.id, a.name, 'bien du document #' || f.id || ' (lien direct document_suppliers)', ${ASSET_STATUS_SQL('a')}, NULL, 'document_suppliers → asset_files.asset_id'
+        FROM document_suppliers ds JOIN asset_files f ON f.id = ds.document_id AND f.account_id = $1
+        JOIN assets a ON a.id = f.asset_id AND a.account_id = $1 WHERE ds.supplier_id = $2
+      UNION ALL
+      SELECT 'asset', a.id, a.name, 'bien de l’équipement #' || e.id || ' (lien direct equipment_suppliers)', ${ASSET_STATUS_SQL('a')}, es.source_type, 'equipment_suppliers → equipments.asset_id'
+        FROM equipment_suppliers es JOIN equipments e ON e.id = es.equipment_id
+        JOIN assets a ON a.id = e.asset_id AND a.account_id = $1 WHERE es.supplier_id = $2
+    ) r`, [A, id]);
+  await relSection(ctx, 'rel-biens-via', 'Biens — VIA Opération (biens des Opérations actives du fournisseur)', `
+    SELECT 'asset' AS type, a.id, a.name AS label, 'via Opération #' || l.operation_id || ' — fournisseur ' || l.role || ' ; bien ' || coalesce(al.link_role, '') AS nature,
+           ${ASSET_STATUS_SQL('a')} AS status, al.authority AS origin, 'business_operation_suppliers × business_operation_asset_links' AS via
+      FROM business_operation_suppliers l
+      JOIN business_operations o ON o.id = l.operation_id AND o.account_id = $1 AND o.invalidated_at IS NULL AND o.merged_into_operation_id IS NULL
+      JOIN business_operation_asset_links al ON al.operation_id = l.operation_id AND al.account_id = $1 AND al.active
+      JOIN assets a ON a.id = al.asset_id AND a.account_id = $1
+     WHERE l.supplier_id = $2 AND l.account_id = $1 AND l.status = 'ACTIVE'`, [A, id]);
+  await relSection(ctx, 'rel-equipements-direct', 'Équipements — liens DIRECTS (equipment_suppliers)', `
+    SELECT 'equipment' AS type, e.id, e.name AS label,
+           'lien direct — ' || coalesce(r.role, 'relation non renseignée') || CASE WHEN (r.proof ->> 'isPrimary')::boolean THEN ' (principal)' ELSE '' END AS nature,
+           coalesce(e.status, '') || CASE WHEN e.archived_at IS NOT NULL THEN ' (archivé)' ELSE '' END || CASE WHEN a.deleted_at IS NOT NULL THEN ' (bien supprimé)' ELSE '' END AS status,
+           r.origin, 'equipment_suppliers' AS via
+      FROM (${P.equipments}) r JOIN equipments e ON e.id = r.obj JOIN assets a ON a.id = e.asset_id AND a.account_id = $1
+     WHERE r.provenance = 'DIRECT'`, [A, id]);
+  await relSection(ctx, 'rel-equipements-via', 'Équipements — VIA Opération (équipements des Opérations actives du fournisseur)', `
+    SELECT 'equipment' AS type, e.id, e.name AS label, ${VIA_NATURE} AS nature,
+           coalesce(e.status, '') || CASE WHEN e.archived_at IS NOT NULL THEN ' (archivé)' ELSE '' END || CASE WHEN a.deleted_at IS NOT NULL THEN ' (bien supprimé)' ELSE '' END AS status,
+           r.origin, 'business_operation_suppliers × business_operation_equipment_links' AS via
+      FROM (${P.equipments}) r JOIN equipments e ON e.id = r.obj JOIN assets a ON a.id = e.asset_id AND a.account_id = $1
+     WHERE r.provenance = 'VIA_OPERATION'`, [A, id]);
+  await relSection(ctx, 'rel-operations', 'Opérations — liens fournisseur ↔ Opération (business_operation_suppliers, tous états)', OP_REL(`
+    SELECT operation_id AS op_id, 'fournisseur ' || role || ' — lien ' || status || coalesce(' (' || reason_code || ')', '') AS nature, origin, 'business_operation_suppliers' AS via
+      FROM business_operation_suppliers WHERE account_id = $1 AND supplier_id = $2`), [A, id]);
+  await relSection(ctx, 'rel-echeances-direct', 'Échéances — liens DIRECTS (agenda_item_suppliers)', `
+    SELECT 'agenda' AS type, i.id, i.title AS label, 'lien direct — provenance ' || coalesce(r.origin, '') AS nature, i.manual_status AS status, r.origin, 'agenda_item_suppliers' AS via
+      FROM (${P.agendaItems}) r JOIN agenda_items i ON i.id = r.obj AND i.account_id = $1
+     WHERE r.provenance = 'DIRECT'`, [A, id]);
+  await relSection(ctx, 'rel-echeances-via', 'Échéances — VIA Opération (événements des Opérations actives du fournisseur)', `
+    SELECT 'agenda' AS type, i.id, i.title AS label, ${VIA_NATURE} || ' ; événement ' || coalesce(array_to_string(r.membership, ','), '') AS nature,
+           i.manual_status AS status, r.origin, 'business_operation_suppliers × agenda_items.business_operation_id' AS via
+      FROM (${P.agendaItems}) r JOIN agenda_items i ON i.id = r.obj AND i.account_id = $1
+     WHERE r.provenance = 'VIA_OPERATION'`, [A, id]);
+
+  await tableSection(ctx, 'observations', 'preuves', 'Coordonnées relevées sur les documents (supplier_contact_observations)', 'supplier_contact_observations',
+    `SELECT o.* FROM supplier_contact_observations o JOIN suppliers s ON s.id = o.supplier_id AND s.account_id = $1 WHERE o.supplier_id = $2 ORDER BY o.created_at DESC NULLS LAST, o.id DESC`, [A, id],
+    'origin : T1_ANALYSIS, T3_SECOND_CHANCE (lot 111X) ; document_id → asset_files.id ; IBAN et titulaire relevés masqués.');
+  await tableSection(ctx, 'reviews', 'preuves', 'Revues fournisseurs (supplier_review_items) — conflits de coordonnées et doublons, toutes', 'supplier_review_items',
+    `SELECT * FROM supplier_review_items WHERE account_id = $1 AND (supplier_id = $2 OR candidate_supplier_ids @> jsonb_build_array($2::int)) ORDER BY created_at DESC NULLS LAST, id DESC`, [A, id],
+    'Consultation seulement : aucune revue n’est ouverte, résolue ni recalculée par le back-office. Valeurs d’un conflit bancaire masquées.');
+  await tableSection(ctx, 'op-history', 'preuves', 'Historique des liens Opération ↔ fournisseur (business_operation_supplier_history)', 'business_operation_supplier_history',
+    `SELECT * FROM business_operation_supplier_history WHERE account_id = $1 AND supplier_id = $2 ORDER BY created_at DESC, id DESC`, [A, id]);
+  await tableSection(ctx, 'agenda-history', 'preuves', 'Historique des liens Agenda ↔ fournisseur (agenda_item_supplier_history)', 'agenda_item_supplier_history',
+    `SELECT * FROM agenda_item_supplier_history WHERE account_id = $1 AND supplier_id = $2 ORDER BY created_at DESC, id DESC`, [A, id]);
+  await tableSection(ctx, 'agenda-suppressions', 'preuves', 'Retraits manuels mémorisés Agenda ↔ fournisseur (agenda_item_supplier_suppressions)', 'agenda_item_supplier_suppressions',
+    `SELECT * FROM agenda_item_supplier_suppressions WHERE account_id = $1 AND supplier_id = $2 ORDER BY suppressed_at DESC, id DESC`, [A, id]);
+  await tableSection(ctx, 'to-process', 'preuves', 'Cartes « À traiter » du fournisseur (to_process_actions)', 'to_process_actions',
+    `SELECT * FROM to_process_actions WHERE account_id = $1 AND upper(target_type) = 'SUPPLIER' AND target_id = $2 ORDER BY resolved_at DESC NULLS FIRST, id DESC`, [A, id]);
+  await tableSection(ctx, 'to-process-decisions', 'preuves', 'Décisions du moteur « À traiter » (to_process_decisions)', 'to_process_decisions',
+    `SELECT * FROM to_process_decisions WHERE account_id = $1 AND upper(target_type) = 'SUPPLIER' AND target_id = $2 ORDER BY last_seen_at DESC NULLS LAST, id DESC`, [A, id]);
+
+  return { type: 'supplier', typeLabel: ENTITY_LABELS.supplier, id, table: 'suppliers', name: str(row.name) ?? `Fournisseur #${id}`, status, statusLabel };
+}
+
 // ── Plan, consultation paginée ──────────────────────────────────────────────
 
 /** Dossier planifié : sections (données des sources non encore lues) + sources. */
@@ -941,6 +1075,7 @@ export async function planEntityDossier(
     case 'document': entity = await documentDossier(ctx, id); break;
     case 'agenda': entity = await agendaDossier(ctx, id); break;
     case 'deadline': entity = await deadlineDossier(ctx, id); break;
+    case 'supplier': entity = await supplierDossier(ctx, id); break;
     case 'operation': {
       // Détail d'écran : seulement pour le dossier complet (pas pour une page d'une section).
       const r = await operationDossier(ctx, id, !ctx.only || ctx.only === 'reconciliation');
