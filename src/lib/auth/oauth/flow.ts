@@ -42,6 +42,7 @@ import {
 import { checkSessionEligibility, landingPath, mfaStepPath, openSocialSession } from './session-bridge';
 import { issueReauthProof, ReauthError } from '@/lib/auth/reauth';
 import { emailHasAccount } from './social-signup';
+import { classifyEmailDomain } from '@/lib/auth/disposable-email';
 import { socialErrorMessage, type SocialErrorCode } from './messages';
 
 export const PENDING_PAGE = '/connexion-sociale';
@@ -433,7 +434,18 @@ async function completeLogin(request: NextRequest, tx: AuthTransaction): Promise
   // (§8.1, LOGIN-04). Adresse vérifiée par le fournisseur et portée par un
   // compte → seul le rattachement est proposé (création interdite, SIGN-06) ;
   // sinon → « Vous avez déjà un compte Verebona ? » (§8.2, SIGN-07).
-  const existing = claims.email && claims.emailVerified ? await emailHasAccount(claims.email) : null;
+  //
+  // Lot 113H (#707, écart A — anti-énumération) : adresse attestée sur un
+  // domaine interdit (classificateur centralisé 109F, domaine seul) → l'étape
+  // ne dépend JAMAIS de l'existence d'un compte : toujours « choice ». Une
+  // adresse jetable déjà inscrite et une adresse jetable inconnue voient donc
+  // le même écran, et « Créer un nouveau compte » avec cette adresse reçoit le
+  // même refus (400, DISPOSABLE_EMAIL_NOT_ALLOWED). « J'ai déjà un compte
+  // Verebona » (mot de passe ou autre fournisseur déjà lié) reste proposé :
+  // la connexion et la liaison des comptes préexistants sont préservées.
+  const attested = claims.email && claims.emailVerified ? claims.email : null;
+  const forbiddenDomain = attested ? classifyEmailDomain(attested).disposable : false;
+  const existing = attested && !forbiddenDomain ? await emailHasAccount(attested) : null;
   const stage = existing ? 'existing_email' : 'choice';
   const moved = await transition(tx.id, 'received', 'awaiting_user', {
     stage, expiresAt: new Date(Date.now() + PENDING_SIGNUP_TTL_MS),

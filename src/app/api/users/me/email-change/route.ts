@@ -38,7 +38,11 @@ export async function POST(request: NextRequest) {
     if (!r.ok) {
       const status = r.code === 'RATE_LIMITED' ? 429 : 400;
       return NextResponse.json(
-        { error: r.code, code: r.code, message: r.message, ...(r.retryAfterSeconds ? { retryAfterSeconds: r.retryAfterSeconds } : {}) },
+        {
+          error: r.code, code: r.code, message: r.message, ...(r.retryAfterSeconds ? { retryAfterSeconds: r.retryAfterSeconds } : {}),
+          // Lot 113H : champ ciblé, comme les autres refus « adresse jetable » (inscription, Google / Apple).
+          ...(r.code === 'DISPOSABLE_EMAIL_NOT_ALLOWED' ? { field: 'email' } : {}),
+        },
         { status, headers: r.retryAfterSeconds ? { 'Retry-After': String(r.retryAfterSeconds) } : undefined },
       );
     }

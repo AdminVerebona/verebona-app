@@ -60,6 +60,32 @@ export interface AdminHealthReport {
   runtime: { node: string; nodeEnv: string | null; appEnv: string | null };
   /** Lot 109H : mémoire de l'instance qui a répondu (tailles seulement, sans secret). */
   memory?: AdminMemoryView;
+  /**
+   * Lot 113H : compteurs AGRÉGÉS des refus d'adresses jetables (migration
+   * 1125, `disposable_email_refusals`) sur 30 jours, par voie — jamais
+   * d'adresse. `table: false` : migration 1125 non appliquée.
+   */
+  disposableRefusals?: { table: boolean; days: number; total: number; byChannel: Array<{ channel: string; refusals: number }>; lastAt: string | null; error: string | null };
+}
+
+const DISPOSABLE_REFUSALS_DAYS = 30;
+
+async function disposableRefusalsView(): Promise<AdminHealthReport['disposableRefusals']> {
+  try {
+    const rows = await pgClient<{ channel: string; refusals: number; last_at: Date | null }[]>`
+      SELECT channel, sum(refusals)::int AS refusals, max(last_at) AS last_at
+        FROM disposable_email_refusals
+       WHERE day >= current_date - ${DISPOSABLE_REFUSALS_DAYS}::int
+       GROUP BY channel ORDER BY channel`;
+    const last = rows.reduce<Date | null>((m, r) => (r.last_at && (!m || new Date(r.last_at) > m) ? new Date(r.last_at) : m), null);
+    return {
+      table: true, days: DISPOSABLE_REFUSALS_DAYS, total: rows.reduce((n, r) => n + Number(r.refusals), 0),
+      byChannel: rows.map((r) => ({ channel: r.channel, refusals: Number(r.refusals) })), lastAt: last ? last.toISOString() : null, error: null,
+    };
+  } catch (e) {
+    if ((e as { code?: string })?.code === '42P01') return { table: false, days: DISPOSABLE_REFUSALS_DAYS, total: 0, byChannel: [], lastAt: null, error: null };
+    return { table: true, days: DISPOSABLE_REFUSALS_DAYS, total: 0, byChannel: [], lastAt: null, error: (e as Error).message?.slice(0, 200) ?? 'erreur' };
+  }
 }
 
 export interface AdminMemoryView {
@@ -163,6 +189,7 @@ export async function getAdminHealth(env: Record<string, string | undefined> = p
     retiredVariablesSet: retiredEnvVariables().filter((v) => isSet(env, v.name)),
     runtime: { node: process.version, nodeEnv: env.NODE_ENV ?? null, appEnv: env.NEXT_PUBLIC_APP_ENV ?? null },
     memory: await memoryView(env),
+    disposableRefusals: await withDeadline(disposableRefusalsView(), BUDGET_MS).catch(() => undefined),
   };
   return redactDeep(rapport);
 }

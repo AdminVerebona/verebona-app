@@ -51,8 +51,18 @@ export const MIN_MATCH_LABELS = 2;
 /** En deçà, le référentiel embarqué est considéré comme indisponible (fichier tronqué). */
 export const MIN_VALID_LIST_SIZE = 1000;
 
-/** Âge au-delà duquel le référentiel est signalé « à mettre à jour » (fréquence cible : mensuelle). */
+/**
+ * SEUIL D'ALERTE : au-delà, le référentiel est « périmé » et une anomalie est
+ * ouverte dans BO › Supervision (lot 113H). Distinct de la cible ci-dessous.
+ */
 export const DISPOSABLE_LIST_MAX_AGE_DAYS = 90;
+
+/**
+ * Lot 113H — CIBLE de mise à jour (action opérationnelle MENSUELLE, docs/
+ * exploitation/emails-jetables.md) : au-delà, BO › Exploitation affiche
+ * « mise à jour à prévoir », sans anomalie (l'alerte reste à 90 jours).
+ */
+export const DISPOSABLE_LIST_UPDATE_TARGET_DAYS = 31;
 
 /** Où le contrôle a refusé une adresse (métriques agrégées). */
 export type DisposableChannel =

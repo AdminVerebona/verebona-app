@@ -7,7 +7,11 @@
  * compte du fournisseur :
  *   · adresse attestée déjà utilisée par un compte (§8.1) → « Un compte
  *     Verebona utilise déjà cette adresse » : seule la connexion à ce compte
- *     (puis l'association) est proposée — jamais de second compte ;
+ *     (puis l'association) est proposée — jamais de second compte. Lot 113H :
+ *     sauf adresse attestée sur un domaine interdit (jetable) — l'écran est
+ *     alors toujours le choix ci-dessous, qu'un compte existe ou non
+ *     (anti-énumération) ; « Créer un nouveau compte » avec cette adresse est
+ *     refusé sous le champ « Adresse e-mail principale » ;
  *   · sinon (§8.2, obligatoire) → « Vous avez déjà un compte Verebona ? » :
  *     « J'ai déjà un compte Verebona » (connexion complète puis association)
  *     ou « Créer un nouveau compte » (« Prénom ou pseudo » prérempli avec le

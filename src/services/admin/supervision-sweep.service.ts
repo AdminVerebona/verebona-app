@@ -334,6 +334,11 @@ export async function runSupervisionSweep(): Promise<{ exports: SweepDomainResul
   await import('@/services/admin/production-copies/production-copies.service')
     .then((m) => m.syncProductionCopiesAnomaly())
     .catch(() => undefined);
+  // Lot 113H : référentiel des e-mails jetables indisponible, incohérent ou
+  // périmé (> 90 jours) — ouverture / résolution automatique, jamais bloquant.
+  await import('@/services/admin/disposable-list-supervision')
+    .then((m) => m.syncDisposableListAnomalies())
+    .catch(() => undefined);
   return { exports: exportsResult, ai: aiResult };
 }
 

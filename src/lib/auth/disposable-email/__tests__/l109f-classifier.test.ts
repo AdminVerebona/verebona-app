@@ -194,3 +194,81 @@ describe('L109F — garde serveur', () => {
     info.mockRestore();
   });
 });
+
+// ── Lot 113H (#707) — écarts B et C : état / supervision et intégrité bloquante ──
+
+describe('L113H — intégrité du référentiel livré (verifyReferential, prebuild, CI)', () => {
+  const list = domains as string[];
+  const license = readFileSync(join(root, 'src/lib/auth/disposable-email/data', source.licenseFile), 'utf8');
+  const script = () => import('../../../../../scripts/update-disposable-domains.mjs');
+
+  it('référentiel embarqué conforme (même contrôle que npm run disposable-domains:verify)', async () => {
+    const { verifyReferential, readReferential } = await script();
+    expect(verifyReferential({ list, source, license })).toEqual([]);
+    expect(verifyReferential(readReferential())).toEqual([]);
+  });
+
+  it('livraison invalide refusée : vide, < 1 000, tri, doublon, forme, sentinelle, métadonnées, empreinte, licence', async () => {
+    const { verifyReferential, listSha256 } = await script();
+    const ok = { list, source, license };
+    const fails = (over: Record<string, unknown>, pattern: RegExp) => {
+      const problems = verifyReferential({ ...ok, ...over });
+      expect(problems.join(' | '), String(pattern)).toMatch(pattern);
+    };
+    fails({ list: null }, /absente ou illisible/);
+    fails({ list: [] }, /VIDE/);
+    fails({ list: list.slice(0, 999) }, /tronquée : 999/);
+    fails({ list: [list[1], list[0], ...list.slice(2)] }, /non triée/);
+    fails({ list: [list[0], ...list] }, /doublon/);
+    fails({ list: [...list.slice(0, -1), 'PAS UN DOMAINE'] }, /forme invalide/);
+    fails({ list: [...list, 'gmail.com'].sort() }, /domaines légitimes présents.*gmail\.com/);
+    fails({ source: null }, /source\.json absent/);
+    fails({ source: { ...source, count: source.count + 1 } }, /count/);
+    fails({ source: { ...source, sha256: '0'.repeat(64) } }, /sha256 différente/);
+    fails({ source: { ...source, sha256: 'abc' } }, /sha256 absente ou invalide/);
+    fails({ source: { ...source, version: 'dea-0000000' } }, /version incohérente/);
+    fails({ source: { ...source, ref: 'main' } }, /ref absente ou invalide/);
+    fails({ source: { ...source, license: 'MIT' } }, /license différente/);
+    fails({ source: { ...source, schema: 'autre/2' } }, /schema/);
+    fails({ source: { ...source, fetchedAt: '2999-01-01T00:00:00Z' } }, /fetchedAt/);
+    fails({ source: { ...source, updateCommand: 'npm run x' } }, /updateCommand/);
+    fails({ license: '' }, /licence absent/);
+    fails({ license: 'MIT License' }, /différent de CC0/);
+    // Une liste tronquée mais « cohérente » (métadonnées recalculées) reste refusée.
+    const short = list.slice(0, 10);
+    fails({ list: short, source: { ...source, count: 10, sha256: listSha256(short) } }, /tronquée : 10/);
+  });
+
+  it('bloquant à la livraison : prebuild (build Scalingo) et script npm de vérification ; seuil aligné sur le runtime', () => {
+    const pkg = JSON.parse(readFileSync(join(root, 'package.json'), 'utf8')) as { scripts: Record<string, string> };
+    expect(pkg.scripts.prebuild).toContain('node scripts/update-disposable-domains.mjs --verify');
+    expect(pkg.scripts['disposable-domains:verify']).toBe('node scripts/update-disposable-domains.mjs --verify');
+    expect(pkg.scripts['test:e2e:emails-jetables']).toContain('l113h-emails-jetables-oauth.e2e.ts');
+    const src = readFileSync(join(root, 'scripts/update-disposable-domains.mjs'), 'utf8');
+    expect(Number(/const MIN_DOMAINS = (\d+)/.exec(src)?.[1])).toBe(MIN_VALID_LIST_SIZE);
+  });
+});
+
+describe('L113H — état du référentiel pour la supervision (disposableListStatus)', () => {
+  const at = (days: number) => new Date(new Date(source.fetchedAt).getTime() + days * 86_400_000);
+
+  it('cible mensuelle distincte du seuil d’alerte : ok → mise à jour à prévoir → périmé', () => {
+    expect(disposableListStatus(at(10))).toMatchObject({ state: 'ok', stale: false, integrity: 'ok', maxAgeDays: 90, updateTargetDays: 31 });
+    expect(disposableListStatus(at(40))).toMatchObject({ state: 'update_due', stale: false });
+    expect(disposableListStatus(at(90))).toMatchObject({ state: 'update_due', stale: false });
+    expect(disposableListStatus(at(91))).toMatchObject({ state: 'stale', stale: true, ageDays: 91 });
+  });
+
+  it('indisponible / incohérent : état explicite avec version et nombres, jamais la liste', () => {
+    const spy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    setDisposableListForTests(null);
+    expect(disposableListStatus(at(1))).toMatchObject({ state: 'unavailable', available: false, count: 0, loadedCount: 0, expectedCount: source.count, version: source.version });
+    setDisposableListForTests([...filler, 'tout-nouveau-jetable.test']);
+    const st = disposableListStatus(at(1));
+    expect(st).toMatchObject({ state: 'integrity', available: true, integrity: 'mismatch', loadedCount: MIN_VALID_LIST_SIZE + 1 });
+    expect(isDisposableEmailDomain('x@tout-nouveau-jetable.test')).toBe(true); // classement inchangé (pas de panne)
+    expect(JSON.stringify(st)).not.toContain('tout-nouveau-jetable');
+    expect(spy.mock.calls.map((c) => String(c[0])).join('\n')).toContain('incohérent avec source.json');
+    spy.mockRestore();
+  });
+});

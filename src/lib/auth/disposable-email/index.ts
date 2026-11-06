@@ -23,10 +23,13 @@
  * les autres adresses, et le signale (`listAvailable: false`, journal unique).
  * ══════════════════════════════════════════════════════════════════════════
  */
+import { createHash } from 'node:crypto';
 import { domainToASCII } from 'node:url';
 import embeddedDomains from './data/disposable-domains.json';
 import embeddedSource from './data/source.json';
-import { DISPOSABLE_ENV, DISPOSABLE_LIST_MAX_AGE_DAYS, LOCAL_ALLOWLIST, MIN_MATCH_LABELS, MIN_VALID_LIST_SIZE } from './policy';
+import {
+  DISPOSABLE_ENV, DISPOSABLE_LIST_MAX_AGE_DAYS, DISPOSABLE_LIST_UPDATE_TARGET_DAYS, LOCAL_ALLOWLIST, MIN_MATCH_LABELS, MIN_VALID_LIST_SIZE,
+} from './policy';
 
 export { DISPOSABLE_EMAIL_MESSAGE, DISPOSABLE_EMAIL_NOT_ALLOWED } from './messages';
 
@@ -73,7 +76,19 @@ export function domainCandidates(domain: string): string[] {
 
 // ── Référentiel embarqué ────────────────────────────────────────────────────
 
-interface EmbeddedList { set: ReadonlySet<string>; available: boolean; version: string }
+interface EmbeddedList {
+  set: ReadonlySet<string>;
+  available: boolean;
+  version: string;
+  /** Nombre de domaines lus dans le fichier embarqué (avant tout repli). */
+  loadedCount: number;
+  /**
+   * Lot 113H : cohérence avec `source.json` (nombre ET empreinte SHA-256).
+   * `mismatch` : livraison incohérente — signalée (journal + Supervision) ;
+   * le classement reste celui du lot 109F (aucune panne d'inscription).
+   */
+  integrity: 'ok' | 'mismatch';
+}
 let embedded: EmbeddedList | null = null;
 let overrideForTests: readonly string[] | null | undefined;
 let unavailableLogged = false;
@@ -84,11 +99,17 @@ function loadEmbedded(): EmbeddedList {
   const raw: unknown = overrideForTests === undefined ? embeddedDomains : overrideForTests;
   const list = Array.isArray(raw) ? raw.filter((d): d is string => typeof d === 'string') : [];
   const available = list.length >= MIN_VALID_LIST_SIZE;
-  if (!available && !unavailableLogged) {
+  // Même empreinte que scripts/update-disposable-domains.mjs (domaines joints par « \n »).
+  const integrity: EmbeddedList['integrity'] =
+    list.length === embeddedSource?.count && createHash('sha256').update(list.join('\n')).digest('hex') === embeddedSource?.sha256
+      ? 'ok' : 'mismatch';
+  if ((!available || integrity !== 'ok') && !unavailableLogged) {
     unavailableLogged = true;
-    console.error(`[disposable-email] référentiel embarqué indisponible ou tronqué (${list.length} domaines, version ${version}) : seules les listes DISPOSABLE_EMAIL_* s'appliquent.`);
+    console.error(!available
+      ? `[disposable-email] référentiel embarqué indisponible ou tronqué (${list.length} domaines, version ${version}) : seules les listes DISPOSABLE_EMAIL_* s'appliquent.`
+      : `[disposable-email] référentiel embarqué incohérent avec source.json (${list.length} domaines lus, ${String(embeddedSource?.count)} attendus, version ${version}) : livraison à corriger (npm run disposable-domains:verify).`);
   }
-  embedded = { set: new Set(available ? list : []), available, version };
+  embedded = { set: new Set(available ? list : []), available, version, loadedCount: list.length, integrity };
   return embedded;
 }
 
@@ -148,11 +169,29 @@ export function isDisposableEmailDomain(emailOrDomain: unknown): boolean {
   return classifyEmailDomain(emailOrDomain).disposable;
 }
 
-/** État du référentiel (documentation, supervision) — jamais la liste elle-même. */
+/**
+ * Lot 113H — état synthétique du référentiel, du plus grave au moins grave :
+ *   · `unavailable`  : fichier illisible / tronqué (< MIN_VALID_LIST_SIZE) — repli 109F ;
+ *   · `integrity`    : nombre ou empreinte différents de `source.json` ;
+ *   · `stale`        : date inconnue ou âge > DISPOSABLE_LIST_MAX_AGE_DAYS (ALERTE) ;
+ *   · `update_due`   : âge > DISPOSABLE_LIST_UPDATE_TARGET_DAYS (cible mensuelle, information) ;
+ *   · `ok`.
+ * Les trois premiers ouvrent une anomalie (BO › Supervision), `update_due` non.
+ */
+export type DisposableListState = 'ok' | 'update_due' | 'stale' | 'integrity' | 'unavailable';
+
+/** État du référentiel (documentation, supervision, BO › Exploitation) — jamais la liste elle-même. */
 export function disposableListStatus(now = new Date()) {
   const list = loadEmbedded();
   const fetchedAt = typeof embeddedSource?.fetchedAt === 'string' ? embeddedSource.fetchedAt : null;
-  const ageDays = fetchedAt ? Math.floor((now.getTime() - new Date(fetchedAt).getTime()) / 86_400_000) : null;
+  const fetchedMs = fetchedAt ? new Date(fetchedAt).getTime() : NaN;
+  const ageDays = Number.isFinite(fetchedMs) ? Math.floor((now.getTime() - fetchedMs) / 86_400_000) : null;
+  const stale = ageDays == null || ageDays > DISPOSABLE_LIST_MAX_AGE_DAYS;
+  const state: DisposableListState = !list.available ? 'unavailable'
+    : list.integrity !== 'ok' ? 'integrity'
+      : stale ? 'stale'
+        : ageDays! > DISPOSABLE_LIST_UPDATE_TARGET_DAYS ? 'update_due'
+          : 'ok';
   return {
     source: embeddedSource?.repository ?? null,
     license: embeddedSource?.license ?? null,
@@ -160,10 +199,19 @@ export function disposableListStatus(now = new Date()) {
     ref: embeddedSource?.ref ?? null,
     fetchedAt,
     count: list.set.size,
+    /** Lot 113H : domaines lus dans le fichier embarqué et nombre attendu (`source.json`). */
+    loadedCount: list.loadedCount,
+    expectedCount: typeof embeddedSource?.count === 'number' ? embeddedSource.count : null,
     available: list.available,
+    integrity: list.integrity,
     ageDays,
-    stale: ageDays == null || ageDays > DISPOSABLE_LIST_MAX_AGE_DAYS,
+    stale,
+    state,
+    maxAgeDays: DISPOSABLE_LIST_MAX_AGE_DAYS,
+    updateTargetDays: DISPOSABLE_LIST_UPDATE_TARGET_DAYS,
     allowlistOverrides: envList(DISPOSABLE_ENV.allowlist).size,
     extraBlocklist: envList(DISPOSABLE_ENV.extraBlocklist).size,
   };
 }
+
+export type DisposableListStatus = ReturnType<typeof disposableListStatus>;

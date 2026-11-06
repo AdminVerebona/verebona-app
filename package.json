@@ -8,7 +8,7 @@
   "scripts": {
     "predev": "node scripts/sync-pdf-worker.mjs",
     "dev": "next dev --turbopack",
-    "prebuild": "node scripts/check-repo-structure.mjs && node scripts/sync-pdf-worker.mjs",
+    "prebuild": "node scripts/check-repo-structure.mjs && node scripts/update-disposable-domains.mjs --verify && node scripts/sync-pdf-worker.mjs",
     "postinstall": "node scripts/install-chromium.mjs",
     "build": "next build",
     "postbuild": "node scripts/prune-image.mjs",
@@ -124,7 +124,8 @@
     "ai:check-legacy": "node scripts/check-legacy-ai.mjs",
     "prompts:check": "tsx scripts/check-prompt-files.ts",
     "disposable-domains:update": "node scripts/update-disposable-domains.mjs",
-    "test:e2e:emails-jetables": "vitest --run --config vitest.e2e.config.ts src/test/e2e/scenarios/l109f-emails-jetables.e2e.ts",
+    "disposable-domains:verify": "node scripts/update-disposable-domains.mjs --verify",
+    "test:e2e:emails-jetables": "vitest --run --config vitest.e2e.config.ts src/test/e2e/scenarios/l109f-emails-jetables.e2e.ts src/test/e2e/scenarios/l113h-emails-jetables-oauth.e2e.ts",
     "ai:corpus": "tsx scripts/run-master-corpus.ts",
     "ai:corpus:manifest": "tsx scripts/ai-corpus-manifest.ts",
     "ai:corpus:import": "tsx scripts/ai-corpus-import.ts",

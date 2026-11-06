@@ -150,6 +150,16 @@ export interface HealthCheckResult {
       acknowledged?: boolean;
       message?: string;
     };
+    /**
+     * Lot 113H (#707) : référentiel des domaines d'e-mails jetables embarqué
+     * (`disposableListStatus`, lot 109F) — diagnostic AUTORISÉ seulement :
+     * version, date, âge, nombres, disponibilité, intégrité, seuils ; jamais
+     * la liste. `error` : indisponible ou incohérent ; `warning` : périmé
+     * (> 90 jours) ; `ok` (éventuellement « mise à jour à prévoir », cible
+     * mensuelle). Statut global inchangé : l'inscription reste servie (repli
+     * 109F) ; l'alerte passe par la Supervision.
+     */
+    disposableEmailList?: { status: 'ok' | 'warning' | 'error' } & import('@/lib/auth/disposable-email').DisposableListStatus;
     /** Diagnostic autorisé : pool PostgreSQL du processus (lot 24, APP-PERF-01). */
     dbPool?: { status: 'ok'; role: string; max: number; maxSource: string } & import('@/db/pool-metrics').PoolMetricsSnapshot;
     assistantRateLimiter?: { status: 'ok' | 'warning'; mode: string; degradedSince: string | null; lastError: string | null };
@@ -329,6 +339,18 @@ export async function buildHealthReport(opts: { detailed: boolean }): Promise<{ 
       : { status: l.status };
   } catch {
     /* contrôle indicatif */
+  }
+
+  // Check 12 (lot 113H, diagnostic autorisé) : référentiel des e-mails jetables. Pur, sans réseau.
+  if (detailed) {
+    try {
+      const { disposableListStatus } = await import('@/lib/auth/disposable-email');
+      const st = disposableListStatus();
+      const status = st.state === 'unavailable' || st.state === 'integrity' ? 'error' : st.state === 'stale' ? 'warning' : 'ok';
+      result.checks.disposableEmailList = { status, ...st };
+    } catch {
+      /* contrôle indicatif */
+    }
   }
 
   // Statut global

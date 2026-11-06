@@ -263,6 +263,8 @@ jobs:
         run: npm run test:e2e:auth-social -- --reporter=default --reporter=junit --outputFile.junit=rapports/e2e-auth-social.xml
       - name: MFA et clés d’accès, environnement, disponibilité serveur, messages (lot 111W)
         run: npm run test:e2e:mfa-preprod -- --reporter=default --reporter=junit --outputFile.junit=rapports/e2e-mfa-preprod.xml
+      - name: Inscription, e-mails jetables Google / Apple et supervision du référentiel (lots 109F + 113H, Trello #707)
+        run: npm run test:e2e:emails-jetables -- --reporter=default --reporter=junit --outputFile.junit=rapports/e2e-emails-jetables.xml
       - name: Isolation entre comptes (lots 40, 49, 53A, 53B, 54B, 83D)
         run: npm run test:security:e2e -- --reporter=default --reporter=junit --outputFile.junit=rapports/e2e-securite.xml
       - uses: actions/upload-artifact@v4

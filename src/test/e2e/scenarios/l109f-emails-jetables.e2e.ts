@@ -232,7 +232,9 @@ scenario('L109F', 'E-mails jetables — inscription, Google / Apple, changement 
     const b2 = new Nav();
     const u2 = { sub: uid('j03e-sub'), email: ancien.email };
     expect(loc(await social(b2, 'google', u2)).pathname).toBe('/connexion-sociale');
-    expect((await pending(b2)).body.stage).toBe('existing_email');
+    // Lot 113H (#707, écart A) : adresse attestée sur un domaine interdit → toujours l'écran de choix
+    // (« J'ai déjà un compte » / « Créer un nouveau compte »), qu'un compte existe ou non (anti-énumération).
+    expect((await pending(b2)).body.stage).toBe('choice');
     const lien = await pending(b2, { action: 'link-password', email: ancien.email, password: PASSWORD });
     expect(lien.status).toBe(200);
     expect(await sql`SELECT user_id FROM auth_identities WHERE subject = ${u2.sub}`).toEqual([{ user_id: ancien.id }]);
@@ -307,7 +309,8 @@ scenario('L109F', 'E-mails jetables — inscription, Google / Apple, changement 
     };
     sent.length = 0;
     const libre = await demander(`${uid('j06n')}@yopmail.com`);
-    expect(libre).toEqual({ status: 400, body: { error: 'DISPOSABLE_EMAIL_NOT_ALLOWED', code: 'DISPOSABLE_EMAIL_NOT_ALLOWED', message: MESSAGE } });
+    // Lot 113H : champ ciblé ajouté (`field: 'email'`), comme les autres refus « adresse jetable ».
+    expect(libre).toEqual({ status: 400, body: { error: 'DISPOSABLE_EMAIL_NOT_ALLOWED', code: 'DISPOSABLE_EMAIL_NOT_ALLOWED', message: MESSAGE, field: 'email' } });
     // Adresse jetable déjà portée par un autre compte : réponse identique, aucun e-mail au titulaire.
     const autre = await compteExistant(`${uid('j06o')}@yopmail.com`);
     expect(await demander(autre.email)).toEqual(libre);

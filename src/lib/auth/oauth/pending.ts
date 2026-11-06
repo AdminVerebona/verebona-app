@@ -148,7 +148,19 @@ export async function linkWithPassword(request: NextRequest, tx: AuthTransaction
 // ── Inscription ─────────────────────────────────────────────────────────────
 
 export async function signup(request: NextRequest, tx: AuthTransaction, body: Record<string, unknown>): Promise<NextResponse> {
-  if (tx.stage === 'existing_email') return err('ACCOUNT_ALREADY_EXISTS', 409);
+  // Lot 113H (#707, écart A) : le classificateur centralisé passe AVANT le
+  // verdict « un compte utilise déjà cette adresse » (étape `existing_email`,
+  // qui dépend de l'existence du compte) : une adresse jetable soumise pour
+  // créer un compte reçoit toujours le même refus (400,
+  // DISPOSABLE_EMAIL_NOT_ALLOWED, message canonique, field: 'email'). Une
+  // adresse attestée JETABLE n'atteint d'ailleurs jamais cette étape (flow.ts :
+  // toujours « choice »). La création reste interdite à l'étape
+  // `existing_email` (SIGN-06) ; connexion et liaison inchangées.
+  if (tx.stage === 'existing_email') {
+    const disposableAtExisting = checkDisposableEmail(typeof body.email === 'string' ? body.email : null, 'social_signup');
+    if (disposableAtExisting) return disposableErr(disposableAtExisting);
+    return err('ACCOUNT_ALREADY_EXISTS', 409);
+  }
   const v = validateProfileInput(body);
   if (!v.ok) return err(v.code, 400, PROFILE_ERROR_MESSAGES[v.code]);
   const termsVersion = await acceptedTermsVersion(v.presentedVersion);
