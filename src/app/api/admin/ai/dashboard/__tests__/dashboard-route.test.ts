@@ -49,6 +49,10 @@ const getCostReport = vi.fn(async (_o: { since: Date }) => ({
 vi.mock('@/services/ai/telemetry/cost-report.repository', () => ({ getCostReport: (o: { since: Date }) => getCostReport(o) }));
 vi.mock('@/services/ai/queue/circuit-breaker.repository', () => ({ getModelAlerts: async () => [] }));
 vi.mock('@/services/ai/alerts/alerts.repository', () => ({ listAlerts: async () => [] }));
+// Correctif 113 (CI du 06/11) : la synthèse tarifaire du lot 113O (14e source) lit la base ; sans
+// PostgreSQL (job unitaire de la CI) l'appel restait pendant jusqu'au délai du test. Simulée ici
+// comme les treize autres sources ; elle est couverte par l113o (unitaires et e2e).
+vi.mock('@/services/ai/gateway/pricing/pricing-supervision', () => ({ ALL_PRICING_ALERT_CODES: [], pricingSummaryForDashboard: async () => null }));
 vi.mock('@/services/ai/telemetry/treatment-activity.repository', () => ({
   getTreatmentActivity: async () => [{
     treatment: 'T1', calls24h: 4, calls7d: 10, calls30d: 20, successRate24h: 0.5, successRate7d: 0.9,
