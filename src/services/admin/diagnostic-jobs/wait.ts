@@ -251,3 +251,35 @@ export function displayStatus(r: DisplayRow, wait: Pick<WaitDiagnosis, 'reason' 
     default: return String(r.status);
   }
 }
+
+/**
+ * Lot 113K (Trello #699, recette KO du 06/11/2026) — LIBELLÉ HONNÊTE du worker
+ * vu pour une demande (pur, partagé par la page BO et les tests).
+ *
+ * Constat : demande ciblée « compte #13 · renforcé » (f191d635…) QUEUED depuis
+ * 24 h, BO affichant à la fois « En attente — worker désactivé
+ * (DIAG_JOB_WORKER_DISABLED) » et « Worker disponible : app-preprod-web-1:23 ».
+ * La page disait « Worker disponible » pour TOUTE demande non RUNNING, sans
+ * regarder l'état du processus. Désormais « Worker disponible » n'est écrit
+ * que si le processus a un worker DÉMARRÉ, vivant, et qu'au moins un worker
+ * vivant existe ; sinon l'état réel est nommé.
+ */
+export interface WorkerViewLike {
+  state: string;
+  alive: boolean;
+  aliveWorkers: number;
+  disabledReason?: string | null;
+  lane?: 'main' | 'targeted' | null;
+}
+export type WorkerHeadlineCode = 'EXECUTING' | 'AVAILABLE' | 'DISABLED' | 'NO_WORKER_IN_PROCESS' | 'OFFLINE' | 'STOPPED' | 'UNKNOWN';
+export interface WorkerHeadline { code: WorkerHeadlineCode; label: string; problem: boolean }
+
+export function workerHeadline(v: WorkerViewLike, jobStatus: string): WorkerHeadline {
+  if (jobStatus === 'RUNNING' && v.lane && v.state === 'STARTED' && v.alive) return { code: 'EXECUTING', label: 'Worker qui exécute', problem: false };
+  if (v.state === 'DISABLED') return { code: 'DISABLED', label: `Worker désactivé (${v.disabledReason || 'DIAG_JOB_WORKER_DISABLED'})`, problem: true };
+  if (v.state === 'NOT_THIS_PROCESS') return { code: 'NO_WORKER_IN_PROCESS', label: 'Processus sans worker', problem: true };
+  if (v.state === 'STOPPED') return { code: 'STOPPED', label: 'Worker arrêté', problem: true };
+  if (!v.alive) return { code: 'OFFLINE', label: 'Worker hors ligne (battement périmé)', problem: true };
+  if (v.state === 'STARTED' && v.aliveWorkers > 0) return { code: jobStatus === 'RUNNING' ? 'EXECUTING' : 'AVAILABLE', label: jobStatus === 'RUNNING' ? 'Worker qui exécute' : 'Worker disponible', problem: false };
+  return { code: 'UNKNOWN', label: `Worker : état ${v.state}`, problem: true };
+}

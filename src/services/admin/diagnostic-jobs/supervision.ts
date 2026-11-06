@@ -268,7 +268,7 @@ export function startDiagnosticSupervisor(intervalMs = 60_000): void {
  * dernier prélèvement, battement). Lecture seule, ne lève jamais.
  */
 export async function diagnosticJobWorkerView(job: { id: string; status: string; worker: string | null }, now: Date = new Date()): Promise<null | {
-  instance: string; state: string; alive: boolean; seenAt: string; lastTickAt: string | null; lastClaimAt: string | null; lane: 'main' | 'targeted' | null;
+  instance: string; state: string; disabledReason: string | null; alive: boolean; seenAt: string; lastTickAt: string | null; lastClaimAt: string | null; lane: 'main' | 'targeted' | null;
   waitReason: string | null; laneWaitReason: string | null; commit: string | null; version: string | null; aliveWorkers: number;
 }> {
   try {
@@ -280,7 +280,7 @@ export async function diagnosticJobWorkerView(job: { id: string; status: string;
     const pick = own ?? alive.filter((b) => b.state === 'STARTED').sort((a, b) => Date.parse(b.seenAt) - Date.parse(a.seenAt))[0] ?? alive[0] ?? beats[0];
     if (!pick) return null;
     return {
-      instance: short(pick), state: pick.state, alive: isBeatAlive(pick, now), seenAt: pick.seenAt, lastTickAt: pick.lastTickAt,
+      instance: short(pick), state: pick.state, disabledReason: pick.disabledReason ?? null, alive: isBeatAlive(pick, now), seenAt: pick.seenAt, lastTickAt: pick.lastTickAt,
       lastClaimAt: [pick.lastClaimAt, pick.laneLastClaimAt ?? null].filter(Boolean).sort().at(-1) ?? null,
       lane: own ? (pick.laneJobId === job.id ? 'targeted' : 'main') : null, waitReason: pick.waitReason, laneWaitReason: pick.laneWaitReason ?? null,
       commit: pick.buildCommit, version: pick.buildVersion, aliveWorkers: alive.filter((b) => b.state === 'STARTED').length,

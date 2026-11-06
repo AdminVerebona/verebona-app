@@ -27,6 +27,7 @@ import { afterAll, beforeAll, expect, it, vi } from 'vitest';
 import JSZip from 'jszip';
 import { scenario } from '../scenario';
 import type { AccountRow } from '../factories';
+import { workerHeadline } from '@/services/admin/diagnostic-jobs/wait';
 
 type Json = Record<string, any>;
 
@@ -394,6 +395,9 @@ scenario('L111Q', 'Diagnostic ciblé : prise en charge, voie réservée, métriq
     const d = await detail(id);
     expect(d.category).toEqual({ code: 'WORKER_INDISPONIBLE', label: 'Worker indisponible' });
     expect(d.statusLabel).toBe('En attente — worker désactivé (DIAG_JOB_WORKER_DISABLED)');
+    // Lot 113K (#699, recette KO du 06/11) : plus jamais « Worker disponible » pour un processus désactivé.
+    expect(d.workerView).toMatchObject({ state: 'DISABLED', disabledReason: 'DIAG_JOB_WORKER_DISABLED', aliveWorkers: 0 });
+    expect(workerHeadline(d.workerView, d.job.status)).toEqual({ code: 'DISABLED', label: 'Worker désactivé (DIAG_JOB_WORKER_DISABLED)', problem: true });
     // Alerte immédiate (superviseur lancé par la demande, en tâche de fond) : attendue avant la suite.
     const t0 = Date.now();
     while (!(await anomalies()).some((x) => x.fingerprint.endsWith(':worker_disabled')) && Date.now() - t0 < 10_000) await new Promise((res) => setTimeout(res, 50));
@@ -410,6 +414,8 @@ scenario('L111Q', 'Diagnostic ciblé : prise en charge, voie réservée, métriq
     expect(dq.metrics.queueWaitMs).toBeGreaterThanOrEqual(380_000);
     // Worker relancé : reprise automatique, une seule exécution, alerte résolue.
     await battement({ id: 'web-1:31:retour01' });
+    const dr = await detail(id);
+    expect(workerHeadline(dr.workerView, dr.job.status).code, 'worker rétabli : disponible').toBe('AVAILABLE');
     const outs = await drain({ maxJobs: 3 });
     expect(outs).toHaveLength(1);
     expect(outs[0]).toMatch(/^(COMPLETE|PARTIAL)$/);
@@ -495,4 +501,35 @@ scenario('L111Q', 'Diagnostic ciblé : prise en charge, voie réservée, métriq
     expect(Date.parse(d.readAt)).toBeGreaterThan(Date.now() - 60_000);
     await viderFile();
   });
+
+  // ══ L113K ═══════════════════════════════════════════════════════════════
+  it('L113K — libellé du worker d’une demande en file : désactivé, processus sans worker, hors ligne, disponible (jamais « disponible » à tort)', async () => {
+    await viderFile();
+    await sql`DELETE FROM diagnostic_worker_heartbeats`;
+    const r = await demander({ scope: 'account', id: A.id, reinforced: true });
+    const id = String(r.json.jobId);
+    const vue = async () => { const d = await detail(id); expect(d.job.status).toBe('QUEUED'); return { d, h: workerHeadline(d.workerView, d.job.status) }; };
+    // Processus web sans worker (BACKGROUND_JOBS_PROCESS=worker) : « Processus sans worker ».
+    await battement({ id: 'web-1:40:nowk0001', state: 'NOT_THIS_PROCESS', lastTickAt: null });
+    expect((await vue()).h).toMatchObject({ code: 'NO_WORKER_IN_PROCESS', problem: true });
+    // Processus désactivé, vu juste avant : reste désactivé (cas de la préproduction du 06/11).
+    await sql`DELETE FROM diagnostic_worker_heartbeats`;
+    await battement({ id: 'app-preprod-web-1:23:off00001', state: 'DISABLED', disabledReason: 'DIAG_JOB_WORKER_DISABLED', lastTickAt: null });
+    const des = await vue();
+    expect(des.d.workerView).toMatchObject({ instance: 'app-preprod-web-1:23', state: 'DISABLED', aliveWorkers: 0 });
+    expect(des.h.label).toBe('Worker désactivé (DIAG_JOB_WORKER_DISABLED)');
+    // Worker démarré mais battement périmé (> 90 s) : « hors ligne ».
+    await sql`DELETE FROM diagnostic_worker_heartbeats`;
+    await battement({ id: 'web-1:41:vieux001', seenAt: new Date(Date.now() - 10 * 60_000).toISOString() });
+    expect((await vue()).h).toMatchObject({ code: 'OFFLINE', problem: true });
+    // Worker démarré et vivant : seul cas « Worker disponible ».
+    await battement({ id: 'web-1:42:sain0001' });
+    const ok = await vue();
+    expect(ok.d.workerView).toMatchObject({ instance: 'web-1:42', state: 'STARTED', alive: true, aliveWorkers: 1 });
+    expect(ok.h).toEqual({ code: 'AVAILABLE', label: 'Worker disponible', problem: false });
+    // Et la demande part : aucune attente injustifiée une fois le worker disponible.
+    const [st] = await drain();
+    expect(st).toMatch(/^(COMPLETE|PARTIAL)$/);
+    expect(await ligne(id)).toMatchObject({ attempt: 1 });
+  }, 600_000);
 });

@@ -56,6 +56,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@
 import { EcranEnErreur } from '@/components/admin/EcranEnErreur';
 import { copyText } from '../ai-executions/_components/CopyJson';
 import { boGet, boPost, ensureFreshSession, freshnessLabel, reconnectHref, stopsPolling, type ReadFailure } from './_lib/bo-read';
+import { workerHeadline } from '@/services/admin/diagnostic-jobs/wait';
 import { DIAG_PROFILE_PHASE_LABELS, formatDuration, type DiagMetrics, type DiagTimings } from '@/services/admin/diagnostic-jobs/metrics';
 import type { DiagScope } from '@/services/admin/diagnostics-export/model';
 import type { GenerationRow } from '@/services/admin/export-generations';
@@ -90,7 +91,7 @@ function newKey(): string {
 interface WaitView { reason: string; label: string; detail: string | null; action: string; blockingJobId: string | null; waitedSeconds?: number; alert?: boolean }
 interface ReplacedView { id: string; previousStatus: 'QUEUED' | 'RUNNING'; outcome: 'CANCELLED' | 'CANCEL_REQUESTED' }
 
-interface WorkerViewDto { instance: string; state: string; alive: boolean; seenAt: string; lastTickAt: string | null; lastClaimAt: string | null; lane: 'main' | 'targeted' | null; waitReason: string | null; laneWaitReason: string | null; commit: string | null; version: string | null; aliveWorkers: number }
+interface WorkerViewDto { instance: string; state: string; disabledReason?: string | null; alive: boolean; seenAt: string; lastTickAt: string | null; lastClaimAt: string | null; lane: 'main' | 'targeted' | null; waitReason: string | null; laneWaitReason: string | null; commit: string | null; version: string | null; aliveWorkers: number }
 
 interface JobView {
   job: GenerationRow;
@@ -331,6 +332,7 @@ function JobPanel({ id, onSelect, onChange }: { id: string; onSelect: (id: strin
   const isJob = j.mode === 'job';
   const p = (j.progress ?? {}) as { filesDone?: number; filesPlanned?: number | null; current?: string | null; rssMb?: number | null; peakRssMb?: number | null; compressedBytes?: number };
   const attempts = (j.attemptsLog ?? []) as Array<{ attempt: number; worker: string; commit: string | null; startedAt: string; endedAt: string | null; outcome: string | null; errorCode: string | null; phase: string | null; lastProgress?: { current?: string | null; rssMb?: number | null; peakRssMb?: number | null } | null }>;
+  const headline = v.workerView ? workerHeadline(v.workerView, j.status) : null;
   const sections = (j.sections ?? []) as Array<{ code: string; label: string; status: string; motif: string | null; expected: number; exported: number; files: number }>;
   return (
     <section className="rounded-xl border bg-card p-4 space-y-4" aria-label="Diagnostic sélectionné" data-diag-job={j.id}>
@@ -393,7 +395,8 @@ function JobPanel({ id, onSelect, onChange }: { id: string; onSelect: (id: strin
         <div><dt className="inline text-muted-foreground">Terminé le : </dt><dd className="inline">{dateFr(j.finishedAt)}</dd></div>
         {v.workerView && (
           <div className="sm:col-span-2" data-diag-worker-view>
-            <dt className="inline text-muted-foreground">{j.status === 'RUNNING' ? 'Worker qui exécute : ' : 'Worker disponible : '}</dt>
+            {/* Lot 113K (#699) : « Worker disponible » seulement si démarré, vivant et au moins un worker vivant ; sinon l'état réel. */}
+            <dt className={`inline ${headline!.problem ? 'text-destructive font-medium' : 'text-muted-foreground'}`} data-diag-worker-headline={headline!.code}>{headline!.label} : </dt>
             <dd className="inline font-mono">{v.workerView.instance}{v.workerView.commit ? ` · ${v.workerView.commit.slice(0, 10)}` : ''}</dd>
             <dd className={`inline ${v.workerView.alive ? '' : 'text-destructive'}`}> — battement {dateFr(v.workerView.seenAt)}{v.workerView.alive ? '' : ' (sans signe de vie)'} · dernier tour {dateFr(v.workerView.lastTickAt)} · dernier prélèvement {dateFr(v.workerView.lastClaimAt)} · workers vivants : {v.workerView.aliveWorkers}</dd>
           </div>
