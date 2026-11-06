@@ -44,7 +44,9 @@ function Verification() {
   const [code, setCode] = useState('');
   const [busy, setBusy] = useState<'code' | 'passkey' | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const [webauthnHere, setWebauthnHere] = useState(false);
+  // Lot 113M : `null` tant que la prise en charge de la vue n'est pas connue —
+  // aucun choix (ni avis « pas utilisable sur cet appareil ») avant de savoir.
+  const [webauthnHere, setWebauthnHere] = useState<boolean | null>(null);
   const [offline, setOffline] = useState(false);
   const [retry, setRetry] = useState<null | 'passkey' | 'code'>(null);
 
@@ -63,7 +65,7 @@ function Verification() {
   useEffect(() => { void load(); }, [load]);
 
   // Facteurs proposés : enrôlés ET disponibles côté serveur ET (clé d'accès) pris en charge ici.
-  const choices = state
+  const choices = state && webauthnHere !== null
     ? verificationChoices({ methods: state.methods, passkeysAvailable: state.passkeysAvailable, totpAvailable: state.totpAvailable, webauthnHere })
     : null;
 
@@ -149,7 +151,7 @@ function Verification() {
       </MfaAuthCard>
     );
   }
-  if (!state) {
+  if (!state || !choices) {
     return <MfaAuthCard title="Confirmez votre connexion"><div className="flex justify-center py-8"><Loader2 className="w-6 h-6 animate-spin text-[color:var(--text-muted)]" /></div></MfaAuthCard>;
   }
 

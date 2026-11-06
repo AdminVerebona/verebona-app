@@ -28,6 +28,13 @@ const PREPROD = {
   WEBAUTHN_RP_ID: 'app.preprod.verebona.fr',
   WEBAUTHN_ORIGINS: 'https://app.preprod.verebona.fr',
   MFA_ENCRYPTION_KEYS: `k2026a:${KEY}`,
+  // Lot 113M : une préproduction « correctement configurée » associe aussi SON
+  // app mobile (webcredentials iOS, get_login_creds Android) — sinon la
+  // cohérence signale désormais IOS_WEBCREDENTIALS_MISSING / ANDROID_ASSETLINKS_MISSING.
+  MOBILE_IOS_TEAM_ID: 'ABCDE12345',
+  MOBILE_IOS_BUNDLE_IDS: 'fr.verebona.app.preprod',
+  MOBILE_ANDROID_PACKAGE: 'fr.verebona.app.preprod',
+  MOBILE_ANDROID_SHA256_FINGERPRINTS: Array.from({ length: 32 }, () => 'AB').join(':'),
 };
 const codes = (env: Record<string, string | undefined>) => checkMfaCoherence(env).issues.map((i) => i.code);
 

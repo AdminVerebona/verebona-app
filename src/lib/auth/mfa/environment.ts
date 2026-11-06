@@ -29,6 +29,8 @@
 import { parseEnvironment, type AiEnvironment } from '@/services/ai/config/environment';
 import { webAuthnStatus } from './passkeys';
 import { keyRingStatus } from './secret-box';
+import { appLinksStatus } from '@/lib/mobile/app-links';
+import { EXPECTED_APP_IDS } from '@/services/admin/ops/credential-association';
 
 type Env = Record<string, string | undefined>;
 
@@ -157,6 +159,28 @@ export function checkMfaCoherence(env: Env = process.env): MfaCoherenceReport {
       add('RP_ID_ENV_MISMATCH', 'error', `Production, mais WEBAUTHN_RP_ID (${rp}) ressemble à un domaine hors production.`);
     } else if (environment.key === 'preprod' && !looksNonProductionHost(rp)) {
       add('RP_ID_ENV_TO_CHECK', 'warning', `Préproduction, mais WEBAUTHN_RP_ID (${rp}) ne ressemble pas à un domaine de préproduction : vérifiez qu’il n’est pas celui de la production.`);
+    }
+  }
+
+  // Lot 113M : clés d'accès DANS L'APPLICATION MOBILE. iOS n'accepte une clé
+  // d'accès dans l'app que si /.well-known/apple-app-site-association (servi
+  // sur l'hôte de l'application) déclare `webcredentials.apps` = l'app de CET
+  // environnement ; Android exige assetlinks.json (`get_login_creds`). Lecture
+  // des VARIABLES seulement (le fichier réellement servi et la copie du CDN
+  // Apple se vérifient dans BO › Exploitation › Application mobile, carte
+  // « Association iOS / Android », lot 111E). Le site web n'est pas concerné.
+  if (hosted && web.available) {
+    const links = appLinksStatus(env);
+    const expected = environment.key === 'preprod' || environment.key === 'production' ? EXPECTED_APP_IDS[environment.key] : null;
+    if (!links.ios.configured) {
+      add('IOS_WEBCREDENTIALS_MISSING', 'warning', 'Application iPhone : /.well-known/apple-app-site-association n’est pas servi (MOBILE_IOS_TEAM_ID / MOBILE_IOS_BUNDLE_IDS absentes ou invalides) : sans webcredentials, les clés d’accès ne fonctionneront pas dans l’app (le site web n’est pas concerné).');
+    } else if (expected && !links.ios.appIds.some((id) => id.endsWith(`.${expected}`))) {
+      add('IOS_WEBCREDENTIALS_APP_MISSING', 'warning', `Application iPhone : webcredentials.apps ne contient pas l’app de cet environnement (${expected}) — vérifiez MOBILE_IOS_BUNDLE_IDS.`);
+    }
+    if (!links.android.configured) {
+      add('ANDROID_ASSETLINKS_MISSING', 'warning', 'Application Android : /.well-known/assetlinks.json n’est pas servi (MOBILE_ANDROID_PACKAGE / MOBILE_ANDROID_SHA256_FINGERPRINTS absentes ou invalides) : les clés d’accès ne fonctionneront pas dans l’app (le site web n’est pas concerné).');
+    } else if (expected && links.android.packageName !== expected) {
+      add('ANDROID_ASSETLINKS_APP_MISMATCH', 'warning', `Application Android : assetlinks.json déclare ${links.android.packageName}, attendu ${expected} pour cet environnement — vérifiez MOBILE_ANDROID_PACKAGE.`);
     }
   }
 

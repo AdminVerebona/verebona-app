@@ -128,3 +128,31 @@ export function enrollmentChoices(i: EnrollmentInputs): {
     : 'Aucune méthode de sécurité ne peut être configurée pour le moment. Réessayez plus tard : vos biens et vos documents restent protégés.';
   return { passkey, passkeyNote, totp, totpNote, notice };
 }
+
+// ── Mon compte › Sécurité (ajout d'un facteur, session complète) — lot 113M ──
+
+export interface SecuritySettingsInputs {
+  /** Service WebAuthn du serveur configuré (`passkeysAvailable` du résumé). */
+  passkeysAvailable: boolean;
+  /** Trousseau TOTP utilisable (absent = serveur antérieur = disponible). */
+  totpAvailable?: boolean;
+  /** Prise en charge WebAuthn de la vue ; `null` = vérification en cours. */
+  webauthnHere: boolean | null;
+}
+
+/**
+ * Ajouts proposés dans Mon compte › Sécurité : seulement ceux qui peuvent
+ * aboutir. Service serveur indisponible ≠ appareil incompatible (deux
+ * mentions distinctes) ; vérification de la vue en cours : ni bouton ni
+ * mention. Les facteurs déjà enrôlés restent listés et retirables.
+ */
+export function securitySettingsChoices(i: SecuritySettingsInputs): {
+  addPasskey: boolean; passkeyNote: string | null; setupTotp: boolean; totpNote: string | null;
+} {
+  const addPasskey = i.passkeysAvailable && i.webauthnHere === true;
+  const passkeyNote = addPasskey || (i.passkeysAvailable && i.webauthnHere === null) ? null
+    : !i.passkeysAvailable ? PASSKEY_UNAVAILABLE
+      : 'Ajout de clé d’accès non disponible sur cet appareil.';
+  const setupTotp = i.totpAvailable !== false;
+  return { addPasskey, passkeyNote, setupTotp, totpNote: setupTotp ? null : TOTP_UNAVAILABLE };
+}

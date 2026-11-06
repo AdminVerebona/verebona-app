@@ -8,6 +8,12 @@
  * la confirmation d'identité (`useReauth`, forte dès que la double
  * authentification est obligatoire). Jamais la dernière méthode retirée.
  * Aucune réinitialisation possible par l'assistance : dit à l'écran.
+ *
+ * Lot 113M : seuls les ajouts réellement possibles sont proposés
+ * (`securitySettingsChoices`) — service serveur indisponible (« … pas
+ * disponibles pour le moment ») distinct de l'appareil incompatible ;
+ * application d'authentification non configurée sur le serveur : pas de
+ * bouton « Activer / Remplacer » (le retrait reste possible).
  */
 import { useCallback, useEffect, useState } from 'react';
 import { toast } from 'sonner';
@@ -19,6 +25,7 @@ import {
 } from '@/components/ui/dialog';
 import { apiClient, ApiClientError } from '@/lib/api-client';
 import { createPasskey, passkeysUsableHere, PASSKEY_ERROR_TEXT } from '@/lib/auth/mfa/client';
+import { securitySettingsChoices } from '@/lib/auth/mfa/availability';
 import { RecoveryCodesView } from '@/components/auth/mfa/RecoveryCodesView';
 import { TotpSetup, type TotpStart } from '@/components/auth/mfa/TotpSetup';
 import { useReauth } from './ReauthProvider';
@@ -28,6 +35,8 @@ interface MfaSummary {
   enrolled: boolean;
   enforcedFrom: string | null;
   passkeysAvailable: boolean;
+  /** Lot 113M (absent sur un serveur antérieur = disponible). */
+  totpAvailable?: boolean;
   passkeys: Array<{ id: number; name: string; createdAt: string; lastUsedAt: string | null; synced: boolean }>;
   totp: { active: boolean; confirmedAt: string | null };
   recoveryCodes: { remaining: number; total: number; confirmed: boolean };
@@ -49,7 +58,7 @@ export function MfaBlock() {
   const [totpOpen, setTotpOpen] = useState(false);
   const [codes, setCodes] = useState<string[] | null>(null);
   const [renaming, setRenaming] = useState<{ id: number; name: string } | null>(null);
-  const [webauthnHere, setWebauthnHere] = useState(false);
+  const [webauthnHere, setWebauthnHere] = useState<boolean | null>(null);
 
   const load = useCallback(async () => {
     try {
@@ -159,7 +168,7 @@ export function MfaBlock() {
   if (!data) return <div className="flex justify-center py-3"><Loader2 className="w-5 h-5 animate-spin text-[color:var(--text-muted)]" /></div>;
 
   const strongCount = data.passkeys.length + (data.totp.active ? 1 : 0);
-  const canAddPasskey = data.passkeysAvailable && webauthnHere;
+  const offer = securitySettingsChoices({ passkeysAvailable: data.passkeysAvailable, totpAvailable: data.totpAvailable, webauthnHere });
 
   return (
     <div className="space-y-4" data-testid="security-mfa">
@@ -197,9 +206,9 @@ export function MfaBlock() {
             </div>
           </Row>
         ))}
-        {canAddPasskey
-          ? <Button size="sm" variant="outline" onClick={() => void addPasskey()} disabled={busy !== null}>{busy === 'passkey-add' && <Loader2 className="w-4 h-4 mr-2 animate-spin" />}Ajouter une clé d’accès</Button>
-          : <p className="text-xs text-[color:var(--text-muted)]">Ajout de clé d’accès non disponible sur cet appareil.</p>}
+        {offer.addPasskey
+          ? <Button size="sm" variant="outline" onClick={() => void addPasskey()} disabled={busy !== null} data-testid="security-passkey-add">{busy === 'passkey-add' && <Loader2 className="w-4 h-4 mr-2 animate-spin" />}Ajouter une clé d’accès</Button>
+          : offer.passkeyNote && <p className="text-xs text-[color:var(--text-muted)]" data-testid="security-passkey-note">{offer.passkeyNote}</p>}
       </div>
 
       <div className="space-y-1">
@@ -207,13 +216,14 @@ export function MfaBlock() {
         <Row>
           <p className="text-sm">{data.totp.active ? `Activée le ${dateFr(data.totp.confirmedAt)}` : 'Non configurée'}</p>
           <div className="flex gap-2">
-            <Button size="sm" variant="outline" onClick={() => void openTotp()} disabled={busy !== null}>{data.totp.active ? 'Remplacer' : 'Activer'}</Button>
+            {offer.setupTotp && <Button size="sm" variant="outline" onClick={() => void openTotp()} disabled={busy !== null}>{data.totp.active ? 'Remplacer' : 'Activer'}</Button>}
             {data.totp.active && (
               <Button size="sm" variant="ghost" onClick={() => void removeTotp()} disabled={busy !== null || strongCount <= 1}
                 title={strongCount <= 1 ? 'Ajoutez une autre méthode avant de retirer la dernière.' : undefined}>Retirer</Button>
             )}
           </div>
         </Row>
+        {offer.totpNote && <p className="text-xs text-[color:var(--text-muted)]" data-testid="security-totp-note">{offer.totpNote}</p>}
       </div>
 
       {data.enrolled && (

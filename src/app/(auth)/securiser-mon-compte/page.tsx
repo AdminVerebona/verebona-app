@@ -11,6 +11,7 @@
  * serveur (et, pour la clé d'accès, prise en charge par la vue) ; sinon une
  * mention exacte, sans renvoyer vers une méthode elle-même indisponible.
  * Coupure réseau : message distinct + « Réessayer ». Jamais de contournement.
+ * Lot 113M : rien n'est proposé avant de connaître la prise en charge de la vue.
  */
 import { Suspense, useCallback, useEffect, useState } from 'react';
 import Link from 'next/link';
@@ -50,7 +51,8 @@ function SecureAccount() {
   const [redirectTo, setRedirectTo] = useState<string>(returnUrl);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
-  const [webauthnHere, setWebauthnHere] = useState(false);
+  // Lot 113M : `null` tant que la prise en charge de la vue n'est pas connue (pas de mention trompeuse).
+  const [webauthnHere, setWebauthnHere] = useState<boolean | null>(null);
   const [factor, setFactor] = useState<'passkey' | 'totp'>('totp');
 
   useEffect(() => { void passkeysUsableHere().then(setWebauthnHere); }, []);
@@ -135,7 +137,7 @@ function SecureAccount() {
     setView('done');
   };
 
-  if (view === 'loading') {
+  if (view === 'loading' || (view === 'choose' && webauthnHere === null)) {
     return <MfaAuthCard title={SECURE_ACCOUNT_TITLE}><div className="flex justify-center py-8"><Loader2 className="w-6 h-6 animate-spin text-[color:var(--text-muted)]" /></div></MfaAuthCard>;
   }
   if (view === 'offline') {
@@ -188,7 +190,7 @@ function SecureAccount() {
   }
 
   const social = state?.primaryMethod === 'google' || state?.primaryMethod === 'apple';
-  const choices = enrollmentChoices({ passkeysAvailable: !!state?.passkeysAvailable, totpAvailable: state?.totpAvailable, webauthnHere });
+  const choices = enrollmentChoices({ passkeysAvailable: !!state?.passkeysAvailable, totpAvailable: state?.totpAvailable, webauthnHere: webauthnHere === true });
   const passkeyPossible = choices.passkey;
   return (
     <MfaAuthCard title={SECURE_ACCOUNT_TITLE} description={SECURE_ACCOUNT_INTRO} wide>
