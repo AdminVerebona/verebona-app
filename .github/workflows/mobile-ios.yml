@@ -209,6 +209,12 @@ jobs:
         run: |
           xcodebuild -version
           node mobile/scripts/asc-signing-check.mjs
+      # Lot 112 (correctif 3) : chaque runner neuf crée un certificat « Apple Development »
+      # (signature automatique) ; à la limite du compte, l'archivage échoue (« maximum number of
+      # certificates »). On révoque d'abord ceux créés par la CI (« Created via API ») — jamais
+      # ceux de distribution ni ceux d'un Mac de développeur.
+      - name: Certificats de développement de la CI (révoqués avant l'archivage)
+        run: node mobile/scripts/asc-cleanup-dev-certs.mjs
       - name: Archiver (signature automatique, App Store Connect)
         working-directory: mobile/ios/App
         run: |

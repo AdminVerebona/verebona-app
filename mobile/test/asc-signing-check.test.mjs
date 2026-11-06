@@ -89,3 +89,40 @@ test('appels à l\'API : jamais de « limit » sur une relation (400 du 06/11) ;
     assert.match(out.join('\n'), /::warning::.*Profils non lus/);
   } finally { globalThis.fetch = saved; }
 });
+
+test('certificats : seuls ceux de développement créés par l\'API sont révoqués', async () => {
+  const { cleanup, isCiDevCertificate } = await import('../scripts/asc-cleanup-dev-certs.mjs');
+  const c = (id, certificateType, name) => ({ id, attributes: { certificateType, name, displayName: name } });
+  const certs = [
+    c('1', 'DEVELOPMENT', 'Apple Development: Created via API'),
+    c('2', 'IOS_DEVELOPMENT', 'iOS Development: Created via API'),
+    c('3', 'DEVELOPMENT', 'Apple Development: Geoffroy (MacBook)'),
+    c('4', 'DISTRIBUTION', 'Apple Distribution: Created via API'),
+    c('5', 'IOS_DISTRIBUTION', 'iOS Distribution: Verebona'),
+  ];
+  assert.deepEqual(certs.filter(isCiDevCertificate).map((x) => x.id), ['1', '2']);
+  const { generateKeyPairSync } = await import('node:crypto');
+  const { writeFileSync, mkdtempSync } = await import('node:fs');
+  const { tmpdir } = await import('node:os');
+  const { join } = await import('node:path');
+  const key = join(mkdtempSync(join(tmpdir(), 'asc-')), 'AuthKey.p8');
+  writeFileSync(key, generateKeyPairSync('ec', { namedCurve: 'prime256v1' }).privateKey.export({ type: 'pkcs8', format: 'pem' }));
+  const deleted = [];
+  const saved = globalThis.fetch;
+  globalThis.fetch = async (url, init) => {
+    const u = String(url);
+    if (init?.method === 'DELETE') { deleted.push(u.split('/').pop()); return new Response(null, { status: 204 }); }
+    return new Response(JSON.stringify({ data: certs }), { status: 200 });
+  };
+  try {
+    const r = await cleanup({ ASC_KEY_PATH: key, ASC_API_KEY_ID: 'ABCDEFGHIJ', ASC_API_ISSUER_ID: '00000000-0000-0000-0000-000000000000' }, { log: () => {} });
+    assert.deepEqual(deleted, ['1', '2']);
+    assert.deepEqual(r, { dev: 3, revoked: 2 });
+  } finally { globalThis.fetch = saved; }
+});
+
+test('workflow iOS : révocation des certificats de la CI avant l\'archivage', () => {
+  const wf = readFileSync(new URL('../../.github/workflows/mobile-ios.yml', import.meta.url), 'utf8');
+  const clean = wf.indexOf('node mobile/scripts/asc-cleanup-dev-certs.mjs');
+  assert.ok(clean > 0 && wf.indexOf('-archivePath "$RUNNER_TEMP/App.xcarchive"') > clean);
+});
