@@ -18,6 +18,11 @@ export const dynamic = 'force-dynamic';
  * (profilage par étape, fichiers les plus lents), `workerView` (worker qui
  * exécute ou dernier worker vivant : battement, dernier tour, prélèvement),
  * `firstRunStartedAt`, `lane`, `readAt` (horodatage serveur de la lecture).
+ *
+ * Lot 113Q : `retry` (relance automatique prévue ou non, et pourquoi),
+ * `archive` (archive ZIP définitive : taille, empreinte, entrées, vérifiée
+ * le) ; `timings.memory` / `timings.queries` (mesures par étape et par
+ * fichier) ; une tentative arrêtée a `timings.ended` (plus d'étape en cours).
  */
 export async function GET(request: NextRequest, { params }: { params: Promise<{ id: string }> }) {
   const g = await guardAdmin(() => requireAdmin(request));
@@ -33,7 +38,8 @@ export async function GET(request: NextRequest, { params }: { params: Promise<{ 
   const wait = sup ? await sup.diagnosticJobWait(job.id) : null;
   const { displayStatus } = await import('@/services/admin/diagnostic-jobs/wait');
   const [mx, repo] = await Promise.all([import('@/services/admin/diagnostic-jobs/metrics'), import('@/services/admin/diagnostic-jobs/repository')]);
-  const extras = job.mode === st.DIAG_JOB_MODE ? await repo.readDiagnosticJobExtras(job.id).catch(() => ({ firstRunStartedAt: null, lane: null, phaseTimings: null })) : { firstRunStartedAt: null, lane: null, phaseTimings: null };
+  const none = { firstRunStartedAt: null, lane: null, phaseTimings: null, archive: null };
+  const extras = job.mode === st.DIAG_JOB_MODE ? await repo.readDiagnosticJobExtras(job.id).catch(() => none) : none;
   const now = new Date();
   const metrics = mx.diagMetrics({
     status: job.status, startedAt: job.startedAt, firstRunStartedAt: extras.firstRunStartedAt, runStartedAt: job.runStartedAt, finishedAt: job.finishedAt,
@@ -58,6 +64,9 @@ export async function GET(request: NextRequest, { params }: { params: Promise<{ 
     phaseLabel: job.phase ? st.DIAG_JOB_PHASE_LABELS[job.phase as keyof typeof st.DIAG_JOB_PHASE_LABELS] ?? job.phase : null,
     errorLabel: job.errorCode ? st.DIAG_JOB_ERROR_LABELS[job.errorCode as keyof typeof st.DIAG_JOB_ERROR_LABELS] ?? null : null,
     progressPercent: st.progressPercent(job.progress as never, status),
+    // Lot 113Q : relance automatique dite explicitement (MEMORY_GUARD : aucune) ; archive définitive prête.
+    retry: job.mode === st.DIAG_JOB_MODE ? st.retryPolicy({ status: job.status, errorCode: job.errorCode, attempt: Number(job.attempt ?? 0), maxAttempts: job.maxAttempts, nextAttemptAt: job.nextAttemptAt }) : null,
+    archive: extras.archive ? { bytes: extras.archive.bytes, sha256: extras.archive.sha256, entries: extras.archive.entries, zip64: extras.archive.zip64, verifiedAt: extras.archive.verifiedAt } : null,
   };
   if (request.nextUrl.searchParams.get('report') !== '1') return NextResponse.json(view, { headers: NO_STORE });
   if (!downloadable) return NextResponse.json({ ...view, report: null, reportError: 'Rapport disponible quand la génération est terminée (COMPLETE ou PARTIAL) et non purgée.' }, { headers: NO_STORE });

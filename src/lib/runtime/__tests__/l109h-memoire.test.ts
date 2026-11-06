@@ -26,7 +26,9 @@ describe('L109H — Procfile', () => {
     expect(lines).toContain('worker: node scripts/start-server.mjs worker');
     expect(lines).toContain('postdeploy: node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON scripts/migrate.mjs');
     expect(read('Procfile')).not.toMatch(/npm/);
-    expect(lines).toHaveLength(3);
+    // Lot 113Q : processus dédié aux diagnostics BO (veille sans DIAG_JOB_PROCESS=diagworker).
+    expect(lines).toContain('diagworker: node scripts/start-server.mjs diagworker');
+    expect(lines).toHaveLength(4);
   });
 });
 
@@ -98,7 +100,7 @@ describe('L109H — rôle du processus (application)', () => {
     expect(runsBackgroundJobs({ CONTAINER: 'web-1' })).toBe(true);
     expect(runsBackgroundJobs({ APP_PROCESS_TYPE: 'web', BACKGROUND_JOBS_PROCESS: 'worker' })).toBe(false);
     expect(runsBackgroundJobs({ APP_PROCESS_TYPE: 'worker', BACKGROUND_JOBS_PROCESS: 'worker' })).toBe(true);
-    expect(processRoleSummary({ CONTAINER: 'web-1' })).toEqual({ process: 'web', placement: 'web', backgroundJobs: true, container: 'web-1' });
+    expect(processRoleSummary({ CONTAINER: 'web-1' })).toEqual({ process: 'web', placement: 'web', backgroundJobs: true, diagnostics: true, diagnosticsPlacement: 'web', container: 'web-1' });
   });
 
   it('même lecture de BACKGROUND_JOBS_PROCESS que le lanceur', () => {
@@ -110,9 +112,11 @@ describe('L109H — rôle du processus (application)', () => {
   it('instrumentation : planificateurs et files démarrés seulement par le processus des traitements', () => {
     const src = read('src/instrumentation-node.ts');
     for (const start of ['startIndexMaintenance()', 'startAnalysisRecoveryScheduler()', 'startQueueWorker()', 'startDatabaseBackupScheduler()',
-      'startDailyMaintenanceScheduler()', 'startScheduledTasks()', 'startExportWorker()', 'startDiagnosticWorker()']) {
+      'startDailyMaintenanceScheduler()', 'startScheduledTasks()', 'startExportWorker()']) {
       expect(src, start).toContain(`if (role.backgroundJobs) ${start};`);
     }
+    // Lot 113Q : diagnostics BO — avec les traitements de fond (défaut) ou dans le processus dédié (DIAG_JOB_PROCESS=diagworker).
+    expect(src).toContain('if (role.diagnostics) startDiagnosticWorker();');
     // Abonnements aux événements : partout.
     expect(src).toMatch(/\n  registerReconciliationHandlers\(\);/);
     expect(src).toMatch(/\n  await registerCoherenceTriggers\(\)/);

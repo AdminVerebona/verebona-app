@@ -1,21 +1,20 @@
 /**
  * Lot 107G — téléchargement d'un diagnostic durable (serveur uniquement).
  *
- *   · l'archive : ZIP produit EN FLUX depuis les fichiers stockés de la
- *     tentative publiée — chaque fichier est lu à la demande, décompressé à
- *     la volée et recompressé dans le ZIP (mêmes chemins et même contenu que
- *     l'ancien ZIP du diagnostic : `manifeste.json`, `donnees/…`), mémoire
- *     bornée (un morceau à la fois, contre-pression jusqu'au client) ; un
- *     client parti ou une coupure n'affecte jamais l'archive stockée :
- *     relancer le téléchargement suffit ;
+ *   · l'archive : lot 113Q — l'archive ZIP DÉFINITIVE, assemblée et vérifiée
+ *     une fois par le worker, est servie telle quelle (`streamStoredArchive`) ;
+ *     pour une publication antérieure (sans archive définitive), ZIP assemblé
+ *     en flux par COPIE des fichiers compressés, sans recompression. Mêmes
+ *     chemins et même contenu (`manifeste.json`, `donnees/…`), mémoire bornée
+ *     (un morceau à la fois, contre-pression jusqu'au client) ; un client
+ *     parti ou une coupure n'affecte jamais l'archive stockée : relancer le
+ *     téléchargement suffit ;
  *   · un fichier : URL signée de courte durée (fichier `.json.gz`), seulement
  *     pour un chemin listé dans l'index d'intégrité (jamais une clé arbitraire).
  */
-import { Readable, type PassThrough } from 'node:stream';
-import { createGunzip, gunzipSync } from 'node:zlib';
-import JSZip from 'jszip';
+import type { PassThrough } from 'node:stream';
+import { gunzipSync } from 'node:zlib';
 import { writeWithBackpressure } from '@/services/admin/account-data/stream-response';
-import { ZIP_MAX_BYTES } from '@/services/admin/diagnostics-export/zip';
 import type { DiagStorage, DiagStoredIndex } from './runner';
 
 /** Index d'intégrité stocké d'une tentative publiée ; null : absent (purgé, jamais publié). */
@@ -38,77 +37,54 @@ async function streamToBuffer(s: NodeJS.ReadableStream): Promise<Buffer> {
   return Buffer.concat(chunks);
 }
 
-/** Lecture fichier stocké (`.gz`) → contenu décompressé, à la demande, avec contre-pression. */
-function lazyInflated(storage: DiagStorage, key: string): Readable {
-  let source: Readable | null = null;
-  let started = false;
-  const r = new Readable({
-    read() {
-      if (source) { source.resume(); return; }
-      if (started) return;
-      started = true;
-      void (async () => {
-        try {
-          const { GetObjectCommand } = await import('@aws-sdk/client-s3');
-          const o = await storage.client.send(new GetObjectCommand({ Bucket: storage.bucket, Key: key })) as { Body?: NodeJS.ReadableStream };
-          if (!o.Body) throw new Error('objet vide');
-          const gunzip = createGunzip();
-          (o.Body as Readable).on('error', (e: Error) => gunzip.destroy(e));
-          source = (o.Body as Readable).pipe(gunzip);
-          source.on('data', (c: Buffer) => { if (!r.push(c)) source!.pause(); });
-          source.on('end', () => r.push(null));
-          source.on('error', (e: Error) => r.destroy(e));
-        } catch (e) {
-          r.destroy(e instanceof Error ? e : new Error(String(e)));
-        }
-      })();
-    },
-  });
-  return r;
-}
-
 type ZipOutcome = { ok: true; bytes: number } | { ok: false; bytes: number; error: unknown; clientGone: boolean };
 
-/** Archive ZIP complète d'une tentative publiée, écrite en flux dans `out`. */
-export async function streamDiagnosticJobZip(index: DiagStoredIndex, storage: DiagStorage, prefix: string, out: PassThrough): Promise<ZipOutcome> {
-  const zip = new JSZip();
-  const entries: Readable[] = [];
-  const date = new Date(index.generatedAt);
-  // Ordre : manifeste et rapport en tête (lecture humaine), puis l'ordre de production.
-  const order = (p: string) => (p === 'manifeste.json' ? 0 : p === 'rapport.txt' ? 1 : p === 'integrite.json' ? 2 : p === 'SHA256SUMS.txt' ? 3 : 4);
-  const files = [...index.files].sort((a, b) => order(a.path) - order(b.path));
-  const listedIndex = index.files.some((f) => f.path === 'integrite.json');
-  for (const f of files) {
-    const e = lazyInflated(storage, `${prefix}${f.path}.gz`);
-    entries.push(e);
-    zip.file(f.path, e, { date, binary: true, createFolders: true });
-  }
-  // L'index d'intégrité n'est pas listé dans lui-même : ajouté à l'archive.
-  if (!listedIndex) {
-    const e = lazyInflated(storage, `${prefix}integrite.json.gz`);
-    entries.push(e);
-    zip.file('integrite.json', e, { date, binary: true, createFolders: true });
-  }
-  const zs = zip.generateNodeStream({ streamFiles: true, compression: 'DEFLATE', compressionOptions: { level: 6 }, platform: 'UNIX' });
+/**
+ * Lot 113Q — ARCHIVE DÉFINITIVE déjà prête : l'objet ZIP stocké (assemblé et
+ * vérifié par le worker) est servi TEL QUEL, en flux, avec contre-pression
+ * jusqu'au client. Aucun recalcul, aucune décompression ni compression : un
+ * second téléchargement relit le même objet.
+ */
+export async function streamStoredArchive(storage: DiagStorage, key: string, out: PassThrough): Promise<ZipOutcome> {
+  const { GetObjectCommand } = await import('@aws-sdk/client-s3');
   let bytes = 0;
-  const outcome = await new Promise<ZipOutcome>((resolve) => {
-    let settled = false;
-    const done = (o: ZipOutcome) => { if (!settled) { settled = true; resolve(o); } };
-    zs.on('data', (chunk: Buffer) => {
-      bytes += chunk.length;
-      if (bytes > ZIP_MAX_BYTES) {
-        zs.pause();
-        done({ ok: false, bytes, error: new Error('archive au-delà de 4 Gio (format ZIP sans ZIP64) : téléchargez les fichiers un par un'), clientGone: false });
-        return;
+  try {
+    const o = await storage.client.send(new GetObjectCommand({ Bucket: storage.bucket, Key: key })) as { Body?: AsyncIterable<Uint8Array> & { destroy?: () => void } };
+    if (!o.Body) throw new Error('archive vide');
+    try {
+      for await (const c of o.Body) {
+        const b = Buffer.isBuffer(c) ? c : Buffer.from(c);
+        bytes += b.length;
+        try { await writeWithBackpressure(out, b); } catch (err) { o.Body.destroy?.(); return { ok: false, bytes, error: err, clientGone: true }; }
       }
-      zs.pause();
-      writeWithBackpressure(out, chunk).then(() => zs.resume(), (err) => done({ ok: false, bytes, error: err, clientGone: true }));
+    } catch (e) {
+      return { ok: false, bytes, error: e, clientGone: false };
+    }
+    return { ok: true, bytes };
+  } catch (e) {
+    return { ok: false, bytes, error: e, clientGone: false };
+  }
+}
+
+/**
+ * Archive d'une tentative publiée AVANT le lot 113Q (sans archive
+ * définitive) : assemblée en flux depuis les fichiers stockés — lot 113Q :
+ * par COPIE des flux compressés (`archive.ts`), sans décompression ni
+ * recompression, ZIP64 au besoin (plus de limite de 4 Gio).
+ */
+export async function streamDiagnosticJobZip(index: DiagStoredIndex, storage: DiagStorage, prefix: string, out: PassThrough): Promise<ZipOutcome> {
+  const { archiveOrder, writeArchive } = await import('./archive');
+  let bytes = 0;
+  let clientGone = false;
+  try {
+    const r = await writeArchive(storage, archiveOrder(index, prefix, null), new Date(index.generatedAt), async (c) => {
+      bytes += c.length;
+      try { await writeWithBackpressure(out, c); } catch (err) { clientGone = true; throw err; }
     });
-    zs.on('end', () => done({ ok: true, bytes }));
-    zs.on('error', (err: unknown) => done({ ok: false, bytes, error: err, clientGone: false }));
-  });
-  if (!outcome.ok) for (const e of entries) if (!e.destroyed) e.destroy();
-  return outcome;
+    return { ok: true, bytes: r.bytes };
+  } catch (e) {
+    return { ok: false, bytes, error: e, clientGone };
+  }
 }
 
 /** Chemin téléchargeable un par un ? (listé dans l'index ; jamais `..`, jamais absolu). */

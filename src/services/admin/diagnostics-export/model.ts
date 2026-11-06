@@ -135,7 +135,10 @@ export function pseudonym(value: string): string {
   return h.toString(16).padStart(8, '0');
 }
 
-const EMAIL = /[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}/g;
+// Lot 113Q : quantificateurs BORNÉS (partie locale ≤ 64, domaine ≤ 253, RFC 5321) — l'ancien motif
+// `[…]+@` était quadratique sur une longue suite sans « @ » (texte IA, base64 : 80 000 caractères ≈ 7 s,
+// 5 Mo ≈ des heures) ; même résultat pour toute adresse réelle.
+const EMAIL = /[A-Za-z0-9._%+-]{1,64}@[A-Za-z0-9.-]{1,253}\.[A-Za-z]{2,}/g;
 /** Motifs de secrets dans un texte libre (filet de sécurité). */
 const SECRET_PATTERNS: ReadonlyArray<RegExp> = [
   /\bBearer\s+[A-Za-z0-9._~+/=-]{8,}/gi,

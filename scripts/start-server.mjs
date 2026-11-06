@@ -2,8 +2,9 @@
  * Lancement des processus Scalingo — lot 109H (conteneur web tué pour
  * dépassement du quota mémoire, constat PO du 03-04/11/2026).
  *
- *   web:    node scripts/start-server.mjs web
- *   worker: node scripts/start-server.mjs worker
+ *   web:        node scripts/start-server.mjs web
+ *   worker:     node scripts/start-server.mjs worker
+ *   diagworker: node scripts/start-server.mjs diagworker   (lot 113Q)
  *
  * ══════════════════════════════════════════════════════════════════════════
  * POURQUOI CE LANCEUR (et plus `npm start`)
@@ -23,10 +24,16 @@
  *    avant et le type `worker` du Procfile — à 0 conteneur tant que le PO ne
  *    le dimensionne pas — reste en veille sans démarrer Next.
  *
+ *  · Lot 113Q (#714) : type `diagworker` — processus DÉDIÉ aux diagnostics BO
+ *    (aucun planificateur, file IA ni rendu PDF à côté). Actif seulement avec
+ *    DIAG_JOB_PROCESS=diagworker ; sans la variable, il reste en veille (0
+ *    conteneur conseillé) et les diagnostics suivent les traitements de fond.
+ *
  * Variables (toutes facultatives) :
  *   NODE_MAX_OLD_SPACE_MB   entier (Mo) | `auto` (défaut) | `off`
  *   NODE_HEAP_PERCENT       part du conteneur donnée au tas en `auto` (défaut 60, 25 à 75)
  *   BACKGROUND_JOBS_PROCESS `web` (défaut) | `worker`
+ *   DIAG_JOB_PROCESS        absent (défaut) | `diagworker`
  *   NODE_OPTIONS            respectée : une limite déjà posée n'est pas remplacée
  *
  * `postdeploy` (migrations) n'est PAS concerné : il garde sa propre commande.
@@ -39,7 +46,7 @@ import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 /** Types de processus du Procfile. */
-export const PROCESS_TYPES = Object.freeze(['web', 'worker']);
+export const PROCESS_TYPES = Object.freeze(['web', 'worker', 'diagworker']);
 /** Où tournent les traitements de fond (défaut : conteneur web, comme avant le lot 109H). */
 export const JOBS_PLACEMENTS = Object.freeze(['web', 'worker']);
 export const DEFAULT_HEAP_PERCENT = 60;
@@ -142,9 +149,14 @@ function autoHeap(env, limit) {
  */
 export function planLaunch({ processType, env = process.env, cgroupText = null, nextBin = 'node_modules/next/dist/bin/next' }) {
   const type = PROCESS_TYPES.includes(processType) ? processType : null;
-  if (!type) throw new Error(`type de processus inconnu : « ${String(processType).slice(0, 20)} » (attendu : web ou worker)`);
+  if (!type) throw new Error(`type de processus inconnu : « ${String(processType).slice(0, 20)} » (attendu : web, worker ou diagworker)`);
   const { placement, warning } = jobsPlacement(env);
   const notes = warning ? [warning] : [];
+  // Lot 113Q : processus dédié aux diagnostics — actif seulement si DIAG_JOB_PROCESS=diagworker.
+  if (type === 'diagworker' && String(env.DIAG_JOB_PROCESS ?? '').trim().toLowerCase() !== 'diagworker') {
+    notes.push('DIAG_JOB_PROCESS n’est pas « diagworker » : les diagnostics suivent les traitements de fond ; ce conteneur diagworker reste en veille (le ramener à 0 conteneur dans Scalingo).');
+    return { mode: 'idle', processType: type, placement, notes, nodeArgs: [], nextArgs: [], nextBin, env: { ...env }, heap: { mb: null, reason: 'veille' }, limit: { mb: null, source: null } };
+  }
   if (type === 'worker' && placement !== 'worker') {
     notes.push('BACKGROUND_JOBS_PROCESS n’est pas « worker » : les traitements de fond restent dans le conteneur web ; ce conteneur worker reste en veille (le ramener à 0 conteneur dans Scalingo).');
     return { mode: 'idle', processType: type, placement, notes, nodeArgs: [], nextArgs: [], nextBin, env: { ...env }, heap: { mb: null, reason: 'veille' }, limit: { mb: null, source: null } };
@@ -153,7 +165,7 @@ export function planLaunch({ processType, env = process.env, cgroupText = null, 
   const heap = heapLimit(env, limit);
   const nodeArgs = heap.mb ? [`--max-old-space-size=${heap.mb}`] : [];
   // Le worker ne reçoit aucun trafic : écoute locale seulement (sonde interne).
-  const nextArgs = type === 'worker' ? ['start', '-H', '127.0.0.1', '-p', String(env.PORT || 3000)] : ['start'];
+  const nextArgs = type === 'worker' || type === 'diagworker' ? ['start', '-H', '127.0.0.1', '-p', String(env.PORT || 3000)] : ['start'];
   const childEnv = { ...env, APP_PROCESS_TYPE: type, BACKGROUND_JOBS_PROCESS: placement };
   return { mode: 'next', processType: type, placement, nodeArgs, nextArgs, nextBin, env: childEnv, heap, limit, notes };
 }

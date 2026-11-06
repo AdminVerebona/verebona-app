@@ -7,8 +7,11 @@
  * est produit À LA DEMANDE et écrit — compressé gzip, en flux, à mémoire
  * bornée (`openGzipUpload`, celui de la sauvegarde et de l'export de recette)
  * — sous `admin-exports/diagnostics/<travail>/a<tentative>/<chemin>.gz`.
- * Aucune archive n'est construite en mémoire ; le ZIP est assemblé au
- * téléchargement, en flux, depuis les fichiers stockés (`download.ts`).
+ * Aucune archive n'est construite en mémoire. Lot 113Q : le ZIP DÉFINITIF
+ * est assemblé UNE fois après validation (étape ASSEMBLAGE_ZIP, copie des
+ * flux compressés sans recompression, `archive.ts`), stocké, relu et vérifié
+ * intégralement (étape VERIFICATION_ZIP) avant publication ; le
+ * téléchargement sert cet objet tel quel.
  *
  * JAMAIS DE FAUX COMPLETE : avant publication, VALIDATION — chaque fichier du
  * plan est stocké (présence et taille vérifiées dans le stockage), l'empreinte
@@ -48,7 +51,7 @@ import {
   DiagLeaseLostError, failDiagnosticAttempt, publishDiagnosticJob, readDiagnosticControl, saveDiagnosticTimings, setDiagnosticPhase, type DiagJobRow,
 } from './repository';
 import type { DiagLane } from './state';
-import { createPhaseProfiler, diagMetrics } from './metrics';
+import { createMemoryRecorder, createPhaseProfiler, diagMetrics, memPoint, type DiagMemPoint } from './metrics';
 
 export interface DiagStorage { client: Pick<S3Client, 'send'>; bucket: string }
 
@@ -107,14 +110,24 @@ export function containerMemoryLimitMb(): number | null {
   return readContainerMemory().containerLimitMb;
 }
 
-/** Mesure mémoire du processus, reportée dans la progression (pic compris). */
-export function sampleMemory(p: DiagJobProgress, rssMb?: () => number): number {
+/**
+ * Mesure mémoire du processus, reportée dans la progression (pic compris).
+ * Lot 113Q : aussi la mémoire native (`external`) et les ArrayBuffer — les
+ * tampons de compression et d'envoi n'apparaissent pas dans le tas V8 —, et
+ * la mémoire du conteneur quand `container` est demandé (lecture du cgroup,
+ * plus coûteuse : entre deux fichiers seulement). Rend la RSS (Mo).
+ */
+export function sampleMemory(p: DiagJobProgress, rssMb?: () => number, onPoint?: (pt: DiagMemPoint) => void, container = false): number {
   const m = process.memoryUsage();
   const rss = rssMb ? rssMb() : Math.round(m.rss / MB);
   p.rssMb = rss;
   p.peakRssMb = Math.max(p.peakRssMb ?? 0, rss);
   p.heapUsedMb = Math.round(m.heapUsed / MB);
+  p.externalMb = Math.round(m.external / MB);
+  p.arrayBuffersMb = Math.round(m.arrayBuffers / MB);
+  if (container) { try { p.containerUsedMb = readContainerMemory().containerUsedMb; } catch { /* cgroup illisible */ } }
   p.updatedAt = new Date().toISOString();
+  onPoint?.({ ...memPoint(m, container ? p.containerUsedMb ?? null : undefined), rssMb: rss });
   return rss;
 }
 
@@ -203,6 +216,14 @@ export async function runDiagnosticJob(job: DiagJobRow, ctx: DiagRunContext): Pr
   const log = (event: string, data: Record<string, unknown>) => console.info(`[diagnostic-job] ${JSON.stringify({ event, ...base, ...data })}`);
   // Lot 111Q : profilage des étapes (durées, fichiers les plus lents) — persisté et journalisé.
   const prof = createPhaseProfiler({ attempt: job.attempt, lane: ctx.lane ?? null });
+  // Lot 113Q : profil mémoire (initial, pic, par étape, par fichier) — origine du pic MESURÉE.
+  const mem = createMemoryRecorder();
+  const onPoint = (pt: DiagMemPoint) => mem.sample(phase, pt);
+  let sessionStats: import('@/services/admin/account-data/session').SessionStats | null = null;
+  const queries = () => (sessionStats ? {
+    count: sessionStats.queries, ms: Math.round(sessionStats.queryMs), fetches: sessionStats.fetches, rows: sessionStats.rows, bytes: sessionStats.bytes,
+    oversizedRows: sessionStats.oversizedRows, maxRowBytes: sessionStats.maxRowBytes, slowest: sessionStats.slowest.map((x) => ({ sql: sanitizeErrorMessage(x.sql), ms: x.ms })),
+  } : null);
   const guardMb = memoryGuardMb(settings.maxRssMb, progress.memoryLimitMb);
   let phase: DiagJobPhase = 'PLANIFICATION';
   let step: string | null = null;
@@ -249,17 +270,26 @@ export async function runDiagnosticJob(job: DiagJobRow, ctx: DiagRunContext): Pr
   let lastSampleAt = 0;
   let writes = 0;
   let samples = 0;
+  let uploadMs = 0;
+  let uploadParts = 0;
   const stopReason = (force = false): { code: DiagJobErrorCode | 'LEASE'; message: string } | null => {
     if (!ctx.isActive()) return { code: 'LEASE', message: 'bail perdu' };
     if (cancelled()) return { code: 'CANCELLED', message: 'annulation demandée' };
     if (Date.now() > ctx.deadline) return { code: 'JOB_TIMEOUT', message: `délai global de ${Math.round(settings.timeoutMs / 60_000)} min dépassé` };
     let rss = progress.rssMb ?? 0;
     if (force || progress.rssMb == null || Date.now() - lastSampleAt >= MEMORY_SAMPLE_MS) {
-      rss = sampleMemory(progress, ctx.rssMb);
+      rss = sampleMemory(progress, ctx.rssMb, onPoint, force);
       lastSampleAt = Date.now();
       samples++;
     }
-    if (guardMb && rss > guardMb) return { code: 'MEMORY_GUARD', message: `mémoire ${rss} Mo > seuil ${guardMb} Mo (limite du conteneur ${progress.memoryLimitMb ?? '?'} Mo)` };
+    if (guardMb && rss > guardMb) {
+      // Lot 113Q : la mesure dit ce qui est plein (tas V8, mémoire native, ArrayBuffer), et d'où le fichier en cours est parti.
+      const f = mem.current();
+      return {
+        code: 'MEMORY_GUARD',
+        message: `mémoire du processus ${rss} Mo > seuil ${guardMb} Mo (limite du conteneur ${progress.memoryLimitMb ?? '?'} Mo) — tas ${progress.heapUsedMb ?? '?'} Mo, natif ${progress.externalMb ?? '?'} Mo, ArrayBuffer ${progress.arrayBuffersMb ?? '?'} Mo, mémoire au démarrage ${progress.initialRssMb ?? '?'} Mo${f ? ` ; fichier ${f.path} commencé à ${f.startRssMb} Mo` : ''}`,
+      };
+    }
     return null;
   };
   const check = () => {
@@ -277,6 +307,8 @@ export async function runDiagnosticJob(job: DiagJobRow, ctx: DiagRunContext): Pr
   };
 
   try {
+    // Lot 113Q : mémoire au démarrage (avant toute lecture) — distingue la part du processus de celle du diagnostic.
+    progress.initialRssMb = sampleMemory(progress, ctx.rssMb, onPoint, true);
     storage = ctx.storage ?? await defaultStorage();
     // Fichiers d'une tentative précédente (interrompue) : supprimés — jamais mélangés à ceux-ci.
     step = 'cleanup';
@@ -292,7 +324,10 @@ export async function runDiagnosticJob(job: DiagJobRow, ctx: DiagRunContext): Pr
       const key = `${prefix}${path}.gz`;
       const fileStart = Date.now();
       step = 'upload';
+      // Lot 113Q : coût des envois (ouverture + fin d'envoi, hors production) mesuré — beaucoup de petits fichiers.
+      const u0 = Date.now();
       const up = await openGzipUpload(st.client, st.bucket, key, { contentType: 'application/gzip', metadata: { job: job.id, attempt: String(job.attempt) } });
+      uploadMs += Date.now() - u0;
       openUpload = up;
       const write = async (c: string) => {
         writes++;
@@ -302,21 +337,28 @@ export async function runDiagnosticJob(job: DiagJobRow, ctx: DiagRunContext): Pr
         progress.bytes += Buffer.byteLength(c);
       };
       step = 'produce';
+      sampleMemory(progress, ctx.rssMb, (pt) => mem.fileStart(path, phase, pt));
       await produce(write);
       step = 'upload';
+      const u1 = Date.now();
       const r = await up.finish().catch((e) => { throw new SinkAbort('STORAGE_UPLOAD_FAILED', `fin d'envoi de ${path} : ${(e as Error)?.message ?? e}`); });
+      uploadMs += Date.now() - u1;
+      uploadParts += r.parts;
       openUpload = null;
       const f: StoredFile = { path, key, bytes: r.bytes, compressedBytes: r.compressedBytes, sha256: r.sha256 };
       stored.push(f);
       progress.filesDone++;
       progress.compressedBytes += r.compressedBytes;
       prof.file(path, Date.now() - fileStart, r.bytes);
+      sampleMemory(progress, ctx.rssMb, (pt) => mem.fileEnd(pt, r.bytes));
+      lastSampleAt = Date.now();
       return f;
     };
 
     step = 'snapshot';
     prof.enter('INSTANTANE');
     const session = await openReadSession({}, { statementTimeoutMs: settings.statementTimeoutMs });
+    sessionStats = session.stats ?? null;
     // Lot 111C : connexion réservée de l'instantané — cible de l'interruption en cas d'annulation.
     await session.q('SELECT pg_backend_pid() AS pid, (SELECT xact_start::text FROM pg_stat_activity WHERE pid = pg_backend_pid()) AS xs').then((r) => {
       backendXact = r[0]?.xs == null ? null : String(r[0].xs);
@@ -372,6 +414,55 @@ export async function runDiagnosticJob(job: DiagJobRow, ctx: DiagRunContext): Pr
       throw new DiagJobError('GENERATION_FAILED', `statut du moteur FAILED — ${m.warnings.slice(0, 3).join(' ; ')}`);
     }
 
+    // ── Lot 113Q : ZIP DÉFINITIF — assemblé une fois, stocké, relu, vérifié ──
+    check();
+    await enter('ASSEMBLAGE_ZIP');
+    const integ = stored.find((f) => f.path === 'integrite.json')!;
+    const { archiveOrder, writeArchive, verifyStoredArchive } = await import('./archive');
+    const { openRawUpload } = await import('@/services/backup/s3-gzip-upload');
+    const entries = archiveOrder(index, prefix, integ);
+    const archiveKey = `${prefix}archive/${archiveObjectName(outcome.fileName)}`;
+    let archive: DiagArchiveInfo | null = null;
+    // Reprise de l'ASSEMBLAGE seul (fichiers validés de CETTE tentative, même instantané) : bornée.
+    for (let k = 1; k <= ARCHIVE_ASSEMBLY_TRIES && !archive; k++) {
+      step = 'archive';
+      const t0 = Date.now();
+      const up = await openRawUpload(st.client, st.bucket, archiveKey, { contentType: 'application/zip', metadata: { job: job.id, attempt: String(job.attempt) } });
+      openUpload = up;
+      try {
+        const zr = await writeArchive(st, entries, new Date(m.generatedAt), async (c) => {
+          const r = stopReason();
+          if (r) throw r.code === 'LEASE' ? new DiagLeaseLostError() : new DiagJobError(r.code, r.message);
+          await up.write(c);
+        }, (p) => { progress.current = `ZIP › ${p}`; });
+        const fin = await up.finish();
+        openUpload = null;
+        prof.counter('archiveAssemblyMs', Date.now() - t0);
+        await enter('VERIFICATION_ZIP');
+        step = 'archive-verify';
+        progress.current = 'ZIP › vérification';
+        const t1 = Date.now();
+        const chk = await verifyStoredArchive(st, archiveKey, entries, fin.bytes);
+        prof.counter('archiveVerifyMs', Date.now() - t1);
+        if (!chk.ok) throw new DiagJobError('ARCHIVE_FAILED', chk.problems.slice(0, 5).join(' ; '));
+        archive = { key: archiveKey, bytes: fin.bytes, sha256: fin.sha256, entries: zr.entries, zip64: zr.zip64, verifiedAt: new Date().toISOString() };
+      } catch (e) {
+        await up.abort().catch(() => undefined);
+        openUpload = null;
+        const code = (e as { diagCode?: string })?.diagCode;
+        // Arrêt (garde, annulation, bail) ou dernière reprise : l'erreur remonte telle quelle.
+        if (e instanceof DiagLeaseLostError || (code && code !== 'ARCHIVE_FAILED') || k === ARCHIVE_ASSEMBLY_TRIES) {
+          if (!code && !(e instanceof DiagLeaseLostError)) {
+            throw new DiagJobError((e as { $metadata?: unknown })?.$metadata !== undefined ? 'STORAGE_UPLOAD_FAILED' : 'ARCHIVE_FAILED', `assemblage de l’archive : ${sanitizeErrorMessage(e)}`);
+          }
+          throw e;
+        }
+        log('archive-retry', { try: k, message: sanitizeErrorMessage(e) });
+        await purgeDiagnosticPrefix(st, `${prefix}archive/`);
+        await enter('ASSEMBLAGE_ZIP');
+      }
+    }
+
     // ── Publication ─────────────────────────────────────────────────────────
     await enter('PUBLICATION');
     progress.current = null;
@@ -382,10 +473,13 @@ export async function runDiagnosticJob(job: DiagJobRow, ctx: DiagRunContext): Pr
     const metrics = diagMetrics({ status: 'RUNNING', startedAt: job.queuedAt ?? new Date().toISOString(), firstRunStartedAt: job.firstRunStartedAt, attemptsLog: job.attemptsLog, now: new Date() });
     prof.counter('writes', writes);
     prof.counter('memorySamples', samples);
+    prof.counter('uploadOpenFinishMs', uploadMs);
+    prof.counter('uploadParts', uploadParts);
     const timings = prof.snapshot({
       queueWaitMs: metrics.queueWaitMs, executionMs: metrics.executionMs, totalElapsedMs: metrics.totalElapsedMs,
       zipFiles: stored.length, bytes: stored.reduce((n, f) => n + f.bytes, 0), compressedBytes: progress.compressedBytes, status: outcome.status,
-    });
+      archiveBytes: archive?.bytes ?? null,
+    }, { memory: mem.snapshot(), queries: queries() });
     await saveDiagnosticTimings(job.id, ctx.workerId, timings);
     await publishDiagnosticJob(job, ctx.workerId, {
       status: outcome.status, snapshotAt: m.snapshot?.at ?? null, pgSnapshot: m.snapshot?.snapshot ?? null,
@@ -394,11 +488,14 @@ export async function runDiagnosticJob(job: DiagJobRow, ctx: DiagRunContext): Pr
       batches: files.reduce((n, f) => n + (f.batches ?? 0), 0),
       bytes: stored.reduce((n, f) => n + f.bytes, 0), files: stored.length, sections,
       warning: outcome.status === 'COMPLETE' ? null : m.warnings.slice(0, 20).join(' ; '), fileName: outcome.fileName, progress, storagePrefix: prefix,
+      archive,
     });
     log('published', {
       status: outcome.status, files: stored.length, bytes: timings.final?.bytes ?? null, compressedBytes: progress.compressedBytes, peakRssMb: progress.peakRssMb,
       queueWaitMs: metrics.queueWaitMs, executionMs: metrics.executionMs, totalElapsedMs: metrics.totalElapsedMs, phases: timings.phases,
       slowest: timings.slowestFiles.slice(0, 5).map((x) => `${x.path}:${x.ms}ms`), counters: timings.counters,
+      archiveBytes: archive?.bytes ?? null, archiveEntries: archive?.entries ?? null, zip64: archive?.zip64 ?? null,
+      memory: memoryLogLine(timings.memory ?? null, progress), queries: timings.queries ? { count: timings.queries.count, ms: timings.queries.ms, oversizedRows: timings.queries.oversizedRows, maxRowBytes: timings.queries.maxRowBytes } : null,
     });
     return outcome.status;
   } catch (e) {
@@ -417,15 +514,46 @@ export async function runDiagnosticJob(job: DiagJobRow, ctx: DiagRunContext): Pr
     const code = isCancel ? 'CANCELLED' : classifyDiagJobError(e, step);
     const message = sanitizeErrorMessage(e);
     if (storage) await purgeDiagnosticPrefix(storage, prefix);
-    await saveDiagnosticTimings(job.id, ctx.workerId, prof.snapshot());
+    // Lot 113Q : profilage CLOS (durées figées, aucune étape « en cours »), mémoire et requêtes mesurées.
+    const memory = mem.snapshot();
+    const closed = prof.snapshot(undefined, { ended: { status: isCancel ? 'CANCELLED' : 'FAILED', code, phase, at: new Date().toISOString() }, memory, queries: queries() });
+    await saveDiagnosticTimings(job.id, ctx.workerId, closed);
     const status = await failDiagnosticAttempt(job, ctx.workerId, {
       code, phase, message, transient: isTransientError(code), progress, cancelled: isCancel,
     });
-    console.error(`[diagnostic-job] ${JSON.stringify({ event: isCancel ? 'attempt-cancelled' : 'attempt-failed', ...base, code, cause: code, phase, step, status, rssMb: progress.rssMb, peakRssMb: progress.peakRssMb, phases: prof.snapshot().phases, message })}`);
+    console.error(`[diagnostic-job] ${JSON.stringify({ event: isCancel ? 'attempt-cancelled' : 'attempt-failed', ...base, code, cause: code, phase, step, status, autoRetry: status === 'QUEUED', rssMb: progress.rssMb, peakRssMb: progress.peakRssMb, phases: closed.phases, memory: memoryLogLine(memory, progress), queries: closed.queries ? { count: closed.queries.count, ms: closed.queries.ms, oversizedRows: closed.queries.oversizedRows } : null, message })}`);
     return status;
   } finally {
     clearInterval(poll);
   }
+}
+
+/** Lot 113Q : archive ZIP définitive publiée (objet stocké, vérifié). */
+export interface DiagArchiveInfo { key: string; bytes: number; sha256: string; entries: number; zip64: boolean; verifiedAt: string }
+
+/** Lot 113Q : essais d'assemblage de l'archive dans une même tentative (fichiers validés réutilisés). */
+export const ARCHIVE_ASSEMBLY_TRIES = 2;
+
+/** Nom d'objet sûr de l'archive (pur). */
+export function archiveObjectName(fileName: string): string {
+  const base = String(fileName || 'diagnostic.zip').replace(/[^A-Za-z0-9._-]+/g, '_').slice(0, 150);
+  return base.toLowerCase().endsWith('.zip') ? base : `${base}.zip`;
+}
+
+/**
+ * Lot 113Q : résumé mémoire journalisé (Scalingo) — initial, pic (RSS, tas,
+ * natif, ArrayBuffer, conteneur), pic par étape, 5 fichiers au pic le plus
+ * haut et 5 à la plus forte croissance. Aucune donnée métier.
+ */
+export function memoryLogLine(m: import('./metrics').DiagMemoryProfile | null, p: DiagJobProgress): Record<string, unknown> {
+  if (!m) return { initialRssMb: p.initialRssMb ?? null, peakRssMb: p.peakRssMb };
+  return {
+    initial: m.initial, peak: m.peak,
+    byPhase: Object.fromEntries(Object.entries(m.byPhase).map(([k, v]) => [k, `${v.rssMb}/${v.heapUsedMb}/${v.externalMb}/${v.arrayBuffersMb}`])),
+    topFiles: m.files.slice(0, 5).map((f) => `${f.path}:${f.startRssMb}→${f.peakRssMb}Mo`),
+    topGrowth: m.growth.slice(0, 5).map((f) => `${f.path}:+${f.peakRssMb - f.startRssMb}Mo`),
+    legend: 'rss/tas/natif/arrayBuffers (Mo)',
+  };
 }
 
 /** Chemins attendus : ceux du manifeste (fichiers du plan, rapport et manifeste compris). */

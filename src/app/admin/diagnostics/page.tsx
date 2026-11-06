@@ -112,6 +112,9 @@ interface JobView {
   progressPercent: number | null;
   report?: string | null;
   reportError?: string;
+  /** Lot 113Q : relance automatique prévue ou non (et pourquoi) ; archive ZIP définitive. */
+  retry?: { state: 'SCHEDULED' | 'NOT_TRANSIENT' | 'EXHAUSTED' | 'NOT_APPLICABLE'; label: string } | null;
+  archive?: { bytes: number; sha256: string | null; entries: number | null; zip64: boolean; verifiedAt: string | null } | null;
 }
 
 function Diagnostics() {
@@ -373,10 +376,19 @@ function JobPanel({ id, onSelect, onChange }: { id: string; onSelect: (id: strin
       )}
       <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
         <Stat label={v.category ? `État : ${v.category.label}` : 'Statut'} value={v.statusLabel ?? `${STATUS_LABELS[j.status] ?? j.status}${j.leaseExpired ? ' (sans signe de vie)' : ''}`} warn={!['COMPLETE', 'QUEUED', 'RUNNING'].includes(j.status) || j.leaseExpired || !!v.wait?.alert || j.cancelRequested} data={v.category?.code} />
-        <Stat label="Étape" value={v.phaseLabel ?? '—'} />
+        <Stat label={ACTIVE.has(j.status) ? 'Étape' : 'Étape (arrêtée)'} value={!ACTIVE.has(j.status) && j.errorPhase ? `Arrêt à l’étape ${j.errorPhase}` : v.phaseLabel ?? '—'} />
         <Stat label="Progression" value={v.progressPercent == null ? '—' : `${v.progressPercent} % (${p.filesDone ?? 0} / ${p.filesPlanned ?? '?'} fichiers)`} />
-        <Stat label={isJob && j.status === 'RUNNING' ? 'Tentative en cours' : 'Tentatives'} value={isJob ? `${j.attempt} / ${j.maxAttempts ?? '?'}` : '—'} />
+        <Stat label={isJob && j.status === 'RUNNING' ? 'Tentative en cours' : 'Tentatives'} value={isJob ? (v.retry && (v.retry.state === 'NOT_TRANSIENT' || v.retry.state === 'EXHAUSTED') ? `${j.attempt} (sans relance automatique)` : `${j.attempt} / ${j.maxAttempts ?? '?'}`) : '—'} warn={v.retry?.state === 'NOT_TRANSIENT' || v.retry?.state === 'EXHAUSTED'} />
       </div>
+      {/* Lot 113Q : relance automatique dite explicitement — « 1 / 3 » ne laisse plus croire qu'une relance est prévue. */}
+      {v.retry && v.retry.state !== 'NOT_APPLICABLE' && (
+        <p className={`text-xs ${v.retry.state === 'SCHEDULED' ? 'text-muted-foreground' : 'text-destructive'}`} data-diag-retry={v.retry.state} role="status">{v.retry.label}</p>
+      )}
+      {v.archive && (
+        <p className="text-xs text-muted-foreground" data-diag-archive>
+          Archive ZIP prête : {kib(v.archive.bytes)} · {v.archive.entries ?? '?'} fichier(s){v.archive.zip64 ? ' · format ZIP64' : ''} · vérifiée le {dateFr(v.archive.verifiedAt)}{v.archive.sha256 ? <> · SHA-256 <span className="font-mono break-all">{v.archive.sha256.slice(0, 16)}…</span></> : null}
+        </p>
+      )}
       {/* Lot 111Q : trois mesures distinctes — l'attente en file n'est jamais une durée de génération. */}
       <div className="grid grid-cols-1 sm:grid-cols-3 gap-3" data-diag-metrics>
         <Stat label={v.metrics?.started ? 'Temps en file (avant démarrage)' : 'Temps en file (non démarré)'} value={v.metrics ? formatDuration(v.metrics.queueWaitMs) : '—'} warn={!v.metrics?.started && !!v.wait?.alert} />
@@ -403,7 +415,7 @@ function JobPanel({ id, onSelect, onChange }: { id: string; onSelect: (id: strin
         )}
         {v.readAt && <div className="sm:col-span-2 text-muted-foreground">Lu sur le serveur {freshnessLabel(Date.parse(v.readAt), now)} ({dateFr(v.readAt)})</div>}
         <div><dt className="inline text-muted-foreground">Initiateur : </dt><dd className="inline">administrateur #{j.adminUserId ?? '?'}</dd></div>
-        <div><dt className="inline text-muted-foreground">Fichier en cours : </dt><dd className="inline font-mono break-all">{p.current ?? '—'}</dd></div>
+        <div><dt className="inline text-muted-foreground">{ACTIVE.has(j.status) ? 'Fichier en cours : ' : 'Dernier fichier traité : '}</dt><dd className="inline font-mono break-all">{p.current ?? '—'}</dd></div>
         <div><dt className="inline text-muted-foreground">Volume : </dt><dd className="inline">{j.bytes != null ? kib(j.bytes) : p.compressedBytes ? `${kib(p.compressedBytes)} compressés` : '—'}{j.rowsExported != null ? ` · ${j.rowsExported} / ${j.rowsExpected ?? '?'} lignes` : ''}</dd></div>
         <div><dt className="inline text-muted-foreground">Mémoire du worker : </dt><dd className="inline">{p.rssMb != null ? `${p.rssMb} Mo (pic ${p.peakRssMb ?? '?'} Mo)` : '—'}</dd></div>
         <div><dt className="inline text-muted-foreground">Worker / version : </dt><dd className="inline font-mono">{j.worker ?? '—'}{j.buildCommit ? ` · ${j.buildCommit.slice(0, 10)}` : ''}</dd></div>
@@ -414,14 +426,21 @@ function JobPanel({ id, onSelect, onChange }: { id: string; onSelect: (id: strin
       </dl>
       {v.timings && Object.keys(v.timings.phases ?? {}).length > 0 && (
         <div className="overflow-x-auto" data-diag-timings>
-          <p className="text-xs font-medium mb-1">Durées par étape (tentative {v.timings.attempt}{v.timings.final ? '' : ', en cours'})</p>
+          {/* Lot 113Q : « en cours » seulement pour une génération ACTIVE ; une tentative arrêtée a des durées figées. */}
+          <p className="text-xs font-medium mb-1">Durées par étape (tentative {v.timings.attempt}{timingsState(v.timings, ACTIVE.has(j.status))})</p>
           <table className="w-full text-xs">
             <tbody>
-              {Object.entries(v.timings.phases).filter(([, ms]) => (ms ?? 0) > 0 || v.timings?.current?.phase).map(([ph, ms]) => (
-                <tr key={ph} className="border-b last:border-b-0"><td className="px-2 py-1">{DIAG_PROFILE_PHASE_LABELS[ph] ?? ph}{v.timings?.current?.phase === ph ? ' (en cours)' : ''}</td><td className="px-2 py-1 text-right tabular-nums">{formatDuration(ms ?? 0)}</td></tr>
-              ))}
+              {Object.entries(v.timings.phases).filter(([, ms]) => (ms ?? 0) > 0 || v.timings?.current?.phase).map(([ph, ms]) => {
+                const live = ACTIVE.has(j.status) && !v.timings?.ended && v.timings?.current?.phase === ph;
+                const stopped = !ACTIVE.has(j.status) && (v.timings?.ended?.phase === ph || (!v.timings?.ended && !v.timings?.final && v.timings?.current?.phase === ph));
+                const mem = v.timings?.memory?.byPhase?.[ph];
+                return (
+                  <tr key={ph} className="border-b last:border-b-0"><td className="px-2 py-1">{DIAG_PROFILE_PHASE_LABELS[ph] ?? ph}{live ? ' (en cours)' : stopped ? ' (arrêt ici)' : ''}</td><td className="px-2 py-1 text-right tabular-nums">{formatDuration(ms ?? 0)}</td><td className="px-2 py-1 text-right tabular-nums text-muted-foreground hidden sm:table-cell">{mem ? `pic ${mem.rssMb} Mo` : ''}</td></tr>
+                );
+              })}
             </tbody>
           </table>
+          {v.timings.memory && <MemoryProfile m={v.timings.memory} q={v.timings.queries ?? null} />}
           {v.timings.slowestFiles.length > 0 && (
             <details className="mt-1 text-xs"><summary className="cursor-pointer text-muted-foreground">Fichiers les plus longs à produire</summary>
               <ul className="mt-1 space-y-0.5">{v.timings.slowestFiles.map((f) => <li key={f.path} className="font-mono break-all">{f.path} — {formatDuration(f.ms)} · {kib(f.bytes)}</li>)}</ul>
@@ -446,7 +465,7 @@ function JobPanel({ id, onSelect, onChange }: { id: string; onSelect: (id: strin
                 <tr key={a.attempt} className="border-b last:border-b-0 align-top">
                   <td className="px-2 py-1">{a.attempt}</td>
                   <td className="px-2 py-1 whitespace-nowrap">{dateFr(a.startedAt)}</td>
-                  <td className="px-2 py-1">{a.outcome ?? 'en cours'}{a.errorCode ? ` · ${a.errorCode}` : ''}</td>
+                  <td className="px-2 py-1">{a.outcome ?? (ACTIVE.has(j.status) && a.attempt === j.attempt ? 'en cours' : 'interrompue (sans clôture)')}{a.errorCode ? ` · ${a.errorCode}` : ''}</td>
                   <td className="px-2 py-1 hidden sm:table-cell">{a.phase ?? '—'}</td>
                   <td className="px-2 py-1 hidden md:table-cell font-mono">{String(a.worker).split(':').slice(0, 2).join(':')}{a.commit ? ` · ${a.commit.slice(0, 8)}` : ''}</td>
                   <td className="px-2 py-1 hidden md:table-cell break-all">{a.lastProgress ? `${a.lastProgress.current ?? '—'}${a.lastProgress.rssMb ? ` · ${a.lastProgress.rssMb} Mo (pic ${a.lastProgress.peakRssMb ?? '?'})` : ''}` : '—'}</td>
@@ -482,6 +501,46 @@ function JobPanel({ id, onSelect, onChange }: { id: string; onSelect: (id: strin
         </div>
       )}
     </section>
+  );
+}
+
+/** Lot 113Q : état du profilage d'une tentative (jamais « en cours » après l'arrêt). */
+function timingsState(t: DiagTimings, active: boolean): string {
+  if (t.final) return ', terminée';
+  if (t.ended) return `, arrêtée${t.ended.code ? ` (${t.ended.code}` : ''}${t.ended.phase ? `${t.ended.code ? ', ' : ' ('}étape ${t.ended.phase}` : ''}${t.ended.code || t.ended.phase ? ')' : ''}`;
+  return active ? ', en cours' : ', interrompue';
+}
+
+/**
+ * Lot 113Q — mesures mémoire d'une tentative (BO, lisibles sans accès
+ * serveur) : au démarrage, au pic (RSS du processus, tas V8, mémoire native,
+ * ArrayBuffer, conteneur), fichiers au pic le plus haut et à la plus forte
+ * croissance ; requêtes de lecture (nombre, durée, grosses lignes).
+ */
+function MemoryProfile({ m, q }: { m: NonNullable<DiagTimings['memory']>; q: DiagTimings['queries'] | null }) {
+  const pt = (p: { rssMb: number; heapUsedMb: number; externalMb: number; arrayBuffersMb: number; containerUsedMb?: number | null } | null) =>
+    (p ? `${p.rssMb} Mo (tas ${p.heapUsedMb} · natif ${p.externalMb} · tampons ${p.arrayBuffersMb}${p.containerUsedMb != null ? ` · conteneur ${p.containerUsedMb}` : ''})` : '—');
+  return (
+    <details className="mt-1 text-xs" data-diag-memory open>
+      <summary className="cursor-pointer text-muted-foreground">Mémoire mesurée (processus entier)</summary>
+      <dl className="mt-1 grid grid-cols-1 sm:grid-cols-2 gap-x-6 gap-y-0.5">
+        <div><dt className="inline text-muted-foreground">Au démarrage : </dt><dd className="inline tabular-nums">{pt(m.initial)}</dd></div>
+        <div><dt className="inline text-muted-foreground">Pic : </dt><dd className="inline tabular-nums">{pt(m.peak)}</dd></div>
+        {q && <div className="sm:col-span-2"><dt className="inline text-muted-foreground">Lectures : </dt><dd className="inline tabular-nums">{q.count} requête(s), {formatDuration(q.ms)} · {q.rows} ligne(s) · {kib(q.bytes)}{q.oversizedRows ? ` · ${q.oversizedRows} très grosse(s) ligne(s) lue(s) seule(s) (max ${kib(q.maxRowBytes)})` : ''}</dd></div>}
+      </dl>
+      {m.files.length > 0 && (
+        <div className="mt-1 overflow-x-auto">
+          <p className="text-muted-foreground">Fichiers au pic mémoire le plus haut (début → pic → fin)</p>
+          <ul className="space-y-0.5">{m.files.slice(0, 8).map((f) => <li key={`p-${f.path}`} className="font-mono break-all">{f.path} — {f.startRssMb} → {f.peakRssMb} → {f.endRssMb} Mo · {formatDuration(f.ms)}</li>)}</ul>
+        </div>
+      )}
+      {m.growth.length > 0 && (
+        <div className="mt-1 overflow-x-auto">
+          <p className="text-muted-foreground">Plus forte croissance pendant la production</p>
+          <ul className="space-y-0.5">{m.growth.slice(0, 5).map((f) => <li key={`g-${f.path}`} className="font-mono break-all">{f.path} — +{Math.max(0, f.peakRssMb - f.startRssMb)} Mo</li>)}</ul>
+        </div>
+      )}
+    </details>
   );
 }
 

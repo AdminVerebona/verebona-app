@@ -37,6 +37,7 @@ import {
   traceReportLines, type AmountTrace, type DiagFileInfo, type DiagManifest, type DiagRequest, type DiagUnavailable,
 } from './model';
 import { loadTcoContext, tcoSummary, traceTcoLine, type TcoContext } from './trace';
+import { memoQuery, writeMaskedJson, type MemoStats } from './stream-json';
 import type { DiagSectionCode } from './coverage';
 import { buildAnalysisGuide, computeSectionManifests, globalWithSections, sectionOfPath } from './account-model';
 import type { DiagFilter, EngineManifestPart } from './engine';
@@ -433,7 +434,10 @@ export async function planDiagnostic(req: DiagRequest, s: ReadSession, opts: Gen
   let nTraces = 0;
   let nRuptures = 0;
   let nSansLien = 0;
-  const summaries: Row[] = [];
+  // Lot 113Q : synthèses TCO gardées SÉRIALISÉES (masquées, compactes) jusqu'à tracabilite/tco.json — jamais les objets.
+  const summaries: string[] = [];
+  // Lot 113Q : lectures de la traçabilité TCO mémorisées par bien (même instantané) — plus de relecture par ligne.
+  const tcoMemo: MemoStats = { hits: 0, misses: 0, bytes: 0, evicted: 0 };
   const assetsSql = enginePart.assetsSql;
   const { PgDialect } = await import('drizzle-orm/pg-core');
   const dialect = new PgDialect();
@@ -484,13 +488,15 @@ export async function planDiagnostic(req: DiagRequest, s: ReadSession, opts: Gen
         failed.push(`TCO du bien #${id} : ${describe(e)}`);
         continue;
       }
-      summaries.push(tcoSummary(ctx));
+      summaries.push(JSON.stringify(M(tcoSummary(ctx)), null, 2));
       if (ctx.unavailable) unavailable.push({ element: `TCO du bien #${ctx.assetId}`, motif: ctx.unavailable });
       const lines = (ctx.result?.lines ?? []).filter(keep);
       expected += lines.length;
+      // Une mémoire de lectures par bien (bornée en octets), oubliée après ses lignes.
+      const mq = memoQuery(s.q, { stats: tcoMemo });
       for (const l of lines) {
         try {
-          const t = await s.savepoint(() => traceTcoLine(s.q, A, ctx, l));
+          const t = await s.savepoint(() => traceTcoLine(mq, A, ctx, l));
           await writeTrace(w, t, n++ === 0);
         } catch (e) {
           if ((e as Error)?.name === 'SinkError' || errCode(e) === '25006') throw e;
@@ -499,11 +505,17 @@ export async function planDiagnostic(req: DiagRequest, s: ReadSession, opts: Gen
       }
     }
     await w(`${n ? '\n' : ''}]\n`);
+    if (tcoMemo.hits + tcoMemo.misses) console.info(`[admin/diagnostics] ${JSON.stringify({ event: 'tco-trace-reads', lectures: tcoMemo.misses, evitees: tcoMemo.hits, oubliees: tcoMemo.evicted })}`);
     return { expected, count: n, batches: 1, error: failed.length ? failed.join(' ; ') : null };
   }, undefined, 'tracabilite');
   entry('tracabilite/tco.json', 'TCO recalculé (moteur existant, dans l’instantané) des biens du filtre : synthèse, postes, fiabilité', async (w) => {
-    await w(`${JSON.stringify(summaries.map((x) => M(x)), null, 2)}\n`);
-    return { expected: summaries.length, count: summaries.length, batches: 1, error: null };
+    // Même texte que `JSON.stringify(summaries, null, 2)`, écrit synthèse par synthèse.
+    if (!summaries.length) await w('[]');
+    else for (let i = 0; i < summaries.length; i++) await w(`${i ? ',' : '['}\n  ${summaries[i].replace(/\n/g, '\n  ')}${i === summaries.length - 1 ? '\n]' : ''}`);
+    await w('\n');
+    const n = summaries.length;
+    summaries.length = 0;
+    return { expected: n, count: n, batches: 1, error: null };
   }, undefined, 'tracabilite');
 
   // Lot 99A (ticket P1 T3, point D) : usage de l'IA en compteurs DISTINCTS — appels réels au fournisseur
@@ -520,19 +532,25 @@ export async function planDiagnostic(req: DiagRequest, s: ReadSession, opts: Gen
   // compteurs par compte et par phase, Supervision et, par document, sources / groupes / candidats / branche / preuves
   // croisées / panne / cartes avant-après / projection. Même moteur, même instantané (aucun export parallèle).
   {
-    let t3: import('@/services/ai/reconciliation/document-asset/diagnostic').T3DocumentAssetDiagnostic | null = null;
+    // Lot 113Q : l'objet T3 n'est plus gardé pour sa version texte — le texte est produit tout de suite
+    // (seule chaîne conservée jusqu'au fichier suivant), l'objet est libéré, le JSON écrit en flux.
+    let t3Text: string | null = null;
     const t3q = (t: string, p: unknown[]) => s.savepoint(() => s.q(t, p));
     entry('ia/t3-rattachement-documents.json', 'T3 — rattachement des documents aux biens : configuration (version, variables, migrations, prompt actif, qualification), contrôles, compteurs par compte et par phase, Supervision, détail par document (sources, groupes, candidats, branche, preuves croisées, panne, cartes avant / après, projection)', async (w) => {
-      const { t3DocumentAssetDiagnostic } = await import('@/services/ai/reconciliation/document-asset/diagnostic');
-      t3 = await t3DocumentAssetDiagnostic(t3q, global ? null : filter.accounts ?? []);
-      await w(`${JSON.stringify(M(t3 as unknown as Row), null, 2)}\n`);
+      const { t3DocumentAssetDiagnostic, t3DiagnosticText } = await import('@/services/ai/reconciliation/document-asset/diagnostic');
+      let t3: import('@/services/ai/reconciliation/document-asset/diagnostic').T3DocumentAssetDiagnostic | null = await t3DocumentAssetDiagnostic(t3q, global ? null : filter.accounts ?? []);
+      try { t3Text = M(t3DiagnosticText(t3)) as string; } catch (e) { console.error('[admin/diagnostics] texte T3 :', (e as Error)?.message ?? e); }
+      await writeMaskedJson(w, t3, M);
+      await w('\n');
       const n = t3.accounts.reduce((k, a) => k + (a.documents?.length ?? 0), 0);
+      t3 = null;
       return { expected: n, count: n, batches: 1, error: null };
     }, undefined, 'extractions-ia');
     entry('ia/t3-rattachement-documents.txt', 'T3 — rattachement des documents aux biens : tableau lisible (contrôles attendu → constaté, un document par ligne, cartes avant → après) à recopier dans la recette', async (w) => {
-      const { t3DiagnosticText } = await import('@/services/ai/reconciliation/document-asset/diagnostic');
-      await w(t3 ? (M(t3DiagnosticText(t3)) as string) : 'journal T3 indisponible (voir ia/t3-rattachement-documents.json)\n');
-      return { expected: 1, count: t3 ? 1 : 0, batches: 1, error: t3 ? null : 'journal T3 non produit' };
+      const ok = t3Text !== null;
+      await w(t3Text ?? 'journal T3 indisponible (voir ia/t3-rattachement-documents.json)\n');
+      t3Text = null;
+      return { expected: 1, count: ok ? 1 : 0, batches: 1, error: ok ? null : 'journal T3 non produit' };
     }, undefined, 'extractions-ia');
   }
 
@@ -541,19 +559,25 @@ export async function planDiagnostic(req: DiagRequest, s: ReadSession, opts: Gen
   // conformité des sorties T1, constats COH-DOC-EXTRACT-CHAIN, progression et coût des réexamens, rattrapage simulé et,
   // pour un compte, bilan par document et par unité. Même moteur, même instantané (aucun export parallèle).
   {
-    let t1d: import('@/services/ai/source-analysis/value-decisions/diagnostic').T1DecisionsDiagnostic | null = null;
+    // Lot 113Q : même principe que T3 — texte produit tout de suite, objet libéré, JSON écrit en flux.
+    let t1Text: string | null = null;
     const t1q = (t: string, p: unknown[]) => s.savepoint(() => s.q(t, p));
     entry('ia/t1-decisions-valeurs.json', 'T1 — décisions sur les valeurs significatives : configuration (marqueur du prompt effectif, T1_VALUE_DECISIONS_ENABLED, migrations, concordance des versions), contrôles, compteurs par compte (décisions par statut, sorties T1, constats, réexamens, coût IA), rattrapage simulé, bilan par document et par unité (compte)', async (w) => {
-      const { t1DecisionsDiagnostic } = await import('@/services/ai/source-analysis/value-decisions/diagnostic');
-      t1d = await t1DecisionsDiagnostic(t1q, global ? null : filter.accounts ?? []);
-      await w(`${JSON.stringify(M(t1d as unknown as Row), null, 2)}\n`);
+      const { t1DecisionsDiagnostic, t1DecisionsDiagnosticText } = await import('@/services/ai/source-analysis/value-decisions/diagnostic');
+      let t1d: import('@/services/ai/source-analysis/value-decisions/diagnostic').T1DecisionsDiagnostic | null = await t1DecisionsDiagnostic(t1q, global ? null : filter.accounts ?? []);
+      try { t1Text = M(t1DecisionsDiagnosticText(t1d)) as string; } catch (e) { console.error('[admin/diagnostics] texte T1 :', (e as Error)?.message ?? e); }
+      await writeMaskedJson(w, t1d, M);
+      await w('\n');
       const n = t1d.accounts.reduce((k, a) => k + (a.documents?.length ?? 0), 0);
-      return { expected: n, count: n, batches: 1, error: t1d.errors.length ? t1d.errors.join(' ; ').slice(0, 500) : null };
+      const error = t1d.errors.length ? t1d.errors.join(' ; ').slice(0, 500) : null;
+      t1d = null;
+      return { expected: n, count: n, batches: 1, error };
     }, undefined, 'extractions-ia');
     entry('ia/t1-decisions-valeurs.txt', 'T1 — décisions sur les valeurs significatives : tableau lisible (contrôles attendu → constaté, un document par ligne, unités en omission) à recopier dans la recette 108K', async (w) => {
-      const { t1DecisionsDiagnosticText } = await import('@/services/ai/source-analysis/value-decisions/diagnostic');
-      await w(t1d ? (M(t1DecisionsDiagnosticText(t1d)) as string) : 'journal T1 indisponible (voir ia/t1-decisions-valeurs.json)\n');
-      return { expected: 1, count: t1d ? 1 : 0, batches: 1, error: t1d ? null : 'journal T1 non produit' };
+      const ok = t1Text !== null;
+      await w(t1Text ?? 'journal T1 indisponible (voir ia/t1-decisions-valeurs.json)\n');
+      t1Text = null;
+      return { expected: 1, count: ok ? 1 : 0, batches: 1, error: ok ? null : 'journal T1 non produit' };
     }, undefined, 'extractions-ia');
   }
 
@@ -563,21 +587,24 @@ export async function planDiagnostic(req: DiagRequest, s: ReadSession, opts: Gen
   // l'historique ET les 30 derniers jours (période du bandeau Coûts IA). Même instantané, lecture seule, aucun appel IA.
   {
     const cq = (t: string, p: unknown[]) => s.savepoint(() => s.q(t, p)) as Promise<Array<Record<string, unknown>>>;
-    let couts: import('@/services/ai/telemetry/cost-diagnostic').CostDiagnosticReport | null = null;
-    let couts30: import('@/services/ai/telemetry/cost-diagnostic').CostDiagnosticReport | null = null;
+    // Lot 113Q : rapports de coûts libérés après leur texte (jamais gardés jusqu'à la fin du diagnostic).
+    let coutsText: string | null = null;
     entry('ia/couts-ia-non-chiffres.json', 'Coûts IA — appels non chiffrés : rapprochement avec l’ancienne règle du bandeau, causes (tarif absent, cache, invalidation à tort, modèle hors couverture, arrondi, consommation manquante, historique sans preuve), par jour / traitement / modèle / compte, agrégats journaliers, dernière synchronisation tarifaire (empreinte, format)', async (w) => {
-      const { aiCostDiagnostic } = await import('@/services/ai/telemetry/cost-diagnostic');
+      const { aiCostDiagnostic, costDiagnosticText } = await import('@/services/ai/telemetry/cost-diagnostic');
       const scope = global ? null : filter.accounts ?? [];
-      couts = await aiCostDiagnostic(cq, { since: new Date('2000-01-01T00:00:00Z'), until: now, accounts: scope });
-      couts30 = await aiCostDiagnostic(cq, { since: new Date(now.getTime() - 30 * 86_400_000), until: now, accounts: scope });
-      await w(`${JSON.stringify(M({ historique: couts, trenteJours: couts30 } as unknown as Row), null, 2)}\n`);
+      const couts = await aiCostDiagnostic(cq, { since: new Date('2000-01-01T00:00:00Z'), until: now, accounts: scope });
+      const couts30 = await aiCostDiagnostic(cq, { since: new Date(now.getTime() - 30 * 86_400_000), until: now, accounts: scope });
+      try { coutsText = `${costDiagnosticText(couts30)}\n──────── Tout l’historique ────────\n${costDiagnosticText(couts)}`; } catch (e) { console.error('[admin/diagnostics] texte des coûts :', (e as Error)?.message ?? e); }
+      await writeMaskedJson(w, { historique: couts, trenteJours: couts30 }, M);
+      await w('\n');
       const n = couts.byCause.reduce((k, c) => k + c.calls, 0);
       return { expected: n, count: n, batches: 1, error: null };
     }, undefined, 'technique');
     entry('ia/couts-ia-non-chiffres.txt', 'Coûts IA — appels non chiffrés : tableau lisible (30 derniers jours puis tout l’historique) à recopier dans la recette 109L', async (w) => {
-      const { costDiagnosticText } = await import('@/services/ai/telemetry/cost-diagnostic');
-      await w(couts && couts30 ? `${costDiagnosticText(couts30)}\n──────── Tout l’historique ────────\n${costDiagnosticText(couts)}` : 'diagnostic des coûts indisponible (voir ia/couts-ia-non-chiffres.json)\n');
-      return { expected: 1, count: couts ? 1 : 0, batches: 1, error: couts ? null : 'diagnostic des coûts non produit' };
+      const ok = coutsText !== null;
+      await w(coutsText ?? 'diagnostic des coûts indisponible (voir ia/couts-ia-non-chiffres.json)\n');
+      coutsText = null;
+      return { expected: 1, count: ok ? 1 : 0, batches: 1, error: ok ? null : 'diagnostic des coûts non produit' };
     }, undefined, 'technique');
   }
 
@@ -636,7 +663,8 @@ export async function planDiagnostic(req: DiagRequest, s: ReadSession, opts: Gen
       // Troncature DÉCLARÉE dans la section (jamais silencieuse).
       if (restreint) addTo(sectionTruncations, 'extractions-ia', `ia/sorties-modele.json : ${DIAG_LIMITS.modelOutputTraces} trace(s) jointe(s) sur ${all.length} (restriction d’accès aux sorties IA, inchangée).`);
       if (tronque) addTo(sectionTruncations, 'extractions-ia', `ia/sorties-modele.json : sortie(s) coupée(s) à ${DIAG_LIMITS.modelOutputChars} caractères (restriction d’accès aux sorties IA, inchangée).`);
-      await w(`${JSON.stringify(sorties.map((x) => M(x)), null, 2)}\n`);
+      await writeMaskedJson(w, sorties, M);
+      await w('\n');
       // Restriction d'accès (requalifiée, signalée) : le fichier n'est pas présenté comme complet si des sorties ne sont pas jointes.
       return { expected: sorties.length, count: sorties.length, batches: 1, error: null, status: restreint || tronque ? 'PARTIAL' : 'COMPLETE' };
     }, undefined, 'extractions-ia');

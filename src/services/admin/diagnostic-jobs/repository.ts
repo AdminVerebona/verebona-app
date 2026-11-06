@@ -468,6 +468,8 @@ export interface DiagJobOutcome {
   progress: DiagJobProgress;
   /** Préfixe de la tentative publiée (fichiers téléchargeables). */
   storagePrefix: string;
+  /** Lot 113Q : archive ZIP définitive (stockée, vérifiée) ; null : aucune (jamais publié sans, hors tests anciens). */
+  archive?: { key: string; bytes: number; sha256: string; entries: number; zip64: boolean; verifiedAt: string } | null;
 }
 
 function closeAttempt(log: DiagJobAttempt[], outcome: DiagJobAttempt['outcome'], code: DiagJobErrorCode | null, phase: DiagJobPhase | null, p: DiagJobProgress | null): DiagJobAttempt[] {
@@ -499,7 +501,9 @@ export async function publishDiagnosticJob(job: DiagJobRow, workerId: string, o:
            sections = ${JSON.stringify(o.sections)}::jsonb, error = ${o.warning ? sanitizeErrorMessage(o.warning) : null},
            error_code = NULL, error_phase = NULL, file_name = ${o.fileName}, progress = ${JSON.stringify(o.progress)}::jsonb, storage_prefix = ${o.storagePrefix},
            locked_by = NULL, locked_until = NULL, attempts_log = ${JSON.stringify(log)}::jsonb,
-           expires_at = now() + make_interval(days => ${s.retentionDays})
+           expires_at = now() + make_interval(days => ${s.retentionDays}),
+           archive_key = ${o.archive?.key ?? null}, archive_bytes = ${o.archive?.bytes ?? null}, archive_sha256 = ${o.archive?.sha256 ?? null},
+           archive_entries = ${o.archive?.entries ?? null}, archive_zip64 = ${o.archive?.zip64 ?? null}, archive_verified_at = ${o.archive?.verifiedAt ?? null}::timestamptz
      WHERE id = ${job.id}::uuid AND locked_by = ${workerId} AND status = 'RUNNING' AND NOT cancel_requested RETURNING id`;
   if (rows.length) return;
   const control = await readDiagnosticControl(job.id, workerId);
@@ -617,13 +621,32 @@ export async function diagnosticQueueHealth(now: Date = new Date()): Promise<Raw
  * Lot 111Q — champs de la migration 1280 d'un travail (premier démarrage réel,
  * voie, profilage) ; valeurs nulles si la migration n'est pas appliquée.
  */
-export async function readDiagnosticJobExtras(id: string): Promise<{ firstRunStartedAt: string | null; lane: string | null; phaseTimings: unknown | null }> {
+export async function readDiagnosticJobExtras(id: string): Promise<{ firstRunStartedAt: string | null; lane: string | null; phaseTimings: unknown | null; archive: DiagArchiveRow | null }> {
   const sql = await db();
   try {
     const [r] = await sql<Raw[]>`SELECT first_run_started_at, lane, phase_timings FROM admin_export_generations WHERE id = ${id}::uuid`;
-    return { firstRunStartedAt: iso(r?.first_run_started_at), lane: r?.lane == null ? null : String(r.lane), phaseTimings: json<unknown | null>(r?.phase_timings, null) };
+    return { firstRunStartedAt: iso(r?.first_run_started_at), lane: r?.lane == null ? null : String(r.lane), phaseTimings: json<unknown | null>(r?.phase_timings, null), archive: await readDiagnosticArchive(id) };
   } catch (e) {
-    if ((e as { code?: string })?.code === '42703') return { firstRunStartedAt: null, lane: null, phaseTimings: null };
+    if ((e as { code?: string })?.code === '42703') return { firstRunStartedAt: null, lane: null, phaseTimings: null, archive: null };
+    throw e;
+  }
+}
+
+/** Lot 113Q : archive ZIP définitive d'un travail publié (migration 1530). */
+export interface DiagArchiveRow { key: string; bytes: number; sha256: string | null; entries: number | null; zip64: boolean; verifiedAt: string | null }
+
+/** Lot 113Q : archive définitive stockée ; null si aucune (publication antérieure au lot 113Q, migration absente). */
+export async function readDiagnosticArchive(id: string): Promise<DiagArchiveRow | null> {
+  const sql = await db();
+  try {
+    const [r] = await sql<Raw[]>`SELECT archive_key, archive_bytes, archive_sha256, archive_entries, archive_zip64, archive_verified_at FROM admin_export_generations WHERE id = ${id}::uuid`;
+    if (!r?.archive_key) return null;
+    return {
+      key: String(r.archive_key), bytes: Number(r.archive_bytes ?? 0), sha256: r.archive_sha256 == null ? null : String(r.archive_sha256),
+      entries: r.archive_entries == null ? null : Number(r.archive_entries), zip64: r.archive_zip64 === true, verifiedAt: iso(r.archive_verified_at),
+    };
+  } catch (e) {
+    if ((e as { code?: string })?.code === '42703') return null;
     throw e;
   }
 }

@@ -121,6 +121,91 @@ export function stateCategory(status: DiagJobStatus | string, waitReason: DiagWa
 
 export interface DiagFileTiming { path: string; ms: number; bytes: number }
 
+/**
+ * Lot 113Q — mesure mémoire du PROCESSUS (Mo) : RSS (tout le processus), tas
+ * V8 utilisé, mémoire native (`external` : tampons, zlib) et ArrayBuffer ;
+ * mémoire du conteneur (cgroup) quand elle est lisible.
+ */
+export interface DiagMemPoint { rssMb: number; heapUsedMb: number; externalMb: number; arrayBuffersMb: number; containerUsedMb?: number | null }
+
+/** Lot 113Q — mémoire pendant la production d'un fichier : au début, au pic, à la fin. */
+export interface DiagFileMemory { path: string; phase: string; startRssMb: number; peakRssMb: number; endRssMb: number; peakHeapMb: number; peakExternalMb: number; peakArrayBuffersMb: number; ms: number; bytes: number }
+
+/** Lot 113Q — profil mémoire d'une tentative (persisté avec les durées). */
+export interface DiagMemoryProfile {
+  initial: DiagMemPoint | null;
+  peak: DiagMemPoint | null;
+  /** Pic de chaque étape. */
+  byPhase: Record<string, DiagMemPoint>;
+  /** Fichiers au pic le plus haut (au plus DIAG_MEMORY_FILES). */
+  files: DiagFileMemory[];
+  /** Fichiers dont la mémoire a le plus augmenté pendant leur production (au plus DIAG_MEMORY_FILES). */
+  growth: DiagFileMemory[];
+}
+
+/** Lot 113Q : fichiers conservés dans le profil mémoire. */
+export const DIAG_MEMORY_FILES = 12;
+
+/** Lot 113Q : point mémoire du processus (Mo, arrondi). */
+export function memPoint(m: { rss: number; heapUsed: number; external: number; arrayBuffers: number }, containerUsedMb?: number | null): DiagMemPoint {
+  const MB = 1024 * 1024;
+  return { rssMb: Math.round(m.rss / MB), heapUsedMb: Math.round(m.heapUsed / MB), externalMb: Math.round(m.external / MB), arrayBuffersMb: Math.round(m.arrayBuffers / MB), ...(containerUsedMb !== undefined ? { containerUsedMb } : {}) };
+}
+
+const maxPoint = (a: DiagMemPoint | null | undefined, b: DiagMemPoint): DiagMemPoint => (!a ? { ...b } : {
+  rssMb: Math.max(a.rssMb, b.rssMb), heapUsedMb: Math.max(a.heapUsedMb, b.heapUsedMb), externalMb: Math.max(a.externalMb, b.externalMb), arrayBuffersMb: Math.max(a.arrayBuffersMb, b.arrayBuffersMb),
+  ...(a.containerUsedMb != null || b.containerUsedMb != null ? { containerUsedMb: Math.max(a.containerUsedMb ?? 0, b.containerUsedMb ?? 0) } : {}),
+});
+
+/**
+ * Lot 113Q — enregistreur mémoire (pur : les mesures sont fournies) : pic
+ * par étape, pic et croissance par fichier — mémoire bornée (les
+ * DIAG_MEMORY_FILES fichiers les plus marquants seulement).
+ */
+export function createMemoryRecorder() {
+  let initial: DiagMemPoint | null = null;
+  let peak: DiagMemPoint | null = null;
+  const byPhase: Record<string, DiagMemPoint> = {};
+  const files: DiagFileMemory[] = [];
+  const growth: DiagFileMemory[] = [];
+  let cur: { path: string; phase: string; start: DiagMemPoint; peak: DiagMemPoint; t0: number } | null = null;
+  const keep = (list: DiagFileMemory[], f: DiagFileMemory, score: (x: DiagFileMemory) => number) => {
+    if (list.length >= DIAG_MEMORY_FILES && score(f) <= score(list[list.length - 1])) return;
+    list.push(f);
+    list.sort((a, b) => score(b) - score(a));
+    if (list.length > DIAG_MEMORY_FILES) list.length = DIAG_MEMORY_FILES;
+  };
+  return {
+    sample(phase: string, p: DiagMemPoint) {
+      if (!initial) initial = { ...p };
+      peak = maxPoint(peak, p);
+      byPhase[phase] = maxPoint(byPhase[phase], p);
+      if (cur) cur.peak = maxPoint(cur.peak, p);
+    },
+    fileStart(path: string, phase: string, p: DiagMemPoint, now = Date.now()) { this.sample(phase, p); cur = { path, phase, start: { ...p }, peak: { ...p }, t0: now }; },
+    fileEnd(p: DiagMemPoint, bytes: number, now = Date.now()): DiagFileMemory | null {
+      if (!cur) return null;
+      this.sample(cur.phase, p);
+      const f: DiagFileMemory = {
+        path: cur.path, phase: cur.phase, startRssMb: cur.start.rssMb, peakRssMb: cur.peak.rssMb, endRssMb: p.rssMb, peakHeapMb: cur.peak.heapUsedMb,
+        peakExternalMb: cur.peak.externalMb, peakArrayBuffersMb: cur.peak.arrayBuffersMb, ms: Math.round(now - cur.t0), bytes,
+      };
+      cur = null;
+      keep(files, f, (x) => x.peakRssMb);
+      keep(growth, f, (x) => x.peakRssMb - x.startRssMb);
+      return f;
+    },
+    /** Fichier en cours au moment d'un arrêt (garde mémoire) : sa mesure partielle. */
+    current(): Omit<DiagFileMemory, 'endRssMb' | 'bytes' | 'ms'> | null {
+      if (!cur) return null;
+      return { path: cur.path, phase: cur.phase, startRssMb: cur.start.rssMb, peakRssMb: cur.peak.rssMb, peakHeapMb: cur.peak.heapUsedMb, peakExternalMb: cur.peak.externalMb, peakArrayBuffersMb: cur.peak.arrayBuffersMb };
+    },
+    snapshot(): DiagMemoryProfile {
+      return { initial, peak, byPhase: Object.fromEntries(Object.entries(byPhase).map(([k, v]) => [k, { ...v }])), files: files.map((f) => ({ ...f })), growth: growth.map((f) => ({ ...f })) };
+    },
+  };
+}
+
 /** Profilage persisté (`phase_timings`) : durées par étape, fichiers les plus lents, totaux. */
 export interface DiagTimings {
   schema: 'verebona.bo.diagnostic-profilage/1';
@@ -136,7 +221,16 @@ export interface DiagTimings {
   /** Compteurs techniques (écritures, mesures mémoire…) : preuve des traitements évités. */
   counters?: Record<string, number>;
   /** Renseignées à la publication. */
-  final?: { queueWaitMs: number | null; executionMs: number | null; totalElapsedMs: number | null; zipFiles: number; bytes: number; compressedBytes: number; status: string } | null;
+  final?: { queueWaitMs: number | null; executionMs: number | null; totalElapsedMs: number | null; zipFiles: number; bytes: number; compressedBytes: number; status: string; archiveBytes?: number | null } | null;
+  /**
+   * Lot 113Q — tentative ARRÊTÉE (échec, annulation) : durées figées, plus
+   * aucune étape « en cours » (`current` est null).
+   */
+  ended?: { status: string; code: string | null; phase: string | null; at: string } | null;
+  /** Lot 113Q : profil mémoire (initial, pic, par étape, par fichier). */
+  memory?: DiagMemoryProfile | null;
+  /** Lot 113Q : requêtes de la session de lecture (nombre, durée, lots, octets, grosses lignes, plus lentes). */
+  queries?: { count: number; ms: number; fetches: number; rows: number; bytes: number; oversizedRows: number; maxRowBytes: number; slowest: Array<{ sql: string; ms: number }> } | null;
 }
 
 /** Nombre de fichiers lents conservés dans le profilage. */
@@ -176,13 +270,15 @@ export function createPhaseProfiler(o: { attempt: number; lane: string | null; n
       }
     },
     counter(name: string, value: number) { counters[name] = value; },
-    snapshot(final?: DiagTimings['final']): DiagTimings {
+    snapshot(final?: DiagTimings['final'], extra: { ended?: DiagTimings['ended']; memory?: DiagMemoryProfile | null; queries?: DiagTimings['queries'] } = {}): DiagTimings {
       const at = clock();
       const cur = { ...phases, [phase]: (phases[phase] ?? 0) + Math.max(0, at - since) };
+      const closed = !!final || !!extra.ended;
       return {
         schema: 'verebona.bo.diagnostic-profilage/1', attempt: o.attempt, lane: o.lane, startedAt: new Date(t0).toISOString(),
-        phases: Object.fromEntries(Object.entries(cur).map(([k, v]) => [k, Math.round(v)])), current: final ? null : { phase, since: new Date(since).toISOString() },
+        phases: Object.fromEntries(Object.entries(cur).map(([k, v]) => [k, Math.round(v)])), current: closed ? null : { phase, since: new Date(since).toISOString() },
         slowestFiles: [...slow], files, counters: { ...counters }, ...(final ? { final } : {}),
+        ...(extra.ended ? { ended: extra.ended } : {}), ...(extra.memory ? { memory: extra.memory } : {}), ...(extra.queries ? { queries: extra.queries } : {}),
       };
     },
     get phase() { return phase; },
@@ -200,5 +296,7 @@ export const DIAG_PROFILE_PHASE_LABELS: Readonly<Record<string, string>> = {
   TRACABILITE: 'Traçabilité (TCO, usage IA, sorties modèle)',
   MANIFESTE: 'Rapport et manifeste',
   VALIDATION: 'Validation (empreintes, stockage)',
+  ASSEMBLAGE_ZIP: 'Assemblage de l’archive ZIP définitive',
+  VERIFICATION_ZIP: 'Vérification de l’archive ZIP stockée',
   PUBLICATION: 'Publication',
 };

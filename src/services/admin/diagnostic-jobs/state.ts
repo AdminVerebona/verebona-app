@@ -35,7 +35,9 @@ export const DIAG_JOB_PREFIX = 'admin-exports/diagnostics/';
 
 /** Étapes journalisées (phase + point de reprise). */
 export const DIAG_JOB_PHASES = [
-  'EN_FILE', 'PLANIFICATION', 'INVENTAIRE', 'EXTRACTION', 'RELATIONS', 'CONTROLES', 'TRACABILITE', 'MANIFESTE', 'VALIDATION', 'PUBLICATION', 'TERMINE',
+  'EN_FILE', 'PLANIFICATION', 'INVENTAIRE', 'EXTRACTION', 'RELATIONS', 'CONTROLES', 'TRACABILITE', 'MANIFESTE', 'VALIDATION',
+  // Lot 113Q : ZIP définitif assemblé une fois, stocké, relu et vérifié avant publication.
+  'ASSEMBLAGE_ZIP', 'VERIFICATION_ZIP', 'PUBLICATION', 'TERMINE',
 ] as const;
 export type DiagJobPhase = (typeof DIAG_JOB_PHASES)[number];
 
@@ -49,7 +51,9 @@ export const DIAG_JOB_PHASE_LABELS: Readonly<Record<DiagJobPhase, string>> = {
   TRACABILITE: 'Traçabilité (montants, TCO, usage IA)',
   MANIFESTE: 'Rapport et manifeste',
   VALIDATION: 'Validation des fichiers stockés et des empreintes',
-  PUBLICATION: 'Publication du résultat',
+  ASSEMBLAGE_ZIP: 'Assemblage de l’archive ZIP définitive (copie des fichiers compressés, sans recompression)',
+  VERIFICATION_ZIP: 'Vérification de l’archive ZIP stockée (relecture intégrale, empreintes)',
+  PUBLICATION: 'Publication du résultat (archive prête à télécharger)',
   TERMINE: 'Terminé',
 };
 
@@ -73,7 +77,9 @@ export type DiagJobErrorCode =
   | 'READ_TIMEOUT' | 'DB_CONNECTION_LOST' | 'SNAPSHOT_FAILED' | 'TARGET_NOT_FOUND'
   | 'MEMORY_GUARD' | 'JOB_TIMEOUT' | 'VALIDATION_FAILED' | 'CANCELLED' | 'GENERATION_FAILED'
   /** Lot 111C : demande globale remplacée par une demande globale plus récente. */
-  | 'REPLACED_BY_NEW_REQUEST';
+  | 'REPLACED_BY_NEW_REQUEST'
+  /** Lot 113Q : archive ZIP définitive impossible à assembler ou à vérifier. */
+  | 'ARCHIVE_FAILED';
 
 export const DIAG_JOB_ERROR_LABELS: Readonly<Record<DiagJobErrorCode, string>> = {
   WORKER_LOST: 'Processus du worker arrêté pendant la génération (redémarrage, déploiement ou mémoire) : bail expiré, nouvelle tentative programmée.',
@@ -92,11 +98,36 @@ export const DIAG_JOB_ERROR_LABELS: Readonly<Record<DiagJobErrorCode, string>> =
   CANCELLED: 'Génération annulée par un administrateur.',
   REPLACED_BY_NEW_REQUEST: 'Demande globale remplacée par une demande globale plus récente (la dernière demande est prioritaire) : ancienne génération annulée, résultat jamais publié.',
   GENERATION_FAILED: 'Erreur inattendue de génération.',
+  ARCHIVE_FAILED: 'Archive ZIP définitive impossible à assembler ou à vérifier (entrée manquante, empreinte ou taille divergente) : résultat NON publié.',
 };
 
 /** Erreurs transitoires : nouvelle tentative automatique (bornée). */
 const TRANSIENT: ReadonlySet<DiagJobErrorCode> = new Set(['WORKER_LOST', 'STORAGE_UPLOAD_FAILED', 'READ_TIMEOUT', 'DB_CONNECTION_LOST', 'SNAPSHOT_FAILED']);
 export function isTransientError(code: DiagJobErrorCode): boolean { return TRANSIENT.has(code); }
+
+/**
+ * Lot 113Q — RELANCE AUTOMATIQUE d'une demande (pure), dite explicitement au
+ * BO : « tentative 1/3 » ne laisse plus croire qu'une relance est prévue.
+ * MEMORY_GUARD (comme VALIDATION_FAILED, JOB_TIMEOUT, ARCHIVE_FAILED…) n'est
+ * PAS transitoire : la même demande sur les mêmes données atteindrait le même
+ * seuil — aucune relance automatique ; l'administrateur relance après
+ * correction (ou mesure). Seules les causes transitoires (processus arrêté,
+ * envoi, lecture, connexion, instantané) sont relancées, dans la limite des
+ * tentatives.
+ */
+export type DiagRetryState = 'SCHEDULED' | 'NOT_TRANSIENT' | 'EXHAUSTED' | 'NOT_APPLICABLE';
+export function retryPolicy(j: { status: string; errorCode: string | null | undefined; attempt: number; maxAttempts: number | null | undefined; nextAttemptAt?: string | null }): { state: DiagRetryState; label: string } {
+  const max = j.maxAttempts ?? 0;
+  if (j.status === 'QUEUED' && j.errorCode && j.attempt > 0) {
+    return { state: 'SCHEDULED', label: `Relance automatique prévue${j.nextAttemptAt ? ` (${j.nextAttemptAt})` : ''} : tentative ${j.attempt + 1} sur ${max}.` };
+  }
+  if (j.status !== 'FAILED') return { state: 'NOT_APPLICABLE', label: '' };
+  const code = (j.errorCode ?? 'GENERATION_FAILED') as DiagJobErrorCode;
+  if (code === 'WORKER_LOST_MAX_ATTEMPTS' || (isTransientError(code) && j.attempt >= max)) {
+    return { state: 'EXHAUSTED', label: `Aucune relance automatique : ${j.attempt} tentative(s) sur ${max} épuisée(s). Utilisez « Relancer ».` };
+  }
+  return { state: 'NOT_TRANSIENT', label: `Aucune relance automatique : la cause ${code} n’est pas transitoire (la même demande échouerait de la même façon). Arrêt définitif après la tentative ${j.attempt} ; utilisez « Relancer » après correction.` };
+}
 
 function envInt(env: Record<string, string | undefined>, name: string, fallback: number, min = 1): number {
   const v = Number(env[name]);
@@ -142,6 +173,14 @@ export function diagJobSettings(env: Record<string, string | undefined> = proces
      * 0 : comportement du lot 111C (une seule voie commune).
      */
     targetedConcurrency: envInt(env, 'DIAG_JOB_TARGETED_CONCURRENCY', 1, 0),
+    /**
+     * Lot 113Q — générations SIMULTANÉES dans UN processus, toutes voies
+     * confondues (voie commune + voie ciblée). Défaut 1 : une génération à la
+     * fois par processus d'export (la voie ciblée sert alors via un AUTRE
+     * processus — attente « processus occupé » visible) ; 2 : comportement
+     * du lot 111Q (deux générations dans le même processus).
+     */
+    processConcurrency: Math.min(2, envInt(env, 'DIAG_JOB_PROCESS_CONCURRENCY', 1, 1)),
   };
 }
 
@@ -273,6 +312,12 @@ export interface DiagJobProgress {
   peakRssMb: number | null;
   heapUsedMb: number | null;
   memoryLimitMb: number | null;
+  /** Lot 113Q : mémoire native (tampons, compression) et ArrayBuffer du processus ; mémoire du conteneur. */
+  externalMb?: number | null;
+  arrayBuffersMb?: number | null;
+  containerUsedMb?: number | null;
+  /** Lot 113Q : mesure au démarrage de la tentative (avant toute lecture). */
+  initialRssMb?: number | null;
   updatedAt: string;
 }
 

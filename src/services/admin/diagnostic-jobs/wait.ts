@@ -55,7 +55,7 @@ const NORMAL: ReadonlySet<DiagWaitReason> = new Set(['RETRY_SCHEDULED', 'PICKUP_
 export const DIAG_WAIT_ACTIONS: Readonly<Record<DiagWaitReason, string>> = {
   RETRY_SCHEDULED: 'Rien à faire : la nouvelle tentative partira à l’heure indiquée.',
   WORKER_DISABLED: 'Scalingo › Environnement : retirer la variable indiquée (ou remplacer DIAG_JOB_WORKER_DISABLED=true par auto : démarrage seulement quand la mémoire le permet), puis redémarrer l’application. La demande partira seule.',
-  NO_WORKER_CONTAINER: 'Scalingo › Ressources : passer le type « worker » à 1 conteneur, OU retirer BACKGROUND_JOBS_PROCESS (retour des traitements de fond dans le conteneur web). La demande partira seule.',
+  NO_WORKER_CONTAINER: 'Scalingo › Ressources : passer le type « worker » à 1 conteneur, OU retirer BACKGROUND_JOBS_PROCESS (retour des traitements de fond dans le conteneur web). Lot 113Q : avec DIAG_JOB_PROCESS=diagworker, passer le type « diagworker » à 1 conteneur, OU retirer DIAG_JOB_PROCESS. La demande partira seule.',
   WORKER_UNAVAILABLE: 'Scalingo › Journaux : chercher « [diagnostic-job] worker » et « [startup] » au dernier démarrage ; vérifier que la migration 1200 est appliquée et que le conteneur tourne. Redémarrer l’application si besoin.',
   WORKER_LOOP_FAILING: 'Scalingo › Journaux : chercher « [diagnostic-job] tour du worker en échec » (message affiché ici). Corriger la cause (base, migration), le worker reprend seul.',
   WORKER_STUCK: 'Le tour du worker ne se termine plus : redémarrer l’application (Scalingo › Ressources › Redémarrer). La demande sera reprise au démarrage.',
@@ -71,7 +71,7 @@ export const DIAG_WAIT_ACTIONS: Readonly<Record<DiagWaitReason, string>> = {
 export interface DiagWorkerBeat {
   instanceId: string;
   processType: 'web' | 'worker';
-  placement: 'web' | 'worker';
+  placement: 'web' | 'worker' | 'diagworker';
   state: 'STARTED' | 'DISABLED' | 'NOT_THIS_PROCESS' | 'STOPPED';
   disabledReason: string | null;
   buildCommit: string | null;
@@ -147,6 +147,8 @@ export function diagnoseWait(i: WaitInput): WaitDiagnosis {
   if (!started.length) {
     const disabled = [...new Set(alive.filter((b) => b.state === 'DISABLED').map((b) => b.disabledReason ?? 'DIAG_JOB_WORKER_DISABLED'))];
     if (disabled.length) return out('WORKER_DISABLED', disabled.join(', '));
+    // Lot 113Q : processus dédié demandé (DIAG_JOB_PROCESS=diagworker) sans conteneur diagworker.
+    if (alive.some((b) => b.state === 'NOT_THIS_PROCESS' && b.placement === 'diagworker')) return out('NO_WORKER_CONTAINER', 'DIAG_JOB_PROCESS=diagworker');
     if (alive.some((b) => b.state === 'NOT_THIS_PROCESS' && b.placement === 'worker')) return out('NO_WORKER_CONTAINER', 'BACKGROUND_JOBS_PROCESS=worker');
     const last = [...i.beats].filter((b) => b.state === 'STARTED').sort((a, b) => t(b.seenAt) - t(a.seenAt))[0];
     return out('WORKER_UNAVAILABLE', last ? `dernier signe de vie d’un worker : ${last.seenAt} (${last.instanceId.split(':').slice(0, 2).join(':')})` : 'aucun worker n’a jamais battu');
@@ -182,6 +184,8 @@ export function diagnoseWait(i: WaitInput): WaitDiagnosis {
       }
       if (laneFree.every((b) => b.laneWaitReason === 'MEMORY_ADMISSION')) return out('MEMORY_ADMISSION', 'voie ciblée : mémoire du conteneur au-delà du seuil d’admission');
       if (laneFree.every((b) => b.laneWaitReason === 'LOCAL_SLOT_BUSY')) return out('OTHER_DIAGNOSTIC_RUNNING', 'places de génération du processus occupées', fresh[0].currentJobId);
+      // Lot 113Q : une génération à la fois par processus d'export (DIAG_JOB_PROCESS_CONCURRENCY=1).
+      if (laneFree.every((b) => b.laneWaitReason === 'PROCESS_BUSY')) return out('OTHER_DIAGNOSTIC_RUNNING', 'une génération à la fois par processus d’export (DIAG_JOB_PROCESS_CONCURRENCY=1) : départ à la fin de la génération en cours', fresh[0].currentJobId);
     }
   }
   const loopFailing = started.every((b) => b.lastError && (!b.lastTickOkAt || t(b.lastErrorAt) >= t(b.lastTickOkAt)));
@@ -207,7 +211,9 @@ export function waitLabel(d: Pick<WaitDiagnosis, 'reason' | 'detail' | 'blocking
   switch (d.reason) {
     case 'RETRY_SCHEDULED': return `En attente — nouvelle tentative programmée${d.detail ? ` (${new Date(d.detail).toLocaleString('fr-FR')})` : ''}`;
     case 'WORKER_DISABLED': return `En attente — worker désactivé (${d.detail ?? 'DIAG_JOB_WORKER_DISABLED'})`;
-    case 'NO_WORKER_CONTAINER': return 'En attente — worker indisponible (BACKGROUND_JOBS_PROCESS=worker sans conteneur worker)';
+    case 'NO_WORKER_CONTAINER': return d.detail === 'DIAG_JOB_PROCESS=diagworker'
+      ? 'En attente — worker indisponible (DIAG_JOB_PROCESS=diagworker sans conteneur diagworker)'
+      : 'En attente — worker indisponible (BACKGROUND_JOBS_PROCESS=worker sans conteneur worker)';
     case 'WORKER_UNAVAILABLE': return 'En attente — worker indisponible';
     case 'WORKER_LOOP_FAILING': return 'En attente — worker en échec (tour en erreur)';
     case 'WORKER_STUCK': return 'En attente — worker bloqué (plus aucun tour)';

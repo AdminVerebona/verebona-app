@@ -104,3 +104,72 @@ export async function openGzipUpload(
     abort,
   };
 }
+
+/**
+ * Lot 113Q (#714) — envoi S3 d'octets BRUTS (sans compression), en plusieurs
+ * parties, à mémoire bornée : archive ZIP définitive du diagnostic, assemblée
+ * en flux. Même contrat que `openGzipUpload` : `write` attend que la partie
+ * précédente soit envoyée (contre-pression : au plus une partie en tampon et
+ * une en vol) ; `finish` termine (l'objet n'existe qu'à cet instant) ;
+ * `abort` annule (aucun objet partiel visible). SHA-256 des octets envoyés.
+ */
+export interface RawUpload {
+  write(chunk: Buffer): Promise<void>;
+  finish(): Promise<{ bytes: number; sha256: string; parts: number }>;
+  abort(): Promise<void>;
+}
+
+export async function openRawUpload(
+  client: Pick<S3Client, 'send'>, bucket: string, key: string,
+  opts: { contentType?: string; metadata?: Record<string, string>; partSize?: number } = {},
+): Promise<RawUpload> {
+  const s3 = await import('@aws-sdk/client-s3');
+  const partSize = Math.max(5 * 1024 * 1024, opts.partSize ?? UPLOAD_PART_BYTES);
+  const created = await client.send(new s3.CreateMultipartUploadCommand({
+    Bucket: bucket, Key: key, ContentType: opts.contentType ?? 'application/octet-stream', ...(opts.metadata ? { Metadata: opts.metadata } : {}),
+  }));
+  const uploadId = (created as { UploadId?: string }).UploadId;
+  if (!uploadId) throw new Error('UploadId absent');
+  const parts: Array<{ ETag: string; PartNumber: number }> = [];
+  let buffer: Buffer[] = [];
+  let buffered = 0;
+  let total = 0;
+  const hash = createHash('sha256');
+  let done = false;
+  const flush = async () => {
+    if (!buffered) return;
+    const body = Buffer.concat(buffer, buffered);
+    buffer = [];
+    buffered = 0;
+    const n = parts.length + 1;
+    const r = await client.send(new s3.UploadPartCommand({ Bucket: bucket, Key: key, UploadId: uploadId, PartNumber: n, Body: body }));
+    const etag = (r as { ETag?: string }).ETag;
+    if (!etag) throw new Error(`ETag absent pour la partie ${n}`);
+    parts.push({ ETag: etag, PartNumber: n });
+  };
+  return {
+    async write(chunk: Buffer) {
+      if (done) throw new Error('envoi déjà terminé');
+      if (!chunk.length) return;
+      hash.update(chunk);
+      total += chunk.length;
+      buffer.push(chunk);
+      buffered += chunk.length;
+      // Partie pleine : envoyée avant d'accepter la suite (mémoire bornée à une partie).
+      if (buffered >= partSize) await flush();
+    },
+    async finish() {
+      if (done) throw new Error('envoi déjà terminé');
+      await flush();
+      await client.send(new s3.CompleteMultipartUploadCommand({ Bucket: bucket, Key: key, UploadId: uploadId, MultipartUpload: { Parts: parts } }));
+      done = true;
+      return { bytes: total, sha256: hash.digest('hex'), parts: parts.length };
+    },
+    async abort() {
+      if (done) return;
+      done = true;
+      buffer = [];
+      await client.send(new s3.AbortMultipartUploadCommand({ Bucket: bucket, Key: key, UploadId: uploadId })).catch(() => undefined);
+    },
+  };
+}

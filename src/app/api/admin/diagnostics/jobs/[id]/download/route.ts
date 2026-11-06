@@ -9,9 +9,13 @@ export const maxDuration = 900;
 /**
  * GET /api/admin/diagnostics/jobs/:id/download — lot 107G.
  *
- *   sans paramètre → archive ZIP complète, assemblée EN FLUX depuis les
- *          fichiers stockés de la génération publiée (rien n'est régénéré ;
- *          une coupure ne touche pas l'archive stockée : relancer suffit) ;
+ *   sans paramètre → archive ZIP complète. Lot 113Q : l'archive DÉFINITIVE
+ *          (assemblée et vérifiée une fois par le worker) est servie telle
+ *          quelle — aucune extraction, aucune compression au téléchargement,
+ *          un second téléchargement relit le même objet ; publication
+ *          antérieure : assemblée en flux par copie des fichiers compressés
+ *          (sans recompression). Une coupure ne touche pas l'archive stockée :
+ *          relancer suffit ;
  *   `path=<fichier>` → redirection vers une URL signée de courte durée
  *          (fichier `.json.gz`), pour un chemin de l'index d'intégrité.
  *
@@ -60,17 +64,33 @@ export async function GET(request: NextRequest, { params }: { params: Promise<{ 
     return NextResponse.redirect(url, { status: 302, headers: NO_STORE });
   }
 
-  const [{ responseStream }, { contentDisposition }] = await Promise.all([import('@/services/admin/account-data/stream-response'), import('@/lib/download-filename')]);
+  const [{ responseStream }, { contentDisposition }, { readDiagnosticArchive }] = await Promise.all([
+    import('@/services/admin/account-data/stream-response'), import('@/lib/download-filename'), import('@/services/admin/diagnostic-jobs/repository'),
+  ]);
+  const archive = await readDiagnosticArchive(id).catch(() => null);
+  // Archive définitive : seulement celle de la tentative publiée (clé sous son préfixe), jamais une clé arbitraire.
+  const ready = archive && archive.key.startsWith(job.storagePrefix) ? archive : null;
   const out = responseStream();
   const fileName = index.fileName || `verebona-diagnostic-${id.slice(0, 8)}.zip`;
-  void dl.streamDiagnosticJobZip(index, storage, job.storagePrefix, out.node).then(async (o) => {
-    if (o.ok) { out.end(); await audit('SUCCESS', { bytes: o.bytes }); return; }
-    console.error(`[diagnostic-job] ${JSON.stringify({ event: 'download-failed', jobId: id, clientGone: o.clientGone, bytes: o.bytes, message: st.sanitizeErrorMessage(o.error) })}`);
-    await audit('FAILURE', { code: o.clientGone ? 'CLIENT_GONE' : 'DOWNLOAD_FAILED', bytes: o.bytes });
+  const t0 = Date.now();
+  const run = ready ? dl.streamStoredArchive(storage, ready.key, out.node) : dl.streamDiagnosticJobZip(index, storage, job.storagePrefix, out.node);
+  void run.then(async (o) => {
+    const mode = ready ? 'ARCHIVE_DEFINITIVE' : 'ASSEMBLAGE_EN_FLUX';
+    if (o.ok) {
+      out.end();
+      console.info(`[diagnostic-job] ${JSON.stringify({ event: 'downloaded', jobId: id, mode, bytes: o.bytes, ms: Date.now() - t0 })}`);
+      await audit('SUCCESS', { bytes: o.bytes, mode });
+      return;
+    }
+    console.error(`[diagnostic-job] ${JSON.stringify({ event: 'download-failed', jobId: id, mode, clientGone: o.clientGone, bytes: o.bytes, message: st.sanitizeErrorMessage(o.error) })}`);
+    await audit('FAILURE', { code: o.clientGone ? 'CLIENT_GONE' : 'DOWNLOAD_FAILED', bytes: o.bytes, mode });
     out.abort(o.error);
   });
   return new Response(out.body, {
     status: 200,
-    headers: { ...NO_STORE, 'Content-Type': 'application/zip', 'Content-Disposition': contentDisposition(fileName), 'X-Content-Type-Options': 'nosniff', 'X-Verebona-Diagnostic-Id': id },
+    headers: {
+      ...NO_STORE, 'Content-Type': 'application/zip', 'Content-Disposition': contentDisposition(fileName), 'X-Content-Type-Options': 'nosniff', 'X-Verebona-Diagnostic-Id': id,
+      ...(ready ? { 'Content-Length': String(ready.bytes), 'X-Verebona-Archive': 'definitive' } : { 'X-Verebona-Archive': 'assemblee-en-flux' }),
+    },
   });
 }

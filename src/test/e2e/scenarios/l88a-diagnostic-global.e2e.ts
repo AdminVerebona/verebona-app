@@ -36,6 +36,8 @@
 import { afterAll, beforeAll, expect, it, vi } from 'vitest';
 import JSZip from 'jszip';
 import { scenario } from '../scenario';
+// Lot 113Q : chaîne des propriétés par références → développée depuis les fichiers détaillés.
+import { expandedProperties } from '../property-chain';
 import type { AccountRow } from '../factories';
 
 // Lot 107G : la génération synchrone dans la requête HTTP est retirée par défaut (410) ; ce scénario
@@ -237,7 +239,7 @@ scenario('L88A', 'Diagnostic global d’un compte : exhaustif, auto-suffisant, f
     expect(rows(F, 'ecritures', 'ai_execution_report_entries').filter((e) => Number(e.report_id) === ids.rapportT1 && e.section === 'FACT')).toHaveLength(2);
 
     // Chaîne de la propriété.
-    const props = parse<Json[]>(F, 'tracabilite/proprietes.json');
+    const props = expandedProperties(F);
     const prix = props.find((p) => p.bien === ids.asset && p.champ === 'acquisitionPrice' && p.cible === `ASSET#${ids.asset}`)!;
     expect(prix).toBeDefined();
     expect(prix.verdict).toBe('VIDE_EN_BASE');

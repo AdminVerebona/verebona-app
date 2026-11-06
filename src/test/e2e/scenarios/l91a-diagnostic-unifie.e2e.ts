@@ -42,6 +42,8 @@ import type postgres from 'postgres';
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import { adminUrlFromEnv, bootstrapE2eDatabase, dropE2eDatabase } from '../db-bootstrap';
 import { factories, type AccountRow, type Factories } from '../factories';
+// Lot 113Q : chaîne des propriétés par références → développée depuis les fichiers détaillés.
+import { expandedProperties } from '../property-chain';
 
 // Lot 107G : la génération synchrone dans la requête HTTP est retirée par défaut (410) ; ce scénario
 // vérifie le CONTENU du moteur par la route historique : activation explicite réservée aux tests.
@@ -251,7 +253,7 @@ describe('L91A — Diagnostic unifié : « Ensemble de l’application » exhaus
     const F = G.files;
     // Bien et état canonique ; propriété vide.
     expect(rows(F, 'assets').find((a) => a.id === ids.asset)).toMatchObject({ account_id: A.id, category: 'IMMOBILIER', name: 'Maison L91A' });
-    const props = parse<Json[]>(F, 'tracabilite/proprietes.json');
+    const props = expandedProperties(F);
     const prix = props.find((p) => p.bien === ids.asset && p.champ === 'acquisitionPrice' && p.cible === `ASSET#${ids.asset}`)!;
     expect(prix, 'entrée acquisitionPrice').toBeDefined();
     expect(prix.verdict).toBe('VIDE_EN_BASE');
@@ -341,7 +343,7 @@ describe('L91A — Diagnostic unifié : « Ensemble de l’application » exhaus
           'canonical_field_writes', 'property_recovery_runs', 'property_recovery_decisions', 'coherence_object_proofs', 'coherence_repairs', 'coherence_campaigns', 'business_operations',
           'business_operation_financial_components', 'business_operation_sources', 'ai_job_queue', 'ai_usage_event', 'ai_call_captures', 'ai_execution_reports', 'ai_execution_report_entries', 'accounts']) has(t);
         expect(parse<Json[]>(z.files, 'tracabilite/montants.json').some((t) => t.ligne.id === `c:${ids.component}`), qs).toBe(true);
-        expect(parse<Json[]>(z.files, 'tracabilite/proprietes.json').some((p) => p.champ === 'acquisitionPrice' && p.bien === ids.asset), qs).toBe(true);
+        expect(expandedProperties(z.files).some((p) => p.champ === 'acquisitionPrice' && p.bien === ids.asset), qs).toBe(true);
       }
       if (qs.startsWith('scope=document')) {
         has('asset_files', (r) => r.id === ids.acte);

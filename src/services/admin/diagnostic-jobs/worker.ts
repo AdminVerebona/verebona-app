@@ -30,6 +30,14 @@
  * prend un diagnostic que si la mémoire du conteneur est sous le seuil
  * d'admission (jamais de départ forcé) ; `true` reste une désactivation
  * explicite, jamais contournée.
+ *
+ * Lot 113Q (#714) — ISOLATION : une génération à la fois PAR PROCESSUS,
+ * voies commune et ciblée confondues (DIAG_JOB_PROCESS_CONCURRENCY, défaut
+ * 1 ; 2 rétablit les deux générations simultanées du lot 111Q). Deux
+ * diagnostics dans le même processus additionnaient leurs pics sous le même
+ * seuil de garde. Processus DÉDIÉ aux exports : type `diagworker` du Procfile
+ * avec DIAG_JOB_PROCESS=diagworker (`lib/runtime/process-role.ts`) — seul ce
+ * processus prend les diagnostics, sans planificateurs, file IA ni rendu PDF.
  */
 import { admitHeavyTask, memorySnapshot, pressureLevel, sampleNow, trackMemory } from '@/lib/runtime/memory-monitor';
 import { hostname } from 'node:os';
@@ -301,9 +309,13 @@ async function tick(): Promise<void> {
  */
 async function tickTargeted(): Promise<void> {
   const st = state();
-  if (!st.started || diagJobSettings().targetedConcurrency <= 0) return;
+  const s = diagJobSettings();
+  if (!st.started || s.targetedConcurrency <= 0) return;
   if (st.lane.running) { st.lane.again = true; return; }
   if (!st.currentJobId) { st.lane.waitReason = 'MAIN_LANE_FREE'; return; }
+  // Lot 113Q : une génération à la fois par processus d'export (toutes voies) — la voie ciblée de CE
+  // processus attend (raison visible au BO) ; un autre processus d'export peut prendre le ciblé.
+  if (s.processConcurrency < 2) { st.lane.waitReason = 'PROCESS_BUSY'; return; }
   st.lane.running = true;
   try {
     do {

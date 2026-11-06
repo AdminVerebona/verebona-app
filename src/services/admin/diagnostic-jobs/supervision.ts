@@ -72,7 +72,7 @@ export async function writeDiagnosticBeat(b: BeatWrite): Promise<boolean> {
         (instance_id, host, pid, container, process_type, placement, state, disabled_reason, build_commit, build_version, started_at, seen_at,
          last_tick_at, last_tick_ok_at, tick_running_since, last_claim_at, last_claim_job_id, current_job_id, wait_reason, last_error, last_error_at,
          interval_ms, memory_level, rss_mb, container_limit_mb, processed)
-      VALUES (${b.instanceId}, ${host.slice(0, 80)}, ${process.pid}, ${role.container}, ${role.process}, ${role.placement}, ${b.state}, ${b.disabledReason ?? null},
+      VALUES (${b.instanceId}, ${host.slice(0, 80)}, ${process.pid}, ${role.container}, ${role.process}, ${role.diagnosticsPlacement ?? role.placement}, ${b.state}, ${b.disabledReason ?? null},
               ${build.commit ?? null}, ${build.version ?? null}, ${b.startedAt}::timestamptz, now(),
               ${b.lastTickAt ?? null}::timestamptz, ${b.lastTickOkAt ?? null}::timestamptz, ${b.tickRunningSince ?? null}::timestamptz,
               ${b.lastClaimAt ?? null}::timestamptz, ${u(b.lastClaimJobId)}::uuid, ${u(b.currentJobId)}::uuid, ${b.waitReason ?? null},

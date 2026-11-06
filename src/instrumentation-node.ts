@@ -337,8 +337,10 @@ export async function registerNode(): Promise<void> {
   //    mode 'job') — bail, reprise après arrêt du processus, un diagnostic à
   //    la fois sur l'ensemble des instances. DIAG_JOB_WORKER_DISABLED=true le
   //    retire de cette instance.
+  //    Lot 113Q : DIAG_JOB_PROCESS=diagworker — seul le processus dédié
+  //    (type `diagworker` du Procfile) prend les diagnostics.
   const { startDiagnosticWorker, markDiagnosticWorkerNotHere } = await import('@/services/admin/diagnostic-jobs/worker');
-  if (role.backgroundJobs) startDiagnosticWorker();
+  if (role.diagnostics) startDiagnosticWorker();
   // Lot 111C : un processus qui ne porte pas le worker le dit en base (battement) ;
   //    le superviseur de la file est démarré plus haut (étape 00 ter).
   else markDiagnosticWorkerNotHere();

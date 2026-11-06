@@ -133,6 +133,20 @@ export function filteredIncludedInGlobal(filtered: Record<string, string>, globa
     if (META_FILES.has(base)) { if (!(base in global)) v.push(`${base} : absent du global`); continue; }
     switch (base) {
       case 'tracabilite/proprietes.json': entries(base, (x) => `${x.bien}|${x.cible}|${x.champ}`); break;
+      // Lot 113Q : fichiers détaillés de la traçabilité des propriétés (chaque ligne une fois, citée par identifiant).
+      case 'tracabilite/proprietes/documents.json': entries(base, (x) => `${x.compte}|${x.id}`); break;
+      case 'tracabilite/proprietes/lignes-rapports.json': entries(base, (x) => `${x.report_id}|${x.seq}`); break;
+      case 'tracabilite/proprietes/biens.json': entries(base, (x) => String(x.bien)); break;
+      case 'tracabilite/proprietes/preuves.json':
+      case 'tracabilite/proprietes/decisions.json':
+      case 'tracabilite/proprietes/conflits.json':
+      case 'tracabilite/proprietes/ecritures.json':
+      case 'tracabilite/proprietes/mises-a-jour-ia.json':
+      case 'tracabilite/proprietes/reprises.json':
+      case 'tracabilite/proprietes/faits.json':
+      case 'tracabilite/proprietes/extractions.json':
+      case 'tracabilite/proprietes/rapports.json':
+        entries(base, (x) => String(x.id)); break;
       case 'api-ui/fiches.json': entries(base, (x) => String(x.bien)); break;
       case 'tracabilite/montants.json': entries(base, (x) => `${x.assetId}|${(x.ligne as Row)?.id}`); break;
       case 'tracabilite/tco.json': entries(base, (x) => String(x.assetId)); break;
