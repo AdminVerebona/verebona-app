@@ -335,19 +335,22 @@ scenario('L76J', 'T3 — complétude et cohérence exhaustives de l’onglet Inf
       await candidatOperation(c, acte, { type: 'ACQUISITION', targets: [{ type: 'ASSET', entityId: a }], amountMinor: (200_000 + i) * 100, excerpt: `Prix ${200_000 + i} €` });
       ids.push(a);
     }
+    // Lot 101-quinquies / lot 111 (correctif 3) : une écriture asynchrone déclenchée par la
+    // création des pièces (rattachements, files, contrôles événementiels) peut « toucher » un
+    // bien APRÈS le recul de updated_at sur un serveur lent (CI : un 3e bien retenu, [14, 15, 16]).
+    // On attend d'abord le CALME (1 s sans aucun bien touché, 15 s au plus), PUIS on pose la
+    // marque du passage T3 antérieur : tout ce qui précède la marque n'est plus « touché ».
+    await sql`UPDATE assets SET updated_at = now() - interval '1 day' WHERE id = ANY(${ids})`;
+    for (let essai = 0, calme = 0; essai < 150 && calme < 10; essai += 1) {
+      await new Promise((r) => setTimeout(r, 100));
+      const touches = await sql`SELECT id FROM assets WHERE id = ANY(${ids}) AND updated_at > now() - interval '1 hour'`;
+      if (touches.length === 0) { calme += 1; continue; }
+      calme = 0;
+      await sql`UPDATE assets SET updated_at = now() - interval '1 day' WHERE id = ANY(${ids})`;
+    }
     // Passage T3 antérieur au lot 76J : rien de « touché » depuis.
     await sql`INSERT INTO account_reconciliation_runs (account_id, trigger_type, correlation_id, scope, status, started_at, finished_at)
       VALUES (${c.id}, 'scheduled', ${`l76j-${c.id}`}, 'incremental', 'completed', now(), now())`;
-    await sql`UPDATE assets SET updated_at = now() - interval '1 day' WHERE id = ANY(${ids})`;
-    // Lot 101-quinquies : une écriture asynchrone déclenchée par la création des pièces
-    // (rattachements, files) peut « toucher » un bien APRÈS le recul ci-dessus sur un
-    // serveur lent (CI) ; on attend que les biens restent non touchés (3 s au plus).
-    for (let essai = 0; essai < 30; essai += 1) {
-      await new Promise((r) => setTimeout(r, 100));
-      const touches = await sql`SELECT id FROM assets WHERE id = ANY(${ids}) AND updated_at > now() - interval '1 hour'`;
-      if (touches.length === 0) break;
-      await sql`UPDATE assets SET updated_at = now() - interval '1 day' WHERE id = ANY(${ids})`;
-    }
     process.env.T3_INFORMATION_BACKFILL_MAX_ASSETS = '2';
     try {
       const passe = () => account.reconcileAccount(c.id, { type: 'scheduled' }, { scope: 'incremental' }, {
