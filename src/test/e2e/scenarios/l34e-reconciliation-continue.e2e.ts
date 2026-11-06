@@ -243,7 +243,12 @@ scenario('L34E', 'Réconciliation T3 continue : révision de connaissance, Candi
     await linkDocumentToAsset({ accountId: compte.id, fileId: doc.id, target: { assetId: polo.id }, role: 'PRIMARY', origin: 'USER' });
     await sql`UPDATE assets SET key_characteristics = ${JSON.stringify({ vin: 'VSSZZZKLZJR123456' })} WHERE id = ${cupra.id}`;
     const { reconcileOpenKnowledge } = await import('@/services/ai/reconciliation/continuous/open-knowledge.service');
+    // Lot 113L (ticket #711) : aligné — le VIN exact d'un autre bien est un INDICE : la revue IA du
+    // rattachement est demandée (file T3) ; c'est elle qui ouvre la carte quand le modèle confirme le conflit.
     expect((await reconcileOpenKnowledge(compte.id)).userConflicts).toMatchObject({ proposed: 1 });
+    await rejouer([{ operationCode: 't3_link_ambiguity', task: 'LINK_AMBIGUITY', repeat: true,
+      output: { task: 'LINK_AMBIGUITY', matches: [{ candidateId: cupra.id, score: 0.95, confidence: 'certain', reason: 'VIN de la Cupra' }] } }]);
+    await drainQueues();
     const conflit = await sql<{ active: boolean; ctx: Record<string, unknown> }[]>`
       SELECT resolved_at IS NULL AS active, trigger_context AS ctx FROM to_process_actions
        WHERE target_type = 'DOCUMENT' AND target_id = ${doc.id} AND rule_code = 'LINK-ASSET-CONFLICT'`;

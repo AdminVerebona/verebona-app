@@ -8,11 +8,12 @@
  * Un document rattaché par l'utilisateur à A n'est JAMAIS déplacé par T3.
  * Quand la connaissance du compte évolue et qu'un identifiant canonique lu
  * dans ses faits (immatriculation, VIN, série, cadastre, adresse) désigne
- * désormais UN autre bien B de façon exacte et exclusive, T3 ouvre (ou
- * maintient) la carte « À traiter » d'incohérence LINK-ASSET-CONFLICT
- * existante (`proposeDocumentAssetConflict` : un couple déjà tranché par
- * l'utilisateur n'est jamais reproposé). Déterministe, sans IA, borné ;
- * repassé seulement quand la révision de connaissance du compte avance.
+ * désormais UN autre bien B de façon exacte et exclusive, c'est un INDICE :
+ * lot 113L (ticket #711), T3 demande la REVUE IA du rattachement
+ * (`attachment-review`), qui décide si la carte LINK-ASSET-CONFLICT est
+ * justifiée (un couple déjà tranché par l'utilisateur n'est jamais
+ * reproposé). Plus aucune carte déterministe ici. Borné ; repassé seulement
+ * quand la révision de connaissance du compte avance.
  */
 import { pgClient } from '@/db';
 import type { ExecutionGuard } from '../../queue/execution-control';
@@ -21,7 +22,8 @@ import type { AccountMatchingIndex } from '../document-asset/matching-index';
 import { getReconciliationState, recordReconciliationState } from './reconciliation-state.repository';
 
 const USER_CONFLICT_RELATION = 'USER_LINK_CONFLICT';
-const USER_CONFLICT_ENGINE_VERSION = 1;
+/** 2 — lot 113L : indices soumis à la revue IA (plus de carte déterministe). */
+const USER_CONFLICT_ENGINE_VERSION = 2;
 /** Documents relus au plus par passage. */
 const USER_CONFLICT_MAX_DOCUMENTS = 200;
 const IDENTIFIER_FACT_KEYS = ['registrationNumber', 'vin', 'serialNumber', 'cadastralRef', 'address1', 'postalCode'];
@@ -63,13 +65,12 @@ export async function reconcileUserDecisionConflicts(p: {
     const ident = resolveAssetByIdentifiers(p.index.records, { facts: facts.map((f) => ({ canonicalKey: f.k, value: f.v })), texts: [] });
     const autre = ident.uniqueAssetId;
     if (autre == null || autre === Number(r.user_asset_id) || !ident.matches.every((m) => m.exclusive)) continue;
-    await p.guard?.assertActive('T3 autorité utilisateur — incohérence de rattachement');
-    const { proposeDocumentAssetConflict } = await import('@/services/to-process/document-asset-conflict');
-    const res = await proposeDocumentAssetConflict({
-      accountId: p.accountId, fileId: Number(r.file_id), currentAssetId: Number(r.user_asset_id), suggestedAssetId: autre,
-      basis: 'IDENTIFIER', kinds: ident.matches.map((m) => m.kind),
+    await p.guard?.assertActive('T3 autorité utilisateur — revue du rattachement');
+    const { requestAttachmentReview } = await import('../document-asset/attachment-review/service');
+    const job = await requestAttachmentReview({
+      accountId: p.accountId, fileId: Number(r.file_id), userId: null, triggerCode: 'asset_updated', reprocessReason: 'KNOWLEDGE_CHANGED',
     });
-    if (res.status === 'CREATED' || res.status === 'UPDATED') proposed += 1;
+    if (job !== null) proposed += 1;
   }
   await recordReconciliationState({
     relation: USER_CONFLICT_RELATION, subjectType: 'ACCOUNT', subjectId: p.accountId, accountId: p.accountId,

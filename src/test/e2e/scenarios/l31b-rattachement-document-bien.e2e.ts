@@ -179,7 +179,9 @@ scenario('L31B', 'Rattachement document → bien : identifiants canoniques (T1) 
     const { warnings } = await analyser(compte, doc.id, sortie({ texte: ['Véhicule XY-987-ZT'] }));
 
     expect((await fichier(doc.id)).asset_id).toBe(a42.id);
-    expect(warnings).toContain('ASSET_TARGET_CONTRADICTION');
+    // Lot 113L (ticket #711) : aligné — l'identifiant d'un autre bien est un INDICE transmis à la revue IA
+    // du rattachement (`ASSET_ATTACHMENT_INDICES`), plus une contradiction conclue par T1.
+    expect(warnings).toContain('ASSET_ATTACHMENT_INDICES');
     const l = await liens(doc.id);
     expect(l.filter((x) => x[1] === 'PRIMARY')).toEqual([[a42.id, 'PRIMARY', 'LEGACY_COLUMN', 1]]);
     expect(l).toContainEqual([a43.id, 'MENTIONED', 'AI', 1]);
@@ -190,7 +192,7 @@ scenario('L31B', 'Rattachement document → bien : identifiants canoniques (T1) 
     const { linkDocumentToAsset } = await import('@/services/documents/document-asset-links');
     await linkDocumentToAsset({ accountId: compte.id, fileId: doc2.id, target: { assetId: a42.id }, role: 'PRIMARY', origin: 'USER' });
     const r2 = await analyser(compte, doc2.id, sortie({ texte: ['Véhicule XY-987-ZT'] }));
-    expect(r2.warnings).toContain('ASSET_TARGET_CONTRADICTION');
+    expect(r2.warnings).toContain('ASSET_ATTACHMENT_INDICES');
     expect((await liens(doc2.id)).filter((x) => x[1] === 'PRIMARY')).toEqual([[a42.id, 'PRIMARY', 'USER', null]]);
     expect((await fichier(doc2.id)).asset_id).toBeNull();
   });
@@ -227,7 +229,7 @@ scenario('L31B', 'Rattachement document → bien : identifiants canoniques (T1) 
     await sql`UPDATE asset_files SET user_edited_fields = COALESCE(user_edited_fields, '{}'::jsonb) || '{"assetId": true}'::jsonb WHERE id = ${doc.id}`;
     const r = await analyser(compte, doc.id, sortie({ texte: ['Véhicule AB-123-CD'] }));
     expect((await fichier(doc.id)).asset_id).toBe(a43.id);
-    expect(r.warnings).toContain('ASSET_TARGET_CONTRADICTION');
+    expect(r.warnings).toContain('ASSET_ATTACHMENT_INDICES');
   });
 
   // ══ Ticket T3 DOCUMENT_ASSET ════════════════════════════════════════════

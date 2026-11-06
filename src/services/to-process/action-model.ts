@@ -78,6 +78,11 @@ export interface ActionProposal {
    * (§8.5). Elle n'est pas une proposition de l'IA et n'a pas de confiance.
    */
   isCurrentValue?: boolean;
+  /**
+   * Lot 113L : choix présenté sans mise en avant (bouton neutre) — un
+   * déplacement non établi ou « Ignorer » ne sont jamais privilégiés visuellement.
+   */
+  emphasis?: 'neutral';
 }
 
 export interface ToProcessAction {

@@ -83,6 +83,29 @@ export const T3LinkAmbiguityOutput = z.object({
     contradictions: z.array(z.string().min(1).max(200)).max(10).optional(),
     userValidationRequired: z.boolean().optional(),
   }).nullable().optional(),
+  /**
+   * Lot 113L — contrat `t3-document-attachment-review-v1` (relation
+   * DOCUMENT_ASSET, REVUE d'un rattachement existant face à des indices) :
+   * décision explicite du modèle — KEEP_CURRENT (le document concerne bien le
+   * bien actuel : aucune question), ARBITRATE (contradiction ou ambiguïté
+   * réelle : l'utilisateur tranche), MULTIPLE (le document concerne
+   * réellement plusieurs biens : aucun choix exclusif) —, biens concernés,
+   * indices et unités sources cités (identifiants FOURNIS seulement), rôle
+   * attribué à chaque indice (texte libre), justification concise.
+   * FACULTATIVE : absente pour les autres relations et pour un prompt sans le
+   * bloc ; présente, vérifiée par le serveur (`attachment-review/model.ts`).
+   */
+  attachmentReview: z.object({
+    decision: z.enum(['KEEP_CURRENT', 'ARBITRATE', 'MULTIPLE']),
+    concernedAssetIds: z.array(z.number().int().positive()).max(20).optional(),
+    citedIndexIds: z.array(z.number().int().positive()).max(40).optional(),
+    citedUnitIds: z.array(z.string().min(1).max(120)).max(40).optional(),
+    indexRoles: z.array(z.object({
+      indexId: z.number().int().positive(),
+      role: z.string().min(1).max(120),
+    })).max(40).optional(),
+    reason: z.string().min(1).max(400),
+  }).nullable().optional(),
 });
 export type T3LinkAmbiguityOutput = z.infer<typeof T3LinkAmbiguityOutput>;
 

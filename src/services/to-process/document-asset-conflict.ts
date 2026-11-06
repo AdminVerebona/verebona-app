@@ -8,10 +8,13 @@
  * PO 10 : « le choix de l'utilisateur prévaut ; si une analyse rattacherait à
  * un autre bien, il faut À traiter. »
  *
- *   · producteur : l'abonné `source_analyzed` (toute analyse et réanalyse T1)
- *     lit l'avertissement `ASSET_TARGET_CONTRADICTION` — identifiant canonique
- *     exact d'un autre bien, ou candidat unique certain de l'analyse — et
- *     appelle `proposeDocumentAssetConflict` ;
+ *   · producteur : lot 113L (ticket #711) — la REVUE IA du rattachement
+ *     (`ai/reconciliation/document-asset/attachment-review`) SEULEMENT : une
+ *     correspondance exacte d'identifiant n'est plus une conclusion, c'est un
+ *     indice soumis à T3, qui décide si un arbitrage est nécessaire (base
+ *     `AI_REVIEW`, raison issue des preuves). Les bases historiques
+ *     IDENTIFIER / ANALYSIS ne sont plus produites (cartes anciennes
+ *     réévaluées par la revue, jamais fermées en masse) ;
  *   · cible : le DOCUMENT ; relation `assetConflict` — UNE carte active par
  *     document (index unique des actions actives), mise à jour si l'analyse
  *     désigne un autre bien ;
@@ -36,7 +39,11 @@ import { unnamedLabel } from './card-labels';
 export const ASSET_CONFLICT_RULE = 'LINK-ASSET-CONFLICT';
 const ASSET_CONFLICT_RELATION = 'assetConflict';
 
-type AssetConflictBasis = 'IDENTIFIER' | 'ANALYSIS';
+/**
+ * `AI_REVIEW` (lot 113L) : décision de la revue IA. `IDENTIFIER` / `ANALYSIS` :
+ * bases HISTORIQUES (cartes ouvertes avant le lot 113L), lues seulement.
+ */
+type AssetConflictBasis = 'AI_REVIEW' | 'IDENTIFIER' | 'ANALYSIS';
 
 /** Contexte conservé sur la carte (stable : entre dans l'empreinte §7.4, sans libellé). */
 interface AssetConflictContext {
@@ -48,40 +55,46 @@ interface AssetConflictContext {
   basis: AssetConflictBasis;
   /** Natures d'identifiant (ADDRESS, REGISTRATION…) — jamais la valeur. */
   kinds: string[];
+  /** Lot 113L : revue IA à l'origine de la carte (clé du contexte pertinent, ambiguïté réelle). */
+  reviewKey?: string;
+  ambiguous?: boolean;
 }
-
-const KIND_WITH_ARTICLE: Readonly<Record<string, string>> = {
-  ADDRESS: 'l’adresse',
-  REGISTRATION: 'l’immatriculation',
-  VIN: 'le VIN',
-  SERIAL: 'le numéro de série',
-  CADASTRAL: 'la référence cadastrale',
-};
 
 const borne = (s: string, n = 60) => (s.length > n ? `${s.slice(0, n - 1)}…` : s);
 
-/** Question de la carte (pure) : claire, sans aucune valeur d'identifiant. */
-export function assetConflictQuestion(p: { basis: AssetConflictBasis; kinds: readonly string[]; currentName: string; suggestedName: string }): string {
+/**
+ * Question de la carte (pure) : claire, sans aucune valeur d'identifiant.
+ * Lot 113L : plus aucune formulation qui fait d'une simple mention une preuve
+ * (« contient l'adresse de … ») — la carte dit ce que l'analyse du document
+ * conclut ; ambiguïté réelle : les deux biens restent possibles.
+ */
+export function assetConflictQuestion(p: { basis: AssetConflictBasis; kinds?: readonly string[]; currentName: string; suggestedName: string; ambiguous?: boolean }): string {
   const a = `« ${borne(p.currentName)} »`;
   const b = `« ${borne(p.suggestedName)} »`;
-  if (p.basis === 'IDENTIFIER') {
-    const natures = [...new Set(p.kinds.map((k) => KIND_WITH_ARTICLE[k]).filter(Boolean))];
-    const quoi = natures.length === 0 ? 'un identifiant' : natures.length === 1 ? natures[0] : `${natures.slice(0, -1).join(', ')} et ${natures[natures.length - 1]}`;
-    return `Ce document est rattaché à ${a} mais contient ${quoi} de ${b}. Quel bien garder ?`;
-  }
+  if (p.ambiguous) return `Ce document est rattaché à ${a}, mais son contenu pourrait aussi concerner ${b}. Quel bien garder ?`;
   return `Ce document est rattaché à ${a} mais l’analyse indique qu’il concerne ${b}. Quel bien garder ?`;
 }
 
-/** Choix proposés (pure) : rattacher à B, ignorer, garder A (valeur actuelle). */
-export function assetConflictProposals(p: { currentAssetId: number; suggestedAssetId: number; currentName: string; suggestedName: string; basis: AssetConflictBasis }) {
+/**
+ * Choix proposés (pure) : rattacher à B, ignorer, garder A (valeur actuelle). Lot 113L : la raison de l'arbitrage (justification du modèle,
+ * reformulée à l'affichage) accompagne la proposition de déplacement ;
+ * « Ignorer » et un déplacement non établi (ambiguïté) ne sont jamais mis en
+ * avant (`emphasis: 'neutral'`).
+ */
+export function assetConflictProposals(p: {
+  currentAssetId: number; suggestedAssetId: number; currentName: string; suggestedName: string; basis: AssetConflictBasis;
+  ambiguous?: boolean; reason?: string | null;
+}) {
+  const raison = p.reason?.replace(/\s+/g, ' ').trim();
   return [
     {
       value: `MOVE:${p.suggestedAssetId}`,
       label: `Rattacher à « ${borne(p.suggestedName, 40)} »`,
       confidence: 0.6,
-      sourceContext: { label: p.basis === 'IDENTIFIER' ? 'Identifiant exact lu dans le document' : 'Analyse du document', targetType: 'ASSET' as const, targetId: p.suggestedAssetId },
+      sourceContext: { label: raison ? borne(raison, 160) : 'Analyse du document', targetType: 'ASSET' as const, targetId: p.suggestedAssetId },
+      ...(p.ambiguous ? { emphasis: 'neutral' as const } : {}),
     },
-    { value: 'IGNORE', label: 'Ignorer', confidence: 0.3 },
+    { value: 'IGNORE', label: 'Ignorer', confidence: 0.3, emphasis: 'neutral' as const },
     { value: 'KEEP', label: `Garder « ${borne(p.currentName, 40)} »`, confidence: 1, isCurrentValue: true },
   ];
 }
@@ -137,6 +150,8 @@ async function assetNames(accountId: number, ids: number[]): Promise<Map<number,
 export async function proposeDocumentAssetConflict(p: {
   accountId: number; fileId: number; currentAssetId: number; suggestedAssetId: number;
   basis: AssetConflictBasis; kinds?: readonly string[];
+  /** Lot 113L : revue IA (clé de contexte, ambiguïté, justification du modèle). */
+  review?: { reviewKey: string; ambiguous: boolean; reason: string | null };
 }): Promise<UpsertActionResult> {
   try {
     if (p.currentAssetId === p.suggestedAssetId) return { status: 'SKIPPED', reason: 'Même bien.' };
@@ -167,6 +182,7 @@ export async function proposeDocumentAssetConflict(p: {
     const suggestedName = noms.get(p.suggestedAssetId)!;
     const ctx: AssetConflictContext = {
       kind: 'asset_conflict', currentAssetId: p.currentAssetId, suggestedAssetId: p.suggestedAssetId, basis: p.basis, kinds,
+      ...(p.review ? { reviewKey: p.review.reviewKey, ambiguous: p.review.ambiguous } : {}),
     };
     return await upsertAction({
       accountId: p.accountId,
@@ -175,8 +191,8 @@ export async function proposeDocumentAssetConflict(p: {
       relationKey: ASSET_CONFLICT_RELATION,
       actionKind: 'ARBITRATE',
       ruleCode: ASSET_CONFLICT_RULE,
-      question: assetConflictQuestion({ basis: p.basis, kinds, currentName, suggestedName }),
-      proposals: assetConflictProposals({ ...p, currentName, suggestedName }),
+      question: assetConflictQuestion({ basis: p.basis, kinds, currentName, suggestedName, ambiguous: p.review?.ambiguous }),
+      proposals: assetConflictProposals({ ...p, currentName, suggestedName, ambiguous: p.review?.ambiguous, reason: p.review?.reason ?? null }),
       triggerContext: ctx as unknown as Record<string, unknown>,
     });
   } catch (e) {
@@ -205,6 +221,32 @@ export async function clearDocumentAssetConflict(accountId: number, fileId: numb
     console.error(`[to-process] incohérence de rattachement du document ${fileId} non close :`, (e as Error).message);
     return 0;
   }
+}
+
+/**
+ * Lot 113L — ferme UNE carte LINK-ASSET-CONFLICT ouverte après la revue IA
+ * (rattachement confirmé, multi-biens, plus d'indice, document disparu),
+ * avec un événement tracé (motif, décision, clé de revue, version de prompt).
+ * Jamais une fermeture en masse. Rend vrai si la carte a été fermée.
+ */
+export async function closeAssetConflictCard(
+  accountId: number, actionId: number, reason: Extract<ResolutionReason, 'OBSOLETE' | 'TARGET_DELETED'> | 'TARGET_GONE', details: Record<string, unknown>,
+): Promise<boolean> {
+  const motif: ResolutionReason = reason === 'TARGET_GONE' ? 'TARGET_DELETED' : reason;
+  return db.transaction(async (tx) => {
+    const now = new Date();
+    const rows = await tx.update(toProcessActions)
+      .set({ resolvedAt: now, resolutionReason: motif, updatedAt: now })
+      .where(and(eq(toProcessActions.id, actionId), eq(toProcessActions.accountId, accountId), eq(toProcessActions.ruleCode, ASSET_CONFLICT_RULE), isNull(toProcessActions.resolvedAt)))
+      .returning({ id: toProcessActions.id, targetType: toProcessActions.targetType, targetId: toProcessActions.targetId, relationKey: toProcessActions.relationKey });
+    if (!rows[0]) return false;
+    await tx.insert(toProcessActionEvents).values({
+      actionId, accountId, event: 'OBSOLETE', actorUserId: null, targetType: rows[0].targetType, targetId: rows[0].targetId,
+      fieldKey: rows[0].relationKey, previousValue: null as never, newValue: null as never,
+      details: { ruleCode: ASSET_CONFLICT_RULE, reason: 'ATTACHMENT_REVIEW', ...details }, createdAt: now,
+    });
+    return true;
+  });
 }
 
 /**

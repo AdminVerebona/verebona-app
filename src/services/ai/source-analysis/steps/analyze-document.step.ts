@@ -50,7 +50,7 @@ import type {
 } from '../types';
 import type { AssetFamily as V2AssetFamily } from '@/lib/referential/v2';
 import {
-  IDENTIFIER_KIND_LABELS, matchSignals, resolveAssetByIdentifiers, type IdentifierResolution,
+  matchSignals, resolveAssetByIdentifiers, type IdentifierResolution,
 } from '../../reconciliation/document-asset/identifiers';
 
 const T1_ANALYZE_DOCUMENT_OPERATION = 't1_analyze_document';
@@ -424,23 +424,33 @@ export async function analyzeDocument(
   let documentAssetId: number | null;
   if (knownAssetId) {
     documentAssetId = knownAssetId;
-    // Jamais de remplacement silencieux : le rattachement utilisateur reste,
-    // la contradiction est conservée (avertissement + bien CITÉ) et devient
-    // une action « À traiter » dédiée (lot 32C, PO 8 / PO 10).
+    // Jamais de remplacement silencieux : le rattachement utilisateur reste.
+    // Lot 113L (ticket #711) : une correspondance exacte d'identifiant d'un
+    // autre bien n'est plus une conclusion (« identifiant exact = conflit ») —
+    // c'est un INDICE, calculé ici APRÈS l'appel, puis soumis avec son contexte
+    // (unités sources) à la revue IA du rattachement (T3, `attachment-review`),
+    // qui décide si un arbitrage est nécessaire. La désignation certaine d'un
+    // autre bien par le modèle (base ANALYSIS) est elle aussi transmise comme
+    // indice : la carte « À traiter » n'est plus jamais ouverte depuis T1.
+    const indices = attachmentIndicesOf({ knownAssetId, identification });
     const conflit = detectAssetContradiction({
       knownAssetId, identification, modelAssets: verification.assets, multiAssetDeclared: out.entities.multiAsset === true,
     });
-    if (conflit) {
+    if (indices || conflit) {
       warnings.push({
-        code: 'ASSET_TARGET_CONTRADICTION',
-        message: conflit.basis === 'IDENTIFIER'
-          ? `Le document contient un identifiant exact d’un autre bien (${conflit.kinds
-            .map((k) => IDENTIFIER_KIND_LABELS[k as keyof typeof IDENTIFIER_KIND_LABELS] ?? k).join(', ')}) : `
-            + 'le rattachement choisi par l’utilisateur est conservé.'
-          : 'L’analyse désigne avec certitude un autre bien que celui choisi par l’utilisateur : '
-            + 'le rattachement choisi est conservé.',
-        target: `asset:${conflit.assetId}`,
-        assetConflict: conflit,
+        code: 'ASSET_ATTACHMENT_INDICES',
+        message: 'Le document cite des éléments d’un autre bien : indices transmis à la revue du rattachement ; '
+          + 'le rattachement choisi est conservé.',
+        target: `asset:${indices?.assetIds[0] ?? conflit?.assetId}`,
+        attachmentIndices: {
+          assetIds: [...new Set([...(indices?.assetIds ?? []), ...(conflit ? [conflit.assetId] : [])])].sort((a, b) => a - b),
+          kinds: indices?.kinds ?? [],
+          // Candidats du MODÈLE (vérifiés), jamais ceux enrichis par le serveur après l'appel.
+          modelCandidates: verification.assets.filter((c) => c.verified && c.entityId !== null).map((c) => ({
+            assetId: c.entityId as number, confidence: c.confidence, score: Number.isFinite(c.score) ? c.score : 0,
+            reason: (c.reason ?? '').slice(0, 300), signals: (c.excerpt ?? '').slice(0, 1000),
+          })),
+        },
       });
     }
   } else if (identification.uniqueAssetId !== null) {
@@ -537,36 +547,49 @@ function pageContinuable(input: SourceInput, groupIndices: number[]): boolean {
 }
 
 /**
- * Bien que l'analyse aurait retenu À LA PLACE du bien choisi par
+ * Bien que le MODÈLE T1 désigne avec certitude À LA PLACE du bien choisi par
  * l'utilisateur (lot 32C, PO 8 / PO 10), sinon null. Pure.
  *
- *   · identifiant canonique exact et UNIQUE d'un autre bien (adresse,
- *     immatriculation, VIN, série, cadastre) → base IDENTIFIER ;
- *   · identifiants de plusieurs biens (dont éventuellement le bien choisi) :
- *     rien de certain → null ;
- *   · sinon, candidat UNIQUE certain et vérifié du modèle, autre que le bien
- *     choisi, que le modèle ne cite pas lui-même avec certitude, hors
- *     document déclaré multi-biens → base ANALYSIS.
- * Même règle que le choix de T1 sans bien connu (`documentAssetId`).
+ * Lot 113L (ticket #711) : la branche « identifiant canonique exact et unique
+ * d'un autre bien → conflit » (base IDENTIFIER) est SUPPRIMÉE — une
+ * correspondance exacte est un indice (`attachmentIndicesOf`), interprété par
+ * la revue IA. Reste la désignation du modèle : candidat UNIQUE certain et
+ * vérifié, autre que le bien choisi, que le modèle ne cite pas lui-même avec
+ * certitude, hors document déclaré multi-biens et hors correspondances
+ * d'identifiants (alors soumises comme indices) — elle aussi transmise comme
+ * indice, jamais une carte directe.
  */
 export function detectAssetContradiction(p: {
   knownAssetId: number;
   identification: Pick<IdentifierResolution, 'uniqueAssetId' | 'assetIds' | 'matches'>;
   modelAssets: readonly LinkCandidate[];
   multiAssetDeclared: boolean;
-}): { assetId: number; basis: 'IDENTIFIER' | 'ANALYSIS'; kinds: string[] } | null {
-  const id = p.identification;
-  if (id.uniqueAssetId !== null) {
-    if (id.uniqueAssetId === p.knownAssetId) return null;
-    const kinds = [...new Set(id.matches.filter((m) => m.assetId === id.uniqueAssetId).map((m) => m.kind))];
-    return { assetId: id.uniqueAssetId, basis: 'IDENTIFIER', kinds };
-  }
-  if (id.assetIds.length > 0 || p.multiAssetDeclared) return null;
+}): { assetId: number; basis: 'ANALYSIS'; kinds: string[] } | null {
+  if (p.identification.assetIds.length > 0 || p.multiAssetDeclared) return null;
   const certains = p.modelAssets.filter((c) => c.verified && c.entityId !== null && c.confidence === 'certain');
   if (certains.some((c) => c.entityId === p.knownAssetId)) return null;
   const autres = [...new Set(certains.map((c) => c.entityId as number))];
   return autres.length === 1 ? { assetId: autres[0], basis: 'ANALYSIS', kinds: [] } : null;
 }
+
+/**
+ * Indices d'identifiant d'AUTRES biens que le bien choisi (lot 113L) : biens
+ * et natures des correspondances exactes, jamais la valeur. Pure. `null` :
+ * aucune correspondance hors du bien choisi.
+ */
+export function attachmentIndicesOf(p: {
+  knownAssetId: number; identification: Pick<IdentifierResolution, 'matches'>;
+}): { assetIds: number[]; kinds: string[] } | null {
+  const autres = p.identification.matches.filter((m) => m.assetId !== p.knownAssetId);
+  if (autres.length === 0) return null;
+  return {
+    assetIds: [...new Set(autres.map((m) => m.assetId))].sort((a, b) => a - b),
+    kinds: [...new Set(autres.map((m) => m.kind))].sort(),
+  };
+}
+
+/** Raison posée par le serveur sur un candidat issu d'une correspondance exacte (jamais une désignation du modèle). */
+export const SERVER_IDENTIFIER_REASON = 'identifiant canonique exact (contrôle serveur)';
 
 /** Forme de comparaison : sans accents, casse ni ponctuation ni espaces. */
 const plat = (s: string) => s.normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase().replace(/[^a-z0-9]/g, '');
@@ -611,7 +634,7 @@ export function mergeIdentifierCandidates(candidates: LinkCandidate[], identific
     }
     out.push({
       entityId: id, confidence: unique ? 'certain' : 'probable', score: unique ? 1 : 0.7,
-      reason: 'identifiant canonique exact (contrôle serveur)', excerpt: signals, verified: true,
+      reason: SERVER_IDENTIFIER_REASON, excerpt: signals, verified: true,
     });
   }
   return out;

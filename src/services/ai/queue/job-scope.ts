@@ -61,6 +61,8 @@ export const JOB_TARGET_KINDS: Readonly<Record<string, OwnedKind>> = {
   asset: 'asset',
   asset_file: 'file',
   document: 'file',
+  // Lot 113L : revue IA du rattachement d'un document (cible = le document).
+  document_attachment: 'file',
   equipment: 'equipment',
   // Lot 75G : rapprochement des documents d'un équipement (cible = l'équipement).
   equipment_documents: 'equipment',

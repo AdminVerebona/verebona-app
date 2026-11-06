@@ -19,6 +19,7 @@ import {
 import { registerOperationAgendaProjection } from '@/services/business-operations/agenda-projection/queue';
 import { registerSourceUnitProviders } from './document-asset/source-unit-provider';
 import { registerEquipmentDocumentsT3 } from '@/services/equipment/equipment-document-queue';
+import { registerAttachmentReviewT3 } from './document-asset/attachment-review/service';
 
 export { resolveDocumentAsset } from './document-asset/resolve-document-asset.service';
 export { requestDocumentAssetResolution } from './document-asset/queue';
@@ -41,6 +42,8 @@ export function registerReconciliationHandlers(): void {
   // exécutées par `runT3Job`) et rattrapage des documents sans bien
   // principal ouvert par la racine du balayage planifié (pages bornées).
   registerDocumentAssetT3();
+  // Lot 113L — revue IA du rattachement d'un document déjà rattaché (indices → T3).
+  registerAttachmentReviewT3();
   // Lot 49B — couche exhaustive T1 (unités source, faits non résolus) comme
   // sources documentaires de T3 DOCUMENT_ASSET (base seulement, jamais le fichier).
   registerSourceUnitProviders();
@@ -72,9 +75,9 @@ export function registerReconciliationHandlers(): void {
 
   // Lot 16b-3 : plus de drapeau (`AI_RECONCILIATION_ENGINE` supprimé).
   onSourceAnalyzed('réconciliation', async (e) => {
-    // Lot 32C (PO 8 / PO 10) : document rattaché par l'utilisateur à A que
-    // l'analyse désigne comme concernant B → « À traiter » dédié, jamais de
-    // déplacement automatique. Analyse sans incohérence : carte close.
+    // Lot 32C (PO 8 / PO 10) : document rattaché à A dont l'analyse cite B —
+    // lot 113L : indices soumis à la revue IA (T3), qui décide d'un arbitrage ;
+    // jamais de déplacement automatique, jamais de carte déterministe.
     await syncAssetConflictFromAnalysis(e);
     if (!e.assetId) {
       // Lot 31B (ticket T3, §3) : T1 terminé SANS bien principal certain →
@@ -95,22 +98,31 @@ export function registerReconciliationHandlers(): void {
 }
 
 /**
- * Carte LINK-ASSET-CONFLICT depuis le résultat d'une analyse T1 (avertissement
- * `ASSET_TARGET_CONTRADICTION`, bien choisi = `e.assetId`). Ne lève jamais.
+ * Revue du rattachement après une analyse T1 (lot 113L, ticket #711 —
+ * remplace la carte LINK-ASSET-CONFLICT ouverte directement depuis
+ * l'avertissement `ASSET_TARGET_CONTRADICTION`). Document rattaché
+ * (`e.assetId`) dont l'analyse cite des éléments d'un autre bien
+ * (`ASSET_ATTACHMENT_INDICES`), ou porteur d'une carte encore ouverte : les
+ * indices sont soumis à T3 (file durable, `attachment-review`), qui décide.
+ * Aucune carte n'est créée ni fermée ici. Ne lève jamais.
  */
-async function syncAssetConflictFromAnalysis(e: Pick<SourceAnalyzedEvent, 'accountId' | 'assetId' | 'leadSourceId' | 'result'>): Promise<void> {
+export async function syncAssetConflictFromAnalysis(e: Pick<SourceAnalyzedEvent, 'accountId' | 'assetId' | 'leadSourceId' | 'result' | 'userId'>): Promise<void> {
   try {
-    const { clearDocumentAssetConflict, proposeDocumentAssetConflict } = await import('@/services/to-process/document-asset-conflict');
-    const w = e.result.warnings.find((x) => x.code === 'ASSET_TARGET_CONTRADICTION' && x.assetConflict);
-    if (e.assetId && w?.assetConflict) {
-      await proposeDocumentAssetConflict({
-        accountId: e.accountId, fileId: e.leadSourceId, currentAssetId: e.assetId,
-        suggestedAssetId: w.assetConflict.assetId, basis: w.assetConflict.basis, kinds: w.assetConflict.kinds,
-      });
-    } else {
-      await clearDocumentAssetConflict(e.accountId, e.leadSourceId);
-    }
+    if (!e.assetId) return;
+    const w = e.result.warnings.find((x) => x.code === 'ASSET_ATTACHMENT_INDICES' && x.attachmentIndices);
+    const { pgClient } = await import('@/db');
+    const ouverte = w ? [] : (await pgClient.unsafe(
+      `SELECT 1 FROM to_process_actions WHERE account_id = $1 AND target_type = 'DOCUMENT' AND target_id = $2
+          AND rule_code = 'LINK-ASSET-CONFLICT' AND resolved_at IS NULL LIMIT 1`,
+      [e.accountId, e.leadSourceId] as never[],
+    )) as unknown as unknown[];
+    if (!w && ouverte.length === 0) return;
+    const { requestAttachmentReview } = await import('./document-asset/attachment-review/service');
+    await requestAttachmentReview({
+      accountId: e.accountId, fileId: e.leadSourceId, userId: e.userId ?? null, triggerCode: 'source_analyzed', reprocessReason: 'NEW_ANALYSIS',
+      t1Candidates: w?.attachmentIndices?.modelCandidates ?? [],
+    });
   } catch (err) {
-    console.error(`[réconciliation] incohérence de rattachement du document ${e.leadSourceId} :`, (err as Error).message);
+    console.error(`[réconciliation] revue du rattachement du document ${e.leadSourceId} non demandée :`, (err as Error).message);
   }
 }

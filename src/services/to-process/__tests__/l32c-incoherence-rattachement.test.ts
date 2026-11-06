@@ -11,7 +11,7 @@ const {
   ASSET_CONFLICT_RULE, assetConflictProposals, assetConflictQuestion, parseAssetConflictChoice,
 } = await import('../document-asset-conflict');
 const { selectDisplayedProposals } = await import('../action-model');
-const { detectAssetContradiction } = await import('@/services/ai/source-analysis/steps/analyze-document.step');
+const { attachmentIndicesOf, detectAssetContradiction } = await import('@/services/ai/source-analysis/steps/analyze-document.step');
 
 const ident = (o: Partial<{ uniqueAssetId: number | null; assetIds: number[]; matches: Array<{ assetId: number; kind: string }> }>) => ({
   uniqueAssetId: null, assetIds: [], matches: [], ...o,
@@ -35,12 +35,18 @@ describe('PO8 — règle déclarée au catalogue « À traiter »', () => {
 });
 
 describe('PO8 / PO10 — détection : le choix utilisateur prévaut, l’incohérence est remontée', () => {
-  it('PO8 : document rattaché à A contenant l’adresse exacte de B → incohérence (base IDENTIFIER)', () => {
+  // Lot 113L (ticket #711, décision PO) : aligné — l'adresse exacte d'un autre bien n'est PLUS une
+  // incohérence en soi (base IDENTIFIER supprimée) ; c'est un INDICE soumis à la revue IA du rattachement
+  // (`attachmentIndicesOf`, `attachment-review`), qui décide si un arbitrage est nécessaire.
+  it('PO8 (lot 113L) : document rattaché à A contenant l’adresse exacte de B → indice transmis, jamais une incohérence automatique', () => {
     const c = detectAssetContradiction({
       knownAssetId: 1, identification: ident({ uniqueAssetId: 2, assetIds: [2], matches: [{ assetId: 2, kind: 'ADDRESS' }] }),
       modelAssets: [], multiAssetDeclared: false,
     });
-    expect(c).toEqual({ assetId: 2, basis: 'IDENTIFIER', kinds: ['ADDRESS'] });
+    expect(c).toBeNull();
+    expect(attachmentIndicesOf({ knownAssetId: 1, identification: ident({ matches: [{ assetId: 2, kind: 'ADDRESS' }] }) }))
+      .toEqual({ assetIds: [2], kinds: ['ADDRESS'] });
+    expect(attachmentIndicesOf({ knownAssetId: 1, identification: ident({ matches: [{ assetId: 1, kind: 'ADDRESS' }] }) })).toBeNull();
   });
 
   it('adresse de A elle-même, ou identifiants de plusieurs biens : aucune incohérence certaine', () => {
@@ -65,13 +71,24 @@ describe('PO8 / PO10 — détection : le choix utilisateur prévaut, l’incohé
 });
 
 describe('PO8 — carte : libellé clair, trois choix, aucune valeur sensible', () => {
-  it('question explicite (natures d’identifiant, jamais la valeur) ', () => {
-    expect(assetConflictQuestion({ basis: 'IDENTIFIER', kinds: ['ADDRESS'], currentName: 'Maison A', suggestedName: 'Maison B' }))
-      .toBe('Ce document est rattaché à « Maison A » mais contient l’adresse de « Maison B ». Quel bien garder ?');
-    expect(assetConflictQuestion({ basis: 'IDENTIFIER', kinds: ['REGISTRATION', 'VIN'], currentName: 'Polo', suggestedName: 'Clio' }))
-      .toBe('Ce document est rattaché à « Polo » mais contient l’immatriculation et le VIN de « Clio ». Quel bien garder ?');
-    expect(assetConflictQuestion({ basis: 'ANALYSIS', kinds: [], currentName: 'Maison A', suggestedName: 'Maison B' }))
-      .toBe('Ce document est rattaché à « Maison A » mais l’analyse indique qu’il concerne « Maison B ». Quel bien garder ?');
+  // Lot 113L (ticket #711) : aligné — plus aucune formulation qui fait d'une mention une preuve
+  // (« contient l'adresse de … ») : la carte dit ce que l'analyse conclut, ou l'ambiguïté réelle.
+  it('question explicite (jamais « contient l’adresse de … », jamais la valeur) ', () => {
+    for (const basis of ['AI_REVIEW', 'IDENTIFIER', 'ANALYSIS'] as const) {
+      expect(assetConflictQuestion({ basis, kinds: ['ADDRESS'], currentName: 'Maison A', suggestedName: 'Maison B' }))
+        .toBe('Ce document est rattaché à « Maison A » mais l’analyse indique qu’il concerne « Maison B ». Quel bien garder ?');
+    }
+    expect(assetConflictQuestion({ basis: 'AI_REVIEW', currentName: 'Vélo', suggestedName: 'Maison', ambiguous: true }))
+      .toBe('Ce document est rattaché à « Vélo », mais son contenu pourrait aussi concerner « Maison ». Quel bien garder ?');
+  });
+
+  it('lot 113L : raison de l’arbitrage sur la proposition de déplacement ; « Ignorer » et un déplacement ambigu jamais mis en avant', () => {
+    const p = assetConflictProposals({ currentAssetId: 1, suggestedAssetId: 2, currentName: 'A', suggestedName: 'B', basis: 'AI_REVIEW', reason: 'Le bien assuré est B.' });
+    expect(p[0]).toMatchObject({ value: 'MOVE:2', sourceContext: { label: 'Le bien assuré est B.' } });
+    expect(p[0]).not.toHaveProperty('emphasis');
+    expect(p[1]).toMatchObject({ value: 'IGNORE', emphasis: 'neutral' });
+    expect(assetConflictProposals({ currentAssetId: 1, suggestedAssetId: 2, currentName: 'A', suggestedName: 'B', basis: 'AI_REVIEW', ambiguous: true })[0])
+      .toMatchObject({ emphasis: 'neutral', sourceContext: { label: 'Analyse du document' } });
   });
 
   it('les trois choix sont AFFICHÉS : rattacher à B, ignorer, garder A (valeur actuelle)', () => {

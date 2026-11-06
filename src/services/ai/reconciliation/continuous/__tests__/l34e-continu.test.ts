@@ -104,9 +104,12 @@ describe('déclenchement événementiel + réconciliation compte (orchestration 
     expect(o).toMatch(/reconcileFactTargets/);
     expect(o).toMatch(/sweepAccountDocuments/);
   });
-  it('T3C-06 — autorité utilisateur : jamais de déplacement, carte d’incohérence existante (LINK-ASSET-CONFLICT) réutilisée', () => {
+  // Lot 113L (ticket #711) : aligné — l'identifiant d'un autre bien est un INDICE soumis à la revue IA du
+  // rattachement (qui seule peut ouvrir la carte LINK-ASSET-CONFLICT) ; plus de carte déterministe ici.
+  it('T3C-06 — autorité utilisateur : jamais de déplacement ; indices soumis à la revue IA (carte LINK-ASSET-CONFLICT seulement si l’IA la justifie)', () => {
     const u = src('src/services/ai/reconciliation/continuous/user-decision-conflicts.ts');
-    expect(u).toMatch(/proposeDocumentAssetConflict\(/);
+    expect(u).toMatch(/requestAttachmentReview\(/);
+    expect(u).not.toMatch(/proposeDocumentAssetConflict\(/);
     expect(u).not.toMatch(/attachAutomatically|linkDocumentToAsset|unlinkDocument|UPDATE asset_files/);
     expect(src('src/services/ai/reconciliation/continuous/open-knowledge.service.ts')).toMatch(/reconcileUserDecisionConflicts/);
   });

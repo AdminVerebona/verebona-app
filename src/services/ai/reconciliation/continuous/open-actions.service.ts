@@ -295,6 +295,12 @@ interface OpenActionsDeps {
   resolveDocumentField?: typeof import('@/services/to-process/document-rule-bridge').resolveDocumentRuleFromKnowledge;
   /** Lot 57B : journal (tests : simulation d'une panne). */
   journal?: (accountId: number, ctx: { accountRunId?: number | null; queueJobId?: number | null }, lot: OpenActionEntry[]) => Promise<JournalResult>;
+  /**
+   * Lot 113L : revue IA du rattachement (carte LINK-ASSET-CONFLICT ouverte) et
+   * relance des revues en échec. Absentes (tests historiques) : constat seul.
+   */
+  reviewAttachment?: typeof import('../document-asset/attachment-review/service').reviewDocumentAttachment;
+  retryAttachmentReviews?: typeof import('../document-asset/attachment-review/service').retryFailedAttachmentReviews;
   /** Lot 54A : relance de la consolidation Opérations du compte (cartes T3_OPERATIONS). */
   consolidateOperations?: (accountId: number, p: { fileIds: number[]; operationIds: number[]; beforeWrite?: (what: string) => Promise<void> }) => Promise<{ changes: number; aiCalls: number }>;
 }
@@ -315,12 +321,13 @@ async function defaultConsolidateOperations(
 }
 
 async function defaultDeps(): Promise<OpenActionsDeps> {
-  const [r, e, c, l, b] = await Promise.all([
+  const [r, e, c, l, b, rv] = await Promise.all([
     import('../document-asset/resolve-document-asset.service'),
     import('../entity-reconciliation'),
     import('@/services/to-process/document-asset-conflict'),
     import('./document-element-link'),
     import('@/services/to-process/document-rule-bridge'),
+    import('../document-asset/attachment-review/service'),
   ]);
   return {
     resolveDocumentAsset: r.resolveDocumentAsset,
@@ -329,6 +336,8 @@ async function defaultDeps(): Promise<OpenActionsDeps> {
     resolveElementLink: l.resolveDocumentElementLink,
     resolveDocumentField: b.resolveDocumentRuleFromKnowledge,
     consolidateOperations: defaultConsolidateOperations,
+    reviewAttachment: rv.reviewDocumentAttachment,
+    retryAttachmentReviews: rv.retryFailedAttachmentReviews,
   };
 }
 
@@ -542,6 +551,13 @@ export async function reconcileOpenToProcessActions(accountId: number, opts: {
     if (isExecutionCancelled(e)) throw e;
     console.error(`[t3-open-actions] compte ${accountId} : incohérences obsolètes non closes :`, (e as Error).message);
   }
+  // Lot 113L : revues du rattachement en échec (panne, réponse invalide) — relance durable après le délai.
+  if (d.retryAttachmentReviews) {
+    try { await d.retryAttachmentReviews(accountId, { guard: opts.guard, triggerCode: opts.triggerCode ?? null }); } catch (e) {
+      if (isExecutionCancelled(e)) throw e;
+      console.error(`[t3-open-actions] compte ${accountId} : revues du rattachement non relancées :`, (e as Error).message);
+    }
+  }
 
   // Lignes du cycle : ouvertes au début du passage (identifiant ≤ borne) —
   // une carte créée pendant le passage appartient au cycle suivant.
@@ -597,7 +613,7 @@ export async function reconcileOpenToProcessActions(accountId: number, opts: {
   };
 
   const ctxAutres: OtherCtx = {
-    reconciledAssetIds: opts.reconciledAssetIds, d, entites: new Set<string>(), guard: opts.guard, borne: Number(borne), operations: null, out,
+    reconciledAssetIds: opts.reconciledAssetIds, d, entites: new Set<string>(), guard: opts.guard, triggerCode: opts.triggerCode ?? null, borne: Number(borne), operations: null, out,
     runRef: opts.accountRunId ? `t3_run:${opts.accountRunId}${opts.queueJobId ? `/job:${opts.queueJobId}` : ''}` : opts.queueJobId ? `job:${opts.queueJobId}` : null,
   };
   // Lot 105D : graphe d'identité (groupes, décisions) construit à la première carte LINK-ASSET, partagé par la phase.
@@ -825,6 +841,8 @@ interface OtherCtx {
   /** ENTITY : 1 réconciliation max par entité et par passage. */
   entites: Set<string>;
   guard?: ExecutionGuard;
+  /** Lot 113L : déclencheur du passage (revue du rattachement). */
+  triggerCode?: string | null;
   /** T3_OPERATIONS : consolidation du passage (une seule) et effet par carte. */
   /** Borne du cycle : cartes ouvertes au début du passage. */
   borne: number;
@@ -967,8 +985,37 @@ async function reexamineOther(accountId: number, row: ActionRow, base: Base, res
       return entry({ actionEffect: 'STILL_OPEN', deterministicAttempted: true, evaluationMode: 'OBSOLESCENCE_ONLY', resolutionAttempted: false, reasonCode: 'GROUP_CONFIRMATION_PENDING' });
     }
     case 'T3_ASSET_CONFLICT': {
-      // Obsolescence évaluée en tête de phase (une requête par compte) : constat seulement.
-      return entry({ actionEffect: 'STILL_OPEN', deterministicAttempted: true, evaluationMode: 'OBSOLESCENCE_ONLY', resolutionAttempted: false, reasonCode: 'CONFLICT_STILL_VALID' });
+      // Obsolescence évaluée en tête de phase (une requête par compte). Lot 113L (ticket #711) : la carte
+      // est RÉÉVALUÉE par la revue IA du rattachement (indices + contexte → T3) — faux conflit confirmé
+      // par l'analyse : fermée (OBSOLETE, tracé) ; vrai conflit : maintenu / actualisé ; échec : conservée.
+      // Contexte pertinent inchangé : décision mémorisée réutilisée (aucun appel). Jamais de déplacement.
+      if (row.target_type !== 'DOCUMENT' || !o.d.reviewAttachment) {
+        return entry({ actionEffect: 'STILL_OPEN', deterministicAttempted: true, evaluationMode: 'OBSOLESCENCE_ONLY', resolutionAttempted: false, reasonCode: 'CONFLICT_STILL_VALID' });
+      }
+      const r = await o.d.reviewAttachment({
+        accountId, fileId: Number(row.target_id), guard: o.guard, finalAttempt: true, triggerCode: o.triggerCode ?? null,
+        reprocessReason: 'OPEN_CARD_REVIEW',
+      });
+      etape(trace, 'VERIFY');
+      const dec = r.trace.decision;
+      const commun = {
+        deterministicAttempted: true, aiCalled: r.aiCalled, candidateCount: r.trace.candidateIds.length,
+        aiReason: r.trace.aiReused ? 'DECISION_REUSED' : r.aiCalled ? 'ATTACHMENT_REVIEW' : r.status,
+        aiOperation: r.aiCalled ? 't3_link_ambiguity' : null, aiStatus: r.trace.aiStatus, aiError: r.trace.error,
+        aiTraceId: r.trace.traceIds[0] ?? null, decision: dec ? (dec.kind === 'NO_DECISION' ? `NO_DECISION:${dec.reasonCode}` : dec.kind) : r.status,
+        evaluationMode: (r.aiCalled ? 'AI_REEVALUATION' : 'FULL_REEVALUATION') as EvaluationMode, resolutionAttempted: true,
+      };
+      if (r.trace.card.effect === 'CLOSED') return entry({ ...commun, actionEffect: 'CLOSED', reasonCode: 'RESOLVED', lastStep: 'CLOSE', note: `attachment_review:${r.status}` });
+      if (r.status === 'TECHNICAL_FAILURE' || r.status === 'RETRY_LATER') {
+        return entry({ ...commun, actionEffect: 'STILL_OPEN', reasonCode: 'AI_UNAVAILABLE', note: `attachment_review:${r.status}` });
+      }
+      if (r.trace.card.effect === 'UPDATED' || (r.trace.card.after !== null && r.trace.card.after !== Number(row.id))) {
+        return entry({ ...commun, actionEffect: 'UPDATED', reasonCode: 'AWAITING_USER', note: `attachment_review:${r.status}` });
+      }
+      return entry({
+        ...commun, actionEffect: 'STILL_OPEN', note: `attachment_review:${r.status}`,
+        reasonCode: dec?.kind === 'ARBITRATE' ? 'AWAITING_USER' : dec?.kind === 'NO_DECISION' ? 'INSUFFICIENT_EVIDENCE' : 'CONFLICT_STILL_VALID',
+      });
     }
     case 'T3_EQUIPMENT_LINK': {
       // Lot 54A (écart 2) : candidats RECONSTRUITS depuis l'état courant.

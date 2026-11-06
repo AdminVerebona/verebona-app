@@ -258,25 +258,35 @@ scenario('L32C', 'Rattachement document ↔ bien : rattrapage versionné T3, inc
     return resolveArbitration(compte.id, publicId, value, { userId: compte.ownerUserId });
   };
 
+  // Lot 113L (ticket #711, décision PO) : tests ALIGNÉS — l'adresse (ou la désignation certaine) d'un
+  // autre bien n'ouvre plus la carte d'elle-même : c'est un INDICE soumis à la revue IA du rattachement
+  // (T3, `attachment-review`). Ces scénarios simulent un modèle qui confirme un VRAI conflit (le
+  // document concerne réellement B) : la carte, ses choix et l'autorité utilisateur restent les mêmes ;
+  // seul le libellé ne fait plus d'une mention une preuve.
+  const revueVers = (assetId: number): RecordedOutput => ({
+    operationCode: 't3_link_ambiguity', task: 'LINK_AMBIGUITY', repeat: true,
+    output: { task: 'LINK_AMBIGUITY', matches: [{ candidateId: assetId, score: 0.92, confidence: 'certain', reason: 'Le document concerne ce bien.' }], documentScope: 'SINGLE' },
+  });
+
   it('PO8-01 — document rattaché à A contenant l’adresse de B : action « À traiter » dédiée, A conservé, aucune duplication à la réanalyse', async () => {
     const compte = await make.account();
     const { a, b } = await deuxMaisons(compte);
     const doc = await make.assetFile(compte, { assetId: a.id });
     const out = sortie({ texte: ['Intervention au 12 rue Exemple, 69003 Lyon'] });
-    const { warnings } = await analyser(compte, doc.id, out);
-    expect(warnings).toContain('ASSET_TARGET_CONTRADICTION');
+    const { warnings } = await analyser(compte, doc.id, out, { extra: [revueVers(b.id)] });
+    expect(warnings).toContain('ASSET_ATTACHMENT_INDICES');
     expect((await fichier(doc.id)).asset_id).toBe(a.id); // jamais de déplacement automatique
     const [carte] = await actions(doc.id, 'LINK-ASSET-CONFLICT');
     expect(carte).toMatchObject({
       active: true,
-      question: 'Ce document est rattaché à « Maison A » mais contient l’adresse de « Maison B ». Quel bien garder ?',
-      ctx: expect.objectContaining({ currentAssetId: a.id, suggestedAssetId: b.id, basis: 'IDENTIFIER', kinds: ['ADDRESS'] }),
+      question: 'Ce document est rattaché à « Maison A » mais l’analyse indique qu’il concerne « Maison B ». Quel bien garder ?',
+      ctx: expect.objectContaining({ currentAssetId: a.id, suggestedAssetId: b.id, basis: 'AI_REVIEW', ambiguous: false }),
     });
     expect(carte.proposals.map((p) => p.value)).toEqual([`MOVE:${b.id}`, 'IGNORE', 'KEEP']);
     // L'adresse (sensible) n'apparaît nulle part sur la carte.
     expect(JSON.stringify(carte)).not.toContain('rue Exemple');
     // Réanalyse : même carte, mise à jour.
-    await analyser(compte, doc.id, out);
+    await analyser(compte, doc.id, out, { extra: [revueVers(b.id)] });
     expect(await actions(doc.id, 'LINK-ASSET-CONFLICT')).toHaveLength(1);
     // Aucune carte LINK-ASSET : le document est rattaché.
     expect((await actions(doc.id, 'LINK-ASSET')).filter((x) => x.active)).toEqual([]);
@@ -286,7 +296,7 @@ scenario('L32C', 'Rattachement document ↔ bien : rattrapage versionné T3, inc
     const compte = await make.account();
     const { a, b } = await deuxMaisons(compte);
     const doc = await make.assetFile(compte, { assetId: a.id });
-    await analyser(compte, doc.id, sortie({ texte: ['12 rue Exemple 69003 Lyon'] }));
+    await analyser(compte, doc.id, sortie({ texte: ['12 rue Exemple 69003 Lyon'] }), { extra: [revueVers(b.id)] });
     const [carte] = await actions(doc.id, 'LINK-ASSET-CONFLICT');
     // Requête forgée vers un autre bien : refusée.
     expect(await resoudre(compte, carte.public_id, `MOVE:${a.id}`)).toMatchObject({ ok: false, error: 'INVALID_VALUE' });
@@ -309,11 +319,11 @@ scenario('L32C', 'Rattachement document ↔ bien : rattrapage versionné T3, inc
 
   it('PO8-03 — « Garder A » : décision utilisateur explicite, le même couple n’est plus reproposé ; « Ignorer » : idem (Non applicable)', async () => {
     const compte = await make.account();
-    const { a } = await deuxMaisons(compte);
+    const { a, b } = await deuxMaisons(compte);
     const garde = await make.assetFile(compte, { assetId: a.id });
     const ignore = await make.assetFile(compte, { assetId: a.id });
     const out = sortie({ texte: ['12 rue Exemple 69003 Lyon'] });
-    for (const d of [garde, ignore]) await analyser(compte, d.id, out);
+    for (const d of [garde, ignore]) await analyser(compte, d.id, out, { extra: [revueVers(b.id)] });
 
     const [c1] = await actions(garde.id, 'LINK-ASSET-CONFLICT');
     expect((await resoudre(compte, c1.public_id, 'KEEP')).ok).toBe(true);
@@ -327,18 +337,19 @@ scenario('L32C', 'Rattachement document ↔ bien : rattrapage versionné T3, inc
 
     // Réanalyse identique : aucune nouvelle carte.
     for (const d of [garde, ignore]) {
-      await analyser(compte, d.id, out);
+      const { replay } = await analyser(compte, d.id, out, { extra: [revueVers(b.id)] });
       expect((await actions(d.id, 'LINK-ASSET-CONFLICT')).filter((x) => x.active)).toEqual([]);
+      expect(appels(replay, 't3_link_ambiguity')).toBe(0); // couple tranché : aucune revue IA
     }
   });
 
   it('PO8-04 — carte devenue sans objet (document rattaché ailleurs par l’utilisateur) : close au balayage ; résolution tardive « périmée »', async () => {
     const compte = await make.account();
-    const { a } = await deuxMaisons(compte);
+    const { a, b } = await deuxMaisons(compte);
     const c = await make.asset(compte, { category: 'IMMOBILIER', name: 'Maison C' });
     const doc = await make.assetFile(compte, { assetId: a.id });
     const doc2 = await make.assetFile(compte, { assetId: a.id });
-    for (const d of [doc, doc2]) await analyser(compte, d.id, sortie({ texte: ['12 rue Exemple 69003 Lyon'] }));
+    for (const d of [doc, doc2]) await analyser(compte, d.id, sortie({ texte: ['12 rue Exemple 69003 Lyon'] }), { extra: [revueVers(b.id)] });
     await sql`UPDATE asset_files SET asset_id = ${c.id} WHERE id IN (${doc.id}, ${doc2.id})`;
     const [carte2] = await actions(doc2.id, 'LINK-ASSET-CONFLICT');
     expect(await resoudre(compte, carte2.public_id, 'KEEP')).toMatchObject({ ok: false, error: 'STALE' });
@@ -355,8 +366,8 @@ scenario('L32C', 'Rattachement document ↔ bien : rattrapage versionné T3, inc
     const doc = await make.assetFile(compte, { assetId: null });
     const { linkDocumentToAsset } = await import('@/services/documents/document-asset-links');
     await linkDocumentToAsset({ accountId: compte.id, fileId: doc.id, target: { assetId: polo.id }, role: 'PRIMARY', origin: 'USER' });
-    const { warnings } = await analyser(compte, doc.id, sortie({ assets: [{ id: clio.id, label: 'Clio' }] }));
-    expect(warnings).toContain('ASSET_TARGET_CONTRADICTION');
+    const { warnings } = await analyser(compte, doc.id, sortie({ assets: [{ id: clio.id, label: 'Clio' }] }), { extra: [revueVers(clio.id)] });
+    expect(warnings).toContain('ASSET_ATTACHMENT_INDICES');
     expect((await liens(doc.id)).filter((x) => x[1] === 'PRIMARY')).toEqual([[polo.id, 'PRIMARY', 'USER']]);
     const [carte] = await actions(doc.id, 'LINK-ASSET-CONFLICT');
     expect(carte).toMatchObject({

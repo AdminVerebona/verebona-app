@@ -53,6 +53,8 @@ export interface ActionProposalView {
   label: string;
   isCurrentValue?: boolean;
   sourceContext?: { label: string };
+  /** Lot 113L : choix présenté sans mise en avant (bouton neutre). */
+  emphasis?: 'neutral';
 }
 
 export interface ActionView {
@@ -263,7 +265,7 @@ function Controls({ action, onChoose, onOpenTarget, busy }: { action: ActionView
         <Button
           key={`${action.publicId}-${index}`}
           size="sm"
-          variant={proposal.isCurrentValue ? 'secondary' : 'default'}
+          variant={proposal.isCurrentValue ? 'secondary' : proposal.emphasis === 'neutral' ? 'outline' : 'default'}
           disabled={busy}
           onClick={() => onChoose(action, proposal)}
           className={PROPOSAL_BUTTON_CLASS}

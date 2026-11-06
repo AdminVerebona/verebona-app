@@ -293,8 +293,17 @@ export type AnalysisWarningCode =
    * l'utilisateur — rattachement utilisateur conservé, contradiction remontée.
    * Lot 32C (PO 10) : aussi quand l'analyse retiendrait avec certitude un
    * autre bien (candidat unique certain) ; « À traiter » LINK-ASSET-CONFLICT.
+   * HISTORIQUE depuis le lot 113L (résultats antérieurs, encore lus par
+   * l'observabilité) : remplacé par `ASSET_ATTACHMENT_INDICES`.
    */
   | 'ASSET_TARGET_CONTRADICTION'
+  /**
+   * Lot 113L (ticket #711) : le document cite des éléments d'un AUTRE bien
+   * que celui choisi (identifiant exact, désignation du modèle) — INDICES
+   * soumis à la revue IA du rattachement (T3), jamais une conclusion ;
+   * rattachement conservé.
+   */
+  | 'ASSET_ATTACHMENT_INDICES'
   /**
    * HISTORIQUE (résultats antérieurs au lot 16b-3, encore lus par
    * l'observabilité) : échec total du prompt maître, groupe analysé par les
@@ -320,6 +329,15 @@ export interface AnalysisWarning {
    * traiter » LINK-ASSET-CONFLICT ; jamais de déplacement automatique.
    */
   assetConflict?: { assetId: number; basis: 'IDENTIFIER' | 'ANALYSIS'; kinds: string[] };
+  /**
+   * `ASSET_ATTACHMENT_INDICES` (lot 113L) : biens et natures des indices
+   * (jamais une valeur), candidats du MODÈLE T1 (jamais ceux enrichis par le
+   * serveur) — matière de la revue IA du rattachement.
+   */
+  attachmentIndices?: {
+    assetIds: number[]; kinds: string[];
+    modelCandidates: Array<{ assetId: number; confidence: string; score: number; reason: string; signals: string }>;
+  };
 }
 
 export interface SupplierCandidate {
