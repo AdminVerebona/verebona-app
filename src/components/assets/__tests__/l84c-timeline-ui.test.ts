@@ -25,7 +25,7 @@ type State = Parameters<typeof AssetTimelineList>[0]['state'];
 
 const lire = (p: string) => readFileSync(resolve(__dirname, '..', '..', '..', p), 'utf8').replace(/\r\n?/g, '\n');
 const item = (id: string, date: string | null, title = `Élément ${id}`) =>
-  ({ itemType: 'agenda' as const, id, title, effectiveDate: date, isDone: false, isOverdue: false, toConfirm: false });
+  ({ itemType: 'agenda' as const, id, title, effectiveDate: date, isDone: false, isOverdue: false, toConfirm: false, effectiveStatus: 'a_venir' as const });
 const groupe: TimelineEntry = {
   kind: 'group', ...item('11', '2026-03-12', 'Dégât des eaux'),
   members: [item('22', '2026-04-18', 'Réparation plafond'), item('21', '2026-03-21', 'Visite expert')],

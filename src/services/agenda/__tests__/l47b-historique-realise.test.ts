@@ -125,7 +125,9 @@ describe('O7b-H04 — rendu desktop ET mobile : un seul calcul serveur, affiché
     // nature lue dans la même requête (colonnes 0223), même règle partagée.
     expect(lire('src/app/api/assets/[id]/overview/route.ts')).toContain('readAssetTimelinePage(');
     expect(lire('src/services/agenda/timeline/read.ts')).toContain('ai.event_nature, ai.business_type');
-    expect(lire('src/services/agenda/timeline/model.ts')).toContain('isHistoricalAgendaEvent(');
+    // Lot 111R : la Timeline lit la nature par le calcul CANONIQUE (`computeEffectiveStatus` → règle partagée).
+    expect(lire('src/services/agenda/timeline/model.ts')).toContain('computeEffectiveStatus(');
+    expect(lire('src/services/agenda/AgendaDomainService.ts')).toContain('isPastHistoricalUnconfirmed(item, now)');
   });
 
   it('aucune écriture de statut : la règle n\'appelle ni la primitive d\'écriture ni une mise à jour', () => {

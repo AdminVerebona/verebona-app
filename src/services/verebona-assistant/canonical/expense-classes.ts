@@ -5,6 +5,7 @@
  * pures, sans accès base (extraites de `expenses.ts`, qui les réexporte).
  */
 import { resolveDocumentType, type EventBusinessType } from '@/services/canonical/registry';
+import { DOCUMENT_TYPES } from '@/lib/referential/v2/document-types';
 
 export type ExpenseTheme =
   | 'maintenance' | 'repair' | 'works' | 'insurance' | 'purchase' | 'inspection' | 'subscription' | 'charges'
@@ -62,6 +63,28 @@ const THEME_BY_V2_CODE: Readonly<Record<string, ExpenseTheme>> = {
 /** Lot 75D (D) : types V2 de dépense qualifiée (lecture des justificatifs SANS montant par le TCO). */
 export const EXPENSE_THEME_V2_CODES: readonly string[] = Object.keys(THEME_BY_V2_CODE);
 
+/**
+ * Lot 111V (ticket « TCO — anomalies corrigeables » §D) : rôle financier du
+ * type. Un contrat, une attestation ou un procès-verbal DÉCRIVENT la nature
+ * d'une dépense (thème ci-dessus, utile quand un montant y figure), mais ne
+ * sont pas une demande de paiement : leur absence de montant est normale —
+ * jamais « montant inconnu », jamais une relecture automatique. Les autres
+ * types thématiques (factures, quittances, avis d'échéance) portent un
+ * montant par nature. Propriété du vocabulaire (même table que les thèmes),
+ * pas une liste d'exemples.
+ */
+const DESCRIPTIVE_V2_CODES: ReadonlySet<string> = new Set(['INSURANCE_POLICY', 'INSURANCE_CERTIFICATE', 'VEHICLE_TECHNICAL_INSPECTION']);
+
+/** Types V2 dont un justificatif SANS montant est un montant manquant (récupération 108B). */
+export const AMOUNT_EXPECTED_V2_CODES: readonly string[] = EXPENSE_THEME_V2_CODES.filter((c) => !DESCRIPTIVE_V2_CODES.has(c));
+
+/** Lot 111V : un justificatif de ce type porte-t-il un montant par nature ? (pure). */
+export function documentTypeExpectsAmount(documentTypeCode: string | null | undefined): boolean {
+  return !DESCRIPTIVE_V2_CODES.has((documentTypeCode ?? '').trim().toUpperCase());
+}
+
+const V2_CONNUS: ReadonlySet<string> = new Set(DOCUMENT_TYPES.map((t) => t.code));
+
 /** Types jamais sommés comme dépense. */
 const EXCLUDED_V2 = new Set(['MAINTENANCE_QUOTE', 'REPAIR_QUOTE', 'WORKS_QUOTE', 'ACQUISITION_QUOTE', 'RENT_RECEIPT', 'SECURITY_DEPOSIT_RECEIPT']);
 const EXCLUDED_CATALOG = new Set(['BON_COMMANDE', 'COMPROMIS_VENTE']);
@@ -103,7 +126,13 @@ export function classifyExpenseDocument(documentTypeCode: string | null, legacyT
   // Lot 45 (P16) : une preuve de paiement n'est jamais une dépense de plus.
   if (isPaymentProofType(documentTypeCode)) return { kind: 'excluded', reason: 'PAYMENT_PROOF' };
   if (documentTypeCode && THEME_BY_V2_CODE[documentTypeCode]) return { kind: 'theme', theme: THEME_BY_V2_CODE[documentTypeCode] };
-  const entry = resolveDocumentType(documentTypeCode) ?? resolveDocumentType(legacyType);
+  // Lot 111V (cause racine « Avis de taxe foncière : document sans valeur de dépense ») : la colonne historique
+  // `document_type` reçoit « AUTRE » par défaut quand le type V2 n'a pas d'équivalent V1 (`resolveDocumentTypeCode`).
+  // Ce repli de stockage n'apporte AUCUNE information : il ne doit jamais exclure un document dont le type V2 est
+  // connu (référentiel V2 = taxonomie produit). Un type historique faible n'est lu que sans type V2 connu.
+  const v2Connu = !!documentTypeCode && V2_CONNUS.has(documentTypeCode);
+  const historique = resolveDocumentType(legacyType);
+  const entry = resolveDocumentType(documentTypeCode) ?? (v2Connu && historique?.authority === 'WEAK' ? undefined : historique);
   if (!entry) return { kind: 'unqualified' };
   if (entry.authority === 'WEAK' || EXCLUDED_CATALOG.has(entry.code)) return { kind: 'excluded', reason: entry.code };
   if (entry.businessTypes.length === 1) {

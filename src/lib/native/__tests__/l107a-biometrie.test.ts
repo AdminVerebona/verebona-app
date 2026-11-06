@@ -12,6 +12,10 @@
  *               l'enrôlement, nettoyage à la déconnexion, reprise de
  *               l'ancienne préférence, aucun appel serveur ;
  *   L107A-OFFR  proposition unique : conditions, textes ;
+ *   L111T-ORDRE première connexion mobile : biométrie D'ABORD puis notifications
+ *               dans la même session (remplace « notifications d'abord,
+ *               biométrie au lancement suivant » du lot 109G), une seule
+ *               fenêtre à la fois, proposition notée à l'affichage réel ;
  *   L107A-BOOT  masquage avant tout rendu au démarrage à froid (natif seulement) ;
  *   L107A-SRC   écran « Verebona est verrouillé » retiré, coque native (plugin
  *               local, Info.plist), déconnexion branchée.
@@ -31,6 +35,12 @@ import {
 } from '@/lib/native/biometric-consent';
 import { SECURE_KEYS, SECURE_PREFIX, secureSet } from '@/lib/native/secure-store';
 import { LOCK_ATTRIBUTE, nativeLockBootScript } from '@/lib/native/lock-boot';
+import {
+  BIOMETRIC_EVALUATION_TIMEOUT_MS, OFFER_TRANSITION_MS, biometricOfferView, createBiometricOffer,
+  type BiometricOfferContext, type BiometricOfferDeps,
+} from '@/lib/native/biometric-offer-flow';
+import { createPushOnboarding, pushOnboardingView, type PushOnboardingContext } from '@/lib/native/push-onboarding';
+import type { BiometricSetting, BiometricState, BiometricsChange, DeferReason } from '@/lib/native/biometric-consent';
 import { createUnlockController, type UnlockDeps } from '@/lib/native/unlock-controller';
 import {
   INITIAL_UNLOCK_STATE, fallbackActionLabel, fallbackMessage, reduceUnlock,
@@ -663,5 +673,232 @@ describe('L107A-SRC — interface et coque native', () => {
     expect(java).toMatch(/@CapacitorPlugin\(name = "VerebonaBiometricState"\)/);
     expect(read('mobile/ios/App/App/Info.plist')).toMatch(/<key>NSFaceIDUsageDescription<\/key>\s*<string>[^<]*Face ID[^<]*<\/string>/);
     expect(read('mobile/capacitor.config.ts')).toMatch(/PrivacyScreen: \{ enable: true/);
+  });
+});
+
+// ── L111T-ORDRE ─────────────────────────────────────────────────────────────
+
+describe('L111T-ORDRE — biométrie d’abord, puis notifications dans la même session', () => {
+  const tick = async () => { for (let i = 0; i < 8; i++) await Promise.resolve(); };
+
+  function setting(state: BiometricState, o: Partial<BiometricSetting> = {}): BiometricSetting {
+    return {
+      supported: true, available: state !== 'unavailable', deviceSecure: true, state, stored: 'never',
+      enabled: state === 'active', label: 'Face ID', shortLabel: 'Face ID', type: 2, ...o,
+    };
+  }
+
+  /** Doubles : capteur / choix lus, vérification native contrôlée, minuteries manuelles. */
+  function bioDeps(o: { state?: BiometricState; read?: () => Promise<BiometricSetting> } = {}) {
+    const defers: Array<[number, DeferReason]> = [];
+    const timers: Array<{ ms: number; fire: () => void }> = [];
+    let verdict: ((r: BiometricsChange) => void) | null = null;
+    const deps = {
+      readSetting: vi.fn(o.read ?? (async () => setting(o.state ?? 'never'))),
+      presentationType: vi.fn(async (st: BiometricSetting) => st.type),
+      defer: vi.fn(async (u: number, why: DeferReason) => { defers.push([u, why]); }),
+      activate: vi.fn(() => new Promise<BiometricsChange>((r) => { verdict = r; })),
+      delay: vi.fn((ms: number) => new Promise<void>((r) => { timers.push({ ms, fire: r }); })),
+    } satisfies BiometricOfferDeps;
+    const fire = async (ms: number) => { for (const t of timers.filter((x) => x.ms === ms)) t.fire(); await tick(); };
+    return { deps, defers, fire, answer: async (r: BiometricsChange) => { verdict?.(r); await tick(); } };
+  }
+
+  function pushDeps(permission: 'prompt' | 'granted' | 'denied' = 'prompt') {
+    const records: Record<number, string> = {};
+    const deps = {
+      permission: vi.fn(async () => permission),
+      read: vi.fn(async () => null),
+      record: vi.fn(async (u: number, st: 'offered' | 'later' | 'answered') => { records[u] = st; return true; }),
+      request: vi.fn(async () => ({ state: 'granted' as const, registered: true })),
+    };
+    return { deps, records };
+  }
+
+  const bctx = (o: Partial<BiometricOfferContext> = {}): BiometricOfferContext => ({
+    userId: 1, featureOn: true, pathname: '/accueil', legalRequired: false, blocked: false, ...o,
+  });
+  const pctx = (held: boolean, o: Partial<PushOnboardingContext> = {}): PushOnboardingContext => ({
+    userId: 1, featureOn: true, pathname: '/accueil', legalRequired: false, blocked: false, offline: false, held, ...o,
+  });
+
+  /** Hôte simulé : même enchaînement que NativeBridgeRuntime (biométrie, puis push avec `holdsPush`). */
+  function host(b = bioDeps(), p = pushDeps()) {
+    const bio = createBiometricOffer(b.deps);
+    const push = createPushOnboarding(p.deps);
+    const render = (o: Partial<BiometricOfferContext> = {}) => {
+      const c = bctx(o);
+      bio.sync(c);
+      const bv = biometricOfferView(bio.getSnapshot(), c);
+      const pc = pctx(bv.holdsPush, { userId: c.userId, pathname: c.pathname, legalRequired: c.legalRequired, blocked: c.blocked });
+      if (c.userId !== null) void push.evaluate(c.userId);
+      push.sync(pc);
+      const pv = pushOnboardingView(push.getSnapshot(), pc);
+      // Effets « après rendu » : notées seulement si réellement affichées.
+      if (bv.visible) bio.presented(bio.getSnapshot().offer!.userId);
+      const pushShown = pv.visible && !bv.visible;
+      if (pushShown) push.presented(c.userId!);
+      return { bio: bv.visible, push: pushShown, holdsPush: bv.holdsPush };
+    };
+    return { bio, push, render, b, p };
+  }
+
+  it('première connexion : fenêtre biométrique seule, puis « Plus tard » → notifications sans relancement', async () => {
+    const h = host();
+    expect(h.render()).toMatchObject({ bio: false, push: false, holdsPush: true }); // évaluation en cours
+    await tick();
+    expect(h.render()).toMatchObject({ bio: true, push: false });
+    expect(h.b.defers).toEqual([[1, 'offered']]); // notée à l'affichage réel
+    expect(h.p.records[1]).toBeUndefined(); // notifications pas encore sollicitées
+    h.bio.later();
+    await tick();
+    expect(h.b.defers).toEqual([[1, 'offered'], [1, 'later']]);
+    // Transition : aucune des deux fenêtres (jamais de superposition ni de flash).
+    expect(h.render()).toMatchObject({ bio: false, push: false, holdsPush: true });
+    await h.b.fire(OFFER_TRANSITION_MS);
+    expect(h.render()).toMatchObject({ bio: false, push: true, holdsPush: false });
+    expect(h.p.records[1]).toBe('offered');
+    expect(h.p.deps.request).not.toHaveBeenCalled(); // demande système seulement au clic
+    // Navigation : ni l'une ni l'autre ne revient pendant ce lancement.
+    h.push.later();
+    expect(h.render({ pathname: '/documents' })).toMatchObject({ bio: false, push: false });
+    expect(h.b.deps.readSetting).toHaveBeenCalledTimes(1);
+  });
+
+  it('« Activer » : fenêtre native uniquement au clic, notifications seulement APRÈS sa fermeture', async () => {
+    for (const verdict of ['enabled', 'refused', 'storage_error'] as const) {
+      const h = host();
+      h.render();
+      await tick();
+      h.render();
+      expect(h.b.deps.activate).not.toHaveBeenCalled();
+      const p = h.bio.activate();
+      void h.bio.activate(); // double appui ignoré
+      h.bio.later(); // ignoré pendant la vérification
+      expect(h.b.deps.activate).toHaveBeenCalledTimes(1);
+      // Fenêtre native ouverte : la proposition reste (inactive), aucune invitation dessous.
+      expect(h.render()).toMatchObject({ bio: true, push: false });
+      expect(biometricOfferView(h.bio.getSnapshot(), bctx()).busy).toBe(true);
+      await h.b.answer(verdict);
+      expect(await p).toEqual({ result: verdict, label: 'Face ID' });
+      expect(h.render()).toMatchObject({ bio: false, push: false });
+      await h.b.fire(OFFER_TRANSITION_MS);
+      expect(h.render(), verdict).toMatchObject({ bio: false, push: true });
+      expect(h.b.defers.map(([, w]) => w)).toEqual(['offered']); // échec/annulation : rien d'activé, aucun « Plus tard » ajouté
+    }
+  });
+
+  it('biométrie indisponible, déjà décidée ou fonction coupée : notifications directement', async () => {
+    for (const state of ['unavailable', 'deferred', 'active', 'reactivate'] as const) {
+      const h = host(bioDeps({ state }));
+      h.render();
+      await tick();
+      expect(h.render(), state).toMatchObject({ bio: false, push: true, holdsPush: false });
+      expect(h.b.defers).toEqual([]);
+    }
+    const off = host();
+    expect(off.render({ featureOn: false })).toMatchObject({ holdsPush: false });
+    await tick();
+    expect(off.render({ featureOn: false })).toMatchObject({ bio: false, push: true });
+    expect(off.b.deps.readSetting).not.toHaveBeenCalled();
+  });
+
+  it('notifications déjà traitées par le système : seule la biométrie ; les deux traitées : rien', async () => {
+    const h = host(bioDeps(), pushDeps('granted'));
+    h.render();
+    await tick();
+    expect(h.render()).toMatchObject({ bio: true, push: false });
+    h.bio.later();
+    await h.b.fire(OFFER_TRANSITION_MS);
+    expect(h.render()).toMatchObject({ bio: false, push: false });
+    const none = host(bioDeps({ state: 'deferred' }), pushDeps('denied'));
+    none.render();
+    await tick();
+    expect(none.render()).toMatchObject({ bio: false, push: false });
+    expect(none.p.deps.request).not.toHaveBeenCalled();
+  });
+
+  it('jamais avant l’authentification, sur la connexion, les CGUV ou pendant le verrou', async () => {
+    const h = host();
+    for (const o of [{ userId: null }, { pathname: '/login' }, { pathname: '/cguv' }, { legalRequired: true }, { blocked: true }]) {
+      expect(h.render(o), JSON.stringify(o)).toMatchObject({ bio: false, push: false });
+    }
+    await tick();
+    expect(h.b.deps.readSetting).not.toHaveBeenCalled();
+    expect(h.b.defers).toEqual([]);
+    h.render();
+    await tick();
+    expect(h.render()).toMatchObject({ bio: true, push: false });
+    // Verrou par-dessus la proposition : masquée, pas perdue, notifications toujours retenues.
+    expect(h.render({ blocked: true })).toMatchObject({ bio: false, push: false, holdsPush: true });
+    expect(h.render()).toMatchObject({ bio: true });
+  });
+
+  it('interrompue AVANT l’affichage réel (redirection, compte changé, session perdue) : proposition non perdue', async () => {
+    const pending = deferred<BiometricSetting>();
+    const h = host(bioDeps({ read: () => pending.promise }));
+    h.render({ userId: 1 });
+    h.render({ userId: null }); // session momentanément indisponible pendant la lecture
+    pending.resolve(setting('never'));
+    await tick();
+    expect(h.b.defers).toEqual([]); // rien noté
+    h.render();
+    await tick();
+    expect(h.render()).toMatchObject({ bio: true });
+    expect(h.b.deps.readSetting).toHaveBeenCalledTimes(2); // réévaluée
+
+    // Prête mais jamais rendue (verrou), puis changement de compte : rien noté pour le compte 1.
+    const k = host();
+    k.render({ blocked: true });
+    k.render();
+    await tick();
+    k.render({ blocked: true });
+    k.render({ userId: 2, blocked: true });
+    await tick();
+    expect(k.b.defers).toEqual([]);
+    expect(k.bio.getSnapshot().steps[1]).toBeUndefined(); // sera reproposée au compte 1
+  });
+
+  it('proposition affichée puis app fermée sans réponse : notée (jamais de boucle) ; « Plus tard » respecté', async () => {
+    const h = host();
+    h.render();
+    await tick();
+    h.render();
+    expect(h.b.defers).toEqual([[1, 'offered']]);
+    // Changement de compte après affichage : pas reproposée au compte 1 pendant ce lancement.
+    h.render({ userId: 2 });
+    await tick();
+    h.render({ userId: 1 });
+    await tick();
+    expect(h.bio.getSnapshot().steps[1]).toBe('none');
+  });
+
+  it('lecture en échec ou trop longue : jamais bloquant pour les notifications', async () => {
+    const failing = host(bioDeps({ read: async () => { throw new Error('keychain'); } }));
+    failing.render();
+    await tick();
+    expect(failing.render()).toMatchObject({ bio: false, push: true });
+
+    const slow = host(bioDeps({ read: () => new Promise(() => {}) }));
+    slow.render();
+    await tick();
+    expect(slow.render()).toMatchObject({ bio: false, push: false, holdsPush: true });
+    await slow.b.fire(BIOMETRIC_EVALUATION_TIMEOUT_MS);
+    expect(slow.render()).toMatchObject({ bio: false, push: true });
+    expect(slow.b.defers).toEqual([]);
+  });
+
+  it('branchements : runtime et hooks dans le nouvel ordre, fenêtres centrées communes', () => {
+    const runtime = read('src/components/native/NativeBridgeRuntime.tsx');
+    expect(runtime).toMatch(/const offer = useBiometricOffer\(features, blocked\);\s*const push = usePushOnboarding\(featureOn\(features, 'push'\), blocked, offline, offer\.holdsPush\);/);
+    expect(runtime).toMatch(/push\.visible && !offer\.visible/);
+    const hook = read('src/components/native/useBiometricOffer.ts');
+    expect(hook).not.toMatch(/deferBiometrics\(userId, 'offered'\)/); // plus noté avant l'affichage
+    expect(hook).toMatch(/ctl\.presented\(shownFor\)/);
+    expect(read('src/components/native/usePushOnboarding.ts')).toMatch(/ctl\.presented\(shownFor\)/);
+    for (const f of ['src/components/native/BiometricOfferCard.tsx', 'src/components/native/PushOnboardingCard.tsx']) {
+      expect(read(f), f).toMatch(/<NativeOfferDialog/);
+      expect(read(f), f).not.toMatch(/inset-x-3|bottom:/);
+    }
   });
 });

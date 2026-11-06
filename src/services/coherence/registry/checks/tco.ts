@@ -34,6 +34,21 @@
  * moteur déclare non financiers (notice, photo, annonce…) en sont exclus :
  * leur exclusion est motivée par le moteur lui-même. Aucune valeur écrite,
  * aucun montant repris de l'extract, aucune règle par type de document.
+ *
+ * Lot 111V (ticket « TCO — anomalies corrigeables », chaînon fermé) : le
+ * contrat `82B-t3-decision-tco` n'a toujours AUCUN champ de sortie dans le T3
+ * livré (guide PO §12) — aucune réparation T3 n'est donc annoncée ni
+ * déclenchée (jamais d'IA à l'ouverture de l'écran ni ici). Le chaînon est
+ * fermé sur l'architecture existante :
+ *   · la cause racine des exclusions à tort est corrigée dans le moteur (repli
+ *     de stockage « AUTRE » ignoré pour un type V2 connu, `expense-classes`) :
+ *     le recalcul à la lecture reprend l'historique sans écriture ;
+ *   · chaque ligne constatée porte sur la fiche le geste « Nature à confirmer »
+ *     (`tcoLineDecisionOptions` : ajouter, confirmer la nature, confirmer
+ *     l'exclusion) — `resolution: 'USER_DECISION'` dans le constat ;
+ *   · une ligne ARBITRÉE par l'utilisateur (décision 80A ou 111V) n'est plus un
+ *     écart : sa décision est l'issue explicable exigée par l'invariant (C-Q6
+ *     reste ouvert pour une décision T3 automatique, contrat en attente).
  */
 import type { CheckContext, CoherenceCheck, Inspection } from '../types';
 import { hashOf, idsOf, intArray, rows } from '../util';
@@ -93,7 +108,7 @@ export const tcoExtractedExpensesCheck: CoherenceCheck = {
   applicability: 'compte éligible ; lecture TCO complète (une lecture partielle est une erreur de contrôle, jamais un résultat conforme)',
   invariant: 'toute dépense dont le montant est connu est retenue, représentée par une Opération, ou exclue avec un motif explicable ; toute source du bien dont l’extract porte un montant produit une ligne économique ou une exclusion motivée',
   anomalies: ['EXTRACTED_EXPENSE_NOT_EVALUATED', 'SOURCE_AMOUNT_NOT_EXPLOITED'],
-  autoRepairWhen: 'aucune pour l’instant : la décision d’inclusion relève de T3 (C-Q6) — contrat demandé à l’équipe IA',
+  autoRepairWhen: 'aucune écriture automatique : la décision d’inclusion relève de T3 (C-Q6, contrat 82B-t3-decision-tco sans champ de sortie livré) ; en attendant, l’issue est la décision de l’utilisateur proposée sur la fiche (lot 111V)',
   forbiddenRepairs: ['classer une dépense par type de document ou mot-clé', 'relancer T1 (montant déjà extrait)', 'ajouter une décision utilisateur à sa place'],
   services: ['business-operations/tco/service#readAssetTco'],
   chain: ['T1', 'T3', 'PERSISTENCE'],
@@ -135,8 +150,9 @@ export const tcoExtractedExpensesCheck: CoherenceCheck = {
       }
       // Lecture incomplète (pages non lues) : le contrôle n'a pas eu lieu — jamais « conforme ».
       if (tco.status === 'PARTIAL' || tco.status === 'ERROR') throw new Error(`lecture TCO ${tco.status} du bien ${assetId}`);
+      // Lot 111V : une ligne arbitrée par l'utilisateur (ajoutée, nature confirmée, exclusion confirmée) a son issue explicable.
       const ecarts = tco.lines
-        .filter((l) => l.status === 'NOT_QUALIFIED' && l.reason === 'THEME_UNKNOWN' && !l.amountUnknown && l.amountMinor > 0)
+        .filter((l) => l.status === 'NOT_QUALIFIED' && l.reason === 'THEME_UNKNOWN' && !l.amountUnknown && l.amountMinor > 0 && !l.userDecision?.applied)
         .map((l) => ({ lineId: l.id, fileId: l.fileId, amountMinor: l.amountMinor, currency: l.currency, date: l.date, provenance: l.provenance, label: l.label.slice(0, 120) }));
       // Lot 85B : sources sans AUCUNE ligne dont l'extract porte un montant (omission silencieuse du moteur, §4.4).
       const silencieux = await silentAmountSources(ctx, accountId, assetId, new Set(tco.lines.map((l) => l.fileId).filter((x): x is number => x != null)));
@@ -145,7 +161,10 @@ export const tcoExtractedExpensesCheck: CoherenceCheck = {
         verdict: 'FINDING', anomaly: 'EXTRACTED_EXPENSE_NOT_EVALUATED', faultyLink: 'T3',
         expected: 'dépense retenue, consolidée ou exclue avec motif (décision sémantique T3, C-Q6)',
         observed: ecarts,
-        detail: { pendingContract: TCO_T3_DECISION_CONTRACT, t1Relaunch: false, count: ecarts.length, ...(silencieux.length ? { silentSources: silencieux } : {}) },
+        detail: {
+          pendingContract: TCO_T3_DECISION_CONTRACT, t3Contract: 'NO_OUTPUT_FIELD', resolution: 'USER_DECISION', userDiagnostic: 'DOCUMENTS_NOT_QUALIFIED',
+          t1Relaunch: false, count: ecarts.length, ...(silencieux.length ? { silentSources: silencieux } : {}),
+        },
         inputHash: hashOf({ assetId, ecarts: ecarts.map((x) => [x.lineId, x.amountMinor, x.currency]), silencieux }),
       } : {
         verdict: 'FINDING', anomaly: 'SOURCE_AMOUNT_NOT_EXPLOITED', faultyLink: 'T1',

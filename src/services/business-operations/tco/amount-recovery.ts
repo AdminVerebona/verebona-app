@@ -89,7 +89,9 @@ export interface AmountSourceCandidate {
 }
 
 /** Statut persisté (`document_amount_recoveries.status`). */
-export type AmountRecoveryStatus = 'PENDING' | 'T1_PENDING' | 'RECOVERED' | 'TO_CONFIRM' | 'NOT_FOUND' | 'TECHNICAL_FAILURE' | 'USER_OWNED';
+// Lot 111V : NOT_APPLICABLE — le document n'est pas (ou plus) un justificatif qui porte un montant (contrat,
+// attestation, procès-verbal ; exclusion confirmée par l'utilisateur) : récupération close, jamais relancée.
+export type AmountRecoveryStatus = 'PENDING' | 'T1_PENDING' | 'RECOVERED' | 'TO_CONFIRM' | 'NOT_FOUND' | 'TECHNICAL_FAILURE' | 'USER_OWNED' | 'NOT_APPLICABLE';
 
 export interface AmountRecoveryRow {
   status: AmountRecoveryStatus;
@@ -104,6 +106,11 @@ export interface AmountRecoveryInput {
   fileId: number;
   /** Le moteur TCO ne connaît pas le montant (`AMOUNT_UNKNOWN`). */
   amountUnknown: boolean;
+  /**
+   * Lot 111V : le moteur produit au moins une ligne économique pour ce document (faux : document descriptif sans
+   * montant, ou plus aucune dépense attendue) — une récupération ouverte est alors close « sans objet ».
+   */
+  financialDocument?: boolean;
   /** Montant courant du document. */
   amountCents: number | null;
   /** Montant marqué « modifié par l'utilisateur » (jamais remplacé). */
@@ -132,7 +139,7 @@ export type AmountRecoveryAction =
   /** Montant établi : écrire sur le document avec sa preuve. */
   | { kind: 'APPLY'; candidate: AmountSourceCandidate; corroboratedBy: AmountSourceCandidate[] }
   /** Montant apparu (relance T1 ou saisie) : consigner la provenance. */
-  | { kind: 'RECORD_RESULT'; state: 'RECOVERED' | 'USER_OWNED'; amountCents: number | null }
+  | { kind: 'RECORD_RESULT'; state: 'RECOVERED' | 'USER_OWNED' | 'NOT_APPLICABLE'; amountCents: number | null }
   /** Relancer T1 sur le document original. */
   | { kind: 'RELAUNCH_T1'; attempt: number; retryAfterTechnical: boolean }
   /** Relance en cours : attendre (aucune action). */
@@ -186,7 +193,9 @@ export function planAmountRecovery(x: AmountRecoveryInput): AmountRecoveryAction
   // Montant désormais connu du moteur (montant du document ou indices T1 établis après la relance) :
   // consigner l'issue d'une récupération en cours (provenance).
   if (!x.amountUnknown) {
-    if (row && row.status !== 'RECOVERED' && row.status !== 'USER_OWNED') {
+    // Lot 111V : plus aucun montant attendu (document descriptif, exclusion confirmée) — clos sans objet, jamais « retrouvé ».
+    if (row && x.financialDocument === false && x.amountCents == null && row.status !== 'NOT_APPLICABLE') return { kind: 'RECORD_RESULT', state: 'NOT_APPLICABLE', amountCents: null };
+    if (row && row.status !== 'RECOVERED' && row.status !== 'USER_OWNED' && row.status !== 'NOT_APPLICABLE') {
       return { kind: 'RECORD_RESULT', state: x.userEditedAmount ? 'USER_OWNED' : 'RECOVERED', amountCents: x.amountCents };
     }
     return { kind: 'NONE', state: row?.status ?? null };
@@ -281,43 +290,93 @@ export function roleOfHint(role: string, scope: string | null): AmountRecoveryRo
 
 // ── Vue du TCO (fiche du bien) ─────────────────────────────────────────────
 
-/** État présenté à l'utilisateur pour un justificatif sans montant. */
-export type AmountRecoveryViewState = 'IN_PROGRESS' | 'TO_CONFIRM' | 'NOT_FOUND';
+/**
+ * État présenté pour un justificatif sans montant — lot 111V (§D) : issu de
+ * l'état PERSISTÉ de la récupération ET de la file réelle `ai_job_queue`,
+ * jamais d'un défaut. « Lecture en cours » seulement si un travail T1 est
+ * réellement RUNNING pour ce document.
+ *   · WAITING          aucun travail en file : la vérification automatique
+ *                      (campagne quotidienne, contrôle ciblé) le prendra en
+ *                      charge — aucune lecture n'est annoncée ;
+ *   · QUEUED           travail T1 en file (PENDING), pas encore démarré ;
+ *   · READING          travail T1 RUNNING ;
+ *   · RETRY_SCHEDULED  échec technique, reprise automatique prévue (date) ;
+ *   · TO_CONFIRM       montants contradictoires ou incertains ;
+ *   · NOT_FOUND        aucun montant, même après relecture ;
+ *   · TECHNICAL_FAILURE reprises épuisées (Supervision BO) : saisie proposée,
+ *                      sans en faire porter la faute à l'utilisateur.
+ */
+export type AmountRecoveryViewState = 'WAITING' | 'QUEUED' | 'READING' | 'RETRY_SCHEDULED' | 'TO_CONFIRM' | 'NOT_FOUND' | 'TECHNICAL_FAILURE';
+
+/** États « contrôle en attente » (jamais une anomalie reprochée à l'utilisateur). */
+export const AMOUNT_RECOVERY_PENDING_STATES: ReadonlySet<AmountRecoveryViewState> = new Set(['WAITING', 'QUEUED', 'READING', 'RETRY_SCHEDULED']);
 
 export interface AmountRecoveryViewItem {
   fileId: number;
   title: string;
   state: AmountRecoveryViewState;
+  /** Prochaine reprise automatique (RETRY_SCHEDULED) ou disponibilité du travail en file (QUEUED), ISO. */
+  nextAttemptAt?: string | null;
 }
 
 export interface TcoAmountRecoveryView {
   items: AmountRecoveryViewItem[];
+  /** Contrôles en attente (WAITING, QUEUED, READING, RETRY_SCHEDULED). */
   inProgress: number;
   toConfirm: number;
   notFound: number;
 }
 
+/** Travail T1 vivant d'un document dans la file réelle (`ai_job_queue`). */
+export interface AmountRecoveryLiveJob { status: 'PENDING' | 'RUNNING'; availableAt: string | null }
+
 /**
- * État présenté (pure). Pas d'état persisté : le contrôle n'est pas encore
- * passé → « en cours » (la campagne quotidienne et le contrôle ciblé à
- * l'analyse le garantissent). Un échec TECHNIQUE reste « en cours » tant que
- * des reprises sont permises (jamais une faute de l'utilisateur), puis le
- * montant lui est demandé (« à confirmer »).
+ * État présenté (pure, testée L111V-U-REC). Priorité à la file réelle (un
+ * travail RUNNING / PENDING existe), puis à l'état persisté. Sans état ni
+ * travail : WAITING (jamais « en cours »).
  */
-export function viewStateOf(row: Pick<AmountRecoveryRow, 'status' | 'technicalFailures'> | null, limits: Pick<AmountRecoveryLimits, 'maxTechnicalFailures'>): AmountRecoveryViewState {
-  if (!row) return 'IN_PROGRESS';
+export function viewStateOf(
+  row: (Pick<AmountRecoveryRow, 'status' | 'technicalFailures'> & Partial<Pick<AmountRecoveryRow, 'lastRequestedAt'>>) | null,
+  limits: Pick<AmountRecoveryLimits, 'maxTechnicalFailures'> & Partial<Pick<AmountRecoveryLimits, 'technicalBackoffHours'>>,
+  job: AmountRecoveryLiveJob | null = null,
+): { state: AmountRecoveryViewState; nextAttemptAt: string | null } {
+  if (job?.status === 'RUNNING') return { state: 'READING', nextAttemptAt: null };
+  if (job?.status === 'PENDING') return { state: 'QUEUED', nextAttemptAt: job.availableAt };
+  if (!row) return { state: 'WAITING', nextAttemptAt: null };
   switch (row.status) {
-    case 'TO_CONFIRM': case 'USER_OWNED': return 'TO_CONFIRM';
-    case 'NOT_FOUND': return 'NOT_FOUND';
-    case 'TECHNICAL_FAILURE': return row.technicalFailures >= limits.maxTechnicalFailures ? 'TO_CONFIRM' : 'IN_PROGRESS';
-    default: return 'IN_PROGRESS';
+    case 'TO_CONFIRM': case 'USER_OWNED': return { state: 'TO_CONFIRM', nextAttemptAt: null };
+    case 'NOT_FOUND': return { state: 'NOT_FOUND', nextAttemptAt: null };
+    case 'TECHNICAL_FAILURE': {
+      if (row.technicalFailures >= limits.maxTechnicalFailures) return { state: 'TECHNICAL_FAILURE', nextAttemptAt: null };
+      const base = row.lastRequestedAt ? new Date(row.lastRequestedAt).getTime() : NaN;
+      const next = Number.isFinite(base) && limits.technicalBackoffHours != null ? new Date(base + limits.technicalBackoffHours * 3_600_000).toISOString() : null;
+      return { state: 'RETRY_SCHEDULED', nextAttemptAt: next };
+    }
+    // PENDING (recherche ou budget), T1_PENDING sans travail vivant (relance terminée, issue à constater), RECOVERED /
+    // NOT_APPLICABLE alors que le montant reste inconnu : la vérification suivante tranche — aucune lecture annoncée.
+    default: return { state: 'WAITING', nextAttemptAt: null };
   }
 }
 
 export const AMOUNT_RECOVERY_VIEW_LABELS: Readonly<Record<AmountRecoveryViewState, { title: string; text: string; action: string | null }>> = {
-  IN_PROGRESS: {
+  WAITING: {
+    title: 'Vérification automatique à venir',
+    text: 'Le montant de ce justificatif n’est pas encore connu. La vérification automatique le recherchera dans les informations déjà lues ; aucune lecture n’est en cours pour l’instant.',
+    action: null,
+  },
+  QUEUED: {
+    title: 'En attente de prise en charge',
+    text: 'Une nouvelle lecture de ce justificatif est en file d’attente. Le coût sera mis à jour dès qu’elle aboutit.',
+    action: null,
+  },
+  READING: {
     title: 'Lecture du montant en cours',
-    text: 'Verebona relit automatiquement ce justificatif pour retrouver son montant. Le coût sera mis à jour dès que la lecture aboutit : rien à faire pour l’instant.',
+    text: 'Verebona relit ce justificatif pour retrouver son montant. Le coût sera mis à jour dès que la lecture aboutit.',
+    action: null,
+  },
+  RETRY_SCHEDULED: {
+    title: 'Nouvelle tentative prévue',
+    text: 'La lecture automatique a rencontré un incident technique ; une nouvelle tentative est prévue. Rien à faire de votre côté.',
     action: null,
   },
   TO_CONFIRM: {
@@ -328,6 +387,11 @@ export const AMOUNT_RECOVERY_VIEW_LABELS: Readonly<Record<AmountRecoveryViewStat
   NOT_FOUND: {
     title: 'Montant introuvable',
     text: 'Le montant de ce justificatif n’a pas pu être lu, même après une nouvelle lecture. Ouvrez-le pour saisir le montant.',
+    action: 'Ouvrir le justificatif pour saisir le montant',
+  },
+  TECHNICAL_FAILURE: {
+    title: 'Lecture automatique indisponible',
+    text: 'La lecture automatique de ce justificatif n’a pas abouti pour une raison technique (suivie par l’équipe Verebona). Vous pouvez saisir le montant vous-même.',
     action: 'Ouvrir le justificatif pour saisir le montant',
   },
 };
@@ -342,7 +406,8 @@ export const AMOUNT_RECOVERY_VIEW_LABELS: Readonly<Record<AmountRecoveryViewStat
 export function warningsAfterRecovery<W extends string>(warnings: readonly W[], view: TcoAmountRecoveryView): W[] {
   if (!warnings.includes('AMOUNTS_UNKNOWN' as W) || !view.items.length) return [...warnings];
   const out = warnings.filter((w) => w !== ('AMOUNTS_UNKNOWN' as W));
-  if (view.toConfirm + view.notFound > 0) out.push('AMOUNTS_UNKNOWN' as W);
+  if (view.toConfirm + view.notFound > 0 || view.items.some((i) => i.state === 'TECHNICAL_FAILURE')) out.push('AMOUNTS_UNKNOWN' as W);
   if (view.inProgress > 0) out.push('AMOUNTS_RECOVERY_PENDING' as W);
+  // Lot 111V : échec technique épuisé — le montant est demandé (jamais une faute de l'utilisateur), point ouvert.
   return out;
 }

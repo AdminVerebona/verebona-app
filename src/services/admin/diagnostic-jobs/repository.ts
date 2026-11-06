@@ -19,8 +19,8 @@
  */
 import { randomUUID } from 'node:crypto';
 import {
-  DIAG_JOB_ERROR_LABELS, DIAG_JOB_MODE, DiagJobError, diagJobSettings, isGlobalRequest, requestKey, retryDelaySeconds, sanitizeErrorMessage,
-  type DiagJobAttempt, type DiagJobErrorCode, type DiagJobPhase, type DiagJobProgress, type DiagJobStatus,
+  DIAG_JOB_ERROR_LABELS, DIAG_JOB_MODE, DiagJobError, diagJobSettings, isGlobalRequest, laneCapacity, requestKey, retryDelaySeconds, sanitizeErrorMessage,
+  type DiagJobAttempt, type DiagLane, type DiagJobErrorCode, type DiagJobPhase, type DiagJobProgress, type DiagJobStatus,
 } from './state';
 
 type Raw = Record<string, unknown>;
@@ -53,6 +53,9 @@ export interface DiagJobRow {
   replacedBy: string | null;
   attemptsLog: DiagJobAttempt[];
   progress: DiagJobProgress | null;
+  /** Lot 111Q : demande (started_at) et premier démarrage réel (migration 1280). */
+  queuedAt?: string | null;
+  firstRunStartedAt?: string | null;
 }
 
 const iso = (v: unknown) => (v == null ? null : v instanceof Date ? v.toISOString() : String(v));
@@ -72,6 +75,7 @@ function toJob(r: Raw): DiagJobRow {
     cancelReason: r.cancel_reason == null ? null : String(r.cancel_reason), replacedBy: r.replaced_by == null ? null : String(r.replaced_by),
     attemptsLog: json<DiagJobAttempt[]>(r.attempts_log, []),
     progress: json<DiagJobProgress | null>(r.progress, null),
+    queuedAt: iso(r.started_at), firstRunStartedAt: iso(r.first_run_started_at),
   };
 }
 
@@ -326,17 +330,20 @@ export async function recoverDiagnosticJobs(now: Date = new Date()): Promise<{ r
 
 // ── Prise et bail ───────────────────────────────────────────────────────────
 
-/** Lot 111C : pourquoi la prise n'a rien rendu (raison d'attente vue par le worker). */
-export type DiagClaimBlock = 'GLOBAL_SLOT_BUSY' | 'GLOBAL_DIAGNOSTIC_STOPPING' | 'NO_ELIGIBLE_JOB';
+/** Lot 111C : pourquoi la prise n'a rien rendu (raison d'attente vue par le worker). Lot 111Q : TARGETED_SLOT_BUSY (voie ciblée pleine). */
+export type DiagClaimBlock = 'GLOBAL_SLOT_BUSY' | 'GLOBAL_DIAGNOSTIC_STOPPING' | 'TARGETED_SLOT_BUSY' | 'NO_ELIGIBLE_JOB';
 
 /**
  * Prend le prochain diagnostic à faire (QUEUED, échéance passée), dans la
  * limite de la concurrence GLOBALE (toutes instances) — verrou consultatif :
  * deux instances ne prennent jamais deux travaux au-delà de la borne.
  */
-export async function claimNextDiagnosticJob(workerId: string, commit: string | null, opts: { onlyId?: string; now?: Date } = {}): Promise<DiagJobRow | null> {
+export async function claimNextDiagnosticJob(workerId: string, commit: string | null, opts: { onlyId?: string; now?: Date; lane?: DiagLane } = {}): Promise<DiagJobRow | null> {
   return (await claimNextDiagnosticJobDetailed(workerId, commit, opts)).job;
 }
+
+/** Lot 111Q : expression SQL « demande globale » (même règle que `isGlobalRequest`). */
+const IS_GLOBAL_SQL = (alias: string) => `coalesce(${alias}.perimeter->>'scope', ${alias}.target_type, 'global') = 'global'`;
 
 /**
  * Lot 111C — prise avec raison d'attente. En plus de la borne globale :
@@ -346,28 +353,51 @@ export async function claimNextDiagnosticJob(workerId: string, commit: string | 
  *   · seul le diagnostic global le PLUS RÉCENT est éligible (garde
  *     défensive : le remplacement en base l'assure déjà).
  */
-export async function claimNextDiagnosticJobDetailed(workerId: string, commit: string | null, opts: { onlyId?: string; now?: Date } = {}): Promise<{ job: DiagJobRow | null; blocked: DiagClaimBlock | null }> {
+export async function claimNextDiagnosticJobDetailed(workerId: string, commit: string | null, opts: { onlyId?: string; now?: Date; lane?: DiagLane } = {}): Promise<{ job: DiagJobRow | null; blocked: DiagClaimBlock | null }> {
   const sql = await db();
   const s = diagJobSettings();
+  const lane: DiagLane = opts.lane ?? 'main';
   return sql.begin(async (tx) => {
     await tx`SELECT pg_advisory_xact_lock(hashtext(${QUEUE_LOCK}))`;
     const running = await tx<Raw[]>`
       SELECT id, cancel_requested, coalesce(perimeter->>'scope', target_type, 'global') = 'global' AS is_global FROM admin_export_generations
        WHERE kind = 'TECH_DIAGNOSTIC' AND mode = ${DIAG_JOB_MODE} AND status = 'RUNNING' AND locked_until > now()`;
-    const stopping = running.some((r) => r.cancel_requested === true);
-    if (running.length >= s.globalConcurrency) return { job: null, blocked: stopping ? 'GLOBAL_DIAGNOSTIC_STOPPING' : 'GLOBAL_SLOT_BUSY' };
     const globalRunning = running.some((r) => r.is_global === true);
+    const stopping = running.some((r) => r.cancel_requested === true && r.is_global === true);
+    // Lot 111Q : voie commune (DIAG_JOB_GLOBAL_CONCURRENCY) + places réservées aux ciblés
+    // (DIAG_JOB_TARGETED_CONCURRENCY). Un global en cours, annulé, en cours d'arrêt ou orphelin
+    // à bail vivant n'occupe JAMAIS les places réservées : un ciblé n'attend pas sa fin.
+    const cap = laneCapacity({ total: running.length, global: running.filter((r) => r.is_global === true).length }, s);
+    const globalOk = lane === 'main' && cap.globalAllowed;
+    const targetedOk = cap.targetedAllowed;
+    const busy = (): DiagClaimBlock => (lane === 'targeted' ? 'TARGETED_SLOT_BUSY' : stopping ? 'GLOBAL_DIAGNOSTIC_STOPPING' : 'GLOBAL_SLOT_BUSY');
+    if (!globalOk && !targetedOk) return { job: null, blocked: busy() };
+    const only = opts.onlyId ? tx`AND t.id = ${opts.onlyId}::uuid` : tx``;
+    // Ordre : CIBLÉS d'abord (courts, demandés pour une analyse immédiate), puis le global le plus
+    // récent (seul éligible, garde défensive du lot 111C) ; à priorité égale, ordre d'arrivée.
     const [pick] = await tx<Raw[]>`
       SELECT * FROM admin_export_generations t
-       WHERE kind = 'TECH_DIAGNOSTIC' AND mode = ${DIAG_JOB_MODE} AND status = 'QUEUED' AND NOT cancel_requested
-         AND (next_attempt_at IS NULL OR next_attempt_at <= now())
-         AND NOT (coalesce(t.perimeter->>'scope', t.target_type, 'global') = 'global' AND (${globalRunning}::boolean OR EXISTS (
+       WHERE t.kind = 'TECH_DIAGNOSTIC' AND t.mode = ${DIAG_JOB_MODE} AND t.status = 'QUEUED' AND NOT t.cancel_requested
+         AND (t.next_attempt_at IS NULL OR t.next_attempt_at <= now())
+         AND (
+           (NOT ${tx.unsafe(IS_GLOBAL_SQL('t'))} AND ${targetedOk}::boolean)
+           OR (${tx.unsafe(IS_GLOBAL_SQL('t'))} AND ${globalOk}::boolean AND NOT EXISTS (
                SELECT 1 FROM admin_export_generations n
                 WHERE n.kind = 'TECH_DIAGNOSTIC' AND n.mode = ${DIAG_JOB_MODE} AND n.status IN ('QUEUED', 'RUNNING') AND NOT n.cancel_requested
-                  AND coalesce(n.perimeter->>'scope', n.target_type, 'global') = 'global' AND n.started_at > t.started_at)))
-         ${opts.onlyId ? tx`AND id = ${opts.onlyId}::uuid` : tx``}
-       ORDER BY started_at, id LIMIT 1 FOR UPDATE SKIP LOCKED`;
-    if (!pick) return { job: null, blocked: globalRunning ? (stopping ? 'GLOBAL_DIAGNOSTIC_STOPPING' : 'GLOBAL_SLOT_BUSY') : 'NO_ELIGIBLE_JOB' };
+                  AND ${tx.unsafe(IS_GLOBAL_SQL('n'))} AND n.started_at > t.started_at))
+         )
+         ${only}
+       ORDER BY (${tx.unsafe(IS_GLOBAL_SQL('t'))}) ASC, t.started_at, t.id LIMIT 1 FOR UPDATE SKIP LOCKED`;
+    if (!pick) {
+      // Rien de pris : file vide (pour cette voie), ou demandes retenues par la capacité.
+      const [waiting] = await tx<Raw[]>`
+        SELECT count(*)::int AS n FROM admin_export_generations t
+         WHERE t.kind = 'TECH_DIAGNOSTIC' AND t.mode = ${DIAG_JOB_MODE} AND t.status = 'QUEUED' AND NOT t.cancel_requested
+           AND (t.next_attempt_at IS NULL OR t.next_attempt_at <= now())
+           ${lane === 'targeted' ? tx`AND NOT ${tx.unsafe(IS_GLOBAL_SQL('t'))}` : tx``}
+           ${only}`;
+      return { job: null, blocked: Number(waiting?.n ?? 0) > 0 && running.length > 0 ? busy() : 'NO_ELIGIBLE_JOB' };
+    }
     const log = json<DiagJobAttempt[]>(pick.attempts_log, []);
     const attempt = Number(pick.attempt ?? 0) + 1;
     log.push({ attempt, worker: workerId, commit, startedAt: new Date().toISOString(), endedAt: null, outcome: null, errorCode: null, phase: 'PLANIFICATION' });
@@ -375,6 +405,7 @@ export async function claimNextDiagnosticJobDetailed(workerId: string, commit: s
       UPDATE admin_export_generations
          SET status = 'RUNNING', phase = 'PLANIFICATION', attempt = ${attempt}, locked_by = ${workerId},
              locked_until = now() + make_interval(secs => ${s.leaseSeconds}), heartbeat_at = now(), run_started_at = now(),
+             first_run_started_at = coalesce(first_run_started_at, now()), lane = ${lane}, phase_timings = NULL,
              next_attempt_at = NULL, build_commit = ${commit}, attempts_log = ${JSON.stringify(log)}::jsonb, finished_at = NULL,
              wait_reason = NULL, wait_reason_at = NULL
        WHERE id = ${String(pick.id)}::uuid RETURNING *`;
@@ -399,14 +430,27 @@ export async function renewDiagnosticLease(id: string, workerId: string, progres
  * le bail n'est plus à nous, `DiagJobError('CANCELLED')` si une annulation
  * est demandée (lot 111C : arrêt coopératif sans attendre le bail).
  */
-export async function setDiagnosticPhase(id: string, workerId: string, phase: DiagJobPhase, progress?: DiagJobProgress | null): Promise<void> {
+export async function setDiagnosticPhase(id: string, workerId: string, phase: DiagJobPhase, progress?: DiagJobProgress | null, timings?: unknown): Promise<void> {
   const sql = await db();
+  // Lot 111Q : profilage de la tentative (durées par étape) écrit à chaque changement d'étape.
   const rows = await sql<Raw[]>`
     UPDATE admin_export_generations SET phase = ${phase}, heartbeat_at = now(),
-           progress = COALESCE(${progress ? JSON.stringify(progress) : null}::jsonb, progress)
+           progress = COALESCE(${progress ? JSON.stringify(progress) : null}::jsonb, progress),
+           phase_timings = COALESCE(${timings ? JSON.stringify(timings) : null}::jsonb, phase_timings)
      WHERE id = ${id}::uuid AND locked_by = ${workerId} AND status = 'RUNNING' RETURNING cancel_requested`;
   if (!rows.length) throw new DiagLeaseLostError();
   if (rows[0].cancel_requested === true) throw new DiagJobError('CANCELLED', 'annulation demandée');
+}
+
+/** Lot 111Q : profilage final de la tentative (best effort, exige le bail ; jamais bloquant). */
+export async function saveDiagnosticTimings(id: string, workerId: string, timings: unknown): Promise<void> {
+  try {
+    const sql = await db();
+    await sql`UPDATE admin_export_generations SET phase_timings = ${JSON.stringify(timings)}::jsonb
+               WHERE id = ${id}::uuid AND locked_by = ${workerId} AND status = 'RUNNING'`;
+  } catch (e) {
+    console.error('[diagnostic-job] profilage non enregistré :', sanitizeErrorMessage(e));
+  }
 }
 
 export interface DiagJobOutcome {
@@ -524,9 +568,9 @@ export async function markDiagnosticJobPurged(id: string): Promise<void> {
 /** État de la file (observabilité sans générer de diagnostic). */
 export async function diagnosticQueueHealth(now: Date = new Date()): Promise<Raw> {
   const sql = await db();
-  const [cols] = await sql<Raw[]>`SELECT count(*)::int AS n FROM information_schema.columns WHERE table_name = 'admin_export_generations' AND column_name IN ('phase', 'locked_until', 'attempts_log', 'cancel_reason')`;
-  // Lot 111C : la migration 1200 (motif d'annulation, remplacement) est requise en plus de la 1035.
-  if (Number(cols?.n ?? 0) < 4) return { migrationApplied: false };
+  const [cols] = await sql<Raw[]>`SELECT count(*)::int AS n FROM information_schema.columns WHERE table_name = 'admin_export_generations' AND column_name IN ('phase', 'locked_until', 'attempts_log', 'cancel_reason', 'first_run_started_at')`;
+  // Lot 111C : la migration 1200 (motif d'annulation, remplacement) est requise en plus de la 1035 ; lot 111Q : la 1280.
+  if (Number(cols?.n ?? 0) < 5) return { migrationApplied: false };
   const byStatus = await sql<Raw[]>`
     SELECT status, count(*)::int AS n FROM admin_export_generations WHERE kind = 'TECH_DIAGNOSTIC' AND mode = ${DIAG_JOB_MODE} GROUP BY status`;
   const [oldest] = await sql<Raw[]>`
@@ -534,7 +578,7 @@ export async function diagnosticQueueHealth(now: Date = new Date()): Promise<Raw
        AND (next_attempt_at IS NULL OR next_attempt_at <= now())`;
   const running = await sql<Raw[]>`
     SELECT id::text, phase, attempt, max_attempts, locked_by, locked_until, heartbeat_at, progress, run_started_at, cancel_requested, cancel_reason, replaced_by::text AS replaced_by,
-           coalesce(perimeter->>'scope', target_type, 'global') AS scope
+           coalesce(perimeter->>'scope', target_type, 'global') AS scope, lane
       FROM admin_export_generations WHERE kind = 'TECH_DIAGNOSTIC' AND mode = ${DIAG_JOB_MODE} AND status = 'RUNNING' ORDER BY run_started_at`;
   const failures = await sql<Raw[]>`
     SELECT id::text, status, error_code, error_phase, error_at, error, attempt, max_attempts, build_commit, attempts_log, target_type, target_id
@@ -556,6 +600,7 @@ export async function diagnosticQueueHealth(now: Date = new Date()): Promise<Raw
         progress: json<DiagJobProgress | null>(r.progress, null),
         scope: String(r.scope ?? 'global'), cancelRequested: r.cancel_requested === true,
         cancelReason: r.cancel_reason == null ? null : String(r.cancel_reason), replacedBy: r.replaced_by == null ? null : String(r.replaced_by),
+        lane: r.lane == null ? null : String(r.lane),
       };
     }),
     recentFailures: failures.map((r) => ({
@@ -566,4 +611,19 @@ export async function diagnosticQueueHealth(now: Date = new Date()): Promise<Raw
     })),
     legacyRunning: Number(legacyRunning[0]?.n ?? 0),
   };
+}
+
+/**
+ * Lot 111Q — champs de la migration 1280 d'un travail (premier démarrage réel,
+ * voie, profilage) ; valeurs nulles si la migration n'est pas appliquée.
+ */
+export async function readDiagnosticJobExtras(id: string): Promise<{ firstRunStartedAt: string | null; lane: string | null; phaseTimings: unknown | null }> {
+  const sql = await db();
+  try {
+    const [r] = await sql<Raw[]>`SELECT first_run_started_at, lane, phase_timings FROM admin_export_generations WHERE id = ${id}::uuid`;
+    return { firstRunStartedAt: iso(r?.first_run_started_at), lane: r?.lane == null ? null : String(r.lane), phaseTimings: json<unknown | null>(r?.phase_timings, null) };
+  } catch (e) {
+    if ((e as { code?: string })?.code === '42703') return { firstRunStartedAt: null, lane: null, phaseTimings: null };
+    throw e;
+  }
 }

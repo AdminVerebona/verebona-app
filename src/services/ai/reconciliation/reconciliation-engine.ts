@@ -85,6 +85,7 @@ export async function reconcileAsset(input: ReconcileInput): Promise<Reconciliat
   try {
     const run = await runEngine(input, runId, traceId, rec);
     await reconcileAgendaStatusAfter(input);
+    await projectCilAfter(input);
     await rapport();
     return run;
   } catch (e) {
@@ -122,6 +123,25 @@ async function reconcileAgendaStatusAfter(input: ReconcileInput): Promise<void> 
     const { isExecutionCancelled } = await import('../queue/execution-control');
     if (isExecutionCancelled(e)) throw e;
     console.error('[reconciliation] réconciliation de statut agenda (non bloquante) :', (e as Error).message);
+  }
+}
+
+/**
+ * Lot 111U (CIL) — même travail T3 : les faits T1 PERSISTÉS des documents
+ * énergétiques du bien (DPE, audit…) alimentent de façon déterministe les
+ * structures CIL spécialisées (`energy_materials`, `equipments` /
+ * `equipment_cil_specs` ; jamais `energy_works` depuis une recommandation).
+ * Idempotent, sans IA, protections USER / ADMIN. Jamais bloquant.
+ */
+async function projectCilAfter(input: ReconcileInput): Promise<void> {
+  await assertJobActive('projection CIL');
+  try {
+    const { projectCilDocumentsForAsset } = await import('@/services/cil/projection/document-projection');
+    await projectCilDocumentsForAsset({ accountId: input.accountId, assetId: input.assetId });
+  } catch (e) {
+    const { isExecutionCancelled } = await import('../queue/execution-control');
+    if (isExecutionCancelled(e)) throw e;
+    console.error('[reconciliation] projection CIL (non bloquante) :', (e as Error).message);
   }
 }
 

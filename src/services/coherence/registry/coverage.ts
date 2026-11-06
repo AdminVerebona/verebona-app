@@ -49,7 +49,9 @@ export const COVERAGE_INVENTORY: readonly CoverageEntry[] = [
     domain: 'operations', label: 'Opérations (identité économique, montants, regroupements)',
     checks: [...O1, 'COH-OPS-IDENTITY', 'COH-OPS-RECURRING-SERIES', 'COH-OPS-ACQUISITION-DATE', 'COH-OPS-CONTRACT-DATES',
       // Lot 109A : fournisseurs prouvés des Opérations persistés, sans héritage fantôme après fusion.
-      'COH-OPERATION-RELATIONS'],
+      'COH-OPERATION-RELATIONS',
+      // Lot 111S : acquisition prouvée par un document matérialisée (Opération, liens, historique « Achat »).
+      'COH-OPS-ACQUISITION-DOCUMENT'],
     // Lot 86C : doublons ENTRE Opérations d'une même relation contractuelle (COH-OPS-IDENTITY v2, réexamen T3)
     // et dates de contrat issues de périodes facturées (COH-OPS-CONTRACT-DATES) — contrôlés et réparés.
     // Lot 85E : acquisition réalisée sans date alors que la date du bien est connue — contrôlée et réparée (T3 du bien puis T4).
@@ -101,7 +103,9 @@ export const COVERAGE_INVENTORY: readonly CoverageEntry[] = [
     domain: 'biens', label: 'Biens',
     checks: ['COH-TCO-EXTRACTED-EXPENSES', 'COH-ASSET-EQUIPMENT-SEPARATION', 'COH-OPS-ACQUISITION-DATE', 'COH-MISSING-PROPERTIES',
       // Lot 107D : prix d'achat jamais alimenté par le total d'un justificatif à plusieurs articles (bien et équipements).
-      'COH-PRICE-MULTI-ARTICLE'],
+      'COH-PRICE-MULTI-ARTICLE',
+      // Lot 111U : faits des documents énergétiques (DPE…) projetés dans les structures CIL (matériaux, équipements).
+      'COH-CIL-DOCUMENT-PROJECTION'],
     // Lot 85E : la date d'acquisition du bien est reportée sur l'achat réalisé resté sans date (et son événement de référence).
     // Lot 88B : toute propriété canonique VIDE du bien (prix d'acquisition compris) est reprise à partir des documents, Opérations,
     // montants, Agenda et preuves connus — arbitrage T3, écriture canonique ou abstention tracée (COH-MISSING-PROPERTIES).

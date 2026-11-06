@@ -81,6 +81,8 @@ import { computeProvenance, isDurableRelationType, type AttributeProvenance, typ
 import { rejectedSubjects } from '../grouping/decisions';
 import { runnerContext, structuralTargetAllowedFor, syncOperationRoomsFromT3 } from '../grouping/service';
 import { drizzleRunner } from '../grouping/runner';
+// Lot 111S : corroboration d'une facture d'achat par la preuve canonique de la fiche.
+import { acquisitionEvidenceIndex, acquisitionEvidenceSql, type AcquisitionEvidenceIndex } from './acquisition-corroboration';
 // Lot 109A : relation Opération ↔ fournisseur (preuves documentaires), écrite par T3 dans sa transaction.
 import { syncOperationSuppliers } from '@/services/relations/operation-suppliers';
 
@@ -212,8 +214,12 @@ async function loadCandidates(tx: DbTx, accountId: number, fileId: number): Prom
  * Lot 109D : contexte DOCUMENTAIRE de l'identité d'un candidat — candidats actifs et établis du même document,
  * montant TTC du document, date de référence (qualification des montants au niveau du document).
  */
-function documentIdentityContext(file: FileRow | null, candidats: readonly CandidateRow[], today: string) {
-  return { documentCandidates: candidats.filter((x) => x.status === 'ACTIVE' && x.established), documentTotalMinor: file?.amountCents ?? null, today };
+function documentIdentityContext(file: FileRow | null, candidats: readonly CandidateRow[], today: string, actx?: Pick<AssetContext, 'acquisitionEvidence'>) {
+  return {
+    documentCandidates: candidats.filter((x) => x.status === 'ACTIVE' && x.established), documentTotalMinor: file?.amountCents ?? null, today,
+    // Lot 111S : preuves canoniques d'acquisition des cibles (corroboration d'une facture d'achat restée « probable »).
+    ...(actx?.acquisitionEvidence ? { acquisitionEvidence: actx.acquisitionEvidence } : {}),
+  };
 }
 
 /** Lot 109D : candidats actifs d'un document, en LECTURE (aucun verrou) — contexte documentaire de l'identité. */
@@ -248,7 +254,7 @@ export async function prepareOperationMatch(accountId: number, candidateId: numb
     const ids = targetIdsOf([c], file.assetId);
     const actx = await loadAssetContext(tx, accountId, ids.assets, ids.equipments, ids.rooms);
     const identity = buildCandidateIdentity(c, { fileAssetId: file.assetId, liveAssetIds: actx.live, equipmentAssets: actx.equipments, roomAssets: actx.rooms, providerCanonical: actx.providers,
-      ...documentIdentityContext(file, await loadActiveCandidatesRead(tx, accountId, c.fileId), todayUtc()) });
+      ...documentIdentityContext(file, await loadActiveCandidatesRead(tx, accountId, c.fileId), todayUtc(), actx) });
     // Lot 53 (D7) : le LOT courant de l'examen progressif (au plus 5 Opérations),
     // à défaut (trace antérieure au lot 53) les Opérations plausibles.
     const lot = (c.t3Detail?.m3Batch ?? c.t3Detail?.plausible) as unknown[] | undefined;
@@ -291,6 +297,8 @@ interface AssetContext {
   live: Set<number>; status: Map<number, string>; equipments: Map<number, number>; rooms: Map<number, number>;
   /** Lot 86C : désignations équivalentes d'un prestataire (preuves du compte) → clé canonique. */
   providers: ReadonlyMap<string, string>;
+  /** Lot 111S : preuves canoniques d'acquisition des biens / équipements du contexte (`acquisition-corroboration.ts`). */
+  acquisitionEvidence?: AcquisitionEvidenceIndex;
 }
 
 /** Lot 86C : la clé d'un prestataire a-t-elle été remplacée par une clé canonique équivalente ? */
@@ -362,6 +370,11 @@ export async function loadAssetContext(tx: DbTx, accountId: number, assetIds: nu
       ctx.live.add(Number(x.id));
       ctx.status.set(Number(x.id), x.status ?? 'EN_SERVICE');
     }
+  }
+  // Lot 111S : preuves canoniques d'acquisition (date / prix d'achat) des cibles vivantes, par document.
+  if (ctx.live.size || ctx.equipments.size) {
+    const p = await rows<Row>(tx, sql.raw(acquisitionEvidenceSql(accountId, [...ctx.live], [...ctx.equipments.keys()])));
+    ctx.acquisitionEvidence = acquisitionEvidenceIndex(p as never);
   }
   return ctx;
 }
@@ -675,7 +688,7 @@ async function contributionOf(tx: DbTx, accountId: number, s: OpSource, agenda?:
   const ids = targetIdsOf([c], file.assetId);
   const actx = await loadAssetContext(tx, accountId, ids.assets, ids.equipments, ids.rooms);
   const identity = buildCandidateIdentity(c, { fileAssetId: file.assetId, liveAssetIds: actx.live, equipmentAssets: actx.equipments, roomAssets: actx.rooms, providerCanonical: actx.providers,
-    ...documentIdentityContext(file, tousCandidats, agenda?.today ?? todayUtc()) });
+    ...documentIdentityContext(file, tousCandidats, agenda?.today ?? todayUtc(), actx) });
   // Lot 109D : candidat qui ne porte qu'une remise intégrée au net d'un autre achat du document — jamais une réalité
   // propre (faux avoir historique) : sa source est retirée (tracée), l'Opération n'est maintenue que par ses autres preuves.
   if (!identity.established) return { withdrawn: 'COMMERCIAL_ADJUSTMENT_INTEGRATED' };
@@ -1487,7 +1500,7 @@ export async function previewSeriesGrouping(accountId: number, fileIds: readonly
       const actx = await loadAssetContext(tx, accountId, tids.assets, tids.equipments, tids.rooms);
       for (const c of actifs) {
         const identity = buildCandidateIdentity(c, { fileAssetId: file.assetId, liveAssetIds: actx.live, equipmentAssets: actx.equipments, roomAssets: actx.rooms, providerCanonical: actx.providers,
-          ...documentIdentityContext(file, actifs, todayUtc()) });
+          ...documentIdentityContext(file, actifs, todayUtc(), actx) });
         const memeSource = docSources.filter((s) => s.key === c.candidateKey && s.active && !s.opMerged && !s.opInvalidated);
         if (!memeSource.length) continue;
         const dec = await loadDecisions(tx, accountId, fileId, c.candidateKey);
@@ -1598,7 +1611,7 @@ export async function previewOperationDuplicates(accountId: number, operationIds
         const tids = targetIdsOf([c], file.assetId);
         const actx = await loadAssetContext(tx, accountId, tids.assets, tids.equipments, tids.rooms);
         const identity = buildCandidateIdentity(c, { fileAssetId: file.assetId, liveAssetIds: actx.live, equipmentAssets: actx.equipments, roomAssets: actx.rooms, providerCanonical: actx.providers,
-          ...documentIdentityContext(file, candidatsDoc, todayUtc()) });
+          ...documentIdentityContext(file, candidatsDoc, todayUtc(), actx) });
         const memeSource = docSources.filter((s) => s.key === c.candidateKey && s.active && !s.opMerged && !s.opInvalidated);
         if (!memeSource.length) continue;
         const dec = await loadDecisions(tx, accountId, fileId, c.candidateKey);
@@ -1792,7 +1805,7 @@ export async function consolidateDocument(accountId: number, fileId: number, opt
       // Lot 78A (§2A) : identités de tous les candidats actifs du document, et
       // Opérations où chacun a déjà sa source (doublons d'un même document à la réanalyse).
       const identites = new Map(actifs.map((c) => [c.id, buildCandidateIdentity(c, { fileAssetId: file?.assetId ?? null, liveAssetIds: actx.live, equipmentAssets: actx.equipments, roomAssets: actx.rooms, providerCanonical: actx.providers,
-        ...documentIdentityContext(file, actifs, today) })]));
+        ...documentIdentityContext(file, actifs, today, actx) })]));
       const opsDuDocument = new Map<number, CandidateIdentity[]>();
       for (const s of docSources.filter((x) => x.active && !x.opMerged && !x.opInvalidated)) {
         const autre = actifs.find((x) => x.candidateKey === s.key);

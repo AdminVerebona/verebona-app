@@ -167,31 +167,35 @@ describe('L111G-REND — rendu', () => {
 });
 
 describe('L111G-SRC — comportement inchangé, pas de fermeture automatique', () => {
+  // Lot 111T : la forme de la fenêtre est commune (NativeOfferDialog) aux deux invitations.
   const card = code('src/components/native/BiometricOfferCard.tsx');
+  const shell = code('src/components/native/NativeOfferDialog.tsx');
   const glyph = code('src/components/native/BiometricGlyph.tsx');
-  const hook = code('src/components/native/useBiometricOffer.ts');
+  const flow = code('src/lib/native/biometric-offer-flow.ts');
 
   it('aucune minuterie, aucune fermeture par le fond ni par Échap', () => {
-    for (const src of [card, glyph]) expect(src).not.toMatch(/setTimeout|setInterval|requestAnimationFrame/);
-    expect(card).not.toMatch(/Escape/);
-    expect(card.match(/onClick=/g)).toHaveLength(2); // seulement « Activer » et « Plus tard »
-    expect(card).toMatch(/onClick=\{onActivate\}/);
-    expect(card).toMatch(/onClick=\{onLater\}/);
+    for (const src of [card, shell, glyph]) expect(src).not.toMatch(/setTimeout|setInterval|requestAnimationFrame/);
+    expect(card + shell).not.toMatch(/Escape/);
+    expect(shell.match(/onClick=/g)).toHaveLength(2); // seulement l'action principale et « Plus tard »
+    expect(shell).toMatch(/onClick=\{onPrimary\}/);
+    expect(shell).toMatch(/onClick=\{onLater\}/);
+    expect(card).toMatch(/onPrimary=\{onActivate\}/);
+    expect(card).toMatch(/onLater=\{onLater\}/);
   });
 
   it('focus initial sur le titre', () => {
-    expect(card).toMatch(/title\.current\?\.focus\(\)/);
+    expect(shell).toMatch(/title\.current\?\.focus\(\)/);
   });
 
   it('pas d’image de tiers', () => {
-    expect(card + glyph).not.toMatch(/<img|lucide-react|\.png|\.svg['"]/);
+    expect(card + shell + glyph).not.toMatch(/<img|lucide-react|\.png|\.svg['"]/);
   });
 
-  it('conditions d’affichage et mémorisation inchangées dans le hook', () => {
-    expect(hook).toMatch(/!shouldOfferBiometrics\(\{ \.\.\.input, setting \}\)/);
-    expect(hook).toMatch(/await deferBiometrics\(userId, 'offered'\);[\s\S]*setOffer\(/);
-    expect(hook).toMatch(/changeBiometrics\(true, offer\.userId\)/);
-    expect(hook).toMatch(/deferBiometrics\(offer\.userId, 'later'\)/);
-    expect(hook).toMatch(/visible: !!offer && !blocked/);
+  it('conditions d’affichage et mémorisation (lot 111T : notée à l’affichage réel)', () => {
+    expect(flow).toMatch(/shouldOfferBiometrics\(\{ \.\.\.c, sessionStatus: 'authenticated', setting \}\)/);
+    expect(flow).toMatch(/deps\.defer\(userId, 'offered'\)/);
+    expect(flow).toMatch(/changeBiometrics\(true, userId\)/);
+    expect(flow).toMatch(/deps\.defer\(o\.userId, 'later'\)/);
+    expect(flow).toMatch(/const visible = mine && !c\.blocked/);
   });
 });

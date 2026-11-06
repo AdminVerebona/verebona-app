@@ -47,9 +47,13 @@ describe('PO-D17 — statuts distincts, jamais « réalisé » sur la seule date
     // Lot 84C : la vue d'ensemble lit sa Timeline par `services/agenda/timeline` (même règle).
     const overview = lire('src/app/api/assets/[id]/overview/route.ts');
     expect(overview).toContain("from '@/services/agenda/timeline/read'");
+    // Lot 111R (décision ticket « Timeline/Agenda statut effectif ») : la Timeline
+    // n'a plus de règle propre — statut effectif CANONIQUE (preuve comprise),
+    // indicateurs dérivés de ce statut.
     const timeline = lire('src/services/agenda/timeline/model.ts');
-    expect(timeline).toContain("isDone: r.manual_status === 'realise',");
-    expect(timeline).toMatch(/toConfirm: ouvert && historique/);
+    expect(timeline).toContain('const effectiveStatus = computeEffectiveStatus({');
+    expect(timeline).toContain('...effectiveStatusFlags(effectiveStatus),');
+    expect(timeline).not.toMatch(/isDone: r\.manual_status === 'realise'/);
   });
 
   it('PO-D17-04 — desktop ET mobile : toutes les vues affichent le statut reçu avec les libellés partagés, « à confirmer » compris', () => {
@@ -73,8 +77,10 @@ describe('PO-D17 — statuts distincts, jamais « réalisé » sur la seule date
     expect(fiche).toContain('variant="desktop"');
     expect(fiche).toContain('variant="mobile"');
     const timeline = lire('src/components/assets/timeline/AssetTimeline.tsx');
-    expect(timeline.match(/> · statut à confirmer</g)?.length).toBe(1);
     expect(timeline.match(/item\.toConfirm\s*\n?\s*\?/g)?.length ?? 0).toBeGreaterThanOrEqual(1);
-    expect(timeline).toMatch(/item\.toConfirm && <span[^>]*> · statut à confirmer<\/span>/);
+    // Lot 111R : mention écrite issue du statut effectif reçu (libellés partagés) —
+    // « statut à confirmer », « réalisé », « date échue » ; une seule ligne d'élément.
+    expect(timeline).toContain('effectiveStatusLabel(s).toLowerCase()');
+    expect(timeline.match(/\{mention && <span className=\{mention\.tone\}> · \{mention\.text\}<\/span>\}/g)?.length).toBe(1);
   });
 });

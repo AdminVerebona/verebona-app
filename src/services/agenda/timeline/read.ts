@@ -26,6 +26,7 @@
  * Volume lu borné par la Timeline du bien (index `agenda_asset_links` par
  * bien) ; volume rendu borné par la page. Plan vérifié par l'e2e L84C-E08.
  */
+import { validCompletionProofSql } from '@/services/agenda/completion-proof';
 import {
   DEFAULT_TIMELINE_MODE, decodeTimelineCursor, TIMELINE_PAGE_DEFAULT, TIMELINE_PAGE_MAX, compareTimelineItems, encodeTimelineCursor, timelineItemView,
   type TimelineCursor, type TimelineEntry, type TimelineGroupCounters, type TimelineItemRow, type TimelineItemView, type TimelineMode, type TimelinePage,
@@ -43,6 +44,15 @@ async function defaultQuery(): Promise<TimelineQuery> {
 const NOT_CANCELLED = `(ai.manual_status IS NULL OR ai.manual_status <> 'annule')`;
 
 /**
+ * Lot 111R : colonnes du statut effectif CANONIQUE (même calcul que l'Agenda,
+ * `computeEffectiveStatus`) — heure / fin de l'élément et preuve de
+ * réalisation VALIDE (`completion-proof.ts`), lue dans la MÊME requête
+ * (lectures par clé, jamais une requête par élément).
+ */
+const TIME_COLUMNS = `ai.start_time::text AS start_time, to_char(ai.end_date, 'YYYY-MM-DD') AS end_date, ai.end_time::text AS end_time`;
+const STATUS_COLUMNS = `${TIME_COLUMNS}, ${validCompletionProofSql('ai')} AS completion_proven`;
+
+/**
  * $1 compte, $2 bien, $3 mode ('grouped' | 'detailed'), $4 date du curseur
  * (AAAA-MM-JJ | '-infinity' | NULL), $5 id du curseur, $6 limite (+1).
  */
@@ -50,6 +60,7 @@ export const TIMELINE_PAGE_SQL = `
 WITH items AS MATERIALIZED (
   SELECT ai.id, ai.title, ai.start_date AS d, to_char(ai.start_date, 'YYYY-MM-DD') AS start_date,
          ai.manual_status, ai.origin_field_key, ai.event_nature, ai.business_type,
+         ${TIME_COLUMNS}, ai.account_id, ai.completion_proof_file_id,
          -- Sous-requête SCALAIRE corrélée (jamais « hachée » sur toute la table) :
          -- une lecture par clé primaire, pour les seuls éléments rattachés.
          CASE WHEN ai.business_operation_id IS NOT NULL THEN (
@@ -71,6 +82,8 @@ WITH items AS MATERIALIZED (
    WHERE $3 = 'detailed' OR h.head IS NULL OR h.head = h.id
 )
 SELECT e.id, e.title, e.start_date, e.manual_status, e.origin_field_key, e.event_nature, e.business_type,
+       -- Lot 111R : preuve de réalisation valide (lectures par clé ; PostgreSQL la reporte après le tri et la limite).
+       e.start_time, e.end_date, e.end_time, ${validCompletionProofSql('e')} AS completion_proven,
        e.op, e.is_head, e.sort_date::text AS sort_key, count(*) OVER () AS remaining
   FROM entries e
  WHERE $4::date IS NULL OR (e.sort_date, e.id) < ($4::date, $5::int)
@@ -80,7 +93,7 @@ SELECT e.id, e.title, e.start_date, e.manual_status, e.origin_field_key, e.event
 /** Éléments liés masqués des têtes de la page ($3 : Opérations, $4 : têtes). */
 export const TIMELINE_MEMBERS_SQL = `
 SELECT ai.id, ai.title, to_char(ai.start_date, 'YYYY-MM-DD') AS start_date, ai.manual_status, ai.origin_field_key,
-       ai.event_nature, ai.business_type, ai.business_operation_id AS op
+       ai.event_nature, ai.business_type, ${STATUS_COLUMNS}, ai.business_operation_id AS op
   FROM agenda_items ai
  WHERE ai.business_operation_id = ANY($3::bigint[]) AND ai.account_id = $1 AND ${NOT_CANCELLED}
    AND ai.id <> ALL($4::int[])
@@ -123,6 +136,11 @@ interface ReadTimelineInput {
   limit?: number;
   /** Date de référence (AAAA-MM-JJ) des états « en retard » / « à confirmer ». */
   today: string;
+  /**
+   * Lot 111R : instant de référence (la route passe l'instant de la requête,
+   * comme l'Agenda). Absent : début de la journée `today` (export, tests).
+   */
+  now?: Date;
   q?: TimelineQuery;
 }
 
@@ -138,6 +156,7 @@ export async function readAssetTimelinePage(input: ReadTimelineInput): Promise<T
   const mode = input.mode ?? DEFAULT_TIMELINE_MODE;
   const limit = Math.max(1, Math.min(input.limit ?? TIMELINE_PAGE_DEFAULT, TIMELINE_PAGE_MAX));
   const c = input.cursor && input.cursor.mode === mode ? input.cursor : null;
+  const ref = input.now ?? input.today;
   const rows = await q(TIMELINE_PAGE_SQL, [input.accountId, input.assetId, mode, c?.sortDate ?? null, c?.id ?? null, limit + 1]);
   const page = rows.slice(0, limit);
   const last = page[page.length - 1];
@@ -158,7 +177,7 @@ export async function readAssetTimelinePage(input: ReadTimelineInput): Promise<T
     for (const r of mRows) {
       const op = Number(r.op);
       const list = members.get(op) ?? [];
-      list.push(timelineItemView(r as unknown as TimelineItemRow, input.today));
+      list.push(timelineItemView(r as unknown as TimelineItemRow, ref));
       members.set(op, list);
     }
     for (const r of cRows) {
@@ -169,7 +188,7 @@ export async function readAssetTimelinePage(input: ReadTimelineInput): Promise<T
   }
 
   const entries: TimelineEntry[] = page.map((r) => {
-    const view = timelineItemView(r as unknown as TimelineItemRow, input.today);
+    const view = timelineItemView(r as unknown as TimelineItemRow, ref);
     if (r.is_head !== true) return { kind: 'item', ...view };
     const op = Number(r.op);
     const ms = (members.get(op) ?? []).sort(compareTimelineItems);

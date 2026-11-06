@@ -371,6 +371,8 @@ export async function planDiagnosticEngine(kit: DiagPlanKit, f: DiagFilter): Pro
     return null;
   };
   const results = new Map<string, RefResult>();
+  const seenIndex = new Map<string, { fermeture: Set<string>; absentes: Set<string> }>();
+  const seenOf = (key: string) => { let x = seenIndex.get(key); if (!x) { x = { fermeture: new Set(), absentes: new Set() }; seenIndex.set(key, x); } return x; };
   const closure = new Map<string, Map<string, Set<string>>>();
   let paramN = 0;
   /** Filtre « ligne dont `col` vaut l'une des valeurs » (OR sur les colonnes), paramètres nommés frais. */
@@ -395,6 +397,9 @@ export async function planDiagnosticEngine(kit: DiagPlanKit, f: DiagFilter): Pro
         const key = `${r.from}.${r.column}->${r.to}.${r.toColumn}|${r.when ?? ''}`;
         if (!results.has(key)) results.set(key, { ...r, valeurs: 0, resolues: 0, fermeture: [], externes: 0, versTableExclue: 0, horsPerimetre: 0, absentes: [] });
         const out = results.get(key)!;
+        // Lot 111Q : appartenance en O(1) (index à côté des listes, contenu et ordre des listes inchangés) —
+        // la recherche linéaire `includes` à chaque valeur était quadratique sur les grandes fermetures.
+        const seen = seenOf(key);
         const srcSql = `SELECT DISTINCT ${refValueExpr(r)} AS v FROM ${ident(r.from)} t WHERE (${src.filter})${r.when ? ` AND (${r.when})` : ''}`;
         try {
           const main = filterOf.get(r.to) ?? null;
@@ -403,7 +408,7 @@ export async function planDiagnosticEngine(kit: DiagPlanKit, f: DiagFilter): Pro
             const n = await s.savepoint(() => qn(`SELECT count(*)::int AS n FROM (${srcSql}) x WHERE v IS NOT NULL`, src.values));
             const k = Number(n[0]?.n ?? 0);
             out.valeurs += k;
-            if (k && !out.absentes.includes('(table cible absente de la base)')) out.absentes.push('(table cible absente de la base)');
+            if (k && !seen.absentes.has('(table cible absente de la base)')) { seen.absentes.add('(table cible absente de la base)'); out.absentes.push('(table cible absente de la base)'); }
             out.motif = 'table cible absente';
             continue;
           }
@@ -433,7 +438,7 @@ export async function planDiagnosticEngine(kit: DiagPlanKit, f: DiagFilter): Pro
           const existantes = ((agg?.existantes ?? []) as unknown[]).map(String);
           const manquantes = ((agg?.manquantes ?? []) as unknown[]).map(String);
           for (const v of existantes) {
-            if (!out.fermeture.includes(v)) out.fermeture.push(v);
+            if (!seen.fermeture.has(v)) { seen.fermeture.add(v); out.fermeture.push(v); }
             const have = closure.get(r.to)?.get(r.toColumn);
             if (have?.has(v)) continue;
             if (!closure.has(r.to)) closure.set(r.to, new Map());
@@ -444,7 +449,7 @@ export async function planDiagnosticEngine(kit: DiagPlanKit, f: DiagFilter): Pro
             next.get(r.to)!.get(r.toColumn)!.add(v);
           }
           if (external) { out.externes += manquantes.length; if (manquantes.length) out.motif = `hors filtre attendu : ${external}`; }
-          else for (const v of manquantes) if (!out.absentes.includes(v)) out.absentes.push(v);
+          else for (const v of manquantes) if (!seen.absentes.has(v)) { seen.absentes.add(v); out.absentes.push(v); }
         } catch (e) {
           if (isReadOnlyViolation(e)) throw e;
           out.erreur = describe(e);

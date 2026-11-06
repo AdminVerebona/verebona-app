@@ -1,6 +1,7 @@
 "use client"
 
 import React, { useState, useEffect, useCallback, useMemo } from 'react';
+import { subscribeAgendaStatusSources } from '@/lib/agenda/agenda-status-events';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
@@ -316,11 +317,9 @@ export function AssetOverviewTab({ assetId, onTabChange, readOnly = false }: Pro
   useEffect(() => { load(); }, [load]);
 
   // Refresh immediately when any agenda item is mutated (status change, edit, delete)
-  useEffect(() => {
-    const handler = () => load(true);
-    window.addEventListener('agenda-mutated', handler);
-    return () => window.removeEventListener('agenda-mutated', handler);
-  }, [load]);
+  // Lot 111R : aussi quand une preuve de réalisation peut changer (document
+  // supprimé, analyse terminée) — la Timeline relit le statut effectif.
+  useEffect(() => subscribeAgendaStatusSources(() => load(true)), [load]);
 
   // Lot 84C — POINT D'APPEL UNIQUE des tiroirs depuis la Timeline (desktop et
   // mobile) : élément seul, groupe (son élément principal) ou élément d'un

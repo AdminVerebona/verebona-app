@@ -37,6 +37,7 @@
  *     plusieurs documents n'est qu'une composante (empreinte sans référence).
  * ══════════════════════════════════════════════════════════════════════════
  */
+import { corroborateAcquisition, type AcquisitionEvidenceIndex, type Corroboration } from './acquisition-corroboration';
 import { createHash } from 'node:crypto';
 import {
   isBusinessOperationStatus, isIsoCurrency, isIsoDate, isMinorAmount, normalizeBusinessReference, normalizeOperationTypeHint,
@@ -128,6 +129,12 @@ interface IdentityContext {
    * canonique. Absent : comparaison historique (égalité des clés).
    */
   providerCanonical?: ReadonlyMap<string, string>;
+  /**
+   * Lot 111S : preuves canoniques d'acquisition (cible → documents qui en sont
+   * la preuve active et certaine, `acquisition-corroboration.ts`). Absent :
+   * aucune corroboration.
+   */
+  acquisitionEvidence?: AcquisitionEvidenceIndex;
 }
 
 // ── Identité candidate ─────────────────────────────────────────────────────
@@ -186,6 +193,11 @@ export interface CandidateIdentity {
    * Lot 47B : identité d'un élément d'AGENDA saisi / corrigé par
    * l'utilisateur (source AGENDA, `agenda-source.ts`).
    */
+  /**
+   * Lot 111S : candidat corroboré par la preuve canonique d'acquisition de CE
+   * document sur SA cible (`acquisition-corroboration.ts`) — trace.
+   */
+  corroboration?: Corroboration;
   agenda?: {
     itemId: number;
     /** Date de réalisation portée par l'élément (non future), si « réalisé ». */
@@ -261,15 +273,24 @@ export function buildCandidateIdentity(c: CandidateRecord, ctx: IdentityContext)
   // Lot 86C : désignation équivalente (preuves du compte) → clé canonique ; l'origine reste tracée.
   const brute = normalizeProvider(p.provider);
   const canon = brute !== null ? ctx.providerCanonical?.get(brute) ?? brute : null;
+  const established = c.established && !ajuste.adjustmentOnly;
+  const type = normalizeOperationTypeHint(c.typeHint);
+  const status = ajuste.paidOrder ? 'REALIZED' : statusOfSource(c.statusHint, role);
+  // Lot 111S : facture d'achat de la cible prouvée par la fiche (preuve canonique de CE document) — voir le module.
+  const corroboration = corroborateAcquisition({
+    fileId: c.fileId, established, confidence: c.confidence, type, status, role, assetIds, equipmentIds,
+    documentEstablished: (ctx.documentCandidates ?? [c]).filter((x) => x.established).length,
+  }, ctx.acquisitionEvidence);
   return {
     candidateId: c.id,
     candidateKey: c.candidateKey,
     fileId: c.fileId,
     // Lot 109D : un candidat qui ne porte qu'une remise intégrée au net d'un autre achat du document n'est pas une réalité propre.
-    established: c.established && !ajuste.adjustmentOnly,
-    confidence: c.confidence,
-    type: normalizeOperationTypeHint(c.typeHint),
-    status: ajuste.paidOrder ? 'REALIZED' : statusOfSource(c.statusHint, role),
+    established,
+    confidence: corroboration?.confidence ?? c.confidence,
+    type: corroboration?.type ?? type,
+    status,
+    ...(corroboration ? { corroboration } : {}),
     role,
     summary: c.summary,
     provider: p.provider?.trim() || null,

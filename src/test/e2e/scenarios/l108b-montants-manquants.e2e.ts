@@ -72,13 +72,14 @@ scenario('L108B', 'TCO — montants inconnus récupérés automatiquement avant 
     const avant = await tco(c, v.id);
     expect(avant.reliability.warnings).not.toContain('AMOUNTS_UNKNOWN');
     expect(avant.reliability.warnings).toContain('AMOUNTS_RECOVERY_PENDING');
-    expect(avant.amountRecovery).toMatchObject({ inProgress: 1, items: [{ fileId: f, state: 'IN_PROGRESS' }] });
+    // Lot 111V (§D) : aucun contrôle passé, aucun travail en file → « vérification à venir » (jamais « lecture en cours »).
+    expect(avant.amountRecovery).toMatchObject({ inProgress: 1, items: [{ fileId: f, state: 'WAITING' }] });
     expect(avant.status).toBe('INCOMPLETE');
     expect(avant.summary.cumulativeCostCents).toBe(30_000);
     const route = await getTco(c, v.id);
     expect(route.status).toBe(200);
     expect(route.body.tco.warningLabels.join(' ')).not.toMatch(/montant lisible|Lecture automatique/);
-    expect(route.body.tco.amountRecovery.items).toEqual([{ fileId: f, title: 'Révision (illisible)', state: 'IN_PROGRESS' }]);
+    expect(route.body.tco.amountRecovery.items).toEqual([{ fileId: f, title: 'Révision (illisible)', state: 'WAITING' }]);
     // La consultation n'écrit rien et ne relance rien.
     expect(await etat(f)).toBeNull();
     expect(await jobsT1(f)).toHaveLength(0);
@@ -169,7 +170,8 @@ scenario('L108B', 'TCO — montants inconnus récupérés automatiquement avant 
     const alertes = await computeCoherenceAlerts(new Date(), pgClient);
     expect(alertes.some((a) => a.fingerprint.includes(CHECK.toLowerCase()) && a.fingerprint.includes('amount_recovery_technical_failure'))).toBe(true);
     const t = await tco(c, v.id);
-    expect(t.amountRecovery?.items[0]).toMatchObject({ fileId: f, state: 'IN_PROGRESS' });
+    // Lot 111V (§D) : échec technique avec reprise permise → « nouvelle tentative prévue » (date de reprise), état neutre.
+    expect(t.amountRecovery?.items[0]).toMatchObject({ fileId: f, state: 'RETRY_SCHEDULED', nextAttemptAt: expect.any(String) });
     expect(t.reliability.warnings).not.toContain('AMOUNTS_UNKNOWN');
     expect(await cartes(c)).toBe(0);
   });

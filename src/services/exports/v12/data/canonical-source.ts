@@ -334,8 +334,12 @@ interface CanonicalAgendaRow {
 /** Agenda du bien avec nature (D-14) et statut à 4 états (T4-12). */
 export async function loadCanonicalAgenda(accountId: number, assetId: number, today: string): Promise<CanonicalAgendaRow[]> {
   const col = await agendaFunctionalColumnsReady().catch(() => false);
+  // Lot 111R : preuve de réalisation valide (expression canonique de l'Agenda et de la Timeline).
+  const { validCompletionProofSelect } = await import('@/services/agenda/completion-proof');
+  const preuve = await validCompletionProofSelect('i').catch(() => 'false');
   const rows = (await pgClient.unsafe(
     `SELECT i.id, i.title, i.description, to_char(i.start_date, 'YYYY-MM-DD') AS "startDate", i.manual_status AS "manualStatus",
+            ${preuve} AS "completionProven",
             i.occurrence_nature AS "occurrenceNature", i.origin_field_key AS "originFieldKey",
             ${col ? 'i.event_nature' : 'NULL::text'} AS "eventNature", ${col ? 'i.business_type' : 'NULL::text'} AS "businessType",
             EXISTS (SELECT 1 FROM to_process_actions t WHERE t.account_id = i.account_id AND t.target_type = 'AGENDA_ITEM'
@@ -347,6 +351,7 @@ export async function loadCanonicalAgenda(accountId: number, assetId: number, to
   )) as unknown as Array<{
     id: number; title: string; description: string | null; startDate: string | null; manualStatus: string | null;
     occurrenceNature: string | null; originFieldKey: string | null; eventNature: string | null; businessType: string | null; pendingCard: boolean;
+    completionProven?: boolean | null;
   }>;
   return rows.map((r) => {
     const sem = resolveEventSemantics({ originFieldKey: r.originFieldKey, businessType: r.businessType });
@@ -354,7 +359,7 @@ export async function loadCanonicalAgenda(accountId: number, assetId: number, to
       id: Number(r.id), title: r.title, description: r.description, startDate: r.startDate,
       manualStatus: r.manualStatus || null, occurrenceNature: r.occurrenceNature,
       nature: (r.eventNature as CanonicalAgendaRow['nature']) ?? sem.nature,
-      status4: agendaStatus4(r.manualStatus || null, !!r.pendingCard, r.startDate, today),
+      status4: agendaStatus4(r.manualStatus || null, !!r.pendingCard, r.startDate, today, false, r.completionProven === true),
     };
   });
 }

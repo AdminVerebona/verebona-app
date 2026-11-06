@@ -49,6 +49,8 @@ export interface BeatWrite {
   lastErrorAt?: string | null;
   intervalMs?: number | null;
   processed?: number;
+  /** Lot 111Q : état de la voie ciblée (migration 1280) ; null : voie absente (worker non démarré). */
+  lane?: { jobId: string | null; waitReason: string | null; lastClaimAt: string | null; capacity: number } | null;
 }
 
 let lastPurge = 0;
@@ -84,6 +86,10 @@ export async function writeDiagnosticBeat(b: BeatWrite): Promise<boolean> {
         wait_reason = EXCLUDED.wait_reason, last_error = EXCLUDED.last_error, last_error_at = EXCLUDED.last_error_at,
         interval_ms = EXCLUDED.interval_ms, memory_level = EXCLUDED.memory_level, rss_mb = EXCLUDED.rss_mb,
         container_limit_mb = EXCLUDED.container_limit_mb, processed = EXCLUDED.processed`;
+    // Lot 111Q : voie ciblée — écriture séparée, tolérante à l'absence de la migration 1280.
+    await sql`UPDATE diagnostic_worker_heartbeats SET lane_job_id = ${u(b.lane?.jobId)}::uuid, lane_wait_reason = ${b.lane?.waitReason ?? null},
+               lane_last_claim_at = ${b.lane?.lastClaimAt ?? null}::timestamptz, lane_capacity = ${b.lane ? b.lane.capacity : null}
+               WHERE instance_id = ${b.instanceId}`.catch((e) => { if ((e as { code?: string })?.code !== '42703') throw e; });
     if (Date.now() - lastPurge > 3600_000) {
       lastPurge = Date.now();
       await sql`DELETE FROM diagnostic_worker_heartbeats WHERE seen_at < now() - interval '7 days'`.catch(() => undefined);
@@ -112,6 +118,8 @@ function toBeat(r: Raw): DiagWorkerBeat {
     lastTickAt: iso(r.last_tick_at), lastTickOkAt: iso(r.last_tick_ok_at), tickRunningSince: iso(r.tick_running_since), lastClaimAt: iso(r.last_claim_at),
     currentJobId: r.current_job_id == null ? null : String(r.current_job_id), waitReason: r.wait_reason == null ? null : String(r.wait_reason),
     lastError: r.last_error == null ? null : String(r.last_error), lastErrorAt: iso(r.last_error_at), intervalMs: r.interval_ms == null ? null : Number(r.interval_ms),
+    laneJobId: r.lane_job_id == null ? null : String(r.lane_job_id), laneWaitReason: r.lane_wait_reason == null ? null : String(r.lane_wait_reason),
+    laneLastClaimAt: iso(r.lane_last_claim_at), laneCapacity: r.lane_capacity == null ? null : Number(r.lane_capacity),
   };
 }
 
@@ -163,7 +171,7 @@ export async function diagnosticQueueWaits(now: Date = new Date()): Promise<{ wa
   const waits = queued.map((q) => {
     const diagnosis = diagnoseWait({
       job: { id: String(q.id), scope: String(q.scope), startedAt: iso(q.started_at)!, nextAttemptAt: iso(q.next_attempt_at) },
-      beats, running: run, globalConcurrency: s.globalConcurrency, stallAlertSeconds: s.stallAlertSeconds, now,
+      beats, running: run, globalConcurrency: s.globalConcurrency, targetedConcurrency: s.targetedConcurrency, stallAlertSeconds: s.stallAlertSeconds, now,
     });
     return { jobId: String(q.id), scope: String(q.scope), startedAt: iso(q.started_at)!, diagnosis, label: waitLabel(diagnosis), action: DIAG_WAIT_ACTIONS[diagnosis.reason] };
   });
@@ -252,4 +260,33 @@ export function startDiagnosticSupervisor(intervalMs = 60_000): void {
   setTimeout(run, 45_000).unref?.();
   setInterval(run, intervalMs).unref?.();
   console.info(`[diagnostic-supervisor] superviseur de la file des diagnostics démarré (tour toutes les ${Math.round(intervalMs / 1000)} s, alerte au-delà de ${diagJobSettings().stallAlertSeconds} s d’attente).`);
+}
+
+/**
+ * Lot 111Q — worker vu par le BO pour UNE demande : celui qui l'exécute (voie
+ * commune ou ciblée) ou, en file, le dernier worker vivant (dernier tour,
+ * dernier prélèvement, battement). Lecture seule, ne lève jamais.
+ */
+export async function diagnosticJobWorkerView(job: { id: string; status: string; worker: string | null }, now: Date = new Date()): Promise<null | {
+  instance: string; state: string; alive: boolean; seenAt: string; lastTickAt: string | null; lastClaimAt: string | null; lane: 'main' | 'targeted' | null;
+  waitReason: string | null; laneWaitReason: string | null; commit: string | null; version: string | null; aliveWorkers: number;
+}> {
+  try {
+    const beats = await listDiagnosticBeats();
+    if (!beats) return null;
+    const alive = beats.filter((b) => isBeatAlive(b, now));
+    const short = (b: DiagWorkerBeatRow) => b.instanceId.split(':').slice(0, 2).join(':');
+    const own = beats.find((b) => b.currentJobId === job.id || b.laneJobId === job.id) ?? (job.worker ? beats.find((b) => short(b) === job.worker) : undefined);
+    const pick = own ?? alive.filter((b) => b.state === 'STARTED').sort((a, b) => Date.parse(b.seenAt) - Date.parse(a.seenAt))[0] ?? alive[0] ?? beats[0];
+    if (!pick) return null;
+    return {
+      instance: short(pick), state: pick.state, alive: isBeatAlive(pick, now), seenAt: pick.seenAt, lastTickAt: pick.lastTickAt,
+      lastClaimAt: [pick.lastClaimAt, pick.laneLastClaimAt ?? null].filter(Boolean).sort().at(-1) ?? null,
+      lane: own ? (pick.laneJobId === job.id ? 'targeted' : 'main') : null, waitReason: pick.waitReason, laneWaitReason: pick.laneWaitReason ?? null,
+      commit: pick.buildCommit, version: pick.buildVersion, aliveWorkers: alive.filter((b) => b.state === 'STARTED').length,
+    };
+  } catch (e) {
+    console.error('[diagnostic-job] worker illisible :', sanitizeErrorMessage(e));
+    return null;
+  }
 }

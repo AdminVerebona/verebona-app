@@ -10,7 +10,10 @@ import {
   TCO_CATEGORY_LABELS, USAGE_BUDGET_CATEGORY_LABELS, USAGE_BUDGET_PERIODICITY_LABELS, validateUsageBudget, type TcoCategory,
   type TcoEconomicLine, type TcoResult, type TcoWarning, type UsageBudget,
 } from './model';
-import { tcoAddDuplicateRisk, tcoLineAddable, tcoLineRemovable } from './user-decisions';
+import {
+  TCO_ARBITRATION_DECISIONS, TCO_REQUALIFY_CATEGORIES, tcoAddDuplicateRisk, tcoLineAddable, tcoLineDecisionOptions, tcoLineRemovable,
+  type TcoAddBlockedCode, type TcoDecisionOption,
+} from './user-decisions';
 import { USAGE_BUDGET_STATUS_LABELS, USAGE_COMPLEMENT_WARNING_LABELS } from './usage-complement';
 import { computeTcoDiagnostics, type TcoDiagnostics } from './diagnostics';
 
@@ -91,6 +94,10 @@ interface TcoLineActions {
   addable: boolean;
   addBlockedReason: string | null;
   duplicateWarning: string | null;
+  /** Lot 111V : motif RÉEL d'un ajout impossible (code stable : nature à confirmer, montant à renseigner, devise…). */
+  addBlockedCode: TcoAddBlockedCode | null;
+  /** Lot 111V : gestes contextuels (arbitrages, correction du document, annulation d'un choix) — serveur seulement. */
+  options: TcoDecisionOption[];
 }
 
 /** Ligne montrée sur la fiche : justificatifs repris par la dépense consolidée (en plus de `fileId`). */
@@ -107,6 +114,8 @@ function tcoLineActions(l: TcoEconomicLine, lines: readonly TcoEconomicLine[]): 
     addable: !!a?.ok,
     addBlockedReason: a && !a.ok ? a.reason : null,
     duplicateWarning: a?.ok && !annuleRetrait ? tcoAddDuplicateRisk(l, lines) : null,
+    addBlockedCode: a && !a.ok ? a.code : null,
+    options: tcoLineDecisionOptions(l, lines),
   };
 }
 
@@ -186,7 +195,11 @@ export type TcoDto = Omit<TcoResult, 'entries' | 'lines' | 'citedOnlyDocuments' 
    * lignes (pas seulement la page) — `review` : au moins une ligne de ce
    * motif relève d'un cas ouvert (« À revoir ») ; sinon exclusion normale.
    */
-  otherLinesByReason: Array<{ status: EconomicLineStatus; reason: EconomicLineReason | null; label: string; count: number; review: number }>;
+  otherLinesByReason: Array<{ status: EconomicLineStatus; reason: EconomicLineReason | null; label: string; count: number; review: number; decided: number }>;
+  /** Lot 111V : lignes non retenues dont le choix a été confirmé par l'utilisateur (groupe distinct). */
+  decidedLinesTotal: number;
+  /** Lot 111V : catégories proposées quand l'utilisateur confirme la nature d'une dépense. */
+  requalifyCategories: TcoCategory[];
   usageLabels: {
     categories: typeof USAGE_BUDGET_CATEGORY_LABELS; periodicities: typeof USAGE_BUDGET_PERIODICITY_LABELS;
     /** Lot 108C : état de chaque forfait et signalements du complément estimé. */
@@ -231,15 +244,17 @@ export function toTcoDto(t: TcoResult, page: { linesOffset?: number; linesLimit?
   const diagnostics = computeTcoDiagnostics(t, { hidden: new Set(Object.keys(vue.hidden)) });
   const aRevoir = new Set(diagnostics.reviewLineIds);
   const parMotif = new Map<string, TcoDto['otherLinesByReason'][number]>();
+  let decidees = 0;
   for (const l of vue.lines) {
     if (RETENUE(l.status) || l.status === 'OUT_OF_SCOPE') continue;
     const k = `${l.status}|${l.reason ?? ''}`;
     const g = parMotif.get(k) ?? {
-      status: l.status, reason: l.reason, count: 0, review: 0,
+      status: l.status, reason: l.reason, count: 0, review: 0, decided: 0,
       label: l.reason ? ECONOMIC_LINE_REASON_LABELS[l.reason] : ECONOMIC_LINE_STATUS_LABELS[l.status],
     };
     g.count += 1;
     if (aRevoir.has(l.id)) g.review += 1;
+    else if (l.userDecision?.applied && TCO_ARBITRATION_DECISIONS.has(l.userDecision.decision)) { g.decided += 1; decidees += 1; }
     parMotif.set(k, g);
   }
   return {
@@ -259,6 +274,8 @@ export function toTcoDto(t: TcoResult, page: { linesOffset?: number; linesLimit?
     // Lot 108B : la lecture en cours d'un montant n'est pas une alerte (bloc dédié de la fiche).
     warningLabels: t.reliability.warnings.filter((w) => w !== 'AMOUNTS_RECOVERY_PENDING').map((w) => TCO_WARNING_LABELS[w]),
     diagnostics,
+    decidedLinesTotal: decidees,
+    requalifyCategories: [...TCO_REQUALIFY_CATEGORIES],
     otherLinesByReason: [...parMotif.values()].sort((a, b) => b.review - a.review || b.count - a.count || a.label.localeCompare(b.label)),
     usageLabels: {
       categories: USAGE_BUDGET_CATEGORY_LABELS, periodicities: USAGE_BUDGET_PERIODICITY_LABELS,

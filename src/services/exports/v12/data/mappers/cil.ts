@@ -73,15 +73,28 @@ export function mapCil(m: MapInput): CilData {
   const b6Ids = cil?.readiness.energyEquipmentIds;
   const b6List = b6Ids ? s.equipments.filter((e) => b6Ids.includes(e.id)) : cilEnergyEquipments(s.equipments);
   const b9Docs = allDocs.filter((d) => cilSection(d) === 'B9' && d.kind !== 'AUTRE');
+  // Lot 111U : même état granulaire que l'onglet Informations (service commun) — les seules données
+  // réellement manquantes d'un bloc partiellement renseigné sont citées dans sa source.
+  const cilState = cil?.readiness.state;
+  // B7 (lot 111U) : travaux RÉALISÉS de l'état commun (saisis + Opérations prouvées) ; état antérieur : `energy_works`.
+  const workList = cilState?.works
+    ? cilState.works.map((w) => ({ completedAt: w.date, title: w.title, description: null as string | null, companyName: w.company }))
+    : (cil?.works ?? []).map((w) => ({ completedAt: w.completedAt, title: w.title, description: w.description, companyName: w.companyName }));
+  const withGaps = (id: string, src: string | null): string | null => {
+    const b = cilState?.blocks.find((x) => x.id === id);
+    if (!b || b.status !== 'partiel' || !src) return src;
+    const gaps = b.items.filter((i) => i.counted && (i.status === 'manquant' || i.status === 'partiel')).map((i) => i.label);
+    return gaps.length ? `${src} · à compléter : ${gaps.slice(0, 3).join(', ')}${gaps.length > 3 ? '…' : ''}` : src;
+  };
 
   const blocks: CilData['cil']['blocks'] = [
     { code: 'B1', status: status('B1'), source: status('B1') === 'complete' ? 'Fiche bien · adresse, type' : null },
     { code: 'B2', status: b2Complete ? 'complete' : 'unknown', source: b2Complete ? 'Profil CIL du bien' : null },
     { code: 'B3', status: status('B3'), source: planDocs.length ? plural(planDocs.length, 'plan') : null, resolution: resolution('B3') },
-    { code: 'B4', status: status('B4'), source: networkDocs.length ? plural(networkDocs.length, 'schéma réseau', 'schémas réseaux') : null, resolution: resolution('B4') },
-    { code: 'B5', status: status('B5'), source: cil?.materials.length ? plural(cil.materials.length, 'matériau', 'matériaux') : null, resolution: resolution('B5') },
+    { code: 'B4', status: status('B4'), source: withGaps('B4', networkDocs.length ? plural(networkDocs.length, 'schéma réseau', 'schémas réseaux') : null), resolution: resolution('B4') },
+    { code: 'B5', status: status('B5'), source: withGaps('B5', cil?.materials.length ? plural(cil.materials.length, 'matériau', 'matériaux') : null), resolution: resolution('B5') },
     { code: 'B6', status: status('B6'), source: b6List.length ? plural(b6List.length, 'équipement') : null, resolution: resolution('B6') },
-    { code: 'B7', status: status('B7'), source: cil?.works.length ? plural(cil.works.length, 'travail', 'travaux') : null, resolution: resolution('B7') },
+    { code: 'B7', status: status('B7'), source: workList.length ? plural(workList.length, 'travail', 'travaux') : null, resolution: resolution('B7') },
     { code: 'B8', status: status('B8'), source: dpeDoc ? dot('DPE', dpeDoc.date ? `du ${fmt.date(dpeDoc.date)}` : '') : null },
     { code: 'B9', status: status('B9'), source: b9Docs.length ? plural(b9Docs.length, 'document') : null, resolution: resolution('B9') },
   ];
@@ -127,9 +140,16 @@ export function mapCil(m: MapInput): CilData {
         spec: dot(
           mt.thermalResistanceR != null ? `R = ${fmt.number(mt.thermalResistanceR, 2)} m²·K/W` : '',
           mt.lambda != null ? `λ = ${fmt.number(mt.lambda, 3)}` : '',
+          // Lot 111U (1301) : coefficient U, lu tel quel (jamais converti en R).
+          mt.uValue != null ? `U = ${fmt.number(mt.uValue, 2)} W/(m²·K)` : '',
           mt.thicknessMm != null ? `${fmt.number(mt.thicknessMm)} mm` : '',
         ) || null,
-        source: mt.documentId ? 'Document importé' : 'Saisie',
+        // Lot 111U : source OUVRABLE (pièce du dossier), sinon saisie.
+        source: (() => {
+          const d = mt.documentId ? allDocs.find((x) => x.id === mt.documentId) : undefined;
+          if (!d) return mt.documentId ? 'Document importé' : 'Saisie';
+          return dot(d.typeLabel || 'Document', d.date ? `du ${fmt.date(d.date)}` : '') || 'Document importé';
+        })(),
       })),
       equipments: b6List.map((e) => ({
         // Lot 70B : usage DÉCLARÉ dans le tiroir en priorité (même règle que B6).
@@ -141,7 +161,7 @@ export function mapCil(m: MapInput): CilData {
         model: dot(e.brand, e.model) || null,
         installed: null,
       })),
-      works: (cil?.works ?? []).map((w) => ({
+      works: workList.map((w) => ({
         date: w.completedAt,
         title: w.title,
         description: str(w.description),
@@ -151,7 +171,11 @@ export function mapCil(m: MapInput): CilData {
         dpe: kc(s, 'dpeClass'),
         ges: kc(s, 'gesClass'),
         consumption: energyConsumptionLabel(s),
-        emissions: kc(s, 'gesEmissions') ?? kc(s, 'dpeEmissions'),
+        // Lot 111U : clé canonique `gesEmissions` (registre), unité affichée.
+        emissions: (() => {
+          const v = kcNum(s, 'gesEmissions') ?? kcNum(s, 'dpeEmissions');
+          return v != null ? `${fmt.number(v, 1)} kg CO₂/m²/an` : kc(s, 'gesEmissions') ?? kc(s, 'dpeEmissions');
+        })(),
         date: kc(s, 'dpeDate') ?? dpeDoc?.date ?? null,
         // Clé canonique (éditable sur la fiche, D-E) ; repli sur l'ancien alias.
         validUntil: kc(s, 'dpeExpiryDate') ?? kc(s, 'dpeValidUntil'),

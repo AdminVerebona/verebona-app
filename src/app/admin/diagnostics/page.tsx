@@ -26,6 +26,16 @@
  * diagnostic »…) avec l'action à mener ; « Santé du moteur » montre le
  * battement de chaque processus (pas seulement l'instance qui répond).
  *
+ * Lot 111Q : catégorie d'état commune (« Attente de ressource », « Worker
+ * indisponible », « Génération en cours », « Échec », « Terminé », « Annulé »),
+ * temps en file / exécution / total SÉPARÉS, démarrage réel, dernière
+ * activité, dernier battement du worker, durées par étape. Toutes les
+ * lectures passent par `apiClient` (renouvellement du jeton d'accès de
+ * 15 min) : fin du « Détail non chargé : Unauthorized (MISSING_TOKEN) » après
+ * un quart d'heure de suivi ; session réellement expirée → message français,
+ * « Se reconnecter », âge de la dernière lecture réussie (jamais un état
+ * périmé présenté comme frais).
+ *
  * NAVIGATION : page atteinte depuis Dashboard › Supervision (lien
  * « Diagnostics ») ; « Données du compte » n'y ajoute qu'un RACCOURCI (filtre
  * compte prérempli : `?scope=account&id=12`). Aucune entrée de barre latérale.
@@ -36,7 +46,7 @@
  */
 import { Suspense, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import Link from 'next/link';
-import { useRouter, useSearchParams } from 'next/navigation';
+import { useSearchParams } from 'next/navigation';
 import { Activity, AlertTriangle, ArrowLeft, Ban, Check, Copy, Download, Filter, Globe2, History, ListChecks, Loader2, RefreshCw, RotateCcw, Stethoscope } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -45,6 +55,8 @@ import { Checkbox } from '@/components/ui/checkbox';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { EcranEnErreur } from '@/components/admin/EcranEnErreur';
 import { copyText } from '../ai-executions/_components/CopyJson';
+import { boGet, boPost, ensureFreshSession, freshnessLabel, reconnectHref, stopsPolling, type ReadFailure } from './_lib/bo-read';
+import { DIAG_PROFILE_PHASE_LABELS, formatDuration, type DiagMetrics, type DiagTimings } from '@/services/admin/diagnostic-jobs/metrics';
 import type { DiagScope } from '@/services/admin/diagnostics-export/model';
 import type { GenerationRow } from '@/services/admin/export-generations';
 
@@ -78,8 +90,18 @@ function newKey(): string {
 interface WaitView { reason: string; label: string; detail: string | null; action: string; blockingJobId: string | null; waitedSeconds?: number; alert?: boolean }
 interface ReplacedView { id: string; previousStatus: 'QUEUED' | 'RUNNING'; outcome: 'CANCELLED' | 'CANCEL_REQUESTED' }
 
+interface WorkerViewDto { instance: string; state: string; alive: boolean; seenAt: string; lastTickAt: string | null; lastClaimAt: string | null; lane: 'main' | 'targeted' | null; waitReason: string | null; laneWaitReason: string | null; commit: string | null; version: string | null; aliveWorkers: number }
+
 interface JobView {
   job: GenerationRow;
+  /** Lot 111Q : lecture serveur, métriques séparées, catégorie, profilage, worker. */
+  readAt?: string;
+  metrics?: DiagMetrics;
+  category?: { code: string; label: string };
+  firstRunStartedAt?: string | null;
+  lane?: string | null;
+  timings?: DiagTimings | null;
+  workerView?: WorkerViewDto | null;
   /** Lot 111C : statut explicite et raison d'attente. */
   statusLabel?: string;
   wait?: WaitView | null;
@@ -92,7 +114,6 @@ interface JobView {
 }
 
 function Diagnostics() {
-  const router = useRouter();
   const sp = useSearchParams();
   const initialScope = (SCOPES.some((s) => s.key === sp.get('scope')) ? sp.get('scope') : 'global') as DiagScope;
   const [scope, setScope] = useState<DiagScope>(initialScope);
@@ -105,6 +126,7 @@ function Diagnostics() {
   /** Clé d'idempotence de la demande en cours de saisie : un double clic ou un rejeu réseau rend le même travail. */
   const idemKey = useRef<string>(newKey());
   const [tick, setTick] = useState(0);
+  const [needLogin, setNeedLogin] = useState(false);
 
   const def = SCOPES.find((s) => s.key === scope)!;
   const idValid = !def.idLabel || /^\d{1,9}$/.test(id.trim());
@@ -117,12 +139,15 @@ function Diagnostics() {
     setError(null);
     setNotice(null);
     try {
-      const res = await fetch('/api/admin/diagnostics/jobs', {
-        method: 'POST', credentials: 'include', headers: { 'Content-Type': 'application/json', 'Idempotency-Key': idemKey.current }, body: JSON.stringify(body),
-      });
-      if (res.status === 401 || res.status === 403) { router.push('/login?returnUrl=/admin/diagnostics'); return; }
-      const r = await res.json().catch(() => ({}));
-      if (!res.ok) { setError(`${r.error || `Erreur ${res.status}`}${r.code ? ` (code ${r.code})` : ''}${r.requestId ? ` — demande ${String(r.requestId).slice(0, 8)}` : ''}`); return; }
+      const out = await boPost<Record<string, any>>('/api/admin/diagnostics/jobs', body, { 'Idempotency-Key': idemKey.current });
+      if (!out.ok) {
+        const f = out.failure;
+        if (f.kind === 'SESSION_EXPIRED' || f.kind === 'MFA_REQUIRED') { setError(`${f.message} Votre demande n’a pas été enregistrée.`); setNeedLogin(true); return; }
+        setError(`${out.serverMessage ?? f.message}${f.requestId ? ` — demande ${f.requestId.slice(0, 8)}` : ''}`);
+        return;
+      }
+      const r = out.data;
+      setNeedLogin(false);
       setSelected(String(r.jobId));
       const replaced = (r.replaced ?? []) as ReplacedView[];
       const wait = r.wait as WaitView | null | undefined;
@@ -201,6 +226,7 @@ function Diagnostics() {
       </section>
 
       {error && <EcranEnErreur titre="Diagnostic non demandé" message={error} onRetry={generate} />}
+      {needLogin && <p className="text-xs"><Link className="underline" href={reconnectHref(selected)}>Se reconnecter</Link></p>}
 
       {selected && <JobPanel id={selected} onSelect={(x) => { setSelected(x); setTick((t) => t + 1); }} onChange={() => setTick((t) => t + 1)} />}
 
@@ -230,48 +256,77 @@ function CopyId({ value, label = 'ID' }: { value: string; label?: string }) {
 function JobPanel({ id, onSelect, onChange }: { id: string; onSelect: (id: string) => void; onChange: () => void }) {
   const [v, setV] = useState<JobView | null>(null);
   const [err, setErr] = useState<string | null>(null);
+  /** Lot 111Q : dernier échec de LECTURE (session, réseau) — distinct de l'état du diagnostic. */
+  const [failure, setFailure] = useState<ReadFailure | null>(null);
+  const [lastOkAt, setLastOkAt] = useState<number | null>(null);
+  const [now, setNow] = useState(() => Date.now());
   const [copied, setCopied] = useState<string | null>(null);
   const [acting, setActing] = useState(false);
   const load = useCallback(async () => {
-    try {
-      const res = await fetch(`/api/admin/diagnostics/jobs/${id}`, { credentials: 'include', cache: 'no-store' });
-      const b = await res.json().catch(() => ({}));
-      if (!res.ok) { setErr(`Détail non chargé : ${b.error || `HTTP ${res.status}`}${b.code ? ` (${b.code})` : ''}`); return; }
-      setErr(null);
-      setV(b as JobView);
-    } catch {
-      setErr('Détail non chargé : erreur réseau.');
-    }
+    const r = await boGet<JobView>(`/api/admin/diagnostics/jobs/${id}`);
+    if (!r.ok) { setFailure(r.failure); return; }
+    setFailure(null);
+    setErr(null);
+    setLastOkAt(Date.now());
+    setV(r.data);
   }, [id]);
-  useEffect(() => { setV(null); void load(); }, [load]);
+  useEffect(() => { setV(null); setLastOkAt(null); setFailure(null); void load(); }, [load]);
   const active = v ? ACTIVE.has(v.job.status) : true;
+  // Suivi : arrêté tant que l'administrateur doit agir (session expirée, droits) — jamais de boucle de 401.
+  const blocked = failure ? stopsPolling(failure) : false;
   useEffect(() => {
-    if (!active) return undefined;
+    if (!active || blocked) return undefined;
     const t = setInterval(() => { void load(); }, 3000);
     return () => clearInterval(t);
-  }, [active, load]);
+  }, [active, blocked, load]);
+  useEffect(() => {
+    const t = setInterval(() => setNow(Date.now()), 1000);
+    return () => clearInterval(t);
+  }, []);
 
   const copyReport = async () => {
-    const res = await fetch(`/api/admin/diagnostics/jobs/${id}?report=1`, { credentials: 'include', cache: 'no-store' });
-    const b = await res.json().catch(() => ({})) as JobView;
-    if (!b.report) { setCopied(b.reportError ?? 'Rapport indisponible.'); return; }
-    setCopied((await copyText(b.report)) ? 'Rapport synthétique copié (les données complètes sont dans le ZIP).' : 'Copie impossible.');
+    const r = await boGet<JobView>(`/api/admin/diagnostics/jobs/${id}?report=1`);
+    if (!r.ok) { setCopied(r.failure.message); return; }
+    if (!r.data.report) { setCopied(r.data.reportError ?? 'Rapport indisponible.'); return; }
+    setCopied((await copyText(r.data.report)) ? 'Rapport synthétique copié (les données complètes sont dans le ZIP).' : 'Copie impossible.');
     setTimeout(() => setCopied(null), 4000);
   };
   const act = async (what: 'retry' | 'cancel') => {
     if (acting) return;
     setActing(true);
     try {
-      const res = await fetch(`/api/admin/diagnostics/jobs/${id}/${what}`, { method: 'POST', credentials: 'include' });
-      const b = await res.json().catch(() => ({}));
-      if (!res.ok) { setErr(`${what === 'retry' ? 'Relance' : 'Annulation'} refusée : ${b.error || `HTTP ${res.status}`}`); return; }
-      if (what === 'retry' && b.jobId) onSelect(String(b.jobId)); else { void load(); onChange(); }
+      const r = await boPost<{ jobId?: string }>(`/api/admin/diagnostics/jobs/${id}/${what}`);
+      if (!r.ok) {
+        if (stopsPolling(r.failure)) setFailure(r.failure);
+        setErr(`${what === 'retry' ? 'Relance' : 'Annulation'} refusée : ${r.serverMessage ?? r.failure.message}`);
+        return;
+      }
+      if (what === 'retry' && r.data.jobId) onSelect(String(r.data.jobId)); else { void load(); onChange(); }
     } finally {
       setActing(false);
     }
   };
+  const download = async (href: string) => {
+    // Lien direct (hors apiClient) : session renouvelée juste avant — sinon « MISSING_TOKEN » après 15 min.
+    await ensureFreshSession();
+    window.location.assign(href);
+  };
 
-  if (!v) return <section className="rounded-xl border bg-card p-4 text-xs text-muted-foreground" aria-label="Diagnostic sélectionné">{err ?? <span className="inline-flex items-center gap-1"><Loader2 className="h-3 w-3 animate-spin" />Chargement du diagnostic…</span>}</section>;
+  const readBanner = failure && (
+    <div className="rounded-lg border px-3 py-2 text-xs space-y-1" role="alert" data-diag-read-failure={failure.kind}>
+      <p className="font-medium flex items-center gap-1.5 text-destructive"><AlertTriangle className="h-3.5 w-3.5" />{failure.message}</p>
+      <p className="text-muted-foreground">
+        Dernière lecture réussie : {freshnessLabel(lastOkAt, now)}{lastOkAt ? ' — les informations ci-dessous datent de cette lecture.' : '.'}
+        {failure.code ? <span className="ml-1 font-mono text-[10px] opacity-70">({failure.code}{failure.requestId ? ` · ${failure.requestId.slice(0, 8)}` : ''})</span> : null}
+      </p>
+      <div className="flex flex-wrap gap-2">
+        {(failure.kind === 'SESSION_EXPIRED' || failure.kind === 'MFA_REQUIRED') && <Button asChild size="sm" variant="outline"><Link href={reconnectHref(id)}>Se reconnecter</Link></Button>}
+        <Button size="sm" variant="outline" onClick={() => void load()}><RefreshCw className="h-3.5 w-3.5 mr-1.5" />Réessayer</Button>
+      </div>
+    </div>
+  );
+
+  if (!v) return <section className="rounded-xl border bg-card p-4 text-xs text-muted-foreground space-y-2" aria-label="Diagnostic sélectionné">{readBanner || err || <span className="inline-flex items-center gap-1"><Loader2 className="h-3 w-3 animate-spin" />Chargement du diagnostic…</span>}</section>;
   const j = v.job;
   const isJob = j.mode === 'job';
   const p = (j.progress ?? {}) as { filesDone?: number; filesPlanned?: number | null; current?: string | null; rssMb?: number | null; peakRssMb?: number | null; compressedBytes?: number };
@@ -288,7 +343,7 @@ function JobPanel({ id, onSelect, onChange }: { id: string; onSelect: (id: strin
         <div className="flex flex-col sm:flex-row gap-2">
           {v.downloadable && (
             <Button asChild variant="outline" className="w-full sm:w-auto">
-              <a href={`/api/admin/diagnostics/jobs/${j.id}/download`} download><Download className="h-4 w-4 mr-1.5" />Télécharger le ZIP</a>
+              <a href={`/api/admin/diagnostics/jobs/${j.id}/download`} download onClick={(e) => { e.preventDefault(); void download(`/api/admin/diagnostics/jobs/${j.id}/download`); }}><Download className="h-4 w-4 mr-1.5" />Télécharger le ZIP</a>
             </Button>
           )}
           {v.downloadable && <Button variant="outline" onClick={copyReport} className="w-full sm:w-auto"><Copy className="h-4 w-4 mr-1.5" />Copier le rapport synthétique</Button>}
@@ -297,6 +352,7 @@ function JobPanel({ id, onSelect, onChange }: { id: string; onSelect: (id: strin
         </div>
       </div>
       {copied && <p className="text-xs text-muted-foreground" role="status">{copied}</p>}
+      {readBanner}
       {err && <p className="text-xs text-destructive">{err}</p>}
       {v.wait && (
         <div className="rounded-lg border px-3 py-2 text-xs space-y-0.5" data-diag-wait={v.wait.reason} role="status">
@@ -313,12 +369,17 @@ function JobPanel({ id, onSelect, onChange }: { id: string; onSelect: (id: strin
           {j.cancelRequestedAt ? ` (${dateFr(j.cancelRequestedAt)})` : ''}
         </p>
       )}
-      <div className="grid grid-cols-2 lg:grid-cols-5 gap-3">
-        <Stat label="Statut" value={v.statusLabel ?? `${STATUS_LABELS[j.status] ?? j.status}${j.leaseExpired ? ' (sans signe de vie)' : ''}`} warn={!['COMPLETE', 'QUEUED', 'RUNNING'].includes(j.status) || j.leaseExpired || !!v.wait?.alert || j.cancelRequested} />
+      <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
+        <Stat label={v.category ? `État : ${v.category.label}` : 'Statut'} value={v.statusLabel ?? `${STATUS_LABELS[j.status] ?? j.status}${j.leaseExpired ? ' (sans signe de vie)' : ''}`} warn={!['COMPLETE', 'QUEUED', 'RUNNING'].includes(j.status) || j.leaseExpired || !!v.wait?.alert || j.cancelRequested} data={v.category?.code} />
         <Stat label="Étape" value={v.phaseLabel ?? '—'} />
         <Stat label="Progression" value={v.progressPercent == null ? '—' : `${v.progressPercent} % (${p.filesDone ?? 0} / ${p.filesPlanned ?? '?'} fichiers)`} />
-        <Stat label="Tentatives" value={isJob ? `${j.attempt} / ${j.maxAttempts ?? '?'}` : '—'} />
-        <Stat label="Durée" value={duree(j.runStartedAt ?? j.startedAt, j.finishedAt)} />
+        <Stat label={isJob && j.status === 'RUNNING' ? 'Tentative en cours' : 'Tentatives'} value={isJob ? `${j.attempt} / ${j.maxAttempts ?? '?'}` : '—'} />
+      </div>
+      {/* Lot 111Q : trois mesures distinctes — l'attente en file n'est jamais une durée de génération. */}
+      <div className="grid grid-cols-1 sm:grid-cols-3 gap-3" data-diag-metrics>
+        <Stat label={v.metrics?.started ? 'Temps en file (avant démarrage)' : 'Temps en file (non démarré)'} value={v.metrics ? formatDuration(v.metrics.queueWaitMs) : '—'} warn={!v.metrics?.started && !!v.wait?.alert} />
+        <Stat label="Temps d’exécution (génération)" value={v.metrics?.started ? formatDuration(v.metrics.executionMs) : 'non démarrée'} />
+        <Stat label="Temps total depuis la demande" value={v.metrics ? formatDuration(v.metrics.totalElapsedMs) : duree(j.startedAt, j.finishedAt)} />
       </div>
       {v.progressPercent != null && ACTIVE.has(j.status) && (
         <div className="h-2 w-full rounded-full bg-muted overflow-hidden" role="progressbar" aria-valuenow={v.progressPercent} aria-valuemin={0} aria-valuemax={100}>
@@ -327,7 +388,17 @@ function JobPanel({ id, onSelect, onChange }: { id: string; onSelect: (id: strin
       )}
       <dl className="grid grid-cols-1 sm:grid-cols-2 gap-x-6 gap-y-1 text-xs">
         <div><dt className="inline text-muted-foreground">Demandé le : </dt><dd className="inline">{dateFr(j.startedAt)}</dd></div>
+        <div><dt className="inline text-muted-foreground">Démarrage réel : </dt><dd className="inline">{v.firstRunStartedAt ? dateFr(v.firstRunStartedAt) : 'pas encore démarré'}{v.lane ? ` · voie ${v.lane === 'targeted' ? 'réservée aux ciblés' : 'commune'}` : ''}</dd></div>
+        <div><dt className="inline text-muted-foreground">Dernière activité : </dt><dd className="inline">{dateFr(j.heartbeatAt)}</dd></div>
         <div><dt className="inline text-muted-foreground">Terminé le : </dt><dd className="inline">{dateFr(j.finishedAt)}</dd></div>
+        {v.workerView && (
+          <div className="sm:col-span-2" data-diag-worker-view>
+            <dt className="inline text-muted-foreground">{j.status === 'RUNNING' ? 'Worker qui exécute : ' : 'Worker disponible : '}</dt>
+            <dd className="inline font-mono">{v.workerView.instance}{v.workerView.commit ? ` · ${v.workerView.commit.slice(0, 10)}` : ''}</dd>
+            <dd className={`inline ${v.workerView.alive ? '' : 'text-destructive'}`}> — battement {dateFr(v.workerView.seenAt)}{v.workerView.alive ? '' : ' (sans signe de vie)'} · dernier tour {dateFr(v.workerView.lastTickAt)} · dernier prélèvement {dateFr(v.workerView.lastClaimAt)} · workers vivants : {v.workerView.aliveWorkers}</dd>
+          </div>
+        )}
+        {v.readAt && <div className="sm:col-span-2 text-muted-foreground">Lu sur le serveur {freshnessLabel(Date.parse(v.readAt), now)} ({dateFr(v.readAt)})</div>}
         <div><dt className="inline text-muted-foreground">Initiateur : </dt><dd className="inline">administrateur #{j.adminUserId ?? '?'}</dd></div>
         <div><dt className="inline text-muted-foreground">Fichier en cours : </dt><dd className="inline font-mono break-all">{p.current ?? '—'}</dd></div>
         <div><dt className="inline text-muted-foreground">Volume : </dt><dd className="inline">{j.bytes != null ? kib(j.bytes) : p.compressedBytes ? `${kib(p.compressedBytes)} compressés` : '—'}{j.rowsExported != null ? ` · ${j.rowsExported} / ${j.rowsExpected ?? '?'} lignes` : ''}</dd></div>
@@ -338,6 +409,23 @@ function JobPanel({ id, onSelect, onChange }: { id: string; onSelect: (id: strin
         {j.nextAttemptAt && j.status === 'QUEUED' && <div><dt className="inline text-muted-foreground">Nouvelle tentative : </dt><dd className="inline">{dateFr(j.nextAttemptAt)}</dd></div>}
         {j.expiresAt && <div><dt className="inline text-muted-foreground">Archive conservée jusqu’au : </dt><dd className="inline">{j.purgedAt ? `purgée le ${dateFr(j.purgedAt)}` : dateFr(j.expiresAt)}</dd></div>}
       </dl>
+      {v.timings && Object.keys(v.timings.phases ?? {}).length > 0 && (
+        <div className="overflow-x-auto" data-diag-timings>
+          <p className="text-xs font-medium mb-1">Durées par étape (tentative {v.timings.attempt}{v.timings.final ? '' : ', en cours'})</p>
+          <table className="w-full text-xs">
+            <tbody>
+              {Object.entries(v.timings.phases).filter(([, ms]) => (ms ?? 0) > 0 || v.timings?.current?.phase).map(([ph, ms]) => (
+                <tr key={ph} className="border-b last:border-b-0"><td className="px-2 py-1">{DIAG_PROFILE_PHASE_LABELS[ph] ?? ph}{v.timings?.current?.phase === ph ? ' (en cours)' : ''}</td><td className="px-2 py-1 text-right tabular-nums">{formatDuration(ms ?? 0)}</td></tr>
+              ))}
+            </tbody>
+          </table>
+          {v.timings.slowestFiles.length > 0 && (
+            <details className="mt-1 text-xs"><summary className="cursor-pointer text-muted-foreground">Fichiers les plus longs à produire</summary>
+              <ul className="mt-1 space-y-0.5">{v.timings.slowestFiles.map((f) => <li key={f.path} className="font-mono break-all">{f.path} — {formatDuration(f.ms)} · {kib(f.bytes)}</li>)}</ul>
+            </details>
+          )}
+        </div>
+      )}
       {(j.errorCode || j.error) && (
         <div className="rounded-lg border px-3 py-2 text-xs space-y-0.5" data-diag-last-error>
           <p className="font-medium flex items-center gap-1.5"><AlertTriangle className="h-3.5 w-3.5" />Dernière erreur{j.errorCode ? ` — ${j.errorCode}` : ''}{j.errorPhase ? ` (étape ${j.errorPhase})` : ''}{j.errorAt ? ` · ${dateFr(j.errorAt)}` : ''}</p>
@@ -401,39 +489,38 @@ function JobPanel({ id, onSelect, onChange }: { id: string; onSelect: (id: strin
  * la liste n'est jamais confondue avec un échec de génération.
  */
 function Generations({ refreshKey, selected, onSelect }: { refreshKey: number; selected: string | null; onSelect: (id: string) => void }) {
-  const [rows, setRows] = useState<Array<GenerationRow & { statusLabel?: string }> | null>(null);
+  const [rows, setRows] = useState<Array<GenerationRow & { statusLabel?: string; category?: { code: string; label: string } }> | null>(null);
   const [total, setTotal] = useState(0);
   const [page, setPage] = useState(1);
   const [err, setErr] = useState<string | null>(null);
+  const [failure, setFailure] = useState<ReadFailure | null>(null);
+  const [lastOkAt, setLastOkAt] = useState<number | null>(null);
   const pageSize = 10;
   const load = useCallback(async () => {
-    try {
-      const res = await fetch(`/api/admin/diagnostics/generations?page=${page}&pageSize=${pageSize}`, { credentials: 'include', cache: 'no-store' });
-      const body = await res.json().catch(() => null);
-      if (!res.ok) {
-        setErr(body?.error
-          ? `Liste non chargée : ${body.error}${body.code ? ` (${body.code})` : ''}`
-          : `Liste non chargée (HTTP ${res.status}${res.status === 502 || res.status === 503 || res.status === 504 ? ' : le serveur n’a pas répondu — les générations en cours ne sont pas concernées, voir « Santé du moteur »' : ''}).`);
-        return;
-      }
-      setErr(null);
-      setRows(body.items as Array<GenerationRow & { statusLabel?: string }>);
-      setTotal(Number(body.total) || 0);
-    } catch {
-      setErr('Liste non chargée : erreur réseau (les générations en cours ne sont pas concernées).');
+    // Lot 111Q : apiClient (renouvellement du jeton d'accès) ; échec de lecture ≠ échec de génération.
+    const r = await boGet<{ items: Array<GenerationRow & { statusLabel?: string }>; total: number }>(`/api/admin/diagnostics/generations?page=${page}&pageSize=${pageSize}`);
+    if (!r.ok) {
+      setFailure(r.failure);
+      setErr(`Liste non chargée : ${r.failure.message} Les générations en cours ne sont pas concernées.`);
+      return;
     }
+    setErr(null);
+    setFailure(null);
+    setLastOkAt(Date.now());
+    setRows(r.data.items);
+    setTotal(Number(r.data.total) || 0);
   }, [page]);
   useEffect(() => { void load(); }, [load, refreshKey]);
   const activeNow = rows?.some((r) => ACTIVE.has(r.status)) ?? false;
+  const blocked = failure ? stopsPolling(failure) : false;
   useEffect(() => {
-    if (!activeNow) return undefined;
+    if (!activeNow || blocked) return undefined;
     const t = setInterval(() => { void load(); }, 5000);
     return () => clearInterval(t);
-  }, [activeNow, load]);
+  }, [activeNow, blocked, load]);
   const retry = async (id: string) => {
-    const res = await fetch(`/api/admin/diagnostics/jobs/${id}/retry`, { method: 'POST', credentials: 'include' });
-    const b = await res.json().catch(() => ({}));
-    if (res.ok && b.jobId) { onSelect(String(b.jobId)); void load(); } else setErr(`Relance refusée : ${b.error || `HTTP ${res.status}`}`);
+    const r = await boPost<{ jobId?: string }>(`/api/admin/diagnostics/jobs/${id}/retry`);
+    if (r.ok && r.data.jobId) { onSelect(String(r.data.jobId)); void load(); } else if (!r.ok) setErr(`Relance refusée : ${r.serverMessage ?? r.failure.message}`);
   };
   const pages = Math.max(1, Math.ceil(total / pageSize));
   return (
@@ -442,7 +529,7 @@ function Generations({ refreshKey, selected, onSelect }: { refreshKey: number; s
         <h2 className="vb-app-section flex items-center gap-1.5"><History className="h-4 w-4" />Générations d’export</h2>
         <Button variant="outline" size="sm" onClick={() => void load()} className="gap-1.5"><RefreshCw className="h-3.5 w-3.5" />Actualiser</Button>
       </div>
-      {err && <p className="px-4 py-2 text-xs text-destructive" data-diag-list-error>{err}</p>}
+      {err && <p className="px-4 py-2 text-xs text-destructive" data-diag-list-error>{err}{rows ? ` Dernière lecture réussie : ${freshnessLabel(lastOkAt, Date.now())}.` : ''}{failure && (failure.kind === 'SESSION_EXPIRED' || failure.kind === 'MFA_REQUIRED') ? <> <Link className="underline" href={reconnectHref(selected)}>Se reconnecter</Link></> : null}</p>}
       {rows && !rows.length && <p className="px-4 py-3 text-xs text-muted-foreground">Aucune génération enregistrée.</p>}
       {rows && rows.length > 0 && (
         <table className="w-full text-sm">
@@ -452,7 +539,7 @@ function Generations({ refreshKey, selected, onSelect }: { refreshKey: number; s
               <th className="px-3 py-2 font-medium">Export</th>
               <th className="px-3 py-2 font-medium">Statut</th>
               <th className="px-3 py-2 font-medium hidden sm:table-cell">Tentatives</th>
-              <th className="px-3 py-2 font-medium hidden md:table-cell text-right">Durée · taille</th>
+              <th className="px-3 py-2 font-medium hidden md:table-cell text-right">Temps total · taille</th>
               <th className="px-3 py-2 font-medium"><span className="sr-only">Actions</span></th>
             </tr>
           </thead>
@@ -473,12 +560,13 @@ function Generations({ refreshKey, selected, onSelect }: { refreshKey: number; s
                     <span className={r.status === 'COMPLETE' ? '' : ACTIVE.has(r.status) ? 'text-muted-foreground' : 'text-destructive font-medium'} data-diag-status-label>
                       {ACTIVE.has(r.status) ? <span className="inline-flex items-center gap-1">{r.status === 'RUNNING' && !r.cancelRequested && <Loader2 className="h-3 w-3 animate-spin" />}{r.statusLabel ?? STATUS_LABELS[r.status]}</span> : r.statusLabel ?? STATUS_LABELS[r.status] ?? r.status}
                     </span>
+                    {r.category && <span className="block text-[11px] text-muted-foreground" data-diag-category={r.category.code}>{r.category.label}</span>}
                     {r.phase && ACTIVE.has(r.status) && <span className="block text-[11px] text-muted-foreground">{r.phase}{p.filesPlanned ? ` · ${p.filesDone ?? 0}/${p.filesPlanned}` : ''}{r.leaseExpired ? ' · sans signe de vie' : ''}</span>}
                     {r.errorCode && <span className="block text-[11px] text-destructive">{r.errorCode}{r.errorPhase ? ` (${r.errorPhase})` : ''}</span>}
                     {r.error && <span className="block text-[11px] text-destructive break-words line-clamp-3">{r.error}</span>}
                   </td>
                   <td className="px-3 py-2 text-xs hidden sm:table-cell">{r.mode === 'job' ? `${r.attempt} / ${r.maxAttempts ?? '?'}` : '—'}{r.parentId ? <span className="block text-[11px] text-muted-foreground">relance de {r.parentId.slice(0, 8)}</span> : null}</td>
-                  <td className="px-3 py-2 text-xs text-right tabular-nums hidden md:table-cell">{duree(r.runStartedAt ?? r.startedAt, r.finishedAt)}{r.bytes != null ? ` · ${kib(r.bytes)}` : ''}</td>
+                  <td className="px-3 py-2 text-xs text-right tabular-nums hidden md:table-cell">{duree(r.startedAt, r.finishedAt)}{r.bytes != null ? ` · ${kib(r.bytes)}` : ''}</td>
                   <td className="px-3 py-2 text-xs">
                     {r.kind === 'TECH_DIAGNOSTIC' && <button type="button" className="underline whitespace-nowrap" onClick={() => onSelect(r.id)}>Voir</button>}
                     {isDiagJob && !ACTIVE.has(r.status) && <button type="button" className="underline whitespace-nowrap block mt-1" onClick={() => void retry(r.id)}>Relancer</button>}
@@ -506,7 +594,7 @@ interface Health {
   worker: { workerId: string; started: boolean; running: boolean; startedAt: string | null; lastTickAt: string | null; lastTickError: string | null; currentJobId: string | null; disabledReason: string | null; processed: number };
   process: { rssMb: number; heapUsedMb: number; containerLimitMb: number | null; guardMb: number | null; uptimeSeconds: number };
   storageConfigured: boolean;
-  workers?: Array<{ instance: string; process: string; placement: string; state: string; disabledReason: string | null; alive: boolean; seenAt: string; lastTickAt: string | null; lastClaimAt: string | null; currentJobId: string | null; waitReason: string | null; lastError: string | null; commit: string | null; rssMb: number | null; containerLimitMb: number | null }>;
+  workers?: Array<{ instance: string; process: string; placement: string; state: string; disabledReason: string | null; alive: boolean; seenAt: string; lastTickAt: string | null; lastClaimAt: string | null; currentJobId: string | null; waitReason: string | null; lastError: string | null; commit: string | null; rssMb: number | null; containerLimitMb: number | null; laneJobId?: string | null; laneWaitReason?: string | null; laneCapacity?: number | null }>;
   waits?: Array<{ jobId: string; label: string; action: string; alert: boolean; waitedSeconds: number }>;
   queue: null | { migrationApplied: boolean; byStatus?: Record<string, number>; oldestQueuedAgeSeconds?: number | null; running?: Array<{ id: string; phase: string | null; attempt: number; maxAttempts: number; worker: string | null; leaseExpired: boolean; heartbeatAt: string | null }>; recentFailures?: Array<{ id: string; status: string; code: string | null; phase: string | null; at: string | null; message: string | null; attempt: number; maxAttempts: number | null; commit: string | null }> };
   alerts: string[];
@@ -526,13 +614,10 @@ function EngineHealth() {
   const load = useCallback(async () => {
     setLoading(true);
     try {
-      const res = await fetch('/api/admin/diagnostics/jobs/health', { credentials: 'include', cache: 'no-store' });
-      const b = await res.json().catch(() => null);
-      if (!res.ok || !b) { setErr(`Santé non chargée (HTTP ${res.status}).`); return; }
+      const r = await boGet<Health>('/api/admin/diagnostics/jobs/health');
+      if (!r.ok) { setErr(`Santé non chargée : ${r.failure.message}`); return; }
       setErr(null);
-      setH(b as Health);
-    } catch {
-      setErr('Santé non chargée : erreur réseau.');
+      setH(r.data);
     } finally {
       setLoading(false);
     }
@@ -578,7 +663,7 @@ function EngineHealth() {
                         {!w.alive ? `sans signe de vie depuis ${dateFr(w.seenAt)}` : w.state === 'STARTED' ? (w.currentJobId ? `occupé (${w.currentJobId.slice(0, 8)})` : 'démarré') : w.state === 'DISABLED' ? `désactivé (${w.disabledReason ?? '?'})` : w.state === 'NOT_THIS_PROCESS' ? 'non porté par ce processus' : w.state}
                       </td>
                       <td className="px-2 py-1 hidden sm:table-cell whitespace-nowrap">{dateFr(w.lastTickAt)}{w.lastClaimAt ? <span className="block text-muted-foreground">prélèvement {dateFr(w.lastClaimAt)}</span> : null}</td>
-                      <td className="px-2 py-1 hidden md:table-cell break-words">{w.waitReason ?? '—'}{w.lastError ? <span className="block text-destructive">{w.lastError}</span> : null}</td>
+                      <td className="px-2 py-1 hidden md:table-cell break-words">{w.waitReason ?? '—'}{w.laneCapacity ? <span className="block text-muted-foreground">voie ciblée : {w.laneJobId ? `occupée (${w.laneJobId.slice(0, 8)})` : (w.laneWaitReason ?? 'libre')}</span> : null}{w.lastError ? <span className="block text-destructive">{w.lastError}</span> : null}</td>
                     </tr>
                   ))}</tbody>
                 </table>
@@ -608,9 +693,9 @@ function EngineHealth() {
   );
 }
 
-function Stat({ label, value, warn = false }: { label: string; value: string; warn?: boolean }) {
+function Stat({ label, value, warn = false, data }: { label: string; value: string; warn?: boolean; data?: string }) {
   return (
-    <div className="rounded-xl border bg-card p-3">
+    <div className="rounded-xl border bg-card p-3" data-diag-state={data}>
       <p className={`text-sm font-semibold break-words ${warn ? 'text-destructive' : 'text-foreground'}`}>{value}</p>
       <p className="text-xs text-muted-foreground mt-0.5">{label}</p>
     </div>

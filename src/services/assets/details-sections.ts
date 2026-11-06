@@ -103,6 +103,7 @@ export function buildSections(family: string, kc: Record<string, unknown>, asset
       dpeExpiryDate: kc.dpeExpiryDate ?? null,
       dpeAdemeNumber: kc.dpeAdemeNumber ?? null,
       energyConsumption: kc.energyConsumption ?? null,
+      gesEmissions: kc.gesEmissions ?? null,
       gesClass: kc.gesClass ?? null,
       lastRevision: kc.lastRevision ?? null,
       maintenanceDueDate: kc.maintenanceDueDate ?? null,

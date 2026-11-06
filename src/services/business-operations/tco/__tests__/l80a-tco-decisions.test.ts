@@ -224,7 +224,8 @@ describe('L80A-D — décisions « Ajouter / Retirer du TCO »', () => {
   });
 
   it('L80A-D07 — jamais ajoutables : montant inconnu, devise sans contre-valeur, autre bien, déjà portée ailleurs, règlement', () => {
-    expect(tcoLineAddable({ status: 'NOT_QUALIFIED', kind: 'REALIZED_COST', eurCents: null, amountUnknown: true })).toMatchObject({ ok: false, reason: expect.stringMatching(/Montant inconnu/) });
+    // Lot 111V : motif réel « Montant à renseigner » (code stable AMOUNT_MISSING).
+    expect(tcoLineAddable({ status: 'NOT_QUALIFIED', kind: 'REALIZED_COST', eurCents: null, amountUnknown: true })).toMatchObject({ ok: false, code: 'AMOUNT_MISSING', reason: expect.stringMatching(/Montant à renseigner/) });
     expect(tcoLineAddable({ status: 'UNCONVERTED', kind: 'REALIZED_COST', eurCents: null })).toMatchObject({ ok: false, reason: expect.stringMatching(/devise/) });
     expect(tcoLineAddable({ status: 'OUT_OF_SCOPE', kind: 'REALIZED_COST', eurCents: 100 })).toMatchObject({ ok: false });
     expect(tcoLineAddable({ status: 'CONSOLIDATED_ELSEWHERE', kind: 'REALIZED_COST', eurCents: 100 })).toMatchObject({ ok: false });
@@ -254,9 +255,11 @@ describe('L80A-D — décisions « Ajouter / Retirer du TCO »', () => {
     const t = computeTco(entree({ documents: [doc(1001, 5_000, '2026-01-05'), doc(1002, null, '2026-01-06')] }));
     const dto = toTcoDto(t);
     const retenue = dto.lines.find((l) => l.fileId === 1001)!;
-    expect(retenue.actions).toEqual({ removable: true, addable: false, addBlockedReason: null, duplicateWarning: null });
+    // Lot 111V : + motif réel (code) et gestes contextuels calculés par le serveur.
+    expect(retenue.actions).toMatchObject({ removable: true, addable: false, addBlockedReason: null, duplicateWarning: null, addBlockedCode: null });
+    expect(retenue.actions!.options.map((o) => o.action)).toEqual(['EXCLUDE']);
     const inconnue = dto.lines.find((l) => l.fileId === 1002)!;
-    expect(inconnue.actions).toMatchObject({ removable: false, addable: false, addBlockedReason: expect.stringMatching(/Montant inconnu/) });
+    expect(inconnue.actions).toMatchObject({ removable: false, addable: false, addBlockedCode: 'AMOUNT_MISSING', addBlockedReason: expect.stringMatching(/Montant à renseigner/) });
     expect(dto.lineReasonLabels.USER_EXCLUDED).toBe('Retirée du coût de possession par vous');
     // Le prix d'achat (fiche) est une dépense retirable ; aucune ligne PROCEED ne l'est.
     expect(dto.lines.find((l) => l.source === 'ASSET_DATA')!.actions!.removable).toBe(true);
@@ -354,8 +357,8 @@ describe('L80A-UI — sous-tiroirs et gestes (desktop et mobile, même composant
     // Les deux sous-tiroirs et les ajustements passent les gestes.
     // Lot 81D : + avoirs / remboursements / indemnités de l'année dans le sous-tiroir des retenues.
     // Lot 109C (ticket « alertes contextualisées » §C) : non retenues présentées en deux listes (« À revoir » /
-    // « Exclusions normales »), toutes deux avec les gestes → 5 appels.
-    expect((ui.match(/canEdit=\{canEdit\} onDecide=\{decide\}/g) ?? []).length).toBe(5);
+    // « Exclusions normales »), toutes deux avec les gestes → 5 appels. Lot 111V : + « Vos choix confirmés » → 6.
+    expect((ui.match(/canEdit=\{canEdit\} onDecide=\{decide\}/g) ?? []).length).toBe(6);
   });
 });
 

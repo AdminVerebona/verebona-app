@@ -46,6 +46,7 @@
     "test:e2e:ia-promotion": "vitest --run --config vitest.e2e.config.ts src/test/e2e/scenarios/l105b-promotion-ia.e2e.ts src/test/e2e/scenarios/l99b-conformite-prompts.e2e.ts src/test/e2e/scenarios/l86a-qualification-couples.e2e.ts src/test/e2e/scenarios/l100b-corpus-certification.e2e.ts src/test/e2e/scenarios/l103g-compte-technique.e2e.ts",
     "test:e2e:compte-technique": "vitest --run --config vitest.e2e.config.ts src/test/e2e/scenarios/l103g-compte-technique.e2e.ts src/test/e2e/scenarios/l86a-qualification-couples.e2e.ts src/test/e2e/scenarios/l99b-conformite-prompts.e2e.ts src/test/e2e/scenarios/l82a-eligibilite-comptes.e2e.ts",
     "test:e2e:tco-remises": "vitest --run --config vitest.e2e.config.ts src/test/e2e/scenarios/l109d-tco-remises-avoirs.e2e.ts src/test/e2e/scenarios/l108a-tco-anti-double-comptage.e2e.ts src/test/e2e/scenarios/l61-tco-depenses.e2e.ts",
+    "test:e2e:statut-effectif": "vitest --run --config vitest.e2e.config.ts src/test/e2e/scenarios/l111r-statut-effectif.e2e.ts",
     "test:e2e:rattachement-multiple": "vitest --run --config vitest.e2e.config.ts src/test/e2e/scenarios/l111i-rattachement-multiple.e2e.ts",
     "test:e2e:partage-natif": "vitest --run --config vitest.e2e.config.ts src/test/e2e/scenarios/l110a-partage-natif.e2e.ts src/test/e2e/scenarios/l111p-partage-renouvellement.e2e.ts src/test/e2e/scenarios/depot-idempotent.e2e.ts",
     "test:e2e:legal": "vitest --run --config vitest.e2e.config.ts src/test/e2e/scenarios/l102b-source-juridique.e2e.ts",
@@ -84,6 +85,7 @@
     "test:e2e:connexion-mobile": "vitest --run --config vitest.e2e.config.ts src/test/e2e/scenarios/l103a-connexion-mobile.e2e.ts",
     "test:e2e:diagnostic": "vitest --run --config vitest.e2e.config.ts src/test/e2e/scenarios/l91a-diagnostic-unifie.e2e.ts src/test/e2e/scenarios/l88a-diagnostic-global.e2e.ts src/test/e2e/scenarios/l77c-bo-diagnostics-techniques.e2e.ts src/test/e2e/scenarios/l81c-bo-exports-exhaustifs.e2e.ts",
     "test:e2e:diagnostic-file": "vitest --run --config vitest.e2e.config.ts src/test/e2e/scenarios/l111c-diagnostic-file.e2e.ts src/test/e2e/scenarios/l107g-diagnostics-bo.e2e.ts",
+    "test:e2e:diagnostic-cible": "vitest --run --config vitest.e2e.config.ts src/test/e2e/scenarios/l111q-diagnostic-cible.e2e.ts",
     "test:e2e:diagnostics-bo": "vitest --run --config vitest.e2e.config.ts src/test/e2e/scenarios/l107g-diagnostics-bo.e2e.ts src/test/e2e/scenarios/l91a-diagnostic-unifie.e2e.ts src/test/e2e/scenarios/l88a-diagnostic-global.e2e.ts src/test/e2e/scenarios/l77c-bo-diagnostics-techniques.e2e.ts src/test/e2e/scenarios/l81c-bo-exports-exhaustifs.e2e.ts src/test/e2e/scenarios/l82e-recette-export-restauration.e2e.ts src/test/e2e/scenarios/l84d-bo-executions-exports.e2e.ts",
     "test:e2e:bo-exports": "vitest --run --config vitest.e2e.config.ts src/test/e2e/scenarios/l81c-bo-exports-exhaustifs.e2e.ts src/test/e2e/scenarios/l75n-bo-donnees-compte.e2e.ts src/test/e2e/scenarios/l77c-bo-diagnostics-techniques.e2e.ts src/test/e2e/scenarios/l82e-recette-export-restauration.e2e.ts src/test/e2e/scenarios/l88a-diagnostic-global.e2e.ts",
     "test:e2e:coherence": "vitest --run --config vitest.e2e.config.ts src/test/e2e/scenarios/l82b-controle-coherence.e2e.ts src/test/e2e/scenarios/l76h-agenda-doublons-interventions.e2e.ts src/test/e2e/scenarios/l83b-coherence-extract-operations.e2e.ts src/test/e2e/scenarios/l83e-coherence-c5-c6.e2e.ts src/test/e2e/scenarios/l85b-coherence-recette.e2e.ts src/test/e2e/scenarios/l81a-faux-arbitrages.e2e.ts src/test/e2e/scenarios/l84e-recurrence-reconsolidation.e2e.ts src/test/e2e/scenarios/l88b-proprietes-manquantes.e2e.ts src/test/e2e/scenarios/l91b-reprise-proprietes-sans-silence.e2e.ts src/test/e2e/scenarios/l91d-decisions-t1-omissions.e2e.ts src/test/e2e/scenarios/l98b-a-traiter-publiable.e2e.ts src/test/e2e/scenarios/l85f-t3-connaissance-t1.e2e.ts src/test/e2e/scenarios/l100e-a-traiter-familles.e2e.ts",
@@ -103,6 +105,7 @@
     "test:e2e:mfa": "vitest --run --config vitest.e2e.config.ts src/test/e2e/scenarios/l110b-mfa.e2e.ts src/test/e2e/scenarios/l92-sessions-reauth.e2e.ts src/test/e2e/scenarios/l96b-securite-connexions.e2e.ts src/test/e2e/scenarios/l93-connexion-google-apple.e2e.ts",
     "test:e2e:auth-social": "vitest --run --config vitest.e2e.config.ts src/test/e2e/scenarios/l97b-app-liaison-sociale.e2e.ts src/test/e2e/scenarios/l96b-reauth-sociale.e2e.ts src/test/e2e/scenarios/l93-connexion-google-apple.e2e.ts src/test/e2e/scenarios/l53a-securite-cdc18.e2e.ts src/test/e2e/scenarios/l37-securite-comptes.e2e.ts",
     "test:e2e:tco-financement": "vitest --run --config vitest.e2e.config.ts src/test/e2e/scenarios/l111f-tco-financement.e2e.ts",
+    "test:e2e:tco-anomalies": "vitest --run --config vitest.e2e.config.ts src/test/e2e/scenarios/l111v-tco-anomalies.e2e.ts src/test/e2e/scenarios/l80a-tco-decisions.e2e.ts src/test/e2e/scenarios/l109c-tco-diagnostics.e2e.ts src/test/e2e/scenarios/l108b-montants-manquants.e2e.ts",
     "test:e2e:tco-anti-double-comptage": "vitest --run --config vitest.e2e.config.ts src/test/e2e/scenarios/l108a-tco-anti-double-comptage.e2e.ts src/test/e2e/scenarios/l75d-tco-residuels.e2e.ts src/test/e2e/scenarios/l61-tco-depenses.e2e.ts src/test/e2e/scenarios/l107d-prix-multi-articles.e2e.ts src/test/e2e/scenarios/l82b-controle-coherence.e2e.ts",
     "test:e2e:prix-multi-articles": "vitest --run --config vitest.e2e.config.ts src/test/e2e/scenarios/l107d-prix-multi-articles.e2e.ts src/test/e2e/scenarios/l81a-faux-arbitrages.e2e.ts src/test/e2e/scenarios/l76j-t3-informations.e2e.ts src/test/e2e/scenarios/l91c-propriete-vs-realisation.e2e.ts",
     "test:e2e:documents-date": "vitest --run --config vitest.e2e.config.ts src/test/e2e/scenarios/l108d-documents-date-unique.e2e.ts src/test/e2e/scenarios/l103f-filtres-documents.e2e.ts src/test/e2e/scenarios/depot-idempotent.e2e.ts",
@@ -130,7 +133,9 @@
     "test:e2e:couts-ia": "vitest --run --config vitest.e2e.config.ts src/test/e2e/scenarios/l109l-couts-ia.e2e.ts src/test/e2e/scenarios/l35b-catalogue-dynamique.e2e.ts",
     "test:e2e:t6-empreinte": "vitest --run --config vitest.e2e.config.ts src/test/e2e/scenarios/l109e-t6-empreinte-v5.e2e.ts",
     "test:e2e:t3-nommage-6033": "vitest --run --config vitest.e2e.config.ts src/test/e2e/scenarios/l109j-t3-nommage-6033.e2e.ts",
-    "test:e2e:t1-couverture-propagation": "vitest --run --config vitest.e2e.config.ts src/test/e2e/scenarios/l109k-t1-couverture-propagation.e2e.ts"
+    "test:e2e:t1-couverture-propagation": "vitest --run --config vitest.e2e.config.ts src/test/e2e/scenarios/l109k-t1-couverture-propagation.e2e.ts",
+    "test:e2e:acquisition-bout-en-bout": "vitest --run --config vitest.e2e.config.ts src/test/e2e/scenarios/l111s-acquisition-bout-en-bout.e2e.ts",
+    "test:e2e:cil-dpe": "vitest --run --config vitest.e2e.config.ts src/test/e2e/scenarios/l111u-cil-dpe.e2e.ts"
   },
   "dependencies": {
     "@aws-sdk/client-s3": "^3.934.0",

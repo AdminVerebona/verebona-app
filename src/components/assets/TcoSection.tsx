@@ -65,6 +65,12 @@
  *     exclusions normales), pas des erreurs. « Aucune anomalie détectée » ne
  *     veut jamais dire « toutes les dépenses possibles sont connues ».
  *
+ *   · Lot 111V : gestes CONTEXTUELS calculés par le serveur (arbitrages :
+ *     même fait, dépenses distinctes, exclusion confirmée, nature confirmée ;
+ *     correction du document ; annulation d'un choix) dans « Points à
+ *     vérifier » et dans chaque ligne ; « Vos choix confirmés » séparés des
+ *     exclusions normales ; récupération du montant selon son état réel.
+ *
  * Aucun bouton « Modifier » du total : les corrections se font sur les
  * sources (fiche, document) ou par « Ajouter / Retirer du TCO » ligne par
  * ligne. Standard : présentation verrouillée, AUCUN montant reçu (403 serveur
@@ -81,7 +87,9 @@ import { toast } from 'sonner';
 import { TCO_CALCULATION_INFO, type TcoDto } from '@/services/business-operations/tco/dto';
 import { TcoJustificatif } from './tco-justificatif';
 import { TcoAmountRecoveryNotice } from './tco-amount-recovery';
-import { TcoInformationDiagnostics, TcoOpenDiagnostics } from './tco-diagnostics';
+import { TcoDecidedDiagnostics, TcoInformationDiagnostics, TcoOpenDiagnostics, type TcoDiagnosticsDecide } from './tco-diagnostics';
+import { TcoDecisionActions, type TcoArbitrate } from './tco-decision-actions';
+import { AMOUNT_RECOVERY_PENDING_STATES } from '@/services/business-operations/tco/amount-recovery';
 import type { TcoDiagnosticSource } from '@/services/business-operations/tco/diagnostics';
 import { TcoUsageSection } from './TcoUsageSection';
 import { TcoInfoTip } from './tco-info-tip';
@@ -135,6 +143,13 @@ function anneeSelEstime(c: TcoDto['usage']['complement'] | null, annual: Annual 
 }
 
 const NEGATIVE = new Set(['REDUCTION', 'REFUND', 'INDEMNITY']);
+/** Lot 111V : confirmation (toast) de chaque geste. */
+const MESSAGES_CHOIX: Readonly<Record<string, string>> = {
+  INCLUDE: 'Dépense ajoutée au coût de possession', EXCLUDE: 'Dépense retirée du coût de possession',
+  CONFIRM_EXCLUSION: 'Exclusion confirmée', SAME_FACT: 'Même dépense confirmée : comptée une seule fois',
+  DISTINCT_FACTS: 'Dépenses distinctes confirmées', REQUALIFY: 'Dépense comptée dans le coût de possession', REVERT: 'Votre choix est annulé',
+};
+
 const RETENUE = new Set(['RETAINED_DIRECT', 'RETAINED_CONSOLIDATED']);
 
 
@@ -206,7 +221,7 @@ function TcoLigneDetail({ l }: { l: Line }) {
 /** Lot 80A : geste « Ajouter / Retirer du TCO » demandé sur une ligne (confirmé dans la ligne). */
 type Decide = (l: Line, action: 'INCLUDE' | 'EXCLUDE', confirmDuplicate: boolean) => Promise<{ ok: true } | { ok: false; duplicateWarning?: string }>;
 
-function LigneDepense({ l, t, canEdit = false, onDecide, review = false, focused = false }: { l: Line; t: TcoDto; canEdit?: boolean; onDecide?: Decide; review?: boolean; focused?: boolean }) {
+function LigneDepense({ l, t, canEdit = false, onDecide, review = false, focused = false, arbitrate }: { l: Line; t: TcoDto; canEdit?: boolean; onDecide?: Decide; review?: boolean; focused?: boolean; arbitrate?: TcoArbitrate }) {
   const retenue = RETENUE.has(l.status);
   // Lot 80A : confirmation légère dans la ligne (pas de fenêtre), avertissement de doublon présumé explicite.
   const [confirm, setConfirm] = useState<null | { action: 'INCLUDE' | 'EXCLUDE'; duplicateWarning: string | null }>(null);
@@ -281,8 +296,18 @@ function LigneDepense({ l, t, canEdit = false, onDecide, review = false, focused
           </button>
         )}
       </div>
-      {canEdit && !retenue && actions && !actions.addable && actions.addBlockedReason && l.status !== 'OUT_OF_SCOPE' && (
-        <p className="text-xs text-muted-foreground mt-0.5" data-tco-add-blocked>Ajout impossible : {actions.addBlockedReason}</p>
+      {canEdit && !retenue && actions && !actions.addable && actions.addBlockedReason && l.status !== 'OUT_OF_SCOPE' && !(actions.options ?? []).length && (
+        <p className="text-xs text-muted-foreground mt-0.5" data-tco-add-blocked={actions.addBlockedCode ?? ''}>Ajout impossible : {actions.addBlockedReason}</p>
+      )}
+      {/* Lot 111V : motif réel + gestes adaptés (nature à confirmer, montant à renseigner, doublon, choix à annuler). */}
+      {canEdit && !retenue && actions && !actions.addable && actions.addBlockedReason && (actions.options ?? []).length > 0 && (
+        <p className="text-xs text-muted-foreground mt-0.5" data-tco-add-blocked={actions.addBlockedCode ?? ''}>{actions.addBlockedReason}</p>
+      )}
+      {canEdit && arbitrate && actions && !confirm && (
+        <TcoDecisionActions
+          lineId={l.id} lineKey={l.decisionKey ?? null} options={actions.options ?? []} onDecide={arbitrate}
+          categoryLabels={t.categoryLabels} categories={t.requalifyCategories ?? []} exclude={['INCLUDE', 'EXCLUDE']}
+        />
       )}
       {confirm && (
         <div className="mt-2 rounded-lg border border-border bg-muted/30 p-3 space-y-2" role="group" aria-label={confirm.action === 'EXCLUDE' ? 'Confirmer le retrait' : 'Confirmer l’ajout'} data-tco-decision-confirm={confirm.action}>
@@ -424,6 +449,32 @@ export function TcoSection({ assetId, readOnly = false, defaultOpen = false }: P
     }
   };
 
+  // Lot 111V : arbitrages et gestes contextuels — même route, TCO recalculé rendu par le serveur (mise à jour immédiate).
+  const arbitrate: TcoArbitrate = async ({ lineId, lineKey, action, category, confirmDuplicate }) => {
+    ownWrite.current = true;
+    try {
+      const r = await apiClient.post<{ tco: TcoDto; outcome: string }>(`/api/assets/${assetId}/tco/decisions`, {
+        lineId, lineKey, action, ...(category ? { category } : {}), ...(confirmDuplicate ? { confirmDuplicate: true } : {}),
+      });
+      coordinator.current?.supersede();
+      setData(r.tco);
+      setExtra([]);
+      setYearLines(null);
+      toast.success(MESSAGES_CHOIX[action] ?? 'Votre choix est enregistré');
+      return { ok: true };
+    } catch (e) {
+      const err = e as { code?: string; serverMessage?: string };
+      if (err.code === 'DUPLICATE_CONFIRMATION_REQUIRED' && err.serverMessage) return { ok: false, duplicateWarning: err.serverMessage };
+      toast.error(err.serverMessage ?? 'Votre choix n’a pas pu être enregistré');
+      if (err.code === 'LINE_NOT_FOUND' || err.code === 'NOT_APPLICABLE') void load();
+      return { ok: false };
+    } finally {
+      ownWrite.current = false;
+    }
+  };
+  const decideCtx: TcoDiagnosticsDecide | undefined = canEdit && data
+    ? { onDecide: arbitrate, categoryLabels: data.categoryLabels, categories: data.requalifyCategories ?? [] } : undefined;
+
   // Lot 109C : « Voir la dépense » — ouvre le sous-tiroir de la ligne (retenue ou non), toutes années.
   const showLine = useCallback((src: TcoDiagnosticSource) => {
     if (!src.lineId) return;
@@ -466,11 +517,15 @@ export function TcoSection({ assetId, readOnly = false, defaultOpen = false }: P
   const diag = t?.diagnostics ?? null;
   const aRevoir = new Set(diag?.reviewLineIds ?? []);
   const ecarteesARevoir = ecartees.filter((l) => aRevoir.has(l.id));
-  const ecarteesNormales = ecartees.filter((l) => !aRevoir.has(l.id));
+  // Lot 111V : choix confirmés par l'utilisateur — groupe distinct des exclusions normales.
+  const decidee = (l: Line) => !!l.userDecision?.applied && ['CONFIRM_EXCLUSION', 'SAME_FACT', 'DISTINCT_FACTS', 'REQUALIFY'].includes(l.userDecision.decision);
+  const ecarteesDecidees = ecartees.filter((l) => !aRevoir.has(l.id) && decidee(l));
+  const ecarteesNormales = ecartees.filter((l) => !aRevoir.has(l.id) && !decidee(l));
   const motifs = t?.otherLinesByReason ?? [];
   const lignesARevoir = motifs.reduce((n, m) => n + m.review, 0);
   const lignesNonRetenues = motifs.reduce((n, m) => n + m.count, 0);
-  const enCours = t?.amountRecovery ? { ...t.amountRecovery, items: t.amountRecovery.items.filter((i) => i.state === 'IN_PROGRESS') } : null;
+  const enCours = t?.amountRecovery ? { ...t.amountRecovery, items: t.amountRecovery.items.filter((i) => AMOUNT_RECOVERY_PENDING_STATES.has(i.state)) } : null;
+  const lignesDecidees = motifs.reduce((n, m) => n + (m.decided ?? 0), 0);
   // Lot 76G : indicateurs annuels calculés par le moteur (aucun recalcul ici).
   const annual = t?.annual ?? null;
   const anneeSel = annual ? tcoKeptYear(year, annual.years, annual.defaultYear) : null;
@@ -727,7 +782,7 @@ export function TcoSection({ assetId, readOnly = false, defaultOpen = false }: P
               {/* ── Lot 109C : points à vérifier — seulement s'il existe un cas OUVERT (anomalie, information manquante) ── */}
               {diag && diag.open.families > 0 && (
                 <Bloc title={`Points à vérifier (${diag.open.families})`} data-tco-warnings>
-                  <TcoOpenDiagnostics diagnostics={diag} assetId={assetId} onShowLine={showLine} />
+                  <TcoOpenDiagnostics diagnostics={diag} assetId={assetId} onShowLine={showLine} decide={decideCtx} />
                 </Bloc>
               )}
 
@@ -736,6 +791,7 @@ export function TcoSection({ assetId, readOnly = false, defaultOpen = false }: P
 
               {/* ── Lot 109C : informations neutres (exclusions normales, déduplication prouvée, vos choix) ── */}
               {diag && <TcoInformationDiagnostics diagnostics={diag} onShowLine={showLine} />}
+              {diag && <TcoDecidedDiagnostics diagnostics={diag} onShowLine={showLine} decide={decideCtx} />}
               {/* Lot 108A (§D) : information neutre (texte exact de la décision PO) — jamais une alerte. */}
               <p className="text-xs text-muted-foreground" role="note" data-tco-calculation-info>{TCO_CALCULATION_INFO}</p>
             </>
@@ -779,7 +835,7 @@ export function TcoSection({ assetId, readOnly = false, defaultOpen = false }: P
                 {!chargementAnnee && depensesFiltrees.length === 0 && (
                   <p className="text-sm text-muted-foreground py-1.5">{retainedFilter === 'YEAR' ? 'Aucune dépense retenue datée de cette année.' : 'Aucune dépense retenue.'}</p>
                 )}
-                {depensesFiltrees.map((l) => <LigneDepense key={l.id} l={l} t={t} canEdit={canEdit} onDecide={decide} review={aRevoir.has(l.id)} focused={focusLine === l.id} />)}
+                {depensesFiltrees.map((l) => <LigneDepense key={l.id} l={l} t={t} canEdit={canEdit} onDecide={decide} arbitrate={arbitrate} review={aRevoir.has(l.id)} focused={focusLine === l.id} />)}
               </div>
               {/* Lot 81D : avoirs, remboursements et indemnités de l'année (net de l'indicateur, même sélection). */}
               {creditsAnnee.length > 0 && (
@@ -830,12 +886,13 @@ export function TcoSection({ assetId, readOnly = false, defaultOpen = false }: P
               {motifs.length > 0 && (
                 <div className="pb-3 border-b border-border space-y-1" data-tco-excluded-summary>
                   <p className="text-xs text-muted-foreground" data-tco-excluded-summary-counts>
-                    {lignesNonRetenues} ligne(s) : {lignesNonRetenues - lignesARevoir} exclusion(s) normale(s){lignesARevoir ? `, ${lignesARevoir} à revoir` : ''}.
+                    {lignesNonRetenues} ligne(s) examinée(s) : {lignesNonRetenues - lignesARevoir - lignesDecidees} exclusion(s) normale(s){lignesARevoir ? `, ${lignesARevoir} à revoir` : ''}{lignesDecidees ? `, ${lignesDecidees} choix confirmé(s)` : ''}.
+                    {diag && diag.open.decisions > 0 ? ` ${diag.open.decisions} choix à faire.` : ''}
                   </p>
                   <ul className="text-xs text-muted-foreground space-y-0.5">
                     {motifs.map((m) => (
                       <li key={`${m.status}|${m.reason ?? ''}`} className="flex items-start justify-between gap-3" data-tco-excluded-reason={m.reason ?? m.status}>
-                        <span className="min-w-0 break-words">{m.label}{m.review ? ` (dont ${m.review} à revoir)` : ''}</span>
+                        <span className="min-w-0 break-words">{m.label}{m.review ? ` (dont ${m.review} à revoir)` : ''}{m.decided ? ` (dont ${m.decided} confirmée(s) par vous)` : ''}</span>
                         <span className="shrink-0 tabular-nums">{m.count}</span>
                       </li>
                     ))}
@@ -847,15 +904,23 @@ export function TcoSection({ assetId, readOnly = false, defaultOpen = false }: P
                 <div className="pt-3" data-tco-excluded-review>
                   <p className="vb-app-subsection m-0">{`À revoir (${ecarteesARevoir.length})`}</p>
                   <div className="divide-y divide-border">
-                    {ecarteesARevoir.map((l) => <LigneDepense key={l.id} l={l} t={t} canEdit={canEdit} onDecide={decide} review focused={focusLine === l.id} />)}
+                    {ecarteesARevoir.map((l) => <LigneDepense key={l.id} l={l} t={t} canEdit={canEdit} onDecide={decide} arbitrate={arbitrate} review focused={focusLine === l.id} />)}
+                  </div>
+                </div>
+              )}
+              {ecarteesDecidees.length > 0 && (
+                <div className="pt-3" data-tco-excluded-decided>
+                  <p className="vb-app-subsection m-0">{`Vos choix confirmés (${ecarteesDecidees.length})`}</p>
+                  <div className="divide-y divide-border">
+                    {ecarteesDecidees.map((l) => <LigneDepense key={l.id} l={l} t={t} canEdit={canEdit} onDecide={decide} arbitrate={arbitrate} focused={focusLine === l.id} />)}
                   </div>
                 </div>
               )}
               {ecarteesNormales.length > 0 && (
                 <div className="pt-3" data-tco-excluded-normal>
-                  {ecarteesARevoir.length > 0 && <p className="vb-app-subsection m-0">{`Exclusions normales (${ecarteesNormales.length})`}</p>}
+                  {(ecarteesARevoir.length > 0 || ecarteesDecidees.length > 0) && <p className="vb-app-subsection m-0">{`Exclusions normales (${ecarteesNormales.length})`}</p>}
                   <div className="divide-y divide-border">
-                    {ecarteesNormales.map((l) => <LigneDepense key={l.id} l={l} t={t} canEdit={canEdit} onDecide={decide} focused={focusLine === l.id} />)}
+                    {ecarteesNormales.map((l) => <LigneDepense key={l.id} l={l} t={t} canEdit={canEdit} onDecide={decide} arbitrate={arbitrate} focused={focusLine === l.id} />)}
                   </div>
                 </div>
               )}

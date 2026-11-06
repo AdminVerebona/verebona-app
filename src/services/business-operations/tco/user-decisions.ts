@@ -55,18 +55,49 @@
  *     l'insu de l'utilisateur.
  * ══════════════════════════════════════════════════════════════════════════
  */
-import { COMPONENT_EFFECT, EXCLUSION_LABELS, ledgerKey, type LedgerEntry } from '../finance/engine';
+import { COMPONENT_EFFECT, componentEurMinor, EXCLUSION_LABELS, ledgerKey, type LedgerEntry } from '../finance/engine';
 import { DOCUMENT_LINE_REASON_LABELS, type EconomicLineReason, type EconomicLineStatus } from '../finance/economic-lines';
 import type { TcoCategory, TcoEconomicLine, TcoWarning } from './model';
 
-export type TcoUserDecisionValue = 'INCLUDE' | 'EXCLUDE';
+/**
+ * Lot 80A : INCLUDE (« Ajouter au TCO ») / EXCLUDE (« Retirer du TCO »).
+ * Lot 111V (ticket « TCO — anomalies corrigeables ») : ARBITRAGES explicites,
+ * qui CLÔTURENT un point à vérifier (jamais INCLUDE / EXCLUDE détournés) :
+ *   · CONFIRM_EXCLUSION — la ligne non retenue doit le rester (ce n'est pas une
+ *     dépense de ce bien, aucune dépense sur ce document) : total inchangé ;
+ *   · SAME_FACT — cette source représente le même fait qu'une dépense déjà
+ *     comptée : une seule contribution, les deux justificatifs restent ;
+ *   · DISTINCT_FACTS — deux transactions / échéances différentes (même montant
+ *     possible) : chacune compte, sans double comptage interne ;
+ *   · REQUALIFY — nature confirmée : dépense de ce bien (catégorie choisie),
+ *     comptée à son montant en euros (jamais un montant inventé).
+ */
+export type TcoUserDecisionValue = 'INCLUDE' | 'EXCLUDE' | 'CONFIRM_EXCLUSION' | 'SAME_FACT' | 'DISTINCT_FACTS' | 'REQUALIFY';
 
-/** Décision persistée (table `asset_cost_line_decisions`, migration 0623). */
+/**
+ * Lot 111V : catégories qu'un utilisateur peut choisir en confirmant la nature d'une dépense — jamais
+ * l'acquisition du bien (chantier 111S), le financement (111F) ni la cession (fiche du bien).
+ */
+export const TCO_REQUALIFY_CATEGORIES: readonly TcoCategory[] = ['USAGE', 'MAINTENANCE', 'CONTRACTS', 'ACCESSORIES', 'CLAIMS', 'OTHER'];
+
+/** Lot 111V : arbitrages (clôturent un point à vérifier ; annulables par « Annuler mon choix »). */
+export const TCO_ARBITRATION_DECISIONS: ReadonlySet<TcoUserDecisionValue> = new Set(['CONFIRM_EXCLUSION', 'SAME_FACT', 'DISTINCT_FACTS', 'REQUALIFY']);
+/** Lot 111V : décisions dont le résultat voulu est « la ligne compte » (T2 la compte aussi). */
+export const TCO_COUNTING_DECISIONS: ReadonlySet<TcoUserDecisionValue> = new Set(['INCLUDE', 'DISTINCT_FACTS', 'REQUALIFY']);
+
+/** Décision persistée (table `asset_cost_line_decisions`, migration 0623, étendue 1320). */
 export interface TcoUserDecision {
   key: string;
   decision: TcoUserDecisionValue;
   decidedAt: string;
   decidedByUserId: number | null;
+  /** Lot 111V : autres lignes du même arbitrage (doublon : la ligne comptée à sa place). */
+  relatedKeys?: readonly string[];
+  /** Lot 111V : catégorie choisie par l'utilisateur (REQUALIFY). */
+  requalifiedCategory?: TcoCategory | null;
+  /** Lot 111V : statut / motif automatiques au moment de la décision (réouverture motivée si une preuve nouvelle les contredit). */
+  basisStatus?: EconomicLineStatus | null;
+  basisReason?: string | null;
 }
 
 /** Décision portée par une ligne (trace : statut et motif automatiques qu'elle remplace). */
@@ -79,6 +110,12 @@ export interface TcoLineUserDecision {
   applied: boolean;
   automaticStatus: EconomicLineStatus;
   automaticReason: EconomicLineReason | null;
+  /**
+   * Lot 111V : une preuve nouvelle contredit le choix (le traitement automatique a changé depuis, en sens
+   * contraire) — le choix reste appliqué (jamais effacé en silence), le point est rouvert avec son motif.
+   */
+  contradicted?: boolean;
+  relatedKeys?: readonly string[];
 }
 
 const RETENUE = (s: EconomicLineStatus) => s === 'RETAINED_DIRECT' || s === 'RETAINED_CONSOLIDATED';
@@ -140,17 +177,56 @@ export function tcoLineRemovable(l: Pick<TcoEconomicLine, 'status' | 'kind'>): b
   return RETENUE(l.status) && l.kind !== 'PROCEED';
 }
 
+/**
+ * Lot 111V : motif RÉEL d'un ajout impossible (code stable) — classification, montant, conversion et
+ * réalisation sont distingués ; « devise étrangère » seulement si la devise d'origine n'est pas l'euro.
+ */
+export type TcoAddBlockedCode =
+  | 'ALREADY_RETAINED' | 'NOT_REALIZED' | 'AMOUNT_MISSING' | 'OTHER_ASSET' | 'COUNTED_ELSEWHERE'
+  | 'NOT_AN_EXPENSE' | 'NATURE_TO_CONFIRM' | 'FOREIGN_CURRENCY';
+
+type AddableLine = Pick<TcoEconomicLine, 'status' | 'kind' | 'eurCents' | 'amountUnknown' | 'notRealized'> & Partial<Pick<TcoEconomicLine, 'reason' | 'currency' | 'amountMinor'>>;
+
+const devise = (c: string | null | undefined) => String(c ?? '').trim().toUpperCase();
+/** Devise d'origine AVÉRÉE autre que l'euro (une devise absente n'est jamais « étrangère »). */
+const deviseEtrangere = (c: string | null | undefined) => { const d = devise(c); return !!d && d !== 'EUR'; };
+
+/** Lot 111V : montant en euros d'une ligne, y compris non qualifiée (même conversion que le moteur ; null : inconnu ou non convertible). */
+export function tcoLineEurCents(l: Pick<TcoEconomicLine, 'eurCents' | 'amountMinor' | 'currency'> & Partial<Pick<TcoEconomicLine, 'amountUnknown'>>): number | null {
+  if (l.amountUnknown) return null;
+  if (l.eurCents != null) return l.eurCents;
+  if (!(l.amountMinor > 0) || !devise(l.currency)) return null;
+  return componentEurMinor({ amountMinor: l.amountMinor, currency: devise(l.currency), amountEurCents: null });
+}
+
 /** Une ligne non retenue peut-elle être ajoutée ? Motif en langage utilisateur sinon (pure). */
-export function tcoLineAddable(l: Pick<TcoEconomicLine, 'status' | 'kind' | 'eurCents' | 'amountUnknown' | 'notRealized'>): { ok: true } | { ok: false; reason: string } {
-  if (RETENUE(l.status)) return { ok: false, reason: 'Déjà retenue dans le coût de possession.' };
+export function tcoLineAddable(l: AddableLine): { ok: true } | { ok: false; reason: string; code: TcoAddBlockedCode } {
+  if (RETENUE(l.status)) return { ok: false, code: 'ALREADY_RETAINED', reason: 'Déjà retenue dans le coût de possession.' };
   // Lot 81D : une dépense non réalisée ne contribue à aucun indicateur, même sur décision (jamais de date de réalisation inventée).
-  if (l.notRealized) return { ok: false, reason: 'Dépense non encore réalisée : elle ne peut être comptée qu’une fois réalisée (paiement daté et justifié).' };
-  if (l.amountUnknown) return { ok: false, reason: 'Montant inconnu : renseignez le montant du document pour pouvoir l’ajouter.' };
-  if (l.status === 'OUT_OF_SCOPE') return { ok: false, reason: 'Dépense attribuée à un autre bien.' };
-  if (l.status === 'CONSOLIDATED_ELSEWHERE') return { ok: false, reason: 'Déjà comptée par une autre dépense : utilisez la dépense qui la porte.' };
-  if (l.status === 'UNCONVERTED' || l.eurCents == null) return { ok: false, reason: 'Montant en devise étrangère sans contre-valeur en euros : il ne peut pas être ajouté.' };
-  if (!l.kind || l.kind === 'PROCEED') return { ok: false, reason: 'Ce document n’est pas une dépense (règlement, capital emprunté ou prix de vente).' };
+  if (l.notRealized) return { ok: false, code: 'NOT_REALIZED', reason: 'Dépense non encore réalisée : elle ne peut être comptée qu’une fois réalisée (paiement daté et justifié).' };
+  if (l.amountUnknown) return { ok: false, code: 'AMOUNT_MISSING', reason: 'Montant à renseigner : aucun montant n’a pu être lu sur le justificatif. Indiquez-le sur le document pour qu’il soit compté.' };
+  if (l.status === 'OUT_OF_SCOPE') return { ok: false, code: 'OTHER_ASSET', reason: 'Dépense attribuée à un autre bien.' };
+  if (l.status === 'CONSOLIDATED_ELSEWHERE') return { ok: false, code: 'COUNTED_ELSEWHERE', reason: 'Déjà comptée par une autre dépense : utilisez la dépense qui la porte.' };
+  // Règlement, capital emprunté, prix de vente : jamais une dépense (motif établi par le moteur).
+  if (l.kind === 'PROCEED' || l.status === 'PAYMENT' || l.reason === 'PAYMENT_PROOF' || l.reason === 'LOAN_PRINCIPAL') {
+    return { ok: false, code: 'NOT_AN_EXPENSE', reason: 'Ce document n’est pas une dépense (règlement, capital emprunté ou prix de vente).' };
+  }
+  // Lot 111V : nature non établie (document non classé comme dépense) — à confirmer, jamais une « devise étrangère ».
+  if (!l.kind) return { ok: false, code: 'NATURE_TO_CONFIRM', reason: 'Nature de la dépense à confirmer : indiquez s’il s’agit d’une dépense de ce bien.' };
+  if (l.status === 'UNCONVERTED' || (l.eurCents == null && deviseEtrangere(l.currency))) {
+    return { ok: false, code: 'FOREIGN_CURRENCY', reason: 'Montant en devise étrangère sans contre-valeur en euros : indiquez le montant en euros sur le document pour pouvoir l’ajouter.' };
+  }
+  if (l.eurCents == null) return { ok: false, code: 'AMOUNT_MISSING', reason: 'Montant à renseigner : indiquez le montant sur le document pour qu’il soit compté.' };
   return { ok: true };
+}
+
+/** Lot 111V : ligne dont la nature peut être confirmée par l'utilisateur (« C'est une dépense de ce bien »). */
+export function tcoLineRequalifiable(l: AddableLine & Pick<TcoEconomicLine, 'amountMinor' | 'currency'>): boolean {
+  if (RETENUE(l.status) || l.notRealized || l.amountUnknown) return false;
+  if (!['EXCLUDED', 'NOT_QUALIFIED'].includes(l.status)) return false;
+  const a = tcoLineAddable(l);
+  if (a.ok || a.code !== 'NATURE_TO_CONFIRM') return false;
+  return tcoLineEurCents({ eurCents: l.eurCents, amountMinor: l.amountMinor ?? 0, currency: l.currency ?? '' }) != null;
 }
 
 /** Motifs pour lesquels le moteur considère la ligne comme DÉJÀ comptée ailleurs. */
@@ -160,6 +236,8 @@ const DEJA_COMPTEE: ReadonlySet<string> = new Set([
   'ASSET_PRICE_CONSOLIDATED', 'EQUIPMENT_PRICE_CONSOLIDATED',
   // Lot 108A : même achat confirmé représenté par une autre source (fiche, justificatif, événement de référence).
   'SAME_FACT_CROSS_SOURCE',
+  // Lot 111V : même fait confirmé par l'utilisateur.
+  'USER_SAME_FACT',
 ]);
 const REASON_LABELS: Readonly<Record<string, string>> = { ...EXCLUSION_LABELS, ...DOCUMENT_LINE_REASON_LABELS };
 
@@ -187,7 +265,111 @@ export function tcoAddDuplicateRisk(
   return null;
 }
 
+/**
+ * Lot 111V — GESTES CONTEXTUELS d'une ligne (pure, calculés côté serveur,
+ * jamais par l'interface) : chaque cas « À corriger / À revoir » a une issue
+ * réalisable, adaptée à son motif réel (jamais un « Ajouter » universel).
+ *   · EDIT_DOCUMENT : ouvrir le justificatif pour corriger montant, devise,
+ *     date ou bien concerné (formulaire existant du document) ;
+ *   · REVERT : annuler un arbitrage (retour au traitement automatique).
+ */
+export type TcoDecisionOptionAction = TcoUserDecisionValue | 'REVERT' | 'EDIT_DOCUMENT';
+
+export interface TcoDecisionOption {
+  action: TcoDecisionOptionAction;
+  label: string;
+  /** Phrase de confirmation (effet exact du geste sur le coût de possession). */
+  confirm: string;
+  /** REQUALIFY : l'utilisateur choisit la catégorie (proposée : celle de la ligne). */
+  needsCategory?: boolean;
+  /** INCLUDE : avertissement de doublon présumé (confirmation explicite exigée). */
+  duplicateWarning?: string | null;
+  /** EDIT_DOCUMENT : justificatif à ouvrir. */
+  fileId?: number | null;
+}
+
+type OptionLine = TcoEconomicLine;
+
+/** Ligne présumée doublon d'une autre (même somme, sans preuve d'une transaction distincte). */
+export const tcoPresumedDuplicate = (l: Pick<TcoEconomicLine, 'status' | 'reason'>): boolean => l.status === 'DUPLICATE' && l.reason === 'SAME_FACT_OTHER_DOCUMENT';
+
+/** Gestes possibles sur une ligne montrée (pure, testée L111V-U-OPT). */
+export function tcoLineDecisionOptions(l: OptionLine, lines: readonly OptionLine[]): TcoDecisionOption[] {
+  const out: TcoDecisionOption[] = [];
+  const d = l.userDecision;
+  if (d && TCO_ARBITRATION_DECISIONS.has(d.decision) && (d.applied || d.contradicted)) {
+    if (d.contradicted && d.applied) out.push({ action: d.decision, label: 'Garder mon choix', confirm: 'Confirmer de nouveau votre choix malgré la nouvelle information.' });
+    out.push({ action: 'REVERT', label: 'Annuler mon choix', confirm: 'Annuler votre choix ? La ligne retrouve le traitement automatique.' });
+    return out;
+  }
+  const doc = l.fileId ?? l.sourceFileIds?.[0] ?? null;
+  const corriger = (label: string): TcoDecisionOption | null => (doc != null ? { action: 'EDIT_DOCUMENT', label, confirm: '', fileId: doc } : null);
+  const push = (o: TcoDecisionOption | null) => { if (o) out.push(o); };
+  if (RETENUE(l.status)) {
+    if (l.uncertain) {
+      out.push({ action: 'SAME_FACT', label: 'C’est la même dépense', confirm: 'Compter une seule fois : cette ligne sort du coût de possession, son justificatif reste consultable.' });
+      out.push({ action: 'DISTINCT_FACTS', label: 'Dépenses distinctes', confirm: 'Confirmer qu’il s’agit de deux dépenses différentes : cette ligne reste comptée.' });
+    }
+    if (tcoLineRemovable(l)) out.push({ action: 'EXCLUDE', label: 'Retirer du TCO', confirm: 'Retirer cette dépense du coût de possession ? Vous pourrez l’ajouter de nouveau.' });
+    return out;
+  }
+  if (tcoPresumedDuplicate(l)) {
+    out.push({ action: 'SAME_FACT', label: 'Confirmer le même fait', confirm: 'Confirmer qu’il s’agit de la même dépense : elle reste comptée une seule fois, les deux justificatifs sont conservés.' });
+    if (tcoLineEurCents(l) != null && !l.notRealized) out.push({ action: 'DISTINCT_FACTS', label: 'Dépenses distinctes', confirm: 'Confirmer qu’il s’agit de deux dépenses différentes (autre échéance, autre période) : celle-ci est ajoutée au coût de possession.' });
+    return out;
+  }
+  const a = tcoLineAddable(l);
+  if (a.ok) {
+    out.push({ action: 'INCLUDE', label: 'Ajouter au TCO', confirm: 'Ajouter cette dépense au coût de possession ? Vous pourrez la retirer de nouveau.', duplicateWarning: tcoAddDuplicateRisk(l, lines) });
+    if (l.status === 'NOT_QUALIFIED' || l.status === 'UNCONFIRMED_ASSET' || l.status === 'UNALLOCATED') {
+      out.push({ action: 'CONFIRM_EXCLUSION', label: l.status === 'NOT_QUALIFIED' ? 'Pas une dépense du bien' : 'Ne concerne pas ce bien', confirm: 'Confirmer que cette ligne ne doit pas être comptée : le coût est inchangé, le point est clos.' });
+    }
+    return out;
+  }
+  switch (a.code) {
+    case 'NATURE_TO_CONFIRM':
+      if (tcoLineRequalifiable(l)) {
+        out.push({ action: 'REQUALIFY', label: 'C’est une dépense du bien', needsCategory: true, confirm: 'Compter cette dépense dans le coût de possession, à son montant en euros (aucun paiement n’est ajouté).' });
+        out.push({ action: 'CONFIRM_EXCLUSION', label: 'Pas une dépense du bien', confirm: 'Confirmer que ce document ne porte pas de dépense de ce bien : le coût est inchangé, le point est clos.' });
+      }
+      push(corriger('Corriger le document'));
+      break;
+    case 'AMOUNT_MISSING':
+      push(corriger('Indiquer le montant'));
+      out.push({ action: 'CONFIRM_EXCLUSION', label: 'Aucune dépense sur ce document', confirm: 'Confirmer que ce document ne porte pas de dépense : aucun montant n’est attendu, le point est clos.' });
+      break;
+    case 'FOREIGN_CURRENCY':
+      push(corriger('Indiquer le montant en euros'));
+      out.push({ action: 'CONFIRM_EXCLUSION', label: 'Ne pas compter', confirm: 'Confirmer que ce montant ne doit pas être compté : le coût est inchangé, le point est clos.' });
+      break;
+    default:
+      break;
+  }
+  if (l.status === 'UNALLOCATED') {
+    push(corriger('Préciser le bien concerné'));
+    out.push({ action: 'CONFIRM_EXCLUSION', label: 'Ne pas compter ici', confirm: 'Confirmer que cette dépense commune n’est pas comptée pour ce bien : le coût est inchangé, le point est clos.' });
+  }
+  return out;
+}
+
 type Entry = LedgerEntry & { category: TcoCategory | null };
+
+/** Lot 111V : motifs d'une identité PROUVÉE par le moteur (copie exacte, même référence, même achat confirmé). */
+const PREUVE_MEME_FAIT: ReadonlySet<string> = new Set(['DUPLICATE_COPY', 'DUPLICATE_REFERENCE', 'SAME_FACT_CROSS_SOURCE']);
+
+/**
+ * Lot 111V : le traitement automatique a changé depuis la décision, en sens contraire du choix (pure) —
+ * le choix reste appliqué, le point est rouvert avec son motif (jamais effacé en silence).
+ */
+export function tcoDecisionContradicted(d: Pick<TcoUserDecision, 'decision' | 'basisStatus' | 'basisReason'>, current: Pick<TcoEconomicLine, 'status' | 'reason'>): boolean {
+  if (!TCO_ARBITRATION_DECISIONS.has(d.decision) || !d.basisStatus) return false;
+  const veutCompter = TCO_COUNTING_DECISIONS.has(d.decision);
+  if (veutCompter && current.reason && PREUVE_MEME_FAIT.has(current.reason) && current.reason !== d.basisReason) return true;
+  return RETENUE(d.basisStatus) === veutCompter && RETENUE(current.status) !== veutCompter;
+}
+
+/** Clé sans la nature (`f:<fichier>:*:<montant>:<devise>`) : un arbitrage survit à la requalification de la ligne. */
+const sansNature = (k: string): string | null => { const m = /^f:(\d+):[^:]+:(.+)$/.exec(k); return m ? `f:${m[1]}:*:${m[2]}` : null; };
 
 /**
  * Applique les décisions aux lignes et aux entrées du grand livre (mutation,
@@ -204,62 +386,48 @@ export function applyTcoUserDecisions(x: {
 }): { applied: number; includedDuplicates: number; orphans: TcoUserDecision[] } {
   const parPrincipale = new Map<string, TcoEconomicLine[]>();
   const parSecondaire = new Map<string, TcoEconomicLine[]>();
+  const parSansNature = new Map<string, TcoEconomicLine[]>();
   for (const l of x.lines) {
     const k = tcoLineKeys(l);
     l.decisionKey = k.primary;
     parPrincipale.set(k.primary, [...(parPrincipale.get(k.primary) ?? []), l]);
     for (const s of k.secondary) parSecondaire.set(s, [...(parSecondaire.get(s) ?? []), l]);
+    const a = sansNature(k.primary);
+    if (a) parSansNature.set(a, [...(parSansNature.get(a) ?? []), l]);
   }
   const orphans: TcoUserDecision[] = [];
   if (!x.decisions.length) return { applied: 0, includedDuplicates: 0, orphans };
   const entree = new Map<string, Entry>();
   for (const e of x.entries) if (!entree.has(ledgerKey(e))) entree.set(ledgerKey(e), e);
+  const incertainesAvant = x.lines.some((l) => RETENUE(l.status) && l.uncertain);
   let applied = 0;
   let includedDuplicates = 0;
   // La plus récente d'abord : une ligne déjà décidée n'est plus touchée (la plus récente l'emporte).
   const ordre = [...x.decisions].sort((a, b) => b.decidedAt.localeCompare(a.decidedAt) || a.key.localeCompare(b.key));
-  const trace = (l: TcoEconomicLine, d: TcoUserDecision, ok: boolean): void => {
-    l.userDecision = { key: d.key, decision: d.decision, decidedAt: d.decidedAt, decidedByUserId: d.decidedByUserId, applied: ok, automaticStatus: l.status, automaticReason: l.reason };
+  const trace = (l: TcoEconomicLine, d: TcoUserDecision, ok: boolean, contradicted = false): void => {
+    l.userDecision = {
+      key: d.key, decision: d.decision, decidedAt: d.decidedAt, decidedByUserId: d.decidedByUserId, applied: ok, automaticStatus: l.status, automaticReason: l.reason,
+      ...(contradicted ? { contradicted: true } : {}), ...(d.relatedKeys?.length ? { relatedKeys: [...d.relatedKeys] } : {}),
+    };
   };
-  for (const d of ordre) {
-    let cibles = (parPrincipale.get(d.key) ?? []).filter((l) => !l.userDecision);
-    const secondaires = (parSecondaire.get(d.key) ?? []).filter((l) => !l.userDecision);
-    if (!cibles.length && !parPrincipale.has(d.key)) cibles = secondaires;
-    // Lot 85A (O-9) : la ligne de la clé principale existe encore mais ne porte plus le fait (justificatif ou prix de la
-    // fiche repris par une Opération, après consolidation ou reconstruction) — la décision suit le fait, porté par la
-    // ligne retenue qui le cite en clé secondaire (jamais une décision silencieusement inopérante).
-    else if (secondaires.length && !cibles.some((l) => RETENUE(l.status)) && secondaires.some((l) => RETENUE(l.status))) cibles = [...cibles, ...secondaires];
-    if (!cibles.length) { if (!parPrincipale.has(d.key) && !parSecondaire.has(d.key)) orphans.push(d); continue; }
-    if (d.decision === 'EXCLUDE') {
-      for (const l of cibles) {
-        const ok = tcoLineRemovable(l);
-        trace(l, d, ok);
-        if (!ok) continue;
-        const e = entree.get(l.id);
-        if (e) { e.included = false; e.includedEurMinor = 0; e.category = null; e.prorata = null; }
-        l.status = 'EXCLUDED'; l.reason = 'USER_EXCLUDED'; l.includedCents = 0;
-        delete l.uncertain;
-        l.note = 'Retirée du coût de possession par vous.';
-        applied += 1;
-      }
-      continue;
-    }
-    // AJOUTER : le fait déjà retenu par une ligne visée → rien à faire ; sinon UNE ligne, la mieux identifiée.
-    if (cibles.some((l) => RETENUE(l.status))) { for (const l of cibles) trace(l, d, false); continue; }
-    const ajoutables = cibles.filter((l) => tcoLineAddable(l).ok)
-      .sort((a, b) => (a.source === 'OPERATION' ? 0 : 1) - (b.source === 'OPERATION' ? 0 : 1) || a.id.localeCompare(b.id));
-    const l = ajoutables[0];
-    if (!l) { for (const c of cibles) trace(c, d, false); continue; }
-    const risque = tcoAddDuplicateRisk(l, x.lines);
-    trace(l, d, true);
-    const kind = l.kind === 'FORECAST_COST' ? 'REALIZED_COST' : l.kind!;
+  /** Retire une ligne retenue du total (entrée du registre neutralisée). */
+  const retirer = (l: TcoEconomicLine, status: TcoEconomicLine['status'], reason: TcoEconomicLine['reason'], note: string): void => {
+    const e = entree.get(l.id);
+    if (e) { e.included = false; e.includedEurMinor = 0; e.category = null; e.prorata = null; }
+    l.status = status; l.reason = reason; l.includedCents = 0;
+    delete l.uncertain;
+    l.note = note;
+  };
+  /** Compte UNE ligne non retenue à son montant en euros (jamais deux fois le même fait par une même décision). */
+  const compter = (l: TcoEconomicLine, o: { eur: number; kind: NonNullable<TcoEconomicLine['kind']>; category?: TcoCategory | null; note: string }): void => {
+    const kind = o.kind;
     const effect = COMPONENT_EFFECT[kind];
     const opCat = l.operationId != null ? x.operationCategory.get(l.operationId) : undefined;
     // Catégorie effacée par la règle automatique (doublon, autre achat) : celle de l'Opération ; un achat ajouté
     // n'est jamais « l'acquisition du bien » (déjà établie ou non) — accessoire / achat complémentaire.
     const repli: TcoCategory = l.source !== 'OPERATION' || !opCat ? 'OTHER' : opCat === 'ACQUISITION' ? 'ACCESSORIES' : opCat;
-    const category: TcoCategory | null = effect === 'COST' ? (l.category ?? repli) : null;
-    const eur = l.eurCents!;
+    const category: TcoCategory | null = effect === 'COST' ? (o.category ?? l.category ?? repli) : null;
+    const eur = o.eur;
     const e = entree.get(l.id);
     if (e) Object.assign(e, { kind, effect, included: true, includedEurMinor: eur, eurMinor: eur, exclusion: null, attribution: 'IN', category, prorata: null });
     else {
@@ -274,17 +442,125 @@ export function applyTcoUserDecisions(x: {
       entree.set(l.id, ne);
     }
     l.status = l.source === 'OPERATION' ? 'RETAINED_CONSOLIDATED' : 'RETAINED_DIRECT';
-    l.reason = null; l.includedCents = eur; l.kind = kind; l.category = category;
+    l.reason = null; l.includedCents = eur; l.kind = kind; l.category = category; l.eurCents = eur;
     delete l.uncertain; delete l.duplicateOf;
-    l.note = `Ajoutée au coût de possession par vous.${risque ? ` ${risque}` : ''}`;
+    l.note = o.note;
+  };
+  for (const d of ordre) {
+    let cibles = (parPrincipale.get(d.key) ?? []).filter((l) => !l.userDecision);
+    const secondaires = (parSecondaire.get(d.key) ?? []).filter((l) => !l.userDecision);
+    /** Lot 111V : la ligne visée porte désormais le fait via une clé secondaire (sources réunies par T3). */
+    const viaSecondaire = (l: TcoEconomicLine) => !(parPrincipale.get(d.key) ?? []).includes(l);
+    if (!cibles.length && !parPrincipale.has(d.key)) cibles = secondaires;
+    // Lot 85A (O-9) : la ligne de la clé principale existe encore mais ne porte plus le fait (justificatif ou prix de la
+    // fiche repris par une Opération, après consolidation ou reconstruction) — la décision suit le fait, porté par la
+    // ligne retenue qui le cite en clé secondaire (jamais une décision silencieusement inopérante).
+    else if (secondaires.length && !cibles.some((l) => RETENUE(l.status)) && secondaires.some((l) => RETENUE(l.status))) cibles = [...cibles, ...secondaires];
+    // Lot 111V : arbitrage sur une ligne dont la NATURE a changé depuis (requalification T1 / T3) — même justificatif, même montant.
+    let parNature = false;
+    if (!cibles.length && TCO_ARBITRATION_DECISIONS.has(d.decision) && !parPrincipale.has(d.key) && !parSecondaire.has(d.key)) {
+      const a = sansNature(d.key);
+      cibles = a ? (parSansNature.get(a) ?? []).filter((l) => !l.userDecision) : [];
+      parNature = cibles.length > 0;
+    }
+    if (!cibles.length) { if (!parNature && !parPrincipale.has(d.key) && !parSecondaire.has(d.key)) orphans.push(d); continue; }
+    if (d.decision === 'EXCLUDE') {
+      for (const l of cibles) {
+        const ok = tcoLineRemovable(l);
+        trace(l, d, ok);
+        if (!ok) continue;
+        retirer(l, 'EXCLUDED', 'USER_EXCLUDED', 'Retirée du coût de possession par vous.');
+        applied += 1;
+      }
+      continue;
+    }
+    if (d.decision === 'CONFIRM_EXCLUSION') {
+      // Exclusion confirmée : aucune mutation du total ; une ligne que le traitement automatique compte désormais
+      // reste hors du total (le choix prime), signalée « à reconfirmer » (preuve nouvelle).
+      for (const l of cibles) {
+        // Ligne retenue qui porte le fait par une AUTRE source (T3 a réuni les justificatifs) : jamais retirée en
+        // silence — le choix est signalé « à reconfirmer » (preuve nouvelle), le total reste celui du traitement automatique.
+        if (RETENUE(l.status) && viaSecondaire(l)) { trace(l, d, false, true); continue; }
+        const contredit = tcoDecisionContradicted(d, l);
+        trace(l, d, true, contredit);
+        if (RETENUE(l.status)) { if (tcoLineRemovable(l)) retirer(l, 'EXCLUDED', 'USER_EXCLUDED', 'Exclusion confirmée par vous.'); }
+        else {
+          l.note = l.note ? `${l.note} Exclusion confirmée par vous.` : 'Exclusion confirmée par vous.';
+          // Montant non converti / commun non ventilé : l'utilisateur l'écarte de ce bien — il ne rend plus le total incomplet.
+          const e = entree.get(l.id);
+          if (e && (e.exclusion === 'UNCONVERTED_CURRENCY' || e.exclusion === 'UNALLOCATED_MULTI_ASSET')) { e.exclusion = 'OUT_OF_SCOPE'; e.included = false; e.includedEurMinor = 0; }
+        }
+        applied += 1;
+      }
+      continue;
+    }
+    if (d.decision === 'SAME_FACT') {
+      for (const l of cibles) {
+        // Ligne retenue qui réunit déjà les justificatifs du fait (consolidation T3) : le choix est satisfait, pas contredit.
+        const reunie = RETENUE(l.status) && (!l.uncertain || viaSecondaire(l));
+        const contredit = !reunie && tcoDecisionContradicted(d, l);
+        trace(l, d, true, contredit);
+        const note = 'Même dépense qu’une autre déjà comptée, confirmé par vous : comptée une seule fois (le justificatif reste consultable).';
+        // Seule une ligne retenue DOUTEUSE (même montant qu'une autre, sans preuve) sort du total ; une ligne retenue qui
+        // réunit déjà les deux justificatifs (T3 a consolidé le même fait) EST la contribution unique : rien à retirer.
+        if (RETENUE(l.status)) { if (l.uncertain && !viaSecondaire(l) && tcoLineRemovable(l)) retirer(l, 'DUPLICATE', 'USER_SAME_FACT', note); }
+        else if (tcoPresumedDuplicate(l)) { l.reason = 'USER_SAME_FACT'; l.note = note; }
+        else l.note = note;
+        applied += 1;
+      }
+      continue;
+    }
+    if (d.decision === 'DISTINCT_FACTS') {
+      const l = cibles.find((c) => RETENUE(c.status)) ?? cibles[0];
+      for (const c of cibles) if (c !== l) trace(c, d, false);
+      const contredit = tcoDecisionContradicted(d, l);
+      if (RETENUE(l.status)) {
+        // Rapprochement incertain levé : la dépense reste comptée, le doute est clos.
+        trace(l, d, true, contredit);
+        delete l.uncertain;
+        l.note = 'Dépense distincte d’une autre de même montant, confirmé par vous : comptée.';
+        applied += 1;
+        continue;
+      }
+      const eur = tcoLineEurCents(l);
+      if (eur == null || l.notRealized || !l.kind || l.kind === 'PROCEED') { trace(l, d, false); continue; }
+      trace(l, d, true, contredit);
+      compter(l, { eur, kind: l.kind === 'FORECAST_COST' ? 'REALIZED_COST' : l.kind, note: 'Dépense distincte d’une autre de même montant, confirmé par vous : comptée.' });
+      applied += 1;
+      continue;
+    }
+    if (d.decision === 'REQUALIFY') {
+      const l = cibles.find((c) => RETENUE(c.status)) ?? cibles.find((c) => tcoLineRequalifiable(c)) ?? cibles[0];
+      for (const c of cibles) if (c !== l) trace(c, d, false);
+      if (RETENUE(l.status)) { trace(l, d, false); continue; } // déjà comptée par le traitement automatique
+      const eur = tcoLineEurCents(l);
+      const qualifiable = eur != null && !l.notRealized && !l.amountUnknown && l.kind !== 'PROCEED' && l.status !== 'PAYMENT'
+        && l.status !== 'OUT_OF_SCOPE' && l.status !== 'CONSOLIDATED_ELSEWHERE';
+      if (!qualifiable) { trace(l, d, false); continue; }
+      trace(l, d, true, tcoDecisionContradicted(d, l));
+      compter(l, { eur: eur!, kind: 'REALIZED_COST', category: d.requalifiedCategory ?? null, note: 'Dépense de ce bien, nature confirmée par vous : comptée à son montant en euros.' });
+      applied += 1;
+      continue;
+    }
+    // AJOUTER : le fait déjà retenu par une ligne visée → rien à faire ; sinon UNE ligne, la mieux identifiée.
+    if (cibles.some((l) => RETENUE(l.status))) { for (const l of cibles) trace(l, d, false); continue; }
+    const ajoutables = cibles.filter((l) => tcoLineAddable(l).ok)
+      .sort((a, b) => (a.source === 'OPERATION' ? 0 : 1) - (b.source === 'OPERATION' ? 0 : 1) || a.id.localeCompare(b.id));
+    const l = ajoutables[0];
+    if (!l) { for (const c of cibles) trace(c, d, false); continue; }
+    const risque = tcoAddDuplicateRisk(l, x.lines);
+    trace(l, d, true);
+    compter(l, { eur: l.eurCents!, kind: l.kind === 'FORECAST_COST' ? 'REALIZED_COST' : l.kind!, note: `Ajoutée au coût de possession par vous.${risque ? ` ${risque}` : ''}` });
     if (risque) { includedDuplicates += 1; x.warnings.add('USER_INCLUDED_DUPLICATES'); }
     applied += 1;
   }
   if (applied) {
     x.warnings.add('USER_DECISIONS');
     // Signalements automatiques (78B) qui ne portent plus sur aucune ligne après décision : retirés.
-    if (!x.lines.some((l) => l.status === 'DUPLICATE' && l.reason === 'SAME_FACT_OTHER_DOCUMENT')) x.warnings.delete('PRESUMED_DUPLICATES');
+    if (!x.lines.some((l) => tcoPresumedDuplicate(l))) x.warnings.delete('PRESUMED_DUPLICATES');
     if (!x.lines.some((l) => l.reason === 'NOT_OWNERSHIP_COST')) x.warnings.delete('NOT_OWNERSHIP_COSTS');
+    // Lot 111V : doutes « même montant » tous levés par l'utilisateur.
+    if (incertainesAvant && !x.lines.some((l) => RETENUE(l.status) && l.uncertain)) x.warnings.delete('UNCERTAIN_MATCHES');
   }
   return { applied, includedDuplicates, orphans };
 }

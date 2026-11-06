@@ -494,9 +494,12 @@ export const defaultDeps: SynthesisDeps = {
 
   async timelineRows(accountId, assetIds, limit) {
     if (assetIds.length === 0) return [];
+    // Lot 111R : preuve de réalisation valide (expression canonique de l'Agenda et de la Timeline).
+    const { validCompletionProofSelect } = await import('@/services/agenda/completion-proof');
+    const preuve = await validCompletionProofSelect('i').catch(() => 'false');
     const [agenda, docs, achats] = await Promise.all([
       pgClient.unsafe(
-        `SELECT i.id, i.title, to_char(i.start_date, 'YYYY-MM-DD') AS date, i.manual_status AS "manualStatus",
+        `SELECT i.id, i.title, to_char(i.start_date, 'YYYY-MM-DD') AS date, i.manual_status AS "manualStatus", ${preuve} AS "completionProven",
                 i.origin_field_key AS "originFieldKey", min(a.name) AS "assetName", i.business_operation_id AS "operationId"
            FROM agenda_items i
            JOIN agenda_asset_links l ON l.agenda_item_id = i.id AND l.asset_id = ANY($2::int[])
@@ -504,7 +507,7 @@ export const defaultDeps: SynthesisDeps = {
           WHERE i.account_id = $1 AND i.start_date IS NOT NULL AND coalesce(i.manual_status, '') <> 'annule'
           GROUP BY i.id ORDER BY i.start_date DESC LIMIT $3`,
         [accountId, assetIds, limit] as never[],
-      ) as unknown as Promise<Array<{ id: number; title: string; date: string; manualStatus: string | null; originFieldKey: string | null; assetName: string | null; operationId: number | null }>>,
+      ) as unknown as Promise<Array<{ id: number; title: string; date: string; manualStatus: string | null; completionProven?: boolean | null; originFieldKey: string | null; assetName: string | null; operationId: number | null }>>,
       withDocumentTitles(pgClient.unsafe(
         `SELECT f.id, ${documentTitleJsonSql('f')} AS title, to_char(f.document_date, 'YYYY-MM-DD') AS date,
                 (SELECT a.name FROM assets a WHERE a.id = coalesce(f.asset_id, f.linked_asset_id)) AS "assetName"
@@ -540,7 +543,8 @@ export const defaultDeps: SynthesisDeps = {
     for (const a of achats) if (a && !ops.acquisitionAssets.has(a.id)) out.push({ date: a.date, label: 'Achat', kind: 'acquisition', ref: `asset_field:${a.id}:acquisitionDate`, assetName: a.name, detail: null });
     for (const i of agenda) {
       if (i.operationId != null && ops.operationIds.has(Number(i.operationId))) continue;
-      const statut = i.manualStatus === 'realise' ? 'réalisé' : i.date > today ? 'à venir' : null;
+      // Lot 111R : « réalisé » aussi sur preuve de réalisation valide (date passée), comme l'Agenda.
+      const statut = i.manualStatus === 'realise' || (i.completionProven === true && i.date <= today) ? 'réalisé' : i.date > today ? 'à venir' : null;
       out.push({ date: i.date, label: i.title, kind: 'agenda', ref: `agenda_${i.id}`, assetName: i.assetName, detail: statut });
     }
     for (const d of docs) {

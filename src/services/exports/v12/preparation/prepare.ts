@@ -248,6 +248,8 @@ function cilBlocks(source: ExportSource): PreparationDto['cil'] {
     canMarkNotApplicable: CIL_NOT_APPLICABLE_ALLOWED.has(b.id) && !(b.id === 'B6' && b.status === 'complete'),
     neutralizedResolution: b.neutralizedResolution ?? null,
     notice: b.notice ?? null,
+    // Lot 111U : détail granulaire du service commun d'état CIL.
+    cilMissing: b.cilMissing ?? [],
   }));
   // B2 : contexte de constitution (profil CIL), non bloquant (§20).
   const b2: CilBlockDto = {

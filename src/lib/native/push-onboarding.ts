@@ -15,12 +15,14 @@
  *     la proposition biométrique), jamais pendant la réacceptation des CGUV,
  *     le verrou, un écran bloquant (mise à jour, environnement, commerce) ni
  *     hors ligne.
- *   · UNE invitation à la fois, notifications PRIORITAIRES : tant que la
- *     décision push du compte n'est pas connue, ou si l'invitation push est
- *     (ou a été) présentée pendant ce lancement, la proposition biométrique
- *     attend le lancement suivant (son état reste « jamais proposé »).
- *   · Notée dès l'affichage (`offered`) : jamais de boucle, même si l'app est
- *     fermée sans réponse ; « Plus tard » → `later` ; réponse → `answered`.
+ *   · UNE invitation à la fois, BIOMÉTRIE D'ABORD (lot 111T, remplace la
+ *     priorité push du lot 109G) : tant que l'étape biométrique n'est pas
+ *     terminée (`held`, voir `biometric-offer-flow`), l'invitation attend ;
+ *     elle est présentée ensuite dans la MÊME session, sans relancement.
+ *   · Notée une fois RÉELLEMENT affichée (`presented` → `offered`) : jamais de
+ *     boucle, même si l'app est fermée sans réponse, mais une ouverture
+ *     interrompue avant l'affichage ne fait pas perdre l'invitation ;
+ *     « Plus tard » → `later` ; réponse → `answered`.
  *     La demande système n'est faite que sur « Autoriser les notifications ».
  *
  * STOCKAGE : stockage sécurisé de l'app (purgé à la réinstallation), lié à
@@ -194,8 +196,8 @@ export interface PushOnboardingContext {
   /** Verrou, mise à jour requise, environnement, page commerciale. */
   blocked: boolean;
   offline: boolean;
-  /** Une autre invitation (biométrie) est à l'écran. */
-  otherVisible: boolean;
+  /** Lot 111T : l'étape biométrique n'est pas terminée (évaluation, fenêtre, transition). */
+  held: boolean;
 }
 
 /** Écran utilisable pour une invitation (pur, testé). */
@@ -211,16 +213,14 @@ export interface PushOnboardingSnapshot {
   decisions: Readonly<Record<number, Decision>>;
   /** Compte dont l'invitation est présentée, ou null. */
   shown: number | null;
-  /** Une invitation push a été présentée pendant ce lancement. */
-  shownThisRun: boolean;
+  /** L'invitation de `shown` a été réellement affichée (et notée). */
+  presented: boolean;
   busy: boolean;
 }
 
 export interface PushOnboardingView {
   visible: boolean;
   busy: boolean;
-  /** La proposition biométrique doit attendre (push prioritaire). */
-  holdBiometrics: boolean;
 }
 
 export interface PushOnboardingDeps {
@@ -240,15 +240,12 @@ const defaultDeps: PushOnboardingDeps = {
 /** Vue dérivée (pure, testée). */
 export function pushOnboardingView(s: PushOnboardingSnapshot, c: PushOnboardingContext): PushOnboardingView {
   const u = c.userId;
-  if (u === null || !c.featureOn) return { visible: false, busy: s.busy, holdBiometrics: false };
-  const d = s.decisions[u];
-  const visible = s.shown === u && pushOnboardingScreenAllowed(c) && !c.otherVisible;
-  const holdBiometrics = d === undefined || d === 'pending' || d === 'offer' || s.shownThisRun;
-  return { visible, busy: s.busy, holdBiometrics };
+  if (u === null || !c.featureOn) return { visible: false, busy: s.busy };
+  return { visible: s.shown === u && pushOnboardingScreenAllowed(c) && !c.held, busy: s.busy };
 }
 
 export function createPushOnboarding(deps: PushOnboardingDeps = defaultDeps) {
-  let snap: PushOnboardingSnapshot = { decisions: {}, shown: null, shownThisRun: false, busy: false };
+  let snap: PushOnboardingSnapshot = { decisions: {}, shown: null, presented: false, busy: false };
   const listeners = new Set<() => void>();
   const set = (patch: Partial<PushOnboardingSnapshot>) => {
     snap = { ...snap, ...patch };
@@ -279,18 +276,30 @@ export function createPushOnboarding(deps: PushOnboardingDeps = defaultDeps) {
     },
 
     /**
-     * Présente l'invitation si tout le permet. Notée dès l'affichage.
-     * Retire l'invitation d'un autre compte (changement de compte).
+     * Présente l'invitation si tout le permet (étape biométrique terminée).
+     * Retire l'invitation d'un autre compte (changement de compte) ; jamais
+     * affichée, elle reste due à ce compte.
      */
     sync(c: PushOnboardingContext): void {
       // Session momentanément indisponible (userId null) : masquée seulement, pas perdue.
-      if (snap.shown !== null && c.userId !== null && snap.shown !== c.userId && !snap.busy) set({ shown: null });
+      const prev = snap.shown;
+      if (prev !== null && c.userId !== null && prev !== c.userId && !snap.busy) {
+        const wasPresented = snap.presented;
+        set({ shown: null, presented: false });
+        if (!wasPresented) decide(prev, 'offer');
+      }
       const u = c.userId;
       if (u === null || !c.featureOn || snap.shown !== null) return;
-      if (snap.decisions[u] !== 'offer' || c.otherVisible || !pushOnboardingScreenAllowed(c)) return;
+      if (snap.decisions[u] !== 'offer' || c.held || !pushOnboardingScreenAllowed(c)) return;
       decide(u, 'none'); // jamais reproposée pendant ce lancement
-      set({ shown: u, shownThisRun: true });
-      void deps.record(u, 'offered');
+      set({ shown: u, presented: false });
+    },
+
+    /** Fenêtre réellement affichée : invitation notée (une fois). */
+    presented(userId: number): void {
+      if (snap.shown !== userId || snap.presented) return;
+      set({ presented: true });
+      void deps.record(userId, 'offered');
     },
 
     /** « Autoriser les notifications » : une seule demande système, issue réelle. */
@@ -303,7 +312,7 @@ export function createPushOnboarding(deps: PushOnboardingDeps = defaultDeps) {
         r = await deps.request();
       } finally {
         await deps.record(u, 'answered', r.state).catch(() => false);
-        set({ busy: false, shown: snap.shown === u ? null : snap.shown });
+        set({ busy: false, shown: snap.shown === u ? null : snap.shown, presented: false });
       }
       return r;
     },
@@ -312,7 +321,7 @@ export function createPushOnboarding(deps: PushOnboardingDeps = defaultDeps) {
     later(): void {
       const u = snap.shown;
       if (u === null || snap.busy) return;
-      set({ shown: null });
+      set({ shown: null, presented: false });
       void deps.record(u, 'later');
     },
   };

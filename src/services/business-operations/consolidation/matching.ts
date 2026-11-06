@@ -199,6 +199,8 @@ export interface CandidateDecision {
      * commune — plausibilité seulement, M3 tranche).
      */
     designations?: Array<{ operationId: number; basis: 'EQUIVALENT' | 'LINKED'; reasons: string[] }>;
+    /** Lot 111S : candidat corroboré par la preuve canonique d'acquisition de son document (`acquisition-corroboration.ts`). */
+    corroboration?: { code: string; target: string; confidence?: string; type?: string };
   };
   /** Fusion V1 (B8) : Opérations absorbées par `operationId` (canonique) dans la même transaction. */
   mergeIds?: number[];
@@ -648,7 +650,7 @@ function creationOutOfPerimeter(c: CandidateIdentity, assetStatus: ReadonlyMap<n
 
 /** Décision T3 pour UN candidat (pure). */
 export function decideCandidate(c: CandidateIdentity, ctx: MatchContext): CandidateDecision {
-  const detail: CandidateDecision['detail'] = { certain: [], plausible: [], contradictions: [], excluded: [] };
+  const detail: CandidateDecision['detail'] = { certain: [], plausible: [], contradictions: [], excluded: [], ...(c.corroboration ? { corroboration: { ...c.corroboration } } : {}) };
   const res = (outcome: T3Outcome, reason: string, operationId: number | null = null, matchMethod: MatchMethod | null = null): CandidateDecision =>
     ({ outcome, operationId, matchMethod, reason, detail });
 

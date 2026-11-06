@@ -21,6 +21,7 @@ import { documentTitleJsonSql, withDocumentTitles } from '@/lib/documents/docume
 import { pgClient } from '@/db';
 import { resolveEventSemantics } from '@/services/agenda/agenda-functional-key';
 import { agendaFunctionalColumnsReady } from '@/services/agenda/agenda-columns';
+import { validCompletionProofSelect } from '@/services/agenda/completion-proof';
 import { HISTORICAL_FIELD_KEYS, historicalSql, isHistoricalAgendaEvent } from '@/services/agenda/agenda-historical';
 import { agendaDateRole, type AgendaDateRole } from '@/services/agenda/agenda-date-role';
 import type { RetrievedSource } from '../types/sources';
@@ -75,10 +76,13 @@ export function agendaStatus4(
   date: string | null,
   today: string,
   historical = false,
+  /** Lot 111R : preuve de réalisation valide (`completion-proof.ts`) — même règle que `computeEffectiveStatus`. */
+  completionProven = false,
 ): AgendaStatus4 {
   if (manualStatus === 'realise') return 'completed';
   if (manualStatus === 'annule') return 'not_completed';
   if (!date || date >= today) return 'unknown';
+  if (completionProven) return 'completed';
   // D17 : fait passé sans statut — à confirmer, jamais réalisé sur la seule date.
   if (historical) return 'not_proven';
   return pendingStatusCard ? 'unknown' : 'not_proven';
@@ -89,8 +93,11 @@ const today = () => new Intl.DateTimeFormat('en-CA', { timeZone: 'Europe/Paris',
 /** Élément d'agenda du compte, lu comme objet métier ; `null` hors compte. */
 export async function getCanonicalAgendaItem(accountId: number, itemId: number): Promise<CanonicalAgendaItem | null> {
   const col = await agendaFunctionalColumnsReady().catch(() => false);
+  // Lot 111R : preuve de réalisation valide — expression canonique partagée avec l'Agenda et la Timeline.
+  const preuve = await validCompletionProofSelect('i').catch(() => 'false');
   const [r] = (await pgClient.unsafe(
     `SELECT i.id, i.title, to_char(i.start_date, 'YYYY-MM-DD') AS date, i.manual_status AS "manualStatus",
+            ${preuve} AS "completionProven",
             i.occurrence_nature AS "occurrenceNature", i.home_category AS category, i.is_automatic AS "isAutomatic",
             i.is_automatic_modified AS "isAutomaticModified", i.origin_field_key AS "originFieldKey",
             i.origin_type AS "originType", to_jsonb(i) ->> 'projection_origin' AS "projectionOrigin",
@@ -103,7 +110,7 @@ export async function getCanonicalAgendaItem(accountId: number, itemId: number):
     id: number; title: string; date: string | null; manualStatus: string | null; occurrenceNature: string | null; category: string | null;
     isAutomatic: boolean; isAutomaticModified: boolean; originFieldKey: string | null; eventNature: string | null; businessType: string | null;
     originType: string | null; projectionOrigin: string | null;
-    pendingCard: boolean;
+    pendingCard: boolean; completionProven?: boolean | null;
   }>;
   if (!r) return null;
   const [assets, sources] = await Promise.all([
@@ -117,7 +124,7 @@ export async function getCanonicalAgendaItem(accountId: number, itemId: number):
   ]);
   const sem = resolveEventSemantics({ originFieldKey: r.originFieldKey, businessType: r.businessType });
   const historique = isHistoricalAgendaEvent({ eventNature: r.eventNature, businessType: r.businessType, originFieldKey: r.originFieldKey });
-  const status = agendaStatus4(r.manualStatus || null, r.pendingCard, r.date, today(), historique);
+  const status = agendaStatus4(r.manualStatus || null, r.pendingCard, r.date, today(), historique, r.completionProven === true);
   return {
     id: Number(r.id), title: r.title, date: r.date,
     nature: (r.eventNature as CanonicalAgendaItem['nature']) ?? sem.nature,

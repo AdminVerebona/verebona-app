@@ -10,7 +10,7 @@ import {
 import { eq, and, or, isNull, inArray, sql } from 'drizzle-orm';
 import { alias } from 'drizzle-orm/pg-core';
 import { computeEffectiveStatus, computeAttentionFlags, type EffectiveStatus, type AttentionFlag } from './AgendaDomainService';
-import { agendaCompletionColumnsReady, agendaFunctionalColumnsReady } from './agenda-columns';
+import { agendaFunctionalColumnsReady } from './agenda-columns';
 import { listAgendaItemIdsForSource } from './agenda-source-links';
 import {
   countItemsByEquipment, filterItemsByEquipment, listEquipmentsOfAssets,
@@ -344,10 +344,10 @@ async function enrichItems(rows: typeof agendaItems.$inferSelect[]): Promise<Age
 export async function loadEventNatures(ids: number[]): Promise<Map<number, { nature: 'HISTORICAL' | 'DEADLINE' | null; businessType: string | null; completionProven?: boolean }> | null> {
   if (ids.length === 0 || !(await agendaFunctionalColumnsReady())) return null;
   const { pgClient } = await import('@/db');
-  // Lot 103D (0945) : réalisation prouvée — document du compte, non supprimé (revérifié à chaque lecture).
-  const preuve = (await agendaCompletionColumnsReady())
-    ? `EXISTS (SELECT 1 FROM asset_files f WHERE f.id = i.completion_proof_file_id AND f.account_id = i.account_id AND f.deleted_at IS NULL)`
-    : 'false';
+  // Lot 103D (0945) : réalisation prouvée — revérifiée à chaque lecture.
+  // Lot 111R : expression UNIQUE (document du compte, non supprimé, encore lié), partagée avec la Timeline.
+  const { validCompletionProofSelect } = await import('./completion-proof');
+  const preuve = await validCompletionProofSelect('i');
   const rows = (await pgClient.unsafe(
     `SELECT i.id, i.event_nature AS nature, i.business_type AS "businessType", ${preuve} AS "completionProven" FROM agenda_items i WHERE i.id = ANY($1::int[])`,
     [ids] as never[],
@@ -366,8 +366,11 @@ export async function loadEventNatures(ids: number[]): Promise<Map<number, { nat
 export function isUpcomingDeadlineCandidate(item: {
   eventNature?: 'HISTORICAL' | 'DEADLINE' | null;
   manualStatus?: string | null;
+  /** Lot 111R : statut effectif calculé (preuve comprise) — réalisé ou annulé : jamais une échéance à venir. */
+  effectiveStatus?: EffectiveStatus | null;
 }): boolean {
   if (item.eventNature === 'HISTORICAL') return false;
+  if (item.effectiveStatus === 'realise' || item.effectiveStatus === 'annule') return false;
   return !item.manualStatus || (item.manualStatus !== 'realise' && item.manualStatus !== 'annule');
 }
 

@@ -21,6 +21,16 @@ import { eq, and } from 'drizzle-orm';
 import {
   CIL_B6_NOT_APPLICABLE_REFUSED_CODE, cilB6EnergyEquipmentIds, cilB6NotApplicableRefusedMessage,
 } from '@/services/exports/cil-preparation.service';
+import { cilCatalogItem, cilItemNotApplicableAllowed } from '@/lib/cil/cil-catalog';
+
+/**
+ * Lot 111U — identifiants admis : blocs déclarables (§20 : B3 à B7, B9 —
+ * même liste que la préparation) et DONNÉES du catalogue CIL autorisées
+ * (`B4.gaz`, `B6.refroidissement`…). B1, B8 et toute autre valeur : 400.
+ */
+const CIL_BLOCKS_DECLARABLE = new Set(['B3', 'B4', 'B5', 'B6', 'B7', 'B9']);
+const CIL_RESOLUTION_TARGET_INVALID = 'CIL_RESOLUTION_TARGET_INVALID';
+const CIL_ITEM_DATA_PRESENT = 'CIL_ITEM_DATA_PRESENT';
 
 export async function PATCH(
   request: NextRequest,
@@ -45,6 +55,26 @@ export async function PATCH(
 
     if (!blockId || !resolution) {
       return NextResponse.json({ error: 'MISSING_FIELDS' }, { status: 400 });
+    }
+
+    if (resolution !== 'not_applicable' && resolution !== 'unknown_confirmed') {
+      return NextResponse.json({ error: 'INVALID_RESOLUTION' }, { status: 400 });
+    }
+    const isItem = blockId.includes('.');
+    if (isItem ? !cilItemNotApplicableAllowed(blockId) || resolution !== 'not_applicable' : !CIL_BLOCKS_DECLARABLE.has(blockId)) {
+      return NextResponse.json({ error: CIL_RESOLUTION_TARGET_INVALID, code: CIL_RESOLUTION_TARGET_INVALID }, { status: 400 });
+    }
+    // Une donnée déjà renseignée (ou partiellement) ne peut pas être déclarée non applicable.
+    if (isItem) {
+      const { getCilState } = await import('@/services/cil/state');
+      const r = await getCilState({ id: assetId, accountId: asset.accountId });
+      const it = r?.state.blocks.flatMap((b) => b.items).find((i) => i.id === blockId);
+      if (it && (it.status === 'renseigne' || it.status === 'partiel')) {
+        return NextResponse.json({
+          error: CIL_ITEM_DATA_PRESENT, code: CIL_ITEM_DATA_PRESENT,
+          message: `« ${cilCatalogItem(blockId)?.label ?? blockId} » est renseigné pour ce logement : il ne peut pas être déclaré non applicable.`,
+        }, { status: 409 });
+      }
     }
 
     if (blockId === 'B6' && resolution === 'not_applicable') {

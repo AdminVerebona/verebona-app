@@ -1,6 +1,7 @@
 "use client"
 
 import { useState, useEffect, useId } from 'react';
+import { subscribeAgendaStatusSources } from '@/lib/agenda/agenda-status-events';
 import { EFFECTIVE_STATUS_LABELS, attentionFlagLabel, visibleAttentionFlags, type AgendaEffectiveStatus } from '@/lib/agenda/effective-status';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
@@ -156,11 +157,8 @@ export function AssetAgendaTab({ assetId }: Props) {
   };
 
   // Refresh when any agenda mutation happens elsewhere (e.g. from DocumentDrawer)
-  useEffect(() => {
-    const handler = () => setRefreshKey(k => k + 1);
-    window.addEventListener('agenda-mutated', handler);
-    return () => window.removeEventListener('agenda-mutated', handler);
-  }, []);
+  // Lot 111R : aussi quand une preuve de réalisation peut changer (document supprimé, analyse terminée).
+  useEffect(() => subscribeAgendaStatusSources(() => setRefreshKey(k => k + 1)), []);
 
   // Bien fixé par la fiche : un seul bien retenu pour le modèle.
   const equipmentModel = buildEquipmentFilterModel(equipmentFacet, equipment, 1);

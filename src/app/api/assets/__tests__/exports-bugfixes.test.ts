@@ -84,6 +84,23 @@ vi.mock('@/db', () => {
   db.execute = async () => [];
   return { db };
 });
+// Lot 111U : l'évaluation CIL lit ses entrées par le chargeur COMMUN (SQL) — simulé ici
+// depuis le même état (bien, documents), la règle évaluée restant la vraie.
+vi.mock('@/services/cil/state/load', () => ({
+  cilProjectionSchemaReady: async () => false,
+  CIL_DOCUMENT_SCOPE_SQL: '',
+  loadCilStateInput: async ({ id }: { id: number }) => {
+    const a = state.asset;
+    if (!a || a.id !== id) return null;
+    return {
+      asset: { id, address: (a.address as string) ?? null, postalCode: (a.postalCode as string) ?? null, city: (a.city as string) ?? null, subtype: (a.subtype as string) ?? null },
+      fields: {}, fieldSources: {}, profile: null, resolutions: [], materials: [], equipments: [], works: [], journal: [],
+      documents: state.files.map((f) => ({ id: Number(f.id), title: `Document ${f.id}`, date: null, documentType: (f.documentType as string) ?? null,
+        documentTypeCode: (f.documentTypeCode as string) ?? null, retainedFunctionCode: (f.retainedFunctionCode as string) ?? null,
+        cilRubricCodes: (f.cilRubricCodes as string[]) ?? null, planState: null })),
+    };
+  },
+}));
 // Débit par utilisateur : couvert par v12-units ; neutralisé ici (nombreuses requêtes du même utilisateur).
 vi.mock('@/services/exports/v12/generation/rate-limit', () => ({ exportRateLimitResponse: () => null }));
 

@@ -46,13 +46,13 @@ export async function GET(request: NextRequest) {
       containerLimitMb: limit, guardMb: st.memoryGuardMb(settings.maxRssMb, limit), uptimeSeconds: Math.round(process.uptime()),
     },
     storageConfigured: isS3Configured(),
-    settings: { maxAttempts: settings.maxAttempts, leaseSeconds: settings.leaseSeconds, timeoutMinutes: Math.round(settings.timeoutMs / 60_000), globalConcurrency: settings.globalConcurrency, retentionDays: settings.retentionDays },
+    settings: { maxAttempts: settings.maxAttempts, leaseSeconds: settings.leaseSeconds, timeoutMinutes: Math.round(settings.timeoutMs / 60_000), globalConcurrency: settings.globalConcurrency, targetedConcurrency: settings.targetedConcurrency, stallAlertSeconds: settings.stallAlertSeconds, retentionDays: settings.retentionDays },
     syncHttpEnabled: process.env.DIAG_SYNC_HTTP === 'on',
   };
   try {
     const queue = await diagnosticQueueHealth();
     const alerts: string[] = [];
-    if (queue.migrationApplied === false) alerts.push('MIGRATION_MISSING : migrations 1035 / 1200 non appliquées — aucun diagnostic durable possible.');
+    if (queue.migrationApplied === false) alerts.push('MIGRATION_MISSING : migrations 1035 / 1200 / 1280 non appliquées — aucun diagnostic durable possible.');
     if (!base.storageConfigured) alerts.push('STORAGE_UNAVAILABLE : stockage OVH non configuré — les diagnostics échoueront.');
     // Lot 111C : état du worker lu dans les battements de TOUTES les instances (et plus seulement celle qui répond).
     const sup = await import('@/services/admin/diagnostic-jobs/supervision');
@@ -70,7 +70,7 @@ export async function GET(request: NextRequest) {
       instance: b.instanceId.split(':').slice(0, 2).join(':'), process: b.processType, placement: b.placement, state: b.state, disabledReason: b.disabledReason,
       alive: isBeatAlive(b, new Date()), seenAt: b.seenAt, startedAt: b.startedAt, lastTickAt: b.lastTickAt, lastTickOkAt: b.lastTickOkAt,
       tickRunningSince: b.tickRunningSince, lastClaimAt: b.lastClaimAt, lastClaimJobId: b.lastClaimJobId, currentJobId: b.currentJobId, waitReason: b.waitReason,
-      lastError: b.lastError, lastErrorAt: b.lastErrorAt, commit: b.buildCommit, version: b.buildVersion, memoryLevel: b.memoryLevel, rssMb: b.rssMb, containerLimitMb: b.containerLimitMb,
+      lastError: b.lastError, lastErrorAt: b.lastErrorAt, laneJobId: b.laneJobId ?? null, laneWaitReason: b.laneWaitReason ?? null, laneLastClaimAt: b.laneLastClaimAt ?? null, laneCapacity: b.laneCapacity ?? null, commit: b.buildCommit, version: b.buildVersion, memoryLevel: b.memoryLevel, rssMb: b.rssMb, containerLimitMb: b.containerLimitMb,
     }));
     const waits = q.waits.map((w) => ({ jobId: w.jobId, scope: w.scope, startedAt: w.startedAt, reason: w.diagnosis.reason, label: w.label, detail: w.diagnosis.detail, action: w.action, waitedSeconds: w.diagnosis.waitedSeconds, alert: w.diagnosis.alert, blockingJobId: w.diagnosis.blockingJobId }));
     return NextResponse.json({ ...base, queue, workers, waits, alerts }, { headers: NO_STORE });

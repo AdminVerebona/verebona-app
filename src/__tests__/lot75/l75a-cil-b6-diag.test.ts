@@ -136,7 +136,10 @@ describe('L75A-B6 — B6 « Non applicable » vs équipements énergétiques ret
     // DELETE inchangé : seule une action explicite retire une déclaration.
     expect(route.match(/\.delete\(cilBlockResolutions\)/g)?.length).toBe(1);
     const svc = read('src/services/exports/cil-preparation.service.ts');
-    expect(svc).toContain('const equips = await loadCilB6Equipments(assetId);');
+    // Lot 111U : l'évaluation passe par le chargeur commun de l'état CIL ; même périmètre B6 que la
+    // route (équipements du bien NON archivés, classification `evaluateCilB6` partagée).
+    expect(svc).toContain('const b6 = evaluateCilB6(input.equipments, resolutionMap.get(\'B6\'));');
+    expect(readFileSync(join(process.cwd(), 'src/services/cil/state/load.ts'), 'utf8')).toContain('WHERE e.asset_id = $1 AND e.archived_at IS NULL');
     expect(svc).not.toMatch(/if \(resolution === 'not_applicable'\) status = 'not_applicable';/);
     const panel = read('src/components/exports/preparation/CilBlocksPanel.tsx');
     expect(panel).toContain('{b.notice}');

@@ -6,7 +6,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { emitBusinessEvent } from '@/services/verebona-assistant/events/business-events';
 import { SessionService } from '@/lib/session-service';
-import { db } from '@/db';
+import { db, pgClient } from '@/db';
 import { assets, assetCilProfiles } from '@/db/schema';
 import { eq, and } from 'drizzle-orm';
 import { refuserSiModificationBiensSuspendue } from '@/lib/asset-quota-guard';
@@ -101,6 +101,12 @@ export async function POST(
         createdAt: now,
         updatedAt: now,
       });
+    }
+
+    // Lot 111U : une saisie fait foi — le profil devient USER (protégé de toute projection documentaire).
+    const { cilSecondPassSchemaReady } = await import('@/services/cil/state/load');
+    if (await cilSecondPassSchemaReady()) {
+      await pgClient.unsafe(`UPDATE asset_cil_profiles SET origin = 'USER', source_file_id = NULL WHERE asset_id = $1`, [assetId] as never[]);
     }
 
     const [updated] = await db

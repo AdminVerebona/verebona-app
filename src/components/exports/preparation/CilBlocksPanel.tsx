@@ -192,6 +192,12 @@ export function CilBlocksPanel({ cil, assetId, api, disabled, onChanged }: {
                   )}
                 </div>
               )}
+              {/* Lot 111U : données encore à compléter dans un bloc documenté (même liste que l'onglet Informations). */}
+              {!isOpen && b.status !== 'not_applicable' && (b.cilMissing?.length ?? 0) > 0 && (
+                <p className="px-3.5 pb-3 pl-[3.25rem] text-xs text-muted-foreground" data-testid={`cil-block-gaps-${b.id}`}>
+                  À préciser : {b.cilMissing!.slice(0, 4).join(', ')}{b.cilMissing!.length > 4 ? '…' : ''}
+                </p>
+              )}
               {isOpen && (
                 <div id={panelId} className="space-y-2 bg-[var(--accent-soft)]/50 px-3.5 pb-3.5 pt-1 pl-[3.25rem]">
                   {b.missingItems.map((m) => {

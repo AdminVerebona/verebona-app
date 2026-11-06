@@ -34,7 +34,7 @@
 import { admitHeavyTask, memorySnapshot, pressureLevel, sampleNow, trackMemory } from '@/lib/runtime/memory-monitor';
 import { hostname } from 'node:os';
 import { randomUUID } from 'node:crypto';
-import { DIAG_JOB_PREFIX, diagJobSettings, sanitizeErrorMessage, workerDisabledReason, type DiagJobStatus } from './state';
+import { DIAG_JOB_PREFIX, diagJobSettings, sanitizeErrorMessage, workerDisabledReason, type DiagJobStatus, type DiagLane } from './state';
 import {
   claimNextDiagnosticJobDetailed, expiredDiagnosticJobs, markDiagnosticJobPurged, recoverDiagnosticJobs, renewDiagnosticLease,
 } from './repository';
@@ -65,6 +65,13 @@ interface WorkerState {
   lastClaimAt: string | null;
   lastClaimJobId: string | null;
   waitReason: string | null;
+  /**
+   * Lot 111Q — VOIE CIBLÉE de ce processus : un diagnostic ciblé (compte,
+   * utilisateur, bien, document, Opération) part pendant que la voie commune
+   * produit un diagnostic global (long). Ouverte seulement quand la voie
+   * commune est occupée, admission mémoire stricte.
+   */
+  lane: { running: boolean; again: boolean; currentJobId: string | null; lastClaimAt: string | null; waitReason: string | null; processed: number };
 }
 const KEY = Symbol.for('verebona.admin.diagnostic-jobs.worker');
 function state(): WorkerState {
@@ -72,6 +79,7 @@ function state(): WorkerState {
   return (g[KEY] ??= {
     started: false, running: false, again: false, timer: null, startedAt: null, lastTickAt: null, lastTickError: null, currentJobId: null, lastPurgeAt: 0, disabledReason: null, processed: 0,
     mode: null, presence: null, bootAt: new Date().toISOString(), lastTickOkAt: null, lastTickErrorAt: null, tickRunningSince: null, lastClaimAt: null, lastClaimJobId: null, waitReason: null,
+    lane: { running: false, again: false, currentJobId: null, lastClaimAt: null, waitReason: null, processed: 0 },
   });
 }
 
@@ -91,6 +99,9 @@ async function beat(): Promise<void> {
     lastTickAt: st.lastTickAt, lastTickOkAt: st.lastTickOkAt, tickRunningSince: st.tickRunningSince, lastClaimAt: st.lastClaimAt,
     lastClaimJobId: st.lastClaimJobId, currentJobId: st.currentJobId, waitReason: st.waitReason,
     lastError: st.lastTickError, lastErrorAt: st.lastTickErrorAt, intervalMs: diagJobSettings().intervalMs, processed: st.processed,
+    lane: st.mode === 'STARTED'
+      ? { jobId: st.lane.currentJobId, waitReason: st.lane.waitReason, lastClaimAt: st.lane.lastClaimAt, capacity: diagJobSettings().targetedConcurrency }
+      : null,
   });
 }
 
@@ -129,8 +140,23 @@ function admitDiagnostic(strict: boolean): boolean {
   return level === 'ok' || level === 'unknown';
 }
 
+/**
+ * Lot 111Q : place de génération LOCALE libre ? (`tryAcquireExportSlot`,
+ * deux diagnostics par processus : voie commune + voie ciblée). Sans place,
+ * la demande n'est pas prélevée — jamais une tentative consommée pour rien
+ * (une génération sans place échouait en GENERATION_FAILED).
+ */
+async function localSlotFree(): Promise<boolean> {
+  const { tryAcquireExportSlot } = await import('@/services/admin/export-generations');
+  const probe = tryAcquireExportSlot('TECH_DIAGNOSTIC');
+  probe?.release();
+  return !!probe;
+}
+
 interface DrainOptions {
   workerId?: string;
+  /** Lot 111Q : voie (défaut `main`). `targeted` : ciblés seulement, admission mémoire stricte. */
+  lane?: DiagLane;
   maxJobs?: number;
   onlyId?: string;
   /** Tests : stockage simulé, découpage, mesure mémoire. */
@@ -160,16 +186,27 @@ export async function drainDiagnosticJobs(opts: DrainOptions = {}): Promise<Arra
   }
   const out: Array<DiagJobStatus | null> = [];
   const maxJobs = opts.maxJobs ?? 1;
+  const lane: DiagLane = opts.lane ?? 'main';
+  const st0 = state();
+  // Lot 111Q : état de la voie (raison d'attente, travail en cours) — voie commune ou voie ciblée.
+  const setLane = (v: { currentJobId?: string | null; lastClaimAt?: string; lastClaimJobId?: string; waitReason?: string }) => {
+    if (opts.onlyId) return;
+    if (lane === 'targeted') Object.assign(st0.lane, { ...(v.currentJobId !== undefined ? { currentJobId: v.currentJobId } : {}), ...(v.lastClaimAt ? { lastClaimAt: v.lastClaimAt } : {}), ...(v.waitReason ? { waitReason: v.waitReason } : {}) });
+    else Object.assign(st0, v);
+  };
   while (out.length < maxJobs) {
     // Lot 109H : mémoire du conteneur au-delà du seuil d'admission → le
     // diagnostic attend le tour suivant (au plus MEMORY_ADMISSION_MAX_WAIT_MS ;
-    // lot 111C, mode `auto` : sans départ forcé).
-    if (!opts.onlyId && !admitDiagnostic(settings.memoryGate === 'strict')) { state().waitReason = 'MEMORY_ADMISSION'; break; }
-    const { job, blocked } = await claimNextDiagnosticJobDetailed(workerId, commit, { onlyId: opts.onlyId });
-    if (!job) { if (!opts.onlyId) state().waitReason = blocked ?? 'NO_ELIGIBLE_JOB'; break; }
-    Object.assign(state(), { currentJobId: job.id, lastClaimAt: new Date().toISOString(), lastClaimJobId: job.id, waitReason: 'PROCESSING' });
+    // lot 111C, mode `auto` : sans départ forcé). Lot 111Q : la voie ciblée
+    // (deuxième génération simultanée dans le processus) n'admet jamais de
+    // départ forcé.
+    if (!opts.onlyId && !admitDiagnostic(lane === 'targeted' || settings.memoryGate === 'strict')) { setLane({ waitReason: 'MEMORY_ADMISSION' }); break; }
+    if (!(await localSlotFree())) { setLane({ waitReason: 'LOCAL_SLOT_BUSY' }); break; }
+    const { job, blocked } = await claimNextDiagnosticJobDetailed(workerId, commit, { onlyId: opts.onlyId, lane });
+    if (!job) { setLane({ waitReason: blocked ?? 'NO_ELIGIBLE_JOB' }); break; }
+    setLane({ currentJobId: job.id, lastClaimAt: new Date().toISOString(), lastClaimJobId: job.id, waitReason: 'PROCESSING' });
     if (!opts.onlyId) void beat();
-    console.info(`[diagnostic-job] ${JSON.stringify({ event: 'claimed', jobId: job.id, attempt: job.attempt, maxAttempts: job.maxAttempts, scope: job.request.scope, targetId: job.request.id, reinforced: job.request.reinforced, worker: workerId.split(':').slice(0, 2).join(':'), commit })}`);
+    console.info(`[diagnostic-job] ${JSON.stringify({ event: 'claimed', jobId: job.id, requestId: job.requestId, attempt: job.attempt, maxAttempts: job.maxAttempts, scope: job.request.scope, targetId: job.request.id, reinforced: job.request.reinforced, lane, queueWaitMs: job.queuedAt ? Math.max(0, Date.now() - Date.parse(job.queuedAt)) : null, worker: workerId.split(':').slice(0, 2).join(':'), commit })}`);
     let active = true;
     let cancel = false;
     const progress = emptyProgress(limit);
@@ -186,13 +223,13 @@ export async function drainDiagnosticJobs(opts: DrainOptions = {}): Promise<Arra
     try {
       const status = await trackMemory('diagnostic:job', () => runDiagnosticJob(job, {
         workerId, isActive: () => active, cancelRequested: () => cancel, deadline: startedAt + settings.timeoutMs, progress,
-        storage: opts.storage, partRows: opts.partRows, batchRows: opts.batchRows, rssMb: opts.rssMb, cancelPollMs: opts.cancelPollMs,
+        storage: opts.storage, partRows: opts.partRows, batchRows: opts.batchRows, rssMb: opts.rssMb, cancelPollMs: opts.cancelPollMs, lane,
       })).catch((e) => { console.error(`[diagnostic-job] ${job.id} : erreur inattendue du worker :`, sanitizeErrorMessage(e)); return null; });
       out.push(status);
-      state().processed++;
+      if (lane === 'targeted') st0.lane.processed++; else st0.processed++;
     } finally {
       clearInterval(heartbeat);
-      state().currentJobId = null;
+      setLane({ currentJobId: null });
     }
   }
   return out;
@@ -257,9 +294,35 @@ async function tick(): Promise<void> {
   }
 }
 
-/** Réveille le worker de ce processus (sans effet s'il n'est pas démarré ici). */
+/**
+ * Lot 111Q — tour de la VOIE CIBLÉE : seulement quand la voie commune est
+ * occupée par une génération (sinon c'est elle qui prend le ciblé, priorité
+ * aux ciblés) et si DIAG_JOB_TARGETED_CONCURRENCY > 0. Ne lève jamais.
+ */
+async function tickTargeted(): Promise<void> {
+  const st = state();
+  if (!st.started || diagJobSettings().targetedConcurrency <= 0) return;
+  if (st.lane.running) { st.lane.again = true; return; }
+  if (!st.currentJobId) { st.lane.waitReason = 'MAIN_LANE_FREE'; return; }
+  st.lane.running = true;
+  try {
+    do {
+      st.lane.again = false;
+      await drainDiagnosticJobs({ lane: 'targeted' });
+    } while (st.lane.again && st.currentJobId);
+  } catch (e) {
+    st.lane.waitReason = 'LOOP_ERROR';
+    console.error('[diagnostic-job] tour de la voie ciblée en échec (non bloquant) :', sanitizeErrorMessage(e));
+  } finally {
+    st.lane.running = false;
+  }
+}
+
+/** Réveille le worker de ce processus (sans effet s'il n'est pas démarré ici). Lot 111Q : les deux voies. */
 export function nudgeDiagnosticWorker(): void {
-  if (state().started) void tick();
+  if (!state().started) return;
+  void tick();
+  void tickTargeted();
 }
 
 export function startDiagnosticWorker(): void {
@@ -281,7 +344,7 @@ export function startDiagnosticWorker(): void {
   startPresence();
   // Premier tour différé : migrations et référentiels se mettent en place au démarrage ; les orphelins sont rattrapés au premier tour.
   setTimeout(() => void tick(), 15_000).unref?.();
-  st.timer = setInterval(() => void tick(), s.intervalMs);
+  st.timer = setInterval(() => { void tick(); void tickTargeted(); }, s.intervalMs);
   st.timer.unref?.();
-  console.info(`[diagnostic-job] worker démarré (${DIAG_WORKER_ID.split(':').slice(0, 2).join(':')}) — un diagnostic à la fois, concurrence globale ${s.globalConcurrency}, tour toutes les ${s.intervalMs / 1000} s${s.memoryGate === 'strict' ? ', mode auto (départ seulement sous le seuil d’admission mémoire)' : ''}.`);
+  console.info(`[diagnostic-job] worker démarré (${DIAG_WORKER_ID.split(':').slice(0, 2).join(':')}) — un diagnostic à la fois (+ voie ciblée : ${s.targetedConcurrency}), concurrence globale ${s.globalConcurrency}, tour toutes les ${s.intervalMs / 1000} s${s.memoryGate === 'strict' ? ', mode auto (départ seulement sous le seuil d’admission mémoire)' : ''}.`);
 }

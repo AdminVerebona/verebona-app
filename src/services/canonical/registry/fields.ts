@@ -307,6 +307,13 @@ export const CANONICAL_FIELDS: readonly CanonicalFieldDef[] = [
     range: { min: 0 },
   }),
   f({ key: 'dpeAdemeNumber', label: 'N° ADEME du DPE', families: I, valueType: 'string', aliases: ['numeroAdeme'] }),
+  // Lot 111U (CIL B8) : émissions de gaz à effet de serre du DPE — lues par le mappeur CIL (`gesEmissions`,
+  // ancien repli `dpeEmissions` devenu alias) ; sans clé, la valeur restait une connaissance générique.
+  f({
+    key: 'gesEmissions', label: 'Émissions de gaz à effet de serre', families: I, valueType: 'number', unit: 'kg CO2/m2/an',
+    section: 'performance_technical', aliases: ['dpeEmissions', 'emissionsGes', 'emissionGes', 'ghgEmissions', 'emissionsCo2'],
+    range: { min: 0 },
+  }),
   f({ key: 'networks', label: 'Réseaux', families: I, valueType: 'json', section: 'performance_technical', aliases: ['reseaux'] }),
 
   /* ── Véhicule : identification ─────────────────────────────────────────── */

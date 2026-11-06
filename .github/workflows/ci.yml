@@ -537,8 +537,18 @@ jobs:
         run: npm run test:e2e:exports-regeneration -- --reporter=default --reporter=junit --outputFile.junit=rapports/e2e-exports-regeneration.xml
       - name: Diagnostic global, file, remplacement et supervision du worker (lot 111C)
         run: npm run test:e2e:diagnostic-file -- --reporter=default --reporter=junit --outputFile.junit=rapports/e2e-diagnostic-file.xml
+      - name: Diagnostic ciblé, voie réservée et durées (lot 111Q)
+        run: npm run test:e2e:diagnostic-cible -- --reporter=default --reporter=junit --outputFile.junit=rapports/e2e-diagnostic-cible.xml
+      - name: Agenda / Timeline, statut effectif commun (lot 111R)
+        run: npm run test:e2e:statut-effectif -- --reporter=default --reporter=junit --outputFile.junit=rapports/e2e-statut-effectif.xml
+      - name: Acquisition prouvée par facture de bout en bout (lot 111S)
+        run: npm run test:e2e:acquisition-bout-en-bout -- --reporter=default --reporter=junit --outputFile.junit=rapports/e2e-acquisition-bout-en-bout.xml
       - name: TCO, coût annuel, financement et valorisation (lot 111F)
         run: npm run test:e2e:tco-financement -- --reporter=default --reporter=junit --outputFile.junit=rapports/e2e-tco-financement.xml
+      - name: TCO, anomalies corrigeables et arbitrages (lot 111V)
+        run: npm run test:e2e:tco-anomalies -- --reporter=default --reporter=junit --outputFile.junit=rapports/e2e-tco-anomalies.xml
+      - name: CIL, chaîne DPE et données structurées de bout en bout (lot 111U)
+        run: npm run test:e2e:cil-dpe -- --reporter=default --reporter=junit --outputFile.junit=rapports/e2e-cil-dpe.xml
       - name: Documents, rattachement à plusieurs biens, pièces et équipements (lot 111I)
         run: npm run test:e2e:rattachement-multiple -- --reporter=default --reporter=junit --outputFile.junit=rapports/e2e-rattachement-multiple.xml
       - name: Assistant, pertinence des preuves (lot 111K)

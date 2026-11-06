@@ -12,7 +12,7 @@
  * qu'aucun template ne peut les imprimer.
  */
 
-import { db } from '@/db';
+import { db, pgClient } from '@/db';
 import {
   assets, users, agendaItems, agendaAssetLinks, assetCilProfiles, energyMaterials, energyWorks,
   equipments, equipmentCilSpecs, cilBlockResolutions,
@@ -149,7 +149,7 @@ export interface SourceEquipmentField {
 interface SourceCil {
   readiness: CilReadiness;
   profile: { triggerType: string | null; triggerDate: string | null; authorizationType: string | null; voluntaryReason: string | null } | null;
-  materials: Array<{ id: number; category: string; materialNature: string | null; brand: string | null; reference: string | null; thermalResistanceR: string | null; lambda: string | null; thicknessMm: number | null; documentId: number | null }>;
+  materials: Array<{ id: number; category: string; materialNature: string | null; brand: string | null; reference: string | null; thermalResistanceR: string | null; lambda: string | null; thicknessMm: number | null; documentId: number | null; uValue?: number | null }>;
   works: Array<{ id: number; category: string; title: string; description: string | null; completedAt: string | null; companyName: string | null }>;
   resolutions: Array<{ blockId: string; resolution: string; justification: string | null }>;
 }
@@ -516,12 +516,19 @@ async function loadLegacyExportSource(params: LoadParams): Promise<{ source: Exp
       db.select().from(cilBlockResolutions).where(eq(cilBlockResolutions.assetId, assetId)),
     ]);
     const p = profiles[0];
+    // Lot 111U (1301) : coefficient U (colonne additive lue en SQL, absente du schéma Drizzle).
+    const { cilSecondPassSchemaReady } = await import('@/services/cil/state/load');
+    const uRows = await cilSecondPassSchemaReady()
+      ? (await pgClient.unsafe(`SELECT id, u_value::float8 AS u FROM energy_materials WHERE asset_id = $1 AND u_value IS NOT NULL`, [assetId] as never[])) as unknown as Array<{ id: number; u: number }>
+      : [];
+    const uOf = new Map(uRows.map((r) => [Number(r.id), Number(r.u)]));
     cil = {
       readiness,
       profile: p ? { triggerType: p.triggerType, triggerDate: asIso(p.triggerDate), authorizationType: p.authorizationType, voluntaryReason: p.voluntaryReason } : null,
       materials: materials.map((m) => ({
         id: m.id, category: m.category, materialNature: m.materialNature, brand: m.brand, reference: m.reference,
         thermalResistanceR: m.thermalResistanceR, lambda: m.lambda, thicknessMm: m.thicknessMm, documentId: m.documentId,
+        uValue: uOf.get(m.id) ?? null,
       })),
       works: works.map((w) => ({ id: w.id, category: w.category, title: w.title, description: w.description, completedAt: asIso(w.completedAt), companyName: w.companyName })),
       resolutions: resolutions.map((r) => ({ blockId: r.blockId, resolution: r.resolution, justification: r.justification })),

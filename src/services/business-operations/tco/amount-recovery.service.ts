@@ -17,10 +17,10 @@
 import { sql as dsql, type SQL } from 'drizzle-orm';
 import type postgres from 'postgres';
 import {
-  AMOUNT_RECOVERY_RULES_VERSION, amountRecoveryLimits, planAmountRecovery, roleOfHint, textTotalsOfProfile, viewStateOf,
+  AMOUNT_RECOVERY_PENDING_STATES, AMOUNT_RECOVERY_RULES_VERSION, amountRecoveryLimits, planAmountRecovery, roleOfHint, textTotalsOfProfile, viewStateOf,
   warningsAfterRecovery,
-  type AmountRecoveryAction, type AmountRecoveryLimits, type AmountRecoveryRow, type AmountRecoveryStatus, type AmountSourceCandidate,
-  type TcoAmountRecoveryView,
+  type AmountRecoveryAction, type AmountRecoveryLimits, type AmountRecoveryLiveJob, type AmountRecoveryRow, type AmountRecoveryStatus, type AmountRecoveryViewItem,
+  type AmountSourceCandidate, type TcoAmountRecoveryView,
 } from './amount-recovery';
 import type { TcoResult } from './model';
 
@@ -69,8 +69,9 @@ export const AMOUNT_RECOVERY_CANDIDATES_SQL = (expenseCodes: string, invoiceLike
 
 /** Arguments SQL des types financiers (codes V2 de dépense, motif facture / ticket du moteur). */
 export async function expenseTypeFilters(): Promise<{ codes: string; invoiceLike: string }> {
-  const { EXPENSE_THEME_V2_CODES } = await import('@/services/verebona-assistant/canonical/expense-classes');
-  return { codes: `{${EXPENSE_THEME_V2_CODES.map((c) => `"${c.replace(/["\\']/g, '')}"`).join(',')}}`, invoiceLike: '(INVOICE|FACTURE|TICKET)' };
+  // Lot 111V (§D) : seuls les types qui portent un montant par nature (jamais un contrat, une attestation, un PV).
+  const { AMOUNT_EXPECTED_V2_CODES } = await import('@/services/verebona-assistant/canonical/expense-classes');
+  return { codes: `{${AMOUNT_EXPECTED_V2_CODES.map((c) => `"${c.replace(/["\\']/g, '')}"`).join(',')}}`, invoiceLike: '(INVOICE|FACTURE|TICKET)' };
 }
 
 interface DocumentState {
@@ -82,6 +83,8 @@ interface DocumentState {
   hash: string | null;
   currency: string | null;
   amountUnknown: boolean;
+  /** Lot 111V : le moteur produit une ligne économique pour ce document (faux : plus aucun montant attendu). */
+  financialDocument: boolean;
 }
 
 /** Documents du compte et décision du MOTEUR TCO (`AMOUNT_UNKNOWN`), sans aucune seconde règle. */
@@ -98,12 +101,21 @@ async function documentStates(sql: Sql, accountId: number, ids: readonly number[
   ]);
   const { documents } = await readEconomicDocuments(db, accountId, { fileIds: base.map((b) => Number(b.id)) });
   const titres = new Map(documents.map((d) => [d.fileId, d.title]));
-  const inconnus = new Set(qualifyDocumentLines(documents, { today }).filter((d) => d.reason === 'AMOUNT_UNKNOWN').map((d) => d.fileId));
+  const lignes = qualifyDocumentLines(documents, { today });
+  // Lot 111V (§D) : « aucune dépense sur ce document » confirmé par l'utilisateur (clé du montant inconnu) — plus
+  // aucun montant attendu : jamais de relecture (décision prioritaire, réversible depuis la fiche).
+  const confirmes = new Set((await q(sql, `
+    SELECT DISTINCT file_id FROM asset_cost_line_decisions
+     WHERE account_id = $1 AND file_id = ANY($2::int[]) AND decision = 'CONFIRM_EXCLUSION' AND line_key ~ '^f:[0-9]+:[A-Z_]+:0:'`,
+  [accountId, base.map((b) => Number(b.id))]).catch(() => [] as Row[])).map((r) => Number(r.file_id)));
+  const inconnus = new Set(lignes.filter((d) => d.reason === 'AMOUNT_UNKNOWN' && !confirmes.has(d.fileId)).map((d) => d.fileId));
+  const financiers = new Set(lignes.filter((d) => !(d.reason === 'AMOUNT_UNKNOWN' && confirmes.has(d.fileId))).map((d) => d.fileId));
   for (const b of base) {
     const id = Number(b.id);
     out.set(id, {
       fileId: id, title: titres.get(id) ?? 'Document', amountCents: n(b.amount_cents), userEditedAmount: b.user_amount === true,
       analysisState: txt(b.analysis_state), hash: txt(b.sha256_hash), currency: txt(b.currency), amountUnknown: inconnus.has(id),
+      financialDocument: financiers.has(id),
     });
   }
   return out;
@@ -243,7 +255,7 @@ export async function diagnoseAmountRecovery(sql: Sql, accountId: number, ids: r
     if (!d) { out.set(id, { fileId: id, document: null, row, sources: [], fingerprint, action: { kind: 'NONE', state: row?.status ?? null } }); continue; }
     const sources = d.amountUnknown && !d.userEditedAmount ? await persistedAmountSources(sql, accountId, id, d.currency) : [];
     const action = planAmountRecovery({
-      fileId: id, amountUnknown: d.amountUnknown, amountCents: d.amountCents, userEditedAmount: d.userEditedAmount,
+      fileId: id, amountUnknown: d.amountUnknown, financialDocument: d.financialDocument, amountCents: d.amountCents, userEditedAmount: d.userEditedAmount,
       analysisState: d.analysisState, t1JobLive: vivants.has(id), sources, row, fingerprint,
       t1Allowed: o.t1Allowed, budgetLeft: o.budgetLeft, now: o.now, limits,
     });
@@ -331,6 +343,11 @@ export async function applyRecoveredAmount(sql: Sql, accountId: number, d: Amoun
 export async function recordRecoveryResult(sql: Sql, accountId: number, d: AmountRecoveryDiagnosis): Promise<void> {
   if (d.action.kind !== 'RECORD_RESULT') return;
   const parT1 = d.row?.status === 'T1_PENDING' || d.row?.status === 'TECHNICAL_FAILURE' || (d.row?.totalAttempts ?? 0) > 0;
+  if (d.action.state === 'NOT_APPLICABLE') {
+    // Lot 111V : récupération close sans objet (document descriptif, ou aucune dépense confirmée par l'utilisateur).
+    await upsertState(sql, accountId, d.fileId, { status: 'NOT_APPLICABLE', sourceKind: 'DOCUMENT', sourceRef: `file:${d.fileId}`, resolved: true, errorCode: 'NO_AMOUNT_EXPECTED' });
+    return;
+  }
   await upsertState(sql, accountId, d.fileId, {
     status: d.action.state, amountCents: d.action.amountCents, currency: d.document?.currency ?? null,
     role: d.action.amountCents == null ? 'T1_FINANCIAL_HINTS' : d.action.amountCents < 0 ? 'CREDIT_NOTE' : 'DOCUMENT_TOTAL',
@@ -388,21 +405,45 @@ interface Runner { execute: (q: SQL) => Promise<unknown> }
  */
 export async function attachAmountRecovery<T extends TcoResult>(r: Runner, accountId: number, t: T, limits: AmountRecoveryLimits = amountRecoveryLimits()): Promise<T> {
   const inconnus = new Map<number, string>();
-  for (const l of t.lines) if (l.amountUnknown && l.fileId != null && !inconnus.has(l.fileId)) inconnus.set(l.fileId, l.label);
+  // Lot 111V : une ligne dont l'utilisateur a confirmé qu'elle ne porte aucune dépense n'attend plus de montant.
+  for (const l of t.lines) {
+    if (!l.amountUnknown || l.fileId == null || inconnus.has(l.fileId)) continue;
+    if (l.userDecision?.applied && l.userDecision.decision === 'CONFIRM_EXCLUSION') continue;
+    inconnus.set(l.fileId, l.label);
+  }
   if (!inconnus.size) return t;
-  let etats = new Map<number, Pick<AmountRecoveryRow, 'status' | 'technicalFailures'>>();
+  const ids = `{${[...inconnus.keys()].join(',')}}`;
+  let etats = new Map<number, Pick<AmountRecoveryRow, 'status' | 'technicalFailures' | 'lastRequestedAt'>>();
   try {
     const lus = (await r.execute(dsql`
-      SELECT file_id, status, technical_failures FROM document_amount_recoveries
-       WHERE account_id = ${accountId} AND file_id = ANY(${`{${[...inconnus.keys()].join(',')}}`}::int[])`)) as unknown as Row[];
-    etats = new Map(lus.map((x) => [Number(x.file_id), { status: String(x.status) as AmountRecoveryStatus, technicalFailures: Number(x.technical_failures ?? 0) }]));
+      SELECT file_id, status, technical_failures, last_requested_at FROM document_amount_recoveries
+       WHERE account_id = ${accountId} AND file_id = ANY(${ids}::int[])`)) as unknown as Row[];
+    etats = new Map(lus.map((x) => [Number(x.file_id), {
+      status: String(x.status) as AmountRecoveryStatus, technicalFailures: Number(x.technical_failures ?? 0),
+      lastRequestedAt: x.last_requested_at ? new Date(x.last_requested_at as string).toISOString() : null,
+    }]));
   } catch {
     // Table absente (déploiement en cours) : comportement antérieur, alerte inchangée.
     return t;
   }
-  const items = [...inconnus].map(([fileId, title]) => ({ fileId, title, state: viewStateOf(etats.get(fileId) ?? null, limits) }));
+  // Lot 111V (§D) : file RÉELLE — un travail T1 vivant pour ce document (lecture seule, aucune mise en file ici).
+  const travaux = new Map<number, AmountRecoveryLiveJob>();
+  try {
+    const lus = (await r.execute(dsql`
+      SELECT DISTINCT ON (target_id) target_id, status, available_at FROM ai_job_queue
+       WHERE treatment = 'T1' AND target_type = 'asset_file' AND account_id = ${accountId}
+         AND target_id = ANY(${`{${[...inconnus.keys()].map(String).join(',')}}`}::text[]) AND status IN ('PENDING', 'RUNNING')
+       ORDER BY target_id, (status = 'RUNNING') DESC, id DESC`)) as unknown as Row[];
+    for (const x of lus) {
+      travaux.set(Number(x.target_id), { status: String(x.status) as AmountRecoveryLiveJob['status'], availableAt: x.available_at ? new Date(x.available_at as string).toISOString() : null });
+    }
+  } catch { /* file illisible : aucun travail présumé (jamais « en cours » par défaut) */ }
+  const items: AmountRecoveryViewItem[] = [...inconnus].map(([fileId, title]) => {
+    const v = viewStateOf(etats.get(fileId) ?? null, limits, travaux.get(fileId) ?? null);
+    return { fileId, title, state: v.state, ...(v.nextAttemptAt ? { nextAttemptAt: v.nextAttemptAt } : {}) };
+  });
   const view: TcoAmountRecoveryView = {
-    items, inProgress: items.filter((i) => i.state === 'IN_PROGRESS').length,
+    items, inProgress: items.filter((i) => AMOUNT_RECOVERY_PENDING_STATES.has(i.state)).length,
     toConfirm: items.filter((i) => i.state === 'TO_CONFIRM').length, notFound: items.filter((i) => i.state === 'NOT_FOUND').length,
   };
   return { ...t, amountRecovery: view, reliability: { ...t.reliability, warnings: warningsAfterRecovery(t.reliability.warnings, view) } };

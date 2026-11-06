@@ -11,6 +11,13 @@ export const dynamic = 'force-dynamic';
  * `report=1` : le RAPPORT SYNTHÉTIQUE stocké (`rapport.txt`) — le vrai texte
  * produit avec l'archive, pas une reconstitution ; les données complètes
  * sont dans le ZIP. Administrateurs seulement ; jamais mis en cache.
+ *
+ * Lot 111Q : `metrics` (temps en file / exécution / total, séparés),
+ * `category` (« Attente de ressource », « Worker indisponible », « Génération
+ * en cours », « Échec », « Terminé », « Annulé », « En file »), `timings`
+ * (profilage par étape, fichiers les plus lents), `workerView` (worker qui
+ * exécute ou dernier worker vivant : battement, dernier tour, prélèvement),
+ * `firstRunStartedAt`, `lane`, `readAt` (horodatage serveur de la lecture).
  */
 export async function GET(request: NextRequest, { params }: { params: Promise<{ id: string }> }) {
   const g = await guardAdmin(() => requireAdmin(request));
@@ -25,8 +32,26 @@ export async function GET(request: NextRequest, { params }: { params: Promise<{ 
   const sup = job.mode === st.DIAG_JOB_MODE && job.status === 'QUEUED' && !job.cancelRequested ? await import('@/services/admin/diagnostic-jobs/supervision') : null;
   const wait = sup ? await sup.diagnosticJobWait(job.id) : null;
   const { displayStatus } = await import('@/services/admin/diagnostic-jobs/wait');
+  const [mx, repo] = await Promise.all([import('@/services/admin/diagnostic-jobs/metrics'), import('@/services/admin/diagnostic-jobs/repository')]);
+  const extras = job.mode === st.DIAG_JOB_MODE ? await repo.readDiagnosticJobExtras(job.id).catch(() => ({ firstRunStartedAt: null, lane: null, phaseTimings: null })) : { firstRunStartedAt: null, lane: null, phaseTimings: null };
+  const now = new Date();
+  const metrics = mx.diagMetrics({
+    status: job.status, startedAt: job.startedAt, firstRunStartedAt: extras.firstRunStartedAt, runStartedAt: job.runStartedAt, finishedAt: job.finishedAt,
+    attemptsLog: job.attemptsLog as Array<{ startedAt?: string | null; endedAt?: string | null }>, now,
+  });
+  const category = mx.stateCategory(job.status, wait?.diagnosis.reason ?? job.waitReason, job.cancelRequested && job.status === 'QUEUED');
+  const workerView = job.mode === st.DIAG_JOB_MODE && (job.status === 'QUEUED' || job.status === 'RUNNING')
+    ? await (sup ?? await import('@/services/admin/diagnostic-jobs/supervision')).diagnosticJobWorkerView(job, now)
+    : null;
   const view = {
     job,
+    readAt: now.toISOString(),
+    metrics,
+    category: { code: category, label: mx.DIAG_STATE_CATEGORY_LABELS[category] },
+    firstRunStartedAt: extras.firstRunStartedAt ?? metrics.firstStartAt,
+    lane: extras.lane,
+    timings: extras.phaseTimings,
+    workerView,
     statusLabel: displayStatus(job, wait?.diagnosis ?? null),
     wait: wait ? { reason: wait.diagnosis.reason, label: wait.label, detail: wait.diagnosis.detail, action: wait.action, blockingJobId: wait.diagnosis.blockingJobId, waitedSeconds: wait.diagnosis.waitedSeconds, alert: wait.diagnosis.alert } : null,
     downloadable,

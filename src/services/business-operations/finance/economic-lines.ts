@@ -58,7 +58,7 @@
  */
 import type { FinancialComponentKind } from '../model';
 import {
-  classifyExpenseDocument, dedupePossibleMerges, isCreditNoteTitle, type ExpenseTheme,
+  classifyExpenseDocument, dedupePossibleMerges, documentTypeExpectsAmount, isCreditNoteTitle, type ExpenseTheme,
 } from '@/services/verebona-assistant/canonical/expense-classes';
 import type { ExclusionReason } from './engine';
 import { resolveEconomicDate, type EconomicDateResolution } from './economic-date';
@@ -219,7 +219,9 @@ type DocumentLineReason =
   | 'SAME_FACT_CROSS_SOURCE'
   // Lot 109D : remise / code promo d'une pièce de transaction intégrée au net de l'achat (jamais un avoir) ;
   // ligne, frais ou remise comprise dans le net d'un achat composé ; remise globale de plusieurs achats non ventilée.
-  | 'COMMERCIAL_ADJUSTMENT_INTEGRATED' | 'PURCHASE_COMPONENT' | 'GLOBAL_DISCOUNT_NOT_ALLOCATED';
+  | 'COMMERCIAL_ADJUSTMENT_INTEGRATED' | 'PURCHASE_COMPONENT' | 'GLOBAL_DISCOUNT_NOT_ALLOCATED'
+  // Lot 111V : l'utilisateur a confirmé que cette source représente le même fait qu'une dépense déjà comptée.
+  | 'USER_SAME_FACT';
 
 export type EconomicLineReason = ExclusionReason | DocumentLineReason;
 
@@ -254,6 +256,7 @@ export const DOCUMENT_LINE_REASON_LABELS: Readonly<Record<DocumentLineReason, st
   COMMERCIAL_ADJUSTMENT_INTEGRATED: 'Remise intégrée au prix net de l’achat : ni un avoir, ni un remboursement',
   PURCHASE_COMPONENT: 'Composante du prix net de l’achat (détail du calcul)',
   GLOBAL_DISCOUNT_NOT_ALLOCATED: 'Remise globale sur plusieurs achats du document : non répartie faute de règle explicite (jamais un avoir)',
+  USER_SAME_FACT: 'Même dépense qu’une autre déjà comptée, confirmé par vous : comptée une seule fois',
 };
 
 /** Ligne documentaire qualifiée, avant le moteur (`status` null : à évaluer par `evaluateComponent`). */
@@ -540,7 +543,9 @@ export function qualifyDocumentLines(docs: readonly EconomicDocumentInput[], ctx
     const facture = cls.kind === 'theme' || (cls.kind === 'unqualified' && INVOICE_LIKE.test(`${d.typeCode ?? ''} ${d.legacyType ?? ''}`));
     if (d.amountCents == null) {
       // Lot 75D (D) : justificatif financier reconnu sans montant — montant INCONNU (jamais 0 € certain), signalé.
-      if (facture) out.push(base({ ...lien, amountMinor: 0, status: 'NOT_QUALIFIED', reason: 'AMOUNT_UNKNOWN' }));
+      // Lot 111V (§D) : un document descriptif (contrat, attestation, procès-verbal) sans montant n'est pas un montant
+      // manquant — aucune ligne, aucune relecture (jamais de dépense ni de montant exigés qui n'existent pas).
+      if (facture && documentTypeExpectsAmount(d.typeCode)) out.push(base({ ...lien, amountMinor: 0, status: 'NOT_QUALIFIED', reason: 'AMOUNT_UNKNOWN' }));
       continue;
     }
     if (cls.kind === 'excluded') {

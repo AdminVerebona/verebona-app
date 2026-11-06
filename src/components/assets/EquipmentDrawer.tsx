@@ -168,7 +168,8 @@ function AgendaStatusIcon({ status }: { status: string }) {
 
 /** Pastille d'état d'une échéance associée (texte, non interactive). */
 function AgendaStatusBadge({ item }: { item: Pick<EquipmentAgendaItem, 'manualStatus' | 'effectiveStatus'> }) {
-  if (item.manualStatus === 'realise') {
+  // Lot 111R : « Réalisé » = statut effectif (statut manuel OU preuve de réalisation valide).
+  if (item.manualStatus === 'realise' || item.effectiveStatus === 'realise') {
     return (
       <span className="text-[11px] font-semibold px-2 py-0.5 rounded-full bg-[color:var(--bg-success)] text-[color:var(--text-success)] border border-[color:var(--border-success)] flex-shrink-0">
         Réalisé

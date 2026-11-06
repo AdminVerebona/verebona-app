@@ -147,7 +147,11 @@ describe('L101A-U-COH-IDENTITY — contrôle de cohérence de l’identité prod
       // Lot 109K : couverture PDF (fin de registre).
       'COH-T1-PDF-COVERAGE',
       // Lot 111I : rattachements multiples d'un document (fin de registre).
-      'COH-DOC-TARGETS']);
+      'COH-DOC-TARGETS',
+      // Lot 111S : acquisition documentaire établie sans Opération active ni historique « Achat » (fin de registre).
+      'COH-OPS-ACQUISITION-DOCUMENT',
+      // Lot 111U : projection documentaire CIL (fin de registre).
+      'COH-CIL-DOCUMENT-PROJECTION']);
     expect(COVERAGE_INVENTORY.find((d) => d.domain === 'equipements')!.checks).toContain('COH-EQUIPMENT-IDENTITY');
     expect(equipmentIdentityCheck.forbiddenRepairs.join(' ')).toMatch(/utilisateur/);
   });

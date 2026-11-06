@@ -16,11 +16,11 @@ import { AssetDetailSection, type FieldDef } from './AssetDetailSection';
 import { ValuationHistoryDrawer } from './ValuationHistoryDrawer';
 import { TcoSection } from './TcoSection';
 import { AssetAdditionalInfosSection } from './AssetAdditionalInfosSection';
+import { CilProgressPanel } from './CilProgressPanel';
 import { OCCUPANCY_USAGE_OPTIONS } from '@/lib/assets/occupancy';
 import { apiClient } from '@/lib/api-client';
 import type { AssetDetail } from '@/types/asset-detail';
-import { ChevronDown, ChevronUp, TrendingUp } from 'lucide-react';
-import { displayDocumentTitle } from '@/lib/documents/document-title-rules';
+import { TrendingUp } from 'lucide-react';
 import { TENURE_END_LABEL, TENURE_META_KEY, tenureEndKey, tenureSourceLabel, type TenureEndMeta } from '@/lib/assets/tenure-end';
 
 interface Props {
@@ -152,6 +152,7 @@ const SECTION_FIELDS: Record<string, FieldDef[]> = {
     { key: 'dpeExpiryDate', label: 'Fin de validité du DPE', type: 'date' },
     { key: 'dpeAdemeNumber', label: 'N° ADEME du DPE' },
     { key: 'energyConsumption', label: 'Consommation énergétique (kWh/m²/an)', type: 'number' },
+    { key: 'gesEmissions', label: 'Émissions de GES (kg CO₂/m²/an)', type: 'number' },
     { key: 'gesClass', label: 'Classe GES', type: 'select', options: ['A','B','C','D','E','F','G'].map(v => ({ value: v, label: v })) },
     { key: 'lastRevision', label: 'Dernier entretien', type: 'date' },
     { key: 'maintenanceDueDate', label: 'Prochain entretien', type: 'date' },
@@ -292,139 +293,11 @@ export const SECTION_LABELS: Record<string, string> = {
   object_usage: 'Usage / conservation',
 };
 
-// ─── CIL Checklist ─────────────────────────────────────────────────────────────
-
-const CIL_RUBRICS = [
-  { code: 'PLAN_CONSTRUCTION',         label: 'Plans de construction',                     section: 'construction' },
-  { code: 'RE2020',                    label: 'Attestation RE2020',                         section: 'construction' },
-  { code: 'LABEL_CERTIFICATION',       label: 'Label ou certification',                     section: 'construction' },
-  { code: 'DPE',                       label: 'DPE (Diagnostic de Performance Énergétique)', section: 'construction' },
-  { code: 'ISOLATION_TOITURE',         label: 'Isolation thermique — toiture',              section: 'construction' },
-  { code: 'ISOLATION_MURS',            label: 'Isolation thermique — murs extérieurs',      section: 'construction' },
-  { code: 'ISOLATION_VITRAGE',         label: 'Isolation thermique — vitrages',             section: 'construction' },
-  { code: 'ISOLATION_PLANCHERS',       label: 'Isolation thermique — planchers bas',        section: 'construction' },
-  { code: 'EQUIPEMENT_CHAUFFAGE',      label: 'Système de chauffage',                       section: 'construction' },
-  { code: 'EQUIPEMENT_REFROIDISSEMENT',label: 'Système de refroidissement',                 section: 'construction' },
-  { code: 'EQUIPEMENT_ECS',            label: "Eau chaude sanitaire",                       section: 'construction' },
-  { code: 'RESEAU_CHALEUR',            label: 'Réseau de chaleur ou de froid',              section: 'construction' },
-  { code: 'EQUIPEMENT_VENTILATION',    label: 'Système de ventilation (VMC…)',              section: 'construction' },
-  { code: 'AUDIT_ENERGETIQUE',         label: 'Audit énergétique',                          section: 'renovation' },
-  { code: 'AMIANTE',                   label: 'Diagnostic amiante',                         section: 'diagnostic' },
-  { code: 'PLOMB',                     label: 'Diagnostic plomb (CREP)',                    section: 'diagnostic' },
-  { code: 'GAZ',                       label: 'Diagnostic installation gaz',                section: 'diagnostic' },
-  { code: 'ELECTRICITE',               label: 'Diagnostic installation électrique',         section: 'diagnostic' },
-  { code: 'ASSAINISSEMENT',            label: 'Diagnostic assainissement non collectif',    section: 'diagnostic' },
-  { code: 'ERNMT',                     label: 'État des risques naturels et technologiques', section: 'diagnostic' },
-] as const;
-
-interface CilDocRef { code: string; date: string | null; title: string | null }
-
-function CilChecklist({ assetId, naRubrics = new Set<string>() }: { assetId: number; naRubrics?: Set<string> }) {
-  const [open, setOpen] = useState(false);
-  const [docs, setDocs] = useState<CilDocRef[]>([]);
-  const [loaded, setLoaded] = useState(false);
-
-  useEffect(() => {
-    if (!open || loaded) return;
-    apiClient.get<{ items: Array<{ id: number; retainedFunctionCode: string | null; documentType: string; cilRubricCodes: string[] | null; documentDate: string | null; retainedTitle: string | null; originalFilename: string | null }> }>(
-      `/api/assets/${assetId}/cil-checklist`
-    ).then(data => {
-      const result: CilDocRef[] = [];
-      for (const rubric of CIL_RUBRICS) {
-        const match = data.items.find(d => {
-          if (d.retainedFunctionCode === rubric.code) return true;
-          if (d.documentType === rubric.code) return true;
-          const crc = d.cilRubricCodes;
-          if (Array.isArray(crc)) return crc.includes(rubric.code);
-          return false;
-        });
-        result.push({
-          code: rubric.code,
-          date: match?.documentDate ?? null,
-          title: match ? (displayDocumentTitle(match, '') || null) : null,
-        });
-      }
-      setDocs(result);
-      setLoaded(true);
-    }).catch(() => setLoaded(true));
-  }, [open, loaded, assetId]);
-
-  const sections = [
-    { key: 'construction', label: 'Construction / performance' },
-    { key: 'renovation',   label: 'Rénovation énergétique' },
-    { key: 'diagnostic',   label: 'Diagnostics techniques' },
-  ] as const;
-
-  const applicableRubrics = CIL_RUBRICS.filter(r => !naRubrics.has(r.code));
-  const available = docs.filter(d => d.title !== null && !naRubrics.has(d.code)).length;
-  const total = applicableRubrics.length;
-
-  return (
-    <div className="border rounded-lg overflow-hidden">
-      <button
-        type="button"
-        onClick={() => setOpen(o => !o)}
-        className="w-full flex items-center justify-between px-4 py-3 bg-muted/30 hover:bg-muted/50 transition-colors text-left"
-      >
-        <div className="flex items-center gap-2 min-w-0">
-          <span className="font-medium text-sm">Checklist CIL</span>
-          {loaded && (
-            <span className="text-[10px] font-medium text-[color:var(--accent)] bg-[color:var(--accent-soft)] rounded px-1.5 py-0.5 shrink-0">
-              {available} / {total}
-            </span>
-          )}
-        </div>
-        {open ? <ChevronUp className="w-4 h-4 text-muted-foreground shrink-0" /> : <ChevronDown className="w-4 h-4 text-muted-foreground shrink-0" />}
-      </button>
-
-      {open && (
-        <div className="p-4 space-y-4">
-          {!loaded ? (
-            <div className="space-y-2">
-              {[1,2,3].map(i => <Skeleton key={i} className="h-6 w-full" />)}
-            </div>
-          ) : (
-            sections.map(sec => (
-              <div key={sec.key}>
-                <p className="vb-app-label mb-2">{sec.label}</p>
-                <div className="space-y-1">
-                  {CIL_RUBRICS.filter(r => r.section === sec.key).map(rubric => {
-                    const doc = docs.find(d => d.code === rubric.code);
-                    const isAvailable = !!doc?.title;
-                    const isNa = naRubrics.has(rubric.code);
-                    return (
-                      <div key={rubric.code} className="flex items-center justify-between gap-2 py-1 border-b border-border/20 last:border-0">
-                        <span className={`text-xs ${isAvailable ? 'text-foreground' : 'text-muted-foreground'}`}>
-                          {rubric.label}
-                        </span>
-                        <div className="flex items-center gap-2 shrink-0">
-                          {isAvailable && doc?.date && (
-                            <span className="text-[10px] text-muted-foreground">
-                              {new Intl.DateTimeFormat('fr-FR', { day: 'numeric', month: 'short', year: 'numeric' }).format(new Date(doc.date))}
-                            </span>
-                          )}
-                          <span className={`text-[10px] font-semibold px-2 py-0.5 rounded-full ${
-                            isAvailable
-                              ? 'bg-[color:var(--bg-success)] text-[color:var(--text-success)]'
-                              : isNa
-                              ? 'bg-[color:var(--bg-subtle)] text-[color:var(--text-muted)]'
-                              : 'bg-muted/50 text-muted-foreground'
-                          }`}>
-                            {isAvailable ? 'Disponible' : isNa ? 'Non applicable' : 'Non renseigné'}
-                          </span>
-                        </div>
-                      </div>
-                    );
-                  })}
-                </div>
-              </div>
-            ))
-          )}
-        </div>
-      )}
-    </div>
-  );
-}
+// ─── Carnet d'information du logement ──────────────────────────────────────────
+// Lot 111U : l'ancienne « Checklist CIL » (correspondances documentaires seules,
+// échec silencieux, « gaz non applicable » déduit du chauffage) est remplacée
+// par `CilProgressPanel` — état du service commun (même projection que la
+// préparation et le PDF).
 
 export const FAMILY_SECTIONS: Record<string, string[]> = {
   IMMOBILIER: ['common', 'location_identification', 'physical_characteristics', 'occupancy_usage', 'performance_technical', 'valuation', 'insurance'],
@@ -605,18 +478,10 @@ export function AssetDetailsTab({ asset, onRefresh, readOnly = false, highlightF
         defaultOpen={highlightField === 'additional_infos'}
       />
 
-      {/* ── CIL Checklist — after insurance section, IMMOBILIER only ─────────── */}
-      {asset.category === 'IMMOBILIER' && (() => {
-        const perf = detailData?.sections?.performance_technical as { mainEnergy?: string; heatingType?: string } | undefined;
-        const combined = [(perf?.mainEnergy ?? ''), (perf?.heatingType ?? '')].join(' ')
-          .toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g, '');
-        const naRubrics = new Set<string>();
-        // GAZ is N/A when energy info is present and clearly non-gas
-        if ((perf?.mainEnergy || perf?.heatingType) && !combined.includes('gaz')) {
-          naRubrics.add('GAZ');
-        }
-        return <CilChecklist assetId={asset.id} naRubrics={naRubrics} />;
-      })()}
+      {/* ── Carnet d'information du logement (lot 111U) — immobilier seulement ── */}
+      {asset.category === 'IMMOBILIER' && (
+        <CilProgressPanel assetId={asset.id} readOnly={readOnly} defaultOpen={highlightField === 'cil'} />
+      )}
     </div>
   );
 }

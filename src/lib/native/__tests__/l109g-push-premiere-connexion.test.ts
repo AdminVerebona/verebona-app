@@ -5,7 +5,8 @@
  *
  *   L109G-TXT   textes exacts du ticket, messages de réactivation iOS / Android ;
  *   L109G-RULE  décision (permission × décision enregistrée), écrans utilisables ;
- *   L109G-FLOW  parcours : priorité sur la biométrie, « Plus tard », « Autoriser »,
+ *   L109G-FLOW  parcours : APRÈS la biométrie (lot 111T, remplace la priorité
+ *               push), « Plus tard », « Autoriser »,
  *               une seule demande, comptes A / B, gardes (CGUV, verrou, hors ligne,
  *               fonction coupée) ;
  *   L109G-STORE persistance par compte × installation, ancienne clé globale ;
@@ -86,7 +87,7 @@ function installNative(plugins: Record<string, unknown>, platform: 'ios' | 'andr
 
 function ctx(o: Partial<PushOnboardingContext> = {}): PushOnboardingContext {
   return {
-    userId: 1, featureOn: true, pathname: '/accueil', legalRequired: false, blocked: false, offline: false, otherVisible: false, ...o,
+    userId: 1, featureOn: true, pathname: '/accueil', legalRequired: false, blocked: false, offline: false, held: false, ...o,
   };
 }
 
@@ -122,7 +123,9 @@ describe('L109G-TXT — textes', () => {
     expect(PUSH_ONBOARDING_LATER).toBe('Plus tard');
     const card = read('src/components/native/PushOnboardingCard.tsx');
     for (const c of ['PUSH_ONBOARDING_TITLE', 'PUSH_ONBOARDING_TEXT', 'PUSH_ONBOARDING_ALLOW', 'PUSH_ONBOARDING_LATER']) expect(card).toContain(`{${c}}`);
-    expect(card).toMatch(/disabled=\{busy\}/);
+    // Lot 111T : fenêtre centrée commune (boutons inactifs pendant la demande).
+    expect(card).toMatch(/<NativeOfferDialog/);
+    expect(read('src/components/native/NativeOfferDialog.tsx')).toMatch(/disabled=\{busy\}/);
   });
 
   it('réactivation adaptée au système', () => {
@@ -163,48 +166,57 @@ describe('L109G-RULE — décision et écrans', () => {
     expect(pushOnboardingScreenAllowed({ pathname: '/accueil', legalRequired: false, blocked: false, offline: true })).toBe(false);
   });
 
-  it('sans session ou fonction coupée par le serveur : rien, biométrie libre', () => {
-    const s = { decisions: { 1: 'offer' as const }, shown: 1, shownThisRun: true, busy: false };
-    expect(pushOnboardingView(s, ctx({ userId: null }))).toEqual({ visible: false, busy: false, holdBiometrics: false });
-    expect(pushOnboardingView(s, ctx({ featureOn: false }))).toEqual({ visible: false, busy: false, holdBiometrics: false });
+  it('sans session ou fonction coupée par le serveur : rien', () => {
+    const s = { decisions: { 1: 'offer' as const }, shown: 1, presented: true, busy: false };
+    expect(pushOnboardingView(s, ctx({ userId: null }))).toEqual({ visible: false, busy: false });
+    expect(pushOnboardingView(s, ctx({ featureOn: false }))).toEqual({ visible: false, busy: false });
+    // Lot 111T : étape biométrique pas terminée → invitation retenue.
+    expect(pushOnboardingView(s, ctx({ held: true }))).toEqual({ visible: false, busy: false });
+    expect(pushOnboardingView(s, ctx())).toEqual({ visible: true, busy: false });
   });
 });
 
 // ── L109G-FLOW ──────────────────────────────────────────────────────────────
 
 describe('L109G-FLOW — parcours de première connexion', () => {
-  it('première connexion : push prioritaire, biométrie retenue tout le lancement, « Plus tard » sans demande OS', async () => {
+  it('première connexion (lot 111T) : biométrie d’abord, puis invitation dans la même session, « Plus tard » sans demande OS', async () => {
     const { deps, records } = fakeDeps();
     const ctl = createPushOnboarding(deps);
-    // Session établie, décision pas encore lue : biométrie retenue (aucune course).
-    expect(pushOnboardingView(ctl.getSnapshot(), ctx()).holdBiometrics).toBe(true);
     await ctl.evaluate(1);
+    // Étape biométrique en cours (évaluation, fenêtre, vérification native) : attente, rien n'est noté.
+    ctl.sync(ctx({ held: true }));
+    expect(ctl.getSnapshot().shown).toBeNull();
+    expect(deps.record).not.toHaveBeenCalled();
     // Encore sur l'écran de connexion (redirection en cours) : rien.
     ctl.sync(ctx({ pathname: '/login' }));
     expect(pushOnboardingView(ctl.getSnapshot(), ctx({ pathname: '/login' })).visible).toBe(false);
+    // Étape biométrique terminée : invitation présentée sans relancement.
     ctl.sync(ctx());
     const v = pushOnboardingView(ctl.getSnapshot(), ctx());
-    expect(v).toEqual({ visible: true, busy: false, holdBiometrics: true });
+    expect(v).toEqual({ visible: true, busy: false });
     await flush();
-    expect(records[1].s).toBe('offered'); // noté dès l'affichage
+    expect(records[1]).toBeUndefined(); // pas encore réellement affichée
+    ctl.presented(1);
+    ctl.presented(1);
+    await flush();
+    expect(records[1].s).toBe('offered'); // noté à l'affichage réel, une fois
+    expect(deps.record).toHaveBeenCalledTimes(1);
     ctl.later();
     await flush();
     expect(records[1].s).toBe('later');
     expect(deps.request).not.toHaveBeenCalled();
-    const after = pushOnboardingView(ctl.getSnapshot(), ctx());
-    expect(after.visible).toBe(false);
-    expect(after.holdBiometrics).toBe(true); // biométrie reportée au lancement suivant
+    expect(pushOnboardingView(ctl.getSnapshot(), ctx()).visible).toBe(false);
     // Navigation : jamais reproposée pendant ce lancement.
     ctl.sync(ctx({ pathname: '/documents' }));
     expect(pushOnboardingView(ctl.getSnapshot(), ctx({ pathname: '/documents' })).visible).toBe(false);
   });
 
-  it('lancement suivant : décision « Plus tard » lue → aucune invitation, biométrie libérée', async () => {
+  it('lancement suivant : décision « Plus tard » lue → aucune invitation', async () => {
     const { deps } = fakeDeps({ records: { 1: { s: 'later', at: 'x' } } });
     const ctl = createPushOnboarding(deps);
     await ctl.evaluate(1);
     ctl.sync(ctx());
-    expect(pushOnboardingView(ctl.getSnapshot(), ctx())).toEqual({ visible: false, busy: false, holdBiometrics: false });
+    expect(pushOnboardingView(ctl.getSnapshot(), ctx())).toEqual({ visible: false, busy: false });
   });
 
   it('« Autoriser » : UNE seule demande même sur double appui, boutons inactifs, réponse notée', async () => {
@@ -230,7 +242,7 @@ describe('L109G-FLOW — parcours de première connexion', () => {
       const ctl = createPushOnboarding(deps);
       await ctl.evaluate(1);
       ctl.sync(ctx());
-      expect(pushOnboardingView(ctl.getSnapshot(), ctx())).toEqual({ visible: false, busy: false, holdBiometrics: false });
+      expect(pushOnboardingView(ctl.getSnapshot(), ctx())).toEqual({ visible: false, busy: false });
       expect(deps.record).not.toHaveBeenCalled();
     }
   });
@@ -240,6 +252,7 @@ describe('L109G-FLOW — parcours de première connexion', () => {
     const ctl = createPushOnboarding(deps);
     await ctl.evaluate(1);
     ctl.sync(ctx({ userId: 1 }));
+    ctl.presented(1);
     ctl.later();
     await flush();
     // Déconnexion puis B.
@@ -247,6 +260,7 @@ describe('L109G-FLOW — parcours de première connexion', () => {
     await ctl.evaluate(2);
     ctl.sync(ctx({ userId: 2 }));
     expect(pushOnboardingView(ctl.getSnapshot(), ctx({ userId: 2 })).visible).toBe(true);
+    ctl.presented(2);
     await flush();
     expect(records[1].s).toBe('later');
     expect(records[2].s).toBe('offered');
@@ -263,11 +277,32 @@ describe('L109G-FLOW — parcours de première connexion', () => {
     expect(pushOnboardingView(ctl.getSnapshot(), ctx({ userId: 1 })).visible).toBe(false);
   });
 
-  it('CGUV à réaccepter, verrou, hors ligne, autre carte à l’écran : attente, puis affichage sur écran utile', async () => {
+  it('lot 111T — interrompue AVANT l’affichage réel (changement de compte, redirection) : pas perdue, rien de noté', async () => {
+    const { deps, records } = fakeDeps({ records: { 2: { s: 'later', at: 'x' } } });
+    const ctl = createPushOnboarding(deps);
+    await ctl.evaluate(1);
+    ctl.sync(ctx({ userId: 1 })); // prête, mais la fenêtre n'a pas encore été rendue
+    await ctl.evaluate(2);
+    ctl.sync(ctx({ userId: 2 }));
+    await flush();
+    expect(records[1]).toBeUndefined();
+    // Retour du compte 1 dans la même session : l'invitation revient.
+    ctl.sync(ctx({ userId: 1 }));
+    expect(pushOnboardingView(ctl.getSnapshot(), ctx({ userId: 1 })).visible).toBe(true);
+    // Rendue puis interrompue : notée, jamais reproposée.
+    ctl.presented(1);
+    ctl.sync(ctx({ userId: 2 }));
+    ctl.sync(ctx({ userId: 1 }));
+    await flush();
+    expect(records[1].s).toBe('offered');
+    expect(ctl.getSnapshot().shown).toBeNull();
+  });
+
+  it('CGUV à réaccepter, verrou, hors ligne, étape biométrique en cours : attente, puis affichage sur écran utile', async () => {
     const { deps } = fakeDeps();
     const ctl = createPushOnboarding(deps);
     await ctl.evaluate(1);
-    for (const c of [{ legalRequired: true }, { blocked: true }, { offline: true }, { otherVisible: true }, { featureOn: false }]) {
+    for (const c of [{ legalRequired: true }, { blocked: true }, { offline: true }, { held: true }, { featureOn: false }]) {
       ctl.sync(ctx(c));
       expect(ctl.getSnapshot().shown, JSON.stringify(c)).toBeNull();
     }
@@ -283,12 +318,13 @@ describe('L109G-FLOW — parcours de première connexion', () => {
     expect(pushOnboardingView(ctl.getSnapshot(), ctx()).visible).toBe(true);
   });
 
-  it('lecture en échec : aucune invitation, biométrie libérée', async () => {
+  it('lecture en échec : aucune invitation', async () => {
     const { deps } = fakeDeps();
     deps.permission.mockRejectedValueOnce(new Error('x'));
     const ctl = createPushOnboarding(deps);
     expect(await ctl.evaluate(1)).toBe('none');
-    expect(pushOnboardingView(ctl.getSnapshot(), ctx()).holdBiometrics).toBe(false);
+    ctl.sync(ctx());
+    expect(pushOnboardingView(ctl.getSnapshot(), ctx()).visible).toBe(false);
   });
 
   it('évaluée une fois par compte et par lancement', async () => {
@@ -443,21 +479,21 @@ describe('L109G-NATIVE — socle push réel (lib/native/push)', () => {
 describe('L109G-SRC — branchements et binaires', () => {
   const runtime = read('src/components/native/NativeBridgeRuntime.tsx');
 
-  it('runtime : plus de clé globale ni de report lié à la biométrie, push prioritaire', () => {
+  it('runtime : plus de clé globale ; lot 111T biométrie d’abord, notifications ensuite', () => {
     expect(runtime).not.toMatch(/push-prompt-dismissed|PUSH_PROMPT_DISMISSED_KEY/);
-    expect(runtime).not.toMatch(/offer\.shownThisRun/);
-    expect(runtime).toMatch(/usePushOnboarding\(featureOn\(features, 'push'\), blocked, offline, bioVisible\)/);
-    expect(runtime).toMatch(/useBiometricOffer\(features, blocked, push\.holdBiometrics\)/);
+    expect(runtime).not.toMatch(/shownThisRun|holdBiometrics|bioVisible/);
+    expect(runtime).toMatch(/useBiometricOffer\(features, blocked\)/);
+    expect(runtime).toMatch(/usePushOnboarding\(featureOn\(features, 'push'\), blocked, offline, offer\.holdsPush\)/);
     expect(runtime).toMatch(/push\.visible && !offer\.visible/);
     expect(runtime).toMatch(/const blocked = locked \|\| commerce \|\| envMismatch \|\| updateRequired/);
     expect(runtime).toMatch(/APP_UPDATE_REQUIRED_EVENT/);
     expect(runtime).not.toMatch(/enableNativePush|requestPermissions/); // jamais de demande automatique
   });
 
-  it('biométrie : retenue sans être notée (reste « jamais proposée »)', () => {
-    const hook = read('src/components/native/useBiometricOffer.ts');
-    expect(hook).toMatch(/held = false/);
-    expect(hook).toMatch(/blocked \|\| held \|\| legalRequired/);
+  it('lot 111T : plus de report de la biométrie au lancement suivant', () => {
+    const src = read('src/lib/native/push-onboarding.ts') + read('src/components/native/useBiometricOffer.ts');
+    expect(src).not.toMatch(/holdBiometrics|shownThisRun/);
+    expect(read('src/components/native/useBiometricOffer.ts')).not.toMatch(/held = false/);
   });
 
   it('Mon compte › Notifications : accès « Ce téléphone » distinct des préférences, app native seulement', () => {

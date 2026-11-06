@@ -21,6 +21,10 @@ docs/*
 !docs/recette/
 # Application mobile (lot 95) : comparaison d'architectures, grille Gate 0, builds.
 !docs/mobile/
+# Briefs graphiques destinés au graphiste (lot 100F : icône mobile, mascotte).
+!docs/design/
+# Matrice CIL donnée par donnée (lot 111U), spécification de recette versionnée.
+!docs/cil/
 
 *.tsbuildinfo
 .orchids
@@ -32,8 +36,3 @@ coverage
 
 # VS Code Local History
 .history/
-
-google-services.json
-GoogleService-Info.plist
-*.jks
-*.p8

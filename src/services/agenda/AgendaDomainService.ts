@@ -60,7 +60,13 @@ interface AgendaDataConflictRef {
 }
 
 /**
- * computeEffectiveStatus
+ * computeEffectiveStatus — CALCUL CANONIQUE du statut effectif (lot 111R :
+ * seul calcul, utilisé par l'Agenda — liste, tiroir, accueil —, la Timeline
+ * du bien — groupes et membres, deux modes —, le suivi, l'équipement,
+ * l'export de recette). Ordre : statut manuel ; date (absente ou future :
+ * à venir) ; preuve de réalisation valide (`completionProven`, lue par
+ * `completion-proof.ts`) ; nature (fait historique : à confirmer ;
+ * échéance : date échue).
  * Algorithm per plan §0.2
  *
  * Lot 47B : un fait HISTORICAL passé n'est jamais « en retard ». Lot 53
@@ -69,14 +75,43 @@ interface AgendaDataConflictRef {
  * Règle partagée : `agenda-historical.ts`.
  */
 export function computeEffectiveStatus(item: AgendaItemRaw, now: Date = new Date()): EffectiveStatus {
-  if (item.manualStatus !== null && item.manualStatus !== undefined && item.manualStatus !== ('' as ManualStatus)) {
-    return item.manualStatus as EffectiveStatus;
-  }
+  // Lot 111R : statut manuel normalisé (espaces, chaîne vide = aucun statut).
+  const manuel = normalizeManualStatus(item.manualStatus);
+  if (manuel) return manuel;
   const passee = agendaDatePassed(item, now);
   if (passee === null) return 'a_venir';
   if (!passee) return 'a_venir';
   if (item.completionProven === true) return 'realise';
   return isPastHistoricalUnconfirmed(item, now) ? 'a_confirmer' : 'en_retard';
+}
+
+/** Statut manuel reconnu (`realise` | `annule`), sinon null (aucun statut). Pure. */
+export function normalizeManualStatus(v: string | null | undefined): ManualStatus {
+  const t = typeof v === 'string' ? v.trim() : '';
+  return t === 'realise' || t === 'annule' ? t : null;
+}
+
+/**
+ * Lot 111R — indicateurs d'affichage DÉRIVÉS du statut effectif (jamais
+ * recalculés à part) : Timeline (lot 84C), groupes et membres, fiche du bien.
+ */
+export interface EffectiveStatusFlags {
+  isDone: boolean;
+  isOverdue: boolean;
+  toConfirm: boolean;
+}
+export function effectiveStatusFlags(s: EffectiveStatus): EffectiveStatusFlags {
+  return { isDone: s === 'realise', isOverdue: s === 'en_retard', toConfirm: s === 'a_confirmer' };
+}
+
+/**
+ * Lot 111R — date de référence d'une lecture : instant fourni, sinon début
+ * de la journée `today` (AAAA-MM-JJ, heure locale du serveur) — un élément
+ * daté de `today` sans heure n'est donc pas encore passé (règle historique de
+ * la Timeline, identique à `agendaDatePassed`).
+ */
+export function referenceInstant(today: string, now?: Date | null): Date {
+  return now ?? new Date(`${today}T00:00:00`);
 }
 
 /**

@@ -30,7 +30,7 @@ import { computeTco, nonRealizedComponentIds, type TcoAssetPrice, type TcoEquipm
 import { readUsageAssignments, readUsageBudgets } from './usage-budgets.service';
 import type { TcoFinancingDetails } from './financing';
 import { presumedDuplicateComponents, unjustifiedComponent, type ComponentProvenance } from './fact-identity';
-import { TCO_STABLE_SOURCE_KINDS, type TcoUserDecision } from './user-decisions';
+import { TCO_COUNTING_DECISIONS, TCO_STABLE_SOURCE_KINDS, type TcoUserDecision } from './user-decisions';
 import { civilDateParis, type LedgerComponent } from '../finance/engine';
 import { operationCoverage, type EconomicDocumentInput, type EconomicHint } from '../finance/economic-lines';
 import { readCanonicalValue, type AssetRowJson } from '@/services/canonical/asset-state/canonical-asset-view';
@@ -254,8 +254,9 @@ const CITED_MAX = 200;
 // Lot 80A : + retrait décidé par l'utilisateur (USER_EXCLUDED) — même effet sur T2 que sur le TCO du bien.
 // Lot 81D : + dépense non réalisée (prévue sans paiement daté et justifié, datée après la date de référence).
 // Lot 108A : + même achat confirmé représenté par une autre source (SAME_FACT_CROSS_SOURCE) — T2 ne le recompte pas.
-const MOTIFS_78B_COMPOSANTE: ReadonlySet<string> = new Set(['SAME_FACT_OTHER_DOCUMENT', 'NOT_OWNERSHIP_COST', 'SOURCE_WITHDRAWN', 'COUNTED_FOR_OTHER_ASSET', 'USER_EXCLUDED', 'NOT_REALIZED', 'FUTURE_DATED', 'SAME_FACT_CROSS_SOURCE']);
-const MOTIFS_78B_DOCUMENT: ReadonlySet<string> = new Set(['SAME_FACT_OTHER_DOCUMENT', 'NOT_OWNERSHIP_COST', 'USER_EXCLUDED', 'FUTURE_DATED']);
+// Lot 111V : + même fait confirmé par l'utilisateur (USER_SAME_FACT) — compté une seule fois, par T2 aussi.
+const MOTIFS_78B_COMPOSANTE: ReadonlySet<string> = new Set(['SAME_FACT_OTHER_DOCUMENT', 'NOT_OWNERSHIP_COST', 'SOURCE_WITHDRAWN', 'COUNTED_FOR_OTHER_ASSET', 'USER_EXCLUDED', 'NOT_REALIZED', 'FUTURE_DATED', 'SAME_FACT_CROSS_SOURCE', 'USER_SAME_FACT']);
+const MOTIFS_78B_DOCUMENT: ReadonlySet<string> = new Set(['SAME_FACT_OTHER_DOCUMENT', 'NOT_OWNERSHIP_COST', 'USER_EXCLUDED', 'FUTURE_DATED', 'USER_SAME_FACT']);
 
 /** Lot 80A : dépense ajoutée au TCO du bien par l'utilisateur (T2 la compte si ses propres règles ne la comptent pas). */
 interface T2UserAddedExpense {
@@ -301,7 +302,8 @@ export async function t2CostExclusions(
     const t = await readAssetTco(accountId, assetIds[0], { runner: r, today });
     // Lot 80A : dépenses AJOUTÉES par l'utilisateur au TCO de ce bien (décision prioritaire) — T2 les compte aussi.
     for (const l of t.lines) {
-      if (!l.userDecision?.applied || l.userDecision.decision !== 'INCLUDE' || l.includedCents <= 0) continue;
+      // Lot 111V : de même pour « dépenses distinctes » et « nature confirmée » (décisions qui comptent la ligne).
+      if (!l.userDecision?.applied || !TCO_COUNTING_DECISIONS.has(l.userDecision.decision) || l.includedCents <= 0) continue;
       userAdded.push({
         source: l.source, lineId: l.id, operationId: l.operationId, componentId: l.source === 'OPERATION' && l.id.startsWith('c:') ? Number(l.id.slice(2)) : null,
         fileId: l.fileId, eurCents: l.includedCents, date: l.date, label: l.label, automaticReason: l.userDecision.automaticReason,
@@ -889,11 +891,26 @@ async function tableDecisionsPresente(r: Runner): Promise<boolean> {
 async function readTcoLineDecisions(r: Runner, accountId: number, assetId: number): Promise<TcoUserDecision[]> {
   if (!(await tableDecisionsPresente(r))) return [];
   const x = await rows(r, sql`
-    SELECT d.line_key, d.decision, to_char(d.decided_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"') AS decided_at, d.decided_by
+    SELECT d.line_key, d.decision, to_char(d.decided_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"') AS decided_at, d.decided_by,
+           -- Lot 111V : colonnes d'arbitrage (migration 1320) lues sans dépendre de leur présence (déploiement en cours).
+           to_jsonb(d) - 'label' AS j
       FROM asset_cost_line_decisions d JOIN assets a ON a.id = d.asset_id AND a.account_id = d.account_id
      WHERE d.account_id = ${accountId} AND d.asset_id = ${assetId}
      ORDER BY d.decided_at DESC, d.id DESC LIMIT 5000`);
   return x
-    .filter((d) => d.decision === 'INCLUDE' || d.decision === 'EXCLUDE')
-    .map((d) => ({ key: String(d.line_key), decision: d.decision as TcoUserDecision['decision'], decidedAt: String(d.decided_at), decidedByUserId: d.decided_by == null ? null : Number(d.decided_by) }));
+    .filter((d) => TCO_DECISION_VALUES.has(String(d.decision)))
+    .map((d) => {
+      const j = (d.j && typeof d.j === 'object' ? d.j : {}) as Record<string, unknown>;
+      const lies = Array.isArray(j.related_line_keys) ? j.related_line_keys.map(String).filter(Boolean) : [];
+      return {
+        key: String(d.line_key), decision: d.decision as TcoUserDecision['decision'], decidedAt: String(d.decided_at), decidedByUserId: d.decided_by == null ? null : Number(d.decided_by),
+        ...(lies.length ? { relatedKeys: lies } : {}),
+        ...(typeof j.requalified_category === 'string' ? { requalifiedCategory: j.requalified_category as TcoUserDecision['requalifiedCategory'] } : {}),
+        ...(typeof j.automatic_status === 'string' ? { basisStatus: j.automatic_status as TcoUserDecision['basisStatus'] } : {}),
+        ...(typeof j.automatic_reason === 'string' ? { basisReason: j.automatic_reason } : {}),
+      };
+    });
 }
+
+/** Décisions lues (lot 80A + arbitrages 111V) ; toute autre valeur est ignorée (jamais appliquée). */
+const TCO_DECISION_VALUES: ReadonlySet<string> = new Set(['INCLUDE', 'EXCLUDE', 'CONFIRM_EXCLUSION', 'SAME_FACT', 'DISTINCT_FACTS', 'REQUALIFY']);

@@ -109,16 +109,20 @@ describe('L108B-U-ROLES — rôles des montants (lot 107, `amount-roles`)', () =
 });
 
 describe('L108B-U-VIEW — état présenté et alerte', () => {
-  it('pas encore examiné / en cours / reprise technique → « en cours » ; échecs réels → à confirmer / introuvable', () => {
-    expect(viewStateOf(null, LIMITS)).toBe('IN_PROGRESS');
-    expect(viewStateOf({ status: 'T1_PENDING', technicalFailures: 0 }, LIMITS)).toBe('IN_PROGRESS');
-    expect(viewStateOf({ status: 'TECHNICAL_FAILURE', technicalFailures: 1 }, LIMITS)).toBe('IN_PROGRESS');
-    expect(viewStateOf({ status: 'TECHNICAL_FAILURE', technicalFailures: LIMITS.maxTechnicalFailures }, LIMITS)).toBe('TO_CONFIRM');
-    expect(viewStateOf({ status: 'TO_CONFIRM', technicalFailures: 0 }, LIMITS)).toBe('TO_CONFIRM');
-    expect(viewStateOf({ status: 'NOT_FOUND', technicalFailures: 0 }, LIMITS)).toBe('NOT_FOUND');
+  // Lot 111V (ticket « TCO — anomalies corrigeables » §D, décision du ticket) : plus d'« en cours » par défaut —
+  // état issu de la persistance ET de la file réelle (voir L111V-U-REC-03).
+  it('pas encore examiné → vérification à venir ; reprise technique → nouvelle tentative ; plafond → indisponible ; échecs réels → à confirmer / introuvable', () => {
+    const e = (r: Parameters<typeof viewStateOf>[0]) => viewStateOf(r, LIMITS).state;
+    expect(e(null)).toBe('WAITING');
+    expect(e({ status: 'T1_PENDING', technicalFailures: 0 })).toBe('WAITING');
+    expect(viewStateOf({ status: 'T1_PENDING', technicalFailures: 0 }, LIMITS, { status: 'RUNNING', availableAt: null }).state).toBe('READING');
+    expect(e({ status: 'TECHNICAL_FAILURE', technicalFailures: 1 })).toBe('RETRY_SCHEDULED');
+    expect(e({ status: 'TECHNICAL_FAILURE', technicalFailures: LIMITS.maxTechnicalFailures })).toBe('TECHNICAL_FAILURE');
+    expect(e({ status: 'TO_CONFIRM', technicalFailures: 0 })).toBe('TO_CONFIRM');
+    expect(e({ status: 'NOT_FOUND', technicalFailures: 0 })).toBe('NOT_FOUND');
   });
   it('alerte « montant illisible » seulement après échec réel ; sinon avertissement neutre', () => {
-    const v = (inProgress: number, toConfirm: number, notFound: number) => ({ items: [{ fileId: 1, title: 'F', state: 'IN_PROGRESS' as const }], inProgress, toConfirm, notFound });
+    const v = (inProgress: number, toConfirm: number, notFound: number) => ({ items: [{ fileId: 1, title: 'F', state: 'READING' as const }], inProgress, toConfirm, notFound });
     expect(warningsAfterRecovery(['AMOUNTS_UNKNOWN', 'USER_DECISIONS'], v(1, 0, 0))).toEqual(['USER_DECISIONS', 'AMOUNTS_RECOVERY_PENDING']);
     expect(warningsAfterRecovery(['AMOUNTS_UNKNOWN'], v(0, 0, 1))).toEqual(['AMOUNTS_UNKNOWN']);
     expect(warningsAfterRecovery(['AMOUNTS_UNKNOWN'], v(1, 1, 0))).toEqual(['AMOUNTS_UNKNOWN', 'AMOUNTS_RECOVERY_PENDING']);

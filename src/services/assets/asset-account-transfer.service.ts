@@ -154,6 +154,8 @@ export const ASSET_SCOPED_TABLES: readonly string[] = [
   't3_decision_memory',
   // Lot 108C : classements « dépense d'usage » du bien (clés portées par ses justificatifs) — suivent le bien.
   'asset_usage_line_assignments',
+  // Lot 111U : journal de la projection documentaire CIL du bien (sources, cibles, abstentions) — suit le bien.
+  'cil_projection_journal',
 ];
 
 /**

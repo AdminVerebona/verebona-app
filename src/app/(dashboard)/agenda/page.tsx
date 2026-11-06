@@ -1,6 +1,7 @@
 "use client"
 
 import { useState, useEffect, useId, useMemo, Suspense } from 'react';
+import { subscribeAgendaStatusSources } from '@/lib/agenda/agenda-status-events';
 import { useRouter, useSearchParams } from 'next/navigation';
 import { useBreadcrumb } from '@/contexts/BreadcrumbContext';
 import { Button } from '@/components/ui/button';
@@ -225,11 +226,8 @@ function AgendaPageInner() {
   };
 
   // Refresh when any agenda mutation happens elsewhere (e.g. from DocumentDrawer)
-  useEffect(() => {
-    const handler = () => setRefreshKey(k => k + 1);
-    window.addEventListener('agenda-mutated', handler);
-    return () => window.removeEventListener('agenda-mutated', handler);
-  }, []);
+  // Lot 111R : aussi quand une preuve de réalisation peut changer (document supprimé, analyse terminée).
+  useEffect(() => subscribeAgendaStatusSources(() => setRefreshKey(k => k + 1)), []);
 
   const equipmentModel = buildEquipmentFilterModel(equipmentFacet, equipment, assetIds.length);
   const roomModel = buildRoomFilterModel(roomFacet, piece, assetIds.length);

@@ -26,17 +26,21 @@ export interface TcoDiagnosticResponse {
 }
 
 const NATURE_BO: Record<string, string> = { ANOMALY: 'Anomalie', COVERAGE: 'Couverture', INFORMATION: 'Information' };
+/** Lot 111V : statut d'un diagnostic en français (jamais le code brut ; code inconnu : affiché tel quel). */
+export const STATUT_DIAGNOSTIC_BO: Readonly<Record<string, string>> = {
+  OPEN: 'Ouvert', IN_PROGRESS: 'Contrôle en attente', INFORMATIONAL: 'Information', DECIDED: 'Choix confirmé par l’utilisateur',
+};
 
 /** Lot 109C : code stable, nature, statut, nombre réel d'occurrences et sources (identifiants) de chaque diagnostic. */
 function DiagnosticsBo({ d }: { d: TcoDiagnostics }) {
   if (!d.items.length) return <p className="text-xs text-muted-foreground" data-bo-tco-diagnostics="0">Aucun diagnostic (aucune anomalie détectée — ne signifie pas que toutes les dépenses possibles sont connues).</p>;
   return (
     <div className="rounded-lg border p-3 text-xs space-y-1.5" data-bo-tco-diagnostics={d.items.length}>
-      <p className="font-medium text-sm">Diagnostics ({d.open.families} ouvert(s), {d.inProgress} en cours, {d.information} information(s))</p>
+      <p className="font-medium text-sm">Diagnostics ({d.open.families} ouvert(s), {d.inProgress} en cours, {d.information} information(s){d.decided ? `, ${d.decided} choix confirmé(s)` : ''})</p>
       <ul className="space-y-1">
         {d.items.map((x) => (
           <li key={x.code} className="break-words" data-bo-tco-diagnostic={x.code} data-bo-tco-diagnostic-nature={x.nature}>
-            <span className="font-mono">{x.code}</span> · {NATURE_BO[x.nature]} · {x.status} · {x.count ?? 'nombre inconnu'} occurrence(s){x.traced ? '' : ' · sources non retrouvées'}
+            <span className="font-mono">{x.code}</span> · {NATURE_BO[x.nature]} · <span data-bo-tco-diagnostic-status={x.status}>{STATUT_DIAGNOSTIC_BO[x.status] ?? x.status}</span> · {x.count ?? 'nombre inconnu'} occurrence(s){x.traced ? '' : ' · sources non retrouvées'}
             {x.amountCents != null ? ` · ${eur(x.amountCents)}` : ''}
             {x.sources.length > 0 && (
               <span className="block text-muted-foreground">

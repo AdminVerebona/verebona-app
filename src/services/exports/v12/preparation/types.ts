@@ -139,6 +139,11 @@ export interface CilBlockDto {
   neutralizedResolution?: 'not_applicable' | null;
   /** Information à afficher sous le bloc ; `null` sinon. */
   notice?: string | null;
+  /**
+   * Lot 111U : données applicables encore manquantes ou à confirmer (état
+   * CIL commun, même liste que l'onglet Informations) ; vide sinon.
+   */
+  cilMissing?: string[];
 }
 
 export interface PreparationDto {

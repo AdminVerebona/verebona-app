@@ -147,7 +147,8 @@ describe('L107G-U05 inventaire : chaque table du schéma → section et fichier 
 describe('L107G-S01 aucune génération dans une requête HTTP ; liste légère ; migration additive', () => {
   it('la page BO demande un travail durable (POST, clé d’idempotence) et ne génère plus rien dans une requête', () => {
     const page = read('src/app/admin/diagnostics/page.tsx');
-    expect(page).toContain("fetch('/api/admin/diagnostics/jobs'");
+    // Lot 111Q : la demande passe par le client commun (renouvellement du jeton d'accès), plus par un fetch nu.
+    expect(page).toContain("boPost<Record<string, any>>('/api/admin/diagnostics/jobs'");
     expect(page).toContain("'Idempotency-Key'");
     expect(page).not.toMatch(/fetch\(`\/api\/admin\/diagnostics\?/);
     expect(page).not.toMatch(/\/api\/admin\/diagnostics\?\$\{[^}]*\}&format=zip/);

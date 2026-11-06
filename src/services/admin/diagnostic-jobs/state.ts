@@ -135,7 +135,35 @@ export function diagJobSettings(env: Record<string, string | undefined> = proces
     stallAlertSeconds: envInt(env, 'DIAG_JOB_STALL_ALERT_SECONDS', 300, 60),
     /** Lot 111C : lecture de l'annulation pendant une génération (ms). */
     cancelPollMs: envInt(env, 'DIAG_JOB_CANCEL_POLL_MS', 3_000, 500),
+    /**
+     * Lot 111Q : places RÉSERVÉES aux diagnostics CIBLÉS (compte, utilisateur,
+     * bien, document, Opération), en plus de DIAG_JOB_GLOBAL_CONCURRENCY —
+     * un diagnostic global en cours (long) ne fait plus attendre un ciblé.
+     * 0 : comportement du lot 111C (une seule voie commune).
+     */
+    targetedConcurrency: envInt(env, 'DIAG_JOB_TARGETED_CONCURRENCY', 1, 0),
   };
+}
+
+/**
+ * Lot 111Q — voie d'exécution d'un worker : `main` (voie commune : ciblés
+ * d'abord, puis le global le plus récent) ; `targeted` (voie réservée : ciblés
+ * seulement, ouverte quand la voie commune est occupée, admission mémoire
+ * stricte — jamais de départ forcé).
+ */
+export type DiagLane = 'main' | 'targeted';
+
+/**
+ * Lot 111Q — capacité (pure, toutes instances) : un diagnostic global démarre
+ * si aucun global ne tient de bail ET si la voie commune a une place ; un
+ * ciblé démarre tant que voie commune + voie réservée ne sont pas pleines.
+ * Un diagnostic global (même annulé ou en cours d'arrêt) n'occupe jamais les
+ * places réservées aux ciblés.
+ */
+export function laneCapacity(running: { total: number; global: number }, s: { globalConcurrency: number; targetedConcurrency: number }): { globalAllowed: boolean; targetedAllowed: boolean } {
+  const G = Math.max(1, s.globalConcurrency);
+  const T = Math.max(0, s.targetedConcurrency);
+  return { globalAllowed: running.global === 0 && running.total < G, targetedAllowed: running.total < G + T };
 }
 
 /**

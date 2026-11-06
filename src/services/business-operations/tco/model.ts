@@ -1313,9 +1313,10 @@ export function computeTco(input: TcoInput): TcoResult {
   });
 
   // Lot 80A : une ligne que l'utilisateur a lui-même ajoutée au TCO ne rend plus le total incomplet pour son motif d'origine.
-  const ajouteeParUtilisateur = new Set(toutesLignes.filter((l) => l.userDecision?.applied && l.userDecision.decision === 'INCLUDE').map((l) => l.id));
+  // Lot 111V : de même pour un arbitrage appliqué (exclusion confirmée, nature confirmée, même fait / faits distincts).
+  const ajouteeParUtilisateur = new Set(toutesLignes.filter((l) => l.userDecision?.applied && (l.userDecision.decision !== 'EXCLUDE')).map((l) => l.id));
   if (drafts.some((d) => d.status === 'NOT_QUALIFIED' && d.reason !== 'AMOUNT_UNKNOWN' && !ajouteeParUtilisateur.has(d.lineId))) warnings.add('DOCUMENTS_NOT_QUALIFIED');
-  if (drafts.some((d) => d.reason === 'AMOUNT_UNKNOWN')) warnings.add('AMOUNTS_UNKNOWN');
+  if (drafts.some((d) => d.reason === 'AMOUNT_UNKNOWN' && !ajouteeParUtilisateur.has(d.lineId))) warnings.add('AMOUNTS_UNKNOWN');
   if (achatsIncertains.size) warnings.add('UNCERTAIN_MATCHES');
   if (drafts.some((d) => d.status === 'UNCONFIRMED_ASSET' && !ajouteeParUtilisateur.has(d.lineId))) warnings.add('UNCONFIRMED_ASSET_EXPENSES');
 

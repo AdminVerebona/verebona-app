@@ -129,6 +129,8 @@ export const DIAG_TABLE_COVERAGE: Readonly<Record<string, DiagTableCoverage>> = 
   asset_transmissions: C('etat-metier'),
   asset_usage_budgets: C('etat-metier'),
   cil_block_resolutions: C('etat-metier', { filter: `t.asset_id IN ${ASSETS}` }),
+  // Lot 111U : journal de la projection documentaire CIL (faits → matériaux, équipements, travaux ; abstentions).
+  cil_projection_journal: C('etat-metier', { filter: `t.asset_id IN ${ASSETS}` }),
   energy_materials: C('etat-metier', { filter: `t.asset_id IN ${ASSETS}` }),
   energy_works: C('etat-metier', { filter: `t.asset_id IN ${ASSETS}` }),
   suppliers: C('etat-metier'),

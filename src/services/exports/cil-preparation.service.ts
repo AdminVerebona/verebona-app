@@ -9,14 +9,13 @@
  */
 
 import { db } from '@/db';
-import {
-  energyMaterials, energyWorks,
-  cilBlockResolutions, assetFiles, equipments, equipmentCilSpecs,
-} from '@/db/schema';
+import { assets, equipments, equipmentCilSpecs } from '@/db/schema';
 import { eq, and, isNull } from 'drizzle-orm';
-import { documentInAssetsCondition } from '@/services/documents/asset-document-scope';
 import { classifyCilEnergyEquipment, type CilEnergyEquipmentInput } from '@/lib/cil/energy-equipment';
 import { isCilBlockingRuleBlock } from '@/lib/exports/cil-blocking';
+import { evaluateCilState, type CilStateInput } from '@/services/cil/state/evaluate';
+import type { CilItemStatus } from '@/lib/cil/cil-catalog';
+import type { CilState } from '@/lib/cil/cil-state-types';
 
 type BlockStatus = 'complete' | 'not_applicable' | 'missing' | 'invalid' | 'unknown';
 
@@ -41,6 +40,10 @@ export interface CilBlock {
   neutralizedResolution?: 'not_applicable';
   /** Information affichée à l'utilisateur (préparation) ; absente sinon. */
   notice?: string;
+  /** Lot 111U : statut granulaire du bloc (service commun d'état CIL). */
+  cilStatus?: CilItemStatus;
+  /** Lot 111U : données applicables réellement manquantes ou à confirmer (libellés). */
+  cilMissing?: string[];
 }
 
 export interface CilReadiness {
@@ -58,12 +61,18 @@ export interface CilReadiness {
    * état antérieur au lot 69 : le mappeur réapplique la même règle.
    */
   energyEquipmentIds?: number[];
+  /**
+   * Lot 111U : état CIL granulaire (même projection que l'onglet
+   * Informations) — valeurs, sources, statuts par donnée. Absent dans un
+   * instantané antérieur : le mappeur garde sa lecture historique.
+   */
+  state?: CilState;
 }
 
 /** Code et message renvoyés quand la génération d'un CIL est refusée. */
 export const CIL_ACTION_REQUIRED_CODE = 'CIL_ACTION_REQUIRED';
 
-type CilAsset = { id: number; address: string | null; postalCode: string | null; city: string | null };
+type CilAsset = { id: number; accountId?: number | null; address?: string | null; postalCode?: string | null; city?: string | null };
 
 /** Ligne d'équipement lue pour B6 (colonnes structurées seulement). */
 export type CilEquipmentRow = CilEnergyEquipmentInput & { id: number };
@@ -141,48 +150,47 @@ export function isBlockBlocking(b: CilBlock): boolean {
   return b.blocking && (b.status === 'missing' || b.status === 'invalid' || b.status === 'unknown');
 }
 
+/**
+ * Lot 111U — état de préparation DÉRIVÉ du service commun d'état CIL
+ * (`services/cil/state`) : mêmes entrées (chargées une fois), même
+ * classement documentaire (référentiel V2 `documentTypeCode` puis codes V1 et
+ * rubriques), même périmètre de rattachement (colonnes et liens N-N ACTIFS,
+ * documents ouverts seulement — un document supprimé ne compte plus).
+ * Les statuts de BLOC gardent la règle produit validée (présence ; B6 lot
+ * 75A ; blocage CIL-RULE-002) ; le détail granulaire (renseigné / partiel /
+ * manquant / à confirmer / non applicable) est porté par `state` et
+ * `cilStatus` / `cilMissing` sur chaque bloc.
+ */
 export async function evaluateCilReadiness(asset: CilAsset): Promise<CilReadiness> {
-  const assetId = asset.id;
+  const accountId = asset.accountId ?? await (async () => {
+    const [r] = await db.select({ accountId: assets.accountId }).from(assets).where(eq(assets.id, asset.id)).limit(1);
+    return r?.accountId ?? null;
+  })();
+  if (accountId == null) throw new Error('CIL_ASSET_NOT_FOUND');
+  const { loadCilStateInput } = await import('@/services/cil/state/load');
+  const input = await loadCilStateInput({ id: asset.id, accountId });
+  if (!input) throw new Error('CIL_ASSET_NOT_FOUND');
+  return readinessFromCilInput(input);
+}
 
-  const materials = await db.select().from(energyMaterials).where(eq(energyMaterials.assetId, assetId));
-  const works = await db.select().from(energyWorks).where(eq(energyWorks.assetId, assetId));
-  const resolutions = await db.select().from(cilBlockResolutions).where(eq(cilBlockResolutions.assetId, assetId));
-  const resolutionMap = new Map(resolutions.map(r => [r.blockId, r.resolution]));
-
-  // Documents pour B3/B4/B8
-  const docs = await db
-    .select({
-      id: assetFiles.id,
-      retainedFunctionCode: assetFiles.retainedFunctionCode,
-      documentType: assetFiles.documentType,
-      cilRubricCodes: assetFiles.cilRubricCodes,
-    })
-    .from(assetFiles)
-    // Lot 32C (PO 9) : un document lié au bien (relation N-N) compte aussi.
-    .where(and(documentInAssetsCondition([assetId]), eq(assetFiles.uploadStatus, 'COMPLETED')));
-
-  // Équipements pour B6 : données structurées (règle partagée), équipements
-  // archivés exclus comme dans l'export (avant le lot 69 : tout équipement
-  // existant, archivé compris, rendait B6 « renseigné »).
-  const equips = await loadCilB6Equipments(assetId);
-
-  const hasDoc = (code: string) =>
-    docs.some(d =>
-      d.retainedFunctionCode === code ||
-      d.documentType === code ||
-      (typeof d.cilRubricCodes === 'string' && (() => { try { return JSON.parse(d.cilRubricCodes as string); } catch { return []; } })().includes(code)) ||
-      (Array.isArray(d.cilRubricCodes) && (d.cilRubricCodes as string[]).includes(code))
-    );
-
+/** Pure : blocs B1, B3-B9 de la préparation + état granulaire, depuis les entrées communes. */
+export function readinessFromCilInput(input: CilStateInput): CilReadiness {
+  const state = evaluateCilState(input);
+  const resolutionMap = new Map(input.resolutions.map((r) => [r.blockId, r.resolution]));
+  const item = (id: string) => state.blocks.flatMap((b) => b.items).find((i) => i.id === id)!;
+  const detail = (id: string): Pick<CilBlock, 'cilStatus' | 'cilMissing'> => {
+    const b = state.blocks.find((x) => x.id === id)!;
+    return { cilStatus: b.status, cilMissing: b.items.filter((i) => i.counted).flatMap((i) => (i.missing.length ? i.missing : i.status === 'a_confirmer' ? [`${i.label} (à confirmer)`] : [])) };
+  };
   const blocks: CilBlock[] = [];
 
   // B1 — Identification
   {
     const missingItems: MissingItem[] = [];
-    if (!asset.address) missingItems.push({ id: 'address', label: 'Adresse', target: { type: 'details', filter: 'address' }, actionLabel: 'Renseigner l\'adresse' });
-    if (!asset.postalCode) missingItems.push({ id: 'postal_code', label: 'Code postal', target: { type: 'details', filter: 'address' }, actionLabel: 'Renseigner le code postal' });
-    if (!asset.city) missingItems.push({ id: 'city', label: 'Ville', target: { type: 'details', filter: 'address' }, actionLabel: 'Renseigner la ville' });
-    blocks.push({ id: 'B1', label: 'Identification du logement', status: missingItems.length === 0 ? 'complete' : 'missing', blocking: isCilBlockingRuleBlock('B1'), missingItems });
+    if (item('B1.address').status === 'manquant') missingItems.push({ id: 'address', label: 'Adresse', target: { type: 'details', filter: 'address' }, actionLabel: 'Renseigner l\'adresse' });
+    if (item('B1.postalCode').status === 'manquant') missingItems.push({ id: 'postal_code', label: 'Code postal', target: { type: 'details', filter: 'address' }, actionLabel: 'Renseigner le code postal' });
+    if (item('B1.city').status === 'manquant') missingItems.push({ id: 'city', label: 'Ville', target: { type: 'details', filter: 'address' }, actionLabel: 'Renseigner la ville' });
+    blocks.push({ id: 'B1', label: 'Identification du logement', status: missingItems.length === 0 ? 'complete' : 'missing', blocking: isCilBlockingRuleBlock('B1'), missingItems, ...detail('B1') });
   }
 
   // B3 — Plans et coupes
@@ -191,27 +199,26 @@ export async function evaluateCilReadiness(asset: CilAsset): Promise<CilReadines
     const missingItems: MissingItem[] = [];
     let status: BlockStatus;
     if (res === 'not_applicable') status = 'not_applicable';
-    else if (hasDoc('PLAN_CONSTRUCTION')) status = 'complete';
+    else if (item('B3.plans').status === 'renseigne') status = 'complete';
     else {
       status = 'missing';
       missingItems.push({ id: 'plan_construction', label: 'Plans de construction / coupes', target: { type: 'documents', filter: 'PLAN_CONSTRUCTION' }, actionLabel: 'Ajouter les plans' });
     }
-    blocks.push({ id: 'B3', label: 'Plans et coupes', status, blocking: isCilBlockingRuleBlock('B3') && status === 'missing', missingItems });
+    blocks.push({ id: 'B3', label: 'Plans et coupes', status, blocking: isCilBlockingRuleBlock('B3') && status === 'missing', missingItems, ...detail('B3') });
   }
 
   // B4 — Réseaux
   {
     const res = resolutionMap.get('B4');
-    const networkCodes = ['RESEAU_EAU', 'RESEAU_ELECTRICITE', 'RESEAU_GAZ', 'RESEAU_AERATION'];
     const missingItems: MissingItem[] = [];
     let status: BlockStatus;
     if (res === 'not_applicable') status = 'not_applicable';
-    else if (networkCodes.some(c => hasDoc(c))) status = 'complete';
+    else if (['B4.eau', 'B4.electricite', 'B4.gaz', 'B4.aeration'].some((id) => item(id).status === 'renseigne')) status = 'complete';
     else {
       status = 'unknown';
       missingItems.push({ id: 'reseau', label: 'Plans / schémas réseaux (eau, électricité, gaz, aération)', target: { type: 'documents', filter: 'reseau' }, actionLabel: 'Ajouter les plans réseaux' });
     }
-    blocks.push({ id: 'B4', label: 'Réseaux', status, blocking: false, missingItems });
+    blocks.push({ id: 'B4', label: 'Réseaux', status, blocking: false, missingItems, ...detail('B4') });
   }
 
   // B5 — Matériaux énergétiques
@@ -220,26 +227,27 @@ export async function evaluateCilReadiness(asset: CilAsset): Promise<CilReadines
     const missingItems: MissingItem[] = [];
     let status: BlockStatus;
     if (res === 'not_applicable') status = 'not_applicable';
-    else if (materials.length > 0) status = 'complete';
+    else if (input.materials.length > 0) status = 'complete';
     else {
       status = 'unknown';
       missingItems.push({ id: 'energy_materials', label: 'Matériaux d\'isolation thermique', target: { type: 'energy_materials' }, actionLabel: 'Ajouter les matériaux' });
     }
-    blocks.push({ id: 'B5', label: 'Matériaux à incidence énergétique', status, blocking: false, missingItems });
+    blocks.push({ id: 'B5', label: 'Matériaux à incidence énergétique', status, blocking: false, missingItems, ...detail('B5') });
   }
 
   // B6 — Équipements énergétiques (règle partagée avec le mappeur et le PDF)
-  const b6 = evaluateCilB6(equips, resolutionMap.get('B6'));
-  blocks.push(b6.block);
+  const b6 = evaluateCilB6(input.equipments, resolutionMap.get('B6'));
+  blocks.push({ ...b6.block, ...detail('B6') });
 
-  // B7 — Travaux de rénovation énergétique
+  // B7 — Travaux de rénovation énergétique (réalisés seulement : une recommandation n'en est jamais un)
   {
     const res = resolutionMap.get('B7');
     const missingItems: MissingItem[] = [];
     let status: BlockStatus;
     if (res === 'not_applicable') status = 'not_applicable';
-    else if (works.length > 0) {
-      if (works.some(w => !w.completedAt)) {
+    // Lot 111U : travaux saisis ET Opérations réalisées prouvées (même liste que l'état commun et le PDF).
+    else if ((state.works ?? []).length > 0) {
+      if ((state.works ?? []).some((w) => !w.date)) {
         status = 'invalid';
         missingItems.push({ id: 'work_date', label: 'Date de réalisation manquante sur certains travaux', target: { type: 'energy_works' }, actionLabel: 'Compléter les travaux' });
       } else {
@@ -249,19 +257,19 @@ export async function evaluateCilReadiness(asset: CilAsset): Promise<CilReadines
       status = 'unknown';
       missingItems.push({ id: 'energy_works', label: 'Travaux de rénovation énergétique', target: { type: 'agenda' }, actionLabel: 'Ajouter des travaux' });
     }
-    blocks.push({ id: 'B7', label: 'Travaux de rénovation énergétique', status, blocking: false, missingItems });
+    blocks.push({ id: 'B7', label: 'Travaux de rénovation énergétique', status, blocking: false, missingItems, ...detail('B7') });
   }
 
-  // B8 — Documents de performance énergétique
+  // B8 — Documents de performance énergétique (la présence du DPE ne remplit que cette ligne)
   {
     const missingItems: MissingItem[] = [];
     let status: BlockStatus;
-    if (hasDoc('DPE')) status = 'complete';
+    if (item('B8.dpeDocument').status === 'renseigne') status = 'complete';
     else {
       status = 'missing';
       missingItems.push({ id: 'dpe_file', label: 'Diagnostic de performance énergétique (DPE)', target: { type: 'documents', filter: 'DPE' }, actionLabel: 'Ajouter un DPE' });
     }
-    blocks.push({ id: 'B8', label: 'Documents de performance énergétique', status, blocking: isCilBlockingRuleBlock('B8'), missingItems });
+    blocks.push({ id: 'B8', label: 'Documents de performance énergétique', status, blocking: isCilBlockingRuleBlock('B8'), missingItems, ...detail('B8') });
   }
 
   // B9 — Documents annexes
@@ -270,18 +278,22 @@ export async function evaluateCilReadiness(asset: CilAsset): Promise<CilReadines
     blocks.push({
       id: 'B9',
       label: 'Documents annexes',
-      status: res === 'not_applicable' ? 'not_applicable' : docs.length > 0 ? 'complete' : 'unknown',
+      status: res === 'not_applicable' ? 'not_applicable' : input.documents.length > 0 ? 'complete' : 'unknown',
       blocking: false,
       missingItems: [],
+      ...detail('B9'),
     });
   }
 
   // ── Statut global ─────────────────────────────────────────────────────────
+  // Lot 111U : un bloc « non applicable » sort du dénominateur SANS entrer au
+  // numérateur (l'ancien calcul le comptait comme résolu sur le total).
   const applicableBlocks = blocks.filter(b => b.status !== 'not_applicable');
+  const completeBlocks = applicableBlocks.filter(b => b.status === 'complete');
   const resolvedBlocks = blocks.filter(b => b.status === 'complete' || b.status === 'not_applicable');
   const percentage = applicableBlocks.length === 0
     ? 100
-    : Math.round((resolvedBlocks.length / blocks.length) * 100);
+    : Math.round((completeBlocks.length / applicableBlocks.length) * 100);
 
   const blockingBlocks = blocks.filter(isBlockBlocking);
 
@@ -296,5 +308,6 @@ export async function evaluateCilReadiness(asset: CilAsset): Promise<CilReadines
     blocks,
     blockingBlocks,
     energyEquipmentIds: b6.energyEquipmentIds,
+    state,
   };
 }

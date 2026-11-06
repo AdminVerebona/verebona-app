@@ -9,14 +9,21 @@
  *   · « Montant à confirmer » / « Montant introuvable » : après l'échec RÉEL
  *     de la récupération — document identifié, lien direct (tiroir document,
  *     où le montant se saisit) et action explicite.
+ * Lot 111V (§D) : états RÉELS (persistance + file `ai_job_queue`) — « En
+ * attente de prise en charge » (travail en file), « Lecture du montant en
+ * cours » (travail RUNNING seulement), « Nouvelle tentative prévue » (date),
+ * « Vérification automatique à venir » (aucun travail : rien n'est annoncé
+ * comme lancé). Les échecs réels restent dans « Points à vérifier ».
  * Jamais de carte « À traiter » : ce bloc est le seul endroit où la demande
  * apparaît. Desktop et mobile (cibles de 44 px), charte Sérénité (jetons).
  */
 import { Clock, FileQuestion } from 'lucide-react';
-import { AMOUNT_RECOVERY_VIEW_LABELS, type AmountRecoveryViewState, type TcoAmountRecoveryView } from '@/services/business-operations/tco/amount-recovery';
+import { AMOUNT_RECOVERY_PENDING_STATES, AMOUNT_RECOVERY_VIEW_LABELS, type AmountRecoveryViewState, type TcoAmountRecoveryView } from '@/services/business-operations/tco/amount-recovery';
 import { TcoJustificatif } from './tco-justificatif';
 
-const ORDRE: readonly AmountRecoveryViewState[] = ['NOT_FOUND', 'TO_CONFIRM', 'IN_PROGRESS'];
+const ORDRE: readonly AmountRecoveryViewState[] = ['TECHNICAL_FAILURE', 'NOT_FOUND', 'TO_CONFIRM', 'READING', 'QUEUED', 'RETRY_SCHEDULED', 'WAITING'];
+
+const jj = (d: string | null | undefined) => (d && /^\d{4}-\d{2}-\d{2}/.test(d) ? `${d.slice(8, 10)}/${d.slice(5, 7)}/${d.slice(0, 4)}` : null);
 
 export function TcoAmountRecoveryNotice({ recovery }: { recovery: TcoAmountRecoveryView | null | undefined }) {
   if (!recovery?.items.length) return null;
@@ -26,7 +33,7 @@ export function TcoAmountRecoveryNotice({ recovery }: { recovery: TcoAmountRecov
         const items = recovery.items.filter((i) => i.state === etat);
         if (!items.length) return null;
         const libelle = AMOUNT_RECOVERY_VIEW_LABELS[etat];
-        const enCours = etat === 'IN_PROGRESS';
+        const enCours = AMOUNT_RECOVERY_PENDING_STATES.has(etat);
         const Icone = enCours ? Clock : FileQuestion;
         return (
           <div
@@ -43,6 +50,11 @@ export function TcoAmountRecoveryNotice({ recovery }: { recovery: TcoAmountRecov
                 <li key={i.fileId} className="flex flex-wrap items-center gap-x-2 gap-y-0.5 min-w-0" data-tco-amount-recovery-file={i.fileId}>
                   <TcoJustificatif fileId={i.fileId} title={i.title} />
                   {libelle.action && <span className="text-xs text-muted-foreground">— {libelle.action}</span>}
+                  {i.nextAttemptAt && jj(i.nextAttemptAt) && (
+                    <span className="text-xs text-muted-foreground" data-tco-amount-recovery-next>
+                      {etat === 'RETRY_SCHEDULED' ? `— prochaine tentative à partir du ${jj(i.nextAttemptAt)}` : `— en file depuis le ${jj(i.nextAttemptAt)}`}
+                    </span>
+                  )}
                 </li>
               ))}
             </ul>

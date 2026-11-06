@@ -264,14 +264,17 @@ describe('53H — critères d’acceptation', () => {
     // commerciale », « référence » ; productDesignation « désignation
     // commerciale »), pluriels compris : 241 + 12 formulations. Aucune des
     // formulations du lot 53 ci-dessous n'est devenue déterministe.
-    expect(lignes).toHaveLength(253);
+    // Lot 111U (CIL B8) : SECOND ajout délibéré — champ canonique gesEmissions
+    // (« Émissions de gaz à effet de serre », lu par le mappeur CIL) : + 1 formulation.
+    expect(lignes).toHaveLength(254);
+    expect(lignes.filter((l) => /^gesEmissions:/.test(l))).toHaveLength(1);
     expect(lignes.filter((l) => /^(productSeries|productReference|productDesignation):/.test(l))).toHaveLength(12);
-    expect(createHash('sha256').update(lignes.filter((l) => !/^(productSeries|productReference|productDesignation):/.test(l)).join('\n')).digest('hex'))
+    expect(createHash('sha256').update(lignes.filter((l) => !/^(productSeries|productReference|productDesignation|gesEmissions):/.test(l)).join('\n')).digest('hex'))
       .toBe('9fd6c942c3d925ea2dfaa775dface57cebcd5be0e228f19134792d3377f275ea');
-    expect(createHash('sha256').update(lignes.join('\n')).digest('hex')).toBe('c81a3f7cb8cf7bd0a23f24a283724c59da2981b7b10d1cfc1d23f42bf5858e39');
+    expect(createHash('sha256').update(lignes.join('\n')).digest('hex')).toBe('45dc9336a72a8865711556755427aafe07bb6d30932700121d0196f86502e266');
     // FIELD_CATALOG transmis à UNDERSTAND (catalogue de capacités, DONNÉE du
-    // prompt) : il porte les trois propriétés du lot 101A ; texte du prompt non modifié.
-    expect(createHash('sha256').update(describeFieldCatalog()).digest('hex')).toBe('425836a0491444b53e98f3f3567de4cb375296c9965752cf8fae9f852836ffba');
+    // prompt) : il porte les trois propriétés du lot 101A et gesEmissions (lot 111U) ; texte du prompt non modifié.
+    expect(createHash('sha256').update(describeFieldCatalog()).digest('hex')).toBe('c522b3d1424c8a2cc73fad397520888f3f2974da5229120ddac74d3206405377');
     // Les formulations du ticket ne sont PAS devenues des règles déterministes.
     for (const m of ['km polo', 'moteur cupra', 'date polo', 'assurance maison']) expect(deterministicRequestedFacts(m)).toEqual([]);
     // La forme d'une demande reste décidée par les SEULS motifs du lot 52.

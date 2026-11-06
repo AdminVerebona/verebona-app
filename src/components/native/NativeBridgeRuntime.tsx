@@ -395,14 +395,12 @@ export default function NativeBridgeRuntime() {
   const locked = unlock.locked && status !== 'unauthenticated';
   const blocked = locked || commerce || envMismatch || updateRequired;
 
-  // ── Invitation notifications, prioritaire (lot 109G) ───────────────────
-  // Une seule invitation à la fois : tant que la décision push du compte est
-  // attendue ou que l'invitation est/a été présentée pendant ce lancement, la
-  // proposition biométrique attend le lancement suivant.
-  const [bioVisible, setBioVisible] = useState(false);
-  const push = usePushOnboarding(featureOn(features, 'push'), blocked, offline, bioVisible);
-  const offer = useBiometricOffer(features, blocked, push.holdBiometrics);
-  useEffect(() => { setBioVisible(offer.visible); }, [offer.visible]);
+  // ── Invitation notifications (lot 109G), APRÈS la biométrie (lot 111T) ──
+  // Une seule invitation à la fois : tant que l'étape biométrique n'est pas
+  // terminée (évaluation, fenêtre ou vérification native, transition), les
+  // notifications attendent ; elles suivent dans la même session.
+  const offer = useBiometricOffer(features, blocked);
+  const push = usePushOnboarding(featureOn(features, 'push'), blocked, offline, offer.holdsPush);
 
   // ── Rendu ───────────────────────────────────────────────────────────────
   if (commerce) {
@@ -485,8 +483,8 @@ export default function NativeBridgeRuntime() {
         <BiometricOfferCard type={offer.type} busy={offer.busy} onActivate={offer.activate} onLater={offer.later} />
       )}
 
-      {/* Lot 109G : une seule invitation à la fois, notifications prioritaires
-          (jamais superposée à la proposition biométrique). */}
+      {/* Lot 111T : une seule invitation à la fois, biométrie d'abord puis
+          notifications (deux fenêtres centrées, jamais superposées). */}
       {push.visible && !offer.visible && (
         <PushOnboardingCard busy={push.busy} onAllow={push.allow} onLater={push.later} />
       )}

@@ -73,6 +73,10 @@ import { tcoCommercialAdjustmentsCheck } from './checks/tco-commercial-adjustmen
 import { t1PdfCoverageCheck } from './checks/t1-pdf-coverage';
 // Lot 111I : rattachements multiples d'un document reflétés par la source canonique (fin de registre).
 import { documentTargetsCheck } from './checks/document-targets';
+// Lot 111S : acquisition documentaire établie sans Opération active ni historique « Achat » (fin de registre).
+import { operationsAcquisitionDocumentCheck } from './checks/operations-acquisition-document';
+// Lot 111U : faits documentaires CIL (DPE…) projetés dans les structures spécialisées (fin de registre ; après 111S à la fusion).
+import { cilDocumentProjectionCheck } from './checks/cil-document-projection';
 
 export const COHERENCE_REGISTRY: readonly CoherenceCheck[] = [
   toProcessDocumentFieldsCheck,
@@ -154,6 +158,10 @@ export const COHERENCE_REGISTRY: readonly CoherenceCheck[] = [
   t1PdfCoverageCheck,
   // Lot 111I (ticket « rattachement multiple d'un document ») : ajouté EN FIN de registre.
   documentTargetsCheck,
+  // Lot 111S (ticket « acquisition prouvée par facture → Opération, Informations, historique Achat ») : ajouté EN FIN de registre.
+  operationsAcquisitionDocumentCheck,
+  // Lot 111U (ticket « CIL : chaîne DPE et données structurées ») : ajouté EN FIN de registre (après COH-OPS-ACQUISITION-DOCUMENT de 111S à la fusion).
+  cilDocumentProjectionCheck,
 ];
 
 /** Contrôles exécutés par l'orchestrateur (les points d'extension PLANNED sont exclus). */

@@ -41,7 +41,9 @@ export async function GET(
       );
     }
 
-    const today = new Date().toISOString().split('T')[0];
+    // Lot 111R : même instant de référence que l'Agenda (statut effectif canonique).
+    const now = new Date();
+    const today = now.toISOString().split('T')[0];
     // Lot 84C (CDC v5 §13, O-4) : Timeline regroupée (défaut, jamais
     // mémorisée) ou détaillée, regroupée AVANT pagination (E10), par curseur.
     // `section=timeline` : page de Timeline seule (bascule de mode, « Afficher plus »).
@@ -50,7 +52,7 @@ export async function GET(
     if (!mode) return apiError(400, 'INVALID_INPUT', 'Unknown timeline mode');
     const cursor = decodeTimelineCursor(sp.get('cursor'), mode);
     if (cursor === 'INVALID') return apiError(400, 'INVALID_INPUT', 'Invalid timeline cursor');
-    const timelineInput = { accountId: session.currentAccountId, assetId, mode, cursor, limit: clampTimelineLimit(sp.get('limit')), today };
+    const timelineInput = { accountId: session.currentAccountId, assetId, mode, cursor, limit: clampTimelineLimit(sp.get('limit')), today, now };
     if (sp.get('section') === 'timeline') {
       const page = await readAssetTimelinePage(timelineInput);
       const res = NextResponse.json({ timeline: page.entries, timelinePage: { mode: page.mode, nextCursor: page.nextCursor, remaining: page.remaining } });

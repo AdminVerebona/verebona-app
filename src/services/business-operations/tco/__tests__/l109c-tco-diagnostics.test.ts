@@ -68,7 +68,8 @@ describe('L109C-M — matrice : inventaire complet des codes, classe fondée sur
     const codes = Object.keys(TCO_WARNING_LABELS) as TcoWarning[];
     for (const c of codes) expect(TCO_DIAGNOSTIC_MATRIX[c], c).toBeDefined();
     expect(Object.keys(TCO_DIAGNOSTIC_MATRIX)).not.toContain('NO_RELIABLE_VALUATION');
-    expect(Object.keys(TCO_DIAGNOSTIC_MATRIX).sort()).toEqual([...codes, 'SAME_FACT_PROVEN', 'LEDGER_ANOMALY'].sort());
+    // Lot 111V : + USER_DECISION_TO_RECONFIRM (choix rouvert par une preuve nouvelle contraire).
+    expect(Object.keys(TCO_DIAGNOSTIC_MATRIX).sort()).toEqual([...codes, 'SAME_FACT_PROVEN', 'LEDGER_ANOMALY', 'USER_DECISION_TO_RECONFIRM'].sort());
   });
 
   it('L109C-M02 — matrice du ticket §3B', () => {
@@ -183,17 +184,18 @@ describe('L109C-R — recette du ticket (moteur → diagnostics)', () => {
     expect(t.lines.filter((l) => l.amountUnknown).map((l) => l.fileId).sort()).toEqual([91, 92]);
     // Sans état de récupération (table absente) : la trace du moteur.
     expect(item(t, 'AMOUNTS_UNKNOWN')).toMatchObject({ status: 'OPEN', count: 2, amountCents: null });
-    const vue = (states: Array<'IN_PROGRESS' | 'TO_CONFIRM' | 'NOT_FOUND'>): TcoAmountRecoveryView => ({
+    const vue = (states: Array<'READING' | 'TO_CONFIRM' | 'NOT_FOUND'>): TcoAmountRecoveryView => ({
       items: states.map((state, i) => ({ fileId: 91 + i, title: `Facture illisible ${91 + i}`, state })),
-      inProgress: states.filter((s) => s === 'IN_PROGRESS').length, toConfirm: states.filter((s) => s === 'TO_CONFIRM').length, notFound: states.filter((s) => s === 'NOT_FOUND').length,
+      inProgress: states.filter((s) => s === 'READING').length, toConfirm: states.filter((s) => s === 'TO_CONFIRM').length, notFound: states.filter((s) => s === 'NOT_FOUND').length,
     });
+    // Lot 111V : « en cours » = travail T1 réellement RUNNING (état READING, issu de la file).
     // Reprise en cours (warningsAfterRecovery de 108B : AMOUNTS_RECOVERY_PENDING, pas AMOUNTS_UNKNOWN).
-    const enCours: TcoResult = { ...t, amountRecovery: vue(['IN_PROGRESS', 'IN_PROGRESS']), reliability: { ...t.reliability, warnings: [...t.reliability.warnings.filter((w) => w !== 'AMOUNTS_UNKNOWN'), 'AMOUNTS_RECOVERY_PENDING'] } };
+    const enCours: TcoResult = { ...t, amountRecovery: vue(['READING', 'READING']), reliability: { ...t.reliability, warnings: [...t.reliability.warnings.filter((w) => w !== 'AMOUNTS_UNKNOWN'), 'AMOUNTS_RECOVERY_PENDING'] } };
     expect(ouverts(enCours)).toEqual([]);
     expect(item(enCours, 'AMOUNTS_RECOVERY_PENDING')).toMatchObject({ status: 'IN_PROGRESS', count: 2 });
     expect(toTcoDto(enCours).warningLabels.join(' ')).not.toMatch(/Lecture automatique|montant lisible/);
     // Échec réel pour l'un, reprise pour l'autre.
-    const echec: TcoResult = { ...t, amountRecovery: vue(['NOT_FOUND', 'IN_PROGRESS']), reliability: { ...t.reliability, warnings: [...t.reliability.warnings, 'AMOUNTS_RECOVERY_PENDING'] } };
+    const echec: TcoResult = { ...t, amountRecovery: vue(['NOT_FOUND', 'READING']), reliability: { ...t.reliability, warnings: [...t.reliability.warnings, 'AMOUNTS_RECOVERY_PENDING'] } };
     const d = item(echec, 'AMOUNTS_UNKNOWN')!;
     expect(d).toMatchObject({ status: 'OPEN', count: 1, title: 'Montant à confirmer', sources: [expect.objectContaining({ fileId: 91, detail: 'Montant introuvable', amountCents: null })] });
     expect(item(echec, 'AMOUNTS_RECOVERY_PENDING')!.sources.map((s) => s.fileId)).toEqual([92]);
@@ -294,8 +296,9 @@ describe('L109C-U — fiche (desktop et mobile, même composant)', () => {
     expect(ui).not.toMatch(/t\.warningLabels\.map/);
     expect(ui).toMatch(/\{diag && diag\.open\.families > 0 && \(\s*<Bloc title=\{`Points à vérifier/);
     expect(ui).toContain('<TcoInformationDiagnostics');
-    // 108B : lecture en cours = bloc neutre existant, limité aux reprises en cours.
-    expect(ui).toMatch(/items: t\.amountRecovery\.items\.filter\(\(i\) => i\.state === 'IN_PROGRESS'\)/);
+    // 108B : lecture en cours = bloc neutre existant, limité aux contrôles en attente. Lot 111V (décision du ticket
+    // « TCO — anomalies corrigeables » §D) : états RÉELS (file, lecture RUNNING, reprise prévue, vérification à venir).
+    expect(ui).toMatch(/items: t\.amountRecovery\.items\.filter\(\(i\) => AMOUNT_RECOVERY_PENDING_STATES\.has\(i\.state\)\)/);
   });
 
   it('L109C-U02 — aucune IA, aucune lecture de document, aucune carte « À traiter » à l’affichage ; jamais « Opération » visible', () => {

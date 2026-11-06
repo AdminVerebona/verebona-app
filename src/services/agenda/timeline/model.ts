@@ -32,7 +32,7 @@
  * Aucun libellé produit ici ne contient le mot « Opération » (P1).
  * ══════════════════════════════════════════════════════════════════════════
  */
-import { isHistoricalAgendaEvent } from '@/services/agenda/agenda-historical';
+import { computeEffectiveStatus, effectiveStatusFlags, normalizeManualStatus, referenceInstant, type EffectiveStatus } from '@/services/agenda/AgendaDomainService';
 
 export type TimelineMode = 'grouped' | 'detailed';
 const TIMELINE_MODES: readonly TimelineMode[] = ['grouped', 'detailed'];
@@ -54,6 +54,12 @@ export interface TimelineItemView {
   isOverdue: boolean;
   /** Lot 53 (D17) : fait passé sans preuve de réalisation. */
   toConfirm: boolean;
+  /**
+   * Lot 111R : statut effectif CANONIQUE (`computeEffectiveStatus`, même
+   * calcul que le tiroir Agenda) ; `isDone` / `isOverdue` / `toConfirm` en
+   * sont dérivés.
+   */
+  effectiveStatus: EffectiveStatus;
 }
 
 /** Compteurs distincts d'un groupe (§13.7, AC26). */
@@ -97,6 +103,12 @@ export interface TimelineItemRow {
   origin_field_key: string | null;
   event_nature: string | null;
   business_type: string | null;
+  /** Lot 111R : heure / fin de l'élément (même règle de date que l'Agenda). */
+  start_time?: string | null;
+  end_date?: string | null;
+  end_time?: string | null;
+  /** Lot 111R : preuve de réalisation valide (`completion-proof.ts`). */
+  completion_proven?: boolean | null;
 }
 
 export function parseTimelineMode(v: string | null | undefined): TimelineMode | null {
@@ -143,24 +155,40 @@ export function decodeTimelineCursor(raw: string | null | undefined, mode: Timel
   }
 }
 
-// ── États d'affichage (règles existantes 47B / 53 D17, inchangées) ─────────
+// ── États d'affichage : statut effectif CANONIQUE (lot 111R) ──────────────
+//
+// Avant le lot 111R, la Timeline recalculait ses états à part (statut
+// manuel, date, nature) SANS la preuve de réalisation (103D, 0945) : un achat
+// prouvé, « Réalisé » dans le tiroir Agenda, restait « statut à confirmer »
+// sur la Timeline. Désormais : MÊME calcul (`computeEffectiveStatus`) et
+// MÊME preuve (`completion-proof.ts`, lue dans la requête) que l'Agenda.
 
-export function timelineItemView(r: TimelineItemRow, today: string): TimelineItemView {
+/**
+ * Vue d'un élément. `now` : instant de référence (route : l'instant de la
+ * requête, comme l'Agenda) ; une chaîne AAAA-MM-JJ vaut le début de ce jour
+ * (export de recette, tests : résultat déterministe).
+ */
+export function timelineItemView(r: TimelineItemRow, now: string | Date): TimelineItemView {
   const effectiveDate = r.start_date ?? null;
-  const historique = isHistoricalAgendaEvent({
+  const ref = typeof now === 'string' ? referenceInstant(now) : now;
+  const effectiveStatus = computeEffectiveStatus({
+    startDate: effectiveDate,
+    startTime: r.start_time ?? null,
+    endDate: r.end_date ?? null,
+    endTime: r.end_time ?? null,
+    manualStatus: normalizeManualStatus(r.manual_status),
     eventNature: r.event_nature ?? null,
     businessType: r.business_type ?? null,
     originFieldKey: r.origin_field_key ?? null,
-  });
-  const ouvert = !r.manual_status || r.manual_status.trim() === '';
+    completionProven: r.completion_proven === true,
+  }, ref);
   return {
     itemType: 'agenda',
     id: String(r.id),
     title: r.title,
     effectiveDate,
-    isDone: r.manual_status === 'realise',
-    isOverdue: ouvert && !historique && !!effectiveDate && effectiveDate < today,
-    toConfirm: ouvert && historique && !!effectiveDate && effectiveDate < today,
+    ...effectiveStatusFlags(effectiveStatus),
+    effectiveStatus,
   };
 }
 

@@ -127,6 +127,8 @@ export const DETAILS_UI_SECTION_FIELDS: Readonly<Record<string, readonly Details
     { key: 'dpeExpiryDate', label: 'Fin de validité du DPE' },
     { key: 'dpeAdemeNumber', label: 'N° ADEME du DPE' },
     { key: 'energyConsumption', label: 'Consommation énergétique (kWh/m²/an)' },
+    // Lot 111U (CIL B8) : émissions de gaz à effet de serre du DPE.
+    { key: 'gesEmissions', label: 'Émissions de GES (kg CO₂/m²/an)' },
     { key: 'gesClass', label: 'Classe GES' },
     { key: 'lastRevision', label: 'Dernier entretien' },
     { key: 'maintenanceDueDate', label: 'Prochain entretien' },

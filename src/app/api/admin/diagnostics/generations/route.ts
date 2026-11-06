@@ -29,11 +29,17 @@ export async function GET(request: NextRequest) {
     const diag = r.items.filter((x) => x.kind === 'TECH_DIAGNOSTIC' && x.mode === 'job');
     if (!diag.length) return NextResponse.json(r, { headers: NO_STORE });
     const { displayStatus } = await import('@/services/admin/diagnostic-jobs/wait');
+    // Lot 111Q : catégorie d'état commune (« Attente de ressource », « Worker indisponible »…).
+    const { stateCategory, DIAG_STATE_CATEGORY_LABELS } = await import('@/services/admin/diagnostic-jobs/metrics');
     const waits = diag.some((x) => x.status === 'QUEUED' && !x.cancelRequested)
       ? await import('@/services/admin/diagnostic-jobs/supervision').then((m) => m.diagnosticQueueWaits()).then((w) => w.waits, () => [])
       : [];
     const items = r.items.map((x) => (x.kind === 'TECH_DIAGNOSTIC' && x.mode === 'job'
-      ? { ...x, statusLabel: displayStatus(x, waits.find((w) => w.jobId === x.id)?.diagnosis ?? null) }
+      ? (() => {
+        const d = waits.find((w) => w.jobId === x.id)?.diagnosis ?? null;
+        const c = stateCategory(x.status, d?.reason ?? x.waitReason, x.cancelRequested && x.status === 'QUEUED');
+        return { ...x, statusLabel: displayStatus(x, d), category: { code: c, label: DIAG_STATE_CATEGORY_LABELS[c] } };
+      })()
       : x));
     return NextResponse.json({ ...r, items }, { headers: NO_STORE });
   } catch (e) {

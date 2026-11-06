@@ -86,6 +86,11 @@ export interface DiagWorkerBeat {
   lastError: string | null;
   lastErrorAt: string | null;
   intervalMs: number | null;
+  /** Lot 111Q (migration 1280) : voie ciblée — travail en cours, raison d'attente, capacité (null : version sans voie ciblée). */
+  laneJobId?: string | null;
+  laneWaitReason?: string | null;
+  laneLastClaimAt?: string | null;
+  laneCapacity?: number | null;
 }
 
 /** Intervalle du battement de présence (ms). */
@@ -103,6 +108,8 @@ export interface WaitInput {
   beats: readonly DiagWorkerBeat[] | null;
   running: ReadonlyArray<{ id: string; scope: string; leaseAlive: boolean; cancelRequested: boolean; cancelReason: string | null }>;
   globalConcurrency: number;
+  /** Lot 111Q : places réservées aux ciblés (DIAG_JOB_TARGETED_CONCURRENCY, défaut 1). */
+  targetedConcurrency?: number;
   stallAlertSeconds: number;
   now: Date;
 }
@@ -146,12 +153,36 @@ export function diagnoseWait(i: WaitInput): WaitDiagnosis {
   }
   const isGlobal = i.job.scope === 'global';
   const live = i.running.filter((r) => r.leaseAlive && r.id !== i.job.id);
-  const stopping = live.find((r) => r.cancelRequested && (r.cancelReason === 'REPLACED_BY_NEW_REQUEST' || (isGlobal && r.scope === 'global')));
-  if (stopping) return out('STOPPING_REPLACED', null, stopping.id);
-  const globalBusy = isGlobal ? live.find((r) => r.scope === 'global') : undefined;
-  if (globalBusy || live.length >= Math.max(1, i.globalConcurrency)) {
-    const b = globalBusy ?? live[0];
-    return out('OTHER_DIAGNOSTIC_RUNNING', `diagnostic ${b.scope} en cours`, b.id);
+  const T = Math.max(0, i.targetedConcurrency ?? 1);
+  const G = Math.max(1, i.globalConcurrency);
+  if (isGlobal || T === 0) {
+    const stopping = live.find((r) => r.cancelRequested && (r.cancelReason === 'REPLACED_BY_NEW_REQUEST' || (isGlobal && r.scope === 'global')));
+    if (stopping) return out('STOPPING_REPLACED', null, stopping.id);
+    const globalBusy = isGlobal ? live.find((r) => r.scope === 'global') : undefined;
+    if (globalBusy || live.length >= G) {
+      const b = globalBusy ?? live[0];
+      return out('OTHER_DIAGNOSTIC_RUNNING', `diagnostic ${b.scope} en cours`, b.id);
+    }
+  } else {
+    // Lot 111Q — diagnostic CIBLÉ : un global (en cours, annulé, en cours d'arrêt, orphelin à bail
+    // vivant) n'occupe jamais les places réservées ; seul « tout est plein » le fait attendre.
+    if (live.length >= G + T) {
+      const b = live.find((r) => r.scope !== 'global') ?? live[0];
+      return out('OTHER_DIAGNOSTIC_RUNNING', `toutes les places sont occupées (${live.length} / ${G + T}) — diagnostic ${b.scope} en cours`, b.id);
+    }
+    // Capacité de CHAQUE processus : voie commune occupée et voie ciblée absente, pleine ou retenue.
+    const fresh = started.filter((b) => isBeatAlive(b, i.now));
+    const mainBusy = fresh.length > 0 && fresh.every((b) => b.currentJobId);
+    if (mainBusy) {
+      const laneFree = fresh.filter((b) => (b.laneCapacity ?? 0) > 0 && !b.laneJobId);
+      if (!laneFree.length) {
+        const b = fresh[0];
+        const busyId = b.laneJobId ?? b.currentJobId!;
+        return out('OTHER_DIAGNOSTIC_RUNNING', (b.laneCapacity ?? 0) > 0 ? 'voie commune et voie ciblée occupées' : 'voie commune occupée (voie ciblée absente : DIAG_JOB_TARGETED_CONCURRENCY=0 ou version antérieure)', busyId);
+      }
+      if (laneFree.every((b) => b.laneWaitReason === 'MEMORY_ADMISSION')) return out('MEMORY_ADMISSION', 'voie ciblée : mémoire du conteneur au-delà du seuil d’admission');
+      if (laneFree.every((b) => b.laneWaitReason === 'LOCAL_SLOT_BUSY')) return out('OTHER_DIAGNOSTIC_RUNNING', 'places de génération du processus occupées', fresh[0].currentJobId);
+    }
   }
   const loopFailing = started.every((b) => b.lastError && (!b.lastTickOkAt || t(b.lastErrorAt) >= t(b.lastTickOkAt)));
   if (loopFailing) return out('WORKER_LOOP_FAILING', started[0].lastError);

@@ -76,6 +76,7 @@ export const RECETTE_TABLES: Readonly<Record<string, { domain: Exclude<RecetteDo
   asset_move_requests: { domain: 'biens', description: 'Demandes de déplacement de bien entre comptes.' },
   asset_delete_requests: { domain: 'biens', description: 'Demandes de suppression de bien.' },
   cil_block_resolutions: { domain: 'biens', description: 'Résolutions de blocs CIL.' },
+  cil_projection_journal: { domain: 'biens', description: 'Journal de la projection documentaire CIL (lot 111U).' },
   energy_materials: { domain: 'biens', description: 'Matériaux (énergie).' },
   energy_works: { domain: 'biens', description: 'Travaux (énergie).' },
   suppliers: { domain: 'biens', description: 'Fournisseurs du compte.' },

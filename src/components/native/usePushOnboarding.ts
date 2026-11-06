@@ -4,6 +4,7 @@
  * Invitation « Autoriser les notifications » à la première connexion — lot 109G.
  * Règles et persistance : `lib/native/push-onboarding`. Ce hook ne fait que
  * relier le contrôleur à la session, à l'écran courant et aux toasts.
+ * Lot 111T : `held` = étape biométrique pas encore terminée (biométrie d'abord).
  */
 import { useCallback, useEffect, useSyncExternalStore } from 'react';
 import { usePathname } from 'next/navigation';
@@ -25,7 +26,7 @@ export function usePushOnboarding(
   pushFeatureOn: boolean,
   blocked: boolean,
   offline: boolean,
-  otherVisible: boolean,
+  held: boolean,
 ): PushOnboarding {
   const ctl = sharedPushOnboarding();
   const snap = useSyncExternalStore(ctl.subscribe, ctl.getSnapshot, ctl.getSnapshot);
@@ -35,8 +36,9 @@ export function usePushOnboarding(
   const legalRequired = reacceptanceStatusOf(user?.legalReacceptance) === 'required';
 
   const ctx: PushOnboardingContext = {
-    userId, featureOn: pushFeatureOn, pathname, legalRequired, blocked, offline, otherVisible,
+    userId, featureOn: pushFeatureOn, pathname, legalRequired, blocked, offline, held,
   };
+  const view = pushOnboardingView(snap, ctx);
 
   useEffect(() => { clearLegacyPushPromptKey(); }, []);
 
@@ -47,8 +49,14 @@ export function usePushOnboarding(
 
   // Présentation quand l'écran le permet (et retrait si le compte change).
   useEffect(() => {
-    ctl.sync({ userId, featureOn: pushFeatureOn, pathname, legalRequired, blocked, offline, otherVisible });
-  }, [ctl, snap, userId, pushFeatureOn, pathname, legalRequired, blocked, offline, otherVisible]);
+    ctl.sync({ userId, featureOn: pushFeatureOn, pathname, legalRequired, blocked, offline, held });
+  }, [ctl, snap, userId, pushFeatureOn, pathname, legalRequired, blocked, offline, held]);
+
+  // Invitation notée seulement une fois la fenêtre réellement affichée.
+  const shownFor = view.visible ? snap.shown : null;
+  useEffect(() => {
+    if (shownFor !== null) ctl.presented(shownFor);
+  }, [ctl, shownFor]);
 
   const allow = useCallback(() => {
     void ctl.allow().then((r) => {
@@ -62,5 +70,5 @@ export function usePushOnboarding(
 
   const later = useCallback(() => ctl.later(), [ctl]);
 
-  return { ...pushOnboardingView(snap, ctx), allow, later };
+  return { ...view, allow, later };
 }

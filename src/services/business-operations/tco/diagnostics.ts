@@ -30,21 +30,29 @@
  * Règle de sécurité : un signalement d'anomalie ou de couverture du moteur
  * dont aucune source n'est retrouvée reste AFFICHÉ (`traced: false`, nombre
  * inconnu) — une règle de présentation ne masque jamais une incohérence.
+ * Lot 111V (ticket « TCO — anomalies corrigeables ») : quatre groupes
+ * distincts — (1) anomalie ouverte (OPEN), (2) contrôle / récupération en
+ * attente (IN_PROGRESS), (3) exclusion normale documentée (INFORMATIONAL),
+ * (4) choix de l'utilisateur déjà confirmé (DECIDED). Chaque source d'un cas
+ * ouvert porte ses GESTES contextuels (`actions`, calculés par
+ * `tcoLineDecisionOptions`) ; une ligne arbitrée par l'utilisateur ne rouvre
+ * aucun cas, sauf preuve nouvelle contraire (`USER_DECISION_TO_RECONFIRM`).
  * Les états #646 sont repris tels quels : `NO_RELIABLE_VALUATION` n'existe
  * plus ; `AMOUNTS_UNKNOWN` n'est levé qu'après l'échec réel de la récupération
  * (108B) ; `AMOUNTS_RECOVERY_PENDING` est un traitement en cours ; une
  * identité économique prouvée (108A) est une information.
  * ══════════════════════════════════════════════════════════════════════════
  */
-import { AMOUNT_RECOVERY_VIEW_LABELS, type AmountRecoveryViewState } from './amount-recovery';
+import { AMOUNT_RECOVERY_PENDING_STATES, AMOUNT_RECOVERY_VIEW_LABELS, type AmountRecoveryViewState } from './amount-recovery';
 import type { TcoEconomicLine, TcoResult, TcoWarning } from './model';
+import { TCO_ARBITRATION_DECISIONS, tcoLineDecisionOptions, type TcoDecisionOption, type TcoUserDecisionValue } from './user-decisions';
 
 export type TcoDiagnosticNature = 'ANOMALY' | 'COVERAGE' | 'INFORMATION';
-export type TcoDiagnosticStatus = 'OPEN' | 'IN_PROGRESS' | 'INFORMATIONAL';
+export type TcoDiagnosticStatus = 'OPEN' | 'IN_PROGRESS' | 'INFORMATIONAL' | 'DECIDED';
 /** Ce que le cas peut fausser (ordre d'impact : total, périmètre, période, répartition annuelle, rien). */
 export type TcoDiagnosticImpact = 'TOTAL' | 'SCOPE' | 'PERIOD' | 'ANNUAL' | 'NONE';
 /** Codes stables : signalements du moteur + deux codes dérivés de la trace. */
-export type TcoDiagnosticCode = TcoWarning | 'SAME_FACT_PROVEN' | 'LEDGER_ANOMALY';
+export type TcoDiagnosticCode = TcoWarning | 'SAME_FACT_PROVEN' | 'LEDGER_ANOMALY' | 'USER_DECISION_TO_RECONFIRM';
 /** Champ de la fiche du bien à compléter ou corriger (clés des champs de la fiche). */
 export type TcoAssetField = 'acquisitionDate' | 'acquisitionPrice' | 'saleDate' | 'salePrice';
 
@@ -73,6 +81,14 @@ export interface TcoDiagnosticSource {
   visible: boolean;
   /** La ligne est retenue (« Dépenses retenues ») ou non (« Dépenses non retenues »). */
   retained: boolean;
+  /** Lot 111V : clé stable de la ligne (geste envoyé au serveur). */
+  lineKey?: string | null;
+  /** Lot 111V : gestes contextuels possibles sur cette source (vide : aucun geste, motif suffisant). */
+  actions?: TcoDecisionOption[];
+  /** Lot 111V : ligne comptée à la place (doublon présumé) — libellé, date et montant retenu, pour comparer. */
+  counterpart?: { label: string; date: string | null; amountCents: number | null; fileId: number | null } | null;
+  /** Lot 111V : choix de l'utilisateur porté par la ligne (groupe « choix confirmé »). */
+  decision?: { value: TcoUserDecisionValue; contradicted: boolean } | null;
 }
 
 export interface TcoDiagnostic {
@@ -95,10 +111,15 @@ export interface TcoDiagnostic {
 export interface TcoDiagnostics {
   /** Triés : nature (anomalie, couverture, information), impact réel, montant en jeu, nombre. */
   items: TcoDiagnostic[];
-  /** Cas ouverts (anomalies + couvertures OPEN) : familles et occurrences connues. */
-  open: { families: number; occurrences: number; anomalies: number; coverage: number };
+  /**
+   * Cas ouverts (anomalies + couvertures OPEN) : familles et occurrences connues. Lot 111V : `decisions` —
+   * nombre RÉEL de lignes distinctes qui attendent un geste (jamais le nombre de lignes non retenues).
+   */
+  open: { families: number; occurrences: number; anomalies: number; coverage: number; decisions: number };
   inProgress: number;
   information: number;
+  /** Lot 111V : lignes portant un choix confirmé de l'utilisateur (groupe distinct, jamais une alerte). */
+  decided: number;
   /** Lignes concernées par un cas ouvert (« À revoir » dans « Dépenses non retenues »). */
   reviewLineIds: string[];
   /**
@@ -136,14 +157,14 @@ export const TCO_DIAGNOSTIC_MATRIX: Readonly<Record<TcoDiagnosticCode, MatrixEnt
   PRESUMED_DUPLICATES: {
     nature: 'ANOMALY', impact: 'TOTAL',
     title: (n) => pl(n, 'Même montant sur deux justificatifs d’une dépense', 'Même montant sur plusieurs justificatifs d’une dépense'),
-    text: 'Le montant n’est compté qu’une fois, faute de preuve qu’il s’agit de paiements distincts. S’il s’agit bien de deux paiements, ajoutez la ligne au coût de possession ; sinon, rien à faire.',
-    action: voirDepense,
+    text: 'Le montant n’est compté qu’une fois, faute de preuve qu’il s’agit de paiements distincts. Confirmez s’il s’agit de la même dépense, ou de deux dépenses distinctes (autre échéance, autre période).',
+    action: null,
   },
   UNCERTAIN_MATCHES: {
     nature: 'ANOMALY', impact: 'TOTAL',
     title: (n) => pl(n, 'Dépense peut-être déjà comptée', 'Dépenses peut-être déjà comptées'),
-    text: 'Même montant qu’une autre dépense, sans preuve qu’il s’agisse de la même : la dépense est comptée. S’il s’agit d’un doublon, retirez-la du coût de possession.',
-    action: voirDepense,
+    text: 'Même montant qu’une autre dépense, sans preuve qu’il s’agisse de la même : la dépense est comptée. Confirmez s’il s’agit de la même dépense ou de deux dépenses distinctes.',
+    action: null,
   },
   UNJUSTIFIED_AMOUNTS: {
     nature: 'ANOMALY', impact: 'TOTAL',
@@ -196,8 +217,8 @@ export const TCO_DIAGNOSTIC_MATRIX: Readonly<Record<TcoDiagnosticCode, MatrixEnt
   },
   AMOUNTS_RECOVERY_PENDING: {
     nature: 'COVERAGE', impact: 'TOTAL',
-    title: () => AMOUNT_RECOVERY_VIEW_LABELS.IN_PROGRESS.title,
-    text: AMOUNT_RECOVERY_VIEW_LABELS.IN_PROGRESS.text,
+    title: (n) => pl(n, 'Montant en attente de vérification automatique', 'Montants en attente de vérification automatique'),
+    text: 'Rien à faire de votre côté : l’état réel de chaque justificatif est indiqué (en file, lecture en cours, nouvelle tentative prévue ou vérification à venir).',
     action: null,
   },
   ACQUISITION_COST_MISSING: {
@@ -209,7 +230,7 @@ export const TCO_DIAGNOSTIC_MATRIX: Readonly<Record<TcoDiagnosticCode, MatrixEnt
   DOCUMENTS_NOT_QUALIFIED: {
     nature: 'COVERAGE', impact: 'TOTAL',
     title: (n) => pl(n, 'Nature de la dépense à préciser', 'Nature des dépenses à préciser'),
-    text: 'Le justificatif porte un montant dont la nature n’est pas établie : il n’est pas compté. Ouvrez-le pour vérifier, ou ajoutez la ligne au coût de possession.',
+    text: 'Le justificatif porte un montant dont la nature n’est pas établie : il n’est pas compté. Confirmez s’il s’agit d’une dépense de ce bien, ou corrigez le document.',
     action: ouvrirJustificatif,
   },
   UNCONVERTED_AMOUNTS: {
@@ -285,10 +306,16 @@ export const TCO_DIAGNOSTIC_MATRIX: Readonly<Record<TcoDiagnosticCode, MatrixEnt
     text: 'Une période payée dépasse la cession : seule la part jusqu’à la cession est comptée (prorata au jour).',
     action: voirDepense,
   },
+  USER_DECISION_TO_RECONFIRM: {
+    nature: 'ANOMALY', impact: 'TOTAL',
+    title: (n) => pl(n, 'Choix à reconfirmer', 'Choix à reconfirmer'),
+    text: 'Une information nouvelle contredit un choix que vous avez fait : votre choix reste appliqué. Gardez-le ou annulez-le.',
+    action: null,
+  },
   USER_DECISIONS: {
     nature: 'INFORMATION', impact: 'NONE',
     title: (n) => pl(n, 'Votre choix est appliqué', 'Vos choix sont appliqués'),
-    text: 'Vous avez ajouté ou retiré des dépenses : le coût de possession reflète vos choix, réversibles depuis les listes de dépenses.',
+    text: 'Le coût de possession reflète vos choix (dépenses ajoutées, retirées, confirmées ou arbitrées), réversibles depuis les listes de dépenses.',
     action: voirDepense,
   },
   USER_INCLUDED_DUPLICATES: {
@@ -313,8 +340,19 @@ function deLigne(l: TcoEconomicLine, visible: boolean, detail: string | null = n
   return {
     lineId: l.id, fileId: l.fileId ?? l.sourceFileIds?.[0] ?? null, relatedFileId: l.relatedFileId, operationId: l.operationId,
     assetField: null, label: l.label, detail, amountCents, date: l.date, visible, retained: RETENUE(l),
+    lineKey: l.decisionKey ?? null,
+    decision: l.userDecision?.applied ? { value: l.userDecision.decision, contradicted: !!l.userDecision.contradicted } : null,
   };
 }
+
+/** Lot 111V : la ligne porte un arbitrage de l'utilisateur, non contredit — le point qu'il clôt ne se rouvre pas. */
+const arbitree = (l: TcoEconomicLine): boolean => !!l.userDecision?.applied && TCO_ARBITRATION_DECISIONS.has(l.userDecision.decision) && !l.userDecision.contradicted;
+
+/** Lot 111V : libellé court d'un choix confirmé. */
+const CHOIX: Readonly<Record<TcoUserDecisionValue, string>> = {
+  INCLUDE: 'Ajoutée par vous.', EXCLUDE: 'Retirée par vous.', CONFIRM_EXCLUSION: 'Exclusion confirmée par vous.',
+  SAME_FACT: 'Même dépense qu’une autre, confirmé par vous.', DISTINCT_FACTS: 'Dépense distincte, confirmé par vous.', REQUALIFY: 'Nature confirmée par vous.',
+};
 function sansLigne(label: string): TcoDiagnosticSource {
   return { lineId: null, fileId: null, relatedFileId: null, operationId: null, assetField: null, label, detail: null, amountCents: null, date: null, visible: false, retained: false };
 }
@@ -353,10 +391,19 @@ function occurrences(t: TcoResult, hidden: ReadonlySet<string>): Map<TcoDiagnost
   const ajoutee = (l: TcoEconomicLine) => !!l.userDecision?.applied && l.userDecision.decision === 'INCLUDE';
 
   for (const l of t.lines) {
+    // Lot 111V : ligne arbitrée par l'utilisateur — aucun cas ouvert pour le point qu'il a clos ; choix rouvert par une preuve nouvelle.
+    if (arbitree(l)) continue;
+    if (l.userDecision?.contradicted) {
+      add('USER_DECISION_TO_RECONFIRM', deLigne(l, vis(l), `${CHOIX[l.userDecision.decision]} Le traitement automatique a changé depuis (nouvelle information).`));
+      continue;
+    }
     // Doublon PRÉSUMÉ (même somme, même dépense, sans preuve de transaction distincte) : anomalie ciblée.
     if (l.status === 'DUPLICATE' && l.reason === 'SAME_FACT_OTHER_DOCUMENT') {
       const garde = l.duplicateOf ? parId.get(l.duplicateOf) : undefined;
-      add('PRESUMED_DUPLICATES', deLigne(l, vis(l), garde ? `Même somme que « ${garde.label} », comptée à sa place.` : 'Même somme qu’un autre justificatif de la même dépense, comptée une seule fois.'));
+      add('PRESUMED_DUPLICATES', {
+        ...deLigne(l, vis(l), garde ? `Même somme que « ${garde.label} », comptée à sa place.` : 'Même somme qu’un autre justificatif de la même dépense, comptée une seule fois.'),
+        counterpart: garde ? { label: garde.label, date: garde.date, amountCents: garde.includedCents || garde.eurCents, fileId: garde.fileId ?? garde.sourceFileIds?.[0] ?? null } : null,
+      });
     } else if (!RETENUE(l) && l.reason && MEME_FAIT_PROUVE.has(l.reason) && vis(l)) add('SAME_FACT_PROVEN', deLigne(l, true));
     if (RETENUE(l) && l.uncertain) {
       if (l.source === 'OPERATION' && !l.identity) add('UNJUSTIFIED_AMOUNTS', deLigne(l, vis(l), 'Montant compté, introuvable sur les justificatifs de la dépense.'));
@@ -372,21 +419,25 @@ function occurrences(t: TcoResult, hidden: ReadonlySet<string>): Map<TcoDiagnost
     if (l.reason === 'NOT_OWNERSHIP_COST') add('NOT_OWNERSHIP_COSTS', deLigne(l, vis(l), l.note));
     if (RETENUE(l) && !l.date && l.economicDate?.status === 'UNDETERMINED') add('ECONOMIC_DATE_UNDETERMINED', deLigne(l, vis(l), l.dateLabel ?? null, l.includedCents));
     if (l.userDecision?.applied) {
-      add('USER_DECISIONS', deLigne(l, vis(l), l.userDecision.decision === 'INCLUDE' ? 'Ajoutée par vous.' : 'Retirée par vous.'));
+      add('USER_DECISIONS', deLigne(l, vis(l), CHOIX[l.userDecision.decision]));
       if (ajoutee(l) && l.note?.startsWith(`${NOTE_AJOUT} `)) add('USER_INCLUDED_DUPLICATES', deLigne(l, vis(l), l.note.slice(NOTE_AJOUT.length + 1), l.includedCents));
     }
   }
+  // Lot 111V : choix confirmés (arbitrages) — groupe « choix confirmé », jamais une alerte.
+  for (const l of t.lines) if (arbitree(l)) add('USER_DECISIONS', deLigne(l, vis(l), CHOIX[l.userDecision!.decision]));
   // Montants inconnus : état PERSISTÉ de la récupération 108B (jamais relu à l'affichage) ; sans cet état, la trace.
-  const inconnues = t.lines.filter((l) => l.amountUnknown);
+  const inconnues = t.lines.filter((l) => l.amountUnknown && !arbitree(l));
   const recup = t.amountRecovery;
   if (recup?.items.length) {
     for (const i of recup.items) {
+      if (!inconnues.some((x) => x.fileId === i.fileId) && t.lines.some((x) => x.fileId === i.fileId && x.amountUnknown && arbitree(x))) continue;
       const l = inconnues.find((x) => x.fileId === i.fileId);
       const s: TcoDiagnosticSource = {
         ...(l ? deLigne(l, vis(l)) : sansLigne(i.title)),
-        label: i.title, fileId: i.fileId, detail: AMOUNT_RECOVERY_VIEW_LABELS[i.state as AmountRecoveryViewState].title,
+        label: i.title, fileId: i.fileId,
+        detail: `${AMOUNT_RECOVERY_VIEW_LABELS[i.state as AmountRecoveryViewState].title}${i.nextAttemptAt ? ` (${i.state === 'QUEUED' ? 'en file depuis le' : 'à partir du'} ${jj(i.nextAttemptAt.slice(0, 10)) ?? ''})` : ''}`,
       };
-      add(i.state === 'IN_PROGRESS' ? 'AMOUNTS_RECOVERY_PENDING' : 'AMOUNTS_UNKNOWN', s);
+      add(AMOUNT_RECOVERY_PENDING_STATES.has(i.state) ? 'AMOUNTS_RECOVERY_PENDING' : 'AMOUNTS_UNKNOWN', s);
     }
   } else for (const l of inconnues) add('AMOUNTS_UNKNOWN', deLigne(l, vis(l)));
   // Dates impossibles ignorées et prorata : entrées du registre (lignes correspondantes).
@@ -427,7 +478,9 @@ function occurrences(t: TcoResult, hidden: ReadonlySet<string>): Map<TcoDiagnost
 /** Champs de la fiche : occurrence unique, posée seulement si le moteur a levé le code. */
 const PAR_FICHE = new Set<TcoDiagnosticCode>(['ACQUISITION_COST_MISSING', 'ACQUISITION_DATE_MISSING', 'ACQUISITION_DATE_INCOHERENT', 'DISPOSAL_PRICE_MISSING', 'DISPOSAL_DATE_MISSING', 'PARTIAL_READ']);
 /** Informations dérivées de la trace (affichées dès qu'une occurrence existe, sans signalement requis). */
-const DERIVEES = new Set<TcoDiagnosticCode>(['SAME_FACT_PROVEN', 'NOT_REALIZED_EXPENSES', 'NOT_OWNERSHIP_COSTS', 'PRORATA_APPLIED', 'USER_DECISIONS', 'USER_INCLUDED_DUPLICATES']);
+const DERIVEES = new Set<TcoDiagnosticCode>(['SAME_FACT_PROVEN', 'NOT_REALIZED_EXPENSES', 'NOT_OWNERSHIP_COSTS', 'PRORATA_APPLIED', 'USER_DECISIONS', 'USER_INCLUDED_DUPLICATES', 'USER_DECISION_TO_RECONFIRM']);
+/** Lot 111V : choix de l'utilisateur — groupe « choix confirmé » (DECIDED), distinct des exclusions normales. */
+const CHOIX_CONFIRMES = new Set<TcoDiagnosticCode>(['USER_DECISIONS', 'USER_INCLUDED_DUPLICATES']);
 
 /**
  * Diagnostics structurés d'un résultat TCO (pure, testée L109C-*). Aucune
@@ -436,6 +489,17 @@ const DERIVEES = new Set<TcoDiagnosticCode>(['SAME_FACT_PROVEN', 'NOT_REALIZED_E
 export function computeTcoDiagnostics(t: TcoResult, opts: { hidden?: ReadonlySet<string> } = {}): TcoDiagnostics {
   const hidden = opts.hidden ?? new Set<string>();
   const occ = occurrences(t, hidden);
+  // Lot 111V : gestes contextuels de chaque source (mêmes règles que les listes de dépenses, lignes montrées).
+  const parId = new Map(t.lines.map((l) => [l.id, l]));
+  const montrees = t.lines.filter((l) => !hidden.has(l.id));
+  const gestes = (s: TcoDiagnosticSource): TcoDiagnosticSource => {
+    const l = s.lineId ? parId.get(s.lineId) : undefined;
+    return l && s.visible ? { ...s, actions: tcoLineDecisionOptions(l, montrees) } : { ...s, actions: [] };
+  };
+  // Codes levés par le moteur dont toutes les occurrences ont été arbitrées par l'utilisateur : clos (jamais « non tracé »).
+  const closParChoix = (code: TcoDiagnosticCode): boolean => (code === 'PRESUMED_DUPLICATES' || code === 'UNCERTAIN_MATCHES' || code === 'DOCUMENTS_NOT_QUALIFIED'
+    || code === 'UNCONFIRMED_ASSET_EXPENSES' || code === 'UNCONVERTED_AMOUNTS' || code === 'UNALLOCATED_AMOUNTS' || code === 'AMOUNTS_UNKNOWN')
+    && t.lines.some((l) => arbitree(l));
   const warnings = new Set<string>(t.reliability.warnings);
   const items: TcoDiagnostic[] = [];
   const review = new Set<string>();
@@ -448,12 +512,14 @@ export function computeTcoDiagnostics(t: TcoResult, opts: { hidden?: ReadonlySet
     if (code === 'ACQUISITION_DATE_UNDETERMINED' && !leve) sources = [];
     // Anomalie / couverture : seulement si le moteur l'a levée (sa règle fait foi) ; information : dès qu'une occurrence existe.
     if (DERIVEES.has(code) ? sources.length === 0 : !leve) continue;
+    if (!DERIVEES.has(code) && !sources.length && closParChoix(code)) continue;
     // Code levé sans occurrence retrouvée : affiché quand même (jamais masqué), nombre inconnu.
     const traced = code === 'LEDGER_ANOMALY' ? true : sources.length > 0;
     const count = code === 'LEDGER_ANOMALY' ? t.reliability.anomalies.length : traced ? sources.length : null;
     const montants = sources.map((s) => s.amountCents).filter((v): v is number => v != null);
-    const status: TcoDiagnosticStatus = m.nature === 'INFORMATION' ? 'INFORMATIONAL' : code === 'AMOUNTS_RECOVERY_PENDING' ? 'IN_PROGRESS' : 'OPEN';
+    const status: TcoDiagnosticStatus = CHOIX_CONFIRMES.has(code) ? 'DECIDED' : m.nature === 'INFORMATION' ? 'INFORMATIONAL' : code === 'AMOUNTS_RECOVERY_PENDING' ? 'IN_PROGRESS' : 'OPEN';
     if (status === 'OPEN') for (const s of sources) if (s.lineId) review.add(s.lineId);
+    if (status === 'OPEN' || status === 'DECIDED') sources = sources.map(gestes);
     items.push({
       code, nature: m.nature, status, impact: m.impact, count, traced,
       amountCents: montants.length ? montants.reduce((a, b) => a + Math.abs(b), 0) : null,
@@ -465,6 +531,7 @@ export function computeTcoDiagnostics(t: TcoResult, opts: { hidden?: ReadonlySet
   items.sort((a, b) => NATURE_RANG[a.nature] - NATURE_RANG[b.nature] || IMPACT_RANG[a.impact] - IMPACT_RANG[b.impact]
     || (b.amountCents ?? -1) - (a.amountCents ?? -1) || (b.count ?? 0) - (a.count ?? 0) || a.code.localeCompare(b.code));
   const ouverts = items.filter((d) => d.status === 'OPEN');
+  const aDecider = new Set(ouverts.flatMap((d) => d.sources.filter((s) => s.lineId && (s.actions ?? []).length).map((s) => s.lineId!)));
   return {
     items,
     open: {
@@ -472,9 +539,11 @@ export function computeTcoDiagnostics(t: TcoResult, opts: { hidden?: ReadonlySet
       occurrences: ouverts.reduce((n, d) => n + (d.count ?? 0), 0),
       anomalies: ouverts.filter((d) => d.nature === 'ANOMALY').length,
       coverage: ouverts.filter((d) => d.nature === 'COVERAGE').length,
+      decisions: aDecider.size,
     },
     inProgress: items.filter((d) => d.status === 'IN_PROGRESS').length,
     information: items.filter((d) => d.status === 'INFORMATIONAL').length,
+    decided: new Set(items.filter((d) => d.status === 'DECIDED').flatMap((d) => d.sources.map((s) => s.lineId ?? s.label))).size,
     reviewLineIds: [...review],
     completeness: t.status,
   };
