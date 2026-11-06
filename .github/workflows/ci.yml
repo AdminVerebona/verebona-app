@@ -555,6 +555,8 @@ jobs:
         run: npm run test:e2e:capital-restant-du -- --reporter=default --reporter=junit --outputFile.junit=rapports/e2e-capital-restant-du.xml
       - name: TCO, saisie des conditions d’un prêt (lot 112H)
         run: npm run test:e2e:saisie-pret -- --reporter=default --reporter=junit --outputFile.junit=rapports/e2e-saisie-pret.xml
+      - name: TCO, bloc Standard verrouillé et CTA vers Offres (lot 113B, Trello #690)
+        run: npm run test:e2e:tco-standard-cta -- --reporter=default --reporter=junit --outputFile.junit=rapports/e2e-tco-standard-cta.xml
       - name: CIL, chaîne DPE et données structurées de bout en bout (lot 111U)
         run: npm run test:e2e:cil-dpe -- --reporter=default --reporter=junit --outputFile.junit=rapports/e2e-cil-dpe.xml
       - name: CIL, pastille Partiel identique Informations, préparation et PDF (lot 112A)

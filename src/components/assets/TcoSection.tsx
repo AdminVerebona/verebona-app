@@ -74,7 +74,8 @@
  * Aucun bouton « Modifier » du total : les corrections se font sur les
  * sources (fiche, document) ou par « Ajouter / Retirer du TCO » ligne par
  * ligne. Standard : présentation verrouillée, AUCUN montant reçu (403 serveur
- * avant toute lecture). Lecture seule (`canEdit` faux) : aucun geste.
+ * avant toute lecture) ; lot 113B : bloc `TcoLockedNotice` (textes PO #690 et
+ * CTA « Découvrir les offres Premium » vers Offres). Lecture seule (`canEdit` faux) : aucun geste.
  */
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { Button } from '@/components/ui/button';
@@ -96,6 +97,8 @@ import { TcoInfoTip } from './tco-info-tip';
 import { createCoalescedRefresh, type CoalescedRefresh } from '@/lib/home/coalesced-refresh';
 import { tcoKeptYear, TCO_REFRESH_WINDOW_MS, watchTcoMutations } from './tco-refresh';
 import { TcoLoanTermsSheet } from './TcoLoanTermsSheet';
+import { TcoLockedNotice } from './tco-locked';
+import { useNativeCommerceHidden } from '@/hooks/useNativeCommerceHidden';
 
 interface Props {
   assetId: number;
@@ -380,6 +383,7 @@ export function TcoSection({ assetId, readOnly = false, defaultOpen = false }: P
   const [data, setData] = useState<TcoDto | null>(null);
   const [canEdit, setCanEdit] = useState(false);
   const [locked, setLocked] = useState(false);
+  const commerceHidden = useNativeCommerceHidden();
   const [error, setError] = useState(false);
   const [loading, setLoading] = useState(false);
   // Lot 75D (J) : lignes des pages suivantes (chargement complémentaire), remises à zéro à chaque recalcul.
@@ -615,10 +619,8 @@ export function TcoSection({ assetId, readOnly = false, defaultOpen = false }: P
           {loading && !t && !locked ? (
             <div className="flex justify-center py-6"><Loader2 className="w-5 h-5 animate-spin text-muted-foreground" /></div>
           ) : locked ? (
-            <div className="rounded-lg border border-border p-4 text-sm space-y-2" data-tco-locked>
-              <div className="flex items-center gap-2 font-semibold"><Lock className="w-4 h-4" /> Fonction Premium</div>
-              <p className="text-muted-foreground">Le coût total de possession (coûts documentés, valeur, résultat de cession) est disponible avec Premium et Premium Duo. Vos données sont conservées.</p>
-            </div>
+            // Lot 113B (#690) : textes du ticket + CTA « Découvrir les offres Premium » (→ Offres ; app : message stores).
+            <TcoLockedNotice commerceHidden={commerceHidden} />
           ) : error || !t ? (
             <div className="text-sm text-muted-foreground flex flex-wrap items-center gap-2" data-tco-error>
               <AlertCircle className="w-4 h-4 text-[color:var(--danger)]" />
