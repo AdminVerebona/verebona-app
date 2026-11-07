@@ -68,6 +68,8 @@ import {
   EMPTY_TARGETS, targetsBody, valueFromTargetsView, type TargetOptionGroupView, type TargetsValue,
 } from '@/lib/documents/document-targets-selection';
 import { NativeCommerceNotice } from '@/components/native/NativeCommerceNotice';
+// Lot 113W (#724) : période métier principale du document et historique de couverture de l'événement de référence.
+import { DocumentBusinessPeriodField } from '@/components/documents/BusinessPeriods';
 
 export interface DocumentDrawerItem {
   id: number;
@@ -1678,6 +1680,12 @@ export function DocumentDrawer({ open, onOpenChange, document: doc, onRefresh, a
                         )}
                       </div>
                     </div>
+                    {/* Lot 113W (#724) : période métier (couverture, facturation…) — rien si aucune n'est pertinente ; correction synchronisée. */}
+                    <DocumentBusinessPeriodField
+                      documentId={doc.id}
+                      refreshKey={refreshTrigger}
+                      onOpenDocument={(id) => openDrawer({ kind: 'document', id }, { stack: true })}
+                    />
                     {/* Date d'ajout — lot 108D : conservée et visible dans le détail (absente des lignes de liste). */}
                     {(fullData?.uploadedAt ?? doc.uploadedAt) && (
                       <div className="flex items-center justify-between" data-testid="document-detail-added-date">

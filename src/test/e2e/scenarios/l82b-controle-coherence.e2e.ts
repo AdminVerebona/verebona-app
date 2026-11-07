@@ -122,7 +122,8 @@ scenario('L82B', 'Contrôle de cohérence global : registre, orchestrateur, preu
     // Lot 108A : + un même achat compté une seule fois (COH-TCO-SAME-FACT, lecture seule du TCO du bien).
     // Lot 111I : + rattachements multiples du document (COH-DOC-TARGETS).
     // Lot 111U : + projection documentaire CIL du bien (COH-CIL-DOCUMENT-PROJECTION).
-    expect(p.map((x) => [x.check_id, x.object_id])).toEqual([['COH-CIL-DOCUMENT-PROJECTION', m.id], ['COH-DOC-CLASSIFICATION', f], ['COH-DOC-LINKS', f], ['COH-DOC-PRIMARY-LINK', f], ['COH-DOC-TARGETS', f], ['COH-DOC-TITLES', f],
+    // Lot 113W : + périodes métier du document (COH-DOC-BUSINESS-PERIODS).
+    expect(p.map((x) => [x.check_id, x.object_id])).toEqual([['COH-CIL-DOCUMENT-PROJECTION', m.id], ['COH-DOC-BUSINESS-PERIODS', f], ['COH-DOC-CLASSIFICATION', f], ['COH-DOC-LINKS', f], ['COH-DOC-PRIMARY-LINK', f], ['COH-DOC-TARGETS', f], ['COH-DOC-TITLES', f],
       ['COH-MISSING-PROPERTIES', m.id], ['COH-TCO-EXTRACTED-EXPENSES', m.id], ['COH-TCO-SAME-FACT', m.id]]);
     expect(p.find((x) => x.check_id === 'COH-MISSING-PROPERTIES')).toMatchObject({
       campaign: camp.id, last_trigger: 'DAILY', last_result: 'FINDING', finding: expect.objectContaining({ anomaly: 'MISSING_PROPERTY_ARBITRATION_PENDING' }),
@@ -141,14 +142,14 @@ scenario('L82B', 'Contrôle de cohérence global : registre, orchestrateur, preu
     expect(row.remaining).toBeNull();
     expect(row.accounts).toMatchObject({ visited: 1, skipped: {} });
     // Lot 86E : + le document au contrôle de classement.
-    expect(row.metrics).toMatchObject({ objectsControlled: 9, // lot 111U : + COH-CIL-DOCUMENT-PROJECTION (bien) ; lot 108A : + COH-TCO-SAME-FACT (bien) ; // lot 105D : + COH-DOC-PRIMARY-LINK ; lot 111I : + COH-DOC-TARGETS
+    expect(row.metrics).toMatchObject({ objectsControlled: 10, // lot 113W : + COH-DOC-BUSINESS-PERIODS ; lot 111U : + COH-CIL-DOCUMENT-PROJECTION (bien) ; lot 108A : + COH-TCO-SAME-FACT (bien) ; // lot 105D : + COH-DOC-PRIMARY-LINK ; lot 111I : + COH-DOC-TARGETS
       aiCalls: 0, repairsAttempted: 0 }); // lot 87D : + COH-DOC-TITLES ; lot 88B : + COH-MISSING-PROPERTIES
     expect(row.metrics.runs).toBeGreaterThanOrEqual(1);
     expect(row.metrics.durationMs).toBeGreaterThanOrEqual(0);
     // Le lendemain (nouvelle campagne exhaustive) : les MÊMES objets, inchangés, sont recontrôlés — sans doublon de preuve.
     const camp2 = await campagne([c.id], 'CORRECTIVE');
     const p2 = await preuves(c.id);
-    expect(p2).toHaveLength(9); // lot 111U : + COH-CIL-DOCUMENT-PROJECTION ; lot 111I : + COH-DOC-TARGETS ; lot 108A : + COH-TCO-SAME-FACT ; lot 86E : + COH-DOC-CLASSIFICATION ; lot 87D : + COH-DOC-TITLES ; lot 88B : + COH-MISSING-PROPERTIES ; lot 105D : + COH-DOC-PRIMARY-LINK
+    expect(p2).toHaveLength(10); // lot 113W : + COH-DOC-BUSINESS-PERIODS ; lot 111U : + COH-CIL-DOCUMENT-PROJECTION ; lot 111I : + COH-DOC-TARGETS ; lot 108A : + COH-TCO-SAME-FACT ; lot 86E : + COH-DOC-CLASSIFICATION ; lot 87D : + COH-DOC-TITLES ; lot 88B : + COH-MISSING-PROPERTIES ; lot 105D : + COH-DOC-PRIMARY-LINK
     for (const x of p2) expect(x).toMatchObject({ campaign: camp2.id, last_result: x.check_id === 'COH-MISSING-PROPERTIES' ? 'FINDING' : 'CONSISTENT' });
   });
 
@@ -404,7 +405,8 @@ scenario('L82B', 'Contrôle de cohérence global : registre, orchestrateur, preu
     // même achat compté une fois — lot 108A).
     // Lot 111I : + rattachements multiples (COH-DOC-TARGETS) des 3 documents.
     // Lot 111U : + projection documentaire CIL (COH-CIL-DOCUMENT-PROJECTION) des 3 biens.
-    expect((await preuves(c.id)).filter((x) => x.campaign === id)).toHaveLength(27);
+    // Lot 113W : + périodes métier (COH-DOC-BUSINESS-PERIODS) des 3 documents.
+    expect((await preuves(c.id)).filter((x) => x.campaign === id)).toHaveLength(30);
     // 2. Échéance dépassée avant la fin : PARTIAL (reste consigné), jamais COMPLETE.
     const passe = await o.startCampaign({ kind: 'MANUAL', trigger: 'e2e', mode: 'CORRECTIVE', scopeAccountIds: [c.id], deadlineAt: new Date(Date.now() - 1000) });
     const r1 = await o.runCampaignStep(passe, { deadline: Date.now() + 60_000 });

@@ -38,7 +38,9 @@ export const COVERAGE_INVENTORY: readonly CoverageEntry[] = [
       // Lot 101A : identité produit des équipements (série, modèle, référence, n° de série ; produits connexes, conflits).
       'COH-EQUIPMENT-IDENTITY',
       // Lot 108D : date du document jamais égale au jour d'import par repli (reprise depuis la connaissance T1, sinon « – »).
-      'COH-DOC-DATE-FALLBACK'],
+      'COH-DOC-DATE-FALLBACK',
+      // Lot 113W (#724) : périodes métier des documents (couverture, facturation…) qualifiées depuis la connaissance T1 persistée.
+      'COH-DOC-BUSINESS-PERIODS'],
     gap: {
       what: 'valeurs canoniques RENSEIGNÉES des fiches comparées aux preuves sur le stock ; propriétés vides : arbitrage T3 en attente du contrat d’entrée t3-knowledge-query-v2 (constat MISSING_PROPERTY_ARBITRATION_PENDING) ; propriétés des pièces',
       existingMechanism: 'T3 « Informations » 76J par version (t3_information_checks) ; COH-MISSING-PROPERTIES (lot 88B)',

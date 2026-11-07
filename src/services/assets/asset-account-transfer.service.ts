@@ -131,6 +131,8 @@ export const FILE_SCOPED_TABLES: ReadonlyArray<readonly [table: string, column: 
   ['document_amount_recoveries', 'file_id'],
   // Lot 109K : journal de propagation des réparations T1 vers les candidats et T3 (1145) — suit le document.
   ['document_candidate_repair_propagations', 'file_id'],
+  // Lot 113W (#724) : périodes métier qualifiées du document et corrections de l'utilisateur (1560) — suivent le document.
+  ['document_business_periods', 'file_id'],
 ];
 
 /** Tables des données du BIEN (colonne `asset_id`) qui suivent le bien. */

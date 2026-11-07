@@ -468,6 +468,13 @@ export async function runSourceAnalysis(
       if (titre?.outcome === 'FAILED') rec.fail('TITLE', titre.reason ?? 'échec');
       else rec.ok('TITLE', { outcome: titre?.outcome ?? null, reason: titre?.reason ?? null });
 
+      // Lot 113W (#724) : périodes métier du document (couverture, facturation…) requalifiées depuis la
+      // connaissance T1 qui vient d'être persistée — sans IA ; une correction de l'utilisateur reste
+      // protégée. Ne lève jamais : le contrôle COH-DOC-BUSINESS-PERIODS rattrape un échec.
+      await import('@/services/documents/business-periods/service')
+        .then((m) => m.refreshDocumentBusinessPeriods(input.accountId, leadSourceId))
+        .catch((e: Error) => console.error(`[source-analysis] périodes métier du fichier ${leadSourceId} non requalifiées :`, e.message));
+
       // ══════════════════════════════════════════════════════════════════
       // ÉTAPE 12 ter — CLASSEMENT V2 ET FILE « À TRAITER » (CDC V2 §10.2, §11.3)
       //

@@ -175,6 +175,8 @@ export const DIAG_TABLE_COVERAGE: Readonly<Record<string, DiagTableCoverage>> = 
   document_validation_reprise: C('documents'),
   document_suppliers: C('documents', { filter: `t.document_id IN ${FILES}` }),
   event_documents: C('documents', { filter: `t.file_id IN ${FILES}` }),
+  // Lot 113W (#724) : périodes métier qualifiées d'un document (couverture, facturation…), corrections protégées.
+  document_business_periods: C('documents'),
   // ── Relations ────────────────────────────────────────────────────────────
   document_asset_links: C('relations'),
   document_asset_resolutions: C('relations'),

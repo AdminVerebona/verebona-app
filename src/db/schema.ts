@@ -1,4 +1,4 @@
-import { pgTable, serial, integer, text, boolean, index, uniqueIndex, uuid, check, date as pgDate, time as pgTime, timestamp as pgTimestamp, json, unique, numeric, jsonb, primaryKey, bigint, bigserial, char, foreignKey } from 'drizzle-orm/pg-core';
+import { pgTable, serial, integer, text, boolean, index, uniqueIndex, uuid, check, date as pgDate, time as pgTime, timestamp as pgTimestamp, json, unique, numeric, jsonb, primaryKey, bigint, bigserial, char, foreignKey, smallint } from 'drizzle-orm/pg-core';
 import { sql } from 'drizzle-orm';
 import { documentExtractions } from './ai-schema';
 
@@ -4430,6 +4430,48 @@ export const documentOperationCandidates = pgTable('document_operation_candidate
   // Lot 78A — 0609_idx_3 : candidats pas encore réévalués par le contrôle d'identité économique (rattrapage borné).
   identityReviewIdx: index('document_operation_candidates_identity_review_idx').on(t.accountId)
     .where(sql`status = 'ACTIVE' AND established AND COALESCE(t3_detail->>'identityReview', '') <> 'l78a-v1'`),
+}));
+
+/**
+ * Lot 113W (1560, Trello #724) — PÉRIODES MÉTIER d'un document : nature,
+ * bornes partielles (AAAA | AAAA-MM | AAAA-MM-JJ, facultatives), segment
+ * (périodes discontinues), indice de période principale, provenance, preuves,
+ * correction de l'utilisateur protégée. Dérivées des extractions T1
+ * persistées par `services/documents/business-periods` ; l'historique de
+ * couverture d'un événement de référence est LU par l'appartenance des
+ * documents (`business_operation_documents`), jamais copié.
+ */
+export const documentBusinessPeriods = pgTable('document_business_periods', {
+  id: bigserial('id', { mode: 'number' }).primaryKey(),
+  accountId: integer('account_id').notNull().references(() => accounts.id, { onDelete: 'cascade' }),
+  fileId: integer('file_id').notNull().references(() => assetFiles.id, { onDelete: 'cascade' }),
+  periodKind: text('period_kind').notNull(),
+  segmentIndex: smallint('segment_index').notNull().default(0),
+  startOn: text('start_on'),
+  endOn: text('end_on'),
+  principalHint: boolean('principal_hint').notNull().default(false),
+  origin: text('origin').notNull(),
+  basis: text('basis').notNull(),
+  evidence: jsonb('evidence').notNull().default({}),
+  userLocked: boolean('user_locked').notNull().default(false),
+  correctedByUserId: integer('corrected_by_user_id').references(() => users.id, { onDelete: 'set null' }),
+  correctedAt: tstzOptional('corrected_at'),
+  beforeCorrection: jsonb('before_correction'),
+  status: text('status').notNull().default('ACTIVE'),
+  supersededAt: tstzOptional('superseded_at'),
+  correlationId: text('correlation_id'),
+  createdAt: tstz('created_at'),
+  updatedAt: tstz('updated_at'),
+}, (t) => ({
+  kindChk: check('document_business_periods_kind_chk', sql`${t.periodKind} IN ('COVERAGE', 'BILLING', 'VALIDITY', 'WARRANTY', 'SERVICE')`),
+  segmentChk: check('document_business_periods_segment_chk', sql`${t.segmentIndex} >= 0 AND ${t.segmentIndex} < 50`),
+  originChk: check('document_business_periods_origin_chk', sql`${t.origin} IN ('T1', 'T3', 'USER')`),
+  statusChk: check('document_business_periods_status_chk', sql`${t.status} IN ('ACTIVE', 'SUPERSEDED')`),
+  lifecycleChk: check('document_business_periods_lifecycle_chk', sql`(${t.status} = 'ACTIVE') = (${t.supersededAt} IS NULL)`),
+  evidenceChk: check('document_business_periods_evidence_chk', sql`jsonb_typeof(${t.evidence}) = 'object'`),
+  userChk: check('document_business_periods_user_chk', sql`NOT ${t.userLocked} OR ${t.origin} = 'USER'`),
+  activeUidx: uniqueIndex('document_business_periods_active_uidx').on(t.fileId, t.periodKind, t.segmentIndex).where(sql`status = 'ACTIVE'`),
+  accountIdx: index('document_business_periods_account_idx').on(t.accountId, t.fileId).where(sql`status = 'ACTIVE'`),
 }));
 
 /** C6.3 — décisions de rapprochement durables. */

@@ -46,6 +46,7 @@
     "test:e2e:ia-promotion": "vitest --run --config vitest.e2e.config.ts src/test/e2e/scenarios/l105b-promotion-ia.e2e.ts src/test/e2e/scenarios/l99b-conformite-prompts.e2e.ts src/test/e2e/scenarios/l86a-qualification-couples.e2e.ts src/test/e2e/scenarios/l100b-corpus-certification.e2e.ts src/test/e2e/scenarios/l103g-compte-technique.e2e.ts src/test/e2e/scenarios/l113i-amelioration-ia.e2e.ts",
     "test:e2e:t1-files-403": "vitest --run --config vitest.e2e.config.ts src/test/e2e/scenarios/l113r-t1-files-403.e2e.ts src/test/e2e/scenarios/l87a-secours-reprise.e2e.ts src/test/e2e/scenarios/l61a-t1-gemini-extraction.e2e.ts",
     "test:e2e:relance-analyse": "vitest --run --config vitest.e2e.config.ts src/test/e2e/scenarios/l113u-relance-analyse.e2e.ts",
+    "test:e2e:periodes-metier": "vitest --run --config vitest.e2e.config.ts src/test/e2e/scenarios/l113w-periodes-metier.e2e.ts",
     "test:e2e:bo-export-json": "vitest --run --config vitest.e2e.config.ts src/test/e2e/scenarios/l113t-bo-export-json.e2e.ts src/test/e2e/scenarios/l84d-bo-executions-exports.e2e.ts src/test/e2e/scenarios/l32e-exemples-et-export.e2e.ts",
     "test:e2e:ia-amelioration": "vitest --run --config vitest.e2e.config.ts src/test/e2e/scenarios/l113i-amelioration-ia.e2e.ts",
     "test:e2e:compte-technique": "vitest --run --config vitest.e2e.config.ts src/test/e2e/scenarios/l103g-compte-technique.e2e.ts src/test/e2e/scenarios/l86a-qualification-couples.e2e.ts src/test/e2e/scenarios/l99b-conformite-prompts.e2e.ts src/test/e2e/scenarios/l82a-eligibilite-comptes.e2e.ts",

@@ -112,6 +112,8 @@ export const RECETTE_TABLES: Readonly<Record<string, { domain: Exclude<RecetteDo
   document_classification_feedback: { domain: 'documents', description: 'Retours de classement.' },
   document_validation_reprise: { domain: 'documents', description: 'Reprise des documents « à valider » (lot 71B).' },
   document_suppliers: { domain: 'documents', description: 'Fournisseurs cités par les documents.' },
+  // Lot 113W (#724) : périodes métier d'un document.
+  document_business_periods: { domain: 'documents', description: 'Périodes métier des documents (nature, bornes partielles, provenance, preuves, corrections de l’utilisateur).' },
   event_documents: { domain: 'documents', description: 'Pièces jointes des événements.' },
   // ── Extraits et résultats IA ──────────────────────────────────────────
   document_raw_extracts: { domain: 'extraits-ia', description: 'Extracts bruts (texte : longueur et SHA-256, ou intégral sur habilitation).' },

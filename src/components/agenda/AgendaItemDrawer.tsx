@@ -44,6 +44,8 @@ import { NoDeadlineField } from "@/components/agenda/NoDeadlineField";
 import { NO_DEADLINE_HELP, NO_DEADLINE_LABEL, toggleNoDeadline, undatedLabel, withDateEntry, type AgendaDateFormState } from "@/lib/agenda/no-deadline";
 // Lot 84B (CDC v5 O-3, §14) : regroupement de l'élément — événement de référence, élément rattaché, élément seul.
 import { AgendaGroupingSection } from "@/components/agenda/AgendaGroupingSection";
+// Lot 113W (#724) : périodes de couverture de l'événement de référence (chacune reliée à son justificatif).
+import { AgendaCoverageHistory } from "@/components/documents/BusinessPeriods";
 // Lot 103E : « Fournisseur / intervenant » — composant dédié (consultation et modification).
 import { AgendaSuppliersField, AgendaSuppliersView, suppliersPayload, type AgendaSuppliersSelection } from "@/components/agenda/AgendaSuppliersSection";
 import { AGENDA_EVENT_LABELS } from "@/lib/agenda/grouping-view";
@@ -943,6 +945,12 @@ export function AgendaItemDrawer({ item: itemProp, open, onClose, onMutated, onO
                 onOpenDocument={onOpenDocument}
                 onChanged={refreshItem}
                 onRole={setGroupingRole}
+              />
+            )}
+            {mode === "view" && (
+              <AgendaCoverageHistory
+                itemId={item.id}
+                onOpenDocument={(id) => (onOpenDocument ? onOpenDocument(id) : openDrawer({ kind: "document", id }, { stack: true }))}
               />
             )}
 

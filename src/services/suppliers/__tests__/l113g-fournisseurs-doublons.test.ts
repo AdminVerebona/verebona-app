@@ -184,8 +184,10 @@ describe('L113G-U-DISPLAY — affichage discret, plus de faux « à confirmer »
 describe('L113G-U-REGISTRY — contrôle de cohérence du stock', () => {
   it('COH-SUPPLIER-IDENTITY en fin de registre, après COH-SUPPLIER-COORDINATES ; couvert par « fournisseurs » ; interdits', () => {
     const ids = COHERENCE_REGISTRY.map((c) => c.id);
-    expect(ids.slice(-2)).toEqual(['COH-SUPPLIER-COORDINATES', 'COH-SUPPLIER-IDENTITY']);
-    const c = COHERENCE_REGISTRY.at(-1)!;
+    // Lot 113W : COH-DOC-BUSINESS-PERIODS ajouté ensuite, en fin de registre.
+    const i = ids.indexOf('COH-SUPPLIER-IDENTITY');
+    expect(ids.slice(i - 1, i + 1)).toEqual(['COH-SUPPLIER-COORDINATES', 'COH-SUPPLIER-IDENTITY']);
+    const c = COHERENCE_REGISTRY[i];
     expect(c).toMatchObject({ status: 'ACTIVE', version: 1, objectType: 'supplier', domain: 'fournisseurs' });
     expect(c.forbiddenRepairs.join(' ')).toMatch(/fusionner/);
     expect(c.forbiddenRepairs.join(' ')).toMatch(/décision de l’utilisateur/);

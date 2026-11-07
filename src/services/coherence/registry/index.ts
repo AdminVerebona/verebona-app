@@ -55,6 +55,8 @@ import { agendaSuppliersCheck } from './checks/agenda-suppliers';
 import { agendaStructuralHousingCheck } from './checks/agenda-structural-housing';
 // Lot 105D : rattachement principal récupérable des documents (fin de registre).
 import { documentPrimaryLinkCheck } from './checks/document-primary-link';
+// Lot 113W (#724) : périodes métier des documents (fin de registre, reprise de l'historique).
+import { documentBusinessPeriodsCheck } from './checks/document-business-periods';
 // Lot 106A : représentations équivalentes d'un même fait réalisé, toutes origines (fin de registre).
 import { agendaEquivalentRepresentationsCheck } from './checks/agenda-equivalent-representations';
 import { priceMultiArticleCheck } from './checks/price-multi-article';
@@ -168,6 +170,8 @@ export const COHERENCE_REGISTRY: readonly CoherenceCheck[] = [
   supplierCoordinatesCheck,
   // Lot 113G (ticket #706 « Fournisseurs — création automatique, arbitrage des doublons uniquement ») : ajouté EN FIN de registre, après COH-SUPPLIER-COORDINATES (111X).
   supplierIdentityCheck,
+  // Lot 113W (ticket #724 « Gestion transversale des périodes métier ») : ajouté EN FIN de registre, après COH-SUPPLIER-IDENTITY (113G).
+  documentBusinessPeriodsCheck,
 ];
 
 /** Contrôles exécutés par l'orchestrateur (les points d'extension PLANNED sont exclus). */
