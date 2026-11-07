@@ -59,6 +59,7 @@ import { MatchingIndexCache } from './matching-index';
 import { T1_SETTLED_STATES } from './question-gate';
 import { DOCUMENT_ASSET_RESOLUTION_VERSION } from './version';
 import { T3_TECHNICAL_RETRY_MINUTES, TECHNICAL_FAILURE_REASON } from './technical-failure';
+import { NO_ASSET_REASON_CODE } from '@/services/to-process/no-asset-choice';
 
 /** Type de cible des travaux T3 DOCUMENT_ASSET dans `ai_job_queue`. */
 const T3_TARGET_DOCUMENT = 'document';
@@ -338,7 +339,8 @@ export async function startDocumentSweep(
  */
 export const SWEEP_SQL = `
   SELECT f.id, f.account_id, f.user_id,
-         (r.file_id IS NOT NULL AND r.status IN ('ABSTAINED', 'NO_CANDIDATE', 'MULTI_ASSET')
+         (r.file_id IS NOT NULL AND (r.status IN ('ABSTAINED', 'NO_CANDIDATE', 'MULTI_ASSET')
+                                     OR (r.status = 'USER_DECIDED' AND r.reason_code = '${NO_ASSET_REASON_CODE}'))
           AND r.extraction_at IS NOT NULL AND r.extraction_at >= date_trunc('milliseconds', e.extracted_at)
           AND r.resolution_version IS NOT DISTINCT FROM $5::int
           AND r.context_fingerprint IS NOT NULL) AS context_check,
@@ -369,8 +371,14 @@ export const SWEEP_SQL = `
           AND q.status IN ('PENDING', 'RUNNING'))
      AND (r.file_id IS NULL OR NOT COALESCE((
           -- Millisecondes : l'instant est relu côté serveur (précision JS).
-          (r.status = 'USER_DECIDED'
-            AND r.extraction_at IS NOT NULL AND r.extraction_at >= date_trunc('milliseconds', e.extracted_at))
+          ((r.status = 'USER_DECIDED' AND r.extraction_at IS NOT NULL AND r.extraction_at >= date_trunc('milliseconds', e.extracted_at))
+            AND r.reason_code IS DISTINCT FROM '${NO_ASSET_REASON_CODE}')
+       -- Lot 113V (#719) : « Aucun » de l'utilisateur — repris seulement sur une nouvelle analyse, une nouvelle
+       -- version ou une évolution de la connaissance du compte (contexte comparé avant toute mise en file).
+       OR (r.status = 'USER_DECIDED' AND r.reason_code = '${NO_ASSET_REASON_CODE}'
+            AND r.extraction_at IS NOT NULL AND r.extraction_at >= date_trunc('milliseconds', e.extracted_at)
+            AND r.resolution_version IS NOT DISTINCT FROM $5::int
+            AND NOT ${knowledgeChangedSql('f.account_id', 'r.knowledge_revision')})
        OR (r.status IN ('ABSTAINED', 'NO_CANDIDATE', 'MULTI_ASSET')
             AND r.reason_code IS DISTINCT FROM '${TECHNICAL_FAILURE_REASON}'
             AND r.extraction_at IS NOT NULL AND r.extraction_at >= date_trunc('milliseconds', e.extracted_at)

@@ -37,6 +37,7 @@ import { getField } from '@/services/canonical/registry';
 import type { ActionProposal, ValueOrigin } from './action-model';
 import { unnamedLabel } from './card-labels';
 import { parseDocumentDate } from './document-field-evidence';
+import { explicitNoAssetSql } from './no-asset-choice';
 
 /** Client de base : transaction en cours ou `db` (même contrat que `resolve-action`). */
 type SlotClient = Pick<typeof db, 'select' | 'update' | 'insert'>;
@@ -375,6 +376,8 @@ export const ASSET_LINK_SLOT: DocumentSlot = {
         sql`((${assetFiles.assetId} IS NULL AND ${assetFiles.linkedAssetId} IS NULL)
              OR ${assetFiles.assetId} = (${assetFiles.userEditedFields} ->> 'assetIdAuto')::int)`,
         sql`COALESCE((${assetFiles.userEditedFields} ->> 'assetId')::boolean, false) = false`,
+        // Lot 113V (#719) : jamais par-dessus un « Aucun » de l'utilisateur (non-rattachement explicite).
+        sql.raw(`NOT ${explicitNoAssetSql('asset_files')}`),
       ))
       .returning({ id: assetFiles.id });
     return rows.length > 0;

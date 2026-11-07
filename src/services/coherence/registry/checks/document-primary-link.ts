@@ -164,7 +164,8 @@ export const documentPrimaryLinkCheck: CoherenceCheck = {
       if (!s) { out.set(id, { verdict: 'GONE' }); continue; }
       if (!s.orphan) { out.set(id, { verdict: 'CONSISTENT', detail: { state: 'PRIMARY_PRESENT' } }); continue; }
       if (s.userDecided || s.draft || s.status === 'USER_DECIDED') {
-        out.set(id, { verdict: 'CONSISTENT', detail: { state: 'ORPHAN_NORMAL', reason: s.draft ? 'DRAFT_OR_IGNORED' : 'USER_DECISION' } });
+        // Lot 113V (#719) : « Aucun » choisi par l'utilisateur — l'absence de bien n'est pas une anomalie.
+        out.set(id, { verdict: 'CONSISTENT', detail: { state: 'ORPHAN_NORMAL', reason: s.draft ? 'DRAFT_OR_IGNORED' : s.reasonCode === 'USER_NO_ASSET' ? 'USER_NO_ASSET' : 'USER_DECISION' } });
         continue;
       }
       const constat = (verdict: Inspection['verdict'], anomaly: string, detail: Record<string, unknown> = {}): Inspection => ({

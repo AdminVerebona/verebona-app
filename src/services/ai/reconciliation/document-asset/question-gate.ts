@@ -14,20 +14,30 @@
  *   · document analysé SANS représentation persistée (ancien moteur) ;
  *   · document dont l'utilisateur a retiré le rattachement (T3 ne rattache
  *     jamais un document détaché par l'utilisateur).
+ * Sauf « Aucun » choisi sur la carte (lot 113V) : voir la condition SQL.
  */
 import { pgClient } from '@/db';
+import { explicitNoAssetSql } from '@/services/to-process/no-asset-choice';
 
 /** États d'analyse où T1 est terminé. */
 export const T1_SETTLED_STATES = ['ANALYZED', 'VALIDATION_REQUIRED', 'CONFLICT_DETECTED', 'FUSION_SUGGESTED'] as const;
 
-/** Condition SQL (alias `f` = asset_files) : la question peut être posée. */
-export const ASSET_LINK_QUESTION_ALLOWED_SQL = `(
+/**
+ * Condition SQL (alias `f` = asset_files) : la question peut être posée.
+ *
+ * Lot 113V (#719) : JAMAIS tant qu'un non-rattachement explicite (« Aucun »)
+ * est en vigueur — ni par le pont documentaire, ni par le balayage. Seul T3,
+ * sur un élément réellement nouveau, peut soumettre un réexamen
+ * (`document-asset/explicit-no-asset.ts`).
+ */
+export const ASSET_LINK_QUESTION_ALLOWED_SQL = `((
   f.analysis_state IS NULL
   OR f.analysis_state NOT IN ('${T1_SETTLED_STATES.join("', '")}')
   OR NOT EXISTS (SELECT 1 FROM document_extractions qe WHERE qe.file_id = f.id)
   OR COALESCE((f.user_edited_fields ->> 'assetId')::boolean, false)
   OR EXISTS (SELECT 1 FROM document_asset_resolutions qr
-              WHERE qr.file_id = f.id AND qr.status IN ('ABSTAINED', 'NO_CANDIDATE')))`;
+              WHERE qr.file_id = f.id AND qr.status IN ('ABSTAINED', 'NO_CANDIDATE')))
+  AND NOT ${explicitNoAssetSql('f')})`;
 
 /** La question LINK-ASSET peut-elle être créée pour ce document ? */
 export async function assetLinkQuestionAllowed(accountId: number, fileId: number): Promise<boolean> {

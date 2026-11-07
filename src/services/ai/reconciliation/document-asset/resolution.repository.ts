@@ -198,7 +198,10 @@ export async function confirmContext(p: {
         SET evaluated_at = now(), updated_at = now(), knowledge_revision = GREATEST(COALESCE(knowledge_revision, 0), $3::bigint),
             last_evaluation = $4::jsonb
       WHERE file_id = $1 AND context_fingerprint = $2
-        AND status IN ('ABSTAINED', 'NO_CANDIDATE', 'MULTI_ASSET') AND resolution_version = $5::int
+        AND (status IN ('ABSTAINED', 'NO_CANDIDATE', 'MULTI_ASSET')
+             -- Lot 113V (#719) : « Aucun » de l'utilisateur, contexte identique — confirmé sans travail.
+             OR (status = 'USER_DECIDED' AND reason_code = 'USER_NO_ASSET'))
+        AND resolution_version = $5::int
       RETURNING file_id`,
     [p.fileId, p.contextFingerprint, p.knowledgeRevision, JSON.stringify(p.lastEvaluation), DOCUMENT_ASSET_RESOLUTION_VERSION] as never[],
   )) as unknown as unknown[];

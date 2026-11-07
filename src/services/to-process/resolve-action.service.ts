@@ -338,6 +338,16 @@ export async function resolveArbitration(
       return resolveDocumentAssetConflict(tx, action, value, accountId, options);
     }
 
+    // Lot 113V (#719) : « Aucun » sur la carte de rattachement document → bien —
+    // non-rattachement EXPLICITE mémorisé (aucun lien, aucune colonne écrits).
+    if (action.ruleCode === 'LINK-ASSET') {
+      const { isNoAssetChoice } = await import('./no-asset-choice');
+      if (isNoAssetChoice(value)) {
+        const { resolveNoAssetChoice } = await import('./no-asset-decision');
+        return resolveNoAssetChoice(tx, action, accountId, options);
+      }
+    }
+
     // Confirmation groupée d'identité (lot 105D) : « Oui, c'est ce bien » / « Non » —
     // décision mémorisée, puis chaque document repasse par T3 (jamais « rattacher tout »).
     if (action.ruleCode === 'LINK-ASSET-GROUP') {
@@ -492,6 +502,13 @@ export async function undoArbitration(
   if (action.ruleCode === 'LINK-ASSET-CONFLICT') {
     const { undoDocumentAssetConflict } = await import('./document-asset-conflict');
     return undoDocumentAssetConflict(action, accountId);
+  }
+
+  // Lot 113V : « Annuler » après « Aucun » — la même carte est rouverte.
+  if (action.ruleCode === 'LINK-ASSET') {
+    const { undoNoAssetChoice } = await import('./no-asset-decision');
+    const r = await undoNoAssetChoice(action, accountId);
+    if (r) return r;
   }
 
   if (action.ruleCode === 'LINK-ASSET-GROUP') {

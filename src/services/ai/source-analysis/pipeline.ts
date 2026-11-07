@@ -71,7 +71,7 @@ import { markSourcesGrouped } from '@/services/documents/grouped-sources';
 // Prompt maître T1 — seul moteur depuis le lot 16b-3 (CDC 15 §23, §29).
 import { analyseGroupWithMaster, type MasterGroupAnalysis } from './master/analyse-group-master';
 import { enqueueT3ForAffectedAssets, enqueueT3ForAffectedEntities } from './master/reconciliation-fanout';
-import { computeMasterDocumentLinks, writeMasterDocumentLinks } from './master/document-links';
+import { computeMasterDocumentLinks, withoutAssetAttachment, writeMasterDocumentLinks } from './master/document-links';
 import { syncDocumentRulesFromAnalysis } from '@/services/to-process/document-rule-bridge';
 import { groupUpload } from './steps/group-upload.step';
 import { loadAssetIdentifiers } from '../reconciliation/document-asset/asset-identifiers.repository';
@@ -575,7 +575,17 @@ export async function runSourceAnalysis(
       // bien… ? » éventuellement ouverte est close par le SYSTÈME, avant
       // l'écriture des liens (le déclencheur 0257 la fermerait sinon avec
       // un motif « utilisateur »).
-      if (assetId !== null && assetId !== (input.linkedAssetId ?? null)) {
+      // Lot 113V (#719) : « Aucun » choisi par l'utilisateur et en vigueur — aucun rattachement
+      // silencieux par une (ré)analyse : biens désignés seulement CITÉS, ni colonne, ni question close.
+      const liensT1 = computeMasterDocumentLinks({
+        facts: master.facts,
+        assetCandidates: result.assetCandidates,
+        documentAssetId: master.documentAssetId,
+        knownAssetId: input.linkedAssetId ?? null,
+      });
+      const aucunBien = (assetId !== null || liensT1.some((l) => l.role !== 'MENTIONED'))
+        && await import('@/services/to-process/no-asset-decision').then((m) => m.explicitNoAssetActive(input.accountId, leadSourceId), () => false);
+      if (assetId !== null && assetId !== (input.linkedAssetId ?? null) && !aucunBien) {
         await closeAssetLinkQuestion(input.accountId, leadSourceId).catch((e: Error) => {
           console.error(`[source-analysis] question de rattachement du fichier ${leadSourceId} non close :`, e.message);
         });
@@ -586,12 +596,7 @@ export async function runSourceAnalysis(
       await writeMasterDocumentLinks({
         accountId: input.accountId,
         fileId: leadSourceId,
-        links: computeMasterDocumentLinks({
-          facts: master.facts,
-          assetCandidates: result.assetCandidates,
-          documentAssetId: master.documentAssetId,
-          knownAssetId: input.linkedAssetId ?? null,
-        }),
+        links: aucunBien ? withoutAssetAttachment(liensT1) : liensT1,
       }).then(() => rec.ok('LINKS'), (e: Error) => {
         rec.fail('LINKS', e);
         console.error(`[source-analysis] liens document ↔ biens du fichier ${leadSourceId} non écrits :`, e.message);
@@ -612,7 +617,7 @@ export async function runSourceAnalysis(
       // Lot 31B : rattachement principal VISIBLE (colonne lue par les listes
       // de documents) pour un bien retenu automatiquement — jamais par-dessus
       // un choix ou un retrait de l'utilisateur (`ASSET_LINK_SLOT.writeAuto`).
-      if (assetId !== null && assetId !== (input.linkedAssetId ?? null)) {
+      if (assetId !== null && assetId !== (input.linkedAssetId ?? null) && !aucunBien) {
         await writeAutomaticPrimaryColumn(input.accountId, leadSourceId, assetId).then(() => rec.ok('PRIMARY_ASSET', { assetId }), (e: Error) => {
           rec.fail('PRIMARY_ASSET', e);
           console.error(`[source-analysis] rattachement principal du fichier ${leadSourceId} non écrit :`, e.message);

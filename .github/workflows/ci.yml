@@ -595,6 +595,8 @@ jobs:
         run: npm run test:e2e:bo-export-json -- --reporter=default --reporter=junit --outputFile.junit=rapports/e2e-bo-export-json.xml
       - name: Relance d'analyse, verdict unique et journal des refus (lot 113U, Trello #720)
         run: npm run test:e2e:relance-analyse -- --reporter=default --reporter=junit --outputFile.junit=rapports/e2e-relance-analyse.xml
+      - name: Rattachement « Aucun » respecté (lot 113V, Trello #719)
+        run: npm run test:e2e:rattachement-aucun -- --reporter=default --reporter=junit --outputFile.junit=rapports/e2e-rattachement-aucun.xml
       - name: Inscription, CGUV publiées vérifiées et reprise (lot 111O)
         run: npm run test:e2e:inscription-cguv -- --reporter=default --reporter=junit --outputFile.junit=rapports/e2e-inscription-cguv.xml
       - uses: actions/upload-artifact@v4

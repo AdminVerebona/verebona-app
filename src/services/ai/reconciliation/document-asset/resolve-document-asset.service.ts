@@ -135,6 +135,9 @@ import {
 } from './technical-failure';
 import { resolveProjectionActor, type ProjectionEffect } from './projection-actor';
 import { createHash } from 'node:crypto';
+import { readExplicitNoAssetDecision } from '@/services/to-process/no-asset-decision';
+import type { ExplicitNoAssetDecision } from '@/services/to-process/no-asset-choice';
+import { respectExplicitNoAsset, type RespectNoAssetDeps } from './explicit-no-asset';
 
 /** Issue métier d'une exécution (vocabulaire de la file T3). */
 type DocumentAssetOutcome = 'APPLIED' | 'NO_CHANGE' | 'ABSTAIN' | 'SUPERSEDED' | 'TARGET_GONE';
@@ -233,6 +236,8 @@ export interface DocumentAssetEvaluation {
   projection?: ProjectionEffect | null;
   /** Lot 108E (C) : carte « À traiter » LINK-ASSET avant l'évaluation (identifiant) — après : `toProcessAction`. */
   cardBefore?: number | null;
+  /** Lot 113V : non-rattachement explicite (« Aucun ») respecté — éléments nouveaux examinés. */
+  explicitNoAsset?: import('./explicit-no-asset').ExplicitNoAssetEvaluation | null;
 }
 
 /** Lot 105D — décision du modèle mémorisée (abstention seulement : un rattachement clôt le document). */
@@ -329,6 +334,10 @@ interface ResolveDocumentAssetDeps {
   crossContractActive?: () => Promise<boolean>;
   /** Lot 105D : signature de la configuration IA effective (défaut : passerelle). */
   aiConfigSignature?: () => Promise<string>;
+  /** Lot 113V : décision « Aucun » en vigueur (défaut : trace de la carte, `readExplicitNoAssetDecision`). */
+  explicitNoAsset?: (accountId: number, fileId: number) => Promise<ExplicitNoAssetDecision | null>;
+  /** Lot 113V : biens éligibles / révision du document (défaut : base). */
+  noAsset?: RespectNoAssetDeps;
 }
 
 async function defaultAiConfigSignature(): Promise<string> {
@@ -446,6 +455,17 @@ export async function resolveDocumentAsset(
   const changed = resolution?.knowledgeRevision != null ? await knowledgeChangedSince(accountId, resolution.knowledgeRevision) : [];
   const base = evaluationBase({ fileId, ctx, resolution, revision, changed, triggerCode: input.triggerCode, reprocessReason: input.reprocessReason });
   const openCard = deps.openAssetLinkAction ?? openAssetLinkActionOf;
+
+  // Lot 113V (#719) : « Aucun » choisi par l'utilisateur et en vigueur — sa décision prime :
+  // aucun appel au modèle, aucun rattachement ; réexamen soumis seulement sur un élément nouveau.
+  const aucun = await (deps.explicitNoAsset ?? readExplicitNoAssetDecision)(accountId, fileId);
+  if (aucun) {
+    const carte = input.openActionId ?? await openCard(accountId, fileId);
+    return respectExplicitNoAsset({
+      accountId, fileId, decision: aucun, ctx, revision, open: state.open, cardBefore: carte, g, deps: deps.noAsset,
+      evaluation: { ...base, reevaluated: true, openActionId: carte, cardBefore: carte },
+    });
+  }
 
   // Lot 108E (A5) : graphe d'identité en PANNE (≠ coupure) — aucune décision (les garde-fous de rôle d'adresse,
   // de refus et de groupe en dépendent), aucune carte : issue technique, Supervision, relance durable.
@@ -881,6 +901,12 @@ async function applyDecision(p: {
   const avant = await readAttachmentState(accountId, fileId);
   const stop = await stopReason(accountId, fileId, avant, g);
   if (stop) return stop.outcome === 'NO_CHANGE' ? { ...stop, outcome: 'SUPERSEDED' } : stop;
+  // Lot 113V : « Aucun » choisi PENDANT l'évaluation (appel au modèle) — la décision de l'utilisateur gagne.
+  if (await readExplicitNoAssetDecision(accountId, fileId)) {
+    await g('état de résolution');
+    await recordOutcome({ accountId, fileId, status: 'USER_DECIDED', method: 'NONE', reasonCode: 'USER_NO_ASSET' });
+    return { outcome: 'SUPERSEDED', status: 'USER_DECIDED' };
+  }
   const commun = {
     inputFingerprint: ctx.fingerprint, extractionAt: ctx.extractionAt, identifiersFingerprint: ctx.idsFingerprint,
     knowledgeRevision: p.revision, contextFingerprint: ctx.fingerprint,

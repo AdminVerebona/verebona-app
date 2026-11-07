@@ -35,6 +35,7 @@ import { openToProcessTarget } from '@/lib/to-process-target';
 import { resolveErrorClosesCard, resolveErrorMessage } from '@/lib/to-process-resolve-errors';
 import type { ActionProposalView, ActionView } from './ActionCard';
 import { saleDetailsPrompt } from '@/lib/assets/sale-fields';
+import { isNoAssetChoice } from '@/services/to-process/no-asset-choice';
 import type { SaleFollowUp } from '@/components/assets/SaleDetailsDialog';
 
 /** Événement de synchronisation file / pastille / mascotte. */
@@ -78,7 +79,9 @@ export function saleFollowUpFor(action: ActionView, value: ActionProposalView['v
  * carte — la liste est rechargée.
  */
 export const ASSET_LINK_REFUSED_MESSAGE = 'Ce bien ne peut plus recevoir ce document : la liste des biens a été actualisée.';
-export function resolutionToastText(action: Pick<ActionView, 'assetChoices'>, proposal: Pick<ActionProposalView, 'label'>): string {
+export function resolutionToastText(action: Pick<ActionView, 'assetChoices'>, proposal: Pick<ActionProposalView, 'label'> & { value?: ActionProposalView['value'] }): string {
+  // Lot 113V (#719) : « Aucun » — texte à valider par le PO.
+  if (action.assetChoices && isNoAssetChoice(proposal.value)) return 'Choix enregistré : ce document reste sans bien.';
   return action.assetChoices ? `Document rattaché à « ${proposal.label} »` : 'Valeur mise à jour';
 }
 

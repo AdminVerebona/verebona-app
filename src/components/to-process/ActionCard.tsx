@@ -45,6 +45,7 @@ import { SupplierPairDetails } from './SupplierPairDetails';
 import { clearDraft, getDraft, setDraft } from './return-state';
 import type { AssetLinkChoicesView } from '@/services/to-process/asset-link-choices';
 import { AssetLinkChoices } from './AssetLinkChoices';
+import { NO_ASSET_CHOICE, NO_ASSET_CHOICE_LABEL } from '@/services/to-process/no-asset-choice';
 import { PROPOSAL_BUTTON_CLASS } from './proposal-button';
 import { notifyToProcessChanged } from './useToProcessResolution';
 
@@ -239,6 +240,8 @@ function Controls({ action, onChoose, onOpenTarget, busy }: { action: ActionView
         busy={busy}
         onPick={(c) => onChoose(action, { value: c.assetId, label: c.label })}
         onRetry={notifyToProcessChanged}
+        // Lot 113V (#719) : « Aucun » — même parcours commun (route `/resolve`, valeur `NONE`).
+        onNone={() => onChoose(action, { value: NO_ASSET_CHOICE, label: NO_ASSET_CHOICE_LABEL })}
       />
     );
   }

@@ -70,6 +70,16 @@ export function computeMasterDocumentLinks(p: {
 }
 
 /**
+ * Lot 113V (#719) — « Aucun » choisi par l'utilisateur et en vigueur : une
+ * analyse ne RATTACHE pas silencieusement le document. Les biens qu'elle
+ * désigne restent CITÉS (MENTIONED : indice, jamais un rattachement) ; les
+ * liens vers un équipement ou une pièce ne passent pas ici (fonction PURE).
+ */
+export function withoutAssetAttachment(links: readonly MasterDocumentLink[]): MasterDocumentLink[] {
+  return links.map((l) => (l.role === 'MENTIONED' ? l : { ...l, role: 'MENTIONED' as const }));
+}
+
+/**
  * Écrit les liens AI du document, puis retire les liens AI d'une analyse
  * antérieure qui ne sont plus justifiés. Chaque lien est indépendant : un
  * échec (cible retirée entre-temps, cloisonnement) est journalisé sans

@@ -1412,7 +1412,7 @@ export async function syncDocumentRulesFromAnalysis(input: {
           });
           continue;
         }
-        const plan = planDocumentRule({
+        let plan = planDocumentRule({
           rule, state, proposals, mode: 'analysis',
           relevant: isRuleRelevantForDocument(rule, ctx.documentTypeCode),
           // Juste analysé : l'état d'analyse n'est pas encore final, seule
@@ -1420,6 +1420,12 @@ export async function syncDocumentRulesFromAnalysis(input: {
           mayCreate: ctx.open,
           deferredToT3: key === 'assetIds' && obs.deferAssetLinkToT3 === true,
         });
+        // Lot 113V (#719) : « Aucun » en vigueur — une réanalyse ne repose jamais la question
+        // et ne rattache rien (l'écriture automatique est aussi refusée par `ASSET_LINK_SLOT.writeAuto`).
+        if (key === 'assetIds' && !actives.has(key) && (plan.kind === 'UPSERT' || plan.kind === 'WRITE')
+          && await (await import('./no-asset-decision')).explicitNoAssetActive(input.accountId, input.fileId)) {
+          plan = { kind: 'NONE', reason: 'USER_NO_ASSET' };
+        }
         const before = { ...report };
         const exec = await executePlan(input.accountId, input.fileId, rule, slot, plan, state, report, 'OBSOLETE');
         await traceClassic({ accountId: input.accountId, fileId: input.fileId, rule, trigger: 'ANALYSIS', runRef: input.runRef, plan, exec, active: actives.get(key) ?? null, state, report, before });

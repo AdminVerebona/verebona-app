@@ -159,8 +159,9 @@ describe('L113A — carte « À quel bien rattacher ce document ? »', () => {
     const vide = rendu(carte({ assetChoices: { status: 'EMPTY', items: [] } }));
     expect(vide).toContain('data-asset-choices="empty"');
     expect(vide).toContain(ASSET_LINK_TEXT.empty.replace(/’/g, '’'));
-    // Seul reste le lien de consultation (« Voir le document ») : aucun bouton de choix.
-    expect(boutons(vide).filter((b) => b !== '')).toEqual(['Voir le document']);
+    // Aucun bouton de BIEN ; seuls restent « Aucun » (lot 113V, #719 : l'absence de bien n'est pas
+    // une anomalie, l'utilisateur peut la confirmer) et le lien de consultation (« Voir le document »).
+    expect(boutons(vide).filter((b) => b !== '')).toEqual([ASSET_LINK_TEXT.none, 'Voir le document']);
     const err = rendu(carte({ assetChoices: { status: 'ERROR', items: [] } }));
     expect(err).toContain('role="alert"');
     expect(boutons(err).filter((b) => b !== '')).toEqual([ASSET_LINK_TEXT.retry, 'Voir le document']);
