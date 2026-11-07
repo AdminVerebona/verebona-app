@@ -4,6 +4,8 @@
  * Copie et téléchargement d'une exécution IA — BO, lot 32 (point 5).
  *
  * · « Copier » / « Télécharger .json » : l'export complet de l'exécution
+ *   (lot 113T : fichier remis par `exportFileWithFeedback`, même parcours que
+ *   tous les exports du BO)
  *   (`/api/admin/ai/executions/[id]/export`, construit côté serveur sur le
  *   même détail que le panneau : la rédaction en place s'applique) ;
  * · `CopyBlockButton` : copie d'un bloc JSON affiché (instantané d'entrée,
@@ -14,6 +16,8 @@ import { Check, Copy, Download, Loader2 } from 'lucide-react';
 import { toast } from 'sonner';
 import { Button } from '@/components/ui/button';
 import { apiClient } from '@/lib/api-client';
+import { exportFileName } from '@/lib/files/export-file-name';
+import { exportFileWithFeedback } from '@/components/admin/ExportFileButton';
 
 /** Texte JSON lisible (indentation 2) ; une chaîne est copiée telle quelle. */
 function jsonText(value: unknown): string {
@@ -68,22 +72,13 @@ export function ExecutionExportButtons({ callId }: { callId: number }) {
     } finally { setBusy(null); }
   };
 
+  // Lot 113T : lecture contrôlée puis FICHIER remis (partage natif dans l'app,
+  // Web Share sur mobile, téléchargement sur ordinateur) — plus de lien `blob:`
+  // affiché en texte brut dans la vue de l'app iOS.
   const telecharger = async () => {
     setBusy('download');
     try {
-      const data = await charger() as { exportedAt?: string };
-      const blob = new Blob([jsonText(data)], { type: 'application/json' });
-      const url = URL.createObjectURL(blob);
-      const a = document.createElement('a');
-      const at = (data.exportedAt ?? new Date().toISOString()).slice(0, 19).replace(/[:T]/g, '-');
-      a.href = url;
-      a.download = `execution-ia-appel-${callId}-${at}.json`;
-      document.body.appendChild(a);
-      a.click();
-      a.remove();
-      setTimeout(() => URL.revokeObjectURL(url), 1000);
-    } catch {
-      toast.error('Export indisponible.');
+      await exportFileWithFeedback(`${exportUrl(callId)}?download=1`, exportFileName('execution-ia-appel', callId), 'json');
     } finally { setBusy(null); }
   };
 
@@ -95,7 +90,7 @@ export function ExecutionExportButtons({ callId }: { callId: number }) {
       </Button>
       <Button size="sm" variant="outline" onClick={telecharger} disabled={busy !== null}>
         {busy === 'download' ? <Loader2 className="w-3.5 h-3.5 mr-1.5 animate-spin" /> : <Download className="w-3.5 h-3.5 mr-1.5" />}
-        Télécharger .json
+        {busy === 'download' ? 'Préparation…' : 'Télécharger .json'}
       </Button>
     </div>
   );

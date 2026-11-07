@@ -19,7 +19,8 @@ interface SharePlugin {
   canShare?: () => Promise<{ value?: boolean }>;
 }
 
-function isCancel(e: unknown): boolean {
+/** Fermeture de la feuille de partage par l'utilisateur (natif : « Share canceled » ; Web : AbortError). Lot 113T : partagé. */
+export function isCancel(e: unknown): boolean {
   const m = String((e as { message?: unknown })?.message ?? e ?? '').toLowerCase();
   const n = String((e as { name?: unknown })?.name ?? '');
   return n === 'AbortError' || m.includes('cancel') || m.includes('abort');

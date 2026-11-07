@@ -23,6 +23,7 @@ import {
   type DossierField, type DossierRelation, type DossierSection, type DossierTable, type DossierWindow, type EntityType, type ExportFormat,
 } from '@/services/admin/account-data/model';
 import { copyText } from '@/app/admin/ai-executions/_components/CopyJson';
+import { saveFileWithFeedback } from '@/components/admin/ExportFileButton';
 
 /** Taille de page de la consultation (pagination serveur). */
 export const SCREEN_ROWS = DOSSIER_PAGE_SIZE;
@@ -250,16 +251,9 @@ function TableView({ table, window: w, onPage, busy = false }: {
   );
 }
 
+/** Lot 113T : fichier remis par le parcours commun des exports du BO (partage natif / Web Share / téléchargement). */
 function downloadText(text: string, fileName: string, type: string) {
-  const blob = new Blob([text], { type });
-  const url = URL.createObjectURL(blob);
-  const a = document.createElement('a');
-  a.href = url;
-  a.download = fileName;
-  document.body.appendChild(a);
-  a.click();
-  a.remove();
-  setTimeout(() => URL.revokeObjectURL(url), 1000);
+  void saveFileWithFeedback(new Blob([text], { type }), fileName);
 }
 
 export function SectionCard({ s, onNavigate, csvName, extra, actions }: {

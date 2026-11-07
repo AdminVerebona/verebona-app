@@ -47,8 +47,9 @@ export async function GET(req: NextRequest, { params }: { params: Promise<{ id: 
     }
     const headers: Record<string, string> = { 'cache-control': 'no-store', 'content-type': 'application/json; charset=utf-8' };
     if (req.nextUrl.searchParams.get('download') === '1') {
-      const { contentDisposition } = await import('@/lib/download-filename');
-      headers['content-disposition'] = contentDisposition(`verebona-execution-${id.replace(/[^A-Za-z0-9._-]/g, '_')}.json`);
+      // Lot 113T : type + identifiant utile + jour (`verebona-execution-T1-ef883f80-2026-11-06.json`).
+      const [{ contentDisposition }, { exportFileName }] = await Promise.all([import('@/lib/download-filename'), import('@/lib/files/export-file-name')]);
+      headers['content-disposition'] = contentDisposition(exportFileName('execution', id, new Date(), sensitive ? { variant: 'avec-echanges' } : {}));
     }
     return new NextResponse(`${JSON.stringify(body, null, 2)}\n`, { status: 200, headers });
   } catch (e) {

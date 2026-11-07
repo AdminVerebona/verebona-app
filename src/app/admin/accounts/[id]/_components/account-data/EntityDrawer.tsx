@@ -40,6 +40,7 @@ import type { OperationDetail } from '@/services/business-operations/diagnostics
 import { OperationDetailView } from '@/app/admin/operations/_components/views';
 import { CopyButton, SectionCard, fmtInt, type SectionActions } from './DossierView';
 import { copyText } from '@/app/admin/ai-executions/_components/CopyJson';
+import { deliverFile } from '@/lib/files/export-delivery';
 
 export interface EntityRefValue { type: EntityType; id: number }
 
@@ -161,14 +162,9 @@ export function EntityDrawer({ accountId, current, openSeq, onChange, onClose }:
     setDownloading(format);
     try {
       const { blob, status, name } = await fetchExport(format);
-      const url = URL.createObjectURL(blob);
-      const a = document.createElement('a');
-      a.href = url;
-      a.download = name;
-      document.body.appendChild(a);
-      a.click();
-      a.remove();
-      setTimeout(() => URL.revokeObjectURL(url), 1000);
+      // Lot 113T : fichier remis par le parcours commun des exports du BO (partage natif / Web Share / téléchargement).
+      const { outcome } = await deliverFile(blob, name, { onNeedsGesture: 'download' });
+      if (outcome === 'cancelled') return;
       if (status !== 'COMPLETE') toast.warning(`Export ${format.toUpperCase()} téléchargé : statut ${status} — le fichier le signale (complétude en fin de fichier).`);
       else toast.success(`Export intégral ${format.toUpperCase()} téléchargé (COMPLETE).`, { duration: 2000 });
     } catch (e) {

@@ -543,10 +543,6 @@ jobs:
         run: npm run test:e2e:diagnostic-file -- --reporter=default --reporter=junit --outputFile.junit=rapports/e2e-diagnostic-file.xml
       - name: Diagnostic ciblé, voie réservée et durées (lot 111Q)
         run: npm run test:e2e:diagnostic-cible -- --reporter=default --reporter=junit --outputFile.junit=rapports/e2e-diagnostic-cible.xml
-      - name: Agenda / Timeline, statut effectif commun (lot 111R)
-        run: npm run test:e2e:statut-effectif -- --reporter=default --reporter=junit --outputFile.junit=rapports/e2e-statut-effectif.xml
-      - name: Rappels mascotte, À traiter, J-7 et accueil sur le statut effectif (lot 112G)
-        run: npm run test:e2e:rappels-statut-effectif -- --reporter=default --reporter=junit --outputFile.junit=rapports/e2e-rappels-statut-effectif.xml
       - name: Acquisition prouvée par facture de bout en bout (lot 111S)
         run: npm run test:e2e:acquisition-bout-en-bout -- --reporter=default --reporter=junit --outputFile.junit=rapports/e2e-acquisition-bout-en-bout.xml
       - name: TCO, coût annuel, financement et valorisation (lot 111F)
@@ -595,6 +591,8 @@ jobs:
         run: npm run test:e2e:t1-files-403 -- --reporter=default --reporter=junit --outputFile.junit=rapports/e2e-t1-files-403.xml
       - name: À traiter, questions formulées par T3/T4 (lot 113S, Trello #716)
         run: npm run test:e2e:a-traiter-questions-ia -- --reporter=default --reporter=junit --outputFile.junit=rapports/e2e-a-traiter-questions-ia.xml
+      - name: BO, exports JSON téléchargés ou partagés (lot 113T, Trello #718)
+        run: npm run test:e2e:bo-export-json -- --reporter=default --reporter=junit --outputFile.junit=rapports/e2e-bo-export-json.xml
       - name: Inscription, CGUV publiées vérifiées et reprise (lot 111O)
         run: npm run test:e2e:inscription-cguv -- --reporter=default --reporter=junit --outputFile.junit=rapports/e2e-inscription-cguv.xml
       - uses: actions/upload-artifact@v4

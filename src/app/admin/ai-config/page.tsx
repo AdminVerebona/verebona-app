@@ -66,6 +66,7 @@ import { createEditTracker } from './_components/edit-tracker';
 import type { CatalogTrigger } from './_components/triggers-model';
 import { chainOptions, unusableRanks, type ChainRank } from '@/services/ai/registry/model-chain';
 import { useRouter } from 'next/navigation';
+import { deliverFile } from '@/lib/files/export-delivery';
 
 // ─── Types de l'écran ─────────────────────────────────────────────────────────
 
@@ -931,15 +932,9 @@ export default function AiConfigPage() {
     setBusy(true);
     try {
       const r = await apiClient.post<{ fileName: string; content: string; warnings?: string[] }>('/api/admin/ai/config-exports', {});
-      const url = URL.createObjectURL(new Blob([r.content], { type: 'application/json' }));
-      const a = document.createElement('a');
-      a.href = url;
-      a.download = r.fileName;
-      document.body.appendChild(a);
-      a.click();
-      a.remove();
-      URL.revokeObjectURL(url);
-      toast.success(`Configuration exportée : ${r.fileName}`);
+      // Lot 113T : fichier remis par le parcours commun des exports du BO.
+      const { outcome } = await deliverFile(new Blob([r.content], { type: 'application/json' }), r.fileName, { onNeedsGesture: 'download' });
+      if (outcome !== 'cancelled') toast.success(`Configuration exportée : ${r.fileName}`);
       for (const w of r.warnings ?? []) toast.warning(w, { duration: 8_000 });
       await loadExportState();
     } catch (e) {

@@ -16,11 +16,13 @@
  * · export JSON exhaustif (flux, aucune troncature).
  */
 import { useCallback, useEffect, useState } from 'react';
-import { AlertTriangle, ChevronLeft, ChevronRight, Download, Loader2 } from 'lucide-react';
+import { AlertTriangle, ChevronLeft, ChevronRight, Loader2 } from 'lucide-react';
 import { toast } from 'sonner';
 import { Button } from '@/components/ui/button';
 import { apiClient } from '@/lib/api-client';
 import { CopyBlockButton } from './CopyJson';
+import { ExportFileButton } from '@/components/admin/ExportFileButton';
+import { exportFileName } from '@/lib/files/export-file-name';
 
 interface ReportSummaryDto {
   id: number; accountId: number; treatment: string; scope: string; jobId: number | null; traceIds: string[];
@@ -229,9 +231,8 @@ export function ExecutionReportView({ reportId: initialId }: { reportId: number 
       <div className="flex flex-wrap items-center gap-2">
         <ReportHeaderLine r={r} />
         <span className="flex-1" />
-        <a href={`/api/admin/ai/execution-reports/${r.id}/export?download=1`} className="inline-flex" data-testid="execution-report-export">
-          <Button size="sm" variant="outline" type="button"><Download className="w-3.5 h-3.5 mr-1.5" /> Export JSON complet</Button>
-        </a>
+        {/* Lot 113T : fichier remis (partage natif / Web Share / téléchargement). */}
+        <ExportFileButton url={`/api/admin/ai/execution-reports/${r.id}/export?download=1`} fallbackName={exportFileName('rapport-ia', r.id)} label="Export JSON complet" testId="execution-report-export" />
       </div>
       <p className="text-[color:var(--text-muted)] break-all">
         Compte {r.accountId}{r.jobId != null && ` · job ${r.jobId}`}{r.analysisRunId != null && ` · run d’analyse ${r.analysisRunId}`}

@@ -18,7 +18,7 @@
  */
 import { useEffect, useState } from 'react';
 import Link from 'next/link';
-import { Download, Loader2, RotateCcw } from 'lucide-react';
+import { Loader2, RotateCcw } from 'lucide-react';
 import { toast } from 'sonner';
 import { Button } from '@/components/ui/button';
 import { Sheet, SheetContent, SheetDescription, SheetTitle } from '@/components/ui/sheet';
@@ -26,6 +26,8 @@ import { apiClient } from '@/lib/api-client';
 import type { BusinessExecutionDetailDto, RelaunchOption } from '@/services/ai/business-execution/detail-model';
 import { BusinessOutcomeBadge, nativeText } from './BusinessExecutionsPanel';
 import { CopyBlockButton } from './CopyJson';
+import { ExportFileButton } from '@/components/admin/ExportFileButton';
+import { exportFileName } from '@/lib/files/export-file-name';
 import { ModelOutputs } from './ExecutionDiagnosisPanel';
 import { ExecutionReportView } from './ExecutionReportPanel';
 
@@ -211,13 +213,10 @@ export function BusinessExecutionDetailSheet({ id, onClose, onOpenCall }: { id: 
           {d && (
             <div className="flex flex-wrap gap-2">
               <CopyBlockButton value={d} label="l’exécution" />
-              <a href={exportUrl(false)} className="inline-flex items-center gap-1 text-xs text-[color:var(--accent)] hover:underline" data-testid="unit-export">
-                <Download className="w-3.5 h-3.5" /> Export JSON
-              </a>
+              {/* Lot 113T : fichier remis (partage natif / Web Share / téléchargement), jamais de page de JSON brut. */}
+              <ExportFileButton appearance="link" url={exportUrl(false)} fallbackName={exportFileName('execution', id ?? '')} label="Export JSON" testId="unit-export" />
               {d.canReadContents && (
-                <a href={exportUrl(true)} className="inline-flex items-center gap-1 text-xs text-[color:var(--accent)] hover:underline" data-testid="unit-export-contents">
-                  <Download className="w-3.5 h-3.5" /> Export JSON avec échanges
-                </a>
+                <ExportFileButton appearance="link" url={exportUrl(true)} fallbackName={exportFileName('execution', id ?? '', new Date(), { variant: 'avec-echanges' })} label="Export JSON avec échanges" testId="unit-export-contents" />
               )}
             </div>
           )}

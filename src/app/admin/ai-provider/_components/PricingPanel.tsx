@@ -23,6 +23,8 @@ import { toast } from 'sonner';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { apiClient } from '@/lib/api-client';
+import { ExportFileButton } from '@/components/admin/ExportFileButton';
+import { exportFileName } from '@/lib/files/export-file-name';
 
 interface ModelRow {
   model: string; used: boolean; pageStatus: 'KNOWN' | 'STALE' | 'UNKNOWN' | 'NOT_EVALUATED';
@@ -192,8 +194,9 @@ export function PricingPanel() {
         <Input placeholder="Identifiants supplémentaires (séparés par des virgules)" value={extraModels} onChange={(e) => setExtraModels(e.target.value)} className="bg-[color:var(--bg-input)] font-mono" />
         <div className="flex flex-wrap gap-2">
           <Button size="sm" variant="outline" onClick={loadRecon} disabled={busy}>Afficher le rapport</Button>
-          <a className="text-xs self-center text-[color:var(--accent)] hover:underline" href={reconUrl(`${data.reconciliation?.json ?? '/api/admin/ai/provider/pricing/reconciliation'}?download=1`)}>Exporter (JSON)</a>
-          <a className="text-xs self-center text-[color:var(--accent)] hover:underline" href={reconUrl(data.reconciliation?.csv ?? '/api/admin/ai/provider/pricing/reconciliation?format=csv')}>Exporter (CSV)</a>
+          {/* Lot 113T : fichiers remis par le parcours commun des exports du BO (mobile compris). */}
+          <ExportFileButton appearance="link" className="self-center" url={reconUrl(`${data.reconciliation?.json ?? '/api/admin/ai/provider/pricing/reconciliation'}?download=1`)} fallbackName={exportFileName('reconciliation-tarifs-ia', null)} label="Exporter (JSON)" testId="pricing-reconciliation-json" />
+          <ExportFileButton appearance="link" className="self-center" kind="csv" url={reconUrl(data.reconciliation?.csv ?? '/api/admin/ai/provider/pricing/reconciliation?format=csv')} fallbackName={exportFileName('reconciliation-tarifs-ia', null, new Date(), { ext: 'csv' })} label="Exporter (CSV)" testId="pricing-reconciliation-csv" />
           {data.snapshot && <a className="text-xs self-center text-[color:var(--accent)] hover:underline" href={data.snapshot.href}>Page réellement reçue (contenu intégral)</a>}
         </div>
         {recon && (

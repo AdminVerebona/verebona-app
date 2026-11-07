@@ -163,7 +163,9 @@ describe('AC5.4 — panneau : copier, télécharger, copie par bloc', () => {
   it('boutons d’en-tête branchés sur l’export serveur', () => {
     expect(page).toMatch(/<ExecutionExportButtons callId=\{detail\.call\.id\} \/>/);
     expect(comp).toMatch(/\/api\/admin\/ai\/executions\/\$\{callId\}\/export/);
-    expect(comp).toMatch(/\n\s*Télécharger \.json\n/);
+    // Lot 113T : « Préparation… » pendant la lecture, fichier remis par le parcours commun.
+    expect(comp).toMatch(/'Préparation…' : 'Télécharger \.json'/);
+    expect(comp).toMatch(/exportFileWithFeedback\(/);
     expect(comp).toMatch(/'Copié' : 'Copier'/);
     expect(comp).toMatch(/navigator\.clipboard\.writeText/);
   });
