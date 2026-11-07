@@ -13,8 +13,6 @@ import { assets, agendaItems, agendaAssetLinks } from '@/db/schema';
 import { eq, and, isNull, desc } from 'drizzle-orm';
 import { apiError } from '@/lib/api-errors';
 import { SessionService } from '@/lib/session-service';
-import { computeEffectiveStatus, type EffectiveStatus } from '@/services/agenda/AgendaDomainService';
-import { loadEventNatures } from '@/services/agenda/AgendaQueryService';
 
 export async function GET(
   request: NextRequest,
@@ -49,7 +47,7 @@ export async function GET(
     }
 
     const { searchParams } = new URL(request.url);
-    const includeDone = searchParams.get('includeDone') === 'true';
+    // Lot 113P (#715) : `includeDone` (ancien filtre « réalisés / annulés ») accepté et ignoré.
     const limit = Math.min(parseInt(searchParams.get('limit') ?? '50'), 200);
     const offset = parseInt(searchParams.get('offset') ?? '0');
 
@@ -62,7 +60,6 @@ export async function GET(
         description: agendaItems.description,
         startDate: agendaItems.startDate,
         endDate: agendaItems.endDate,
-        manualStatus: agendaItems.manualStatus,
         originType: agendaItems.originType,
         originFieldKey: agendaItems.originFieldKey,
         requiresQualification: agendaItems.requiresQualification,
@@ -84,49 +81,23 @@ export async function GET(
       publicId: string;
       title: string;
       effectiveDate: string | null;
-      effectiveStatus: EffectiveStatus;
-      isDone: boolean;
-      isOverdue: boolean;
-      /** D17 (lot 53) : fait passé sans preuve de réalisation — affiché, jamais masqué. */
-      toConfirm: boolean;
       description: string | null;
       originType: string;
       requiresQualification: boolean;
     };
 
-    // Lot 47B : un fait historique passé n'est jamais « en retard ». Lot 53 (D17) :
-    // sans statut, il est « à confirmer » — ni réalisé, ni masqué du suivi.
-    const natures = await loadEventNatures(rows.map((r) => r.id));
-    const typedItems: FollowupItem[] = rows.flatMap(r => {
-      const effectiveStatus = computeEffectiveStatus({
-        startDate: r.startDate ?? null,
-        startTime: null,
-        endDate: r.endDate ?? null,
-        endTime: null,
-        manualStatus: (r.manualStatus as 'realise' | 'annule' | null) ?? null,
-        eventNature: natures?.get(r.id)?.nature ?? null,
-        businessType: natures?.get(r.id)?.businessType ?? null,
-        originFieldKey: r.originFieldKey ?? null,
-        // Lot 103D : réalisation prouvée (0945).
-        completionProven: natures?.get(r.id)?.completionProven === true,
-      });
-      const isDone = effectiveStatus === 'realise' || effectiveStatus === 'annule';
-      if (!includeDone && isDone) return [];
-      return [{
-        itemType: 'agenda' as const,
-        id: String(r.id),
-        publicId: r.publicId,
-        title: r.title,
-        effectiveDate: r.startDate ?? null,
-        effectiveStatus,
-        isDone,
-        isOverdue: effectiveStatus === 'en_retard',
-        toConfirm: effectiveStatus === 'a_confirmer',
-        description: r.description ?? null,
-        originType: r.originType,
-        requiresQualification: r.requiresQualification,
-      }];
-    });
+    // Lot 113P (#715, décision PO du 06/11/2026) : plus de statut d'événement
+    // (ni « réalisé », « en retard », « à confirmer ») — chaque élément à sa date.
+    const typedItems: FollowupItem[] = rows.map((r) => ({
+      itemType: 'agenda' as const,
+      id: String(r.id),
+      publicId: r.publicId,
+      title: r.title,
+      effectiveDate: r.startDate ?? null,
+      description: r.description ?? null,
+      originType: r.originType,
+      requiresQualification: r.requiresQualification,
+    }));
 
     const total = typedItems.length;
     const paginated = typedItems.slice(offset, offset + limit);

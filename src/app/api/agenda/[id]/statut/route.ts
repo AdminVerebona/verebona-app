@@ -1,45 +1,34 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { emitBusinessEvent } from '@/services/verebona-assistant/events/business-events';
 import { SessionService } from '@/lib/session-service';
 import { refuserSiLectureSeule } from '@/lib/write-access-guard';
-import { updateManualStatus } from '@/services/agenda/AgendaWriteService';
 
-/** `params` est une promesse depuis Next.js 15 — cf. `../route.ts`. */
-type RouteContext = { params: Promise<{ id: string }> };
+/**
+ * Lot 113P (#715, décision PO du 06/11/2026) : les événements de l'agenda
+ * n'ont PLUS de statut (« Réalisé », « Annulé »…). Cette route, appelée par
+ * d'anciennes versions de l'interface (cache PWA), ne modifie plus rien :
+ * 410 Gone, code stable `AGENDA_STATUS_REMOVED`. Un événement inexistant ou
+ * annulé se SUPPRIME (`DELETE /api/agenda/:id`) ; une date se MODIFIE
+ * (`PUT /api/agenda/:id`).
+ *
+ * Gardes conservées (session, lecture seule — lot 85D) : une route ancienne
+ * reste une route d'écriture du point de vue des contrôles, et ne répond
+ * rien à un appelant non connecté. Aucune écriture, donc aucun événement
+ * métier émis.
+ */
+export const AGENDA_STATUS_REMOVED = 'AGENDA_STATUS_REMOVED';
 
-export async function PATCH(req: NextRequest, context: RouteContext) {
-  try {
-    let session;
-    try {
-      session = await SessionService.getSession(req);
-    } catch (e) {
-      return SessionService.handleSessionError(e);
-    }
-    const accountId = session.currentAccountId;
-    if (!accountId) return NextResponse.json({ error: 'No account selected' }, { status: 400 });
+export async function PATCH(req: NextRequest) {
+  let session;
+  try { session = await SessionService.getSession(req); }
+  catch (e) { return SessionService.handleSessionError(e); }
+  const accountId = session.currentAccountId;
+  if (!accountId) return NextResponse.json({ error: 'No account selected' }, { status: 400 });
 
-    const { id: rawId } = await context.params;
-    const id = parseInt(rawId, 10);
-    if (isNaN(id)) return NextResponse.json({ error: 'Invalid id' }, { status: 400 });
+  const refus = await refuserSiLectureSeule(accountId);
+  if (refus) return refus;
 
-    // Lot 85D : changer le statut est une écriture — refusée en lecture seule.
-    const refus = await refuserSiLectureSeule(accountId);
-    if (refus) return refus;
-
-    const body = await req.json();
-    const { manualStatus } = body;
-
-    if (manualStatus !== null && manualStatus !== 'realise' && manualStatus !== 'annule') {
-      return NextResponse.json({ error: 'manualStatus must be null, "realise", or "annule"' }, { status: 400 });
-    }
-
-    const item = await updateManualStatus(id, manualStatus, accountId);
-    // CDC Assistant §25.7, §31.7.
-    await emitBusinessEvent({ type: 'AGENDA_ITEM_UPDATED', accountId, entityId: id });
-    return NextResponse.json({ item });
-  } catch (err) {
-    const message = err instanceof Error ? err.message : 'Internal server error';
-    console.error('[api/agenda/:id/statut] PATCH', err);
-    return NextResponse.json({ error: message }, { status: message === 'Item not found' ? 404 : 500 });
-  }
+  return NextResponse.json(
+    { error: 'Les événements n’ont plus de statut : modifiez la date ou supprimez l’événement.', code: AGENDA_STATUS_REMOVED },
+    { status: 410 },
+  );
 }

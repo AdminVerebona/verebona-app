@@ -243,6 +243,8 @@ export interface AiMemoryEntry {
   ranked: Array<{ assetId: number; score: number; reason: string }>;
   at: string;
   traceId: string | null;
+  /** Lot 113S : question proposée par T3 avec cette décision (réutilisée avec elle). */
+  userQuestion?: string | null;
 }
 
 /** Mémoire IA de la résolution précédente (monitoring), ou null. Pure. */
@@ -544,11 +546,17 @@ export async function resolveDocumentAsset(
     aiMemory = m;
     void import('../../reuse/reuse-counters').then(({ noteReuse }) => noteReuse({ kind: 'DECISION_REUSED', accountId, treatment: 'T3', operationCode: 't3_link_ambiguity' })).catch(() => undefined);
     const ids = new Set(ctx.index.assets.map((a) => a.assetId));
-    return { kind: 'ABSTAIN' as const, reasonCode: m.reasonCode as Extract<DocumentAssetDecision, { kind: 'ABSTAIN' }>['reasonCode'], ranked: m.ranked.filter((r) => ids.has(r.assetId) && !refuses.has(r.assetId)) };
+    return {
+      kind: 'ABSTAIN' as const, reasonCode: m.reasonCode as Extract<DocumentAssetDecision, { kind: 'ABSTAIN' }>['reasonCode'], ranked: m.ranked.filter((r) => ids.has(r.assetId) && !refuses.has(r.assetId)),
+      ...(typeof m.userQuestion === 'string' ? { userQuestion: m.userQuestion } : {}),
+    };
   };
   const memoriser = (key: string, path: 'STRUCTURED' | 'SEMANTIC', d: DocumentAssetDecision) => {
     if (!key || d.kind !== 'ABSTAIN' || aiError) return;
-    aiMemory = { key, path, reasonCode: d.reasonCode, ranked: d.ranked.slice(0, 20), at: new Date().toISOString(), traceId: traces[0] ?? null };
+    aiMemory = {
+      key, path, reasonCode: d.reasonCode, ranked: d.ranked.slice(0, 20), at: new Date().toISOString(), traceId: traces[0] ?? null,
+      ...(typeof d.userQuestion === 'string' ? { userQuestion: d.userQuestion.slice(0, 1000) } : {}),
+    };
   };
   // Lot 105D / 108E (A3) : preuves croisées vérifiées par le serveur, MÊMES pour les deux branches.
   const croisement = (cross: boolean) => {
@@ -894,7 +902,16 @@ async function applyDecision(p: {
     } else {
       // Carte LINK-ASSET synchronisée sur l'état COURANT (créée, ou
       // COMPLETE → ARBITRATE, ou propositions actualisées).
-      effet = await openUserQuestion({ accountId, fileId, state: avant, candidates, g, supplier: ctx.sources?.extraction?.supplier ?? null });
+      effet = await openUserQuestion({
+        accountId, fileId, state: avant, candidates, g, supplier: ctx.sources?.extraction?.supplier ?? null,
+        // Lot 113S : question proposée par T3 dans la même sortie (appel ou décision mémorisée), contrôlée par la carte.
+        ai: {
+          raw: decision.userQuestion ?? null, called: p.evaluation.aiCalled === true || p.evaluation.aiReused === true,
+          traceId: p.evaluation.ai?.traceIds?.[0] ?? p.evaluation.aiMemory?.traceId ?? null,
+          title: ctx.sources?.extraction?.title ?? null,
+          others: ctx.index.assets.filter((a) => !candidates.some((c) => c.assetId === a.assetId)).map((a) => a.name),
+        },
+      });
     }
     const status = decision.reasonCode === 'NO_CANDIDATE' ? 'NO_CANDIDATE' : 'ABSTAINED';
     const evaluation = fin({ newResolution: status, toProcessAction: effet, result: status });
@@ -1045,7 +1062,11 @@ export async function refreshDocumentTitle(accountId: number, fileId: number): P
  * candidat. Lot 71B : l'état du document n'est plus modifié — la question
  * vit dans « À traiter », jamais comme une validation sur la fiche.
  */
-async function openUserQuestion(p: { accountId: number; fileId: number; state: AttachmentState; candidates: StoredCandidate[]; g: Garde; supplier?: string | null }): Promise<ToProcessEffect> {
+async function openUserQuestion(p: {
+  accountId: number; fileId: number; state: AttachmentState; candidates: StoredCandidate[]; g: Garde; supplier?: string | null;
+  /** Lot 113S : question de T3 (brute), appel réel ou mémorisé, trace ; titre du document ; autres biens du compte. */
+  ai?: { raw: unknown; called: boolean; traceId: string | null; title: string | null; others: string[] };
+}): Promise<ToProcessEffect> {
   if (!p.state.open) return 'NONE';
   await p.g('question « À traiter »');
   const { upsertAction } = await import('@/services/to-process/to-process-action.service');
@@ -1059,6 +1080,16 @@ async function openUserQuestion(p: { accountId: number; fileId: number; state: A
       ...(source ? { sourceContext: { label: source.slice(0, 120) } } : {}),
     };
   });
+  // Lot 113S (#716) : arbitrage avec candidats — question de T3 si elle passe le contrôle (biens
+  // candidats, titre du document, fournisseur) ; sinon question du catalogue, provenance tracée.
+  // Sans candidat (« À compléter ») : question simple du catalogue, jamais d'IA.
+  const choix = proposals.length > 0 && p.ai
+    ? await (await import('@/services/to-process/ai-user-question')).resolveAiCardQuestion(p.accountId, {
+      rule: 'LINK-ASSET', treatment: 'T3', operation: 't3_link_ambiguity', contract: T3_USER_QUESTION_MARKER, raw: p.ai.raw, aiCalled: p.ai.called,
+      contractActive: await (await import('@/services/to-process/ai-user-question')).questionContractActive('t3_link_ambiguity', T3_USER_QUESTION_MARKER),
+      traceId: p.ai.traceId, check: { allowedLabels: [...proposals.map((x) => x.label), p.ai.title, p.supplier], foreignLabels: p.ai.others },
+    }, p.fileId)
+    : null;
   const res = await upsertAction({
     accountId: p.accountId,
     targetType: 'DOCUMENT',
@@ -1066,12 +1097,16 @@ async function openUserQuestion(p: { accountId: number; fileId: number; state: A
     relationKey: 'assetIds',
     actionKind: proposals.length > 0 ? 'ARBITRATE' : 'COMPLETE',
     ruleCode: 'LINK-ASSET',
+    ...(choix ? { question: choix.question, questionSource: choix.source } : {}),
     proposals,
     // `current` : même instantané que le pont documentaire (rattachement vide).
     triggerContext: { current: '', producer: 'T3_DOCUMENT_ASSET' },
   });
   return res.status === 'CREATED' ? 'CREATED' : res.status === 'UPDATED' ? 'UPDATED' : 'SKIPPED';
 }
+
+/** Lot 113S : marqueur du contrat de question T3 (même valeur que `T3_USER_QUESTION_CONTRACT`, sans import circulaire). */
+const T3_USER_QUESTION_MARKER = 't3-user-question-v1';
 
 /** Transition d'état d'analyse conditionnelle, diffusée au tiroir du document (SSE). */
 async function setAnalysisState(accountId: number, fileId: number, from: string, to: string): Promise<void> {

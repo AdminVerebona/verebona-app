@@ -162,7 +162,7 @@ scenario('L61E-T6EV', 'Lot 61 — contrat de décision T6 (EVALUATE) et composit
     expect(ids(apres)).toEqual([a1]);
   });
 
-  it('T6-EV-07 / T6-EV-13 / T6-EV-15 — démarche établie au-delà du seuil et vérification justifiée : deux cartes distinctes, résumé et pose cohérents', async () => {
+  it('T6-EV-07 / T6-EV-13 / T6-EV-15 — démarche établie au-delà du seuil (#715 : plus de vérification sur une date passée) : carte, résumé cohérents', async () => {
     const c = await compte();
     const gaz = await echeance(c, 'Fin du contrat de gaz', await plus(90), { description: 'Résiliation possible avec un préavis de deux mois avant la fin du contrat.' });
     const ramonage = await echeance(c, 'Ramonage cheminée', await plus(-4));
@@ -175,20 +175,20 @@ scenario('L61E-T6EV', 'Lot 61 — contrat de décision T6 (EVALUATE) et composit
         // Même SHOW_NOW sans preuve concrète au-delà du seuil : écarté par le serveur.
         : AGIR({ priorityHint: 'HIGH' }));
     const p = await pregen(c.id);
-    expect(ids(p)).toEqual([gaz, ramonage]);
+    // #715 : plus de statut d'événement — « vérifier si le ramonage a été réalisé » (date passée) n'est plus présenté.
+    expect(ids(p)).toEqual([gaz]);
     expect(ids(p)).not.toContain(assurance);
-    expect(p.state).toMatchObject({ kind: 'ACTIONS', actions: 2 });
+    expect(ids(p)).not.toContain(ramonage);
+    expect(p.state).toMatchObject({ kind: 'ACTIONS', actions: 1 });
     const texte = await parler(p);
     // Lot 68 : plus d'introduction de comptage ; action distincte gardée, sans « À prévoir : ».
     expect(texte).not.toMatch(/méritent votre attention|À prévoir :/);
     expect(texte).toContain('Envoyer la demande de résiliation.');
     expect(texte).not.toMatch(INTERDITS);
-    expect((await B()).actionTiles(p).map((x) => x.label)).toEqual(['Fin du contrat de gaz', 'Ramonage cheminée']);
+    expect((await B()).actionTiles(p).map((x) => x.label)).toEqual(['Fin du contrat de gaz']);
     const cartes = (await B()).subjectBlocks(p);
-    expect(cartes.map((x) => x.badge)).toEqual(['Action à prévoir', 'À vérifier']);
-    expect(cartes.map((x) => x.actions[0].action.target)).toEqual([
-      expect.objectContaining({ kind: 'drawer', id: gaz }), expect.objectContaining({ kind: 'drawer', id: ramonage })]);
-    expect((await B()).homePose(p, false)).toBe('questioning');
+    expect(cartes.map((x) => x.badge)).toEqual(['Action à prévoir']);
+    expect(cartes.map((x) => x.actions[0].action.target)).toEqual([expect.objectContaining({ kind: 'drawer', id: gaz })]);
     // Rapport d'affichage : l'écart IA (SHOW_NOW) / serveur (seuil) est tracé pour l'assurance.
     const repo = await import('@/services/ai/execution-report/repository');
     await vi.waitFor(async () => {
@@ -198,7 +198,7 @@ scenario('L61E-T6EV', 'Lot 61 — contrat de décision T6 (EVALUATE) et composit
       const { entries } = await repo.readReportEntries(rapport!, { section: 'INTERPELLATION' });
       expect(entries.find((e) => e.entityId === assurance)?.value).toMatchObject({ decision: 'SUPPRESS', aiDecision: 'SHOW_NOW', divergence: true });
       const f = (await repo.readReportEntries(rapport!, { section: 'FORMULATE' })).entries[0];
-      expect(f?.value).toMatchObject({ mode: 'FORMULATE', contract: 't6-output-v2', transmitted: [`DATE-NEXT:${gaz}`, `MASC-EXT-ACTION:${ramonage}`] });
+      expect(f?.value).toMatchObject({ mode: 'FORMULATE', contract: 't6-output-v2', transmitted: [`DATE-NEXT:${gaz}`] });
     }, { timeout: 10_000 });
   });
 

@@ -139,10 +139,14 @@ const FACT_COLS = `id, file_id, extraction_id, fact_key, canonical_key, label, v
 export const REPORT_COLS = `id, treatment, scope, status, report_complete, report_error, trigger_code, job_id, job_attempt, trace_ids, file_id, asset_id,
   target_type, target_id, analysis_run_id, extraction_id, reconciliation_run_id, origin_t1_report_id, entry_count, entries_report_id, counters, schema_version, started_at, created_at`;
 export const USAGE_COLS = `id, created_at, account_id, user_id, asset_file_id, operation_type, use_case_code, operation_code, task, provider, model, model_rank,
-  status, error_code, error_message, is_fallback, is_billable, input_tokens AS entree_jetons, output_tokens AS sortie_jetons,
+  status, error_code, error_message,
+  (is_fallback AND COALESCE(error_code, '') NOT IN ('FALLBACK_NOT_ADMISSIBLE', 'MODEL_KNOWN_UNAVAILABLE')) AS is_fallback,
+  (COALESCE(error_code, '') IN ('FALLBACK_NOT_ADMISSIBLE', 'MODEL_KNOWN_UNAVAILABLE')) AS non_sollicite,
+  is_billable, input_tokens AS entree_jetons, output_tokens AS sortie_jetons,
   cost_micros, duration_ms, environment, pipeline_version, app_version, config_version_id, job_id, master_prompt_code, master_prompt_version,
   metadata->>'traceId' AS trace_id, metadata->>'promptVersion' AS prompt_version, metadata->>'callKind' AS call_kind,
-  (metadata->>'repaired')::boolean AS repaired, metadata->'failure' AS failure`;
+  (metadata->>'repaired')::boolean AS repaired, metadata->'failure' AS failure,
+  metadata->'transfer' AS transfert, metadata->'fallback' AS decision_secours`;
 
 async function documentRow(q: DiagQuery, A: number, fileId: number): Promise<Row | null> {
   return oneRow(q, `SELECT ${DOC_COLS} FROM asset_files WHERE id = $1 AND account_id = $2`, [fileId, A]);

@@ -10,6 +10,10 @@ export interface ExecutionCallsDto {
   failedCalls: number;
   /** Lot 109J : rangs non sollicités (aucune requête). */
   notCalled?: number;
+  /** Lot 113R : appels arrêtés au transfert de la pièce jointe (aucune génération). */
+  transferFailures?: number;
+  /** Lot 113R : générations réellement demandées au modèle. */
+  generationsRequested?: number;
   repairCalls: number;
   costMicros: number | null;
   models: string[];

@@ -24,7 +24,7 @@ function op(over: Partial<OperationSnapshot> = {}): OperationSnapshot {
 }
 function item(over: Partial<AgendaItemSnapshot> = {}): AgendaItemSnapshot {
   return {
-    id: 100, title: 'Événement', date: '2026-03-12', manualStatus: null, isAutomatic: false, isAutomaticModified: false, projected: false,
+    id: 100, title: 'Événement', date: '2026-03-12', isAutomatic: false, isAutomaticModified: false, projected: false,
     businessOperationId: 10, linkedOperationActive: true, nature: null, businessType: null, homeCategory: null, functionalKey: null,
     originRefType: null, originRefId: null, assetIds: [5], equipmentIds: [], fileIds: [], operationRole: 'RELATED', operationRoleOrigin: 'USER', ...over,
   };
@@ -32,7 +32,7 @@ function item(over: Partial<AgendaItemSnapshot> = {}): AgendaItemSnapshot {
 const plan = (o: OperationSnapshot, p: { linked?: AgendaItemSnapshot[]; candidates?: AgendaItemSnapshot[] } = {}) =>
   planOperationProjection({
     op: o, decision: decideProjection(o, AUJ), linked: p.linked ?? [], suppressedKeys: new Set(), candidates: p.candidates ?? [],
-    taken: new Set((p.linked ?? []).map((i) => i.id)), statusCardItems: new Set(),
+    taken: new Set((p.linked ?? []).map((i) => i.id)),
   });
 
 describe('L83A-U01 — clé de projection = principal (E01, E04, AC15, AC34)', () => {
@@ -127,10 +127,11 @@ describe('L83A-U02 — principal sans date, date découverte, dates contradictoi
     expect(plan(conteste, { linked: [projete] })).toEqual([{ kind: 'SYNC', itemId: 11, changes: { date: null } }]);
     expect(plan(conteste, { linked: [{ ...projete, isAutomaticModified: true }] })).toEqual([]);
   });
-  it('F-140 conservé : une occurrence PLANIFIÉE projetée garde sa date quand la réalisation n’a pas de date', () => {
+  // #715 : plus de statut d'événement — la projection ne pose plus « réalisé » (MARK_DONE retiré) : date seule.
+  it('F-140 conservé : une occurrence PLANIFIÉE projetée garde sa date quand la réalisation n’a pas de date (aucun statut posé)', () => {
     const planifie = item({ id: 12, title: 'Dégât des eaux', projected: true, isAutomatic: true, nature: 'DEADLINE', businessType: 'maintenance',
       homeCategory: 'action', functionalKey: 'bo:v1:10:INTERVENTION', date: '2026-02-01', operationRole: 'PRINCIPAL', operationRoleOrigin: 'T4' });
-    expect(plan(op({ typeCode: 'INTERVENTION', realizedDate: null }), { linked: [planifie] })).toEqual([{ kind: 'SYNC', itemId: 12, changes: { manualStatus: 'realise' } }]);
+    expect(plan(op({ typeCode: 'INTERVENTION', realizedDate: null }), { linked: [planifie] })).toEqual([]);
   });
 });
 

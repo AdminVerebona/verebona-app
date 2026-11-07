@@ -23,12 +23,14 @@ const VALEURS: Record<DocumentAnalysisDisplayState, string> = {
  * Valeur du statut (minuscule, sans préfixe). Un état inconnu n'est pas un
  * échec : il est lu comme « analysé » (règle historique du tiroir).
  */
-export function documentStatusValue(state: string | null | undefined, processingStatus?: string | null): string {
+export function documentStatusValue(state: string | null | undefined, processingStatus?: string | null, userMessageCode?: string | null): string {
   if (state === 'ANALYSIS_FAILED' && processingStatus === 'NEEDS_USER_ACTION') return 'action requise';
+  // Lot 113R : attente technique (aucune exécution en cours, reprise par le système).
+  if (state === 'UPLOADED' && userMessageCode === 'ANALYSIS_WAITING_TECHNICAL') return 'en attente technique';
   return (state && (VALEURS as Record<string, string>)[state]) || VALEURS.ANALYZED;
 }
 
 /** Libellé complet : « Statut : analysé ». */
-export function documentStatusLabel(state: string | null | undefined, processingStatus?: string | null): string {
-  return `Statut : ${documentStatusValue(state, processingStatus)}`;
+export function documentStatusLabel(state: string | null | undefined, processingStatus?: string | null, userMessageCode?: string | null): string {
+  return `Statut : ${documentStatusValue(state, processingStatus, userMessageCode)}`;
 }

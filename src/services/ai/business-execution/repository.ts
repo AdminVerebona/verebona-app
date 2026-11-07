@@ -11,7 +11,7 @@
  * (`PROJECTION_ROW_CAP`) ; un dépassement est SIGNALÉ (`truncated`), jamais
  * tu. Les exports volumineux relèvent de la phase P3 (collecteur 77C).
  */
-import { NOT_CALLED_ERROR_CODES } from '../gateway/fallback-policy';
+import { NOT_CALLED_ERROR_CODES, NO_GENERATION_STAGES } from '../gateway/fallback-policy';
 import { pgClient } from '@/db';
 import { historyExecutionColumnReady } from '../history-reclassification/columns';
 import { getAssistantConfig } from '@/services/verebona-assistant/config/assistant-config';
@@ -90,6 +90,9 @@ function aiSuspensionOf(payload: Record<string, unknown> | null): JobState['aiSu
     until: typeof x.until === 'string' ? x.until : null,
     count: typeof x.count === 'number' ? x.count : 1,
     resumedAt: typeof x.resumedAt === 'string' ? x.resumedAt : null,
+    // Lot 113R : attente longue et réponse du fournisseur au transfert.
+    ...(x.parked === true ? { parked: true } : {}),
+    ...(x.transfer && typeof x.transfer === 'object' ? { transfer: x.transfer as Record<string, unknown> } : {}),
   };
 }
 
@@ -572,6 +575,10 @@ export interface ExecutionCalls {
   failedCalls: number;
   /** Lot 109J : rangs non sollicités (refus de secours, modèle connu indisponible) — aucune requête. */
   notCalled?: number;
+  /** Lot 113R : appels arrêtés au TRANSFERT de la pièce jointe (aucune génération). */
+  transferFailures?: number;
+  /** Lot 113R : générations RÉELLEMENT demandées au modèle (hors construction locale et transfert). */
+  generationsRequested?: number;
   repairCalls: number;
   /** null : au moins un appel sans tarif connu (jamais compté zéro, COST-008). */
   costMicros: number | null;
@@ -587,7 +594,7 @@ export interface ExecutionCalls {
 export async function callsOfExecutions(xs: readonly Pick<BusinessExecution, 'id' | 'traceIds'>[], q: Query = defaultQuery): Promise<Map<string, ExecutionCalls>> {
   const out = new Map<string, ExecutionCalls>();
   if (xs.length === 0) return out;
-  const vide = (): ExecutionCalls => ({ calls: 0, failedCalls: 0, notCalled: 0, repairCalls: 0, costMicros: 0, models: [], usageEventIds: [] });
+  const vide = (): ExecutionCalls => ({ calls: 0, failedCalls: 0, notCalled: 0, transferFailures: 0, generationsRequested: 0, repairCalls: 0, costMicros: 0, models: [], usageEventIds: [] });
   for (const x of xs) out.set(x.id, vide());
   const ids = xs.map((x) => x.id);
   const traces = new Map<string, string>();
@@ -595,7 +602,8 @@ export async function callsOfExecutions(xs: readonly Pick<BusinessExecution, 'id
   // Lot 89A (P8, MIG-03) : appels historiques rattachés par le reclassement prouvé (0776).
   const hist = await historyExecutionColumnReady(q);
   const rows = await q(`
-    SELECT e.id, e.business_execution_id, e.metadata->>'traceId' AS trace_id, e.status, e.error_code, e.cost_micros, e.model, e.metadata->>'callKind' AS call_kind
+    SELECT e.id, e.business_execution_id, e.metadata->>'traceId' AS trace_id, e.status, e.error_code, e.cost_micros, e.model, e.metadata->>'callKind' AS call_kind,
+           e.metadata->'failure'->>'stage' AS failure_stage
            ${hist ? ', e.history_execution_id' : ''}
       FROM ai_usage_event e
      WHERE e.business_execution_id = ANY($1::text[])
@@ -612,6 +620,9 @@ export async function callsOfExecutions(xs: readonly Pick<BusinessExecution, 'id
     c.calls += 1;
     if (r.status !== 'success') c.failedCalls += 1;
     if (r.call_kind === 'repair') c.repairCalls += 1;
+    // Lot 113R : transfert refusé ≠ génération sollicitée et échouée.
+    if (r.failure_stage === 'attachment_transfer') c.transferFailures = (c.transferFailures ?? 0) + 1;
+    if (!NO_GENERATION_STAGES.has(String(r.failure_stage ?? ''))) c.generationsRequested = (c.generationsRequested ?? 0) + 1;
     c.costMicros = c.costMicros === null || r.cost_micros === null || r.cost_micros === undefined ? null : c.costMicros + num(r.cost_micros);
     if (r.model && !c.models.includes(String(r.model))) c.models.push(String(r.model));
   }

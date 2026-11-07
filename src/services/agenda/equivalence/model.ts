@@ -64,18 +64,14 @@ export interface EqItem {
   equipmentIds: number[];
   isAutomatic: boolean;
   isAutomaticModified: boolean;
-  manualStatus: string | null;
   confirmationMode: string | null;
   requiresQualification: boolean;
   occurrenceNature: string | null;
   projected: boolean;
   operationId: number | null;
   operationActive: boolean;
-  completionProofFileId: number | null;
-  /** Geste de l'utilisateur tracé (STATUS_CHANGED, USER_MODIFIED, USER_CONFIRMED). */
+  /** Geste de l'utilisateur tracé (STATUS_CHANGED historique, USER_MODIFIED, USER_CONFIRMED). */
   userTouchEvent: boolean;
-  /** Statut « réalisé » posé AUTOMATIQUEMENT (STATUS_AUTO_COMPLETED tracé). */
-  autoStatusEvent: boolean;
   pendingConflict: boolean;
   /** Élément restauré après une consolidation : choix de l'utilisateur / de l'exploitation. */
   restored: boolean;
@@ -104,14 +100,12 @@ export interface EqAsset {
   fields: Record<string, unknown>;
 }
 
-export type Protection = 'USER' | 'STATUS' | 'CONFLICT' | 'OPERATION' | null;
+/** Lot 113P (#715) : plus de protection « STATUS » — un événement n'a plus de statut. */
+export type Protection = 'USER' | 'CONFLICT' | 'OPERATION' | null;
 
 /** Protection d'un élément (voir l'en-tête). Pure. */
 export function protectionOf(i: EqItem): Protection {
-  const manuel = !!i.manualStatus && i.manualStatus.trim() !== '';
   if (!i.isAutomatic || i.isAutomaticModified || i.confirmationMode === 'USER' || i.userTouchEvent || i.restored) return 'USER';
-  if (manuel && !i.autoStatusEvent) return 'USER';
-  if (manuel) return 'STATUS';
   if (i.pendingConflict) return 'CONFLICT';
   if (i.projected || (i.operationId !== null && i.operationActive)) return 'OPERATION';
   return null;
@@ -165,7 +159,7 @@ export interface EqGroup {
 
 /** Groupes candidats d'un bien (pure) : ≥ 2 représentations possibles d'un même fait réalisé. */
 export function buildGroups(items: readonly EqItem[]): EqGroup[] {
-  const hist = items.filter((i) => i.nature === 'HISTORICAL' && !!i.date && !!i.businessType && i.manualStatus !== 'annule');
+  const hist = items.filter((i) => i.nature === 'HISTORICAL' && !!i.date && !!i.businessType);
   const parCle = new Map<string, EqItem[]>();
   for (const i of hist) {
     const k = `${i.date}|${i.businessType}`;
@@ -212,8 +206,6 @@ export interface GroupDecision {
   operationIds: number[];
   /** Nouvel intitulé du canonique (automatique intact, sujet non informatif). */
   retitle: { from: string; to: string } | null;
-  /** Preuve de réalisation reportée sur le canonique (même occurrence, preuve d'un absorbé). */
-  proofFileId: number | null;
   evidence: { references: string[]; perItem: Record<number, { refs: string[]; anchored: boolean; files: number[]; protection: Protection; generic: boolean }> };
   fingerprint: string;
 }
@@ -225,7 +217,7 @@ const HISTORICAL_TITLE: Readonly<Record<string, string>> = {
 /** Rang du choix du canonique (plus petit = préféré). Pure. */
 function rang(i: EqItem): number[] {
   const p = protectionOf(i);
-  return [p === 'USER' ? 0 : 1, p === 'STATUS' ? 0 : 1, isGenericItem(i) ? 1 : 0, i.completionProofFileId ? 0 : 1, i.originFieldKey ? 0 : 1, i.id];
+  return [p === 'USER' ? 0 : 1, isGenericItem(i) ? 1 : 0, i.originFieldKey ? 0 : 1, i.id];
 }
 const compare = (a: number[], b: number[]) => { for (let k = 0; k < a.length; k++) if (a[k] !== b[k]) return a[k] - b[k]; return 0; };
 
@@ -243,7 +235,7 @@ export function decideGroup(g: EqGroup, items: ReadonlyMap<number, EqItem>, docs
   const refs = [...new Set(membres.flatMap((i) => perItem[i.id].refs))].sort();
   const base = (verdict: GroupVerdict, reason: string, extra: Partial<GroupDecision> = {}): GroupDecision => {
     const d: GroupDecision = {
-      group: g, verdict, reason, canonicalId: null, absorbIds: [], kept: [], uncertainIds: [], operationIds: [], retitle: null, proofFileId: null,
+      group: g, verdict, reason, canonicalId: null, absorbIds: [], kept: [], uncertainIds: [], operationIds: [], retitle: null,
       evidence: { references: refs, perItem }, fingerprint: '', ...extra,
     };
     d.fingerprint = fingerprintOf(g, items, perItem);
@@ -327,9 +319,6 @@ export function decideGroup(g: EqGroup, items: ReadonlyMap<number, EqItem>, docs
       if (to !== canonique.title) retitle = { from: canonique.title, to };
     }
   }
-  // Preuve de réalisation : celle d'un absorbé (même occurrence) si le canonique n'en a pas et n'a pas de statut.
-  const proof = !canonique.completionProofFileId && (pCanon === null)
-    ? (tri.slice(1).find((i) => absorb.includes(i.id) && i.completionProofFileId)?.completionProofFileId ?? null) : null;
   if (!absorb.length) {
     return base(kept.some((k) => k.why.startsWith('PROTECTED')) ? 'PROTECTED' : incertains.length ? 'UNCERTAIN' : 'NOTHING',
       kept.some((k) => k.why.startsWith('PROTECTED')) ? 'EQUIVALENT_ITEMS_PROTECTED' : motif, {
@@ -337,7 +326,7 @@ export function decideGroup(g: EqGroup, items: ReadonlyMap<number, EqItem>, docs
       });
   }
   return base('CONSOLIDATE', motif, {
-    canonicalId: canonique.id, absorbIds: absorb.sort((a, b) => a - b), kept, uncertainIds: incertains.map((i) => i.id), operationIds, retitle, proofFileId: proof,
+    canonicalId: canonique.id, absorbIds: absorb.sort((a, b) => a - b), kept, uncertainIds: incertains.map((i) => i.id), operationIds, retitle,
   });
 }
 
@@ -372,7 +361,7 @@ function genericProvenSame(gi: EqItem, g: EqGroup, docs: ReadonlyMap<number, EqD
 function fingerprintOf(g: EqGroup, items: ReadonlyMap<number, EqItem>, perItem: GroupDecision['evidence']['perItem']): string {
   const etat = [...g.memberIds, ...g.genericIds].sort((a, b) => a - b).map((id) => {
     const i = items.get(id);
-    return i ? [id, i.title, i.manualStatus ?? '', i.isAutomaticModified, i.confirmationMode ?? '', perItem[id]?.refs ?? [], perItem[id]?.files ?? []] : [id];
+    return i ? [id, i.title, i.isAutomaticModified, i.confirmationMode ?? '', perItem[id]?.refs ?? [], perItem[id]?.files ?? []] : [id];
   });
   return createHash('sha256').update(JSON.stringify([EQUIVALENCE_RULES_VERSION, g.key, etat])).digest('hex').slice(0, 32);
 }

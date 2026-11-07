@@ -28,8 +28,7 @@ function rawOp(over: Partial<RawOperation> = {}): RawOperation {
 }
 function rawItem(over: Partial<RawItem> = {}): RawItem {
   return {
-    id: 100, title: 'Réparation', date: '2026-03-18', nature: 'HISTORICAL', businessType: 'repair', isAutomatic: true, isAutomaticModified: false,
-    manualStatus: null, pendingStatus: false, confirmedByUser: false, projected: false, operationId: null, operationActive: false, role: null, roleOrigin: null,
+    id: 100, title: 'Réparation', date: '2026-03-18', nature: 'HISTORICAL', businessType: 'repair', isAutomatic: true, isAutomaticModified: false, pendingStatus: false, confirmedByUser: false, projected: false, operationId: null, operationActive: false, role: null, roleOrigin: null,
     fileIds: [77], originFileId: 77, sources: [{ fileId: 77, role: 'EVIDENCE' }], assetIds: [5], restoredByUser: false, ...over,
   };
 }
@@ -222,15 +221,14 @@ function op(over: Partial<OperationSnapshot> = {}): OperationSnapshot {
 }
 function t4(over: Partial<AgendaItemSnapshot> = {}): AgendaItemSnapshot {
   return {
-    id: 100, title: 'Réparation — Maison', date: '2026-03-18', manualStatus: null, isAutomatic: true, isAutomaticModified: false, projected: false,
+    id: 100, title: 'Réparation — Maison', date: '2026-03-18', isAutomatic: true, isAutomaticModified: false, projected: false,
     businessOperationId: null, linkedOperationActive: false, nature: 'HISTORICAL', businessType: 'repair', homeCategory: 'information', functionalKey: null,
     originRefType: 'asset_file', originRefId: 77, assetIds: [5], equipmentIds: [], fileIds: [77], pendingStatus: false, originFieldKey: null, sourceCount: 1, ...over,
   };
 }
 const planDe = (o: OperationSnapshot, p: { linked?: AgendaItemSnapshot[]; candidates?: AgendaItemSnapshot[]; roles?: Array<[number, 'PRINCIPAL' | 'STEP' | 'INDEPENDENT' | 'DUPLICATE']> } = {}) =>
   planOperationProjection({
-    op: o, decision: decideProjection(o, AUJ), linked: p.linked ?? [], suppressedKeys: new Set(), candidates: p.candidates ?? [],
-    statusCardItems: new Set(), t4Roles: p.roles ? new Map(p.roles) : undefined,
+    op: o, decision: decideProjection(o, AUJ), linked: p.linked ?? [], suppressedKeys: new Set(), candidates: p.candidates ?? [], t4Roles: p.roles ? new Map(p.roles) : undefined,
   });
 
 describe('L87B-U-CAS — les cas du ticket au niveau de la projection (aucune fusion décidée par le code)', () => {

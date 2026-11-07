@@ -16,7 +16,7 @@ const TODAY = '2026-09-25';
 const src = (p: string) => readFileSync(join(process.cwd(), p), 'utf-8');
 
 const item = (o: Partial<ExistingAgendaItem> & { id: number; date: string }): ExistingAgendaItem => ({
-  title: 'Contrôle technique', category: 'action', status: null, manual: false,
+  title: 'Contrôle technique', category: 'action', manual: false,
   originFieldKey: 'nextInspection', nature: 'CONFIRMED', ...o,
 });
 

@@ -26,7 +26,7 @@ import { TIMELINE_COUNTERS_SQL, TIMELINE_MEMBERS_SQL, TIMELINE_PAGE_SQL, readAss
 import { TIMELINE_MODE_LABELS, counterLabel, visibleCounters } from '../labels';
 
 const row = (id: number, start: string | null, extra: Record<string, unknown> = {}) => ({
-  id, title: `Élément ${id}`, start_date: start, manual_status: null, origin_field_key: null, event_nature: null, business_type: null, ...extra,
+  id, title: `Élément ${id}`, start_date: start, origin_field_key: null, event_nature: null, business_type: null, ...extra,
 });
 
 describe('L84C — Timeline : règles pures', () => {
@@ -59,14 +59,13 @@ describe('L84C — Timeline : règles pures', () => {
     expect(clampTimelineLimit('100000')).toBe(TIMELINE_PAGE_MAX);
   });
 
-  it('L84C-U04 — états : échéance passée en retard, fait passé à confirmer, réalisé établi', () => {
+  // #715 (lot 113P) : plus d'états (« en retard », « à confirmer », « réalisé ») — la vue ne porte que la date.
+  it('L84C-U04 — #715 : aucun état d’exécution, seulement la date', () => {
     const today = '2026-06-01';
-    expect(timelineItemView(row(1, '2026-05-01'), today)).toMatchObject({ itemType: 'agenda', id: '1', isOverdue: true, toConfirm: false, isDone: false });
-    expect(timelineItemView(row(2, '2026-05-01', { event_nature: 'HISTORICAL' }), today)).toMatchObject({ isOverdue: false, toConfirm: true });
-    expect(timelineItemView(row(3, '2026-05-01', { manual_status: 'realise' }), today)).toMatchObject({ isDone: true, isOverdue: false, toConfirm: false });
-    expect(timelineItemView(row(4, null), today)).toMatchObject({ effectiveDate: null, isOverdue: false, toConfirm: false });
-    // Date de référence injectée : rien ne dépend du jour réel.
-    expect(timelineItemView(row(1, '2026-05-01'), '2026-04-01').isOverdue).toBe(false);
+    expect(timelineItemView(row(1, '2026-05-01'), today)).toEqual({ itemType: 'agenda', id: '1', title: expect.any(String), effectiveDate: '2026-05-01' });
+    expect(timelineItemView(row(2, '2026-05-01', { event_nature: 'HISTORICAL' }), today)).not.toHaveProperty('toConfirm');
+    expect(timelineItemView(row(4, null), today)).toMatchObject({ effectiveDate: null });
+    for (const k of ['isDone', 'isOverdue', 'toConfirm', 'effectiveStatus']) expect(timelineItemView(row(1, '2026-05-01'), today)).not.toHaveProperty(k);
   });
 
   it('L84C-U05 — ordre de la Timeline', () => {
@@ -90,7 +89,7 @@ describe('L84C — Timeline : règles pures', () => {
 });
 
 describe('L84C — Timeline : requête et assemblage', () => {
-  it('L84C-U08 — regroupement par fenêtre AVANT LIMIT ; annulés exclus ; compte filtré ; principal DATÉ ; Opération active', () => {
+  it('L84C-U08 — regroupement par fenêtre AVANT LIMIT ; compte filtré ; principal DATÉ ; Opération active (#715 : plus de statut lu)', () => {
     const sql = TIMELINE_PAGE_SQL.replace(/\s+/g, ' ');
     const fenetre = sql.indexOf('OVER (PARTITION BY i.op)');
     const limite = sql.lastIndexOf('LIMIT $6');
@@ -98,14 +97,14 @@ describe('L84C — Timeline : requête et assemblage', () => {
     expect(limite).toBeGreaterThan(fenetre);
     expect(sql.match(/LIMIT/g)).toHaveLength(1);
     expect(sql).toContain("FILTER (WHERE i.role = 'PRINCIPAL' AND i.d IS NOT NULL)");
-    expect(sql).toContain("(ai.manual_status IS NULL OR ai.manual_status <> 'annule')");
+    expect(sql).not.toContain('manual_status');
     expect(sql).toContain('aal.asset_id = $2 AND ai.account_id = $1');
     expect(sql).toContain('bo.id = ai.business_operation_id AND bo.account_id = ai.account_id AND bo.invalidated_at IS NULL');
     expect(sql).toContain("WHERE $3 = 'detailed' OR h.head IS NULL OR h.head = h.id");
     expect(sql).toContain('(e.sort_date, e.id) < ($4::date, $5::int)');
     expect(sql).toContain('ORDER BY e.sort_date DESC, e.id DESC');
     expect(TIMELINE_MEMBERS_SQL).toContain('aal.asset_id = $2');
-    expect(TIMELINE_MEMBERS_SQL).toContain("ai.manual_status <> 'annule'");
+    expect(TIMELINE_MEMBERS_SQL).not.toContain('manual_status');
   });
 
   it('L84C-U09 — compteurs : cinq compteurs, hors principal, objets du compte seulement', () => {

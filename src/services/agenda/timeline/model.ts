@@ -32,7 +32,6 @@
  * Aucun libellé produit ici ne contient le mot « Opération » (P1).
  * ══════════════════════════════════════════════════════════════════════════
  */
-import { computeEffectiveStatus, effectiveStatusFlags, normalizeManualStatus, referenceInstant, type EffectiveStatus } from '@/services/agenda/AgendaDomainService';
 
 export type TimelineMode = 'grouped' | 'detailed';
 const TIMELINE_MODES: readonly TimelineMode[] = ['grouped', 'detailed'];
@@ -50,21 +49,16 @@ export interface TimelineItemView {
   title: string;
   /** AAAA-MM-JJ ; null : élément sans date. */
   effectiveDate: string | null;
-  isDone: boolean;
-  isOverdue: boolean;
-  /** Lot 53 (D17) : fait passé sans preuve de réalisation. */
-  toConfirm: boolean;
-  /**
-   * Lot 111R : statut effectif CANONIQUE (`computeEffectiveStatus`, même
-   * calcul que le tiroir Agenda) ; `isDone` / `isOverdue` / `toConfirm` en
-   * sont dérivés.
+  /*
+   * Lot 113P (#715, décision PO du 06/11/2026) : plus de statut d'événement —
+   * `isDone`, `isOverdue`, `toConfirm` et `effectiveStatus` sont RETIRÉS. La
+   * date situe l'élément sur la Timeline.
    */
-  effectiveStatus: EffectiveStatus;
 }
 
 /** Compteurs distincts d'un groupe (§13.7, AC26). */
 export interface TimelineGroupCounters {
-  /** Éléments d'agenda liés, HORS principal (annulés exclus). */
+  /** Éléments d'agenda liés, HORS principal. */
   events: number;
   documents: number;
   assets: number;
@@ -99,7 +93,6 @@ export interface TimelineItemRow {
   id: number | string;
   title: string;
   start_date: string | null;
-  manual_status: string | null;
   origin_field_key: string | null;
   event_nature: string | null;
   business_type: string | null;
@@ -107,8 +100,6 @@ export interface TimelineItemRow {
   start_time?: string | null;
   end_date?: string | null;
   end_time?: string | null;
-  /** Lot 111R : preuve de réalisation valide (`completion-proof.ts`). */
-  completion_proven?: boolean | null;
 }
 
 export function parseTimelineMode(v: string | null | undefined): TimelineMode | null {
@@ -155,40 +146,18 @@ export function decodeTimelineCursor(raw: string | null | undefined, mode: Timel
   }
 }
 
-// ── États d'affichage : statut effectif CANONIQUE (lot 111R) ──────────────
+// ── Vue d'un élément ────────────────────────────────────────────────────────
 //
-// Avant le lot 111R, la Timeline recalculait ses états à part (statut
-// manuel, date, nature) SANS la preuve de réalisation (103D, 0945) : un achat
-// prouvé, « Réalisé » dans le tiroir Agenda, restait « statut à confirmer »
-// sur la Timeline. Désormais : MÊME calcul (`computeEffectiveStatus`) et
-// MÊME preuve (`completion-proof.ts`, lue dans la requête) que l'Agenda.
+// Lot 113P (#715) : plus de statut (« réalisé », « en retard », « à
+// confirmer ») — l'élément est présenté à sa date, sans état.
 
-/**
- * Vue d'un élément. `now` : instant de référence (route : l'instant de la
- * requête, comme l'Agenda) ; une chaîne AAAA-MM-JJ vaut le début de ce jour
- * (export de recette, tests : résultat déterministe).
- */
-export function timelineItemView(r: TimelineItemRow, now: string | Date): TimelineItemView {
-  const effectiveDate = r.start_date ?? null;
-  const ref = typeof now === 'string' ? referenceInstant(now) : now;
-  const effectiveStatus = computeEffectiveStatus({
-    startDate: effectiveDate,
-    startTime: r.start_time ?? null,
-    endDate: r.end_date ?? null,
-    endTime: r.end_time ?? null,
-    manualStatus: normalizeManualStatus(r.manual_status),
-    eventNature: r.event_nature ?? null,
-    businessType: r.business_type ?? null,
-    originFieldKey: r.origin_field_key ?? null,
-    completionProven: r.completion_proven === true,
-  }, ref);
+/** Vue d'un élément. `_now` : conservé pour la compatibilité des appelants (sans effet). */
+export function timelineItemView(r: TimelineItemRow, _now?: string | Date): TimelineItemView {
   return {
     itemType: 'agenda',
     id: String(r.id),
     title: r.title,
-    effectiveDate,
-    ...effectiveStatusFlags(effectiveStatus),
-    effectiveStatus,
+    effectiveDate: r.start_date ?? null,
   };
 }
 

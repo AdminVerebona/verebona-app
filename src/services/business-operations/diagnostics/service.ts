@@ -373,7 +373,7 @@ export const OPERATION_DETAIL_LISTS = {
           ORDER BY active DESC, id DESC` },
   // Lot 86C : provenance de chaque élément (projection d'une fin établie, T4 d'un document, champ métier, saisie).
   agendaItems: { table: 'agenda_items', sql: `SELECT id, title, start_date::text AS start_date, end_date::text AS end_date, projection_origin,
-                projection_correlation_id, manual_status, to_jsonb(agenda_items) ->> 'functional_key' AS functional_key,
+                projection_correlation_id, to_jsonb(agenda_items) ->> 'functional_key' AS functional_key,
                 to_jsonb(agenda_items) ->> 'business_type' AS business_type, is_automatic, is_automatic_modified, origin_type,
                 origin_ref_type, origin_ref_id, origin_field_key, created_at
            FROM agenda_items WHERE business_operation_id = $1 AND account_id = $2 ORDER BY id` },

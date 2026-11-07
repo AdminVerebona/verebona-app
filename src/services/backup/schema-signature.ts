@@ -76,6 +76,8 @@ export const RESTORE_KEEP_CURRENT_TABLES: readonly string[] = [
   'ai_cost_regularization_runs', 'ai_cost_regularization_items', 'ai_cost_corrections',
   'ai_pipeline_step', 'ai_log_archives', 'ai_admin_audit_log', 'ai_t2_content_access_log', 'ai_execution_reports', 'ai_execution_report_entries',
   'ai_call_captures', 'ai_call_capture_state',
+  // Lot 113R : vérifications de l'envoi de fichiers au fournisseur (trace d'exploitation, comme les diagnostics).
+  'ai_provider_transfer_checks',
   'ai_evaluator_runs', 'ai_master_corpus_runs', 'ai_master_prompt_test_runs', 'ai_prompt_test_runs', 'ai_model_qualification',
   // Lot 85C : journal des changements de capacités des modèles (trace, comme la qualification).
   'ai_model_capability_changes',

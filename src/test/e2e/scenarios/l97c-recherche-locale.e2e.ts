@@ -58,12 +58,11 @@ scenario('L97C-RL', 'Recherche locale réactive : Documents et Agenda, pages gé
       RETURNING id`;
     return f.id;
   };
-  const evt = async (c: Compte, title: string, o: { date?: string | null; assets?: number[]; equipments?: number[]; rooms?: number[]; cancelled?: boolean; description?: string } = {}) => {
+  const evt = async (c: Compte, title: string, o: { date?: string | null; assets?: number[]; equipments?: number[]; rooms?: number[]; description?: string } = {}) => {
     const i = await make.agendaItem(c as never, { title, startDate: o.date ?? undefined, assetIds: o.assets ?? [] });
     if (o.description) await sql`UPDATE agenda_items SET description = ${o.description} WHERE id = ${i.id}`;
     for (const e of o.equipments ?? []) await sql`INSERT INTO agenda_equipment_links (agenda_item_id, equipment_id) VALUES (${i.id}, ${e})`;
     for (const r of o.rooms ?? []) await sql`INSERT INTO agenda_room_links (agenda_item_id, substructure_id) VALUES (${i.id}, ${r})`;
-    if (o.cancelled) await sql`UPDATE agenda_items SET manual_status = 'annule' WHERE id = ${i.id}`;
     return i.id;
   };
 
@@ -144,7 +143,7 @@ scenario('L97C-RL', 'Recherche locale réactive : Documents et Agenda, pages gé
     ids.eEntretienSansDate = await evt(moi, 'Entretien adoucisseur', { assets: [ids.maison] });
     ids.eEquipementSeul = await evt(moi, 'Entretien brûleur', { date: '2031-05-20', equipments: [ids.chaudiere] });
     ids.ePieceSeule = await evt(moi, 'Entretien VMC', { date: '2031-03-25', rooms: [ids.sdb] });
-    ids.eAnnule = await evt(moi, 'Entretien annulé', { date: '2031-03-14', assets: [ids.maison], cancelled: true });
+    // #715 : plus de statut d'événement — plus d'élément « annulé » (un événement qui n'a pas eu lieu est supprimé).
     ids.eVoiture = await evt(moi, 'Entretien Voiture', { date: '2031-03-18', assets: [ids.voiture] });
     ids.eCt = await evt(moi, 'Contrôle technique', { date: '2031-06-01', assets: [ids.voiture] });
     ids.eTaxe = await evt(moi, 'Taxe foncière', { date: '2031-10-15', assets: [ids.maison] });
@@ -238,13 +237,14 @@ scenario('L97C-RL', 'Recherche locale réactive : Documents et Agenda, pages gé
     expect(recherche.meta.total).toBe(15);
   });
 
-  it('AC08 — Mon agenda : toutes périodes (passé, futur, sans date), annulés exclus selon la règle existante', async () => {
+  it('AC08 — Mon agenda : toutes périodes (passé, futur, sans date) ; #715 : plus d’« annulés »', async () => {
     as(moi);
     const r = await agenda({ q: 'entretien' });
     expect(tri(r)).toEqual(tri([ids.eEntretienPasse, ids.eEntretienFutur, ids.eEntretienSansDate, ids.eEquipementSeul, ids.ePieceSeule, ids.eVoiture]));
     expect(r).not.toContain(ids.eAutre);
     expect(r).not.toContain(ids.eTaxe);
-    expect(await agenda({ q: 'entretien', includeCancelled: 'true' })).toContain(ids.eAnnule);
+    // #715 : l'ancien paramètre `includeCancelled` est ignoré.
+    expect(tri(await agenda({ q: 'entretien', includeCancelled: 'true' }))).toEqual(tri(r));
     // Un élément n'apparaît qu'une fois, malgré ses liens bien + équipement + pièce.
     expect(r.filter((x) => x === ids.eEntretienFutur)).toHaveLength(1);
   });

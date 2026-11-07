@@ -149,7 +149,7 @@ scenario('X-02', 'Exports V12 : source canonique (champs, pièces N-N, agenda)',
     expect((await charger(compte, bien.id, 'legacy')).asset.purchaseDate).toBe('2021-05-25');
   });
 
-  it('agenda : pas d’échéance tirée d’un fait historique ; échéance passée non prouvée hors historique', async () => {
+  it('agenda : pas d’échéance tirée d’un fait historique ; échéance passée hors historique (#715 : sans rubrique « à confirmer »)', async () => {
     const compte = await make.account();
     const bien = await make.asset(compte, { category: 'VEHICULE', name: 'Polo' });
     const { HISTORICAL_FIELD_KEYS } = await import('@/services/verebona-assistant/canonical/agenda');
@@ -169,8 +169,10 @@ scenario('X-02', 'Exports V12 : source canonique (champs, pièces N-N, agenda)',
     const canon = sections(await charger(compte, bien.id));
     expect(canon[`agenda:${fait.id}`]).toBeNull();
     expect(canon[`agenda:${futur.id}`]).toBe('deadlines');
-    expect(canon[`agenda:${passe.id}`]).toBe('deadlines'); // rubrique « à confirmer » (arbitrage lot 16)
-    expect(canon[`agenda:${fait2.id}`]).toBe('history');
+    // #715 : plus de rubrique « à confirmer » ; une échéance passée n'est jamais présentée comme réalisée
+    // (ni historique, ni à venir) — un ancien « réalisé » en base est neutralisé (1526).
+    expect(canon[`agenda:${passe.id}`]).toBeNull();
+    expect(canon[`agenda:${fait2.id}`]).toBeNull();
 
     // Commutateur retiré posé à legacy : ignoré.
     expect(sections(await charger(compte, bien.id, 'legacy'))).toEqual(canon);

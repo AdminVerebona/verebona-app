@@ -74,6 +74,12 @@ async function unsafe(sql: string, p: unknown[] = []): Promise<unknown[]> {
     const i = etat.agenda.get(id);
     return i && i.account === account && !i.manualStatus ? [{ date: i.date }] : [];
   }
+  // #715 : revalidation au clic d'une échéance = existence dans le compte (plus de statut).
+  if (/SELECT 1 FROM agenda_items WHERE id = \$1 AND account_id = \$2/.test(sql)) {
+    const [id, account] = p as [number, number];
+    const i = etat.agenda.get(id);
+    return i && i.account === account ? [{ '?column?': 1 }] : [];
+  }
   if (/SELECT manual_status FROM agenda_items/.test(sql)) {
     const [id, account] = p as [number, number];
     const i = etat.agenda.get(id);
@@ -140,7 +146,7 @@ vi.mock('@/services/ai/queue/job-queue.repository', () => ({ canStart: async () 
 const opened: unknown[] = [];
 vi.mock('@/lib/drawers', () => ({ openDrawer: (d: unknown) => { opened.push(d); } }));
 
-const { acknowledgeOccurrence, undoAcknowledgment, checkTarget } = await import('../actions.service');
+const { acknowledgeOccurrence, checkTarget } = await import('../actions.service');
 const { collectMascotData, MASCOT_TO_PROCESS_LIMIT } = await import('../collector');
 const { buildCandidates, extActionOccurrenceKey, mascotRightsFrom } = await import('../signals');
 const { buildSecondaries, selectSubjects } = await import('../selector');
@@ -292,21 +298,14 @@ describe('« C’est fait » (DONE-02, DUO-01)', () => {
   const echeance = () => etat.agenda.set(21, { account: 7, date: '2026-09-20', manualStatus: null, title: 'Vidange' });
   const key = extActionOccurrenceKey(21);
 
-  it('DONE-02 — « C’est fait » puis « Annuler » : la MÊME occurrence est réactivée', async () => {
+  // #715 : plus de statut d'événement — « C’est fait » n'est plus proposé ni enregistré.
+  it('DONE-02 (#715) — échéance échue : aucun « C’est fait » présenté ; un acquittement demandé est refusé sans écriture', async () => {
     echeance();
     const avant = await presenter(7);
-    expect(avant.paragraphs.map((p) => p.occurrenceKey)).toContain(key);
-
-    expect(await acknowledgeOccurrence({ accountId: 7, userId: 1, occurrenceKey: key, cycleKey: '2026-09-20' })).toMatchObject({ ok: true });
-    expect((await presenter(7)).paragraphs.map((p) => p.occurrenceKey)).not.toContain(key);
-
-    expect(await undoAcknowledgment({ accountId: 7, occurrenceKey: key, cycleKey: '2026-09-20' })).toMatchObject({ ok: true });
-    // Annuler ne crée rien : aucune nouvelle ligne, la même clé revient.
-    expect(sqlLog.filter((s) => /INSERT INTO home_mascot_acknowledgments/.test(s))).toHaveLength(1);
-    const apres = await presenter(7);
-    const p = apres.paragraphs.find((x) => x.occurrenceKey === key);
-    expect(p).toBeDefined();
-    expect(p!.actions.find((a) => a.target.kind === 'done')?.target).toMatchObject({ occurrenceKey: key, cycleKey: '2026-09-20' });
+    expect(avant.paragraphs.map((p) => p.occurrenceKey)).not.toContain(key);
+    expect(JSON.stringify(avant)).not.toContain('C’est fait');
+    expect(await acknowledgeOccurrence({ accountId: 7, userId: 1, occurrenceKey: key, cycleKey: '2026-09-20' })).toMatchObject({ ok: false });
+    expect(sqlLog.filter((s) => /INSERT INTO home_mascot_acknowledgments/.test(s))).toHaveLength(0);
   });
 
   it('DUO-01 — l’utilisateur A acquitte : l’utilisateur B du même compte ne la voit plus', async () => {
@@ -343,7 +342,9 @@ describe('pré-génération et cloisonnement (CACHE-03, SEC-01)', () => {
   });
 
   it('SEC-01 — changement de compte Duo : ni sujet ni cache du compte précédent', async () => {
-    etat.agenda.set(21, { account: 7, date: '2026-10-20', manualStatus: null, title: 'Vidange' });
+    // #715 : rappels sur dates FUTURES seulement — date relative au jour réel (la présentation lit l'horloge).
+    const futur = new Date(Date.now() + 20 * 86_400_000).toISOString().slice(0, 10);
+    etat.agenda.set(21, { account: 7, date: futur, manualStatus: null, title: 'Vidange' });
     const p7 = await getMascotPresentation(7);
     const p8 = await getMascotPresentation(8);
     expect(p7.paragraphs.some((p) => /vidange/i.test(p.text))).toBe(true);
@@ -353,7 +354,7 @@ describe('pré-génération et cloisonnement (CACHE-03, SEC-01)', () => {
 
     // Cache T6 : la clé porte le compte, et la lecture filtre sur le compte.
     const input = buildT6Input(selectSubjects(buildCandidates(raw({
-      agenda: [{ id: 21, title: 'Vidange', date: '2026-10-20', forecast: false, requiresQualification: false, assetId: null, assetName: null }],
+      agenda: [{ id: 21, title: 'Vidange', date: futur, forecast: false, requiresQualification: false, assetId: null, assetName: null }],
     })).candidates));
     expect(t6CacheKey({ accountId: 7, input, promptVersion: 'v' })).not.toBe(t6CacheKey({ accountId: 8, input, promptVersion: 'v' }));
     callLog.length = 0;
@@ -374,11 +375,11 @@ describe('revalidation au clic (ERR-02, §20)', () => {
     expect(await checkTarget(7, { kind: 'to_process', publicId: 'x', targetType: 'DOCUMENT', targetId: 1, targetPublicId: null, field: null })).toBe('gone');
   });
 
-  it('§20 — échéance réalisée/annulée entre affichage et clic : « déjà traitée », pas de tiroir', async () => {
+  // #715 : plus de statut d'événement — une échéance existe (tiroir ouvert) ou a été supprimée (indisponible) ;
+  // jamais « déjà traitée » par un statut.
+  it('§20 (#715) — échéance existante : tiroir ouvert, même si une ancienne valeur de statut traîne ; autre compte : indisponible', async () => {
     etat.agenda.set(30, { account: 7, date: '2026-10-01', manualStatus: 'realise', title: 'Contrôle' });
-    expect(await checkTarget(7, { kind: 'drawer', drawer: 'echeance', id: 30, mode: 'view' })).toBe('resolved');
-    etat.agenda.set(31, { account: 7, date: '2026-10-01', manualStatus: '  ', title: 'Contrôle' });
-    expect(await checkTarget(7, { kind: 'drawer', drawer: 'echeance', id: 31, mode: 'view' })).toBe('ok');
+    expect(await checkTarget(7, { kind: 'drawer', drawer: 'echeance', id: 30, mode: 'view' })).toBe('ok');
     // Échéance d'un autre compte : indisponible (SEC-006).
     etat.agenda.set(32, { account: 8, date: '2026-10-01', manualStatus: null, title: 'Autre' });
     expect(await checkTarget(7, { kind: 'drawer', drawer: 'echeance', id: 32 })).toBe('gone');
@@ -410,12 +411,13 @@ describe('offre et droits (REC-005)', () => {
     expect(codes(raw({ onboarding: unBien, rights: { canWrite: true, canAddAsset: true, canAddDocument: false } }))).not.toContain('ONB-DOC');
   });
 
-  it('lecture seule : pas de « C’est fait » ni de « Préciser l’échéance »', () => {
+  it('lecture seule : pas de « Préciser l’échéance » (#715 : « C’est fait » n’existe plus)', () => {
     const agenda = [
       { id: 1, title: 'Vidange', date: '2026-09-20', forecast: false, requiresQualification: false, assetId: null, assetName: null },
       { id: 2, title: 'Bail', date: '2026-09-21', forecast: false, requiresQualification: true, assetId: null, assetName: null },
     ];
-    expect(codes(raw({ agenda }))).toEqual(expect.arrayContaining(['MASC-EXT-ACTION', 'MASC-BLOCKED']));
+    expect(codes(raw({ agenda }))).toContain('MASC-BLOCKED');
+    expect(codes(raw({ agenda }))).not.toContain('MASC-EXT-ACTION');
     const ro = codes(raw({ agenda, rights: { canWrite: false, canAddAsset: false, canAddDocument: false } }));
     expect(ro).not.toContain('MASC-EXT-ACTION');
     expect(ro).not.toContain('MASC-BLOCKED');

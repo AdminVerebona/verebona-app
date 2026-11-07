@@ -54,6 +54,7 @@ import type { DbClient, ResolveOptions, ResolveResult } from './resolve-action.s
 import { upsertAction } from './to-process-action.service';
 import type { OperationCardNeeds } from '@/services/business-operations/consolidation/card-needs';
 import * as bin from './operation-match-binary';
+import { questionContractActive, resolveAiCardQuestion, T3_USER_QUESTION_CONTRACT } from './ai-user-question';
 import {
   isBinaryMatchContext, parseBinaryMatchChoice, USER_NOT_SAME_OPERATION_REASON, USER_SAME_OPERATION_REASON, type OperationReference,
 } from './operation-match-binary';
@@ -279,6 +280,19 @@ async function matchClosureTrace(
   return out;
 }
 
+/** Lot 113S : verdict M3 enregistré du candidat (question proposée par T3, version de prompt). */
+async function m3VerdictOf(accountId: number, fileId: number, candidateKey: string): Promise<{ verdict: import('@/services/ai/reconciliation/master/operation-match').OperationMatchVerdict | null; promptVersion: string | null } | null> {
+  const r = (await pgClient.unsafe(
+    `SELECT c.t3_detail->'m3' AS m3 FROM document_operation_candidates c
+      WHERE c.account_id = $1 AND c.file_id = $2 AND c.candidate_key = $3 AND c.status = 'ACTIVE' LIMIT 1`,
+    [accountId, fileId, candidateKey] as never[],
+  ).catch(() => [])) as unknown as Array<{ m3: { verdict?: unknown; promptVersion?: unknown } | null }>;
+  const m = r[0]?.m3;
+  if (!m || typeof m !== 'object') return null;
+  const v = m.verdict as import('@/services/ai/reconciliation/master/operation-match').OperationMatchVerdict | undefined;
+  return { verdict: v && typeof v === 'object' ? v : null, promptVersion: typeof m.promptVersion === 'string' ? m.promptVersion : null };
+}
+
 // ── Producteur ──────────────────────────────────────────────────────────────
 
 interface OperationCardsReport { created: number; updated: number; closed: number; skipped: number; /** Lot 54D (E05) : échec de synchronisation (repris au passage T3 suivant). */ error?: string }
@@ -301,18 +315,46 @@ export async function syncOperationCards(accountId: number, needs: OperationCard
     // binaire sur la première Opération candidate (canonique), ses références
     // en contexte — jamais « A ou B ? » entre documents (`operation-match-binary.ts`).
     for (const n of needs.match) {
-      const candidates = await bin.canonicalCandidateOperations(accountId, n.operationIds);
+      const ordre = await bin.canonicalCandidateOperations(accountId, n.operationIds);
+      // Lot 113S : verdict sémantique M3 (T3) à l'origine de la question — question proposée et son sujet.
+      const m3 = n.basis === 'M3' ? await m3VerdictOf(accountId, n.fileId, n.candidateKey) : null;
+      const sujet = m3?.verdict?.questionCandidateId ?? null;
+      // Le candidat sur lequel porte la question de T3 est présenté (jamais une question posée sur un autre).
+      const candidates = sujet !== null && ordre.some((c) => c.id === sujet) ? [ordre.find((c) => c.id === sujet)!, ...ordre.filter((c) => c.id !== sujet)] : ordre;
       const cible = candidates[0];
       if (!cible) continue;
-      const refs = bin.referencesForCard(await bin.loadOperationReferences(accountId, [cible.id]), cible.id, n.fileId);
+      const toutes = await bin.loadOperationReferences(accountId, candidates.map((c) => c.id));
+      const refs = bin.referencesForCard(toutes, cible.id, n.fileId);
       const ctx = bin.buildBinaryMatchContext({
         candidateKey: n.candidateKey, basis: n.basis, operationId: cible.id, others: candidates.slice(1).map((c) => c.id),
         operationType: cible.type, references: refs,
       });
+      const repli = bin.binaryMatchQuestion(cible.type, refs, { provider: cible.provider, date: cible.date });
+      let choix: Awaited<ReturnType<typeof resolveAiCardQuestion>> | null = null;
+      if (n.basis === 'M3') {
+        const autres = candidates.slice(1).flatMap((c) => bin.referencesForCard(toutes, c.id, n.fileId).map((x) => x.title));
+        const titres = await fileTitles(accountId, [n.fileId]);
+        const raw = m3?.verdict?.userQuestion ?? null;
+        const horsSujet = typeof raw === 'string' && sujet === null && candidates.length > 1;
+        choix = await resolveAiCardQuestion(accountId, {
+          rule: OPERATION_MATCH_RULE, treatment: 'T3', operation: 't3_operation_match', contract: T3_USER_QUESTION_CONTRACT,
+          raw, aiCalled: !!m3?.verdict, contractActive: await questionContractActive('t3_operation_match', T3_USER_QUESTION_CONTRACT),
+          promptVersion: m3?.promptVersion ?? null, fallbackQuestion: repli,
+          check: {
+            allowedLabels: [...refs.map((x) => x.title), ...refs.map((x) => x.typeLabel), cible.provider, titres.get(n.fileId)],
+            foreignLabels: autres.filter((t) => !refs.some((x) => x.title === t)),
+          },
+        }, n.fileId);
+        if (horsSujet && choix.source.origin === 'AI') {
+          // Question sans candidat désigné alors que plusieurs sont possibles : sujet non établi, repli tracé.
+          choix = { question: repli, source: { ...choix.source, origin: 'CODE', fallback: 'AI_QUESTION_REJECTED', rejection: 'SUBJECT_MISMATCH' }, anomaly: null };
+        }
+      }
       const r = await upsertAction({
         accountId, targetType: 'DOCUMENT', targetId: n.fileId, relationKey: matchRelationKey(n.candidateKey),
         actionKind: 'ARBITRATE', ruleCode: OPERATION_MATCH_RULE,
-        question: bin.binaryMatchQuestion(cible.type, refs, { provider: cible.provider, date: cible.date }),
+        question: choix?.question ?? repli,
+        ...(choix ? { questionSource: choix.source } : {}),
         proposals: bin.binaryMatchProposals(cible.id),
         triggerContext: ctx as unknown as Record<string, unknown>,
       });

@@ -11,8 +11,7 @@
  *   · « Annuler » reste proposé 15 minutes après l'exécution (UNDO_WINDOW_MS).
  *   · Seulement pour les actions RÉVERSIBLES :
  *       - CREATE_AGENDA_ITEM  → commande inverse : supprimer l'échéance créée ;
- *       - MARK_AGENDA_DONE    → rétablir le statut précédent de l'échéance ;
- *       - CANCEL_AGENDA_ITEM  → rétablir le statut précédent de l'échéance ;
+ *       - (lot 113P : MARK_AGENDA_DONE / CANCEL_AGENDA_ITEM retirées) ;
  *       - UPDATE_ASSET_FIELD  → rétablir la valeur précédente du champ.
  *   · IRRÉVERSIBLES (aucun bouton pour tout le plan) :
  *       - une échéance « achat » rattachée à un bien sans date d'achat (à la
@@ -56,6 +55,7 @@ import type { ActionResult, PlanStatus, WriteCommandType } from './catalog';
 /** Durée pendant laquelle une action exécutée peut être annulée. */
 export const UNDO_WINDOW_MS = 15 * 60_000;
 
+/** Lot 113P (#715) : RESTORE_AGENDA_STATUS conservé pour lire les étapes antérieures — jamais rejoué. */
 type InverseOp = 'DELETE_AGENDA_ITEM' | 'RESTORE_AGENDA_STATUS' | 'RESTORE_ASSET_FIELDS';
 
 /** Ce que l'exécuteur d'une étape rapporte pour permettre (ou non) son annulation. */
@@ -87,7 +87,6 @@ interface AgendaSnapshot {
   id: number;
   title: string;
   startDate: string | null;
-  manualStatus: string | null;
   updatedAt: string;
 }
 
@@ -110,16 +109,17 @@ const empreinte = (parts: unknown[]) => createHash('sha256').update(JSON.stringi
  *
  * Empreinte d'une échéance : champs métier ET date de mise à jour. Une
  * écriture qui oublierait de toucher `updated_at` est tout de même vue si
- * elle change le titre, la date ou le statut.
+ * elle change le titre ou la date. Lot 113P : l'ancien statut est figé à null
+ * (empreintes des étapes déjà enregistrées inchangées).
  */
-export const agendaVersion = (s: AgendaSnapshot) => empreinte([s.title, s.startDate, s.manualStatus, s.updatedAt]);
+export const agendaVersion = (s: AgendaSnapshot) => empreinte([s.title, s.startDate, null, s.updatedAt]);
 /** Empreinte d'un bien : caractéristiques, colonnes recopiées et date de mise à jour. */
 export const assetVersion = (s: AssetSnapshot) =>
   empreinte([s.keyCharacteristics, s.registrationNumber, s.purchaseDate, s.updatedAt]);
 
 export async function readAgendaSnapshot(run: SqlRunner, accountId: number, id: number, lock = false): Promise<AgendaSnapshot | null> {
   const rows = (await run.unsafe(
-    `SELECT id, title, to_char(start_date, 'YYYY-MM-DD') AS "startDate", manual_status AS "manualStatus",
+    `SELECT id, title, to_char(start_date, 'YYYY-MM-DD') AS "startDate",
             (extract(epoch FROM updated_at) * 1000000)::bigint::text AS "updatedAt"
        FROM agenda_items WHERE id = $1 AND account_id = $2${lock ? ' FOR UPDATE' : ''}`,
     [id, accountId] as never[],
@@ -262,7 +262,6 @@ const conflictMessage = (label: string, gone: boolean) => gone
   ? `Annulation impossible : ${label} n’existe plus. Rien n’a été modifié.`
   : `Annulation impossible : ${label} a changé depuis l’exécution de l’action. Rien n’a été modifié ; vous pouvez faire la correction directement depuis l’écran concerné.`;
 
-const statutFr = (s: unknown) => (s === 'realise' ? 'réalisée' : s === 'annule' ? 'annulée' : 'à traiter');
 
 interface StepRow {
   id: number;
@@ -357,19 +356,9 @@ async function defaireEtape(
       return `${s.label} a été supprimée`;
     }
 
-    // RESTORE_AGENDA_STATUS
-    const precedent = (before.manualStatus ?? null) as string | null;
-    await t.unsafe(
-      `UPDATE agenda_items SET manual_status = $3, updated_at = now() WHERE id = $1 AND account_id = $2`,
-      [s.targetId, ctx.accountId, precedent] as never[],
-    );
-    await t.unsafe(
-      `INSERT INTO agenda_occurrence_events (agenda_item_id, account_id, event_type, detail_json, actor_user_id)
-       VALUES ($1, $2, 'STATUS_CHANGED', $3::jsonb, $4)`,
-      [s.targetId, ctx.accountId, JSON.stringify({ manualStatus: precedent, undoOfPlan: ctx.planId }), ctx.userId] as never[],
-    );
-    dejaDefaites.set(cle, s.versionBefore);
-    return `${s.label} a retrouvé son statut précédent (${statutFr(precedent)})`;
+    // RESTORE_AGENDA_STATUS — lot 113P (#715) : plus de statut d'événement, jamais rejoué
+    // (étape d'une commande « réalisée / annulée » antérieure) : refus, rien n'est écrit.
+    throw new UndoConflict(s.label, false);
   }
 
   // RESTORE_ASSET_FIELDS

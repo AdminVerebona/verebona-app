@@ -197,6 +197,12 @@ export async function reevaluateRepresentation(req: RepresentationRequest): Prom
       beforeState: stateSummary(b), afterState: stateSummary(b), resultingFingerprint: b.fingerprint, decided: true,
     });
     await signalIdentity(req, concern);
+    // Lot 113S (#716) : T4 ne tranche pas — sa question (contrat `t4-user-question-v1`), contrôlée,
+    // requalifie la carte « À traiter » ouverte de l'Opération (même carte, aucune réouverture).
+    if (decision.userQuestion) {
+      const { requalifyAgendaProjectionQuestions } = await import('@/services/to-process/agenda-projection-cards');
+      await requalifyAgendaProjectionQuestions(req.accountId, req.operationId);
+    }
     return vide('ABSTAINED', { fingerprint: b.fingerprint, journalId: id, reason: decision.reason, aiCalls: 1, identityConcern: concern });
   }
 

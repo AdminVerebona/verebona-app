@@ -2,7 +2,7 @@
 
 import { useState, useEffect, useId } from 'react';
 import { subscribeAgendaStatusSources } from '@/lib/agenda/agenda-status-events';
-import { EFFECTIVE_STATUS_LABELS, attentionFlagLabel, visibleAttentionFlags, type AgendaEffectiveStatus } from '@/lib/agenda/effective-status';
+import { attentionFlagLabel, visibleAttentionFlags } from '@/lib/agenda/attention-flags';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
 import { Skeleton } from '@/components/ui/skeleton';
@@ -37,18 +37,7 @@ const CreateAgendaItemDrawer = dynamic(
   { ssr: false }
 );
 
-// Lot 53 (D17) : libellés partagés — « Statut à confirmer » n'est ni réalisé, ni masqué.
-type EffectiveStatus = AgendaEffectiveStatus;
-
-const STATUS_LABELS: Record<EffectiveStatus, string> = EFFECTIVE_STATUS_LABELS;
-
-const STATUS_COLORS: Record<EffectiveStatus, string> = {
-  a_venir: 'bg-[color:var(--accent-soft)] text-[color:var(--accent)]',
-  en_retard: 'bg-[color:var(--danger-soft)] text-[color:var(--danger)]',
-  a_confirmer: 'bg-[color:var(--attention-soft)] text-[color:var(--attention-on-soft)]',
-  realise: 'bg-[color:var(--bg-success)] text-[color:var(--text-success)]',
-  annule: 'bg-[color:var(--bg-subtle)] text-[color:var(--text-secondary)]',
-};
+// Lot 113P (#715, décision PO du 06/11/2026) : plus de statut d'événement (ni badge, ni filtre « Statut »).
 
 function formatShortDate(d: string | null): string {
   if (!d) return 'Sans date';
@@ -81,7 +70,6 @@ export function AssetAgendaTab({ assetId }: Props) {
   const [period, setPeriod] = useState<AgendaPeriod>('all');
   // Lot 100E (A8) : période suspendue le temps d'une recherche (rétablie à l'effacement).
   const [periodeSuspendue, setPeriodeSuspendue] = useState<AgendaPeriod | null>(null);
-  const [includeCancelled, setIncludeCancelled] = useState(false);
   // Lot 72 (72E) : `null` = « Tous (bien et équipements) », jamais transmis.
   const [equipment, setEquipment] = useState<string | null>(null);
   const [equipmentFacet, setEquipmentFacet] = useState<EquipmentFacet | null>(null);
@@ -125,7 +113,6 @@ export function AssetAgendaTab({ assetId }: Props) {
     const params = new URLSearchParams({
       assetIds: String(assetId),
       period: view === 'year' ? 'all' : period,
-      includeCancelled: String(includeCancelled),
       includeUndated: 'true',
     });
     if (view === 'calendar') params.set('month', month);
@@ -149,7 +136,7 @@ export function AssetAgendaTab({ assetId }: Props) {
       .catch(() => { if (actuel) toast.error('Erreur lors du chargement'); })
       .finally(() => { if (actuel) { setLoading(false); setLoadedOnce(true); } });
     return () => { actuel = false; };
-  }, [assetId, period, includeCancelled, equipment, piece, q, refreshKey, view, month, year]);
+  }, [assetId, period, equipment, piece, q, refreshKey, view, month, year]);
 
   const onMutated = () => {
     setRefreshKey(k => k + 1);
@@ -157,7 +144,7 @@ export function AssetAgendaTab({ assetId }: Props) {
   };
 
   // Refresh when any agenda mutation happens elsewhere (e.g. from DocumentDrawer)
-  // Lot 111R : aussi quand une preuve de réalisation peut changer (document supprimé, analyse terminée).
+  // Lot 111R : aussi quand un document lié change (supprimé, analyse terminée).
   useEffect(() => subscribeAgendaStatusSources(() => setRefreshKey(k => k + 1)), []);
 
   // Bien fixé par la fiche : un seul bien retenu pour le modèle.
@@ -172,7 +159,7 @@ export function AssetAgendaTab({ assetId }: Props) {
     if (loadedOnce && !loading && piece && !roomModel.chipLabel) setPiece(null);
   }, [loadedOnce, loading, piece, roomModel.chipLabel]);
   const chips = assetAgendaChips({
-    view, period, includeCancelled,
+    view, period,
     equipmentChipLabel: equipment ? (equipmentModel.chipLabel ?? (loading ? null : 'Équipement indisponible')) : null,
     roomChipLabel: piece ? roomModel.chipLabel : null,
   });
@@ -185,11 +172,10 @@ export function AssetAgendaTab({ assetId }: Props) {
   };
   const removeChip = (key: string) => {
     if (key === 'period') choisirPeriode('all');
-    else if (key === 'cancelled') setIncludeCancelled(false);
     else if (key === 'equipment') setEquipment(null);
     else if (key === 'piece') setPiece(null);
   };
-  const clearFilters = () => { choisirPeriode('all'); setIncludeCancelled(false); setEquipment(null); setPiece(null); };
+  const clearFilters = () => { choisirPeriode('all'); setEquipment(null); setPiece(null); };
 
   // Comme « Mon agenda » : commandes masquées seulement si l'agenda du bien
   // est RÉELLEMENT vide (vue Liste, aucun filtre) — un mois vide n'est pas un
@@ -222,10 +208,8 @@ export function AssetAgendaTab({ assetId }: Props) {
           id={filtersPanelId}
           view={view}
           period={period}
-          includeCancelled={includeCancelled}
           equipment={equipmentModel}
           onPeriod={choisirPeriode}
-          onToggleCancelled={() => setIncludeCancelled(v => !v)}
           onEquipment={(v) => setEquipment(equipmentFilterParam(v))}
           room={roomModel}
           onRoom={(v) => setPiece(roomFilterParam(v))}
@@ -323,9 +307,6 @@ export function AssetAgendaTab({ assetId }: Props) {
                   ))}
                 </div>
               </div>
-              <span className={`shrink-0 mt-0.5 inline-flex items-center rounded-full px-2 py-0.5 text-xs font-medium ${STATUS_COLORS[item.effectiveStatus]}`}>
-                {STATUS_LABELS[item.effectiveStatus]}
-              </span>
             </div>
           ))}
         </div>

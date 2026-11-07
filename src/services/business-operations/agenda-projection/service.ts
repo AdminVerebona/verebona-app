@@ -149,8 +149,6 @@ export interface ProjectionRunResult {
   linked: number;
   removed: number;
   detached: number;
-  markedDone: number;
-  proposed: number;
   abstained: number;
   suppressed: number;
   /** Lot 53 (D14) : cartes « À traiter » de rapprochement incertain posées / mises à jour. */
@@ -180,7 +178,7 @@ export interface ProjectionRunResult {
 }
 
 const vide = (): ProjectionRunResult => ({
-  operations: 0, created: 0, updated: 0, linked: 0, removed: 0, detached: 0, markedDone: 0, proposed: 0, abstained: 0, suppressed: 0, changes: 0,
+  operations: 0, created: 0, updated: 0, linked: 0, removed: 0, detached: 0, abstained: 0, suppressed: 0, changes: 0,
 });
 
 // ── Lectures ────────────────────────────────────────────────────────────────
@@ -263,7 +261,7 @@ async function loadOperationSnapshots(accountId: number, ids: readonly number[])
 }
 
 const itemColumnsSql = (journal: boolean) => sql.raw(`
-  i.id, i.title, i.start_date::text AS date, i.manual_status, i.is_automatic, i.is_automatic_modified,
+  i.id, i.title, i.start_date::text AS date, i.is_automatic, i.is_automatic_modified,
   (i.projection_origin IS NOT DISTINCT FROM '${PROJECTION_ORIGIN}') AS projected, i.business_operation_id,
   (lo.id IS NOT NULL AND lo.invalidated_at IS NULL AND lo.merged_into_operation_id IS NULL) AS linked_active,
   i.event_nature, i.business_type, i.home_category, i.functional_key, i.origin_ref_type, i.origin_ref_id,
@@ -316,7 +314,6 @@ function toItem(x: Row): AgendaItemSnapshot {
     id: Number(x.id),
     title: String(x.title ?? ''),
     date: txt(x.date),
-    manualStatus: txt(x.manual_status) || null,
     isAutomatic: x.is_automatic === true,
     isAutomaticModified: x.is_automatic_modified === true,
     projected: x.projected === true,
@@ -356,7 +353,6 @@ async function loadCandidates(accountId: number, assetIds: readonly number[], fi
   return (await rows(db, sql`
     SELECT ${await itemColumns()} FROM agenda_items i LEFT JOIN business_operations lo ON lo.id = i.business_operation_id
      WHERE i.account_id = ${accountId} AND i.start_date IS NOT NULL
-       AND (i.manual_status IS NULL OR i.manual_status <> 'annule')
        AND (EXISTS (SELECT 1 FROM agenda_asset_links l WHERE l.agenda_item_id = i.id AND l.asset_id = ANY(${intArray(assetIds)}::int[]))
             OR EXISTS (SELECT 1 FROM agenda_file_links l WHERE l.agenda_item_id = i.id AND l.asset_file_id = ANY(${intArray(fileIds)}::int[]))
             OR (i.origin_ref_type = 'asset_file' AND i.origin_ref_id = ANY(${intArray(fileIds)}::int[])))
@@ -392,15 +388,6 @@ async function loadPrincipalWithdrawals(accountId: number, opIds: readonly numbe
   return new Set(r.map((x) => Number(x.op)));
 }
 
-async function loadStatusCardItems(accountId: number, itemIds: readonly number[]): Promise<Set<number>> {
-  if (!itemIds.length) return new Set();
-  const r = await rows<{ target_id: number }>(db, sql`
-    SELECT DISTINCT target_id FROM to_process_actions
-     WHERE account_id = ${accountId} AND target_type = 'AGENDA_ITEM' AND field_key = 'manualStatus'
-       AND target_id = ANY(${intArray(itemIds)}::int[])`);
-  return new Set(r.map((x) => Number(x.target_id)));
-}
-
 /**
  * Lot 76H : Opération d'intervention active dont T3 a fait, de façon
  * exclusive, le document source de chaque élément (`coveredByOperationId`).
@@ -434,7 +421,6 @@ function syncValues(changes: ItemSync, correlationId: string | null): Partial<Ag
     ...(changes.title !== undefined ? { title: changes.title } : {}),
     ...(changes.date !== undefined ? { startDate: changes.date } : {}),
     ...(changes.homeCategory !== undefined ? { homeCategory: changes.homeCategory } : {}),
-    ...(changes.manualStatus !== undefined ? { manualStatus: changes.manualStatus } : {}),
     // Lot 82D : l'appartenance (`business_operation_id`, rôle) est écrite par le service de regroupement.
     ...(changes.businessOperationId !== undefined ? { originRefId: changes.businessOperationId } : {}),
     projectionOrigin: PROJECTION_ORIGIN,
@@ -586,29 +572,6 @@ async function applyAction(
       res.changes++;
       return null;
     }
-    case 'MARK_DONE': {
-      await garde('statut réalisé');
-      const [cur] = await rows<{ s: string | null }>(db, sql`SELECT manual_status AS s FROM agenda_items WHERE id = ${a.itemId} AND account_id = ${accountId}`);
-      if (!cur || (cur.s && cur.s !== '')) return null;
-      const { upsertAgendaItem } = await import('@/services/agenda/agenda-write-primitive');
-      await upsertAgendaItem({ itemId: a.itemId, accountId, assetId: null, origin: 'AUTOMATIC', details: { manualStatus: 'realise' } });
-      const { recordOccurrenceEvent } = await import('@/services/agenda/agenda-persistence');
-      await recordOccurrenceEvent(a.itemId, accountId, 'STATUS_AUTO_COMPLETED', {
-        manualStatus: 'realise', origin: 'CONSOLIDATED_REALIZATION', reasonCode: 'COMPLETION_PROVEN', correlationId: opts.correlationId,
-      });
-      const { closeAgendaStatusCards } = await import('@/services/to-process/agenda-status-cards');
-      await closeAgendaStatusCards(accountId, a.itemId, 'OBSOLETE');
-      res.markedDone++;
-      res.changes++;
-      return null;
-    }
-    case 'PROPOSE_DONE': {
-      await garde('proposition de réalisation');
-      const { proposeAgendaStatus } = await import('@/services/to-process/agenda-status-cards');
-      const r = await proposeAgendaStatus({ accountId, itemId: a.itemId, kind: 'propose_done', sourceFileId: op.documentFileIds[0] ?? null });
-      if (r.status !== 'SKIPPED') { res.proposed++; res.changes++; }
-      return null;
-    }
     case 'ABSTAIN':
       res.abstained++;
       if (a.itemId !== undefined) {
@@ -724,7 +687,6 @@ async function projectIds(
   const actifs = ops.filter((o) => o.active);
   const candidates = await loadCandidates(accountId, actifs.flatMap((o) => o.assetIds), actifs.flatMap((o) => o.documentFileIds));
   await markCoveringOperations(accountId, [...linked, ...candidates]);
-  const cards = await loadStatusCardItems(accountId, [...linked, ...candidates].map((i) => i.id));
   // Lot 76H : un élément lié à une Opération INACTIVE (fusionnée, invalidée)
   // reste disponible pour la canonique dans le même passage (représentation
   // cohérente après fusion) ; son détachement est gardé (`detachItem`).
@@ -745,7 +707,6 @@ async function projectIds(
       suppressedKeys: suppressions.get(op.id) ?? new Set(),
       candidates,
       taken,
-      statusCardItems: cards,
       forceCreate: forcer.has(op.id),
       principalWithdrawn: retraits.has(op.id),
       t4Roles: rolesT4.get(op.id),

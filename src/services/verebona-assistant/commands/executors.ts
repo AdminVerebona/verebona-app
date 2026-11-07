@@ -91,15 +91,6 @@ export const EXECUTORS: Record<PlannedAction['command'], Executor> = {
     return ok(action, `Échéance « ${p.title} » créée.`, item.id);
   },
 
-  async MARK_AGENDA_DONE(action, ctx) {
-    const p = action.params as Extract<CommandParams, { agendaItemId: number }>;
-    const etat = await avant(ctx, () => etatStatut(ctx, p.agendaItemId, true));
-    const { updateManualStatus } = await import('@/services/agenda/AgendaWriteService');
-    const item = await updateManualStatus(p.agendaItemId, 'realise', ctx.accountId);
-    await capturer(ctx, action.actionId, () => captureStatut(action, ctx, etat));
-    return ok(action, `« ${item.title} » marquée comme réalisée.`, item.id);
-  },
-
   /**
    * Caractéristique d'un bien : par le service de la fiche bien, avec ses
    * contrôles (bien du compte, disponible, section applicable, dates).
@@ -187,50 +178,18 @@ export const EXECUTORS: Record<PlannedAction['command'], Executor> = {
       entity: { type: 'asset', id: p.assetId },
     };
   },
-
-  async CANCEL_AGENDA_ITEM(action, ctx) {
-    const p = action.params as Extract<CommandParams, { agendaItemId: number }>;
-    const { updateManualStatus } = await import('@/services/agenda/AgendaWriteService');
-    const etat = await avant(ctx, () => etatStatut(ctx, p.agendaItemId, false));
-    const item = await updateManualStatus(p.agendaItemId, 'annule', ctx.accountId);
-    await capturer(ctx, action.actionId, () => captureStatut(action, ctx, etat));
-    return ok(action, `« ${item.title} » annulée.`, item.id);
-  },
 };
 
-/** État d'une échéance avant changement de statut (et synchronisation « achat » à venir). */
-async function etatStatut(ctx: ExecutionContext, agendaItemId: number, marquerRealisee: boolean) {
-  const snap = await readAgendaSnapshot(pgClient, ctx.accountId, agendaItemId);
-  if (!snap) return null;
-  // Marquée réalisée, une échéance « achat » recopie sa date sur les biens
-  // rattachés sans date d'achat (synchronisation échéance → bien).
-  const achat = marquerRealisee
-    && await achatSyncWillWrite(pgClient, { title: snap.title, startDate: snap.startDate, agendaItemId });
-  return { snap, achat };
-}
-
-/** Commande inverse d'un changement de statut : rétablir le statut précédent. */
-async function captureStatut(
-  action: PlannedAction,
-  ctx: ExecutionContext,
-  etat: Awaited<ReturnType<typeof etatStatut>> | 'ERREUR',
-): Promise<UndoCapture> {
-  const p = action.params as Extract<CommandParams, { agendaItemId: number }>;
-  if (!etat || etat === 'ERREUR') return { actionId: action.actionId, reversible: false, reason: 'état antérieur non capturé' };
-  if (etat.achat) return { actionId: action.actionId, reversible: false, reason: ACHAT_SYNC_REASON };
-  const apres = await readAgendaSnapshot(pgClient, ctx.accountId, p.agendaItemId);
-  if (!apres) return { actionId: action.actionId, reversible: false, reason: 'échéance introuvable après exécution' };
-  return {
-    actionId: action.actionId, reversible: true, command: action.command,
-    targetType: 'agenda_item', targetId: p.agendaItemId, inverseOp: 'RESTORE_AGENDA_STATUS',
-    before: { manualStatus: etat.snap.manualStatus },
-    versionBefore: agendaVersion(etat.snap), versionAfter: agendaVersion(apres),
-    label: `l’échéance « ${etat.snap.title} »`,
-  };
-}
+// Lot 113P (#715) : plus de commande de STATUT d'échéance (réalisée / annulée) ni d'inverse associé.
 
 /** Exécute une action, sans jamais lever : une erreur devient un résultat FAILED. */
+/** #715 (lot 113P) : commande d'un plan ancien retirée (statut d'échéance) — refusée, rien n'est écrit. */
+export const RETIRED_COMMAND_MESSAGE = 'Cette action n’existe plus : modifiez la date ou supprimez l’événement depuis l’Agenda.';
+
 export async function runAction(action: PlannedAction, ctx: ExecutionContext, executors = EXECUTORS): Promise<ActionResult> {
+  if (typeof executors[action.command] !== 'function') {
+    return { actionId: action.actionId, status: 'REFUSED', message: RETIRED_COMMAND_MESSAGE };
+  }
   try {
     return await executors[action.command](action, ctx);
   } catch (e) {

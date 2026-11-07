@@ -19,7 +19,7 @@ import type { ToProcessActionView } from '@/services/to-process/to-process-query
 import type { MascotAction, MascotFamily, MascotInterpellation, MascotPriority, MascotReminderRef, MascotSubject } from './types';
 import { MAX_ACTIONS_PER_SUBJECT } from './types';
 import type { AgendaDateRole } from '@/services/agenda/agenda-date-role';
-import { deadlineBlockedText, deadlineButtonLabel, deadlineExtActionText, deadlineNextText, deadlineReminderText } from './deadline-label';
+import { deadlineBlockedText, deadlineButtonLabel, deadlineNextText, deadlineReminderText } from './deadline-label';
 import { actionIsDistinct, actionSentence } from './t6-interpellation';
 
 export interface MascotDocRow { id: number; title: string; at: string }
@@ -440,40 +440,6 @@ function blockedSubject(raw: MascotRawData, i: MascotAgendaRow): MascotSubject {
   });
 }
 
-/**
- * MASC-EXT-ACTION : action externe arrivée à date, que Verebona ne peut pas
- * constater (DONE-001). Le cycle est la date : une nouvelle date est une
- * nouvelle occurrence (DONE-002, DONE-005). Pur.
- */
-function extActionSubject(raw: MascotRawData, i: MascotAgendaRow): MascotSubject {
-  const date = formatDateFr(i.date!);
-  const voir = action(`MASC:${i.id}:open`, 'Voir', { kind: 'drawer', drawer: 'echeance', id: i.id, mode: 'view' });
-  const occurrenceKey = extActionOccurrenceKey(i.id);
-  const cycleKey = i.date!;
-  const passee = i.date! < raw.today;
-  return subject('MASCOT_RULE', {
-    subjectId: `MASC-EXT-ACTION:${i.id}`,
-    sourceCode: 'MASC-EXT-ACTION',
-    accountId: raw.accountId,
-    targetType: 'AGENDA_ITEM', targetId: i.id,
-    priority: 'DO_NEXT', requiresAttention: true, intent: 'act',
-    facts: { title: i.title, date: i.date!, dateLabel: date, assetName: i.assetName, dateState: passee ? 'passée' : 'du jour', dateRole: roleOf(i) },
-    actions: [voir, action(`MASC-EXT-ACTION:${i.id}:done`, 'C’est fait', {
-      kind: 'done', occurrenceKey, cycleKey,
-    })],
-    // Décision PO 20 (lot 32) : libellé naturel, jamais le titre technique.
-    fallbackText: deadlineExtActionText(i, date, passee),
-    allowedHighlight: date,
-    occurrenceKey,
-    dedupeKeys: [`agenda:${i.id}`],
-    secondaryLabel: `${deadlineButtonLabel(i)} : c’est fait ?`,
-    // Lot 61 : intitulé métier de la carte quand l'échéance est retenue par
-    // une décision IA (« Ramonage », jamais « Confirmer ou reporter »).
-    tileTitle: deadlineButtonLabel(i),
-    assetId: i.assetId, assetName: i.assetName,
-  });
-}
-
 function mascotRuleSubjects(raw: MascotRawData): MascotSubject[] {
   // REC-005 : « C'est fait » et « Préciser l'échéance » écrivent ; un compte
   // en lecture seule se les verrait refuser — aucune recommandation propre.
@@ -485,15 +451,14 @@ function mascotRuleSubjects(raw: MascotRawData): MascotSubject[] {
       && daysBetween(i.date, raw.today) <= EXT_ACTION_LOOKBACK_DAYS)
     .sort((a, b) => a.date!.localeCompare(b.date!) || a.id - b.id);
 
+  void acquittes;
   const out: MascotSubject[] = [];
   for (const i of echues) {
-    // MASC-BLOCKED (REC-004) : l'échéance doit d'abord être précisée. Seule la
-    // dépendance est recommandée — jamais « C'est fait » sur un objet flou.
+    // MASC-BLOCKED (REC-004) : l'échéance doit d'abord être précisée.
     if (i.requiresQualification) { out.push(blockedSubject(raw, i)); continue; }
-    // MASC-EXT-ACTION : action externe arrivée à date (DONE-001) ; une
-    // occurrence déjà déclarée faite (même cycle) n'est plus proposée.
-    if (acquittes.has(`${extActionOccurrenceKey(i.id)}|${i.date!}`)) continue;
-    out.push(extActionSubject(raw, i));
+    // Lot 113P (#715) : plus de MASC-EXT-ACTION « … : c'est fait ? » — une date
+    // arrivée ou passée ne produit jamais de demande de confirmation de
+    // réalisation (événement daté ≠ action en attente).
   }
   // Même référentiel que « À traiter » : priorité, puis ancienneté.
   return out.sort((a, b) => PRIORITY_RANK[a.priority ?? 'CAN_WAIT'] - PRIORITY_RANK[b.priority ?? 'CAN_WAIT']);
@@ -534,8 +499,8 @@ const PRIORITE_T6: Readonly<Record<MascotInterpellation['priority'], MascotPrior
 /**
  * Sujets des échéances décidées (pur) : UNE échéance = UN sujet, sa carte
  * et ses actions — jamais de sujet composé (fin de DATE-NEXT-2 et de ses
- * titres concaténés « X et Y »). Échéance à venir : DATE-NEXT ; arrivée à
- * date : MASC-EXT-ACTION (« C'est fait ») ou MASC-BLOCKED (à préciser).
+ * titres concaténés « X et Y »). Échéance à venir ou du jour : DATE-NEXT ;
+ * à préciser : MASC-BLOCKED. Lot 113P : plus de MASC-EXT-ACTION (« C'est fait »).
  */
 export function decidedAgendaSubjects(raw: MascotRawData, shown: readonly MascotDecidedAgenda[]): MascotSubject[] {
   // Lot 71G : une échéance décidée peut venir de la lecture propre à T6.
@@ -552,9 +517,12 @@ export function decidedAgendaSubjects(raw: MascotRawData, shown: readonly Mascot
   for (const d of shown) {
     const i = lignes.find((x) => x.id === d.agendaItemId);
     if (!i?.date) continue;
-    const base = i.date > raw.today
+    // Lot 113P (#715) : plus de « c'est fait ? » (MASC-EXT-ACTION) — une échéance
+    // du jour reste présentée à sa date ; une échéance passée n'est jamais un sujet.
+    if (i.date < raw.today && !i.requiresQualification) continue;
+    const base = i.date >= raw.today && !(i.date === raw.today && i.requiresQualification)
       ? dateNextSubject(raw, i, { dedupeDateNext: false })
-      : i.requiresQualification ? blockedSubject(raw, i) : extActionSubject(raw, i);
+      : blockedSubject(raw, i);
     const ia = d.interpellation.mode !== 'LEGACY';
     // Lot 68 — rappel informatif (SHOW_NOW + INFORMATION) : le fait seul, une
     // fois ; ni action, ni attention prioritaire, ni « à prévoir ». Toujours

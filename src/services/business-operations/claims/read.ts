@@ -91,7 +91,6 @@ export async function loadClaimRecords(x: SqlExecutor, accountId: number, by: { 
       SELECT ai.business_operation_id AS operation_id, ai.id, ai.title, ai.start_date::text AS date, ai.operation_role AS role
         FROM agenda_items ai
        WHERE ai.business_operation_id = ANY(${liste}::bigint[]) AND ai.account_id = ${accountId}
-         AND COALESCE(ai.manual_status, '') <> 'annule'
        ORDER BY ai.business_operation_id, (ai.operation_role IS NOT DISTINCT FROM 'PRINCIPAL') DESC, ai.start_date NULLS LAST, ai.id`);
 
   return ops.map((o): ClaimRecord => {

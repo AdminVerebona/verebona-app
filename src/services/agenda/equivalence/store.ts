@@ -10,7 +10,7 @@
  *     groupe CERTAIN : absorption par le mécanisme EXISTANT
  *     (`absorbEquivalentItemsInTx`, journal 0591 restaurable, retrait tracé
  *     0223, mémoire anti-recréation T4), intitulé non informatif remplacé,
- *     preuve de réalisation de la même occurrence reportée, décision et état
+ *     (lot 113P : plus de report de preuve de réalisation), décision et état
  *     AVANT / APRÈS au journal `agenda_equivalence_decisions` — tout ou rien
  *     par bien, idempotent (un second passage ne trouve plus rien) ;
  *   · `recordUncertainGroups` : FILE DURABLE des groupes incertains (une
@@ -74,7 +74,7 @@ export async function assetsWithCandidateGroups(sql: Sql, accountId: number, ext
     `SELECT a.id FROM assets a
       WHERE a.account_id = $1 AND a.deleted_at IS NULL ${extra}
         AND (EXISTS (SELECT 1 FROM agenda_asset_links l JOIN agenda_items i ON i.id = l.agenda_item_id AND i.account_id = a.account_id
-                     WHERE l.asset_id = a.id AND i.start_date IS NOT NULL AND COALESCE(i.manual_status, '') <> 'annule' AND ${historicalSql('i')}
+                     WHERE l.asset_id = a.id AND i.start_date IS NOT NULL AND ${historicalSql('i')}
                      GROUP BY i.start_date HAVING count(*) >= 2)
              OR EXISTS (${corroborationCandidateSql('a')}))
       ORDER BY a.id LIMIT ${Math.max(1, Math.min(limit, 5000))}`,
@@ -116,8 +116,6 @@ export async function loadAssetEquivalenceInput(sql: Sql | Tx, accountId: number
   if (!a) return null;
   const kcBrut = a.key_characteristics;
   const fields = (typeof kcBrut === 'string' ? JSON.parse(kcBrut) : kcBrut ?? {}) as Record<string, unknown>;
-  const { agendaCompletionColumnsReady } = await import('../agenda-columns');
-  const preuve = await agendaCompletionColumnsReady();
   const journal = (await sql.unsafe<Row[]>(`SELECT to_regclass('agenda_intervention_consolidations') IS NOT NULL AS ok`))[0]?.ok === true;
   const r = await sql.unsafe<Row[]>(`
     SELECT i.id, i.title, i.start_date::text AS date, i.event_nature, i.business_type, i.origin_type, i.origin_field_key, i.functional_key,
@@ -127,12 +125,10 @@ export async function loadAssetEquivalenceInput(sql: Sql | Tx, accountId: number
                    || ARRAY(SELECT l.asset_file_id FROM agenda_file_links l WHERE l.agenda_item_id = i.id)) x
                  WHERE x IS NOT NULL ORDER BY x) AS file_ids,
            ARRAY(SELECT e.equipment_id FROM agenda_equipment_links e WHERE e.agenda_item_id = i.id ORDER BY 1) AS equipment_ids,
-           i.is_automatic, COALESCE(i.is_automatic_modified, false) AS modified, NULLIF(i.manual_status, '') AS manual_status, i.confirmation_mode,
+           i.is_automatic, COALESCE(i.is_automatic_modified, false) AS modified, i.confirmation_mode,
            COALESCE(i.requires_qualification, false) AS rq, i.occurrence_nature, (i.projection_origin IS NOT DISTINCT FROM 'OPERATION') AS projected,
            i.business_operation_id, (lo.id IS NOT NULL AND lo.invalidated_at IS NULL AND lo.merged_into_operation_id IS NULL) AS op_active,
-           ${preuve ? 'i.completion_proof_file_id' : 'NULL::int'} AS proof,
            EXISTS (SELECT 1 FROM agenda_occurrence_events e WHERE e.agenda_item_id = i.id AND e.event_type = ANY($3::text[])) AS user_touch,
-           EXISTS (SELECT 1 FROM agenda_occurrence_events e WHERE e.agenda_item_id = i.id AND e.event_type = 'STATUS_AUTO_COMPLETED') AS auto_status,
            EXISTS (SELECT 1 FROM agenda_data_conflicts c WHERE c.agenda_item_id = i.id AND c.current_decision = 'pending') AS conflict,
            ${journal ? `EXISTS (SELECT 1 FROM agenda_intervention_consolidations k WHERE k.account_id = i.account_id AND k.restored_at IS NOT NULL
                           AND (k.absorbed_item_id = i.id OR (k.kind <> 'ABSORB' AND k.principal_item_id = i.id)))` : 'false'} AS restored
@@ -148,10 +144,10 @@ export async function loadAssetEquivalenceInput(sql: Sql | Tx, accountId: number
       id: Number(x.id), title: String(x.title ?? ''), date: day(x.date), nature: sem.nature, businessType: sem.businessType,
       originType: txt(x.origin_type), originFieldKey, functionalKey: txt(x.functional_key),
       originFileId: x.origin_file_id == null ? null : Number(x.origin_file_id), fileIds: nums(x.file_ids), equipmentIds: nums(x.equipment_ids),
-      isAutomatic: x.is_automatic === true, isAutomaticModified: x.modified === true, manualStatus: txt(x.manual_status), confirmationMode: txt(x.confirmation_mode),
+      isAutomatic: x.is_automatic === true, isAutomaticModified: x.modified === true, confirmationMode: txt(x.confirmation_mode),
       requiresQualification: x.rq === true, occurrenceNature: txt(x.occurrence_nature), projected: x.projected === true,
       operationId: x.business_operation_id == null ? null : Number(x.business_operation_id), operationActive: x.op_active === true,
-      completionProofFileId: x.proof == null ? null : Number(x.proof), userTouchEvent: x.user_touch === true, autoStatusEvent: x.auto_status === true,
+      userTouchEvent: x.user_touch === true,
       pendingConflict: x.conflict === true, restored: x.restored === true,
     };
   });
@@ -207,11 +203,11 @@ async function withoutRejectedLinks<T extends { itemId: number; fileId: number }
   return out;
 }
 
-/** État borné d'un groupe (avant / après) : identifiants, intitulés, statuts, documents — jamais de contenu. */
+/** État borné d'un groupe (avant / après) : identifiants, intitulés, documents — jamais de contenu. */
 function etatGroupe(items: readonly EqItem[], ids: readonly number[]): Array<Record<string, unknown>> {
   return ids.map((id) => items.find((i) => i.id === id)).filter((i): i is EqItem => !!i).map((i) => ({
     id: i.id, title: i.title, date: i.date, businessType: i.businessType, originType: i.originType, originFieldKey: i.originFieldKey,
-    manualStatus: i.manualStatus, completionProofFileId: i.completionProofFileId, fileIds: i.fileIds,
+    fileIds: i.fileIds,
   }));
 }
 
@@ -253,10 +249,10 @@ export async function applyAssetEquivalence(sql: Sql, accountId: number, assetId
       if (r.absorbed.length && d.retitle) {
         retitled = await retitleEquivalentInTx(tx, { accountId, itemId: d.canonicalId!, from: d.retitle.from, to: d.retitle.to, reason: EQUIVALENCE_CONSOLIDATION_REASON, runId: opts.runId ?? null, correlationId: opts.correlationId });
       }
-      let proofCarried = false;
-      if (r.absorbed.length && d.proofFileId) proofCarried = await carryProofInTx(tx, accountId, d.canonicalId!, d.proofFileId, opts.correlationId);
+      // Lot 113P (#715) : plus de report de « preuve de réalisation » (aucun statut d'événement).
+      const proofCarried = false;
       const after = await tx.unsafe<Row[]>(
-        `SELECT i.id, i.title, i.start_date::text AS date, NULLIF(i.manual_status, '') AS manual_status,
+        `SELECT i.id, i.title, i.start_date::text AS date,
                 ARRAY(SELECT l.asset_file_id FROM agenda_file_links l WHERE l.agenda_item_id = i.id ORDER BY 1) AS file_ids
            FROM agenda_items i WHERE i.account_id = $1 AND i.id = ANY($2::int[]) ORDER BY i.id`,
         [accountId, intArray([...d.group.memberIds, ...d.group.genericIds])] as never[]);
@@ -269,8 +265,8 @@ export async function applyAssetEquivalence(sql: Sql, accountId: number, assetId
          RETURNING id`,
         [accountId, assetId, d.group.key, d.fingerprint, verdict, d.reason, d.canonicalId, intArray([...d.group.memberIds, ...d.group.genericIds]),
           intArray(r.absorbed), r.functionalKeys, intArray([...r.protectedIds, ...d.kept.map((k) => k.id)]),
-          JSON.stringify({ ...d.evidence, kept: d.kept, retitle: d.retitle, proofFileId: d.proofFileId, rulesVersion: 1, runId: opts.runId }),
-          JSON.stringify({ items: before }), JSON.stringify({ items: after.map((x) => ({ id: Number(x.id), title: x.title, date: x.date, manualStatus: x.manual_status, fileIds: nums(x.file_ids) })), retitled, proofCarried }),
+          JSON.stringify({ ...d.evidence, kept: d.kept, retitle: d.retitle, rulesVersion: 1, runId: opts.runId }),
+          JSON.stringify({ items: before }), JSON.stringify({ items: after.map((x) => ({ id: Number(x.id), title: x.title, date: x.date, fileIds: nums(x.file_ids) })), retitled, proofCarried }),
           opts.correlationId, opts.campaignId ?? null, opts.trigger ?? null] as never[]);
       applied.push({ groupKey: d.group.key, verdict, canonicalId: d.canonicalId, absorbed: r.absorbed, protectedIds: r.protectedIds, retitled, proofCarried, decisionId: row ? Number(row.id) : null });
       console.info(JSON.stringify({
@@ -330,30 +326,6 @@ async function attachProofInTx(tx: Tx, accountId: number, itemId: number, fileId
     `INSERT INTO agenda_occurrence_events (agenda_item_id, account_id, event_type, detail_json) VALUES ($1, $2, 'CORROBORATING_SOURCE_ADDED', $3::text::jsonb)`,
     [itemId, accountId, JSON.stringify({ reasonCode: 'SAME_STABLE_REFERENCE', sourceFileId: fileId, reference: reference.slice(0, 4) + '…', correlationId, closedCardIds: cartes.map((c) => Number(c.id)) })] as never[]);
   return cartes.length;
-}
-
-/**
- * Preuve de réalisation d'une occurrence absorbée reportée sur le canonique
- * (même fait, identité certaine) : écriture gardée (automatique intact, sans
- * statut ni preuve), lien document requis, trace COMPLETION_PROVEN (origine
- * EQUIVALENCE). « Réalisé » reste CALCULÉ à la lecture (0945).
- */
-async function carryProofInTx(tx: Tx, accountId: number, itemId: number, fileId: number, correlationId: string): Promise<boolean> {
-  const { agendaCompletionColumnsReady } = await import('../agenda-columns');
-  if (!(await agendaCompletionColumnsReady())) return false;
-  const r = await tx.unsafe<Row[]>(
-    `UPDATE agenda_items i SET completion_proof_file_id = $3, completion_proven_at = now(), updated_at = now()
-      WHERE i.id = $1 AND i.account_id = $2 AND i.is_automatic AND NOT COALESCE(i.is_automatic_modified, false)
-        AND (i.manual_status IS NULL OR trim(i.manual_status) = '') AND i.completion_proof_file_id IS NULL
-        AND NOT EXISTS (SELECT 1 FROM agenda_occurrence_events e WHERE e.agenda_item_id = i.id AND e.event_type = ANY($4::text[]))
-        AND EXISTS (SELECT 1 FROM agenda_file_links l JOIN asset_files f ON f.id = l.asset_file_id AND f.deleted_at IS NULL AND f.account_id = $2
-                     WHERE l.agenda_item_id = i.id AND l.asset_file_id = $3)
-      RETURNING i.id`, [itemId, accountId, fileId, USER_TOUCH_EVENTS] as never[]);
-  if (!r.length) return false;
-  await tx.unsafe(
-    `INSERT INTO agenda_occurrence_events (agenda_item_id, account_id, event_type, detail_json) VALUES ($1, $2, 'COMPLETION_PROVEN', $3::text::jsonb)`,
-    [itemId, accountId, JSON.stringify({ origin: 'EQUIVALENCE', reasonCode: 'COMPLETION_PROOF_OF_SAME_OCCURRENCE', correlationId, proof: { fileId } })] as never[]);
-  return true;
 }
 
 /**

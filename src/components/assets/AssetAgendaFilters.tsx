@@ -14,17 +14,15 @@ import type { RoomFilterModel } from '@/lib/filters/room-filter';
 import { RoomFilterSection } from '@/components/filters/RoomFilterSection';
 import type { AgendaPeriod } from '@/lib/agenda/agenda-filters';
 import { ASSET_AGENDA_PERIOD_OPTIONS, type AssetAgendaView } from '@/lib/agenda/asset-agenda-filters';
-import { FilterChoiceSection, FilterPanel, FilterPillSection } from '@/components/filters/FilterControls';
+import { FilterChoiceSection, FilterPanel } from '@/components/filters/FilterControls';
 import { EquipmentFilterSection } from '@/components/filters/EquipmentFilterSection';
 
 export function AssetAgendaFilterPanel({
   id,
   view,
   period,
-  includeCancelled,
   equipment,
   onPeriod,
-  onToggleCancelled,
   onEquipment,
   room,
   onRoom,
@@ -32,10 +30,8 @@ export function AssetAgendaFilterPanel({
   id: string;
   view: AssetAgendaView;
   period: AgendaPeriod;
-  includeCancelled: boolean;
   equipment: EquipmentFilterModel;
   onPeriod: (value: AgendaPeriod) => void;
-  onToggleCancelled: () => void;
   onEquipment: (value: string) => void;
   room?: RoomFilterModel;
   onRoom?: (value: string) => void;
@@ -51,12 +47,7 @@ export function AssetAgendaFilterPanel({
           onSelect={(v) => onPeriod(v as AgendaPeriod)}
         />
       )}
-      <FilterPillSection
-        id={`${id}-statut`}
-        title="Statut"
-        options={[{ value: 'cancelled', label: 'Afficher les annulés', active: includeCancelled }]}
-        onToggle={onToggleCancelled}
-      />
+      {/* Lot 113P (#715) : plus de filtre « Statut » (« Afficher les annulés ») — aucun statut d'événement. */}
       {room && onRoom && (
         <RoomFilterSection
           id={`${id}-piece`}

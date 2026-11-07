@@ -73,7 +73,9 @@ export async function getT1QueueStatus(accountId: number): Promise<T1QueueStatus
   try {
     const jobs = await pgClient.unsafe(
       `SELECT target_id, status, available_at,
-              (status = 'PENDING' AND payload ? 'costCapDeferredUntil' AND available_at > NOW()) AS reporte_plafond
+              (status = 'PENDING' AND payload ? 'costCapDeferredUntil' AND available_at > NOW()) AS reporte_plafond,
+              (status = 'PENDING' AND payload->'aiSuspension'->>'resumedAt' IS NULL
+                AND payload->'aiSuspension'->>'cause' IN ('TRANSFER_ACCESS_DENIED', 'TRANSFER_UNAVAILABLE')) AS attente_technique
          FROM ai_job_queue
         WHERE treatment = 'T1' AND account_id = $1 AND target_type = 'asset_file'
           AND status IN ('PENDING', 'RUNNING')
@@ -86,7 +88,9 @@ export async function getT1QueueStatus(accountId: number): Promise<T1QueueStatus
       if (!Number.isInteger(fileId)) continue;
       // Lot 22 : reporté au mois suivant (plafond IA du compte) — ni « en
       // cours » ni « en file » pour le bandeau : le motif est sur le fichier.
-      if (j.reporte_plafond === true) {
+      // Lot 113R : attente technique (envoi au fournisseur impossible) — aucune
+      // exécution : jamais « en cours » au bandeau ; l'état est sur le document.
+      if (j.reporte_plafond === true || j.attente_technique === true) {
         parFichier.delete(fileId);
         continue;
       }

@@ -53,7 +53,6 @@ import { equipmentIdentityCheck } from './checks/equipment-identity';
 // Lot 103E — fournisseurs / intervenants des éléments d'Agenda (preuves propres à l'élément, retraits manuels respectés).
 import { agendaSuppliersCheck } from './checks/agenda-suppliers';
 import { agendaStructuralHousingCheck } from './checks/agenda-structural-housing';
-import { agendaHistoricalStatusCheck } from './checks/agenda-historical-status';
 // Lot 105D : rattachement principal récupérable des documents (fin de registre).
 import { documentPrimaryLinkCheck } from './checks/document-primary-link';
 // Lot 106A : représentations équivalentes d'un même fait réalisé, toutes origines (fin de registre).
@@ -137,10 +136,10 @@ export const COHERENCE_REGISTRY: readonly CoherenceCheck[] = [
   equipmentIdentityCheck,
   // Lot 103E (ajouté en fin de liste, sans réordonner l'existant) : fournisseurs des éléments d'Agenda.
   agendaSuppliersCheck,
-  // Lot 103D (ajoutés en fin de liste, sans réordonner l'existant) : pièces / équipements sans logement rattaché,
-  // puis faits historiques prouvés restés « à confirmer ».
+  // Lot 103D (ajoutés en fin de liste, sans réordonner l'existant) : pièces / équipements sans logement rattaché.
+  // Lot 113P (#715) : COH-AGENDA-HISTORICAL-STATUS (faits historiques « à confirmer » → « réalisé » prouvé) RETIRÉ —
+  // les événements n'ont plus de statut.
   agendaStructuralHousingCheck,
-  agendaHistoricalStatusCheck,
   // Lot 105D (ticket « Rattachement rétroactif après création d'un bien », §G) : ajouté EN FIN de registre.
   documentPrimaryLinkCheck,
   // Lot 106A (ticket « Agenda — doublons DPE non autoréparés ») : ajouté EN FIN de registre.

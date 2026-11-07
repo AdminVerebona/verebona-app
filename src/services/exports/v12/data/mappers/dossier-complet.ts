@@ -11,7 +11,7 @@
 
 import { dot, fmt } from '../../html/components';
 import type { DossierCompletData } from '../../types';
-import { eventKind, isUnconfirmedPastDeadline, type EventKind } from '../choices';
+import { eventKind, isPastEvent, type EventKind } from '../choices';
 import { CHARGE_KIND_OPTIONS, CHARGE_PERIOD_OPTIONS, RETAINED_VALUE_SOURCE_OPTIONS } from '@/lib/assets/additional-infos';
 import {
   type MapInput, exportInfo, kc, kcNum, str, info, infoCents, infoList, optionLabel, categoryName, categoryLabel, titleLines, cityLine, roomsLabel,
@@ -25,10 +25,10 @@ export const EVENT_KIND_LABELS: Record<EventKind, string> = {
 
 export function mapDossierComplet(m: MapInput): DossierCompletData {
   const s = m.source;
-  // Échéances passées non confirmées (source canonique) : rubrique « à
-  // confirmer », jamais présentées comme historique réalisé.
-  const toConfirm = selectedEvents(m, (e) => isUnconfirmedPastDeadline(e, m.today));
-  const history = selectedEvents(m, (e) => !!e.date && e.date <= m.today && !isUnconfirmedPastDeadline(e, m.today));
+  // Lot 113P (#715) : plus de rubrique « Échéances passées à confirmer » — une
+  // échéance passée n'est ni un fait réalisé ni une action à confirmer : seuls
+  // les faits (historique) et les échéances à venir sont présentés.
+  const history = selectedEvents(m, (e) => isPastEvent(e, m.today));
   const deadlines = selectedEvents(m, (e) => !!e.date && e.date > m.today);
 
   const chips = [...new Set([...s.asset.equipmentList, ...s.equipments.map((e) => e.name)].map((x) => x.trim()).filter(Boolean))].slice(0, 10);
@@ -125,7 +125,6 @@ export function mapDossierComplet(m: MapInput): DossierCompletData {
       ? history.map((e) => ({ id: e.key, date: e.date, title: e.title, typeLabel: EVENT_KIND_LABELS[eventKind(e)], provider: str(e.provider), selected: true }))
       : [],
     deadlines: sectionOn(m, 'deadlines') ? deadlines.map((e) => ({ id: e.key, title: e.title, date: e.date!, selected: true })) : [],
-    ...(toConfirm.length && sectionOn(m, 'deadlines') ? { toConfirm: toConfirm.map((e) => ({ id: e.key, title: e.title, date: e.date!, selected: true })) } : {}),
     contracts: sectionOn(m, 'contracts') ? contracts : [],
     documents: docs,
     photos,

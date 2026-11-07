@@ -48,6 +48,12 @@ export const USER_MESSAGE_CODES = [
   'FILE_EMPTY',
   'ANALYSIS_FAILED_FINAL',
   'ANALYSIS_DEFERRED_COST_CAP',
+  /**
+   * Lot 113R (carte #717) : analyse en ATTENTE TECHNIQUE — un incident
+   * d'envoi du document au service d'analyse empêche l'exécution ; le système
+   * la reprendra seul (aucune action de l'utilisateur, aucun « Relancer »).
+   */
+  'ANALYSIS_WAITING_TECHNICAL',
 ] as const;
 export type UserMessageCode = (typeof USER_MESSAGE_CODES)[number];
 
@@ -67,6 +73,7 @@ export const USER_MESSAGES: Record<UserMessageCode, string> = {
   FILE_EMPTY: 'Ce document est vide et ne peut pas être analysé automatiquement.',
   ANALYSIS_FAILED_FINAL: ANALYSIS_FAILED_FINAL_MESSAGE,
   ANALYSIS_DEFERRED_COST_CAP: 'Plafond IA du mois atteint : l’analyse sera lancée automatiquement le 1er du mois.',
+  ANALYSIS_WAITING_TECHNICAL: 'Analyse en attente : un incident technique empêche momentanément l’envoi du document au service d’analyse. Elle reprendra automatiquement, vous n’avez rien à faire.',
 };
 
 function isUserMessageCode(v: unknown): v is UserMessageCode {
@@ -122,7 +129,15 @@ export interface LiveJobSnapshot {
   availableAt?: string | null;
   /** Report pour plafond de coût du compte (lot 22), ISO. */
   costCapDeferredUntil?: string | null;
+  /**
+   * Lot 113R : travail SUSPENDU (aucune exécution en cours) pour un incident
+   * technique d'envoi au fournisseur — cause établie (`TRANSFER_…`).
+   */
+  technicalWaitCause?: string | null;
 }
+
+/** Causes de suspension présentées comme une attente technique (lot 113R). */
+const TECHNICAL_WAIT_CAUSES: ReadonlySet<string> = new Set(['TRANSFER_ACCESS_DENIED', 'TRANSFER_UNAVAILABLE']);
 
 interface ProcessingInput {
   /** `asset_files.analysis_state`. */
@@ -169,6 +184,11 @@ export function computeProcessingStatus(input: ProcessingInput, now: number = Da
       ? job.costCapDeferredUntil : null;
     if (differe) {
       return vue('PENDING', { userMessageCode: 'ANALYSIS_DEFERRED_COST_CAP', resumeAt: differe, nextAttemptAt: job.availableAt ?? null });
+    }
+    // Lot 113R : attente technique (envoi au fournisseur impossible) — aucune
+    // exécution en cours, reprise par le système ; jamais « en cours ».
+    if (job.technicalWaitCause && TECHNICAL_WAIT_CAUSES.has(job.technicalWaitCause)) {
+      return vue('PENDING', { userMessageCode: 'ANALYSIS_WAITING_TECHNICAL', retryScheduled: true, nextAttemptAt: job.availableAt ?? null });
     }
     // Une exécution déjà consommée puis remise en file : retry RÉEL (cas 2).
     return vue('PENDING', { retryScheduled: job.attempts >= 1, nextAttemptAt: job.availableAt ?? null });

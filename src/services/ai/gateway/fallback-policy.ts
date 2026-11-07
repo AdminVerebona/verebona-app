@@ -36,6 +36,13 @@
  *                                                              supérieur (gain plausible)
  *   Cause indéterminée                           UNKNOWN       au plus UN essai alternatif,
  *                                                              puis arrêt
+ *   Lot 113R — TRANSFERT de la pièce jointe      TRANSFER_     aucun secours (il dépend du
+ *   échoué AVANT toute génération (le modèle     ACCESS_       même envoi : même clé, même
+ *   n'a pas été sollicité)                       DENIED,       projet, même Files API) ;
+ *                                                TRANSFER_     suspension technique et
+ *                                                UNAVAILABLE   reprise automatique ;
+ *                                                TRANSFER_     fichier refusé : échec
+ *                                                REJECTED      ordinaire (aucun secours)
  *
  * ══════════════════════════════════════════════════════════════════════════
  * SECOURS ADMISSIBLES (RUN-02, ACT-01, ACT-02, MIG-02) — RÈGLE PRUDENTE
@@ -77,11 +84,13 @@ export const FAILURE_CAUSES = [
   'COMMON_DEFECT', 'GLOBAL_ACCESS',
   'INVALID_OUTPUT', 'OUTPUT_TRUNCATED',
   'UNKNOWN',
+  // Lot 113R (carte #717) : échec du TRANSFERT de la pièce jointe, avant génération.
+  'TRANSFER_ACCESS_DENIED', 'TRANSFER_UNAVAILABLE', 'TRANSFER_REJECTED',
 ] as const;
 export type FailureCause = (typeof FAILURE_CAUSES)[number];
 
 /** Ligne du tableau §8 du CDC. */
-type CdcRow = 'MODEL_SPECIFIC' | 'REQUEST_INCOMPATIBILITY' | 'COMMON_DEFECT' | 'INVALID_RESULT' | 'UNDETERMINED';
+type CdcRow = 'MODEL_SPECIFIC' | 'REQUEST_INCOMPATIBILITY' | 'COMMON_DEFECT' | 'INVALID_RESULT' | 'UNDETERMINED' | 'SHARED_TRANSFER';
 
 interface CausePolicy {
   row: CdcRow;
@@ -92,21 +101,41 @@ interface CausePolicy {
   /** Compte pour le disjoncteur (indisponibilité du modèle). */
   countsForBreaker: boolean;
   label: string;
+  /**
+   * Lot 113R : dépendance COMMUNE réelle qui rend un secours inutile (affichée
+   * avec la décision) — `null` : la cause est propre au modèle.
+   */
+  commonDependency: string | null;
 }
 
 export const CAUSE_POLICY: Readonly<Record<FailureCause, CausePolicy>> = {
-  QUOTA: { row: 'MODEL_SPECIFIC', fallback: 'ALLOWED', suspendWithoutFallback: true, countsForBreaker: true, label: 'quota ou limite de débit du modèle' },
-  UNAVAILABLE: { row: 'MODEL_SPECIFIC', fallback: 'ALLOWED', suspendWithoutFallback: true, countsForBreaker: true, label: 'modèle indisponible' },
-  TIMEOUT: { row: 'MODEL_SPECIFIC', fallback: 'ALLOWED', suspendWithoutFallback: true, countsForBreaker: true, label: 'délai dépassé' },
-  MODEL_LIMIT: { row: 'MODEL_SPECIFIC', fallback: 'ALLOWED', suspendWithoutFallback: false, countsForBreaker: true, label: 'limite propre au modèle (taille de la demande)' },
-  KNOWN_UNAVAILABLE: { row: 'MODEL_SPECIFIC', fallback: 'ALLOWED', suspendWithoutFallback: true, countsForBreaker: false, label: 'modèle connu indisponible (état opérationnel)' },
-  PARAMETER_REJECTED: { row: 'REQUEST_INCOMPATIBILITY', fallback: 'ALLOWED', suspendWithoutFallback: true, countsForBreaker: false, label: 'paramètre refusé par ce modèle' },
-  PARAMETER_INCOMPATIBLE: { row: 'REQUEST_INCOMPATIBILITY', fallback: 'ALLOWED', suspendWithoutFallback: true, countsForBreaker: false, label: 'réglage incompatible avec ce modèle (refus avant appel)' },
-  COMMON_DEFECT: { row: 'COMMON_DEFECT', fallback: 'STOP', suspendWithoutFallback: false, countsForBreaker: true, label: 'défaut commun (prompt, contrat ou construction de la requête)' },
-  GLOBAL_ACCESS: { row: 'COMMON_DEFECT', fallback: 'STOP', suspendWithoutFallback: true, countsForBreaker: true, label: 'accès global refusé (clé fournisseur)' },
-  INVALID_OUTPUT: { row: 'INVALID_RESULT', fallback: 'ALLOWED', suspendWithoutFallback: false, countsForBreaker: true, label: 'sortie invalide' },
-  OUTPUT_TRUNCATED: { row: 'INVALID_RESULT', fallback: 'IF_PROFILE_HELPS', suspendWithoutFallback: false, countsForBreaker: true, label: 'sortie tronquée (plafond de sortie atteint)' },
-  UNKNOWN: { row: 'UNDETERMINED', fallback: 'ONE_ALTERNATIVE', suspendWithoutFallback: false, countsForBreaker: true, label: 'cause indéterminée' },
+  QUOTA: { row: 'MODEL_SPECIFIC', fallback: 'ALLOWED', suspendWithoutFallback: true, countsForBreaker: true, label: 'quota ou limite de débit du modèle', commonDependency: null },
+  UNAVAILABLE: { row: 'MODEL_SPECIFIC', fallback: 'ALLOWED', suspendWithoutFallback: true, countsForBreaker: true, label: 'modèle indisponible', commonDependency: null },
+  TIMEOUT: { row: 'MODEL_SPECIFIC', fallback: 'ALLOWED', suspendWithoutFallback: true, countsForBreaker: true, label: 'délai dépassé', commonDependency: null },
+  MODEL_LIMIT: { row: 'MODEL_SPECIFIC', fallback: 'ALLOWED', suspendWithoutFallback: false, countsForBreaker: true, label: 'limite propre au modèle (taille de la demande)', commonDependency: null },
+  KNOWN_UNAVAILABLE: { row: 'MODEL_SPECIFIC', fallback: 'ALLOWED', suspendWithoutFallback: true, countsForBreaker: false, label: 'modèle connu indisponible (état opérationnel)', commonDependency: null },
+  PARAMETER_REJECTED: { row: 'REQUEST_INCOMPATIBILITY', fallback: 'ALLOWED', suspendWithoutFallback: true, countsForBreaker: false, label: 'paramètre refusé par ce modèle', commonDependency: null },
+  PARAMETER_INCOMPATIBLE: { row: 'REQUEST_INCOMPATIBILITY', fallback: 'ALLOWED', suspendWithoutFallback: true, countsForBreaker: false, label: 'réglage incompatible avec ce modèle (refus avant appel)', commonDependency: null },
+  COMMON_DEFECT: { row: 'COMMON_DEFECT', fallback: 'STOP', suspendWithoutFallback: false, countsForBreaker: true, label: 'défaut commun (prompt, contrat ou construction de la requête)', commonDependency: 'prompt, contrat de sortie ou construction locale de la requête (identiques pour tous les modèles)' },
+  GLOBAL_ACCESS: { row: 'COMMON_DEFECT', fallback: 'STOP', suspendWithoutFallback: true, countsForBreaker: true, label: 'accès global refusé (clé fournisseur)', commonDependency: 'clé fournisseur commune à tous les modèles de la chaîne' },
+  INVALID_OUTPUT: { row: 'INVALID_RESULT', fallback: 'ALLOWED', suspendWithoutFallback: false, countsForBreaker: true, label: 'sortie invalide', commonDependency: null },
+  OUTPUT_TRUNCATED: { row: 'INVALID_RESULT', fallback: 'IF_PROFILE_HELPS', suspendWithoutFallback: false, countsForBreaker: true, label: 'sortie tronquée (plafond de sortie atteint)', commonDependency: null },
+  TRANSFER_ACCESS_DENIED: {
+    row: 'SHARED_TRANSFER', fallback: 'STOP', suspendWithoutFallback: true, countsForBreaker: false,
+    label: 'envoi du document refusé par le fournisseur (accès), avant toute génération',
+    commonDependency: 'envoi du document au fournisseur avec la même clé, le même projet et le même service de fichiers (Files API) : commun à tous les modèles de la chaîne',
+  },
+  TRANSFER_UNAVAILABLE: {
+    row: 'SHARED_TRANSFER', fallback: 'STOP', suspendWithoutFallback: true, countsForBreaker: false,
+    label: 'envoi du document momentanément impossible (quota, indisponibilité ou réseau), avant toute génération',
+    commonDependency: 'même envoi du document (stockage, réseau, service de fichiers du fournisseur) : commun à tous les modèles de la chaîne',
+  },
+  TRANSFER_REJECTED: {
+    row: 'SHARED_TRANSFER', fallback: 'STOP', suspendWithoutFallback: false, countsForBreaker: false,
+    label: 'pièce jointe refusée ou illisible à l’envoi, avant toute génération',
+    commonDependency: 'même pièce jointe et même envoi : commun à tous les modèles de la chaîne',
+  },
+  UNKNOWN: { row: 'UNDETERMINED', fallback: 'ONE_ALTERNATIVE', suspendWithoutFallback: false, countsForBreaker: true, label: 'cause indéterminée', commonDependency: null },
 };
 
 /** Échec à classer : famille / sous-type du diagnostic, code de passerelle, métadonnées utiles. */
@@ -117,13 +146,41 @@ export interface FailureFacts {
   httpStatus?: number | null;
   providerErrorCode?: string | null;
   message?: string | null;
+  /** Lot 113R : étape de l'échec (`attachment_transfer` : avant toute génération). */
+  stage?: string | null;
+  /** Lot 113R : nature d'un échec de transfert (`activation_failed`…). */
+  transferKind?: string | null;
 }
+
+/**
+ * Lot 113R (carte #717) — cause d'un échec de TRANSFERT (pure). Le refus
+ * d'accès distant (401/403, condition du projet ou de la région) suspend ;
+ * une indisponibilité (429, 5xx, réseau, délai) suspend ; un fichier refusé
+ * (400, 404, 413, traitement échoué) ou illisible dans le stockage échoue
+ * normalement. Jamais `COMMON_DEFECT` (prompt / contrat) ni une panne du modèle.
+ */
+export function transferCauseOf(f: Pick<FailureFacts, 'family' | 'providerErrorCode' | 'transferKind'>): FailureCause {
+  if (f.transferKind === 'activation_failed') return 'TRANSFER_REJECTED';
+  switch (f.family) {
+    case 'AUTH_ERROR': return 'TRANSFER_ACCESS_DENIED';
+    case 'RATE_LIMIT': case 'PROVIDER_ERROR': case 'NETWORK_ERROR': case 'TIMEOUT': return 'TRANSFER_UNAVAILABLE';
+    case 'INPUT_ERROR':
+      // FAILED_PRECONDITION : condition du compte, du projet ou de la région
+      // (accès), jamais un défaut du fichier.
+      return f.providerErrorCode === 'FAILED_PRECONDITION' ? 'TRANSFER_ACCESS_DENIED' : 'TRANSFER_REJECTED';
+    default: return 'TRANSFER_REJECTED';
+  }
+}
+
+/** Causes de transfert qui SUSPENDENT (attente technique, reprise automatique par le système). */
+export const TRANSFER_SUSPEND_CAUSES: ReadonlySet<string> = new Set<FailureCause>(['TRANSFER_ACCESS_DENIED', 'TRANSFER_UNAVAILABLE']);
 
 /**
  * Cause établie d'un échec (pure). N'invente rien : ce qui n'est pas
  * attribuable avec certitude au modèle ou à un défaut commun est UNKNOWN.
  */
 export function causeOfFailure(f: FailureFacts): FailureCause {
+  if (f.stage === 'attachment_transfer') return transferCauseOf(f);
   const sub = f.subtype ?? null;
   if (sub === 'PARAMETER_REJECTED') return 'PARAMETER_REJECTED';
   if (sub === 'PARAMETER_INCOMPATIBLE' || f.code === 'MODEL_PARAMETERS_INCOMPATIBLE') return 'PARAMETER_INCOMPATIBLE';
@@ -162,7 +219,9 @@ export type AdmissionReason =
   | 'FIRST' | 'QUALIFIED' | 'MANUAL_UNTESTED'
   // Refusés (aucun appel)
   | 'KNOWN_UNAVAILABLE' | 'EXCLUDED' | 'CAUSE_STOPS_CHAIN' | 'UNKNOWN_CAUSE_LIMIT' | 'PROFILE_CANNOT_RESOLVE'
-  | 'COUPLE_REFUSED' | 'NOT_QUALIFIED_AUTOMATIC';
+  | 'COUPLE_REFUSED' | 'NOT_QUALIFIED_AUTOMATIC'
+  /** Lot 113R : le secours dépend du même transfert de pièce jointe (même clé, même projet, même Files API). */
+  | 'SHARED_TRANSFER';
 
 export const ADMISSION_LABELS: Readonly<Record<AdmissionReason, string>> = {
   FIRST: 'premier modèle de la chaîne',
@@ -175,6 +234,7 @@ export const ADMISSION_LABELS: Readonly<Record<AdmissionReason, string>> = {
   PROFILE_CANNOT_RESOLVE: 'le profil du secours ne peut pas résoudre l’échec (plafond de sortie non supérieur)',
   COUPLE_REFUSED: 'couple refusé à la qualification',
   NOT_QUALIFIED_AUTOMATIC: 'configuration automatique sans preuve admissible courante',
+  SHARED_TRANSFER: 'secours non appelé : il dépend du même envoi du document au fournisseur (même clé, même projet, même service de fichiers) et échouerait de la même façon',
 };
 
 interface Candidate {
@@ -205,7 +265,7 @@ export function admitCandidate(c: Candidate, previous: {
   if (c.excluded) return { admitted: false, reason: 'EXCLUDED' };
   if (previous === null) return { admitted: true, reason: 'FIRST' };
   const pol = CAUSE_POLICY[previous.cause];
-  if (pol.fallback === 'STOP') return { admitted: false, reason: 'CAUSE_STOPS_CHAIN' };
+  if (pol.fallback === 'STOP') return { admitted: false, reason: pol.row === 'SHARED_TRANSFER' ? 'SHARED_TRANSFER' : 'CAUSE_STOPS_CHAIN' };
   if (pol.fallback === 'ONE_ALTERNATIVE' && previous.unknownAlternativesUsed >= 1) return { admitted: false, reason: 'UNKNOWN_CAUSE_LIMIT' };
   if (pol.fallback === 'IF_PROFILE_HELPS' && previous.truncatedAtMaxOutputTokens !== null
     && (c.maxOutputTokens === null || c.maxOutputTokens <= previous.truncatedAtMaxOutputTokens)) {
@@ -227,6 +287,8 @@ export interface FallbackDecision {
   /** Cause de l'échec (ou du saut) qui a conduit à considérer ce modèle ; `null` : premier. */
   afterCause: FailureCause | null;
   afterCauseLabel: string | null;
+  /** Lot 113R : dépendance commune réelle de la cause (secours inutile), `null` sinon. */
+  commonDependency?: string | null;
   /** Modèle dont l'échec a conduit à ce rang. */
   afterModel: string | null;
   qualification: CoupleQualification;
@@ -242,6 +304,8 @@ export function decisionOf(p: {
     policy: FALLBACK_POLICY_VERSION, rank: p.rank, model: p.model,
     decision: p.admission.reason, decisionLabel: ADMISSION_LABELS[p.admission.reason],
     afterCause: p.afterCause, afterCauseLabel: p.afterCause ? CAUSE_POLICY[p.afterCause].label : null,
+    ...(p.afterCause && CAUSE_POLICY[p.afterCause].commonDependency && !ADMITTED_REASONS.has(p.admission.reason)
+      ? { commonDependency: CAUSE_POLICY[p.afterCause].commonDependency } : {}),
     afterModel: p.afterModel, qualification: p.qualification,
     ...(p.operational ? { operational: p.operational } : {}),
   };
@@ -253,6 +317,13 @@ export function decisionOf(p: {
  * une génération échouée dans les décomptes.
  */
 export const NOT_CALLED_ERROR_CODES: ReadonlySet<string> = new Set(['FALLBACK_NOT_ADMISSIBLE', 'MODEL_KNOWN_UNAVAILABLE']);
+
+/**
+ * Lot 113R : étapes d'échec où AUCUNE génération n'a été demandée au modèle
+ * (construction locale, transfert de la pièce jointe) — ni génération
+ * échouée, ni défaut du modèle dans les décomptes.
+ */
+export const NO_GENERATION_STAGES: ReadonlySet<string> = new Set(['request_build', 'attachment_transfer']);
 
 /** Lot 109J : décisions qui SOLLICITENT le modèle (les autres : aucune requête, jamais une génération échouée). */
 export const ADMITTED_REASONS: ReadonlySet<AdmissionReason> = new Set<AdmissionReason>(['FIRST', 'QUALIFIED', 'MANUAL_UNTESTED']);
@@ -279,6 +350,6 @@ export function chainOutcome(p: {
 }): 'SUSPEND' | 'FAIL' {
   if (p.attempted === 0 && p.decisions.length > 0 && p.decisions.every((d) => SANS_SECOURS_ADMISSIBLE.has(d.decision))) return 'SUSPEND';
   if (!p.lastCause || !CAUSE_POLICY[p.lastCause].suspendWithoutFallback) return 'FAIL';
-  if (p.lastCause === 'GLOBAL_ACCESS') return 'SUSPEND';
+  if (p.lastCause === 'GLOBAL_ACCESS' || TRANSFER_SUSPEND_CAUSES.has(p.lastCause)) return 'SUSPEND';
   return p.decisions.some((d) => SANS_SECOURS_ADMISSIBLE.has(d.decision)) ? 'SUSPEND' : 'FAIL';
 }

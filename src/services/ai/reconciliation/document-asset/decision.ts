@@ -79,6 +79,8 @@ export type DocumentAssetDecision =
       | 'TECHNICAL_FAILURE';
     /** Candidats proposés à l'utilisateur, du plus au moins probable. */
     ranked: Array<{ assetId: number; score: number; reason: string }>;
+    /** Lot 113S (`t3-user-question-v1`) : question BRUTE proposée par T3, contrôlée avant affichage (`ai-user-question.ts`). */
+    userQuestion?: string | null;
   };
 
 /** Le serveur a-t-il fourni au moins une preuve pour ce candidat ? */
@@ -250,7 +252,22 @@ export function documentAssetVariables(
 // ── Après le modèle ─────────────────────────────────────────────────────────
 
 /** Décision déterministe sur la sortie du master (pure). */
+/**
+ * Lot 113S : une abstention issue d'une réponse VALIDE (monde fermé respecté)
+ * garde la question proposée par T3 — la carte LINK-ASSET la contrôlera.
+ */
 export function decideFromAiOutput(
+  output: T3LinkAmbiguityOutput,
+  candidates: DocumentAssetCandidate[],
+  cross?: Parameters<typeof decideFromAiOutputCore>[2],
+  report?: Parameters<typeof decideFromAiOutputCore>[3],
+): DocumentAssetDecision {
+  const d = decideFromAiOutputCore(output, candidates, cross, report);
+  if (d.kind === 'ABSTAIN' && d.reasonCode !== 'CLOSED_WORLD_VIOLATION' && typeof output.userQuestion === 'string') return { ...d, userQuestion: output.userQuestion };
+  return d;
+}
+
+function decideFromAiOutputCore(
   output: T3LinkAmbiguityOutput,
   candidates: DocumentAssetCandidate[],
   /**

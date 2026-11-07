@@ -8,13 +8,6 @@ import {
   SheetTitle,
 } from "@/components/ui/sheet";
 import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from "@/components/ui/select";
-import {
   Popover,
   PopoverContent,
   PopoverTrigger,
@@ -35,13 +28,13 @@ import { Textarea } from "@/components/ui/textarea";
 import { Label } from "@/components/ui/label";
 import { DatePicker } from "@/components/ui/date-picker";
 import { TimePicker } from "@/components/ui/time-picker";
-import { Clock, Building2, FileText, Grid2X2, Wrench, Edit, Trash2, AlertCircle, ChevronDown, X, Check } from "lucide-react";
+import { Building2, FileText, Grid2X2, Wrench, Edit, Trash2, AlertCircle, ChevronDown, X, Check } from "lucide-react";
 import { FooterPrimaryAction } from '@/components/ui/footer-primary-action';
 import { apiClient } from "@/lib/api-client";
 import { toast } from "sonner";
 import { assetSupportsStructuralFeatures } from "@/types/domain";
 import type { AgendaItemFull } from "@/services/agenda/AgendaQueryService";
-import { EFFECTIVE_STATUS_LABELS, attentionFlagLabel, automaticStatusOptionLabel, visibleAttentionFlags, type AgendaEffectiveStatus } from '@/lib/agenda/effective-status';
+import { attentionFlagLabel, visibleAttentionFlags } from '@/lib/agenda/attention-flags';
 // Lot 103D : Pièces / Équipements seulement pour un logement rattaché (règle unique, desktop et mobile).
 import { AGENDA_HOUSING_REMOVAL_HAS_DEPENDENTS, HOUSING_SCOPE_LABELS, agendaHousingAssetIds, restrictToHousing } from "@/lib/agenda/housing-scope";
 import { openDrawer } from "@/lib/drawers";
@@ -55,33 +48,11 @@ import { AgendaGroupingSection } from "@/components/agenda/AgendaGroupingSection
 import { AgendaSuppliersField, AgendaSuppliersView, suppliersPayload, type AgendaSuppliersSelection } from "@/components/agenda/AgendaSuppliersSection";
 import { AGENDA_EVENT_LABELS } from "@/lib/agenda/grouping-view";
 
-// Lot 53 (D17) : libellés partagés des cinq états.
-type EffectiveStatus = AgendaEffectiveStatus;
-
-const STATUS_LABELS: Record<EffectiveStatus, string> = EFFECTIVE_STATUS_LABELS;
-
-const STATUS_STYLES: Record<EffectiveStatus, string> = {
-  a_venir:
-    "bg-[color:var(--accent-soft)] text-[color:var(--accent)] border border-[color:var(--border-info)]",
-  en_retard:
-    "bg-[color:var(--danger-soft)] text-[color:var(--danger)] border border-[color:var(--danger-edge)]",
-  a_confirmer:
-    "bg-[color:var(--attention-soft)] text-[color:var(--attention-on-soft)] border border-[color:var(--attention-edge)]",
-  realise:
-    "bg-[color:var(--bg-success)] text-[color:var(--text-success)] border border-[color:var(--border-success)]",
-  annule:
-    "bg-[color:var(--bg-subtle)] text-[color:var(--text-secondary)] border border-[color:var(--border)]",
-};
-
-// Pastille de date du héros : même ton que le statut (charte §5 — brume /
-// pétrole par défaut, rouge en retard strict, cuivre à confirmer).
-const HERO_DATE_TONE: Record<EffectiveStatus, string> = {
-  a_venir: "bg-[color:var(--accent-soft)] border-[color:var(--border)] text-[color:var(--accent)]",
-  en_retard: "bg-[color:var(--danger-soft)] border-[color:var(--danger-edge)] text-[color:var(--danger)]",
-  a_confirmer: "bg-[color:var(--attention-soft)] border-[color:var(--attention-edge)] text-[color:var(--attention-on-soft)]",
-  realise: "bg-[color:var(--accent-soft)] border-[color:var(--border)] text-[color:var(--accent)]",
-  annule: "bg-[color:var(--bg-subtle)] border-[color:var(--border)] text-[color:var(--text-secondary)]",
-};
+// Lot 113P (#715, décision PO du 06/11/2026) : plus de statut d'événement —
+// ni badge d'en-tête, ni sélecteur « Statut », ni ton « retard / à confirmer ».
+// La date (ou la période) situe l'événement ; un événement inexistant ou annulé
+// se SUPPRIME (occurrence seule, ou toute la série pour une récurrence).
+const HERO_DATE_TONE = "bg-[color:var(--accent-soft)] border-[color:var(--border)] text-[color:var(--accent)]";
 
 
 function formatDateRange(item: AgendaItemFull): string {
@@ -163,7 +134,6 @@ export function AgendaItemDrawer({ item: itemProp, open, onClose, onMutated, onO
     setDirty(true);
     setTemporalError(null);
   };
-  const [editManualStatus, setEditManualStatus] = useState<string>("null");
   const [editAssetIds, setEditAssetIds] = useState<number[]>([]);
   const [editSubstructureIds, setEditSubstructureIds] = useState<number[]>([]);
   const [editEquipmentIds, setEditEquipmentIds] = useState<number[]>([]);
@@ -219,7 +189,6 @@ export function AgendaItemDrawer({ item: itemProp, open, onClose, onMutated, onO
       setEditEndDate(item.endDate ?? "");
       setEditEndTime(item.endTime ?? "");
       setEditNoDeadline(item.noDeadline === true);
-      setEditManualStatus(item.manualStatus ?? "null");
       setEditAssetIds(item.assetLinks.map((l) => l.assetId));
       setEditSubstructureIds(item.roomLinks.map((l) => l.substructureId));
       setEditEquipmentIds(item.equipmentLinks.map((l) => l.equipmentId));
@@ -293,7 +262,6 @@ export function AgendaItemDrawer({ item: itemProp, open, onClose, onMutated, onO
     setEditEndDate(item.endDate ?? "");
     setEditEndTime(item.endTime ?? "");
     setEditNoDeadline(item.noDeadline === true);
-    setEditManualStatus(item.manualStatus ?? "null");
     setEditAssetIds(item.assetLinks.map((l) => l.assetId));
     setEditSubstructureIds(item.roomLinks.map((l) => l.substructureId));
     setEditEquipmentIds(item.equipmentLinks.map((l) => l.equipmentId));
@@ -350,16 +318,6 @@ export function AgendaItemDrawer({ item: itemProp, open, onClose, onMutated, onO
       });
       if (saved?.suppliers && saved.suppliers.ok === false) toast.error(saved.suppliers.error ?? "Les fournisseurs n’ont pas pu être associés.");
       setSuppliersViewKey((k) => k + 1);
-      // Update status separately if changed
-      const newManualStatus =
-        editManualStatus === "null"
-          ? null
-          : (editManualStatus as "realise" | "annule");
-      if (newManualStatus !== (item.manualStatus ?? null)) {
-        await apiClient.patch(`/api/agenda/${item.id}/statut`, {
-          manualStatus: newManualStatus,
-        });
-      }
       toast.success(dissociateIncompatible ? HOUSING_SCOPE_LABELS.dissociatedToast : "Agenda mis à jour");
       setMode("view");
       setDirty(false);
@@ -385,20 +343,6 @@ export function AgendaItemDrawer({ item: itemProp, open, onClose, onMutated, onO
     }
   };
 
-  const handleStatusChange = async (val: string) => {
-    if (!item || !autorise()) return;
-    const manualStatus = val === "null" ? null : (val as "realise" | "annule");
-    try {
-      await apiClient.patch(`/api/agenda/${item.id}/statut`, { manualStatus });
-      toast.success("Statut mis à jour");
-      dispatchAgendaMutated();
-      onMutated();
-    } catch (err: any) {
-      // 403 de droits : la fenêtre de fin d'essai est déjà ouverte (api-client).
-      if (err?.status !== 403) toast.error("Erreur lors de la mise à jour du statut");
-    }
-  };
-
   // Occurrence prévisionnelle : l'utilisateur peut la confirmer telle quelle.
   const handleConfirmForecast = async () => {
     if (!item || !autorise()) return;
@@ -412,19 +356,20 @@ export function AgendaItemDrawer({ item: itemProp, open, onClose, onMutated, onO
     }
   };
 
-  const handleDelete = async () => {
+  // Lot 113P (#715) : `scope` — cette occurrence seule (défaut) ou toute la série (récurrence).
+  const handleDelete = async (scope: "occurrence" | "series" = "occurrence") => {
     if (!item || !autorise()) return;
     setDeleting(true);
 
     const confirmDeleted = () => {
-      toast.success(AGENDA_EVENT_LABELS.deletedToast);
+      toast.success(scope === "series" ? AGENDA_EVENT_LABELS.deletedSeriesToast : AGENDA_EVENT_LABELS.deletedToast);
       onClose();
       dispatchAgendaMutated();
       onMutated();
     };
 
     try {
-      await apiClient.delete(`/api/agenda/${item.id}`);
+      await apiClient.delete(`/api/agenda/${item.id}${scope === "series" ? "?scope=series" : ""}`);
       confirmDeleted();
     } catch (err: any) {
       // 404 : l'élément n'existe déjà plus côté serveur — deuxième clic,
@@ -474,7 +419,8 @@ export function AgendaItemDrawer({ item: itemProp, open, onClose, onMutated, onO
 
   if (!item) return null;
 
-  const statusStyle = STATUS_STYLES[item.effectiveStatus];
+  // Lot 113P : récurrence connue (série) — la suppression propose l'occurrence seule ou toute la série.
+  const isRecurring = !!item.seriesKey && (item.occurrenceNature === "FORECAST" || !!item.recurrenceRule);
   // Lot 103D : logements rattachés (catégorie fournie par le serveur) → pièces / équipements affichables.
   const viewHousing = agendaHousingAssetIds(item.assetLinks.map((l) => ({ id: l.assetId, category: l.assetCategory, subtype: l.assetSubtype })));
   const viewRooms = restrictToHousing(item.roomLinks.map((l) => ({ ...l, assetId: l.resolvedAssetId })), viewHousing);
@@ -489,13 +435,8 @@ export function AgendaItemDrawer({ item: itemProp, open, onClose, onMutated, onO
           {mode === "view" ? (
             <div className="relative px-7 pt-10 pb-8 border-b border-[color:var(--border-subtle)] bg-[color:var(--bg-card)]">
               {/* Close button is injected by SheetContent – leave room */}
-              {/* Status + flags row */}
-              <div className="flex items-center gap-2 mb-5 flex-wrap">
-                <span
-                  className={`inline-flex items-center rounded-full px-3 py-1 text-xs font-semibold ${statusStyle}`}
-                >
-                  {STATUS_LABELS[item.effectiveStatus]}
-                </span>
+              {/* Lot 113P : plus de badge de statut — seuls « Prévisionnelle » (provenance de la date) et les signaux visibles. */}
+              <div className="flex items-center gap-2 mb-5 flex-wrap empty:hidden">
                 {item.occurrenceNature === "FORECAST" && (
                   <span
                     className="inline-flex items-center rounded-full px-3 py-1 text-xs font-medium bg-[color:var(--accent-soft)] text-[color:var(--accent)] border border-[color:var(--border-info)]"
@@ -526,7 +467,7 @@ export function AgendaItemDrawer({ item: itemProp, open, onClose, onMutated, onO
               {/* Date hero block */}
               {heroDate ? (
                 <div className="flex items-center gap-4">
-                  <div aria-hidden className={`w-14 h-14 rounded-[10px] border flex flex-col items-center justify-center shrink-0 ${HERO_DATE_TONE[item.effectiveStatus] ?? HERO_DATE_TONE.a_venir}`}>
+                  <div aria-hidden className={`w-14 h-14 rounded-[10px] border flex flex-col items-center justify-center shrink-0 ${HERO_DATE_TONE}`}>
                     <span className="text-xl font-bold tabular-nums leading-none">
                       {heroDate.day}
                     </span>
@@ -596,36 +537,8 @@ export function AgendaItemDrawer({ item: itemProp, open, onClose, onMutated, onO
 
           {/* ── BODY ── */}
           <div className="flex-1 px-7 py-6 space-y-6">
-            {/* Status changer (view mode only inline) */}
-            {mode === "view" && (
-              <div className="flex items-center gap-3">
-                <div className="w-8 h-8 rounded-lg bg-[color:var(--accent-soft)] flex items-center justify-center shrink-0">
-                  <Clock className="h-4 w-4 text-[color:var(--text-muted)]" />
-                </div>
-                <div className="flex-1">
-                  <p className="vb-app-label mb-1">
-                    Statut
-                  </p>
-                  <Select
-                    value={item?.manualStatus ?? "null"}
-                    onValueChange={handleStatusChange}
-                  >
-                    <SelectTrigger className="h-8 w-36 text-sm bg-[color:var(--bg-card)] border-[color:var(--border-subtle)]">
-                      <SelectValue />
-                    </SelectTrigger>
-                    <SelectContent>
-                      {/* Lot 103D : statut CALCULÉ (jamais « À venir » en dur pour une date passée). */}
-                      <SelectItem value="null">{automaticStatusOptionLabel(item)}</SelectItem>
-                      <SelectItem value="realise">Réalisé</SelectItem>
-                      <SelectItem value="annule">Annulé</SelectItem>
-                    </SelectContent>
-                  </Select>
-                </div>
-              </div>
-            )}
-
             {/* Lot 60 (T6) : rappels de l'accueil pour cette échéance — préférence personnelle. */}
-            {mode === "view" && !item.manualStatus && <T6ReminderSettings agendaItemId={item.id} title={item.title} />}
+            {mode === "view" && <T6ReminderSettings agendaItemId={item.id} title={item.title} />}
 
             {/* Description */}
             {mode === "view" ? (
@@ -717,31 +630,6 @@ export function AgendaItemDrawer({ item: itemProp, open, onClose, onMutated, onO
                 {temporalError && (
                   <p className="text-xs text-[color:var(--danger)] mt-1">{temporalError}</p>
                 )}
-              </div>
-            )}
-
-            {/* Edit: status */}
-            {mode === "edit" && (
-              <div>
-                <Label className="text-[13px] font-semibold text-[color:var(--text-muted)]">
-                  Statut
-                </Label>
-                <Select
-                  value={editManualStatus}
-                  onValueChange={(val) => {
-                    setEditManualStatus(val);
-                    setDirty(true);
-                  }}
-                >
-                  <SelectTrigger className="mt-2 h-9 text-sm">
-                    <SelectValue />
-                  </SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value="null">{automaticStatusOptionLabel(item)}</SelectItem>
-                    <SelectItem value="realise">Réalisé</SelectItem>
-                    <SelectItem value="annule">Annulé</SelectItem>
-                  </SelectContent>
-                </Select>
               </div>
             )}
 
@@ -1111,22 +999,41 @@ export function AgendaItemDrawer({ item: itemProp, open, onClose, onMutated, onO
       </Sheet>
 
       <AlertDialog open={showDeleteConfirm} onOpenChange={setShowDeleteConfirm}>
-        <AlertDialogContent>
+        <AlertDialogContent data-testid="agenda-suppression">
           <AlertDialogHeader>
             <AlertDialogTitle>{AGENDA_EVENT_LABELS.deleteTitle}</AlertDialogTitle>
             <AlertDialogDescription>
-              {AGENDA_EVENT_LABELS.deleteBody}
+              {isRecurring ? AGENDA_EVENT_LABELS.deleteSeriesBody : AGENDA_EVENT_LABELS.deleteBody}
             </AlertDialogDescription>
           </AlertDialogHeader>
-          <AlertDialogFooter>
+          <AlertDialogFooter className={isRecurring ? "flex-col gap-2 sm:flex-col sm:space-x-0" : undefined}>
             <AlertDialogCancel>Annuler</AlertDialogCancel>
-            <AlertDialogAction
-              onClick={handleDelete}
-              disabled={deleting}
-              className="bg-[color:var(--danger)] hover:bg-[color:var(--danger)]/90"
-            >
-              {deleting ? 'Suppression…' : 'Supprimer définitivement'}
-            </AlertDialogAction>
+            {isRecurring ? (
+              <>
+                <AlertDialogAction
+                  onClick={() => { void handleDelete("occurrence"); }}
+                  disabled={deleting}
+                  className="bg-[color:var(--danger)] hover:bg-[color:var(--danger)]/90"
+                >
+                  {deleting ? 'Suppression…' : AGENDA_EVENT_LABELS.deleteOccurrence}
+                </AlertDialogAction>
+                <AlertDialogAction
+                  onClick={() => { void handleDelete("series"); }}
+                  disabled={deleting}
+                  className="bg-[color:var(--danger)] hover:bg-[color:var(--danger)]/90"
+                >
+                  {deleting ? 'Suppression…' : AGENDA_EVENT_LABELS.deleteSeries}
+                </AlertDialogAction>
+              </>
+            ) : (
+              <AlertDialogAction
+                onClick={() => { void handleDelete("occurrence"); }}
+                disabled={deleting}
+                className="bg-[color:var(--danger)] hover:bg-[color:var(--danger)]/90"
+              >
+                {deleting ? 'Suppression…' : 'Supprimer définitivement'}
+              </AlertDialogAction>
+            )}
           </AlertDialogFooter>
         </AlertDialogContent>
       </AlertDialog>

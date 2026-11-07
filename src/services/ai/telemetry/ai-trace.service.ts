@@ -20,7 +20,7 @@ import { currentSyncConfigSnapshot, snapshotTrace } from '../config/execution-sn
 import { getCachedPrice } from '../gateway/pricing/pricing.repository';
 import { priceCall } from '../gateway/cost-catalog';
 import { alertMissingPrice, computeTracePricing, writeTracePricing } from './trace-pricing';
-import type { ProviderAttemptTrace, ProviderRequestTrace } from '../gateway/diagnostics/taxonomy';
+import type { AttachmentTransferFailure, ProviderAttemptTrace, ProviderRequestTrace } from '../gateway/diagnostics/taxonomy';
 import type { CallCaptureInput } from './call-capture';
 import type { AiAttachment } from '../gateway/types';
 
@@ -133,6 +133,12 @@ interface CallTrace {
    */
   providerRequest?: ProviderRequestTrace;
   providerAttempts?: ProviderAttemptTrace[];
+  /**
+   * Lot 113R (carte #717) — échec de TRANSFERT de la pièce jointe (réponse du
+   * fournisseur structurée, masquée, bornée), figé avec CET appel : une
+   * reprise ou une réussite ultérieure ne l'écrase jamais.
+   */
+  transfer?: AttachmentTransferFailure;
   /**
    * Lot 82C (LOG-01) — capture complète de l'appel (prompt final, contexte,
    * paramètres envoyés, réponse brute, sortie parsée), écrite dans
@@ -326,6 +332,7 @@ export async function recordCallTrace(t0: CallTrace): Promise<number | null> {
         ...(t.structuredContext ? { structuredContext: t.structuredContext } : {}),
         ...(t.providerRequest ? { providerRequest: t.providerRequest } : {}),
         ...(t.providerAttempts?.length ? { providerAttempts: t.providerAttempts.slice(0, 5) } : {}),
+        ...(t.transfer ? { transfer: t.transfer } : {}),
         // Lot 34C : tentative du JOB de file pendant laquelle l'appel a eu
         // lieu — BO › Exécutions IA regroupe la cascade de modèles par
         // tentative (fallback modèle ≠ retry du job).

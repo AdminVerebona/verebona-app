@@ -142,7 +142,6 @@ export interface AgendaItemSnapshot {
   id: number;
   title: string;
   date: string | null;
-  manualStatus: string | null;
   isAutomatic: boolean;
   isAutomaticModified: boolean;
   /** `projection_origin = 'OPERATION'` : élément GÉNÉRÉ par une projection. */
@@ -394,8 +393,9 @@ export const establishedRealizedDate = (op: Pick<OperationSnapshot, 'realizedDat
 
 // ── Élément « touché » par l'utilisateur (convention §14.6) ────────────────
 
-export const isTouched = (i: Pick<AgendaItemSnapshot, 'isAutomatic' | 'isAutomaticModified' | 'manualStatus'>): boolean =>
-  !i.isAutomatic || i.isAutomaticModified || (i.manualStatus !== null && i.manualStatus !== '');
+/** Lot 113P (#715) : plus de statut d'événement — touché = saisi ou modifié par l'utilisateur. */
+export const isTouched = (i: Pick<AgendaItemSnapshot, 'isAutomatic' | 'isAutomaticModified'>): boolean =>
+  !i.isAutomatic || i.isAutomaticModified;
 
 // ── Rapprochement (C16.1) ──────────────────────────────────────────────────
 
@@ -452,7 +452,7 @@ export function matchExistingItem(op: OperationSnapshot, desired: DesiredProject
   const probables: Array<ProbableCandidate & { ecart: number }> = [];
 
   for (const c of candidates) {
-    if (!c.date || c.manualStatus === 'annule') continue;
+    if (!c.date) continue;
     if (c.businessOperationId !== null && c.businessOperationId !== op.id && c.linkedOperationActive) continue;
     if (c.projected) continue; // projection d'une autre Opération (ou orpheline) : jamais adoptée
     // Lot 87B : « même document » = provenance exacte (document lié, origine non détachée, source AGENDA T3).
@@ -467,7 +467,7 @@ export function matchExistingItem(op: OperationSnapshot, desired: DesiredProject
     const planifieVersRealise = op.typeCode === 'INTERVENTION' && desired.nature === 'HISTORICAL' && c.nature !== 'HISTORICAL';
     const tolerance = planifieVersRealise ? PLANNED_TO_REALIZED_TOLERANCE_DAYS : MATCH_DATE_TOLERANCE_DAYS;
     const doublon = findDuplicate({ title: desired.title, date: desired.date }, [{
-      id: c.id, title: c.title, date: c.date, category: null, status: c.manualStatus, manual: true, originFieldKey: null,
+      id: c.id, title: c.title, date: c.date, category: null, manual: true, originFieldKey: null,
     }]);
     if (ecart <= tolerance && memeDoc) {
       certains.push({
@@ -631,7 +631,6 @@ export interface ItemSync {
   businessType?: string;
   homeCategory?: 'action' | 'information';
   functionalKey?: string;
-  manualStatus?: 'realise';
   businessOperationId?: number;
   /** Lot 82D : `fileIds` absent pour un principal (documents propagés par le service de regroupement). */
   links?: { assetIds: number[]; equipmentIds: number[]; fileIds?: number[] };
@@ -654,8 +653,7 @@ export type ProjectionAction =
   | { kind: 'RETITLE'; itemId: number; title: string; from: string }
   | { kind: 'REMOVE'; itemId: number; reason: string }
   | { kind: 'DETACH'; itemId: number; reason: string }
-  | { kind: 'MARK_DONE'; itemId: number }
-  | { kind: 'PROPOSE_DONE'; itemId: number }
+  // Lot 113P (#715) : MARK_DONE / PROPOSE_DONE retirés — plus de statut d'événement.
   | {
     kind: 'ABSTAIN'; reason: string; itemId?: number;
     /** Lot 53 (D14) : rapprochement incertain — événements candidats et motif (carte « À traiter »). */
@@ -688,8 +686,6 @@ export interface PlanInput {
   candidates: readonly AgendaItemSnapshot[];
   /** Éléments déjà retenus par une autre Opération dans ce passage. */
   taken?: ReadonlySet<number>;
-  /** Éléments ayant déjà une carte de statut (ouverte ou tranchée) : jamais reproposée. */
-  statusCardItems?: ReadonlySet<number>;
   /**
    * Lot 53 (D14) : l'utilisateur a répondu « nouvel événement » à la carte de
    * rapprochement — création sans nouveau rapprochement (suppression utilisateur
@@ -799,21 +795,6 @@ function dateActions(item: AgendaItemSnapshot, d: DesiredProjection): Projection
 }
 
 /**
- * Statut d'un élément lié non projeté (ou projeté touché) quand une
- * INTERVENTION est réalisée (C16.1 « à la réalisation ») — seul type qui
- * passe d'un état prévu à un état réalisé ; un sinistre, un achat, une
- * cession naissent réalisés (aucune carte pour un fait passé saisi).
- */
-function statusActions(op: OperationSnapshot, item: AgendaItemSnapshot, desired: DesiredProjection, cards: ReadonlySet<number>): ProjectionAction[] {
-  if (op.typeCode !== 'INTERVENTION' || desired.target !== 'REALIZED') return [];
-  if (item.manualStatus || item.nature === 'HISTORICAL') return [];
-  // Élément automatique intact (T4) : marqué réalisé ; sinon proposé, une seule fois.
-  if (!item.projected && !isTouched(item)) return [{ kind: 'MARK_DONE', itemId: item.id }];
-  if (cards.has(item.id)) return [];
-  return [{ kind: 'PROPOSE_DONE', itemId: item.id }];
-}
-
-/**
  * Plan d'actions pour UNE Opération (pur, idempotent : un état à jour rend un plan vide).
  *
  * Lot 83A (CDC v5 O-7) — la projection n'agit que sur SA représentation :
@@ -840,7 +821,6 @@ function statusActions(op: OperationSnapshot, item: AgendaItemSnapshot, desired:
 export function planOperationProjection(p: PlanInput): ProjectionAction[] {
   const { op, decision } = p;
   const actions: ProjectionAction[] = [];
-  const cards = p.statusCardItems ?? new Set<number>();
 
   if (decision.kind === 'NONE') {
     for (const i of p.linked) {
@@ -871,7 +851,6 @@ export function planOperationProjection(p: PlanInput): ProjectionAction[] {
       return [
         { kind: 'REMOVE', itemId: item.id, reason: 'DUPLICATE_PROJECTION' },
         { kind: 'LINK', itemId: reconnu.item.id, reason: `élément du regroupement : ${reconnu.reason}` },
-        ...statusActions(op, reconnu.item, d, cards),
       ];
     }
     const forts = reconnu.kind === 'certain' ? [reconnu.item] : reconnu.kind === 'probable' ? reconnu.candidates.filter((c) => c.strong).map((c) => c.item) : [];
@@ -888,7 +867,7 @@ export function planOperationProjection(p: PlanInput): ProjectionAction[] {
       const meme = evenementGlobal ? projectionRoleOf(cle ?? d.key) === 'PRINCIPAL' : cle === null || cle === d.key;
       if (meme) actions.push({ kind: 'REMOVE', itemId: autre.id, reason: 'DUPLICATE_PROJECTION' });
     }
-    actions.push(...occupiedSlotActions(p, d, fk, item, cards));
+    actions.push(...occupiedSlotActions(p, d, fk, item));
     if (demandeMembres && !actions.some((a) => a.kind === 'REPRESENTATION_REQUIRED')) actions.push(demandeMembres);
     if (!evenementGlobal) actions.push(...durableRelationDemotions(op, p.linked));
     return uniqueRoles(actions);
@@ -924,7 +903,6 @@ export function planOperationProjection(p: PlanInput): ProjectionAction[] {
       const seul = couverts[0];
       actions.push({ kind: 'LINK', itemId: seul.id, reason: 'représentation établie par l’Opération (T3)' });
       actions.push(...retitleActions(op, seul));
-      actions.push(...statusActions(op, seul, d, cards));
       return actions;
     }
     // Lot 87B (CODE-03, CODE-04, V-Q4) : PLUSIEURS représentations possibles (doublons ? étapes
@@ -949,7 +927,6 @@ export function planOperationProjection(p: PlanInput): ProjectionAction[] {
   const reconnu = membres.length ? matchExistingItem(op, d, membres) : { kind: 'none' as const };
   if (reconnu.kind === 'certain') {
     actions.push({ kind: 'LINK', itemId: reconnu.item.id, reason: `élément du regroupement : ${reconnu.reason}` });
-    actions.push(...statusActions(op, reconnu.item, d, cards));
     return actions;
   }
   // Lot 87B (CODE-04) : membre seulement SIGNALÉ (même bien, type compatible ou même intitulé, date proche)
@@ -976,7 +953,6 @@ export function planOperationProjection(p: PlanInput): ProjectionAction[] {
   }
   if (m.kind === 'certain') {
     actions.push({ kind: 'LINK', itemId: m.item.id, reason: m.reason });
-    actions.push(...statusActions(op, m.item, d, cards));
     return actions;
   }
   if (!d.creatable) return [{ kind: 'ABSTAIN', reason: 'NOT_CREATABLE' }];
@@ -984,7 +960,7 @@ export function planOperationProjection(p: PlanInput): ProjectionAction[] {
 }
 
 /** Emplacement occupé : convergence 76H, mise à jour de la projection intacte, sinon statut / intitulé / date / rôle. */
-function occupiedSlotActions(p: PlanInput, d: DesiredProjection, fk: string, item: AgendaItemSnapshot, cards: ReadonlySet<number>): ProjectionAction[] {
+function occupiedSlotActions(p: PlanInput, d: DesiredProjection, fk: string, item: AgendaItemSnapshot): ProjectionAction[] {
   const { op } = p;
   const actions: ProjectionAction[] = [];
   // Lot 76H / 87B : autres représentations de l'Opération à côté de son emplacement (liées à elle, ou
@@ -1015,7 +991,6 @@ function occupiedSlotActions(p: PlanInput, d: DesiredProjection, fk: string, ite
         { kind: 'REMOVE', itemId: item.id, reason: 'PROJECTION_YIELDS_TO_T4_REPRESENTATION' },
         { kind: 'LINK', itemId: seul.id, reason: 'représentation établie par l’Opération (T3)' },
         ...retitleActions(op, seul),
-        ...statusActions(op, seul, d, cards),
       ];
     }
     // Lot 87B (CODE-03, V-Q4) : autres représentations possibles à côté de l'emplacement — la projection
@@ -1039,7 +1014,6 @@ function occupiedSlotActions(p: PlanInput, d: DesiredProjection, fk: string, ite
     if (item.homeCategory !== categorie) changes.homeCategory = categorie;
     if (item.functionalKey !== fk) changes.functionalKey = fk;
     if (item.businessOperationId !== op.id) changes.businessOperationId = op.id;
-    if (!d.date && d.target === 'REALIZED' && nature !== 'HISTORICAL' && !item.manualStatus) changes.manualStatus = 'realise';
     // Lot 82D (§7.1) : les documents d'un PRINCIPAL sont propagés par le service de
     // regroupement (OPERATION_PRINCIPAL, refus utilisateur respectés) — la projection
     // ne les recopie plus ; une échéance garde ses liens directs (AI_DIRECT).
@@ -1055,12 +1029,11 @@ function occupiedSlotActions(p: PlanInput, d: DesiredProjection, fk: string, ite
     return actions;
   }
   // Élément saisi, produit par T4, ou projeté puis modifié : jamais réécrit
-  // — statut seulement ; lot 76H : l'intitulé GÉNÉRIQUE d'un élément T4
+  // (lot 113P : plus de statut posé) ; lot 76H : l'intitulé GÉNÉRIQUE d'un élément T4
   // intact cède à la description précise et prouvée de l'Opération ; lot
   // 83A : un élément T4 intact resté sans date reçoit la date établie.
   actions.push(...retitleActions(op, item));
   actions.push(...dateActions(item, d));
-  actions.push(...statusActions(op, item, d, cards));
   actions.push(...roleActions(item, d.key, p.principalWithdrawn));
   return actions;
 }

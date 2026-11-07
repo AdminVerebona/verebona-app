@@ -44,6 +44,7 @@ import { selectDisplayedProposals } from './action-model';
 import { getRule } from './rules-catalog';
 import { sortActions, type OrderMode } from './priority';
 import { presentCardLabels, targetFallbackLabel } from './card-labels';
+import { isAiQuestion } from './ai-user-question';
 import { publishableCardCondition } from './publishability';
 import { resolveCardLinks, type CardLinks } from './card-links';
 import { buildAssetLinkChoices, isAssetLinkChoiceCard, loadEligibleLinkAssets, type AssetLinkChoicesView } from './asset-link-choices';
@@ -246,7 +247,7 @@ export async function getToProcessPage(
         label: targetFallbackLabel(row.targetType),
       },
       ...(scope ? { scope } : {}),
-    }, getRule(row.ruleCode)?.question ?? null);
+    }, getRule(row.ruleCode)?.question ?? null, { aiQuestion: isAiQuestion(row.questionSource) });
   });
 
   // Lot 110D : questions « même réalité » binaires — références ACTUELLES de
@@ -259,12 +260,13 @@ export async function getToProcessPage(
       const parCarte = new Map(binaires.map((row) => {
         const ctx = row.triggerContext as { operationId: number; operationType?: string | null };
         const items = referencesForCard(refs, ctx.operationId, row.targetId);
-        return [row.publicId, { items, type: ctx.operationType ?? null }] as const;
+        return [row.publicId, { items, type: ctx.operationType ?? null, ai: isAiQuestion(row.questionSource) }] as const;
       }));
       views = views.map((v) => {
         const b = parCarte.get(v.publicId);
         // Aucune référence consultable : la question enregistrée (désignation de l'Opération) est gardée.
-        return b ? { ...v, choiceMode: 'BINARY' as const, references: referencesView(b.items), ...(b.items.length ? { question: binaryMatchQuestion(b.type, b.items) } : {}) } : v;
+        // Lot 113S : question formulée par T3 (contrôlée) — jamais recomposée à la lecture.
+        return b ? { ...v, choiceMode: 'BINARY' as const, references: referencesView(b.items), ...(b.items.length && !b.ai ? { question: binaryMatchQuestion(b.type, b.items) } : {}) } : v;
       });
     } catch (e) {
       console.error('[to-process] références des questions « même réalité » indisponibles :', (e as Error).message);

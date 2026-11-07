@@ -275,12 +275,39 @@ export function maxAiSuspensions(): number {
   return Number.isInteger(n) && n >= 1 ? n : 24;
 }
 
-/** Issue d'une suspension IA (pure) : nouvelle attente, ou échec définitif au-delà du plafond. */
+/**
+ * Lot 113R (carte #717) — motif SERVEUR d'un document en attente technique
+ * pour un incident d'ENVOI au fournisseur (refus d'accès, indisponibilité du
+ * service de fichiers) : jamais affiché tel quel (l'application lit le code
+ * fermé `ANALYSIS_WAITING_TECHNICAL`), cause précise au BO.
+ */
+export const AI_TRANSFER_WAIT_REASON = 'Analyse en attente technique : l’envoi du document au service d’analyse est momentanément impossible. Reprise automatique.';
+
+/**
+ * Lot 113R — après épuisement des reprises rapprochées d'un incident d'ENVOI
+ * (refus d'accès, indisponibilité du service de fichiers), le travail n'est
+ * JAMAIS abandonné en silence : il reste en file (responsabilité du système),
+ * re-vérifié au plus une fois par `AI_TRANSFER_PARK_RECHECK_HOURS` (24 h par
+ * défaut, borné à [1, 168]) et repris dès que la sonde d'envoi constate le
+ * rétablissement (`transfer-recovery`). L'exploitation est alertée.
+ */
+export function transferParkRecheckSeconds(): number {
+  const h = Number(process.env.AI_TRANSFER_PARK_RECHECK_HOURS);
+  return (Number.isFinite(h) && h >= 1 ? Math.min(Math.floor(h), 168) : 24) * 3_600;
+}
+
+/**
+ * Issue d'une suspension IA (pure) : nouvelle attente, ou échec définitif
+ * au-delà du plafond. Lot 113R : `park` (incident d'envoi au fournisseur) —
+ * au-delà du plafond, attente LONGUE (`parked`) au lieu de l'échec.
+ */
 export function afterAiSuspension(
   previous: number,
   max: number = maxAiSuspensions(),
-): { status: Extract<JobStatus, 'PENDING' | 'FAILED'>; count: number; retryInSeconds: number } {
+  opts: { park?: boolean } = {},
+): { status: Extract<JobStatus, 'PENDING' | 'FAILED'>; count: number; retryInSeconds: number; parked?: boolean } {
   const count = Math.max(0, Math.floor(previous)) + 1;
+  if (count > max && opts.park) return { status: 'PENDING', count, retryInSeconds: transferParkRecheckSeconds(), parked: true };
   if (count > max) return { status: 'FAILED', count, retryInSeconds: 0 };
   const i = Math.min(count, AI_SUSPENSION_DELAYS_SECONDS.length) - 1;
   return { status: 'PENDING', count, retryInSeconds: AI_SUSPENSION_DELAYS_SECONDS[i] };

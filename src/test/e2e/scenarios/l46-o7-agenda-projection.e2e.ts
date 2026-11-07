@@ -202,7 +202,7 @@ scenario('L46-O7', 'T4 / Agenda : projection des Opérations (C16), rapprochemen
     expect(seul).toMatchObject({ id: manuel.id, title: 'Achat de ma Clio chez Dupont', start_date: '2021-03-02', op: achat, projection_origin: null });
     expect((await projeter(compte, [achat])).changes).toBe(0);
 
-    // Échéance T4 (document) planifiée, puis l'intervention réalisée : liée et marquée réalisée.
+    // Échéance T4 (document) planifiée, puis l'intervention réalisée : liée (#715 : plus marquée « réalisée »).
     const f = await make.assetFile(compte, { assetId: clio.id });
     const { upsertAgendaItem } = await import('@/services/agenda/agenda-write-primitive');
     const t4 = await upsertAgendaItem({
@@ -210,8 +210,10 @@ scenario('L46-O7', 'T4 / Agenda : projection des Opérations (C16), rapprochemen
       category: 'action', sources: [{ fileId: f.id, role: 'SOURCE' }], occurrenceIndex: 'single',
     });
     const revision = await creerOp(compte, { type: 'INTERVENTION', realized: '2026-03-10', assetIds: [clio.id], fileId: f.id, label: 'Révision 60 000 km' });
-    expect(await projeter(compte, [revision])).toMatchObject({ linked: 1, markedDone: 1, created: 0 });
-    expect((await items(compte)).find((i) => i.id === t4.id)).toMatchObject({ op: revision, manual_status: 'realise', title: 'Révision', start_date: '2026-03-08' });
+    const r = await projeter(compte, [revision]);
+    expect(r).toMatchObject({ linked: 1, created: 0 });
+    expect(r).not.toHaveProperty('markedDone');
+    expect((await items(compte)).find((i) => i.id === t4.id)).toMatchObject({ op: revision, manual_status: null, title: 'Révision', start_date: '2026-03-08' });
     expect((await projeter(compte, [revision])).changes).toBe(0);
   });
 
@@ -335,7 +337,7 @@ scenario('L46-O7', 'T4 / Agenda : projection des Opérations (C16), rapprochemen
     const clio = await make.asset(compte, { category: 'VEHICULE', name: 'Clio' });
     const { createAgendaItem, updateAgendaItem } = await agendaWrite();
     // 1. Événement « achat » réalisé saisi par l'utilisateur → date d'acquisition recopiée (D-13) → TRG-008.
-    const achatEvt = await createAgendaItem({ title: 'Achat', startDate: '2024-05-01', manualStatus: 'realise', assetIds: [clio.id], homeCategory: 'information' }, compte.id, compte.ownerUserId);
+    const achatEvt = await createAgendaItem({ title: 'Achat', startDate: '2024-05-01', assetIds: [clio.id], homeCategory: 'information' }, compte.id, compte.ownerUserId);
     const kc = (await sql<{ kc: Json | null }[]>`SELECT key_characteristics AS kc FROM assets WHERE id = ${clio.id}`)[0].kc;
     expect(JSON.stringify(kc)).toContain('2024-05-01');
     expect(await attendreJobT3(compte, 'asset_updated')).not.toBeNull();

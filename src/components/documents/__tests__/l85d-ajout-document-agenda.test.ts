@@ -148,14 +148,17 @@ describe('L85D-UI06 — tiroir d’un élément d’agenda (desktop et mobile : 
     expect(src).toMatch(/const autorise = \(\) => \{ let ok = false; garder\(\(\) => \{ ok = true; \}\); return ok; \};/);
     // Lot 103D : `handleSave(dissociateIncompatible)` (confirmation de dissociation) — garde toujours en tête.
     expect(src).toMatch(/const handleSave = async \(dissociateIncompatible = false\) => \{\s*if \(!autorise\(\)\) return;/);
-    expect(src).toMatch(/const handleStatusChange = async \(val: string\) => \{\s*if \(!item \|\| !autorise\(\)\) return;/);
+    // #715 : plus de statut d'événement — plus de `handleStatusChange` dans le tiroir.
+    expect(src).not.toContain('handleStatusChange');
     expect(src).toMatch(/const handleConfirmForecast = async \(\) => \{\s*if \(!item \|\| !autorise\(\)\) return;/);
-    expect(src).toMatch(/const handleDelete = async \(\) => \{\s*if \(!item \|\| !autorise\(\)\) return;/);
+    // #715 : suppression avec portée (cet événement / toute la série).
+    expect(src).toMatch(/const handleDelete = async \(scope: "occurrence" \| "series" = "occurrence"\) => \{\s*if \(!item \|\| !autorise\(\)\) return;/);
     expect(src).toMatch(/onClick=\{\(\) => \{ if \(autorise\(\)\) setShowDeleteConfirm\(true\); \}\}/);
     expect(src).toMatch(/onClick=\{\(\) => \{ if \(autorise\(\)\) startEdit\(\); \}\}/);
   });
   it('un refus de droits (403) n’ajoute pas de message d’erreur par-dessus la fenêtre habituelle', () => {
-    expect(src.match(/if \(err\?\.status !== 403\)/g)?.length).toBeGreaterThanOrEqual(3);
+    // #715 : une écriture de moins (statut retiré) — enregistrement et suppression.
+    expect(src.match(/if \(err\?\.status !== 403\)/g)?.length).toBeGreaterThanOrEqual(2);
   });
   it('même tiroir sur mobile : aucune variante mobile séparée des écritures d’agenda', () => {
     for (const f of ['src/components/mobile/mobile-actions-sheet.tsx', 'src/components/mobile/add-forms.tsx']) {

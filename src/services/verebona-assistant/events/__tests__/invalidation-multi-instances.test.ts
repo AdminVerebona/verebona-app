@@ -174,7 +174,7 @@ describe('§31.7 — chaque chemin de modification émet son événement', () =>
     ['agenda/route.ts', ['AGENDA_ITEM_CREATED']],
     ['agenda/[id]/route.ts', ['AGENDA_ITEM_UPDATED', 'AGENDA_ITEM_DELETED']],
     ['agenda/[id]/confirm/route.ts', ['AGENDA_ITEM_UPDATED']],
-    ['agenda/[id]/statut/route.ts', ['AGENDA_ITEM_UPDATED']],
+    // #715 : plus de statut d'événement — `agenda/[id]/statut` ne modifie plus rien (410) : aucun événement.
     ['v2/to-process/[publicId]/resolve/route.ts', ['TO_PROCESS_ITEM_UPDATED']],
     ['to-process/conficts/[id]/resolve/route.ts', ['TO_PROCESS_ITEM_UPDATED']],
     ['to-process/suppliers/[id]/resolve/route.ts', ['TO_PROCESS_ITEM_UPDATED']],

@@ -1,22 +1,14 @@
 /**
- * Fait HISTORIQUE de l'agenda et « en retard » — règle UNIQUE (lot 47B,
- * point 2 ; décision PO du 12/10 ; CDC 15 D-14).
+ * Fait HISTORIQUE de l'agenda — règle UNIQUE de NATURE (lot 47B, point 2 ;
+ * décision PO du 12/10 ; CDC 15 D-14). Lot 113P (#715) : la partie « statut »
+ * (« en retard », « à confirmer ») de ce module est supprimée ; seule la
+ * nature (fait passé / échéance) reste, utile à T4, à l'accueil et aux exports.
  *
  * ══════════════════════════════════════════════════════════════════════════
- * UN FAIT PASSÉ N'EST JAMAIS « EN RETARD »
- *
- * Un élément de nature HISTORICAL (achat, sinistre, cession, intervention,
- * historique lu par T4 dans un document) n'est jamais « en retard ».
- *
- * Lot 53 (retour PO D17, cohérence D4 / D15 / D17) : UNE DATE PASSÉE NE
- * PROUVE PAS LA RÉALISATION. Daté dans le passé et sans statut, un fait
- * historique n'est plus affiché « réalisé » ni masqué du suivi : il est
- * « statut à confirmer » (`a_confirmer`) — partout (vues agenda desktop et
- * mobile, fiche du bien, suivi, équipement, document, assistant). Seul un
- * statut ÉTABLI le rend « réalisé » : `manual_status = 'realise'`, posé par
- * l'utilisateur ou par la consolidation sur preuve de réalisation
- * (COMPLETION_PROVEN). Rien n'est écrit en base (calcul de lecture). Une
- * ÉCHÉANCE passée non faite reste « date échue » (`en_retard`), comme avant.
+ * Historique : les lots 47B et 53 (D17) dérivaient de cette nature des
+ * statuts « en retard » / « statut à confirmer ». Supprimés au lot 113P :
+ * la nature sert seulement à distinguer un FAIT passé d'une ÉCHÉANCE (T4,
+ * accueil, exports, assistant), jamais à qualifier une exécution.
  *
  * Nature d'un élément (même précédence que `resolveEventSemantics`) :
  *   1. colonne `event_nature` (0223) quand elle est renseignée ;
@@ -82,27 +74,8 @@ export function agendaDatePassed(
   return new Date(`${date}T${time || '23:59:59'}`).getTime() < now.getTime();
 }
 
-/**
- * Un élément est-il EN RETARD ? Ouvert (aucun statut posé), date passée, et
- * jamais un fait HISTORICAL (décision PO du 12/10). Pure — LA règle partagée.
+/*
+ * Lot 113P (#715, décision PO du 06/11/2026) : `isAgendaOverdue` (« en retard ») et
+ * `isPastHistoricalUnconfirmed` (« statut à confirmer ») sont SUPPRIMÉS — un événement
+ * n'a plus de statut ; une date passée n'est ni un retard ni une réalisation à confirmer.
  */
-export function isAgendaOverdue(
-  item: { startDate: string | null; startTime?: string | null; endDate?: string | null; endTime?: string | null; manualStatus?: string | null } & AgendaNatureSignals,
-  now: Date = new Date(),
-): boolean {
-  if (item.manualStatus && item.manualStatus.trim() !== '') return false;
-  if (agendaDatePassed(item, now) !== true) return false;
-  return !isHistoricalAgendaEvent(item);
-}
-
-/**
- * Fait historique passé, sans statut : « statut à confirmer » (D17) — jamais
- * « réalisé » sur la seule foi de la date, jamais masqué ; rien n'est écrit.
- */
-export function isPastHistoricalUnconfirmed(
-  item: { startDate: string | null; startTime?: string | null; endDate?: string | null; endTime?: string | null; manualStatus?: string | null } & AgendaNatureSignals,
-  now: Date = new Date(),
-): boolean {
-  if (item.manualStatus && item.manualStatus.trim() !== '') return false;
-  return agendaDatePassed(item, now) === true && isHistoricalAgendaEvent(item);
-}

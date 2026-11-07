@@ -70,10 +70,9 @@ export async function consolidationJournalReady(sql: Sql = pgClient): Promise<bo
   return ready;
 }
 
-/** Gardes SQL d'un élément absorbable (alias `i`). Mêmes notions que `isTouched` + statuts ouverts + restauration. */
+/** Gardes SQL d'un élément absorbable (alias `i`). Mêmes notions que `isTouched` + restauration (lot 113P : plus de statut). */
 export const ABSORBABLE_SQL = `
   i.is_automatic AND NOT COALESCE(i.is_automatic_modified, false)
-  AND (i.manual_status IS NULL OR i.manual_status = '')
   AND i.confirmation_mode IS DISTINCT FROM 'USER'
   AND i.projection_origin IS NULL
   AND NOT COALESCE(i.requires_qualification, false)
@@ -290,16 +289,15 @@ async function journal(tx: Tx, p: JournalInput, kind: 'ABSORB' | 'LINK' | 'RETIT
  * Lot 106A — gardes d'un élément absorbable par la consolidation des
  * REPRÉSENTATIONS ÉQUIVALENTES (alias `i`) : élément automatique jamais touché
  * par l'utilisateur (même règle que `isUserTouched` / `agendaUntouchedSql`),
- * sans statut, sans geste tracé, non projeté, non prévisionnel, sans conflit
+ * sans geste tracé (lot 113P : plus de statut), non projeté, non prévisionnel, sans conflit
  * de données en attente, non lié à une Opération ACTIVE, jamais restauré.
  * Diffère d'`ABSORBABLE_SQL` sur un point : la qualification de catégorie
  * (`requires_qualification`, « Donnée à qualifier ») ne protège pas — c'est
  * une métadonnée interne, jamais un choix de l'utilisateur (décision PO
- * lot 105) ; un « statut à confirmer » n'est pas un statut posé.
+ * lot 105).
  */
 export const EQUIVALENT_ABSORBABLE_SQL = `
   i.is_automatic AND NOT COALESCE(i.is_automatic_modified, false)
-  AND (i.manual_status IS NULL OR i.manual_status = '')
   AND i.confirmation_mode IS DISTINCT FROM 'USER'
   AND i.projection_origin IS NULL
   AND i.occurrence_nature IS DISTINCT FROM 'FORECAST'
@@ -482,6 +480,13 @@ export async function restoreConsolidationLineInTx(
         if (item.functional_key) {
           const [cle] = await tx.unsafe<Row[]>(`SELECT id FROM agenda_items WHERE account_id = $1 AND functional_key = $2 LIMIT 1`, [accountId, item.functional_key] as never[]);
           if (cle) { conflit(id, `FUNCTIONAL_KEY_TAKEN:${String(cle.id)}`); return false; }
+        }
+        // Lot 113P (#715) : jamais ressusciter un événement de même clé supprimé par l'utilisateur.
+        if (item.functional_key) {
+          const [supprime] = await tx.unsafe<Row[]>(
+            `SELECT 1 FROM agenda_item_removals WHERE account_id = $1 AND functional_key = $2 AND reason IN ('USER_DELETED', 'USER_DELETED_SERIES') LIMIT 1`,
+            [accountId, item.functional_key] as never[]);
+          if (supprime) { conflit(id, 'USER_DELETED'); return false; }
         }
         await tx.unsafe(`INSERT INTO agenda_items SELECT * FROM jsonb_populate_record(NULL::agenda_items, $1::text::jsonb)`, [JSON.stringify(item)] as never[]);
         const links = (d.links ?? {}) as Record<string, unknown>;

@@ -316,18 +316,15 @@ const creer = (actionId: string, title: string, assetIds: number[] = []): Planne
   actionId, command: 'CREATE_AGENDA_ITEM', targets: [], dependsOn: [],
   params: { title, startDate: '2026-10-03', assetIds }, preview: `Créer « ${title} ».`, effects: [],
 });
-const statut = (actionId: string, command: 'MARK_AGENDA_DONE' | 'CANCEL_AGENDA_ITEM', agendaItemId: number): PlannedAction => ({
-  actionId, command, targets: [{ type: 'agenda_item', id: agendaItemId, label: 'x' }], dependsOn: [],
-  params: { agendaItemId }, preview: 'Changer le statut.', effects: [],
-});
+// #715 (lot 113P) : plus de commande de statut d'échéance (MARK_AGENDA_DONE / CANCEL_AGENDA_ITEM) —
+// les cas génériques (refus, idempotence, restitution) utilisent la modification d'une caractéristique.
+const valeur = (actionId: string) => champ(actionId, 'estimatedValue', 8500, 9000, 'valuation');
+const estimee = () => JSON.parse(db().assets.get(12)!.key_characteristics!).estimatedValue;
 const champ = (actionId: string, field: string, value: string | number, previous: unknown, section = 'common'): PlannedAction => ({
   actionId, command: 'UPDATE_ASSET_FIELD', targets: [{ type: 'asset', id: 12, label: 'Polo' }], dependsOn: [],
   params: { assetId: 12, section, field, value, previous }, preview: 'Modifier.',
   effects: ['Bien : Polo', `Champ : ${field === 'estimatedValue' ? 'Valeur estimée' : 'Immatriculation'}`, `Valeur actuelle : ${previous ?? 'non renseigné'}`, `Nouvelle valeur : ${value}`],
 });
-const item = (id: number, over: Partial<Item> = {}) => {
-  db().items.set(id, { id, account_id: 7, title: 'Entretien chaudière', start_date: '2026-09-01', manual_status: null, updated_at: stamp(), ...over });
-};
 const asset = (over: Partial<Asset> = {}) => {
   db().assets.set(over.id ?? 12, {
     id: 12, account_id: 7, name: 'Polo', category: 'VEHICULE', status: 'EN_SERVICE', lock_state: 'NONE',
@@ -368,27 +365,6 @@ describe('actions réversibles : commande inverse appliquée', () => {
     await vi.waitFor(() => expect(h.emitBusinessEvent).toHaveBeenCalledWith(expect.objectContaining({ type: 'AGENDA_ITEM_DELETED' })));
   });
 
-  it('échéance marquée réalisée : statut précédent rétabli et tracé dans l’historique de l’occurrence', async () => {
-    item(5);
-    plan('p1', [statut('a1', 'MARK_AGENDA_DONE', 5)]);
-    await confirmer('p1');
-    expect(db().items.get(5)!.manual_status).toBe('realise');
-    const r = await annuler('p1');
-    expect(r).toMatchObject({ ok: true, status: 'UNDONE' });
-    expect((r as { message: string }).message).toMatch(/l’échéance « Entretien chaudière » a retrouvé son statut précédent \(à traiter\)/);
-    expect(db().items.get(5)!.manual_status).toBeNull();
-    expect(db().occurrences).toEqual([expect.objectContaining({ agenda_item_id: 5, detail: { manualStatus: null, undoOfPlan: 'p1' } })]);
-  });
-
-  it('échéance annulée : statut précédent rétabli (ici « réalisée »)', async () => {
-    item(6, { manual_status: 'realise' });
-    plan('p1', [statut('a1', 'CANCEL_AGENDA_ITEM', 6)]);
-    await confirmer('p1');
-    expect(db().items.get(6)!.manual_status).toBe('annule');
-    expect(await annuler('p1')).toMatchObject({ ok: true });
-    expect(db().items.get(6)!.manual_status).toBe('realise');
-  });
-
   it('caractéristique d’un bien : valeur précédente rétablie, y compris ce que l’écriture avait ajouté', async () => {
     asset();
     const avant = db().assets.get(12)!.key_characteristics;
@@ -410,40 +386,40 @@ describe('actions réversibles : commande inverse appliquée', () => {
     expect(db().assets.get(12)!.registration_number).toBe('AB-123-CD');
   });
 
-  it('plan multi-actions : tout est défait, en ordre inverse — y compris deux étapes sur la même échéance', async () => {
-    item(5);
-    plan('p1', [creer('a1', 'Vidange'), statut('a2', 'MARK_AGENDA_DONE', 5), statut('a3', 'CANCEL_AGENDA_ITEM', 5)]);
+  it('plan multi-actions : tout est défait, en ordre inverse', async () => {
+    asset({ purchase_date: '2019-01-01' });
+    plan('p1', [creer('a1', 'Vidange'), valeur('a2')]);
     await confirmer('p1');
-    expect(db().items.get(5)!.manual_status).toBe('annule');
+    expect(estimee()).toBe(8500);
     const r = await annuler('p1');
     expect(r).toMatchObject({ ok: true });
-    expect(db().items.get(5)!.manual_status).toBeNull();
-    expect(db().items.size).toBe(1);
-    expect((r as { message: string }).message.split('\n')).toHaveLength(4);
+    expect(estimee()).toBe(9000);
+    expect(db().items.size).toBe(0);
+    expect((r as { message: string }).message.split('\n')).toHaveLength(3);
   });
 });
 
 describe('refus : rien n’est modifié', () => {
   it('délai de 15 minutes dépassé', async () => {
-    item(5);
-    plan('p1', [statut('a1', 'MARK_AGENDA_DONE', 5)]);
+    asset();
+    plan('p1', [valeur('a1')]);
     await confirmer('p1');
     db().plans.get('p1')!.undo_until = new Date(Date.now() - 1000);
     expect(await annuler('p1')).toEqual({ ok: false, code: 'UNDO_EXPIRED', message: UNDO_EXPIRED_MESSAGE, status: 'EXECUTED' });
-    expect(db().items.get(5)!.manual_status).toBe('realise');
+    expect(estimee()).toBe(8500);
   });
 
   it('cible modifiée depuis l’exécution : message clair, tracé et restitué dans le fil', async () => {
-    item(5);
-    plan('p1', [statut('a1', 'MARK_AGENDA_DONE', 5)]);
+    plan('p1', [creer('a1', 'Vidange')]);
     await confirmer('p1');
-    db().items.get(5)!.title = 'Entretien chaudière (fait par Dupont)';
-    db().items.get(5)!.updated_at = stamp();
+    const cree = [...db().items.values()][0];
+    cree.title = 'Vidange (faite par Dupont)';
+    cree.updated_at = stamp();
     const r = await annuler('p1');
     expect(r).toMatchObject({ ok: false, code: 'UNDO_CONFLICT', status: 'EXECUTED' });
     expect((r as { message: string }).message).toBe(
-      'Annulation impossible : l’échéance « Entretien chaudière » a changé depuis l’exécution de l’action. Rien n’a été modifié ; vous pouvez faire la correction directement depuis l’écran concerné.');
-    expect(db().items.get(5)!.manual_status).toBe('realise');
+      'Annulation impossible : l’échéance « Vidange » a changé depuis l’exécution de l’action. Rien n’a été modifié ; vous pouvez faire la correction directement depuis l’écran concerné.');
+    expect(db().items.size).toBe(1);
     expect(db().plans.get('p1')!.status).toBe('EXECUTED');
     expect(types().at(-1)).toBe('UNDO_REFUSED');
     expect(db().messages.at(-1)!.content).toBe((r as { message: string }).message);
@@ -468,36 +444,36 @@ describe('refus : rien n’est modifié', () => {
   });
 
   it('atomique : un conflit sur une étape n’en défait aucune autre', async () => {
-    item(5);
-    plan('p1', [creer('a1', 'Vidange'), statut('a2', 'MARK_AGENDA_DONE', 5)]);
+    asset({ purchase_date: '2019-01-01' });
+    plan('p1', [creer('a1', 'Vidange'), valeur('a2')]);
     await confirmer('p1');
     // L'étape a1 (défaite en dernier) est en conflit ; a2 aurait été défaite avant.
     const cree = [...db().items.values()].find((i) => i.title === 'Vidange')!;
     cree.updated_at = stamp();
     expect(await annuler('p1')).toMatchObject({ ok: false, code: 'UNDO_CONFLICT' });
-    expect(db().items.get(5)!.manual_status).toBe('realise');
-    expect(db().items.size).toBe(2);
+    expect(estimee()).toBe(8500);
+    expect(db().items.size).toBe(1);
     expect(db().steps.every((s) => s.undone_at === null)).toBe(true);
     expect(db().plans.get('p1')!.status).toBe('EXECUTED');
   });
 
   it('plan d’un autre utilisateur (Duo) ou d’un autre compte : inexistant (404), rien ne change', async () => {
-    item(5);
-    plan('p1', [statut('a1', 'MARK_AGENDA_DONE', 5)]);
+    asset();
+    plan('p1', [valeur('a1')]);
     await confirmer('p1');
     expect(await annuler('p1', { accountId: 7, userId: 4 })).toMatchObject({ ok: false, code: 'PLAN_NOT_FOUND' });
     expect(await annuler('p1', { accountId: 8, userId: 3 })).toMatchObject({ ok: false, code: 'PLAN_NOT_FOUND' });
-    expect(db().items.get(5)!.manual_status).toBe('realise');
+    expect(estimee()).toBe(8500);
     expect(types()).not.toContain('UNDONE');
   });
 
   it('compte en lecture seule (offre, impayé) : refusé, rien n’est modifié', async () => {
-    item(5);
-    plan('p1', [statut('a1', 'MARK_AGENDA_DONE', 5)]);
+    asset();
+    plan('p1', [valeur('a1')]);
     await confirmer('p1');
     const r = await undoCommandPlan({ planId: 'p1', ...owner }, { canWrite: async () => ({ allowed: false, message: 'Votre compte est en lecture seule.' }) });
     expect(r).toMatchObject({ ok: false, code: 'WRITE_REFUSED', message: 'Votre compte est en lecture seule.' });
-    expect(db().items.get(5)!.manual_status).toBe('realise');
+    expect(estimee()).toBe(8500);
   });
 
   it('proposition non exécutée : rien à défaire', async () => {
@@ -508,16 +484,18 @@ describe('refus : rien n’est modifié', () => {
 
 describe('idempotence', () => {
   it('rejouée : même résultat, sans nouvelle écriture, trace ni message', async () => {
-    item(5);
-    plan('p1', [statut('a1', 'MARK_AGENDA_DONE', 5)]);
+    asset();
+    plan('p1', [valeur('a1')]);
     await confirmer('p1');
     await annuler('p1');
     const evenements = db().events.length;
     const messages = db().messages.length;
-    db().items.get(5)!.manual_status = 'realise'; // modifiée ensuite par l'utilisateur
+    const apres = db().assets.get(12)!.key_characteristics; // modifiée ensuite par l'utilisateur
+    db().assets.get(12)!.key_characteristics = JSON.stringify({ estimatedValue: 7000 });
     const r2 = await annuler('p1');
     expect(r2).toMatchObject({ ok: true, status: 'UNDONE', alreadyHandled: true });
-    expect(db().items.get(5)!.manual_status).toBe('realise');
+    expect(estimee()).toBe(7000);
+    expect(apres).toBeTruthy();
     expect(db().events).toHaveLength(evenements);
     expect(db().messages).toHaveLength(messages);
   });
@@ -536,15 +514,6 @@ describe('actions irréversibles : aucun bouton, annulation refusée', () => {
     expect(db().items.size).toBe(1);
   });
 
-  it('échéance « achat » marquée réalisée : irréversible', async () => {
-    asset({ purchase_date: null });
-    item(5, { title: 'Achat Polo', start_date: '2019-03-12' });
-    db().links.push({ agenda_item_id: 5, asset_id: 12 });
-    plan('p1', [statut('a1', 'MARK_AGENDA_DONE', 5)]);
-    expect(await confirmer('p1')).toMatchObject({ undoUntil: null });
-    expect(await annuler('p1')).toMatchObject({ code: 'IRREVERSIBLE' });
-  });
-
   it('« achat » sans effet sur le bien (date déjà connue) : reste réversible', async () => {
     asset({ purchase_date: '2019-01-01' });
     plan('p1', [creer('a1', 'Achat pneus', [12])]);
@@ -553,19 +522,18 @@ describe('actions irréversibles : aucun bouton, annulation refusée', () => {
 
   it('T2-039 : une seule étape irréversible rend tout le plan non annulable', async () => {
     asset({ purchase_date: null });
-    item(5);
-    plan('p1', [statut('a1', 'MARK_AGENDA_DONE', 5), creer('a2', 'Achat pneus', [12])]);
+    plan('p1', [valeur('a1'), creer('a2', 'Achat pneus', [12])]);
     expect(await confirmer('p1')).toMatchObject({ undoUntil: null });
     expect(db().steps).toHaveLength(0);
     expect(await annuler('p1')).toMatchObject({ code: 'IRREVERSIBLE' });
-    expect(db().items.get(5)!.manual_status).toBe('realise');
+    expect(estimee()).toBe(8500);
   });
 });
 
 describe('restitution dans le fil', () => {
   it('fenêtre rendue pour un plan exécuté réversible ; plus rien une fois annulé', async () => {
-    item(5);
-    plan('p1', [statut('a1', 'MARK_AGENDA_DONE', 5)]);
+    asset();
+    plan('p1', [valeur('a1')]);
     await confirmer('p1');
     const [avant] = await listThreadCommandPlans(7, 3, 11);
     expect(avant.undoUntil).toEqual(expect.any(String));

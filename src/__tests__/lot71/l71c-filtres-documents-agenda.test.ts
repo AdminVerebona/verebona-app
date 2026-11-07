@@ -342,11 +342,12 @@ describe('FILT-05 — « Mon agenda » : filtres dans la page, sans tiroir (ordi
     expect(lire('src/components/filters/FilterControls.tsx')).toContain("grid grid-cols-1");
   });
 
-  it('FILT-05d — filtres propres à l’agenda conservés : période, statut annulé, vues Liste/Mensuel/Annuel', () => {
+  it('FILT-05d — filtres propres à l’agenda conservés : période, vues Liste/Mensuel/Annuel (#715 : plus de filtre « annulés »)', () => {
     // Lot 100E (A8) : « Tous » (libellé de la décision PO) remplace « Tout ».
     expect(AGENDA_PERIOD_OPTIONS.map((o) => o.label)).toEqual(['Tous', 'À venir', "Aujourd'hui", 'Passés']);
     expect(PAGE).toContain('title="Période"');
-    expect(PAGE).toContain("label: 'Afficher les annulés'");
+    // #715 : plus de statut d'événement — plus de case « Afficher les annulés ».
+    expect(PAGE).not.toContain('Afficher les annulés');
     expect(PAGE).toContain('<AgendaViewControls');
     expect(parseAgendaPeriod('upcoming')).toBe('upcoming');
     expect(parseAgendaPeriod('demain')).toBe('all');
@@ -357,7 +358,7 @@ describe('FILT-05 — « Mon agenda » : filtres dans la page, sans tiroir (ordi
     // Lot 75B : le filtre Pièce est réinitialisé avec le filtre Équipement.
     expect(PAGE).toMatch(/updateURL\(\{ assetIds: next\.length > 0 \? next\.join\(','\) : null, equipment: null, piece: null \}\)/);
     // Lot 100E (A8) : la période suspendue par une recherche est aussi effacée.
-    expect(PAGE).toMatch(/const clearFilters = \(\) => updateURL\(\{ period: null, \[SUSPENDED_PERIOD_PARAM\]: null, assetIds: null, equipment: null, piece: null, includeCancelled: null \}\)/);
+    expect(PAGE).toMatch(/const clearFilters = \(\) => updateURL\(\{ period: null, \[SUSPENDED_PERIOD_PARAM\]: null, assetIds: null, equipment: null, piece: null \}\)/);
     expect(PAGE).toMatch(/params\.set\('equipmentFacet', '1'\)/);
   });
 
@@ -367,15 +368,14 @@ describe('FILT-05 — « Mon agenda » : filtres dans la page, sans tiroir (ordi
 
   it('FILT-05g — pastilles « Filtré par … » : Période, Bien, Équipement, Statut', () => {
     const chips = agendaFilterChips({
-      period: 'past', assetIds: [1, 2], includeCancelled: true,
-      assetOptions: [{ id: 1, name: 'Maison' }, { id: 2, name: 'Studio' }],
+      period: 'past', assetIds: [1, 2], assetOptions: [{ id: 1, name: 'Maison' }, { id: 2, name: 'Studio' }],
       equipmentChipLabel: 'Studio · Chaudière',
     });
     expect(chips).toEqual([
       { key: 'period', label: 'Passés' }, { key: 'bien:1', label: 'Maison' }, { key: 'bien:2', label: 'Studio' },
-      { key: 'equipment', label: 'Studio · Chaudière' }, { key: 'cancelled', label: 'Annulés affichés' },
+      { key: 'equipment', label: 'Studio · Chaudière' },
     ]);
-    expect(agendaFilterChips({ period: 'all', assetIds: [], includeCancelled: false, assetOptions: [], equipmentChipLabel: null })).toEqual([]);
+    expect(agendaFilterChips({ period: 'all', assetIds: [], assetOptions: [], equipmentChipLabel: null })).toEqual([]);
   });
 });
 

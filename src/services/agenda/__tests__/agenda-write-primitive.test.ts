@@ -40,10 +40,11 @@ describe('parité des deux chemins historiques', () => {
     expect(input).toMatchObject({ origin: 'AUTOMATIC', nature: 'DEADLINE', businessType: 'inspection', functionalKey: 'k', sources: [{ fileId: 9, role: 'SOURCE' }] });
     expect(primarySource(input)?.fileId).toBe(9);
   });
-  it('mise à jour : seulement ce qui est fourni (statut seul : aucune autre colonne)', () => {
-    const v = agendaItemValues({ itemId: 5, accountId: 1, assetId: null, origin: 'MANUAL', details: { manualStatus: 'realise' } });
-    expect(Object.keys(v).sort()).toEqual(['manualStatus', 'updatedAt']);
-    const preuve = agendaItemValues({ itemId: 5, accountId: 1, assetId: null, origin: 'AUTOMATIC', sources: [{ fileId: 2, role: 'PROOF' }], details: { manualStatus: 'realise' } });
+  // #715 : plus de statut — une mise à jour sans champ n'écrit que `updatedAt`, jamais `manualStatus`.
+  it('mise à jour : seulement ce qui est fourni (rien fourni : aucune autre colonne, jamais de statut)', () => {
+    const v = agendaItemValues({ itemId: 5, accountId: 1, assetId: null, origin: 'MANUAL', details: {} });
+    expect(Object.keys(v).sort()).toEqual(['updatedAt']);
+    const preuve = agendaItemValues({ itemId: 5, accountId: 1, assetId: null, origin: 'AUTOMATIC', sources: [{ fileId: 2, role: 'PROOF' }], details: {} });
     expect(preuve.originRefId).toBeUndefined();
     const maj = agendaItemValues({ itemId: 5, accountId: 1, assetId: null, origin: 'AUTOMATIC', title: 'CT', date: '2027-04-01', sources: [] });
     expect(maj).toMatchObject({ title: 'CT', startDate: '2027-04-01', originRefType: null, originRefId: null });
@@ -71,7 +72,7 @@ describe('clé fonctionnelle (T4-08)', () => {
 describe('§14.6 — dédoublonnage des éléments automatiques', () => {
   const r = (over: Partial<DedupeRow>): DedupeRow => ({
     id: 1, accountId: 1, assetId: 7, sourceFileId: 9, originFieldKey: 'nextInspection', title: 'CT', startDate: '2027-03-01',
-    isAutomaticModified: false, manualStatus: null, ...over,
+    isAutomaticModified: false, ...over,
   });
   it('le plus ancien est gardé, les autres retirés', () => {
     const p = planAgendaDedupe([r({ id: 3 }), r({ id: 1 }), r({ id: 2 }), r({ id: 4, startDate: '2027-04-01' })]);
@@ -80,7 +81,8 @@ describe('§14.6 — dédoublonnage des éléments automatiques', () => {
     expect(p.remove).toEqual([2, 3]);
   });
   it('un élément modifié par l’utilisateur est gardé, jamais retiré', () => {
-    const p = planAgendaDedupe([r({ id: 1 }), r({ id: 2, isAutomaticModified: true }), r({ id: 3, manualStatus: 'realise' })]);
+    // #715 : plus de statut « réalisé » qui protège (reporté sur `isAutomaticModified` par la migration 1526).
+    const p = planAgendaDedupe([r({ id: 1 }), r({ id: 2, isAutomaticModified: true }), r({ id: 3, isAutomaticModified: true })]);
     expect(p.groups[0]).toMatchObject({ keep: [2, 3], remove: [1], protected: [2, 3] });
   });
   it('sans champ d’origine : même titre normalisé ; un élément gardé ailleurs n’est pas retiré', () => {

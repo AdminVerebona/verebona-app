@@ -1,23 +1,18 @@
 /**
- * Lot 47B — point 2 : un fait HISTORIQUE passé n'est plus « en retard »
- * (décision PO du 12/10). Affiché réalisé PARTOUT (vues agenda desktop et
- * mobile, fiche, équipement, document, accueil, mascotte, assistant) via UNE
- * règle partagée (`agenda-historical.ts`) ; aucun statut écrit ; une
- * échéance passée non faite reste « en retard ».
+ * Lot 47B — point 2 : règle partagée de NATURE (`agenda-historical.ts`) — un
+ * fait HISTORIQUE n'est jamais une action.
+ *
+ * #715 (lot 113P) : plus de statut d'événement — les cas O7b-H02 (statut
+ * effectif « à confirmer » / « en retard ») et le statut à 4 états de
+ * l'assistant (H03) sont RETIRÉS ; H04 vérifie désormais l'ABSENCE de statut
+ * dans les vues et les lecteurs.
  */
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
-import { computeAttentionFlags, computeEffectiveStatus } from '../AgendaDomainService';
-import {
-  HISTORICAL_ONLY_BUSINESS_TYPES, historicalSql, isAgendaOverdue, isHistoricalAgendaEvent, isPastHistoricalUnconfirmed,
-} from '../agenda-historical';
-import { agendaStatus4 } from '@/services/verebona-assistant/canonical/agenda';
+import { computeAttentionFlags } from '../AgendaDomainService';
+import { HISTORICAL_ONLY_BUSINESS_TYPES, historicalSql, isHistoricalAgendaEvent } from '../agenda-historical';
 import { isAgendaActionItemT4 } from '@/services/home/mascot/collector';
-
-const NOW = new Date('2026-10-12T10:00:00');
-const passe = { startDate: '2026-03-10', startTime: null, endDate: null, endTime: null, manualStatus: null };
-const futur = { ...passe, startDate: '2026-12-01' };
 
 describe('O7b-H01 — règle partagée : nature historique (0223, champ d\'origine, type métier)', () => {
   it('nature 0223 prioritaire ; à défaut champ d\'origine du registre ; à défaut type métier exclusivement historique', () => {
@@ -46,48 +41,16 @@ describe('O7b-H01 — règle partagée : nature historique (0223, champ d\'origi
   });
 });
 
-describe('O7b-H02 — statut effectif : historique passé jamais en retard ; échéance passée = date échue', () => {
-  // Lot 53 (retour PO D17) : une date passée ne prouve pas la réalisation — « à confirmer », plus « réalisé ».
-  it('historique passé sans statut → « a_confirmer » (affichage) ; aucun statut écrit (calcul de lecture)', () => {
-    const item = { ...passe, eventNature: 'HISTORICAL' as const };
-    expect(computeEffectiveStatus(item, NOW)).toBe('a_confirmer');
-    expect(item.manualStatus).toBeNull();
-    expect(isPastHistoricalUnconfirmed(item, NOW)).toBe(true);
-    expect(isAgendaOverdue(item, NOW)).toBe(false);
-    // Achat / sinistre / cession / réparation lus par T4 sans nature : même règle.
-    for (const businessType of ['purchase', 'claim', 'sale', 'repair']) {
-      expect(computeEffectiveStatus({ ...passe, businessType }, NOW)).toBe('a_confirmer');
-    }
-  });
-
-  it('échéance passée non faite → « en_retard » comme aujourd\'hui ; à venir → « a_venir »', () => {
-    expect(computeEffectiveStatus(passe, NOW)).toBe('en_retard');
-    expect(computeEffectiveStatus({ ...passe, eventNature: 'DEADLINE' }, NOW)).toBe('en_retard');
-    expect(isAgendaOverdue({ ...passe, eventNature: 'DEADLINE' }, NOW)).toBe(true);
-    expect(computeEffectiveStatus(futur, NOW)).toBe('a_venir');
-    expect(computeEffectiveStatus({ ...futur, eventNature: 'HISTORICAL' }, NOW)).toBe('a_venir');
-  });
-
-  it('un statut posé par l\'utilisateur l\'emporte toujours (annulé reste annulé, même historique)', () => {
-    expect(computeEffectiveStatus({ ...passe, eventNature: 'HISTORICAL', manualStatus: 'annule' }, NOW)).toBe('annule');
-    expect(computeEffectiveStatus({ ...passe, manualStatus: 'realise' }, NOW)).toBe('realise');
-  });
-
-  it('drapeau d\'attention « en retard » : jamais pour un historique passé', () => {
+describe('L113P — #715 : plus aucun signal « en retard »', () => {
+  it('drapeaux d’attention : jamais « en_retard », passé comme à venir', () => {
     const base = { directAssetIds: [1], fileLinks: [], roomLinks: [], equipmentLinks: [] };
-    expect(computeAttentionFlags({ ...passe, ...base, eventNature: 'HISTORICAL' }, [], NOW)).not.toContain('en_retard');
-    expect(computeAttentionFlags({ ...passe, ...base }, [], NOW)).toContain('en_retard');
+    for (const startDate of ['2020-03-10', '2099-12-01']) {
+      expect(computeAttentionFlags({ ...base, startDate, eventNature: 'DEADLINE' }, [])).not.toContain('en_retard');
+    }
   });
 });
 
 describe('O7b-H03 — assistant (lot 34 « qu\'est-ce qui est en retard ? »), accueil et mascotte', () => {
-  it('statut à 4 états : historique passé sans statut = non prouvé (D17, lot 53), jamais en retard ; échéance passée inchangée', () => {
-    expect(agendaStatus4(null, false, '2026-03-10', '2026-10-12', true)).toBe('not_proven');
-    expect(agendaStatus4('realise', false, '2026-03-10', '2026-10-12', true)).toBe('completed');
-    expect(agendaStatus4(null, false, '2026-03-10', '2026-10-12')).toBe('not_proven');
-    expect(agendaStatus4('annule', false, '2026-03-10', '2026-10-12', true)).toBe('not_completed');
-  });
-
   it('accueil / mascotte / actions de l\'assistant : un fait historique n\'est jamais une action (donc jamais en retard)', () => {
     const base = { homeCategory: 'action', originType: 'qualified_document', title: 'Achat' };
     expect(isAgendaActionItemT4({ ...base, eventNature: 'HISTORICAL' })).toBe(false);
@@ -96,41 +59,32 @@ describe('O7b-H03 — assistant (lot 34 « qu\'est-ce qui est en retard ? »), a
   });
 });
 
-describe('O7b-H04 — rendu desktop ET mobile : un seul calcul serveur, affiché tel quel', () => {
+describe('O7b-H04 — #715 : aucun statut d’événement, ni dans les vues ni dans les lecteurs serveur', () => {
   const lire = (f: string) => readFileSync(join(process.cwd(), f), 'utf8');
 
-  it('vues agenda (page desktop/mobile, onglet du bien, tiroirs) : badge = `effectiveStatus` du serveur, aucun recalcul de date côté client', () => {
+  it('vues agenda (page desktop/mobile, onglet du bien, tiroirs) : ni `effectiveStatus`, ni `manualStatus`, ni sélecteur « Statut »', () => {
     for (const f of [
       'src/app/(dashboard)/agenda/page.tsx', 'src/components/assets/AssetAgendaTab.tsx', 'src/components/agenda/AgendaItemDrawer.tsx',
-      'src/components/assets/EquipmentDrawer.tsx', 'src/components/assets/DocumentDrawer.tsx',
+      'src/components/agenda/CreateAgendaItemDrawer.tsx', 'src/components/agenda/AgendaPeriodViews.tsx',
+      'src/components/assets/EquipmentDrawer.tsx', 'src/components/assets/DocumentDrawer.tsx', 'src/components/assets/timeline/AssetTimeline.tsx',
     ]) {
       const src = lire(f);
-      expect(src).toMatch(/effectiveStatus/);
-      expect(src).not.toMatch(/computeEffectiveStatus|en_retard['"]\s*:\s*\w+\s*</);
+      expect(src, f).not.toMatch(/effectiveStatus|manualStatus|isOverdue|toConfirm|\/statut`/);
+      expect(src, f).not.toMatch(/>\s*(Réalisé|Annulé|Statut à confirmer|Date échue)\s*</);
     }
-    // Page agenda : même composant de ligne aux deux tailles (badge non masqué sur mobile).
-    const page = lire('src/app/(dashboard)/agenda/page.tsx');
-    expect(page).toContain('STATUS_LABELS[item.effectiveStatus]');
-    expect(page).not.toMatch(/hidden sm:[^"]*\$\{STATUS_COLORS/);
   });
 
-  it('chaque calcul serveur du statut lit la nature (règle partagée) : liste, recherche, fiche, suivi, équipement', () => {
-    const q = lire('src/services/agenda/AgendaQueryService.ts');
-    expect(q.match(/eventNature: natures\?\.get\(item\.id\)\?\.nature/g)?.length ?? 0).toBeGreaterThanOrEqual(1);
-    expect(q).toContain('...signaux,');
-    for (const f of ['src/app/api/assets/[id]/followup/route.ts', 'src/app/api/equipments/[id]/agenda/route.ts']) {
-      expect(lire(f)).toContain('loadEventNatures(');
+  it('lecteurs serveur : plus de calcul de statut (liste, recherche, suivi, équipement, Timeline)', () => {
+    for (const f of [
+      'src/services/agenda/AgendaQueryService.ts', 'src/services/agenda/timeline/model.ts', 'src/services/agenda/timeline/read.ts',
+      'src/app/api/assets/[id]/followup/route.ts', 'src/app/api/equipments/[id]/agenda/route.ts',
+    ]) {
+      expect(lire(f), f).not.toMatch(/computeEffectiveStatus|manual_status AS|completion_proven|validCompletionProof/);
     }
-    // Lot 84C : la fiche (vue d'ensemble) lit sa Timeline par `services/agenda/timeline` :
-    // nature lue dans la même requête (colonnes 0223), même règle partagée.
-    expect(lire('src/app/api/assets/[id]/overview/route.ts')).toContain('readAssetTimelinePage(');
-    expect(lire('src/services/agenda/timeline/read.ts')).toContain('ai.event_nature, ai.business_type');
-    // Lot 111R : la Timeline lit la nature par le calcul CANONIQUE (`computeEffectiveStatus` → règle partagée).
-    expect(lire('src/services/agenda/timeline/model.ts')).toContain('computeEffectiveStatus(');
-    expect(lire('src/services/agenda/AgendaDomainService.ts')).toContain('isPastHistoricalUnconfirmed(item, now)');
+    expect(lire('src/services/agenda/AgendaDomainService.ts')).not.toMatch(/export function computeEffectiveStatus/);
   });
 
-  it('aucune écriture de statut : la règle n\'appelle ni la primitive d\'écriture ni une mise à jour', () => {
+  it('aucune écriture de statut : la règle de nature n\'appelle ni la primitive d\'écriture ni une mise à jour', () => {
     const regle = lire('src/services/agenda/agenda-historical.ts');
     expect(regle).not.toMatch(/upsertAgendaItem|UPDATE agenda_items|db\.update/);
   });

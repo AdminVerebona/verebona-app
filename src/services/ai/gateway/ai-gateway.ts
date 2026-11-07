@@ -29,7 +29,7 @@ import {
   resolveRuntimeContract, contractStamp, contractJsonSchemaText, providerSchemaHash, runtimeContractBlock,
   contractVersionsOf, ContractResolutionError, type RuntimeContract, type ContractMismatch, type ResolvedContract,
 } from './output-resolution/runtime-contract';
-import type { OutputRepairStep, OutputSchemaRef } from './diagnostics/taxonomy';
+import type { AttachmentTransferFailure, OutputRepairStep, OutputSchemaRef } from './diagnostics/taxonomy';
 import type { RuntimeContractTrace, OutputTransformationsTrace, StructuredContextTrace } from '../telemetry/ai-trace.service';
 import {
   structuredSpecFor, executionConfigFor, executionSignature, checkExecutionConfig, buildExecutionContext,
@@ -703,6 +703,8 @@ export class AiGateway {
     let lastCause: FailureCause | null = null;
     let unknownAlternativesUsed = 0;
     let attempted = 0;
+    /** Lot 113R : dernier échec de TRANSFERT de la chaîne (porté par la suspension). */
+    let lastTransfer: (AttachmentTransferFailure & { model: string; callIndex: number; attempt: number | null }) | null = null;
     /** Rang sans appel (modèle sauté ou secours refusé) : trace d'usage + capture « aucun envoi ». */
     const traceNoCall = async (p: { model: string; rankIndex: number; decision: FallbackDecision; reasoning: ProviderCallInput['reasoning'] | null; timeoutMs: number; request?: RequestTrace | null }) => {
       const code = p.decision.decision === 'KNOWN_UNAVAILABLE' ? 'MODEL_KNOWN_UNAVAILABLE' : 'FALLBACK_NOT_ADMISSIBLE';
@@ -710,7 +712,9 @@ export class AiGateway {
       const elapsedMs = Date.now() - startedAt;
       await recordCallTrace({
         traceId, useCaseCode: op.useCaseCode, operationCode, accountId: req.accountId, userId: req.userId,
-        parentOperationId: req.parentOperationId, provider: provider.name, model: p.model, promptVersion, usedFallback: p.rankIndex > 0,
+        // Lot 113R : un rang NON sollicité n'a utilisé aucun secours — `usedFallback`
+        // reste faux ; le rang CONFIGURÉ est porté par `modelRank`.
+        parentOperationId: req.parentOperationId, provider: provider.name, model: p.model, promptVersion, usedFallback: false,
         shadow: Boolean(req.shadow), modelRank: rankAt(p.rankIndex), jobId, configVersionId: configuration.configVersionId,
         callerMode: req.callerMode, ...traceConfig, reasoning: p.reasoning, maxOutputTokens: null,
         inputTokens: 0, outputTokens: 0, costMicros: 0, durationMs: 0, executionElapsedMs: elapsedMs, status: 'error',
@@ -779,7 +783,7 @@ export class AiGateway {
           }
           // Cause qui arrête la chaîne (défaut commun, cause indéterminée déjà
           // retentée) : les rangs suivants sont refusés pour le même motif.
-          if (admission.reason === 'CAUSE_STOPS_CHAIN' || admission.reason === 'UNKNOWN_CAUSE_LIMIT') {
+          if (admission.reason === 'CAUSE_STOPS_CHAIN' || admission.reason === 'UNKNOWN_CAUSE_LIMIT' || admission.reason === 'SHARED_TRANSFER') {
             for (let k = i + 1; k < models.length; k++) {
               const d = decisionOf({ rank: rankAt(k + premierRang), model: models[k], admission, afterCause: previous?.cause ?? null, afterModel: previous?.model ?? null, qualification: 'UNKNOWN' });
               decisions.push(d);
@@ -907,7 +911,10 @@ export class AiGateway {
           // indisponible », le disjoncteur n'avance pas.
           const cause = causeOfFailure({
             family: c.family, subtype: c.subtype, code: lastFailureCode, httpStatus: c.httpStatus, providerErrorCode: c.providerErrorCode, message,
+            // Lot 113R : un échec de TRANSFERT est classé comme tel (jamais prompt / contrat).
+            stage: c.stage, transferKind: c.transfer?.kind ?? null,
           });
+          if (c.transfer) lastTransfer = { ...c.transfer, model, callIndex, attempt: currentJobContext()?.jobAttempt ?? null };
           previous = { cause, model, truncatedAt: null };
           lastCause = cause;
           if (CAUSE_POLICY[cause].countsForBreaker) attempts.push({ model, succeeded: false });
@@ -917,6 +924,7 @@ export class AiGateway {
             controls: { ...emptyControlChain(), providerResponse: 'failed' },
             provider: providerMetaOf(provider.name, model, blockedMeta, tokens, Date.now() - attemptStart, maxOutputTokens, soStatus, c),
             schema: schemaRefOf(soStatus), repairs: [], informedOfPreviousError: informed,
+            ...(c.transfer ? { transfer: c.transfer } : {}),
           });
           const requests = withTrailKinds(sent.slice(attemptFrom), trail);
           const attemptMs = Date.now() - attemptStart;
@@ -933,6 +941,8 @@ export class AiGateway {
             billable: Boolean(tokens.input || tokens.output) && op.billable && !req.shadow,
             failure: failureSummary(diag), providerMeta: compactProviderMeta(diag.provider), callKind: 'analysis',
             providerRequest, providerAttempts: trail,
+            // Lot 113R : réponse du fournisseur au TRANSFERT, figée avec CETTE tentative.
+            ...(c.transfer ? { transfer: c.transfer } : {}),
             runtimeContract: contractTraceOf(soStatus),
             ...(structuredTrace ? { structuredContext: structuredTrace } : {}),
             capture: captureOf({
@@ -1187,6 +1197,7 @@ export class AiGateway {
           `Exécution suspendue sans écriture : aucun secours admissible après « ${CAUSE_POLICY[cause].label} ». ${failures.join(' — ')}`,
           cause, decisions as unknown as Array<Record<string, unknown>>, lastFailureCode, treatment);
         Object.defineProperty(susp, 'callStats', { value: callStats, enumerable: false, configurable: true });
+        if (lastTransfer) Object.defineProperty(susp, 'transfer', { value: lastTransfer, enumerable: false, configurable: true });
         throw susp;
       }
       const err = new AiGatewayError('ALL_MODELS_FAILED', operationCode,
@@ -1195,6 +1206,7 @@ export class AiGateway {
       Object.defineProperty(err, 'fallbackDecisions', { value: decisions, enumerable: false, configurable: true });
       Object.defineProperty(err, 'failureCause', { value: lastCause ?? null, enumerable: false, configurable: true });
       Object.defineProperty(err, 'callStats', { value: callStats, enumerable: false, configurable: true });
+      if (lastTransfer) Object.defineProperty(err, 'transfer', { value: lastTransfer, enumerable: false, configurable: true });
       throw err;
     } finally {
       // Nettoyage systématique des fichiers temporaires (CDC §5.2, §4.1.7).
@@ -1420,6 +1432,9 @@ async function callWithSchemaFallback(
     return await timed({ ...input, responseSchema: schema }, 'initial');
   } catch (e) {
     const c = classifyCallError(e);
+    // Lot 113R : échec au TRANSFERT de la pièce jointe — le schéma n'a jamais
+    // été soumis au modèle ; un nouvel essai sans schéma referait le même envoi.
+    if (c.stage === 'attachment_transfer') throw e;
     // Nouvel essai SANS schéma : `responseMimeType` application/json conservé.
     const sansSchema: ProviderCallInput = {
       ...input, jsonResponse: true, ...(promptWithoutSchema !== undefined ? { prompt: promptWithoutSchema } : {}),
@@ -1518,10 +1533,12 @@ function providerMetaOf(
  * contexte trop grand, clé refusée, structured output refusé) devient
  * `PROVIDER_REQUEST_REJECTED`. Même caractère récupérable qu'avant.
  */
-export function gatewayCodeOf(e: unknown, c: Pick<ClassifiedFailure, 'family' | 'subtype'>): AiErrorCode {
+export function gatewayCodeOf(e: unknown, c: Pick<ClassifiedFailure, 'family' | 'subtype'> & { stage?: string | null }): AiErrorCode {
   if (isAiGatewayError(e)) return e.code;
   // Lot 61 : erreur locale déterministe — jamais une indisponibilité fournisseur.
   if (isDeterministicLocalError(e)) return 'REQUEST_BUILD_FAILED';
+  // Lot 113R : transfert de la pièce jointe échoué avant toute génération.
+  if ((c as { stage?: string | null }).stage === 'attachment_transfer') return 'ATTACHMENT_TRANSFER_FAILED';
   const cat = providerFailureCategory(c.family, c.subtype);
   return cat === 'REQUEST_REJECTED' || cat === 'STRUCTURED_OUTPUT_REJECTED' || cat === 'PARAMETER_REJECTED' ? 'PROVIDER_REQUEST_REJECTED' : 'PROVIDER_UNAVAILABLE';
 }

@@ -1,32 +1,29 @@
 /**
  * AgendaDomainService — pure domain logic, no DB access
+ *
+ * Lot 113P (#715, décision PO du 06/11/2026) : un événement EXISTE à une date
+ * ou une période ; il n'a PLUS de statut métier (« À venir », « Date échue »,
+ * « Statut à confirmer », « Réalisé », « Annulé », choix manuel / automatique).
+ * Le calcul de « statut effectif » (lots 53, 103D, 111R, 112G) est SUPPRIMÉ :
+ * plus aucun lecteur ni écrivain. La date suffit à situer l'événement ; un
+ * événement inexistant ou erroné est SUPPRIMÉ par l'utilisateur.
+ * La colonne `agenda_items.manual_status` reste en base (obsolète, neutralisée
+ * par la migration 1526) ; aucun flux ne la lit ni ne l'écrit.
  */
-import { agendaDatePassed, isPastHistoricalUnconfirmed, type AgendaNatureSignals } from './agenda-historical';
+import type { AgendaNatureSignals } from './agenda-historical';
 
-type ManualStatus = 'realise' | 'annule' | null;
 /**
- * Statut effectif (lu, jamais écrit) — D17 (lot 53) : cinq états distincts
- *   a_venir      prévu / à venir
- *   en_retard    date échue (échéance passée sans statut)
- *   a_confirmer  statut à confirmer (fait passé sans preuve de réalisation)
- *   realise      réalisé (statut établi)
- *   annule       annulé
+ * Signaux d'attention calculés à la lecture. Lot 113P : plus de signal
+ * « en_retard » (une date passée n'est ni un retard ni une action due).
  */
-export type EffectiveStatus = 'a_venir' | 'en_retard' | 'a_confirmer' | 'realise' | 'annule';
-export type AttentionFlag = 'sans_bien' | 'en_retard' | 'date_incoherente' | 'donnee_distincte_a_qualifier';
+export type AttentionFlag = 'sans_bien' | 'date_incoherente' | 'donnee_distincte_a_qualifier';
 
+/** Données d'un élément lues par les signaux (dates conservées pour la compatibilité des appelants). */
 interface AgendaItemRaw extends AgendaNatureSignals {
-  startDate: string | null;
-  startTime: string | null;
-  endDate: string | null;
-  endTime: string | null;
-  manualStatus: ManualStatus;
-  /**
-   * Lot 103D (0945) : réalisation PROUVÉE par un document lié (contrôle
-   * COH-AGENDA-HISTORICAL-STATUS) — « réalisé » à la lecture, sans statut
-   * manuel (l'élément reste automatique et intact). Un statut manuel prime.
-   */
-  completionProven?: boolean;
+  startDate?: string | null;
+  startTime?: string | null;
+  endDate?: string | null;
+  endTime?: string | null;
 }
 
 export interface ResolvedLink {
@@ -57,51 +54,6 @@ interface AgendaDataConflictRef {
   id: number;
   requiresQualification: boolean;
   currentDecision: string;
-}
-
-/**
- * computeEffectiveStatus — CALCUL CANONIQUE du statut effectif (lot 111R :
- * seul calcul, utilisé par l'Agenda — liste, tiroir, accueil —, la Timeline
- * du bien — groupes et membres, deux modes —, le suivi, l'équipement,
- * l'export de recette). Ordre : statut manuel ; date (absente ou future :
- * à venir) ; preuve de réalisation valide (`completionProven`, lue par
- * `completion-proof.ts`) ; nature (fait historique : à confirmer ;
- * échéance : date échue).
- * Algorithm per plan §0.2
- *
- * Lot 47B : un fait HISTORICAL passé n'est jamais « en retard ». Lot 53
- * (D17) : sans statut, il est « à confirmer », plus « réalisé » — une date
- * passée ne prouve pas la réalisation. Calcul de lecture, rien n'est écrit.
- * Règle partagée : `agenda-historical.ts`.
- */
-export function computeEffectiveStatus(item: AgendaItemRaw, now: Date = new Date()): EffectiveStatus {
-  // Lot 111R : statut manuel normalisé (espaces, chaîne vide = aucun statut).
-  const manuel = normalizeManualStatus(item.manualStatus);
-  if (manuel) return manuel;
-  const passee = agendaDatePassed(item, now);
-  if (passee === null) return 'a_venir';
-  if (!passee) return 'a_venir';
-  if (item.completionProven === true) return 'realise';
-  return isPastHistoricalUnconfirmed(item, now) ? 'a_confirmer' : 'en_retard';
-}
-
-/** Statut manuel reconnu (`realise` | `annule`), sinon null (aucun statut). Pure. */
-export function normalizeManualStatus(v: string | null | undefined): ManualStatus {
-  const t = typeof v === 'string' ? v.trim() : '';
-  return t === 'realise' || t === 'annule' ? t : null;
-}
-
-/**
- * Lot 111R — indicateurs d'affichage DÉRIVÉS du statut effectif (jamais
- * recalculés à part) : Timeline (lot 84C), groupes et membres, fiche du bien.
- */
-export interface EffectiveStatusFlags {
-  isDone: boolean;
-  isOverdue: boolean;
-  toConfirm: boolean;
-}
-export function effectiveStatusFlags(s: EffectiveStatus): EffectiveStatusFlags {
-  return { isDone: s === 'realise', isOverdue: s === 'en_retard', toConfirm: s === 'a_confirmer' };
 }
 
 /**
@@ -140,17 +92,11 @@ function hasDirectOrIndirectAssetContext(item: AgendaItemWithResolvedLinks): boo
 export function computeAttentionFlags(
   item: AgendaItemRaw & AgendaItemWithResolvedLinks & { requiresQualification?: boolean },
   pendingConflicts: AgendaDataConflictRef[],
-  now: Date = new Date()
 ): AttentionFlag[] {
   const flags: AttentionFlag[] = [];
-  const effective = computeEffectiveStatus(item, now);
 
   if (!hasDirectOrIndirectAssetContext(item)) {
     flags.push('sans_bien');
-  }
-
-  if (effective === 'en_retard') {
-    flags.push('en_retard');
   }
 
   const hasDateConflict = pendingConflicts.some(

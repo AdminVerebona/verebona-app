@@ -168,40 +168,30 @@ function documentTargetAnswer(d: CanonicalDocumentState, attr: DocumentAttribute
   };
 }
 
-/** Réponse sur une échéance ciblée (pure, testée) — statut à 4 états. */
+/**
+ * Réponse sur une échéance ciblée (pure, testée). Lot 113P (#715, décision PO
+ * du 06/11/2026) : un événement n'a plus de statut — l'assistant donne la date
+ * (et sa nature : fait de l'historique, échéance, date prévisionnelle) ; à une
+ * question de réalisation, il répond que l'agenda situe l'événement dans le
+ * temps sans indiquer s'il a été fait (une date passée ne prouve rien) — jamais
+ * « réalisé », « annulé » ni « à confirmer ». Textes À VALIDER PAR LE PO.
+ */
 export function agendaTargetAnswer(i: CanonicalAgendaItem, attr: AgendaAttribute, today: string): TargetAnswer {
   const t = `« ${i.title} »`;
   const quand = i.date ? formatDateFr(i.date) : null;
-  let text: string;
-  if (attr === 'date') {
-    // Lot 53 (D17, D27) : « a eu lieu » seulement si la réalisation est établie ;
-    // « prévu » seulement pour un événement saisi par l'utilisateur — une
-    // échéance est « à prévoir » / « fixée », jamais un rendez-vous confirmé.
-    const passe = i.date! < today;
-    text = !quand ? `Aucune date n’est enregistrée pour ${t}.`
-      : i.nature === 'HISTORICAL'
-        ? (i.status === 'completed' ? `${t} a eu lieu le ${quand}.` : `${t} est daté du ${quand} dans votre historique ; sa réalisation n’est pas confirmée.`)
-        : i.forecast ? `${t} est estimé autour du ${quand} (date prévisionnelle, à confirmer par un document).`
-          : i.status === 'completed' ? `${t} est marqué comme réalisé (date du ${quand}).`
-            : (i.dateRole ?? 'DEADLINE') === 'SCHEDULED_EVENT'
-              ? `${t} ${passe ? 'était prévu le' : 'est prévu le'} ${quand}.`
-              : `${t} ${passe ? 'était à prévoir pour le' : 'est à prévoir pour le'} ${quand}.`;
-  } else {
-    switch (i.status) {
-      case 'completed': text = `${t} est marqué comme réalisé${quand ? ` (échéance du ${quand})` : ''}.`; break;
-      case 'not_completed': text = `${t} est marqué comme annulé : il n’aura pas lieu.`; break;
-      case 'unknown': text = `La réalisation de ${t} est à confirmer : une question vous attend dans « À traiter ».`; break;
-      default:
-        text = i.nature === 'HISTORICAL' && i.date && i.date < today
-          ? `${t} est enregistré dans votre historique${quand ? ` à la date du ${quand}` : ''}, mais sa réalisation n’est pas confirmée : une date passée ne le prouve pas. Vous pouvez le marquer comme réalisé depuis l’agenda.`
-          : i.date && i.date < today
-            ? `Aucune réalisation n’est enregistrée pour ${t}, daté du ${quand} : une date passée ne prouve pas qu’il a été fait. Vous pouvez le marquer comme réalisé depuis l’agenda.`
-            : `${t} est à venir${quand ? ` (le ${quand})` : ''}.`;
-    }
-  }
+  const passe = !!i.date && i.date < today;
+  // Lot 53 (D27) : « prévu » seulement pour un événement saisi par l'utilisateur.
+  const datation = !quand ? `Aucune date n’est enregistrée pour ${t}.`
+    : i.nature === 'HISTORICAL' ? `${t} est daté du ${quand} dans votre historique.`
+      : i.forecast ? `${t} est estimé autour du ${quand} (date prévisionnelle, à confirmer par un document).`
+        : (i.dateRole ?? 'DEADLINE') === 'SCHEDULED_EVENT'
+          ? `${t} ${passe ? 'était prévu le' : 'est prévu le'} ${quand}.`
+          : `${t} ${passe ? 'était à prévoir pour le' : 'est à prévoir pour le'} ${quand}.`;
+  const text = attr === 'date' ? datation
+    : `${datation} L’agenda situe l’événement dans le temps, sans indiquer s’il a été réalisé.`;
   const src: RetrievedSource = {
     id: `agenda_${i.id}`, type: 'agenda_item', title: i.title,
-    content: [i.date, i.status, i.nature === 'HISTORICAL' ? 'fait passé' : null, i.forecast ? 'date prévisionnelle' : null,
+    content: [i.date, i.nature === 'HISTORICAL' ? 'fait passé' : null, i.forecast ? 'date prévisionnelle' : null,
       i.assets.map((a) => a.name).join(', ') || null].filter(Boolean).join(' · '),
     relevanceScore: 1,
     meta: { agendaItemId: i.id, date: i.date, assetId: i.assets[0]?.assetId ?? null },

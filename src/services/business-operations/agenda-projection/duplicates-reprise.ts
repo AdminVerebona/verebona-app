@@ -167,7 +167,6 @@ export async function detectOperations(sql: Sql, accountId: number): Promise<{ i
                 JOIN business_operation_sources s ON s.operation_id = ops.id AND s.active AND s.source_kind = 'DOCUMENT'
                      AND s.source_entity_key = i.origin_ref_id::text
                WHERE i.account_id = $1 AND i.origin_ref_type = 'asset_file' AND i.is_automatic AND i.projection_origin IS NULL
-                 AND (i.manual_status IS NULL OR i.manual_status <> 'annule')
                  AND i.start_date BETWEEN ops.d - 3 AND ops.d + 3
                  AND i.business_operation_id IS DISTINCT FROM ops.id))
         OR (SELECT count(*) FROM agenda_items i WHERE i.account_id = $1 AND i.business_operation_id = ops.id) >= 2

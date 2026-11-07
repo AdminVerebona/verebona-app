@@ -14,6 +14,14 @@ export type AiErrorCode =
    * avant (modèle suivant, reprise de la file) : seul le libellé change.
    */
   | 'PROVIDER_REQUEST_REJECTED'
+  /**
+   * Lot 113R (carte #717) : TRANSFERT d'une pièce jointe échoué AVANT toute
+   * génération (lecture du stockage, envoi à la Files API, activation du
+   * fichier) — code de l'APPEL tracé (`ai_usage_event.error_code`), réponse
+   * du fournisseur structurée dans `metadata.transfer`. Le modèle n'a pas été
+   * sollicité : ni génération échouée, ni défaut du prompt.
+   */
+  | 'ATTACHMENT_TRANSFER_FAILED'
   | 'TIMEOUT'
   | 'INVALID_OUTPUT'
   | 'ALL_MODELS_FAILED'

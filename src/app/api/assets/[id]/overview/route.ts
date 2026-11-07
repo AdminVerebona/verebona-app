@@ -98,8 +98,7 @@ export async function GET(
               AND account_id = ${accountId} AND deleted_at IS NULL AND upload_status = 'COMPLETED')::text AS doc_count,
           (SELECT COUNT(*) FROM agenda_asset_links aal
             INNER JOIN agenda_items ai ON ai.id = aal.agenda_item_id
-            WHERE aal.asset_id = ${assetId} AND ai.account_id = ${accountId}
-              AND (ai.manual_status IS NULL OR ai.manual_status != 'annule'))::text AS agenda_count,
+            WHERE aal.asset_id = ${assetId} AND ai.account_id = ${accountId})::text AS agenda_count,
           (SELECT COUNT(*) FROM substructures WHERE asset_id = ${assetId})::text AS room_count,
           (SELECT COUNT(*) FROM equipments WHERE asset_id = ${assetId} AND archived_at IS NULL)::text AS eq_count
       `,
@@ -134,7 +133,7 @@ export async function GET(
         city: assetRow.city ?? null,
       },
       // Entrées de la Timeline (forme historique au premier niveau : id, title,
-      // effectiveDate, isDone, isOverdue, toConfirm) + `kind` / `members` / `counters`.
+      // effectiveDate ; lot 113P : plus de statut) + `kind` / `members` / `counters`.
       timeline: timelinePage.entries,
       timelinePage: { mode: timelinePage.mode, nextCursor: timelinePage.nextCursor, remaining: timelinePage.remaining },
       documentsPreview: docs.map(d => ({

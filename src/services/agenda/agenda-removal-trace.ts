@@ -9,8 +9,8 @@
  * de ses liens — pour pouvoir le rattraper.
  *
  * Gardes dans le DELETE lui-même : compte, élément AUTOMATIQUE, jamais
- * modifié par l'utilisateur (`is_automatic_modified`, `manual_status`,
- * prévision confirmée par l'utilisateur — lot 75F) — un
+ * modifié par l'utilisateur (`is_automatic_modified`, prévision confirmée
+ * par l'utilisateur — lot 75F ; lot 113P : plus de statut) — un
  * élément touché entre le plan et le retrait est épargné, sans course.
  * Table de trace absente : AUCUN retrait (signalé) — on ne supprime pas sans
  * pouvoir rattraper.
@@ -31,7 +31,9 @@ type AgendaRemovalReason = 'SOURCE_SYNC' | 'DEDUPE_14_6' | 'OPERATION_PROJECTION
   /** Lot 83E : événement documentaire automatique, source retirée, sans plus aucun rattachement (contrôle COH-AGENDA-ORPHANS). */
   | 'ORPHAN_SOURCE_DELETED'
   /** Lot 106A : représentation équivalente d'un même fait absorbée par l'élément canonique (journal 0591, origine COHERENCE). */
-  | 'EQUIVALENT_REPRESENTATION';
+  | 'EQUIVALENT_REPRESENTATION'
+  /** Lot 113P : prévision au-delà de la fin établie d'une récurrence (remplace l'ancien statut « annulé »). */
+  | 'FORECAST_RETIRED';
 
 let pret: { ready: boolean; at: number } | null = null;
 
@@ -73,6 +75,8 @@ export async function removeAgendaItemsTraced(sql: Sql, p: {
   reason: AgendaRemovalReason;
   sourceFileId?: number | null;
   assetId?: number | null;
+  /** Lot 113P : motif détaillé du retrait (fin de récurrence : borne, source…), conservé dans l'image (`retirement`). */
+  detail?: Record<string, unknown> | null;
 }): Promise<number[]> {
   const ids = [...new Set(p.ids.filter((x) => Number.isInteger(x) && x > 0))];
   if (ids.length === 0) return [];
@@ -82,7 +86,6 @@ export async function removeAgendaItemsTraced(sql: Sql, p: {
       DELETE FROM agenda_items
        WHERE account_id = ${p.accountId} AND id IN ${sql(ids)}
          AND is_automatic AND NOT is_automatic_modified
-         AND (manual_status IS NULL OR manual_status = '')
          AND confirmation_mode IS DISTINCT FROM 'USER'
       RETURNING *
     )
@@ -92,7 +95,8 @@ export async function removeAgendaItemsTraced(sql: Sql, p: {
            ${p.sourceFileId ?? null}::int,
            ${p.assetId ?? null}::int,
            ${p.reason},
-           to_jsonb(g),
+           to_jsonb(g) || CASE WHEN ${p.detail ? JSON.stringify(p.detail) : null}::jsonb IS NULL THEN '{}'::jsonb
+                               ELSE jsonb_build_object('retirement', ${p.detail ? JSON.stringify(p.detail) : null}::jsonb) END,
            jsonb_build_object(
              'assets',     COALESCE((SELECT jsonb_agg(l.asset_id) FROM agenda_asset_links l WHERE l.agenda_item_id = g.id), '[]'::jsonb),
              'files',      COALESCE((SELECT jsonb_agg(l.asset_file_id) FROM agenda_file_links l WHERE l.agenda_item_id = g.id), '[]'::jsonb),

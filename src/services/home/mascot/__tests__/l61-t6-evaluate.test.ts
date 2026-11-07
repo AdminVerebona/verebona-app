@@ -355,7 +355,8 @@ describe('Décision et affichage', () => {
 
 describe('Bulle et UX', () => {
   it('T6-EV-13 — résumé, cartes, actions et pose cohérents ; même sujet jamais compté deux fois', () => {
-    const r = raw([row(1, '2026-11-04', { title: 'Révision chaudière' }), row(2, '2026-10-01', { title: 'Ramonage' })]);
+    // #715 : rappels sur dates FUTURES seulement — le ramonage « à vérifier » est daté dans le futur.
+    const r = raw([row(1, '2026-11-04', { title: 'Révision chaudière' }), row(2, '2026-11-01', { title: 'Ramonage' })]);
     const p = accueil(r, [montre(1), montre(2, { reasonCode: 'VERIFICATION_REQUIRED' }, 'Vérifier la date du dernier passage')]);
     const cartes = B.subjectBlocks(p);
     expect(p.state).toMatchObject({ kind: 'ACTIONS', actions: 2, information: 0 });
@@ -363,7 +364,7 @@ describe('Bulle et UX', () => {
     // Lot 68 : plus d'introduction de comptage ; la nature de l'action reste dite (badge), sans la date répétée.
     expect(parler(p)).not.toMatch(/méritent votre attention/);
     expect(cartes.map((x) => x.badge)).toEqual(['Action à prévoir', 'À vérifier']);
-    expect(B.actionTiles(p).map((x) => x.sub)).toEqual([expect.stringMatching(/^Bien 1 · Action à prévoir · 4 novembre 2026$/), expect.stringMatching(/À vérifier · 1er octobre 2026$/)]);
+    expect(B.actionTiles(p).map((x) => x.sub)).toEqual([expect.stringMatching(/^Bien 1 · Action à prévoir · 4 novembre 2026$/), expect.stringMatching(/À vérifier · 1er novembre 2026$/)]);
     expect(p.paragraphs.map((x) => x.tile?.kind)).toEqual(['action', 'verify']);
     expect(B.homePose(p, false)).toBe('questioning');
     expect(parler(p)).not.toMatch(INTERDITS);

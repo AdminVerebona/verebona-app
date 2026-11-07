@@ -591,6 +591,10 @@ jobs:
         run: npm run test:e2e:tarifs-ia-alertes -- --reporter=default --reporter=junit --outputFile.junit=rapports/e2e-tarifs-ia-alertes.xml
       - name: Diagnostic complet, mémoire bornée et ZIP définitif (lot 113Q, Trello #714)
         run: npm run test:e2e:diagnostic-memoire -- --reporter=default --reporter=junit --outputFile.junit=rapports/e2e-diagnostic-memoire.xml
+      - name: T1, refus d'envoi du fichier au fournisseur et reprise (lot 113R, Trello #717)
+        run: npm run test:e2e:t1-files-403 -- --reporter=default --reporter=junit --outputFile.junit=rapports/e2e-t1-files-403.xml
+      - name: À traiter, questions formulées par T3/T4 (lot 113S, Trello #716)
+        run: npm run test:e2e:a-traiter-questions-ia -- --reporter=default --reporter=junit --outputFile.junit=rapports/e2e-a-traiter-questions-ia.xml
       - name: Inscription, CGUV publiées vérifiées et reprise (lot 111O)
         run: npm run test:e2e:inscription-cguv -- --reporter=default --reporter=junit --outputFile.junit=rapports/e2e-inscription-cguv.xml
       - uses: actions/upload-artifact@v4

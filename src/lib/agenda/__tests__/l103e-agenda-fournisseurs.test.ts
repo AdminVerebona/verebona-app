@@ -104,7 +104,7 @@ describe('L103E-U-PAYLOAD — sélection reçue par l’API', () => {
 describe('L103E-U-ICS — export calendrier (AC12)', () => {
   const item = (over: Partial<AgendaItemFull> = {}): AgendaItemFull => ({
     id: 1, publicId: 'p-1', accountId: 1, createdByUserId: null, title: 'Visite expert', description: 'Constat dégât des eaux',
-    startDate: '2026-11-20', startTime: '10:00:00', endDate: null, endTime: null, manualStatus: null, effectiveStatus: 'a_venir',
+    startDate: '2026-11-20', startTime: '10:00:00', endDate: null, endTime: null,
     isAutomatic: false, isAutomaticModified: false, requiresQualification: false, originType: 'manual', originRefType: null, originRefId: null,
     originFieldKey: null, occurrenceNature: 'CONFIRMED', forecastInitialDate: null, confirmedAt: null, confirmationMode: null, recurrenceRule: null,
     createdAt: new Date(), updatedAt: new Date(), assetLinks: [], fileLinks: [], roomLinks: [], equipmentLinks: [], attentionFlags: [], ...over,

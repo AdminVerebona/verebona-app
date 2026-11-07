@@ -19,6 +19,7 @@ import { drizzleRunner } from '@/services/business-operations/grouping/runner';
 import { logStructuralLinkDecision, planStructuralLinks } from './housing-scope.service';
 import { upsertAgendaItem, agendaItemValues, type AgendaUpsertInput } from './agenda-write-primitive';
 import { resolveNoDeadlineWrite } from '@/lib/agenda/no-deadline';
+import type { AgendaDeletionScope } from './agenda-user-deletion';
 
 interface CreateAgendaItemInput {
   title: string;
@@ -27,7 +28,6 @@ interface CreateAgendaItemInput {
   startTime?: string | null;
   endDate?: string | null;
   endTime?: string | null;
-  manualStatus?: 'realise' | 'annule' | null;
   assetIds?: number[];
   fileIds?: number[];
   substructureIds?: number[];
@@ -151,7 +151,6 @@ export function manualUpsertInput(
       startTime: input.startTime ?? null,
       endDate: input.endDate ?? null,
       endTime: input.endTime ?? null,
-      manualStatus: input.manualStatus ?? null,
       requiresQualification: input.requiresQualification ?? false,
       isAutomatic: input.isAutomatic ?? false,
       originType: input.originType ?? 'manual',
@@ -363,7 +362,7 @@ async function notifyLinkedOperation(accountId: number, id: number, changed: boo
       if (!full) return;
       const { agendaItemMayEstablishOperation } = await import('@/services/business-operations/consolidation/agenda-source');
       candidate = agendaItemMayEstablishOperation({
-        isAutomatic: full.isAutomatic, title: full.title, startDate: full.startDate, manualStatus: full.manualStatus,
+        isAutomatic: full.isAutomatic, title: full.title, startDate: full.startDate,
         assetCount: full.assetLinks.length + full.equipmentLinks.filter((e) => e.resolvedAssetId !== null).length,
       });
       if (!candidate) return;
@@ -387,43 +386,11 @@ function checkQualification(existing: AgendaItemFull, newTitle: string): boolean
   return true;
 }
 
-export async function updateManualStatus(
-  id: number,
-  manualStatus: 'realise' | 'annule' | null,
-  accountId: number
-): Promise<AgendaItemFull> {
-  await db.update(agendaItems).set({
-    manualStatus,
-    updatedAt: new Date(),
-  }).where(and(eq(agendaItems.id, id), eq(agendaItems.accountId, accountId)));
-
-  const full = await getAgendaItemById(id, accountId);
-  if (!full) throw new Error('Item not found');
-
-  // Réalisée / annulée : l'état change, la NATURE (prévisionnelle ou
-  // confirmée) est conservée.
-  const { recordOccurrenceEvent } = await import('./agenda-persistence');
-  await recordOccurrenceEvent(id, accountId, 'STATUS_CHANGED', { manualStatus, nature: full.occurrenceNature });
-
-  // Statut posé par l'utilisateur : les cartes « réalisée ? » / « non
-  // réalisée ? » de l'élément sont sans objet (T4-12, lot 14).
-  if (manualStatus) {
-    const { closeAgendaStatusCards } = await import('@/services/to-process/agenda-status-cards');
-    await closeAgendaStatusCards(accountId, id, 'USER_COMPLETED')
-      .catch((e: Error) => console.error('[agenda] fermeture des cartes de statut :', e.message));
-  }
-
-  // Recopie « achat » quand l'élément est marqué réalisé (D-13).
-  if (manualStatus === 'realise') {
-    await syncPurchaseDate({ itemId: id, accountId, actorUserId: null, manualStatus });
-  }
-
-  // Lot 46 (O7, C4) : statut posé par l'utilisateur sur un élément lié
-  // (lot 47B : réalisé / annulé → transition C8 de l'intervention).
-  await notifyLinkedOperation(accountId, id, true, undefined, full);
-
-  return full;
-}
+/**
+ * Lot 113P (#715, décision PO du 06/11/2026) : l'ancien `updateManualStatus`
+ * (« Réalisé » / « Annulé ») est SUPPRIMÉ — un événement n'a plus de statut ;
+ * un événement inexistant ou annulé est supprimé (`deleteAgendaItem`).
+ */
 
 /**
  * Exécute un détachement de traçabilité sans pouvoir compromettre la
@@ -478,12 +445,41 @@ async function detachSafely(
  * ce code ne dépend plus d'elle.
  * ══════════════════════════════════════════════════════════════════════════
  */
-export async function deleteAgendaItem(id: number, accountId: number, actorUserId: number | null = null): Promise<void> {
+export async function deleteAgendaItem(
+  id: number, accountId: number, actorUserId: number | null = null,
+  opts: { scope?: AgendaDeletionScope } = {},
+): Promise<{ deletedIds: number[] }> {
   const existing = await getAgendaItemById(id, accountId);
   if (!existing) throw new Error('Item not found');
-  const operationId = await linkedOperationId(accountId, id);
+  // Lot 113P (#715) : récurrence — suppression de CETTE occurrence (défaut) ou
+  // de TOUTE LA SÉRIE (même `series_key`, même compte), demandée explicitement.
+  const scope: AgendaDeletionScope = opts.scope === 'SERIES' && existing.seriesKey ? 'SERIES' : 'OCCURRENCE';
+  const ids = scope === 'SERIES'
+    ? (await db.select({ id: agendaItems.id }).from(agendaItems)
+      .where(and(eq(agendaItems.accountId, accountId), eq(agendaItems.seriesKey, existing.seriesKey!)))).map((r) => r.id)
+    : [id];
+  const operations = new Map<number, number | null>();
+  for (const x of ids) operations.set(x, await linkedOperationId(accountId, x));
+  for (const x of ids) await deleteOneAgendaItem(x, accountId, actorUserId, operations.get(x) ?? null, scope);
+  // Lot 46 (O7, C4 TRG-014) : suppression utilisateur d'un élément lié → T3.
+  for (const x of ids) await notifyLinkedOperation(accountId, x, true, operations.get(x) ?? null);
+  return { deletedIds: ids };
+}
 
+/** Suppression d'UN élément (transaction unique), trace d'exclusion comprise. */
+async function deleteOneAgendaItem(
+  id: number, accountId: number, actorUserId: number | null, operationId: number | null, scope: AgendaDeletionScope,
+): Promise<void> {
   await db.transaction(async tx => {
+    // 00. Lot 113P (#715) : TRACE PERSISTANTE D'EXCLUSION (`agenda_item_removals`,
+    //     USER_DELETED / USER_DELETED_SERIES) écrite AVANT la suppression, dans la
+    //     même transaction (image des liens encore lisible) : aucune réanalyse
+    //     (T1, T3, T4, cohérence) ne recrée cet événement depuis les mêmes sources.
+    //     Isolée (point de sauvegarde) : elle ne bloque jamais la suppression demandée.
+    await detachSafely(tx, 'agenda_item_removals (suppression utilisateur)', async (t) => {
+      const { recordUserDeletion } = await import('./agenda-user-deletion');
+      await recordUserDeletion(t, { accountId, ids: [id], scope, userId: actorUserId });
+    });
     // 0. Lot 46 (O7, C16.1, F-146) : l'élément représente une Opération
     //    (projeté, ou lié) — la suppression est MÉMORISÉE : la projection ne
     //    le recréera pas. Isolée (point de sauvegarde) : elle ne bloque
@@ -539,9 +535,6 @@ export async function deleteAgendaItem(id: number, accountId: number, actorUserI
     await tx.delete(agendaItems)
       .where(and(eq(agendaItems.id, id), eq(agendaItems.accountId, accountId)));
   });
-
-  // Lot 46 (O7, C4 TRG-014) : suppression utilisateur d'un élément lié → T3.
-  await notifyLinkedOperation(accountId, id, true, operationId);
 }
 
 /**

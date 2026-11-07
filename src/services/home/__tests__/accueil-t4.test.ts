@@ -60,16 +60,15 @@ describe('mascotte : non prouvé ≠ non réalisé (T4-12)', () => {
     degradedNotice: null, computedAt: '', paragraphs: [{ subjectId: 's', sourceCode: 'MASC-EXT-ACTION', occurrenceKey: 'k', text: 't.', highlight: null, actions: [], tile }],
   });
 
-  it('historique : échéance passée = rouge « en retard », pose alert-folder', () => {
-    const t = tileFor(echue, '2026-09-20');
-    expect(t).toMatchObject({ tone: 'red', kind: 'overdue' });
-    expect(homePose(pres(t), false)).toBe('alert-folder');
-  });
-
-  it('T4 : échéance passée sans statut = ambre « à confirmer », pose questioning', () => {
-    const t = tileFor(echue, '2026-09-20', { unprovenOverdueIsQuestion: true });
-    expect(t).toMatchObject({ tone: 'amber', kind: 'verify', status: 'Prévue il y a 10 j — à confirmer' });
-    expect(homePose(pres(t), false)).toBe('questioning');
+  // #715 : plus de statut d'événement — les cas « rouge en retard » et « ambre à confirmer » sont supprimés
+  // (ils ne testaient que le statut retiré) ; une date passée ne colore plus rien.
+  it('#715 — échéance passée : ni « en retard », ni « à confirmer »', () => {
+    for (const opts of [undefined, { unprovenOverdueIsQuestion: true }]) {
+      const t = tileFor(echue, '2026-09-20', opts as never);
+      expect(t.tone).not.toBe('red');
+      expect(['overdue', 'verify']).not.toContain(t.kind);
+      expect(JSON.stringify(t)).not.toMatch(/à confirmer|en retard/i);
+    }
   });
 
   it('T4 : échéance du jour inchangée (reminder-bell)', () => {

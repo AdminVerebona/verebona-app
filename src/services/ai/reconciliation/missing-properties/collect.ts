@@ -312,7 +312,7 @@ export async function collectSubjectContext(
     ? `EXISTS (SELECT 1 FROM agenda_asset_links l WHERE l.agenda_item_id = i.id AND l.asset_id = $2)`
     : `EXISTS (SELECT 1 FROM agenda_equipment_links l WHERE l.agenda_item_id = i.id AND l.equipment_id = $2)`;
   const agenda = await q<Row>(
-    `SELECT i.id, i.title, i.description, i.start_date::text AS start, i.end_date::text AS end_d, i.manual_status, i.is_automatic,
+    `SELECT i.id, i.title, i.description, i.start_date::text AS start, i.end_date::text AS end_d, i.is_automatic,
             i.origin_type, to_jsonb(i) ->> 'business_type' AS business_type, i.business_operation_id,
             (SELECT array_agg(DISTINCT x ORDER BY x) FROM (
                SELECT fl.asset_file_id AS x FROM agenda_file_links fl WHERE fl.agenda_item_id = i.id
@@ -374,7 +374,7 @@ export async function collectSubjectContext(
     elements.push({
       ref: `A-${a.id}`, document: 'S', fileId: 0, layer: 'AGENDA', kind: String(a.business_type ?? a.origin_type ?? 'agenda'), label: texte(a.title),
       value: texte(a.start),
-      text: joindre([['endDate', a.end_d], ['status', a.manual_status], ['automatic', a.is_automatic === true ? 'yes' : 'no'], ['description', a.description]]),
+      text: joindre([['endDate', a.end_d], ['automatic', a.is_automatic === true ? 'yes' : 'no'], ['description', a.description]]),
       confidence: 'certain', page: null,
       links: [...(a.business_operation_id ? [`O-${a.business_operation_id}`] : []), ...refsDocs(files)],
       provenance: { fileIds: files, agendaItemIds: [Number(a.id)], operationId: a.business_operation_id ? Number(a.business_operation_id) : null,

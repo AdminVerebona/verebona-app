@@ -359,7 +359,8 @@ export function memeBesoin(todo: TodoRow, d: DeadlineRow): boolean {
 /**
  * Sélection, déduplication et ordre (pure, testée).
  * Ordre (règle de l'accueil `getHomepageAgendaItems`, puis règle « Par
- * priorité » de la file À traiter) : en retard (date croissante), du jour,
+ * priorité » de la file À traiter) : en retard (« À traiter » datés seulement —
+ * lot 113P : une échéance d'agenda passée n'est jamais « en retard »), du jour,
  * de la période (date croissante), puis « À traiter » sans date (priorité,
  * ancienneté).
  */
@@ -374,9 +375,14 @@ export function selectionnerActionnables(
 
   const echeances = veutEcheance ? rows.deadlines.flatMap((d): ActionableResult[] => {
     const raison = raisonDatee(d.date, d.endDate, today);
-    if (!retenueDatee(req, d.date, d.endDate, raison)) return [];
+    // Lot 113P (#715, décision PO du 06/11/2026) : un événement d'agenda n'a plus de
+    // statut — une date PASSÉE n'est jamais une action à faire ni « en retard ». Elle
+    // n'est restituée que si la demande vise explicitement sa période (« mes
+    // échéances de la semaine dernière »), jamais par l'inclusion « en retard ».
+    if (!retenueDatee(raison === 'OVERDUE' ? { ...req, includeOverdue: false } : req, d.date, d.endDate, raison)) return [];
     return [{
-      sourceType: 'DEADLINE', sourceId: `agenda_${d.id}`, id: d.id, title: d.title, reasonForInclusion: raison,
+      // Date passée dans la période demandée : « dans la période », jamais « En retard ».
+      sourceType: 'DEADLINE', sourceId: `agenda_${d.id}`, id: d.id, title: d.title, reasonForInclusion: raison === 'OVERDUE' ? 'DUE_IN_PERIOD' : raison,
       status: d.forecast ? 'FORECAST' : 'ACTIVE', dueDate: d.date,
       relatedAssetId: d.assets[0]?.id ?? null, relatedAssetName: d.assets[0]?.name ?? null,
       priority: null, isAction: d.isAction, contextDocuments: d.documents.slice(0, 3), mergedSourceIds: [],
@@ -524,7 +530,7 @@ function phraseAucunActionnable(req: ActionableRequest, ctx: ActionableReadConte
       return req.appliedTimeScope === 'OVERDUE' ? 'Aucune échéance en retard.' : `Vous n’avez aucune échéance ${p}.`;
     default:
       return req.appliedTimeScope === 'TODAY'
-        ? 'Rien à faire pour aujourd’hui : aucun élément « À traiter » en attente, aucune échéance en retard ni prévue aujourd’hui.'
+        ? 'Rien à faire pour aujourd’hui : aucun élément « À traiter » en attente, aucune échéance prévue aujourd’hui.'
         : `Rien de prévu ${p} : aucune échéance ni aucun élément « À traiter » daté sur cette période${req.includeOverdue ? ', et aucun retard' : ''}.`;
   }
 }

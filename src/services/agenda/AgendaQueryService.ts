@@ -7,9 +7,9 @@ import {
   agendaItems, agendaAssetLinks, agendaFileLinks, agendaRoomLinks, agendaEquipmentLinks,
   agendaDataConflicts, assets, assetFiles, substructures, equipments,
 } from '@/db/schema';
-import { eq, and, or, isNull, inArray, sql } from 'drizzle-orm';
+import { eq, and, inArray, sql } from 'drizzle-orm';
 import { alias } from 'drizzle-orm/pg-core';
-import { computeEffectiveStatus, computeAttentionFlags, type EffectiveStatus, type AttentionFlag } from './AgendaDomainService';
+import { computeAttentionFlags, type AttentionFlag } from './AgendaDomainService';
 import { agendaFunctionalColumnsReady } from './agenda-columns';
 import { listAgendaItemIdsForSource } from './agenda-source-links';
 import {
@@ -25,6 +25,7 @@ interface AgendaQueryParams {
   assetIds?: number[];
   fileId?: number;
   period?: 'all' | 'past' | 'today' | 'upcoming';
+  /** Obsolète (lot 113P) : accepté pour la compatibilité des anciens appels, sans effet — plus de statut « annulé ». */
   includeCancelled?: boolean;
   month?: string; // 'YYYY-MM'
   year?: string;  // 'YYYY'
@@ -62,14 +63,11 @@ export interface AgendaItemFull {
   startTime: string | null;
   endDate: string | null;
   endTime: string | null;
-  manualStatus: 'realise' | 'annule' | null;
-  effectiveStatus: EffectiveStatus;
-  /**
-   * Lot 103D : statut CALCULÉ hors statut manuel (date, nature, preuves déjà
-   * appliquées) — libellé de l'option « automatique » du sélecteur de statut :
-   * jamais « À venir » pour une date passée. Optionnel (objets construits ailleurs).
+  /*
+   * Lot 113P (#715, décision PO du 06/11/2026) : plus de statut d'événement —
+   * `manualStatus`, `effectiveStatus` et `automaticStatus` sont RETIRÉS du
+   * contrat. La date (ou la période) situe l'événement dans le temps.
    */
-  automaticStatus?: EffectiveStatus;
   isAutomatic: boolean;
   isAutomaticModified: boolean;
   requiresQualification: boolean;
@@ -79,9 +77,11 @@ export interface AgendaItemFull {
   originFieldKey: string | null;
   /**
    * Nature de l'occurrence — FORECAST (date estimée d'une récurrence) ou
-   * CONFIRMED. Indépendante de l'état temporel (`effectiveStatus`).
+   * CONFIRMED : provenance de la DATE, jamais un statut d'exécution.
    */
   occurrenceNature: 'FORECAST' | 'CONFIRMED';
+  /** Lot 113P : série récurrente de l'occurrence (suppression d'une occurrence ou de la série). */
+  seriesKey?: string | null;
   /** Date prévisionnelle d'origine, conservée après confirmation. */
   forecastInitialDate: string | null;
   confirmedAt: Date | null;
@@ -120,7 +120,6 @@ interface AgendaSearchResult {
   id: number;
   publicId: string;
   title: string;
-  effectiveStatus: EffectiveStatus;
   contextLabel: string;
 }
 
@@ -245,8 +244,6 @@ async function enrichItems(rows: typeof agendaItems.$inferSelect[]): Promise<Age
     )
   );
 
-  const now = new Date();
-
   return rows.map(item => {
     const itemAssets = assetLinks.filter(l => l.agendaItemId === item.id);
     const itemFiles = fileLinks.filter(l => l.agendaItemId === item.id);
@@ -254,26 +251,11 @@ async function enrichItems(rows: typeof agendaItems.$inferSelect[]): Promise<Age
     const itemEquips = equipLinks.filter(l => l.agendaItemId === item.id);
     const itemConflicts = conflicts.filter(c => c.agendaItemId === item.id);
 
-    // Lot 47B : nature lue pour la règle « un fait passé n'est jamais en retard ».
     const signaux = {
       eventNature: natures?.get(item.id)?.nature ?? null,
       businessType: natures?.get(item.id)?.businessType ?? null,
       originFieldKey: item.originFieldKey,
-      // Lot 103D : réalisation prouvée (0945) — « réalisé » à la lecture.
-      completionProven: natures?.get(item.id)?.completionProven === true,
     };
-    const effectiveStatus = computeEffectiveStatus({
-      startDate: item.startDate,
-      startTime: item.startTime,
-      endDate: item.endDate,
-      endTime: item.endTime,
-      manualStatus: item.manualStatus as 'realise' | 'annule' | null,
-      ...signaux,
-    }, now);
-
-    const automaticStatus = computeEffectiveStatus({
-      startDate: item.startDate, startTime: item.startTime, endDate: item.endDate, endTime: item.endTime, manualStatus: null, ...signaux,
-    }, now);
 
     const attentionFlags = computeAttentionFlags(
       {
@@ -281,7 +263,6 @@ async function enrichItems(rows: typeof agendaItems.$inferSelect[]): Promise<Age
         startTime: item.startTime,
         endDate: item.endDate,
         endTime: item.endTime,
-        manualStatus: item.manualStatus as 'realise' | 'annule' | null,
         ...signaux,
         directAssetIds: itemAssets.map(a => a.assetId),
         fileLinks: itemFiles.map(f => ({ id: f.id, resolvedAssetId: f.resolvedAssetId ?? null })),
@@ -294,7 +275,6 @@ async function enrichItems(rows: typeof agendaItems.$inferSelect[]): Promise<Age
         requiresQualification: c.requiresQualification,
         currentDecision: c.currentDecision,
       })),
-      now
     );
 
     return {
@@ -308,9 +288,6 @@ async function enrichItems(rows: typeof agendaItems.$inferSelect[]): Promise<Age
       startTime: item.startTime,
       endDate: item.endDate,
       endTime: item.endTime,
-      manualStatus: item.manualStatus as 'realise' | 'annule' | null,
-      effectiveStatus,
-      automaticStatus,
       isAutomatic: item.isAutomatic,
       isAutomaticModified: item.isAutomaticModified,
       requiresQualification: item.requiresQualification,
@@ -319,6 +296,7 @@ async function enrichItems(rows: typeof agendaItems.$inferSelect[]): Promise<Age
       originRefId: item.originRefId,
       originFieldKey: item.originFieldKey,
       occurrenceNature: (item.occurrenceNature as 'FORECAST' | 'CONFIRMED' | null) ?? 'CONFIRMED',
+      seriesKey: item.seriesKey ?? null,
       forecastInitialDate: item.forecastInitialDate ?? null,
       confirmedAt: item.confirmedAt ?? null,
       confirmationMode: item.confirmationMode ?? null,
@@ -339,20 +317,16 @@ async function enrichItems(rows: typeof agendaItems.$inferSelect[]): Promise<Age
 /**
  * Nature et type métier des éléments (colonnes 0223, non déclarées dans
  * Drizzle) ; null si la migration n'est pas appliquée (rien n'est lu).
- * Lot 47B : exportée pour les routes qui calculent le statut effectif.
+ * Lot 113P : plus de « preuve de réalisation » lue (aucun statut d'événement).
  */
-export async function loadEventNatures(ids: number[]): Promise<Map<number, { nature: 'HISTORICAL' | 'DEADLINE' | null; businessType: string | null; completionProven?: boolean }> | null> {
+export async function loadEventNatures(ids: number[]): Promise<Map<number, { nature: 'HISTORICAL' | 'DEADLINE' | null; businessType: string | null }> | null> {
   if (ids.length === 0 || !(await agendaFunctionalColumnsReady())) return null;
   const { pgClient } = await import('@/db');
-  // Lot 103D (0945) : réalisation prouvée — revérifiée à chaque lecture.
-  // Lot 111R : expression UNIQUE (document du compte, non supprimé, encore lié), partagée avec la Timeline.
-  const { validCompletionProofSelect } = await import('./completion-proof');
-  const preuve = await validCompletionProofSelect('i');
   const rows = (await pgClient.unsafe(
-    `SELECT i.id, i.event_nature AS nature, i.business_type AS "businessType", ${preuve} AS "completionProven" FROM agenda_items i WHERE i.id = ANY($1::int[])`,
+    `SELECT i.id, i.event_nature AS nature, i.business_type AS "businessType" FROM agenda_items i WHERE i.id = ANY($1::int[])`,
     [ids] as never[],
-  )) as unknown as Array<{ id: number; nature: 'HISTORICAL' | 'DEADLINE' | null; businessType: string | null; completionProven: boolean | null }>;
-  return new Map(rows.map((r) => [Number(r.id), { nature: r.nature, businessType: r.businessType ?? null, completionProven: r.completionProven === true }]));
+  )) as unknown as Array<{ id: number; nature: 'HISTORICAL' | 'DEADLINE' | null; businessType: string | null }>;
+  return new Map(rows.map((r) => [Number(r.id), { nature: r.nature, businessType: r.businessType ?? null }]));
 }
 
 // ── Prochaines échéances (CDC 15 D-14) — helpers pour l'accueil (C) ─────────
@@ -360,18 +334,11 @@ export async function loadEventNatures(ids: number[]): Promise<Map<number, { nat
 /**
  * Un élément entre-t-il dans les « prochaines échéances » ? Jamais un
  * élément HISTORICAL (fait passé : achat, entretien réalisé, sinistre,
- * vente…), ni un élément réalisé ou annulé. `eventNature` absent (élément
- * antérieur à la 0223) : échéance.
+ * vente…). `eventNature` absent (élément antérieur à la 0223) : échéance.
+ * Lot 113P : plus de statut (« réalisé » / « annulé ») à exclure.
  */
-export function isUpcomingDeadlineCandidate(item: {
-  eventNature?: 'HISTORICAL' | 'DEADLINE' | null;
-  manualStatus?: string | null;
-  /** Lot 111R : statut effectif calculé (preuve comprise) — réalisé ou annulé : jamais une échéance à venir. */
-  effectiveStatus?: EffectiveStatus | null;
-}): boolean {
-  if (item.eventNature === 'HISTORICAL') return false;
-  if (item.effectiveStatus === 'realise' || item.effectiveStatus === 'annule') return false;
-  return !item.manualStatus || (item.manualStatus !== 'realise' && item.manualStatus !== 'annule');
+export function isUpcomingDeadlineCandidate(item: { eventNature?: 'HISTORICAL' | 'DEADLINE' | null }): boolean {
+  return item.eventNature !== 'HISTORICAL';
 }
 
 /**
@@ -388,14 +355,14 @@ export async function upcomingDeadlinesSqlFilter(alias = ''): Promise<string> {
 
 /**
  * Prochaines échéances d'un compte (à partir d'aujourd'hui), HISTORICAL
- * exclus, réalisées et annulées exclues — prête pour l'accueil.
+ * exclus — prête pour l'accueil.
  */
 export async function getUpcomingDeadlines(
   accountId: number,
   opts: { from?: string; limit?: number; assetIds?: number[] } = {},
 ): Promise<AgendaItemFull[]> {
   const from = opts.from ?? new Date().toISOString().slice(0, 10);
-  const items = await getAgendaItems({ accountId, assetIds: opts.assetIds, includeCancelled: false, includeUndated: false });
+  const items = await getAgendaItems({ accountId, assetIds: opts.assetIds, includeUndated: false });
   return items
     .filter((i) => i.startDate !== null && i.startDate >= from && isUpcomingDeadlineCandidate(i))
     .sort((a, b) => (a.startDate ?? '').localeCompare(b.startDate ?? '') || (a.startTime ?? 'zzz').localeCompare(b.startTime ?? 'zzz'))
@@ -484,7 +451,7 @@ async function queryAgenda(
  * `extraIds` (lot 75B) : éléments rattachés aux pièces des biens retenus.
  */
 async function getAgendaItemsInScope(params: AgendaQueryParams, extraIds: readonly number[] = []): Promise<AgendaItemFull[]> {
-  const { accountId, assetIds, fileId, period, includeCancelled = false, month, year, includeUndated } = params;
+  const { accountId, assetIds, fileId, period, month, year, includeUndated } = params;
   const now = new Date();
   const today = now.toISOString().slice(0, 10);
 
@@ -576,14 +543,8 @@ async function getAgendaItemsInScope(params: AgendaQueryParams, extraIds: readon
     rows = rows.filter(item => item.startDate !== null);
   }
 
-  const enriched = await enrichItems(rows);
-
-  // Filter cancelled
-  if (!includeCancelled) {
-    return enriched.filter(item => item.effectiveStatus !== 'annule' && item.manualStatus !== 'annule');
-  }
-
-  return enriched;
+  // Lot 113P (#715) : plus de filtre « annulés » — un événement annulé est supprimé.
+  return enrichItems(rows);
 }
 
 export async function getAgendaItemById(id: number, accountId: number): Promise<AgendaItemFull | null> {
@@ -622,7 +583,6 @@ export async function searchAgendaItems(query: string, accountId: number): Promi
     startTime: agendaItems.startTime,
     endDate: agendaItems.endDate,
     endTime: agendaItems.endTime,
-    manualStatus: agendaItems.manualStatus,
   })
   .from(agendaItems)
   .innerJoin(agendaAssetLinks, eq(agendaAssetLinks.agendaItemId, agendaItems.id))
@@ -640,7 +600,7 @@ export async function searchAgendaItems(query: string, accountId: number): Promi
   const { pgClient } = await import('@/db');
   const supplierRows = (await pgClient.unsafe(
     `SELECT DISTINCT i.id, i.public_id AS "publicId", i.title, i.start_date::text AS "startDate", i.start_time::text AS "startTime",
-            i.end_date::text AS "endDate", i.end_time::text AS "endTime", i.manual_status AS "manualStatus"
+            i.end_date::text AS "endDate", i.end_time::text AS "endTime"
        FROM agenda_items i
        JOIN agenda_item_suppliers l ON l.agenda_item_id = i.id
        JOIN suppliers s ON s.id = l.supplier_id AND s.account_id = i.account_id AND s.status <> 'deleted'
@@ -673,30 +633,13 @@ export async function searchAgendaItems(query: string, accountId: number): Promi
     seen.add(row.id);
   }
 
-  const now = new Date();
-  const retenus = combined.slice(0, 20);
-  const natures = await loadEventNatures(retenus.map((r) => r.id));
-  return retenus.map(item => {
-    const effectiveStatus = computeEffectiveStatus({
-      startDate: item.startDate,
-      startTime: item.startTime,
-      endDate: item.endDate,
-      endTime: item.endTime,
-      manualStatus: item.manualStatus as 'realise' | 'annule' | null,
-      eventNature: natures?.get(item.id)?.nature ?? null,
-      businessType: natures?.get(item.id)?.businessType ?? null,
-      originFieldKey: item.originFieldKey ?? null,
-      completionProven: natures?.get(item.id)?.completionProven === true,
-    }, now);
-    return {
-      type: 'agenda' as const,
-      id: item.id,
-      publicId: item.publicId,
-      title: item.title,
-      effectiveStatus,
-      contextLabel: 'Agenda',
-    };
-  });
+  return combined.slice(0, 20).map(item => ({
+    type: 'agenda' as const,
+    id: item.id,
+    publicId: item.publicId,
+    title: item.title,
+    contextLabel: 'Agenda',
+  }));
 }
 
 /**
@@ -704,32 +647,25 @@ export async function searchAgendaItems(query: string, accountId: number): Promi
  * 2-pass priority algorithm per plan §2.7
  */
 export async function getHomepageAgendaItems(accountId: number): Promise<AgendaItemFull[]> {
-  const rows = await db.select().from(agendaItems).where(
-    and(
-      eq(agendaItems.accountId, accountId),
-      or(isNull(agendaItems.manualStatus), eq(agendaItems.manualStatus, ''))
-    )
-  );
+  const rows = await db.select().from(agendaItems).where(eq(agendaItems.accountId, accountId));
 
   const enriched = await enrichItems(rows);
   const now = new Date();
   const today = now.toISOString().slice(0, 10);
 
-  // Exclude realise and annule (treat empty string as null — DB may store '')
+  // Lot 113P (#715) : plus de statut — ni « réalisé / annulé » exclus, ni « en retard »
+  // (une date passée n'est pas un retard : seuls aujourd'hui, l'avenir et les sans-date).
   // CDC 15 D-14 : un élément HISTORICAL n'est pas une échéance — ni « en
   // retard », ni « à venir ». Nature absente (avant la 0223) : échéance.
   const active = enriched.filter(isUpcomingDeadlineCandidate);
 
   // Pass 1 — classify
-  const overdue: AgendaItemFull[] = [];
   const todayItems: AgendaItemFull[] = [];
   const upcoming: AgendaItemFull[] = [];
   const undated: AgendaItemFull[] = [];
 
   for (const item of active) {
-    if (item.effectiveStatus === 'en_retard') {
-      overdue.push(item);
-    } else if (!item.startDate) {
+    if (!item.startDate) {
       undated.push(item);
     } else if (item.startDate === today || (item.startDate <= today && item.endDate !== null && item.endDate >= today)) {
       todayItems.push(item);
@@ -739,12 +675,6 @@ export async function getHomepageAgendaItems(accountId: number): Promise<AgendaI
   }
 
   // Pass 2 — sort within groups
-  overdue.sort((a, b) => {
-    const d = (a.startDate ?? '').localeCompare(b.startDate ?? '');
-    if (d !== 0) return d;
-    return (a.startTime ?? 'zzz').localeCompare(b.startTime ?? 'zzz');
-  });
-
   todayItems.sort((a, b) => (a.startTime ?? 'zzz').localeCompare(b.startTime ?? 'zzz'));
 
   upcoming.sort((a, b) => {
@@ -755,6 +685,6 @@ export async function getHomepageAgendaItems(accountId: number): Promise<AgendaI
 
   undated.sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime());
 
-  return [...overdue, ...todayItems, ...upcoming, ...undated].slice(0, 5);
+  return [...todayItems, ...upcoming, ...undated].slice(0, 5);
 }
 

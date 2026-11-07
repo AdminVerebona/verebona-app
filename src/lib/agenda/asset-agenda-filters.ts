@@ -22,13 +22,12 @@ export const ASSET_AGENDA_PERIOD_OPTIONS: ReadonlyArray<{ value: AgendaPeriod; l
   AGENDA_PERIOD_OPTIONS.filter((o) => o.value !== 'today');
 
 /**
- * Pastilles « Filtré par … » : Période, Équipement, Statut. En vue annuelle,
+ * Pastilles « Filtré par … » : Période, Équipement (lot 113P : plus de Statut). En vue annuelle,
  * la période ne s'applique pas (toute l'année) : pas de pastille Période.
  */
 export function assetAgendaChips(input: {
   view: AssetAgendaView;
   period: AgendaPeriod;
-  includeCancelled: boolean;
   equipmentChipLabel: string | null;
   /** Lot 75B : libellé du filtre Pièce actif. */
   roomChipLabel?: string | null;
@@ -37,7 +36,6 @@ export function assetAgendaChips(input: {
     roomChipLabel: input.roomChipLabel ?? null,
     period: input.view === 'year' ? 'all' : input.period,
     assetIds: [],
-    includeCancelled: input.includeCancelled,
     assetOptions: [],
     equipmentChipLabel: input.equipmentChipLabel,
   });

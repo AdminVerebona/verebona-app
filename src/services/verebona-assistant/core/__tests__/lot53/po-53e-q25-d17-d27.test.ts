@@ -18,7 +18,6 @@ const { runAssistant } = await import('../../assistant-orchestrator.service');
 const { agendaTargetAnswer } = await import('../../target-answer');
 const { answerFromData } = await import('../../data-answer.service');
 const { analyserDemandeActionnable, formatActionnables, NO_PRIORITY_SUBJECT } = await import('../../actionable-request');
-const { agendaStatus4 } = await import('../../../canonical/agenda');
 
 import type { AccountDataPort, AssetRow, DocumentHit } from '../../data-answer.service';
 import type { OrchestratorPorts } from '../../assistant-orchestrator.service';
@@ -136,11 +135,12 @@ describe('PO-Q25 — T2 : vocabulaire de priorité, cohérent avec la mascotte',
     expect(un.answer).toContain('Un autre élément reste à voir dans « À traiter »');
   });
 
-  it('PO-Q25-03 — échéance échue ou « À faire d’abord » : listés comme sujets à traiter en priorité (jamais « aucun sujet »)', async () => {
+  // #715 : plus de statut d'événement — une échéance d'agenda échue n'est plus un sujet prioritaire (« en retard »).
+  it('PO-Q25-03 (#715) — « À faire d’abord » listé en priorité ; échéance échue jamais « en retard » (jamais « aucun sujet »)', async () => {
     const h = harness(fx({ deadlines: [echeance('Contrôle technique', HIER)], todos: [aTraiter('Vérifier l’IBAN', { priority: 'DO_FIRST' })] }));
     const r = await h.ask(URGENT);
-    expect(r.answer).toMatch(/^Vous avez 2 sujets à traiter en priorité aujourd’hui :/);
-    expect(r.answer).toContain('En retard (échéance du 8 octobre 2026) : « Contrôle technique »');
+    expect(r.answer).toMatch(/^Vous avez 1 sujet à traiter en priorité aujourd’hui :/);
+    expect(r.answer).not.toMatch(/En retard|Contrôle technique/);
     expect(r.answer).not.toMatch(/urgen|Aucun sujet|prévu le/i);
   });
 
@@ -163,31 +163,26 @@ describe('PO-Q25 — T2 : vocabulaire de priorité, cohérent avec la mascotte',
 });
 
 const item = (o: Partial<CanonicalAgendaItem>): CanonicalAgendaItem => ({
-  id: 5, title: 'Achat Clio', date: '2024-05-01', nature: 'HISTORICAL', businessType: 'purchase', status: 'not_proven',
-  manualStatus: null, forecast: false, category: null, isAutomatic: true, userModified: false, overdue: false, assets: [], sources: [], ...o,
+  id: 5, title: 'Achat Clio', date: '2024-05-01', nature: 'HISTORICAL', businessType: 'purchase', forecast: false, category: null, isAutomatic: true, userModified: false, assets: [], sources: [], ...o,
 });
 
+// #715 : plus de statut d'événement — le statut à 4 états (agendaStatus4) et la réponse
+// « a eu lieu » sur statut « réalisé » sont retirés ; une date passée ne prouve toujours rien.
 describe('PO-D17 — assistant : une date passée ne prouve pas la réalisation', () => {
-  it('PO-D17-05 — statut à 4 états : fait historique passé sans statut = non prouvé ; réalisé seulement si établi', () => {
-    expect(agendaStatus4(null, false, '2024-05-01', TODAY, true)).toBe('not_proven');
-    expect(agendaStatus4('realise', false, '2024-05-01', TODAY, true)).toBe('completed');
-  });
-
-  it('PO-D17-06 — réponses : « a eu lieu » seulement si la réalisation est établie', () => {
-    const nonProuve = agendaTargetAnswer(item({}), 'date', TODAY).text;
-    expect(nonProuve).toBe('« Achat Clio » est daté du 1 mai 2024 dans votre historique ; sa réalisation n’est pas confirmée.');
-    expect(agendaTargetAnswer(item({ status: 'completed', manualStatus: 'realise' }), 'date', TODAY).text).toBe('« Achat Clio » a eu lieu le 1 mai 2024.');
+  it('PO-D17-06 — réponses : date seule, jamais « a eu lieu » ni « réalisé »', () => {
+    const date = agendaTargetAnswer(item({}), 'date', TODAY).text;
+    expect(date).toBe('« Achat Clio » est daté du 1 mai 2024 dans votre historique.');
     const statut = agendaTargetAnswer(item({}), 'status', TODAY).text;
-    expect(statut).toContain('sa réalisation n’est pas confirmée');
-    expect(statut).not.toMatch(/a eu lieu|réalisé\b(?! depuis)/);
+    expect(statut).toContain('sans indiquer s’il a été réalisé');
+    expect(statut).not.toMatch(/a eu lieu|réalisé\b(?! depuis)|en retard/);
   });
 });
 
 describe('PO-D27 — assistant : échéance à respecter ≠ rendez-vous programmé', () => {
   it('PO-D27-05 — échéance : « à prévoir pour le » ; événement saisi par l’utilisateur : « prévu le » ; jamais « confirmé »', () => {
-    const ct = item({ title: 'Contrôle technique', date: '2026-11-20', nature: 'DEADLINE', businessType: 'inspection', status: 'unknown', dateRole: 'DEADLINE' });
+    const ct = item({ title: 'Contrôle technique', date: '2026-11-20', nature: 'DEADLINE', businessType: 'inspection', dateRole: 'DEADLINE' });
     expect(agendaTargetAnswer(ct, 'date', TODAY).text).toBe('« Contrôle technique » est à prévoir pour le 20 novembre 2026.');
-    const rdv = item({ title: 'Garage', date: '2026-11-20', nature: null, businessType: null, status: 'unknown', isAutomatic: false, dateRole: 'SCHEDULED_EVENT' });
+    const rdv = item({ title: 'Garage', date: '2026-11-20', nature: null, businessType: null, isAutomatic: false, dateRole: 'SCHEDULED_EVENT' });
     expect(agendaTargetAnswer(rdv, 'date', TODAY).text).toBe('« Garage » est prévu le 20 novembre 2026.');
     // Rôle inconnu (appelant ancien) : prudence — échéance.
     expect(agendaTargetAnswer({ ...ct, dateRole: undefined }, 'date', TODAY).text).toContain('à prévoir');

@@ -4,16 +4,21 @@
  * demande → construction du plan → prévisualisation → confirmation unique →
  * exécution ordonnée → résultats détaillés (SUCCESS / FAILED /
  * SKIPPED_DEPENDENCY / REFUSED), sans retour arrière automatique.
+ *
+ * #715 (lot 113P) : MARK_AGENDA_DONE / CANCEL_AGENDA_ITEM retirées (plus de
+ * statut d'événement) — les actions de test sont des créations ; la
+ * résolution « en masse » (« marque toutes les échéances… comme réalisées »)
+ * n'existe plus et n'est plus reconnue comme commande.
  */
 import { describe, it, expect } from 'vitest';
 import { parseCommands } from '../parser';
-import { executeActions, planStatusFrom, summarizeResults, resolveDraft, MAX_BULK_TARGETS, type CommandLookup } from '../plan.service';
+import { executeActions, planStatusFrom, summarizeResults } from '../plan.service';
 import type { PlannedAction } from '../catalog';
 import type { Executor } from '../executors';
 
 const TODAY = '2026-09-25';
 const act = (id: string, dependsOn: string[] = []): PlannedAction => ({
-  actionId: id, command: 'MARK_AGENDA_DONE', dependsOn, targets: [], params: { agendaItemId: Number(id.replace(/\D/g, '')) || 1 },
+  actionId: id, command: 'CREATE_AGENDA_ITEM', dependsOn, targets: [], params: { title: `E${id}`, startDate: '2026-11-01', assetIds: [] },
   preview: `Action ${id}.`, effects: [],
 });
 
@@ -23,7 +28,7 @@ const executors = (echecs: string[], refus: string[] = []) => {
     if (refus.includes(a.actionId)) return { actionId: a.actionId, status: 'REFUSED', message: 'Droits' };
     return { actionId: a.actionId, status: 'SUCCESS', message: 'ok' };
   };
-  return { CREATE_AGENDA_ITEM: run, MARK_AGENDA_DONE: run, CANCEL_AGENDA_ITEM: run, UPDATE_ASSET_FIELD: run };
+  return { CREATE_AGENDA_ITEM: run, UPDATE_ASSET_FIELD: run };
 };
 const ctx = { accountId: 1, userId: 2 };
 
@@ -61,37 +66,23 @@ describe('actions en masse : un résultat par objet', () => {
     expect(summarizeResults(r).match(/ — /g)).toHaveLength(2);
   });
 
-  it('résolution : une action par échéance, plafonnée', async () => {
-    const items = Array.from({ length: 3 }, (_, i) => ({ id: i + 1, title: `E${i + 1}`, date: '2026-05-01' }));
-    const lookup = {
-      today: () => TODAY,
-      findAssets: async () => [{ id: 890, name: 'Clio', city: null }],
-      getAsset: async () => null, findAgendaItems: async () => [], getAgendaItem: async () => null,
-      listOpenAgendaItems: async (_a: number, o: { pastOnly: boolean; assetIds: number[] }) => (o.pastOnly && o.assetIds[0] === 890 ? items : []),
-    } as CommandLookup;
-    const segs = parseCommands('Marque toutes les échéances passées de ma Clio comme réalisées', TODAY)!;
-    const r = await resolveDraft(segs[0].draft, { accountId: 1, userId: 2, planType: 'P', message: '', clientRequestId: 'x', locale: 'fr-FR' }, lookup, 'a1');
-    expect(Array.isArray(r) && r.map((a) => [a.actionId, (a.params as { agendaItemId: number }).agendaItemId])).toEqual([['a1.1', 1], ['a1.2', 2], ['a1.3', 3]]);
-    expect(MAX_BULK_TARGETS).toBe(50);
+  it('#715 : « marque toutes les échéances passées … comme réalisées » n’est plus une commande', () => {
+    expect(parseCommands('Marque toutes les échéances passées de ma Clio comme réalisées', TODAY)).toBeNull();
+    expect(parseCommands('Annule tous les rappels de ma Clio', TODAY)).toBeNull();
   });
 });
 
 describe('construction du plan depuis un message', () => {
   it('« et » : indépendantes ; « puis » : dépendante de la précédente', () => {
-    const s = parseCommands('Crée un rappel contrôle le 3 novembre pour ma Clio puis marque le ramonage comme fait et annule le rappel vidange', TODAY)!;
+    const s = parseCommands('Crée un rappel contrôle le 3 novembre pour ma Clio puis ajoute un rappel vidange le 10/12 et mets date d\'achat le 25/05/2021 pour la polo', TODAY)!;
     expect(s.map((x) => [x.draft.command, x.dependsOnPrevious])).toEqual([
-      ['CREATE_AGENDA_ITEM', false], ['MARK_AGENDA_DONE', true], ['CANCEL_AGENDA_ITEM', false],
+      ['CREATE_AGENDA_ITEM', false], ['CREATE_AGENDA_ITEM', true], ['UPDATE_ASSET_FIELD', false],
     ]);
   });
 
   it('un segment incompris : aucun plan (jamais partiellement proposé)', () => {
     expect(parseCommands('Ajoute un rappel vidange le 10/12 et dis-moi quelque chose', TODAY)?.length).toBe(1);
-    expect(parseCommands('Bonjour, et marque le ramonage comme fait', TODAY)).toBeNull();
-  });
-
-  it('action en masse reconnue', () => {
-    expect(parseCommands('Annule tous les rappels de ma Clio', TODAY)![0].draft).toMatchObject({
-      command: 'CANCEL_AGENDA_ITEM', bulk: { scope: 'open', assetWords: ['clio'] },
-    });
+    // #715 : « marque le ramonage comme fait » n'est plus une commande.
+    expect(parseCommands('Ajoute un rappel vidange le 10/12 et marque le ramonage comme fait', TODAY)).toBeNull();
   });
 });

@@ -25,9 +25,9 @@ const D = '2020-12-22';
 const ADEME = '2069V2010945W';
 const item = (id: number, o: Partial<EqItem> = {}): EqItem => ({
   id, title: 'DPE réalisé — DPE', date: D, nature: 'HISTORICAL', businessType: 'dpe', originType: 'asset_field', originFieldKey: 'dpeDate',
-  functionalKey: `k${id}`, originFileId: 309, fileIds: [309], equipmentIds: [], isAutomatic: true, isAutomaticModified: false, manualStatus: null,
+  functionalKey: `k${id}`, originFileId: 309, fileIds: [309], equipmentIds: [], isAutomatic: true, isAutomaticModified: false,
   confirmationMode: null, requiresQualification: true, occurrenceNature: 'CONFIRMED', projected: false, operationId: null, operationActive: false,
-  completionProofFileId: null, userTouchEvent: false, autoStatusEvent: false, pendingConflict: false, restored: false, ...o,
+  userTouchEvent: false, pendingConflict: false, restored: false, ...o,
 });
 const doc = (fileId: number, title: string, facts: Array<[string | null, string, { subject?: string; type?: string; nature?: string }?]>): EqDocument => ({
   fileId, title, documentTypeCode: null, documentDate: null,
@@ -41,17 +41,18 @@ const compromis316 = doc(316, 'Compromis de vente', [['dpeDate', D, { type: 'dpe
 const docs = (...l: EqDocument[]) => new Map(l.map((d) => [d.fileId, d]));
 const stock = () => [
   item(102),
-  item(103, { title: 'Contrôle réalisé — Maison', businessType: 'inspection', originType: 'qualified_document', originFieldKey: null, completionProofFileId: 309 }),
+  item(103, { title: 'Contrôle réalisé — Maison', businessType: 'inspection', originType: 'qualified_document', originFieldKey: null }),
   item(104, { title: 'DPE réalisé — Maison', originFileId: 316, fileIds: [316] }),
 ];
 
 describe('L106A-U-EQUIVALENCE — représentations équivalentes (pur)', () => {
-  it('U01 — cas du ticket : une occurrence, canonique stable, intitulé et preuve', () => {
+  // #715 : plus de report de « preuve de réalisation » (`proofFileId`) — aucun statut d'événement.
+  it('U01 — cas du ticket : une occurrence, canonique stable, intitulé', () => {
     const [d] = decideAsset(stock(), docs(dossier309, compromis316), maison);
     expect(d.group).toMatchObject({ key: `${D}|HISTORICAL|dpe`, memberIds: [102, 104], genericIds: [103] });
     expect(d).toMatchObject({ verdict: 'CONSOLIDATE', reason: 'SAME_STABLE_REFERENCE', canonicalId: 102, absorbIds: [103, 104] });
     expect(d.retitle).toEqual({ from: 'DPE réalisé — DPE', to: 'DPE réalisé — Maison' });
-    expect(d.proofFileId).toBe(309);
+    expect('proofFileId' in d).toBe(false);
     expect(d.evidence.references).toEqual([ADEME]);
   });
 
@@ -89,24 +90,19 @@ describe('L106A-U-EQUIVALENCE — représentations équivalentes (pur)', () => {
     expect(c).toMatchObject({ verdict: 'CONSOLIDATE', reason: 'SAME_SOURCE_SAME_FIELD', canonicalId: 1, absorbIds: [2] });
   });
 
-  it('U06 — protections de l’utilisateur ; statut automatique tracé → canonique, jamais absorbé', () => {
+  // #715 : plus de protection « STATUS » (statut d'événement supprimé).
+  it('U06 — protections de l’utilisateur', () => {
     expect(protectionOf(item(1, { isAutomatic: false }))).toBe('USER');
     expect(protectionOf(item(1, { isAutomaticModified: true }))).toBe('USER');
     expect(protectionOf(item(1, { confirmationMode: 'USER' }))).toBe('USER');
     expect(protectionOf(item(1, { userTouchEvent: true }))).toBe('USER');
     expect(protectionOf(item(1, { restored: true }))).toBe('USER');
-    expect(protectionOf(item(1, { manualStatus: 'realise' }))).toBe('USER');
-    expect(protectionOf(item(1, { manualStatus: 'realise', autoStatusEvent: true }))).toBe('STATUS');
     expect(protectionOf(item(1, { pendingConflict: true }))).toBe('CONFLICT');
     expect(protectionOf(item(1))).toBeNull();
     const l = stock();
     l[2] = { ...l[2], isAutomaticModified: true, title: 'Mon DPE' };
     const [d] = decideAsset(l, docs(dossier309, compromis316), maison);
     expect(d).toMatchObject({ verdict: 'CONSOLIDATE', canonicalId: 104, absorbIds: [102, 103], retitle: null });
-    const s = stock();
-    s[2] = { ...s[2], manualStatus: 'realise', autoStatusEvent: true };
-    const [e] = decideAsset(s, docs(dossier309, compromis316), maison);
-    expect(e).toMatchObject({ canonicalId: 104, absorbIds: [102, 103] });
     const deux = stock();
     deux[0] = { ...deux[0], userTouchEvent: true };
     deux[2] = { ...deux[2], isAutomaticModified: true };

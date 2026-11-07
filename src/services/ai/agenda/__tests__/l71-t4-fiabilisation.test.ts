@@ -72,7 +72,7 @@ describe('§A — reject / abstain / technical_failure distincts jusqu’à la p
 
   const item = (o: Partial<import('@/services/agenda/agenda-functional-key').SourceItem>) => ({
     id: 1, functionalKey: null, title: 'Alpha', startDate: '2027-03-01', originFieldKey: null,
-    isAutomatic: true, isAutomaticModified: false, manualStatus: null, ...o,
+    isAutomatic: true, isAutomaticModified: false, ...o,
   });
   const cle = (title: string, date: string, businessType: string | null = null) => computeAgendaFunctionalKey({
     sourceFileId: 40, target: { type: 'ASSET', id: 3 }, businessType, originFieldKey: null, occurrence: date,
@@ -140,7 +140,7 @@ describe('§B — businessType décidé par T4 propagé', () => {
     const ancienne = computeAgendaFunctionalKey({ sourceFileId: 40, target: { type: 'ASSET', id: 3 }, businessType: 'insurance', originFieldKey: null, occurrence: '2027-03-01' });
     const plan = planSourceSync({
       sourceFileId: 40, assetId: 3,
-      items: [{ id: 7, functionalKey: ancienne, title: 'Échéance Alpha', startDate: '2027-03-01', originFieldKey: null, isAutomatic: true, isAutomaticModified: false, manualStatus: null }],
+      items: [{ id: 7, functionalKey: ancienne, title: 'Échéance Alpha', startDate: '2027-03-01', originFieldKey: null, isAutomatic: true, isAutomaticModified: false }],
       decisions: [{ index: 0, action: 'create', title: 'Echeance alpha', date: '2027-03-01', sourceFileId: 40, businessType: 'warranty' }],
     });
     expect(plan.steps).toMatchObject([{ kind: 'update', itemId: 7, adopted: true }]);
@@ -148,7 +148,7 @@ describe('§B — businessType décidé par T4 propagé', () => {
     // Intitulé différent sans champ d'origine : pas de rapprochement fiable → création, l'ancien n'est pas adopté.
     const autre = planSourceSync({
       sourceFileId: 40, assetId: 3,
-      items: [{ id: 7, functionalKey: ancienne, title: 'Échéance Alpha', startDate: '2027-03-01', originFieldKey: null, isAutomatic: true, isAutomaticModified: false, manualStatus: null }],
+      items: [{ id: 7, functionalKey: ancienne, title: 'Échéance Alpha', startDate: '2027-03-01', originFieldKey: null, isAutomatic: true, isAutomaticModified: false }],
       decisions: [{ index: 0, action: 'create', title: 'Autre chose', date: '2027-03-01', sourceFileId: 40, businessType: 'warranty' }],
     });
     expect(autre.steps).toMatchObject([{ kind: 'create' }]);

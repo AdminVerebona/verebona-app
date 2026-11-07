@@ -80,6 +80,14 @@ export type InvalidOutputSubtype = (typeof INVALID_OUTPUT_SUBTYPES)[number];
 /** Étapes d'un appel modèle (ticket §2). */
 export const AI_FAILURE_STAGES = [
   'request_build',
+  /**
+   * Lot 113R (carte #717) : TRANSFERT d'une pièce jointe, AVANT toute
+   * génération — lecture du document dans le stockage, envoi au service de
+   * fichiers du fournisseur (Files API), activation du fichier. L'étape fine
+   * est dans `transfer.step`. Un échec ici n'est jamais une génération
+   * échouée ni un défaut du prompt : le modèle n'a pas été sollicité.
+   */
+  'attachment_transfer',
   'provider_request',
   'provider_generation',
   'response_reception',
@@ -97,7 +105,91 @@ export type AiFailureStage = (typeof AI_FAILURE_STAGES)[number];
  * Étapes où le modèle N'A PAS répondu (par opposition à « a répondu mais
  * Verebona a rejeté sa sortie ») — ticket §2.
  */
-export const PRE_RESPONSE_STAGES: readonly AiFailureStage[] = ['request_build', 'provider_request', 'provider_generation'];
+export const PRE_RESPONSE_STAGES: readonly AiFailureStage[] = ['request_build', 'attachment_transfer', 'provider_request', 'provider_generation'];
+
+// ══════════════════════════════════════════════════════════════════════════
+// LOT 113R (carte #717) — ÉCHEC DE TRANSFERT D'UNE PIÈCE JOINTE
+//
+// Réponse du fournisseur CONSERVÉE de façon structurée (statut HTTP, code,
+// message, raison, détails, identifiant de requête, corps borné), sans
+// secret : clé d'API, URL signée et en-têtes sensibles sont retirés AVANT
+// toute persistance. Figée avec CHAQUE appel (`ai_usage_event.metadata
+// .transfer`, `ai_call_diagnostics.diagnostic.transfer`) : une reprise ou une
+// réussite ultérieure n'écrase jamais la cause d'une tentative antérieure.
+// Aucun détail fournisseur (corps vide, non JSON) : `providerDetail` =
+// `NONE` / `TEXT`, jamais une cause inventée.
+// ══════════════════════════════════════════════════════════════════════════
+
+/** Étape RÉELLE du transfert. */
+export type AttachmentTransferStep = 'source_download' | 'provider_upload' | 'file_activation';
+
+/** Nature de l'échec de transfert. */
+export type AttachmentTransferFailureKind =
+  /** Réponse HTTP non OK (statut et corps conservés). */
+  | 'http'
+  /** Aucune réponse : réseau, DNS, connexion coupée (code réseau conservé). */
+  | 'network'
+  /** Réponse 2xx inexploitable (URI absente, JSON illisible). */
+  | 'invalid_response'
+  /** Fichier jamais devenu ACTIVE dans le délai. */
+  | 'activation_timeout'
+  /** Traitement du fichier échoué chez le fournisseur (`state=FAILED`). */
+  | 'activation_failed';
+
+/** Borne du corps de réponse conservé (caractères, après masquage). */
+export const TRANSFER_BODY_MAX_CHARS = 2_000;
+/** Borne des détails structurés conservés (éléments de `error.details`). */
+export const TRANSFER_DETAILS_MAX = 8;
+
+export interface AttachmentTransferFailure {
+  /** Version du format (lecture des exports). */
+  format: 'transfer-v1';
+  step: AttachmentTransferStep;
+  kind: AttachmentTransferFailureKind;
+  provider: string;
+  /** `POST generativelanguage.googleapis.com/upload/v1beta/files` — jamais de paramètre ni de clé. */
+  endpoint: string;
+  httpStatus: number | null;
+  /** Statut fournisseur (`PERMISSION_DENIED`…), `null` s'il n'est pas fourni. */
+  providerStatus: string | null;
+  /** Code numérique du corps (`error.code`). */
+  providerCode: number | null;
+  /** Message fournisseur masqué et borné, `null` s'il n'est pas fourni. */
+  providerMessage: string | null;
+  /** Raison structurée (`ErrorInfo.reason` : `API_KEY_SERVICE_BLOCKED`…), `null` sinon. */
+  providerReason: string | null;
+  /** Domaine et métadonnées utiles de l'`ErrorInfo` (service, projet consommateur…), masqués. */
+  providerDomain: string | null;
+  providerMetadata: Record<string, string> | null;
+  /** Détails structurés (`error.details`), masqués et bornés. */
+  details: Array<Record<string, unknown>>;
+  /** Identifiant de requête renvoyé par le fournisseur (en-tête ou détail `RequestInfo`). */
+  requestId: string | null;
+  /** En-têtes de réponse NON sensibles (liste blanche). */
+  responseHeaders: Record<string, string>;
+  /** Corps de réponse : nature, longueur, extrait masqué et borné. */
+  body: { kind: 'json' | 'text' | 'empty' | 'unread'; length: number | null; excerpt: string | null; truncated: boolean };
+  /**
+   * Détail fourni par le fournisseur : `STRUCTURED` (erreur JSON lisible),
+   * `TEXT` (corps non JSON), `NONE` (aucun corps, ou aucune réponse) —
+   * absence de raison signalée explicitement, jamais devinée.
+   */
+  providerDetail: 'STRUCTURED' | 'TEXT' | 'NONE';
+  /** Code réseau (`ECONNRESET`…), pour `kind = network`. */
+  networkCode: string | null;
+  /** Message technique masqué (jamais de clé ni d'URL signée). */
+  message: string;
+  durationMs: number | null;
+  /** Le modèle n'a PAS été sollicité (toujours vrai pour un échec de transfert). */
+  generationRequested: false;
+}
+
+/** Libellés BO des étapes de transfert. */
+export const TRANSFER_STEP_LABELS: Record<AttachmentTransferStep, string> = {
+  source_download: 'lecture du document dans le stockage Verebona',
+  provider_upload: 'envoi du document au fournisseur (Files API)',
+  file_activation: 'activation du fichier chez le fournisseur',
+};
 
 /** État d'un contrôle de la chaîne (ticket §6). */
 export type ControlState =
@@ -253,6 +345,8 @@ export interface CallDiagnostic {
   signature: string | null;
   /** Le fallback précédent a-t-il reçu l'erreur de l'appel précédent ? */
   informedOfPreviousError?: boolean;
+  /** Lot 113R : échec de transfert d'une pièce jointe (réponse fournisseur structurée, sans secret). */
+  transfer?: AttachmentTransferFailure | null;
 }
 
 /** Libellés français des familles, sous-types et étapes (BO). */
@@ -356,9 +450,15 @@ export function isStructuredOutputRetry(a: Pick<ProviderAttemptTrace, 'kind'>): 
  * Lot 52B — nature d'un échec AVANT sortie, pour le BO : un HTTP 400
  * INVALID_ARGUMENT n'est jamais une indisponibilité du fournisseur.
  */
-export type ProviderFailureCategory = 'PROVIDER_UNAVAILABLE' | 'REQUEST_REJECTED' | 'STRUCTURED_OUTPUT_REJECTED' | 'PARAMETER_REJECTED' | 'PARAMETER_INCOMPATIBLE';
+export type ProviderFailureCategory = 'PROVIDER_UNAVAILABLE' | 'REQUEST_REJECTED' | 'STRUCTURED_OUTPUT_REJECTED' | 'PARAMETER_REJECTED' | 'PARAMETER_INCOMPATIBLE'
+  /** Lot 113R : transfert de la pièce jointe refusé (401/403) — aucune génération sollicitée. */
+  | 'TRANSFER_REFUSED'
+  /** Lot 113R : transfert impossible (quota, 5xx, réseau, activation…) — aucune génération sollicitée. */
+  | 'TRANSFER_FAILED';
 
 export const PROVIDER_FAILURE_CATEGORY_LABELS: Record<ProviderFailureCategory, string> = {
+  TRANSFER_REFUSED: 'Envoi du document refusé par le fournisseur (aucune génération)',
+  TRANSFER_FAILED: 'Envoi du document au fournisseur impossible (aucune génération)',
   PROVIDER_UNAVAILABLE: 'Fournisseur indisponible',
   REQUEST_REJECTED: 'Requête refusée par le fournisseur',
   STRUCTURED_OUTPUT_REJECTED: 'Structured output refusé',
@@ -366,7 +466,9 @@ export const PROVIDER_FAILURE_CATEGORY_LABELS: Record<ProviderFailureCategory, s
   PARAMETER_INCOMPATIBLE: 'Combinaison incompatible refusée avant appel',
 };
 
-export function providerFailureCategory(family: string | null | undefined, subtype: string | null | undefined): ProviderFailureCategory | null {
+export function providerFailureCategory(family: string | null | undefined, subtype: string | null | undefined, stage?: string | null): ProviderFailureCategory | null {
+  // Lot 113R : l'envoi de la pièce jointe a échoué AVANT toute génération.
+  if (stage === 'attachment_transfer') return family === 'AUTH_ERROR' ? 'TRANSFER_REFUSED' : 'TRANSFER_FAILED';
   if (subtype === 'STRUCTURED_OUTPUT_REJECTED') return 'STRUCTURED_OUTPUT_REJECTED';
   // Lot 82C (LOG-04, R02) : incompatibilité de paramètre, jamais une indisponibilité.
   if (subtype === 'PARAMETER_REJECTED') return 'PARAMETER_REJECTED';

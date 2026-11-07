@@ -1,31 +1,7 @@
 /**
- * Cartes « À traiter » du statut — CDC 15 T4-12 (propose_done /
- * propose_not_done) et D-15 (changement de statut du bien) ; lot 14.
- *
- * ══════════════════════════════════════════════════════════════════════════
- * STATUT D'UNE ÉCHÉANCE (AGENDA-DONE, AGENDA-NOT-DONE)
- *
- * `reconcileStatus()` (T4, agent A) rend quatre états. Seul `completed` avec
- * une confiance certaine et une occurrence établie est écrit
- * automatiquement (`mark_done` → 'realise'). Les deux autres verdicts
- * actionnables deviennent une carte sur l'ÉLÉMENT D'AGENDA (champ
- * `manualStatus`) :
- *   · propose_done     « Cette échéance a-t-elle été réalisée ? »
- *                      → « Oui, c'est fait » ('realise') | « Pas encore » (null) ;
- *   · propose_not_done « Cette échéance semble ne pas avoir été réalisée »
- *                      → « Annulée » ('annule') | « Toujours à faire » (null).
- * `not_completed` n'est JAMAIS écrit automatiquement : seule la réponse de
- * l'utilisateur pose un statut. Une carte par élément (identité objet +
- * champ, §7.3) : un nouveau verdict remplace la carte de l'autre nature.
- * Empreinte : élément + document preuve + verdict — rejouer la même preuve
- * ne crée rien, une carte « Non applicable » ne revient qu'avec une
- * nouvelle preuve (§7.4).
- *
- * Résolution (`resolveArbitration`, liste blanche) : écrivain
- * `AGENDA_STATUS_WRITER`, qui pose le statut par la PRIMITIVE
- * `writeAgendaItem` (canal MANUAL, dans la transaction de résolution) et
- * trace STATUS_CHANGED (origine USER). Annulation : le statut précédent — le
- * plus souvent « aucun » (null) — est restauré.
+ * Cartes « À traiter » du statut du BIEN — CDC 15 D-15 (lot 14). Lot 113P
+ * (#715) : le volet « statut d'une échéance » (AGENDA-DONE / AGENDA-NOT-DONE,
+ * T4-12) est SUPPRIMÉ — voir plus bas.
  *
  * ══════════════════════════════════════════════════════════════════════════
  * STATUT DU BIEN (ASSET-STATUS, D-15)
@@ -46,208 +22,22 @@
  */
 import { and, eq, isNull, sql } from 'drizzle-orm';
 import { db } from '@/db';
-import { agendaItems, agendaOccurrenceEvents, assets, toProcessActionEvents, toProcessActions } from '@/db/schema';
-import type { ActionProposal, ResolutionReason } from './action-model';
+import { agendaItems, assets } from '@/db/schema';
+import type { ActionProposal } from './action-model';
 import type { DbClient, FieldWriter } from './resolve-action.service';
 import { upsertAction, type UpsertActionResult } from './to-process-action.service';
 import { ASSET_STATUSES, assetStatusLabel } from '@/lib/asset-status';
-import { PUBLISHABILITY_CONTRACTS } from './publishability';
 
-const AGENDA_DONE_RULE = 'AGENDA-DONE';
-const AGENDA_NOT_DONE_RULE = 'AGENDA-NOT-DONE';
-const AGENDA_STATUS_FIELD = 'manualStatus';
 const ASSET_STATUS_RULE = 'ASSET-STATUS';
 const ASSET_STATUS_FIELD = 'status';
 
-type AgendaStatusProposalKind = 'propose_done' | 'propose_not_done';
-const RULE_OF: Record<AgendaStatusProposalKind, string> = {
-  propose_done: AGENDA_DONE_RULE,
-  propose_not_done: AGENDA_NOT_DONE_RULE,
-};
-
-// ── Statut d'une échéance ───────────────────────────────────────────────────
-
-const AGENDA_STATUS_VALUES = new Set<unknown>(['realise', 'annule', null]);
-/** Même type d'événement d'occurrence que `updateManualStatus`. */
-const OCCURRENCE_STATUS_CHANGED = 'STATUS_CHANGED';
-
-export const AGENDA_STATUS_WRITER: FieldWriter = {
-  targetType: 'AGENDA_ITEM',
-  fieldKey: AGENDA_STATUS_FIELD,
-  nullable: true,
-  validate: (v) => v !== undefined && AGENDA_STATUS_VALUES.has(v),
-  check: async (client, itemId, accountId) => {
-    const [row] = await client.select({ id: agendaItems.id }).from(agendaItems)
-      .where(and(eq(agendaItems.id, itemId), eq(agendaItems.accountId, accountId))).limit(1);
-    return !!row;
-  },
-  read: async (client, itemId, accountId) => {
-    const [row] = await client.select({ v: agendaItems.manualStatus }).from(agendaItems)
-      .where(and(eq(agendaItems.id, itemId), eq(agendaItems.accountId, accountId))).limit(1);
-    return row?.v ?? null;
-  },
-  write: async (client, itemId, accountId, value) => {
-    const manualStatus = (value ?? null) as 'realise' | 'annule' | null;
-    // Primitive unique (T4-09), dans la transaction de résolution (§13.5).
-    const { upsertAgendaItem } = await import('@/services/agenda/agenda-write-primitive');
-    await upsertAgendaItem(
-      { itemId, accountId, assetId: null, origin: 'MANUAL', details: { manualStatus } },
-      { client: client as unknown as { transaction: typeof db.transaction } },
-    );
-    await client.insert(agendaOccurrenceEvents).values({
-      // Trace d'occurrence (agenda_occurrence_events), pas une notification.
-      agendaItemId: itemId, accountId, eventType: OCCURRENCE_STATUS_CHANGED,
-      detailJson: { manualStatus, origin: 'USER', via: 'to_process' },
-    });
-  },
-  // Effets d'après validation (D-13 recopie « achat », D-15 statut du bien),
-  // comme `updateManualStatus` — jamais dans la transaction de résolution.
-  afterCommit: async ({ accountId, targetId, value, userId }) => {
-    // Lot 47B (C4 TRG-013) : statut posé par l'utilisateur sur un élément
-    // relié à une Opération → T3 (source AGENDA, transition C8). Ne lève jamais.
-    try {
-      const [lie] = await db.select({ op: agendaItems.businessOperationId }).from(agendaItems)
-        .where(and(eq(agendaItems.id, targetId), eq(agendaItems.accountId, accountId))).limit(1);
-      if (lie?.op != null) {
-        const { notifyAgendaChangedForOperations } = await import('@/services/business-operations/agenda-projection/queue');
-        notifyAgendaChangedForOperations(accountId, { itemId: targetId, businessOperationId: Number(lie.op), userFieldsChanged: true });
-      }
-    } catch (e) {
-      console.error(`[agenda] déclencheur Agenda de l'élément ${targetId} :`, (e as Error).message);
-    }
-    if (value !== 'realise') return;
-    const { agendaEffectsAfterCommit } = await import('@/services/agenda/write-agenda-item');
-    await agendaEffectsAfterCommit({ accountId, itemId: targetId, actorUserId: userId, created: false, manualStatus: 'realise' });
-  },
-};
-
-/** Propositions d'une carte de statut (pures, testées). */
-export function agendaStatusProposals(kind: AgendaStatusProposalKind, sourceFileId: number | null): ActionProposal[] {
-  const source = sourceFileId
-    ? { evidenceIds: [`file:${sourceFileId}`], sourceContext: { label: 'Document analysé', targetType: 'DOCUMENT' as const, targetId: sourceFileId } }
-    : {};
-  return kind === 'propose_done'
-    ? [
-      { value: 'realise', label: 'Oui, c’est fait', confidence: 0.8, ...source },
-      { value: null, label: 'Pas encore', confidence: 0.2 },
-    ]
-    : [
-      { value: 'annule', label: 'Non, elle n’aura pas lieu (annulée)', confidence: 0.6, ...source },
-      { value: null, label: 'Elle reste à faire', confidence: 0.4 },
-    ];
-}
-
-/** Empreinte d'une carte de statut : élément + preuve + verdict (§7.4). */
-export function agendaStatusTriggerContext(itemId: number, kind: AgendaStatusProposalKind, sourceFileId: number | null): Record<string, unknown> {
-  return { itemId, decision: kind, sourceFileId };
-}
-
-/**
- * Ferme les cartes de statut ACTIVES d'un élément (autre verdict, statut
- * écrit, élément clos à la main). `except` : règle à laisser ouverte.
- */
-export async function closeAgendaStatusCards(
-  accountId: number,
-  itemId: number,
-  reason: Extract<ResolutionReason, 'OBSOLETE' | 'USER_COMPLETED'>,
-  opts: { except?: string; client?: DbClient } = {},
-): Promise<number[]> {
-  const client = opts.client ?? db;
-  const actives = await client.select({ id: toProcessActions.id, ruleCode: toProcessActions.ruleCode, cycleNumber: toProcessActions.cycleNumber })
-    .from(toProcessActions)
-    .where(and(
-      eq(toProcessActions.accountId, accountId), eq(toProcessActions.targetType, 'AGENDA_ITEM'),
-      eq(toProcessActions.targetId, itemId), eq(toProcessActions.fieldKey, AGENDA_STATUS_FIELD),
-      isNull(toProcessActions.resolvedAt),
-    ));
-  const now = new Date();
-  const fermees: number[] = [];
-  for (const a of actives) {
-    if (opts.except && a.ruleCode === opts.except) continue;
-    await client.update(toProcessActions)
-      .set({ resolvedAt: now, resolutionReason: reason, updatedAt: now })
-      .where(and(eq(toProcessActions.id, a.id), isNull(toProcessActions.resolvedAt)));
-    await client.insert(toProcessActionEvents).values({
-      actionId: a.id, accountId, event: reason, targetType: 'AGENDA_ITEM', targetId: itemId,
-      fieldKey: AGENDA_STATUS_FIELD, details: { ruleCode: a.ruleCode, cycleNumber: a.cycleNumber, reason: 'AGENDA_STATUS_SETTLED' },
-      createdAt: now,
-    });
-    fermees.push(a.id);
-  }
-  return fermees;
-}
-
-/**
- * Carte « réalisée ? » / « non réalisée ? » sur un élément d'agenda
- * (idempotente). Rien pour un élément introuvable ou déjà clos.
- */
-export async function proposeAgendaStatus(p: {
-  accountId: number;
-  itemId: number;
-  kind: AgendaStatusProposalKind;
-  sourceFileId: number | null;
-}): Promise<UpsertActionResult> {
-  const [item] = await db.select({ status: agendaItems.manualStatus, date: agendaItems.startDate })
-    .from(agendaItems)
-    .where(and(eq(agendaItems.id, p.itemId), eq(agendaItems.accountId, p.accountId))).limit(1);
-  if (!item) return { status: 'SKIPPED', reason: 'Événement introuvable dans le compte.' };
-  if (item.status) return { status: 'SKIPPED', reason: 'Statut déjà posé : rien à proposer.' };
-  // Lot 112G : statut effectif COMMUN (111R) — réalisé et prouvé par un document : aucune carte.
-  const { isSettledStatus, loadEffectiveStatus } = await import('@/services/agenda/effective-status-read');
-  const effectif = await loadEffectiveStatus(p.accountId, p.itemId);
-  if (effectif && isSettledStatus(effectif)) return { status: 'SKIPPED', reason: 'Réalisation déjà établie : rien à proposer.' };
-  const rule = RULE_OF[p.kind];
-  await closeAgendaStatusCards(p.accountId, p.itemId, 'OBSOLETE', { except: rule });
-  return upsertAction({
-    accountId: p.accountId,
-    targetType: 'AGENDA_ITEM',
-    targetId: p.itemId,
-    fieldKey: AGENDA_STATUS_FIELD,
-    actionKind: 'ARBITRATE',
-    ruleCode: rule,
-    proposals: agendaStatusProposals(p.kind, p.sourceFileId),
-    triggerContext: agendaStatusTriggerContext(p.itemId, p.kind, p.sourceFileId),
-  });
-}
-
-/** Carte ouverte « non réalisée ? » (lecture pour l'accueil / la mascotte). */
-interface OpenNotDoneProposal {
-  publicId: string;
-  agendaItemId: number;
-  title: string;
-  startDate: string | null;
-  sourceFileId: number | null;
-  activeSince: Date;
-}
-
-/**
- * Cartes AGENDA-NOT-DONE ouvertes d'un compte (élément non clos), plus
- * récentes d'abord. `assetIds` : restreint aux éléments liés à ces biens.
- */
-export async function listOpenNotDoneProposals(
-  accountId: number,
-  opts: { assetIds?: number[]; limit?: number } = {},
-): Promise<OpenNotDoneProposal[]> {
-  const biens = opts.assetIds?.filter((a) => Number.isInteger(a) && a > 0) ?? null;
-  const rows = await db.execute(sql`
-    SELECT t.public_id AS "publicId", i.id AS "agendaItemId", i.title, i.start_date::text AS "startDate",
-           (t.trigger_context->>'sourceFileId')::int AS "sourceFileId", t.active_since AS "activeSince"
-      FROM to_process_actions t
-      JOIN agenda_items i ON i.id = t.target_id AND i.account_id = t.account_id
-     WHERE t.account_id = ${accountId} AND t.target_type = 'AGENDA_ITEM' AND t.rule_code = ${AGENDA_NOT_DONE_RULE}
-       AND t.resolved_at IS NULL AND (i.manual_status IS NULL OR i.manual_status = '')
-       -- Lot 112G : même prémisse que l'affichage (réalisation prouvée comprise).
-       AND NOT ${sql.raw(PUBLISHABILITY_CONTRACTS[AGENDA_NOT_DONE_RULE].noLongerUseful!('t'))}
-       ${biens && biens.length
-    ? sql`AND EXISTS (SELECT 1 FROM agenda_asset_links l WHERE l.agenda_item_id = i.id AND l.asset_id IN (${sql.join(biens.map((b) => sql`${b}`), sql`, `)}))`
-    : sql``}
-     ORDER BY t.active_since DESC
-     LIMIT ${Math.min(Math.max(opts.limit ?? 20, 1), 100)}`);
-  return (rows as unknown as OpenNotDoneProposal[]).map((r) => ({
-    ...r, agendaItemId: Number(r.agendaItemId), sourceFileId: r.sourceFileId == null ? null : Number(r.sourceFileId),
-    activeSince: new Date(r.activeSince),
-  }));
-}
+// ── Statut d'une échéance : SUPPRIMÉ (lot 113P, #715) ───────────────────────
+//
+// Décision PO du 06/11/2026 : les événements de l'agenda n'ont plus de statut.
+// Les cartes AGENDA-DONE (« Cette échéance a-t-elle été réalisée ? ») et
+// AGENDA-NOT-DONE ne sont plus produites ni résolues ; les cartes ouvertes
+// restantes sont closes par la migration 1527 (motif OBSOLETE, trace
+// EVENT_STATUS_RETIRED). Seul le statut du BIEN (D-15) demeure ci-dessous.
 
 // ── Statut du bien (D-15) ───────────────────────────────────────────────────
 

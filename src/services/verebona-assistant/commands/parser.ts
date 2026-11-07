@@ -6,7 +6,6 @@
  * parcours de réponse normal. Ce module ne lit rien et n'écrit rien ; il
  * produit un brouillon que `plan.service` résout dans le compte puis fige.
  */
-import type { WriteCommandType } from './catalog';
 import { findAssetField, parseFieldValue } from './asset-fields';
 import { plain } from '../core/routing-text';
 
@@ -20,18 +19,6 @@ export type CommandDraft =
       assetWords: string[];
       /** « pour cette maison » : bien du fil. */
       assetFromContext: boolean;
-    }
-  | {
-      command: Extract<WriteCommandType, 'MARK_AGENDA_DONE' | 'CANCEL_AGENDA_ITEM'>;
-      /** Mots désignant l'échéance (« le ramonage »). */
-      targetWords: string[];
-      /** « le deuxième », « cette échéance » : référence du fil. */
-      targetFromContext: boolean;
-      /**
-       * Action EN MASSE (« toutes les échéances passées de ma Clio ») : un
-       * résultat par échéance visée.
-       */
-      bulk?: { scope: 'past' | 'open'; assetWords: string[] };
     }
   | {
       command: 'UPDATE_ASSET_FIELD';
@@ -60,8 +47,6 @@ const MOIS: Record<string, number> = {
 const CREATE = /\b(ajoute|ajouter|cree|creer|programme|programmer|planifie|planifier|enregistre|enregistrer)\b/;
 const AGENDA_NOUN = /\b(un|une)?\s*(rappel|echeance|rendez-vous|rdv|evenement|entretien|controle|revision)s?\b/;
 const DONE = /\b(marque|marquer|indique|indiquer|passe|passer|note|noter)\b[\s\S]*\b(fait|faite|faits|faites|realise|realisee|realises|realisees|termine|terminee|termines|terminees)\b/;
-const CANCEL = /\b(annule|annuler|supprime l'echeance|annulez)\b/;
-const REFERENCE = /\b(le|la)\s+(premier|premiere|deuxieme|second|seconde|troisieme|dernier|derniere)\b|\b(ce|cette|cet)\s+(rappel|echeance|rendez-vous|evenement|entretien)\b|\bcelle-ci\b|\bcelui-ci\b/;
 
 const STOP = new Set([
   'le', 'la', 'les', 'l', 'un', 'une', 'des', 'de', 'du', 'd', 'mon', 'ma', 'mes', 'pour', 'au', 'aux', 'a', 'en',
@@ -223,27 +208,8 @@ export function parseCommand(message: string, today: string): CommandDraft | nul
     };
   }
 
-  // ── Marquer comme réalisée / annuler ──────────────────────────────────
-  // T2-37 : « indique-moi si le ramonage est fait ? » est une question.
-  const done = DONE.test(m) && !(isReadingRequest(m) && !/\bmarquer?\b/.test(m));
-  const cancel = !done && CANCEL.test(m) && AGENDA_NOUN.test(m.replace(CANCEL, ''));
-  if (done || cancel) {
-    const command = done ? 'MARK_AGENDA_DONE' : 'CANCEL_AGENDA_ITEM';
-    const masse = m.match(/\btou(?:te)?s\s+(?:les|mes)\s+(?:echeances|rappels|rendez-vous|evenements|entretiens)\b/);
-    if (masse) {
-      const bien = m.match(/\b(?:de|du|pour)\s+(?:ma|mon|la|le|l')\s*([a-z0-9-]+)/);
-      return {
-        command, targetWords: [], targetFromContext: false,
-        bulk: {
-          scope: /\b(passee?s|en retard|depassee?s|echue?s)\b/.test(m) ? 'past' : 'open',
-          assetWords: bien ? motsUtiles(bien[1]) : [],
-        },
-      };
-    }
-    const targetFromContext = REFERENCE.test(m);
-    const targetWords = motsUtiles(m.replace(REFERENCE, ' '));
-    return { command, targetWords, targetFromContext };
-  }
+  // Lot 113P (#715) : plus de commande « marquer comme réalisée » / « annuler une échéance » —
+  // un événement n'a plus de statut (une échéance erronée se supprime depuis l'Agenda).
   return null;
 }
 

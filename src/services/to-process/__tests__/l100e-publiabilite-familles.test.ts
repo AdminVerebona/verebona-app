@@ -108,7 +108,9 @@ describe('L100E-U-PUB — une seule définition « publiable », toutes familles
   it('L100E-U-PUB-04 — prémisses (conditions 1 et 2) : réponse connue ou intérêt disparu, par famille', () => {
     const n = noLongerUsefulSql('a');
     // Agenda : date saisie ailleurs, élément réalisé / annulé, « Sans échéance ».
-    expect(n).toMatch(/a\.rule_code = 'DATA-AGENDA-DATE' AND EXISTS \(SELECT 1 FROM agenda_items i[\s\S]*i\.start_date IS NOT NULL OR NULLIF\(i\.manual_status, ''\) IS NOT NULL OR i\.no_deadline = true/);
+    // #715 : plus de statut d'événement — la date connue ou « Sans échéance » seulement.
+    expect(n).toMatch(/a\.rule_code = 'DATA-AGENDA-DATE' AND EXISTS \(SELECT 1 FROM agenda_items i[\s\S]*i\.start_date IS NOT NULL OR i\.no_deadline = true/);
+    expect(n).not.toMatch(/manual_status/);
     // Équipements : rattaché à un bien vivant, ou inactif.
     expect(n).toMatch(/'LINK-EQUIP-ASSET' AND EXISTS \(SELECT 1 FROM equipments e[\s\S]*s\.deleted_at IS NULL\) OR e\.archived_at IS NOT NULL/);
     // Fournisseurs : plus aucune revue ouverte.
@@ -165,7 +167,7 @@ describe('L100E-U-COH — COH-TODO-PUBLISHABILITY (nettoyage rétroactif, point 
     // Ajouté en fin de registre au lot 100E ; seuls des contrôles plus récents (lot 101A et suivants) le suivent.
     const ids = COHERENCE_REGISTRY.map((c) => c.id);
     // Lots suivants ajoutés APRÈS (101A, 103E, 103D), sans réordonner l'existant.
-    expect(ids.slice(ids.indexOf(PUBLISHABILITY_CHECK_ID) + 1)).toEqual(['COH-EQUIPMENT-IDENTITY', 'COH-AGENDA-SUPPLIERS', 'COH-AGENDA-STRUCTURAL-HOUSING', 'COH-AGENDA-HISTORICAL-STATUS',
+    expect(ids.slice(ids.indexOf(PUBLISHABILITY_CHECK_ID) + 1)).toEqual(['COH-EQUIPMENT-IDENTITY', 'COH-AGENDA-SUPPLIERS', 'COH-AGENDA-STRUCTURAL-HOUSING', /* #715 : COH-AGENDA-HISTORICAL-STATUS retiré */
       // Lot 105D : rattachement principal récupérable (fin de registre).
       'COH-DOC-PRIMARY-LINK',
       // Lot 106A : représentations Agenda équivalentes (fin de registre).

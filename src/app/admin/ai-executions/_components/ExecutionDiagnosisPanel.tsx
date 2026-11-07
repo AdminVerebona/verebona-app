@@ -29,9 +29,10 @@ import { Button } from '@/components/ui/button';
 import { apiClient } from '@/lib/api-client';
 import {
   CONTROL_LABELS, FAMILY_LABELS, PROVIDER_FAILURE_CATEGORY_LABELS, SUBTYPE_LABELS,
-  type CallDiagnostic, type ControlChain, type ControlState, type ProviderAttemptTrace,
+  type AttachmentTransferFailure, type CallDiagnostic, type ControlChain, type ControlState, type ProviderAttemptTrace,
   type ProviderFailureCategory, type ProviderRequestTrace,
 } from '@/services/ai/gateway/diagnostics/taxonomy';
+import { TransferFailureBlock } from '@/components/admin/TransferFailureBlock';
 import { CopyBlockButton } from './CopyJson';
 
 export interface CallReportView {
@@ -56,6 +57,15 @@ export interface CallReportView {
   failureCategory?: ProviderFailureCategory | null;
   providerRequest?: ProviderRequestTrace | null;
   providerAttempts?: ProviderAttemptTrace[];
+  /** Lot 113R : rang non appelé, rang configuré ≠ secours réellement utilisé, génération demandée ou non. */
+  notCalled?: boolean;
+  configuredRank?: string | null;
+  fallbackUsed?: boolean;
+  generationRequested?: boolean;
+  notCalledReason?: string | null;
+  commonDependency?: string | null;
+  /** Lot 113R : réponse du fournisseur au transfert de la pièce jointe (sans secret). */
+  transfer?: AttachmentTransferFailure | null;
 }
 
 export interface DiagnosisView {
@@ -64,7 +74,10 @@ export interface DiagnosisView {
     analysisCalls: number; failedCalls: number; identical: boolean; signature: string | null;
     cause: string | null; path: string | null; expected: string | null; received: string | null; stage: string | null;
   };
-  counters: { jobAttempts: number | null; modelCalls: number; modelFallbacks: number; structuredOutputRetries?: number; repairCalls: number };
+  counters: {
+    jobAttempts: number | null; modelCalls: number; modelFallbacks: number; structuredOutputRetries?: number; repairCalls: number;
+    notCalled?: number; transferFailures?: number; generationsRequested?: number;
+  };
   result: { jobStatus: string | null; businessResult: string | null; cause: string | null; doneButFailed: boolean };
   finalDiagnosis: string[];
 }
@@ -188,7 +201,22 @@ function Controls({ controls }: { controls: ControlChain }) {
   );
 }
 
+
+const RANK_TEXT: Record<string, string> = { primary: 'principal', fallback_1: 'secours 1', fallback_2: 'secours 2' };
+
 function CallCard({ r }: { r: CallReportView }) {
+  if (r.notCalled) {
+    return (
+      <div className="rounded-lg border border-[color:var(--border-subtle)] p-3 space-y-1 text-xs text-[color:var(--text-secondary)]" data-testid="execution-call-not-called">
+        <p className="font-medium text-[color:var(--text-primary)]">
+          {r.label.charAt(0).toUpperCase() + r.label.slice(1)} — {r.model ?? 'modèle inconnu'} : non appelé
+        </p>
+        <p>Rang configuré : {RANK_TEXT[r.configuredRank ?? ''] ?? r.configuredRank ?? '—'} · secours utilisé : non · aucune requête, aucun coût.</p>
+        {r.notCalledReason && <p>Motif : {r.notCalledReason}</p>}
+        {r.commonDependency && <p>Dépendance commune : {r.commonDependency}</p>}
+      </div>
+    );
+  }
   const d = r.diagnostic;
   const p = d?.provider;
   const first = d?.issues[0];
@@ -205,6 +233,8 @@ function CallCard({ r }: { r: CallReportView }) {
         {r.cause && (<><dt className="text-[color:var(--text-muted)]">Cause</dt><dd>{r.cause}{causeLabel(d) ? ` (${causeLabel(d)})` : ''}</dd></>)}
         {r.failureCategory && (<><dt className="text-[color:var(--text-muted)]">Nature</dt><dd data-testid="execution-call-category">{PROVIDER_FAILURE_CATEGORY_LABELS[r.failureCategory]}</dd></>)}
         {r.stage && (<><dt className="text-[color:var(--text-muted)]">Étape</dt><dd>{r.stage}</dd></>)}
+        {r.configuredRank && (<><dt className="text-[color:var(--text-muted)]">Rang configuré</dt><dd>{RANK_TEXT[r.configuredRank] ?? r.configuredRank}{r.fallbackUsed ? ' — secours réellement utilisé' : ''}</dd></>)}
+        {r.generationRequested === false && (<><dt className="text-[color:var(--text-muted)]">Génération</dt><dd data-testid="execution-call-no-generation">non demandée au modèle</dd></>)}
         <dt className="text-[color:var(--text-muted)]">Entrée</dt><dd>{fmtInt(r.inputTokens)} tokens</dd>
         <dt className="text-[color:var(--text-muted)]">Sortie</dt>
         <dd>
@@ -219,6 +249,7 @@ function CallCard({ r }: { r: CallReportView }) {
       </dl>
 
       <ProviderAttempts attempts={r.providerAttempts ?? []} model={r.model} />
+      {(r.transfer ?? d?.transfer) && <TransferFailureBlock t={(r.transfer ?? d?.transfer)!} />}
 
       {first && (
         <div className="space-y-0.5" data-testid="execution-call-error">
@@ -419,6 +450,9 @@ export function ExecutionDiagnosisPanel({ callId, diagnosis }: { callId: number;
           Appels modèle de cette tentative : {counters.modelCalls} · Fallbacks modèle : {counters.modelFallbacks}
           {(counters.structuredOutputRetries ?? 0) > 0 && <> · Nouveaux essais sans structured output : {counters.structuredOutputRetries}</>}
           {counters.repairCalls > 0 && <> · Réparations ciblées : {counters.repairCalls}</>}
+          {counters.generationsRequested !== undefined && <> · Générations demandées : {counters.generationsRequested}</>}
+          {(counters.transferFailures ?? 0) > 0 && <> · Envois du document refusés ou impossibles : {counters.transferFailures}</>}
+          {(counters.notCalled ?? 0) > 0 && <> · Secours non appelés : {counters.notCalled}</>}
         </p>
       </section>
 

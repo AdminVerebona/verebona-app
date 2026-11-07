@@ -111,7 +111,6 @@ interface DocumentAgendaItem {
   startDate: string | null;
   isAutomatic: boolean;
   isAutomaticModified: boolean;
-  manualStatus: string | null;
   homeCategory: string | null;
   originFieldKey: string | null;
 }
@@ -132,7 +131,6 @@ export async function listAgendaItemsForDocument(
     startDate: agendaItems.startDate,
     isAutomatic: agendaItems.isAutomatic,
     isAutomaticModified: agendaItems.isAutomaticModified,
-    manualStatus: agendaItems.manualStatus,
     homeCategory: agendaItems.homeCategory,
     originFieldKey: agendaItems.originFieldKey,
   })

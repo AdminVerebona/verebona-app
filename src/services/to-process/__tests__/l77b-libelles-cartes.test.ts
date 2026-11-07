@@ -182,8 +182,7 @@ describe('L77B-03 — toutes les familles : aucun libellé technique', () => {
     ['AGENDA-PROJECTION-MATCH', vue({ targetType: 'AGENDA_ITEM', ruleCode: 'AGENDA-PROJECTION-MATCH', relationKey: 'proj', label: 'Vidange',
       question: projection.agendaProjectionQuestion({ title: 'Vidange', date: '2026-04-10', typeCode: null }, [{ itemId: 4, title: 'Entretien', date: '2026-04-11', reason: 'DATE_PROXIMITY' }, { itemId: 5, title: 'Révision', date: null, reason: 'X' }], 'Facture garage'),
       proposals: projection.agendaProjectionProposals([{ itemId: 4, title: 'Entretien', date: '2026-04-11', reason: 'DATE_PROXIMITY' }, { itemId: 5, title: 'Révision', date: null, reason: 'X' }]) })],
-    ['AGENDA-DONE', vue({ targetType: 'AGENDA_ITEM', ruleCode: 'AGENDA-DONE', fieldKey: 'status', label: 'Ramonage', proposals: statut.agendaStatusProposals('propose_done', 44) })],
-    ['AGENDA-NOT-DONE', vue({ targetType: 'AGENDA_ITEM', ruleCode: 'AGENDA-NOT-DONE', fieldKey: 'status', label: 'Ramonage', proposals: statut.agendaStatusProposals('propose_not_done', null) })],
+    // #715 (lot 113P) : AGENDA-DONE / AGENDA-NOT-DONE retirés (plus de statut d'événement).
     ['ASSET-STATUS', vue({ targetType: 'ASSET', ruleCode: 'ASSET-STATUS', fieldKey: 'status', label: 'Peugeot 208',
       proposals: statut.assetStatusProposals('sale', 'ACTIF', 'Acte de vente', new Set(['VENDU', 'TRANSMIS'])) })],
     ['AGENDA-DUPLICATE', vue({ targetType: 'AGENDA_ITEM', ruleCode: 'AGENDA-DUPLICATE', relationKey: 'dup', label: 'Contrôle technique',

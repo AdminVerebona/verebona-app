@@ -122,7 +122,7 @@ export interface SupplierDetail {
   documents: SupplierSectionPage<SupplierDocumentRow>;
   equipments: SupplierSectionPage<SupplierEquipmentRow>;
   /** Lot 103E : événements rattachés (relation persistante), avec la provenance du lien. */
-  agendaItems: Array<{ id: number; title: string; startDate: string | null; manualStatus: string | null; provenance?: string | null }>;
+  agendaItems: Array<{ id: number; title: string; startDate: string | null; provenance?: string | null }>;
   /** Conflits de coordonnées ouverts, arbitrables depuis la fiche (Garder / Utiliser / Ignorer). */
   conflicts: SupplierConflict[];
   /** Doublon possible à arbitrer (carte « À traiter »), sans statut global. */
@@ -293,7 +293,7 @@ export async function getSupplierDetail(
     // `agenda_item_suppliers`) — passés, à venir et sans date. Plus aucune déduction par
     // voisinage (document ou équipement commun) : le ticket l'interdit.
     run(
-      `SELECT i.id, i.title, i.start_date AS "startDate", i.manual_status AS "manualStatus", l.provenance
+      `SELECT i.id, i.title, i.start_date AS "startDate", l.provenance
          FROM agenda_item_suppliers l
          JOIN agenda_items i ON i.id = l.agenda_item_id AND i.account_id = $2
         WHERE l.supplier_id = $1 AND l.account_id = $2

@@ -271,7 +271,7 @@ export const agendaOrphansCheck: CoherenceCheck = {
              (i.origin_ref_type = 'asset_file' AND i.origin_ref_id IS NOT NULL) AS has_source,
              (i.business_operation_id IS NOT NULL AND EXISTS (SELECT 1 FROM business_operations o WHERE o.id = i.business_operation_id
                                                               AND o.invalidated_at IS NULL AND o.merged_into_operation_id IS NULL)) AS operation_alive,
-             (i.is_automatic AND NOT i.is_automatic_modified AND (i.manual_status IS NULL OR i.manual_status = '')
+             (i.is_automatic AND NOT i.is_automatic_modified
               AND i.confirmation_mode IS DISTINCT FROM 'USER') AS untouched
         FROM agenda_items i WHERE i.account_id = $1 AND i.id = ANY($2::int[])`, [accountId, intArray(ids)]);
     const parId = new Map(r.map((x) => [Number(x.id), x]));

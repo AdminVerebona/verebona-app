@@ -363,7 +363,7 @@ async function assetDossier(ctx: Ctx, id: number): Promise<EntityDossier['entity
       JOIN asset_files f ON f.id = x.fid AND f.account_id = $1
      ORDER BY f.id, x.via, x.nature`, [A, id]);
   await relSection(ctx, 'rel-agenda', 'Échéances (agenda)', `
-    SELECT 'agenda' AS type, i.id, i.title AS label, 'échéance liée au bien' AS nature, i.manual_status AS status, i.origin_type AS origin, 'agenda_asset_links' AS via
+    SELECT 'agenda' AS type, i.id, i.title AS label, 'échéance liée au bien' AS nature, NULL::text AS status, i.origin_type AS origin, 'agenda_asset_links' AS via
       FROM agenda_asset_links l JOIN agenda_items i ON i.id = l.agenda_item_id AND i.account_id = $1 WHERE l.asset_id = $2 ORDER BY i.start_date, i.id`, [A, id]);
   await relSection(ctx, 'rel-deadlines', 'Échéances historiques (deadlines)', `
     SELECT 'deadline' AS type, d.id, d.label, 'échéance historique' AS nature, CASE WHEN d.is_done THEN 'faite' ELSE 'ouverte' END AS status, NULL AS origin, 'deadlines.asset_id' AS via
@@ -483,7 +483,7 @@ async function equipmentDossier(ctx: Ctx, id: number): Promise<EntityDossier['en
       JOIN asset_files f ON f.id = x.fid AND f.account_id = $1
      ORDER BY f.id, x.via, x.nature`, [A, id]);
   await relSection(ctx, 'rel-agenda', 'Échéances et historique', `
-    SELECT 'agenda' AS type, i.id, i.title AS label, 'échéance de l’équipement' AS nature, i.manual_status AS status, i.origin_type AS origin, 'agenda_equipment_links' AS via
+    SELECT 'agenda' AS type, i.id, i.title AS label, 'échéance de l’équipement' AS nature, NULL::text AS status, i.origin_type AS origin, 'agenda_equipment_links' AS via
       FROM agenda_equipment_links l JOIN agenda_items i ON i.id = l.agenda_item_id AND i.account_id = $1 WHERE l.equipment_id = $2
     UNION ALL
     SELECT 'deadline', d.id, d.label, 'échéance historique', CASE WHEN d.is_done THEN 'faite' ELSE 'ouverte' END, NULL, 'deadlines.equipment_id'
@@ -544,7 +544,7 @@ async function roomDossier(ctx: Ctx, id: number): Promise<EntityDossier['entity'
       JOIN asset_files f ON f.id = x.fid AND f.account_id = $1
      ORDER BY f.id, x.nature, x.via`, [A, id]);
   await relSection(ctx, 'rel-agenda', 'Échéances', `
-    SELECT 'agenda' AS type, i.id, i.title AS label, 'échéance de la pièce' AS nature, i.manual_status AS status, i.origin_type AS origin, 'agenda_room_links' AS via
+    SELECT 'agenda' AS type, i.id, i.title AS label, 'échéance de la pièce' AS nature, NULL::text AS status, i.origin_type AS origin, 'agenda_room_links' AS via
       FROM agenda_room_links l JOIN agenda_items i ON i.id = l.agenda_item_id AND i.account_id = $1 WHERE l.substructure_id = $2
     UNION ALL
     SELECT 'deadline', d.id, d.label, 'échéance historique', CASE WHEN d.is_done THEN 'faite' ELSE 'ouverte' END, NULL, 'deadlines.substructure_id'
@@ -610,7 +610,7 @@ async function documentDossier(ctx: Ctx, id: number): Promise<EntityDossier['ent
         FROM asset_files g WHERE g.grouped_into_file_id = $2 AND g.account_id = $1
     ) r`, [A, id]);
   await relSection(ctx, 'rel-agenda', 'Échéances générées ou associées', `
-    SELECT 'agenda' AS type, i.id, i.title AS label, x.nature, i.manual_status AS status, x.origin, x.via
+    SELECT 'agenda' AS type, i.id, i.title AS label, x.nature, NULL::text AS status, x.origin, x.via
       FROM (SELECT agenda_item_id AS iid, 'document lié' AS nature, NULL AS origin, 'agenda_file_links' AS via FROM agenda_file_links WHERE asset_file_id = $2
             UNION ALL SELECT agenda_item_id, 'source : ' || coalesce(effect_type, '') || coalesce(' / ' || source_role, ''), 'DOCUMENT_EXTRACTION', 'agenda_item_sources' FROM agenda_item_sources WHERE asset_file_id = $2) x
       JOIN agenda_items i ON i.id = x.iid AND i.account_id = $1
@@ -665,7 +665,7 @@ async function interventionDuplicatesSections(ctx: Ctx, fileId: number): Promise
   const { EXCLUSIVE_FILES_RAW } = await import('@/services/business-operations/agenda-projection/service');
   const itemsSql = `
     SELECT i.id, i.title, i.start_date::text AS date, i.business_type, i.event_nature, i.business_operation_id::int AS business_operation_id,
-           i.projection_origin, i.is_automatic, i.is_automatic_modified, i.manual_status, i.requires_qualification, i.occurrence_nature,
+           i.projection_origin, i.is_automatic, i.is_automatic_modified, i.requires_qualification, i.occurrence_nature,
            i.confirmation_mode, i.origin_type, i.origin_ref_type, i.origin_ref_id, i.origin_field_key, i.functional_key, i.created_at, i.updated_at
       FROM agenda_items i
      WHERE i.account_id = $1 AND (
@@ -711,7 +711,7 @@ async function interventionDuplicatesSections(ctx: Ctx, fileId: number): Promise
       parDate.set(d, [...(parDate.get(d) ?? []), i]);
     }
     const fields: DossierField[] = [];
-    const touche = (i: Row) => i.is_automatic !== true || i.is_automatic_modified === true || (i.manual_status !== null && i.manual_status !== '') || i.confirmation_mode === 'USER';
+    const touche = (i: Row) => i.is_automatic !== true || i.is_automatic_modified === true || i.confirmation_mode === 'USER';
     for (const [date, groupe] of parDate) {
       const v = classifyDuplicateCause({
         items: groupe.map((i) => ({ id: num(i.id), title: str(i.title) ?? '', date: str(i.date), businessType: str(i.business_type), businessOperationId: i.business_operation_id == null ? null : num(i.business_operation_id), projected: i.projection_origin === 'OPERATION', touched: touche(i) })),
@@ -724,7 +724,7 @@ async function interventionDuplicatesSections(ctx: Ctx, fileId: number): Promise
     return { fields };
   });
   await tableSection(ctx, 'doublons-evenements', 'preuves', 'Doublons d’interventions — événements du document (agenda_items)', 'agenda_items', itemsSql, [A, fileId],
-    'business_operation_id : Opération représentée ; projection_origin = OPERATION : événement projeté ; is_automatic_modified / manual_status / confirmation_mode : touché par l’utilisateur (jamais absorbé).');
+    'business_operation_id : Opération représentée ; projection_origin = OPERATION : événement projeté ; is_automatic_modified / confirmation_mode : touché par l’utilisateur (jamais absorbé ; lot 113P : plus de statut d’événement).');
   await tableSection(ctx, 'doublons-candidats', 'preuves', 'Doublons d’interventions — candidats T1 et décisions T3', 'document_operation_candidates', candSql, [A, fileId],
     'canonical_operation_id : Opération retenue par T3 (fusions suivies) ; refs : références identifiantes normalisées.');
   await tableSection(ctx, 'doublons-operations', 'preuves', 'Doublons d’interventions — Opérations actives prouvées par le document', 'business_operations', opsSql, [A, fileId],
@@ -759,7 +759,7 @@ async function agendaDossier(ctx: Ctx, id: number): Promise<EntityDossier['entit
   const row = await oneRow(ctx.q, `SELECT * FROM agenda_items WHERE id = $1 AND account_id = $2`, [id, A]);
   if (!row) throw new EntityNotFoundError();
   await section(ctx, { id: 'identite', tab: 'synthese', title: 'Échéance (agenda actif)' }, async () => ({
-    fields: pick('agenda_items', row, [['id', 'Identifiant'], ['title', 'Titre'], ['start_date', 'Date'], ['start_time', 'Heure'], ['end_date', 'Fin'], ['manual_status', 'Statut'],
+    fields: pick('agenda_items', row, [['id', 'Identifiant'], ['title', 'Titre'], ['start_date', 'Date'], ['start_time', 'Heure'], ['end_date', 'Fin'],
       ['event_nature', 'Nature'], ['business_type', 'Type métier'], ['origin_type', 'Origine'], ['origin_ref_type', 'Référence d’origine (type)'], ['origin_ref_id', 'Référence d’origine (id)'],
       ['origin_field_key', 'Champ d’origine'], ['is_automatic', 'Automatique'], ['is_automatic_modified', 'Automatique modifiée'], ['recurrence_json', 'Récurrence'],
       ['forecast_initial_date', 'Date prévisionnelle initiale'], ['confirmed_at', 'Confirmée le'], ['confirmation_mode', 'Mode de confirmation'], ['confirmation_source', 'Source de confirmation'],
@@ -791,7 +791,7 @@ async function agendaDossier(ctx: Ctx, id: number): Promise<EntityDossier['entit
     `SELECT * FROM to_process_actions WHERE account_id = $1 AND upper(target_type) IN ('AGENDA_ITEM', 'AGENDA') AND target_id = $2 ORDER BY id DESC`, [A, id]);
   // Lot 76H : événement produit par un document — diagnostic des doublons d'interventions de ce document.
   if (row.origin_ref_type === 'asset_file' && row.origin_ref_id != null) await interventionDuplicatesSections(ctx, num(row.origin_ref_id));
-  return { type: 'agenda', typeLabel: ENTITY_LABELS.agenda, id, table: 'agenda_items', name: str(row.title) ?? `Échéance #${id}`, status: str(row.manual_status), statusLabel: str(row.manual_status) };
+  return { type: 'agenda', typeLabel: ENTITY_LABELS.agenda, id, table: 'agenda_items', name: str(row.title) ?? `Échéance #${id}`, status: null, statusLabel: null };
 }
 
 async function deadlineDossier(ctx: Ctx, id: number): Promise<EntityDossier['entity']> {
@@ -881,7 +881,7 @@ async function operationDossier(ctx: Ctx, id: number, withDetail: boolean): Prom
       FROM business_operation_sources s JOIN asset_files f ON f.id = (CASE WHEN s.source_entity_key ~ '^[0-9]{1,9}$' THEN s.source_entity_key::int END) AND f.account_id = s.account_id
      WHERE s.operation_id = $1 AND s.account_id = $2 AND s.source_kind = 'DOCUMENT'
     UNION ALL
-    SELECT 'agenda', i.id, coalesce(i.title, 'Échéance'), CASE WHEN i.projection_origin = 'OPERATION' THEN 'échéance projetée (T4)' ELSE 'échéance rapprochée' END, i.manual_status, i.projection_origin, 'agenda_items.business_operation_id'
+    SELECT 'agenda', i.id, coalesce(i.title, 'Échéance'), CASE WHEN i.projection_origin = 'OPERATION' THEN 'échéance projetée (T4)' ELSE 'échéance rapprochée' END, NULL::text, i.projection_origin, 'agenda_items.business_operation_id'
       FROM agenda_items i WHERE i.business_operation_id = $1 AND i.account_id = $2
     UNION ALL
     SELECT 'operation', m.id, 'Opération #' || m.id, 'fusionnée dans', NULL, NULL, 'business_operations.merged_into_operation_id'
@@ -1017,12 +1017,12 @@ async function supplierDossier(ctx: Ctx, id: number): Promise<EntityDossier['ent
     SELECT operation_id AS op_id, 'fournisseur ' || role || ' — lien ' || status || coalesce(' (' || reason_code || ')', '') AS nature, origin, 'business_operation_suppliers' AS via
       FROM business_operation_suppliers WHERE account_id = $1 AND supplier_id = $2`), [A, id]);
   await relSection(ctx, 'rel-echeances-direct', 'Échéances — liens DIRECTS (agenda_item_suppliers)', `
-    SELECT 'agenda' AS type, i.id, i.title AS label, 'lien direct — provenance ' || coalesce(r.origin, '') AS nature, i.manual_status AS status, r.origin, 'agenda_item_suppliers' AS via
+    SELECT 'agenda' AS type, i.id, i.title AS label, 'lien direct — provenance ' || coalesce(r.origin, '') AS nature, NULL::text AS status, r.origin, 'agenda_item_suppliers' AS via
       FROM (${P.agendaItems}) r JOIN agenda_items i ON i.id = r.obj AND i.account_id = $1
      WHERE r.provenance = 'DIRECT'`, [A, id]);
   await relSection(ctx, 'rel-echeances-via', 'Échéances — VIA Opération (événements des Opérations actives du fournisseur)', `
     SELECT 'agenda' AS type, i.id, i.title AS label, ${VIA_NATURE} || ' ; événement ' || coalesce(array_to_string(r.membership, ','), '') AS nature,
-           i.manual_status AS status, r.origin, 'business_operation_suppliers × agenda_items.business_operation_id' AS via
+           NULL::text AS status, r.origin, 'business_operation_suppliers × agenda_items.business_operation_id' AS via
       FROM (${P.agendaItems}) r JOIN agenda_items i ON i.id = r.obj AND i.account_id = $1
      WHERE r.provenance = 'VIA_OPERATION'`, [A, id]);
 

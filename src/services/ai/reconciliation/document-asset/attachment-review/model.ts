@@ -103,7 +103,11 @@ export type ReviewAttachmentOrigin = 'USER' | 'HISTORICAL' | 'AUTOMATIC';
 export type AttachmentReviewDecision =
   | { kind: 'CONFIRMED'; reason: string; source: 'AI' | 'NO_INDEX' }
   | { kind: 'MULTI_ASSET'; assetIds: number[]; reason: string }
-  | { kind: 'ARBITRATE'; suggestedAssetId: number; ambiguous: boolean; reason: string; citedUnitIds: string[]; citedIndexIds: number[] }
+  | {
+    kind: 'ARBITRATE'; suggestedAssetId: number; ambiguous: boolean; reason: string; citedUnitIds: string[]; citedIndexIds: number[];
+    /** Lot 113S (`t3-user-question-v1`) : question BRUTE proposée par T3, contrôlée avant affichage (`ai-user-question.ts`). */
+    userQuestion?: string | null;
+  }
   | {
     kind: 'NO_DECISION';
     reasonCode: 'INSUFFICIENT_EVIDENCE' | 'UNSUPPORTED_ARBITRATION' | 'CLOSED_WORLD_VIOLATION' | 'REVIEW_OUTPUT_MISSING'
@@ -468,7 +472,10 @@ export function decideAttachmentReview(
     const rang = (id: number) => { const i = tries.findIndex((m) => m.candidateId === id); return i < 0 ? Number.MAX_SAFE_INTEGER : i; };
     const suggere = [...autres].sort((a, b) => rang(a) - rang(b) || a - b)[0];
     const ambigu = autres.length > 1 || concernes.some((id) => actuels.has(id)) || !certainsAutres.some((m) => m.candidateId === suggere);
-    return { kind: 'ARBITRATE', suggestedAssetId: suggere, ambiguous: ambigu, reason, citedUnitIds: cites.units, citedIndexIds: cites.indices };
+    return {
+      kind: 'ARBITRATE', suggestedAssetId: suggere, ambiguous: ambigu, reason, citedUnitIds: cites.units, citedIndexIds: cites.indices,
+      ...(typeof r.userQuestion === 'string' ? { userQuestion: r.userQuestion } : {}),
+    };
   }
 
   // ── Sans contrat : contrat historique de la branche (matches, documentScope) ──

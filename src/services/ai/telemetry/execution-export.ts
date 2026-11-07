@@ -37,7 +37,7 @@
  *     par précaution — un masquage déjà appliqué reste inchangé.
  * ══════════════════════════════════════════════════════════════════════════
  */
-import { NOT_CALLED_ERROR_CODES } from '../gateway/fallback-policy';
+import { NOT_CALLED_ERROR_CODES, NO_GENERATION_STAGES } from '../gateway/fallback-policy';
 import { redact } from '@/services/ai/gateway/redaction';
 import type { ExecutionDetail, ExecutionRow, ExecutionStep } from './execution-log.repository';
 import { buildExecutionDiagnosis, type ExecutionDiagnosis } from './execution-diagnosis';
@@ -78,7 +78,15 @@ function appel(c: ExecutionRow) {
     provider: c.provider,
     model: c.model,
     modelRank: c.modelRank,
-    usedFallback: c.usedFallback,
+    // Lot 113R : rang CONFIGURÉ (`configuredRank`) ≠ secours RÉELLEMENT utilisé
+    // (`usedFallback`, toujours faux pour un rang non appelé).
+    configuredRank: c.modelRank,
+    usedFallback: c.usedFallback && !NOT_CALLED_ERROR_CODES.has(c.errorCode ?? ''),
+    notCalled: NOT_CALLED_ERROR_CODES.has(c.errorCode ?? ''),
+    generationRequested: !NOT_CALLED_ERROR_CODES.has(c.errorCode ?? '') && !NO_GENERATION_STAGES.has(String(c.failure?.stage ?? '')),
+    fallbackDecision: c.fallbackDecision ? masquer(c.fallbackDecision) : null,
+    // Lot 113R : réponse du fournisseur au transfert de la pièce jointe (déjà masquée à la source).
+    transfer: c.transfer ? masquer(c.transfer) : null,
     status: c.status,
     error: c.errorCode || c.errorMessage ? { code: c.errorCode, message: texte(c.errorMessage) } : null,
     durationMs: c.durationMs,
@@ -164,6 +172,10 @@ interface ExecutionExport {
     failedCalls: number;
     /** Lot 109J : rangs non sollicités (refus de secours) — aucune requête. */
     notCalled: number;
+    /** Lot 113R : appels arrêtés au transfert de la pièce jointe (aucune génération). */
+    transferFailures: number;
+    /** Lot 113R : générations réellement demandées au modèle. */
+    generationsRequested: number;
   };
   calls: ReturnType<typeof appel>[];
   steps: ReturnType<typeof etape>[];
@@ -265,6 +277,9 @@ export function buildExecutionExport(
       calls: calls.filter((x) => !NOT_CALLED_ERROR_CODES.has(x.errorCode ?? '')).length,
       failedCalls: calls.filter((x) => x.status === 'error' && !NOT_CALLED_ERROR_CODES.has(x.errorCode ?? '')).length,
       notCalled: calls.filter((x) => NOT_CALLED_ERROR_CODES.has(x.errorCode ?? '')).length,
+      // Lot 113R : transfert refusé ≠ génération sollicitée et échouée.
+      transferFailures: calls.filter((x) => x.failure?.stage === 'attachment_transfer').length,
+      generationsRequested: calls.filter((x) => !NOT_CALLED_ERROR_CODES.has(x.errorCode ?? '') && !NO_GENERATION_STAGES.has(String(x.failure?.stage ?? ''))).length,
     },
     calls: calls.map(appel),
     steps: steps.map(etape),

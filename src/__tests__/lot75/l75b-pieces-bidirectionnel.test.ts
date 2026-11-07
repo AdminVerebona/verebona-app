@@ -135,7 +135,7 @@ describe('L75B-FILT — filtre Pièce (pur)', () => {
 
   it('L75B-FILT-05 — « Mon agenda » : pastille Pièce entre Bien et Équipement', () => {
     expect(agendaFilterChips({
-      period: 'all', assetIds: [3], includeCancelled: false, assetOptions: [{ id: 3, name: 'Maison' }],
+      period: 'all', assetIds: [3], assetOptions: [{ id: 3, name: 'Maison' }],
       equipmentChipLabel: 'Four', roomChipLabel: 'Cuisine',
     }).map((c) => c.key)).toEqual(['bien:3', 'piece', 'equipment']);
   });

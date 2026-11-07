@@ -22,7 +22,7 @@ describe('parité des valeurs écrites', () => {
   it('agenda manuel : mêmes colonnes qu’avant (createAgendaItem)', () => {
     expect(manualInsertValues({ title: 'Achat vélo', startDate: '2026-01-02', assetIds: [1] }, 7, 'information')).toEqual({
       createdByUserId: 7, title: 'Achat vélo', description: null, startDate: '2026-01-02', startTime: null, endDate: null,
-      endTime: null, manualStatus: null, isAutomatic: false, isAutomaticModified: false, requiresQualification: false,
+      endTime: null, isAutomatic: false, isAutomaticModified: false, requiresQualification: false,
       originType: 'manual', originRefType: null, originRefId: null, originFieldKey: null, homeCategory: 'information',
     });
   });
@@ -41,16 +41,16 @@ describe('parité des valeurs écrites', () => {
 });
 
 describe('D-13 — recopie « achat »', () => {
-  const achat = { title: 'Achat draisienne', startDate: '2026-01-02', isAutomatic: false, manualStatus: null };
-  it('événement manuel réalisé (statut, ou date passée) : oui', () => {
+  const achat = { title: 'Achat draisienne', startDate: '2026-01-02', isAutomatic: false };
+  // #715 : plus de statut — la date seule situe l'achat (passée ou du jour).
+  it('événement manuel d’achat daté du passé ou du jour : oui', () => {
     expect(purchaseSyncAllowed(achat, null, '2026-02-01')).toBe(true);
-    expect(purchaseSyncAllowed({ ...achat, startDate: '2026-05-01', manualStatus: 'realise' }, null, '2026-02-01')).toBe(true);
+    expect(purchaseSyncAllowed({ ...achat, startDate: '2026-02-01' }, null, '2026-02-01')).toBe(true);
     expect(purchaseSyncAllowed({ ...achat, title: 'Draisienne' }, 'purchase', '2026-02-01')).toBe(true);
   });
-  it('automatique, futur non réalisé, annulé, autre type : non', () => {
+  it('automatique, futur, autre type : non', () => {
     expect(purchaseSyncAllowed({ ...achat, isAutomatic: true }, 'purchase', '2026-02-01')).toBe(false);
     expect(purchaseSyncAllowed({ ...achat, startDate: '2026-05-01' }, null, '2026-02-01')).toBe(false);
-    expect(purchaseSyncAllowed({ ...achat, manualStatus: 'annule' }, null, '2026-02-01')).toBe(false);
     expect(purchaseSyncAllowed({ ...achat, title: 'Révision' }, 'maintenance', '2026-02-01')).toBe(false);
   });
 });
@@ -60,7 +60,6 @@ describe('D-14 — prochaines échéances', () => {
     expect(isUpcomingDeadlineCandidate({ eventNature: 'HISTORICAL' })).toBe(false);
     expect(isUpcomingDeadlineCandidate({ eventNature: 'DEADLINE' })).toBe(true);
     expect(isUpcomingDeadlineCandidate({})).toBe(true);
-    expect(isUpcomingDeadlineCandidate({ manualStatus: 'realise' })).toBe(false);
   });
   it('fragment SQL : HISTORICAL exclu dès que la 0223 est appliquée ; vide sinon', async () => {
     colonnes.pretes = true;

@@ -89,7 +89,7 @@ describe('AC5.1 — export complet et structuré', () => {
     // Erreurs agrégées : appel, étape, job.
     expect(x.errors.map((e) => e.where)).toEqual(['appel 2621 (gemini-3.5-flash)', 'étape model_call', 'job 575']);
     // Coûts de la chaîne entière.
-    expect(x.costs).toEqual({ totalCostMicros: 9432, totalCostUsd: 0.009432, inputTokens: 6293, outputTokens: 79, totalDurationMs: 11500, calls: 2, failedCalls: 1, notCalled: 0 });
+    expect(x.costs).toEqual({ totalCostMicros: 9432, totalCostUsd: 0.009432, inputTokens: 6293, outputTokens: 79, totalDurationMs: 11500, calls: 2, failedCalls: 1, notCalled: 0, transferFailures: 0, generationsRequested: 2 });
     expect(x.inputs.find((i) => i.label === 'Tarif figé')?.value).toEqual({ source: 'public_catalog', currency: 'USD', verified: false, inputMicros: 1.25, outputMicros: 10 });
     expect(x.modifications).toHaveLength(1);
     expect(x.job).toMatchObject({ id: 575, target: { type: 'asset', id: '9' } });

@@ -110,7 +110,7 @@ scenario('L106A', 'Agenda — représentations équivalentes d’un même DPE (t
     journal: await journal(accountId),
   });
 
-  it('L106A-E2E-01 — stock du ticket (3 lignes) → campagne : UNE ligne « DPE réalisé — Maison », deux preuves, statut par preuve, journal avant / après ; convergence', async () => {
+  it('L106A-E2E-01 — stock du ticket (3 lignes) → campagne : UNE ligne « DPE réalisé — Maison », deux preuves, sans statut (#715), journal avant / après ; convergence', async () => {
     const c = await contexte();
     await c.analyser(c.f309, dossier(c.maison.id));
     await c.analyser(c.f316, compromis(c.maison.id));
@@ -126,9 +126,10 @@ scenario('L106A', 'Agenda — représentations équivalentes d’un même DPE (t
     expect(apres).toHaveLength(1);
     expect(apres[0]).toMatchObject({ id: dpe309.id, title: 'DPE réalisé — Maison', businessType: 'dpe', nature: 'HISTORICAL' });
     expect(apres[0].sources).toEqual([c.f309, c.f316]);
-    // Statut par preuve : la preuve de réalisation établie par le dossier daté du jour (103D) suit l'occurrence.
+    // #715 : plus de statut d'événement — aucune preuve de réalisation n'est plus reportée sur l'occurrence.
     const [canon] = await lignes(c.compte.id);
-    expect(canon.completion_proof_file_id).toBe(c.f309);
+    expect(canon.completion_proof_file_id).toBeNull();
+    expect(canon.manual_status).toBeNull();
     // Échéance de validité 2030 : distincte, jamais confondue avec la réalisation 2020.
     expect(await echeances(c.maison.id)).toEqual([['2030-12-21', 'dpe']]);
     // Journal 0591 (origine COHERENCE, sans Opération, restaurable) et décision 1000 avant / après.
@@ -221,14 +222,15 @@ scenario('L106A', 'Agenda — représentations équivalentes d’un même DPE (t
     await c.analyser(c.f309, dossier(c.maison.id));
     await c.analyser(c.f316, compromis(c.maison.id));
     const [dpe309, generique, dpe316] = await stockAncien(c);
-    // L'utilisateur a modifié la ligne du compromis (intitulé personnel) ; il a posé « Réalisé » sur celle du dossier.
+    // L'utilisateur a modifié la ligne du compromis (intitulé personnel) ; il avait posé « Réalisé » sur celle du dossier
+    // (#715 : statut migré par 1526 en « modifié par l'utilisateur », trace historique STATUS_CHANGED conservée).
     await sql`UPDATE agenda_items SET title = 'Mon DPE (vente)', is_automatic_modified = true WHERE id = ${dpe316.id}`;
-    await sql`UPDATE agenda_items SET manual_status = 'realise' WHERE id = ${dpe309.id}`;
+    await sql`UPDATE agenda_items SET is_automatic_modified = true WHERE id = ${dpe309.id}`;
     await sql`INSERT INTO agenda_occurrence_events (agenda_item_id, account_id, event_type, detail_json) VALUES (${dpe309.id}, ${c.compte.id}, 'STATUS_CHANGED', '{"manualStatus":"realise"}'::jsonb)`;
     await runCoherenceFor(sql, [c.compte.id]);
     const l = await lignes(c.compte.id);
     // Les deux choix de l'utilisateur restent tels quels ; seul le générique automatique intact est absorbé.
-    expect(l.map((x) => [x.id, x.title, x.manual_status])).toEqual([[dpe309.id, 'DPE réalisé — DPE', 'realise'], [dpe316.id, 'Mon DPE (vente)', null]]);
+    expect(l.map((x) => [x.id, x.title, x.manual_status])).toEqual([[dpe309.id, 'DPE réalisé — DPE', null], [dpe316.id, 'Mon DPE (vente)', null]]);
     expect((await journal(c.compte.id)).filter((j) => j.kind === 'ABSORB').map((j) => j.absorbed_item_id)).toEqual([generique.id]);
     const [dec] = await decisions(c.compte.id);
     expect(dec).toMatchObject({ verdict: 'CONSOLIDATED', canonical_item_id: dpe309.id });

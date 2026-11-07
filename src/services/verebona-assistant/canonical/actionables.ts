@@ -10,8 +10,8 @@
  *     échéance existante), PUBLIABLE (lot 98B : `publishability.ts`, même
  *     définition que la page) et bien rattaché DISPONIBLE (règle unique
  *     `asset-availability` : ni supprimé, ni archivé, ni transmis, ni vendu) ;
- *   · ÉCHÉANCES ACTIVES : `agenda_items` ouverts (`manual_status` vide — ni
- *     réalisée, ni annulée), datées, jamais HISTORICAL (D-14, même règle que
+ *   · ÉCHÉANCES ACTIVES : `agenda_items` (lot 113P : plus de statut
+ *     d'événement), datées, jamais HISTORICAL (D-14, même règle que
  *     `listUpcomingAgenda`), et dont les biens liés ne sont pas tous
  *     indisponibles ; documents associés (liens, sources de l'échéance) lus
  *     comme CONTEXTE.
@@ -71,7 +71,7 @@ export async function listOpenTodos(accountId: number, opts: { assetIds?: number
       WHERE t.account_id = $1 AND t.resolved_at IS NULL AND ${publishableCardSql('t')}
         AND NOT (t.target_type = 'DOCUMENT' AND (f.id IS NULL OR f.deleted_at IS NOT NULL))
         AND NOT (t.target_type = 'EQUIPMENT' AND (e.id IS NULL OR e.archived_at IS NOT NULL))
-        AND NOT (t.target_type = 'AGENDA_ITEM' AND (ai.id IS NULL OR coalesce(trim(ai.manual_status), '') <> ''))
+        AND NOT (t.target_type = 'AGENDA_ITEM' AND ai.id IS NULL)
         AND NOT (t.target_type = 'ASSET' AND a.id IS NULL)
         AND (a.id IS NULL OR (${dispo}))
         AND ($2::int[] IS NULL
@@ -103,9 +103,6 @@ export async function listActiveDeadlines(
 ): Promise<DeadlineRow[]> {
   const col = await agendaFunctionalColumnsReady().catch(() => false);
   const ids = opts.assetIds?.length ? opts.assetIds : null;
-  // Lot 112G : statut effectif commun — une échéance réalisée et prouvée par un document n'est plus active.
-  const { notSettledByProofFilter } = await import('@/services/agenda/effective-status-read');
-  const prouve = await notSettledByProofFilter('i').catch(() => '');
   const r = await lignes(
     `SELECT i.id, i.title, to_char(i.start_date, 'YYYY-MM-DD') AS date, to_char(i.end_date, 'YYYY-MM-DD') AS "endDate",
             (i.occurrence_nature = 'FORECAST') AS forecast, i.home_category AS "homeCategory", i.origin_type AS "originType",
@@ -117,7 +114,7 @@ export async function listActiveDeadlines(
                         JOIN assets a ON a.id = l.asset_id AND a.account_id = i.account_id AND ${assistantAssetAvailability.sql('a')}
                        WHERE l.agenda_item_id = i.id), '[]'::json) AS assets
        FROM agenda_items i
-      WHERE i.account_id = $1 AND coalesce(trim(i.manual_status), '') = ''${prouve}
+      WHERE i.account_id = $1
         AND i.start_date IS NOT NULL
         AND ${NOT_HISTORICAL(col, '$5')}
         AND ($2::date IS NULL OR coalesce(greatest(i.end_date, i.start_date), i.start_date) >= $2::date)

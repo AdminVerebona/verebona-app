@@ -116,7 +116,6 @@ export interface RelatedAgendaItem extends RelationBase {
   publicId: string | null;
   title: string;
   startDate: string | null;
-  manualStatus: string | null;
   businessOperationId: number | null;
   operationRole: string | null;
 }
@@ -373,11 +372,10 @@ export async function listEntityDocuments(accountId: number, entity: RelationEnt
 // ── Agenda ──────────────────────────────────────────────────────────────────
 
 const AGENDA_VISIBLE_JOIN = `JOIN agenda_items x ON x.id = {obj} AND x.account_id = $1`;
-const AGENDA_SELECT = `x.id, x.public_id::text AS public_id, x.title, x.start_date, x.manual_status, x.business_operation_id, x.operation_role`;
+const AGENDA_SELECT = `x.id, x.public_id::text AS public_id, x.title, x.start_date, x.business_operation_id, x.operation_role`;
 const AGENDA_ORDER = 'x.start_date DESC NULLS LAST, x.id DESC';
 const toAgenda = (x: Row): RelatedAgendaItem => ({
   id: Number(x.id), publicId: (x.public_id as string | null) ?? null, title: String(x.title ?? ''), startDate: jour(x.start_date),
-  manualStatus: (x.manual_status as string | null) ?? null,
   businessOperationId: x.business_operation_id == null ? null : Number(x.business_operation_id), operationRole: (x.operation_role as string | null) ?? null,
   ...base(x),
 });

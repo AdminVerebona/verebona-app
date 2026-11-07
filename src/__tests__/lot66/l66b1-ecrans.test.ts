@@ -25,9 +25,7 @@ import {
   attentionFlagLabel,
   visibleAttentionFlags,
   ATTENTION_FLAG_LABELS,
-  EFFECTIVE_STATUS_LABELS,
-} from '@/lib/agenda/effective-status';
-import { STATUS_COLORS, STATUS_BORDER } from '@/components/agenda/AgendaPeriodViews';
+} from '@/lib/agenda/attention-flags';
 import { PLAN_THEMES } from '@/lib/plan-theme';
 import { RUBRIC_COLORS, UNFILED_COLORS } from '@/lib/referential/v2/rubrics';
 
@@ -161,7 +159,8 @@ describe('L66B1-04 — ni dégradé, ni flou, ni mouvement au survol', () => {
 
 describe('L66B1-05 — Agenda : signaux d’attention écrits, jamais le code brut', () => {
   it('L66B1-05 — libellés en toutes lettres, signal inconnu « À vérifier »', () => {
-    expect(attentionFlagLabel('en_retard')).toBe('Date échue');
+    // #715 : le signal « en_retard » n'existe plus (libellé inconnu → « À vérifier », et masqué).
+    expect(attentionFlagLabel('en_retard')).toBe('À vérifier');
     expect(attentionFlagLabel('sans_bien')).toBe('Sans bien associé');
     expect(attentionFlagLabel('date_incoherente')).toBe('Date incohérente');
     expect(attentionFlagLabel('donnee_distincte_a_qualifier')).toBe('Donnée à qualifier');
@@ -184,25 +183,18 @@ describe('L66B1-05 — Agenda : signaux d’attention écrits, jamais le code br
   });
 });
 
-describe('L66B1-06 — tons des statuts (décision PO lot 66)', () => {
-  it('L66B1-06 — date échue rouge, statut à confirmer cuivre, à venir / réalisé pétrole ; libellés écrits', () => {
-    expect(STATUS_COLORS.en_retard).toContain('var(--danger)');
-    expect(STATUS_BORDER.en_retard).toContain('var(--danger-edge)');
-    expect(STATUS_COLORS.a_confirmer).toContain('var(--attention-on-soft)');
-    expect(STATUS_COLORS.a_venir).toContain('var(--accent)');
-    expect(STATUS_COLORS.realise).toContain('var(--text-success)');
-    for (const s of Object.keys(STATUS_COLORS)) {
-      expect(EFFECTIVE_STATUS_LABELS[s as keyof typeof EFFECTIVE_STATUS_LABELS]).toBeTruthy();
-    }
-    // Ni rouge ni cuivre pour un état neutre.
-    expect(STATUS_COLORS.a_venir).not.toMatch(/danger|attention/);
+describe('L66B1-06 — #715 : plus de tons de statut d’événement', () => {
+  it('L66B1-06 — AgendaPeriodViews n’exporte plus de couleurs de statut', async () => {
+    const mod = await import('@/components/agenda/AgendaPeriodViews');
+    expect('STATUS_COLORS' in mod).toBe(false);
+    expect('STATUS_BORDER' in mod).toBe(false);
   });
 
-  it('L66B1-06 — la pastille de date de l’agenda est le DateChip de la charte (late / attention / default)', () => {
+  it('L66B1-06 — la pastille de date de l’agenda est le DateChip de la charte, ton neutre (#715 : ni « late » ni « attention »)', () => {
     const src = read('src/components/agenda/AgendaPeriodViews.tsx');
     expect(src).toMatch(/<DateChip /);
-    expect(src).toMatch(/status === 'en_retard' \? 'late'/);
-    expect(read('src/app/(dashboard)/agenda/page.tsx')).toMatch(/<DateBlock dateStr=\{item\.startDate \?\? null\} status=\{item\.effectiveStatus\} \/>/);
+    expect(src).not.toMatch(/en_retard|a_confirmer/);
+    expect(read('src/app/(dashboard)/agenda/page.tsx')).toMatch(/<DateBlock dateStr=\{item\.startDate \?\? null\} \/>/);
   });
 
   it('L66B1-06 — couleur par bien (vue Mois / Année) : ni rouge ni cuivre, infobulle écrite', () => {

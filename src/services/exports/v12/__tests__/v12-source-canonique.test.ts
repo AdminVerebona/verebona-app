@@ -1,7 +1,8 @@
 /**
  * CDC 15 X-02 (lot 16, volet B) — source canonique des dossiers V12 : champs
  * du bien (CanonicalAssetView, unités du registre), chemins de rattachement
- * des pièces (N-N puis repli colonnes), agenda D-14 / 4 états. Lot 16b-3 :
+ * des pièces (N-N puis repli colonnes), agenda D-14 (#715, lot 113P : plus de
+ * statut à 4 états ni de rubrique « Échéances passées à confirmer »). Lot 16b-3 :
  * `EXPORTS_CANONICAL_SOURCE` et le rapport d'écarts shadow supprimés.
  * Fonctions pures, sans base.
  */
@@ -13,7 +14,7 @@ import {
 } from '../data/canonical-source';
 import { buildCanonicalAssetState, type AssetRowJson } from '@/services/canonical/asset-state';
 import { REGISTRY_VERSION } from '@/services/canonical/registry';
-import { isPastEvent, isUpcoming, eventSection, isUnconfirmedPastDeadline, buildDefaultChoices, planSelection, choicesFromLegacyOptions } from '../data/choices';
+import { isPastEvent, isUpcoming, eventSection, buildDefaultChoices, planSelection, choicesFromLegacyOptions } from '../data/choices';
 import { buildPreparation } from '../preparation/prepare';
 import { mapDossierData } from '../data/mappers';
 import { renderDossierHtml } from '../templates';
@@ -138,66 +139,57 @@ describe('relecture lot 16 — rattachements confirmés pour un envoi à un tier
     const tiroir = choicesFromLegacyOptions('DOSSIER_COMPLET', s, { customDocIds: [1, 2] }, { outputFormat: 'PDF', today: TODAY });
     expect(tiroir.items.filter((i) => i.sourceType === 'document').map((i) => i.sourceId)).toEqual([1]);
   });
-  it('libellé « échéances passées à confirmer » (source canonique seule depuis le lot 16b-3)', () => {
+  it('#715 : plus de libellé « échéances passées à confirmer »', () => {
     const desc = (s: ReturnType<typeof makeSource>) => buildPreparation('DOSSIER_COMPLET', s, { today: TODAY, lastGeneration: null })
       .sections.find((x) => x.id === 'deadlines')!.description;
-    expect(desc(makeSource('IMMOBILIER', 'DOSSIER_COMPLET'))).toContain('échéances passées à confirmer');
-    expect(desc(makeSource('IMMOBILIER', 'DOSSIER_COMPLET', { sourceTrace: traceOf('canonical') }))).toContain('échéances passées à confirmer');
+    expect(desc(makeSource('IMMOBILIER', 'DOSSIER_COMPLET'))).not.toContain('à confirmer');
+    expect(desc(makeSource('IMMOBILIER', 'DOSSIER_COMPLET', { sourceTrace: traceOf('canonical') }))).toContain('prochaines échéances de l’agenda');
   });
 });
 
-describe('agenda — nature D-14 et statut à 4 états', () => {
+describe('agenda — nature D-14 (#715 : plus de statut)', () => {
   const ag = (over: Parameters<typeof event>[1]) => event(1, { key: 'agenda:1', source: 'agenda', category: null, status: null, ...over });
-  it('historique inchangé sans statut canonique (legacy)', () => {
+  it('historique inchangé sans nature (lecture historique)', () => {
     expect(isPastEvent(ag({ title: 'x', date: '2025-01-01' }), TODAY)).toBe(true);
     expect(isUpcoming(ag({ title: 'x', date: '2027-01-01' }), TODAY)).toBe(true);
   });
   it('jamais d’échéance à venir tirée d’un fait historique', () => {
-    const e = ag({ title: 'Achat', date: '2027-01-01', nature: 'HISTORICAL', status4: 'unknown' });
+    const e = ag({ title: 'Achat', date: '2027-01-01', nature: 'HISTORICAL' });
     expect(isUpcoming(e, TODAY)).toBe(false);
     expect(eventSection('DOSSIER_COMPLET', e, TODAY)).toBeNull();
-    expect(isUpcoming(ag({ title: 'CT', date: '2027-01-01', nature: 'DEADLINE', status4: 'unknown' }), TODAY)).toBe(true);
+    expect(isUpcoming(ag({ title: 'CT', date: '2027-01-01', nature: 'DEADLINE' }), TODAY)).toBe(true);
   });
-  it('historique : fait passé ou échéance réalisée ; échéance passée non prouvée exclue', () => {
-    expect(isPastEvent(ag({ title: 'Achat', date: '2021-01-01', nature: 'HISTORICAL', status4: 'not_proven' }), TODAY)).toBe(true);
-    expect(isPastEvent(ag({ title: 'CT', date: '2025-01-01', nature: 'DEADLINE', status4: 'completed', status: 'realise' }), TODAY)).toBe(true);
-    expect(isPastEvent(ag({ title: 'CT', date: '2025-01-01', nature: 'DEADLINE', status4: 'not_proven' }), TODAY)).toBe(false);
-    expect(isPastEvent(ag({ title: 'CT', date: '2025-01-01', nature: 'DEADLINE', status4: 'unknown' }), TODAY)).toBe(false);
+  it('historique : seulement un FAIT passé ; une échéance passée n’est jamais présentée comme réalisée', () => {
+    expect(isPastEvent(ag({ title: 'Achat', date: '2021-01-01', nature: 'HISTORICAL' }), TODAY)).toBe(true);
+    expect(isPastEvent(ag({ title: 'CT', date: '2025-01-01', nature: 'DEADLINE' }), TODAY)).toBe(false);
   });
 });
 
-describe('arbitrage lot 16 : échéances passées « à confirmer » (dossier complet)', () => {
+describe('#715 : plus de rubrique « Échéances passées à confirmer » (dossier complet)', () => {
   const ag = (id: number, over: Parameters<typeof event>[1]) => event(id, { key: `agenda:${id}`, source: 'agenda', category: null, status: null, ...over });
-  const source = () => makeSource('IMMOBILIER', 'DOSSIER_COMPLET', {
-    events: [
-      ag(1, { title: 'Contrôle chaudière', date: '2025-01-10', nature: 'DEADLINE', status4: 'not_proven' }),
-      ag(2, { title: 'Ramonage', date: '2027-02-01', nature: 'DEADLINE', status4: 'unknown' }),
-      ag(3, { title: 'Achat', date: '2021-05-25', nature: 'HISTORICAL', status4: 'not_proven' }),
-      ag(4, { title: 'Vidange', date: '2025-03-01', nature: 'DEADLINE', status4: 'completed', status: 'realise' }),
-    ],
-  });
-  it('proposée et pré-cochée dans « deadlines », rendue sous « Échéances passées à confirmer », jamais en historique', () => {
-    const s = source();
-    expect(isUnconfirmedPastDeadline(s.events[0], TODAY)).toBe(true);
-    expect(eventSection('DOSSIER_COMPLET', s.events[0], TODAY)).toBe('deadlines');
-    expect(eventSection('VENTE', s.events[0], TODAY)).toBeNull();
+  it('échéance passée : ni « à confirmer », ni historique ; échéance à venir : « deadlines » ; fait : historique', () => {
+    const s = makeSource('IMMOBILIER', 'DOSSIER_COMPLET', {
+      events: [
+        ag(1, { title: 'Contrôle chaudière', date: '2025-01-10', nature: 'DEADLINE' }),
+        ag(2, { title: 'Ramonage', date: '2027-02-01', nature: 'DEADLINE' }),
+        ag(3, { title: 'Achat', date: '2021-05-25', nature: 'HISTORICAL' }),
+      ],
+    });
+    expect(eventSection('DOSSIER_COMPLET', s.events[0], TODAY)).toBeNull();
+    expect(eventSection('DOSSIER_COMPLET', s.events[1], TODAY)).toBe('deadlines');
+    expect(eventSection('DOSSIER_COMPLET', s.events[2], TODAY)).toBe('history');
     const choices = buildDefaultChoices('DOSSIER_COMPLET', s, { today: TODAY });
     const plan = planSelection('DOSSIER_COMPLET', s, choices, TODAY);
     const meta = { reference: 'VBN-T', generatedAt: '2026-09-28T09:14:00+02:00', preparedBy: null, templateLabel: 't', zipName: null, label: 't' };
     const data = mapDossierData('DOSSIER_COMPLET', { source: s, plan, resolved: null, meta, today: TODAY }) as {
-      history: Array<{ id: string }>; deadlines: Array<{ id: string }>; toConfirm?: Array<{ id: string }>;
+      history: Array<{ id: string }>; deadlines: Array<{ id: string }>; toConfirm?: unknown;
     };
-    expect(data.toConfirm?.map((e) => e.id)).toEqual(['agenda:1']);
+    expect(data.toConfirm).toBeUndefined();
     expect(data.deadlines.map((e) => e.id)).toEqual(['agenda:2']);
-    expect(data.history.map((e) => e.id)).toEqual(['agenda:4']); // « Achat » (AUTRE) proposé, non pré-coché
+    expect(data.history.map((e) => e.id)).not.toContain('agenda:1');
     const html = renderDossierHtml('DOSSIER_COMPLET', data as never, { sys: 'SYS/', asset: () => null, stylesheets: [], pageMap: null }).html;
-    expect(html).toContain('Échéances passées à confirmer');
-    expect(html).toContain('À confirmer');
+    expect(html).not.toContain('à confirmer');
+    expect(html).not.toContain('À confirmer');
     expect(html).not.toContain('En retard');
-  });
-  it('source historique : aucune rubrique « à confirmer »', () => {
-    const s = makeSource('IMMOBILIER', 'DOSSIER_COMPLET', { events: [ag(1, { title: 'CT', date: '2025-01-10' })] });
-    expect(isUnconfirmedPastDeadline(s.events[0], TODAY)).toBe(false);
-    expect(eventSection('DOSSIER_COMPLET', s.events[0], TODAY)).toBe('history');
   });
 });

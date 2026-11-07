@@ -338,7 +338,8 @@ describe('Classification BO — fournisseur indisponible ≠ requête refusée �
         providerAttempts: t.providerAttempts, providerRequest: t.providerRequest,
       } as never],
     });
-    expect(d.counters).toEqual({ jobAttempts: 1, modelCalls: 1, modelFallbacks: 0, structuredOutputRetries: 1, repairCalls: 0 });
+    // Lot 113R : compteurs réconciliés (rangs non appelés, transferts refusés, générations demandées).
+    expect(d.counters).toEqual({ jobAttempts: 1, modelCalls: 1, modelFallbacks: 0, structuredOutputRetries: 1, repairCalls: 0, notCalled: 0, transferFailures: 0, generationsRequested: 1 });
     expect(d.finalDiagnosis.join(' ')).toMatch(/HTTP 400 INVALID_ARGUMENT avec structured output \(schéma fournisseur [0-9a-f]{12}\) ; essai diagnostique du même modèle sans responseSchema réussi/);
   });
 });

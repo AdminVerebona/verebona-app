@@ -306,9 +306,8 @@ const agendaAdapter: RetrievalAdapter = {
       .select({
         id: agendaItems.id, accountId: agendaItems.accountId,
         title: agendaItems.title, description: agendaItems.description,
-        // Les colonnes sont `startDate` et `manualStatus`, non `dueDate` et
-        // `status` : le nommage diffère de celui des outils d'origine.
-        startDate: agendaItems.startDate, manualStatus: agendaItems.manualStatus,
+        // Colonne `startDate` (non `dueDate`). Lot 113P (#715) : plus de statut d'événement.
+        startDate: agendaItems.startDate,
       })
       .from(agendaItems)
       .where(and(...conditions))
@@ -330,7 +329,7 @@ const agendaAdapter: RetrievalAdapter = {
         id: `agenda_${l.id}`,
         type: 'agenda_item' as const,
         title: l.title,
-        content: extrait([date, l.manualStatus, l.description]),
+        content: extrait([date, l.description]),
         meta: { ...(assetCible !== null ? { agendaItemId: l.id, date, assetId: assetCible } : { agendaItemId: l.id, date }), ...e.meta } as Record<string, string | number | null>,
         relevanceScore: score,
       }];

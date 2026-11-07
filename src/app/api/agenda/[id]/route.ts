@@ -1,5 +1,5 @@
 import { refuserSiLectureSeule } from '@/lib/write-access-guard';
-import { emitBusinessEvent } from '@/services/verebona-assistant/events/business-events';
+import { emitBusinessEvent, emitBusinessEvents } from '@/services/verebona-assistant/events/business-events';
 import { NextRequest, NextResponse } from 'next/server';
 import { structuralLinkRefusal } from '@/services/agenda/housing-scope-http';
 import { SessionService } from '@/lib/session-service';
@@ -68,6 +68,8 @@ export async function PUT(req: NextRequest, context: RouteContext) {
     if (fournisseurs instanceof NextResponse) return fournisseurs;
     // Lot 103D : dissociation des pièces / équipements devenus incompatibles — seulement sur confirmation explicite.
     if (body && typeof body === 'object' && 'dissociateIncompatible' in body && (body as Record<string, unknown>).dissociateIncompatible !== true) delete (body as Record<string, unknown>).dissociateIncompatible;
+    // Lot 113P (#715) : un `manualStatus` envoyé par un ancien client est ignoré (plus de statut d'événement).
+    if (body && typeof body === 'object') delete (body as Record<string, unknown>).manualStatus;
     // Lot 77A : l'auteur est tracé avec l'option « Sans échéance » (cochée / retirée).
     const item = await updateAgendaItem(id, body, accountId, session.userId ?? null);
     const suppliers = fournisseurs ? await appliquerFournisseurs(accountId, id, session.userId ?? null, fournisseurs) : undefined;
@@ -105,11 +107,15 @@ export async function DELETE(req: NextRequest, context: RouteContext) {
     const refus = await refuserSiLectureSeule(accountId);
     if (refus) return refus;
 
-    // Lot 46 (O7) : l'auteur est mémorisé avec la suppression d'un événement projeté (F-146).
-    await deleteAgendaItem(id, accountId, session.userId ?? null);
+    // Lot 113P (#715) : récurrence — `?scope=series` supprime TOUTE la série (sinon : cet événement seul).
+    const scope = new URL(req.url).searchParams.get('scope') === 'series' ? 'SERIES' as const : 'OCCURRENCE' as const;
+    // Lot 46 (O7) : l'auteur est mémorisé avec la suppression d'un événement projeté (F-146) ;
+    // lot 113P : trace persistante d'exclusion (aucune réanalyse ne recrée l'événement).
+    const { deletedIds } = await deleteAgendaItem(id, accountId, session.userId ?? null, { scope });
     // CDC Assistant §25.7 : événement métier (caches de l'assistant, §31.4).
-    await emitBusinessEvent({ type: 'AGENDA_ITEM_DELETED', accountId, entityId: id });
-    return NextResponse.json({ success: true });
+    // Une invalidation par demande (§31.7), même pour une série entière.
+    await emitBusinessEvents(deletedIds.map((entityId) => ({ type: 'AGENDA_ITEM_DELETED' as const, accountId, entityId })));
+    return NextResponse.json({ success: true, deletedIds });
   } catch (err) {
     const message = err instanceof Error ? err.message : 'Internal server error';
     const status = message === 'Item not found' ? 404 : 500;

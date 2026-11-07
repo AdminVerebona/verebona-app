@@ -27,7 +27,7 @@ export async function GET(req: NextRequest) {
       : undefined;
     const fileId = searchParams.get('fileId') ? Number(searchParams.get('fileId')) : undefined;
     const period = (searchParams.get('period') as 'all' | 'past' | 'today' | 'upcoming') ?? 'all';
-    const includeCancelled = searchParams.get('includeCancelled') === 'true';
+    // Lot 113P (#715) : `includeCancelled` (ancien filtre « annulés ») accepté et ignoré — plus de statut d'événement.
     const month = searchParams.get('month') ?? undefined;
     const year = searchParams.get('year') ?? undefined;
     const includeUndated = searchParams.get('includeUndated') !== 'false';
@@ -42,7 +42,7 @@ export async function GET(req: NextRequest) {
     const piece = roomFilterParam(searchParams.get('piece')) ?? undefined;
     // Lot 97C : recherche locale (`?q=`), combinée aux filtres en intersection.
     const q = normalizeLocalQuery(searchParams.get(LOCAL_SEARCH_PARAM)) || undefined;
-    const query = { accountId, assetIds, fileId, period, includeCancelled, month, year, includeUndated, equipment, piece, q };
+    const query = { accountId, assetIds, fileId, period, month, year, includeUndated, equipment, piece, q };
     if (searchParams.get('equipmentFacet') === '1') {
       const { items, equipmentFacet, roomFacet } = await getAgendaItemsWithEquipmentFacet(query);
       return NextResponse.json({ items, equipmentFacet, roomFacet }, { headers: { 'Cache-Control': 'private, no-cache' } });
@@ -76,13 +76,12 @@ export async function POST(req: NextRequest) {
     if (refus) return refus;
 
     const body = await req.json();
-    const { title, description, startDate, startTime, endDate, endTime, manualStatus, assetIds, fileIds, substructureIds, equipmentIds, noDeadline } = body;
+    // Lot 113P (#715) : un `manualStatus` envoyé par un ancien client est IGNORÉ (plus de statut d'événement).
+    const { title, description, startDate, startTime, endDate, endTime, assetIds, fileIds, substructureIds, equipmentIds, noDeadline } = body;
 
     if (!title || typeof title !== 'string' || !title.trim()) {
       return NextResponse.json({ error: 'title est requis' }, { status: 400 });
     }
-
-    const validManualStatus = manualStatus === 'realise' || manualStatus === 'annule' ? manualStatus : null;
 
     // Lot 103E : « Fournisseur / intervenant » (facultatif) — validé AVANT toute écriture :
     // une sélection invalide ne crée ni l'élément, ni une fiche, ni un lien.
@@ -91,7 +90,7 @@ export async function POST(req: NextRequest) {
 
     const item = await createAgendaItem(
       // Lot 77A : « Sans échéance » validée par le service (booléen, incompatible avec une date).
-      { title: title.trim(), description, startDate, startTime, endDate, endTime, manualStatus: validManualStatus, assetIds, fileIds, substructureIds, equipmentIds, noDeadline },
+      { title: title.trim(), description, startDate, startTime, endDate, endTime, assetIds, fileIds, substructureIds, equipmentIds, noDeadline },
       accountId,
       session.userId
     );

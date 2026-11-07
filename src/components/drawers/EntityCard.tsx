@@ -23,7 +23,7 @@
  * fiche (texte masqué) + titre + ligne secondaire.
  *
  * Pas d'interactif imbriqué : les badges (`badges`) sont du texte ; les
- * commandes propres à la carte (`actions` : bouton « Statut à confirmer »,
+ * commandes propres à la carte (`actions` : bouton « Dissocier »,
  * menu…) sont rendues À CÔTÉ du lien, dans le même cadre, jamais dedans.
  *
  * Même composant sur ordinateur et téléphone (les tiroirs sont plein écran

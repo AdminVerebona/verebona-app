@@ -142,10 +142,14 @@ scenario('L99D-E2E', 'Agenda : une clause de résiliation n’arrête plus une r
     await job(c);
     const l = await items(c);
     expect(l.find((x) => x.id === passe.id)).toMatchObject({ d: FIN_AN_DERNIER, nature: 'CONFIRMED', status: null });
-    expect(l.find((x) => x.id === prevision.id)).toMatchObject({ d: FIN_CETTE_ANNEE, nature: 'FORECAST', status: 'annule' });
-    expect(l.filter((x) => x.d > FIN_AN_DERNIER && x.status === null)).toEqual([]);
-    const ev = (await evenements(prevision.id)).find((e) => e.type === 'FORECAST_RETIRED')!;
-    expect(ev.detail).toMatchObject({
+    // #715 : la prévision au-delà de la fin effective est RETIRÉE (trace restaurable), plus « annulée ».
+    expect(l.find((x) => x.id === prevision.id)).toBeUndefined();
+    expect(l.filter((x) => x.d > FIN_AN_DERNIER)).toEqual([]);
+    const [retrait] = await sql<{ reason: string; detail: Json }[]>`
+      SELECT reason, item_snapshot -> 'retirement' AS detail FROM agenda_item_removals WHERE agenda_item_id = ${prevision.id}`;
+    expect(retrait.reason).toBe('FORECAST_RETIRED');
+    // Arrêt tracé dans le journal des retraits (l'élément n'existe plus).
+    expect(retrait.detail).toMatchObject({
       reasonCode: 'RECURRENCE_ENDED', bound: FIN_AN_DERNIER, sourceFileId: c.doc.id,
       end: { status: 'CONFIRMED', reason: 'TERMINATION_EFFECTIVE', effectiveDate: FIN_AN_DERNIER, source: { kind: 'T1_FACT', fieldKey: 'contractNote' } },
     });
@@ -169,33 +173,36 @@ scenario('L99D-E2E', 'Agenda : une clause de résiliation n’arrête plus une r
   });
 
   it('E2E-04 — reprise COH-AGENDA-RECURRENCE-END : prévisions arrêtées par l’ancienne règle rétablies ou régénérées, sans nouvel envoi', async () => {
-    // A : prévision annulée SANS TRACE (ce que faisait l'ancien retrait « mot-clé »).
+    // #715 (lot 113P) : plus de statut d'événement.
+    // A : ancienne écriture d'un statut « annulé » (ce que faisait l'ancien retrait « mot-clé ») :
+    // neutralisée par le déclencheur 1526 — la prévision reste visible, rien à rétablir.
     const a = await contexte();
     await faits(a, annuelActif(FIN_AN_DERNIER));
     await job(a);
     const [passeA, prevA] = await items(a);
     await sql`UPDATE agenda_items SET manual_status = 'annule' WHERE id = ${prevA.id}`;
+    expect((await items(a)).find((x) => x.id === prevA.id)!.status).toBeNull();
     // B : prévision JAMAIS générée (l'ancien `ended` vidait le calcul).
     const b = await contexte();
     await faits(b, annuelActif(FIN_AN_DERNIER));
     await job(b);
     const [passeB, prevB] = await items(b);
     await sql`DELETE FROM agenda_items WHERE id = ${prevB.id}`;
-    // C : annulation par l'UTILISATEUR — respectée.
+    // C : SUPPRESSION par l'UTILISATEUR (ex-« annulé ») — respectée : jamais « manquante ».
     const c = await contexte();
     await faits(c, annuelActif(FIN_AN_DERNIER));
     await job(c);
     const [, prevC] = await items(c);
-    const { updateManualStatus } = await import('@/services/agenda/AgendaWriteService');
-    await updateManualStatus(prevC.id, 'annule', c.compte.id);
+    const { deleteAgendaItem } = await import('@/services/agenda/AgendaWriteService');
+    await deleteAgendaItem(prevC.id, c.compte.id, c.compte.ownerUserId, { scope: 'OCCURRENCE' });
     // D : fin CONFIRMÉE (résiliation effective) — le retrait tracé reste acquis.
     const d = await contexte();
     await faits(d, annuelActif(FIN_AN_DERNIER));
     await job(d);
     await faits(d, [...annuelActif(FIN_AN_DERNIER), { key: 'contractNote', value: 'x', excerpt: `Le contrat a été résilié le ${fr(FIN_AN_DERNIER)}.` }]);
     await job(d);
-    const [, prevD] = await items(d);
-    expect(prevD.status).toBe('annule');
+    // #715 : la prévision au-delà de la fin confirmée est retirée (trace FORECAST_RETIRED), plus « annulée ».
+    expect((await items(d)).filter((x) => x.nature === 'FORECAST')).toEqual([]);
 
     const passes = async () => (await sql<Json[]>`
       SELECT id, start_date::text AS d, manual_status, occurrence_nature, updated_at FROM agenda_items
@@ -204,18 +211,17 @@ scenario('L99D-E2E', 'Agenda : une clause de résiliation n’arrête plus une r
 
     // Constat à blanc, puis réparation.
     const blanc = await runCoherenceFor(sql, [a.compte.id, b.compte.id, c.compte.id, d.compte.id], { mode: 'DRY_RUN', today: TODAY });
-    expect(blanc.results['COH-AGENDA-RECURRENCE-END']).toMatchObject({ WOULD_REPAIR: 2 });
-    expect((await proofOf(sql, a.compte.id, 'COH-AGENDA-RECURRENCE-END', a.doc.id))?.finding).toMatchObject({ anomaly: 'RECURRENCE_FORECAST_WRONGLY_RETIRED' });
+    expect(blanc.results['COH-AGENDA-RECURRENCE-END']).toMatchObject({ WOULD_REPAIR: 1 });
+    expect((await proofOf(sql, a.compte.id, 'COH-AGENDA-RECURRENCE-END', a.doc.id))?.last_result).not.toBe('WOULD_REPAIR');
     expect((await proofOf(sql, b.compte.id, 'COH-AGENDA-RECURRENCE-END', b.doc.id))?.finding).toMatchObject({ anomaly: 'RECURRENCE_OCCURRENCE_MISSING' });
     await runCoherenceFor(sql, [a.compte.id, b.compte.id, c.compte.id, d.compte.id], { today: TODAY });
 
-    // A : rétablie, tracée ; B : file T4 du document ; C, D : intactes.
+    // A : visible, intacte ; B : file T4 du document ; C : toujours supprimée, sans relance T4 ; D : intacte.
     expect((await items(a)).find((x) => x.id === prevA.id)).toMatchObject({ status: null, nature: 'FORECAST', d: FIN_CETTE_ANNEE });
-    expect((await evenements(prevA.id)).map((e) => e.type)).toContain('FORECAST_RESTORED');
-    expect((await evenements(prevA.id)).find((e) => e.type === 'FORECAST_RESTORED')!.detail).toMatchObject({ reason: 'LEGACY_KEYWORD_END_REVERSED', sourceFileId: a.doc.id });
-    expect((await proofOf(sql, a.compte.id, 'COH-AGENDA-RECURRENCE-END', a.doc.id))?.last_result).toBe('REPAIRED');
-    expect((await items(c)).find((x) => x.id === prevC.id)!.status).toBe('annule');
-    expect((await items(d)).find((x) => x.id === prevD.id)!.status).toBe('annule');
+    expect((await evenements(prevA.id)).map((e) => e.type)).not.toContain('FORECAST_RESTORED');
+    expect((await items(c)).find((x) => x.id === prevC.id)).toBeUndefined();
+    expect(await sql`SELECT 1 FROM ai_job_queue WHERE treatment = 'T4' AND account_id = ${c.compte.id} AND status = 'PENDING'`).toHaveLength(0);
+    expect((await items(d)).filter((x) => x.nature === 'FORECAST')).toEqual([]);
     const [file] = await sql<{ id: number; payload: Json }[]>`
       SELECT id, payload FROM ai_job_queue WHERE treatment = 'T4' AND account_id = ${b.compte.id} AND status = 'PENDING' ORDER BY id DESC LIMIT 1`;
     expect(file).toBeDefined();

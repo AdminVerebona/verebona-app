@@ -79,7 +79,7 @@ export const RULE_PRODUCERS: Readonly<Record<RuleProducer, {
   T3_EQUIPMENT_LINK: { module: 'src/services/to-process/document-equipment-link.ts', entries: ['proposeDocumentEquipmentLink'], generic: false },
   T3_ENTITY_FIELDS: { module: 'src/services/to-process/entity-field-cards.ts', entries: ['syncEntityFieldCards'], generic: false },
   T4_AGENDA_DUPLICATE: { module: 'src/services/agenda/agenda-persistence.ts', entries: ['createDuplicateArbitration'], generic: false },
-  T4_STATUS: { module: 'src/services/to-process/agenda-status-cards.ts', entries: ['proposeAgendaStatus', 'proposeAssetStatusChange'], generic: false },
+  T4_STATUS: { module: 'src/services/to-process/agenda-status-cards.ts', entries: ['proposeAssetStatusChange'], generic: false },
   T4_PROPOSAL: { module: 'src/services/to-process/agenda-proposal-cards.ts', entries: ['proposeAgendaCreation'], generic: false },
   MIGRATION_REVIEW: { module: 'src/services/to-process/migration-review-cards.ts', entries: ['upsertMigrationReviewCard'], generic: false },
   T3_ASSET_CONFLICT: { module: 'src/services/to-process/document-asset-conflict.ts', entries: ['proposeDocumentAssetConflict', 'closeObsoleteAssetConflicts'], generic: false },
@@ -123,8 +123,20 @@ export interface ProcessingRule {
    * peut légitimement constituer un état final.
    */
   allowNotApplicable: boolean;
-  /** Question affichée en élément dominant de la carte (§8.4). */
+  /**
+   * Question par défaut (§8.4). Lot 113S (#716) : pour une règle
+   * `formulation.kind = 'AI_CONTEXTUAL'`, ce n'est plus qu'un REPLI — la
+   * question est formulée par le traitement IA qui décide l'arbitrage (même
+   * sortie structurée), contrôlée par `ai-user-question.ts`.
+   */
   question: string;
+  /**
+   * Lot 113S (#716) — QUI FORMULE la question (audit des règles, rapport
+   * 113S). Le catalogue reste la source des permissions, priorités,
+   * admissibilités et types d'action ; il ne porte plus la formulation métier
+   * des arbitrages contextuels.
+   */
+  formulation: QuestionFormulation;
   /**
    * Seuil temporel de promotion, en jours avant échéance (§9.2).
    * Au franchissement, l'action devient candidate à « À faire d'abord ».
@@ -153,6 +165,28 @@ export interface ProcessingRule {
   cardinality?: 'one' | 'atLeastOne';
 }
 
+/**
+ * Lot 113S — origine de la formulation d'une règle.
+ *   · AI_CONTEXTUAL : arbitrage métier décidé par un traitement IA existant
+ *     (`treatment`, `operation`) ; la question vient de sa sortie (`userQuestion`)
+ *     si elle passe le contrôle, sinon repli déterministe tracé (`fallback` :
+ *     question du catalogue, ou formulation du producteur) ;
+ *   · DETERMINISTIC : texte du code légitime — `DATA_ENTRY` (saisie ou choix
+ *     d'une donnée précise : date, montant, rubrique…), `SIMPLE_CHOICE`
+ *     (confirmation simple, sans interprétation du document),
+ *     `NO_AI_DECISION` (constat déterministe : aucun traitement IA ne décide
+ *     de cette carte), `AI_ACTION_LABEL` (libellé d'action déjà produit par
+ *     l'IA et contrôlé : T4 `action`), `SYSTEM` (reprise de données).
+ */
+export type QuestionFormulation =
+  | { kind: 'AI_CONTEXTUAL'; treatment: 'T3' | 'T4'; operation: string; fallback: 'RULE' | 'PRODUCER' }
+  | { kind: 'DETERMINISTIC'; why: 'DATA_ENTRY' | 'SIMPLE_CHOICE' | 'NO_AI_DECISION' | 'AI_ACTION_LABEL' | 'SYSTEM' };
+
+const DATA_ENTRY = { kind: 'DETERMINISTIC', why: 'DATA_ENTRY' } as const;
+const SIMPLE_CHOICE = { kind: 'DETERMINISTIC', why: 'SIMPLE_CHOICE' } as const;
+const NO_AI_DECISION = { kind: 'DETERMINISTIC', why: 'NO_AI_DECISION' } as const;
+const T3_LINK = (fallback: 'RULE' | 'PRODUCER') => ({ kind: 'AI_CONTEXTUAL', treatment: 'T3', operation: 't3_link_ambiguity', fallback }) as const;
+
 /** Types de contrats dont la date de fin est attendue (DATA-CONTRACT-END). */
 const CONTRACT_END_DOCUMENT_TYPES = [
   'SERVICE_CONTRACT',
@@ -177,6 +211,7 @@ export const PROCESSING_RULES: readonly ProcessingRule[] = [
     question: 'Dans quelle rubrique classer ce document ?',
     businessImpact: 70,
     producer: 'CLASSIFICATION',
+    formulation: DATA_ENTRY,
   },
   {
     code: 'DOC-TYP',
@@ -190,6 +225,7 @@ export const PROCESSING_RULES: readonly ProcessingRule[] = [
     question: 'Quel est le type de ce document ?',
     businessImpact: 20,
     producer: 'CLASSIFICATION',
+    formulation: DATA_ENTRY,
   },
 
   // ── §10.3 Rattachement à un bien ────────────────────────────────────────
@@ -207,6 +243,7 @@ export const PROCESSING_RULES: readonly ProcessingRule[] = [
     question: 'À quel bien rattacher ce document ?',
     businessImpact: 75,
     producer: 'DOCUMENT_BRIDGE',
+    formulation: T3_LINK('RULE'),
     cardinality: 'atLeastOne',
   },
 
@@ -227,6 +264,7 @@ export const PROCESSING_RULES: readonly ProcessingRule[] = [
     question: 'Ce document semble concerner un autre bien : lequel garder ?',
     businessImpact: 72,
     producer: 'T3_ASSET_CONFLICT',
+    formulation: T3_LINK('PRODUCER'),
   },
 
   // ── Lot 105D : confirmation GROUPÉE de l'identité d'un bien ─────────────
@@ -247,6 +285,7 @@ export const PROCESSING_RULES: readonly ProcessingRule[] = [
     question: 'Ces documents concernent-ils ce bien ?',
     businessImpact: 76,
     producer: 'T3_IDENTITY_GROUP',
+    formulation: NO_AI_DECISION,
   },
 
   // ── §10.4 Rattachement secondaire ───────────────────────────────────────
@@ -261,6 +300,7 @@ export const PROCESSING_RULES: readonly ProcessingRule[] = [
     question: 'À quelle pièce ou quel équipement rattacher ce document ?',
     businessImpact: 10,
     producer: 'T3_EQUIPMENT_LINK',
+    formulation: T3_LINK('RULE'),
   },
 
   // ── §10.5 Données métier ────────────────────────────────────────────────
@@ -275,6 +315,7 @@ export const PROCESSING_RULES: readonly ProcessingRule[] = [
     dueSoonDays: 30,
     businessImpact: 80,
     producer: 'DOCUMENT_BRIDGE',
+    formulation: DATA_ENTRY,
     relevantDocumentTypes: CONTRACT_END_DOCUMENT_TYPES,
   },
   {
@@ -288,6 +329,7 @@ export const PROCESSING_RULES: readonly ProcessingRule[] = [
     dueSoonDays: 30,
     businessImpact: 65,
     producer: 'DOCUMENT_BRIDGE',
+    formulation: DATA_ENTRY,
     relevantDocumentTypes: WARRANTY_END_DOCUMENT_TYPES,
   },
   // ── Lot 61 : intervention réelle de l'utilisateur sur un document ──────
@@ -305,6 +347,7 @@ export const PROCESSING_RULES: readonly ProcessingRule[] = [
     question: 'Une démarche est attendue pour ce document',
     businessImpact: 78,
     producer: 'DOCUMENT_INTERVENTION',
+    formulation: { kind: 'DETERMINISTIC', why: 'AI_ACTION_LABEL' },
   },
   {
     code: 'DATA-AGENDA-DATE',
@@ -319,6 +362,7 @@ export const PROCESSING_RULES: readonly ProcessingRule[] = [
     dueSoonDays: 14,
     businessImpact: 85,
     producer: 'STATE_SCAN',
+    formulation: DATA_ENTRY,
   },
   {
     // Rapprochement d'échéances incertain (T4) : « même échéance » ou
@@ -334,6 +378,7 @@ export const PROCESSING_RULES: readonly ProcessingRule[] = [
     dueSoonDays: 14,
     businessImpact: 75,
     producer: 'T4_AGENDA_DUPLICATE',
+    formulation: NO_AI_DECISION,
   },
   {
     code: 'DATA-REGISTRATION',
@@ -345,6 +390,7 @@ export const PROCESSING_RULES: readonly ProcessingRule[] = [
     question: 'Quel est le numéro d’immatriculation de ce bien ?',
     businessImpact: 60,
     producer: 'RECONCILIATION_BRIDGE',
+    formulation: DATA_ENTRY,
   },
   {
     code: 'DATA-ACQUISITION-PRICE',
@@ -360,6 +406,7 @@ export const PROCESSING_RULES: readonly ProcessingRule[] = [
     question: 'Quel est le prix d’acquisition de ce bien ?',
     businessImpact: 40,
     producer: 'RECONCILIATION_BRIDGE',
+    formulation: DATA_ENTRY,
   },
   {
     // Lot 76J (T3 complétude, cas « Maison ») : date d'achat du bien
@@ -376,6 +423,7 @@ export const PROCESSING_RULES: readonly ProcessingRule[] = [
     question: 'Quelle est la date d’achat de ce bien ?',
     businessImpact: 40,
     producer: 'RECONCILIATION_BRIDGE',
+    formulation: DATA_ENTRY,
   },
   {
     code: 'DATA-SUPPLIER',
@@ -389,6 +437,7 @@ export const PROCESSING_RULES: readonly ProcessingRule[] = [
     question: 'Quel fournisseur a émis ce document ?',
     businessImpact: 15,
     producer: 'DOCUMENT_BRIDGE',
+    formulation: DATA_ENTRY,
   },
 
   // ── §10.3 Rattachement d'un équipement à un bien ────────────────────────
@@ -404,6 +453,7 @@ export const PROCESSING_RULES: readonly ProcessingRule[] = [
     question: 'À quel bien cet équipement appartient-il ?',
     businessImpact: 70,
     producer: 'STATE_SCAN',
+    formulation: DATA_ENTRY,
   },
 
   // ── §10.5 Identité d'un fournisseur ─────────────────────────────────────
@@ -420,36 +470,14 @@ export const PROCESSING_RULES: readonly ProcessingRule[] = [
     question: 'S’agit-il du même fournisseur ?',
     businessImpact: 45,
     producer: 'STATE_SCAN',
+    formulation: NO_AI_DECISION,
   },
   // L'ancienne règle ASSET-RENTED (« Bien mis en location ») est retirée avec
   // l'attribut : l'usage « Mis en location » de la fiche porte seul l'information.
 
-  // ── CDC 15 T4-12 (lot 14) : statut d'une échéance ───────────────────────
-  // Verdicts de `reconcileStatus()` qui ne s'écrivent jamais seuls : une
-  // réalisation probable, ou une non-réalisation (jamais écrite
-  // automatiquement). Voir `agenda-status-cards.ts`.
-  {
-    code: 'AGENDA-DONE',
-    targetType: 'AGENDA_ITEM',
-    fieldKey: 'manualStatus',
-    arbitratePriority: 'DO_NEXT',
-    completePriority: null,
-    allowNotApplicable: true,
-    question: 'Cette échéance a-t-elle été réalisée ?',
-    businessImpact: 55,
-    producer: 'T4_STATUS',
-  },
-  {
-    code: 'AGENDA-NOT-DONE',
-    targetType: 'AGENDA_ITEM',
-    fieldKey: 'manualStatus',
-    arbitratePriority: 'DO_NEXT',
-    completePriority: null,
-    allowNotApplicable: true,
-    question: 'Cette échéance semble ne pas avoir été réalisée : qu’en est-il ?',
-    businessImpact: 60,
-    producer: 'T4_STATUS',
-  },
+  // ── CDC 15 T4-12 (lot 14) : statut d'une échéance — RETIRÉ (lot 113P, #715) ──
+  // AGENDA-DONE / AGENDA-NOT-DONE : plus de statut d'événement, plus de demande
+  // de confirmation de réalisation (décision PO du 06/11/2026).
 
   // ── CDC 15 T4-04 (lot 14) : échéance d'une source non autoritaire ───────
   // Devis, document de type inconnu : l'échéance lue est PROPOSÉE, jamais
@@ -465,6 +493,7 @@ export const PROCESSING_RULES: readonly ProcessingRule[] = [
     question: 'Ajouter cette échéance à l’agenda ?',
     businessImpact: 35,
     producer: 'T4_PROPOSAL',
+    formulation: SIMPLE_CHOICE,
   },
 
   // ── CDC 15 §14, MIG-09 (lot 17) : cas ambigus des rattrapages de données ─
@@ -483,6 +512,7 @@ export const PROCESSING_RULES: readonly ProcessingRule[] = [
     question: 'Quelle valeur garder pour ce champ ?',
     businessImpact: 30,
     producer: 'MIGRATION_REVIEW',
+    formulation: { kind: 'DETERMINISTIC', why: 'SYSTEM' },
   },
 
   // ── CDC 15 T1-04 (lot 18, R3) : conflit sur un champ d'ÉQUIPEMENT ───────
@@ -501,6 +531,7 @@ export const PROCESSING_RULES: readonly ProcessingRule[] = [
     question: 'Quelle valeur garder pour ce champ de l’équipement ?',
     businessImpact: 35,
     producer: 'T3_ENTITY_FIELDS',
+    formulation: DATA_ENTRY,
   },
   // Même conflit sur une PIÈCE (lot 19) — `roomArea` aujourd'hui. Code
   // distinct (un code par règle et par type de cible), même mécanisme.
@@ -514,6 +545,7 @@ export const PROCESSING_RULES: readonly ProcessingRule[] = [
     question: 'Quelle valeur garder pour ce champ de la pièce ?',
     businessImpact: 30,
     producer: 'T3_ENTITY_FIELDS',
+    formulation: DATA_ENTRY,
   },
 
   // ── Lot 42 (CDC Opérations V1 ch. 20, B19, C19) : ambiguïtés de la ──────
@@ -534,6 +566,7 @@ export const PROCESSING_RULES: readonly ProcessingRule[] = [
     question: 'Ce document concerne-t-il la même intervention ?',
     businessImpact: 70,
     producer: 'T3_OPERATIONS',
+    formulation: { kind: 'AI_CONTEXTUAL', treatment: 'T3', operation: 't3_operation_match', fallback: 'PRODUCER' },
   },
   // (b) « Parent Sinistre » et (d) « dissociation » (OPERATION-CLAIM-PARENT,
   // OPERATION-CLAIM-DETACH) : RETIRÉES au lot 83D (CDC v5 §18.4, AC39 — plus
@@ -549,6 +582,7 @@ export const PROCESSING_RULES: readonly ProcessingRule[] = [
     question: 'Ces documents indiquent des montants différents : lequel est le bon ?',
     businessImpact: 68,
     producer: 'T3_OPERATIONS',
+    formulation: NO_AI_DECISION,
   },
   {
     // (e) Lot 53 (retour PO Q17) : bien retiré du sinistre par l'utilisateur,
@@ -562,6 +596,7 @@ export const PROCESSING_RULES: readonly ProcessingRule[] = [
     question: 'Ce document mentionne un bien retiré du sinistre : faut-il l’y rattacher à nouveau ?',
     businessImpact: 58,
     producer: 'T3_OPERATIONS',
+    formulation: NO_AI_DECISION,
   },
 
   // ── Lot 53 (retour PO D14) : projection d'agenda incertaine ─────────────
@@ -579,6 +614,7 @@ export const PROCESSING_RULES: readonly ProcessingRule[] = [
     question: 'Cet événement de l’agenda correspond-il à cette intervention ?',
     businessImpact: 55,
     producer: 'T4_PROJECTION_MATCH',
+    formulation: { kind: 'AI_CONTEXTUAL', treatment: 'T4', operation: 't4_agenda_representation', fallback: 'PRODUCER' },
   },
   {
     // (d) Lot 53D (retour PO D2) : devise d'un montant non établie sur le document.
@@ -591,6 +627,7 @@ export const PROCESSING_RULES: readonly ProcessingRule[] = [
     question: 'De quelle devise s’agit-il pour ce montant ?',
     businessImpact: 62,
     producer: 'T3_OPERATIONS',
+    formulation: DATA_ENTRY,
   },
 
   // ── CDC 15 D-15 (lot 14) : statut du bien après vente ou sinistre ───────
@@ -605,6 +642,7 @@ export const PROCESSING_RULES: readonly ProcessingRule[] = [
     question: 'Le statut de ce bien a-t-il changé ?',
     businessImpact: 50,
     producer: 'T4_STATUS',
+    formulation: SIMPLE_CHOICE,
   },
 ] as const;
 
@@ -688,6 +726,10 @@ export function checkRulesCatalog(): string[] {
     }
     if (rule.relevantDocumentTypes?.some((code) => !getDocumentType(code))) {
       problems.push(`Règle ${rule.code} : Type documentaire hors référentiel dans relevantDocumentTypes.`);
+    }
+    // Lot 113S : chaque règle dit QUI formule sa question (aucune règle sans classement).
+    if (!rule.formulation || (rule.formulation.kind !== 'AI_CONTEXTUAL' && rule.formulation.kind !== 'DETERMINISTIC')) {
+      problems.push(`Règle ${rule.code} : formulation de la question non classée (lot 113S).`);
     }
     if (rule.cardinality === 'atLeastOne' && !rule.relationKey) {
       problems.push(`Règle ${rule.code} : cardinality « atLeastOne » réservée aux relations.`);

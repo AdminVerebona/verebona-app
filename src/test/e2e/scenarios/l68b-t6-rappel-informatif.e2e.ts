@@ -224,8 +224,8 @@ scenario('L68B-T6RAP', 'Lot 68 — rappel informatif T6 et bulle d’accueil all
     expect(ids(await pregen(c.id, b.id))).toEqual([]);
     expect(await sql`SELECT user_id, decision FROM t6_reminder_preferences WHERE account_id = ${c.id} ORDER BY user_id`)
       .toEqual([{ user_id: Math.min(c.ownerUserId, b.id), decision: c.ownerUserId < b.id ? 'SNOOZED' : 'DISMISSED' }, { user_id: Math.max(c.ownerUserId, b.id), decision: c.ownerUserId < b.id ? 'DISMISSED' : 'SNOOZED' }]);
-    // Devenu sans objet (réalisée) : plus jamais rappelée, pour personne.
-    await sql`UPDATE agenda_items SET manual_status = 'realise' WHERE id = ${visite}`;
+    // #715 : devenue sans objet, l'échéance est SUPPRIMÉE par l'utilisateur (plus de statut « réalisé ») : plus jamais rappelée.
+    await sql`DELETE FROM agenda_items WHERE id = ${visite}`;
     await sql`DELETE FROM t6_reminder_preferences WHERE account_id = ${c.id}`;
     expect(ids(await pregen(c.id, c.ownerUserId))).toEqual([]);
     expect(ids(await pregen(c.id, b.id))).toEqual([]);

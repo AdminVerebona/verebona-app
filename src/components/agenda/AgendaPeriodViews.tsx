@@ -22,17 +22,14 @@
  */
 import { useState } from 'react';
 import { Button } from '@/components/ui/button';
-import { DateChip, type DateChipTone } from '@/components/ui/date-chip';
+import { DateChip } from '@/components/ui/date-chip';
 import { Calendar, List, CalendarRange, ChevronLeft, ChevronRight } from 'lucide-react';
 import type { AgendaItemFull } from '@/services/agenda/AgendaQueryService';
-import { EFFECTIVE_STATUS_LABELS, type AgendaEffectiveStatus } from '@/lib/agenda/effective-status';
 import { NO_DEADLINE_LABEL } from '@/lib/agenda/no-deadline';
 import { AGENDA_EVENT_LABELS } from '@/lib/agenda/grouping-view';
 
-// Lot 53 (D17) : cinq états distincts, libellés partagés (desktop et mobile : même ligne).
-type EffectiveStatus = AgendaEffectiveStatus;
-
-const STATUS_LABELS: Record<EffectiveStatus, string> = EFFECTIVE_STATUS_LABELS;
+// Lot 113P (#715, décision PO du 06/11/2026) : plus de statut d'événement — ni badge,
+// ni couleur de retard, ni compteur « en retard » ; la date situe l'événement.
 
 export type AgendaView = 'list' | 'calendar' | 'year';
 
@@ -55,32 +52,11 @@ export function currentMonth(now: Date = new Date()): string {
 }
 
 /**
- * Tons des statuts (charte « Sérénité », décision PO lot 66) — libellé
- * TOUJOURS écrit : neutre brume / pétrole (à venir), pétrole (réalisé),
- * cuivre (statut à confirmer = attention), rouge (date échue = retard strict).
+ * Pastille de date d'une échéance (charte §5, composant DateChip) : ton
+ * neutre (brume / pétrole), quelle que soit la date — lot 113P : plus de ton
+ * « retard » ni « à confirmer ». Décorative : la date est écrite à côté.
  */
-export const STATUS_COLORS: Record<EffectiveStatus, string> = {
-  a_venir: 'bg-[color:var(--accent-soft)] text-[color:var(--accent)]',
-  en_retard: 'bg-[color:var(--danger-soft)] text-[color:var(--danger)]',
-  a_confirmer: 'bg-[color:var(--attention-soft)] text-[color:var(--attention-on-soft)]',
-  realise: 'bg-[color:var(--bg-success)] text-[color:var(--text-success)]',
-  annule: 'bg-[color:var(--bg-subtle)] text-[color:var(--text-secondary)]',
-};
-
-export const STATUS_BORDER: Record<EffectiveStatus, string> = {
-  a_venir: 'border-[color:var(--border-info)]',
-  en_retard: 'border-[color:var(--danger-edge)]',
-  a_confirmer: 'border-[color:var(--attention-edge)]',
-  realise: 'border-[color:var(--border-success)]',
-  annule: 'border-[color:var(--border)]',
-};
-
-/**
- * Pastille de date d'une échéance (charte §5, composant DateChip) : brume /
- * pétrole par défaut, rouge pour une date échue (retard strict), cuivre pour
- * un statut à confirmer. Décorative : le statut est écrit à côté.
- */
-export function DateBlock({ dateStr, status }: { dateStr: string | null; status?: EffectiveStatus }) {
+export function DateBlock({ dateStr }: { dateStr: string | null }) {
   if (!dateStr) {
     return (
       <span aria-hidden className="flex h-11 w-11 md:h-12 md:w-12 flex-shrink-0 flex-col items-center justify-center rounded-[10px] border border-[color:var(--border)] bg-[color:var(--bg-subtle)] leading-none text-[color:var(--text-muted)]">
@@ -92,8 +68,7 @@ export function DateBlock({ dateStr, status }: { dateStr: string | null; status?
   const d = new Date(dateStr + 'T12:00:00');
   const day = d.getDate();
   const month = d.toLocaleDateString('fr-FR', { month: 'short' }).toUpperCase().replace('.', '');
-  const tone: DateChipTone = status === 'en_retard' ? 'late' : status === 'a_confirmer' ? 'attention' : 'default';
-  return <DateChip day={String(day).padStart(2, '0')} month={month} tone={tone} />;
+  return <DateChip day={String(day).padStart(2, '0')} month={month} tone="default" />;
 }
 
 // Repère par bien (vue Mois / Année) — lot 66B1 : la couleur par bien n'est
@@ -118,10 +93,10 @@ function itemColor(item: AgendaItemFull) {
   return assetColor(item.assetLinks[0]?.assetId);
 }
 
-/** Infobulle d'une échéance compacte : titre, bien, statut écrit. */
+/** Infobulle d'une échéance compacte : titre, bien (lot 113P : aucun statut). */
 function itemTooltip(item: AgendaItemFull): string {
   const bien = item.assetLinks[0]?.assetName;
-  return [item.title, bien, STATUS_LABELS[item.effectiveStatus]].filter(Boolean).join(' · ');
+  return [item.title, bien].filter(Boolean).join(' · ');
 }
 
 export function CalendarView({ items, month, onItemClick }: { items: AgendaItemFull[]; month: string; onItemClick: (item: AgendaItemFull) => void; onNew: () => void }) {
@@ -191,10 +166,9 @@ export function CalendarView({ items, month, onItemClick }: { items: AgendaItemF
                     key={item.id}
                     onClick={() => onItemClick(item)}
                     title={itemTooltip(item)}
-                    className={`w-full text-left text-xs rounded px-1.5 py-0.5 truncate font-medium hover:opacity-80 transition-opacity ${item.effectiveStatus === 'en_retard' ? 'bg-[color:var(--danger-soft)] text-[color:var(--danger)]' : itemColor(item).pill}`}
+                    className={`w-full text-left text-xs rounded px-1.5 py-0.5 truncate font-medium hover:opacity-80 transition-opacity ${itemColor(item).pill}`}
                   >
                     {item.startTime ? `${item.startTime.slice(0, 5)} ` : ''}{item.title}
-                    {item.effectiveStatus === 'en_retard' && <span className="sr-only"> — {STATUS_LABELS.en_retard}</span>}
                   </button>
                 ))}
                 {dayItems.length > 3 && (
@@ -225,9 +199,6 @@ export function CalendarView({ items, month, onItemClick }: { items: AgendaItemF
               {item.assetLinks[0] && (
                 <span className="text-xs text-muted-foreground shrink-0 hidden sm:block">{item.assetLinks[0].assetName}</span>
               )}
-              <span className={`shrink-0 inline-flex items-center rounded-full px-2.5 py-1 text-xs font-medium border ${STATUS_BORDER[item.effectiveStatus]} ${STATUS_COLORS[item.effectiveStatus]}`}>
-                {STATUS_LABELS[item.effectiveStatus]}
-              </span>
             </button>
           ))}
         </div>
@@ -309,7 +280,6 @@ function MonthCard({ monthLabel, monthKey, monthItems, isCurrentMonth, onItemCli
 }) {
   const [expanded, setExpanded] = useState(false);
   const hasItems = monthItems.length > 0;
-  const overdue = monthItems.filter(i => i.effectiveStatus === 'en_retard').length;
   const visibleItems = expanded ? monthItems : monthItems.slice(0, PREVIEW_COUNT);
   const hiddenCount = monthItems.length - PREVIEW_COUNT;
 
@@ -357,11 +327,6 @@ function MonthCard({ monthLabel, monthKey, monthItems, isCurrentMonth, onItemCli
               >
                 Réduire
               </button>
-            )}
-            {overdue > 0 && (
-              <p className="text-[10px] font-medium text-[color:var(--danger)] pl-4 pt-1">
-                {overdue} en retard
-              </p>
             )}
           </>
         )}

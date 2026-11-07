@@ -204,7 +204,9 @@ scenario('L71G-T6', 'Lot 71G — écarts de décision d’interpellation T6 et r
     expect(evalues()).toEqual([]);
   });
 
-  it('T6-02 — échéance dépassée de 90 jours : éligible si une action reste établie, absente sinon', async () => {
+  // #715 : plus de statut d'événement — les rappels reposent sur des dates FUTURES : une échéance dépassée
+  // n'est plus ni évaluée ni présentée, même si une démarche restait établie.
+  it('T6-02 (#715) — échéance dépassée de 90 jours : jamais évaluée ni présentée', async () => {
     const c = await compte();
     const ouverte = await echeance(c, 'Mise en conformité électrique', await plus(-90));
     const close = await echeance(c, 'Ramonage cheminée', await plus(-92));
@@ -219,14 +221,12 @@ scenario('L71G-T6', 'Lot 71G — écarts de décision d’interpellation T6 et r
       ? AGIR({ reasonCode: 'OVERDUE_ACTION_PENDING', action: 'Faire intervenir un électricien' })
       : { decision: 'SUPPRESS', category: 'INFORMATION', reasonCode: 'ALREADY_HANDLED', reason: 'Le ramonage a été réalisé selon la facture jointe.', priorityHint: 'LOW', preuve: 'title' });
     const p = await passer(c.id);
-    // Réévaluées (jamais une date dépassée prise pour une action non faite), sélection bornée.
-    expect(evalues().map((x) => x.title).sort()).toEqual(['Mise en conformité électrique', 'Ramonage cheminée']);
-    expect(ids(p)).toEqual([ouverte]);
+    expect(evalues()).toEqual([]);
+    expect(ids(p)).toEqual([]);
     expect(ids(p)).not.toContain(close);
     expect(ids(p)).not.toContain(sansSignal);
-    // Échéance historique sans action restante : plus jamais proposée.
     modele.candidats.length = 0;
-    expect(ids(await passer(c.id))).toEqual([ouverte]);
+    expect(ids(await passer(c.id))).toEqual([]);
     expect(evalues()).toEqual([]);
   });
 
@@ -360,9 +360,10 @@ scenario('L71G-T6', 'Lot 71G — écarts de décision d’interpellation T6 et r
     expect(ids(await passer(c.id, c.ownerUserId))).toEqual([]);
     // Lot 75E (D) : nouveau cycle de la MÊME ligne = occurrence réalisée puis rouverte pour l'échéance
     // suivante (identité persistante, cohérente avec T4) — plus un simple écart de dates (183 jours).
-    const { updateManualStatus } = await import('@/services/agenda/AgendaWriteService');
-    await updateManualStatus(e, 'realise', c.id);
-    await updateManualStatus(e, null, c.id);
+    // #715 : plus de geste de statut — le cycle clos est l'événement HISTORIQUE immuable
+    // (« réalisé » posé avant le lot 113P), toujours lu par la clé de cycle T6.
+    await sql`INSERT INTO agenda_occurrence_events (agenda_item_id, account_id, event_type, detail_json)
+              VALUES (${e}, ${c.id}, 'STATUS_CHANGED', '{"manualStatus":"realise","origin":"USER"}'::jsonb)`;
     await sql`UPDATE agenda_items SET start_date = start_date + 365, updated_at = now(),
                 description = 'Renouvellement : relancer le prestataire un mois avant.' WHERE id = ${e}`;
     // L'IA juge le nouveau cycle (réévaluation après changement de date et de contenu).

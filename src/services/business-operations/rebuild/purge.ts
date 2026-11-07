@@ -83,7 +83,7 @@ export async function readUserData(sql: Sql, accountId: number): Promise<UserDat
   const [r] = await sql.unsafe<Row[]>(`
     SELECT (SELECT count(*)::int FROM agenda_items WHERE account_id = $1 AND NOT is_automatic) AS agenda_user,
            (SELECT count(*)::int FROM agenda_items WHERE account_id = $1 AND is_automatic
-              AND (is_automatic_modified OR COALESCE(manual_status, '') <> '' OR confirmation_mode IS NOT DISTINCT FROM 'USER')) AS agenda_modified,
+              AND (is_automatic_modified OR confirmation_mode IS NOT DISTINCT FROM 'USER')) AS agenda_modified,
            (SELECT count(*)::int FROM agenda_file_links l JOIN agenda_items i ON i.id = l.agenda_item_id
              WHERE i.account_id = $1 AND 'MANUAL_DIRECT' = ANY(l.provenances)) AS manual_links,
            (SELECT count(*)::int FROM business_operation_match_decisions WHERE account_id = $1 AND active AND origin IN ('USER_ARBITRATION', 'ADMIN_REVIEW')) AS decisions,
@@ -156,7 +156,7 @@ export async function inventoryAccount(sql: Sql, accountId: number): Promise<Pur
   const projections = purged.length ? (await sql.unsafe<Array<{ id: number }>>(`
     SELECT i.id FROM agenda_items i
      WHERE i.account_id = $1 AND i.business_operation_id = ANY($2::bigint[]) AND i.projection_origin = 'OPERATION'
-       AND i.is_automatic AND NOT i.is_automatic_modified AND COALESCE(i.manual_status, '') = ''
+       AND i.is_automatic AND NOT i.is_automatic_modified
        AND i.confirmation_mode IS DISTINCT FROM 'USER'
        AND NOT EXISTS (SELECT 1 FROM agenda_file_links l WHERE l.agenda_item_id = i.id AND 'MANUAL_DIRECT' = ANY(l.provenances))
        ${t6 ? 'AND NOT EXISTS (SELECT 1 FROM t6_reminder_preferences p WHERE p.agenda_item_id = i.id)' : ''}

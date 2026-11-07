@@ -3,7 +3,7 @@
  * Lot 103E — événements d'Agenda rattachés à un fournisseur (fiche
  * `/fournisseurs/[id]`), relation BIDIRECTIONNELLE avec le tiroir Agenda.
  *
- *   · passés, à venir et sans date, avec intitulé, date et statut ; chaque
+ *   · passés, à venir et sans date, avec intitulé et date (lot 113P : plus de statut) ; chaque
  *     ligne ouvre la fiche de l'événement (tiroir) ;
  *   · « Associer un événement » (recherche Agenda du compte) et « Dissocier »
  *     (aucune entité supprimée ; retrait mémorisé : aucun traitement
@@ -24,13 +24,12 @@ import { AGENDA_SUPPLIER_BUCKET_LABELS, type AgendaSupplierTimeBucket } from "@/
 import { AGENDA_EVENT_LABELS } from "@/lib/agenda/grouping-view";
 
 interface SupplierAgendaItem {
-  id: number; title: string; startDate: string | null; manualStatus: string | null; bucket: AgendaSupplierTimeBucket;
+  id: number; title: string; startDate: string | null; bucket: AgendaSupplierTimeBucket;
 }
 
 const ORDRE: AgendaSupplierTimeBucket[] = ["future", "past", "undated"];
 const fmt = (d: string | null) =>
   d ? new Date(`${d}T12:00:00`).toLocaleDateString("fr-FR", { day: "numeric", month: "long", year: "numeric" }) : "Sans date";
-const statut = (s: string | null) => (s === "realise" ? "Réalisé" : s === "annule" ? "Annulé" : null);
 
 export function SupplierAgendaSection({ supplierId, supplierName }: { supplierId: number; supplierName: string }) {
   const [items, setItems] = useState<SupplierAgendaItem[] | null>(null);
@@ -115,7 +114,7 @@ export function SupplierAgendaSection({ supplierId, supplierName }: { supplierId
                     <li key={c.id} className="flex items-center gap-3 py-2">
                       <div className="min-w-0 flex-1">
                         <p className="truncate text-sm font-medium">{c.title}</p>
-                        <p className="truncate text-xs text-muted-foreground">{[fmt(c.startDate), statut(c.manualStatus)].filter(Boolean).join(" · ")}</p>
+                        <p className="truncate text-xs text-muted-foreground">{fmt(c.startDate)}</p>
                       </div>
                       <Button size="sm" variant="ghost" disabled={busy === c.id} onClick={() => { void geste("link", c.id); }} aria-label={`Associer ${c.title} à ${supplierName}`}>
                         {busy === c.id ? <Loader2 className="h-4 w-4 animate-spin" /> : "Associer"}
@@ -141,7 +140,7 @@ export function SupplierAgendaSection({ supplierId, supplierName }: { supplierId
                       className="flex min-w-0 flex-1 items-center gap-3 rounded-md px-1 py-2.5 text-left hover:bg-muted/40">
                       <div className="min-w-0 flex-1">
                         <p className="truncate text-sm font-medium">{i.title}</p>
-                        <p className="truncate text-xs text-muted-foreground">{[fmt(i.startDate), statut(i.manualStatus)].filter(Boolean).join(" · ")}</p>
+                        <p className="truncate text-xs text-muted-foreground">{fmt(i.startDate)}</p>
                       </div>
                       <ChevronRight className="h-4 w-4 text-muted-foreground" aria-hidden />
                     </button>

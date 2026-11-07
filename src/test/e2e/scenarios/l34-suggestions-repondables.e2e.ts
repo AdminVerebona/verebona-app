@@ -252,9 +252,8 @@ scenario('L34-SUGG', 'Lot 34 — chaque suggestion affichée → cliquée → in
     let l = (await exemples(c, '/accueil')).map((x) => x.label);
     expect(l).toContain('Que dois-je traiter en priorité ?');
     expect(l).not.toContain('Que dois-je faire aujourd’hui ?');
-    // Échéance d'hier réalisée : toujours pas « aujourd'hui » (résolveur réel).
-    const faite = await echeance(c, cupra, 'Vidange', dans(-1));
-    await sql`UPDATE agenda_items SET manual_status = 'realise' WHERE id = ${faite}`;
+    // #715 : échéance d'hier (sans statut) : une date passée n'est pas une action — toujours pas « aujourd'hui ».
+    await echeance(c, cupra, 'Vidange', dans(-1));
     l = (await exemples(c, '/accueil')).map((x) => x.label);
     expect(l).not.toContain('Que dois-je faire aujourd’hui ?');
     await echeance(c, cupra, 'Contrôle technique', J);

@@ -375,8 +375,6 @@ export async function buildSynthesisContext(
 
 /* ── Implémentation par défaut (couche canonique de X, SQL borné au compte) ── */
 
-const aujourdhui = () => new Intl.DateTimeFormat('en-CA', { timeZone: 'Europe/Paris', year: 'numeric', month: '2-digit', day: '2-digit' }).format(new Date());
-
 const DOCS_DES_BIENS = `(EXISTS (SELECT 1 FROM document_asset_links l WHERE l.account_id = f.account_id AND l.file_id = f.id
                            AND l.status = 'ACTIVE' AND l.asset_id = ANY($2::int[]))
          OR f.asset_id = ANY($2::int[]) OR f.linked_asset_id = ANY($2::int[]))`;
@@ -494,20 +492,17 @@ export const defaultDeps: SynthesisDeps = {
 
   async timelineRows(accountId, assetIds, limit) {
     if (assetIds.length === 0) return [];
-    // Lot 111R : preuve de réalisation valide (expression canonique de l'Agenda et de la Timeline).
-    const { validCompletionProofSelect } = await import('@/services/agenda/completion-proof');
-    const preuve = await validCompletionProofSelect('i').catch(() => 'false');
     const [agenda, docs, achats] = await Promise.all([
       pgClient.unsafe(
-        `SELECT i.id, i.title, to_char(i.start_date, 'YYYY-MM-DD') AS date, i.manual_status AS "manualStatus", ${preuve} AS "completionProven",
+        `SELECT i.id, i.title, to_char(i.start_date, 'YYYY-MM-DD') AS date,
                 i.origin_field_key AS "originFieldKey", min(a.name) AS "assetName", i.business_operation_id AS "operationId"
            FROM agenda_items i
            JOIN agenda_asset_links l ON l.agenda_item_id = i.id AND l.asset_id = ANY($2::int[])
            JOIN assets a ON a.id = l.asset_id AND a.account_id = $1 AND a.deleted_at IS NULL
-          WHERE i.account_id = $1 AND i.start_date IS NOT NULL AND coalesce(i.manual_status, '') <> 'annule'
+          WHERE i.account_id = $1 AND i.start_date IS NOT NULL
           GROUP BY i.id ORDER BY i.start_date DESC LIMIT $3`,
         [accountId, assetIds, limit] as never[],
-      ) as unknown as Promise<Array<{ id: number; title: string; date: string; manualStatus: string | null; completionProven?: boolean | null; originFieldKey: string | null; assetName: string | null; operationId: number | null }>>,
+      ) as unknown as Promise<Array<{ id: number; title: string; date: string; originFieldKey: string | null; assetName: string | null; operationId: number | null }>>,
       withDocumentTitles(pgClient.unsafe(
         `SELECT f.id, ${documentTitleJsonSql('f')} AS title, to_char(f.document_date, 'YYYY-MM-DD') AS date,
                 (SELECT a.name FROM assets a WHERE a.id = coalesce(f.asset_id, f.linked_asset_id)) AS "assetName"
@@ -529,7 +524,6 @@ export const defaultDeps: SynthesisDeps = {
         }));
       })(),
     ]);
-    const today = aujourdhui();
     const out: TimelineEvent[] = [];
     // Lot 45 (O6, C15 « historique », B15 « que s'est-il passé ? ») : la
     // chronologie métier CONSOLIDÉE d'abord — Opérations actives datées ;
@@ -543,9 +537,8 @@ export const defaultDeps: SynthesisDeps = {
     for (const a of achats) if (a && !ops.acquisitionAssets.has(a.id)) out.push({ date: a.date, label: 'Achat', kind: 'acquisition', ref: `asset_field:${a.id}:acquisitionDate`, assetName: a.name, detail: null });
     for (const i of agenda) {
       if (i.operationId != null && ops.operationIds.has(Number(i.operationId))) continue;
-      // Lot 111R : « réalisé » aussi sur preuve de réalisation valide (date passée), comme l'Agenda.
-      const statut = i.manualStatus === 'realise' || (i.completionProven === true && i.date <= today) ? 'réalisé' : i.date > today ? 'à venir' : null;
-      out.push({ date: i.date, label: i.title, kind: 'agenda', ref: `agenda_${i.id}`, assetName: i.assetName, detail: statut });
+      // Lot 113P (#715) : plus de statut d'événement (« réalisé », « à venir ») — la date situe l'élément.
+      out.push({ date: i.date, label: i.title, kind: 'agenda', ref: `agenda_${i.id}`, assetName: i.assetName, detail: null });
     }
     for (const d of docs) {
       if (ops.fileIds.has(Number(d.id))) continue;

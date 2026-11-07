@@ -287,7 +287,8 @@ async function usageMetrics(useCase: string, s: Scope, errors: string[]): Promis
   const rows = await tryMany(
     `SELECT COUNT(*)::int AS calls,
             COALESCE(SUM(cost_micros) FILTER (WHERE is_billable), 0)::bigint AS cost,
-            COUNT(*) FILTER (WHERE model_rank IN ('fallback_1', 'fallback_2') OR is_fallback)::int AS fallbacks
+            COUNT(*) FILTER (WHERE (model_rank IN ('fallback_1', 'fallback_2') OR is_fallback)
+                             AND COALESCE(error_code, '') NOT IN ('FALLBACK_NOT_ADMISSIBLE', 'MODEL_KNOWN_UNAVAILABLE'))::int AS fallbacks
        FROM ai_usage_event
       WHERE created_at >= $1 AND created_at < $2 AND use_case_code = $3
         AND operation_type <> 'circuit_breaker_probe'
@@ -995,7 +996,8 @@ async function domainConfig(s: Scope, errors: string[]): Promise<DomainResult> {
             COUNT(*) FILTER (WHERE config_version_id IS NOT NULL)::int AS with_version,
             COUNT(*) FILTER (WHERE metadata->>'engine' = 'new')::int AS engine_new,
             COUNT(*) FILTER (WHERE metadata->>'engine' = 'legacy')::int AS engine_legacy,
-            COUNT(*) FILTER (WHERE model_rank IN ('fallback_1', 'fallback_2') OR is_fallback)::int AS fallbacks,
+            COUNT(*) FILTER (WHERE (model_rank IN ('fallback_1', 'fallback_2') OR is_fallback)
+                             AND COALESCE(error_code, '') NOT IN ('FALLBACK_NOT_ADMISSIBLE', 'MODEL_KNOWN_UNAVAILABLE'))::int AS fallbacks,
             COUNT(*) FILTER (WHERE metadata ? 'reasoning')::int AS with_reasoning,
             COUNT(*) FILTER (WHERE metadata ? 'maxOutputTokens')::int AS with_max_tokens,
             COUNT(*) FILTER (WHERE metadata ? 'trigger')::int AS with_trigger,

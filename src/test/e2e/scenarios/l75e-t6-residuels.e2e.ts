@@ -164,53 +164,26 @@ scenario('L75E-T6', 'Lot 75E — écarts résiduels de sélection, preuves et ra
 
   // ── A ─────────────────────────────────────────────────────────────────────
 
-  it('L75E-T6-A — dépassée de 90 jours, écartée, clause pertinente ajoutée : évaluable à nouveau, jamais réaffichée avant décision IA', async () => {
+  // #715 : plus de statut d'événement — les rappels reposent sur des dates FUTURES : une échéance dépassée
+  // n'est plus ni réévaluée ni présentée, même quand une clause pertinente est ajoutée (cas A d'origine retiré).
+  it('L75E-T6-A (#715) — dépassée de 90 jours, clause pertinente ajoutée : jamais réévaluée ni présentée', async () => {
     const c = await compte();
     const e = await echeance(c, 'Fin du contrat d’entretien chaudière', await plus(-90));
     const doc = await contrat(c, e);
-    // Écartée il y a 3 semaines (décision IA conservée, données de l'époque).
-    const { evaluerEcheance } = await import('../t6-assessment');
-    await evaluerEcheance(sql, e, { interpellation: 'NONE' });
-    await sql`UPDATE t6_interpellation_assessments SET assessed_on = assessed_on - 21 WHERE agenda_item_id = ${e}`;
-    // Contexte inchangé : jamais relue ni réévaluée (aucun appel répété).
     await passer(c.id);
-    await passer(c.id);
-    expect(evalues().filter((x) => x.title.startsWith('Fin du contrat'))).toEqual([]);
-    // Nouvelle clause extraite (titre et date inchangés).
+    expect(evalues()).toEqual([]);
     await fait(c, doc, { key: 'unpaidMaintenance', label: 'Obligation de paiement du solde', value: '120 €', excerpt: 'Le solde de 120 € reste dû au prestataire en cas de résiliation.' });
     modele.candidats.length = 0;
-    modele.juger = (x) => ((x.facts ?? []).some((f) => /solde/.test(f.excerpt ?? '')) ? AGIR({ reasonCode: 'OVERDUE_ACTION_PENDING', expectedAction: 'Régler le solde au prestataire', preuve: 'fact1' }) : AUCUNE);
-    // Affichage AVANT la décision IA : rien d'office ; l'évaluation est demandée en arrière-plan.
-    en(c.ownerUserId, c.id);
-    const avant = await (await svc()).getMascotPresentation(c.id, 'display', c.ownerUserId);
-    expect(ids(avant)).not.toContain(e);
-    await vi.waitFor(async () => {
-      const [a] = await sql<[{ decision: string }]>`SELECT decision FROM t6_interpellation_assessments WHERE agenda_item_id = ${e}`;
-      expect(a.decision).toBe('SHOW_NOW');
-    }, { timeout: 10_000 });
+    modele.juger = () => AGIR({ reasonCode: 'OVERDUE_ACTION_PENDING', expectedAction: 'Régler le solde au prestataire', preuve: 'fact1' });
     const p = await passer(c.id);
-    // Une seule évaluation (aucune demande répétée), puis présentée.
-    expect(evalues().map((x) => x.title)).toEqual(['Fin du contrat d’entretien chaudière']);
-    expect(ids(p)).toEqual([e]);
-    // Réextraction IDENTIQUE (nouvelle version, variation cosmétique : casse, ponctuation, espaces) : aucun appel IA supplémentaire.
-    // Lot 76A : l'ordre des mots porte le sens — une clause réordonnée est réévaluée une fois (jamais présumée identique).
-    modele.candidats.length = 0;
-    await sql`UPDATE document_facts SET status = 'superseded' WHERE file_id = ${doc.fileId}`;
-    await fait(c, doc, { key: 'unpaidMaintenance', label: 'Obligation de paiement du solde', value: '120 €', excerpt: '  LE SOLDE de 120 €   reste dû au prestataire en cas de résiliation' }); // lot 109E : casse, espaces, point final
-    expect(ids(await passer(c.id))).toEqual([e]);
     expect(evalues()).toEqual([]);
-    // Modification de CLAUSE sans changement de titre, de date ni de valeur : réévaluée.
-    await sql`UPDATE document_facts SET status = 'superseded' WHERE file_id = ${doc.fileId}`;
-    await fait(c, doc, { key: 'unpaidMaintenance', label: 'Obligation de paiement du solde', value: '120 €', excerpt: 'Le solde de 120 € n’est pas dû en cas de résiliation.' });
-    modele.juger = () => ({ ...AUCUNE, reasonCode: 'ALREADY_HANDLED', reason: 'La clause n’impose plus aucun paiement.' });
-    const q = await passer(c.id);
-    expect(evalues().map((x) => x.title)).toEqual(['Fin du contrat d’entretien chaudière']);
-    expect(ids(q)).toEqual([]);
+    expect(ids(p)).not.toContain(e);
   });
 
   // ── B ─────────────────────────────────────────────────────────────────────
 
-  it('L75E-T6-B — plus de 200 échéances, fenêtre saturée d’anciennes décisions : reprise complète, bornée, sans doublon', async () => {
+  // #715 : les échéances DÉPASSÉES (anciennes, « mise en conformité ») ne sont plus lues : seules les dates futures comptent.
+  it('L75E-T6-B — plus de 200 échéances, anciennes décisions sur des dates passées : reprise complète des dates futures, bornée, sans doublon', async () => {
     const c = await compte();
     // 200 échéances proches (lecture principale).
     await sql`INSERT INTO agenda_items (account_id, title, start_date, home_category)
@@ -237,7 +210,8 @@ scenario('L75E-T6', 'Lot 75E — écarts résiduels de sélection, preuves et ra
     expect(Math.max(...modele.candidats.map((x) => x.length))).toBeLessThanOrEqual(8);
     // Exhaustive : la lointaine documentée et les dépassées documentées ont été examinées…
     const titres = evalues().map((x) => x.title);
-    for (const t of ['Échéance bail commercial', 'Mise en conformité 70', 'Mise en conformité 80', 'Mise en conformité 95']) expect(titres, t).toContain(t);
+    expect(titres).toContain('Échéance bail commercial');
+    for (const t of ['Mise en conformité 70', 'Mise en conformité 80', 'Mise en conformité 95']) expect(titres, t).not.toContain(t);
     // … sans duplication (une seule demande par échéance, une seule décision conservée).
     expect(new Set(titres).size).toBe(titres.length);
     const [{ n, d }] = await sql<[{ n: number; d: number }]>`SELECT count(*)::int AS n, count(DISTINCT agenda_item_id)::int AS d FROM t6_interpellation_assessments WHERE account_id = ${c.id}`;
@@ -245,7 +219,7 @@ scenario('L75E-T6', 'Lot 75E — écarts résiduels de sélection, preuves et ra
     // Toutes les anciennes déjà décidées ont été examinées (curseur persistant), sans appel IA.
     const [{ ex }] = await sql<[{ ex: number }]>`SELECT count(*)::int AS ex FROM t6_candidate_examinations x JOIN agenda_items i ON i.id = x.agenda_item_id
                                                   WHERE x.account_id = ${c.id} AND i.title LIKE 'Ancienne échéance %'`;
-    expect(ex).toBe(130);
+    expect(ex).toBe(0); // #715 : dates passées jamais examinées
     expect(titres.filter((t) => t.startsWith('Ancienne échéance'))).toEqual([]);
     // La décision lointaine est présentée (exception motivée par la clause extraite).
     const p = await passer(c.id);
@@ -309,7 +283,6 @@ scenario('L75E-T6', 'Lot 75E — écarts résiduels de sélection, preuves et ra
     modele.juger = () => AGIR();
     en(c.ownerUserId, c.id);
     const R = await route();
-    const { updateManualStatus } = await import('@/services/agenda/AgendaWriteService');
     for (const [nom, periode] of [['mensuelle', 30], ['trimestrielle', 91], ['annuelle', 365], ['quinquennale', 1826]] as const) {
       const serie = `serie-${nom}`;
       const o1 = await echeance(c, `Contrôle ${nom}`, await plus(10), { serie });
@@ -325,8 +298,9 @@ scenario('L75E-T6', 'Lot 75E — écarts résiduels de sélection, preuves et ra
       const re = await preparer(c.id, c.ownerUserId);
       expect(re.decisions.find((d) => d.agendaItemId === o1)?.code, `${nom} replanifiée`).toBe('USER_DISMISSED_OCCURRENCE');
       // Occurrence réalisée puis rouverte (cycle suivant de la même ligne) : refus non transmis, ni présenté.
-      await updateManualStatus(o1, 'realise', c.id);
-      await updateManualStatus(o1, null, c.id);
+      // #715 : plus de geste de statut — cycle clos = événement historique immuable (avant 113P).
+      await sql`INSERT INTO agenda_occurrence_events (agenda_item_id, account_id, event_type, detail_json)
+                VALUES (${o1}, ${c.id}, 'STATUS_CHANGED', '{"manualStatus":"realise","origin":"USER"}'::jsonb)`;
       const nv = await preparer(c.id, c.ownerUserId);
       expect(nv.decisions.find((d) => d.agendaItemId === o1)?.code ?? '', `${nom} nouveau cycle`).not.toMatch(/USER_DISMISSED/);
       const etatO1 = await (await R.GET(req('GET', undefined, `?agendaItemId=${o1}`))).json();

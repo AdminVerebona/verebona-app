@@ -93,7 +93,7 @@ export const toProcessPublishabilityCheck: CoherenceCheck = {
   forbiddenRepairs: ['écrire une valeur de l’objet', 'fermer une carte retenue pour cause technique', 'rouvrir une carte fermée par l’utilisateur',
     'fermer une carte dont la prémisse tient', 'supprimer une carte', 'appeler l’IA'],
   services: [
-    'to-process/publishability#closeCardsNoLongerUseful', 'to-process/agenda-status-cards#closeAgendaStatusCards',
+    'to-process/publishability#closeCardsNoLongerUseful',
     'to-process/producers.service#produceAgendaActions', 'to-process/producers.service#produceEquipmentActions', 'to-process/producers.service#produceSupplierActions',
   ],
   chain: ['PERSISTENCE', 'TO_PROCESS'],
@@ -172,13 +172,6 @@ export const toProcessPublishabilityCheck: CoherenceCheck = {
         const { closeCardsNoLongerUseful } = await import('@/services/to-process/publishability');
         const fermees = await closeCardsNoLongerUseful(accountId, [id], { runRef: ctx.correlationId });
         out.set(id, { called: true, service, aiCalls: 0, result: { closed: fermees, reason: contrat?.reason ?? null }, rollbackRef });
-        continue;
-      }
-      if (service === 'closeAgendaStatusCards') {
-        // Statut posé par l'utilisateur (réalisé / annulé) : la carte de statut est close « complétée ailleurs ».
-        const { closeAgendaStatusCards } = await import('@/services/to-process/agenda-status-cards');
-        const fermees = await closeAgendaStatusCards(accountId, targetId, 'USER_COMPLETED');
-        out.set(id, { called: true, service, aiCalls: 0, result: { closed: fermees }, rollbackRef });
         continue;
       }
       const producteurs = await import('@/services/to-process/producers.service');

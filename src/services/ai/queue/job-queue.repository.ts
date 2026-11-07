@@ -719,22 +719,34 @@ export async function deferJob(
  */
 export async function suspendJobForAi(
   jobId: number,
-  p: { cause: string; message: string; revisionId: number | null; decisions?: ReadonlyArray<Record<string, unknown>> },
+  p: {
+    cause: string; message: string; revisionId: number | null; decisions?: ReadonlyArray<Record<string, unknown>>;
+    /** Lot 113R : réponse du fournisseur au transfert (structurée, sans secret), portée par la suspension. */
+    transfer?: Record<string, unknown> | null;
+  },
   executionId: string | null = null,
-): Promise<{ permanent: boolean; stale?: boolean; until?: Date; count?: number }> {
+): Promise<{ permanent: boolean; stale?: boolean; until?: Date; count?: number; parked?: boolean }> {
   const rows0 = await pgClient.unsafe(
     `SELECT COALESCE((payload->'aiSuspension'->>'count')::int, 0) AS n FROM ai_job_queue WHERE id = $1 LIMIT 1`,
     [jobId] as never[],
   );
-  const outcome = afterAiSuspension(Number((rows0 as unknown as Row[])[0]?.n ?? 0));
+  // Lot 113R : incident d'ENVOI au fournisseur — jamais d'abandon silencieux
+  // (attente longue, reprise sur rétablissement vérifié, alerte exploitation).
+  const { TRANSFER_SUSPEND_CAUSES } = await import('../gateway/fallback-policy');
+  const park = TRANSFER_SUSPEND_CAUSES.has(p.cause);
+  const outcome = afterAiSuspension(Number((rows0 as unknown as Row[])[0]?.n ?? 0), undefined, { park });
   const until = new Date(Date.now() + outcome.retryInSeconds * 1000);
   const message = outcome.status === 'FAILED'
     ? `${p.message} — suspendu ${outcome.count - 1} fois, abandonné`
-    : `${p.message} — suspendu (${outcome.count}), reprise automatique depuis un point sûr`;
+    : outcome.parked
+      ? `${p.message} — suspendu (${outcome.count}) : reprises rapprochées épuisées, en attente du rétablissement vérifié de l'envoi (sonde automatique, nouvelle vérification au plus tard à ${until.toISOString()}) — exploitation alertée`
+      : `${p.message} — suspendu (${outcome.count}), reprise automatique depuis un point sûr`;
   const suspension = {
     cause: p.cause, message: p.message.slice(0, 1000), at: new Date().toISOString(), count: outcome.count,
     until: outcome.status === 'PENDING' ? until.toISOString() : null, revisionId: p.revisionId, resumedAt: null,
     decisions: (p.decisions ?? []).slice(0, 6),
+    ...(outcome.parked ? { parked: true } : {}),
+    ...(p.transfer ? { transfer: p.transfer } : {}),
   };
   const upd = await pgClient.unsafe(
     `UPDATE ai_job_queue
@@ -752,7 +764,14 @@ export async function suspendJobForAi(
     [jobId, outcome.status, message.slice(0, 2000), String(outcome.retryInSeconds), executionId, JSON.stringify(suspension)] as never[],
   );
   if ((upd as unknown as Row[]).length === 0) return { permanent: false, stale: true };
-  return { permanent: outcome.status === 'FAILED', count: outcome.count, ...(outcome.status === 'PENDING' ? { until } : {}) };
+  if (park) {
+    const { noteTransferIncident } = await import('../transfer/transfer-recovery');
+    await noteTransferIncident({ cause: p.cause, parked: Boolean(outcome.parked), jobId, transfer: p.transfer ?? null }).catch(() => undefined);
+  }
+  return {
+    permanent: outcome.status === 'FAILED', count: outcome.count, ...(outcome.status === 'PENDING' ? { until } : {}),
+    ...(outcome.parked ? { parked: true } : {}),
+  };
 }
 
 /** Reprise d'un travail suspendu (lot 87A) : marque la suspension comme reprise par cette tentative. */

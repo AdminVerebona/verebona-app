@@ -193,10 +193,11 @@ describe('T4-V2-08 — correction historique (ordre : T4 avant la déduplication
     const d = await run([HOMIRIS], decide, [existant]);
     expect(d.map((x) => x.action)).toEqual(['ignore']);
     const items = [
-      { id: 501, functionalKey: 'k1', title: 'Abonnement Homiris', startDate: '2026-10-31', originFieldKey: null, isAutomatic: true, isAutomaticModified: false, manualStatus: null },
-      { id: 502, functionalKey: 'k2', title: 'Abonnement Homiris', startDate: '2026-11-30', originFieldKey: null, isAutomatic: true, isAutomaticModified: false, manualStatus: null },
-      { id: 503, functionalKey: 'k3', title: 'Abonnement Homiris', startDate: '2026-12-31', originFieldKey: null, isAutomatic: true, isAutomaticModified: true, manualStatus: null },
-      { id: 504, functionalKey: 'k4', title: 'Abonnement Homiris', startDate: '2027-01-31', originFieldKey: null, isAutomatic: true, isAutomaticModified: false, manualStatus: 'fait' },
+      { id: 501, functionalKey: 'k1', title: 'Abonnement Homiris', startDate: '2026-10-31', originFieldKey: null, isAutomatic: true, isAutomaticModified: false },
+      { id: 502, functionalKey: 'k2', title: 'Abonnement Homiris', startDate: '2026-11-30', originFieldKey: null, isAutomatic: true, isAutomaticModified: false },
+      { id: 503, functionalKey: 'k3', title: 'Abonnement Homiris', startDate: '2026-12-31', originFieldKey: null, isAutomatic: true, isAutomaticModified: true },
+      // #715 : plus de statut d'événement — l'ancien statut utilisateur est devenu « modifié par l'utilisateur » (1526).
+      { id: 504, functionalKey: 'k4', title: 'Abonnement Homiris', startDate: '2027-01-31', originFieldKey: null, isAutomatic: true, isAutomaticModified: true },
     ];
     const plan = planSourceSync({
       sourceFileId: 40, assetId: 3, items,

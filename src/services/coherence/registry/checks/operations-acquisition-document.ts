@@ -278,8 +278,7 @@ async function lireFaits(sql: Sql, accountId: number, ids: readonly number[], to
            EXISTS (SELECT 1 FROM business_operation_asset_links l JOIN assets a ON a.id = l.asset_id AND a.account_id = $1 AND a.deleted_at IS NULL
                     WHERE l.operation_id = o.id AND l.active) AS linked,
            (SELECT array_agg(s.source_entity_key) FROM business_operation_sources s WHERE s.operation_id = o.id AND s.active AND s.source_kind = 'DOCUMENT') AS docs,
-           (SELECT count(*)::int FROM agenda_items ai WHERE ai.account_id = $1 AND ai.business_operation_id = o.id
-              AND (ai.manual_status IS NULL OR ai.manual_status <> 'annule')) AS events
+           (SELECT count(*)::int FROM agenda_items ai WHERE ai.account_id = $1 AND ai.business_operation_id = o.id) AS events
       FROM chaine ch JOIN business_operations o ON o.id = ch.id
      WHERE ch.merged_into_operation_id IS NULL OR ch.n = 10`, [accountId, opIds]) : [];
   const opDe = new Map(ops.map((o) => [Number(o.origine), o]));

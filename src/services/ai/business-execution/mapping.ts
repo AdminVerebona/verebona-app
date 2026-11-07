@@ -80,7 +80,13 @@ export interface JobState {
    * Lot 87A (P7, RUN-02) : suspension faute de secours admissible
    * (`payload.aiSuspension`) — cause établie, message, reprise prévue.
    */
-  aiSuspension?: { cause: string; message: string | null; until: string | null; count: number; resumedAt: string | null } | null;
+  aiSuspension?: {
+    cause: string; message: string | null; until: string | null; count: number; resumedAt: string | null;
+    /** Lot 113R : reprises rapprochées épuisées (attente du rétablissement vérifié). */
+    parked?: boolean;
+    /** Lot 113R : réponse du fournisseur au transfert (compacte, sans secret). */
+    transfer?: Record<string, unknown> | null;
+  } | null;
 }
 
 const jobActivity = (j: JobState): Date => latest(j.finishedAt, j.startedAt, j.createdAt) ?? new Date(0);
@@ -93,6 +99,16 @@ function jobNotFinal(j: JobState, now: Date): { progress: BusinessProgress; caus
   if (j.costCapDeferredUntil) return { progress: 'SUSPENDED', cause: `plafond IA du compte : reprise prévue le ${j.costCapDeferredUntil.slice(0, 10)}` };
   // Lot 87A : suspendue faute de secours admissible (cause explicite, aucune écriture).
   if (j.aiSuspension && !j.aiSuspension.resumedAt) {
+    // Lot 113R : incident d'ENVOI du document au fournisseur — cause fournisseur,
+    // classification interne et suspension présentées sans les confondre.
+    if (j.aiSuspension.cause === 'TRANSFER_ACCESS_DENIED' || j.aiSuspension.cause === 'TRANSFER_UNAVAILABLE') {
+      const t = j.aiSuspension.transfer ?? null;
+      const reponse = t ? [t.httpStatus ? `HTTP ${String(t.httpStatus)}` : null, t.providerStatus, t.providerReason].filter(Boolean).join(' ') : '';
+      return {
+        progress: 'SUSPENDED',
+        cause: `AI_SUSPENDED (${j.aiSuspension.cause}) : envoi du document au fournisseur ${j.aiSuspension.cause === 'TRANSFER_ACCESS_DENIED' ? 'refusé' : 'impossible'}${reponse ? ` (${reponse})` : ''}, aucune génération — attente technique${j.aiSuspension.parked ? ', reprises rapprochées épuisées : reprise dès le rétablissement vérifié de l’envoi' : ''}, reprise automatique${reprise !== null && reprise > now.getTime() ? ` au plus tard à ${asDate(reprise).toISOString()}` : ''}`,
+      };
+    }
     return {
       progress: 'SUSPENDED',
       cause: `AI_SUSPENDED (${j.aiSuspension.cause}) : aucun secours admissible, aucune écriture — reprise automatique depuis un point sûr${reprise !== null && reprise > now.getTime() ? ` à ${asDate(reprise).toISOString()}` : ''}${j.aiSuspension.message ? ` (${j.aiSuspension.message.slice(0, 200)})` : ''}`,
@@ -244,7 +260,9 @@ export function qualifyT1(i: T1Input, now: Date): Qualification {
     detail: { reportId: rep.id, ...(job ? { jobId: job.id, jobStatus: job.status } : {}), ...(rep.failedSteps.length ? { failedSteps: rep.failedSteps } : {}) },
   };
   if (rep.status === 'FAILED') {
-    return q('FAILED', native, `T1_FAILED : ${rep.failedSteps.length ? `étape(s) en échec ${rep.failedSteps.join(', ')}` : 'aucun résultat exploitable'}`, lastActivityAt);
+    // Lot 113R : une liste d'étapes (MASTER, GROUPE…) dit OÙ le traitement s'est
+    // arrêté, pas POURQUOI — la cause technique est celle des appels (diagnostic).
+    return q('FAILED', native, `T1_FAILED : ${rep.failedSteps.length ? `étape(s) en échec ${rep.failedSteps.join(', ')} (lieu de l’arrêt, cause technique : voir le diagnostic des appels)` : 'aucun résultat exploitable'}`, lastActivityAt);
   }
   // R20 / RES-02 : persistance partielle identifiée, jamais masquée par un succès fournisseur.
   if (rep.status === 'PARTIAL') {

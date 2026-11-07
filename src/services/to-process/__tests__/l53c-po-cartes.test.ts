@@ -54,7 +54,7 @@ describe('PO-D14 — agenda : doute sur l\'événement à relier → carte « À
     const c = (r[0] as { candidates: Array<{ itemId: number; reason: string }> }).candidates;
     expect(c.map((x) => x.itemId)).toEqual([7, 8]);
     expect(c[0].reason).toMatch(/plusieurs événements équivalents|signaux/);
-    expect(r.some((a) => a.kind === 'LINK' || a.kind === 'CREATE' || a.kind === 'MARK_DONE')).toBe(false);
+    expect(r.some((a) => a.kind === 'LINK' || a.kind === 'CREATE')).toBe(false);
   });
 
   it('PO-D14-02 candidats probables classés par écart de date (au plus 3) ; un certain unique reste relié sans carte', () => {

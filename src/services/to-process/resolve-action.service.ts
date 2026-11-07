@@ -34,7 +34,7 @@ import { applyClassificationChange } from '@/services/documents/rubric-classific
 import type { ResolutionReason, TargetType } from './action-model';
 import { getRule, PROCESSING_RULES } from './rules-catalog';
 import { documentExists, documentSlotFor } from './document-slots';
-import { AGENDA_STATUS_WRITER, ASSET_STATUS_WRITER } from './agenda-status-cards';
+import { ASSET_STATUS_WRITER } from './agenda-status-cards';
 import { AGENDA_DATE_WRITER } from './agenda-date-writer';
 
 /**
@@ -79,8 +79,7 @@ export interface FieldWriter {
 }
 
 const FIELD_WRITERS: FieldWriter[] = [
-  // CDC 15 T4-12 et D-15 (lot 14) : statut d'une échéance, statut du bien.
-  AGENDA_STATUS_WRITER,
+  // CDC 15 D-15 (lot 14) : statut du bien. Lot 113P (#715) : plus d'écrivain du statut d'une échéance.
   ASSET_STATUS_WRITER,
   // Lot 83A (CDC v5 §11.8) : date d'un événement principal arbitrée (DATA-AGENDA-DATE).
   AGENDA_DATE_WRITER,

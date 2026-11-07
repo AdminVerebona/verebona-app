@@ -9,9 +9,9 @@
  *
  *   · élément saisi à la main (`is_automatic = false`) ;
  *   · élément automatique (T4, projection) MODIFIÉ par l'utilisateur :
- *     titre / date / description (`is_automatic_modified`), ou statut posé
- *     par un geste utilisateur (dernière trace de statut = STATUS_CHANGED ;
- *     un statut posé par le système — STATUS_AUTO_COMPLETED — ne compte pas).
+ *     titre / date / description (`is_automatic_modified`). Lot 113P (#715) :
+ *     plus de statut d'événement (« réalisé » / « annulé ») — la migration 1526
+ *     a reporté les anciens statuts posés par l'utilisateur sur ce drapeau.
  *   Jamais une projection (`projection_origin = 'OPERATION'`) ni un élément
  *   T4 intacts : une sortie T4 ne prouve rien (C2, B16).
  *
@@ -25,26 +25,24 @@
  * interdit ») — règles FERMÉES, toutes requises :
  *   1. élément saisi à la main (un élément automatique corrigé se RATTACHE,
  *      il ne crée pas : son document est déjà la preuve, T1 / T3) ;
- *   2. daté, rattaché à au moins un bien du compte, non annulé ;
+ *   2. daté, rattaché à au moins un bien du compte ;
  *   3. intitulé (ou type métier) d'une intervention : entretien, révision,
  *      réparation, remplacement, installation, vidange, ramonage, travaux… ;
  *   4. ni rappel (« penser à », « vérifier », « rappel », « devis »,
  *      « appeler »…, ou une question), ni échéance (« avant le »,
  *      « échéance », « expiration », « renouvellement »…) (3.2, F-020).
- *   Statut : « réalisé » posé, fait HISTORICAL, ou intitulé qui le dit
+ *   Statut de l'événement de référence : fait HISTORICAL, ou intitulé qui le dit
  *   (« faite », « effectué »…) → REALIZED (F-022) ; sinon ENVISAGED (F-021) —
  *   une date passée seule ne prouve pas la réalisation (17).
  *
  * CONTRIBUTION D'UNE SOURCE AGENDA (reconsolidation T3, C19 « Source
  * Agenda utilisateur prioritaire sur projection système »)
- *   · « réalisé » → REALIZED, date de réalisation = date de l'élément si
- *     elle n'est pas future (sinon inconnue : rien d'inventé, C16.1) ; la
- *     date prévue est conservée (C8) ;
- *   · « annulé » → CANCELLED seulement si AUCUNE autre preuve ne soutient
- *     l'Opération ; sinon la source est RETIRÉE et l'Opération reste
- *     (TRG-014 « ne pas annuler l'Operation si d'autres preuves existent »,
- *     F-087 « annulation d'un événement projeté : jamais source d'annulation
- *     métier ») ;
+ *   · fait HISTORICAL ou intitulé « fait » → REALIZED, date de réalisation =
+ *     date de l'élément si elle n'est pas future (sinon inconnue : rien
+ *     d'inventé, C16.1) ; la date prévue est conservée (C8) ;
+ *   · lot 113P : plus d'« annulé » — un événement supprimé par l'utilisateur
+ *     retire sa source (ITEM_GONE), l'Opération reste si d'autres preuves la
+ *     soutiennent (TRG-014) ;
  *   · sinon ENVISAGED, date prévue = date de l'élément ;
  *   · la date saisie PRIME pour le fait qu'elle porte (date prévue, date de
  *     réalisation) ; les biens / équipements de l'élément ne reciblent pas
@@ -68,13 +66,10 @@ export interface AgendaSourceItem {
   /** `start_date` (AAAA-MM-JJ). */
   date: string | null;
   endDate: string | null;
-  manualStatus: string | null;
   isAutomatic: boolean;
   isAutomaticModified: boolean;
   /** `projection_origin = 'OPERATION'`. */
   projected: boolean;
-  /** Dernière trace de statut posée par l'utilisateur (STATUS_CHANGED). */
-  statusByUser: boolean;
   /** `business_operation_id` résolu vers la canonique (fusion), ou null. */
   businessOperationId: number | null;
   nature: string | null;
@@ -89,14 +84,12 @@ export interface AgendaSourceItem {
 
 // ── Garde anti-blanchiment ─────────────────────────────────────────────────
 
-const statut = (s: string | null | undefined): 'realise' | 'annule' | null =>
-  s === 'realise' || s === 'annule' ? s : null;
-
-/** Contenu de l'élément porté par l'utilisateur (voir l'en-tête). Pure. */
-export function isUserAuthoredAgendaItem(i: Pick<AgendaSourceItem, 'isAutomatic' | 'isAutomaticModified' | 'manualStatus' | 'statusByUser'>): boolean {
-  if (!i.isAutomatic) return true;
-  if (i.isAutomaticModified) return true;
-  return statut(i.manualStatus) !== null && i.statusByUser;
+/**
+ * Contenu de l'élément porté par l'utilisateur (voir l'en-tête). Pure.
+ * Lot 113P (#715) : plus de statut d'événement — saisi ou modifié par l'utilisateur.
+ */
+export function isUserAuthoredAgendaItem(i: Pick<AgendaSourceItem, 'isAutomatic' | 'isAutomaticModified'>): boolean {
+  return !i.isAutomatic || i.isAutomaticModified;
 }
 
 // ── Intention : intervention décidée, pas un rappel ────────────────────────
@@ -154,7 +147,7 @@ function objectWords(texte: string | null | undefined): Set<string> {
 
 type AgendaIntent =
   | { kind: 'INTERVENTION'; status: Extract<BusinessOperationStatus, 'ENVISAGED' | 'REALIZED'> }
-  | { kind: 'NONE'; reason: 'NOT_USER_ENTERED' | 'NO_DATE' | 'NO_ASSET' | 'CANCELLED' | 'REMINDER' | 'DEADLINE' | 'NOT_AN_INTERVENTION' };
+  | { kind: 'NONE'; reason: 'NOT_USER_ENTERED' | 'NO_DATE' | 'NO_ASSET' | 'REMINDER' | 'DEADLINE' | 'NOT_AN_INTERVENTION' };
 
 /** L'intitulé (ou le type métier) décrit-il une intervention, hors rappel et échéance ? Pure. */
 function describesIntervention(i: Pick<AgendaSourceItem, 'title' | 'businessType'>): AgendaIntent {
@@ -167,11 +160,13 @@ function describesIntervention(i: Pick<AgendaSourceItem, 'title' | 'businessType
   return { kind: 'INTERVENTION', status: 'ENVISAGED' };
 }
 
-/** Statut que l'élément affirme (réalisé posé, fait historique, intitulé « fait »). Pure. */
-export function agendaItemStatus(i: Pick<AgendaSourceItem, 'manualStatus' | 'nature' | 'title'>): BusinessOperationStatus {
-  const s = statut(i.manualStatus);
-  if (s === 'realise') return 'REALIZED';
-  if (s === 'annule') return 'CANCELLED';
+/**
+ * Statut que l'élément affirme pour l'ÉVÉNEMENT DE RÉFÉRENCE (fait historique,
+ * intitulé « fait »). Pure. Lot 113P (#715) : l'événement d'agenda n'a plus de
+ * statut — la réalisation relève de l'événement de référence, jamais d'un
+ * statut d'agenda.
+ */
+export function agendaItemStatus(i: Pick<AgendaSourceItem, 'nature' | 'title'>): BusinessOperationStatus {
   if (i.nature === 'HISTORICAL') return 'REALIZED';
   return FAIT.test(normalizeText(i.title)) ? 'REALIZED' : 'ENVISAGED';
 }
@@ -182,7 +177,6 @@ export function agendaItemStatus(i: Pick<AgendaSourceItem, 'manualStatus' | 'nat
  */
 export function agendaEstablishesIntervention(i: AgendaSourceItem): AgendaIntent {
   if (i.isAutomatic) return { kind: 'NONE', reason: 'NOT_USER_ENTERED' };
-  if (statut(i.manualStatus) === 'annule') return { kind: 'NONE', reason: 'CANCELLED' };
   if (!i.date) return { kind: 'NONE', reason: 'NO_DATE' };
   if (!i.assetIds.length) return { kind: 'NONE', reason: 'NO_ASSET' };
   const d = describesIntervention(i);
@@ -197,9 +191,9 @@ export function agendaEstablishesIntervention(i: AgendaSourceItem): AgendaIntent
  * création, sur les champs connus de l'appelant. Pure.
  */
 export function agendaItemMayEstablishOperation(i: {
-  isAutomatic: boolean; title: string; startDate: string | null; manualStatus: string | null; assetCount: number; businessType?: string | null;
+  isAutomatic: boolean; title: string; startDate: string | null; assetCount: number; businessType?: string | null;
 }): boolean {
-  if (i.isAutomatic || !i.startDate || i.assetCount === 0 || statut(i.manualStatus) === 'annule') return false;
+  if (i.isAutomatic || !i.startDate || i.assetCount === 0) return false;
   return describesIntervention({ title: i.title, businessType: i.businessType ?? null }).kind === 'INTERVENTION';
 }
 
@@ -208,7 +202,8 @@ export function agendaItemMayEstablishOperation(i: {
 /** Version d'une contribution (source_version) : change à chaque modification pertinente (C2). */
 export function agendaSourceVersion(i: AgendaSourceItem): string {
   const h = createHash('sha256').update(JSON.stringify([
-    i.title, i.date, i.endDate, statut(i.manualStatus), i.statusByUser, i.isAutomaticModified, i.nature,
+    // Lot 113P : ex-statut (null) et ex-trace de statut (false) figés — versions des contributions inchangées.
+    i.title, i.date, i.endDate, null, false, i.isAutomaticModified, i.nature,
     [...i.assetIds].sort((a, b) => a - b), [...i.equipmentIds].sort((a, b) => a - b),
   ])).digest('hex').slice(0, 32);
   return `ag1:${h}`;
@@ -274,8 +269,8 @@ export function agendaContribution(
   if (p.operationType !== null && p.operationType !== 'INTERVENTION') return { kind: 'WITHDRAWN', reason: 'TYPE_NOT_SUPPORTED' };
   if (item.businessOperationId !== p.operationId) return { kind: 'WITHDRAWN', reason: 'UNLINKED' };
   if (!isUserAuthoredAgendaItem(item)) return { kind: 'WITHDRAWN', reason: 'NOT_USER_AUTHORED' };
+  // Lot 113P (#715) : plus de statut « annulé » d'événement (un événement annulé est supprimé : ITEM_GONE).
   const status = agendaItemStatus(item);
-  if (status === 'CANCELLED' && p.otherSupport) return { kind: 'WITHDRAWN', reason: 'CANCELLED_OTHER_PROOF' };
   return { kind: 'CONTRIBUTES', status, identity: agendaIdentity(item, status, p.today) };
 }
 

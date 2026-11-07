@@ -39,10 +39,9 @@ scenario('L71C-FILT', 'Filtre Équipement : documents et agenda fondés sur les 
     await sql`INSERT INTO document_asset_links (account_id, file_id, asset_id, equipment_id, link_role, origin, status)
               VALUES (${accountId}, ${fileId}, ${assetId}, ${equipmentId}, ${role}, 'USER', 'ACTIVE')`;
   };
-  const evt = async (account: { id: number; ownerUserId: number }, title: string, assetIds: number[], equipmentIds: number[] = [], cancelled = false) => {
+  const evt = async (account: { id: number; ownerUserId: number }, title: string, assetIds: number[], equipmentIds: number[] = []) => {
     const i = await make.agendaItem(account as never, { title, startDate: '2026-03-10', assetIds });
     for (const e of equipmentIds) await sql`INSERT INTO agenda_equipment_links (agenda_item_id, equipment_id) VALUES (${i.id}, ${e})`;
-    if (cancelled) await sql`UPDATE agenda_items SET manual_status = 'annule' WHERE id = ${i.id}`;
     return i.id;
   };
 
@@ -83,7 +82,7 @@ scenario('L71C-FILT', 'Filtre Équipement : documents et agenda fondés sur les 
     ids.aBienEq = await evt(compte, 'Entretien chaudière', [ids.maison], [ids.chaudiere]);
     ids.aEqSeul = await evt(compte, 'Ramonage', [], [ids.chaudiere]);
     ids.aNomTrompeur = await evt(compte, 'Chaudière : rappel', [ids.maison]);
-    ids.aAnnule = await evt(compte, 'Visite annulée', [ids.maison], [ids.chaudiere], true);
+    // #715 : plus de statut d'événement — plus d'élément « annulé » (un événement qui n'a pas eu lieu est supprimé).
     ids.aRobot = await evt(compte, 'Brosses robot', [ids.studio], [ids.robot]);
     ids.aGarage = await evt(compte, 'Contrôle', [ids.sansEq]);
     ids.aAutre = await evt(autre, 'Autre compte', [ids.autreBien], [ids.eqAutre]);
@@ -228,9 +227,10 @@ scenario('L71C-FILT', 'Filtre Équipement : documents et agenda fondés sur les 
     expect(eq.facet!.items).toEqual([expect.objectContaining({ id: ids.chaudiere, count: 2, assetName: 'Maison' })]);
   });
 
-  it('FILT-A03 — combinaison avec le statut « annulés » (règle métier inchangée)', async () => {
-    expect((await agenda([ids.maison], String(ids.chaudiere), true)).ids).toEqual(tri(ids.aBienEq, ids.aEqSeul, ids.aAnnule));
-    expect((await agenda([ids.maison], String(ids.chaudiere), false)).ids).not.toContain(ids.aAnnule);
+  // #715 : plus de statut d'événement — `includeCancelled` (ancien écran) est ignoré : même résultat.
+  it('FILT-A03 (#715) — ancien paramètre « annulés » ignoré : même résultat avec ou sans', async () => {
+    expect((await agenda([ids.maison], String(ids.chaudiere), true)).ids).toEqual(tri(ids.aBienEq, ids.aEqSeul));
+    expect((await agenda([ids.maison], String(ids.chaudiere), false)).ids).toEqual(tri(ids.aBienEq, ids.aEqSeul));
   });
 
   it('FILT-A04 — bien sans équipement : pas de facette, filtre ignoré ; sans bien : ignoré', async () => {

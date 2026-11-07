@@ -80,9 +80,8 @@ export interface ContextAgendaItem {
   businessType: string | null;
   /** Élément saisi par l'utilisateur, automatique (T4 / fiche), ou projection technique d'une Opération. */
   origin: 'USER' | 'AUTOMATIC' | 'PROJECTION';
-  /** Modifié, confirmé ou doté d'un statut par l'utilisateur (jamais absorbé). */
+  /** Modifié ou confirmé par l'utilisateur (jamais absorbé). Lot 113P : plus de statut d'événement transmis. */
   touchedByUser: boolean;
-  status: string | null;
   /** Opération de rattachement (`O1`, voisine, `OTHER` hors contexte) ou null. */
   operationRef: string | null;
   role: 'PRINCIPAL' | 'RELATED' | null;
@@ -235,6 +234,16 @@ export const T4AgendaRepresentationOutput = z.object({
     reason: z.string().min(1).max(300),
   }).nullable().optional(),
   reason: z.string().min(1).max(300),
+  /**
+   * Lot 113S (#716) — contrat `t4-user-question-v1` : quand `outcome` =
+   * ABSTAIN (le contexte ne permet pas de trancher : l'utilisateur choisit),
+   * question à lui poser, fondée sur les éléments examinés. FACULTATIVE et
+   * sans borne dans le schéma (jamais une décision invalidée par sa
+   * longueur) : contrôlée par le serveur (`to-process/ai-user-question.ts`)
+   * avant de remplacer la formulation de la carte « À traiter »
+   * AGENDA-PROJECTION-MATCH.
+   */
+  userQuestion: z.string().nullable().optional(),
 }).superRefine((v, ctx) => {
   if (v.outcome === 'ABSTAIN' && (v.occurrences.length || v.restorations.length)) {
     ctx.addIssue({ code: 'custom', path: ['outcome'], message: 'outcome=ABSTAIN exige occurrences=[] et restorations=[]' });

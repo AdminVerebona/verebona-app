@@ -1736,6 +1736,12 @@ export const agendaItems = pgTable('agenda_items', {
   startTime: pgTime('start_time'),
   endDate: pgDate('end_date'),
   endTime: pgTime('end_time'),
+  /**
+   * OBSOLÈTE (lot 113P, #715 — décision PO du 06/11/2026) : plus de statut d'événement.
+   * Colonne conservée (aucune suppression), neutralisée par la migration 1526 (valeurs
+   * archivées dans `agenda_occurrence_events` LEGACY_STATUS_ARCHIVED puis remises à NULL ;
+   * déclencheur qui la maintient NULL). Aucun flux ne la lit ni ne l'écrit.
+   */
   manualStatus: text('manual_status'),
   isAutomatic: boolean('is_automatic').notNull().default(false),
   isAutomaticModified: boolean('is_automatic_modified').notNull().default(false),
@@ -3617,6 +3623,12 @@ export const toProcessActions = pgTable('to_process_actions', {
   evidenceKeys: jsonb('evidence_keys'),
   /** Lot 107D (migration 1025) : motif expliqué d'un nouvel arbitrage après une décision de l'utilisateur. */
   reopenReason: jsonb('reopen_reason'),
+  /**
+   * Lot 113S (migration 1540) : provenance de la question affichée — AI (formulée par T3 / T4 dans
+   * sa sortie structurée, contrôlée par `ai-user-question.ts`) ou CODE (repli déterministe, motif).
+   * NULL : carte antérieure, question du producteur.
+   */
+  questionSource: jsonb('question_source'),
 
   createdAt: tstz('created_at'),
   updatedAt: tstz('updated_at'),

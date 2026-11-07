@@ -21,7 +21,11 @@ export function actionKind(type: VerebonaActionType | WriteCommandType): ActionK
   return 'display';
 }
 
-const WRITE_COMMANDS = ['CREATE_AGENDA_ITEM', 'MARK_AGENDA_DONE', 'CANCEL_AGENDA_ITEM', 'UPDATE_ASSET_FIELD'] as const;
+/**
+ * Lot 113P (#715) : MARK_AGENDA_DONE / CANCEL_AGENDA_ITEM retirées — un événement
+ * n'a plus de statut (« réalisée » / « annulée ») ; il se modifie ou se supprime.
+ */
+const WRITE_COMMANDS = ['CREATE_AGENDA_ITEM', 'UPDATE_ASSET_FIELD'] as const;
 export type WriteCommandType = (typeof WRITE_COMMANDS)[number];
 
 interface WriteCommandDefinition {
@@ -38,14 +42,6 @@ export const WRITE_COMMAND_CATALOG: Record<WriteCommandType, WriteCommandDefinit
     type: 'CREATE_AGENDA_ITEM', label: 'Créer une échéance',
     service: 'AgendaWriteService.createAgendaItem', requiresWriteAccess: true,
   },
-  MARK_AGENDA_DONE: {
-    type: 'MARK_AGENDA_DONE', label: 'Marquer une échéance comme réalisée',
-    service: 'AgendaWriteService.updateManualStatus(realise)', requiresWriteAccess: true,
-  },
-  CANCEL_AGENDA_ITEM: {
-    type: 'CANCEL_AGENDA_ITEM', label: 'Annuler une échéance',
-    service: 'AgendaWriteService.updateManualStatus(annule)', requiresWriteAccess: true,
-  },
   UPDATE_ASSET_FIELD: {
     type: 'UPDATE_ASSET_FIELD', label: 'Modifier une caractéristique d’un bien',
     service: 'asset-details-write.service.updateAssetDetails', requiresWriteAccess: true,
@@ -55,7 +51,6 @@ export const WRITE_COMMAND_CATALOG: Record<WriteCommandType, WriteCommandDefinit
 /** Paramètres figés d'une action préparée. */
 export type CommandParams =
   | { title: string; startDate: string; assetIds: number[] }            // CREATE_AGENDA_ITEM
-  | { agendaItemId: number }                                            // MARK / CANCEL
   | {                                                                   // UPDATE_ASSET_FIELD
       assetId: number; section: string; field: string;
       value: string | number;

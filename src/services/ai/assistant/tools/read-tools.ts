@@ -194,7 +194,7 @@ const getDocumentEvidence: AssistantTool<{ documentId: number; fieldKey?: string
 //
 // ⚠️ CORRECTION : la première version de cet outil référençait `dueDate`,
 // `status` et `assetId` sur `agenda_items`. Ces trois colonnes N'EXISTENT PAS.
-// Le schéma réel porte `start_date`, `manual_status`, et le rattachement au
+// Le schéma réel porte `start_date` (lot 113P : plus de statut d'événement), et le rattachement au
 // bien passe par la table de liaison `agenda_asset_links`.
 const searchAgenda: AssistantTool<{ from?: string; to?: string; assetId?: number }> = {
   name: 'searchAgenda',
@@ -220,7 +220,6 @@ const searchAgenda: AssistantTool<{ from?: string; to?: string; assetId?: number
         title: agendaItems.title,
         startDate: agendaItems.startDate,
         category: agendaItems.homeCategory,
-        manualStatus: agendaItems.manualStatus,
         requiresQualification: agendaItems.requiresQualification,
         accountId: agendaItems.accountId,
       })

@@ -170,20 +170,21 @@ scenario('L75F-T4-RES', 'T4 : choix utilisateur, rapprochements historiques, amb
     return l[1];
   }
 
-  it('T4-RES-01 — prévision marquée « réalisé » par l’utilisateur, puis fin de récurrence : statut conservé', async () => {
+  // #715 : plus de statut d'événement — l'ancien statut utilisateur est migré (1526) en
+  // « modifié par l'utilisateur » : c'est cette protection qui est vérifiée désormais.
+  it('T4-RES-01 — prévision modifiée par l’utilisateur, puis fin de récurrence : conservée', async () => {
     const c = await contexte();
     const prevision = await serie(c);
-    const { updateManualStatus } = await import('@/services/agenda/AgendaWriteService');
-    await updateManualStatus(prevision.id, 'realise', c.compte.id);
+    await sql`UPDATE agenda_items SET is_automatic_modified = true WHERE id = ${prevision.id}`;
     const avant = await items(c.bien.id);
     await rejouer([t4({ agenda: 'accept', recurrence: 'accept' })]);
     expect(await job(c.compte, c.bien.id, c.doc.id, [finDeRecurrence()])).toBeNull();
     const apres = await items(c.bien.id);
     expect(apres).toEqual(avant);
-    expect(apres.find((x) => x.id === prevision.id)).toMatchObject({ status: 'realise', d: '2027-11-15' });
+    expect(apres.find((x) => x.id === prevision.id)).toMatchObject({ status: null, modified: true, d: '2027-11-15' });
   });
 
-  it('T4-RES-02 — prévision marquée « annulé » par l’utilisateur : statut et date conservés (aucune confirmation déplaçant la date)', async () => {
+  it('T4-RES-02 — prévision modifiée par l’utilisateur (#715 : ex-« annulé ») : date conservée (aucune confirmation déplaçant la date)', async () => {
     const c = await contexte();
     // Prévision liée à un champ d'origine : une date lue à deux jours est une confirmation CERTAINE (rapprochement 1 bis).
     const excerpt = 'Entretien chaudière à réaliser tous les 12 mois';
@@ -192,15 +193,14 @@ scenario('L75F-T4-RES', 'T4 : choix utilisateur, rapprochements historiques, amb
     expect(await job(c.compte, c.bien.id, c.doc.id, [base])).toBeNull();
     const prevision = (await items(c.bien.id)).find((x) => x.nature === 'FORECAST')!;
     expect(prevision).toBeDefined();
-    const { updateManualStatus } = await import('@/services/agenda/AgendaWriteService');
-    await updateManualStatus(prevision.id, 'annule', c.compte.id);
+    await sql`UPDATE agenda_items SET is_automatic_modified = true WHERE id = ${prevision.id}`;
     const avant = await items(c.bien.id);
     // Nouveau document : la date de l'occurrence est lue au 17/11/2027.
     const doc2 = await make.assetFile(c.compte, { assetId: c.bien.id });
     await rejouer([t4({ agenda: 'accept' })]);
     expect(await job(c.compte, c.bien.id, doc2.id, [{ ...cand('Entretien chaudière', '2027-11-17'), originFieldKey: 'boilerServiceDueDate', excerpt: 'Entretien prévu le 17/11/2027' }])).toBeNull();
     const p = (await items(c.bien.id)).find((x) => x.id === prevision.id)!;
-    expect(p).toMatchObject({ status: 'annule', d: '2027-11-15', nature: 'FORECAST', mode: null });
+    expect(p).toMatchObject({ status: null, modified: true, d: '2027-11-15', nature: 'FORECAST', mode: null });
     expect((await items(c.bien.id)).filter((x) => avant.some((y) => y.id === x.id))).toEqual(avant);
   });
 
@@ -221,9 +221,9 @@ scenario('L75F-T4-RES', 'T4 : choix utilisateur, rapprochements historiques, amb
     // décisions forgées directement sur des éléments protégés.
     const c2 = await contexte();
     const p2 = await serie(c2);
-    const { updateManualStatus } = await import('@/services/agenda/AgendaWriteService');
-    await updateManualStatus(p2.id, 'realise', c2.compte.id);
-    // Statut utilisateur seul (sans is_automatic_modified) ou confirmation utilisateur seule.
+    // #715 : ex-statut utilisateur = « modifié par l'utilisateur » (migration 1526).
+    await sql`UPDATE agenda_items SET is_automatic_modified = true WHERE id = ${p2.id}`;
+    // Modification utilisateur seule ou confirmation utilisateur seule.
     const p3 = (await serie(await contexte()));
     await sql`UPDATE agenda_items SET confirmation_mode = 'USER' WHERE id = ${p3.id}`;
     const [{ account_id: compte3 }] = await sql<{ account_id: number }[]>`SELECT account_id FROM agenda_items WHERE id = ${p3.id}`;
@@ -239,16 +239,20 @@ scenario('L75F-T4-RES', 'T4 : choix utilisateur, rapprochements historiques, amb
       expect((await persistence.persistAgendaDecisions([forge(p2.id, action)], c2.compte.id, c2.bien.id)).writeFailures).toBe(0);
       expect((await persistence.persistAgendaDecisions([forge(p3.id, action)], compte3, 0)).writeFailures).toBe(0);
     }
-    expect(await etat(p2.id)).toEqual(e2);
+    // #715 : l'élément modifié par l'utilisateur (ex-statut, 1526) garde sa DATE et reste présent ; une confirmation
+    // par la source peut le qualifier (comportement d'une prévision modifiée à la main).
+    expect(await etat(p2.id)).toMatchObject({ d: (e2 as { d: string }).d, status: null });
     expect(await etat(p3.id)).toEqual(e3);
   });
 
-  it('T4-RES-04 — prévision automatique intacte, fin de récurrence explicite : retrait légitime (annulée)', async () => {
+  // #715 : le retrait d'une prévision n'est plus un statut « annulé » : retrait tracé (restaurable).
+  it('T4-RES-04 — prévision automatique intacte, fin de récurrence explicite : retrait légitime (tracé)', async () => {
     const c = await contexte();
     const prevision = await serie(c);
     await rejouer([t4({ agenda: 'accept', recurrence: 'accept' })]);
     expect(await job(c.compte, c.bien.id, c.doc.id, [finDeRecurrence()])).toBeNull();
-    expect((await items(c.bien.id)).find((x) => x.id === prevision.id)).toMatchObject({ status: 'annule', d: '2027-11-15' });
+    expect((await items(c.bien.id)).find((x) => x.id === prevision.id)).toBeUndefined();
+    expect(await retraits(c.compte.id)).toContain(Number(prevision.id));
   });
 
   // ── B — rapprochement des échéances historiques sans clé ─────────────────

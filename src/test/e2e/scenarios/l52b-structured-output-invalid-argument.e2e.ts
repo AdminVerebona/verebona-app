@@ -96,7 +96,8 @@ scenario('L52B', 'Structured output : 400 INVALID_ARGUMENT générique rattrapé
       ['fallback 2', 'FAILED', 'non appelé (politique de secours)', null, 'FALLBACK_NOT_ADMISSIBLE'],
     ]);
     // Un rang sauté n'est ni un appel ni un repli effectué.
-    expect(detail?.diagnosis.counters).toEqual({ jobAttempts: null, modelCalls: 2, modelFallbacks: 1, structuredOutputRetries: 2, repairCalls: 0 });
+    // Lot 113R : le rang sauté est compté à part (notCalled), jamais comme secours utilisé.
+    expect(detail?.diagnosis.counters).toEqual({ jobAttempts: null, modelCalls: 2, modelFallbacks: 1, structuredOutputRetries: 2, repairCalls: 0, notCalled: 1, transferFailures: 0, generationsRequested: 2 });
     expect(detail?.diagnosis.finalDiagnosis.join(' ')).toMatch(/essai diagnostique sans responseSchema également en échec \(HTTP 400\) — le schéma n’est pas mis en cause/);
     const breakdown = await getErrorBreakdown(1);
     expect(breakdown.some((b) => b.treatment === 'T1' && b.errorCode === 'PROVIDER_REQUEST_REJECTED' && b.failureSubtype === 'INPUT_ERROR')).toBe(true);
@@ -165,7 +166,7 @@ scenario('L52B', 'Structured output : 400 INVALID_ARGUMENT générique rattrapé
     const { getExecutionDetail } = await import('@/services/ai/telemetry/execution-log.repository');
     const detail = await getExecutionDetail(Number(row.id));
     expect(detail?.diagnosis.calls.map((c) => [c.label, c.status, c.providerAttempts?.length])).toEqual([['principal', 'SUCCEEDED', 2]]);
-    expect(detail?.diagnosis.counters).toEqual({ jobAttempts: null, modelCalls: 1, modelFallbacks: 0, structuredOutputRetries: 1, repairCalls: 0 });
+    expect(detail?.diagnosis.counters).toEqual({ jobAttempts: null, modelCalls: 1, modelFallbacks: 0, structuredOutputRetries: 1, repairCalls: 0, notCalled: 0, transferFailures: 0, generationsRequested: 1 });
     expect(detail?.diagnosis.finalDiagnosis[0]).toBe('Réussite T1.');
     expect(detail?.diagnosis.finalDiagnosis.join(' ')).toMatch(/HTTP 400 INVALID_ARGUMENT avec structured output \(schéma fournisseur [0-9a-f]{12}\) ; essai diagnostique du même modèle sans responseSchema réussi/);
   });

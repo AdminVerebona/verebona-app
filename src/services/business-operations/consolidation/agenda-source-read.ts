@@ -23,14 +23,11 @@ const intArray = (v: readonly number[]): string => `{${[...new Set(v)].filter((x
 export async function loadAgendaSourceItem(tx: DbTx, accountId: number, itemId: number): Promise<AgendaSourceItem | null> {
   const col = await agendaFunctionalColumnsReady();
   const [r] = await rows(tx, sql`
-    SELECT i.id, i.account_id, i.title, i.description, i.start_date::text AS date, i.end_date::text AS end_date, i.manual_status,
+    SELECT i.id, i.account_id, i.title, i.description, i.start_date::text AS date, i.end_date::text AS end_date,
            i.is_automatic, i.is_automatic_modified,
            (i.projection_origin IS NOT DISTINCT FROM ${PROJECTION_ORIGIN}) AS projected,
            COALESCE(o.merged_into_operation_id, o.id) AS op,
            ${col ? sql`i.event_nature` : sql`NULL::text`} AS nature, ${col ? sql`i.business_type` : sql`NULL::text`} AS business_type,
-           (SELECT e.event_type = 'STATUS_CHANGED' FROM agenda_occurrence_events e
-             WHERE e.agenda_item_id = i.id AND e.event_type IN ('STATUS_CHANGED', 'STATUS_AUTO_COMPLETED')
-             ORDER BY e.created_at DESC, e.id DESC LIMIT 1) AS status_by_user,
            COALESCE((SELECT array_agg(l.asset_id ORDER BY l.asset_id) FROM agenda_asset_links l
                        JOIN assets a ON a.id = l.asset_id AND a.account_id = i.account_id AND a.deleted_at IS NULL
                       WHERE l.agenda_item_id = i.id), '{}') AS asset_ids,
@@ -52,11 +49,9 @@ export async function loadAgendaSourceItem(tx: DbTx, accountId: number, itemId: 
     description: txt(r.description),
     date: txt(r.date),
     endDate: txt(r.end_date),
-    manualStatus: txt(r.manual_status)?.trim() || null,
     isAutomatic: r.is_automatic === true,
     isAutomaticModified: r.is_automatic_modified === true,
     projected: r.projected === true,
-    statusByUser: r.status_by_user === true,
     businessOperationId: r.op === null || r.op === undefined ? null : Number(r.op),
     nature: txt(r.nature),
     businessType: txt(r.business_type),
@@ -96,7 +91,7 @@ export async function loadAgendaMatchOperations(
                       WHERE s.operation_id = o.id AND s.active AND s.source_kind = 'DOCUMENT' AND s.source_entity_key ~ '^[0-9]{1,9}$'), '{}') AS file_ids,
            EXISTS (SELECT 1 FROM agenda_items ai
                     WHERE ai.business_operation_id = o.id AND ai.account_id = o.account_id AND ai.id <> ${item.id}
-                      AND (NOT ai.is_automatic OR ai.is_automatic_modified OR COALESCE(trim(ai.manual_status), '') <> '')) AS other_user_item
+                      AND (NOT ai.is_automatic OR ai.is_automatic_modified)) AS other_user_item
       FROM business_operations o
      WHERE o.account_id = ${accountId} AND o.invalidated_at IS NULL AND o.merged_into_operation_id IS NULL
        AND (o.type_code = 'INTERVENTION' OR o.type_code IS NULL)

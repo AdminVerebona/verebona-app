@@ -37,7 +37,6 @@ export interface DedupeRow {
   title: string;
   startDate: string;
   isAutomaticModified: boolean;
-  manualStatus: string | null;
 }
 
 interface DedupeGroup {
@@ -54,8 +53,8 @@ interface DedupeGroup {
 
 const normTitre = (t: string) =>
   t.normalize('NFD').replace(/[̀-ͯ]/g, '').toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim();
-const touche = (r: Pick<DedupeRow, 'isAutomaticModified' | 'manualStatus'>) =>
-  r.isAutomaticModified || (r.manualStatus !== null && r.manualStatus !== '');
+/** Lot 113P (#715) : plus de statut d'événement — modifié par l'utilisateur seulement. */
+const touche = (r: Pick<DedupeRow, 'isAutomaticModified'>) => r.isAutomaticModified;
 
 /** Plan de dédoublonnage (pur, testé). Un élément gardé dans un groupe n'est retiré nulle part. */
 export function planAgendaDedupe(rows: DedupeRow[]): { groups: DedupeGroup[]; remove: number[] } {
@@ -106,7 +105,7 @@ export async function dedupeAutomaticAgendaItems(sql: Sql, opts: {
       SELECT i.id, i.account_id AS "accountId", l.asset_id AS "assetId",
              CASE WHEN i.origin_ref_type = 'asset_file' THEN i.origin_ref_id END AS "sourceFileId",
              i.origin_field_key AS "originFieldKey", i.title, i.start_date::text AS "startDate",
-             i.is_automatic_modified AS "isAutomaticModified", i.manual_status AS "manualStatus"
+             i.is_automatic_modified AS "isAutomaticModified"
         FROM agenda_items i JOIN agenda_asset_links l ON l.agenda_item_id = i.id
        WHERE i.account_id = ${accountId} AND i.is_automatic AND i.start_date IS NOT NULL`;
     report.accountsScanned += 1;

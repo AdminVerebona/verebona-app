@@ -86,9 +86,10 @@ scenario('L85D', 'Lecture seule (routes d’écriture) et « Ajouter un document
     const res = await DELETE(new NextRequest(`http://localhost/api/agenda/${itemId}`, { method: 'DELETE' }), params({ id: String(itemId) }));
     return { status: res.status, body: await res.json() as Json };
   }
+  // #715 : plus de statut d'événement — la route ne modifie plus rien (410), gardes conservées (403 en lecture seule).
   async function statut(itemId: number, manualStatus: string | null) {
     const { PATCH } = await import('@/app/api/agenda/[id]/statut/route');
-    const res = await PATCH(new NextRequest(`http://localhost/api/agenda/${itemId}/statut`, { method: 'PATCH', ...json({ manualStatus }) }), params({ id: String(itemId) }));
+    const res = await PATCH(new NextRequest(`http://localhost/api/agenda/${itemId}/statut`, { method: 'PATCH', ...json({ manualStatus }) }));
     return { status: res.status, body: await res.json() as Json };
   }
   async function conflit(conflictId: number) {
@@ -157,8 +158,7 @@ scenario('L85D', 'Lecture seule (routes d’écriture) et « Ajouter un document
 
     for (const [nom, r] of [
       ['DELETE /api/agenda/:id', await supprimer(item.id)],
-      ['PATCH /api/agenda/:id/statut (réalisé)', await statut(item.id, 'realise')],
-      ['PATCH /api/agenda/:id/statut (annulé)', await statut(item.id, 'annule')],
+      ['PATCH /api/agenda/:id/statut (ancien écran)', await statut(item.id, 'realise')],
       ['PATCH /api/agenda/conflicts/:id', await conflit(cf.id)],
     ] as const) {
       expect(r.status, nom).toBe(403);
@@ -170,12 +170,13 @@ scenario('L85D', 'Lecture seule (routes d’écriture) et « Ajouter un document
     expect(await lire(item.id)).toBe(200);
   });
 
-  it('L85D-E02 — compte actif : suppression et changement de statut inchangés', async () => {
+  it('L85D-E02 — compte actif : suppression inchangée ; changement de statut retiré (#715, 410 sans écriture)', async () => {
     const c = await compte('actif');
     const item = await make.agendaItem(c.compte, { title: 'Contrôle technique', startDate: '2026-11-04' });
     const s = await statut(item.id, 'realise');
-    expect(s.status).toBe(200);
-    expect((await sql`SELECT manual_status FROM agenda_items WHERE id = ${item.id}`)[0]).toEqual({ manual_status: 'realise' });
+    expect(s.status).toBe(410);
+    expect(s.body).toMatchObject({ code: 'AGENDA_STATUS_REMOVED' });
+    expect((await sql`SELECT manual_status FROM agenda_items WHERE id = ${item.id}`)[0]).toEqual({ manual_status: null });
     expect((await supprimer(item.id)).status).toBe(200);
     expect(await lire(item.id)).toBe(404);
   });

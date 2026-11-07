@@ -225,14 +225,15 @@ const SQL: Readonly<Record<Exclude<Category, 'operations' | 'echeances'> | 'agen
     stateExpr: `'active'`,
     search: `(x.title ILIKE $2 OR x.business_type ILIKE $2 OR x.origin_field_key ILIKE $2 OR x.id = $3::int)`,
     order: { date: 'x.start_date', id: 'x.id', name: 'lower(x.title)', created: 'x.created_at' },
-    columns: `x.id, x.title, x.start_date::text AS start_date, x.end_date::text AS end_date, x.manual_status, x.event_nature, x.business_type, x.origin_type,
+    columns: `x.id, x.title, x.start_date::text AS start_date, x.end_date::text AS end_date, x.event_nature, x.business_type, x.origin_type,
               x.is_automatic, x.confirmed_at, x.created_at,
               (SELECT a.id FROM agenda_asset_links l JOIN assets a ON a.id = l.asset_id AND a.account_id = x.account_id WHERE l.agenda_item_id = x.id ORDER BY l.id LIMIT 1) AS asset_id,
               (SELECT a.name FROM agenda_asset_links l JOIN assets a ON a.id = l.asset_id AND a.account_id = x.account_id WHERE l.agenda_item_id = x.id ORDER BY l.id LIMIT 1) AS asset_name`,
     map: (r) => ({
       type: 'agenda', id: int(r.id), name: str(r.title) ?? `Échéance #${r.id}`,
       kind: [str(r.event_nature), str(r.business_type), str(r.origin_type), r.is_automatic ? 'automatique' : 'manuelle'].filter(Boolean).join(' · '),
-      status: str(r.manual_status), statusLabel: r.confirmed_at ? `${str(r.manual_status) ?? '—'} · confirmée` : str(r.manual_status), state: 'active',
+      // Lot 113P (#715) : plus de statut d'événement (seule la confirmation d'une date prévisionnelle est indiquée).
+      status: null, statusLabel: r.confirmed_at ? 'confirmée' : null, state: 'active',
       parent: r.asset_id ? { type: 'asset', id: int(r.asset_id), label: str(r.asset_name) ?? 'Bien' } : null,
       dates: [{ label: 'Date', value: str(r.start_date) }, ...(r.end_date ? [{ label: 'Fin', value: str(r.end_date) }] : []), { label: 'Créée', value: ts(r.created_at) }],
     }),

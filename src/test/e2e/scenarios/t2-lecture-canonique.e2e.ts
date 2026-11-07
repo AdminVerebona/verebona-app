@@ -134,14 +134,15 @@ scenario('T2-L15-LECTURE', 'Lecture canonique de l’assistant', ({ sql, make })
     expect(prochaines.map((r) => r.id)).not.toContain(achatAncien);
 
     const item = await can.getCanonicalAgendaItem(compte.id, ct);
-    expect(item).toMatchObject({ nature: 'DEADLINE', businessType: 'inspection', status: 'unknown', forecast: false });
+    expect(item).toMatchObject({ nature: 'DEADLINE', businessType: 'inspection', forecast: false });
+    expect(item).not.toHaveProperty('status'); // #715 : plus de statut d'événement
     expect(item!.assets.map((x) => x.name)).toEqual(['Clio']);
     expect(item!.sources.map((x) => x.fileId)).toEqual([doc.id]);
-    // Date passée, sans statut ni carte : not_proven (à venir : unknown).
+    // #715 : date passée — aucun statut, aucun retard ; un ancien « réalisé » écrit en base est neutralisé (1526).
     const passe = await cree('Entretien 2020', '2020-01-10', 'DEADLINE', 'maintenanceDueDate');
-    expect((await can.getCanonicalAgendaItem(compte.id, passe))?.status).toBe('not_proven');
+    expect(await can.getCanonicalAgendaItem(compte.id, passe)).not.toHaveProperty('overdue');
     await sql`UPDATE agenda_items SET manual_status = 'realise' WHERE id = ${achat}`;
-    expect((await can.getCanonicalAgendaItem(compte.id, achat))?.status).toBe('completed');
+    expect((await sql`SELECT manual_status FROM agenda_items WHERE id = ${achat}`)[0]).toEqual({ manual_status: null });
     expect(await can.getCanonicalAgendaItem((await make.account()).id, ct)).toBeNull();
   });
 

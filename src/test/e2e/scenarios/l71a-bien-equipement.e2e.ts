@@ -326,12 +326,12 @@ scenario('L71A', 'Séparation bien / équipement et rapprochement documentaire',
     const item = await make.agendaItem(c, { title: 'Achat robot aspirateur', startDate: '2025-03-10', assetIds: [m.id] });
     await sql`INSERT INTO agenda_equipment_links (agenda_item_id, equipment_id) VALUES (${item.id}, ${robot})`;
     const { syncPurchaseDate } = await import('@/services/agenda/write-agenda-item');
-    await syncPurchaseDate({ itemId: item.id, accountId: c.id, actorUserId: c.ownerUserId, manualStatus: 'realise', businessType: 'purchase' });
+    await syncPurchaseDate({ itemId: item.id, accountId: c.id, actorUserId: c.ownerUserId, businessType: 'purchase' });
     expect((await etatEq(c, robot)).acquisitionDate).toMatchObject({ value: '2025-03-10', origin: 'USER' });
     expect((await etatBien(c, m.id)).acquisitionDate).toBeUndefined();
     // Événement d'achat du BIEN seul : règle D-13 inchangée.
     const achat = await make.agendaItem(c, { title: 'Achat maison', startDate: '2019-06-14', assetIds: [m.id] });
-    await syncPurchaseDate({ itemId: achat.id, accountId: c.id, actorUserId: c.ownerUserId, manualStatus: 'realise', businessType: 'purchase' });
+    await syncPurchaseDate({ itemId: achat.id, accountId: c.id, actorUserId: c.ownerUserId, businessType: 'purchase' });
     expect((await etatBien(c, m.id)).acquisitionDate?.value).toBe('2019-06-14');
     expect((await etatEq(c, robot)).acquisitionDate?.value).toBe('2025-03-10');
   });

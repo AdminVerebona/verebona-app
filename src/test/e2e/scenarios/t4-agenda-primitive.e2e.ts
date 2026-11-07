@@ -104,11 +104,12 @@ scenario('T4-L14', 'Primitive d’écriture agenda, clé fonctionnelle et nature
     items = await itemsDe(bien.id);
     expect(items.map((i) => i.id)).toEqual([id]);
 
-    // Statut posé par l'utilisateur : même protection.
+    // #715 : plus de statut d'événement — l'ancien statut utilisateur est devenu « modifié par l'utilisateur » (1526) :
+    // même protection.
     const doc2 = await make.assetFile(compte, { assetId: bien.id });
     await persist([decision(doc2.id, '2027-05-01')], compte.id, bien.id);
     const id2 = (await itemsDe(bien.id)).find((i) => i.id !== id)!.id;
-    await sql`UPDATE agenda_items SET manual_status = 'realise' WHERE id = ${id2}`;
+    await sql`UPDATE agenda_items SET is_automatic_modified = true WHERE id = ${id2}`;
     await persist([], compte.id, bien.id, { sourceFileId: doc2.id, analysisComplete: true });
     expect((await itemsDe(bien.id)).map((i) => i.id)).toEqual([id, id2]);
   });
@@ -147,7 +148,7 @@ scenario('T4-L14', 'Primitive d’écriture agenda, clé fonctionnelle et nature
 
       const manuel = await make.asset(compte);
       await write.createAgendaItem({
-        title: 'Achat du véhicule', startDate: '2024-02-15', manualStatus: 'realise', assetIds: [manuel.id], homeCategory: 'information',
+        title: 'Achat du véhicule', startDate: '2024-02-15', assetIds: [manuel.id], homeCategory: 'information',
       }, compte.id, compte.ownerUserId);
       const [m] = await sql<{ p: string | null; kc: string | null }[]>`
         SELECT purchase_date::text AS p, key_characteristics AS kc FROM assets WHERE id = ${manuel.id}`;
@@ -157,7 +158,7 @@ scenario('T4-L14', 'Primitive d’écriture agenda, clé fonctionnelle et nature
       // Champ déjà renseigné : rien n'est écrasé.
       const rempli = await make.asset(compte, { purchaseDate: '2020-05-05' });
       await write.createAgendaItem({
-        title: 'Achat du véhicule', startDate: '2024-03-01', manualStatus: 'realise', assetIds: [rempli.id], homeCategory: 'information',
+        title: 'Achat du véhicule', startDate: '2024-03-01', assetIds: [rempli.id], homeCategory: 'information',
       }, compte.id, compte.ownerUserId);
       const [r] = await sql<{ p: string | null }[]>`SELECT purchase_date::text AS p FROM assets WHERE id = ${rempli.id}`;
       expect(r.p).toBe('2020-05-05');

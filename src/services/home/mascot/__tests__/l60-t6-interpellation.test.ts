@@ -131,17 +131,14 @@ describe('Sélection intelligente', () => {
     expect(decide({ candidate: { ...c, state: 'RESOLVED' } })).toMatchObject({ decision: 'SUPPRESS', code: 'SUBJECT_CLOSED', needsAssessment: false });
   });
 
-  it('T6-INT-05 — échéance dépassée nécessitant une démarche : interpellation adaptée (démarche dite, « C’est fait » proposé)', () => {
+  // #715 : plus de statut d'événement — une échéance DÉPASSÉE n'est plus présentée (ni démarche, ni « C’est fait ») :
+  // les rappels reposent sur des dates futures seulement.
+  it('T6-INT-05 (#715) — échéance dépassée : aucun sujet présenté, jamais « C’est fait »', () => {
     const d = decide({ candidate: cand({ dueDate: '2026-10-01' }), assessment: ia({ interpellation: 'ACT_NOW', actionNeeded: true, priority: 'MEDIUM', action: 'Prendre rendez-vous pour le ramonage' }) });
-    expect(d).toMatchObject({ decision: 'SHOW_NOW', code: 'AI_ACT_NOW', mode: 'ACT_NOW' });
     const r = raw([assurance(5, '2026-10-01', { title: 'Ramonage cheminée' })]);
-    const [s] = decidedAgendaSubjects(r, [{ agendaItemId: 5, interpellation: { mode: 'ACT_NOW', priority: 'MEDIUM', code: 'AI_ACT_NOW' }, action: d.action, reminder: { agendaItemId: 5, suggestedDate: '2026-10-22', hasSeries: false } }]);
-    expect(s.sourceCode).toBe('MASC-EXT-ACTION');
-    // Lot 68 : action DISTINCTE conservée, sans préfixe « À prévoir : ».
-    expect(s.fallbackText).toContain('Prendre rendez-vous pour le ramonage.');
-    expect(s.fallbackText).not.toContain('À prévoir :');
-    expect(s.facts.expectedAction).toBe('Prendre rendez-vous pour le ramonage');
-    expect(s.actions.map((a) => a.label)).toEqual(['Voir', 'C’est fait']);
+    const sujets = decidedAgendaSubjects(r, [{ agendaItemId: 5, interpellation: { mode: 'ACT_NOW', priority: 'MEDIUM', code: 'AI_ACT_NOW' }, action: d.action, reminder: { agendaItemId: 5, suggestedDate: '2026-10-22', hasSeries: false } }]);
+    expect(sujets).toEqual([]);
+    expect(JSON.stringify(sujets)).not.toContain('C’est fait');
   });
 
   it('T6-INT-06 — ni date d’échéance ni date pour agir : aucun délai inventé', () => {

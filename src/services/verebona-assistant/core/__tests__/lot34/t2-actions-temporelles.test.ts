@@ -176,14 +176,15 @@ describe('Lot 34 — T2 demandes d’actions temporelles (TEMP-01 à TEMP-12)', 
     expect(r.answer).toContain('« Entretien voiture » (Polo)');
   });
 
-  it('TEMP-03 — échéance d’hier encore active : retournée, OVERDUE', async () => {
+  // #715 : plus de statut d'événement — une échéance d'agenda à date passée n'est jamais une action ni « en retard ».
+  it('TEMP-03 (#715) — échéance d’hier : non retournée, jamais « en retard »', async () => {
     const e = echeance('Contrôle technique', HIER);
     const h = harness(fx({ deadlines: [e] }));
     const r = await h.ask(QUE_FAIRE);
     sansDocumentNiModele(h, r);
-    expect(r.cascade?.actionable?.results).toEqual([expect.objectContaining({ sourceId: `agenda_${e.id}`, reasonForInclusion: 'OVERDUE', dueDate: HIER })]);
-    expect(r.cascade?.actionable?.overdueCount).toBe(1);
-    expect(r.answer).toMatch(/En retard \(échéance du 8 octobre 2026\) : « Contrôle technique »/);
+    expect(r.cascade?.actionable?.resultCount).toBe(0);
+    expect(r.cascade?.actionable?.overdueCount ?? 0).toBe(0);
+    expect(r.answer).not.toMatch(/En retard|Contrôle technique/);
   });
 
   it('TEMP-04 — échéance d’hier close (réalisée) : non retournée', async () => {
@@ -266,7 +267,8 @@ describe('Lot 34 — T2 demandes d’actions temporelles (TEMP-01 à TEMP-12)', 
     expect(h.listActionables.mock.calls[0][1]).toMatchObject({ todos: false, deadlines: true, from: TODAY, to: TODAY });
   });
 
-  it('TEMP-10 — « Est-ce que j’ai quelque chose en retard ? » : uniquement les éléments échus ET encore actifs', async () => {
+  // #715 : seuls les « À traiter » datés peuvent être en retard ; une échéance d'agenda passée ne l'est jamais.
+  it('TEMP-10 (#715) — « Est-ce que j’ai quelque chose en retard ? » : uniquement les « À traiter » échus et ouverts', async () => {
     const retard = echeance('Contrôle technique', '2026-09-30');
     const close = echeance('Vidange', '2026-09-28', { closed: true });
     const todoRetard = aTraiter('Renouveler l’assurance', { dueDate: HIER });
@@ -280,9 +282,9 @@ describe('Lot 34 — T2 demandes d’actions temporelles (TEMP-01 à TEMP-12)', 
       const r = await h.ask(q);
       sansDocumentNiModele(h, r);
       expect(r.cascade?.actionable?.intentResolution, q).toBe('ACTIONS_OVERDUE');
-      expect(ids(r), q).toEqual([`agenda_${retard.id}`, `todo_${todoRetard.id}`]);
+      expect(ids(r), q).toEqual([`todo_${todoRetard.id}`]);
       expect(r.cascade?.actionable?.results.every((x) => x.reasonForInclusion === 'OVERDUE'), q).toBe(true);
-      expect(r.cascade?.actionable?.overdueCount, q).toBe(2);
+      expect(r.cascade?.actionable?.overdueCount, q).toBe(1);
     }
   });
 
@@ -301,9 +303,11 @@ describe('Lot 34 — T2 demandes d’actions temporelles (TEMP-01 à TEMP-12)', 
     const semaine = await h.ask('Qu’est-ce que j’ai cette semaine ?');
     sansDocumentNiModele(h, semaine);
     expect(semaine.cascade?.actionable).toMatchObject({ requestedTimeScope: 'THIS_WEEK', resolvedStartDate: '2026-10-05', resolvedEndDate: '2026-10-11' });
-    // Retards actifs (la période contient aujourd'hui), puis la période ; ni le
-    // lundi suivant, ni l'À traiter sans date.
-    expect(ids(semaine)).toEqual([`agenda_${ancien.id}`, `agenda_${lun.id}`, `agenda_${sam.id}`, `agenda_${dim.id}`, `todo_${todoSemaine.id}`]);
+    // #715 : demande d'ACTIONS — une date d'agenda passée (ancien « retard », lundi déjà passé) n'est pas une
+    // action à faire ; ni le lundi suivant, ni l'À traiter sans date. (« Mes échéances cette semaine » garde le
+    // calendrier complet, lundi compris : voir plus bas.)
+    expect(ids(semaine)).toEqual([`agenda_${sam.id}`, `agenda_${dim.id}`, `todo_${todoSemaine.id}`]);
+    expect(semaine.answer).not.toMatch(/En retard/);
 
     const demain = await h.ask('Que dois-je faire demain ?');
     expect(demain.cascade?.actionable).toMatchObject({ requestedTimeScope: 'TOMORROW', resolvedStartDate: DEMAIN, resolvedEndDate: DEMAIN });
@@ -400,7 +404,8 @@ describe('Lot 34 — formulations, période, ordre, déduplication', () => {
     expect(w('Quelles sont mes échéances aujourd’hui ?')).toEqual({ from: TODAY, to: TODAY });
   });
 
-  it('ordre : retards (date), du jour, puis À traiter sans date (priorité, ancienneté)', () => {
+  // #715 : une échéance d'agenda passée n'est plus un « retard » (agenda_11, agenda_12 exclus).
+  it('ordre : du jour, puis À traiter sans date (priorité, ancienneté)', () => {
     const req = analyserDemandeActionnable(QUE_FAIRE, TODAY)!;
     const r = selectionnerActionnables(req, {
       todos: [
@@ -412,7 +417,7 @@ describe('Lot 34 — formulations, période, ordre, déduplication', () => {
       ],
       deadlines: [echeance('Jour', TODAY, { id: 10 }), echeance('Retard récent', HIER, { id: 11 }), echeance('Retard ancien', '2026-09-01', { id: 12 })],
     }, TODAY);
-    expect(r.map((x) => x.sourceId)).toEqual(['agenda_12', 'agenda_11', 'agenda_10', 'todo_4', 'todo_3', 'todo_2', 'todo_1']);
+    expect(r.map((x) => x.sourceId)).toEqual(['agenda_10', 'todo_4', 'todo_3', 'todo_2', 'todo_1']);
   });
 
   it('déduplication : un À traiter qui vise l’échéance (ou la même donnée du même bien) est fusionné, l’échéance reste principale', () => {

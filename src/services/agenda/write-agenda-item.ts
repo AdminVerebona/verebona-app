@@ -38,7 +38,7 @@ import {
   agendaItems, agendaAssetLinks, agendaRoomLinks, agendaEquipmentLinks,
   assets, assetFiles, substructures, equipments,
 } from '@/db/schema';
-import { and, eq, inArray, isNull, or, sql } from 'drizzle-orm';
+import { and, eq, inArray, sql } from 'drizzle-orm';
 import { validateTemporalConstraints, validateLinkCoherence, type ResolvedLink } from './AgendaDomainService';
 import { agendaFunctionalColumnsReady } from './agenda-columns';
 import { recordAgendaItemSources, type AgendaSourceRef } from './agenda-source-links';
@@ -87,11 +87,10 @@ export interface WriteAgendaItemOptions {
   /** Notification de création (propagation d'impact par bien lié). */
   notify?: boolean;
   /**
-   * Recopie « achat » (D-13). `undefined` : pas de recopie. Sinon le statut
-   * transmis décide, comme l'historique (`manualStatus` absent = création /
-   * édition ; 'realise' = marqué réalisé).
+   * Recopie « achat » (D-13). `undefined` : pas de recopie ; `{}` : recopie
+   * (lot 113P : plus de statut transmis — la date seule décide).
    */
-  purchaseSync?: { manualStatus?: 'realise' | 'annule' | null };
+  purchaseSync?: Record<string, never>;
   /**
    * Transaction englobante (résolution d'une carte « À traiter », §13.5) :
    * l'écriture y est faite (SAVEPOINT), jamais sur le client global. Les
@@ -101,8 +100,8 @@ export interface WriteAgendaItemOptions {
   client?: { transaction: typeof db.transaction };
   /**
    * Mise à jour AUTOMATIQUE : n'écrit que si l'élément n'a pas été modifié par
-   * l'utilisateur (`is_automatic_modified = false`, `manual_status` vide),
-   * condition portée par le WHERE lui-même (pas de course avec une édition
+   * l'utilisateur (`is_automatic_modified = false`, prévision non confirmée
+   * par l'utilisateur — lot 113P : plus de statut), condition portée par le WHERE lui-même (pas de course avec une édition
    * concurrente). 0 ligne touchée = élément protégé, rien d'autre n'est écrit.
    */
   onlyIfUntouched?: boolean;
@@ -124,6 +123,8 @@ export interface WriteAgendaItemResult {
   functionalKey: string | null;
   /** Élément modifié par l'utilisateur : rien n'a été écrit (`onlyIfUntouched`). */
   protected?: boolean;
+  /** Lot 113P : création automatique d'un événement supprimé par l'utilisateur — rien n'a été écrit (`id` = 0). */
+  suppressedByUser?: boolean;
 }
 
 export class AgendaValidationError extends Error {
@@ -370,6 +371,28 @@ export async function writeAgendaItem(
   }
 
   const creation = input.itemId === undefined;
+  // Lot 113P (#715) : une création AUTOMATIQUE ne recrée jamais un événement que
+  // l'utilisateur a supprimé (trace `agenda_item_removals` USER_DELETED*) — la
+  // suppression prévaut sur toute réanalyse. Une création manuelle n'est jamais bloquée.
+  if (creation && opts.channel === 'T4') {
+    const { userDeletionBlocks } = await import('./agenda-user-deletion');
+    const v = input.values as Record<string, unknown>;
+    const bloque = await userDeletionBlocks(opts.accountId, {
+      functionalKey: input.functionalKey ?? null,
+      seriesKey: (v.seriesKey as string | null | undefined) ?? null,
+      occurrenceNature: (v.occurrenceNature as string | null | undefined) ?? null,
+      originFieldKey: (v.originFieldKey as string | null | undefined) ?? null,
+      startDate: (v.startDate as string | null | undefined) ?? null,
+      assetIds: input.links?.assetIds ?? [],
+    });
+    if (bloque) {
+      console.info(JSON.stringify({ event: 'agenda.skip_user_deleted', accountId: opts.accountId, reason: bloque, functionalKey: input.functionalKey ?? null }));
+      return {
+        id: 0, created: false, protected: true, suppressedByUser: true, nature: semantics.nature, businessType: semantics.businessType,
+        notifiable: false, functionalKey: input.functionalKey ?? null,
+      };
+    }
+  }
   const id = await (opts.client ?? db).transaction(async (tx): Promise<number | null> => {
     // SÉCURITÉ (lot 49, SEC-07) : toujours, même avec `validate: false`, dans
     // la transaction et AVANT toute écriture — refus entier sinon.
@@ -387,7 +410,6 @@ export async function writeAgendaItem(
           eq(agendaItems.id, itemId), eq(agendaItems.accountId, opts.accountId),
           ...(opts.onlyIfUntouched ? [
             eq(agendaItems.isAutomaticModified, false),
-            or(isNull(agendaItems.manualStatus), eq(agendaItems.manualStatus, '')),
             // Lot 75F (§A) : prévision confirmée par l'utilisateur — protégée.
             sql`${agendaItems.confirmationMode} IS DISTINCT FROM 'USER'`,
           ] : []),
@@ -423,7 +445,7 @@ export async function writeAgendaItem(
   if (opts.purchaseSync) {
     await syncPurchaseDate({
       itemId: id, accountId: opts.accountId, actorUserId: opts.actorUserId ?? null,
-      manualStatus: opts.purchaseSync.manualStatus, businessType: semantics.businessType,
+      businessType: semantics.businessType,
     });
   }
 
@@ -466,20 +488,18 @@ const estAchat = (title: string, businessType: string | null) =>
  * Recopie de la date d'un événement « achat » vers la date d'acquisition du
  * bien lié (D-13) : jamais pour un événement AUTOMATIQUE (la date
  *   d'acquisition relève de T3, pas de l'agenda) ; pour un événement MANUEL
- *   réalisé (statut « réalisé », ou date passée sans statut), d'achat, et
- *   seulement si le champ est vide — par `writeCanonicalAssetField`
+ *   d'achat daté d'aujourd'hui ou du passé (lot 113P : plus de statut — la
+ *   date seule situe l'achat), et seulement si le champ est vide — par `writeCanonicalAssetField`
  *   (`acquisitionDate`, origine USER, valeur attendue vide).
  */
 export async function syncPurchaseDate(p: {
   itemId: number;
   accountId: number;
   actorUserId: number | null;
-  manualStatus?: 'realise' | 'annule' | null;
   businessType?: string | null;
 }): Promise<void> {
   const [item] = await db.select({
     title: agendaItems.title, startDate: agendaItems.startDate, isAutomatic: agendaItems.isAutomatic,
-    manualStatus: agendaItems.manualStatus,
   }).from(agendaItems).where(and(eq(agendaItems.id, p.itemId), eq(agendaItems.accountId, p.accountId))).limit(1);
   if (!item || !item.title || !item.startDate) return;
 
@@ -540,15 +560,14 @@ function purchaseSyncTargets(
   };
 }
 
-/** D-13 : événement manuel, d'achat, réalisé (statut, ou date passée sans statut). */
+/** D-13 : événement manuel, d'achat, daté d'aujourd'hui ou du passé (lot 113P : sans statut). */
 export function purchaseSyncAllowed(
-  item: { title: string; startDate: string | null; isAutomatic: boolean; manualStatus: string | null },
+  item: { title: string; startDate: string | null; isAutomatic: boolean },
   businessType: string | null,
   today: string = new Date().toISOString().slice(0, 10),
 ): boolean {
   if (item.isAutomatic || !item.startDate || !estAchat(item.title, businessType)) return false;
-  if (item.manualStatus === 'annule') return false;
-  return item.manualStatus === 'realise' || item.startDate <= today;
+  return item.startDate <= today;
 }
 
 // ── Effets d'après validation, pour une écriture faite dans la transaction
@@ -557,9 +576,9 @@ export function purchaseSyncAllowed(
 /**
  * Mêmes effets que `writeAgendaItem` hors transaction englobante, à appeler
  * APRÈS la validation de celle-ci (relecture de lot 14) :
- *   · D-13 recopie « achat » (création, ou élément marqué réalisé) ;
- *   · D-15 proposition de statut du bien (événement historique « vente » /
- *     « sinistre » créé, ou marqué réalisé) ;
+ *   · D-13 recopie « achat » (création) ;
+ *   · D-15 proposition de statut du BIEN (événement historique « vente » /
+ *     « sinistre » créé — lot 113P : plus de statut d'événement) ;
  *   · notification de création (D-14 : jamais un HISTORICAL).
  * Ne lève jamais.
  */
@@ -568,7 +587,6 @@ export async function agendaEffectsAfterCommit(p: {
   itemId: number;
   actorUserId: number | null;
   created: boolean;
-  manualStatus?: 'realise' | 'annule' | null;
 }): Promise<void> {
   try {
     let nature: string | null = null;
@@ -582,15 +600,12 @@ export async function agendaEffectsAfterCommit(p: {
       nature = r?.n ?? null;
       businessType = r?.b ?? null;
     }
-    if (p.created || p.manualStatus === 'realise') {
-      await syncPurchaseDate({
-        itemId: p.itemId, accountId: p.accountId, actorUserId: p.actorUserId,
-        ...(p.created ? {} : { manualStatus: p.manualStatus }), businessType,
-      });
+    if (p.created) {
+      await syncPurchaseDate({ itemId: p.itemId, accountId: p.accountId, actorUserId: p.actorUserId, businessType });
     }
     const assetIds = (await db.select({ assetId: agendaAssetLinks.assetId }).from(agendaAssetLinks)
       .where(eq(agendaAssetLinks.agendaItemId, p.itemId))).map((r) => r.assetId);
-    if (businessType && ((p.created && nature === 'HISTORICAL') || p.manualStatus === 'realise')) {
+    if (businessType && p.created && nature === 'HISTORICAL') {
       const { proposeAssetStatusChange, ASSET_STATUS_BY_EVENT } = await import('@/services/to-process/agenda-status-cards');
       if (ASSET_STATUS_BY_EVENT[businessType]) {
         for (const assetId of assetIds) {

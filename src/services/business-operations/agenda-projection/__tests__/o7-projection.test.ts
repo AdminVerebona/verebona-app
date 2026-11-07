@@ -21,7 +21,7 @@ function op(over: Partial<OperationSnapshot> = {}): OperationSnapshot {
 }
 function item(over: Partial<AgendaItemSnapshot> = {}): AgendaItemSnapshot {
   return {
-    id: 100, title: 'Événement', date: '2026-03-10', manualStatus: null, isAutomatic: false, isAutomaticModified: false, projected: false,
+    id: 100, title: 'Événement', date: '2026-03-10', isAutomatic: false, isAutomaticModified: false, projected: false,
     businessOperationId: null, linkedOperationActive: false, nature: null, businessType: null, homeCategory: null, functionalKey: null,
     originRefType: null, originRefId: null, assetIds: [5], equipmentIds: [], fileIds: [], ...over,
   };
@@ -34,7 +34,7 @@ const desired = (o: OperationSnapshot): DesiredProjection => {
 const plan = (o: OperationSnapshot, p: { linked?: AgendaItemSnapshot[]; candidates?: AgendaItemSnapshot[]; suppressed?: string[]; cards?: number[] } = {}) =>
   planOperationProjection({
     op: o, decision: decideProjection(o, AUJ), linked: p.linked ?? [], suppressedKeys: new Set(p.suppressed ?? []),
-    candidates: p.candidates ?? [], statusCardItems: new Set(p.cards ?? []),
+    candidates: p.candidates ?? [],
   });
 
 describe('O7-01 — tableau C16 : projection par type (decideProjection)', () => {
@@ -119,9 +119,9 @@ describe('O7-10 — rapprochement avant projection (C16.1, F-147)', () => {
     expect(plan(op(), { candidates: [rdv] })).toEqual([
       expect.objectContaining({ kind: 'ABSTAIN', itemId: 4 }), { kind: 'REPRESENTATION_REQUIRED', itemIds: [4], reason: 'UNCERTAIN_EXISTING_EVENT' },
     ]);
-    // Provenance exacte (événement saisi dont T3 a fait la source de l'Opération, lot 47B) : lié, réalisation proposée.
+    // Provenance exacte (événement saisi dont T3 a fait la source de l'Opération, lot 47B) : lié (#715 : plus de réalisation proposée).
     expect(plan(op(), { candidates: [{ ...rdv, agendaSourceOperationIds: [10] }] })).toEqual([
-      { kind: 'LINK', itemId: 4, reason: expect.stringContaining('même document') }, { kind: 'PROPOSE_DONE', itemId: 4 },
+      { kind: 'LINK', itemId: 4, reason: expect.stringContaining('même document') },
     ]);
   });
   it('C16-11 — événement T4 du même document (constat de sinistre) : lié', () => {
@@ -172,7 +172,7 @@ describe('O7-10 — rapprochement avant projection (C16.1, F-147)', () => {
     ]);
     // T4 a décidé que ce rendez-vous est un événement indépendant : la projection crée l'événement, sans carte.
     const independant = planOperationProjection({
-      op: op(), decision: decideProjection(op(), AUJ), linked: [], suppressedKeys: new Set(), candidates: [planifie], statusCardItems: new Set(),
+      op: op(), decision: decideProjection(op(), AUJ), linked: [], suppressedKeys: new Set(), candidates: [planifie],
       t4Roles: new Map([[11, 'INDEPENDENT']]),
     });
     expect(independant).toEqual([{ kind: 'CREATE', desired: desired(op()), functionalKey: 'bo:v1:10:INTERVENTION' }]);
@@ -190,26 +190,26 @@ describe('O7-20 — plan : création, mise à jour, statut, idempotence', () => 
     });
     expect(plan(op(), { linked: [projete] })).toEqual([{ kind: 'SYNC', itemId: 20, changes: { date: '2026-03-10', nature: 'HISTORICAL', homeCategory: 'information' } }]);
   });
-  it('O7-22 — réalisé sans date : l\'occurrence projetée garde sa date et est marquée réalisée (F-140)', () => {
+  // #715 : plus de statut « réalisé » posé par la projection — l'occurrence garde sa date, rien d'autre.
+  it('O7-22 — réalisé sans date : l\'occurrence projetée garde sa date (F-140), sans statut', () => {
     const projete = item({ id: 21, projected: true, isAutomatic: true, businessOperationId: 10, title: 'Remplacement chaudière', date: '2026-02-01', nature: 'DEADLINE', businessType: 'maintenance', homeCategory: 'action', functionalKey: 'bo:v1:10:INTERVENTION', fileIds: [77] });
-    expect(plan(op({ realizedDate: null }), { linked: [projete] })).toEqual([{ kind: 'SYNC', itemId: 21, changes: { manualStatus: 'realise' } }]);
+    expect(plan(op({ realizedDate: null }), { linked: [projete] })).toEqual([]);
   });
-  it('O7-23 — élément T4 lié et intact : marqué réalisé ; élément saisi : réalisation PROPOSÉE une seule fois ; jamais réécrit', () => {
+  // #715 : plus de MARK_DONE / PROPOSE_DONE (aucun statut d'événement, aucune demande de confirmation).
+  it('O7-23 — élément T4 lié et intact, élément saisi : ni marqué réalisé, ni réalisation proposée ; jamais réécrit', () => {
     // Lot 83A : l'élément qui représente l'Opération est son PRINCIPAL (rôle porté par l'instantané).
     const t4 = item({ id: 22, isAutomatic: true, businessOperationId: 10, nature: 'DEADLINE', title: 'Entretien chaudière', operationRole: 'PRINCIPAL', operationRoleOrigin: 'T4' });
-    expect(plan(op(), { linked: [t4] })).toEqual([{ kind: 'MARK_DONE', itemId: 22 }]);
+    expect(plan(op(), { linked: [t4] })).toEqual([]);
     // Lot 83A : membre lié sans être principal ; lot 87B — test corrigé : sans provenance (même bien, intitulé, date),
     // il n'est plus promu principal d'office : décision T4 demandée et carte D14 ; avec provenance, reconnu (AC15).
     expect(plan(op(), { linked: [{ ...t4, operationRole: 'RELATED' }] })).toEqual([
       expect.objectContaining({ kind: 'ABSTAIN', itemId: 22 }), { kind: 'REPRESENTATION_REQUIRED', itemIds: [22], reason: 'MEMBER_MAY_REPRESENT_EVENT' },
     ]);
     expect(plan(op(), { linked: [{ ...t4, operationRole: 'RELATED', fileIds: [77] }] })).toEqual([
-      { kind: 'LINK', itemId: 22, reason: expect.stringContaining('élément du regroupement') }, { kind: 'MARK_DONE', itemId: 22 },
+      { kind: 'LINK', itemId: 22, reason: expect.stringContaining('élément du regroupement') },
     ]);
     const manuel = item({ id: 23, businessOperationId: 10, title: 'Mon RDV', operationRole: 'PRINCIPAL', operationRoleOrigin: 'USER' });
-    expect(plan(op(), { linked: [manuel] })).toEqual([{ kind: 'PROPOSE_DONE', itemId: 23 }]);
-    expect(plan(op(), { linked: [manuel], cards: [23] })).toEqual([]);
-    expect(plan(op(), { linked: [{ ...manuel, manualStatus: 'realise' }] })).toEqual([]);
+    expect(plan(op(), { linked: [manuel] })).toEqual([]);
   });
   it('O7-24 — projection modifiée par l\'utilisateur : jamais réécrite (titre, date)', () => {
     const touche = item({ id: 24, projected: true, isAutomatic: true, isAutomaticModified: true, businessOperationId: 10, title: 'Mon titre', date: '2026-01-01', nature: 'HISTORICAL' });

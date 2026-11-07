@@ -54,6 +54,16 @@ interface UpsertActionInput {
   /** Question personnalisée ; à défaut, celle de la règle. */
   question?: string;
   /**
+   * Lot 113S (#716) — provenance de la question (`ai-user-question.ts`) :
+   * question du traitement IA contrôlée (AI) ou formulation déterministe du
+   * producteur (CODE). FOURNIE, elle fait foi pour une carte EXISTANTE : la
+   * question devient `question ?? règle` — un ancien libellé n'est jamais
+   * conservé —, la même carte est mise à jour (aucune réouverture, aucun
+   * nouveau cycle) et le changement de texte est tracé (QUESTION_UPDATED).
+   * Absente (producteurs historiques, reprises) : comportement d'avant.
+   */
+  questionSource?: import('./ai-user-question').QuestionSource | null;
+  /**
    * Éléments déclencheurs propres au producteur (identifiant / version de la
    * preuve source, date de la donnée métier…). Entre dans l'empreinte qui
    * décide si une action « Non applicable » peut revenir (§7.4).
@@ -290,15 +300,21 @@ async function upsertActionOnce(input: UpsertActionInput): Promise<UpsertActionR
         }
       });
     }
+    // Lot 113S : question ACTUELLE de la carte. Provenance fournie : la question
+    // du producteur (ou du catalogue) remplace toujours un ancien libellé ;
+    // sinon (producteurs historiques) : comportement d'avant.
+    const question = existing.ruleCode !== input.ruleCode || input.questionSource
+      ? input.question ?? rule.question
+      : input.question && input.question !== existing.question ? input.question : existing.question;
+    const questionChangee = question !== existing.question;
     await db
       .update(toProcessActions)
       .set({
         proposalsJson: displayed,
-        // Même donnée, autre règle de même nature (AGENDA-DONE ↔
-        // AGENDA-NOT-DONE) : la carte porte la règle et la question actuelles.
-        ...(existing.ruleCode !== input.ruleCode
-          ? { ruleCode: input.ruleCode, question: input.question ?? rule.question }
-          : input.question && input.question !== existing.question ? { question: input.question } : {}),
+        // Même donnée, autre règle de même nature : la carte porte la règle et la question actuelles.
+        ...(existing.ruleCode !== input.ruleCode ? { ruleCode: input.ruleCode } : {}),
+        ...(questionChangee ? { question } : {}),
+        ...(input.questionSource ? { questionSource: input.questionSource as never } : questionChangee ? { questionSource: null } : {}),
         dueDate: input.dueDate ?? existing.dueDate,
         triggerContextHash: contextHash,
         triggerContext: (input.triggerContext ?? null) as never,
@@ -309,6 +325,19 @@ async function upsertActionOnce(input: UpsertActionInput): Promise<UpsertActionR
         updatedAt: now,
       })
       .where(eq(toProcessActions.id, existing.id));
+    if (questionChangee) {
+      // Réévaluation traçable : ancien et nouveau texte, provenance (aucune réouverture, même cycle).
+      try {
+        await db.insert(toProcessActionEvents).values({
+          actionId: existing.id, accountId: input.accountId, event: 'QUESTION_UPDATED', targetType: existing.targetType, targetId: existing.targetId,
+          fieldKey: existing.fieldKey ?? existing.relationKey, previousValue: { question: existing.question, source: existing.questionSource ?? null } as never,
+          newValue: { question, source: input.questionSource ?? null } as never,
+          details: { ruleCode: input.ruleCode, cycleNumber: existing.cycleNumber, origin: input.questionSource?.origin ?? null }, createdAt: now,
+        });
+      } catch (e) {
+        console.error(`[to-process] trace de la question de l’action ${existing.id} non écrite :`, (e as Error).message);
+      }
+    }
 
     return {
       status: 'UPDATED',
@@ -443,6 +472,7 @@ async function upsertActionOnce(input: UpsertActionInput): Promise<UpsertActionR
         ruleCode: input.ruleCode,
         priority: finalPriority,
         question: input.question ?? rule.question,
+        ...(input.questionSource ? { questionSource: input.questionSource as never } : {}),
         proposalsJson: displayed,
         dueDate: input.dueDate ?? null,
         activeSince: now,
@@ -479,6 +509,33 @@ async function upsertActionOnce(input: UpsertActionInput): Promise<UpsertActionR
         ? 'Action créée.'
         : 'Action créée en « À faire ensuite » : plafond de dix atteint (§9.3).',
   };
+}
+
+/**
+ * Lot 113S (#716) — requalifie la QUESTION d'une carte OUVERTE (même carte,
+ * même cycle, mêmes propositions : aucune décision nouvelle, aucune
+ * réouverture). Sert quand la décision du traitement arrive après la carte
+ * (T4 représentation Agenda). Rien si la carte est close, d'un autre compte,
+ * d'une autre règle, ou si le texte est déjà celui-là. Trace QUESTION_UPDATED.
+ */
+export async function requalifyOpenActionQuestion(p: {
+  accountId: number; actionId: number; ruleCode: string; question: string; source: import('./ai-user-question').QuestionSource;
+}): Promise<boolean> {
+  const now = new Date();
+  return db.transaction(async (tx) => {
+    const [a] = await tx.select().from(toProcessActions)
+      .where(and(eq(toProcessActions.id, p.actionId), eq(toProcessActions.accountId, p.accountId), eq(toProcessActions.ruleCode, p.ruleCode), isNull(toProcessActions.resolvedAt)))
+      .for('update').limit(1);
+    if (!a || a.question === p.question) return false;
+    await tx.update(toProcessActions).set({ question: p.question, questionSource: p.source as never, updatedAt: now }).where(eq(toProcessActions.id, a.id));
+    await tx.insert(toProcessActionEvents).values({
+      actionId: a.id, accountId: p.accountId, event: 'QUESTION_UPDATED', targetType: a.targetType, targetId: a.targetId,
+      fieldKey: a.fieldKey ?? a.relationKey, previousValue: { question: a.question, source: a.questionSource ?? null } as never,
+      newValue: { question: p.question, source: p.source } as never,
+      details: { ruleCode: p.ruleCode, cycleNumber: a.cycleNumber, origin: p.source.origin, requalified: true }, createdAt: now,
+    });
+    return true;
+  });
 }
 
 /**

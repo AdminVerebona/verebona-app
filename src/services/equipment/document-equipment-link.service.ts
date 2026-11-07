@@ -417,7 +417,7 @@ export type DocumentArbitrate = (p: {
   accountId: number; fileId: number; subjectContext: string; equipmentsList: string; candidateIds: number[];
   /** Marge supplémentaire exigée entre les deux meilleurs (réexamen LINK-ELT). */
   requiredMargin?: number;
-}) => Promise<{ equipmentId: number | null; score?: number; reason?: string; abstained?: boolean }>;
+}) => Promise<{ equipmentId: number | null; score?: number; reason?: string; abstained?: boolean; /** Lot 113S : question proposée par T3 (brute). */ userQuestion?: string | null }>;
 
 export const defaultDocumentArbitrate: DocumentArbitrate = async (p) => {
   const { reconcileLinks, retainAbove, LINK_SCORE_THRESHOLDS } = await import('@/services/ai/reconciliation/link-reconciler');
@@ -428,7 +428,7 @@ export const defaultDocumentArbitrate: DocumentArbitrate = async (p) => {
       SUPPLIERS_LIST: '(sans objet)', EQUIPMENTS_LIST: p.equipmentsList,
     },
   });
-  if ((r.ambiguities ?? []).some((a) => a.section === 'matches')) return { equipmentId: null, score: 0, reason: 'abstention T3', abstained: true };
+  if ((r.ambiguities ?? []).some((a) => a.section === 'matches')) return { equipmentId: null, score: 0, reason: 'abstention T3', abstained: true, userQuestion: r.userQuestions?.matches ?? null };
   // Relation DOCUMENT_EQUIPMENT (exclusive) : seuil `documentToEquipment` 0,5.
   const retenus = retainAbove(r.matches, LINK_SCORE_THRESHOLDS.documentToEquipment).filter((m) => p.candidateIds.includes(m.id));
   if (retenus.length > 1 && p.requiredMargin !== undefined && retenus[0].score - retenus[1].score + 1e-9 < p.requiredMargin) {
@@ -536,6 +536,8 @@ export async function syncDocumentEquipmentLinks(o: SyncDocumentOptions): Promis
     .map((g) => g.filter((id) => !refus.has(id)))
     .filter((g) => g.length >= 2);
 
+  // Lot 113S : question proposée par T3 avec son abstention, par groupe d'équipements en concurrence.
+  const questionsT3 = new Map<string, string | null>();
   if (groupes.length > 0 && o.allowAi) {
     const restants: number[][] = [];
     for (const g of groupes) {
@@ -558,6 +560,7 @@ export async function syncDocumentEquipmentLinks(o: SyncDocumentOptions): Promis
           out.methods.push('T3');
           continue;
         }
+        if (r.abstained) questionsT3.set([...g].sort((a, b) => a - b).join(','), r.userQuestion ?? null);
       } catch (e) {
         if (isExecutionCancelled(e)) throw e;
         console.warn(`[document-equipment] arbitrage T3 du document ${o.fileId} indisponible :`, (e as Error).message);
@@ -590,9 +593,12 @@ export async function syncDocumentEquipmentLinks(o: SyncDocumentOptions): Promis
     if (duBien.length >= 2) {
       try {
         const { proposeDocumentEquipmentLink } = await import('@/services/to-process/document-equipment-link');
+        // Lot 113S : la question de T3 ne vaut que si elle porte exactement sur les équipements de la carte.
+        const cle = [...duBien].sort((a, b) => a - b).join(',');
         const r = await proposeDocumentEquipmentLink({
           accountId: o.accountId, fileId: o.fileId, assetId: doc.mainAssetId,
           candidates: duBien.map((id) => ({ equipmentId: id, score: parId.get(id)?.score ?? 0.5, reason: parId.get(id)?.reason ?? 'Équipements en concurrence' })),
+          ...(out.aiCalled ? { aiQuestion: { raw: questionsT3.get(cle) ?? null, aiCalled: questionsT3.has(cle) } } : {}),
         });
         out.cardProposed = r.status === 'CREATED' || r.status === 'UPDATED';
       } catch (e) {

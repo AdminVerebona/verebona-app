@@ -240,60 +240,7 @@ scenario('L103D', 'Fiche Agenda — pièces / équipements d’un logement, stat
     expect(re.get(auto)).toMatchObject({ called: false });
   });
 
-  it('L103D-E06 — COH-AGENDA-HISTORICAL-STATUS : contrôle de 2020 prouvé → « Réalisé » ; sans preuve → « à confirmer » ; idempotent ; correction protégée', async () => {
-    const c = await contexte();
-    const fait = async (title: string, avecPreuve: boolean) => {
-      const [i] = await sql<{ id: number }[]>`
-        INSERT INTO agenda_items (account_id, title, start_date, is_automatic, requires_qualification, event_nature, business_type, origin_type)
-        VALUES (${c.compte.id}, ${title}, '2020-12-22', true, true, 'HISTORICAL', 'inspection', 'qualified_document') RETURNING id`;
-      await sql`INSERT INTO agenda_asset_links (agenda_item_id, asset_id) VALUES (${i.id}, ${c.maisonA.id})`;
-      const f = await make.assetFile(c.compte, { assetId: c.maisonA.id });
-      await sql`UPDATE asset_files SET document_type_code = 'DIAGNOSTIC', document_date = ${avecPreuve ? '2020-12-22' : null}, retained_title = 'Dossier de diagnostic technique' WHERE id = ${f.id}`;
-      await sql`INSERT INTO agenda_file_links (agenda_item_id, asset_file_id, provenances) VALUES (${i.id}, ${f.id}, ARRAY['AI_DIRECT']::text[])`;
-      return { id: i.id, fileId: f.id };
-    };
-    const prouve = await fait('Contrôle réalisé — Maison', true);
-    const inconnu = await fait('Contrôle réalisé — Maison (copie)', false);
-    const corrige = await fait('Contrôle corrigé', true);
-    await sql`INSERT INTO agenda_occurrence_events (agenda_item_id, account_id, event_type, detail_json) VALUES (${corrige.id}, ${c.compte.id}, 'STATUS_CHANGED', '{"manualStatus":null}'::jsonb)`;
-
-    // Avant : jamais « À venir » — statut calculé « à confirmer », badges présents.
-    const avant = await lire(prouve.id);
-    expect(avant.effectiveStatus).toBe('a_confirmer');
-    expect(avant.automaticStatus).toBe('a_confirmer');
-    expect(avant.attentionFlags).toContain('donnee_distincte_a_qualifier');
-
-    const { agendaHistoricalStatusCheck: chk } = await import('@/services/coherence/registry/checks/agenda-historical-status');
-    const ids = await chk.listObjects!(ctxCoherence() as never, c.compte.id, 0, 100);
-    expect(ids).toEqual([prouve.id, inconnu.id, corrige.id]);
-    const insp = await chk.inspect!(ctxCoherence() as never, c.compte.id, ids);
-    expect(insp.get(prouve.id)).toMatchObject({ verdict: 'REPAIRABLE', anomaly: 'HISTORICAL_COMPLETION_PROVEN_NOT_APPLIED', detail: { proof: { fileId: prouve.fileId, proofCode: 'RAPPORT_DIAGNOSTIC' } } });
-    expect(insp.get(inconnu.id)).toMatchObject({ verdict: 'CONSISTENT', detail: { verdict: { kind: 'UNKNOWN', uncertainField: 'completion', reason: 'NO_DATED_DOCUMENT' } } });
-    expect(insp.get(corrige.id)).toMatchObject({ verdict: 'CONSISTENT', detail: { verdict: { kind: 'PROTECTED' } } });
-    const n = await nbElements(c.compte);
-    await chk.repair!(ctxCoherence() as never, c.compte.id, [{ id: prouve.id, inspection: insp.get(prouve.id)! }]);
-    const apres = await lire(prouve.id);
-    // « Réalisé » calculé à la lecture (preuve 0945) : AUCUN statut manuel posé, l'élément reste automatique et intact.
-    expect(apres.manualStatus).toBeNull();
-    expect(apres.isAutomaticModified).toBe(false);
-    expect(apres.effectiveStatus).toBe('realise');
-    expect(apres.automaticStatus).toBe('realise');
-    expect(apres.startDate).toBe('2020-12-22');
-    expect(apres.attentionFlags).not.toContain('donnee_distincte_a_qualifier');
-    const [trace] = await evenements(prouve.id, 'COMPLETION_PROVEN');
-    expect(trace.detail).toMatchObject({ origin: 'COHERENCE', proof: { fileId: prouve.fileId, proofCode: 'RAPPORT_DIAGNOSTIC', documentDate: '2020-12-22' },
-      before: { effectiveStatus: 'a_confirmer', requiresQualification: true }, after: { effectiveStatus: 'realise', manualStatus: null, requiresQualification: false } });
-    expect(await evenements(prouve.id, 'STATUS_AUTO_COMPLETED')).toEqual([]);
-    // Aucune occurrence inventée ; le fait non prouvé et le fait corrigé ne bougent pas.
-    expect(await nbElements(c.compte)).toBe(n);
-    expect((await lire(inconnu.id)).effectiveStatus).toBe('a_confirmer');
-    expect((await lire(corrige.id)).manualStatus).toBeNull();
-    // Idempotent : le fait réalisé sort du périmètre.
-    expect(await chk.listObjects!(ctxCoherence() as never, c.compte.id, 0, 100)).toEqual([inconnu.id, corrige.id]);
-    // Document supprimé : la preuve tombe, l'état redevient « à confirmer » (jamais « À venir »).
-    await sql`UPDATE asset_files SET deleted_at = now() WHERE id = ${prouve.fileId}`;
-    expect((await lire(prouve.id)).effectiveStatus).toBe('a_confirmer');
-  });
+  // #715 : plus de statut d'événement — L103D-E06 (COH-AGENDA-HISTORICAL-STATUS, « Réalisé » prouvé) supprimé avec le contrôle.
 
   it('L103D-E07 — rappels : aucun bloc pour un fait historique ni sans décision T6 ; rappel T6 existant → action et date utile', async () => {
     const c = await contexte();

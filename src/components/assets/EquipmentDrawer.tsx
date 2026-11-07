@@ -1,7 +1,6 @@
 "use client"
 
 import { useState, useCallback, useEffect } from 'react';
-import { EFFECTIVE_STATUS_LABELS } from '@/lib/agenda/effective-status';
 import {
   Sheet, SheetContent, SheetHeader, SheetTitle,
 } from '@/components/ui/sheet';
@@ -16,7 +15,7 @@ import {
 } from '@/components/ui/alert-dialog';
 import {
   Settings, Pencil, Trash2, MapPin, Home, Loader2, X, Save, Plus,
-  Building2, FileText, CalendarDays, Clock, CheckCircle2, AlertCircle, Circle,
+  Building2, FileText, CalendarDays, Circle,
 } from 'lucide-react';
 import { FooterPrimaryAction } from '@/components/ui/footer-primary-action';
 import { toast } from 'sonner';
@@ -103,8 +102,6 @@ interface EquipmentAgendaItem {
   startDate: string | null;
   startTime: string | null;
   endDate: string | null;
-  manualStatus: string | null;
-  effectiveStatus: string;
   originType: string;
   /** Lot 77A : tâche « Sans échéance ». */
   noDeadline?: boolean;
@@ -153,45 +150,10 @@ const STATUS_COLORS: Record<string, string> = {
 // table par code historique (FACTURE, GARANTIE…) accentuait certains types
 // selon `documentType` alors que le libellé affiché est celui du Type V2 :
 // supprimée, sans nouveau mapping. Les couleurs d'état restent réservées aux
-// statuts (équipement, agenda).
+// statuts de l'équipement (lot 113P : plus de statut d'événement d'agenda).
 const DOC_TYPE_PILL = 'bg-[color:var(--bg-subtle)] text-[color:var(--text-secondary)] border-[color:var(--border)]';
 
-function AgendaStatusIcon({ status }: { status: string }) {
-  if (status === 'realise') return <CheckCircle2 className="w-3.5 h-3.5 text-[color:var(--text-success)] flex-shrink-0" />;
-  if (status === 'annule') return <X className="w-3.5 h-3.5 text-muted-foreground flex-shrink-0" />;
-  if (status === 'en_retard') return <AlertCircle className="w-3.5 h-3.5 text-[color:var(--danger)] flex-shrink-0" />;
-  // Lot 53 (D17) : fait passé sans preuve de réalisation — à confirmer, jamais coché « réalisé ».
-  if (status === 'a_confirmer') return <Clock className="w-3.5 h-3.5 text-[color:var(--attention-on-soft)] flex-shrink-0" />;
-  if (status === 'aujourd_hui') return <Clock className="w-3.5 h-3.5 text-[color:var(--attention-on-soft)] flex-shrink-0" />;
-  return <Circle className="w-3.5 h-3.5 text-muted-foreground flex-shrink-0" />;
-}
-
-/** Pastille d'état d'une échéance associée (texte, non interactive). */
-function AgendaStatusBadge({ item }: { item: Pick<EquipmentAgendaItem, 'manualStatus' | 'effectiveStatus'> }) {
-  // Lot 111R : « Réalisé » = statut effectif (statut manuel OU preuve de réalisation valide).
-  if (item.manualStatus === 'realise' || item.effectiveStatus === 'realise') {
-    return (
-      <span className="text-[11px] font-semibold px-2 py-0.5 rounded-full bg-[color:var(--bg-success)] text-[color:var(--text-success)] border border-[color:var(--border-success)] flex-shrink-0">
-        Réalisé
-      </span>
-    );
-  }
-  if (item.effectiveStatus === 'en_retard') {
-    return (
-      <span className="text-[11px] font-semibold px-2 py-0.5 rounded-full bg-[color:var(--danger-soft)] text-[color:var(--danger)] border border-[color:var(--danger-edge)] flex-shrink-0">
-        {EFFECTIVE_STATUS_LABELS.en_retard}
-      </span>
-    );
-  }
-  if (item.effectiveStatus === 'a_confirmer') {
-    return (
-      <span className="text-[11px] font-semibold px-2 py-0.5 rounded-full bg-[color:var(--attention-soft)] text-[color:var(--attention-on-soft)] border border-[color:var(--attention-edge)] flex-shrink-0">
-        {EFFECTIVE_STATUS_LABELS.a_confirmer}
-      </span>
-    );
-  }
-  return null;
-}
+// Lot 113P (#715) : plus d'icône ni de pastille de statut d'événement (« Réalisé », « Date échue », « Statut à confirmer »).
 
 function formatDate(dateStr: string | null): string {
   if (!dateStr) return '';
@@ -740,12 +702,11 @@ export function EquipmentDrawer({ open, onOpenChange, assetId, equipment: eq, su
                 kind="echeance"
                 id={item.id}
                 title={item.title}
-                icon={<AgendaStatusIcon status={item.effectiveStatus} />}
+                icon={<Circle className="w-3.5 h-3.5 text-muted-foreground flex-shrink-0" />}
                 iconStyle="plain"
                 meta={`${item.startDate
                   ? `${formatDate(item.startDate)}${item.startTime ? ` · ${item.startTime.slice(0, 5)}` : ''}`
                   : undatedLabel(item)}${item.provenance === 'VIA_OPERATION' ? ` · ${VIA_REFERENCE_LABEL}` : ''}`}
-                badges={<AgendaStatusBadge item={item} />}
               />
             ))}
           </div>

@@ -269,8 +269,8 @@ describe('L75H-4 — inventaire des tiroirs : chaque carte d’entité ouvre sa 
     expect(src).toMatch(/<EntityCard\s+key=\{s\.supplierId\}\s+kind="fournisseur"/);
     expect(src).toMatch(/<EntityCard\s+key=\{doc\.id\}\s+kind="document"/);
     expect(src).toMatch(/<EntityCard\s+key=\{item\.id\}\s+kind="echeance"/);
-    // Badges d'état conservés (texte, dans la carte).
-    expect(src).toContain('badges={<AgendaStatusBadge item={item} />}');
+    // #715 : plus de statut d'événement — plus de badge d'état sur la carte d'un événement.
+    expect(src).not.toContain('AgendaStatusBadge');
     // Échéance modifiée dans le tiroir empilé → liste relue.
     expect(src).toContain("window.addEventListener('agenda-mutated', reload)");
   });

@@ -472,15 +472,16 @@ scenario('L76C-ATP', 'À traiter : défauts résiduels du lot 72C, réévaluatio
     const { collectMascotData } = await import('@/services/home/mascot/collector');
     const { t6Candidates } = await import('@/services/home/mascot/t6-interpellation.service');
     const retenu = async () => t6Candidates(await collectMascotData(compte.id)).find((c) => c.candidate.agendaItemId === echeance)?.candidate.state;
-    // Sujet effectivement écarté de l'affichage (RESOLVED), pas seulement présent dans la collecte.
-    expect(await retenu()).toBe('RESOLVED');
+    // #715 : rappels T6 sur dates FUTURES seulement — l'échéance passée n'est jamais un candidat T6
+    // (l'obligation restante passe par « À traiter », jamais par une demande de réalisation).
+    expect(await retenu()).toBeUndefined();
     expect(await ouvertes(f, KEY_IV)).toEqual([]);
     // Nouvel élément justifié (obligation distincte prouvée) : la relance redevient légitime.
     await sql`UPDATE document_facts SET value_text = 'Le locataire doit remettre les clés du local.', excerpt = 'Le locataire doit remettre les clés du local.'
               WHERE file_id = ${f} AND fact_key = 'conditionsRestitution'`;
     await balayage(compte);
     expect(await ouvertes(f, KEY_IV)).toHaveLength(1);
-    expect(await retenu()).toBe('ACTIVE');
+    expect(await retenu()).toBeUndefined();
   });
 
   it('RES-23 — réexécution sans changement métier (balayages, contrôle de cohérence) : aucune réouverture, aucun calcul différent, aucun appel IA redondant, traces dédupliquées', async () => {

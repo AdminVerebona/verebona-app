@@ -9,8 +9,11 @@
  *              d'entretien de l'année précédente analysé (faits persistés) puis
  *              réconciliation locale du bien (production) → l'occurrence N
  *              reste ouverte, aucune carte, aucun lien de preuve ;
- *   L100B-S02  témoin positif (même chaîne, preuve de l'année N) → « réalisé »,
- *              preuve liée — le scénario S01 n'est donc pas vert par vacuité ;
+ *   L100B-S02  témoin (même chaîne, preuve de l'année N). #715 (lot 113P) : plus
+ *              de statut d'événement — aucune preuve ne « clôture » plus une
+ *              occurrence ; le témoin prouve que la chaîne a bien tourné (faits
+ *              T1 persistés) et que même une preuve N ne pose ni statut, ni
+ *              lien, ni carte — S01 n'est donc pas vert par vacuité ;
  *   L100B-S03  le rapport attribue un défaut de la chaîne serveur à la couche
  *              SERVEUR, jamais à une réponse IA.
  */
@@ -51,8 +54,8 @@ scenario('L100B-STRESS', 'Harnais E2E_MÉTIER : preuve N-1 et occurrence N (donn
   });
 
   /** Scénario générique paramétré : échéance de l'année N, preuve datée `preuve`. */
-  const preuveEtOccurrence = (id: string, preuve: string, attendu: 'ouverte' | 'realise'): StressScenario<Ctx> => ({
-    id, title: attendu === 'ouverte' ? 'une preuve N-1 ne clôture pas l’occurrence N' : 'témoin : une preuve N clôture l’occurrence N',
+  const preuveEtOccurrence = (id: string, preuve: string, attendu: 'ouverte' | 'temoin'): StressScenario<Ctx> => ({
+    id, title: attendu === 'ouverte' ? 'une preuve N-1 ne clôture pas l’occurrence N' : 'témoin (#715) : une preuve N ne pose aucun statut non plus',
     async setup(ctx) {
       const compte = await ctx.make.account();
       const bien = await ctx.make.asset(compte, { category: 'VEHICULE' });
@@ -79,20 +82,26 @@ scenario('L100B-STRESS', 'Harnais E2E_MÉTIER : preuve N-1 et occurrence N (donn
     ],
     assertions: [
       {
-        label: attendu === 'ouverte' ? 'occurrence 2027 toujours ouverte' : 'occurrence 2027 réalisée', layer: 'DONNEES',
+        // #715 : chaîne réellement exécutée (anti-vacuité) — le fait du rapport est persisté.
+        label: 'rapport analysé : preuve « dernière révision » persistée', layer: 'DONNEES',
         async check(ctx) {
-          const [r] = await ctx.sql<{ s: string | null }[]>`SELECT manual_status AS s FROM agenda_items WHERE id = ${ctx.data.itemId}`;
-          const ok = attendu === 'ouverte' ? r.s === null : r.s === 'realise';
-          return ok ? null : `statut persisté « ${r.s ?? 'aucun'} »`;
+          const f = await ctx.sql`SELECT 1 FROM field_evidence WHERE asset_id = ${ctx.data.assetId} AND source_id = ${ctx.data.docB}`;
+          return f.length ? null : 'aucun fait persisté (chaîne non exécutée)';
         },
       },
       {
-        label: attendu === 'ouverte' ? 'aucun lien de preuve ni carte « À traiter »' : 'preuve liée à l’occurrence', layer: 'DONNEES',
+        label: 'occurrence 2027 sans statut (#715 : plus de statut d’événement)', layer: 'DONNEES',
+        async check(ctx) {
+          const [r] = await ctx.sql<{ s: string | null }[]>`SELECT manual_status AS s FROM agenda_items WHERE id = ${ctx.data.itemId}`;
+          return r && r.s === null ? null : `statut persisté « ${r?.s ?? 'occurrence absente'} »`;
+        },
+      },
+      {
+        label: 'aucun lien de preuve ni carte « À traiter »', layer: 'DONNEES',
         async check(ctx) {
           const liens = await ctx.sql`SELECT 1 FROM agenda_file_links WHERE agenda_item_id = ${ctx.data.itemId} AND asset_file_id = ${ctx.data.docB}`;
           const cartes = await ctx.sql`SELECT 1 FROM to_process_actions WHERE account_id = ${ctx.data.accountId} AND target_type = 'AGENDA_ITEM' AND target_id = ${ctx.data.itemId} AND resolved_at IS NULL`;
-          if (attendu === 'ouverte') return liens.length || cartes.length ? `${liens.length} lien(s), ${cartes.length} carte(s)` : null;
-          return liens.length ? null : 'preuve non liée';
+          return liens.length || cartes.length ? `${liens.length} lien(s), ${cartes.length} carte(s)` : null;
         },
       },
     ],
@@ -103,8 +112,9 @@ scenario('L100B-STRESS', 'Harnais E2E_MÉTIER : preuve N-1 et occurrence N (donn
     expect(r.passed, harnais.stressReportText(r)).toBe(true);
   });
 
-  it('L100B-S02 — témoin : une preuve de l’année N clôture N (S01 n’est pas vert par vacuité)', async () => {
-    const r = await harnais.runStressScenario(preuveEtOccurrence('S-GEN-02', '2027-03-08', 'realise'), { sql, make, data: {} });
+  // #715 : plus de statut d'événement — une preuve N ne « clôture » plus l'occurrence (test d'origine retiré).
+  it('L100B-S02 (#715) — témoin : preuve de l’année N, chaîne exécutée, aucun statut ni lien posé', async () => {
+    const r = await harnais.runStressScenario(preuveEtOccurrence('S-GEN-02', '2027-03-08', 'temoin'), { sql, make, data: {} });
     expect(r.passed, harnais.stressReportText(r)).toBe(true);
   });
 

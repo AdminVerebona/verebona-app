@@ -12,7 +12,7 @@
  *   1. `agenda_items` n'a PAS de colonne `asset_id`. Le rattachement à un bien
  *      passe par la table de liaison `agenda_asset_links`.
  *   2. La date d'échéance est `start_date`, pas `due_date`.
- *   3. Le statut est `manual_status`, contraint à 'realise' | 'annule' | NULL.
+ *   3. Lot 113P (#715) : plus de statut d'événement (`manual_status` obsolète, jamais lu ni écrit).
  *
  * La traduction est faite ici, une fois, plutôt que dispersée dans le moteur.
  */
@@ -26,7 +26,7 @@ import {
   upsertAgendaItem, removeAgendaItemsFromSource, functionalKeyFor, type AgendaUpsertInput, type AgendaSourceRef,
 } from './agenda-write-primitive';
 import { agendaFunctionalColumnsReady } from './agenda-columns';
-import { parseSeriesRecurrence } from './agenda-status-sync';
+import { parseSeriesRecurrence } from './series-recurrence';
 import {
   planSourceSync, resolveEventSemantics, keyTarget, agendaUntouchedSql, isUserTouched,
   type SourceSyncPlan, type SourceItem, type SyncStep, type AgendaEventNature,
@@ -165,7 +165,6 @@ export async function loadExistingAgendaItems(
       title: agendaItems.title,
       startDate: agendaItems.startDate,
       homeCategory: agendaItems.homeCategory,
-      manualStatus: agendaItems.manualStatus,
       isAutomatic: agendaItems.isAutomatic,
       isAutomaticModified: agendaItems.isAutomaticModified,
       confirmationMode: agendaItems.confirmationMode,
@@ -194,15 +193,12 @@ export async function loadExistingAgendaItems(
       title: r.title,
       date: r.startDate,
       category: (r.homeCategory as HomeCategory | null) ?? null,
-      status: r.manualStatus,
       // Est « manuel » (protégé) tout événement créé par un utilisateur, tout
-      // événement automatique qu'il a modifié, dont il a renseigné le statut
-      // (réalisé, annulé) ou dont il a confirmé la prévision (CDC §4.4.4,
-      // lot 75F §A) — règle unique `isUserTouched` : moteur, déduplication,
-      // récurrences et persistance.
+      // événement automatique qu'il a modifié ou dont il a confirmé la
+      // prévision (CDC §4.4.4, lot 75F §A ; lot 113P : plus de statut) — règle
+      // unique `isUserTouched` : moteur, déduplication, récurrences et persistance.
       manual: isUserTouched({
-        isAutomatic: r.isAutomatic, isAutomaticModified: r.isAutomaticModified,
-        manualStatus: r.manualStatus, confirmationMode: r.confirmationMode,
+        isAutomatic: r.isAutomatic, isAutomaticModified: r.isAutomaticModified, confirmationMode: r.confirmationMode,
       }),
       originFieldKey: r.originFieldKey,
       nature: (r.occurrenceNature as 'FORECAST' | 'CONFIRMED' | null) ?? 'CONFIRMED',
@@ -443,13 +439,13 @@ async function correctClassification(decision: AgendaDecision, accountId: number
   const colonnes = await agendaFunctionalColumnsReady();
   const [cur] = (await pgClient.unsafe(
     `SELECT home_category AS "category", is_automatic AS "isAutomatic", is_automatic_modified AS "isAutomaticModified",
-            manual_status AS "manualStatus", confirmation_mode AS "confirmationMode", projection_origin AS "projectionOrigin",
+            confirmation_mode AS "confirmationMode", projection_origin AS "projectionOrigin",
             origin_ref_type AS "originRefType", origin_ref_id AS "originRefId"
             ${colonnes ? ', business_type AS "businessType"' : ''}
        FROM agenda_items WHERE id = $1 AND account_id = $2`,
     [id, accountId] as never[],
   )) as unknown as Array<{
-    category: string | null; isAutomatic: boolean; isAutomaticModified: boolean; manualStatus: string | null; confirmationMode: string | null;
+    category: string | null; isAutomatic: boolean; isAutomaticModified: boolean; confirmationMode: string | null;
     projectionOrigin: string | null; originRefType: string | null; originRefId: number | null; businessType?: string | null;
   }>;
   if (!cur || isUserTouched(cur) || cur.projectionOrigin) return false;
@@ -533,7 +529,7 @@ async function loadSourceItems(accountId: number, assetId: number, sourceFileId:
   const rows = (await pgClient.unsafe(
     `SELECT i.id, i.functional_key AS "functionalKey", i.title, i.start_date::text AS "startDate",
             i.origin_field_key AS "originFieldKey", i.is_automatic AS "isAutomatic",
-            i.is_automatic_modified AS "isAutomaticModified", i.manual_status AS "manualStatus",
+            i.is_automatic_modified AS "isAutomaticModified",
             i.confirmation_mode AS "confirmationMode"
        FROM agenda_items i
        JOIN agenda_asset_links l ON l.agenda_item_id = i.id AND l.asset_id = $3
@@ -631,6 +627,12 @@ async function proposeFromDecision(decision: AgendaDecision, accountId: number, 
     await createItem(decision, accountId, assetId, true, planKey);
     return;
   }
+  // Lot 113P (#715) : jamais de carte « Ajouter à l'agenda ? » pour un événement que l'utilisateur a supprimé.
+  const { userDeletionBlocks } = await import('./agenda-user-deletion');
+  if (await userDeletionBlocks(accountId, {
+    functionalKey: planKey ?? functionalKeyFor(input),
+    seriesKey: input.details?.occurrence?.seriesKey ?? null, occurrenceNature: input.details?.occurrence?.nature ?? null,
+  })) return;
   const { proposeAgendaCreation } = await import('@/services/to-process/agenda-proposal-cards');
   await proposeAgendaCreation({
     accountId,
@@ -851,9 +853,9 @@ export async function recordOccurrenceEvent(
  * ici que le cas « même date » ; une date différente passe par l'arbitrage).
  *
  * Lot 75F (§A) — gardes SQL ATOMIQUES (indépendantes du moteur) :
- *  · jamais une prévision au statut renseigné par l'utilisateur (réalisé,
- *    annulé) ni une prévision déjà confirmée par l'utilisateur : rien n'est
- *    écrit (statut, date, confirmation, relations conservés) ;
+ *  · jamais une prévision déjà confirmée par l'utilisateur : rien n'est
+ *    écrit (date, confirmation, relations conservés) — lot 113P : plus de
+ *    statut d'événement ;
  *  · date et source d'origine réécrites seulement si l'élément est
  *    automatique et intact (`agendaUntouchedSql`) ;
  *  · une prévision encore intacte reste confirmée automatiquement.
@@ -863,8 +865,8 @@ async function confirmForecast(decision: AgendaDecision, accountId: number): Pro
   const [cur] = await db.select().from(agendaItems)
     .where(and(eq(agendaItems.id, decision.existingItemId), eq(agendaItems.accountId, accountId))).limit(1);
   if (!cur || cur.occurrenceNature !== 'FORECAST') return;
-  if ((cur.manualStatus ?? '') !== '' || cur.confirmationMode === 'USER') {
-    console.info(JSON.stringify({ event: 't4.forecast_confirmation_protected', accountId, itemId: cur.id, manualStatus: cur.manualStatus, confirmationMode: cur.confirmationMode }));
+  if (cur.confirmationMode === 'USER') {
+    console.info(JSON.stringify({ event: 't4.forecast_confirmation_protected', accountId, itemId: cur.id, confirmationMode: cur.confirmationMode }));
     return;
   }
   const intact = agendaUntouchedSql('agenda_items');
@@ -881,7 +883,7 @@ async function confirmForecast(decision: AgendaDecision, accountId: number): Pro
         origin_ref_id = CASE WHEN ${intact} AND $5::int IS NOT NULL THEN $5::int ELSE origin_ref_id END,
         updated_at = now()
       WHERE id = $1 AND account_id = $2 AND occurrence_nature = 'FORECAST'
-        AND (manual_status IS NULL OR manual_status = '') AND confirmation_mode IS DISTINCT FROM 'USER'
+        AND confirmation_mode IS DISTINCT FROM 'USER'
       RETURNING start_date::text AS "confirmedDate"`,
     [cur.id, accountId, decision.date,
       JSON.stringify({ sourceFileId: decision.sourceFileId ?? null, originFieldKey: decision.originFieldKey ?? null, date: decision.date }),
@@ -904,30 +906,37 @@ async function confirmForecast(decision: AgendaDecision, accountId: number): Pro
 
 /**
  * Fin explicite d'une récurrence : une prévision automatique au-delà de la
- * borne n'a plus d'objet. Annulée — jamais si l'utilisateur y a touché.
- * Lot 75F (§A) : garde SQL complète (`agendaUntouchedSql`) — un statut
- * « réalisé » ou « annulé » posé par l'utilisateur, une modification ou une
- * confirmation utilisateur ne sont jamais remplacés.
+ * borne n'a plus d'objet. Lot 113P (#715) : RETIRÉE (journal restaurable
+ * `agenda_item_removals`, motif FORECAST_RETIRED) au lieu d'être passée au
+ * statut « annulé » — jamais si l'utilisateur y a touché (garde du retrait :
+ * automatique, intacte, non confirmée par l'utilisateur).
  */
 async function retireForecast(decision: AgendaDecision, accountId: number): Promise<void> {
   if (!decision.existingItemId) return;
-  const rows = (await pgClient.unsafe(
-    `UPDATE agenda_items SET manual_status = 'annule', updated_at = now()
-      WHERE id = $1 AND account_id = $2 AND occurrence_nature = 'FORECAST' AND ${agendaUntouchedSql('agenda_items')}
-      RETURNING id`,
+  const [cible] = (await pgClient.unsafe(
+    `SELECT id FROM agenda_items WHERE id = $1 AND account_id = $2 AND occurrence_nature = 'FORECAST' AND ${agendaUntouchedSql('agenda_items')}`,
     [decision.existingItemId, accountId] as never[],
-  )) as unknown as unknown[];
-  if (!rows.length) {
-    console.info(JSON.stringify({ event: 't4.forecast_retire_protected', accountId, itemId: decision.existingItemId }));
-    return;
-  }
-  // Lot 99D : arrêt TRACÉ (raison, date d'effet, source) — visible au diagnostic global
-  // (`agenda_occurrence_events`) ; distingue aussi ce retrait automatique d'une annulation par l'utilisateur.
-  await recordOccurrenceEvent(decision.existingItemId, accountId, 'FORECAST_RETIRED', {
+  )) as unknown as Array<{ id: number }>;
+  const { removeAgendaItemsTraced } = await import('./agenda-removal-trace');
+  // Lot 99D : arrêt TRACÉ (raison, date d'effet, source) — conservé dans le journal des retraits.
+  const detail = {
     reasonCode: decision.reasonCode, date: decision.date, sourceFileId: decision.sourceFileId ?? null,
     bound: decision.recurrenceEnd?.bound ?? null, scheduleEndDate: decision.recurrenceEnd?.scheduleEndDate ?? null,
     end: decision.recurrenceEnd?.end ?? null,
-  });
+  };
+  const retires = cible
+    ? await removeAgendaItemsTraced(pgClient, { accountId, ids: [Number(cible.id)], reason: 'FORECAST_RETIRED', sourceFileId: decision.sourceFileId ?? null, detail })
+    : [];
+  if (!retires.length) {
+    console.info(JSON.stringify({ event: 't4.forecast_retire_protected', accountId, itemId: decision.existingItemId }));
+    return;
+  }
+  // Lot 99D : arrêt TRACÉ (raison, date d'effet, source) — journal des retraits (visible au diagnostic global).
+  console.info(JSON.stringify({
+    event: 't4.forecast_retired', accountId, itemId: decision.existingItemId,
+    reasonCode: decision.reasonCode, date: decision.date, sourceFileId: decision.sourceFileId ?? null,
+    bound: decision.recurrenceEnd?.bound ?? null, scheduleEndDate: decision.recurrenceEnd?.scheduleEndDate ?? null,
+  }));
 }
 
 async function updateItem(decision: AgendaDecision, accountId: number): Promise<void> {
@@ -939,7 +948,6 @@ async function updateItem(decision: AgendaDecision, accountId: number): Promise<
     .select({
       isAutomatic: agendaItems.isAutomatic,
       isAutomaticModified: agendaItems.isAutomaticModified,
-      manualStatus: agendaItems.manualStatus,
       confirmationMode: agendaItems.confirmationMode,
       projectionOrigin: agendaItems.projectionOrigin,
     })

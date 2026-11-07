@@ -36,7 +36,8 @@ import type { Treatment } from '../config/treatments';
 import { TREATMENT_DEFINITIONS } from '../config/treatments';
 import { readHistoryClass, type HistoryClass } from '../history-reclassification/rule';
 import type { RuntimeContractTrace, OutputTransformationsTrace, StructuredContextTrace } from './ai-trace.service';
-import type { ProviderAttemptTrace, ProviderRequestTrace } from '../gateway/diagnostics/taxonomy';
+import type { AttachmentTransferFailure, ProviderAttemptTrace, ProviderRequestTrace } from '../gateway/diagnostics/taxonomy';
+import { NOT_CALLED_ERROR_CODES } from '../gateway/fallback-policy';
 
 type Row = Record<string, unknown>;
 
@@ -149,6 +150,14 @@ export interface ExecutionRow {
   providerAttempts?: ProviderAttemptTrace[];
   /** Lot 34C : tentative du job de file pendant laquelle l'appel a eu lieu (`null` : hors file ou trace antérieure). */
   jobAttempt: number | null;
+  /**
+   * Lot 113R : échec de TRANSFERT de la pièce jointe figé avec CET appel
+   * (réponse du fournisseur structurée, sans secret) — `null` sinon, ou pour
+   * une trace antérieure (réponse non conservée historiquement).
+   */
+  transfer?: AttachmentTransferFailure | null;
+  /** Lot 87A / 113R : décision de la politique de secours pour ce rang (motif, cause, dépendance commune). */
+  fallbackDecision?: Record<string, unknown> | null;
   /** Lot 34C : trace (cascade) de l'appel. */
   traceId: string | null;
   /**
@@ -181,7 +190,10 @@ function toRow(r: Row): ExecutionRow {
     provider: r.provider == null ? null : String(r.provider),
     model: r.model == null ? null : String(r.model),
     modelRank: r.model_rank == null ? null : String(r.model_rank),
-    usedFallback: Boolean(r.is_fallback),
+    // Lot 113R : un rang NON sollicité (refus de secours, modèle connu
+    // indisponible) n'a utilisé aucun secours — même pour une trace antérieure
+    // qui portait `is_fallback` vrai ; le rang configuré reste `modelRank`.
+    usedFallback: Boolean(r.is_fallback) && !NOT_CALLED_ERROR_CODES.has(String(r.error_code ?? '')),
     inputTokens: r.input_tokens == null ? null : Number(r.input_tokens),
     outputTokens: r.output_tokens == null ? null : Number(r.output_tokens),
     costMicros: r.cost_micros == null ? null : Number(r.cost_micros),
@@ -222,6 +234,8 @@ function toRow(r: Row): ExecutionRow {
     providerAttempts: Array.isArray(metadata.providerAttempts)
       ? (metadata.providerAttempts as unknown[]).filter((a): a is ProviderAttemptTrace => Boolean(a) && typeof a === 'object') : [],
     jobAttempt: typeof metadata.jobAttempt === 'number' ? metadata.jobAttempt : null,
+    transfer: objet<AttachmentTransferFailure>(metadata.transfer),
+    fallbackDecision: objet<Record<string, unknown>>(metadata.fallback),
     traceId: typeof metadata.traceId === 'string' ? metadata.traceId : null,
     history: readHistoryClass(r.history_class),
   };
@@ -338,7 +352,9 @@ export async function searchExecutions(f: ExecutionFilters = {}): Promise<Execut
         AND ($10::int IS NULL OR e.duration_ms >= $10)
         AND ($11::int IS NULL OR e.user_id = $11)
         AND ($12::text IS NULL
-             OR ($12 = 'fallback' AND (e.model_rank IN ('fallback_1', 'fallback_2') OR e.is_fallback))
+             -- Lot 113R : un rang non sollicité (refus de secours) n'est pas un secours utilisé.
+             OR ($12 = 'fallback' AND (e.model_rank IN ('fallback_1', 'fallback_2') OR e.is_fallback)
+                 AND COALESCE(e.error_code, '') NOT IN ('FALLBACK_NOT_ADMISSIBLE', 'MODEL_KNOWN_UNAVAILABLE'))
              OR e.model_rank = $12)
         AND ($13::int IS NULL OR e.job_id = $13)
         AND ($14::text IS NULL OR ${OBJECT_TYPE} = $14)

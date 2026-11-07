@@ -141,8 +141,8 @@ export async function closeObsoleteAgendaProposals(
 
 type Action = typeof toProcessActions.$inferSelect;
 
-/** Empreinte d'un élément : titre, date, statut, dernière mise à jour. */
-const itemFingerprint = sql<string>`md5(concat_ws('|', ${agendaItems.title}, ${agendaItems.startDate}::text, coalesce(${agendaItems.manualStatus}, ''), ${agendaItems.updatedAt}::text))`;
+/** Empreinte d'un élément : titre, date, dernière mise à jour (lot 113P : statut retiré, empreinte inchangée — chaîne vide conservée). */
+const itemFingerprint = sql<string>`md5(concat_ws('|', ${agendaItems.title}, ${agendaItems.startDate}::text, '', ${agendaItems.updatedAt}::text))`;
 
 /**
  * Résolution (appelée par `resolveArbitration`, dans SA transaction) :

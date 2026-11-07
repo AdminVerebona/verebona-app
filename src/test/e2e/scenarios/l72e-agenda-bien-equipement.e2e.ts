@@ -39,10 +39,9 @@ scenario('L72E-EQ', 'Onglet Agenda du bien : filtre Équipement sur la vraie rou
       RETURNING id`;
     return e.id;
   };
-  const evt = async (acc: { id: number; ownerUserId: number }, title: string, assetIds: number[], equipmentIds: number[] = [], opts: { date?: string; cancelled?: boolean } = {}) => {
+  const evt = async (acc: { id: number; ownerUserId: number }, title: string, assetIds: number[], equipmentIds: number[] = [], opts: { date?: string } = {}) => {
     const i = await make.agendaItem(acc as never, { title, startDate: opts.date ?? '2026-03-10', assetIds });
     for (const e of equipmentIds) await sql`INSERT INTO agenda_equipment_links (agenda_item_id, equipment_id) VALUES (${i.id}, ${e})`;
-    if (opts.cancelled) await sql`UPDATE agenda_items SET manual_status = 'annule' WHERE id = ${i.id}`;
     return i.id;
   };
   const as = (acc: { id: number; ownerUserId: number }) => { session.userId = acc.ownerUserId; session.currentAccountId = acc.id; };
@@ -76,7 +75,7 @@ scenario('L72E-EQ', 'Onglet Agenda du bien : filtre Équipement sur la vraie rou
     ids.aNomTrompeur = await evt(moi, 'Révision chaudière (sans association)', [ids.maison]);
     ids.aChaud = await evt(moi, 'Entretien chaudière', [ids.maison], [ids.chaudiere]);
     ids.aChaudSeul = await evt(moi, 'Ramonage', [], [ids.chaudiere], { date: '2026-04-02' }); // lié à l'équipement seul
-    ids.aChaudAnnule = await evt(moi, 'Entretien annulé', [ids.maison], [ids.chaudiere], { cancelled: true });
+    // #715 : plus de statut d'événement — plus d'élément « annulé » (un événement qui n'a pas eu lieu est supprimé).
     ids.aCumulus = await evt(moi, 'Détartrage cumulus', [ids.maison], [ids.cumulus]);
     ids.aGarage = await evt(moi, 'Assurance garage', [ids.garage]);
     ids.aAutre = await evt(autre, 'Secret', [ids.bienAutre], [ids.eqAutre]);
@@ -100,11 +99,11 @@ scenario('L72E-EQ', 'Onglet Agenda du bien : filtre Équipement sur la vraie rou
     expect(r.model.chipLabel).toBe('Bien uniquement');
   });
 
-  it('L72E-EQ-E3 — un équipement : seulement ses éléments associés en base ; combiné aux annulés et à la vue mensuelle', async () => {
+  it('L72E-EQ-E3 — un équipement : seulement ses éléments associés en base ; combiné à la vue mensuelle (#715 : plus d’« annulés »)', async () => {
     as(moi);
     expect((await onglet(ids.maison, { equipment: String(ids.chaudiere) })).ids).toEqual(tri(ids.aChaud, ids.aChaudSeul));
-    expect((await onglet(ids.maison, { equipment: String(ids.chaudiere), includeCancelled: 'true' })).ids)
-      .toEqual(tri(ids.aChaud, ids.aChaudSeul, ids.aChaudAnnule));
+    // #715 : `includeCancelled` (ancien écran) est ignoré — même résultat.
+    expect((await onglet(ids.maison, { equipment: String(ids.chaudiere), includeCancelled: 'true' })).ids).toEqual(tri(ids.aChaud, ids.aChaudSeul));
     expect((await onglet(ids.maison, { equipment: String(ids.chaudiere), month: '2026-04' })).ids).toEqual([ids.aChaudSeul]);
     expect((await onglet(ids.maison, { equipment: String(ids.adoucisseur) })).ids).toEqual([]);
     expect((await onglet(ids.maison, { equipment: String(ids.cumulus) })).ids).toEqual([ids.aCumulus]);

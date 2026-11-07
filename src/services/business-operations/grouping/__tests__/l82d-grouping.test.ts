@@ -198,7 +198,7 @@ const op = (over: Partial<OperationSnapshot> = {}): OperationSnapshot => ({
   disposalKind: null, exclusiveFileIds: [], ...over,
 });
 const item = (over: Partial<AgendaItemSnapshot> = {}): AgendaItemSnapshot => ({
-  id: 1, title: 'Fin de contrat — Assur', date: '2027-01-31', manualStatus: null, isAutomatic: true, isAutomaticModified: false, projected: true,
+  id: 1, title: 'Fin de contrat — Assur', date: '2027-01-31', isAutomatic: true, isAutomaticModified: false, projected: true,
   businessOperationId: 7, linkedOperationActive: true, nature: 'DEADLINE', businessType: 'contract', homeCategory: 'action', functionalKey: 'bo:v1:7:CONTRACT:END:2027-01-31',
   originRefType: 'business_operation', originRefId: 7, assetIds: [3], equipmentIds: [], fileIds: [], ...over,
 });

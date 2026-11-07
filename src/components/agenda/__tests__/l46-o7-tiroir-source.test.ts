@@ -37,6 +37,7 @@ describe('O7-UI-01 — tiroir d’un événement projeté (desktop et mobile)', 
 
   it('suppression : même route, l’auteur est transmis pour mémoriser la suppression (F-146)', () => {
     const route = lire('app/api/agenda/[id]/route.ts');
-    expect(route).toContain('await deleteAgendaItem(id, accountId, session.userId ?? null);');
+    // #715 : portée explicite (cet événement / toute la série) ; l'auteur reste transmis (trace d'exclusion).
+    expect(route).toContain('await deleteAgendaItem(id, accountId, session.userId ?? null, { scope });');
   });
 });

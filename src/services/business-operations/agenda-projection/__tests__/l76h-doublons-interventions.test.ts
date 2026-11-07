@@ -27,7 +27,7 @@ function op(over: Partial<OperationSnapshot> = {}): OperationSnapshot {
 /** Événement automatique T4 intact produit par le document `DOC`. */
 function t4(over: Partial<AgendaItemSnapshot> = {}): AgendaItemSnapshot {
   return {
-    id: 100, title: 'Réparation — Maison', date: '2021-07-07', manualStatus: null, isAutomatic: true, isAutomaticModified: false, projected: false,
+    id: 100, title: 'Réparation — Maison', date: '2021-07-07', isAutomatic: true, isAutomaticModified: false, projected: false,
     businessOperationId: null, linkedOperationActive: false, nature: 'HISTORICAL', businessType: 'repair', homeCategory: 'information', functionalKey: null,
     originRefType: 'asset_file', originRefId: DOC, assetIds: [BIEN], equipmentIds: [], fileIds: [DOC], pendingStatus: false, originFieldKey: null, sourceCount: 1, ...over,
   };
@@ -37,7 +37,7 @@ const entretien = () => t4({ id: 102, title: 'Entretien réalisé — Prestation
 const plan = (o: OperationSnapshot, p: { linked?: AgendaItemSnapshot[]; candidates?: AgendaItemSnapshot[]; suppressed?: string[]; taken?: number[] } = {}) =>
   planOperationProjection({
     op: o, decision: decideProjection(o, AUJ), linked: p.linked ?? [], suppressedKeys: new Set(p.suppressed ?? []),
-    candidates: p.candidates ?? [], statusCardItems: new Set(), taken: new Set(p.taken ?? []),
+    candidates: p.candidates ?? [], taken: new Set(p.taken ?? []),
   });
 
 describe('L76H — projection : une intervention établie = une représentation d’agenda', () => {
@@ -97,8 +97,8 @@ describe('L76H — projection : une intervention établie = une représentation 
       expect.objectContaining({ kind: 'ABSTAIN', candidates: expect.arrayContaining([expect.objectContaining({ itemId: 103 })]) }),
       expect.objectContaining({ kind: 'REPRESENTATION_REQUIRED', itemIds: expect.arrayContaining([102, 103]) }),
     ]);
-    // Statut posé par l'utilisateur, saisi à la main : idem (jamais un rattachement ni un retrait).
-    for (const x of [t4({ id: 104, manualStatus: 'realise' }), t4({ id: 105, isAutomatic: false })]) {
+    // Modifié par l'utilisateur (#715 : ex-statut posé, reporté par 1526), saisi à la main : idem (jamais un rattachement ni un retrait).
+    for (const x of [t4({ id: 104, isAutomaticModified: true }), t4({ id: 105, isAutomatic: false })]) {
       expect(plan(op(), { candidates: [x, entretien()] }).some((a) => a.kind === 'LINK' || a.kind === 'REMOVE')).toBe(false);
     }
   });
@@ -153,7 +153,7 @@ describe('L76H — projection : une intervention établie = une représentation 
     // T4 a décidé (étape distincte) : plus aucune demande, plus aucune carte (convergence, CODE-11).
     const decide = planOperationProjection({
       op: op(), decision: decideProjection(op(), AUJ), linked: [{ ...a, operationRole: 'PRINCIPAL' }, b], suppressedKeys: new Set(),
-      candidates: [a, b], statusCardItems: new Set(), taken: new Set([101, 102]), t4Roles: new Map([[101, 'PRINCIPAL'], [102, 'STEP']]),
+      candidates: [a, b], taken: new Set([101, 102]), t4Roles: new Map([[101, 'PRINCIPAL'], [102, 'STEP']]),
     });
     expect(decide.some((x) => x.kind === 'REPRESENTATION_REQUIRED' || x.kind === 'ABSTAIN')).toBe(false);
   });

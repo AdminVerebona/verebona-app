@@ -74,10 +74,13 @@ scenario('L76J', 'T3 — complétude et cohérence exhaustives de l’onglet Inf
     return r.id;
   };
   /** Événement « Achat » de l'agenda lié au bien (automatique et à confirmer par défaut). */
-  const achatAgenda = async (c: AccountRow, assetId: number, date: string, o: { automatic?: boolean; status?: 'realise' | null; sourceFileId?: number; equipmentId?: number } = {}) => {
+  // #715 : plus de statut d'événement — l'achat « confirmé par l'utilisateur » ne passe plus par un statut
+  // « réalisé » ; c'est l'élément modifié par l'utilisateur (état produit par la migration 1526 pour un ancien
+  // statut posé à la main) ou saisi à la main.
+  const achatAgenda = async (c: AccountRow, assetId: number, date: string, o: { automatic?: boolean; confirmed?: boolean; sourceFileId?: number; equipmentId?: number } = {}) => {
     const auto = o.automatic ?? true;
-    const [i] = await sql<{ id: number }[]>`INSERT INTO agenda_items (account_id, title, start_date, is_automatic, origin_type, manual_status, requires_qualification, business_type)
-      VALUES (${c.id}, 'Achat — Maison', ${date}, ${auto}, ${auto ? 'qualified_document' : 'manual'}, ${o.status ?? null}, ${auto}, 'purchase') RETURNING id`;
+    const [i] = await sql<{ id: number }[]>`INSERT INTO agenda_items (account_id, title, start_date, is_automatic, is_automatic_modified, origin_type, requires_qualification, business_type)
+      VALUES (${c.id}, 'Achat — Maison', ${date}, ${auto}, ${auto && o.confirmed === true}, ${auto ? 'qualified_document' : 'manual'}, ${auto}, 'purchase') RETURNING id`;
     await sql`INSERT INTO agenda_asset_links (agenda_item_id, asset_id) VALUES (${i.id}, ${assetId})`;
     if (o.equipmentId) await sql`INSERT INTO agenda_equipment_links (agenda_item_id, equipment_id) VALUES (${i.id}, ${o.equipmentId})`;
     if (o.sourceFileId) await sql`INSERT INTO agenda_item_sources (agenda_item_id, asset_file_id, effect_type) VALUES (${i.id}, ${o.sourceFileId}, 'created')`;
@@ -147,7 +150,7 @@ scenario('L76J', 'T3 — complétude et cohérence exhaustives de l’onglet Inf
   it('T3-COH-01 bis — achat CONFIRMÉ par l’utilisateur : complète le champ vide ; contredit une valeur automatique → un seul arbitrage, jamais reproposé une fois tranché', async () => {
     const c = await make.account({ plan: 'premium' });
     const vide = await bien(c, {});
-    await achatAgenda(c, vide, '2021-05-06', { automatic: true, status: 'realise' });
+    await achatAgenda(c, vide, '2021-05-06', { automatic: true, confirmed: true });
     await t3(c, vide);
     const f = await fiche(vide);
     expect(f.kc.acquisitionDate).toBe('2021-05-06');
@@ -155,7 +158,7 @@ scenario('L76J', 'T3 — complétude et cohérence exhaustives de l’onglet Inf
     expect(f.purchaseDate).toBe('2021-05-06');
 
     const m = await bien(c, { kc: { acquisitionDate: '2005-02-17', acquisitionDate__origin: 'RECONCILIATION' } });
-    await achatAgenda(c, m, '2021-05-06', { automatic: false, status: 'realise' });
+    await achatAgenda(c, m, '2021-05-06', { automatic: false, confirmed: true });
     await t3(c, m);
     expect((await fiche(m)).kc.acquisitionDate).toBe('2005-02-17');
     const ouvertes = (await cartes(m)).filter((x) => x.resolved_at === null);
@@ -267,7 +270,7 @@ scenario('L76J', 'T3 — complétude et cohérence exhaustives de l’onglet Inf
     const pac = await equipement(m, 'Pompe à chaleur');
     const facture = await fichier(c, m, 'FACTURE');
     await candidatOperation(c, facture, { type: 'ACQUISITION', targets: [{ type: 'ASSET', entityId: m }, { type: 'EQUIPMENT', entityId: pac }], amountMinor: 1_200_000, excerpt: 'PAC air/eau 12 000,00 € TTC' });
-    await achatAgenda(c, m, '2023-03-10', { automatic: false, status: 'realise', equipmentId: pac });
+    await achatAgenda(c, m, '2023-03-10', { automatic: false, confirmed: true, equipmentId: pac });
     await t3(c, m);
     const f = await fiche(m);
     expect(f.kc.acquisitionPrice).toBeUndefined();

@@ -248,10 +248,12 @@ scenario('L53C-D10-D14', 'Sinistres (brouillon, dissociation, exclusion) et agen
     const z = await interventionEtDeuxEvenements(compte3);
     await projeter(compte3, [z.op]);
     expect(await ouvertes(compte3, 'AGENDA-PROJECTION-MATCH')).toHaveLength(1);
-    await sql`UPDATE agenda_items SET manual_status = 'annule' WHERE id = ${z.b}`;
+    // #715 : plus de statut « annulé » — les candidats disparaissent par SUPPRESSION de l'utilisateur.
+    const { deleteAgendaItem } = await import('@/services/agenda/AgendaWriteService');
+    await deleteAgendaItem(z.b, compte3.id, compte3.ownerUserId, { scope: 'OCCURRENCE' });
     await projeter(compte3, [z.op]);
     expect(await ouvertes(compte3, 'AGENDA-PROJECTION-MATCH')).toHaveLength(1);
-    await sql`UPDATE agenda_items SET manual_status = 'annule' WHERE id = ${z.a}`;
+    await deleteAgendaItem(z.a, compte3.id, compte3.ownerUserId, { scope: 'OCCURRENCE' });
     await projeter(compte3, [z.op]);
     expect(await ouvertes(compte3, 'AGENDA-PROJECTION-MATCH')).toEqual([]);
     expect((await cartes(compte3, 'AGENDA-PROJECTION-MATCH'))[0]).toMatchObject({ resolution_reason: 'OBSOLETE' });

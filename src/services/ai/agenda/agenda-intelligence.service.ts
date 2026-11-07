@@ -441,7 +441,7 @@ function todayParis(): string {
 
 function asPlanned(d: AgendaDecision, i: number): ExistingAgendaItem {
   return {
-    id: -(i + 1), title: d.title, date: d.date, category: d.category, status: null, manual: false,
+    id: -(i + 1), title: d.title, date: d.date, category: d.category, manual: false,
     originFieldKey: d.originFieldKey ?? null, nature: d.occurrence?.nature, seriesKey: d.occurrence?.seriesKey ?? null,
   };
 }
@@ -457,7 +457,6 @@ function seriesKeyFor(assetId: number | null, c: { title: string; originFieldKey
 /** Occurrences comparables déjà connues (même série). */
 function sameSeries(c: AgendaCandidate, existing: ExistingAgendaItem[], key: string): ExistingAgendaItem[] {
   return existing.filter((e) => {
-    if (e.status === 'annule') return false;
     if (e.seriesKey && e.seriesKey === key) return true;
     if (c.originFieldKey && e.originFieldKey) return c.originFieldKey === e.originFieldKey;
     const a = normTitle(e.title);
@@ -525,7 +524,7 @@ async function forecastsFor(
   for (const date of computeOccurrences(spec, reference, today)) {
     if (date === candidate.date) continue;
     if (!listees && fenetre > 0) {
-      const present = serie.find((e) => e.date !== date && jours(e.date, date) <= fenetre && e.status !== 'annule');
+      const present = serie.find((e) => e.date !== date && jours(e.date, date) <= fenetre);
       if (present) {
         out.push({
           action: 'skip_duplicate', title: candidate.title, date, category: base.category, confidence: candidate.confidence,

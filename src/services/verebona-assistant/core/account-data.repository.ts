@@ -95,7 +95,7 @@ const baseAccountDataRepository: BaseAccountDataPort = {
     const r = await pgClient.unsafe(
       `SELECT count(DISTINCT i.id)::int AS n FROM agenda_items i
          LEFT JOIN agenda_asset_links l ON l.agenda_item_id = i.id
-        WHERE i.account_id = $1 AND i.manual_status IS NULL
+        WHERE i.account_id = $1
           AND ($2::boolean IS NOT TRUE OR i.start_date >= $3::date)
           AND ($4::int[] IS NULL OR l.asset_id = ANY($4::int[]))`,
       [accountId, opts.futureOnly ?? false, todayParis(), ids] as never[],

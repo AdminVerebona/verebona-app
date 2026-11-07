@@ -250,10 +250,10 @@ describe('jusqu’aux décisions Agenda (T4 simulé)', () => {
 
   it('fin passée confirmée : aucune prévision ; prévision automatique postérieure retirée avec raison, date et source ; occurrences réelles intactes', async () => {
     const existing: ExistingAgendaItem[] = [
-      { id: 10, title: 'Échéance de l’assurance', date: '2024-12-31', category: 'action', status: null, manual: false, originFieldKey: 'insuranceExpiry', nature: 'CONFIRMED' },
-      { id: 11, title: 'Échéance de l’assurance', date: '2025-12-31', category: 'action', status: null, manual: false, originFieldKey: 'insuranceExpiry', nature: 'CONFIRMED' },
-      { id: 12, title: 'Échéance de l’assurance', date: '2026-12-31', category: 'action', status: null, manual: false, originFieldKey: 'insuranceExpiry', nature: 'FORECAST' },
-      { id: 13, title: 'Échéance de l’assurance', date: '2027-12-31', category: 'action', status: null, manual: true, originFieldKey: 'insuranceExpiry', nature: 'FORECAST' },
+      { id: 10, title: 'Échéance de l’assurance', date: '2024-12-31', category: 'action', manual: false, originFieldKey: 'insuranceExpiry', nature: 'CONFIRMED' },
+      { id: 11, title: 'Échéance de l’assurance', date: '2025-12-31', category: 'action', manual: false, originFieldKey: 'insuranceExpiry', nature: 'CONFIRMED' },
+      { id: 12, title: 'Échéance de l’assurance', date: '2026-12-31', category: 'action', manual: false, originFieldKey: 'insuranceExpiry', nature: 'FORECAST' },
+      { id: 13, title: 'Échéance de l’assurance', date: '2027-12-31', category: 'action', manual: true, originFieldKey: 'insuranceExpiry', nature: 'FORECAST' },
     ];
     const d = await run([
       fait('insuranceExpiry', '2025-12-31', 'Échéance annuelle le 31/12/2025.'),

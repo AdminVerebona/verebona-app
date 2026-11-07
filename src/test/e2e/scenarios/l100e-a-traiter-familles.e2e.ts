@@ -131,7 +131,6 @@ scenario('L100E-A-TRAITER-FAMILLES', '« À traiter » : publiabilité de toutes
     const vivant = await make.asset(compte);
     const p = await producteurs();
     const item = await make.agendaItem(compte, { title: 'Ramonage' });
-    const statut = await make.agendaItem(compte, { title: 'Entretien annuel', startDate: '2026-09-01' });
     const eq = await equipementOrphelin(compte, 'Chauffe-eau');
     const fr = await revue(compte, 'Delta');
     const garde = await make.agendaItem(compte, { title: 'Vidange' });
@@ -139,9 +138,7 @@ scenario('L100E-A-TRAITER-FAMILLES', '« À traiter » : publiabilité de toutes
     await p.produceAgendaActions(compte.id);
     await p.produceEquipmentActions(compte.id);
     await p.produceSupplierActions(compte.id);
-    // Carte de statut d'agenda (« réalisé ? ») et lien document → équipement proposé.
-    const { proposeAgendaStatus } = await import('@/services/to-process/agenda-status-cards');
-    expect((await proposeAgendaStatus({ accountId: compte.id, itemId: statut.id, kind: 'propose_done', sourceFileId: null })).status).toBe('CREATED');
+    // #715 : plus de statut d'événement — la carte « réalisé ? » (AGENDA-DONE) n'existe plus.
     const f = await make.assetFile(compte, { assetId: vivant.id });
     // Statut du bien proposé (« vendu ? ») : l'utilisateur le change lui-même ensuite.
     expect((await upsert({ accountId: compte.id, targetType: 'ASSET', targetId: vivant.id, fieldKey: 'status', actionKind: 'ARBITRATE', ruleCode: 'ASSET-STATUS',
@@ -157,11 +154,10 @@ scenario('L100E-A-TRAITER-FAMILLES', '« À traiter » : publiabilité de toutes
     await sql`UPDATE to_process_actions SET resolved_at = now(), resolution_reason = 'NOT_APPLICABLE' WHERE id = ${cGarde.id}`;
     // Blocage technique sur « Contrôle gaz » (lecture en erreur) PUIS date toujours absente : jamais fermé par ce contrôle.
     await decision(compte, 'AGENDA_ITEM', technique.id, 'DATA-AGENDA-DATE', 'ERROR', 'ERROR', 'READ_FAILED:e2e');
-    expect((await vu(compte)).regles).toEqual(['AGENDA-DONE', 'ASSET-STATUS', 'DATA-AGENDA-DATE', 'LINK-EQUIP-ASSET', 'OPERATION-AMOUNT', 'SUPPLIER-IDENTITY']);
+    expect((await vu(compte)).regles).toEqual(['ASSET-STATUS', 'DATA-AGENDA-DATE', 'LINK-EQUIP-ASSET', 'OPERATION-AMOUNT', 'SUPPLIER-IDENTITY']);
 
     // ── Modifications MANUELLES de l'utilisateur, ailleurs que sur la carte ──
     await sql`UPDATE agenda_items SET start_date = '2026-12-02' WHERE id = ${item.id}`;
-    await sql`UPDATE agenda_items SET manual_status = 'realise' WHERE id = ${statut.id}`;
     await sql`UPDATE equipments SET asset_id = ${vivant.id} WHERE id = ${eq}`;
     await sql`UPDATE supplier_review_items SET status = 'resolved', resolved_at = now() WHERE supplier_id = ${fr}`;
     await sql`UPDATE assets SET status = 'VENDU' WHERE id = ${vivant.id}`;
@@ -174,7 +170,6 @@ scenario('L100E-A-TRAITER-FAMILLES', '« À traiter » : publiabilité de toutes
 
     const cibles = {
       agenda: (await carteDe('AGENDA_ITEM', item.id, 'DATA-AGENDA-DATE'))!.id,
-      statut: (await carteDe('AGENDA_ITEM', statut.id, 'AGENDA-DONE'))!.id,
       equipement: (await carteDe('EQUIPMENT', eq, 'LINK-EQUIP-ASSET'))!.id,
       fournisseur: (await carteDe('SUPPLIER', fr, 'SUPPLIER-IDENTITY'))!.id,
       bien: (await carteDe('ASSET', vivant.id, 'ASSET-STATUS'))!.id,
@@ -195,19 +190,17 @@ scenario('L100E-A-TRAITER-FAMILLES', '« À traiter » : publiabilité de toutes
     const ferme = async (id: number) => (await sql<Array<{ open: boolean; reason: string | null }>>`
       SELECT resolved_at IS NULL AS open, resolution_reason AS reason FROM to_process_actions WHERE id = ${id}`)[0];
     expect(await ferme(cibles.agenda)).toEqual({ open: false, reason: 'OBSOLETE' });
-    expect(await ferme(cibles.statut)).toEqual({ open: false, reason: 'USER_COMPLETED' });
     expect(await ferme(cibles.equipement)).toEqual({ open: false, reason: 'OBSOLETE' });
     expect(await ferme(cibles.fournisseur)).toEqual({ open: false, reason: 'OBSOLETE' });
     expect(await ferme(cibles.bien)).toEqual({ open: false, reason: 'OBSOLETE' });
     const reps = await sql<Array<{ object_id: number; outcome: string; service: string; recheck_verdict: string }>>`
       SELECT object_id, outcome, service, recheck_verdict FROM coherence_repairs WHERE account_id = ${compte.id} AND check_id = ${CHECK} ORDER BY id`;
-    expect(reps.map((r) => r.service).sort()).toEqual(['closeAgendaStatusCards', 'closeCardsNoLongerUseful', 'produceAgendaActions', 'produceEquipmentActions', 'produceSupplierActions']);
+    expect(reps.map((r) => r.service).sort()).toEqual(['closeCardsNoLongerUseful', 'produceAgendaActions', 'produceEquipmentActions', 'produceSupplierActions']);
     expect(reps.every((r) => r.outcome === 'REPAIRED' && ['GONE', 'CONSISTENT'].includes(r.recheck_verdict))).toBe(true);
     const [ev] = await sql<Array<{ details: Record<string, unknown> }>>`SELECT details FROM to_process_action_events WHERE action_id = ${cibles.bien} AND event = 'OBSOLETE'`;
     expect(ev.details).toMatchObject({ ruleCode: 'ASSET-STATUS', reason: 'STATUS_CHANGED_SINCE', source: 'A7_PUBLISHABILITY' });
     // Valeurs de l'UTILISATEUR intactes (aucune écriture de l'objet).
     expect((await sql`SELECT to_char(start_date, 'YYYY-MM-DD') AS d FROM agenda_items WHERE id = ${item.id}`)[0].d).toBe('2026-12-02');
-    expect((await sql`SELECT manual_status AS s FROM agenda_items WHERE id = ${statut.id}`)[0].s).toBe('realise');
     expect((await sql`SELECT asset_id AS a FROM equipments WHERE id = ${eq}`)[0].a).toBe(vivant.id);
     expect((await sql`SELECT status AS s FROM assets WHERE id = ${vivant.id}`)[0].s).toBe('VENDU');
     // « Non applicable » jamais rouvert ; blocage technique jamais fermé par le nettoyage (retenté par sa famille).

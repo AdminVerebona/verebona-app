@@ -11,13 +11,6 @@ import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import { Label } from "@/components/ui/label";
 import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from "@/components/ui/select";
-import {
   Popover,
   PopoverContent,
   PopoverTrigger,
@@ -108,7 +101,6 @@ export function CreateAgendaItemDrawer({
   const [startTime, setStartTime] = useState("");
   const [endDate, setEndDate] = useState("");
   const [endTime, setEndTime] = useState("");
-  const [manualStatus, setManualStatus] = useState<string>("null");
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [showEndDate, setShowEndDate] = useState(false);
@@ -229,7 +221,6 @@ export function CreateAgendaItemDrawer({
     setStartTime("");
     setEndDate("");
     setEndTime("");
-    setManualStatus("null");
     setSelectedAssetIds(prefilledAssetId ? [prefilledAssetId] : []);
     setSelectedSubstructureIds(
       prefilledSubstructureId ? [prefilledSubstructureId] : [],
@@ -272,7 +263,6 @@ export function CreateAgendaItemDrawer({
         startTime: startTime || null,
         endDate: endDate || null,
         endTime: endTime || null,
-        manualStatus: manualStatus === "null" ? null : manualStatus,
         noDeadline,
         assetIds: selectedAssetIds,
         fileIds: prefilledFileId ? [prefilledFileId] : [],
@@ -483,20 +473,7 @@ export function CreateAgendaItemDrawer({
               </div>
             )}
 
-            {/* Statut */}
-            <div className="space-y-1.5">
-              <Label>Statut</Label>
-              <Select value={manualStatus} onValueChange={setManualStatus}>
-                <SelectTrigger>
-                  <SelectValue />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="null">À venir</SelectItem>
-                  <SelectItem value="realise">Réalisé</SelectItem>
-                  <SelectItem value="annule">Annulé</SelectItem>
-                </SelectContent>
-              </Select>
-            </div>
+            {/* Lot 113P (#715) : plus de champ « Statut » — un événement existe à sa date. */}
 
             {/* Description */}
             <div className="space-y-1.5">

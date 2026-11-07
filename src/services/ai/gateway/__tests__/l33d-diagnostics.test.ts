@@ -211,7 +211,8 @@ describe('DIAG-08 — familles d’erreur fournisseur (§1, §14)', () => {
   it('taxonomie complète du ticket', () => {
     expect(AI_FAILURE_FAMILIES).toEqual(expect.arrayContaining(['INVALID_OUTPUT', 'TIMEOUT', 'PROVIDER_ERROR', 'RATE_LIMIT', 'AUTH_ERROR', 'CONTEXT_TOO_LARGE', 'INPUT_ERROR', 'SAFETY_BLOCK', 'NETWORK_ERROR', 'INTERNAL_ERROR']));
     expect(INVALID_OUTPUT_SUBTYPES).toEqual(['EMPTY_RESPONSE', 'MALFORMED_JSON', 'SCHEMA_VALIDATION_FAILED', 'MISSING_REQUIRED_FIELD', 'INVALID_ENUM', 'INVALID_TYPE', 'OUTPUT_TRUNCATED', 'STRUCTURED_OUTPUT_REJECTED', 'PARSER_ERROR', 'BUSINESS_VALIDATION_FAILED', 'RUNTIME_CONTRACT_MISMATCH', 'PARAMETER_REJECTED', 'PARAMETER_INCOMPATIBLE', 'UNKNOWN']); // L82C : PARAMETER_REJECTED (LOG-04) ; L85C : PARAMETER_INCOMPATIBLE (refus avant appel, CFG-03)
-    expect(AI_FAILURE_STAGES).toEqual(['request_build', 'provider_request', 'provider_generation', 'response_reception', 'structured_output', 'json_parse', 'schema_validation', 'business_validation', 'result_mapping', 'persistence', 'post_processing']);
+    // Lot 113R : étape `attachment_transfer` (transfert de la pièce jointe, avant toute génération).
+    expect(AI_FAILURE_STAGES).toEqual(['request_build', 'attachment_transfer', 'provider_request', 'provider_generation', 'response_reception', 'structured_output', 'json_parse', 'schema_validation', 'business_validation', 'result_mapping', 'persistence', 'post_processing']);
   });
 });
 
@@ -272,7 +273,8 @@ describe('DIAG-14 / DIAG-15 — compteurs explicites et diagnostic final factuel
       calls: [appel(1, 'primary', 'error'), appel(2, 'primary', 'error', 'repair'), appel(3, 'fallback_1', 'error'), appel(4, 'fallback_2', 'success')],
       job: { status: 'DONE', attempts: 2 },
     });
-    expect(d.counters).toEqual({ jobAttempts: 2, modelCalls: 3, modelFallbacks: 2, structuredOutputRetries: 0, repairCalls: 1 });
+    // Lot 113R : compteurs réconciliés (rangs non appelés, transferts refusés, générations demandées).
+    expect(d.counters).toEqual({ jobAttempts: 2, modelCalls: 3, modelFallbacks: 2, structuredOutputRetries: 0, repairCalls: 1, notCalled: 0, transferFailures: 0, generationsRequested: 3 });
     expect(d.calls.map((c) => c.label)).toEqual(['principal', 'réparation (principal)', 'fallback 1', 'fallback 2']);
     expect(d.result.businessResult).toBe('SUCCEEDED');
     expect(d.finalDiagnosis[0]).toBe('Réussite T1.');

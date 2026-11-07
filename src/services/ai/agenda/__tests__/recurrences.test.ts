@@ -84,7 +84,7 @@ describe('moteur T4', () => {
   });
 
   it('occurrence déjà présente : pas recréée ; occurrence proche : arbitrage T4-01', async () => {
-    const exist = (d: string, manual = false): ExistingAgendaItem => ({ id: 5, title: 'Entretien à prévoir', date: d, category: 'action', status: null, manual, originFieldKey: 'maintenanceDueDate' });
+    const exist = (d: string, manual = false): ExistingAgendaItem => ({ id: 5, title: 'Entretien à prévoir', date: d, category: 'action', manual, originFieldKey: 'maintenanceDueDate' });
     expect((await run('Entretien annuel', [exist('2027-11-15')])).find((x) => x.date === '2027-11-15')!.action).toBe('skip_duplicate');
     const deplacee = (await run('Entretien annuel', [exist('2027-11-20', true)])).filter((x) => x.date === '2027-11-15');
     expect(deplacee.every((x) => x.action === 'skip_duplicate')).toBe(true);

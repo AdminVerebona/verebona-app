@@ -10,7 +10,7 @@ import { selectSubjects } from '../selector';
 import { buildPresentation } from '../presentation';
 import { NOTHING_TO_REPORT_SPEECH, NOTHING_PRIORITY, composeSpeech, homePose } from '../bubble';
 import { buildT6Input, nuanceViolation } from '../t6-contract';
-import { deadlineExtActionText, deadlineNextText } from '../deadline-label';
+import { deadlineNextText } from '../deadline-label';
 import { agendaDateRole } from '@/services/agenda/agenda-date-role';
 import type { MascotPresentation } from '../types';
 
@@ -56,13 +56,11 @@ describe('PO-D25 — « Aucun sujet à traiter en priorité » : jamais au prix 
     expect(t).not.toMatch(/\d/);
   });
 
-  it('PO-D25-03 — échéance échue récente : un vrai sujet « à confirmer », jamais « aucun sujet »', () => {
+  // #715 : plus de statut d'événement — une échéance passée n'est plus un sujet « à confirmer » (jamais de demande de confirmation).
+  it('PO-D25-03 (#715) — échéance échue récente : aucun sujet « à confirmer », aucune demande de réalisation', () => {
     const r = raw({ agenda: [row({ id: 4, date: '2026-10-01', dateRole: 'DEADLINE' })], overdueAgenda: [{ id: 4, date: '2026-10-01' }] });
     const t = parler(presenter(r));
-    // Lot 68 : le sujet est dit directement (plus d'introduction de comptage).
-    expect(t).toMatch(/^Le contrôle technique de la Cupra était à prévoir/);
-    expect(t).not.toMatch(/mérite votre attention/);
-    expect(t).not.toContain(NOTHING_PRIORITY);
+    expect(t).not.toMatch(/était à prévoir|à confirmer|C’est fait|C'est fait|en retard/i);
   });
 
   it('PO-D25-04 — élément en attente de rapprochement (À traiter non prioritaire) : « aucun sujet en priorité », jamais « tout est à jour » (la pastille du menu le compte ; MASC3 maintenu)', () => {
@@ -123,16 +121,8 @@ describe('PO-D27 — échéance à respecter, rendez-vous programmé, interventi
     expect(t).not.toMatch(/prévu |confirm|rendez-vous/);
   });
 
-  it('PO-D27-03 — échéance passée non confirmée : « était à prévoir », jamais « était prévu » ni « réalisé »', () => {
-    const passe = deadlineExtActionText({ ...CUPRA, dateRole: 'DEADLINE' }, '1 octobre 2026', true);
-    expect(passe).toBe('Le contrôle technique de la Cupra était à prévoir pour le 1 octobre 2026. Si c’est fait, vous pouvez l’indiquer.');
-    expect(deadlineExtActionText({ ...CUPRA, dateRole: 'DEADLINE' }, '12 octobre 2026', false))
-      .toBe('Le contrôle technique de la Cupra est à prévoir pour aujourd’hui, le 12 octobre 2026. Une fois que c’est fait, vous pouvez l’indiquer.');
-    // Événement saisi par l'utilisateur : « était prévu ».
-    expect(deadlineExtActionText({ ...CUPRA, title: 'Contrôle garage', dateRole: 'SCHEDULED_EVENT' }, '1 octobre 2026', true))
-      .toMatch(/^Le contrôle garage de la Cupra était prévu le 1 octobre 2026\./);
-    for (const t of [passe]) expect(t).not.toMatch(/réalisé|confirm/);
-  });
+  // #715 : plus de statut d'événement — PO-D27-03 (texte « Si c’est fait, vous pouvez l’indiquer » d'une échéance
+  // passée, MASC-EXT-ACTION) supprimé avec la fonction `deadlineExtActionText`.
 
   it('PO-D27-04 — T6 ne qualifie jamais un rendez-vous de « confirmé » / « réservé » sans le fait (échéance ET événement)', () => {
     const sujet = (dateRole: 'DEADLINE' | 'SCHEDULED_EVENT', title = 'Rendez-vous garage') => buildT6Input(

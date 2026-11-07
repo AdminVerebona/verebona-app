@@ -153,6 +153,13 @@ export interface OperationMatchVerdict {
   resolutionOrigin?: 'MODEL' | 'LEGACY';
   /** Lot 56A : issue du modèle déclassée par le serveur (motif). */
   downgraded?: OperationMatchDowngrade;
+  /**
+   * Lot 113S (`t3-user-question-v1`) : question BRUTE proposée par T3 pour
+   * l'arbitrage et candidat sur lequel elle porte (monde fermé : candidat hors
+   * du jeu fourni → null). Contrôlée avant affichage (`ai-user-question.ts`).
+   */
+  userQuestion?: string | null;
+  questionCandidateId?: number | null;
 }
 
 /**
@@ -212,6 +219,11 @@ export function translateOperationMatch(
     reason: output.reason.slice(0, 400),
   };
   // Monde fermé violé : la sortie de remplacement n'a pas d'issue — ambiguïté.
+  // Lot 113S : question de l'arbitrage, seulement d'une sortie qui respecte le monde fermé.
+  if (warnings.length === 0 && typeof out.userQuestion === 'string') {
+    base.userQuestion = out.userQuestion.slice(0, 1000);
+    base.questionCandidateId = typeof out.questionCandidateId === 'number' && allowedOperationIds.has(out.questionCandidateId) ? out.questionCandidateId : null;
+  }
   const explicite = warnings.length === 0 ? out.resolution : undefined;
   if (!explicite) return { verdict: { ...base, resolution: m3Resolution(base), resolutionOrigin: 'LEGACY' }, warnings };
   const v = validateResolution({ ...output, resolution: explicite }, matchedOperationId);

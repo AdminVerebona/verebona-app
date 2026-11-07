@@ -97,18 +97,20 @@ describe('tuiles d’action (§3.2)', () => {
   it('nature du sujet pour la pose : vérifier, compléter, retard, échéance', () => {
     expect(tileFor(subject({ sourceCode: 'ATP-CONFLICT', facts: { actionKind: 'arbitrage' } }), TODAY).kind).toBe('verify');
     expect(tileFor(subject({ sourceCode: 'ATP-MISSING', facts: { actionKind: 'complément' } }), TODAY).kind).toBe('action');
-    expect(tileFor(subject({ sourceCode: 'MASC-EXT-ACTION', facts: { date: '2026-09-19' } }), TODAY).kind).toBe('overdue');
+    // #715 : plus de statut d'événement — une date passée n'est plus un « retard ».
+    expect(tileFor(subject({ sourceCode: 'MASC-EXT-ACTION', facts: { date: '2026-09-19' } }), TODAY).kind).not.toBe('overdue');
     expect(tileFor(subject({ sourceCode: 'MASC-EXT-ACTION', facts: { date: TODAY } }), TODAY).kind).toBe('action');
     expect(tileFor(subject({ sourceCode: 'DATE-NEXT', requiresAttention: false, facts: {} }), TODAY).kind).toBe('info');
   });
 
-  it('sévérité : amber à vérifier, rouge en retard (jours), bleu pour une échéance', () => {
+  it('sévérité : amber à vérifier, bleu pour une échéance ; jamais rouge « en retard » (#715)', () => {
     expect(tileFor(subject({ sourceCode: 'ATP-CONFLICT', facts: { actionKind: 'arbitrage' }, assetName: 'Ferrari Testarossa' }), TODAY))
       .toMatchObject({ tone: 'amber', label: 'Vérifier l’information', status: 'À vérifier', assetName: 'Ferrari Testarossa', attention: true });
-    expect(tileFor(subject({ sourceCode: 'MASC-EXT-ACTION', facts: { date: '2026-09-19' }, assetName: 'Vélo Cargo' }), TODAY))
-      .toMatchObject({ tone: 'red', icon: 'clock', label: 'Reporter ou marquer fait', status: 'En retard (2 j)' });
-    expect(tileFor(subject({ sourceCode: 'MASC-EXT-ACTION', facts: { date: TODAY } }), TODAY))
-      .toMatchObject({ tone: 'amber', status: 'Aujourd’hui' });
+    // #715 : plus de rouge « en retard » ni de « Reporter ou marquer fait ».
+    const passee = tileFor(subject({ sourceCode: 'MASC-EXT-ACTION', facts: { date: '2026-09-19' }, assetName: 'Vélo Cargo' }), TODAY);
+    expect(passee.tone).not.toBe('red');
+    expect(JSON.stringify(passee)).not.toMatch(/En retard|marquer fait/);
+    // #715 : le sujet MASC-EXT-ACTION (« C'est fait ? ») n'est plus produit — plus de tuile ambre « Aujourd’hui » dédiée.
     expect(tileFor(subject({ sourceCode: 'DATE-NEXT', requiresAttention: false, facts: { dateLabel: '12 octobre 2026', dateNature: 'confirmée' } }), TODAY))
       .toMatchObject({ tone: 'blue', attention: false, status: '12 octobre 2026' });
   });
@@ -127,7 +129,8 @@ describe('tuiles d’action (§3.2)', () => {
     expect(actionTiles(null)).toEqual([]);
   });
 
-  it('bout en bout : le moteur réel produit des tuiles colorées (retard réel)', () => {
+  // #715 : plus de statut d'événement — une révision à date passée ne produit plus de tuile « en retard ».
+  it('bout en bout : le moteur réel ne produit aucune tuile « en retard » pour une date passée (#715)', () => {
     const raw: MascotRawData = {
       accountId: 1, today: TODAY,
       processing: { uploads: [], analyses: [], exports: [] },
@@ -139,11 +142,12 @@ describe('tuiles d’action (§3.2)', () => {
     const c = buildCandidates(raw);
     const subjects = selectSubjects(c.candidates);
     const p = buildPresentation({ subjects, secondaries: buildSecondaries(c, subjects), degraded: false, messages: null, today: TODAY });
-    const [tile] = actionTiles(p);
-    expect(tile).toMatchObject({ tone: 'red', label: 'Reporter ou marquer fait', sub: 'Vélo Cargo · En retard (2 j)' });
-    expect(homePose(p, false)).toBe('alert-folder'); // révision en retard réelle
-    expect(composeSpeech({ presentation: p, empty: false }).text).not.toMatch(/mérite votre attention/);
-    expect(composeSpeech({ presentation: p, empty: false }).text).toMatch(/^Votre échéance du 19 septembre 2026/);
+    for (const tile of actionTiles(p)) {
+      expect(tile.tone).not.toBe('red');
+      expect(JSON.stringify(tile)).not.toMatch(/En retard|marquer fait/);
+    }
+    expect(homePose(p, false)).not.toBe('alert-folder');
+    expect(composeSpeech({ presentation: p, empty: false }).text).not.toMatch(/^Votre échéance du 19 septembre 2026/);
   });
 });
 

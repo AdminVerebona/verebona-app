@@ -36,7 +36,8 @@ async function loadLiveT1Jobs(fileIds: number[]): Promise<Map<number, LiveJobSna
   try {
     const rows = (await pgClient.unsafe(
       `SELECT DISTINCT ON (target_id) target_id, status, attempts, available_at,
-              payload->>'costCapDeferredUntil' AS cost_cap_until
+              payload->>'costCapDeferredUntil' AS cost_cap_until,
+              CASE WHEN payload->'aiSuspension'->>'resumedAt' IS NULL THEN payload->'aiSuspension'->>'cause' END AS suspension_cause
          FROM ai_job_queue
         WHERE treatment = 'T1' AND target_type = 'asset_file'
           AND status IN ('PENDING', 'RUNNING')
@@ -52,6 +53,8 @@ async function loadLiveT1Jobs(fileIds: number[]): Promise<Map<number, LiveJobSna
         attempts: Number(r.attempts ?? 0),
         availableAt: r.available_at ? new Date(String(r.available_at)).toISOString() : null,
         costCapDeferredUntil: r.cost_cap_until ? String(r.cost_cap_until) : null,
+        // Lot 113R : suspension non reprise (attente technique d'envoi).
+        technicalWaitCause: r.status === 'PENDING' && r.suspension_cause ? String(r.suspension_cause) : null,
       });
     }
   } catch (e) {

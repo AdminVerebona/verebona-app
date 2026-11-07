@@ -167,6 +167,8 @@ export async function proposeDocumentEquipmentLink(p: {
   fileId: number;
   assetId: number;
   candidates: Array<{ equipmentId: number; score: number; reason: string }>;
+  /** Lot 113S (#716) : question proposée par T3 avec son abstention (brute), contrôlée ici ; absente : question du catalogue. */
+  aiQuestion?: { raw: unknown; aiCalled: boolean; traceId?: string | null };
 }): Promise<ProposeResult> {
   const bien = await documentAsset(db, p.fileId, p.accountId);
   const ids = [...new Set(p.candidates.map((c) => c.equipmentId).filter((id) => asId(id) !== null))];
@@ -193,6 +195,14 @@ export async function proposeDocumentEquipmentLink(p: {
       ...(source ? { sourceContext: { label: source.slice(0, 200), targetType: 'EQUIPMENT' as const, targetId: c.equipmentId } } : {}),
     };
   });
+  const choix = p.aiQuestion
+    ? await (await import('./ai-user-question')).resolveAiCardQuestion(p.accountId, {
+      rule: LINK_ELT_RULE, treatment: 'T3', operation: 't3_link_ambiguity', contract: 't3-user-question-v1',
+      raw: p.aiQuestion.raw, aiCalled: p.aiQuestion.aiCalled, traceId: p.aiQuestion.traceId ?? null,
+      contractActive: await (await import('./ai-user-question')).questionContractActive('t3_link_ambiguity', 't3-user-question-v1'),
+      check: { allowedLabels: proposals.map((x) => x.label) },
+    }, p.fileId)
+    : null;
   const res = await upsertAction({
     accountId: p.accountId,
     targetType: 'DOCUMENT',
@@ -200,6 +210,7 @@ export async function proposeDocumentEquipmentLink(p: {
     relationKey: LINK_ELT_RELATION,
     actionKind: 'ARBITRATE',
     ruleCode: LINK_ELT_RULE,
+    ...(choix ? { question: choix.question, questionSource: choix.source } : {}),
     proposals,
     triggerContext: documentEquipmentTriggerContext(p.fileId, retenus.map((c) => c.equipmentId)),
   });

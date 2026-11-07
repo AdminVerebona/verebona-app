@@ -35,6 +35,7 @@ import type { ResolutionReason } from './action-model';
 import type { DbClient, ResolveOptions, ResolveResult } from './resolve-action.service';
 import { upsertAction, type UpsertActionResult } from './to-process-action.service';
 import { unnamedLabel } from './card-labels';
+import { resolveAiCardQuestion, type AiQuestionInput, type QuestionSource } from './ai-user-question';
 
 export const ASSET_CONFLICT_RULE = 'LINK-ASSET-CONFLICT';
 const ASSET_CONFLICT_RELATION = 'assetConflict';
@@ -152,7 +153,13 @@ export async function proposeDocumentAssetConflict(p: {
   basis: AssetConflictBasis; kinds?: readonly string[];
   /** Lot 113L : revue IA (clé de contexte, ambiguïté, justification du modèle). */
   review?: { reviewKey: string; ambiguous: boolean; reason: string | null };
-}): Promise<UpsertActionResult> {
+  /**
+   * Lot 113S (#716) : question proposée par T3 dans la même sortie (contrat
+   * `t3-user-question-v1`), contrôlée ici contre le contexte de la carte (deux
+   * biens, libellés fournis) ; refusée ou absente : formulation 113L, tracée.
+   */
+  aiQuestion?: Omit<AiQuestionInput, 'rule' | 'check' | 'fallbackQuestion'> & { extraLabels?: ReadonlyArray<string | null | undefined>; foreignLabels?: readonly string[] };
+}): Promise<UpsertActionResult & { questionSource?: QuestionSource }> {
   try {
     if (p.currentAssetId === p.suggestedAssetId) return { status: 'SKIPPED', reason: 'Même bien.' };
     const etat = await attachmentOf(db, p.accountId, p.fileId);
@@ -184,17 +191,27 @@ export async function proposeDocumentAssetConflict(p: {
       kind: 'asset_conflict', currentAssetId: p.currentAssetId, suggestedAssetId: p.suggestedAssetId, basis: p.basis, kinds,
       ...(p.review ? { reviewKey: p.review.reviewKey, ambiguous: p.review.ambiguous } : {}),
     };
-    return await upsertAction({
+    const repli = assetConflictQuestion({ basis: p.basis, kinds, currentName, suggestedName, ambiguous: p.review?.ambiguous });
+    const proposals = assetConflictProposals({ ...p, currentName, suggestedName, ambiguous: p.review?.ambiguous, reason: p.review?.reason ?? null });
+    const choix = p.aiQuestion
+      ? await resolveAiCardQuestion(p.accountId, {
+        ...p.aiQuestion, rule: ASSET_CONFLICT_RULE, fallbackQuestion: repli,
+        check: { allowedLabels: [currentName, suggestedName, ...proposals.map((x) => x.label), ...(p.aiQuestion.extraLabels ?? [])], foreignLabels: p.aiQuestion.foreignLabels },
+      }, p.fileId)
+      : null;
+    const r = await upsertAction({
       accountId: p.accountId,
       targetType: 'DOCUMENT',
       targetId: p.fileId,
       relationKey: ASSET_CONFLICT_RELATION,
       actionKind: 'ARBITRATE',
       ruleCode: ASSET_CONFLICT_RULE,
-      question: assetConflictQuestion({ basis: p.basis, kinds, currentName, suggestedName, ambiguous: p.review?.ambiguous }),
-      proposals: assetConflictProposals({ ...p, currentName, suggestedName, ambiguous: p.review?.ambiguous, reason: p.review?.reason ?? null }),
+      question: choix?.question ?? repli,
+      ...(choix ? { questionSource: choix.source } : {}),
+      proposals,
       triggerContext: ctx as unknown as Record<string, unknown>,
     });
+    return choix ? { ...r, questionSource: choix.source } : r;
   } catch (e) {
     console.error(`[to-process] incohérence de rattachement du document ${p.fileId} non signalée :`, (e as Error).message);
     return { status: 'SKIPPED', reason: (e as Error).message };

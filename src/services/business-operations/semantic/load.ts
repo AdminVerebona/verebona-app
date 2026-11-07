@@ -61,7 +61,6 @@ export async function loadOperations(sql: Sql, accountId: number, ids: readonly 
 
 const ITEM_COLUMNS = (journal: boolean) => `
   i.id, i.title, i.start_date::text AS date, i.event_nature, i.business_type, i.is_automatic, COALESCE(i.is_automatic_modified, false) AS modified,
-  NULLIF(i.manual_status, '') AS manual_status,
   (COALESCE(i.requires_qualification, false) OR i.occurrence_nature IS NOT DISTINCT FROM 'FORECAST') AS pending,
   (i.confirmation_mode IS NOT DISTINCT FROM 'USER') AS confirmed,
   (i.projection_origin IS NOT DISTINCT FROM 'OPERATION') AS projected,
@@ -77,7 +76,7 @@ const ITEM_COLUMNS = (journal: boolean) => `
 function toItem(x: Row): RawItem {
   return {
     id: Number(x.id), title: String(x.title ?? ''), date: txt(x.date), nature: txt(x.event_nature), businessType: txt(x.business_type),
-    isAutomatic: x.is_automatic === true, isAutomaticModified: x.modified === true, manualStatus: txt(x.manual_status),
+    isAutomatic: x.is_automatic === true, isAutomaticModified: x.modified === true,
     pendingStatus: x.pending === true || x.restored === true, confirmedByUser: x.confirmed === true, projected: x.projected === true,
     operationId: x.business_operation_id == null ? null : Number(x.business_operation_id), operationActive: x.op_active === true,
     role: (txt(x.operation_role) as RawItem['role']), roleOrigin: txt(x.operation_role_origin),
@@ -90,13 +89,14 @@ function toItem(x: Row): RawItem {
 /**
  * Sélection des éléments À DÉCIDER pour l'Opération (signaux seulement) :
  * liés ; produits depuis un de ses documents et libres (ou liés à une
- * Opération inactive) ; candidats explicites. Jamais un élément annulé.
+ * Opération inactive) ; candidats explicites (lot 113P : plus de statut « annulé » — un événement
+ * annulé est supprimé par l'utilisateur).
  */
 async function loadScopeItems(sql: Sql, accountId: number, op: RawOperation, extraItemIds: readonly number[] = []): Promise<RawItem[]> {
   const journal = await journalPresent(sql, 'agenda_intervention_consolidations');
   const r = await sql.unsafe<Row[]>(`
     SELECT ${ITEM_COLUMNS(journal)} FROM agenda_items i LEFT JOIN business_operations lo ON lo.id = i.business_operation_id
-     WHERE i.account_id = $1 AND (i.manual_status IS NULL OR i.manual_status <> 'annule')
+     WHERE i.account_id = $1
        AND (i.business_operation_id = $2
             OR i.id = ANY($4::int[])
             OR (i.origin_ref_type = 'asset_file' AND i.origin_ref_id = ANY($3::int[]) AND i.is_automatic
@@ -110,7 +110,7 @@ async function loadItemsOfOperations(sql: Sql, accountId: number, opIds: readonl
   const journal = await journalPresent(sql, 'agenda_intervention_consolidations');
   const r = await sql.unsafe<Row[]>(`
     SELECT ${ITEM_COLUMNS(journal)} FROM agenda_items i LEFT JOIN business_operations lo ON lo.id = i.business_operation_id
-     WHERE i.account_id = $1 AND i.business_operation_id = ANY($2::bigint[]) AND (i.manual_status IS NULL OR i.manual_status <> 'annule')
+     WHERE i.account_id = $1 AND i.business_operation_id = ANY($2::bigint[])
      ORDER BY i.id LIMIT ${CONTEXT_ITEMS_READ}`, [accountId, intArray(opIds)] as never[]);
   return r.map(toItem);
 }

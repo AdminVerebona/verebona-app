@@ -26,7 +26,6 @@ import { toExportFamily, type ExportFamily, type DossierCode } from '@/services/
 import {
   classifyDocument, documentTitle, documentTypeLabel, fileFormatOf, isIntegrable, type DocKind,
 } from './documents';
-import type { AgendaStatus4 } from '@/services/verebona-assistant/canonical/agenda';
 import type { ExportSourceTrace } from './canonical-source';
 
 /**
@@ -97,7 +96,7 @@ export interface SourceEvent {
   date: string | null;
   /** Catégorie historique (`entretien`, `reparation`, `sinistre`…) ; null pour l'agenda. */
   category: string | null;
-  /** `realise` | `prevu` | `annule` … */
+  /** Table historique `events` seulement (`realise` | `prevu` | `annule` …) ; toujours null pour l'agenda (lot 113P). */
   status: string | null;
   provider: string | null;
   costCents: number | null;
@@ -105,11 +104,11 @@ export interface SourceEvent {
   /** Prévision issue d'une récurrence (agenda). */
   forecast: boolean;
   /**
-   * Source canonique seulement (X-02, lot 16) : nature D-14 et statut à
-   * 4 états du lot 14. Absents en lecture historique (règles inchangées).
+   * Source canonique seulement (X-02, lot 16) : nature D-14. Absente en
+   * lecture historique. Lot 113P (#715) : plus de statut à 4 états (un
+   * élément d'agenda n'a plus de statut).
    */
   nature?: 'HISTORICAL' | 'DEADLINE' | null;
-  status4?: AgendaStatus4;
 }
 
 export interface SourceEquipment {
@@ -332,20 +331,20 @@ function toSourcePhotos(photos: PhotoRef[]): SourcePhoto[] {
 }
 
 function toSourceEvents(snapshot: AssetSnapshot, agenda: Array<{
-  id: number; title: string; description: string | null; startDate: unknown; manualStatus: string | null; occurrenceNature: string | null;
-  nature?: SourceEvent['nature']; status4?: AgendaStatus4;
+  id: number; title: string; description: string | null; startDate: unknown; occurrenceNature: string | null;
+  nature?: SourceEvent['nature'];
 }>): SourceEvent[] {
   const fromEvents: SourceEvent[] = snapshot.events.map((e) => ({
     key: `event:${e.id}`, source: 'event', id: e.id, title: e.title, date: asIso(e.date), category: e.categorie ?? null,
     status: e.statut ?? null, provider: e.provider ?? null, costCents: e.costCents ?? null, description: e.notes ?? null, forecast: false,
   }));
+  // Lot 113P (#715) : plus de statut d'événement (ni filtre « annulé », ni statut transmis).
   const fromAgenda: SourceEvent[] = agenda
-    .filter((a) => a.manualStatus !== 'annule')
     .map((a) => ({
       key: `agenda:${a.id}`, source: 'agenda', id: a.id, title: a.title, date: asIso(a.startDate), category: null,
-      status: a.manualStatus ?? null, provider: null, costCents: null, description: a.description ?? null,
+      status: null, provider: null, costCents: null, description: a.description ?? null,
       forecast: a.occurrenceNature === 'FORECAST',
-      ...(a.status4 !== undefined ? { nature: a.nature ?? null, status4: a.status4 } : {}),
+      ...(a.nature !== undefined ? { nature: a.nature ?? null } : {}),
     }));
   return [...fromEvents, ...fromAgenda];
 }
@@ -476,8 +475,8 @@ async function buildCanonicalExportSource(
         .map((d) => (docs.unconfirmed.includes(d.id) ? { ...d, unconfirmedLink: true } : d)),
       equipments,
       events: toSourceEvents(snapshot, agenda.map((a) => ({
-        id: a.id, title: a.title, description: a.description, startDate: a.startDate, manualStatus: a.manualStatus,
-        occurrenceNature: a.occurrenceNature, nature: a.nature, status4: a.status4,
+        id: a.id, title: a.title, description: a.description, startDate: a.startDate,
+        occurrenceNature: a.occurrenceNature, nature: a.nature,
       }))),
     },
   };
@@ -497,7 +496,7 @@ async function loadLegacyExportSource(params: LoadParams): Promise<{ source: Exp
     getAssetAdditionalInfos(assetId, accountId),
     db.select({
       id: agendaItems.id, title: agendaItems.title, description: agendaItems.description, startDate: agendaItems.startDate,
-      manualStatus: agendaItems.manualStatus, occurrenceNature: agendaItems.occurrenceNature,
+      occurrenceNature: agendaItems.occurrenceNature,
     }).from(agendaItems)
       .innerJoin(agendaAssetLinks, eq(agendaAssetLinks.agendaItemId, agendaItems.id))
       .where(and(eq(agendaAssetLinks.assetId, assetId), eq(agendaItems.accountId, accountId))),

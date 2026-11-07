@@ -12,7 +12,7 @@ import { processAgendaCandidates } from '../agenda-intelligence.service';
 import type { ExistingAgendaItem } from '../types';
 import { t4Simule } from './support/t4-simule';
 
-const existant: ExistingAgendaItem = { id: 102, title: 'DPE réalisé — DPE', date: '2020-12-22', category: 'information', status: null, manual: false, originFieldKey: 'dpeDate', nature: 'CONFIRMED' };
+const existant: ExistingAgendaItem = { id: 102, title: 'DPE réalisé — DPE', date: '2020-12-22', category: 'information', manual: false, originFieldKey: 'dpeDate', nature: 'CONFIRMED' };
 const candidat = (o: Record<string, unknown> = {}) => ({
   title: 'DPE réalisé — Maison', date: '2020-12-22', confidence: 'certain', excerpt: 'DPE réalisé le 22/12/2020', originFieldKey: 'dpeDate',
   nature: 'HISTORICAL', businessType: 'dpe', target: { type: 'ASSET', id: 14 }, occurrence: 'single', sourceFileId: 316, documentType: 'COMPROMIS_VENTE',

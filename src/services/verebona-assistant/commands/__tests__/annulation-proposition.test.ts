@@ -105,7 +105,13 @@ vi.mock('@/db', () => ({
 const { cancelCommandPlan, confirmCommandPlan, expirePendingPlans, listThreadCommandPlans, hashActions,
   CANCELLED_MESSAGE, EXPIRED_MESSAGE } = await import('../plan.service');
 
+// #715 : plus de statut d'événement — la proposition type est une création d'échéance.
 const ACTIONS = JSON.stringify([{
+  actionId: 'a1', command: 'CREATE_AGENDA_ITEM', targets: [],
+  params: { title: 'Entretien chaudière', date: '2026-12-01' }, dependsOn: [], preview: 'Ajouter l’échéance « Entretien chaudière ».', effects: [],
+}]);
+/** Plan enregistré AVANT le lot 113P : commande de statut retirée. */
+const ACTIONS_ANCIENNES = JSON.stringify([{
   actionId: 'a1', command: 'MARK_AGENDA_DONE', targets: [{ type: 'agenda_item', id: 5, label: 'Entretien chaudière' }],
   params: { agendaItemId: 5 }, dependsOn: [], preview: 'Marquer comme réalisée l’échéance « Entretien chaudière ».', effects: [],
 }]);
@@ -113,7 +119,7 @@ const ACTIONS = JSON.stringify([{
 function plan(id: string, over: Partial<Plan> = {}): Plan {
   const p: Plan = {
     plan_id: id, account_id: 7, user_id: 3, conversation_id: 11, message_id: 101,
-    status: 'PENDING_CONFIRMATION', summary: 'Marquer… Confirmez-vous ?', actions_payload: ACTIONS, params_hash: hashActions(ACTIONS),
+    status: 'PENDING_CONFIRMATION', summary: 'Ajouter… Confirmez-vous ?', actions_payload: ACTIONS, params_hash: hashActions(ACTIONS),
     expires_at: new Date(now() + 10 * 60_000), created_at: new Date(), ...over,
   };
   P().set(id, p);
@@ -122,7 +128,7 @@ function plan(id: string, over: Partial<Plan> = {}): Plan {
 const owner = { accountId: 7, userId: 3 };
 const executors = () => {
   const run = vi.fn(async (a: { actionId: string }) => ({ actionId: a.actionId, status: 'SUCCESS' as const, message: 'fait' }));
-  return { run, all: { CREATE_AGENDA_ITEM: run, MARK_AGENDA_DONE: run, CANCEL_AGENDA_ITEM: run, UPDATE_ASSET_FIELD: run } };
+  return { run, all: { CREATE_AGENDA_ITEM: run, UPDATE_ASSET_FIELD: run } };
 };
 
 beforeEach(() => {
@@ -243,5 +249,15 @@ describe('état restitué dans le fil', () => {
     const c = await confirmCommandPlan({ planId: 'p1', ...owner }, { executors: ex.all, canWrite: async () => ({ allowed: true }) });
     expect(c.ok).toBe(true);
     expect(db.messages).toEqual([expect.objectContaining({ content: 'fait', parent_message_id: 101 })]);
+  });
+
+  it('#715 — plan d’avant le lot 113P (« marquer réalisée ») : restitué « Action retirée », confirmé sans aucune écriture', async () => {
+    plan('ancien', { actions_payload: ACTIONS_ANCIENNES, params_hash: hashActions(ACTIONS_ANCIENNES) });
+    const list = await listThreadCommandPlans(7, 3, 11);
+    expect(list[0].actions[0]).toMatchObject({ actionId: 'a1', label: 'Action retirée' });
+    const ex = executors();
+    const c = await confirmCommandPlan({ planId: 'ancien', ...owner }, { executors: ex.all, canWrite: async () => ({ allowed: true }) });
+    expect(ex.run).not.toHaveBeenCalled();
+    expect(JSON.stringify(c)).toContain('Cette action n’existe plus');
   });
 });

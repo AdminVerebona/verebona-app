@@ -115,6 +115,9 @@ export class GeminiProvider implements AiProvider {
       : null;
     // Lot 33D : un échec de préparation des pièces jointes est une erreur de
     // CONSTRUCTION de la requête (étape `request_build`), pas du fournisseur.
+    // Lot 113R : SAUF un échec de TRANSFERT (lecture du stockage, Files API,
+    // activation) — il porte déjà son étape réelle (`attachment_transfer`) et
+    // la réponse du fournisseur ; il n'est jamais requalifié en construction.
     const { parts, temporaryFileUris } = await (session
       ? session.parts(apiKey).then((p) => ({ parts: p, temporaryFileUris: [] as string[] }))
       : prepareAttachmentParts(input.attachments, apiKey)
@@ -161,6 +164,9 @@ export class GeminiProvider implements AiProvider {
 /** Étape d'échec posée sur une erreur (lue par `diagnostics/classify`). */
 function markStage(e: unknown, stage: string): unknown {
   if (e && typeof e === 'object') {
+    // Étape déjà posée par le module des pièces jointes (construction locale,
+    // transfert) : elle fait foi.
+    if (typeof (e as { aiStage?: unknown }).aiStage === 'string') return e;
     try { Object.assign(e, { aiStage: stage }); } catch { /* erreur gelée : sans étape */ }
   }
   return e;

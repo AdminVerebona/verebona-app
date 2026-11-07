@@ -59,6 +59,14 @@ export interface RecordedOutput {
    * (essai diagnostique de la passerelle). Absent : les deux.
    */
   whenStructured?: boolean;
+  /**
+   * Lot 113R — Files API SIMULÉE : avant la sortie, le contenu est envoyé par
+   * le VRAI chemin d'envoi (`transferBufferToFilesApi`) à une Files API qui
+   * rend ces réponses dans l'ordre (statut, corps, en-têtes ; `networkCode` :
+   * aucune réponse). Un envoi refusé lève l'échec STRUCTURÉ réel ; un envoi
+   * accepté laisse l'appel rendre `output`.
+   */
+  transfer?: Array<{ status?: number; body?: string; headers?: Record<string, string>; networkCode?: string }>;
 }
 
 const cle = (operationCode: string, task?: string, callKind?: 'analysis' | 'repair') =>
@@ -161,6 +169,15 @@ export class ReplayProvider implements AiProvider {
         `[replay] aucune sortie enregistrée pour l'opération « ${op} »`
         + `${input.task ? ` (TASK ${input.task})` : ''}${kind === 'repair' ? ' (réparation)' : ''} — aucun appel réseau n'est permis en E2E.`,
       );
+    }
+    if (r.transfer) {
+      const reponses = [...r.transfer];
+      const { transferBufferToFilesApi } = await import('@/services/ai/gateway/providers/gemini-files');
+      await transferBufferToFilesApi(Buffer.from('%PDF-1.4 e2e'), { mimeType: 'application/pdf', displayName: 'e2e.pdf' }, 'cle-e2e-replay', async () => {
+        const x = reponses.shift() ?? { status: 200, body: JSON.stringify({ file: { uri: 'https://generativelanguage.googleapis.com/v1beta/files/e2e', state: 'ACTIVE' } }) };
+        if (x.networkCode) throw Object.assign(new TypeError('fetch failed'), { cause: { code: x.networkCode } });
+        return new Response(x.body ?? null, { status: x.status ?? 200, headers: x.headers ?? {} });
+      });
     }
     if (r.error) {
       if (r.error.code === 'TIMEOUT') {

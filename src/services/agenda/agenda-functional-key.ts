@@ -115,7 +115,6 @@ export interface SourceItem {
   originFieldKey: string | null;
   isAutomatic: boolean;
   isAutomaticModified: boolean;
-  manualStatus: string | null;
   /** Lot 75F (§A) — `USER` : prévision confirmée par l'utilisateur (protégée). */
   confirmationMode?: string | null;
 }
@@ -166,13 +165,14 @@ export function keyTarget(target: { type: string; id: number | null } | null | u
  * Élément protégé par un choix de l'utilisateur (§14.6, lot 75F §A) : jamais
  * mis à jour, déplacé, reclassé ni retiré automatiquement. Règle UNIQUE :
  *   · élément manuel (non automatique) ;
- *   · élément automatique modifié par l'utilisateur (`is_automatic_modified`) ;
- *   · statut explicitement renseigné (`manual_status` : réalisé, annulé) ;
+ *   · élément automatique modifié par l'utilisateur (`is_automatic_modified` —
+ *     lot 113P : la migration 1526 y reporte les anciens statuts posés) ;
  *   · prévision confirmée par l'utilisateur (`confirmation_mode = 'USER'`).
+ * Lot 113P (#715) : plus de statut d'événement — `manual_status` n'est plus lu.
  * Les mêmes conditions gardent les écritures SQL (`AGENDA_UNTOUCHED_SQL`).
  */
-export const isUserTouched = (i: Pick<SourceItem, 'isAutomatic' | 'isAutomaticModified' | 'manualStatus'> & { confirmationMode?: string | null }): boolean =>
-  !i.isAutomatic || i.isAutomaticModified || (i.manualStatus != null && i.manualStatus !== '') || i.confirmationMode === 'USER';
+export const isUserTouched = (i: Pick<SourceItem, 'isAutomatic' | 'isAutomaticModified'> & { confirmationMode?: string | null }): boolean =>
+  !i.isAutomatic || i.isAutomaticModified || i.confirmationMode === 'USER';
 
 /**
  * Lot 75F (§A) — garde SQL d'un élément d'agenda (alias `i`, ou nom de table)
@@ -181,7 +181,6 @@ export const isUserTouched = (i: Pick<SourceItem, 'isAutomatic' | 'isAutomaticMo
  */
 export const agendaUntouchedSql = (alias = 'agenda_items'): string =>
   `${alias}.is_automatic AND NOT COALESCE(${alias}.is_automatic_modified, false)`
-  + ` AND (${alias}.manual_status IS NULL OR ${alias}.manual_status = '')`
   + ` AND ${alias}.confirmation_mode IS DISTINCT FROM 'USER'`;
 
 /** Clé de base (sans rang `#n`). */

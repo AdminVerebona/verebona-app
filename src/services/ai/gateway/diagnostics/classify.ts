@@ -12,8 +12,8 @@ import type { ZodError } from 'zod';
 import { redact } from '../redaction';
 import { descAt, type FieldDesc } from '../output-resolution/schema-introspect';
 import {
-  displayCause, PRE_RESPONSE_STAGES,
-  type AiFailureFamily, type AiFailureStage, type CallDiagnostic, type InvalidOutputSubtype,
+  displayCause, PRE_RESPONSE_STAGES, TRANSFER_STEP_LABELS,
+  type AiFailureFamily, type AiFailureStage, type AttachmentTransferFailure, type CallDiagnostic, type InvalidOutputSubtype,
   type ProviderCallMetadata, type ValidationIssueDetail,
 } from './taxonomy';
 
@@ -211,6 +211,48 @@ export interface ClassifiedFailure {
   error: { message: string; exception: string | null; stack: string | null };
   /** Lot 82C : paramètre de requête refusé par le fournisseur (`PARAMETER_REJECTED`). */
   rejectedParameter?: string | null;
+  /** Lot 113R : échec de TRANSFERT d'une pièce jointe (réponse fournisseur structurée, sans secret). */
+  transfer?: AttachmentTransferFailure | null;
+}
+
+/** Échec de transfert structuré porté par une erreur (forme, jamais le texte). Pur. */
+function transferOf(e: unknown): AttachmentTransferFailure | null {
+  const t = (e as { transfer?: unknown } | null)?.transfer;
+  return t && typeof t === 'object' && (t as { format?: unknown }).format === 'transfer-v1' ? t as AttachmentTransferFailure : null;
+}
+
+/**
+ * Lot 113R (carte #717) — famille d'un échec de TRANSFERT, lue sur la
+ * réponse STRUCTURÉE (statut, code fournisseur, nature), jamais sur le
+ * texte. Le modèle n'a pas été sollicité : aucune de ces familles ne vise
+ * le prompt, le contrat ou le modèle. Pur.
+ *
+ *   transfert                                  famille
+ *   ─────────────────────────────────────────  ─────────────────
+ *   401 / 403 / PERMISSION_DENIED /            AUTH_ERROR (refus d'accès distant)
+ *   UNAUTHENTICATED (envoi, activation)
+ *   429 / RESOURCE_EXHAUSTED                   RATE_LIMIT
+ *   5xx, réponse 2xx inexploitable,            PROVIDER_ERROR
+ *   traitement du fichier échoué
+ *   408 / délai d'activation                   TIMEOUT
+ *   aucune réponse (réseau)                    NETWORK_ERROR
+ *   400 / 404 / 413 (fichier refusé)           INPUT_ERROR / CONTEXT_TOO_LARGE
+ *   lecture du STOCKAGE Verebona en 4xx        INTERNAL_ERROR (défaut local, pas le fournisseur)
+ */
+export function transferFamilyOf(t: Pick<AttachmentTransferFailure, 'step' | 'kind' | 'httpStatus' | 'providerStatus'>): AiFailureFamily {
+  const s = t.httpStatus;
+  if (t.kind === 'network') return 'NETWORK_ERROR';
+  if (t.kind === 'activation_timeout' || s === 408 || s === 504) return 'TIMEOUT';
+  if (t.kind === 'activation_failed' || t.kind === 'invalid_response') return 'PROVIDER_ERROR';
+  if (s !== null && s >= 500) return 'PROVIDER_ERROR';
+  if (s === 429 || t.providerStatus === 'RESOURCE_EXHAUSTED') return 'RATE_LIMIT';
+  // Le stockage Verebona n'est pas le fournisseur : une URL signée expirée
+  // ou un objet absent est un défaut LOCAL (jamais un refus d'accès Google).
+  if (t.step === 'source_download') return 'INTERNAL_ERROR';
+  if (s === 401 || s === 403 || t.providerStatus === 'PERMISSION_DENIED' || t.providerStatus === 'UNAUTHENTICATED') return 'AUTH_ERROR';
+  if (s === 413) return 'CONTEXT_TOO_LARGE';
+  if (s !== null && s >= 400) return 'INPUT_ERROR';
+  return 'UNKNOWN';
 }
 
 /** `generation_config.thinking_config` → `generationConfig.thinkingConfig`. Pur. */
@@ -305,6 +347,22 @@ export function classifyCallError(err: unknown): ClassifiedFailure {
   // autre règle : le message d'origine peut contenir des nombres ou des mots
   // qui ressemblent à un statut fournisseur.
   if (code === 'REQUEST_BUILD_FAILED') return out('INTERNAL_ERROR', 'request_build');
+  // Lot 113R : échec de TRANSFERT structuré (Files API, stockage, activation)
+  // — avant toute génération, classé sur la réponse conservée.
+  const transfer = transferOf(err);
+  if (transfer) {
+    const family = transferFamilyOf(transfer);
+    const providerMessage = transfer.providerMessage
+      ?? (transfer.providerDetail === 'NONE' ? `aucun détail fourni par le fournisseur (${TRANSFER_STEP_LABELS[transfer.step]})` : null);
+    return {
+      family, subtype: null, stage: 'attachment_transfer',
+      httpStatus: transfer.httpStatus,
+      providerErrorCode: transfer.providerStatus ?? (transfer.httpStatus !== null ? String(transfer.httpStatus) : transfer.networkCode),
+      providerErrorMessage: providerMessage ? redact(providerMessage).slice(0, 1000) : null,
+      error: { message: redact(transfer.message).slice(0, 2000), exception, stack: family === 'INTERNAL_ERROR' || family === 'UNKNOWN' ? stack : null },
+      transfer,
+    };
+  }
   // Lot 85C (P4, CFG-03) : combinaison connue comme incompatible, refusée avant appel.
   if (code === 'MODEL_PARAMETERS_INCOMPATIBLE') {
     return { ...out('INPUT_ERROR', 'request_build', 'PARAMETER_INCOMPATIBLE'), rejectedParameter: typeof e.rejectedParameter === 'string' ? e.rejectedParameter : null };
@@ -440,7 +498,7 @@ const STAGE_SENTENCE: Partial<Record<AiFailureStage, string>> = {
 export function finalDiagnosis(p: {
   treatment: string | null;
   succeeded: boolean;
-  calls: Array<Pick<CallDiagnostic, 'outcome' | 'callKind' | 'family' | 'subtype' | 'stage' | 'issues' | 'signature' | 'outputReceived' | 'repairs'>>;
+  calls: Array<Pick<CallDiagnostic, 'outcome' | 'callKind' | 'family' | 'subtype' | 'stage' | 'issues' | 'signature' | 'outputReceived' | 'repairs' | 'transfer'>>;
   businessResult?: string | null;
 }): string[] {
   const t = p.treatment ?? 'IA';
@@ -466,6 +524,20 @@ export function finalDiagnosis(p: {
   }
 
   lines.push(`Échec ${t}.`);
+  // Lot 113R (carte #717) : échec au TRANSFERT de la pièce jointe — le modèle
+  // n'a pas été sollicité ; ni le prompt ni le modèle ne sont en cause.
+  const transferts = analyses.filter((c) => c.stage === 'attachment_transfer');
+  if (transferts.length === n) {
+    const tr = transferts[transferts.length - 1].transfer ?? null;
+    const reponse = tr
+      ? [tr.httpStatus !== null ? `HTTP ${tr.httpStatus}` : tr.networkCode ? `réseau ${tr.networkCode}` : null, tr.providerStatus, tr.providerReason].filter(Boolean).join(' ')
+      : null;
+    lines.push(`${n === 1 ? 'L’envoi' : `Les ${n} envois`} du document au fournisseur ${n === 1 ? 'a' : 'ont'} échoué avant toute génération${tr ? ` (${TRANSFER_STEP_LABELS[tr.step]}${reponse ? ` : ${reponse}` : ''})` : ''} : aucun modèle n’a été sollicité, ni le prompt ni le modèle ne sont en cause.`);
+    if (tr?.providerMessage) lines.push(`Réponse du fournisseur : « ${tr.providerMessage} »${tr.requestId ? ` (requête ${tr.requestId})` : ''}.`);
+    else if (tr) lines.push(tr.providerDetail === 'NONE' ? 'Le fournisseur n’a fourni aucun détail (corps de réponse vide) : aucune cause n’en est déduite.' : 'Réponse du fournisseur non structurée : extrait conservé dans le détail de l’appel.');
+    lines.push('Aucune modification métier n’a donc été appliquée.');
+    return lines;
+  }
   if (recus === 0) lines.push(n === 1 ? 'Le modèle n’a retourné aucune sortie.' : `Aucun des ${n} modèles n’a retourné de sortie.`);
   else lines.push(`${modeles} ${recus > 1 ? 'ont' : 'a'} retourné une sortie.`);
   const casc = cascadeDiagnosis(analyses);

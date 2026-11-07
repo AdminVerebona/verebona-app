@@ -32,6 +32,7 @@
 import { useState, useEffect, useCallback } from 'react';
 import { ModelCatalog } from './_components/ModelCatalog';
 import { PricingPanel } from './_components/PricingPanel';
+import { FileTransferPanel } from './_components/FileTransferPanel';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import {
@@ -249,6 +250,9 @@ export default function AiProviderPage() {
           </>
         )}
       </div>
+
+      {/* Lot 113R : envoi de fichiers au fournisseur (Files API) — test, réponse conservée, attente technique */}
+      <FileTransferPanel />
 
       {/* Nouvelle clé */}
       <div className="rounded-xl border border-[color:var(--border-subtle)] bg-[color:var(--bg-card)] p-4 space-y-3">

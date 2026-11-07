@@ -30,13 +30,11 @@ scenario('T4-L14-RELECTURE', 'Relecture du lot 14 : retraits, courses, annulatio
   let prim: typeof import('@/services/agenda/agenda-write-primitive');
   let resolve: typeof import('@/services/to-process/resolve-action.service');
   let write: typeof import('@/services/agenda/AgendaWriteService');
-  let cards: typeof import('@/services/to-process/agenda-status-cards');
   beforeAll(async () => {
     ({ persistAgendaDecisions: persist } = await import('@/services/agenda/agenda-persistence'));
     prim = await import('@/services/agenda/agenda-write-primitive');
     resolve = await import('@/services/to-process/resolve-action.service');
     write = await import('@/services/agenda/AgendaWriteService');
-    cards = await import('@/services/to-process/agenda-status-cards');
   });
   afterEach(() => {
     if (env.AI_T4_EFFECTS === undefined) delete process.env.AI_T4_EFFECTS; else process.env.AI_T4_EFFECTS = env.AI_T4_EFFECTS;
@@ -76,8 +74,9 @@ scenario('T4-L14-RELECTURE', 'Relecture du lot 14 : retraits, courses, annulatio
       accountId: compte.id, assetId: bien.id, origin: 'AUTOMATIC', category: 'action', date: '2027-03-01', title: 'CT',
       originFieldKey: 'nextInspection', sources: [{ fileId: doc.id, role: 'SOURCE' }], occurrenceIndex: 'single',
     });
+    // #715 : plus de statut d'événement — le geste « annulé » est remplacé par une confirmation utilisateur.
     for (const geste of [sql`UPDATE agenda_items SET is_automatic_modified = true WHERE id = ${cree.id}`,
-      sql`UPDATE agenda_items SET is_automatic_modified = false, manual_status = 'annule' WHERE id = ${cree.id}`]) {
+      sql`UPDATE agenda_items SET is_automatic_modified = false, confirmation_mode = 'USER' WHERE id = ${cree.id}`]) {
       await geste;
       const r = await prim.upsertAgendaItem(
         { itemId: cree.id, accountId: compte.id, assetId: null, origin: 'AUTOMATIC', title: 'CT écrasé', date: '2027-09-09', sources: [] },
@@ -118,7 +117,7 @@ scenario('T4-L14-RELECTURE', 'Relecture du lot 14 : retraits, courses, annulatio
     expect((await carte(compte.id, doc.id)).resolved_at).toBeNull();
   });
 
-  it('4. effets après validation : vente acceptée → ASSET-STATUS (D-15) ; « réalisé » depuis une carte → recopie achat (D-13)', async () => {
+  it('4. effets après validation : vente acceptée → ASSET-STATUS (D-15) ; modification de l’événement d’achat → recopie achat (D-13, #715)', async () => {
     const compte = await make.account();
     const bien = await make.asset(compte);
     const doc = await make.assetFile(compte, { assetId: bien.id });
@@ -134,9 +133,8 @@ scenario('T4-L14-RELECTURE', 'Relecture du lot 14 : retraits, courses, annulatio
     // Lot 16b-3 : la recopie passe toujours par la primitive canonique — la
     // date d'acquisition (fiche ET colonne miroir) est vidée pour le test.
     await sql`UPDATE assets SET purchase_date = NULL, key_characteristics = '{}' WHERE id = ${velo.id}`;
-    await cards.proposeAgendaStatus({ accountId: compte.id, itemId: achat.id, kind: 'propose_done', sourceFileId: null });
-    const [s] = await sql<{ public_id: string }[]>`SELECT public_id FROM to_process_actions WHERE account_id = ${compte.id} AND target_id = ${achat.id} AND rule_code = 'AGENDA-DONE'`;
-    expect(await resolve.resolveArbitration(compte.id, s.public_id, 'realise', { userId: compte.ownerUserId })).toMatchObject({ ok: true });
+    // #715 : plus de carte « réalisé ? » — la recopie D-13 suit la DATE de l'événement manuel (modification de date).
+    await write.updateAgendaItem(achat.id, { startDate: '2026-01-10' }, compte.id, compte.ownerUserId);
     const [p] = await sql<{ d: string | null }[]>`SELECT purchase_date::text AS d FROM assets WHERE id = ${velo.id}`;
     expect(p.d).toBe('2026-01-10');
   });

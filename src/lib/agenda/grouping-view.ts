@@ -228,6 +228,11 @@ export const AGENDA_EVENT_LABELS = {
   deletedToast: 'Événement supprimé',
   deleteTitle: 'Supprimer cet événement ?',
   deleteBody: 'Cette action est définitive et irréversible. L’événement sera supprimé de votre agenda.',
+  /** Lot 113P (#715) — suppression d'un événement récurrent : occurrence ou série (À VALIDER PAR LE PO). */
+  deleteSeriesBody: 'Cet événement fait partie d’une série récurrente. Les autres dates de la série sont conservées si vous ne supprimez que celui-ci.',
+  deleteOccurrence: 'Supprimer cet événement uniquement',
+  deleteSeries: 'Supprimer toute la série',
+  deletedSeriesToast: 'Série supprimée',
   noAssetHint: 'Sans bien associé, cet événement apparaîtra dans « À traiter ».',
   seeAll: 'Voir tous les événements',
   /** Fiche document : propositions d'événements détectées (chaque ligne ouvre la création prérenseignée). */

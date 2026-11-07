@@ -69,8 +69,7 @@ export interface RawItem {
   businessType: string | null;
   isAutomatic: boolean;
   isAutomaticModified: boolean;
-  manualStatus: string | null;
-  /** « à qualifier », prévision, confirmation de l'utilisateur, consolidation restaurée. */
+  /** « à qualifier », prévision, confirmation de l'utilisateur, consolidation restaurée (lot 113P : aucun statut d'événement). */
   pendingStatus: boolean;
   confirmedByUser: boolean;
   projected: boolean;
@@ -154,7 +153,7 @@ export interface ScopeItem {
   roleOrigin: string | null;
   projected: boolean;
   isAutomatic: boolean;
-  /** Touché par l'utilisateur (saisi, modifié, statut, confirmé). */
+  /** Touché par l'utilisateur (saisi, modifié, confirmé). */
   touched: boolean;
   pendingStatus: boolean;
   restoredByUser: boolean;
@@ -193,8 +192,8 @@ export interface BuiltRepresentation {
 
 // ── Construction (pure) ─────────────────────────────────────────────────────
 
-const isTouchedItem = (i: Pick<RawItem, 'isAutomatic' | 'isAutomaticModified' | 'manualStatus' | 'confirmedByUser'>): boolean =>
-  !i.isAutomatic || i.isAutomaticModified || (i.manualStatus !== null && i.manualStatus !== '') || i.confirmedByUser;
+const isTouchedItem = (i: Pick<RawItem, 'isAutomatic' | 'isAutomaticModified' | 'confirmedByUser'>): boolean =>
+  !i.isAutomatic || i.isAutomaticModified || i.confirmedByUser;
 
 /** Sérialisation stable (clés triées) : empreintes reproductibles. */
 export function stableStringify(v: unknown): string {
@@ -251,7 +250,6 @@ export function buildRepresentationInput(raw: RawContext, bounds: Representation
     title: i.title, date: i.date, nature: i.nature, businessType: i.businessType,
     origin: i.projected ? 'PROJECTION' : i.isAutomatic ? 'AUTOMATIC' : 'USER',
     touchedByUser: isTouchedItem(i),
-    status: i.manualStatus,
     operationRef: i.operationId === null ? null : opRef.get(i.operationId) ?? (i.operationActive ? 'OTHER' : null),
     role: i.role, roleOrigin: i.roleOrigin,
     documents: ds(i.fileIds), originDocument: d(i.originFileId),

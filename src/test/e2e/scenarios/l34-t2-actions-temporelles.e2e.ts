@@ -111,17 +111,19 @@ scenario('L34-TEMP', 'Lot 34 — T2 : demandes d’actions temporelles → donn�
     expect(r.cascade?.actionable?.results[0]).toMatchObject({ sourceType: 'DEADLINE', reasonForInclusion: 'DUE_TODAY', dueDate: J, relatedAssetId: polo });
   });
 
-  it('TEMP-03 / TEMP-04 — échéance d’hier active : OVERDUE ; réalisée ou annulée : exclue ; HISTORICAL : exclue', async () => {
+  // #715 : plus de statut d'événement — une échéance d'agenda à date PASSÉE n'est jamais une action
+  // à faire ni « en retard » (ni « réalisée » ni « annulée » : ces statuts n'existent plus).
+  it('TEMP-03 / TEMP-04 (#715) — échéances d’hier ou avant-hier, fait HISTORICAL : aucune action « aujourd’hui »', async () => {
     const c = await compte();
     const polo = await bien(c, 'Polo');
-    const active = await echeance(c, [polo], 'Contrôle technique', decale(-1));
-    await echeance(c, [polo], 'Vidange réalisée', decale(-1), { statut: 'realise' });
-    await echeance(c, [polo], 'Révision annulée', decale(-2), { statut: 'annule' });
+    await echeance(c, [polo], 'Contrôle technique', decale(-1));
+    await echeance(c, [polo], 'Vidange', decale(-1), { statut: 'realise' });
+    await echeance(c, [polo], 'Révision', decale(-2), { statut: 'annule' });
     await echeance(c, [polo], 'Achat de la Polo', decale(-3), { nature: 'HISTORICAL' });
     const r = await demande(c, 'Que dois-je faire aujourd’hui ?');
-    expect(ids(r)).toEqual([`agenda_${active}`]);
-    expect(r.cascade?.actionable?.results[0]).toMatchObject({ reasonForInclusion: 'OVERDUE', dueDate: decale(-1) });
-    expect(r.answer).not.toMatch(/Vidange réalisée|Révision annulée|Achat de la Polo/);
+    expect(ids(r)).toEqual([]);
+    expect(r.cascade?.actionable?.results.some((x) => x.reasonForInclusion === 'OVERDUE')).toBe(false);
+    expect(r.answer).not.toMatch(/Contrôle technique|Vidange|Révision|Achat de la Polo|en retard/i);
   });
 
   it('TEMP-05 — « Qu’est-ce que je dois traiter ? » : À traiter ouverts, alignés sur la page À traiter ; résolus exclus', async () => {
@@ -189,11 +191,12 @@ scenario('L34-TEMP', 'Lot 34 — T2 : demandes d’actions temporelles → donn�
     expect(r.cascade?.actionable).toMatchObject({ intentResolution: 'DEADLINES_PERIOD', queriedSources: ['DEADLINE'], todoCount: 0, resultCount: 1 });
   });
 
-  it('TEMP-10 — « Est-ce que j’ai quelque chose en retard ? » : seulement les éléments échus et encore actifs', async () => {
+  // #715 : seuls les « À traiter » datés peuvent être « en retard » ; une échéance d'agenda passée ne l'est jamais.
+  it('TEMP-10 (#715) — « Est-ce que j’ai quelque chose en retard ? » : seulement les « À traiter » échus', async () => {
     const c = await compte();
     const polo = await bien(c, 'Polo');
     const clio = await bien(c, 'Clio');
-    const retard = await echeance(c, [polo], 'Contrôle technique', decale(-10));
+    await echeance(c, [polo], 'Contrôle technique', decale(-10));
     await echeance(c, [polo], 'Vidange faite', decale(-5), { statut: 'realise' });
     await echeance(c, [polo], 'Du jour', J);
     await echeance(c, [polo], 'Plus tard', decale(20));
@@ -201,7 +204,7 @@ scenario('L34-TEMP', 'Lot 34 — T2 : demandes d’actions temporelles → donn�
     await aTraiter(c, { type: 'ASSET', id: clio }, 'registrationNumber');
     const r = await demande(c, 'Est-ce que j’ai quelque chose en retard ?');
     expect(r.cascade?.actionable?.intentResolution).toBe('ACTIONS_OVERDUE');
-    expect(ids(r)).toEqual([`agenda_${retard}`, `todo_${todoRetard}`]);
+    expect(ids(r)).toEqual([`todo_${todoRetard}`]);
     expect(r.cascade?.actionable?.results.every((x) => x.reasonForInclusion === 'OVERDUE')).toBe(true);
   });
 
@@ -268,11 +271,13 @@ scenario('L34-TEMP', 'Lot 34 — T2 : demandes d’actions temporelles → donn�
     expect(r.answer).not.toMatch(/Bien archivé|Autre compte|Supprimé/);
   });
 
-  it('Déduplication — carte « réalisée ? » sur une échéance en retard : un seul résultat (l’échéance)', async () => {
+  // #715 : plus de carte « réalisée ? » ni d'échéance « en retard » — la déduplication est vérifiée sur une
+  // carte « À traiter » qui vise une échéance du jour.
+  it('Déduplication (#715) — carte « À traiter » sur une échéance du jour : un seul résultat (l’échéance)', async () => {
     const c = await compte();
     const polo = await bien(c, 'Polo');
-    const e = await echeance(c, [polo], 'Contrôle technique', decale(-3));
-    const carte = await aTraiter(c, { type: 'AGENDA_ITEM', id: e }, 'manualStatus');
+    const e = await echeance(c, [polo], 'Contrôle technique', J);
+    const carte = await aTraiter(c, { type: 'AGENDA_ITEM', id: e }, 'date');
     const r = await demande(c, 'Que dois-je faire aujourd’hui ?');
     expect(ids(r)).toEqual([`agenda_${e}`]);
     expect(r.cascade?.actionable?.results[0].mergedSourceIds).toEqual([`todo_${carte}`]);

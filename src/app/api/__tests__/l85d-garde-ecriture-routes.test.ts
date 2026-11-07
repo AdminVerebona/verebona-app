@@ -188,7 +188,9 @@ describe('L85D-S04 — constat 84B corrigé à la source (même garde que les au
   it('PATCH /api/agenda/:id/statut', () => {
     const s = lire('agenda/[id]/statut/route.ts');
     expect(s).toMatch(/import \{ refuserSiLectureSeule \} from '@\/lib\/write-access-guard'/);
-    expect(s).toMatch(/const refus = await refuserSiLectureSeule\(accountId\);\s*if \(refus\) return refus;[\s\S]*updateManualStatus\(/);
+    // #715 : plus de statut d'événement — la route ne modifie plus rien (410) ; la garde reste AVANT la réponse.
+    expect(s).toMatch(/const refus = await refuserSiLectureSeule\(accountId\);\s*if \(refus\) return refus;[\s\S]*AGENDA_STATUS_REMOVED/);
+    expect(s).not.toMatch(/updateManualStatus/);
   });
   it('les deux routes sont vues gardées par l’audit', () => {
     const handlers = auditWriteRoutes();

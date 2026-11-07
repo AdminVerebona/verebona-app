@@ -8,7 +8,8 @@ import { describe, it, expect } from 'vitest';
 import {
   formatCanonicalValue, assetFieldSource, assetFieldSourceId, parseAssetFieldSourceId, type CanonicalFieldReading,
 } from '../field-reader';
-import { agendaStatus4, HISTORICAL_FIELD_KEYS } from '../agenda';
+import * as agendaCanonique from '../agenda';
+import { HISTORICAL_FIELD_KEYS } from '../agenda';
 import { classifyExpenseDocument, aggregateExpenses, expenseThemeOf } from '../expenses';
 import { requiredFieldsFor, missingRequiredFields } from '../completeness';
 import { dedupeSuppliers } from '../suppliers';
@@ -75,17 +76,9 @@ describe('T2-22 / T2-32 — champ canonique et source de niveau champ', () => {
 });
 
 describe('T2-26 — statut d’agenda à 4 états ; D-14', () => {
-  it('réalisé, annulé ; à venir → unknown ; passé : carte en attente → unknown, sinon not_proven', () => {
-    const auj = '2026-09-30';
-    expect(agendaStatus4('realise', false, '2026-01-01', auj)).toBe('completed');
-    expect(agendaStatus4('annule', true, '2027-01-01', auj)).toBe('not_completed');
-    // Date à venir, sans statut : rien ne peut être établi (arbitrage lot 15).
-    expect(agendaStatus4(null, false, '2026-12-01', auj)).toBe('unknown');
-    expect(agendaStatus4(null, false, auj, auj)).toBe('unknown');
-    expect(agendaStatus4(null, false, null, auj)).toBe('unknown');
-    // Date passée : not_proven réservé à ce cas, sauf carte en attente.
-    expect(agendaStatus4(null, false, '2026-09-29', auj)).toBe('not_proven');
-    expect(agendaStatus4(null, true, '2026-09-29', auj)).toBe('unknown');
+  // #715 (lot 113P) : plus de statut à 4 états (completed / not_completed / unknown / not_proven).
+  it('#715 : le statut à 4 états n’existe plus', () => {
+    expect('agendaStatus4' in agendaCanonique).toBe(false);
   });
   it('champs historiques du registre (exclus des échéances)', () => {
     expect(HISTORICAL_FIELD_KEYS).toContain('acquisitionDate');

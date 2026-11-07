@@ -270,17 +270,11 @@ scenario('L107E-LIENS', 'À traiter : liens directs vers l’objet et les justif
     expect((await sql<{ n: number }[]>`SELECT count(*)::int AS n FROM canonical_field_writes WHERE asset_id = ${bien.id}`)[0].n).toBe(writesAvant);
   });
 
-  it('L107E-E2E-08 — Agenda et événement de référence : l’événement exact, la source de « c’est fait »', async () => {
+  it('L107E-E2E-08 — Agenda et événement de référence : l’événement exact (#715 : sans carte « c’est fait »)', async () => {
     const compte = await make.account();
     const bien = await make.asset(compte, { name: 'Chaudière' });
     const item = await make.agendaItem(compte, { title: 'Entretien chaudière', startDate: '2026-09-15', assetIds: [bien.id] });
     const rapport = await facture(compte, bien.id, 'Rapport d’entretien', 'MAINTENANCE_REPORT');
-    const { agendaStatusProposals, agendaStatusTriggerContext } = await import('@/services/to-process/agenda-status-cards');
-    const [{ public_id: done }] = await sql<{ public_id: string }[]>`
-      INSERT INTO to_process_actions (account_id, target_type, target_id, field_key, action_kind, rule_code, question, proposals_json, trigger_context)
-      VALUES (${compte.id}, 'AGENDA_ITEM', ${item.id}, 'manualStatus', 'ARBITRATE', 'AGENDA-DONE', 'Cet entretien a-t-il été réalisé ?',
-              ${JSON.stringify(agendaStatusProposals('propose_done', rapport))}::jsonb, ${JSON.stringify(agendaStatusTriggerContext(item.id, 'propose_done', rapport))}::jsonb)
-      RETURNING public_id::text`;
     const { resolveCardLinks } = await import('@/services/to-process/card-links');
     const { selectDisplayedProposals } = await import('@/services/to-process/action-model');
     const lire = async (publicId: string) => {
@@ -288,10 +282,8 @@ scenario('L107E-LIENS', 'À traiter : liens directs vers l’objet et les justif
       return (await resolveCardLinks(compte.id, [{ publicId, ruleCode: r.rule_code, actionKind: r.action_kind, targetType: r.target_type, targetId: r.target_id,
         fieldKey: r.field_key, relationKey: r.relation_key, proposals: selectDisplayedProposals(r.proposals_json ?? []), triggerContext: r.trigger_context }])).get(publicId)!;
     };
-    const l1 = await lire(done);
-    expect(l1.object).toMatchObject({ kind: 'echeance', id: item.id, label: 'Entretien chaudière' });
-    expect(l1.proposals.map((p) => p.documents)).toEqual([[rapport], []]);
-    expect(await verifier(compte, done, { kind: 'echeance', id: item.id })).toBe('ok');
+    // #715 : plus de statut d'événement — la carte « c’est fait ? » (AGENDA-DONE) et son lien vers le rapport sont retirés.
+    expect(rapport).toBeGreaterThan(0);
 
     // Événement de référence : élément PRINCIPAL de la réalité.
     const [{ id: op }] = await sql<{ id: number }[]>`INSERT INTO business_operations (account_id, status) VALUES (${compte.id}, 'REALIZED') RETURNING id`;

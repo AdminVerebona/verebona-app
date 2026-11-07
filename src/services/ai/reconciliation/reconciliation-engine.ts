@@ -84,7 +84,8 @@ export async function reconcileAsset(input: ReconcileInput): Promise<Reconciliat
   });
   try {
     const run = await runEngine(input, runId, traceId, rec);
-    await reconcileAgendaStatusAfter(input);
+    // Lot 113P (#715) : plus de réconciliation de STATUT des échéances (« réalisé » sur preuve) —
+    // un événement n'a plus de statut ; le document reste lié et consultable.
     await projectCilAfter(input);
     await rapport();
     return run;
@@ -98,31 +99,6 @@ export async function reconcileAsset(input: ReconcileInput): Promise<Reconciliat
       await rapport();
     }
     throw e;
-  }
-}
-
-/**
- * CDC 15 T4-12 à T4-14 (lot 14) — un document analysé ou rattaché est une
- * preuve possible de RÉALISATION d'une échéance du bien : la réconciliation
- * de statut (`reconcileStatus`, T4) s'exécute ici, après celle des champs,
- * dans le même travail (file T3 pour l'analyse et le cycle de vie des
- * documents). Jamais bloquante.
- */
-async function reconcileAgendaStatusAfter(input: ReconcileInput): Promise<void> {
-  if (!input.sourceFileId) return;
-  if (input.triggeredBy !== 'document_analyzed' && input.triggeredBy !== 'document_linked') return;
-  await assertJobActive('statut agenda');
-  try {
-    const { reconcileAgendaStatusForSource } = await import('@/services/agenda/agenda-status-sync');
-    await reconcileAgendaStatusForSource({
-      accountId: input.accountId, assetId: input.assetId, sourceFileId: input.sourceFileId, userId: input.userId,
-    });
-  } catch (e) {
-    // Interruption (arrêt d'urgence, désactivation) : remontée, le travail
-    // est remis en file ; toute autre erreur est non bloquante.
-    const { isExecutionCancelled } = await import('../queue/execution-control');
-    if (isExecutionCancelled(e)) throw e;
-    console.error('[reconciliation] réconciliation de statut agenda (non bloquante) :', (e as Error).message);
   }
 }
 

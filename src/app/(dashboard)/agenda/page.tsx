@@ -9,13 +9,13 @@ import { Skeleton } from '@/components/ui/skeleton';
 import { EmptyStateCard } from '@/components/ui/empty-state-card';
 import { Calendar, Plus, AlertCircle, CalendarDays } from 'lucide-react';
 import {
-  AgendaViewControls, CalendarView, DateBlock, STATUS_BORDER, STATUS_COLORS, YearView, currentMonth, parseAgendaView,
+  AgendaViewControls, CalendarView, DateBlock, YearView, currentMonth, parseAgendaView,
 } from '@/components/agenda/AgendaPeriodViews';
 import dynamic from 'next/dynamic';
 import { apiClient } from '@/lib/api-client';
 import { toast } from 'sonner';
 import type { AgendaItemFull } from '@/services/agenda/AgendaQueryService';
-import { EFFECTIVE_STATUS_LABELS, attentionFlagLabel, visibleAttentionFlags, type AgendaEffectiveStatus } from '@/lib/agenda/effective-status';
+import { attentionFlagLabel, visibleAttentionFlags } from '@/lib/agenda/attention-flags';
 import { useSession } from '@/hooks/useSession';
 import {
   ActiveFilterChips, FilterChoiceSection, FilterPanel, FilterPillSection, FiltersToggleButton,
@@ -48,10 +48,7 @@ const DocumentDrawer = dynamic(
   { ssr: false }
 );
 
-// Lot 53 (D17) : cinq états distincts, libellés partagés (desktop et mobile : même ligne).
-type EffectiveStatus = AgendaEffectiveStatus;
-
-const STATUS_LABELS: Record<EffectiveStatus, string> = EFFECTIVE_STATUS_LABELS;
+// Lot 113P (#715, décision PO du 06/11/2026) : plus de statut d'événement — ni badge, ni filtre « Statut ».
 
 function formatShortDate(dateStr: string | null): string {
   if (!dateStr) return 'Sans date';
@@ -70,7 +67,7 @@ function AgendaItemRow({ item, onClick }: { item: AgendaItemFull; onClick: () =>
       onClick={onClick}
     >
       {/* Date block */}
-      <DateBlock dateStr={item.startDate ?? null} status={item.effectiveStatus} />
+      <DateBlock dateStr={item.startDate ?? null} />
 
       {/* Content */}
       <div className="flex-1 min-w-0">
@@ -106,10 +103,6 @@ function AgendaItemRow({ item, onClick }: { item: AgendaItemFull; onClick: () =>
         </div>
       </div>
 
-      {/* Status badge */}
-      <span className={`shrink-0 inline-flex items-center rounded-full px-2.5 py-1 text-xs font-medium border ${STATUS_BORDER[item.effectiveStatus]} ${STATUS_COLORS[item.effectiveStatus]}`}>
-        {STATUS_LABELS[item.effectiveStatus]}
-      </span>
     </div>
   );
 }
@@ -132,7 +125,6 @@ function AgendaPageInner() {
   const yearParam = searchParams.get('year');
   const currentYear = new Date().getFullYear();
   const year = yearParam ? parseInt(yearParam, 10) : currentYear;
-  const includeCancelled = searchParams.get('includeCancelled') === 'true';
   const assetIdsParam = searchParams.get('assetIds');
   const assetIds = assetIdsParam ? assetIdsParam.split(',').map(Number).filter(Boolean) : [];
   // Lot 71 (71C) : filtre Équipement, dans l'URL comme les autres filtres de l'agenda.
@@ -186,7 +178,6 @@ function AgendaPageInner() {
     setLoading(true);
     const params = new URLSearchParams();
     params.set('period', period);
-    params.set('includeCancelled', String(includeCancelled));
     if (view === 'calendar') params.set('month', month);
     if (view === 'year') { params.set('year', String(year)); params.set('period', 'all'); }
     if (assetIds.length > 0) {
@@ -211,7 +202,7 @@ function AgendaPageInner() {
       .catch(() => { if (actuel) toast.error('Erreur lors du chargement'); })
       .finally(() => { if (actuel) { setLoading(false); setLoadedOnce(true); } });
     return () => { actuel = false; };
-  }, [period, view, month, year, includeCancelled, assetIdsParam, equipment, piece, q, refreshKey]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [period, view, month, year, assetIdsParam, equipment, piece, q, refreshKey]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Biens proposés au filtre (et libellés des pastilles « Filtré par … »).
   useEffect(() => {
@@ -226,13 +217,13 @@ function AgendaPageInner() {
   };
 
   // Refresh when any agenda mutation happens elsewhere (e.g. from DocumentDrawer)
-  // Lot 111R : aussi quand une preuve de réalisation peut changer (document supprimé, analyse terminée).
+  // Lot 111R : aussi quand un document lié change (supprimé, analyse terminée).
   useEffect(() => subscribeAgendaStatusSources(() => setRefreshKey(k => k + 1)), []);
 
   const equipmentModel = buildEquipmentFilterModel(equipmentFacet, equipment, assetIds.length);
   const roomModel = buildRoomFilterModel(roomFacet, piece, assetIds.length);
   const chips = agendaFilterChips({
-    period, assetIds, includeCancelled, assetOptions,
+    period, assetIds, assetOptions,
     equipmentChipLabel: equipment ? (equipmentModel.chipLabel ?? (loading ? null : 'Équipement indisponible')) : null,
     roomChipLabel: piece ? (roomModel.chipLabel ?? (loading ? null : 'Pièce indisponible')) : null,
   });
@@ -245,12 +236,11 @@ function AgendaPageInner() {
   };
   const removeChip = (key: string) => {
     if (key === 'period') choisirPeriode('all');
-    else if (key === 'cancelled') updateURL({ includeCancelled: null });
     else if (key === 'equipment') updateURL({ equipment: null });
     else if (key === 'piece') updateURL({ piece: null });
     else if (key.startsWith('bien:')) toggleAsset(Number(key.slice(5)));
   };
-  const clearFilters = () => updateURL({ period: null, [SUSPENDED_PERIOD_PARAM]: null, assetIds: null, equipment: null, piece: null, includeCancelled: null });
+  const clearFilters = () => updateURL({ period: null, [SUSPENDED_PERIOD_PARAM]: null, assetIds: null, equipment: null, piece: null });
 
   // ══════════════════════════════════════════════════════════════════════════
   // « AGENDA VIDE » N'EST PAS « AUCUN RÉSULTAT »
@@ -358,12 +348,6 @@ function AgendaPageInner() {
               title="Bien"
               options={assetOptions.map(a => ({ value: String(a.id), label: a.name, active: assetIds.includes(a.id) }))}
               onToggle={(v) => toggleAsset(Number(v))}
-            />
-            <FilterPillSection
-              id={`${filtersPanelId}-statut`}
-              title="Statut"
-              options={[{ value: 'cancelled', label: 'Afficher les annulés', active: includeCancelled }]}
-              onToggle={() => updateURL({ includeCancelled: includeCancelled ? null : 'true' })}
             />
             <RoomFilterSection
               id={`${filtersPanelId}-piece`}

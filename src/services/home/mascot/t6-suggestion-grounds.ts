@@ -133,9 +133,9 @@ export async function currentSuggestionGroundVersions(accountId: number, grounds
   ]);
   const [lignes, ouvertes, preuves, evaluations, preferences, biens, etat, operations] = await Promise.all([
     collector.readAgendaRowsByIds(accountId, agenda),
-    // Lot 112G : « ouverte » = statut effectif commun ni réalisé ni annulé (preuve de réalisation comprise).
-    agenda.length ? import('@/services/agenda/effective-status-read').then(async (m) => [...(await m.loadEffectiveStatuses(accountId, agenda))]
-      .filter(([, s]) => !m.isSettledStatus(s)).map(([id]) => ({ id }))) : Promise.resolve([]),
+    // Lot 113P (#715) : plus de statut d'événement — « ouverte » = l'échéance existe dans le compte.
+    agenda.length ? rows(`SELECT id FROM agenda_items WHERE account_id = $1 AND id = ANY($2::int[])`, [accountId, agenda])
+      .then((r) => r.map((x) => ({ id: Number(x.id) }))) : Promise.resolve([]),
     service.loadT6Evidence(accountId, agenda),
     service.loadAssessments(accountId, agenda),
     agenda.length ? rows(

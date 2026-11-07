@@ -32,7 +32,7 @@ function op(over: Partial<OperationSnapshot> = {}): OperationSnapshot {
 }
 function item(over: Partial<AgendaItemSnapshot> = {}): AgendaItemSnapshot {
   return {
-    id: 100, title: 'Événement', date: '2026-03-12', manualStatus: null, isAutomatic: false, isAutomaticModified: false, projected: false,
+    id: 100, title: 'Événement', date: '2026-03-12', isAutomatic: false, isAutomaticModified: false, projected: false,
     businessOperationId: 10, linkedOperationActive: true, nature: null, businessType: null, homeCategory: null, functionalKey: null,
     originRefType: null, originRefId: null, assetIds: [5], equipmentIds: [], fileIds: [], operationRole: 'RELATED', operationRoleOrigin: 'USER', ...over,
   };
@@ -40,7 +40,7 @@ function item(over: Partial<AgendaItemSnapshot> = {}): AgendaItemSnapshot {
 const plan = (o: OperationSnapshot, p: { linked?: AgendaItemSnapshot[]; candidates?: AgendaItemSnapshot[]; withdrawn?: boolean } = {}) =>
   planOperationProjection({
     op: o, decision: decideProjection(o, AUJ), linked: p.linked ?? [], suppressedKeys: new Set(), candidates: p.candidates ?? [],
-    taken: new Set((p.linked ?? []).map((i) => i.id)), statusCardItems: new Set(), principalWithdrawn: p.withdrawn,
+    taken: new Set((p.linked ?? []).map((i) => i.id)), principalWithdrawn: p.withdrawn,
   });
 
 describe('L84B-U01 — rôle principal retiré par l’utilisateur (point ouvert 83A)', () => {

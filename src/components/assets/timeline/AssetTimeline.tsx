@@ -24,7 +24,6 @@ import { apiClient } from '@/lib/api-client';
 import { SegmentedControl } from '@/components/documents/v2/DocumentsToolbar';
 import type { TimelineEntry, TimelineItemView, TimelineMode } from '@/services/agenda/timeline/model';
 import { TIMELINE_MODE_LABELS, visibleCounters } from '@/services/agenda/timeline/labels';
-import { effectiveStatusLabel } from '@/lib/agenda/effective-status';
 
 /** Ce qui est demandé au tiroir : l'élément, et s'il ouvre un groupe ou un élément d'un groupe. */
 export interface TimelineOpenRequest {
@@ -134,15 +133,8 @@ function fromPage(mode: TimelineMode, entries: TimelineEntry[], page: TimelinePa
   };
 }
 
-function dotClass(item: TimelineItemView): string {
-  return item.isOverdue
-    ? 'bg-destructive'
-    : item.toConfirm
-    ? 'bg-[color:var(--badge-todo)]'
-    : item.isDone
-    ? 'bg-[color:var(--accent)]'
-    : 'bg-[color:var(--text-muted)]';
-}
+/** Lot 113P (#715) : pastille neutre — plus de couleur d'état (réalisé, en retard, à confirmer). */
+const DOT_CLASS = 'bg-[color:var(--text-muted)]';
 
 interface RowProps {
   item: TimelineItemView;
@@ -154,29 +146,12 @@ interface RowProps {
   children?: React.ReactNode;
 }
 
-/**
- * Lot 111R : mention d'état à côté de la date, issue du statut effectif
- * CANONIQUE reçu du serveur (même calcul et mêmes libellés que le tiroir
- * Agenda) — « réalisé », « date échue », « statut à confirmer » ; rien pour
- * « à venir ». Repli (réponse antérieure sans `effectiveStatus`) : indicateurs.
- */
-function statusMention(item: TimelineItemView): { text: string; tone: string } | null {
-  const s = item.effectiveStatus
-    ?? (item.isDone ? 'realise' : item.isOverdue ? 'en_retard' : item.toConfirm ? 'a_confirmer' : 'a_venir');
-  const tone = s === 'realise' ? 'text-[color:var(--text-success)]'
-    : s === 'en_retard' ? 'text-[color:var(--danger)]'
-    : s === 'a_confirmer' ? 'text-[color:var(--attention-on-soft)]'
-    : null;
-  return tone ? { text: effectiveStatusLabel(s).toLowerCase(), tone } : null;
-}
-
-/** Ligne d'un élément : pastille d'état, date (et mention d'état), titre. */
+/** Ligne d'un élément : pastille, date, titre (lot 113P : aucune mention d'état). */
 function TimelineRow({ item, variant, readOnly, busy, onOpen, small, children }: RowProps) {
   const dot = small ? 'w-2.5 h-2.5 mt-1.5' : 'w-3.5 h-3.5 mt-1';
-  const mention = statusMention(item);
   return (
-    <div className={`relative flex gap-3 ${variant === 'mobile' ? 'pb-4' : 'pb-5'}`} data-timeline-item={item.id} data-timeline-status={item.effectiveStatus}>
-      <div className={`relative z-10 ${dot} rounded-full border-2 border-background shrink-0 ${dotClass(item)} ${busy ? 'animate-pulse' : ''}`} />
+    <div className={`relative flex gap-3 ${variant === 'mobile' ? 'pb-4' : 'pb-5'}`} data-timeline-item={item.id}>
+      <div className={`relative z-10 ${dot} rounded-full border-2 border-background shrink-0 ${DOT_CLASS} ${busy ? 'animate-pulse' : ''}`} />
       <div className="flex-1 min-w-0">
         <button
           type="button"
@@ -187,10 +162,9 @@ function TimelineRow({ item, variant, readOnly, busy, onOpen, small, children }:
           {item.effectiveDate && (
             <p className="text-[10px] text-muted-foreground leading-none mb-0.5">
               {formatDate(item.effectiveDate)}
-              {mention && <span className={mention.tone}> · {mention.text}</span>}
             </p>
           )}
-          <p className={`text-xs font-medium leading-snug ${variant === 'desktop' ? 'truncate' : ''} ${item.isDone ? 'text-muted-foreground' : 'text-foreground'}`}>
+          <p className={`text-xs font-medium leading-snug ${variant === 'desktop' ? 'truncate' : ''} text-foreground`}>
             {item.title}
           </p>
         </button>

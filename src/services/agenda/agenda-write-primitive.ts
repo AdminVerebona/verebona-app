@@ -28,7 +28,7 @@
  *
  * « MODIFIÉ PAR L'UTILISATEUR » : notion existante réutilisée —
  * `is_automatic_modified` (édition du titre, de la date, de la description,
- * confirmation d'une prévision) ou `manual_status` posé. Un tel élément n'est
+ * confirmation d’une prévision ; lot 113P : anciens statuts reportés par 1526). Un tel élément n’est
  * jamais mis à jour ni retiré par la synchronisation (§14.6).
  */
 import { pgClient } from '@/db';
@@ -52,7 +52,6 @@ interface AgendaItemDetails {
   startTime?: string | null;
   endDate?: string | null;
   endTime?: string | null;
-  manualStatus?: 'realise' | 'annule' | null;
   requiresQualification?: boolean;
   /** Mise à jour : l'élément automatique a été modifié par l'utilisateur. */
   isAutomaticModified?: boolean;
@@ -156,7 +155,6 @@ export function agendaItemValues(input: AgendaUpsertInput): Partial<AgendaItemVa
         startTime: d.startTime ?? null,
         endDate: d.endDate ?? null,
         endTime: d.endTime ?? null,
-        manualStatus: d.manualStatus ?? null,
         isAutomatic: d.isAutomatic ?? false,
         isAutomaticModified: false,
         requiresQualification: d.requiresQualification ?? false,
@@ -202,7 +200,6 @@ export function agendaItemValues(input: AgendaUpsertInput): Partial<AgendaItemVa
   if (defini(d.startTime)) v.startTime = d.startTime;
   if (defini(d.endDate)) v.endDate = d.endDate;
   if (defini(d.endTime)) v.endTime = d.endTime;
-  if (defini(d.manualStatus)) v.manualStatus = d.manualStatus;
   if (defini(d.requiresQualification)) v.requiresQualification = d.requiresQualification;
   if (defini(d.isAutomaticModified)) v.isAutomaticModified = d.isAutomaticModified;
   // Lot 77A : « Sans échéance » — chemin manuel seulement (un traitement automatique ne la pose jamais).
@@ -246,11 +243,11 @@ export function functionalKeyFor(input: AgendaUpsertInput): string | null {
 /** Élément automatique existant de même clé (0223 présente). */
 async function itemByKey(accountId: number, key: string) {
   const rows = (await pgClient.unsafe(
-    `SELECT id, is_automatic AS "isAutomatic", is_automatic_modified AS "isAutomaticModified", manual_status AS "manualStatus",
+    `SELECT id, is_automatic AS "isAutomatic", is_automatic_modified AS "isAutomaticModified",
             confirmation_mode AS "confirmationMode"
        FROM agenda_items WHERE account_id = $1 AND functional_key = $2 AND is_automatic LIMIT 1`,
     [accountId, key] as never[],
-  )) as unknown as Array<{ id: number; isAutomatic: boolean; isAutomaticModified: boolean; manualStatus: string | null; confirmationMode: string | null }>;
+  )) as unknown as Array<{ id: number; isAutomatic: boolean; isAutomaticModified: boolean; confirmationMode: string | null }>;
   return rows[0] ? { ...rows[0], id: Number(rows[0].id) } : null;
 }
 
@@ -386,7 +383,7 @@ export async function removeAgendaItemsFromSource(p: {
   }
   const rows = (await pgClient.unsafe(
     `SELECT i.id, i.functional_key AS "functionalKey", i.is_automatic AS "isAutomatic",
-            i.is_automatic_modified AS "isAutomaticModified", i.manual_status AS "manualStatus",
+            i.is_automatic_modified AS "isAutomaticModified",
             i.confirmation_mode AS "confirmationMode"
        FROM agenda_items i
       WHERE i.account_id = $1 AND i.is_automatic
@@ -401,14 +398,14 @@ export async function removeAgendaItemsFromSource(p: {
     if (!/source_role/.test(e.message)) throw e;
     return pgClient.unsafe(
       `SELECT i.id, i.functional_key AS "functionalKey", i.is_automatic AS "isAutomatic",
-              i.is_automatic_modified AS "isAutomaticModified", i.manual_status AS "manualStatus",
+              i.is_automatic_modified AS "isAutomaticModified",
               i.confirmation_mode AS "confirmationMode"
          FROM agenda_items i
         WHERE i.account_id = $1 AND i.is_automatic AND i.origin_ref_type = 'asset_file' AND i.origin_ref_id = $2
           AND ($3::int IS NULL OR EXISTS (SELECT 1 FROM agenda_asset_links l WHERE l.agenda_item_id = i.id AND l.asset_id = $3))`,
       [p.accountId, p.sourceFileId, p.assetId ?? null] as never[],
     );
-  })) as unknown as Array<{ id: number; functionalKey: string | null; isAutomatic: boolean; isAutomaticModified: boolean; manualStatus: string | null; confirmationMode: string | null }>;
+  })) as unknown as Array<{ id: number; functionalKey: string | null; isAutomatic: boolean; isAutomaticModified: boolean; confirmationMode: string | null }>;
 
   const cles = new Set(p.keepKeys);
   const ids = new Set(p.keepIds ?? []);

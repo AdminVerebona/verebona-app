@@ -38,7 +38,7 @@ export const RECETTE_DOMAINS: Readonly<Record<RecetteDomain, { label: string; de
   'champs-preuves': { label: 'Champs structurés, preuves et décisions', description: 'Preuves de champ, écritures canoniques, versions d’objets, réconciliations T3 et leurs décisions, contrôles d’information, registre des incohérences, corrections, campagnes / preuves / réparations du contrôle de cohérence.' },
   operations: { label: 'Opérations et rapprochements', description: 'Opérations, sources, liens biens / équipements, composantes financières, références, historique, décisions de rapprochement, revues d’identité, sinistres.' },
   tco: { label: 'TCO', description: 'Décisions utilisateur sur les lignes TCO (tables) ; lignes TCO CALCULÉES par le moteur existant (fichiers `calculs/`).' },
-  'agenda-timeline': { label: 'Agenda et Timeline', description: 'Éléments d’agenda et leurs liens / sources / occurrences / consolidations / retraits, échéances historiques, événements. La Timeline d’un bien est calculée à la lecture depuis `agenda_items` et `agenda_asset_links` (statut « annule » exclu) : aucune table propre ; son résultat (vues regroupée et détaillée) est exporté en fichier calculé `calculs/timeline.part-NNNN.ndjson.gz` (lot 84C).' },
+  'agenda-timeline': { label: 'Agenda et Timeline', description: 'Éléments d’agenda et leurs liens / sources / occurrences / consolidations / retraits, échéances historiques, événements. La Timeline d’un bien est calculée à la lecture depuis `agenda_items` et `agenda_asset_links` (lot 113P : plus de statut d’événement ; supprimés absents, traces dans `agenda_item_removals`) : aucune table propre ; son résultat (vues regroupée et détaillée) est exporté en fichier calculé `calculs/timeline.part-NNNN.ndjson.gz` (lot 84C).' },
   'a-traiter': { label: 'Cartes « À traiter »', description: 'Cartes, événements, états, décisions, passages d’évaluation, campagnes de pertinence.' },
   referentiels: { label: 'Référentiels', description: 'Types de biens, de documents, catégories, types d’Opération : nécessaires pour interpréter les codes.' },
   'non-classees': { label: 'Tables non classées', description: 'Tables présentes en base mais absentes du catalogue de l’export (nouvelle migration) : exportées par prudence, à classer.' },
@@ -333,6 +333,7 @@ export const RECETTE_EXCLUDED: Readonly<Record<string, string>> = {
   ai_model_pricing: 'tarifs des modèles', ai_model_pricing_refresh_log: 'tarifs des modèles', ai_model_qualification: 'qualification IA',
   // Lot 113O : page tarifaire réellement reçue et cache tarifaire par instance.
   ai_model_pricing_page_snapshots: 'tarifs des modèles (page reçue)', ai_pricing_cache_instances: 'tarifs des modèles (cache par instance)',
+  ai_provider_transfer_checks: 'vérifications de l’envoi de fichiers au fournisseur IA',
   // Lot 85C (Pilotage IA V2 P4) : journal des changements de capacités des modèles.
   ai_model_capability_changes: 'configuration IA (journal des capacités des modèles)',
   // Lot 86A (Pilotage IA V2 P5) : qualification par couple — journaux techniques (empreintes, jamais de contenu).

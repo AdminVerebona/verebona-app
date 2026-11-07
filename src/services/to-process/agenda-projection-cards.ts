@@ -122,11 +122,15 @@ export async function syncAgendaProjectionCards(
       if (!n.candidates.length) continue;
       const docs = n.fileIds.filter((f) => titres.has(f)).map((f) => ({ fileId: f, title: titres.get(f)! }));
       const relationKey = agendaProjectionRelationKey(n.operationId, n.key);
+      const repli = agendaProjectionQuestion(n.desired, n.candidates, docs[0]?.title ?? null);
+      const proposals = agendaProjectionProposals(n.candidates);
+      // Lot 113S : question formulée par T4 (représentation Agenda, issue ABSTAIN) quand elle porte sur ces candidats.
+      const choix = await projectionQuestionChoice(accountId, n.operationId, { desired: n.desired, candidates: n.candidates, documents: docs, proposals }, repli);
       const r = await upsertAction({
         accountId, targetType: 'ASSET', targetId: n.assetId, relationKey,
         actionKind: 'ARBITRATE', ruleCode: AGENDA_PROJECTION_MATCH_RULE,
-        question: agendaProjectionQuestion(n.desired, n.candidates, docs[0]?.title ?? null),
-        proposals: agendaProjectionProposals(n.candidates),
+        question: choix.question ?? repli, questionSource: choix.source,
+        proposals,
         triggerContext: {
           kind: 'agenda_projection_match', operationId: n.operationId, projectionKey: n.key, desired: n.desired,
           candidates: n.candidates, provenance: { documents: docs },
@@ -150,6 +154,94 @@ export async function syncAgendaProjectionCards(
     console.error(`[to-process] cartes de rapprochement agenda du compte ${accountId} non synchronisées :`, (e as Error).message);
   }
   return rep;
+}
+
+// ── Lot 113S (#716) : question formulée par T4 ──────────────────────────────
+
+const T4_OPERATION = 't4_agenda_representation';
+
+/** Dernière décision T4 (représentation Agenda) de l'Opération : question proposée si T4 s'est abstenu sur CES éléments. */
+async function lastT4Abstention(accountId: number, operationId: number, itemIds: readonly number[]): Promise<{ raw: string | null; promptVersion: string | null; traceId: string | null } | null> {
+  try {
+    return await readLastT4Abstention(accountId, operationId, itemIds);
+  } catch (e) {
+    console.error(`[to-process] décision T4 de l’Opération ${operationId} illisible (question de la carte) :`, (e as Error).message);
+    return null;
+  }
+}
+
+async function readLastT4Abstention(accountId: number, operationId: number, itemIds: readonly number[]): Promise<{ raw: string | null; promptVersion: string | null; traceId: string | null } | null> {
+  const r = (await pgClient.unsafe(
+    `SELECT status, ai_output, decider_version, ai_trace_id, before_state FROM operation_semantic_reevaluations
+      WHERE account_id = $1 AND scope = 'T4' AND operation_id = $2 AND decided_at IS NOT NULL
+      ORDER BY id DESC LIMIT 1`,
+    [accountId, operationId] as never[],
+  ).catch(() => [])) as unknown as Array<{ status: string; ai_output: unknown; decider_version: string | null; ai_trace_id: string | null; before_state: unknown }>;
+  const x = r[0];
+  if (!x || x.status !== 'ABSTAINED') return null;
+  const etat = (typeof x.before_state === 'string' ? JSON.parse(x.before_state) : x.before_state) as { items?: Array<{ id?: unknown }> } | null;
+  const examines = new Set((etat?.items ?? []).map((i) => Number(i.id)));
+  // La question de T4 ne vaut que pour les éléments qu'il a effectivement examinés.
+  if (!itemIds.every((id) => examines.has(id))) return null;
+  const sortie = (typeof x.ai_output === 'string' ? JSON.parse(x.ai_output) : x.ai_output) as { userQuestion?: unknown } | null;
+  return { raw: typeof sortie?.userQuestion === 'string' ? sortie.userQuestion : null, promptVersion: x.decider_version || null, traceId: x.ai_trace_id };
+}
+
+interface ProjectionCardView {
+  desired: AgendaProjectionCardNeed['desired'];
+  candidates: AgendaProjectionCardNeed['candidates'];
+  documents: Array<{ fileId: number; title: string }>;
+  proposals: ActionProposal[];
+}
+
+/** Question de la carte : celle de T4 si elle passe le contrôle (libellés de la carte), sinon le repli tracé. */
+async function projectionQuestionChoice(accountId: number, operationId: number, v: ProjectionCardView, repli: string, ref?: string) {
+  const { questionContractActive, resolveAiCardQuestion, T4_USER_QUESTION_CONTRACT } = await import('./ai-user-question');
+  const t4 = await lastT4Abstention(accountId, operationId, v.candidates.map((c) => c.itemId));
+  const dates = (t: string, d: string | null) => [t, ...(frDate(d) ? [`${t} du ${frDate(d)}`] : [])];
+  return resolveAiCardQuestion(accountId, {
+    rule: AGENDA_PROJECTION_MATCH_RULE, treatment: 'T4', operation: T4_OPERATION, contract: T4_USER_QUESTION_CONTRACT,
+    raw: t4?.raw ?? null, aiCalled: !!t4, contractActive: await questionContractActive(T4_OPERATION, T4_USER_QUESTION_CONTRACT),
+    promptVersion: t4?.promptVersion ?? null, traceId: t4?.traceId ?? null, fallbackQuestion: repli,
+    check: {
+      allowedLabels: [
+        ...dates(v.desired.title, v.desired.date), ...v.candidates.flatMap((c) => dates(c.title, c.date)),
+        ...v.documents.map((d) => d.title), ...v.proposals.map((p) => p.label),
+      ],
+    },
+  }, ref ?? `${operationId}`);
+}
+
+/**
+ * Après une abstention T4 (orchestrateur de la représentation Agenda) : les
+ * cartes OUVERTES de l'Opération reçoivent la question de T4 si elle passe le
+ * contrôle — même carte, mêmes choix, aucune réouverture. Une question
+ * refusée ne remplace rien (la formulation actuelle reste). Ne lève jamais.
+ */
+export async function requalifyAgendaProjectionQuestions(accountId: number, operationId: number): Promise<number> {
+  let n = 0;
+  try {
+    const cartes = (await pgClient.unsafe(
+      `SELECT id, trigger_context FROM to_process_actions
+        WHERE account_id = $1 AND rule_code = $2 AND resolved_at IS NULL AND (trigger_context->>'operationId')::bigint = $3`,
+      [accountId, AGENDA_PROJECTION_MATCH_RULE, operationId] as never[],
+    )) as unknown as Array<{ id: number; trigger_context: unknown }>;
+    const { requalifyOpenActionQuestion } = await import('./to-process-action.service');
+    for (const c of cartes) {
+      const ctx = (typeof c.trigger_context === 'string' ? JSON.parse(c.trigger_context) : c.trigger_context) as {
+        desired?: AgendaProjectionCardNeed['desired']; candidates?: AgendaProjectionCardNeed['candidates']; provenance?: { documents?: Array<{ fileId: number; title: string }> };
+      } | null;
+      if (!ctx?.desired || !ctx.candidates?.length) continue;
+      const docs = ctx.provenance?.documents ?? [];
+      const repli = agendaProjectionQuestion(ctx.desired, ctx.candidates, docs[0]?.title ?? null);
+      const choix = await projectionQuestionChoice(accountId, operationId, { desired: ctx.desired, candidates: ctx.candidates, documents: docs, proposals: agendaProjectionProposals(ctx.candidates) }, repli, `${operationId}:${c.id}`);
+      if (choix.source.origin !== 'AI' || !choix.question) continue;
+      if (await requalifyOpenActionQuestion({ accountId, actionId: Number(c.id), ruleCode: AGENDA_PROJECTION_MATCH_RULE, question: choix.question, source: choix.source })) n++;
+    }
+  } catch (e) {
+    console.error(`[to-process] question T4 des cartes de rapprochement agenda (compte ${accountId}, ${operationId}) non appliquée :`, (e as Error).message);
+  }
+  return n;
 }
 
 async function closeCards(ids: number[], reason: string): Promise<number> {
@@ -288,7 +380,7 @@ export async function undoAgendaProjectionMatch(action: Action, accountId: numbe
     // Élément créé par la projection : retiré seulement s'il est resté intact (convention §14.6).
     const r = (await pgClient.unsafe(
       `SELECT id FROM agenda_items WHERE account_id = $1 AND business_operation_id = $2 AND projection_origin = 'OPERATION'
-          AND is_automatic AND NOT COALESCE(is_automatic_modified, false) AND (manual_status IS NULL OR manual_status = '')`,
+          AND is_automatic AND NOT COALESCE(is_automatic_modified, false)`,
       [accountId, ctx.operationId] as never[],
     )) as unknown as Array<{ id: number }>;
     if (r.length) {

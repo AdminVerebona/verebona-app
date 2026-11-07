@@ -1,4 +1,12 @@
 /**
+ * ⚠️ Lot 113P (#715, décision PO du 06/11/2026) : PLUS AUCUN APPEL EN
+ * PRODUCTION. Les événements de l'agenda n'ont plus de statut ; la
+ * réconciliation de statut à l'arrivée d'une preuve (`agenda-status-sync`,
+ * appelée par T3) est supprimée. Ce module pur reste seulement pour le
+ * corpus de gouvernance de la branche VERIFY_COMPLETION du master T4
+ * (prompt non modifié — retrait proposé au PO, étape 23 de
+ * `docs/exploitation/prompts-a-appliquer-par-le-po.md`).
+ *
  * Réconciliation de statut — CDC §4.4.4.
  *
  * « Le passage automatique au statut réalisé exige une preuve explicite et une
@@ -151,9 +159,6 @@ const keep = (
  * jamais une preuve (U2).
  */
 export function decideCompletion(item: ExistingAgendaItem, evidence: CompletionEvidence | null): CompletionDecision {
-  if (item.status === 'realise' || item.status === 'done') {
-    return keep('completed', 'ALREADY_DONE', 'déjà marqué réalisé');
-  }
   const verdict = evaluate(item, evidence);
   // Un événement manuel n'est jamais modifié automatiquement (§4.4.4) : le
   // verdict est calculé, la décision reste `keep`.

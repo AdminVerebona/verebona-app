@@ -35,6 +35,7 @@ import { historyExecutionColumnReady } from '../history-reclassification/columns
 import { toExecutionDto, type ExecutionCallsDto } from './dto';
 import { matchesJournalFilter, journalFilterFingerprint, journalFilterToParams, type JournalFilter } from './journal';
 import { projectBusinessExecutions } from './repository';
+import { NOT_CALLED_ERROR_CODES, NO_GENERATION_STAGES } from '../gateway/fallback-policy';
 import {
   EXPORT_CALL_BATCH, EXPORT_MIN_SLICE_MS, EXPORT_RETENTION_DAYS, EXECUTION_UNIT_SCHEMA, EXECUTIONS_EXPORT_PREFIX,
   addToTotals, buildManifest, executionLine, executionsExportPrefix, exportReadme, initialResumeState, partPath, readEnd, sliceAt,
@@ -166,11 +167,18 @@ export async function readCallsOf(
 
 /** Synthèse des appels d'une exécution (même règle que `callsOfExecutions` : inconnu ≠ zéro). */
 function callsSummary(calls: Array<{ row: Row }>): ExecutionCallsDto {
-  const s: ExecutionCallsDto = { calls: 0, failedCalls: 0, repairCalls: 0, costMicros: 0, models: [], usageEventIds: [] };
+  const s: ExecutionCallsDto = { calls: 0, failedCalls: 0, notCalled: 0, transferFailures: 0, generationsRequested: 0, repairCalls: 0, costMicros: 0, models: [], usageEventIds: [] };
   for (const { row: r } of calls) {
+    // Lot 113R : mêmes règles que `callsOfExecutions` (détail, liste, export
+    // réconciliés) — un rang non sollicité n'est ni un appel ni un échec ;
+    // un transfert refusé n'est pas une génération.
+    if (NOT_CALLED_ERROR_CODES.has(String(r.error_code ?? ''))) { s.notCalled = (s.notCalled ?? 0) + 1; s.usageEventIds.push(Number(r.id)); continue; }
     s.calls++;
     if (r.status !== 'success') s.failedCalls++;
     if (r.call_kind === 'repair') s.repairCalls++;
+    const etape = (r.failure as { stage?: unknown } | null)?.stage ?? null;
+    if (etape === 'attachment_transfer') s.transferFailures = (s.transferFailures ?? 0) + 1;
+    if (!NO_GENERATION_STAGES.has(String(etape ?? ''))) s.generationsRequested = (s.generationsRequested ?? 0) + 1;
     s.costMicros = s.costMicros === null || r.cost_micros == null ? null : s.costMicros + Number(r.cost_micros);
     if (r.model && !s.models.includes(String(r.model))) s.models.push(String(r.model));
     s.usageEventIds.push(Number(r.id));

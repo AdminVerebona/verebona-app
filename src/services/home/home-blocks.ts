@@ -286,15 +286,13 @@ export interface HomeUpcomingItem {
   /** Pastille de date : « 12 » / « oct. ». */
   day: string;
   month: string;
-  /** « En retard (2 j) », « Aujourd'hui », « Dans 3 semaines »… */
+  /** « Aujourd'hui », « Dans 3 semaines »… */
   rel: string;
   tone: UpcomingTone;
   forecast: boolean;
 }
 
 export const MAX_UPCOMING = 5;
-/** Au-delà, une action passée relève de l'agenda, plus de l'accueil (comme la mascotte). */
-const UPCOMING_OVERDUE_DAYS = 60;
 /** Une échéance à moins de 30 jours est « proche » (amber). */
 const UPCOMING_SOON_DAYS = 30;
 
@@ -304,10 +302,9 @@ function ecart(from: string, to: string): number {
   return Math.round((Date.parse(`${to.slice(0, 10)}T00:00:00Z`) - Date.parse(`${from.slice(0, 10)}T00:00:00Z`)) / 86_400_000);
 }
 
-/** Délai lisible depuis `today` (négatif : en retard). */
+/** Délai lisible depuis `today` (lot 113P : jamais « En retard » — une date passée se lit « Aujourd’hui » au plus tôt, l'accueil n'en présente pas). */
 export function relativeDue(days: number): string {
-  if (days < 0) return `En retard (${-days} j)`;
-  if (days === 0) return 'Aujourd’hui';
+  if (days <= 0) return 'Aujourd’hui';
   if (days === 1) return 'Demain';
   if (days < 14) return `Dans ${days} jours`;
   if (days < 60) return `Dans ${Math.round(days / 7)} semaines`;
@@ -316,14 +313,15 @@ export function relativeDue(days: number): string {
 }
 
 /**
- * « Prochaines échéances » : les actions en retard (60 jours au plus), puis
- * les échéances à venir, par date croissante — la plus urgente en tête.
- * Rouge = en retard, amber = moins de 30 jours, vert = plus tard.
+ * « Prochaines échéances » : les échéances à venir (aujourd'hui compris), par
+ * date croissante. Amber = moins de 30 jours, vert = plus tard. Lot 113P
+ * (#715) : plus d'« en retard » (une date passée n'est pas un retard).
  */
 export function deriveUpcoming(rows: UpcomingRow[], today: string, max = MAX_UPCOMING): HomeUpcomingItem[] {
   return rows
     .map((r) => ({ r, d: ecart(today, r.date) }))
-    .filter(({ r, d }) => (d >= 0 ? true : r.action && !r.forecast && -d <= UPCOMING_OVERDUE_DAYS))
+    // Lot 113P (#715) : une échéance passée n'est jamais « en retard » — seules les dates à venir.
+    .filter(({ d }) => d >= 0)
     .sort((a, b) => a.d - b.d || a.r.id - b.r.id)
     .slice(0, max)
     .map(({ r, d }) => {
@@ -332,7 +330,7 @@ export function deriveUpcoming(rows: UpcomingRow[], today: string, max = MAX_UPC
         id: r.id, title: r.title, assetName: r.assetName, date: r.date.slice(0, 10),
         day: String(j), month: MOIS_COURTS[m - 1],
         rel: `${relativeDue(d)}${r.forecast ? ' (estimée)' : ''}`,
-        tone: d < 0 ? 'red' : d <= UPCOMING_SOON_DAYS ? 'amber' : 'green',
+        tone: d <= UPCOMING_SOON_DAYS ? 'amber' : 'green',
         forecast: r.forecast,
       };
     });

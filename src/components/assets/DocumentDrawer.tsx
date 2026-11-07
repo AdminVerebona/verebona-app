@@ -1,7 +1,6 @@
 "use client"
 
 import { useState, useCallback, useEffect, useRef } from 'react';
-import { effectiveStatusLabel } from '@/lib/agenda/effective-status';
 import Image from 'next/image';
 import {
   Sheet, SheetContent, SheetHeader, SheetTitle,
@@ -21,7 +20,7 @@ import {
 import {
   FileText, Download, Trash2, ExternalLink, Loader2,
   Calendar, Euro, FileQuestion, Pencil, Building2, LayoutGrid, Wrench, Wand2, Check, CalendarPlus, X,
-  Sparkles, AlertCircle, CheckCircle2, ChevronDown, ChevronUp, Lock, RefreshCw, ChevronLeft, ChevronRight, Unlink,
+  Sparkles, AlertCircle, CheckCircle2, ChevronDown, ChevronUp, Lock, RefreshCw, ChevronLeft, ChevronRight, Unlink, Clock,
 } from 'lucide-react';
 import { FooterPrimaryAction } from '@/components/ui/footer-primary-action';
 import dynamic from 'next/dynamic';
@@ -359,7 +358,7 @@ export function DocumentDrawer({ open, onOpenChange, document: doc, onRefresh, a
   const [pendingAgendaProposalId, setPendingAgendaProposalId] = useState<number | null>(null);
 
   // Linked agenda items (already created)
-  interface LinkedAgendaItem { id: number; title: string; startDate: string | null; effectiveStatus: string; }
+  interface LinkedAgendaItem { id: number; title: string; startDate: string | null; }
   const [linkedAgendaItems, setLinkedAgendaItems] = useState<LinkedAgendaItem[]>([]);
 
   // Propositions de l'analyse (lecture seule : suggestions d'agenda). Lot 71B :
@@ -389,9 +388,9 @@ export function DocumentDrawer({ open, onOpenChange, document: doc, onRefresh, a
   const rechargerElementsAgenda = useCallback(async () => {
     if (!doc) return;
     try {
-      const r = await fetch(`/api/agenda?fileId=${doc.id}&period=all&includeCancelled=false`, { credentials: 'include' });
+      const r = await fetch(`/api/agenda?fileId=${doc.id}&period=all`, { credentials: 'include' });
       const data = r.ok ? await r.json() : null;
-      if (data?.items) setLinkedAgendaItems(data.items.map((i: any) => ({ id: i.id, title: i.title, startDate: i.startDate ?? null, effectiveStatus: i.effectiveStatus })));
+      if (data?.items) setLinkedAgendaItems(data.items.map((i: any) => ({ id: i.id, title: i.title, startDate: i.startDate ?? null })));
     } catch { /* liste inchangée */ }
   }, [doc?.id]); // eslint-disable-line react-hooks/exhaustive-deps
   useEffect(() => {
@@ -552,7 +551,7 @@ export function DocumentDrawer({ open, onOpenChange, document: doc, onRefresh, a
           apiClient.get<{ viewUrl: string }>(`/api/files/${doc.id}/view`),
           apiClient.get<any>('/api/assets?limit=100', { useCache: true }),
           fetch(`/api/documents/${doc.id}/analysis-proposals`, { credentials: 'include' }),
-          fetch(`/api/agenda?fileId=${doc.id}&period=all&includeCancelled=false`, { credentials: 'include' }),
+          fetch(`/api/agenda?fileId=${doc.id}&period=all`, { credentials: 'include' }),
           // Lot 111I : tous les rattachements (biens, pièces, équipements) avec leur provenance.
           apiClient.get<{ targets: DocumentTargetsViewDto }>(`/api/documents/${doc.id}/targets`),
         ]);
@@ -608,7 +607,7 @@ export function DocumentDrawer({ open, onOpenChange, document: doc, onRefresh, a
           const res = agendaRes.value as Response;
           if (res.ok) {
             const { items } = await res.json();
-            const mapped = ((items ?? []) as any[]).map(i => ({ id: i.id, title: i.title, startDate: i.startDate ?? null, effectiveStatus: i.effectiveStatus }));
+            const mapped = ((items ?? []) as any[]).map(i => ({ id: i.id, title: i.title, startDate: i.startDate ?? null }));
             if (!cancelled) setLinkedAgendaItems(mapped);
             mapped.forEach(i => existingAgendaTitles.add(i.title.toLowerCase().trim()));
           }
@@ -1281,11 +1280,18 @@ export function DocumentDrawer({ open, onOpenChange, document: doc, onRefresh, a
               // « Analyse impossible » par défaut. `UPLOADING` (envoi en
               // cours) est rattaché à la file d'attente.
               if (analysisState === 'UPLOADING') stateConfig.UPLOADING = stateConfig.UPLOADED;
+              // Lot 113R : attente technique (envoi au service d'analyse impossible) —
+              // aucune exécution en cours : icône d'attente fixe, jamais un indicateur
+              // d'activité ; ni « Relancer » ni action demandée à l'utilisateur.
+              const attenteTechnique = analysisState === 'UPLOADED' && fullData?.userMessageCode === 'ANALYSIS_WAITING_TECHNICAL';
+              if (attenteTechnique) {
+                stateConfig.UPLOADED = { ...stateConfig.UPLOADED, icon: <Clock className="w-3.5 h-3.5" aria-hidden /> };
+              }
               const cfg = stateConfig[analysisState] ?? stateConfig['ANALYZED'];
               // Lot 89B (demande PO 25/10) : libellé sobre « Statut : analysé » ; le détail
               // ne se déplie que s'il apporte quelque chose (étapes d'analyse, informations
               // détectées, suggestions d'agenda) — sinon simple ligne de statut.
-              const statusLabel = documentStatusLabel(analysisState, fullData?.processingStatus);
+              const statusLabel = documentStatusLabel(analysisState, fullData?.processingStatus, fullData?.userMessageCode);
               const hasDetail = analysisState === 'ANALYZING'
                 || proposals.some((p: any) => (p.proposalType === 'field' || p.proposalType === 'agenda_suggestion') && p.status !== 'rejected');
 
@@ -1327,6 +1333,11 @@ export function DocumentDrawer({ open, onOpenChange, document: doc, onRefresh, a
 
                     {/* Lot 22 : analyse reportée (plafond IA du mois du compte) — motif et date de reprise.
                         Lot 34C : texte du référentiel fermé (code + date), plus le motif brut du document. */}
+                    {attenteTechnique && (
+                      <p className="text-[10px] text-muted-foreground/70 leading-relaxed pl-1" data-testid="document-analysis-waiting-technical">
+                        {userMessageText(fullData?.userMessageCode)}
+                      </p>
+                    )}
                     {analysisState === 'UPLOADED' && fullData?.userMessageCode === 'ANALYSIS_DEFERRED_COST_CAP' && (
                       <p className="text-[10px] text-muted-foreground/70 leading-relaxed pl-1">
                         {userMessageText(fullData.userMessageCode, { resumeAt: fullData.processingResumeAt })}
@@ -1714,15 +1725,7 @@ export function DocumentDrawer({ open, onOpenChange, document: doc, onRefresh, a
                               {agendaLinkInfo.get(item.id)?.direct && agendaLinkInfo.get(item.id)?.viaGroup && (
                                 <span className="shrink-0 text-[10px] font-semibold px-1.5 py-0.5 rounded-full bg-muted text-muted-foreground">{GROUPING_LABELS.directLink}</span>
                               )}
-                              <span className={`shrink-0 text-[10px] font-semibold px-1.5 py-0.5 rounded-full ${
-                                item.effectiveStatus === 'realise' ? 'bg-[color:var(--bg-success)] text-[color:var(--text-success)]' :
-                                item.effectiveStatus === 'annule' ? 'bg-muted text-muted-foreground' :
-                                item.effectiveStatus === 'en_retard' ? 'bg-[color:var(--danger-soft)] text-[color:var(--danger)]' :
-                                item.effectiveStatus === 'a_confirmer' ? 'bg-[color:var(--attention-soft)] text-[color:var(--attention-on-soft)]' :
-                                'bg-primary/10 text-primary'
-                              }`}>
-                                {item.effectiveStatus === 'aujourd_hui' ? "Aujourd'hui" : effectiveStatusLabel(item.effectiveStatus || 'a_venir')}
-                              </span>
+                              {/* Lot 113P (#715) : plus de pastille de statut d'événement. */}
                             </>)}
                           />
                         ))}
@@ -1880,9 +1883,9 @@ export function DocumentDrawer({ open, onOpenChange, document: doc, onRefresh, a
           }
           // Refresh linked agenda items
           if (doc) {
-            fetch(`/api/agenda?fileId=${doc.id}&period=all&includeCancelled=false`, { credentials: 'include' })
+            fetch(`/api/agenda?fileId=${doc.id}&period=all`, { credentials: 'include' })
               .then(r => r.ok ? r.json() : null)
-              .then(data => { if (data?.items) setLinkedAgendaItems(data.items.map((i: any) => ({ id: i.id, title: i.title, startDate: i.startDate ?? null, effectiveStatus: i.effectiveStatus }))); })
+              .then(data => { if (data?.items) setLinkedAgendaItems(data.items.map((i: any) => ({ id: i.id, title: i.title, startDate: i.startDate ?? null }))); })
               .catch(() => {});
           }
           onRefresh();
@@ -1926,9 +1929,9 @@ export function DocumentDrawer({ open, onOpenChange, document: doc, onRefresh, a
             setAgendaDrawerItem(null);
             // Refresh linked agenda items list
             if (doc) {
-              fetch(`/api/agenda?fileId=${doc.id}&period=all&includeCancelled=true`, { credentials: 'include' })
+              fetch(`/api/agenda?fileId=${doc.id}&period=all`, { credentials: 'include' })
                 .then(r => r.ok ? r.json() : null)
-                .then(data => { if (data?.items) setLinkedAgendaItems(data.items.map((i: any) => ({ id: i.id, title: i.title, startDate: i.startDate ?? null, effectiveStatus: i.effectiveStatus }))); })
+                .then(data => { if (data?.items) setLinkedAgendaItems(data.items.map((i: any) => ({ id: i.id, title: i.title, startDate: i.startDate ?? null }))); })
                 .catch(() => {});
             }
             onRefresh();

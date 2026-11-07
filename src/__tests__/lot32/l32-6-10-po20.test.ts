@@ -19,7 +19,7 @@ vi.mock('next/navigation', () => ({
 
 import { TO_PROCESS_COUNT_EVENT, TO_PROCESS_REFRESH_EVENTS } from '@/hooks/useToProcessCount';
 import { HomeAssets } from '@/components/home/HomeBlocks';
-import { deadlineBlockedText, deadlineExtActionText } from '@/services/home/mascot/deadline-label';
+import { deadlineBlockedText } from '@/services/home/mascot/deadline-label';
 import { buildCandidates, type MascotAgendaRow, type MascotRawData } from '@/services/home/mascot/signals';
 
 const lire = (f: string) => readFileSync(join(process.cwd(), f), 'utf8');
@@ -71,7 +71,7 @@ describe('L32-10 — pastilles « action à faire » des biens', () => {
   });
 });
 
-describe('PO20 — formulation naturelle (MASC-BLOCKED, MASC-EXT-ACTION)', () => {
+describe('PO20 — formulation naturelle (MASC-BLOCKED ; #715 : MASC-EXT-ACTION retiré)', () => {
   const cupra = { title: 'Prochain contrôle technique — CUPRA LEON E-HYBRID180', assetName: 'Cupra', assetCategory: 'VEHICULE', assetSubtype: 'Voiture' };
 
   it('PO20 — MASC-BLOCKED : libellé naturel, jamais le titre technique entre guillemets', () => {
@@ -81,17 +81,7 @@ describe('PO20 — formulation naturelle (MASC-BLOCKED, MASC-EXT-ACTION)', () =>
       .toBe('Une échéance doit être précisée avant de pouvoir être suivie : Audit énergétique de la maison, le 2 mai 2026.');
   });
 
-  it('PO20 — MASC-EXT-ACTION : passée / du jour, accord du genre, repli neutre sans article deviné', () => {
-    expect(deadlineExtActionText(cupra, '18 avril 2028', true))
-      // Lot 53 (D27) : une date à respecter (rôle par défaut) était « à prévoir », jamais « prévue » comme un rendez-vous.
-      .toBe('Le contrôle technique de la Cupra était à prévoir pour le 18 avril 2028. Si c’est fait, vous pouvez l’indiquer.');
-    expect(deadlineExtActionText({ title: 'Vidange Clio', assetName: 'Clio', assetCategory: 'VEHICULE', assetSubtype: 'Voiture' }, '7 octobre 2026', false))
-      .toBe('La vidange de la Clio est à prévoir pour aujourd’hui, le 7 octobre 2026. Une fois que c’est fait, vous pouvez l’indiquer.');
-    expect(deadlineExtActionText({ title: 'Audit énergétique', assetName: 'Polo' }, '1er octobre 2026', true))
-      .toBe('Votre échéance du 1er octobre 2026 concerne Polo : Audit énergétique. Si c’est fait, vous pouvez l’indiquer.');
-    expect(deadlineExtActionText({ title: 'Audit', assetName: null }, '1er octobre 2026', true))
-      .toBe('Votre échéance du 1er octobre 2026 : Audit. Si c’est fait, vous pouvez l’indiquer.');
-  });
+  // #715 : plus de statut d'événement — test « PO20 — MASC-EXT-ACTION » supprimé avec `deadlineExtActionText`.
 
   it('PO20 — dans le moteur : aucun texte ni libellé secondaire ne cite le titre brut entre guillemets', () => {
     const agenda = (o: Partial<MascotAgendaRow>): MascotAgendaRow => ({
@@ -104,14 +94,14 @@ describe('PO20 — formulation naturelle (MASC-BLOCKED, MASC-EXT-ACTION)', () =>
       toProcess: [], agenda: [agenda({ id: 1 }), agenda({ id: 2, requiresQualification: true })], acknowledgments: [],
     };
     const c = buildCandidates(raw).candidates.filter((s) => s.sourceCode === 'MASC-EXT-ACTION' || s.sourceCode === 'MASC-BLOCKED');
-    expect(c.map((s) => s.sourceCode).sort()).toEqual(['MASC-BLOCKED', 'MASC-EXT-ACTION']);
+    // #715 : MASC-EXT-ACTION (« c’est fait ? ») n'est plus produit.
+    expect(c.map((s) => s.sourceCode).sort()).toEqual(['MASC-BLOCKED']);
     for (const s of c) {
       expect(s.fallbackText).not.toContain('CUPRA LEON');
       expect(s.fallbackText).not.toContain('«');
       expect(s.secondaryLabel).not.toContain('CUPRA LEON');
       expect(s.fallbackText).toContain(s.allowedHighlight!);
     }
-    expect(c.find((s) => s.sourceCode === 'MASC-EXT-ACTION')!.secondaryLabel).toBe('Contrôle technique : c’est fait ?');
     expect(c.find((s) => s.sourceCode === 'MASC-BLOCKED')!.secondaryLabel).toBe('Préciser « Contrôle technique »');
   });
 });

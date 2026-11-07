@@ -125,7 +125,8 @@ scenario('T4-L14-UNIFIE', 'Écriture agenda unifiée', ({ sql, make }) => {
     const perime = await cree(b1.id, 'maintenanceDueDate', '2027-02-01');
     const modifie = await cree(b1.id, 'insuranceExpiry', '2027-03-01');
     const autreBien = await cree(b2.id, 'maintenanceDueDate', '2027-02-01');
-    await sql`UPDATE agenda_items SET manual_status = 'realise' WHERE id = ${modifie.id}`;
+    // #715 : plus de statut d'événement — l'élément est « modifié par l'utilisateur » (ex-statut, 1526).
+    await sql`UPDATE agenda_items SET is_automatic_modified = true WHERE id = ${modifie.id}`;
     const manuel = await write.createAgendaItem({ title: 'Manuel', startDate: '2027-01-05', assetIds: [b1.id], fileIds: [doc.id], homeCategory: 'action' }, compte.id, compte.ownerUserId);
 
     const ombre = await prim.removeAgendaItemsFromSource({ accountId: compte.id, sourceFileId: doc.id, assetId: b1.id, keepKeys: [garde.functionalKey!] });

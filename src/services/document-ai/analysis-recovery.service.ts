@@ -75,7 +75,23 @@ export interface RecoveryResult {
  * @param targetAccountId — si fourni, ne traiter que ce compte (ex: après upgrade plan)
  */
 export async function runAnalysisRecovery(targetAccountId?: number): Promise<RecoveryResult> {
-  const issue = await withJobLock(LOCK_NAME, LOCK_TTL_MS, () => runInterne(targetAccountId));
+  const issue = await withJobLock(LOCK_NAME, LOCK_TTL_MS, async () => {
+    const r = await runInterne(targetAccountId);
+    // Lot 113R (carte #717) : documents en ATTENTE TECHNIQUE pour un incident
+    // d'envoi au fournisseur (travaux suspendus de la file durable, documents
+    // historiques en échec rattachés) — réexaminés après rétablissement
+    // VÉRIFIÉ par une sonde d'envoi réelle. Tour global uniquement (sous le
+    // même bail : une seule sonde à la fois). Jamais bloquant.
+    if (targetAccountId === undefined) {
+      try {
+        const { reexamineTransferBlocked } = await import('@/services/ai/transfer/transfer-recovery');
+        await reexamineTransferBlocked();
+      } catch (e) {
+        console.warn('[analysis-recovery] réexamen des envois en attente impossible :', (e as Error).message);
+      }
+    }
+    return r;
+  });
   if (issue === null) {
     console.info('[analysis-recovery] Un autre tour est en cours ailleurs, skip.');
     return { found: 0, retried: 0, errors: 0 };

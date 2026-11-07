@@ -60,9 +60,8 @@ scenario('L84C', 'Opérations v5 — O-4 : Timeline regroupée / détaillée, re
     const [o] = await sql<{ id: number }[]>`INSERT INTO business_operations (account_id, status) VALUES (${compte.id}, 'REALIZED') RETURNING id::int`;
     return o.id;
   }
-  async function element(compte: AccountRow, title: string, date: string | null, assetIds: number[], status: string | null = null): Promise<number> {
+  async function element(compte: AccountRow, title: string, date: string | null, assetIds: number[]): Promise<number> {
     const i = await make.agendaItem(compte, { title, ...(date ? { startDate: date } : {}), assetIds });
-    if (status) await sql`UPDATE agenda_items SET manual_status = ${status} WHERE id = ${i.id}`;
     return i.id;
   }
   /** Rattachement par le service unique de regroupement (chemin de production). */
@@ -102,10 +101,10 @@ scenario('L84C', 'Opérations v5 — O-4 : Timeline regroupée / détaillée, re
     const visite = await element(compte, 'Visite expert', '2026-03-21', [bien.id]);
     const reparation = await element(compte, 'Réparation plafond', '2026-04-18', [bien.id]);
     const relance = await element(compte, 'Relance assureur', null, [bien.id]);
-    const annule = await element(compte, 'Rendez-vous annulé', '2026-03-25', [bien.id], 'annule');
+    // #715 : plus de statut d'événement — plus d'élément « annulé » (un rendez-vous qui n'a pas eu lieu est supprimé).
     await rattacher(compte, op, principal, true);
-    for (const i of [visite, reparation, relance, annule]) await rattacher(compte, op, i);
-    return { compte, bien, garage, op, controle, principal, visite, reparation, relance, annule };
+    for (const i of [visite, reparation, relance]) await rattacher(compte, op, i);
+    return { compte, bien, garage, op, controle, principal, visite, reparation, relance };
   }
 
   it('L84C-E01 — AC22 : « regroupée » par défaut ; principal daté = groupe dépliable ; éléments liés masqués de la liste', async () => {
@@ -117,16 +116,15 @@ scenario('L84C', 'Opérations v5 — O-4 : Timeline regroupée / détaillée, re
     expect(ids(r.body.timeline)).toEqual([S(d.controle), S(d.principal)]);
     const g = r.body.timeline[1];
     expect(g).toMatchObject({ kind: 'group', title: 'Dégât des eaux', effectiveDate: '2026-03-12' });
-    // Éléments liés présents sur la Timeline de ce bien, triés comme elle ; l'annulé n'apparaît nulle part.
+    // Éléments liés présents sur la Timeline de ce bien, triés comme elle.
     expect(ids(g.members!)).toEqual([S(d.reparation), S(d.visite), S(d.relance)]);
     expect(r.body.timeline[0]).toMatchObject({ kind: 'item', title: 'Contrôle chaudière' });
-    expect(JSON.stringify(r.body.timeline)).not.toContain('Rendez-vous annulé');
     // Rien n'a été écrit pour la Timeline : aucune table propre (calcul de lecture).
     const [t] = await sql<{ n: number }[]>`SELECT count(*)::int AS n FROM information_schema.tables WHERE table_schema = 'public' AND table_name ILIKE '%timeline%'`;
     expect(t.n).toBe(0);
   });
 
-  it('L84C-E02 — AC23 : « détaillée » = tous les éléments, individuellement ; annulés exclus', async () => {
+  it('L84C-E02 — AC23 : « détaillée » = tous les éléments, individuellement (#715 : sans statut)', async () => {
     const d = await degatDesEaux();
     asUser(d.compte);
     const r = await overview(d.bien.id, '?section=timeline&mode=detailed');
@@ -136,10 +134,11 @@ scenario('L84C', 'Opérations v5 — O-4 : Timeline regroupée / détaillée, re
     expect(r.body.timeline.every((e) => e.kind === 'item')).toBe(true);
     const [n] = await sql<{ n: number }[]>`
       SELECT count(*)::int AS n FROM agenda_asset_links l JOIN agenda_items i ON i.id = l.agenda_item_id
-       WHERE l.asset_id = ${d.bien.id} AND (i.manual_status IS NULL OR i.manual_status <> 'annule')`;
+       WHERE l.asset_id = ${d.bien.id}`;
     expect(r.body.timeline).toHaveLength(n.n);
-    // Champs historiques de la vue d'ensemble conservés au premier niveau.
-    expect(r.body.timeline[0]).toMatchObject({ itemType: 'agenda', isDone: false, toConfirm: false });
+    // Champs historiques de la vue d'ensemble conservés au premier niveau ; #715 : plus aucun état (isDone, toConfirm…).
+    expect(r.body.timeline[0]).toMatchObject({ itemType: 'agenda' });
+    for (const k of ['isDone', 'isOverdue', 'toConfirm', 'effectiveStatus']) expect(r.body.timeline[0]).not.toHaveProperty(k);
   });
 
   it('L84C-E03 — AC24 : jamais mémorisé ; mode et curseur invalides refusés', async () => {
@@ -163,7 +162,7 @@ scenario('L84C', 'Opérations v5 — O-4 : Timeline regroupée / détaillée, re
     expect(p.n).toBe(0);
   });
 
-  it('L84C-E04 — AC25 / §13.5 / §13.6 : principal non daté, sans principal, principal annulé ou hors du bien, Opération invalidée → rien masqué', async () => {
+  it('L84C-E04 — AC25 / §13.5 / §13.6 : principal non daté, sans principal, principal supprimé ou hors du bien, Opération invalidée → rien masqué', async () => {
     const { compte, bien } = await compteEtBien();
     const garage = await make.asset(compte, { category: 'IMMOBILIER', name: 'Garage' });
     // Principal SANS date : ses éléments liés datés restent visibles à leur date ; il est placé avec les éléments sans date.
@@ -180,13 +179,13 @@ scenario('L84C', 'Opérations v5 — O-4 : Timeline regroupée / détaillée, re
     const a2 = await element(compte, 'Étape B', '2026-01-20', [bien.id]);
     await rattacher(compte, opSans, a1);
     await rattacher(compte, opSans, a2);
-    // Principal ANNULÉ : exclu comme aujourd'hui → ses éléments liés ne sont pas masqués.
+    // Principal SUPPRIMÉ (#715 : ex-« annulé ») → ses éléments liés ne sont pas masqués.
     const opAnn = await operation(compte);
     const pAnn = await element(compte, 'Panne', '2026-01-05', [bien.id]);
     const mAnn = await element(compte, 'Dépannage', '2026-01-06', [bien.id]);
     await rattacher(compte, opAnn, pAnn, true);
     await rattacher(compte, opAnn, mAnn);
-    await sql`UPDATE agenda_items SET manual_status = 'annule' WHERE id = ${pAnn}`;
+    await sql`DELETE FROM agenda_items WHERE id = ${pAnn}`;
     // Principal lié à un AUTRE bien : sur ce bien, l'élément lié reste visible ; sur l'autre, groupe sans élément masqué.
     const opAilleurs = await operation(compte);
     const pAilleurs = await element(compte, 'Inondation garage', '2025-12-01', [garage.id]);
@@ -246,7 +245,7 @@ scenario('L84C', 'Opérations v5 — O-4 : Timeline regroupée / détaillée, re
     asUser(d.compte);
     const r = await overview(d.bien.id);
     const grp = r.body.timeline.find((e) => e.kind === 'group')!;
-    // Événements liés HORS principal, annulé exclu ; documents = appartenance ∪ liens du principal (supprimé et étranger exclus).
+    // Événements liés HORS principal ; documents = appartenance ∪ liens du principal (supprimé et étranger exclus).
     expect(grp.counters).toEqual({ events: 3, documents: 3, assets: 2, rooms: 2, equipments: 1 });
   });
 

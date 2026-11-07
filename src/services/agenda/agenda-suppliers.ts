@@ -107,12 +107,12 @@ async function itemInAccount(x: Exec, accountId: number, itemId: number): Promis
   return !!r;
 }
 
-/** Éléments liés à un fournisseur (fiche fournisseur), annulés compris (statut affiché). */
+/** Éléments liés à un fournisseur (fiche fournisseur) — lot 113P : plus de statut d'événement. */
 export async function listItemsOfSupplier(accountId: number, supplierId: number, limit = 500): Promise<Array<{
-  id: number; title: string; startDate: string | null; manualStatus: string | null; provenance: AgendaSupplierProvenance;
+  id: number; title: string; startDate: string | null; provenance: AgendaSupplierProvenance;
 }>> {
   const r = await rows<Row>(db, sql`
-    SELECT i.id, i.title, i.start_date::text AS start_date, i.manual_status, l.provenance
+    SELECT i.id, i.title, i.start_date::text AS start_date, l.provenance
       FROM agenda_item_suppliers l
       JOIN agenda_items i ON i.id = l.agenda_item_id AND i.account_id = ${accountId}
       JOIN suppliers s ON s.id = l.supplier_id AND s.account_id = ${accountId}
@@ -121,7 +121,7 @@ export async function listItemsOfSupplier(accountId: number, supplierId: number,
      LIMIT ${limit}`);
   return r.map((x) => ({
     id: num(x.id), title: String(x.title ?? ''), startDate: x.start_date == null ? null : String(x.start_date).slice(0, 10),
-    manualStatus: (x.manual_status as string | null) ?? null, provenance: x.provenance as AgendaSupplierProvenance,
+    provenance: x.provenance as AgendaSupplierProvenance,
   }));
 }
 

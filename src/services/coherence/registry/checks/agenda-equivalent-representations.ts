@@ -40,7 +40,7 @@ export const EQUIVALENT_REPRESENTATIONS_CHECK_ID = 'COH-AGENDA-EQUIVALENT-REPRES
 export const EQUIVALENCE_T4_CONTRACT = '106A-t4-representation-sans-operation';
 
 interface Plan {
-  consolidate: Array<{ groupKey: string; canonicalId: number | null; absorbIds: number[]; retitle: unknown; proofFileId: number | null; reason: string }>;
+  consolidate: Array<{ groupKey: string; canonicalId: number | null; absorbIds: number[]; retitle: unknown; reason: string }>;
   t4Operations: Array<{ groupKey: string; operationId: number; itemIds: number[] }>;
   unavailable: Array<{ groupKey: string; itemIds: number[]; reason: string }>;
   distinct: Array<{ groupKey: string; reason: string }>;
@@ -115,7 +115,7 @@ export const agendaEquivalentRepresentationsCheck: CoherenceCheck = {
       const plan: Plan = { consolidate: [], t4Operations: [], unavailable: [], distinct: [], protected: [], corroborations: d.corroborations.map((c) => ({ itemId: c.itemId, fileId: c.fileId })) };
       for (const g of d.decisions) {
         if (g.verdict === 'CONSOLIDATE') {
-          plan.consolidate.push({ groupKey: g.group.key, canonicalId: g.canonicalId, absorbIds: g.absorbIds, retitle: g.retitle, proofFileId: g.proofFileId, reason: g.reason });
+          plan.consolidate.push({ groupKey: g.group.key, canonicalId: g.canonicalId, absorbIds: g.absorbIds, retitle: g.retitle, reason: g.reason });
         }
         if (g.uncertainIds.length) {
           if (g.operationIds.length) plan.t4Operations.push({ groupKey: g.group.key, operationId: g.operationIds[0], itemIds: [...new Set([...g.uncertainIds, ...(g.canonicalId ? [g.canonicalId] : [])])] });

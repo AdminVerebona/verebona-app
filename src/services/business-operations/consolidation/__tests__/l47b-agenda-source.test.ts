@@ -17,8 +17,8 @@ const TODAY = '2026-10-12';
 
 function item(over: Partial<AgendaSourceItem> = {}): AgendaSourceItem {
   return {
-    id: 10, accountId: 1, title: 'Remplacement chaudière', description: null, date: '2026-11-20', endDate: null, manualStatus: null,
-    isAutomatic: false, isAutomaticModified: false, projected: false, statusByUser: false, businessOperationId: null,
+    id: 10, accountId: 1, title: 'Remplacement chaudière', description: null, date: '2026-11-20', endDate: null,
+    isAutomatic: false, isAutomaticModified: false, projected: false, businessOperationId: null,
     nature: null, businessType: null, assetIds: [5], equipmentIds: [], fileIds: [], ...over,
   };
 }
@@ -45,24 +45,24 @@ describe('F-020 / F-021 / F-022 — création depuis un élément saisi (C5, rè
     expect(agendaEstablishesIntervention(item({ title: 'Ramonage', date: '2026-01-10' }))).toEqual({ kind: 'INTERVENTION', status: 'ENVISAGED' });
   });
 
-  it('F-022 — « vidange faite aujourd\'hui » : INTERVENTION REALIZED ; « réalisé » posé : REALIZED', () => {
+  // #715 : plus de statut « réalisé » posé — seule la nature HISTORICAL ou l'intitulé « fait » établit REALIZED.
+  it('F-022 — « vidange faite aujourd\'hui » : INTERVENTION REALIZED ; fait historique : REALIZED', () => {
     expect(agendaEstablishesIntervention(item({ title: 'Vidange faite aujourd’hui', date: TODAY }))).toEqual({ kind: 'INTERVENTION', status: 'REALIZED' });
-    expect(agendaEstablishesIntervention(item({ title: 'Révision', manualStatus: 'realise', date: '2026-10-01' }))).toEqual({ kind: 'INTERVENTION', status: 'REALIZED' });
+    expect(agendaEstablishesIntervention(item({ title: 'Révision', nature: 'HISTORICAL', date: '2026-10-01' }))).toEqual({ kind: 'INTERVENTION', status: 'REALIZED' });
   });
 
-  it('échéance pure, élément sans date, sans bien, annulé, automatique, non-intervention : jamais de création', () => {
+  it('échéance pure, élément sans date, sans bien, automatique, non-intervention : jamais de création (#715 : plus d’« annulé »)', () => {
     expect(agendaEstablishesIntervention(item({ title: 'Contrôle technique avant le 12/05' }))).toEqual({ kind: 'NONE', reason: 'DEADLINE' });
     expect(agendaEstablishesIntervention(item({ title: 'Fin de garantie lave-linge' }))).toEqual({ kind: 'NONE', reason: 'DEADLINE' });
     expect(agendaEstablishesIntervention(item({ date: null }))).toEqual({ kind: 'NONE', reason: 'NO_DATE' });
     expect(agendaEstablishesIntervention(item({ assetIds: [] }))).toEqual({ kind: 'NONE', reason: 'NO_ASSET' });
-    expect(agendaEstablishesIntervention(item({ manualStatus: 'annule' }))).toEqual({ kind: 'NONE', reason: 'CANCELLED' });
     expect(agendaEstablishesIntervention(item({ isAutomatic: true, isAutomaticModified: true }))).toEqual({ kind: 'NONE', reason: 'NOT_USER_ENTERED' });
     expect(agendaEstablishesIntervention(item({ title: 'Anniversaire de Paul' }))).toEqual({ kind: 'NONE', reason: 'NOT_AN_INTERVENTION' });
     expect(agendaEstablishesIntervention(item({ title: 'Achat Clio' }))).toEqual({ kind: 'NONE', reason: 'NOT_AN_INTERVENTION' });
   });
 
   it('pré-filtre du déclencheur (TRG-012) : mêmes règles, sans base', () => {
-    const base = { isAutomatic: false, title: 'Ramonage', startDate: '2026-11-02', manualStatus: null, assetCount: 1 };
+    const base = { isAutomatic: false, title: 'Ramonage', startDate: '2026-11-02', assetCount: 1 };
     expect(agendaItemMayEstablishOperation(base)).toBe(true);
     expect(agendaItemMayEstablishOperation({ ...base, title: 'Penser à appeler le ramoneur' })).toBe(false);
     expect(agendaItemMayEstablishOperation({ ...base, assetCount: 0 })).toBe(false);
@@ -79,9 +79,10 @@ describe('C2 / C16.2 — garde anti-blanchiment (projection, T4 intacts : jamais
     expect(isUserAuthoredAgendaItem(item({ isAutomatic: true, projected: true, isAutomaticModified: true }))).toBe(true);
   });
 
-  it('O7b-02 — statut posé par le SYSTÈME (STATUS_AUTO_COMPLETED) ne blanchit pas ; posé par l\'utilisateur : oui', () => {
-    expect(isUserAuthoredAgendaItem(item({ isAutomatic: true, manualStatus: 'realise', statusByUser: false }))).toBe(false);
-    expect(isUserAuthoredAgendaItem(item({ isAutomatic: true, manualStatus: 'realise', statusByUser: true }))).toBe(true);
+  // #715 : plus de statut — un ancien statut posé par l'utilisateur a été reporté sur `isAutomaticModified` (1526).
+  it('O7b-02 — élément automatique intact ne blanchit pas ; modifié par l\'utilisateur : oui', () => {
+    expect(isUserAuthoredAgendaItem(item({ isAutomatic: true }))).toBe(false);
+    expect(isUserAuthoredAgendaItem(item({ isAutomatic: true, isAutomaticModified: true }))).toBe(true);
   });
 
   it('O7b-03 — contribution : projection intacte retirée, élément délié retiré, type non intervention retiré', () => {
@@ -93,35 +94,28 @@ describe('C2 / C16.2 — garde anti-blanchiment (projection, T4 intacts : jamais
   });
 });
 
-describe('C8 / TRG-014 / F-087 — statut réalisé / annulé posé par l\'utilisateur', () => {
+describe('C8 / TRG-014 — #715 : plus de statut d’événement (réalisation portée par la nature ou l’intitulé)', () => {
   const p = { operationId: 7, operationType: 'INTERVENTION', otherSupport: false, today: TODAY };
 
-  it('O7b-04 — « réalisé » → REALIZED ; « annulé » sans autre preuve → CANCELLED', () => {
-    const r = agendaContribution(item({ businessOperationId: 7, manualStatus: 'realise', date: '2026-10-01' }), p);
+  it('O7b-04 — fait historique → REALIZED ; échéance datée du passé → ENVISAGED (une date passée ne prouve rien) ; jamais CANCELLED', () => {
+    const r = agendaContribution(item({ businessOperationId: 7, nature: 'HISTORICAL', date: '2026-10-01' }), p);
     expect(r).toMatchObject({ kind: 'CONTRIBUTES', status: 'REALIZED' });
-    const a = agendaContribution(item({ businessOperationId: 7, manualStatus: 'annule' }), p);
-    expect(a).toMatchObject({ kind: 'CONTRIBUTES', status: 'CANCELLED' });
+    const a = agendaContribution(item({ businessOperationId: 7, date: '2026-01-01' }), p);
+    expect(a).toMatchObject({ kind: 'CONTRIBUTES', status: 'ENVISAGED' });
   });
 
-  it('F-087 / TRG-014 — « annulé » à côté d\'autres preuves : la source est retirée, jamais une annulation métier', () => {
-    expect(agendaContribution(item({ businessOperationId: 7, manualStatus: 'annule', isAutomatic: true, projected: true, statusByUser: true }), { ...p, otherSupport: true }))
-      .toEqual({ kind: 'WITHDRAWN', reason: 'CANCELLED_OTHER_PROOF' });
-  });
-
-  it('O7b-05 — état consolidé : réalisé (date prévue conservée, C8), annulé, rouvert', () => {
+  it('O7b-05 — état consolidé : réalisé (date prévue conservée, C8), ouvert (#715 : plus d’« annulé »)', () => {
     const contrib = (over: Partial<AgendaSourceItem>, id = 1): SourceContribution => {
       const i = item({ businessOperationId: 7, ...over });
       return { sourceId: id, identity: agendaIdentity(i, agendaItemStatus(i), TODAY) };
     };
-    const fait = [contrib({ manualStatus: 'realise', date: '2026-10-01' })];
+    const fait = [contrib({ title: 'Remplacement chaudière effectué', date: '2026-10-01' })];
     const s = applyAgendaAuthority(consolidateOperationState('INTERVENTION', fait, TODAY), fait);
     expect(s).toMatchObject({ status: 'REALIZED', plannedDate: '2026-10-01', realizedDate: '2026-10-01' });
-    const annule = [contrib({ manualStatus: 'annule' })];
-    expect(consolidateOperationState('INTERVENTION', annule, TODAY).status).toBe('CANCELLED');
     const ouvert = [contrib({})];
     expect(consolidateOperationState('INTERVENTION', ouvert, TODAY).status).toBe('ENVISAGED');
     // Réalisé à une date future : aucune date de réalisation inventée (C16.1).
-    const futur = [contrib({ manualStatus: 'realise', date: '2026-12-01' })];
+    const futur = [contrib({ title: 'Remplacement chaudière effectué', date: '2026-12-01' })];
     expect(applyAgendaAuthority(consolidateOperationState('INTERVENTION', futur, TODAY), futur).realizedDate).toBeNull();
   });
 });
@@ -142,9 +136,10 @@ describe('C19 — la correction Agenda de l\'utilisateur prime pour la date qu\'
     expect(applyAgendaAuthority(consolidateOperationState('INTERVENTION', sources, TODAY), sources).plannedDate).toBe('2026-11-25');
   });
 
-  it('O7b-07 — échéance marquée « réalisé » : la date de la facture prime ; un fait historique corrigé prime sur la facture', () => {
+  // #715 : plus de statut d'événement — une échéance (sans statut) ne fixe jamais la date de réalisation.
+  it('O7b-07 — échéance corrigée par l’utilisateur, sans statut : la date de la facture prime ; un fait historique corrigé prime sur la facture', () => {
     const facture = doc(null, '2026-03-10', 'REALIZED');
-    const echeance = ag(item({ date: '2026-03-12', manualStatus: 'realise', isAutomatic: true, statusByUser: true }));
+    const echeance = ag(item({ date: '2026-03-12', isAutomatic: true, isAutomaticModified: true }));
     let sources = [facture, echeance];
     expect(applyAgendaAuthority(consolidateOperationState('INTERVENTION', sources, TODAY), sources).realizedDate).toBe('2026-03-10');
     const historique = ag(item({ date: '2026-03-09', nature: 'HISTORICAL', isAutomatic: true, projected: true, isAutomaticModified: true }));
@@ -187,7 +182,7 @@ describe('C16.1 / C7.2 — rapprochement d\'un élément non relié (jamais de d
   });
 
   it('O7b-13 — planifié ↔ réalisé : tolérance de 7 j ; Opération annulée : jamais rapprochée', () => {
-    expect(matchAgendaItem(item({ date: '2026-11-26', manualStatus: 'realise' }), 'REALIZED', [op()])).toMatchObject({ kind: 'MATCH' });
+    expect(matchAgendaItem(item({ date: '2026-11-26', nature: 'HISTORICAL' }), 'REALIZED', [op()])).toMatchObject({ kind: 'MATCH' });
     expect(matchAgendaItem(item(), 'ENVISAGED', [op({ status: 'CANCELLED' })])).toEqual({ kind: 'NONE' });
   });
 

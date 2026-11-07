@@ -5,7 +5,7 @@
  */
 import { describe, expect, it } from 'vitest';
 import { readFileSync } from 'node:fs';
-import { visibleAttentionFlags, attentionFlagLabel, HIDDEN_ATTENTION_FLAGS } from '@/lib/agenda/effective-status';
+import { visibleAttentionFlags, attentionFlagLabel, HIDDEN_ATTENTION_FLAGS } from '@/lib/agenda/attention-flags';
 
 const lire = (f: string) => readFileSync(f, 'utf8');
 const VUES = [
@@ -35,7 +35,6 @@ describe('L105E — badges internes retirés de l’Agenda', () => {
     }
   });
 
-  it('le statut métier reste affiché dans la fiche', () => {
-    expect(lire('src/components/agenda/AgendaItemDrawer.tsx')).toMatch(/EFFECTIVE_STATUS_LABELS/);
-  });
+  // #715 : plus de statut d'événement — test « le statut métier reste affiché dans la fiche » supprimé
+  // (il ne testait que le statut retiré) ; l'absence de statut est vérifiée par l113p-agenda-sans-statut.test.ts.
 });

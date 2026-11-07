@@ -65,7 +65,6 @@
  */
 import { sql, type SQL } from 'drizzle-orm';
 import { PROCESSING_RULES } from './rules-catalog';
-import { settledByProofSql } from '@/services/agenda/effective-status-read';
 
 // ══════════════════════════════════════════════════════════════════════════
 // CONTRAT COMMUN DES FAMILLES (lot 100E, A7)
@@ -88,7 +87,6 @@ export type CleanupService =
   | 'produceAgendaActions'
   | 'produceEquipmentActions'
   | 'produceSupplierActions'
-  | 'closeAgendaStatusCards'
   | 'closeCardsNoLongerUseful';
 
 /** Identifiant du contrôle de nettoyage rétroactif (registre de cohérence). */
@@ -126,13 +124,6 @@ export interface PublishabilityContract {
 /** Élément d'agenda du compte (alias `a`) répondant à `cond` (alias `i`). */
 const agendaItem = (a: string, cond: string) =>
   `EXISTS (SELECT 1 FROM agenda_items i WHERE i.id = ${a}.target_id AND i.account_id = ${a}.account_id AND (${cond}))`;
-
-/**
- * Lot 112G — élément d'agenda (alias `i`) CLOS : statut posé à la main (non vide), ou
- * réalisé par preuve de réalisation valide (sous-ensemble certain du statut effectif
- * commun, `effective-status-read.ts`).
- */
-const AGENDA_STATUS_SETTLED = `(NULLIF(trim(coalesce(i.manual_status, '')), '') IS NOT NULL OR ${settledByProofSql('i')})`;
 
 /** Identifiant numérique sûr lu dans le contexte de la carte (jamais une erreur de conversion). */
 const idDe = (expr: string) => `CASE WHEN (${expr}) ~ '^[0-9]{1,18}$' THEN (${expr})::bigint END`;
@@ -182,24 +173,12 @@ export const PUBLISHABILITY_CONTRACTS: Readonly<Record<string, PublishabilityCon
   // ── Agenda ─────────────────────────────────────────────────────────────
   'DATA-AGENDA-DATE': {
     family: 'AGENDA', decisions: 'FAMILY_DECISION', reason: 'DATE_KNOWN_OR_EVENT_SETTLED', atCreation: true,
-    // Date saisie ailleurs, élément réalisé / annulé, ou « Sans échéance » choisi par l'utilisateur.
-    noLongerUseful: (a) => agendaItem(a, `i.start_date IS NOT NULL OR NULLIF(i.manual_status, '') IS NOT NULL OR i.no_deadline = true`),
+    // Date saisie ailleurs, ou « Sans échéance » choisi par l'utilisateur (lot 113P : plus de statut d'événement).
+    noLongerUseful: (a) => agendaItem(a, `i.start_date IS NOT NULL OR i.no_deadline = true`),
     cleanup: { by: PUBLISHABILITY_CHECK_ID, service: 'produceAgendaActions' },
   },
   'AGENDA-DUPLICATE': parProduction('AGENDA', 'COH-TODO-ORPHAN-CARDS'),
-  // Lot 112G : statut posé à la main, OU réalisation prouvée par un document (statut effectif
-  // commun 111R : preuve valide 103D, pré-filtre `settledByProofSql`, jamais plus large que
-  // `computeEffectiveStatus`) — la question « réalisée ? » / « non réalisée ? » n'a plus d'objet.
-  'AGENDA-DONE': {
-    family: 'AGENDA', decisions: 'PRODUCTION', reason: 'STATUS_SET_BY_USER', atCreation: true,
-    noLongerUseful: (a) => agendaItem(a, AGENDA_STATUS_SETTLED),
-    cleanup: { by: PUBLISHABILITY_CHECK_ID, service: 'closeAgendaStatusCards' },
-  },
-  'AGENDA-NOT-DONE': {
-    family: 'AGENDA', decisions: 'PRODUCTION', reason: 'STATUS_SET_BY_USER', atCreation: true,
-    noLongerUseful: (a) => agendaItem(a, AGENDA_STATUS_SETTLED),
-    cleanup: { by: PUBLISHABILITY_CHECK_ID, service: 'closeAgendaStatusCards' },
-  },
+  // Lot 113P (#715) : AGENDA-DONE / AGENDA-NOT-DONE retirés (plus de statut d'événement).
   'AGENDA-PROPOSAL': {
     family: 'AGENDA', decisions: 'PRODUCTION', reason: 'ALREADY_SCHEDULED',
     noLongerUseful: (a) => `EXISTS (SELECT 1 FROM agenda_items i WHERE i.account_id = ${a}.account_id

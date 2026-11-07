@@ -53,9 +53,8 @@ const facet = {
   ],
 };
 const panel = (over: Partial<Parameters<typeof AssetAgendaFilterPanel>[0]> = {}) => renderToStaticMarkup(h(AssetAgendaFilterPanel, {
-  id: 'f', view: 'list', period: 'all', includeCancelled: false,
-  equipment: buildEquipmentFilterModel(facet, 'all', 1),
-  onPeriod: noop, onToggleCancelled: noop, onEquipment: noop,
+  id: 'f', view: 'list', period: 'all', equipment: buildEquipmentFilterModel(facet, 'all', 1),
+  onPeriod: noop, onEquipment: noop,
   ...over,
 }));
 
@@ -79,14 +78,17 @@ describe('L72E-EQ-01 — section Équipement de l’onglet Agenda du bien', () =
     const archivesVides = { all: 0, assetOnly: 0, items: [{ id: 10, name: 'Vieux portail', assetId: 3, assetName: 'Maison', archived: true, count: 0 }] };
     expect(panel({ equipment: buildEquipmentFilterModel(archivesVides, 'all', 1) })).not.toContain('filtre-equipement');
     // Les autres filtres de l'onglet restent proposés.
-    expect(panel({ equipment: buildEquipmentFilterModel(null, 'all', 1) })).toContain('Afficher les annulés');
+    // #715 : plus de statut d'événement — la période reste proposée (plus de « Afficher les annulés »).
+    expect(panel({ equipment: buildEquipmentFilterModel(null, 'all', 1) })).toContain('Période');
   });
 
-  it('L72E-EQ-01c — mêmes composants que « Mon agenda » : panneau, sections Période et Statut, radiogroup accessible', () => {
+  // #715 : section « Statut » (« Afficher les annulés ») retirée — plus de statut d'événement.
+  it('L72E-EQ-01c — mêmes composants que « Mon agenda » : panneau, section Période (plus de Statut), radiogroup accessible', () => {
     const html = panel({ equipment: buildEquipmentFilterModel(facet, '7', 1) });
     expect(html).toContain('data-testid="agenda-bien-filtres"');
     expect(html).toContain('Période');
-    expect(html).toContain('Statut');
+    expect(html).not.toContain('Statut');
+    expect(html).not.toContain('Afficher les annulés');
     expect(html).toContain('role="radiogroup"');
     expect(html).toMatch(/aria-checked="true"[^>]*>[\s\S]*?Chaudière/);
     // Une seule colonne sur téléphone (grille à partir de md) : même panneau pour tous les écrans.
@@ -102,17 +104,17 @@ describe('L72E-EQ-01 — section Équipement de l’onglet Agenda du bien', () =
 });
 
 describe('L72E-EQ-02 — pastilles « Filtré par … » et état vide', () => {
-  it('L72E-EQ-02a — pastilles Période, Équipement, Statut (jamais le bien, fixé par la fiche)', () => {
+  it('L72E-EQ-02a — pastilles Période, Équipement (#715 : plus de Statut ; jamais le bien, fixé par la fiche)', () => {
     const model = buildEquipmentFilterModel(facet, '7', 1);
-    expect(filtres.assetAgendaChips({ view: 'list', period: 'past', includeCancelled: true, equipmentChipLabel: model.chipLabel }))
-      .toEqual([{ key: 'period', label: 'Passés' }, { key: 'equipment', label: 'Chaudière' }, { key: 'cancelled', label: 'Annulés affichés' }]);
+    expect(filtres.assetAgendaChips({ view: 'list', period: 'past', equipmentChipLabel: model.chipLabel }))
+      .toEqual([{ key: 'period', label: 'Passés' }, { key: 'equipment', label: 'Chaudière' }]);
     const bienSeul = buildEquipmentFilterModel(facet, 'asset', 1);
-    expect(filtres.assetAgendaChips({ view: 'list', period: 'all', includeCancelled: false, equipmentChipLabel: bienSeul.chipLabel }))
+    expect(filtres.assetAgendaChips({ view: 'list', period: 'all', equipmentChipLabel: bienSeul.chipLabel }))
       .toEqual([{ key: 'equipment', label: 'Bien uniquement' }]);
   });
 
   it('L72E-EQ-02b — vue annuelle : la période ne s’applique pas, aucune pastille Période', () => {
-    expect(filtres.assetAgendaChips({ view: 'year', period: 'past', includeCancelled: false, equipmentChipLabel: null })).toEqual([]);
+    expect(filtres.assetAgendaChips({ view: 'year', period: 'past', equipmentChipLabel: null })).toEqual([]);
   });
 
   it('L72E-EQ-02c — agenda « vide » seulement sans filtre actif (un filtre trop restrictif reste retirable)', () => {
@@ -175,7 +177,7 @@ describe('L72E-EQ-04 — GET /api/agenda avec un seul bien (onglet de la fiche)'
   it('L72E-EQ-04a — `equipmentFacet=1` + `equipment=<id>` : service facetté, bien et compte de la session', async () => {
     svc.getAgendaItemsWithEquipmentFacet.mockResolvedValue({ items: [], equipmentFacet: facet });
     const { GET } = await import('@/app/api/agenda/route');
-    const res = await GET(new NextRequest('http://localhost/api/agenda?assetIds=3&period=all&includeCancelled=false&includeUndated=true&equipmentFacet=1&equipment=7'));
+    const res = await GET(new NextRequest('http://localhost/api/agenda?assetIds=3&period=all&includeUndated=true&equipmentFacet=1&equipment=7'));
     expect(res.status).toBe(200);
     expect(await res.json()).toEqual({ items: [], equipmentFacet: facet });
     expect(svc.getAgendaItemsWithEquipmentFacet).toHaveBeenCalledWith(expect.objectContaining({ accountId: 10, assetIds: [3], equipment: '7' }));

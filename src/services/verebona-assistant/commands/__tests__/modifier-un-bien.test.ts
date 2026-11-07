@@ -26,9 +26,6 @@ const lookup: CommandLookup = {
   today: () => TODAY,
   async findAssets(_a, w) { return [polo, maison].filter((a) => w.some((x) => a.name.toLowerCase().includes(x))); },
   async getAsset() { return null; },
-  async findAgendaItems() { return []; },
-  async getAgendaItem() { return null; },
-  async listOpenAgendaItems() { return []; },
   async getAssetState(_a, id) { return [polo, maison].find((a) => a.id === id) ?? null; },
 };
 const input = { accountId: 1, userId: 2, planType: 'PREMIUM', message: '', clientRequestId: 'x', locale: 'fr-FR' };
@@ -67,7 +64,8 @@ describe('reconnaissance', () => {
   it('les commandes d’agenda restent des commandes d’agenda', () => {
     expect(parseCommand('enregistre le contrôle technique le 12/05/2027 pour la polo', TODAY)).toMatchObject({ command: 'CREATE_AGENDA_ITEM' });
     expect(parseCommand('Ajoute un rappel contrôle technique le 12 mars pour ma Polo', TODAY)).toMatchObject({ command: 'CREATE_AGENDA_ITEM' });
-    expect(parseCommand('Marque le contrôle technique comme fait', TODAY)).toMatchObject({ command: 'MARK_AGENDA_DONE' });
+    // #715 : plus de statut d'événement — « marquer comme fait » n'est plus une commande d'écriture.
+    expect(parseCommand('Marque le contrôle technique comme fait', TODAY)).toBeNull();
     expect(parseCommand('Quelle est la date d’achat de la polo ?', TODAY)).toBeNull();
   });
 

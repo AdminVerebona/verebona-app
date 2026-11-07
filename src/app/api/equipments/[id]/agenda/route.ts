@@ -4,8 +4,6 @@ import { agendaItems } from '@/db/schema';
 import { eq, and, inArray } from 'drizzle-orm';
 import { SessionService } from '@/lib/session-service';
 import { apiError } from '@/lib/api-errors';
-import { computeEffectiveStatus } from '@/services/agenda/AgendaDomainService';
-import { loadEventNatures } from '@/services/agenda/AgendaQueryService';
 import { equipmentInAccount } from '@/services/security/account-ownership';
 
 // GET /api/equipments/[id]/agenda — agenda items linked to an equipment
@@ -50,7 +48,6 @@ export async function GET(
         startTime: agendaItems.startTime,
         endDate: agendaItems.endDate,
         endTime: agendaItems.endTime,
-        manualStatus: agendaItems.manualStatus,
         originType: agendaItems.originType,
         originFieldKey: agendaItems.originFieldKey,
         noDeadline: agendaItems.noDeadline,
@@ -63,10 +60,7 @@ export async function GET(
         )
       );
 
-    const now = new Date();
-    // Lot 47B / lot 53 (D17) : un fait historique passé n'est jamais « en retard » ;
-    // sans statut, il est « à confirmer » (jamais réalisé sur la seule date).
-    const natures = await loadEventNatures(rows.map((r) => r.id));
+    // Lot 113P (#715) : plus de statut d'événement — chaque élément à sa date.
     const items = rows.map(item => ({
       id: item.id,
       publicId: item.publicId,
@@ -75,19 +69,6 @@ export async function GET(
       startDate: item.startDate,
       startTime: item.startTime,
       endDate: item.endDate,
-      manualStatus: item.manualStatus,
-      effectiveStatus: computeEffectiveStatus({
-        startDate: item.startDate,
-        startTime: item.startTime,
-        endDate: item.endDate,
-        endTime: item.endTime,
-        manualStatus: item.manualStatus as 'realise' | 'annule' | null,
-        eventNature: natures?.get(item.id)?.nature ?? null,
-        businessType: natures?.get(item.id)?.businessType ?? null,
-        originFieldKey: item.originFieldKey ?? null,
-        // Lot 103D : réalisation prouvée (0945).
-        completionProven: natures?.get(item.id)?.completionProven === true,
-      }, now),
       originType: item.originType,
       // Lot 77A : tâche « Sans échéance » (mention dans la fiche équipement).
       noDeadline: item.noDeadline === true,

@@ -60,7 +60,8 @@ import {
 } from './job-queue.repository';
 import { isCostCapReached, costCapResumeAt, isAiSuspended, type AiSuspendedError } from '../gateway/errors';
 import type { ExecutionConfigSnapshot } from '../config/execution-snapshot';
-import { isJobDeferred, isPermanentJobError, isBusinessResult, AI_SUSPENSION_USER_REASON, type JobBusinessResult } from './queue-policy';
+import { isJobDeferred, isPermanentJobError, isBusinessResult, AI_SUSPENSION_USER_REASON, AI_TRANSFER_WAIT_REASON, type JobBusinessResult } from './queue-policy';
+import { TRANSFER_SUSPEND_CAUSES } from '../gateway/fallback-policy';
 import {
   createExecutionGuard, registerLocalExecution, unregisterLocalExecution,
   isExecutionCancelled, ExecutionCancelledError, waitForSettlement, type ExecutionGuard,
@@ -364,14 +365,17 @@ export async function runOne(treatment: Treatment, onClaimed?: () => void): Prom
       // portée par le travail (exécution métier P2, journal P3).
       const s = e as AiSuspendedError;
       const message = (s.message ?? 'aucun secours admissible').slice(0, 1500);
+      // Lot 113R : réponse du fournisseur au transfert (structurée, sans secret).
+      const transfer = (s as { transfer?: Record<string, unknown> }).transfer ?? null;
       const r = await suspendJobForAi(job.id, {
         cause: s.failureCause ?? 'UNKNOWN', message, revisionId: configRevisionId,
         decisions: Array.isArray(s.decisions) ? s.decisions : [],
+        ...(transfer ? { transfer: compactTransfer(transfer) } : {}),
       }, job.executionId);
       if (!r.stale) {
         outcome = r.permanent
           ? { kind: 'failed', permanent: true, timedOut: false, error: message }
-          : { kind: 'deferred', permanent: false, reason: AI_SUSPENSION_USER_REASON, until: r.until?.toISOString() };
+          : { kind: 'deferred', permanent: false, reason: TRANSFER_SUSPEND_CAUSES.has(s.failureCause ?? '') ? AI_TRANSFER_WAIT_REASON : AI_SUSPENSION_USER_REASON, until: r.until?.toISOString() };
       }
       console.warn(`[queue] ${treatment} job ${job.id} suspendu (aucun secours admissible) — ${message}${r.permanent ? ' (plafond de suspensions atteint : échec définitif)' : ''}.`);
     } else if (isJobDeferred(e) && !controller.signal.aborted) {
@@ -441,6 +445,17 @@ export async function runOne(treatment: Treatment, onClaimed?: () => void): Prom
     await settle(treatment, job, outcome);
   }
   return true;
+}
+
+/**
+ * Lot 113R — réponse du fournisseur au transfert, réduite pour la charge utile
+ * du travail (le détail complet est sur l'appel : `ai_usage_event.metadata
+ * .transfer`, `ai_call_diagnostics`). Déjà masquée à la source. Pur.
+ */
+export function compactTransfer(t: Record<string, unknown>): Record<string, unknown> {
+  const pick = ['step', 'kind', 'endpoint', 'httpStatus', 'providerStatus', 'providerCode', 'providerMessage', 'providerReason',
+    'providerDomain', 'requestId', 'providerDetail', 'networkCode', 'model', 'callIndex', 'attempt'];
+  return Object.fromEntries(pick.filter((k) => t[k] !== undefined).map((k) => [k, t[k]]));
 }
 
 /** Suspension IA non encore reprise portée par le travail (pur), ou `null`. */

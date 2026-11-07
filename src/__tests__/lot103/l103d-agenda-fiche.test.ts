@@ -2,7 +2,7 @@
  * Lot 103D — fiche Agenda (retours de recette iOS du 31/10) : trois tickets.
  *
  *   L103D-U-HOUSING-SCOPE      Pièces / Équipements seulement pour un logement rattaché (règle pure, vues, API, IA)
- *   L103D-U-STATUT-HISTORIQUE  statut d'un fait passé : jamais « À venir », « Réalisé » seulement sur preuve fiable
+ *   L103D-U-STATUT-HISTORIQUE  #715 (lot 113P) : REMPLACÉ — plus de statut ni de sélecteur « Statut » dans le tiroir
  *   L103D-U-RAPPELS            bloc « Rappels sur l'accueil » : seulement un rappel effectif, formulation concrète
  *   L103D-U-WORDING            libellés des associations (« Associations », « Associer à un autre événement »…)
  *   L103D-U-COH                deux contrôles ajoutés EN FIN de registre, couverts, jamais destructeurs
@@ -18,7 +18,6 @@ import {
   AGENDA_HOUSING_REMOVAL_HAS_DEPENDENTS, AGENDA_STRUCTURAL_LINK_INCOMPATIBLE, HOUSING_SCOPE_LABELS,
   agendaHousingAssetIds, agendaShowsRoomsAndEquipments, incompatibleStructuralLinks, isAgendaHousingAsset, restrictToHousing,
 } from '@/lib/agenda/housing-scope';
-import { automaticStatusOptionLabel, EFFECTIVE_STATUS_LABELS } from '@/lib/agenda/effective-status';
 import { agendaReminderRelevance, REMINDER_BLOCK_LABELS } from '@/lib/agenda/reminder-relevance';
 import { GROUPING_LABELS, groupingActionToast } from '@/lib/agenda/grouping-view';
 
@@ -116,57 +115,22 @@ describe('L103D-U-HOUSING-SCOPE — règle unique « logement rattaché »', () 
   });
 });
 
-describe('L103D-U-STATUT-HISTORIQUE — fait passé : jamais « À venir », « Réalisé » seulement sur preuve', () => {
-  it('cause démontrée : l’option « sans statut » affichait « À venir » en dur ; elle affiche désormais le statut calculé', async () => {
-    const { computeEffectiveStatus } = await import('@/services/agenda/AgendaDomainService');
-    const now = new Date('2026-10-31T10:00:00Z');
-    const controle2020 = { startDate: '2020-12-22', startTime: null, endDate: null, endTime: null, manualStatus: null, eventNature: 'HISTORICAL' as const };
-    const auto = computeEffectiveStatus(controle2020, now);
-    expect(auto).toBe('a_confirmer');
-    // Réalisation PROUVÉE (0945) : « Réalisé » à la lecture, sans statut manuel ; un statut manuel prime.
-    expect(computeEffectiveStatus({ ...controle2020, completionProven: true }, now)).toBe('realise');
-    expect(computeEffectiveStatus({ ...controle2020, completionProven: true, manualStatus: 'annule' }, now)).toBe('annule');
-    expect(computeEffectiveStatus({ ...controle2020, startDate: '2027-01-10', completionProven: true }, now)).toBe('a_venir');
-    expect(automaticStatusOptionLabel({ automaticStatus: auto, effectiveStatus: auto, manualStatus: null })).toBe('Statut à confirmer');
-    // Échéance passée : « Date échue » ; future : « À venir ».
-    expect(automaticStatusOptionLabel({ automaticStatus: computeEffectiveStatus({ ...controle2020, eventNature: 'DEADLINE' }, now) })).toBe(EFFECTIVE_STATUS_LABELS.en_retard);
-    expect(automaticStatusOptionLabel({ automaticStatus: computeEffectiveStatus({ ...controle2020, startDate: '2027-01-10' }, now) })).toBe('À venir');
+describe('L103D-U-STATUT-HISTORIQUE — #715 : plus de statut d’événement (remplace la règle « Réalisé sur preuve »)', () => {
+  it('tiroir Agenda : ni sélecteur « Statut », ni option « Selon la date » / « Réalisé » / « Annulé » ; module de statut supprimé', () => {
     const src = lire('src/components/agenda/AgendaItemDrawer.tsx');
-    expect(src).not.toMatch(/<SelectItem value="null">À venir<\/SelectItem>/);
-    expect(src.match(/<SelectItem value="null">\{automaticStatusOptionLabel\(item\)\}<\/SelectItem>/g)?.length).toBe(2);
-  });
-
-  it('règle de preuve : document lié, daté du jour, type établissant la réalisation — jamais le titre ni la seule date', async () => {
-    const { historicalCompletionVerdict } = await import('@/services/agenda/historical-completion');
-    const now = new Date('2026-10-31T10:00:00Z');
-    const base = {
-      id: 1, startDate: '2020-12-22', endDate: null, manualStatus: null, historical: true, businessType: 'inspection',
-      isAutomatic: true, isAutomaticModified: false, userTouched: false, requiresQualification: true, pendingConflict: false,
-    };
-    const ddt = { fileId: 9, documentDate: '2020-12-22', documentTypeCode: 'DIAGNOSTIC' };
-    const v = historicalCompletionVerdict(base, [ddt], now);
-    expect(v).toMatchObject({ kind: 'PROVEN', fileId: 9, proofCode: 'RAPPORT_DIAGNOSTIC', clearQualification: true });
-    // Aucun document : réalisation inconnue, champ nommé (le titre « Contrôle réalisé » ne prouve rien).
-    expect(historicalCompletionVerdict(base, [], now)).toEqual({ kind: 'UNKNOWN', uncertainField: 'completion', reason: 'NO_LINKED_DOCUMENT' });
-    expect(historicalCompletionVerdict(base, [{ ...ddt, documentDate: null }], now)).toMatchObject({ reason: 'NO_DATED_DOCUMENT' });
-    expect(historicalCompletionVerdict(base, [{ ...ddt, documentDate: '2021-03-01' }], now)).toMatchObject({ reason: 'DATE_MISMATCH' });
-    expect(historicalCompletionVerdict(base, [{ ...ddt, documentTypeCode: 'FACTURE_ENERGIE' }], now)).toMatchObject({ kind: 'UNKNOWN' });
-    // Corrections de l'utilisateur protégées.
-    expect(historicalCompletionVerdict({ ...base, isAutomatic: false }, [ddt], now)).toEqual({ kind: 'PROTECTED', reason: 'MANUAL_ITEM' });
-    expect(historicalCompletionVerdict({ ...base, userTouched: true }, [ddt], now)).toEqual({ kind: 'PROTECTED', reason: 'USER_MODIFIED' });
-    expect(historicalCompletionVerdict({ ...base, manualStatus: 'realise' }, [ddt], now)).toMatchObject({ kind: 'NOT_APPLICABLE' });
-    // Conflit en attente : statut prouvé, mais la qualification reste à l'utilisateur.
-    expect(historicalCompletionVerdict({ ...base, pendingConflict: true }, [ddt], now)).toMatchObject({ kind: 'PROVEN', clearQualification: false });
-    // Échéance (pas un fait passé) : hors règle — la réconciliation des échéances reste celle de T4.
-    expect(historicalCompletionVerdict({ ...base, historical: false }, [ddt], now)).toMatchObject({ kind: 'NOT_APPLICABLE', reason: 'NOT_HISTORICAL' });
+    expect(src).not.toMatch(/<SelectItem value="(null|realise|annule)">/);
+    expect(src).not.toMatch(/automaticStatusOptionLabel|EFFECTIVE_STATUS_LABELS|\/statut`/);
+    expect(() => lire('src/lib/agenda/effective-status.ts')).toThrow();
+    expect(() => lire('src/services/agenda/historical-completion.ts')).toThrow();
   });
 });
 
 describe('L103D-U-RAPPELS — bloc « Rappels sur l’accueil » : rappel effectif seulement', () => {
-  const base = { manualStatus: null, historical: false, dueDate: '2026-12-15', hasPreference: false, assessment: null };
-  it('fait historique, sujet clos, aucune décision T6, décision « aucune interpellation » : aucun bloc', () => {
+  const base = { historical: false, dueDate: '2026-12-15', today: '2026-10-31', hasPreference: false, assessment: null };
+  // #715 : plus de « sujet clos » par statut ; une date PASSÉE ne crée jamais de rappel.
+  it('fait historique, date passée, aucune décision T6, décision « aucune interpellation » : aucun bloc', () => {
     expect(agendaReminderRelevance({ ...base, historical: true, assessment: { interpellation: 'ACT_NOW', action: null, actionDate: null } }).visible).toBe(false);
-    expect(agendaReminderRelevance({ ...base, manualStatus: 'realise' }).reason).toBe('SUBJECT_CLOSED');
+    expect(agendaReminderRelevance({ ...base, dueDate: '2026-10-01', assessment: { interpellation: 'ACT_NOW', action: null, actionDate: null } })).toMatchObject({ visible: false, reason: 'PAST_DATE' });
     expect(agendaReminderRelevance(base)).toMatchObject({ visible: false, reason: 'NO_REMINDER' });
     expect(agendaReminderRelevance({ ...base, assessment: { interpellation: 'NONE', action: null, actionDate: null } }).visible).toBe(false);
   });
@@ -219,16 +183,15 @@ describe('L103D-U-COH — contrôles du registre', () => {
     const ids = COHERENCE_REGISTRY.map((c) => c.id);
     // Ordre d'ajout en fin de registre (sans réordonner l'existant) : 101A, 103E, 103D, puis lots suivants (105D…).
     const apres = ids.slice(ids.indexOf('COH-EQUIPMENT-IDENTITY'));
-    expect(apres.slice(0, 4)).toEqual(['COH-EQUIPMENT-IDENTITY', 'COH-AGENDA-SUPPLIERS', 'COH-AGENDA-STRUCTURAL-HOUSING', 'COH-AGENDA-HISTORICAL-STATUS']);
+    // #715 : COH-AGENDA-HISTORICAL-STATUS retiré (plus de statut d'événement).
+    expect(apres.slice(0, 3)).toEqual(['COH-EQUIPMENT-IDENTITY', 'COH-AGENDA-SUPPLIERS', 'COH-AGENDA-STRUCTURAL-HOUSING']);
+    expect(ids).not.toContain('COH-AGENDA-HISTORICAL-STATUS');
     const agenda = COVERAGE_INVENTORY.find((d) => d.domain === 'agenda')!;
-    expect(agenda.checks).toEqual(expect.arrayContaining(['COH-AGENDA-STRUCTURAL-HOUSING', 'COH-AGENDA-HISTORICAL-STATUS']));
+    expect(agenda.checks).toEqual(expect.arrayContaining(['COH-AGENDA-STRUCTURAL-HOUSING']));
+    expect(agenda.checks).not.toContain('COH-AGENDA-HISTORICAL-STATUS');
     const housing = COHERENCE_REGISTRY.find((c) => c.id === 'COH-AGENDA-STRUCTURAL-HOUSING')!;
     expect(housing.immediateSupervision).toEqual(['STRUCTURAL_LINK_HOUSING_AMBIGUOUS']);
     expect(housing.forbiddenRepairs.join(' ')).toMatch(/utilisateur/);
     expect(housing.forbiddenRepairs.join(' ')).toMatch(/supprimer une pièce/);
-    const statut = COHERENCE_REGISTRY.find((c) => c.id === 'COH-AGENDA-HISTORICAL-STATUS')!;
-    expect(statut.forbiddenRepairs.join(' ')).toMatch(/titre/);
-    expect(statut.forbiddenRepairs.join(' ')).toMatch(/créer une occurrence/);
-    expect(statut.forbiddenRepairs.join(' ')).toMatch(/statut manuel/);
   });
 });

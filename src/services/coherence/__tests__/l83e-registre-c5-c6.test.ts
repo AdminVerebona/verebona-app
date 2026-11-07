@@ -122,7 +122,7 @@ describe('L83E-U-PROJECTION — écarts de projection (projection appelée, jama
     expect(projectionAnomaly(projectionGaps('CONTRACT', [{ kind: 'SYNC', itemId: 3 }, { kind: 'ROLE', itemId: 3 }]))).toBe('EVENT_OUT_OF_SYNC');
     expect(projectionGaps('INTERVENTION', [{ kind: 'LINK', itemId: 1 }, { kind: 'CONSOLIDATE' }])).toEqual([]);
     expect(projectionAnomaly(projectionGaps('ACQUISITION', [{ kind: 'LINK', itemId: 1 }]))).toBe('EVENT_NOT_LINKED');
-    expect(projectionGaps('CONTRACT', [{ kind: 'ABSTAIN', candidates: [1] }, { kind: 'SUPPRESSED' }, { kind: 'RETITLE' }, { kind: 'PROPOSE_DONE' }])).toEqual([]);
+    expect(projectionGaps('CONTRACT', [{ kind: 'ABSTAIN', candidates: [1] }, { kind: 'SUPPRESSED' }, { kind: 'RETITLE' }])).toEqual([]);
     // Aucune règle de projection recopiée : le contrôle n'importe que le point d'entrée public.
     const code = sansCommentaires(lire('src/services/coherence/registry/checks/agenda-projection.ts'));
     expect(code).not.toMatch(/decideProjection|planOperationProjection|projectionKeyOf|matchExistingItem/);

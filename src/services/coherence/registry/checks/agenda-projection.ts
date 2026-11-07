@@ -163,7 +163,7 @@ export const agendaOperationProjectionCheck: CoherenceCheck = {
       const r = await projectAccountOperations(accountId, { operationIds: [id], correlationId: ctx.correlationId, today: ctx.today });
       out.set(id, {
         called: true, service: 'projectAccountOperations', aiCalls: 0,
-        result: { created: r.created, updated: r.updated, linked: r.linked, removed: r.removed, detached: r.detached, markedDone: r.markedDone, roles: r.roles ?? 0, changes: r.changes, skipped: r.skipped ?? null },
+        result: { created: r.created, updated: r.updated, linked: r.linked, removed: r.removed, detached: r.detached, roles: r.roles ?? 0, changes: r.changes, skipped: r.skipped ?? null },
         // Retraits : trace 0223 (`agenda_item_removals`, restaurable) ; créations : clé fonctionnelle de l'Opération.
         rollbackRef: `agenda_item_removals:correlation=${ctx.correlationId};agenda_items:business_operation_id=${id}`,
       });

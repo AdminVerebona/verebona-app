@@ -61,16 +61,16 @@ async function agendaBusinessTypeReady(): Promise<boolean> {
 
 /**
  * Événements « achat » liés au BIEN, sans aucun équipement lié (l'achat d'un
- * équipement n'est jamais celui du bien, lot 71A), non annulés, datés.
+ * équipement n'est jamais celui du bien, lot 71A), datés (lot 113P : plus de statut d'événement).
  */
 export async function loadAgendaPurchases(accountId: number, assetId: number, today = new Date().toISOString().slice(0, 10)): Promise<AgendaPurchaseObservation[]> {
   const bt = await agendaBusinessTypeReady();
   const rows = await q<{
-    id: number; date: string; is_automatic: boolean; manual_status: string | null; confirmation_mode: string | null;
+    id: number; date: string; is_automatic: boolean; is_automatic_modified: boolean; confirmation_mode: string | null;
     origin_type: string | null; origin_ref_type: string | null; origin_ref_id: number | null; op_from_fiche: boolean | null;
     files: unknown; op_files: unknown;
   }>(
-    `SELECT i.id, i.start_date::text AS date, i.is_automatic, i.manual_status, i.confirmation_mode, i.origin_type,
+    `SELECT i.id, i.start_date::text AS date, i.is_automatic, COALESCE(i.is_automatic_modified, false) AS is_automatic_modified, i.confirmation_mode, i.origin_type,
             i.origin_ref_type, i.origin_ref_id,
             CASE WHEN i.business_operation_id IS NULL THEN NULL ELSE (
               SELECT bool_and(s.source_kind = 'ASSET_DATA') FROM business_operation_sources s
@@ -81,7 +81,7 @@ export async function loadAgendaPurchases(accountId: number, assetId: number, to
                WHERE s.operation_id = i.business_operation_id AND s.account_id = i.account_id AND s.active AND s.source_kind = 'DOCUMENT') END AS op_files
        FROM agenda_items i
        JOIN agenda_asset_links l ON l.agenda_item_id = i.id AND l.asset_id = $2
-      WHERE i.account_id = $1 AND i.start_date IS NOT NULL AND COALESCE(i.manual_status, '') <> 'annule'
+      WHERE i.account_id = $1 AND i.start_date IS NOT NULL
         AND NOT EXISTS (SELECT 1 FROM agenda_equipment_links e WHERE e.agenda_item_id = i.id)
         AND ${bt ? `(i.business_type = 'purchase' OR (i.business_type IS NULL AND i.title ILIKE '%achat%'))` : `i.title ILIKE '%achat%'`}
       ORDER BY i.id LIMIT 50`,
@@ -89,12 +89,14 @@ export async function loadAgendaPurchases(accountId: number, assetId: number, to
   );
   return rows.map((r) => {
     const fichiers = [...ids(r.files), ...ids(r.op_files), ...(r.origin_ref_type === 'asset_file' && r.origin_ref_id ? [Number(r.origin_ref_id)] : [])];
-    // D-13 : un événement MANUEL réalisé (ou daté du passé) est une saisie ;
+    // D-13 : un événement MANUEL daté du passé (ou du jour) est une saisie ;
     // un événement AUTOMATIQUE n'est une donnée confirmée que si
-    // l'utilisateur l'a marqué réalisé ou confirmé.
+    // l'utilisateur l'a modifié ou confirmé (lot 113P : plus de statut
+    // « réalisé » ; la migration 1526 a reporté les anciens statuts posés par
+    // l'utilisateur sur `is_automatic_modified`).
     const confirmed = r.is_automatic
-      ? r.manual_status === 'realise' || r.confirmation_mode === 'USER'
-      : r.manual_status === 'realise' || (r.date ?? '') <= today;
+      ? r.is_automatic_modified === true || r.confirmation_mode === 'USER'
+      : (r.date ?? '') <= today;
     return {
       source: 'AGENDA' as const, id: Number(r.id), date: String(r.date).slice(0, 10), automatic: r.is_automatic, confirmed,
       derivedFromField: r.origin_type === 'asset_field' || r.op_from_fiche === true,

@@ -56,8 +56,6 @@ scenario('L47B', 'Agenda source T3 (TRG-012 à 014) et historique passé affich�
   const items = (compte: AccountRow) => sql<{ id: number; op: number | null; projection_origin: string | null; manual_status: string | null; start_date: string | null }[]>`
     SELECT id, business_operation_id::int AS op, projection_origin, manual_status, start_date::text AS start_date
       FROM agenda_items WHERE account_id = ${compte.id} ORDER BY id`;
-  const historique = (opId: number) => sql<{ event_type: string; reason_code: string; after: Json | null }[]>`
-    SELECT event_type, reason_code, after_json AS after FROM business_operation_history WHERE operation_id = ${opId} ORDER BY id`;
   const t3 = async (compte: AccountRow, itemIds: number[]) => (await t3Agenda()).consolidateAgendaItems(compte.id, itemIds, { today: AUJOURDHUI });
   const projeter = async (compte: AccountRow, ids?: number[]) =>
     (await projection()).projectAccountOperations(compte.id, ids ? { operationIds: ids, correlationId: 'corr-47b' } : { all: true, correlationId: 'corr-47b' });
@@ -177,7 +175,10 @@ scenario('L47B', 'Agenda source T3 (TRG-012 à 014) et historique passé affich�
     expect(await items(compte)).toEqual([expect.objectContaining({ id: evt.id, start_date: plus(25), projection_origin: 'OPERATION' })]);
   });
 
-  it('C8 / C16-21 — « réalisé » posé par l\'utilisateur sur l\'événement relié → ENVISAGED → REALIZED, historisé ; anti-boucle : la projection ne repousse rien et n\'émet aucun T3', async () => {
+  // #715 (lot 113P) : plus de statut d'événement — T3 ne lit plus « réalisé » / « annulé » sur l'agenda
+  // (existence, date et relations seulement). Les cas C8 « réalisé → REALIZED » et « annulé → CANCELLED »
+  // deviennent : date passée sans effet de réalisation ; suppression par l'utilisateur jamais ressuscitée.
+  it('C8 / C16-21 (#715) — événement relié dont la date est passée : jamais REALIZED par l\'agenda ; anti-boucle : la projection ne repousse rien et n\'émet aucun T3', async () => {
     const compte = await make.account({ plan: 'premium' });
     const maison = await make.asset(compte, { category: 'IMMOBILIER' });
     const devis = await make.assetFile(compte, { assetId: maison.id });
@@ -185,61 +186,36 @@ scenario('L47B', 'Agenda source T3 (TRG-012 à 014) et historique passé affich�
     const opId = await opDocument(compte, { status: 'ENVISAGED', planned: prevu, assetId: maison.id, fileId: devis.id, label: 'Élagage' });
     await projeter(compte, [opId]);
     const [evt] = await items(compte);
-    const { updateManualStatus } = await agendaWrite();
-    await updateManualStatus(evt.id, 'realise', compte.id);
-    expect(await attendreJobAgenda(compte, evt.id)).not.toBeNull();
     await t3(compte, [evt.id]);
-    expect(await ops(compte)).toEqual([expect.objectContaining({ id: opId, status: 'REALIZED', planned_date: prevu, realized_date: prevu })]);
-    expect((await historique(opId)).some((h) => h.event_type === 'STATUS_CHANGED')).toBe(true);
-    // Anti-boucle (C16.2) : la projection qui suit ne réécrit pas l'élément touché, ne crée rien, ne demande pas T3.
+    expect(await ops(compte)).toEqual([expect.objectContaining({ id: opId, status: 'ENVISAGED' })]);
     const avant = (await jobsT3(compte)).filter((j) => j.target_type === 'business_operations').length;
     expect(await projeter(compte, [opId])).toMatchObject({ changes: 0, created: 0 });
-    await new Promise((r) => setTimeout(r, 200));
     expect((await jobsT3(compte)).filter((j) => j.target_type === 'business_operations').length).toBe(avant);
-    expect(await items(compte)).toEqual([expect.objectContaining({ id: evt.id, manual_status: 'realise' })]);
-    // T3 rejoué : rien ne bouge (aucune boucle).
+    expect(await items(compte)).toEqual([expect.objectContaining({ id: evt.id, manual_status: null })]);
     expect((await t3(compte, [evt.id]))[0].changes).toBe(0);
   });
 
-  it('C8 — « annulé » sur une intervention établie par l\'agenda seul → CANCELLED (historisé) ; aucune projection contraire', async () => {
-    const compte = await make.account({ plan: 'premium' });
-    const maison = await make.asset(compte, { category: 'IMMOBILIER' });
-    const { createAgendaItem, updateManualStatus } = await agendaWrite();
-    const evt = await createAgendaItem({ title: 'Ramonage', startDate: plus(15), assetIds: [maison.id], homeCategory: 'action' }, compte.id, compte.ownerUserId);
-    await t3(compte, [evt.id]);
-    const [op] = await ops(compte);
-    await updateManualStatus(evt.id, 'annule', compte.id);
-    await t3(compte, [evt.id]);
-    expect(await ops(compte)).toEqual([expect.objectContaining({ id: op.id, status: 'CANCELLED', invalidated: false })]);
-    expect((await historique(op.id)).filter((h) => h.event_type === 'STATUS_CHANGED').map((h) => h.after)).toEqual([{ status: 'CANCELLED' }]);
-    expect(await projeter(compte, [op.id])).toMatchObject({ created: 0, changes: 0 });
-    expect(await items(compte)).toHaveLength(1);
-  });
-
-  it('F-087 / TRG-014 — « annulé » posé sur l\'événement PROJETÉ d\'un devis : jamais une annulation métier ; la source Agenda est retirée, l\'Opération reste prévue', async () => {
+  it('C8 (#715) — événement supprimé par l\'utilisateur : jamais une annulation métier ; la projection du devis ne le recrée pas', async () => {
     const compte = await make.account({ plan: 'premium' });
     const maison = await make.asset(compte, { category: 'IMMOBILIER' });
     const devis = await make.assetFile(compte, { assetId: maison.id });
     const opId = await opDocument(compte, { status: 'ENVISAGED', planned: plus(20), assetId: maison.id, fileId: devis.id, label: 'Remplacement fenêtres' });
     await projeter(compte, [opId]);
     const [evt] = await items(compte);
-    const { updateAgendaItem, updateManualStatus } = await agendaWrite();
-    await updateAgendaItem(evt.id, { startDate: plus(22) }, compte.id);
-    await t3(compte, [evt.id]);
-    expect(await sourcesAgenda(opId)).toEqual([expect.objectContaining({ active: true })]);
-    await updateManualStatus(evt.id, 'annule', compte.id);
+    const { deleteAgendaItem } = await agendaWrite();
+    expect(await deleteAgendaItem(evt.id, compte.id, compte.ownerUserId, { scope: 'OCCURRENCE' })).toEqual({ deletedIds: [evt.id] });
     await t3(compte, [evt.id]);
     expect(await ops(compte)).toEqual([expect.objectContaining({ id: opId, status: 'ENVISAGED', invalidated: false })]);
-    expect(await sourcesAgenda(opId)).toEqual([expect.objectContaining({ active: false })]);
-    expect((await historique(opId)).some((h) => h.reason_code === 'AGENDA_CANCELLED_OTHER_PROOF')).toBe(true);
-    // Aucune projection recréée à côté de l'élément annulé (lié).
+    // Trace d'exclusion : la projection (même clé fonctionnelle) ne ressuscite pas l'événement.
     expect(await projeter(compte, [opId])).toMatchObject({ created: 0 });
-    expect(await items(compte)).toHaveLength(1);
+    expect(await items(compte)).toHaveLength(0);
+    const [trace] = await sql<{ reason: string }[]>`SELECT reason FROM agenda_item_removals WHERE agenda_item_id = ${evt.id}`;
+    expect(trace.reason).toBe('USER_DELETED');
   });
 
   // ══ Garde anti-blanchiment (C2, C16.2) ═════════════════════════════════════
 
-  it('O7b-E01 / C2 — projection intacte, T4 intact, T4 marqué réalisé par le système : JAMAIS source', async () => {
+  it('O7b-E01 / C2 — projection intacte, T4 intact, T4 lié par le système (#715 : sans statut) : JAMAIS source', async () => {
     const compte = await make.account({ plan: 'premium' });
     const clio = await make.asset(compte, { category: 'VEHICULE' });
     const f = await make.assetFile(compte, { assetId: clio.id });
@@ -252,8 +228,8 @@ scenario('L47B', 'Agenda source T3 (TRG-012 à 014) et historique passé affich�
       category: 'action', sources: [{ fileId: f2.id, role: 'SOURCE' }], occurrenceIndex: 'single',
     });
     const realisee = await opDocument(compte, { status: 'REALIZED', realized: '2026-03-10', assetId: clio.id, fileId: f2.id, label: 'Vidange' });
-    // La projection lie l'échéance T4 intacte et la marque réalisée (STATUS_AUTO_COMPLETED).
-    expect(await projeter(compte, [realisee])).toMatchObject({ linked: 1, markedDone: 1 });
+    // La projection lie l'échéance T4 intacte (#715 : sans la marquer « réalisée »).
+    expect(await projeter(compte, [realisee])).toMatchObject({ linked: 1 });
     const tous = await items(compte);
     const res = await t3(compte, tous.map((i) => i.id));
     expect(res.every((x) => x.outcome === 'NONE' && x.changes === 0)).toBe(true);
@@ -317,8 +293,8 @@ scenario('L47B', 'Agenda source T3 (TRG-012 à 014) et historique passé affich�
 
   // ══ Point 2 : historique passé affiché réalisé, sans écriture ═════════════
 
-  // Lot 53 (retour PO D17) : une date passée ne prouve pas la réalisation — « à confirmer », plus « réalisé ».
-  it('O7b-H10 — historique passé : « à confirmer » (agenda, recherche, fiche, suivi, assistant), jamais en retard ; échéance passée : date échue ; AUCUN statut écrit', async () => {
+  // #715 (lot 113P) : plus de statut d'événement — ni « à confirmer », ni « date échue », ni « réalisé ».
+  it('O7b-H10 (#715) — historique passé et échéance passée : aucun statut (agenda, recherche, fiche, suivi, assistant), ni retard ; AUCUN statut écrit', async () => {
     const compte = await make.account({ plan: 'premium' });
     const clio = await make.asset(compte, { category: 'VEHICULE' });
     session.currentAccountId = compte.id;
@@ -333,35 +309,36 @@ scenario('L47B', 'Agenda source T3 (TRG-012 à 014) et historique passé affich�
       accountId: compte.id, assetId: clio.id, origin: 'AUTOMATIC', title: 'Révision', date: plus(-20), nature: 'DEADLINE', businessType: 'maintenance',
       category: 'action', sources: [{ fileId: f.id, role: 'SOURCE' }], occurrenceIndex: 'single',
     });
+    const statutaire = /effectiveStatus|manualStatus|automaticStatus|isOverdue|isDone|toConfirm|"overdue"|"status"/;
     const { getAgendaItems, getAgendaItemById, searchAgendaItems, getHomepageAgendaItems } = await import('@/services/agenda/AgendaQueryService');
     const parId = new Map((await getAgendaItems({ accountId: compte.id, includeUndated: true })).map((i) => [i.id, i]));
-    expect(parId.get(hist.id)).toMatchObject({ effectiveStatus: 'a_confirmer', manualStatus: null });
-    expect(parId.get(hist.id)!.attentionFlags).not.toContain('en_retard');
-    expect(parId.get(echeance.id)).toMatchObject({ effectiveStatus: 'en_retard' });
-    expect((await getAgendaItemById(hist.id, compte.id))!.effectiveStatus).toBe('a_confirmer');
-    expect((await searchAgendaItems('Achat', compte.id)).find((x) => x.id === hist.id)?.effectiveStatus).toBe('a_confirmer');
+    for (const id of [hist.id, echeance.id]) {
+      expect(parId.get(id), 'visible à sa date').toBeDefined();
+      expect(JSON.stringify(parId.get(id))).not.toMatch(statutaire);
+      expect(parId.get(id)!.attentionFlags).not.toContain('en_retard');
+    }
+    expect(JSON.stringify(await getAgendaItemById(hist.id, compte.id))).not.toMatch(statutaire);
+    expect(JSON.stringify((await searchAgendaItems('Achat', compte.id)).find((x) => x.id === hist.id))).not.toMatch(statutaire);
     const accueil = (await getHomepageAgendaItems(compte.id)).map((i) => i.id);
     expect(accueil).not.toContain(hist.id);
-    expect(accueil).toContain(echeance.id);
+    // Une date passée n'est pas « en retard » : l'accueil ne montre que l'à-venir.
+    expect(accueil).not.toContain(echeance.id);
 
     // Fiche du bien (vue d'ensemble, suivi) et assistant.
     const overview = await import('@/app/api/assets/[id]/overview/route');
     const o = await overview.GET(new NextRequest(`http://x/api/assets/${clio.id}/overview`), { params: Promise.resolve({ id: String(clio.id) }) });
-    const timeline = ((await o.json()) as { timeline: Array<{ id: string; isDone: boolean; isOverdue: boolean }> }).timeline;
-    expect(timeline.find((t) => t.id === String(hist.id))).toMatchObject({ isDone: false, isOverdue: false, toConfirm: true });
-    expect(timeline.find((t) => t.id === String(echeance.id))).toMatchObject({ isDone: false, isOverdue: true });
+    const timeline = ((await o.json()) as { timeline: Array<{ id: string }> }).timeline;
+    for (const id of [hist.id, echeance.id]) {
+      const t = timeline.find((x) => x.id === String(id));
+      expect(t, 'Timeline : visible').toBeDefined();
+      expect(JSON.stringify(t)).not.toMatch(statutaire);
+    }
     const followup = await import('@/app/api/assets/[id]/followup/route');
     const fr = await followup.GET(new NextRequest(`http://x/api/assets/${clio.id}/followup?includeDone=true`), { params: Promise.resolve({ id: String(clio.id) }) });
-    const suivi = ((await fr.json()) as { items: Array<{ id: string; effectiveStatus: string; isOverdue: boolean }> }).items;
-    expect(suivi.find((t) => t.id === String(hist.id))).toMatchObject({ effectiveStatus: 'a_confirmer', isOverdue: false });
-    expect(suivi.find((t) => t.id === String(echeance.id))).toMatchObject({ effectiveStatus: 'en_retard', isOverdue: true });
+    const suivi = ((await fr.json()) as { items: Array<{ id: string }> }).items;
+    for (const t of suivi) expect(JSON.stringify(t)).not.toMatch(statutaire);
     const { getCanonicalAgendaItem } = await import('@/services/verebona-assistant/canonical/agenda');
-    expect(await getCanonicalAgendaItem(compte.id, hist.id)).toMatchObject({ status: 'not_proven', overdue: false });
-    expect(await getCanonicalAgendaItem(compte.id, echeance.id)).toMatchObject({ status: 'not_proven', overdue: true });
-    const { listActiveDeadlines } = await import('@/services/verebona-assistant/canonical/actionables');
-    const actives = (await listActiveDeadlines(compte.id, { from: null, to: null })).map((d) => d.id);
-    expect(actives).not.toContain(hist.id);
-    expect(actives).toContain(echeance.id);
+    for (const id of [hist.id, echeance.id]) expect(JSON.stringify(await getCanonicalAgendaItem(compte.id, id))).not.toMatch(statutaire);
 
     // Aucune écriture : le statut en base reste nul.
     expect(await sql`SELECT manual_status FROM agenda_items WHERE id = ${hist.id}`).toEqual([{ manual_status: null }]);

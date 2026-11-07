@@ -8,7 +8,7 @@
  *
  * Requête (`TIMELINE_PAGE_SQL`) :
  *   1. éléments du bien : `agenda_asset_links (asset_id)` → `agenda_items`
- *      (clé primaire), même compte, « annule » exclu ; l'Opération n'est
+ *      (clé primaire), même compte (lot 113P : plus de statut « annulé ») ; l'Opération n'est
  *      retenue que si elle est ACTIVE et du même compte (sinon élément seul),
  *      vérifié par sa clé primaire pour les seuls éléments rattachés (jamais
  *      un parcours de toutes les Opérations) ;
@@ -26,7 +26,6 @@
  * Volume lu borné par la Timeline du bien (index `agenda_asset_links` par
  * bien) ; volume rendu borné par la page. Plan vérifié par l'e2e L84C-E08.
  */
-import { validCompletionProofSql } from '@/services/agenda/completion-proof';
 import {
   DEFAULT_TIMELINE_MODE, decodeTimelineCursor, TIMELINE_PAGE_DEFAULT, TIMELINE_PAGE_MAX, compareTimelineItems, encodeTimelineCursor, timelineItemView,
   type TimelineCursor, type TimelineEntry, type TimelineGroupCounters, type TimelineItemRow, type TimelineItemView, type TimelineMode, type TimelinePage,
@@ -41,16 +40,11 @@ async function defaultQuery(): Promise<TimelineQuery> {
   return async (sql, params = []) => (await pgClient.unsafe(sql, params as never[])) as unknown as Row[];
 }
 
-const NOT_CANCELLED = `(ai.manual_status IS NULL OR ai.manual_status <> 'annule')`;
-
 /**
- * Lot 111R : colonnes du statut effectif CANONIQUE (même calcul que l'Agenda,
- * `computeEffectiveStatus`) — heure / fin de l'élément et preuve de
- * réalisation VALIDE (`completion-proof.ts`), lue dans la MÊME requête
- * (lectures par clé, jamais une requête par élément).
+ * Heure / fin de l'élément (lot 111R). Lot 113P (#715) : plus de statut ni de
+ * « preuve de réalisation » lus — un événement n'a plus de statut.
  */
 const TIME_COLUMNS = `ai.start_time::text AS start_time, to_char(ai.end_date, 'YYYY-MM-DD') AS end_date, ai.end_time::text AS end_time`;
-const STATUS_COLUMNS = `${TIME_COLUMNS}, ${validCompletionProofSql('ai')} AS completion_proven`;
 
 /**
  * $1 compte, $2 bien, $3 mode ('grouped' | 'detailed'), $4 date du curseur
@@ -59,8 +53,8 @@ const STATUS_COLUMNS = `${TIME_COLUMNS}, ${validCompletionProofSql('ai')} AS com
 export const TIMELINE_PAGE_SQL = `
 WITH items AS MATERIALIZED (
   SELECT ai.id, ai.title, ai.start_date AS d, to_char(ai.start_date, 'YYYY-MM-DD') AS start_date,
-         ai.manual_status, ai.origin_field_key, ai.event_nature, ai.business_type,
-         ${TIME_COLUMNS}, ai.account_id, ai.completion_proof_file_id,
+         ai.origin_field_key, ai.event_nature, ai.business_type,
+         ${TIME_COLUMNS}, ai.account_id,
          -- Sous-requête SCALAIRE corrélée (jamais « hachée » sur toute la table) :
          -- une lecture par clé primaire, pour les seuls éléments rattachés.
          CASE WHEN ai.business_operation_id IS NOT NULL THEN (
@@ -70,7 +64,7 @@ WITH items AS MATERIALIZED (
          ai.operation_role AS role
     FROM agenda_asset_links aal
     JOIN agenda_items ai ON ai.id = aal.agenda_item_id
-   WHERE aal.asset_id = $2 AND ai.account_id = $1 AND ${NOT_CANCELLED}
+   WHERE aal.asset_id = $2 AND ai.account_id = $1
 ), heads AS (
   SELECT i.*,
          CASE WHEN i.op IS NULL THEN NULL
@@ -81,9 +75,8 @@ WITH items AS MATERIALIZED (
     FROM heads h
    WHERE $3 = 'detailed' OR h.head IS NULL OR h.head = h.id
 )
-SELECT e.id, e.title, e.start_date, e.manual_status, e.origin_field_key, e.event_nature, e.business_type,
-       -- Lot 111R : preuve de réalisation valide (lectures par clé ; PostgreSQL la reporte après le tri et la limite).
-       e.start_time, e.end_date, e.end_time, ${validCompletionProofSql('e')} AS completion_proven,
+SELECT e.id, e.title, e.start_date, e.origin_field_key, e.event_nature, e.business_type,
+       e.start_time, e.end_date, e.end_time,
        e.op, e.is_head, e.sort_date::text AS sort_key, count(*) OVER () AS remaining
   FROM entries e
  WHERE $4::date IS NULL OR (e.sort_date, e.id) < ($4::date, $5::int)
@@ -92,10 +85,10 @@ SELECT e.id, e.title, e.start_date, e.manual_status, e.origin_field_key, e.event
 
 /** Éléments liés masqués des têtes de la page ($3 : Opérations, $4 : têtes). */
 export const TIMELINE_MEMBERS_SQL = `
-SELECT ai.id, ai.title, to_char(ai.start_date, 'YYYY-MM-DD') AS start_date, ai.manual_status, ai.origin_field_key,
-       ai.event_nature, ai.business_type, ${STATUS_COLUMNS}, ai.business_operation_id AS op
+SELECT ai.id, ai.title, to_char(ai.start_date, 'YYYY-MM-DD') AS start_date, ai.origin_field_key,
+       ai.event_nature, ai.business_type, ${TIME_COLUMNS}, ai.business_operation_id AS op
   FROM agenda_items ai
- WHERE ai.business_operation_id = ANY($3::bigint[]) AND ai.account_id = $1 AND ${NOT_CANCELLED}
+ WHERE ai.business_operation_id = ANY($3::bigint[]) AND ai.account_id = $1
    AND ai.id <> ALL($4::int[])
    AND EXISTS (SELECT 1 FROM agenda_asset_links aal WHERE aal.agenda_item_id = ai.id AND aal.asset_id = $2)`;
 
@@ -108,8 +101,7 @@ SELECT ai.id, ai.title, to_char(ai.start_date, 'YYYY-MM-DD') AS start_date, ai.m
 export const TIMELINE_COUNTERS_SQL = `
 SELECT g.op,
   (SELECT count(*) FROM agenda_items x
-    WHERE x.business_operation_id = g.op AND x.account_id = $1 AND x.id <> g.head
-      AND (x.manual_status IS NULL OR x.manual_status <> 'annule'))::int AS events,
+    WHERE x.business_operation_id = g.op AND x.account_id = $1 AND x.id <> g.head)::int AS events,
   (SELECT count(*) FROM (
       SELECT d.file_id AS id FROM business_operation_documents d WHERE d.operation_id = g.op AND d.account_id = $1 AND d.active
       UNION SELECT l.asset_file_id FROM agenda_file_links l WHERE l.agenda_item_id = g.head) u
@@ -134,7 +126,7 @@ interface ReadTimelineInput {
   mode?: TimelineMode;
   cursor?: TimelineCursor | null;
   limit?: number;
-  /** Date de référence (AAAA-MM-JJ) des états « en retard » / « à confirmer ». */
+  /** Date de référence (AAAA-MM-JJ) — lot 113P : conservée pour la compatibilité, plus aucun état calculé. */
   today: string;
   /**
    * Lot 111R : instant de référence (la route passe l'instant de la requête,

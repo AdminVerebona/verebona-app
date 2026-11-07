@@ -36,7 +36,7 @@ const t4 = (agenda: 'accept' | 'reject' | 'abstain', recurrence: 'accept' | 'abs
 });
 const item = (o: Partial<SourceItem>): SourceItem => ({
   id: 1, functionalKey: null, title: 'Alpha', startDate: '2027-03-01', originFieldKey: null,
-  isAutomatic: true, isAutomaticModified: false, manualStatus: null, ...o,
+  isAutomatic: true, isAutomaticModified: false, ...o,
 });
 const cle = (date: string, rang = 1) => {
   const k = computeAgendaFunctionalKey({ sourceFileId: 40, target: { type: 'ASSET', id: 3 }, businessType: null, originFieldKey: null, occurrence: date });
@@ -51,17 +51,16 @@ beforeEach(() => { vi.spyOn(console, 'info').mockImplementation(() => {}); vi.sp
 afterEach(() => { vi.restoreAllMocks(); });
 
 describe('§A — tout choix utilisateur protège l’événement', () => {
-  it('T4-RES-A — règle unique : manuel, modifié, statut renseigné, prévision confirmée par l’utilisateur', () => {
-    const base = { isAutomatic: true, isAutomaticModified: false, manualStatus: null as string | null };
+  // #715 : plus de « statut renseigné » (supprimé) — reporté sur `isAutomaticModified` par la migration 1526.
+  it('T4-RES-A — règle unique : manuel, modifié, prévision confirmée par l’utilisateur', () => {
+    const base = { isAutomatic: true, isAutomaticModified: false };
     expect(isUserTouched(base)).toBe(false);
     expect(isUserTouched({ ...base, confirmationMode: 'SOURCE' })).toBe(false);
     expect(isUserTouched({ ...base, isAutomatic: false })).toBe(true);
     expect(isUserTouched({ ...base, isAutomaticModified: true })).toBe(true);
-    expect(isUserTouched({ ...base, manualStatus: 'realise' })).toBe(true);
-    expect(isUserTouched({ ...base, manualStatus: 'annule' })).toBe(true);
     expect(isUserTouched({ ...base, confirmationMode: 'USER' })).toBe(true);
     // Garde SQL : mêmes conditions.
-    expect(agendaUntouchedSql('i')).toBe("i.is_automatic AND NOT COALESCE(i.is_automatic_modified, false) AND (i.manual_status IS NULL OR i.manual_status = '') AND i.confirmation_mode IS DISTINCT FROM 'USER'");
+    expect(agendaUntouchedSql('i')).toBe("i.is_automatic AND NOT COALESCE(i.is_automatic_modified, false) AND i.confirmation_mode IS DISTINCT FROM 'USER'");
   });
 
   it('T4-RES-01 — fin de récurrence : aucune prévision au statut utilisateur (« réalisé ») n’est retirée ; prévision intacte retirée (T4-RES-04)', async () => {
@@ -91,7 +90,7 @@ describe('§A — tout choix utilisateur protège l’événement', () => {
   });
 
   it('T4-RES-03 — plan de synchronisation : prévision confirmée par l’utilisateur ni mise à jour ni retirée', () => {
-    const p = plan([item({ id: 1, functionalKey: cle('2027-03-01'), confirmationMode: 'USER' }), item({ id: 2, title: 'Beta', startDate: '2027-05-01', functionalKey: cle('2027-05-01'), manualStatus: 'realise' })],
+    const p = plan([item({ id: 1, functionalKey: cle('2027-03-01'), confirmationMode: 'USER' }), item({ id: 2, title: 'Beta', startDate: '2027-05-01', functionalKey: cle('2027-05-01'), isAutomaticModified: true })],
       [{ action: 'create', title: 'Alpha' }]);
     expect(p.steps).toMatchObject([{ kind: 'protected', itemId: 1 }]);
     expect(p.remove).toEqual([]);

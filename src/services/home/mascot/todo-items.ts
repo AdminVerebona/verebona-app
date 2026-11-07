@@ -71,8 +71,6 @@ const SUJETS: Readonly<Record<string, { noun: string; fixed?: string }>> = {
   'DATA-SUPPLIER': { noun: 'Fournisseur du document' },
   'LINK-EQUIP-ASSET': { noun: 'Bien de l’équipement', fixed: 'Équipement à rattacher à un bien' },
   'SUPPLIER-IDENTITY': { noun: 'Fournisseur', fixed: 'Fournisseur à confirmer' },
-  'AGENDA-DONE': { noun: 'Échéance', fixed: 'Échéance réalisée à confirmer' },
-  'AGENDA-NOT-DONE': { noun: 'Échéance', fixed: 'Échéance non réalisée à vérifier' },
   'AGENDA-PROPOSAL': { noun: 'Échéance', fixed: 'Échéance à ajouter à l’agenda' },
   'MIG-REVIEW': { noun: 'Valeur', fixed: 'Valeur à choisir' },
   'ENTITY-FIELD': { noun: 'Valeur', fixed: 'Valeur d’équipement à choisir' },

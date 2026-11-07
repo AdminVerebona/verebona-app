@@ -10,7 +10,7 @@ import { pgClient } from '@/db';
 import { getToProcessPage } from '@/services/to-process/to-process-query.service';
 import { getEntitlements } from '@/services/entitlements.service';
 import type { MascotAgendaRow, MascotDocRow, MascotExportRow, MascotRawData, MascotRights } from './signals';
-import { EXT_ACTION_LOOKBACK_DAYS, mascotRightsFrom } from './signals';
+import { mascotRightsFrom } from './signals';
 import { MAX_SECONDARIES, MAX_SUBJECTS } from './types';
 import { upcomingDeadlinesSqlFilter } from '@/services/agenda/AgendaQueryService';
 import { isHistoricalAgendaEvent } from '@/services/agenda/agenda-historical';
@@ -21,13 +21,17 @@ import { effectiveAnalysisStateSql } from '@/services/ai/processing-status/effec
 import { analysisVisibilityColumnReady, userVisibleAnalysisSql } from '@/services/ai/processing-status/processing-visibility';
 import { agendaDateRole } from '@/services/agenda/agenda-date-role';
 // Lot 112G : statut effectif COMMUN (111R) — preuve de réalisation comprise.
-import { effectiveStatusColumns, isAgendaItemSettled, notSettledByProofFilter, statusRowOfSelected } from '@/services/agenda/effective-status-read';
 import { T6_RELEVANT_FACT_PATTERN, T6_ASSESSMENT_MAX_AGE_DAYS } from './t6-interpellation';
 
 /** Un envoi ou une analyse bloqués depuis plus longtemps ne sont plus « en cours ». */
 const PROCESSING_WINDOW_HOURS = 24;
 /** Horizon de l'agenda lu pour la prochaine date. */
 const AGENDA_FORWARD_DAYS = 730;
+/**
+ * Lot 113P (#715) : profondeur de lecture des dates PASSÉES — zéro. Un événement
+ * passé ne produit ni rappel, ni « c'est fait ? », ni « en retard ».
+ */
+const AGENDA_PAST_LOOKBACK_DAYS = 0;
 /**
  * NFR-001 : la mascotte n'utilise que la tête de la file « À traiter » — au
  * plus 2 sujets et 3 secondaires. Le double laisse la marge des doublons
@@ -169,7 +173,7 @@ async function readOnboarding(accountId: number): Promise<MascotRawData['onboard
 }
 
 /** Colonnes d'une échéance lue par la mascotte (alias `i`, bien `a`, lien `l`). */
-const agendaColumns = (t4: boolean, es = '') => `${es ? `${es}, ` : ''}i.id, i.title, to_char(i.start_date, 'YYYY-MM-DD') AS date,
+const agendaColumns = (t4: boolean) => `i.id, i.title, to_char(i.start_date, 'YYYY-MM-DD') AS date,
             i.occurrence_nature AS "occurrenceNature", i.requires_qualification AS "requiresQualification",
             i.home_category AS "homeCategory", i.origin_type AS "originType",
             i.origin_field_key AS "originFieldKey",
@@ -191,20 +195,8 @@ const AGENDA_ASSET_JOIN = `LEFT JOIN LATERAL (
        ) l ON TRUE
        LEFT JOIN assets a ON a.id = l.asset_id AND a.account_id = i.account_id AND a.deleted_at IS NULL`;
 
-/**
- * Lot 112G — l'échéance est-elle CLOSE selon le statut effectif commun
- * (`computeEffectiveStatus` + preuve valide 103D, colonnes `es*`) ? Réalisée
- * et prouvée, ou réalisée / annulée à la main : ni rappel, ni « en retard »,
- * ni « c'est fait ? ». Ligne lue sans ces colonnes : jamais écartée ici.
- */
-function closedByEffectiveStatus(i: Row, now: Date): boolean {
-  if (!('esCompletionProven' in i)) return false;
-  return isAgendaItemSettled(statusRowOfSelected(i), now);
-}
-
 /** Lignes lues → échéances « action » de la mascotte (classification T4 partagée). */
 function agendaRowsOf(r: Row[]): MascotAgendaRow[] {
-  const now = new Date();
   const classer = (i: Row): HomeAgendaItemForClassification => ({
     homeCategory: (i.homeCategory as string | null) ?? null,
     originType: String(i.originType ?? 'manual'),
@@ -213,7 +205,7 @@ function agendaRowsOf(r: Row[]): MascotAgendaRow[] {
     businessType: (i.businessType as string | null | undefined) ?? null,
     originFieldKey: (i.originFieldKey as string | null | undefined) ?? null,
   });
-  return r.filter((i) => isAgendaActionItemT4(classer(i)) && !closedByEffectiveStatus(i, now)).map(agendaRowOf);
+  return r.filter((i) => isAgendaActionItemT4(classer(i))).map(agendaRowOf);
 }
 
 /** Ligne lue → échéance de la mascotte (sans filtre) — lot 76A : partagée avec l'empreinte T6. */
@@ -269,20 +261,19 @@ async function readAgenda(accountId: number, today: string): Promise<MascotAgend
   // exclus hors prévisions, faute de nature pour écarter les faits passés.
   const filtreT4 = await upcomingDeadlinesSqlFilter('i');
   const t4 = filtreT4 !== '';
-  // Lot 112G : statut effectif commun — colonnes du calcul et pré-filtre des faits prouvés.
-  const [es, prouve] = await Promise.all([effectiveStatusColumns('i'), notSettledByProofFilter('i', '$2::date')]);
+  // Lot 113P (#715) : plus de statut d'événement — un rappel se fonde sur une
+  // date FUTURE (ou du jour) : aucune échéance passée n'est lue.
   const r = await rows(
-    `SELECT ${agendaColumns(t4, es)}
+    `SELECT ${agendaColumns(t4)}
        FROM agenda_items i
        ${AGENDA_ASSET_JOIN}
       WHERE i.account_id = $1
-        AND (i.manual_status IS NULL OR trim(i.manual_status) = '')${prouve}
         ${t4 ? filtreT4 : "AND (i.is_automatic = FALSE OR i.occurrence_nature = 'FORECAST')"}
         AND i.start_date >= ($2::date - $3::int)
         AND i.start_date <= ($2::date + $4::int)
       ORDER BY i.start_date ASC, i.id ASC
       LIMIT ${AGENDA_LIMIT}`,
-    [accountId, today, EXT_ACTION_LOOKBACK_DAYS, AGENDA_FORWARD_DAYS],
+    [accountId, today, AGENDA_PAST_LOOKBACK_DAYS, AGENDA_FORWARD_DAYS],
   );
   return agendaRowsOf(r);
 }
@@ -291,8 +282,6 @@ async function readAgenda(accountId: number, today: string): Promise<MascotAgend
 export const T6_AGENDA_EXTRA_LIMIT = 120;
 /** Lot 75E (B) : échéances déjà décidées « à présenter » relues hors file d'examen (affichage). */
 export const T6_AGENDA_SHOWN_LIMIT = 40;
-/** Lot 71G (T6-02) : ancienneté maximale d'une échéance dépassée encore examinée. */
-const T6_OVERDUE_MAX_LOOKBACK_DAYS = 730;
 
 /** Lot 75E (B) : table du curseur d'examen (0551) présente ? Lue une fois par processus. */
 let examinations: Promise<boolean> | null = null;
@@ -331,6 +320,9 @@ export function t6ExaminationsReady(): Promise<boolean> {
  *     `backlog` signale qu'il en reste au-delà (reprise durable) ;
  *   · à part, et bornées, les échéances non dues déjà décidées « à présenter »
  *     (l'affichage reste possible pendant la reprise).
+ *
+ * Lot 113P (#715) : profondeur passée = `AGENDA_PAST_LOOKBACK_DAYS` (zéro) —
+ * plus aucune échéance dépassée n'est examinée (`longOverdue` toujours faux).
  */
 async function readT6Agenda(accountId: number, today: string, horizonDays = 180): Promise<{ rows: MascotAgendaRow[]; backlog: boolean }> {
   const [ok] = await rows(`SELECT to_regclass('t6_interpellation_assessments') IS NOT NULL AND to_regclass('t6_reminder_preferences') IS NOT NULL AS ok`, []);
@@ -338,9 +330,9 @@ async function readT6Agenda(accountId: number, today: string, horizonDays = 180)
   const filtreT4 = await upcomingDeadlinesSqlFilter('i');
   const t4 = filtreT4 !== '';
   const ex = await t6ExaminationsReady();
-  // Lot 112G : statut effectif commun (preuve de réalisation 103D comprise).
-  const [es, prouve] = await Promise.all([effectiveStatusColumns('i'), notSettledByProofFilter('i', '$2::date')]);
-  const actif = `(i.manual_status IS NULL OR trim(i.manual_status) = '')${prouve}
+  // Lot 113P (#715) : plus de statut d'événement (aucun filtre « réalisé / annulé ») ;
+  // seules les dates futures (ou du jour) sont lues — plus d'échéance « dépassée ».
+  const actif = `TRUE
         ${t4 ? filtreT4 : "AND (i.is_automatic = FALSE OR i.occurrence_nature = 'FORECAST')"}`;
   const documents = `(SELECT l2.asset_file_id AS file_id FROM agenda_file_links l2 WHERE l2.agenda_item_id = i.id
                        UNION SELECT i.origin_ref_id WHERE i.origin_ref_type = 'asset_file' AND i.origin_ref_id IS NOT NULL)`;
@@ -352,7 +344,7 @@ async function readT6Agenda(accountId: number, today: string, horizonDays = 180)
         ORDER BY i.start_date ASC, i.id ASC LIMIT ${AGENDA_LIMIT}
      ),
      base AS (
-       SELECT ${agendaColumns(t4, es)},
+       SELECT ${agendaColumns(t4)},
               (i.start_date < $2::date - $3::int) AS "longOverdue",
               (d.n > 0) AS "hasDocs", (k.faits IS NOT NULL) AS "hasFacts",
               t.id AS "assessmentId", t.decision AS "assessmentDecision",
@@ -418,7 +410,7 @@ async function readT6Agenda(accountId: number, today: string, horizonDays = 180)
      UNION ALL
      (SELECT *, FALSE FROM eligibles WHERE NOT "due" AND "assessmentDecision" = 'SHOW_NOW'
        ORDER BY sd ASC, id ASC LIMIT ${T6_AGENDA_SHOWN_LIMIT})`,
-    [accountId, today, EXT_ACTION_LOOKBACK_DAYS, AGENDA_FORWARD_DAYS, T6_OVERDUE_MAX_LOOKBACK_DAYS, T6_RELEVANT_FACT_PATTERN, horizonDays],
+    [accountId, today, AGENDA_PAST_LOOKBACK_DAYS, AGENDA_FORWARD_DAYS, AGENDA_PAST_LOOKBACK_DAYS, T6_RELEVANT_FACT_PATTERN, horizonDays],
   );
   const file = r.filter((x) => x.inQueue === true);
   const backlog = file.length > T6_AGENDA_EXTRA_LIMIT;
@@ -426,42 +418,13 @@ async function readT6Agenda(accountId: number, today: string, horizonDays = 180)
   return { rows: agendaRowsOf(lues), backlog };
 }
 
-/** Échéances dépassées lues au plus (au-delà : la présence suffit, jamais un total affiché). */
-const OVERDUE_AGENDA_LIMIT = 200;
-
 /**
- * Lot 53 (retour PO D25) : TOUTES les échéances « action » ouvertes dont la
- * date est dépassée — sans la fenêtre de 60 jours des sujets ni la limite
- * de deux sujets. La bulle ne dit jamais « aucune échéance dépassée » ou
- * « tout est à jour » tant qu'il en reste une (identifiants et dates seuls).
+ * Lot 113P (#715) — plus d'échéance « dépassée » : une date passée n'est ni un
+ * retard ni une action due (l'ancienne lecture des lots 53 D25 / 112G est
+ * retirée). Liste toujours vide, jamais « inconnue ».
  */
-async function readOverdueAgenda(accountId: number, today: string): Promise<Array<{ id: number; date: string }>> {
-  const filtreT4 = await upcomingDeadlinesSqlFilter('i');
-  const t4 = filtreT4 !== '';
-  // Lot 112G : une échéance réalisée et prouvée n'est jamais « dépassée ».
-  const [es, prouve] = await Promise.all([effectiveStatusColumns('i'), notSettledByProofFilter('i', '$2::date')]);
-  const now = new Date();
-  const r = await rows(
-    `SELECT ${es}, i.id, to_char(i.start_date, 'YYYY-MM-DD') AS date, i.title,
-            i.home_category AS "homeCategory", i.origin_type AS "originType", i.origin_field_key AS "originFieldKey"
-            ${t4 ? ', i.event_nature AS "eventNature", i.business_type AS "businessType"' : ''}
-       FROM agenda_items i
-      WHERE i.account_id = $1
-        AND (i.manual_status IS NULL OR trim(i.manual_status) = '')${prouve}
-        ${t4 ? filtreT4 : "AND (i.is_automatic = FALSE OR i.occurrence_nature = 'FORECAST')"}
-        AND coalesce(greatest(i.end_date, i.start_date), i.start_date) < $2::date
-      ORDER BY i.start_date DESC, i.id DESC
-      LIMIT ${OVERDUE_AGENDA_LIMIT}`,
-    [accountId, today],
-  );
-  return r
-    .filter((i) => !closedByEffectiveStatus(i, now))
-    .filter((i) => isAgendaActionItemT4({
-      homeCategory: (i.homeCategory as string | null) ?? null, originType: String(i.originType ?? 'manual'), title: String(i.title ?? ''),
-      eventNature: (i.eventNature as string | null | undefined) ?? null, businessType: (i.businessType as string | null | undefined) ?? null,
-      originFieldKey: (i.originFieldKey as string | null | undefined) ?? null,
-    }))
-    .map((i) => ({ id: Number(i.id), date: String(i.date) }));
+async function readOverdueAgenda(): Promise<Array<{ id: number; date: string }>> {
+  return [];
 }
 
 /** ATP-004 : toutes les échéances déjà portées par une action ouverte (ids seuls). */
@@ -538,7 +501,7 @@ export async function collectMascotData(accountId: number, now: Date = new Date(
     safe('agenda', () => readAgenda(accountId, today)),
     safe('acquittements', () => readAcknowledgments(accountId)),
     safe('droits', () => readRights(accountId)),
-    safe('échéances dépassées', () => readOverdueAgenda(accountId, today)),
+    safe('échéances dépassées', () => readOverdueAgenda()),
     // Lot 61 : décisions « À traiter » que T6 ne doit pas contredire.
     safe('à traiter (décisions)', () => readToProcessSettledAgendaIds(accountId, today)),
     // Lot 71G : échéances que seule l'évaluation T6 examine (anciennes, lointaines, reprise).

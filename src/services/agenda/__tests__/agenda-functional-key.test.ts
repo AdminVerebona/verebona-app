@@ -12,7 +12,7 @@ const d = (over: Partial<SyncDecision>): SyncDecision => ({
 });
 const item = (over: Partial<SourceItem>): SourceItem => ({
   id: 1, functionalKey: null, title: 'Prochain entretien', startDate: '2026-03-01', originFieldKey: 'maintenanceDueDate',
-  isAutomatic: true, isAutomaticModified: false, manualStatus: null, ...over,
+  isAutomatic: true, isAutomaticModified: false, ...over,
 });
 
 describe('clé fonctionnelle', () => {
@@ -59,13 +59,14 @@ describe('planSourceSync (T4-08)', () => {
     expect(p.steps).toEqual([expect.objectContaining({ kind: 'update', itemId: 7, adopted: true })]);
   });
 
-  it('élément modifié à la main (ou marqué réalisé) : jamais mis à jour ni retiré (§14.6)', () => {
+  // #715 : plus de statut « réalisé » qui protège — la migration 1526 l'a reporté sur `isAutomaticModified`.
+  it('élément modifié à la main : jamais mis à jour ni retiré (§14.6)', () => {
     const key = (planSourceSync({ ...base, decisions: [d({})], items: [] }).steps[0] as { key: string }).key;
     const p = planSourceSync({ ...base, decisions: [d({ date: '2026-05-01' })], items: [item({ id: 5, functionalKey: key, isAutomaticModified: true })] });
     expect(p.steps).toEqual([expect.objectContaining({ kind: 'protected', itemId: 5 })]);
-    const vide = planSourceSync({ ...base, decisions: [], items: [item({ id: 5, functionalKey: key, manualStatus: 'realise' }), item({ id: 6, functionalKey: 'x' })] });
+    const vide = planSourceSync({ ...base, decisions: [], items: [item({ id: 5, functionalKey: key, isAutomaticModified: true }), item({ id: 6, functionalKey: 'x' })] });
     expect(vide.remove).toEqual([6]);
-    expect(isUserTouched({ isAutomatic: false, isAutomaticModified: false, manualStatus: null })).toBe(true);
+    expect(isUserTouched({ isAutomatic: false, isAutomaticModified: false })).toBe(true);
   });
 
   it('événement disparu : retiré ; élément consolidé (skip_duplicate) conservé', () => {

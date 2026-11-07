@@ -61,10 +61,6 @@ export interface CommandLookup {
   today(): string;
   findAssets(accountId: number, words: string[]): Promise<Array<{ id: number; name: string; city?: string | null }>>;
   getAsset(accountId: number, id: number): Promise<{ id: number; name: string; city?: string | null } | null>;
-  findAgendaItems(accountId: number, words: string[], opts: { openOnly: boolean }): Promise<Array<{ id: number; title: string; date: string | null }>>;
-  getAgendaItem(accountId: number, id: number): Promise<{ id: number; title: string; date: string | null; manualStatus: string | null } | null>;
-  /** Échéances ouvertes (non réalisées / annulées), éventuellement passées, d'un bien. */
-  listOpenAgendaItems(accountId: number, opts: { pastOnly: boolean; assetIds: number[]; today: string; limit: number }): Promise<Array<{ id: number; title: string; date: string | null }>>;
   /** Bien et ses caractéristiques, pour UPDATE_ASSET_FIELD (ancienne valeur, famille, disponibilité). */
   getAssetState?(accountId: number, id: number): Promise<AssetState | null>;
 }
@@ -103,45 +99,11 @@ export const sqlLookup: CommandLookup = {
     )) as unknown as Array<{ id: number; name: string; city: string | null }>;
     return r[0] ?? null;
   },
-  async findAgendaItems(accountId, words, { openOnly }) {
-    const w = words.filter((x) => x.length >= 3).slice(0, 4);
-    if (w.length === 0) return [];
-    const cond = w.map((_, i) => `unaccent(lower(i.title)) LIKE unaccent(lower($${i + 2}))`).join(' AND ');
-    return (await pgClient.unsafe(
-      `SELECT i.id, i.title, to_char(i.start_date, 'YYYY-MM-DD') AS date FROM agenda_items i
-        WHERE i.account_id = $1 AND (${cond}) ${openOnly ? 'AND i.manual_status IS NULL' : ''}
-        ORDER BY i.start_date NULLS LAST, i.id LIMIT 10`,
-      [accountId, ...w.map((x) => `%${x}%`)] as never[],
-    )) as unknown as Array<{ id: number; title: string; date: string | null }>;
-  },
-  async listOpenAgendaItems(accountId, { pastOnly, assetIds, today, limit }) {
-    // Lot 47B : « mes échéances passées » — un fait historique passé est déjà
-    // réalisé (règle partagée `agenda-historical`), jamais une cible.
-    const { historicalSql } = await import('@/services/agenda/agenda-historical');
-    const { agendaFunctionalColumnsReady } = await import('@/services/agenda/agenda-columns');
-    const col = await agendaFunctionalColumnsReady().catch(() => false);
-    return (await pgClient.unsafe(
-      `SELECT i.id, i.title, to_char(i.start_date, 'YYYY-MM-DD') AS date FROM agenda_items i
-        WHERE i.account_id = $1 AND i.manual_status IS NULL
-          AND ($2::boolean IS FALSE OR (i.start_date < $3::date AND NOT ${historicalSql('i', col)}))
-          AND ($4::int[] IS NULL OR EXISTS (SELECT 1 FROM agenda_asset_links l WHERE l.agenda_item_id = i.id AND l.asset_id = ANY($4::int[])))
-        ORDER BY i.start_date NULLS LAST, i.id LIMIT $5`,
-      [accountId, pastOnly, today, assetIds.length ? assetIds : null, limit] as never[],
-    )) as unknown as Array<{ id: number; title: string; date: string | null }>;
-  },
   async getAssetState(accountId, id) {
     // CDC 15 T2-40 : la valeur présentée à la confirmation (« A → B ») est
     // la valeur CANONIQUE — celle que l'assistant lit et que la fiche affiche
     // (`commandAssetState`), la même que l'exécuteur relit avant d'écrire.
     return (await import('../canonical/commands')).commandAssetState(accountId, id);
-  },
-  async getAgendaItem(accountId, id) {
-    const r = (await pgClient.unsafe(
-      `SELECT id, title, to_char(start_date, 'YYYY-MM-DD') AS date, manual_status AS "manualStatus"
-         FROM agenda_items WHERE id = $1 AND account_id = $2`,
-      [id, accountId] as never[],
-    )) as unknown as Array<{ id: number; title: string; date: string | null; manualStatus: string | null }>;
-    return r[0] ?? null;
   },
 };
 
@@ -190,35 +152,8 @@ export async function resolveDraft(
     return resolveAssetFieldUpdate(draft, input, lookup, actionId);
   }
 
-  // Action en masse : une action — donc un résultat — par échéance visée.
-  if (draft.bulk) {
-    return resolveBulk(draft as Extract<CommandDraft, { targetWords: string[] }>, input, lookup, actionId);
-  }
-
-  // Marquer réalisée / annuler une échéance existante.
-  let item: { id: number; title: string; date: string | null } | null = null;
-  if (draft.targetFromContext && input.reference?.type === 'agenda_item') {
-    item = await lookup.getAgendaItem(acc, input.reference.id);
-  } else if (draft.targetWords.length) {
-    const found = await lookup.findAgendaItems(acc, draft.targetWords, { openOnly: true });
-    if (found.length > 1) {
-      return { needInfo: `Plusieurs échéances correspondent : ${found.slice(0, 5).map((i) => `« ${i.title} »${i.date ? ` (${formatDateFr(i.date)})` : ''}`).join(', ')}. Précisez laquelle.` };
-    }
-    item = found[0] ?? null;
-  }
-  if (!item) return { needInfo: 'Je n’ai pas trouvé cette échéance. Précisez son intitulé.' };
-  const verbe = draft.command === 'MARK_AGENDA_DONE' ? 'Marquer comme réalisée' : 'Annuler';
-  const quand = item.date ? ` du ${formatDateFr(item.date)}` : '';
-  return {
-    actionId, command: draft.command, dependsOn: [],
-    targets: [{ type: 'agenda_item', id: item.id, label: item.title }],
-    params: { agendaItemId: item.id },
-    preview: `${verbe} l’échéance « ${item.title} »${quand}.`,
-    effects: [
-      `Échéance : ${item.title}${quand}`,
-      `Nouveau statut : ${draft.command === 'MARK_AGENDA_DONE' ? 'réalisée' : 'annulée'}`,
-    ],
-  };
+  // Lot 113P (#715) : plus de « marquer réalisée » / « annuler » (aucun statut d'événement).
+  return { needInfo: 'Je ne peux pas faire cette modification depuis l’assistant.' };
 }
 
 /**
@@ -295,45 +230,12 @@ async function resolveAssetFieldUpdate(
   };
 }
 
-async function resolveBulk(
-  draft: Extract<CommandDraft, { targetWords: string[] }>,
-  input: AssistantRequestInput,
-  lookup: CommandLookup,
-  prefix: string,
-): Promise<PlannedAction[] | { needInfo: string }> {
-  const bulk = draft.bulk!;
-  let assetIds: number[] = [];
-  let bienLibelle = '';
-  if (bulk.assetWords.length) {
-    const found = await lookup.findAssets(input.accountId, bulk.assetWords);
-    if (found.length === 0) return { needInfo: 'Je n’ai pas trouvé ce bien dans votre compte.' };
-    if (found.length > 1) return { needInfo: `Plusieurs biens correspondent : ${found.slice(0, 5).map((a) => nomBien(a)).join(', ')}. Précisez lequel.` };
-    assetIds = [found[0].id];
-    bienLibelle = ` de ${nomBien(found[0])}`;
-  }
-  const items = await lookup.listOpenAgendaItems(input.accountId, {
-    pastOnly: bulk.scope === 'past', assetIds, today: lookup.today(), limit: MAX_BULK_TARGETS + 1,
-  });
-  if (items.length === 0) return { needInfo: `Aucune échéance${bulk.scope === 'past' ? ' passée' : ''} à traiter${bienLibelle}.` };
-  if (items.length > MAX_BULK_TARGETS) {
-    return { needInfo: `Plus de ${MAX_BULK_TARGETS} échéances sont concernées : précisez un bien ou une période.` };
-  }
-  const verbe = draft.command === 'MARK_AGENDA_DONE' ? 'Marquer comme réalisée' : 'Annuler';
-  return items.map((item, i) => {
-    const quand = item.date ? ` du ${formatDateFr(item.date)}` : '';
-    return {
-      actionId: `${prefix}.${i + 1}`, command: draft.command, dependsOn: [],
-      targets: [{ type: 'agenda_item' as const, id: item.id, label: item.title }],
-      params: { agendaItemId: item.id },
-      preview: `${verbe} « ${item.title} »${quand}.`,
-      effects: [],
-    };
-  });
-}
-
 // ── Empreinte et persistance ───────────────────────────────────────────────
 
 export const hashActions = (payload: string) => createHash('sha256').update(payload).digest('hex');
+
+/** Libellé d'une commande retirée encore présente dans un plan ancien (#715 : « réalisé » / « annulé »). */
+export const RETIRED_COMMAND_LABEL = 'Action retirée';
 
 function toPreview(plan: StoredPlan): CommandPlanPreview {
   return {
@@ -341,7 +243,8 @@ function toPreview(plan: StoredPlan): CommandPlanPreview {
     summary: plan.summary,
     expiresAt: plan.expiresAt,
     actions: plan.actions.map((a) => ({
-      actionId: a.actionId, label: WRITE_COMMAND_CATALOG[a.command].label,
+      // #715 (lot 113P) : un plan ancien peut porter une commande retirée (statut d'échéance).
+      actionId: a.actionId, label: WRITE_COMMAND_CATALOG[a.command]?.label ?? RETIRED_COMMAND_LABEL,
       preview: a.preview, effects: a.effects, dependsOn: a.dependsOn,
     })),
   };

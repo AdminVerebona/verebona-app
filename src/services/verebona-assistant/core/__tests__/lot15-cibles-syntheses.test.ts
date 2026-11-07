@@ -32,8 +32,7 @@ const DOC: Doc = {
   assets: [{ assetId: 3, name: 'Maison', role: 'PRIMARY', origin: 'USER' }], facts: [],
 };
 const ITEM: Item = {
-  id: 44, title: 'Contrôle technique', date: '2026-01-10', nature: 'DEADLINE', businessType: 'inspection', status: 'not_proven',
-  manualStatus: null, forecast: false, category: 'action', isAutomatic: true, userModified: false, overdue: true,
+  id: 44, title: 'Contrôle technique', date: '2026-01-10', nature: 'DEADLINE', businessType: 'inspection', forecast: false, category: 'action', isAutomatic: true, userModified: false,
   assets: [{ assetId: 3, name: 'Clio' }], sources: [],
 };
 const readers = (over: Partial<import('../target-answer').TargetReaders> = {}) => ({
@@ -74,15 +73,15 @@ describe('T2-19 à T2-21 — lectures ciblées', () => {
     expect(r.document).not.toHaveBeenCalled();
   });
 
-  it('échéance citée dans le fil : date et statut à 4 états (une date passée ne prouve rien)', async () => {
+  // #715 : plus de statut d'événement — l'agenda situe l'événement dans le temps, sans dire s'il a été réalisé.
+  it('échéance citée dans le fil : date, et aucune affirmation de réalisation', async () => {
     const t = targetsFromInput({ reference: { type: 'agenda_item', id: 44, method: 'pronoun' } });
     const d = await T.answerFromTarget(1, 'Et sa date ?', t, readers());
     expect(d?.text).toContain('10 janvier 2026');
     expect(d?.intent).toBe('ACCOUNT_FACT_AGENDA');
     const st = await T.answerFromTarget(1, 'Il a été fait ?', t, readers());
-    expect(st?.text).toContain('une date passée ne prouve pas');
-    const fait = T.agendaTargetAnswer({ ...ITEM, status: 'completed', manualStatus: 'realise' }, 'status', '2026-09-30');
-    expect(fait.text).toContain('marqué comme réalisé');
+    expect(st?.text).toContain('sans indiquer s’il a été réalisé');
+    expect(st?.text).not.toMatch(/marqué comme réalisé|en retard/);
   });
 
   it('document hors compte → null (jamais une réponse inventée)', async () => {
@@ -249,7 +248,8 @@ describe('T2-37 — le parseur de commandes n’intercepte plus les questions (h
     expect(parseCommand('Mets la date d’achat de la Polo au 25/05/2021', today)).toMatchObject({ command: 'UPDATE_ASSET_FIELD', value: '2021-05-25' });
     expect(parseCommand('Modifie la date d’achat de la Polo', today)).toMatchObject({ command: 'UPDATE_ASSET_FIELD', value: null });
     expect(parseCommand('Renseigne la date d’achat de la Polo : 25/05/2021', today)).toMatchObject({ command: 'UPDATE_ASSET_FIELD', value: '2021-05-25' });
-    expect(parseCommand('Marque le ramonage comme fait', today)).toMatchObject({ command: 'MARK_AGENDA_DONE' });
+    // #715 : plus de statut d'événement — « marquer comme fait » n'est plus une commande d'écriture.
+    expect(parseCommand('Marque le ramonage comme fait', today)).toBeNull();
   });
 });
 

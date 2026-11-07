@@ -210,8 +210,8 @@ describe('dates (§10)', () => {
     expect(p.paragraphs.map((x) => x.tile?.label)).toEqual(['Ramonage', 'Vidange']);
   });
 
-  it('DATE-04 — une date réalisée ou annulée n’est jamais lue (filtrée à la source)', () => {
-    // Le collecteur ne lit que les échéances sans statut manuel ; sans ligne, pas de sujet.
+  it('DATE-04 — sans ligne d’agenda, pas de sujet', () => {
+    // #715 : plus de statut d'événement — le collecteur lit les dates à venir.
     expect(codes(present(raw({ agenda: [] })))).toEqual(['CLEAR']);
   });
 });
@@ -219,11 +219,11 @@ describe('dates (§10)', () => {
 describe('« C’est fait » (§11)', () => {
   const echue = agenda({ id: 8, title: 'Contrôle technique', date: '2026-09-20', assetName: 'Polo', assetId: 2 });
 
-  it('MASC-EXT-ACTION — action externe échue : Voir + C’est fait', () => {
+  // #715 : plus de statut d'événement — une échéance échue ne demande jamais « C’est fait » (MASC-EXT-ACTION retiré).
+  it('#715 — action externe échue : aucun sujet, jamais « C’est fait »', () => {
     const p = present(raw({ agenda: [echue] }));
-    expect(codes(p)).toEqual(['MASC-EXT-ACTION']);
-    expect(p.paragraphs[0].actions.map((a) => a.label)).toEqual(['Voir', 'C’est fait']);
-    expect(p.paragraphs[0].actions[1].target).toEqual({ kind: 'done', occurrenceKey: extActionOccurrenceKey(8), cycleKey: '2026-09-20' });
+    expect(codes(p)).toEqual(['CLEAR']);
+    expect(JSON.stringify(p)).not.toContain('C’est fait');
   });
 
   it('DONE-01 — occurrence acquittée : masquée', () => {
@@ -231,12 +231,13 @@ describe('« C’est fait » (§11)', () => {
     expect(codes(p)).toEqual(['CLEAR']);
   });
 
-  it('DONE-03 — nouveau cycle (nouvelle date) : nouvelle occurrence affichée', () => {
+  it('DONE-03 (#715) — nouvelle date FUTURE : l’échéance redevient une date à venir (sans « C’est fait »)', () => {
     const p = present(raw({
-      agenda: [{ ...echue, date: '2026-09-24' }],
+      agenda: [{ ...echue, date: '2026-10-24' }],
       acknowledgments: [{ occurrenceKey: extActionOccurrenceKey(8), cycleKey: '2026-09-20' }],
     }));
-    expect(codes(p)).toEqual(['MASC-EXT-ACTION']);
+    expect(codes(p)).not.toContain('MASC-EXT-ACTION');
+    expect(JSON.stringify(p)).not.toContain('C’est fait');
   });
 
   it('MASC-BLOCKED — dépendance : seule l’étape actionnable est proposée', () => {
@@ -251,15 +252,14 @@ describe('« C’est fait » (§11)', () => {
 });
 
 describe('plafonds et secondaires (§4, §12)', () => {
-  it('UI-03 — 2 sujets avec 4 actions : 1 secondaire au plus', () => {
-    const e1 = agenda({ id: 8, date: '2026-09-20' });
-    const e2 = agenda({ id: 9, date: '2026-09-21', title: 'Vidange' });
+  // #715 : les échéances échues (MASC-EXT-ACTION, 2 actions) ne sont plus des sujets — plafonds vérifiés sur des dates à venir.
+  it('UI-03 — plusieurs sujets : 1 secondaire au plus, plafond d’actions respecté', () => {
+    const e1 = agenda({ id: 8, date: '2026-10-20' });
+    const e2 = agenda({ id: 9, date: '2026-10-21', title: 'Vidange' });
     const p = present(raw({ agenda: [e1, e2, agenda({ id: 10, date: '2026-12-01', title: 'Assurance' })], toProcess: [] }));
-    expect(p.paragraphs.flatMap((x) => x.actions)).toHaveLength(3); // DATE (1) + EXT (2)
-    const p2 = present(raw({ agenda: [e1, e2] }));
-    expect(p2.paragraphs.flatMap((x) => x.actions)).toHaveLength(4);
-    expect(p2.secondaries.length).toBeLessThanOrEqual(1);
-    expect(totalActions(p2)).toBeLessThanOrEqual(MAX_ACTIONS_TOTAL);
+    expect(p.paragraphs.length).toBeGreaterThanOrEqual(1);
+    expect(p.secondaries.length).toBeLessThanOrEqual(1);
+    expect(totalActions(p)).toBeLessThanOrEqual(MAX_ACTIONS_TOTAL);
   });
 
   it('UI-04 — aucune action liée : jusqu’à 3 secondaires, sans remplissage', () => {

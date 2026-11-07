@@ -107,7 +107,7 @@ async function biensDisponibles(accountId: number): Promise<BienLu[]> {
               WHERE f.account_id = a.account_id AND f.deleted_at IS NULL
                 AND (f.asset_id = a.id OR f.linked_asset_id = a.id)) AS documents,
             (SELECT count(*)::int FROM agenda_items i
-              WHERE i.account_id = a.account_id AND (i.manual_status IS NULL OR i.manual_status = '')
+              WHERE i.account_id = a.account_id
                 AND i.start_date >= $2::date AND i.start_date <= $2::date + $3::int
                 AND EXISTS (SELECT 1 FROM agenda_asset_links x WHERE x.agenda_item_id = i.id AND x.asset_id = a.id)
                 AND ${NOT_HISTORICAL(col, '$4')}) AS deadlines

@@ -131,16 +131,12 @@ export async function getT6ReminderState(p: { accountId: number; userId: number;
   const t = await targetOf(p.accountId, p.agendaItemId);
   if (!t) return { ok: false, code: 'NOT_FOUND', message: 'Cette échéance n’est plus disponible.' };
   const today = p.today ?? todayParis();
-  // Lot 103D : statut et nature de l'échéance (sujet clos, fait historique D-14).
+  // Lot 103D : nature de l'échéance (fait historique D-14). Lot 113P : plus de statut d'événement.
   const col0223 = await agendaFunctionalColumnsReady();
   const [etat] = await rows(
-    `SELECT i.manual_status, ${historicalSql('i', col0223)} AS historical FROM agenda_items i WHERE i.id = $1 AND i.account_id = $2`,
+    `SELECT ${historicalSql('i', col0223)} AS historical FROM agenda_items i WHERE i.id = $1 AND i.account_id = $2`,
     [t.id, p.accountId],
   ).catch(() => [] as Row[]);
-  // Lot 112G : statut effectif COMMUN (preuve de réalisation 103D comprise) — un
-  // événement réalisé et prouvé n'affiche plus « Rappel actif ».
-  const effectif = await import('@/services/agenda/effective-status-read')
-    .then((m) => m.loadEffectiveStatus(p.accountId, t.id)).catch(() => null);
   const cles = [agendaSubjectKey(t.id), ...(t.seriesKey ? [seriesSubjectKey(t.seriesKey)] : [])];
   const r = await rows(
     `SELECT subject_key, scope, decision, to_char(remind_at, 'YYYY-MM-DD') AS remind_at, updated_at,
@@ -160,10 +156,9 @@ export async function getT6ReminderState(p: { accountId: number; userId: number;
     [p.accountId, t.id],
   ).catch(() => [] as Row[]);
   const relevance = agendaReminderRelevance({
-    manualStatus: (etat?.manual_status as string | null | undefined) ?? null,
-    effectiveStatus: effectif,
     historical: etat?.historical === true,
     dueDate: t.date,
+    today,
     hasPreference: !!occ || !!ser,
     assessment: a ? { interpellation: (a.interpellation as string | null) ?? null, action: (a.action as string | null) ?? null, actionDate: (a.action_date as string | null) ?? null } : null,
   });
@@ -262,7 +257,7 @@ export async function clearT6Reminder(p: {
 /**
  * Nettoyage quotidien (tâche `mascot-pregeneration-deadlines`) :
  *   · reports échus depuis plus de 90 jours, et reports d'échéances
- *     réalisées ou annulées (ils n'ont plus d'objet) ;
+ *     (lot 113P : plus de retrait par statut — aucun statut d’événement) ;
  *   · préférences et évaluations rattachées à une échéance passée dans un
  *     AUTRE compte (déplacement de bien) — jamais appliquées, retirées ;
  *   · lot 75E (D) : préférence d'occurrence d'un cycle PRÉCÉDENT (cycle
@@ -274,7 +269,8 @@ export async function clearT6Reminder(p: {
  *     occurrence : une régénération T4, même longue, ne supprime jamais un
  *     refus de série ; une série sans bien connu (préférence antérieure)
  *     n'est jamais retirée automatiquement ;
- *   · évaluations d'échéances réalisées ou annulées, ou de plus de 180 jours.
+ *   · évaluations de plus de 180 jours (lot 113P : plus de statut d'événement,
+ *     plus de retrait « réalisée / annulée »).
  * Un REFUS sur une échéance encore présente (même cycle) n'est jamais retiré.
  * Les préférences d'une échéance supprimée disparaissent avec elle (ON
  * DELETE CASCADE).
@@ -301,13 +297,11 @@ export async function cleanupT6Reminders(today: string): Promise<{ preferences: 
   const prefs = await rows(
     `DELETE FROM t6_reminder_preferences p
       WHERE (p.decision = 'SNOOZED' AND p.remind_at < $1::date - 90)
-         OR (p.decision = 'SNOOZED' AND p.agenda_item_id IS NOT NULL AND EXISTS (
-               SELECT 1 FROM agenda_items i WHERE i.id = p.agenda_item_id AND trim(coalesce(i.manual_status, '')) <> ''))
          OR (p.agenda_item_id IS NOT NULL AND EXISTS (
                SELECT 1 FROM agenda_items i WHERE i.id = p.agenda_item_id AND i.account_id <> p.account_id))
          ${identite ? `OR (p.scope = 'OCCURRENCE' AND p.cycle_key IS NOT NULL AND EXISTS (
                SELECT 1 FROM agenda_items i WHERE i.id = p.agenda_item_id AND i.account_id = p.account_id
-                  AND trim(coalesce(i.manual_status, '')) = '' AND ${t6CycleKeySql('i')} <> p.cycle_key))
+                  AND ${t6CycleKeySql('i')} <> p.cycle_key))
          OR (p.scope = 'SERIES' AND p.series_asset_id IS NOT NULL AND ${sansSerie}
              AND NOT EXISTS (SELECT 1 FROM assets a WHERE a.id = p.series_asset_id AND a.account_id = p.account_id))` : ''}
       RETURNING p.id`,
@@ -317,7 +311,7 @@ export async function cleanupT6Reminders(today: string): Promise<{ preferences: 
     `DELETE FROM t6_interpellation_assessments a
       WHERE a.assessed_on < $1::date - 180
          OR EXISTS (SELECT 1 FROM agenda_items i WHERE i.id = a.agenda_item_id
-                     AND (i.account_id <> a.account_id OR trim(coalesce(i.manual_status, '')) <> ''))
+                     AND i.account_id <> a.account_id)
       RETURNING a.id`,
     [today],
   );

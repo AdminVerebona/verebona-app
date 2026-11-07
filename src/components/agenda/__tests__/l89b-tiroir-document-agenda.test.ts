@@ -57,7 +57,8 @@ describe('L89B-UI02 — statut d’analyse sobre', () => {
   it('tiroir : plus de « Automatique — » ; détail dépliable seulement s’il apporte quelque chose', () => {
     expect(tiroir).not.toMatch(/Automatique —/);
     expect(tiroir).not.toContain('Informations déjà complètes');
-    expect(tiroir).toContain('documentStatusLabel(analysisState, fullData?.processingStatus)');
+    // Lot 113R : le code de message (attente technique) est transmis au libellé.
+    expect(tiroir).toContain('documentStatusLabel(analysisState, fullData?.processingStatus, fullData?.userMessageCode)');
     expect(tiroir).toContain('{hasDetail ? (');
     expect(tiroir).toContain('aria-expanded={showDetectedInfo}');
   });

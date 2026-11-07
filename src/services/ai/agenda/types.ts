@@ -207,8 +207,7 @@ export interface ExistingAgendaItem {
   title: string;
   date: string;
   category: HomeCategory | null;
-  status: string | null;
-  /** true si créé ou modifié par un utilisateur (§4.4.4). */
+  /** true si créé ou modifié par un utilisateur (§4.4.4). Lot 113P : plus de statut d'événement. */
   manual: boolean;
   originFieldKey: string | null;
   /** FORECAST | CONFIRMED (0158) ; absent = CONFIRMED. */

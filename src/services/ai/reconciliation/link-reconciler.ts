@@ -38,6 +38,8 @@ interface ReconcileLinksResult {
    * identifiant hors liste. Aucune liaison automatique pour ces candidats.
    */
   ambiguities: LinkAmbiguity[];
+  /** Lot 113S : question proposée par T3 (brute, par section), contrôlée par la carte qui l'affiche. */
+  userQuestions?: Partial<Record<'documents' | 'agendaItems' | 'suppliers' | 'matches', string>>;
 }
 
 interface ReconcileLinksInput {

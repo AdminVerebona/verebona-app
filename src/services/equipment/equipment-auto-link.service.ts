@@ -52,7 +52,6 @@ interface CandidateAgenda {
   title: string;
   startDate: string | null;
   description: string | null;
-  manualStatus: string | null;
 }
 
 interface CandidateSupplier {
@@ -195,7 +194,7 @@ function buildAgendaList(items: CandidateAgenda[]): string {
   return items.map(i => {
     const parts = [`[id:${i.id}] "${i.title}"`];
     if (i.startDate) parts.push(`date:${i.startDate}`);
-    if (i.manualStatus) parts.push(`statut:${i.manualStatus}`);
+    // Lot 113P (#715) : plus de statut d'événement transmis au modèle.
     if (i.description) parts.push(`— ${i.description.slice(0, 100)}`);
     return parts.join(' | ');
   }).join('\n');
@@ -322,7 +321,6 @@ export async function runEquipmentAutoLink(
         title: agendaItems.title,
         startDate: agendaItems.startDate,
         description: agendaItems.description,
-        manualStatus: agendaItems.manualStatus,
       })
       .from(agendaItems)
       .where(and(

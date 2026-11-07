@@ -52,14 +52,14 @@ export async function GET(req: NextRequest, context: RouteContext) {
       const ids = q ? await matchingIdsForList(c.accountId, q, 'agenda_item') : null;
       const { pgClient } = await import('@/db');
       const lignes = (await pgClient.unsafe(
-        `SELECT id, title, start_date::text AS "startDate", manual_status AS "manualStatus" FROM agenda_items
+        `SELECT id, title, start_date::text AS "startDate" FROM agenda_items
           WHERE account_id = $1 ${ids ? 'AND id = ANY($2::int[])' : ''}
           ORDER BY start_date DESC NULLS LAST, id DESC LIMIT 60`,
         (ids ? [c.accountId, ids] : [c.accountId]) as never[],
-      )) as unknown as Array<{ id: number; title: string; startDate: string | null; manualStatus: string | null }>;
+      )) as unknown as Array<{ id: number; title: string; startDate: string | null }>;
       const candidates = lignes.filter((l) => !deja.has(Number(l.id))).slice(0, 20).map((l) => ({
         id: Number(l.id), title: l.title, startDate: l.startDate ? String(l.startDate).slice(0, 10) : null,
-        manualStatus: l.manualStatus, bucket: agendaTimeBucket(l.startDate, today),
+        bucket: agendaTimeBucket(l.startDate, today),
       }));
       return NextResponse.json({ candidates }, { headers: { 'Cache-Control': 'private, no-cache' } });
     }

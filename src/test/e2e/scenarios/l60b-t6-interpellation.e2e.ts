@@ -166,7 +166,7 @@ scenario('L60B-T6', 'Lot 60 — décision d’interpellation T6 et rappels de l�
     expect((await sql`SELECT id FROM agenda_items WHERE account_id = ${c.id} AND manual_status IS NULL`).length).toBe(3);
   });
 
-  it('T6-INT-02 / T6-INT-05 — démarche motivée au-delà du seuil, échéance dépassée qui demande (ou non) une action ; texte et cartes cohérents', async () => {
+  it('T6-INT-02 / T6-INT-05 — démarche motivée au-delà du seuil, échéance dépassée jamais présentée (#715) ; texte et cartes cohérents', async () => {
     const c = await compte();
     const preavis = await echeance(c, 'Fin du contrat de gaz', await plus(90), { description: 'Résiliation possible avec un préavis de deux mois avant la fin du contrat.' });
     const ramonage = await echeance(c, 'Ramonage cheminée', await plus(-5));
@@ -177,18 +177,19 @@ scenario('L60B-T6', 'Lot 60 — décision d’interpellation T6 et rappels de l�
       : x.title === 'Ramonage cheminée' ? AGIR({ action: 'Faire réaliser le ramonage' }) : AUCUNE);
     await passer(c.id);
     const p = await passer(c.id);
-    expect(ids(p)).toEqual([preavis, ramonage]); // HIGH d'abord
-    expect(sujets(p).map((x) => x.sourceCode)).toEqual(['DATE-NEXT', 'MASC-EXT-ACTION']);
+    // #715 : plus de statut d'événement — une échéance DÉPASSÉE n'est plus présentée (rappels sur dates futures).
+    expect(ids(p)).toEqual([preavis]);
+    expect(sujets(p).map((x) => x.sourceCode)).toEqual(['DATE-NEXT']);
     // Lot 68 : action distincte gardée, sans préfixe « À prévoir : ».
     expect(sujets(p)[0].text).toContain('Envoyer la demande de résiliation.');
     expect(sujets(p)[0].text).not.toContain('À prévoir :');
     expect(sujets(p)[0].tile).toMatchObject({ attention: true, tone: 'amber' });
     const t = await texte(p);
     expect(t).not.toMatch(/méritent votre attention/);
-    // L'échéance dépassée sans action restante n'est ni dite ni comptée (« dépassées à
-    // vérifier ») : seule celle qui est présentée (ramonage) reste comptée.
-    expect(p.overdueDeadlines).toBe(1);
+    // #715 : aucune échéance dépassée n'est dite ni comptée.
+    expect(p.overdueDeadlines ?? 0).toBe(0);
     expect(ids(p)).not.toContain(fete);
+    expect(ids(p)).not.toContain(ramonage);
   });
 
   it('T6-INT-07 / T6-INT-08 / T6-INT-10 — report : masqué jusqu’à la date ; survit aux exécutions, sessions et mises à jour ; réévalué à la date', async () => {

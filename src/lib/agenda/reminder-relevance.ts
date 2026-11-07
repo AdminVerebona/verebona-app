@@ -8,7 +8,12 @@
  * (report, refus) porte sur cette échéance. Aucun second moteur : cette
  * fonction ne décide pas d'interpeller, elle lit ce que T6 a déjà décidé, et
  * applique les exclusions métier déjà établies (D-14 : un fait passé n'est
- * jamais une action ; statut posé : sujet clos).
+ * jamais une action).
+ *
+ * Lot 113P (#715) : plus de statut d'événement — plus de « sujet clos » par
+ * statut ou preuve de réalisation. Un rappel se fonde sur une DATE FUTURE
+ * (ou sur une préférence de l'utilisateur) : une date passée ne crée jamais
+ * de relance (« à confirmer » ou autre).
  *
  * Module PUR (sans import serveur) : appelé par la route des rappels, testé.
  */
@@ -17,8 +22,8 @@
 export const T6_REMINDER_INTERPELLATIONS: readonly string[] = ['ACT_NOW', 'ANTICIPATE', 'INFORM', 'LATER'];
 
 export type AgendaReminderRelevanceReason =
-  /** Statut posé (réalisé, annulé) ou réalisation prouvée par un document (lot 112G) : sujet clos. */
-  | 'SUBJECT_CLOSED'
+  /** Lot 113P : date passée (ou absente) — jamais une relance, quel que soit l'avis de T6. */
+  | 'PAST_DATE'
   /** Fait historique (D-14) : jamais une action, jamais un rappel. */
   | 'HISTORICAL_FACT'
   /** Report ou refus enregistré par l'utilisateur : le bloc permet de le modifier. */
@@ -38,24 +43,18 @@ export interface AgendaReminderRelevance {
 }
 
 export function agendaReminderRelevance(p: {
-  manualStatus: string | null | undefined;
-  /**
-   * Lot 112G : statut effectif COMMUN (111R, calculé côté serveur par
-   * `computeEffectiveStatus` avec la preuve de réalisation 103D). Réalisé
-   * (à la main ou prouvé par un document) ou annulé : sujet clos.
-   */
-  effectiveStatus?: string | null;
   historical: boolean;
   dueDate: string | null;
+  /** Date du jour (AAAA-MM-JJ, Europe/Paris) : une échéance antérieure est passée. */
+  today: string;
   hasPreference: boolean;
   assessment: { interpellation: string | null; action: string | null; actionDate: string | null } | null;
 }): AgendaReminderRelevance {
   const action = p.assessment?.action?.trim() || null;
   const actionDate = p.assessment?.actionDate ?? p.dueDate ?? null;
   const out = (visible: boolean, reason: AgendaReminderRelevanceReason): AgendaReminderRelevance => ({ visible, reason, action, actionDate });
-  if (p.manualStatus && p.manualStatus.trim() !== '') return out(false, 'SUBJECT_CLOSED');
-  if (p.effectiveStatus === 'realise' || p.effectiveStatus === 'annule') return out(false, 'SUBJECT_CLOSED');
   if (p.historical) return out(false, 'HISTORICAL_FACT');
+  if (!p.dueDate || p.dueDate < p.today) return out(false, 'PAST_DATE');
   if (p.hasPreference) return out(true, 'USER_PREFERENCE');
   if (p.assessment?.interpellation && T6_REMINDER_INTERPELLATIONS.includes(p.assessment.interpellation)) return out(true, 'T6_REMINDER');
   return out(false, 'NO_REMINDER');

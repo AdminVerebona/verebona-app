@@ -710,7 +710,7 @@ export async function POST(
             startTime: item.startTime ?? null,
             endDate: item.endDate ?? null,
             endTime: item.endTime ?? null,
-            manualStatus: item.manualStatus ?? null,
+            // Lot 113P (#715) : plus de statut d’événement recopié.
             isAutomatic: false,
             isAutomaticModified: false,
             requiresQualification: false,

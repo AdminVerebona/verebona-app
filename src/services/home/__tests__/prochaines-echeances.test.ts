@@ -12,26 +12,27 @@ const row = (id: number, date: string, extra: Partial<UpcomingRow> = {}): Upcomi
   ({ id, title: `E${id}`, date, assetName: 'Ferrari', forecast: false, action: true, ...extra });
 
 describe('dérivation', () => {
-  it('en retard d’abord, puis à venir, par date croissante', () => {
+  // #715 : plus de statut d'événement — une date passée n'est plus « en retard » : à venir seulement.
+  it('à venir seulement, par date croissante (une date passée n’apparaît pas)', () => {
     const r = deriveUpcoming([row(1, '2026-12-15'), row(2, '2026-10-12'), row(3, '2026-09-19'), row(4, '2027-08-28')], TODAY);
-    expect(r.map((x) => x.id)).toEqual([3, 2, 1, 4]);
+    expect(r.map((x) => x.id)).toEqual([2, 1, 4]);
   });
 
-  it('couleur : rouge en retard, amber à moins de 30 jours, vert plus tard', () => {
+  it('couleur : amber à moins de 30 jours, vert plus tard ; jamais rouge « en retard » (#715)', () => {
     const r = deriveUpcoming([row(1, '2026-09-19'), row(2, TODAY), row(3, '2026-10-21'), row(4, '2026-10-22')], TODAY);
-    expect(r.map((x) => x.tone)).toEqual(['red', 'amber', 'amber', 'green']);
-    expect(r[0]).toMatchObject({ rel: 'En retard (2 j)', day: '19', month: 'sept.' });
-    expect(r[1].rel).toBe('Aujourd’hui');
+    expect(r.map((x) => x.tone)).toEqual(['amber', 'amber', 'green']);
+    expect(r[0]).toMatchObject({ rel: 'Aujourd’hui', day: '21', month: 'sept.' });
+    expect(JSON.stringify(r)).not.toMatch(/En retard/);
   });
 
-  it('une information passée ou une prévision passée n’est pas « en retard » ; au-delà de 60 jours, non plus', () => {
+  it('une information, une prévision ou une action passées ne sont jamais « en retard » (#715)', () => {
     const r = deriveUpcoming([
       row(1, '2026-09-10', { action: false }),
       row(2, '2026-09-10', { forecast: true }),
       row(3, '2026-07-01'),
       row(4, '2026-09-20'),
     ], TODAY);
-    expect(r.map((x) => x.id)).toEqual([4]);
+    expect(r.map((x) => x.id)).toEqual([]);
   });
 
   it('une prévision à venir est dite estimée', () => {
@@ -55,7 +56,9 @@ describe('dérivation', () => {
   it('le résumé expose le bloc, sur les échéances actives du compte', () => {
     const svc = readFileSync(join(process.cwd(), 'src/services/home/HomeSummaryService.ts'), 'utf8');
     expect(svc).toMatch(/upcoming: \{ items: upcoming \}/);
-    expect(svc).toMatch(/eq\(agendaItems\.accountId, accountId\),\s*or\(isNull\(agendaItems\.manualStatus\)/);
+    // #715 : plus de filtre sur un statut d'événement.
+    expect(svc).toMatch(/eq\(agendaItems\.accountId, accountId\)/);
+    expect(svc).not.toMatch(/agendaItems\.manualStatus/);
   });
 
   // Lot 36 (maquette 2a/2b « Fil encadré ») : plus de paire côte à côte ni

@@ -326,7 +326,7 @@ export async function produceAgendaActions(accountId: number, opts: ProducerRunO
       and(
         eq(agendaItems.accountId, accountId),
         isNull(agendaItems.startDate),
-        isNull(agendaItems.manualStatus),
+        // Lot 113P (#715) : plus de statut d'événement (« annulé » / « réalisé ») à exclure.
       ),
     )).filter((i) => !opts.only || opts.only.includes(i.id));
 
@@ -352,7 +352,7 @@ export async function produceAgendaActions(accountId: number, opts: ProducerRunO
       // Écriture conditionnelle (toujours sans date, jamais modifié par l'utilisateur), relue.
       const ecrit = (await pgClient.unsafe(
         `UPDATE agenda_items SET start_date = $3::date, date_source = COALESCE(date_source, 'EXPLICIT_DATE'), updated_at = now()
-          WHERE id = $1 AND account_id = $2 AND start_date IS NULL AND manual_status IS NULL AND is_automatic = true AND is_automatic_modified = false
+          WHERE id = $1 AND account_id = $2 AND start_date IS NULL AND is_automatic = true AND is_automatic_modified = false
             AND no_deadline = false
           RETURNING to_char(start_date, 'YYYY-MM-DD') AS d`,
         [item.id, accountId, date] as never[],

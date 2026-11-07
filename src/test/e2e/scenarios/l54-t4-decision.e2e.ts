@@ -185,13 +185,13 @@ scenario('L54-T4', 'T4 décisionnaire de l’existence et de la récurrence d’
     await job(compte, bien.id, doc.id, [homiris()]);
     expect((await items(bien.id)).map((x) => x.id)).toEqual([avant[1].id]);
 
-    // Variante : élément CONFIRMÉ par l'utilisateur (statut manuel) → conservé.
+    // Variante : élément touché par l'utilisateur (#715 : ex-statut manuel → « modifié », migration 1526) → conservé.
     await useRecordings([t4({ agenda: 'accept', recurrence: 'not_applicable' }), t4({ agenda: 'reject', recurrence: 'not_applicable' })]);
     const c2 = await contexte();
     const ponctuel = { ...homiris(), recurrence: undefined };
     await job(c2.compte, c2.bien.id, c2.doc.id, [ponctuel]);
     const [e] = await items(c2.bien.id);
-    await sql`UPDATE agenda_items SET manual_status = 'realise' WHERE id = ${e.id}`;
+    await sql`UPDATE agenda_items SET is_automatic_modified = true WHERE id = ${e.id}`;
     await job(c2.compte, c2.bien.id, c2.doc.id, [ponctuel]);
     expect((await items(c2.bien.id)).map((x) => x.id)).toEqual([e.id]);
   });

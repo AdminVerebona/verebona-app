@@ -56,16 +56,18 @@ export interface StructuralHousingDiagnosis {
   ambiguous: LinkVerdict[];
 }
 
+
+/** Événements tracés qui prouvent un geste de l'utilisateur sur l'élément (protection ; ex-`historical-completion`, lot 113P). */
+const AGENDA_USER_TOUCH_EVENT_TYPES: readonly string[] = ['STATUS_CHANGED', 'USER_MODIFIED', 'USER_CONFIRMED'];
 /** Diagnostic (lecture seule) d'un élément du compte ; null : hors périmètre ou disparu. */
 export async function diagnoseStructuralHousing(r: GroupingRunner, accountId: number, itemId: number): Promise<StructuralHousingDiagnosis | null> {
   const { agendaItemAssetIds, housingAssetIdsOf, loadStructuralParents, operationScopeAssetIds } = await import('@/services/agenda/housing-scope.service');
-  const { USER_TOUCH_EVENT_TYPES } = await import('@/services/agenda/historical-completion');
   const [i] = await r.q<{ id: number; is_automatic: boolean; is_automatic_modified: boolean; op: number | null; role: string | null; op_active: boolean | null; touched: boolean }>(
     `SELECT i.id, i.is_automatic, i.is_automatic_modified, i.business_operation_id AS op, i.operation_role AS role,
             (o.id IS NOT NULL AND o.account_id = i.account_id AND o.invalidated_at IS NULL AND o.merged_into_operation_id IS NULL) AS op_active,
             EXISTS (SELECT 1 FROM agenda_occurrence_events e WHERE e.agenda_item_id = i.id AND e.event_type = ANY($3::text[])) AS touched
        FROM agenda_items i LEFT JOIN business_operations o ON o.id = i.business_operation_id
-      WHERE i.id = $1 AND i.account_id = $2`, [itemId, accountId, [...USER_TOUCH_EVENT_TYPES]]);
+      WHERE i.id = $1 AND i.account_id = $2`, [itemId, accountId, [...AGENDA_USER_TOUCH_EVENT_TYPES]]);
   if (!i) return null;
   const out: StructuralHousingDiagnosis = { itemId, operationId: null, certain: [], ambiguous: [] };
   const push = (v: LinkVerdict) => (v.certain ? out.certain : out.ambiguous).push(v);

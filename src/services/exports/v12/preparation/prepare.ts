@@ -26,7 +26,7 @@ import { isBlockBlocking } from '@/services/exports/cil-preparation.service';
 import { cilActionRequiredMessage, isCilBlockingRuleBlock } from '@/lib/exports/cil-blocking';
 import type { ExportSource, SourceDocument, SourceEvent, SourcePhoto } from '../data/source';
 import {
-  buildDefaultChoices, DEFAULT_SECTIONS, PHOTO_CAPS, eventKind, eventSection, isPhotoIntegrable, isUpcoming, isUnconfirmedPastDeadline, planSelection,
+  buildDefaultChoices, DEFAULT_SECTIONS, PHOTO_CAPS, eventKind, eventSection, isPhotoIntegrable, isUpcoming, planSelection,
   type ChoiceItem, type ExportChoices,
 } from '../data/choices';
 import { mapDossierData } from '../data/mappers';
@@ -145,7 +145,8 @@ function eventItem(e: SourceEvent, today: string, cur: ChoiceItem | undefined, r
     selected: !!cur?.selected,
     mode: null,
     fileId: null,
-    detail: [e.provider, upcoming ? 'À venir' : isUnconfirmedPastDeadline(e, today) ? 'À confirmer' : null].filter(Boolean).join(' · ') || null,
+    // Lot 113P (#715) : plus de « À confirmer » sur une échéance passée.
+    detail: [e.provider, upcoming ? 'À venir' : null].filter(Boolean).join(' · ') || null,
     error: null,
   };
 }
@@ -336,7 +337,7 @@ export function buildPreparation(code: DossierCode, source: ExportSource, ctx: P
     return {
       id: def.id,
       label: def.label,
-      // Lot 16b-3 : source canonique toujours — libellé « à confirmer » toujours.
+      // Lot 16b-3 : source canonique toujours (lot 113P : plus de libellé « à confirmer » pour les échéances).
       description: def.descriptionCanonical ?? def.description,
       required: def.required,
       toggleable,

@@ -25,6 +25,17 @@ export const T3_TASKS = ['VALUE_CONFLICT', 'LINK_AMBIGUITY', 'OPERATION_MATCH', 
 
 const confidence = z.enum(['certain', 'probable', 'conflictual']);
 
+/**
+ * Lot 113S (#716) — contrat `t3-user-question-v1` : question à poser à
+ * l'utilisateur, formulée par T3 dans la MÊME sortie, seulement quand sa
+ * décision demande un arbitrage. Texte libre, FACULTATIF et sans borne dans
+ * le schéma (une question trop longue ne doit jamais invalider la décision) :
+ * forme, langue, vocabulaire, données sensibles et libellés cités sont
+ * contrôlés par le serveur (`to-process/ai-user-question.ts`), qui garde une
+ * formulation déterministe tracée sinon.
+ */
+const userQuestion = z.string().nullable().optional();
+
 // ── Branche VALUE_CONFLICT ──────────────────────────────────────────────────
 /**
  * `chosenEvidenceId` obligatoire si `decision = choose`, interdit (absent ou
@@ -84,6 +95,12 @@ export const T3LinkAmbiguityOutput = z.object({
     userValidationRequired: z.boolean().optional(),
   }).nullable().optional(),
   /**
+   * Lot 113S — `t3-user-question-v1` : question à l'utilisateur quand la
+   * réponse ne permet pas de rattacher (abstention avec candidats :
+   * DOCUMENT_ASSET, DOCUMENT_EQUIPMENT). FACULTATIVE.
+   */
+  userQuestion,
+  /**
    * Lot 113L — contrat `t3-document-attachment-review-v1` (relation
    * DOCUMENT_ASSET, REVUE d'un rattachement existant face à des indices) :
    * décision explicite du modèle — KEEP_CURRENT (le document concerne bien le
@@ -105,6 +122,8 @@ export const T3LinkAmbiguityOutput = z.object({
       role: z.string().min(1).max(120),
     })).max(40).optional(),
     reason: z.string().min(1).max(400),
+    /** Lot 113S — `t3-user-question-v1` : question de l'arbitrage (decision = ARBITRATE). FACULTATIVE. */
+    userQuestion,
   }).nullable().optional(),
 });
 export type T3LinkAmbiguityOutput = z.infer<typeof T3LinkAmbiguityOutput>;
@@ -137,6 +156,14 @@ export const T3OperationMatchOutput = z.object({
    * (`translateOperationMatch`) : jamais un rattachement sans signal positif.
    */
   resolution: z.enum(['ATTACH', 'ARBITRATE', 'DISTINCT']).optional(),
+  /**
+   * Lot 113S — `t3-user-question-v1` : question Oui / Non posée à
+   * l'utilisateur quand `resolution` = ARBITRATE, et le candidat sur lequel
+   * elle porte (`questionCandidateId`, parmi les candidats fournis).
+   * FACULTATIVES ; contrôlées par le serveur (monde fermé, libellés cités).
+   */
+  userQuestion,
+  questionCandidateId: z.number().int().positive().nullable().optional(),
 }).superRefine((v, ctx) => {
   if (v.decision === 'SAME_OPERATION' && (v.matchedCandidateId === undefined || v.matchedCandidateId === null)) {
     ctx.addIssue({ code: 'custom', path: ['matchedCandidateId'], message: 'obligatoire quand decision = SAME_OPERATION' });

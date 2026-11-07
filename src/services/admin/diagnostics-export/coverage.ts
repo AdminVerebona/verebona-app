@@ -509,6 +509,8 @@ export const DIAG_TABLE_COVERAGE: Readonly<Record<string, DiagTableCoverage>> = 
   // Lot 113O : page tarifaire réellement reçue (publique, sans secret) et état du cache par instance.
   ai_model_pricing_page_snapshots: T('referentiels', 'tarifs des modèles : page reçue'),
   ai_pricing_cache_instances: T('technique', 'tarifs des modèles : cache par instance'),
+  // Lot 113R : vérifications de l'envoi de fichiers au fournisseur IA (test BO, sonde de rétablissement) — sans secret.
+  ai_provider_transfer_checks: T('technique', 'vérifications de l’envoi de fichiers au fournisseur IA'),
   // Lot 109L : régularisation des coûts IA (exécutions, plan, corrections — multi-comptes).
   ai_cost_regularization_runs: T('technique', 'régularisation des coûts IA'),
   ai_cost_regularization_items: T('technique', 'régularisation des coûts IA'),

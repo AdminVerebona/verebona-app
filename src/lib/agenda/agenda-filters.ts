@@ -28,13 +28,13 @@ export function parseAgendaPeriod(raw: string | null | undefined): AgendaPeriod 
 
 /**
  * Pastilles « Filtré par … », dans l'ordre Période, Bien, Pièce,
- * Équipement, Statut. Clés : `period`, `bien:<id>`, `piece`, `equipment`,
- * `cancelled` (Pièce : lot 75B, même ordre que « Mes documents »).
+ * Équipement. Clés : `period`, `bien:<id>`, `piece`, `equipment` (Pièce :
+ * lot 75B, même ordre que « Mes documents »). Lot 113P (#715) : plus de
+ * filtre « Statut » (« Afficher les annulés ») — un événement n'a plus de statut.
  */
 export function agendaFilterChips(input: {
   period: AgendaPeriod;
   assetIds: readonly number[];
-  includeCancelled: boolean;
   assetOptions: ReadonlyArray<{ id: number; name: string }>;
   /** Libellé du filtre Équipement actif, `null` s'il n'agit pas. */
   equipmentChipLabel: string | null;
@@ -49,7 +49,6 @@ export function agendaFilterChips(input: {
     ...input.assetIds.map((id) => ({ key: `bien:${id}`, label: noms.get(id) ?? 'Bien' })),
     ...(input.roomChipLabel ? [{ key: 'piece', label: input.roomChipLabel }] : []),
     ...(input.equipmentChipLabel ? [{ key: 'equipment', label: input.equipmentChipLabel }] : []),
-    ...(input.includeCancelled ? [{ key: 'cancelled', label: 'Annulés affichés' }] : []),
   ];
 }
 

@@ -49,9 +49,10 @@ describe('L107B-1 — pastilles de type de document : un seul style neutre', () 
     expect(drawer).toMatch(/<DocumentDateCell value=\{doc\.documentDate\}/);
   });
 
-  it('les couleurs d’état (équipement, agenda) ne sont pas touchées', () => {
+  // #715 : plus de statut d'événement — seule la couleur d'état de l'équipement demeure.
+  it('les couleurs d’état de l’équipement ne sont pas touchées ; plus aucune couleur d’état d’agenda', () => {
     expect(drawer).toContain("EN_PANNE: 'bg-[color:var(--danger-soft)]");
-    expect(drawer).toContain("status === 'en_retard'");
+    expect(drawer).not.toContain("status === 'en_retard'");
   });
 
   it('les autres listes de documents affichent déjà le type en pastille neutre unique', () => {

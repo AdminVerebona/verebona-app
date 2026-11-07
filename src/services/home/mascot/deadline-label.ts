@@ -336,32 +336,5 @@ export function deadlineBlockedText(i: DeadlineWordingItem, dateLabel: string): 
   return `Une échéance doit être précisée avant de pouvoir être suivie : ${element(i)}, le ${dateLabel}.`;
 }
 
-/**
- * MASC-EXT-ACTION — échéance du jour ou passée, que Verebona ne peut pas
- * constater (pure). Lot 53 (D27) : le verbe suit le rôle de la date — une
- * date à respecter (DEADLINE, défaut) était « à prévoir », seul un
- * événement saisi par l'utilisateur (SCHEDULED_EVENT) était « prévu » ;
- * jamais « confirmé », jamais « réalisé » :
- *   · « Le contrôle technique de la Cupra était à prévoir pour le 18 avril
- *     2028. Si c’est fait, vous pouvez l’indiquer. »
- *   · planifié : « Le rendez-vous garage de la Cupra était prévu le 18 avril
- *     2028. Si c’est fait, vous pouvez l’indiquer. »
- *   · repli neutre : « Votre échéance du 18 avril 2028 concerne Cupra :
- *     contrôle technique. Si c’est fait, vous pouvez l’indiquer. »
- */
-export function deadlineExtActionText(i: DeadlineWordingItem, dateLabel: string, passee: boolean): string {
-  const p = parts(i);
-  const suite = passee ? 'Si c’est fait, vous pouvez l’indiquer.' : 'Une fois que c’est fait, vous pouvez l’indiquer.';
-  if (p.art && p.gender && (p.bien || !p.assetName)) {
-    const sujet = majuscule(`${p.art}${p.label}${p.bien ? ` ${p.bien.de}` : ''}`);
-    if ((i.dateRole ?? 'DEADLINE') === 'SCHEDULED_EVENT') {
-      const accord = p.gender === 'f' ? 'prévue' : 'prévu';
-      return `${sujet} ${passee ? 'était' : 'est'} ${accord} ${passee ? 'le' : 'aujourd’hui, le'} ${dateLabel}. ${suite}`;
-    }
-    return `${sujet} ${passee ? 'était' : 'est'} à prévoir ${passee ? 'pour le' : 'pour aujourd’hui, le'} ${dateLabel}. ${suite}`;
-  }
-  if (p.assetName) {
-    return `Votre échéance du ${dateLabel} concerne ${p.bien ? p.bien.ref : p.assetName} : ${p.label}. ${suite}`;
-  }
-  return `Votre échéance du ${dateLabel} : ${p.label}. ${suite}`;
-}
+// Lot 113P (#715) : `deadlineExtActionText` (MASC-EXT-ACTION, « Si c’est fait, vous pouvez
+// l’indiquer. ») est supprimé — plus de statut d'événement, plus de demande de réalisation.

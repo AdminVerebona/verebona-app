@@ -36,10 +36,6 @@ import { displayableText, hasCountingIntro } from './counting-intro';
 
 // ── Tuiles (serveur) ────────────────────────────────────────────────────────
 
-function daysBetween(a: string, b: string): number {
-  return Math.round((Date.parse(`${b.slice(0, 10)}T00:00:00Z`) - Date.parse(`${a.slice(0, 10)}T00:00:00Z`)) / 86_400_000);
-}
-
 const str = (v: unknown): string | null => (typeof v === 'string' && v.trim() ? v.trim() : null);
 
 /**
@@ -48,15 +44,13 @@ const str = (v: unknown): string | null => (typeof v === 'string' && v.trim() ? 
  */
 export interface TileOptions {
   /**
-   * CDC 15 T4-12 : une échéance passée sans statut est
-   * NON PROUVÉE, pas « non réalisée ». Tuile ambre « à confirmer », nature
-   * `verify` (pose `questioning`), au lieu de rouge « en retard »
-   * (`alert-folder`). Absent / false : comportement historique.
+   * Obsolète depuis le lot 113P (#715) : plus de tuile d'échéance passée
+   * (« à confirmer » / « en retard »). Conservé pour la compatibilité des appelants ; sans effet.
    */
   unprovenOverdueIsQuestion?: boolean;
 }
 
-export function tileFor(s: MascotSubject, today: string, opts: TileOptions = {}): MascotTile {
+export function tileFor(s: MascotSubject, _today: string, _opts: TileOptions = {}): MascotTile {
   const f = s.facts;
   const asset = s.assetName ?? str(f.assetName) ?? str(f.targetLabel);
   const code = s.sourceCode;
@@ -99,16 +93,7 @@ export function tileFor(s: MascotSubject, today: string, opts: TileOptions = {})
       kind: verifier ? 'verify' : 'action',
     };
   }
-  if (code === 'MASC-EXT-ACTION') {
-    const date = str(f.date);
-    const retard = date ? daysBetween(date, today) : 0;
-    if (retard > 0 && opts.unprovenOverdueIsQuestion) {
-      return { tone: 'amber', icon: 'clock', attention: true, assetName: asset, label: 'Confirmer ou reporter', status: `Prévue il y a ${retard} j — à confirmer`, kind: 'verify' };
-    }
-    return retard > 0
-      ? { tone: 'red', icon: 'clock', attention: true, assetName: asset, label: 'Reporter ou marquer fait', status: `En retard (${retard} j)`, kind: 'overdue' }
-      : { tone: 'amber', icon: 'clock', attention: true, assetName: asset, label: 'Reporter ou marquer fait', status: 'Aujourd’hui', kind: 'action' };
-  }
+  // Lot 113P (#715) : plus de tuile MASC-EXT-ACTION (« En retard », « Reporter ou marquer fait », « à confirmer »).
   if (code === 'MASC-BLOCKED') {
     return { tone: 'amber', icon: 'circle-alert', attention: true, assetName: asset, label: 'Préciser l’échéance', status: 'À préciser', kind: 'action' };
   }

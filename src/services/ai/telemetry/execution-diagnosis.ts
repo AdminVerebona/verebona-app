@@ -12,13 +12,13 @@
  *   · le diagnostic final, construit uniquement sur des constats (§12).
  * Pur : aucune lecture en base (testé).
  */
-import { NOT_CALLED_ERROR_CODES } from '../gateway/fallback-policy';
+import { NOT_CALLED_ERROR_CODES, NO_GENERATION_STAGES } from '../gateway/fallback-policy';
 import type { ExecutionRow } from './execution-log.repository';
 import type { StoredCallDiagnostic } from '../gateway/diagnostics/diagnostic.repository';
 import { cascadeDiagnosis, finalDiagnosis, type CascadeDiagnosis } from '../gateway/diagnostics/classify';
 import {
   displayCause, displayErrorCode, emptyControlChain, isStructuredOutputRetry, providerFailureCategory,
-  type CallDiagnostic, type ProviderAttemptTrace, type ProviderFailureCategory, type ProviderRequestTrace,
+  type AttachmentTransferFailure, type CallDiagnostic, type ProviderAttemptTrace, type ProviderFailureCategory, type ProviderRequestTrace,
 } from '../gateway/diagnostics/taxonomy';
 
 export interface CallReport {
@@ -54,6 +54,17 @@ export interface CallReport {
   /** Lot 52B : requête fournisseur sans contenu, tentatives internes de l'appel. */
   providerRequest?: ProviderRequestTrace | null;
   providerAttempts?: ProviderAttemptTrace[];
+  /** Lot 113R : rang CONFIGURÉ (principal, secours 1, secours 2) — distinct du secours réellement utilisé. */
+  configuredRank?: string | null;
+  /** Lot 113R : un secours a RÉELLEMENT été sollicité à ce rang (jamais vrai pour un rang non appelé). */
+  fallbackUsed?: boolean;
+  /** Lot 113R : une génération a été demandée au modèle (faux : non appelé, construction locale, transfert). */
+  generationRequested?: boolean;
+  /** Lot 113R : motif du non-appel (décision de la politique) et dépendance commune réelle. */
+  notCalledReason?: string | null;
+  commonDependency?: string | null;
+  /** Lot 113R : réponse du fournisseur au transfert de la pièce jointe (sans secret), `null` sinon. */
+  transfer?: AttachmentTransferFailure | null;
 }
 
 export interface ExecutionCounters {
@@ -71,6 +82,12 @@ export interface ExecutionCounters {
   structuredOutputRetries: number;
   /** Passes de réparation ciblée (sans relecture du document). */
   repairCalls: number;
+  /** Lot 113R : rangs tracés mais NON appelés (refus de secours, modèle connu indisponible). */
+  notCalled?: number;
+  /** Lot 113R : appels arrêtés au transfert de la pièce jointe (aucune génération). */
+  transferFailures?: number;
+  /** Lot 113R : générations réellement demandées au modèle (analyse, hors transfert et construction locale). */
+  generationsRequested?: number;
 }
 
 export interface ExecutionResultView {
@@ -131,8 +148,16 @@ export function buildExecutionDiagnosis(p: {
     const kind = stored?.diagnostic.callKind ?? c.callKind ?? 'analysis';
     const status: CallDiagnostic['outcome'] = diag?.outcome ?? (c.status === 'error' ? 'FAILED' : 'SUCCEEDED');
     const notCalled = NOT_CALLED_CODES.has(c.errorCode ?? '');
+    const decision = c.fallbackDecision ?? null;
+    const stage = diag?.stage ?? c.failure?.stage ?? null;
     return {
       notCalled,
+      configuredRank: c.modelRank,
+      fallbackUsed: !notCalled && (c.modelRank === 'fallback_1' || c.modelRank === 'fallback_2' || (c.modelRank == null && c.usedFallback)),
+      generationRequested: !notCalled && !NO_GENERATION_STAGES.has(String(stage ?? '')),
+      notCalledReason: notCalled ? (typeof decision?.decisionLabel === 'string' ? decision.decisionLabel : 'non appelé (politique de secours)') : null,
+      commonDependency: typeof decision?.commonDependency === 'string' ? decision.commonDependency : null,
+      transfer: c.transfer ?? diag?.transfer ?? null,
       callId: c.id,
       label: kind === 'repair' ? `réparation (${RANK_LABELS[c.modelRank ?? ''] ?? 'rang inconnu'})` : RANK_LABELS[c.modelRank ?? ''] ?? (c.usedFallback ? 'fallback' : 'rang inconnu'),
       rank: c.modelRank,
@@ -150,7 +175,7 @@ export function buildExecutionDiagnosis(p: {
       hasModelOutput: stored?.hasModelOutput ?? false,
       errorCode: displayErrorCode(c.errorCode, diag?.family ?? c.failure?.family, diag?.subtype ?? c.failure?.subtype),
       errorMessage: c.errorMessage,
-      failureCategory: !notCalled && diag && !diag.outputReceived ? providerFailureCategory(diag.family, diag.subtype) : null,
+      failureCategory: !notCalled && diag && !diag.outputReceived ? providerFailureCategory(diag.family, diag.subtype, diag.stage) : null,
       providerRequest: c.providerRequest ?? null,
       providerAttempts: c.providerAttempts ?? [],
     };
@@ -172,6 +197,9 @@ export function buildExecutionDiagnosis(p: {
     modelFallbacks: analyses.filter((r) => r.rank === 'fallback_1' || r.rank === 'fallback_2').length,
     structuredOutputRetries: analyses.reduce((n, r) => n + (r.providerAttempts ?? []).filter(isStructuredOutputRetry).length, 0),
     repairCalls: appels.length - analyses.length,
+    notCalled: reports.length - appels.length,
+    transferFailures: analyses.filter((r) => r.diagnostic?.stage === 'attachment_transfer').length,
+    generationsRequested: analyses.filter((r) => r.generationRequested).length,
   };
   const lastFailed = [...analyses].reverse().find((r) => r.status === 'FAILED');
   const business = p.job?.businessResult ?? (reports.length === 0 ? null : succeeded ? 'SUCCEEDED' : 'FAILED');

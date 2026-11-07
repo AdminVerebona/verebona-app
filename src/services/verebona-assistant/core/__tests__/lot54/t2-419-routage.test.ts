@@ -78,9 +78,6 @@ const lookup: import('../../../commands/plan.service').CommandLookup = {
   today: () => '2026-10-14',
   async findAssets() { return []; },
   async getAsset() { return null; },
-  async findAgendaItems() { return []; },
-  async getAgendaItem() { return null; },
-  async listOpenAgendaItems() { return []; },
   async getAssetState(_a, id) { return ETATS[id] ?? null; },
 };
 

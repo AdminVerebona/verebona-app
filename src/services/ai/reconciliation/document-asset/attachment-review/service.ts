@@ -95,6 +95,8 @@ export interface AttachmentReviewTrace {
   secondaryLinked: number[];
   error: string | null;
   failures: number;
+  /** Lot 113S : provenance de la question de la carte (AI / CODE, motif d'un repli). */
+  question?: { origin: 'AI' | 'CODE'; fallback: string | null; rejection: string | null; contractActive: boolean } | null;
 }
 
 export interface AttachmentReviewResult {
@@ -426,16 +428,32 @@ export async function reviewDocumentAttachment(input: ReviewInput, deps: Attachm
         outcome = 'APPLIED';
       }
     }
-  } else if (decision.kind === 'ARBITRATE' && carte && carte.ctx?.reviewKey === key && Number(carte.ctx?.suggestedAssetId) === decision.suggestedAssetId) {
+  } else if (decision.kind === 'ARBITRATE' && carte && carte.ctx?.reviewKey === key && Number(carte.ctx?.suggestedAssetId) === decision.suggestedAssetId
+      // Lot 113S : une question de T3 passe toujours par la carte (mise à jour idempotente du libellé, jamais de doublon).
+      && typeof decision.userQuestion !== 'string') {
     // Même arbitrage, même contexte : la carte ouverte est déjà la bonne (aucune écriture, aucun doublon).
     trace.card.effect = 'UNCHANGED';
     outcome = 'NO_CHANGE';
   } else if (decision.kind === 'ARBITRATE') {
     await g('question « À traiter »');
+    // Lot 113S : question formulée par T3 dans la même sortie (`t3-user-question-v1`), contrôlée contre le
+    // contexte de la carte (biens candidats, document) ; jamais un second appel.
+    const { questionContractActive, T3_USER_QUESTION_CONTRACT } = await import('@/services/to-process/ai-user-question');
+    const qContrat = await questionContractActive(ATTACHMENT_REVIEW_OPERATION, T3_USER_QUESTION_CONTRACT);
+    const ext = ctx.sources.extraction;
     const r = await conflict.proposeDocumentAssetConflict({
       accountId, fileId, currentAssetId: current[0], suggestedAssetId: decision.suggestedAssetId, basis: 'AI_REVIEW', kinds: [],
       review: { reviewKey: key, ambiguous: decision.ambiguous, reason: decision.reason },
+      aiQuestion: {
+        treatment: 'T3', operation: ATTACHMENT_REVIEW_OPERATION, contract: T3_USER_QUESTION_CONTRACT, raw: decision.userQuestion ?? null,
+        aiCalled: trace.aiCalled || trace.aiReused, contractActive: qContrat, promptVersion: trace.promptVersion, traceId: trace.traceIds[0] ?? null,
+        extraLabels: [...candidates.map((c) => c.name), ext?.title, ext?.supplier],
+        foreignLabels: [...index.byId.values()].filter((a) => !trace.candidateIds.includes(a.assetId)).map((a) => a.name),
+      },
     });
+    if (r.questionSource) {
+      trace.question = { origin: r.questionSource.origin, fallback: r.questionSource.fallback, rejection: r.questionSource.rejection, contractActive: qContrat };
+    }
     const now = await openConflictCard(accountId, fileId);
     trace.card.after = now?.id ?? null;
     trace.card.effect = r.status === 'CREATED' ? 'CREATED' : r.status === 'UPDATED' ? 'UPDATED' : 'SKIPPED';

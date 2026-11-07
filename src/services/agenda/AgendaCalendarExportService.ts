@@ -63,16 +63,14 @@ export function computeICSContent(items: AgendaItemFull[], calendarName: string)
   const events: string[] = [];
 
   for (const item of items) {
-    // Exclude: no startDate, or annule
+    // Sans date : non exporté. Lot 113P (#715) : plus de statut (ni « annulé » exclu, ni « en retard » signalé).
     if (!item.startDate) continue;
-    if (item.manualStatus === 'annule') continue;
 
     const assetNames = item.assetLinks.map(l => l.assetName).join(', ');
     const roomNames = item.roomLinks.map(l => l.name).join(', ');
     const equipNames = item.equipmentLinks.map(l => l.name).join(', ');
 
-    // SUMMARY: prepend clock emoji if overdue
-    let summary = item.effectiveStatus === 'en_retard' ? `🕒 ${item.title}` : item.title;
+    let summary = item.title;
     if (assetNames) summary += ` | ${assetNames}`;
 
     // DESCRIPTION

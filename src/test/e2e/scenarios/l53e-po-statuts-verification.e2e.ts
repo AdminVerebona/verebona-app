@@ -26,7 +26,7 @@ vi.mock('@/services/verebona-assistant/events/business-events', async (o) => ({
 const jour = (d: number) => new Date(Date.now() + d * 86_400_000).toISOString().slice(0, 10);
 
 scenario('L53E', 'Statuts réels (D17, D25, D27) et vérification T1 incomplète (D19)', ({ sql, make }) => {
-  it('PO-D17-E1 — suivi et fiche du bien : fait passé non confirmé VISIBLE (jamais masqué comme terminé) ; réalisé seulement si établi', async () => {
+  it('PO-D17-E1 (#715) — suivi et fiche du bien : faits passés VISIBLES à leur date, sans aucun statut', async () => {
     const compte = await make.account({ plan: 'premium' });
     const clio = await make.asset(compte, { category: 'VEHICULE' });
     session.currentAccountId = compte.id;
@@ -39,26 +39,32 @@ scenario('L53E', 'Statuts réels (D17, D25, D27) et vérification T1 incomplète
     });
     const reparation = await ecrire('Réparation embrayage', jour(-40), 'repair');
     const etablie = await ecrire('Remplacement pneus', jour(-90), 'repair');
+    // #715 : plus de statut d'événement — un ancien « réalisé » écrit en base est neutralisé (1526) ;
+    // les deux faits restent VISIBLES à leur date, sans aucun état (ni « à confirmer », ni « réalisé »).
     await sql`UPDATE agenda_items SET manual_status = 'realise' WHERE id = ${etablie.id}`;
+    const statutaire = /"(effectiveStatus|isDone|isOverdue|toConfirm|overdue|status)"/;
 
-    // Suivi SANS les éléments terminés : la réparation non confirmée reste affichée.
     const followup = await import('@/app/api/assets/[id]/followup/route');
     const fr = await followup.GET(new NextRequest(`http://x/api/assets/${clio.id}/followup`), { params: Promise.resolve({ id: String(clio.id) }) });
-    const suivi = ((await fr.json()) as { items: Array<{ id: string; effectiveStatus: string; isDone: boolean; toConfirm: boolean }> }).items;
-    expect(suivi.find((x) => x.id === String(reparation.id))).toMatchObject({ effectiveStatus: 'a_confirmer', isDone: false, toConfirm: true });
-    expect(suivi.find((x) => x.id === String(etablie.id))).toBeUndefined();
+    const suivi = ((await fr.json()) as { items: Array<{ id: string }> }).items;
+    for (const id of [reparation.id, etablie.id]) {
+      const x = suivi.find((y) => y.id === String(id));
+      expect(x, 'suivi : visible').toBeDefined();
+      expect(JSON.stringify(x)).not.toMatch(statutaire);
+    }
 
     const overview = await import('@/app/api/assets/[id]/overview/route');
     const o = await overview.GET(new NextRequest(`http://x/api/assets/${clio.id}/overview`), { params: Promise.resolve({ id: String(clio.id) }) });
-    const tl = ((await o.json()) as { timeline: Array<{ id: string; isDone: boolean; isOverdue: boolean; toConfirm: boolean }> }).timeline;
-    expect(tl.find((x) => x.id === String(reparation.id))).toMatchObject({ isDone: false, isOverdue: false, toConfirm: true });
-    expect(tl.find((x) => x.id === String(etablie.id))).toMatchObject({ isDone: true, toConfirm: false });
+    const tl = ((await o.json()) as { timeline: Array<{ id: string }> }).timeline;
+    for (const id of [reparation.id, etablie.id]) {
+      const x = tl.find((y) => y.id === String(id));
+      expect(x, 'Timeline : visible').toBeDefined();
+      expect(JSON.stringify(x)).not.toMatch(statutaire);
+    }
 
-    // Assistant : non prouvé, jamais « réalisé » ; aucun statut écrit.
     const { getCanonicalAgendaItem } = await import('@/services/verebona-assistant/canonical/agenda');
-    expect(await getCanonicalAgendaItem(compte.id, reparation.id)).toMatchObject({ status: 'not_proven', overdue: false });
-    expect(await getCanonicalAgendaItem(compte.id, etablie.id)).toMatchObject({ status: 'completed' });
-    expect(await sql`SELECT manual_status FROM agenda_items WHERE id = ${reparation.id}`).toEqual([{ manual_status: null }]);
+    for (const id of [reparation.id, etablie.id]) expect(JSON.stringify(await getCanonicalAgendaItem(compte.id, id))).not.toMatch(statutaire);
+    expect(await sql`SELECT manual_status FROM agenda_items WHERE id IN (${reparation.id}, ${etablie.id})`).toEqual([{ manual_status: null }, { manual_status: null }]);
   });
 
   it('PO-D25-E1 (revu lot 61) / PO-D27-E1 — mascotte : échéance échue ancienne, ni « Tout est à jour » ni vérification générique ; une heure ne fait pas un rendez-vous', async () => {
@@ -77,7 +83,8 @@ scenario('L53E', 'Statuts réels (D17, D25, D27) et vérification T1 incomplète
     const p = await getMascotPresentation(compte.id, 'display');
     // Lot 61 (T6) : le compteur reste une donnée de supervision ; une date
     // dépassée n'établit aucune action — ni phrase générique, ni « Tout est à jour ».
-    expect(p.overdueDeadlines).toBe(1);
+    // #715 : une date passée n'est plus une échéance « dépassée » : plus aucun compteur.
+    expect(p.overdueDeadlines ?? 0).toBe(0);
     const t = composeSpeech({ presentation: p, empty: false }).text;
     expect(t).not.toContain('Des échéances dépassées sont à vérifier');
     expect(t).not.toMatch(/Tout est à jour|Aucune échéance dépassée|urgen/i);

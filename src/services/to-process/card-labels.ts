@@ -217,17 +217,20 @@ interface CardLabelView {
  * Libellés d'une carte, prêts à afficher (page, mascotte, accueil). Pure.
  *   · cible : jamais « #id » ni vide → libellé générique du type ;
  *   · question : dates lisibles ; formulation technique → question du
- *     catalogue (`ruleQuestion`) ;
+ *     catalogue (`ruleQuestion`) — sauf question du traitement IA déjà
+ *     contrôlée (lot 113S, `opts.aiQuestion`) : affichée telle quelle,
+ *     jamais remplacée par une phrase du catalogue ;
  *   · propositions : valeurs brutes formatées, replis numérotés nommés ;
  *   · contexte de source : reformulé (historique fournisseur) ou retiré.
  */
-export function presentCardLabels<T extends CardLabelView>(view: T, ruleQuestion?: string | null): T {
+export function presentCardLabels<T extends CardLabelView>(view: T, ruleQuestion?: string | null, opts: { aiQuestion?: boolean } = {}): T {
   const label = view.target.label?.trim();
   // Un titre saisi peut contenir « #123 » (numéro de facture) : seul un
   // libellé qui n'est QU'UN identifiant est remplacé.
   const cible = !label || /^#?\d+$/.test(label) || /^(?:Bien|Équipement|Pièce|Document|Fournisseur) \d+$/.test(label)
     ? targetFallbackLabel(view.targetType) : label;
-  const question = humanizeIsoDates(view.question ?? '');
+  // Lot 113S : question de l'IA contrôlée à l'écriture (`ai-user-question.ts`) — identique à celle affichée.
+  const question = opts.aiQuestion ? view.question ?? '' : humanizeIsoDates(view.question ?? '');
   const linkAsset = view.targetType === 'DOCUMENT' && view.relationKey === 'assetIds';
   const proposals = view.proposals.map((p) => {
     // Lot 81A : rendu depuis la valeur comparée (dates, montants) — jamais un faux « identique ».
@@ -240,7 +243,7 @@ export function presentCardLabels<T extends CardLabelView>(view: T, ruleQuestion
   });
   return {
     ...view,
-    question: technicalLabelIssues(question, { userContent: true }).length && ruleQuestion ? ruleQuestion : question,
+    question: !opts.aiQuestion && technicalLabelIssues(question, { userContent: true }).length && ruleQuestion ? ruleQuestion : question,
     proposals,
     target: { ...view.target, label: cible },
   };

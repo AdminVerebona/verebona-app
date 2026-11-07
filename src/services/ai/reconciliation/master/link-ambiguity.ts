@@ -152,6 +152,8 @@ interface MasterLinksResult {
   matches: Array<{ id: number; score: number; reason: string }>;
   /** Abstentions explicites (T3-07) : à proposer à l'utilisateur, jamais liées. */
   ambiguities: LinkAmbiguity[];
+  /** Lot 113S (`t3-user-question-v1`) : question BRUTE proposée par T3, par section (réponse valide seulement). */
+  userQuestions?: Partial<Record<LinkSection, string>>;
 }
 
 interface LinkAmbiguityMasterInput {
@@ -189,6 +191,7 @@ export async function reconcileLinksMaster(input: LinkAmbiguityMasterInput): Pro
         result.ambiguities.push({ section, reasonCode: 'CLOSED_WORLD_VIOLATION', candidateIds: candidates.map((c) => c.candidateId) });
         continue;
       }
+      if (typeof output.userQuestion === 'string') (result.userQuestions ??= {})[section] = output.userQuestion.slice(0, 1000);
       const { retained, ambiguity } = decideLinks(output.matches, { exclusive: spec.exclusive, threshold: spec.threshold });
       if (ambiguity) result.ambiguities.push({ section, ...ambiguity });
       result[section] = retained.map((m) => ({ id: m.candidateId, score: m.score, reason: m.reason }));

@@ -6,30 +6,16 @@
  * télémétrie sont les seules écritures propres à la mascotte.
  */
 import { pgClient } from '@/db';
-import { extActionOccurrenceKey } from './signals';
 import type { MascotActionTarget } from './types';
-import { isSettledStatus, loadEffectiveStatus } from '@/services/agenda/effective-status-read';
 
 type Row = Record<string, unknown>;
 const rows = async (sql: string, params: unknown[]): Promise<Row[]> =>
   (await pgClient.unsafe(sql, params as never[])) as unknown as Row[];
 
-/** Lot 112G : échéance close selon le statut effectif commun (réalisée — à la main ou prouvée — ou annulée). */
-async function agendaSettled(accountId: number, id: number): Promise<boolean> {
-  const s = await loadEffectiveStatus(accountId, id);
-  return s != null && isSettledStatus(s);
-}
-
 /** Délai pendant lequel « Annuler » reste proposé (DONE-003). */
 export const UNDO_WINDOW_MS = 60_000;
 
 // ── « C'est fait » ───────────────────────────────────────────────────────────
-
-/** `MASC-EXT-ACTION:agenda:<id>` → id, ou null. Seule règle acquittable en V1. */
-function parseExtActionKey(occurrenceKey: string): number | null {
-  const m = /^MASC-EXT-ACTION:agenda:(\d{1,10})$/.exec(occurrenceKey);
-  return m ? Number(m[1]) : null;
-}
 
 type DoneResult =
   | { ok: true; acknowledgedAt: string }
@@ -43,33 +29,11 @@ type DoneResult =
 export async function acknowledgeOccurrence(p: {
   accountId: number; userId: number; occurrenceKey: string; cycleKey: string;
 }): Promise<DoneResult> {
-  const agendaId = parseExtActionKey(p.occurrenceKey);
-  if (!agendaId || p.occurrenceKey !== extActionOccurrenceKey(agendaId)) {
-    return { ok: false, code: 'NOT_ACKNOWLEDGEABLE', message: 'Cette action ne peut pas être marquée comme faite ici.' };
-  }
-  const [item] = await rows(
-    `SELECT to_char(start_date, 'YYYY-MM-DD') AS date
-       FROM agenda_items
-      WHERE id = $1 AND account_id = $2 AND (manual_status IS NULL OR trim(manual_status) = '')`,
-    [agendaId, p.accountId],
-  );
-  if (!item || item.date !== p.cycleKey) {
-    return { ok: false, code: 'NOT_FOUND', message: 'Cet élément n’est plus disponible.' };
-  }
-  // Lot 112G : déjà réalisée et prouvée (statut effectif commun) — rien à acquitter.
-  if (await agendaSettled(p.accountId, agendaId)) {
-    return { ok: false, code: 'NOT_FOUND', message: 'Cet élément n’est plus disponible.' };
-  }
-  const [r] = await rows(
-    `INSERT INTO home_mascot_acknowledgments
-       (account_id, occurrence_key, rule_code, target_type, target_id, cycle_key, acknowledged_by_user_id)
-     VALUES ($1, $2, 'MASC-EXT-ACTION', 'AGENDA_ITEM', $3, $4, $5)
-     ON CONFLICT (account_id, occurrence_key, cycle_key) WHERE undone_at IS NULL
-     DO UPDATE SET updated_at = NOW()
-     RETURNING acknowledged_at`,
-    [p.accountId, p.occurrenceKey, agendaId, p.cycleKey, p.userId],
-  );
-  return { ok: true, acknowledgedAt: new Date(String(r.acknowledged_at)).toISOString() };
+  // Lot 113P (#715) : plus de « C'est fait » sur une échéance — un événement daté
+  // n'est jamais une action à confirmer (aucune carte MASC-EXT-ACTION n'est plus
+  // produite ; une carte ancienne restée affichée est refusée, rien n'est écrit).
+  void p;
+  return { ok: false, code: 'NOT_ACKNOWLEDGEABLE', message: 'Cette action ne peut pas être marquée comme faite ici.' };
 }
 
 /**
@@ -103,14 +67,10 @@ type TargetCheck = 'ok' | 'gone' | 'resolved';
 export async function checkTarget(accountId: number, target: MascotActionTarget): Promise<TargetCheck> {
   switch (target.kind) {
     case 'drawer': {
-      // §20 « Action déjà résolue entre affichage et clic » : une échéance
-      // réalisée ou annulée depuis l'affichage (`manual_status` renseigné)
-      // n'ouvre pas le tiroir — le client dit « déjà traitée » puis recalcule.
+      // Lot 113P (#715) : une échéance n'a plus de statut — elle existe (ok) ou
+      // a été supprimée (gone) ; jamais « déjà traitée » par un statut.
       if (target.drawer === 'echeance') {
-        // Lot 112G : statut effectif commun (statut manuel, ou réalisation prouvée par un document).
-        const s = await loadEffectiveStatus(accountId, target.id);
-        if (!s) return 'gone';
-        return isSettledStatus(s) ? 'resolved' : 'ok';
+        return (await rows(`SELECT 1 FROM agenda_items WHERE id = $1 AND account_id = $2`, [target.id, accountId])).length ? 'ok' : 'gone';
       }
       const sql = {
         document: `SELECT 1 FROM asset_files WHERE id = $1 AND account_id = $2 AND deleted_at IS NULL`,
@@ -139,14 +99,9 @@ export async function checkTarget(accountId: number, target: MascotActionTarget)
       }
       return 'ok';
     }
-    case 'done': {
-      const id = parseExtActionKey(target.occurrenceKey);
-      if (!id) return 'gone';
-      // Lot 112G : statut effectif commun (preuve de réalisation comprise).
-      const s = await loadEffectiveStatus(accountId, id);
-      if (!s) return 'gone';
-      return isSettledStatus(s) ? 'resolved' : 'ok';
-    }
+    case 'done':
+      // Lot 113P : plus de « C'est fait » sur une échéance (voir `acknowledgeOccurrence`).
+      return 'gone';
     case 'route': {
       const m = /^\/assets\/(\d+)/.exec(target.href);
       if (!m) return 'ok';

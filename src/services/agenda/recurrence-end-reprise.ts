@@ -15,15 +15,16 @@
  *     l'ancienne règle (`legacyKeywordEndFlag`) sont examinées ;
  *   · occurrences ATTENDUES = prochaines occurrences À VENIR recalculées
  *     (`computeOccurrences`, jamais après une fin confirmée) ;
- *   · RETIRED : prévision automatique intacte, À VENIR, annulée SANS trace
- *     (aucun « STATUS_CHANGED » de l'utilisateur, aucun « FORECAST_RETIRED »
- *     tracé depuis 99D), dans la fenêtre d'une occurrence attendue ;
+ *   · RETIRED : (lot 113P, #715) PLUS AUCUNE — le statut « annulé » n'existe
+ *     plus ; la migration 1526 a neutralisé les anciens statuts (les
+ *     prévisions annulées à tort par l'ancienne règle sont redevenues
+ *     visibles), `retiredIds` est toujours vide ;
  *   · MISSING : occurrence attendue sans aucun élément de la série dans sa
- *     fenêtre (jamais générée).
+ *     fenêtre (jamais générée) — une occurrence (ou une série) SUPPRIMÉE par
+ *     l'utilisateur n'est jamais manquante (lot 113P, trace d'exclusion).
  *
  * Réparation (déléguée par le contrôle COH-AGENDA-RECURRENCE-END) :
- *   · RETIRED → statut retiré (prévision rétablie), événement tracé
- *     `FORECAST_RESTORED` (retour arrière : reposer « annulé ») ;
+ *   · RETIRED → sans objet depuis le lot 113P (aucun statut à retirer) ;
  *   · MISSING → candidats du document remis dans la file T4 existante
  *     (`enqueueT4Candidates`, sans retrait : analyse non déclarée complète) —
  *     T4 redécide, le moteur génère les occurrences. Appels IA limités aux
@@ -113,21 +114,24 @@ export async function diagnoseRecurrenceEnd(sql: Sql, accountId: number, fileId:
     const expected = computeOccurrences(spec, c.date, today).filter((d) => d !== c.date && d >= today);
     const fenetre = occurrenceWindowDays(spec);
     const pres = (await q(sql, `
-      SELECT i.id, i.start_date::text AS d, i.occurrence_nature AS nature, i.manual_status AS st,
-             i.is_automatic AS auto, i.is_automatic_modified AS modif, i.confirmation_mode AS cm,
-             EXISTS (SELECT 1 FROM agenda_occurrence_events e
-                      WHERE e.agenda_item_id = i.id AND e.event_type IN ('STATUS_CHANGED', 'FORECAST_RETIRED')) AS trace
+      SELECT i.id, i.start_date::text AS d
         FROM agenda_items i
        WHERE i.account_id = $1 AND i.series_key = $2 AND i.start_date IS NOT NULL
        ORDER BY i.start_date, i.id`, [accountId, sk])).map((r) => ({
-      id: Number(r.id), d: String(r.d), nature: String(r.nature), st: (r.st as string | null) ?? null,
-      auto: r.auto === true, modif: r.modif === true, cm: (r.cm as string | null) ?? null, trace: r.trace === true,
+      id: Number(r.id), d: String(r.d),
     }));
+    // Lot 113P (#715) : une occurrence SUPPRIMÉE PAR L'UTILISATEUR (trace d'exclusion,
+    // `agenda-user-deletion.ts`) n'est jamais « manquante » — ni relance T4, ni recréation.
+    const supprimees = (await q(sql, `
+      SELECT r.start_date::text AS d, r.reason
+        FROM agenda_item_removals r
+       WHERE r.account_id = $1 AND r.reason IN ('USER_DELETED', 'USER_DELETED_SERIES')
+         AND r.item_snapshot->>'series_key' = $2`, [accountId, sk]));
+    if (supprimees.some((r) => r.reason === 'USER_DELETED_SERIES')) continue;
+    for (const r of supprimees) if (r.d && r.d !== 'null') pres.push({ id: 0, d: String(r.d) });
     const dansFenetre = (x: { d: string }, d: string) => x.d === d || (fenetre > 0 && jours(x.d, d) <= fenetre);
-    const retiredIds = pres
-      .filter((x) => x.nature === 'FORECAST' && x.st === 'annule' && x.auto && !x.modif && !x.cm && !x.trace
-        && x.d >= today && (!bound || x.d <= bound) && expected.some((d) => dansFenetre(x, d)))
-      .map((x) => x.id);
+    // Lot 113P (#715) : plus de statut « annulé » — aucune prévision à rétablir.
+    const retiredIds: number[] = [];
     const missing = expected.filter((d) => !pres.some((x) => dansFenetre(x, d)));
     if (retiredIds.length || missing.length) {
       series.push({ originFieldKey: fk, seriesKey: sk, end: spec.end ?? null, bound, expected, retiredIds, missing });
@@ -141,28 +145,10 @@ export async function diagnoseRecurrenceEnd(sql: Sql, accountId: number, fileId:
  * T4 du document si une occurrence attendue n'a jamais été générée.
  */
 export async function repairRecurrenceEnd(
-  sql: Sql, accountId: number, diag: RecurrenceEndDiagnosis, opts: { correlationId: string },
+  sql: Sql, accountId: number, diag: RecurrenceEndDiagnosis, _opts: { correlationId: string },
 ): Promise<{ restored: number[]; t4JobId: number | null; t4Requested: boolean }> {
-  const ids = [...new Set(diag.series.flatMap((s) => s.retiredIds))];
-  let restored: number[] = [];
-  if (ids.length) {
-    // Mêmes gardes que le diagnostic, rejouées ATOMIQUEMENT (l'utilisateur a pu agir entre-temps).
-    restored = (await q(sql, `
-      UPDATE agenda_items i SET manual_status = NULL, updated_at = now()
-       WHERE i.account_id = $1 AND i.id = ANY($2::int[]) AND i.occurrence_nature = 'FORECAST' AND i.manual_status = 'annule'
-         AND i.is_automatic AND NOT i.is_automatic_modified AND i.confirmation_mode IS NULL
-         AND NOT EXISTS (SELECT 1 FROM agenda_occurrence_events e
-                          WHERE e.agenda_item_id = i.id AND e.event_type IN ('STATUS_CHANGED', 'FORECAST_RETIRED'))
-       RETURNING i.id`, [accountId, ids])).map((r) => Number(r.id));
-    for (const id of restored) {
-      const s = diag.series.find((x) => x.retiredIds.includes(id));
-      await q(sql, `INSERT INTO agenda_occurrence_events (agenda_item_id, account_id, event_type, detail_json)
-                    VALUES ($1, $2, 'FORECAST_RESTORED', $3::jsonb)`, [id, accountId, JSON.stringify({
-        reason: LEGACY_END_REVERSED, sourceFileId: diag.fileId, seriesKey: s?.seriesKey ?? null,
-        end: s?.end ?? null, correlationId: opts.correlationId, rollback: "reposer manual_status = 'annule'",
-      })]);
-    }
-  }
+  // Lot 113P (#715) : plus de prévision « annulée » à rétablir (aucun statut d'événement).
+  const restored: number[] = [];
   const manque = diag.series.some((s) => s.missing.length > 0);
   if (!manque) return { restored, t4JobId: null, t4Requested: false };
   const [owner] = await q(sql, `SELECT owner_user_id AS u FROM accounts WHERE id = $1`, [accountId]);
