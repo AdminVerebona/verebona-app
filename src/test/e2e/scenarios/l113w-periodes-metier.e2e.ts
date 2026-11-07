@@ -19,6 +19,9 @@
  *   L113W-E2E-10  reprise de l'historique (contrôle de cohérence) : à blanc sans écriture, puis exécutée deux fois
  *                 et après interruption → résultat stable ;
  *   L113W-E2E-11  schéma : bornes désordonnées / mal formées refusées, une seule période active par segment.
+ *   L113W-E2E-12  113W2 (décision PO 07/11) : une fin d'ATTESTATION n'est jamais une fin de contrat — aucun effective_to ni
+ *                 « Fin de contrat » ; stock : effective_to et échéance issus d'une attestation retirés par COH-OPS-CONTRACT-DATES v2
+ *                 (à blanc sans écriture, idempotent), échéance modifiée par l'utilisateur conservée, fin contractuelle explicite conservée.
  *
  * Assertions bornées aux comptes créés ici.
  */
@@ -126,6 +129,9 @@ scenario('L113W', 'Périodes métier transversales (Documents, événements de r
       expect(v.coverageHistories).toHaveLength(1);
       expect(v.coverageHistories[0].coverages.map((x: Json) => x.fileId)).toEqual(docs);
       expect(JSON.stringify(v)).not.toMatch(/expir|dernière période connue/i);
+      // 113W2 : la fin de la dernière attestation n'est pas une fin de contrat (date d'effet conservée).
+      const [cd] = await sql<{ f: string | null; t: string | null }[]>`SELECT effective_from::text AS f, effective_to::text AS t FROM business_operation_contract_details WHERE operation_id = ${op}`;
+      expect(cd).toMatchObject({ f: '2023-04-01', t: null });
 
       // Tiroir d'un élément d'agenda relié à l'événement de référence : même historique.
       const item = await make.agendaItem(c, { title: 'Assurance habitation', assetIds: [m.id] });
@@ -346,6 +352,75 @@ scenario('L113W', 'Périodes métier transversales (Documents, événements de r
     expect(await actives(achat)).toEqual([]);
     // Rafraîchissement direct rejoué : inchangé.
     expect(await (await svc()).refreshDocumentBusinessPeriods(c.id, stock[1])).toMatchObject({ outcome: 'UNCHANGED', kept: 1 });
+  });
+
+  // ══ E2E-12 (113W2) ═══════════════════════════════════════════════════════
+  it('L113W-E2E-12 — fin d’attestation ≠ fin de contrat : aucune échéance, stock réparé par le contrôle, décisions de l’utilisateur conservées', async () => {
+    const c = await make.account({ plan: 'premium' });
+    const m = await maison(c);
+    const details = async (opId: number) => (await sql<{ f: string | null; t: string | null }[]>`
+      SELECT effective_from::text AS f, effective_to::text AS t FROM business_operation_contract_details WHERE operation_id = ${opId}`)[0] ?? null;
+    const fins = () => sql<{ id: number; start_date: string | null; op: number | null }[]>`
+      SELECT id, start_date::text AS start_date, business_operation_id::int AS op FROM agenda_items WHERE account_id = ${c.id} AND business_type = 'contract' ORDER BY id`;
+    const { projectAccountOperations } = await import('@/services/business-operations/agenda-projection/service');
+    const projeter = () => projectAccountOperations(c.id, { all: true, today: RECETTE_TODAY });
+
+    // Attestation EN COURS (fin à venir) : aucune date de fin contractuelle, aucune « Fin de contrat ».
+    await k.document(c, m.id, [attestation(m.id, '2026-04-01', '2027-03-31', { police: 'POL-A' })], { type: 'INSURANCE_CERTIFICATE', title: 'Attestation 2026-2027' });
+    // Ancien code V1 (correspondance certaine) : même règle.
+    await k.document(c, m.id, [attestation(m.id, '2026-02-01', '2027-01-31', { police: 'POL-B', provider: 'Mutuelle Auto' })], { type: 'ATTESTATION_ASSURANCE', title: 'Attestation auto' });
+    // Contrat à durée déterminée (pièce contractuelle) : la fin explicite reste une fin de contrat.
+    await k.document(c, m.id, [cand({ typeHint: 'CONTRACT', statusHint: 'REALIZED', sourceRoleHint: 'CONTRACT_DOCUMENT', provider: 'Location Matériel', summary: 'Contrat de location 24 mois',
+      targetHints: [cible(m.id)], businessReferences: [ref('CONTRACT', 'LOC-24')] as AnchoredOperationCandidate['businessReferences'],
+      temporalHints: { startDate: '2025-12-01', endDate: '2027-11-30' } })], { type: 'SERVICE_CONTRACT', title: 'Contrat de location' });
+    await k.passer(c);
+    await k.passer(c);
+    const ops = (await k.actives(c)).filter((o) => o.type_code === 'CONTRACT');
+    expect(ops).toHaveLength(3);
+    const parProv = async (p: string) => (await sql<{ id: number }[]>`SELECT id::int AS id FROM business_operations WHERE account_id = ${c.id} AND provider = ${p} AND invalidated_at IS NULL`)[0].id;
+    const opA = await parProv('Assureur Habitation');
+    const opB = await parProv('Mutuelle Auto');
+    const opCdd = await parProv('Location Matériel');
+    expect(await details(opA)).toMatchObject({ f: '2026-04-01', t: null });
+    expect(await details(opB)).toMatchObject({ f: '2026-02-01', t: null });
+    expect(await details(opCdd)).toMatchObject({ f: '2025-12-01', t: '2027-11-30' });
+    await projeter();
+    expect((await fins()).map((x) => [x.op, x.start_date])).toEqual([[opCdd, '2027-11-30']]);
+
+    // Stock créé avant 113W2 : effective_to = fin d'attestation, « Fin de contrat » projetées ; l'une modifiée par l'utilisateur.
+    for (const [op, f, t] of [[opA, '2026-04-01', '2027-03-31'], [opB, '2026-02-01', '2027-01-31']] as const) {
+      await sql`UPDATE business_operation_contract_details SET effective_to = ${t} WHERE operation_id = ${op}`;
+      await sql`UPDATE business_operations SET start_date = ${f}, end_date = ${t} WHERE id = ${op}`;
+    }
+    await projeter();
+    const avant = await fins();
+    expect(avant.map((x) => x.op).sort()).toEqual([opA, opB, opCdd].sort());
+    const finB = avant.find((x) => x.op === opB)!;
+    await sql`UPDATE agenda_items SET is_automatic_modified = true WHERE id = ${finB.id}`;
+
+    const blanc = await runCoherenceFor(sql, [c.id], { mode: 'DRY_RUN', today: RECETTE_TODAY });
+    expect(blanc.results['COH-OPS-CONTRACT-DATES']).toMatchObject({ WOULD_REPAIR: 2 });
+    expect(await details(opA)).toMatchObject({ t: '2027-03-31' });
+
+    await runCoherenceFor(sql, [c.id], { today: RECETTE_TODAY });
+    expect(await details(opA)).toMatchObject({ f: '2026-04-01', t: null });
+    expect(await details(opB)).toMatchObject({ t: null });
+    expect(await details(opCdd)).toMatchObject({ t: '2027-11-30' });
+    const [h] = await sql<Json[]>`SELECT before_json, after_json FROM business_operation_history WHERE operation_id = ${opA} AND reason_code = 'T3_CONTRACT_DATES_UNPROVEN'`;
+    expect(h).toMatchObject({ before_json: { effective_to: '2027-03-31' }, after_json: { effective_to: null } });
+    // Échéance intacte retirée (trace restaurable) ; échéance modifiée par l'utilisateur conservée ; CDD intact.
+    const apres = await fins();
+    expect(apres.map((x) => x.id).sort()).toEqual([finB.id, avant.find((x) => x.op === opCdd)!.id].sort());
+    expect(await sql`SELECT 1 FROM agenda_item_removals WHERE account_id = ${c.id} AND agenda_item_id = ${avant.find((x) => x.op === opA)!.id}`).toHaveLength(1);
+    // Couverture toujours visible comme couverture (période métier, jamais une fin de contrat).
+    const fa = (await sql<{ f: number }[]>`SELECT source_entity_key::int AS f FROM business_operation_sources WHERE operation_id = ${opA} AND active AND source_kind = 'DOCUMENT'`)[0].f;
+    await rafraichir(c, [fa]);
+    expect((await lireDoc(c, fa)).principal.line).toBe('Période couverte : du 01/04/2026 au 31/03/2027');
+
+    // Idempotent : seconde campagne sans réparation.
+    const r2 = await runCoherenceFor(sql, [c.id], { today: RECETTE_TODAY });
+    expect(r2.results['COH-OPS-CONTRACT-DATES']?.REPAIRED ?? 0).toBe(0);
+    expect((await fins()).map((x) => x.id).sort()).toEqual(apres.map((x) => x.id).sort());
   });
 
   // ══ E2E-11 ═══════════════════════════════════════════════════════════════

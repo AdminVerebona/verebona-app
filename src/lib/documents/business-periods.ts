@@ -20,8 +20,12 @@
  * natures suivent la même forme (textes « à valider par le PO », recette 113W).
  */
 
-/** Natures de période (ordre = priorité par défaut de la période principale, décision 1). */
-export const BUSINESS_PERIOD_KINDS = ['COVERAGE', 'BILLING', 'VALIDITY', 'WARRANTY', 'SERVICE'] as const;
+/**
+ * Natures de période. L'ordre est la priorité par défaut de la période
+ * principale (décision 1 ; ordre décidé par le PO le 07/11/2026, 113W2) :
+ * Couverture > Validité > Garantie > Prestation > Facturation.
+ */
+export const BUSINESS_PERIOD_KINDS = ['COVERAGE', 'VALIDITY', 'WARRANTY', 'SERVICE', 'BILLING'] as const;
 export type BusinessPeriodKind = (typeof BUSINESS_PERIOD_KINDS)[number];
 
 export const isBusinessPeriodKind = (v: unknown): v is BusinessPeriodKind =>

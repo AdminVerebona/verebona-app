@@ -37,7 +37,8 @@
  *
  * PÉRIODE PRINCIPALE (décision 1) : la nature désignée par T1 (attribut
  * `principal` d'un fait de période), sinon la première nature présente dans
- * l'ordre couverture → facturation → validité → garantie → prestation. Les
+ * l'ordre couverture → validité → garantie → prestation → facturation
+ * (décision PO du 07/11/2026). Les
  * autres restent consultables (détail), jamais écrites dans les notes.
  * ══════════════════════════════════════════════════════════════════════════
  */

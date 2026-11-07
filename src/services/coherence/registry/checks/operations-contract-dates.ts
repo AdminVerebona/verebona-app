@@ -22,6 +22,17 @@
  *     du contrôle, aucune carte, aucune IA ; recontrôle par le moteur.
  * Aucune règle recopiée : la règle est `contractualDateSource` (model.ts),
  * appliquée par `consolidateOperationState`.
+ *
+ * Version 2 (lot 113W2, décision PO du 07/11/2026, #724) : une fin de
+ * COUVERTURE (attestation, certificat de garantie, échéancier de couverture —
+ * Type de référentiel `coverage-document-types.ts`, jamais un libellé) n'est
+ * jamais une fin de contrat (`contractualEndSource`). La nouvelle version fait
+ * réexaminer TOUT le stock par la campagne quotidienne : un `effective_to`
+ * fondé sur la seule fin d'une attestation devient CONTRACT_DATE_UNPROVEN, la
+ * consolidation le retire (motif T3_CONTRACT_DATES_UNPROVEN, avant / après) et
+ * la projection retire l'échéance « Fin de contrat » restée intacte (trace
+ * restaurable) ; une échéance modifiée par l'utilisateur est conservée, une
+ * donnée saisie sur la fiche reste une source contractuelle. Sans IA.
  */
 import type { CoherenceCheck, Inspection, RepairResult } from '../types';
 import { hashOf, idsOf, intArray, rows } from '../util';
@@ -38,7 +49,7 @@ const DATEES_SQL = `o.account_id = $1 AND o.invalidated_at IS NULL AND o.merged_
 
 export const operationsContractDatesCheck: CoherenceCheck = {
   id: 'COH-OPS-CONTRACT-DATES',
-  version: 1,
+  version: 2,
   status: 'ACTIVE',
   title: 'Opérations : dates de contrat justifiées par une pièce contractuelle (jamais une période facturée)',
   domain: 'operations',
@@ -48,10 +59,10 @@ export const operationsContractDatesCheck: CoherenceCheck = {
   sources: ['business_operations', 'business_operation_contract_details', 'business_operation_financing_details', 'business_operation_sources',
     'document_operation_candidates', 'agenda_items'],
   applicability: 'compte éligible (actif et modifiable) ; relation durable consolidée par T3',
-  invariant: 'une date d’effet, de fin, de résiliation ou de renouvellement d’un contrat repose sur une source dont la signification contractuelle est établie ; une période facturée ne date jamais un contrat',
+  invariant: 'une date d’effet, de fin, de résiliation ou de renouvellement d’un contrat repose sur une source dont la signification contractuelle est établie ; une période facturée ne date jamais un contrat ; une fin de couverture (attestation, certificat, échéancier de couverture) n’est jamais une fin de contrat',
   anomalies: ['CONTRACT_DATE_UNPROVEN', 'CONTRACT_DATE_STALE'],
   autoRepairWhen: 'les dates recalculées par le modèle de consolidation T3 (simulation, sans IA) diffèrent des dates enregistrées',
-  forbiddenRepairs: ['écrire une date depuis le contrôle', 'inventer une date de fin', 'modifier un élément d’agenda touché par l’utilisateur',
+  forbiddenRepairs: ['écrire une date depuis le contrôle', 'inventer une date de fin', 'prendre la fin d’une couverture pour une fin de contrat', 'modifier un élément d’agenda touché par l’utilisateur',
     'recalculer les dates d’une Opération portant des sources non gérées par T3', 'appeler l’IA', 'créer une carte « À traiter »'],
   services: ['business-operations/consolidation/consolidator#previewContractDates', 'business-operations/consolidation/consolidator#reconsolidateOperations',
     'business-operations/agenda-projection/service#projectAccountOperations'],
@@ -59,7 +70,7 @@ export const operationsContractDatesCheck: CoherenceCheck = {
   triggers: ['SOURCE_ANALYZED', OPERATION_CHANGED],
   frequency: 'campagne exhaustive quotidienne (toutes les relations durables, y compris inchangées) + contrôle ciblé à chaque analyse ou écriture d’Opération',
   criticality: 'HIGH',
-  tests: ['L86C-U-DATES', 'L86C-E2E-06', 'L86C-E2E-08'],
+  tests: ['L86C-U-DATES', 'L86C-E2E-06', 'L86C-E2E-08', 'L113W2-U-FIN', 'L113W-E2E-12'],
 
   async listObjects(ctx, accountId, afterId, limit) {
     return idsOf(await rows(ctx.sql, `SELECT o.id FROM business_operations o WHERE ${DATEES_SQL} AND o.id > $2 ORDER BY o.id LIMIT $3`, [accountId, afterId, limit]));

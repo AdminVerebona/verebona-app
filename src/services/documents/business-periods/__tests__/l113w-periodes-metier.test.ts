@@ -225,3 +225,52 @@ describe('L113W-U-COH — contrôle de cohérence (reprise de l’historique)', 
     }
   });
 });
+
+describe('L113W2-U-FIN — décision PO du 07/11 : une fin de couverture n’est jamais une fin de contrat', () => {
+  it('Types de couverture : référentiel V2 (et V1 à correspondance certaine), jamais un libellé', async () => {
+    const { COVERAGE_PERIOD_DOCUMENT_TYPES, isCoveragePeriodDocumentType } = await import('@/lib/referential/v2/coverage-document-types');
+    const { DOCUMENT_TYPES } = await import('@/lib/referential/v2/document-types');
+    for (const c of COVERAGE_PERIOD_DOCUMENT_TYPES) expect(DOCUMENT_TYPES.some((t) => t.code === c), c).toBe(true);
+    expect(isCoveragePeriodDocumentType('INSURANCE_CERTIFICATE')).toBe(true);
+    expect(isCoveragePeriodDocumentType('ATTESTATION_ASSURANCE')).toBe(true);
+    expect(isCoveragePeriodDocumentType('GARANTIE')).toBe(true);
+    for (const c of ['INSURANCE_POLICY', 'SERVICE_CONTRACT', 'SUBSCRIPTION_CONTRACT', 'LEASING_FINANCING_CONTRACT', 'Attestation', null]) expect(isCoveragePeriodDocumentType(c), String(c)).toBe(false);
+  });
+  it('consolidation : attestations → date d’effet seule, aucune fin ; fin explicite d’un contrat conservée', async () => {
+    const { buildCandidateIdentity, consolidateOperationState, contractualEndSource } = await import('@/services/business-operations/consolidation/model');
+    const rec = (id: number, start: string, end: string) => ({
+      id, accountId: 1, fileId: 100 + id, candidateKey: 'op1', established: true, confidence: 'certain' as const, typeHint: 'CONTRACT', statusHint: 'REALIZED',
+      summary: 'Assurance', payload: { sourceRoleHint: 'CONTRACT_DOCUMENT', provider: 'Assureur', businessReferences: [{ kind: 'POLICY', value: 'P-1' }], temporalHints: { startDate: start, endDate: end } },
+    });
+    const ident = (id: number, start: string, end: string, type: string | null) =>
+      buildCandidateIdentity(rec(id, start, end) as never, { fileAssetId: 14, fileDocumentTypeCode: type, liveAssetIds: new Set([14]), equipmentAssets: new Map() });
+    const atts = [ident(1, '2023-04-01', '2024-03-31', 'INSURANCE_CERTIFICATE'), ident(2, '2024-04-01', '2025-03-31', 'INSURANCE_CERTIFICATE'), ident(3, '2025-04-01', '2027-03-31', 'ATTESTATION_ASSURANCE')];
+    expect(atts.every((a) => a.coverageDocument === true && !contractualEndSource(a))).toBe(true);
+    const s = consolidateOperationState('CONTRACT', atts.map((identity, i) => ({ sourceId: i + 1, identity })), '2026-11-07');
+    expect(s.contract).toMatchObject({ effectiveFrom: '2023-04-01', effectiveTo: null });
+    expect(s.endDate).toBeNull();
+    expect(s.provenance.endDate).toBeUndefined();
+    // Contrat à durée déterminée (pièce contractuelle d'un autre Type) : sa fin explicite reste la fin du contrat.
+    const cdd = ident(4, '2023-04-01', '2028-03-31', 'SERVICE_CONTRACT');
+    expect(cdd.coverageDocument).toBeUndefined();
+    const s2 = consolidateOperationState('CONTRACT', [...atts, cdd].map((identity, i) => ({ sourceId: i + 1, identity })), '2026-11-07');
+    expect(s2.contract).toMatchObject({ effectiveTo: '2028-03-31' });
+    expect(s2.provenance.endDate).toMatchObject({ sourceId: 4 });
+  });
+  it('COH-OPS-CONTRACT-DATES en version 2 (stock réexaminé), interdit explicite', async () => {
+    const { COHERENCE_REGISTRY } = await import('@/services/coherence/registry');
+    const c = COHERENCE_REGISTRY.find((x) => x.id === 'COH-OPS-CONTRACT-DATES')!;
+    expect(c.version).toBe(2);
+    expect(c.forbiddenRepairs.join(' ')).toMatch(/fin d’une couverture/);
+  });
+  it('priorité de la période principale (PO 07/11) : Couverture > Validité > Garantie > Prestation > Facturation', () => {
+    expect(lib.BUSINESS_PERIOD_KINDS).toEqual(['COVERAGE', 'VALIDITY', 'WARRANTY', 'SERVICE', 'BILLING']);
+    const p = (kind: (typeof lib.BUSINESS_PERIOD_KINDS)[number]) => ({ kind, principalHint: false });
+    expect(m.principalKind([p('BILLING'), p('SERVICE')])).toBe('SERVICE');
+    expect(m.principalKind([p('BILLING'), p('WARRANTY'), p('SERVICE')])).toBe('WARRANTY');
+    expect(m.principalKind([p('BILLING'), p('VALIDITY'), p('WARRANTY')])).toBe('VALIDITY');
+    expect(m.principalKind([p('BILLING'), p('VALIDITY'), p('COVERAGE')])).toBe('COVERAGE');
+    expect(m.principalKind([p('BILLING')])).toBe('BILLING');
+    expect(m.principalKind([p('COVERAGE'), { kind: 'BILLING', principalHint: true }])).toBe('BILLING');
+  });
+});

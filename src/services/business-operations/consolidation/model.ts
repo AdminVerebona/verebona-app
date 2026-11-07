@@ -39,6 +39,7 @@
  */
 import { corroborateAcquisition, type AcquisitionEvidenceIndex, type Corroboration } from './acquisition-corroboration';
 import { createHash } from 'node:crypto';
+import { isCoveragePeriodDocumentType } from '@/lib/referential/v2/coverage-document-types';
 import {
   isBusinessOperationStatus, isIsoCurrency, isIsoDate, isMinorAmount, normalizeBusinessReference, normalizeOperationTypeHint,
   type BusinessOperationStatus, type BusinessOperationTypeCode, type Confidence, type FinancialComponentKind,
@@ -106,6 +107,11 @@ export interface CandidateRecord {
 interface IdentityContext {
   /** Bien principal du document (`asset_files.asset_id`, à défaut `linked_asset_id`), s'il existe encore. */
   fileAssetId: number | null;
+  /**
+   * Lot 113W2 : Type (V2) du document (`asset_files.document_type_code`). Un Type
+   * de période de couverture (`coverage-document-types.ts`) ne date jamais la fin d'un contrat.
+   */
+  fileDocumentTypeCode?: string | null;
   /**
    * Lot 109D : candidats ACTIFS et établis du MÊME document (celui-ci compris) et montant TTC du document — la
    * qualification des montants est faite au niveau du document (`finance/commercial-adjustments`). Absent : le
@@ -177,6 +183,11 @@ export interface CandidateIdentity {
   refs: NormalizedReference[];
   dates: CandidateDates;
   hints: PersistedFinancialHint[];
+  /**
+   * Lot 113W2 (décision PO #724) : le document délimite une PÉRIODE DE COUVERTURE
+   * (attestation, certificat, échéancier de couverture) — sa fin n'est jamais une fin de contrat.
+   */
+  coverageDocument?: boolean;
   /**
    * Lot 43 (O4) : identité d'une donnée STRUCTURÉE du bien (source
    * ASSET_DATA, `asset-data.ts`) et non d'un candidat T1 — sa nature et
@@ -308,6 +319,7 @@ export function buildCandidateIdentity(c: CandidateRecord, ctx: IdentityContext)
       endDate: dateOrNull(t.endDate),
     },
     hints,
+    ...(isCoveragePeriodDocumentType(ctx.fileDocumentTypeCode) ? { coverageDocument: true } : {}),
   };
 }
 
@@ -426,6 +438,18 @@ export function contractualDateSource(id: Pick<CandidateIdentity, 'role' | 'hint
   if (id.role === 'CONTRACT_DOCUMENT') return true;
   if (id.role !== null && BILLING_SOURCE_ROLES.has(id.role)) return false;
   return !hasRecurringPeriod(id);
+}
+
+/**
+ * Lot 113W2 (décision PO du 07/11/2026, #724) — une source établit-elle une FIN
+ * contractuelle ? Comme `contractualDateSource`, sauf pour une pièce qui
+ * délimite une PÉRIODE DE COUVERTURE (attestation, certificat de garantie,
+ * échéancier de couverture : Type de référentiel, jamais un libellé) — sa fin
+ * est celle d'une couverture, jamais une fin de contrat ni une échéance
+ * « Fin de contrat ». Sa date d'effet reste une date contractuelle. Pure.
+ */
+export function contractualEndSource(id: Pick<CandidateIdentity, 'role' | 'hints' | 'agenda' | 'structured' | 'coverageDocument'>): boolean {
+  return !id.coverageDocument && contractualDateSource(id);
 }
 
 /** Types dont `start_date` / `end_date` sont des dates contractuelles (date d'effet, fin). */
@@ -883,7 +907,8 @@ export function computeProvenance(
   for (const k of ['plannedDate', 'startDate', 'realizedDate', 'endDate'] as const) {
     const val = v[k];
     if (!val) continue;
-    const pool = opts.durable && (k === 'startDate' || k === 'endDate') ? srcs.filter((x) => contractualDateSource(x.identity)) : srcs;
+    const pool = opts.durable && (k === 'startDate' || k === 'endDate')
+      ? srcs.filter((x) => (k === 'endDate' ? contractualEndSource(x.identity) : contractualDateSource(x.identity))) : srcs;
     const s = (k === 'realizedDate' ? srcs.find((x) => x.identity.agenda?.realizedDate === val) : undefined)
       ?? pool.find((x) => x.identity.dates[k] === val)
       ?? (k === 'realizedDate' ? srcs.find((x) => x.identity.hints.some((h) => h.economicDate === val) || x.identity.dates.endDate === val) : undefined);
@@ -954,10 +979,12 @@ export function consolidateOperationState(
   // d'effet, de fin, de résiliation ou de renouvellement.
   const durable = isDurableRelationType(type);
   const datees = durable ? srcs.filter((s) => contractualDateSource(s.identity)) : srcs;
+  // Lot 113W2 : une fin de couverture (attestation, certificat…) ne date jamais la fin du contrat.
+  const finsDatees = durable ? srcs.filter((s) => contractualEndSource(s.identity)) : srcs;
   let plannedDate = minDate(all('plannedDate'));
   let startDate = minDate(all('startDate', datees));
   let realizedDate: string | null = null;
-  let endDate = maxDate(all('endDate', datees));
+  let endDate = maxDate(all('endDate', finsDatees));
   switch (type) {
     case 'CONTRACT':
     case 'FINANCING':
