@@ -62,8 +62,17 @@
  *     « Bon à savoir » (exclusions normales, déduplication prouvée, vos
  *     choix). Diagnostics calculés par le serveur (`tco/diagnostics.ts`).
  *     « Dépenses non retenues » : des LIGNES et leurs motifs (à revoir /
- *     exclusions normales), pas des erreurs. « Aucune anomalie détectée » ne
- *     veut jamais dire « toutes les dépenses possibles sont connues ».
+ *     exclusions normales), pas des erreurs. (Lot 113X : plus aucun état
+ *     positif de complétude affiché.)
+ *
+ *   · Lot 113X (#722) : UNE seule information « dépenses sans date fiable »
+ *     sous les indicateurs (près de « Dépenses de l'année »), nombre et
+ *     montant calculés par le moteur (`undatedExpenses` = `annual.undated`),
+ *     visible quelle que soit l'année choisie, et « Renseigner les dates (N) »
+ *     (`TcoUndatedDatesSheet` : saisie dans le champ métier canonique) ; plus
+ *     d'état positif de complétude (#722), plus d'avertissement sous la
+ *     ventilation, et le point « date non établie » n'est plus répété dans
+ *     « Points à vérifier » (`tcoSheetDiagnostics` ; DTO inchangé pour T2/BO).
  *
  *   · Lot 111V : gestes CONTEXTUELS calculés par le serveur (arbitrages :
  *     même fait, dépenses distinctes, exclusion confirmée, nature confirmée ;
@@ -81,7 +90,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { Button } from '@/components/ui/button';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle } from '@/components/ui/sheet';
-import { AlertCircle, ArrowLeft, ChevronDown, ChevronRight, ChevronUp, Loader2, Lock, MinusCircle, PlusCircle } from 'lucide-react';
+import { AlertCircle, ArrowLeft, CalendarDays, ChevronDown, ChevronRight, ChevronUp, Info, Loader2, Lock, MinusCircle, PlusCircle } from 'lucide-react';
 import { apiClient } from '@/lib/api-client';
 import { toast } from 'sonner';
 // Types seulement : les libellés viennent de la réponse (aucun module serveur ni registre dans le paquet client).
@@ -100,6 +109,8 @@ import { tcoKeptYear, TCO_REFRESH_WINDOW_MS, watchTcoMutations } from './tco-ref
 import { TcoLoanTermsSheet } from './TcoLoanTermsSheet';
 import { TcoLockedNotice } from './tco-locked';
 import { useNativeCommerceHidden } from '@/hooks/useNativeCommerceHidden';
+import { tcoSheetDiagnostics, tcoUndatedButtonLabel, tcoUndatedMessage } from '@/services/business-operations/tco/undated-expenses';
+import { TcoUndatedDatesSheet } from './TcoUndatedDatesSheet';
 
 interface Props {
   assetId: number;
@@ -406,6 +417,9 @@ export function TcoSection({ assetId, readOnly = false, defaultOpen = false }: P
   // Lot 109C : ligne à montrer depuis un point à vérifier (sous-tiroir ouvert, ligne mise en évidence et focalisée).
   const [focusLine, setFocusLine] = useState<string | null>(null);
   const [loanTermsKey, setLoanTermsKey] = useState<string | null>(null); // L112H : feuille « Conditions du prêt »
+  // Lot 113X : interface « Renseigner les dates » (une seule feuille ouverte à la fois).
+  const [datesOpen, setDatesOpen] = useState(false);
+  const datesTrigger = useRef<HTMLButtonElement | null>(null);
 
   // Lot 81D : lecture du TCO par le mécanisme existant de rafraîchissement regroupé (une lecture par rafale
   // d'événements, réponses anciennes écartées, données affichées conservées pendant la relecture).
@@ -567,7 +581,10 @@ export function TcoSection({ assetId, readOnly = false, defaultOpen = false }: P
   // justificatif déjà porté par une dépense consolidée affichée (tous restent au diagnostic BO). Garde défensive.
   const ecartees = toutes.filter((l) => !RETENUE.has(l.status) && l.status !== 'OUT_OF_SCOPE');
   // Lot 109C : diagnostics du serveur — lignes « à revoir » (cas ouverts) vs exclusions normales.
-  const diag = t?.diagnostics ?? null;
+  // Lot 113X : le point « date non établie » est porté par l'alerte unique (pas de répétition dans « Points à vérifier »).
+  const diag = t?.diagnostics ? tcoSheetDiagnostics(t.diagnostics) : null;
+  const sansDate = t?.undatedExpenses ?? null;
+  const messageSansDate = sansDate ? tcoUndatedMessage(sansDate.count, sansDate.costsCents, eur) : null;
   const aRevoir = new Set(diag?.reviewLineIds ?? []);
   const ecarteesARevoir = ecartees.filter((l) => aRevoir.has(l.id));
   // Lot 111V : choix confirmés par l'utilisateur — groupe distinct des exclusions normales.
@@ -686,12 +703,24 @@ export function TcoSection({ assetId, readOnly = false, defaultOpen = false }: P
                             Avoirs, remboursements et indemnités : − {eur(anneeCourante.creditsCents)} · net de l’année {eur(anneeCourante.netCents)}.
                           </p>
                         )}
-                        {anneeCourante.possiblyIncomplete && (
-                          <p className="text-xs text-[color:var(--attention-on-soft)] mt-0.5" data-tco-year-incomplete>
-                            {anneeCourante.count === 0 ? 'Absence de dépense non certaine : ' : 'Montant potentiellement incomplet : '}des dépenses sans date ne sont rattachées à aucune année.
-                          </p>
-                        )}
                       </div>
+                    )}
+                  </div>
+                )}
+                {/* ── Lot 113X (#722) : information UNIQUE sur les dépenses sans date fiable, près de « Dépenses de l'année » ──
+                    Toutes années confondues (le filtre d'année ne la masque jamais) ; aucun état positif quand tout est daté. */}
+                {sansDate && messageSansDate && (
+                  <div className="rounded-lg border border-border bg-card p-3 space-y-2" role="group" aria-label="Dépenses sans date fiable" data-tco-undated={sansDate.count}>
+                    <p className="text-xs text-[color:var(--text-primary)] flex items-start gap-1.5" data-tco-undated-message>
+                      <Info className="w-3.5 h-3.5 mt-px shrink-0 text-muted-foreground" aria-hidden /> <span>{messageSansDate}</span>
+                    </p>
+                    {canEdit && (
+                      <Button
+                        ref={datesTrigger} type="button" variant="outline" size="sm" className="min-h-[44px] md:min-h-0 w-full sm:w-auto"
+                        onClick={() => setDatesOpen(true)} aria-haspopup="dialog" aria-expanded={datesOpen} aria-controls="tco-undated-drawer" data-tco-undated-open
+                      >
+                        <CalendarDays className="w-3.5 h-3.5 mr-1.5" aria-hidden />{tcoUndatedButtonLabel(sansDate.count)}
+                      </Button>
                     )}
                   </div>
                 )}
@@ -703,17 +732,14 @@ export function TcoSection({ assetId, readOnly = false, defaultOpen = false }: P
                     <Ligne label="Avoirs, remboursements et indemnités" value={`− ${eur(t.reductionsCents + t.refundsCents + t.indemnitiesCents)}`} />
                   )}
                 </div>
-                {/* Lot 109C : « aucune anomalie détectée » ≠ « toutes les dépenses possibles sont connues ». */}
-                <p className={`text-xs ${t.status === 'COMPLETE' ? 'text-muted-foreground' : 'text-[color:var(--attention-on-soft)]'}`} data-tco-completeness={t.status}>
-                  {t.status === 'COMPLETE' ? `Aucune anomalie détectée sur ${t.reliability.operationsCounted + t.reliability.documentsCounted} élément(s) documenté(s). Le coût ne comprend que les dépenses connues de Verebona.`
-                    : t.status === 'PARTIAL' ? 'Résultat partiel : seule une partie des éléments a pu être lue.'
+                {/* Lot 113X (#722) : plus aucune phrase « aucune anomalie » (état positif supprimé) ; seule une couverture
+                    réellement incomplète est signalée. L'information « sans date » n'est plus répétée sous la ventilation. */}
+                {t.status !== 'COMPLETE' && (
+                  <p className="text-xs text-[color:var(--attention-on-soft)]" data-tco-completeness={t.status}>
+                    {t.status === 'PARTIAL' ? 'Résultat partiel : seule une partie des éléments a pu être lue.'
                       : (diag?.open.families ?? 0) > 0 ? 'Couverture incomplète : voir les points à vérifier ci-dessous.'
                         : (diag?.inProgress ?? 0) > 0 ? 'Couverture incomplète : lecture automatique en cours (voir ci-dessous).'
                           : 'Couverture incomplète : certaines informations manquent.'}
-                </p>
-                {annual && (annual.undated.count > 0 || annual.undated.creditsCents > 0) && (
-                  <p className="text-xs text-[color:var(--attention-on-soft)]" data-tco-annual-undated>
-                    {annual.undated.count} dépense(s) sans date fiable ({eur(annual.undated.costsCents)}) : comptée(s) dans le coût total, rattachée(s) à aucune année — les montants par année peuvent être incomplets.
                   </p>
                 )}
                 {annual && annual.notRealized.count > 0 && (
@@ -989,6 +1015,15 @@ export function TcoSection({ assetId, readOnly = false, defaultOpen = false }: P
             </div>
           </SheetContent>
         </Sheet>
+      )}
+      {/* Lot 113X (#722) : « Renseigner les dates » — TCO recalculé rendu par le serveur (mise à jour immédiate). */}
+      {t && canEdit && (
+        <TcoUndatedDatesSheet
+          open={datesOpen} onOpenChange={setDatesOpen} assetId={assetId} tco={t} canEdit={canEdit} arbitrate={arbitrate}
+          trigger={datesTrigger.current}
+          onOwnWrite={(w) => { ownWrite.current = w; }}
+          onSaved={(tco) => { coordinator.current?.supersede(); setData(tco); setExtra([]); setYearLines(null); }}
+        />
       )}
       {/* Lot 112H : conditions du prêt — route PUT 112D, TCO recalculé rendu par le serveur (mise à jour immédiate). */}
       {t && ind && loanTermsKey && (

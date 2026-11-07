@@ -16,6 +16,7 @@ import {
 } from './user-decisions';
 import { USAGE_BUDGET_STATUS_LABELS, USAGE_COMPLEMENT_WARNING_LABELS } from './usage-complement';
 import { computeTcoDiagnostics, type TcoDiagnostics } from './diagnostics';
+import { tcoUndatedExpenses, type TcoUndatedExpenses } from './undated-expenses';
 
 export const TCO_PREMIUM_MESSAGE = 'Le coût de possession est disponible avec Premium et Premium Duo.';
 
@@ -209,6 +210,11 @@ export type TcoDto = Omit<TcoResult, 'entries' | 'lines' | 'citedOnlyDocuments' 
   componentsExamined: number;
   /** Lot 81D : année du détail demandé (`linesYear`), ou null (toutes les lignes). */
   linesYear: number | null;
+  /**
+   * Lot 113X (#722) : dépenses retenues sans date fiable (= `annual.undated`, trace complète, jamais la page) et
+   * champ métier où se saisit la date de chacune — alerte unique et « Renseigner les dates (N) » de la fiche.
+   */
+  undatedExpenses: TcoUndatedExpenses;
 };
 
 /**
@@ -283,6 +289,7 @@ export function toTcoDto(t: TcoResult, page: { linesOffset?: number; linesLimit?
     },
     componentsExamined: entries.length,
     linesYear: page.linesYear ?? null,
+    undatedExpenses: tcoUndatedExpenses({ lines: vue.lines }, vue.lines),
   };
 }
 

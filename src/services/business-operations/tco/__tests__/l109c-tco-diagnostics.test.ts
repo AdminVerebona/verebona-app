@@ -217,8 +217,11 @@ describe('L109C-R — recette du ticket (moteur → diagnostics)', () => {
     expect(diag(t).items.filter((d) => d.status !== 'INFORMATIONAL')).toEqual([]);
     const ui = lire('src/components/assets/TcoSection.tsx');
     expect(ui).not.toContain('Calcul complet :');
-    expect(ui).toContain('Aucune anomalie détectée sur');
-    expect(ui).toContain('Le coût ne comprend que les dépenses connues de Verebona.');
+    // Lot 113X (#722, décision PO) : la ligne « Aucune anomalie détectée sur N élément(s) documenté(s) » est
+    // SUPPRIMÉE, sans remplacement (« Aucune incohérence détectée » interdit) : aucun état positif affiché.
+    expect(ui).not.toContain('Aucune anomalie détectée');
+    expect(ui).not.toContain('Aucune incohérence détectée');
+    expect(ui).toContain("t.status !== 'COMPLETE' && (");
   });
 
   it('L109C-R11 — plusieurs familles : ordre selon l’impact réel (anomalie > couverture ; total > période ; montant en jeu), pas l’ordre des codes', () => {

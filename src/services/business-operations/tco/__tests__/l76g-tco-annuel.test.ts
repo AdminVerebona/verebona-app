@@ -559,7 +559,10 @@ describe('L81D — interface (desktop et mobile, même composant) : aucune règl
     expect(ui).not.toContain('TOO_RECENT');
     expect(ui).toContain('extrapolationLabel');
     expect(ui).toContain('data-tco-year-net');
-    expect(ui).toContain('possiblyIncomplete');
+    // Lot 113X (#722) : l'année potentiellement incomplète est portée par l'information UNIQUE « dépenses sans date
+    // fiable » (nombre et montant du moteur), plus par une mention répétée dans la carte de l'année.
+    expect(ui).toContain('data-tco-undated');
+    expect(ui).toContain('undatedExpenses');
     expect(ui).toContain('data-tco-annual-not-realized');
   });
   it('L81D-UI-03 — actualisation automatique : événements de mutation existants, regroupés, sans boucle', () => {
