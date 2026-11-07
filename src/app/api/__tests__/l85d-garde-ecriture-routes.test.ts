@@ -76,6 +76,7 @@ const WRITE_GUARD_EXCEPTIONS: Readonly<Record<string, string>> = {
   'home/mascot/events/route.ts': 'Télémétrie produit.',
   'home/mascot/pregenerate/route.ts': 'Demande de préparation en arrière-plan : l’éligibilité 82A (processingEligibleSql) est appliquée à la mise en file et au traitement.',
   'analytics/track/route.ts': 'Télémétrie produit.',
+  'documents/analyze-launch-reports/route.ts': 'Télémétrie d’exploitation (lot 113U) : rapport d’un lancement d’analyse sans réponse exploitable, aucune écriture métier — doit rester possible pour un compte restreint (refus d’offre compris).',
   'verebona/usage-events/route.ts': 'Télémétrie de l’assistant.',
   'verebona/messages/[messageId]/feedback/route.ts': 'Avis sur une réponse de l’assistant (télémétrie).',
   'documents/[id]/notify-analyzed/route.ts': 'Route de compatibilité sans écriture depuis le lot 108I (ne crée plus aucune notification).',

@@ -35,7 +35,9 @@ const AgendaItemDrawer = dynamic(
 );
 import { ROOM_ASSOCIATIONS_CHANGED } from '@/lib/rooms/room-associations';
 import { toast } from 'sonner';
-import { analyzeErrorFeedback, type AnalyzeFeedback } from './document-analysis-feedback';
+import { newIncidentRef } from '@/lib/ai/analysis-launch';
+import { analyzeErrorFeedback, nextAttemptLabel, LAUNCH_MESSAGES, type AnalyzeFeedback } from './document-analysis-feedback';
+import { startAnalyzeRequest, reportLaunchFailure, applyLaunchSideEffects, AUTO_RETRY_DELAYS_MS } from './document-analysis-launch';
 import { apiClient } from '@/lib/api-client';
 import { useAnalysisBanner } from '@/contexts/AnalysisBannerContext';
 import { DocumentSupplierField } from '@/components/assets/DocumentSupplierField';
@@ -117,6 +119,8 @@ interface FullFileData {
   processingStatus: ProcessingStatus | null;
   userMessageCode: string | null;
   processingResumeAt: string | null;
+  /** Lot 113U : prochaine tentative de la file (job en attente), ISO. */
+  nextAttemptAt?: string | null;
   userEditedFields: Record<string, boolean> | null;
   /** Lot 87D : titre affiché calculé par le serveur (règle unique, même libellé que la liste et la recherche). */
   displayTitle?: string | null;
@@ -343,6 +347,10 @@ export function DocumentDrawer({ open, onOpenChange, document: doc, onRefresh, a
   const [analyzeElapsed, setAnalyzeElapsed] = useState(0);
   const [analyzeStage, setAnalyzeStage] = useState(0);
   const [retryCount, setRetryCount] = useState(0);
+  // Lot 113U : nouvel essai automatique (borné) après une indisponibilité momentanée.
+  const autoRetryRef = useRef<{ timer: ReturnType<typeof setTimeout> | null; count: number; fileId: number | null }>({ timer: null, count: 0, fileId: null });
+  const handleAnalyzeRef = useRef<() => Promise<void>>(async () => {});
+  const docIdRef = useRef<number | null>(null);
   // Toast ID for background analysis progress (when drawer is closed during analysis)
   const bgToastIdRef = useRef<string | number | null>(null);
   const isDrawerOpenRef = useRef(open);
@@ -521,6 +529,9 @@ export function DocumentDrawer({ open, onOpenChange, document: doc, onRefresh, a
 
   useEffect(() => {
     if (!open || !doc) {
+      // Lot 113U : nouvel essai automatique annulé à la fermeture du tiroir.
+      if (autoRetryRef.current.timer) clearTimeout(autoRetryRef.current.timer);
+      autoRetryRef.current = { timer: null, count: 0, fileId: null };
       setAnalyzingTooLong(false);
       analyzingStartRef.current = null;
       setFullData(null);
@@ -584,6 +595,7 @@ export function DocumentDrawer({ open, onOpenChange, document: doc, onRefresh, a
             processingStatus: isProcessingStatus(f.processingStatus) ? f.processingStatus : null,
             userMessageCode: typeof f.userMessageCode === 'string' ? f.userMessageCode : null,
             processingResumeAt: typeof f.processingResumeAt === 'string' ? f.processingResumeAt : null,
+            nextAttemptAt: typeof f.nextAttemptAt === 'string' ? f.nextAttemptAt : null,
             userEditedFields: f.userEditedFields ?? f.user_edited_fields ?? null,
             displayTitle: typeof f.displayTitle === 'string' ? f.displayTitle : null,
           };
@@ -860,6 +872,57 @@ export function DocumentDrawer({ open, onOpenChange, document: doc, onRefresh, a
     }
   }, [doc, fullData, editFilename, editClassement, editDocDate, editSupplier, editAmount, editDescription, editNotes, editTargets, onRefresh]);
 
+  // Lot 113U : état relu après TOUT échec de lancement (flux, refus HTTP,
+  // réseau) — jamais l'état local périmé (« analyse non finalisée » alors
+  // qu'un job attend, ou l'inverse).
+  const relireEtat = useCallback(async (fileId: number) => {
+    const relu = await apiClient.get<any>(`/api/files/${fileId}`).catch(() => null);
+    if (relu) {
+      const etat = relu.analysisState ?? relu.analysis_state ?? null;
+      const statut = isProcessingStatus(relu.processingStatus) ? relu.processingStatus : null;
+      setAnalysisState(displayAnalysisState(etat, statut));
+      setFullData(prev => prev ? {
+        ...prev, analysisState: etat, processingStatus: statut,
+        userMessageCode: typeof relu.userMessageCode === 'string' ? relu.userMessageCode : null,
+        processingResumeAt: typeof relu.processingResumeAt === 'string' ? relu.processingResumeAt : null,
+        nextAttemptAt: typeof relu.nextAttemptAt === 'string' ? relu.nextAttemptAt : null,
+      } : prev);
+    }
+    window.dispatchEvent(new CustomEvent('document-analysis-complete', { detail: { fileId } }));
+  }, []);
+
+  /**
+   * Lot 113U : retour d'un lancement non abouti — toast du référentiel fermé,
+   * état relu, et nouvel essai automatique BORNÉ sur indisponibilité
+   * momentanée (l'utilisateur n'est jamais invité à cliquer en boucle).
+   */
+  const signalerEchecLancement = useCallback(async (fileId: number, retour: AnalyzeFeedback) => {
+    setIsAnalyzing(false);
+    const essais = autoRetryRef.current.fileId === fileId ? autoRetryRef.current.count : 0;
+    let message = retour.message;
+    if (retour.autoRetry) {
+      if (essais < AUTO_RETRY_DELAYS_MS.length) {
+        if (autoRetryRef.current.timer) clearTimeout(autoRetryRef.current.timer);
+        autoRetryRef.current = {
+          fileId, count: essais + 1,
+          timer: setTimeout(() => {
+            autoRetryRef.current.timer = null;
+            // Seulement si le tiroir montre toujours ce document (navigation précédent / suivant).
+            if (docIdRef.current === fileId) void handleAnalyzeRef.current();
+          }, AUTO_RETRY_DELAYS_MS[essais]),
+        };
+      } else {
+        message = LAUNCH_MESSAGES.UNAVAILABLE_FINAL;
+        autoRetryRef.current = { timer: null, count: 0, fileId: null };
+      }
+    } else {
+      autoRetryRef.current = { timer: null, count: 0, fileId: null };
+    }
+    if (retour.level === 'info') toast.info(message, { duration: 6000 });
+    else toast.error(message, { duration: 8000 });
+    await relireEtat(fileId);
+  }, [relireEtat]);
+
   const handleAnalyze = useCallback(async () => {
     if (!doc) return;
     if (analysisState === 'ANALYSIS_FAILED') setRetryCount(c => c + 1);
@@ -867,6 +930,9 @@ export function DocumentDrawer({ open, onOpenChange, document: doc, onRefresh, a
     setAgendaSuggestions([]);
     window.dispatchEvent(new CustomEvent('document-analysis-start', { detail: { fileId: doc.id } }));
 
+    // Lot 113U : le flux a-t-il commencé ? (coupure APRÈS le départ : l'analyse
+    // peut se poursuivre côté serveur — information, pas une erreur).
+    let fluxOuvert = false;
     try {
       // Si le document est bloqué en ANALYZING, le réinitialiser d'abord
       if (analysisState === 'ANALYZING') {
@@ -877,28 +943,24 @@ export function DocumentDrawer({ open, onOpenChange, document: doc, onRefresh, a
         setAnalysisState('ANALYSIS_FAILED');
       }
 
-      // Stream SSE pour éviter le timeout HTTP de 120s
-      // skipNotification=true: drawer is open — no bell needed; client will create it if drawer closes
-      const startRes = await fetch(`/api/documents/${doc.id}/analyze`, {
-      credentials: 'include',
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json'},
-        body: JSON.stringify({ skipNotification: true }),
-      });
-      if (!startRes.ok || !startRes.body) {
-        const err = await startRes.json().catch(() => ({}));
-        const retour = analyzeErrorFeedback({ code: err.error, message: err.message });
-        toast.error(retour.message, { duration: 8000 });
-        setIsAnalyzing(false);
+      // Stream SSE pour éviter le timeout HTTP de 120s.
+      // Lot 113U : en-têtes du client, renouvellement de session sur 401,
+      // refus HTTP lu par son code et journalisé avec sa référence.
+      const depart = await startAnalyzeRequest(doc.id, autoRetryRef.current.fileId === doc.id ? autoRetryRef.current.count : 0);
+      if (depart.kind !== 'stream') {
+        await signalerEchecLancement(doc.id, depart.feedback);
         return;
       }
+      const startRes = depart.response;
+      fluxOuvert = true;
 
       // Lire le stream SSE jusqu'à l'événement "done" ou "error"
-      const reader = startRes.body.getReader();
+      const reader = startRes.body!.getReader();
       const dec = new TextDecoder();
       let buf = '';
       let analysisError: string | null = null;
       let analysisFeedback: AnalyzeFeedback | null = null;
+      let termine = false;
       outer: while (true) {
         const { done, value } = await reader.read();
         if (done) break;
@@ -909,40 +971,36 @@ export function DocumentDrawer({ open, onOpenChange, document: doc, onRefresh, a
           if (!line.startsWith('data: ')) continue;
           try {
             const evt = JSON.parse(line.slice(6));
-            if (evt.type === 'done') break outer;
+            if (evt.type === 'done') { termine = true; break outer; }
             if (evt.type === 'progress' && evt.stage) setSseStage(evt.stage);
             if (evt.type === 'error') {
               // Lot 16b-3 : motif du serveur (échec motivé du master T1,
               // analyse déjà en file…) rendu par un toast.
               analysisFeedback = analyzeErrorFeedback(evt);
               analysisError = analysisFeedback.message;
+              termine = true;
               break outer;
             }
           } catch { /* ignore malformed line */ }
         }
       }
 
-      if (analysisError) {
-        setIsAnalyzing(false);
-        if (analysisFeedback?.level === 'info') toast.info(analysisError, { duration: 6000 });
-        else toast.error(analysisError, { duration: 8000 });
-        // État relu : après un échec, le document est remis en file durable
-        // (« En file ») ou reste en échec motivé — jamais l'état local périmé.
-        const relu = await apiClient.get<any>(`/api/files/${doc.id}`).catch(() => null);
-        if (relu) {
-          const etat = relu.analysisState ?? relu.analysis_state ?? null;
-          const statut = isProcessingStatus(relu.processingStatus) ? relu.processingStatus : null;
-          setAnalysisState(displayAnalysisState(etat, statut));
-          setFullData(prev => prev ? {
-            ...prev, analysisState: etat, processingStatus: statut,
-            userMessageCode: typeof relu.userMessageCode === 'string' ? relu.userMessageCode : null,
-            processingResumeAt: typeof relu.processingResumeAt === 'string' ? relu.processingResumeAt : null,
-          } : prev);
-        }
-        window.dispatchEvent(new CustomEvent('document-analysis-complete', { detail: { fileId: doc.id } }));
+      // Lot 113U : flux fermé sans verdict (coupure du routeur de l'hébergeur…).
+      if (!termine) {
+        const incidentRef = newIncidentRef();
+        reportLaunchFailure({ incidentRef, fileId: doc.id, phase: 'stream', code: 'STREAM_INTERRUPTED' });
+        await signalerEchecLancement(doc.id, { level: 'info', category: 'NETWORK', message: LAUNCH_MESSAGES.STREAM_INTERRUPTED, incidentRef });
         return;
       }
 
+      if (analysisError && analysisFeedback) {
+        applyLaunchSideEffects(analysisFeedback);
+        // État relu : après un échec, le document est remis en file durable
+        // (« En file ») ou reste en échec motivé — jamais l'état local périmé.
+        await signalerEchecLancement(doc.id, analysisFeedback);
+        return;
+      }
+      autoRetryRef.current = { timer: null, count: 0, fileId: null };
       // Relecture complète : les informations détectées sont déjà enregistrées (lot 71B).
       const [refreshedFile, propRes] = await Promise.all([
         apiClient.get<any>(`/api/files/${doc.id}`).catch(() => null),
@@ -978,6 +1036,7 @@ export function DocumentDrawer({ open, onOpenChange, document: doc, onRefresh, a
           processingStatus: isProcessingStatus(rf.processingStatus) ? rf.processingStatus : null,
           userMessageCode: typeof rf.userMessageCode === 'string' ? rf.userMessageCode : null,
           processingResumeAt: typeof rf.processingResumeAt === 'string' ? rf.processingResumeAt : null,
+          nextAttemptAt: typeof rf.nextAttemptAt === 'string' ? rf.nextAttemptAt : null,
           userEditedFields: rf.userEditedFields ?? rf.user_edited_fields ?? null,
           displayTitle: typeof rf.displayTitle === 'string' ? rf.displayTitle : null,
         };
@@ -1041,15 +1100,27 @@ export function DocumentDrawer({ open, onOpenChange, document: doc, onRefresh, a
       // Refresh parent list (missing_analysis motif now resolved)
       onRefresh();
     } catch {
+      // Lot 113U : coupure pendant la lecture du flux (l'analyse peut se
+      // poursuivre côté serveur) ou avant toute réponse — texte précis, état relu.
       setIsAnalyzing(false);
+      const incidentRef = newIncidentRef();
+      reportLaunchFailure({ incidentRef, fileId: doc.id, phase: fluxOuvert ? 'stream' : 'network', code: fluxOuvert ? 'STREAM_INTERRUPTED' : 'NETWORK_ERROR' });
+      const message = fluxOuvert ? LAUNCH_MESSAGES.STREAM_INTERRUPTED : LAUNCH_MESSAGES.NETWORK;
       if (bgToastIdRef.current !== null) {
-        toast.error("Erreur lors de l'analyse", { id: bgToastIdRef.current, duration: 6000 });
+        toast.error(message, { id: bgToastIdRef.current, duration: 6000 });
         bgToastIdRef.current = null;
+      } else if (fluxOuvert) {
+        toast.info(message, { duration: 6000 });
       } else {
-        toast.error("Erreur lors de l'analyse. Veuillez réessayer.", { duration: 6000 });
+        toast.error(message, { duration: 6000 });
       }
+      await relireEtat(doc.id);
     }
-  }, [doc, onRefresh]);
+  }, [doc, onRefresh, analysisState, relireEtat, signalerEchecLancement]); // eslint-disable-line react-hooks/exhaustive-deps
+  handleAnalyzeRef.current = handleAnalyze;
+  docIdRef.current = doc?.id ?? null;
+
+
 
   const handleDownload = useCallback(async () => {
     if (!doc) return;
@@ -1336,6 +1407,12 @@ export function DocumentDrawer({ open, onOpenChange, document: doc, onRefresh, a
                     {attenteTechnique && (
                       <p className="text-[10px] text-muted-foreground/70 leading-relaxed pl-1" data-testid="document-analysis-waiting-technical">
                         {userMessageText(fullData?.userMessageCode)}
+                      </p>
+                    )}
+                    {/* Lot 113U : job en file (attente, reprise, attente technique) — heure de la prochaine tentative si connue. */}
+                    {analysisState === 'UPLOADED' && fullData?.userMessageCode !== 'ANALYSIS_DEFERRED_COST_CAP' && nextAttemptLabel(fullData?.nextAttemptAt) && (
+                      <p className="text-[10px] text-muted-foreground/70 leading-relaxed pl-1" data-testid="document-analysis-next-attempt">
+                        {`Prochaine tentative automatique vers ${nextAttemptLabel(fullData?.nextAttemptAt)}.`}
                       </p>
                     )}
                     {analysisState === 'UPLOADED' && fullData?.userMessageCode === 'ANALYSIS_DEFERRED_COST_CAP' && (

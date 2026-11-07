@@ -78,6 +78,8 @@ export const RESTORE_KEEP_CURRENT_TABLES: readonly string[] = [
   'ai_call_captures', 'ai_call_capture_state',
   // Lot 113R : vérifications de l'envoi de fichiers au fournisseur (trace d'exploitation, comme les diagnostics).
   'ai_provider_transfer_checks',
+  // Lot 113U : refus de lancement d'analyse depuis le tiroir (journal d'exploitation, comme les diagnostics).
+  'document_analysis_launch_refusals',
   'ai_evaluator_runs', 'ai_master_corpus_runs', 'ai_master_prompt_test_runs', 'ai_prompt_test_runs', 'ai_model_qualification',
   // Lot 85C : journal des changements de capacités des modèles (trace, comme la qualification).
   'ai_model_capability_changes',

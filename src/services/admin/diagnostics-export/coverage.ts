@@ -343,6 +343,8 @@ export const DIAG_TABLE_COVERAGE: Readonly<Record<string, DiagTableCoverage>> = 
   ai_analysis_version: C('technique', { filter: `t.asset_file_id IN ${FILES}` }),
   ai_call_diagnostics: C('technique'),
   ai_call_captures: C('technique'),
+  // Lot 113U : refus de lancement d'une analyse depuis le tiroir (codes, états, référence d'incident — aucun texte libre).
+  document_analysis_launch_refusals: C('technique'),
   ai_search_log: C('technique'),
   ai_security_lock: C('technique'),
   ai_account_cost_caps: C('technique'),

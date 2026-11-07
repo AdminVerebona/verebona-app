@@ -107,6 +107,8 @@ export const RECETTE_TABLES: Readonly<Record<string, { domain: Exclude<RecetteDo
   document_naming_members: { domain: 'documents', description: 'Membres des groupes de nommage.' },
   document_rename_events: { domain: 'documents', description: 'Renommages de documents.' },
   document_title_events: { domain: 'documents', description: 'Titres retenus et leurs changements.' },
+  // Lot 113U : refus de lancement d'une analyse depuis le tiroir (BO › File d'attente IA).
+  document_analysis_launch_refusals: { domain: 'documents', description: 'Refus de lancement d’une analyse depuis le tiroir (code, catégorie, référence d’incident, origine).' },
   document_classification_feedback: { domain: 'documents', description: 'Retours de classement.' },
   document_validation_reprise: { domain: 'documents', description: 'Reprise des documents « à valider » (lot 71B).' },
   document_suppliers: { domain: 'documents', description: 'Fournisseurs cités par les documents.' },

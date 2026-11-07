@@ -54,7 +54,8 @@ describe('POST /api/documents/[id]/analyze — revue 3a', () => {
   it('panne du pipeline (null) : code d’interruption, aucun texte technique, pas de « done »', async () => {
     h.analyze.mockResolvedValue(null);
     const ev = await evenements();
-    expect(ev.at(-1)).toEqual({ type: 'error', code: 'ANALYSIS_INTERRUPTED' });
+    // Lot 113U : + référence d'incident (journal BO), rien d'autre.
+    expect(ev.at(-1)).toEqual({ type: 'error', code: 'ANALYSIS_INTERRUPTED', incidentRef: expect.stringMatching(/^AN-[0-9A-Z]{8}$/) });
   });
 
   it('UXERR-04 — échec motivé : statut fonctionnel, JAMAIS le motif technique du fichier', async () => {
@@ -63,6 +64,7 @@ describe('POST /api/documents/[id]/analyze — revue 3a', () => {
     expect(ev.at(-1)).toEqual({
       type: 'error', code: 'ANALYSIS_FAILED', processingStatus: 'FAILED_FINAL', userMessageCode: 'ANALYSIS_FAILED_FINAL',
       retryScheduled: false, nextAttemptAt: null, processingResumeAt: null,
+      incidentRef: expect.stringMatching(/^AN-[0-9A-Z]{8}$/),
     });
     expect(JSON.stringify(ev)).not.toMatch(/prompt|sortie invalide/);
   });
