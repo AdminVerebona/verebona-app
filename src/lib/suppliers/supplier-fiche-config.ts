@@ -28,6 +28,37 @@ export function isSupplierSection(v: unknown): v is SupplierSection {
   return typeof v === 'string' && (SUPPLIER_SECTIONS as readonly string[]).includes(v);
 }
 
+/**
+ * Lot 113Y (#721) — rubrique « Documents » UNIQUE de la fiche : documents liés
+ * directement au fournisseur ∪ documents d'un événement de référence auquel il
+ * est EFFECTIVEMENT et PERTINEMMENT associé. Rôles du fournisseur dans
+ * l'événement (`business_operation_suppliers.role`, lien ACTIF) qui ouvrent ce
+ * second chemin :
+ *   · PROVIDER    prestataire de l'événement (preuve documentaire T3 ou choix
+ *                 de l'utilisateur) ;
+ *   · INTERVENER  intervenant posé par l'utilisateur.
+ * Jamais : DOCUMENT_ISSUER (émetteur d'UNE pièce de l'événement, qui n'en
+ * devient pas le prestataire : il ne voit que ses propres documents, par le
+ * lien direct) ni BRAND (marque). Un document attribué directement à un AUTRE
+ * fournisseur n'est jamais montré par ce chemin.
+ */
+export const SUPPLIER_VIA_EVENT_ROLES = ['PROVIDER', 'INTERVENER'] as const;
+
+/**
+ * Contexte discret d'un document visible SEULEMENT par un événement de
+ * référence (pure) : « Via Achat — Maison », « Via Achat — Maison et 1 autre
+ * événement ». `null` quand aucun titre lisible n'existe (rien d'inventé) ou
+ * pour un document lié directement (sa preuve propre prime).
+ */
+export function supplierViaEventContext(titles: readonly string[] | null | undefined, eventCount: number | null | undefined): string | null {
+  const t = [...new Set((titles ?? []).map((x) => String(x ?? '').trim()).filter(Boolean))].sort((a, b) => a.localeCompare(b, 'fr'));
+  if (t.length === 0) return null;
+  const n = Math.max(t.length, Number.isSafeInteger(eventCount) ? Number(eventCount) : 0);
+  const autres = n - 1;
+  if (autres <= 0) return `Via ${t[0]}`;
+  return `Via ${t[0]} et ${autres} autre${autres > 1 ? 's' : ''} événement${autres > 1 ? 's' : ''}`;
+}
+
 /** Tris de la liste générale. */
 export const SUPPLIER_LIST_SORTS = ['name_asc', 'name_desc', 'recent'] as const;
 export type SupplierListSort = (typeof SUPPLIER_LIST_SORTS)[number];

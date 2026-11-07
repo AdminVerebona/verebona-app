@@ -134,9 +134,12 @@ scenario('L109B-FOURNISSEURS-FICHE-UNIQUE', 'Fournisseurs : fiche unique, sans s
     connecter(b);
     expect((await section(s, 'documents', 0)).status).toBe(404);
     expect((await overview(s)).status).toBe(404);
-    // Contrat 109A relié (intégration) : aucun événement de référence → section vide, rien d'inventé.
+    // Lot 113Y (#721) : plus de section séparée « Documents des événements de référence » — aucun événement
+    // de référence → la rubrique unique « Documents » ne compte que les documents directs, rien d'inventé.
     connecter(a);
-    expect((await overview(s)).body.documentsViaOperation).toMatchObject({ wired: true, total: 0, items: [] });
+    const ov2 = await overview(s);
+    expect(ov2.body).not.toHaveProperty('documentsViaOperation');
+    expect((ov2.body.documents as { total: number }).total).toBe(61);
   });
 
   it('L109B-E2E-AC07b — liste : plus de 100 fournisseurs, recherche au-delà de 20, pagination, tri, statut', async () => {

@@ -296,16 +296,25 @@ scenario('L109A-RELATIONS-METIER', 'Relations métier : Opération pivot, contra
     const vias = (await (await rc()).listSupplierDocuments(a.id, x.s, { provenance: 'VIA_OPERATION_ONLY', pageSize: 200 }))!;
     expect(vias.total).toBe(11);
     expect(vias.items.map((d) => d.id).sort((m, n) => m - n)).toEqual([...viaSeuls, x.paiement].sort((m, n) => m - n));
-    // Intégration 109A ↔ 109B : la fiche fournisseur lit la section « via événement de référence » par ce contrat.
-    const { listSupplierDocumentsViaOperation } = await import('@/services/suppliers/supplier-operation-documents');
-    const p1 = await listSupplierDocumentsViaOperation(a.id, x.s, { offset: 0, limit: 5 });
-    expect(p1).toMatchObject({ wired: true, total: 11, offset: 0, limit: 5, nextOffset: 5 });
-    const p3 = await listSupplierDocumentsViaOperation(a.id, x.s, { offset: 10, limit: 5 });
-    expect(p3).toMatchObject({ wired: true, total: 11, nextOffset: null });
-    expect(p3.items).toHaveLength(1);
-    const tous = [...p1.items, ...(await listSupplierDocumentsViaOperation(a.id, x.s, { offset: 5, limit: 5 })).items, ...p3.items].map((d) => d.id);
-    expect(new Set(tous).size).toBe(11);
-    expect(tous.some((id) => !vias.items.some((d) => d.id === id))).toBe(false);
+    // Lot 113Y (#721) : la fiche fournisseur n'a plus qu'UNE rubrique « Documents » (directs ∪ documents de ses
+    // événements de référence), paginée avec un total exact. La preuve de paiement, attribuée à la BANQUE, n'y
+    // apparaît pas par la seule participation à l'événement ; le contrat 109A (ci-dessus) reste inchangé.
+    const { listSupplierSection } = await import('@/services/suppliers/supplier-detail.service');
+    const fiche: number[] = [];
+    let next: number | null = 0;
+    let totalFiche = -1;
+    while (next != null) {
+      const pg: { total: number; items: Array<{ id: number }>; nextOffset: number | null } =
+        (await listSupplierSection(a.id, x.s, 'documents', { offset: next, limit: 25 }))!;
+      totalFiche = pg.total;
+      fiche.push(...pg.items.map((d) => d.id));
+      next = pg.nextOffset;
+    }
+    expect(totalFiche).toBe(74);
+    expect(fiche).toHaveLength(74);
+    expect(new Set(fiche).size).toBe(74);
+    expect(fiche).toEqual(expect.arrayContaining(viaSeuls));
+    expect(fiche).not.toContain(x.paiement);
   });
 
   it('L109A-E2E-AC12..16 — reprise du stock par la cohérence (à blanc, correctif), rapport avant / après, sécurité', async () => {

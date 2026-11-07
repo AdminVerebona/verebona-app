@@ -15,6 +15,13 @@
  * et événements d'Agenda (association / dissociation, lot 103E). Aucun statut
  * global « vérifié / non vérifié ».
  *
+ * Lot 113Y (#721) : UNE seule rubrique « Documents » (compteur de documents
+ * uniques) — documents liés directement et documents des événements de
+ * référence où le fournisseur est prestataire ou intervenant, lus et paginés
+ * par la même section serveur ; un document vu par un événement porte un
+ * contexte discret « Via <événement> ». La carte « Équipements » n'est
+ * affichée que lorsqu'au moins un équipement est rattaché.
+ *
  * Les droits sont ceux des biens, appliqués côté serveur
  * (`/api/suppliers/[id]/overview`) : un fournisseur d'un autre compte est
  * introuvable ; un bien archivé ou verrouillé par l'offre est listé sans lien.
@@ -230,7 +237,6 @@ export default function SupplierPage() {
 
   const s = data.supplier;
   const archived = s.status === 'archived';
-  const via = data.documentsViaOperation;
 
   return (
     <div className="space-y-6 p-4 md:p-6" data-testid="supplier-page">
@@ -331,7 +337,7 @@ export default function SupplierPage() {
               /* Lot 108D : sous-titre = Type seul ; UNE date à droite, la date du document (sinon « – »).
                  Lot 113G (#706) : plus de « Rattachement à confirmer » déduit de la seule fiabilité du lien — un vrai
                  doute d'identité est signalé par le bandeau ci-dessus (carte « À traiter » actionnable). */
-              subtitle={[userFacingLabel(d.documentTypeLabel), DOCUMENT_ROW_SUBTITLE_INCLUDES_ASSET ? d.assetName : null].filter(Boolean).join(' · ')}
+              subtitle={[userFacingLabel(d.documentTypeLabel), DOCUMENT_ROW_SUBTITLE_INCLUDES_ASSET ? d.assetName : null, d.viaContext].filter(Boolean).join(' · ')}
               aside={<DocumentDateCell value={d.documentDate} className="w-[74px] text-xs text-muted-foreground sm:w-[90px]" />}
               onOpen={() => openDrawer({ kind: 'document', id: d.id })}
               unavailable={!d.available}
@@ -339,41 +345,25 @@ export default function SupplierPage() {
           ))}
         </Section>
 
-        {/* Lot 109B : documents des événements de référence du fournisseur — section affichée
-            seulement quand le contrat de lecture 109A est relié (supplier-operation-documents.ts). */}
-        {via?.wired && via.total > 0 && (
+        {/* Lot 113Y (#721) : carte masquée quand aucun équipement n'est rattaché (total exact du serveur) ;
+            réaffichée dès qu'il y en a un, ou si la suite n'a pas pu être chargée. */}
+        {(equipments.total > 0 || equipments.failed) && (
           <Section
-            icon={FileText} title="Documents des événements de référence" total={via.total} shown={via.items.length}
-            testId="supplier-documents-via" empty="" nextOffset={null} loading={false} failed={false} onMore={() => {}}
+            icon={Wrench} title="Équipements" total={equipments.total} shown={equipments.items.length} testId="supplier-equipments"
+            empty="Aucun équipement n’est rattaché à ce fournisseur."
+            nextOffset={equipments.nextOffset} loading={equipments.loading} failed={equipments.failed} onMore={() => { void equipments.loadMore(); }}
           >
-            {via.items.map((d) => (
+            {equipments.items.map((e) => (
               <Row
-                key={d.id}
-                title={d.title}
-                subtitle={[userFacingLabel(d.documentTypeLabel), d.operationLabel].filter(Boolean).join(' · ')}
-                aside={<DocumentDateCell value={d.documentDate} className="w-[74px] text-xs text-muted-foreground sm:w-[90px]" />}
-                onOpen={() => openDrawer({ kind: 'document', id: d.id })}
-                unavailable={!d.available}
+                key={e.id}
+                title={e.name}
+                subtitle={[e.assetName, e.isPrimary ? 'Fournisseur principal' : null].filter(Boolean).join(' · ')}
+                onOpen={() => openDrawer({ kind: 'equipement', id: e.id })}
+                unavailable={!e.available}
               />
             ))}
           </Section>
         )}
-
-        <Section
-          icon={Wrench} title="Équipements" total={equipments.total} shown={equipments.items.length} testId="supplier-equipments"
-          empty="Aucun équipement n’est rattaché à ce fournisseur."
-          nextOffset={equipments.nextOffset} loading={equipments.loading} failed={equipments.failed} onMore={() => { void equipments.loadMore(); }}
-        >
-          {equipments.items.map((e) => (
-            <Row
-              key={e.id}
-              title={e.name}
-              subtitle={[e.assetName, e.isPrimary ? 'Fournisseur principal' : null].filter(Boolean).join(' · ')}
-              onOpen={() => openDrawer({ kind: 'equipement', id: e.id })}
-              unavailable={!e.available}
-            />
-          ))}
-        </Section>
 
         {/* Lot 103E : événements d'Agenda RATTACHÉS (relation persistante, bidirectionnelle) — passés,
             à venir, sans date ; association / dissociation depuis la fiche. */}

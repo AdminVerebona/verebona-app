@@ -84,7 +84,8 @@ const run = async (sql: string, params: unknown[]) => {
   // Lot 113G : doute d'identité réel = carte « S’agit-il du même fournisseur ? » vivante (to_process_actions).
   if (q.includes('FROM to_process_actions a')) return [{ n: 0 }];
   if (q.includes('FROM assets a WHERE a.account_id = $2')) return pour(LIES.assets);
-  if (q.includes('FROM document_suppliers ds JOIN asset_files f')) return pour(LIES.documents);
+  // Lot 113Y : une seule section « Documents » (liens directs ∪ événements de référence pertinents).
+  if (q.includes('FROM asset_files f LEFT JOIN document_suppliers ds')) return pour(LIES.documents);
   if (q.includes('FROM equipment_suppliers es JOIN equipments')) return pour(LIES.equipments);
   if (q.includes('FROM agenda_item_suppliers l')) return pour(LIES.agenda);
   throw new Error(`requête inattendue : ${q.slice(0, 60)}`);

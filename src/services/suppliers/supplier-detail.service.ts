@@ -34,6 +34,23 @@
  *     `document_suppliers.is_confirmed`, `confidence_score`) — sa suppression
  *     du statut global ne rend aucun rattachement « certain ».
  *
+ * Lot 113Y (#721) — UNE SEULE rubrique « Documents » : l'ancienne section
+ * séparée « Documents des événements de référence » (première page seule,
+ * sans « Afficher plus ») est fusionnée dans la section `documents`, lue par
+ * UNE requête de périmètre (lignes ET total, même pagination) :
+ *   · documents liés DIRECTEMENT (`document_suppliers`, toute fiabilité —
+ *     règle inchangée) ;
+ *   ∪ documents membres actifs d'un événement de référence ACTIF (ni invalidé,
+ *     ni absorbé) où le fournisseur a un lien ACTIF de rôle pertinent
+ *     (`SUPPLIER_VIA_EVENT_ROLES` : prestataire ou intervenant — jamais simple
+ *     émetteur d'une autre pièce ni marque), document déposé, et JAMAIS un
+ *     document attribué directement à un autre fournisseur du compte.
+ * Chaque document une fois (ligne = `asset_files`, jonction unique par
+ * couple) ; un document des deux chemins est « direct ». Lecture seule :
+ * aucun lien écrit, aucune preuve ni décision modifiée ; un document vu par
+ * un événement n'est pas présenté comme émis par ce fournisseur (contexte
+ * discret « Via <événement> », `isConfirmed` faux, aucun score).
+ *
  * Minimisation : l'IBAN n'est jamais rendu par la fiche (seulement « RIB
  * renseigné » et sa forme masquée) ; sa consultation en clair passe par
  * `GET /api/suppliers/[id]/iban` (action volontaire, réponse non mise en cache).
@@ -42,9 +59,8 @@
 import { pgClient } from '@/db';
 import { documentTitleColumnsSql, documentTitleOf } from '@/lib/documents/document-title-source';
 import { documentTypeLabelOrNull } from '@/lib/referential/user-facing-labels';
-import { listSupplierDocumentsViaOperation, type SupplierViaOperationPage } from './supplier-operation-documents';
 import {
-  SUPPLIER_SECTION_PAGE_MAX, SUPPLIER_SECTION_PAGE_SIZE, maskIban, type SupplierSection,
+  SUPPLIER_SECTION_PAGE_MAX, SUPPLIER_SECTION_PAGE_SIZE, SUPPLIER_VIA_EVENT_ROLES, maskIban, supplierViaEventContext, type SupplierSection,
 } from '@/lib/suppliers/supplier-fiche-config';
 
 export type SqlRunner = (sql: string, params: unknown[]) => Promise<unknown[]>;
@@ -71,10 +87,17 @@ export interface SupplierDocumentRow {
   documentTypeLabel: string | null;
   documentDate: string | null;
   role: string | null;
-  /** Preuve LOCALE de la relation document → fournisseur (conservée, lot 109B). */
+  /** Preuve LOCALE de la relation document → fournisseur (conservée, lot 109B) ; faux / null pour un document vu par un événement. */
   isConfirmed: boolean;
   confidenceScore: number | null;
   assetId: number | null; assetName: string | null; available: boolean;
+  /**
+   * Lot 113Y : chemin d'accès — DIRECT (lien propre au document, prioritaire)
+   * ou VIA_EVENT (document d'un événement de référence du fournisseur).
+   */
+  provenance: 'DIRECT' | 'VIA_EVENT';
+  /** Contexte discret d'un document VIA_EVENT (« Via Achat — Maison »), sinon null. */
+  viaContext: string | null;
 }
 export interface SupplierAssetRow { id: number; name: string; category: string | null; city: string | null; available: boolean }
 export interface SupplierEquipmentRow {
@@ -127,13 +150,6 @@ export interface SupplierDetail {
   conflicts: SupplierConflict[];
   /** Doublon possible à arbitrer (carte « À traiter »), sans statut global. */
   openDeduplicationCount: number;
-  /**
-   * Documents des événements de référence du fournisseur (VIA_OPERATION),
-   * distincts des documents DIRECTS — point d'extension relié au contrat de
-   * lecture de 109A (`supplier-operation-documents.ts`) ; `wired: false` tant
-   * qu'il ne l'est pas (section masquée).
-   */
-  documentsViaOperation: SupplierViaOperationPage;
 }
 
 /** Bien ouvrable : ni archivé, ni verrouillé par l'offre (règle de la fiche bien). */
@@ -154,19 +170,52 @@ export function normalizeSectionPage(p: { offset?: unknown; limit?: unknown } = 
   return { offset, limit };
 }
 
+/**
+ * Lot 113Y — documents d'un événement de référence ÉLIGIBLES pour le
+ * fournisseur $1 du compte $2 (colonnes : file_id, operation_id). Mêmes
+ * exclusions que le contrat de lecture 109A (événement invalidé ou absorbé,
+ * lien non actif, appartenance inactive, autre compte), RESTREINTES aux rôles
+ * pertinents et sans aucun document attribué à un autre fournisseur.
+ */
+const VIA_EVENT_DOCUMENTS_SQL = `
+    SELECT d.file_id, d.operation_id
+      FROM business_operation_suppliers l
+      JOIN business_operations o ON o.id = l.operation_id AND o.account_id = $2
+           AND o.invalidated_at IS NULL AND o.merged_into_operation_id IS NULL
+      JOIN business_operation_documents d ON d.operation_id = l.operation_id AND d.account_id = $2 AND d.active
+     WHERE l.supplier_id = $1 AND l.account_id = $2 AND l.status = 'ACTIVE'
+       AND l.role IN (${SUPPLIER_VIA_EVENT_ROLES.map((r) => `'${r}'`).join(', ')})
+       AND NOT EXISTS (
+         SELECT 1 FROM document_suppliers xo
+           JOIN suppliers xs ON xs.id = xo.supplier_id AND xs.account_id = $2 AND xs.status <> 'deleted'
+          WHERE xo.document_id = d.file_id AND xo.supplier_id <> $1)`;
+
 // ── Périmètre de chaque section : UNE source pour les lignes ET le total ────
 // Paramètres : $1 fournisseur, $2 compte (session), $3 limite, $4 décalage.
 const SECTION_SQL: Record<SupplierSection, { from: string; select: string; order: string }> = {
+  // Lot 113Y : une ligne par DOCUMENT (asset_files), direct ou via un événement — jamais deux.
+  // Documents directs : règle 109B inchangée (non supprimés) ; via un événement : documents déposés seulement
+  // (même règle que le contrat 109A).
   documents: {
-    from: `FROM document_suppliers ds
-         JOIN asset_files f ON f.id = ds.document_id AND f.account_id = $2 AND f.deleted_at IS NULL
+    from: `FROM asset_files f
+         LEFT JOIN document_suppliers ds ON ds.document_id = f.id AND ds.supplier_id = $1
          LEFT JOIN assets a ON a.id = f.asset_id AND a.account_id = $2 AND a.deleted_at IS NULL
-        WHERE ds.supplier_id = $1`,
+        WHERE f.account_id = $2 AND f.deleted_at IS NULL
+          AND (ds.document_id IS NOT NULL
+               OR ((f.upload_status = 'COMPLETED' OR f.upload_status IS NULL)
+                   AND f.id IN (SELECT v.file_id FROM (${VIA_EVENT_DOCUMENTS_SQL}) v)))`,
     select: `SELECT f.id, ${documentTitleColumnsSql('f')},
               f.document_type AS "documentType", f.document_type_code AS "documentTypeCode", f.document_date AS "documentDate",
-              ds.role, ds.is_confirmed AS "isConfirmed", ds.confidence_score AS "confidenceScore",
+              ds.role, coalesce(ds.is_confirmed, false) AS "isConfirmed", ds.confidence_score AS "confidenceScore",
               a.id AS "assetId", a.name AS "assetName",
-              (a.id IS NULL OR ${BIEN_DISPONIBLE('a')}) AS available`,
+              (a.id IS NULL OR ${BIEN_DISPONIBLE('a')}) AS available,
+              (ds.document_id IS NOT NULL) AS "isDirect",
+              CASE WHEN ds.document_id IS NULL THEN (
+                SELECT count(DISTINCT v.operation_id)::int FROM (${VIA_EVENT_DOCUMENTS_SQL}) v WHERE v.file_id = f.id) END AS "viaEventCount",
+              CASE WHEN ds.document_id IS NULL THEN (
+                SELECT array_agg(DISTINCT i.title) FROM agenda_items i
+                 WHERE i.account_id = $2 AND i.operation_role = 'PRINCIPAL' AND nullif(btrim(i.title), '') IS NOT NULL
+                   AND i.business_operation_id IN (SELECT v.operation_id FROM (${VIA_EVENT_DOCUMENTS_SQL}) v WHERE v.file_id = f.id)) END AS "viaEventTitles"`,
     order: 'ORDER BY f.document_date DESC NULLS LAST, f.id DESC',
   },
   // Biens : liens explicites, et biens des documents et équipements liés (relations persistées).
@@ -197,6 +246,8 @@ const SECTION_SQL: Record<SupplierSection, { from: string; select: string; order
 function mapRow(section: SupplierSection, d: Record<string, unknown>): SupplierDocumentRow | SupplierAssetRow | SupplierEquipmentRow {
   if (section === 'documents') {
     const score = d.confidenceScore == null ? null : Number(d.confidenceScore);
+    const direct = d.isDirect == null ? true : Boolean(d.isDirect);
+    const titles = Array.isArray(d.viaEventTitles) ? (d.viaEventTitles as unknown[]).map(String) : [];
     return {
       // Lot 87D : titre par la règle unique des vues ; Type V2 en libellé français.
       id: Number(d.id), title: documentTitleOf(d), documentType: (d.documentType as string | null) ?? null,
@@ -204,6 +255,8 @@ function mapRow(section: SupplierSection, d: Record<string, unknown>): SupplierD
       documentDate: jour(d.documentDate as string | null), role: (d.role as string | null) ?? null,
       isConfirmed: Boolean(d.isConfirmed), confidenceScore: Number.isFinite(score) ? score : null,
       assetId: d.assetId == null ? null : Number(d.assetId), assetName: (d.assetName as string | null) ?? null, available: Boolean(d.available),
+      provenance: direct ? 'DIRECT' : 'VIA_EVENT',
+      viaContext: direct ? null : supplierViaEventContext(titles, d.viaEventCount == null ? null : Number(d.viaEventCount)),
     };
   }
   if (section === 'assets') {
@@ -285,7 +338,7 @@ export async function getSupplierDetail(
   if (!s) return null;
 
   const first = normalizeSectionPage({ offset: 0, limit: pageSize });
-  const [documents, assets, equipments, agenda, conflicts, dedup, documentsViaOperation] = await Promise.all([
+  const [documents, assets, equipments, agenda, conflicts, dedup] = await Promise.all([
     readSection<SupplierDocumentRow>(run, 'documents', supplierId, accountId, first),
     readSection<SupplierAssetRow>(run, 'assets', supplierId, accountId, first),
     readSection<SupplierEquipmentRow>(run, 'equipments', supplierId, accountId, first),
@@ -320,7 +373,6 @@ export async function getSupplierDetail(
           AND (a.target_id = $1 OR a.trigger_context->>'knownSupplierId' = $1::text)`,
       [supplierId, accountId],
     ),
-    listSupplierDocumentsViaOperation(accountId, supplierId, first),
   ]);
 
   const iban = (s.iban as string | null) ?? null;
@@ -350,6 +402,5 @@ export async function getSupplierDetail(
       };
     }),
     openDeduplicationCount: Number((dedup as Array<{ n: number }>)[0]?.n ?? 0),
-    documentsViaOperation,
   };
 }
