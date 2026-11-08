@@ -24,8 +24,19 @@
  * Natures de période. L'ordre est la priorité par défaut de la période
  * principale (décision 1 ; ordre décidé par le PO le 07/11/2026, 113W2) :
  * Couverture > Validité > Garantie > Prestation > Facturation.
+ *
+ * Lot 113AA (Trello #725, §2 C) : deux natures AJOUTÉES APRÈS l'arbitrage
+ * 113W2, sans en changer l'ordre relatif — EFFET CONTRACTUEL (`CONTRACT` :
+ * date d'effet et fin contractuelle d'un contrat, distinctes de la
+ * couverture) et RÉALISATION (`REALIZATION` : travaux ou prestation
+ * réellement exécutés, jamais la date d'un devis). Elles ne sont qualifiées
+ * QUE par T1 (bloc 28, contrat `t1-business-periods-v2`) ; leur rang de repli
+ * (en dernier) est « à valider par le PO ». T1 peut toujours désigner la
+ * période principale.
  */
-export const BUSINESS_PERIOD_KINDS = ['COVERAGE', 'VALIDITY', 'WARRANTY', 'SERVICE', 'BILLING'] as const;
+export const BUSINESS_PERIOD_KINDS = ['COVERAGE', 'VALIDITY', 'WARRANTY', 'SERVICE', 'BILLING', 'CONTRACT', 'REALIZATION'] as const;
+/** Arbitrage 113W2 (décision PO du 07/11/2026), tracé séparément du CDC : ordre des cinq natures initiales. */
+export const PRIORITY_ARBITRATION_113W2 = ['COVERAGE', 'VALIDITY', 'WARRANTY', 'SERVICE', 'BILLING'] as const;
 export type BusinessPeriodKind = (typeof BUSINESS_PERIOD_KINDS)[number];
 
 export const isBusinessPeriodKind = (v: unknown): v is BusinessPeriodKind =>
@@ -40,7 +51,13 @@ export const BUSINESS_PERIOD_LABELS: Record<BusinessPeriodKind, { period: string
   VALIDITY: { period: 'Période de validité', start: 'Début de validité', end: 'Fin de validité' },
   WARRANTY: { period: 'Période de garantie', start: 'Début de garantie', end: 'Fin de garantie' },
   SERVICE: { period: 'Période de prestation', start: 'Début de prestation', end: 'Fin de prestation' },
+  // Lot 113AA — à valider par le PO (même forme).
+  CONTRACT: { period: 'Période contractuelle', start: 'Date d’effet du contrat', end: 'Fin du contrat' },
+  REALIZATION: { period: 'Période de réalisation', start: 'Début de réalisation', end: 'Fin de réalisation' },
 };
+
+/** Lot 113AA — à valider par le PO : durée indéterminée ÉTABLIE par le document (≠ fin inconnue). */
+export const OPEN_ENDED_SUFFIX = 'durée indéterminée';
 
 /** Ticket #724 (à l'identique). */
 export const SEVERAL_PERIODS_LABEL = 'Plusieurs périodes concernées';
@@ -119,7 +136,15 @@ export function partialToInput(v: PartialDate | null): string {
 
 // ── Libellés ────────────────────────────────────────────────────────────────
 
-export interface PeriodBounds { start: PartialDate | null; end: PartialDate | null }
+export interface PeriodBounds {
+  start: PartialDate | null;
+  end: PartialDate | null;
+  /**
+   * Lot 113AA : la durée indéterminée est ÉTABLIE (écrite) — la fin n'existe
+   * pas. Distincte d'une fin INCONNUE (`end` null, `openEnded` faux).
+   */
+  openEnded?: boolean;
+}
 
 /**
  * Libellé d'UNE période (pure) :
@@ -134,14 +159,17 @@ export function periodLine(kind: BusinessPeriodKind, b: PeriodBounds): string {
   const l = BUSINESS_PERIOD_LABELS[kind];
   const { start, end } = b;
   if (start && end) {
-    if (start === end && precisionOf(start) !== 'DAY') return `${l.period} : ${formatPartialDate(start)}`;
+    // Lot 113AA : une RÉALISATION à une date (travaux exécutés le…) s'affiche par cette seule date.
+    if (start === end && (precisionOf(start) !== 'DAY' || kind === 'REALIZATION')) return `${l.period} : ${formatPartialDate(start)}`;
     const jour = precisionOf(start) === 'DAY' && precisionOf(end) === 'DAY';
     return jour
       ? `${l.period} : du ${formatPartialDate(start)} au ${formatPartialDate(end)}`
       : `${l.period} : de ${formatPartialDate(start)} à ${formatPartialDate(end)}`;
   }
+  if (start && b.openEnded) return `${l.start} : ${formatPartialDate(start)} (${OPEN_ENDED_SUFFIX})`;
   if (start) return `${l.start} : ${formatPartialDate(start)}`;
   if (end) return `${l.end} : ${formatPartialDate(end)}`;
+  if (b.openEnded) return `${l.period} : ${OPEN_ENDED_SUFFIX}`;
   return `${l.period} : ${NOT_PROVIDED_LABEL}`;
 }
 

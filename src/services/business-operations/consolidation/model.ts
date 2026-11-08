@@ -40,6 +40,7 @@
 import { corroborateAcquisition, type AcquisitionEvidenceIndex, type Corroboration } from './acquisition-corroboration';
 import { createHash } from 'node:crypto';
 import { isCoveragePeriodDocumentType } from '@/lib/referential/v2/coverage-document-types';
+import { dayMatchesBound, type TermQualification } from '@/services/documents/business-periods/t1-v2';
 import {
   isBusinessOperationStatus, isIsoCurrency, isIsoDate, isMinorAmount, normalizeBusinessReference, normalizeOperationTypeHint,
   type BusinessOperationStatus, type BusinessOperationTypeCode, type Confidence, type FinancialComponentKind,
@@ -112,6 +113,12 @@ interface IdentityContext {
    * de période de couverture (`coverage-document-types.ts`) ne date jamais la fin d'un contrat.
    */
   fileDocumentTypeCode?: string | null;
+  /**
+   * Lot 113AA (#725, §3 T4) : SENS des dates du document qualifié par T1 (contrat
+   * `t1-business-periods-v2`, faits `period.*` persistés). Absent ou non évalué :
+   * règle prudente 113W2 (Type de couverture) puis 86C.
+   */
+  fileTermQualification?: TermQualification | null;
   /**
    * Lot 109D : candidats ACTIFS et établis du MÊME document (celui-ci compris) et montant TTC du document — la
    * qualification des montants est faite au niveau du document (`finance/commercial-adjustments`). Absent : le
@@ -188,6 +195,11 @@ export interface CandidateIdentity {
    * (attestation, certificat, échéancier de couverture) — sa fin n'est jamais une fin de contrat.
    */
   coverageDocument?: boolean;
+  /**
+   * Lot 113AA (#725) : qualification T1 v2 du sens des dates du document (présente seulement si
+   * T1 l'a rendue) — elle seule décide alors si une date d'effet ou de fin est contractuelle.
+   */
+  termQualification?: TermQualification;
   /**
    * Lot 43 (O4) : identité d'une donnée STRUCTURÉE du bien (source
    * ASSET_DATA, `asset-data.ts`) et non d'un candidat T1 — sa nature et
@@ -320,6 +332,7 @@ export function buildCandidateIdentity(c: CandidateRecord, ctx: IdentityContext)
     },
     hints,
     ...(isCoveragePeriodDocumentType(ctx.fileDocumentTypeCode) ? { coverageDocument: true } : {}),
+    ...(ctx.fileTermQualification?.evaluated ? { termQualification: ctx.fileTermQualification } : {}),
   };
 }
 
@@ -448,8 +461,33 @@ export function contractualDateSource(id: Pick<CandidateIdentity, 'role' | 'hint
  * est celle d'une couverture, jamais une fin de contrat ni une échéance
  * « Fin de contrat ». Sa date d'effet reste une date contractuelle. Pure.
  */
-export function contractualEndSource(id: Pick<CandidateIdentity, 'role' | 'hints' | 'agenda' | 'structured' | 'coverageDocument'>): boolean {
-  return !id.coverageDocument && contractualDateSource(id);
+export function contractualEndSource(id: Pick<CandidateIdentity, 'role' | 'hints' | 'agenda' | 'structured' | 'coverageDocument' | 'termQualification'> & { dates?: Pick<CandidateDates, 'endDate'> }): boolean {
+  if (id.structured) return true;
+  if (!contractualDateSource(id)) return false;
+  // Lot 113AA (#725, §3 T4) : le Type seul ne prouve pas le sens d'une date de fin. Quand T1 a qualifié
+  // le document (contrat v2), la fin n'est contractuelle que si elle est la borne de fin d'un EFFET
+  // CONTRACTUEL rendu par T1 (jamais une fin de couverture, de validité, de garantie ni une durée
+  // indéterminée) — dans les deux sens : une fin d'avis d'échéance qualifiée fin de contrat est fondée.
+  if (id.termQualification?.evaluated) {
+    const fin = id.dates?.endDate ?? null;
+    return id.termQualification.contractTerms.some((t) => !t.openEnded && dayMatchesBound(fin, t.end));
+  }
+  // Sans qualification : arbitrage 113W2 (Type de couverture) puis règle 86C — prudence documentée.
+  return !id.coverageDocument;
+}
+
+/**
+ * Lot 113AA (#725, §3 Réalisation) — une source établit-elle une DATE D'EFFET contractuelle ?
+ * Comme `contractualDateSource` ; quand T1 a qualifié le document (contrat v2), seulement si la date
+ * est le début d'un EFFET CONTRACTUEL rendu par T1 — aucun transfert mécanique de la date d'effet
+ * d'une attestation sans preuve de ce rôle. Sans qualification : arbitrage 113W2 (la date d'effet
+ * d'une attestation reste contractuelle). Pure.
+ */
+export function contractualStartSource(id: Pick<CandidateIdentity, 'role' | 'hints' | 'agenda' | 'structured' | 'termQualification'> & { dates?: Pick<CandidateDates, 'startDate'> }): boolean {
+  if (!contractualDateSource(id)) return false;
+  if (id.structured || !id.termQualification?.evaluated) return true;
+  const debut = id.dates?.startDate ?? null;
+  return id.termQualification.contractTerms.some((t) => dayMatchesBound(debut, t.start));
 }
 
 /** Types dont `start_date` / `end_date` sont des dates contractuelles (date d'effet, fin). */
@@ -908,7 +946,7 @@ export function computeProvenance(
     const val = v[k];
     if (!val) continue;
     const pool = opts.durable && (k === 'startDate' || k === 'endDate')
-      ? srcs.filter((x) => (k === 'endDate' ? contractualEndSource(x.identity) : contractualDateSource(x.identity))) : srcs;
+      ? srcs.filter((x) => (k === 'endDate' ? contractualEndSource(x.identity) : contractualStartSource(x.identity))) : srcs;
     const s = (k === 'realizedDate' ? srcs.find((x) => x.identity.agenda?.realizedDate === val) : undefined)
       ?? pool.find((x) => x.identity.dates[k] === val)
       ?? (k === 'realizedDate' ? srcs.find((x) => x.identity.hints.some((h) => h.economicDate === val) || x.identity.dates.endDate === val) : undefined);
@@ -978,7 +1016,8 @@ export function consolidateOperationState(
   // reste dans les composantes (`period_start` / `period_end`), jamais une date
   // d'effet, de fin, de résiliation ou de renouvellement.
   const durable = isDurableRelationType(type);
-  const datees = durable ? srcs.filter((s) => contractualDateSource(s.identity)) : srcs;
+  // Lot 113AA : date d'effet seulement si son rôle contractuel est établi (qualification T1 v2 quand elle existe).
+  const datees = durable ? srcs.filter((s) => contractualStartSource(s.identity)) : srcs;
   // Lot 113W2 : une fin de couverture (attestation, certificat…) ne date jamais la fin du contrat.
   const finsDatees = durable ? srcs.filter((s) => contractualEndSource(s.identity)) : srcs;
   let plannedDate = minDate(all('plannedDate'));

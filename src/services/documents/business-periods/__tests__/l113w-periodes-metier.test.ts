@@ -177,7 +177,8 @@ describe('L113W-U-GUIDE — bloc 26 du guide (T1, périodes métier)', () => {
 
   it('marqueur et clés du code, absent du prompt livré (le code ne modifie aucun prompt), ligne repère unique', () => {
     expect(bloc).toContain(m.T1_BUSINESS_PERIODS_CONTRACT);
-    for (const k of Object.keys(m.PERIOD_FACT_KEYS)) expect(bloc).toContain(k);
+    // Lot 113AA : period.contract et period.realization appartiennent au bloc 28 (t1-business-periods-v2), pas au bloc 26.
+    for (const k of Object.keys(m.PERIOD_FACT_KEYS).filter((x) => !['period.contract', 'period.realization'].includes(x))) expect(bloc).toContain(k);
     expect(livre).not.toContain(m.T1_BUSINESS_PERIODS_CONTRACT);
     expect(livre.split(REPERE)).toHaveLength(2);
     expect(bloc).toMatch(/tacite reconduction/);
@@ -263,11 +264,14 @@ describe('L113W2-U-FIN — décision PO du 07/11 : une fin de couverture n’est
   it('COH-OPS-CONTRACT-DATES en version 2 (stock réexaminé), interdit explicite', async () => {
     const { COHERENCE_REGISTRY } = await import('@/services/coherence/registry');
     const c = COHERENCE_REGISTRY.find((x) => x.id === 'COH-OPS-CONTRACT-DATES')!;
-    expect(c.version).toBe(2);
+    // Lot 113AA (#725) : version 3 (qualification T1 du sens des dates) — la règle 113W2 reste le repli.
+    expect(c.version).toBeGreaterThanOrEqual(2);
     expect(c.forbiddenRepairs.join(' ')).toMatch(/fin d’une couverture/);
   });
   it('priorité de la période principale (PO 07/11) : Couverture > Validité > Garantie > Prestation > Facturation', () => {
-    expect(lib.BUSINESS_PERIOD_KINDS).toEqual(['COVERAGE', 'VALIDITY', 'WARRANTY', 'SERVICE', 'BILLING']);
+    // Lot 113AA : arbitrage tracé séparément ; les natures CONTRACT / REALIZATION viennent APRÈS, sans changer cet ordre.
+    expect(lib.PRIORITY_ARBITRATION_113W2).toEqual(['COVERAGE', 'VALIDITY', 'WARRANTY', 'SERVICE', 'BILLING']);
+    expect(lib.BUSINESS_PERIOD_KINDS.slice(0, 5)).toEqual(['COVERAGE', 'VALIDITY', 'WARRANTY', 'SERVICE', 'BILLING']);
     const p = (kind: (typeof lib.BUSINESS_PERIOD_KINDS)[number]) => ({ kind, principalHint: false });
     expect(m.principalKind([p('BILLING'), p('SERVICE')])).toBe('SERVICE');
     expect(m.principalKind([p('BILLING'), p('WARRANTY'), p('SERVICE')])).toBe('WARRANTY');

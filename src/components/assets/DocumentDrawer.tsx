@@ -71,6 +71,8 @@ import {
 import { NativeCommerceNotice } from '@/components/native/NativeCommerceNotice';
 // Lot 113W (#724) : période métier principale du document et historique de couverture de l'événement de référence.
 import { DocumentBusinessPeriodField } from '@/components/documents/BusinessPeriods';
+// Lot 113AB (#725) : fiche de l'événement de référence consultable sans élément d'agenda.
+import { DocumentReferenceEvents } from '@/components/documents/ReferenceEventSheet';
 
 export interface DocumentDrawerItem {
   id: number;
@@ -1705,6 +1707,8 @@ export function DocumentDrawer({ open, onOpenChange, document: doc, onRefresh, a
                       refreshKey={refreshTrigger}
                       onOpenDocument={(id) => openDrawer({ kind: 'document', id }, { stack: true })}
                     />
+                    {/* Lot 113AB (#725) : événements de référence du document sans élément d'agenda — leur fiche (couvertures, justificatifs). */}
+                    <DocumentReferenceEvents documentId={doc.id} />
                     {/* Date d'ajout — lot 108D : conservée et visible dans le détail (absente des lignes de liste). */}
                     {(fullData?.uploadedAt ?? doc.uploadedAt) && (
                       <div className="flex items-center justify-between" data-testid="document-detail-added-date">

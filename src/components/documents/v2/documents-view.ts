@@ -53,6 +53,8 @@ export interface DocumentItem {
   assetNames: string[];
   /** Lot 32C (PO 9) : tous les biens du document, principal d'abord. */
   assetIds?: number[];
+  /** Lot 113AC : période principale (même ligne que la fiche), absente si non pertinente. */
+  periodLine?: string;
 }
 
 /** Rubrique visible dans le périmètre, dans l'ordre du référentiel. */

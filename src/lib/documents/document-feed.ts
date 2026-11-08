@@ -137,6 +137,11 @@ export interface FeedDocument {
    * les biens liés (PRIMARY / SECONDARY) ; `assetNames` dans le même ordre.
    */
   assetIds?: number[];
+  /**
+   * Lot 113AC (#725, §3 « Documents / listes / recherche ») : la période PRINCIPALE du document, même
+   * ligne que sa fiche (jamais le titre) ; absente quand aucune période n'est pertinente.
+   */
+  periodLine?: string;
 }
 
 export interface FeedFacet {

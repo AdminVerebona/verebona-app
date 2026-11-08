@@ -698,6 +698,11 @@ async function searchDocumentsCanonical(q: RetrievalQuery): Promise<RetrievedSou
     .limit(q.limit);
 
   verifierPerimetre('documents', lignes, q.accountId);
+  // Lot 113AB (#725, §2 D) : périodes métier du document (mêmes libellés que la fiche, corrections comprises) —
+  // un fait de l'extrait de source, jamais un statut ni une prolongation. Lecture sûre (vide en cas d'échec).
+  const periodes = lignes.length
+    ? await (await import('@/services/documents/business-period-surfaces')).documentPeriodTexts(q.accountId, lignes.map((l) => l.id))
+    : new Map<number, string>();
 
   const cible = typeof q.entityFilters.documentId === 'number' ? q.entityFilters.documentId : null;
   const titresIndices = (q.hints?.documentTitles ?? []).map(plainT).filter((t) => t.length >= 3);
@@ -729,7 +734,7 @@ async function searchDocumentsCanonical(q: RetrievalQuery): Promise<RetrievedSou
       // Lot 87D : type en libellé français (Type V2 enregistré, sinon nature V1) — jamais un code.
       // Lot 113Z : la note de l'utilisateur est rendue À PART, avec sa provenance
       // « déclarée par l'utilisateur » — jamais confondue avec un fait du document.
-      content: extrait([documentTypeLabelOrNull(l.documentTypeCode) ?? (documentCodeLabel(l.documentType) || null), l.supplier, l.documentDate, l.description, note]),
+      content: extrait([documentTypeLabelOrNull(l.documentTypeCode) ?? (documentCodeLabel(l.documentType) || null), l.supplier, l.documentDate, periodes.get(l.id), l.description, note]),
       meta: {
         documentId: l.id, assetId: l.assetId ?? l.linkedAssetId ?? null, assetName: l.assetName ?? null,
         date: l.documentDate ?? null, analysisStatus: statut,

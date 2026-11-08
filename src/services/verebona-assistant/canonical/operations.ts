@@ -36,6 +36,7 @@ import { classifyExpenseDocument, expenseThemeOf, isPaymentProofType, type Expen
 // Lot 54D (§4.1) : règles économiques du moteur canonique PARTAGÉ (T2, TCO, Sinistres, exports).
 import { attributeComponent, componentEurMinor, COST_SIGN } from '@/services/business-operations/finance/engine';
 import { assetFieldSourceId, claimSourceId } from './source-ids';
+import { coverageFactsText, type SurfacePeriodLine } from '@/lib/documents/business-period-surfaces';
 
 export type { AssistantOperationRead };
 
@@ -670,6 +671,14 @@ export interface ContractOverview {
   forecastCents: number | null;
   assetIds: number[];
   source: RetrievedSource | null;
+  /**
+   * Lot 113AB (#725, §2 D) : périodes de couverture ÉTABLIES par les
+   * justificatifs (mêmes libellés et mêmes corrections que la fiche),
+   * chronologiques ; jamais une prolongation, jamais un statut.
+   */
+  coverages?: SurfacePeriodLine[];
+  /** Lot 113AB : justificatifs de ces couvertures, consultables (tiroir du document). */
+  coverageSources?: RetrievedSource[];
 }
 
 const PERIODE = (from: string | null, to: string | null) => (from && to ? `du ${from} au ${to}` : from ? `depuis le ${from}` : to ? `jusqu’au ${to}` : null);
@@ -677,7 +686,16 @@ const PERIODE = (from: string | null, to: string | null) => (from && to ? `du ${
 /** Contrats actifs d'un périmètre — Opérations CONTRACT et leurs documents sources. */
 export async function readContracts(accountId: number, assetIds: readonly number[], opts: { assetName?: string | null } = {}): Promise<ContractOverview[]> {
   const ops = await operationReader().listForAssistant(accountId, { assetIds: assetIds.length ? assetIds : null, typeCodes: ['CONTRACT'], includeUntargeted: assetIds.length === 0, limit: 50 });
+  const { operationsCoverageSafe } = await import('@/services/documents/business-period-surfaces');
+  const couvertures = await operationsCoverageSafe(accountId, ops.filter((o) => o.status !== 'CANCELLED').map((o) => o.id));
   return ops.filter((o) => o.status !== 'CANCELLED').map((o) => {
+    // Lot 113AC (D11) : statut de résolution (remplacée / en conflit) et autres justificatifs du même fait —
+    // jamais `basis` (interne) ; une période en conflit n'est jamais présentée comme établie.
+    const coverages: SurfacePeriodLine[] = (couvertures.get(o.id) ?? []).map((c) => ({
+      line: c.line, userCorrected: c.userCorrected, documentTitle: c.documentTitle,
+      ...(c.resolution ? { resolution: { status: c.resolution.status, note: c.resolution.note } } : {}),
+      ...(c.otherSources?.length ? { otherSources: c.otherSources.map((x) => ({ documentTitle: x.documentTitle })) } : {}),
+    }));
     const [l] = operationCostLines([o], { assetIds: [...assetIds] });
     const prevu = o.components.filter((c) => c.kind === 'FORECAST_COST').map((c) => componentEurCents(c)).filter((x): x is number => x != null);
     const realise = l && (l.hasCost || l.costCents) ? l.costCents : null;
@@ -686,8 +704,17 @@ export async function readContracts(accountId: number, assetIds: readonly number
       o.contractReference ? `n° ${o.contractReference}` : null, PERIODE(o.effectiveFrom, o.effectiveTo),
       realise != null ? `coûts documentés : ${formatEur(realise)}` : null,
       prevu.length ? `tarif annoncé : ${formatEur(prevu[prevu.length - 1])}` : null,
+      coverageFactsText(coverages),
     ].filter(Boolean).join(' · ');
+    // Lot 113AC : chaque justificatif cité est consultable, y compris les autres sources d'un même fait.
+    const coverageSources: RetrievedSource[] = [...new Map((couvertures.get(o.id) ?? []).flatMap((c) => [
+      { fileId: c.fileId, title: c.documentTitle, line: c.line }, ...(c.otherSources ?? []).map((x) => ({ fileId: x.fileId, title: x.documentTitle, line: c.line })),
+    ]).map((c) => [c.fileId, {
+      id: `doc_${c.fileId}`, type: 'document' as const, title: c.title, content: c.line, relevanceScore: 1,
+      meta: { fileId: c.fileId, documentId: c.fileId, assetId: o.assetIds[0] ?? null, assetName: opts.assetName ?? null },
+    }])).values()];
     return {
+      ...(coverages.length ? { coverages, coverageSources } : {}),
       operationId: o.id, label: operationLabel(o), provider: o.provider, reference: o.contractReference,
       // Lot 86C : la fin d'un contrat est sa fin d'effet ÉTABLIE (sources contractuelles), jamais la fin
       // d'une période facturée (`endDate` historique) — sinon aucune fin n'est annoncée.

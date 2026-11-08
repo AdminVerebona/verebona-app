@@ -57,6 +57,7 @@ import { agendaStructuralHousingCheck } from './checks/agenda-structural-housing
 import { documentPrimaryLinkCheck } from './checks/document-primary-link';
 // Lot 113W (#724) : périodes métier des documents (fin de registre, reprise de l'historique).
 import { documentBusinessPeriodsCheck } from './checks/document-business-periods';
+import { operationsPeriodResolutionCheck } from './checks/operations-period-resolution';
 import { documentDescriptionT1Check } from './checks/document-description-t1';
 // Lot 106A : représentations équivalentes d'un même fait réalisé, toutes origines (fin de registre).
 import { agendaEquivalentRepresentationsCheck } from './checks/agenda-equivalent-representations';
@@ -175,6 +176,8 @@ export const COHERENCE_REGISTRY: readonly CoherenceCheck[] = [
   documentBusinessPeriodsCheck,
   // Lot 113Z (ticket #723 « Documents — Unifier « Notes / Description » ») : ajouté EN FIN de registre, après COH-DOC-BUSINESS-PERIODS (113W).
   documentDescriptionT1Check,
+  // Lot 113AA (ticket #725 « Périodes métier — conformité au CDC #724 », D11) : ajouté EN FIN de registre, après COH-DOC-DESCRIPTION-T1 (113Z).
+  operationsPeriodResolutionCheck,
 ];
 
 /** Contrôles exécutés par l'orchestrateur (les points d'extension PLANNED sont exclus). */

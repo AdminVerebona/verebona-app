@@ -68,7 +68,7 @@
  * services.
  */
 
-export type BackfillScript = 'database-restore-point' | 'merge-rooms' | 'document-asset-links' | 'agenda' | 'cdc15' | 'asset-account' | 'operations-structured' | 'claims-legacy-cleanup' | 'cross-account' | 'equipment-separation' | 'document-validation' | 'duo-shared-account' | 'agenda-intervention-duplicates' | 'to-process-false-arbitrations' | 'operations-v5-rebuild' | 'ai-history-reclassification' | 'missing-properties-catchup' | 'projection-property-evidence' | 'extract-chain-decision-review';
+export type BackfillScript = 'database-restore-point' | 'merge-rooms' | 'document-asset-links' | 'agenda' | 'cdc15' | 'asset-account' | 'operations-structured' | 'claims-legacy-cleanup' | 'cross-account' | 'equipment-separation' | 'document-validation' | 'duo-shared-account' | 'agenda-intervention-duplicates' | 'to-process-false-arbitrations' | 'operations-v5-rebuild' | 'ai-history-reclassification' | 'missing-properties-catchup' | 'projection-property-evidence' | 'extract-chain-decision-review' | 'business-periods-v2-requalification';
 export type BackfillAction = 'simulate' | 'apply' | 'restore';
 export type BackfillStatus = 'running' | 'succeeded' | 'failed' | 'interrupted';
 
@@ -456,6 +456,24 @@ export const BACKFILL_DEFINITIONS: readonly BackfillDefinition[] = [
       + 'progression est conservée unité par unité (document_value_review_units).',
     actions: ['simulate', 'apply'],
     accountFilter: true,
+  },
+  {
+    // Lot 113AC (Trello #725, §3 « Reprise ») — textes à valider par le PO.
+    script: 'business-periods-v2-requalification',
+    order: 19,
+    label: 'Périodes métier : requalification T1 des documents déjà analysés (contrat t1-business-periods-v2)',
+    command: 'BO uniquement (aucune commande) — jamais lancé automatiquement ni à la consultation',
+    description: 'Les documents analysés avant l’activation du bloc 28 du guide des prompts n’ont pas la qualification v2 de leurs '
+      + 'périodes (pertinence, effet contractuel, sens des dates de fin, avenant ou rectificatif déclaré) : leurs périodes restent sous '
+      + 'les règles prudentes et leurs divergences sont seulement signalées. Simuler : recensement (à requalifier, demandés en attente, '
+      + 'requalifiés, demandés sans sortie v2), lot qui serait traité et coût indicatif (coût moyen T1 par document observé sur 30 jours), '
+      + 'rien n’est écrit. Appliquer : met en file T1 UN lot de 100 documents au plus (traitement technique non facturé, visible dans '
+      + 'File d’attente IA), avec un rapport avant / après. Arrêt : ne pas relancer ; reprise : relancer (lot suivant). Un document déjà '
+      + 'requalifié ou déjà demandé n’est jamais redemandé. Les corrections de l’utilisateur sont conservées. Inactif tant que le contrat '
+      + 't1-business-periods-v2 n’est pas « satisfait » (Configuration IA › Conformité des prompts).',
+    actions: ['simulate', 'apply'],
+    accountFilter: true,
+    warning: 'Chaque application déclenche de vraies analyses T1 (coût IA). Vérifiez l’estimation de la simulation avant d’appliquer.',
   },
 ];
 

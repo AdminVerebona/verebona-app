@@ -68,6 +68,14 @@ export interface SourceDocument {
   codes: string[];
   equipmentId: number | null;
   /**
+   * Lot 113AB (#725, §2 D) : période métier PRINCIPALE du document, telle
+   * qu'affichée sur sa fiche (corrections de l'utilisateur comprises) —
+   * « Période couverte : du… au… », « Période facturée : mars 2026 »… ; null :
+   * aucune période pertinente. Fait structuré (`document_business_periods`),
+   * jamais les Notes / Description (113Z). Figé dans l'instantané du dossier.
+   */
+  periodLine?: string | null;
+  /**
    * Source canonique (relecture lot 16) : rattachement non confirmé
    * (lien SECONDARY AI, `linked_asset_id` / `linked_room_id`) — proposé
    * DÉCOCHÉ, jamais pré-sélectionné. Absent en lecture historique.
@@ -312,6 +320,29 @@ function toSourceDocuments(docs: DocumentRef[], photoFileIds: Set<number>): Sour
     });
 }
 
+/**
+ * Lot 113AB (#725) : périodes principales des pièces du dossier (une requête, lecture
+ * sûre : une lecture impossible n'empêche jamais le dossier, la pièce reste sans période).
+ */
+async function documentPeriodLines(accountId: number, fileIds: number[]): Promise<Map<number, string>> {
+  const out = new Map<number, string>();
+  if (!fileIds.length) return out;
+  try {
+    // Lot 113AC (D11) : une pièce dont la couverture est remplacée ou en conflit entre justificatifs n'y porte
+    // aucune période (jamais une période non établie présentée comme établie dans un dossier utilisateur).
+    const { dossierPeriodLines } = await import('@/services/documents/business-period-surfaces');
+    for (const [id, line] of await dossierPeriodLines(accountId, fileIds)) out.set(id, line);
+  } catch (e) {
+    console.warn('[exports/v12] périodes des pièces non lues', (e as Error)?.message);
+  }
+  return out;
+}
+
+/** Pose la période principale de chaque pièce (pure). */
+export function withPeriodLines(docs: SourceDocument[], lines: ReadonlyMap<number, string>): SourceDocument[] {
+  return docs.map((d) => (lines.has(d.id) ? { ...d, periodLine: lines.get(d.id)! } : d));
+}
+
 function toSourcePhotos(photos: PhotoRef[]): SourcePhoto[] {
   return photos
     .filter((p) => !!p.s3Key)
@@ -472,7 +503,8 @@ async function buildCanonicalExportSource(
         characteristics: cleanCharacteristics(cs.canonicalCharacteristics(row, state)),
       },
       // Rattachement non confirmé : proposé décoché (relecture lot 16).
-      documents: toSourceDocuments(docs.documents, photoFileIds)
+      // Lot 113AB : période principale de chaque pièce (même lecture que la fiche).
+      documents: withPeriodLines(toSourceDocuments(docs.documents, photoFileIds), await documentPeriodLines(params.accountId, docs.documents.map((d) => d.id)))
         .map((d) => (docs.unconfirmed.includes(d.id) ? { ...d, unconfirmedLink: true } : d)),
       equipments,
       events: toSourceEvents(snapshot, agenda.map((a) => ({

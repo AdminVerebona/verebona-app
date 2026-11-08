@@ -111,6 +111,9 @@ import { TcoLockedNotice } from './tco-locked';
 import { useNativeCommerceHidden } from '@/hooks/useNativeCommerceHidden';
 import { tcoSheetDiagnostics, tcoUndatedButtonLabel, tcoUndatedMessage } from '@/services/business-operations/tco/undated-expenses';
 import { TcoUndatedDatesSheet } from './TcoUndatedDatesSheet';
+// Lot 113AB (#725) : période facturée du justificatif (même fait que la fiche du document) et fiche de l'événement de référence.
+import { TcoExpensePeriod, useExpensePeriods, type ExpensePeriodSummary } from './tco-expense-period';
+import { ReferenceEventLink } from '@/components/documents/ReferenceEventSheet';
 
 interface Props {
   assetId: number;
@@ -279,7 +282,7 @@ function TcoLigneDetail({ l }: { l: Line }) {
 /** Lot 80A : geste « Ajouter / Retirer du TCO » demandé sur une ligne (confirmé dans la ligne). */
 type Decide = (l: Line, action: 'INCLUDE' | 'EXCLUDE', confirmDuplicate: boolean) => Promise<{ ok: true } | { ok: false; duplicateWarning?: string }>;
 
-function LigneDepense({ l, t, canEdit = false, onDecide, review = false, focused = false, arbitrate }: { l: Line; t: TcoDto; canEdit?: boolean; onDecide?: Decide; review?: boolean; focused?: boolean; arbitrate?: TcoArbitrate }) {
+function LigneDepense({ l, t, canEdit = false, onDecide, review = false, focused = false, arbitrate, periods }: { l: Line; t: TcoDto; canEdit?: boolean; onDecide?: Decide; review?: boolean; focused?: boolean; arbitrate?: TcoArbitrate; periods?: Record<string, ExpensePeriodSummary> }) {
   const retenue = RETENUE.has(l.status);
   // Lot 80A : confirmation légère dans la ligne (pas de fenêtre), avertissement de doublon présumé explicite.
   const [confirm, setConfirm] = useState<null | { action: 'INCLUDE' | 'EXCLUDE'; duplicateWarning: string | null }>(null);
@@ -319,6 +322,8 @@ function LigneDepense({ l, t, canEdit = false, onDecide, review = false, focused
         </div>
         <span className={`shrink-0 tabular-nums ${l.amountUnknown ? 'text-muted-foreground' : ''}`}>{valeur}</span>
       </div>
+      {/* Lot 113AB (#725) : période facturée du justificatif, corrigeable ici (même fait que le document ; TCO inchangé). */}
+      {l.fileId != null && <TcoExpensePeriod fileId={l.fileId} summary={periods?.[String(l.fileId)]} />}
       {/* Lot 109C : ligne concernée par un point à vérifier (mention écrite, pas seulement une couleur). */}
       {review && <p className="text-xs font-medium text-[color:var(--attention-on-soft)] mt-0.5" data-tco-line-review-label>À revoir — voir « Points à vérifier »</p>}
       {!retenue && (
@@ -343,6 +348,8 @@ function LigneDepense({ l, t, canEdit = false, onDecide, review = false, focused
       <TcoLigneDetail l={l} />
       <div className="mt-0.5 flex flex-wrap items-center gap-x-3 gap-y-0.5">
         <TcoJustificatif fileId={l.fileId} />
+        {/* Lot 113AB (#725) : fiche de l'événement de référence (couvertures, justificatifs), même sans élément d'agenda. */}
+        {l.operationId != null && <ReferenceEventLink operationId={l.operationId} />}
         {/* Lot 68 : justificatifs repris par cette dépense consolidée (plus listés dans les non retenues). */}
         {(l.supportingDocuments ?? []).map((d) => <TcoJustificatif key={d.fileId} fileId={d.fileId} title={d.title} />)}
         {/* Lot 80A : décision de l'utilisateur (gestes calculés par le serveur). */}
@@ -610,6 +617,8 @@ export function TcoSection({ assetId, readOnly = false, defaultOpen = false }: P
   const creditsAnnee = lignesAnnee ? lignesAnnee.filter((l) => l.kind && NEGATIVE.has(l.kind)) : [];
   const chargementAnnee = filtreAnnee && !!t?.linesTruncated && yearLines?.year !== anneeSel;
   const besoinAnnee = retainedOpen && chargementAnnee ? anneeSel : null;
+  // Lot 113AB : périodes facturées des justificatifs affichés dans les sous-tiroirs (une requête, à l'ouverture).
+  const periodesDepenses = useExpensePeriods([...depensesFiltrees, ...creditsAnnee, ...ecartees].map((l) => l.fileId), retainedOpen || excludedOpen);
   useEffect(() => {
     if (besoinAnnee == null) return;
     let actif = true;
@@ -815,7 +824,7 @@ export function TcoSection({ assetId, readOnly = false, defaultOpen = false }: P
 
               {ajustements.length > 0 && (
                 <Bloc title="Avoirs, remboursements et indemnités" data-tco-adjustments>
-                  <div className="divide-y divide-border">{ajustements.map((l) => <LigneDepense key={l.id} l={l} t={t} canEdit={canEdit} onDecide={decide} />)}</div>
+                  <div className="divide-y divide-border">{ajustements.map((l) => <LigneDepense key={l.id} l={l} t={t} periods={periodesDepenses} canEdit={canEdit} onDecide={decide} />)}</div>
                 </Bloc>
               )}
 
@@ -915,13 +924,13 @@ export function TcoSection({ assetId, readOnly = false, defaultOpen = false }: P
                 {!chargementAnnee && depensesFiltrees.length === 0 && (
                   <p className="text-sm text-muted-foreground py-1.5">{retainedFilter === 'YEAR' ? 'Aucune dépense retenue datée de cette année.' : 'Aucune dépense retenue.'}</p>
                 )}
-                {depensesFiltrees.map((l) => <LigneDepense key={l.id} l={l} t={t} canEdit={canEdit} onDecide={decide} arbitrate={arbitrate} review={aRevoir.has(l.id)} focused={focusLine === l.id} />)}
+                {depensesFiltrees.map((l) => <LigneDepense key={l.id} l={l} t={t} periods={periodesDepenses} canEdit={canEdit} onDecide={decide} arbitrate={arbitrate} review={aRevoir.has(l.id)} focused={focusLine === l.id} />)}
               </div>
               {/* Lot 81D : avoirs, remboursements et indemnités de l'année (net de l'indicateur, même sélection). */}
               {creditsAnnee.length > 0 && (
                 <div className="pt-3" data-tco-retained-year-credits>
                   <p className="vb-app-subsection m-0">Avoirs, remboursements et indemnités de l’année</p>
-                  <div className="divide-y divide-border">{creditsAnnee.map((l) => <LigneDepense key={l.id} l={l} t={t} canEdit={canEdit} onDecide={decide} />)}</div>
+                  <div className="divide-y divide-border">{creditsAnnee.map((l) => <LigneDepense key={l.id} l={l} t={t} periods={periodesDepenses} canEdit={canEdit} onDecide={decide} />)}</div>
                 </div>
               )}
               {retainedFilter === 'YEAR' && annual && annual.undated.count > 0 && (
@@ -984,7 +993,7 @@ export function TcoSection({ assetId, readOnly = false, defaultOpen = false }: P
                 <div className="pt-3" data-tco-excluded-review>
                   <p className="vb-app-subsection m-0">{`À revoir (${ecarteesARevoir.length})`}</p>
                   <div className="divide-y divide-border">
-                    {ecarteesARevoir.map((l) => <LigneDepense key={l.id} l={l} t={t} canEdit={canEdit} onDecide={decide} arbitrate={arbitrate} review focused={focusLine === l.id} />)}
+                    {ecarteesARevoir.map((l) => <LigneDepense key={l.id} l={l} t={t} periods={periodesDepenses} canEdit={canEdit} onDecide={decide} arbitrate={arbitrate} review focused={focusLine === l.id} />)}
                   </div>
                 </div>
               )}
@@ -992,7 +1001,7 @@ export function TcoSection({ assetId, readOnly = false, defaultOpen = false }: P
                 <div className="pt-3" data-tco-excluded-decided>
                   <p className="vb-app-subsection m-0">{`Vos choix confirmés (${ecarteesDecidees.length})`}</p>
                   <div className="divide-y divide-border">
-                    {ecarteesDecidees.map((l) => <LigneDepense key={l.id} l={l} t={t} canEdit={canEdit} onDecide={decide} arbitrate={arbitrate} focused={focusLine === l.id} />)}
+                    {ecarteesDecidees.map((l) => <LigneDepense key={l.id} l={l} t={t} periods={periodesDepenses} canEdit={canEdit} onDecide={decide} arbitrate={arbitrate} focused={focusLine === l.id} />)}
                   </div>
                 </div>
               )}
@@ -1000,7 +1009,7 @@ export function TcoSection({ assetId, readOnly = false, defaultOpen = false }: P
                 <div className="pt-3" data-tco-excluded-normal>
                   {(ecarteesARevoir.length > 0 || ecarteesDecidees.length > 0) && <p className="vb-app-subsection m-0">{`Exclusions normales (${ecarteesNormales.length})`}</p>}
                   <div className="divide-y divide-border">
-                    {ecarteesNormales.map((l) => <LigneDepense key={l.id} l={l} t={t} canEdit={canEdit} onDecide={decide} arbitrate={arbitrate} focused={focusLine === l.id} />)}
+                    {ecarteesNormales.map((l) => <LigneDepense key={l.id} l={l} t={t} periods={periodesDepenses} canEdit={canEdit} onDecide={decide} arbitrate={arbitrate} focused={focusLine === l.id} />)}
                   </div>
                 </div>
               )}

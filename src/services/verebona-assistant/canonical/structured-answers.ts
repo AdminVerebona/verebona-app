@@ -17,6 +17,7 @@
  *                                     dépenses qualifiées par thème, couverture
  *                                     incomplète signalée, jamais de somme brute.
  */
+import { coverageFactsText } from '@/lib/documents/business-period-surfaces';
 import { listFields, type CanonicalFieldDef } from '@/services/canonical/registry';
 import type { Claim, RetrievedSource } from '../types/sources';
 import type { AccountDataPort, AssetRow } from '../core/data-answer.service';
@@ -287,11 +288,14 @@ export function contractsAnswer(contrats: ContractOverview[], scope: ScopeLike):
     c.status === 'ENVISAGED' ? ' — envisagé' : '',
     c.realizedCents != null ? ` — coûts documentés : ${formatEur(c.realizedCents)}` : '',
     c.forecastCents != null ? ` — tarif annoncé : ${formatEur(c.forecastCents)} (prévisionnel)` : '',
+    // Lot 113AB (#725) : couvertures ÉTABLIES (justificatifs, corrections comprises) — même texte que les sources ; rien sinon.
+    c.coverages?.length ? ` — ${coverageFactsText(c.coverages)}` : '',
   ].join('');
   const answer = contrats.length === 1
     ? `${ligne(contrats[0])}.`
     : formatList(`Contrats${scope.label ? ` de ${scope.label}` : ''}`, contrats.map(ligne), 8);
-  const sources = uniques(contrats.map((c) => c.source)).slice(0, SOURCES_MAX);
+  // Lot 113AB : le document du contrat d'abord, puis les justificatifs des couvertures citées (consultables).
+  const sources = uniques(contrats.flatMap((c) => [c.source, ...(c.coverageSources ?? [])])).slice(0, SOURCES_MAX);
   const srcs = sources.length ? sources : scope.assets.map(assetSrc);
   return { strategy: 'structured.contracts', answer, sources: srcs, claims: [claim('contracts', answer, srcs, 'direct')], kind: contrats.length === 1 ? 'exact' : 'list' };
 }

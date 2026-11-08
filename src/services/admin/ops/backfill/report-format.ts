@@ -894,6 +894,45 @@ function extractChainDecisionReview(action: BackfillAction, out: RawBackfillOutp
   };
 }
 
+/** Montant indicatif en dollars (micro-dollars → « 1,23 $ »), « non estimable » sinon. */
+const usd = (micros: number | null) => (micros == null ? 'non estimable' : `${(micros / 1_000_000).toLocaleString('fr-FR', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} $`);
+
+/** Lot 113AC — requalification T1 des périodes métier (textes à valider par le PO). */
+function businessPeriodsRequalification(action: BackfillAction, out: RawBackfillOutput): BackfillSummary {
+  const r = out.result as import('@/services/documents/business-periods/requalification').RequalificationReport;
+  const recense = (c: typeof r.before, quand: string) => [
+    { label: `${quand} — à requalifier`, value: c.toRequalify },
+    { label: `${quand} — demandés, analyse en attente`, value: c.requestedPending },
+    { label: `${quand} — requalifiés (sortie v2)`, value: c.requestedQualified },
+    { label: `${quand} — demandés, toujours sans sortie v2`, value: c.requestedWithoutV2 },
+    { label: `${quand} — qualifiés v2 sans requalification`, value: c.qualifiedOtherwise },
+  ];
+  const headline = r.refused
+    ? `Application refusée : ${r.availability.reason}`
+    : action === 'simulate'
+      ? `Simulation : ${r.before.toRequalify} document(s) à requalifier ; prochain lot : ${r.batch.length} document(s) ; coût indicatif du reste : ${usd(r.estimate.estimatedMicros)}.${r.availability.available ? '' : ` ${r.availability.reason}`}`
+      : `Application : ${r.queued?.length ?? 0} document(s) mis en file T1 (lot de ${r.batchSize} au plus) ; ${r.notAccepted?.length ?? 0} non accepté(s) par la file.`;
+  return {
+    headline,
+    scriptRunId: null,
+    restorable: false,
+    counters: [
+      { label: 'Contrat t1-business-periods-v2', value: r.availability.contractState },
+      ...recense(r.before, 'Avant'),
+      ...(r.after && action === 'apply' ? recense(r.after, 'Après') : []),
+      { label: 'Coût moyen T1 observé par document', value: usd(r.estimate.averageMicrosPerDocument) },
+      { label: `Documents analysés sur ${r.estimate.windowDays} jours (base de la moyenne)`, value: r.estimate.sampleDocuments },
+      { label: 'Comptes écartés (non éligibles au traitement IA)', value: r.ineligibleAccounts.length },
+    ],
+    ambiguous: { count: 0, samples: [] },
+    conflicts: { count: 0, samples: [] },
+    warnings: [
+      ...(r.before.requestedWithoutV2 > 0 ? [`${r.before.requestedWithoutV2} document(s) déjà requalifié(s) restent sans sortie v2 : ils ne sont pas redemandés (à examiner dans le diagnostic du document).`] : []),
+      'Coût indicatif : moyenne observée des analyses T1 récentes, pas un devis. Suivi des analyses : BO › File d’attente IA (origine business-periods-v2-requalification).',
+    ],
+  };
+}
+
 /** Libellés des motifs de refus du rattrapage 91C (jamais de valeur dans le rapport). */
 const REFUS_91C: Record<string, string> = {
   FIELD_STATES_REALIZATION: 'date d’achat (réalisation non prouvée)',
@@ -964,6 +1003,7 @@ export function summarizeBackfill(script: BackfillScript, action: BackfillAction
     case 'missing-properties-catchup': return missingPropertiesCatchup(action, out);
     case 'projection-property-evidence': return projectionPropertyEvidence(out);
     case 'extract-chain-decision-review': return extractChainDecisionReview(action, out);
+    case 'business-periods-v2-requalification': return businessPeriodsRequalification(action, out);
   }
 }
 

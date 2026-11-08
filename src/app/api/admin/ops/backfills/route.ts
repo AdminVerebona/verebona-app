@@ -9,6 +9,21 @@ import { guardAdmin, NO_STORE, opsError } from '../_shared';
 export const dynamic = 'force-dynamic';
 
 /**
+ * Lot 113AC — disponibilité des rattrapages conditionnés par un prérequis (affichée sur le bloc, bouton
+ * « Appliquer » désactivé avec la raison) : requalification T1 des périodes métier = contrat
+ * `t1-business-periods-v2` « satisfait ». Ne lève pas (prérequis illisible : indisponible).
+ */
+async function backfillAvailability(): Promise<Record<string, { available: boolean; reason: string }>> {
+  try {
+    const { requalificationAvailability } = await import('@/services/documents/business-periods/requalification');
+    const a = await requalificationAvailability();
+    return { 'business-periods-v2-requalification': { available: a.available, reason: a.reason } };
+  } catch (e) {
+    return { 'business-periods-v2-requalification': { available: false, reason: `Prérequis illisible : ${(e as Error).message}` } };
+  }
+}
+
+/**
  * Rattrapages de données (page « Exploitation », lot 25).
  *
  *   GET  : catalogue (ordre recommandé, actions permises), exécution en cours,
@@ -24,7 +39,7 @@ export async function GET(request: NextRequest) {
   if (!g.ok) return g.response;
   try {
     const state = await getBackfillState(50);
-    return NextResponse.json({ definitions: BACKFILL_DEFINITIONS, ...state }, { headers: NO_STORE });
+    return NextResponse.json({ definitions: BACKFILL_DEFINITIONS, ...state, availability: await backfillAvailability() }, { headers: NO_STORE });
   } catch (e) {
     if ((e as { code?: string }).code === '42P01') {
       return NextResponse.json(
@@ -42,6 +57,13 @@ export async function POST(request: NextRequest) {
   const body = await request.json().catch(() => null);
   const v = validateBackfillRequest(body);
   if (!v.ok) return NextResponse.json({ error: 'Demande invalide', code: v.code, message: v.message }, { status: 400, headers: NO_STORE });
+  // Lot 113AC : un rattrapage conditionné (contrat de prompt absent) refuse l'application, avec la raison.
+  if (v.value.action === 'apply') {
+    const dispo = (await backfillAvailability())[v.value.script];
+    if (dispo && !dispo.available) {
+      return NextResponse.json({ error: 'Indisponible', code: 'BACKFILL_PREREQUISITE_MISSING', message: dispo.reason }, { status: 409, headers: NO_STORE });
+    }
+  }
   try {
     // E-mail de l'auteur (historique « lancé par », journal) ; à défaut, relu en base par l'audit.
     const email = await getSession(request).then((s) => (s as { email?: string } | null)?.email, () => undefined);

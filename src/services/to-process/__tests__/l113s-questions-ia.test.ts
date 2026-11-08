@@ -207,10 +207,11 @@ describe('L113S — contrats T3 / T4 : sections facultatives, rétrocompatibles'
   });
 });
 
-describe('L113S — catalogue : les 27 règles actives classées (formulation)', () => {
+describe('L113S — catalogue : les règles actives classées (formulation)', () => {
   it('R-01 — chaque règle dit qui formule sa question ; catalogue sain', () => {
     expect(checkRulesCatalog()).toEqual([]);
-    expect(PROCESSING_RULES).toHaveLength(27);
+    // Lot 113AA (#725) : + PERIOD-CONFLICT (constat déterministe, NO_AI_DECISION).
+    expect(PROCESSING_RULES).toHaveLength(28);
     for (const r of PROCESSING_RULES) expect(['AI_CONTEXTUAL', 'DETERMINISTIC'], r.code).toContain(r.formulation.kind);
   });
 

@@ -168,8 +168,9 @@ describe('L113Z-U-COH — reprise de l’historique sans IA', () => {
     const { COHERENCE_REGISTRY } = await import('@/services/coherence/registry');
     const { COVERAGE_INVENTORY } = await import('@/services/coherence/registry/coverage');
     const ids = COHERENCE_REGISTRY.map((c) => c.id);
-    expect(ids.slice(-2)).toEqual(['COH-DOC-BUSINESS-PERIODS', 'COH-DOC-DESCRIPTION-T1']);
-    const c = COHERENCE_REGISTRY.at(-1)!;
+    // Lot 113AA (#725) : COH-OPS-PERIOD-RESOLUTION ajouté ensuite, en fin de registre.
+    expect(ids.slice(ids.indexOf('COH-DOC-BUSINESS-PERIODS'), ids.indexOf('COH-DOC-DESCRIPTION-T1') + 1)).toEqual(['COH-DOC-BUSINESS-PERIODS', 'COH-DOC-DESCRIPTION-T1']);
+    const c = COHERENCE_REGISTRY.find((x) => x.id === 'COH-DOC-DESCRIPTION-T1')!;
     expect(c).toMatchObject({ status: 'ACTIVE', version: 1, objectType: 'document' });
     const interdits = c.forbiddenRepairs.join(' ');
     expect(interdits).toMatch(/appeler l’IA/);

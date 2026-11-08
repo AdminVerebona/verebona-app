@@ -65,6 +65,8 @@ interface GlobalSearchRow {
   /** Équipement / pièce : bien PARENT (contexte, homonymes) — jamais substitué à l'entité. */
   assetId?: number;
   mimeType?: string;
+  /** Lot 113AC : document — période principale (même ligne que la fiche), absente si non pertinente. */
+  periodLine?: string;
   /**
    * Lot 71 : le libellé EST la requête, à la normalisation près
    * (`isExactNameMatch`) — prioritaire dans les suggestions, jamais masqué
@@ -466,6 +468,19 @@ function nestedHref(kind: NestedKind, id: number, assetId: number | null): strin
     ?? drawerHref({ kind: kind === 'room' ? 'piece' : 'equipement', id });
 }
 
+/** Lot 113AC : périodes principales des documents (113AA `readPrincipalPeriodLines`), vide en cas d'échec. */
+async function documentPeriodLinesSafe(accountId: number, fileIds: number[]): Promise<Map<number, string>> {
+  const out = new Map<number, string>();
+  if (!fileIds.length) return out;
+  try {
+    const { readPrincipalPeriodLines } = await import('@/services/documents/business-periods/service');
+    for (const [id, p] of await readPrincipalPeriodLines(accountId, fileIds)) out.set(id, p.line);
+  } catch (e) {
+    console.warn('[search] périodes non lues', (e as Error)?.message);
+  }
+  return out;
+}
+
 /** Recherche globale du compte (biens, documents, échéances, équipements, pièces). */
 export async function globalSearch(accountId: number, rawQuery: string, opts: { debug?: boolean } = {}): Promise<GlobalSearchOutput> {
   const q = parseSearchQuery(rawQuery);
@@ -487,6 +502,8 @@ export async function globalSearch(accountId: number, rawQuery: string, opts: { 
     asset: ra.results.slice(0, LIMITES.asset), document: rd.results.slice(0, LIMITES.document), agenda: rg.results.slice(0, LIMITES.agenda_item),
     equipment: exactsDabord(q, re.results).slice(0, LIMITES.equipment), room: exactsDabord(q, rr.results).slice(0, LIMITES.room),
   };
+  // Lot 113AC (#725) : période principale des documents retenus — UNE lecture groupée, sûre.
+  const periodes = await documentPeriodLinesSafe(accountId, retenus.document.map((r) => Number(r.candidate.entityId)));
   // Correspondance EXACTE (libellé = requête normalisée) : marquée pour être
   // présentée en premier par les suggestions (lot 71, AC12).
   const exact = (label: string) => (isExactNameMatch(q, label) ? { exact: true as const } : {});
@@ -505,7 +522,8 @@ export async function globalSearch(accountId: number, rawQuery: string, opts: { 
         id: `doc-${id}`, category: 'Document' as const, label: c._label, ...(c._sub ? { sublabel: c._sub } : {}),
         // Lien profond : le document s'ouvre en tiroir (src/lib/drawers.ts).
         href: drawerHref({ kind: 'document', id }, '/documents'),
-        docId: id, drawer: { kind: 'document' as const, id }, ...(c._mime ? { mimeType: c._mime } : {}), ...exact(c._label), match: matchInfo(r),
+        docId: id, drawer: { kind: 'document' as const, id }, ...(c._mime ? { mimeType: c._mime } : {}),
+        ...(periodes.has(id) ? { periodLine: periodes.get(id)! } : {}), ...exact(c._label), match: matchInfo(r),
       };
     }),
     ...retenus.agenda.map((r) => {

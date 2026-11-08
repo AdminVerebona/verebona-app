@@ -375,6 +375,13 @@ export async function resolveArbitration(
       return resolveDocumentIntervention(tx, action, value, accountId, options);
     }
 
+    // Divergence de périodes métier (lot 113AA, #725, D11) : décision durable de l'utilisateur,
+    // relue par la résolution — aucune période de document modifiée, jamais redemandée.
+    if (action.ruleCode === 'PERIOD-CONFLICT') {
+      const { resolvePeriodConflictCard } = await import('@/services/documents/business-periods/conflict-cards');
+      return resolvePeriodConflictCard(tx, action, value, accountId, options);
+    }
+
     // Ambiguïtés de consolidation des Opérations (lot 42, ch. 20, C19) :
     // décision durable (C6.3, B19) puis reconsolidation après commit.
     {

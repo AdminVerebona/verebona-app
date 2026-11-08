@@ -62,7 +62,8 @@ export type RuleProducer =
   | 'T3_OPERATIONS'
   | 'T4_PROJECTION_MATCH'
   | 'DOCUMENT_INTERVENTION'
-  | 'T3_IDENTITY_GROUP';
+  | 'T3_IDENTITY_GROUP'
+  | 'T3_PERIOD_RESOLUTION';
 
 /** Où vit chaque producteur, et par quelle(s) fonction(s) il est appelé. */
 export const RULE_PRODUCERS: Readonly<Record<RuleProducer, {
@@ -100,6 +101,12 @@ export const RULE_PRODUCERS: Readonly<Record<RuleProducer, {
   T3_IDENTITY_GROUP: {
     module: 'src/services/to-process/identity-group-cards.ts',
     entries: ['syncIdentityGroupCards', 'resolveIdentityGroupCard', 'closeIndividualCards'], generic: false,
+  },
+  // Lot 113AA (#725, D11 / R14) : divergence de périodes qu'aucune preuve n'explique (résolution
+  // contextuelle des périodes métier, synchronisée après chaque passage T3 et par COH-OPS-PERIOD-RESOLUTION).
+  T3_PERIOD_RESOLUTION: {
+    module: 'src/services/documents/business-periods/conflict-cards.ts',
+    entries: ['syncPeriodConflictCards', 'resolvePeriodConflictCard'], generic: false,
   },
 };
 
@@ -628,6 +635,21 @@ export const PROCESSING_RULES: readonly ProcessingRule[] = [
     businessImpact: 62,
     producer: 'T3_OPERATIONS',
     formulation: DATA_ENTRY,
+  },
+  {
+    // Lot 113AA (#725, D11 / R14) : deux justificatifs d'un même événement de référence indiquent des
+    // périodes différentes qu'aucune preuve n'explique (ni avenant, ni rectificatif, ni succession) —
+    // question ciblée, choix durable (`business_period_decisions`), jamais redemandée.
+    code: 'PERIOD-CONFLICT',
+    targetType: 'DOCUMENT',
+    relationKey: 'periodConflict',
+    arbitratePriority: 'DO_NEXT',
+    completePriority: null,
+    allowNotApplicable: false,
+    question: 'Ces documents indiquent des périodes différentes : laquelle est la bonne ?',
+    businessImpact: 60,
+    producer: 'T3_PERIOD_RESOLUTION',
+    formulation: NO_AI_DECISION,
   },
 
   // ── CDC 15 D-15 (lot 14) : statut du bien après vente ou sinistre ───────

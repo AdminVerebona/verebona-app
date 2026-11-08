@@ -213,6 +213,10 @@ function DocumentRow({
           <span className="mt-0.5 block truncate text-xs text-[color:var(--text-muted)]" data-testid="document-row-subtitle">
             {documentSubtitle(document, context)}
           </span>
+          {/* Lot 113AC : UNE période principale (même ligne que la fiche), rien si non pertinente. */}
+          {document.periodLine && (
+            <span className="mt-0.5 block truncate text-xs text-[color:var(--text-muted)]" data-testid="document-row-period">{document.periodLine}</span>
+          )}
         </span>
         {showRubric && !isToClassify(document) && (
           <span className="hidden shrink-0 text-xs text-[color:var(--text-muted)] md:block">{rubricLabel}</span>
@@ -301,6 +305,9 @@ function DocumentTile({
             <span className="min-w-0 flex-1 truncate" data-testid="document-row-subtitle">{documentSubtitle(document, context)}</span>
             <DocumentDateCell value={document.documentDate} />
           </span>
+          {document.periodLine && (
+            <span className="mt-0.5 block truncate text-[11.5px] text-[color:var(--text-muted)]" data-testid="document-row-period">{document.periodLine}</span>
+          )}
         </span>
       </button>
     </li>

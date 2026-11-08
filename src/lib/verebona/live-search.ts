@@ -49,6 +49,8 @@ interface ApiSearchRow {
   category?: string;
   label?: string;
   sublabel?: string;
+  /** Lot 113AC : document — période principale (même ligne que la fiche). */
+  periodLine?: string;
   href?: string;
   drawer?: DrawerTarget;
   /** Lot 71 : libellé = requête normalisée (prioritaire, jamais masqué par le plafond). */
@@ -64,6 +66,12 @@ const TIROIRS = new Set<DrawerTarget['kind']>(['document', 'echeance', 'equipeme
 const tiroirValide = (d: DrawerTarget | undefined): d is DrawerTarget =>
   !!d && TIROIRS.has(d.kind) && Number.isSafeInteger(d.id) && d.id > 0;
 
+/** Contexte d'une suggestion : sous-titre servi, puis (document) sa période principale — lot 113AC. Pur. */
+function liveSub(r: Pick<ApiSearchRow, 'sublabel' | 'periodLine' | 'category'>): string | null {
+  const parts = [r.sublabel, r.category === 'Document' ? r.periodLine : null].filter((x): x is string => !!x && x.trim().length > 0);
+  return parts.length ? parts.join(' · ') : null;
+}
+
 /**
  * Réponse de `/api/search` → suggestions bornées : pages d'abord, puis les
  * correspondances EXACTES (lot 71, AC12 — le plafond de six ne masque jamais
@@ -73,7 +81,7 @@ export function toLiveResults(q: string, rows: ApiSearchRow[] | null | undefined
   const api = (rows ?? [])
     .filter((r) => r && r.label && r.href && KIND[r.category ?? ''])
     .map((r) => ({
-      id: String(r.id), kind: KIND[r.category!], title: r.label!, sub: r.sublabel ?? null, href: r.href!,
+      id: String(r.id), kind: KIND[r.category!], title: r.label!, sub: liveSub(r), href: r.href!,
       ...(tiroirValide(r.drawer) ? { drawer: { kind: r.drawer.kind, id: r.drawer.id } } : {}),
       ...(r.exact === true ? { exact: true } : {}),
     }));

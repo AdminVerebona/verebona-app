@@ -38,8 +38,23 @@
  * PÉRIODE PRINCIPALE (décision 1) : la nature désignée par T1 (attribut
  * `principal` d'un fait de période), sinon la première nature présente dans
  * l'ordre couverture → validité → garantie → prestation → facturation
- * (décision PO du 07/11/2026). Les
- * autres restent consultables (détail), jamais écrites dans les notes.
+ * (décision PO du 07/11/2026) puis effet contractuel → réalisation (113AA).
+ * Les autres restent consultables (détail), jamais écrites dans les notes.
+ *
+ * LOT 113AA (Trello #725, §2 C) — contrat `t1-business-periods-v2` (bloc 28,
+ * `./t1-v2`) : quand T1 a rendu la PERTINENCE des natures (`period.relevance`),
+ * c'est elle qui décide, indépendamment de la présence des dates :
+ *   · `not_relevant` → aucun champ, aucun repli déterministe ;
+ *   · `unknown`      → « Période … : non renseignée » (corrigeable) ;
+ *   · `known`        → faits T1, à défaut repli déterministe daté, à défaut
+ *                      « non renseignée » ;
+ *   · `undetermined` → seulement des faits ou des données datées — jamais une
+ *                      obligation fictive ; la couverture n'est alors JAMAIS
+ *                      tirée des dates contractuelles (effet contractuel ≠
+ *                      couverture).
+ * Sans ce fait (bloc absent) : comportement 113W inchangé (pertinence par le
+ * rôle T1 de la pièce), documenté comme « dépend du bloc prompt ».
+ * Une fin `INDEFINITE` = durée indéterminée ÉTABLIE (≠ fin inconnue).
  * ══════════════════════════════════════════════════════════════════════════
  */
 import { contractualDateSource } from '@/services/business-operations/consolidation/model';
@@ -47,6 +62,7 @@ import {
   BUSINESS_PERIOD_KINDS, chronoKey, isPartialDate, orderedBounds,
   type BusinessPeriodKind, type PartialDate,
 } from '@/lib/documents/business-periods';
+import { isOpenEndToken, parseRelation, parseRelevance, type DocumentRelation, type PeriodRelevance } from './t1-v2';
 
 /** Préfixe des clés de faits génériques T1 (contrat `t1-business-periods-v1`). */
 export const PERIOD_FACT_PREFIX = 'period.';
@@ -56,6 +72,9 @@ export const PERIOD_FACT_KEYS: Record<string, BusinessPeriodKind> = {
   'period.validity': 'VALIDITY',
   'period.warranty': 'WARRANTY',
   'period.service': 'SERVICE',
+  // Lot 113AA (contrat t1-business-periods-v2, bloc 28).
+  'period.contract': 'CONTRACT',
+  'period.realization': 'REALIZATION',
 };
 /** Marqueur du bloc PO (documentation ; aucun code ne le lit). */
 export const T1_BUSINESS_PERIODS_CONTRACT = 't1-business-periods-v1';
@@ -68,6 +87,8 @@ const BILLING_ROLES = new Set(['INVOICE', 'DEPOSIT_INVOICE', 'CREDIT_NOTE']);
 export type PeriodBasis =
   | 'T1_PERIOD_FACT' | 'T1_CONTRACT_DATES' | 'T1_CONTRACT_UNDATED'
   | 'T1_INSTALLMENT' | 'T1_COST_PERIOD' | 'T1_BILLING_PERIOD' | 'T1_STATED_MONTH' | 'T1_BILLING_UNDATED'
+  /** Lot 113AA : pertinence rendue par T1 (`period.relevance`), sans date. */
+  | 'T1_RELEVANT_UNKNOWN'
   | 'USER';
 
 export interface PeriodEvidence {
@@ -75,6 +96,11 @@ export interface PeriodEvidence {
   page?: number | null;
   factIds?: number[];
   candidateKeys?: string[];
+  /** Lot 113AA : le document a été qualifié sous le contrat v2 (pertinence rendue par T1). */
+  qualified?: true;
+  /** Lot 113AA : relation que le document déclare (avenant, rectificatif, renouvellement) — résolution D11. */
+  relation?: DocumentRelation;
+  relationQuote?: string | null;
 }
 
 /** Fait de période voulu (sortie du modèle, avant persistance). */
@@ -86,6 +112,8 @@ export interface DesiredPeriod {
   principalHint: boolean;
   basis: PeriodBasis;
   evidence: PeriodEvidence;
+  /** Lot 113AA : durée indéterminée ÉTABLIE (fin inexistante, ≠ fin inconnue). */
+  openEnded?: boolean;
 }
 
 /** Candidat Opération ACTIF du document (`document_operation_candidates`). */
@@ -136,7 +164,7 @@ const day = (v: unknown): string | null => (typeof v === 'string' && /^\d{4}-\d{
  * periodEnd` du fait. Illisible → undefined (fait ignoré, jamais deviné).
  */
 export function parsePeriodValue(f: Pick<PeriodFactInput, 'normalizedValue' | 'rawValue' | 'periodStart' | 'periodEnd'>):
-  { start: PartialDate | null; end: PartialDate | null } | undefined {
+  { start: PartialDate | null; end: PartialDate | null; openEnded?: true } | undefined {
   const brut = typeof f.normalizedValue === 'string' && f.normalizedValue.trim() ? f.normalizedValue.trim() : null;
   if (brut !== null) {
     if (brut.includes('/')) {
@@ -144,6 +172,8 @@ export function parsePeriodValue(f: Pick<PeriodFactInput, 'normalizedValue' | 'r
       if (parts.length !== 2) return undefined;
       const [a, b] = parts.map((x) => x.trim());
       const start = a ? (isPartialDate(a) ? a : undefined) : null;
+      // Lot 113AA : « DÉBUT/INDEFINITE » = durée indéterminée établie (jamais une fin inventée).
+      if (isOpenEndToken(b)) return start === undefined ? undefined : { start, end: null, openEnded: true };
       const end = b ? (isPartialDate(b) ? b : undefined) : null;
       if (start === undefined || end === undefined) return undefined;
       return orderedBounds(start, end) ? { start, end } : undefined;
@@ -172,22 +202,34 @@ export function deriveDocumentPeriods(inp: PeriodInputs): DesiredPeriod[] {
     parNature.set(p.kind, l);
   };
 
+  // Lot 113AA : pertinence et relation décidées par T1 (contrat v2) ; absentes → règles 113W.
+  const pertinence = parseRelevance(inp.facts);
+  const rel = parseRelation(inp.facts);
+  const qualif: PeriodEvidence = pertinence ? { qualified: true, ...(rel ? { relation: rel.relation, relationQuote: rel.quote } : {}) } : {};
+  const rv = (k: BusinessPeriodKind): PeriodRelevance | null => pertinence?.get(k) ?? null;
+
   // 1. Faits de période T1 (nature et pertinence décidées par T1).
   const naturesT1 = new Set<BusinessPeriodKind>();
   for (const f of [...inp.facts].sort((a, b) => a.factId - b.factId)) {
     const kind = f.rawKey ? PERIOD_FACT_KEYS[f.rawKey.trim().toLowerCase()] : undefined;
     if (!kind || f.confidence === 'conflictual') continue;
+    // Lot 113AA : une nature que T1 déclare non pertinente n'a aucun champ (cohérence de sa propre sortie).
+    if (rv(kind) === 'NOT_RELEVANT') continue;
     const v = parsePeriodValue(f);
     if (!v) continue;
     naturesT1.add(kind);
     ajouter({
       kind, start: v.start, end: v.end, principalHint: (f.attribute ?? '').trim().toLowerCase() === 'principal',
-      basis: 'T1_PERIOD_FACT', evidence: { quote: f.excerpt?.slice(0, 200) ?? null, page: f.page ?? null, factIds: [f.factId] },
+      basis: 'T1_PERIOD_FACT', evidence: { quote: f.excerpt?.slice(0, 200) ?? null, page: f.page ?? null, factIds: [f.factId], ...qualif },
+      ...(v.openEnded ? { openEnded: true } : {}),
     });
   }
 
   // 2a. Couverture : dates contractuelles des candidats établis qualifiés CONTRACT (règle 86C).
-  if (!naturesT1.has('COVERAGE')) {
+  // Lot 113AA : sous le contrat v2, seulement si T1 tient la couverture pour pertinente et connue
+  // (jamais une date d'effet contractuel transformée en couverture sans ce rôle).
+  const couvertureParRepli = pertinence ? rv('COVERAGE') === 'KNOWN' : true;
+  if (!naturesT1.has('COVERAGE') && couvertureParRepli) {
     let sansDate: string[] = [];
     for (const c of inp.candidates) {
       if (!c.established || c.confidence === 'conflictual' || c.typeHint !== 'CONTRACT') continue;
@@ -200,33 +242,45 @@ export function deriveDocumentPeriods(inp: PeriodInputs): DesiredPeriod[] {
       const end = day(t.endDate);
       if (start || end) {
         if (!orderedBounds(start, end)) continue;
-        ajouter({ kind: 'COVERAGE', start, end, principalHint: false, basis: 'T1_CONTRACT_DATES', evidence: { candidateKeys: [c.candidateKey] } });
+        ajouter({ kind: 'COVERAGE', start, end, principalHint: false, basis: 'T1_CONTRACT_DATES', evidence: { candidateKeys: [c.candidateKey], ...qualif } });
       } else if (role === 'CONTRACT_DOCUMENT') sansDate = [...sansDate, c.candidateKey];
     }
-    if (!parNature.has('COVERAGE') && sansDate.length) {
+    // Sans pertinence T1 (113W) : pièce contractuelle sans date → « non renseignée » ; sous v2, c'est T1 qui le dit (ci-dessous).
+    if (!pertinence && !parNature.has('COVERAGE') && sansDate.length) {
       ajouter({ kind: 'COVERAGE', start: null, end: null, principalHint: false, basis: 'T1_CONTRACT_UNDATED', evidence: { candidateKeys: sansDate } });
     }
   }
 
   // 2b. Facturation : pièce de facturation → période facturée unique (règle de nommage existante).
-  if (!naturesT1.has('BILLING')) {
+  if (!naturesT1.has('BILLING') && rv('BILLING') !== 'NOT_RELEVANT' && rv('BILLING') !== 'UNKNOWN') {
     const factures = inp.candidates.filter((c) => {
       const role = obj(c.payload).sourceRoleHint;
       return c.established && c.confidence !== 'conflictual' && typeof role === 'string' && BILLING_ROLES.has(role);
     });
-    const pertinente = factures.length > 0 || inp.billing.hasBillingBlock;
+    const pertinente = factures.length > 0 || inp.billing.hasBillingBlock || rv('BILLING') === 'KNOWN';
     const bp = inp.billing.billedPeriod;
     if (pertinente && bp && bp.source !== 'T1_FACT' && orderedBounds(bp.start, bp.end)) {
       ajouter({
         kind: 'BILLING', start: bp.start, end: bp.end, principalHint: false,
-        basis: bp.source as PeriodBasis, evidence: { candidateKeys: factures.map((c) => c.candidateKey) },
+        basis: bp.source as PeriodBasis, evidence: { candidateKeys: factures.map((c) => c.candidateKey), ...qualif },
       });
     } else if (pertinente && inp.billing.statedMonth && /^\d{4}-(0[1-9]|1[0-2])$/.test(inp.billing.statedMonth.value)) {
       const m = inp.billing.statedMonth.value;
-      ajouter({ kind: 'BILLING', start: m, end: m, principalHint: false, basis: 'T1_STATED_MONTH', evidence: { quote: inp.billing.statedMonth.quote ?? null } });
-    } else if (factures.some((c) => c.typeHint === 'CONTRACT')) {
+      ajouter({ kind: 'BILLING', start: m, end: m, principalHint: false, basis: 'T1_STATED_MONTH', evidence: { quote: inp.billing.statedMonth.quote ?? null, ...qualif } });
+    } else if (!pertinence && factures.some((c) => c.typeHint === 'CONTRACT')) {
       // Échéance d'une relation contractuelle sans période lisible : pertinente, non renseignée.
       ajouter({ kind: 'BILLING', start: null, end: null, principalHint: false, basis: 'T1_BILLING_UNDATED', evidence: { candidateKeys: factures.map((c) => c.candidateKey) } });
+    }
+  }
+
+  // 2c. Lot 113AA : nature pertinente selon T1 mais sans date (« unknown », ou « known » sans valeur lisible)
+  // → une ligne « non renseignée », corrigeable. « undetermined » : aucune obligation fictive.
+  if (pertinence) {
+    for (const kind of BUSINESS_PERIOD_KINDS) {
+      const r = rv(kind);
+      if ((r === 'UNKNOWN' || r === 'KNOWN') && !parNature.has(kind)) {
+        ajouter({ kind, start: null, end: null, principalHint: false, basis: 'T1_RELEVANT_UNKNOWN', evidence: { ...qualif } });
+      }
     }
   }
 
@@ -242,7 +296,7 @@ export function deriveDocumentPeriods(inp: PeriodInputs): DesiredPeriod[] {
   for (const kind of BUSINESS_PERIOD_KINDS) {
     const l = (parNature.get(kind) ?? []).slice()
       // Une période datée rend inutile une ligne « non renseignée » de la même nature.
-      .filter((p, _i, all) => p.start !== null || p.end !== null || all.every((x) => x.start === null && x.end === null))
+      .filter((p, _i, all) => p.start !== null || p.end !== null || p.openEnded || all.every((x) => x.start === null && x.end === null && !x.openEnded))
       .sort((a, b) => chronoKey(a).localeCompare(chronoKey(b)));
     l.slice(0, MAX_SEGMENTS_PER_KIND).forEach((p, i) => out.push({ ...p, segment: i }));
   }
@@ -257,6 +311,8 @@ function mergeEvidence(a: PeriodEvidence, b: PeriodEvidence): PeriodEvidence {
     ...(a.page ?? b.page ? { page: a.page ?? b.page ?? null } : {}),
     ...(ids.length ? { factIds: ids } : {}),
     ...(keys.length ? { candidateKeys: keys } : {}),
+    ...(a.qualified || b.qualified ? { qualified: true as const } : {}),
+    ...(a.relation ?? b.relation ? { relation: (a.relation ?? b.relation)!, relationQuote: a.relationQuote ?? b.relationQuote ?? null } : {}),
   };
 }
 
@@ -272,6 +328,8 @@ export interface StoredPeriod {
   basis: string;
   evidence: PeriodEvidence;
   userLocked: boolean;
+  /** Lot 113AA : durée indéterminée établie (colonne `end_open`, migration 1590). */
+  openEnded?: boolean;
 }
 
 /** Nature principale (pure) : désignée par T1, sinon priorité de la décision 1. */
@@ -283,14 +341,18 @@ export function principalKind(periods: ReadonlyArray<Pick<StoredPeriod, 'kind' |
 }
 
 /** Empreinte comparable d'un fait (idempotence de la reprise). */
-export const periodSignature = (p: Pick<DesiredPeriod, 'kind' | 'segment' | 'start' | 'end' | 'principalHint' | 'evidence'> & { basis: string }): string =>
-  JSON.stringify([p.kind, p.segment, p.start, p.end, p.principalHint, p.basis, normalizeEvidence(p.evidence)]);
+// Lot 113AA : `openEnded` et les marques v2 n'entrent dans l'empreinte QUE lorsqu'elles sont présentes —
+// les faits enregistrés avant le lot gardent exactement leur empreinte (aucune réécriture du stock).
+export const periodSignature = (p: Pick<DesiredPeriod, 'kind' | 'segment' | 'start' | 'end' | 'principalHint' | 'evidence' | 'openEnded'> & { basis: string }): string =>
+  JSON.stringify([p.kind, p.segment, p.start, p.end, p.principalHint, p.basis, normalizeEvidence(p.evidence), ...(p.openEnded ? ['OPEN_ENDED'] : [])]);
 
 function normalizeEvidence(e: PeriodEvidence): PeriodEvidence {
   return {
     quote: e.quote ?? null, page: e.page ?? null,
     factIds: [...(e.factIds ?? [])].sort((a, b) => a - b),
     candidateKeys: [...(e.candidateKeys ?? [])].sort(),
+    ...(e.qualified ? { qualified: true as const } : {}),
+    ...(e.relation ? { relation: e.relation, relationQuote: e.relationQuote ?? null } : {}),
   };
 }
 

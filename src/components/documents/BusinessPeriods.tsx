@@ -13,6 +13,11 @@
  *   · `AgendaCoverageHistory` (tiroir d'un élément d'agenda) : toutes les
  *     périodes de couverture établies de son événement de référence,
  *     chronologiques, chacune reliée à son justificatif.
+ * Lot 113AA (#725, D11) : chaque couverture de l'historique porte sa
+ * RÉSOLUTION calculée par le serveur (actualisée par un avenant, remplacée par
+ * un rectificatif ou par votre choix, divergente) — affichée en petit sous la
+ * ligne, jamais masquée ; un même fait porté par plusieurs justificatifs est
+ * présenté une fois, avec ses autres justificatifs.
  * Une correction modifie le MÊME fait (`PUT /api/documents/:id/periodes`),
  * quelle que soit la fiche : les deux tiroirs se relisent
  * (`business-periods-mutated`). Rien n'est affiché quand aucune période n'est
@@ -34,7 +39,7 @@ import {
 /** Événement de fenêtre : une période a changé (les tiroirs ouverts se relisent). */
 export const BUSINESS_PERIODS_MUTATED = "business-periods-mutated";
 
-interface PeriodView {
+export interface PeriodView {
   id: number;
   kind: BusinessPeriodKind;
   segment: number;
@@ -43,7 +48,12 @@ interface PeriodView {
   line: string;
   userCorrected: boolean;
 }
-interface CoverageEntry extends PeriodView { fileId: number; documentTitle: string }
+export interface CoverageEntry extends PeriodView {
+  fileId: number;
+  documentTitle: string;
+  resolution?: { status: "REPLACED" | "CONFLICT"; note: string };
+  otherSources?: Array<{ fileId: number; documentTitle: string }>;
+}
 interface DocumentPeriodsView {
   documentId: number;
   principal: { kind: BusinessPeriodKind; line: string; segments: PeriodView[] } | null;
@@ -99,8 +109,8 @@ function PeriodEditor({ fileId, period, onDone }: { fileId: number; period: Peri
   );
 }
 
-/** Ligne d'une période + action « Corriger » (protégée en lecture seule par la garde d'écriture). */
-function PeriodRow({ fileId, period, text, muted, onSaved }: {
+/** Ligne d'une période + action « Corriger » (protégée en lecture seule par la garde d'écriture). Lot 113AB : réutilisée (dépense, fiche de l'événement de référence). */
+export function PeriodRow({ fileId, period, text, muted, onSaved }: {
   fileId: number; period: PeriodView; text?: string; muted?: boolean; onSaved: () => void;
 }) {
   const [edition, setEdition] = useState(false);
@@ -130,7 +140,8 @@ function PeriodRow({ fileId, period, text, muted, onSaved }: {
 
 // ── Historique de couverture ────────────────────────────────────────────────
 
-function CoverageHistoryList({ coverages, currentFileId, onOpenDocument, onSaved }: {
+/** Lot 113AB : réutilisée par la fiche de l'événement de référence. */
+export function CoverageHistoryList({ coverages, currentFileId, onOpenDocument, onSaved }: {
   coverages: CoverageEntry[]; currentFileId?: number; onOpenDocument?: (fileId: number) => void; onSaved: () => void;
 }) {
   return (
@@ -139,7 +150,10 @@ function CoverageHistoryList({ coverages, currentFileId, onOpenDocument, onSaved
       <ol className="space-y-2">
         {coverages.map((c) => (
           <li key={c.id} className="rounded-xl border border-[color:var(--border-subtle)] bg-[color:var(--bg-card)] px-3 py-2" data-testid="coverage-history-entry">
-            <PeriodRow fileId={c.fileId} period={c} onSaved={onSaved} />
+            <PeriodRow fileId={c.fileId} period={c} muted={c.resolution?.status === "REPLACED"} onSaved={onSaved} />
+            {c.resolution && (
+              <p className="mt-1 text-xs text-muted-foreground" data-testid="coverage-history-resolution">{c.resolution.note}</p>
+            )}
             {c.fileId !== currentFileId && onOpenDocument ? (
               <button
                 type="button"
@@ -152,6 +166,19 @@ function CoverageHistoryList({ coverages, currentFileId, onOpenDocument, onSaved
             ) : (
               <p className="mt-1 flex items-center gap-1.5 text-xs text-muted-foreground"><FileText className="w-3 h-3 shrink-0" /><span className="truncate">{c.documentTitle}</span></p>
             )}
+            {(c.otherSources ?? []).map((o) => (o.fileId !== currentFileId && onOpenDocument ? (
+              <button
+                key={o.fileId}
+                type="button"
+                onClick={() => onOpenDocument(o.fileId)}
+                className="mt-1 flex max-w-full items-center gap-1.5 text-xs text-[color:var(--accent)] hover:underline"
+                aria-label={`Ouvrir le document : ${o.documentTitle}`}
+              >
+                <FileText className="w-3 h-3 shrink-0" /><span className="truncate">{o.documentTitle}</span>
+              </button>
+            ) : (
+              <p key={o.fileId} className="mt-1 flex items-center gap-1.5 text-xs text-muted-foreground"><FileText className="w-3 h-3 shrink-0" /><span className="truncate">{o.documentTitle}</span></p>
+            )))}
           </li>
         ))}
       </ol>

@@ -572,7 +572,27 @@ export async function getDocumentFeed(query: DocumentFeedQuery): Promise<FeedRes
     };
   });
 
-  return { documents, nextCursor, hasMore, limit: query.limit, ...(meta ? { meta } : {}) };
+  // Lot 113AC (#725) : période principale de chaque document du lot — UNE lecture groupée (113AA,
+  // `readPrincipalPeriodLines`), jamais une par ligne ; lecture sûre (la liste reste servie sans elle).
+  const periodes = await principalPeriodLinesSafe(query.accountId, documents.map((d) => d.id));
+  const avecPeriodes = periodes.size
+    ? documents.map((d) => (periodes.has(d.id) ? { ...d, periodLine: periodes.get(d.id)! } : d))
+    : documents;
+
+  return { documents: avecPeriodes, nextCursor, hasMore, limit: query.limit, ...(meta ? { meta } : {}) };
+}
+
+/** Lot 113AC : périodes principales (une requête), vide en cas d'échec — jamais bloquant pour la liste. */
+async function principalPeriodLinesSafe(accountId: number, fileIds: number[]): Promise<Map<number, string>> {
+  const out = new Map<number, string>();
+  if (!fileIds.length) return out;
+  try {
+    const { readPrincipalPeriodLines } = await import('@/services/documents/business-periods/service');
+    for (const [id, p] of await readPrincipalPeriodLines(accountId, fileIds)) out.set(id, p.line);
+  } catch (e) {
+    console.warn('[documents/feed] périodes non lues', (e as Error)?.message);
+  }
+  return out;
 }
 
 /** Identifiants d'un `int[]` relu (tableau, ou texte `{1,2}` selon le pilote). */

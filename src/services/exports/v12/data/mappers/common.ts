@@ -13,6 +13,7 @@
  *     dans le design (`fmt.mask`).
  */
 
+import { exportPeriodDetail } from '@/lib/documents/business-period-surfaces';
 import { fmt, dot, isEmpty } from '../../html/components';
 import type { DocItem, ExportInfo, PhotoItem, Nullable } from '../../types';
 import type { ExportSource, SourceDocument, SourceEquipment, SourceEvent, InfoSection } from '../source';
@@ -363,6 +364,8 @@ export function toDocItem(pd: PlannedDocument, section: string, m: MapInput, ext
     fileName: d.fileName,
     sizeBytes: d.sizeBytes,
     preview,
+    // Lot 113AB (#725) : période principale de la pièce, telle que sur sa fiche (jamais Notes / Description).
+    ...(exportPeriodDetail(d.periodLine) ? { detail: exportPeriodDetail(d.periodLine) } : {}),
     ...extra,
   };
 }

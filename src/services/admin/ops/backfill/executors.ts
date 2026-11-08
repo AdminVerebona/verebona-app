@@ -35,6 +35,8 @@
  *                         même sélection que le rattrapage automatique de `coherence-control`)
  *   projection-property-evidence runPropertyEvidenceReprise (lot 91C ; simulation = lecture seule ;
  *                         même service que la tâche `projection-property-evidence-reprise`)
+ *   business-periods-v2-requalification runBusinessPeriodsRequalification (lot 113AC ; simulation =
+ *                         recensement + estimation ; application = un lot T1, contrat t1-business-periods-v2 exigé)
  *   database-restore-point runDatabaseBackup('admin') / restoreDatabaseBackup (lot 82E ; point de
  *                         restauration = sauvegarde format 2 ; restauration tout ou rien)
  *
@@ -292,6 +294,14 @@ export async function executeBackfill(sql: postgres.Sql, req: BackfillRequest, h
       hooks.log(`contrat T1 : ${contrat.reason} ; ${req.action === 'apply' ? 'demandés' : 'à reprendre'} : ${JSON.stringify(r.requested)}`);
       const controls = req.action === 'apply' && Object.keys(r.requested).length ? await orch.runTargetedChecks({ deadline: Date.now() + 15 * 60_000, sql }) : null;
       return { result: { ...r, controls, contract: contrat.reason } };
+    }
+    case 'business-periods-v2-requalification': {
+      // Lot 113AC : simulation = recensement et estimation ; application = UN lot mis en file T1 (contrat revérifié).
+      const { runBusinessPeriodsRequalification } = await import('@/services/documents/business-periods/requalification');
+      const r = await runBusinessPeriodsRequalification({
+        apply: req.action === 'apply', accountId: req.accountId, sql, log: (m) => { hooks.log(m); hooks.progress({ message: m }); },
+      });
+      return { result: r };
     }
     case 'projection-property-evidence': {
       // Lot 91C : même service que la tâche planifiée (règle pure de la projection T1, sans appel IA).

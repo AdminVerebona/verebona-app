@@ -949,3 +949,24 @@ export async function conformityOverview(environment: AiEnvironment = getAiEnvir
     corpusAccount: corpus ? { ok: corpus.ok, code: corpus.code, label: corpus.label, accountId: corpus.accountId, reasons: corpus.reasons, warnings: corpus.warnings, nextAction: corpus.nextAction, security: corpus.security } : null,
   };
 }
+
+/**
+ * Lot 113AC — état d'UN contrat du registre sur le prompt EFFECTIF de son traitement (même lecture que
+ * `conformityOverview`, sans les incidents) : sert à conditionner une action d'exploitation à la
+ * présence d'un bloc du guide (ex. requalification T1 des périodes métier → `t1-business-periods-v2`).
+ * Lecture seule ; ne lève pas (contrat inconnu ou prompt illisible : `UNKNOWN`, cause expliquée).
+ */
+export async function contractConformityState(contractId: string, environment: AiEnvironment = getAiEnvironment()): Promise<{
+  state: ContractCheck['state'] | 'UNKNOWN'; cause: string | null; promptVersionId: number | null;
+}> {
+  try {
+    const c = (await promptContracts()).find((x) => x.id === contractId);
+    if (!c) return { state: 'UNKNOWN', cause: `Contrat ${contractId} absent du registre.`, promptVersionId: null };
+    const pr = (await effectivePrompts(environment, [c.treatment])).get(c.treatment);
+    if (!pr || pr.readError) return { state: 'UNKNOWN', cause: pr?.readError ?? 'Prompt effectif illisible.', promptVersionId: pr?.versionId ?? null };
+    const chk = await c.check(pr);
+    return { state: chk.state, cause: chk.cause || null, promptVersionId: pr.versionId };
+  } catch (e) {
+    return { state: 'UNKNOWN', cause: (e as Error).message, promptVersionId: null };
+  }
+}

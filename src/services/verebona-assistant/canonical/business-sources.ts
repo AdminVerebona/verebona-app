@@ -37,6 +37,7 @@ import {
 import { readCanonicalField, assetFieldSource } from './field-reader';
 import { agendaDateProvenance, listUpcomingAgenda } from './agenda';
 import { isPaymentProofType } from './expense-classes';
+import { coverageFactsText, type SurfacePeriodLine } from '@/lib/documents/business-period-surfaces';
 
 const capitalize = (s: string) => s.charAt(0).toUpperCase() + s.slice(1);
 const frDate = (iso: string | null | undefined): string | null => {
@@ -97,8 +98,14 @@ function lastRealizedAmount(op: Pick<AssistantOperationRead, 'components'>): { c
   return reels[0] ?? null;
 }
 
-/** Source métier d'une opération (pure, testée). */
-export function operationBusinessSource(op: AssistantOperationRead, assetId: number | null, assetName: string | null): BusinessSource {
+/**
+ * Source métier d'une opération (pure, testée). Lot 113AB (#725, §2 D) :
+ * `coverages` — périodes de couverture ÉTABLIES par les justificatifs
+ * (lecture du lot 113W, corrections comprises), données à T2 comme un fait
+ * explicite (« … — aucune prolongation n'est déduite ») ; absentes : contenu
+ * inchangé.
+ */
+export function operationBusinessSource(op: AssistantOperationRead, assetId: number | null, assetName: string | null, coverages: readonly SurfacePeriodLine[] = []): BusinessSource {
   const label = capitalize(operationLabel(op));
   const dernier = lastRealizedAmount(op);
   const prevu = op.components.filter((c) => c.kind === 'FORECAST_COST').map((c) => componentEurCents(c)).filter((x): x is number => x != null);
@@ -117,6 +124,7 @@ export function operationBusinessSource(op: AssistantOperationRead, assetId: num
     dernier ? `dernier montant : ${formatEur(dernier.cents)}${dernier.date ? ` (${dernier.date})` : ''}` : null,
     l && (l.hasCost || l.costCents) ? `total documenté : ${formatEur(l.costCents)}` : null,
     prevu.length ? `tarif annoncé : ${formatEur(prevu[prevu.length - 1])}` : null,
+    coverageFactsText(coverages),
   ].filter(Boolean).join(' · ');
   // Lot 75J (#419 R01) : composantes réalisées EXPLOITABLES (montant EUR établi) seulement.
   const realises = op.components.filter((c) => c.kind === 'REALIZED_COST')
@@ -199,11 +207,21 @@ interface BusinessSourceProvider {
   read?(accountId: number, ref: string, ctx: { assetIds: number[]; nom: (id: number | null) => string | null }): Promise<BusinessSource | null>;
 }
 
+/** Lot 113AB : couvertures établies des CONTRATS d'une liste d'opérations (lecture sûre : vide en cas d'échec). */
+async function coveragesOf(accountId: number, ops: ReadonlyArray<Pick<AssistantOperationRead, 'id' | 'typeCode'>>): Promise<Map<number, SurfacePeriodLine[]>> {
+  const contrats = ops.filter((o) => o.typeCode === 'CONTRACT').map((o) => o.id);
+  if (!contrats.length) return new Map();
+  const { operationsCoverageSafe } = await import('@/services/documents/business-period-surfaces');
+  return operationsCoverageSafe(accountId, contrats);
+}
+
 const operationProvider: BusinessSourceProvider = {
   domain: 'operation',
   async list(accountId, { ids, nom, includeUntargeted }) {
     const out: BusinessSource[] = [];
     const ops = await operationReader().listForAssistant(accountId, { assetIds: ids.length ? ids : null, includeUntargeted: ids.length === 0 || Boolean(includeUntargeted), limit: MAX_OPERATIONS });
+    // Lot 113AB : couvertures établies des contrats (une requête, lecture sûre).
+    const couvertures = await coveragesOf(accountId, ops);
     for (const op of ops) {
       if (op.status === 'CANCELLED' || op.typeCode === 'DISPOSAL') continue;
       // Aucun bien disponible dans le périmètre : seules les opérations SANS
@@ -212,7 +230,7 @@ const operationProvider: BusinessSourceProvider = {
       // Lot 75J : opération liée seulement à des biens HORS périmètre (indisponibles) : jamais exposée.
       if (ids.length && op.assetIds.length && !op.assetIds.some((a) => ids.includes(a))) continue;
       const assetId = op.assetIds.find((a) => ids.includes(a)) ?? (ids.length === 1 && op.assetIds.length ? ids[0] : op.assetIds[0] ?? null);
-      out.push(operationBusinessSource(op, assetId, nom(assetId)));
+      out.push(operationBusinessSource(op, assetId, nom(assetId), couvertures.get(op.id)));
     }
     return out;
   },
@@ -224,7 +242,7 @@ const operationProvider: BusinessSourceProvider = {
     // Sans bien de reprise : seule une opération sans bien est relisible.
     if (assetIds.length ? !op.assetIds.some((x) => assetIds.includes(x)) : op.assetIds.length > 0) return null;
     const assetId = op.assetIds.find((x) => assetIds.includes(x)) ?? op.assetIds[0] ?? null;
-    return operationBusinessSource(op, assetId, nom(assetId));
+    return operationBusinessSource(op, assetId, nom(assetId), (await coveragesOf(accountId, [op])).get(op.id));
   },
 };
 

@@ -38,6 +38,7 @@ const { mapReconciliationDecision } = await import('../reconciliation-bridge');
 const { proposalsFromAnalysis } = await import('../document-rule-bridge');
 const { rankCandidates } = await import('@/services/ai/reconciliation/document-asset/decision');
 const { todoItemFrom, todoTitle } = await import('@/services/home/mascot/todo-items');
+const periodes = await import('@/services/documents/business-periods/conflict-cards');
 const { ActionCard } = await import('@/components/to-process/ActionCard');
 import type { ActionProposal, TargetType } from '../action-model';
 import type { ToProcessActionView } from '../to-process-query.service';
@@ -217,6 +218,10 @@ describe('L77B-03 — toutes les familles : aucun libellé technique', () => {
       question: ops.exclusionQuestion('Maison', 'Dégât des eaux'), proposals: ops.exclusionProposals('Maison') })],
     ['OPERATION-CURRENCY', vue({ targetType: 'DOCUMENT', ruleCode: 'OPERATION-CURRENCY', relationKey: 'op', label: 'Facture',
       question: ops.currencyQuestion(12000), proposals: ops.currencyProposals(['USD', 'CHF']) })],
+    // Lot 113AA (#725) : divergence de périodes entre deux justificatifs.
+    ['PERIOD-CONFLICT', vue({ targetType: 'DOCUMENT', ruleCode: 'PERIOD-CONFLICT', relationKey: 'periodConflict:1:a', label: 'Attestation 2024-2025',
+      question: periodes.PERIOD_CONFLICT_QUESTION, proposals: periodes.periodConflictProposals([
+        { fileId: 10, title: 'Attestation A', line: 'Période couverte : du 01/04/2024 au 31/03/2025' }, { fileId: 11, title: 'Attestation B', line: 'Période couverte : du 01/07/2024 au 30/06/2025' }]) })],
     ['DOC-RUB / DOC-TYP / DATA-SUPPLIER / DATA-WARRANTY-END (repli cible)', vue({ targetType: 'DOCUMENT', ruleCode: 'DOC-RUB', fieldKey: 'rubric', kind: 'COMPLETE', label: '' })],
   ];
 
