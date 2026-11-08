@@ -33,12 +33,16 @@ import {
   deriveDocumentPeriods, planRefresh, principalKind, PERIOD_FACT_PREFIX,
   type DesiredPeriod, type PeriodCandidateInput, type PeriodEvidence, type PeriodFactInput, type PeriodInputs, type StoredPeriod,
 } from './model';
+import { resolvePeriods, type EntryResolution, type PeriodConflict, type ResolutionEntry, type UserPeriodDecision } from './resolution';
+import { loadRelationStates, type RelationState } from './relation-review';
 
 type Sql = postgres.Sql;
 type Tx = postgres.TransactionSql;
 type Row = Record<string, unknown>;
 const sqlClient = async (): Promise<Sql> => (await import('@/db')).pgClient;
 const MAX_MERGE_REDIRECTS = 10;
+/** Lot 113AC : plafond d'une lecture groupée d'historiques de couverture (surfaces : 200). */
+export const MAX_GROUPED_OPERATIONS = 200;
 
 /** Table absente (migration 1560 non appliquée) : le code se tait. */
 const tableMissing = (e: unknown) => (e as { code?: string })?.code === '42P01';
@@ -105,7 +109,7 @@ export async function loadPeriodInputs(sql: Sql | Tx, accountId: number, fileId:
 // ── Lecture des faits persistés ─────────────────────────────────────────────
 
 const PERIOD_COLUMNS = `p.id, p.file_id, p.period_kind, p.segment_index, p.start_on, p.end_on, p.principal_hint, p.origin, p.basis,
-  p.evidence, p.user_locked, p.corrected_at::text AS corrected_at`;
+  p.evidence, p.user_locked, p.corrected_at::text AS corrected_at, p.end_open`;
 
 function toStored(r: Row): StoredPeriod & { fileId: number; correctedAt: string | null } {
   return {
@@ -113,6 +117,7 @@ function toStored(r: Row): StoredPeriod & { fileId: number; correctedAt: string 
     start: (r.start_on as string | null) ?? null, end: (r.end_on as string | null) ?? null,
     principalHint: r.principal_hint === true, origin: r.origin as StoredPeriod['origin'], basis: String(r.basis),
     evidence: asObj(r.evidence) as PeriodEvidence, userLocked: r.user_locked === true, correctedAt: (r.corrected_at as string | null) ?? null,
+    ...(r.end_open === true ? { openEnded: true } : {}),
   };
 }
 
@@ -150,7 +155,23 @@ export async function previewDocumentBusinessPeriods(accountId: number, fileId: 
   return { gone: false, desired, plan: planRefresh(stored, desired) };
 }
 
+/** Lot 113AA : divergences de périodes des événements dont le document est membre, resynchronisées (ne lève jamais). */
+async function afterPeriodsChanged(accountId: number, fileId: number): Promise<void> {
+  try {
+    const { syncPeriodConflictCards } = await import('./conflict-cards');
+    await syncPeriodConflictCards(accountId, { fileIds: [fileId] });
+  } catch (e) {
+    console.error(`[periodes-metier] divergences du document ${fileId} non resynchronisées :`, (e as Error).message);
+  }
+}
+
 export async function refreshDocumentBusinessPeriods(accountId: number, fileId: number, opts: { correlationId?: string | null } = {}): Promise<RefreshResult> {
+  const r = await refreshDocumentBusinessPeriodsOnce(accountId, fileId, opts);
+  if (r.outcome === 'UPDATED') await afterPeriodsChanged(accountId, fileId);
+  return r;
+}
+
+async function refreshDocumentBusinessPeriodsOnce(accountId: number, fileId: number, opts: { correlationId?: string | null } = {}): Promise<RefreshResult> {
   const sql = await sqlClient();
   const vide: RefreshResult = { outcome: 'UNCHANGED', kept: 0, inserted: 0, superseded: 0, protectedKinds: [] };
   try {
@@ -187,10 +208,10 @@ async function insertPeriod(tx: Tx, accountId: number, fileId: number, d: Desire
 }): Promise<number> {
   const r = (await tx.unsafe(
     `INSERT INTO document_business_periods (account_id, file_id, period_kind, segment_index, start_on, end_on, principal_hint, origin, basis,
-       evidence, user_locked, corrected_by_user_id, corrected_at, before_correction, correlation_id)
-     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10::jsonb, $11, $12, CASE WHEN $11 THEN now() END, $13::jsonb, $14) RETURNING id`,
+       evidence, user_locked, corrected_by_user_id, corrected_at, before_correction, correlation_id, end_open)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10::jsonb, $11, $12, CASE WHEN $11 THEN now() END, $13::jsonb, $14, $15) RETURNING id`,
     [accountId, fileId, d.kind, d.segment, d.start, d.end, d.principalHint, origin, d.basis, json(d.evidence),
-      !!user, user?.userId ?? null, user ? json(user.before) : null, correlationId] as never[],
+      !!user, user?.userId ?? null, user ? json(user.before) : null, correlationId, d.openEnded === true && d.end === null] as never[],
   )) as unknown as Row[];
   return Number(r[0].id);
 }
@@ -206,12 +227,44 @@ export interface PeriodView {
   line: string;
   /** Corrigée par l'utilisateur (protégée). */
   userCorrected: boolean;
+  /** Lot 113AA : durée indéterminée établie (≠ fin inconnue). */
+  openEnded?: boolean;
 }
 
 export interface CoverageEntry extends PeriodView {
   fileId: number;
   documentTitle: string;
+  /**
+   * Lot 113AA (D11) : résolution contextuelle de la période parmi celles de l'événement de référence
+   * (absente : période établie, aucune autre ne la contredit). `note` : texte affiché (à valider par le PO).
+   */
+  resolution?: { status: 'REPLACED' | 'CONFLICT'; basis?: string; byFileId?: number; note: string; pendingQuestion?: boolean };
+  /** Lot 113AA : autres justificatifs portant EXACTEMENT la même période (même fait, sources réunies). */
+  otherSources?: Array<{ fileId: number; documentTitle: string }>;
 }
+
+/**
+ * Lot 113AC — couverture telle qu'exposée aux écrans (routes) : `resolution.basis` est INTERNE (tableau
+ * « à afficher / à exclure » de 113AA) et n'est jamais transmis ; le reste (statut, note, document
+ * remplaçant, question en attente, autres justificatifs, durée indéterminée) est conservé. Pure.
+ */
+export function publicCoverage<T extends CoverageEntry>(c: T): T {
+  if (!c.resolution) return c;
+  const { basis: _interne, ...resolution } = c.resolution;
+  return { ...c, resolution: resolution as CoverageEntry['resolution'] };
+}
+
+/** Lot 113AA — textes de la résolution (à valider par le PO). */
+export const RESOLUTION_NOTES = {
+  AMENDMENT: (t: string) => `Actualisée par l’avenant « ${t} »`,
+  RECTIFICATION: (t: string) => `Remplacée par le rectificatif « ${t} »`,
+  USER_DECISION: (t: string) => `Remplacée par « ${t} » (votre choix)`,
+  // Lot 113AD : classement par le réexamen T3 d'une divergence non déclarée, preuve citée (à valider par le PO).
+  AI_AMENDMENT: (t: string, x: string | null) => `Actualisée par « ${t} »${x ? ` (avenant reconnu : « ${x} »)` : ''}`,
+  AI_RECTIFICATION: (t: string, x: string | null) => `Remplacée par « ${t} »${x ? ` (rectificatif reconnu : « ${x} »)` : ''}`,
+  CONFLICT: 'Les justificatifs indiquent des périodes différentes.',
+  CONFLICT_QUESTION: 'Une question vous est posée dans « À traiter ».',
+} as const;
 
 export interface DocumentPeriodsView {
   documentId: number;
@@ -224,6 +277,7 @@ export interface DocumentPeriodsView {
 
 const toView = (s: StoredPeriod): PeriodView => ({
   id: s.id, kind: s.kind, segment: s.segment, start: s.start, end: s.end, line: periodLine(s.kind, s), userCorrected: s.userLocked,
+  ...(s.openEnded ? { openEnded: true } : {}),
 });
 
 export async function readDocumentPeriods(accountId: number, fileId: number): Promise<DocumentPeriodsView | null> {
@@ -243,9 +297,10 @@ export async function readDocumentPeriods(accountId: number, fileId: number): Pr
     [accountId, fileId] as never[],
   ).catch(() => [])) as unknown as Row[];
   const coverageHistories: DocumentPeriodsView['coverageHistories'] = [];
+  const resolus = await operationsPeriodResolution(sql, accountId, ops.map((o) => Number(o.operation_id)));
   for (const o of ops) {
-    const coverages = await coverageOf(sql, accountId, Number(o.operation_id));
-    if (coverages.some((c) => c.fileId !== fileId)) coverageHistories.push({ operationId: Number(o.operation_id), coverages });
+    const coverages = resolus.get(Number(o.operation_id))?.coverages ?? [];
+    if (coverages.some((c) => c.fileId !== fileId || (c.otherSources ?? []).some((o) => o.fileId !== fileId))) coverageHistories.push({ operationId: Number(o.operation_id), coverages: coverages.map(publicCoverage) });
   }
   return {
     documentId: fileId,
@@ -255,21 +310,129 @@ export async function readDocumentPeriods(accountId: number, fileId: number): Pr
   };
 }
 
-async function coverageOf(sql: Sql, accountId: number, operationId: number): Promise<CoverageEntry[]> {
+async function coverageOf(sql: Sql | Tx, accountId: number, operationId: number): Promise<CoverageEntry[]> {
+  return (await operationPeriodResolution(sql, accountId, operationId)).coverages;
+}
+
+/** Décisions ACTIVES de l'utilisateur sur les divergences de plusieurs événements de référence (une requête ; migration 1590 absente : aucune). */
+async function activeDecisionsOf(sql: Sql | Tx, accountId: number, operationIds: readonly number[]): Promise<Map<number, UserPeriodDecision[]>> {
+  const out = new Map<number, UserPeriodDecision[]>();
+  if (!operationIds.length) return out;
+  try {
+    const r = (await sql.unsafe(
+      `SELECT operation_id, fingerprint, choice, retained_file_id FROM business_period_decisions
+        WHERE account_id = $1 AND operation_id = ANY($2::bigint[]) AND status = 'ACTIVE' ORDER BY id`,
+      [accountId, `{${operationIds.join(',')}}`] as never[],
+    )) as unknown as Row[];
+    for (const x of r) {
+      const op = Number(x.operation_id);
+      out.set(op, [...(out.get(op) ?? []), { fingerprint: String(x.fingerprint), choice: x.choice === 'BOTH' ? 'BOTH' : 'KEEP', retainedFileId: x.retained_file_id == null ? null : Number(x.retained_file_id) }]);
+    }
+  } catch (e) {
+    if (!tableMissing(e)) throw e;
+  }
+  return out;
+}
+
+/** Périodes de couverture actives des documents membres d'un événement de référence (même borne : 200 par événement). */
+const MAX_COVERAGE_ROWS_PER_OPERATION = 200;
+
+/**
+ * Lot 113AA (D11, R13 / R14) — périodes de COUVERTURE de l'événement de référence RÉSOLUES
+ * (`resolution.ts`, pure) : succession, même fait (sources réunies), avenant / rectificatif déclarés
+ * par T1, décision de l'utilisateur, divergence. Lecture seule, sans IA — jamais une réanalyse.
+ * Les périodes remplacées restent dans l'historique, avec leur justificatif et la raison.
+ */
+export async function operationPeriodResolution(sql: Sql | Tx, accountId: number, operationId: number): Promise<{
+  coverages: CoverageEntry[]; conflicts: PeriodConflict[]; titles: Map<number, string>;
+}> {
+  return (await operationsPeriodResolution(sql, accountId, [operationId])).get(operationId)!;
+}
+
+/**
+ * Lot 113AC — MÊME résolution que `operationPeriodResolution`, pour plusieurs événements de référence en
+ * DEUX requêtes (périodes, décisions) quel que soit leur nombre : listes, Assistant, dossiers sans N+1.
+ * Chaque identifiant demandé est présent dans le résultat (vide s'il n'a aucune couverture).
+ */
+export async function operationsPeriodResolution(sql: Sql | Tx, accountId: number, operationIds: readonly number[]): Promise<Map<number, {
+  coverages: CoverageEntry[]; conflicts: PeriodConflict[]; titles: Map<number, string>;
+}>> {
+  const ids = [...new Set(operationIds.filter((x) => Number.isSafeInteger(x) && x > 0))];
+  const out = new Map<number, { coverages: CoverageEntry[]; conflicts: PeriodConflict[]; titles: Map<number, string> }>();
+  if (!ids.length) return out;
   let r: Row[] = [];
   try {
     r = (await sql.unsafe(
-      `SELECT ${PERIOD_COLUMNS}, ${documentTitleColumnsSql('f')}
-         FROM business_operation_documents d
-         JOIN asset_files f ON f.id = d.file_id AND f.account_id = d.account_id AND f.deleted_at IS NULL
-         JOIN document_business_periods p ON p.file_id = f.id AND p.account_id = d.account_id AND p.status = 'ACTIVE' AND p.period_kind = 'COVERAGE'
-        WHERE d.account_id = $1 AND d.operation_id = $2 AND d.active
-        LIMIT 200`,
-      [accountId, operationId] as never[],
+      `SELECT x.* FROM (
+         SELECT d.operation_id AS op_id, ${PERIOD_COLUMNS}, ${documentTitleColumnsSql('f')},
+                row_number() OVER (PARTITION BY d.operation_id ORDER BY p.file_id, p.id) AS rang
+           FROM business_operation_documents d
+           JOIN asset_files f ON f.id = d.file_id AND f.account_id = d.account_id AND f.deleted_at IS NULL
+           JOIN document_business_periods p ON p.file_id = f.id AND p.account_id = d.account_id AND p.status = 'ACTIVE' AND p.period_kind = 'COVERAGE'
+          WHERE d.account_id = $1 AND d.operation_id = ANY($2::bigint[]) AND d.active
+       ) x WHERE x.rang <= ${MAX_COVERAGE_ROWS_PER_OPERATION} ORDER BY x.op_id, x.rang`,
+      [accountId, `{${ids.join(',')}}`] as never[],
     )) as unknown as Row[];
   } catch (e) { if (!tableMissing(e)) throw e; }
-  return r.map((x) => ({ ...toView(toStored(x)), fileId: Number(x.file_id), documentTitle: documentTitleOf(x) }))
-    .sort((a, b) => chronoKey(a).localeCompare(chronoKey(b)) || a.fileId - b.fileId || a.segment - b.segment);
+  const parOp = new Map<number, Row[]>();
+  for (const x of r) { const op = Number(x.op_id); parOp.set(op, [...(parOp.get(op) ?? []), x]); }
+  const decisions = await activeDecisionsOf(sql, accountId, ids);
+  // Lot 113AD : états du réexamen T3 des divergences de ces documents (une requête ; table absente : aucun).
+  const examens = await loadRelationStates(sql, accountId, [...new Set(r.map((x) => Number(x.file_id)))]);
+  for (const id of ids) out.set(id, resolveCoverageRows(parOp.get(id) ?? [], decisions.get(id) ?? [], examens));
+  return out;
+}
+
+/** Résolution D11 des lignes de couverture d'UN événement de référence (pure sur les lignes lues). */
+function resolveCoverageRows(r: readonly Row[], decisions: readonly UserPeriodDecision[], examens: readonly RelationState[] = []): {
+  coverages: CoverageEntry[]; conflicts: PeriodConflict[]; titles: Map<number, string>;
+} {
+  const vues = r.map((x) => {
+    const st = toStored(x);
+    return { st, view: { ...toView(st), fileId: Number(x.file_id), documentTitle: documentTitleOf(x) } as CoverageEntry };
+  });
+  // Un même document membre par plusieurs appartenances : une seule ligne par fait.
+  const uniques = [...new Map(vues.map((v) => [v.st.id, v])).values()];
+  const titles = new Map(uniques.map((v) => [v.view.fileId, v.view.documentTitle]));
+  const entrees: ResolutionEntry[] = uniques.map(({ st, view }) => ({
+    id: st.id, fileId: view.fileId, kind: st.kind, start: st.start, end: st.end, userCorrected: st.userLocked,
+    qualified: st.evidence?.qualified === true, relation: st.evidence?.relation ?? null,
+  }));
+  const res = resolvePeriods(entrees, decisions, examens);
+  const citation = (fp: string | undefined) => {
+    const x = fp ? examens.find((y) => y.fingerprint === fp) : undefined;
+    const c = x && 'citation' in x ? x.citation : null;
+    return c ? (c.excerpt.length > 120 ? `${c.excerpt.slice(0, 119)}…` : c.excerpt) : null;
+  };
+  const memes = new Map<number, Array<{ fileId: number; documentTitle: string }>>();
+  const out: CoverageEntry[] = [];
+  for (const { st, view } of uniques) {
+    const e: EntryResolution = res.entries.get(st.id) ?? { status: 'ESTABLISHED' };
+    if (e.status === 'SAME_AS') {
+      // Même fait qu'un autre justificatif : réuni à la première ligne qui le porte.
+      const prim = uniques.find((u) => u.view.fileId === e.byFileId && u.st.start === st.start && u.st.end === st.end);
+      if (prim) { memes.set(prim.st.id, [...(memes.get(prim.st.id) ?? []), { fileId: view.fileId, documentTitle: view.documentTitle }]); continue; }
+    }
+    if (e.status === 'REPLACED' && e.byFileId !== undefined) {
+      const t = titles.get(e.byFileId) ?? 'Document';
+      const note = e.basis === 'AMENDMENT' ? RESOLUTION_NOTES.AMENDMENT(t) : e.basis === 'RECTIFICATION' ? RESOLUTION_NOTES.RECTIFICATION(t)
+        : e.basis === 'AI_AMENDMENT' ? RESOLUTION_NOTES.AI_AMENDMENT(t, citation(e.conflict)) : e.basis === 'AI_RECTIFICATION' ? RESOLUTION_NOTES.AI_RECTIFICATION(t, citation(e.conflict))
+          : RESOLUTION_NOTES.USER_DECISION(t);
+      out.push({ ...view, resolution: { status: 'REPLACED', basis: String(e.basis), byFileId: e.byFileId, note } });
+      continue;
+    }
+    if (e.status === 'CONFLICT') {
+      const question = res.conflicts.some((c) => c.needsUser && c.periodIds.includes(st.id));
+      out.push({ ...view, resolution: { status: 'CONFLICT', basis: String(e.basis), note: question ? `${RESOLUTION_NOTES.CONFLICT} ${RESOLUTION_NOTES.CONFLICT_QUESTION}` : RESOLUTION_NOTES.CONFLICT, ...(question ? { pendingQuestion: true } : {}) } });
+      continue;
+    }
+    out.push(view);
+  }
+  for (const v of out) { const m = memes.get(v.id); if (m) v.otherSources = m; }
+  return {
+    coverages: out.sort((a, b) => chronoKey(a).localeCompare(chronoKey(b)) || a.fileId - b.fileId || a.segment - b.segment),
+    conflicts: res.conflicts, titles,
+  };
 }
 
 /** Événement de référence actif CANONIQUE (redirection des fusions), borné au compte ; null sinon. */
@@ -293,6 +456,33 @@ export async function readOperationCoverageHistory(accountId: number, operationI
   const canon = await canonicalOperation(sql, accountId, operationId);
   if (canon === null) return null;
   return { operationId: canon, coverages: await coverageOf(sql, accountId, canon) };
+}
+
+/**
+ * Lot 113AC — événements CANONIQUES de plusieurs identifiants (même règle que `canonicalOperation`),
+ * par niveaux de redirection : une requête par niveau (au plus `MAX_MERGE_REDIRECTS` + 1), jamais une
+ * par événement. Identifiant inconnu, d'un autre compte ou invalidé sans regroupement : absent.
+ */
+async function canonicalOperations(sql: Sql, accountId: number, operationIds: readonly number[]): Promise<Map<number, number>> {
+  const out = new Map<number, number>();
+  // origine → identifiant courant à relire
+  let courants = new Map(operationIds.map((id) => [id, id]));
+  for (let i = 0; i <= MAX_MERGE_REDIRECTS && courants.size; i++) {
+    const r = (await sql.unsafe(
+      `SELECT id, invalidated_at IS NULL AS active, merged_into_operation_id FROM business_operations WHERE id = ANY($1::bigint[]) AND account_id = $2`,
+      [`{${[...new Set(courants.values())].join(',')}}`, accountId] as never[],
+    )) as unknown as Row[];
+    const lu = new Map(r.map((x) => [Number(x.id), x]));
+    const suivants = new Map<number, number>();
+    for (const [origine, id] of courants) {
+      const x = lu.get(id);
+      if (!x) continue;
+      if (x.active === true) out.set(origine, id);
+      else if (x.merged_into_operation_id != null) suivants.set(origine, Number(x.merged_into_operation_id));
+    }
+    courants = suivants;
+  }
+  return out;
 }
 
 /** Événement de référence d'un élément d'agenda (compte actif), sinon null. */
@@ -329,7 +519,7 @@ export async function correctDocumentPeriod(accountId: number, userId: number | 
   if ((start !== null && !isPartialDate(start)) || (end !== null && !isPartialDate(end)) || !orderedBounds(start, end)) return { ok: false, error: 'INVALID_DATES' };
   const sql = await sqlClient();
   try {
-    return await sql.begin(async (tx) => {
+    const r = await sql.begin(async (tx) => {
       await tx.unsafe(`SELECT pg_advisory_xact_lock(hashtext('document_business_periods'), $1)`, [fileId] as never[]);
       const doc = (await tx.unsafe(
         `SELECT 1 FROM asset_files WHERE id = $1 AND account_id = $2 AND deleted_at IS NULL`, [fileId, accountId] as never[],
@@ -357,15 +547,75 @@ export async function correctDocumentPeriod(accountId: number, userId: number | 
           [cible.id, accountId] as never[],
         );
       }
-      const before = cible ? { start: cible.start, end: cible.end, origin: cible.origin, basis: cible.basis } : null;
+      const before = cible ? { start: cible.start, end: cible.end, origin: cible.origin, basis: cible.basis, ...(cible.openEnded ? { openEnded: true } : {}) } : null;
       const d: DesiredPeriod = {
         kind, segment, start, end, principalHint: cible?.principalHint ?? false, basis: 'USER', evidence: cible?.evidence ?? {},
       };
       const id = await insertPeriod(tx, accountId, fileId, d, 'USER', correlationId ?? null, { userId, before });
       return { ok: true as const, period: { id, kind, segment, start, end, line: periodLine(kind, { start, end }), userCorrected: true } };
     });
+    // Lot 113AA : une correction peut faire disparaître (ou apparaître) une divergence — questions resynchronisées.
+    if (r.ok) await afterPeriodsChanged(accountId, fileId);
+    return r;
   } catch (e) {
     if (tableMissing(e)) return { ok: false, error: 'UNAVAILABLE' };
     throw e;
   }
+}
+
+// ── Lot 113AA : lecture groupée (listes, recherche, exports — lecture publique) ─
+
+/**
+ * Période PRINCIPALE de plusieurs documents du compte (une ligne par document : la même règle que la
+ * fiche — `principalKind` puis `principalLine`, jamais le titre). Documents sans période pertinente :
+ * absents du résultat. Lecture seule, bornée (200 documents), sans IA ; table absente : vide.
+ */
+export async function readPrincipalPeriodLines(accountId: number, fileIds: readonly number[]): Promise<Map<number, { kind: BusinessPeriodKind; line: string }>> {
+  const ids = [...new Set(fileIds.filter((x) => Number.isSafeInteger(x) && x > 0))].slice(0, 200);
+  const out = new Map<number, { kind: BusinessPeriodKind; line: string }>();
+  if (!ids.length) return out;
+  const sql = await sqlClient();
+  let r: Row[] = [];
+  try {
+    r = (await sql.unsafe(
+      `SELECT ${PERIOD_COLUMNS} FROM document_business_periods p
+         JOIN asset_files f ON f.id = p.file_id AND f.account_id = p.account_id AND f.deleted_at IS NULL
+        WHERE p.account_id = $1 AND p.file_id = ANY($2::int[]) AND p.status = 'ACTIVE' ORDER BY p.file_id, p.period_kind, p.segment_index`,
+      [accountId, `{${ids.join(',')}}`] as never[],
+    )) as unknown as Row[];
+  } catch (e) { if (!tableMissing(e)) throw e; }
+  const parDoc = new Map<number, Array<ReturnType<typeof toStored>>>();
+  for (const x of r) { const s = toStored(x); parDoc.set(s.fileId, [...(parDoc.get(s.fileId) ?? []), s]); }
+  for (const [fileId, stored] of parDoc) {
+    const kind = principalKind(stored);
+    if (!kind) continue;
+    out.set(fileId, { kind, line: principalLine(kind, stored.filter((s) => s.kind === kind).sort((a, b) => a.segment - b.segment)) });
+  }
+  return out;
+}
+
+/**
+ * Lot 113AA (demande 113AB) — historiques de couverture RÉSOLUS (D11) de plusieurs événements de
+ * référence en un appel : même lecture que la fiche (`operationPeriodResolution` : statut REPLACED /
+ * CONFLICT, note, document remplaçant, autres justificatifs du même fait). Événements canoniques
+ * (redirection des fusions) bornés au compte ; un identifiant d'un autre compte est absent du résultat.
+ * Lecture seule, sans IA, bornée (50 événements par défaut ; `max` jusqu'à `MAX_GROUPED_OPERATIONS`). Destinée à
+ * l'Assistant (T2), aux dossiers et aux listes. Lot 113AC : groupée (nombre de requêtes indépendant du nombre d'événements).
+ */
+export async function readOperationsCoverageHistories(accountId: number, operationIds: readonly number[], opts: { max?: number } = {}): Promise<Map<number, { operationId: number; coverages: CoverageEntry[] }>> {
+  const max = Math.min(Math.max(1, opts.max ?? 50), MAX_GROUPED_OPERATIONS);
+  const sql = await sqlClient();
+  const out = new Map<number, { operationId: number; coverages: CoverageEntry[] }>();
+  const ids = [...new Set(operationIds.filter((x) => Number.isSafeInteger(x) && x > 0))].slice(0, max);
+  if (!ids.length) return out;
+  // Lot 113AC : lecture GROUPÉE (canoniques par niveau de redirection, puis une résolution pour tous) — même résultat
+  // que l'appel par événement d'avant, sans N requêtes.
+  const canon = await canonicalOperations(sql, accountId, ids);
+  const resolus = await operationsPeriodResolution(sql, accountId, [...new Set(canon.values())]);
+  for (const id of ids) {
+    const c = canon.get(id);
+    if (c === undefined) continue;
+    out.set(id, { operationId: c, coverages: resolus.get(c)?.coverages ?? [] });
+  }
+  return out;
 }

@@ -53,6 +53,10 @@ export const DEVELOPER_FIXTURES = new Set([
   'p-t2-16-historique-actuel-loyer.json', 'p-t2-17-hors-registre-capacite.json', 'p-t2-18-question-indirecte-couverture-vol.json',
   'p-t2-19-reserve-parasite-ramonage.json', 'p-t2-20-composite-partielle-lave-vaisselle.json', 'p-t2-21-hors-sujet-serie-chaudiere.json',
   'p-t2-22-reglement-affirme-sans-preuve.json', 'p-t2-23-chiffres-justes-conclusion-fausse.json',
+  // Lot 113AD : relation entre deux périodes divergentes (contrat `t3-period-relation-v1`, #725) — réponses de référence
+  // À APPROUVER (rôle `answer`) et gardes serveur (rôle `guard` : période corrigée protégée, extrait inventé).
+  'p-t3-pr-01-avenant-non-declare.json', 'p-t3-pr-02-contradiction-reelle.json', 'p-t3-pr-03-succession-borne-mal-lue.json',
+  'p-t3-pr-04-meme-fait-duplicata.json', 'p-t3-pr-05-periode-corrigee-protegee.json', 'p-t3-pr-06-extrait-invente.json',
 ]);
 
 /**
@@ -77,6 +81,7 @@ const RISK_BY_CASE: Readonly<Record<string, string>> = {
   'P-T2-02': 'T2_CORRECTIONS_UTILISATEUR', 'P-T2-08': 'T2_ABSTENTION_INJUSTIFIEE', 'P-T2-09': 'T2_SOURCES_VERIFIEES', 'P-T2-03': 'T2_SOURCES_VERIFIEES',
   'P-T3-01': 'T3_CORRECTIONS_PRESERVEES', 'P-T3-08': 'T3_IDENTITE_ECONOMIQUE', 'P-T3-09': 'T3_DOUBLE_COMPTE', 'P-T3-12': 'T3_IDENTITE_ECONOMIQUE',
   'P-T3-13': 'T3_IDENTITE_ECONOMIQUE', 'P-T3-ID-01': 'T3_DOUBLE_COMPTE', 'P-T3-ID-02': 'T3_CORRECTIONS_PRESERVEES',
+  'P-T3-PR-05': 'T3_CORRECTIONS_PRESERVEES',
   'P-T4-01': 'T4_ECHEANCE', 'P-T4-02': 'T4_PREUVE_OCCURRENCE', 'P-T4-03': 'T4_PREUVE_OCCURRENCE', 'P-T4-04': 'T4_ECHEANCE', 'P-T4-05': 'T4_ECHEANCE',
   'P-T4-06': 'T4_PERIODE', 'P-T4-07': 'T4_RECONDUCTION', 'P-T4-V3-07': 'T4_RECONDUCTION', 'P-T4-08': 'T4_PERIODE', 'P-T4-V3-08': 'T4_PERIODE',
   'P-T4-09': 'T4_RECONDUCTION', 'P-T4-V3-09': 'T4_RECONDUCTION', 'P-T4-10': 'T4_RECONDUCTION', 'P-T4-V3-10': 'T4_RECONDUCTION',
@@ -89,6 +94,7 @@ const RISK_BY_OPERATION: Readonly<Record<string, string>> = {
   t2_understand: 'T2_INTENTION', t2_answer: 'T2_SOURCES_VERIFIEES', t2_revalidate: 'T2_REVALIDATION',
   t3_value_conflict: 'T3_CORRECTIONS_PRESERVEES', t3_link_ambiguity: 'T3_RATTACHEMENT', t3_operation_match: 'T3_IDENTITE_ECONOMIQUE',
   t3_document_naming: 'T3_NOMMAGE', t3_knowledge_query: 'T3_CONNAISSANCE', t3_operation_identity: 'T3_DOUBLE_COMPTE',
+  t3_period_relation: 'T3_CONNAISSANCE',
   t4_classify_event: 'T4_ECHEANCE', t4_verify_completion: 'T4_PREUVE_OCCURRENCE', t4_temporal_ambiguity: 'T4_ECHEANCE', t4_agenda_representation: 'T4_PERIODE',
   t6_formulate: 'T6_INFORMATION_UTILE', t6_evaluate: 'T6_ACTION_UTILE',
 };

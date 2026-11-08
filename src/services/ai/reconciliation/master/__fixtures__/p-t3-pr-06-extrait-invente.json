@@ -1,0 +1,93 @@
+{
+  "case": "P-T3-PR-06",
+  "description": "Lot 113AD — PERIOD_RELATION, garde serveur : la sortie cite un passage absent des textes fournis (« annule et remplace ») pour conclure à un rectificatif ⇒ refus en bloc (EXCERPT_NOT_FOUND), vaut abstention : comportement 113AA.",
+  "qualification": {
+    "role": "guard"
+  },
+  "context": {
+    "periodRelation": {
+      "today": "2026-11-08",
+      "periodKind": "COVERAGE",
+      "operation": {
+        "typeCode": "CONTRACT",
+        "label": "Assurance habitation",
+        "provider": "Assureur Habitation"
+      },
+      "periods": [
+        {
+          "periodId": 1,
+          "fileId": 9601,
+          "start": "2025-04-01",
+          "end": "2026-03-31",
+          "quote": "Période de garantie : du 01/04/2025 au 31/03/2026",
+          "userCorrected": false
+        },
+        {
+          "periodId": 2,
+          "fileId": 9602,
+          "start": "2025-05-01",
+          "end": "2026-04-30",
+          "quote": "Période de garantie : du 01/05/2025 au 30/04/2026",
+          "userCorrected": false
+        }
+      ],
+      "documents": [
+        {
+          "id": 9601,
+          "type": "INSURANCE_CERTIFICATE",
+          "title": "Attestation habitation A",
+          "date": "2025-03-15",
+          "provider": "Assureur Habitation",
+          "references": [
+            {
+              "kind": "POLICY",
+              "value": "POL-725"
+            }
+          ],
+          "excerpts": [
+            "Période de garantie : du 01/04/2025 au 31/03/2026"
+          ]
+        },
+        {
+          "id": 9602,
+          "type": "INSURANCE_CERTIFICATE",
+          "title": "Attestation habitation B",
+          "date": "2025-04-20",
+          "provider": "Assureur Habitation",
+          "references": [
+            {
+              "kind": "POLICY",
+              "value": "POL-725"
+            }
+          ],
+          "excerpts": [
+            "Période de garantie : du 01/05/2025 au 30/04/2026"
+          ]
+        }
+      ]
+    }
+  },
+  "recording": {
+    "operationCode": "t3_period_relation",
+    "task": "PERIOD_RELATION",
+    "output": {
+      "task": "PERIOD_RELATION",
+      "relation": "RECTIFICATION",
+      "replacingPeriod": "P2",
+      "confidence": "certain",
+      "evidence": [
+        {
+          "document": "D2",
+          "excerpt": "Cette attestation annule et remplace la précédente"
+        }
+      ],
+      "reason": "La seconde attestation corrige la première."
+    }
+  },
+  "expected": {
+    "valid": false,
+    "issues": [
+      "EXCERPT_NOT_FOUND"
+    ]
+  }
+}

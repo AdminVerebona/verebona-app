@@ -4460,10 +4460,14 @@ export const documentBusinessPeriods = pgTable('document_business_periods', {
   status: text('status').notNull().default('ACTIVE'),
   supersededAt: tstzOptional('superseded_at'),
   correlationId: text('correlation_id'),
+  // Lot 113AA (1590) : durée indéterminée ÉTABLIE (≠ fin inconnue).
+  endOpen: boolean('end_open').notNull().default(false),
   createdAt: tstz('created_at'),
   updatedAt: tstz('updated_at'),
 }, (t) => ({
-  kindChk: check('document_business_periods_kind_chk', sql`${t.periodKind} IN ('COVERAGE', 'BILLING', 'VALIDITY', 'WARRANTY', 'SERVICE')`),
+  // Lot 113AA (1590) : natures CONTRACT et REALIZATION ajoutées (contrainte élargie).
+  kindChk: check('document_business_periods_kind_v2_chk', sql`${t.periodKind} IN ('COVERAGE', 'BILLING', 'VALIDITY', 'WARRANTY', 'SERVICE', 'CONTRACT', 'REALIZATION')`),
+  openEndChk: check('document_business_periods_open_end_chk', sql`NOT ${t.endOpen} OR ${t.endOn} IS NULL`),
   segmentChk: check('document_business_periods_segment_chk', sql`${t.segmentIndex} >= 0 AND ${t.segmentIndex} < 50`),
   originChk: check('document_business_periods_origin_chk', sql`${t.origin} IN ('T1', 'T3', 'USER')`),
   statusChk: check('document_business_periods_status_chk', sql`${t.status} IN ('ACTIVE', 'SUPERSEDED')`),
@@ -4472,6 +4476,69 @@ export const documentBusinessPeriods = pgTable('document_business_periods', {
   userChk: check('document_business_periods_user_chk', sql`NOT ${t.userLocked} OR ${t.origin} = 'USER'`),
   activeUidx: uniqueIndex('document_business_periods_active_uidx').on(t.fileId, t.periodKind, t.segmentIndex).where(sql`status = 'ACTIVE'`),
   accountIdx: index('document_business_periods_account_idx').on(t.accountId, t.fileId).where(sql`status = 'ACTIVE'`),
+}));
+
+/**
+ * Lot 113AA (Trello #725, D11 / R14, migration 1590) — décision DURABLE de
+ * l'utilisateur sur une divergence de périodes qu'aucune preuve n'explique
+ * (carte PERIOD-CONFLICT). Jamais redemandée ; historique (SUPERSEDED).
+ */
+export const businessPeriodDecisions = pgTable('business_period_decisions', {
+  id: bigserial('id', { mode: 'number' }).primaryKey(),
+  accountId: integer('account_id').notNull().references(() => accounts.id, { onDelete: 'cascade' }),
+  operationId: bigint('operation_id', { mode: 'number' }).notNull(),
+  periodKind: text('period_kind').notNull(),
+  fingerprint: text('fingerprint').notNull(),
+  choice: text('choice').notNull(),
+  retainedFileId: integer('retained_file_id').references(() => assetFiles.id, { onDelete: 'set null' }),
+  fileIds: integer('file_ids').array().notNull().default(sql`'{}'::integer[]`),
+  evidence: jsonb('evidence').notNull().default({}),
+  actionId: integer('action_id'),
+  decidedByUserId: integer('decided_by_user_id').references(() => users.id, { onDelete: 'set null' }),
+  status: text('status').notNull().default('ACTIVE'),
+  supersededAt: tstzOptional('superseded_at'),
+  createdAt: tstz('created_at'),
+  updatedAt: tstz('updated_at'),
+}, (t) => ({
+  activeUidx: uniqueIndex('business_period_decisions_active_uidx').on(t.accountId, t.operationId, t.fingerprint).where(sql`status = 'ACTIVE'`),
+}));
+
+/**
+ * Lot 113AD (Trello #725, D11 / R13 / R14, migration 1591) — MÉMOIRE de
+ * l'examen T3 par l'IA (`t3_period_relation`, contrat `t3-period-relation-v1`)
+ * d'une paire de périodes divergentes : une ligne par empreinte, jamais
+ * renvoyée à l'IA une fois classée. La décision de l'utilisateur prime.
+ */
+export const businessPeriodRelationReviews = pgTable('business_period_relation_reviews', {
+  id: bigserial('id', { mode: 'number' }).primaryKey(),
+  accountId: integer('account_id').notNull().references(() => accounts.id, { onDelete: 'cascade' }),
+  operationId: bigint('operation_id', { mode: 'number' }).notNull(),
+  periodKind: text('period_kind').notNull(),
+  fingerprint: text('fingerprint').notNull(),
+  fileIds: integer('file_ids').array().notNull().default(sql`'{}'::integer[]`),
+  periodIds: bigint('period_ids', { mode: 'number' }).array().notNull().default(sql`'{}'::bigint[]`),
+  status: text('status').notNull().default('PENDING'),
+  relation: text('relation'),
+  replacingFileId: integer('replacing_file_id').references(() => assetFiles.id, { onDelete: 'set null' }),
+  confidence: text('confidence'),
+  evidence: jsonb('evidence').notNull().default([]),
+  reason: text('reason'),
+  aiOutput: jsonb('ai_output'),
+  validation: jsonb('validation').notNull().default({}),
+  contractVersion: text('contract_version').notNull(),
+  deciderVersion: text('decider_version'),
+  aiTraceId: text('ai_trace_id'),
+  aiCalls: integer('ai_calls').notNull().default(0),
+  attempts: integer('attempts').notNull().default(0),
+  retryAt: tstzOptional('retry_at'),
+  lastCallAt: tstzOptional('last_call_at'),
+  error: text('error'),
+  requestedAt: tstz('requested_at'),
+  decidedAt: tstzOptional('decided_at'),
+  createdAt: tstz('created_at'),
+  updatedAt: tstz('updated_at'),
+}, (t) => ({
+  fpUidx: uniqueIndex('business_period_relation_reviews_fp_uidx').on(t.accountId, t.fingerprint),
 }));
 
 /** C6.3 — décisions de rapprochement durables. */

@@ -1,0 +1,94 @@
+{
+  "case": "P-T3-PR-04",
+  "description": "Lot 113AD — PERIOD_RELATION : duplicata de la même attestation dont la fin a été lue au mois seulement ⇒ SAME_FACT certain, aucune question.",
+  "qualification": {
+    "role": "answer"
+  },
+  "context": {
+    "periodRelation": {
+      "today": "2026-11-08",
+      "periodKind": "COVERAGE",
+      "operation": {
+        "typeCode": "CONTRACT",
+        "label": "Assurance habitation",
+        "provider": "Assureur Habitation"
+      },
+      "periods": [
+        {
+          "periodId": 1,
+          "fileId": 9401,
+          "start": "2025-04-01",
+          "end": "2026-03-31",
+          "quote": "Période de garantie : du 01/04/2025 au 31/03/2026",
+          "userCorrected": false
+        },
+        {
+          "periodId": 2,
+          "fileId": 9402,
+          "start": "2025-04-01",
+          "end": "2026-04",
+          "quote": "Valable jusqu’en avril 2026",
+          "userCorrected": false
+        }
+      ],
+      "documents": [
+        {
+          "id": 9401,
+          "type": "INSURANCE_CERTIFICATE",
+          "title": "Attestation habitation 2025",
+          "date": "2025-03-15",
+          "provider": "Assureur Habitation",
+          "references": [
+            {
+              "kind": "POLICY",
+              "value": "POL-725"
+            }
+          ],
+          "excerpts": [
+            "Période de garantie : du 01/04/2025 au 31/03/2026",
+            "Attestation n° AT-2025-118"
+          ]
+        },
+        {
+          "id": 9402,
+          "type": "INSURANCE_CERTIFICATE",
+          "title": "Duplicata attestation",
+          "date": "2025-09-02",
+          "provider": "Assureur Habitation",
+          "references": [
+            {
+              "kind": "POLICY",
+              "value": "POL-725"
+            }
+          ],
+          "excerpts": [
+            "DUPLICATA de l’attestation n° AT-2025-118",
+            "Valable jusqu’en avril 2026"
+          ]
+        }
+      ]
+    }
+  },
+  "recording": {
+    "operationCode": "t3_period_relation",
+    "task": "PERIOD_RELATION",
+    "output": {
+      "task": "PERIOD_RELATION",
+      "relation": "SAME_FACT",
+      "replacingPeriod": null,
+      "confidence": "certain",
+      "evidence": [
+        {
+          "document": "D2",
+          "excerpt": "DUPLICATA de l’attestation n° AT-2025-118"
+        }
+      ],
+      "reason": "Le second document est le duplicata de la même attestation : une seule période."
+    }
+  },
+  "expected": {
+    "valid": true,
+    "relation": "SAME_FACT",
+    "effect": "NO_QUESTION"
+  }
+}

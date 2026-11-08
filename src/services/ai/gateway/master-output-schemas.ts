@@ -24,6 +24,7 @@ import {
 import { T6EvaluateOutput, T6FormulateOutput } from '@/services/home/mascot/t6-contract';
 import { T4AgendaRepresentationOutput } from '@/services/business-operations/semantic/contract';
 import { T3OperationIdentityOutput } from '@/services/business-operations/semantic/identity-contract';
+import { T3PeriodRelationOutput } from '@/services/documents/business-periods/relation-contract';
 
 export const MASTER_OUTPUT_SCHEMAS: Readonly<Record<string, ZodType>> = {
   T1GroupUploadOutput,
@@ -38,6 +39,8 @@ export const MASTER_OUTPUT_SCHEMAS: Readonly<Record<string, ZodType>> = {
   T3KnowledgeQueryOutput,
   // Lot 97A : identité sémantique d'une Opération à plusieurs sources (branche facultative, texte collé par le PO).
   T3OperationIdentityOutput,
+  // Lot 113AD : relation entre deux périodes divergentes (branche facultative, texte collé par le PO, bloc 29).
+  T3PeriodRelationOutput,
   T3MasterOutput,
   T4ClassifyEventOutput,
   // Lot 54 : contrat de sortie `t4_output_v2` de CLASSIFY_EVENT (décision Agenda + récurrence).

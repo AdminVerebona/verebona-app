@@ -193,6 +193,8 @@ export const RECETTE_TABLES: Readonly<Record<string, { domain: Exclude<RecetteDo
   business_operation_references: { domain: 'operations', description: 'Références (n° de contrat, de facture…).' },
   business_operation_history: { domain: 'operations', description: 'Historique des Opérations.' },
   business_operation_match_decisions: { domain: 'operations', description: 'Décisions de rapprochement.' },
+  business_period_decisions: { domain: 'operations', description: 'Décisions de l’utilisateur sur une divergence de périodes entre justificatifs d’un événement de référence (lot 113AA, #725).' },
+  business_period_relation_reviews: { domain: 'operations', description: 'Réexamen T3 par l’IA d’une divergence de périodes entre justificatifs : demande, classement validé, preuve citée (lot 113AD, #725).' },
   business_operation_identity_reviews: { domain: 'operations', description: 'Revues d’identité économique (séparations, doublons).' },
   business_operation_projection_suppressions: { domain: 'operations', description: 'Suppressions de projection vers l’agenda.' },
   business_operation_contract_details: { domain: 'operations', description: 'Détails de contrat.' },

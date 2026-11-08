@@ -48,7 +48,8 @@ describe('opérations T1 master (seules depuis le lot 16b-3)', () => {
       { masterPromptCode: T1_MASTER_PROMPT_CODE, useCaseCode: 'SOURCE_ANALYSIS', tasks: ['GROUP_UPLOAD', 'ANALYZE_DOCUMENT'] },
       // Lot 85F : KNOWLEDGE_QUERY (facultative, texte attendu de l'équipe IA).
       // Lot 97A : OPERATION_IDENTITY (T3) et AGENDA_REPRESENTATION (T4), facultatives (textes du guide du PO).
-      { masterPromptCode: 't3_master_v1', useCaseCode: 'DATA_RECONCILIATION', tasks: ['VALUE_CONFLICT', 'LINK_AMBIGUITY', 'OPERATION_MATCH', 'DOCUMENT_NAMING', 'KNOWLEDGE_QUERY', 'OPERATION_IDENTITY'] },
+      // Lot 113AD : + PERIOD_RELATION (facultative, bloc 29 du guide du PO).
+      { masterPromptCode: 't3_master_v1', useCaseCode: 'DATA_RECONCILIATION', tasks: ['VALUE_CONFLICT', 'LINK_AMBIGUITY', 'OPERATION_MATCH', 'DOCUMENT_NAMING', 'KNOWLEDGE_QUERY', 'OPERATION_IDENTITY', 'PERIOD_RELATION'] },
       // Lot 15 : T2, discriminant MODE (§24).
       { masterPromptCode: 't2_master_v1', useCaseCode: 'INTELLIGENT_ASSISTANT', tasks: ['UNDERSTAND', 'ANSWER', 'REVALIDATE'] },
       // TEMPORAL_AMBIGUITY : active depuis le lot 18 (R5).
@@ -122,7 +123,8 @@ describe('opérations T3 master (CDC 15 §25, lot 13 ; seules depuis le lot 16b-
     // Lot 61 : harmonisation du nommage documentaire (branche facultative).
     // Lot 85F : compréhension de la connaissance T1 persistée (branche facultative, texte attendu de l'équipe IA).
     // Lot 97A : identité sémantique d'une Opération à plusieurs sources (branche facultative, texte du guide du PO).
-    expect(actives.map((o) => o.operationCode)).toEqual(['t3_value_conflict', 't3_link_ambiguity', 't3_operation_match', 't3_document_naming', 't3_knowledge_query', 't3_operation_identity']);
+    // Lot 113AD : + t3_period_relation.
+    expect(actives.map((o) => o.operationCode)).toEqual(['t3_value_conflict', 't3_link_ambiguity', 't3_operation_match', 't3_document_naming', 't3_knowledge_query', 't3_operation_identity', 't3_period_relation']);
     for (const op of actives) expect(isMasterOperation(op), op.operationCode).toBe(true);
   });
 });

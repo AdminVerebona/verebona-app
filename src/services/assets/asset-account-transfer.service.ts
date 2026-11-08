@@ -200,6 +200,8 @@ export const ACCOUNT_OWNED_TABLES: Readonly<Record<string, string>> = {
   business_operation_identity_reviews: 'Opérations : journal des contrôles d’identité économique (lot 78A, trace d’exploitation BO) — suit l’Opération, jamais le document ; reste au compte',
   business_operation_room_links: 'Opérations : Pièces d’une Opération (lot 82D) — suivent l’Opération (transferAssetOperationsInTx, clé composée) ; lien intercomptes retiré (detachCrossAccountGroupingInTx)',
   business_operation_documents: 'Opérations : appartenance d’un document à une Opération (lot 82D) — SOURCE suit les sources (déclencheur 0655), USER intercomptes retiré (detachCrossAccountGroupingInTx)',
+  business_period_decisions: 'Périodes métier : décision de l’utilisateur sur une divergence de périodes de SON événement de référence (lot 113AA, #725) — suit l’Opération (clé operation_id), reste au compte',
+  business_period_relation_reviews: 'Périodes métier : mémoire du réexamen T3 d’une divergence de périodes de SON événement de référence (lot 113AD, #725) — trace IA, suit l’Opération (clé operation_id), reste au compte',
 };
 
 export interface AssetDataTransferResult {

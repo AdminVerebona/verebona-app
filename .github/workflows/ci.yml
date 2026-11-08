@@ -601,6 +601,8 @@ jobs:
         run: npm run test:e2e:rattachement-aucun -- --reporter=default --reporter=junit --outputFile.junit=rapports/e2e-rattachement-aucun.xml
       - name: Périodes métier des documents et couvertures (lot 113W, Trello #724)
         run: npm run test:e2e:periodes-metier -- --reporter=default --reporter=junit --outputFile.junit=rapports/e2e-periodes-metier.xml
+      - name: Périodes métier — événement de référence, dépense, Assistant, dossiers, listes (lots 113AB/113AC, Trello #725)
+        run: npm run test:e2e:periodes-metier-surfaces -- --reporter=default --reporter=junit --outputFile.junit=rapports/e2e-periodes-metier-surfaces.xml
       - name: Fiche fournisseur, rubrique Documents unique (lot 113Y, Trello #721)
         run: npm run test:e2e:fournisseur-documents -- --reporter=default --reporter=junit --outputFile.junit=rapports/e2e-fournisseur-documents.xml
       - name: Notes / Description unique, dossiers tiers et périmètre des transmissions (lot 113Z, Trello #723)

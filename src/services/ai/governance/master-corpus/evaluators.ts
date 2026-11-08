@@ -274,6 +274,24 @@ export const MASTER_CORPUS_EVALUATORS: Readonly<Record<string, Evaluator>> = {
       ...ecart(exp(c, 'issues') === undefined || JSON.stringify(issues) === JSON.stringify(exp(c, 'issues')), `refus ${JSON.stringify(issues)}`),
     ];
   },
+  // Lot 113AD — PERIOD_RELATION (contrat t3-period-relation-v1) : contexte construit par le code de production
+  // (`buildRelationInput`), validation stricte réelle (`validateRelation`) puis effet appliqué par la résolution.
+  // Attendus : `valid`, `relation`, `effect` (NONE : comportement 113AA ; NO_QUESTION ; REPLACE), `replacingFileId`,
+  // `issues` (motifs de refus triés).
+  async t3_period_relation(c, output) {
+    const { buildRelationInput, validateRelation } = await import('@/services/documents/business-periods/relation-contract');
+    const b = buildRelationInput((c.context as { periodRelation: never }).periodRelation);
+    const v = validateRelation(output, b.scope);
+    const issues = v.ok ? [] : [...new Set(v.problems.map((p) => p.issue))].sort();
+    const effet = !v.ok || !v.effect ? 'NONE' : v.effect.replacingFileId !== null ? 'REPLACE' : 'NO_QUESTION';
+    return [
+      ...ecart(exp(c, 'valid') === undefined || v.ok === exp(c, 'valid'), `validité ${v.ok}${v.ok ? '' : ` (${issues.join(',')})`}`),
+      ...ecart(exp(c, 'relation') === undefined || (v.ok && v.decision.relation === exp(c, 'relation')), `classement ${v.ok ? v.decision.relation : 'refusé'}`),
+      ...ecart(exp(c, 'effect') === undefined || effet === exp(c, 'effect'), `effet ${effet}`),
+      ...ecart(exp(c, 'replacingFileId') === undefined || (v.ok && (v.effect?.replacingFileId ?? null) === exp(c, 'replacingFileId')), `document remplaçant ${v.ok ? String(v.effect?.replacingFileId ?? null) : 'refusé'}`),
+      ...ecart(exp(c, 'issues') === undefined || JSON.stringify(issues) === JSON.stringify(exp(c, 'issues')), `refus ${JSON.stringify(issues)}`),
+    ];
+  },
   // ── T4 ─────────────────────────────────────────────────────────────────────
   // Lot 97A — AGENDA_REPRESENTATION (contrat t4-agenda-representation-v1) : contexte construit par le code de
   // production (`buildRepresentationInput`), validation (`validateRepresentation`) et plan (`planRepresentation`)

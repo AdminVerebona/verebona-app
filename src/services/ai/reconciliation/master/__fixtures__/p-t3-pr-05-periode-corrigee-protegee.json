@@ -1,0 +1,93 @@
+{
+  "case": "P-T3-PR-05",
+  "description": "Lot 113AD — PERIOD_RELATION, garde serveur : la période de la première attestation a été corrigée par l’utilisateur ; une sortie qui la ferait remplacer (AMENDMENT) est refusée en bloc (PROTECTED_PERIOD), aucune écriture : la question reste à l’utilisateur.",
+  "qualification": {
+    "role": "guard"
+  },
+  "context": {
+    "periodRelation": {
+      "today": "2026-11-08",
+      "periodKind": "COVERAGE",
+      "operation": {
+        "typeCode": "CONTRACT",
+        "label": "Assurance habitation",
+        "provider": "Assureur Habitation"
+      },
+      "periods": [
+        {
+          "periodId": 1,
+          "fileId": 9501,
+          "start": "2025-04-01",
+          "end": "2026-03-31",
+          "quote": "Période de garantie : du 01/04/2025 au 31/03/2026",
+          "userCorrected": true
+        },
+        {
+          "periodId": 2,
+          "fileId": 9502,
+          "start": "2025-07-01",
+          "end": "2026-06-30",
+          "quote": "Nouvelle période de garantie : du 01/07/2025 au 30/06/2026",
+          "userCorrected": false
+        }
+      ],
+      "documents": [
+        {
+          "id": 9501,
+          "type": "INSURANCE_CERTIFICATE",
+          "title": "Attestation habitation 2025",
+          "date": "2025-03-15",
+          "provider": "Assureur Habitation",
+          "references": [
+            {
+              "kind": "POLICY",
+              "value": "POL-725"
+            }
+          ],
+          "excerpts": [
+            "Période de garantie : du 01/04/2025 au 31/03/2026"
+          ]
+        },
+        {
+          "id": 9502,
+          "type": "OTHER",
+          "title": "Courrier assureur",
+          "date": "2025-06-20",
+          "provider": "Assureur Habitation",
+          "references": [
+            {
+              "kind": "POLICY",
+              "value": "POL-725"
+            }
+          ],
+          "excerpts": [
+            "La période de garantie est modifiée à compter du 01/07/2025"
+          ]
+        }
+      ]
+    }
+  },
+  "recording": {
+    "operationCode": "t3_period_relation",
+    "task": "PERIOD_RELATION",
+    "output": {
+      "task": "PERIOD_RELATION",
+      "relation": "AMENDMENT",
+      "replacingPeriod": "P2",
+      "confidence": "certain",
+      "evidence": [
+        {
+          "document": "D2",
+          "excerpt": "La période de garantie est modifiée à compter du 01/07/2025"
+        }
+      ],
+      "reason": "Le courrier modifie la période de l’attestation."
+    }
+  },
+  "expected": {
+    "valid": false,
+    "issues": [
+      "PROTECTED_PERIOD"
+    ]
+  }
+}

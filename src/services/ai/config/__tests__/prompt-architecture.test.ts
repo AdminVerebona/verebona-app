@@ -21,7 +21,7 @@ import { runInJobContext } from '../../queue/job-context';
 import { T3_MASTER_VARIABLES } from '../../registry/operations';
 import { MASTER_ONLY_TREATMENTS, TREATMENTS } from '../treatments';
 
-const MASTER_T3 = `{{TASK}}\n${T3_MASTER_VARIABLES.map((v) => `{{${v}}}`).join('\n')}\nBRANCHE TASK = VALUE_CONFLICT\nBRANCHE TASK = LINK_AMBIGUITY\nBRANCHE TASK = OPERATION_MATCH\nBRANCHE TASK = DOCUMENT_NAMING\nBRANCHE TASK = KNOWLEDGE_QUERY\nBRANCHE TASK = OPERATION_IDENTITY\n`;
+const MASTER_T3 = `{{TASK}}\n${T3_MASTER_VARIABLES.map((v) => `{{${v}}}`).join('\n')}\nBRANCHE TASK = VALUE_CONFLICT\nBRANCHE TASK = LINK_AMBIGUITY\nBRANCHE TASK = OPERATION_MATCH\nBRANCHE TASK = DOCUMENT_NAMING\nBRANCHE TASK = KNOWLEDGE_QUERY\nBRANCHE TASK = OPERATION_IDENTITY\nBRANCHE TASK = PERIOD_RELATION\n`;
 /** Traitement fictif sans master (lot 16 : T1 à T6 en ont tous un). */
 const SANS_MASTER = 'T9' as never;
 const t3 = (over: Partial<TreatmentConfig> = {}): TreatmentConfig => ({
@@ -50,7 +50,8 @@ describe('valeur par défaut', () => {
     });
     expect(masterPromptForTreatment('T3')).toEqual({
       // Lot 85F : + KNOWLEDGE_QUERY (facultative, texte attendu de l'équipe IA). Lot 97A : + OPERATION_IDENTITY (facultative).
-      masterPromptCode: 't3_master_v1', tasks: ['VALUE_CONFLICT', 'LINK_AMBIGUITY', 'OPERATION_MATCH', 'DOCUMENT_NAMING', 'KNOWLEDGE_QUERY', 'OPERATION_IDENTITY'],
+      // Lot 113AD : + PERIOD_RELATION (facultative, bloc 29 du guide du PO).
+      masterPromptCode: 't3_master_v1', tasks: ['VALUE_CONFLICT', 'LINK_AMBIGUITY', 'OPERATION_MATCH', 'DOCUMENT_NAMING', 'KNOWLEDGE_QUERY', 'OPERATION_IDENTITY', 'PERIOD_RELATION'],
     });
     expect(masterPromptForTreatment('T4')).toEqual({
       // TEMPORAL_AMBIGUITY : active depuis le lot 18 (R5). Lot 97A : + AGENDA_REPRESENTATION (facultative, contexte structuré).

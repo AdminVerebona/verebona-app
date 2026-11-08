@@ -184,6 +184,12 @@ export const MARKER_CONTRACT_DECLARATIONS: readonly MarkerContractDeclaration[] 
     impact: 'Déjà sûr côté serveur : les invitations viennent du catalogue éditorial (sans IA, sans donnée personnelle) ; sans le contrat, T6 ne les rédige pas.',
     requires: ['t6-suggestions-v3'],
     detect: async (t) => (await import('@/services/home/mascot/discovery')).promptSupportsDiscovery(t) },
+  // Lot 113AA (Trello #725) : périodes métier v2 — pertinence, effet contractuel, sens des bornes, relation déclarée (étape 28 du guide).
+  // Absent : la fiche reste prudente (aucune qualification v2) ET ce registre le signale (BO › Configuration IA › Conformité des prompts).
+  { id: 't1-business-periods-v2', treatment: 'T1', rank: 28, guideStep: 28, lot: '113AA', task: 'ANALYZE_DOCUMENT',
+    blockId: 't1-business-periods-v2', killSwitch: null, label: 'T1 : périodes métier — pertinence, effet contractuel, sens des dates de fin, avenant / rectificatif',
+    impact: 'Configuration incomplète pour le CDC #724 : sans le contrat, la pertinence des périodes vient du rôle de la pièce (113W), une fin écrite n’est qualifiée que par le Type (113W2), l’effet contractuel et la réalisation ne sont pas distingués, et une divergence entre justificatifs reste signalée sans question (PERIOD_DIVERGENCE_UNQUALIFIED).',
+    detect: async (t) => (await import('@/services/documents/business-periods/t1-v2')).promptCarriesBusinessPeriodsV2(t) },
 ];
 
 let registryCache: Promise<PromptContract[]> | null = null;
@@ -329,6 +335,29 @@ async function buildRegistry(): Promise<PromptContract[]> {
     },
     async plan() { return blocks([idc.IDENTITY_CONTRACT_VERSION]); },
   });
+  // Lot 113AD (Trello #725, D11) : réexamen T3 d'une divergence de périodes non déclarée (étape 29 du guide).
+  // Absent : aucune demande, aucun appel — question PERIOD-CONFLICT (documents qualifiés) ou signalement, comme au lot 113AA.
+  {
+    const prc = await import('@/services/documents/business-periods/relation-contract');
+    out.push({
+      id: prc.PERIOD_RELATION_CONTRACT_VERSION, treatment: 'T3', masterPromptCode: t3, rank: 29,
+      label: 'T3 : relation entre deux périodes divergentes (succession, même fait, avenant, rectificatif, contradiction)', lot: '113AD', guideStep: 29,
+      version: prc.PERIOD_RELATION_CONTRACT_VERSION, task: prc.PERIOD_RELATION_TASK, operations: await opsOf(t3, prc.PERIOD_RELATION_TASK),
+      inputs: [prc.PERIOD_RELATION_CONTRACT_VERSION], outputs: await outputsOf(t3, prc.PERIOD_RELATION_TASK), capabilities: ['relation capability (promptCarriesPeriodRelation)'],
+      markers: [`BRANCHE TASK = ${prc.PERIOD_RELATION_TASK}`, prc.PERIOD_RELATION_CONTRACT_VERSION], validations: ['T3PeriodRelationOutput', 'validateRelation'],
+      requires: ['t3-socle'], blockIds: [prc.PERIOD_RELATION_CONTRACT_VERSION], expectedExecution: null, killSwitch: 'T3_PERIOD_RELATION_ENABLED',
+      impact: 'Configuration incomplète pour le CDC #724 (D11, R14) : une divergence de périodes que les documents ne déclarent pas n’est jamais réexaminée par T3 — question directe à l’utilisateur (documents qualifiés) ou simple signalement (PERIOD_DIVERGENCE_UNQUALIFIED).',
+      anomaly: null, coverage: null,
+      async check(p) {
+        if (prc.promptCarriesPeriodRelation(p.text, branches(p.text))) return ok();
+        const b = branches(p.text).includes(prc.PERIOD_RELATION_TASK);
+        const m = p.text.includes(prc.PERIOD_RELATION_CONTRACT_VERSION);
+        return manque(b || m ? 'INCOMPLETE' : 'ABSENT', `Branche ${prc.PERIOD_RELATION_TASK} ${b ? 'présente' : 'absente'}, marqueur ${prc.PERIOD_RELATION_CONTRACT_VERSION} ${m ? 'présent' : 'absent'}.`,
+          [...(b ? [] : [`BRANCHE TASK = ${prc.PERIOD_RELATION_TASK}`]), ...(m ? [] : [prc.PERIOD_RELATION_CONTRACT_VERSION])]);
+      },
+      async plan() { return blocks([prc.PERIOD_RELATION_CONTRACT_VERSION]); },
+    });
+  }
 
   // ── T1 ────────────────────────────────────────────────────────────────────
   const t1 = code('T1');

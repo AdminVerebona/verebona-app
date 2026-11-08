@@ -1,6 +1,6 @@
 {
-  "version": 5,
-  "generatedAt": "2026-11-05T10:24:13.855Z",
+  "version": 6,
+  "generatedAt": "2026-11-08T20:05:57.680Z",
   "reference": {
     "ticket": "#601",
     "announcedScenarios": 401,
@@ -9285,6 +9285,323 @@
           "oracleFingerprint": null
         }
       ]
+    },
+    {
+      "id": "H-P-T3-PR-01-AVENANT-NON-DECLARE",
+      "sourceCaseId": "P-T3-PR-01",
+      "file": "src/services/ai/reconciliation/master/__fixtures__/p-t3-pr-01-avenant-non-declare.json",
+      "operationCode": "t3_period_relation",
+      "treatment": "T3",
+      "contract": null,
+      "schema": "T3PeriodRelationOutput",
+      "riskFamily": "T3_CONNAISSANCE",
+      "difficulty": "SIMPLE",
+      "critical": true,
+      "pair": null,
+      "provenance": "DEVELOPPEUR",
+      "sourcePieces": [],
+      "inputMode": "STRUCTURED",
+      "testType": "QUALITE_MODELE",
+      "evaluationType": "ORACLE",
+      "status": "A_COMPLETER",
+      "reason": "réponse potentiellement utilisable : proposition d’oracle prête, approbation humaine individuelle requise (sources du cas)",
+      "historicalClass": "REPONSE_UTILISABLE",
+      "cdc35Category": null,
+      "oracle": {
+        "version": 1,
+        "requiredFacts": [],
+        "absentFacts": [],
+        "entities": {
+          "expected": [],
+          "forbidden": []
+        },
+        "decisions": {
+          "allowed": [],
+          "forbidden": []
+        },
+        "abstention": {
+          "expected": "EITHER",
+          "criteria": null
+        },
+        "allowedSources": [],
+        "equivalences": [],
+        "amountTolerance": 0,
+        "serverExpected": {
+          "valid": true,
+          "relation": "AMENDMENT",
+          "effect": "REPLACE",
+          "replacingFileId": 9102
+        },
+        "notes": "Proposition générée au lot 100B depuis l’attendu historique du cas : à relire sur les sources (contexte du cas, pièces), jamais sur une sortie de modèle."
+      },
+      "expectedSummary": "{\"valid\":true,\"relation\":\"AMENDMENT\",\"effect\":\"REPLACE\",\"replacingFileId\":9102}",
+      "revisions": [
+        {
+          "revision": 1,
+          "at": "2026-11-08T20:05:57.680Z",
+          "by": "lot100b",
+          "reason": "reclassement initial (REPONSE_UTILISABLE) : Lot 113AD — PERIOD_RELATION (contrat t3-period-relation-v1) : une attestation 2025/2026, puis un second document du même contrat qui modifie la période de garantie sans se déclarer avenant dans son titre ⇒ AMENDMENT certain, la période du second document actualise la première (historique conservé).",
+          "changes": [
+            "*"
+          ],
+          "oracleFingerprint": "2b06ded0e53e50ceb927e324dcec1828f190b8ed7307b2335d2dd365e1473b6f"
+        }
+      ]
+    },
+    {
+      "id": "H-P-T3-PR-02-CONTRADICTION-REELLE",
+      "sourceCaseId": "P-T3-PR-02",
+      "file": "src/services/ai/reconciliation/master/__fixtures__/p-t3-pr-02-contradiction-reelle.json",
+      "operationCode": "t3_period_relation",
+      "treatment": "T3",
+      "contract": null,
+      "schema": "T3PeriodRelationOutput",
+      "riskFamily": "T3_CONNAISSANCE",
+      "difficulty": "DIFFICILE",
+      "critical": true,
+      "pair": null,
+      "provenance": "DEVELOPPEUR",
+      "sourcePieces": [],
+      "inputMode": "STRUCTURED",
+      "testType": "QUALITE_MODELE",
+      "evaluationType": "ORACLE",
+      "status": "A_COMPLETER",
+      "reason": "réponse potentiellement utilisable : proposition d’oracle prête, approbation humaine individuelle requise (sources du cas)",
+      "historicalClass": "REPONSE_UTILISABLE",
+      "cdc35Category": null,
+      "oracle": {
+        "version": 1,
+        "requiredFacts": [],
+        "absentFacts": [],
+        "entities": {
+          "expected": [],
+          "forbidden": []
+        },
+        "decisions": {
+          "allowed": [],
+          "forbidden": []
+        },
+        "abstention": {
+          "expected": "EITHER",
+          "criteria": null
+        },
+        "allowedSources": [],
+        "equivalences": [],
+        "amountTolerance": 0,
+        "serverExpected": {
+          "valid": true,
+          "relation": "CONTRADICTION",
+          "effect": "NONE"
+        },
+        "notes": "Proposition générée au lot 100B depuis l’attendu historique du cas : à relire sur les sources (contexte du cas, pièces), jamais sur une sortie de modèle."
+      },
+      "expectedSummary": "{\"valid\":true,\"relation\":\"CONTRADICTION\",\"effect\":\"NONE\"}",
+      "revisions": [
+        {
+          "revision": 1,
+          "at": "2026-11-08T20:05:57.680Z",
+          "by": "lot100b",
+          "reason": "reclassement initial (REPONSE_UTILISABLE) : Lot 113AD — PERIOD_RELATION : deux attestations du même contrat donnent des périodes incompatibles et aucune ne modifie l’autre ⇒ CONTRADICTION, aucun effet : la question PERIOD-CONFLICT reste posée à l’utilisateur.",
+          "changes": [
+            "*"
+          ],
+          "oracleFingerprint": "40fc7052803ae02cf35f554705cc11f9d209e0a4331442033ac75f4aca9038ec"
+        }
+      ]
+    },
+    {
+      "id": "H-P-T3-PR-03-SUCCESSION-BORNE-MAL-LUE",
+      "sourceCaseId": "P-T3-PR-03",
+      "file": "src/services/ai/reconciliation/master/__fixtures__/p-t3-pr-03-succession-borne-mal-lue.json",
+      "operationCode": "t3_period_relation",
+      "treatment": "T3",
+      "contract": null,
+      "schema": "T3PeriodRelationOutput",
+      "riskFamily": "T3_CONNAISSANCE",
+      "difficulty": "INTERMEDIAIRE",
+      "critical": true,
+      "pair": null,
+      "provenance": "DEVELOPPEUR",
+      "sourcePieces": [],
+      "inputMode": "STRUCTURED",
+      "testType": "QUALITE_MODELE",
+      "evaluationType": "ORACLE",
+      "status": "A_COMPLETER",
+      "reason": "réponse potentiellement utilisable : proposition d’oracle prête, approbation humaine individuelle requise (sources du cas)",
+      "historicalClass": "REPONSE_UTILISABLE",
+      "cdc35Category": null,
+      "oracle": {
+        "version": 1,
+        "requiredFacts": [],
+        "absentFacts": [],
+        "entities": {
+          "expected": [],
+          "forbidden": []
+        },
+        "decisions": {
+          "allowed": [],
+          "forbidden": []
+        },
+        "abstention": {
+          "expected": "EITHER",
+          "criteria": null
+        },
+        "allowedSources": [],
+        "equivalences": [],
+        "amountTolerance": 0,
+        "serverExpected": {
+          "valid": true,
+          "relation": "SUCCESSION",
+          "effect": "NO_QUESTION"
+        },
+        "notes": "Proposition générée au lot 100B depuis l’attendu historique du cas : à relire sur les sources (contexte du cas, pièces), jamais sur une sortie de modèle."
+      },
+      "expectedSummary": "{\"valid\":true,\"relation\":\"SUCCESSION\",\"effect\":\"NO_QUESTION\"}",
+      "revisions": [
+        {
+          "revision": 1,
+          "at": "2026-11-08T20:05:57.680Z",
+          "by": "lot100b",
+          "reason": "reclassement initial (REPONSE_UTILISABLE) : Lot 113AD — PERIOD_RELATION : la fin lue sur l’attestation 2024 est sa date d’échéance de paiement, pas la fin de garantie ; les extraits établissent deux périodes annuelles successives ⇒ SUCCESSION certaine, aucune question.",
+          "changes": [
+            "*"
+          ],
+          "oracleFingerprint": "ff14c0d415d8dc643f8d6e864e942b5879a335ee81307c5ec4d5477351b7f3bd"
+        }
+      ]
+    },
+    {
+      "id": "H-P-T3-PR-04-MEME-FAIT-DUPLICATA",
+      "sourceCaseId": "P-T3-PR-04",
+      "file": "src/services/ai/reconciliation/master/__fixtures__/p-t3-pr-04-meme-fait-duplicata.json",
+      "operationCode": "t3_period_relation",
+      "treatment": "T3",
+      "contract": null,
+      "schema": "T3PeriodRelationOutput",
+      "riskFamily": "T3_CONNAISSANCE",
+      "difficulty": "SIMPLE",
+      "critical": true,
+      "pair": null,
+      "provenance": "DEVELOPPEUR",
+      "sourcePieces": [],
+      "inputMode": "STRUCTURED",
+      "testType": "QUALITE_MODELE",
+      "evaluationType": "ORACLE",
+      "status": "A_COMPLETER",
+      "reason": "réponse potentiellement utilisable : proposition d’oracle prête, approbation humaine individuelle requise (sources du cas)",
+      "historicalClass": "REPONSE_UTILISABLE",
+      "cdc35Category": null,
+      "oracle": {
+        "version": 1,
+        "requiredFacts": [],
+        "absentFacts": [],
+        "entities": {
+          "expected": [],
+          "forbidden": []
+        },
+        "decisions": {
+          "allowed": [],
+          "forbidden": []
+        },
+        "abstention": {
+          "expected": "EITHER",
+          "criteria": null
+        },
+        "allowedSources": [],
+        "equivalences": [],
+        "amountTolerance": 0,
+        "serverExpected": {
+          "valid": true,
+          "relation": "SAME_FACT",
+          "effect": "NO_QUESTION"
+        },
+        "notes": "Proposition générée au lot 100B depuis l’attendu historique du cas : à relire sur les sources (contexte du cas, pièces), jamais sur une sortie de modèle."
+      },
+      "expectedSummary": "{\"valid\":true,\"relation\":\"SAME_FACT\",\"effect\":\"NO_QUESTION\"}",
+      "revisions": [
+        {
+          "revision": 1,
+          "at": "2026-11-08T20:05:57.680Z",
+          "by": "lot100b",
+          "reason": "reclassement initial (REPONSE_UTILISABLE) : Lot 113AD — PERIOD_RELATION : duplicata de la même attestation dont la fin a été lue au mois seulement ⇒ SAME_FACT certain, aucune question.",
+          "changes": [
+            "*"
+          ],
+          "oracleFingerprint": "628b80c093674da3b4e58a97faf55c303bb5d9117212ca9f2ee714b8d7a3162f"
+        }
+      ]
+    },
+    {
+      "id": "H-P-T3-PR-05-PERIODE-CORRIGEE-PROTEGEE",
+      "sourceCaseId": "P-T3-PR-05",
+      "file": "src/services/ai/reconciliation/master/__fixtures__/p-t3-pr-05-periode-corrigee-protegee.json",
+      "operationCode": "t3_period_relation",
+      "treatment": "T3",
+      "contract": null,
+      "schema": "T3PeriodRelationOutput",
+      "riskFamily": "T3_CORRECTIONS_PRESERVEES",
+      "difficulty": "DIFFICILE",
+      "critical": false,
+      "pair": null,
+      "provenance": "DEVELOPPEUR",
+      "sourcePieces": [],
+      "inputMode": "STRUCTURED",
+      "testType": "GARDE_SERVEUR",
+      "evaluationType": "GARDE_SERVEUR",
+      "status": "GARDE_SERVEUR",
+      "reason": "garde serveur : sortie enregistrée délibérément fautive, contrôle de la réaction du serveur (reste en CI, jamais une référence de promotion)",
+      "historicalClass": "GARDE",
+      "cdc35Category": null,
+      "oracle": null,
+      "expectedSummary": "{\"valid\":false,\"issues\":[\"PROTECTED_PERIOD\"]}",
+      "revisions": [
+        {
+          "revision": 1,
+          "at": "2026-11-08T20:05:57.680Z",
+          "by": "lot100b",
+          "reason": "reclassement initial (GARDE) : Lot 113AD — PERIOD_RELATION, garde serveur : la période de la première attestation a été corrigée par l’utilisateur ; une sortie qui la ferait remplacer (AMENDMENT) est refusée en bloc (PROTECTED_PERIOD), aucune écriture : la question reste à l’utilisateur.",
+          "changes": [
+            "*"
+          ],
+          "oracleFingerprint": null
+        }
+      ]
+    },
+    {
+      "id": "H-P-T3-PR-06-EXTRAIT-INVENTE",
+      "sourceCaseId": "P-T3-PR-06",
+      "file": "src/services/ai/reconciliation/master/__fixtures__/p-t3-pr-06-extrait-invente.json",
+      "operationCode": "t3_period_relation",
+      "treatment": "T3",
+      "contract": null,
+      "schema": "T3PeriodRelationOutput",
+      "riskFamily": "T3_CONNAISSANCE",
+      "difficulty": "DIFFICILE",
+      "critical": false,
+      "pair": null,
+      "provenance": "DEVELOPPEUR",
+      "sourcePieces": [],
+      "inputMode": "STRUCTURED",
+      "testType": "GARDE_SERVEUR",
+      "evaluationType": "GARDE_SERVEUR",
+      "status": "GARDE_SERVEUR",
+      "reason": "garde serveur : sortie enregistrée délibérément fautive, contrôle de la réaction du serveur (reste en CI, jamais une référence de promotion)",
+      "historicalClass": "GARDE",
+      "cdc35Category": null,
+      "oracle": null,
+      "expectedSummary": "{\"valid\":false,\"issues\":[\"EXCERPT_NOT_FOUND\"]}",
+      "revisions": [
+        {
+          "revision": 1,
+          "at": "2026-11-08T20:05:57.680Z",
+          "by": "lot100b",
+          "reason": "reclassement initial (GARDE) : Lot 113AD — PERIOD_RELATION, garde serveur : la sortie cite un passage absent des textes fournis (« annule et remplace ») pour conclure à un rectificatif ⇒ refus en bloc (EXCERPT_NOT_FOUND), vaut abstention : comportement 113AA.",
+          "changes": [
+            "*"
+          ],
+          "oracleFingerprint": null
+        }
+      ]
     }
   ],
   "ledger": [
@@ -9435,6 +9752,12 @@
     "H-P-T2-20-COMPOSITE-PARTIELLE-LAVE-VAISSELLE",
     "H-P-T2-21-HORS-SUJET-SERIE-CHAUDIERE",
     "H-P-T2-22-REGLEMENT-AFFIRME-SANS-PREUVE",
-    "H-P-T2-23-CHIFFRES-JUSTES-CONCLUSION-FAUSSE"
+    "H-P-T2-23-CHIFFRES-JUSTES-CONCLUSION-FAUSSE",
+    "H-P-T3-PR-01-AVENANT-NON-DECLARE",
+    "H-P-T3-PR-02-CONTRADICTION-REELLE",
+    "H-P-T3-PR-03-SUCCESSION-BORNE-MAL-LUE",
+    "H-P-T3-PR-04-MEME-FAIT-DUPLICATA",
+    "H-P-T3-PR-05-PERIODE-CORRIGEE-PROTEGEE",
+    "H-P-T3-PR-06-EXTRAIT-INVENTE"
   ]
 }

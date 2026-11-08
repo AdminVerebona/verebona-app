@@ -136,7 +136,11 @@ describe('L89C-U01 — blocs du guide', () => {
       // Lot 111F : étape 16 (T1 échéancier d'un prêt, FACULTATIVE).
       't1-loan-schedule-v1',
       // Lot 111K : étape 17 (T2 pertinence des preuves, 3 blocs, FACULTATIVE, rejouée par l111k-guide-etape16.test.ts).
-      't2-evidence-relevance-understand-v1', 't2-evidence-relevance-b12-v1', 't2-evidence-relevance-answer-v1']);
+      't2-evidence-relevance-understand-v1', 't2-evidence-relevance-b12-v1', 't2-evidence-relevance-answer-v1',
+      // Lot 113AA : étape 28 (T1 périodes métier v2, rejouée par l113aa-periodes-conformite.test.ts).
+      't1-business-periods-v2',
+      // Lot 113AD : étape 29 (T3 PERIOD_RELATION, rejouée par l113ad-relation-t3.test.ts).
+      't3-period-relation-v1']);
     // Aucun bloc n'introduit un emplacement {{X}} (bloquant au BO : « emplacement inconnu »).
     for (const b of B) expect(inspectMasterTemplate(b.text).placeholders, b.id).toEqual([]);
   });

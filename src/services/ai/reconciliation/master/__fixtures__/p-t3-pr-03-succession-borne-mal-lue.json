@@ -1,0 +1,97 @@
+{
+  "case": "P-T3-PR-03",
+  "description": "Lot 113AD — PERIOD_RELATION : la fin lue sur l’attestation 2024 est sa date d’échéance de paiement, pas la fin de garantie ; les extraits établissent deux périodes annuelles successives ⇒ SUCCESSION certaine, aucune question.",
+  "qualification": {
+    "role": "answer"
+  },
+  "context": {
+    "periodRelation": {
+      "today": "2026-11-08",
+      "periodKind": "COVERAGE",
+      "operation": {
+        "typeCode": "CONTRACT",
+        "label": "Assurance habitation",
+        "provider": "Assureur Habitation"
+      },
+      "periods": [
+        {
+          "periodId": 1,
+          "fileId": 9301,
+          "start": "2024-04-01",
+          "end": "2025-06-30",
+          "quote": "Échéance : 30/06/2025",
+          "userCorrected": false
+        },
+        {
+          "periodId": 2,
+          "fileId": 9302,
+          "start": "2025-04-01",
+          "end": "2026-03-31",
+          "quote": "Période de garantie : du 01/04/2025 au 31/03/2026",
+          "userCorrected": false
+        }
+      ],
+      "documents": [
+        {
+          "id": 9301,
+          "type": "INSURANCE_CERTIFICATE",
+          "title": "Attestation habitation 2024",
+          "date": "2024-03-10",
+          "provider": "Assureur Habitation",
+          "references": [
+            {
+              "kind": "POLICY",
+              "value": "POL-725"
+            }
+          ],
+          "excerpts": [
+            "Période de garantie : du 01/04/2024 au 31/03/2025",
+            "Échéance : 30/06/2025"
+          ]
+        },
+        {
+          "id": 9302,
+          "type": "INSURANCE_CERTIFICATE",
+          "title": "Attestation habitation 2025",
+          "date": "2025-03-12",
+          "provider": "Assureur Habitation",
+          "references": [
+            {
+              "kind": "POLICY",
+              "value": "POL-725"
+            }
+          ],
+          "excerpts": [
+            "Période de garantie : du 01/04/2025 au 31/03/2026"
+          ]
+        }
+      ]
+    }
+  },
+  "recording": {
+    "operationCode": "t3_period_relation",
+    "task": "PERIOD_RELATION",
+    "output": {
+      "task": "PERIOD_RELATION",
+      "relation": "SUCCESSION",
+      "replacingPeriod": null,
+      "confidence": "certain",
+      "evidence": [
+        {
+          "document": "D1",
+          "excerpt": "Période de garantie : du 01/04/2024 au 31/03/2025"
+        },
+        {
+          "document": "D2",
+          "excerpt": "Période de garantie : du 01/04/2025 au 31/03/2026"
+        }
+      ],
+      "reason": "La garantie 2024 prend fin le 31/03/2025 ; la date du 30/06/2025 est une échéance, pas une borne : les périodes se suivent."
+    }
+  },
+  "expected": {
+    "valid": true,
+    "relation": "SUCCESSION",
+    "effect": "NO_QUESTION"
+  }
+}

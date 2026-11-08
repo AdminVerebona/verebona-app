@@ -50,6 +50,7 @@ import type { BusinessOperationStatus, BusinessOperationTypeCode, Confidence, Op
 import type { BusinessOperationRepository } from '../repository';
 import { withBusinessOperationWrite } from '../write';
 import { NON_BUSINESS_DOCUMENT_TYPES } from '@/services/ai/source-analysis/operation-candidates/prepare';
+import { termQualificationOf, type TermQualification } from '@/services/documents/business-periods/t1-v2';
 import {
   buildCandidateIdentity, consolidateOperationState, hasRecurringPeriod, normalizeProvider,
   type CandidateIdentity, type CandidateRecord, type SourceContribution,
@@ -175,15 +176,27 @@ export class Changes {
 
 // ── Lecture du contexte (sous verrou, dans la transaction) ─────────────────
 
-interface FileRow { id: number; accountId: number; deleted: boolean; assetId: number | null; documentTypeCode: string | null; amountCents?: number | null }
+interface FileRow {
+  id: number; accountId: number; deleted: boolean; assetId: number | null; documentTypeCode: string | null; amountCents?: number | null;
+  /** Lot 113AA (#725) : sens des dates qualifié par T1 (contrat t1-business-periods-v2), sinon non évalué. */
+  termQualification?: TermQualification | null;
+}
 
 async function loadFile(tx: DbTx, accountId: number, fileId: number): Promise<FileRow | null> {
   const [f] = await rows<{ id: number; account_id: number; deleted: boolean; asset_id: number | null; document_type_code: string | null; amount_cents: number | string | null }>(tx, sql`
     SELECT id, account_id, deleted_at IS NOT NULL AS deleted, COALESCE(asset_id, linked_asset_id) AS asset_id, document_type_code, amount_cents
       FROM asset_files WHERE id = ${fileId}`);
   if (!f || Number(f.account_id) !== accountId) return null;
+  // Lot 113AA : faits de période T1 persistés (lecture seule, bornée) — qualification du sens des dates.
+  const faits = await rows<{ raw_key: string | null; normalized_value: string | null; raw_value: string | null; confidence: string | null }>(tx, sql`
+    SELECT COALESCE(raw_key, fact_key) AS raw_key, normalized_value, raw_value, confidence FROM document_facts
+     WHERE file_id = ${fileId} AND account_id = ${accountId} AND status = 'active' AND COALESCE(raw_key, fact_key) LIKE 'period.%'
+     ORDER BY id LIMIT 60`);
+  const termQualification = termQualificationOf(faits.map((x) => ({
+    rawKey: x.raw_key, normalizedValue: x.normalized_value == null ? null : String(x.normalized_value), rawValue: x.raw_value, confidence: x.confidence,
+  })));
   // Lot 109D : montant TTC du document (réconciliation des achats composés, `finance/commercial-adjustments`).
-  return { id: Number(f.id), accountId: Number(f.account_id), deleted: f.deleted, assetId: num(f.asset_id), documentTypeCode: f.document_type_code, amountCents: num(f.amount_cents) };
+  return { id: Number(f.id), accountId: Number(f.account_id), deleted: f.deleted, assetId: num(f.asset_id), documentTypeCode: f.document_type_code, amountCents: num(f.amount_cents), termQualification };
 }
 
 interface CandidateRow extends CandidateRecord {
@@ -253,7 +266,7 @@ export async function prepareOperationMatch(accountId: number, candidateId: numb
     if (!file || file.deleted || (file.documentTypeCode && NON_BUSINESS_DOCUMENT_TYPES.has(file.documentTypeCode))) return null;
     const ids = targetIdsOf([c], file.assetId);
     const actx = await loadAssetContext(tx, accountId, ids.assets, ids.equipments, ids.rooms);
-    const identity = buildCandidateIdentity(c, { fileAssetId: file.assetId, fileDocumentTypeCode: file.documentTypeCode, liveAssetIds: actx.live, equipmentAssets: actx.equipments, roomAssets: actx.rooms, providerCanonical: actx.providers,
+    const identity = buildCandidateIdentity(c, { fileAssetId: file.assetId, fileDocumentTypeCode: file.documentTypeCode, fileTermQualification: file.termQualification, liveAssetIds: actx.live, equipmentAssets: actx.equipments, roomAssets: actx.rooms, providerCanonical: actx.providers,
       ...documentIdentityContext(file, await loadActiveCandidatesRead(tx, accountId, c.fileId), todayUtc(), actx) });
     // Lot 53 (D7) : le LOT courant de l'examen progressif (au plus 5 Opérations),
     // à défaut (trace antérieure au lot 53) les Opérations plausibles.
@@ -687,7 +700,7 @@ async function contributionOf(tx: DbTx, accountId: number, s: OpSource, agenda?:
   if (!c || c.confidence === 'conflictual') return null;
   const ids = targetIdsOf([c], file.assetId);
   const actx = await loadAssetContext(tx, accountId, ids.assets, ids.equipments, ids.rooms);
-  const identity = buildCandidateIdentity(c, { fileAssetId: file.assetId, fileDocumentTypeCode: file.documentTypeCode, liveAssetIds: actx.live, equipmentAssets: actx.equipments, roomAssets: actx.rooms, providerCanonical: actx.providers,
+  const identity = buildCandidateIdentity(c, { fileAssetId: file.assetId, fileDocumentTypeCode: file.documentTypeCode, fileTermQualification: file.termQualification, liveAssetIds: actx.live, equipmentAssets: actx.equipments, roomAssets: actx.rooms, providerCanonical: actx.providers,
     ...documentIdentityContext(file, tousCandidats, agenda?.today ?? todayUtc(), actx) });
   // Lot 109D : candidat qui ne porte qu'une remise intégrée au net d'un autre achat du document — jamais une réalité
   // propre (faux avoir historique) : sa source est retirée (tracée), l'Opération n'est maintenue que par ses autres preuves.
@@ -1499,7 +1512,7 @@ export async function previewSeriesGrouping(accountId: number, fileIds: readonly
       const tids = targetIdsOf(actifs, file.assetId);
       const actx = await loadAssetContext(tx, accountId, tids.assets, tids.equipments, tids.rooms);
       for (const c of actifs) {
-        const identity = buildCandidateIdentity(c, { fileAssetId: file.assetId, fileDocumentTypeCode: file.documentTypeCode, liveAssetIds: actx.live, equipmentAssets: actx.equipments, roomAssets: actx.rooms, providerCanonical: actx.providers,
+        const identity = buildCandidateIdentity(c, { fileAssetId: file.assetId, fileDocumentTypeCode: file.documentTypeCode, fileTermQualification: file.termQualification, liveAssetIds: actx.live, equipmentAssets: actx.equipments, roomAssets: actx.rooms, providerCanonical: actx.providers,
           ...documentIdentityContext(file, actifs, todayUtc(), actx) });
         const memeSource = docSources.filter((s) => s.key === c.candidateKey && s.active && !s.opMerged && !s.opInvalidated);
         if (!memeSource.length) continue;
@@ -1610,7 +1623,7 @@ export async function previewOperationDuplicates(accountId: number, operationIds
         const docSources = await loadDocumentSources(tx, accountId, fileId);
         const tids = targetIdsOf([c], file.assetId);
         const actx = await loadAssetContext(tx, accountId, tids.assets, tids.equipments, tids.rooms);
-        const identity = buildCandidateIdentity(c, { fileAssetId: file.assetId, fileDocumentTypeCode: file.documentTypeCode, liveAssetIds: actx.live, equipmentAssets: actx.equipments, roomAssets: actx.rooms, providerCanonical: actx.providers,
+        const identity = buildCandidateIdentity(c, { fileAssetId: file.assetId, fileDocumentTypeCode: file.documentTypeCode, fileTermQualification: file.termQualification, liveAssetIds: actx.live, equipmentAssets: actx.equipments, roomAssets: actx.rooms, providerCanonical: actx.providers,
           ...documentIdentityContext(file, candidatsDoc, todayUtc(), actx) });
         const memeSource = docSources.filter((s) => s.key === c.candidateKey && s.active && !s.opMerged && !s.opInvalidated);
         if (!memeSource.length) continue;
@@ -1804,7 +1817,7 @@ export async function consolidateDocument(accountId: number, fileId: number, opt
       cards.reviewedFiles.push(fileId);
       // Lot 78A (§2A) : identités de tous les candidats actifs du document, et
       // Opérations où chacun a déjà sa source (doublons d'un même document à la réanalyse).
-      const identites = new Map(actifs.map((c) => [c.id, buildCandidateIdentity(c, { fileAssetId: file?.assetId ?? null, fileDocumentTypeCode: file?.documentTypeCode ?? null, liveAssetIds: actx.live, equipmentAssets: actx.equipments, roomAssets: actx.rooms, providerCanonical: actx.providers,
+      const identites = new Map(actifs.map((c) => [c.id, buildCandidateIdentity(c, { fileAssetId: file?.assetId ?? null, fileDocumentTypeCode: file?.documentTypeCode ?? null, fileTermQualification: file?.termQualification ?? null, liveAssetIds: actx.live, equipmentAssets: actx.equipments, roomAssets: actx.rooms, providerCanonical: actx.providers,
         ...documentIdentityContext(file, actifs, today, actx) })]));
       const opsDuDocument = new Map<number, CandidateIdentity[]>();
       for (const s of docSources.filter((x) => x.active && !x.opMerged && !x.opInvalidated)) {
@@ -2080,6 +2093,14 @@ export async function syncCards(accountId: number, cards: OperationCardNeeds): P
   } catch (e) {
     echec = (e as Error).message;
   }
+  // Lot 113AA (#725, D11) : divergences de périodes des événements de référence réexaminés (ne lève jamais ;
+  // une carte manquée est reprise par COH-OPS-PERIOD-RESOLUTION).
+  try {
+    const { syncPeriodConflictCards } = await import('@/services/documents/business-periods/conflict-cards');
+    await syncPeriodConflictCards(accountId, { fileIds: cards.reviewedFiles, operationIds: cards.reviewedOperations });
+  } catch (e) {
+    console.error(`[t3-operations] divergences de périodes du compte ${accountId} non synchronisées :`, (e as Error).message);
+  }
   // Lot 54D (E05) : l'échec n'est plus seulement journalisé — les documents
   // concernés sont marqués (état durable) et repris par le passage T3 suivant
   // (balayage horaire), qui recalcule et resynchronise leurs cartes sans
@@ -2152,6 +2173,8 @@ interface AccountConsolidationResult {
   identityReviewMarked?: number;
   /** Lot 84E (O-6) : liens directs Document ↔ Équipement posés (documents arrivés dans une Opération liée à un équipement). */
   directLinks?: number;
+  /** Lot 113AD : réexamen T3 des divergences de périodes (demandes traitées, appels, issues). */
+  periodRelation?: import('@/services/documents/business-periods/relation-review').PeriodRelationPhaseResult;
 }
 
 type Sql = typeof import('@/db').pgClient;
@@ -2382,6 +2405,19 @@ export async function consolidateAccountOperations(
       console.error(`[t3-operations] identité sémantique T3 (compte ${accountId}) :`, (e as Error).message);
     }
   }
+  // Lot 113AD (#725, D11) : réexamen T3 des divergences de périodes non déclarées (contrat t3-period-relation-v1) —
+  // hors verrou, borné, seulement si le prompt T3 actif porte la branche ; jamais à la consultation.
+  if (opts.operationMatch !== false) {
+    try {
+      const { runPeriodRelationPhase } = await import('@/services/documents/business-periods/relation-review');
+      const pr = await runPeriodRelationPhase(accountId, { beforeCall: opts.beforeWrite });
+      if (pr.processed) res.periodRelation = pr;
+    } catch (e) {
+      if ((await import('@/services/ai/queue/execution-control')).isExecutionCancelled(e)) throw e;
+      res.errors++;
+      console.error(`[t3-operations] réexamen T3 des périodes (compte ${accountId}) :`, (e as Error).message);
+    }
+  }
   // Lot 87B (CODE-09) : réévaluations sémantiques T3 terminées par ce passage — clôturées au journal (0752).
   const { settleIdentityRequests } = await import('../semantic/orchestrator');
   await settleIdentityRequests(accountId);
@@ -2397,7 +2433,7 @@ export async function consolidateAccountOperations(
  * INV-040).
  */
 export async function listAccountsToConsolidate(afterAccountId: number, limit: number, m3PromptVersion: string | null = null): Promise<number[]> {
-  const { M3_PENDING_SQL } = await import('./m3');
+  const [{ M3_PENDING_SQL }, { RELATION_REVIEW_PENDING_SQL }] = await Promise.all([import('./m3'), import('@/services/documents/business-periods/relation-review')]);
   const r = (await (await pg()).unsafe(
     `SELECT account_id FROM (
        SELECT c.account_id FROM document_operation_candidates c WHERE c.t3_pending AND c.account_id > $1
@@ -2419,6 +2455,9 @@ export async function listAccountsToConsolidate(afterAccountId: number, limit: n
        UNION
        -- Lot 78A (§5) : candidats pas encore réévalués par le contrôle d'identité économique.
        SELECT c.account_id FROM document_operation_candidates c WHERE c.account_id > $1 AND ${IDENTITY_REVIEW_PENDING_SQL}
+       UNION
+       -- Lot 113AD (#725) : réexamen T3 des divergences de périodes demandé (bloc 29 actif au moment de la demande).
+       SELECT r.account_id FROM business_period_relation_reviews r WHERE r.account_id > $1 AND ${RELATION_REVIEW_PENDING_SQL('r')}
      ) x
      -- Lot 82A (C-Q10, §3.3) : balayage des seuls comptes éligibles.
      WHERE ${processingEligibleSql('x.account_id')}

@@ -262,6 +262,10 @@ export const DIAG_TABLE_COVERAGE: Readonly<Record<string, DiagTableCoverage>> = 
   t3_open_action_evaluations: C('conflits-arbitrages'),
   agenda_data_conflicts: C('conflits-arbitrages'),
   business_operation_match_decisions: C('conflits-arbitrages'),
+  // Lot 113AA (#725, D11) : décisions de l'utilisateur sur une divergence de périodes d'un événement de référence.
+  business_period_decisions: C('conflits-arbitrages'),
+  // Lot 113AD (#725, D11) : mémoire du réexamen T3 d'une divergence de périodes (sortie IA, validation, preuve citée).
+  business_period_relation_reviews: C('conflits-arbitrages'),
   business_operation_identity_reviews: C('conflits-arbitrages'),
   operation_semantic_reevaluations: C('conflits-arbitrages'),
   // ── Écritures ────────────────────────────────────────────────────────────
@@ -828,6 +832,8 @@ export const DIAG_AI_OPERATION_COVERAGE: Readonly<Record<string, DiagAiOperation
   t3_knowledge_query: { treatment: 'T3', tables: [...CALL_TRACES, 't3_knowledge_queries'] },
   // Lot 97A : demande, décision reçue, validation et mutations au journal 0752 ; décisions de rattachement `AI_IDENTITY`.
   t3_operation_identity: { treatment: 'T3', tables: [...CALL_TRACES, 'operation_semantic_reevaluations', 'business_operation_match_decisions', 'business_operation_sources', 'document_operation_candidates'] },
+  // Lot 113AD (#725) : demande, sortie reçue, validation, classement et preuve citée au journal 1591 ; résolution relue par les périodes.
+  t3_period_relation: { treatment: 'T3', tables: [...CALL_TRACES, 'business_period_relation_reviews', 'document_business_periods', 'business_period_decisions', 'to_process_actions'] },
   retrieve_data: { treatment: 'T2', tables: [...CALL_TRACES, 'verebona_request_runs', 'verebona_ai_runs'] },
   retrieve_evidence: { treatment: 'T2', tables: [...CALL_TRACES, 'verebona_request_runs', 'verebona_ai_runs'] },
   t2_understand: { treatment: 'T2', tables: [...CALL_TRACES, 'verebona_request_runs', 'verebona_ai_runs', 'verebona_command_plans'] },

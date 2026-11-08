@@ -1,0 +1,96 @@
+{
+  "case": "P-T3-PR-01",
+  "description": "Lot 113AD — PERIOD_RELATION (contrat t3-period-relation-v1) : une attestation 2025/2026, puis un second document du même contrat qui modifie la période de garantie sans se déclarer avenant dans son titre ⇒ AMENDMENT certain, la période du second document actualise la première (historique conservé).",
+  "qualification": {
+    "role": "answer"
+  },
+  "context": {
+    "periodRelation": {
+      "today": "2026-11-08",
+      "periodKind": "COVERAGE",
+      "operation": {
+        "typeCode": "CONTRACT",
+        "label": "Assurance habitation",
+        "provider": "Assureur Habitation"
+      },
+      "periods": [
+        {
+          "periodId": 1,
+          "fileId": 9101,
+          "start": "2025-04-01",
+          "end": "2026-03-31",
+          "quote": "Période de garantie : du 01/04/2025 au 31/03/2026",
+          "userCorrected": false
+        },
+        {
+          "periodId": 2,
+          "fileId": 9102,
+          "start": "2025-07-01",
+          "end": "2026-06-30",
+          "quote": "Nouvelle période de garantie : du 01/07/2025 au 30/06/2026",
+          "userCorrected": false
+        }
+      ],
+      "documents": [
+        {
+          "id": 9101,
+          "type": "INSURANCE_CERTIFICATE",
+          "title": "Attestation habitation 2025",
+          "date": "2025-03-15",
+          "provider": "Assureur Habitation",
+          "references": [
+            {
+              "kind": "POLICY",
+              "value": "POL-725"
+            }
+          ],
+          "excerpts": [
+            "Période de garantie : du 01/04/2025 au 31/03/2026",
+            "Contrat POL-725"
+          ]
+        },
+        {
+          "id": 9102,
+          "type": "OTHER",
+          "title": "Courrier assureur juin 2025",
+          "date": "2025-06-20",
+          "provider": "Assureur Habitation",
+          "references": [
+            {
+              "kind": "POLICY",
+              "value": "POL-725"
+            }
+          ],
+          "excerpts": [
+            "La période de garantie est modifiée à compter du 01/07/2025",
+            "Nouvelle période de garantie : du 01/07/2025 au 30/06/2026",
+            "Contrat POL-725"
+          ]
+        }
+      ]
+    }
+  },
+  "recording": {
+    "operationCode": "t3_period_relation",
+    "task": "PERIOD_RELATION",
+    "output": {
+      "task": "PERIOD_RELATION",
+      "relation": "AMENDMENT",
+      "replacingPeriod": "P2",
+      "confidence": "certain",
+      "evidence": [
+        {
+          "document": "D2",
+          "excerpt": "La période de garantie est modifiée à compter du 01/07/2025"
+        }
+      ],
+      "reason": "Le second document modifie la période de garantie de l’attestation : il l’actualise."
+    }
+  },
+  "expected": {
+    "valid": true,
+    "relation": "AMENDMENT",
+    "effect": "REPLACE",
+    "replacingFileId": 9102
+  }
+}

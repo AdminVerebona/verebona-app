@@ -297,7 +297,8 @@ export const OPTIONAL_MASTER_VARIABLES: Readonly<Record<string, readonly string[
 export const OPTIONAL_MASTER_TASKS: Readonly<Record<string, readonly string[]>> = {
   // Lot 85F : KNOWLEDGE_QUERY — compréhension de la connaissance T1 persistée (texte attendu de l'équipe IA).
   // Lot 97A : OPERATION_IDENTITY — identité sémantique d'une Opération à plusieurs sources (texte collé par le PO).
-  t3_master_v1: ['OPERATION_MATCH', 'DOCUMENT_NAMING', 'KNOWLEDGE_QUERY', 'OPERATION_IDENTITY'],
+  // Lot 113AD : PERIOD_RELATION — relation entre deux périodes divergentes (texte collé par le PO, bloc 29).
+  t3_master_v1: ['OPERATION_MATCH', 'DOCUMENT_NAMING', 'KNOWLEDGE_QUERY', 'OPERATION_IDENTITY', 'PERIOD_RELATION'],
   // Lot 97A : AGENDA_REPRESENTATION — représentation Agenda multi-événements (texte collé par le PO).
   t4_master_v1: ['AGENDA_REPRESENTATION'],
   // Lot 61 : mode EVALUATE de T6 (pertinence des interpellations). Sans lui
@@ -321,7 +322,8 @@ export const MASTER_TASKS_TEXT_PENDING: Readonly<Record<string, readonly string[
   // Lot 85F : texte de la branche demandé à l'équipe IA (`85F-t3-comprehension-connaissance-t1`) ;
   // Claude ne modifie aucun prompt. À retirer d'ici à la livraison du texte dans le fichier du dépôt.
   // Lot 97A : OPERATION_IDENTITY (demande `87B-t3-identite-multi-operations`), texte dans le guide du PO.
-  t3_master_v1: ['KNOWLEDGE_QUERY', 'OPERATION_IDENTITY'],
+  // Lot 113AD : PERIOD_RELATION (#725), texte dans le guide du PO (étape 29).
+  t3_master_v1: ['KNOWLEDGE_QUERY', 'OPERATION_IDENTITY', 'PERIOD_RELATION'],
   // Lot 97A : AGENDA_REPRESENTATION (demande `87B-t4-representation-agenda-multi-evenements`) ; T4 est en contexte
   // structuré : la branche est un paragraphe libre repéré par son marqueur, jamais une section exigée.
   t4_master_v1: ['AGENDA_REPRESENTATION'],

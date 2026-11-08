@@ -385,6 +385,27 @@ export const AI_OPERATIONS: Record<string, AiOperationDefinition> = {
     timeoutMs: 45_000, jsonResponse: true, defaultMaxOutputTokens: 2_000,
     outputSchema: 'T3OperationIdentityOutput', active: true, billable: false,
   },
+  // Lot 113AD (Trello #725, D11 de #724, R13 / R14) : réexamen T3 d'une divergence
+  // de périodes entre deux justificatifs d'un événement de référence que les
+  // documents ne déclarent pas (succession, même fait, avenant, rectificatif,
+  // natures différentes, contradiction, abstention ; preuve citée). Contrat
+  // `t3-period-relation-v1` (`documents/business-periods/relation-contract.ts`).
+  // Appelée par la phase du passage T3 du compte (`relation-review.ts`), HORS
+  // lecture, par lots bornés, une seule fois par divergence (mémoire 1591),
+  // seulement si le prompt T3 ACTIF porte la section « BRANCHE TASK =
+  // PERIOD_RELATION » ET le marqueur ; sinon aucune demande (comportement
+  // 113AA). Réutilise les six emplacements T3 : aucun nouvel emplacement.
+  // Branche FACULTATIVE dont le texte est collé par le PO (bloc 29,
+  // `MASTER_TASKS_TEXT_PENDING`). Budget : plafonds existants du rapprochement
+  // sémantique. Non facturée (traitement de fond).
+  t3_period_relation: {
+    operationCode: 't3_period_relation', useCaseCode: 'DATA_RECONCILIATION',
+    label: 'T3 master — relation entre deux périodes divergentes d’un événement de référence (TASK=PERIOD_RELATION)',
+    provider: GEMINI, primaryModel: DOC_PRIMARY, fallbackModels: DOC_FALLBACKS,
+    promptCode: T3_MASTER, masterPromptCode: T3_MASTER, task: 'PERIOD_RELATION', promptVariables: T3_MASTER_VARIABLES,
+    timeoutMs: 30_000, jsonResponse: true, defaultMaxOutputTokens: 800,
+    outputSchema: 'T3PeriodRelationOutput', active: true, billable: false,
+  },
 
   // ── Usage 3 — Assistant (CDC §4.3.4) ──────────────────────────────────────
   retrieve_data: {

@@ -40,6 +40,8 @@ const QUALIFIABLES = [
   't2_understand', 't2_answer', 't2_revalidate',
   't3_link_ambiguity', 't3_operation_match', 't3_document_naming', 't3_knowledge_query',
   't3_operation_identity',
+  // Lot 113AD : relation entre deux périodes divergentes (contrat t3-period-relation-v1).
+  't3_period_relation',
   't4_classify_event', 't4_verify_completion', 't4_temporal_ambiguity', 't4_agenda_representation',
   't6_formulate', 't6_evaluate',
 ];
