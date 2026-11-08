@@ -42,6 +42,7 @@ import { apiClient } from '@/lib/api-client';
 import { useAnalysisBanner } from '@/contexts/AnalysisBannerContext';
 import { DocumentSupplierField } from '@/components/assets/DocumentSupplierField';
 import { displayDocumentTitle } from '@/lib/documents/document-title-rules';
+import { NOTES_DESCRIPTION_LABEL, NOTES_MAX_LENGTH, notesWriteFromEdit, resolveNotesDescription } from '@/lib/documents/notes-description';
 import { openDrawer, restoreFocusOnClose } from '@/lib/drawers';
 import { EntityCard, EntityCardList } from '@/components/drawers/EntityCard';
 import type { AgendaItemFull } from '@/services/agenda/AgendaQueryService';
@@ -108,8 +109,14 @@ interface FullFileData {
   size: number | null;
   supplier: string | null;
   amountCents: number | null;
+  /** Description T1 (interne, compatibilité) — jamais envoyée par l'édition (lot 113Z). */
   description: string | null;
+  /** Texte de l'utilisateur dans « Notes / Description » (lot 113Z). */
   notes: string | null;
+  /** Lot 113Z : reprise en main explicite (vide volontaire compris). */
+  notesUserOwned: boolean;
+  /** Lot 113Z : provenance établie de la description (`'T1'`), sinon null. */
+  descriptionSource: string | null;
   substructureId: number | null;
   equipmentId: number | null;
   assetId: number | null;
@@ -320,8 +327,10 @@ export function DocumentDrawer({ open, onOpenChange, document: doc, onRefresh, a
   const [editSupplier, setEditSupplier] = useState('');
   const [editAmount, setEditAmount] = useState('');
   const [editAmountError, setEditAmountError] = useState(false);
-  const [editDescription, setEditDescription] = useState('');
-  const [editNotes, setEditNotes] = useState('');
+  // Lot 113Z (#723) : un seul champ « Notes / Description » ; `shown` = texte
+  // affiché à l'entrée en édition (référence de « modifié ou non »).
+  const [editNotesDescription, setEditNotesDescription] = useState('');
+  const [shownNotesDescription, setShownNotesDescription] = useState('');
   // Rattachement — lot 111I : sélection MULTIPLE (biens, pièces, équipements).
   const [editTargets, setEditTargets] = useState<TargetsValue>(EMPTY_TARGETS);
   const [targetGroups, setTargetGroups] = useState<TargetOptionGroupView[]>([]);
@@ -590,6 +599,8 @@ export function DocumentDrawer({ open, onOpenChange, document: doc, onRefresh, a
             amountCents: f.amountCents ?? f.amount_cents ?? null,
             description: f.description ?? null,
             notes: f.notes ?? null,
+            notesUserOwned: f.notesUserOwned === true,
+            descriptionSource: typeof f.descriptionSource === 'string' ? f.descriptionSource : null,
             substructureId: f.substructureId ?? f.substructure_id ?? null,
             equipmentId: f.equipmentId ?? f.equipment_id ?? null,
             assetId: f.assetId ?? f.asset_id ?? null,
@@ -751,8 +762,9 @@ export function DocumentDrawer({ open, onOpenChange, document: doc, onRefresh, a
     setEditSupplier(fullData.supplier ?? '');
     setEditAmount(fullData.amountCents != null ? formatNumberForInput(fullData.amountCents / 100) : '');
     setEditAmountError(false);
-    setEditDescription(fullData.description ?? '');
-    setEditNotes(fullData.notes ?? '');
+    const affiche = resolveNotesDescription(fullData).text;
+    setEditNotesDescription(affiche);
+    setShownNotesDescription(affiche);
     // Lot 111I : sélection actuelle (tous les rattachements) ; à défaut, colonnes principales.
     setEditTargets(targetsView ? valueFromTargetsView(targetsView) : {
       assetIds: fullData.assetId ? [fullData.assetId] : [],
@@ -793,6 +805,9 @@ export function DocumentDrawer({ open, onOpenChange, document: doc, onRefresh, a
       if (newAmt !== fullData.amountCents) userEdited.amountCents = true;
     }
 
+    // Lot 113Z : la note n'est envoyée que si le texte AFFICHÉ a été modifié ;
+    // la description T1 n'est jamais envoyée (ni effacée).
+    const ecritureNotes = notesWriteFromEdit(shownNotesDescription, editNotesDescription);
     const response = await fetch(`/api/documents/${doc.id}`, {
       credentials: 'include',
         method: 'PUT',
@@ -804,8 +819,7 @@ export function DocumentDrawer({ open, onOpenChange, document: doc, onRefresh, a
           // Lot 111I : listes (plusieurs biens, pièces, équipements).
           ...targetsBody(editTargets),
           supplier: editSupplier.trim() || null,
-          description: editDescription.trim() || null,
-          notes: editNotes.trim() || null,
+          ...(ecritureNotes.write ? { notesDescription: editNotesDescription } : {}),
           amountCents,
           userEditedFields: userEdited,
         }),
@@ -842,8 +856,7 @@ export function DocumentDrawer({ open, onOpenChange, document: doc, onRefresh, a
         documentDate: editDocDate || null,
         supplier: editSupplier.trim() || null,
         amountCents: isNaN(amountCents as number) ? null : amountCents,
-        description: editDescription.trim() || null,
-        notes: editNotes.trim() || null,
+        ...(ecritureNotes.write ? { notes: ecritureNotes.notes, notesUserOwned: true } : {}),
         rubricCode: effectiveRubric(editClassement),
         documentTypeCode: editClassement.documentTypeCode,
       } : prev);
@@ -872,7 +885,7 @@ export function DocumentDrawer({ open, onOpenChange, document: doc, onRefresh, a
     } finally {
       setIsSaving(false);
     }
-  }, [doc, fullData, editFilename, editClassement, editDocDate, editSupplier, editAmount, editDescription, editNotes, editTargets, onRefresh]);
+  }, [doc, fullData, editFilename, editClassement, editDocDate, editSupplier, editAmount, shownNotesDescription, editNotesDescription, editTargets, onRefresh]);
 
   // Lot 113U : état relu après TOUT échec de lancement (flux, refus HTTP,
   // réseau) — jamais l'état local périmé (« analyse non finalisée » alors
@@ -1031,6 +1044,8 @@ export function DocumentDrawer({ open, onOpenChange, document: doc, onRefresh, a
           amountCents: rf.amountCents ?? rf.amount_cents ?? null,
           description: rf.description ?? null,
           notes: rf.notes ?? null,
+          notesUserOwned: rf.notesUserOwned === true,
+          descriptionSource: typeof rf.descriptionSource === 'string' ? rf.descriptionSource : null,
           substructureId: rf.substructureId ?? rf.substructure_id ?? null,
           equipmentId: rf.equipmentId ?? rf.equipment_id ?? null,
           assetId: rf.assetId ?? rf.asset_id ?? null,
@@ -1597,13 +1612,17 @@ export function DocumentDrawer({ open, onOpenChange, document: doc, onRefresh, a
                   <Label>Montant (€)</Label>
                   <NumberInput value={editAmount} onValueChange={setEditAmount} parseOptions={MONEY_INPUT} showError={editAmountError} placeholder="Ex : 150,00" showButtons={false} />
                 </div>
+                {/* Lot 113Z (#723) : un seul champ, prérempli par la note de l'utilisateur, sinon la description T1. */}
                 <div className="space-y-1.5">
-                  <Label>Description</Label>
-                  <Textarea value={editDescription} onChange={e => setEditDescription(e.target.value)} rows={2} placeholder="Description du document..." />
-                </div>
-                <div className="space-y-1.5">
-                  <Label>Notes</Label>
-                  <Textarea value={editNotes} onChange={e => setEditNotes(e.target.value)} rows={2} placeholder="Notes internes..." />
+                  <Label htmlFor={`doc-${doc.id}-notes-description`}>{NOTES_DESCRIPTION_LABEL}</Label>
+                  <Textarea
+                    id={`doc-${doc.id}-notes-description`}
+                    data-testid="document-notes-description-input"
+                    value={editNotesDescription}
+                    onChange={e => setEditNotesDescription(e.target.value)}
+                    rows={3}
+                    maxLength={NOTES_MAX_LENGTH}
+                  />
                 </div>
 
                 {/* Agenda suggestions from AI — visible in edit mode too */}
@@ -1759,21 +1778,23 @@ export function DocumentDrawer({ open, onOpenChange, document: doc, onRefresh, a
                     </>)}
                   </div>
 
-                  {/* Description — courte, 2 lignes max */}
-                  {fullData?.description && (
-                    <div className="pt-1">
-                      <p className="vb-app-label mb-1">Description</p>
-                      <p className="text-sm text-muted-foreground leading-relaxed line-clamp-2">{fullData.description}</p>
-                    </div>
-                  )}
-
-                  {/* Notes */}
-                  {fullData?.notes && (
-                    <div className="pt-1">
-                      <p className="vb-app-label mb-1">Notes</p>
-                      <p className="text-sm text-muted-foreground leading-relaxed line-clamp-2">{fullData.notes}</p>
-                    </div>
-                  )}
+                  {/* Lot 113Z (#723) : « Notes / Description » — note de l'utilisateur, sinon
+                      description T1 ; marque « détecté automatiquement » seulement si la provenance T1 est établie. */}
+                  {fullData && (() => {
+                    const nd = resolveNotesDescription(fullData);
+                    if (!nd.text) return null;
+                    return (
+                      <div className="pt-1" data-testid="document-notes-description">
+                        <p className="vb-app-label mb-1 flex items-center gap-1">
+                          {NOTES_DESCRIPTION_LABEL}
+                          {nd.origin === 'AI' && (
+                            <Sparkles className="w-2.5 h-2.5 text-[color:var(--accent)] shrink-0" aria-label="Détecté automatiquement" data-testid="document-notes-description-ai" />
+                          )}
+                        </p>
+                        <p className="text-sm text-muted-foreground leading-relaxed line-clamp-3 whitespace-pre-line break-words">{nd.text}</p>
+                      </div>
+                    );
+                  })()}
 
                   {/* Linked agenda items */}
                   {linkedAgendaItems.length > 0 && (

@@ -56,7 +56,20 @@ export async function GET(
     // Lot 87D : titre affiché calculé par la règle UNIQUE (même libellé que la
     // liste, la recherche et les autres vues) — le tiroir l'affiche tel quel.
     const { documentTitleFromRecord } = await import('@/lib/documents/document-title-source');
-    return NextResponse.json({ ...projete, displayTitle: documentTitleFromRecord(file, file.originalFilename ?? 'Document') }, { status: 200 });
+    // Lot 113Z (#723) : champ unique « Notes / Description » (règle unique :
+    // notes utilisateur > description T1 > vide) et sa provenance établie.
+    // La trace T1 (constat, run) reste au diagnostic BO : jamais servie ici.
+    const { readNotesDescriptionMeta } = await import('@/services/documents/notes-description/store');
+    const { resolveNotesDescription } = await import('@/lib/documents/notes-description');
+    const meta = await readNotesDescriptionMeta(accountId, file.id).catch(() => null);
+    const notesDescription = resolveNotesDescription({
+      notes: file.notes, description: file.description,
+      notesUserOwned: meta?.notesUserOwned ?? false, descriptionSource: meta?.descriptionSource ?? null,
+    });
+    return NextResponse.json({
+      ...projete, displayTitle: documentTitleFromRecord(file, file.originalFilename ?? 'Document'),
+      notesUserOwned: meta?.notesUserOwned ?? false, descriptionSource: meta?.descriptionSource ?? null, notesDescription,
+    }, { status: 200 });
   } catch (error) {
     // Refus de session (absente, invalide, révoquée…) ou vérification
     // impossible : 401/403/503 du contrat commun (APP-PERF-20), non

@@ -48,6 +48,7 @@
     "test:e2e:relance-analyse": "vitest --run --config vitest.e2e.config.ts src/test/e2e/scenarios/l113u-relance-analyse.e2e.ts",
     "test:e2e:fournisseur-documents": "vitest --run --config vitest.e2e.config.ts src/test/e2e/scenarios/l113y-fournisseur-documents.e2e.ts src/test/e2e/scenarios/l109b-fournisseurs-fiche-unique.e2e.ts",
     "test:e2e:periodes-metier": "vitest --run --config vitest.e2e.config.ts src/test/e2e/scenarios/l113w-periodes-metier.e2e.ts",
+    "test:e2e:notes-description": "vitest --run --config vitest.e2e.config.ts src/test/e2e/scenarios/l113z-notes-description.e2e.ts",
     "test:e2e:bo-export-json": "vitest --run --config vitest.e2e.config.ts src/test/e2e/scenarios/l113t-bo-export-json.e2e.ts src/test/e2e/scenarios/l84d-bo-executions-exports.e2e.ts src/test/e2e/scenarios/l32e-exemples-et-export.e2e.ts",
     "test:e2e:ia-amelioration": "vitest --run --config vitest.e2e.config.ts src/test/e2e/scenarios/l113i-amelioration-ia.e2e.ts",
     "test:e2e:compte-technique": "vitest --run --config vitest.e2e.config.ts src/test/e2e/scenarios/l103g-compte-technique.e2e.ts src/test/e2e/scenarios/l86a-qualification-couples.e2e.ts src/test/e2e/scenarios/l99b-conformite-prompts.e2e.ts src/test/e2e/scenarios/l82a-eligibilite-comptes.e2e.ts",

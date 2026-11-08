@@ -8,6 +8,8 @@ import { DatePicker } from '@/components/ui/date-picker';
 import { NumberInput } from '@/components/ui/number-input';
 import { MONEY_INPUT, parseMoneyInputToCents } from '@/lib/number-input';
 import { Label } from '@/components/ui/label';
+import { Textarea } from '@/components/ui/textarea';
+import { NOTES_DESCRIPTION_LABEL, NOTES_MAX_LENGTH } from '@/lib/documents/notes-description';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { Upload, X, FileIcon, Loader2, Link as LinkIcon, Camera, ImageIcon, LayoutGrid, Settings, Check, ChevronDown, Video } from 'lucide-react';
 import { FooterPrimaryAction } from '@/components/ui/footer-primary-action';
@@ -235,6 +237,8 @@ export function UnifiedDocumentDialog({
 
   // ── Form fields ─────────────────────────────────────────────────────────────
   const [title, setTitle] = useState('');
+  // Lot 113Z (#723) : texte libre « Notes / Description » (→ note de l'utilisateur), distinct du titre.
+  const [notes, setNotes] = useState('');
   const [documentType, setDocumentType] = useState('AUTRE');
   // Lot 108D : AUCUNE date pré-remplie. Le jour courant pré-rempli devenait
   // la « date du document » de tout dépôt où l'analyse ne lisait pas de date
@@ -480,6 +484,7 @@ export function UnifiedDocumentDialog({
     files.forEach(f => { if (f.preview) URL.revokeObjectURL(f.preview); });
     setFiles([]);
     setTitle('');
+    setNotes('');
     setDocumentType('AUTRE');
     setDocumentDate('');
     setAssetId(preselectedAssetId?.toString() || '0');
@@ -629,7 +634,9 @@ export function UnifiedDocumentDialog({
         documentDate: documentDate || null,
         // Lot 108D : la date n'est jamais pré-remplie — présente, elle est saisie.
         documentDateSource: documentDate ? 'USER' : null,
-        description: title || null,
+        // Lot 113Z : le titre saisi est le titre du document ; le texte libre, la note.
+        title: title.trim() || null,
+        notes: notes.trim() || null,
         supplier: supplier || null,
         amountCents: ctx.amountCents,
       };
@@ -653,7 +660,8 @@ export function UnifiedDocumentDialog({
         assetId: ctx.targetAssetId,
         documentDate: documentDate || null,
         ...(documentDate ? { documentDateSource: 'USER' } : {}),
-        description: title || null,
+        // Lot 113Z : le nom du lien est son titre ; le texte libre est la note.
+        notes: notes.trim() || null,
         supplier: supplier || null,
         amountCents: ctx.amountCents || null,
       }));
@@ -844,9 +852,17 @@ export function UnifiedDocumentDialog({
 
         {showExtraFields && (
           <div className="px-4 pb-4 space-y-4 border-t border-[color:var(--border-subtle)]">
-            <div className="pt-4 space-y-2">
-              <Label htmlFor="doc-title">Titre / Description</Label>
-              <Input id="doc-title" value={title} onChange={e => setTitle(e.target.value)} placeholder="Ex: Facture chaudière – Salon" disabled={isUploading} />
+            {/* Lot 113Z (#723) : titre et texte libre séparés — le titre ne nourrit plus la description.
+                Lien web : son nom (ci-dessus) est déjà son titre. */}
+            {mode !== 'weblink' && (
+              <div className="pt-4 space-y-2">
+                <Label htmlFor="doc-title">Titre</Label>
+                <Input id="doc-title" value={title} onChange={e => setTitle(e.target.value)} placeholder="Ex: Facture chaudière – Salon" disabled={isUploading} />
+              </div>
+            )}
+            <div className={mode === 'weblink' ? 'pt-4 space-y-2' : 'space-y-2'}>
+              <Label htmlFor="doc-notes-description">{NOTES_DESCRIPTION_LABEL}</Label>
+              <Textarea id="doc-notes-description" data-testid="import-notes-description" value={notes} onChange={e => setNotes(e.target.value)} rows={2} maxLength={NOTES_MAX_LENGTH} disabled={isUploading} />
             </div>
 
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">

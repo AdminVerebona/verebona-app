@@ -159,7 +159,9 @@ describe('L67-TYPO — typographie de la charte, casse naturelle', () => {
   it('L67-TYPO-04 — titres de section des tiroirs et onglets : 15 / 700 ou 17 / 700, casse naturelle', () => {
     const doc = read('src/components/assets/DocumentDrawer.tsx');
     expect(doc).toContain('<p className="vb-app-subsection">Informations</p>');
-    expect(doc).toContain('<p className="vb-app-label mb-1">Description</p>');
+    // Lot 113Z (#723) : un seul libellé « Notes / Description » (même classe de titre de rubrique).
+    expect(doc).toContain('<p className="vb-app-label mb-1 flex items-center gap-1">');
+    expect(doc).toContain('NOTES_DESCRIPTION_LABEL');
     const eq = read('src/components/assets/EquipmentDrawer.tsx');
     for (const t of ['Fournisseurs', 'Documents associés']) expect(eq).toContain(`<p className="vb-app-subsection">${t}</p>`);
     // Lot 109I (vocabulaire « événement », extension du #614) : « Agenda associé » devient

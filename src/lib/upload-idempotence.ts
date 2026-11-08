@@ -85,6 +85,10 @@ export function empreinteConfirm(body: Record<string, unknown>): string {
     amountCents: body.amountCents === undefined || body.amountCents === null ? null : entierOuNull(body.amountCents),
     substructureId: entierOuNull(body.substructureId),
     equipmentId: entierOuNull(body.equipmentId),
+    // Lot 113Z : titre et note saisis — ajoutés seulement s'ils sont présents
+    // (l'empreinte d'une confirmation antérieure reste identique au rejeu).
+    ...(texteOuNull(body.title) ? { title: texteOuNull(body.title) } : {}),
+    ...(texteOuNull(body.notes) ? { notes: texteOuNull(body.notes) } : {}),
   });
 }
 

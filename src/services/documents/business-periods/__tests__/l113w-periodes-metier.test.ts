@@ -202,7 +202,10 @@ describe('L113W-U-COH — contrôle de cohérence (reprise de l’historique)', 
   it('en fin de registre, couvert, sans IA ni écriture contractuelle', async () => {
     const { COHERENCE_REGISTRY } = await import('@/services/coherence/registry');
     const { COVERAGE_INVENTORY } = await import('@/services/coherence/registry/coverage');
-    const c = COHERENCE_REGISTRY.at(-1)!;
+    // Lot 113Z : COH-DOC-DESCRIPTION-T1 ajouté ensuite, en fin de registre.
+    const ids = COHERENCE_REGISTRY.map((x) => x.id);
+    const c = COHERENCE_REGISTRY[ids.indexOf('COH-DOC-BUSINESS-PERIODS')];
+    expect(ids.slice(ids.indexOf('COH-SUPPLIER-IDENTITY'), ids.indexOf('COH-DOC-BUSINESS-PERIODS') + 1)).toEqual(['COH-SUPPLIER-IDENTITY', 'COH-DOC-BUSINESS-PERIODS']);
     expect(c).toMatchObject({ id: 'COH-DOC-BUSINESS-PERIODS', status: 'ACTIVE', version: 1, objectType: 'document' });
     expect(c.forbiddenRepairs.join(' ')).toMatch(/appeler l’IA/);
     expect(c.forbiddenRepairs.join(' ')).toMatch(/reconduction/);

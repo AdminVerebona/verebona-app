@@ -158,6 +158,16 @@ function bonusRecence(date: string | null | undefined): number {
 }
 
 /** Extrait borné : le contrat impose 1 500 caractères au plus (§17.7). */
+/** Lot 113Z (#723) : provenance d'une note de l'utilisateur dans une source de l'Assistant. */
+export const USER_DECLARED_PROVENANCE = 'USER_DECLARED';
+/** Préfixe de la note (texte vu par le modèle et dans l'extrait) : déclarée, pas prouvée. */
+export const USER_NOTE_PREFIX = 'Note déclarée par l’utilisateur (non prouvée par le document) :';
+/** Note de l'utilisateur, préfixée de sa provenance ; null si vide. Pure. */
+export function userDeclaredNote(notes: string | null | undefined): string | null {
+  const t = typeof notes === 'string' ? notes.trim() : '';
+  return t ? `${USER_NOTE_PREFIX} ${t.slice(0, 600)}` : null;
+}
+
 function extrait(parts: Array<string | null | undefined>): string {
   return parts.filter(Boolean).join(' · ').slice(0, 1500);
 }
@@ -663,6 +673,8 @@ async function searchDocumentsCanonical(q: RetrievalQuery): Promise<RetrievedSou
   const cond = await conditionTermes([
     assetFiles.retainedTitle, assetFiles.originalFilename, assetFiles.supplier,
     assetFiles.description, assetFiles.documentType, assetFiles.documentTypeCode, assetFiles.extractedText,
+    // Lot 113Z (#723) : la note de l'utilisateur (« Notes / Description ») est cherchée aussi.
+    assetFiles.notes,
   ], termes, q.tolerant);
   if (cond) conditions.push(cond);
 
@@ -673,7 +685,7 @@ async function searchDocumentsCanonical(q: RetrievalQuery): Promise<RetrievedSou
       // Lot 87D : sources du titre affiché (règle unique des vues : liste, fiche, recherche).
       webLinkTitle: assetFiles.webLinkTitle, storageName: assetFiles.filename, s3Key: assetFiles.s3Key, publicId: assetFiles.publicId,
       documentType: assetFiles.documentType, documentTypeCode: assetFiles.documentTypeCode, documentDate: assetFiles.documentDate,
-      supplier: assetFiles.supplier, description: assetFiles.description,
+      supplier: assetFiles.supplier, description: assetFiles.description, notes: assetFiles.notes,
       assetId: assetFiles.assetId, linkedAssetId: assetFiles.linkedAssetId, assetName: assets.name,
       analysisState: assetFiles.analysisState,
       contentHash: assetFiles.sha256Hash, size: assetFiles.size, groupedIntoFileId: assetFiles.groupedIntoFileId,
@@ -703,17 +715,21 @@ async function searchDocumentsCanonical(q: RetrievalQuery): Promise<RetrievedSou
       fields: {
         title: l.title, originalFilename: l.filename, supplier: l.supplier, description: l.description,
         documentType: [l.documentTypeCode, l.documentType], content: l.textHead, assetName: l.assetName,
+        notes: l.notes,
       },
     });
     if (!e) return [];
-    const score = classer(qq, [titre, l.filename, l.supplier, l.documentType, l.documentTypeCode, l.description, l.textHead].filter(Boolean).join(' '), bonus, e);
+    const note = userDeclaredNote(l.notes);
+    const score = classer(qq, [titre, l.filename, l.supplier, l.documentType, l.documentTypeCode, l.description, l.notes, l.textHead].filter(Boolean).join(' '), bonus, e);
     const statut = documentAnalysisStatus(l.analysisState);
     return [{
       id: `doc_${l.id}`,
       type: 'document' as const,
       title: titre,
       // Lot 87D : type en libellé français (Type V2 enregistré, sinon nature V1) — jamais un code.
-      content: extrait([documentTypeLabelOrNull(l.documentTypeCode) ?? (documentCodeLabel(l.documentType) || null), l.supplier, l.documentDate, l.description]),
+      // Lot 113Z : la note de l'utilisateur est rendue À PART, avec sa provenance
+      // « déclarée par l'utilisateur » — jamais confondue avec un fait du document.
+      content: extrait([documentTypeLabelOrNull(l.documentTypeCode) ?? (documentCodeLabel(l.documentType) || null), l.supplier, l.documentDate, l.description, note]),
       meta: {
         documentId: l.id, assetId: l.assetId ?? l.linkedAssetId ?? null, assetName: l.assetName ?? null,
         date: l.documentDate ?? null, analysisStatus: statut,
@@ -722,6 +738,7 @@ async function searchDocumentsCanonical(q: RetrievalQuery): Promise<RetrievedSou
         supplier: l.supplier ?? null,
         contentHash: l.contentHash ?? null, size: l.size ?? null,
         logicalFileId: l.groupedIntoFileId ?? l.id,
+        ...(note ? { userNoteProvenance: USER_DECLARED_PROVENANCE } : {}),
         ...e.meta,
       },
       relevanceScore: score,

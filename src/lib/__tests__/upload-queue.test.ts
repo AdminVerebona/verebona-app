@@ -130,7 +130,8 @@ describe('concurrence bornée (APP-PERF-25, CA-02)', () => {
     expect(bilans[0].fileIds.sort()).toEqual([100, 101, 102]);
     expect(s.etat.confirms.every((c) => !('fileIds' in c))).toBe(true); // jamais de confirmation groupée
     // Plusieurs documents : titre, fournisseur et montant non recopiés.
-    expect(s.etat.confirms.every((c) => c.description === null && c.supplier === null && c.amountCents === null)).toBe(true);
+    // Lot 113Z : titre et « Notes / Description » non recopiés non plus ; plus aucune `description` envoyée.
+    expect(s.etat.confirms.every((c) => c.title === null && c.notes === null && !('description' in c) && c.supplier === null && c.amountCents === null)).toBe(true);
   });
 
   it('un seul fichier : métadonnées saisies transmises', async () => {

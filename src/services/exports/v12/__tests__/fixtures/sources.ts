@@ -28,7 +28,6 @@ export function doc(over: Partial<SourceDocument> & { kind: DocKind; title: stri
     s3Bucket: null,
     supplier: null,
     amountCents: null,
-    description: null,
     cilRubricCodes: [],
     codes: [over.kind],
     equipmentId: null,

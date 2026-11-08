@@ -56,6 +56,8 @@ import { describeEvidenceWriteErrors, persistProjectedFacts } from './steps/pers
 import {
   computeInputHash, finalizeRunWrites, loadReplayableRun, persistAnalysisResult,
 } from './persistence/analysis-result.repository';
+import { descriptionRemovedAtValidation } from '@/services/documents/notes-description/t1-description';
+import { recordDescriptionT1Status } from '@/services/documents/notes-description/store';
 import { titleInputsFromAnalysis } from './document-title';
 import { ensureBusinessTitle } from '@/services/documents/document-title.service';
 import { notifyLotCompleted } from './lot-notification';
@@ -365,7 +367,16 @@ export async function runSourceAnalysis(
         master: { masterPromptVersion: master.promptVersion },
         // Lot 75C (F) : sortie rejouable tant que les écritures ne sont pas achevées.
         masterSnapshot: input.sourceType === 'file' ? masterSnapshotOf(master, rawOutcomes) : undefined,
-      }).catch((e) => { rec.fail('ANALYSIS_RUN', e); throw e; });
+        // Lot 113Z (#723) : description produite puis retirée par la validation (constat tracé).
+        descriptionRemovedAtValidation: descriptionRemovedAtValidation(master.sourceLayer?.unresolvedFacts),
+      }).catch(async (e) => {
+        rec.fail('ANALYSIS_RUN', e);
+        // Lot 113Z : description produite mais non persistée — constat tracé hors transaction (ne lève jamais).
+        if (result.document.description?.value?.trim()) {
+          await recordDescriptionT1Status(db, { accountId: input.accountId, fileId: leadSourceId, status: 'PERSIST_FAILED' });
+        }
+        throw e;
+      });
       rec.ok('ANALYSIS_RUN', {
         runId: persisted.runId, deduplicated: persisted.deduplicated === true,
         ...(persisted.repaired?.length ? { repaired: persisted.repaired } : {}),

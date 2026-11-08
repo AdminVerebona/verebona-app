@@ -163,7 +163,7 @@ const baseAccountDataRepository: BaseAccountDataPort = {
     // description) et le contenu extrait par T1 (texte intégral).
     const clean = terms.filter((t) => t.length >= 3).slice(0, 8);
     if (clean.length === 0) return [];
-    const hay = `unaccent(lower(coalesce(f.retained_title,'') || ' ' || coalesce(f.original_filename,'') || ' ' || coalesce(f.supplier,'') || ' ' || coalesce(f.description,'')))`;
+    const hay = `unaccent(lower(coalesce(f.retained_title,'') || ' ' || coalesce(f.original_filename,'') || ' ' || coalesce(f.supplier,'') || ' ' || coalesce(f.description,'') || ' ' || coalesce(f.notes,'')))`; // lot 113Z : note de l'utilisateur
     // Lot 33 : début de mot, jamais une sous-chaîne d'un autre mot.
     const score = clean.map((_, i) => `(CASE WHEN ${hay} ~ $${i + 3} THEN 1 ELSE 0 END)`).join(' + ');
     const meta = rows<DocumentHit & { matchedTerms: number }>(await withDocumentTitles(pgClient.unsafe(

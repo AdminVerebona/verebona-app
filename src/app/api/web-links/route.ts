@@ -1,3 +1,5 @@
+import { NOTES_MAX_LENGTH } from '@/lib/documents/notes-description';
+import { markNotesUserOwned } from '@/services/documents/notes-description/store';
 import { NextRequest, NextResponse } from 'next/server';
 import { db } from '@/db';
 import { assetFiles, assets } from '@/db/schema';
@@ -69,10 +71,15 @@ export async function POST(request: NextRequest) {
     try { body = await request.json(); }
     catch { return NextResponse.json({ error: 'INVALID_BODY' }, { status: 400 }); }
 
-    const { url, title, documentType, assetId, documentDate, documentDateSource, description, supplier, amountCents } = body as {
+    const { url, title, documentType, assetId, documentDate, documentDateSource, description, notes, supplier, amountCents } = body as {
       url?: string; title?: string; documentType?: string; assetId?: number | string | null;
-      documentDate?: string; documentDateSource?: string; description?: string; supplier?: string; amountCents?: number;
+      documentDate?: string; documentDateSource?: string; description?: string; notes?: string; supplier?: string; amountCents?: number;
     };
+    // Lot 113Z (#723) : le nom du lien est son titre ; le texte libre est la
+    // note de l'utilisateur (« Notes / Description »), jamais la description
+    // T1. Client antérieur : `description` (« Titre / Description ») lu comme une note.
+    const noteSaisie = (typeof notes === 'string' && notes.trim() ? notes.trim()
+      : typeof description === 'string' && description.trim() ? description.trim() : '').slice(0, NOTES_MAX_LENGTH) || null;
 
     if (!url || !url.trim()) return NextResponse.json({ error: 'MISSING_URL', message: 'URL requise' }, { status: 400 });
     if (!title || !title.trim()) return NextResponse.json({ error: 'MISSING_TITLE', message: 'Nom du document requis' }, { status: 400 });
@@ -113,7 +120,7 @@ export async function POST(request: NextRequest) {
       documentType: (typeof documentType === 'string' && documentType) ? documentType : 'AUTRE',
       documentDate: dateDepot.documentDate,
       ...(dateDepot.markUserEdited ? { userEditedFields: { documentDate: true } } : {}),
-      description: description || null,
+      notes: noteSaisie,
       supplier: supplier || null,
       amountCents: amountCents || null,
       uploadStatus: 'COMPLETED',
@@ -126,6 +133,7 @@ export async function POST(request: NextRequest) {
     }).returning();
 
     if (!newWebLink) throw new Error('Échec de la création');
+    if (noteSaisie) await markNotesUserOwned(db, accountId, newWebLink.id);
 
     return NextResponse.json({ success: true, webLink: newWebLink }, { status: 201 });
   } catch (error) {

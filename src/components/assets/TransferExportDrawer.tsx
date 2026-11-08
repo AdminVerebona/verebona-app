@@ -22,6 +22,7 @@ import { Input } from '@/components/ui/input';
 import { ScrollArea } from '@/components/ui/scroll-area';
 import { CalendarDays, ChevronDown, ChevronRight, Download, FileText, Image, Loader2, Package, Send, Wrench, X } from 'lucide-react';
 import { apiClient } from '@/lib/api-client';
+import { THIRD_PARTY_NOTES_DESCRIPTION_DEFAULT, THIRD_PARTY_NOTES_DESCRIPTION_OPTION_LABEL } from '@/services/documents/notes-description/third-party';
 import { toast } from 'sonner';
 import { documentTitleFromRecord } from '@/lib/documents/document-title-source';
 import { documentTypeLabelOrNull, userFacingLabel } from '@/lib/referential/user-facing-labels';
@@ -97,6 +98,8 @@ export function TransferExportDrawer({ assetId, usage, planType, assetCategory, 
   const [recipientEmail, setRecipientEmail] = useState('');
   const [keepActive, setKeepActive] = useState(false);
   const [includeThumbnail, setIncludeThumbnail] = useState(true);
+  // Lot 113Z (#723) : « Notes / Description » des documents exclu par défaut d'une transmission à un tiers.
+  const [includeNotesDescription, setIncludeNotesDescription] = useState<boolean>(THIRD_PARTY_NOTES_DESCRIPTION_DEFAULT);
   const [busy, setBusy] = useState(false);
 
   useEffect(() => {
@@ -149,6 +152,7 @@ export function TransferExportDrawer({ assetId, usage, planType, assetCategory, 
             includePhotos: selPhotos.size > 0, selectedPhotoIds: [...selPhotos],
             includeEvents: selAgenda.size > 0, selectedEventIds: [...selAgenda],
             includeThumbnail: !!(thumbnailUrl && includeThumbnail),
+            includeNotesDescription: selDocs.size > 0 && includeNotesDescription === true,
           },
         });
         toast.success('Invitation de transmission envoyée');
@@ -177,7 +181,7 @@ export function TransferExportDrawer({ assetId, usage, planType, assetCategory, 
     } finally {
       setBusy(false);
     }
-  }, [isTransmission, recipientEmail, assetId, keepActive, selDocs, selEquips, selPhotos, selAgenda, thumbnailUrl, includeThumbnail, onSuccess, docs.length, photos.length]);
+  }, [isTransmission, recipientEmail, assetId, keepActive, selDocs, selEquips, selPhotos, selAgenda, thumbnailUrl, includeThumbnail, includeNotesDescription, onSuccess, docs.length, photos.length]);
 
   const Icon = isTransmission ? Send : Package;
   return (
@@ -201,7 +205,13 @@ export function TransferExportDrawer({ assetId, usage, planType, assetCategory, 
               <div className="space-y-2">
                 <p className="mb-3 vb-app-subsection">Contenu à inclure</p>
                 <Group icon={FileText} label="Documents" rows={docs} selected={selDocs} emptyLabel="Aucun document"
-                  onToggle={(id) => setSelDocs((s) => toggleIn(s, id))} onToggleAll={() => setSelDocs((s) => (s.size === docs.length ? new Set() : new Set(docs.map((x) => x.id))))} />
+                  onToggle={(id) => setSelDocs((s) => toggleIn(s, id))} onToggleAll={() => setSelDocs((s) => (s.size === docs.length ? new Set() : new Set(docs.map((x) => x.id))))}
+                  extra={isTransmission && docs.length > 0 ? (
+                    <label className="flex cursor-pointer items-center gap-3 px-4 py-2.5 hover:bg-[var(--accent-soft)]" data-testid="transfer-include-notes-description">
+                      <Checkbox checked={includeNotesDescription} onCheckedChange={(v) => setIncludeNotesDescription(v === true)} />
+                      <span className="min-w-0 flex-1"><span className="block text-xs font-medium">{THIRD_PARTY_NOTES_DESCRIPTION_OPTION_LABEL}</span></span>
+                    </label>
+                  ) : undefined} />
                 <Group icon={Image} label="Photos" rows={photos} selected={selPhotos} emptyLabel="Aucune photo"
                   onToggle={(id) => setSelPhotos((s) => toggleIn(s, id))} onToggleAll={() => setSelPhotos((s) => (s.size === photos.length ? new Set() : new Set(photos.map((x) => x.id))))}
                   extra={isTransmission && thumbnailUrl ? (

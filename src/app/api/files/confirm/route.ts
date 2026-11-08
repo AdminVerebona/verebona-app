@@ -21,6 +21,9 @@ import { deciderConfirm, empreinteConfirm, estCleOperation, uploadOperationLockK
 import { verificationObjetActive, verifierObjetDepose } from '@/lib/upload-object-check';
 import { toUserFile } from '@/services/ai/processing-status/user-file';
 import { resolveUploadDocumentDate } from '@/services/documents/upload-document-date';
+import { isValidBusinessTitle } from '@/lib/documents/document-title-rules';
+import { NOTES_MAX_LENGTH } from '@/lib/documents/notes-description';
+import { markNotesUserOwned } from '@/services/documents/notes-description/store';
 
 type LigneFichier = typeof assetFiles.$inferSelect;
 
@@ -80,6 +83,8 @@ export async function POST(request: NextRequest) {
       documentDate,
       documentDateSource,
       description,
+      title,
+      notes,
       supplier,
       amountCents,
       substructureId,
@@ -281,7 +286,22 @@ export async function POST(request: NextRequest) {
     // Titre et fournisseur saisis s'appliquent à un dépôt d'UN fichier : sur
     // plusieurs documents distincts, un titre commun serait faux pour tous
     // sauf un. L'analyse les renseigne alors document par document.
-    if (description && idsDemandes.length === 1) updateData.description = description;
+    // Lot 113Z (#723) : le titre saisi devient le TITRE du document (source
+    // USER, jamais renommé automatiquement) et le texte libre la note de
+    // l'utilisateur (« Notes / Description », reprise en main) — plus rien
+    // n'est versé dans `description` (description T1). Un client antérieur
+    // envoyait « Titre / Description » dans `description` : lu comme une note
+    // (texte de l'utilisateur, conservé et protégé, jamais perdu).
+    const unSeul = idsDemandes.length === 1;
+    const titreSaisi = typeof title === 'string' ? title.trim().slice(0, 300) : '';
+    if (unSeul && titreSaisi && isValidBusinessTitle(titreSaisi, { s3Key: fileRecords[0]?.s3Key ?? null, publicId: fileRecords[0]?.publicId ?? null })) {
+      updateData.retainedTitle = titreSaisi;
+      updateData.titleSource = 'USER';
+    }
+    const noteSaisie = typeof notes === 'string' && notes.trim() ? notes.trim()
+      : typeof description === 'string' && description.trim() ? description.trim() : '';
+    const noteEcrite = unSeul && noteSaisie ? noteSaisie.slice(0, NOTES_MAX_LENGTH) : null;
+    if (noteEcrite) updateData.notes = noteEcrite;
     if (supplier && idsDemandes.length === 1) updateData.supplier = supplier;
     if (amountCents !== undefined && amountCents !== null && idsDemandes.length === 1) {
       updateData.amountCents = parseInt(amountCents.toString());
@@ -364,7 +384,12 @@ export async function POST(request: NextRequest) {
           return { kind: 'quota', decision };
         }
       }
-      return { kind: 'ok', files: await confirmer(tx) };
+      const confirmes = await confirmer(tx);
+      // Lot 113Z : note saisie au dépôt = reprise en main (même transaction).
+      if (noteEcrite && confirmes.length === 1 && confirmes[0].accountId) {
+        await markNotesUserOwned(tx as never, confirmes[0].accountId, confirmes[0].id);
+      }
+      return { kind: 'ok', files: confirmes };
     };
     const issue: Issue = accountForGuard
       ? await withAccountStorageLock(accountForGuard, sousVerrou)

@@ -576,6 +576,7 @@ async function documentDossier(ctx: Ctx, id: number): Promise<EntityDossier['ent
   await tableSection(ctx, 'extractions', 'synthese', 'Extractions T1 (document_extractions) — montant, devise, date, fournisseur', 'document_extractions',
     `SELECT * FROM document_extractions WHERE account_id = $1 AND file_id = $2 ORDER BY extracted_at DESC NULLS LAST, id DESC`, [A, id],
     'amount_cents + currency : montant documentaire extrait ; full_text masqué (longueur seule).');
+  await notesDescriptionSection(ctx, id, row);
   await tableSection(ctx, 'field-values', 'synthese', 'Champs documentaires validés (document_field_values)', 'document_field_values',
     `SELECT * FROM document_field_values WHERE account_id = $1 AND file_id = $2 ORDER BY field_key, id`, [A, id]);
 
@@ -648,6 +649,54 @@ async function documentDossier(ctx: Ctx, id: number): Promise<EntityDossier['ent
     'Contenu détaillé : BO › Exécutions & logs › rapport (consultation journalisée).');
 
   return { type: 'document', typeLabel: ENTITY_LABELS.document, id, table: 'asset_files', name, status: str(row.analysis_state), statusLabel: `${str(row.analysis_state) ?? 'NULL'}${deleted ? ' — supprimé logiquement' : ''}` };
+}
+
+// ── Lot 113Z (#723 §4) : chaîne « Notes / Description » d'un document ──────
+
+/**
+ * Compare, sans SQL côté PO : dernière sortie T1 (`document.description` du run
+ * de référence), extraction persistée, `asset_files.description`, constat T1
+ * tracé, reprise en main de l'utilisateur et historique d'écritures (journal).
+ * Verdict = cause PROUVÉE par ces données, sinon « non prouvée ». Le contenu
+ * de la note de l'utilisateur n'est jamais servi (longueur seulement).
+ */
+async function notesDescriptionSection(ctx: Ctx, id: number, row: Row): Promise<void> {
+  const A = ctx.accountId;
+  await section(ctx, {
+    id: 'notes-description', tab: 'synthese', title: 'Notes / Description — chaîne T1 et reprise en main (lot 113Z)',
+    description: 'Sortie T1 de référence → validation → extraction → asset_files.description ; note de l’utilisateur (longueur seule) ; journal des écritures du tiroir.',
+  }, async () => {
+    const { diagnoseDescriptionChain, runDescriptionOf, DESCRIPTION_CHAIN_LABELS } = await import('@/services/documents/notes-description/t1-description');
+    const has1580 = 'description_source' in row || (await ctx.q(`SELECT 1 FROM information_schema.columns WHERE table_schema = 'public' AND table_name = 'asset_files' AND column_name = 'description_source'`, [])).length > 0;
+    const meta = has1580
+      ? (await ctx.q(`SELECT notes_user_owned, notes_updated_at, description_source, description_t1_status, description_t1_status_at, description_t1_run_id FROM asset_files WHERE id = $1 AND account_id = $2`, [id, A]))[0] ?? {}
+      : {};
+    const [run] = await ctx.q(`SELECT id, created_at, prompt_version, raw_response_json FROM document_analysis_runs
+       WHERE account_id = $1 AND asset_file_id = $2 AND status = 'completed' ORDER BY is_current_reference DESC, id DESC LIMIT 1`, [A, id]);
+    const [ext] = await ctx.q(`SELECT description, extracted_at FROM document_extractions WHERE account_id = $1 AND file_id = $2 ORDER BY extracted_at DESC NULLS LAST, id DESC LIMIT 1`, [A, id]);
+    const retraits = await ctx.q(`SELECT count(*)::int AS n FROM document_unresolved_facts WHERE account_id = $1 AND file_id = $2
+       AND status <> 'RETAINED' AND (coalesce(raw_key, '') ~ 'document\\.description' OR coalesce(detail, '') ~ 'document\\.description')`, [A, id]);
+    const journal = await ctx.q(`SELECT timestamp, details FROM admin_audit_log WHERE target_type = 'document' AND target_id = $1 AND details ILIKE '%Notes / Description%' ORDER BY timestamp DESC`, [id]);
+    const runDescription = run ? runDescriptionOf(run.raw_response_json) : null;
+    const userEdited = (() => { try { const u = typeof row.user_edited_fields === 'string' ? JSON.parse(row.user_edited_fields) : row.user_edited_fields; return (u as Record<string, unknown> | null)?.description === true; } catch { return false; } })();
+    const verdict = diagnoseDescriptionChain({
+      runExists: !!run, runDescription, removedAtValidation: Number(retraits[0]?.n ?? 0) > 0,
+      extraction: str(ext?.description), current: str(row.description), t1Status: str(meta.description_t1_status), userLocked: userEdited,
+    });
+    const notes = typeof row.notes === 'string' ? row.notes : null;
+    const synth: Row = {
+      verdict, verdict_label: DESCRIPTION_CHAIN_LABELS[verdict],
+      run_id: run?.id ?? null, run_created_at: run?.created_at ?? null, run_prompt_version: run?.prompt_version ?? null,
+      run_description: runDescription, retraits_validation: Number(retraits[0]?.n ?? 0),
+      extraction_description: str(ext?.description), extraction_at: ext?.extracted_at ?? null,
+      asset_files_description: str(row.description), description_source: meta.description_source ?? (has1580 ? null : 'colonnes 1580 absentes'),
+      description_t1_status: meta.description_t1_status ?? null, description_t1_status_at: meta.description_t1_status_at ?? null, description_t1_run_id: meta.description_t1_run_id ?? null,
+      user_edited_description: userEdited, notes_longueur: notes ? notes.trim().length : 0,
+      notes_user_owned: meta.notes_user_owned ?? false, notes_updated_at: meta.notes_updated_at ?? null,
+      journal_ecritures: journal.length ? journal.map((j) => `${String(j.timestamp instanceof Date ? j.timestamp.toISOString() : j.timestamp)} — ${String(j.details)}`).join(' | ') : null,
+    };
+    return { fields: Object.keys(synth).map((k) => columnField('notes_description', k, synth[k], synth, k)) };
+  });
 }
 
 // ── Lot 76H : diagnostic des doublons d'interventions (cause réelle, §3.1) ──

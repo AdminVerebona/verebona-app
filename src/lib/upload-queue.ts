@@ -86,7 +86,15 @@ export interface MetaConfirmation {
    * pré-remplie) — le serveur la pose comme correction prioritaire.
    */
   documentDateSource?: 'USER' | null;
-  description: string | null;
+  /**
+   * Lot 113Z (#723) : titre saisi (→ titre du document, source USER) et texte
+   * libre « Notes / Description » (→ note de l'utilisateur) — plus jamais
+   * versés dans la description T1.
+   */
+  title?: string | null;
+  notes?: string | null;
+  /** @deprecated lot 113Z — dépôts restaurés d'une version antérieure seulement (lu comme une note). */
+  description?: string | null;
   supplier: string | null;
   amountCents: number | null;
 }
@@ -355,7 +363,7 @@ export class FileDepot {
         // Titre, fournisseur et montant saisis ne valent que pour un dépôt
         // d'un seul fichier : sur plusieurs documents, ils seraient faux pour
         // tous sauf un. L'analyse les renseigne document par document.
-        meta: seul ? meta : { ...meta, description: null, supplier: null, amountCents: null },
+        meta: seul ? meta : { ...meta, title: null, notes: null, description: null, supplier: null, amountCents: null },
         creeLe: Date.now(),
         fichierDisponible: true,
       });
@@ -617,7 +625,9 @@ export class FileDepot {
       documentType: e.meta.documentType,
       documentDate: e.meta.documentDate,
       ...(e.meta.documentDate && e.meta.documentDateSource === 'USER' ? { documentDateSource: 'USER' } : {}),
-      description: e.meta.description,
+      title: e.meta.title ?? null,
+      notes: e.meta.notes ?? null,
+      ...(e.meta.description ? { description: e.meta.description } : {}),
       supplier: e.meta.supplier,
       amountCents: e.meta.amountCents,
     };

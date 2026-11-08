@@ -85,6 +85,7 @@ interface SelectedPayload {
   selectedPhotoIds: number[];
   includeEvents: boolean;
   selectedEventIds: number[];
+  includeNotesDescription?: boolean;
 }
 
 
@@ -119,7 +120,7 @@ export async function POST(
     }
     const keepActiveAfterTransmission = body.keepActiveAfterTransmission === true;
 
-    const selectedPayload: SelectedPayload = {
+    const selectedPayloadDemande: SelectedPayload = {
       includeDocuments: body.selectedPayload?.includeDocuments ?? true,
       selectedDocIds: body.selectedPayload?.selectedDocIds ?? [],
       includeEquipments: body.selectedPayload?.includeEquipments ?? true,
@@ -128,12 +129,20 @@ export async function POST(
       selectedPhotoIds: body.selectedPayload?.selectedPhotoIds ?? [],
       includeEvents: body.selectedPayload?.includeEvents ?? true,
       selectedEventIds: body.selectedPayload?.selectedEventIds ?? [],
+      // Lot 113Z (#723) : « Notes / Description » exclu sauf choix explicite.
+      includeNotesDescription: body.selectedPayload?.includeNotesDescription === true,
     };
 
     // Lot 72D : compte de la SESSION (le bien vient d'y être vérifié), et non
     // la première adhésion de l'utilisateur, sans ordre.
     const accountId = session.currentAccountId ?? null;
     if (!accountId) return NextResponse.json({ error: 'NO_ACCOUNT' }, { status: 400 });
+
+    // Lot 113Z (sécurité, isolation des comptes) : seuls les éléments du COMPTE
+    // émetteur et du BIEN transmis sont enregistrés ; le reste est ignoré sans
+    // message (anti-énumération). Revérifié à l'acceptation.
+    const { scopeTransmissionSelection } = await import('@/services/transmission/transmission-scope');
+    const { selection: selectedPayload } = await scopeTransmissionSelection(accountId, assetId, selectedPayloadDemande, 'creation');
 
     // Build snapshot at transmission time
     // X-02 (lot 16) : source canonique ; `snapshot.dataSource` est figé dans

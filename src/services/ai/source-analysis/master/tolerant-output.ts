@@ -146,6 +146,9 @@ export interface T1NormalisationReport {
   truncatedValueDecisions?: number;
 }
 
+/** Lot 113Z : schéma réel de `document.description` (méta du contrat), pour un retrait isolé. */
+const T1_DESCRIPTION_META = T1AnalyzeDocumentOutput.shape.document.removeDefault().shape.description.unwrap();
+
 /** Tableau validé SANS borne de lignes (lot de débordement). */
 const t1TableSansBorne = t1Table.extend({ rows: z.array(t1Table.shape.rows.element) });
 
@@ -223,7 +226,23 @@ function prepare(brut: unknown): unknown {
   const doc = isObj(out.document) ? out.document : undefined;
   if (doc) {
     if (isObj(doc.title) && vide(doc.title.value)) delete doc.title;
+    // Lot 113Z (#723, §3.B) : description vide = absente (abstention) ; description
+    // mal formée retirée SEULE (original conservé) — jamais l'échec de toute
+    // l'extraction pour un résumé, jamais une description inventée ou réparée.
+    if ('description' in doc) {
+      const ds = doc.description;
+      if (ds === null || ds === undefined || (isObj(ds) && vide(ds.value))) delete doc.description;
+      else if (!isObj(ds)) { garder('REMOVED', 'document.description', structuredClone(ds), null); delete doc.description; }
+    }
     for (const [k, max] of [['title', 300], ['description', 2000]] as const) if (isObj(doc[k])) cut(doc[k] as Obj, 'value', max, `document.${k}`);
+    if (isObj(doc.description)) {
+      const dsc = doc.description;
+      if (typeof dsc.confidence === 'string') {
+        const conf = dsc.confidence.trim().toLowerCase();
+        dsc.confidence = conf === 'uncertain' ? 'probable' : conf;
+      }
+      if (!T1_DESCRIPTION_META.safeParse(dsc).success) { garder('REMOVED', 'document.description', structuredClone(dsc), null); delete doc.description; }
+    }
     const d = doc.documentDate;
     if (isObj(d)) {
       const iso = normalizeDateValue(d.value);

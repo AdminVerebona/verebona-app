@@ -193,7 +193,9 @@ describe('L100E-U-COH — COH-TODO-PUBLISHABILITY (nettoyage rétroactif, point 
       // Lot 113G : identité des fiches fournisseur, doublons réels soumis une fois par paire (fin de registre).
       'COH-SUPPLIER-IDENTITY',
       // Lot 113W (#724) : périodes métier des documents, en fin de registre.
-      'COH-DOC-BUSINESS-PERIODS']);
+      'COH-DOC-BUSINESS-PERIODS',
+      // Lot 113Z (#723) : description T1 reprise depuis l'extraction persistée, en fin de registre.
+      'COH-DOC-DESCRIPTION-T1']);
     const c = getCheck(PUBLISHABILITY_CHECK_ID)!;
     expect(c).toMatchObject({ status: 'ACTIVE', version: 1, objectType: 'to_process_action' });
     expect(c.forbiddenRepairs).toEqual(expect.arrayContaining(['écrire une valeur de l’objet', 'fermer une carte retenue pour cause technique', 'rouvrir une carte fermée par l’utilisateur']));

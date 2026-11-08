@@ -31,6 +31,8 @@ import { CopyObjectCommand } from '@aws-sdk/client-s3';
 import { s3Client, S3_BUCKET } from '@/lib/s3-client';
 import { generateS3Key, parseS3Key } from '@/lib/s3-naming';
 import { withoutSaleFields } from '@/lib/assets/sale-fields';
+import { notesDescriptionForThirdParty } from '@/services/documents/notes-description/third-party';
+import { markDescriptionSourceT1, markNotesUserOwned, readNotesDescriptionMetaMany } from '@/services/documents/notes-description/store';
 
 /**
  * Copie un objet S3 vers une nouvelle clé propre au destinataire.
@@ -74,6 +76,12 @@ interface SelectedPayload {
   includeEvents: boolean;
   selectedEventIds: number[];
   includeThumbnail?: boolean;
+  /**
+   * Lot 113Z (#723) : contenu « Notes / Description » des documents (T1 ou
+   * utilisateur) transmis au destinataire — SEULEMENT sur choix explicite de
+   * l'émetteur ; absent ou faux = exclu (défaut).
+   */
+  includeNotesDescription?: boolean;
 }
 
 interface DocumentRef {
@@ -273,6 +281,19 @@ export async function POST(
     includeThumbnail: true,
   };
   try { selected = { ...selected, ...JSON.parse(row.selectedPayload || '{}') }; } catch {}
+
+  // ══════════════════════════════════════════════════════════════════════
+  // LOT 113Z — PÉRIMÈTRE DE LA SÉLECTION (isolation des comptes)
+  //
+  // Défense principale : la sélection enregistrée (y compris par une
+  // version antérieure, qui ne la filtrait pas) est restreinte aux éléments
+  // du COMPTE émetteur et du BIEN transmis. Un identifiant étranger est
+  // ignoré silencieusement (anti-énumération), trace serveur en nombres.
+  // ══════════════════════════════════════════════════════════════════════
+  {
+    const { scopeTransmissionSelection } = await import('@/services/transmission/transmission-scope');
+    selected = (await scopeTransmissionSelection(row.accountId, row.assetId, selected, 'acceptation')).selection;
+  }
 
   // ══════════════════════════════════════════════════════════════════════
   // QUI ACCEPTE ?
@@ -507,6 +528,8 @@ export async function POST(
           .from(assetFiles)
           .where(and(
             inArray(assetFiles.id, selected.selectedDocIds),
+            // Lot 113Z : compte émetteur (en plus du périmètre vérifié ci-dessus).
+            eq(assetFiles.accountId, row.accountId),
             isNull(assetFiles.deletedAt),
           ));
         docsToTransfer = dbDocs as DocumentRef[];
@@ -515,9 +538,17 @@ export async function POST(
         docsToTransfer = allSnapshotDocs;
       }
 
+      // Lot 113Z (#723) : « Notes / Description » EXCLU par défaut ; inclus
+      // (texte affiché seul) uniquement si l'émetteur l'a choisi explicitement.
+      const inclureNotes = selected.includeNotesDescription === true;
+      const metaNotes = inclureNotes && row.accountId
+        ? await readNotesDescriptionMetaMany(row.accountId, docsToTransfer.map((d) => d.id)).catch(() => new Map())
+        : new Map();
+
       // Insert all docs in DB first (sequential — each needs a new ID for the S3 key)
       const insertedDocs: Array<{ newFileId: number; doc: DocumentRef }> = [];
       for (const doc of docsToTransfer) {
+        const nd = notesDescriptionForThirdParty({ ...doc, ...(metaNotes.get(doc.id) ?? {}) }, inclureNotes);
         try {
           const [newFile] = await db.insert(assetFiles).values({
             userId: recipientUser!.id,
@@ -536,10 +567,10 @@ export async function POST(
             s3Bucket: doc.s3Bucket ?? null,
             documentType: doc.documentType ?? 'AUTRE',
             documentDate: doc.documentDate ? String(doc.documentDate).split('T')[0] : null,
-            description: doc.description ?? null,
+            description: nd.description,
             supplier: doc.supplier ?? null,
             amountCents: doc.amountCents ?? null,
-            notes: doc.notes ?? null,
+            notes: nd.notes,
             retainedTitle: doc.retainedTitle ?? null,
             retainedFunctionCode: doc.retainedFunctionCode ?? null,
             uploadStatus: 'COMPLETED' as const,
@@ -550,6 +581,8 @@ export async function POST(
             createdAt: now,
             updatedAt: now,
           }).returning({ id: assetFiles.id });
+          if (nd.notesUserOwned) await markNotesUserOwned(db, recipientUser!.accountId!, newFile.id);
+          if (nd.descriptionSource === 'T1') await markDescriptionSourceT1(db, recipientUser!.accountId!, newFile.id);
           insertedDocs.push({ newFileId: newFile.id, doc });
         } catch (err) {
           console.error(`[Transmission] Failed to insert doc id=${doc.id} (${doc.originalFilename}):`, err);
@@ -609,6 +642,8 @@ export async function POST(
           .from(assetFiles)
           .where(and(
             inArray(assetFiles.id, selected.selectedPhotoIds),
+            // Lot 113Z : compte émetteur (en plus du périmètre vérifié ci-dessus).
+            eq(assetFiles.accountId, row.accountId),
             isNull(assetFiles.deletedAt),
           ));
         // Re-attach photo display metadata (displayOrder, isPrimary, caption) from snapshot
@@ -694,8 +729,8 @@ export async function POST(
         .innerJoin(agendaAssetLinks, eq(agendaAssetLinks.agendaItemId, agendaItems.id))
         .where(
           selected.selectedEventIds && selected.selectedEventIds.length > 0
-            ? and(eq(agendaAssetLinks.assetId, row.assetId), inArray(agendaItems.id, selected.selectedEventIds))
-            : eq(agendaAssetLinks.assetId, row.assetId)
+            ? and(eq(agendaAssetLinks.assetId, row.assetId), eq(agendaItems.accountId, row.accountId), inArray(agendaItems.id, selected.selectedEventIds))
+            : and(eq(agendaAssetLinks.assetId, row.assetId), eq(agendaItems.accountId, row.accountId))
         );
 
       let agendaCopied = 0;

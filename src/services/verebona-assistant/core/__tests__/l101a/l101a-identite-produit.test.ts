@@ -157,7 +157,9 @@ describe('L101A-U-COH-IDENTITY — contrôle de cohérence de l’identité prod
       // Lot 113G : identité des fiches fournisseur, doublons réels soumis une fois par paire (fin de registre).
       'COH-SUPPLIER-IDENTITY',
       // Lot 113W (#724) : périodes métier des documents, en fin de registre.
-      'COH-DOC-BUSINESS-PERIODS']);
+      'COH-DOC-BUSINESS-PERIODS',
+      // Lot 113Z (#723) : description T1 reprise depuis l'extraction persistée, en fin de registre.
+      'COH-DOC-DESCRIPTION-T1']);
     expect(COVERAGE_INVENTORY.find((d) => d.domain === 'equipements')!.checks).toContain('COH-EQUIPMENT-IDENTITY');
     expect(equipmentIdentityCheck.forbiddenRepairs.join(' ')).toMatch(/utilisateur/);
   });

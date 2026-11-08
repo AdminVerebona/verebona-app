@@ -26,6 +26,8 @@ import { db, pgClient } from '@/db';
 import { documentAnalysisRuns, documentAnalysisProposals, assetFiles } from '@/db/schema';
 import { and, eq, sql } from 'drizzle-orm';
 import type { SourceAnalysisResult, SourceInput } from '../types';
+import { decideT1Description } from '@/services/documents/notes-description/t1-description';
+import { notesDescriptionColumnsReady, recordDescriptionT1Status } from '@/services/documents/notes-description/store';
 
 type Tx = Parameters<Parameters<typeof db.transaction>[0]>[0];
 type Exec = typeof db | Tx;
@@ -47,6 +49,11 @@ interface PersistResultInput {
    * fichiers lus), conservée tant que les écritures ne sont pas achevées.
    */
   masterSnapshot?: unknown;
+  /**
+   * Lot 113Z (#723) : la validation de la sortie T1 a retiré une description
+   * produite (constat `REMOVED_AT_VALIDATION`, jamais un échec d'extraction).
+   */
+  descriptionRemovedAtValidation?: boolean;
 }
 
 interface PersistedRun {
@@ -112,7 +119,7 @@ export async function persistAnalysisResult(p: PersistResultInput): Promise<Pers
         proposalCount = await insertProposals(existing.id, p, tx);
         repaired.push('PROPOSALS');
       }
-      if (await updateSourceMetadata(p, tx, { onlyMissing: true })) repaired.push('METADATA');
+      if (await updateSourceMetadata(p, tx, { onlyMissing: true, runId: existing.id })) repaired.push('METADATA');
       if (suivi) await markWritesPending(tx, existing.id, p.masterSnapshot);
       return { runId: existing.id, deduplicated: true, proposalCount, ...(repaired.length ? { repaired } : {}) };
     });
@@ -144,7 +151,7 @@ export async function persistAnalysisResult(p: PersistResultInput): Promise<Pers
     }).returning({ id: documentAnalysisRuns.id });
 
     const proposalCount = await insertProposals(run.id, p, tx);
-    await updateSourceMetadata(p, tx);
+    await updateSourceMetadata(p, tx, { runId: run.id });
     if (suivi) await markWritesPending(tx, run.id, p.masterSnapshot);
 
     return { runId: run.id, deduplicated: false, proposalCount };
@@ -237,7 +244,7 @@ const METADATA_KEYS = ['documentType', 'description', 'extractedText', 'supplier
  * résultat porte et que le document n'a PAS (colonne vide) sont écrites ;
  * rend `true` si au moins une a dû être rejouée.
  */
-async function updateSourceMetadata(p: PersistResultInput, x: Exec = db, opts: { onlyMissing?: boolean } = {}): Promise<boolean> {
+async function updateSourceMetadata(p: PersistResultInput, x: Exec = db, opts: { onlyMissing?: boolean; runId?: number } = {}): Promise<boolean> {
   const d = p.result.document;
   const patch: Record<string, unknown> = { lastAnalysisAt: new Date(), updatedAt: new Date() };
 
@@ -248,7 +255,10 @@ async function updateSourceMetadata(p: PersistResultInput, x: Exec = db, opts: {
   // dédupliqué (ce chemin-ci n'est alors pas exécuté : c'était l'une des
   // causes d'un document resté « <uuid>.pdf »).
   if (d.type?.value) patch.documentType = d.type.value;
-  if (d.description?.value) patch.description = d.description.value;
+  // Lot 113Z : la description T1 est décidée plus bas (provenance établie,
+  // description d'origine inconnue conservée) ; jamais la note utilisateur.
+  const descriptionT1 = d.description?.value?.trim() ? d.description.value.trim() : null;
+  if (descriptionT1) patch.description = descriptionT1;
   if (d.transcription) patch.extractedText = d.transcription;
   // Lot 28 : un fournisseur CONTRADICTOIRE n'est pas écrit — il est soumis à
   // l'utilisateur (DATA-SUPPLIER, pont « À traiter » `document-rule-bridge`).
@@ -273,16 +283,47 @@ async function updateSourceMetadata(p: PersistResultInput, x: Exec = db, opts: {
   for (const [key, edited] of Object.entries(current?.userEditedFields ?? {})) {
     if (edited === true && key in patch && key !== 'lastAnalysisAt' && key !== 'updatedAt') delete patch[key];
   }
+  // ── Lot 113Z (#723, §3.B) : description T1 — provenance et constat ──────
+  // Une description en place d'origine INCONNUE (saisie historique possible)
+  // n'est pas remplacée ; une description T1 établie (ou prouvée égale à une
+  // sortie T1 persistée) l'est. Le constat est tracé dans la même transaction.
+  const suivi1580 = await notesDescriptionColumnsReady();
+  let decision: ReturnType<typeof decideT1Description> | null = null;
+  if (suivi1580) {
+    const [prec] = (await x.execute(sql`SELECT x.description AS extraction, f.description_source AS source
+        FROM asset_files f LEFT JOIN document_extractions x ON x.file_id = f.id AND x.account_id = f.account_id
+       WHERE f.id = ${p.leadSourceId} AND f.account_id = ${p.input.accountId}`)) as unknown as Array<{ extraction: string | null; source: string | null }>;
+    decision = decideT1Description({
+      produced: descriptionT1,
+      removedAtValidation: p.descriptionRemovedAtValidation === true,
+      current: current?.description ?? null,
+      currentSource: prec?.source ?? null,
+      previousExtraction: prec?.extraction ?? null,
+      userLocked: (current?.userEditedFields as Record<string, boolean> | null | undefined)?.description === true,
+    });
+    if (!decision.write) delete patch.description;
+  }
   if (opts.onlyMissing) {
     // Run dédupliqué : seules les métadonnées ABSENTES du document sont rejouées.
     const manquantes = METADATA_KEYS.filter((k) => k in patch && (current as Record<string, unknown> | undefined)?.[k] == null);
-    if (manquantes.length === 0) return false;
+    if (manquantes.length === 0) {
+      if (decision) await recordDescriptionT1Status(x, { accountId: p.input.accountId, fileId: p.leadSourceId, status: decision.status, runId: opts.runId ?? null, setSourceT1: decision.setSourceT1 });
+      return false;
+    }
     for (const k of Object.keys(patch)) if (!(manquantes as readonly string[]).includes(k) && k !== 'updatedAt') delete patch[k];
   }
 
   await x.update(assetFiles)
     .set(patch as never)
     .where(and(eq(assetFiles.id, p.leadSourceId), eq(assetFiles.accountId, p.input.accountId)));
+  if (decision) {
+    // Provenance T1 posée seulement quand la description EN PLACE est celle de
+    // T1 : écrite à l'instant, déjà établie, ou prouvée égale à une sortie T1.
+    await recordDescriptionT1Status(x, {
+      accountId: p.input.accountId, fileId: p.leadSourceId, status: decision.status, runId: opts.runId ?? null,
+      setSourceT1: decision.setSourceT1,
+    });
+  }
   return true;
 }
 

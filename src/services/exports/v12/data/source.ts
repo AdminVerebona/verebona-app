@@ -60,7 +60,9 @@ export interface SourceDocument {
   s3Bucket: string | null;
   supplier: string | null;
   amountCents: number | null;
-  description: string | null;
+  // Lot 113Z (#723) : plus de `description` — un dossier destiné à un tiers ne
+  // porte jamais le contenu « Notes / Description » d'un document (T1 ou
+  // utilisateur), même indirectement par une autre section.
   cilRubricCodes: string[];
   /** Tous les codes connus (types V1/V2, fonction retenue, rubriques CIL), en capitales. */
   codes: string[];
@@ -302,7 +304,6 @@ function toSourceDocuments(docs: DocumentRef[], photoFileIds: Set<number>): Sour
         s3Bucket: d.s3Bucket ?? null,
         supplier: d.supplier ?? null,
         amountCents: d.amountCents ?? null,
-        description: d.description ?? null,
         cilRubricCodes: Array.isArray(d.cilRubricCodes) ? d.cilRubricCodes : [],
         codes: [d.documentType, d.retainedFunctionCode, d.documentTypeCode, ...(Array.isArray(d.cilRubricCodes) ? d.cilRubricCodes : [])]
           .filter((c): c is string => typeof c === 'string' && c.length > 0).map((c) => c.toUpperCase()),

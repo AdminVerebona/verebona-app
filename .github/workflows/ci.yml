@@ -603,6 +603,8 @@ jobs:
         run: npm run test:e2e:periodes-metier -- --reporter=default --reporter=junit --outputFile.junit=rapports/e2e-periodes-metier.xml
       - name: Fiche fournisseur, rubrique Documents unique (lot 113Y, Trello #721)
         run: npm run test:e2e:fournisseur-documents -- --reporter=default --reporter=junit --outputFile.junit=rapports/e2e-fournisseur-documents.xml
+      - name: Notes / Description unique, dossiers tiers et périmètre des transmissions (lot 113Z, Trello #723)
+        run: npm run test:e2e:notes-description -- --reporter=default --reporter=junit --outputFile.junit=rapports/e2e-notes-description.xml
       - name: Inscription, CGUV publiées vérifiées et reprise (lot 111O)
         run: npm run test:e2e:inscription-cguv -- --reporter=default --reporter=junit --outputFile.junit=rapports/e2e-inscription-cguv.xml
       - uses: actions/upload-artifact@v4

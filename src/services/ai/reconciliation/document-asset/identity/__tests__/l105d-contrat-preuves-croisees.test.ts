@@ -167,7 +167,9 @@ describe('L105D-U-COH — cohérence : ASSET_CREATED relayé, contrôle spécial
       // Lot 113G : identité des fiches fournisseur, doublons réels soumis une fois par paire (fin de registre).
       'COH-SUPPLIER-IDENTITY',
       // Lot 113W (#724) : périodes métier des documents, en fin de registre.
-      'COH-DOC-BUSINESS-PERIODS']);
+      'COH-DOC-BUSINESS-PERIODS',
+      // Lot 113Z (#723) : description T1 reprise depuis l'extraction persistée, en fin de registre.
+      'COH-DOC-DESCRIPTION-T1']);
     expect(ids.filter((x) => x === 'COH-DOC-PRIMARY-LINK')).toHaveLength(1);
     const c = COHERENCE_REGISTRY.find((x) => x.id === 'COH-DOC-PRIMARY-LINK')!;
     expect(c.triggers).toEqual(expect.arrayContaining(['ASSET_CREATED', 'ASSET_UPDATED', 'SOURCE_ANALYZED']));

@@ -14,6 +14,8 @@ import {
   assertTargetInAccount, isCrossAccountReferenceError, logCrossAccountRefusal, ownedSql, TargetCoherenceError,
 } from '@/services/security/account-ownership';
 import { documentTargetsErrorResponse, prepareTargetLists } from '@/services/documents/document-targets/route-support';
+import { NOTES_MAX_LENGTH, notesWriteFromEdit, resolveNotesDescription } from '@/lib/documents/notes-description';
+import { markNotesUserOwned, readNotesDescriptionMeta } from '@/services/documents/notes-description/store';
 
 /** Identifiant de cible envoyé : `undefined` (absent), `null` (retiré) ou entier. */
 function cible(v: unknown): number | null | undefined {
@@ -50,7 +52,13 @@ export async function PUT(
     }
 
     const body = await request.json();
-    const { fileName, documentType, webLinkUrl, documentDate, retainedTitle, retainedFunctionCode, supplier, description, notes, amountCents, userEditedFields } = body;
+    // Lot 113Z (#723) : `description` n'est plus lue ici — c'est la description
+    // T1 (interne), jamais écrite par l'édition utilisateur ; un client
+    // antérieur qui l'envoie encore (vide compris) ne l'efface plus.
+    const { fileName, documentType, webLinkUrl, documentDate, retainedTitle, retainedFunctionCode, supplier, notes, notesDescription, amountCents, userEditedFields } = body;
+    if (body.description !== undefined) {
+      console.info('[documents/PUT] champ « description » ignoré (lot 113Z : écrit par T1 seulement).');
+    }
     let { assetId, substructureId, equipmentId } = body;
 
     // Lot 86E : le code V1 historique (`document_type`) est FACULTATIF. Le
@@ -85,6 +93,33 @@ export async function PUT(
     }
 
     const oldDoc = existingDoc[0];
+
+    // ══════════════════════════════════════════════════════════════════════
+    // LOT 113Z — CHAMP UNIQUE « NOTES / DESCRIPTION »
+    //
+    // `notesDescription` : texte enregistré par le tiroir dans le champ unique.
+    // Il est comparé au texte AFFICHÉ (notes utilisateur > description T1 >
+    // vide) : inchangé → aucune écriture (ni valeur, ni provenance) ; modifié
+    // → `notes` (null si effacé) + reprise en main explicite
+    // (`notes_user_owned`), que T1 ne défait jamais. `notes` seul (client
+    // antérieur) : écrit seulement s'il diffère de la note enregistrée.
+    // ══════════════════════════════════════════════════════════════════════
+    let notesEcrites: { notes: string | null; cleared: boolean } | null = null;
+    if (notesDescription !== undefined || notes !== undefined) {
+      const saisie = notesDescription !== undefined ? notesDescription : notes;
+      if (saisie !== null && typeof saisie !== 'string') {
+        return NextResponse.json({ error: 'INVALID_INPUT', message: 'Notes / Description invalide' }, { status: 400 });
+      }
+      if (typeof saisie === 'string' && saisie.length > NOTES_MAX_LENGTH) {
+        return NextResponse.json({ error: 'INVALID_INPUT', message: `Notes / Description : ${NOTES_MAX_LENGTH} caractères au plus` }, { status: 400 });
+      }
+      const meta = await readNotesDescriptionMeta(session.currentAccountId, documentId);
+      const affiche = notesDescription !== undefined
+        ? resolveNotesDescription({ notes: oldDoc.notes, description: oldDoc.description, notesUserOwned: meta.notesUserOwned, descriptionSource: meta.descriptionSource }).text
+        : (oldDoc.notes ?? '');
+      const w = notesWriteFromEdit(affiche, saisie);
+      if (w.write) notesEcrites = { notes: w.notes, cleared: w.cleared };
+    }
 
     // ══════════════════════════════════════════════════════════════════════
     // LOT 111I — RATTACHEMENT MULTIPLE (listes `assetIds`, `substructureIds`,
@@ -210,11 +245,8 @@ export async function PUT(
     if (supplier !== undefined) {
       updateData.supplier = supplier || null;
     }
-    if (description !== undefined) {
-      updateData.description = description || null;
-    }
-    if (notes !== undefined) {
-      updateData.notes = notes || null;
+    if (notesEcrites) {
+      updateData.notes = notesEcrites.notes;
     }
     if (amountCents !== undefined) {
       updateData.amountCents = amountCents != null ? parseInt(amountCents) : null;
@@ -320,6 +352,8 @@ export async function PUT(
         .set(updateData)
         .where(and(eq(assetFiles.id, documentId), eq(assetFiles.accountId, accountIdEcriture), ...cibles))
         .returning({ id: assetFiles.id });
+      // Lot 113Z : reprise en main de « Notes / Description », même transaction que la note.
+      if (lignes.length > 0 && notesEcrites) await markNotesUserOwned(tx, accountIdEcriture, documentId);
       // Lot 111I : liens des autres cibles (colonnes déjà écrites ci-dessus, même transaction).
       if (lignes.length > 0 && listes) {
         const { applyDocumentTargets } = await import('@/services/documents/document-targets/service');
@@ -357,6 +391,10 @@ export async function PUT(
       changes.push(`Bien: ${oldDoc.assetId || 'aucun'} → ${newAssetId}`);
     }
 
+    if (notesEcrites) {
+      // Contenu jamais journalisé (donnée personnelle) : seulement le fait.
+      changes.push(notesEcrites.cleared ? 'Notes / Description : effacées par l’utilisateur' : 'Notes / Description : modifiées par l’utilisateur');
+    }
     if (listes && (listes.changed.assets || listes.changed.rooms || listes.changed.equipments)) {
       changes.push(`Rattachements: biens [${listes.selection.assetIds.join(', ')}], pièces [${listes.selection.roomIds.join(', ')}], équipements [${listes.selection.equipmentIds.join(', ')}]`);
     }
@@ -409,10 +447,18 @@ export async function PUT(
     const autresChampsModifies = Object.keys(updateData)
       // `userEditedFields` ne fait que marquer les champs ci-dessus (et, lot 28,
       // le rattachement) : il ne constitue pas une correction à lui seul.
-      .filter((k) => k !== 'updatedAt' && k !== 'assetId' && k !== 'userEditedFields' && k !== 'titleSource')
+      // Lot 113Z : `notes` non plus — T1 ne lit pas la note de l'utilisateur
+      // (aucun contexte nouveau pour l'analyse).
+      .filter((k) => k !== 'updatedAt' && k !== 'assetId' && k !== 'userEditedFields' && k !== 'titleSource' && k !== 'notes')
       .some((k) => !memeValeur(updateData[k], (oldDoc as Record<string, unknown>)[k]));
     const seulLeBienChange =
       assetCible !== undefined && assetCible !== oldDoc.assetId && !autresChampsModifies;
+    // Lot 113Z (#723, recette 3 et 7) : rien de ce que lit T1 n'a changé (notes
+    // seules, ou enregistrement sans modification) → aucune réanalyse, aucune
+    // projection ; « À traiter » et les caches de l'Assistant suivent quand même.
+    const ciblesModifiees = (assetCible !== undefined && assetCible !== oldDoc.assetId)
+      || !!(listes && (listes.changed.assets || listes.changed.rooms || listes.changed.equipments));
+    const rienPourT1 = !autresChampsModifies && !ciblesModifiees;
     // CDC 15 T3-03 : détachement ou déplacement A → B — les preuves portées
     // par A sont retirées et A réconcilié AVANT la reprojection sur B
     // (ne lève jamais).
@@ -424,7 +470,7 @@ export async function PUT(
     }
 
     const projectionPossible =
-      hasBeenAnalysed && !!accountId && seulLeBienChange && !!assetCible
+      !rienPourT1 && hasBeenAnalysed && !!accountId && seulLeBienChange && !!assetCible
       && await hasProjectableKnowledge(documentId).catch(() => false);
 
     const reanalyser = () => {
@@ -452,7 +498,7 @@ export async function PUT(
         console.error(`[documents/PUT] projection T1 après rattachement échouée (file ${documentId}):`, err);
         reanalyser();
       });
-    } else if (hasBeenAnalysed && accountId) {
+    } else if (hasBeenAnalysed && accountId && !rienPourT1) {
       reanalyser();
     }
 
@@ -469,8 +515,16 @@ export async function PUT(
     // CDC Assistant §25.7 : événement métier (caches de l'assistant).
     if (accountId) await emitBusinessEvent({ type: 'DOCUMENT_UPDATED', accountId, entityId: documentId });
 
+    // Lot 113Z : texte affiché après l'écriture (le tiroir le reprend tel quel).
+    const metaApres = await readNotesDescriptionMeta(session.currentAccountId, documentId).catch(() => null);
+    const notesApres = notesEcrites ? notesEcrites.notes : oldDoc.notes;
+    const notesDescriptionVue = resolveNotesDescription({
+      notes: notesApres, description: oldDoc.description,
+      notesUserOwned: metaApres?.notesUserOwned ?? false, descriptionSource: metaApres?.descriptionSource ?? null,
+    });
+
     return NextResponse.json(
-      { message: 'Document mis à jour avec succès', documentId },
+      { message: 'Document mis à jour avec succès', documentId, notesDescription: notesDescriptionVue, reanalysis: !rienPourT1 && hasBeenAnalysed },
       { status: 200 }
     );
 
