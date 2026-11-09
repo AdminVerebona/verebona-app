@@ -2,9 +2,25 @@
  * Registre des capacités par offre + suggestions — CDC §25.6 / §6 / §8.
  *
  * Évite les switch dispersés sur les offres (§25.6). Les capacités futures sont
- * enregistrées mais DÉSACTIVÉES en V1 (§5.4). L'éligibilité IA réelle est calculée
- * par `entitlements.service.getEntitlements(accountId).premiumFeatures` (source de
- * vérité serveur), ce registre ne fait que déclarer la matrice.
+ * enregistrées mais DÉSACTIVÉES en V1 (§5.4). Ce registre ne fait que déclarer
+ * la matrice COGNITIVE de T2 (quelles capacités pour quelle offre).
+ *
+ * ══════════════════════════════════════════════════════════════════════════
+ * LOT 113AE (#728, décision PO du 09/11/2026) — TROIS DROITS DISTINCTS
+ *
+ *   1. T2 cognitif (CE registre) : Standard, Premium, Premium Duo (et l'essai
+ *      actif) ont EXACTEMENT les mêmes capacités T2 actives — même moteur,
+ *      mêmes modèles, mêmes prompts, mêmes escalades. Standard n'est plus
+ *      exclu de `account_ai` (synthèse, comparaison, chronologie).
+ *   2. Autorisation EFFECTIVE d'appeler un modèle : prédicat serveur unique
+ *      `core/ai-access.ts` (droits réels du compte : actif ou essai actif,
+ *      lecture permise, aucune restriction ; flags du §39). Un compte en
+ *      lecture seule, impayé, résilié ou sans abonnement n'appelle AUCUN
+ *      modèle, même si son code d'offre cognitif est `STANDARD`.
+ *   3. Droit Premium MÉTIER (TCO, dossiers prêts à l'usage, synchronisation
+ *      d'agenda) : `premiumFeatures` des droits, contrôlé par fonctionnalité.
+ *      `isPlanAiEligible` n'en est JAMAIS un substitut.
+ * ══════════════════════════════════════════════════════════════════════════
  */
 import type { VerebonaIntent } from '../types/intents';
 import { FLAG_NAMES, isAssistantFlagOn, type AssistantFlag } from '../config/assistant-flags';
@@ -20,8 +36,12 @@ interface AssistantCapability {
   featureFlag?: string;
 }
 
-/** Offres éligibles aux réponses intelligentes (§6). Standard exclu (§6.1). */
-const AI_ELIGIBLE_PLANS: PlanCode[] = ['PREMIUM', 'PREMIUM_DUO', 'PREMIUM_PRO'];
+/**
+ * Offres dont T2 est COGNITIVEMENT complet (lot 113AE, #728) : toutes les
+ * offres actives. Ce n'est PAS une autorisation d'appel (voir `ai-access.ts`)
+ * ni un droit Premium métier (`premiumFeatures`).
+ */
+const T2_COGNITIVE_PLANS: PlanCode[] = ['STANDARD', 'PREMIUM', 'PREMIUM_DUO', 'PREMIUM_PRO'];
 
 const CAPABILITIES: AssistantCapability[] = [
   {
@@ -46,19 +66,32 @@ const CAPABILITIES: AssistantCapability[] = [
   {
     code: 'account_ai',
     enabled: true,
-    plans: AI_ELIGIBLE_PLANS,
+    // Lot 113AE (#728) : Standard inclus — mêmes capacités que Premium.
+    plans: T2_COGNITIVE_PLANS,
     intents: ['ACCOUNT_SUMMARY', 'ACCOUNT_COMPARISON', 'ACCOUNT_TIMELINE'],
     featureFlag: 'verebona_assistant_account_ai',
   },
   // Capacités futures — enregistrées, DÉSACTIVÉES en V1 (§5.4).
-  { code: 'semantic_retrieval', enabled: false, plans: AI_ELIGIBLE_PLANS, intents: [], featureFlag: 'verebona_assistant_semantic_retrieval' },
+  // Capacité future DÉSACTIVÉE : matrice d'offres inchangée (lot 113AE : aucune capacité future ouverte).
+  { code: 'semantic_retrieval', enabled: false, plans: ['PREMIUM', 'PREMIUM_DUO', 'PREMIUM_PRO'], intents: [], featureFlag: 'verebona_assistant_semantic_retrieval' },
   { code: 'voice_io', enabled: false, plans: [], intents: [] },
   { code: 'photo_search', enabled: false, plans: [], intents: [] },
   { code: 'proactive_notifications', enabled: false, plans: [], intents: [] },
 ];
 
+/**
+ * L'offre (code cognitif `PlanCode`) a-t-elle T2 complet ? Lot 113AE : vrai
+ * pour TOUTES les offres actives, Standard compris. Ne dit RIEN de
+ * l'autorisation effective d'appeler un modèle (statut du compte, flags :
+ * `ai-access.ts`) ni des droits Premium métier (`premiumFeatures`).
+ */
+export function isT2CognitivePlan(plan: string): boolean {
+  return (T2_COGNITIVE_PLANS as string[]).includes(plan);
+}
+
+/** Ancien nom, conservé pour les appelants historiques : même sens que `isT2CognitivePlan`. */
 export function isPlanAiEligible(plan: string): boolean {
-  return (AI_ELIGIBLE_PLANS as string[]).includes(plan);
+  return isT2CognitivePlan(plan);
 }
 
 export function capabilityForIntent(intent: VerebonaIntent): AssistantCapability | undefined {
@@ -89,12 +122,13 @@ export function capabilityAllows(intent: VerebonaIntent, plan: string, env: Node
 }
 
 /**
- * Éligibilité à un appel modèle d'une intention (§6, §15.1, §25.6) : il faut
- * que l'intention le permette (`geminiEligible`), que l'offre soit éligible
- * aux réponses intelligentes ET que la capacité de l'intention l'autorise.
+ * Éligibilité COGNITIVE d'une intention à un appel modèle (§6, §15.1, §25.6) :
+ * il faut que l'intention le permette (`geminiEligible`), que l'offre ait T2
+ * complet ET que la capacité de l'intention l'autorise. L'appel effectif
+ * dépend en plus du prédicat unique `ai-access.ts` (droits réels du compte).
  */
 export function isAiEligibleFor(intent: VerebonaIntent, plan: string, geminiEligible: boolean): boolean {
-  return geminiEligible && isPlanAiEligible(plan) && capabilityAllows(intent, plan);
+  return geminiEligible && isT2CognitivePlan(plan) && capabilityAllows(intent, plan);
 }
 
 /** Capacités ouvertes et fermées pour une offre, à cet instant (flags compris). */

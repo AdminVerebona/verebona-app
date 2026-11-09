@@ -38,7 +38,9 @@ export interface Entitlements {
    *  `past_due` : impayé, compte restreint (GAP-06). */
   status: string;
   quotas: Quotas;
-  /** Fonctions Premium (questions a Verebona, sync agenda, dossiers prets). */
+  /** Fonctions Premium (cout de possession, sync agenda, dossiers prets).
+   *  Lot 113AE (#728) : les questions a Verebona (T2) n'en font plus partie —
+   *  elles sont ouvertes a toute offre active (`verebona-assistant/core/ai-access.ts`). */
   premiumFeatures: boolean;
   /** Creation / modification de donnees metier autorisee. */
   canWrite: boolean;

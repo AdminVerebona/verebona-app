@@ -10,6 +10,7 @@
  *
  *   D01  Standard : réponse sans aucun montant, qui explique la réservation
  *        Premium (lecture TCO non exécutée : test unitaire l112c-t2-tco-droits) ;
+ *        lot 113AE (#728) : Standard ACTIF a T2 complet — le TCO reste refusé ;
  *   D02  Premium, Premium Duo, essai actif : TCO chiffré (inchangé) ;
  *   D03  lecture seule (essai échu / impayé) : comme Standard ;
  *   D04  Q3 / Q4 (dépenses d'entretien d'un bien, dépenses de l'année) :
@@ -67,10 +68,17 @@ scenario('L112C-TCO', 'Lot 112C reprise — coût de possession réservé Premiu
   /** Question posée comme par POST /api/verebona/messages : offre dérivée des DROITS du compte. */
   const poser = async (c: Compte, message: string) => {
     const { getEntitlements } = await import('@/services/entitlements.service');
-    const { assistantPlanFromEntitlements } = await import('@/services/verebona-assistant/core/plan-eligibility');
-    const planType = assistantPlanFromEntitlements(await getEntitlements(c.id));
+    const { assistantPlanFromEntitlements, assistantPlanLimit } = await import('@/services/verebona-assistant/core/plan-eligibility');
+    const { assistantAiAccessFromEntitlements } = await import('@/services/verebona-assistant/core/ai-access');
+    const ent = await getEntitlements(c.id);
+    const planType = assistantPlanFromEntitlements(ent);
+    const limite = assistantPlanLimit(ent);
     calls.length = 0;
-    const r = await demander(c, message, { planType, pageContext: { route: '/accueil', platform: 'web' } });
+    // Lot 113AE (#728) : comme la route — accès IA RÉEL (Standard actif : T2 complet, sans TCO).
+    const r = await demander(c, message, {
+      planType, planLimit: limite === 'NO_ACCESS' ? null : limite, aiAccess: assistantAiAccessFromEntitlements(ent),
+      pageContext: { route: '/accueil', platform: 'web' },
+    });
     return { r, answer: String(r.answer ?? ''), planType };
   };
   const QUESTIONS_TCO = ['Quel est le coût de possession de Cupra ?', 'Quel est le coût total de possession de Cupra ?', 'Quel est le TCO de Cupra ?'];

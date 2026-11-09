@@ -31,6 +31,7 @@ import { toApiPayload } from '@/services/verebona-assistant/core/api-payload';
 import { executerIssueClarification } from '@/services/verebona-assistant/core/clarification-flow';
 import { resoudreClarification } from '@/services/verebona-assistant/core/clarification.service';
 import { assistantPlanFromEntitlements, assistantPlanLimit } from '@/services/verebona-assistant/core/plan-eligibility';
+import { assistantAiAccessFromEntitlements } from '@/services/verebona-assistant/core/ai-access';
 import { checkAssistantRateLimit } from '@/lib/verebona/rate-limit';
 import { clientIp } from '@/lib/verebona/api-guard';
 import { httpRequestId, parseWith, readJson, withRequestId } from '@/lib/verebona/api-guard';
@@ -78,12 +79,16 @@ async function traiter(
 
   // La reprise relance le pipeline (éventuellement un appel modèle) : mêmes
   // droits que l'envoi d'une question.
-  // Fin d'essai (§6.5) : la reprise reste possible SANS IA (offre Standard
-  // effective) ; refus seulement si le compte n'est plus consultable.
+  // Fin d'essai (§6.5) : la reprise reste possible SANS IA ; refus seulement
+  // si le compte n'est plus consultable.
+  // Lot 113AE (#728) : même prédicat d'accès IA que l'envoi d'un message —
+  // Standard actif garde T2 complet, un compte restreint aucun appel modèle,
+  // même en reprise (l'ancienne reprise ne transmettait pas la limite).
   const entitlements = await getEntitlements(accountId);
-  if (assistantPlanLimit(entitlements) === 'NO_ACCESS') {
+  const planLimit = assistantPlanLimit(entitlements);
+  if (planLimit === 'NO_ACCESS') {
     const refus = await refuserSiPasDIA(accountId);
-    if (refus) return refus;
+    return refus ?? NextResponse.json({ code: 'SUBSCRIPTION_REQUIRED', message: 'Une offre active est nécessaire.' }, { status: 403 });
   }
 
   // Bornage compte + utilisateur (+ fil) dans la requête de chargement : la
@@ -104,6 +109,8 @@ async function traiter(
     // Même dérivation que l'envoi d'un message : essai = Premium (§6.5).
     planType: assistantPlanFromEntitlements(entitlements, session.planType),
     locale: cfg.locale,
+    planLimit,
+    aiAccess: assistantAiAccessFromEntitlements(entitlements),
   }, { runAssistant, ports: buildOrchestratorPorts() });
 
   if (out.kind === 'rejected') {

@@ -38,6 +38,10 @@ import type { OrchestratorPorts } from '../../assistant-orchestrator.service';
 import type { AssistantRequestInput, AssistantRunResult, IntentRoute } from '../../../types/contracts';
 import type { ResolvedSource, RetrievedSource } from '../../../types/sources';
 
+/** Lot 113AE (#728) : Standard ACTIF a T2 complet — « sans IA » = compte RESTREINT (droits réels). */
+const COMPTE_SANS_IA = { modelCalls: false, denial: 'TRIAL_EXPIRED', commercialPlan: 'none', status: 'readonly', premiumFeatures: false, canWrite: false } as const;
+
+
 const SNAPSHOT = join(__dirname, '../../../../../test/e2e/fixtures/help-corpus-t2.snapshot.json');
 const CORPUS = help.parseHelpCorpus(JSON.parse(readFileSync(SNAPSHOT, 'utf8')))!;
 
@@ -406,9 +410,9 @@ describe('Lot 33 — escalade réelle ou motif explicite (jamais de repli silenc
     traceCoherente(r);
   });
 
-  it('HELP-AC09 — IA non permise (Standard) : motif AI_NOT_ALLOWED, 0 appel', async () => {
+  it('HELP-AC09 — IA non permise (compte restreint ; lot 113AE : Standard actif a l’IA) : motif AI_NOT_ALLOWED, 0 appel', async () => {
     const b = banc({ understand: compris('PRODUCT_HELP_HOW_TO', ['x']) });
-    const r = await b.ask(NON_DOC, { planType: 'STANDARD' });
+    const r = await b.ask(NON_DOC, { planType: 'STANDARD', aiAccess: COMPTE_SANS_IA });
     expect(r.cascade?.fallbackReason).toBe('AI_NOT_ALLOWED');
     expect(r.cascade?.escalationReasons).toContain('HELP:N4:AI_NOT_ALLOWED');
     expect(r.cascade!.help!.levels.at(-1)).toMatchObject({ level: 4, status: 'SKIPPED', reason: 'AI_NOT_ALLOWED' });
@@ -518,9 +522,10 @@ describe('Lot 33 — escalade réelle ou motif explicite (jamais de repli silenc
 
 describe('Lot 33 — cohérence des traces hors Centre d’aide (§14)', () => {
   it('HELP-AC17 — N2 « SYNTHESIS_REQUIRED » sans appel : le motif de non-escalade est TOUJOURS explicite', async () => {
-    for (const [plan, motif] of [['STANDARD', 'AI_NOT_ALLOWED'], ['PREMIUM', 'NO_SOURCE_FOR_SYNTHESIS']] as const) {
+    // Lot 113AE : Standard ACTIF a l’IA (même motif que Premium) ; compte restreint : AI_NOT_ALLOWED.
+    for (const [plan, motif, acces] of [['STANDARD', 'AI_NOT_ALLOWED', COMPTE_SANS_IA], ['STANDARD', 'NO_SOURCE_FOR_SYNTHESIS', undefined], ['PREMIUM', 'NO_SOURCE_FOR_SYNTHESIS', undefined]] as const) {
       const b = banc({ sansPortAide: true, retrieved: [] });
-      const r = await b.ask('Explique-moi l’évolution de mes dépenses', { planType: plan });
+      const r = await b.ask('Explique-moi l’évolution de mes dépenses', { planType: plan, ...(acces ? { aiAccess: acces } : {}) });
       expect(r.route.intent.startsWith('ACCOUNT_'), r.route.intent).toBe(true);
       expect(r.cascade?.escalationReasons).toContain('N2:SYNTHESIS_REQUIRED');
       expect(r.cascade?.escalationReasons).toContain(`N3:NOT_EXECUTED:${motif}`);

@@ -125,3 +125,138 @@ describe('fin d’essai (§6.5)', () => {
     expect(prepareCommand).not.toHaveBeenCalled();
   });
 });
+
+// ══════════════════════════════════════════════════════════════════════════
+// Lot 113AE (#728) — Standard actif = T2 complet ; compte restreint = ZÉRO
+// appel modèle (UNDERSTAND, ANSWER, REVALIDATE, ARBITRATE), y compris en
+// reprise de clarification ; IA coupée ou budget épuisé : même repli pour
+// Standard et Premium.
+// ══════════════════════════════════════════════════════════════════════════
+type Access = NonNullable<Input['aiAccess']>;
+const ACCES = {
+  standard: { modelCalls: true, denial: null, commercialPlan: 'standard', status: 'active', premiumFeatures: false, canWrite: true } as Access,
+  premium: { modelCalls: true, denial: null, commercialPlan: 'premium', status: 'active', premiumFeatures: true, canWrite: true } as Access,
+  essai: { modelCalls: true, denial: null, commercialPlan: 'trial', status: 'trialing', premiumFeatures: true, canWrite: true } as Access,
+  readonly: { modelCalls: false, denial: 'TRIAL_EXPIRED', commercialPlan: 'none', status: 'readonly', premiumFeatures: false, canWrite: false } as Access,
+  past_due: { modelCalls: false, denial: 'SUBSCRIPTION_REQUIRED', commercialPlan: 'none', status: 'past_due', premiumFeatures: false, canWrite: false } as Access,
+  canceled: { modelCalls: false, denial: 'SUBSCRIPTION_REQUIRED', commercialPlan: 'none', status: 'canceled', premiumFeatures: false, canWrite: false } as Access,
+  none: { modelCalls: false, denial: 'SUBSCRIPTION_REQUIRED', commercialPlan: 'none', status: 'none', premiumFeatures: false, canWrite: false } as Access,
+};
+
+function portsModele() {
+  const classify = vi.fn(async () => null);
+  const generate = vi.fn(async () => ({ answer: 'Synthèse rédigée.', claims: [], actions: [], supportLevel: 'supported' as const, model: 'm' }));
+  const arbitrate = vi.fn(async () => null);
+  const revalidate = vi.fn(async () => ({ results: [], established: false }));
+  const p = ports({ classifyWithAI: classify, generateWithAI: generate as never, arbitrateWithAI: arbitrate, revalidateFacts: revalidate });
+  return { p, classify, generate, arbitrate, revalidate, appels: () => classify.mock.calls.length + generate.mock.calls.length + arbitrate.mock.calls.length + revalidate.mock.calls.length };
+}
+
+const QUESTIONS = ['Résume les garanties de mon vélo', 'raconte-moi un truc sur ce que je possède', 'Compare mes deux contrats'];
+
+describe('lot 113AE (#728) — autorisation effective des appels modèle', () => {
+  it('Standard actif : ANSWER réel comme Premium (même port, même route), offre réelle tracée « standard »', async () => {
+    const s = portsModele();
+    const r = await runAssistant(input({ planType: 'STANDARD', aiAccess: ACCES.standard }), s.p);
+    expect(s.generate).toHaveBeenCalledTimes(1);
+    expect(r.mode).toBe('ai');
+    expect(r.cascade?.access).toMatchObject({ commercialPlan: 'standard', modelCalls: true, premiumFeatures: false, source: 'entitlements' });
+    expect(r.cascade?.escalationReasons.join(' ')).not.toMatch(/PLAN_WITHOUT_AI|PLAN_LIMIT/);
+    const p = portsModele();
+    const rp = await runAssistant(input({ planType: 'PREMIUM', aiAccess: ACCES.premium }), p.p);
+    expect(p.generate).toHaveBeenCalledTimes(1);
+    // Même route, même intention : aucun « Standard light ».
+    expect(r.route.intent).toBe(rp.route.intent);
+    expect(r.route.aiEligible).toBe(rp.route.aiEligible);
+  });
+
+  it('Standard actif : UNDERSTAND effectif sur une question ambiguë', async () => {
+    const s = portsModele();
+    await runAssistant(input({ planType: 'STANDARD', aiAccess: ACCES.standard, message: 'raconte-moi un truc sur ce que je possède' }), s.p);
+    expect(s.classify).toHaveBeenCalled();
+  });
+
+  it('essai actif : autorisé', async () => {
+    const s = portsModele();
+    await runAssistant(input({ planType: 'PREMIUM', aiAccess: ACCES.essai }), s.p);
+    expect(s.generate).toHaveBeenCalledTimes(1);
+  });
+
+  for (const etat of ['readonly', 'past_due', 'canceled', 'none'] as const) {
+    it(`compte ${etat} : ZÉRO appel modèle (questions ambiguës, synthèse, reprise), limite et « Voir les offres »`, async () => {
+      for (const message of QUESTIONS) {
+        const s = portsModele();
+        const r = await runAssistant(input({ planType: 'STANDARD', aiAccess: ACCES[etat], message }), s.p);
+        expect(s.appels()).toBe(0);
+        expect(r.cascade?.aiCalls ?? 0).toBe(0);
+        expect(r.cascade?.access).toMatchObject({ modelCalls: false, commercialPlan: 'none' });
+      }
+      // Reprise d'une clarification : même accès, toujours aucun appel.
+      const s = portsModele();
+      await runAssistant(input({
+        planType: 'STANDARD', aiAccess: ACCES[etat], message: 'Résume les garanties de mon vélo',
+        resume: { clarificationId: 'c1', intent: 'ACCOUNT_SUMMARY', assetId: 3, chainDepth: 1, choiceLabel: 'Vélo' },
+      }), s.p);
+      expect(s.appels()).toBe(0);
+      const synth = await runAssistant(input({ planType: 'STANDARD', aiAccess: ACCES[etat] }), portsModele().p);
+      const limite = ACCES[etat].denial as 'TRIAL_EXPIRED' | 'SUBSCRIPTION_REQUIRED';
+      expect(synth.answer).toContain(planLimitNotice(limite));
+      expect(synth.actions.some((a) => a.type === 'OPEN_PRICING')).toBe(true);
+    });
+  }
+
+  it('compte restreint : la recherche classique reste servie, sans appel', async () => {
+    const s = portsModele();
+    const r = await runAssistant(input({ planType: 'STANDARD', aiAccess: ACCES.readonly, message: 'retrouve ma facture vélo' }), s.p);
+    expect(s.appels()).toBe(0);
+    expect(r.resultGroups?.[0]?.items[0]?.title).toBe('Facture vélo');
+  });
+
+  it('compte restreint : aucune commande préparée ; Standard actif : commande préparée (flag d’écriture porté par le port)', async () => {
+    const prepareCommand = vi.fn(async () => ({ kind: 'need_info' as const, message: 'Précisez la date.' }));
+    await runAssistant(input({ planType: 'STANDARD', aiAccess: ACCES.readonly, message: 'ajoute un rappel demain' }), ports({ prepareCommand }));
+    expect(prepareCommand).not.toHaveBeenCalled();
+    await runAssistant(input({ planType: 'STANDARD', aiAccess: ACCES.standard, message: 'ajoute un rappel demain' }), ports({ prepareCommand }));
+    expect(prepareCommand).toHaveBeenCalledTimes(1);
+  });
+
+  it('IA coupée globalement : aucun appel, Standard comme Premium (aucune dérogation)', async () => {
+    process.env.VEREBONA_ASSISTANT_AI_ENABLED = 'false';
+    resetAssistantConfigForTests();
+    for (const [planType, aiAccess] of [['STANDARD', ACCES.standard], ['PREMIUM', ACCES.premium]] as const) {
+      for (const message of QUESTIONS) {
+        const s = portsModele();
+        await runAssistant(input({ planType, aiAccess, message }), s.p);
+        expect(s.appels()).toBe(0);
+      }
+    }
+  });
+
+  it('budget du message épuisé : repli sans appel, Standard comme Premium', async () => {
+    const { createAiCallBudget } = await import('../ai-call-budget');
+    for (const [planType, aiAccess] of [['STANDARD', ACCES.standard], ['PREMIUM', ACCES.premium]] as const) {
+      const s = portsModele();
+      const r = await runAssistant(input({ planType, aiAccess, aiBudget: createAiCallBudget(0) }), s.p);
+      expect(s.generate).not.toHaveBeenCalled();
+      expect(r.error).toBeUndefined();
+    }
+  });
+
+  it('plafond mensuel atteint : repli sans appel, Standard comme Premium', async () => {
+    for (const [planType, aiAccess] of [['STANDARD', ACCES.standard], ['PREMIUM', ACCES.premium]] as const) {
+      const s = portsModele();
+      const p = { ...s.p, checkMonthlyBudget: async () => ({ allowed: false, usedMicros: 10, limitMicros: 10, alert: true }) };
+      await runAssistant(input({ planType, aiAccess }), p);
+      expect(s.generate).not.toHaveBeenCalled();
+    }
+  });
+
+  it('PRODUCT_PLAN_LIMIT : Standard présente les questions comme INCLUSES, pas de fausse incitation', async () => {
+    const r = await runAssistant(input({ planType: 'STANDARD', aiAccess: ACCES.standard, message: 'Que comprend mon offre ?' }), ports());
+    expect(r.route.intent).toBe('PRODUCT_PLAN_LIMIT');
+    expect(r.answer).toContain('Votre offre Standard comprend');
+    expect(r.answer).toMatch(/réponses à vos questions/);
+    expect(r.answer).not.toMatch(/(réponses rédigées|questions)[^.]*font partie de (Premium|l’offre Premium)/);
+    expect(r.answer).toMatch(/coût de possession, la synchronisation de l’agenda et les dossiers prêts à l’usage font partie de Premium/);
+  });
+});

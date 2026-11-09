@@ -37,6 +37,7 @@ import { toApiPayload } from '@/services/verebona-assistant/core/api-payload';
 import { resoudreClarification } from '@/services/verebona-assistant/core/clarification.service';
 import { executerIssueClarification } from '@/services/verebona-assistant/core/clarification-flow';
 import { assistantPlanFromEntitlements, assistantPlanLimit } from '@/services/verebona-assistant/core/plan-eligibility';
+import { assistantAiAccessFromEntitlements } from '@/services/verebona-assistant/core/ai-access';
 import { httpRequestId, parseWith, readJson, withRequestId } from '@/lib/verebona/api-guard';
 import { PostMessageSchema } from '@/lib/verebona/api-schemas';
 
@@ -113,14 +114,18 @@ async function traiter(req: NextRequest, httpId: string): Promise<NextResponse> 
   const entitlements = await getEntitlements(accountId);
 
   // Essai terminé ou abonnement absent (§6.5) : la recherche classique et
-  // l'aide RESTENT disponibles ; seuls les appels intelligents (offre
-  // Standard effective, sans IA) et les commandes d'écriture sont coupés,
-  // et l'assistant explique la limite avec « Voir les offres ». Refus
-  // complet seulement si le compte n'est même plus consultable.
+  // l'aide RESTENT disponibles ; seuls les appels intelligents et les
+  // commandes d'écriture sont coupés, et l'assistant explique la limite avec
+  // « Voir les offres ». Refus complet seulement si le compte n'est même
+  // plus consultable.
+  // Lot 113AE (#728) : Standard ACTIF a T2 complet ; l'autorisation d'appel
+  // modèle vient du prédicat unique `ai-access.ts` (droits réels), transmis
+  // à l'orchestrateur — jamais un PREMIUM simulé.
   const planLimit = assistantPlanLimit(entitlements);
+  const aiAccess = assistantAiAccessFromEntitlements(entitlements);
   if (planLimit === 'NO_ACCESS') {
     const refus = await refuserSiPasDIA(accountId);
-    if (refus) return refus;
+    return refus ?? NextResponse.json({ code: 'SUBSCRIPTION_REQUIRED', message: 'Une offre active est nécessaire.' }, { status: 403 });
   }
 
   // Idempotence (§31.9), bornée à l'UTILISATEUR : une demande rejouée (réseau
@@ -230,7 +235,8 @@ async function traiter(req: NextRequest, httpId: string): Promise<NextResponse> 
     // Fil de l'utilisateur, résolu côté serveur : la persistance et les
     // copies en cache du modèle y sont rattachées (purge à l'effacement).
     conversationId,
-    planLimit: planLimit === 'NO_ACCESS' ? null : planLimit,
+    planLimit,
+    aiAccess,
   };
 
   // 5. Orchestration.
@@ -246,6 +252,8 @@ async function traiter(req: NextRequest, httpId: string): Promise<NextResponse> 
       });
       const suite = await executerIssueClarification(issue, {
         accountId, userId: session.userId, planType: input.planType, locale: input.locale, typedText: message,
+        // Lot 113AE : la reprise garde l'accès IA RÉEL du compte (jamais élargi).
+        aiAccess, planLimit: input.planLimit,
       }, { runAssistant, ports });
       // La reprise de clarification a sa propre trace : la réservation de ce
       // message est close pour libérer le fil.

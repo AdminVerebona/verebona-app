@@ -27,6 +27,10 @@ const { inputDeReprise } = await import('../../clarification.service');
 const { answerFromData } = await import('../../data-answer.service');
 const { aujourdhuiParis } = await import('../../query-period');
 
+/** Lot 113AE (#728) : Standard ACTIF a T2 complet — « sans IA » = compte RESTREINT (droits réels). */
+const COMPTE_SANS_IA = { modelCalls: false, denial: 'TRIAL_EXPIRED', commercialPlan: 'none', status: 'readonly', premiumFeatures: false, canWrite: false } as const;
+
+
 type Op = import('../../../canonical/operations').AssistantOperationRead;
 type Source = import('../../semantic-scope').BusinessSource;
 type Route = import('../../../types/contracts').IntentRoute;
@@ -63,7 +67,7 @@ const edf = (a = 3) => op({ assetIds: [a], technicalLabel: 'Électricité', prov
 const navigo = (a = 3) => op({ assetIds: [a], technicalLabel: 'Pass Navigo annuel', provider: 'RATP', components: [cout(8640, '2026-01-05')] });
 const sfrBox = (a = 3) => op({ assetIds: [a], technicalLabel: 'Box SFR', provider: 'SFR', components: [cout(2999, '2026-09-03')] });
 
-function harness(assets: Array<typeof MAISON>, ops: Op[], o: { understand?: Route | null; plan?: string } = {}) {
+function harness(assets: Array<typeof MAISON>, ops: Op[], o: { understand?: Route | null; plan?: string; sansIa?: boolean } = {}) {
   const h = H.harness(H.account({ assets }), { understand: o.understand ?? null });
   const nom = (id: number | null) => assets.find((a) => a.id === id)?.name ?? null;
   const sourcesOf = (ids: number[]): Source[] => ops
@@ -73,7 +77,7 @@ function harness(assets: Array<typeof MAISON>, ops: Op[], o: { understand?: Rout
   const read = vi.fn(async (_acc: number, ref: string, ctx: { assetIds: number[] }) => sourcesOf(ctx.assetIds).find((s) => s.ref === ref) ?? null);
   h.ports.listBusinessSources = list;
   h.ports.readBusinessSource = read;
-  const ask = (message: string, extra = {}) => h.ask(message, { planType: o.plan ?? 'PREMIUM', ...extra });
+  const ask = (message: string, extra = {}) => h.ask(message, { planType: o.plan ?? 'PREMIUM', ...(o.sansIa ? { aiAccess: COMPTE_SANS_IA } : {}), ...extra });
   return { ...h, ask, list, read };
 }
 
@@ -166,8 +170,8 @@ describe('PO D21 — service, plusieurs biens, périodes', () => {
     const h = harness([MAISON, APPART], [orange(3), orange(4, 2999)], { understand: compris([], ['internet', 'fibre']) });
     await h.ask('Je paye combien pour internet ?');
     expect(h.llmCalls()).toBe(1);
-    // Offre sans IA : aucun appel, jamais une somme de tout le bien.
-    const s = harness([MAISON], [orange(3), netflix(), edf()], { plan: 'STANDARD' });
+    // Compte sans IA (restreint — lot 113AE) : aucun appel, jamais une somme de tout le bien.
+    const s = harness([MAISON], [orange(3), netflix(), edf()], { plan: 'STANDARD', sansIa: true });
     const r = await s.ask('Je paye combien pour internet à la maison ?');
     expect(s.llmCalls()).toBe(0);
     expect(r.answer).not.toMatch(/13,49|85,00|Netflix|EDF/);

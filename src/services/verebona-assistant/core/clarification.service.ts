@@ -408,7 +408,8 @@ export async function resoudreClarification(p: {
  * « question de clarification + libellé » recollés.
  */
 export function inputDeReprise(
-  base: Pick<AssistantRequestInput, 'accountId' | 'userId' | 'planType' | 'locale'>,
+  // Lot 113AE (#728) : accès IA réel et limite du compte transmis tels quels.
+  base: Pick<AssistantRequestInput, 'accountId' | 'userId' | 'planType' | 'locale' | 'aiAccess' | 'planLimit'>,
   etat: ClarificationState,
   candidate: ClarificationCandidate,
 ): AssistantRequestInput {

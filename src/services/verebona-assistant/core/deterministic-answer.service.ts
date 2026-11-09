@@ -33,6 +33,11 @@ const TEMPLATES: Partial<Record<VerebonaIntent, string>> = {
 interface DeterministicContext {
   planType?: string;
   planLimit?: 'TRIAL_EXPIRED' | 'SUBSCRIPTION_REQUIRED' | null;
+  /**
+   * Lot 113AE (#728) : droit Premium MÉTIER réel (`premiumFeatures`). Absent
+   * (appel interne historique) : déduit du code d'offre.
+   */
+  premiumFeatures?: boolean;
 }
 
 /**
@@ -41,12 +46,23 @@ interface DeterministicContext {
  * Contenu fixe, validé, sans modèle ; l'action est « Voir les offres ».
  */
 function planLimitTemplate(ctx: DeterministicContext = {}): string {
-  const premium = ['PREMIUM', 'PREMIUM_DUO', 'PREMIUM_PRO'].includes(String(ctx.planType ?? ''));
-  const base = premium
-    ? 'Votre offre comprend la recherche dans vos biens, documents, échéances et fournisseurs, l’aide Verebona, '
-      + 'ainsi que les fonctions Premium : réponses rédigées (synthèse, comparaison, chronologie), synchronisation de l’agenda et dossiers prêts à l’usage.'
-    : 'Votre offre Standard comprend la recherche dans vos biens, documents, échéances et fournisseurs, les réponses exactes sur vos données et l’aide Verebona. '
-      + 'Les réponses rédigées (synthèse, comparaison, chronologie), la synchronisation de l’agenda et les dossiers prêts à l’usage font partie de Premium et Premium Duo.';
+  // Lot 113AE (#728) : les questions à Verebona (T2 complet : synthèse,
+  // comparaison, chronologie) sont incluses dans TOUTES les offres actives ;
+  // seuls le coût de possession, la synchronisation de l'agenda et les
+  // dossiers prêts à l'usage restent Premium. Textes à valider par le PO.
+  const premium = ctx.premiumFeatures ?? ['PREMIUM', 'PREMIUM_DUO', 'PREMIUM_PRO'].includes(String(ctx.planType ?? ''));
+  const base = ctx.planLimit
+    // Compte sans offre active : description des offres, sans « votre offre Standard ».
+    ? 'Les offres Standard, Premium et Premium Duo comprennent la recherche dans vos biens, documents, échéances et fournisseurs, '
+      + 'les réponses à vos questions sur vos données (synthèse, comparaison, chronologie comprises) et l’aide Verebona. '
+      + 'Premium et Premium Duo ajoutent le coût de possession, la synchronisation de l’agenda et les dossiers prêts à l’usage.'
+    : premium
+      ? 'Votre offre comprend la recherche dans vos biens, documents, échéances et fournisseurs, les réponses à vos questions '
+        + 'sur vos données (synthèse, comparaison, chronologie comprises), l’aide Verebona, '
+        + 'ainsi que les fonctions Premium : coût de possession, synchronisation de l’agenda et dossiers prêts à l’usage.'
+      : 'Votre offre Standard comprend la recherche dans vos biens, documents, échéances et fournisseurs, les réponses à vos questions '
+        + 'sur vos données (synthèse, comparaison, chronologie comprises) et l’aide Verebona. '
+        + 'Le coût de possession, la synchronisation de l’agenda et les dossiers prêts à l’usage font partie de Premium et Premium Duo.';
   const limite = ctx.planLimit === 'TRIAL_EXPIRED'
     ? ' Votre essai est terminé : votre compte est en consultation seule tant qu’une offre n’est pas choisie.'
     : ctx.planLimit === 'SUBSCRIPTION_REQUIRED'

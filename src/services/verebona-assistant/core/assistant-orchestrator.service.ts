@@ -47,7 +47,8 @@ import { formatDateFr } from './deterministic-format';
 import { marquerDisponibilite } from './source-availability.service';
 import { analyzeScope } from './blocked-topics';
 import { tryDeterministic } from './deterministic-answer.service';
-import { isPlanAiEligible } from '../registries/capability-registry';
+import { isT2CognitivePlan } from '../registries/capability-registry';
+import { accessTraceOf, accountAllowsModelCalls, accountLimitOf, premiumBusinessRightOf } from './ai-access';
 import type { CascadeTrace } from '../types/contracts';
 import {
   admissibleSourceTypes,
@@ -316,11 +317,29 @@ export async function runAssistant(
   // à CHAQUE demande : coupés, aucun appel modèle (rollback « désactiver
   // l'IA » en gardant recherche classique et aide).
   const aiActif = cfg.aiEnabled && isAssistantFlagOn('account_ai');
+  // ══════════════════════════════════════════════════════════════════════
+  // LOT 113AE (#728) — AUTORISATION EFFECTIVE DU COMPTE, UNE SEULE FOIS
+  //
+  // `compteIa` : prédicat unique `ai-access.ts` (droits RÉELS : actif ou
+  // essai actif, lecture permise, aucune restriction). Il remplace
+  // l'éligibilité de l'OFFRE (`isPlanAiEligible`), qui ne dit plus que le
+  // T2 cognitif (Standard compris). Il garde TOUS les appels : UNDERSTAND,
+  // arbitrage, aide, revalidation, ANSWER, reprises. Compte restreint :
+  // budget du message NUL en plus (filet : aucun appel ne peut partir).
+  // `limiteCompte` : limite à EXPLIQUER (« Voir les offres »), indépendante
+  // de l'offre cognitive.
+  // ══════════════════════════════════════════════════════════════════════
+  const compteIa = accountAllowsModelCalls(input);
+  const limiteCompte = accountLimitOf(input);
+  // Écriture bloquée (lecture seule) : ni commande, ni proposition de mise à jour.
+  const ecritureBloquee = Boolean(limiteCompte) || input.aiAccess?.canWrite === false;
   // ── Budget d'appels modèle du message (§15.5, CA-07) ──────────────────
   // Un seul compteur pour classification, revalidation et génération,
   // replis compris. Partagé par référence : les copies `{ ...input }`
   // successives gardent le même objet.
-  const budget: AiCallBudget = input.aiBudget ?? createAiCallBudget(cfg.maxAiCallsPerRequest);
+  const budget: AiCallBudget = compteIa
+    ? input.aiBudget ?? createAiCallBudget(cfg.maxAiCallsPerRequest)
+    : createAiCallBudget(0);
   // Identifiant RÉSERVÉ par la route (ligne `pending`, annulable) s'il
   // existe ; sinon généré ici (reprise de clarification, tests).
   const requestId = input.requestId ?? randomUUID();
@@ -340,6 +359,20 @@ export async function runAssistant(
   // Lot 101A (I) : appels de compréhension (UNDERSTAND) réellement faits pendant
   // le tour, quel que soit le chemin — versés dans le diagnostic du tour.
   const turnState = input.turnState ?? { understandCalls: 0 };
+  // Lot 113AE (#728) — filet : compte sans accès IA (lecture seule, impayé,
+  // résilié, sans abonnement), AUCUN port modèle n'est appelable, quel que
+  // soit le chemin (reprise, clarification, revalidation, aide). Les gardes
+  // explicites (`compteIa`) décident en amont ; ce filet garantit le zéro.
+  if (!compteIa) {
+    const bloque = () => { aiReport.events.push('ACCESS:MODEL_CALL_BLOCKED'); };
+    ports = {
+      ...ports,
+      ...(ports.classifyWithAI ? { classifyWithAI: async () => { bloque(); return null; } } : {}),
+      ...(ports.generateWithAI ? { generateWithAI: async () => { bloque(); return null; } } : {}),
+      ...(ports.arbitrateWithAI ? { arbitrateWithAI: async () => { bloque(); return null; } } : {}),
+      ...(ports.revalidateFacts ? { revalidateFacts: async () => { bloque(); return { results: [], established: false }; } } : {}),
+    };
+  }
   if (ports.classifyWithAI && !input.turnState) {
     const classer = ports.classifyWithAI;
     ports = { ...ports, classifyWithAI: (m, i) => { turnState.understandCalls += 1; return classer(m, i); } };
@@ -428,6 +461,8 @@ export async function runAssistant(
       latencyMs: 0,
     };
     base.cascade = trace;
+    // Lot 113AE : offre commerciale RÉELLE et accès IA de la demande (BO, coût par offre).
+    trace.access = accessTraceOf(input);
     // Sous-demandes et leur classement, tracés avec la demande.
     trace.scope = scopeTrace;
     const done = (answeredBy: CascadeTrace['answeredBy'], strategy: string, sufficiency: string | null, sourceCount: number) => {
@@ -621,7 +656,8 @@ export async function runAssistant(
     // ══════════════════════════════════════════════════════════════════════
     // Compte en lecture seule (fin d'essai, §6.5) : aucune commande d'écriture.
     // Lot 108J : une suggestion d'aide ou de découverte est une QUESTION, jamais une commande.
-    if (ports.prepareCommand && !input.resume && !input.planLimit && !input.suggestion?.forceIntent) {
+    // Lot 113AE : commandes ouvertes à toute offre ACTIVE (flag d'écriture), jamais en lecture seule.
+    if (ports.prepareCommand && !input.resume && !ecritureBloquee && !input.suggestion?.forceIntent) {
       const prep = await ports.prepareCommand(input).catch((e) => {
         console.error('[verebona] préparation de commande impossible :', (e as Error).message);
         return null;
@@ -1014,7 +1050,7 @@ export async function runAssistant(
         return servirSemantique(issue, r0);
       }
       trace.escalationReasons.push(`INTERACTION:${inter.mode}`);
-      if (input.planLimit) {
+      if (ecritureBloquee) {
         semTrace.updateCapabilityResolved = false;
         done('template', 'interaction.read_only', null, 0);
         return finalize(base, machine, 'deterministic', UPDATE_READ_ONLY_MESSAGE, [], [], [], ports, input);
@@ -1076,11 +1112,12 @@ export async function runAssistant(
      * pas d'appel — l'étape sémantique clarifie, jamais un choix lexical.
      */
     const arbitrer = async (cands: ArbitrationCandidate[]): Promise<RawSemanticDecision | null> => {
-      if (!aiActif || !ports.arbitrateWithAI || !isPlanAiEligible(input.planType) || !budget.canCall()) {
-        if (ports.arbitrateWithAI && aiActif && !budget.canCall()) trace.escalationReasons.push('SEMANTIC:ARBITRATION_BUDGET_EXHAUSTED');
+      if (!aiActif || !ports.arbitrateWithAI || !compteIa || !budget.canCall()) {
+        if (ports.arbitrateWithAI && aiActif && compteIa && !budget.canCall()) trace.escalationReasons.push('SEMANTIC:ARBITRATION_BUDGET_EXHAUSTED');
         // Lot 59 : motif EXPLICITE de l'arbitrage impossible (trace, BO).
+        // Lot 113AE : compte sans accès IA (lecture seule…) — plus jamais l'offre Standard.
         semTrace.arbitrationUnavailableReason = !ports.arbitrateWithAI ? 'NO_ARBITRATION_PORT' : !aiActif ? 'AI_DISABLED'
-          : !isPlanAiEligible(input.planType) ? 'PLAN_WITHOUT_AI' : 'BUDGET_EXHAUSTED';
+          : !compteIa ? 'ACCOUNT_WITHOUT_AI' : 'BUDGET_EXHAUSTED';
         return null;
       }
       // Lot 59 (#419) : prompt maître T2 EFFECTIF contrôlé (A9, {{BUSINESS_CANDIDATES}}, semanticDecision).
@@ -1210,7 +1247,7 @@ export async function runAssistant(
           else return clarifierCible(catalogue, 'MISSING_TARGET', route.intent);
         } else {
           // ── Renvoi non levé, ou intention inconnue : UNDERSTAND. ────────
-          const iaPossible = !input.resume && aiActif && ports.classifyWithAI != null && isPlanAiEligible(input.planType) && budget.canCall();
+          const iaPossible = !input.resume && aiActif && ports.classifyWithAI != null && compteIa && budget.canCall();
           if (!iaPossible && needsClassification && ports.classifyWithAI && !aiActif) trace.escalationReasons.push('ROUTING:AI_DISABLED');
           let compris: IntentRoute | null = null;
           if (iaPossible) {
@@ -1347,7 +1384,7 @@ export async function runAssistant(
         // Déjà compris par le modèle (évaluation de la cible) : sa route vaut
         // compréhension, jamais un second appel.
         let compris: IntentRoute | null = comprisParModele && !comprehensionEchouee ? route : null;
-        if (!comprisParModele && aiActif && ports.classifyWithAI && isPlanAiEligible(input.planType) && budget.canCall()) {
+        if (!comprisParModele && aiActif && ports.classifyWithAI && compteIa && budget.canCall()) {
           if (await avantAppelModele() === 'cancelled') return annuler();
           if (budget.canCall()) {
             const avantCl = budget.used;
@@ -1422,7 +1459,7 @@ export async function runAssistant(
         // STRUCTURÉE seulement — puis le serveur reprend la main (8b §G).
         const partielle = !faitsReprise.length && unconsumedInformationWords(input.message).length > 0;
         if (partielle) marquer('PARTIAL', ['UNCONSUMED_MEANING'], null);
-        if (partielle && !comprisParModele && aiActif && ports.classifyWithAI && isPlanAiEligible(input.planType) && budget.canCall()) {
+        if (partielle && !comprisParModele && aiActif && ports.classifyWithAI && compteIa && budget.canCall()) {
           if (await avantAppelModele() === 'cancelled') return annuler();
           if (budget.canCall()) {
             trace.escalationReasons.push('UNDERSTANDING:PARTIAL_DETERMINISTIC');
@@ -1471,7 +1508,7 @@ export async function runAssistant(
     // ══════════════════════════════════════════════════════════════════════
     /** UNDERSTAND borné (une fois par demande, budget, annulation, offre) ; `null` : pas d'appel. */
     const comprendrePourSemantique = async (): Promise<IntentRoute | null> => {
-      if (comprisParModele || !aiActif || !ports.classifyWithAI || !isPlanAiEligible(input.planType) || !budget.canCall()) {
+      if (comprisParModele || !aiActif || !ports.classifyWithAI || !compteIa || !budget.canCall()) {
         if (!aiActif && ports.classifyWithAI) trace.escalationReasons.push('ROUTING:AI_DISABLED');
         return null;
       }
@@ -1493,7 +1530,7 @@ export async function runAssistant(
     ): Promise<AssistantRunResult | null> => {
       semTrace.trigger = declencheur;
       semTrace.semanticResidue = [...residu];
-      if (!o.preset && aiActif && ports.classifyWithAI && !comprisParModele && isPlanAiEligible(input.planType) && budget.canCall()) {
+      if (!o.preset && aiActif && ports.classifyWithAI && !comprisParModele && compteIa && budget.canCall()) {
         if (await avantAppelModele() === 'cancelled') return annuler();
       }
       const issue = await runSemanticStage({
@@ -1574,7 +1611,8 @@ export async function runAssistant(
 
     // ── Réponse déterministe par gabarit (§14) ──────────────────────────────
     // Offre et limite du compte : le gabarit « offre » en dépend (§9.2).
-    const detCtx = { planType: input.planType, planLimit: input.planLimit ?? null };
+    // Lot 113AE : droit Premium MÉTIER réel (jamais l'éligibilité IA) et limite du compte.
+    const detCtx = { planType: input.planType, planLimit: limiteCompte, premiumFeatures: premiumBusinessRightOf(input) };
     let det = tryDeterministic(route.intent, detCtx);
     if (det.handled && det.answer) {
       const actions = await ports.resolveActions(route, input, []);
@@ -1621,7 +1659,7 @@ export async function runAssistant(
       trace.routingGuard = garde;
       if (garde.decision !== 'DETERMINISTIC' && garde.decision !== 'FREE_LEVELS_FIRST') trace.escalationReasons.push(`ROUTING_GUARD:${garde.decision}:${garde.reasons.join('+')}`);
       if (garde.decision === 'UNDERSTAND_FIRST' && !input.resume) {
-        const iaPossible = aiActif && ports.classifyWithAI != null && isPlanAiEligible(input.planType) && budget.canCall();
+        const iaPossible = aiActif && ports.classifyWithAI != null && compteIa && budget.canCall();
         let compris: IntentRoute | null = null;
         if (iaPossible && !comprisParModele) {
           if (await avantAppelModele() === 'cancelled') return annuler();
@@ -1684,7 +1722,8 @@ export async function runAssistant(
       // amélioré est réinjecté, puis la cascade est rejouée UNE fois sur la
       // connaissance mise à jour.
       // ══════════════════════════════════════════════════════════════════
-      if (data?.revalidation && ports.revalidateFacts && !input.revalidationDone && aiActif) {
+      // Lot 113AE : même autorisation de compte que toute autre étape modèle.
+      if (data?.revalidation && ports.revalidateFacts && !input.revalidationDone && aiActif && compteIa) {
         if (await avantAppelModele() === 'cancelled') return annuler();
         const avantRv = budget.used;
         const rv = await ports.revalidateFacts(input, data.revalidation).catch(() => null);
@@ -1834,7 +1873,7 @@ export async function runAssistant(
     // appel modèle — ni compréhension, ni revalidation, ni génération.
     // Déjà compris par le modèle (étape des faits, évaluation de la cible) :
     // pas de second appel.
-    const classifier = needsClassification && !classeParFaits && !comprisParModele && ports.classifyWithAI && aiActif && isPlanAiEligible(input.planType);
+    const classifier = needsClassification && !classeParFaits && !comprisParModele && ports.classifyWithAI && aiActif && compteIa;
     if (needsClassification && !comprisParModele && ports.classifyWithAI && !aiActif) trace.escalationReasons.push('ROUTING:AI_DISABLED');
     if (classifier) {
       if (await avantAppelModele() === 'cancelled') return annuler();
@@ -2007,7 +2046,7 @@ export async function runAssistant(
             }, input.message),
           };
         }
-        if (!aiActif || !route.aiEligible || !isPlanAiEligible(input.planType) || input.planLimit) return { status: 'blocked', reason: 'AI_NOT_ALLOWED' };
+        if (!aiActif || !route.aiEligible || !compteIa) return { status: 'blocked', reason: 'AI_NOT_ALLOWED' };
         if (!ports.classifyWithAI) return { status: 'blocked', reason: 'AI_UNAVAILABLE' };
         if (budgetMensuelAtteint || !budget.canCall()) return { status: 'blocked', reason: 'AI_BUDGET_BLOCKED' };
         if (ports.isAiUnavailable && await ports.isAiUnavailable().catch(() => false)) return { status: 'blocked', reason: 'AI_UNAVAILABLE' };
@@ -2105,7 +2144,7 @@ export async function runAssistant(
         // ANSWER rédige à partir des articles si l'IA est permise ; sinon
         // l'extraction est servie.
         const exact = aide.bestScore >= HELP_EXACT_THRESHOLD;
-        const redactionPossible = aiActif && comprehension.status === 'COMPLETE' && route.aiEligible
+        const redactionPossible = aiActif && compteIa && comprehension.status === 'COMPLETE' && route.aiEligible
           && ports.generateWithAI != null && budget.canCall() && !budgetMensuelAtteint;
         // Lot 34G (§2 du ticket) : procédure SIMPLE — action comprise avec
         // certitude (ajouter un document, créer un bien, une échéance) et
@@ -2215,14 +2254,14 @@ export async function runAssistant(
           const actions = await ports.resolveActions(route, input, proches);
           done('retrieval', 'retrieval.near', 'INSUFFICIENT', proches.length);
           base.resultGroups = buildResultGroups(proches);
-          return finalize(base, machine, 'classic_search', nearResultsAnswer(input.message, proches, isPlanAiEligible(input.planType)),
+          return finalize(base, machine, 'classic_search', nearResultsAnswer(input.message, proches, isT2CognitivePlan(input.planType)),
             [], resolvedProches, actions, ports, input, 'insufficient');
         }
       }
 
       // Réponse exacte à partir des résultats (tryDeterministicFromRetrieval).
       const exact = answerFromRetrievedSources(route.intent, input.message, adapters, thresholds, {
-        candidates: candidats, aiEligible: isPlanAiEligible(input.planType),
+        candidates: candidats, aiEligible: isT2CognitivePlan(input.planType),
       });
       trace.attempts.push({ level: 2, strategy: 'retrieval.adapters', status: exact.decision.status, score: exact.decision.score, threshold: exact.decision.threshold, reason: exact.decision.reason });
       // « Aucun résultat » ne s'applique pas quand un document a été trouvé
@@ -2261,6 +2300,8 @@ export async function runAssistant(
     if (!comprehensionComplete && route.aiEligible && sources.length > 0) trace.escalationReasons.push('N3:UNDERSTANDING_INCOMPLETE');
     const canUseAI =
       aiActif &&
+      // Lot 113AE (#728) : autorisation EFFECTIVE du compte (droits réels).
+      compteIa &&
       comprehensionComplete &&
       route.aiEligible &&
       ports.generateWithAI != null &&
@@ -2268,7 +2309,7 @@ export async function runAssistant(
       // Budget du message épuisé (classification + revalidation) : repli
       // déterministe plutôt qu'un troisième appel (§15.5, CA-07).
       budget.canCall();
-    if (!canUseAI && route.aiEligible && sources.length > 0 && ports.generateWithAI != null && !budget.canCall()) {
+    if (!canUseAI && compteIa && route.aiEligible && sources.length > 0 && ports.generateWithAI != null && !budget.canCall()) {
       trace.escalationReasons.push('N3:AI_BUDGET_EXHAUSTED');
     }
 
@@ -2330,7 +2371,7 @@ export async function runAssistant(
     // trouvé ». Intention inconnue : repli générique, tracé comme tel.
     const chronologie = plan?.kind === 'timeline' && Boolean(plan.timeline?.events.length);
     const sousContrat = !nonCompris && !isHelpIntent(route.intent) && !chronologie && data?.documentState?.kind !== 'FOUND_WITHOUT_INFO'
-      ? fallbackUnderContract(route.intent, sources, input.message, isPlanAiEligible(input.planType))
+      ? fallbackUnderContract(route.intent, sources, input.message, isT2CognitivePlan(input.planType))
       : null;
     if (sousContrat) {
       if (sousContrat.dropped > 0) {
@@ -2378,13 +2419,16 @@ export async function runAssistant(
     // Fin d'essai / sans abonnement (§6.5) : la question aurait demandé une
     // réponse intelligente — l'assistant explique la limite et propose la
     // page des offres. La recherche et l'aide restent servies normalement.
-    const limiteOffre = Boolean(input.planLimit) && !isPlanAiEligible(input.planType)
+    // Lot 113AE (#728) : la limite vient des DROITS du compte (`limiteCompte`),
+    // plus de l'offre cognitive — un compte restreint garde le code STANDARD,
+    // qui a désormais T2 complet ; un Standard actif n'a aucune limite.
+    const limiteOffre = Boolean(limiteCompte) && !compteIa
       && (needsClassification || getIntentDefinition(route.intent).geminiEligible);
-    if (limiteOffre) trace.escalationReasons.push(`PLAN_LIMIT:${input.planLimit}`);
+    if (limiteOffre) trace.escalationReasons.push(`PLAN_LIMIT:${limiteCompte}`);
     const answerBase = budgetMensuelAtteint && route.aiEligible
       ? `${repli}\n\n${MONTHLY_BUDGET_NOTICE}`
       : iaIndisponible ? `${repli}\n\n${AI_UNAVAILABLE_NOTICE}` : repli;
-    const answer = limiteOffre ? `${answerBase}\n\n${planLimitNotice(input.planLimit!)}` : answerBase;
+    const answer = limiteOffre ? `${answerBase}\n\n${planLimitNotice(limiteCompte!)}` : answerBase;
     const actionsBrutes = await ports.resolveActions(route, input, sources);
     // Lot 33 (§12 du ticket) : repli d'aide sans source fiable — aucune
     // action métier précise « comme si la demande était résolue », sauf
@@ -2408,7 +2452,7 @@ export async function runAssistant(
     // + 0 appel + repli » sans explication.
     if (!aideCascade && budget.used === 0 && trace.escalationReasons.some((r) => /^N[12]:/.test(r))
       && !trace.escalationReasons.some((r) => r.startsWith('N3:'))) {
-      const motif = !aiActif || !route.aiEligible || !isPlanAiEligible(input.planType) || input.planLimit ? 'AI_NOT_ALLOWED'
+      const motif = !aiActif || !route.aiEligible || !compteIa ? 'AI_NOT_ALLOWED'
         : iaIndisponible || !ports.generateWithAI ? 'AI_UNAVAILABLE'
           : budgetMensuelAtteint || !budget.canCall() ? 'AI_BUDGET_BLOCKED'
             : sources.length === 0 ? 'NO_SOURCE_FOR_SYNTHESIS'

@@ -27,6 +27,10 @@ const { DEFAULT_THRESHOLDS } = await import('../../sufficiency');
 const { inputDeReprise } = await import('../../clarification.service');
 const { toIntentRoute } = await import('../../classification.adapter');
 
+/** Lot 113AE (#728) : Standard ACTIF a T2 complet — « sans IA » = compte RESTREINT (droits réels). */
+const COMPTE_SANS_IA = { modelCalls: false, denial: 'TRIAL_EXPIRED', commercialPlan: 'none', status: 'readonly', premiumFeatures: false, canWrite: false } as const;
+
+
 type Op = import('../../../canonical/operations').AssistantOperationRead;
 type Source = import('../../semantic-scope').BusinessSource;
 type Port = import('../../data-answer.service').AccountDataPort;
@@ -63,7 +67,7 @@ const electricite = () => op({ assetIds: [3], technicalLabel: 'Électricité', p
 interface DocFx { fileId: number; title: string; amountCents: number | null; date: string; assetId: number }
 
 /** Harnais : orchestrateur réel + fournisseur de sources métier en mémoire. */
-function harness(assets: Array<typeof CUPRA>, ops: Op[], o: { understand?: Route | null; docs?: DocFx[]; plan?: string } = {}) {
+function harness(assets: Array<typeof CUPRA>, ops: Op[], o: { understand?: Route | null; docs?: DocFx[]; plan?: string; sansIa?: boolean } = {}) {
   const h = H.harness(H.account({ assets }), { understand: o.understand ?? null });
   const sourcesOf = (assetIds: number[]): Source[] => [
     ...ops.filter((x) => !assetIds.length || x.assetIds.some((a) => assetIds.includes(a)))
@@ -77,7 +81,7 @@ function harness(assets: Array<typeof CUPRA>, ops: Op[], o: { understand?: Route
   const read = vi.fn(async (_acc: number, ref: string, ctx: { assetIds: number[] }) => sourcesOf(ctx.assetIds).find((s) => s.ref === ref) ?? null);
   h.ports.listBusinessSources = list;
   h.ports.readBusinessSource = read;
-  const ask = (message: string, extra = {}) => h.ask(message, { planType: o.plan ?? 'PREMIUM', ...extra });
+  const ask = (message: string, extra = {}) => h.ask(message, { planType: o.plan ?? 'PREMIUM', ...(o.sansIa ? { aiAccess: COMPTE_SANS_IA } : {}), ...extra });
   return { ...h, ask, list, read };
 }
 
@@ -232,8 +236,8 @@ describe('Lot 49 — T2 : périmètre de dépense précis (Cas B)', () => {
     expect(r.cascade?.semantic).toMatchObject({ structuredStrategyExecuted: true, structuredScopeFallbackPrevented: false });
   });
 
-  it('T2SEM-AC12 — sans IA (offre Standard) : aucune compréhension inventée, sélection sur le seul résidu — jamais d’élargissement', async () => {
-    const h = harness([MAISON], [orangeFibre(), netflix()], { plan: 'STANDARD' });
+  it('T2SEM-AC12 — sans IA (compte restreint ; lot 113AE : Standard actif a l’IA) : aucune compréhension inventée, sélection sur le seul résidu — jamais d’élargissement', async () => {
+    const h = harness([MAISON], [orangeFibre(), netflix()], { plan: 'STANDARD', sansIa: true });
     const r = await h.ask('Je paye combien pour internet à la maison ?');
     expect(h.classify).not.toHaveBeenCalled();
     expect(r.answer).not.toMatch(/13,49|Netflix/);

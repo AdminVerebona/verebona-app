@@ -24,6 +24,8 @@ export async function GET(req: NextRequest) {
       userId: entier(p.get('userId')),
       deterministicOnly: p.get('route') === 'deterministic',
       aiOnly: p.get('route') === 'ai',
+      // Lot 113AE (#728) : offre commerciale réelle tracée (standard, trial, premium…).
+      offer: p.get('offer') ?? undefined,
       since: date(p.get('from')),
       until: date(p.get('to') ? `${p.get('to')}T23:59:59.999Z` : null),
       limit: entier(p.get('limit')),

@@ -155,6 +155,8 @@ async function readUsage(accountId: number, userId: number | null, ctx: Suggesti
     userQuestions: Number(r[0]?.userQuestions ?? 0),
     deadlinesUpcoming: Number(s.deadlinesUpcoming ?? 0),
     exportsTotal: Number(r[0]?.exportsTotal ?? 0),
+    // Lot 113AE (#728) : droit Premium métier RÉEL (même lecture que le coût de possession, `premiumFeatures`).
+    premiumFeatures: Number(s.ownershipCostAvailable ?? 0) > 0,
   };
 }
 
@@ -196,7 +198,8 @@ export function guideCandidatesOf(stage: GuideStage, usage: UsageSignals | null,
   const notAnswerable: string[] = [];
   const candidates: GuideCandidate[] = [];
   const entries = usage
-    ? GUIDE_STOCK.filter((e) => e.stages.includes(stage) && (!e.when || e.when(usage)))
+    // Lot 113AE (#728) : aucune question sur une fonction Premium sans le droit Premium réel.
+    ? GUIDE_STOCK.filter((e) => e.stages.includes(stage) && (!e.when || e.when(usage)) && (!e.requiresPremium || usage.premiumFeatures === true))
     : GUIDE_STOCK.filter((e) => SAFE_FALLBACK_GUIDE_IDS.includes(e.id));
   for (const e of entries) {
     const a = guideAnswerability(e, corpora);

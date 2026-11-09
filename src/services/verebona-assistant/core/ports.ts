@@ -39,7 +39,7 @@ import { parseEntityRef } from './entity-ref';
 import { PAYLOAD_SOURCES, idsPresentes } from './action-selection';
 import type { Claim } from '../types/sources';
 import { persistResult, loadThreadContext } from './conversation.service';
-import { isPlanAiEligible } from '../registries/capability-registry';
+import { accountLimitOf, isAssistantModelCallAllowed, premiumBusinessRightOf } from './ai-access';
 import { saveClarification } from './clarification.service';
 import { pgClient } from '@/db';
 import { assistantAssetAvailability } from './asset-availability';
@@ -321,6 +321,24 @@ export function resolvedAssetId(input: Pick<AssistantRequestInput, 'pageContext'
   return candidats.find((n) => Number.isSafeInteger(n) && n > 0) ?? null;
 }
 
+/**
+ * Lot 113AE (#728) : port modèle gardé par le prédicat unique d'accès IA
+ * (`ai-access.ts`). Refusé : aucun appel, `null` (l'appelant prend son repli).
+ */
+function gardeModele<A extends unknown[], R>(
+  port: (...args: A) => Promise<R | null>,
+  inputOf: (...args: A) => AssistantRequestInput,
+): (...args: A) => Promise<R | null> {
+  return async (...args: A) => {
+    const input = inputOf(...args);
+    if (!isAssistantModelCallAllowed(input)) {
+      input.aiReport?.events.push('ACCESS:MODEL_CALL_REFUSED');
+      return null;
+    }
+    return port(...args);
+  };
+}
+
 export function buildOrchestratorPorts(): OrchestratorPorts {
   const access = buildAccessChecker();
   // Consommateurs des événements métier (§25.7) : idempotent.
@@ -342,8 +360,11 @@ export function buildOrchestratorPorts(): OrchestratorPorts {
     // ── Classification et génération (usage 3, master T2) ────────────────
     // Toujours branchées depuis le lot 16b-2 ; l'offre, le réglage
     // `account_ai` et l'état du traitement T2 décident encore de l'appel.
-    classifyWithAI: buildClassificationPort(),
-    generateWithAI: buildGenerationPort(),
+    // Lot 113AE (#728) : chaque port modèle repasse par le prédicat UNIQUE
+    // d'accès IA (droits réels du compte + flags) — défense en profondeur
+    // derrière les gardes de l'orchestrateur ; refus = `null` (repli).
+    classifyWithAI: gardeModele(buildClassificationPort(), (_m, input) => input),
+    generateWithAI: gardeModele(buildGenerationPort(), (_r, _s, input) => input),
     // EStop / T2 désactivé ou suspendu : message explicite au repli (T2-041).
     isAiUnavailable: async () => !(await isTreatmentRunnable('T2')),
 
@@ -389,8 +410,11 @@ export function buildOrchestratorPorts(): OrchestratorPorts {
         actionIntents: construireActionIntents(route, await revalidateActionTargets(input, access), sources, idsPresentes(claims, sources)),
         access,
         // Offre vérifiée pour chaque action (§22.7 étape 3).
+        // Lot 113AE (#728) : droit Premium MÉTIER réel (dossiers prêts à
+        // l'usage), jamais l'éligibilité IA ; limite de lecture seule.
         planType: input.planType,
-        planLimit: input.planLimit ?? null,
+        planLimit: accountLimitOf(input),
+        premiumExports: premiumBusinessRightOf(input),
       }).then((actions) => actions.filter((a) => a.href !== null || !a.type.startsWith('OPEN_'))),
 
     persist: (result, input) => persistResult(result, input),
@@ -413,8 +437,9 @@ export function buildOrchestratorPorts(): OrchestratorPorts {
           accountId: input.accountId, userId: input.userId, conversationId: input.conversationId,
           factId, question: input.message, trigger: req.trigger,
           requestId: input.requestId,
-          // Mêmes conditions qu'une génération : offre éligible.
-          allowModel: isPlanAiEligible(input.planType),
+          // Lot 113AE (#728) : même prédicat UNIQUE que toute étape modèle
+          // (droits réels du compte, flags) — plus l'éligibilité de l'offre.
+          allowModel: isAssistantModelCallAllowed(input),
           // Budget partagé du message : la revalidation y puise comme la
           // classification et la génération.
           budget: input.aiBudget,
@@ -487,7 +512,7 @@ export function buildOrchestratorPorts(): OrchestratorPorts {
       return readBusinessSource(accountId, ref, ctx);
     },
     // Lot 54E (#419 écart 1) : arbitrage T2 entre candidats prévalidés.
-    arbitrateWithAI: buildArbitrationPort(),
+    arbitrateWithAI: gardeModele(buildArbitrationPort(), (_m, input) => input),
     canArbitrateWithAI: async () => {
       const { effectiveMasterPromptText } = await import('@/services/ai/config/config-resolver');
       const texte = await effectiveMasterPromptText('T2');

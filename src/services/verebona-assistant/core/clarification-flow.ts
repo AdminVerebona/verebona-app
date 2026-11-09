@@ -22,7 +22,9 @@ type SuiteClarification =
 
 export async function executerIssueClarification(
   issue: IssueClarification,
-  base: Pick<AssistantRequestInput, 'accountId' | 'userId' | 'planType' | 'locale'> & {
+  // Lot 113AE (#728) : `aiAccess` et `planLimit` (droits réels du compte)
+  // suivent la reprise — une clarification n'élargit jamais l'accès IA.
+  base: Pick<AssistantRequestInput, 'accountId' | 'userId' | 'planType' | 'locale' | 'aiAccess' | 'planLimit'> & {
     /** Texte tapé par l'utilisateur, s'il y en a un (historique). */
     typedText?: string;
   },

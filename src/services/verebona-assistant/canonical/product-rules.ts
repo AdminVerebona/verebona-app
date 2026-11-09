@@ -42,10 +42,20 @@ export function productRuleSources(d: ProductRuleData): RetrievedSource[] {
     out.push(src('quota_documents', 'Documents', quota(d.usage.documents, d.quotas.maxDocuments, 'document'), { used: d.usage.documents, limit: d.quotas.maxDocuments }));
     out.push(src('quota_users', 'Utilisateurs', quota(d.usage.users, d.quotas.maxUsers, 'utilisateur'), { used: d.usage.users, limit: d.quotas.maxUsers }));
   }
+  // Lot 113AE (#728) : les questions à Verebona (assistant T2 complet) sont
+  // incluses dans TOUTE offre active, Standard compris — elles ne sont plus
+  // une fonction Premium. Compte sans offre active : suspendues (lecture et
+  // aide conservées). Textes à valider par le PO.
+  const questionsActives = !d.isRestricted && d.canWrite && d.plan !== 'none';
+  out.push(src('assistant_questions', 'Questions à Verebona',
+    questionsActives
+      ? 'Incluses dans votre offre : questions à Verebona sur vos biens, documents et échéances (synthèse, comparaison, chronologie comprises).'
+      : 'Suspendues tant qu’aucune offre n’est active : la recherche et l’aide restent disponibles.',
+    { included: questionsActives }));
   out.push(src('premium_features', 'Fonctions Premium',
     d.premiumFeatures
-      ? 'Incluses : questions à Verebona, synchronisation de l’agenda, dossiers prêts à transmettre.'
-      : 'Non incluses dans votre offre : questions à Verebona, synchronisation de l’agenda, dossiers prêts à transmettre.',
+      ? 'Incluses : coût de possession, synchronisation de l’agenda, dossiers prêts à transmettre.'
+      : 'Non incluses dans votre offre : coût de possession, synchronisation de l’agenda, dossiers prêts à transmettre.',
     { included: d.premiumFeatures }));
   if (d.trial.status === 'active') {
     out.push(src('trial', 'Essai gratuit', `En cours : se termine le ${d.trial.endsAt?.slice(0, 10)} (${d.trial.daysRemaining} jour${(d.trial.daysRemaining ?? 0) > 1 ? 's' : ''} restant${(d.trial.daysRemaining ?? 0) > 1 ? 's' : ''}).`,

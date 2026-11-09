@@ -208,7 +208,9 @@ describe('§43 — cache de retrieval (RETRIEVAL_CACHE_TTL_SECONDS) et cache_hit
 describe('§25.6 — éligibilité lue dans le registre des capacités', () => {
   it('capabilityForIntent gouverne l’éligibilité : offre, flag du §39', () => {
     expect(isAiEligibleFor('ACCOUNT_SUMMARY', 'PREMIUM', true)).toBe(true);
-    expect(isAiEligibleFor('ACCOUNT_SUMMARY', 'STANDARD', true)).toBe(false);
+    // Lot 113AE (#728) : Standard inclus dans `account_ai` (T2 cognitif complet).
+    expect(isAiEligibleFor('ACCOUNT_SUMMARY', 'STANDARD', true)).toBe(true);
+    expect(isAiEligibleFor('ACCOUNT_SUMMARY', 'STANDARD', false)).toBe(false);
     process.env.VEREBONA_ASSISTANT_ACCOUNT_AI = 'off';
     expect(capabilityAllows('ACCOUNT_SUMMARY', 'PREMIUM')).toBe(false);
     expect(routeForIntent('ACCOUNT_SUMMARY', 'PREMIUM', 't').aiEligible).toBe(false);

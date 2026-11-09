@@ -186,10 +186,13 @@ describe('§9.4 étape 7 — base d’aide avant classification', () => {
 });
 
 describe('éligibilité IA portée par la route', () => {
-  it('Standard : pas d’IA ; Premium : synthèse éligible', () => {
+  // Lot 113AE (#728) : Standard actif a T2 COMPLET — même éligibilité cognitive que Premium.
+  // L'autorisation d'appel (compte restreint : aucune) relève de `ai-access.ts`, pas de la route.
+  it('Standard et Premium : synthèse éligible à l’identique', () => {
     const std = routeDeterministic({ message: 'Résume les garanties de mon vélo', planType: 'STANDARD', hasPendingClarification: false });
     const prem = routeDeterministic({ message: 'Résume les garanties de mon vélo', planType: 'PREMIUM', hasPendingClarification: false });
-    expect(std.kind === 'route' && std.route.aiEligible).toBe(false);
+    expect(std.kind === 'route' && std.route.aiEligible).toBe(true);
     expect(prem.kind === 'route' && prem.route.aiEligible).toBe(true);
+    expect(std.kind === 'route' && prem.kind === 'route' && std.route.intent).toBe(prem.kind === 'route' ? prem.route.intent : null);
   });
 });

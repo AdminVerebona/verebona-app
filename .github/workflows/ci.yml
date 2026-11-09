@@ -459,6 +459,8 @@ jobs:
         run: npm run test:e2e:corpus-ia -- --reporter=default --reporter=junit --outputFile.junit=rapports/e2e-corpus-ia.xml
       - name: Assistant T2 — continuité conversationnelle, série d'un équipement (lot 101A)
         run: npm run test:e2e:assistant-continuite -- --reporter=default --reporter=junit --outputFile.junit=rapports/e2e-assistant-continuite.xml
+      - name: Assistant T2 — Standard actif = T2 complet sans droits Premium (lot 113AE, Trello #728)
+        run: npm run test:e2e:t2-standard -- --reporter=default --reporter=junit --outputFile.junit=rapports/e2e-t2-standard.xml
       - name: Cycle de vie des comptes — lecture seule, purge à 90 jours, rétractation, J+80 (lot 102A)
         run: npm run test:e2e:cycle-vie -- --reporter=default --reporter=junit --outputFile.junit=rapports/e2e-cycle-vie.xml
       - name: Source juridique unique, CGUV versionnées, réacceptation (lot 102B)

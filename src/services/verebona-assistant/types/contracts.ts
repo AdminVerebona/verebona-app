@@ -252,6 +252,14 @@ export interface AssistantRequestInput {
    */
   planLimit?: 'TRIAL_EXPIRED' | 'SUBSCRIPTION_REQUIRED' | null;
   /**
+   * Lot 113AE (#728) : accès IA EFFECTIF du compte, calculé par la route à
+   * partir des droits réels (`core/ai-access.ts`) — offre commerciale réelle,
+   * statut, autorisation d'appel modèle, droit Premium métier. Jamais fourni
+   * par le client ; conservé tel quel par les reprises de clarification.
+   * Absent (appel interne historique) : règle prudente `planLimit` + offre.
+   */
+  aiAccess?: import('../core/ai-access').AssistantAiAccess;
+  /**
    * Message tel que posé, quand `message` ne porte plus que les sous-demandes
    * autorisées d'une requête mixte (historique fidèle).
    */
@@ -422,6 +430,18 @@ export interface CascadeTrace {
   aiCalls: number;
   model: string | null;
   thresholds: { database: number; text: number; source: string };
+  /**
+   * Lot 113AE (#728) : accès IA de la demande — offre commerciale RÉELLE,
+   * statut, appel modèle autorisé ou motif du refus (BO, coût par offre).
+   */
+  access?: {
+    commercialPlan: string | null;
+    status: string | null;
+    modelCalls: boolean;
+    denial: string | null;
+    premiumFeatures: boolean | null;
+    source: 'entitlements' | 'legacy';
+  };
   latencyMs: number;
   /** Événements de sécurité sur la sortie modèle (§18.7, CA-09, 37.12). */
   securityEvents?: Array<{ code: string; target?: string; detail?: string }>;

@@ -26,6 +26,10 @@ import type { AssistantRequestInput, IntentRoute } from '../../../types/contract
 import type { ThreadContext } from '../../reference-resolver';
 import type { RetrievedSource } from '../../../types/sources';
 
+/** Lot 113AE (#728) : Standard ACTIF a T2 complet — « sans IA » = compte RESTREINT (droits réels). */
+const COMPTE_SANS_IA = { modelCalls: false, denial: 'TRIAL_EXPIRED', commercialPlan: 'none', status: 'readonly', premiumFeatures: false, canWrite: false } as const;
+
+
 const MAISON = { id: 10, name: 'Maison de Bourg', category: 'IMMOBILIER', subtype: 'Maison', city: 'Bourg-en-Bresse',
   fields: { address1: '12 rue des Lilas', postalCode: '01000', city: 'Bourg-en-Bresse' } };
 const POLO = { id: 20, name: 'Polo', category: 'VEHICULE', subtype: 'Voiture', fields: { mileage: 82000 } };
@@ -129,7 +133,7 @@ describe('Lot 32 — tests A à I du ticket', () => {
     expect(r2.answer).not.toMatch(RIEN_TROUVE);
 
     const standard = H.harness(H.account({ assets: [MAISON] }), { understand: H.understood('ACCOUNT_SUMMARY', []) });
-    const r3 = await standard.ask(q, { planType: 'STANDARD' });
+    const r3 = await standard.ask(q, { planType: 'STANDARD', aiAccess: COMPTE_SANS_IA });
     expect(standard.classify).not.toHaveBeenCalled();
     expect(r3.route.intent).toBe('UNKNOWN');
     expect(r3.answer).not.toMatch(RIEN_TROUVE);
@@ -193,9 +197,9 @@ describe('Lot 32 — tests A à I du ticket', () => {
     expect(r3.cascade?.understanding).toMatchObject({ initialStatus: 'UNKNOWN_INTENT', status: 'COMPLETE', resolvedBy: 'understand' });
     llm(h3, r3, 1);
 
-    // 4. IA non autorisée (offre) : pas d'appel, clarification prudente — jamais de compréhension inventée.
+    // 4. IA non autorisée (compte restreint — lot 113AE : Standard actif a l’IA) : pas d'appel, clarification prudente — jamais de compréhension inventée.
     const h4 = H.harness(H.account({ assets: [POLO, CUPRA] }), { thread, understand: H.understood('ACCOUNT_SEARCH_DOCUMENT', [], [{ type: 'asset', value: 'Cupra' }]) });
-    const r4 = await h4.ask(q, { planType: 'STANDARD' });
+    const r4 = await h4.ask(q, { planType: 'STANDARD', aiAccess: COMPTE_SANS_IA });
     expect(h4.classify).not.toHaveBeenCalled();
     expect(r4.clarification?.candidates.map((c) => c.entityId)).toEqual([20, 21]);
     expect(h4.retrieve).not.toHaveBeenCalled();

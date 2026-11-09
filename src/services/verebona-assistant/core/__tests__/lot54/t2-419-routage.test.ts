@@ -82,7 +82,7 @@ const lookup: import('../../../commands/plan.service').CommandLookup = {
 };
 
 function harness(assets: Array<typeof CUPRA>, ops: Op[], o: {
-  understand?: Route | null; extras?: Source[]; plan?: string; arbitrate?: ((c: Cand[]) => Decision | null) | null; proposals?: boolean;
+  understand?: Route | null; extras?: Source[]; plan?: string; sansIa?: boolean; arbitrate?: ((c: Cand[]) => Decision | null) | null; proposals?: boolean;
 } = {}) {
   const h = H.harness(H.account({ assets }), { understand: o.understand ?? null });
   const sourcesOf = (assetIds: number[]): Source[] => [
@@ -99,7 +99,7 @@ function harness(assets: Array<typeof CUPRA>, ops: Op[], o: {
     return r.kind === 'plan' ? { kind: 'plan' as const, preview: r.preview, capability: r.capability, proposed: r.proposed, refused: r.refused } : r;
   });
   if (o.proposals !== false) h.ports.prepareUpdateProposal = propose;
-  const ask = (message: string, extraIn = {}) => h.ask(message, { planType: o.plan ?? 'PREMIUM', ...extraIn });
+  const ask = (message: string, extraIn = {}) => h.ask(message, { planType: o.plan ?? 'PREMIUM', ...(o.sansIa ? { aiAccess: COMPTE_SANS_IA } : {}), ...extraIn });
   return { ...h, ask, arbitrate, propose };
 }
 
@@ -168,7 +168,8 @@ describe('#419 écart 1 / CC1 — sélection finale : T2 arbitre entre candidats
     const sansPort = await harness([MAISON], [orangeFibre(), netflix()], { understand: INTERNET }).ask('Je paye combien pour internet à la maison ?');
     expect(sansPort.answer).not.toMatch(/€/);
     expect(sansPort.clarification?.candidates).toHaveLength(2);
-    const standard = harness([MAISON], [orangeFibre(), netflix()], { arbitrate: choisir(/Orange/), plan: 'STANDARD' });
+    // Lot 113AE : « offre sans IA » = compte restreint (Standard actif a l’arbitrage).
+    const standard = harness([MAISON], [orangeFibre(), netflix()], { arbitrate: choisir(/Orange/), plan: 'STANDARD', sansIa: true });
     const r = await standard.ask('Je paye combien pour internet à la maison ?');
     expect(standard.arbitrate).not.toHaveBeenCalled();
     expect(r.answer).not.toMatch(/€/);
@@ -945,6 +946,10 @@ const { wantsAggregate, aggregateSameReality, operationCarriesValue } = S;
 const { classifySuppliedFacts, countsPayments } = await import('../../interaction');
 const { t2PromptCompatibility } = await import('@/services/ai/assistant/master/t2-prompt-capabilities');
 const { mixedExpenseNotes } = await import('../../../canonical/expenses');
+
+/** Lot 113AE (#728) : Standard ACTIF a T2 complet — « sans IA » = compte RESTREINT (droits réels). */
+const COMPTE_SANS_IA = { modelCalls: false, denial: 'TRIAL_EXPIRED', commercialPlan: 'none', status: 'readonly', premiumFeatures: false, canWrite: false } as const;
+
 
 const T2_FICHIER = readFileSync(join(process.cwd(), 'src/services/ai/prompts/assistant/t2_master_v1.txt'), 'utf8');
 /** Composante réalisée SANS montant EUR exploitable (devise non convertie). */

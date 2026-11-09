@@ -26,7 +26,9 @@ export function assistantPlanFromEntitlements(
   sessionPlanType?: string | null,
 ): PlanCode {
   // Pas de fonctions Premium (Standard, essai expiré, abonnement suspendu) :
-  // comportement Standard, sans IA sur les données (§6.1).
+  // code cognitif STANDARD. Lot 113AE (#728) : Standard a T2 COMPLET ; c'est
+  // `ai-access.ts` (droits réels) qui coupe les appels modèle d'un compte
+  // restreint — jamais ce code d'offre, jamais un PREMIUM simulé.
   if (!entitlements.premiumFeatures) return 'STANDARD';
   switch (entitlements.plan) {
     // §6.5 : l'essai a le comportement Premium, modèle et limites compris.
@@ -50,6 +52,10 @@ export function assistantPlanFromEntitlements(
  *   · peut écrire                      → `null` (aucune limite) ;
  *   · lecture seule (essai échu…)      → limite : assistant sans IA ;
  *   · ni lecture ni écriture           → `NO_ACCESS` (refus, comme avant).
+ *
+ * Lot 113AE (#728) : la limite sert aux MESSAGES (« Voir les offres ») et
+ * au calcul de l'accès IA (`ai-access.ts`) ; elle ne dépend plus de
+ * l'éligibilité cognitive de l'offre (Standard actif : aucune limite).
  */
 export function assistantPlanLimit(
   entitlements: Pick<Entitlements, 'canWrite' | 'status'> & { canRead?: boolean },

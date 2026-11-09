@@ -47,6 +47,7 @@
     "test:e2e:t1-files-403": "vitest --run --config vitest.e2e.config.ts src/test/e2e/scenarios/l113r-t1-files-403.e2e.ts src/test/e2e/scenarios/l87a-secours-reprise.e2e.ts src/test/e2e/scenarios/l61a-t1-gemini-extraction.e2e.ts",
     "test:e2e:relance-analyse": "vitest --run --config vitest.e2e.config.ts src/test/e2e/scenarios/l113u-relance-analyse.e2e.ts",
     "test:e2e:fournisseur-documents": "vitest --run --config vitest.e2e.config.ts src/test/e2e/scenarios/l113y-fournisseur-documents.e2e.ts src/test/e2e/scenarios/l109b-fournisseurs-fiche-unique.e2e.ts",
+    "test:e2e:t2-standard": "vitest --run --config vitest.e2e.config.ts src/test/e2e/scenarios/l113ae-t2-standard.e2e.ts src/test/e2e/scenarios/l112c-t2-tco-droits.e2e.ts",
     "test:e2e:periodes-metier": "vitest --run --config vitest.e2e.config.ts src/test/e2e/scenarios/l113w-periodes-metier.e2e.ts src/test/e2e/scenarios/l113aa-periodes-conformite.e2e.ts src/test/e2e/scenarios/l113ad-relation-t3.e2e.ts",
     "test:e2e:periodes-metier-surfaces": "vitest --run --config vitest.e2e.config.ts src/test/e2e/scenarios/l113ab-periodes-surfaces.e2e.ts src/test/e2e/scenarios/l113ac-periodes-finalisation.e2e.ts",
     "test:e2e:notes-description": "vitest --run --config vitest.e2e.config.ts src/test/e2e/scenarios/l113z-notes-description.e2e.ts",

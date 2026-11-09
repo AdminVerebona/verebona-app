@@ -14,7 +14,7 @@ import { getCostReport, averageCostPerCall } from '@/services/ai/telemetry/cost-
 import { COMPLETENESS_LABELS } from '@/services/ai/telemetry/cost-status';
 import { isTreatment } from '@/services/ai/config/treatments';
 import { getAiEnvironment } from '@/services/ai/config/environment';
-import { getT2UsageSummary } from '@/services/ai/telemetry/t2-routing.repository';
+import { getT2UsageByOffer, getT2UsageSummary } from '@/services/ai/telemetry/t2-routing.repository';
 import { T6_MODES, type T6ModeFilter } from '@/services/ai/telemetry/execution-filters';
 import { requireAdminContext, toErrorResponse } from '../config-versions/_shared';
 import { readReuseTotals } from '@/services/ai/reuse/reuse-counters';
@@ -58,6 +58,8 @@ export async function GET(req: NextRequest) {
     });
     // COST-015 : usage T2 comparé au coût (requêtes tranchées sans IA incluses).
     const t2Usage = await getT2UsageSummary(since).catch(() => null);
+    // Lot 113AE (#728, AC14) : questions, taux d'appels modèle et coût par question, PAR OFFRE RÉELLE.
+    const t2UsageByOffer = await getT2UsageByOffer(since, until).catch(() => null);
     // Lot 99A (point D) : réponses sans appel facturé et décisions réutilisées — 0 coût, jamais des appels.
     const jour = (d: Date) => d.toLocaleDateString('sv-SE', { timeZone: 'Europe/Paris' });
     const reuse = await readReuseTotals({
@@ -80,6 +82,7 @@ export async function GET(req: NextRequest) {
       // COST-003 : axe environnement — une instance = un environnement.
       environment,
       t2Usage,
+      t2UsageByOffer,
       reuse: reuse ? { available: reuse.available, cacheResponses: reuse.cacheResponses, decisionsReused: reuse.decisionsReused, byKind: reuse.byKind } : null,
       // Signalé explicitement : le SCR-09 demande de « signaler l'incomplétude »
       // plutôt que de rendre un agrégat qui paraîtrait exact.

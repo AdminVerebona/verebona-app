@@ -37,7 +37,6 @@ import { drawerHref, parseDrawerParam } from '@/lib/drawers';
 import {
   MAX_ACTIONS_METIER, ajouterSources, destinationDe, rubriqueContextuelle, selectionnerActions, sourcesDeLAction,
 } from './action-selection';
-import { isPlanAiEligible } from '../registries/capability-registry';
 import { createCommandFor } from '@/lib/verebona/assistant-actions';
 
 /**
@@ -225,6 +224,13 @@ interface ResolveActionsInput {
    */
   planType?: string;
   planLimit?: 'TRIAL_EXPIRED' | 'SUBSCRIPTION_REQUIRED' | null;
+  /**
+   * Lot 113AE (#728) : droit RÉEL aux dossiers prêts à l'usage (exports
+   * Premium = `premiumFeatures` et écriture, comme `canUsePremiumFeature`).
+   * Jamais l'éligibilité IA : depuis #728, Standard a T2 complet SANS les
+   * dossiers Premium. Absent (appelant historique) : règle du code d'offre.
+   */
+  premiumExports?: boolean;
 }
 
 // ══════════════════════════════════════════════════════════════════════════
@@ -259,19 +265,30 @@ const ACTIONS_ECRITURE: ReadonlySet<VerebonaActionType> = new Set<VerebonaAction
   'START_ADD_ASSET', 'START_ADD_DOCUMENT', 'START_ADD_AGENDA_ITEM',
 ]);
 
+/**
+ * Codes d'offre qui portent les dossiers Premium — repli des appelants
+ * historiques SANS droits réels (`premiumExports` absent). Les routes de
+ * l'assistant transmettent toujours le droit réel.
+ */
+const OFFRES_DOSSIERS_PREMIUM: ReadonlySet<string> = new Set(['PREMIUM', 'PREMIUM_DUO', 'PREMIUM_PRO']);
+
 /** L'offre du compte permet-elle cette action ? (§22.7 étape 3) */
 export function offrePermet(
   type: VerebonaActionType,
   params: Record<string, unknown> | undefined,
   planType: string | undefined,
   planLimit: ResolveActionsInput['planLimit'],
+  premiumExports?: boolean,
 ): boolean {
   // Compte en lecture seule (essai échu, abonnement requis) : ni création,
   // ni dossier Premium — la consultation et l'export brut restent ouverts.
   if (planLimit && ACTIONS_ECRITURE.has(type)) return false;
   if (type === 'OPEN_EXPORT_AREA' && isPremiumExportCode(params?.exportType)) {
     if (planLimit) return false;
-    if (planType !== undefined && !isPlanAiEligible(planType)) return false;
+    // Lot 113AE (#728) : droit RÉEL aux dossiers Premium, dissocié du droit à
+    // l'IA (Standard actif : T2 complet, PAS de dossier Premium).
+    if (premiumExports !== undefined) return premiumExports;
+    if (planType !== undefined && !OFFRES_DOSSIERS_PREMIUM.has(planType)) return false;
   }
   return true;
 }
@@ -337,7 +354,7 @@ export async function resolveActions(input: ResolveActionsInput): Promise<Verebo
     if (def.isBusinessAction && (parRubrique.get(rubrique) ?? 0) > MAX_ACTIONS_METIER) continue;
 
     // Offre (§22.7 étape 3), avant tout accès en base.
-    if (!offrePermet(ai.type, ai.params, input.planType, input.planLimit)) continue;
+    if (!offrePermet(ai.type, ai.params, input.planType, input.planLimit, input.premiumExports)) continue;
 
     const slug = ai.targetId != null ? String(ai.targetId) : undefined;
     const authorized = sansCible || await checkAccess(input.accountId, def.control, ref, slug, input.access, ai.params);

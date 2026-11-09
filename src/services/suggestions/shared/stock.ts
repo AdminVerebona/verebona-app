@@ -68,6 +68,12 @@ export interface UsageSignals {
   userQuestions: number;
   deadlinesUpcoming: number;
   exportsTotal: number;
+  /**
+   * Lot 113AE (#728) : droit Premium MÉTIER réel du compte (`premiumFeatures` :
+   * dossiers, synchronisation d'agenda, coût de possession). Absent : inconnu,
+   * traité comme NON (aucune suggestion Premium proposée par défaut).
+   */
+  premiumFeatures?: boolean;
 }
 
 // ── Paramètres centralisés (aucune règle en dur ailleurs) ───────────────────
@@ -166,6 +172,12 @@ export interface GuideStockEntry {
   universe?: SuggestionUniverse;
   /** Condition d'usage supplémentaire (pure) : la question reste utile pour CET utilisateur. */
   when?: (s: UsageSignals) => boolean;
+  /**
+   * Lot 113AE (#728) : la question porte sur une fonction Premium MÉTIER
+   * (synchronisation d'agenda, dossiers prêts à l'usage) — jamais proposée à
+   * un compte sans ce droit (Standard : T2 complet, pas les fonctions Premium).
+   */
+  requiresPremium?: true;
 }
 
 export const GUIDE_STOCK: readonly GuideStockEntry[] = [
@@ -182,13 +194,13 @@ export const GUIDE_STOCK: readonly GuideStockEntry[] = [
     stages: ['START', 'PROGRESS'], when: (s) => s.userQuestions < GUIDE_ASK_HELP_MAX_QUESTIONS },
   // ── Progression : fonctions utiles (Centre d'aide) ──────────────────────
   { id: 'guide_agenda_sync', label: 'Comment synchroniser mon agenda ?', canonicalIntent: 'PRODUCT_HELP_HOW_TO', corpus: 'HELP', articleId: 'AID-AGENDA-006',
-    stages: ['PROGRESS', 'ESTABLISHED'] },
+    stages: ['PROGRESS', 'ESTABLISHED'], requiresPremium: true },
   { id: 'guide_detected_deadlines', label: 'Comment les échéances sont-elles détectées dans les documents ?', canonicalIntent: 'PRODUCT_HELP_EXPLAIN', corpus: 'HELP', articleId: 'AID-AGENDA-005',
     stages: ['PROGRESS', 'ESTABLISHED'] },
   { id: 'guide_complete_asset', label: 'Comment compléter la fiche d’un bien ?', canonicalIntent: 'PRODUCT_HELP_HOW_TO', corpus: 'HELP', articleId: 'AID-ASSET-003',
     stages: ['PROGRESS'], when: (s) => s.assetsTotal > 0 },
   { id: 'guide_prepare_dossier', label: 'Comment préparer un dossier pour un bien ?', canonicalIntent: 'PRODUCT_HELP_HOW_TO', corpus: 'HELP', articleId: 'AID-DOSSIER-002',
-    stages: ['PROGRESS', 'ESTABLISHED'], when: (s) => s.assetsTotal > 0 && s.exportsTotal === 0 },
+    stages: ['PROGRESS', 'ESTABLISHED'], when: (s) => s.assetsTotal > 0 && s.exportsTotal === 0, requiresPremium: true },
   { id: 'guide_transfer_asset', label: 'Comment transmettre un bien ?', canonicalIntent: 'PRODUCT_HELP_HOW_TO', corpus: 'HELP', articleId: 'AID-TRANSFER-002',
     stages: ['ESTABLISHED'], when: (s) => s.assetsTotal > 0 },
   // ── Usage établi : nouveaux usages et documents (Ressources) ────────────

@@ -86,6 +86,8 @@ interface Report {
   warning: string | null;
   environment: string | null;
   t2Usage: { requests: number; withAi: number; costMicros: number } | null;
+  /** Lot 113AE (#728, AC14) : questions T2 par offre RÉELLE tracée. */
+  t2UsageByOffer?: T2OfferUsage[] | null;
   /** Lot 99A : réponses sans appel facturé (cache) et décisions réutilisées — jamais comptées comme appels. */
   reuse?: { available: boolean; cacheResponses: number; decisionsReused: number } | null;
 }
@@ -112,6 +114,66 @@ function usd(micros: number): string {
   if (micros === 0) return '0 $';
   if (micros < 10_000) return `${(micros / 1_000_000).toFixed(4)} $`;
   return `${(micros / 1_000_000).toFixed(2)} $`;
+}
+
+interface T2OfferUsage {
+  offer: string; requests: number; withAi: number; aiRate: number | null; aiCalls: number;
+  costMicros: number; costPerRequestMicros: number | null; accessRefused: number;
+}
+
+/** Libellés des offres commerciales tracées (jamais un code brut à l'écran). */
+const OFFER_LABELS: Record<string, string> = {
+  standard: 'Standard', trial: 'Essai', premium: 'Premium', premium_duo: 'Premium Duo',
+  none: 'Sans offre active', unknown: 'Non tracée (avant le lot 113AE)',
+};
+
+/**
+ * Lot 113AE (#728, AC14) : questions à Verebona par offre RÉELLE — taux
+ * d'appels modèle, coût total et coût moyen par question (comparaison
+ * Standard / Premium à données égales).
+ */
+function T2ParOffre({ rows }: { rows: T2OfferUsage[] }) {
+  return (
+    <div className="rounded-xl border border-[color:var(--border-subtle)] bg-[color:var(--bg-card)] p-4 space-y-3">
+      <div>
+        <h2 className="vb-app-section">Questions à Verebona par offre</h2>
+        <p className="text-xs text-[color:var(--text-muted)]">
+          Offre réelle enregistrée avec chaque question. Taux d’appels = part des questions avec au moins un appel au modèle.
+        </p>
+      </div>
+      {rows.length === 0 && <p className="text-sm text-[color:var(--text-muted)]">Aucune question sur la période.</p>}
+      {rows.length > 0 && (
+        <div className="overflow-x-auto">
+          <table className="w-full text-sm">
+            <thead>
+              <tr className="text-left text-xs text-[color:var(--text-muted)]">
+                <th className="py-1 pr-3 font-medium">Offre</th>
+                <th className="py-1 pr-3 font-medium text-right">Questions</th>
+                <th className="py-1 pr-3 font-medium text-right">Taux d’appels</th>
+                <th className="py-1 pr-3 font-medium text-right">Appels</th>
+                <th className="py-1 pr-3 font-medium text-right">Coût</th>
+                <th className="py-1 pr-3 font-medium text-right">Coût / question</th>
+                <th className="py-1 font-medium text-right">Sans IA (compte)</th>
+              </tr>
+            </thead>
+            <tbody>
+              {rows.map((r) => (
+                <tr key={r.offer} className="border-t border-[color:var(--border-subtle)] text-[color:var(--text-primary)]">
+                  <td className="py-1.5 pr-3">{OFFER_LABELS[r.offer] ?? r.offer}</td>
+                  <td className="py-1.5 pr-3 text-right">{r.requests}</td>
+                  <td className="py-1.5 pr-3 text-right">{r.aiRate === null ? '—' : `${Math.round(r.aiRate * 100)} %`}</td>
+                  <td className="py-1.5 pr-3 text-right">{r.aiCalls}</td>
+                  <td className="py-1.5 pr-3 text-right">{usd(r.costMicros)}</td>
+                  <td className="py-1.5 pr-3 text-right">{r.costPerRequestMicros === null ? '—' : usd(r.costPerRequestMicros)}</td>
+                  <td className="py-1.5 text-right text-[color:var(--text-secondary)]">{r.accessRefused}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+    </div>
+  );
 }
 
 function Ventilation({ title, rows, hint, hrefFor }: {
@@ -380,6 +442,8 @@ function AiCostsScreen() {
               </div>
             ))}
           </div>
+
+          {report.t2UsageByOffer && <T2ParOffre rows={report.t2UsageByOffer} />}
 
           <div className="grid gap-4 sm:grid-cols-2">
             <Ventilation title="Par traitement" rows={report.byTreatment}

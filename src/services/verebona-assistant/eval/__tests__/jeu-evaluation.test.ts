@@ -189,9 +189,20 @@ describe('§35.3 — seuils de mise en production vérifiables sans modèle', ()
     expect(fautifs).toEqual([]);
   });
 
-  it('0 appel IA pour l’offre Standard', () => {
-    const fautifs = mesures.filter((m) => m.plan === 'STANDARD' && m.aiCalls > 0).map((m) => m.cas.id);
+  // Lot 113AE (#728) : Standard ACTIF a T2 complet ; seul un compte RESTREINT
+  // (essai échu, sans abonnement : `planLimit`) n'appelle aucun modèle.
+  it('0 appel IA pour un compte restreint (lecture seule, sans abonnement)', () => {
+    const fautifs = mesures.filter((m) => m.cas.planLimit && m.aiCalls > 0).map((m) => m.cas.id);
     expect(fautifs).toEqual([]);
+  });
+
+  it('lot 113AE — Standard actif et Premium : mêmes appels modèle et même mode, à données et question égales', () => {
+    const ecarts: string[] = [];
+    for (const m of mesures.filter((x) => x.plan === 'STANDARD' && !x.cas.planLimit)) {
+      const p = mesures.find((x) => x.cas.id === m.cas.id && x.plan === 'PREMIUM');
+      if (p && (p.aiCalls !== m.aiCalls || p.mode !== m.mode)) ecarts.push(`${m.cas.id} : Standard ${m.aiCalls}/${m.mode} ≠ Premium ${p.aiCalls}/${p.mode}`);
+    }
+    expect(ecarts).toEqual([]);
   });
 
   it('100 % des actions pointent vers une cible interne autorisée (aucune URL d’une source)', () => {
@@ -227,8 +238,8 @@ describe('cas par cas', () => {
     },
   );
   it.each(mesures.filter((m) => m.cas.aiAnswer).map((m) => [m.cas.id, m.plan, m] as const))(
-    '%s (%s) — réponse rédigée par le modèle en offre IA, aucune en Standard', (_id, plan, m) => {
-      if (plan === 'STANDARD') { expect(m.aiCalls).toBe(0); expect(m.mode).not.toBe('ai'); return; }
+    '%s (%s) — réponse rédigée par le modèle pour toute offre active, aucune en compte restreint', (_id, _plan, m) => {
+      if (m.cas.planLimit) { expect(m.aiCalls).toBe(0); expect(m.mode).not.toBe('ai'); return; }
       expect(m.mode).toBe('ai');
       expect(m.aiCalls).toBeGreaterThanOrEqual(1);
     },

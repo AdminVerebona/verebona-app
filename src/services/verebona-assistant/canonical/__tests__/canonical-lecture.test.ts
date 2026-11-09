@@ -159,15 +159,27 @@ describe('T2-06 — règles d’offre', () => {
   };
   it('offre, quotas (limite atteinte), fonctions, essai', () => {
     const s = productRuleSources(d);
-    expect(s.map((x) => x.id)).toEqual(['product_rule:plan', 'product_rule:quota_assets', 'product_rule:quota_documents', 'product_rule:quota_users', 'product_rule:premium_features', 'product_rule:trial']);
+    expect(s.map((x) => x.id)).toEqual(['product_rule:plan', 'product_rule:quota_assets', 'product_rule:quota_documents', 'product_rule:quota_users', 'product_rule:assistant_questions', 'product_rule:premium_features', 'product_rule:trial']);
     expect(s.every((x) => x.type === 'product_rule')).toBe(true);
     expect(s[1].content).toContain('limite atteinte');
-    expect(s[5].content).toContain('5 jours restants');
+    expect(s[6].content).toContain('5 jours restants');
   });
   it('compte restreint, sans offre', () => {
-    const s = productRuleSources({ ...d, plan: 'none', isRestricted: true, premiumFeatures: false, trial: { status: 'expired', endsAt: '2026-09-01T00:00:00Z', daysRemaining: null } });
+    const s = productRuleSources({ ...d, plan: 'none', isRestricted: true, canWrite: false, premiumFeatures: false, trial: { status: 'expired', endsAt: '2026-09-01T00:00:00Z', daysRemaining: null } });
     expect(s[0].content).toContain('mode restreint');
     expect(s.some((x) => x.id === 'product_rule:quota_assets')).toBe(false);
+    // Lot 113AE : questions suspendues (aucune offre active), jamais « réservées à Premium ».
+    expect(s.find((x) => x.id === 'product_rule:assistant_questions')?.meta?.included).toBe(false);
+  });
+  it('lot 113AE (#728) — Standard actif : questions à Verebona INCLUSES, fonctions Premium distinctes', () => {
+    const s = productRuleSources({ ...d, plan: 'standard', status: 'active', premiumFeatures: false, trial: { status: 'converted', endsAt: null, daysRemaining: null } });
+    const q = s.find((x) => x.id === 'product_rule:assistant_questions')!;
+    expect(q.meta?.included).toBe(true);
+    expect(q.content).toMatch(/^Incluses dans votre offre : questions à Verebona/);
+    const p = s.find((x) => x.id === 'product_rule:premium_features')!;
+    expect(p.meta?.included).toBe(false);
+    expect(p.content).toBe('Non incluses dans votre offre : coût de possession, synchronisation de l’agenda, dossiers prêts à transmettre.');
+    expect(s.map((x) => x.content).join(' ')).not.toMatch(/Non incluses[^.]*questions/);
   });
 });
 
