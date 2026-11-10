@@ -24,6 +24,7 @@
  */
 import { pgClient } from '@/db';
 import type { Treatment } from './treatments';
+import { businessCostSql } from '../cost/cost-classification';
 
 type Row = Record<string, unknown>;
 
@@ -120,12 +121,12 @@ const num = (v: unknown): number | null => (v == null ? null : Number(v));
 async function costMetrics(useCaseCode: string, days: number): Promise<{ metrics: Metric[]; row: Row }> {
   const r = await one(
     `SELECT COUNT(*) FILTER (WHERE operation_type <> 'circuit_breaker_probe')::int AS calls,
-            COALESCE(SUM(cost_micros) FILTER (WHERE is_billable), 0)::bigint      AS functional,
-            COALESCE(SUM(cost_micros) FILTER (WHERE NOT is_billable), 0)::bigint  AS technical,
+            COALESCE(SUM(cost_micros) FILTER (WHERE ${businessCostSql('u')}), 0)::bigint      AS functional,
+            COALESCE(SUM(cost_micros) FILTER (WHERE NOT ${businessCostSql('u')}), 0)::bigint  AS technical,
             COUNT(*) FILTER (WHERE status = 'success' AND operation_type <> 'circuit_breaker_probe')::int AS ok,
             COUNT(*) FILTER (WHERE status = 'success' AND operation_type <> 'circuit_breaker_probe'
                              AND (model_rank IN ('fallback_1', 'fallback_2') OR is_fallback))::int AS fallbacks
-       FROM ai_usage_event
+       FROM ai_usage_event u
       WHERE use_case_code = $1 AND created_at >= NOW() - ($2 || ' days')::interval`,
     [useCaseCode, String(days)],
   ).catch((): Row => ({}));

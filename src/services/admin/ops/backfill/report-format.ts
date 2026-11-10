@@ -27,6 +27,7 @@ import type { BackupManifestV2 } from '@/services/backup/database-backup.service
 import type { RestoreReport as DatabaseRestoreReport } from '@/services/backup/database-restore.service';
 import type { ReclassificationReport, ReclassificationRestoreReport } from '@/services/ai/history-reclassification/service';
 import type { PropertyRepriseReport } from '@/services/ai/source-analysis/projection/property-evidence-reprise';
+import type { CostClassificationReport, CostClassificationRestoreReport } from '@/services/ai/cost/cost-classification-backfill';
 
 export interface BackfillSummary {
   headline: string;
@@ -933,6 +934,76 @@ function businessPeriodsRequalification(action: BackfillAction, out: RawBackfill
   };
 }
 
+const ORIGINE_FR: Record<string, string> = {
+  ACCOUNT_SERVICE: 'métier (service du compte)', TECHNICAL: 'technique et essais', SHADOW: 'observation', UNDETERMINED: 'non déterminable',
+};
+const usdMicros = (m: number) => `${(m / 1_000_000).toLocaleString('fr-FR', { minimumFractionDigits: 2, maximumFractionDigits: 4 })} $`;
+
+/**
+ * Lot 113AF (#730) : rapport du rattrapage « IA : origine des coûts » —
+ * avant / après, métier reclassé, technique réel, coût inconnu, non classables
+ * et réconciliation (textes à valider par le PO).
+ */
+function aiCostClassification(action: BackfillAction, out: RawBackfillOutput): BackfillSummary {
+  if (action === 'restore') {
+    const r = out.result as CostClassificationRestoreReport;
+    return {
+      headline: `Classement retiré : ${r.events} appel(s) et ${r.rollups} agrégat(s) journalier(s) reviennent au classement à la lecture (même règle).`,
+      scriptRunId: r.runId, restorable: false,
+      counters: [{ label: 'Appels remis sans classement figé', value: r.events }, { label: 'Agrégats remis sans classement figé', value: r.rollups }],
+      ambiguous: { count: 0, samples: [] }, conflicts: { count: 0, samples: [] },
+      warnings: ['Les coûts, l’ancien indicateur de quota et les traces d’origine n’ont jamais été modifiés.'],
+    };
+  }
+  const r = out.result as CostClassificationReport;
+  const sim = action === 'simulate';
+  if (r.disabled || !r.before || !r.after) {
+    return {
+      headline: `Rien à classer : ${r.disabled ?? 'état illisible'}.`, scriptRunId: null, restorable: false, counters: [],
+      ambiguous: { count: 0, samples: [] }, conflicts: { count: 0, samples: [] }, warnings: [],
+    };
+  }
+  const st = r.after;
+  const rec = r.reconciliation;
+  const montant = (a: { calls: number; micros: number }) => `${usdMicros(a.micros)} (${a.calls} appel(s))`;
+  const enAttente = r.before.pending.events + r.before.pending.rollups;
+  return {
+    headline: sim
+      ? `Simulation (${r.rule}) : ${enAttente} ligne(s) sans origine figée — métier reclassé ${montant(st.reclassifiedToBusiness)}, `
+        + `technique réel ${montant(st.after.TECHNICAL)}, non classable ${montant(st.after.UNDETERMINED)}.`
+      : `Application (${r.rule}) : ${r.written.events} appel(s) et ${r.written.rollups} agrégat(s) classés${r.more ? ' — reste à classer, relancer' : ''}.`,
+    scriptRunId: r.runId,
+    restorable: !sim && r.written.events + r.written.rollups > 0,
+    counters: [
+      { label: 'Règle', value: r.rule },
+      ...(r.runId ? [{ label: 'Identifiant de l’exécution (pour Restaurer)', value: r.runId }] : []),
+      { label: 'Avant : « métier » selon l’ancien indicateur', value: montant(r.before.before.business) },
+      { label: 'Avant : « technique » selon l’ancien indicateur', value: montant(r.before.before.technical) },
+      ...(['ACCOUNT_SERVICE', 'TECHNICAL', 'SHADOW', 'UNDETERMINED'] as const).map((o) => ({ label: `Après : ${ORIGINE_FR[o]}`, value: montant(st.after[o]) })),
+      { label: 'Métier reclassé (rangé en technique par l’ancien indicateur)', value: montant(st.reclassifiedToBusiness) },
+      { label: 'Technique réel compté en métier par l’ancien indicateur', value: montant(st.movedToTechnical) },
+      ...(['ACCOUNT_SERVICE', 'TECHNICAL', 'SHADOW', 'UNDETERMINED'] as const).map((o) => ({ label: `Appels au coût inconnu : ${ORIGINE_FR[o]}`, value: st.unknownCalls[o] })),
+      { label: 'Lignes sans origine figée (avant)', value: enAttente },
+      { label: 'Lignes sans origine figée (après)', value: st.pending.events + st.pending.rollups },
+      ...(sim ? [] : [{ label: 'Appels classés', value: r.written.events }, { label: 'Agrégats journaliers classés', value: r.written.rollups }]),
+      ...(rec ? [
+        { label: 'Réconciliation : total avant = total après', value: rec.totalsMatch ? 'oui' : 'NON' },
+        { label: 'Réconciliation : appels comptés deux fois (appel + agrégat)', value: rec.overlap.calls },
+        ...(rec.costReport ? [{ label: 'Réconciliation : total de l’écran Coûts IA', value: `${usdMicros(rec.costReport.providerMicros)} (${rec.costReport.calls} appel(s)) — ${rec.costReport.matches ? 'identique' : 'différent'}` }] : []),
+      ] : []),
+    ],
+    ambiguous: { count: r.nonClassifiable.rows, samples: r.nonClassifiable.samples },
+    conflicts: { count: rec?.overlap.calls ?? 0, samples: (rec?.overlap.days ?? []).slice(0, SAMPLE_LIMIT).map((d) => `journée ${d} : appels présents et agrégat journalier`) },
+    warnings: [
+      ...(r.more ? ['Temps imparti écoulé : relancer « Appliquer » (rien n’est réécrit).'] : []),
+      ...(rec && !rec.totalsMatch ? ['Totaux avant / après différents : ne pas appliquer, transmettre le rapport.'] : []),
+      ...(rec?.costReport && !rec.costReport.matches ? ['Total de l’écran Coûts IA différent : des appels ont pu arriver pendant le contrôle ; relancer la simulation au calme.'] : []),
+      ...(r.nonClassifiable.rows > 0 ? [`${r.nonClassifiable.rows} ligne(s) restent « non déterminables » : comptées à part, jamais attribuées à un compte.`] : []),
+      'Aucun appel IA, aucun coût recalculé : montants figés à l’appel, régularisations comprises.',
+    ],
+  };
+}
+
 /** Libellés des motifs de refus du rattrapage 91C (jamais de valeur dans le rapport). */
 const REFUS_91C: Record<string, string> = {
   FIELD_STATES_REALIZATION: 'date d’achat (réalisation non prouvée)',
@@ -1004,6 +1075,7 @@ export function summarizeBackfill(script: BackfillScript, action: BackfillAction
     case 'projection-property-evidence': return projectionPropertyEvidence(out);
     case 'extract-chain-decision-review': return extractChainDecisionReview(action, out);
     case 'business-periods-v2-requalification': return businessPeriodsRequalification(action, out);
+    case 'ai-cost-classification': return aiCostClassification(action, out);
   }
 }
 

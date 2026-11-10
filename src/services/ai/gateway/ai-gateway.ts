@@ -637,7 +637,7 @@ export class AiGateway {
       const usageId = await recordCallTrace({
         traceId, useCaseCode: op.useCaseCode, operationCode, accountId: req.accountId, userId: req.userId,
         parentOperationId: req.parentOperationId, provider: provider.name, model, promptVersion, usedFallback: false,
-        shadow: Boolean(req.shadow), modelRank: rankAt(premierRang), jobId, configVersionId: configuration.configVersionId,
+        shadow: Boolean(req.shadow), costCapExempt: req.costCapExempt === true, modelRank: rankAt(premierRang), jobId, configVersionId: configuration.configVersionId,
         callerMode: req.callerMode, ...traceConfig, reasoning: null, maxOutputTokens: maxOutputTokens ?? null,
         // Lot 82C (LOG-05) : aucun appel fournisseur → durée propre nulle ; temps écoulé à part.
         inputTokens: 0, outputTokens: 0, costMicros: 0, durationMs: 0, executionElapsedMs: Date.now() - startedAt, status: 'error',
@@ -715,7 +715,7 @@ export class AiGateway {
         // Lot 113R : un rang NON sollicité n'a utilisé aucun secours — `usedFallback`
         // reste faux ; le rang CONFIGURÉ est porté par `modelRank`.
         parentOperationId: req.parentOperationId, provider: provider.name, model: p.model, promptVersion, usedFallback: false,
-        shadow: Boolean(req.shadow), modelRank: rankAt(p.rankIndex), jobId, configVersionId: configuration.configVersionId,
+        shadow: Boolean(req.shadow), costCapExempt: req.costCapExempt === true, modelRank: rankAt(p.rankIndex), jobId, configVersionId: configuration.configVersionId,
         callerMode: req.callerMode, ...traceConfig, reasoning: p.reasoning, maxOutputTokens: null,
         inputTokens: 0, outputTokens: 0, costMicros: 0, durationMs: 0, executionElapsedMs: elapsedMs, status: 'error',
         errorCode: code, errorMessage: message, billable: false, callKind: 'analysis', fallback: p.decision,
@@ -828,7 +828,7 @@ export class AiGateway {
         const baseTrace = {
           traceId, useCaseCode: op.useCaseCode, operationCode, accountId: req.accountId, userId: req.userId,
           parentOperationId: req.parentOperationId, provider: provider.name, model, promptVersion, usedFallback,
-          shadow: Boolean(req.shadow), modelRank, jobId, configVersionId: configuration.configVersionId,
+          shadow: Boolean(req.shadow), costCapExempt: req.costCapExempt === true, modelRank, jobId, configVersionId: configuration.configVersionId,
           callerMode: req.callerMode, ...traceConfig, reasoning, maxOutputTokens: maxOutputTokens ?? null,
           // Lot 87A : choix de ce rang (cause, rang, modèle, motif).
           fallback: decision,
@@ -1059,7 +1059,10 @@ export class AiGateway {
             // sortie brute — retiré pour l'assistant (code et longueur restent).
             errorMessage: first.ok ? 'Sortie invalide' : redactMessage(first.message, keepRawOutput),
           }),
-          // Un appel facturé par le fournisseur reste une dépense métier.
+          // `billable` = politique commerciale du registre (historique, quota) ;
+          // l'ORIGINE du coût (métier du compte quel que soit `op.billable`,
+          // technique, observation) est classée à part par `recordCallTrace`
+          // (lot 113AF, `cost/cost-classification.ts`).
           billable: op.billable && !req.shadow,
           // CDC Assistant §29.6 : pour l'assistant, la sortie brute n'a pas
           // encore passé la validation serveur (sources, sécurité) — jamais

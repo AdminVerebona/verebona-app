@@ -69,6 +69,7 @@ import type { Metric, MetricTable } from '../config/treatment-metrics.repository
 import { getAiEnvironment, parseEnvironment } from '../config/environment';
 import type { AnalysisWarningCode } from '../source-analysis/types';
 import { truthSourceOf, T2_TRUTH_SOURCES, type T2TruthSource } from './t2-observability';
+import { businessCostSql } from '../cost/cost-classification';
 
 type Row = Record<string, unknown>;
 
@@ -286,10 +287,10 @@ interface DomainResult { metrics: Metric[]; tables: MetricTable[]; notes: string
 async function usageMetrics(useCase: string, s: Scope, errors: string[]): Promise<Metric[]> {
   const rows = await tryMany(
     `SELECT COUNT(*)::int AS calls,
-            COALESCE(SUM(cost_micros) FILTER (WHERE is_billable), 0)::bigint AS cost,
+            COALESCE(SUM(cost_micros) FILTER (WHERE ${businessCostSql('u')}), 0)::bigint AS cost,
             COUNT(*) FILTER (WHERE (model_rank IN ('fallback_1', 'fallback_2') OR is_fallback)
                              AND COALESCE(error_code, '') NOT IN ('FALLBACK_NOT_ADMISSIBLE', 'MODEL_KNOWN_UNAVAILABLE'))::int AS fallbacks
-       FROM ai_usage_event
+       FROM ai_usage_event u
       WHERE created_at >= $1 AND created_at < $2 AND use_case_code = $3
         AND operation_type <> 'circuit_breaker_probe'
         AND ($4::int IS NULL OR config_version_id = $4::int)`,
@@ -721,8 +722,8 @@ async function t2Technical(s: Scope, p: [string, string], total: number, errors:
   const plans = await tryMany(
     `WITH par_compte AS (
        SELECT account_id, COUNT(*)::int AS calls,
-              COALESCE(SUM(cost_micros) FILTER (WHERE is_billable), 0)::bigint AS cost
-         FROM ai_usage_event WHERE ${usageWhere} AND account_id IS NOT NULL
+              COALESCE(SUM(cost_micros) FILTER (WHERE ${businessCostSql('u')}), 0)::bigint AS cost
+         FROM ai_usage_event u WHERE ${usageWhere} AND account_id IS NOT NULL
         GROUP BY account_id
      )
      SELECT CASE WHEN GROUPING(a.plan_type) = 1 THEN '*' ELSE COALESCE(a.plan_type, '—') END AS plan,

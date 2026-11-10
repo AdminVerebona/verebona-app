@@ -15,8 +15,11 @@
  * Global et par traitement, MENSUELS (mois calendaire, UTC) : c'est la
  * période de facturation du fournisseur, donc celle où un dépassement a un
  * sens. Paramètre local à l'environnement, non versionné (`ai_cost_settings`).
- * Pas de budget par compte en V1. Seules les dépenses MÉTIER (is_billable)
- * sont comptées : sondes et tests sont techniques (COST-006).
+ * Pas de budget par compte en V1. Seules les dépenses MÉTIER sont comptées :
+ * sondes et tests sont techniques (COST-006). Lot 113AF : « métier » = coût
+ * IMPUTABLE au service d'un compte selon la règle unique
+ * `cost/cost-classification.ts` (T1 à T6, tâches de fond comprises, même pour
+ * une étape `billable: false` du registre) — plus l'ancien `is_billable`.
  *
  * ══════════════════════════════════════════════════════════════════════════
  * ANOMALIES (COST-011, COST-012, COST-014, WF-44)
@@ -35,6 +38,7 @@
  *     un incident).
  */
 import { TREATMENTS, TREATMENT_DEFINITIONS } from '../config/treatments';
+import { businessCostSql } from '../cost/cost-classification';
 
 export const MIN_BASELINE_DAYS = 14;
 const BASELINE_DAYS = 28;
@@ -161,28 +165,37 @@ export async function evaluateBudgetAlerts(now: Date = new Date(), raise: Raise 
   if (!settings.budgets.some((b) => b.monthlyBudgetMicros != null)) return [];
   // Lot 109L : coût EFFECTIF (correction de régularisation active sinon coût
   // initial, jamais les deux) et appels au coût INCONNU, signalés avec l'alerte.
-  let rows: Array<{ t: string | null; spent: string | number; unknown?: string | number }>;
-  try {
-    const { activeCorrectionJoin, unknownCostSql } = await import('../telemetry/cost-status');
-    rows = (await pgClient.unsafe(
-      `SELECT ${treatmentCaseSql('e')} AS t, COALESCE(SUM(COALESCE(c.corrected_cost_micros, e.cost_micros)), 0)::bigint AS spent,
-              COUNT(*) FILTER (WHERE c.id IS NULL AND ${unknownCostSql('e')})::int AS unknown
-         FROM ai_usage_event e
-         ${activeCorrectionJoin('e', 'c')}
-        WHERE e.is_billable AND e.created_at >= date_trunc('month', NOW())
-        GROUP BY 1`,
-      [] as never[],
-    )) as unknown as typeof rows;
-  } catch (e) {
-    if ((e as { code?: string }).code !== '42P01' && (e as { code?: string }).code !== '42703') throw e;
-    rows = (await pgClient.unsafe(
-      `SELECT ${treatmentCaseSql('e')} AS t, COALESCE(SUM(e.cost_micros), 0)::bigint AS spent
-         FROM ai_usage_event e
-        WHERE e.is_billable AND e.created_at >= date_trunc('month', NOW())
-        GROUP BY 1`,
-      [] as never[],
-    )) as unknown as typeof rows;
+  let rows: Array<{ t: string | null; spent: string | number; unknown?: string | number }> | null = null;
+  const { activeCorrectionJoin, unknownCostSql } = await import('../telemetry/cost-status');
+  // Variantes : classification persistée (1610) puis déduite (même règle) ;
+  // puis sans les corrections et statuts 1150 (coût figé seul).
+  const variantes = [
+    `SELECT ${treatmentCaseSql('e')} AS t, COALESCE(SUM(COALESCE(c.corrected_cost_micros, e.cost_micros)), 0)::bigint AS spent,
+            COUNT(*) FILTER (WHERE c.id IS NULL AND ${unknownCostSql('e')})::int AS unknown
+       FROM ai_usage_event e
+       ${activeCorrectionJoin('e', 'c')}
+      WHERE ${businessCostSql('e')} AND e.created_at >= date_trunc('month', NOW())
+      GROUP BY 1`,
+    `SELECT ${treatmentCaseSql('e')} AS t, COALESCE(SUM(COALESCE(c.corrected_cost_micros, e.cost_micros)), 0)::bigint AS spent,
+            COUNT(*) FILTER (WHERE c.id IS NULL AND ${unknownCostSql('e')})::int AS unknown
+       FROM ai_usage_event e
+       ${activeCorrectionJoin('e', 'c')}
+      WHERE ${businessCostSql('e', { persisted: false })} AND e.created_at >= date_trunc('month', NOW())
+      GROUP BY 1`,
+    `SELECT ${treatmentCaseSql('e')} AS t, COALESCE(SUM(e.cost_micros), 0)::bigint AS spent
+       FROM ai_usage_event e
+      WHERE ${businessCostSql('e', { persisted: false })} AND e.created_at >= date_trunc('month', NOW())
+      GROUP BY 1`,
+  ];
+  for (let k = 0; k < variantes.length && rows === null; k++) {
+    try {
+      rows = (await pgClient.unsafe(variantes[k], [] as never[])) as unknown as Array<{ t: string | null; spent: string | number; unknown?: string | number }>;
+    } catch (e) {
+      const code = (e as { code?: string }).code;
+      if ((code !== '42P01' && code !== '42703') || k === variantes.length - 1) throw e;
+    }
   }
+  rows = rows ?? [];
   const spent: Record<string, number> = { global: 0 };
   const unknown: Record<string, number> = { global: 0 };
   for (const r of rows) {
@@ -222,11 +235,11 @@ export async function evaluateAnomalyAlerts(now: Date = new Date(), raise: Raise
 
   const series = (await pgClient.unsafe(
     `SELECT to_char(date_trunc('day', created_at), 'YYYY-MM-DD') AS day,
-            COALESCE(SUM(cost_micros) FILTER (WHERE is_billable), 0)::bigint AS cost,
-            COUNT(*) FILTER (WHERE is_billable)::int AS calls,
+            COALESCE(SUM(cost_micros) FILTER (WHERE ${businessCostSql('u')}), 0)::bigint AS cost,
+            COUNT(*) FILTER (WHERE ${businessCostSql('u')})::int AS calls,
             COUNT(*) FILTER (WHERE status = 'success')::int AS ok,
             COUNT(*) FILTER (WHERE status = 'success' AND (model_rank IN ('fallback_1', 'fallback_2') OR is_fallback))::int AS fallbacks
-       FROM ai_usage_event
+       FROM ai_usage_event u
       WHERE created_at >= date_trunc('day', NOW()) - ($1 || ' days')::interval
         AND created_at < date_trunc('day', NOW())
       GROUP BY 1 ORDER BY 1`,
@@ -267,15 +280,15 @@ export async function evaluateAnomalyAlerts(now: Date = new Date(), raise: Raise
   // dont la dépense d'hier dépasse le plancher sont examinés.
   const accounts = (await pgClient.unsafe(
     `WITH hier AS (
-       SELECT account_id, SUM(cost_micros)::bigint AS cost FROM ai_usage_event
-        WHERE is_billable AND created_at >= $1::date AND created_at < $1::date + 1
+       SELECT account_id, SUM(cost_micros)::bigint AS cost FROM ai_usage_event u
+        WHERE ${businessCostSql('u')} AND created_at >= $1::date AND created_at < $1::date + 1
         GROUP BY account_id HAVING SUM(cost_micros) >= 500000
         ORDER BY 2 DESC LIMIT 20)
      SELECT h.account_id, h.cost,
             COALESCE((SELECT array_agg(c ORDER BY d) FROM (
                SELECT date_trunc('day', created_at) AS d, SUM(cost_micros)::bigint AS c
-                 FROM ai_usage_event
-                WHERE is_billable AND account_id = h.account_id
+                 FROM ai_usage_event u
+                WHERE ${businessCostSql('u')} AND u.account_id = h.account_id
                   AND created_at >= $1::date - ($2 || ' days')::interval AND created_at < $1::date
                 GROUP BY 1) s), '{}') AS hist
        FROM hier h`,

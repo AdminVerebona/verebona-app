@@ -22,6 +22,12 @@
  * technique. Les additionner ferait chercher une dérive métier là où il n'y a
  * qu'un incident fournisseur.
  *
+ * Lot 113AF (Trello #730) : « métier » = ORIGINE du coût (service d'un
+ * compte, tâches de fond comprises, T1 à T6, même pour une étape hors quota),
+ * classée par la règle unique `cost/cost-classification.ts` — plus l'ancien
+ * indicateur de quota. Coût fournisseur total = métier + technique + non
+ * déterminable (historique) ; coût inconnu compté à part, par segment.
+ *
  * ══════════════════════════════════════════════════════════════════════════
  * LOT IA 2
  *
@@ -61,6 +67,8 @@ import { UnpricedPanel } from './_components/UnpricedPanel';
 interface Breakdown {
   key: string; label: string;
   functionalMicros: number; technicalMicros: number;
+  /** Lot 113AF : historique non déterminable. */
+  undeterminedMicros?: number;
   calls: number; unpricedCalls: number;
 }
 
@@ -72,7 +80,17 @@ interface Report {
     /** Lot 109L : coût initial / régularisé, statuts. */
     initialMicros?: number; regularizedCalls?: number; regularizedMicros?: number; staleTariffCalls?: number;
     byStatus?: { applied: number; zeroOrRounded: number; missing: number; insufficientUsage: number; legacyUndetermined: number; regularized: number };
+    /** Lot 113AF : coût fournisseur, observation, non déterminable, reclassé, inconnu par segment, lignes classées à la lecture. */
+    providerMicros?: number; shadowMicros?: number; undeterminedMicros?: number;
+    reclassifiedBusinessMicros?: number; reclassifiedBusinessCalls?: number;
+    unpricedBusinessCalls?: number; unpricedTechnicalCalls?: number; unpricedUndeterminedCalls?: number;
+    provisionalRows?: number; classification?: 'classified' | 'derived' | 'legacy';
   };
+  /** Lot 113AF : explication des segments (textes à valider par le PO). */
+  segmentHelp?: { provider: string; business: string; technical: string; undetermined: string; unknown: string; quota: string };
+  byOperation?: Breakdown[];
+  byOrigin?: Breakdown[];
+  byDay?: Breakdown[];
   completeness?: 'complete' | 'partial' | 'unknown';
   completenessLabel?: string;
   averageIsPartial?: boolean;
@@ -176,10 +194,47 @@ function T2ParOffre({ rows }: { rows: T2OfferUsage[] }) {
   );
 }
 
+/**
+ * Lot 113AF (#730) : explication des segments de coût (textes nouveaux, à
+ * valider par le PO) et état du classement de l'historique.
+ */
+function LectureDesCouts({ help, provisional, mode }: {
+  help: NonNullable<Report['segmentHelp']>; provisional: number; mode: 'classified' | 'derived' | 'legacy';
+}) {
+  return (
+    <div className="rounded-xl border border-[color:var(--border-subtle)] bg-[color:var(--bg-card)] p-4 space-y-2">
+      <h2 className="vb-app-section">Comment lire ces montants</h2>
+      <dl className="grid gap-2 sm:grid-cols-2 text-xs text-[color:var(--text-secondary)]">
+        {([
+          ['Coût fournisseur total', help.provider], ['Dépense métier', help.business], ['Technique et essais', help.technical],
+          ['Coût inconnu', help.unknown], ['Origine non déterminable', help.undetermined], ['Quotas des offres', help.quota],
+        ] as const).map(([t, d]) => (
+          <div key={t}>
+            <dt className="font-medium text-[color:var(--text-primary)]">{t}</dt>
+            <dd>{d}</dd>
+          </div>
+        ))}
+      </dl>
+      {mode === 'legacy' && (
+        <p className="text-xs text-[color:var(--text-warning-soft)]">
+          Lecture dégradée : la base n’a pas encore les colonnes de classement. Le partage métier / technique suit l’ancien indicateur de quota.
+        </p>
+      )}
+      {mode !== 'legacy' && provisional > 0 && (
+        <p className="text-xs text-[color:var(--text-muted)]">
+          {provisional} appel(s) de la période sont classés à la lecture par la même règle. Pour figer ce classement (traçable et restaurable) :
+          {' '}<Link href="/admin/exploitation" className="text-[color:var(--accent)] hover:underline">Exploitation › Rattrapages › IA : origine des coûts</Link>.
+        </p>
+      )}
+    </div>
+  );
+}
+
 function Ventilation({ title, rows, hint, hrefFor }: {
   title: string; rows: Breakdown[]; hint?: string; hrefFor: (r: Breakdown) => string | null;
 }) {
-  const max = Math.max(1, ...rows.map((r) => r.functionalMicros + r.technicalMicros));
+  const totalOf = (r: Breakdown) => r.functionalMicros + r.technicalMicros + (r.undeterminedMicros ?? 0);
+  const max = Math.max(1, ...rows.map(totalOf));
   return (
     <div className="rounded-xl border border-[color:var(--border-subtle)] bg-[color:var(--bg-card)] p-4 space-y-3">
       <div>
@@ -188,7 +243,7 @@ function Ventilation({ title, rows, hint, hrefFor }: {
       </div>
       {rows.length === 0 && <p className="text-sm text-[color:var(--text-muted)]">Aucune dépense sur la période.</p>}
       {rows.map((r) => {
-        const total = r.functionalMicros + r.technicalMicros;
+        const total = totalOf(r);
         const href = hrefFor(r);
         const inner = (
           <>
@@ -202,6 +257,7 @@ function Ventilation({ title, rows, hint, hrefFor }: {
             <p className="text-xs text-[color:var(--text-muted)]">
               {r.calls} appel{r.calls > 1 ? 's' : ''}
               {r.technicalMicros > 0 && ` · dont ${usd(r.technicalMicros)} technique`}
+              {(r.undeterminedMicros ?? 0) > 0 && ` · dont ${usd(r.undeterminedMicros ?? 0)} d’origine non déterminable`}
               {r.unpricedCalls > 0 && <span className="text-[color:var(--text-warning-soft)]"> · {r.unpricedCalls} sans tarif</span>}
             </p>
           </>
@@ -412,11 +468,20 @@ function AiCostsScreen() {
           <div className="grid gap-3 grid-cols-1 sm:grid-cols-3 lg:grid-cols-6">
             {[
               // Lot 109L : complet / partiel / inconnu — jamais une dépense partielle présentée comme un total.
-              ['Dépense métier', `${usd(report.totals.functionalMicros)}${report.completeness && report.completeness !== 'complete' ? ' *' : ''}`,
+              // Lot 113AF : coût fournisseur total = métier + technique (+ historique non déterminable).
+              ['Coût fournisseur total', `${usd(report.totals.providerMicros ?? (report.totals.functionalMicros + report.totals.technicalMicros))}${report.completeness && report.completeness !== 'complete' ? ' *' : ''}`,
                 report.completeness && report.completeness !== 'complete'
                   ? `${report.completenessLabel ?? 'Partiel'}${(report.totals.regularizedCalls ?? 0) > 0 ? ` · dont ${usd(report.totals.regularizedMicros ?? 0)} régularisés (${report.totals.regularizedCalls} appel(s))` : ''}`
-                  : (report.totals.regularizedCalls ?? 0) > 0 ? `dont ${usd(report.totals.regularizedMicros ?? 0)} régularisés (${report.totals.regularizedCalls} appel(s)) · coût initial ${usd(report.totals.initialMicros ?? 0)}` : null],
-              ['Technique et tests', usd(report.totals.technicalMicros), 'Sondes, observation, vérifications'],
+                  : (report.totals.regularizedCalls ?? 0) > 0 ? `dont ${usd(report.totals.regularizedMicros ?? 0)} régularisés (${report.totals.regularizedCalls} appel(s)) · coût initial ${usd(report.totals.initialMicros ?? 0)}` : 'Estimation d’après les jetons, pas une facture'],
+              ['Dépense métier', `${usd(report.totals.functionalMicros)}${(report.totals.unpricedBusinessCalls ?? 0) > 0 ? ' *' : ''}`,
+                [(report.totals.unpricedBusinessCalls ?? 0) > 0 ? `Partielle : ${report.totals.unpricedBusinessCalls} appel(s) au coût inconnu` : 'Service des comptes, tâches de fond comprises',
+                  (report.totals.reclassifiedBusinessCalls ?? 0) > 0 ? `dont ${usd(report.totals.reclassifiedBusinessMicros ?? 0)} hors quota (${report.totals.reclassifiedBusinessCalls} appel(s))` : ''].filter(Boolean).join(' · ')],
+              ['Technique et essais', `${usd(report.totals.technicalMicros)}${(report.totals.unpricedTechnicalCalls ?? 0) > 0 ? ' *' : ''}`,
+                [`Sondes, qualification, corpus, tests${(report.totals.shadowMicros ?? 0) > 0 ? ` · dont ${usd(report.totals.shadowMicros ?? 0)} en observation` : ''}`,
+                  (report.totals.unpricedTechnicalCalls ?? 0) > 0 ? `Partiel : ${report.totals.unpricedTechnicalCalls} appel(s) au coût inconnu` : ''].filter(Boolean).join(' · ')],
+              ...((report.totals.undeterminedMicros ?? 0) > 0 || (report.totals.unpricedUndeterminedCalls ?? 0) > 0
+                ? [['Origine non déterminable', usd(report.totals.undeterminedMicros ?? 0), 'Historique sans élément fiable : compté à part, jamais deviné'] as [string, string, string]]
+                : []),
               // Lot 83C (SEM-05) : statut fournisseur des appels — l'issue métier est la tuile suivante.
               ['Appels modèle', String(report.totals.calls), `${report.totals.failedCalls} en échec (technique) · ${(report.totals.inputTokens + report.totals.outputTokens).toLocaleString('fr-FR')} tokens`],
               ...(metier ? [(() => {
@@ -443,6 +508,8 @@ function AiCostsScreen() {
             ))}
           </div>
 
+          {report.segmentHelp && <LectureDesCouts help={report.segmentHelp} provisional={report.totals.provisionalRows ?? 0} mode={report.totals.classification ?? 'classified'} />}
+
           {report.t2UsageByOffer && <T2ParOffre rows={report.t2UsageByOffer} />}
 
           <div className="grid gap-4 sm:grid-cols-2">
@@ -456,8 +523,23 @@ function AiCostsScreen() {
               hint="Les coûts ne sont jamais recalculés : un changement de tarif ne réécrit pas le passé."
               hrefFor={() => execHref({})} />
             <Ventilation title="Par compte (les plus coûteux)" rows={report.byAccount}
-              hint="Pas de budget par compte en V1 : un compte coûteux est signalé par la détection d'anomalies."
+              hint="Dépense métier imputée à chaque compte ; le plafond mensuel d’un compte se fonde sur cette dépense."
               hrefFor={(r) => (/^\d+$/.test(r.key) ? execHref({ accountId: r.key }) : null)} />
+            {report.byOrigin && (
+              <Ventilation title="Par origine du coût" rows={report.byOrigin}
+                hint="Pourquoi un appel est classé métier, technique ou non déterminable."
+                hrefFor={() => null} />
+            )}
+            {report.byOperation && (
+              <Ventilation title="Par étape IA (code du référentiel)" rows={report.byOperation}
+                hint="Chaque étape exécutée, qu’elle compte ou non dans le quota de l’offre."
+                hrefFor={() => null} />
+            )}
+            {report.byDay && (
+              <Ventilation title="Par jour" rows={report.byDay.slice(0, 31)}
+                hint="Journées de la période (UTC), les plus récentes d’abord."
+                hrefFor={(r) => (/^\d{4}-\d{2}-\d{2}$/.test(r.key) ? `/admin/ai-executions?from=${r.key}&to=${r.key}` : null)} />
+            )}
           </div>
 
           <Link href={execHref({})} className="inline-flex items-center gap-1.5 text-sm text-[color:var(--accent)] hover:underline">
@@ -471,7 +553,8 @@ function AiCostsScreen() {
           <div>
             <h2 className="vb-app-section">Budgets mensuels et anomalies</h2>
             <p className="text-xs text-[color:var(--text-muted)]">
-              Paramètres de cet environnement, hors configuration versionnée. Mois calendaire, dépense métier,
+              Paramètres de cet environnement, hors configuration versionnée. Mois calendaire, dépense métier
+              (service des comptes, toutes les étapes T1 à T6, tâches de fond comprises, sans les sondes ni les essais),
               en $ (devise de la grille tarifaire). Un dépassement crée une alerte, jamais une suspension.
             </p>
             {report && report.completeness && report.completeness !== 'complete' && (

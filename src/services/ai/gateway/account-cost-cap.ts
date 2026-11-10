@@ -13,10 +13,14 @@
  *
  *   · période : mois civil, Europe/Paris (aucune période mensuelle n'existe
  *     côté crédits : ils sont annuels ou d'essai) ;
- *   · cumul : dépenses MÉTIER enregistrées par la passerelle pour le compte
- *     (`ai_usage_event.cost_micros` des lignes `is_billable`, appels réussis
- *     ET échoués facturés — même périmètre que les budgets de
- *     `cost-evaluator`), hors usage technique AI_GOVERNANCE. ⚠️ Lu dans
+ *   · cumul : dépenses MÉTIER IMPUTABLES au compte (lot 113AF, règle unique
+ *     `cost/cost-classification.ts`) : tout appel exécuté pour le service du
+ *     compte, tâches de fond comprises, T1 à T6, QUELLE QUE SOIT la valeur
+ *     `billable` du registre (politique de quota, inchangée) ; appels réussis
+ *     ET échoués après consommation ; coût effectif (régularisation active
+ *     sinon coût figé). Exclus : sondes, qualification, corpus, AI_GOVERNANCE,
+ *     compte technique, observation (shadow). Même périmètre que les budgets
+ *     de `cost-evaluator`. ⚠️ Lu dans
  *     `ai_usage_event` seul : si l'archivage (`AI_LOG_ARCHIVE_AFTER_DAYS`)
  *     passait sous 32 jours, le cumul serait sous-estimé ;
  *   · plafond effectif : dérogation du compte (`ai_account_cost_caps`, posée
@@ -63,6 +67,7 @@
 import { AiCostCapReachedError } from './errors';
 import { isTechnicalUseCase } from '../config/treatments';
 import { technicalAccountInContext } from '../qualification/technical-context';
+import { businessCostSql, costCapExemption } from '../cost/cost-classification';
 import type { AiUseCaseCode } from '../registry/use-cases';
 
 export type CostCapPlan = 'standard' | 'premium' | 'premium_duo' | 'premium_pro';
@@ -187,12 +192,15 @@ function isTechnicalAccount(accountId: number): boolean {
 
 /** Le traitement de cet usage est-il soumis au plafond du compte ? */
 export function isCostCapped(p: { accountId: number | null | undefined; useCaseCode: AiUseCaseCode; exempt?: boolean }): boolean {
-  if (p.exempt) return false;
-  if (!p.accountId || p.accountId <= 0) return false;
-  if (isTechnicalAccount(p.accountId)) return false;
-  // Usage technique (AI_GOVERNANCE : sondes, tests, évaluation) : jamais
-  // plafonné, ni compté (`spent`). Lot 49 : n'est plus « T5 ».
-  return !isTechnicalUseCase(p.useCaseCode);
+  // Lot 113AF : exemptions techniques VÉRIFIÉES, définies une seule fois avec
+  // la classification des coûts (mêmes critères qu'aux lots 22 / 103G) :
+  // requête exemptée, sans compte, compte technique du contexte serveur,
+  // usage technique AI_GOVERNANCE (jamais plafonné, ni compté dans `spent`).
+  const exemption = costCapExemption({
+    accountId: p.accountId, useCaseCode: p.useCaseCode, exempt: p.exempt,
+    technicalAccountInContext: Boolean(p.accountId && p.accountId > 0 && isTechnicalAccount(p.accountId)),
+  });
+  return exemption === null && !isTechnicalUseCase(p.useCaseCode);
 }
 
 // ── Accès aux données (remplaçable en test) ─────────────────────────────────
@@ -211,6 +219,30 @@ export interface CostCapStore {
 }
 
 const PLANS: readonly CostCapPlan[] = ['standard', 'premium', 'premium_duo', 'premium_pro'];
+
+/**
+ * Variantes de lecture du cumul, de la plus complète à la plus dégradée :
+ * classification persistée (1610) puis déduite, avec puis sans les
+ * corrections de régularisation (1150). Toujours la même règle.
+ */
+const COST_CAP_SPENT_VARIANTS = [
+  { persisted: true, corrections: true },
+  { persisted: false, corrections: true },
+  { persisted: false, corrections: false },
+] as const;
+
+/**
+ * Cumul MÉTIER imputable du compte sur [début, fin[ (lot 113AF) — coût
+ * EFFECTIF (correction de régularisation active sinon coût figé, lot 109L,
+ * jamais les deux). Exporté pour les tests.
+ */
+export function costCapSpentSql(v: { persisted: boolean; corrections: boolean }): string {
+  return `SELECT COALESCE(SUM(${v.corrections ? 'COALESCE(c.corrected_cost_micros, u.cost_micros)' : 'u.cost_micros'}), 0)::bigint AS spent
+         FROM ai_usage_event u
+         ${v.corrections ? `LEFT JOIN ai_cost_corrections c ON c.target_kind = 'event' AND c.target_id = u.id AND c.reverted_at IS NULL` : ''}
+        WHERE u.account_id = $1 AND u.created_at >= $2 AND u.created_at < $3
+          AND ${businessCostSql('u', { persisted: v.persisted })}`;
+}
 
 export const dbCostCapStore: CostCapStore = {
   async planOf(accountId) {
@@ -233,22 +265,20 @@ export const dbCostCapStore: CostCapStore = {
   },
   async spent(accountId, start, end) {
     const { pgClient } = await import('@/db');
-    // Lot 109L : coût EFFECTIF (correction de régularisation active sinon coût
-    // initial — jamais les deux) ; migration 1150 absente : coût initial seul.
-    const sql = (withCorrections: boolean) => `SELECT COALESCE(SUM(${withCorrections ? 'COALESCE(c.corrected_cost_micros, u.cost_micros)' : 'u.cost_micros'}), 0)::bigint AS spent
-         FROM ai_usage_event u
-         ${withCorrections ? `LEFT JOIN ai_cost_corrections c ON c.target_kind = 'event' AND c.target_id = u.id AND c.reverted_at IS NULL` : ''}
-        WHERE u.account_id = $1 AND u.created_at >= $2 AND u.created_at < $3 AND u.is_billable
-          AND (u.use_case_code IS NULL OR u.use_case_code <> 'AI_GOVERNANCE')`;
     const p = [accountId, start.toISOString(), end.toISOString()] as never[];
-    let rows: Array<{ spent: string | number }>;
-    try {
-      rows = (await pgClient.unsafe(sql(true), p)) as unknown as Array<{ spent: string | number }>;
-    } catch (e) {
-      if ((e as { code?: string }).code !== '42P01') throw e;
-      rows = (await pgClient.unsafe(sql(false), p)) as unknown as Array<{ spent: string | number }>;
+    let derniere: unknown = null;
+    for (const v of COST_CAP_SPENT_VARIANTS) {
+      try {
+        const rows = (await pgClient.unsafe(costCapSpentSql(v), p)) as unknown as Array<{ spent: string | number }>;
+        return Number(rows[0]?.spent ?? 0);
+      } catch (e) {
+        // Schéma sans la migration 1610 (42703) ou 1150 (42P01) : variante suivante.
+        const code = (e as { code?: string }).code;
+        if (code !== '42P01' && code !== '42703') throw e;
+        derniere = e;
+      }
     }
-    return Number(rows[0]?.spent ?? 0);
+    throw derniere;
   },
   async raise(a) {
     return (await import('../alerts/alerts.repository')).raiseAlert(a);

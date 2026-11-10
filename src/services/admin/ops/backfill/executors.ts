@@ -37,6 +37,8 @@
  *                         même service que la tâche `projection-property-evidence-reprise`)
  *   business-periods-v2-requalification runBusinessPeriodsRequalification (lot 113AC ; simulation =
  *                         recensement + estimation ; application = un lot T1, contrat t1-business-periods-v2 exigé)
+ *   ai-cost-classification runCostClassificationBackfill / restoreCostClassification (lot 113AF ;
+ *                         simulation = lecture seule ; colonnes 1610 ; aucun appel IA)
  *   database-restore-point runDatabaseBackup('admin') / restoreDatabaseBackup (lot 82E ; point de
  *                         restauration = sauvegarde format 2 ; restauration tout ou rien)
  *
@@ -294,6 +296,26 @@ export async function executeBackfill(sql: postgres.Sql, req: BackfillRequest, h
       hooks.log(`contrat T1 : ${contrat.reason} ; ${req.action === 'apply' ? 'demandés' : 'à reprendre'} : ${JSON.stringify(r.requested)}`);
       const controls = req.action === 'apply' && Object.keys(r.requested).length ? await orch.runTargetedChecks({ deadline: Date.now() + 15 * 60_000, sql }) : null;
       return { result: { ...r, controls, contract: contrat.reason } };
+    }
+    case 'ai-cost-classification': {
+      // Lot 113AF (#730) : origine des coûts de l'historique ; coûts persistés, aucun appel IA.
+      const m = await import('@/services/ai/cost/cost-classification-backfill');
+      const q = async (t: string, p?: unknown[]) => (await sql.unsafe(t, (p ?? []) as never[])) as unknown as Array<Record<string, unknown>>;
+      if (req.action === 'restore') {
+        const r = await m.restoreCostClassification(req.runId!, q);
+        hooks.log(`classement retiré : ${r.events} appel(s), ${r.rollups} agrégat(s)`);
+        return { result: { ...r, action: 'restore' } };
+      }
+      const r = await m.runCostClassificationBackfill({
+        apply: req.action === 'apply', q, deadline: Date.now() + 45 * 60_000,
+        log: (msg) => { hooks.log(msg); hooks.progress({ message: msg }); },
+        costReportTotals: async () => {
+          const { getCostReport } = await import('@/services/ai/telemetry/cost-report.repository');
+          const rep = await getCostReport({ since: new Date('2000-01-01T00:00:00Z'), until: new Date(Date.now() + 60_000) });
+          return { providerMicros: rep.totals.providerMicros ?? (rep.totals.functionalMicros + rep.totals.technicalMicros), calls: rep.totals.calls };
+        },
+      });
+      return { result: { ...r, action: req.action } };
     }
     case 'business-periods-v2-requalification': {
       // Lot 113AC : simulation = recensement et estimation ; application = UN lot mis en file T1 (contrat revérifié).

@@ -45,6 +45,7 @@
  * ══════════════════════════════════════════════════════════════════════════
  */
 import { COST_PLAN_MIN_ACCOUNTS } from './observability.repository';
+import { businessCostSql } from '../cost/cost-classification';
 
 const METRICS_EXPORT_COLUMNS = [
   'section', 'jour', 'intention', 'mode', 'statut', 'offre', 'traitement',
@@ -228,7 +229,7 @@ const SQL_USAGE = `
   WITH base AS (
     SELECT COALESCE(e.use_case_code, '—') AS uc, COALESCE(a.plan_type, '—') AS plan,
            COALESCE(e.master_prompt_version, '—') AS master, e.account_id, e.status,
-           e.input_tokens, e.output_tokens, e.cost_micros, e.is_billable
+           e.input_tokens, e.output_tokens, e.cost_micros, ${businessCostSql('e')} AS metier
       FROM ai_usage_event e LEFT JOIN accounts a ON a.id = e.account_id
      WHERE ${JOUR_SQL('e.created_at')} AND e.operation_type <> 'circuit_breaker_probe'
        AND ($3::text IS NULL OR a.plan_type = $3)
@@ -238,7 +239,7 @@ const SQL_USAGE = `
   SELECT b.uc, CASE WHEN g.comptes >= ${COST_PLAN_MIN_ACCOUNTS} THEN b.plan ELSE $2 END AS plan, b.master,
          COUNT(*)::int AS appels, COUNT(*) FILTER (WHERE b.status <> 'success')::int AS echecs,
          COALESCE(SUM(b.input_tokens), 0)::bigint AS tin, COALESCE(SUM(b.output_tokens), 0)::bigint AS tout,
-         COALESCE(SUM(b.cost_micros) FILTER (WHERE b.is_billable), 0)::bigint AS cout
+         COALESCE(SUM(b.cost_micros) FILTER (WHERE b.metier), 0)::bigint AS cout
     FROM base b JOIN g ON g.uc = b.uc AND g.plan = b.plan
    WHERE ($3::text IS NULL OR g.comptes >= ${COST_PLAN_MIN_ACCOUNTS})
    GROUP BY 1, 2, 3 ORDER BY 1, 2, 3 LIMIT ${LIMITE}`;

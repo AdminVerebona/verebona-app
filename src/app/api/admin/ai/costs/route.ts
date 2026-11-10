@@ -18,6 +18,7 @@ import { getT2UsageByOffer, getT2UsageSummary } from '@/services/ai/telemetry/t2
 import { T6_MODES, type T6ModeFilter } from '@/services/ai/telemetry/execution-filters';
 import { requireAdminContext, toErrorResponse } from '../config-versions/_shared';
 import { readReuseTotals } from '@/services/ai/reuse/reuse-counters';
+import { COST_SEGMENT_HELP } from '@/services/ai/cost/cost-classification';
 
 /** Périodes du SCR-09, en jours. `custom` passe par `since` et `until`. */
 const PERIODS: Record<string, number> = {
@@ -75,6 +76,12 @@ export async function GET(req: NextRequest) {
     return NextResponse.json({
       ...report,
       averageCostPerCall: averageCostPerCall(report.totals),
+      // Lot 113AF (#730) : explication des segments (textes à valider par le PO) et complétude PAR segment.
+      segmentHelp: COST_SEGMENT_HELP,
+      segmentCompleteness: {
+        business: COMPLETENESS_LABELS[(t.unpricedBusinessCalls ?? 0) > 0 ? 'partial' : 'complete'],
+        technical: COMPLETENESS_LABELS[(t.unpricedTechnicalCalls ?? 0) > 0 ? 'partial' : 'complete'],
+      },
       // Lot 109L : complétude explicite — jamais une dépense partielle présentée comme un total.
       completeness: t.completeness ?? (report.incomplete ? 'partial' : 'complete'),
       completenessLabel: COMPLETENESS_LABELS[t.completeness ?? (report.incomplete ? 'partial' : 'complete')],

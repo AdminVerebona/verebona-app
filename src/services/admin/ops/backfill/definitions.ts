@@ -57,6 +57,9 @@
  *      contrat T1 `t1-value-decisions-v1` : contrôle ciblé immédiat, qui
  *      décide du réexamen (mode de campagne, budget IA, une fois par
  *      diagnostic) — aussi lancé automatiquement par « coherence-control » ;
+ *  20. IA : origine des coûts (lot 113AF, Trello #730) — classement métier /
+ *      technique / observation des appels et agrégats historiques, à partir des
+ *      coûts persistés ; jamais automatique ; restaurable par exécution ;
  *   0. Point de restauration de la base (lot 82E, décisions PO C-Q8 / D13) :
  *      « Appliquer » crée un point (même mécanisme que la sauvegarde
  *      nocturne) ; « Restaurer » ramène la base à un point (contrôle de
@@ -68,7 +71,7 @@
  * services.
  */
 
-export type BackfillScript = 'database-restore-point' | 'merge-rooms' | 'document-asset-links' | 'agenda' | 'cdc15' | 'asset-account' | 'operations-structured' | 'claims-legacy-cleanup' | 'cross-account' | 'equipment-separation' | 'document-validation' | 'duo-shared-account' | 'agenda-intervention-duplicates' | 'to-process-false-arbitrations' | 'operations-v5-rebuild' | 'ai-history-reclassification' | 'missing-properties-catchup' | 'projection-property-evidence' | 'extract-chain-decision-review' | 'business-periods-v2-requalification';
+export type BackfillScript = 'database-restore-point' | 'merge-rooms' | 'document-asset-links' | 'agenda' | 'cdc15' | 'asset-account' | 'operations-structured' | 'claims-legacy-cleanup' | 'cross-account' | 'equipment-separation' | 'document-validation' | 'duo-shared-account' | 'agenda-intervention-duplicates' | 'to-process-false-arbitrations' | 'operations-v5-rebuild' | 'ai-history-reclassification' | 'missing-properties-catchup' | 'projection-property-evidence' | 'extract-chain-decision-review' | 'business-periods-v2-requalification' | 'ai-cost-classification';
 export type BackfillAction = 'simulate' | 'apply' | 'restore';
 export type BackfillStatus = 'running' | 'succeeded' | 'failed' | 'interrupted';
 
@@ -474,6 +477,24 @@ export const BACKFILL_DEFINITIONS: readonly BackfillDefinition[] = [
     actions: ['simulate', 'apply'],
     accountFilter: true,
     warning: 'Chaque application déclenche de vraies analyses T1 (coût IA). Vérifiez l’estimation de la simulation avant d’appliquer.',
+  },
+  {
+    // Lot 113AF (Trello #730, §3 C) — textes à valider par le PO.
+    script: 'ai-cost-classification',
+    order: 20,
+    label: 'IA : origine des coûts (métier, technique, observation) de l’historique',
+    command: 'BO uniquement (aucune commande) — jamais lancé automatiquement',
+    description: 'Les appels IA enregistrés avant le lot 113AF n’ont pas d’origine de coût figée : l’ancien indicateur de quota rangeait en '
+      + '« technique » des étapes exécutées pour un compte (regroupement T1, compréhension T2, T3, T4, T6). Ce rattrapage leur applique la '
+      + 'règle des nouveaux appels (couts-ia-v1) à partir des seules données enregistrées : métier (service du compte, tâches de fond '
+      + 'comprises), technique (sondes, qualification, compte technique, Gouvernance IA, tests), observation, ou « non déterminable » quand '
+      + 'rien ne permet de trancher. Les coûts ne sont jamais recalculés : montant figé à l’appel, régularisations comprises. Aucun appel IA, '
+      + 'aucun changement de quota, de tarif, de prompt ou de modèle. Simuler : rapport avant / après (ancien indicateur ↔ origine), métier '
+      + 'reclassé, technique réel, coût inconnu, non classables et réconciliation (totaux identiques, chevauchement appels / agrégats '
+      + 'journaliers, total de l’écran Coûts IA), rien n’est écrit. Appliquer : fige ce classement sur les lignes qui n’en ont pas ; relancé, '
+      + 'rien n’est réécrit. Restaurer (avec l’identifiant donné dans le rapport) : retire le classement de cette exécution.',
+    actions: ['simulate', 'apply', 'restore'],
+    accountFilter: false,
   },
 ];
 

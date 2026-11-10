@@ -23,6 +23,8 @@ import { alertMissingPrice, computeTracePricing, writeTracePricing } from './tra
 import type { AttachmentTransferFailure, ProviderAttemptTrace, ProviderRequestTrace } from '../gateway/diagnostics/taxonomy';
 import type { CallCaptureInput } from './call-capture';
 import type { AiAttachment } from '../gateway/types';
+import { writeCostClassification } from '../cost/cost-classification.store';
+import { technicalAccountInContext } from '../qualification/technical-context';
 
 interface CallTrace {
   traceId: string;
@@ -54,6 +56,12 @@ interface CallTrace {
   /** false pour le mode shadow et les opérations internes (CDC §10.2). */
   billable: boolean;
   shadow: boolean;
+  /**
+   * Lot 113AF : campagne de mesure exemptée du plafond (`costCapExempt` de la
+   * requête) — information serveur fiable, utilisée pour classer l'ORIGINE du
+   * coût (technique). N'a aucun effet sur `billable`.
+   */
+  costCapExempt?: boolean;
   outputPreview?: string;
   /**
    * Rang du modèle réellement utilisé (§9.1). Plus précis qu'`usedFallback`,
@@ -362,6 +370,16 @@ export async function recordCallTrace(t0: CallTrace): Promise<number | null> {
     await writeMasterFields('ai_usage_event', rows?.[0]?.id, master);
     const id = rows?.[0]?.id ?? null;
     await writeTracePricing(id, tarif);
+    // Lot 113AF : ORIGINE du coût (métier du compte / technique / observation),
+    // règle unique `cost/cost-classification.ts` — indépendante de `billable`
+    // (politique de quota), qui reste inchangé.
+    await writeCostClassification(id, {
+      accountId: t.accountId, useCaseCode: t.useCaseCode, operationCode: t.operationCode, shadow: t.shadow,
+      triggerCode: t.triggerCode !== undefined ? t.triggerCode : currentJobContext()?.triggerCode ?? null,
+      improvementAttempt: Boolean(currentJobContext()?.improvementAttemptKey),
+      technicalAccountInContext: technicalAccountInContext(t.accountId),
+      costCapExempt: t.costCapExempt === true, legacyBillable: t.billable,
+    });
     if (tarif.status === 'missing' || tarif.reasonCode) void alertMissingPrice(t.provider, t.model);
     void refreshPricing();
     await writeBusinessExecution(id, execution.id);

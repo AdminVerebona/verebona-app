@@ -164,7 +164,8 @@
     "test:e2e:fournisseurs-coordonnees": "vitest --run --config vitest.e2e.config.ts src/test/e2e/scenarios/l111x-fournisseurs-coordonnees.e2e.ts",
     "test:e2e:tco-standard-cta": "vitest --run --config vitest.e2e.config.ts src/test/e2e/scenarios/l113b-tco-standard-cta.e2e.ts src/test/e2e/scenarios/l112c-t2-tco-droits.e2e.ts",
     "test:e2e:assistant-actions": "vitest --run --config vitest.e2e.config.ts src/test/e2e/scenarios/l113f-assistant-actions.e2e.ts",
-    "test:e2e:fournisseurs-doublons": "vitest --run --config vitest.e2e.config.ts src/test/e2e/scenarios/l113g-fournisseurs-doublons.e2e.ts"
+    "test:e2e:fournisseurs-doublons": "vitest --run --config vitest.e2e.config.ts src/test/e2e/scenarios/l113g-fournisseurs-doublons.e2e.ts",
+    "test:e2e:couts-ia-metier": "vitest --run --config vitest.e2e.config.ts src/test/e2e/scenarios/l113af-couts-ia-metier.e2e.ts"
   },
   "dependencies": {
     "@aws-sdk/client-s3": "^3.934.0",
