@@ -24,6 +24,7 @@ import { Button } from '@/components/ui/button';
 import { formatDateTime } from '@/lib/admin/format';
 import type { AnomalyListItem, DomainCounter } from '@/services/admin/anomaly.service';
 import { SectionTitle, ViewState } from './shared';
+import { AnomalyListExportBar } from './AnomalyExport';
 import { useDashboardData } from './useDashboardData';
 
 type Status = 'open' | 'resolved';
@@ -87,6 +88,8 @@ function AnomalyTable({ status, params, onChange }: { status: Status; params: Li
 
   return (
     <div className="space-y-2">
+      {/* Lot 113AI (#733) : copie de la page / export complet (mêmes tri et page que le tableau). */}
+      <AnomalyListExportBar status={status} sort={params.sort} dir={params.dir} page={data.page} total={data.total} />
       <div className="rounded-xl border bg-card overflow-x-auto">
         <table className="w-full text-sm">
           <thead>

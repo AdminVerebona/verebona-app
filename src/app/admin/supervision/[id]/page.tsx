@@ -27,6 +27,7 @@ import {
 import { EcranEnErreur } from '@/components/admin/EcranEnErreur';
 import { formatDateTime } from '@/lib/admin/format';
 import type { AnomalyDetail } from '@/services/admin/anomaly.service';
+import { AnomalyCopyButtons } from '@/app/admin/_dashboard/AnomalyExport';
 
 const AUTO_ORIGIN_LABEL: Record<string, string> = {
   stripe_webhook_retry: 'Relance du webhook Stripe traitée avec succès',
@@ -157,6 +158,7 @@ export default function AnomalyTreatmentPage({ params }: { params: Promise<{ id:
   return (
     <div className="space-y-6 max-w-5xl">
       {back}
+      <div className="flex flex-wrap items-start justify-between gap-3">
       <div>
         <p className="text-xs text-muted-foreground">{anomaly.domainLabel} · anomalie #{anomaly.id}</p>
         <h1 className="vb-app-title">{anomaly.title}</h1>
@@ -165,6 +167,9 @@ export default function AnomalyTreatmentPage({ params }: { params: Promise<{ id:
             ? 'Ouverte'
             : `Résolue le ${formatDateTime(anomaly.resolvedAt)} — ${anomaly.resolutionSource === 'auto' ? 'automatiquement' : `manuellement${anomaly.resolvedByEmail ? ` par ${anomaly.resolvedByEmail}` : ''}`}`}
         </p>
+      </div>
+      {/* Lot 113AI (#733) : copie Markdown / export JSON pour analyse externe (sans donnée personnelle). */}
+      <AnomalyCopyButtons id={anomaly.id} />
       </div>
 
       <div className="rounded-xl border bg-card p-4 grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">

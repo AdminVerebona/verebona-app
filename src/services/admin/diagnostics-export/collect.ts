@@ -30,7 +30,7 @@ import { createHash, randomUUID } from 'node:crypto';
 import type { DiagQuery } from '@/services/business-operations/diagnostics/service';
 import { getBuildIdentity } from '@/lib/runtime-identity';
 import { globalStatus, sectionStatus, type ExtractionStatus } from '@/services/admin/account-data/model';
-import { countRows, incidentLabel, isReadSessionBroken, jsonBatches, named, openReadSession, type ReadSession, type SqlIncident } from '@/services/admin/account-data/session';
+import { countRows, incidentLabel, jsonBatches, named, openReadSession, type ReadSession, type SqlIncident } from '@/services/admin/account-data/session';
 import type { TextSink } from '@/services/admin/account-data/export';
 import {
   DIAG_LIMITS, DIAG_REMOVED_CAPS, DIAG_SCHEMA, DIAG_SCOPE_LABELS, MASKING_NOTES, READ_ONLY_NOTE, buildReportTextFromLines, leaksSecretOrEmail, maskForExport, maskText,

@@ -64,6 +64,9 @@ export type AdminActionType =
   | 'COMMUNICATION_CHANNEL_TOGGLE'
   // Résolution manuelle d'une anomalie de supervision (CDC BO AUD-003, SUP-007).
   | 'ANOMALY_RESOLVE'
+  // Lot 113AI (Trello #733) : copie (Markdown) ou export (JSON / CSV) des anomalies
+  // de supervision pour analyse externe — format, filtres de l'écran, nombre, issue.
+  | 'ANOMALY_EXPORT'
   // Demandes RGPD manuelles (CDC BO AUD-003 « réouverture RGPD », GDP-010, GDP-014, GDP-016).
   | 'GDPR_REQUEST_CREATE'
   | 'GDPR_REQUEST_UPDATE'
