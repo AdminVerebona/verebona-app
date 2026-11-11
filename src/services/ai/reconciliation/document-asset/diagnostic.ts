@@ -77,7 +77,13 @@ export async function t3PromptState(query: Query | null = null): Promise<T3Promp
     readAt: new Date().toISOString(), operation: 't3_link_ambiguity', effectiveVersion: null, source: null, activeBoVersion: null,
     carriesCrossContract: null, crossContextSent: null, promptArchitecture: null, configurationSignature: null, conformity: null, qualification: null, errors: [],
   };
-  const essai = async (quoi: string, f: () => Promise<void>) => { try { await f(); } catch (e) { out.errors.push(`${quoi} : ${(e as Error).message.slice(0, 200)}`); } };
+  const essai = async (quoi: string, f: () => Promise<void>) => {
+    try { await f(); } catch (e) {
+      // Lot 113AG : session du diagnostic interrompue — arrêt (jamais une configuration « illisible » silencieuse).
+      if (codeOf(e) === SESSION_BROKEN) throw e;
+      out.errors.push(`${quoi} : ${codeOf(e) ? `${codeOf(e)} — ` : ''}${(e as Error).message.slice(0, 200)}`);
+    }
+  };
   await essai('prompt effectif', async () => {
     const { effectivePromptOf } = await import('@/services/ai/master-prompts/effective-prompt');
     const { promptCarriesCrossDocument } = await import('./identity/contract');
@@ -155,6 +161,8 @@ interface DocLine {
   primaryAssetIds: number[]; userDecided: boolean;
   resolution: Row | null; evaluation: Row | null; job: Row | null; coherence: Row | null;
   cards: Row[]; groups: Row[];
+  /** Lot 113AG : informations NON LUES (lecture en échec) : job, coherence, cards, groups. */
+  unread?: string[];
 }
 
 const EVAL_KEYS = [
@@ -173,8 +181,28 @@ export function evaluationSummary(e: Row | null): Row | null {
   return out;
 }
 
-async function accountDocuments(q: Query, accountId: number, after: number): Promise<DocLine[]> {
-  const rows = await q(`
+/**
+ * Lot 113AG (#734) — lecture T3 EN ÉCHEC : jamais une liste vide silencieuse.
+ * « Aucun résultat » (lecture exécutée, 0 ligne) ≠ « lecture non exécutée »
+ * (erreur consignée ici, fichier PARTIAL). Une session de lecture interrompue
+ * (incident fatal, `VB_SESSION_BROKEN`) arrête le diagnostic.
+ */
+export interface T3ReadError { read: string; accountId: number | null; sqlstate: string | null; message: string }
+
+const SESSION_BROKEN = 'VB_SESSION_BROKEN';
+const codeOf = (e: unknown): string | null => { const c = (e as { code?: unknown } | null)?.code; return typeof c === 'string' ? c : null; };
+
+/** Exécute une lecture ; erreur consignée (lecture NON exécutée → `null`), session interrompue relancée. */
+async function lire<T>(errors: T3ReadError[], read: string, accountId: number | null, f: () => Promise<T>): Promise<T | null> {
+  try { return await f(); } catch (e) {
+    if (codeOf(e) === SESSION_BROKEN || codeOf(e) === '25006') throw e;
+    errors.push({ read, accountId, sqlstate: codeOf(e), message: String((e as Error)?.message ?? e).slice(0, 300) });
+    return null;
+  }
+}
+
+async function accountDocuments(q: Query, accountId: number, after: number, errors: T3ReadError[]): Promise<{ lines: DocLine[]; page: number; unread: string[] } | null> {
+  const rows = await lire(errors, 'documents', accountId, () => q(`
     SELECT f.id, e.title, e.document_type_code, e.supplier_name,
            ARRAY(SELECT DISTINCT x FROM unnest(ARRAY[f.asset_id] || ARRAY(
                    SELECT l.asset_id FROM document_asset_links l WHERE l.file_id = f.id AND l.status = 'ACTIVE' AND l.asset_id IS NOT NULL AND l.link_role = 'PRIMARY')) x
@@ -187,24 +215,31 @@ async function accountDocuments(q: Query, accountId: number, after: number): Pro
      WHERE f.account_id = $1 AND f.id > $2 AND f.deleted_at IS NULL AND f.grouped_into_file_id IS NULL
        AND (r.file_id IS NOT NULL OR (f.asset_id IS NULL AND f.linked_asset_id IS NULL
             AND NOT EXISTS (SELECT 1 FROM document_asset_links l WHERE l.file_id = f.id AND l.status = 'ACTIVE' AND l.asset_id IS NOT NULL AND l.link_role = 'PRIMARY')))
-     ORDER BY f.id LIMIT ${PAGE}`, [accountId, after]);
-  if (!rows.length) return [];
+     ORDER BY f.id LIMIT ${PAGE}`, [accountId, after]));
+  if (rows === null) return null;
+  if (!rows.length) return { lines: [], page: 0, unread: [] };
   const ids = rows.map((r) => Number(r.id));
-  const [jobs, preuves, cartes, groupes] = await Promise.all([
-    q(`SELECT DISTINCT ON (target_id) target_id, id, status, attempts, trigger_code, last_error, finished_at, created_at
-         FROM ai_job_queue WHERE treatment = 'T3' AND target_type = 'document' AND target_id = ANY($1::text[]) ORDER BY target_id, id DESC`, [ids.map(String)]).catch(() => []),
-    q(`SELECT object_id, last_result, finding, last_completed_at AS last_checked_at FROM coherence_object_proofs
-        WHERE account_id = $1 AND check_id = 'COH-DOC-PRIMARY-LINK' AND object_id = ANY($2::int[])`, [accountId, ids]).catch(() => []),
-    q(`SELECT a.id, a.target_id, a.rule_code, a.action_kind, a.created_at, a.resolved_at, a.resolution_reason, a.trigger_context -> 'memberFileIds' AS members
+  // Lot 113AG : lectures SÉQUENTIELLES (jamais de Promise.all sur la session réservée du diagnostic) ;
+  // une lecture en échec est consignée (non exécutée), jamais remplacée par une liste vide.
+  const jobs = await lire(errors, 'traitements T3 (ai_job_queue)', accountId, () => q(`SELECT DISTINCT ON (target_id) target_id, id, status, attempts, trigger_code, last_error, finished_at, created_at
+         FROM ai_job_queue WHERE treatment = 'T3' AND target_type = 'document' AND target_id = ANY($1::text[]) ORDER BY target_id, id DESC`, [ids.map(String)]));
+  const preuves = await lire(errors, 'preuves COH-DOC-PRIMARY-LINK (coherence_object_proofs)', accountId, () => q(`SELECT object_id, last_result, finding, last_completed_at AS last_checked_at FROM coherence_object_proofs
+        WHERE account_id = $1 AND check_id = 'COH-DOC-PRIMARY-LINK' AND object_id = ANY($2::int[])`, [accountId, ids]));
+  const cartes = await lire(errors, 'cartes LINK-ASSET (to_process_actions)', accountId, () => q(`SELECT a.id, a.target_id, a.rule_code, a.action_kind, a.created_at, a.resolved_at, a.resolution_reason, a.trigger_context -> 'memberFileIds' AS members
          FROM to_process_actions a
         WHERE a.account_id = $1 AND a.rule_code IN ('LINK-ASSET', 'LINK-ASSET-GROUP')
           AND ((a.rule_code = 'LINK-ASSET' AND a.target_type = 'DOCUMENT' AND a.target_id = ANY($2::int[]))
                OR (a.rule_code = 'LINK-ASSET-GROUP' AND EXISTS (SELECT 1 FROM jsonb_array_elements_text(COALESCE(a.trigger_context -> 'memberFileIds', '[]'::jsonb)) m WHERE m::int = ANY($2::int[]))))
-        ORDER BY a.id`, [accountId, ids]).catch(() => []),
-    q(`SELECT group_key, identity_family, status, target_asset_id, candidate_asset_ids, refused_asset_ids, member_file_ids, excluded, contradictions, card_action_id, evaluated_at
+        ORDER BY a.id`, [accountId, ids]));
+  const groupes = await lire(errors, 'groupes d’identité (document_identity_groups)', accountId, () => q(`SELECT group_key, identity_family, status, target_asset_id, candidate_asset_ids, refused_asset_ids, member_file_ids, excluded, contradictions, card_action_id, evaluated_at
          FROM document_identity_groups WHERE account_id = $1 AND active
-          AND (member_file_ids && $2::int[] OR EXISTS (SELECT 1 FROM jsonb_array_elements(excluded) x WHERE (x ->> 'fileId')::int = ANY($2::int[])))`, [accountId, ids]).catch(() => []),
-  ]);
+          AND (member_file_ids && $2::int[] OR EXISTS (SELECT 1 FROM jsonb_array_elements(excluded) x WHERE (x ->> 'fileId')::int = ANY($2::int[])))`, [accountId, ids]));
+  const unread = [jobs === null ? 'job' : null, preuves === null ? 'coherence' : null, cartes === null ? 'cards' : null, groupes === null ? 'groups' : null].filter((x): x is string => x !== null);
+  const lines = linesOf(rows, jobs ?? [], preuves ?? [], cartes ?? [], groupes ?? [], unread);
+  return { lines, page: rows.length, unread };
+}
+
+function linesOf(rows: Row[], jobs: Row[], preuves: Row[], cartes: Row[], groupes: Row[], unread: string[]): DocLine[] {
   const parJob = new Map(jobs.map((j) => [Number(j.target_id), j]));
   const parPreuve = new Map(preuves.map((p) => [Number(p.object_id), p]));
   return rows.map((r) => {
@@ -234,6 +269,8 @@ async function accountDocuments(q: Query, accountId: number, after: number): Pro
       job: j ? { id: N(j.id), status: j.status, attempts: N(j.attempts), trigger: j.trigger_code ?? null, lastError: j.last_error ? String(j.last_error).slice(0, 200) : null, finishedAt: iso(j.finished_at) } : null,
       coherence: pr ? { lastResult: pr.last_result, anomaly: (J<Row | null>(pr.finding, null)?.anomaly as string | undefined) ?? null, checkedAt: iso(pr.last_checked_at) } : null,
       cards, groups,
+      // Lot 113AG : champs NON LUS (lecture en échec) — leur absence ne signifie pas « aucun ».
+      ...(unread.length ? { unread } : {}),
     };
   });
 }
@@ -278,8 +315,15 @@ export interface T3DocumentAssetDiagnostic {
   scope: 'GLOBAL' | 'ACCOUNTS';
   configuration: Row;
   checks: T3DiagnosticCheck[];
-  accounts: Array<{ accountId: number; counters: Row; lastRun: Row | null; supervision: Row[]; documents?: DocLine[] }>;
+  accounts: Array<{ accountId: number; counters: Row; lastRun: Row | null; supervision: Row[]; documents?: DocLine[]; readErrors?: T3ReadError[] }>;
   notes: string[];
+  /**
+   * Lot 113AG : COMPLETE seulement si TOUTES les lectures ont été exécutées ;
+   * PARTIAL sinon (lectures en échec listées dans `errors`, jamais simulées
+   * par une liste vide).
+   */
+  status?: 'COMPLETE' | 'PARTIAL';
+  errors?: T3ReadError[];
 }
 
 /**
@@ -287,10 +331,19 @@ export interface T3DocumentAssetDiagnostic {
  * (compteurs par compte, sans détail par document).
  */
 export async function t3DocumentAssetDiagnostic(q: Query, accounts: readonly number[] | null, opts: { prompt?: T3PromptState | null } = {}): Promise<T3DocumentAssetDiagnostic> {
-  const { identityMigrations } = await import('./identity/load');
-  const migrations = await identityMigrations({ unsafe: (t: string, p?: never[]) => q(t, (p ?? []) as unknown[]) } as never).catch(() => null);
+  const errors: T3ReadError[] = [];
+  // Lot 113AG : même lecture que `identityMigrations` (identity/load.ts), qui rend « absentes » sur erreur —
+  // relue ici pour distinguer « migration absente » de « lecture non exécutée » (null + erreur consignée).
+  const migrations = await lire(errors, 'migrations 0995 / 1060', null, async () => {
+    const [r] = await q(`SELECT to_regclass('document_identity_groups') IS NOT NULL AND to_regclass('document_identity_decisions') IS NOT NULL AS m0995,
+              COALESCE((SELECT pg_get_constraintdef(c.oid) LIKE '%EQUIPMENT%' FROM pg_constraint c
+                         WHERE c.conname = 'document_identity_groups_family_chk' LIMIT 1), false) AS m1060`, []);
+    return { m0995: r?.m0995 === true, m1060: r?.m1060 === true };
+  });
   const env = Object.fromEntries(['T3_IDENTITY_GROUPS_ENABLED', 'T3_CROSS_DOCUMENT_CONTEXT_ENABLED', 'T3_DOCUMENT_ASSET_AI_MEMORY_ENABLED'].map((v) => [v, envFlag(v)]));
-  const prompt = opts.prompt !== undefined ? opts.prompt : await t3PromptState(q).catch(() => null);
+  const prompt = opts.prompt !== undefined ? opts.prompt : await lire(errors, 'prompt T3 actif', null, () => t3PromptState(q));
+  // Lectures de l'état du prompt en échec : configuration incomplète, déclarée (jamais « conforme » par défaut).
+  for (const x of prompt?.errors ?? []) errors.push({ read: `prompt T3 › ${x.split(' : ')[0]}`, accountId: null, sqlstate: /^([0-9A-Z]{5}) — /.exec(x.split(' : ').slice(1).join(' : '))?.[1] ?? null, message: x.slice(0, 300) });
   const { getBuildIdentity } = await import('@/lib/runtime-identity');
   const build = getBuildIdentity();
   const configuration: Row = {
@@ -299,6 +352,7 @@ export async function t3DocumentAssetDiagnostic(q: Query, accounts: readonly num
   };
   const checks = t3DiagnosticChecks({ engineVersion: DOCUMENT_ASSET_RESOLUTION_VERSION, migrations, env, prompt });
   const global = accounts === null;
+  // Liste des comptes du global : sans elle, rien n'est diagnostiqué — l'erreur remonte (fichier FAILED).
   const comptes = global
     ? (await q(`SELECT DISTINCT r.account_id FROM document_asset_resolutions r ORDER BY 1`, [])).map((r) => Number(r.account_id))
     : [...accounts];
@@ -308,40 +362,53 @@ export async function t3DocumentAssetDiagnostic(q: Query, accounts: readonly num
       'Configuration (variables, prompt, qualification) lue EN DIRECT au moment du diagnostic ; données des documents lues dans l’instantané du diagnostic.',
       global ? 'Diagnostic global : compteurs par compte seulement — le détail par document est dans le diagnostic DU COMPTE (même fichier).' : 'Détail par document : tous les documents sans bien principal et tous ceux évalués par T3 DOCUMENT_ASSET (aucune borne).',
       'Cartes : historique complet LINK-ASSET (par document) et LINK-ASSET-GROUP (qui couvrent le document) — « avant / après » = cartes ouvertes à la date de la capture avant correction / après.',
+      'Lot 113AG : une lecture en échec est listée dans « errors » (et « readErrors » du compte), le document porte « unread » — jamais une liste vide à la place ; statut PARTIAL dans ce cas.',
     ],
+    status: 'COMPLETE', errors,
   };
   for (const accountId of comptes) {
+    const before = errors.length;
     const lines: DocLine[] = [];
     let after = 0;
     for (;;) {
-      const page = await accountDocuments(q, accountId, after);
-      lines.push(...page);
-      if (page.length < PAGE) break;
-      after = page[page.length - 1].fileId;
+      const page = await accountDocuments(q, accountId, after, errors);
+      if (page === null) break;
+      lines.push(...page.lines);
+      if (page.page < PAGE) break;
+      after = page.lines[page.lines.length - 1].fileId;
     }
-    const run = (await q(`SELECT id, status, outcome, phases_json, started_at, finished_at FROM account_reconciliation_runs
-                           WHERE account_id = $1 AND status <> 'queued' ORDER BY id DESC LIMIT 1`, [accountId]).catch(() => []))[0] ?? null;
+    const run = (await lire(errors, 'dernier passage T3 (account_reconciliation_runs)', accountId, () => q(`SELECT id, status, outcome, phases_json, started_at, finished_at FROM account_reconciliation_runs
+                           WHERE account_id = $1 AND status <> 'queued' ORDER BY id DESC LIMIT 1`, [accountId])))?.[0] ?? null;
     const phases = run ? J<Row>(run.phases_json, {}) : null;
-    const supervision = await q(`SELECT id, fingerprint, title, status, occurrence_count, last_seen_at, technical_detail FROM admin_anomalies
+    const supervision = await lire(errors, 'incidents Supervision (admin_anomalies)', accountId, () => q(`SELECT id, fingerprint, title, status, occurrence_count, last_seen_at, technical_detail FROM admin_anomalies
                                   WHERE account_id = $1 AND domain = 'ai' AND (fingerprint LIKE 'ai:t3-identity-graph:%' OR fingerprint LIKE 'ai:t3-document-asset-technical:%')
-                                  ORDER BY id DESC LIMIT 50`, [accountId]).catch(() => []);
+                                  ORDER BY id DESC LIMIT 50`, [accountId]));
+    const readErrors = errors.slice(before);
     out.accounts.push({
       accountId, counters: accountCounters(lines),
       lastRun: run ? {
         id: N(run.id), status: run.status, outcome: run.outcome ?? null, startedAt: iso(run.started_at), finishedAt: iso(run.finished_at),
         openKnowledge: phases?.OPEN_KNOWLEDGE ?? null, identityGroups: phases?.IDENTITY_GROUPS ?? null, openActions: phases?.OPEN_ACTIONS ?? null,
       } : null,
-      supervision: supervision.map((a) => ({ id: N(a.id), fingerprint: a.fingerprint, title: a.title, status: a.status, occurrences: N(a.occurrence_count), lastSeenAt: iso(a.last_seen_at), detail: a.technical_detail ?? null })),
+      supervision: (supervision ?? []).map((a) => ({ id: N(a.id), fingerprint: a.fingerprint, title: a.title, status: a.status, occurrences: N(a.occurrence_count), lastSeenAt: iso(a.last_seen_at), detail: a.technical_detail ?? null })),
       ...(global ? {} : { documents: lines }),
+      ...(readErrors.length ? { readErrors } : {}),
     });
   }
+  out.status = errors.length ? 'PARTIAL' : 'COMPLETE';
   return out;
 }
 
 /** Version lisible (tableau) pour le PO (pure). */
 export function t3DiagnosticText(d: T3DocumentAssetDiagnostic): string {
   const l: string[] = [];
-  l.push('T3 — RATTACHEMENT DES DOCUMENTS AUX BIENS (lot 108E)', `Généré le ${d.generatedAt}`, '');
+  l.push('T3 — RATTACHEMENT DES DOCUMENTS AUX BIENS (lot 108E)', `Généré le ${d.generatedAt}`);
+  // Lot 113AG : statut des lectures en tête (jamais un tableau présenté comme complet si une lecture a échoué).
+  const errs = d.errors ?? [];
+  l.push(errs.length ? `STATUT DES LECTURES : PARTIEL — ${errs.length} lecture(s) en échec (informations NON LUES, pas « aucune ») :` : 'STATUT DES LECTURES : complet (toutes les lectures exécutées)');
+  for (const e of errs.slice(0, 20)) l.push(`  ! ${e.read}${e.accountId !== null ? ` (compte ${e.accountId})` : ''} : ${e.sqlstate ?? 'code inconnu'} — ${e.message}`);
+  if (errs.length > 20) l.push(`  ! … ${errs.length - 20} autre(s) : voir « errors » dans ia/t3-rattachement-documents.json`);
+  l.push('');
   l.push('CONTRÔLES DE CONFIGURATION (attendu → constaté)');
   for (const c of d.checks) l.push(`  [${c.ok === null ? '??' : c.ok ? 'OK' : 'KO'}] ${c.label} : attendu ${c.expected} → ${c.actual}`);
   l.push('');

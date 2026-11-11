@@ -18,7 +18,12 @@
  *   errors            contrôles en erreur répétée (aucun succès) ;
  *   repeated_repairs  même objet réparé au moins `REPEATED_REPAIRS` fois en
  *                     7 jours : la cause est ailleurs (chaîne qui recrée
- *                     l'écart) ;
+ *                     l'écart). Lot 113AJ : seules les VRAIES réparations
+ *                     comptent — un contrôle qui le déclare
+ *                     (`effectiveRepairSql`) requalifie à la lecture ses
+ *                     lignes REPAIRED (historique compris, sans le modifier) ;
+ *                     le détail désigne le champ réécrit et l'écrivain qui
+ *                     l'a remis à vide (`explainRepeatedRepairs`) ;
  *   campaign          dernière campagne quotidienne PARTIELLE ou ÉCHOUÉE ;
  *   <anomalie>        lot 91B : constat déclaré « immédiat » par son contrôle
  *                     (`immediateSupervision` : contrat IA absent, journal
@@ -147,16 +152,7 @@ export async function computeCoherenceAlerts(now: Date = new Date(), sql: Sql = 
       },
     });
   }
-  const repetes = await rows(sql, `
-    SELECT check_id, count(*)::int AS n, (array_agg(DISTINCT account_id))[1:20] AS accounts FROM (
-      SELECT check_id, account_id, object_id FROM coherence_repairs
-       WHERE outcome = 'REPAIRED' AND created_at >= $1 GROUP BY check_id, account_id, object_id HAVING count(*) >= $2) x
-     GROUP BY check_id`, [new Date(now.getTime() - 7 * 86_400_000), REPEATED_REPAIRS]);
-  for (const r of repetes) {
-    const id = String(r.check_id);
-    alerts.push({ fingerprint: fingerprintOf(id, 'repeated_repairs'), title: `Cohérence ${id} : objets réparés de façon répétée (${r.n})`, count: Number(r.n),
-      detail: { checkId: id, accountIds: ((r.accounts as number[]) ?? []).join(', ') } });
-  }
+  for (const a of await repeatedRepairAlerts(sql, now)) alerts.push(a);
   const [derniere] = await rows(sql, `
     SELECT id, status, coverage, remaining, campaign_date::text AS d FROM coherence_campaigns
      WHERE kind = 'DAILY' AND status <> 'RUNNING' ORDER BY campaign_date DESC LIMIT 1`);
@@ -165,6 +161,46 @@ export async function computeCoherenceAlerts(now: Date = new Date(), sql: Sql = 
       count: 1, detail: { campaignId: Number(derniere.id), status: derniere.status, remaining: derniere.remaining ?? null } });
   }
   return alerts;
+}
+
+/**
+ * Lot 113AJ — objets réparés de façon répétée (7 jours) : VRAIES réparations
+ * seulement pour les contrôles qui déclarent leur prédicat (`effectiveRepairSql`) ;
+ * les autres contrôles gardent le décompte des lignes REPAIRED (lots 82B / 83B).
+ */
+export async function repeatedRepairAlerts(sql: Sql, now: Date): Promise<CoherenceAlert[]> {
+  const depuis = new Date(now.getTime() - 7 * 86_400_000);
+  const qualifies = activeChecks().filter((c) => c.effectiveRepairSql);
+  const params: unknown[] = [depuis, REPEATED_REPAIRS, qualifies.map((c) => c.id)];
+  const predicats = qualifies.map((c) => { params.push(c.id); return `(r.check_id = $${params.length} AND ${c.effectiveRepairSql!('r')})`; });
+  const objets = await rows(sql, `
+    SELECT r.check_id, r.account_id, r.object_id, count(*)::int AS n FROM coherence_repairs r
+     WHERE r.outcome = 'REPAIRED' AND r.created_at >= $1 AND (NOT (r.check_id = ANY($3::text[]))${predicats.length ? ` OR ${predicats.join(' OR ')}` : ''})
+     GROUP BY r.check_id, r.account_id, r.object_id HAVING count(*) >= $2
+     ORDER BY r.check_id, count(*) DESC, r.account_id, r.object_id LIMIT 500`, params);
+  const parControle = new Map<string, Array<{ accountId: number; objectId: number; repairs: number }>>();
+  for (const o of objets) {
+    const id = String(o.check_id);
+    parControle.set(id, [...(parControle.get(id) ?? []), { accountId: Number(o.account_id), objectId: Number(o.object_id), repairs: Number(o.n) }]);
+  }
+  const out: CoherenceAlert[] = [];
+  for (const [id, liste] of parControle) {
+    const check = getCheck(id);
+    let explication: Record<string, unknown> = {};
+    if (check?.explainRepeatedRepairs) {
+      try { explication = await check.explainRepeatedRepairs(sql, liste, depuis); } catch (e) { explication = { explanationError: String((e as Error)?.message ?? e).slice(0, 200) }; }
+    }
+    out.push({
+      fingerprint: fingerprintOf(id, 'repeated_repairs'), title: `Cohérence ${id} : objets réparés de façon répétée (${liste.length})`, count: liste.length,
+      detail: {
+        checkId: id, accountIds: [...new Set(liste.map((o) => o.accountId))].slice(0, 20).join(', '),
+        objects: liste.slice(0, 10).map((o) => `compte ${o.accountId} · objet ${o.objectId} : ${o.repairs} réparation(s) en 7 jours`).join(' ; '),
+        ...(check?.effectiveRepairSql ? { counting: 'réparations réelles seulement (écriture effective) : analyses avec abstention, absences de changement et échecs techniques ou IA exclus' } : {}),
+        ...explication,
+      },
+    });
+  }
+  return out;
 }
 
 /** Ouvre / consolide les alertes actives et résout celles revenues à zéro. Ne lève pas. */

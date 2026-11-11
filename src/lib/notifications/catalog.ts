@@ -28,6 +28,7 @@ import { drawerHref } from '@/lib/drawers';
 import { z } from 'zod';
 import { NOTIFICATION_TYPES, type NotificationType } from '@/types/notifications';
 import { subscriptionNotificationText } from './subscription-messages';
+import { deadlineReminderTitle } from './scheduled/deadline-reminder-policy';
 import { formatUnpaidDeadline } from '@/services/billing/unpaid-cycle.rules';
 import { uploadNotificationText } from './upload-notification-text';
 import { formatSecurityIncidentDate } from '@/lib/auth/security-email';
@@ -197,18 +198,22 @@ export const NOTIFICATION_CATALOG: { [K in NotificationType]?: CatalogEntry } = 
     category: 'deadlines', priority: 'normal', deliveryMode: 'immediate',
     mandatoryBell: false, mandatoryEmail: false, neverBell: false,
     defaults: { push: true, email: true }, retentionDays: 90,
+    // Lot 113AH (#732) : rappel à J-7 OU rattrapage (création / changement de
+    // date après le passage du matin, reprise après panne) — le titre donne le
+    // délai RÉEL en jours calendaires de Paris (`daysUntil`, recalculé à
+    // l'envoi) : « dans 7 jours », « dans 3 jours », « demain »,
+    // « aujourd'hui ». Ligne mise en file avant 113AH (sans `daysUntil`) :
+    // 7 jours, comme à l'origine. Une occurrence prévisionnelle est annoncée
+    // comme telle.
     render: (p) => content(
-      // Une occurrence prévisionnelle est annoncée comme telle.
-      p.count > 1
-        ? `${p.count} échéances dans 7 jours${p.forecastCount ? ` (dont ${p.forecastCount} prévisionnelle${p.forecastCount > 1 ? 's' : ''})` : ''}`
-        : p.forecastCount ? 'Échéance prévisionnelle dans 7 jours' : 'Échéance dans 7 jours',
+      deadlineReminderTitle(p),
       p.forecastCount && p.count === p.forecastCount
         ? 'Date estimée à partir de la récurrence : à confirmer dans Verebona.'
         : 'Une action est à prévoir dans Verebona.',
       undefined, 'notif_deadline_j7',
     ),
     deepLink: (p) => `/agenda${p.date ? `?date=${p.date}` : ''}`,
-    payloadSchema: z.object({ count: z.number(), date: z.string(), agendaItemIds: z.array(z.number()).optional(), forecastCount: z.number().optional() }),
+    payloadSchema: z.object({ count: z.number(), date: z.string(), agendaItemIds: z.array(z.number()).optional(), forecastCount: z.number().optional(), daysUntil: z.number().int().min(0).max(7).optional() }),
   },
 
   // ── Documents ───────────────────────────────────────────────────────────────

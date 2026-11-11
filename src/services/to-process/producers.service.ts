@@ -358,6 +358,9 @@ export async function produceAgendaActions(accountId: number, opts: ProducerRunO
         [item.id, accountId, date] as never[],
       )) as unknown as Array<{ d: string }>;
       if (ecrit[0]?.d === date) {
+        // Lot 113AH (#732) : date retrouvée écrite (validée) — rappel d'échéance évalué.
+        const { evaluerRappelEcheance } = await import('@/services/agenda/write-agenda-item');
+        await evaluerRappelEcheance(accountId, item.id);
         const fermees = await closeObsoleteTraced(accountId, 'AGENDA_ITEM', 'date', [item.id], { reason: 'AUTO_RESOLVED', source: 'DATE_FOUND_AT_SOURCE' });
         report.closed += fermees.length;
         await trace('WRITTEN', { closed: fermees });

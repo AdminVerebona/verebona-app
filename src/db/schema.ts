@@ -4541,6 +4541,48 @@ export const businessPeriodRelationReviews = pgTable('business_period_relation_r
   fpUidx: uniqueIndex('business_period_relation_reviews_fp_uidx').on(t.accountId, t.fingerprint),
 }));
 
+/**
+ * Lot 113AL (Trello #737, demande 82B-t3-decision-tco, migration 1650) — DEMANDE,
+ * MÉMOIRE et DÉCISION de l'arbitrage sémantique T3 (`t3_economic_qualification`,
+ * contrat `t3-economic-qualification-v1`) des montants non qualifiés d'un document
+ * dans le TCO d'un bien : une ligne par document et par empreinte de contexte,
+ * jamais renvoyée à l'IA. Relue par le moteur TCO ; la décision de l'utilisateur prime.
+ */
+export const economicQualificationReviews = pgTable('economic_qualification_reviews', {
+  id: bigserial('id', { mode: 'number' }).primaryKey(),
+  accountId: integer('account_id').notNull().references(() => accounts.id, { onDelete: 'cascade' }),
+  assetId: integer('asset_id').notNull(),
+  fileId: integer('file_id').notNull().references(() => assetFiles.id, { onDelete: 'cascade' }),
+  fingerprint: text('fingerprint').notNull(),
+  status: text('status').notNull().default('PENDING'),
+  trigger: text('trigger').notNull().default('COHERENCE'),
+  amounts: jsonb('amounts').notNull().default([]),
+  decisions: jsonb('decisions').notNull().default([]),
+  reason: text('reason'),
+  aiOutput: jsonb('ai_output'),
+  validation: jsonb('validation').notNull().default({}),
+  linesBefore: jsonb('lines_before'),
+  linesAfter: jsonb('lines_after'),
+  contractVersion: text('contract_version').notNull(),
+  promptVersion: text('prompt_version'),
+  model: text('model'),
+  aiTraceId: text('ai_trace_id'),
+  aiCostMicros: bigint('ai_cost_micros', { mode: 'number' }),
+  aiCalls: integer('ai_calls').notNull().default(0),
+  attempts: integer('attempts').notNull().default(0),
+  retryAt: tstzOptional('retry_at'),
+  claimedAt: tstzOptional('claimed_at'),
+  lastCallAt: tstzOptional('last_call_at'),
+  error: text('error'),
+  supersededBy: bigint('superseded_by', { mode: 'number' }),
+  requestedAt: tstz('requested_at'),
+  decidedAt: tstzOptional('decided_at'),
+  createdAt: tstz('created_at'),
+  updatedAt: tstz('updated_at'),
+}, (t) => ({
+  fpUidx: uniqueIndex('economic_qualification_reviews_fp_uidx').on(t.accountId, t.fileId, t.fingerprint),
+}));
+
 /** C6.3 — décisions de rapprochement durables. */
 export const businessOperationMatchDecisions = pgTable('business_operation_match_decisions', {
   id: bigserial('id', { mode: 'number' }).primaryKey(),

@@ -901,6 +901,9 @@ async function confirmForecast(decision: AgendaDecision, accountId: number): Pro
   });
   if (nouvelleDate !== cur.startDate) {
     await recordOccurrenceEvent(cur.id, accountId, 'DATE_CHANGED', { from: cur.startDate, to: nouvelleDate, reason: 'confirmation par la source' });
+    // Lot 113AH (#732) : date confirmée différente de la prévision — rappel réévalué (écriture validée).
+    const { evaluerRappelEcheance } = await import('./write-agenda-item');
+    await evaluerRappelEcheance(accountId, cur.id);
   }
 }
 

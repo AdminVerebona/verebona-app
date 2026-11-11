@@ -292,6 +292,27 @@ export const MASTER_CORPUS_EVALUATORS: Readonly<Record<string, Evaluator>> = {
       ...ecart(exp(c, 'issues') === undefined || JSON.stringify(issues) === JSON.stringify(exp(c, 'issues')), `refus ${JSON.stringify(issues)}`),
     ];
   },
+  // Lot 113AL — ECONOMIC_QUALIFICATION (contrat t3-economic-qualification-v1) : contexte construit par le code de
+  // production (`buildQualificationInput`), validation stricte réelle (`validateQualification`) puis effet appliqué par
+  // le moteur TCO existant (`semanticDraft`). Attendus : `valid`, `effects` (par montant : `outcome`, `applied`,
+  // `status` de la ligne produite, `reason`), `issues` (motifs de refus triés).
+  async t3_economic_qualification(c, output) {
+    const [{ buildQualificationInput, validateQualification }, { qualificationEffectStatus }] = await Promise.all([
+      import('@/services/business-operations/tco/semantic-qualification/contract'), import('@/services/business-operations/tco/semantic-qualification/corpus'),
+    ]);
+    const raw = (c.context as { economicQualification: never }).economicQualification;
+    const b = buildQualificationInput(raw);
+    const v = validateQualification(output, b.scope);
+    const issues = v.ok ? [] : [...new Set(v.problems.map((p) => p.issue))].sort();
+    const effets = v.ok ? v.effects.map((e) => ({ amount: e.amountRef, outcome: e.outcome, applied: e.applied, ...qualificationEffectStatus(raw, e) })) : [];
+    const attendus = exp(c, 'effects') as Array<Record<string, unknown>> | undefined;
+    const conforme = (a: Record<string, unknown>) => { const e = effets.find((x) => x.amount === a.amount); return !!e && Object.entries(a).every(([k, val]) => (e as Record<string, unknown>)[k] === val); };
+    return [
+      ...ecart(exp(c, 'valid') === undefined || v.ok === exp(c, 'valid'), `validité ${v.ok}${v.ok ? '' : ` (${issues.join(',')})`}`),
+      ...ecart(attendus === undefined || attendus.every(conforme), `effets ${JSON.stringify(effets)}`),
+      ...ecart(exp(c, 'issues') === undefined || JSON.stringify(issues) === JSON.stringify(exp(c, 'issues')), `refus ${JSON.stringify(issues)}`),
+    ];
+  },
   // ── T4 ─────────────────────────────────────────────────────────────────────
   // Lot 97A — AGENDA_REPRESENTATION (contrat t4-agenda-representation-v1) : contexte construit par le code de
   // production (`buildRepresentationInput`), validation (`validateRepresentation`) et plan (`planRepresentation`)

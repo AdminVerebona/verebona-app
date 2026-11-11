@@ -20,7 +20,9 @@
  *   code                            calendrier (Paris)            double exécution
  *   notifications-dispatch          toutes les minutes            FOR UPDATE SKIP LOCKED
  *   notifications-to-process-scan   toutes les 10 min             dedupe_key unique
- *   notifications-scheduled-events  /15 min de 8 h 30 à 11 h      dedupe_key par date locale
+ *   notifications-scheduled-events  /15 min de 8 h 30 à 21 h      rappels d'échéance : couverture unique
+ *                                   (113AH ; récapitulatif et     par événement × destinataire (1625) ;
+ *                                   fin d'essai : jusqu'à 11 h)   récapitulatif : dedupe_key par date locale
  *   document-lot-notifications      toutes les 10 min             transition conditionnelle awaiting →
  *                                                                 notified + dedupe_key par lot (lot 81E)
  *   notifications-purge             chaque jour à 5 h 20          suppressions idempotentes
@@ -266,17 +268,28 @@ export const SCHEDULED_TASKS: readonly ScheduledTaskDef[] = [
   },
   {
     code: 'notifications-scheduled-events',
-    label: 'Rappels du matin (échéances, récapitulatif, fin d’essai)',
-    // Envoi à 8 h 30 ; passages suivants jusqu'à 11 h pour rattraper un
-    // échec (dédupliqués par date locale). Jamais d'envoi tardif : hors de
-    // la fenêtre, le créneau est sauté.
-    schedule: { kind: 'interval', everyMs: 15 * MIN, window: { from: [8, 30], to: [11, 0] } },
+    label: 'Rappels d’échéance et du matin (récapitulatif, fin d’essai)',
+    // Envoi à 8 h 30. Lot 113AH (#732) : les rappels d'échéance sont
+    // rattrapés à CHAQUE passage jusqu'à 21 h (événement créé ou déplacé
+    // après le passage du matin, reprise après arrêt) — couverture unique
+    // par événement × destinataire ; récapitulatif et fin d'essai : passages
+    // de 8 h 30 à 11 h seulement, comme avant (dédupliqués par date locale).
+    // Hors de la fenêtre, le créneau est sauté (rien la nuit).
+    schedule: { kind: 'interval', everyMs: 15 * MIN, window: { from: [8, 30], to: [21, 0] } },
     timeoutMs: 15 * MIN,
     startupDelayMs: 2 * MIN,
     run: async () => {
       const { runMorningScheduledEvents } = await import('@/lib/notifications/scheduled/morning-events');
       const r = await runMorningScheduledEvents();
       if (r.skipped) return { note: r.skipped };
+      // Lot 113AH : bilan des rappels d'échéance visible (Exploitation › Tâches
+      // planifiées) ; un compte en échec rend le passage « en échec » (repris au suivant).
+      const d = r.deadlines;
+      if ('covered' in d && (d.covered > 0 || d.errors > 0 || d.recovered > 0)) {
+        const note = JSON.stringify({ rappels: { couverts: d.covered, notifications: d.notifications, regroupes: d.merged, remisEnFile: d.recovered, erreurs: d.errors } });
+        if (d.errors > 0) return { error: `${d.errors} compte(s) en échec (rappels d’échéance)`, note };
+        return { note };
+      }
     },
   },
   {

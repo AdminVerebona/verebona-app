@@ -305,6 +305,13 @@ export async function t2CostExclusions(
     const t = await readAssetTco(accountId, assetIds[0], { runner: r, today });
     // Lot 80A : dépenses AJOUTÉES par l'utilisateur au TCO de ce bien (décision prioritaire) — T2 les compte aussi.
     for (const l of t.lines) {
+      // Lot 113AL (#737) : dépense documentaire qualifiée par l'arbitrage T3 validé et retenue par le moteur — T2 la compte
+      // comme le TCO (même résultat, aucun second calcul), sauf décision contraire de l'utilisateur (déjà appliquée ici).
+      const parT3 = l.source === 'DOCUMENT' && l.semantic?.state === 'APPLIED' && !l.userDecision && l.includedCents > 0;
+      if (parT3) {
+        userAdded.push({ source: l.source, lineId: l.id, operationId: l.operationId, componentId: null, fileId: l.fileId, eurCents: l.includedCents, date: l.date, label: l.label, automaticReason: null });
+        continue;
+      }
       // Lot 111V : de même pour « dépenses distinctes » et « nature confirmée » (décisions qui comptent la ligne).
       if (!l.userDecision?.applied || !TCO_COUNTING_DECISIONS.has(l.userDecision.decision) || l.includedCents <= 0) continue;
       userAdded.push({
@@ -319,6 +326,9 @@ export async function t2CostExclusions(
     for (const l of t.lines) if (l.source === 'DOCUMENT' && l.fileId != null) parFichier.set(l.fileId, [...(parFichier.get(l.fileId) ?? []), l]);
     for (const [f, ls] of parFichier) {
       if (ls.some((l) => l.reason && MOTIFS_78B_DOCUMENT.has(l.reason)) && !ls.some((l) => l.includedCents > 0)) files.add(f);
+      // Lot 113AL : justificatif que l'arbitrage T3 validé rattache à un fait déjà compté, à un règlement ou exclut avec
+      // motif — jamais recompté par T2 (même résultat que le TCO).
+      else if (ls.some((l) => l.semantic?.state === 'APPLIED') && !ls.some((l) => l.includedCents > 0)) files.add(f);
     }
     return { components, files, userAdded };
   }
@@ -487,7 +497,7 @@ export async function readEconomicDocuments(r: Runner, accountId: number, scope:
               -- Lot 75D (D) : justificatif financier reconnu SANS montant (facture, quittance…) — lu pour être signalé
               -- « montant inconnu » (jamais 0 €) ; aucune relecture PDF ni IA.
               OR f.document_type_code = ANY(${pgTextArray(EXPENSE_THEME_V2_CODES)}::text[])
-              OR concat_ws(' ', f.document_type_code, f.document_type) ~* ${INVOICE_LIKE_SQL})`;
+              OR concat_ws(' ', f.document_type_code, f.document_type) ~* ${INVOICE_LIKE_SQL}${await semanticReviewedFilter(r, assetId)})`;
   if (parFichiers && !scope.fileIds.length) return { documents: [], complete: true };
   const lus: Row[] = [];
   let curseur = 0;
@@ -526,6 +536,8 @@ export async function readEconomicDocuments(r: Runner, accountId: number, scope:
   const candidats = await readDocumentCandidates(r, accountId, ids);
   const operations = await readDocumentOperations(r, accountId, ids, assetId);
   const preuves = await acquisitionEvidenceFiles(r, accountId, ids);
+  // Lot 113AL (#737) : arbitrages sémantiques T3 validés des montants sans nature (lecture seule, jamais d'IA).
+  const semantiques = await readSemanticStates(r, accountId, ids, assetId);
   const documents = lus.map((d): EconomicDocumentInput => {
     const id = Number(d.id);
     const ignored = asJson(d.ignored);
@@ -537,9 +549,75 @@ export async function readEconomicDocuments(r: Runner, accountId: number, scope:
       multiAsset: Boolean(d.multi_asset),
       linkedEquipmentIds: (Array.isArray(d.equipments) ? d.equipments : String(d.equipments ?? '').replace(/[{}]/g, '').split(',').filter(Boolean)).map(Number),
       candidates: candidats.get(id) ?? [], operations: operations.get(id) ?? [], acquisitionEvidence: preuves.has(id),
+      ...(semantiques.has(id) ? { semantic: semantiques.get(id)! } : {}),
     };
   });
   return { documents, complete };
+}
+
+// ── Lot 113AL (#737) : arbitrage sémantique T3 des montants non qualifiés (table 1650) ──
+
+/** La table des arbitrages T3 existe-t-elle ? (déploiement avant migration : aucun arbitrage, jamais d'erreur). */
+async function tableArbitragesPresente(r: Runner): Promise<boolean> {
+  const [t] = await rows<{ ok: boolean }>(r, sql`SELECT to_regclass('economic_qualification_reviews') IS NOT NULL AS ok`);
+  return Boolean(t?.ok);
+}
+
+/** Documents du bien qui n'ont qu'un montant de l'extract arbitré par T3 (aucun montant ni indice T1) : lus aussi. */
+async function semanticReviewedFilter(r: Runner, assetId: number | null): Promise<SQL> {
+  if (assetId == null || !(await tableArbitragesPresente(r))) return sql``;
+  return sql` OR EXISTS (SELECT 1 FROM economic_qualification_reviews q WHERE q.account_id = f.account_id AND q.file_id = f.id AND q.asset_id = ${assetId})`;
+}
+
+/** Statuts d'un examen conclu (relu par le moteur) et d'un examen en cours. */
+const EXAMEN_CONCLU = ['DECIDED', 'ABSTAINED', 'NOT_CERTAIN', 'REJECTED'];
+const EXAMEN_EN_COURS = ['PENDING', 'RUNNING', 'AI_FAILED', 'TECHNICAL_WAIT'];
+
+/**
+ * Lot 113AL — état sémantique T3 des documents (lecture seule) : effets du DERNIER examen conclu de chaque
+ * document (pour CE bien quand il est connu : une décision prise dans le contexte d'un autre bien ne s'applique
+ * pas ici), et examen en attente ou contrat absent. Table absente : aucun (comportement 111V).
+ */
+export async function readSemanticStates(r: Runner, accountId: number, ids: readonly number[], assetId: number | null): Promise<Map<number, import('../finance/semantic-qualification').SemanticDocumentState>> {
+  const out = new Map<number, import('../finance/semantic-qualification').SemanticDocumentState>();
+  if (!ids.length || !(await tableArbitragesPresente(r))) return out;
+  for (let i = 0; i < ids.length; i += 1000) {
+    const page = ids.slice(i, i + 1000);
+    const x = await rows(r, sql`
+      SELECT q.id, q.file_id, q.status, q.decisions, q.contract_version, q.prompt_version, q.model,
+             to_char(q.decided_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"') AS decided_at,
+             to_char(q.requested_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"') AS requested_at
+        FROM economic_qualification_reviews q
+       WHERE q.account_id = ${accountId} AND q.file_id = ANY(${intArray(page)}::int[])
+         AND (${assetId}::int IS NULL OR q.asset_id = ${assetId}::int)
+         AND q.status <> ALL(${'{OBSOLETE,SUPERSEDED}'}::text[])
+       ORDER BY q.file_id, q.decided_at DESC NULLS LAST, q.id DESC`);
+    const parFichier = new Map<number, Row[]>();
+    for (const q of x) parFichier.set(Number(q.file_id), [...(parFichier.get(Number(q.file_id)) ?? []), q]);
+    for (const [fileId, qs] of parFichier) {
+      const conclu = qs.find((q) => EXAMEN_CONCLU.includes(String(q.status)));
+      const effects = conclu ? asArray(asJson(conclu.decisions)).map((e) => ({
+        reviewId: Number(conclu.id), decidedAt: String(conclu.decided_at ?? ''), contractVersion: String(conclu.contract_version ?? ''),
+        promptVersion: txt(conclu.prompt_version), model: txt(conclu.model),
+        amountMinor: Number(e.amountMinor ?? 0), currency: String(e.currency ?? 'EUR'), origin: e.origin === 'EXTRACT' ? 'EXTRACT' as const : 'LINE' as const,
+        outcome: (['INCLUDE', 'REPRESENTED', 'EXCLUDE'].includes(String(e.outcome)) ? e.outcome : 'ABSTAIN') as 'INCLUDE' | 'REPRESENTED' | 'EXCLUDE' | 'ABSTAIN',
+        // Seule une décision CONCLUE « DECIDED », certaine et non abstention, change le calcul.
+        applied: String(conclu.status) === 'DECIDED' && e.applied === true,
+        role: txt(e.role), scope: txt(e.scope), economicDate: txt(e.economicDate), periodStart: txt(e.periodStart), periodEnd: txt(e.periodEnd),
+        allocation: e.allocation === 'NOT_ALLOCATED' ? 'NOT_ALLOCATED' as const : e.allocation === 'THIS_ASSET' ? 'THIS_ASSET' as const : null,
+        representedBy: e.representedBy && typeof e.representedBy === 'object' ? e.representedBy as never : null,
+        exclusion: (['NOT_AN_EXPENSE', 'NOT_OWNERSHIP_COST', 'OTHER_ASSET'].includes(String(e.exclusion)) ? e.exclusion : null) as never,
+        confidence: (['certain', 'probable'].includes(String(e.confidence)) ? e.confidence : 'ambiguous') as 'certain' | 'probable' | 'ambiguous',
+        reason: String(e.reason ?? ''), evidence: asArray(e.evidence).map((v) => ({ fileId: Number(v.fileId), excerpt: String(v.excerpt ?? '') })),
+        serverNote: txt(e.serverNote),
+      })).filter((e) => Number.isSafeInteger(e.amountMinor) && e.amountMinor > 0) : [];
+      const depuis = conclu ? String(conclu.decided_at ?? '') : '';
+      const awaiting = qs.some((q) => EXAMEN_EN_COURS.includes(String(q.status)) && String(q.requested_at ?? '') >= depuis);
+      const contractPending = qs.some((q) => String(q.status) === 'CONTRACT_PENDING');
+      out.set(fileId, { effects, awaiting, ...(contractPending ? { contractPending: true } : {}) });
+    }
+  }
+  return out;
 }
 
 const pgTextArray = (v: readonly string[]): string => `{${v.map((x) => `"${x.replace(/["\\]/g, '')}"`).join(',')}}`;

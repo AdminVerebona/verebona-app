@@ -332,6 +332,21 @@ export async function latestOutcomeFor(k: ObjectKey): Promise<LatestOutcome | nu
   };
 }
 
+/**
+ * Lot 113AJ — ligne EXACTE du journal 0216 (`canonical_field_writes`) d'une
+ * écriture effective de la reprise (source = analyse), pour la référencer
+ * dans le journal des réparations. null : ligne introuvable (jamais bloquant).
+ */
+export async function canonicalWriteIdFor(p: { accountId: number; sourceType: string; sourceId: string; key: string }): Promise<number | null> {
+  try {
+    const [r] = await q<{ id: number }>(
+      `SELECT id FROM canonical_field_writes
+        WHERE account_id = $1 AND source_type = $2 AND source_id = $3 AND canonical_key = $4 AND outcome = 'written'
+        ORDER BY id DESC LIMIT 1`, [p.accountId, p.sourceType, p.sourceId, p.key]);
+    return r ? Number(r.id) : null;
+  } catch { return null; }
+}
+
 // ── Supervision : journal 88B inutilisable ──────────────────────────────────
 
 /** Empreinte de l'anomalie « journal des propriétés manquantes inutilisable » (domaine « Autres traitements techniques »). */

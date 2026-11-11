@@ -51,7 +51,8 @@ interface CategoryUi {
 
 const CATEGORY_UI: Record<NotificationCategory, CategoryUi> = {
   deadlines: {
-    description: 'Rappel 7 jours avant une échéance de votre agenda.',
+    // Lot 113AH (#732) : texte à valider par le PO (rattrapage d'une échéance plus proche).
+    description: 'Rappel 7 jours avant une échéance de votre agenda, ou dès son ajout si elle est plus proche.',
     displayDefault: { push: true, email: true },
   },
   documents: {
@@ -97,7 +98,7 @@ const CATEGORY_UI: Record<NotificationCategory, CategoryUi> = {
  * événement à e-mail du catalogue y figure.
  */
 export const EMAIL_EVENT_USER_LABELS: Partial<Record<string, string>> = {
-  DEADLINE_DUE_IN_7_DAYS: 'rappel 7 jours avant une échéance',
+  DEADLINE_DUE_IN_7_DAYS: 'rappel avant une échéance (7 jours avant, ou dès son ajout si elle est plus proche)',
   TO_PROCESS_DAILY_DIGEST: 'récapitulatif quotidien',
   DUO_INVITATION_RECEIVED: 'invitation Duo reçue',
   ACCOUNT_INVITATION: 'invitation à rejoindre un compte',

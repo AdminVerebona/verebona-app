@@ -30,11 +30,11 @@ import { createHash, randomUUID } from 'node:crypto';
 import type { DiagQuery } from '@/services/business-operations/diagnostics/service';
 import { getBuildIdentity } from '@/lib/runtime-identity';
 import { globalStatus, sectionStatus, type ExtractionStatus } from '@/services/admin/account-data/model';
-import { countRows, jsonBatches, named, openReadSession, type ReadSession } from '@/services/admin/account-data/session';
+import { countRows, incidentLabel, isReadSessionBroken, jsonBatches, named, openReadSession, type ReadSession, type SqlIncident } from '@/services/admin/account-data/session';
 import type { TextSink } from '@/services/admin/account-data/export';
 import {
   DIAG_LIMITS, DIAG_REMOVED_CAPS, DIAG_SCHEMA, DIAG_SCOPE_LABELS, MASKING_NOTES, READ_ONLY_NOTE, buildReportTextFromLines, leaksSecretOrEmail, maskForExport, maskText,
-  traceReportLines, type AmountTrace, type DiagFileInfo, type DiagManifest, type DiagRequest, type DiagUnavailable,
+  traceReportLines, type AmountTrace, type DiagFileInfo, type DiagManifest, type DiagRequest, type DiagSqlIncidentView, type DiagUnavailable,
 } from './model';
 import { loadTcoContext, tcoSummary, traceTcoLine, type TcoContext } from './trace';
 import { memoQuery, writeMaskedJson, type MemoStats } from './stream-json';
@@ -226,6 +226,29 @@ interface PlannedEntry {
 
 interface EntryResult { expected: number | null; count?: number; batches: number; error: string | null; status?: ExtractionStatus }
 
+/** Lot 113AG : vue exportée d'une erreur SQL (manifeste, BO) — sans paramètre ni donnée de ligne. */
+export function sqlIncidentView(i: SqlIncident): DiagSqlIncidentView {
+  return {
+    seq: i.seq, at: i.at, sqlstate: i.sqlstate, kind: i.kind, message: i.message.slice(0, 300), statement: i.statement, phase: i.phase, file: i.file,
+    generationId: i.generationId, caller: i.caller, stack: i.stack, savepoint: i.savepoint, recovered: i.recovered, consequenceOf: i.consequenceOf,
+  };
+}
+
+/** Lot 113AG : statut d'un fichier DÉRIVÉ (texte lisible d'un JSON) : jamais meilleur que sa source (pur). */
+export function derivedFileResult(sourcePath: string, source: Pick<DiagFileInfo, 'status' | 'error'> | undefined, produced: boolean): EntryResult {
+  const st = source?.status ?? 'FAILED';
+  const why = `${sourcePath} : ${source ? st : 'absent'}${source?.error ? ` — ${source.error}` : ''}`;
+  if (!produced) return { expected: 1, count: 0, batches: 1, error: `texte non produit (source ${why})`.slice(0, 500), status: 'FAILED' };
+  if (st === 'COMPLETE') return { expected: 1, count: 1, batches: 1, error: null };
+  return { expected: 1, count: 1, batches: 1, error: `dérivé d’une source ${st} (${why})`.slice(0, 500), status: st === 'FAILED' ? 'FAILED' : 'PARTIAL' };
+}
+
+/** Lot 113AG : en-tête de qualification d'un texte dérivé d'une source incomplète (pur). */
+export function derivedHeader(sourcePath: string, source: Pick<DiagFileInfo, 'status' | 'error'> | undefined): string {
+  if (source?.status === 'COMPLETE') return '';
+  return `ATTENTION — FICHIER SOURCE ${sourcePath} : ${source?.status ?? 'ABSENT'}${source?.error ? ` — ${source.error}` : ''}\nCe tableau n’est PAS complet : les informations non lues n’y figurent pas (elles ne valent pas « aucune »).\n\n`;
+}
+
 /** Sérialisation sûre d'une ligne masquée : contrôle de sortie (aucun secret ni e-mail en clair), JSON toujours valide. */
 function safeJson(v: unknown): string {
   const s = JSON.stringify(v);
@@ -263,6 +286,8 @@ export async function planDiagnostic(req: DiagRequest, s: ReadSession, opts: Gen
   const M = (v: unknown) => maskForExport(v, maskOpts);
   const row = (v: unknown) => safeJson(M(v));
 
+  // Lot 113AG : génération rattachée à chaque erreur SQL de la session (manifeste, journal [diagnostic-job]).
+  s.trace?.setContext({ generationId, file: null });
   const per = await s.savepoint(() => resolvePerimeter(s.q, req));
   const filter = filterOfPerimeter(req, per);
   const global = filter.accounts === null;
@@ -299,23 +324,49 @@ export async function planDiagnostic(req: DiagRequest, s: ReadSession, opts: Gen
         let bytes = 0;
         const w = async (c: string) => { hash.update(c); bytes += Buffer.byteLength(c); await sink.write(c); };
         let r: EntryResult;
-        try {
-          r = await body(w);
-        } catch (e) {
-          if ((e as Error)?.name === 'SinkError' || errCode(e) === '25006') throw e;
-          console.error(`[admin/diagnostics] ${path} :`, (e as Error)?.message ?? e);
-          // Échec avant toute écriture : fichier JSON valide (null), statut FAILED, erreur exploitable.
-          if (!bytes && path.endsWith('.json')) await w('null\n');
-          r = { expected: null, batches: 0, error: describe(e) };
+        const trace = s.trace;
+        // Seul le guide d'analyse (aucune lecture) est encore produit après un incident fatal.
+        const fatalBefore = trace?.health().fatal ?? null;
+        const broken = path === 'LISEZMOI-ANALYSE.md' ? null : fatalBefore;
+        trace?.setContext({ file: path });
+        const mark = trace?.mark() ?? 0;
+        if (broken) {
+          // Lot 113AG : session interrompue (incident fatal) — AUCUNE lecture, aucun autre instantané : fichier non produit, dit.
+          if (path.endsWith('.json')) await w('null\n');
+          else if (path.endsWith('.txt')) await w(`non produit : session de lecture interrompue (incident fatal) — voir manifeste.json › sqlIncidents\n`);
+          r = { expected: null, batches: 0, error: `non produit : session de lecture interrompue par l’erreur ${broken.origin ? incidentLabel(broken.origin) : 'non identifiée'} — aucune lecture après l’incident (aucun autre instantané)`.slice(0, 500), status: 'FAILED' };
+        } else {
+          try {
+            r = await body(w);
+          } catch (e) {
+            if ((e as Error)?.name === 'SinkError' || errCode(e) === '25006') throw e;
+            console.error(`[admin/diagnostics] ${path} :`, (e as Error)?.message ?? e);
+            // Échec avant toute écriture : fichier JSON valide (null), statut FAILED, erreur exploitable.
+            if (!bytes && path.endsWith('.json')) await w('null\n');
+            r = { expected: null, batches: 0, error: describe(e) };
+          }
         }
-        const status = r.status ?? sectionStatus(r.expected, r.count ?? 0, r.error);
+        let status = r.status ?? sectionStatus(r.expected, r.count ?? 0, r.error);
+        let error = r.error;
+        // Lot 113AG : erreurs SQL survenues PENDANT ce fichier (même interceptées par une lecture appelée) :
+        // jamais COMPLETE ; la PREMIÈRE erreur d'origine est rattachée au fichier (pas une concaténation de 25P02).
+        const seen = trace && !broken ? trace.since(mark) : null;
+        const first = seen?.firstOrigin ?? null;
+        if (seen && seen.count > 0) {
+          const masked = `${seen.count} erreur(s) SQL pendant la production de ce fichier${seen.consequences ? ` (dont ${seen.consequences} conséquence(s) 25P02)` : ''} — première : ${first ? incidentLabel(first) : 'non identifiée'}`;
+          if (status === 'COMPLETE') { status = 'PARTIAL'; error = masked.slice(0, 500); }
+          else if (first && !(error ?? '').includes(first.sqlstate ?? '\u0000')) error = `${masked} ; ${error ?? ''}`.slice(0, 500);
+        }
+        if (!fatalBefore && trace?.health().fatal && status === 'COMPLETE') { status = 'PARTIAL'; error = 'session interrompue pendant ce fichier'; }
+        trace?.setContext({ file: null });
         infos.push({
           path, description, section: sec, ...(r.count !== undefined ? { count: r.count } : {}), complete: status === 'COMPLETE',
-          expected: r.expected, batches: r.batches, status, error: r.error, bytes, sha256: hash.digest('hex'), ...(part ? { part } : {}),
+          expected: r.expected, batches: r.batches, status, error, bytes, sha256: hash.digest('hex'), ...(part ? { part } : {}),
+          ...(first ? { sqlError: sqlIncidentView(first) } : {}),
         });
         if (status !== 'COMPLETE') {
           // Jamais « n sur ? » : sans attendu, l'erreur dit pourquoi.
-          const detail = r.error ? ` — ${r.error}` : r.expected !== null ? ` — ${r.count ?? 0} élément(s) exporté(s) sur ${r.expected} attendu(s)` : '';
+          const detail = error ? ` — ${error}` : r.expected !== null ? ` — ${r.count ?? 0} élément(s) exporté(s) sur ${r.expected} attendu(s)` : '';
           warnings.push(`${path} : ${status}${detail}.`);
         }
       },
@@ -543,14 +594,19 @@ export async function planDiagnostic(req: DiagRequest, s: ReadSession, opts: Gen
       await writeMaskedJson(w, t3, M);
       await w('\n');
       const n = t3.accounts.reduce((k, a) => k + (a.documents?.length ?? 0), 0);
+      // Lot 113AG : une lecture T3 en échec (non exécutée) n'est jamais « aucun résultat » : fichier PARTIAL, première erreur dite.
+      const errs = t3.errors ?? [];
+      const error = errs.length ? `${errs.length} lecture(s) T3 en échec — ${errs.slice(0, 3).map((e) => `${e.read}${e.accountId !== null ? ` (compte ${e.accountId})` : ''} : ${e.sqlstate ?? 'code inconnu'} — ${e.message}`).join(' ; ')}`.slice(0, 500) : null;
       t3 = null;
-      return { expected: n, count: n, batches: 1, error: null };
+      return { expected: n, count: n, batches: 1, error, ...(error ? { status: 'PARTIAL' as const } : {}) };
     }, undefined, 'extractions-ia');
     entry('ia/t3-rattachement-documents.txt', 'T3 — rattachement des documents aux biens : tableau lisible (contrôles attendu → constaté, un document par ligne, cartes avant → après) à recopier dans la recette', async (w) => {
       const ok = t3Text !== null;
-      await w(t3Text ?? 'journal T3 indisponible (voir ia/t3-rattachement-documents.json)\n');
+      // Lot 113AG : statut DÉRIVÉ de la source (un texte d'un JSON PARTIAL / FAILED n'est jamais COMPLETE), qualification en tête.
+      const src = infos.find((f) => f.path === 'ia/t3-rattachement-documents.json');
+      await w(`${derivedHeader('ia/t3-rattachement-documents.json', src)}${t3Text ?? 'journal T3 indisponible (voir ia/t3-rattachement-documents.json)\n'}`);
       t3Text = null;
-      return { expected: 1, count: ok ? 1 : 0, batches: 1, error: ok ? null : 'journal T3 non produit' };
+      return derivedFileResult('ia/t3-rattachement-documents.json', src, ok);
     }, undefined, 'extractions-ia');
   }
 
@@ -575,9 +631,10 @@ export async function planDiagnostic(req: DiagRequest, s: ReadSession, opts: Gen
     }, undefined, 'extractions-ia');
     entry('ia/t1-decisions-valeurs.txt', 'T1 — décisions sur les valeurs significatives : tableau lisible (contrôles attendu → constaté, un document par ligne, unités en omission) à recopier dans la recette 108K', async (w) => {
       const ok = t1Text !== null;
-      await w(t1Text ?? 'journal T1 indisponible (voir ia/t1-decisions-valeurs.json)\n');
+      const src = infos.find((f) => f.path === 'ia/t1-decisions-valeurs.json');
+      await w(`${derivedHeader('ia/t1-decisions-valeurs.json', src)}${t1Text ?? 'journal T1 indisponible (voir ia/t1-decisions-valeurs.json)\n'}`);
       t1Text = null;
-      return { expected: 1, count: ok ? 1 : 0, batches: 1, error: ok ? null : 'journal T1 non produit' };
+      return derivedFileResult('ia/t1-decisions-valeurs.json', src, ok);
     }, undefined, 'extractions-ia');
   }
 
@@ -602,9 +659,10 @@ export async function planDiagnostic(req: DiagRequest, s: ReadSession, opts: Gen
     }, undefined, 'technique');
     entry('ia/couts-ia-non-chiffres.txt', 'Coûts IA — appels non chiffrés : tableau lisible (30 derniers jours puis tout l’historique) à recopier dans la recette 109L', async (w) => {
       const ok = coutsText !== null;
-      await w(coutsText ?? 'diagnostic des coûts indisponible (voir ia/couts-ia-non-chiffres.json)\n');
+      const src = infos.find((f) => f.path === 'ia/couts-ia-non-chiffres.json');
+      await w(`${derivedHeader('ia/couts-ia-non-chiffres.json', src)}${coutsText ?? 'diagnostic des coûts indisponible (voir ia/couts-ia-non-chiffres.json)\n'}`);
       coutsText = null;
-      return { expected: 1, count: ok ? 1 : 0, batches: 1, error: ok ? null : 'diagnostic des coûts non produit' };
+      return derivedFileResult('ia/couts-ia-non-chiffres.json', src, ok);
     }, undefined, 'technique');
   }
 
@@ -702,6 +760,22 @@ export async function planDiagnostic(req: DiagRequest, s: ReadSession, opts: Gen
     unavailable.push({ element: 'Documents originaux et texte intégral', motif: 'exclus par principe (sécurité) : seules les données structurées et extraits de preuve sont exportés' });
     const sections = sectionsOf();
     const status = fatal ? 'FAILED' : globalWithSections(globalStatus(infos.map((f) => ({ status: f.status ?? 'COMPLETE' }))), sections);
+    // Lot 113AG : erreurs SQL de la session — première erreur d'ORIGINE, incident fatal, conséquences 25P02 rattachées.
+    const h = s.trace?.health() ?? null;
+    const sqlIncidents: DiagManifest['sqlIncidents'] = h ? {
+      session: h.state === 'BROKEN' ? 'INTERROMPUE' : 'SAINE',
+      fiabilite: h.state === 'BROKEN' ? 'NON_FIABLE' : 'FIABLE',
+      firstError: h.firstError ? sqlIncidentView(h.firstError) : null,
+      fatal: h.fatal ? { at: h.fatal.at, reason: h.fatal.reason, origin: h.fatal.origin ? sqlIncidentView(h.fatal.origin) : null, rollback: h.fatal.rollback ? sqlIncidentView(h.fatal.rollback) : null } : null,
+      total: h.total, origins: h.origins, consequences: h.consequences, omitted: h.omitted,
+      incidents: h.incidents.slice(0, 100).map(sqlIncidentView),
+      note: 'Erreurs SQL de la session de lecture, dans l’ordre (seq) et horodatées (UTC). firstError = PREMIÈRE erreur d’origine (jamais un 25P02, qui n’est que la conséquence d’une erreur antérieure : consequenceOf). recovered = point de reprise restauré, session saine. Session INTERROMPUE : lectures arrêtées après l’incident, fichiers suivants non produits (FAILED), aucun autre instantané utilisé. Distinct des « références absentes » de l’auto-contrôle (controle/references.json).',
+    } : undefined;
+    if (h?.fatal) {
+      warnings.unshift(`EXPORT NON FIABLE : session de lecture interrompue (${h.fatal.reason}) — erreur d’origine ${h.fatal.origin ? incidentLabel(h.fatal.origin) : 'non identifiée'}${h.fatal.rollback ? ` ; restauration en échec ${incidentLabel(h.fatal.rollback)}` : ''} — fichiers postérieurs non produits.`);
+    } else if (h?.firstError) {
+      warnings.unshift(`Première erreur SQL : ${incidentLabel(h.firstError)}${h.consequences ? ` — ${h.consequences} conséquence(s) 25P02 rattachée(s)` : ''}.`);
+    }
     finalManifest = {
       schema: DIAG_SCHEMA, generationId, generatedAt: now.toISOString(), environment: env,
       build: { version: build.version, commit: build.commit, commitSource: build.commitSource, container: build.container },
@@ -711,8 +785,9 @@ export async function planDiagnostic(req: DiagRequest, s: ReadSession, opts: Gen
       snapshot: {
         isolation: s.info.isolation, at: s.info.at, snapshot: s.info.snapshot,
         verification: 'Toutes les lectures, TCO compris, dans UNE transaction REPEATABLE READ READ ONLY ; attendu = count(*) (par compte) dans le même instantané ; exporté = lignes écrites (curseur, lots ordonnés) ; COMPLETE seulement si exporté = attendu pour chaque fichier, aucune erreur, aucune section PARTIAL ; SHA-256 de chaque fichier (contenu non compressé) ci-dessous.',
-        exceptions: [...(fatal ? [`Génération interrompue : ${fatal}`] : [])],
+        exceptions: [...(fatal ? [`Génération interrompue : ${fatal}`] : []), ...(h?.fatal ? [`Session de lecture interrompue (incident fatal) : ${h.fatal.reason} — lectures arrêtées, aucun autre instantané utilisé.`] : [])],
       },
+      ...(sqlIncidents ? { sqlIncidents } : {}),
       removedCaps: DIAG_REMOVED_CAPS,
       files: [
         { path: 'rapport.txt', description: 'Rapport synthétique lisible (copiable)', complete: true, section: 'controle' },
@@ -726,6 +801,11 @@ export async function planDiagnostic(req: DiagRequest, s: ReadSession, opts: Gen
     const summary: Array<[string, string | number]> = [
       ['Filtre', per.label],
       ['Statut de la génération', status],
+      ...(sqlIncidents ? [
+        ['Fiabilité (session de lecture)', sqlIncidents.fiabilite === 'FIABLE' ? 'fiable — session saine jusqu’au bout' : 'NON FIABLE — session interrompue (incident fatal)'] as [string, string],
+        ['Première erreur SQL', sqlIncidents.firstError ? incidentLabel(sqlIncidents.firstError) : 'aucune'] as [string, string],
+        ['Erreurs SQL (origines / conséquences 25P02)', `${sqlIncidents.origins} / ${sqlIncidents.consequences}`] as [string, string],
+      ] : []),
       ['Tables exportées', `${enginePart.couverture.exportees} (couvertes : ${enginePart.couverture.couvertes}, exclues avec motif : ${enginePart.couverture.exclues}, hors filtre : ${enginePart.couverture.horsFiltre.length})`],
       ['Comptes couverts', `${enginePart.couverture.comptes.couverts} / ${enginePart.couverture.comptes.attendus}`],
       ['Anomalies de supervision', counts['donnees/technique/admin_anomalies.json'] ?? 0],

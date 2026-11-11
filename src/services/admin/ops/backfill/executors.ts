@@ -39,6 +39,8 @@
  *                         recensement + estimation ; application = un lot T1, contrat t1-business-periods-v2 exigé)
  *   ai-cost-classification runCostClassificationBackfill / restoreCostClassification (lot 113AF ;
  *                         simulation = lecture seule ; colonnes 1610 ; aucun appel IA)
+ *   source-unit-provenance runProvenanceCatchup / restoreProvenanceCatchup (lot 113AK ; simulation =
+ *                         lecture seule ; journal 1640 ; aucun appel IA ; même moteur que COH-DOC-FACT-PROVENANCE)
  *   database-restore-point runDatabaseBackup('admin') / restoreDatabaseBackup (lot 82E ; point de
  *                         restauration = sauvegarde format 2 ; restauration tout ou rien)
  *
@@ -314,6 +316,20 @@ export async function executeBackfill(sql: postgres.Sql, req: BackfillRequest, h
           const rep = await getCostReport({ since: new Date('2000-01-01T00:00:00Z'), until: new Date(Date.now() + 60_000) });
           return { providerMicros: rep.totals.providerMicros ?? (rep.totals.functionalMicros + rep.totals.technicalMicros), calls: rep.totals.calls };
         },
+      });
+      return { result: { ...r, action: req.action } };
+    }
+    case 'source-unit-provenance': {
+      // Lot 113AK (#736) : provenance des faits T1 et preuves orphelines ; données conservées seulement, aucun appel IA.
+      const m = await import('@/services/ai/source-analysis/source-units/provenance-repair');
+      if (req.action === 'restore') {
+        const r = await m.restoreProvenanceCatchup(sql, req.runId!);
+        hooks.log(`restauration : ${r.facts} fait(s), ${r.evidence} preuve(s), ${r.skipped} objet(s) laissé(s) tel(s) quel(s)`);
+        return { result: { ...r, action: 'restore' } };
+      }
+      const r = await m.runProvenanceCatchup({
+        sql, apply: req.action === 'apply', accountId: req.accountId, reason: req.reason, deadline: Date.now() + 45 * 60_000,
+        log: (msg) => { hooks.log(msg); hooks.progress({ message: msg }); },
       });
       return { result: { ...r, action: req.action } };
     }

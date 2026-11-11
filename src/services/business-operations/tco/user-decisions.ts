@@ -261,6 +261,8 @@ const DEJA_COMPTEE: ReadonlySet<string> = new Set([
   'SAME_FACT_CROSS_SOURCE',
   // Lot 111V : même fait confirmé par l'utilisateur.
   'USER_SAME_FACT',
+  // Lot 113AL : autre source d'un fait déjà compté, établie par l'arbitrage T3 validé.
+  'SEMANTIC_SAME_FACT',
 ]);
 const REASON_LABELS: Readonly<Record<string, string>> = { ...EXCLUSION_LABELS, ...DOCUMENT_LINE_REASON_LABELS };
 

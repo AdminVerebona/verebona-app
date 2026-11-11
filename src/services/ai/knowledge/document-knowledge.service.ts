@@ -43,6 +43,8 @@ import { sourceLayerReady, writeSourceLayer } from '../source-analysis/source-un
 import { buildAgendaCandidatesT4 } from '../source-analysis/steps/build-agenda-candidates.step';
 import { operationCandidatesReady, replaceOperationCandidates, type PersistedFactAnchor } from '../source-analysis/operation-candidates/persist';
 import { insertValueDecisions, supersedeFileDecisions, valueDecisionsTableReady } from '../source-analysis/value-decisions/store';
+import { partitionUnitRefs } from '../source-analysis/source-units/provenance-integrity';
+import { provenanceJournalReady, recordProvenanceEvents, type ProvenanceEvent } from '../source-analysis/source-units/provenance-repair';
 
 const json = (v: unknown) => JSON.stringify(v ?? null);
 
@@ -106,6 +108,8 @@ export async function persistDocumentKnowledgeDetailed(k: DocumentKnowledge): Pr
   // Lot 91D : décisions T1 sur les valeurs (0798) — contrôle HORS transaction. Toute nouvelle analyse T1 (couche A
   // ou décisions présentes) supersède les décisions précédentes du document : elles visaient l'extraction d'avant.
   const decisions = k.sourceLayer || k.valueDecisions ? await valueDecisionsTableReady() : false;
+  // Lot 113AK (#736) : journal des références de provenance rejetées (1640) — contrôle HORS transaction.
+  const journal = couche ? await provenanceJournalReady() : false;
 
   await pgClient.begin(async (tx) => {
     const rows = await tx.unsafe(
@@ -210,14 +214,40 @@ export async function persistDocumentKnowledgeDetailed(k: DocumentKnowledge): Pr
       );
     }
 
-    const factIds = await insertFactRows(tx as unknown as SqlTx, e, extractionId, k.facts, { canonical, provenance: couche });
+    // Lot 113AK (#736) — INVARIANT : un fait n'est écrit qu'avec des références vers des unités du MÊME document
+    // (compte + document + identifiant ; une cellule vaut par sa ligne). Unités de référence : la couche A écrite dans
+    // cette transaction, sinon celle déjà persistée du document. Toute autre référence est retirée et journalisée
+    // (jamais une correspondance cherchée dans un autre document, jamais une citation fabriquée).
+    const rejets: Array<{ index: number; event: ProvenanceEvent }> = [];
+    let faits = k.facts;
+    if (couche && k.facts.some((f) => f.sourceUnitIds?.length)) {
+      const unites = k.sourceLayer
+        ? new Set(k.sourceLayer.units.map((u) => u.sourceUnitId))
+        : new Set(((await tx.unsafe(
+          `SELECT source_unit_id FROM document_source_units WHERE account_id = $1 AND file_id = $2`, [e.accountId, e.fileId] as never[],
+        )) as unknown as Array<{ source_unit_id: string }>).map((r) => r.source_unit_id));
+      faits = k.facts.map((f, index) => {
+        if (!f.sourceUnitIds?.length) return f;
+        const { valid, invalid } = partitionUnitRefs(f.sourceUnitIds, unites);
+        if (invalid.length === 0) return f;
+        for (const u of invalid) {
+          rejets.push({ index, event: {
+            accountId: e.accountId, fileId: e.fileId, subject: 'FACT', extractionId, sourceUnitId: u, status: 'UNIT_MISSING',
+            cause: k.sourceLayer ? 'UNIT_NOT_IN_WRITTEN_LAYER' : 'UNIT_NOT_IN_STORED_LAYER', phase: 'PERSISTENCE',
+            detail: { factKey: f.factKey, kept: valid, analysisRunId: e.analysisRunId ?? null },
+          } });
+        }
+        return { ...f, sourceUnitIds: valid };
+      });
+    }
+    const factIds = await insertFactRows(tx as unknown as SqlTx, e, extractionId, faits, { canonical, provenance: couche });
 
     // Lot 40 (CDC Opérations V1 C3.2, C9.1) : candidats Opération — anciens
     // supersédés, nouveaux écrits avec des preuves ANCRÉES sur les faits
     // persistés à l'instant (empreinte → identifiant), même transaction.
     if (candidats && k.operationCandidates) {
       const ancres = new Map<string, PersistedFactAnchor[]>();
-      k.facts.forEach((f, i) => {
+      faits.forEach((f, i) => {
         if (!f.t1FactRef || factIds[i] === undefined) return;
         const l = ancres.get(f.t1FactRef) ?? [];
         l.push({ factId: factIds[i], sourceUnitIds: couche ? f.sourceUnitIds ?? [] : [] });
@@ -264,6 +294,32 @@ export async function persistDocumentKnowledgeDetailed(k: DocumentKnowledge): Pr
           coucheErreur = err.message;
           console.error(`[t1-source-units] couche A du fichier ${e.fileId} non écrite :`, err.message);
         });
+    }
+    // Lot 113AK (#736) — cause démontrée des références orphelines : couche A en échec (point de sauvegarde annulé)
+    // alors que les faits gardaient leurs `source_unit_ids` → provenance vers des unités jamais écrites (ou vers celles
+    // de l'analyse PRÉCÉDENTE, restaurées par l'annulation). Les références des faits écrits ici sont retirées et
+    // journalisées ; la reprise (sortie rejouée) les rétablit en réécrivant faits et couche ensemble.
+    if (k.sourceLayer && couche && !coucheEcrite) {
+      faits.forEach((f, index) => {
+        for (const u of f.sourceUnitIds ?? []) {
+          rejets.push({ index, event: {
+            accountId: e.accountId, fileId: e.fileId, subject: 'FACT', extractionId, sourceUnitId: u, status: 'UNIT_MISSING',
+            cause: 'SOURCE_LAYER_NOT_WRITTEN', phase: 'PERSISTENCE', detail: { factKey: f.factKey, analysisRunId: e.analysisRunId ?? null },
+          } });
+        }
+      });
+      const ecrits = factIds.filter((id, i) => id !== undefined && (faits[i]?.sourceUnitIds?.length ?? 0) > 0);
+      if (ecrits.length) {
+        await tx.unsafe(`UPDATE document_facts SET source_unit_ids = NULL WHERE id = ANY($1::bigint[]) AND file_id = $2`, [ecrits, e.fileId] as never[]);
+      }
+    }
+    if (rejets.length) {
+      console.warn(`[t1-provenance] fichier ${e.fileId} : ${rejets.length} référence(s) d'unité retirée(s) à l'écriture (${[...new Set(rejets.map((r) => r.event.cause))].join(', ')}).`);
+      if (journal) {
+        await (tx as unknown as { savepoint: (f: (sp: unknown) => Promise<unknown>) => Promise<unknown> })
+          .savepoint((sp) => recordProvenanceEvents(sp as never, rejets.map((r) => ({ ...r.event, factId: factIds[r.index] ?? null }))))
+          .catch((err: Error) => console.error(`[t1-provenance] journal du fichier ${e.fileId} non écrit :`, err.message));
+      }
     }
   });
   if (k.sourceLayer && !couche) coucheErreur = 'tables de la couche source absentes (migrations 0295-0297)';

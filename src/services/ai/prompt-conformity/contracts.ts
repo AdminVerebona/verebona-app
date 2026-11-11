@@ -358,6 +358,29 @@ async function buildRegistry(): Promise<PromptContract[]> {
       async plan() { return blocks([prc.PERIOD_RELATION_CONTRACT_VERSION]); },
     });
   }
+  // Lot 113AL (Trello #737, demande 82B-t3-decision-tco) : arbitrage sémantique T3 des montants non qualifiés du TCO
+  // (étape 31 du guide). Absent : CONTRACT_PENDING supervisé, aucun appel — « Nature à confirmer » (lot 111V).
+  {
+    const eqc = await import('@/services/business-operations/tco/semantic-qualification/contract');
+    out.push({
+      id: eqc.ECONOMIC_QUALIFICATION_CONTRACT_VERSION, treatment: 'T3', masterPromptCode: t3, rank: 31,
+      label: 'T3 : arbitrage sémantique des montants non qualifiés du TCO (inclusion, représentation par un fait compté, exclusion, abstention)', lot: '113AL', guideStep: 31,
+      version: eqc.ECONOMIC_QUALIFICATION_CONTRACT_VERSION, task: eqc.ECONOMIC_QUALIFICATION_TASK, operations: await opsOf(t3, eqc.ECONOMIC_QUALIFICATION_TASK),
+      inputs: [eqc.ECONOMIC_QUALIFICATION_CONTRACT_VERSION], outputs: await outputsOf(t3, eqc.ECONOMIC_QUALIFICATION_TASK), capabilities: ['qualification capability (promptCarriesEconomicQualification)'],
+      markers: [`BRANCHE TASK = ${eqc.ECONOMIC_QUALIFICATION_TASK}`, eqc.ECONOMIC_QUALIFICATION_CONTRACT_VERSION], validations: ['T3EconomicQualificationOutput', 'validateQualification'],
+      requires: ['t3-socle'], blockIds: [eqc.ECONOMIC_QUALIFICATION_CONTRACT_VERSION], expectedExecution: null, killSwitch: 'T3_ECONOMIC_QUALIFICATION_ENABLED',
+      impact: 'Configuration incomplète pour le CDC 82B / 111V (#737) : un montant connu sans nature établie n’est jamais arbitré par T3 — il reste « Nature à confirmer » (décision de l’utilisateur) et COH-TCO-EXTRACTED-EXPENSES le signale (t3Contract CONTRACT_PENDING).',
+      anomaly: null, coverage: null,
+      async check(p) {
+        if (eqc.promptCarriesEconomicQualification(p.text, branches(p.text))) return ok();
+        const b = branches(p.text).includes(eqc.ECONOMIC_QUALIFICATION_TASK);
+        const m = p.text.includes(eqc.ECONOMIC_QUALIFICATION_CONTRACT_VERSION);
+        return manque(b || m ? 'INCOMPLETE' : 'ABSENT', `Branche ${eqc.ECONOMIC_QUALIFICATION_TASK} ${b ? 'présente' : 'absente'}, marqueur ${eqc.ECONOMIC_QUALIFICATION_CONTRACT_VERSION} ${m ? 'présent' : 'absent'}.`,
+          [...(b ? [] : [`BRANCHE TASK = ${eqc.ECONOMIC_QUALIFICATION_TASK}`]), ...(m ? [] : [eqc.ECONOMIC_QUALIFICATION_CONTRACT_VERSION])]);
+      },
+      async plan() { return blocks([eqc.ECONOMIC_QUALIFICATION_CONTRACT_VERSION]); },
+    });
+  }
 
   // ── T1 ────────────────────────────────────────────────────────────────────
   const t1 = code('T1');

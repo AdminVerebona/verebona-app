@@ -1,0 +1,155 @@
+{
+  "case": "P-T3-EQ-02",
+  "description": "Lot 113AL — ECONOMIC_QUALIFICATION : justificatif de paiement du montant d’une charge déjà comptée (même référence) ⇒ REPRESENTED PAYMENT du fait F2 : jamais une seconde dépense (cas générique tiré du document #356).",
+  "qualification": {
+    "role": "answer"
+  },
+  "context": {
+    "economicQualification": {
+      "today": "2026-11-10",
+      "asset": {
+        "id": 932,
+        "category": "IMMOBILIER"
+      },
+      "targetFileId": 9302,
+      "amounts": [
+        {
+          "fileId": 9302,
+          "amountMinor": 134000,
+          "currency": "EUR",
+          "origin": "LINE",
+          "lineId": "doc:9302",
+          "quote": null
+        }
+      ],
+      "documents": [
+        {
+          "id": 9302,
+          "type": "OTHER",
+          "title": "Justificatif de paiement",
+          "date": "2025-10-14",
+          "provider": "Banque",
+          "references": [
+            {
+              "kind": "OTHER",
+              "value": "AV-2025-01"
+            }
+          ],
+          "relation": "SAME_REFERENCE",
+          "excerpts": [
+            "Prélèvement de 1 340,00 € au profit de Émetteur public",
+            "Référence AV-2025-01"
+          ],
+          "lines": [
+            {
+              "kind": null,
+              "amountMinor": 134000,
+              "currency": "EUR",
+              "status": "NOT_QUALIFIED",
+              "reason": "THEME_UNKNOWN"
+            }
+          ]
+        },
+        {
+          "id": 9301,
+          "type": "OTHER",
+          "title": "Avis 2025",
+          "date": "2025-09-01",
+          "provider": "Émetteur public",
+          "references": [
+            {
+              "kind": "OTHER",
+              "value": "AV-2025-01"
+            }
+          ],
+          "excerpts": [
+            "Montant à payer : 1 340,00 €",
+            "Date limite de paiement : 15/10/2025",
+            "Cotisation annuelle due pour le bien situé à l’adresse de la maison"
+          ],
+          "lines": [
+            {
+              "kind": "REALIZED_COST",
+              "amountMinor": 134000,
+              "currency": "EUR",
+              "status": "RETAINED_DIRECT",
+              "reason": null
+            }
+          ],
+          "relation": "SAME_REFERENCE"
+        }
+      ],
+      "countedFacts": [
+        {
+          "key": "f:9301:REALIZED_COST:134000:EUR",
+          "lineId": "doc:9301",
+          "source": "DOCUMENT",
+          "label": "Avis 2025",
+          "kind": "REALIZED_COST",
+          "amountMinor": 134000,
+          "currency": "EUR",
+          "date": "2025-09-01",
+          "fileId": 9301,
+          "operationId": null
+        },
+        {
+          "key": "asset:932:acquisitionPrice",
+          "lineId": "asset:932:acquisitionPrice",
+          "source": "ASSET_DATA",
+          "label": "Prix d’achat (fiche du bien)",
+          "kind": "REALIZED_COST",
+          "amountMinor": 28900000,
+          "currency": "EUR",
+          "date": "2019-06-01",
+          "fileId": null,
+          "operationId": null
+        }
+      ]
+    }
+  },
+  "recording": {
+    "operationCode": "t3_economic_qualification",
+    "task": "ECONOMIC_QUALIFICATION",
+    "output": {
+      "task": "ECONOMIC_QUALIFICATION",
+      "decisions": [
+        {
+          "amount": "M1",
+          "outcome": "REPRESENTED",
+          "role": "PAYMENT",
+          "scope": null,
+          "economicDate": "2025-10-14",
+          "periodStart": null,
+          "periodEnd": null,
+          "allocation": null,
+          "representedBy": "F1",
+          "exclusion": null,
+          "confidence": "certain",
+          "evidence": [
+            {
+              "document": "D0",
+              "excerpt": "Prélèvement de 1 340,00 € au profit de Émetteur public"
+            },
+            {
+              "document": "D1",
+              "excerpt": "Montant à payer : 1 340,00 €"
+            }
+          ],
+          "reason": "Prélèvement du montant de l’avis de même référence : règlement, pas une dépense de plus."
+        }
+      ]
+    }
+  },
+  "expected": {
+    "valid": true,
+    "effects": [
+      {
+        "amount": "M1",
+        "outcome": "REPRESENTED",
+        "applied": true,
+        "status": "PAYMENT",
+        "reason": "PAYMENT_PROOF"
+      }
+    ]
+  }
+}

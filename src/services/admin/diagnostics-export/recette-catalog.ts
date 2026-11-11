@@ -121,6 +121,8 @@ export const RECETTE_TABLES: Readonly<Record<string, { domain: Exclude<RecetteDo
   document_extraction_coverage: { domain: 'extraits-ia', description: 'Couverture de l’extraction T1.' },
   document_facts: { domain: 'extraits-ia', description: 'Faits T1.' },
   document_source_units: { domain: 'extraits-ia', description: 'Unités sources (pages, blocs) des extractions.' },
+  // Lot 113AK (#736) : journal de provenance (fait → unité du même document, preuves orphelines).
+  document_fact_provenance_events: { domain: 'extraits-ia', description: 'Journal de provenance : références d’unités sources invalides, provenances rétablies ou non reconstituables, preuves par champ retirées (bien ou document supprimé, transféré, fusionné).' },
   document_tables: { domain: 'extraits-ia', description: 'Tableaux extraits.' },
   document_table_cells: { domain: 'extraits-ia', description: 'Cellules des tableaux extraits.' },
   document_unresolved_facts: { domain: 'extraits-ia', description: 'Faits T1 non résolus.' },
@@ -222,6 +224,7 @@ export const RECETTE_TABLES: Readonly<Record<string, { domain: Exclude<RecetteDo
   operations_rebuild_snapshots: { domain: 'operations', description: 'Opérations v5 : image avant des lignes d’un compte (tables du périmètre de la reconstruction), restauration exacte par exécution (lot 85A).' },
   // ── TCO ────────────────────────────────────────────────────────────────
   asset_cost_line_decisions: { domain: 'tco', description: 'Décisions utilisateur sur les lignes TCO.' },
+  economic_qualification_reviews: { domain: 'tco', description: 'Arbitrage sémantique T3 des montants non qualifiés du TCO : demande, décision validée par montant, preuves citées, versions, coût, avant / après (lot 113AL, #737).' },
   asset_usage_line_assignments: { domain: 'tco', description: 'Classements utilisateur des dépenses réelles en dépenses d’usage (rapprochement forfait / réel).' },
   asset_cost_line_decision_events: { domain: 'tco', description: 'Historique des décisions sur les lignes TCO.' },
   document_amount_recoveries: { domain: 'tco', description: 'Récupération automatique des montants inconnus des justificatifs (lot 108B).' },
@@ -248,6 +251,7 @@ export const RECETTE_TABLES: Readonly<Record<string, { domain: Exclude<RecetteDo
   calendar_additions: { domain: 'agenda-timeline', description: 'Ajouts au calendrier personnel.' },
   annual_renewal_reminder_state: { domain: 'agenda-timeline', description: 'Rappels de renouvellement annuel (état).' },
   annual_renewal_reminder_checks: { domain: 'agenda-timeline', description: 'Rappels de renouvellement annuel (contrôles).' },
+  agenda_deadline_reminders: { domain: 'agenda-timeline', description: 'Rappels d’échéance : couverture par événement × échéance × destinataire (en attente / traité / annulé, notification liée ; lot 113AH).' },
   // ── « À traiter » ──────────────────────────────────────────────────────
   to_process_actions: { domain: 'a-traiter', description: 'Cartes « À traiter » (règle, cible, statut, résolution).' },
   to_process_action_events: { domain: 'a-traiter', description: 'Événements des cartes.' },

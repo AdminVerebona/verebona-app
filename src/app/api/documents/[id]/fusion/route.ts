@@ -13,6 +13,7 @@ import { refuserSiLectureSeule } from '@/lib/write-access-guard';
 import { db } from '@/db';
 import { assetFiles } from '@/db/schema';
 import { eq, and, isNull } from 'drizzle-orm';
+import { retireMergedDocumentEvidence } from '@/services/documents/document-fusion-lifecycle';
 
 export async function POST(
   request: NextRequest,
@@ -91,6 +92,8 @@ export async function POST(
       await db.update(assetFiles)
         .set({ deletedAt: now, updatedAt: now })
         .where(eq(assetFiles.id, candidateFileId));
+      // Lot 113AK (#736) : le document fusionné quitte l'usage actif comme une suppression (preuves retirées, T3).
+      await retireMergedDocumentEvidence({ accountId, userId: session.userId, fileId: candidateFileId, keptFileId: assetFileId });
 
       // CDC Assistant §25.7, §31.7 : le candidat fusionné disparaît.
       await emitBusinessEvent({ type: 'DOCUMENT_DELETED', accountId, entityId: candidateFileId });
@@ -102,6 +105,7 @@ export async function POST(
       await db.update(assetFiles)
         .set({ deletedAt: now, updatedAt: now })
         .where(eq(assetFiles.id, assetFileId));
+      await retireMergedDocumentEvidence({ accountId, userId: session.userId, fileId: assetFileId, keptFileId: candidateFileId });
 
       await emitBusinessEvent({ type: 'DOCUMENT_DELETED', accountId, entityId: assetFileId });
       return NextResponse.json({ success: true, action: 'replaced', keptFileId: candidateFileId, deletedFileId: assetFileId });
@@ -115,3 +119,4 @@ export async function POST(
     return NextResponse.json({ error: 'INTERNAL_ERROR' }, { status: 500 });
   }
 }
+

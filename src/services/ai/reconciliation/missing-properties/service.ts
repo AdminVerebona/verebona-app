@@ -191,7 +191,11 @@ interface RecoveryResult {
   /** Lot 91B : faux si l'issue n'a pas pu être persistée (journal inutilisable — anomalie ouverte). */
   persisted?: boolean;
   calls: number;
-  written: Array<{ key: string; value: unknown; evidenceIds: number[] }>;
+  /**
+   * Écritures EFFECTIVES seulement (writer canonique, outcome `written`) ; lot 113AJ : références exactes à la
+   * ligne du journal 0216 (`canonical_field_writes.id`, null si introuvable), à la décision et à l'analyse.
+   */
+  written: Array<{ key: string; value: unknown; evidenceIds: number[]; previous?: unknown; canonicalWriteId?: number | null; decisionId?: number; runId?: number }>;
   abstained: Array<{ key: string; cause: string }>;
   undecided: string[];
   traceIds: string[];
@@ -392,11 +396,14 @@ export async function recoverMissingProperties(
       }
       const ecrit = await writeEstablished(accountId, s, d, { runId, promptVersion, traceId: traces[0] ?? null, elements: elementsParRef });
       if (ecrit.outcome === 'written') {
-        await store.saveDecision({
+        const decisionId = await store.saveDecision({
           ...commun, decision: 'WRITTEN', cause: null, valueBefore: ecrit.previous, valueAfter: ecrit.next, proposedValue: d.value,
           evidenceIds: ecrit.evidenceIds, provenance: { ...provenance, mirrors: ecrit.mirrors, evidenceError: ecrit.evidenceError }, writeOutcome: 'written',
         });
-        res.written.push({ key: d.key, value: ecrit.next, evidenceIds: ecrit.evidenceIds });
+        res.written.push({
+          key: d.key, value: ecrit.next, previous: ecrit.previous, evidenceIds: ecrit.evidenceIds, decisionId, runId,
+          canonicalWriteId: await store.canonicalWriteIdFor({ accountId, sourceType: MISSING_PROPERTIES_SOURCE_TYPE, sourceId: `${MISSING_PROPERTIES_PROJECTION_RULE}:${runId}`, key: ecrit.canonicalKey ?? d.key }),
+        });
       } else {
         const cause = ecrit.outcome === 'protected' ? 'USER_PROTECTED' : ecrit.outcome === 'conflict' ? 'CONCURRENT_CHANGE' : 'WRITE_REFUSED';
         await store.saveDecision({
@@ -412,6 +419,8 @@ export async function recoverMissingProperties(
 
 interface WriteOutcome {
   outcome: 'written' | 'unchanged' | 'protected' | 'invalid' | 'conflict' | 'not_found';
+  /** Lot 113AJ : clé canonique journalisée par le writer (0216). */
+  canonicalKey?: string;
   reason?: string;
   previous: unknown;
   next: unknown;
@@ -434,7 +443,7 @@ async function writeEstablished(
   const source = { type: MISSING_PROPERTIES_SOURCE_TYPE, id: `${MISSING_PROPERTIES_PROJECTION_RULE}:${o.runId}` };
   const trace = { decisionType: 'T3_MISSING_PROPERTY', reasonCode: 'ESTABLISHED_BY_T3', promptVersion: o.promptVersion || null, confidence: 'certain' };
   const ecriture = { key: d.key, value: d.value, expectedCurrent: null, trace };
-  let r: { outcome: WriteOutcome['outcome']; reason?: string; previousValue: unknown; nextValue: unknown; mirrors: Record<string, unknown> } | null;
+  let r: { key: string; outcome: WriteOutcome['outcome']; reason?: string; previousValue: unknown; nextValue: unknown; mirrors: Record<string, unknown> } | null;
   if (s.type === 'ASSET') {
     const { writeCanonicalAssetFields } = await import('@/services/canonical/asset-state');
     const w = await writeCanonicalAssetFields({ assetId: s.id, accountId, origin: 'RECONCILIATION', source, traceId: o.traceId, writes: [ecriture] });
@@ -454,7 +463,7 @@ async function writeEstablished(
     // La valeur reste écrite et tracée (journal 0216, décision) ; l'échec de preuve est consigné.
     evidenceError = String((e as Error)?.message ?? e).slice(0, 300);
   }
-  return { outcome: 'written', previous: r.previousValue, next: r.nextValue, mirrors: r.mirrors, evidenceIds, evidenceError };
+  return { outcome: 'written', canonicalKey: r.key, previous: r.previousValue, next: r.nextValue, mirrors: r.mirrors, evidenceIds, evidenceError };
 }
 
 /** Preuves des éléments cités (document → `document`, Agenda → `agenda`) ; idempotentes (empreinte). */

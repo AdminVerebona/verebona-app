@@ -57,6 +57,11 @@ export const DEVELOPER_FIXTURES = new Set([
   // À APPROUVER (rôle `answer`) et gardes serveur (rôle `guard` : période corrigée protégée, extrait inventé).
   'p-t3-pr-01-avenant-non-declare.json', 'p-t3-pr-02-contradiction-reelle.json', 'p-t3-pr-03-succession-borne-mal-lue.json',
   'p-t3-pr-04-meme-fait-duplicata.json', 'p-t3-pr-05-periode-corrigee-protegee.json', 'p-t3-pr-06-extrait-invente.json',
+  // Lot 113AL : arbitrage sémantique des montants non qualifiés du TCO (contrat `t3-economic-qualification-v1`, #737) —
+  // réponses de référence À APPROUVER (rôle `answer`) et gardes serveur (rôle `guard` : égalité de montant seule, extrait
+  // inventé, rôle incompatible).
+  'p-t3-eq-01-avis-charge-sans-indice.json', 'p-t3-eq-02-reglement-d-une-charge.json', 'p-t3-eq-03-acquisition-deja-comptee.json',
+  'p-t3-eq-04-montant-egal-seul.json', 'p-t3-eq-05-multibiens-sans-ventilation.json', 'p-t3-eq-06-extrait-invente.json',
 ]);
 
 /**
@@ -82,6 +87,7 @@ const RISK_BY_CASE: Readonly<Record<string, string>> = {
   'P-T3-01': 'T3_CORRECTIONS_PRESERVEES', 'P-T3-08': 'T3_IDENTITE_ECONOMIQUE', 'P-T3-09': 'T3_DOUBLE_COMPTE', 'P-T3-12': 'T3_IDENTITE_ECONOMIQUE',
   'P-T3-13': 'T3_IDENTITE_ECONOMIQUE', 'P-T3-ID-01': 'T3_DOUBLE_COMPTE', 'P-T3-ID-02': 'T3_CORRECTIONS_PRESERVEES',
   'P-T3-PR-05': 'T3_CORRECTIONS_PRESERVEES',
+  'P-T3-EQ-03': 'T3_DOUBLE_COMPTE', 'P-T3-EQ-04': 'T3_DOUBLE_COMPTE',
   'P-T4-01': 'T4_ECHEANCE', 'P-T4-02': 'T4_PREUVE_OCCURRENCE', 'P-T4-03': 'T4_PREUVE_OCCURRENCE', 'P-T4-04': 'T4_ECHEANCE', 'P-T4-05': 'T4_ECHEANCE',
   'P-T4-06': 'T4_PERIODE', 'P-T4-07': 'T4_RECONDUCTION', 'P-T4-V3-07': 'T4_RECONDUCTION', 'P-T4-08': 'T4_PERIODE', 'P-T4-V3-08': 'T4_PERIODE',
   'P-T4-09': 'T4_RECONDUCTION', 'P-T4-V3-09': 'T4_RECONDUCTION', 'P-T4-10': 'T4_RECONDUCTION', 'P-T4-V3-10': 'T4_RECONDUCTION',
@@ -95,6 +101,7 @@ const RISK_BY_OPERATION: Readonly<Record<string, string>> = {
   t3_value_conflict: 'T3_CORRECTIONS_PRESERVEES', t3_link_ambiguity: 'T3_RATTACHEMENT', t3_operation_match: 'T3_IDENTITE_ECONOMIQUE',
   t3_document_naming: 'T3_NOMMAGE', t3_knowledge_query: 'T3_CONNAISSANCE', t3_operation_identity: 'T3_DOUBLE_COMPTE',
   t3_period_relation: 'T3_CONNAISSANCE',
+  t3_economic_qualification: 'T3_IDENTITE_ECONOMIQUE',
   t4_classify_event: 'T4_ECHEANCE', t4_verify_completion: 'T4_PREUVE_OCCURRENCE', t4_temporal_ambiguity: 'T4_ECHEANCE', t4_agenda_representation: 'T4_PERIODE',
   t6_formulate: 'T6_INFORMATION_UTILE', t6_evaluate: 'T6_ACTION_UTILE',
 };

@@ -197,7 +197,9 @@ describe('L100E-U-COH — COH-TODO-PUBLISHABILITY (nettoyage rétroactif, point 
       // Lot 113Z (#723) : description T1 reprise depuis l'extraction persistée, en fin de registre.
       'COH-DOC-DESCRIPTION-T1',
       // Lot 113AA (#725) : résolution des périodes de couverture d'un événement de référence, en fin de registre.
-      'COH-OPS-PERIOD-RESOLUTION']);
+      'COH-OPS-PERIOD-RESOLUTION',
+      // Lot 113AK (#736) : provenance des faits T1 et preuves orphelines, en fin de registre.
+      'COH-DOC-FACT-PROVENANCE']);
     const c = getCheck(PUBLISHABILITY_CHECK_ID)!;
     expect(c).toMatchObject({ status: 'ACTIVE', version: 1, objectType: 'to_process_action' });
     expect(c.forbiddenRepairs).toEqual(expect.arrayContaining(['écrire une valeur de l’objet', 'fermer une carte retenue pour cause technique', 'rouvrir une carte fermée par l’utilisateur']));

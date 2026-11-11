@@ -45,6 +45,8 @@ import {
   SOURCE_LAYER_VERSION, type CoveredSourceUnit, type SourceLayer, type T1CoverageDiagnostics, type UnresolvedFactRecord,
 } from './types';
 import { needsSourceRetryDue, verificationAutoRetryDue } from './verification-followup';
+import { partitionUnitRefs, relinkFromStored, type StoredUnitView } from './provenance-integrity';
+import { provenanceJournalReady, recordProvenanceEvents } from './provenance-repair';
 import type { AnalysisContext, ExtractedTable, SourceInput, VisualObservation } from '../types';
 import type { AccountCapabilities } from '@/services/account-capabilities.service';
 import type { AssetFamily as V2AssetFamily } from '@/lib/referential/v2';
@@ -87,6 +89,8 @@ interface StoredFactRow {
   id: number; confidence: 'certain' | 'probable' | 'conflictual'; excerpt: string | null; location: Record<string, unknown> | null;
   evidence_origin: string | null; visual_evidence: { description?: string; page?: number } | null;
   value_text: string | null; normalized_value: string | null; label: string | null; attribute: string | null; fact_key: string;
+  /** Lot 113AK : provenance déjà posée (lue par la reprise historique pour la vérifier). */
+  source_unit_ids?: string[] | null;
 }
 
 /** Métadonnées d'une extraction historique, à la forme du contrat T1 (unités `doc:meta:*`). */
@@ -159,6 +163,27 @@ export function backfillLayer(p: {
   };
 }
 
+/**
+ * Lot 113AK (#736) — provenance déjà posée sur des faits historiques, vérifiée
+ * contre les unités reconstruites (pure) : rend les faits à corriger.
+ */
+export function verifierProvenanceHistorique(facts: readonly StoredFactRow[], units: readonly StoredUnitView[]): Array<{
+  id: number; before: string[]; after: string[] | null; invalid: string[]; status: 'RELINKED' | 'NOT_RECONSTRUCTIBLE';
+}> {
+  const ids = new Set(units.map((u) => u.sourceUnitId));
+  const out: ReturnType<typeof verifierProvenanceHistorique> = [];
+  for (const f of facts) {
+    const avant = Array.isArray(f.source_unit_ids) ? f.source_unit_ids.map(String) : [];
+    if (avant.length === 0) continue;
+    const { valid, invalid } = partitionUnitRefs(avant, ids);
+    if (invalid.length === 0) continue;
+    const relie = relinkFromStored({ excerpt: f.excerpt, location: f.location, evidenceOrigin: f.evidence_origin, visualEvidence: f.visual_evidence ?? null }, units);
+    const apres = relie.length ? [...new Set([...valid, ...relie])] : valid.length ? valid : null;
+    out.push({ id: Number(f.id), before: avant, after: apres, invalid, status: relie.length ? 'RELINKED' : 'NOT_RECONSTRUCTIBLE' });
+  }
+  return out;
+}
+
 interface BackfillResult { processed: number; failed: number; more: boolean; disabled?: boolean }
 
 export async function runSourceUnitsBackfill(opts: { deadline?: number; env?: Record<string, string | undefined>; maxBatches?: number } = {}): Promise<BackfillResult> {
@@ -194,13 +219,18 @@ export async function runSourceUnitsBackfill(opts: { deadline?: number; env?: Re
           getDocumentTables(e.account_id, e.file_id),
           pgClient.unsafe(
             `SELECT id::float8 AS id, confidence, excerpt, location, evidence_origin, visual_evidence, value_text, normalized_value,
-                    label, attribute, fact_key
+                    label, attribute, fact_key, source_unit_ids
                FROM document_facts WHERE file_id = $1 AND status = 'active' ORDER BY id`,
             [e.file_id] as never[],
           ) as unknown as Promise<StoredFactRow[]>,
         ]);
         const b = backfillLayer({ extraction: e, tables: tables as unknown as ExtractedTable[], facts });
         const aReparer = s.backfillAiRepair && b.repairCandidates > 0;
+        // Lot 113AK (#736) : une provenance DÉJÀ posée (analyse dont la couche A n'a pas été écrite) n'est plus laissée
+        // telle quelle : vérifiée contre les unités reconstruites du MÊME document, rétablie depuis l'extrait, la
+        // cellule ou l'observation conservés, sinon retirée (« provenance non reconstituable », valeur conservée).
+        const corrections = verifierProvenanceHistorique(facts, b.layer.units);
+        const journal = corrections.length > 0 && await provenanceJournalReady(pgClient as never);
         await pgClient.begin(async (tx) => {
           await writeSourceLayer(tx as never, {
             accountId: e.account_id, fileId: e.file_id, extractionId: e.id, layer: b.layer, origin: 'BACKFILL',
@@ -213,6 +243,20 @@ export async function runSourceUnitsBackfill(opts: { deadline?: number; env?: Re
                 WHERE f.id = x.id AND f.file_id = $2 AND f.source_unit_ids IS NULL`,
               [JSON.stringify(b.provenance), e.file_id] as never[],
             );
+          }
+          for (const c of corrections) {
+            await tx.unsafe(
+              `UPDATE document_facts SET source_unit_ids = $3::text[]${journal ? ', provenance_status = $5' : ''}
+                WHERE id = $1 AND file_id = $2 AND source_unit_ids IS NOT DISTINCT FROM $4::text[]`,
+              [c.id, e.file_id, c.after, c.before, ...(journal ? [c.status] : [])] as never[],
+            );
+          }
+          if (journal) {
+            await recordProvenanceEvents(tx as never, corrections.flatMap((c) => c.invalid.map((u) => ({
+              accountId: e.account_id, fileId: e.file_id, subject: 'FACT' as const, factId: c.id, extractionId: e.id, sourceUnitId: u,
+              status: c.status, cause: 'UNIT_MISSING_AFTER_LAYER_REBUILD', phase: 'BACKFILL' as const,
+              detail: { before: c.before, after: c.after, beforeStatus: null },
+            }))));
           }
         });
         res.processed++;

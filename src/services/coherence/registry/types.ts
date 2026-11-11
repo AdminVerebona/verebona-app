@@ -88,6 +88,24 @@ export interface RepairResult {
 }
 
 /**
+ * Issue journalisée d'une tentative de réparation (`coherence_repairs.outcome`).
+ * Lot 113AJ (Trello #735, migration 1635) : ABSTAINED (analyse menée,
+ * abstention justifiée, rien d'écrit) et UNCHANGED (rien à changer) — posées
+ * SEULEMENT par un contrôle qui qualifie lui-même ses réparations
+ * (`qualifyRepair`) ; le sens générique des autres issues est inchangé.
+ */
+export type RepairJournalOutcome = 'REPAIRED' | 'INEFFECTIVE' | 'FAILED' | 'PENDING' | 'ABSTAINED' | 'UNCHANGED';
+
+/** Lot 113AJ — qualification d'une réparation par son contrôle (voir `CoherenceCheck.qualifyRepair`). */
+export interface RepairQualification {
+  journal: RepairJournalOutcome;
+  /** Résultat de la preuve de contrôle (ignoré quand le recontrôle est impossible : la preuve reste en erreur). */
+  result: ControlResult;
+  /** Cause technique explicite (journal `coherence_repairs.error`), quand la réparation n'a pas pu avoir lieu. */
+  error?: string | null;
+}
+
+/**
  * Lot 83E (C-Q10) — périmètre du compte contrôlé :
  *   ELIGIBLE                  compte actif et modifiable (cas général) ;
  *   SUBSCRIPTION_STATE_READ   compte NON éligible du fait de son abonnement
@@ -232,6 +250,31 @@ export interface CoherenceCheck {
    * configuration exploitable (contrat IA absent, journal inutilisable…).
    */
   immediateSupervision?: readonly string[];
+  /**
+   * Lot 113AJ (Trello #735) — le contrôle QUALIFIE lui-même l'issue d'une
+   * réparation à partir de ce que son service a réellement fait (`repair`),
+   * au lieu de la seule comparaison avant / après du moteur (`generic`,
+   * `recheckOutcome`). `recheck` est null quand le recontrôle a échoué.
+   * Absent : qualification générique (aucun changement pour les autres
+   * contrôles, qui peuvent corriger un état sans écrire de propriété).
+   */
+  qualifyRepair?(p: {
+    before: Inspection; repair: RepairResult | null; recheck: Inspection | null;
+    generic: { journal: 'REPAIRED' | 'INEFFECTIVE'; result: ControlResult };
+  }): RepairQualification;
+  /**
+   * Lot 113AJ — prédicat SQL (alias de `coherence_repairs` fourni) d'une
+   * ligne `outcome = 'REPAIRED'` qui est une VRAIE réparation : requalifie à
+   * la lecture l'historique journalisé avant 113AJ (Supervision,
+   * statistiques) sans le modifier. Absent : toute ligne REPAIRED compte.
+   */
+  effectiveRepairSql?(alias: string): string;
+  /**
+   * Lot 113AJ — détail des réparations RÉPÉTÉES d'objets (Supervision
+   * `repeated_repairs`) : champ ou fait réécrit, preuves avant / après,
+   * écrivain qui a remis la valeur à vide. Lecture seule ; ne lève pas.
+   */
+  explainRepeatedRepairs?(sql: Sql, objects: ReadonlyArray<{ accountId: number; objectId: number }>, since: Date): Promise<Record<string, unknown>>;
   /**
    * Lot 91B — RATTRAPAGE : objets à reprendre sans attendre un événement
    * (jamais contrôlés, ou constat ouvert sans issue persistée récente).

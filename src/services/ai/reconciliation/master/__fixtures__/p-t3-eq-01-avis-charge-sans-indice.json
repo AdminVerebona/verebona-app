@@ -1,0 +1,141 @@
+{
+  "case": "P-T3-EQ-01",
+  "description": "Lot 113AL — ECONOMIC_QUALIFICATION (contrat t3-economic-qualification-v1) : avis portant un montant à payer, sans indice financier T1 ni candidat ; les autres données du compte établissent une charge annuelle du bien ⇒ INCLUDE REALIZED_COST certain, ligne créée par le moteur existant (cas générique tiré du compte 10, Maison #32, document #355 ; aucune règle par type de document ni par montant).",
+  "qualification": {
+    "role": "answer"
+  },
+  "context": {
+    "economicQualification": {
+      "today": "2026-11-10",
+      "asset": {
+        "id": 932,
+        "category": "IMMOBILIER"
+      },
+      "targetFileId": 9301,
+      "amounts": [
+        {
+          "fileId": 9301,
+          "amountMinor": 134000,
+          "currency": "EUR",
+          "origin": "LINE",
+          "lineId": "doc:9301",
+          "quote": null
+        }
+      ],
+      "documents": [
+        {
+          "id": 9301,
+          "type": "OTHER",
+          "title": "Avis 2025",
+          "date": "2025-09-01",
+          "provider": "Émetteur public",
+          "references": [
+            {
+              "kind": "OTHER",
+              "value": "AV-2025-01"
+            }
+          ],
+          "excerpts": [
+            "Montant à payer : 1 340,00 €",
+            "Date limite de paiement : 15/10/2025",
+            "Cotisation annuelle due pour le bien situé à l’adresse de la maison"
+          ],
+          "lines": [
+            {
+              "kind": null,
+              "amountMinor": 134000,
+              "currency": "EUR",
+              "status": "NOT_QUALIFIED",
+              "reason": "THEME_UNKNOWN"
+            }
+          ]
+        },
+        {
+          "id": 9302,
+          "type": "OTHER",
+          "title": "Justificatif de paiement",
+          "date": "2025-10-14",
+          "provider": "Banque",
+          "references": [
+            {
+              "kind": "OTHER",
+              "value": "AV-2025-01"
+            }
+          ],
+          "relation": "SAME_REFERENCE",
+          "excerpts": [
+            "Prélèvement de 1 340,00 € au profit de Émetteur public",
+            "Référence AV-2025-01"
+          ],
+          "lines": [
+            {
+              "kind": null,
+              "amountMinor": 134000,
+              "currency": "EUR",
+              "status": "NOT_QUALIFIED",
+              "reason": "THEME_UNKNOWN"
+            }
+          ]
+        }
+      ],
+      "countedFacts": [
+        {
+          "key": "asset:932:acquisitionPrice",
+          "lineId": "asset:932:acquisitionPrice",
+          "source": "ASSET_DATA",
+          "label": "Prix d’achat (fiche du bien)",
+          "kind": "REALIZED_COST",
+          "amountMinor": 28900000,
+          "currency": "EUR",
+          "date": "2019-06-01",
+          "fileId": null,
+          "operationId": null
+        }
+      ]
+    }
+  },
+  "recording": {
+    "operationCode": "t3_economic_qualification",
+    "task": "ECONOMIC_QUALIFICATION",
+    "output": {
+      "task": "ECONOMIC_QUALIFICATION",
+      "decisions": [
+        {
+          "amount": "M1",
+          "outcome": "INCLUDE",
+          "role": "REALIZED_COST",
+          "scope": "TOTAL",
+          "economicDate": "2025-09-01",
+          "periodStart": null,
+          "periodEnd": null,
+          "allocation": "THIS_ASSET",
+          "representedBy": null,
+          "exclusion": null,
+          "confidence": "certain",
+          "evidence": [
+            {
+              "document": "D0",
+              "excerpt": "Montant à payer : 1 340,00 €"
+            },
+            {
+              "document": "D0",
+              "excerpt": "Cotisation annuelle due pour le bien situé à l’adresse de la maison"
+            }
+          ],
+          "reason": "Avis d’une cotisation annuelle due pour ce bien : coût de possession dû."
+        }
+      ]
+    }
+  },
+  "expected": {
+    "valid": true,
+    "effects": [
+      {
+        "amount": "M1",
+        "outcome": "INCLUDE",
+        "applied": true,
+        "status": "ENGINE"
+      }
+    ]
+  }
+}

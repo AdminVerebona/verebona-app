@@ -66,6 +66,9 @@ export const AGENDA_DATE_WRITER: FieldWriter = {
     });
   },
   afterCommit: async ({ accountId, targetId }) => {
+    // Lot 113AH (#732) : rappel d'échéance de la date choisie (après validation).
+    const { evaluerRappelEcheance } = await import('@/services/agenda/write-agenda-item');
+    await evaluerRappelEcheance(accountId, targetId);
     try {
       const [lie] = await db.select({ op: agendaItems.businessOperationId }).from(agendaItems)
         .where(and(eq(agendaItems.id, targetId), eq(agendaItems.accountId, accountId))).limit(1);

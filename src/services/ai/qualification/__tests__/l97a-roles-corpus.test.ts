@@ -42,6 +42,8 @@ const QUALIFIABLES = [
   't3_operation_identity',
   // Lot 113AD : relation entre deux périodes divergentes (contrat t3-period-relation-v1).
   't3_period_relation',
+  // Lot 113AL : arbitrage sémantique des montants non qualifiés du TCO (contrat t3-economic-qualification-v1).
+  't3_economic_qualification',
   't4_classify_event', 't4_verify_completion', 't4_temporal_ambiguity', 't4_agenda_representation',
   't6_formulate', 't6_evaluate',
 ];

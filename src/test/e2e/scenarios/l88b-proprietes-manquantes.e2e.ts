@@ -365,7 +365,9 @@ scenario('L88B-PROPRIETES', 'Propriétés métier manquantes reprises à partir 
     await campagne(c8);
     expect(await valeur(c8, a8.id)).toBeNull();
     expect(await decisionPrix(c8, a8.id)).toMatchObject({ decision: 'ABSTAINED', cause: 'NOT_FOUND', value_after: null, proposed_value: null });
-    expect(await proofOf(sql, c8.id, CHECK, a8.id)).toMatchObject({ last_result: 'REPAIRED' });
+    // Lot 113AJ (Trello #735) : une abstention justifiée n'est pas une réparation — preuve CONSISTENT, journal ABSTAINED.
+    expect(await proofOf(sql, c8.id, CHECK, a8.id)).toMatchObject({ last_result: 'CONSISTENT' });
+    expect((await sql<Json[]>`SELECT outcome FROM coherence_repairs WHERE account_id = ${c8.id} AND check_id = ${CHECK} AND object_id = ${a8.id}`).map((r) => r.outcome)).toEqual(['ABSTAINED']);
     expect(await proofOf(sql, c8.id, CHECK, nu.id)).toBeNull();
     expect(await ecritures(c8)).toEqual([]);
   });

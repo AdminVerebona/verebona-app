@@ -463,6 +463,18 @@ jobs:
         run: npm run test:e2e:t2-standard -- --reporter=default --reporter=junit --outputFile.junit=rapports/e2e-t2-standard.xml
       - name: Coûts IA — métier / technique / inconnu, budgets, plafonds, rattrapage (lot 113AF, Trello #730)
         run: npm run test:e2e:couts-ia-metier -- --reporter=default --reporter=junit --outputFile.junit=rapports/e2e-couts-ia-metier.xml
+      - name: BO — anomalies de la Supervision copiables et exportables (lot 113AI, Trello #733)
+        run: npm run test:e2e:anomalies-export -- --reporter=default --reporter=junit --outputFile.junit=rapports/e2e-anomalies-export.xml
+      - name: Cohérence — « réparé » seulement si une valeur a été écrite (lot 113AJ, Trello #735)
+        run: npm run test:e2e:coherence-reparations -- --reporter=default --reporter=junit --outputFile.junit=rapports/e2e-coherence-reparations.xml
+      - name: Rappels d'échéance — couverture par événement et rattrapage (lot 113AH, Trello #732)
+        run: npm run test:e2e:rappels-echeances -- --reporter=default --reporter=junit --outputFile.junit=rapports/e2e-rappels-echeances.xml
+      - name: Diagnostic BO — session SQL sérialisée, première erreur tracée, statuts exacts (lot 113AG, Trello #734)
+        run: npm run test:e2e:diagnostic-transactions -- --reporter=default --reporter=junit --outputFile.junit=rapports/e2e-diagnostic-transactions.xml
+      - name: Provenance des faits et preuves orphelines (lot 113AK, Trello #736)
+        run: npm run test:e2e:preuves-unites-sources -- --reporter=default --reporter=junit --outputFile.junit=rapports/e2e-preuves-unites-sources.xml
+      - name: TCO — arbitrage sémantique T3 des montants non qualifiés (lot 113AL, Trello #737)
+        run: npm run test:e2e:tco-arbitrage-t3 -- --reporter=default --reporter=junit --outputFile.junit=rapports/e2e-tco-arbitrage-t3.xml
       - name: Cycle de vie des comptes — lecture seule, purge à 90 jours, rétractation, J+80 (lot 102A)
         run: npm run test:e2e:cycle-vie -- --reporter=default --reporter=junit --outputFile.junit=rapports/e2e-cycle-vie.xml
       - name: Source juridique unique, CGUV versionnées, réacceptation (lot 102B)

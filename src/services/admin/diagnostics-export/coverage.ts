@@ -207,6 +207,8 @@ export const DIAG_TABLE_COVERAGE: Readonly<Record<string, DiagTableCoverage>> = 
   document_extraction_coverage: C('extractions-ia'),
   document_facts: C('extractions-ia'),
   document_source_units: C('extractions-ia'),
+  // Lot 113AK (#736) : journal des références de provenance invalides et de leur traitement (unités, preuves orphelines).
+  document_fact_provenance_events: C('extractions-ia'),
   document_tables: C('extractions-ia'),
   document_table_cells: C('extractions-ia'),
   document_analysis_runs: C('extractions-ia'),
@@ -266,6 +268,8 @@ export const DIAG_TABLE_COVERAGE: Readonly<Record<string, DiagTableCoverage>> = 
   business_period_decisions: C('conflits-arbitrages'),
   // Lot 113AD (#725, D11) : mémoire du réexamen T3 d'une divergence de périodes (sortie IA, validation, preuve citée).
   business_period_relation_reviews: C('conflits-arbitrages'),
+  // Lot 113AL (#737) : arbitrage sémantique T3 des montants non qualifiés du TCO (demande, sortie IA, validation, effets, avant / après, coût).
+  economic_qualification_reviews: C('conflits-arbitrages'),
   business_operation_identity_reviews: C('conflits-arbitrages'),
   operation_semantic_reevaluations: C('conflits-arbitrages'),
   // ── Écritures ────────────────────────────────────────────────────────────
@@ -298,6 +302,8 @@ export const DIAG_TABLE_COVERAGE: Readonly<Record<string, DiagTableCoverage>> = 
   agenda_equivalence_decisions: C('rapprochements-agenda-controles'),
   agenda_item_removals: C('rapprochements-agenda-controles'),
   annual_renewal_reminder_checks: C('rapprochements-agenda-controles'),
+  // Lot 113AH (#732) : couverture des rappels d'échéance par événement × échéance × destinataire (1625).
+  agenda_deadline_reminders: C('rapprochements-agenda-controles'),
   coherence_object_proofs: C('rapprochements-agenda-controles'),
   coherence_repairs: C('rapprochements-agenda-controles'),
   coherence_campaigns: C('rapprochements-agenda-controles', {
@@ -664,6 +670,13 @@ interface DiagLogicalReference {
   kind?: 'value' | 'json-array' | 'pg-array';
   when?: string;
   role: string;
+  /**
+   * Lot 113AK (#736) : référence résolue DANS le même objet — la valeur n'est
+   * une correspondance que si `column` (source) = `toColumn` (cible), ex. une
+   * unité source du MÊME document ; `cellToRow` : une adresse de cellule
+   * (`…:row:R:cell:C`) vaut par sa ligne.
+   */
+  scope?: { column: string; toColumn: string; cellToRow?: boolean };
 }
 
 export const DIAG_LOGICAL_REFERENCES: readonly DiagLogicalReference[] = [
@@ -679,7 +692,14 @@ export const DIAG_LOGICAL_REFERENCES: readonly DiagLogicalReference[] = [
   { from: 'field_evidence', column: 'asset_id', to: 'assets', role: 'preuve → bien' },
   { from: 'document_facts', column: 'extraction_id', to: 'document_extractions', role: 'fait → extraction T1' },
   { from: 'document_facts', column: 'file_id', to: 'asset_files', role: 'fait → document' },
-  { from: 'document_facts', column: 'source_unit_ids', to: 'document_source_units', toColumn: 'source_unit_id', kind: 'pg-array', role: 'fait → unités sources (entrée utile)' },
+  // Lot 113AK (#736) : vérifiée DANS LE MÊME DOCUMENT (l'identifiant d'unité se répète d'un document à l'autre) et pour les
+  // faits ACTIFS seulement — les références d'un fait supersédé visent la lecture d'avant (historique légitime, non vérifié).
+  { from: 'document_facts', column: 'source_unit_ids', to: 'document_source_units', toColumn: 'source_unit_id', kind: 'pg-array',
+    when: `t.status = 'active'`, scope: { column: 'file_id', toColumn: 'file_id', cellToRow: true },
+    role: 'fait actif → unités sources du même document (entrée utile ; cellule = sa ligne)' },
+  // Lot 113AK (#736) : journal de provenance → fait, preuve (document purgé : identifiant seul, sans référence déclarée).
+  { from: 'document_fact_provenance_events', column: 'fact_id', to: 'document_facts', role: 'journal de provenance → fait' },
+  { from: 'document_fact_provenance_events', column: 'evidence_id', to: 'field_evidence', role: 'journal de provenance → preuve par champ' },
   // Lot 91D : décision T1 sur une valeur → document, extraction, analyse, faits rattachés (clés étrangères déclarées : compte, document).
   { from: 'document_value_decisions', column: 'extraction_id', to: 'document_extractions', role: 'décision T1 sur une valeur → extraction' },
   { from: 'document_value_decisions', column: 'analysis_run_id', to: 'document_analysis_runs', role: 'décision T1 sur une valeur → analyse' },
@@ -834,6 +854,8 @@ export const DIAG_AI_OPERATION_COVERAGE: Readonly<Record<string, DiagAiOperation
   t3_operation_identity: { treatment: 'T3', tables: [...CALL_TRACES, 'operation_semantic_reevaluations', 'business_operation_match_decisions', 'business_operation_sources', 'document_operation_candidates'] },
   // Lot 113AD (#725) : demande, sortie reçue, validation, classement et preuve citée au journal 1591 ; résolution relue par les périodes.
   t3_period_relation: { treatment: 'T3', tables: [...CALL_TRACES, 'business_period_relation_reviews', 'document_business_periods', 'business_period_decisions', 'to_process_actions'] },
+  // Lot 113AL (#737) : demande, sortie reçue, validation, effets par montant et avant / après au journal 1650 ; relus par le moteur TCO.
+  t3_economic_qualification: { treatment: 'T3', tables: [...CALL_TRACES, 'economic_qualification_reviews', 'asset_cost_line_decisions', 'document_source_units', 'document_facts'] },
   retrieve_data: { treatment: 'T2', tables: [...CALL_TRACES, 'verebona_request_runs', 'verebona_ai_runs'] },
   retrieve_evidence: { treatment: 'T2', tables: [...CALL_TRACES, 'verebona_request_runs', 'verebona_ai_runs'] },
   t2_understand: { treatment: 'T2', tables: [...CALL_TRACES, 'verebona_request_runs', 'verebona_ai_runs', 'verebona_command_plans'] },

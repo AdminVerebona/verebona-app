@@ -37,6 +37,8 @@ export const EXCLUDED_TABLES: ReadonlySet<string> = new Set([
   'admin_audit_log', 'ai_admin_audit_log', 'legal_audit_log', 'account_audit_log',
   // Mécanique technique
   '_migrations', 'job_locks', 'pending_blob_deletions', 'notification_outbox', 'notification_deliveries',
+  // Lot 113AH : couverture technique des rappels d'échéance (mécanique de la file, sans contenu utile).
+  'agenda_deadline_reminders',
   'stripe_webhook_logs', 'ai_job_queue', 'ai_treatment_state', 'impact_queue',
   'ai_usage_event', 'ai_usage_events', 'ai_usage_account_counter',
   'verebona_ai_runs', 'verebona_request_runs', 'ai_pipeline_step', 'ai_pipeline_version',

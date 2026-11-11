@@ -48,9 +48,17 @@
  * (`recordOutcomes`) pour que SON journal porte aussi cette issue — une
  * campagne « réussie » ne masque plus l'absence d'exécution. Le contexte
  * transmis aux contrôles porte le déclencheur et la campagne.
+ *
+ * Lot 113AJ (Trello #735) : un contrôle peut QUALIFIER lui-même l'issue de
+ * ses réparations (`qualifyRepair`) d'après ce que son service a réellement
+ * fait — COH-MISSING-PROPERTIES : REPAIRED seulement si une propriété a été
+ * écrite ; abstention justifiée (ABSTAINED), rien à changer (UNCHANGED),
+ * échec technique / IA (FAILED), réparation inefficace (INEFFECTIVE). Sans
+ * cette déclaration, la qualification générique (`recheckOutcome`) reste
+ * celle des lots 82B / 83B.
  */
 import type {
-  CheckContext, CoherenceCheck, ControlResult, ControlTrigger, Inspection, RepairResult, Sql,
+  CheckContext, CoherenceCheck, ControlResult, ControlTrigger, Inspection, RepairJournalOutcome, RepairResult, Sql,
 } from './registry/types';
 import { RESOLVED_RESULTS } from './registry/types';
 import { registryVersion } from './registry';
@@ -252,9 +260,12 @@ async function completeProof(sql: Sql, p: {
 
 async function journalRepair(sql: Sql, p: {
   campaignId: number | null; accountId: number; check: CoherenceCheck; id: number; trigger: ControlTrigger; inspection: Inspection;
-  repair: RepairResult | null; outcome: 'REPAIRED' | 'INEFFECTIVE' | 'FAILED' | 'PENDING'; recheck: string | null; error: string | null; durationMs: number;
+  repair: RepairResult | null; outcome: RepairJournalOutcome; recheck: string | null; error: string | null; durationMs: number;
   aiCalls?: number;
 }): Promise<void> {
+  // Lot 113AJ : issues 1635 (ABSTAINED, UNCHANGED) refusées par une base pas encore migrée → INEFFECTIVE (jamais REPAIRED) ;
+  // la qualification exacte reste lisible dans `result.effect`.
+  const outcome = p.outcome === 'ABSTAINED' || p.outcome === 'UNCHANGED' ? ((await issues1635Ready(sql)) ? p.outcome : 'INEFFECTIVE') : p.outcome;
   await exec(sql, 
     `INSERT INTO coherence_repairs (campaign_id, account_id, check_id, check_version, object_type, object_id, trigger_code, anomaly, faulty_link,
                                     service, input_hash, before_state, result, outcome, recheck_verdict, rollback_ref, error, ai_calls, duration_ms
@@ -264,7 +275,7 @@ async function journalRepair(sql: Sql, p: {
     [p.campaignId, p.accountId, p.check.id, p.check.version, p.check.objectType, p.id, p.trigger, p.inspection.anomaly ?? 'UNSPECIFIED',
       p.inspection.faultyLink ?? null, p.repair?.service ?? p.check.services[0] ?? 'unknown', p.inspection.inputHash ?? null,
       JSON.stringify(borne({ expected: p.inspection.expected, observed: p.inspection.observed, detail: p.inspection.detail })),
-      p.repair ? JSON.stringify(borne(p.repair.result ?? {})) : null, p.outcome, p.recheck, p.repair?.rollbackRef ?? null,
+      p.repair ? JSON.stringify(borne(p.repair.result ?? {})) : null, outcome, p.recheck, p.repair?.rollbackRef ?? null,
       p.error?.slice(0, 500) ?? null, p.aiCalls ?? p.repair?.aiCalls ?? 0, p.durationMs,
       // NULL : nature non déclarée par le contrôle (jamais présumée « technique »).
       ...((await reevaluationColumnReady(sql)) ? [p.repair?.reevaluation ?? null] : [])],
@@ -281,6 +292,18 @@ async function reevaluationColumnReady(sql: Sql): Promise<boolean> {
     colonneNature = r.length > 0;
   } catch { colonneNature = false; }
   return colonneNature;
+}
+
+let contrainte1635: boolean | null = null;
+/** Lot 113AJ : la contrainte `coherence_repairs_outcome_check` accepte-t-elle ABSTAINED / UNCHANGED (migration 1635) ? (lue une fois). */
+async function issues1635Ready(sql: Sql): Promise<boolean> {
+  if (contrainte1635 !== null) return contrainte1635;
+  try {
+    const r = await sql.unsafe(`SELECT pg_get_constraintdef(c.oid) AS d FROM pg_constraint c
+                                  WHERE c.conname = 'coherence_repairs_outcome_check' AND c.conrelid = 'coherence_repairs'::regclass`) as unknown as Array<{ d: string }>;
+    contrainte1635 = r.length === 0 || /ABSTAINED/.test(String(r[0].d));
+  } catch { contrainte1635 = false; }
+  return contrainte1635;
 }
 
 /**
@@ -421,18 +444,27 @@ export async function controlObjects(p: ControlBatchInput): Promise<BatchSummary
           } catch (e) {
             recheck = e instanceof Error ? e : new Error(message(e));
           }
-          let journal: 'REPAIRED' | 'INEFFECTIVE' = 'INEFFECTIVE';
+          let journal: RepairJournalOutcome = 'INEFFECTIVE';
+          let cause: string | null = null;
           if (recheck instanceof Error) {
             o = { id, result: 'ERROR', inspection: insp, error: `recontrôle impossible : ${recheck.message}`, repairAttempted: true, aiCalls: ai };
+            // Lot 113AJ : une écriture effective reste une réparation même si le recontrôle a échoué (preuve en erreur).
+            if (check.qualifyRepair) {
+              const q = check.qualifyRepair({ before: insp, repair: rep, recheck: null, generic: { journal: 'INEFFECTIVE', result: 'ERROR' } });
+              journal = q.journal;
+              cause = q.error ?? null;
+            }
           } else {
-            const issue = recheckOutcome(insp, recheck);
+            const generique = recheckOutcome(insp, recheck);
+            const issue = check.qualifyRepair ? check.qualifyRepair({ before: insp, repair: rep, recheck, generic: generique }) : generique;
             journal = issue.journal;
+            cause = 'error' in issue ? issue.error ?? null : null;
             o = { id, result: issue.result, inspection: issue.result === 'REPAIRED' ? insp : recheck, repairAttempted: true, aiCalls: ai };
           }
           await journalRepair(ctx.sql, {
             campaignId: p.campaignId, accountId, check, id, trigger: p.trigger, inspection: insp, repair: rep,
             outcome: journal, recheck: recheck instanceof Error ? 'ERROR' : recheck.verdict,
-            error: o.error ?? null, durationMs: Date.now() - r0, aiCalls: ai,
+            error: [o.error, cause].filter(Boolean).join(' ; ') || null, durationMs: Date.now() - r0, aiCalls: ai,
           });
         }
       }

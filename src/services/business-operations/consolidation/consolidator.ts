@@ -2175,6 +2175,8 @@ interface AccountConsolidationResult {
   directLinks?: number;
   /** Lot 113AD : réexamen T3 des divergences de périodes (demandes traitées, appels, issues). */
   periodRelation?: import('@/services/documents/business-periods/relation-review').PeriodRelationPhaseResult;
+  /** Lot 113AL : arbitrage sémantique T3 des montants non qualifiés du TCO (demandes traitées, appels, issues). */
+  economicQualification?: import('../tco/semantic-qualification/review').QualificationPhaseResult;
 }
 
 type Sql = typeof import('@/db').pgClient;
@@ -2418,6 +2420,20 @@ export async function consolidateAccountOperations(
       console.error(`[t3-operations] réexamen T3 des périodes (compte ${accountId}) :`, (e as Error).message);
     }
   }
+  // Lot 113AL (#737) : arbitrage sémantique T3 des montants non qualifiés du TCO (contrat t3-economic-qualification-v1) —
+  // hors verrou, borné, seulement si le prompt T3 actif porte la branche (sinon attente de contrat durable) ; jamais à la
+  // consultation du TCO.
+  if (opts.operationMatch !== false) {
+    try {
+      const { runQualificationPhase } = await import('../tco/semantic-qualification/review');
+      const eq = await runQualificationPhase(accountId, { beforeCall: opts.beforeWrite });
+      if (eq.processed) res.economicQualification = eq;
+    } catch (e) {
+      if ((await import('@/services/ai/queue/execution-control')).isExecutionCancelled(e)) throw e;
+      res.errors++;
+      console.error(`[t3-operations] arbitrage sémantique T3 du TCO (compte ${accountId}) :`, (e as Error).message);
+    }
+  }
   // Lot 87B (CODE-09) : réévaluations sémantiques T3 terminées par ce passage — clôturées au journal (0752).
   const { settleIdentityRequests } = await import('../semantic/orchestrator');
   await settleIdentityRequests(accountId);
@@ -2433,7 +2449,9 @@ export async function consolidateAccountOperations(
  * INV-040).
  */
 export async function listAccountsToConsolidate(afterAccountId: number, limit: number, m3PromptVersion: string | null = null): Promise<number[]> {
-  const [{ M3_PENDING_SQL }, { RELATION_REVIEW_PENDING_SQL }] = await Promise.all([import('./m3'), import('@/services/documents/business-periods/relation-review')]);
+  const [{ M3_PENDING_SQL }, { RELATION_REVIEW_PENDING_SQL }, { QUALIFICATION_PENDING_SQL }] = await Promise.all([
+    import('./m3'), import('@/services/documents/business-periods/relation-review'), import('../tco/semantic-qualification/review'),
+  ]);
   const r = (await (await pg()).unsafe(
     `SELECT account_id FROM (
        SELECT c.account_id FROM document_operation_candidates c WHERE c.t3_pending AND c.account_id > $1
@@ -2458,6 +2476,9 @@ export async function listAccountsToConsolidate(afterAccountId: number, limit: n
        UNION
        -- Lot 113AD (#725) : réexamen T3 des divergences de périodes demandé (bloc 29 actif au moment de la demande).
        SELECT r.account_id FROM business_period_relation_reviews r WHERE r.account_id > $1 AND ${RELATION_REVIEW_PENDING_SQL('r')}
+       UNION
+       -- Lot 113AL (#737) : arbitrage sémantique T3 des montants non qualifiés du TCO demandé (ou à reprendre).
+       SELECT q.account_id FROM economic_qualification_reviews q WHERE q.account_id > $1 AND ${QUALIFICATION_PENDING_SQL('q')}
      ) x
      -- Lot 82A (C-Q10, §3.3) : balayage des seuls comptes éligibles.
      WHERE ${processingEligibleSql('x.account_id')}

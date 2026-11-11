@@ -59,7 +59,14 @@ export async function t1DecisionsDiagnostic(q: Query, accounts: readonly number[
   const now = opts.now ?? new Date();
   const errors: string[] = [];
   const essai = async <T>(quoi: string, f: () => Promise<T>, d: T): Promise<T> => {
-    try { return await f(); } catch (e) { errors.push(`${quoi} : ${(e as Error).message.slice(0, 200)}`); return d; }
+    try { return await f(); } catch (e) {
+      // Lot 113AG (#734) : session du diagnostic interrompue (incident fatal) — arrêt, jamais une valeur par défaut ;
+      // sinon erreur consignée AVEC son SQLSTATE (la première erreur reste identifiable).
+      const code = (e as { code?: unknown } | null)?.code;
+      if (code === 'VB_SESSION_BROKEN' || code === '25006') throw e;
+      errors.push(`${quoi} : ${typeof code === 'string' ? `${code} — ` : ''}${(e as Error).message.slice(0, 200)}`);
+      return d;
+    }
   };
   const [{ valueDecisionsCapability, valueDecisionsEnabled, T1_VALUE_DECISIONS_CONTRACT }, review] = await Promise.all([
     import('./contract'), import('./review'),

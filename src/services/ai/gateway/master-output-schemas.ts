@@ -25,6 +25,7 @@ import { T6EvaluateOutput, T6FormulateOutput } from '@/services/home/mascot/t6-c
 import { T4AgendaRepresentationOutput } from '@/services/business-operations/semantic/contract';
 import { T3OperationIdentityOutput } from '@/services/business-operations/semantic/identity-contract';
 import { T3PeriodRelationOutput } from '@/services/documents/business-periods/relation-contract';
+import { T3EconomicQualificationOutput } from '@/services/business-operations/tco/semantic-qualification/contract';
 
 export const MASTER_OUTPUT_SCHEMAS: Readonly<Record<string, ZodType>> = {
   T1GroupUploadOutput,
@@ -41,6 +42,8 @@ export const MASTER_OUTPUT_SCHEMAS: Readonly<Record<string, ZodType>> = {
   T3OperationIdentityOutput,
   // Lot 113AD : relation entre deux périodes divergentes (branche facultative, texte collé par le PO, bloc 29).
   T3PeriodRelationOutput,
+  // Lot 113AL : arbitrage sémantique des montants non qualifiés du TCO (branche facultative, texte collé par le PO, bloc 31).
+  T3EconomicQualificationOutput,
   T3MasterOutput,
   T4ClassifyEventOutput,
   // Lot 54 : contrat de sortie `t4_output_v2` de CLASSIFY_EVENT (décision Agenda + récurrence).

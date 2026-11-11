@@ -192,7 +192,8 @@ describe('L85B-U-VERSION — réévaluation historique (§6.4) et version déplo
   });
 
   it('L85B-U-VERSION-06 — évolutions du lot : versions incrémentées (stock réexaminé), vérification exigeant la version EN VIGUEUR, erreur sans effet sur la version', () => {
-    expect(getCheck('COH-TCO-EXTRACTED-EXPENSES')!.version).toBe(2);
+    // Lot 113AL : version 3 (arbitrage sémantique T3 demandé et suivi) — toujours supérieure à la version 2 du lot 85B.
+    expect(getCheck('COH-TCO-EXTRACTED-EXPENSES')!.version).toBe(3);
     expect(getCheck('COH-TCO-EXTRACTED-EXPENSES')!.anomalies).toContain('SOURCE_AMOUNT_NOT_EXPLOITED');
     const orch = sansCommentaires(lire('src/services/coherence/orchestrator.ts'));
     expect(orch).toMatch(/last_success_at >= \$4\s+AND rules_version = \$5/);

@@ -162,6 +162,10 @@ async function purgeOne(
     // 2. Ligne d'abord (une clé étrangère inattendue échoue AVANT toute
     //    suppression S3) ; cascade + déclencheur des miniatures.
     await tx.update(equipmentSuppliers).set({ sourceDocumentId: null }).where(eq(equipmentSuppliers.sourceDocumentId, id));
+    // Lot 113AK (#736) : filet de sûreté — une preuve par champ encore ACTIVE qui cite ce document (suppression passée
+    // par un parcours sans cycle de vie des preuves) est retirée de l'usage actif ; la ligne reste (historique).
+    await tx.execute(sql`UPDATE field_evidence SET lifecycle_status = 'WITHDRAWN', superseded_at = now()
+      WHERE source_id = ${id} AND source_type IN ('document', 'web_link') AND (lifecycle_status IS NULL OR lifecycle_status = 'ACTIVE')`);
     await tx.delete(assetFiles).where(eq(assetFiles.id, id));
 
     // 3. Objets : clé du fichier et de ses versions, sauf clé encore référencée.

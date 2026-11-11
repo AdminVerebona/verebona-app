@@ -11,8 +11,10 @@ import { runMorningScheduledEvents } from '@/lib/notifications/scheduled/morning
  * risque de doublon, quel que soit le passage heure d'été/heure d'hiver.
  *
  * Lot 25 : planifiée DANS l'application (tâche interne
- * `notifications-scheduled-events`, toutes les 15 min à partir de 8 h 30) ;
- * cette route ne sert plus qu'au déclenchement manuel.
+ * `notifications-scheduled-events`, toutes les 15 min de 8 h 30 à 21 h —
+ * lot 113AH : rattrapage des rappels d'échéance à chaque passage, couverture
+ * unique par événement × destinataire) ; cette route ne sert plus qu'au
+ * déclenchement manuel.
  *
  * Protégé par CRON_SECRET. Passer ?force=1 permet de déclencher hors créneau
  * (tests). La livraison des notifications est faite par le dispatcher.

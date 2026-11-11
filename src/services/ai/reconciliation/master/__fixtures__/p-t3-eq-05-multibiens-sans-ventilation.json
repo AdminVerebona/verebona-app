@@ -1,0 +1,101 @@
+{
+  "case": "P-T3-EQ-05",
+  "description": "Lot 113AL — ECONOMIC_QUALIFICATION : charge d’un document commun à plusieurs biens sans répartition écrite ⇒ INCLUDE avec SHARED_NOT_ALLOCATED : non attribuée, jamais répartie arbitrairement (attente motivée).",
+  "qualification": {
+    "role": "answer"
+  },
+  "context": {
+    "economicQualification": {
+      "today": "2026-11-10",
+      "asset": {
+        "id": 932,
+        "category": "IMMOBILIER"
+      },
+      "targetFileId": 9304,
+      "amounts": [
+        {
+          "fileId": 9304,
+          "amountMinor": 80000,
+          "currency": "EUR",
+          "origin": "LINE",
+          "lineId": "doc:9304",
+          "quote": null
+        }
+      ],
+      "documents": [
+        {
+          "id": 9304,
+          "type": "OTHER",
+          "title": "Appel de charges",
+          "date": "2025-04-01",
+          "provider": "Syndic",
+          "references": [],
+          "multiAsset": true,
+          "linkedAssetCount": 2,
+          "excerpts": [
+            "Total des charges de l’immeuble : 800,00 €",
+            "Lots concernés : appartement et parking"
+          ]
+        }
+      ],
+      "countedFacts": [
+        {
+          "key": "asset:932:acquisitionPrice",
+          "lineId": "asset:932:acquisitionPrice",
+          "source": "ASSET_DATA",
+          "label": "Prix d’achat (fiche du bien)",
+          "kind": "REALIZED_COST",
+          "amountMinor": 28900000,
+          "currency": "EUR",
+          "date": "2019-06-01",
+          "fileId": null,
+          "operationId": null
+        }
+      ]
+    }
+  },
+  "recording": {
+    "operationCode": "t3_economic_qualification",
+    "task": "ECONOMIC_QUALIFICATION",
+    "output": {
+      "task": "ECONOMIC_QUALIFICATION",
+      "decisions": [
+        {
+          "amount": "M1",
+          "outcome": "INCLUDE",
+          "role": "REALIZED_COST",
+          "scope": "TOTAL",
+          "economicDate": "2025-04-01",
+          "periodStart": null,
+          "periodEnd": null,
+          "allocation": "SHARED_NOT_ALLOCATED",
+          "representedBy": null,
+          "exclusion": null,
+          "confidence": "certain",
+          "evidence": [
+            {
+              "document": "D0",
+              "excerpt": "Total des charges de l’immeuble : 800,00 €"
+            },
+            {
+              "document": "D0",
+              "excerpt": "Lots concernés : appartement et parking"
+            }
+          ],
+          "reason": "Charge commune à deux biens, aucune répartition écrite."
+        }
+      ]
+    }
+  },
+  "expected": {
+    "valid": true,
+    "effects": [
+      {
+        "amount": "M1",
+        "outcome": "INCLUDE",
+        "applied": true,
+        "status": "UNALLOCATED"
+      }
+    ]
+  }
+}

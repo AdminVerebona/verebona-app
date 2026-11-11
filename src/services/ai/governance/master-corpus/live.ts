@@ -179,6 +179,13 @@ const BUILDERS: Record<string, Builder> = {
     const { buildRelationInput, relationVariables } = await import('@/services/documents/business-periods/relation-contract');
     return relationVariables(buildRelationInput(raw as never).input);
   },
+  async t3_economic_qualification(c) {
+    // Lot 113AL : variables construites par le constructeur de production (`buildQualificationInput`, six emplacements T3).
+    const raw = ctx<{ economicQualification?: unknown }>(c).economicQualification;
+    if (!raw) return null;
+    const { buildQualificationInput, qualificationVariables } = await import('@/services/business-operations/tco/semantic-qualification/contract');
+    return qualificationVariables(buildQualificationInput(raw as never).input);
+  },
   async t4_agenda_representation(c) {
     // Lot 97A : contexte construit par le constructeur de production (`buildRepresentationInput`, contrat t4_input_v3).
     const raw = ctx<{ representation?: unknown }>(c).representation;

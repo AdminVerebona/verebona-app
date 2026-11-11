@@ -161,7 +161,9 @@ describe('L101A-U-COH-IDENTITY — contrôle de cohérence de l’identité prod
       // Lot 113Z (#723) : description T1 reprise depuis l'extraction persistée, en fin de registre.
       'COH-DOC-DESCRIPTION-T1',
       // Lot 113AA (#725) : résolution des périodes de couverture d'un événement de référence, en fin de registre.
-      'COH-OPS-PERIOD-RESOLUTION']);
+      'COH-OPS-PERIOD-RESOLUTION',
+      // Lot 113AK (#736) : provenance des faits T1 et preuves orphelines, en fin de registre.
+      'COH-DOC-FACT-PROVENANCE']);
     expect(COVERAGE_INVENTORY.find((d) => d.domain === 'equipements')!.checks).toContain('COH-EQUIPMENT-IDENTITY');
     expect(equipmentIdentityCheck.forbiddenRepairs.join(' ')).toMatch(/utilisateur/);
   });

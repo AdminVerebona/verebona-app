@@ -102,7 +102,8 @@ export type NotificationType = typeof NOTIFICATION_TYPES[keyof typeof NOTIFICATI
  * La validation Zod à l'exécution sera ajoutée au Lot 1.
  */
 export interface NotificationPayloadMap {
-  DEADLINE_DUE_IN_7_DAYS: { count: number; date: string; agendaItemIds?: number[]; forecastCount?: number };
+  /** Lot 113AH : `daysUntil` = délai réel (0 = aujourd'hui … 7) ; absent = 7 (lignes antérieures). */
+  DEADLINE_DUE_IN_7_DAYS: { count: number; date: string; agendaItemIds?: number[]; forecastCount?: number; daysUntil?: number };
 
   DOCUMENT_ANALYZED: { assetFileId: number; analysedCount: number; failedCount: number; documentTitle?: string };
   DOCUMENT_BATCH_COMPLETED: {

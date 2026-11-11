@@ -432,7 +432,9 @@ export function addUserAddedExpenses(
     if (!(u.eurCents > 0)) continue;
     if (x.year != null && (!u.date || Number(u.date.slice(0, 4)) !== x.year)) continue;
     if (u.source === 'DOCUMENT' && u.fileId != null) {
-      if (x.entries.some((e) => e.fileId === u.fileId && e.cls.kind !== 'excluded')) continue;
+      // Lot 113AL : un justificatif que T2 tient pour « non qualifié » (nature non établie) n'est pas compté — la décision
+      // (utilisateur ou arbitrage T3 validé) le compte, comme le TCO ; seul un thème déjà établi évite l'ajout.
+      if (x.entries.some((e) => e.fileId === u.fileId && e.cls.kind === 'theme')) continue;
       for (let i = x.entries.length - 1; i >= 0; i--) if (x.entries[i].fileId === u.fileId) x.entries.splice(i, 1);
       const d = x.docs.find((r) => r.id === u.fileId);
       const cls = d ? classifyExpenseDocument(d.v2, d.legacy) : null;

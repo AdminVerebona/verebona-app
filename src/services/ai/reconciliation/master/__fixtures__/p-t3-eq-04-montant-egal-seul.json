@@ -1,0 +1,100 @@
+{
+  "case": "P-T3-EQ-04",
+  "description": "Lot 113AL — ECONOMIC_QUALIFICATION, garde serveur : la sortie rattache le montant au prix de la fiche sur la seule égalité de montant (un passage) ⇒ refus en bloc (SAME_AMOUNT_ONLY), vaut abstention : « Nature à confirmer ».",
+  "qualification": {
+    "role": "guard"
+  },
+  "context": {
+    "economicQualification": {
+      "today": "2026-11-10",
+      "asset": {
+        "id": 932,
+        "category": "IMMOBILIER"
+      },
+      "targetFileId": 9303,
+      "amounts": [
+        {
+          "fileId": 9303,
+          "amountMinor": 28900000,
+          "currency": "EUR",
+          "origin": "LINE",
+          "lineId": "doc:9303",
+          "quote": null
+        }
+      ],
+      "documents": [
+        {
+          "id": 9303,
+          "type": "OTHER",
+          "title": "Justificatif d’acquisition",
+          "date": "2019-06-01",
+          "provider": null,
+          "references": [],
+          "excerpts": [
+            "Prix de vente : 289 000 €",
+            "Vente du bien situé à l’adresse de la maison",
+            "Acquéreur : le titulaire du compte"
+          ],
+          "lines": [
+            {
+              "kind": null,
+              "amountMinor": 28900000,
+              "currency": "EUR",
+              "status": "NOT_QUALIFIED",
+              "reason": "THEME_UNKNOWN"
+            }
+          ]
+        }
+      ],
+      "countedFacts": [
+        {
+          "key": "asset:932:acquisitionPrice",
+          "lineId": "asset:932:acquisitionPrice",
+          "source": "ASSET_DATA",
+          "label": "Prix d’achat (fiche du bien)",
+          "kind": "REALIZED_COST",
+          "amountMinor": 28900000,
+          "currency": "EUR",
+          "date": "2019-06-01",
+          "fileId": null,
+          "operationId": null
+        }
+      ]
+    }
+  },
+  "recording": {
+    "operationCode": "t3_economic_qualification",
+    "task": "ECONOMIC_QUALIFICATION",
+    "output": {
+      "task": "ECONOMIC_QUALIFICATION",
+      "decisions": [
+        {
+          "amount": "M1",
+          "outcome": "REPRESENTED",
+          "role": "REALIZED_COST",
+          "scope": null,
+          "economicDate": null,
+          "periodStart": null,
+          "periodEnd": null,
+          "allocation": null,
+          "representedBy": "F1",
+          "exclusion": null,
+          "confidence": "certain",
+          "evidence": [
+            {
+              "document": "D0",
+              "excerpt": "Prix de vente : 289 000 €"
+            }
+          ],
+          "reason": "Même montant que le prix d’achat."
+        }
+      ]
+    }
+  },
+  "expected": {
+    "valid": false,
+    "issues": [
+      "SAME_AMOUNT_ONLY"
+    ]
+  }
+}

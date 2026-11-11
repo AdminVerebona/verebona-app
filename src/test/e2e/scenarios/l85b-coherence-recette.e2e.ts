@@ -460,7 +460,8 @@ scenario('L85B', 'Cohérence C7 : familles « À traiter », réévaluation hist
     expect(ligneAvant).toBeUndefined();
     expect(ligneApres).toBeUndefined();
     const tco = await preuve(c.id, 'COH-TCO-EXTRACTED-EXPENSES', maison.id);
-    expect(tco).toMatchObject({ last_trigger: 'DAILY', last_result: 'FINDING', rules_version: 2, finding: expect.objectContaining({
+    // Lot 113AL : version 3 du contrôle (arbitrage T3 branché ; sans bloc 31, constat d'origine `t3Contract: CONTRACT_PENDING`).
+    expect(tco).toMatchObject({ last_trigger: 'DAILY', last_result: 'FINDING', rules_version: 3, finding: expect.objectContaining({
       anomaly: 'SOURCE_AMOUNT_NOT_EXPLOITED', faultyLink: 'T1', observed: [{ fileId: f.id, amounts: [123400] }],
       detail: expect.objectContaining({ pendingContract: '82B-t1-omissions-extract', inclusionContract: '82B-t3-decision-tco', t1Relaunch: false }) }) });
     expect(await reparations(c.id, 'COH-TCO-EXTRACTED-EXPENSES')).toEqual([]);

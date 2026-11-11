@@ -128,6 +128,7 @@ import {
   type EconomicLineReason, type EconomicLineSource, type EconomicLineStatus,
 } from '../finance/economic-lines';
 import { computeTcoAnnual, type TcoAnnual } from './annual';
+import { verifySemanticRepresentations } from './semantic-representation';
 import {
   resolveAcquisitionStart, type AcquisitionOperationRole, type AcquisitionStartBasis, type AcquisitionStartKind, type AcquisitionStartResolution,
   type AcquisitionStartStatus, type CanonicalAcquisitionDateInput,
@@ -420,6 +421,13 @@ export interface TcoEconomicLine {
    * date d'achat de la fiche du bien (prix de la fiche), ou date du justificatif qui établit seul le montant.
    */
   dateEntry?: { kind: 'ASSET_FIELD'; field: 'acquisitionDate' } | { kind: 'DOCUMENT'; fileId: number };
+  /**
+   * Lot 113AL (#737) : arbitrage sémantique T3 du montant (décision validée appliquée, abstention, attente, contrat
+   * absent, fait représentant disparu) — preuves citées, confiance, versions ; jamais un montant de l'IA.
+   */
+  semantic?: import('../finance/semantic-qualification').SemanticLineTrace;
+  /** Lot 113AL : clé stable du fait déjà compté qui représente ce montant (ligne reliée par `duplicateOf`). */
+  representedBy?: string;
 }
 
 export interface TcoResult {
@@ -1109,6 +1117,8 @@ export function computeTco(input: TcoInput): TcoResult {
       // Lot 109D : détail consultable de la ligne (contexte, composition du net, composante de calcul).
       ...(d.context ? { context: d.context } : {}), ...(d.composition ? { composition: d.composition } : {}),
       ...(d.compositionOf ? { compositionOf: d.compositionOf } : {}), ...(d.mergedFacts?.length ? { mergedFacts: d.mergedFacts } : {}),
+      // Lot 113AL : trace de l'arbitrage sémantique T3 et fait déjà compté qui représente ce montant.
+      ...(d.semantic ? { semantic: d.semantic } : {}), ...(d.representedBy ? { representedBy: d.representedBy } : {}),
     };
     if (d.status !== null || !d.kind) {
       // Lot 75D (D) : montant inconnu — jamais présenté comme 0 €.
@@ -1371,6 +1381,10 @@ export function computeTco(input: TcoInput): TcoResult {
     const entree = dateEntryOf(l);
     if (entree) l.dateEntry = entree;
   }
+
+  // Lot 113AL (#737) : une représentation T3 n'est valable que si son fait est toujours compté (sinon : à réexaminer,
+  // jamais un montant perdu en silence) — AVANT les décisions de l'utilisateur, qui priment et voient l'état réel.
+  verifySemanticRepresentations(toutesLignes);
 
   // ── Lot 80A : décisions de l'utilisateur (Ajouter / Retirer du TCO) — AVANT les totaux, priment sur les règles ──
   const decisionsUtilisateur = applyTcoUserDecisions({

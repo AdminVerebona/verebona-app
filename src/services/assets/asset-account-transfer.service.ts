@@ -133,6 +133,8 @@ export const FILE_SCOPED_TABLES: ReadonlyArray<readonly [table: string, column: 
   ['document_candidate_repair_propagations', 'file_id'],
   // Lot 113W (#724) : périodes métier qualifiées du document et corrections de l'utilisateur (1560) — suivent le document.
   ['document_business_periods', 'file_id'],
+  // Lot 113AK (#736) : journal de provenance des faits du document (références d'unités, preuves) — suit le document.
+  ['document_fact_provenance_events', 'file_id'],
 ];
 
 /** Tables des données du BIEN (colonne `asset_id`) qui suivent le bien. */
@@ -148,6 +150,9 @@ export const ASSET_SCOPED_TABLES: readonly string[] = [
   // Lot 80A : décisions « Ajouter / Retirer du TCO » du bien et leur journal — suivent le bien (clés portées par
   // ses justificatifs, qui partent avec lui).
   'asset_cost_line_decisions', 'asset_cost_line_decision_events',
+  // Lot 113AL (#737) : arbitrages sémantiques T3 des montants du TCO du bien (effets relus par le moteur) — suivent le bien
+  // (le nouveau compte ne resoumet pas un contexte déjà arbitré ; l'empreinte reste celle du document).
+  'economic_qualification_reviews',
   // Lot 88B : analyses et décisions des propriétés manquantes du bien et de ses équipements (`asset_id` = bien porteur) —
   // suivent le bien (le nouveau compte ne resoumet pas un contexte déjà arbitré ; preuves et valeurs écrites partent avec lui).
   'property_recovery_runs', 'property_recovery_decisions',
@@ -480,6 +485,8 @@ export async function transferAssetDataInTx(
       UPDATE agenda_data_conflicts SET account_id = ${to}
        WHERE account_id = ${from} AND (agenda_item_id = ANY(${ints(agMove)}) OR result_agenda_item_id = ANY(${ints(agMove)})) RETURNING 1`);
     await maj('agenda_item_removals', sql`UPDATE agenda_item_removals SET account_id = ${to} WHERE account_id = ${from} AND agenda_item_id = ANY(${ints(agMove)}) RETURNING 1`);
+    // Lot 113AH : couverture des rappels d'échéance — suit l'événement (un destinataire déjà rappelé ne l'est pas deux fois).
+    await maj('agenda_deadline_reminders', sql`UPDATE agenda_deadline_reminders SET account_id = ${to} WHERE account_id = ${from} AND agenda_item_id = ANY(${ints(agMove)}) RETURNING 1`);
   }
   if (agStay.length) {
     await maj('agenda_asset_links (retirés)', sql`DELETE FROM agenda_asset_links WHERE agenda_item_id = ANY(${ints(agStay)}) AND asset_id = ${A} RETURNING 1`);

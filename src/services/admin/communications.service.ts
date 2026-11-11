@@ -47,7 +47,7 @@ import { formatSecurityIncidentDate } from '@/lib/auth/security-email';
 
 /** Libellé métier des événements du catalogue (le catalogue n'en porte pas). */
 const EVENT_LABELS: Record<string, string> = {
-  DEADLINE_DUE_IN_7_DAYS: 'Échéance dans 7 jours',
+  DEADLINE_DUE_IN_7_DAYS: 'Rappel d’échéance (7 jours avant, ou rattrapage)',
   // Lot 108I : plus émise (confirmation dans l'interface) ; conservée pour l'historique.
   DOCUMENT_UPLOAD_COMPLETED: 'Documents ajoutés (plus envoyée : confirmation dans l’interface)',
   DOCUMENT_BATCH_COMPLETED: 'Lot de documents analysé',

@@ -28,6 +28,7 @@ import type { RestoreReport as DatabaseRestoreReport } from '@/services/backup/d
 import type { ReclassificationReport, ReclassificationRestoreReport } from '@/services/ai/history-reclassification/service';
 import type { PropertyRepriseReport } from '@/services/ai/source-analysis/projection/property-evidence-reprise';
 import type { CostClassificationReport, CostClassificationRestoreReport } from '@/services/ai/cost/cost-classification-backfill';
+import type { ProvenanceCatchupReport, ProvenanceRestoreReport } from '@/services/ai/source-analysis/source-units/provenance-repair';
 
 export interface BackfillSummary {
   headline: string;
@@ -1004,6 +1005,89 @@ function aiCostClassification(action: BackfillAction, out: RawBackfillOutput): B
   };
 }
 
+/** Lot 113AK (#736) : libellés des qualifications de provenance et de preuves (textes à valider par le PO). */
+const PROVENANCE_FR: Record<string, string> = {
+  RELINKED: 'provenance rétablie (données conservées du même document)', NOT_RECONSTRUCTIBLE: 'provenance non reconstituable (valeur conservée)',
+  CONTRADICTION: 'unité présente sans l’extrait cité (constat)', SUPERSEDED_VERSION: 'fait actif d’une extraction remplacée (constat)',
+  SOURCE_UNLINKED: 'source déliée', ASSET_DELETED: 'bien supprimé', ASSET_TRANSFERRED: 'bien transféré vers un autre compte',
+  DOCUMENT_DELETED: 'document supprimé', DOCUMENT_PURGED: 'document purgé', DOCUMENT_TRANSFERRED: 'document transféré vers un autre compte',
+  DOCUMENT_MERGED: 'document fusionné',
+};
+
+/**
+ * Lot 113AK (#736) : rapport du rattrapage « T1 : provenance des faits et
+ * preuves orphelines » — compteurs par statut, échantillons consultables
+ * (compte, document, fait / preuve, unité, statut, cause).
+ */
+function sourceUnitProvenance(action: BackfillAction, out: RawBackfillOutput): BackfillSummary {
+  if (action === 'restore') {
+    const r = out.result as ProvenanceRestoreReport;
+    return {
+      headline: `Restauration : ${r.facts} fait(s) et ${r.evidence} preuve(s) remis dans leur état d’avant ; ${r.skipped} objet(s) modifié(s) depuis, laissé(s) tel(s) quel(s).`,
+      scriptRunId: r.runId, restorable: false,
+      counters: [{ label: 'Faits restaurés', value: r.facts }, { label: 'Preuves restaurées', value: r.evidence }, { label: 'Objets laissés tels quels', value: r.skipped }],
+      ambiguous: { count: 0, samples: [] }, conflicts: { count: 0, samples: [] },
+      warnings: ['Le journal de provenance est conservé (lignes marquées « restaurées »).'],
+    };
+  }
+  const r = out.result as ProvenanceCatchupReport;
+  if (r.disabled) {
+    return { headline: `Rien à faire : ${r.disabled}.`, scriptRunId: null, restorable: false, counters: [],
+      ambiguous: { count: 0, samples: [] }, conflicts: { count: 0, samples: [] }, warnings: [] };
+  }
+  const sim = action === 'simulate';
+  const f = r.facts;
+  const e = r.evidence;
+  const ecrit = r.written.relinked + r.written.notReconstructible + r.written.evidenceWithdrawn;
+  const ligne = (x: ProvenanceCatchupReport['samples'][number]) =>
+    `compte ${x.accountId} · document ${x.fileId}${x.factId ? ` · fait ${x.factId}` : ''}${x.evidenceId ? ` · preuve ${x.evidenceId}` : ''}`
+    + `${x.assetId ? ` · bien ${x.assetId}` : ''}${x.unit ? ` · unité ${x.unit}` : ''} — ${PROVENANCE_FR[x.status] ?? x.status} (${x.cause})`;
+  return {
+    headline: sim
+      ? `Simulation : ${f.broken} fait(s) à lien cassé (${f.relinkable} rétabli(s), ${f.notReconstructible} non reconstituable(s)), `
+        + `${e.withdrawable} preuve(s) active(s) orpheline(s) ; rien n’est écrit.`
+      : `Application : ${r.written.relinked} provenance(s) rétablie(s), ${r.written.notReconstructible} fait(s) qualifié(s) non reconstituable(s), `
+        + `${r.written.evidenceWithdrawn} preuve(s) retirée(s) de l’usage actif${r.more ? ' — reste à traiter, relancer' : ''}.`,
+    scriptRunId: r.runId,
+    restorable: !sim && ecrit > 0,
+    counters: [
+      ...(r.runId ? [{ label: 'Identifiant de l’exécution (pour Restaurer)', value: r.runId }] : []),
+      { label: 'Comptes examinés', value: r.accounts },
+      { label: 'Documents examinés', value: r.documents },
+      { label: 'Faits actifs examinés (avec provenance)', value: f.examined },
+      { label: 'Faits à provenance valide', value: f.valid },
+      { label: 'Références historiques (faits supersédés, légitimes)', value: f.historicalReferences },
+      { label: 'Faits hors périmètre (document supprimé)', value: f.outOfScope },
+      { label: 'Faits à lien cassé', value: f.broken },
+      { label: '… dont provenance rétablie', value: f.relinkable },
+      { label: '… dont provenance non reconstituable', value: f.notReconstructible },
+      { label: 'Faits dont l’identifiant manquant existe dans un AUTRE document (jamais utilisé)', value: f.crossDocumentIds },
+      { label: 'Contradictions (constat)', value: f.contradictions },
+      { label: 'Faits actifs d’une extraction remplacée (constat)', value: f.supersededVersion },
+      { label: 'Faits d’un document d’un autre compte (constat)', value: f.sourceUnlinked },
+      { label: 'Couche source pas encore reconstruite (reprise historique en cours)', value: f.layerPending },
+      { label: 'Déjà qualifiés non reconstituables', value: f.alreadyNotReconstructible },
+      { label: 'Preuves actives examinées', value: e.examined },
+      { label: 'Preuves valides', value: e.valid },
+      { label: 'Preuves de biens archivés, vendus ou transmis (historique légitime)', value: e.historicalArchived },
+      ...Object.entries(e.byStatus).map(([k, n]) => ({ label: `Preuves orphelines : ${PROVENANCE_FR[k] ?? k}`, value: n })),
+      ...(sim ? [] : [
+        { label: 'Provenances rétablies', value: r.written.relinked },
+        { label: 'Faits qualifiés non reconstituables', value: r.written.notReconstructible },
+        { label: 'Preuves retirées de l’usage actif', value: r.written.evidenceWithdrawn },
+        { label: 'Lignes de journal écrites', value: r.written.events },
+      ]),
+    ],
+    ambiguous: { count: f.contradictions + f.supersededVersion + f.sourceUnlinked, samples: r.samples.filter((x) => ['CONTRADICTION', 'SUPERSEDED_VERSION', 'SOURCE_UNLINKED'].includes(x.status) && x.factId).slice(0, SAMPLE_LIMIT).map(ligne) },
+    conflicts: { count: f.broken + e.withdrawable, samples: r.samples.filter((x) => !(['CONTRADICTION', 'SUPERSEDED_VERSION'].includes(x.status) || (x.status === 'SOURCE_UNLINKED' && x.factId))).slice(0, SAMPLE_LIMIT).map(ligne) },
+    warnings: [
+      ...(r.more ? ['Temps imparti écoulé : relancer (rien n’est réécrit).'] : []),
+      ...(r.assetsToReconcile.length ? [`${r.assetsToReconcile.length} bien(s) ont perdu des preuves : leurs valeurs ne sont pas modifiées ; elles seront réexaminées au prochain passage T3 du bien.`] : []),
+      'Aucun appel IA, aucune réanalyse, aucune citation fabriquée ; aucune ligne supprimée.',
+    ],
+  };
+}
+
 /** Libellés des motifs de refus du rattrapage 91C (jamais de valeur dans le rapport). */
 const REFUS_91C: Record<string, string> = {
   FIELD_STATES_REALIZATION: 'date d’achat (réalisation non prouvée)',
@@ -1076,6 +1160,7 @@ export function summarizeBackfill(script: BackfillScript, action: BackfillAction
     case 'extract-chain-decision-review': return extractChainDecisionReview(action, out);
     case 'business-periods-v2-requalification': return businessPeriodsRequalification(action, out);
     case 'ai-cost-classification': return aiCostClassification(action, out);
+    case 'source-unit-provenance': return sourceUnitProvenance(action, out);
   }
 }
 

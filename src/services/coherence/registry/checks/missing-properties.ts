@@ -55,6 +55,13 @@
  *   · RATTRAPAGE (`catchupCandidates`) : objets porteurs de sources jamais
  *     contrôlés (trace NOT_SELECTED) ou constat ouvert sans issue persistée
  *     depuis 20 h → contrôle ciblé demandé, sans attendre un événement.
+ *
+ * Lot 113AJ (Trello #735, alerte BO n° 89) — « réparé » seulement si une
+ * propriété a RÉELLEMENT été écrite (`qualifyRepair`, voir
+ * `missing-properties-repairs.ts`) : abstention justifiée, absence de
+ * changement, échec technique / IA et réparation inefficace sont journalisés
+ * comme tels ; la Supervision ne compte que les vraies réparations et
+ * désigne le champ réécrit et l'écrivain qui l'avait remis à vide.
  * ══════════════════════════════════════════════════════════════════════════
  */
 import type { CatchupCandidate, CheckContext, CoherenceCheck, ControlResult, Inspection, RepairResult, UnrepairedOutcome } from '../types';
@@ -66,6 +73,9 @@ import {
 } from '@/services/ai/reconciliation/missing-properties/contract';
 import { subjectSourcesSql } from '@/services/ai/reconciliation/missing-properties/sql';
 import type { GateStatus } from '@/services/ai/reconciliation/missing-properties/store';
+import {
+  effectiveMissingPropertiesRepairSql, explainRepeatedMissingProperties, qualifyMissingPropertiesRepair, repairEffectOf, repairJournalResult,
+} from './missing-properties-repairs';
 
 const OPERATION_CHANGED = 'BUSINESS_OPERATION_CHANGED';
 /** Abstentions qui laissent une ambiguïté (aucune écriture, aucune carte) : verdict AMBIGUOUS. */
@@ -310,8 +320,12 @@ function controle(type: SubjectType): CoherenceCheck {
     criticality: 'MEDIUM',
     semanticReevaluation: ['T3'],
     tests: ['L88B-U-01', 'L88B-U-02', 'L88B-U-03', 'L88B-U-ORDRE', 'L88B-E2E-01', 'L88B-E2E-02', 'L88B-E2E-03', 'L88B-E2E-04',
-      'L91B-U-01', 'L91B-U-02', 'L91B-U-03', 'L91B-U-04', 'L91B-E2E-01', 'L91B-E2E-02', 'L91B-E2E-03', 'L91B-E2E-04'],
+      'L91B-U-01', 'L91B-U-02', 'L91B-U-03', 'L91B-U-04', 'L91B-E2E-01', 'L91B-E2E-02', 'L91B-E2E-03', 'L91B-E2E-04',
+      'L113AJ-U-01', 'L113AJ-U-02', 'L113AJ-U-03', 'L113AJ-E2E-01', 'L113AJ-E2E-02', 'L113AJ-E2E-03', 'L113AJ-E2E-04', 'L113AJ-E2E-05'],
     immediateSupervision: ['MISSING_PROPERTY_ARBITRATION_PENDING', 'MISSING_PROPERTY_MEMORY_UNAVAILABLE', 'MISSING_PROPERTY_ARBITRATION_FAILED'],
+    qualifyRepair: qualifyMissingPropertiesRepair,
+    effectiveRepairSql: effectiveMissingPropertiesRepairSql,
+    explainRepeatedRepairs: explainRepeatedMissingProperties(type, bien ? MISSING_PROPERTIES_CHECK_ID : MISSING_PROPERTIES_EQUIPMENT_CHECK_ID),
 
     async listObjects(ctx, accountId, afterId, limit) {
       return idsOf(await rows(ctx.sql, objetsSql(type, (c) => `${c} > $2`, 'LIMIT $3'), [accountId, afterId, limit]));
@@ -358,13 +372,16 @@ function controle(type: SubjectType): CoherenceCheck {
         const r = await recoverMissingProperties(accountId, { type, id }, {
           trigger: `COHERENCE:${ctx.trigger ?? 'TARGETED'}`, runRef: ctx.correlationId, campaignId: ctx.campaignId ?? null, today: ctx.today,
         });
+        // Lot 113AJ : effet réel et références EXACTES (lignes canonical_field_writes, décisions, analyses) ;
+        // rien à défaire sans écriture : la référence pointe alors vers les analyses et décisions conservées.
+        const ecrit = repairEffectOf(r) === 'WRITTEN';
+        const ids = (xs: Array<number | null | undefined>) => xs.filter((x): x is number => Number.isSafeInteger(x)).join(',');
         out.set(id, {
           called: true, service: 'recoverMissingProperties', aiCalls: r.calls,
-          result: {
-            status: r.status, cause: r.cause ?? null, persisted: r.persisted ?? true, written: r.written.map((w) => w.key), abstained: r.abstained.slice(0, 40),
-            undecided: r.undecided.slice(0, 40), calls: r.calls, runs: r.runIds.slice(0, 10), contextFingerprint: r.contextFingerprint,
-          },
-          rollbackRef: `canonical_field_writes:source=coherence_missing_property;property_recovery_decisions:${type}=${id}`,
+          result: repairJournalResult(r),
+          rollbackRef: ecrit
+            ? `canonical_field_writes:ids=${ids(r.written.map((w) => w.canonicalWriteId)) || 'source=coherence_missing_property'};property_recovery_decisions:ids=${ids(r.written.map((w) => w.decisionId))}`
+            : `property_recovery_runs:ids=${ids(r.runIds) || '-'};property_recovery_decisions:${type}=${id}`,
           reevaluation: 'SEMANTIC_REEVALUATION_T3',
         });
       }

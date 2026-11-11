@@ -159,6 +159,8 @@ export function tableSql(table: string, m: TableMeta, filter: string, order: str
 
 export interface RefSpec {
   from: string; column: string; to: string; toColumn: string; kind: 'value' | 'json-array' | 'pg-array'; when?: string; role: string; origin: 'FK' | 'LOGIQUE';
+  /** Lot 113AK : référence résolue DANS le même objet (`column` de la source = `toColumn` de la cible), adresse de cellule ramenée à sa ligne. */
+  scope?: { column: string; toColumn: string; cellToRow?: boolean };
 }
 
 interface RefResult extends RefSpec {
@@ -169,10 +171,21 @@ interface RefResult extends RefSpec {
 /** Valeurs référencées par la colonne (texte), selon le type de référence. */
 function refValueExpr(r: RefSpec): string {
   const c = `t.${ident(r.column)}`;
-  if (r.kind === 'json-array') return `jsonb_array_elements_text(CASE WHEN jsonb_typeof(to_jsonb(${c})) = 'array' THEN to_jsonb(${c}) ELSE '[]'::jsonb END)`;
-  if (r.kind === 'pg-array') return `unnest(${c})::text`;
-  return `${c}::text`;
+  const brut = r.kind === 'json-array' ? `jsonb_array_elements_text(CASE WHEN jsonb_typeof(to_jsonb(${c})) = 'array' THEN to_jsonb(${c}) ELSE '[]'::jsonb END)`
+    : r.kind === 'pg-array' ? `unnest(${c})::text` : `${c}::text`;
+  if (!r.scope) return brut;
+  // Lot 113AK (#736) : valeur qualifiée par l'objet porteur (`<document>|<unité>`) — jamais une correspondance dans un autre objet.
+  const v = r.scope.cellToRow ? `regexp_replace(${brut}, ':cell:[0-9]+$', '')` : brut;
+  return `(t.${ident(r.scope.column)}::text || '|' || ${v})`;
 }
+
+/** Clé de fermeture d'une référence cible : colonne simple, ou couple `objet|colonne` d'une référence qualifiée (lot 113AK). */
+const refTargetKey = (r: Pick<RefSpec, 'toColumn' | 'scope'>) => (r.scope ? `${r.scope.toColumn}|${r.toColumn}` : r.toColumn);
+/** Expression SQL (texte) d'une clé de fermeture sur l'alias `t`. */
+const targetKeyExpr = (key: string) => {
+  const i = key.indexOf('|');
+  return i < 0 ? `t.${ident(key)}::text` : `(t.${ident(key.slice(0, i))}::text || '|' || t.${ident(key.slice(i + 1))}::text)`;
+};
 
 /**
  * Prédicat PUR « la ligne (alias `t`) désigne une valeur du jeu » pour une
@@ -257,7 +270,7 @@ export async function planDiagnosticEngine(kit: DiagPlanKit, f: DiagFilter): Pro
   const colsOf = (t: string) => new Set([...(meta.get(t)?.columns ?? []), ...(meta.get(t)?.excluded.map((x) => x.colonne) ?? [])]);
   const specs: RefSpec[] = [];
   const seen = new Set<string>();
-  for (const r of [...DIAG_LOGICAL_REFERENCES.map((l): RefSpec => ({ from: l.from, column: l.column, to: l.to, toColumn: l.toColumn ?? 'id', kind: l.kind ?? 'value', when: l.when, role: l.role, origin: 'LOGIQUE' })), ...fk.refs]) {
+  for (const r of [...DIAG_LOGICAL_REFERENCES.map((l): RefSpec => ({ from: l.from, column: l.column, to: l.to, toColumn: l.toColumn ?? 'id', kind: l.kind ?? 'value', when: l.when, role: l.role, origin: 'LOGIQUE', ...(l.scope ? { scope: l.scope } : {}) })), ...fk.refs]) {
     const key = `${r.from}.${r.column}->${r.to}.${r.toColumn}|${r.when ?? ''}`;
     if (seen.has(key)) continue;
     seen.add(key);
@@ -265,6 +278,7 @@ export async function planDiagnosticEngine(kit: DiagPlanKit, f: DiagFilter): Pro
     if (r.origin === 'LOGIQUE') {
       if (!colsOf(r.from).has(r.column)) { declaredInvalid.push(`${r.from}.${r.column} (table ou colonne absente)`); continue; }
       if (present.has(r.to) && !colsOf(r.to).has(r.toColumn)) { declaredInvalid.push(`${r.to}.${r.toColumn} (colonne cible absente)`); continue; }
+      if (r.scope && (!colsOf(r.from).has(r.scope.column) || (present.has(r.to) && !colsOf(r.to).has(r.scope.toColumn)))) { declaredInvalid.push(`${r.from}.${r.column} (portée ${r.scope.column} → ${r.scope.toColumn} absente)`); continue; }
     }
     if (meta.get(r.from)?.excluded.some((e) => e.colonne === r.column)) continue; // colonne de sécurité : non exportée
     specs.push(r);
@@ -311,7 +325,7 @@ export async function planDiagnosticEngine(kit: DiagPlanKit, f: DiagFilter): Pro
     const preds = directPreds(t);
     // Enfants directs d'une ligne retenue par le filtre fin (un niveau : pas de fermeture vers le compte entier).
     for (const r of specsFrom.get(t) ?? []) {
-      if (r.to === t || DIAG_ENTITY_TABLES[r.to]) continue;
+      if (r.to === t || DIAG_ENTITY_TABLES[r.to] || r.scope) continue;
       const pBase = baseFilter(r.to);
       const pDirect = directPreds(r.to);
       if (pBase === null || !pDirect.length || covOf(r.to)?.global) continue;
@@ -381,7 +395,7 @@ export async function planDiagnosticEngine(kit: DiagPlanKit, f: DiagFilter): Pro
     const parts = [...cols.entries()].filter(([, v]) => v.size).map(([col, v]) => {
       const p = `fv${++paramN}`;
       values[p] = [...v].sort();
-      return `t.${ident(col)}::text = ANY({{${p}}}::text[])`;
+      return `${targetKeyExpr(col)} = ANY({{${p}}}::text[])`;
     });
     return { sql: parts.length ? parts.join(' OR ') : 'FALSE', values };
   };
@@ -421,7 +435,7 @@ export async function planDiagnosticEngine(kit: DiagPlanKit, f: DiagFilter): Pro
             else { out.versTableExclue += k; out.motif = `table cible exclue : ${DIAG_TABLE_EXCLUSIONS[r.to]?.motif ?? 'non classée sans account_id'}`; }
             continue;
           }
-          const col = `t.${ident(r.toColumn)}::text`;
+          const col = r.scope ? targetKeyExpr(refTargetKey(r)) : `t.${ident(r.toColumn)}::text`;
           // Semi-jointures par hachage (texte) : seules les valeurs NON résolues remontent (mémoire bornée par les manques).
           const sql = `WITH s AS (SELECT v FROM (${srcSql}) x WHERE v IS NOT NULL),
                  e AS (SELECT DISTINCT ${col} AS k FROM ${ident(r.to)} t WHERE (${main ?? 'FALSE'}) AND ${col} IN (SELECT v FROM s))
@@ -439,14 +453,15 @@ export async function planDiagnosticEngine(kit: DiagPlanKit, f: DiagFilter): Pro
           const manquantes = ((agg?.manquantes ?? []) as unknown[]).map(String);
           for (const v of existantes) {
             if (!seen.fermeture.has(v)) { seen.fermeture.add(v); out.fermeture.push(v); }
-            const have = closure.get(r.to)?.get(r.toColumn);
+            const cle = refTargetKey(r);
+            const have = closure.get(r.to)?.get(cle);
             if (have?.has(v)) continue;
             if (!closure.has(r.to)) closure.set(r.to, new Map());
-            if (!closure.get(r.to)!.has(r.toColumn)) closure.get(r.to)!.set(r.toColumn, new Set());
-            closure.get(r.to)!.get(r.toColumn)!.add(v);
+            if (!closure.get(r.to)!.has(cle)) closure.get(r.to)!.set(cle, new Set());
+            closure.get(r.to)!.get(cle)!.add(v);
             if (!next.has(r.to)) next.set(r.to, new Map());
-            if (!next.get(r.to)!.has(r.toColumn)) next.get(r.to)!.set(r.toColumn, new Set());
-            next.get(r.to)!.get(r.toColumn)!.add(v);
+            if (!next.get(r.to)!.has(cle)) next.get(r.to)!.set(cle, new Set());
+            next.get(r.to)!.get(cle)!.add(v);
           }
           if (external) { out.externes += manquantes.length; if (manquantes.length) out.motif = `hors filtre attendu : ${external}`; }
           else for (const v of manquantes) if (!seen.absentes.has(v)) { seen.absentes.add(v); out.absentes.push(v); }

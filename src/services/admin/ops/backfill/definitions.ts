@@ -60,6 +60,12 @@
  *  20. IA : origine des coûts (lot 113AF, Trello #730) — classement métier /
  *      technique / observation des appels et agrégats historiques, à partir des
  *      coûts persistés ; jamais automatique ; restaurable par exécution ;
+ *  21. T1 : provenance des faits et preuves orphelines (lot 113AK, Trello
+ *      #736) — références d'unités sources vérifiées DANS LE MÊME document,
+ *      rétablies depuis les données conservées ou qualifiées « non
+ *      reconstituables », preuves actives vers des biens / documents absents
+ *      retirées de l'usage actif ; même moteur que COH-DOC-FACT-PROVENANCE ;
+ *      jamais automatique ; sans appel IA ; restaurable par exécution ;
  *   0. Point de restauration de la base (lot 82E, décisions PO C-Q8 / D13) :
  *      « Appliquer » crée un point (même mécanisme que la sauvegarde
  *      nocturne) ; « Restaurer » ramène la base à un point (contrôle de
@@ -71,7 +77,7 @@
  * services.
  */
 
-export type BackfillScript = 'database-restore-point' | 'merge-rooms' | 'document-asset-links' | 'agenda' | 'cdc15' | 'asset-account' | 'operations-structured' | 'claims-legacy-cleanup' | 'cross-account' | 'equipment-separation' | 'document-validation' | 'duo-shared-account' | 'agenda-intervention-duplicates' | 'to-process-false-arbitrations' | 'operations-v5-rebuild' | 'ai-history-reclassification' | 'missing-properties-catchup' | 'projection-property-evidence' | 'extract-chain-decision-review' | 'business-periods-v2-requalification' | 'ai-cost-classification';
+export type BackfillScript = 'database-restore-point' | 'merge-rooms' | 'document-asset-links' | 'agenda' | 'cdc15' | 'asset-account' | 'operations-structured' | 'claims-legacy-cleanup' | 'cross-account' | 'equipment-separation' | 'document-validation' | 'duo-shared-account' | 'agenda-intervention-duplicates' | 'to-process-false-arbitrations' | 'operations-v5-rebuild' | 'ai-history-reclassification' | 'missing-properties-catchup' | 'projection-property-evidence' | 'extract-chain-decision-review' | 'business-periods-v2-requalification' | 'ai-cost-classification' | 'source-unit-provenance';
 export type BackfillAction = 'simulate' | 'apply' | 'restore';
 export type BackfillStatus = 'running' | 'succeeded' | 'failed' | 'interrupted';
 
@@ -495,6 +501,25 @@ export const BACKFILL_DEFINITIONS: readonly BackfillDefinition[] = [
       + 'rien n’est réécrit. Restaurer (avec l’identifiant donné dans le rapport) : retire le classement de cette exécution.',
     actions: ['simulate', 'apply', 'restore'],
     accountFilter: false,
+  },
+  {
+    // Lot 113AK (Trello #736) — textes à valider par le PO.
+    script: 'source-unit-provenance',
+    order: 21,
+    label: 'T1 : provenance des faits et preuves orphelines',
+    command: 'BO uniquement (aucune commande) — jamais lancé automatiquement (le contrôle de cohérence COH-DOC-FACT-PROVENANCE répare les cas sans ambiguïté)',
+    description: 'Des faits T1 actifs citent des unités sources (« page:1:table:1:row:1:cell:2 ») absentes de LEUR document, et des preuves par '
+      + 'champ restent actives alors que leur bien ou leur document a été supprimé, transféré ou fusionné. Ce rattrapage vérifie chaque '
+      + 'référence dans le MÊME document (compte, document, unité) — jamais par l’identifiant seul, qui se répète d’un document à l’autre. '
+      + 'Il rétablit la provenance à partir de ce qui est conservé (extrait, cellule ou observation du fait, unités du document) ; sinon le fait '
+      + 'est qualifié « provenance non reconstituable » : sa valeur est conservée, aucune citation n’est fabriquée. Les preuves dont le bien ou '
+      + 'le document a disparu (supprimé, purgé, transféré, fusionné ou plus rattaché) sont retirées de l’usage actif ; la ligne reste dans '
+      + 'l’historique. Les biens archivés, vendus ou transmis gardent leurs preuves. Aucun appel IA, aucune réanalyse, aucune correction '
+      + 'de l’utilisateur touchée. Simuler : rapport par statut (compte, document, fait ou preuve, unité, cause), rien n’est écrit. Appliquer '
+      + '(motif obligatoire) : corrections et journal ; relancé, rien n’est réécrit. Restaurer (avec l’identifiant donné dans le rapport) : remet '
+      + 'l’état d’avant sur les objets de cette exécution qui n’ont pas changé depuis.',
+    actions: ['simulate', 'apply', 'restore'],
+    accountFilter: true,
   },
 ];
 

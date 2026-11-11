@@ -406,6 +406,29 @@ export const AI_OPERATIONS: Record<string, AiOperationDefinition> = {
     timeoutMs: 30_000, jsonResponse: true, defaultMaxOutputTokens: 800,
     outputSchema: 'T3PeriodRelationOutput', active: true, billable: false,
   },
+  // Lot 113AL (Trello #737, demande 82B-t3-decision-tco, écart au CDC 82B / 111V) :
+  // arbitrage sémantique T3 des montants CONNUS d'un document restés sans nature
+  // dans le TCO d'un bien (rôle économique du modèle existant, identité — fait
+  // autonome ou autre source d'un fait déjà compté —, attribution, attributs
+  // prouvés, issue : inclusion, représentation, exclusion motivée, abstention ;
+  // preuves citées). Contrat `t3-economic-qualification-v1`
+  // (`business-operations/tco/semantic-qualification/contract.ts`). Appelée par
+  // la phase du passage T3 du compte (`review.ts`), HORS lecture, par lots
+  // bornés, une seule fois par contexte (mémoire 1650), seulement si le prompt
+  // T3 ACTIF porte la section « BRANCHE TASK = ECONOMIC_QUALIFICATION » ET le
+  // marqueur ; sinon CONTRACT_PENDING supervisé. Réutilise les six emplacements
+  // T3 : aucun nouvel emplacement. Branche FACULTATIVE dont le texte est collé
+  // par le PO (bloc 31, `MASTER_TASKS_TEXT_PENDING`). Le serveur valide, le
+  // moteur TCO existant calcule (aucun montant de l'IA). Budget : plafonds
+  // existants du rapprochement sémantique. Non facturée (traitement de fond).
+  t3_economic_qualification: {
+    operationCode: 't3_economic_qualification', useCaseCode: 'DATA_RECONCILIATION',
+    label: 'T3 master — arbitrage sémantique des montants non qualifiés du TCO (TASK=ECONOMIC_QUALIFICATION)',
+    provider: GEMINI, primaryModel: DOC_PRIMARY, fallbackModels: DOC_FALLBACKS,
+    promptCode: T3_MASTER, masterPromptCode: T3_MASTER, task: 'ECONOMIC_QUALIFICATION', promptVariables: T3_MASTER_VARIABLES,
+    timeoutMs: 45_000, jsonResponse: true, defaultMaxOutputTokens: 2_500,
+    outputSchema: 'T3EconomicQualificationOutput', active: true, billable: false,
+  },
 
   // ── Usage 3 — Assistant (CDC §4.3.4) ──────────────────────────────────────
   retrieve_data: {

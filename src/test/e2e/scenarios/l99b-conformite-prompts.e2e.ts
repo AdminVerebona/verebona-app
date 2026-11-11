@@ -347,7 +347,9 @@ describe('L99B — Mise en conformité automatique des prompts IA (préproductio
     expect(ops).toEqual(['t3_document_naming', 't3_knowledge_query', 't3_link_ambiguity', 't3_operation_match', 't3_value_conflict']);
     // OPERATION_IDENTITY (étape 5 non faite) : branche absente des deux versions — hors périmètre, signalée.
     // Lot 113AD : PERIOD_RELATION (étape 29 non faite), idem.
-    expect(i.qualification.excluded).toEqual([expect.objectContaining({ operationCode: 't3_operation_identity' }), expect.objectContaining({ operationCode: 't3_period_relation' })]);
+    expect(i.qualification.excluded).toEqual([expect.objectContaining({ operationCode: 't3_operation_identity' }), expect.objectContaining({ operationCode: 't3_period_relation' }),
+      // Lot 113AL : ECONOMIC_QUALIFICATION (étape 31 non faite), idem.
+      expect.objectContaining({ operationCode: 't3_economic_qualification' })]);
     // Cas d'un contrat absent des DEUX versions (99C, étape 9 non faite) : hors périmètre — ni réussis, ni bloquants.
     const { loadMasterCorpusCases, readMasterFileFromRepo } = await import('@/services/ai/governance/master-corpus/cases');
     const { liveVariablesFor } = await import('@/services/ai/governance/master-corpus/live');

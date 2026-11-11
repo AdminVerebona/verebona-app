@@ -140,7 +140,9 @@ describe('L89C-U01 — blocs du guide', () => {
       // Lot 113AA : étape 28 (T1 périodes métier v2, rejouée par l113aa-periodes-conformite.test.ts).
       't1-business-periods-v2',
       // Lot 113AD : étape 29 (T3 PERIOD_RELATION, rejouée par l113ad-relation-t3.test.ts).
-      't3-period-relation-v1']);
+      't3-period-relation-v1',
+      // Lot 113AL : étape 31 (T3 ECONOMIC_QUALIFICATION, rejouée par l113al-guide-corpus.test.ts).
+      't3-economic-qualification-v1']);
     // Aucun bloc n'introduit un emplacement {{X}} (bloquant au BO : « emplacement inconnu »).
     for (const b of B) expect(inspectMasterTemplate(b.text).placeholders, b.id).toEqual([]);
   });

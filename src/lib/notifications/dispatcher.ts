@@ -91,6 +91,22 @@ async function processRow(row: OutboxRow): Promise<'sent' | 'partial' | 'failed'
   // servis — une cloche, même obligatoire, déjà livrée ne l'est pas deux fois.
   // La clé technique est retirée avant le rendu.
   const { payload: payloadBrut, restriction } = lireRestrictionReemission(row.payload_json ?? {});
+
+  // Lot 113AH (#732) : rappel d'échéance relu juste avant l'envoi — événements
+  // supprimés, déplacés ou devenus « information » retirés (aucun restant :
+  // rien n'est envoyé), échéance passée ignorée, délai réel recalculé.
+  let deadlinePatch: Record<string, unknown> | undefined;
+  if (row.event_type === 'DEADLINE_DUE_IN_7_DAYS') {
+    const { checkDeadlineReminderAtDispatch } = await import('./scheduled/deadline-dispatch');
+    const c = await checkDeadlineReminderAtDispatch(row as never, payloadBrut as Record<string, unknown>);
+    if (c.skipReason) {
+      await markProcessed(row.id, 'skipped', { reason: c.skipReason });
+      await afterProcessed(row, 'skipped');
+      return 'skipped';
+    }
+    deadlinePatch = c.payloadPatch;
+  }
+
   const restricted = appliquerRestrictionReemission(await resolveChannels(row.recipient_user_id, entry), restriction);
 
   // Lot 79C : un incident déjà porté par une autre ligne (même facture, même
@@ -116,7 +132,8 @@ async function processRow(row: OutboxRow): Promise<'sent' | 'partial' | 'failed'
     await afterProcessed(row, 'skipped');
     return 'skipped';
   }
-  const payload = grouping.payloadPatch ? { ...payloadBrut, ...grouping.payloadPatch } : payloadBrut;
+  const patched = deadlinePatch ? { ...payloadBrut, ...deadlinePatch } : payloadBrut;
+  const payload = grouping.payloadPatch ? { ...patched, ...grouping.payloadPatch } : patched;
 
   // Lot 79C : canaux SUPPRIMÉS — coupés quelles que soient les anciennes
   // préférences, la file, la reprise ou la réémission (`retired-channels.ts`).
@@ -245,6 +262,11 @@ async function afterProcessed(row: OutboxRow, status: 'sent' | 'partial' | 'fail
     } catch (e) {
       console.error(`[notifications] reprise des événements regroupés avec ${row.id} :`, (e as Error).message);
     }
+  }
+  if (row.event_type === 'DEADLINE_DUE_IN_7_DAYS') {
+    // Lot 113AH : couverture des événements de ce rappel « traitée » (statut final).
+    const { recordDeadlineReminderOutcome } = await import('./scheduled/deadline-dispatch');
+    await recordDeadlineReminderOutcome(row.dedupe_key, status);
   }
   if (row.event_type === 'TO_PROCESS_DAILY_DIGEST') {
     try {

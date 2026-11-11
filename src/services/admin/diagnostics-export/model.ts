@@ -363,6 +363,26 @@ export interface DiagFileInfo {
   sha256?: string;
   /** Découpage technique : partie `index` sur `of` du fichier logique `group`. */
   part?: { index: number; of: number; group: string };
+  /** Lot 113AG : PREMIÈRE erreur SQL d'origine survenue pendant la production du fichier (même interceptée par une lecture). */
+  sqlError?: DiagSqlIncidentView;
+}
+
+/** Lot 113AG — erreur SQL de la session de lecture (manifeste, BO) : ordre, horodatage, SQLSTATE, contexte, pile courte. */
+export interface DiagSqlIncidentView {
+  seq: number;
+  at: string;
+  sqlstate: string | null;
+  kind: 'ORIGIN' | 'CONSEQUENCE' | 'RELEASE_FAILED' | 'ROLLBACK_FAILED';
+  message: string;
+  statement: string;
+  phase: string | null;
+  file: string | null;
+  generationId: string | null;
+  caller: string | null;
+  stack: string[];
+  savepoint: string | null;
+  recovered: boolean | null;
+  consequenceOf: number | null;
 }
 
 export interface DiagUnavailable { element: string; motif: string }
@@ -403,6 +423,23 @@ export interface DiagManifest {
   autoControle?: import('./engine').EngineManifestPart['autoControle'];
   /** Lot 107G — bilan PAR TABLE : attendu, exporté, écart, statut, exclusions motivées, SHA-256. */
   parTable?: import('./collect').DiagTableManifest[];
+  /**
+   * Lot 113AG — erreurs SQL de la session : session SAINE / INTERROMPUE,
+   * fiabilité, PREMIÈRE erreur d'origine, incident fatal (origine + échec de
+   * restauration), conséquences 25P02 rattachées à leur cause.
+   */
+  sqlIncidents?: {
+    session: 'SAINE' | 'INTERROMPUE';
+    fiabilite: 'FIABLE' | 'NON_FIABLE';
+    firstError: DiagSqlIncidentView | null;
+    fatal: { at: string; reason: string; origin: DiagSqlIncidentView | null; rollback: DiagSqlIncidentView | null } | null;
+    total: number;
+    origins: number;
+    consequences: number;
+    omitted: number;
+    incidents: DiagSqlIncidentView[];
+    note: string;
+  };
 }
 
 export const MASKING_NOTES: readonly string[] = [

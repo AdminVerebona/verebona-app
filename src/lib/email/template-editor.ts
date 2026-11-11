@@ -261,7 +261,7 @@ interface NotificationEmailTemplate {
 
 /** Clé : type en majuscules. Contrôlé contre le catalogue (test L73A-NOTIF-01). */
 export const NOTIFICATION_EMAIL_TEMPLATES: Readonly<Record<string, NotificationEmailTemplate>> = {
-  NOTIF_DEADLINE_J7: { label: 'Échéance dans 7 jours', events: ['DEADLINE_DUE_IN_7_DAYS'] },
+  NOTIF_DEADLINE_J7: { label: 'Rappel d’échéance (7 jours avant, ou rattrapage)', events: ['DEADLINE_DUE_IN_7_DAYS'] },
   NOTIF_DOCUMENT_UPLOAD: { label: 'Documents ajoutés', events: ['DOCUMENT_UPLOAD_COMPLETED'] },
   NOTIF_DOCUMENT_BATCH_FAILED: { label: 'Analyse de documents en anomalie ou impossible', events: ['DOCUMENT_BATCH_PARTIALLY_FAILED', 'DOCUMENT_BATCH_FAILED', 'ANALYSIS_FAILED_PERSISTENT'] },
   NOTIF_TO_PROCESS_IMMEDIATE: { label: 'Nouvel élément à traiter', events: ['TO_PROCESS_ITEM_CREATED'] },

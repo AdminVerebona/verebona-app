@@ -42,7 +42,9 @@ export const COVERAGE_INVENTORY: readonly CoverageEntry[] = [
       // Lot 113W (#724) : périodes métier des documents (couverture, facturation…) qualifiées depuis la connaissance T1 persistée.
       'COH-DOC-BUSINESS-PERIODS',
       // Lot 113Z (#723) : description T1 reprise depuis l'extraction persistée, provenance établie sur preuve.
-      'COH-DOC-DESCRIPTION-T1'],
+      'COH-DOC-DESCRIPTION-T1',
+      // Lot 113AK (#736) : provenance des faits T1 vers les unités du même document, preuves par champ orphelines.
+      'COH-DOC-FACT-PROVENANCE'],
     gap: {
       what: 'valeurs canoniques RENSEIGNÉES des fiches comparées aux preuves sur le stock ; propriétés vides : arbitrage T3 en attente du contrat d’entrée t3-knowledge-query-v2 (constat MISSING_PROPERTY_ARBITRATION_PENDING) ; propriétés des pièces',
       existingMechanism: 'T3 « Informations » 76J par version (t3_information_checks) ; COH-MISSING-PROPERTIES (lot 88B)',

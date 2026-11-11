@@ -180,7 +180,9 @@ describe('113AF — critères 5 et 6 : synthèse avant / après réconciliable, 
 describe('113AF — rattrapage BO « IA : origine des coûts »', () => {
   it('déclaré en fin de catalogue, simuler / appliquer / restaurer, motif obligatoire pour écrire', () => {
     expect(backfillDefinition('ai-cost-classification')).toMatchObject({ order: 20, actions: ['simulate', 'apply', 'restore'], accountFilter: false });
-    expect(BACKFILL_DEFINITIONS.at(-1)?.script).toBe('ai-cost-classification');
+    // Lot 113AK : le rattrapage « T1 : provenance des faits et preuves orphelines » (n° 21) suit celui-ci.
+    expect(BACKFILL_DEFINITIONS.find((d) => d.order === 21)?.script).toBe('source-unit-provenance');
+    expect(BACKFILL_DEFINITIONS.findIndex((d) => d.script === 'ai-cost-classification')).toBe(BACKFILL_DEFINITIONS.length - 2);
     expect(validateBackfillRequest({ script: 'ai-cost-classification', action: 'apply' })).toMatchObject({ ok: false, code: 'REASON_REQUIRED' });
     expect(validateBackfillRequest({ script: 'ai-cost-classification', action: 'simulate' })).toMatchObject({ ok: true });
     expect(validateBackfillRequest({ script: 'ai-cost-classification', action: 'restore', runId: 'x', reason: 'retour arrière' })).toMatchObject({ ok: false, code: 'INVALID_RUN_ID' });

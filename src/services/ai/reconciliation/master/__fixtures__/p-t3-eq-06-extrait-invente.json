@@ -1,0 +1,105 @@
+{
+  "case": "P-T3-EQ-06",
+  "description": "Lot 113AL — ECONOMIC_QUALIFICATION, garde serveur : la sortie cite un passage absent des textes fournis (« payé le ») pour inclure le montant ⇒ refus en bloc (EXCERPT_NOT_FOUND), vaut abstention.",
+  "qualification": {
+    "role": "guard"
+  },
+  "context": {
+    "economicQualification": {
+      "today": "2026-11-10",
+      "asset": {
+        "id": 932,
+        "category": "IMMOBILIER"
+      },
+      "targetFileId": 9301,
+      "amounts": [
+        {
+          "fileId": 9301,
+          "amountMinor": 134000,
+          "currency": "EUR",
+          "origin": "LINE",
+          "lineId": "doc:9301",
+          "quote": null
+        }
+      ],
+      "documents": [
+        {
+          "id": 9301,
+          "type": "OTHER",
+          "title": "Avis 2025",
+          "date": "2025-09-01",
+          "provider": "Émetteur public",
+          "references": [
+            {
+              "kind": "OTHER",
+              "value": "AV-2025-01"
+            }
+          ],
+          "excerpts": [
+            "Montant à payer : 1 340,00 €",
+            "Date limite de paiement : 15/10/2025",
+            "Cotisation annuelle due pour le bien situé à l’adresse de la maison"
+          ],
+          "lines": [
+            {
+              "kind": null,
+              "amountMinor": 134000,
+              "currency": "EUR",
+              "status": "NOT_QUALIFIED",
+              "reason": "THEME_UNKNOWN"
+            }
+          ]
+        }
+      ],
+      "countedFacts": [
+        {
+          "key": "asset:932:acquisitionPrice",
+          "lineId": "asset:932:acquisitionPrice",
+          "source": "ASSET_DATA",
+          "label": "Prix d’achat (fiche du bien)",
+          "kind": "REALIZED_COST",
+          "amountMinor": 28900000,
+          "currency": "EUR",
+          "date": "2019-06-01",
+          "fileId": null,
+          "operationId": null
+        }
+      ]
+    }
+  },
+  "recording": {
+    "operationCode": "t3_economic_qualification",
+    "task": "ECONOMIC_QUALIFICATION",
+    "output": {
+      "task": "ECONOMIC_QUALIFICATION",
+      "decisions": [
+        {
+          "amount": "M1",
+          "outcome": "INCLUDE",
+          "role": "REALIZED_COST",
+          "scope": null,
+          "economicDate": null,
+          "periodStart": null,
+          "periodEnd": null,
+          "allocation": "THIS_ASSET",
+          "representedBy": null,
+          "exclusion": null,
+          "confidence": "certain",
+          "evidence": [
+            {
+              "document": "D0",
+              "excerpt": "Taxe payée le 15/10/2025 : 1 340,00 €"
+            }
+          ],
+          "reason": "Charge payée."
+        }
+      ]
+    }
+  },
+  "expected": {
+    "valid": false,
+    "issues": [
+      "EXCERPT_NOT_FOUND"
+    ]
+  }
+}

@@ -63,6 +63,7 @@ import {
 import type { ExclusionReason } from './engine';
 import { resolveEconomicDate, type EconomicDateResolution } from './economic-date';
 import { compositionView, hintKey, planDocumentAdjustments, type PurchaseCompositionView } from './commercial-adjustments';
+import { semanticDraft, semanticEffectFor, semanticPendingTrace, type SemanticDocumentState, type SemanticLineTrace } from './semantic-qualification';
 
 // ── Entrées (lues par le service, persistées) ──────────────────────────────
 
@@ -158,6 +159,12 @@ export interface EconomicDocumentInput {
    * d'achat de la fiche de l'équipement.
    */
   linkedEquipmentIds?: number[];
+  /**
+   * Lot 113AL (#737) : décisions T3 VALIDÉES d'arbitrage sémantique des montants restés sans nature
+   * (`economic_qualification_reviews`) et examen en attente — appliquées par `semantic-qualification.ts`
+   * à la place de l'indice T1 manquant, jamais un montant calculé par l'IA. Absent : comportement 111V.
+   */
+  semantic?: SemanticDocumentState;
 }
 
 // ── Sortie : ligne économique ──────────────────────────────────────────────
@@ -221,7 +228,9 @@ type DocumentLineReason =
   // ligne, frais ou remise comprise dans le net d'un achat composé ; remise globale de plusieurs achats non ventilée.
   | 'COMMERCIAL_ADJUSTMENT_INTEGRATED' | 'PURCHASE_COMPONENT' | 'GLOBAL_DISCOUNT_NOT_ALLOCATED'
   // Lot 111V : l'utilisateur a confirmé que cette source représente le même fait qu'une dépense déjà comptée.
-  | 'USER_SAME_FACT';
+  | 'USER_SAME_FACT'
+  // Lot 113AL (#737) : arbitrage T3 validé — autre source d'un fait économique déjà compté (preuves au-delà du montant).
+  | 'SEMANTIC_SAME_FACT';
 
 export type EconomicLineReason = ExclusionReason | DocumentLineReason;
 
@@ -257,6 +266,7 @@ export const DOCUMENT_LINE_REASON_LABELS: Readonly<Record<DocumentLineReason, st
   PURCHASE_COMPONENT: 'Composante du prix net de l’achat (détail du calcul)',
   GLOBAL_DISCOUNT_NOT_ALLOCATED: 'Remise globale sur plusieurs achats du document : non répartie faute de règle explicite (jamais un avoir)',
   USER_SAME_FACT: 'Même dépense qu’une autre déjà comptée, confirmé par vous : comptée une seule fois',
+  SEMANTIC_SAME_FACT: 'Autre justificatif d’une dépense déjà comptée (rapprochement établi sur preuves) : comptée une seule fois',
 };
 
 /** Ligne documentaire qualifiée, avant le moteur (`status` null : à évaluer par `evaluateComponent`). */
@@ -321,6 +331,10 @@ export interface DocumentLineDraft {
   compositionOf?: string;
   /** Lot 109D : coûts réunis dans le net d'un achat recomposé (décisions « Ajouter / Retirer » antérieures conservées). */
   mergedFacts?: Array<{ kind: string; amountMinor: number; currency: string }>;
+  /** Lot 113AL : trace de l'arbitrage sémantique T3 du montant (appliqué, abstention, attente, contrat absent). */
+  semantic?: SemanticLineTrace | null;
+  /** Lot 113AL : clé stable du fait déjà compté qui représente ce montant (vérifiée par `tco/semantic-representation.ts`). */
+  representedBy?: string | null;
 }
 
 // ── Règles ─────────────────────────────────────────────────────────────────
@@ -412,6 +426,19 @@ export function qualifyDocumentLines(docs: readonly EconomicDocumentInput[], ctx
       };
     };
 
+    /**
+     * Lot 113AL (#737) : montants lus dans l'extract SANS aucune ligne (document sans montant ni indice T1) que
+     * T3 a arbitrés — une ligne par décision appliquée, une ligne « Nature à confirmer » par abstention (arbitrage
+     * de l'utilisateur, lot 111V). Montants persistés de l'extract, jamais calculés par l'IA.
+     */
+    const extraitsArbitres = (lienOp: Partial<DocumentLineDraft> = {}): DocumentLineDraft[] => {
+      const effets = (d.semantic?.effects ?? []).filter((e) => e.origin === 'EXTRACT');
+      return effets.map((e, i) => {
+        const b = base({ ...lienOp, lineId: `doc:${d.fileId}:t3:${i}`, amountMinor: e.amountMinor, currency: e.currency, provenance: 'T3' });
+        return semanticDraft(d, b, e) ?? { ...b, kind: null, status: 'NOT_QUALIFIED' as const, reason: 'THEME_UNKNOWN' as const, semantic: semanticPendingTrace(d.semantic, e) };
+      });
+    };
+
     // 1. Copie d'un autre justificatif.
     if (copies.has(d.fileId)) { out.push(base({ status: 'DUPLICATE', reason: 'DUPLICATE_COPY' })); continue; }
 
@@ -449,8 +476,8 @@ export function qualifyDocumentLines(docs: readonly EconomicDocumentInput[], ctx
     const nonMetier = !!d.typeCode && NON_EXPENSE_DOCUMENT_TYPES.has(d.typeCode);
     const cls = nonMetier ? { kind: 'excluded' as const, reason: d.typeCode! } : classifyExpenseDocument(d.typeCode, d.legacyType);
     if (cls.kind === 'excluded') {
-      // Ni montant ni indice : rien à expliquer (photo, notice sans montant).
-      if (d.amountCents == null && !d.candidates.some((c) => c.hints.length)) continue;
+      // Ni montant ni indice : rien à expliquer (photo, notice sans montant) — lot 113AL : sauf montants de l'extract arbitrés par T3.
+      if (d.amountCents == null && !d.candidates.some((c) => c.hints.length)) { out.push(...extraitsArbitres(lien)); continue; }
       const r = excludedReasonOf(cls.reason);
       // Devis / commande : leurs indices restent des prévisions (évaluées : total « prévu »).
       if (r !== 'QUOTE') {
@@ -542,6 +569,9 @@ export function qualifyDocumentLines(docs: readonly EconomicDocumentInput[], ctx
     // 5. Repli : montant du document, si son type est une dépense qualifiée.
     const facture = cls.kind === 'theme' || (cls.kind === 'unqualified' && INVOICE_LIKE.test(`${d.typeCode ?? ''} ${d.legacyType ?? ''}`));
     if (d.amountCents == null) {
+      // Lot 113AL : montants de l'extract arbitrés par T3 (aucun indice T1, aucun montant sur la fiche du document).
+      const arbitres = extraitsArbitres(lien);
+      if (arbitres.length) { out.push(...arbitres); continue; }
       // Lot 75D (D) : justificatif financier reconnu sans montant — montant INCONNU (jamais 0 € certain), signalé.
       // Lot 111V (§D) : un document descriptif (contrat, attestation, procès-verbal) sans montant n'est pas un montant
       // manquant — aucune ligne, aucune relecture (jamais de dépense ni de montant exigés qui n'existent pas).
@@ -553,7 +583,17 @@ export function qualifyDocumentLines(docs: readonly EconomicDocumentInput[], ctx
       out.push(base({ ...lien, kind: 'FORECAST_COST', role: 'FORECAST_COST', currency: d.userEditedAmount ? 'EUR' : String(d.currency || 'EUR').toUpperCase() }));
       continue;
     }
-    if (!facture) { out.push(base({ ...lien, status: 'NOT_QUALIFIED', reason: 'THEME_UNKNOWN' })); continue; }
+    if (!facture) {
+      // Lot 113AL (#737) : nature non établie par T1 — décision T3 validée appliquée si elle existe (même somme, même
+      // devise, jamais un montant de l'IA) ; sinon « Nature à confirmer » avec la trace de l'examen (abstention, attente).
+      const nonQualifiee = base({ ...lien, status: 'NOT_QUALIFIED', reason: 'THEME_UNKNOWN' });
+      const effet = semanticEffectFor(d.semantic, Math.abs(d.amountCents), nonQualifiee.currency);
+      const arbitree = effet ? semanticDraft(d, { ...nonQualifiee, status: null, reason: null }, effet) : null;
+      if (arbitree) { out.push(arbitree); continue; }
+      const trace = semanticPendingTrace(d.semantic, effet);
+      out.push(trace ? { ...nonQualifiee, semantic: trace } : nonQualifiee);
+      continue;
+    }
     const avoir = isCreditNoteTitle(d.title);
     // Lot 86F : montant du document daté par le document (fondement tracé).
     const dateDoc = resolveEconomicDate({

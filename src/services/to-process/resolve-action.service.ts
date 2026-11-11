@@ -693,7 +693,7 @@ async function resolveAgendaDuplicate(
   value: unknown,
   accountId: number,
   options: ResolveOptions,
-): Promise<ResolveResult> {
+): Promise<ResolveResult & { afterCommit?: () => Promise<void> }> {
   if (value !== 'SAME' && value !== 'DIFFERENT') return { ok: false, previousValue: null, error: 'INVALID_VALUE' };
   const ctx = action.triggerContext as DuplicateContext | null;
   if (!ctx?.candidate) return { ok: false, previousValue: null, error: 'FIELD_NOT_RESOLVABLE' };
@@ -774,5 +774,13 @@ async function resolveAgendaDuplicate(
     createdAt: now,
   });
 
-  return { ok: true, previousValue: null };
+  // Lot 113AH (#732) : rappel d'échéance de l'élément créé ou mis à jour, après validation.
+  const rappelItemId = value === 'SAME' ? (consolidation.applied ? existing.id : null) : Number(consolidation.createdItemId);
+  return {
+    ok: true, previousValue: null,
+    afterCommit: rappelItemId ? async () => {
+      const { evaluerRappelEcheance } = await import('@/services/agenda/write-agenda-item');
+      await evaluerRappelEcheance(accountId, rappelItemId);
+    } : undefined,
+  };
 }

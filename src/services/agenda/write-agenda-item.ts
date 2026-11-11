@@ -442,6 +442,16 @@ export async function writeAgendaItem(
     };
   }
 
+  // Lot 113AH (#732) : rappel d'échéance évalué APRÈS la validation de la
+  // transaction (création, date ou catégorie écrite) — jamais sur une
+  // écriture non validée : dans une transaction englobante (`client`), ce
+  // sont les effets d'après validation de l'appelant qui l'évaluent
+  // (`agendaEffectsAfterCommit`, écrivain de date « À traiter »). Une
+  // sauvegarde sans changement ne renvoie rien (couverture existante).
+  if (!opts.client && (creation || input.values.startDate !== undefined || input.values.homeCategory !== undefined)) {
+    await evaluerRappelEcheance(opts.accountId, id);
+  }
+
   if (opts.purchaseSync) {
     await syncPurchaseDate({
       itemId: id, accountId: opts.accountId, actorUserId: opts.actorUserId ?? null,
@@ -614,8 +624,25 @@ export async function agendaEffectsAfterCommit(p: {
       }
     }
     if (p.created && nature !== 'HISTORICAL' && assetIds.length > 0) await publierCreationAgenda(p.accountId, p.itemId);
+    // Lot 113AH : rappel d'échéance (création ou modification validée).
+    await evaluerRappelEcheance(p.accountId, p.itemId);
   } catch (e) {
     console.error(`[agenda] effets après validation de l'élément ${p.itemId} :`, (e as Error).message);
+  }
+}
+
+/**
+ * Lot 113AH (#732) — rappel d'échéance d'un élément écrit et VALIDÉ
+ * (`evaluateDeadlineRemindersAfterWrite` : J+0 … J+7, plage d'envoi, couverture
+ * unique par événement × destinataire). Import différé, jamais bloquant : le
+ * rattrapage périodique reste le filet.
+ */
+export async function evaluerRappelEcheance(accountId: number, itemId: number): Promise<void> {
+  try {
+    const { evaluateDeadlineRemindersAfterWrite } = await import('@/lib/notifications/scheduled/deadlines');
+    await evaluateDeadlineRemindersAfterWrite(accountId, [itemId]);
+  } catch (e) {
+    console.error(`[agenda] rappel d'échéance de l'élément ${itemId} :`, (e as Error).message);
   }
 }
 

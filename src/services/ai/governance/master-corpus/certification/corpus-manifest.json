@@ -1,6 +1,6 @@
 {
-  "version": 6,
-  "generatedAt": "2026-11-08T20:05:57.680Z",
+  "version": 7,
+  "generatedAt": "2026-11-10T16:47:24.548Z",
   "reference": {
     "ticket": "#601",
     "announcedScenarios": 401,
@@ -9602,6 +9602,348 @@
           "oracleFingerprint": null
         }
       ]
+    },
+    {
+      "id": "H-P-T3-EQ-01-AVIS-CHARGE-SANS-INDICE",
+      "sourceCaseId": "P-T3-EQ-01",
+      "file": "src/services/ai/reconciliation/master/__fixtures__/p-t3-eq-01-avis-charge-sans-indice.json",
+      "operationCode": "t3_economic_qualification",
+      "treatment": "T3",
+      "contract": null,
+      "schema": "T3EconomicQualificationOutput",
+      "riskFamily": "T3_IDENTITE_ECONOMIQUE",
+      "difficulty": "SIMPLE",
+      "critical": true,
+      "pair": null,
+      "provenance": "DEVELOPPEUR",
+      "sourcePieces": [],
+      "inputMode": "STRUCTURED",
+      "testType": "QUALITE_MODELE",
+      "evaluationType": "ORACLE",
+      "status": "A_COMPLETER",
+      "reason": "réponse potentiellement utilisable : proposition d’oracle prête, approbation humaine individuelle requise (sources du cas)",
+      "historicalClass": "REPONSE_UTILISABLE",
+      "cdc35Category": null,
+      "oracle": {
+        "version": 1,
+        "requiredFacts": [],
+        "absentFacts": [],
+        "entities": {
+          "expected": [],
+          "forbidden": []
+        },
+        "decisions": {
+          "allowed": [],
+          "forbidden": []
+        },
+        "abstention": {
+          "expected": "EITHER",
+          "criteria": null
+        },
+        "allowedSources": [],
+        "equivalences": [],
+        "amountTolerance": 0,
+        "serverExpected": {
+          "valid": true,
+          "effects": [
+            {
+              "amount": "M1",
+              "outcome": "INCLUDE",
+              "applied": true,
+              "status": "ENGINE"
+            }
+          ]
+        },
+        "notes": "Proposition générée au lot 100B depuis l’attendu historique du cas : à relire sur les sources (contexte du cas, pièces), jamais sur une sortie de modèle."
+      },
+      "expectedSummary": "{\"valid\":true,\"effects\":[{\"amount\":\"M1\",\"outcome\":\"INCLUDE\",\"applied\":true,\"status\":\"ENGINE\"}]}",
+      "revisions": [
+        {
+          "revision": 1,
+          "at": "2026-11-10T16:47:24.548Z",
+          "by": "lot100b",
+          "reason": "reclassement initial (REPONSE_UTILISABLE) : Lot 113AL — ECONOMIC_QUALIFICATION (contrat t3-economic-qualification-v1) : avis portant un montant à payer, sans indice financier T1 ni candidat ; les autres données du compte établissent une charge annuelle du bien ⇒ INCLUDE REALIZED_COST certain, ligne créée par le moteur existant (cas générique ",
+          "changes": [
+            "*"
+          ],
+          "oracleFingerprint": "6d4e59d3545789c7c7d1c9af934301d970556c7cad2446191214b8d9bce71d4f"
+        }
+      ]
+    },
+    {
+      "id": "H-P-T3-EQ-02-REGLEMENT-D-UNE-CHARGE",
+      "sourceCaseId": "P-T3-EQ-02",
+      "file": "src/services/ai/reconciliation/master/__fixtures__/p-t3-eq-02-reglement-d-une-charge.json",
+      "operationCode": "t3_economic_qualification",
+      "treatment": "T3",
+      "contract": null,
+      "schema": "T3EconomicQualificationOutput",
+      "riskFamily": "T3_IDENTITE_ECONOMIQUE",
+      "difficulty": "SIMPLE",
+      "critical": true,
+      "pair": null,
+      "provenance": "DEVELOPPEUR",
+      "sourcePieces": [],
+      "inputMode": "STRUCTURED",
+      "testType": "QUALITE_MODELE",
+      "evaluationType": "ORACLE",
+      "status": "A_COMPLETER",
+      "reason": "réponse potentiellement utilisable : proposition d’oracle prête, approbation humaine individuelle requise (sources du cas)",
+      "historicalClass": "REPONSE_UTILISABLE",
+      "cdc35Category": null,
+      "oracle": {
+        "version": 1,
+        "requiredFacts": [],
+        "absentFacts": [],
+        "entities": {
+          "expected": [],
+          "forbidden": []
+        },
+        "decisions": {
+          "allowed": [],
+          "forbidden": []
+        },
+        "abstention": {
+          "expected": "EITHER",
+          "criteria": null
+        },
+        "allowedSources": [],
+        "equivalences": [],
+        "amountTolerance": 0,
+        "serverExpected": {
+          "valid": true,
+          "effects": [
+            {
+              "amount": "M1",
+              "outcome": "REPRESENTED",
+              "applied": true,
+              "status": "PAYMENT",
+              "reason": "PAYMENT_PROOF"
+            }
+          ]
+        },
+        "notes": "Proposition générée au lot 100B depuis l’attendu historique du cas : à relire sur les sources (contexte du cas, pièces), jamais sur une sortie de modèle."
+      },
+      "expectedSummary": "{\"valid\":true,\"effects\":[{\"amount\":\"M1\",\"outcome\":\"REPRESENTED\",\"applied\":true,\"status\":\"PAYMENT\",\"reason\":\"PAYMENT_PROOF\"}]}",
+      "revisions": [
+        {
+          "revision": 1,
+          "at": "2026-11-10T16:47:24.548Z",
+          "by": "lot100b",
+          "reason": "reclassement initial (REPONSE_UTILISABLE) : Lot 113AL — ECONOMIC_QUALIFICATION : justificatif de paiement du montant d’une charge déjà comptée (même référence) ⇒ REPRESENTED PAYMENT du fait F2 : jamais une seconde dépense (cas générique tiré du document #356).",
+          "changes": [
+            "*"
+          ],
+          "oracleFingerprint": "876d8e1a52a530e851a99aa35806f91b9fd3c7c288fb64b22c039468f2000e66"
+        }
+      ]
+    },
+    {
+      "id": "H-P-T3-EQ-03-ACQUISITION-DEJA-COMPTEE",
+      "sourceCaseId": "P-T3-EQ-03",
+      "file": "src/services/ai/reconciliation/master/__fixtures__/p-t3-eq-03-acquisition-deja-comptee.json",
+      "operationCode": "t3_economic_qualification",
+      "treatment": "T3",
+      "contract": null,
+      "schema": "T3EconomicQualificationOutput",
+      "riskFamily": "T3_DOUBLE_COMPTE",
+      "difficulty": "SIMPLE",
+      "critical": true,
+      "pair": null,
+      "provenance": "DEVELOPPEUR",
+      "sourcePieces": [],
+      "inputMode": "STRUCTURED",
+      "testType": "QUALITE_MODELE",
+      "evaluationType": "ORACLE",
+      "status": "A_COMPLETER",
+      "reason": "réponse potentiellement utilisable : proposition d’oracle prête, approbation humaine individuelle requise (sources du cas)",
+      "historicalClass": "REPONSE_UTILISABLE",
+      "cdc35Category": null,
+      "oracle": {
+        "version": 1,
+        "requiredFacts": [],
+        "absentFacts": [],
+        "entities": {
+          "expected": [],
+          "forbidden": []
+        },
+        "decisions": {
+          "allowed": [],
+          "forbidden": []
+        },
+        "abstention": {
+          "expected": "EITHER",
+          "criteria": null
+        },
+        "allowedSources": [],
+        "equivalences": [],
+        "amountTolerance": 0,
+        "serverExpected": {
+          "valid": true,
+          "effects": [
+            {
+              "amount": "M1",
+              "outcome": "REPRESENTED",
+              "applied": true,
+              "status": "CONSOLIDATED_ELSEWHERE",
+              "reason": "SAME_AS_ASSET_PRICE"
+            }
+          ]
+        },
+        "notes": "Proposition générée au lot 100B depuis l’attendu historique du cas : à relire sur les sources (contexte du cas, pièces), jamais sur une sortie de modèle."
+      },
+      "expectedSummary": "{\"valid\":true,\"effects\":[{\"amount\":\"M1\",\"outcome\":\"REPRESENTED\",\"applied\":true,\"status\":\"CONSOLIDATED_ELSEWHERE\",\"reason\":\"SAME_AS_ASSET_PRICE\"}]}",
+      "revisions": [
+        {
+          "revision": 1,
+          "at": "2026-11-10T16:47:24.548Z",
+          "by": "lot100b",
+          "reason": "reclassement initial (REPONSE_UTILISABLE) : Lot 113AL — ECONOMIC_QUALIFICATION : justificatif d’acquisition portant le prix déjà repris par la fiche du bien ⇒ REPRESENTED du fait F1 (prix de la fiche) : relié au vrai fait, aucune nouvelle somme, plus de THEME_UNKNOWN (cas générique tiré du document #361).",
+          "changes": [
+            "*"
+          ],
+          "oracleFingerprint": "60b2763ae1c4fe727f50f35b823967a1577bdc4f2d1579b13eccc2e8de2cf267"
+        }
+      ]
+    },
+    {
+      "id": "H-P-T3-EQ-04-MONTANT-EGAL-SEUL",
+      "sourceCaseId": "P-T3-EQ-04",
+      "file": "src/services/ai/reconciliation/master/__fixtures__/p-t3-eq-04-montant-egal-seul.json",
+      "operationCode": "t3_economic_qualification",
+      "treatment": "T3",
+      "contract": null,
+      "schema": "T3EconomicQualificationOutput",
+      "riskFamily": "T3_DOUBLE_COMPTE",
+      "difficulty": "DIFFICILE",
+      "critical": false,
+      "pair": null,
+      "provenance": "DEVELOPPEUR",
+      "sourcePieces": [],
+      "inputMode": "STRUCTURED",
+      "testType": "GARDE_SERVEUR",
+      "evaluationType": "GARDE_SERVEUR",
+      "status": "GARDE_SERVEUR",
+      "reason": "garde serveur : sortie enregistrée délibérément fautive, contrôle de la réaction du serveur (reste en CI, jamais une référence de promotion)",
+      "historicalClass": "GARDE",
+      "cdc35Category": null,
+      "oracle": null,
+      "expectedSummary": "{\"valid\":false,\"issues\":[\"SAME_AMOUNT_ONLY\"]}",
+      "revisions": [
+        {
+          "revision": 1,
+          "at": "2026-11-10T16:47:24.548Z",
+          "by": "lot100b",
+          "reason": "reclassement initial (GARDE) : Lot 113AL — ECONOMIC_QUALIFICATION, garde serveur : la sortie rattache le montant au prix de la fiche sur la seule égalité de montant (un passage) ⇒ refus en bloc (SAME_AMOUNT_ONLY), vaut abstention : « Nature à confirmer ».",
+          "changes": [
+            "*"
+          ],
+          "oracleFingerprint": null
+        }
+      ]
+    },
+    {
+      "id": "H-P-T3-EQ-05-MULTIBIENS-SANS-VENTILATION",
+      "sourceCaseId": "P-T3-EQ-05",
+      "file": "src/services/ai/reconciliation/master/__fixtures__/p-t3-eq-05-multibiens-sans-ventilation.json",
+      "operationCode": "t3_economic_qualification",
+      "treatment": "T3",
+      "contract": null,
+      "schema": "T3EconomicQualificationOutput",
+      "riskFamily": "T3_IDENTITE_ECONOMIQUE",
+      "difficulty": "INTERMEDIAIRE",
+      "critical": true,
+      "pair": null,
+      "provenance": "DEVELOPPEUR",
+      "sourcePieces": [],
+      "inputMode": "STRUCTURED",
+      "testType": "QUALITE_MODELE",
+      "evaluationType": "ORACLE",
+      "status": "A_COMPLETER",
+      "reason": "réponse potentiellement utilisable : proposition d’oracle prête, approbation humaine individuelle requise (sources du cas)",
+      "historicalClass": "REPONSE_UTILISABLE",
+      "cdc35Category": null,
+      "oracle": {
+        "version": 1,
+        "requiredFacts": [],
+        "absentFacts": [],
+        "entities": {
+          "expected": [],
+          "forbidden": []
+        },
+        "decisions": {
+          "allowed": [],
+          "forbidden": []
+        },
+        "abstention": {
+          "expected": "EITHER",
+          "criteria": null
+        },
+        "allowedSources": [],
+        "equivalences": [],
+        "amountTolerance": 0,
+        "serverExpected": {
+          "valid": true,
+          "effects": [
+            {
+              "amount": "M1",
+              "outcome": "INCLUDE",
+              "applied": true,
+              "status": "UNALLOCATED"
+            }
+          ]
+        },
+        "notes": "Proposition générée au lot 100B depuis l’attendu historique du cas : à relire sur les sources (contexte du cas, pièces), jamais sur une sortie de modèle."
+      },
+      "expectedSummary": "{\"valid\":true,\"effects\":[{\"amount\":\"M1\",\"outcome\":\"INCLUDE\",\"applied\":true,\"status\":\"UNALLOCATED\"}]}",
+      "revisions": [
+        {
+          "revision": 1,
+          "at": "2026-11-10T16:47:24.548Z",
+          "by": "lot100b",
+          "reason": "reclassement initial (REPONSE_UTILISABLE) : Lot 113AL — ECONOMIC_QUALIFICATION : charge d’un document commun à plusieurs biens sans répartition écrite ⇒ INCLUDE avec SHARED_NOT_ALLOCATED : non attribuée, jamais répartie arbitrairement (attente motivée).",
+          "changes": [
+            "*"
+          ],
+          "oracleFingerprint": "32554754a120789e72bbb3a22b3d963a7b0128364cbd6b43a4e63b5f4fab9341"
+        }
+      ]
+    },
+    {
+      "id": "H-P-T3-EQ-06-EXTRAIT-INVENTE",
+      "sourceCaseId": "P-T3-EQ-06",
+      "file": "src/services/ai/reconciliation/master/__fixtures__/p-t3-eq-06-extrait-invente.json",
+      "operationCode": "t3_economic_qualification",
+      "treatment": "T3",
+      "contract": null,
+      "schema": "T3EconomicQualificationOutput",
+      "riskFamily": "T3_IDENTITE_ECONOMIQUE",
+      "difficulty": "DIFFICILE",
+      "critical": false,
+      "pair": null,
+      "provenance": "DEVELOPPEUR",
+      "sourcePieces": [],
+      "inputMode": "STRUCTURED",
+      "testType": "GARDE_SERVEUR",
+      "evaluationType": "GARDE_SERVEUR",
+      "status": "GARDE_SERVEUR",
+      "reason": "garde serveur : sortie enregistrée délibérément fautive, contrôle de la réaction du serveur (reste en CI, jamais une référence de promotion)",
+      "historicalClass": "GARDE",
+      "cdc35Category": null,
+      "oracle": null,
+      "expectedSummary": "{\"valid\":false,\"issues\":[\"EXCERPT_NOT_FOUND\"]}",
+      "revisions": [
+        {
+          "revision": 1,
+          "at": "2026-11-10T16:47:24.548Z",
+          "by": "lot100b",
+          "reason": "reclassement initial (GARDE) : Lot 113AL — ECONOMIC_QUALIFICATION, garde serveur : la sortie cite un passage absent des textes fournis (« payé le ») pour inclure le montant ⇒ refus en bloc (EXCERPT_NOT_FOUND), vaut abstention.",
+          "changes": [
+            "*"
+          ],
+          "oracleFingerprint": null
+        }
+      ]
     }
   ],
   "ledger": [
@@ -9758,6 +10100,12 @@
     "H-P-T3-PR-03-SUCCESSION-BORNE-MAL-LUE",
     "H-P-T3-PR-04-MEME-FAIT-DUPLICATA",
     "H-P-T3-PR-05-PERIODE-CORRIGEE-PROTEGEE",
-    "H-P-T3-PR-06-EXTRAIT-INVENTE"
+    "H-P-T3-PR-06-EXTRAIT-INVENTE",
+    "H-P-T3-EQ-01-AVIS-CHARGE-SANS-INDICE",
+    "H-P-T3-EQ-02-REGLEMENT-D-UNE-CHARGE",
+    "H-P-T3-EQ-03-ACQUISITION-DEJA-COMPTEE",
+    "H-P-T3-EQ-04-MONTANT-EGAL-SEUL",
+    "H-P-T3-EQ-05-MULTIBIENS-SANS-VENTILATION",
+    "H-P-T3-EQ-06-EXTRAIT-INVENTE"
   ]
 }

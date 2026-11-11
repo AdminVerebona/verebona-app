@@ -220,6 +220,13 @@ export async function runDiagnosticJob(job: DiagJobRow, ctx: DiagRunContext): Pr
   const mem = createMemoryRecorder();
   const onPoint = (pt: DiagMemPoint) => mem.sample(phase, pt);
   let sessionStats: import('@/services/admin/account-data/session').SessionStats | null = null;
+  let sessionTrace: import('@/services/admin/account-data/session').SessionTrace | null = null;
+  /** Lot 113AG : bilan des erreurs SQL de la session (journal final). */
+  const sqlSummary = () => {
+    const h = sessionTrace?.health();
+    if (!h) return null;
+    return { session: h.state, total: h.total, origins: h.origins, consequences: h.consequences, firstError: h.firstError ? { seq: h.firstError.seq, at: h.firstError.at, sqlstate: h.firstError.sqlstate, file: h.firstError.file, caller: h.firstError.caller } : null, fatal: h.fatal ? h.fatal.reason : null };
+  };
   const queries = () => (sessionStats ? {
     count: sessionStats.queries, ms: Math.round(sessionStats.queryMs), fetches: sessionStats.fetches, rows: sessionStats.rows, bytes: sessionStats.bytes,
     oversizedRows: sessionStats.oversizedRows, maxRowBytes: sessionStats.maxRowBytes, slowest: sessionStats.slowest.map((x) => ({ sql: sanitizeErrorMessage(x.sql), ms: x.ms })),
@@ -301,6 +308,7 @@ export async function runDiagnosticJob(job: DiagJobRow, ctx: DiagRunContext): Pr
   const enter = async (p: DiagJobPhase) => {
     if (p === phase) return;
     phase = p;
+    sessionTrace?.setContext({ phase: p });
     const left = prof.enter(p);
     await setDiagnosticPhase(job.id, ctx.workerId, p, progress, prof.snapshot());
     log('phase', { phase: p, previous: left.left, previousMs: Math.round(left.ms), filesDone: progress.filesDone, filesPlanned: progress.filesPlanned, rssMb: progress.rssMb });
@@ -357,8 +365,22 @@ export async function runDiagnosticJob(job: DiagJobRow, ctx: DiagRunContext): Pr
 
     step = 'snapshot';
     prof.enter('INSTANTANE');
-    const session = await openReadSession({}, { statementTimeoutMs: settings.statementTimeoutMs });
+    // Lot 113AG : chaque erreur SQL d'ORIGINE et l'incident fatal journalisés AU MOMENT où ils surviennent
+    // (horodatage corrélable Scalingo / PostgreSQL) ; les 25P02 secondaires sont comptés, rattachés à leur cause.
+    let sqlLogged = 0;
+    const session = await openReadSession({}, {
+      statementTimeoutMs: settings.statementTimeoutMs,
+      onIncident: (i) => {
+        if (i.kind === 'CONSEQUENCE' || sqlLogged >= 20) return;
+        sqlLogged++;
+        console.error(`[diagnostic-job] ${JSON.stringify({ event: sqlLogged === 1 ? 'sql-first-error' : 'sql-error', ...base, seq: i.seq, at: i.at, sqlstate: i.sqlstate, kind: i.kind, phase: i.phase ?? phase, file: i.file, caller: i.caller, savepoint: i.savepoint, statement: sanitizeErrorMessage(i.statement), message: sanitizeErrorMessage(i.message), stack: i.stack.slice(0, 4) })}`);
+      },
+      onFatal: (f) => {
+        console.error(`[diagnostic-job] ${JSON.stringify({ event: 'sql-session-broken', ...base, at: f.at, reason: f.reason, phase, origin: f.origin ? { seq: f.origin.seq, sqlstate: f.origin.sqlstate, file: f.origin.file, caller: f.origin.caller, message: sanitizeErrorMessage(f.origin.message) } : null, rollback: f.rollback ? { seq: f.rollback.seq, sqlstate: f.rollback.sqlstate, message: sanitizeErrorMessage(f.rollback.message) } : null, connection: 'libérée', reads: 'arrêtées' })}`);
+      },
+    });
     sessionStats = session.stats ?? null;
+    sessionTrace = session.trace ?? null;
     // Lot 111C : connexion réservée de l'instantané — cible de l'interruption en cas d'annulation.
     await session.q('SELECT pg_backend_pid() AS pid, (SELECT xact_start::text FROM pg_stat_activity WHERE pid = pg_backend_pid()) AS xs').then((r) => {
       backendXact = r[0]?.xs == null ? null : String(r[0].xs);
@@ -496,6 +518,7 @@ export async function runDiagnosticJob(job: DiagJobRow, ctx: DiagRunContext): Pr
       slowest: timings.slowestFiles.slice(0, 5).map((x) => `${x.path}:${x.ms}ms`), counters: timings.counters,
       archiveBytes: archive?.bytes ?? null, archiveEntries: archive?.entries ?? null, zip64: archive?.zip64 ?? null,
       memory: memoryLogLine(timings.memory ?? null, progress), queries: timings.queries ? { count: timings.queries.count, ms: timings.queries.ms, oversizedRows: timings.queries.oversizedRows, maxRowBytes: timings.queries.maxRowBytes } : null,
+      sql: sqlSummary(),
     });
     return outcome.status;
   } catch (e) {
@@ -521,7 +544,7 @@ export async function runDiagnosticJob(job: DiagJobRow, ctx: DiagRunContext): Pr
     const status = await failDiagnosticAttempt(job, ctx.workerId, {
       code, phase, message, transient: isTransientError(code), progress, cancelled: isCancel,
     });
-    console.error(`[diagnostic-job] ${JSON.stringify({ event: isCancel ? 'attempt-cancelled' : 'attempt-failed', ...base, code, cause: code, phase, step, status, autoRetry: status === 'QUEUED', rssMb: progress.rssMb, peakRssMb: progress.peakRssMb, phases: closed.phases, memory: memoryLogLine(memory, progress), queries: closed.queries ? { count: closed.queries.count, ms: closed.queries.ms, oversizedRows: closed.queries.oversizedRows } : null, message })}`);
+    console.error(`[diagnostic-job] ${JSON.stringify({ event: isCancel ? 'attempt-cancelled' : 'attempt-failed', ...base, code, cause: code, phase, step, status, autoRetry: status === 'QUEUED', rssMb: progress.rssMb, peakRssMb: progress.peakRssMb, phases: closed.phases, memory: memoryLogLine(memory, progress), queries: closed.queries ? { count: closed.queries.count, ms: closed.queries.ms, oversizedRows: closed.queries.oversizedRows } : null, sql: sqlSummary(), message })}`);
     return status;
   } finally {
     clearInterval(poll);
