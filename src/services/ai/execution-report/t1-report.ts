@@ -270,6 +270,10 @@ async function safeRows(steps: ReportStep[], label: string, sql: string, params:
 /** Construit les lignes du rapport par relecture en base (exporté pour les tests). */
 export async function buildT1Entries(rec: T1ExecutionRecorder, p: { accountId: number; fileId: number }): Promise<{ entries: ReportEntry[]; readSteps: ReportStep[]; counters: Record<string, number> }> {
   const entries: ReportEntry[] = [];
+  // Lot 114G (#760, P2-10) : faits réellement relus en base pour cette extraction (`null` : relecture impossible).
+  // Sert à ne dire « connaissance conservée » que lorsqu'elle est vérifiée.
+  let faitsRelus: Set<string> | null = null;
+  const cleFait = (k: unknown, v: unknown) => `${String(k ?? '').toLowerCase()}\u0001${String(v ?? '').trim().toLowerCase()}`;
   const readSteps: ReportStep[] = [];
   const knowledgeOk = rec.steps.some((s) => s.step === 'KNOWLEDGE' && s.status === 'OK');
   const knowledgeErr = rec.steps.find((s) => s.step === 'KNOWLEDGE' && s.status === 'FAILED')?.error ?? null;
@@ -392,6 +396,10 @@ export async function buildT1Entries(rec: T1ExecutionRecorder, p: { accountId: n
         inc(r.canonical_key ? 'factsCanonical' : 'factsGeneric');
       }
       c.factsPersisted = (facts ?? []).length;
+      if (facts) {
+        faitsRelus = new Set(facts.flatMap((r) => [r.canonical_key, r.raw_key, r.fact_key].filter(Boolean)
+          .flatMap((k) => [cleFait(k, r.value_text), cleFait(k, r.normalized_value), cleFait(k, r.raw_value)])));
+      }
       // Déclaré ↔ persisté : ce qui manque est identifié, jamais supposé écrit.
       if (facts) {
         const manquants = unmatchedDeclared(declaredFacts, facts.map((r) => factMatchKey({ factKey: r.fact_key as string, valueText: r.value_text as string | null, valueNumber: r.value_number as string | null })),
@@ -473,6 +481,9 @@ export async function buildT1Entries(rec: T1ExecutionRecorder, p: { accountId: n
   // ── 3. Projection des faits sur les fiches (preuves) ─────────────────────
   for (const s of rec.projection?.skipped ?? []) {
     const fct = s.fact;
+    const echecEcriture = s.reason === 'WRITE_FAILED' || s.reason === 'SCHEMA_NOT_READY';
+    const conserve: boolean | null = faitsRelus === null ? null
+      : [fct.canonicalKey, fct.rawKey].filter(Boolean).some((k) => [fct.value, fct.rawValue].some((v) => faitsRelus!.has(cleFait(k, v))));
     entries.push({
       section: 'PROJECTION', tableName: 'field_evidence', fieldKey: fct.canonicalKey ?? fct.rawKey, label: fct.label,
       entityType: fct.target.targetType, entityId: fct.target.targetEntityId, value: fct.value, valueType: fct.valueType ?? valueTypeOf(fct.value),
@@ -482,12 +493,17 @@ export async function buildT1Entries(rec: T1ExecutionRecorder, p: { accountId: n
         rawKey: fct.rawKey, subject: fct.subject, attribute: fct.attribute, excerpt: fct.evidence?.excerpt ?? null, page: fct.evidence?.page ?? null, confidence: fct.confidence,
         // Lot 113AN (#741, diagnostic §5) : une projection non écrite n'est PAS une extraction manquée — le fait
         // reste dans document_facts (connaissance conservée) ; seules les unités NON RÉSOLUES sont des lacunes.
-        lossFamily: s.reason === 'WRITE_FAILED' || s.reason === 'SCHEMA_NOT_READY' ? 'TECHNICAL_WRITE_FAILURE' : 'PROJECTION_ONLY_KNOWLEDGE_KEPT',
-        knowledgePreserved: true,
+        // Lot 114G (#760, P2-10) : « conservée » seulement si le fait est RETROUVÉ à la relecture de document_facts ;
+        // relecture impossible → non vérifiable (null), jamais annoncé conservé ; introuvable → perte signalée.
+        lossFamily: echecEcriture ? 'TECHNICAL_WRITE_FAILURE' : conserve === true ? 'PROJECTION_ONLY_KNOWLEDGE_KEPT'
+          : conserve === false ? 'KNOWLEDGE_NOT_FOUND_AFTER_REREAD' : 'KNOWLEDGE_NOT_VERIFIABLE',
+        knowledgePreserved: conserve,
       },
     });
     inc(`projection_${s.reason}`);
-    if (s.reason !== 'WRITE_FAILED' && s.reason !== 'SCHEMA_NOT_READY') inc('projectionNotWrittenKnowledgeKept');
+    if (!echecEcriture && conserve === true) inc('projectionNotWrittenKnowledgeKept');
+    else if (!echecEcriture && conserve === false) inc('projectionNotWrittenKnowledgeMissing');
+    else if (!echecEcriture) inc('projectionNotWrittenKnowledgeUnverified');
   }
   const evidenceIds = [...(rec.projection?.evidenceIds.values() ?? [])];
   if (evidenceIds.length) {

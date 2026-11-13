@@ -50,6 +50,7 @@
  */
 import { unitOfCell } from './build-units';
 import { allSignificantValues, plat } from './text';
+import { unstructuredContactValues } from './coverage';
 import { contentRoots, valueFormsOf } from '../value-decisions/validate';
 import type { CoverageStatus, CoveredSourceUnit } from './types';
 
@@ -108,8 +109,34 @@ export interface ReconciliationInput {
   stage: ReconciliationStage;
 }
 
-/** Motifs d'une unité NON RÉSOLUE que la réconciliation peut lever (jamais une incertitude, un échec, un contact). */
+/**
+ * Motifs d'une unité NON RÉSOLUE que la réconciliation peut lever (jamais une incertitude ni un échec).
+ * Lot 114G (#760, P2-06) : `values_not_structured` (coordonnées de contact) est traité à part, par
+ * comparaison de TOUTES les coordonnées du passage à la connaissance persistée (`reconcileContactUnit`).
+ */
 const RECONCILABLE_REASONS = new Set(['not_extracted', 'not_structured', 'fact_dropped', 'values_partially_structured']);
+
+/**
+ * Lot 114G (Trello #760, P2-05) — valeurs structurées d'un candidat Opération (références métier, montants,
+ * dates, périodes), à partir de sa forme en mémoire OU de sa charge persistée (`document_operation_candidates.payload`).
+ * Une seule fonction pour l'analyse et pour la réconciliation sur stockage : même résultat des deux côtés. Pure.
+ */
+export function candidateReconciliationValue(candidateKey: string, c: unknown): ReconciliationValue {
+  const o = (c && typeof c === 'object' ? c : {}) as {
+    businessReferences?: Array<{ value?: unknown }>;
+    financialHints?: Array<{ amountMinor?: unknown; economicDate?: unknown; periodStart?: unknown; periodEnd?: unknown }>;
+    temporalHints?: Record<string, unknown> | null;
+  };
+  const montant = (v: unknown) => (typeof v === 'number' && Number.isFinite(v) ? v / 100 : null);
+  return {
+    ref: candidateKey, source: 'CANDIDATE', page: null,
+    values: [
+      ...(Array.isArray(o.businessReferences) ? o.businessReferences.map((r) => r?.value) : []),
+      ...(Array.isArray(o.financialHints) ? o.financialHints.flatMap((h) => [montant(h?.amountMinor), h?.economicDate, h?.periodStart, h?.periodEnd]) : []),
+      ...Object.values(o.temporalHints ?? {}),
+    ].filter((v) => v !== null && v !== undefined && typeof v !== 'object'),
+  };
+}
 const TEXT_KINDS = new Set(['TEXT_BLOCK', 'LABEL_VALUE', 'FORM_FIELD']);
 /** Longueur minimale (forme de comparaison) d'une unité CITÉE par un extrait ou incluse dans un autre passage. */
 const MIN_CITATION = 4;
@@ -207,7 +234,89 @@ export function reconcileCoverage<U extends CoveredSourceUnit>(units: readonly U
   for (const x of textes) for (const f of formesUnite.get(x.sourceUnitId) ?? []) parForme.set(f, [...(parForme.get(f) ?? []), x]);
   const porteurs = (form: string, page: number | null | 'doc') => (parForme.get(form) ?? []).filter((x) => page === 'doc' || pageOk(x.page, page)).length;
 
+  // Lot 114G (#760, P2-06) : toute la connaissance persistée du document (valeurs des faits, métadonnées, candidats).
+  const connaissance = [...input.facts.flatMap((f) => f.values), ...(input.values ?? []).flatMap((v) => v.values)]
+    .filter((v) => v !== null && v !== undefined && String(v).trim() !== '').map(String);
+
   return units.map((u) => {
+    // ════════════════════════════════════════════════════════════════════
+    // LOT 114G (Trello #760, P1-01) — UNITÉ « COUVERTE » À PLUSIEURS VALEURS
+    //
+    // `computeCoverage` déclare une unité COVERED/fact dès qu'UN fait lui est
+    // lié. Un bloc « Montant TTC 120,00 € — HT 100,00 € — acompte 30,00 € »
+    // dont seule la première valeur est structurée restait donc couvert, et
+    // la réconciliation ne regardait que les unités NON RÉSOLUES. Chaque
+    // valeur significative (montant, date, identifiant) d'une unité couverte
+    // par un fait doit maintenant être expliquée : décision valide de T1, fait
+    // rattaché à l'unité, ou donnée structurée ancrée (mêmes ancrages que
+    // ci-dessous — jamais une simple égalité de nombre). Sinon l'unité devient
+    // NON RÉSOLUE `values_partially_structured` (réparation ciblée possible),
+    // ou INCERTAINE si une valeur est déclarée indéterminée. Une unité à une
+    // seule valeur, ou dont toutes les valeurs sont expliquées, n'est jamais
+    // dégradée.
+    // ════════════════════════════════════════════════════════════════════
+    if (u.status === 'COVERED' && u.reason === 'fact' && TEXT_KINDS.has(u.kind) && u.text) {
+      const sig = [...new Set(allSignificantValues(u.text).map((v) => `${v.kind}:${v.normalized}`))];
+      if (sig.length < 2) return u;
+      const decs = decisions.get(u.sourceUnitId) ?? new Map<string, ReconciliationDecision>();
+      const libelle = u.label ? contentRoots(u.label) : new Set<string>();
+      const pu = platUnite.get(u.sourceUnitId) ?? '';
+      const reps: Representation[] = [];
+      let structurees = 0; let nonRetenues = 0; let indeterminees = 0;
+      for (const form of sig) {
+        const d = decs.get(form);
+        if (d) {
+          reps.push({ source: 'VALUE_DECISION', ref: `decision:${d.ref}` });
+          if (d.decision === 'UNDETERMINED') indeterminees++; else if (d.decision === 'NOT_RETAINED') nonRetenues++; else structurees++;
+          continue;
+        }
+        const f = faits.find((x) => x.forms.has(form) && (
+          // Fait rattaché à CETTE unité (provenance), ou dont l'extrait la cite, ou de même libellé,
+          // ou seule unité de la page à porter la valeur.
+          x.f.unitIds.some((id) => unitOfCell(id) === u.sourceUnitId)
+          || (pu.length >= MIN_CITATION && x.ex.includes(pu))
+          || ([...x.pages].some((pg) => pageOk(pg, u.page)) && (
+            (libelle.size > 0 && [...libelle].some((w) => x.roots.has(w)))
+            || (u.page !== null && x.pages.has(u.page) && porteurs(form, u.page) === 1)))));
+        if (f) { structurees++; reps.push({ source: 'FACT', ref: `fact:${f.f.ref}` }); continue; }
+        const l = lignes.find((x) => pageOk(x.u.page, u.page) && x.forms.has(form) && sig.every((g) => x.forms.has(g)));
+        if (l) { structurees++; reps.push({ source: 'TABLE', ref: `unit:${l.u.sourceUnitId}` }); continue; }
+        const o = autres.find((x) => x.forms.has(form) && pageOk(x.v.page, u.page) && porteurs(form, 'doc') === 1);
+        if (o) { structurees++; reps.push({ source: o.v.source, ref: `${o.v.source === 'METADATA' ? 'meta' : 'candidate'}:${o.v.ref}` }); continue; }
+      }
+      const expliquees = structurees + nonRetenues + indeterminees;
+      if (expliquees === sig.length && indeterminees === 0) return u;
+      const provenance: CoverageProvenance = {
+        rule: expliquees === sig.length ? 'value_decision_undetermined' : 'covered_unit_values_partially_structured',
+        sources: [...new Set(reps.map((r) => r.source))], refs: [...new Set(reps.map((r) => r.ref))].slice(0, MAX_REFS),
+        previous: u.coverageProvenance?.previous ?? { status: u.status, reason: u.reason },
+        values: { total: sig.length, represented: structurees, notRetained: nonRetenues, undetermined: indeterminees }, stage: input.stage,
+      };
+      return expliquees === sig.length
+        ? { ...u, status: 'UNCERTAIN', reason: 'value_undetermined', coverageProvenance: provenance }
+        : { ...u, status: 'UNRESOLVED', reason: 'values_partially_structured', coverageProvenance: provenance };
+    }
+    // ════════════════════════════════════════════════════════════════════
+    // LOT 114G (Trello #760, P2-06) — COORDONNÉES DE CONTACT, SANS IA
+    //
+    // `values_not_structured` (lot 111X) était exclu de la réconciliation :
+    // une coordonnée déjà portée par un fait d'une AUTRE unité ou par une
+    // donnée structurée du document repartait vers le modèle. Avant toute
+    // réparation, TOUTES les coordonnées du passage sont comparées à la
+    // connaissance persistée ; l'unité n'est couverte que si aucune ne
+    // manque. Un seul résidu réel la laisse NON RÉSOLUE.
+    // ════════════════════════════════════════════════════════════════════
+    if (u.status === 'UNRESOLVED' && u.reason === 'values_not_structured' && TEXT_KINDS.has(u.kind) && u.text) {
+      if (unstructuredContactValues(u.text, connaissance).length > 0) return u;
+      return {
+        ...u, status: 'COVERED', reason: 'values_structured',
+        coverageProvenance: {
+          rule: 'contact_values_structured', sources: ['FACT'], refs: [],
+          previous: u.coverageProvenance?.previous ?? { status: u.status, reason: u.reason },
+          values: { total: 0, represented: 0, notRetained: 0, undetermined: 0 }, stage: input.stage,
+        },
+      };
+    }
     if (u.status !== 'UNRESOLVED' || !RECONCILABLE_REASONS.has(u.reason ?? '') || !TEXT_KINDS.has(u.kind) || !u.text) return u;
     const p = platUnite.get(u.sourceUnitId) ?? '';
     const forms = formesUnite.get(u.sourceUnitId) ?? [];
@@ -327,7 +436,9 @@ export function reconcileCoverage<U extends CoveredSourceUnit>(units: readonly U
  * stable, persisté avec l'unité). Jamais « terminé » sans politique :
  *   REPAIR_PENDING              réparation programmée (budget) ;
  *   REPAIR_RETRY_SCHEDULED      échec technique transitoire : reprise programmée ;
- *   REPAIR_ATTEMPTED_NO_RESULT  réparation ciblée exécutée sans donnée prouvée — conservée, réinterprétable T3 / T2 ;
+ *   REPAIR_ATTEMPTED_NO_RESULT  réparation ciblée RÉELLEMENT exécutée sans donnée prouvée — conservée, réinterprétable T3 / T2 ;
+ *   REPAIR_NOT_ATTEMPTED        aucune tentative tracée et aucun motif d'exclusion connu (lot 114G, #760 P2-08) :
+ *                               jamais présenté comme une réparation exécutée — la reprise ciblée reste possible ;
  *   REPAIR_EXHAUSTED            plafond de tentatives atteint ;
  *   REPAIR_NOT_RUN:<motif>      réparation non exécutée à l'analyse (DISABLED, BELOW_MIN_UNITS, BUDGET) ;
  *   NEEDS_SOURCE                relecture du fichier nécessaire (incertitude visuelle) ;
@@ -336,7 +447,7 @@ export function reconcileCoverage<U extends CoveredSourceUnit>(units: readonly U
  *   TECHNICAL_FAILURE_FINAL     échec définitif (lacune de pages, réparation refusée).
  * `null` pour une unité couverte ou non informative.
  */
-export function residualPolicyOf(u: Pick<CoveredSourceUnit, 'status' | 'reason' | 'kind' | 'salient' | 'repairState' | 'repairAttempts' | 'payload'>,
+export function residualPolicyOf(u: Pick<CoveredSourceUnit, 'status' | 'reason' | 'kind' | 'salient' | 'repairState' | 'repairAttempts' | 'payload'> & { text?: string | null },
   ctx: { repairSkipped?: string | null } = {}): string | null {
   if (u.status === 'COVERED' || u.status === 'NON_INFORMATIONAL') return null;
   if (u.status === 'FAILED') {
@@ -347,9 +458,12 @@ export function residualPolicyOf(u: Pick<CoveredSourceUnit, 'status' | 'reason' 
   if (u.repairState === 'PENDING') return 'REPAIR_PENDING';
   if (u.repairState === 'EXHAUSTED') return 'REPAIR_EXHAUSTED';
   if (u.status === 'UNCERTAIN') return u.reason === 'table_uncertain' && u.repairAttempts === 0 && ctx.repairSkipped ? `REPAIR_NOT_RUN:${ctx.repairSkipped}` : 'T3_REINTERPRETATION';
+  // Lot 114G (#760, P2-08) : la politique vient d'une TRACE réelle — tentative comptée ou état de réparation
+  // posé par une passe. Sans trace, jamais « tentée sans résultat ».
   if (u.repairState === 'ATTEMPTED_FAILED' || u.repairState === 'SUCCEEDED' || u.repairAttempts > 0) return 'REPAIR_ATTEMPTED_NO_RESULT';
-  if (u.reason === 'not_structured') return 'PRESERVED_UNSTRUCTURED';
-  return ctx.repairSkipped ? `REPAIR_NOT_RUN:${ctx.repairSkipped}` : 'REPAIR_ATTEMPTED_NO_RESULT';
+  // « Non structuré » ne prouve l'absence de valeur exploitable que si le texte n'en porte aucune.
+  if (u.reason === 'not_structured' && (u.text === undefined || u.text === null || allSignificantValues(u.text).length === 0)) return 'PRESERVED_UNSTRUCTURED';
+  return ctx.repairSkipped ? `REPAIR_NOT_RUN:${ctx.repairSkipped}` : 'REPAIR_NOT_ATTEMPTED';
 }
 
 /** Pose la politique sur chaque unité (pure ; inchangée si identique). */

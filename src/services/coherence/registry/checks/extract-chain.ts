@@ -138,6 +138,8 @@ export interface ExtractUnit {
   repairAttempts: number;
   repairState: string | null;
   retryable: boolean | null;
+  /** Lot 114G (#760) : règle de la requalification de couverture de l'unité, si elle en porte une. */
+  coverageRule?: string | null;
   /** Dernière écriture de l'unité (une nouvelle extraction la réécrit). */
   updatedAt: string | null;
 }
@@ -253,6 +255,15 @@ function knownByT1(v: SignificantValue, k: T1Knowledge): boolean {
 
 const UNITES_LUES = new Set(['TEXT_BLOCK', 'LABEL_VALUE', 'FORM_FIELD', 'TABLE_ROW']);
 const COUVERTES = new Set(['COVERED', 'NON_INFORMATIONAL']);
+/**
+ * Lot 114G (Trello #760, P1-01) — une unité LIÉE À UN FAIT dont une autre valeur n'est pas expliquée n'est plus
+ * dite « couverte » par la couche A (`UNRESOLVED / values_partially_structured`, règle
+ * `covered_unit_values_partially_structured`). Pour CE contrôle, elle reste dans la population des unités
+ * couvertes par un fait : son remède est inchangé — le réexamen ciblé des décisions (lot 91D), jamais une
+ * nouvelle extraction de l'unité entière.
+ */
+const COVERED_BY_FACT_RULE = 'covered_unit_values_partially_structured';
+const estCouverte = (u: Pick<ExtractUnit, 'status' | 'coverageRule'>) => COUVERTES.has(u.status) || (u.status === 'UNRESOLVED' && u.coverageRule === COVERED_BY_FACT_RULE);
 /** Contrôles aval qui exploitent chaque nature de valeur déjà présente dans T1 (aucun second moteur). */
 const DOWNSTREAM_OWNERS: Readonly<Record<SignificantKind, readonly string[]>> = {
   AMOUNT: ['COH-TCO-EXTRACTED-EXPENSES'],
@@ -379,10 +390,10 @@ export function diagnoseExtractChain(x: ExtractChainInput): Inspection {
   const trace = (os: typeof omissions) => os.slice(0, DETAIL_MAX).map((o) => ({ unit: o.unit.unitId, status: o.unit.status, values: o.values.slice(0, 5).map(tracer) }));
   // Sans contrat : empreinte d'avant (constats inchangés) ; avec : l'état de décision en fait partie.
   const cle = (os: typeof omissions) => os.map((o) => [o.unit.unitId, o.values.map((v) => (carried ? `${v.kind}:${v.normalized}:${v.state}` : `${v.kind}:${v.normalized}`)).sort()]);
-  const nonCouvertes = omissions.filter((o) => !COUVERTES.has(o.unit.status));
+  const nonCouvertes = omissions.filter((o) => !estCouverte(o.unit));
   const relancables = nonCouvertes.filter((o) => x.repairableUnitIds.has(o.unit.unitId));
   const epuisees = nonCouvertes.filter((o) => !x.repairableUnitIds.has(o.unit.unitId));
-  const couvertes = omissions.filter((o) => COUVERTES.has(o.unit.status));
+  const couvertes = omissions.filter((o) => estCouverte(o.unit));
   // Lot 91D : réexamen ciblé des décisions (contrat porté) — unités couvertes et reprises épuisées, UNE fois par diagnostic.
   const relancablesEpuisees = relancables.length > 0 && !x.coverage.nextRetryAt && x.coverage.retryAttempts >= x.maxRetries;
   const aReexaminer = carried ? [...(relancablesEpuisees ? relancables : []), ...epuisees, ...couvertes] : [];
@@ -643,6 +654,7 @@ async function charger(ctx: Pick<CheckContext, 'sql' | 'now'>, accountId: number
   for (const u of await rows(ctx.sql, `
     SELECT u.file_id, u.source_unit_id, u.kind, u.ordinal, u.content_text, u.label, u.value_text, u.coverage_status, u.coverage_reason, u.salient,
            u.repair_attempts, to_jsonb(u)->>'repair_state' AS repair_state, u.payload->>'retryable' AS retryable,
+           to_jsonb(u)->'coverage_provenance'->>'rule' AS coverage_rule,
            to_char(u.updated_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US') AS updated_at
       FROM document_source_units u
      WHERE u.account_id = $1 AND u.file_id = ANY($2::int[]) AND u.kind IN ('TEXT_BLOCK', 'LABEL_VALUE', 'FORM_FIELD', 'TABLE_ROW', 'PAGE_GAP')
@@ -654,6 +666,7 @@ async function charger(ctx: Pick<CheckContext, 'sql' | 'now'>, accountId: number
       reason: (u.coverage_reason as string | null) ?? null, salient: u.salient === true, repairAttempts: Number(u.repair_attempts ?? 0),
       repairState: (u.repair_state as string | null) ?? null, retryable: u.retryable == null ? null : u.retryable === 'true',
       updatedAt: (u.updated_at as string | null) ?? null,
+      coverageRule: (u.coverage_rule as string | null) ?? null,
     });
     units.set(Number(u.file_id), l);
   }

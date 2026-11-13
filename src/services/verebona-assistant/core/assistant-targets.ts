@@ -102,7 +102,16 @@ export interface AssistantTargets {
   catalog?: AssetCandidate[];
 }
 
-const RANG: Record<TargetOrigin, number> = { clarification: 0, thread: 1, message: 2, page: 3, category: 4, hint: 5 };
+/**
+ * Lot 114A (Trello #753, CDC T2 §6.1, D04, M06) — la désignation EXPLICITE du
+ * message courant (« la Clio ») l'emporte sur la cible du fil. Règle
+ * remplacée : `thread` avant `message`, qui faisait répondre sur le bien de
+ * l'échange précédent alors que l'utilisateur en nommait un autre. Les
+ * reprises anaphoriques (« son assurance ») ne sont pas touchées : sans
+ * désignation dans le message, la cible du fil reste seule en lice. Le choix
+ * d'une clarification fait toujours foi.
+ */
+const RANG: Record<TargetOrigin, number> = { clarification: 0, message: 1, thread: 2, page: 3, category: 4, hint: 5 };
 
 const entier = (v: unknown): number | null => {
   const n = Number(v);

@@ -8,13 +8,20 @@
  */
 import { findAssetField, parseFieldValue } from './asset-fields';
 import { plain } from '../core/routing-text';
+import { assetDesignationsIn } from '@/lib/asset-taxonomy';
 
 export type CommandDraft =
   | {
       command: 'CREATE_AGENDA_ITEM';
       title: string;
-      /** AAAA-MM-JJ, ou null si la date n'a pas été comprise. */
+      /**
+       * AAAA-MM-JJ, ou null : date non donnée ou non comprise. Lot 114B (#753,
+       * CDC T2 §9.4, D26, M29) : la date est FACULTATIVE — l'événement est
+       * alors créé sans date, comme depuis l'Agenda.
+       */
       date: string | null;
+      /** « Sans échéance » explicitement demandé (option de l'Agenda, lot 77A) — jamais déduit d'une date absente. */
+      noDeadline: boolean;
       /** Mots désignant le bien (« pour ma maison »). */
       assetWords: string[];
       /** « pour cette maison » : bien du fil. */
@@ -30,7 +37,46 @@ export type CommandDraft =
       assetWords: string[];
       /** « pour ce véhicule » : bien du fil. */
       assetFromContext: boolean;
-    };
+    }
+  | ({
+      command: 'UPDATE_AGENDA_ITEM';
+      /** Nouvelle date (AAAA-MM-JJ) et/ou nouveau titre ; au moins l'un des deux. */
+      newDate: string | null;
+      newTitle: string | null;
+    } & AgendaTargetDraft)
+  | {
+      command: 'CREATE_ASSET';
+      /** Famille du référentiel des biens (VEHICULE, IMMOBILIER, OBJECT). */
+      family: string;
+      /** Catégorie du référentiel désignée (« Voiture », « Maison », code d'objet), ou null (famille seule). */
+      category: string | null;
+      /** Nom donné au bien, ou null s'il n'a pas été donné. */
+      name: string | null;
+    }
+  | {
+      command: 'DELETE_ASSET';
+      assetWords: string[];
+      assetFromContext: boolean;
+    }
+  | ({
+      command: 'DELETE_AGENDA_ITEM';
+      /** SERIES seulement si la série est demandée (« toute la série », « tous les… »). */
+      scope: 'OCCURRENCE' | 'SERIES';
+    } & AgendaTargetDraft);
+
+/**
+ * Lot 114B (Trello #753, W16 / W17) — brouillons « modifier » et « supprimer »
+ * une échéance. L'échéance est désignée par les mots de son titre, sa date
+ * et/ou son bien ; elle est retrouvée DANS LE COMPTE par `plan.service`.
+ */
+export type AgendaTargetDraft = {
+  /** Mots du titre de l'échéance visée. */
+  itemWords: string[];
+  /** Date qui désigne l'échéance (« celle du 12 mars »), ou null. */
+  itemDate: string | null;
+  assetWords: string[];
+  assetFromContext: boolean;
+};
 
 /** Segment d'un message à plusieurs commandes. */
 interface CommandSegment {
@@ -170,9 +216,134 @@ function parseAssetFieldUpdate(message: string, today: string): CommandDraft | n
   };
 }
 
+// ── Lot 114B (#753, W16 / W17) : modifier / supprimer une échéance ─────────
+
+const DELETE_VERB = /\b(supprime|supprimer|efface|effacer|retire|retirer|enleve|enlever)\b/;
+const MOVE_VERB = /\b(deplace|deplacer|reporte|reporter|decale|decaler|repousse|repousser|avance|avancer)\b/;
+const RENAME_VERB = /\b(renomme|renommer)\b/;
+/** Nom d'échéance, avec son déterminant (« l'échéance », « le rendez-vous », « tous les rappels »). */
+const AGENDA_TARGET = /\b(?:l'|le |la |les |mon |ma |mes |ce |cet |cette |ces |un |une |tous les |toutes les )?(rappel|echeance|rendez-vous|rdv|evenement|entretien|controle|revision)s?\b/;
+const SERIE = /\b(toute la serie|la serie|serie entiere|tous les|toutes les|recurrents?|recurrentes?|ce cycle|du cycle)\b/;
+/** Mots du nom qui font partie du titre réel (« entretien », « contrôle », « révision »). */
+const NOMS_TITRE = new Set(['entretien', 'controle', 'revision']);
+
+/** Désignation de l'échéance dans la partie du message qui la nomme (pure). */
+function agendaTarget(zone: string, today: string): AgendaTargetDraft | null {
+  const noun = zone.match(AGENDA_TARGET);
+  if (!noun) return null;
+  const apres = zone.slice((noun.index ?? 0) + noun[0].length);
+  const coupe = apres.split(/\s(?:le|du|au|pour|de la|de l'|de mon|de ma|ce|cette)\s|\s\d{1,2}(?:er)?[\s/]/)[0] ?? '';
+  const itemWords = [...(NOMS_TITRE.has(noun[1]) ? [noun[1]] : []), ...motsUtiles(coupe).filter((w) => !['serie', 'entiere', 'toute', 'tous', 'toutes', 'recurrent', 'recurrents', 'cycle', 'double'].includes(w))];
+  const bien = apres.match(/\b(?:pour|de|du|sur)\s+(ma|mon|mes|la|le|l'|notre|ce|cet|cette)\s*([a-z][a-z0-9' -]*?)(?=\s*$|\s*[?.!,;]|\s+(?:au|a|le|du|en)\b)/);
+  const assetFromContext = !!bien && /^(ce|cet|cette)$/.test(bien[1]);
+  return {
+    itemWords,
+    itemDate: parseDateFr(zone, today),
+    assetWords: bien && !assetFromContext ? motsUtiles(bien[2]).filter((w) => !itemWords.includes(w)) : [],
+    assetFromContext,
+  };
+}
+
+/**
+ * « Supprime l'échéance vidange du 12 mars », « supprime toute la série des
+ * rappels vidange », « reporte le contrôle technique de la Clio au 20 mars »,
+ * « renomme l'échéance vidange en révision annuelle » (pure, testée).
+ */
+function parseAgendaChange(message: string, today: string): CommandDraft | null {
+  const m = plain(message).trim();
+  if (!AGENDA_TARGET.test(m)) return null;
+  if (DELETE_VERB.test(m)) {
+    const cible = agendaTarget(m, today);
+    return cible ? { command: 'DELETE_AGENDA_ITEM', scope: SERIE.test(m) ? 'SERIES' : 'OCCURRENCE', ...cible } : null;
+  }
+  if (RENAME_VERB.test(m)) {
+    const coupe = m.search(/\s+en\s+(?!\d)/);
+    if (coupe < 0) return null;
+    const cible = agendaTarget(m.slice(0, coupe), today);
+    // Le nouveau titre est repris du message d'origine (accents, casse).
+    const original = message.normalize('NFC').split(/\s+en\s+/i).slice(1).join(' en ').replace(/[\s.!?]+$/, '').replace(/^[«"“']\s*|\s*[»"”']$/g, '').trim();
+    if (!cible || !original) return null;
+    return { command: 'UPDATE_AGENDA_ITEM', newDate: null, newTitle: capitalize(original), ...cible };
+  }
+  if (MOVE_VERB.test(m)) {
+    // La NOUVELLE date suit le dernier « au / à / pour le » ; ce qui précède désigne l'échéance.
+    const sep = [...m.matchAll(/\s(?:au|a|pour le|pour)\s+(?=\d|le\s+\d|demain)/g)].pop();
+    if (!sep || sep.index === undefined) return null;
+    const newDate = parseDateFr(m.slice(sep.index), today);
+    const cible = agendaTarget(m.slice(0, sep.index), today);
+    if (!cible || !newDate) return null;
+    return { command: 'UPDATE_AGENDA_ITEM', newDate, newTitle: null, ...cible };
+  }
+  return null;
+}
+
+// ── Lot 114B (#753, W01 / W03) : créer / supprimer un bien ─────────────────
+
+const DET_CREATION = String.raw`(?:(?:une|un|mon|ma|le|la)\s+|l')(?:(?:nouveau|nouvelle|nouvel)\s+)?(?:bien\s+(?:de\s+type\s+)?)?`;
+const NOMME = /\b(?:nomme|nommee|appele|appelee|intitule|intitulee|qui s'appelle|du nom de)\s+/;
+/** Autres objets qu'un bien : leur présence exclut la création / suppression d'un BIEN. */
+const AUTRE_OBJET = /\b(documents?|factures?|fichiers?|photos?|pieces?|equipements?|fournisseurs?|notes?|descriptions?|champs?|liens?|contrats?|sinistres?|interventions?|export|dossier)\b/;
+
+/** Nom tel qu'écrit par l'utilisateur (accents, casse), après « nommé(e) » ou entre guillemets. */
+function nomDonne(message: string): string | null {
+  const nfc = message.normalize('NFC');
+  const cite = nfc.match(/[«"“]\s*([^»"”]{1,120}?)\s*[»"”]/);
+  if (cite) return cite[1].trim() || null;
+  const hit = plain(nfc).match(NOMME);
+  if (!hit || hit.index === undefined) return null;
+  const nom = nfc.slice(hit.index + hit[0].length).replace(/[\s.!?]+$/, '').trim();
+  return nom ? nom.slice(0, 120) : null;
+}
+
+/**
+ * « Ajoute une voiture nommée Clio », « crée un bien de type maison "Maison de
+ * Lyon" » (pure, testée). La désignation doit suivre IMMÉDIATEMENT le verbe :
+ * « ajoute une facture pour ma voiture » ne crée aucun bien. La famille et la
+ * catégorie viennent du référentiel des biens, jamais d'une liste locale.
+ */
+function parseAssetCreation(message: string): CommandDraft | null {
+  const m = plain(message).trim().replace(DEMANDE_POLIE, '').trim();
+  const debut = m.match(new RegExp(String.raw`^(?:ajoute|ajouter|cree|creer|enregistre|enregistrer)\s+${DET_CREATION}`));
+  if (!debut || AGENDA_NOUN.test(m) || AUTRE_OBJET.test(m)) return null;
+  const suite = m.slice(debut[0].length);
+  // Le nom du bien n'est pas lu comme une désignation (« nommée Maison bleue »).
+  const avantNom = suite.split(NOMME)[0].replace(/[«"“].*$/, '');
+  const d = assetDesignationsIn(avantNom)[0];
+  if (!d || !plain(avantNom).trimStart().startsWith(d.matched)) return null;
+  return { command: 'CREATE_ASSET', family: d.family, category: d.kind === 'category' ? d.category ?? null : null, name: nomDonne(message) };
+}
+
+/**
+ * « Supprime la Clio », « supprime mon vélo cargo », « supprime ce bien »
+ * (pure, testée). Jamais si le message parle d'un autre objet (« supprime le
+ * document de la Clio ») ni d'une échéance.
+ */
+function parseAssetDeletion(message: string): CommandDraft | null {
+  const m = plain(message).trim().replace(DEMANDE_POLIE, '').trim();
+  const debut = m.match(/^(?:supprime|supprimer|efface|effacer)\s+(?:definitivement\s+)?(ma|mon|mes|la|le|l'|notre|ce|cet|cette)\s*(?:bien\s+)?/);
+  if (!debut || AGENDA_TARGET.test(m) || AUTRE_OBJET.test(m)) return null;
+  const assetFromContext = /^(ce|cet|cette)$/.test(debut[1]);
+  const mots = motsUtiles(m.slice(debut[0].length)).filter((w) => !['definitivement', 'compte', 'tout', 'tous'].includes(w));
+  if (!assetFromContext && mots.length === 0) return null;
+  return { command: 'DELETE_ASSET', assetWords: assetFromContext ? [] : mots, assetFromContext };
+}
+
 /** Brouillon de commande, ou `null` si le message n'est pas une commande claire. */
 export function parseCommand(message: string, today: string): CommandDraft | null {
   const m = plain(message).trim();
+
+  // ── Créer / supprimer un bien (lot 114B) ──────────────────────────────
+  if (!INTERROGATIF.test(m) && !LECTURE_MOI.test(m)) {
+    const bien = parseAssetCreation(message) ?? parseAssetDeletion(message);
+    if (bien) return bien;
+  }
+
+  // ── Modifier / supprimer une échéance (lot 114B) ──────────────────────
+  // Une question (« peux-tu me dire… ? », « quand… ») n'est jamais une commande.
+  if (!(CREATE.test(m) && AGENDA_NOUN.test(m)) && !INTERROGATIF.test(m) && !LECTURE_MOI.test(m)) {
+    const agenda = parseAgendaChange(message, today);
+    if (agenda) return agenda;
+  }
 
   // ── Modifier une caractéristique d'un bien ────────────────────────────
   // « Mets le contrôle technique au … » désigne le champ du véhicule ; une
@@ -203,6 +374,7 @@ export function parseCommand(message: string, today: string): CommandDraft | nul
       command: 'CREATE_AGENDA_ITEM',
       title,
       date: parseDateFr(m, today),
+      noDeadline: /\bsans echeance\b/.test(m),
       assetWords: pour && !assetFromContext ? motsUtiles(pour[1]) : [],
       assetFromContext,
     };
@@ -214,7 +386,7 @@ export function parseCommand(message: string, today: string): CommandDraft | nul
 }
 
 /** Verbes qui ouvrent une nouvelle commande dans un même message. */
-const DEBUT_COMMANDE = /\s+(puis|ensuite|et ensuite|et puis|et)\s+(?=(ajoute|ajouter|crée|cree|créer|creer|programme|planifie|enregistre|marque|marquer|indique|passe|annule|annuler|mets|modifie|change|renseigne|corrige)\b)/i;
+const DEBUT_COMMANDE = /\s+(puis|ensuite|et ensuite|et puis|et)\s+(?=(ajoute|ajouter|crée|cree|créer|creer|programme|planifie|enregistre|marque|marquer|indique|passe|annule|annuler|mets|modifie|change|renseigne|corrige|supprime|efface|retire|enlève|enleve|déplace|deplace|reporte|décale|decale|repousse|avance|renomme)\b)/i;
 
 /**
  * Découpe un message en commandes successives (« ajoute… et marque… »,

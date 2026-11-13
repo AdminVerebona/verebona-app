@@ -592,6 +592,20 @@ export const PROCESSING_RULES: readonly ProcessingRule[] = [
     formulation: NO_AI_DECISION,
   },
   {
+    // (f) Lot 114 (Trello #750, issue C) : contradiction RÉELLE d'un attribut (prestataire, date) entre sources du
+    // même fait — toutes les valeurs réellement différentes proposées, valeur en place jamais écrasée avant la réponse.
+    code: 'OPERATION-ATTRIBUTE',
+    targetType: 'DOCUMENT',
+    relationKey: 'operationAttribute',
+    arbitratePriority: 'DO_NEXT',
+    completePriority: null,
+    allowNotApplicable: false,
+    question: 'Ces documents indiquent des informations différentes : laquelle est la bonne ?',
+    businessImpact: 64,
+    producer: 'T3_OPERATIONS',
+    formulation: NO_AI_DECISION,
+  },
+  {
     // (e) Lot 53 (retour PO Q17) : bien retiré du sinistre par l'utilisateur,
     // cité par un nouveau document — jamais réintégré automatiquement.
     code: 'OPERATION-CLAIM-ASSET',

@@ -111,6 +111,14 @@ export const REASON_TEXTS: Readonly<Record<string, string>> = {
   ROLE_UNKNOWN_NOT_COMPARABLE: 'Une valeur provient d’une source de rôle non établi : non comparée à la valeur retenue.',
   IDENTITY_REVIEW_OPEN: 'Une source porte un doute d’identité ouvert (rattachement 78A) : le rattachement doit être examiné avant toute comparaison.',
   TARGETS_DISJOINT: 'Les sources désignent des biens différents : rattachement probablement erroné.',
+  // Lot 114 (#750, issues B et C) — arbitrage par l'utilisateur (carte « À traiter ») et par T3 (preuve citée).
+  USER_ARBITRATED: 'Contradiction réelle tranchée par l’utilisateur depuis « À traiter » : la valeur choisie est écrite et protégée.',
+  T3_ARBITRATED: 'Contradiction réelle tranchée par l’arbitrage T3 sur preuve citée dans un document qui porte la valeur retenue.',
+  T3_DISTINCT_FACTS: 'T3 a établi, preuve citée, que les valeurs portent sur des faits distincts : aucune contradiction.',
+  T3_UNDECIDABLE: 'T3 a reconnu le même fait et des preuves de même autorité : aucun arbitrage sûr, la question est posée à l’utilisateur.',
+  T3_LINK_ERROR_SUSPECTED: 'T3 signale, preuve citée, qu’un document semble étranger à l’événement : le rattachement doit être examiné avant toute comparaison.',
+  NEW_EVIDENCE_AFTER_DECISION: 'Une valeur nouvelle est apparue après une décision : la contradiction est rouverte, la valeur décidée reste en place.',
+  DECIDED_VALUE_WITHDRAWN: 'La source de la valeur décidée n’est plus active alors que les autres valeurs se contredisent encore : contradiction rouverte.',
   [LEGACY_REASON]: 'Relevé antérieur aux règles 113AQ : ni rôle ni qualification conservés ; recontrôle requis (reconsolidation de l’Opération).',
   CHECK_FAILED: 'Le dernier contrôle de l’Opération n’a pas pu s’achever (erreur technique T3) : verdict non vérifiable.',
 };
@@ -144,9 +152,46 @@ export interface OperationConflictInput {
   sources: ReadonlyMap<number, DiagnosticSourceInfo>;
   /** Candidat T3 de l'Opération en erreur technique (contrôle non achevé). */
   technicalError: string | null;
-  /** Cartes « À traiter » d'arbitrage de date de l'événement principal. */
-  arbitrations: ReadonlyArray<{ actionId: number; state: 'OPEN' | 'RESOLVED'; kind: string }>;
+  /**
+   * Cartes « À traiter » d'arbitrage : date de l'événement principal (lot 83A, sans `subject`) et, lot 114 (#750),
+   * contradiction réelle d'un attribut (`subject` = `attribut:rôle`).
+   */
+  arbitrations: ReadonlyArray<{ actionId: number; state: 'OPEN' | 'RESOLVED'; kind: string; subject?: string | null }>;
+  /** Lot 114 (#750, issue B) : examens T3 de l'Opération (table 1690), le plus récent par sujet `attribut:rôle`. */
+  t3Reviews?: ReadonlyMap<string, T3ReviewInfo>;
 }
+
+/** Lot 114 (#750, issue B) — examen T3 d'une ligne, tel que persisté (aucune valeur reconstruite). */
+export interface T3ReviewInfo {
+  reviewId: number;
+  status: string;
+  outcome: string | null;
+  confidence: string | null;
+  reason: string | null;
+  retainedValue: string | null;
+  valueBefore: string | null;
+  valueAfter: string | null;
+  applied: boolean;
+  evidence: Array<{ fileId: number | null; excerpt: string }>;
+  requestedAt: string | null;
+  decidedAt: string | null;
+  promptVersion: string | null;
+  traceId: string | null;
+  aiCalls: number;
+  error: string | null;
+}
+
+/** États lisibles d'un examen T3 (BO — textes à valider par le PO). */
+export const T3_REVIEW_LABELS: Readonly<Record<string, string>> = {
+  PENDING: 'Arbitrage T3 demandé, en attente du prochain passage',
+  DECIDED: 'Arbitrage T3 rendu',
+  ABSTAINED: 'T3 s’est abstenu (preuves insuffisantes)',
+  NOT_CERTAIN: 'T3 n’est pas certain : aucun effet',
+  REJECTED: 'Sortie T3 refusée par la validation : vaut abstention',
+  AI_FAILED: 'Appel T3 en échec technique (nouvel essai borné)',
+  OBSOLETE: 'Constat disparu avant l’examen',
+  UNAVAILABLE: 'Arbitrage T3 indisponible (bloc 38 absent du prompt actif)',
+};
 
 export interface DiagnosticValue {
   raw: string;
@@ -177,8 +222,13 @@ export interface ConflictDiagnosticEntry {
   origin: 'conflicts' | 'divergences' | 'arbitratedConflicts';
   impact: { scopes: string[]; status: 'TO_VERIFY' | 'NONE' | 'NOT_ESTABLISHED' };
   lastCheck: { at: string | null; rules: string; rulesVersion: number; result: CheckResult; scope: 'OPERATION'; fresh: boolean; ageHours: number | null };
-  appliedAction: { kind: 'NONE' | 'VALUES_KEPT' | 'USER_DECISION' | 'ADMIN_RESTORE' | 'AWAITING_RECHECK'; detail: string };
+  appliedAction: {
+    kind: 'NONE' | 'VALUES_KEPT' | 'USER_DECISION' | 'ADMIN_RESTORE' | 'AWAITING_RECHECK' | 'T3_ARBITRATION' | 'T3_PENDING' | 'USER_ARBITRATION_OPEN';
+    detail: string;
+  };
   arbitration: { actionId: number; state: 'OPEN' | 'RESOLVED' } | null;
+  /** Lot 114 (#750, issue B) : dernier examen T3 de cette ligne (null : jamais examinée). */
+  t3: (T3ReviewInfo & { label: string }) | null;
   protection: string | null;
   lineState: ConflictLineState;
   lineStateReason: string;
@@ -241,7 +291,12 @@ export function buildConflictEntries(op: OperationConflictInput, now: Date = new
       });
       const roleCode = qualified && typeof c.role === 'string' ? c.role : 'UNKNOWN';
       const impactScopes = Array.isArray(c.impact) ? (c.impact as unknown[]).map(String) : [];
-      const arbitration = field === 'realizedDate' ? op.arbitrations.find((a) => a.kind === 'ARBITRATE') ?? null : null;
+      // Lot 114 (#750) : carte de la contradiction (même attribut, même rôle), la plus récente ; à défaut, carte de date 83A.
+      const sujet = `${field}:${roleCode}`;
+      const duSujet = op.arbitrations.filter((a) => a.subject === sujet).sort((a, b) => b.actionId - a.actionId);
+      const arbitration = duSujet.find((a) => a.state === 'OPEN') ?? duSujet[0]
+        ?? (field === 'realizedDate' ? op.arbitrations.find((a) => a.kind === 'ARBITRATE' && !a.subject) ?? null : null);
+      const examen = op.t3Reviews?.get(sujet) ?? null;
       const resolution = (c.resolution && typeof c.resolution === 'object' ? c.resolution : null) as Row | null;
       const lineState: ConflictLineState = availability !== 'EXISTING' ? 'HISTORICAL'
         : qualification === 'LEGITIMATE_DIFFERENCE' ? 'NOT_A_CONFLICT'
@@ -277,12 +332,18 @@ export function buildConflictEntries(op: OperationConflictInput, now: Date = new
           result: failed ? 'FAILED' : legacy || op.lastReconciledAt === null ? 'UNKNOWN' : ALERTING_QUALIFICATIONS.includes(qualification) ? 'PRESENT' : 'ABSENT',
           scope: 'OPERATION', fresh, ageHours,
         },
-        appliedAction: resolution?.by === 'USER' ? { kind: 'USER_DECISION', detail: 'Valeur de l’utilisateur retenue (protégée), aucune écriture par T3.' }
+        appliedAction: resolution?.by === 'T3' && qualification === 'REAL_CONFLICT_RESOLVED'
+          ? { kind: 'T3_ARBITRATION', detail: `Valeur retenue par l’arbitrage T3 sur preuve citée${examen ? ` (examen #${examen.reviewId} : ${examen.valueBefore ?? 'aucune'} → ${examen.valueAfter ?? 'aucune'}${examen.applied ? '' : ', non écrite : valeur protégée ou saisie non gérée'})` : ''}.` }
+          : resolution?.by === 'USER' && reasonCode === 'USER_ARBITRATED' ? { kind: 'USER_DECISION', detail: 'Valeur choisie par l’utilisateur depuis « À traiter », écrite et protégée.' }
+          : arbitration?.state === 'OPEN' && qualification === 'REAL_CONFLICT_UNRESOLVED' ? { kind: 'USER_ARBITRATION_OPEN', detail: 'Arbitrage demandé à l’utilisateur (« À traiter ») ; valeur en place conservée d’ici là.' }
+          : examen?.status === 'PENDING' && ALERTING_QUALIFICATIONS.includes(qualification) ? { kind: 'T3_PENDING', detail: 'Arbitrage T3 demandé : aucune valeur modifiée, carte « À traiter » différée.' }
+          : resolution?.by === 'USER' ? { kind: 'USER_DECISION', detail: 'Valeur de l’utilisateur retenue (protégée), aucune écriture par T3.' }
           : resolution?.by === 'ADMIN' || origin === 'arbitratedConflicts' ? { kind: 'ADMIN_RESTORE', detail: 'Source rétablie au BO (rétablissement tracé).' }
             : legacy ? { kind: 'AWAITING_RECHECK', detail: 'Reconsolidation de l’Opération attendue (règles 113AQ).' }
               : ALERTING_QUALIFICATIONS.includes(qualification) ? { kind: 'VALUES_KEPT', detail: 'Valeurs conservées, aucune écrasée ; valeur retenue inchangée.' }
                 : { kind: 'NONE', detail: 'Aucune action nécessaire.' },
         arbitration: arbitration ? { actionId: arbitration.actionId, state: arbitration.state } : null,
+        t3: examen ? { ...examen, label: T3_REVIEW_LABELS[examen.status] ?? examen.status } : null,
         protection: typeof c.protection === 'string' ? c.protection : null,
         lineState,
         lineStateReason,

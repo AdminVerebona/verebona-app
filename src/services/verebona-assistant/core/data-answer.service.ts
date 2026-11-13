@@ -28,6 +28,7 @@
  * ══════════════════════════════════════════════════════════════════════════
  */
 import type { RetrievedSource, Claim } from '../types/sources';
+import { detectScopeCardinality, type ScopeCardinality } from './scope-cardinality';
 import { findTableIntersection, type TableAnswer, type TableCellRow } from '@/services/ai/knowledge/document-tables';
 import { parseFrDate } from '@/services/ai/agenda/rules/recurrence';
 import { extractSearchTerms, isInventoryQuery } from './query-terms';
@@ -484,6 +485,21 @@ interface AssetScope {
    */
   unresolved: boolean;
   label: string | null;
+  /**
+   * Lot 114A (#753, CDC T2 §6.2) : « mon vélo » (SINGLE) n'est pas « mes
+   * vélos » (COLLECTION). Un agrégat sur des biens concurrents n'est permis
+   * que pour COLLECTION (`aggregateAllowed`).
+   */
+  cardinality: ScopeCardinality;
+}
+
+/** Mots du message qui désignent réellement l'un des biens retenus (nom ou catégorie). */
+function designationWords(candidates: readonly string[], assets: readonly AssetRow[]): string[] {
+  const noms = assets.map((a) => ` ${plain(a.name).replace(/[^a-z0-9]+/g, ' ')} `);
+  const sing = (w: string) => (w.length > 3 && /[sx]$/.test(w) ? w.slice(0, -1) : w);
+  return candidates.filter((w) =>
+    assetDesignationsIn(w).length > 0 || assetDesignationsIn(sing(w)).length > 0
+    || noms.some((n) => n.includes(` ${w}`) || n.includes(` ${sing(w)}`)));
 }
 
 async function resolveAssetScope(
@@ -498,8 +514,8 @@ async function resolveAssetScope(
   if (resolvedAssetId) {
     const a = (await port.listAssets(accountId)).find((x) => x.id === resolvedAssetId);
     return a
-      ? { assets: [a], ambiguous: false, unresolved: false, label: a.name }
-      : { assets: [], ambiguous: false, unresolved: true, label: null };
+      ? { assets: [a], ambiguous: false, unresolved: false, label: a.name, cardinality: 'SINGLE' }
+      : { assets: [], ambiguous: false, unresolved: true, label: null, cardinality: 'UNKNOWN' };
   }
   const candidates = assetWords(message);
   if (candidates.length > 0) {
@@ -507,16 +523,17 @@ async function resolveAssetScope(
     if (found.length > 0) {
       const best = Math.max(...found.map((a) => a.matched ?? 1));
       const top = found.filter((a) => (a.matched ?? 1) === best);
-      return { assets: top, ambiguous: top.length > 1, unresolved: false, label: top.length === 1 ? top[0].name : null };
+      const cardinality = detectScopeCardinality(message, designationWords(candidates, top));
+      return { assets: top, ambiguous: top.length > 1, unresolved: false, label: top.length === 1 ? top[0].name : null, cardinality };
     }
   }
   // « cet appartement » depuis la fiche d'un bien : le contexte de page tranche.
   if (pageAssetId && /\b(ce|cet|cette|ici)\b/.test(plain(message))) {
     const all = await port.listAssets(accountId);
     const a = all.find((x) => x.id === pageAssetId);
-    if (a) return { assets: [a], ambiguous: false, unresolved: false, label: a.name };
+    if (a) return { assets: [a], ambiguous: false, unresolved: false, label: a.name, cardinality: 'SINGLE' };
   }
-  return { assets: [], ambiguous: false, unresolved: candidates.length > 0, label: null };
+  return { assets: [], ambiguous: false, unresolved: candidates.length > 0, label: null, cardinality: candidates.length > 0 ? 'UNKNOWN' : 'GLOBAL' };
 }
 
 // ── Niveau 1 : réponses structurées ────────────────────────────────────────
@@ -635,7 +652,7 @@ async function tryStructured(
     // bien : sans autre mot, la liste porte sur tout le compte.
     const autresMots = assetWords(message).filter((w) => !EXPORT_WORDS.has(w));
     const scope = autresMots.length === 0
-      ? { assets: [] as AssetRow[], ambiguous: false, unresolved: false, label: null as string | null }
+      ? { assets: [] as AssetRow[], ambiguous: false, unresolved: false, label: null as string | null, cardinality: 'GLOBAL' as ScopeCardinality }
       : await scopeOf();
     if (scope.ambiguous) return { ambiguous: scope.assets, reason: 'EXPORTS_MULTIPLE_ASSETS' };
     if (!scope.unresolved) {

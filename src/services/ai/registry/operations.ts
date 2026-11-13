@@ -406,6 +406,26 @@ export const AI_OPERATIONS: Record<string, AiOperationDefinition> = {
     timeoutMs: 30_000, jsonResponse: true, defaultMaxOutputTokens: 800,
     outputSchema: 'T3PeriodRelationOutput', active: true, billable: false,
   },
+  // Lot 114 (Trello #750, issue B) : arbitrage T3 d'une contradiction RÉELLE d'attribut
+  // (date prévue, de début, de réalisation, de fin, prestataire) entre sources du même
+  // fait d'un événement de référence : valeur retenue sur preuve citée, faits distincts,
+  // indécidable (carte « À traiter »), document étranger ou abstention. Contrat
+  // `t3-attribute-arbitration-v1` (`business-operations/consolidation/attribute-arbitration/contract.ts`).
+  // Appelée par la phase du passage T3 du compte (`review.ts`), HORS lecture, par lots
+  // bornés, une seule fois par constat (mémoire 1690), seulement si le prompt T3 ACTIF
+  // porte la section « BRANCHE TASK = ATTRIBUTE_ARBITRATION » ET le marqueur ; sinon
+  // aucune demande (la contradiction réelle va à la carte « À traiter »). Réutilise les
+  // six emplacements T3 : aucun nouvel emplacement. Branche FACULTATIVE dont le texte est
+  // collé par le PO (bloc 38, `MASTER_TASKS_TEXT_PENDING`). Budget : plafonds existants du
+  // rapprochement sémantique. Non facturée (traitement de fond).
+  t3_attribute_arbitration: {
+    operationCode: 't3_attribute_arbitration', useCaseCode: 'DATA_RECONCILIATION',
+    label: 'T3 master — arbitrage d’une contradiction d’attribut d’un événement de référence (TASK=ATTRIBUTE_ARBITRATION)',
+    provider: GEMINI, primaryModel: DOC_PRIMARY, fallbackModels: DOC_FALLBACKS,
+    promptCode: T3_MASTER, masterPromptCode: T3_MASTER, task: 'ATTRIBUTE_ARBITRATION', promptVariables: T3_MASTER_VARIABLES,
+    timeoutMs: 30_000, jsonResponse: true, defaultMaxOutputTokens: 800,
+    outputSchema: 'T3AttributeArbitrationOutput', active: true, billable: false,
+  },
   // Lot 113AL (Trello #737, demande 82B-t3-decision-tco, écart au CDC 82B / 111V) :
   // arbitrage sémantique T3 des montants CONNUS d'un document restés sans nature
   // dans le TCO d'un bien (rôle économique du modèle existant, identité — fait

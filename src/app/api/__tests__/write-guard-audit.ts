@@ -44,6 +44,9 @@ export const RECOGNIZED_GUARDS: ReadonlyArray<{ module: string; name: string; fi
   // `premiumFeatures`, faux dans TOUS les états restreints
   // (`entitlementsFromSubscription`), donc une garde au moins aussi stricte.
   { module: '@/services/entitlements.service', name: 'getEntitlements', file: 'src/services/entitlements.service.ts', requires: /\.(?:canWrite|premiumFeatures)\b/ },
+  // Lot 114 (#753) : la création d'un bien vit dans la façade métier partagée avec l'Assistant ; son contrôle
+  // d'entrée appelle `canCreateAsset` (entitlements.service) — même garde qu'avant, déplacée avec le corps de la route.
+  { module: '@/services/assets/asset-write.facade', name: 'checkAssetCreationAllowed', file: 'src/services/assets/asset-write.facade.ts' },
   { module: '@/services/assets/asset-route-helpers', name: 'writableAssetOr', file: 'src/services/assets/asset-route-helpers.ts' },
   { module: '@/services/asset-details-write.service', name: 'loadWritableAsset', file: 'src/services/asset-details-write.service.ts' },
   { module: '@/services/asset-details-write.service', name: 'updateAssetDetails', file: 'src/services/asset-details-write.service.ts' },

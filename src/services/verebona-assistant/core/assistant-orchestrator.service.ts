@@ -30,7 +30,8 @@ import {
   buildAssetClarification,
   buildPeriodClarification,
   FALLBACK_ASSET_MESSAGE,
-  MAX_CLARIFICATION_CHAIN,
+  carryResolved,
+  isClarificationCycle,
 } from './clarification-builder';
 import type { ClarificationState } from '../types/machine';
 import {
@@ -310,8 +311,14 @@ export interface OrchestratorPorts {
 
 export async function runAssistant(
   input: AssistantRequestInput,
-  ports: OrchestratorPorts,
+  portsFournis: OrchestratorPorts,
 ): Promise<AssistantRunResult> {
+  // Lot 114A (#753, CDC T2 §12.6) : toute clarification créée pendant une
+  // REPRISE hérite des décisions déjà prises et des questions déjà posées dans
+  // la même demande — un seul point, quelle que soit la branche qui la crée.
+  let ports: OrchestratorPorts = input.resume && portsFournis.saveClarification
+    ? { ...portsFournis, saveClarification: (state) => portsFournis.saveClarification!(carryResolved(state, input.resume)) }
+    : portsFournis;
   const cfg = getAssistantConfig();
   // §39 `verebona_assistant_account_ai` / VEREBONA_ASSISTANT_AI_ENABLED, lus
   // à CHAQUE demande : coupés, aucun appel modèle (rollback « désactiver
@@ -518,17 +525,19 @@ export async function runAssistant(
         const routeAmb = { ...routeForIntent(intention, input.planType, 'cible ambiguë'), entityHints: r.entityHints, understanding: r.understanding };
         base.route = routeAmb;
         trace.intent = routeAmb.intent;
-        if (chainDepth > MAX_CLARIFICATION_CHAIN) {
-          const actions = await ports.resolveActions(routeAmb, input, []);
-          done('template', 'clarification.chain_exhausted', 'AMBIGUOUS_TARGET', 0);
-          return finalize(base, machine, 'deterministic', FALLBACK_ASSET_MESSAGE, [], [], actions, ports, input);
-        }
         const state = buildTargetClarification({
           ambiguity: lu.ambiguity, question: lu.text,
           accountId: input.accountId, userId: input.userId, conversationId: input.conversationId,
           originalMessage: input.message, originalMessageId: messageId, originalIntent: intention,
           pageAssetId: Number(input.pageContext?.assetId) || null, requestedFacts: lu.requestedFacts, chainDepth,
         });
+        // Lot 114A (#753) : plus de plafond métier — seule une question déjà posée
+        // (même dimension, mêmes candidats) arrête la série.
+        if (isClarificationCycle(state, input.resume)) {
+          const actions = await ports.resolveActions(routeAmb, input, []);
+          done('template', 'clarification.chain_exhausted', 'AMBIGUOUS_TARGET', 0);
+          return finalize(base, machine, 'deterministic', FALLBACK_ASSET_MESSAGE, [], [], actions, ports, input);
+        }
         if (ports.saveClarification && await ports.saveClarification(state).catch(() => false)) {
           done('template', 'clarification.target', 'AMBIGUOUS_TARGET', state.candidates.length);
           return finalizeClarification(base, machine, state, ports, input);
@@ -603,7 +612,7 @@ export async function runAssistant(
       }
       if (o.kind === 'clarify') {
         trace.escalationReasons.push(`CLARIFICATION:${o.state.ambiguity?.reason ?? 'SEMANTIC'}`);
-        if ((o.state.chainDepth ?? 1) > MAX_CLARIFICATION_CHAIN) {
+        if (isClarificationCycle(o.state, input.resume)) {
           const actions = await ports.resolveActions(routeSem, input, []);
           done('template', 'clarification.chain_exhausted', 'AMBIGUOUS_TARGET', 0);
           return finalize(base, machine, 'deterministic', FALLBACK_ASSET_MESSAGE, [], [], actions, ports, input);
@@ -1207,11 +1216,6 @@ export async function runAssistant(
             return finalize(base, machine, 'deterministic', catalogueLu ? NO_AVAILABLE_ASSET_MESSAGE : TARGET_QUESTION_MESSAGE,
               [], [], actions, ports, input, 'insufficient');
           }
-          if (chainDepth > MAX_CLARIFICATION_CHAIN) {
-            const actions = await ports.resolveActions(routeCl, input, []);
-            done('template', 'clarification.chain_exhausted', 'AMBIGUOUS_TARGET', 0);
-            return finalize(base, machine, 'deterministic', FALLBACK_ASSET_MESSAGE, [], [], actions, ports, input);
-          }
           const noms = cands.map((c) => `« ${c.name} »`);
           const question = cands.length === 2 ? `Parlez-vous de ${noms[0]} ou de ${noms[1]} ?` : 'De quel bien parlez-vous ?';
           const state = buildTargetClarification({
@@ -1220,6 +1224,13 @@ export async function runAssistant(
             originalMessage: input.message, originalMessageId: messageId, originalIntent: intention,
             pageAssetId: Number(input.pageContext?.assetId) || null, requestedFacts: route.understanding?.requestedFacts ?? [], chainDepth,
           });
+          // Lot 114A (#753) : plus de plafond métier — seule une question déjà posée
+          // (même dimension, mêmes candidats) arrête la série.
+          if (isClarificationCycle(state, input.resume)) {
+            const actions = await ports.resolveActions(routeCl, input, []);
+            done('template', 'clarification.chain_exhausted', 'AMBIGUOUS_TARGET', 0);
+            return finalize(base, machine, 'deterministic', FALLBACK_ASSET_MESSAGE, [], [], actions, ports, input);
+          }
           if (ports.saveClarification && await ports.saveClarification(state).catch(() => false)) {
             done('template', 'clarification.understanding_target', 'AMBIGUOUS_TARGET', state.candidates.length);
             return finalizeClarification(base, machine, state, ports, input);
@@ -1806,11 +1817,6 @@ export async function runAssistant(
         if (data.ambiguity && data.ambiguity.candidates.length >= 2) {
           const chainDepth = (input.resume?.chainDepth ?? 0) + 1;
           trace.escalationReasons.push(`CLARIFICATION:${data.ambiguity.reason}`);
-          if (chainDepth > MAX_CLARIFICATION_CHAIN) {
-            const actions = await ports.resolveActions(route, input, []);
-            done('template', 'clarification.chain_exhausted', 'AMBIGUOUS_TARGET', 0);
-            return finalize(base, machine, 'deterministic', FALLBACK_ASSET_MESSAGE, [], [], actions, ports, input);
-          }
           const state = buildAssetClarification({
             assets: data.ambiguity.candidates,
             reason: data.ambiguity.reason,
@@ -1823,6 +1829,13 @@ export async function runAssistant(
             pageAssetId: Number(input.pageContext?.assetId) || null,
             chainDepth,
           });
+          // Lot 114A (#753) : plus de plafond métier — seule une question déjà posée
+          // (même dimension, mêmes candidats) arrête la série.
+          if (isClarificationCycle(state, input.resume)) {
+            const actions = await ports.resolveActions(route, input, []);
+            done('template', 'clarification.chain_exhausted', 'AMBIGUOUS_TARGET', 0);
+            return finalize(base, machine, 'deterministic', FALLBACK_ASSET_MESSAGE, [], [], actions, ports, input);
+          }
           const saved = ports.saveClarification ? await ports.saveClarification(state).catch(() => false) : false;
           if (saved) {
             done('template', 'clarification.asset', 'AMBIGUOUS_TARGET', state.candidates.length);

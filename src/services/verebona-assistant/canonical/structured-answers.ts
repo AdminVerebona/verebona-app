@@ -18,6 +18,7 @@
  *                                     incomplète signalée, jamais de somme brute.
  */
 import { coverageFactsText } from '@/lib/documents/business-period-surfaces';
+import { aggregateAllowed, type ScopeCardinality } from '../core/scope-cardinality';
 import { listFields, type CanonicalFieldDef } from '@/services/canonical/registry';
 import type { Claim, RetrievedSource } from '../types/sources';
 import type { AccountDataPort, AssetRow } from '../core/data-answer.service';
@@ -39,7 +40,7 @@ import { plain } from '../core/routing-text';
 import { asksSettlement } from '../core/question-focus';
 import { TCO_PREMIUM_MESSAGE } from '@/services/business-operations/tco/dto';
 
-interface ScopeLike { assets: AssetRow[]; ambiguous: boolean; unresolved: boolean; label: string | null }
+interface ScopeLike { assets: AssetRow[]; ambiguous: boolean; unresolved: boolean; label: string | null; cardinality?: ScopeCardinality }
 
 type CanonicalStrategy =
   | 'structured.asset_field' | 'structured.upcoming_agenda' | 'structured.missing_information' | 'structured.sum_qualified'
@@ -190,6 +191,8 @@ const TCO_STRIP = /co[uû]ts? (total|totaux|global|globaux|complet|r[ée]el) de 
 
 /** « payé / réglé » (C15) — distinct de « coûté / dépensé » (F-132, F-133). */
 export const PAID = /\b(paye|payee|payes|payees|payer|regle|reglee|regles|reglees|regler|acquitte(e|es|s)?|verse|versee|versees)\b/;
+/** Lot 114A (#753) : question LARGE sur le coût (« combien m'a coûté… ») — pas « payé », pas un thème. */
+const BROAD_COST = /\b(coute|coutee?s?|couter)\b/;
 const COST_WORDS = /\b(coute|coutee|coutes|cout|couts|depense\w*)\b/;
 const PAID_YESNO = /\b(a-t-(il|elle) ete|ont-(ils|elles) ete|est-(il|elle)|sont-(ils|elles)|deja)\b/;
 const PAID_STRIP = /pay[ée]e?s?|payer|r[ée]gl[ée]e?s?|r[ée]gler|acquitt[ée]e?s?|vers[ée]e?s?|combien|ai-je|j['’]ai|deja|déjà|a-t-(il|elle)|est-(il|elle)|[ée]t[ée]/gi;
@@ -578,6 +581,9 @@ export function structuredScopeBarrier(
   return { semanticScopeResolved: terms.length === 0, unresolvedSemanticTerms: terms };
 }
 
+/** Stratégies qui additionnent des montants sur les biens du périmètre. */
+const AGGREGATING: ReadonlySet<CanonicalStrategy> = new Set<CanonicalStrategy>(['structured.sum_qualified', 'structured.payments']);
+
 /**
  * Réponse canonique structurée, ou `null` — toute réponse passe par la
  * barrière sémantique transversale (lot 54E) avant d'être servie.
@@ -591,6 +597,13 @@ export async function tryCanonicalStructured(p: {
   let dernier: ScopeLike | null = null;
   const r = await tryCanonicalStructuredInner({ ...p, resolveScope: async (t) => (dernier = await p.resolveScope(t)) });
   if (!r || !('strategy' in r)) return r;
+  // Lot 114A (#753, CDC T2 §11.1) — garde transversale : aucune stratégie de
+  // totalisation ne sert un agrégat sur des biens concurrents d'une demande
+  // au singulier, quelle que soit la branche qui l'a produit.
+  const portee = dernier as ScopeLike | null;
+  if (portee && AGGREGATING.has(r.strategy) && !aggregateAllowed(portee)) {
+    return { ambiguous: portee.assets, reason: 'AGGREGATE_MULTIPLE_ASSETS' };
+  }
   const assets = (dernier as ScopeLike | null)?.assets ?? [];
   const champ = r.strategy === 'structured.asset_field' ? (findReadableField(p.message) ?? purchaseQuestion(p.message)) : null;
   const b = structuredScopeBarrier(r.strategy, p.message, assets.map((a) => a.name), [r.answer, ...r.sources.map((x) => x.title ?? '')], champ ? [champ.phrase] : []);
@@ -788,6 +801,55 @@ async function tryCanonicalStructuredInner(p: {
     // Question de montant : les dépenses qualifiées ci-dessous répondent.
   }
 
+  // ══════════════════════════════════════════════════════════════════════
+  // LOT 114A (Trello #753, CDC T2 §5.3, §10.2, D01 / D19, exemples A et B) —
+  // QUESTION LARGE SUR LE COÛT D'UN BIEN UNIQUE
+  //
+  // « Combien m'a coûté mon vélo ? » n'appelle pas de clarification sur le
+  // type de coût : la réponse présente ce qui est pertinent ET autorisé.
+  //   · offre avec coût de possession : prix d'achat + coût de possession
+  //     canonique (service TCO), présentés à part, jamais additionnés ;
+  //   · sans ce droit (Standard) : prix d'achat + rappel que le coût de
+  //     possession est réservé — AUCUNE lecture TCO, aucune somme de
+  //     factures à la place (pas de TCO déguisé).
+  // Règle remplacée : cette question recevait le seul total des dépenses
+  // documentées par thème. Un thème, une année, une intervention désignée,
+  // un ensemble de biens ou un prix d'achat inconnu gardent le traitement
+  // historique ci-dessous.
+  // ══════════════════════════════════════════════════════════════════════
+  if (BROAD_COST.test(m) && COUNT.test(m) && !PAID.test(m) && !isOwnershipCostQuestion(message)
+    && !expenseThemeOf(message) && !/\b(19|20)\d{2}\b/.test(m)
+    && port.readAcquisition && port.ownershipCostAllowed) {
+    const scope = await p.resolveScope(message);
+    if (!scope.unresolved && !scope.ambiguous && scope.assets.length === 1
+      && residu(scope).length === 0 && specificCostTerms(message, [scope.assets[0].name]).length === 0) {
+      const a = scope.assets[0];
+      const achat = await acquisitionAnswer(port, accountId, a, true);
+      if (achat && 'strategy' in achat) {
+        const autorise = await port.ownershipCostAllowed(accountId);
+        if (!autorise) {
+          const reserve = ownershipCostLockedAnswer(a) as Extract<CanonicalLevel1, { strategy: CanonicalStrategy }>;
+          const sources = uniques([...achat.sources, ...reserve.sources]);
+          const answer = `${achat.answer} ${TCO_PREMIUM_MESSAGE}`;
+          return {
+            strategy: 'structured.acquisition_price', answer, sources, kind: 'exact',
+            claims: [claim('acquisition', achat.answer, achat.sources, 'direct'), claim('ownership_cost_locked', TCO_PREMIUM_MESSAGE, reserve.sources, 'direct')],
+          };
+        }
+        const tco = port.readOwnershipCost ? await port.readOwnershipCost(accountId, a.id).catch(() => null) : null;
+        const possession = tco ? ownershipCostAnswer(a, tco) : null;
+        if (possession && 'strategy' in possession) {
+          const sources = uniques([...achat.sources, ...possession.sources]);
+          return {
+            strategy: 'structured.ownership_cost', answer: `${achat.answer} ${possession.answer}`, sources, kind: 'calc',
+            claims: [claim('acquisition', achat.answer, achat.sources, 'direct'), claim('ownership_cost', possession.answer, possession.sources, 'calculated')],
+          };
+        }
+        return achat;
+      }
+    }
+  }
+
   // ── Dépenses qualifiées (T2-24) ────────────────────────────────────────
   if (SPEND.test(m) && (COUNT.test(m) || /\b(total|somme)\b/.test(m)) && port.sumQualifiedExpenses) {
     const theme = expenseThemeOf(message);
@@ -807,6 +869,10 @@ async function tryCanonicalStructuredInner(p: {
     // Lot 49 : intervention non désignée par les données ET sujet non
     // consommé (« combien me coûte internet à la maison ? ») : jamais l'agrégat
     // de la catégorie ou du bien — T2 reprend la main.
+    // Lot 114A (#753, CDC T2 P0/M08) — barrière de cardinalité AVANT tout calcul :
+    // « combien m'a coûté mon vélo ? » avec deux vélos ne reçoit jamais le total
+    // des deux. Seul un ensemble explicitement demandé (« mes vélos ») est sommé.
+    if (!aggregateAllowed(scope)) return { ambiguous: scope.assets, reason: 'SUM_MULTIPLE_ASSETS' };
     const termesCout = scope.ambiguous ? [] : residu(scope);
     if (termesCout.length) return nonResolu('structured.sum_qualified', termesCout, scope);
     const year = Number(m.match(/\b(20\d{2})\b/)?.[1]) || undefined;

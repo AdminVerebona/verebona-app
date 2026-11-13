@@ -1,0 +1,101 @@
+{
+  "case": "P-T3-AA-02",
+  "description": "Lot 114 — ATTRIBUTE_ARBITRATION : deux exemplaires de la même facture portent deux prestataires différents, sans rectification ni date d’effet ⇒ UNDECIDABLE certain : aucune valeur écrite, la question va à l’utilisateur (carte « À traiter »).",
+  "qualification": {
+    "role": "answer"
+  },
+  "context": {
+    "attributeArbitration": {
+      "today": "2026-11-13",
+      "field": "provider",
+      "role": "SUPPLIER",
+      "operation": {
+        "typeCode": "INTERVENTION",
+        "label": "Remplacement du chauffe-eau"
+      },
+      "values": [
+        {
+          "value": "Plomberie Durand",
+          "normalized": "plomberie durand",
+          "fileIds": [
+            9711
+          ],
+          "held": true,
+          "userProtected": false
+        },
+        {
+          "value": "Chauffage Martin",
+          "normalized": "chauffage martin",
+          "fileIds": [
+            9712
+          ],
+          "held": false,
+          "userProtected": false
+        }
+      ],
+      "documents": [
+        {
+          "id": 9711,
+          "type": "INVOICE",
+          "title": "Facture chauffe-eau",
+          "date": "2026-03-20",
+          "provider": "Plomberie Durand",
+          "references": [
+            {
+              "kind": "INVOICE",
+              "value": "F-2026-118"
+            }
+          ],
+          "excerpts": [
+            "Facture F-2026-118",
+            "Plomberie Durand — remplacement du chauffe-eau"
+          ]
+        },
+        {
+          "id": 9712,
+          "type": "INVOICE",
+          "title": "Facture chauffe-eau (copie)",
+          "date": "2026-03-20",
+          "provider": "Chauffage Martin",
+          "references": [
+            {
+              "kind": "INVOICE",
+              "value": "F-2026-118"
+            }
+          ],
+          "excerpts": [
+            "Facture F-2026-118",
+            "Chauffage Martin — remplacement du chauffe-eau"
+          ]
+        }
+      ]
+    }
+  },
+  "recording": {
+    "operationCode": "t3_attribute_arbitration",
+    "task": "ATTRIBUTE_ARBITRATION",
+    "output": {
+      "task": "ATTRIBUTE_ARBITRATION",
+      "outcome": "UNDECIDABLE",
+      "retainedValue": null,
+      "foreignDocument": null,
+      "confidence": "certain",
+      "evidence": [
+        {
+          "document": "D1",
+          "excerpt": "Facture F-2026-118"
+        },
+        {
+          "document": "D2",
+          "excerpt": "Facture F-2026-118"
+        }
+      ],
+      "reason": "Même facture, deux prestataires, aucune preuve ne départage."
+    }
+  },
+  "expected": {
+    "valid": true,
+    "outcome": "UNDECIDABLE",
+    "effect": "ASK_USER"
+  }
+}

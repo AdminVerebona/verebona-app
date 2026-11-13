@@ -54,6 +54,8 @@ import type { SourceRereadCall, SourceRereadResult } from './source-reread';
 import type { ProjectedFact, T1AnalyzeDocumentOutput, T1Fact } from '../master/t1-contract';
 import type { RepairPropagationOutcome } from '../operation-candidates/repair-propagation.store';
 
+import { KnownFacts, LocalLinks, factCoreIdentity, factLinkKey, type FactIdentityInput } from './repair-identity';
+import type { AnchoredValueDecision } from '../value-decisions/validate';
 type Row = Record<string, unknown>;
 const num = (v: unknown, def: number) => {
   const n = Number(v);
@@ -533,6 +535,11 @@ async function retryDocument(p: {
   const sourceCap = sourceRereadCap(p.env);
   const aRelire = p.attempt <= p.maxRetries && !p.textOnly ? selectSourceRereadUnits(units, sourceCap) : [];
   let relecture: SourceRereadResult | null = null;
+  // Lot 114G (#760, P1-02 / P1-03) : liens locaux fait ↔ unité et décisions de valeur de la passe de
+  // réparation — jusqu'ici perdus par la reprise différée (seuls faits et compteurs étaient repris).
+  let liensLocaux: Map<T1Fact, string[]> | undefined;
+  let decisionsRecues: AnchoredValueDecision[] = [];
+  let decisionsEcartees = { schemaInvalid: 0, unitNotFound: 0 };
   const textuelle = cibles.length > 0 && (p.attempt <= p.maxRetries || continuation);
   if (aRelire.length > 0 || textuelle) {
     const [{ loadAnalysisContext }, { getAccountCapabilities }, { loadAssetFamilies }, step] = await Promise.all([
@@ -566,15 +573,28 @@ async function retryDocument(p: {
       failed = r.failed;
       attempted = r.attempted;
       notAttempted = r.notAttempted;
+      liensLocaux = r.links;
+      decisionsRecues = r.decisions;
+      decisionsEcartees = r.decisionsDropped;
     }
   }
 
   // Faits ajoutés : projection (registre, cibles vérifiées), provenance, écriture.
   const linker = new SourceUnitLinker(units);
   const ajout: Awaited<ReturnType<typeof appendRepairedFacts>> = facts.length > 0
-    ? await appendRepairedFacts({ ...p, facts, linker, propagationOrigin: p.textOnly ? 'coherence-control' : 't1-completeness-retry' })
+    ? await appendRepairedFacts({ ...p, facts, linker, localLinks: liensLocaux, propagationOrigin: p.textOnly ? 'coherence-control' : 't1-completeness-retry' })
     : { inserted: [], all: [] };
   const nouveaux = ajout.inserted;
+  // Lot 114G (#760, P1-02) : décisions de valeur de la réparation — validées, rattachées, persistées
+  // (idempotent) AVANT la réconciliation qui suit, laquelle les relit en base.
+  const decisionsDiag = await persistRepairDecisions({
+    accountId: p.accountId, fileId: p.fileId, extractionId: p.extractionId, decisions: decisionsRecues,
+    units, facts, factIdsByRef: ajout.factIdsByRef ?? new Map(),
+  });
+  // Décisions écartées dès la passe (mal formées, unité ciblée introuvable) : comptées, jamais silencieuses.
+  decisionsDiag.received += decisionsEcartees.schemaInvalid + decisionsEcartees.unitNotFound;
+  if (decisionsEcartees.schemaInvalid) decisionsDiag.skipped.SCHEMA_INVALID = decisionsEcartees.schemaInvalid;
+  if (decisionsEcartees.unitNotFound) decisionsDiag.skipped.UNIT_NOT_IN_TARGET_ZONE = decisionsEcartees.unitNotFound;
   // Couverture : faits de la réparation, y compris ceux déjà écrits par une reprise interrompue (TC11).
   const couvertes = new Set(ajout.all.flatMap((f) => f.sourceUnitIds ?? []).map((id) => id.replace(/:cell:\d+$/, '')));
   // Lignes de tableau incertaines : promues seulement si chaque cellule renseignée est confirmée (DEV-02).
@@ -654,6 +674,11 @@ async function retryDocument(p: {
   });
   if (report.diagnostics) (report.diagnostics as T1CoverageDiagnostics & { continuationRuns?: number }).continuationRuns = runs;
   if (report.diagnostics) {
+    // Lot 114G (#760, P1-02 / P1-03 / P2-10) : ce que CETTE reprise a reçu, validé, écrit et rattaché.
+    (report.diagnostics as T1CoverageDiagnostics & { deferredRepair?: Record<string, unknown> }).deferredRepair = {
+      calls, attemptedUnits: attempted.length, newFacts: nouveaux.length,
+      decisions: decisionsDiag, ...(ajout.linkage ? { linkage: ajout.linkage } : {}),
+    };
     if (diag.coverageRepair) report.diagnostics.coverageRepair = diag.coverageRepair;
     report.diagnostics.reconciliation = reconciliationSummary(majs, 'STORED');
     report.diagnostics.residualPolicies = residualCounts(majs);
@@ -695,6 +720,74 @@ async function retryDocument(p: {
       .catch((e: Error) => console.error('[t1-completeness-retry] projection sur le bien :', e.message));
   }
   return { outcome: report.qualityState === 'INCOMPLETE_FINAL' ? 'final' : 'repaired', calls, attempted, newFacts: nouveaux.length, result: resultat };
+}
+
+/** Lot 114G (#760, P1-02) : bilan des décisions de valeur d'une reprise différée. */
+export interface RepairDecisionsDiag {
+  received: number; valid: number; invalid: number; persisted: number;
+  /** Décisions non exploitées, par motif (contrat non porté, table absente, écriture impossible, rejets de validation). */
+  skipped: Record<string, number>;
+}
+
+/**
+ * Lot 114G (Trello #760, P1-02) — DÉCISIONS DE VALEUR D'UNE RÉPARATION DIFFÉRÉE.
+ *
+ * `runRepairPass()` rend des décisions (STRUCTURED, COMPONENT_OR_CONTEXT,
+ * NOT_RETAINED, UNDETERMINED) ; l'analyse initiale les conserve depuis 113AN,
+ * la reprise manuelle ou planifiée les perdait. Elles suivent ici le MÊME
+ * chemin : validation (`validateValueDecisions`, contrat effectif), rattachement
+ * à l'unité et aux faits persistés, écriture idempotente (`insertValueDecisions`).
+ * Une décision invalide est écrite comme telle (jamais une justification),
+ * comme à l'analyse. Ne lève jamais : une écriture impossible est comptée.
+ */
+export async function persistRepairDecisions(p: {
+  accountId: number; fileId: number; extractionId: number | null;
+  decisions: readonly AnchoredValueDecision[];
+  units: readonly CoveredSourceUnit[];
+  facts: readonly T1Fact[];
+  factIdsByRef: ReadonlyMap<string, readonly number[]>;
+}): Promise<RepairDecisionsDiag> {
+  const diag: RepairDecisionsDiag = { received: p.decisions.length, valid: 0, invalid: 0, persisted: 0, skipped: {} };
+  const ecarter = (motif: string, n: number) => { if (n > 0) diag.skipped[motif] = (diag.skipped[motif] ?? 0) + n; };
+  if (p.decisions.length === 0) return diag;
+  try {
+    const [{ valueDecisionsCapability }, { validateValueDecisions, factContextOf }, { insertValueDecisions, valueDecisionsTableReady }, { pgClient }] = await Promise.all([
+      import('../value-decisions/contract'), import('../value-decisions/validate'), import('../value-decisions/store'), import('@/db'),
+    ]);
+    const ext = ((await pgClient.unsafe(
+      `SELECT prompt_version FROM document_extractions WHERE file_id = $1 AND account_id = $2`, [p.fileId, p.accountId] as never[],
+    )) as unknown as Row[])[0];
+    const promptVersion = ext?.prompt_version == null ? null : String(ext.prompt_version);
+    // Mêmes conditions que la persistance de l'analyse : contrat porté par la version de prompt effective.
+    const cap = await valueDecisionsCapability();
+    if (!cap.carried || (cap.version !== null && promptVersion !== null && cap.version !== promptVersion)) {
+      ecarter('CONTRACT_NOT_CARRIED', p.decisions.length);
+      return diag;
+    }
+    if (!(await valueDecisionsTableReady())) { ecarter('TABLE_MISSING', p.decisions.length); return diag; }
+    // Seuls les faits réellement PERSISTÉS (nouveaux ou déjà présents) peuvent justifier une décision.
+    const gardes = (p.facts as Array<T1Fact & { t1FactRef?: string }>).filter((f) => f.t1FactRef && p.factIdsByRef.has(f.t1FactRef));
+    const preparees = validateValueDecisions(p.decisions, {
+      units: p.units,
+      keptFactRefs: new Set(gardes.map((f) => f.t1FactRef!)),
+      candidateKeys: new Set(),
+      facts: factContextOf(gardes as never, p.units),
+    });
+    diag.valid = preparees.filter((d) => d.validity === 'VALID').length;
+    diag.invalid = preparees.length - diag.valid;
+    for (const d of preparees) if (d.validity === 'INVALID') ecarter(`INVALID:${d.invalidReason ?? 'UNKNOWN'}`, 1);
+    if (preparees.length === 0) return diag;
+    await pgClient.begin(async (tx) => {
+      diag.persisted = await insertValueDecisions(tx as never, {
+        accountId: p.accountId, fileId: p.fileId, extractionId: p.extractionId, analysisRunId: null, promptVersion,
+        factIds: p.factIdsByRef,
+      }, preparees);
+    });
+  } catch (e) {
+    ecarter('WRITE_FAILED', p.decisions.length);
+    console.error(`[t1-completeness-retry] décisions de valeur du fichier ${p.fileId} non écrites :`, (e as Error).message);
+  }
+  return diag;
 }
 
 /**
@@ -818,7 +911,19 @@ export async function appendRepairedFacts(p: {
   fileId: number; accountId: number; extractionId: number | null; assetId: number | null; facts: T1Fact[]; linker: SourceUnitLinker;
   /** Origine consignée de la propagation (défaut : `t1-repair`). */
   propagationOrigin?: string;
-}): Promise<{ inserted: ProjectedFact[]; all: ProjectedFact[]; propagation?: RepairPropagationOutcome }> {
+  /**
+   * Lot 114G (#760, P1-03) : unités CIBLÉES qui prouvent chaque fait rendu par la passe de réparation
+   * (`runRepairPass().links`). Fournies, elles font foi ; le rattachement n'est recalculé sur tout le
+   * document que pour un fait sans lien local (relecture du fichier, lien inexploitable), et c'est compté.
+   */
+  localLinks?: ReadonlyMap<T1Fact, readonly string[]>;
+}): Promise<{
+  inserted: ProjectedFact[]; all: ProjectedFact[]; propagation?: RepairPropagationOutcome;
+  /** Lot 114G (#760) : empreinte du fait rendu (`t1FactRef`) → fait(s) persistés, nouveaux ou déjà présents. */
+  factIdsByRef?: Map<string, number[]>;
+  /** Lot 114G (#760, P1-03 / P1-04) : origine des rattachements et issue de la déduplication. */
+  linkage?: { local: number; relinked: number; relinkedReason: string | null; duplicates: number; relinkedExisting: number };
+}> {
   const [{ projectDocumentFacts }, { toFact }, { projectedFactToExtractedField }, step, { insertFactRows }, { documentFactsCanonicalReady }, registry] = await Promise.all([
     import('../projection/document-projection'),
     import('../../knowledge/document-knowledge'),
@@ -852,38 +957,121 @@ export async function appendRepairedFacts(p: {
     assetFamilies: new Map(p.assetId ? [[p.assetId, registry.toAssetFamily(famille == null ? null : String(famille))]] : []),
     verifiedIds: verif.verifiedIds,
   });
+  // Lot 114G (#760, P1-03) : le lien LOCAL de la réparation (unité ciblée qui prouve le fait) est conservé
+  // jusqu'à l'écriture. Sans lien local exploitable seulement, rattachement recalculé sur le document.
+  const locaux = new LocalLinks(p.localLinks);
+  const refs = new Map<string, string[]>();
+  for (const f of p.facts) {
+    const ref = (f as T1Fact & { t1FactRef?: string }).t1FactRef;
+    if (ref) refs.set(factLinkKey(f), [...(refs.get(factLinkKey(f)) ?? []), ref]);
+  }
+  const linkage = { local: 0, relinked: 0, relinkedReason: null as string | null, duplicates: 0, relinkedExisting: 0 };
   for (const f of projection.facts) {
+    const local = locaux.take(f);
+    if (local?.length) {
+      f.sourceUnitIds = local;
+      linkage.local++;
+      continue;
+    }
     f.sourceUnitIds = p.linker.link({
       provenance: f.provenance, excerpt: f.evidence?.excerpt ?? null, page: f.evidence?.page ?? null,
       // Lot 54G : fait visuel d'une relecture du fichier — rattaché à son observation.
       visualDescription: f.visualEvidence?.description ?? null, visualPage: f.visualEvidence?.page ?? null,
       values: [f.rawValue, f.value], labels: [f.rawKey, f.label, f.attribute],
     });
+    linkage.relinked++;
+    linkage.relinkedReason ??= p.localLinks ? 'LOCAL_LINK_ABSENT' : 'NO_LOCAL_LINKS_PROVIDED';
   }
-  // Lot 49B (TC11) : reprise IDEMPOTENTE — un fait déjà écrit (worker interrompu
-  // entre l'écriture des faits et celle de la couche A) n'est jamais dupliqué.
-  const existants = new Set(((await pgClient.unsafe(
-    `SELECT coalesce(canonical_key, fact_key) AS k, coalesce(value_text, '') AS v, coalesce(excerpt, '') AS e
-       FROM document_facts WHERE file_id = $1 AND status = 'active'`,
-    [p.fileId] as never[],
-  )) as unknown as Array<{ k: string; v: string; e: string }>).map((x) => `${x.v}\u0001${x.e}`));
-  const neufs = projection.facts.filter((f) => !existants.has(`${f.value === null ? '' : String(f.value)}\u0001${f.evidence?.excerpt ?? ''}`));
-  if (neufs.length === 0) return { inserted: [], all: projection.facts };
-  const records = neufs.map((f) => toFact(projectedFactToExtractedField(f)));
+  const records = projection.facts.map((f) => toFact(projectedFactToExtractedField(f)));
+  const identiteDe = (r: (typeof records)[number]): FactIdentityInput => ({
+    key: r.canonicalKey ?? r.factKey, value: r.valueText, excerpt: r.evidenceOrigin === 'VISUAL_ANALYSIS' ? null : r.excerpt,
+    targetType: r.targetType ?? null, targetEntityId: r.targetEntityId ?? null,
+    sourceUnitIds: r.sourceUnitIds ?? null,
+  });
   const canonical = await documentFactsCanonicalReady();
   // Lot 109K (COR-02) : faits actifs AVANT l'ajout (diff avant / après de la propagation).
   const { activeFactIds, propagateRepairToCandidates } = await import('../operation-candidates/repair-propagation.store');
   const avant = await activeFactIds(p.fileId, p.accountId);
+  const factIdsByRef = new Map<string, number[]>();
+  const noter = (f: ProjectedFact, id: number) => {
+    const ref = refs.get(factLinkKey(f))?.[0];
+    if (ref) factIdsByRef.set(ref, [...new Set([...(factIdsByRef.get(ref) ?? []), id])]);
+  };
+  const neufs: ProjectedFact[] = [];
+  // ══════════════════════════════════════════════════════════════════════
+  // LOT 114G (#760, P1-04) — DÉDUPLICATION PAR IDENTITÉ, SOUS VERROU
+  //
+  // Règle remplacée : « déjà écrit » = même valeur + même extrait (la clé du
+  // fait était lue puis ignorée). Deux faits distincts de même valeur et de
+  // même extrait (deux attributs, deux cibles) étaient éliminés à tort.
+  // L'identité est maintenant celle de l'analyse (`factFingerprint`) : clé,
+  // valeur, cible, extrait — `repair-identity.ts`. Un même fait relu ailleurs
+  // (même numéro sur une autre page) reste UN fait : ses unités prouvantes
+  // sont complétées, jamais une seconde ligne.
+  //
+  // Deux reprises concurrentes du même document : le verrou consultatif de
+  // transaction sérialise lecture des faits écrits ET insertion ; la seconde
+  // relit les faits de la première et n'écrit aucun doublon. Une reprise
+  // interrompue après l'écriture des faits (TC11) reste idempotente.
+  // ══════════════════════════════════════════════════════════════════════
   await pgClient.begin(async (tx) => {
-    await insertFactRows(tx as never, {
+    await tx.unsafe(`SELECT pg_advisory_xact_lock(hashtext('t1-repair-facts:' || $1::text))`, [p.fileId] as never[]);
+    const ecrits = (await tx.unsafe(
+      `SELECT id, coalesce(${canonical ? 'canonical_key, ' : ''}fact_key) AS key, value_text AS value, excerpt,
+              ${canonical ? 'target_type AS "targetType", target_entity_id AS "targetEntityId",' : ''}
+              source_unit_ids AS "sourceUnitIds"
+         FROM document_facts WHERE file_id = $1 AND account_id = $2 AND status = 'active'`,
+      [p.fileId, p.accountId] as never[],
+    )) as unknown as Array<FactIdentityInput & { id: number }>;
+    const connus = new KnownFacts(ecrits.map((r) => ({ ...r, id: Number(r.id) })));
+    const parId = new Map(ecrits.map((r) => [Number(r.id), r]));
+    const aEcrire: Array<{ fait: ProjectedFact; record: (typeof records)[number] }> = [];
+    // Faits de CE lot déjà retenus pour écriture : un second fait identique du même lot complète le premier.
+    const duLot = new Map<string, { fait: ProjectedFact; record: (typeof records)[number] }>();
+    for (const [i, f] of projection.facts.entries()) {
+      const identite = identiteDe(records[i]);
+      const id = connus.match(identite);
+      if (id === null) {
+        const cle = factCoreIdentity(identite);
+        const premier = duLot.get(cle);
+        if (premier) {
+          linkage.duplicates++;
+          const unites = [...new Set([...(premier.fait.sourceUnitIds ?? []), ...(f.sourceUnitIds ?? [])])];
+          premier.fait.sourceUnitIds = unites;
+          premier.record.sourceUnitIds = unites;
+          continue;
+        }
+        const x = { fait: f, record: records[i] };
+        duLot.set(cle, x);
+        aEcrire.push(x);
+        continue;
+      }
+      linkage.duplicates++;
+      noter(f, id);
+      // P1-03 : fait déjà présent RELU dans une unité ciblée — ses unités prouvantes sont complétées (jamais retirées).
+      const deja = new Set((parId.get(id)?.sourceUnitIds ?? []) as string[]);
+      const ajout = (f.sourceUnitIds ?? []).filter((u) => !deja.has(u));
+      if (ajout.length > 0) {
+        await tx.unsafe(
+          `UPDATE document_facts SET source_unit_ids = ARRAY(SELECT DISTINCT unnest(coalesce(source_unit_ids, '{}'::text[]) || $3::text[]))
+            WHERE id = $1 AND account_id = $2`,
+          [id, p.accountId, ajout] as never[],
+        );
+        linkage.relinkedExisting++;
+      }
+    }
+    if (aEcrire.length === 0) return;
+    const ids = await insertFactRows(tx as never, {
       accountId: p.accountId, fileId: p.fileId, sourceType: ext.source_type === 'web_link' ? 'web_link' : 'asset_file',
       provider: ext.provider == null ? null : String(ext.provider), model: ext.model == null ? null : String(ext.model),
       promptVersion: ext.prompt_version == null ? null : String(ext.prompt_version),
-    }, Number(ext.id), records, { canonical, provenance: true });
+    }, Number(ext.id), aEcrire.map((x) => x.record), { canonical, provenance: true });
+    aEcrire.forEach((x, i) => { if (ids[i] !== undefined) noter(x.fait, ids[i]); neufs.push(x.fait); });
     await tx.unsafe(`UPDATE document_extractions SET fact_count = fact_count + $2, updated_at = NOW() WHERE id = $1`,
-      [Number(ext.id), records.length] as never[]);
+      [Number(ext.id), aEcrire.length] as never[]);
   });
+  if (neufs.length === 0) return { inserted: [], all: projection.facts, factIdsByRef, linkage };
   // Après commit des faits : la propagation ne peut jamais les emporter (elle ne lève pas).
   const propagation = await propagateRepairToCandidates({ accountId: p.accountId, fileId: p.fileId, beforeFactIds: avant, origin: p.propagationOrigin ?? 't1-repair' });
-  return { inserted: neufs, all: projection.facts, propagation };
+  return { inserted: neufs, all: projection.facts, propagation, factIdsByRef, linkage };
 }

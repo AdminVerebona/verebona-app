@@ -422,6 +422,24 @@ function conflictsMarkdown(x: AttributeConflictsExport): string[] {
     L.push(`| #${String(e.accountId)} | #${String(e.operationId)} | ${mdInline(String(attr.label ?? attr.key))} | ${mdInline(String(role.label ?? '—'))} | ${mdInline(valeurs)} | ${mdInline(e.retainedValue as string | null)} | ${mdInline(e.persistedValue as string | null)} | ${mdInline(String(e.qualification))} | ${mdInline(String(e.reason ?? ''))} | ${chk.at ? `${parisDateTime(String(chk.at))} — ${mdInline(String(chk.at))}` : 'inconnu'} (${mdInline(String(chk.result ?? ''))}) | ${mdInline(String(e.lineState))} |`);
   }
   if (!arr(d.conflicts).length) L.push('| — | — | — | — | Aucune ligne active ou non vérifiable | — | — | — | — | — | — |');
+  // Lot 114 (#750, issues B et C) : arbitrage de chaque ligne — action « À traiter », examen T3, preuve citée, avant / après.
+  const arbitres = arr(d.conflicts).filter((e) => e.arbitration || e.t3);
+  if (arbitres.length) L.push('', '**Arbitrages (par ligne)**', '');
+  for (const e of arbitres) {
+    const attr = (e.attribute ?? {}) as Obj;
+    const a = (e.arbitration ?? null) as Obj | null;
+    const t = (e.t3 ?? null) as Obj | null;
+    const parts: string[] = [];
+    if (a) parts.push(`« À traiter » #${String(a.actionId)} (${a.state === 'OPEN' ? 'ouverte' : 'traitée'})`);
+    if (t) {
+      const preuves = arr(t.evidence).map((p) => `${p.fileId ? `doc #${String(p.fileId)} ` : ''}« ${String(p.excerpt)} »`).join(' ; ');
+      parts.push(`T3 #${String(t.reviewId)} : ${String(t.label ?? t.status)}${t.outcome ? ` — ${String(t.outcome)}` : ''}${t.decidedAt ? ` le ${parisDateTime(String(t.decidedAt))}` : ''}`
+        + `${t.retainedValue ? ` ; valeur retenue ${String(t.retainedValue)} (${String(t.valueBefore ?? 'aucune')} → ${String(t.valueAfter ?? 'aucune')}, ${t.applied ? 'écrite' : 'non écrite'})` : ''}`
+        + `${preuves ? ` ; preuve : ${preuves}` : ''}${t.reason ? ` ; motif : ${String(t.reason)}` : ''}${t.promptVersion ? ` ; prompt ${String(t.promptVersion)}` : ''}${t.error ? ` ; erreur : ${String(t.error)}` : ''}`);
+    }
+    const action = (e.appliedAction ?? {}) as Obj;
+    L.push(`- #${String(e.accountId)} / #${String(e.operationId)} · ${mdInline(String(attr.label ?? attr.key))} : ${mdInline(parts.join(' · '))}${action.detail ? ` — ${mdInline(String(action.detail))}` : ''}`);
+  }
   for (const l of Array.isArray(d.limits) ? (d.limits as unknown[]) : []) L.push(`- Limite : ${mdInline(String(l))}`);
   return L;
 }

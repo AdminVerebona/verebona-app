@@ -381,6 +381,29 @@ async function buildRegistry(): Promise<PromptContract[]> {
       async plan() { return blocks([eqc.ECONOMIC_QUALIFICATION_CONTRACT_VERSION]); },
     });
   }
+  // Lot 114 (Trello #750, issue B) : arbitrage T3 d'une contradiction réelle d'attribut (étape 38 du guide).
+  // Absent : aucune demande, aucun appel — la contradiction réelle va directement à la carte « À traiter » (issue C).
+  {
+    const aac = await import('@/services/business-operations/consolidation/attribute-arbitration/contract');
+    out.push({
+      id: aac.ATTRIBUTE_ARBITRATION_CONTRACT_VERSION, treatment: 'T3', masterPromptCode: t3, rank: 38,
+      label: 'T3 : arbitrage d’une contradiction réelle d’attribut (valeur retenue sur preuve, faits distincts, indécidable, document étranger)', lot: '114', guideStep: 38,
+      version: aac.ATTRIBUTE_ARBITRATION_CONTRACT_VERSION, task: aac.ATTRIBUTE_ARBITRATION_TASK, operations: await opsOf(t3, aac.ATTRIBUTE_ARBITRATION_TASK),
+      inputs: [aac.ATTRIBUTE_ARBITRATION_CONTRACT_VERSION], outputs: await outputsOf(t3, aac.ATTRIBUTE_ARBITRATION_TASK), capabilities: ['arbitration capability (promptCarriesAttributeArbitration)'],
+      markers: [`BRANCHE TASK = ${aac.ATTRIBUTE_ARBITRATION_TASK}`, aac.ATTRIBUTE_ARBITRATION_CONTRACT_VERSION], validations: ['T3AttributeArbitrationOutput', 'validateArbitration'],
+      requires: ['t3-socle'], blockIds: [aac.ATTRIBUTE_ARBITRATION_CONTRACT_VERSION], expectedExecution: null, killSwitch: 'T3_ATTRIBUTE_ARBITRATION_ENABLED',
+      impact: 'Configuration incomplète pour #750 (issue B) : une contradiction réelle d’attribut (date, prestataire) n’est jamais arbitrée par T3 — elle est posée directement à l’utilisateur (« À traiter ») quand elle a une incidence, et reste « preuves insuffisantes » quand l’identité du fait n’est pas établie.',
+      anomaly: null, coverage: null,
+      async check(p) {
+        if (aac.promptCarriesAttributeArbitration(p.text, branches(p.text))) return ok();
+        const b = branches(p.text).includes(aac.ATTRIBUTE_ARBITRATION_TASK);
+        const m = p.text.includes(aac.ATTRIBUTE_ARBITRATION_CONTRACT_VERSION);
+        return manque(b || m ? 'INCOMPLETE' : 'ABSENT', `Branche ${aac.ATTRIBUTE_ARBITRATION_TASK} ${b ? 'présente' : 'absente'}, marqueur ${aac.ATTRIBUTE_ARBITRATION_CONTRACT_VERSION} ${m ? 'présent' : 'absent'}.`,
+          [...(b ? [] : [`BRANCHE TASK = ${aac.ATTRIBUTE_ARBITRATION_TASK}`]), ...(m ? [] : [aac.ATTRIBUTE_ARBITRATION_CONTRACT_VERSION])]);
+      },
+      async plan() { return blocks([aac.ATTRIBUTE_ARBITRATION_CONTRACT_VERSION]); },
+    });
+  }
 
   // ── T1 ────────────────────────────────────────────────────────────────────
   const t1 = code('T1');

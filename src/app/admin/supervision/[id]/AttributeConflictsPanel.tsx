@@ -181,6 +181,14 @@ export function AttributeConflictsPanel({ id }: { id: number }) {
                   {e.impact.status === 'NONE' ? 'aucune incidence' : e.impact.status === 'NOT_ESTABLISHED' ? 'incidence non établie' : `à vérifier : ${e.impact.scopes.join(', ')}`}
                   <br />{e.appliedAction.detail}
                   {e.arbitration && <><br />« À traiter » #{e.arbitration.actionId} ({e.arbitration.state === 'OPEN' ? 'ouverte' : 'traitée'})</>}
+                  {e.t3 && (
+                    <span className="block text-muted-foreground" data-testid="conflit-t3">
+                      T3 #{e.t3.reviewId} : {e.t3.label}{e.t3.outcome ? ` — ${e.t3.outcome}` : ''}{e.t3.decidedAt ? ` · ${formatDateTime(e.t3.decidedAt)}` : ''}
+                      {e.t3.reason ? <><br />motif : {e.t3.reason}</> : null}
+                      {e.t3.evidence.map((p, j) => <span className="block" key={j}>preuve{p.fileId ? ` (document #${p.fileId})` : ''} : « {p.excerpt} »</span>)}
+                      {e.t3.promptVersion ? <><br />prompt : {e.t3.promptVersion}{e.t3.traceId ? ` · trace ${e.t3.traceId}` : ''}</> : null}
+                    </span>
+                  )}
                 </td>
                 <td className={`px-2 py-2 text-xs ${LINE_STATE[e.lineState].cls}`}>{LINE_STATE[e.lineState].label}<span className="block text-muted-foreground">{e.lineStateReason}</span></td>
               </tr>

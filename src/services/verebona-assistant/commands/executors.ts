@@ -73,7 +73,8 @@ export const EXECUTORS: Record<PlannedAction['command'], Executor> = {
     const achat = await avant(ctx, () => achatSyncWillWrite(pgClient, { title: p.title, startDate: p.startDate, assetIds: p.assetIds }));
     const { createAgendaItem } = await import('@/services/agenda/AgendaWriteService');
     const item = await createAgendaItem(
-      { title: p.title, startDate: p.startDate, assetIds: p.assetIds, originType: 'manual' },
+      // Lot 114B (#753, W15) : date facultative ; « Sans échéance » seulement si demandé.
+      { title: p.title, startDate: p.startDate ?? null, assetIds: p.assetIds, originType: 'manual', ...(p.noDeadline ? { noDeadline: true } : {}) },
       ctx.accountId,
       ctx.userId,
     );
@@ -178,20 +179,127 @@ export const EXECUTORS: Record<PlannedAction['command'], Executor> = {
       entity: { type: 'asset', id: p.assetId },
     };
   },
+
+  /**
+   * Lot 114B (#753, W01) — création d'un bien par la façade métier (celle de
+   * `POST /api/assets`) : quota et droits de l'offre recontrôlés à l'exécution.
+   */
+  async CREATE_ASSET(action, ctx) {
+    const p = action.params as Extract<CommandParams, { kind: 'asset_create' }>;
+    const { createAssetForAccount } = await import('@/services/assets/asset-write.facade');
+    const r = await createAssetForAccount({ accountId: ctx.accountId, userId: ctx.userId }, {
+      category: p.category, name: p.name,
+      ...(p.subtype ? { subtype: p.subtype } : {}),
+      ...(p.objectCategory ? { objectCategory: p.objectCategory } : {}),
+    });
+    if (!r.ok) {
+      // Refus de droit ou de quota : message de l'offre ; autre refus : jamais un texte technique.
+      return refuse(action, r.status === 403 ? r.message : 'Ce bien ne peut pas être créé avec ces informations. Refaites votre demande.');
+    }
+    ctx.recordUndo?.({ actionId: action.actionId, reversible: false, reason: 'bien créé : il se supprime depuis sa fiche' });
+    return { actionId: action.actionId, status: 'SUCCESS', message: `Bien « ${r.asset.name} » créé.`, entity: { type: 'asset', id: r.asset.id } };
+  },
+
+  /**
+   * Lot 114B (#753, W03) — suppression DÉFINITIVE d'un bien et de son contenu,
+   * par la façade métier (celle de `DELETE /api/assets`). Le décompte présenté
+   * à la confirmation est relu : s'il a changé, rien n'est supprimé.
+   */
+  async DELETE_ASSET(action, ctx) {
+    const p = action.params as Extract<CommandParams, { kind: 'asset_delete' }>;
+    const { readAssetDeletionSummary, deleteAssetForAccount } = await import('@/services/assets/asset-write.facade');
+    const resume = await readAssetDeletionSummary(ctx.accountId, p.assetId);
+    if (!resume) return refuse(action, 'Bien introuvable ou hors de votre compte.');
+    const change = Object.keys(p.expectedSummary).some((k) => Number((resume as unknown as Record<string, number>)[k] ?? 0) !== p.expectedSummary[k]);
+    if (change) return ko(action, `Le contenu de « ${resume.name} » a changé depuis l’aperçu : rien n’a été supprimé. Refaites votre demande.`);
+    const [bien] = (await pgClient.unsafe(
+      `SELECT id, thumbnail_url AS "thumbnailUrl" FROM assets WHERE id = $1 AND account_id = $2`,
+      [p.assetId, ctx.accountId] as never[],
+    )) as unknown as Array<{ id: number; thumbnailUrl: string | null }>;
+    if (!bien) return refuse(action, 'Bien introuvable ou hors de votre compte.');
+    await deleteAssetForAccount({ accountId: ctx.accountId, userId: ctx.userId }, bien);
+    ctx.recordUndo?.({ actionId: action.actionId, reversible: false, reason: 'suppression définitive d’un bien' });
+    return { actionId: action.actionId, status: 'SUCCESS', message: `Bien « ${resume.name} » supprimé définitivement, avec tout son contenu.`, entity: null };
+  },
+
+  /**
+   * Lot 114B (#753, W16) — titre et/ou date d'une échéance, par le service de
+   * l'Agenda (mêmes validations que son tiroir). L'état présenté à la
+   * confirmation est recontrôlé : modifié entre-temps, rien n'est écrit.
+   */
+  async UPDATE_AGENDA_ITEM(action, ctx) {
+    const p = action.params as Extract<CommandParams, { kind: 'agenda_update' }>;
+    const avantEcriture = await readAgendaSnapshot(pgClient, ctx.accountId, p.agendaItemId);
+    if (!avantEcriture) return refuse(action, 'Échéance introuvable ou hors de votre compte.');
+    if (agendaVersion(avantEcriture) !== p.expectedVersion) return ko(action, CHANGED_SINCE_PREVIEW);
+    const { updateAgendaItem } = await import('@/services/agenda/AgendaWriteService');
+    const item = await updateAgendaItem(p.agendaItemId, {
+      ...(p.patch.title !== undefined ? { title: p.patch.title } : {}),
+      ...(p.patch.startDate !== undefined ? { startDate: p.patch.startDate } : {}),
+    }, ctx.accountId, ctx.userId);
+    ctx.recordUndo?.({ actionId: action.actionId, reversible: false, reason: 'modification d’une échéance : à corriger depuis l’Agenda ou par une nouvelle demande' });
+    await publier([{ type: 'AGENDA_ITEM_UPDATED', accountId: ctx.accountId, entityId: item.id }]);
+    return ok(action, `Échéance « ${item.title} » modifiée.`, item.id);
+  },
+
+  /**
+   * Lot 114B (#753, W17) — suppression par le service de l'Agenda : cette
+   * échéance, ou toute la série si elle a été annoncée. La portée et le nombre
+   * d'échéances ne changent pas entre l'aperçu et l'exécution.
+   */
+  async DELETE_AGENDA_ITEM(action, ctx) {
+    const p = action.params as Extract<CommandParams, { kind: 'agenda_delete' }>;
+    const avantEcriture = await readAgendaSnapshot(pgClient, ctx.accountId, p.agendaItemId);
+    if (!avantEcriture) return refuse(action, 'Échéance introuvable ou hors de votre compte.');
+    if (agendaVersion(avantEcriture) !== p.expectedVersion) return ko(action, CHANGED_SINCE_PREVIEW);
+    if (p.scope === 'SERIES') {
+      const [{ n }] = (await pgClient.unsafe(
+        `SELECT count(*)::int AS n FROM agenda_items s
+          WHERE s.account_id = $2 AND s.series_key = (SELECT series_key FROM agenda_items WHERE id = $1 AND account_id = $2)`,
+        [p.agendaItemId, ctx.accountId] as never[],
+      )) as unknown as Array<{ n: number }>;
+      if (n !== p.expectedCount) {
+        return ko(action, `La série ne compte plus ${p.expectedCount} échéances (${n} aujourd’hui) : rien n’a été supprimé. Refaites votre demande.`);
+      }
+    }
+    const { deleteAgendaItem } = await import('@/services/agenda/AgendaWriteService');
+    const { deletedIds } = await deleteAgendaItem(p.agendaItemId, ctx.accountId, ctx.userId, { scope: p.scope });
+    ctx.recordUndo?.({ actionId: action.actionId, reversible: false, reason: 'suppression définitive d’une échéance' });
+    await publier(deletedIds.map((entityId) => ({ type: 'AGENDA_ITEM_DELETED' as const, accountId: ctx.accountId, entityId })));
+    return {
+      actionId: action.actionId, status: 'SUCCESS',
+      message: deletedIds.length > 1 ? `Série « ${avantEcriture.title} » supprimée : ${deletedIds.length} échéances.` : `Échéance « ${avantEcriture.title} » supprimée.`,
+      // L'identifiant supprimé est rendu pour que l'Agenda ouvert sous l'assistant se remette à jour.
+      entity: { type: 'agenda_item', id: p.agendaItemId },
+    };
+  },
 };
 
 // Lot 113P (#715) : plus de commande de STATUT d'échéance (réalisée / annulée) ni d'inverse associé.
+
+const CHANGED_SINCE_PREVIEW = 'Cette échéance a été modifiée depuis l’aperçu : rien n’a été fait. Refaites votre demande.';
+const refuse = (a: PlannedAction, message: string): ActionResult => ({ actionId: a.actionId, status: 'REFUSED', message });
+/** Événement métier après une écriture réussie (caches de l'assistant) — jamais bloquant. */
+async function publier(events: Array<{ type: 'AGENDA_ITEM_UPDATED' | 'AGENDA_ITEM_DELETED'; accountId: number; entityId: number }>): Promise<void> {
+  try {
+    const { emitBusinessEvents } = await import('../events/business-events');
+    await emitBusinessEvents(events as never);
+  } catch (e) {
+    console.warn('[verebona] événement métier non publié :', (e as Error).message);
+  }
+}
 
 /** Exécute une action, sans jamais lever : une erreur devient un résultat FAILED. */
 /** #715 (lot 113P) : commande d'un plan ancien retirée (statut d'échéance) — refusée, rien n'est écrit. */
 export const RETIRED_COMMAND_MESSAGE = 'Cette action n’existe plus : modifiez la date ou supprimez l’événement depuis l’Agenda.';
 
-export async function runAction(action: PlannedAction, ctx: ExecutionContext, executors = EXECUTORS): Promise<ActionResult> {
-  if (typeof executors[action.command] !== 'function') {
+export async function runAction(action: PlannedAction, ctx: ExecutionContext, executors: Partial<Record<PlannedAction['command'], Executor>> = EXECUTORS): Promise<ActionResult> {
+  const executer = executors[action.command];
+  if (typeof executer !== 'function') {
     return { actionId: action.actionId, status: 'REFUSED', message: RETIRED_COMMAND_MESSAGE };
   }
   try {
-    return await executors[action.command](action, ctx);
+    return await executer(action, ctx);
   } catch (e) {
     const msg = (e as Error).message ?? 'Erreur';
     // « Item not found » : l'échéance a disparu ou n'est pas du compte — un

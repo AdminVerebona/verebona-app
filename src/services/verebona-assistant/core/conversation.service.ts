@@ -162,7 +162,8 @@ export async function getOrCreateActiveConversation(
  *   · identifiant fourni → il doit appartenir à l'utilisateur, sinon
  *     `ConversationNotFoundError` (jamais de repli silencieux vers un autre
  *     fil : la question partirait dans le mauvais contexte) ;
- *   · aucun identifiant → fil le plus récent, créé au besoin.
+ *   · aucun identifiant → NOUVELLE demande (lot 114A, #753 D17) : jamais le
+ *     dernier fil, dont le contexte ne doit pas être hérité.
  */
 export async function resolveConversation(
   accountId: number,
@@ -175,7 +176,38 @@ export async function resolveConversation(
     if (!owned) throw new ConversationNotFoundError();
     return owned;
   }
-  return getOrCreateActiveConversation(accountId, userId, locale);
+  // Lot 114A (#753, CDC T2 §6.5, D17, M03) — règle remplacée : « identifiant
+  // absent → fil le plus récent ». Une demande sans fil choisi ouvre une
+  // NOUVELLE demande : elle n'hérite jamais du contexte du dernier échange.
+  return openFreshConversation(accountId, userId, locale);
+}
+
+/**
+ * Fil d'une nouvelle demande : un fil encore VIDE de l'utilisateur est
+ * réutilisé (double envoi, onglets : pas de fils vides en série), sinon un
+ * fil est créé. Un fil vide ne porte aucun contexte : la réutilisation ne
+ * transmet rien d'un échange précédent. Les anciens fils restent intacts.
+ */
+export async function openFreshConversation(accountId: number, userId: number, locale: string): Promise<number> {
+  return pgClient.begin(async (tx) => {
+    await tx.unsafe(`SELECT pg_advisory_xact_lock(hashtext('verebona_conv:' || $1 || ':' || $2))`, [accountId, userId]);
+    const rows = (await tx.unsafe(
+      `SELECT c.id FROM verebona_conversations c
+        WHERE c.account_id = $1 AND c.user_id = $2 AND c.status = 'active' AND c.expires_at > now()
+          AND c.last_message_at IS NULL AND c.clarification_state_json IS NULL
+          AND NOT EXISTS (SELECT 1 FROM verebona_messages m WHERE m.conversation_id = c.id)
+        ORDER BY c.id DESC
+        LIMIT 1`,
+      [accountId, userId],
+    )) as unknown as Array<{ id: number }>;
+    if (rows[0]) return rows[0].id;
+    const created = (await tx.unsafe(
+      `INSERT INTO verebona_conversations (account_id, user_id, status, machine_state, locale, expires_at)
+       VALUES ($1, $2, 'active', 'IDLE', $3, $4) RETURNING id`,
+      [accountId, userId, locale, expiresFromNow()],
+    )) as unknown as Array<{ id: number }>;
+    return created[0].id;
+  }) as Promise<number>;
 }
 
 /** Fils de l'utilisateur, du plus récent au plus ancien. */

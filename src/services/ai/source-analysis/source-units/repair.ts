@@ -125,6 +125,11 @@ interface RepairPassResult {
    * retrouvé) — jusqu'ici ignorées : l'unité restait `not_extracted`.
    */
   decisions: AnchoredValueDecision[];
+  /**
+   * Lot 114G (#760, P1-02) : décisions rendues par le modèle mais NON retenues par la passe, avec leur motif —
+   * élément mal formé (`schemaInvalid`) ou unité ciblée introuvable. Jamais écartées en silence.
+   */
+  decisionsDropped: { schemaInvalid: number; unitNotFound: number };
 }
 
 export async function runRepairPass(p: {
@@ -138,7 +143,7 @@ export async function runRepairPass(p: {
   pass: number;
   call: RepairCall;
 }): Promise<RepairPassResult> {
-  const res: RepairPassResult = { facts: [], attempted: [], failed: new Map(), calls: 0, outOfScope: 0, notAttempted: [], links: new Map(), decisions: [] };
+  const res: RepairPassResult = { facts: [], attempted: [], failed: new Map(), calls: 0, outOfScope: 0, notAttempted: [], links: new Map(), decisions: [], decisionsDropped: { schemaInvalid: 0, unitNotFound: 0 } };
   const { batches, left } = batchRepairUnits(p.units, p.maxCalls);
   res.notAttempted = left.map((u) => u.sourceUnitId);
   const name = p.input.displayNames[p.groupIndices[0]] ?? 'document';
@@ -181,13 +186,13 @@ export async function runRepairPass(p: {
         res.links.set(repare, ids);
       }
       for (const d of r.valueDecisions ?? []) {
-        if (d.schemaInvalid) continue;
+        if (d.schemaInvalid) { res.decisionsDropped.schemaInvalid++; continue; }
         const cite = d.sourceUnitId ? d.sourceUnitId.replace(/^\[|\]$/g, '').trim() : null;
         const excerpt = (d.evidence?.excerpt ?? '').replace(PREFIXE, '').trim();
         const id = cite && parId.has(unitOfCell(cite)) ? unitOfCell(cite)
           : excerpt ? linker.link({ excerpt, provenance: 'TEXT_EXTRACTION' })[0] ?? null : null;
         const unite = id ? parId.get(id) : undefined;
-        if (!unite) continue;
+        if (!unite) { res.decisionsDropped.unitNotFound++; continue; }
         res.decisions.push({
           ...d, sourceUnitId: unite.sourceUnitId,
           evidence: { ...(d.evidence ?? {}), ...(excerpt ? { excerpt } : {}), ...(unite.page ? { page: unite.page } : {}) },

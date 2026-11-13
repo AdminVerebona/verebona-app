@@ -107,7 +107,7 @@ async function traiter(req: NextRequest, httpId: string): Promise<NextResponse> 
   const entree = parseWith(PostMessageSchema, body, httpId);
   if (!entree.ok) return entree.response;
   const { message, clientRequestId } = entree.data;
-  // Fil choisi par l'utilisateur (optionnel). Absent : fil le plus récent.
+  // Fil choisi par l'utilisateur (optionnel). Absent : NOUVELLE demande (lot 114A, #753 D17).
   const requestedConversation = entree.data.conversationId;
 
   // 4. Éligibilité IA via l'existant (source de vérité serveur — §15.1).

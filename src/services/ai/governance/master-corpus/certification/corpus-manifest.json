@@ -1,6 +1,6 @@
 {
-  "version": 7,
-  "generatedAt": "2026-11-10T16:47:24.548Z",
+  "version": 8,
+  "generatedAt": "2026-11-13T13:22:45.084Z",
   "reference": {
     "ticket": "#601",
     "announcedScenarios": 401,
@@ -9944,6 +9944,298 @@
           "oracleFingerprint": null
         }
       ]
+    },
+    {
+      "id": "H-P-T3-AA-01-FACTURE-RECTIFICATIVE",
+      "sourceCaseId": "P-T3-AA-01",
+      "file": "src/services/ai/reconciliation/master/__fixtures__/p-t3-aa-01-facture-rectificative.json",
+      "operationCode": "t3_attribute_arbitration",
+      "treatment": "T3",
+      "contract": null,
+      "schema": "T3AttributeArbitrationOutput",
+      "riskFamily": "T3_CORRECTIONS_PRESERVEES",
+      "difficulty": "INTERMEDIAIRE",
+      "critical": true,
+      "pair": null,
+      "provenance": "DEVELOPPEUR",
+      "sourcePieces": [],
+      "inputMode": "STRUCTURED",
+      "testType": "QUALITE_MODELE",
+      "evaluationType": "ORACLE",
+      "status": "A_COMPLETER",
+      "reason": "réponse potentiellement utilisable : proposition d’oracle prête, approbation humaine individuelle requise (sources du cas)",
+      "historicalClass": "REPONSE_UTILISABLE",
+      "cdc35Category": null,
+      "oracle": {
+        "version": 1,
+        "requiredFacts": [],
+        "absentFacts": [],
+        "entities": {
+          "expected": [],
+          "forbidden": []
+        },
+        "decisions": {
+          "allowed": [],
+          "forbidden": []
+        },
+        "abstention": {
+          "expected": "EITHER",
+          "criteria": null
+        },
+        "allowedSources": [],
+        "equivalences": [],
+        "amountTolerance": 0,
+        "serverExpected": {
+          "valid": true,
+          "outcome": "RESOLVED",
+          "effect": "RETAIN",
+          "retained": "2026-03-19"
+        },
+        "notes": "Proposition générée au lot 100B depuis l’attendu historique du cas : à relire sur les sources (contexte du cas, pièces), jamais sur une sortie de modèle."
+      },
+      "expectedSummary": "{\"valid\":true,\"outcome\":\"RESOLVED\",\"effect\":\"RETAIN\",\"retained\":\"2026-03-19\"}",
+      "revisions": [
+        {
+          "revision": 1,
+          "at": "2026-11-13T13:22:45.084Z",
+          "by": "lot100b",
+          "reason": "reclassement initial (REPONSE_UTILISABLE) : Lot 114 — ATTRIBUTE_ARBITRATION (contrat t3-attribute-arbitration-v1) : deux factures de même numéro donnent deux dates de réalisation ; la seconde déclare annuler et remplacer la première ⇒ RESOLVED certain, la date de la facture rectificative est retenue, preuve citée dans le document qui la porte",
+          "changes": [
+            "*"
+          ],
+          "oracleFingerprint": "cb6fa7bd308aff3f7fdcda905ca54ce7ddf96cb7c143ec71192ec45f7b400c46"
+        }
+      ]
+    },
+    {
+      "id": "H-P-T3-AA-02-MEME-AUTORITE-INDECIDABLE",
+      "sourceCaseId": "P-T3-AA-02",
+      "file": "src/services/ai/reconciliation/master/__fixtures__/p-t3-aa-02-meme-autorite-indecidable.json",
+      "operationCode": "t3_attribute_arbitration",
+      "treatment": "T3",
+      "contract": null,
+      "schema": "T3AttributeArbitrationOutput",
+      "riskFamily": "T3_CORRECTIONS_PRESERVEES",
+      "difficulty": "INTERMEDIAIRE",
+      "critical": true,
+      "pair": null,
+      "provenance": "DEVELOPPEUR",
+      "sourcePieces": [],
+      "inputMode": "STRUCTURED",
+      "testType": "QUALITE_MODELE",
+      "evaluationType": "ORACLE",
+      "status": "A_COMPLETER",
+      "reason": "réponse potentiellement utilisable : proposition d’oracle prête, approbation humaine individuelle requise (sources du cas)",
+      "historicalClass": "REPONSE_UTILISABLE",
+      "cdc35Category": null,
+      "oracle": {
+        "version": 1,
+        "requiredFacts": [],
+        "absentFacts": [],
+        "entities": {
+          "expected": [],
+          "forbidden": []
+        },
+        "decisions": {
+          "allowed": [],
+          "forbidden": []
+        },
+        "abstention": {
+          "expected": "EITHER",
+          "criteria": null
+        },
+        "allowedSources": [],
+        "equivalences": [],
+        "amountTolerance": 0,
+        "serverExpected": {
+          "valid": true,
+          "outcome": "UNDECIDABLE",
+          "effect": "ASK_USER"
+        },
+        "notes": "Proposition générée au lot 100B depuis l’attendu historique du cas : à relire sur les sources (contexte du cas, pièces), jamais sur une sortie de modèle."
+      },
+      "expectedSummary": "{\"valid\":true,\"outcome\":\"UNDECIDABLE\",\"effect\":\"ASK_USER\"}",
+      "revisions": [
+        {
+          "revision": 1,
+          "at": "2026-11-13T13:22:45.084Z",
+          "by": "lot100b",
+          "reason": "reclassement initial (REPONSE_UTILISABLE) : Lot 114 — ATTRIBUTE_ARBITRATION : deux exemplaires de la même facture portent deux prestataires différents, sans rectification ni date d’effet ⇒ UNDECIDABLE certain : aucune valeur écrite, la question va à l’utilisateur (carte « À traiter »).",
+          "changes": [
+            "*"
+          ],
+          "oracleFingerprint": "6f1b7215f39250d5c59b4a147d874d92cefcccc9c0a2c562ecdf48a26bfcc1b2"
+        }
+      ]
+    },
+    {
+      "id": "H-P-T3-AA-03-FAITS-DISTINCTS",
+      "sourceCaseId": "P-T3-AA-03",
+      "file": "src/services/ai/reconciliation/master/__fixtures__/p-t3-aa-03-faits-distincts.json",
+      "operationCode": "t3_attribute_arbitration",
+      "treatment": "T3",
+      "contract": null,
+      "schema": "T3AttributeArbitrationOutput",
+      "riskFamily": "T3_IDENTITE_ECONOMIQUE",
+      "difficulty": "INTERMEDIAIRE",
+      "critical": true,
+      "pair": null,
+      "provenance": "DEVELOPPEUR",
+      "sourcePieces": [],
+      "inputMode": "STRUCTURED",
+      "testType": "QUALITE_MODELE",
+      "evaluationType": "ORACLE",
+      "status": "A_COMPLETER",
+      "reason": "réponse potentiellement utilisable : proposition d’oracle prête, approbation humaine individuelle requise (sources du cas)",
+      "historicalClass": "REPONSE_UTILISABLE",
+      "cdc35Category": null,
+      "oracle": {
+        "version": 1,
+        "requiredFacts": [],
+        "absentFacts": [],
+        "entities": {
+          "expected": [],
+          "forbidden": []
+        },
+        "decisions": {
+          "allowed": [],
+          "forbidden": []
+        },
+        "abstention": {
+          "expected": "EITHER",
+          "criteria": null
+        },
+        "allowedSources": [],
+        "equivalences": [],
+        "amountTolerance": 0,
+        "serverExpected": {
+          "valid": true,
+          "outcome": "DISTINCT_FACTS",
+          "effect": "NO_CONFLICT"
+        },
+        "notes": "Proposition générée au lot 100B depuis l’attendu historique du cas : à relire sur les sources (contexte du cas, pièces), jamais sur une sortie de modèle."
+      },
+      "expectedSummary": "{\"valid\":true,\"outcome\":\"DISTINCT_FACTS\",\"effect\":\"NO_CONFLICT\"}",
+      "revisions": [
+        {
+          "revision": 1,
+          "at": "2026-11-13T13:22:45.084Z",
+          "by": "lot100b",
+          "reason": "reclassement initial (REPONSE_UTILISABLE) : Lot 114 — ATTRIBUTE_ARBITRATION : deux factures du même prestataire décrivent deux passages distincts (pose, puis mise en service) ⇒ DISTINCT_FACTS certain : pas un conflit, les deux dates sont conservées, aucune question.",
+          "changes": [
+            "*"
+          ],
+          "oracleFingerprint": "271896324883b44cb6cd5b6e4194956da9da11efcb7411e33c5d0482a21aed5f"
+        }
+      ]
+    },
+    {
+      "id": "H-P-T3-AA-04-VALEUR-UTILISATEUR-PROTEGEE",
+      "sourceCaseId": "P-T3-AA-04",
+      "file": "src/services/ai/reconciliation/master/__fixtures__/p-t3-aa-04-valeur-utilisateur-protegee.json",
+      "operationCode": "t3_attribute_arbitration",
+      "treatment": "T3",
+      "contract": null,
+      "schema": "T3AttributeArbitrationOutput",
+      "riskFamily": "T3_CORRECTIONS_PRESERVEES",
+      "difficulty": "DIFFICILE",
+      "critical": false,
+      "pair": null,
+      "provenance": "DEVELOPPEUR",
+      "sourcePieces": [],
+      "inputMode": "STRUCTURED",
+      "testType": "GARDE_SERVEUR",
+      "evaluationType": "GARDE_SERVEUR",
+      "status": "GARDE_SERVEUR",
+      "reason": "garde serveur : sortie enregistrée délibérément fautive, contrôle de la réaction du serveur (reste en CI, jamais une référence de promotion)",
+      "historicalClass": "GARDE",
+      "cdc35Category": null,
+      "oracle": null,
+      "expectedSummary": "{\"valid\":false,\"issues\":[\"PROTECTED_VALUE\"],\"effect\":\"NONE\"}",
+      "revisions": [
+        {
+          "revision": 1,
+          "at": "2026-11-13T13:22:45.084Z",
+          "by": "lot100b",
+          "reason": "reclassement initial (GARDE) : Lot 114 — ATTRIBUTE_ARBITRATION, garde serveur : la sortie retient la valeur d’un document alors qu’une autre valeur a été saisie par l’utilisateur ⇒ refus en bloc (PROTECTED_VALUE), vaut abstention : la valeur de l’utilisateur n’est jamais remplacée.",
+          "changes": [
+            "*"
+          ],
+          "oracleFingerprint": null
+        }
+      ]
+    },
+    {
+      "id": "H-P-T3-AA-05-EXTRAIT-INVENTE",
+      "sourceCaseId": "P-T3-AA-05",
+      "file": "src/services/ai/reconciliation/master/__fixtures__/p-t3-aa-05-extrait-invente.json",
+      "operationCode": "t3_attribute_arbitration",
+      "treatment": "T3",
+      "contract": null,
+      "schema": "T3AttributeArbitrationOutput",
+      "riskFamily": "T3_CORRECTIONS_PRESERVEES",
+      "difficulty": "DIFFICILE",
+      "critical": false,
+      "pair": null,
+      "provenance": "DEVELOPPEUR",
+      "sourcePieces": [],
+      "inputMode": "STRUCTURED",
+      "testType": "GARDE_SERVEUR",
+      "evaluationType": "GARDE_SERVEUR",
+      "status": "GARDE_SERVEUR",
+      "reason": "garde serveur : sortie enregistrée délibérément fautive, contrôle de la réaction du serveur (reste en CI, jamais une référence de promotion)",
+      "historicalClass": "GARDE",
+      "cdc35Category": null,
+      "oracle": null,
+      "expectedSummary": "{\"valid\":false,\"issues\":[\"EXCERPT_NOT_FOUND\"],\"effect\":\"NONE\"}",
+      "revisions": [
+        {
+          "revision": 1,
+          "at": "2026-11-13T13:22:45.084Z",
+          "by": "lot100b",
+          "reason": "reclassement initial (GARDE) : Lot 114 — ATTRIBUTE_ARBITRATION, garde serveur : la sortie cite un passage absent des textes fournis pour retenir une date ⇒ refus en bloc (EXCERPT_NOT_FOUND), vaut abstention : aucune valeur écrite.",
+          "changes": [
+            "*"
+          ],
+          "oracleFingerprint": null
+        }
+      ]
+    },
+    {
+      "id": "H-P-T3-AA-06-PLUS-RECENT-SANS-PREUVE",
+      "sourceCaseId": "P-T3-AA-06",
+      "file": "src/services/ai/reconciliation/master/__fixtures__/p-t3-aa-06-plus-recent-sans-preuve.json",
+      "operationCode": "t3_attribute_arbitration",
+      "treatment": "T3",
+      "contract": null,
+      "schema": "T3AttributeArbitrationOutput",
+      "riskFamily": "T3_CORRECTIONS_PRESERVEES",
+      "difficulty": "DIFFICILE",
+      "critical": false,
+      "pair": null,
+      "provenance": "DEVELOPPEUR",
+      "sourcePieces": [],
+      "inputMode": "STRUCTURED",
+      "testType": "GARDE_SERVEUR",
+      "evaluationType": "GARDE_SERVEUR",
+      "status": "GARDE_SERVEUR",
+      "reason": "garde serveur : sortie enregistrée délibérément fautive, contrôle de la réaction du serveur (reste en CI, jamais une référence de promotion)",
+      "historicalClass": "GARDE",
+      "cdc35Category": null,
+      "oracle": null,
+      "expectedSummary": "{\"valid\":false,\"issues\":[\"RETAINED_EVIDENCE_MISSING\"],\"effect\":\"NONE\"}",
+      "revisions": [
+        {
+          "revision": 1,
+          "at": "2026-11-13T13:22:45.084Z",
+          "by": "lot100b",
+          "reason": "reclassement initial (GARDE) : Lot 114 — ATTRIBUTE_ARBITRATION, garde serveur : la sortie retient la valeur du document le plus récent en ne citant qu’un passage de l’AUTRE document ⇒ refus en bloc (RETAINED_EVIDENCE_MISSING) : une source plus récente n’est jamais retenue sans preuve dans un document qui porte la valeur.",
+          "changes": [
+            "*"
+          ],
+          "oracleFingerprint": null
+        }
+      ]
     }
   ],
   "ledger": [
@@ -10106,6 +10398,12 @@
     "H-P-T3-EQ-03-ACQUISITION-DEJA-COMPTEE",
     "H-P-T3-EQ-04-MONTANT-EGAL-SEUL",
     "H-P-T3-EQ-05-MULTIBIENS-SANS-VENTILATION",
-    "H-P-T3-EQ-06-EXTRAIT-INVENTE"
+    "H-P-T3-EQ-06-EXTRAIT-INVENTE",
+    "H-P-T3-AA-01-FACTURE-RECTIFICATIVE",
+    "H-P-T3-AA-02-MEME-AUTORITE-INDECIDABLE",
+    "H-P-T3-AA-03-FAITS-DISTINCTS",
+    "H-P-T3-AA-04-VALEUR-UTILISATEUR-PROTEGEE",
+    "H-P-T3-AA-05-EXTRAIT-INVENTE",
+    "H-P-T3-AA-06-PLUS-RECENT-SANS-PREUVE"
   ]
 }

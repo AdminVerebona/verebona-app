@@ -62,6 +62,11 @@ export const DEVELOPER_FIXTURES = new Set([
   // inventé, rôle incompatible).
   'p-t3-eq-01-avis-charge-sans-indice.json', 'p-t3-eq-02-reglement-d-une-charge.json', 'p-t3-eq-03-acquisition-deja-comptee.json',
   'p-t3-eq-04-montant-egal-seul.json', 'p-t3-eq-05-multibiens-sans-ventilation.json', 'p-t3-eq-06-extrait-invente.json',
+  // Lot 114 : arbitrage d'une contradiction réelle d'attribut (contrat `t3-attribute-arbitration-v1`, #750) — réponses de
+  // référence À APPROUVER (rôle `answer`) et gardes serveur (rôle `guard` : valeur de l'utilisateur protégée, extrait
+  // inventé, document plus récent retenu sans preuve).
+  'p-t3-aa-01-facture-rectificative.json', 'p-t3-aa-02-meme-autorite-indecidable.json', 'p-t3-aa-03-faits-distincts.json',
+  'p-t3-aa-04-valeur-utilisateur-protegee.json', 'p-t3-aa-05-extrait-invente.json', 'p-t3-aa-06-plus-recent-sans-preuve.json',
 ]);
 
 /**
@@ -87,6 +92,7 @@ const RISK_BY_CASE: Readonly<Record<string, string>> = {
   'P-T3-01': 'T3_CORRECTIONS_PRESERVEES', 'P-T3-08': 'T3_IDENTITE_ECONOMIQUE', 'P-T3-09': 'T3_DOUBLE_COMPTE', 'P-T3-12': 'T3_IDENTITE_ECONOMIQUE',
   'P-T3-13': 'T3_IDENTITE_ECONOMIQUE', 'P-T3-ID-01': 'T3_DOUBLE_COMPTE', 'P-T3-ID-02': 'T3_CORRECTIONS_PRESERVEES',
   'P-T3-PR-05': 'T3_CORRECTIONS_PRESERVEES',
+  'P-T3-AA-03': 'T3_IDENTITE_ECONOMIQUE',
   'P-T3-EQ-03': 'T3_DOUBLE_COMPTE', 'P-T3-EQ-04': 'T3_DOUBLE_COMPTE',
   'P-T4-01': 'T4_ECHEANCE', 'P-T4-02': 'T4_PREUVE_OCCURRENCE', 'P-T4-03': 'T4_PREUVE_OCCURRENCE', 'P-T4-04': 'T4_ECHEANCE', 'P-T4-05': 'T4_ECHEANCE',
   'P-T4-06': 'T4_PERIODE', 'P-T4-07': 'T4_RECONDUCTION', 'P-T4-V3-07': 'T4_RECONDUCTION', 'P-T4-08': 'T4_PERIODE', 'P-T4-V3-08': 'T4_PERIODE',
@@ -102,6 +108,7 @@ const RISK_BY_OPERATION: Readonly<Record<string, string>> = {
   t3_document_naming: 'T3_NOMMAGE', t3_knowledge_query: 'T3_CONNAISSANCE', t3_operation_identity: 'T3_DOUBLE_COMPTE',
   t3_period_relation: 'T3_CONNAISSANCE',
   t3_economic_qualification: 'T3_IDENTITE_ECONOMIQUE',
+  t3_attribute_arbitration: 'T3_CORRECTIONS_PRESERVEES',
   t4_classify_event: 'T4_ECHEANCE', t4_verify_completion: 'T4_PREUVE_OCCURRENCE', t4_temporal_ambiguity: 'T4_ECHEANCE', t4_agenda_representation: 'T4_PERIODE',
   t6_formulate: 'T6_INFORMATION_UTILE', t6_evaluate: 'T6_ACTION_UTILE',
 };

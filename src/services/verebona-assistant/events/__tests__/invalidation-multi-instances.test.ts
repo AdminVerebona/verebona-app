@@ -152,7 +152,10 @@ describe('§31.7 — chaque chemin de modification émet son événement', () =>
     || new RegExp(`await emitBusinessEvents\\([^;]*type: '${type}'`).test(src);
 
   it.each([
-    ['assets/route.ts', ['ASSET_CREATED', 'ASSET_UPDATED', 'ASSET_DELETED']],
+    // Lot 114B (#753, M19 / M21) : création et suppression d'un bien émises (et attendues) par la façade
+    // métier `asset-write.facade`, appelée par cette route ET par l'Assistant ; la route garde la modification.
+    ['assets/route.ts', ['ASSET_UPDATED']],
+    ['../../services/assets/asset-write.facade.ts', ['ASSET_CREATED', 'ASSET_DELETED']],
     ['assets/[id]/details/[section]/route.ts', ['ASSET_UPDATED']],
     ['assets/[id]/equipments/route.ts', ['ASSET_UPDATED']],
     ['assets/[id]/equipments/[equipId]/route.ts', ['ASSET_UPDATED']],

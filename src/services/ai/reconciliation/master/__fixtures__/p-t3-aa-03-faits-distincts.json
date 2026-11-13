@@ -1,0 +1,96 @@
+{
+  "case": "P-T3-AA-03",
+  "description": "Lot 114 — ATTRIBUTE_ARBITRATION : deux factures du même prestataire décrivent deux passages distincts (pose, puis mise en service) ⇒ DISTINCT_FACTS certain : pas un conflit, les deux dates sont conservées, aucune question.",
+  "qualification": {
+    "role": "answer"
+  },
+  "context": {
+    "attributeArbitration": {
+      "today": "2026-11-13",
+      "field": "realizedDate",
+      "role": "REALIZATION",
+      "operation": {
+        "typeCode": "INTERVENTION",
+        "label": "Remplacement du chauffe-eau"
+      },
+      "values": [
+        {
+          "value": "2026-03-12",
+          "normalized": "2026-03-12",
+          "fileIds": [
+            9721
+          ],
+          "held": true,
+          "userProtected": false
+        },
+        {
+          "value": "2026-04-02",
+          "normalized": "2026-04-02",
+          "fileIds": [
+            9722
+          ],
+          "held": false,
+          "userProtected": false
+        }
+      ],
+      "documents": [
+        {
+          "id": 9721,
+          "type": "INVOICE",
+          "title": "Facture pose chauffe-eau",
+          "date": "2026-03-13",
+          "provider": "Plomberie Durand",
+          "references": [
+            {
+              "kind": "INVOICE",
+              "value": "F-2026-118"
+            }
+          ],
+          "excerpts": [
+            "Pose du chauffe-eau le 12/03/2026"
+          ]
+        },
+        {
+          "id": 9722,
+          "type": "INVOICE",
+          "title": "Facture mise en service",
+          "date": "2026-04-03",
+          "provider": "Plomberie Durand",
+          "references": [
+            {
+              "kind": "INVOICE",
+              "value": "F-2026-141"
+            }
+          ],
+          "excerpts": [
+            "Mise en service et réglages le 02/04/2026",
+            "Second passage distinct de la pose"
+          ]
+        }
+      ]
+    }
+  },
+  "recording": {
+    "operationCode": "t3_attribute_arbitration",
+    "task": "ATTRIBUTE_ARBITRATION",
+    "output": {
+      "task": "ATTRIBUTE_ARBITRATION",
+      "outcome": "DISTINCT_FACTS",
+      "retainedValue": null,
+      "foreignDocument": null,
+      "confidence": "certain",
+      "evidence": [
+        {
+          "document": "D2",
+          "excerpt": "Second passage distinct de la pose"
+        }
+      ],
+      "reason": "Deux passages distincts : les dates ne portent pas sur le même fait."
+    }
+  },
+  "expected": {
+    "valid": true,
+    "outcome": "DISTINCT_FACTS",
+    "effect": "NO_CONFLICT"
+  }
+}

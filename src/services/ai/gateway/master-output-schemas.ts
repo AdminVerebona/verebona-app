@@ -26,6 +26,7 @@ import { T4AgendaRepresentationOutput } from '@/services/business-operations/sem
 import { T3OperationIdentityOutput } from '@/services/business-operations/semantic/identity-contract';
 import { T3PeriodRelationOutput } from '@/services/documents/business-periods/relation-contract';
 import { T3EconomicQualificationOutput } from '@/services/business-operations/tco/semantic-qualification/contract';
+import { T3AttributeArbitrationOutput } from '@/services/business-operations/consolidation/attribute-arbitration/contract';
 
 export const MASTER_OUTPUT_SCHEMAS: Readonly<Record<string, ZodType>> = {
   T1GroupUploadOutput,
@@ -44,6 +45,8 @@ export const MASTER_OUTPUT_SCHEMAS: Readonly<Record<string, ZodType>> = {
   T3PeriodRelationOutput,
   // Lot 113AL : arbitrage sémantique des montants non qualifiés du TCO (branche facultative, texte collé par le PO, bloc 31).
   T3EconomicQualificationOutput,
+  // Lot 114 : arbitrage d'une contradiction réelle d'attribut (branche facultative, texte collé par le PO, bloc 38).
+  T3AttributeArbitrationOutput,
   T3MasterOutput,
   T4ClassifyEventOutput,
   // Lot 54 : contrat de sortie `t4_output_v2` de CLASSIFY_EVENT (décision Agenda + récurrence).

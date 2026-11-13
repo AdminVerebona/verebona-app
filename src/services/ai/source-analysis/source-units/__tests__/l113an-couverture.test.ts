@@ -184,8 +184,13 @@ describe('A — causes démontrées des faux UNRESOLVED et réconciliation sur p
     const b = apres(units, f);
     expect(etat(b, 'page:1:field:1')).toBe('UNRESOLVED/not_extracted');
     expect(etat(b, 'page:1:field:2')).toBe('COVERED/fact');
-    // « Période du … au … » : bloc lié au fait de début (extrait inclus) — fin non représentée : couverte par le lien existant.
-    expect(etat(b, 'page:1:block:1')).toBe('COVERED/fact');
+    // Lot 114G (#760, P1-01) — règle remplacée : « Période du … au … » liée au seul fait de début restait COVERED/fact
+    // alors que la date de fin n'était représentée nulle part. Une unité à plusieurs valeurs n'est couverte que si
+    // CHACUNE est expliquée : ici la fin manque → non résolue, motif précis (réparation ciblée possible).
+    expect(etat(b, 'page:1:block:1')).toBe('UNRESOLVED/values_partially_structured');
+    // La fin structurée à son tour : l'unité redevient couverte par ses faits.
+    const complet = apres(units, [...f, lien(units, 'au 31/03/2026', ['2026-03-31'], 1, ['periode_fin'])]);
+    expect(etat(complet, 'page:1:block:1')).toBe('COVERED/fact');
   });
 
   it('A6 valeur isolée : seule unité de la page qui porte la valeur, fait de la même page → couverte ; deux porteurs → non', () => {

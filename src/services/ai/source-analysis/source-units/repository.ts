@@ -123,7 +123,24 @@ export async function writeSourceLayer(tx: Tx, p: {
   }
   // Lot 49B : état de réparation et diagnostics (colonnes 0329) si présents.
   const diagnostics = await layerDiagnosticsReady();
-  const provenance = diagnostics && await coverageProvenanceReady();
+  const colonnes1665 = await coverageProvenanceReady();
+  const provenance = diagnostics && colonnes1665;
+  // ══════════════════════════════════════════════════════════════════════
+  // LOT 114G (Trello #760, P2-07) — MIGRATION 1665 ABSENTE : PLUS DE FAUX SUCCÈS
+  //
+  // Règle remplacée : colonnes `coverage_provenance` / `residual_policy`
+  // absentes → couche A écrite « comme avant », la justification de chaque
+  // requalification et la politique de chaque résidu étant perdues sans
+  // signal. L'écriture est maintenant REFUSÉE (erreur contrôlée, code stable)
+  // dès qu'elle ferait perdre une provenance ou une politique : rien n'est
+  // effacé (le refus précède le DELETE), les unités déjà stockées et les
+  // faits restent en place, et la reprise suivante réécrit la couche dès que
+  // la migration est appliquée. Une couche sans provenance ni politique
+  // s'écrit toujours.
+  // ══════════════════════════════════════════════════════════════════════
+  if (!colonnes1665 && layer.units.some((u) => u.coverageProvenance || u.residualPolicy)) {
+    throw new CoverageSchemaError(p.fileId);
+  }
   await tx.unsafe(`DELETE FROM document_source_units WHERE file_id = $1`, [p.fileId] as never[]);
   for (let i = 0; i < layer.units.length; i += PAQUET) {
     const lot = layer.units.slice(i, i + PAQUET).map((u) => ({
@@ -224,10 +241,53 @@ export async function writeSourceLayer(tx: Tx, p: {
 
 let provenanceCols: { ready: boolean; checkedAt: number } | null = null;
 
+/** Lot 114G (#760, P2-07) — colonnes de la migration 1665 exigées par la couverture T1. */
+export const COVERAGE_PROVENANCE_COLUMNS = ['coverage_provenance', 'residual_policy'] as const;
+export const COVERAGE_SCHEMA_ERROR_CODE = 'T1_COVERAGE_MIGRATION_1665_MISSING';
+
+/**
+ * Lot 114G (#760, P2-07) — écriture de la couche A refusée : la migration 1665
+ * n'est pas (entièrement) appliquée et l'écriture perdrait la provenance ou la
+ * politique d'au moins une unité. Rien n'a été modifié.
+ */
+export class CoverageSchemaError extends Error {
+  readonly code = COVERAGE_SCHEMA_ERROR_CODE;
+  constructor(readonly fileId: number) {
+    super(`${COVERAGE_SCHEMA_ERROR_CODE} : colonnes ${COVERAGE_PROVENANCE_COLUMNS.join(', ')} absentes de document_source_units — `
+      + `couche A du fichier ${fileId} non écrite (provenance de couverture non conservable). Appliquer la migration 1665.`);
+    this.name = 'CoverageSchemaError';
+  }
+}
+
+/**
+ * Lot 114G (#760, P2-07) — état du schéma de couverture, pour le diagnostic BO et le contrôle de déploiement :
+ * colonnes présentes et absentes (migration absente, partiellement appliquée, appliquée). Lecture fraîche, ne lève jamais.
+ */
+export async function coverageSchemaStatus(): Promise<{ ready: boolean; present: string[]; missing: string[]; error: string | null }> {
+  try {
+    const { pgClient } = await import('@/db');
+    const r = (await pgClient.unsafe(
+      `SELECT column_name AS c FROM information_schema.columns
+        WHERE table_schema = current_schema() AND table_name = 'document_source_units' AND column_name = ANY($1::text[])`,
+      [[...COVERAGE_PROVENANCE_COLUMNS]] as never[],
+    )) as unknown as Array<{ c: string }>;
+    const present = r.map((x) => String(x.c)).sort();
+    const missing = COVERAGE_PROVENANCE_COLUMNS.filter((c) => !present.includes(c));
+    provenanceCols = { ready: missing.length === 0, checkedAt: Date.now() };
+    return { ready: missing.length === 0, present, missing, error: null };
+  } catch (e) {
+    return { ready: false, present: [], missing: [...COVERAGE_PROVENANCE_COLUMNS], error: (e as Error).message };
+  }
+}
+
+/** Tests : oublie la sonde mémorisée. */
+export function __resetCoverageProvenanceProbeForTests(): void { provenanceCols = null; }
+
 /**
  * Lot 113AN (#741) — colonnes 1665 (`coverage_provenance`, `residual_policy`)
- * présentes ? Absentes : la couche A est écrite comme avant (provenance de
- * couverture non conservée, jamais d'échec d'écriture). Ne lève jamais.
+ * présentes ? Ne lève jamais. Lot 114G (#760, P2-07) : absentes, une couche A
+ * qui porte une provenance ou une politique n'est plus écrite sans elles
+ * (`CoverageSchemaError`) ; voir `writeSourceLayer`.
  */
 export async function coverageProvenanceReady(): Promise<boolean> {
   if (provenanceCols && (provenanceCols.ready || Date.now() - provenanceCols.checkedAt < RECONTROLE_MS)) return provenanceCols.ready;

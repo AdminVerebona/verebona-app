@@ -33,7 +33,7 @@ import {
 type Sql = postgres.Sql | postgres.TransactionSql;
 type Row = Record<string, unknown>;
 
-const OPERATION_CARD_RULES = ['OPERATION-MATCH', 'OPERATION-AMOUNT', 'OPERATION-CLAIM-ASSET', 'OPERATION-CURRENCY', 'AGENDA-PROJECTION-MATCH'];
+const OPERATION_CARD_RULES = ['OPERATION-MATCH', 'OPERATION-AMOUNT', 'OPERATION-CLAIM-ASSET', 'OPERATION-CURRENCY', 'OPERATION-ATTRIBUTE', 'AGENDA-PROJECTION-MATCH'];
 /** Identité stable d'une source (même forme que `tcoSourceIdentity` / la provenance TCO). */
 const SOURCE_IDENTITY_SQL = `s.source_kind || ':' || s.source_entity_key || COALESCE(':' || NULLIF(s.locator->>'nature', ''), '')`;
 const STABLE_KINDS = `'ASSET_DATA', 'EQUIPMENT_DATA', 'AGENDA'`;

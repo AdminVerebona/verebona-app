@@ -309,7 +309,10 @@ const REPARABLES = new Set(['TEXT_BLOCK', 'LABEL_VALUE', 'FORM_FIELD']);
  * entier. Les unités en attente (budget) passent en tête.
  */
 export function selectRepairUnits(units: readonly CoveredSourceUnit[], maxAttempts: number): CoveredSourceUnit[] {
-  return units.filter((u) => u.text && u.repairAttempts < maxAttempts && (
+  // Lot 114G (#760, P1-01) : une unité déjà liée à un fait mais dont une AUTRE valeur n'est pas expliquée
+  // (`covered_unit_values_partially_structured`) n'est pas réextraite ici : son remède est le réexamen ciblé des
+  // décisions de valeur (lot 91D, contrôle de cohérence), borné et idempotent — jamais deux mécanismes sur la même unité.
+  return units.filter((u) => u.text && u.repairAttempts < maxAttempts && u.coverageProvenance?.rule !== 'covered_unit_values_partially_structured' && (
     (REPARABLES.has(u.kind) && (
       (u.status === 'UNRESOLVED' && (u.salient || u.reason === 'fact_dropped' || u.reason === 'values_not_structured'))
       || (u.status === 'UNCERTAIN' && u.reason === 'fact_conflictual')

@@ -301,6 +301,13 @@ export interface AssistantRequestInput {
     /** Document fixé par la clarification d'une référence (« ce document »). */
     documentId?: number | null;
     chainDepth: number;
+    /**
+     * Lot 114A (#753, CDC T2 §12.6) : décisions cumulées des clarifications
+     * précédentes de la même demande, et signatures des questions déjà posées
+     * (détection de boucle). Construits par le serveur, jamais par le client.
+     */
+    decisions?: import('./machine').ResolvedDecisions;
+    asked?: string[];
     /** Libellé choisi, affiché dans l'historique à la place de la question rejouée. */
     choiceLabel: string;
     /**

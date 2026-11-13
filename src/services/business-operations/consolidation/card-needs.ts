@@ -54,6 +54,24 @@ interface CurrencyCardNeed {
   candidates: string[];
 }
 
+/**
+ * (f) Lot 114 (Trello #750, issue C) : contradiction RÉELLE d'un attribut (prestataire, date) entre sources du
+ * même fait, que ni les preuves ni l'arbitrage T3 ne départagent — « laquelle est la bonne ? ».
+ */
+export interface AttributeCardNeed {
+  operationId: number;
+  /** Document le plus récent parmi ceux qui portent une des valeurs : il porte la carte. */
+  fileId: number;
+  field: 'plannedDate' | 'startDate' | 'realizedDate' | 'endDate' | 'provider';
+  /** Rôle sémantique comparé (même fait). */
+  role: string;
+  reasonCode: string;
+  /** Toutes les valeurs réellement différentes (y compris une troisième), avec leurs documents. */
+  options: Array<{ value: string; normalized: string; fileIds: number[] }>;
+  /** Valeur actuellement portée par l'événement de référence (jamais écrasée avant la réponse). */
+  retained: string | null;
+}
+
 export interface OperationCardNeeds {
   match: MatchCardNeed[];
   /** Documents dont les candidats ont été évalués : leurs cartes (a) non reconduites se ferment. */
@@ -63,10 +81,12 @@ export interface OperationCardNeeds {
   exclusion: ExclusionCardNeed[];
   /** Lot 53D (D2). */
   currency: CurrencyCardNeed[];
+  /** Lot 114 (#750). */
+  attribute: AttributeCardNeed[];
   /** Opérations recalculées : leurs cartes (montant, exclusion, devise) non reconduites se ferment. */
   reviewedOperations: number[];
 }
 
 export function emptyCardNeeds(): OperationCardNeeds {
-  return { match: [], reviewedFiles: [], amount: [], exclusion: [], currency: [], reviewedOperations: [] };
+  return { match: [], reviewedFiles: [], amount: [], exclusion: [], currency: [], attribute: [], reviewedOperations: [] };
 }

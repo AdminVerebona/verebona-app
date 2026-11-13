@@ -28,7 +28,7 @@ import type {
 import { WRITE_COMMAND_CATALOG } from './catalog';
 import { parseCommands, type CommandDraft } from './parser';
 import { runAction, EXECUTORS, type Executor, type ExecutionContext } from './executors';
-import { armUndo, purgeExpiredUndoSteps, type UndoCapture } from './undo.service';
+import { agendaVersion, armUndo, purgeExpiredUndoSteps, type UndoCapture } from './undo.service';
 import { ASSISTANT_ASSET_FIELDS, familyOf, formatFieldValue, type AssetFieldDefinition } from './asset-fields';
 import { parseDateFr } from './parser';
 import type { SuppliedFact } from '../types/contracts';
@@ -36,6 +36,8 @@ import { getField } from '@/services/canonical/registry';
 import { tenureEndKey, tenureSituationHint, TENURE_END_LABEL } from '@/lib/assets/tenure-end';
 import { validateDetailChanges } from '@/lib/asset-detail-rules';
 import { plain } from '../core/routing-text';
+import { undatedLabel } from '@/lib/agenda/no-deadline';
+import { getAssetCategories, getAssetFamily } from '@/lib/asset-taxonomy';
 
 /** Validité d'un plan non confirmé. */
 const PLAN_TTL_MS = 15 * 60_000;
@@ -63,6 +65,29 @@ export interface CommandLookup {
   getAsset(accountId: number, id: number): Promise<{ id: number; name: string; city?: string | null } | null>;
   /** Bien et ses caractéristiques, pour UPDATE_ASSET_FIELD (ancienne valeur, famille, disponibilité). */
   getAssetState?(accountId: number, id: number): Promise<AssetState | null>;
+  /**
+   * Lot 114B (#753, W16 / W17) : échéances du compte désignées par les mots de
+   * leur titre, leur date et/ou leur bien. Jamais une échéance d'un autre compte.
+   */
+  findAgendaItems?(accountId: number, q: { words: string[]; date: string | null; assetIds: number[] }): Promise<AgendaCandidate[]>;
+  /**
+   * Lot 114B (#753, W01) : la création d'un bien est-elle permise (droits, quota de
+   * l'offre) ? `null` : oui ; sinon le message de refus de la façade métier.
+   */
+  assetCreationRefusal?(accountId: number): Promise<string | null>;
+  /** Lot 114B (#753, W03) : décompte de ce que la suppression du bien emportera ; `null` : bien absent du compte. */
+  assetDeletionSummary?(accountId: number, assetId: number): Promise<(Record<string, number> & { name: string }) | null>;
+}
+
+export interface AgendaCandidate {
+  id: number;
+  title: string;
+  startDate: string | null;
+  /** Empreinte de l'état présenté (titre, date, mise à jour) — recontrôlée à l'exécution. */
+  version: string;
+  /** Nombre d'échéances de la même série (1 : échéance isolée). */
+  seriesCount: number;
+  assetLabel: string | null;
 }
 
 export interface AssetState {
@@ -99,6 +124,45 @@ export const sqlLookup: CommandLookup = {
     )) as unknown as Array<{ id: number; name: string; city: string | null }>;
     return r[0] ?? null;
   },
+  async findAgendaItems(accountId, q) {
+    const w = q.words.filter((x) => x.length >= 3).slice(0, 5);
+    if (w.length === 0 && !q.date && q.assetIds.length === 0) return [];
+    const params: unknown[] = [accountId];
+    const cond: string[] = [];
+    // TOUS les mots du titre demandés : « vidange » ne désigne pas « contrôle technique ».
+    for (const x of w) { params.push(`%${x}%`); cond.push(`unaccent(lower(i.title)) LIKE unaccent(lower($${params.length}))`); }
+    if (q.date) { params.push(q.date); cond.push(`i.start_date = $${params.length}::date`); }
+    if (q.assetIds.length) {
+      params.push(q.assetIds);
+      cond.push(`EXISTS (SELECT 1 FROM agenda_asset_links l WHERE l.agenda_item_id = i.id AND l.asset_id = ANY($${params.length}::int[]))`);
+    }
+    const rows = (await pgClient.unsafe(
+      `SELECT i.id, i.title, to_char(i.start_date, 'YYYY-MM-DD') AS "startDate",
+              (extract(epoch FROM i.updated_at) * 1000000)::bigint::text AS "updatedAt",
+              CASE WHEN i.series_key IS NULL THEN 1
+                   ELSE (SELECT count(*)::int FROM agenda_items s WHERE s.account_id = i.account_id AND s.series_key = i.series_key) END AS "seriesCount",
+              (SELECT string_agg(a.name, ', ' ORDER BY a.name) FROM agenda_asset_links l JOIN assets a ON a.id = l.asset_id
+                WHERE l.agenda_item_id = i.id AND a.account_id = i.account_id) AS "assetLabel"
+         FROM agenda_items i
+        WHERE i.account_id = $1${cond.length ? ` AND ${cond.join(' AND ')}` : ''}
+        ORDER BY i.start_date NULLS LAST, i.id LIMIT 11`,
+      params as never[],
+    )) as unknown as Array<{ id: number; title: string; startDate: string | null; updatedAt: string; seriesCount: number; assetLabel: string | null }>;
+    return rows.map((r) => ({
+      id: Number(r.id), title: r.title, startDate: r.startDate, seriesCount: Number(r.seriesCount), assetLabel: r.assetLabel,
+      version: agendaVersion({ id: Number(r.id), title: r.title, startDate: r.startDate, updatedAt: r.updatedAt }),
+    }));
+  },
+  async assetCreationRefusal(accountId) {
+    const { checkAssetCreationAllowed } = await import('@/services/assets/asset-write.facade');
+    const r = await checkAssetCreationAllowed(accountId);
+    return r.ok ? null : r.message;
+  },
+  async assetDeletionSummary(accountId, assetId) {
+    const { readAssetDeletionSummary } = await import('@/services/assets/asset-write.facade');
+    const r = await readAssetDeletionSummary(accountId, assetId);
+    return r ? { ...r } as unknown as Record<string, number> & { name: string } : null;
+  },
   async getAssetState(accountId, id) {
     // CDC 15 T2-40 : la valeur présentée à la confirmation (« A → B ») est
     // la valeur CANONIQUE — celle que l'assistant lit et que la fiche affiche
@@ -119,7 +183,14 @@ export async function resolveDraft(
   const acc = input.accountId;
 
   if (draft.command === 'CREATE_AGENDA_ITEM') {
-    if (!draft.date) return { needInfo: `Pour quelle date voulez-vous créer l’échéance « ${draft.title} » ?` };
+    // Lot 114B (Trello #753, CDC T2 §9.4, D26, M29, W15) — règle remplacée : « une
+    // échéance sans date est refusée ». La date est facultative, comme dans
+    // l'Agenda : l'événement est préparé sans date. « Sans échéance » n'est posé
+    // que s'il est demandé ; une date et « sans échéance » ensemble sont refusés
+    // par le service de l'Agenda (même règle que le formulaire).
+    if (draft.noDeadline && draft.date) {
+      return { needInfo: 'Une tâche « Sans échéance » n’a pas de date : voulez-vous une date, ou « Sans échéance » ?' };
+    }
     const targets: PlannedAction['targets'] = [];
     let assetIds: number[] = [];
     if (draft.assetFromContext || (!draft.assetWords.length && input.reference?.type === 'asset')) {
@@ -136,13 +207,16 @@ export async function resolveDraft(
       assetIds = [found[0].id]; targets.push({ type: 'asset', id: found[0].id, label: nomBien(found[0]) });
     }
     const bien = targets[0] ? `, rattachée à ${targets[0].label}` : '';
+    const quand = draft.date ? formatDateFr(draft.date) : undatedLabel({ noDeadline: draft.noDeadline });
     return {
       actionId, command: 'CREATE_AGENDA_ITEM', targets, dependsOn: [],
-      params: { title: draft.title, startDate: draft.date, assetIds },
-      preview: `Créer l’échéance « ${draft.title} » le ${formatDateFr(draft.date)}${bien}.`,
+      params: { title: draft.title, startDate: draft.date, assetIds, ...(draft.noDeadline ? { noDeadline: true } : {}) },
+      preview: draft.date
+        ? `Créer l’échéance « ${draft.title} » le ${quand}${bien}.`
+        : `Créer l’échéance « ${draft.title} » (${quand.toLowerCase()})${bien}.`,
       effects: [
         `Titre : ${draft.title}`,
-        `Date : ${formatDateFr(draft.date)}`,
+        `Date : ${quand}`,
         targets[0] ? `Bien : ${targets[0].label}` : 'Bien : aucun',
       ],
     };
@@ -152,8 +226,211 @@ export async function resolveDraft(
     return resolveAssetFieldUpdate(draft, input, lookup, actionId);
   }
 
+  if (draft.command === 'UPDATE_AGENDA_ITEM' || draft.command === 'DELETE_AGENDA_ITEM') {
+    return resolveAgendaChange(draft, input, lookup, actionId);
+  }
+
+  if (draft.command === 'CREATE_ASSET') return resolveAssetCreation(draft, input, lookup, actionId);
+  if (draft.command === 'DELETE_ASSET') return resolveAssetDeletion(draft, input, lookup, actionId);
+
   // Lot 113P (#715) : plus de « marquer réalisée » / « annuler » (aucun statut d'événement).
   return { needInfo: 'Je ne peux pas faire cette modification depuis l’assistant.' };
+}
+
+/** Éléments du décompte de suppression — mêmes libellés et même ordre que la boîte de suppression de la fiche. */
+export const DELETION_NOUNS: ReadonlyArray<{ key: string; one: string; many: string }> = [
+  { key: 'documents', one: 'document', many: 'documents' },
+  { key: 'deadlines', one: 'échéance', many: 'échéances' },
+  { key: 'events', one: 'événement', many: 'événements' },
+  { key: 'photos', one: 'photo', many: 'photos' },
+  { key: 'rooms', one: 'pièce', many: 'pièces' },
+  { key: 'equipments', one: 'équipement', many: 'équipements' },
+];
+/** « 12 documents, 1 échéance » — éléments à zéro omis (pure). */
+export function deletionCounts(summary: Record<string, number>): string[] {
+  return DELETION_NOUNS.filter((n) => (summary[n.key] ?? 0) > 0).map((n) => `${summary[n.key]} ${summary[n.key] > 1 ? n.many : n.one}`);
+}
+const countsOnly = (summary: Record<string, unknown>): Record<string, number> =>
+  Object.fromEntries(DELETION_NOUNS.map((n) => [n.key, Number(summary[n.key] ?? 0)]));
+
+/**
+ * Lot 114B (Trello #753, CDC T2 §14.3 W01, §14.4 « Biens », §10.1) — créer un
+ * bien : famille et catégorie du référentiel, nom donné par l'utilisateur.
+ * Seuls le nom et la catégorie sont demandés (D26) ; le quota de l'offre est
+ * contrôlé AVANT de proposer le plan, puis de nouveau à l'exécution.
+ */
+async function resolveAssetCreation(
+  draft: Extract<CommandDraft, { command: 'CREATE_ASSET' }>,
+  input: AssistantRequestInput,
+  lookup: CommandLookup,
+  actionId: string,
+): Promise<PlannedAction | { needInfo: string }> {
+  const famille = getAssetFamily(draft.family);
+  if (!famille) return { needInfo: 'Je ne peux pas faire cette modification depuis l’assistant.' };
+  const categories = getAssetCategories(draft.family);
+  const categorie = draft.category ? categories.find((c) => c.value === draft.category) ?? null : null;
+  // Objet : la catégorie d'objet est obligatoire (même règle que le formulaire).
+  if (draft.family === 'OBJECT' && !categorie) {
+    return { needInfo: `De quel type d’objet s’agit-il ? Par exemple : ${categories.slice(0, 6).map((c) => c.label.toLowerCase()).join(', ')}.` };
+  }
+  const nature = (categorie?.label ?? famille.label).toLowerCase();
+  if (!draft.name) return { needInfo: `Quel nom voulez-vous donner à ce bien (${nature}) ?` };
+  const refus = lookup.assetCreationRefusal ? await lookup.assetCreationRefusal(input.accountId) : null;
+  if (refus) return { needInfo: refus };
+  // Un bien du même nom existe déjà : dit dans l'aperçu, jamais créé en silence (CDC §9.8).
+  const homonymes = (await lookup.findAssets(input.accountId, plain(draft.name).split(/[^a-z0-9]+/).filter((w) => w.length >= 3)))
+    .filter((a) => plain(a.name) === plain(draft.name!));
+  return {
+    actionId, command: 'CREATE_ASSET', targets: [], dependsOn: [],
+    params: {
+      kind: 'asset_create', category: draft.family, name: draft.name,
+      subtype: draft.family === 'OBJECT' ? null : categorie?.value ?? null,
+      objectCategory: draft.family === 'OBJECT' ? categorie!.value : null,
+    },
+    preview: `Créer le bien « ${draft.name} » (${nature}).`,
+    effects: [
+      `Nom : ${draft.name}`,
+      `Type : ${categorie ? `${famille.label} — ${categorie.label}` : famille.label}`,
+      ...(homonymes.length ? [`Attention : un bien nommé « ${homonymes[0].name} » existe déjà dans votre compte.`] : []),
+    ],
+  };
+}
+
+/**
+ * Lot 114B (Trello #753, CDC T2 §9.2, §14.2-3, §14.3 W03, M20-M21, D08 / D29) —
+ * supprimer DÉFINITIVEMENT un bien et tout son contenu. L'aperçu donne le
+ * décompte réel (le même que la fiche) ; aucune conservation des documents
+ * n'est promise, puisque le métier n'en propose pas. Le décompte est figé :
+ * s'il a changé à la confirmation, rien n'est supprimé.
+ */
+async function resolveAssetDeletion(
+  draft: Extract<CommandDraft, { command: 'DELETE_ASSET' }>,
+  input: AssistantRequestInput,
+  lookup: CommandLookup,
+  actionId: string,
+): Promise<PlannedAction | { needInfo: string }> {
+  const acc = input.accountId;
+  if (!lookup.assetDeletionSummary) return { needInfo: 'Je ne peux pas faire cette modification depuis l’assistant.' };
+  let bien: { id: number; name: string; city?: string | null } | null = null;
+  if (draft.assetFromContext) {
+    const id = input.reference?.type === 'asset' ? input.reference.id : Number(input.pageContext?.assetId) || null;
+    bien = id ? await lookup.getAsset(acc, id) : null;
+    if (!bien) return { needInfo: 'Quel bien voulez-vous supprimer ?' };
+  } else {
+    const found = await lookup.findAssets(acc, draft.assetWords);
+    if (found.length === 0) return { needInfo: 'Je n’ai pas trouvé ce bien dans votre compte. Quel bien voulez-vous supprimer ?' };
+    if (found.length > 1) {
+      return { needInfo: `Plusieurs biens correspondent : ${found.slice(0, 5).map((a) => nomBien(a)).join(', ')}. Précisez lequel dans votre demande.` };
+    }
+    bien = found[0];
+  }
+  const resume = await lookup.assetDeletionSummary(acc, bien.id);
+  if (!resume) return { needInfo: 'Je n’ai pas trouvé ce bien dans votre compte. Quel bien voulez-vous supprimer ?' };
+  const comptes = countsOnly(resume);
+  const contenu = deletionCounts(comptes);
+  return {
+    actionId, command: 'DELETE_ASSET', dependsOn: [],
+    targets: [{ type: 'asset', id: bien.id, label: nomBien(bien) }],
+    params: { kind: 'asset_delete', assetId: bien.id, expectedSummary: comptes },
+    preview: `Supprimer définitivement le bien « ${nomBien(bien)} »${contenu.length ? ` et tout ce qui lui est rattaché : ${contenu.join(', ')}` : ''}.`,
+    effects: [
+      'Le bien et tout ce qui lui est rattaché seront supprimés définitivement.',
+      contenu.length ? `Supprimés avec le bien : ${contenu.join(', ')}.` : 'Aucun document, échéance ni autre élément n’est rattaché à ce bien.',
+      'Pour garder un document, téléchargez-le avant de supprimer le bien.',
+      'Cette action est irréversible.',
+    ],
+  };
+}
+
+const quandFr = (d: string | null) => (d ? `du ${formatDateFr(d)}` : `(${undatedLabel({}).toLowerCase()})`);
+const designer = (c: AgendaCandidate) => `« ${c.title} » ${quandFr(c.startDate)}${c.assetLabel ? ` — ${c.assetLabel}` : ''}`;
+
+/**
+ * Lot 114B (Trello #753, CDC T2 §9.6, §14.4 « Agenda », M28, W16 / W17) —
+ * modifier ou supprimer UNE échéance retrouvée dans le compte.
+ *
+ *   · aucune échéance, ou plusieurs également plausibles : on demande, on
+ *     n'écrit rien et on ne choisit jamais à la place de l'utilisateur ;
+ *   · l'état présenté (titre, date) est figé par son empreinte : s'il change
+ *     avant la confirmation, l'exécution refuse ;
+ *   · suppression : portée OCCURRENCE par défaut ; SERIES seulement si elle
+ *     est demandée ET si l'échéance appartient à une série — le nombre
+ *     d'échéances supprimées est annoncé et recontrôlé à l'exécution.
+ */
+async function resolveAgendaChange(
+  draft: Extract<CommandDraft, { command: 'UPDATE_AGENDA_ITEM' | 'DELETE_AGENDA_ITEM' }>,
+  input: AssistantRequestInput,
+  lookup: CommandLookup,
+  actionId: string,
+): Promise<PlannedAction | { needInfo: string }> {
+  const acc = input.accountId;
+  if (!lookup.findAgendaItems) return { needInfo: 'Je ne peux pas faire cette modification depuis l’assistant.' };
+  const verbe = draft.command === 'DELETE_AGENDA_ITEM' ? 'supprimer' : 'modifier';
+
+  // Bien désigné : il restreint la recherche, il ne remplace jamais l'échéance.
+  let assetIds: number[] = [];
+  if (draft.assetFromContext) {
+    const id = input.reference?.type === 'asset' ? input.reference.id : Number(input.pageContext?.assetId) || null;
+    const a = id ? await lookup.getAsset(acc, id) : null;
+    if (!a) return { needInfo: `Pour quel bien voulez-vous ${verbe} cette échéance ?` };
+    assetIds = [a.id];
+  } else if (draft.assetWords.length) {
+    const found = await lookup.findAssets(acc, draft.assetWords);
+    if (found.length === 0) return { needInfo: 'Je n’ai pas trouvé ce bien dans votre compte. De quelle échéance parlez-vous ?' };
+    assetIds = found.map((a) => a.id);
+  }
+  if (draft.itemWords.length === 0 && !draft.itemDate && assetIds.length === 0) {
+    return { needInfo: `Quelle échéance voulez-vous ${verbe} ? Indiquez son titre ou sa date.` };
+  }
+
+  const trouves = await lookup.findAgendaItems(acc, { words: draft.itemWords, date: draft.itemDate, assetIds });
+  if (trouves.length === 0) return { needInfo: 'Je n’ai pas trouvé cette échéance dans votre Agenda. Indiquez son titre exact ou sa date.' };
+  // Une série entière demandée : ses échéances ne sont pas des candidats concurrents.
+  const serie = draft.command === 'DELETE_AGENDA_ITEM' && draft.scope === 'SERIES';
+  const memeSerie = serie && trouves.length > 1 && trouves.every((c) => c.seriesCount === trouves[0].seriesCount && c.seriesCount >= trouves.length && c.title === trouves[0].title);
+  if (trouves.length > 1 && !memeSerie) {
+    return { needInfo: `Plusieurs échéances correspondent : ${trouves.slice(0, 5).map(designer).join(' ; ')}${trouves.length > 5 ? '…' : ''}. Précisez laquelle (titre et date) dans votre demande.` };
+  }
+  const c = trouves[0];
+  const targets: PlannedAction['targets'] = [{ type: 'agenda_item', id: c.id, label: c.title }];
+
+  if (draft.command === 'DELETE_AGENDA_ITEM') {
+    if (serie && c.seriesCount <= 1) {
+      return { needInfo: `L’échéance ${designer(c)} n’appartient pas à une série. Voulez-vous supprimer cette échéance seule ?` };
+    }
+    const scope = serie ? 'SERIES' as const : 'OCCURRENCE' as const;
+    const n = scope === 'SERIES' ? c.seriesCount : 1;
+    return {
+      actionId, command: 'DELETE_AGENDA_ITEM', targets, dependsOn: [],
+      params: { kind: 'agenda_delete', agendaItemId: c.id, scope, expectedVersion: c.version, expectedCount: n },
+      preview: scope === 'SERIES'
+        ? `Supprimer toute la série « ${c.title} » : ${n} échéances.`
+        : `Supprimer l’échéance ${designer(c)}.`,
+      effects: [
+        `Titre : ${c.title}`,
+        scope === 'SERIES' ? `Portée : toute la série (${n} échéances)` : `Portée : cette échéance seulement${c.seriesCount > 1 ? ` (les ${c.seriesCount - 1} autres de la série sont conservées)` : ''}`,
+        c.assetLabel ? `Bien : ${c.assetLabel}` : 'Bien : aucun',
+        'Suppression définitive : elle ne pourra pas être annulée depuis l’assistant.',
+      ],
+    };
+  }
+
+  const patch: { title?: string; startDate?: string | null } = {};
+  if (draft.newDate && draft.newDate !== c.startDate) patch.startDate = draft.newDate;
+  if (draft.newTitle && draft.newTitle !== c.title) patch.title = draft.newTitle;
+  if (Object.keys(patch).length === 0) return { needInfo: `L’échéance ${designer(c)} a déjà cette valeur : rien à modifier.` };
+  const changements = [
+    patch.title !== undefined ? `Titre : ${c.title} → ${patch.title}` : null,
+    patch.startDate !== undefined ? `Date : ${c.startDate ? formatDateFr(c.startDate) : undatedLabel({})} → ${formatDateFr(patch.startDate!)}` : null,
+  ].filter((x): x is string => !!x);
+  return {
+    actionId, command: 'UPDATE_AGENDA_ITEM', targets, dependsOn: [],
+    params: { kind: 'agenda_update', agendaItemId: c.id, patch, expectedVersion: c.version },
+    preview: patch.startDate !== undefined && patch.title === undefined
+      ? `Déplacer l’échéance ${designer(c)} au ${formatDateFr(patch.startDate!)}.`
+      : `Modifier l’échéance ${designer(c)} : ${changements.join(' ; ')}.`,
+    effects: [...changements, c.assetLabel ? `Bien : ${c.assetLabel}` : 'Bien : aucun'],
+  };
 }
 
 /**
@@ -503,7 +780,8 @@ export type Confirmation =
 export async function executeActions(
   actions: PlannedAction[],
   ctx: ExecutionContext,
-  executors: Record<PlannedAction['command'], Executor> = EXECUTORS,
+  // Lot 114B : jeu d'exécuteurs éventuellement partiel (tests) — une commande sans exécuteur est refusée, jamais exécutée.
+  executors: Partial<Record<PlannedAction['command'], Executor>> = EXECUTORS,
 ): Promise<ActionResult[]> {
   const byId = new Map<string, ActionResult>();
   const results: ActionResult[] = [];
@@ -539,7 +817,7 @@ export function summarizeResults(results: ActionResult[]): string {
 export async function confirmCommandPlan(
   p: { planId: string; accountId: number; userId: number },
   deps: {
-    executors?: Record<PlannedAction['command'], Executor>;
+    executors?: Partial<Record<PlannedAction['command'], Executor>>;
     canWrite?: (accountId: number) => Promise<{ allowed: boolean; message?: string }>;
   } = {},
 ): Promise<Confirmation> {

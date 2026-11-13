@@ -78,8 +78,10 @@ import {
   splitArbitratedConflicts, type IdentityReviewEntry,
 } from './identity-review';
 import { computeProvenance, isDurableRelationType, type AttributeProvenance, type ComponentEvidence } from './model';
+import { loadAttributeReviews, requestAttributeReviews } from './attribute-arbitration/review';
 import {
-  ATTRIBUTE_CONFLICT_RULES, ATTRIBUTE_CONFLICT_RULES_VERSION, markAdminArbitrated, qualifyAttributeConflicts,
+  ATTRIBUTE_CONFLICT_RULES, ATTRIBUTE_CONFLICT_RULES_VERSION, attributeChoiceKey, attributeSubjectKey, CONFLICT_FIELDS, markAdminArbitrated,
+  needsArbitrationCard, qualifyAttributeConflicts, resolveAttributeChoices, type AttributeChoice, type ConflictField, type QualificationContext,
   type QualifiedAttributeConflict, type RawAttributeConflict,
 } from './attribute-conflicts';
 // Lot 82D (CDC v5 O-1) : Pièces et décisions utilisateur par le service unique de regroupement.
@@ -816,6 +818,39 @@ export async function reconsolidateOperation(
   // Lot 78A (§2C, §6) : provenance des valeurs conservées, APRÈS les autorités
   // de la fiche et de l'agenda (une saisie de l'utilisateur prime et se trace).
   state.provenance = computeProvenance(state, contributions, { durable: isDurableRelationType(state.type) });
+  // Lot 114 (#750, issues B et C) : arbitrages DURABLES des contradictions réelles — choix de l'utilisateur
+  // (carte « À traiter », source USER_ARBITRATION) puis arbitrages T3 à preuve suffisante. La valeur retenue
+  // est écrite sur l'événement de référence ; un arbitrage T3 ne s'applique jamais à côté de saisies non
+  // gérées (formulaire, migration, import) ni sur une valeur tranchée par l'utilisateur.
+  const attributeChoices = new Map<string, AttributeChoice>();
+  const t3Reviews = await loadAttributeReviews(tx, accountId, operationId);
+  for (const c of t3Reviews.choices) attributeChoices.set(attributeChoiceKey(c.field, c.role), c);
+  for (const d of decisions) {
+    const v = d.decision as { decision?: unknown; field?: unknown; role?: unknown; normalized?: unknown; known?: unknown };
+    if (v.decision === 'ATTRIBUTE' && typeof v.field === 'string' && (CONFLICT_FIELDS as readonly string[]).includes(v.field)
+      && typeof v.role === 'string' && typeof v.normalized === 'string' && Array.isArray(v.known)) {
+      attributeChoices.set(attributeChoiceKey(v.field as ConflictField, v.role), {
+        field: v.field as ConflictField, role: v.role, normalized: v.normalized,
+        known: (v.known as unknown[]).filter((x): x is string => typeof x === 'string'), by: 'USER', sourceId: d.id,
+      });
+    }
+  }
+  const qualifCtx: QualificationContext = {
+    type: state.type, contributions, provenance: state.provenance,
+    sourceMeta: new Map(sources.map((x) => [x.id, { authority: x.authority ?? null, kind: x.kind }])),
+    suspectSourceIds: state.attributeConflicts.length ? await loadSuspectSourceIds(tx, accountId, operationId) : new Set<number>(),
+    choices: attributeChoices, reviews: t3Reviews.reviews,
+  };
+  const arbitres = new Set<ConflictField>();
+  for (const a of resolveAttributeChoices(state.attributeConflicts, qualifCtx)) {
+    if (a.by === 'T3' && !fullyManaged) continue;
+    if (a.field !== 'provider' && state[a.field] === null) continue;
+    state[a.field] = a.value;
+    state.provenance = { ...state.provenance, [a.field]: { sourceId: a.sourceId, value: a.value } };
+    for (const c of state.attributeConflicts) if (c.field === a.field) c.retained = a.value;
+    arbitres.add(a.field);
+  }
+  qualifCtx.provenance = state.provenance;
   const provAvant = await loadAttributeProvenance(tx, accountId, operationId);
 
   // Type nul qualifié (F-054) ; lot 48 (C7.7, F-055) : OTHER requalifié vers un type connu, même identifiant.
@@ -846,6 +881,8 @@ export async function reconsolidateOperation(
     else if (agendaDates && (k === 'plannedDate' || k === 'realizedDate') && state[k] !== null) attrs[k] = state[k];
   }
   if (op.provider === null && state.provider) attrs.provider = state.provider;
+  // Lot 114 (#750) : valeur ARBITRÉE (utilisateur, ou T3 à preuve suffisante) — écrite même à côté d'une valeur existante.
+  for (const k of arbitres) attrs[k] = state[k];
   // Lot 78A (§5) : le retrait d'une source (séparation d'un rattachement
   // contredit, document retiré) déclenche la réévaluation des valeurs qu'elle
   // justifiait — prestataire et libellé qu'AUCUNE source active ne porte
@@ -937,20 +974,34 @@ export async function reconsolidateOperation(
   // Lot 113AQ (#750) : le relevé 78A est QUALIFIÉ (même attribut, même rôle, même fait) avant d'être persisté —
   // seules les lignes actives ou non vérifiables restent « contradictions » ; les autres faits restent consultables.
   const qualifiees = state.attributeConflicts.length
-    ? qualifyAttributeConflicts(state.attributeConflicts, {
-      type: state.type, contributions, provenance: state.provenance,
-      sourceMeta: new Map(sources.map((x) => [x.id, { authority: x.authority ?? null, kind: x.kind }])),
-      suspectSourceIds: await loadSuspectSourceIds(tx, accountId, operationId),
-    })
+    ? qualifyAttributeConflicts(state.attributeConflicts, qualifCtx)
     : { alerting: [], divergences: [] };
   const courant = (c: QualifiedAttributeConflict): QualifiedAttributeConflict => ({ ...c, current: (apres[c.field] as string | null | undefined) ?? null });
   // Lot 79A : une contradiction due SEULEMENT à une source rétablie au BO est arbitrée (tracée à part, hors anomalie).
   const conflits = qualifiees.alerting.length
     ? splitArbitratedConflicts(qualifiees.alerting, await loadAdminRestoredSourceIds(tx, accountId, [operationId]))
     : { open: qualifiees.alerting, arbitrated: [] };
+  // Lot 114 (#750, issue B) : lignes à soumettre à l'examen T3 (bloc 38 actif) — aucune carte tant que l'examen est attendu.
+  const attendues = await requestAttributeReviews(tx, accountId, operationId, conflits.open, t3Reviews, fichierDe);
+  for (const c of conflits.open) if (attendues.has(attributeSubjectKey(c))) c.t3 = { outcome: 'PENDING' };
   await writeAttributeProvenance(tx, accountId, operationId, {
     ...state.provenance, ...(label && apres.technicalLabel ? { label: { sourceId: label.sourceId, value: apres.technicalLabel } } : {}),
   }, conflits.open.map(courant), conflits.arbitrated.map((c) => courant(markAdminArbitrated(c))), qualifiees.divergences.map(courant));
+  // Lot 114 (#750, issue C) : UNE carte « Arbitrer » par sujet (attribut, rôle) pour une contradiction réelle à incidence
+  // métier. La date de réalisation d'un événement déjà représenté dans l'Agenda reste arbitrée par la carte de date
+  // existante (lot 83A, DATA-AGENDA-DATE) : jamais deux cartes pour le même sujet.
+  const dateParAgenda = conflits.open.some((c) => c.field === 'realizedDate' && needsArbitrationCard(c))
+    && (await rows(tx, sql`SELECT 1 FROM agenda_items WHERE account_id = ${accountId} AND business_operation_id = ${operationId} LIMIT 1`)).length > 0;
+  for (const c of conflits.open) {
+    if (!needsArbitrationCard(c) || (c.field === 'realizedDate' && dateParAgenda)) continue;
+    const options = c.values.map((v) => ({
+      value: v.value, normalized: v.normalized,
+      fileIds: [...new Set(v.sourceIds.map((id) => fichierDe.get(id)).filter((f): f is number => f !== undefined))],
+    }));
+    const fileId = fichierDe.get(Math.max(...c.values.flatMap((v) => v.sourceIds).filter((id) => fichierDe.has(id)), -1));
+    if (fileId === undefined) continue;
+    cards.attribute.push({ operationId, fileId, field: c.field, role: c.role, reasonCode: c.reasonCode, options, retained: apres[c.field] ?? null });
+  }
   // Lot 55B (E) : dernière réconciliation RÉELLEMENT effectuée (ni historique, ni version).
   await repo.markReconciled(operationId);
 }
@@ -2216,6 +2267,8 @@ interface AccountConsolidationResult {
   periodRelation?: import('@/services/documents/business-periods/relation-review').PeriodRelationPhaseResult;
   /** Lot 113AL : arbitrage sémantique T3 des montants non qualifiés du TCO (demandes traitées, appels, issues). */
   economicQualification?: import('../tco/semantic-qualification/review').QualificationPhaseResult;
+  /** Lot 114 (#750) : arbitrage T3 des contradictions réelles d'attributs (demandes traitées, appels, issues, valeurs écrites). */
+  attributeArbitration?: import('./attribute-arbitration/review').AttributeArbitrationPhaseResult;
 }
 
 type Sql = typeof import('@/db').pgClient;
@@ -2366,7 +2419,7 @@ export async function consolidateAccountOperations(
     const ouvertes = (await (await pg()).unsafe(
       `SELECT DISTINCT (trigger_context->>'operationId')::bigint AS id FROM to_process_actions
         WHERE account_id = $1 AND resolved_at IS NULL
-          AND rule_code IN ('OPERATION-AMOUNT', 'OPERATION-CLAIM-ASSET', 'OPERATION-CURRENCY')
+          AND rule_code IN ('OPERATION-AMOUNT', 'OPERATION-CLAIM-ASSET', 'OPERATION-CURRENCY', 'OPERATION-ATTRIBUTE')
           AND trigger_context ? 'operationId'
         ORDER BY 1 LIMIT 50`,
       [accountId] as never[],
@@ -2459,6 +2512,19 @@ export async function consolidateAccountOperations(
       console.error(`[t3-operations] réexamen T3 des périodes (compte ${accountId}) :`, (e as Error).message);
     }
   }
+  // Lot 114 (#750, issue B) : arbitrage T3 des contradictions réelles d'attributs (contrat t3-attribute-arbitration-v1) —
+  // hors verrou, borné, seulement si le prompt T3 actif porte la branche ; jamais à la consultation.
+  if (opts.operationMatch !== false) {
+    try {
+      const { runAttributeArbitrationPhase } = await import('./attribute-arbitration/review');
+      const aa = await runAttributeArbitrationPhase(accountId, { beforeCall: opts.beforeWrite });
+      if (aa.processed) res.attributeArbitration = aa;
+    } catch (e) {
+      if ((await import('@/services/ai/queue/execution-control')).isExecutionCancelled(e)) throw e;
+      res.errors++;
+      console.error(`[t3-operations] arbitrage T3 des contradictions d'attributs (compte ${accountId}) :`, (e as Error).message);
+    }
+  }
   // Lot 113AL (#737) : arbitrage sémantique T3 des montants non qualifiés du TCO (contrat t3-economic-qualification-v1) —
   // hors verrou, borné, seulement si le prompt T3 actif porte la branche (sinon attente de contrat durable) ; jamais à la
   // consultation du TCO.
@@ -2488,9 +2554,16 @@ export async function consolidateAccountOperations(
  * INV-040).
  */
 export async function listAccountsToConsolidate(afterAccountId: number, limit: number, m3PromptVersion: string | null = null): Promise<number[]> {
-  const [{ M3_PENDING_SQL }, { RELATION_REVIEW_PENDING_SQL }, { QUALIFICATION_PENDING_SQL }] = await Promise.all([
+  const [{ M3_PENDING_SQL }, { RELATION_REVIEW_PENDING_SQL }, { QUALIFICATION_PENDING_SQL }, { ATTRIBUTE_ARBITRATION_PENDING_SQL }] = await Promise.all([
     import('./m3'), import('@/services/documents/business-periods/relation-review'), import('../tco/semantic-qualification/review'),
+    import('./attribute-arbitration/review'),
   ]);
+  // Lot 114 (#750) : table 1690 absente (migration non passée) → branche du balayage omise, jamais une erreur.
+  const [arb] = (await (await pg()).unsafe(`SELECT to_regclass('business_operation_attribute_arbitrations') IS NOT NULL AS ok`)) as unknown as Array<{ ok: boolean }>;
+  const arbitrages = arb?.ok ? `
+       UNION
+       -- Lot 114 (#750) : arbitrage T3 d'une contradiction réelle d'attribut demandé (bloc 38 actif au moment de la demande).
+       SELECT a.account_id FROM business_operation_attribute_arbitrations a WHERE a.account_id > $1 AND ${ATTRIBUTE_ARBITRATION_PENDING_SQL('a')}` : '';
   const r = (await (await pg()).unsafe(
     `SELECT account_id FROM (
        SELECT c.account_id FROM document_operation_candidates c WHERE c.t3_pending AND c.account_id > $1
@@ -2517,7 +2590,7 @@ export async function listAccountsToConsolidate(afterAccountId: number, limit: n
        SELECT r.account_id FROM business_period_relation_reviews r WHERE r.account_id > $1 AND ${RELATION_REVIEW_PENDING_SQL('r')}
        UNION
        -- Lot 113AL (#737) : arbitrage sémantique T3 des montants non qualifiés du TCO demandé (ou à reprendre).
-       SELECT q.account_id FROM economic_qualification_reviews q WHERE q.account_id > $1 AND ${QUALIFICATION_PENDING_SQL('q')}
+       SELECT q.account_id FROM economic_qualification_reviews q WHERE q.account_id > $1 AND ${QUALIFICATION_PENDING_SQL('q')}${arbitrages}
      ) x
      -- Lot 82A (C-Q10, §3.3) : balayage des seuls comptes éligibles.
      WHERE ${processingEligibleSql('x.account_id')}

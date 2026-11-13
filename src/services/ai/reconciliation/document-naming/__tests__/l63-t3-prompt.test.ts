@@ -48,10 +48,10 @@ describe('L63-T3P — branche DOCUMENT_NAMING du prompt maître T3', () => {
     // (T3) et AGENDA_REPRESENTATION (T4), textes dans le guide du PO.
     // Lot 113AD : + PERIOD_RELATION (bloc 29 du guide du PO).
     // Lot 113AL : + ECONOMIC_QUALIFICATION (bloc 31 du guide du PO).
-    expect(MASTER_TASKS_TEXT_PENDING).toEqual({ t3_master_v1: ['KNOWLEDGE_QUERY', 'OPERATION_IDENTITY', 'PERIOD_RELATION', 'ECONOMIC_QUALIFICATION'], t4_master_v1: ['AGENDA_REPRESENTATION'] });
+    expect(MASTER_TASKS_TEXT_PENDING).toEqual({ t3_master_v1: ['KNOWLEDGE_QUERY', 'OPERATION_IDENTITY', 'PERIOD_RELATION', 'ECONOMIC_QUALIFICATION', 'ATTRIBUTE_ARBITRATION'], t4_master_v1: ['AGENDA_REPRESENTATION'] });
     expect(isMasterTaskTextPending('t3_master_v1', 'DOCUMENT_NAMING')).toBe(false);
     // Compatibilité des versions BO antérieures (sans la section) : jamais bloquant.
-    expect(OPTIONAL_MASTER_TASKS.t3_master_v1).toEqual(['OPERATION_MATCH', 'DOCUMENT_NAMING', 'KNOWLEDGE_QUERY', 'OPERATION_IDENTITY', 'PERIOD_RELATION', 'ECONOMIC_QUALIFICATION']);
+    expect(OPTIONAL_MASTER_TASKS.t3_master_v1).toEqual(['OPERATION_MATCH', 'DOCUMENT_NAMING', 'KNOWLEDGE_QUERY', 'OPERATION_IDENTITY', 'PERIOD_RELATION', 'ECONOMIC_QUALIFICATION', 'ATTRIBUTE_ARBITRATION']);
     expect(listMasterTasks('t3_master_v1')).toContain('DOCUMENT_NAMING');
   });
 
@@ -157,6 +157,8 @@ describe('L63-T3P — branche DOCUMENT_NAMING du prompt maître T3', () => {
       expect.stringMatching(/OPERATION_IDENTITY absente du fichier — texte attendu d’un ticket séparé/),
       // Lot 113AD : PERIOD_RELATION (T3), texte dans le guide du PO (bloc 29).
       expect.stringMatching(/PERIOD_RELATION absente du fichier — texte attendu d’un ticket séparé/),
+      // Lot 114 : ATTRIBUTE_ARBITRATION (T3), texte dans le guide du PO (bloc 38).
+      expect.stringMatching(/ATTRIBUTE_ARBITRATION absente du fichier — texte attendu d’un ticket séparé/),
       // Lot 113AL : ECONOMIC_QUALIFICATION (T3), texte dans le guide du PO (bloc 31).
       expect.stringMatching(/ECONOMIC_QUALIFICATION absente du fichier — texte attendu d’un ticket séparé/),
       expect.stringMatching(/TASK facultative AGENDA_REPRESENTATION non autorisée par la configuration du fichier/),

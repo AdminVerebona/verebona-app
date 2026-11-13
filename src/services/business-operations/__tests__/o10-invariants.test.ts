@@ -60,6 +60,9 @@ const ECRIVAINS: Record<string, string> = {
   // Lot 109A : SEUL écrivain de `business_operation_suppliers` et de son historique (migration 1100) — liens
   // Opération ↔ fournisseur dérivés des preuves T3 ou décidés par l'utilisateur, toujours sous le verrou d'écriture.
   'src/services/relations/operation-suppliers.ts': 'relations 109A : liens Opération ↔ fournisseur (preuves T3, décisions utilisateur, fusion de fiches) sous withBusinessOperationWrite',
+  // Lot 114 (#750, issue B) : mémoire de l'arbitrage T3 d'une contradiction d'attribut (table 1690 : demande, issue, avant / après) —
+  // aucune valeur d'Opération écrite ici : la consolidation (T3) relit la décision et l'applique sous le verrou d'écriture.
+  'src/services/business-operations/consolidation/attribute-arbitration/review.ts': 'T3 arbitrage d’attribut : mémoire des demandes et décisions IA (lot 114) — valeur appliquée par la consolidation T3',
   'src/services/business-operations/semantic/identity-apply.ts': 'T3 identité multi-sources : décisions de rattachement AI_IDENTITY par le dépôt (lot 97A) — métier délégué à T3',
   // Lot 112D (06/11/2026) : SEUL écrivain des conditions de prêt SAISIES (colonnes 1415 de `business_operation_financing_details`)
   // et de leur historique — décision utilisateur du domaine financement, sous le verrou d'écriture ; le TCO ne fait que relire.

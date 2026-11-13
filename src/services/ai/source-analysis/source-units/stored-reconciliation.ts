@@ -18,10 +18,10 @@
  * même état). Ne crée ni fait, ni décision, ni lien : seuls l'état de
  * couverture, sa provenance et la politique des unités restantes changent.
  */
-import { reconcileCoverage, reconciliationSummary, residualCounts, withResidualPolicies, type ReconciliationInput } from './coverage-reconciliation';
+import { candidateReconciliationValue, reconcileCoverage, reconciliationSummary, residualCounts, withResidualPolicies, type ReconciliationInput } from './coverage-reconciliation';
 import { buildCompletenessReport } from './coverage';
 import {
-  coverageProvenanceReady, loadDocumentCoverage, loadDocumentSourceUnits, loadUnresolvedDocumentFacts, maxCompletenessRetries, writeSourceLayer,
+  loadDocumentCoverage, loadDocumentSourceUnits, loadUnresolvedDocumentFacts, maxCompletenessRetries, writeSourceLayer,
 } from './repository';
 import { SOURCE_LAYER_VERSION, type CoveredSourceUnit, type T1CoverageDiagnostics, type UnresolvedFactRecord } from './types';
 
@@ -42,6 +42,13 @@ export async function loadStoredReconciliationInput(sql: Sql, accountId: number,
        FROM document_extractions WHERE account_id = $1 AND file_id = $2`,
     [accountId, fileId] as never[],
   )) as Row[];
+  // Lot 114G (#760, P2-05) : candidats Opération ACTIFS du document — l'analyse les exploitait, le chargement
+  // historique les omettait. Table absente (schéma ancien) : aucun candidat, jamais une erreur.
+  const candidats = (await sql.unsafe(
+    `SELECT candidate_key, payload FROM document_operation_candidates
+      WHERE account_id = $1 AND file_id = $2 AND status = 'ACTIVE' ORDER BY id`,
+    [accountId, fileId] as never[],
+  ).catch(() => [])) as Row[];
   const { loadActiveValueDecisions } = await import('../value-decisions/store');
   const decisions = (await loadActiveValueDecisions(sql as never, accountId, [fileId]).catch(() => []))
     .filter((d) => d.validity === 'VALID' && d.sourceUnitId);
@@ -62,6 +69,8 @@ export async function loadStoredReconciliationInput(sql: Sql, accountId: number,
       ...(ext?.amount_cents != null ? [{ ref: 'amount', source: 'METADATA' as const, values: [Number(ext.amount_cents) / 100], page: null }] : []),
       ...(ext?.document_date ? [{ ref: 'documentDate', source: 'METADATA' as const, values: [String(ext.document_date)], page: null }] : []),
       ...(ext?.supplier_siret ? [{ ref: 'supplier', source: 'METADATA' as const, values: [String(ext.supplier_siret)], page: null }] : []),
+      ...candidats.map((c) => candidateReconciliationValue(String(c.candidate_key), typeof c.payload === 'string' ? JSON.parse(c.payload) : c.payload))
+        .filter((v) => v.values.length > 0),
     ],
     decisions: decisions.map((d) => ({
       ref: `db:${d.id}`, sourceUnitId: d.sourceUnitId!, kind: d.kind, normalizedValue: d.normalizedValue, decision: d.decision,
@@ -155,9 +164,6 @@ export async function reconcileStoredDocumentCoverage(p: {
       retryResult: requalified.length > 0 ? `RECONCILED_${requalified.length}` : 'RECONCILED_POLICIES',
     });
   });
-  if (!(await coverageProvenanceReady())) {
-    console.warn(`[t1-reconciliation] fichier ${p.fileId} : colonnes 1665 absentes — états requalifiés écrits SANS leur provenance.`);
-  }
   console.info(`[t1-reconciliation] fichier ${p.fileId} (${p.origin}) : ${requalified.length} unité(s) requalifiée(s), `
     + `${before.qualityState} → ${after.qualityState}`);
   return { outcome: 'APPLIED', requalified, before, after };

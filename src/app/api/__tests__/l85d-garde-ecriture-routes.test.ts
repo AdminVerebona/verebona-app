@@ -175,6 +175,12 @@ describe('L85D-S03 — chaque garde reconnue applique bien `canWrite`', () => {
       expect(pure).toMatch(/premiumFeatures: false, canWrite: false/);
       return;
     }
+    if (name === 'checkAssetCreationAllowed') {
+      // Lot 114 (#753) : la façade appelle la garde `canCreateAsset` des droits (elle-même vérifiée ci-dessus), et refuse sur son verdict.
+      expect(src(file)).toMatch(/import \{ canCreateAsset as canCreateAssetEntitlement \} from '@\/services\/entitlements\.service'/);
+      expect(body).toMatch(/await canCreateAssetEntitlement\(accountId, currentAssetCount\);\s*if \(!assetDecision\.allowed\) \{\s*return refus\(403/);
+      return;
+    }
     expect(body).toMatch(CHAINE);
   });
 });

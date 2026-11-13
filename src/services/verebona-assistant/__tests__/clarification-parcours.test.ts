@@ -12,7 +12,8 @@ import {
   buildAssetClarification,
   interpretTypedAnswer,
   isExpired,
-  MAX_CLARIFICATION_CHAIN,
+  clarificationSignature,
+  isClarificationCycle,
   MAX_FAILED_ATTEMPTS,
 } from '@/services/verebona-assistant/core/clarification-builder';
 import { verifierClarification, inputDeReprise } from '@/services/verebona-assistant/core/clarification.service';
@@ -132,9 +133,15 @@ describe('choix sécurisé', () => {
     expect(verifierClarification(e, e.clarificationId, 'asset_42', new Date('2026-09-25T10:05:00Z')).ok).toBe(false);
   });
 
-  it('deux échecs au plus, deux clarifications successives au plus', () => {
+  // Lot 114A (#753, CDC T2 D02 / M07) — règle remplacée : « deux clarifications
+  // successives au plus ». Le plafond des RÉPONSES INVALIDES reste ; la série
+  // de questions n'est plus bornée que par la détection de boucle.
+  it('deux échecs au plus ; plus de plafond de clarifications, mais jamais deux fois la même question', () => {
     expect(MAX_FAILED_ATTEMPTS).toBe(2);
-    expect(MAX_CLARIFICATION_CHAIN).toBe(2);
+    const e = etat();
+    expect(isClarificationCycle(e, null)).toBe(false);
+    expect(isClarificationCycle(e, { asked: ['asset|asset|1,2'] })).toBe(false);
+    expect(isClarificationCycle(e, { asked: [clarificationSignature(e)] })).toBe(true);
   });
 });
 
@@ -165,13 +172,17 @@ describe('reprise structurée', () => {
     expect(input.message).not.toContain(e.question);
     expect(input.conversationId).toBe(3);
     expect(input.resume).toMatchObject({ intent: 'ACCOUNT_SEARCH_DOCUMENT', assetId: 42, chainDepth: 1 });
+    // Lot 114A : le choix est conservé comme décision, la question comme déjà posée.
+    expect(input.resume?.decisions).toMatchObject({ assetId: 42 });
+    expect(input.resume?.asked).toEqual([clarificationSignature(e)]);
   });
 
   it('l’orchestrateur garde l’intention initiale et crée la clarification sur le fil', () => {
     const o = read('src/services/verebona-assistant/core/assistant-orchestrator.service.ts');
     expect(o).toMatch(/routeForIntent\(input\.resume\.intent/);
     expect(o).toMatch(/ports\.saveClarification\(state\)/);
-    expect(o).toMatch(/chainDepth > MAX_CLARIFICATION_CHAIN/);
+    expect(o).not.toMatch(/MAX_CLARIFICATION_CHAIN/);
+    expect(o).toMatch(/isClarificationCycle\(state, input\.resume\)/);
     expect(o).not.toMatch(/`\$\{etat!?\.question\} \$\{verdict\.choix\.label\}`/);
   });
 

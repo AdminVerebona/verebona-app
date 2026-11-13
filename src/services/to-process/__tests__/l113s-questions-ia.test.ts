@@ -211,7 +211,8 @@ describe('L113S — catalogue : les règles actives classées (formulation)', ()
   it('R-01 — chaque règle dit qui formule sa question ; catalogue sain', () => {
     expect(checkRulesCatalog()).toEqual([]);
     // Lot 113AA (#725) : + PERIOD-CONFLICT (constat déterministe, NO_AI_DECISION).
-    expect(PROCESSING_RULES).toHaveLength(28);
+    // Lot 114 (#750) : + OPERATION-ATTRIBUTE (contradiction réelle d'un attribut, NO_AI_DECISION).
+    expect(PROCESSING_RULES).toHaveLength(29);
     for (const r of PROCESSING_RULES) expect(['AI_CONTEXTUAL', 'DETERMINISTIC'], r.code).toContain(r.formulation.kind);
   });
 

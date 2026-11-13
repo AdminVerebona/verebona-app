@@ -28,7 +28,7 @@ describe('C6-3x — gouvernance des versions du prompt maître T3', () => {
     // Lot 97A : OPERATION_IDENTITY, facultative, texte dans le guide du PO (absente du fichier du dépôt).
     // Lot 113AD : + PERIOD_RELATION (facultative, bloc 29 du guide du PO).
     // Lot 113AL : + ECONOMIC_QUALIFICATION (facultative, bloc 31).
-    expect(listMasterTasks('t3_master_v1')).toEqual(['VALUE_CONFLICT', 'LINK_AMBIGUITY', 'OPERATION_MATCH', 'DOCUMENT_NAMING', 'KNOWLEDGE_QUERY', 'OPERATION_IDENTITY', 'PERIOD_RELATION', 'ECONOMIC_QUALIFICATION']);
+    expect(listMasterTasks('t3_master_v1')).toEqual(['VALUE_CONFLICT', 'LINK_AMBIGUITY', 'OPERATION_MATCH', 'DOCUMENT_NAMING', 'KNOWLEDGE_QUERY', 'OPERATION_IDENTITY', 'PERIOD_RELATION', 'ATTRIBUTE_ARBITRATION', 'ECONOMIC_QUALIFICATION']);
     expect(isMasterTaskTextPending('t3_master_v1', 'KNOWLEDGE_QUERY')).toBe(true);
     expect(isMasterTaskTextPending('t3_master_v1', 'OPERATION_IDENTITY')).toBe(true);
     expect(isOptionalMasterTask('t3_master_v1', 'OPERATION_MATCH')).toBe(true);
@@ -51,6 +51,8 @@ describe('C6-3x — gouvernance des versions du prompt maître T3', () => {
       expect.objectContaining({ code: 'OPTIONAL_BRANCH_MISSING', blocking: false }), expect.objectContaining({ code: 'OPTIONAL_BRANCH_MISSING', blocking: false }),
       // Lot 113AD : PERIOD_RELATION, texte dans le guide du PO (bloc 29).
       expect.objectContaining({ code: 'OPTIONAL_BRANCH_MISSING', blocking: false }),
+      // Lot 114 : ATTRIBUTE_ARBITRATION, texte dans le guide du PO (bloc 38).
+      expect.objectContaining({ code: 'OPTIONAL_BRANCH_MISSING', blocking: false }),
       // Lot 113AL : ECONOMIC_QUALIFICATION, texte dans le guide du PO (bloc 31).
       expect.objectContaining({ code: 'OPTIONAL_BRANCH_MISSING', blocking: false }),
     ]);
@@ -67,6 +69,8 @@ describe('C6-3x — gouvernance des versions du prompt maître T3', () => {
       expect.objectContaining({ code: 'OPTIONAL_BRANCH_MISSING', blocking: false, message: expect.stringMatching(/OPERATION_IDENTITY[\s\S]*évolution séparée/) }),
       // Lot 113AD : PERIOD_RELATION, texte dans le guide du PO (bloc 29).
       expect.objectContaining({ code: 'OPTIONAL_BRANCH_MISSING', blocking: false, message: expect.stringMatching(/PERIOD_RELATION[\s\S]*évolution séparée/) }),
+      // Lot 114 : ATTRIBUTE_ARBITRATION, texte dans le guide du PO (bloc 38).
+      expect.objectContaining({ code: 'OPTIONAL_BRANCH_MISSING', blocking: false, message: expect.stringMatching(/ATTRIBUTE_ARBITRATION[\s\S]*évolution séparée/) }),
       // Lot 113AL : ECONOMIC_QUALIFICATION, texte dans le guide du PO (bloc 31).
       expect.objectContaining({ code: 'OPTIONAL_BRANCH_MISSING', blocking: false, message: expect.stringMatching(/ECONOMIC_QUALIFICATION[\s\S]*évolution séparée/) }),
     ]);
@@ -77,10 +81,10 @@ describe('C6-3x — gouvernance des versions du prompt maître T3', () => {
     const issues = masterConfigIssues(c);
     expect(issues.filter((i) => i.blocking)).toEqual([]);
     expect(issues).toContainEqual(expect.objectContaining({ field: 'masterPrompt', blocking: false, message: expect.stringMatching(/OPERATION_MATCH/) }));
-    expect(missingOptionalMasterTasks('T3', ancien)).toEqual(['OPERATION_MATCH', 'DOCUMENT_NAMING', 'KNOWLEDGE_QUERY', 'OPERATION_IDENTITY', 'PERIOD_RELATION', 'ECONOMIC_QUALIFICATION']);
+    expect(missingOptionalMasterTasks('T3', ancien)).toEqual(['OPERATION_MATCH', 'DOCUMENT_NAMING', 'KNOWLEDGE_QUERY', 'OPERATION_IDENTITY', 'PERIOD_RELATION', 'ATTRIBUTE_ARBITRATION', 'ECONOMIC_QUALIFICATION']);
     // Lot 85F : KNOWLEDGE_QUERY attendue de l'équipe IA ; lot 97A : OPERATION_IDENTITY (guide du PO).
     // Lot 113AD : + PERIOD_RELATION (bloc 29).
-    expect(missingOptionalMasterTasks('T3', livre)).toEqual(['KNOWLEDGE_QUERY', 'OPERATION_IDENTITY', 'PERIOD_RELATION', 'ECONOMIC_QUALIFICATION']);
+    expect(missingOptionalMasterTasks('T3', livre)).toEqual(['KNOWLEDGE_QUERY', 'OPERATION_IDENTITY', 'PERIOD_RELATION', 'ATTRIBUTE_ARBITRATION', 'ECONOMIC_QUALIFICATION']);
   });
 
   it('C6-33 à l’exécution : les branches existantes rendent ; OPERATION_MATCH est refusée AVANT tout appel (TASK_BRANCH_MISSING)', () => {

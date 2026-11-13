@@ -84,6 +84,8 @@ const SUJETS: Readonly<Record<string, { noun: string; fixed?: string }>> = {
   'AGENDA-PROJECTION-MATCH': { noun: 'Événement', fixed: 'Événement de l’agenda à rapprocher' },
   // Lot 53D (D2) : devise d'un montant à confirmer.
   'OPERATION-CURRENCY': { noun: 'Devise', fixed: 'Devise d’un montant à confirmer' },
+  // Lot 114 (#750) : contradiction réelle d'un attribut (prestataire, date) — à valider par le PO.
+  'OPERATION-ATTRIBUTE': { noun: 'Information', fixed: 'Information à confirmer' },
   // Lot 113AA (#725) — à valider par le PO.
   'PERIOD-CONFLICT': { noun: 'Période', fixed: 'Période à confirmer' },
 };

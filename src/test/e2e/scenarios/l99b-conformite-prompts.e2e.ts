@@ -348,6 +348,8 @@ describe('L99B — Mise en conformité automatique des prompts IA (préproductio
     // OPERATION_IDENTITY (étape 5 non faite) : branche absente des deux versions — hors périmètre, signalée.
     // Lot 113AD : PERIOD_RELATION (étape 29 non faite), idem.
     expect(i.qualification.excluded).toEqual([expect.objectContaining({ operationCode: 't3_operation_identity' }), expect.objectContaining({ operationCode: 't3_period_relation' }),
+      // Lot 114 (#750) : ATTRIBUTE_ARBITRATION (étape 38 non faite), idem.
+      expect.objectContaining({ operationCode: 't3_attribute_arbitration' }),
       // Lot 113AL : ECONOMIC_QUALIFICATION (étape 31 non faite), idem.
       expect.objectContaining({ operationCode: 't3_economic_qualification' })]);
     // Cas d'un contrat absent des DEUX versions (99C, étape 9 non faite) : hors périmètre — ni réussis, ni bloquants.

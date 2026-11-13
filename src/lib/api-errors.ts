@@ -5,7 +5,7 @@
 
 import { NextResponse } from 'next/server';
 
-type ErrorCode =
+export type ErrorCode =
   // Authentication errors
   | 'AUTH_REQUIRED'
   | 'INVALID_TOKEN'

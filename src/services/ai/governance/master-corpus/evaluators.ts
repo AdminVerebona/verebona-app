@@ -292,6 +292,25 @@ export const MASTER_CORPUS_EVALUATORS: Readonly<Record<string, Evaluator>> = {
       ...ecart(exp(c, 'issues') === undefined || JSON.stringify(issues) === JSON.stringify(exp(c, 'issues')), `refus ${JSON.stringify(issues)}`),
     ];
   },
+  // Lot 114 — ATTRIBUTE_ARBITRATION (contrat t3-attribute-arbitration-v1) : contexte construit par le code de production
+  // (`buildArbitrationInput`), validation stricte réelle (`validateArbitration`). Attendus : `valid`, `outcome`, `effect`
+  // (NONE : aucun effet ; RETAIN : valeur retenue ; NO_CONFLICT : faits distincts ; ASK_USER : indécidable ; LINK :
+  // document étranger), `retained` (valeur retenue), `issues` (motifs de refus triés).
+  async t3_attribute_arbitration(c, output) {
+    const { buildArbitrationInput, validateArbitration } = await import('@/services/business-operations/consolidation/attribute-arbitration/contract');
+    const b = buildArbitrationInput((c.context as { attributeArbitration: never }).attributeArbitration);
+    const v = validateArbitration(output, b.scope);
+    const issues = v.ok ? [] : [...new Set(v.problems.map((p) => p.issue))].sort();
+    const e = v.ok ? v.effect : null;
+    const effet = !e ? 'NONE' : e.outcome === 'RESOLVED' ? 'RETAIN' : e.outcome === 'DISTINCT_FACTS' ? 'NO_CONFLICT' : e.outcome === 'UNDECIDABLE' ? 'ASK_USER' : 'LINK';
+    return [
+      ...ecart(exp(c, 'valid') === undefined || v.ok === exp(c, 'valid'), `validité ${v.ok}${v.ok ? '' : ` (${issues.join(',')})`}`),
+      ...ecart(exp(c, 'outcome') === undefined || (v.ok && v.decision.outcome === exp(c, 'outcome')), `issue ${v.ok ? v.decision.outcome : 'refusée'}`),
+      ...ecart(exp(c, 'effect') === undefined || effet === exp(c, 'effect'), `effet ${effet}`),
+      ...ecart(exp(c, 'retained') === undefined || (e?.outcome === 'RESOLVED' && e.value === exp(c, 'retained')), `valeur retenue ${e?.outcome === 'RESOLVED' ? e.value : 'aucune'}`),
+      ...ecart(exp(c, 'issues') === undefined || JSON.stringify(issues) === JSON.stringify(exp(c, 'issues')), `refus ${JSON.stringify(issues)}`),
+    ];
+  },
   // Lot 113AL — ECONOMIC_QUALIFICATION (contrat t3-economic-qualification-v1) : contexte construit par le code de
   // production (`buildQualificationInput`), validation stricte réelle (`validateQualification`) puis effet appliqué par
   // le moteur TCO existant (`semanticDraft`). Attendus : `valid`, `effects` (par montant : `outcome`, `applied`,

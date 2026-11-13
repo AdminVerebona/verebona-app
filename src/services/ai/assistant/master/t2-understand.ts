@@ -65,6 +65,10 @@ interface T2Understanding {
   interaction: RouteInteraction;
   /** Lot 54E (#419 écart 1) : arbitrage entre candidats exposés (s'ils l'ont été). */
   semanticDecision: T2SemanticDecision | null;
+  /** Lot 114A (#753, CDC T2 §12.1) : indices facultatifs — jamais une autorisation. */
+  scopeCardinality?: NonNullable<T2UnderstandOutput['scopeCardinality']>;
+  informationNeeds?: Array<{ code: string; role: 'explicit' | 'useful_complement' }>;
+  unresolvedDimensions?: NonNullable<T2UnderstandOutput['unresolvedDimensions']>;
   /** Réparation / escalade (trace). */
   events: string[];
 }
@@ -143,6 +147,10 @@ export function toT2Understanding(out: UnderstandOut, events: string[] = []): T2
       })),
     },
     semanticDecision: out.semanticDecision ?? null,
+    // Lot 114A (#753) : indices facultatifs — absents avec un prompt antérieur.
+    ...(out.scopeCardinality ? { scopeCardinality: out.scopeCardinality } : {}),
+    ...(out.informationNeeds?.length ? { informationNeeds: out.informationNeeds.map((n) => ({ code: n.code.trim(), role: n.role ?? 'explicit' })) } : {}),
+    ...(out.unresolvedDimensions?.length ? { unresolvedDimensions: [...new Set(out.unresolvedDimensions)] } : {}),
     events: horsCatalogue.length ? [...events, `T2_UNDERSTAND:FACTS_OUT_OF_CATALOG:${horsCatalogue.length}`] : events,
   };
 }

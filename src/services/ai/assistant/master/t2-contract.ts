@@ -39,6 +39,10 @@ const nullableString = z.string().max(200).nullable().optional();
  */
 const T2_INTERACTION_MODES = ['QUERY', 'UPDATE_PROPOSAL', 'ACTION_REQUEST', 'CONTEXT_ONLY', 'MIXED', 'AMBIGUOUS'] as const;
 
+/** Lot 114A (#753, CDC T2 §12.1) : portée demandée et dimensions restant à lever. */
+const T2_SCOPE_CARDINALITIES = ['SINGLE', 'COLLECTION', 'GLOBAL', 'UNKNOWN'] as const;
+const T2_UNRESOLVED_DIMENSIONS = ['target', 'document', 'period', 'source', 'action', 'relation'] as const;
+
 const looseValue = z.union([z.string().max(200), z.number()]).transform(String).nullable().optional();
 
 /** Information APPORTÉE par l'utilisateur (indices : aucun identifiant, aucune destination). */
@@ -94,6 +98,16 @@ export const T2UnderstandOutput = z.object({
   interactionMode: z.enum(T2_INTERACTION_MODES).default('QUERY'),
   suppliedFacts: z.array(t2SuppliedFact).max(10).default([]),
   semanticDecision: t2SemanticDecision.nullable().optional(),
+  // Lot 114A (Trello #753, CDC T2 §12.1) : champs ADDITIFS et FACULTATIFS — une
+  // version de prompt qui ne les produit pas reste valide. Ce sont des INDICES :
+  // le serveur garde sa propre lecture de la cardinalité et décide seul des
+  // droits, des cibles et des calculs.
+  scopeCardinality: z.enum(T2_SCOPE_CARDINALITIES).nullable().optional(),
+  informationNeeds: z.array(z.object({
+    code: z.string().min(1).max(80),
+    role: z.enum(['explicit', 'useful_complement']).default('explicit'),
+  })).max(10).optional(),
+  unresolvedDimensions: z.array(z.enum(T2_UNRESOLVED_DIMENSIONS)).max(6).optional(),
 });
 export type T2UnderstandOutput = z.infer<typeof T2UnderstandOutput>;
 

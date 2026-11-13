@@ -246,6 +246,11 @@ export const PUBLISHABILITY_CONTRACTS: Readonly<Record<string, PublishabilityCon
     family: 'EVENEMENTS_DE_REFERENCE', decisions: 'PRODUCTION', reason: 'REFERENCE_EVENT_WITHDRAWN',
     noLongerUseful: (a) => evenementRetire(a, `${a}.trigger_context->>'operationId'`), cleanup: { by: 'COH-TODO-OPERATION-CARDS' },
   },
+  // Lot 114 (#750, issue C) : contradiction réelle d'un attribut — fermée par la consolidation quand elle est tranchée.
+  'OPERATION-ATTRIBUTE': {
+    family: 'EVENEMENTS_DE_REFERENCE', decisions: 'PRODUCTION', reason: 'REFERENCE_EVENT_WITHDRAWN',
+    noLongerUseful: (a) => evenementRetire(a, `${a}.trigger_context->>'operationId'`), cleanup: { by: 'COH-TODO-OPERATION-CARDS' },
+  },
   // Lot 113AA (#725, D11) : divergence de périodes — fermée par la résolution (COH-OPS-PERIOD-RESOLUTION, passage T3).
   'PERIOD-CONFLICT': {
     family: 'EVENEMENTS_DE_REFERENCE', decisions: 'PRODUCTION', reason: 'REFERENCE_EVENT_WITHDRAWN',

@@ -26,6 +26,15 @@
  *                           de quelle devise s'agit-il ? » — montant gardé hors
  *                           des totaux en euros jusqu'à la réponse.
  *
+ *   OPERATION-ATTRIBUTE     (f) lot 114, Trello #750 (issue C) : « Ces documents
+ *                           indiquent des prestataires différents pour la même
+ *                           intervention : lequel est le bon ? » — contradiction
+ *                           RÉELLE d'un attribut (prestataire, date) du même fait,
+ *                           que ni les preuves ni l'arbitrage T3 ne départagent.
+ *                           Toutes les valeurs réellement différentes sont
+ *                           proposées ; la valeur en place n'est jamais écrasée
+ *                           avant la réponse.
+ *
  * Chaque choix écrit une décision DURABLE puis relance la consolidation :
  *   (a) `business_operation_match_decisions` (C6.3) — CONFIRMED sur
  *       l'Opération choisie, REJECTED sur les autres propositions, ou
@@ -72,8 +81,10 @@ export const RETIRED_CLAIM_PARENT_RULES = ['OPERATION-CLAIM-PARENT', 'OPERATION-
 export const OPERATION_ASSET_EXCLUSION_RULE = 'OPERATION-CLAIM-ASSET';
 /** Lot 53D (retour PO D2) : devise d'un montant non établie sur le document. */
 const OPERATION_CURRENCY_RULE = 'OPERATION-CURRENCY';
+/** Lot 114 (Trello #750, issue C) : contradiction réelle d'un attribut (prestataire, date) à arbitrer. */
+export const OPERATION_ATTRIBUTE_RULE = 'OPERATION-ATTRIBUTE';
 export const OPERATION_CARD_RULES = [
-  OPERATION_MATCH_RULE, OPERATION_AMOUNT_RULE, OPERATION_ASSET_EXCLUSION_RULE, OPERATION_CURRENCY_RULE,
+  OPERATION_MATCH_RULE, OPERATION_AMOUNT_RULE, OPERATION_ASSET_EXCLUSION_RULE, OPERATION_CURRENCY_RULE, OPERATION_ATTRIBUTE_RULE,
 ] as const;
 
 const MATCH_RELATION = 'operationMatch';
@@ -85,6 +96,9 @@ export const matchRelationKey = (candidateKey: string) => `${MATCH_RELATION}:${c
 export const amountRelationKey = (operationId: number, fingerprint: string) => `${AMOUNT_RELATION}:${operationId}:${fingerprint.slice(0, 16)}`;
 const exclusionRelationKey = (operationId: number, assetId: number) => `${EXCLUSION_RELATION}:${operationId}:${assetId}`;
 const currencyRelationKey = (operationId: number, fingerprint: string) => `${CURRENCY_RELATION}:${operationId}:${fingerprint.slice(0, 16)}`;
+const ATTRIBUTE_RELATION = 'operationAttribute';
+/** Une seule carte par SUJET (événement, attribut, rôle) — quelles que soient les valeurs en présence. */
+export const attributeRelationKey = (operationId: number, field: string, role: string) => `${ATTRIBUTE_RELATION}:${operationId}:${field}:${role}`;
 
 // ── Libellés métier (purs) ──────────────────────────────────────────────────
 
@@ -189,6 +203,36 @@ export function currencyProposals(candidates: readonly string[]): ActionProposal
   return [
     ...liste.map((c, i) => ({ value: `CURRENCY:${c}`, label: `En ${NOMS_DEVISES[c] ?? c}`, confidence: 0.6 - i * 0.1 })),
     { value: 'UNKNOWN', label: 'Je ne sais pas — le laisser hors des totaux', confidence: 1, isCurrentValue: true },
+  ];
+}
+
+// ── Lot 114 (#750, issue C) : contradiction réelle d'un attribut — textes à valider par le PO ──
+
+type AttributeField = 'plannedDate' | 'startDate' | 'realizedDate' | 'endDate' | 'provider';
+const DATES_QUALIFIEES: Readonly<Record<Exclude<AttributeField, 'provider'>, string>> = {
+  plannedDate: 'dates prévues', startDate: 'dates de début', realizedDate: 'dates de réalisation', endDate: 'dates de fin',
+};
+
+/** Question (f) — pure. Jamais le mot « Opération » : la réalité est nommée par sa nature. */
+export function attributeQuestion(field: AttributeField, type: string | null): string {
+  const nom = businessNoun(type).meme;
+  return field === 'provider'
+    ? `Ces documents indiquent des prestataires différents pour ${nom} : lequel est le bon ?`
+    : `Ces documents indiquent des ${DATES_QUALIFIEES[field]} différentes pour ${nom} : laquelle est la bonne ?`;
+}
+
+/** Propositions (f) — pures : toutes les valeurs réellement différentes (au plus 4), la valeur en place en dernier. */
+export function attributeProposals(
+  field: AttributeField, options: ReadonlyArray<{ value: string; normalized: string; title: string | null }>, retained: string | null,
+): ActionProposal[] {
+  const lib = (o: { value: string; title: string | null }) =>
+    `${field === 'provider' ? borne(o.value, 60) : frDate(o.value) ?? o.value}${o.title ? ` — ${guillemets(o.title)}` : ''}`;
+  const vues = new Set<string>();
+  const distinctes = options.filter((o) => (vues.has(o.normalized) ? false : (vues.add(o.normalized), true)));
+  const enPlace = distinctes.find((o) => retained !== null && o.value === retained) ?? null;
+  return [
+    ...distinctes.filter((o) => o !== enPlace).slice(0, enPlace ? 3 : 4).map((o, i) => ({ value: `ATTRIBUTE:${o.normalized}`, label: lib(o), confidence: 0.6 - i * 0.1 })),
+    ...(enPlace ? [{ value: `ATTRIBUTE:${enPlace.normalized}`, label: lib(enPlace), confidence: 1, isCurrentValue: true }] : []),
   ];
 }
 
@@ -416,6 +460,28 @@ export async function syncOperationCards(accountId: number, needs: OperationCard
       gardees.add(`C:${n.fileId}:${currencyRelationKey(n.operationId, n.fingerprint)}`);
     }
 
+    // (f) Lot 114 (#750, issue C) : contradiction réelle d'un attribut (prestataire, date) du même fait.
+    for (const n of needs.attribute ?? []) {
+      const titres = await fileTitles(accountId, [...new Set(n.options.flatMap((o) => o.fileIds))]);
+      const type = (await operationLabels(accountId, [n.operationId], null)).get(n.operationId)?.type ?? null;
+      const options = n.options.map((o) => ({ value: o.value, normalized: o.normalized, title: o.fileIds.map((f) => titres.get(f)).find(Boolean) ?? null }));
+      const proposals = attributeProposals(n.field, options, n.retained);
+      if (proposals.length < 2) continue;
+      const r = await upsertAction({
+        accountId, targetType: 'DOCUMENT', targetId: n.fileId, relationKey: attributeRelationKey(n.operationId, n.field, n.role),
+        actionKind: 'ARBITRATE', ruleCode: OPERATION_ATTRIBUTE_RULE,
+        question: attributeQuestion(n.field, type), proposals,
+        triggerContext: {
+          kind: 'operation_attribute', operationId: n.operationId, field: n.field, role: n.role, reasonCode: n.reasonCode,
+          // Toutes les valeurs connues à la question (une valeur nouvelle rouvrira la contradiction, avec son motif).
+          options: n.options.map((o) => ({ value: o.value, normalized: o.normalized })),
+          documents: [...new Set(n.options.flatMap((o) => o.fileIds))].map((f) => ({ fileId: f, title: titres.get(f) ?? 'Document' })),
+        },
+      });
+      compter(r.status);
+      gardees.add(`T:${n.fileId}:${attributeRelationKey(n.operationId, n.field, n.role)}`);
+    }
+
     // Fermeture automatique : cartes des documents / Opérations réexaminés que ce passage ne reconduit pas.
     const ouvertes = (await pgClient.unsafe(
       `SELECT id, rule_code, target_id, relation_key, (trigger_context->>'operationId')::bigint AS op,
@@ -428,7 +494,7 @@ export async function syncOperationCards(accountId: number, needs: OperationCard
     )) as unknown as Array<{ id: number; rule_code: string; target_id: number; relation_key: string; candidate_key: string | null }>;
     const prefixe: Record<string, string> = {
       [OPERATION_MATCH_RULE]: 'M', [OPERATION_AMOUNT_RULE]: 'A',
-      [OPERATION_ASSET_EXCLUSION_RULE]: 'E', [OPERATION_CURRENCY_RULE]: 'C',
+      [OPERATION_ASSET_EXCLUSION_RULE]: 'E', [OPERATION_CURRENCY_RULE]: 'C', [OPERATION_ATTRIBUTE_RULE]: 'T',
     };
     const fermees = ouvertes.filter((o) => !gardees.has(`${prefixe[o.rule_code]}:${o.target_id}:${o.relation_key}`));
     rep.closed += await closeCards(fermees.map((o) => Number(o.id)), 'RESOLVED_BY_T3', await matchClosureTrace(accountId, fermees));
@@ -451,14 +517,23 @@ interface MatchCtx { kind: 'operation_match'; candidateKey: string; basis: 'CERT
 interface AmountCtx { kind: 'operation_amount'; operationId: number; fingerprint: string; options: Array<{ amountMinor: number; currency: string }> }
 interface ExclusionCtx { kind: 'operation_asset_exclusion'; operationId: number; assetId: number; fileIds: number[] }
 interface CurrencyCtx { kind: 'operation_currency'; operationId: number; fingerprint: string; amountMinor: number; candidates: string[] }
+interface AttributeCtx { kind: 'operation_attribute'; operationId: number; field: AttributeField; role: string; options: Array<{ value: string; normalized: string }> }
 
 /** Choix reçu (pur) ; `null` : invalide (une requête forgée ne désigne rien hors de la carte). */
 export function parseOperationCardChoice(ruleCode: string, value: unknown, ctx: unknown):
   | { kind: 'SAME'; operationId: number } | { kind: 'DISTINCT' }
   | { kind: 'NOT_SAME'; operationId: number } | { kind: 'CHANGED' }
   | { kind: 'AMOUNT'; amountMinor: number; currency: string }
-  | { kind: 'REINSTATE' } | { kind: 'KEEP_EXCLUDED' } | { kind: 'CURRENCY'; currency: string | null } | null {
+  | { kind: 'REINSTATE' } | { kind: 'KEEP_EXCLUDED' } | { kind: 'CURRENCY'; currency: string | null }
+  | { kind: 'ATTRIBUTE'; normalized: string; value: string } | null {
   if (typeof value !== 'string' || !ctx || typeof ctx !== 'object') return null;
+  if (ruleCode === OPERATION_ATTRIBUTE_RULE) {
+    // Lot 114 (#750) : seule une valeur PRÉSENTÉE par la carte peut être retenue (jamais une valeur forgée).
+    const c = ctx as AttributeCtx;
+    if (!value.startsWith('ATTRIBUTE:') || !Array.isArray(c.options)) return null;
+    const o = c.options.find((x) => x && x.normalized === value.slice('ATTRIBUTE:'.length));
+    return o ? { kind: 'ATTRIBUTE', normalized: o.normalized, value: o.value } : null;
+  }
   if (ruleCode === OPERATION_ASSET_EXCLUSION_RULE) {
     if (value === 'REINSTATE') return { kind: 'REINSTATE' };
     return value === 'KEEP_EXCLUDED' ? { kind: 'KEEP_EXCLUDED' } : null;
@@ -580,7 +655,7 @@ export async function resolveOperationCard(
       fileToConsolidate = action.targetId;
       return needs;
     }
-    const ctx = action.triggerContext as unknown as AmountCtx | ExclusionCtx | CurrencyCtx;
+    const ctx = action.triggerContext as unknown as AmountCtx | ExclusionCtx | CurrencyCtx | AttributeCtx;
     const opId = await canonicalId(t, accountId, ctx.operationId);
     if (opId === null) { stale = true; return needs; }
     const op = await repo.load(opId, { allowInactive: true });
@@ -597,6 +672,25 @@ export async function resolveOperationCard(
       }
       previous.assetId = x.assetId;
       previous.fileIds = x.fileIds ?? [];
+      const { reconsolidateOperation } = await import('@/services/business-operations/consolidation/consolidator');
+      await reconsolidateOperation(repo, session.tx, opId, now.toISOString().slice(0, 10), undefined, needs);
+      return needs;
+    }
+    if (choice.kind === 'ATTRIBUTE') {
+      // Lot 114 (#750, issue C) : valeur retenue par l'utilisateur pour CET attribut et CE rôle — décision durable
+      // (source explicite de l'événement, comme un montant arbitré). La consolidation écrit la valeur, ferme la
+      // contradiction et ne la rouvrira que si une valeur NOUVELLE apparaît. La décision la plus récente remplace
+      // la précédente du même sujet.
+      const a = ctx as AttributeCtx;
+      const anciennes = (await t.execute(sql`
+        SELECT id FROM business_operation_sources
+         WHERE operation_id = ${opId} AND account_id = ${accountId} AND active AND source_kind = 'USER_ARBITRATION'
+           AND locator->>'decision' = 'ATTRIBUTE' AND locator->>'field' = ${a.field} AND locator->>'role' = ${a.role}`)) as unknown as Array<{ id: string }>;
+      for (const x of anciennes) await repo.deactivateSource(Number(x.id), 'USER_DECISION_REPLACED');
+      previous.sourceId = await repo.addSource(opId, {
+        kind: 'USER_ARBITRATION', entityKey: action.id, authority: 'USER', confidence: 'certain',
+        locator: { decision: 'ATTRIBUTE', field: a.field, role: a.role, normalized: choice.normalized, value: choice.value, known: a.options.map((o) => o.normalized) },
+      }, 'USER_ATTRIBUTE_CHOSEN');
       const { reconsolidateOperation } = await import('@/services/business-operations/consolidation/consolidator');
       await reconsolidateOperation(repo, session.tx, opId, now.toISOString().slice(0, 10), undefined, needs);
       return needs;

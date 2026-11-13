@@ -635,6 +635,14 @@ jobs:
         run: npm run test:e2e:notes-description -- --reporter=default --reporter=junit --outputFile.junit=rapports/e2e-notes-description.xml
       - name: Inscription, CGUV publiées vérifiées et reprise (lot 111O)
         run: npm run test:e2e:inscription-cguv -- --reporter=default --reporter=junit --outputFile.junit=rapports/e2e-inscription-cguv.xml
+      - name: Assistant — un bien ou plusieurs, coût selon l'offre, nouvelle demande par défaut (lot 114A, Trello #753)
+        run: npm run test:e2e:t2-comprehension -- --reporter=default --reporter=junit --outputFile.junit=rapports/e2e-t2-comprehension.xml
+      - name: Assistant — actions sur l'Agenda et les biens, confirmées avant écriture (Trello #753)
+        run: npm run test:e2e:t2-actions -- --reporter=default --reporter=junit --outputFile.junit=rapports/e2e-t2-actions.xml
+      - name: T1 — reprise différée et écarts de couverture (Trello #760)
+        run: npm run test:e2e:t1-reprise-differee -- --reporter=default --reporter=junit --outputFile.junit=rapports/e2e-t1-reprise-differee.xml
+      - name: Contradictions d'attributs — carte « Arbitrer » et arbitrage T3 (Trello #750)
+        run: npm run test:e2e:arbitrage-attributs -- --reporter=default --reporter=junit --outputFile.junit=rapports/e2e-arbitrage-attributs.xml
       - uses: actions/upload-artifact@v4
         if: always()
         with:

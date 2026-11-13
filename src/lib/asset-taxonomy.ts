@@ -125,7 +125,7 @@ export const ASSET_FAMILIES: AssetFamilyDefinition[] = [
 
 const FAMILY_BY_CODE = new Map(ASSET_FAMILIES.map((f) => [f.code, f]));
 
-function getAssetFamily(code: string | null | undefined): AssetFamilyDefinition | undefined {
+export function getAssetFamily(code: string | null | undefined): AssetFamilyDefinition | undefined {
   return code ? FAMILY_BY_CODE.get(code as AssetFamilyCode) : undefined;
 }
 

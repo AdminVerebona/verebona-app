@@ -102,10 +102,13 @@ export interface QualifiedAttributeConflict {
   reasonCode: string;
   /** Portées métier POTENTIELLEMENT concernées (à vérifier) ; vide : aucune incidence. */
   impact: string[];
-  resolution?: { by: 'USER' | 'ADMIN'; sourceId?: number };
+  /** Lot 114 (#750) : `value` = valeur retenue par l'arbitrage (carte « À traiter » ou T3) ; `reviewId` = arbitrage T3. */
+  resolution?: { by: 'USER' | 'ADMIN' | 'T3'; sourceId?: number; value?: string; reviewId?: number };
   protection?: 'USER' | 'ADMIN' | 'IMPORT';
   /** Valeur persistée sur l'Opération au moment du contrôle (posée par le consolidateur). */
   current?: string | null;
+  /** Lot 114 (#750, issue B) : issue du dernier examen T3 de cette ligne (absente : jamais examinée). */
+  t3?: { outcome: AttributeReview['outcome']; reviewId?: number };
 }
 
 export interface QualificationContext {
@@ -116,7 +119,43 @@ export interface QualificationContext {
   sourceMeta?: ReadonlyMap<number, { authority: string | null; kind: string | null }>;
   /** Sources visées par un doute d'identité OUVERT (78A, SUSPECT). */
   suspectSourceIds?: ReadonlySet<number>;
+  /** Lot 114 (#750) : arbitrages durables (utilisateur, T3) par `attributeChoiceKey`. */
+  choices?: ReadonlyMap<string, AttributeChoice>;
+  /** Lot 114 (#750) : examens T3 sans arbitrage (différence légitime, abstention…) par `attributeReviewKey`. */
+  reviews?: ReadonlyMap<string, AttributeReview>;
 }
+
+/**
+ * Lot 114 (#750, issues B et C) — arbitrage DURABLE d'une contradiction réelle : la valeur retenue
+ * pour un attribut et un rôle, et les valeurs connues au moment de la décision. Une valeur nouvelle
+ * (absente de `known`) rouvre la contradiction avec son motif ; un constat identique ne la rouvre jamais.
+ */
+export interface AttributeChoice {
+  field: ConflictField;
+  role: string;
+  /** Valeur retenue, forme de comparaison (`normalizeConflictDate` / `normalizeConflictProvider`). */
+  normalized: string;
+  /** Formes de comparaison de toutes les valeurs présentées à la décision. */
+  known: string[];
+  by: 'USER' | 'T3';
+  /** Source de décision (`USER_ARBITRATION`) de l'utilisateur. */
+  sourceId?: number;
+  /** Arbitrage T3 (`business_operation_attribute_arbitrations`). */
+  reviewId?: number;
+}
+
+/** Lot 114 (#750, issue B) — examen T3 d'une ligne qui n'a PAS retenu de valeur. */
+export interface AttributeReview {
+  field: ConflictField;
+  role: string;
+  /** Formes de comparaison des valeurs examinées (un constat différent n'est pas couvert). */
+  known: string[];
+  outcome: 'LEGITIMATE_DIFFERENCE' | 'UNDECIDABLE' | 'LINK_ERROR' | 'ABSTAINED' | 'FAILED' | 'PENDING';
+  reviewId?: number;
+}
+
+export const attributeChoiceKey = (field: ConflictField, role: string): string => `${field}|${role}`;
+export const attributeReviewKey = attributeChoiceKey;
 
 // ── Rôles sémantiques ─────────────────────────────────────────────────────
 
@@ -280,6 +319,40 @@ function successiveRevisions(items: readonly Item[]): boolean {
 const SINGLE_FACT: ReadonlySet<string> = new Set(['ACQUISITION', 'DISPOSAL', 'CLAIM']);
 const DURABLE: ReadonlySet<string> = new Set(['CONTRACT', 'FINANCING']);
 
+/** Valeurs d'un relevé, une par source, avec rôle sémantique et forme de comparaison. */
+function itemsOf(c: RawAttributeConflict, ctx: QualificationContext, byId: ReadonlyMap<number, CandidateIdentity>): Item[] {
+  const items: Item[] = [];
+  for (const v of c.values) {
+    for (const sourceId of v.sourceIds) {
+      const identity = byId.get(sourceId) ?? null;
+      const meta = ctx.sourceMeta?.get(sourceId);
+      const authority = meta?.authority ?? (identity?.agenda ? 'USER' : null);
+      const role = identity ? semanticRoleOf(c.field, identity, authority) : UNKNOWN_ROLE;
+      const normalized = c.field === 'provider'
+        // Équivalence de désignations PROUVÉE du compte (lot 86C) : clé canonique ; sinon forme normalisée étendue.
+        ? normalizeConflictProvider(v.value, identity?.providerKeyRaw !== undefined && identity.provider
+          && normalizeProvider(identity.provider) === normalizeProvider(v.value) ? identity.providerKey : null)
+        : normalizeConflictDate(v.value) ?? v.value;
+      items.push({ value: v.value, normalized, sourceId, identity, src: { id: sourceId, role, documentRole: identity?.role ?? null, authority } });
+    }
+  }
+  return items;
+}
+
+/**
+ * Lot 114 (#750) — l'arbitrage durable couvre-t-il ce groupe ? `COVERED` : mêmes valeurs qu'à la
+ * décision et valeur retenue toujours portée par une source ; `NEW_EVIDENCE` : une valeur nouvelle
+ * est apparue ; `VALUE_WITHDRAWN` : la source de la valeur retenue n'est plus là.
+ */
+function choiceState(choice: AttributeChoice | undefined, its: readonly Item[]): 'NONE' | 'COVERED' | 'NEW_EVIDENCE' | 'VALUE_WITHDRAWN' {
+  if (!choice) return 'NONE';
+  if (!its.every((i) => choice.known.includes(i.normalized))) return 'NEW_EVIDENCE';
+  return its.some((i) => i.normalized === choice.normalized) ? 'COVERED' : 'VALUE_WITHDRAWN';
+}
+
+const reviewCovers = (r: AttributeReview | undefined, its: readonly Item[]): r is AttributeReview =>
+  !!r && its.every((i) => r.known.includes(i.normalized)) && r.known.every((k) => its.some((i) => i.normalized === k));
+
 /**
  * Qualifie le relevé 78A (pur, déterministe). `alerting` : lignes qui
  * maintiennent l'anomalie (persistées dans `conflicts`) ; `divergences` :
@@ -294,21 +367,7 @@ export function qualifyAttributeConflicts(raw: readonly RawAttributeConflict[], 
   const divergences: QualifiedAttributeConflict[] = [];
 
   for (const c of raw) {
-    const items: Item[] = [];
-    for (const v of c.values) {
-      for (const sourceId of v.sourceIds) {
-        const identity = byId.get(sourceId) ?? null;
-        const meta = ctx.sourceMeta?.get(sourceId);
-        const authority = meta?.authority ?? (identity?.agenda ? 'USER' : null);
-        const role = identity ? semanticRoleOf(c.field, identity, authority) : UNKNOWN_ROLE;
-        const normalized = c.field === 'provider'
-          // Équivalence de désignations PROUVÉE du compte (lot 86C) : clé canonique ; sinon forme normalisée étendue.
-          ? normalizeConflictProvider(v.value, identity?.providerKeyRaw !== undefined && identity.provider
-            && normalizeProvider(identity.provider) === normalizeProvider(v.value) ? identity.providerKey : null)
-          : normalizeConflictDate(v.value) ?? v.value;
-        items.push({ value: v.value, normalized, sourceId, identity, src: { id: sourceId, role, documentRole: identity?.role ?? null, authority } });
-      }
-    }
+    const items = itemsOf(c, ctx, byId);
     const roles = [...new Set(items.map((i) => i.src.role))].sort();
     const comparables = roles.filter((r) => r !== USER_ROLE);
     const prov = ctx.provenance[c.field];
@@ -323,6 +382,10 @@ export function qualifyAttributeConflicts(raw: readonly RawAttributeConflict[], 
       if (!contradicts(c.field, its.map((i) => i.normalized), window)) continue;
       groupes++;
       const suspect = its.some((i) => ctx.suspectSourceIds?.has(i.sourceId));
+      const choix = ctx.choices?.get(attributeChoiceKey(c.field, role));
+      const etat = choiceState(choix, its);
+      const examen = ctx.reviews?.get(attributeReviewKey(c.field, role));
+      const examine = reviewCovers(examen, its) ? examen : undefined;
       let e: QualifiedAttributeConflict;
       if (role === UNKNOWN_ROLE) {
         e = { ...base(role, its), qualification: 'INSUFFICIENT_EVIDENCE', reasonCode: 'ROLE_UNKNOWN', impact };
@@ -330,6 +393,26 @@ export function qualifyAttributeConflicts(raw: readonly RawAttributeConflict[], 
         e = { ...base(role, its), qualification: 'SOURCE_LINK_ERROR_SUSPECTED', reasonCode: suspect ? 'IDENTITY_REVIEW_OPEN' : 'TARGETS_DISJOINT', impact };
       } else if (userRetained !== null) {
         e = { ...base(role, its), qualification: 'REAL_CONFLICT_RESOLVED', reasonCode: 'USER_VALUE_RETAINED', impact: [], resolution: { by: 'USER', sourceId: userRetained }, protection: 'USER' };
+      } else if (choix && etat === 'COVERED') {
+        // Lot 114 (#750) : contradiction tranchée par la carte « À traiter » ou par l'arbitrage T3 (preuve suffisante).
+        const valeur = its.find((i) => i.normalized === choix.normalized)!.value;
+        e = {
+          ...base(role, its), qualification: 'REAL_CONFLICT_RESOLVED', reasonCode: choix.by === 'USER' ? 'USER_ARBITRATED' : 'T3_ARBITRATED', impact: [],
+          resolution: { by: choix.by, value: valeur, ...(choix.sourceId !== undefined ? { sourceId: choix.sourceId } : {}), ...(choix.reviewId !== undefined ? { reviewId: choix.reviewId } : {}) },
+          ...(choix.by === 'USER' ? { protection: 'USER' as const } : {}),
+        };
+      } else if (choix && etat !== 'NONE') {
+        // Nouvelle preuve contradictoire (ou valeur retenue retirée) APRÈS une décision : réouverture motivée.
+        e = {
+          ...base(role, its), qualification: 'REAL_CONFLICT_UNRESOLVED',
+          reasonCode: etat === 'NEW_EVIDENCE' ? 'NEW_EVIDENCE_AFTER_DECISION' : 'DECIDED_VALUE_WITHDRAWN', impact,
+          ...(choix.by === 'USER' ? { protection: 'USER' as const } : {}),
+        };
+      } else if (examine?.outcome === 'LEGITIMATE_DIFFERENCE') {
+        // Lot 114 (#750, issue B) : T3 a établi, preuves citées, que les valeurs portent sur des faits distincts.
+        e = { ...base(role, its), qualification: 'LEGITIMATE_DIFFERENCE', reasonCode: 'T3_DISTINCT_FACTS', impact: [], ...(examine.reviewId !== undefined ? { resolution: { by: 'T3' as const, reviewId: examine.reviewId } } : {}) };
+      } else if (examine?.outcome === 'LINK_ERROR') {
+        e = { ...base(role, its), qualification: 'SOURCE_LINK_ERROR_SUSPECTED', reasonCode: 'T3_LINK_ERROR_SUSPECTED', impact };
       } else if (DURABLE.has(ctx.type ?? '') && successiveRevisions(its)) {
         e = { ...base(role, its), qualification: 'LEGITIMATE_DIFFERENCE', reasonCode: 'SUCCESSIVE_REVISION', impact: [] };
       } else if (role === 'QUOTE_PLANNED' || role.startsWith('QUOTE_VALIDITY') || role === 'QUOTE') {
@@ -342,10 +425,28 @@ export function qualifyAttributeConflicts(raw: readonly RawAttributeConflict[], 
       } else {
         e = { ...base(role, its), qualification: 'INSUFFICIENT_EVIDENCE', reasonCode: 'FACT_IDENTITY_NOT_ESTABLISHED', impact };
       }
+      // Lot 114 (#750, issue B) : issue de l'examen T3 portée par la ligne (diagnostic #751), sans changer le verdict.
+      if (examine && (e.qualification === 'REAL_CONFLICT_UNRESOLVED' || e.qualification === 'INSUFFICIENT_EVIDENCE') && role !== UNKNOWN_ROLE) {
+        e.t3 = { outcome: examine.outcome, ...(examine.reviewId !== undefined ? { reviewId: examine.reviewId } : {}) };
+        if (examine.outcome === 'UNDECIDABLE' && e.qualification === 'INSUFFICIENT_EVIDENCE' && e.reasonCode === 'FACT_IDENTITY_NOT_ESTABLISHED') {
+          // Même fait reconnu par T3, preuves de même autorité : contradiction réelle, à arbitrer par l'utilisateur.
+          e.qualification = 'REAL_CONFLICT_UNRESOLVED';
+          e.reasonCode = 'T3_UNDECIDABLE';
+        }
+      }
       (ALERTING_QUALIFICATIONS.includes(e.qualification) ? alerting : divergences).push(e);
     }
     // Valeur saisie par l'utilisateur (Agenda, fiche) NON retenue alors qu'un document la contredit : jamais masqué.
     if (groupes === 0 && roles.includes(USER_ROLE) && userRetained === null && new Set(items.map((i) => i.normalized)).size > 1) {
+      const choix = ctx.choices?.get(attributeChoiceKey(c.field, 'MIXED'));
+      if (choix && choix.by === 'USER' && choiceState(choix, items) === 'COVERED') {
+        const valeur = items.find((i) => i.normalized === choix.normalized)!.value;
+        divergences.push({
+          ...base('MIXED', items), qualification: 'REAL_CONFLICT_RESOLVED', reasonCode: 'USER_ARBITRATED', impact: [],
+          resolution: { by: 'USER', value: valeur, ...(choix.sourceId !== undefined ? { sourceId: choix.sourceId } : {}) }, protection: 'USER',
+        });
+        continue;
+      }
       alerting.push({ ...base('MIXED', items), qualification: 'REAL_CONFLICT_UNRESOLVED', reasonCode: 'USER_VALUE_NOT_RETAINED', impact, protection: 'USER' });
       continue;
     }
@@ -374,4 +475,50 @@ export function markAdminArbitrated(c: QualifiedAttributeConflict): QualifiedAtt
 /** Empreinte stable d'une ligne (attribut, rôle, valeurs normalisées, qualification) — anti-réouverture. */
 export function conflictLineKey(c: Pick<QualifiedAttributeConflict, 'field' | 'role' | 'values' | 'qualification'>): string {
   return `${c.field}|${c.role}|${c.values.map((v) => v.normalized).sort().join(',')}|${c.qualification}`;
+}
+
+// ── Lot 114 (#750) : application des arbitrages et besoins de cartes ──────
+
+export interface AppliedAttributeChoice { field: ConflictField; role: string; value: string; by: 'USER' | 'T3'; sourceId: number }
+
+/**
+ * Valeurs À ÉCRIRE sur l'Opération d'après les arbitrages durables (pur). Un arbitrage ne s'applique
+ * que s'il couvre le relevé actuel (mêmes valeurs, valeur retenue toujours portée par une source) et
+ * s'il porte sur le rôle de la valeur actuellement retenue (ou s'il est le seul de l'attribut) : la
+ * date d'un devis arbitrée ne remplace jamais une date de réalisation. `sourceId` : source qui porte
+ * la valeur retenue (provenance).
+ */
+export function resolveAttributeChoices(raw: readonly RawAttributeConflict[], ctx: QualificationContext): AppliedAttributeChoice[] {
+  if (!ctx.choices?.size) return [];
+  const byId = new Map(ctx.contributions.map((c) => [c.sourceId, c.identity]));
+  const out: AppliedAttributeChoice[] = [];
+  for (const c of raw) {
+    const items = itemsOf(c, ctx, byId);
+    const retenue = c.retained === null ? null : items.find((i) => i.value === c.retained)?.normalized ?? null;
+    const couverts: Array<{ choix: AttributeChoice; its: Item[] }> = [];
+    for (const role of [...new Set(items.map((i) => i.src.role)), 'MIXED']) {
+      const choix = ctx.choices.get(attributeChoiceKey(c.field, role));
+      const its = role === 'MIXED' ? items : items.filter((i) => i.src.role === role);
+      if (choix && choiceState(choix, its) === 'COVERED' && !its.some((i) => ctx.suspectSourceIds?.has(i.sourceId))) couverts.push({ choix, its });
+    }
+    const elu = couverts.find((x) => retenue !== null && x.its.some((i) => i.normalized === retenue)) ?? (couverts.length === 1 ? couverts[0] : null);
+    if (!elu) continue;
+    const porteur = elu.its.find((i) => i.normalized === elu.choix.normalized)!;
+    out.push({ field: c.field, role: elu.choix.role, value: porteur.value, by: elu.choix.by, sourceId: porteur.sourceId });
+  }
+  return out;
+}
+
+/** Empreinte du SUJET d'une ligne (attribut, rôle) — une seule carte par sujet, quelles que soient les valeurs. */
+export const attributeSubjectKey = (c: Pick<QualifiedAttributeConflict, 'field' | 'role'>): string => `${c.field}:${c.role}`;
+
+/**
+ * Lot 114 (#750, issue C) — la ligne appelle-t-elle une carte « Arbitrer » ? Seulement une
+ * contradiction RÉELLE non tranchée, à incidence métier, avec au moins deux valeurs réellement
+ * différentes. Jamais un doute de rattachement (traité d'abord), ni une preuve insuffisante, ni
+ * une ligne en attente de l'examen T3.
+ */
+export function needsArbitrationCard(c: QualifiedAttributeConflict): boolean {
+  return c.qualification === 'REAL_CONFLICT_UNRESOLVED' && c.impact.length > 0
+    && new Set(c.values.map((v) => v.normalized)).size >= 2 && c.t3?.outcome !== 'PENDING';
 }

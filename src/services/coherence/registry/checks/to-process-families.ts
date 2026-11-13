@@ -318,7 +318,7 @@ export function operationCardAnomaly(s: OperationCardState): { anomaly: string; 
   if (!o || !o.exists) return { anomaly: 'OPERATION_MISSING', verdict: 'FINDING' };
   if (o.merged) return { anomaly: 'OPERATION_MERGED', verdict: 'REPAIRABLE' };
   if (o.invalidated) return { anomaly: 'OPERATION_INVALIDATED', verdict: 'REPAIRABLE' };
-  if ((s.rule === 'OPERATION-AMOUNT' || s.rule === 'OPERATION-CURRENCY') && !o.documentIsSource) return { anomaly: 'DOCUMENT_NOT_IN_OPERATION', verdict: 'REPAIRABLE' };
+  if ((s.rule === 'OPERATION-AMOUNT' || s.rule === 'OPERATION-CURRENCY' || s.rule === 'OPERATION-ATTRIBUTE') && !o.documentIsSource) return { anomaly: 'DOCUMENT_NOT_IN_OPERATION', verdict: 'REPAIRABLE' };
   if (o.lastReconciledAt && s.lastSeenAt && o.lastReconciledAt.getTime() > s.lastSeenAt.getTime() + OPERATION_CARD_CLOCK_MARGIN_MS) {
     return { anomaly: 'CARD_NOT_RECONDUCTED', verdict: 'REPAIRABLE' };
   }

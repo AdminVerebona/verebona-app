@@ -232,6 +232,8 @@ const CONTRACTS: readonly OutputContract[] = [
   { name: 'T3OperationIdentityOutput', label: 't3_operation_identity', version: 1, adapters: [] },
   // Lot 113AD : contrat `t3-period-relation-v1` (#725, bloc 29 du guide du PO).
   { name: 'T3PeriodRelationOutput', label: 't3_period_relation', version: 1, adapters: [] },
+  // Lot 114 : contrat `t3-attribute-arbitration-v1` (#750, bloc 38 du guide du PO).
+  { name: 'T3AttributeArbitrationOutput', label: 't3_attribute_arbitration', version: 1, adapters: [] },
   // Lot 113AL : contrat `t3-economic-qualification-v1` (#737, bloc 31 du guide du PO, demande 82B-t3-decision-tco).
   { name: 'T3EconomicQualificationOutput', label: 't3_economic_qualification', version: 1, adapters: [] },
   { name: 'T4ClassifyEventOutput', label: 't4_classify_event', version: 1, adapters: [] },

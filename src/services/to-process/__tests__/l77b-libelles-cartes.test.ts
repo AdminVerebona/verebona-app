@@ -218,6 +218,10 @@ describe('L77B-03 — toutes les familles : aucun libellé technique', () => {
       question: ops.exclusionQuestion('Maison', 'Dégât des eaux'), proposals: ops.exclusionProposals('Maison') })],
     ['OPERATION-CURRENCY', vue({ targetType: 'DOCUMENT', ruleCode: 'OPERATION-CURRENCY', relationKey: 'op', label: 'Facture',
       question: ops.currencyQuestion(12000), proposals: ops.currencyProposals(['USD', 'CHF']) })],
+    // Lot 114 (#750) : contradiction réelle d'un attribut (prestataire, date) du même fait.
+    ['OPERATION-ATTRIBUTE', vue({ targetType: 'DOCUMENT', ruleCode: 'OPERATION-ATTRIBUTE', relationKey: 'op', label: 'Facture',
+      question: ops.attributeQuestion('provider', 'INTERVENTION'), proposals: ops.attributeProposals('provider', [
+        { value: 'Plomberie Durand', normalized: 'plomberie durand', title: 'Facture' }, { value: 'Chauffage Martin', normalized: 'chauffage martin', title: null }], 'Plomberie Durand') })],
     // Lot 113AA (#725) : divergence de périodes entre deux justificatifs.
     ['PERIOD-CONFLICT', vue({ targetType: 'DOCUMENT', ruleCode: 'PERIOD-CONFLICT', relationKey: 'periodConflict:1:a', label: 'Attestation 2024-2025',
       question: periodes.PERIOD_CONFLICT_QUESTION, proposals: periodes.periodConflictProposals([

@@ -274,6 +274,8 @@ export const DIAG_TABLE_COVERAGE: Readonly<Record<string, DiagTableCoverage>> = 
   business_period_relation_reviews: C('conflits-arbitrages'),
   // Lot 113AL (#737) : arbitrage sémantique T3 des montants non qualifiés du TCO (demande, sortie IA, validation, effets, avant / après, coût).
   economic_qualification_reviews: C('conflits-arbitrages'),
+  // Lot 114 (#750, issue B) : arbitrage T3 d'une contradiction réelle d'attribut (demande, sortie IA, validation, preuve citée, avant / après).
+  business_operation_attribute_arbitrations: C('conflits-arbitrages'),
   business_operation_identity_reviews: C('conflits-arbitrages'),
   operation_semantic_reevaluations: C('conflits-arbitrages'),
   // ── Écritures ────────────────────────────────────────────────────────────
@@ -860,6 +862,8 @@ export const DIAG_AI_OPERATION_COVERAGE: Readonly<Record<string, DiagAiOperation
   t3_period_relation: { treatment: 'T3', tables: [...CALL_TRACES, 'business_period_relation_reviews', 'document_business_periods', 'business_period_decisions', 'to_process_actions'] },
   // Lot 113AL (#737) : demande, sortie reçue, validation, effets par montant et avant / après au journal 1650 ; relus par le moteur TCO.
   t3_economic_qualification: { treatment: 'T3', tables: [...CALL_TRACES, 'economic_qualification_reviews', 'asset_cost_line_decisions', 'document_source_units', 'document_facts'] },
+  // Lot 114 (#750) : demande, sortie reçue, validation, issue, preuve citée et avant / après au journal 1690 ; valeur relue par la consolidation.
+  t3_attribute_arbitration: { treatment: 'T3', tables: [...CALL_TRACES, 'business_operation_attribute_arbitrations', 'business_operations', 'business_operation_sources', 'to_process_actions'] },
   retrieve_data: { treatment: 'T2', tables: [...CALL_TRACES, 'verebona_request_runs', 'verebona_ai_runs'] },
   retrieve_evidence: { treatment: 'T2', tables: [...CALL_TRACES, 'verebona_request_runs', 'verebona_ai_runs'] },
   t2_understand: { treatment: 'T2', tables: [...CALL_TRACES, 'verebona_request_runs', 'verebona_ai_runs', 'verebona_command_plans'] },

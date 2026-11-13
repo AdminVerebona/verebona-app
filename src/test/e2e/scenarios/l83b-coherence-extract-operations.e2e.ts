@@ -309,7 +309,9 @@ scenario('L83B', 'Cohérence : chaîne extract → T1 → aval (C-Q7), rattachem
       transcription: 'Facture entretien\nTotal TTC : 120,00 € dont frais 34,00 €',
       facts: [fait('Total TTC : 120,00 € dont frais 34,00 €', '120.00')],
     }))]);
-    expect(await unite(g, 'page:1:field:1')).toMatchObject({ coverage_status: 'COVERED' });
+    // #760 (P1-01) : l'unité n'est plus dite « couverte » tant qu'une de ses valeurs reste inexpliquée ;
+    // elle reste traitée par le réexamen 91D (constat, aucune relance textuelle).
+    expect(await unite(g, 'page:1:field:1')).toMatchObject({ coverage_status: 'UNRESOLVED', coverage_reason: 'values_partially_structured' });
     await rejouer([]);
     await campagne([c.id], 'CORRECTIVE');
     expect(horsT6().map((x) => x.operationCode)).toEqual([]);

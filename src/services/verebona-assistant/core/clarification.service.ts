@@ -34,9 +34,9 @@
  */
 import { pgClient } from '@/db';
 import { assistantAssetAvailability } from './asset-availability';
-import type { ClarificationCandidate, ClarificationState, ClarificationStatus } from '../types/machine';
+import type { ClarificationCandidate, ClarificationState, ClarificationStatus, ResolvedDecisions } from '../types/machine';
 import type { AssistantRequestInput } from '../types/contracts';
-import { interpretTypedAnswer, isExpired, MAX_FAILED_ATTEMPTS } from './clarification-builder';
+import { clarificationSignature, interpretTypedAnswer, isExpired, MAX_FAILED_ATTEMPTS } from './clarification-builder';
 
 type EchecClarification =
   | 'INTROUVABLE'
@@ -417,15 +417,30 @@ export function inputDeReprise(
     ? { type: etat.candidateType, id: candidate.entityId, assetId: candidate.assetId ?? null } : null;
   // Équipement / pièce : le bien PARENT devient le contexte (filtre, actions),
   // l'entité choisie reste la cible (ticket 13 §G).
-  const assetId = etat.candidateType === 'asset' ? candidate.entityId ?? null : entite?.assetId ?? (etat.candidateType === 'business_source' ? candidate.assetId ?? null : null);
-  const documentId = etat.candidateType === 'document' ? candidate.entityId ?? null : null;
+  // Lot 114A (#753, CDC T2 §12.6) : les décisions des clarifications précédentes
+  // de la même demande sont conservées — le nouveau choix s'y ajoute.
+  const deja = etat.resolvedContext?.decisions ?? {};
+  // Un bien choisi maintenant remplace une entité choisie plus tôt (son parent a pu changer).
+  const entitePrecedente = entite ?? (etat.candidateType === 'asset' ? null : deja.entity ?? null);
+  const assetId = (etat.candidateType === 'asset' ? candidate.entityId ?? null : entite?.assetId ?? (etat.candidateType === 'business_source' ? candidate.assetId ?? null : null))
+    ?? deja.assetId ?? null;
+  const documentId = (etat.candidateType === 'document' ? candidate.entityId ?? null : null) ?? deja.documentId ?? null;
   const requestedFacts = etat.resolvedContext?.requestedFacts?.length ? [...etat.resolvedContext.requestedFacts] : undefined;
   // Lot 49 : choix d'une interprétation métier → contexte STRUCTURÉ (référence
   // de la source, besoin, bien) ; besoin sémantique conservé après une
   // clarification de cible. Jamais une reformulation reclassée.
   const semantique = etat.candidateType === 'business_source' && candidate.sourceRef
     ? { semanticSource: { ref: candidate.sourceRef, need: etat.resolvedContext?.semantic?.need ?? null, assetId: candidate.assetId ?? null } }
-    : etat.resolvedContext?.semantic ? { semantic: etat.resolvedContext.semantic } : {};
+    : deja.semanticSource ? { semanticSource: deja.semanticSource }
+      : etat.resolvedContext?.semantic ? { semantic: etat.resolvedContext.semantic } : {};
+  const decisions: ResolvedDecisions = {
+    ...deja,
+    ...(assetId ? { assetId } : {}),
+    ...(documentId ? { documentId } : {}),
+    ...(entitePrecedente ? { entity: entitePrecedente } : {}),
+    ...('semanticSource' in semantique && semantique.semanticSource ? { semanticSource: semantique.semanticSource } : {}),
+  };
+  const asked = [...new Set([...(etat.resolvedContext?.asked ?? []), clarificationSignature(etat)])];
   return {
     ...base,
     // Période ou action choisie (§20.1) : la demande rejouée est celle que le
@@ -439,9 +454,11 @@ export function inputDeReprise(
     resume: {
       clarificationId: etat.clarificationId,
       intent: candidate.resumeIntent ?? etat.originalIntent,
-      assetId: entite ? null : assetId,
+      assetId: entitePrecedente ? null : assetId,
       documentId,
-      ...(entite ? { entity: entite } : {}),
+      ...(entitePrecedente ? { entity: entitePrecedente } : {}),
+      decisions,
+      asked,
       ...(requestedFacts ? { requestedFacts } : {}),
       ...semantique,
       chainDepth: etat.chainDepth ?? 1,

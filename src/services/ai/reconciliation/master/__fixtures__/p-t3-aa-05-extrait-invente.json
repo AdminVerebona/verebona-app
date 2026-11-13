@@ -1,0 +1,97 @@
+{
+  "case": "P-T3-AA-05",
+  "description": "Lot 114 — ATTRIBUTE_ARBITRATION, garde serveur : la sortie cite un passage absent des textes fournis pour retenir une date ⇒ refus en bloc (EXCERPT_NOT_FOUND), vaut abstention : aucune valeur écrite.",
+  "qualification": {
+    "role": "guard"
+  },
+  "context": {
+    "attributeArbitration": {
+      "today": "2026-11-13",
+      "field": "realizedDate",
+      "role": "REALIZATION",
+      "operation": {
+        "typeCode": "INTERVENTION",
+        "label": "Remplacement du chauffe-eau"
+      },
+      "values": [
+        {
+          "value": "2026-03-12",
+          "normalized": "2026-03-12",
+          "fileIds": [
+            9741
+          ],
+          "held": true,
+          "userProtected": false
+        },
+        {
+          "value": "2026-03-19",
+          "normalized": "2026-03-19",
+          "fileIds": [
+            9742
+          ],
+          "held": false,
+          "userProtected": false
+        }
+      ],
+      "documents": [
+        {
+          "id": 9741,
+          "type": "INVOICE",
+          "title": "Facture chauffe-eau",
+          "date": "2026-03-20",
+          "provider": "Plomberie Durand",
+          "references": [
+            {
+              "kind": "INVOICE",
+              "value": "F-2026-118"
+            }
+          ],
+          "excerpts": [
+            "Intervention réalisée le 12/03/2026"
+          ]
+        },
+        {
+          "id": 9742,
+          "type": "INVOICE",
+          "title": "Facture chauffe-eau bis",
+          "date": "2026-03-27",
+          "provider": "Plomberie Durand",
+          "references": [
+            {
+              "kind": "INVOICE",
+              "value": "F-2026-118"
+            }
+          ],
+          "excerpts": [
+            "Intervention réalisée le 19/03/2026"
+          ]
+        }
+      ]
+    }
+  },
+  "recording": {
+    "operationCode": "t3_attribute_arbitration",
+    "task": "ATTRIBUTE_ARBITRATION",
+    "output": {
+      "task": "ATTRIBUTE_ARBITRATION",
+      "outcome": "RESOLVED",
+      "retainedValue": "V2",
+      "foreignDocument": null,
+      "confidence": "certain",
+      "evidence": [
+        {
+          "document": "D2",
+          "excerpt": "annule et remplace la facture précédente"
+        }
+      ],
+      "reason": "La seconde facture remplace la première."
+    }
+  },
+  "expected": {
+    "valid": false,
+    "issues": [
+      "EXCERPT_NOT_FOUND"
+    ],
+    "effect": "NONE"
+  }
+}

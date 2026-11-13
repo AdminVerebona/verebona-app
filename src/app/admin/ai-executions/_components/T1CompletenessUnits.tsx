@@ -27,7 +27,17 @@ interface Detail {
   residualPolicies: Record<string, number>;
   retryAttempts: number; lastRetryResult: string | null;
   units: UnitRow[];
+  paging?: { offset: number; limit: number; listed: number; matched: number };
+  repairSteps?: {
+    coverageRepair: { calls: number; attempted: number; resolved: number; skipped: string | null } | null;
+    deferredRepair: { calls?: number; attemptedUnits?: number; newFacts?: number; decisions?: { received: number; valid: number; invalid: number; persisted: number }; linkage?: { local: number; relinked: number; duplicates: number } } | null;
+    sourceReread: { runs: number; failed: number; resolved: number } | null;
+    retryAttempts: number; lastRetryResult: string | null;
+  };
+  schema?: { ready: boolean; missing: string[] };
 }
+const PAGE = 100;
+const ETATS = ['UNRESOLVED', 'UNCERTAIN', 'FAILED', 'COVERED', 'NON_INFORMATIONAL'] as const;
 interface Reconcile { outcome: string; requalified: Array<{ unitId: string; from: { status: string }; to: { status: string; reason: string | null }; rule: string | null }>; before: { qualityState: string | null }; after: { qualityState: string | null } }
 
 /** Politique d'une unité restante — libellés BO (codes stables de `residualPolicyOf`). */
@@ -35,6 +45,7 @@ export const RESIDUAL_POLICY_LABEL: Record<string, string> = {
   REPAIR_PENDING: 'réparation programmée',
   REPAIR_RETRY_SCHEDULED: 'échec transitoire — reprise programmée',
   REPAIR_ATTEMPTED_NO_RESULT: 'réparation ciblée tentée sans résultat — conservée, réinterprétable T3/T2',
+  REPAIR_NOT_ATTEMPTED: 'aucune réparation tentée — reprise ciblée possible',
   REPAIR_EXHAUSTED: 'réparation épuisée (plafond atteint)',
   NEEDS_SOURCE: 'relecture du fichier nécessaire',
   T3_REINTERPRETATION: 'interprétation incertaine — arbitrage T3/T2',
@@ -63,17 +74,48 @@ export function coverageRepairText(r: Detail['coverageRepair']): string {
     + `${r.resolved} couverte(s) à l’issue · ${r.factsAdded} fait(s) ajouté(s), ${r.factsConfirmed} relecture(s) d’un fait existant, ${r.decisions} décision(s) de valeur.`;
 }
 
+/**
+ * Lot 114G (#760, P2-10) — reprise différée et relectures, comptées à part de la réparation ciblée de l'analyse
+ * et des réparations JSON de la passerelle (pure, compteurs seulement).
+ */
+export function deferredRepairText(r: Detail['repairSteps']): string {
+  if (!r) return '';
+  const d = r.deferredRepair;
+  const reprise = d
+    ? `Dernière reprise différée : ${d.calls ?? 0} appel(s), ${d.attemptedUnits ?? 0} unité(s) soumise(s), ${d.newFacts ?? 0} fait(s) ajouté(s)`
+      + (d.decisions ? `, décisions de valeur : ${d.decisions.received} reçue(s), ${d.decisions.valid} valide(s), ${d.decisions.invalid} invalide(s), ${d.decisions.persisted} écrite(s)` : '')
+      + (d.linkage ? `, rattachements : ${d.linkage.local} local(aux), ${d.linkage.relinked} recalculé(s), ${d.linkage.duplicates} fait(s) déjà présent(s)` : '') + '.'
+    : `Reprise différée : ${r.retryAttempts} tentative(s) consommée(s)${r.lastRetryResult ? `, dernier résultat ${r.lastRetryResult}` : ', aucune reprise exécutée'}.`;
+  const relecture = r.sourceReread && r.sourceReread.runs > 0
+    ? ` Relectures du fichier : ${r.sourceReread.runs} (${r.sourceReread.resolved} unité(s) levée(s), ${r.sourceReread.failed} en échec).` : ' Relectures du fichier : aucune.';
+  return reprise + relecture;
+}
+
+/** Lot 114G (#760, P2-09) — « 101–200 sur 1 240 (1 240 dans la liste) » (pure). */
+export function pagingText(p: Detail['paging'], shown: number): string {
+  if (!p) return `${shown} unité(s) affichée(s)`;
+  if (p.matched === 0) return `aucune unité ne correspond (${p.listed} dans la liste)`;
+  return `${p.offset + 1}–${p.offset + shown} sur ${p.matched}${p.matched !== p.listed ? ` (${p.listed} dans la liste)` : ''}`;
+}
+
 export function T1CompletenessUnits({ fileId }: { fileId: number }) {
+  // Lot 114G (#760, P2-09) : filtres et pagination côté serveur — plus de liste coupée à 300 sans le dire.
+  const [filtre, setFiltre] = useState({ all: false, status: '', unit: '', page: '', offset: 0 });
   const [d, setD] = useState<Detail | null>(null);
   const [erreur, setErreur] = useState<string | null>(null);
   const [rec, setRec] = useState<Reconcile | null>(null);
   const [action, setAction] = useState<string | null>(null);
 
   const charger = useCallback(() => {
-    apiClient.get<Detail>(`/api/admin/ai/t1-completeness/${fileId}`)
+    const q = new URLSearchParams({ limit: String(PAGE), offset: String(filtre.offset) });
+    if (filtre.all) q.set('all', '1');
+    if (filtre.status) q.set('status', filtre.status);
+    if (filtre.unit.trim()) q.set('unit', filtre.unit.trim());
+    if (/^\d+$/.test(filtre.page.trim())) q.set('page', filtre.page.trim());
+    apiClient.get<Detail>(`/api/admin/ai/t1-completeness/${fileId}?${q.toString()}`)
       .then((r) => { setD(r); setErreur(null); })
       .catch(() => setErreur('Détail indisponible.'));
-  }, [fileId]);
+  }, [fileId, filtre]);
   useEffect(() => { charger(); }, [charger]);
 
   const reconcilier = (apply: boolean) => {
@@ -99,6 +141,12 @@ export function T1CompletenessUnits({ fileId }: { fileId: number }) {
         {t.unresolved} non résolue(s) · {t.failed} en échec · {t.requalified} requalifiée(s) sur preuve
       </p>
       <p className="text-xs text-[color:var(--text-muted)] break-words">{coverageRepairText(d.coverageRepair)}</p>
+      {d.repairSteps && <p className="text-xs text-[color:var(--text-muted)] break-words">{deferredRepairText(d.repairSteps)}</p>}
+      {d.schema && !d.schema.ready && (
+        <p className="text-xs text-[color:var(--text-primary)] break-words" role="alert">
+          Migration 1665 non appliquée (colonnes absentes : {d.schema.missing.join(', ')}) : la couche de couverture n’est plus écrite sans sa provenance. Appliquer la migration, puis relancer la reprise.
+        </p>
+      )}
       {Object.keys(d.residualPolicies).length > 0 && (
         <p className="text-xs text-[color:var(--text-muted)] break-words">
           Unités restantes : {Object.entries(d.residualPolicies).map(([k, n]) => `${n} ${policyLabel(k)}`).join(' · ')}
@@ -123,6 +171,34 @@ export function T1CompletenessUnits({ fileId }: { fileId: number }) {
           {rec.before.qualityState} → {rec.after.qualityState} : {rec.requalified.slice(0, 30).map((q) => `${q.unitId} ${q.from.status}→${q.to.status} (${q.rule ?? q.to.reason})`).join(' · ')}
         </p>
       )}
+      <div className="flex flex-wrap items-center gap-2 text-xs text-[color:var(--text-secondary)]">
+        <label className="flex items-center gap-1">
+          <input type="checkbox" checked={filtre.all} onChange={(e) => setFiltre({ ...filtre, all: e.target.checked, offset: 0 })} />
+          toutes les unités
+        </label>
+        <label className="flex items-center gap-1">
+          État
+          <select value={filtre.status} onChange={(e) => setFiltre({ ...filtre, status: e.target.value, offset: 0 })} className="rounded border border-[color:var(--border-subtle)] bg-transparent px-1 py-0.5">
+            <option value="">tous</option>
+            {ETATS.map((x) => <option key={x} value={x}>{x}</option>)}
+          </select>
+        </label>
+        <label className="flex items-center gap-1">
+          Unité
+          <input value={filtre.unit} onChange={(e) => setFiltre({ ...filtre, unit: e.target.value, offset: 0 })} placeholder="page:1:field:2" className="w-36 rounded border border-[color:var(--border-subtle)] bg-transparent px-1 py-0.5 font-mono" />
+        </label>
+        <label className="flex items-center gap-1">
+          Page
+          <input value={filtre.page} onChange={(e) => setFiltre({ ...filtre, page: e.target.value, offset: 0 })} inputMode="numeric" className="w-12 rounded border border-[color:var(--border-subtle)] bg-transparent px-1 py-0.5" />
+        </label>
+        <span className="text-[color:var(--text-muted)]" data-testid="t1-completeness-paging">{pagingText(d.paging, d.units.length)}</span>
+        <button type="button" disabled={filtre.offset === 0} onClick={() => setFiltre({ ...filtre, offset: Math.max(0, filtre.offset - PAGE) })} className="rounded border border-[color:var(--border-subtle)] px-2 py-0.5 disabled:opacity-40">
+          Précédentes
+        </button>
+        <button type="button" disabled={!d.paging || d.paging.offset + d.units.length >= d.paging.matched} onClick={() => setFiltre({ ...filtre, offset: filtre.offset + PAGE })} className="rounded border border-[color:var(--border-subtle)] px-2 py-0.5 disabled:opacity-40">
+          Suivantes
+        </button>
+      </div>
       <div className="overflow-x-auto">
         <table className="w-full text-xs">
           <thead>
@@ -132,7 +208,7 @@ export function T1CompletenessUnits({ fileId }: { fileId: number }) {
             </tr>
           </thead>
           <tbody>
-            {d.units.slice(0, 300).map((u) => (
+            {d.units.map((u) => (
               <tr key={u.unitId} className="align-top text-[color:var(--text-secondary)]">
                 <td className="pr-2 font-mono break-all">{u.unitId}</td>
                 <td className="pr-2">{u.kind}</td>

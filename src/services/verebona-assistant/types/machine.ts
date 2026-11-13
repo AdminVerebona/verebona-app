@@ -84,6 +84,18 @@ export interface SemanticResumeContext {
   strategyCandidate?: string | null;
 }
 
+/**
+ * Lot 114A (#753, CDC T2 §12.6) — dimensions résolues par des clarifications
+ * successives : chaque choix est conservé jusqu'à la réponse finale. Les
+ * identifiants sont revalidés par le serveur à chaque reprise.
+ */
+export interface ResolvedDecisions {
+  assetId?: number | null;
+  documentId?: number | null;
+  entity?: { type: 'equipment' | 'room'; id: number; assetId: number | null } | null;
+  semanticSource?: { ref: string; need: 'end_date' | 'date' | 'amount' | null; assetId: number | null } | null;
+}
+
 export type ClarificationStatus = 'PENDING' | 'RESOLVED' | 'EXPIRED' | 'EXHAUSTED' | 'ABANDONED';
 
 /**
@@ -107,7 +119,20 @@ export interface ClarificationState {
    * Paramètres déjà identifiés (bien de la page, année…). `requestedFacts` :
    * champs de la demande initiale, relus tous à la reprise (lot 29, ticket 12).
    */
-  resolvedContext?: { pageAssetId?: number | null; assetId?: number | null; requestedFacts?: string[]; semantic?: SemanticResumeContext };
+  resolvedContext?: {
+    pageAssetId?: number | null; assetId?: number | null; requestedFacts?: string[]; semantic?: SemanticResumeContext;
+    /**
+     * Lot 114A (#753, CDC T2 §6.3, §12.6) : décisions DÉJÀ prises dans la même
+     * demande par les clarifications précédentes. Un nouveau choix s'y ajoute,
+     * il ne les efface jamais.
+     */
+    decisions?: ResolvedDecisions;
+    /**
+     * Signatures des questions déjà posées dans la même demande (dimension +
+     * candidats) : sert uniquement à détecter une boucle sans progression.
+     */
+    asked?: string[];
+  };
   /** Ce qui est ambigu : le champ que le choix viendra fixer. */
   ambiguity?:
     | { kind: 'asset'; field: 'assetId'; reason: string }
@@ -126,7 +151,11 @@ export interface ClarificationState {
   expiresAt: string; // ISO — 30 min (§20.4)
   /** Tentatives infructueuses (choix invalide, réponse non reconnue…) ; ≤ 2 (§20.3). */
   attemptCount: number;
-  /** Rang de la clarification dans la même demande (ambiguïtés successives) ; ≤ 2. */
+  /**
+   * Rang de la clarification dans la même demande (ambiguïtés successives).
+   * Lot 114A (#753) : plus de plafond métier — une demande à trois ambiguïtés
+   * réelles reçoit trois questions. Valeur conservée pour la trace.
+   */
   chainDepth?: number;
   status?: ClarificationStatus;
 }

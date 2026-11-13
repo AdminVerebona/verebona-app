@@ -106,8 +106,10 @@ describe('consommateurs : caches de l’assistant (§31.4)', () => {
 describe('points d’émission branchés (§25.7)', () => {
   const lire = async (p: string) => (await import('fs')).readFileSync((await import('path')).join(process.cwd(), p), 'utf8');
   it.each([
-    ['src/app/api/assets/route.ts', 'ASSET_CREATED'],
-    ['src/app/api/assets/route.ts', 'ASSET_DELETED'],
+    // Lot 114B (#753, M19 / M21) : création et suppression d'un bien émises par la façade
+    // métier (`asset-write.facade`), appelée par la route ET par l'Assistant.
+    ['src/services/assets/asset-write.facade.ts', 'ASSET_CREATED'],
+    ['src/services/assets/asset-write.facade.ts', 'ASSET_DELETED'],
     // Lot 82B (C-Q9) : l'ancien relais `coherence/impact-propagation` (file `impact_queue`) est retiré.
     // DOCUMENT_ANALYSIS_COMPLETED n'y était publié que par `emitDocumentAnalyzed`, SANS AUCUN appelant
     // (code mort) : aucune publication réelle n'existait — point ouvert signalé au rapport du lot 82B.

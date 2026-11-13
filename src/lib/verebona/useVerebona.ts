@@ -117,22 +117,17 @@ export interface VerebonaThread {
 }
 
 /**
- * Dernier fil ouvert, pour le rouvrir après un rechargement. Simple confort
- * d'affichage : la source de vérité reste le serveur, qui contrôle la
- * propriété du fil et retombe sur le plus récent si celui-ci n'existe plus.
+ * Lot 114A (Trello #753, CDC T2 §6.5, D17, M02) — NOUVELLE DEMANDE PAR DÉFAUT.
+ *
+ * Règle remplacée : « rouvrir au montage le dernier fil mémorisé, sinon le
+ * plus récent ». L'ouverture de l'assistant présente désormais une demande
+ * vierge ; un ancien fil n'est repris que par un choix explicite dans
+ * l'historique, qui reste entièrement disponible. Le fil mémorisé par les
+ * versions précédentes est simplement oublié.
  */
-const THREAD_KEY = 'verebona:conversationId';
-function rememberThread(id: number | null) {
-  try {
-    if (id == null) window.localStorage.removeItem(THREAD_KEY);
-    else window.localStorage.setItem(THREAD_KEY, String(id));
-  } catch { /* stockage indisponible : sans effet */ }
-}
-function recallThread(): number | null {
-  try {
-    const v = Number(window.localStorage.getItem(THREAD_KEY));
-    return Number.isInteger(v) && v > 0 ? v : null;
-  } catch { return null; }
+const LEGACY_THREAD_KEY = 'verebona:conversationId';
+function forgetLegacyThread() {
+  try { window.localStorage.removeItem(LEGACY_THREAD_KEY); } catch { /* stockage indisponible : sans effet */ }
 }
 
 interface HistoryRow {
@@ -195,7 +190,6 @@ export function useVerebona(rawPageContext?: Record<string, string>, options: Us
   const setConversationId = useCallback((id: number | null) => {
     conversationRef.current = id;
     setConversationIdState(id);
-    rememberThread(id);
   }, []);
 
   const refreshThreads = useCallback(async (): Promise<VerebonaThread[]> => {
@@ -206,15 +200,17 @@ export function useVerebona(rawPageContext?: Record<string, string>, options: Us
     return list;
   }, []);
 
-  /** Charge l'historique d'un fil (ou du plus récent si `id` est nul). */
+  /**
+   * Charge l'historique d'un fil CHOISI. `id` nul ou fil disparu (effacé,
+   * expiré) : demande vierge — jamais un repli silencieux vers un autre fil
+   * (lot 114A, #753).
+   */
   const loadThread = useCallback(async (id: number | null) => {
     abortRef.current?.abort();
-    const url = id ? `/api/verebona/conversation?conversationId=${id}` : '/api/verebona/conversation';
-    const res = await fetch(url).catch(() => null);
+    const res = id ? await fetch(`/api/verebona/conversation?conversationId=${id}`).catch(() => null) : null;
     if (!res || !res.ok) {
-      // Fil disparu (effacé, expiré) : on repart du plus récent.
-      if (id) return loadThread(null);
       setConversationId(null);
+      setOlderCursor(null);
       setState({ messages: [], isLoading: false, error: null });
       return;
     }
@@ -239,16 +235,12 @@ export function useVerebona(rawPageContext?: Record<string, string>, options: Us
     setState({ messages, isLoading: false, error: null });
   }, [setConversationId]);
 
-  // Reprise au montage : le dernier fil ouvert s'il existe toujours, sinon le
-  // plus récent. Après une déconnexion, les fils restent disponibles côté
-  // serveur, séparément.
+  // Lot 114A (#753, D17) — au montage : une demande vierge. Seule la liste
+  // des fils est chargée, pour l'historique ; aucun fil n'est repris.
   useEffect(() => {
-    void (async () => {
-      const list = await refreshThreads();
-      const remembered = recallThread();
-      await loadThread(remembered && list.some((t) => t.id === remembered) ? remembered : null);
-    })();
-  }, [refreshThreads, loadThread]);
+    forgetLegacyThread();
+    void refreshThreads();
+  }, [refreshThreads]);
 
   /**
    * `extraContext` : contexte structuré transmis par l'appelant — question

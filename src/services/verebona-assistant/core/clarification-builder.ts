@@ -14,7 +14,7 @@
  */
 import { randomUUID } from 'crypto';
 import type { AssetRow } from './data-answer.service';
-import type { ClarificationCandidate, ClarificationState } from '../types/machine';
+import type { ClarificationCandidate, ClarificationState, ResolvedDecisions } from '../types/machine';
 import type { VerebonaIntent } from '../types/intents';
 import type { PresentedEntity } from './reference-resolver';
 
@@ -22,8 +22,44 @@ import type { PresentedEntity } from './reference-resolver';
 export const CLARIFICATION_TTL_MS = 30 * 60_000;
 /** Tentatives infructueuses tolérées (§20.3). */
 export const MAX_FAILED_ATTEMPTS = 2;
-/** Clarifications successives dans une même demande. */
-export const MAX_CLARIFICATION_CHAIN = 2;
+/**
+ * Lot 114A (Trello #753, CDC T2 §6.3, §12.6, D02, M07) — CLARIFICATIONS SANS
+ * PLAFOND MÉTIER.
+ *
+ * Règle remplacée : « deux clarifications successives au plus »
+ * (`MAX_CLARIFICATION_CHAIN = 2`). Une demande qui comporte trois ambiguïtés
+ * réelles reçoit désormais trois questions, une à la fois. Les protections
+ * techniques restent distinctes : durée de validité (`CLARIFICATION_TTL_MS`),
+ * réponses invalides (`MAX_FAILED_ATTEMPTS`) et détection de boucle
+ * ci-dessous — la même question (même dimension, mêmes candidats) n'est
+ * jamais reposée sans progression.
+ */
+export function clarificationSignature(state: Pick<ClarificationState, 'candidateType' | 'ambiguity' | 'candidates'>): string {
+  const ids = state.candidates.map((c) => String(c.entityId ?? c.sourceRef ?? c.id)).sort();
+  return `${state.candidateType}|${state.ambiguity?.kind ?? ''}|${ids.join(',')}`;
+}
+
+type ResumeProgress = { decisions?: ResolvedDecisions; asked?: string[] } | null | undefined;
+
+/** La même question a déjà été posée dans cette demande : boucle sans progression. */
+export function isClarificationCycle(state: ClarificationState, resume: ResumeProgress): boolean {
+  return Boolean(resume?.asked?.includes(clarificationSignature(state)));
+}
+
+/**
+ * Reporte dans une NOUVELLE clarification les décisions déjà prises et les
+ * questions déjà posées dans la même demande. Modifie l'état en place (le
+ * même objet est enregistré puis présenté).
+ */
+export function carryResolved(state: ClarificationState, resume: ResumeProgress): ClarificationState {
+  if (!resume) return state;
+  state.resolvedContext = {
+    ...state.resolvedContext,
+    ...(resume.decisions ? { decisions: { ...resume.decisions, ...state.resolvedContext?.decisions } } : {}),
+    ...(resume.asked?.length ? { asked: [...new Set([...resume.asked, ...(state.resolvedContext?.asked ?? [])])] } : {}),
+  };
+  return state;
+}
 
 const plain = (s: string) => s.normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase().trim();
 

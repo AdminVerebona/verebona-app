@@ -4542,6 +4542,51 @@ export const businessPeriodRelationReviews = pgTable('business_period_relation_r
 }));
 
 /**
+ * Lot 114 (Trello #750, issue B, migration 1690) — DEMANDE, MÉMOIRE et DÉCISION
+ * de l'arbitrage T3 par l'IA (`t3_attribute_arbitration`, contrat
+ * `t3-attribute-arbitration-v1`) d'une contradiction réelle d'attribut d'un
+ * événement de référence : une ligne par constat, jamais renvoyée à l'IA.
+ * Relue par la consolidation ; la décision de l'utilisateur prime.
+ */
+export const businessOperationAttributeArbitrations = pgTable('business_operation_attribute_arbitrations', {
+  id: bigserial('id', { mode: 'number' }).primaryKey(),
+  accountId: integer('account_id').notNull().references(() => accounts.id, { onDelete: 'cascade' }),
+  operationId: bigint('operation_id', { mode: 'number' }).notNull(),
+  field: text('field').notNull(),
+  role: text('role').notNull(),
+  fingerprint: text('fingerprint').notNull(),
+  presentedValues: jsonb('presented_values').notNull().default([]),
+  fileIds: integer('file_ids').array().notNull().default(sql`'{}'::integer[]`),
+  status: text('status').notNull().default('PENDING'),
+  outcome: text('outcome'),
+  retainedValue: text('retained_value'),
+  retainedNormalized: text('retained_normalized'),
+  foreignFileId: integer('foreign_file_id').references(() => assetFiles.id, { onDelete: 'set null' }),
+  confidence: text('confidence'),
+  evidence: jsonb('evidence').notNull().default([]),
+  reason: text('reason'),
+  aiOutput: jsonb('ai_output'),
+  validation: jsonb('validation').notNull().default({}),
+  valueBefore: text('value_before'),
+  valueAfter: text('value_after'),
+  appliedAt: tstzOptional('applied_at'),
+  contractVersion: text('contract_version').notNull(),
+  deciderVersion: text('decider_version'),
+  aiTraceId: text('ai_trace_id'),
+  aiCalls: integer('ai_calls').notNull().default(0),
+  attempts: integer('attempts').notNull().default(0),
+  retryAt: tstzOptional('retry_at'),
+  lastCallAt: tstzOptional('last_call_at'),
+  error: text('error'),
+  requestedAt: tstz('requested_at'),
+  decidedAt: tstzOptional('decided_at'),
+  createdAt: tstz('created_at'),
+  updatedAt: tstz('updated_at'),
+}, (t) => ({
+  fpUidx: uniqueIndex('business_operation_attribute_arbitrations_fp_uidx').on(t.accountId, t.fingerprint),
+}));
+
+/**
  * Lot 113AL (Trello #737, demande 82B-t3-decision-tco, migration 1650) — DEMANDE,
  * MÉMOIRE et DÉCISION de l'arbitrage sémantique T3 (`t3_economic_qualification`,
  * contrat `t3-economic-qualification-v1`) des montants non qualifiés d'un document

@@ -2,19 +2,16 @@ import { NextRequest, NextResponse } from 'next/server';
 import { emitBusinessEvent } from '@/services/verebona-assistant/events/business-events';
 import { normalizeAssetCategory } from '@/lib/asset-taxonomy';
 import { db } from '@/db';
-import { assets, accounts as accountsTable } from '@/db/schema';
+import { assets } from '@/db/schema';
 import { eq, like, and, lt, desc, count, isNull, notInArray } from 'drizzle-orm';
 import { parsePaginationParams, buildPaginationResponse, getCursorId } from '@/lib/pagination';
 import { apiError } from '@/lib/api-errors';
 import { SessionService } from '@/lib/session-service';
-import { getFeatureFlags, canCreateAsset } from '@/lib/feature-flags';
-import { canCreateAsset as canCreateAssetEntitlement, canModifyAssets } from '@/services/entitlements.service';
+import { canModifyAssets } from '@/services/entitlements.service';
 import { refuserSiLectureSeule } from '@/lib/write-access-guard';
-import { trackFunnelEvent } from '@/services/funnel-analytics.service';
-import { deleteAssetCompletely } from '@/services/assets/asset-deletion.service';
+import { checkAssetCreationAllowed, createAssetForAccount, deleteAssetForAccount } from '@/services/assets/asset-write.facade';
 import { effectiveThumbnailUrl, loadDefaultAssetPhotos } from '@/services/assets/default-asset-photo';
 import { isValidObjectCategory } from '@/types/domain';
-import type { PlanType } from '@/types/domain';
 import { ACCEPTED_ASSET_CATEGORY_CODES, getAssetCategories } from '@/lib/asset-taxonomy';
 import { ASSET_STATUSES, OUT_OF_PORTFOLIO_ASSET_STATUSES } from '@/lib/asset-status';
 
@@ -183,167 +180,15 @@ export async function POST(request: NextRequest) {
         return apiError(401, 'UNAUTHORIZED', 'No account selected');
       }
 
-      const [account] = await db
-        .select({
-          id: accountsTable.id,
-          planType: accountsTable.planType,
-          featureFlags: accountsTable.featureFlags,
-        })
-        .from(accountsTable)
-        .where(eq(accountsTable.id, session.currentAccountId))
-        .limit(1);
-
-      if (!account) {
-        return apiError(404, 'ACCOUNT_NOT_FOUND', 'Account not found');
-      }
-
-      // Récupérer les feature flags de l'utilisateur (en priorité) ou du compte
-      const features = getFeatureFlags(account.planType as PlanType, account.featureFlags);
-
-      // Compter le nombre de biens actuels du compte
-      const [assetCountResult] = await db
-        .select({ count: count() })
-        .from(assets)
-        .where(eq(assets.accountId, session.currentAccountId));
-
-    const currentAssetCount = assetCountResult?.count || 0;
-
-    // CDC tarification §8.2 : le quota de biens est controle cote serveur a
-    // partir des droits effectifs (essai / Standard / Premium / Duo / restreint).
-    const assetDecision = await canCreateAssetEntitlement(session.currentAccountId, currentAssetCount);
-    if (!assetDecision.allowed) {
-      return apiError(403, assetDecision.reason ?? 'ASSET_LIMIT_REACHED', assetDecision.message ?? 'Quota atteint', {
-        current_count: currentAssetCount,
-        max_assets: assetDecision.limit,
-      });
-    }
-
-    // Controle historique conserve le temps de la transition.
-    if (!canCreateAsset(currentAssetCount, features)) {
-      return apiError(
-        403,
-        'ASSET_LIMIT_REACHED',
-        `Vous avez atteint la limite de ${features.max_assets} biens du plan gratuit. Supprimez un bien ou passez au plan Premium pour gérer tous vos biens.`,
-        {
-          current_count: currentAssetCount,
-          max_assets: features.max_assets,
-          plan_type: account.planType,
-        }
-      );
-    }
-
-    const body = await request.json();
-    const { 
-      category, 
-      subtype, 
-      name, 
-      purchaseDate, 
-      purchasePriceCents, 
-      status, 
-      notes, 
-      thumbnailUrl,
-      objectCategory,
-      objectDetails,
-      purchaseLocation,
-    } = body;
-
-      // Use accountId from session
-      const accountIdInt = session.currentAccountId;
-
-      if (!category) {
-      return apiError(400, 'MISSING_FIELD', 'category is required');
-    }
-
-    if (!name) {
-      return apiError(400, 'MISSING_FIELD', 'name is required');
-    }
-
-    // Validate name is not empty
-    if (!name.trim()) {
-      return apiError(400, 'INVALID_INPUT', 'name cannot be empty');
-    }
-
-    if (!VALID_CATEGORIES.includes(category)) {
-      return apiError(400, 'INVALID_INPUT', `category must be one of: ${VALID_CATEGORIES.join(', ')}`);
-    }
-
-    // Validation for OBJECT type
-    if (category === 'OBJECT') {
-      if (!objectCategory) {
-        return apiError(400, 'MISSING_FIELD', 'objectCategory is required for OBJECT type');
-      }
-      if (!isValidObjectCategory(objectCategory)) {
-        return apiError(400, 'INVALID_INPUT', `objectCategory must be one of: ${VALID_OBJECT_CATEGORIES.join(', ')}`);
-      }
-    }
-
-    if (status && !VALID_STATUSES.includes(status)) {
-      return apiError(400, 'INVALID_INPUT', `status must be one of: ${VALID_STATUSES.join(', ')}`);
-    }
-
-    if (purchasePriceCents !== undefined && purchasePriceCents !== null) {
-      const priceInt = parseInt(purchasePriceCents);
-      if (isNaN(priceInt) || priceInt < 0) {
-        return apiError(400, 'INVALID_INPUT', 'purchasePriceCents must be a positive integer');
-      }
-    }
-
-    // Sanitize inputs
-    const sanitizedName = name.trim();
-
-      // Prepare insert data
-        const now = new Date();
-        const insertData: any = {
-          userId: session.userId,
-          accountId: accountIdInt,
-          category,
-          name: sanitizedName,
-          status: status || 'EN_SERVICE',
-          createdAt: now,
-          updatedAt: now,
-        };
-
-    // Anciens libellés (« Garage », « Local commercial »…) → catégories actuelles.
-    if (subtype) insertData.subtype = normalizeAssetCategory(subtype);
-    if (purchaseDate) insertData.purchaseDate = purchaseDate;
-    if (purchasePriceCents !== undefined && purchasePriceCents !== null) {
-      insertData.purchasePriceCents = parseInt(purchasePriceCents);
-    }
-    if (notes) insertData.notes = notes;
-    if (thumbnailUrl) insertData.thumbnailUrl = thumbnailUrl;
-    if (purchaseLocation) insertData.purchaseLocation = purchaseLocation;
-
-    // Object-specific fields
-    if (category === 'OBJECT') {
-      insertData.objectCategory = objectCategory;
-      if (objectDetails) {
-        insertData.objectDetails = typeof objectDetails === 'string' 
-          ? objectDetails 
-          : JSON.stringify(objectDetails);
-      }
-    }
-
-    const newAsset = await db.insert(assets).values(insertData).returning();
-
-    // CDC §17 : activation — premier bien enregistre (dedoublonne en base)
-    void trackFunnelEvent({
-      event: 'first_asset_added',
-      accountId: session.currentAccountId,
-    });
-
-    // CDC Assistant §25.7 : événement métier (caches de l'assistant).
-    // §31.7 : attendu (ne lève jamais) — l'invalidation précède la réponse.
-    await emitBusinessEvent({ type: 'ASSET_CREATED', accountId: session.currentAccountId, entityId: newAsset[0]?.id ?? null });
-    // Lot 34E : nouveau bien → la réconciliation continue T3 reprend les
-    // documents et faits encore ouverts du compte (temporisée, dédupliquée).
-    if (session.currentAccountId && newAsset[0]?.id) {
-      const { notifyCoherenceEvent } = await import('@/services/ai/reconciliation/account-reconciliation.service');
-      notifyCoherenceEvent(session.currentAccountId, { event: 'asset_updated', objectType: 'asset', objectId: newAsset[0].id });
-      // Lot 43 (TRG-008) : achat saisi à la création → Acquisition (source ASSET_DATA).
-      const { notifyOperationsEvent } = await import('@/services/business-operations/consolidation/queue');
-      notifyOperationsEvent(session.currentAccountId, { trigger: 'asset_updated', assetId: newAsset[0].id });
-    }
-    return NextResponse.json(newAsset[0], { status: 201 });
+      // Lot 114B (#753, M19) : la création vit dans la façade métier, partagée
+      // avec l'Assistant — mêmes quotas, validations et événements. Le quota est
+      // contrôlé avant la lecture du corps, comme avant.
+      const acteur = { accountId: session.currentAccountId, userId: session.userId };
+      const droit = await checkAssetCreationAllowed(acteur.accountId);
+      if (!droit.ok) return apiError(droit.status, droit.code, droit.message, droit.details);
+      const cree = await createAssetForAccount(acteur, await request.json());
+      if (!cree.ok) return apiError(cree.status, cree.code, cree.message, cree.details);
+    return NextResponse.json(cree.asset, { status: 201 });
   } catch (error) {
     console.error('POST error:', error);
     return apiError(500, 'INTERNAL_ERROR', 'Internal server error: ' + (error as Error).message);
@@ -610,15 +455,11 @@ export async function DELETE(request: NextRequest) {
     const refus = await refuserSiLectureSeule(session.currentAccountId);
     if (refus) return refus;
 
-    const { blobsScheduled, fileIds } = await deleteAssetCompletely(existingAsset[0]);
-    // CDC 15 T3-03 : preuves des documents emportés retirées sur les AUTRES
-    // biens (documents multi-biens), qui sont réconciliés (ne lève jamais).
-    {
-      const { onAssetDeleted } = await import('@/services/ai/evidence/document-evidence-lifecycle');
-      await onAssetDeleted({ accountId: existingAsset[0].accountId!, userId: session.userId, assetId, fileIds: fileIds ?? [] });
-    }
-    // CDC Assistant §25.7 : événement métier (caches de l'assistant, §31.4).
-    await emitBusinessEvent({ type: 'ASSET_DELETED', accountId: existingAsset[0].accountId, entityId: existingAsset[0].id });
+    // Lot 114B (#753, M21) : suppression définitive par la façade métier, partagée avec l'Assistant.
+    const { blobsScheduled } = await deleteAssetForAccount(
+      { accountId: existingAsset[0].accountId!, userId: session.userId },
+      existingAsset[0],
+    );
 
     return NextResponse.json(
       {

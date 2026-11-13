@@ -1,0 +1,87 @@
+{
+  "case": "P-T3-AA-04",
+  "description": "Lot 114 — ATTRIBUTE_ARBITRATION, garde serveur : la sortie retient la valeur d’un document alors qu’une autre valeur a été saisie par l’utilisateur ⇒ refus en bloc (PROTECTED_VALUE), vaut abstention : la valeur de l’utilisateur n’est jamais remplacée.",
+  "qualification": {
+    "role": "guard"
+  },
+  "context": {
+    "attributeArbitration": {
+      "today": "2026-11-13",
+      "field": "provider",
+      "role": "SUPPLIER",
+      "operation": {
+        "typeCode": "INTERVENTION",
+        "label": "Remplacement du chauffe-eau"
+      },
+      "values": [
+        {
+          "value": "Plomberie Durand",
+          "normalized": "plomberie durand",
+          "fileIds": [
+            9731
+          ],
+          "held": true,
+          "userProtected": true
+        },
+        {
+          "value": "Chauffage Martin",
+          "normalized": "chauffage martin",
+          "fileIds": [
+            9732
+          ],
+          "held": false,
+          "userProtected": false
+        }
+      ],
+      "documents": [
+        {
+          "id": 9731,
+          "type": "INVOICE",
+          "title": "Facture chauffe-eau",
+          "date": "2026-03-20",
+          "provider": "Plomberie Durand",
+          "references": [],
+          "excerpts": [
+            "Plomberie Durand — remplacement du chauffe-eau"
+          ]
+        },
+        {
+          "id": 9732,
+          "type": "INVOICE",
+          "title": "Facture rectificative",
+          "date": "2026-03-27",
+          "provider": "Chauffage Martin",
+          "references": [],
+          "excerpts": [
+            "Facture rectificative émise par Chauffage Martin"
+          ]
+        }
+      ]
+    }
+  },
+  "recording": {
+    "operationCode": "t3_attribute_arbitration",
+    "task": "ATTRIBUTE_ARBITRATION",
+    "output": {
+      "task": "ATTRIBUTE_ARBITRATION",
+      "outcome": "RESOLVED",
+      "retainedValue": "V1",
+      "foreignDocument": null,
+      "confidence": "certain",
+      "evidence": [
+        {
+          "document": "D2",
+          "excerpt": "Facture rectificative émise par Chauffage Martin"
+        }
+      ],
+      "reason": "La facture rectificative fait foi."
+    }
+  },
+  "expected": {
+    "valid": false,
+    "issues": [
+      "PROTECTED_VALUE"
+    ],
+    "effect": "NONE"
+  }
+}

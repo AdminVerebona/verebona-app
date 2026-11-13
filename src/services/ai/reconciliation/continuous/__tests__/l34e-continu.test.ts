@@ -114,7 +114,9 @@ describe('déclenchement événementiel + réconciliation compte (orchestration 
     expect(src('src/services/ai/reconciliation/continuous/open-knowledge.service.ts')).toMatch(/reconcileUserDecisionConflicts/);
   });
     it('création de bien et d’équipement : événement émis', () => {
-    expect(src('src/app/api/assets/route.ts')).toMatch(/event: 'asset_updated', objectType: 'asset'/);
+    // Lot 114B (#753, M19) : la création d'un bien vit dans la façade métier, appelée par la route ET par l'Assistant.
+    expect(src('src/services/assets/asset-write.facade.ts')).toMatch(/event: 'asset_updated', objectType: 'asset'/);
+    expect(src('src/app/api/assets/route.ts')).toMatch(/createAssetForAccount\(/);
     expect(src('src/app/api/assets/[id]/equipments/route.ts')).toMatch(/event: 'entity_updated', objectType: 'equipment'/);
     expect(src('src/app/api/assets/[id]/equipments/[equipId]/route.ts')).toMatch(/event: 'entity_updated'/);
   });

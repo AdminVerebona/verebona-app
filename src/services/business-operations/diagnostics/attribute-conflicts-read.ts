@@ -81,7 +81,7 @@ async function readPage(q: DiagQuery, accountId: number | null, scope: 'alerting
 
 async function readContext(q: DiagQuery, ops: readonly Row[]) {
   const ids = ops.map((o) => Number(o.id));
-  if (!ids.length) return { sources: [] as Row[], errors: [] as Row[], cards: [] as Row[] };
+  if (!ids.length) return { sources: [] as Row[], errors: [] as Row[], cards: [] as Row[], reviews: [] as Row[] };
   const sources = await q(`
     SELECT s.id, s.operation_id, s.account_id, s.source_kind, s.source_entity_key, s.source_role, s.authority, s.active, s.source_version,
            f.id AS file_id, coalesce(f.document_type_code, f.document_type) AS document_type, f.deleted_at IS NOT NULL AS file_deleted
@@ -98,7 +98,21 @@ async function readContext(q: DiagQuery, ops: readonly Row[]) {
     SELECT a.id, a.action_kind, a.resolved_at IS NOT NULL AS resolved, i.business_operation_id AS operation_id, a.account_id
       FROM to_process_actions a JOIN agenda_items i ON i.id = a.target_id AND i.account_id = a.account_id
      WHERE a.target_type = 'AGENDA_ITEM' AND a.field_key = 'date' AND i.business_operation_id = ANY($1::bigint[])`, [ids]);
-  return { sources, errors, cards };
+  // Lot 114 (#750, issue C) : cartes « Arbitrer » d'une contradiction réelle d'attribut (sujet = attribut:rôle).
+  const attributeCards = await q(`
+    SELECT a.id, a.action_kind, a.resolved_at IS NOT NULL AS resolved, (a.trigger_context->>'operationId')::bigint AS operation_id, a.account_id,
+           (a.trigger_context->>'field') || ':' || (a.trigger_context->>'role') AS subject
+      FROM to_process_actions a
+     WHERE a.rule_code = 'OPERATION-ATTRIBUTE' AND a.trigger_context ? 'operationId'
+       AND (a.trigger_context->>'operationId')::bigint = ANY($1::bigint[])`, [ids]);
+  // Lot 114 (#750, issue B) : examens T3 (table 1690 ; absente avant la migration : aucun examen, jamais une erreur).
+  const [t] = await q(`SELECT to_regclass('business_operation_attribute_arbitrations') IS NOT NULL AS ok`, []);
+  const reviews = t?.ok === true ? await q(`
+    SELECT r.id, r.operation_id, r.account_id, r.field, r.role, r.status, r.outcome, r.confidence, r.reason, r.retained_value, r.value_before, r.value_after,
+           r.applied_at IS NOT NULL AS applied, r.evidence, r.requested_at, r.decided_at, r.decider_version, r.ai_trace_id, r.ai_calls, r.error
+      FROM business_operation_attribute_arbitrations r
+     WHERE r.operation_id = ANY($1::bigint[]) ORDER BY r.id`, [ids]) : [];
+  return { sources, errors, cards: [...cards, ...attributeCards], reviews };
 }
 
 /** Diagnostic d'une page (écran) — lecture seule. */
@@ -133,7 +147,15 @@ export async function readConflictDiagnostic(query: ConflictDiagnosticQuery = {}
         lastReconciledAt: iso(o.last_reconciled_at), provenance: o.provenance, sources,
         technicalError: err ? `erreur technique T3 ${txt(err.code) ?? ''}`.trim() : null,
         arbitrations: ctx.cards.filter((x) => Number(x.operation_id) === id && Number(x.account_id) === acc)
-          .map((x) => ({ actionId: Number(x.id), state: x.resolved === true ? 'RESOLVED' as const : 'OPEN' as const, kind: String(x.action_kind) })),
+          .map((x) => ({ actionId: Number(x.id), state: x.resolved === true ? 'RESOLVED' as const : 'OPEN' as const, kind: String(x.action_kind), subject: txt(x.subject) })),
+        // Le plus récent par sujet (ordre des identifiants) ; isolation par compte comme les autres lectures.
+        t3Reviews: new Map(ctx.reviews.filter((x) => Number(x.operation_id) === id && Number(x.account_id) === acc).map((x) => [`${String(x.field)}:${String(x.role)}`, {
+          reviewId: Number(x.id), status: String(x.status), outcome: txt(x.outcome), confidence: txt(x.confidence), reason: txt(x.reason),
+          retainedValue: txt(x.retained_value), valueBefore: txt(x.value_before), valueAfter: txt(x.value_after), applied: x.applied === true,
+          evidence: (Array.isArray(x.evidence) ? x.evidence as Row[] : []).map((e) => ({ fileId: num(e.fileId), excerpt: String(e.excerpt ?? '') })),
+          requestedAt: iso(x.requested_at), decidedAt: iso(x.decided_at), promptVersion: txt(x.decider_version), traceId: txt(x.ai_trace_id),
+          aiCalls: Number(x.ai_calls ?? 0), error: txt(x.error),
+        }])),
       }, now));
     }
     return { total, entries };

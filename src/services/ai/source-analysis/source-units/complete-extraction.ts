@@ -26,6 +26,7 @@ import {
 import {
   reconcileCoverage, reconciliationSummary, residualCounts, withResidualPolicies,
   type ReconciliationDecision, type ReconciliationFact, type ReconciliationStage, type ReconciliationValue,
+  candidateReconciliationValue,
 } from './coverage-reconciliation';
 import { factContextOf, validateValueDecisions, type AnchoredValueDecision, type PreparedValueDecision } from '../value-decisions/validate';
 import type { AnchoredOperationCandidate } from '../operation-candidates/prepare';
@@ -321,14 +322,8 @@ function metadataValuesOf(d: AnalyzeDocumentResult['analysis']['document']): Rec
 
 /** Valeurs structurées des candidats Opération (références métier, montants, dates). */
 function candidateValuesOf(cands: readonly AnchoredOperationCandidate[]): ReconciliationValue[] {
-  return cands.map((c) => ({
-    ref: c.candidateKey, source: 'CANDIDATE' as const, page: null,
-    values: [
-      ...c.businessReferences.map((r) => r.value),
-      ...c.financialHints.flatMap((h) => [h.amountMinor / 100, h.economicDate, h.periodStart, h.periodEnd]),
-      ...Object.values(c.temporalHints ?? {}),
-    ].filter((v) => v !== null && v !== undefined),
-  }));
+  // Lot 114G (#760, P2-05) : même lecture que la réconciliation sur stockage.
+  return cands.map((c) => candidateReconciliationValue(c.candidateKey, c));
 }
 
 /**

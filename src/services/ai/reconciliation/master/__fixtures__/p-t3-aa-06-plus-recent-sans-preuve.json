@@ -1,0 +1,97 @@
+{
+  "case": "P-T3-AA-06",
+  "description": "Lot 114 — ATTRIBUTE_ARBITRATION, garde serveur : la sortie retient la valeur du document le plus récent en ne citant qu’un passage de l’AUTRE document ⇒ refus en bloc (RETAINED_EVIDENCE_MISSING) : une source plus récente n’est jamais retenue sans preuve dans un document qui porte la valeur.",
+  "qualification": {
+    "role": "guard"
+  },
+  "context": {
+    "attributeArbitration": {
+      "today": "2026-11-13",
+      "field": "realizedDate",
+      "role": "REALIZATION",
+      "operation": {
+        "typeCode": "INTERVENTION",
+        "label": "Remplacement du chauffe-eau"
+      },
+      "values": [
+        {
+          "value": "2026-03-12",
+          "normalized": "2026-03-12",
+          "fileIds": [
+            9751
+          ],
+          "held": true,
+          "userProtected": false
+        },
+        {
+          "value": "2026-03-19",
+          "normalized": "2026-03-19",
+          "fileIds": [
+            9752
+          ],
+          "held": false,
+          "userProtected": false
+        }
+      ],
+      "documents": [
+        {
+          "id": 9751,
+          "type": "INVOICE",
+          "title": "Facture chauffe-eau",
+          "date": "2026-03-20",
+          "provider": "Plomberie Durand",
+          "references": [
+            {
+              "kind": "INVOICE",
+              "value": "F-2026-118"
+            }
+          ],
+          "excerpts": [
+            "Intervention réalisée le 12/03/2026"
+          ]
+        },
+        {
+          "id": 9752,
+          "type": "INVOICE",
+          "title": "Facture chauffe-eau bis",
+          "date": "2026-03-27",
+          "provider": "Plomberie Durand",
+          "references": [
+            {
+              "kind": "INVOICE",
+              "value": "F-2026-118"
+            }
+          ],
+          "excerpts": [
+            "Intervention réalisée le 19/03/2026"
+          ]
+        }
+      ]
+    }
+  },
+  "recording": {
+    "operationCode": "t3_attribute_arbitration",
+    "task": "ATTRIBUTE_ARBITRATION",
+    "output": {
+      "task": "ATTRIBUTE_ARBITRATION",
+      "outcome": "RESOLVED",
+      "retainedValue": "V2",
+      "foreignDocument": null,
+      "confidence": "certain",
+      "evidence": [
+        {
+          "document": "D1",
+          "excerpt": "Intervention réalisée le 12/03/2026"
+        }
+      ],
+      "reason": "Le document le plus récent est retenu."
+    }
+  },
+  "expected": {
+    "valid": false,
+    "issues": [
+      "RETAINED_EVIDENCE_MISSING"
+    ],
+    "effect": "NONE"
+  }
+}
