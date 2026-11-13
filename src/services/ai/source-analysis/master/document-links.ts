@@ -24,14 +24,22 @@ import type { LinkCandidate } from '../types';
 import {
   linkDocumentToAsset,
   unlinkDocument,
+  type LinkJustification,
+  type LinkProof,
   type LinkRole,
 } from '@/services/documents/document-asset-links';
+import type { AddressRole } from '@/services/documents/document-asset-links/admission';
 
 interface MasterDocumentLink {
   assetId: number;
   role: LinkRole;
   confidence: number;
+  /** Lot 113AM (#739) : étape, règle et preuves jugées par la garde d'admission avant l'écriture. */
+  justification?: LinkJustification;
 }
+
+/** Raison posée par le serveur sur un candidat issu d'une correspondance exacte (même texte que l'étape T1). */
+const SERVER_IDENTIFIER_REASON = 'identifiant canonique exact (contrôle serveur)';
 
 const SCORE: Record<T1Confidence, number> = { certain: 1, probable: 0.6, conflictual: 0.3 };
 
@@ -70,6 +78,42 @@ export function computeMasterDocumentLinks(p: {
 }
 
 /**
+ * Lot 113AM (#739) — justification de chaque lien T1 (pure) : bien connu au
+ * dépôt (KNOWN_TARGET), désignation par le MODÈLE (candidat vérifié du
+ * modèle), correspondances exactes admissibles (nature, rôle qualifié de
+ * l'adresse), faits ciblés sur le bien. Un candidat qui n'existe que par une
+ * correspondance serveur d'adresse non qualifiée n'est plus produit en amont
+ * (`admissibleIdentification`) ; s'il l'était, la garde le refuserait ici.
+ */
+export function justifyMasterDocumentLinks(links: readonly MasterDocumentLink[], p: {
+  facts: ProjectedFact[];
+  assetCandidates: LinkCandidate[];
+  documentAssetId: number | null;
+  knownAssetId: number | null;
+}): MasterDocumentLink[] {
+  return links.map((l) => {
+    const proofs: LinkProof[] = [];
+    if (p.knownAssetId !== null && l.assetId === p.knownAssetId) proofs.push({ kind: 'KNOWN_TARGET' });
+    for (const c of p.assetCandidates) {
+      if (c.entityId !== l.assetId || !c.verified) continue;
+      const designe = c.modelDesignated ?? (c.reason !== SERVER_IDENTIFIER_REASON && !c.identifiers?.length);
+      if (designe) proofs.push({ kind: 'MODEL_DESIGNATION', score: Number.isFinite(c.score) ? c.score : null, detail: c.confidence });
+      for (const i of c.identifiers ?? []) {
+        proofs.push({ kind: 'IDENTIFIER', identifierKind: i.kind, via: i.via, ...(i.addressRole ? { addressRole: i.addressRole as AddressRole } : {}) });
+      }
+      // Candidat serveur historique sans détail de preuve : une adresse n'est jamais présumée qualifiée.
+      if (!designe && !c.identifiers?.length) proofs.push({ kind: 'IDENTIFIER', identifierKind: 'ADDRESS', addressRole: 'UNQUALIFIED', detail: 'SERVER_CANDIDATE_WITHOUT_DETAIL' });
+    }
+    const faits = p.facts.filter((f) => f.target.targetType === 'ASSET' && f.target.targetEntityId === l.assetId);
+    if (faits.length) proofs.push({ kind: 'FACT_TARGET', score: Math.max(...faits.map((f) => SCORE[f.target.targetConfidence])), detail: `${faits.length} fait(s)` });
+    const rule = l.role === 'PRIMARY'
+      ? (p.knownAssetId === l.assetId ? 'KNOWN_TARGET' : 'DOCUMENT_ASSET')
+      : l.role === 'SECONDARY' ? 'FACT_TARGET_SECONDARY' : 'VERIFIED_CANDIDATE_MENTIONED';
+    return { ...l, justification: { step: 'T1_PROJECTION', rule, proofs } };
+  });
+}
+
+/**
  * Lot 113V (#719) — « Aucun » choisi par l'utilisateur et en vigueur : une
  * analyse ne RATTACHE pas silencieusement le document. Les biens qu'elle
  * désigne restent CITÉS (MENTIONED : indice, jamais un rattachement) ; les
@@ -92,24 +136,29 @@ export async function writeMasterDocumentLinks(p: {
   accountId: number;
   fileId: number;
   links: MasterDocumentLink[];
-}): Promise<{ created: number; removed: number; failed: number[] }> {
+}): Promise<{ created: number; removed: number; failed: number[]; refused: number[] }> {
   let created = 0;
   const failed: number[] = [];
+  const refused: number[] = [];
   for (const l of p.links) {
     try {
       const r = await linkDocumentToAsset({
         accountId: p.accountId, fileId: p.fileId, target: { assetId: l.assetId },
         role: l.role, origin: 'AI', confidence: l.confidence,
+        // Lot 113AM (#739) : sans justification, la garde refuse (fail-closed).
+        justification: l.justification ?? { step: 'T1_PROJECTION', rule: 'UNJUSTIFIED', proofs: [] },
       });
       if (r.outcome === 'created') created++;
+      if (r.outcome === 'refused') refused.push(l.assetId);
     } catch (e) {
       failed.push(l.assetId);
       console.warn(`[t1-master] lien du document ${p.fileId} vers le bien ${l.assetId} non posé :`, (e as Error).message);
     }
   }
+  // Un lien AI d'une analyse antérieure vers un bien REFUSÉ par la garde est retiré (réanalyse = réparation).
   const removed = await unlinkDocument({
     accountId: p.accountId, fileId: p.fileId, origins: ['AI'],
-    keepAssetIds: p.links.map((l) => l.assetId),
+    keepAssetIds: p.links.map((l) => l.assetId).filter((id) => !refused.includes(id)),
   });
-  return { created, removed, failed };
+  return { created, removed, failed, refused };
 }

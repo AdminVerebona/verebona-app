@@ -158,8 +158,9 @@ describe('L113AK-U06 — contrôle COH-DOC-FACT-PROVENANCE', () => {
   it('registre : en fin de liste, réparations sans IA, contrat déclaré', async () => {
     const { COHERENCE_REGISTRY } = await import('@/services/coherence/registry');
     const ids = COHERENCE_REGISTRY.map((c) => c.id);
-    expect(ids.at(-1)).toBe('COH-DOC-FACT-PROVENANCE');
-    const c = COHERENCE_REGISTRY.at(-1)!;
+    // Lot 113AQ : COH-OPS-ATTRIBUTE-CONFLICTS ajouté ensuite, en fin de registre.
+    expect(ids.slice(ids.indexOf('COH-DOC-FACT-PROVENANCE'))).toEqual(['COH-DOC-FACT-PROVENANCE', 'COH-OPS-ATTRIBUTE-CONFLICTS']);
+    const c = COHERENCE_REGISTRY.find((x) => x.id === 'COH-DOC-FACT-PROVENANCE')!;
     expect(c).toMatchObject({ status: 'ACTIVE', objectType: 'document', version: 1 });
     expect(c.forbiddenRepairs.join(' ')).toMatch(/autre document/);
     expect(c.forbiddenRepairs.join(' ')).toMatch(/IA/);

@@ -56,16 +56,16 @@ scenario('X-02', 'Exports V12 : source canonique (champs, pièces N-N, agenda)',
     const parPiece = await make.assetFile(compte, { assetId: null, name: 'par-piece.pdf' });
     await sql`UPDATE asset_files SET linked_room_id = ${piece.id} WHERE id = ${parPiece.id}`;
     const parSecondaire = await make.assetFile(compte, { assetId: autre.id, name: 'nn-secondary.pdf' });
-    await linkDocumentToAsset({ accountId: compte.id, fileId: parSecondaire.id, target: { assetId: bien.id }, role: 'SECONDARY', origin: 'MIGRATION' });
+    await linkDocumentToAsset({ accountId: compte.id, fileId: parSecondaire.id, target: { assetId: bien.id }, role: 'SECONDARY', origin: 'MIGRATION', justification: { step: 'OTHER', rule: 'E2E_FIXTURE', proofs: [{ kind: 'MODEL_DESIGNATION' }] } });
     const parUser = await make.assetFile(compte, { assetId: null, name: 'lien-user.pdf' });
     await linkDocumentToAsset({ accountId: compte.id, fileId: parUser.id, target: { assetId: bien.id }, role: 'PRIMARY', origin: 'USER' });
     const mentionne = await make.assetFile(compte, { assetId: autre.id, name: 'mentionne.pdf' });
-    await linkDocumentToAsset({ accountId: compte.id, fileId: mentionne.id, target: { assetId: bien.id }, role: 'MENTIONED', origin: 'AI' });
+    await linkDocumentToAsset({ accountId: compte.id, fileId: mentionne.id, target: { assetId: bien.id }, role: 'MENTIONED', origin: 'AI', justification: { step: 'OTHER', rule: 'E2E_FIXTURE', proofs: [{ kind: 'MODEL_DESIGNATION' }] } });
     // Lien AI accepté (ACTIVE) : inclus ; lien AI PROPOSED : exclu (arbitrage lot 16).
     const parIa = await make.assetFile(compte, { assetId: null, name: 'ia-active.pdf' });
-    await linkDocumentToAsset({ accountId: compte.id, fileId: parIa.id, target: { assetId: bien.id }, role: 'SECONDARY', origin: 'AI' });
+    await linkDocumentToAsset({ accountId: compte.id, fileId: parIa.id, target: { assetId: bien.id }, role: 'SECONDARY', origin: 'AI', justification: { step: 'OTHER', rule: 'E2E_FIXTURE', proofs: [{ kind: 'MODEL_DESIGNATION' }] } });
     const propose = await make.assetFile(compte, { assetId: null, name: 'ia-proposee.pdf' });
-    await linkDocumentToAsset({ accountId: compte.id, fileId: propose.id, target: { assetId: bien.id }, role: 'PRIMARY', origin: 'AI', status: 'PROPOSED' });
+    await linkDocumentToAsset({ accountId: compte.id, fileId: propose.id, target: { assetId: bien.id }, role: 'PRIMARY', origin: 'AI', status: 'PROPOSED', justification: { step: 'OTHER', rule: 'E2E_FIXTURE', proofs: [{ kind: 'MODEL_DESIGNATION' }] } });
     // Avant rattrapage §14.8 : colonnes posées, AUCUNE ligne de lien.
     const colonneSeule = await make.assetFile(compte, { assetId: bien.id, name: 'colonne-seule.pdf' });
     const linkedSeule = await make.assetFile(compte, { assetId: null, name: 'linked-seule.pdf' });

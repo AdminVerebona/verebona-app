@@ -99,6 +99,7 @@ export const RECETTE_TABLES: Readonly<Record<string, { domain: Exclude<RecetteDo
   asset_file_thumbnails: { domain: 'documents', description: 'Miniatures (métadonnées).' },
   document_asset_links: { domain: 'documents', description: 'Rattachements N-N document ↔ bien / équipement / Pièce (rôle, statut, origine).' },
   document_asset_resolutions: { domain: 'documents', description: 'Résolutions du rattachement document ↔ bien.' },
+  document_asset_link_admissions: { domain: 'documents', description: 'Garde des rattachements automatiques document ↔ bien : étape décideuse, règle, preuves examinées, rôle qualifié des adresses, issue (admis / refusé / réparé / restauré) — lot 113AM, #739.' },
   document_asset_identifier_changes: { domain: 'documents', description: 'Changements d’identifiant de rattachement.' },
   document_cil_metadata: { domain: 'documents', description: 'Métadonnées CIL des documents.' },
   document_lots: { domain: 'documents', description: 'Lots de dépôt.' },
@@ -153,6 +154,7 @@ export const RECETTE_TABLES: Readonly<Record<string, { domain: Exclude<RecetteDo
   home_mascot_acknowledgments: { domain: 'extraits-ia', description: 'Acquittements de l’accueil (T6).' },
   home_mascot_cache: { domain: 'extraits-ia', description: 'Cache de l’accueil (T6).' },
   home_mascot_pregen_requests: { domain: 'extraits-ia', description: 'Demandes de pré-génération de l’accueil.' },
+  t6_formulate_reservations: { domain: 'extraits-ia', description: 'Réservations des générations T6 (une par clé), formulations évitées et doublons refusés.' },
   home_suggestion_skips: { domain: 'extraits-ia', description: 'Suggestions de l’accueil passées par l’utilisateur (« Autre suggestion », lot 106B — plus lue depuis le lot 108J).' },
   shared_suggestion_consultations: { domain: 'extraits-ia', description: 'Suggestions partagées (accueil et « Demander à Verebona ») consultées par l’utilisateur — rotation seulement (lot 108J).' },
   // ── Champs structurés, preuves, décisions ─────────────────────────────

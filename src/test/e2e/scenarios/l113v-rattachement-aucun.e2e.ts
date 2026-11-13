@@ -135,7 +135,7 @@ scenario('L113V-AUCUN', 'À traiter : « Aucun » dans les choix de rattachement
     const w = await monde();
     // Bien seulement CITÉ par l'analyse : conservé (indice, jamais un rattachement).
     const { linkDocumentToAsset } = await import('@/services/documents/document-asset-links');
-    await linkDocumentToAsset({ accountId: w.compte.id, fileId: w.doc, target: { assetId: w.maison.id }, role: 'MENTIONED', origin: 'AI', confidence: 0.4 });
+    await linkDocumentToAsset({ accountId: w.compte.id, fileId: w.doc, target: { assetId: w.maison.id }, role: 'MENTIONED', origin: 'AI', confidence: 0.4, justification: { step: 'OTHER', rule: 'E2E_FIXTURE', proofs: [{ kind: 'MODEL_DESIGNATION' }] } });
     const avant = await page(w.compte);
     const c = avant.actions.find((a) => a.publicId === w.publicId)!;
     expect(c.assetChoices?.status).toBe('OK');
@@ -332,7 +332,7 @@ scenario('L113V-AUCUN', 'À traiter : « Aucun » dans les choix de rattachement
       INSERT INTO equipments (asset_id, name, type, key_characteristics) VALUES (${w.maison.id}, 'Chaudière', 'APPLIANCE', '{}'::jsonb) RETURNING id`;
     const { linkDocumentToAsset } = await import('@/services/documents/document-asset-links');
     // Équipement CITÉ par le document (relation d'équipement sans rattachement au bien) : la carte reste ouverte.
-    await linkDocumentToAsset({ accountId: w.compte.id, fileId: w.doc, target: { equipmentId: Number(eq.id) }, role: 'MENTIONED', origin: 'AI', confidence: 0.7 });
+    await linkDocumentToAsset({ accountId: w.compte.id, fileId: w.doc, target: { equipmentId: Number(eq.id) }, role: 'MENTIONED', origin: 'AI', confidence: 0.7, justification: { step: 'OTHER', rule: 'E2E_FIXTURE', proofs: [{ kind: 'MODEL_DESIGNATION' }] } });
     expect(await carteOuverte(w.doc)).not.toBeNull();
     expect((await aucun(w.compte, w.publicId)).body.ok).toBe(true);
     const equipement = async () => (await liens(w.doc)).filter((l) => l.equipment_id !== null);
@@ -342,7 +342,7 @@ scenario('L113V-AUCUN', 'À traiter : « Aucun » dans les choix de rattachement
     // Document lié à un équipement (lien de rattachement) : il est déjà rattaché au bien porteur — aucune
     // carte « À quel bien… ? », donc rien que « Aucun » puisse effacer.
     const garantie = (await analyser(w.compte, sortie({ title: 'Garantie chaudière' }))).id;
-    await linkDocumentToAsset({ accountId: w.compte.id, fileId: garantie, target: { equipmentId: Number(eq.id) }, role: 'SECONDARY', origin: 'AI', confidence: 0.9 });
+    await linkDocumentToAsset({ accountId: w.compte.id, fileId: garantie, target: { equipmentId: Number(eq.id) }, role: 'SECONDARY', origin: 'AI', confidence: 0.9, justification: { step: 'OTHER', rule: 'E2E_FIXTURE', proofs: [{ kind: 'MODEL_DESIGNATION' }] } });
     expect(await carteOuverte(garantie)).toBeNull();
   }, 240_000);
 
@@ -351,7 +351,7 @@ scenario('L113V-AUCUN', 'À traiter : « Aucun » dans les choix de rattachement
     const autre = (await analyser(w.compte, sortie({ title: 'Contrat d’entretien des deux logements' }))).id;
     const { linkDocumentToAsset } = await import('@/services/documents/document-asset-links');
     for (const a of [w.maison.id, w.appart.id]) {
-      await linkDocumentToAsset({ accountId: w.compte.id, fileId: autre, target: { assetId: a }, role: 'SECONDARY', origin: 'AI', confidence: 1 });
+      await linkDocumentToAsset({ accountId: w.compte.id, fileId: autre, target: { assetId: a }, role: 'SECONDARY', origin: 'AI', confidence: 1, justification: { step: 'OTHER', rule: 'E2E_FIXTURE', proofs: [{ kind: 'MODEL_DESIGNATION' }] } });
     }
     const { upsertAction } = await import('@/services/to-process/to-process-action.service');
     const r = await upsertAction({

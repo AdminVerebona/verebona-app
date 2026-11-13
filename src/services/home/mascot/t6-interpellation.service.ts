@@ -1550,6 +1550,11 @@ export interface T6FormulateTrace {
   contract: 't6-output-v2';
   /** Sujets transmis à FORMULATE (identifiants techniques, jamais de texte). */
   transmitted: string[];
+  /**
+   * Lot 113AO (#748, A) : sujets servis par leur texte déterministe, SANS appel
+   * (besoin rédactionnel qualifié par le serveur) — identifiants seulement.
+   */
+  deterministicSubjects?: string[];
   /** Sujets finalement affichés. */
   displayed: string[];
   /** Issue : `t6`, `fallback` (texte de secours), `deterministic` (rien à formuler). */
@@ -1623,13 +1628,17 @@ export function t6FormulateEntries(f: T6FormulateTrace): ReportEntry[] {
     fieldKey: 'formulate', label: 'Formulation (MODE=FORMULATE)',
     value: {
       mode: 'FORMULATE', contract: f.contract, transmitted: f.transmitted, displayed: f.displayed,
+      ...(f.deterministicSubjects?.length ? { deterministicSubjects: f.deterministicSubjects } : {}),
       source: f.source, fallbackUsed: f.source === 'fallback' || (f.fallbackSubjects ?? 0) > 0,
       fallbackSubjects: f.fallbackSubjects ?? 0, presentation: f.presentation,
     },
     // Motif = issue affichée (jamais le statut technique volatil — cache, génération —
     // pour qu'un affichage identique n'écrive pas un nouveau rapport).
     recordStatus: f.source, writeResult: 'NOT_WRITTEN', reasonCode: f.source,
-    reason: f.source === 'deterministic' ? 'Aucun sujet à formuler : message déterministe de l’état de présentation.'
+    reason: f.source === 'deterministic'
+      ? (f.deterministicSubjects?.length
+        ? 'Texte entièrement calculé par Verebona : servi tel quel, aucun appel de formulation.'
+        : 'Aucun sujet à formuler : message déterministe de l’état de présentation.')
       : f.source === 'fallback' ? 'Texte de secours affiché (formulation indisponible, en cours ou rejetée).'
         : 'Formulation T6 validée affichée.',
   }, ...(q ? [{
@@ -1777,6 +1786,13 @@ interface T6EvaluationTrace {
   callerMode?: 'displayed' | 'pregeneration' | null;
   /** Lot 78C : exécution durable (prise, tentatives, état écrit à la clôture). */
   run?: import('./t6-runner').T6EvaluationRunTrace | null;
+  /**
+   * Lot 113AO (#748, D) : cause PRIMAIRE de l'échec (troncature, refus 403,
+   * indisponibilité, contrat, transport), modèle et configuration, appels du
+   * passage (fractionnement) et effet sur les évaluations restantes.
+   */
+  failure?: { kind: string; code: string | null; cause: string | null; summary: string } | null;
+  lots?: import('./t6-runner').T6EvaluationLotsTrace | null;
 }
 
 /** Lot 72A — issue du runner → trace du reporting (pure, sans donnée personnelle). */
@@ -1788,6 +1804,8 @@ export function t6EvaluationTraceOf(o: import('./t6-runner').T6EvaluationOutcome
     rejected: o.rejected.map((r) => ({ subjectId: r.subjectId, reason: r.reason })),
     persistedSubjectIds: o.persistedSubjectIds ?? null, notPersisted: o.notPersisted ?? [], callerMode: o.callerMode ?? null,
     run: o.run ?? null,
+    ...(o.failure ? { failure: { kind: o.failure.kind, code: o.failure.code, cause: o.failure.cause, summary: o.failureSummary ?? o.failure.message } } : {}),
+    ...(o.lots ? { lots: o.lots } : {}),
   };
 }
 

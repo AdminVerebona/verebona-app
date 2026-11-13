@@ -94,6 +94,15 @@ export async function runWithConfigSnapshot<T>(treatment: Treatment | null, fn: 
   return snapshot ? storage.run(snapshot, fn) : fn();
 }
 
+/**
+ * Lot 113AO (#748, B) — exécute `fn` hors de l'instantané SYNCHRONE courant
+ * (analyse T1 hors file) : un traitement indépendant qu'elle déclenche (T6)
+ * relève SA configuration à son propre démarrage (`runWithConfigSnapshot`).
+ */
+export function runOutsideConfigSnapshot<T>(fn: () => Promise<T>): Promise<T> {
+  return storage.getStore() ? storage.exit(fn) : fn();
+}
+
 /** Métadonnée tracée avec un appel : instantané appliqué (sans contenu). */
 export function snapshotTrace(s: ExecutionConfigSnapshot | null | undefined): Record<string, unknown> | null {
   if (!s) return null;

@@ -218,8 +218,8 @@ scenario('D-G', 'Pièces rooms → substructures : migration 0229 et reprise', (
     await sql`UPDATE asset_files SET substructure_id = ${x.id} WHERE id = ${f6.id}`;
     const f7 = await make.assetFile(compte, { assetId: null });
     const f8 = await make.assetFile(compte, { assetId: bien.id });
-    const l7 = (await linkDocumentToAsset({ accountId: compte.id, fileId: f7.id, target: { substructureId: x.id }, role: 'SECONDARY', origin: 'AI' })).link;
-    const l8 = (await linkDocumentToAsset({ accountId: compte.id, fileId: f8.id, target: { substructureId: x.id }, role: 'SECONDARY', origin: 'AI' })).link;
+    const l7 = (await linkDocumentToAsset({ accountId: compte.id, fileId: f7.id, target: { substructureId: x.id }, role: 'SECONDARY', origin: 'AI', justification: { step: 'OTHER', rule: 'E2E_FIXTURE', proofs: [{ kind: 'MODEL_DESIGNATION' }] } })).link!;
+    const l8 = (await linkDocumentToAsset({ accountId: compte.id, fileId: f8.id, target: { substructureId: x.id }, role: 'SECONDARY', origin: 'AI', justification: { step: 'OTHER', rule: 'E2E_FIXTURE', proofs: [{ kind: 'MODEL_DESIGNATION' }] } })).link!;
     await sql`DELETE FROM substructures WHERE id = ${x.id}`;
     const lien = async (id: number) => (await sql`SELECT asset_id, substructure_id, status FROM document_asset_links WHERE id = ${id}`)[0];
     expect(await lien(l7.id)).toEqual({ asset_id: bien.id, substructure_id: null, status: 'ACTIVE' }); // repli sur le bien

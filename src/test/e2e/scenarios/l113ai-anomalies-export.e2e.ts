@@ -121,7 +121,7 @@ scenario('L113AI', 'BO — anomalies de Supervision copiables / exportables (#73
     const doc = JSON.parse(text) as Json;
     const [{ n }] = await sql<{ n: number }[]>`SELECT count(*)::int AS n FROM admin_anomalies WHERE status = 'open'`;
     expect(n).toBeGreaterThanOrEqual(N_OPEN);
-    expect(doc).toMatchObject({ format: 'verebona.bo-anomalies/1', schemaVersion: 1, total: n, exported: n, complete: true, timeZone: 'Europe/Paris' });
+    expect(doc).toMatchObject({ format: 'verebona.bo-anomalies/2', schemaVersion: 2, total: n, exported: n, complete: true, timeZone: 'Europe/Paris' });
     expect(doc.filters).toEqual({ status: 'open', sort: 'date', dir: 'desc' });
     expect(Number(r.headers.get('x-anomalies-total'))).toBe(n);
     expect(doc.items.map((i: Json) => i.id)).toEqual(await screenIds('open', 'date', 'desc'));
@@ -201,7 +201,7 @@ scenario('L113AI', 'BO — anomalies de Supervision copiables / exportables (#73
     const text = await j.text();
     outputs.push(text);
     const doc = JSON.parse(text);
-    expect(doc).toMatchObject({ format: 'verebona.bo-anomalies/1', total: 1, exported: 1, complete: true });
+    expect(doc).toMatchObject({ format: 'verebona.bo-anomalies/2', total: 1, exported: 1, complete: true });
     expect(doc.items[0].historique).toHaveLength(3);
   });
 

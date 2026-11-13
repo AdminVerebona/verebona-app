@@ -204,8 +204,11 @@ export async function reconcileFactTargets(p: {
       // déclencheur 0257 la fermerait avec un motif utilisateur).
       const { closeAssetLinkQuestion } = await import('../document-asset/automatic-attachment');
       await closeAssetLinkQuestion(p.accountId, m.fileId);
+      const { structuralJustification } = await import('@/services/documents/document-asset-links/admission');
       const r = await linkDocumentToAsset({
         accountId: p.accountId, fileId: m.fileId, target: { equipmentId: m.equipmentId }, role: 'SECONDARY', origin: 'AI', confidence: 1,
+        // Lot 113AM (#739) : équipement désigné par un identifiant exact et unique (série) — cible structurelle.
+        justification: structuralJustification('T3_FACT_TARGET', `IDENTIFIER_MATCH:${m.factId}`, 'EQUIPMENT_IDENTIFIER', 1),
       });
       if (r.outcome !== 'unchanged') res.linkedEquipments += 1;
       equipementsTouches.set(m.equipmentId, { fileId: m.fileId, userId: state.userId });

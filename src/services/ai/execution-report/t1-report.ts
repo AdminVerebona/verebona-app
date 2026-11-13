@@ -423,14 +423,21 @@ export async function buildT1Entries(rec: T1ExecutionRecorder, p: { accountId: n
         }
       }
 
-      const units = await safeRows(readSteps, 'SOURCE_UNITS', `SELECT id, source_unit_id, kind, page, ordinal, parent_unit_id, content_text, label, value_text, payload, origin, coverage_status, coverage_reason, fact_count, repair_state FROM document_source_units WHERE file_id = $1 AND account_id = $2 AND extraction_id = $3 ORDER BY ordinal`, [f, ac, eid]);
+      const units = await safeRows(readSteps, 'SOURCE_UNITS', `SELECT id, source_unit_id, kind, page, ordinal, parent_unit_id, content_text, label, value_text, payload, origin, coverage_status, coverage_reason, fact_count, repair_state, to_jsonb(u)->'coverage_provenance' AS coverage_provenance, to_jsonb(u)->>'residual_policy' AS residual_policy FROM document_source_units u WHERE file_id = $1 AND account_id = $2 AND extraction_id = $3 ORDER BY ordinal`, [f, ac, eid]);
       for (const u of units ?? []) {
         entries.push(columnEntry('SOURCE_UNIT', 'document_source_units', u.id, 'content_text', u.content_text, {
           label: `${u.kind} ${u.source_unit_id}`, recordStatus: (u.coverage_status as string | null) ?? null,
           reasonCode: (u.coverage_reason as string | null) ?? null,
-          links: { unitId: u.source_unit_id, kind: u.kind, page: u.page, parent: u.parent_unit_id, label: u.label, valueText: u.value_text, origin: u.origin, facts: u.fact_count, repairState: u.repair_state, payload: valueOrRef(u.payload).value ?? (u.payload == null ? null : 'référencé') },
+          links: {
+            unitId: u.source_unit_id, kind: u.kind, page: u.page, parent: u.parent_unit_id, label: u.label, valueText: u.value_text, origin: u.origin, facts: u.fact_count, repairState: u.repair_state, payload: valueOrRef(u.payload).value ?? (u.payload == null ? null : 'référencé'),
+            // Lot 113AN : provenance d'une requalification de couverture, politique d'une unité restante.
+            coverageProvenance: u.coverage_provenance ?? null, residualPolicy: u.residual_policy ?? null,
+          },
         }));
         inc('sourceUnits');
+        // Lot 113AN : unités par état (rapport de complétude) — une unité non résolue n'est PAS une projection refusée.
+        inc(`sourceUnits_${String(u.coverage_status ?? 'UNKNOWN')}`);
+        if (u.coverage_provenance) inc('sourceUnitsRequalified');
       }
 
       const unresolved = await safeRows(readSteps, 'UNRESOLVED', `SELECT id, reason, status, source_unit_ids, raw_key, canonical_key, raw_value, original_payload, pass, detail FROM document_unresolved_facts WHERE file_id = $1 AND account_id = $2 ORDER BY id`, [f, ac]);
@@ -471,9 +478,16 @@ export async function buildT1Entries(rec: T1ExecutionRecorder, p: { accountId: n
       entityType: fct.target.targetType, entityId: fct.target.targetEntityId, value: fct.value, valueType: fct.valueType ?? valueTypeOf(fct.value),
       writeResult: s.reason === 'WRITE_FAILED' || s.reason === 'SCHEMA_NOT_READY' ? 'FAILED' : 'NOT_WRITTEN',
       reasonCode: s.reason, reason: T1_PROJECTION_REASON[s.reason] ?? s.reason,
-      links: { rawKey: fct.rawKey, subject: fct.subject, attribute: fct.attribute, excerpt: fct.evidence?.excerpt ?? null, page: fct.evidence?.page ?? null, confidence: fct.confidence },
+      links: {
+        rawKey: fct.rawKey, subject: fct.subject, attribute: fct.attribute, excerpt: fct.evidence?.excerpt ?? null, page: fct.evidence?.page ?? null, confidence: fct.confidence,
+        // Lot 113AN (#741, diagnostic §5) : une projection non écrite n'est PAS une extraction manquée — le fait
+        // reste dans document_facts (connaissance conservée) ; seules les unités NON RÉSOLUES sont des lacunes.
+        lossFamily: s.reason === 'WRITE_FAILED' || s.reason === 'SCHEMA_NOT_READY' ? 'TECHNICAL_WRITE_FAILURE' : 'PROJECTION_ONLY_KNOWLEDGE_KEPT',
+        knowledgePreserved: true,
+      },
     });
     inc(`projection_${s.reason}`);
+    if (s.reason !== 'WRITE_FAILED' && s.reason !== 'SCHEMA_NOT_READY') inc('projectionNotWrittenKnowledgeKept');
   }
   const evidenceIds = [...(rec.projection?.evidenceIds.values() ?? [])];
   if (evidenceIds.length) {
@@ -506,7 +520,11 @@ export async function buildT1Entries(rec: T1ExecutionRecorder, p: { accountId: n
       section: 'ATTRIBUTE', tableName: a.targetType === 'ASSET' ? 'assets' : a.targetType === 'EQUIPMENT' ? 'equipments' : 'substructures',
       recordId: String(a.entityId), columnPath: 'key_characteristics', fieldKey: a.fieldKey, entityType: a.targetType, entityId: a.entityId,
       value: a.value as never, valueType: valueTypeOf(a.value), writeResult, reasonCode: a.outcome === 'WRITTEN' ? a.reasonCode : `${a.outcome}:${a.reasonCode}`,
-      reason: a.reason, links: { evidenceIds: a.evidenceIds },
+      reason: a.reason, links: {
+        evidenceIds: a.evidenceIds,
+        // Lot 113AN : valeur existante, conflit délégué à T3, non confirmée — connaissance conservée, jamais une perte d'extraction.
+        ...(writeResult === 'NOT_WRITTEN' || writeResult === 'DECIDED_NOT_CONFIRMED' ? { lossFamily: 'DELEGATED_OR_UNCHANGED_KNOWLEDGE_KEPT', knowledgePreserved: true } : {}),
+      },
     });
     inc(`attribute_${a.outcome}`);
   }

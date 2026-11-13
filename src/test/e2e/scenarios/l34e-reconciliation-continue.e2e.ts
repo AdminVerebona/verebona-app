@@ -89,7 +89,7 @@ scenario('L34E', 'Réconciliation T3 continue : révision de connaissance, Candi
     const compte = await make.account();
     await make.asset(compte, { category: 'VEHICULE', name: 'Polo' });
     const doc = await make.assetFile(compte, { assetId: null });
-    await analyser(compte, doc.id, sortie({ texte: ['Intervention au 12 rue Exemple, 69003 Lyon'] }));
+    await analyser(compte, doc.id, sortie({ texte: ['Lieu d’intervention : 12 rue Exemple, 69003 Lyon' /* 113AM : lieu du bien annoncé */] }));
     expect(await resolution(doc.id)).toMatchObject({ status: 'NO_CANDIDATE' });
     expect(await actives(doc.id)).toEqual([expect.objectContaining({ kind: 'COMPLETE' })]);
 

@@ -31,7 +31,8 @@
  */
 import { createHash } from 'node:crypto';
 import type { AttachmentState } from './attachment-state';
-import { buildDocumentAssetCandidates, CANDIDATE_BUILDER_VERSION, isDistinctiveName, type CandidateBuildResult } from './candidate-builder';
+import { buildDocumentAssetCandidates, CANDIDATE_BUILDER_VERSION, CITY_POSTAL_CONTEXT, isDistinctiveName, type CandidateBuildResult } from './candidate-builder';
+import { admissibleIdentification } from './address-roles';
 import type { DocumentAssetCandidate } from './decision';
 import { EXHAUSTIVE_SOURCE_KINDS, loadDocumentKnowledgeSources, type DocumentKnowledgeSources } from './document-sources';
 import {
@@ -159,10 +160,10 @@ export async function computeDocumentAssetContext(p: {
   // une adresse citée comme facturation / livraison n'est jamais une preuve pour le bien qui la porte.
   const issue: IdentityGraphOutcome | null = p.identityOutcome ?? (p.identityGraph !== undefined ? null : await identityGraphOutcomeFor(p.accountId, index));
   const graph = issue ? issue.graph : p.identityGraph ?? null;
-  const build = roleAwareBuild(
+  const build = addressQualifiedBuild(roleAwareBuild(
     buildDocumentAssetCandidates({ index, sources, state: p.state, t1Candidates, fileId: p.fileId }),
     graph?.contextOnlyAssets?.get(p.fileId) ?? [],
-  );
+  ), sources, index);
   const t1 = new Map(t1Candidates.map((c) => [c.assetId, c]));
   const factTargets = new Set(build.candidates.filter((c) => c.sources.includes('FACT_TARGET')).map((c) => c.assetId));
 
@@ -244,10 +245,71 @@ export function roleAwareBuild(build: CandidateBuildResult, contextOnlyAssetIds:
     const sources = evidenceSignals.length === c.evidenceSignals.length ? c.sources : c.sources.filter((x) => x !== 'STRONG_IDENTIFIER');
     return {
       ...c, sources, evidenceSignals,
-      contextSignals: [...new Set([...c.contextSignals, 'adresse du bien citée comme adresse de facturation, de livraison ou du fournisseur (rôle établi par le serveur) — jamais une preuve'])].sort(),
+      contextSignals: [...new Set([...c.contextSignals, ADDRESS_ROLE_CONTEXT])].sort(),
     };
   });
   return { ...build, candidates, identification, deterministicMatches: matches.map((m) => `${m.assetId}:${m.kind}`).sort() };
+}
+
+/** Indice posé par `roleAwareBuild` (lot 105D) : adresse citée avec un rôle établi autre que celui du bien. */
+export const ADDRESS_ROLE_CONTEXT = 'adresse du bien citée comme adresse de facturation, de livraison ou du fournisseur (rôle établi par le serveur) — jamais une preuve';
+
+/** Indice de contexte posé sur un bien dont l'adresse n'est citée qu'avec un autre rôle que « lieu du bien ». */
+export const ADDRESS_NOT_PROPERTY_CONTEXT = 'adresse du bien citée sans rôle de lieu du bien objet du document (destinataire, souscripteur, émetteur, facturation, livraison ou rôle non établi) — jamais une preuve';
+
+/**
+ * Lot 113AM (#739) — QUALIFICATION POSITIVE des adresses (complète
+ * `roleAwareBuild`, qui n'écartait que les rôles explicitement contraires) :
+ * une correspondance d'ADRESSE ne reste un identifiant fort que si son rôle,
+ * lu dans les sorties T1 persistées (cible vérifiée du fait `address1`,
+ * libellé qui la précède immédiatement), est « lieu du bien objet du
+ * document ». Sinon : retirée de l'identification (aucun rattachement
+ * déterministe), du contrôle serveur du candidat, et le candidat qui
+ * n'existait QUE par cette adresse (et la ville / code postal qui en
+ * dérivent) disparaît — jamais une question « À traiter » sur un faux
+ * conflit. Pure.
+ */
+export function addressQualifiedBuild(
+  build: CandidateBuildResult,
+  sources: Pick<DocumentKnowledgeSources, 'texts' | 'facts'> | null,
+  index: Pick<AccountMatchingIndex, 'records'>,
+): CandidateBuildResult {
+  if (!build.identification.matches.some((m) => m.kind === 'ADDRESS')) return withoutAddressOnlyCandidates(build);
+  const textes = (sources?.texts ?? []).filter((t) => !t.uncertain).map((t) => t.text);
+  const faits = (sources?.facts ?? []).map((f) => ({
+    canonicalKey: f.canonicalKey, value: f.value, label: f.label, subject: f.subject, targetType: f.targetType, targetEntityId: f.targetEntityId,
+  }));
+  const q = admissibleIdentification({ records: index.records, resolution: build.identification, facts: faits, texts: textes });
+  const exclus = new Set(q.excluded.map((e) => e.assetId).filter((id) => !q.resolution.assetIds.includes(id)));
+  if (exclus.size === 0) return withoutAddressOnlyCandidates({ ...build, identification: q.resolution, addressQualifications: q.qualifications, identificationWithIndices: build.identification });
+  const ADRESSE = /^adresse du bien identique/;
+  const candidates = build.candidates.flatMap((c) => {
+    if (!exclus.has(c.assetId)) return [c];
+    const evidenceSignals = c.evidenceSignals.filter((x) => !ADRESSE.test(x));
+    const sourcesC = evidenceSignals.some((x) => /identique/.test(x)) ? c.sources : c.sources.filter((x) => x !== 'STRONG_IDENTIFIER');
+    const contextSignals = c.contextSignals.filter((x) => x !== CITY_POSTAL_CONTEXT);
+    const restantes = sourcesC.filter((x) => x !== 'CONTEXTUAL_MATCH' || contextSignals.length > 0);
+    // Candidat né de la seule adresse (et de sa ville / son code postal) : retiré.
+    if (restantes.length === 0) return [];
+    return [{ ...c, sources: restantes, evidenceSignals, contextSignals: [...new Set([...contextSignals, ADDRESS_NOT_PROPERTY_CONTEXT])].sort() }];
+  });
+  return withoutAddressOnlyCandidates({
+    ...build, candidates, identification: q.resolution, addressQualifications: q.qualifications, identificationWithIndices: build.identification,
+    deterministicMatches: q.resolution.matches.map((m) => `${m.assetId}:${m.kind}`).sort(),
+  });
+}
+
+/** Indices dérivés d'une adresse de bien (ville / code postal, adresse au rôle non « lieu du bien »). */
+const INDICES_ADRESSE = new Set([CITY_POSTAL_CONTEXT, ADDRESS_ROLE_CONTEXT, ADDRESS_NOT_PROPERTY_CONTEXT]);
+
+/**
+ * Lot 113AM : un candidat qui n'existe QUE par des indices tirés d'une adresse (déjà requalifiée par
+ * `roleAwareBuild`, ou sa ville / son code postal) est retiré — jamais proposé dans une question. Pure.
+ */
+function withoutAddressOnlyCandidates(build: CandidateBuildResult): CandidateBuildResult {
+  const candidates = build.candidates.filter((c) => !(c.sources.every((x) => x === 'CONTEXTUAL_MATCH')
+    && c.evidenceSignals.length === 0 && c.contextSignals.length > 0 && c.contextSignals.every((x) => INDICES_ADRESSE.has(x))));
+  return candidates.length === build.candidates.length ? build : { ...build, candidates };
 }
 
 /** Unités considérées au plus (empreinte, monitoring). */

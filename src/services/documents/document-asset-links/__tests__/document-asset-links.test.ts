@@ -81,7 +81,8 @@ describe('writeMasterDocumentLinks — liens indépendants', () => {
       { assetId: 14, role: 'MENTIONED', confidence: 0.7 },
     ] });
     expect(link).toHaveBeenCalledTimes(3);
-    expect(r).toEqual({ created: 2, removed: 2, failed: [13] });
+    // Lot 113AM (#739) : `refused` = liens refusés par la garde d'admission (aucun ici : écriture simulée).
+    expect(r).toEqual({ created: 2, removed: 2, failed: [13], refused: [] });
     // Retrait par CIBLE : le lien AI déjà posé vers 13 (en échec) est conservé.
     expect(unlink).toHaveBeenCalledWith({ accountId: 1, fileId: 7, origins: ['AI'], keepAssetIds: [12, 13, 14] });
     expect(warn).toHaveBeenCalledTimes(1);

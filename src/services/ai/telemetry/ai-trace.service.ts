@@ -354,6 +354,8 @@ export async function recordCallTrace(t0: CallTrace): Promise<number | null> {
         durations: { semantics: 'attempt', ...(t.executionElapsedMs !== undefined ? { executionElapsedMs: Math.max(0, Math.round(t.executionElapsedMs)) } : {}) },
         // Lot 83C : appel servant plusieurs exécutions métier (aucune attribution arbitraire).
         ...(execution.ids.length > 1 ? { businessExecutionIds: execution.ids.slice(0, 50) } : {}),
+        // Lot 113AO (#748, B) : déclencheur métier d'un appel T6 (lien de causalité, jamais son exécution).
+        ...(execution.causedBy ? { causedByExecutionId: execution.causedBy } : {}),
       },
       useCaseCode: t.useCaseCode,
       operationCode: t.operationCode,

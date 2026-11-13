@@ -22,6 +22,8 @@
 import { db } from '@/db';
 import { assetFiles, assets, documentAssetLinks, equipments, rooms, substructures } from '@/db/schema';
 import { and, eq, inArray, isNull, sql } from 'drizzle-orm';
+import { admitDocumentAssetLink, type AdmissionDecision, type LinkJustification } from './admission';
+import { logLinkRefusal, recordLinkAdmission } from './admission-journal';
 import {
   canRefresh,
   ROLE_RANK,
@@ -109,27 +111,63 @@ async function resolveTarget(accountId: number, t: LinkTarget): Promise<Required
   return out;
 }
 
-interface LinkDocumentInput {
+interface LinkDocumentBase {
   accountId: number;
   fileId: number;
   target: LinkTarget;
   role: LinkRole;
-  origin: Exclude<LinkOrigin, 'LEGACY_COLUMN'>;
   confidence?: number | null;
   /** ACTIVE par défaut ; PROPOSED pour un lien à faire valider. */
   status?: Extract<LinkStatus, 'ACTIVE' | 'PROPOSED'>;
 }
 
+/**
+ * Lot 113AM (#739) : une écriture AUTOMATIQUE (origine AI / MIGRATION) porte
+ * OBLIGATOIREMENT sa justification (étape, règle, preuves) — la garde
+ * partagée `admitDocumentAssetLink` la juge AVANT toute écriture. Une
+ * décision de l'utilisateur (USER) n'est jamais rejugée.
+ */
+export type LinkDocumentInput = LinkDocumentBase & (
+  | { origin: 'USER'; justification?: LinkJustification }
+  | { origin: 'AI' | 'MIGRATION'; justification: LinkJustification }
+);
+
 type LinkOutcome = 'created' | 'updated' | 'unchanged';
+
+export type LinkDocumentResult =
+  | { outcome: LinkOutcome; link: DocumentAssetLink; admission?: AdmissionDecision }
+  /** Lot 113AM : écriture refusée par la garde — rien n'est écrit ; `link` = lien ACTIF déjà en place vers la cible, s'il existe. */
+  | { outcome: 'refused'; link: DocumentAssetLink | null; admission: AdmissionDecision };
 
 /**
  * Pose (ou rafraîchit) le lien d'un document vers une cible. Un seul lien
  * ACTIF par (document, cible) : s'il existe, il n'est rafraîchi que selon
  * `canRefresh` (un lien LEGACY_COLUMN ou USER n'est jamais écrasé par l'IA).
+ * Lot 113AM : toute écriture automatique passe d'abord la garde d'admission
+ * (refus journalisé, aucune écriture).
  */
-export async function linkDocumentToAsset(input: LinkDocumentInput): Promise<{ outcome: LinkOutcome; link: DocumentAssetLink }> {
+export async function linkDocumentToAsset(input: LinkDocumentInput): Promise<LinkDocumentResult> {
   await assertFileInAccount(input.accountId, input.fileId);
   const target = await resolveTarget(input.accountId, input.target);
+  const admission = admitDocumentAssetLink(input.origin, input.justification);
+  if (!admission.admitted) {
+    const [deja] = await db.select().from(documentAssetLinks).where(and(
+      eq(documentAssetLinks.fileId, input.fileId), eq(documentAssetLinks.status, 'ACTIVE'), sameTarget(target),
+    )).limit(1);
+    const rec = { accountId: input.accountId, fileId: input.fileId, target, writeKind: 'LINK' as const, justification: input.justification, decision: admission };
+    logLinkRefusal(rec);
+    await recordLinkAdmission({ ...rec, origin: input.origin, role: input.role, linkId: deja?.id ?? null });
+    return { outcome: 'refused', link: deja ? toLink(deja) : null, admission };
+  }
+  const journal = async (outcome: LinkOutcome, link: DocumentAssetLink) => {
+    if (input.origin !== 'USER' && outcome !== 'unchanged') {
+      await recordLinkAdmission({
+        accountId: input.accountId, fileId: input.fileId, target, writeKind: 'LINK', origin: input.origin, role: input.role,
+        justification: input.justification, decision: admission, linkId: link.id, detail: { outcome },
+      });
+    }
+    return { outcome, link, admission };
+  };
   const confidence = input.confidence === undefined || input.confidence === null
     ? null : Math.min(1, Math.max(0, Math.round(input.confidence * 1000) / 1000));
   const status = input.status ?? 'ACTIVE';
@@ -150,7 +188,7 @@ export async function linkDocumentToAsset(input: LinkDocumentInput): Promise<{ o
     const [updated] = await db.update(documentAssetLinks)
       .set({ linkRole: role, origin: input.origin, confidence: confidence === null ? null : String(confidence), updatedAt: new Date() })
       .where(eq(documentAssetLinks.id, current.id)).returning();
-    return { outcome: 'updated', link: toLink(updated) };
+    return journal('updated', toLink(updated));
   }
 
   const inserted = await db.insert(documentAssetLinks).values({
@@ -159,7 +197,7 @@ export async function linkDocumentToAsset(input: LinkDocumentInput): Promise<{ o
     linkRole: input.role, origin: input.origin,
     confidence: confidence === null ? null : String(confidence), status,
   }).onConflictDoNothing().returning();
-  if (inserted[0]) return { outcome: 'created', link: toLink(inserted[0]) };
+  if (inserted[0]) return journal('created', toLink(inserted[0]));
 
   // Course avec une autre écriture (déclencheur, autre instance) : lien déjà posé.
   const [racing] = await db.select().from(documentAssetLinks).where(and(

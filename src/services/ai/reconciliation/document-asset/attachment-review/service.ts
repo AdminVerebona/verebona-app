@@ -48,6 +48,8 @@ import { loadAccountMatchingIndex, type AccountMatchingIndex } from '../matching
 import { getResolution, type StoredT1Candidate } from '../resolution.repository';
 import { aiNotConfigured, T3_TECHNICAL_RETRY_MINUTES, technicalCategoryOf } from '../technical-failure';
 import { attachAutomatically } from '../automatic-attachment';
+import { addressRoleOf } from '../address-roles';
+import { attachmentReviewLinkJustification } from '../link-justification';
 import { ATTACHMENT_REVIEW_OPERATION, attachmentReviewContractActive, attachmentReviewEnabled } from './contract';
 import {
   attachmentOriginOf, attachmentReviewKey, attachmentReviewVariables, buildAttachmentIndices, decideAttachmentReview,
@@ -93,6 +95,8 @@ export interface AttachmentReviewTrace {
   decision: AttachmentReviewDecision | null;
   card: { before: number | null; after: number | null; effect: ReviewCardEffect };
   secondaryLinked: number[];
+  /** Lot 113AM (#739) : biens jugés concernés par la revue mais refusés par la garde d'admission (preuve insuffisante). */
+  secondaryRefused?: number[];
   error: string | null;
   failures: number;
   /** Lot 113S : provenance de la question de la carte (AI / CODE, motif d'un repli). */
@@ -292,14 +296,17 @@ export async function reviewDocumentAttachment(input: ReviewInput, deps: Attachm
     return fin('ABSTAIN', 'NO_KNOWLEDGE');
   }
   let units = await loadReviewUnits(accountId, fileId);
+  // Lot 113AM (#739) : les correspondances d'adresse NON qualifiées « lieu du bien » restent des INDICES
+  // soumis à la revue (jamais un lien) — identification d'avant la qualification.
+  const indicesIdentification = ctx.build.identificationWithIndices ?? ctx.identification;
   const t1Designations = (resolution?.t1Candidates ?? []).filter((c) => c.reason !== SERVER_IDENTIFIER_REASON);
   let unitMatches = unitMatchesOf(units, index.records);
-  let indices = buildAttachmentIndices({ currentAssetIds: current, identification: ctx.identification, t1Designations, unitMatches });
+  let indices = buildAttachmentIndices({ currentAssetIds: current, identification: indicesIdentification, t1Designations, unitMatches });
   if (indices.some((i) => !i.currentAsset && i.kind !== 'T1_DESIGNATION' && i.unitIds.length === 0)) {
     // Document historique (sans couche exhaustive ou indice lu hors unité) : lignes de la transcription.
     units = [...units, ...await transcriptionUnits(accountId, fileId, index.records)];
     unitMatches = unitMatchesOf(units, index.records);
-    indices = buildAttachmentIndices({ currentAssetIds: current, identification: ctx.identification, t1Designations, unitMatches });
+    indices = buildAttachmentIndices({ currentAssetIds: current, identification: indicesIdentification, t1Designations, unitMatches });
   }
   trace.indices = indices.map((i) => ({ indexId: i.indexId, assetId: i.assetId, kind: i.kind, via: i.via, exclusive: i.exclusive, currentAsset: i.currentAsset, unitIds: i.unitIds }));
 
@@ -423,7 +430,16 @@ export async function reviewDocumentAttachment(input: ReviewInput, deps: Attachm
         if (apres.primaryAssetIds.includes(id) || apres.secondaryAssetIds.includes(id) || apres.userLinkAssetIds.includes(id)) continue;
         if (await userRemovedLink(accountId, fileId, id)) continue;
         await g('lien SECONDARY');
-        await attachAutomatically({ accountId, fileId, assetId: id, role: 'SECONDARY', confidence: 1 });
+        // Lot 113AM (#739) : garde d'admission — un bien que seule une adresse non qualifiée « lieu du bien »
+        // désigne n'est jamais lié, même si la revue le juge concerné (refus journalisé, aucune carte).
+        const lie = await attachAutomatically({
+          accountId, fileId, assetId: id, role: 'SECONDARY', confidence: 1,
+          justification: attachmentReviewLinkJustification({
+            assetId: id, indices, facts, modelCandidate: t1Designations.some((c) => c.assetId === id),
+            addressRole: addressRoleOf(ctx.build.addressQualifications ?? [], id), reviewKey: key,
+          }),
+        });
+        if (!lie.linked) { trace.secondaryRefused = [...(trace.secondaryRefused ?? []), id]; continue; }
         trace.secondaryLinked.push(id);
         outcome = 'APPLIED';
       }

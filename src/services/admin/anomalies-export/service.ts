@@ -19,7 +19,7 @@ import { getBuildIdentity } from '@/lib/runtime-identity';
 import { anomalyOrderBy, domainLabel, getAnomaly, listAnomalies } from '@/services/admin/anomaly.service';
 import {
   ANOMALY_CSV_HEADER, ANOMALY_EXPORT_MAX_OCCURRENCES, anomalyCsvLine, anomalyJsonHead, anomalyJsonItem, anomalyJsonTail,
-  formatAnomalyListMarkdown, formatAnomalyMarkdown, toExportRecord,
+  formatAnomalyListMarkdown, formatAnomalyMarkdown, toConflictsExport, toExportRecord,
   type AnomalyExportQuery, type AnomalyExportRecord, type AnomalyExportSource, type ExportMeta,
 } from './model';
 
@@ -90,13 +90,28 @@ export async function anomalyRecord(id: number, baseUrl: string): Promise<Anomal
   const a = await getAnomaly(id);
   if (!a) return null;
   const fp = await fingerprints([id]);
-  return toExportRecord({
+  const rec = toExportRecord({
     id: a.id, domain: a.domain, domainLabel: a.domainLabel, fingerprint: fp.get(id) ?? '', title: a.title, status: a.status,
     accountId: a.accountId, userId: a.userId, occurrenceCount: a.occurrenceCount, firstSeenAt: a.firstSeenAt, lastSeenAt: a.lastSeenAt,
     resolvedAt: a.resolvedAt, resolutionSource: a.resolutionSource, cause: a.cause, correctiveAction: a.correctiveAction,
     autoResolutionOrigin: a.autoResolutionOrigin, autoResolutionCause: a.autoResolutionCause, previousAnomalyId: a.previousAnomalyId,
     technicalDetail: a.technicalDetail,
   }, baseUrl, a.occurrences.slice(0, ANOMALY_EXPORT_MAX_OCCURRENCES));
+  // Lot 113AQ (#751) : contradictions d'attributs — même diagnostic que l'écran, borné, lecture seule.
+  const { isAttributeConflictAnomaly } = await import('@/services/admin/anomaly-conflicts');
+  if (isAttributeConflictAnomaly(a)) {
+    try {
+      const { readConflictDiagnostic } = await import('@/services/business-operations/diagnostics/attribute-conflicts-read');
+      const { CONFLICT_DIAGNOSTIC_EXPORT_MAX } = await import('@/services/business-operations/diagnostics/attribute-conflicts-model');
+      const d = await readConflictDiagnostic({
+        pageSize: CONFLICT_DIAGNOSTIC_EXPORT_MAX, occurrences: a.occurrences, occurrenceCount: a.occurrenceCount, anomalyStatus: a.status,
+      });
+      rec.conflitsAttributs = toConflictsExport(d);
+    } catch (e) {
+      rec.conflitsAttributs = toConflictsExport(null, (e as Error)?.message ?? String(e));
+    }
+  }
+  return rec;
 }
 
 export function anomalyMarkdown(r: AnomalyExportRecord, baseUrl: string): string {

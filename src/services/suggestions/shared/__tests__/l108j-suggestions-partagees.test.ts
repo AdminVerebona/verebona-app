@@ -296,7 +296,8 @@ describe('L108J-U11 — T6 garde la bulle ; aucun appel IA de génération de su
   it('la mascotte ne transmet plus de contexte de questions ni d’invitations à T6', () => {
     const m = readFileSync(join(ROOT, 'src/services/home/mascot/mascot.service.ts'), 'utf8');
     expect(m).not.toMatch(/loadT6SuggestionContext|discoveryContextOf|rotateDiscovery|readSuggestionSkips/);
-    expect(m).toMatch(/formulateWithT6\(\{ accountId, input, contextHash, mode, kinds \}\)/);
+    // Lot 113AO : seuls les sujets à formuler partent à T6 (`kinds` du sous-ensemble), toujours sans contexte de questions.
+    expect(m).toMatch(/formulateWithT6\(\{ accountId, input, contextHash, mode, kinds: plan\.formulate\.map\(\(i\) => kinds\[i\]\) \}\)/);
   });
 
   it('le service des suggestions n’importe aucune passerelle IA', () => {

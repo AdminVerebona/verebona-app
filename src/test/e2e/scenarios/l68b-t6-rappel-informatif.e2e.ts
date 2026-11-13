@@ -155,12 +155,11 @@ scenario('L68B-T6RAP', 'Lot 68 — rappel informatif T6 et bulle d’accueil all
     expect(bloc.actions[0].action.target).toMatchObject({ kind: 'drawer', drawer: 'echeance', id: visite });
     expect(p.state).toMatchObject({ kind: 'INFORMATION', actions: 0, information: 1 });
     expect((await B()).homePose(p, false)).toBe('neutral');
-    // FORMULATE : faits sans action attendue, nature « rappel informatif ».
-    const entree = JSON.parse(/Entrée structurée : (.*)\n/.exec(modele.formulate.at(-1)!)![1]) as { subjects: Array<{ intent: string; facts: Record<string, unknown>; fallbackText: string }> };
-    expect(entree.subjects).toHaveLength(1);
-    expect(entree.subjects[0]).toMatchObject({ intent: 'inform', facts: { interpellation: 'rappel informatif' } });
-    expect(entree.subjects[0].facts).not.toHaveProperty('expectedAction');
-    expect(entree.subjects[0].fallbackText).not.toMatch(MECANIQUE);
+    // Lot 113AO (#748, A) : un rappel informatif (le fait seul, sans action ni attention) a un texte
+    // entièrement calculé par le serveur — servi tel quel, AUCUN appel FORMULATE (avant : formulé par T6).
+    expect(modele.formulate).toHaveLength(0);
+    expect(p.source).toBe('deterministic');
+    expect(bloc.text).not.toMatch(MECANIQUE);
     // Rapports : rappel informatif compté à part, jamais comme action.
     await vi.waitFor(async () => {
       const { rapport: ev } = await rapport(c.id, 'evaluate:pregen');

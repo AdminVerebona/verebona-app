@@ -123,6 +123,7 @@ export async function writeSourceLayer(tx: Tx, p: {
   }
   // Lot 49B : état de réparation et diagnostics (colonnes 0329) si présents.
   const diagnostics = await layerDiagnosticsReady();
+  const provenance = diagnostics && await coverageProvenanceReady();
   await tx.unsafe(`DELETE FROM document_source_units WHERE file_id = $1`, [p.fileId] as never[]);
   for (let i = 0; i < layer.units.length; i += PAQUET) {
     const lot = layer.units.slice(i, i + PAQUET).map((u) => ({
@@ -130,20 +131,22 @@ export async function writeSourceLayer(tx: Tx, p: {
       content: u.text, label: u.label ?? null, val: u.value ?? null, payload: u.payload ?? {}, location: u.location ?? {},
       origin: u.origin, salient: u.salient, status: u.status, reason: u.reason, facts: u.factCount, attempts: u.repairAttempts,
       repair: u.repairState ?? null,
+      cprov: u.coverageProvenance ?? null, policy: u.residualPolicy ?? null,
     }));
     await tx.unsafe(
       `INSERT INTO document_source_units (
          account_id, file_id, extraction_id, source_unit_id, kind, page, ordinal, parent_unit_id, content_text, label, value_text,
          payload, location, origin, salient, coverage_status, coverage_reason, fact_count, repair_attempts, layer_version
-         ${diagnostics ? ', repair_state' : ''}
+         ${diagnostics ? ', repair_state' : ''}${provenance ? ', coverage_provenance, residual_policy' : ''}
        )
        SELECT $1, $2, $3, u.id, u.kind, u.page, u.ordinal, u.parent, u.content, u.label, u.val,
               coalesce(u.payload, '{}'::jsonb), coalesce(u.location, '{}'::jsonb), u.origin, coalesce(u.salient, false),
               u.status, u.reason, coalesce(u.facts, 0), coalesce(u.attempts, 0), $5
-              ${diagnostics ? ', u.repair' : ''}
+              ${diagnostics ? ', u.repair' : ''}${provenance ? ', u.cprov, u.policy' : ''}
          FROM jsonb_to_recordset($4::jsonb) AS u(
            id text, kind text, page int, ordinal int, parent text, content text, label text, val text,
-           payload jsonb, location jsonb, origin text, salient boolean, status text, reason text, facts int, attempts int, repair text
+           payload jsonb, location jsonb, origin text, salient boolean, status text, reason text, facts int, attempts int, repair text,
+           cprov jsonb, policy text
          )
        ON CONFLICT (file_id, source_unit_id) DO NOTHING`,
       [p.accountId, p.fileId, p.extractionId, json(lot), layer.layerVersion] as never[],
@@ -219,6 +222,31 @@ export async function writeSourceLayer(tx: Tx, p: {
 
 // ── Lecture ────────────────────────────────────────────────────────────────
 
+let provenanceCols: { ready: boolean; checkedAt: number } | null = null;
+
+/**
+ * Lot 113AN (#741) — colonnes 1665 (`coverage_provenance`, `residual_policy`)
+ * présentes ? Absentes : la couche A est écrite comme avant (provenance de
+ * couverture non conservée, jamais d'échec d'écriture). Ne lève jamais.
+ */
+export async function coverageProvenanceReady(): Promise<boolean> {
+  if (provenanceCols && (provenanceCols.ready || Date.now() - provenanceCols.checkedAt < RECONTROLE_MS)) return provenanceCols.ready;
+  let ready = false;
+  try {
+    const { pgClient } = await import('@/db');
+    const r = (await pgClient.unsafe(
+      `SELECT count(*)::int AS n FROM information_schema.columns
+        WHERE table_schema = current_schema() AND table_name = 'document_source_units'
+          AND column_name IN ('coverage_provenance', 'residual_policy')`,
+    )) as unknown as Array<{ n: number }>;
+    ready = Number(r[0]?.n ?? 0) === 2;
+  } catch {
+    ready = false;
+  }
+  provenanceCols = { ready, checkedAt: Date.now() };
+  return ready;
+}
+
 export interface StoredSourceUnit {
   fileId: number;
   accountId: number;
@@ -240,6 +268,9 @@ export interface StoredSourceUnit {
   repairAttempts: number;
   /** Lot 49B : état de réparation (null : aucune, ou colonne 0329 absente). */
   repairState?: string | null;
+  /** Lot 113AN : provenance d'une requalification et politique d'une unité restante (colonnes 1665). */
+  coverageProvenance?: import('./coverage-reconciliation').CoverageProvenance | null;
+  residualPolicy?: string | null;
   /** Faits actifs rattachés à l'unité (provenance inverse), si demandés. */
   facts?: Array<{ id: number; factKey: string; canonicalKey: string | null; valueText: string | null; confidence: string }>;
 }
@@ -250,7 +281,9 @@ const UNIT_COLUMNS = `
   u.origin, u.salient, u.coverage_status AS "coverageStatus", u.coverage_reason AS "coverageReason",
   u.fact_count AS "factCount", u.repair_attempts AS "repairAttempts"`;
 /** Lot 49B : colonne 0329 lue si présente (`to_jsonb` : jamais d'erreur si absente). */
-const REPAIR_STATE_COLUMN = `, to_jsonb(u) ->> 'repair_state' AS "repairState"`;
+const REPAIR_STATE_COLUMN = `, to_jsonb(u) ->> 'repair_state' AS "repairState"`
+  // Lot 113AN : colonnes 1665 lues si présentes (même tolérance).
+  + `, to_jsonb(u) -> 'coverage_provenance' AS "coverageProvenance", to_jsonb(u) ->> 'residual_policy' AS "residualPolicy"`;
 
 interface LoadSourceUnitsOptions {
   /** Contrôle d'appartenance (recommandé hors traitement interne). */
@@ -309,6 +342,8 @@ export async function loadDocumentSourceUnits(fileId: number, opts: LoadSourceUn
 interface StoredCoverage extends T1CompletenessReport {
   fileId: number;
   accountId: number;
+  /** Lot 113AN : extraction de la couche (réécriture de la réconciliation). */
+  extractionId?: number | null;
   origin: string;
   layerVersion: number;
   retryAttempts: number;
@@ -323,7 +358,7 @@ interface StoredCoverage extends T1CompletenessReport {
 }
 
 const COVERAGE_COLUMNS = `
-  c.file_id AS "fileId", c.account_id AS "accountId", c.total_units AS "totalSourceUnits", c.covered_units AS "coveredUnits",
+  c.file_id AS "fileId", c.account_id AS "accountId", c.extraction_id AS "extractionId", c.total_units AS "totalSourceUnits", c.covered_units AS "coveredUnits",
   c.non_informational_units AS "nonInformationalUnits", c.unresolved_units AS "unresolvedUnits",
   c.uncertain_units AS "uncertainUnits", c.failed_units AS "failedUnits", c.facts_count AS "factsCount",
   c.dropped_facts_count AS "droppedFactsCount", c.truncated_sections_count AS "truncatedSectionsCount",

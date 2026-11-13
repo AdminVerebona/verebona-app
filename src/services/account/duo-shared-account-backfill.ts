@@ -45,6 +45,8 @@ const TECHNICAL_ACCOUNT_TABLES: readonly string[] = [
   'account_reconciliation_runs', 't3_reconciliation_states', 'v2_classification_progress', 'duo_shared_account_journal',
   'annual_renewal_reminder_checks', 'ai_usage_account_counter', 'cdc15_migration_report', 'room_merge_runs',
   'reconciliation_runs', 'impact_queue', 'duo_accounts', 'home_suggestion_skips', 'shared_suggestion_consultations',
+  // Lot 113AO : réservations / mesure des générations T6 (écrites par l'accueil, sans action de l'utilisateur).
+  't6_formulate_reservations',
 ];
 
 type PersonalCategory = 'D1' | 'D2' | 'D3' | 'D4';

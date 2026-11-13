@@ -65,6 +65,7 @@
  * ══════════════════════════════════════════════════════════════════════════
  */
 import { createHash } from 'crypto';
+import type { LinkJustification } from '@/services/documents/document-asset-links/admission';
 import { and, desc, eq, inArray, isNotNull, isNull, sql } from 'drizzle-orm';
 import { db, pgClient } from '@/db';
 import { assets, toProcessActionEvents, toProcessActions } from '@/db/schema';
@@ -274,6 +275,12 @@ interface AnalysisObservations {
    * `source_analyzed`. La question n'est posée qu'après son échec.
    */
   deferAssetLinkToT3?: boolean;
+  /**
+   * Lot 113AM (#739) : justification (étape, règle, preuves) du bien retenu par
+   * l'analyse — jugée par la garde d'admission avant l'écriture automatique du
+   * rattachement. Absente : aucune écriture automatique (fail-closed).
+   */
+  assetLinkJustification?: LinkJustification;
 }
 
 /**
@@ -602,8 +609,8 @@ interface ExecOutcome {
   write: { attempted: boolean; confirmed: boolean | null; status: string; value?: unknown; valueKind?: string | null } | null;
 }
 
-/** Méta d'une écriture automatique (lot 61 : nature et provenance). */
-interface WriteExtra { valueKind?: 'EXPLICIT' | 'CALCULATED'; derivation?: unknown }
+/** Méta d'une écriture automatique (lot 61 : nature et provenance ; lot 113AM : justification d'un rattachement). */
+interface WriteExtra { valueKind?: 'EXPLICIT' | 'CALCULATED'; derivation?: unknown; justification?: LinkJustification }
 
 /**
  * Lot 61 (écart 1) — écriture, VÉRIFICATION et fermeture dans UNE
@@ -634,6 +641,7 @@ async function writeConfirmedAndClose(
     const ok = await slot.writeAuto(tx, accountId, fileId, plan.value, {
       origin: extra.valueKind === 'CALCULATED' ? 'SYSTEM_RULE' : 'RECONCILIATION', confidence: plan.confidence, evidenceIds: plan.evidenceIds,
       valueKind: extra.valueKind ?? 'EXPLICIT', derivation: extra.derivation ?? null,
+      ...(extra.justification ? { justification: extra.justification } : {}),
     });
     if (!ok) throw new WriteNotConfirmed('REFUSED_PROTECTED_VALUE', 'écriture refusée : valeur de l’utilisateur en place ou cible indisponible');
     const apres = await slot.read(tx, accountId, fileId);
@@ -1427,7 +1435,8 @@ export async function syncDocumentRulesFromAnalysis(input: {
           plan = { kind: 'NONE', reason: 'USER_NO_ASSET' };
         }
         const before = { ...report };
-        const exec = await executePlan(input.accountId, input.fileId, rule, slot, plan, state, report, 'OBSOLETE');
+        const exec = await executePlan(input.accountId, input.fileId, rule, slot, plan, state, report, 'OBSOLETE', {},
+          key === 'assetIds' && obs.assetLinkJustification ? { justification: obs.assetLinkJustification } : {});
         await traceClassic({ accountId: input.accountId, fileId: input.fileId, rule, trigger: 'ANALYSIS', runRef: input.runRef, plan, exec, active: actives.get(key) ?? null, state, report, before });
       } catch (e) {
         console.error(`[to-process] règle ${rule.code} du document ${input.fileId} non évaluée :`, (e as Error).message);

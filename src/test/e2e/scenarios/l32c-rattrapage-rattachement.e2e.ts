@@ -95,7 +95,7 @@ scenario('L32C', 'Rattachement document ↔ bien : rattrapage versionné T3, inc
     // Première analyse : deux candidats probables, T3 s'abstient → carte « À quel bien… ? ».
     await analyser(compte, doc.id, sortie({
       assets: [{ id: maison.id, label: 'Maison', confidence: 'probable', score: 0.6 }, { id: studio.id, label: 'Studio', confidence: 'probable', score: 0.6 }],
-      texte: ['Intervention au 12 rue Exemple, 69003 Lyon'],
+      texte: ['Lieu d’intervention : 12 rue Exemple, 69003 Lyon' /* 113AM : lieu du bien annoncé */],
     }), { extra: [T3_ABSTENTION] });
     expect(await resolution(doc.id)).toMatchObject({ status: 'ABSTAINED', resolution_version: VERSION });
     expect((await actions(doc.id, 'LINK-ASSET')).filter((a) => a.active)).toHaveLength(1);
@@ -219,7 +219,7 @@ scenario('L32C', 'Rattachement document ↔ bien : rattrapage versionné T3, inc
     const compte = await make.account();
     const maison = await maisonSansAdresse(compte);
     const doc = await make.assetFile(compte, { assetId: null });
-    await analyser(compte, doc.id, sortie({ texte: ['Travaux : 12 rue Exemple 69003 Lyon'] }));
+    await analyser(compte, doc.id, sortie({ texte: ['Lieu des travaux : 12 rue Exemple 69003 Lyon'] /* 113AM : lieu du bien annoncé */ }));
     expect(await resolution(doc.id)).toMatchObject({ status: 'NO_CANDIDATE', resolution_version: VERSION });
     expect(await balayer(compte)).toBe(0);
 
@@ -236,7 +236,7 @@ scenario('L32C', 'Rattachement document ↔ bien : rattrapage versionné T3, inc
     const compte = await make.account();
     const maison = await maisonSansAdresse(compte);
     const docs = [await make.assetFile(compte, { assetId: null }), await make.assetFile(compte, { assetId: null })];
-    for (const d of docs) await analyser(compte, d.id, sortie({ texte: ['12 rue Exemple 69003 Lyon'] }));
+    for (const d of docs) await analyser(compte, d.id, sortie({ texte: ['Adresse du bien : 12 rue Exemple 69003 Lyon'] /* 113AM : lieu du bien annoncé */ }));
     await sql`UPDATE assets SET key_characteristics = ${JSON.stringify(ADRESSE)} WHERE id = ${maison.id}`;
     for (const d of docs) await ancienneVersion(compte, d.id);
     const { sweepDocumentsWithoutPrimary } = await import('@/services/ai/reconciliation/document-asset/queue');
@@ -272,7 +272,7 @@ scenario('L32C', 'Rattachement document ↔ bien : rattrapage versionné T3, inc
     const compte = await make.account();
     const { a, b } = await deuxMaisons(compte);
     const doc = await make.assetFile(compte, { assetId: a.id });
-    const out = sortie({ texte: ['Intervention au 12 rue Exemple, 69003 Lyon'] });
+    const out = sortie({ texte: ['Lieu d’intervention : 12 rue Exemple, 69003 Lyon' /* 113AM : lieu du bien annoncé */] });
     const { warnings } = await analyser(compte, doc.id, out, { extra: [revueVers(b.id)] });
     expect(warnings).toContain('ASSET_ATTACHMENT_INDICES');
     expect((await fichier(doc.id)).asset_id).toBe(a.id); // jamais de déplacement automatique
@@ -390,11 +390,11 @@ scenario('L32C', 'Rattachement document ↔ bien : rattrapage versionné T3, inc
     const multi = await make.assetFile(compte, { assetId: null });
     await sql`UPDATE asset_files SET upload_status = 'COMPLETED' WHERE id IN (${commun.id}, ${propreA.id}, ${multi.id})`;
     const { linkDocumentToAsset } = await import('@/services/documents/document-asset-links');
-    await linkDocumentToAsset({ accountId: compte.id, fileId: commun.id, target: { assetId: b.id }, role: 'SECONDARY', origin: 'AI' });
+    await linkDocumentToAsset({ accountId: compte.id, fileId: commun.id, target: { assetId: b.id }, role: 'SECONDARY', origin: 'AI', justification: { step: 'OTHER', rule: 'E2E_FIXTURE', proofs: [{ kind: 'MODEL_DESIGNATION' }] } });
     // Lien PRIMARY doublon de la colonne (USER) : toujours une seule ligne.
-    await linkDocumentToAsset({ accountId: compte.id, fileId: commun.id, target: { assetId: c.id }, role: 'MENTIONED', origin: 'AI' });
-    await linkDocumentToAsset({ accountId: compte.id, fileId: multi.id, target: { assetId: a.id }, role: 'SECONDARY', origin: 'AI' });
-    await linkDocumentToAsset({ accountId: compte.id, fileId: multi.id, target: { assetId: b.id }, role: 'SECONDARY', origin: 'AI' });
+    await linkDocumentToAsset({ accountId: compte.id, fileId: commun.id, target: { assetId: c.id }, role: 'MENTIONED', origin: 'AI', justification: { step: 'OTHER', rule: 'E2E_FIXTURE', proofs: [{ kind: 'MODEL_DESIGNATION' }] } });
+    await linkDocumentToAsset({ accountId: compte.id, fileId: multi.id, target: { assetId: a.id }, role: 'SECONDARY', origin: 'AI', justification: { step: 'OTHER', rule: 'E2E_FIXTURE', proofs: [{ kind: 'MODEL_DESIGNATION' }] } });
+    await linkDocumentToAsset({ accountId: compte.id, fileId: multi.id, target: { assetId: b.id }, role: 'SECONDARY', origin: 'AI', justification: { step: 'OTHER', rule: 'E2E_FIXTURE', proofs: [{ kind: 'MODEL_DESIGNATION' }] } });
 
     const { getDocumentFeed } = await import('@/services/documents/rubric-query.service');
     const feed = (assetIds: number[], biens: string[] = []) => getDocumentFeed({

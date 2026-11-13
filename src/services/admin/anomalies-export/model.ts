@@ -36,7 +36,10 @@ import { exportFileName } from '@/lib/files/export-file-name';
 
 /** Identifiant de schéma du fichier JSON (incrémenter la version à tout changement incompatible). */
 export const ANOMALY_EXPORT_SCHEMA = 'verebona.bo-anomalies';
-export const ANOMALY_EXPORT_SCHEMA_VERSION = 1;
+// Lot 113AQ (#751) : version 2 — section facultative `conflitsAttributs` (contrat
+// `verebona.operation-attribute-conflicts/1`) pour les anomalies IDENTITY_ATTRIBUTE_CONFLICT ;
+// le reste de l'enregistrement est inchangé (compatible avec un lecteur de la version 1).
+export const ANOMALY_EXPORT_SCHEMA_VERSION = 2;
 export const ANOMALY_EXPORT_FORMAT = `${ANOMALY_EXPORT_SCHEMA}/${ANOMALY_EXPORT_SCHEMA_VERSION}`;
 
 /** Occurrences reprises dans la copie / l'export d'UNE anomalie (les plus récentes). */
@@ -114,6 +117,28 @@ export interface AnomalyExportRecord {
   contexteTechnique: TechnicalContext;
   detailTechnique: unknown;
   historique?: Array<{ id: number; date: Instant; compteId: number | null; utilisateurId: number | null; detailTechnique: unknown }>;
+  /**
+   * Lot 113AQ (#751) : diagnostic STRUCTURÉ des contradictions d'attributs (même contrat que l'écran),
+   * masqué (secrets, e-mails, téléphones, IBAN) ; `complet` faux si borné ou en échec (jamais prétendu complet).
+   */
+  conflitsAttributs?: AttributeConflictsExport;
+}
+
+/** Lot 113AQ : section d'export du diagnostic des contradictions d'attributs. */
+export interface AttributeConflictsExport {
+  contrat: string;
+  complet: boolean;
+  erreur: string | null;
+  diagnostic: unknown;
+}
+
+/** Lot 113AQ : diagnostic prêt à sortir du BO (valeurs métier conservées, secrets / coordonnées masqués). */
+export function toConflictsExport(diagnostic: { contract: string; contractVersion: number; complete: boolean } | null, error: string | null = null): AttributeConflictsExport {
+  if (!diagnostic) return { contrat: 'verebona.operation-attribute-conflicts/1', complet: false, erreur: maskFreeText(error) ?? 'diagnostic indisponible', diagnostic: null };
+  return {
+    contrat: `${diagnostic.contract}/${diagnostic.contractVersion}`, complet: diagnostic.complete, erreur: null,
+    diagnostic: maskForExport(redactDeep(diagnostic)),
+  };
 }
 
 export interface ExportMeta {
@@ -366,8 +391,39 @@ export function formatAnomalyMarkdown(r: AnomalyExportRecord, meta: Pick<ExportM
       L.push(`| ${o.date.paris} | ${o.date.iso} | ${o.compteId ? `#${o.compteId}` : '—'} | ${o.utilisateurId ? `#${o.utilisateurId}` : '—'} | ${mdInline(o.detailTechnique ? JSON.stringify(o.detailTechnique) : null)} |`);
     }
   }
+  if (r.conflitsAttributs) L.push('', ...conflictsMarkdown(r.conflitsAttributs));
   L.push('', `_Copié depuis le BO Verebona le ${parisDateTime(meta.generatedAt)} (Europe/Paris) — ${meta.generatedAt.toISOString()} — format ${ANOMALY_EXPORT_FORMAT}. Données personnelles exclues ou pseudonymisées._`);
   return `${L.join('\n')}\n`;
+}
+
+type Obj = Record<string, unknown>;
+const arr = (v: unknown): Obj[] => (Array.isArray(v) ? (v as Obj[]) : []);
+
+/** Lot 113AQ : section Markdown du diagnostic des contradictions d'attributs (cohérente avec l'écran et le JSON). */
+function conflictsMarkdown(x: AttributeConflictsExport): string[] {
+  const d = (x.diagnostic ?? {}) as Obj;
+  const c = (d.counters ?? {}) as Obj;
+  const L: string[] = [`### Contradictions d’attributs par Opération (${mdInline(x.contrat)})`, ''];
+  if (!x.diagnostic) return [...L, `- Diagnostic indisponible : ${mdInline(x.erreur)} — aucun verdict n’est donné à sa place.`];
+  const val = (k: string) => (c[k] === null || c[k] === undefined ? 'non mesuré' : String(c[k]));
+  L.push(
+    `- Lu le : ${d.generatedAt ? `${parisDateTime(String(d.generatedAt))} (Europe/Paris) — ${mdInline(String(d.generatedAt))}` : '—'} · ${x.complet ? 'complet' : 'PARTIEL (borné)'}`,
+    `- Signalements : ${val('occurrences')} (matériels ${val('materialOccurrences')}, répétitions ${val('periodicReports')})`,
+    `- Opérations : ${val('operations')} · attributs : ${val('attributes')} · conflits actifs : ${val('activeConflicts')} · non vérifiables : ${val('nonVerifiable')}`,
+    `- Divergences légitimes : ${val('legitimateDifferences')} · résolus : ${val('resolved')} · arbitrages ouverts : ${val('openArbitrations')} · contrôles échoués : ${val('checksFailed')}`,
+    `- Alerte maintenue par : ${mdInline(String(((d.alert ?? {}) as Obj).maintainedBy ?? '—'))}`,
+    '', '| Compte | Opération | Attribut | Rôle | Valeurs (rôle, sources) | Retenue | Persistée | Verdict | Raison | Dernier contrôle | État |', '|---|---|---|---|---|---|---|---|---|---|---|',
+  );
+  for (const e of arr(d.conflicts)) {
+    const attr = (e.attribute ?? {}) as Obj;
+    const role = (e.role ?? {}) as Obj;
+    const chk = (e.lastCheck ?? {}) as Obj;
+    const valeurs = arr(e.values).map((v) => `${String(v.raw)} [${String(v.roleLabel)} ; ${arr(v.sources).map((s) => `#${String(s.sourceId)}${s.fileId ? ` doc #${String(s.fileId)}` : ''}`).join(', ')}]`).join(' ⟷ ');
+    L.push(`| #${String(e.accountId)} | #${String(e.operationId)} | ${mdInline(String(attr.label ?? attr.key))} | ${mdInline(String(role.label ?? '—'))} | ${mdInline(valeurs)} | ${mdInline(e.retainedValue as string | null)} | ${mdInline(e.persistedValue as string | null)} | ${mdInline(String(e.qualification))} | ${mdInline(String(e.reason ?? ''))} | ${chk.at ? `${parisDateTime(String(chk.at))} — ${mdInline(String(chk.at))}` : 'inconnu'} (${mdInline(String(chk.result ?? ''))}) | ${mdInline(String(e.lineState))} |`);
+  }
+  if (!arr(d.conflicts).length) L.push('| — | — | — | — | Aucune ligne active ou non vérifiable | — | — | — | — | — | — |');
+  for (const l of Array.isArray(d.limits) ? (d.limits as unknown[]) : []) L.push(`- Limite : ${mdInline(String(l))}`);
+  return L;
 }
 
 /** Copie de la PAGE affichée (liste filtrée visible). */

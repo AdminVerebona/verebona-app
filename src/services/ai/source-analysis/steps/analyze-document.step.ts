@@ -52,6 +52,7 @@ import type { AssetFamily as V2AssetFamily } from '@/lib/referential/v2';
 import {
   matchSignals, resolveAssetByIdentifiers, type IdentifierResolution,
 } from '../../reconciliation/document-asset/identifiers';
+import { addressRoleOf, admissibleIdentification, restrictIdentification, type AddressQualification } from '../../reconciliation/document-asset/address-roles';
 
 const T1_ANALYZE_DOCUMENT_OPERATION = 't1_analyze_document';
 
@@ -66,6 +67,8 @@ export interface AnalyzeDocumentResult {
   verifiedIds: Record<VerifiableTargetType, Set<number>>;
   /** Bien du document : connu, sinon unique candidat vérifié certain, sinon null. */
   documentAssetId: number | null;
+  /** Lot 113AM (#739) : rôle qualifié de chaque correspondance d'adresse (biens, rôles, provenances — jamais la valeur). */
+  addressQualifications?: AddressQualification[];
   warnings: AnalysisWarning[];
   trace: AiOperationTrace;
   promptVersion: string;
@@ -403,8 +406,28 @@ export async function analyzeDocument(
     facts: facts.map((f) => ({ canonicalKey: f.canonicalKey, value: f.normalizedValue ?? f.rawValue ?? null })),
     texts: [out.transcription, input.extractedContent, ...out.entities.assets.flatMap((a) => a.evidenceSignals)],
   });
-  const verifiedFromModel = mergeIdentifierCandidates(verification.assets, identification);
-  for (const id of identification.assetIds) verifiedIds.ASSET.add(id);
+  // Lot 113AM (#739) : une correspondance d'ADRESSE ne vaut identité du bien que si son rôle, lu dans
+  // les sorties T1 (cible vérifiée du fait, libellé qui la précède), est « lieu du bien objet du
+  // document ». L'adresse d'un souscripteur / destinataire / émetteur / de facturation / de livraison,
+  // ou sans rôle établi, n'est plus qu'un INDICE (revue du rattachement #711) : ni candidat vérifié,
+  // ni bien du document, ni lien. `identification` (complète) reste la source des indices.
+  const qualification = admissibleIdentification({
+    records: ctx.assetIdentifiers ?? [],
+    resolution: identification,
+    facts: facts.map((f) => ({
+      canonicalKey: f.canonicalKey, value: f.normalizedValue ?? f.rawValue ?? null, label: f.label ?? null, subject: f.subject ?? null,
+      rawKey: f.rawKey ?? null, targetType: f.target.type,
+      targetEntityId: f.target.entityId !== null && verifiedIds[f.target.type as VerifiableTargetType]?.has(f.target.entityId) ? f.target.entityId : null,
+    })),
+    texts: [out.transcription, input.extractedContent],
+  });
+  // Rattachement choisi par l'utilisateur : une correspondance vers un bien que le MODÈLE ne désigne pas
+  // n'est qu'un indice concurrent — ni candidat, ni lien (#739, « rattachement utilisateur existant »).
+  const admissible = knownAssetId
+    ? restrictIdentification(qualification.resolution, new Set([knownAssetId, ...verification.assets.filter((c) => c.verified && c.entityId !== null).map((c) => c.entityId as number)]))
+    : qualification.resolution;
+  const verifiedFromModel = withLinkProofs(mergeIdentifierCandidates(verification.assets, admissible), verification.assets, admissible, qualification.qualifications);
+  for (const id of admissible.assetIds) verifiedIds.ASSET.add(id);
 
   const known: LinkCandidate[] = knownAssetId
     ? [{
@@ -453,14 +476,14 @@ export async function analyzeDocument(
         },
       });
     }
-  } else if (identification.uniqueAssetId !== null) {
-    documentAssetId = identification.uniqueAssetId;
-  } else if (identification.ambiguous) {
+  } else if (admissible.uniqueAssetId !== null) {
+    documentAssetId = admissible.uniqueAssetId;
+  } else if (admissible.ambiguous) {
     documentAssetId = null;
   } else {
     documentAssetId = verifiedAssets.length === 1 && verifiedAssets[0].confidence === 'certain' ? verifiedAssets[0].entityId : null;
   }
-  if (!knownAssetId && documentAssetId === null && (verifiedAssets.length > 1 || identification.ambiguous)) {
+  if (!knownAssetId && documentAssetId === null && (verifiedAssets.length > 1 || admissible.ambiguous)) {
     warnings.push({
       code: 'AMBIGUOUS_ASSET',
       message: 'Plusieurs biens correspondent. Le rattachement sera arbitré par la réconciliation.',
@@ -491,6 +514,7 @@ export async function analyzeDocument(
     equipmentCandidates: verification.equipments,
     verifiedIds,
     documentAssetId,
+    addressQualifications: qualification.qualifications,
     warnings,
     trace: { ...mergeTrace(emptyTrace(), res, T1_ANALYZE_DOCUMENT_OPERATION), accountCapabilities: capabilityTrace },
     promptVersion: res.promptVersion,
@@ -638,6 +662,28 @@ export function mergeIdentifierCandidates(candidates: LinkCandidate[], identific
     });
   }
   return out;
+}
+
+/**
+ * Lot 113AM (#739) — preuves INTERNES de chaque candidat « bien » (pure) :
+ * désignation par le MODÈLE (candidat vérifié du modèle, jamais un ajout du
+ * serveur) et correspondances exactes ADMISSIBLES (nature, rôle qualifié
+ * d'une adresse). Lues par la garde d'admission des liens T1.
+ */
+export function withLinkProofs(
+  candidates: LinkCandidate[],
+  modelCandidates: readonly LinkCandidate[],
+  admissible: IdentifierResolution,
+  qualifications: readonly AddressQualification[],
+): LinkCandidate[] {
+  return candidates.map((c) => {
+    if (c.entityId === null) return c;
+    const designe = modelCandidates.some((m) => m.entityId === c.entityId && m.verified);
+    const identifiers = admissible.matches.filter((m) => m.assetId === c.entityId).map((m) => ({
+      kind: m.kind, via: m.via, ...(m.kind === 'ADDRESS' ? { addressRole: addressRoleOf(qualifications, m.assetId) } : {}),
+    }));
+    return { ...c, modelDesignated: designe, ...(identifiers.length ? { identifiers } : {}) };
+  });
 }
 
 type RawCandidate = T1AnalyzeDocumentOutput['entities']['assets'][number];

@@ -180,6 +180,8 @@ export const DIAG_TABLE_COVERAGE: Readonly<Record<string, DiagTableCoverage>> = 
   // ── Relations ────────────────────────────────────────────────────────────
   document_asset_links: C('relations'),
   document_asset_resolutions: C('relations'),
+  // Lot 113AM (#739) : journal de la garde d'admission des rattachements (étape, règle, preuves, rôle des adresses, issue, rattrapage).
+  document_asset_link_admissions: C('relations'),
   document_asset_identifier_changes: C('relations'),
   business_operation_sources: C('relations'),
   business_operation_documents: C('relations'),
@@ -232,6 +234,8 @@ export const DIAG_TABLE_COVERAGE: Readonly<Record<string, DiagTableCoverage>> = 
   home_mascot_acknowledgments: C('extractions-ia'),
   home_mascot_cache: C('extractions-ia'),
   home_mascot_pregen_requests: C('extractions-ia'),
+  // Lot 113AO (1670) : réservation durable des générations T6 FORMULATE par clé, formulations évitées (texte déterministe), doublons refusés — aucun contenu.
+  t6_formulate_reservations: C('extractions-ia'),
   // Lot 106B (1005) : suggestions de l'accueil passées par l'utilisateur (préférence personnelle).
   home_suggestion_skips: C('extractions-ia'),
   // Lot 108J (1085) : suggestions partagées consultées (rotation seulement, préférence personnelle).
@@ -846,7 +850,7 @@ export const DIAG_AI_OPERATION_COVERAGE: Readonly<Record<string, DiagAiOperation
   collect_evidence: { treatment: 'T1', tables: [...CALL_TRACES, 'field_evidence'] },
   compare_values: { treatment: 'T3', tables: [...CALL_TRACES, 'reconciliation_runs', 'reconciliation_decisions', 'inconsistency_registry', 'canonical_field_writes'] },
   t3_value_conflict: { treatment: 'T3', tables: [...CALL_TRACES, 'reconciliation_decisions', 'inconsistency_registry', 'canonical_field_writes', 'ai_execution_reports', 'ai_execution_report_entries', 't3_decision_memory', 'ai_reuse_counters'] },
-  t3_link_ambiguity: { treatment: 'T3', tables: [...CALL_TRACES, 'document_asset_links', 'document_asset_resolutions', 'document_identity_groups', 'document_identity_decisions', 'ai_reuse_counters'] },
+  t3_link_ambiguity: { treatment: 'T3', tables: [...CALL_TRACES, 'document_asset_links', 'document_asset_resolutions', 'document_asset_link_admissions', 'document_identity_groups', 'document_identity_decisions', 'ai_reuse_counters'] },
   t3_operation_match: { treatment: 'T3', tables: [...CALL_TRACES, 'document_operation_candidates', 'business_operation_sources', 'business_operation_match_decisions', 'business_operation_identity_reviews', 'operation_semantic_reevaluations'] },
   t3_document_naming: { treatment: 'T3', tables: [...CALL_TRACES, 'document_naming_groups', 'document_naming_members', 'document_title_events', 'document_rename_events'] },
   t3_knowledge_query: { treatment: 'T3', tables: [...CALL_TRACES, 't3_knowledge_queries'] },
@@ -869,6 +873,6 @@ export const DIAG_AI_OPERATION_COVERAGE: Readonly<Record<string, DiagAiOperation
   // Lot 97A : décision reçue, validation, mutations et rôles au journal 0752 ; consolidations d'agenda (0591).
   t4_agenda_representation: { treatment: 'T4', tables: [...CALL_TRACES, 'operation_semantic_reevaluations', 'agenda_items', 'agenda_intervention_consolidations'] },
   evaluate_prompt: { treatment: 'GOUVERNANCE', tables: ['ai_usage_event', 'ai_prompt_versions', 'ai_master_prompt_versions'] },
-  t6_formulate: { treatment: 'T6', tables: [...CALL_TRACES, 'home_mascot_generations', 'home_mascot_cache', 'home_mascot_events'] },
+  t6_formulate: { treatment: 'T6', tables: [...CALL_TRACES, 'home_mascot_generations', 'home_mascot_cache', 'home_mascot_events', 't6_formulate_reservations'] },
   t6_evaluate: { treatment: 'T6', tables: [...CALL_TRACES, 't6_evaluation_runs', 't6_interpellation_assessments', 't6_candidate_examinations'] },
 };

@@ -66,6 +66,12 @@
  *      reconstituables », preuves actives vers des biens / documents absents
  *      retirées de l'usage actif ; même moteur que COH-DOC-FACT-PROVENANCE ;
  *      jamais automatique ; sans appel IA ; restaurable par exécution ;
+ *  22. T6 : rattachement des appels à leur exécution T6 (lot 113AO, Trello
+ *      #748) — appels t6_formulate / t6_evaluate rattachés à tort à l'exécution
+ *      T1 qui avait demandé la pré-génération ; rattachés à leur exécution T6
+ *      seulement avec preuve (opération, trace, compte, dates), l'ancienne
+ *      valeur conservée comme lien de causalité ; jamais automatique ; sans
+ *      appel IA ; restaurable par exécution ;
  *   0. Point de restauration de la base (lot 82E, décisions PO C-Q8 / D13) :
  *      « Appliquer » crée un point (même mécanisme que la sauvegarde
  *      nocturne) ; « Restaurer » ramène la base à un point (contrôle de
@@ -77,7 +83,7 @@
  * services.
  */
 
-export type BackfillScript = 'database-restore-point' | 'merge-rooms' | 'document-asset-links' | 'agenda' | 'cdc15' | 'asset-account' | 'operations-structured' | 'claims-legacy-cleanup' | 'cross-account' | 'equipment-separation' | 'document-validation' | 'duo-shared-account' | 'agenda-intervention-duplicates' | 'to-process-false-arbitrations' | 'operations-v5-rebuild' | 'ai-history-reclassification' | 'missing-properties-catchup' | 'projection-property-evidence' | 'extract-chain-decision-review' | 'business-periods-v2-requalification' | 'ai-cost-classification' | 'source-unit-provenance';
+export type BackfillScript = 'database-restore-point' | 'merge-rooms' | 'document-asset-links' | 'agenda' | 'cdc15' | 'asset-account' | 'operations-structured' | 'claims-legacy-cleanup' | 'cross-account' | 'equipment-separation' | 'document-validation' | 'duo-shared-account' | 'agenda-intervention-duplicates' | 'to-process-false-arbitrations' | 'operations-v5-rebuild' | 'ai-history-reclassification' | 'missing-properties-catchup' | 'projection-property-evidence' | 'extract-chain-decision-review' | 'business-periods-v2-requalification' | 'ai-cost-classification' | 'source-unit-provenance' | 'document-address-links' | 't6-execution-attribution';
 export type BackfillAction = 'simulate' | 'apply' | 'restore';
 export type BackfillStatus = 'running' | 'succeeded' | 'failed' | 'interrupted';
 
@@ -518,6 +524,41 @@ export const BACKFILL_DEFINITIONS: readonly BackfillDefinition[] = [
       + 'de l’utilisateur touchée. Simuler : rapport par statut (compte, document, fait ou preuve, unité, cause), rien n’est écrit. Appliquer '
       + '(motif obligatoire) : corrections et journal ; relancé, rien n’est réécrit. Restaurer (avec l’identifiant donné dans le rapport) : remet '
       + 'l’état d’avant sur les objets de cette exécution qui n’ont pas changé depuis.',
+    actions: ['simulate', 'apply', 'restore'],
+    accountFilter: true,
+  },
+  {
+    // Lot 113AM (Trello #739) — textes à valider par le PO.
+    script: 'document-address-links',
+    order: 22,
+    label: 'Rattachements : liens automatiques fondés sur une adresse de correspondance',
+    command: 'BO uniquement (aucune commande) — jamais lancé automatiquement',
+    description: 'Avant le lot 113AM, une adresse lue dans un document (souscripteur, destinataire, facturation, livraison, émetteur) égale '
+      + 'à celle d’un bien du compte suffisait à relier automatiquement le document à ce bien (exemple : avis d’assurance d’un vélo relié à '
+      + 'la Maison). Ce rattrapage rejuge chaque lien AUTOMATIQUE avec la règle actuelle, à partir des seules données enregistrées (faits '
+      + 'et texte de l’analyse, désignation du modèle, décisions T3) : il ne retient que les liens dont la seule justification est une '
+      + 'adresse qui n’est pas celle du lieu du bien. Un lien confirmé par l’utilisateur n’est jamais touché ; un lien appuyé sur une autre '
+      + 'preuve (fait, identifiant, référence, nom, décision appuyée) est conservé. Aucun appel IA. Simuler : liste des liens concernés, '
+      + 'rien n’est écrit. Appliquer (motif obligatoire) : liens retirés (jamais supprimés), rattachement principal automatique remis à '
+      + 'vide, bien réconcilié (fiche, événements, Opérations) et rattachement du document réexaminé ; relancé, rien n’est réécrit. '
+      + 'Restaurer (avec l’identifiant donné dans le rapport) : remet les liens de cette exécution qui n’ont pas changé depuis.',
+    actions: ['simulate', 'apply', 'restore'],
+    accountFilter: true,
+  },
+  {
+    // Lot 113AO (Trello #748, B) — textes à valider par le PO.
+    script: 't6-execution-attribution',
+    order: 23,
+    label: 'T6 : rattachement des appels de la mascotte à leur exécution T6',
+    command: 'BO uniquement (aucune commande) — jamais lancé automatiquement',
+    description: 'Avant le lot 113AO, une pré-génération de la mascotte demandée à la fin d’une analyse de document héritait de l’exécution de '
+      + 'cette analyse : ses appels T6 (formulation, évaluation) étaient comptés dans l’exécution T1 (exemple : appel rattaché à « T1:job:… »), '
+      + 'et l’exécution T6 réelle affichait zéro appel. Ce rattrapage rattache chaque appel T6 concerné à SON exécution T6, seulement avec '
+      + 'preuve : opération T6 de l’appel, même trace d’exécution qu’une génération ou une évaluation T6, même compte, dates concordantes. '
+      + 'L’exécution d’origine reste lisible comme « déclencheur » de l’appel. Aucun appel T1 légitime n’est touché, aucun appel IA, aucun coût '
+      + 'recalculé. Simuler : rapport des appels prouvés, non prouvés (motif) et des exécutions concernées, rien n’est écrit. Appliquer (motif '
+      + 'obligatoire) : rattachement et trace ; relancé, rien n’est réécrit. Restaurer (avec l’identifiant donné dans le rapport) : remet le '
+      + 'rattachement d’avant sur les appels de cette exécution qui n’ont pas changé depuis.',
     actions: ['simulate', 'apply', 'restore'],
     accountFilter: true,
   },

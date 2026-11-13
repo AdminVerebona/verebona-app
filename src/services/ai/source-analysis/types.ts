@@ -70,6 +70,15 @@ export interface LinkCandidate {
   excerpt: string;
   /** false tant que `identifier-verifier` n'a pas confirmé l'existence. */
   verified: boolean;
+  /**
+   * Lot 113AM (#739, contrat INTERNE — jamais produit par le modèle) : preuves
+   * serveur du candidat, pour la garde d'admission des liens. `modelDesignated`
+   * : le MODÈLE T1 l'a désigné (et non un enrichissement serveur) ;
+   * `identifiers` : correspondances exactes ADMISSIBLES (natures, rôle
+   * qualifié d'une adresse), jamais leur valeur.
+   */
+  modelDesignated?: boolean;
+  identifiers?: Array<{ kind: string; via: 'fact' | 'text'; addressRole?: string }>;
 }
 
 /** Champ extrait, destiné au moteur de réconciliation (usage 2). */

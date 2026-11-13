@@ -59,6 +59,8 @@ import { documentPrimaryLinkCheck } from './checks/document-primary-link';
 import { documentBusinessPeriodsCheck } from './checks/document-business-periods';
 import { operationsPeriodResolutionCheck } from './checks/operations-period-resolution';
 import { factProvenanceCheck } from './checks/fact-provenance';
+// Lot 113AQ (ticket #750 « T3 / Opérations — faux conflits d'attributs », BO #12).
+import { operationsAttributeConflictsCheck } from './checks/operations-attribute-conflicts';
 import { documentDescriptionT1Check } from './checks/document-description-t1';
 // Lot 106A : représentations équivalentes d'un même fait réalisé, toutes origines (fin de registre).
 import { agendaEquivalentRepresentationsCheck } from './checks/agenda-equivalent-representations';
@@ -181,6 +183,8 @@ export const COHERENCE_REGISTRY: readonly CoherenceCheck[] = [
   operationsPeriodResolutionCheck,
   // Lot 113AK (ticket #736 « T1 / Preuves — liens vers unités sources, preuves orphelines ») : ajouté EN FIN de registre, après COH-OPS-PERIOD-RESOLUTION (113AA).
   factProvenanceCheck,
+  // Lot 113AQ (ticket #750 « T3 / Opérations — faux conflits d'attributs », BO #12) : ajouté EN FIN de registre, après COH-DOC-FACT-PROVENANCE (113AK).
+  operationsAttributeConflictsCheck,
 ];
 
 /** Contrôles exécutés par l'orchestrateur (les points d'extension PLANNED sont exclus). */

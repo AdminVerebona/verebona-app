@@ -28,6 +28,7 @@ import { EcranEnErreur } from '@/components/admin/EcranEnErreur';
 import { formatDateTime } from '@/lib/admin/format';
 import type { AnomalyDetail } from '@/services/admin/anomaly.service';
 import { AnomalyCopyButtons } from '@/app/admin/_dashboard/AnomalyExport';
+import { AttributeConflictsPanel } from './AttributeConflictsPanel';
 
 const AUTO_ORIGIN_LABEL: Record<string, string> = {
   stripe_webhook_retry: 'Relance du webhook Stripe traitée avec succès',
@@ -218,6 +219,9 @@ export default function AnomalyTreatmentPage({ params }: { params: Promise<{ id:
           {anomaly.technicalDetail ? JSON.stringify(anomaly.technicalDetail, null, 2) : '—'}
         </pre>
       </div>
+
+      {/* Lot 113AQ (#751) : contradictions d'attributs d'Opération — diagnostic par Opération × attribut (lecture seule). */}
+      {anomaly.domain === 'other' && anomaly.technicalDetail?.code === 'IDENTITY_ATTRIBUTE_CONFLICT' && <AttributeConflictsPanel id={anomaly.id} />}
 
       <div className="rounded-xl border bg-card p-4 space-y-4">
         <p className="text-sm font-medium">Traitement</p>

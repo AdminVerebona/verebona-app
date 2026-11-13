@@ -108,6 +108,13 @@ export interface CoveredSourceUnit extends SourceUnit, UnitCoverage {
   repairAttempts: number;
   /** Lot 49B : état de réparation (null : aucune réparation requise). */
   repairState?: RepairState | null;
+  /**
+   * Lot 113AN (#741) : provenance d'une requalification par la réconciliation
+   * (règle, sources, références, état d'avant) — `coverage-reconciliation.ts`.
+   */
+  coverageProvenance?: import('./coverage-reconciliation').CoverageProvenance | null;
+  /** Lot 113AN : politique explicite d'une unité non couverte (`residualPolicyOf`) ; null si couverte. */
+  residualPolicy?: string | null;
 }
 
 /** Motifs de conservation d'un fait non intégré tel quel (`document_unresolved_facts`). */
@@ -212,6 +219,34 @@ export interface T1CoverageDiagnostics {
   textLayer?: { origin: string; sourceSha256: string };
   /** Lot 109K (COR-02) : dernière propagation d'une réparation vers les candidats / T3 (résumé borné). */
   repairPropagation?: Record<string, unknown>;
+  /**
+   * Lot 113AN (#741) — réparation ciblée de COUVERTURE (appels ANALYZE_DOCUMENT
+   * « extrait ciblé », distincts des réparations JSON de la passerelle comptées
+   * `repairCalls` par le BO) : passes, appels, unités ciblées / soumises /
+   * résolues, décisions de valeur reçues, motif d'absence de réparation.
+   */
+  coverageRepair?: T1CoverageRepairDiagnostics;
+  /** Lot 113AN : réconciliation des unités avec les données structurées (compteurs par règle). */
+  reconciliation?: import('./coverage-reconciliation').ReconciliationSummary;
+  /** Lot 113AN : unités non couvertes par politique (`REPAIR_ATTEMPTED_NO_RESULT`, `PRESERVED_UNSTRUCTURED`…). */
+  residualPolicies?: Record<string, number>;
+}
+
+/** Lot 113AN — réparation ciblée de couverture pendant l'analyse (compteurs, jamais de contenu). */
+export interface T1CoverageRepairDiagnostics {
+  passes: number;
+  calls: number;
+  /** Unités sélectionnées (après réconciliation) / soumises / couvertes à l'issue. */
+  selected: number;
+  attempted: number;
+  resolved: number;
+  /** Faits prouvés ajoutés ; relectures identiques d'un fait existant (confirmations, jamais un doublon). */
+  factsAdded: number;
+  factsConfirmed: number;
+  /** Décisions de valeur rendues par la réparation (rattachées à une unité ciblée). */
+  decisions: number;
+  /** Motif d'absence de réparation : DISABLED (T1_MAX_REPAIR_PASSES=0), BELOW_MIN_UNITS, NO_TARGET ; null : exécutée. */
+  skipped: string | null;
 }
 
 export const T1_COMPLETENESS_ANOMALIES = [

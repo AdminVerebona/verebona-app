@@ -196,7 +196,11 @@ scenario('L78A', 'Identité économique des Opérations : M1/M2 sécurisés, cor
     expect(await realise(op76)).toBe(27735 + 3 * 49_000_000);
     expect((await k.operations(compte)).find((o) => o.id === op76)!.realized_date).toBe('2025-05-12');
     const prov = async () => (await sql<{ p: Record<string, any> }[]>`SELECT attribute_provenance AS p FROM business_operations WHERE id = ${op76}`)[0].p;
-    expect((await prov()).conflicts.map((c: { field: string }) => c.field)).toEqual(['realizedDate', 'provider']);
+    // Lot 113AQ (#750) — test aligné : seul le MÊME attribut du MÊME rôle se contredit. La date de réalisation (facture /
+    // acte, même rôle « réalisation », fait unique d'un achat) reste une contradiction active ; les prestataires (fournisseur
+    // facturant / office notarial rédacteur de l'acte) sont des RÔLES différents : divergence légitime, consultable.
+    expect((await prov()).conflicts.map((c: { field: string }) => c.field)).toEqual(['realizedDate']);
+    expect((await prov()).divergences.map((c: { field: string; reasonCode: string }) => [c.field, c.reasonCode])).toEqual([['provider', 'ROLES_DIFFER']]);
     expect(await k.anomaliesDures(compte.id)).toMatchObject({ IDENTITY_ATTRIBUTE_CONFLICT: 1 });
     const projection = await import('@/services/business-operations/agenda-projection/service');
     await projection.projectAccountOperations(compte.id, { all: true, today: RECETTE_TODAY });

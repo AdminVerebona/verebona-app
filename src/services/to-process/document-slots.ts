@@ -38,6 +38,8 @@ import type { ActionProposal, ValueOrigin } from './action-model';
 import { unnamedLabel } from './card-labels';
 import { parseDocumentDate } from './document-field-evidence';
 import { explicitNoAssetSql } from './no-asset-choice';
+import { admitDocumentAssetLink, type LinkJustification } from '@/services/documents/document-asset-links/admission';
+import { logLinkRefusal, recordLinkAdmission } from '@/services/documents/document-asset-links/admission-journal';
 
 /** Client de base : transaction en cours ou `db` (même contrat que `resolve-action`). */
 type SlotClient = Pick<typeof db, 'select' | 'update' | 'insert'>;
@@ -62,6 +64,13 @@ interface AutoWriteMeta {
    */
   valueKind?: 'EXPLICIT' | 'CALCULATED' | 'ESTIMATED';
   derivation?: unknown;
+  /**
+   * Lot 113AM (#739) : justification du rattachement automatique (slot
+   * `assetIds` seulement) — jugée par la garde partagée AVANT l'écriture de la
+   * colonne (reflétée en lien LEGACY_COLUMN par le déclencheur 0221). Absente :
+   * écriture refusée (fail-closed).
+   */
+  justification?: LinkJustification;
 }
 
 let colonnesNature: { at: number; ok: boolean } | null = null;
@@ -355,9 +364,19 @@ export const ASSET_LINK_SLOT: DocumentSlot = {
       origin: null,
     };
   },
-  async writeAuto(client, accountId, fileId, value) {
+  async writeAuto(client, accountId, fileId, value, meta) {
     const id = asPositiveId(value);
     if (id === null || !(await assetOfAccount(client, accountId, id))) return false;
+    // Lot 113AM (#739) : garde d'admission partagée — un rattachement automatique sans preuve de
+    // pertinence pour CE bien (adresse de correspondance seule, contexte seul, aucune justification)
+    // n'écrit jamais la colonne. Refus journalisé.
+    const admission = admitDocumentAssetLink('AI', meta?.justification);
+    const rec = { accountId, fileId, target: { assetId: id }, writeKind: 'PRIMARY_COLUMN' as const, justification: meta?.justification, decision: admission };
+    if (!admission.admitted) {
+      logLinkRefusal(rec);
+      await recordLinkAdmission({ ...rec, origin: 'AI', role: 'PRIMARY' });
+      return false;
+    }
     // Jamais par-dessus un rattachement de l'utilisateur, ni un retrait de
     // l'utilisateur. Lot 31B : la colonne posée AUTOMATIQUEMENT porte sa
     // marque (`user_edited_fields.assetIdAuto` = bien écrit) ; tant que la
@@ -380,6 +399,7 @@ export const ASSET_LINK_SLOT: DocumentSlot = {
         sql.raw(`NOT ${explicitNoAssetSql('asset_files')}`),
       ))
       .returning({ id: assetFiles.id });
+    if (rows.length > 0) await recordLinkAdmission({ ...rec, origin: 'AI', role: 'PRIMARY', detail: { outcome: 'column_written' } });
     return rows.length > 0;
   },
   async writeUser(client, accountId, fileId, value) {

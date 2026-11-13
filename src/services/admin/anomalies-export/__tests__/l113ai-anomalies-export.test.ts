@@ -222,7 +222,7 @@ describe('L113AI-U08 — JSON versionné', () => {
     const recs = [toExportRecord(source(), BASE), toExportRecord(source({ id: 43 }), BASE)];
     const text = anomalyJsonHead({ ...meta, total: 2, snapshotAt: new Date('2026-11-10T16:00:00Z') }) + recs.map(anomalyJsonItem).join('') + anomalyJsonTail(2, 2);
     const doc = JSON.parse(text);
-    expect(doc).toMatchObject({ format: 'verebona.bo-anomalies/1', schema: 'verebona.bo-anomalies', schemaVersion: 1, total: 2, exported: 2, complete: true, timeZone: 'Europe/Paris' });
+    expect(doc).toMatchObject({ format: 'verebona.bo-anomalies/2', schema: 'verebona.bo-anomalies', schemaVersion: 2, total: 2, exported: 2, complete: true, timeZone: 'Europe/Paris' });
     expect(doc.generatedAtParis).toBe('10/11/2026 17:05:03');
     expect(doc.filters).toEqual({ status: 'open', sort: 'date', dir: 'desc' });
     expect(doc.items.map((i: { id: number }) => i.id)).toEqual([42, 43]);

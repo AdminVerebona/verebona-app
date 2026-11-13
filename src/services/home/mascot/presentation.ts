@@ -68,6 +68,12 @@ export function buildPresentation(p: {
    * INDÉPENDANTE de `degraded` (sources métier du collecteur).
    */
   deadlinesDegraded?: boolean;
+  /**
+   * Lot 113AO (#748, A) : textes entièrement calculés par le serveur, servis
+   * sans formulation (aucun appel) — source `deterministic` (jamais `fallback`,
+   * qui signale une formulation indisponible, en cours ou rejetée).
+   */
+  deterministic?: boolean;
 }): MascotPresentation {
   const evaluation = p.evaluation ?? 'OK';
   const deadlinesDegraded = p.deadlinesDegraded === true;
@@ -154,7 +160,7 @@ export function buildPresentation(p: {
   return withState({
     ...base,
     status: p.degraded ? 'degraded' : 'ok',
-    source: p.messages ? 't6' : 'fallback',
+    source: p.messages ? 't6' : p.deterministic ? 'deterministic' : 'fallback',
     paragraphs,
   });
 }

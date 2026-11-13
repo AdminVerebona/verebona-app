@@ -232,7 +232,8 @@ scenario('L79A', 'BO « Rétablir » une séparation automatique d\'identité é
     // Contradiction fondatrice / source rétablie : arbitrée au BO (tracée à part), plus « à examiner ».
     const [p] = await sql<{ p: { conflicts: unknown[]; arbitratedConflicts?: Array<{ field: string }> } }[]>`SELECT attribute_provenance AS p FROM business_operations WHERE id = ${op76}`;
     expect(p.p.conflicts).toEqual([]);
-    expect(p.p.arbitratedConflicts?.map((c) => c.field)).toEqual(['realizedDate', 'provider']);
+    // Lot 113AQ (#750) — test aligné : prestataires de rôles différents (facturant / office notarial) = divergence légitime, plus une contradiction.
+    expect(p.p.arbitratedConflicts?.map((c) => c.field)).toEqual(['realizedDate']);
     expect(await k.anomaliesDures(compte.id)).toEqual({});
     // Stable : un passage de plus n'écrit rien.
     const h = await k.historique(compte);

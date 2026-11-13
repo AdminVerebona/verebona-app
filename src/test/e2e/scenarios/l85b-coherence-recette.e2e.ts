@@ -284,7 +284,7 @@ scenario('L85B', 'Cohérence C7 : familles « À traiter », réévaluation hist
     const maison = await make.asset(c, { category: 'IMMOBILIER', name: 'Maison' });
     const f = await make.assetFile(c, { assetId: studio.id });
     const { linkDocumentToAsset } = await import('@/services/documents/document-asset-links/document-asset-links.service');
-    await linkDocumentToAsset({ accountId: c.id, fileId: f.id, target: { assetId: studio.id }, role: 'PRIMARY', origin: 'AI' });
+    await linkDocumentToAsset({ accountId: c.id, fileId: f.id, target: { assetId: studio.id }, role: 'PRIMARY', origin: 'AI', justification: { step: 'OTHER', rule: 'E2E_FIXTURE', proofs: [{ kind: 'MODEL_DESIGNATION' }] } });
     const { proposeDocumentAssetConflict } = await import('@/services/to-process/document-asset-conflict');
     expect(await proposeDocumentAssetConflict({ accountId: c.id, fileId: f.id, currentAssetId: studio.id, suggestedAssetId: maison.id, basis: 'IDENTIFIER' as never }))
       .toMatchObject({ status: 'CREATED' });

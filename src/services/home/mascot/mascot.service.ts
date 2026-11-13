@@ -41,6 +41,9 @@ import {
 } from './t6-interpellation.service';
 import type { MascotRawData } from './signals';
 import { t6InterpellationAvailable, t6ReminderAvailable } from './t6-runner';
+import { deterministicKeyOf, planT6Formulation, recomposeT6Messages, type T6FormulationPlan } from './t6-wording-need';
+import { t6ReservationDbStore } from './t6-formulate-reservation';
+import { currentT6Trigger, inT6Execution } from './t6-execution-scope';
 
 /**
  * Lot 60 : `userId` — utilisateur qui regarde l'accueil. Ses préférences de
@@ -207,11 +210,14 @@ export async function getMascotPresentation(
   // Bulle telle qu'affichée sans reformulation (texte déterministe).
   const secours = buildPresentation({ subjects, secondaries: baseSecondaries, messages: null, ...commun });
   const today = raw.today ?? parisDay();
-  const rapport = (p: MascotPresentation, status: string | null, promptVersion: string | null) =>
+  const rapport = (p: MascotPresentation, status: string | null, promptVersion: string | null, plan?: T6FormulationPlan) =>
     void writeT6InterpellationReport({
       accountId, userId, mode, prep: interpellation,
       formulate: {
-        promptVersion, contract: 't6-output-v2', transmitted: subjects.map((x) => x.subjectId),
+        promptVersion, contract: 't6-output-v2',
+        // Lot 113AO (A) : seuls les sujets réellement confiés à FORMULATE sont « transmis ».
+        transmitted: (plan ? plan.formulate.map((i) => subjects[i]) : subjects).map((x) => x.subjectId),
+        ...(plan?.deterministic.length ? { deterministicSubjects: plan.deterministic.map((i) => subjects[i].subjectId) } : {}),
         displayed: p.paragraphs.filter((x) => x.sourceCode !== 'CLEAR').map((x) => x.subjectId),
         source: p.source, status, presentation: p.state?.kind ?? null, suggestions: null, homeSuggestions: null,
       },
@@ -227,13 +233,31 @@ export async function getMascotPresentation(
     return withRefreshHint(secours, interpellation);
   }
 
-  const input = buildT6Input(subjects);
   // Nature de la tuile de chaque sujet (pose graduée) : nuances R9 du master T6.
   const kinds = subjects.map((s) => tileFor(s, today, tiles).kind);
-  const outcome = await formulateWithT6({ accountId, input, contextHash, mode, kinds });
+  // Lot 113AO (#748, A) : besoin rédactionnel qualifié PAR LE SERVEUR, en amont de
+  // la passerelle — un sujet dont le texte fiable est entièrement calculable est
+  // servi tel quel (aucun appel, aucun jeton) ; seuls les autres partent à FORMULATE.
+  const plan = planT6Formulation(subjects, kinds);
+  if (plan.deterministic.length > 0) {
+    const det = plan.deterministic.map((i) => subjects[i]);
+    void t6ReservationDbStore.noteDeterministic({
+      accountId, cacheKey: deterministicKeyOf(accountId, det), sourceCodes: det.map((x) => x.sourceCode), subjects: det.length,
+    }).catch(() => {});
+  }
+  if (plan.formulate.length === 0) {
+    const deterministe = buildPresentation({ subjects, secondaries: baseSecondaries, messages: null, deterministic: true, ...commun });
+    rapport(deterministe, 'deterministic', null, plan);
+    return withRefreshHint(deterministe, interpellation);
+  }
+  const cibles = plan.formulate.map((i) => subjects[i]);
+  const input = buildT6Input(cibles);
+  const outcome = await formulateWithT6({ accountId, input, contextHash, mode, kinds: plan.formulate.map((i) => kinds[i]) });
   void logT6({ accountId, contextHash, mode, outcome, input });
-  const finale = buildPresentation({ subjects, secondaries: baseSecondaries, messages: outcome.messages, ...commun });
-  rapport(finale, outcome.status, outcome.promptVersion);
+  // Bulle recomposée dans l'ordre de la sélection (1 ou 2 sujets, ancrages conservés).
+  const messages = plan.deterministic.length > 0 ? recomposeT6Messages(subjects, plan, outcome.messages) : outcome.messages;
+  const finale = buildPresentation({ subjects, secondaries: baseSecondaries, messages, ...commun });
+  rapport(finale, outcome.status, outcome.promptVersion, plan);
   return withRefreshHint(finale, interpellation);
 }
 
@@ -310,16 +334,20 @@ const timers = new Map<number, ReturnType<typeof setTimeout>>();
  * une exposition (RUN-011) — elle n'écrit aucune télémétrie produit.
  */
 export function scheduleMascotPregeneration(accountId: number, delayMs = PREGEN_DEBOUNCE_MS, reason = 'change'): void {
+  // Lot 113AO (#748, B) : déclencheur métier (fin d'analyse T1…) mémorisé comme
+  // lien de causalité ; la pré-génération s'exécute dans SA portée T6 (jamais
+  // dans le contexte du travail qui l'a demandée).
+  const causedBy = currentT6Trigger();
   const enregistree = import('./pregen-queue')
-    .then((q) => q.requestMascotPregeneration(accountId, reason))
+    .then((q) => q.requestMascotPregeneration(accountId, reason, { causedBy }))
     .catch(() => {});
   const prev = timers.get(accountId);
   if (prev) clearTimeout(prev);
   const t = setTimeout(() => {
     timers.delete(accountId);
-    void enregistree
+    void inT6Execution(() => enregistree
       .then(() => import('./pregen-queue'))
-      .then((q) => q.processMascotPregenerationFor(accountId))
+      .then((q) => q.processMascotPregenerationFor(accountId)), { causedBy })
       .catch((e) => console.error('[mascotte] pré-génération en échec :', (e as Error).message));
   }, delayMs);
   // Ne retient pas le processus à l'arrêt.

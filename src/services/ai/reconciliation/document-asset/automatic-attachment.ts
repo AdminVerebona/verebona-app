@@ -15,7 +15,7 @@
  * utilisateur — elle est donc fermée AVANT (`closeAssetLinkQuestion`).
  */
 import { db, pgClient } from '@/db';
-import { linkDocumentToAsset } from '@/services/documents/document-asset-links';
+import { linkDocumentToAsset, type LinkJustification } from '@/services/documents/document-asset-links';
 import { ASSET_LINK_SLOT } from '@/services/to-process/document-slots';
 import { resolveActionsForData } from '@/services/to-process/to-process-action.service';
 
@@ -26,22 +26,29 @@ export function closeAssetLinkQuestion(accountId: number, fileId: number): Promi
 
 /**
  * Colonne de rattachement principal posée automatiquement (vide, ou déjà
- * automatique). Refusée si l'utilisateur a choisi ou retiré un bien.
+ * automatique). Refusée si l'utilisateur a choisi ou retiré un bien, et
+ * (lot 113AM, #739) si la garde d'admission refuse la justification.
  */
-export function writeAutomaticPrimaryColumn(accountId: number, fileId: number, assetId: number): Promise<boolean> {
-  return ASSET_LINK_SLOT.writeAuto(db, accountId, fileId, assetId, { origin: 'RECONCILIATION', confidence: 1 });
+export function writeAutomaticPrimaryColumn(accountId: number, fileId: number, assetId: number, justification: LinkJustification): Promise<boolean> {
+  return ASSET_LINK_SLOT.writeAuto(db, accountId, fileId, assetId, { origin: 'RECONCILIATION', confidence: 1, justification });
 }
 
-/** Rattachement automatique complet (lien N-N AI + colonne pour un PRIMARY). */
+/**
+ * Rattachement automatique complet (lien N-N AI + colonne pour un PRIMARY).
+ * Lot 113AM : la justification (étape, règle, preuves) est jugée par la garde
+ * partagée avant CHAQUE écriture ; un lien refusé n'écrit pas non plus la
+ * colonne (`linked: false`).
+ */
 export async function attachAutomatically(p: {
-  accountId: number; fileId: number; assetId: number; role: 'PRIMARY' | 'SECONDARY'; confidence: number;
-}): Promise<{ columnWritten: boolean }> {
-  await linkDocumentToAsset({
+  accountId: number; fileId: number; assetId: number; role: 'PRIMARY' | 'SECONDARY'; confidence: number; justification: LinkJustification;
+}): Promise<{ columnWritten: boolean; linked: boolean }> {
+  const r = await linkDocumentToAsset({
     accountId: p.accountId, fileId: p.fileId, target: { assetId: p.assetId },
-    role: p.role, origin: 'AI', confidence: p.confidence,
+    role: p.role, origin: 'AI', confidence: p.confidence, justification: p.justification,
   });
-  const columnWritten = p.role === 'PRIMARY' ? await writeAutomaticPrimaryColumn(p.accountId, p.fileId, p.assetId) : false;
-  return { columnWritten };
+  if (r.outcome === 'refused') return { columnWritten: false, linked: false };
+  const columnWritten = p.role === 'PRIMARY' ? await writeAutomaticPrimaryColumn(p.accountId, p.fileId, p.assetId, p.justification) : false;
+  return { columnWritten, linked: true };
 }
 
 /**

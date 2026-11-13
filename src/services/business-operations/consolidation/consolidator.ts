@@ -78,6 +78,10 @@ import {
   splitArbitratedConflicts, type IdentityReviewEntry,
 } from './identity-review';
 import { computeProvenance, isDurableRelationType, type AttributeProvenance, type ComponentEvidence } from './model';
+import {
+  ATTRIBUTE_CONFLICT_RULES, ATTRIBUTE_CONFLICT_RULES_VERSION, markAdminArbitrated, qualifyAttributeConflicts,
+  type QualifiedAttributeConflict, type RawAttributeConflict,
+} from './attribute-conflicts';
 // Lot 82D (CDC v5 O-1) : Pièces et décisions utilisateur par le service unique de regroupement.
 import { rejectedSubjects } from '../grouping/decisions';
 import { runnerContext, structuralTargetAllowedFor, syncOperationRoomsFromT3 } from '../grouping/service';
@@ -636,6 +640,8 @@ interface OpSource {
   /** Lot 43 : nature d'une source ASSET_DATA (ACQUISITION, DISPOSAL, CONTRACT). */
   nature: string | null;
   managed: boolean; decision: Record<string, unknown> | null;
+  /** Lot 113AQ : autorité persistée de la source (USER, DOCUMENT, STRUCTURED, INFERENCE). */
+  authority?: string | null;
 }
 
 /** Contexte d'une contribution AGENDA (lot 47B) : Opération et autres preuves. */
@@ -724,7 +730,7 @@ export async function reconsolidateOperation(
   if (op.mergedIntoOperationId !== null) return;
 
   const srcRows = await rows<Row>(tx, sql`
-    SELECT id, source_kind, source_entity_key, locator->>'candidateKey' AS key,
+    SELECT id, source_kind, source_entity_key, locator->>'candidateKey' AS key, authority,
            CASE WHEN source_kind = 'ASSET_DATA' THEN locator->>'nature' END AS nature,
            CASE WHEN source_kind = 'AGENDA' THEN locator->>'agenda' END AS agenda,
            CASE WHEN source_kind = ${DECISION_SOURCE_KIND} AND locator ? 'decision' THEN locator END AS decision
@@ -737,6 +743,7 @@ export async function reconsolidateOperation(
     managed: (x.source_kind === 'DOCUMENT' && x.key !== null) || (x.source_kind === 'ASSET_DATA' && x.nature !== null)
       || (x.source_kind === 'AGENDA' && x.agenda !== null),
     decision: (x.decision as Record<string, unknown> | null) ?? null,
+    authority: (x.authority as string | null) ?? null,
   }));
   const decisions = sources.filter((x) => x.decision !== null);
   // Lot 47B (TRG-014, F-087) : une annulation d'agenda ne vaut que si rien d'autre ne prouve l'Opération.
@@ -927,26 +934,55 @@ export async function reconsolidateOperation(
   const apres = await repo.load(operationId, { allowInactive: true });
   const label = apres.technicalLabel === null ? undefined
     : contributions.find((c) => c.identity.summary.slice(0, 200) === apres.technicalLabel);
+  // Lot 113AQ (#750) : le relevé 78A est QUALIFIÉ (même attribut, même rôle, même fait) avant d'être persisté —
+  // seules les lignes actives ou non vérifiables restent « contradictions » ; les autres faits restent consultables.
+  const qualifiees = state.attributeConflicts.length
+    ? qualifyAttributeConflicts(state.attributeConflicts, {
+      type: state.type, contributions, provenance: state.provenance,
+      sourceMeta: new Map(sources.map((x) => [x.id, { authority: x.authority ?? null, kind: x.kind }])),
+      suspectSourceIds: await loadSuspectSourceIds(tx, accountId, operationId),
+    })
+    : { alerting: [], divergences: [] };
+  const courant = (c: QualifiedAttributeConflict): QualifiedAttributeConflict => ({ ...c, current: (apres[c.field] as string | null | undefined) ?? null });
   // Lot 79A : une contradiction due SEULEMENT à une source rétablie au BO est arbitrée (tracée à part, hors anomalie).
-  const conflits = state.attributeConflicts.length
-    ? splitArbitratedConflicts(state.attributeConflicts, await loadAdminRestoredSourceIds(tx, accountId, [operationId]))
-    : { open: state.attributeConflicts, arbitrated: [] };
+  const conflits = qualifiees.alerting.length
+    ? splitArbitratedConflicts(qualifiees.alerting, await loadAdminRestoredSourceIds(tx, accountId, [operationId]))
+    : { open: qualifiees.alerting, arbitrated: [] };
   await writeAttributeProvenance(tx, accountId, operationId, {
     ...state.provenance, ...(label && apres.technicalLabel ? { label: { sourceId: label.sourceId, value: apres.technicalLabel } } : {}),
-  }, conflits.open, conflits.arbitrated);
+  }, conflits.open.map(courant), conflits.arbitrated.map((c) => courant(markAdminArbitrated(c))), qualifiees.divergences.map(courant));
   // Lot 55B (E) : dernière réconciliation RÉELLEMENT effectuée (ni historique, ni version).
   await repo.markReconciled(operationId);
 }
 
 // ── Lot 78A : provenance des attributs ─────────────────────────────────────
 
-/** Provenance stockée (0609) : champs → { source, valeur } ; contradictions d'attributs. */
+/**
+ * Provenance stockée (0609) : champs → { source, valeur } ; contradictions d'attributs.
+ * Lot 113AQ : version 2 — chaque ligne est QUALIFIÉE (`attribute-conflicts.ts`) : `conflicts` ne garde que les
+ * lignes qui maintiennent l'alerte ; `divergences` conserve les faits légitimement différents ou tranchés.
+ * Une version 1 (relevé brut) est relue comme « non requalifiée » par le diagnostic #751.
+ */
 interface StoredAttributeProvenance {
-  version: 1;
+  version: 1 | 2;
+  rules?: string;
   fields: AttributeProvenance & { label?: { sourceId: number; value: string } };
-  conflicts: ReturnType<typeof consolidateOperationState>['attributeConflicts'];
+  conflicts: Array<RawAttributeConflict | QualifiedAttributeConflict>;
   /** Lot 79A : contradictions arbitrées par un rétablissement BO (ADMIN_REVIEW) — absentes si aucune. */
-  arbitratedConflicts?: ReturnType<typeof consolidateOperationState>['attributeConflicts'];
+  arbitratedConflicts?: Array<RawAttributeConflict | QualifiedAttributeConflict>;
+  /** Lot 113AQ : différences légitimes, valeurs tranchées par l'utilisateur, rôles non comparables — absentes si aucune. */
+  divergences?: QualifiedAttributeConflict[];
+}
+
+/** Lot 113AQ : sources de l'Opération visées par un doute d'identité OUVERT (78A, SUSPECT). */
+async function loadSuspectSourceIds(tx: DbTx, accountId: number, operationId: number): Promise<Set<number>> {
+  const r = await rows<{ id: string }>(tx, sql`
+    SELECT s.id FROM business_operation_sources s
+     WHERE s.operation_id = ${operationId} AND s.account_id = ${accountId} AND s.active
+       AND EXISTS (SELECT 1 FROM business_operation_identity_reviews r
+                    WHERE r.account_id = s.account_id AND r.operation_id = s.operation_id AND r.kind = 'SUSPECT' AND r.status = 'OPEN'
+                      AND (r.source_id = s.id OR (s.source_kind = 'DOCUMENT' AND r.file_id::text = s.source_entity_key)))`);
+  return new Set(r.map((x) => Number(x.id)));
 }
 
 let provenancePrete: boolean | null = null;
@@ -992,11 +1028,14 @@ async function valueSourceWithdrawn(tx: DbTx, accountId: number, operationId: nu
 }
 
 async function writeAttributeProvenance(
-  tx: DbTx, accountId: number, operationId: number, fields: StoredAttributeProvenance['fields'], conflicts: StoredAttributeProvenance['conflicts'],
-  arbitrated: StoredAttributeProvenance['conflicts'] = [],
+  tx: DbTx, accountId: number, operationId: number, fields: StoredAttributeProvenance['fields'], conflicts: QualifiedAttributeConflict[],
+  arbitrated: QualifiedAttributeConflict[] = [], divergences: QualifiedAttributeConflict[] = [],
 ): Promise<void> {
   if (!(await provenanceReady(tx))) return;
-  const voulu: StoredAttributeProvenance = { version: 1, fields, conflicts, ...(arbitrated.length ? { arbitratedConflicts: arbitrated } : {}) };
+  const voulu: StoredAttributeProvenance = {
+    version: ATTRIBUTE_CONFLICT_RULES_VERSION, rules: ATTRIBUTE_CONFLICT_RULES, fields, conflicts,
+    ...(arbitrated.length ? { arbitratedConflicts: arbitrated } : {}), ...(divergences.length ? { divergences } : {}),
+  };
   const actuel = await loadAttributeProvenance(tx, accountId, operationId);
   if (actuel && stableJson(actuel) === stableJson(voulu)) return;
   await tx.execute(sql`UPDATE business_operations SET attribute_provenance = ${JSON.stringify(voulu)}::jsonb WHERE id = ${operationId} AND account_id = ${accountId}`);

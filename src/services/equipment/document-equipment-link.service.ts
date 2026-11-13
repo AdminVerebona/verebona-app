@@ -352,7 +352,7 @@ async function writeLinks(
   const refusees = await userRefusedEquipments(accountId, doc.profile.fileId, sql);
   const valides = await equipementsValides(accountId, doc.profile.assetIds, links.map((l) => l.equipmentId), sql);
   const retenus = links.filter((l) => !refusees.has(l.equipmentId) && valides.has(l.equipmentId));
-  const { linkDocumentToAsset } = await import('@/services/documents/document-asset-links');
+  const { linkDocumentToAsset, structuralJustification } = await import('@/services/documents/document-asset-links');
   let created = 0;
   const linked: number[] = [];
   for (const l of retenus) {
@@ -360,6 +360,8 @@ async function writeLinks(
       const r = await linkDocumentToAsset({
         accountId, fileId: doc.profile.fileId, target: { equipmentId: l.equipmentId },
         role: 'SECONDARY', origin: 'AI', confidence: l.score,
+        // Lot 113AM (#739) : équipement du bien du document, désigné par les données structurées — cible structurelle.
+        justification: structuralJustification('EQUIPMENT_LINK', 'EQUIPMENT_MATCH', null, l.score),
       });
       linked.push(l.equipmentId);
       if (r.outcome === 'created') created++;

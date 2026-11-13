@@ -414,7 +414,9 @@ const IDENTITY_ANOMALY_SQL: Readonly<Record<'IDENTITY_SUSPECT_ATTACHMENT' | 'IDE
                             AND table_name = 'business_operations' AND column_name = 'attribute_provenance') AS ok, $1::int AS compte`,
     sql: `
     SELECT o.account_id, o.id AS operation_id,
-           (SELECT string_agg(c->>'field', ', ') FROM jsonb_array_elements(o.attribute_provenance->'conflicts') c) || ' contradictoires' AS detail
+           -- Lot 113AQ : qualification de chaque ligne (règles v2) ; « à requalifier » pour un relevé antérieur.
+           (SELECT string_agg((c->>'field') || ' [' || coalesce(c->>'qualification', 'à requalifier') || ']', ', ')
+              FROM jsonb_array_elements(o.attribute_provenance->'conflicts') c) || ' contradictoires' AS detail
       FROM business_operations o
      WHERE o.invalidated_at IS NULL AND o.merged_into_operation_id IS NULL AND ${ACC('o.account_id')}
        AND jsonb_typeof(o.attribute_provenance->'conflicts') = 'array' AND jsonb_array_length(o.attribute_provenance->'conflicts') > 0`,

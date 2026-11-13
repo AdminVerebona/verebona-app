@@ -115,7 +115,8 @@ scenario('L31B', 'Rattachement document → bien : identifiants canoniques (T1) 
     const rep = await make.asset(compte, { category: 'IMMOBILIER', name: 'Appartement', keyCharacteristics: { address1: '12 Rue de la République' } });
     await studioLyon(compte);
     const doc = await make.assetFile(compte, { assetId: null });
-    await analyser(compte, doc.id, sortie({ texte: ['Logement : 12 rue de la republique'] }));
+    // Lot 113AM (#739) : aligné — une adresse ne rattache que si elle est annoncée comme lieu du bien.
+    await analyser(compte, doc.id, sortie({ texte: ['Adresse du logement : 12 rue de la republique'] }));
     expect(await liens(doc.id)).toEqual([[rep.id, 'PRIMARY', 'AI', 1]]);
     expect((await fichier(doc.id)).asset_id).toBe(rep.id);
   });
@@ -184,7 +185,9 @@ scenario('L31B', 'Rattachement document → bien : identifiants canoniques (T1) 
     expect(warnings).toContain('ASSET_ATTACHMENT_INDICES');
     const l = await liens(doc.id);
     expect(l.filter((x) => x[1] === 'PRIMARY')).toEqual([[a42.id, 'PRIMARY', 'LEGACY_COLUMN', 1]]);
-    expect(l).toContainEqual([a43.id, 'MENTIONED', 'AI', 1]);
+    // Lot 113AM (#739, « rattachement utilisateur existant ») : aligné — l'identifiant d'un autre bien que le modèle ne
+    // désigne pas reste un INDICE (revue #711) ; plus aucun lien, même MENTIONED.
+    expect(l.filter((x) => x[0] === a43.id)).toEqual([]);
     expect(await jobsDoc(doc.id)).toEqual([]);
 
     // Même règle pour un lien N-N USER (sans colonne).
@@ -201,7 +204,8 @@ scenario('L31B', 'Rattachement document → bien : identifiants canoniques (T1) 
     const compte = await make.account();
     const maison = await maisonLyon(compte);
     const doc = await make.assetFile(compte, { assetId: null });
-    const out = sortie({ texte: ['12 rue Exemple 69003 Lyon'] });
+    // Lot 113AM (#739) : aligné — une adresse ne rattache que si elle est annoncée comme lieu du bien.
+    const out = sortie({ texte: ['Adresse du bien : 12 rue Exemple 69003 Lyon'] });
     await analyser(compte, doc.id, out);
     await analyser(compte, doc.id, out);
     expect(await liens(doc.id)).toEqual([[maison.id, 'PRIMARY', 'AI', 1]]);
@@ -362,14 +366,14 @@ scenario('L31B', 'Rattachement document → bien : identifiants canoniques (T1) 
     const doc = await make.assetFile(compte, { assetId: null });
     const { linkDocumentToAsset } = await import('@/services/documents/document-asset-links');
     await linkDocumentToAsset({ accountId: compte.id, fileId: doc.id, target: { assetId: studio.id }, role: 'SECONDARY', origin: 'USER' });
-    await linkDocumentToAsset({ accountId: compte.id, fileId: doc.id, target: { assetId: maison.id }, role: 'MENTIONED', origin: 'AI', confidence: 0.6 });
+    await linkDocumentToAsset({ accountId: compte.id, fileId: doc.id, target: { assetId: maison.id }, role: 'MENTIONED', origin: 'AI', confidence: 0.6, justification: { step: 'OTHER', rule: 'E2E_FIXTURE', proofs: [{ kind: 'MODEL_DESIGNATION' }] } });
     const avant = await liens(doc.id);
     expect(await resolveDocumentAsset({ accountId: compte.id, fileId: doc.id }, { callModel: appel })).toMatchObject({ outcome: 'SUPERSEDED', status: 'USER_DECIDED' });
     expect(await liens(doc.id)).toEqual(avant);
 
     const detache = await make.assetFile(compte, { assetId: null });
     await sql`UPDATE asset_files SET user_edited_fields = '{"assetId": true}'::jsonb, analysis_state = 'ANALYZED' WHERE id = ${detache.id}`;
-    await linkDocumentToAsset({ accountId: compte.id, fileId: detache.id, target: { assetId: maison.id }, role: 'MENTIONED', origin: 'AI', confidence: 0.9 });
+    await linkDocumentToAsset({ accountId: compte.id, fileId: detache.id, target: { assetId: maison.id }, role: 'MENTIONED', origin: 'AI', confidence: 0.9, justification: { step: 'OTHER', rule: 'E2E_FIXTURE', proofs: [{ kind: 'MODEL_DESIGNATION' }] } });
     expect(await resolveDocumentAsset({ accountId: compte.id, fileId: detache.id }, { callModel: appel })).toMatchObject({ outcome: 'SUPERSEDED' });
     expect((await liens(detache.id)).map((l) => l[1])).toEqual(['MENTIONED']);
     expect(appel).not.toHaveBeenCalled();

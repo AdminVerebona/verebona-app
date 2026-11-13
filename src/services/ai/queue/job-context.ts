@@ -110,6 +110,17 @@ export function runInJobContext<T>(ctx: AiJobContext, fn: () => Promise<T>): Pro
   return storage.run(ctx, fn);
 }
 
+/**
+ * Lot 113AO (#748, B) — exécute `fn` HORS de tout travail de file : un
+ * traitement indépendant déclenché pendant un travail (pré-génération T6
+ * demandée à la fin d'une analyse T1) n'hérite ni de son job, ni de sa
+ * tentative, ni de son déclencheur, ni de sa configuration figée, ni de son
+ * signal d'interruption.
+ */
+export function runOutsideJobContext<T>(fn: () => Promise<T>): Promise<T> {
+  return storage.getStore() ? storage.exit(fn) : fn();
+}
+
 /** Contexte courant, ou `null` hors exécution (appel synchrone T2, T6, usage technique). */
 export function currentJobContext(): AiJobContext | null {
   return storage.getStore() ?? null;

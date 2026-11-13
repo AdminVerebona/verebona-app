@@ -475,6 +475,16 @@ jobs:
         run: npm run test:e2e:preuves-unites-sources -- --reporter=default --reporter=junit --outputFile.junit=rapports/e2e-preuves-unites-sources.xml
       - name: TCO — arbitrage sémantique T3 des montants non qualifiés (lot 113AL, Trello #737)
         run: npm run test:e2e:tco-arbitrage-t3 -- --reporter=default --reporter=junit --outputFile.junit=rapports/e2e-tco-arbitrage-t3.xml
+      - name: T1 — couverture réelle des unités sources et reprise ciblée (lot 113AN, Trello #741)
+        run: npm run test:e2e:couverture-t1 -- --reporter=default --reporter=junit --outputFile.junit=rapports/e2e-couverture-t1.xml
+      - name: Opérations / Agenda — socle et invariants (lots 82D…113AP, Trello #744)
+        run: npm run test:e2e:operations-agenda -- --reporter=default --reporter=junit --outputFile.junit=rapports/e2e-operations-agenda.xml
+      - name: Rattachement document ↔ bien — adresse de correspondance jamais suffisante (lot 113AM, Trello #739)
+        run: npm run test:e2e:rattachement-adresse -- --reporter=default --reporter=junit --outputFile.junit=rapports/e2e-rattachement-adresse.xml
+      - name: T6 mascotte — appels évités, rattachement à l’exécution T6, doublons, causes d’erreur (lot 113AO, Trello #748)
+        run: npm run test:e2e:t6-appels -- --reporter=default --reporter=junit --outputFile.junit=rapports/e2e-t6-appels.xml
+      - name: Opérations — contradictions d’attributs par rôle et diagnostic BO #12 (lot 113AQ, Trello #750 #751)
+        run: npm run test:e2e:conflits-attributs -- --reporter=default --reporter=junit --outputFile.junit=rapports/e2e-conflits-attributs.xml
       - name: Cycle de vie des comptes — lecture seule, purge à 90 jours, rétractation, J+80 (lot 102A)
         run: npm run test:e2e:cycle-vie -- --reporter=default --reporter=junit --outputFile.junit=rapports/e2e-cycle-vie.xml
       - name: Source juridique unique, CGUV versionnées, réacceptation (lot 102B)

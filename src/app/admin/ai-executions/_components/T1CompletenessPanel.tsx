@@ -12,6 +12,7 @@ import { useEffect, useState } from 'react';
 import { AlertTriangle } from 'lucide-react';
 import { apiClient } from '@/lib/api-client';
 import { verificationFollowup } from '@/services/ai/source-analysis/source-units/verification-followup';
+import { T1CompletenessUnits } from './T1CompletenessUnits';
 
 type Quality = 'COMPLETE' | 'COMPLETE_WITH_UNRESOLVED' | 'VERIFICATION_INCOMPLETE' | 'INCOMPLETE_RETRYABLE' | 'INCOMPLETE_FINAL';
 
@@ -162,6 +163,9 @@ export function T1CompletenessPanel({ days = 7 }: { days?: number }) {
   const [data, setData] = useState<Overview | null>(null);
   const [anomaly, setAnomaly] = useState<string>('');
   const [reprises, setReprises] = useState<Record<number, string>>({});
+  // Lot 113AN : rapport de complétude unité par unité d'un document (ligne de la liste ou numéro saisi).
+  const [detail, setDetail] = useState<number | null>(null);
+  const [saisie, setSaisie] = useState('');
 
   // Lot 53 (D19) : reprise manuelle d'une vérification incomplète (relecture du fichier, tracée).
   const relancer = (fileId: number) => {
@@ -183,7 +187,20 @@ export function T1CompletenessPanel({ days = 7 }: { days?: number }) {
 
   if (!data || data.unavailable) return null;
   const anomalies = Object.entries(data.byAnomaly).filter(([, n]) => n > 0);
-  if (anomalies.length === 0 && !anomaly) return null;
+  // Lot 113AN : recherche d'un document (même sans anomalie, ex. « complète, part non structurée conservée »).
+  const recherche = (
+    <div className="flex flex-wrap items-center gap-2" data-testid="t1-completeness-lookup">
+      <label className="text-xs text-[color:var(--text-secondary)]" htmlFor="t1-completeness-file">Unités d’un document n°</label>
+      <input id="t1-completeness-file" inputMode="numeric" value={saisie} onChange={(e) => setSaisie(e.target.value.replace(/\D/g, ''))}
+        className="w-24 text-xs rounded border border-input bg-[color:var(--bg-input)] px-2 py-0.5 text-[color:var(--text-primary)]" />
+      <button type="button" disabled={!saisie} onClick={() => setDetail(Number(saisie))}
+        className="text-xs rounded border border-[color:var(--border-subtle)] px-2 py-0.5 text-[color:var(--text-secondary)] disabled:opacity-60">Afficher</button>
+      {detail !== null && !data.rows.slice(0, 20).some((r) => r.fileId === detail) && <div className="w-full"><T1CompletenessUnits key={detail} fileId={detail} /></div>}
+    </div>
+  );
+  if (anomalies.length === 0 && !anomaly) {
+    return <div className="rounded-xl border border-[color:var(--border-subtle)] p-4 space-y-2" data-testid="t1-completeness-panel">{recherche}</div>;
+  }
 
   return (
     <div className="rounded-xl border border-[color:var(--border-warning)] bg-[color:var(--bg-warning)] p-4 space-y-2" data-testid="t1-completeness-panel">
@@ -213,6 +230,7 @@ export function T1CompletenessPanel({ days = 7 }: { days?: number }) {
           </button>
         ))}
       </div>
+      {recherche}
       {data.rows.length > 0 && (
         <ul className="divide-y divide-[color:var(--border-subtle)]">
           {data.rows.slice(0, 20).map((r) => (
@@ -230,6 +248,11 @@ export function T1CompletenessPanel({ days = 7 }: { days?: number }) {
               {r.retryAttempts > 0 && ` · ${r.retryAttempts} reprise(s)`}
               <span className="text-[color:var(--text-muted)]"> — {r.anomalies.map((a) => ANOMALY_LABEL[a] ?? a).join(', ')}</span>
               {diagnosticsText(r) && <span className="block break-words text-[color:var(--text-muted)]">{diagnosticsText(r)}</span>}
+              <button type="button" onClick={() => setDetail(detail === r.fileId ? null : r.fileId)}
+                className="mt-0.5 text-xs rounded border border-[color:var(--border-subtle)] px-2 py-0.5 text-[color:var(--text-secondary)]">
+                {detail === r.fileId ? 'Masquer les unités' : 'Unités'}
+              </button>
+              {detail === r.fileId && <T1CompletenessUnits fileId={r.fileId} />}
               {(() => {
                 const f = followupOf(r, data.maxRetries);
                 if (!f) return null;

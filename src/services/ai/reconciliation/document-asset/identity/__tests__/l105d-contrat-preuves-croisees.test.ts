@@ -173,7 +173,9 @@ describe('L105D-U-COH — cohérence : ASSET_CREATED relayé, contrôle spécial
       // Lot 113AA (#725) : résolution des périodes de couverture d'un événement de référence, en fin de registre.
       'COH-OPS-PERIOD-RESOLUTION',
       // Lot 113AK (#736) : provenance des faits T1 et preuves orphelines, en fin de registre.
-      'COH-DOC-FACT-PROVENANCE']);
+      'COH-DOC-FACT-PROVENANCE',
+      // Lot 113AQ (#750) : contradictions d'attributs requalifiées, en fin de registre.
+      'COH-OPS-ATTRIBUTE-CONFLICTS']);
     expect(ids.filter((x) => x === 'COH-DOC-PRIMARY-LINK')).toHaveLength(1);
     const c = COHERENCE_REGISTRY.find((x) => x.id === 'COH-DOC-PRIMARY-LINK')!;
     expect(c.triggers).toEqual(expect.arrayContaining(['ASSET_CREATED', 'ASSET_UPDATED', 'SOURCE_ANALYZED']));

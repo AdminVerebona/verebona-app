@@ -110,6 +110,8 @@ export const FILE_SCOPED_TABLES: ReadonlyArray<readonly [table: string, column: 
   ['document_unresolved_facts', 'file_id'],
   ['document_title_events', 'file_id'],
   ['document_asset_resolutions', 'file_id'],
+  // Lot 113AM (#739) : journal de la garde d'admission des rattachements (1660) — suit le document.
+  ['document_asset_link_admissions', 'file_id'],
   ['document_operation_candidates', 'file_id'],
   ['t1_quality_signals', 'file_id'],
   ['ai_field_updates', 'asset_file_id'],

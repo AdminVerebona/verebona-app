@@ -920,7 +920,8 @@ export const SCHEDULED_TASKS: readonly ScheduledTaskDef[] = [
       const { runOperationsQualityCheck } = await import('@/services/business-operations/diagnostics/alerts');
       const r = await runOperationsQualityCheck();
       const total = Object.values(r.counts).reduce((a, b) => a + b, 0);
-      return { note: `${total} anomalie(s) dure(s) — ${JSON.stringify(r.counts)} ; ${r.reported} signalée(s), ${r.resolved} résolue(s)`.slice(0, 1500) };
+      // Lot 113AQ (#751 §4) : un balayage identique est tracé ICI (journal de la tâche), sans nouvelle occurrence.
+      return { note: `${total} anomalie(s) dure(s) — ${JSON.stringify(r.counts)} ; ${r.reported} signalée(s) dont ${r.unchanged} inchangée(s) (aucune occurrence), ${r.resolved} résolue(s)`.slice(0, 1500) };
     },
   },
   {

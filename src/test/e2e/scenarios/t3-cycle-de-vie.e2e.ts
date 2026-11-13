@@ -187,7 +187,7 @@ scenario('T3-L13', 'Écriture T3 et cycle de vie des preuves', ({ sql, make }) =
     // (pièce = sous-structure depuis D-G, lot 20).
     const [piece] = await sql<{ id: number }[]>`
       INSERT INTO substructures (asset_id, name) VALUES (${A.id}, 'Garage') RETURNING id`;
-    await linkDocumentToAsset({ accountId: compte.id, fileId: doc.id, target: { substructureId: piece.id }, role: 'SECONDARY', origin: 'AI' });
+    await linkDocumentToAsset({ accountId: compte.id, fileId: doc.id, target: { substructureId: piece.id }, role: 'SECONDARY', origin: 'AI', justification: { step: 'OTHER', rule: 'E2E_FIXTURE', proofs: [{ kind: 'MODEL_DESIGNATION' }] } });
     await sql`UPDATE asset_files SET asset_id = ${B.id} WHERE id = ${doc.id}`;
     const r = await lifecycle.onDocumentAssetChanged({ accountId: compte.id, userId: compte.ownerUserId, fileId: doc.id, fromAssetId: A.id, toAssetId: B.id });
     expect(r.unlinked).toBe(1);

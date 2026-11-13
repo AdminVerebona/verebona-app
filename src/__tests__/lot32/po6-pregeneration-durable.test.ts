@@ -131,7 +131,7 @@ describe('PO6 — pré-génération durable du texte T6', () => {
     expect(Q.PREGEN_EVENT_TYPES.has('HELP_ENTRY_PUBLISHED')).toBe(false);
     expect(lire('src/instrumentation-node.ts')).toContain('registerMascotPregenerationHandler()');
     expect(lire('src/app/api/auth/login/route.ts')).toContain("scheduleMascotPregeneration(accountId, 0, 'login')");
-    expect(lire('src/services/home/mascot/mascot.service.ts')).toContain('requestMascotPregeneration(accountId, reason)');
+    expect(lire('src/services/home/mascot/mascot.service.ts')).toContain('requestMascotPregeneration(accountId, reason, { causedBy })'); // lot 113AO : déclencheur conservé (lien de causalité)
     expect(findTask('mascot-pregeneration')).toMatchObject({ schedule: { kind: 'interval', everyMs: 60_000 }, ownSlot: true });
     expect(findTask('mascot-pregeneration-deadlines')).toMatchObject({ schedule: { kind: 'daily', at: [5, 40] } });
   });

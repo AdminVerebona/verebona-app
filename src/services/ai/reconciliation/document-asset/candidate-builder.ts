@@ -54,6 +54,7 @@ import {
   matchSignals, normalizeCode, normalizeText, resolveAssetByIdentifiers,
   type AssetIdentifierRecord, type IdentifierResolution,
 } from './identifiers';
+import type { AddressQualification } from './address-roles';
 import { REFERENCE_KEYS, type AccountMatchingIndex } from './matching-index';
 import type { StoredT1Candidate } from './resolution.repository';
 
@@ -108,7 +109,20 @@ export interface CandidateBuildResult {
   testedSources: CandidateSource[];
   /** `assetId:NATURE` des correspondances fortes. */
   deterministicMatches: string[];
+  /**
+   * Lot 113AM (#739) : rôle qualifié de chaque correspondance d'adresse
+   * (posé par `addressQualifiedBuild`, `context.ts`) — jamais la valeur.
+   */
+  addressQualifications?: AddressQualification[];
+  /**
+   * Lot 113AM : identification AVANT la qualification des adresses — source
+   * des INDICES soumis à la revue du rattachement (#711), jamais d'un lien.
+   */
+  identificationWithIndices?: IdentifierResolution;
 }
+
+/** Indice de contexte « ville et code postal du bien cités » (lot 34E) — dérivé d'une adresse. */
+export const CITY_POSTAL_CONTEXT = 'ville et code postal du bien cités par le document';
 
 /**
  * Texte examiné pour les identifiants forts : transcription (200 000) + couche
@@ -253,7 +267,7 @@ export function buildDocumentAssetCandidates(input: CandidateBuildInput): Candid
     tested.add('CONTEXTUAL_MATCH');
     for (const a of index.assets) {
       if (a.city && a.postalCode && phraseIn(anywhere, a.city) && anywhere.includes(pad(a.postalCode))) {
-        add(a.assetId, 'CONTEXTUAL_MATCH', { context: 'ville et code postal du bien cités par le document' });
+        add(a.assetId, 'CONTEXTUAL_MATCH', { context: CITY_POSTAL_CONTEXT });
       }
     }
     for (const e of index.entities) {

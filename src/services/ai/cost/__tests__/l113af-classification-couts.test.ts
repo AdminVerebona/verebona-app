@@ -182,7 +182,11 @@ describe('113AF — rattrapage BO « IA : origine des coûts »', () => {
     expect(backfillDefinition('ai-cost-classification')).toMatchObject({ order: 20, actions: ['simulate', 'apply', 'restore'], accountFilter: false });
     // Lot 113AK : le rattrapage « T1 : provenance des faits et preuves orphelines » (n° 21) suit celui-ci.
     expect(BACKFILL_DEFINITIONS.find((d) => d.order === 21)?.script).toBe('source-unit-provenance');
-    expect(BACKFILL_DEFINITIONS.findIndex((d) => d.script === 'ai-cost-classification')).toBe(BACKFILL_DEFINITIONS.length - 2);
+    // Lot 113AM : « Rattachements : liens automatiques fondés sur une adresse de correspondance » (n° 22) ensuite.
+    expect(BACKFILL_DEFINITIONS.find((d) => d.order === 22)?.script).toBe('document-address-links');
+    // Lot 113AO : « T6 : rattachement des appels de la mascotte » (n° 23) suit à son tour.
+    expect(BACKFILL_DEFINITIONS.find((d) => d.order === 23)?.script).toBe('t6-execution-attribution');
+    expect(BACKFILL_DEFINITIONS.findIndex((d) => d.script === 'ai-cost-classification')).toBe(BACKFILL_DEFINITIONS.length - 4);
     expect(validateBackfillRequest({ script: 'ai-cost-classification', action: 'apply' })).toMatchObject({ ok: false, code: 'REASON_REQUIRED' });
     expect(validateBackfillRequest({ script: 'ai-cost-classification', action: 'simulate' })).toMatchObject({ ok: true });
     expect(validateBackfillRequest({ script: 'ai-cost-classification', action: 'restore', runId: 'x', reason: 'retour arrière' })).toMatchObject({ ok: false, code: 'INVALID_RUN_ID' });

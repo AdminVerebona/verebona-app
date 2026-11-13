@@ -108,6 +108,9 @@ import { isExecutionCancelled, type ExecutionGuard } from '../../queue/execution
 import { T3LinkAmbiguityOutput } from '../master/t3-contract';
 import { unlinkDocument } from '@/services/documents/document-asset-links';
 import { attachAutomatically, clearAutomaticPrimaryColumn, closeAssetLinkQuestion } from './automatic-attachment';
+import { documentAssetLinkJustification } from './link-justification';
+import { admitDocumentAssetLink, type LinkJustification } from '@/services/documents/document-asset-links/admission';
+import { logLinkRefusal, recordLinkAdmission } from '@/services/documents/document-asset-links/admission-journal';
 import { hasPrimaryAttachment, hasUserDecision, readAttachmentState, type AttachmentState } from './attachment-state';
 import {
   decideContextualDeterministic, decideDeterministic, decideFromAiOutput, documentAssetVariables, promptCandidates, rankCandidates,
@@ -701,6 +704,9 @@ export async function resolveDocumentAsset(
   await input.guard?.assertActive('T3 DOCUMENT_ASSET — écriture');
   const result = await applyDecision({
     accountId, fileId, userId: input.userId ?? null, decision, ctx, revision, g, triggerCode: input.triggerCode ?? null,
+    // Lot 113AM (correctif) : biens réellement présentés au modèle (recherche sémantique comprise) — la garde
+    // d'admission juge la décision IA sur les indices que le serveur a fournis, pas seulement sur les candidats structurés.
+    presentedCandidates: pourModele,
     evaluation: {
       ...reexamen, aiCalled, promptCandidateCount: aiCalled ? pourModele.length : 0, ...(aiCalled ? { lastAiAt: new Date().toISOString() } : {}),
       reasonCode: decision.kind === 'ABSTAIN' ? decision.reasonCode : 'RESOLVED',
@@ -890,8 +896,43 @@ async function applyDecision(p: {
   /** Lot 108E (A7) : utilisateur INITIATEUR seulement (null : contexte technique — cohérence, balayage). */
   accountId: number; fileId: number; userId: number | null; decision: DocumentAssetDecision;
   ctx: DocumentAssetContext; revision: number; g: Garde; evaluation: EvaluationDraft; triggerCode?: string | null;
+  /** Biens présentés au modèle (structurés ou présélection sémantique) ; complète `ctx.candidates` pour la justification. */
+  presentedCandidates?: readonly DocumentAssetCandidate[];
 }): Promise<Omit<ResolveDocumentAssetResult, 'decision' | 'aiCalled'>> {
-  const { accountId, fileId, decision, g, ctx } = p;
+  const { accountId, fileId, g, ctx } = p;
+  let decision = p.decision;
+  // Lot 113AM (#739) : garde d'admission AVANT toute écriture (et avant de fermer la question) — un
+  // rattachement dont la seule preuve est une adresse non qualifiée « lieu du bien » (souscripteur,
+  // destinataire, facturation…) est refusé ; la décision devient une abstention SANS ce bien (jamais
+  // une question sur un faux conflit). Refus journalisés (étape, règle, preuves).
+  const justifications = new Map<number, LinkJustification>();
+  if (decision.kind !== 'ABSTAIN') {
+    const cibles0 = decision.kind === 'APPLY' ? [decision.assetId] : decision.assetIds;
+    const refuses: number[] = [];
+    for (const assetId of cibles0) {
+      const j = documentAssetLinkJustification({
+        assetId, decision, branch: p.evaluation.branch, candidates: [...ctx.candidates, ...(p.presentedCandidates ?? [])], identification: ctx.identification,
+        qualifications: ctx.build.addressQualifications ?? [], identity: ctx.identity ?? null,
+        facts: (ctx.sources?.facts ?? []).map((f) => ({ canonicalKey: f.canonicalKey, value: f.value, label: f.label, subject: f.subject, targetType: f.targetType, targetEntityId: f.targetEntityId })),
+        texts: (ctx.sources?.texts ?? []).filter((t) => !t.uncertain).map((t) => t.text),
+      });
+      justifications.set(assetId, j);
+      const admission = admitDocumentAssetLink('AI', j);
+      if (admission.admitted) continue;
+      refuses.push(assetId);
+      const rec = { accountId, fileId, target: { assetId }, writeKind: 'LINK' as const, justification: j, decision: admission };
+      logLinkRefusal(rec);
+      await recordLinkAdmission({ ...rec, origin: 'AI', role: decision.kind === 'APPLY' ? 'PRIMARY' : 'SECONDARY' });
+    }
+    if (refuses.length > 0) {
+      const restants = cibles0.filter((id) => !refuses.includes(id));
+      decision = decision.kind === 'MULTI_ASSET' && restants.length > 1
+        ? { ...decision, assetIds: restants }
+        : decision.kind === 'MULTI_ASSET' && restants.length === 1
+          ? { kind: 'APPLY', assetId: restants[0], score: 1, reason: `${decision.reason}:ADMITTED_ONLY`, method: decision.method }
+          : { kind: 'ABSTAIN', reasonCode: 'INSUFFICIENT_EVIDENCE', ranked: rankCandidates(ctx.candidates.filter((c) => !refuses.includes(c.assetId))) };
+    }
+  }
   const fin = (o: { newResolution: ResolutionStatus | null; linkedAssetId?: number | null; toProcessAction: ToProcessEffect; result: DocumentAssetEvaluationResult }): DocumentAssetEvaluation => ({
     ...p.evaluation, decision: decision.kind === 'ABSTAIN' ? `ABSTAIN:${decision.reasonCode}` : `${decision.kind}:${decision.method}`,
     linkedAssetId: o.linkedAssetId ?? null, newResolution: o.newResolution, toProcessAction: o.toProcessAction, result: o.result,
@@ -959,6 +1000,7 @@ async function applyDecision(p: {
     await g('lien et colonne de rattachement');
     await attachAutomatically({
       accountId, fileId, assetId, role, confidence: decision.kind === 'APPLY' ? decision.score : 1,
+      justification: justifications.get(assetId) ?? { step: 'T3_DOCUMENT_ASSET', rule: decision.reason, proofs: [] },
     });
   }
 

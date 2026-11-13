@@ -165,7 +165,7 @@ scenario('X-01', 'document_asset_links : déclencheur, rattrapage, liens multi-b
     await useRecordings([{ operationCode: f.recording.operationCode, task: f.recording.task, output: JSON.parse(json) }]);
 
     const { analyseGroupWithMaster } = await import('@/services/ai/source-analysis/master/analyse-group-master');
-    const { computeMasterDocumentLinks, writeMasterDocumentLinks } = await import('@/services/ai/source-analysis/master/document-links');
+    const { computeMasterDocumentLinks, justifyMasterDocumentLinks, writeMasterDocumentLinks } = await import('@/services/ai/source-analysis/master/document-links');
     const { listAssetDocuments, listDocumentAssets } = await import('@/services/documents/document-asset-links');
     const { emptyTrace } = await import('@/services/ai/source-analysis/trace');
 
@@ -181,9 +181,9 @@ scenario('X-01', 'document_asset_links : déclencheur, rattrapage, liens multi-b
       ],
     };
     const m = await analyseGroupWithMaster(input, [0], ctx, emptyTrace());
-    const links = computeMasterDocumentLinks({
-      facts: m.facts, assetCandidates: m.result.assetCandidates, documentAssetId: m.documentAssetId, knownAssetId: clio.id,
-    });
+    // Lot 113AM (#739) : chaque lien porte sa justification (garde d'admission partagée), comme dans le pipeline.
+    const entrees = { facts: m.facts, assetCandidates: m.result.assetCandidates, documentAssetId: m.documentAssetId, knownAssetId: clio.id };
+    const links = justifyMasterDocumentLinks(computeMasterDocumentLinks(entrees), entrees);
     await writeMasterDocumentLinks({ accountId: compte.id, fileId: fichier.id, links });
     // Relancé (réanalyse) : aucun doublon.
     await writeMasterDocumentLinks({ accountId: compte.id, fileId: fichier.id, links });

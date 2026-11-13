@@ -73,6 +73,11 @@ import {
   T6_RUN_LEASE_MAX_MS, T6_RUN_LEASE_MS, T6_RUN_RENEW_EVERY_MS, claimT6Runs, finishT6Runs, markT6RunsUnavailable, renewT6Runs, t6RunsReady,
   type T6ClaimResult, type T6FinishedRun, type T6RunResult, type T6RunSubject,
 } from './t6-evaluation-runs';
+import { inT6Execution } from './t6-execution-scope';
+import { t6ReservationDbStore, waitForT6Cache, type T6ReservationStore } from './t6-formulate-reservation';
+import { classifyT6Failure, t6FailureLabel, t6FailureSummary, type T6Failure } from './t6-failure';
+
+const t6FailureLabelOf = (kind: string | null): string => (kind ? t6FailureLabel(kind) : 'modèle indisponible');
 
 /** Branche FORMULATE du prompt maître T6 (CDC 15 §28). */
 export const T6_MASTER_OPERATION = 't6_formulate';
@@ -142,6 +147,8 @@ interface T6Outcome {
   suggestionsInvalidated?: number;
   /** Lot 106B : invitations de découverte validées de la MÊME sortie (absent : aucune). */
   discovery?: MascotDiscoveryInvitation[] | null;
+  /** Lot 113AO (D) : cause primaire d'un échec d'appel (`status: 'error'`). */
+  failure?: T6Failure | null;
 }
 
 // ── Empreintes ───────────────────────────────────────────────────────────────
@@ -763,9 +770,12 @@ async function generateMaster(p: {
     // Lot 83C (R42) : l'échec de génération garde sa trace d'exécution — le
     // journal relie la ligne aux appels en échec (exécution métier T6F).
     const traceId = (e as { traceId?: unknown } | null)?.traceId;
+    // Lot 113AO (#748, D) : cause PRIMAIRE en tête (refus 403, indisponibilité,
+    // troncature, transport…), jamais confondue avec une sortie invalide.
+    const cause = classifyT6Failure(e);
     return {
       status: 'error', messages: null, promptVersion: p.promptVersion, architecture: 'master',
-      latencyMs: Date.now() - startedAt, error: (e as Error).message?.slice(0, 500) ?? 'erreur',
+      latencyMs: Date.now() - startedAt, error: `[${cause.kind}] ${(e as Error).message ?? 'erreur'}`.slice(0, 500), failure: cause,
       ...(typeof traceId === 'string' ? { traceId } : {}),
     };
   }
@@ -780,6 +790,14 @@ export interface T6Dependencies {
   execute: (req: Parameters<typeof AiGateway.execute>[0]) => ReturnType<typeof AiGateway.execute>;
   /** Attente à l'affichage (défaut : `t6DisplayWaitMs()`). */
   displayWaitMs?: () => number;
+  /**
+   * Lot 113AO (#748, C) : réservation DURABLE de la génération (toutes
+   * instances). `null` : aucune ; absente : base pour les dépendances par
+   * défaut, aucune pour des dépendances injectées (tests unitaires).
+   */
+  reservations?: T6ReservationStore | null;
+  /** Lot 113AO : attente bornée du cache d'une génération réservée ailleurs (pré-génération ; défaut 20 s). */
+  reservationWaitMs?: number;
 }
 
 const defaultDeps: T6Dependencies = {
@@ -787,7 +805,58 @@ const defaultDeps: T6Dependencies = {
   promptVersion: getT6MasterPromptVersion,
   previousBubbles: readPreviousBubbles,
   execute: (req) => AiGateway.execute(req),
+  reservations: t6ReservationDbStore,
 };
+
+/** Issue d'une demande dont la génération ÉQUIVALENTE est déjà en cours ailleurs (aucun appel). */
+export const T6_HELD_ELSEWHERE_NOTE = 'génération équivalente en cours (autre instance) : aucun nouvel appel';
+
+/**
+ * Lot 113AO (#748, C) — génération sous RÉSERVATION DURABLE (une seule
+ * génération fournisseur par clé, toutes instances) : prise atomique,
+ * relecture du cache SOUS réservation, génération, libération conditionnée au
+ * détenteur. Refus (génération équivalente vivante ailleurs) : aucun appel —
+ * l'affichage garde son texte déterministe, la pré-génération attend un temps
+ * borné le cache écrit par le détenteur. Réservation indisponible (table
+ * absente, base en panne) : génération comme avant (jamais de blocage).
+ */
+async function generateReserved(p: Parameters<typeof generateMaster>[0], deps: T6Dependencies, store: T6ReservationStore | null): Promise<T6Outcome> {
+  if (!store) return generateMaster(p, deps.execute);
+  const relire = () => readT6CacheEntry(p.accountId, p.cacheKey, p.input, p.suggestions ?? null);
+  const servi = (c: NonNullable<Awaited<ReturnType<typeof relire>>>, adjustment: string): T6Outcome => ({
+    status: 'cache_hit', messages: c.messages, promptVersion: p.promptVersion, architecture: 'master', adjustments: [adjustment],
+    ...(p.suggestions ? { suggestions: c.suggestions, suggestionValidation: c.validation ?? null, suggestionsInvalidated: c.invalidated ?? 0, discovery: c.validation?.acceptedDiscovery ?? null } : {}),
+  });
+  const ownerId = randomUUID();
+  const r = await store.reserve({
+    accountId: p.accountId, cacheKey: p.cacheKey, ownerId, mode: p.mode,
+    failureCooldownMs: p.mode === 'display' ? T6_FAILURE_COOLDOWN_MS : 0,
+    sourceCodes: p.input.subjects.map((x) => x.sourceCode), subjects: p.input.subjects.length,
+  }).catch(() => ({ ok: null, reason: 'unavailable' as const }));
+  if (r.ok === false) {
+    if (p.mode === 'pregen' && r.reason === 'held_elsewhere') {
+      const c = await waitForT6Cache(relire, { maxMs: deps.reservationWaitMs });
+      if (c) return servi(c, 'reservation_waited');
+    }
+    return { status: 'fallback', messages: null, promptVersion: p.promptVersion, architecture: 'master', error: T6_HELD_ELSEWHERE_NOTE, latencyMs: 0 };
+  }
+  if (r.ok === true) {
+    // Relecture SOUS réservation : le détenteur précédent a pu écrire entre-temps.
+    const c = await relire().catch(() => null);
+    if (c) {
+      await store.finish({ accountId: p.accountId, cacheKey: p.cacheKey, ownerId, status: 'DONE' }).catch(() => false);
+      return servi(c, 'reservation_cache_reread');
+    }
+  }
+  const o = await generateMaster(p, deps.execute);
+  if (r.ok === true) {
+    await store.finish({
+      accountId: p.accountId, cacheKey: p.cacheKey, ownerId, status: o.status === 'generated' ? 'DONE' : 'FAILED',
+      traceId: o.traceId ?? null, error: o.status === 'generated' ? null : o.error ?? o.status,
+    }).catch(() => false);
+  }
+  return o;
+}
 
 /**
  * Formule les sujets avec T6, ou rend `messages: null` (texte de secours).
@@ -799,7 +868,9 @@ export async function formulateWithT6(
 ): Promise<T6Outcome> {
   // Lot 87A (P7, RUN-04) : version de prompt lue, cache et génération sous
   // la MÊME configuration, figée au démarrage de l'exécution T6.
-  return runWithConfigSnapshot('T6', () => formulateWithT6Inner(p, deps));
+  // Lot 113AO (#748, B) : exécution T6 AUTONOME — jamais celle du travail (T1…)
+  // dont la fin a demandé la pré-génération (lien de causalité conservé à part).
+  return inT6Execution(() => runWithConfigSnapshot('T6', () => formulateWithT6Inner(p, deps)));
 }
 
 async function formulateWithT6Inner(
@@ -883,7 +954,11 @@ async function formulateWithT6Inner(
 
   let run = inflight.get(cacheKey);
   if (!run) {
-    run = generateMaster({ accountId: p.accountId, input: p.input, cacheKey, contextHash: p.contextHash, promptVersion, mode: p.mode, kinds: p.kinds, pinned, suggestions: bundle }, deps.execute)
+    // Lot 113AO (#748, C) : `inflight` déduplique DANS l'instance ; la réservation
+    // durable, ENTRE instances (réservation prise dans la génération d'arrière-plan :
+    // aucune latence ajoutée à l'affichage).
+    const store = deps.reservations !== undefined ? deps.reservations : deps === defaultDeps ? t6ReservationDbStore : null;
+    run = generateReserved({ accountId: p.accountId, input: p.input, cacheKey, contextHash: p.contextHash, promptVersion, mode: p.mode, kinds: p.kinds, pinned, suggestions: bundle }, deps, store)
       .then((o) => { if (o.status === 'error' || o.status === 'validation_failed') noteFailure(cacheKey); else failures.delete(cacheKey); return o; })
       .finally(() => inflight.delete(cacheKey));
     inflight.set(cacheKey, run);
@@ -891,6 +966,8 @@ async function formulateWithT6Inner(
     // en pré-génération : elle n'a pas été vue (RUN-011).
     if (p.mode === 'display') {
       void run.then((o) => {
+        // Lot 113AO : génération équivalente détenue ailleurs — rien à journaliser (aucun appel).
+        if (o.error === T6_HELD_ELSEWHERE_NOTE) return;
         if (tardive.has(run!)) {
           void logT6({
             accountId: p.accountId, contextHash: p.contextHash, mode: 'pregen', outcome: o, input: p.input, suggestionContext: bundle?.context,
@@ -976,6 +1053,18 @@ export interface T6EvaluationOutcome {
   model?: string | null;
   latencyMs?: number;
   /**
+   * Lot 113AO (#748, D) : cause PRIMAIRE de l'échec (jamais un
+   * `model_unavailable` par défaut), son résumé BO, les lots du passage
+   * (fractionnement d'une sortie tronquée) et les évaluations sans sortie
+   * exploitable quand une partie seulement a abouti.
+   */
+  failure?: T6Failure | null;
+  failureSummary?: string | null;
+  /** Diagnostic de la cause (troncature : candidats, fractionnement, plafond de sortie). */
+  failureNotes?: string[];
+  lots?: T6EvaluationLotsTrace | null;
+  subjectFailures?: Array<{ subjectId: string; kind: T6Failure['kind'] | 'invalid_output'; error: string; notes: string[]; candidates: number }>;
+  /**
    * Lot 78C : exécution DURABLE (`t6_evaluation_runs`) — prise en charge,
    * tentatives, interruptions reprises, état écrit à la clôture de chaque
    * évaluation (COMPLETED, RETRY_WAIT, FAILED, UNAVAILABLE) ou motif du refus
@@ -983,6 +1072,65 @@ export interface T6EvaluationOutcome {
    * Absent : table non déployée (comportement du lot 77).
    */
   run?: T6EvaluationRunTrace | null;
+}
+
+/** Lot 113AO (D) : lots d'un passage EVALUATE (fractionnement d'une sortie tronquée). */
+export interface T6EvaluationLotsTrace {
+  calls: number;
+  /** Tailles des lots fractionnés (8 → 4 + 4…). */
+  splits: number[];
+  initialCandidates: number;
+  lots: Array<{ candidates: number; outcome: string; traceId: string | null }>;
+  /** Plafond de sortie et chaîne de modèles appliqués (diagnostic d'une troncature). */
+  output?: { models: string[]; maxOutputTokens: number | null } | null;
+}
+
+/**
+ * Lot 113AO (D) : appels EVALUATE au plus par passage (1 + 2 + 4 : deux
+ * fractionnements successifs d'un lot tronqué) — aucune boucle ; les lots
+ * encore tronqués sont repris au passage suivant (reprise ciblée).
+ */
+export const T6_EVALUATE_MAX_CALLS = 7;
+
+type T6EvaluationInputOf = T6InterpellationBundle['context'];
+type T6LotIssue =
+  | { ctx: T6EvaluationInputOf; kind: 'ok'; v: Extract<ReturnType<typeof validateT6Evaluation>, { ok: true }>; traceId: string | null; model: string | null }
+  | { ctx: T6EvaluationInputOf; kind: 'invalid'; reason: string; traceId: string | null; model: string | null }
+  | { ctx: T6EvaluationInputOf; kind: 'error'; error: unknown; failure: T6Failure; traceId: string | null };
+
+/** Évaluations d'un passage restées sans sortie exploitable, avec leur cause (pure). */
+function failuresOf(issues: readonly T6LotIssue[]): NonNullable<T6EvaluationOutcome['subjectFailures']> {
+  const out: NonNullable<T6EvaluationOutcome['subjectFailures']> = [];
+  for (const x of issues) {
+    if (x.kind === 'ok') continue;
+    for (const c of x.ctx.candidates) {
+      out.push(x.kind === 'error'
+        ? { subjectId: c.subjectId, kind: x.failure.kind, error: x.failure.message || 'erreur', notes: truncationNotes(x.failure, x.ctx.candidates.length, null), candidates: x.ctx.candidates.length }
+        : { subjectId: c.subjectId, kind: 'invalid_output', error: x.reason, notes: [], candidates: x.ctx.candidates.length });
+    }
+  }
+  return out;
+}
+
+/** Diagnostic d'une troncature (pur) : nombre de candidats, fractionnement, plafond de sortie. */
+function truncationNotes(f: T6Failure, candidates: number, lots: T6EvaluationLotsTrace | null): string[] {
+  if (f.kind !== 'output_truncated') return [];
+  const out = [`${candidates} candidat(s) dans l'appel`];
+  if (lots?.splits.length) out.push(`fractionné (${lots.splits.join(' → ')}), ${lots.calls} appel(s)`);
+  if (lots?.output) out.push(`plafond de sortie ${lots.output.maxOutputTokens ?? 'défaut fournisseur'} jetons, modèle(s) ${lots.output.models.join(', ') || '?'}`);
+  out.push(candidates <= 1 ? 'cause : plafond de sortie ou schéma (un seul candidat)' : 'cause : volume de la sortie (nombre de candidats)');
+  return out;
+}
+
+/** Plafond de sortie et chaîne de modèles EVALUATE effectifs (diagnostic). Ne lève jamais. */
+export async function t6EvaluateGenerationSummary(): Promise<{ models: string[]; maxOutputTokens: number | null } | null> {
+  try {
+    const [config, { getOperation }] = await Promise.all([resolveOperationConfig(T6_EVALUATE_OPERATION), import('@/services/ai/registry/operations')]);
+    const g = effectiveGenerationProfile(getOperation(T6_EVALUATE_OPERATION), config);
+    return { models: g.models.map((m) => m.model), maxOutputTokens: g.maxOutputTokens };
+  } catch {
+    return null;
+  }
 }
 
 /** Lot 78C : trace de l'exécution durable d'une évaluation. */
@@ -1043,10 +1191,29 @@ export function t6RunResultsOf(o: T6EvaluationOutcome, refs: T6InterpellationBun
   const persistes = o.persistedSubjectIds ?? (o.persisted >= o.accepted.length ? o.accepted.map((d) => d.subjectId) : []);
   for (const [subjectId, c] of refs) {
     const id = c.agendaItemId;
-    if (o.status === 'error') {
-      out.push(costCap
-        ? { agendaItemId: id, outcome: 'UNAVAILABLE', errorKind: 'cost_cap', error: o.error ?? 'plafond IA', detail: 'plafond IA du compte' }
-        : { agendaItemId: id, outcome: 'RETRY', errorKind: 'model_unavailable', error: o.error ?? 'erreur', detail: 'modèle indisponible' });
+    // Lot 113AO (#748, D) : évaluation sans sortie exploitable — cause PRIMAIRE
+    // (troncature, refus 403, indisponibilité, contrat, transport), jamais
+    // `model_unavailable` par défaut ; relance seulement quand elle a un sens.
+    const sf = o.subjectFailures?.find((x) => x.subjectId === subjectId);
+    if (sf || o.status === 'error') {
+      const kind = sf?.kind ?? o.failure?.kind ?? null;
+      if (costCap || kind === 'cost_cap') {
+        out.push({ agendaItemId: id, outcome: 'UNAVAILABLE', errorKind: 'cost_cap', error: o.error ?? 'plafond IA', detail: 'plafond IA du compte' });
+        continue;
+      }
+      if (kind === 'invalid_output' && sf) {
+        out.push({ agendaItemId: id, outcome: 'RETRY', errorKind: 'invalid_output', error: sf.error, detail: 'sortie rejetée (lot)' });
+        continue;
+      }
+      const errorKind = (kind ?? 'model_unavailable') as T6RunResult['errorKind'] & string;
+      // Erreur primaire telle que rendue (`last_error`) ; diagnostic lisible de la cause (`last_outcome`).
+      const texte = sf?.error ?? o.error ?? 'erreur';
+      const notes = sf?.notes ?? o.failureNotes ?? [];
+      // Troncature d'un SEUL candidat (plus de fractionnement possible) ou défaut
+      // commun du contrat : la même demande échouerait de même — échec loyal
+      // (une nouvelle configuration relance l'évaluation par sa signature).
+      const terminal = (kind === 'output_truncated' && (sf?.candidates ?? refs.size) <= 1) || kind === 'contract_invalid';
+      out.push({ agendaItemId: id, outcome: terminal ? 'FAILED' : 'RETRY', errorKind, error: texte, detail: [t6FailureLabelOf(kind), ...notes].join(' · ') });
       continue;
     }
     if (o.status === 'validation_failed') {
@@ -1116,6 +1283,8 @@ interface T6EvaluationDependencies {
   report?: (o: T6EvaluationOutcome) => Promise<unknown> | void;
   /** Lot 78C : exécutions durables ; absent : mémoire de l'instance (lot 77). */
   runs?: T6RunStore;
+  /** Lot 113AO (D) : plafond de sortie et modèles effectifs (diagnostic d'une troncature). */
+  generationSummary?: () => Promise<{ models: string[]; maxOutputTokens: number | null } | null>;
 }
 
 export const t6EvaluationDefaultDeps: T6EvaluationDependencies = {
@@ -1160,7 +1329,8 @@ export async function evaluateWithT6(
   deps: T6EvaluationDependencies = t6EvaluationDefaultDeps,
 ): Promise<T6EvaluationOutcome> {
   // Lot 87A (P7, RUN-04) : configuration figée au démarrage de l'évaluation.
-  return runWithConfigSnapshot('T6', () => evaluateWithT6Inner(p, deps));
+  // Lot 113AO (#748, B) : exécution T6 autonome (voir `formulateWithT6`).
+  return inT6Execution(() => runWithConfigSnapshot('T6', () => evaluateWithT6Inner(p, deps)));
 }
 
 async function evaluateWithT6Inner(
@@ -1269,81 +1439,155 @@ async function evaluateWithT6Inner(
     let plafond = false;
     // Lot 83C (SEM-01) : un appel EVALUATE sert l'évaluation de CHAQUE échéance prise
     // (`T6E:<échéance>:<demande>`) — liste portée par l'appel, sans attribution arbitraire.
-    const executionsMetier = claim?.ok && claim.requestedAt
-      ? [...claim.requestedAt.entries()].filter(([, at]) => at).map(([id, at]) => t6EvaluateExecutionId(id, at))
-      : [];
-    try {
-      const res = await runInBusinessExecution(executionsMetier, () => deps.execute({
-        useCaseCode: 'HOME_MASCOT',
-        operationCode: T6_EVALUATE_OPERATION,
-        accountId: p.accountId,
-        // MODE=EVALUATE est imposé par la passerelle (branche de l'opération).
-        promptVariables: { INPUT_JSON: null, SUGGESTION_CONTEXT: null, INTERPELLATION_CONTEXT: JSON.stringify(p.bundle.context) },
-        outputSchema: T6EvaluateOutput,
-        idempotencyKey: `mascot-eval:${key}:${randomUUID()}`,
-        callerMode,
-      }));
-      const base = { promptVersion, traceId: res.traceId ?? null, model: res.model, latencyMs: Date.now() - startedAt, callerMode };
-      // 1. Valider : sortie amputée ou réparée par la passerelle, puis contrat strict.
-      const amputee = evaluationRepairViolation((res as { outputRepairs?: Array<{ stage?: string; rule?: string; path?: string }> }).outputRepairs);
-      const v = amputee ? { ok: false as const, reason: amputee } : validateT6Evaluation(p.bundle.context, res.data);
-      if (!v.ok) {
-        evalRecord(false, key, p.accountId);
-        outcome = { ...base, status: 'validation_failed', accepted: [], rejected: [], persisted: 0, error: v.reason };
-      } else if (v.accepted.length === 0) {
-        evalRecord(v.rejected.length === 0, key, p.accountId);
-        outcome = {
-          ...base, status: 'generated', accepted: [], rejected: v.rejected, persisted: 0, persistedSubjectIds: [], notPersisted: [],
-          error: v.rejected.length ? `${v.rejected.length} décision(s) rejetée(s)` : null,
-        };
-      } else {
-        // 2. Persister le lot accepté (transaction), 3. contrôler le nombre enregistré.
-        // Lot 81B (D) : propriété de l'exécution vérifiée DANS la transaction.
-        let ecrit: { persisted: number; ids: string[] | null; lost: string[] } | null = null;
-        let erreur: string | null = null;
-        try {
-          const r: number | T6PersistResult = await p.bundle.persist(v.accepted, {
-            promptVersion, traceId: res.traceId ?? null, contractRevision: reminder ? T6_ASSESSMENT_REVISION_REMINDER : 1,
-            ...(claim?.ok ? { run: { runId: claim.runId, leaseMs } } : {}),
-          });
-          ecrit = typeof r === 'number' ? { persisted: r, ids: null, lost: [] } : { persisted: r.persisted, ids: r.persistedSubjectIds ?? null, lost: r.lostSubjectIds ?? [] };
-        } catch (e) {
-          erreur = (e as Error).message?.slice(0, 300) ?? 'écriture en échec';
-          console.error('[mascotte] décisions EVALUATE non enregistrées :', erreur);
-        }
-        for (const sid of ecrit?.lost ?? []) {
-          const id = p.bundle.refs.get(sid)?.agendaItemId;
-          if (id != null) perdues.add(id);
-        }
-        const perdu = (sid: string) => (ecrit?.lost ?? []).includes(sid);
-        const persisted = Math.min(ecrit?.persisted ?? 0, v.accepted.length);
-        const ids = ecrit ? (ecrit.ids ?? (persisted >= v.accepted.length ? v.accepted.map((d) => d.subjectId) : null)) : [];
-        const notPersisted = !ecrit
-          ? v.accepted.map((d) => ({ subjectId: d.subjectId, reason: 'write_failed' as const }))
-          : ids ? v.accepted.filter((d) => !ids.includes(d.subjectId))
-            .map((d) => ({ subjectId: d.subjectId, reason: perdu(d.subjectId) ? 'ownership_lost' as const : 'not_written' as const })) : [];
-        // 4. Statut final et disjoncteur : jamais « generated » sans écriture complète.
-        const status: T6EvaluationStatus = persisted === 0 ? 'persist_failed' : persisted < v.accepted.length ? 'partially_persisted' : 'generated';
-        // Une dépossession n'est pas une panne du modèle : pas d'échec au disjoncteur.
-        evalRecord(status !== 'persist_failed' || (ecrit?.lost.length ?? 0) > 0, key, p.accountId);
-        const nbPerdues = notPersisted.filter((x) => x.reason === 'ownership_lost').length;
-        const motifs = [
-          v.rejected.length ? `${v.rejected.length} décision(s) rejetée(s)` : null,
-          nbPerdues ? `${nbPerdues} décision(s) non écrite(s) : exécution dépossédée (bail repris par une autre instance)` : null,
-          status === 'persist_failed' && !nbPerdues ? `aucune décision enregistrée${erreur ? ` : ${erreur}` : ''}` : null,
-          status === 'partially_persisted' && !nbPerdues ? `${v.accepted.length - persisted} décision(s) non enregistrée(s)` : null,
-        ].filter(Boolean);
-        outcome = {
-          ...base, status, accepted: v.accepted, rejected: v.rejected, persisted, persistedSubjectIds: ids, notPersisted,
-          error: motifs.length ? motifs.join(' ; ') : null,
-        };
+    // Lot 113AO (D) : un lot fractionné ne porte que SES échéances.
+    const executionsOf = (ctx: T6EvaluationInputOf): string[] => {
+      if (!claim?.ok || !claim.requestedAt) return [];
+      const out: string[] = [];
+      for (const c of ctx.candidates) {
+        const id = p.bundle.refs.get(c.subjectId)?.agendaItemId;
+        const at = id != null ? claim.requestedAt.get(id) : null;
+        if (id != null && at) out.push(t6EvaluateExecutionId(id, at));
       }
-    } catch (e) {
-      // Plafond IA du mois : pas d'échec du disjoncteur partagé.
-      plafond = isCostCapReached(e);
-      if (!plafond) evalRecord(false, key, p.accountId);
-      outcome = vide('error', plafond ? 'plafond IA du mois du compte atteint' : (e as Error).message?.slice(0, 500) ?? 'erreur', promptVersion);
-      outcome.latencyMs = Date.now() - startedAt;
+      return out;
+    };
+    // Un appel du passage : sortie validée, sortie rejetée, ou exception classée (cause primaire).
+    const appeler = async (ctx: T6EvaluationInputOf): Promise<T6LotIssue> => {
+      try {
+        const res = await runInBusinessExecution(executionsOf(ctx), () => deps.execute({
+          useCaseCode: 'HOME_MASCOT',
+          operationCode: T6_EVALUATE_OPERATION,
+          accountId: p.accountId,
+          // MODE=EVALUATE est imposé par la passerelle (branche de l'opération).
+          promptVariables: { INPUT_JSON: null, SUGGESTION_CONTEXT: null, INTERPELLATION_CONTEXT: JSON.stringify(ctx) },
+          outputSchema: T6EvaluateOutput,
+          idempotencyKey: `mascot-eval:${key}:${randomUUID()}`,
+          callerMode,
+        }));
+        // 1. Valider : sortie amputée ou réparée par la passerelle, puis contrat strict.
+        const amputee = evaluationRepairViolation((res as { outputRepairs?: Array<{ stage?: string; rule?: string; path?: string }> }).outputRepairs);
+        const v = amputee ? { ok: false as const, reason: amputee } : validateT6Evaluation(ctx, res.data);
+        return { ctx, traceId: res.traceId ?? null, model: res.model ?? null, ...(v.ok ? { kind: 'ok' as const, v } : { kind: 'invalid' as const, reason: v.reason }) };
+      } catch (e) {
+        return { ctx, kind: 'error', error: e, failure: classifyT6Failure(e), traceId: typeof (e as { traceId?: unknown })?.traceId === 'string' ? (e as { traceId: string }).traceId : null };
+      }
+    };
+    try {
+      // Lot 113AO (#748, D) : sortie TRONQUÉE (plafond de sortie atteint) — le lot
+      // est FRACTIONNÉ en deux (aucun candidat supprimé), dans la limite de
+      // `T6_EVALUATE_MAX_CALLS` appels par passage ; les autres causes ne sont
+      // jamais relancées dans le passage (reprise durable et bornée).
+      const file: T6EvaluationInputOf[] = [p.bundle.context];
+      const issues: T6LotIssue[] = [];
+      const fractionnements: number[] = [];
+      let appels = 0;
+      while (file.length > 0) {
+        const ctx = file.shift()!;
+        appels += 1;
+        const r = await appeler(ctx);
+        if (r.kind === 'error' && r.failure.kind === 'output_truncated' && ctx.candidates.length > 1 && appels + file.length + 2 <= T6_EVALUATE_MAX_CALLS) {
+          const m = Math.ceil(ctx.candidates.length / 2);
+          file.unshift({ ...ctx, candidates: ctx.candidates.slice(0, m) }, { ...ctx, candidates: ctx.candidates.slice(m) });
+          fractionnements.push(ctx.candidates.length);
+          continue;
+        }
+        issues.push(r);
+      }
+      const reussis = issues.filter((x): x is Extract<T6LotIssue, { kind: 'ok' }> => x.kind === 'ok');
+      const premier = reussis[0] ?? issues[0];
+      const base = { promptVersion, traceId: premier?.traceId ?? null, model: premier && 'model' in premier ? premier.model ?? null : null, latencyMs: Date.now() - startedAt, callerMode };
+      const tronque = issues.some((x) => x.kind === 'error' && x.failure.kind === 'output_truncated') || fractionnements.length > 0;
+      const lotsTrace: T6EvaluationLotsTrace | null = issues.length > 1 || tronque ? {
+        calls: appels, splits: fractionnements, initialCandidates: p.bundle.context.candidates.length,
+        lots: issues.map((x) => ({ candidates: x.ctx.candidates.length, outcome: x.kind === 'error' ? x.failure.kind : x.kind, traceId: x.traceId ?? null })),
+        ...(tronque ? { output: await (deps.generationSummary ?? t6EvaluateGenerationSummary)().catch(() => null) } : {}),
+      } : null;
+      const erreurs = issues.filter((x): x is Extract<T6LotIssue, { kind: 'error' }> => x.kind === 'error');
+      plafond = erreurs.some((x) => x.failure.kind === 'cost_cap');
+      const primaire = erreurs[0]?.failure ?? null;
+      const notesPrimaires = primaire ? truncationNotes(primaire, erreurs[0].ctx.candidates.length, lotsTrace) : [];
+      const resume = primaire ? t6FailureSummary(primaire, notesPrimaires) : null;
+      if (reussis.length === 0 && erreurs.length > 0) {
+        // Aucune sortie exploitable : échec classé (plafond IA : pas d'échec du disjoncteur partagé).
+        if (!plafond) evalRecord(false, key, p.accountId);
+        const e0 = erreurs[0].error;
+        outcome = {
+          ...vide('error', plafond ? 'plafond IA du mois du compte atteint' : (e0 as Error)?.message?.slice(0, 500) ?? 'erreur', promptVersion),
+          traceId: base.traceId, latencyMs: base.latencyMs, failure: primaire, failureSummary: resume, failureNotes: notesPrimaires, lots: lotsTrace,
+          ...(issues.length > 1 ? { subjectFailures: failuresOf(issues) } : {}),
+        };
+      } else if (reussis.length === 0) {
+        const r0 = issues[0] as Extract<T6LotIssue, { kind: 'invalid' }>;
+        evalRecord(false, key, p.accountId);
+        outcome = { ...base, status: 'validation_failed', accepted: [], rejected: [], persisted: 0, error: r0.reason, lots: lotsTrace, ...(issues.length > 1 ? { subjectFailures: failuresOf(issues) } : {}) };
+      } else {
+        const accepted = reussis.flatMap((x) => x.v.accepted);
+        const rejected = reussis.flatMap((x) => x.v.rejected);
+        const echecsLots = issues.length > reussis.length ? failuresOf(issues) : [];
+        if (accepted.length === 0) {
+          evalRecord(rejected.length === 0 && echecsLots.length === 0, key, p.accountId);
+          outcome = {
+            ...base, status: 'generated', accepted: [], rejected, persisted: 0, persistedSubjectIds: [], notPersisted: [],
+            error: [rejected.length ? `${rejected.length} décision(s) rejetée(s)` : null, echecsLots.length ? `${echecsLots.length} évaluation(s) sans sortie exploitable (${resume ?? 'sortie rejetée'})` : null].filter(Boolean).join(' ; ') || null,
+            ...(echecsLots.length ? { subjectFailures: echecsLots, failure: primaire, failureSummary: resume } : {}), lots: lotsTrace,
+          };
+        } else {
+          // 2. Persister chaque lot accepté (transaction), 3. contrôler le nombre enregistré.
+          // Lot 81B (D) : propriété de l'exécution vérifiée DANS la transaction.
+          let persisted = 0;
+          const ids: string[] = [];
+          let idsConnus = true;
+          const lost: string[] = [];
+          const nonEcrits: Array<{ subjectId: string; reason: 'write_failed' | 'not_written' | 'ownership_lost' }> = [];
+          let erreur: string | null = null;
+          for (const lot of reussis) {
+            if (lot.v.accepted.length === 0) continue;
+            let ecrit: { persisted: number; ids: string[] | null; lost: string[] } | null = null;
+            try {
+              const r: number | T6PersistResult = await p.bundle.persist(lot.v.accepted, {
+                promptVersion, traceId: lot.traceId ?? null, contractRevision: reminder ? T6_ASSESSMENT_REVISION_REMINDER : 1,
+                ...(claim?.ok ? { run: { runId: claim.runId, leaseMs } } : {}),
+              });
+              ecrit = typeof r === 'number' ? { persisted: r, ids: null, lost: [] } : { persisted: r.persisted, ids: r.persistedSubjectIds ?? null, lost: r.lostSubjectIds ?? [] };
+            } catch (e) {
+              erreur = (e as Error).message?.slice(0, 300) ?? 'écriture en échec';
+              console.error('[mascotte] décisions EVALUATE non enregistrées :', erreur);
+            }
+            for (const sid of ecrit?.lost ?? []) {
+              lost.push(sid);
+              const id = p.bundle.refs.get(sid)?.agendaItemId;
+              if (id != null) perdues.add(id);
+            }
+            const n = Math.min(ecrit?.persisted ?? 0, lot.v.accepted.length);
+            persisted += n;
+            const lotIds = ecrit ? (ecrit.ids ?? (n >= lot.v.accepted.length ? lot.v.accepted.map((d) => d.subjectId) : null)) : [];
+            if (lotIds === null) idsConnus = false;
+            else ids.push(...lotIds);
+            if (!ecrit) nonEcrits.push(...lot.v.accepted.map((d) => ({ subjectId: d.subjectId, reason: 'write_failed' as const })));
+            else if (lotIds) {
+              nonEcrits.push(...lot.v.accepted.filter((d) => !lotIds.includes(d.subjectId))
+                .map((d) => ({ subjectId: d.subjectId, reason: (ecrit!.lost.includes(d.subjectId) ? 'ownership_lost' : 'not_written') as 'ownership_lost' | 'not_written' })));
+            }
+          }
+          const notPersisted = nonEcrits;
+          // 4. Statut final et disjoncteur : jamais « generated » sans écriture complète.
+          const status: T6EvaluationStatus = persisted === 0 ? 'persist_failed' : persisted < accepted.length ? 'partially_persisted' : 'generated';
+          // Une dépossession n'est pas une panne du modèle : pas d'échec au disjoncteur.
+          evalRecord(status !== 'persist_failed' || lost.length > 0, key, p.accountId);
+          const nbPerdues = notPersisted.filter((x) => x.reason === 'ownership_lost').length;
+          const motifs = [
+            rejected.length ? `${rejected.length} décision(s) rejetée(s)` : null,
+            nbPerdues ? `${nbPerdues} décision(s) non écrite(s) : exécution dépossédée (bail repris par une autre instance)` : null,
+            status === 'persist_failed' && !nbPerdues ? `aucune décision enregistrée${erreur ? ` : ${erreur}` : ''}` : null,
+            status === 'partially_persisted' && !nbPerdues ? `${accepted.length - persisted} décision(s) non enregistrée(s)` : null,
+            echecsLots.length ? `${echecsLots.length} évaluation(s) sans sortie exploitable (${resume ?? 'sortie rejetée'})` : null,
+          ].filter(Boolean);
+          outcome = {
+            ...base, status, accepted, rejected, persisted, persistedSubjectIds: idsConnus ? ids : null, notPersisted,
+            error: motifs.length ? motifs.join(' ; ') : null, lots: lotsTrace,
+            ...(echecsLots.length ? { subjectFailures: echecsLots, failure: primaire, failureSummary: resume } : {}),
+          };
+        }
+      }
     } finally {
       if (minuterie) clearInterval(minuterie);
     }

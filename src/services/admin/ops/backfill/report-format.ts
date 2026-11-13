@@ -22,6 +22,7 @@ import type { RemediationReport, RemediationRestoreReport } from '@/services/sec
 import type { DataSeparationReport } from '@/services/equipment/data-separation-backfill';
 import type { ValidationRepriseReport } from '@/services/documents/validation-reprise';
 import type { BackfillAction, BackfillScript } from './definitions';
+import type { AddressLinkRepairReport, AddressLinkRestoreReport } from '@/services/documents/document-asset-links/address-link-repair';
 import type { DuoSharedAccountReport, RestoreReport as DuoRestoreReport } from '@/services/account/duo-shared-account-backfill';
 import type { BackupManifestV2 } from '@/services/backup/database-backup.service';
 import type { RestoreReport as DatabaseRestoreReport } from '@/services/backup/database-restore.service';
@@ -29,6 +30,7 @@ import type { ReclassificationReport, ReclassificationRestoreReport } from '@/se
 import type { PropertyRepriseReport } from '@/services/ai/source-analysis/projection/property-evidence-reprise';
 import type { CostClassificationReport, CostClassificationRestoreReport } from '@/services/ai/cost/cost-classification-backfill';
 import type { ProvenanceCatchupReport, ProvenanceRestoreReport } from '@/services/ai/source-analysis/source-units/provenance-repair';
+import type { T6AttributionReport, T6AttributionRestoreReport } from '@/services/home/mascot/t6-attribution-repair';
 
 export interface BackfillSummary {
   headline: string;
@@ -1014,6 +1016,61 @@ const PROVENANCE_FR: Record<string, string> = {
   DOCUMENT_MERGED: 'document fusionné',
 };
 
+/** Libellés des rôles d'adresse (rapport du rattrapage 113AM). */
+const ADDRESS_ROLE_FR: Readonly<Record<string, string>> = {
+  CORRESPONDENCE: 'destinataire / souscripteur / facturation', DELIVERY: 'livraison', ISSUER: 'émetteur',
+  INSTALLATION: 'lieu d’installation d’un appareil', OTHER_ASSET_LOCATION: 'adresse d’un autre bien', DOCUMENT_PARTY: 'partie au document',
+  UNQUALIFIED: 'rôle non établi', PROPERTY_LOCATION: 'lieu du bien',
+};
+
+/**
+ * Lot 113AM (#739) : rapport du rattrapage « Rattachements : liens
+ * automatiques fondés sur une adresse de correspondance ».
+ */
+function documentAddressLinks(action: BackfillAction, out: RawBackfillOutput): BackfillSummary {
+  const vide = { ambiguous: { count: 0, samples: [] }, conflicts: { count: 0, samples: [] } };
+  if (action === 'restore') {
+    const r = out.result as AddressLinkRestoreReport;
+    return {
+      headline: `Restauration : ${r.restored} lien(s) remis ; ${r.skipped} lien(s) modifié(s) depuis, laissé(s) tel(s) quel(s).`,
+      scriptRunId: r.runId, restorable: false, ...vide,
+      counters: [{ label: 'Liens remis', value: r.restored }, { label: 'Liens laissés tels quels', value: r.skipped }],
+      warnings: ['Le journal de la garde est conservé (lignes marquées « restaurées »).'],
+    };
+  }
+  const r = out.result as AddressLinkRepairReport;
+  if (r.disabled) return { headline: `Rien à faire : ${r.disabled}.`, scriptRunId: null, restorable: false, counters: [], ...vide, warnings: [] };
+  const sim = action === 'simulate';
+  return {
+    headline: sim
+      ? `Simulation : ${r.erroneous} lien(s) automatique(s) fondé(s) sur une adresse qui n’est pas celle du lieu du bien, sur ${r.examined} examiné(s) ; rien n’est écrit.`
+      : `Application : ${r.repaired} lien(s) retiré(s) sur ${r.erroneous} détecté(s)${r.more ? ' — reste à traiter, relancer' : ''}.`,
+    scriptRunId: r.runId,
+    restorable: !sim && r.repaired > 0,
+    counters: [
+      ...(r.runId ? [{ label: 'Identifiant de l’exécution (pour Restaurer)', value: r.runId }] : []),
+      { label: 'Comptes examinés', value: r.accounts },
+      { label: 'Liens automatiques examinés', value: r.examined },
+      { label: 'Conservés : autre preuve que l’adresse', value: r.kept.proven },
+      { label: 'Conservés : aucune adresse du bien dans le document', value: r.kept.noAddressMatch },
+      { label: 'Conservés : connaissance du document indisponible', value: r.kept.noKnowledge },
+      { label: 'Fondés sur une adresse de correspondance', value: r.erroneous },
+      ...(sim ? [] : [
+        { label: 'Liens retirés', value: r.repaired },
+        { label: 'Biens réconciliés', value: r.derived.reconciled },
+        { label: 'Rattachements réexaminés', value: r.derived.resolutionRequested },
+        { label: 'Effets dérivés en échec', value: r.derived.failed },
+      ]),
+    ],
+    ambiguous: { count: 0, samples: [] },
+    conflicts: {
+      count: r.erroneous,
+      samples: echantillon(r.samples, (x) => `compte ${x.accountId} · document ${x.fileId} · bien ${x.assetId} · lien ${x.linkId} (${x.origin}, ${x.role}) — adresse : ${ADDRESS_ROLE_FR[x.addressRole] ?? x.addressRole}${x.repaired ? ' — retiré' : ''}`),
+    },
+    warnings: sim ? [] : ['Les liens confirmés par l’utilisateur ne sont jamais touchés.'],
+  };
+}
+
 /**
  * Lot 113AK (#736) : rapport du rattrapage « T1 : provenance des faits et
  * preuves orphelines » — compteurs par statut, échantillons consultables
@@ -1137,6 +1194,52 @@ function projectionPropertyEvidence(out: RawBackfillOutput): BackfillSummary {
   };
 }
 
+/** Lot 113AO (#748, B) : rattachement des appels T6 à leur exécution T6. */
+function t6ExecutionAttribution(action: BackfillAction, out: RawBackfillOutput): BackfillSummary {
+  if (action === 'restore') {
+    const r = out.result as T6AttributionRestoreReport;
+    return {
+      headline: `Restauration : ${r.restored} appel(s) remis dans leur rattachement d’avant ; ${r.skipped} appel(s) modifié(s) depuis, laissé(s) tel(s) quel(s).`,
+      scriptRunId: r.runId, restorable: false,
+      counters: [{ label: 'Appels restaurés', value: r.restored }, { label: 'Appels laissés tels quels', value: r.skipped }, { label: 'Captures d’échange restaurées', value: r.captures }],
+      ambiguous: { count: 0, samples: [] }, conflicts: { count: 0, samples: [] }, warnings: [],
+    };
+  }
+  const r = out.result as T6AttributionReport;
+  if (r.disabled) {
+    return { headline: `Rien à faire : ${r.disabled}.`, scriptRunId: null, restorable: false, counters: [],
+      ambiguous: { count: 0, samples: [] }, conflicts: { count: 0, samples: [] }, warnings: [] };
+  }
+  const sim = action === 'simulate';
+  const prouves = r.proven.formulate + r.proven.evaluate;
+  const ligne = (x: T6AttributionReport['items'][number]) =>
+    `appel ${x.usageEventId} · compte ${x.accountId ?? '—'} · ${x.operation} · ${x.previous} → ${x.next ?? (x.ids ?? []).join(', ') ?? '—'}${x.reason ? ` — ${x.reason}` : ''}`;
+  return {
+    headline: sim
+      ? `Simulation (${r.rule}) : ${r.examined} appel(s) T6 rattaché(s) à une autre exécution, ${prouves} rattachable(s) avec preuve, ${r.unproven} non prouvé(s) ; rien n’est écrit.`
+      : `Application (${r.rule}) : ${r.written} appel(s) rattaché(s) à leur exécution T6${r.more ? ' — reste à traiter, relancer' : ''}.`,
+    scriptRunId: r.runId,
+    restorable: !sim && r.written > 0,
+    counters: [
+      ...(r.runId ? [{ label: 'Identifiant de l’exécution (pour Restaurer)', value: r.runId }] : []),
+      { label: 'Appels T6 examinés', value: r.examined },
+      { label: 'Formulations prouvées', value: r.proven.formulate },
+      { label: 'Évaluations prouvées', value: r.proven.evaluate },
+      ...(sim ? [] : [{ label: 'Appels rattachés', value: r.written }]),
+      { label: 'Non prouvés (laissés tels quels)', value: r.unproven },
+      { label: 'Exécutions T6 qui retrouvent leurs appels', value: r.executionsGaining },
+      { label: 'Exécutions d’origine qui les perdent', value: r.executionsLosing },
+      ...Object.entries(r.previousTreatments).map(([k, v]) => ({ label: `Rattachés jusqu’ici à ${k}`, value: v })),
+    ],
+    ambiguous: { count: r.unproven, samples: echantillon(r.items.filter((i) => i.outcome === 'UNPROVEN'), ligne) },
+    conflicts: { count: r.items.filter((i) => i.outcome === 'CHANGED_SINCE').length, samples: echantillon(r.items.filter((i) => i.outcome === 'CHANGED_SINCE'), ligne) },
+    warnings: [
+      ...(r.more ? ['Périmètre non entièrement parcouru : relancer (rien n’est réécrit).'] : []),
+      'L’exécution d’origine reste lisible comme déclencheur de chaque appel rattaché (lien de causalité).',
+    ],
+  };
+}
+
 export function summarizeBackfill(script: BackfillScript, action: BackfillAction, step: string | null, out: RawBackfillOutput): BackfillSummary {
   switch (script) {
     case 'database-restore-point': return databaseRestorePoint(action, out);
@@ -1161,6 +1264,8 @@ export function summarizeBackfill(script: BackfillScript, action: BackfillAction
     case 'business-periods-v2-requalification': return businessPeriodsRequalification(action, out);
     case 'ai-cost-classification': return aiCostClassification(action, out);
     case 'source-unit-provenance': return sourceUnitProvenance(action, out);
+    case 'document-address-links': return documentAddressLinks(action, out);
+    case 't6-execution-attribution': return t6ExecutionAttribution(action, out);
   }
 }
 

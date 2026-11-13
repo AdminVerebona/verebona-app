@@ -197,10 +197,20 @@ export interface ReportAnomalyInput {
   userId?: number | null;
   /** Détail technique de cette occurrence (code, message, identifiants…). */
   detail?: Record<string, unknown> | null;
+  /**
+   * Lot 113AQ (#751 §4) — facultatif : empreinte MATÉRIELLE du constat (population, attributs, valeurs,
+   * verdicts). Si l'anomalie ouverte porte déjà la même (`technical_detail.materialKey`), le balayage est
+   * IDENTIQUE : ni occurrence ni compteur, seul le détail (dernier contrôle) est rafraîchi — le balayage
+   * reste tracé dans le journal de sa tâche. Absente : comportement historique (une occurrence par appel).
+   */
+  materialKey?: string | null;
 }
 
-async function reportOnce(input: ReportAnomalyInput): Promise<number> {
-  const detail = sanitizeDetail(input.detail);
+/** Résultat détaillé d'un signalement (lot 113AQ). */
+export interface ReportOutcome { anomalyId: number; occurrence: boolean }
+
+async function reportOnce(input: ReportAnomalyInput): Promise<ReportOutcome> {
+  const detail = sanitizeDetail(input.materialKey ? { ...(input.detail ?? {}), materialKey: input.materialKey } : input.detail);
   const detailJson = detail ? JSON.stringify(detail) : null;
   const accountId = input.accountId ?? null;
   const userId = input.userId ?? null;
@@ -210,6 +220,15 @@ async function reportOnce(input: ReportAnomalyInput): Promise<number> {
       `SELECT id FROM admin_anomalies WHERE fingerprint = $1 AND status = 'open' FOR UPDATE`,
       [input.fingerprint], tx,
     );
+    // Lot 113AQ : balayage identique (même constat matériel) — aucune nouvelle occurrence.
+    const [precedent] = open && input.materialKey
+      ? await q<{ material_key: string | null }>(`SELECT technical_detail->>'materialKey' AS material_key FROM admin_anomalies WHERE id = $1`, [open.id], tx)
+      : [];
+    if (open && input.materialKey && precedent?.material_key === input.materialKey) {
+      await q(`UPDATE admin_anomalies SET technical_detail = COALESCE($2::jsonb, technical_detail), updated_at = now() WHERE id = $1`,
+        [open.id, detailJson], tx);
+      return { anomalyId: Number(open.id), occurrence: false };
+    }
     const [lastResolved] = open ? [] : await q<{ id: number }>(
       `SELECT id FROM admin_anomalies WHERE fingerprint = $1 AND status = 'resolved'
         ORDER BY resolved_at DESC, id DESC LIMIT 1`,
@@ -249,9 +268,9 @@ async function reportOnce(input: ReportAnomalyInput): Promise<number> {
        VALUES ($1, $2, $3, $4::jsonb)`,
       [anomalyId, accountId, userId, detailJson], tx,
     );
-    return anomalyId;
+    return { anomalyId, occurrence: true };
   });
-  return Number(id);
+  return { anomalyId: Number(id.anomalyId), occurrence: id.occurrence };
 }
 
 /**
@@ -259,6 +278,11 @@ async function reportOnce(input: ReportAnomalyInput): Promise<number> {
  * si l'écriture a échoué — ce qui est journalisé mais jamais propagé.
  */
 export async function reportAnomaly(input: ReportAnomalyInput): Promise<number | null> {
+  return (await reportAnomalyDetailed(input))?.anomalyId ?? null;
+}
+
+/** Lot 113AQ : comme `reportAnomaly`, en disant si une occurrence a été historisée (balayage identique : non). */
+export async function reportAnomalyDetailed(input: ReportAnomalyInput): Promise<ReportOutcome | null> {
   if (!isAnomalyDomain(input.domain) || !input.fingerprint) {
     console.error('[anomaly] signalement ignoré : domaine ou empreinte invalide', input.domain, input.fingerprint);
     return null;

@@ -272,12 +272,15 @@ export async function runSourceUnitsBackfill(opts: { deadline?: number; env?: Re
 
 // ══ 2. Reprise ciblée des documents INCOMPLETE_RETRYABLE ═════════════════════
 
-const toCovered = (u: StoredSourceUnit): CoveredSourceUnit => ({
+export const toCovered = (u: StoredSourceUnit): CoveredSourceUnit => ({
   sourceUnitId: u.sourceUnitId, kind: u.kind, page: u.page, ordinal: u.ordinal, parentUnitId: u.parentUnitId,
   text: u.text, label: u.label, value: u.value, payload: u.payload ?? {}, location: u.location ?? {},
   origin: u.origin as CoveredSourceUnit['origin'], salient: u.salient, status: u.coverageStatus, reason: u.coverageReason,
   factCount: u.factCount, repairAttempts: u.repairAttempts,
   repairState: (u.repairState ?? null) as CoveredSourceUnit['repairState'],
+  // Lot 113AN : provenance de couverture et politique conservées d'une réécriture à l'autre.
+  coverageProvenance: (typeof u.coverageProvenance === 'string' ? JSON.parse(u.coverageProvenance) : u.coverageProvenance) ?? null,
+  residualPolicy: u.residualPolicy ?? null,
 });
 
 interface RetryResult { examined: number; repaired: number; requeued: number; final: number; failed: number; more: boolean; disabled?: boolean }
@@ -373,7 +376,7 @@ export async function runCompletenessRetry(opts: { deadline?: number; env?: Reco
 }
 
 /** Diagnostics conservés d'une couverture (vérification de la source, pertes de normalisation). */
-function storedDiagnostics(v: Record<string, unknown> | null | undefined) {
+export function storedDiagnostics(v: Record<string, unknown> | null | undefined) {
   const d = (v ?? {}) as Partial<T1CoverageDiagnostics> & { continuationRuns?: number };
   const nums = (x: unknown) => (Array.isArray(x) ? x.map(Number).filter((n) => Number.isInteger(n)) : []);
   const verification = d.sourceVerification
@@ -399,6 +402,8 @@ function storedDiagnostics(v: Record<string, unknown> | null | undefined) {
     sourceReread: { runs: Number(d.sourceRereads ?? 0), failed: Number(d.sourceRereadsFailed ?? 0), resolved: Number(d.sourceRereadResolved ?? 0) },
     // Lot 109K (COR-02) : dernière propagation d'une réparation (conservée d'une reprise à l'autre).
     repairPropagation: (d.repairPropagation ?? null) as Record<string, unknown> | null,
+    // Lot 113AN : réparation de couverture de l'analyse (conservée d'une reprise à l'autre).
+    coverageRepair: (d.coverageRepair ?? null) as T1CoverageDiagnostics['coverageRepair'] | null,
   };
 }
 
@@ -496,7 +501,13 @@ async function retryDocument(p: {
   }
 
   const stored = await loadDocumentSourceUnits(p.fileId, { accountId: p.accountId, limit: 50_000 });
-  const units = stored.map(toCovered);
+  // Lot 113AN (#741) : unités d'abord RÉCONCILIÉES avec les données persistées (faits, décisions de valeur,
+  // métadonnées, tableaux) — seules les vraies lacunes sont envoyées au modèle ; aucun appel pour un faux négatif.
+  const [{ loadStoredReconciliationInput }, { reconcileCoverage, reconciliationSummary, residualCounts, withResidualPolicies }] = await Promise.all([
+    import('./stored-reconciliation'), import('./coverage-reconciliation'),
+  ]);
+  const sqlR = pgClient as unknown as Parameters<typeof loadStoredReconciliationInput>[0];
+  const units = reconcileCoverage(stored.map(toCovered), { ...(await loadStoredReconciliationInput(sqlR, p.accountId, p.fileId)), stage: 'STORED' });
   const lacunes = units.filter((u) => u.kind === 'PAGE_GAP' && u.status === 'FAILED' && u.payload.retryable === true);
 
   // Lacune de pages : seule une relecture du fichier peut la combler → file T1.
@@ -597,6 +608,9 @@ async function retryDocument(p: {
   });
   // Lot 54G (point 4) : parent TABLE recalculé depuis la couverture réelle de ses lignes.
   majs = resolveTableParents(majs);
+  // Lot 113AN : réconciliation APRÈS l'ajout des faits (relus en base) et des décisions — faits relus d'une
+  // autre unité, valeurs déjà structurées, répétitions ; jamais une promotion sans preuve.
+  majs = reconcileCoverage(majs, { ...(await loadStoredReconciliationInput(sqlR, p.accountId, p.fileId)), stage: attempted.length > 0 ? 'REPAIR' : 'STORED' });
   const progression = attempted.some((id) => units.find((u) => u.sourceUnitId === id)?.repairState === 'PENDING') && failed.size === 0;
   const consomme = !(continuation && progression) || relecture !== null;
   const tentativesStockees = consomme ? p.attempt : p.attempt - 1;
@@ -606,6 +620,8 @@ async function retryDocument(p: {
     // Plafond de continuation atteint : les unités restantes sont « plafond atteint », explicitement.
     majs = majs.map((u) => (u.repairState === 'PENDING' ? { ...u, repairState: 'EXHAUSTED' } : u));
   }
+  // Lot 113AN : politique explicite de chaque unité restante.
+  majs = withResidualPolicies(majs);
   const anciens = await loadUnresolvedDocumentFacts(p.fileId, { accountId: p.accountId });
   const unresolved: UnresolvedFactRecord[] = anciens.map(({ id: _i, fileId: _f, createdAt: _c, ...x }) => {
     void _i; void _f; void _c;
@@ -637,6 +653,11 @@ async function retryDocument(p: {
     },
   });
   if (report.diagnostics) (report.diagnostics as T1CoverageDiagnostics & { continuationRuns?: number }).continuationRuns = runs;
+  if (report.diagnostics) {
+    if (diag.coverageRepair) report.diagnostics.coverageRepair = diag.coverageRepair;
+    report.diagnostics.reconciliation = reconciliationSummary(majs, 'STORED');
+    report.diagnostics.residualPolicies = residualCounts(majs);
+  }
   // Lot 109K (COR-02) : diagnostic de la propagation de CETTE reprise (sinon le précédent est conservé).
   if (report.diagnostics) {
     const pr = ajout.propagation ? propagationSummary(ajout.propagation) : diag.repairPropagation;

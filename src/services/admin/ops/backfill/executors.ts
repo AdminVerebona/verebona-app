@@ -41,6 +41,10 @@
  *                         simulation = lecture seule ; colonnes 1610 ; aucun appel IA)
  *   source-unit-provenance runProvenanceCatchup / restoreProvenanceCatchup (lot 113AK ; simulation =
  *                         lecture seule ; journal 1640 ; aucun appel IA ; même moteur que COH-DOC-FACT-PROVENANCE)
+ *   document-address-links runAddressLinkRepair / restoreAddressLinkRepair (lot 113AM ; simulation =
+ *                         lecture seule ; journal 1660 ; aucun appel IA ; même garde que les écritures)
+ *   t6-execution-attribution runT6AttributionRepair / restoreT6AttributionRepair (lot 113AO ; simulation =
+ *                         lecture seule ; preuve opération + trace + compte + dates ; aucun appel IA)
  *   database-restore-point runDatabaseBackup('admin') / restoreDatabaseBackup (lot 82E ; point de
  *                         restauration = sauvegarde format 2 ; restauration tout ou rien)
  *
@@ -332,6 +336,35 @@ export async function executeBackfill(sql: postgres.Sql, req: BackfillRequest, h
         log: (msg) => { hooks.log(msg); hooks.progress({ message: msg }); },
       });
       return { result: { ...r, action: req.action } };
+    }
+    case 'document-address-links': {
+      // Lot 113AM (#739) : liens automatiques fondés sur une adresse non qualifiée « lieu du bien » ; aucun appel IA.
+      const m = await import('@/services/documents/document-asset-links/address-link-repair');
+      if (req.action === 'restore') {
+        const r = await m.restoreAddressLinkRepair(sql, req.runId!, { reason: req.reason });
+        hooks.log(`restauration : ${r.restored} lien(s) remis, ${r.skipped} laissé(s) tel(s) quel(s)`);
+        return { result: { ...r, action: 'restore' } };
+      }
+      const r = await m.runAddressLinkRepair({
+        sql, apply: req.action === 'apply', accountId: req.accountId, reason: req.reason, deadline: Date.now() + 45 * 60_000,
+        log: (msg) => { hooks.log(msg); hooks.progress({ message: msg }); },
+      });
+      return { result: { ...r, action: req.action } };
+    }
+    case 't6-execution-attribution': {
+      // Lot 113AO (#748, B) : appels T6 rattachés à leur exécution T6, avec preuve ; aucun appel IA.
+      const m = await import('@/services/home/mascot/t6-attribution-repair');
+      const q = async (t: string, p?: unknown[]) => (await sql.unsafe(t, (p ?? []) as never[])) as unknown as Array<Record<string, unknown>>;
+      if (req.action === 'restore') {
+        const r = await m.restoreT6AttributionRepair(req.runId!, q);
+        hooks.log(`restauration : ${r.restored} appel(s) remis, ${r.skipped} laissé(s) tel(s) quel(s)`);
+        return { result: { ...r, action: 'restore' } };
+      }
+      const r = await m.runT6AttributionRepair({
+        q, apply: req.action === 'apply', accountId: req.accountId, reason: req.reason, deadline: Date.now() + 30 * 60_000,
+        log: (msg) => { hooks.log(msg); hooks.progress({ message: msg }); },
+      });
+      return { result: { ...r } };
     }
     case 'business-periods-v2-requalification': {
       // Lot 113AC : simulation = recensement et estimation ; application = UN lot mis en file T1 (contrat revérifié).

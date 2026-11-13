@@ -59,7 +59,14 @@ type T6RunErrorKind =
   /** Lot 81B (C) : tentatives de la DEMANDE de pré-génération épuisées sans progrès. */
   | 'pregen_exhausted'
   /** Lot 81B (D) : exécution dépossédée (bail repris par une autre instance) — rien écrit. */
-  | 'ownership_lost';
+  | 'ownership_lost'
+  /**
+   * Lot 113AO (#748, D) : causes PRIMAIRES distinguées (`t6-failure.ts`) —
+   * sortie tronquée (plafond de sortie), refus du fournisseur (403), défaut
+   * commun du contrat ou de la requête, transport, cause non déterminée.
+   * `model_unavailable` ne désigne plus que l'indisponibilité réelle.
+   */
+  | 'output_truncated' | 'provider_refused' | 'contract_invalid' | 'transport' | 'unknown_error';
 
 /** Espace des verrous consultatifs de prise en charge (par compte). */
 const T6_RUN_LOCK_SPACE = 78016;
@@ -529,7 +536,8 @@ export async function claimT6Runs(p: {
   });
 }
 
-type T6RunOutcome = 'COMPLETED' | 'RETRY' | 'UNAVAILABLE';
+/** Lot 113AO (D) : `FAILED` — échec loyal sans relance (la même demande échouerait de même). */
+type T6RunOutcome = 'COMPLETED' | 'RETRY' | 'UNAVAILABLE' | 'FAILED';
 
 export interface T6RunResult {
   agendaItemId: number;
@@ -558,8 +566,10 @@ export async function finishT6Runs(p: {
     `UPDATE t6_evaluation_runs r SET
        status = CASE WHEN m.outcome = 'COMPLETED' THEN 'COMPLETED'
                      WHEN m.outcome = 'UNAVAILABLE' THEN 'UNAVAILABLE'
+                     WHEN m.outcome = 'FAILED' THEN 'FAILED'
                      WHEN r.attempts >= $4::int THEN 'FAILED' ELSE 'RETRY_WAIT' END,
        next_attempt_at = CASE WHEN m.outcome = 'COMPLETED' THEN NULL
+                              WHEN m.outcome = 'FAILED' THEN NULL
                               WHEN m.outcome = 'UNAVAILABLE' THEN now() + make_interval(secs => $5::int)
                               WHEN r.attempts >= $4::int THEN NULL
                               ELSE now() + make_interval(secs => ($6::int[])[least(greatest(r.attempts, 1), array_length($6::int[], 1))]) END,

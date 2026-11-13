@@ -20,8 +20,15 @@ import { plat } from './text';
 import { repairAttemptCap, repairSettings, runRepairPass, type RepairCall } from './repair';
 import {
   SOURCE_LAYER_VERSION, UNRESOLVED_REASONS,
-  type PageGap, type SourceLayer, type SourceUnit, type SourceUnitOrigin, type TextSegment, type UnresolvedFactRecord, type UnresolvedReason,
+  type CoveredSourceUnit, type PageGap, type SourceLayer, type SourceUnit, type SourceUnitOrigin, type T1CoverageRepairDiagnostics, type TextSegment,
+  type UnresolvedFactRecord, type UnresolvedReason,
 } from './types';
+import {
+  reconcileCoverage, reconciliationSummary, residualCounts, withResidualPolicies,
+  type ReconciliationDecision, type ReconciliationFact, type ReconciliationStage, type ReconciliationValue,
+} from './coverage-reconciliation';
+import { factContextOf, validateValueDecisions, type AnchoredValueDecision, type PreparedValueDecision } from '../value-decisions/validate';
+import type { AnchoredOperationCandidate } from '../operation-candidates/prepare';
 import { factLabel } from '../master/fact-evidence';
 import type { ProjectedFact, T1Fact } from '../master/t1-contract';
 import type { T1DroppedItem, T1PreservedOriginal } from '../master/tolerant-output';
@@ -82,6 +89,20 @@ interface SourceLayerDraft {
   repairFacts: Set<T1Fact>;
   /** Lot 49B (DEV-02) : faits conflictuels CONFIRMÉS par une relecture ciblée certaine (preuve suffisante). */
   confirmed: Set<T1Fact>;
+  /** Lot 113AN : unités ciblées qui prouvent un fait de réparation (lien local, jamais recalculé). */
+  repairLinks: Map<T1Fact, string[]>;
+  /** Lot 113AN : unités ciblées où la réparation a RELU un fait déjà présent (même empreinte) — couvertes par lui. */
+  extraLinks: Map<T1Fact, Set<string>>;
+  /** Lot 113AN : décisions de valeur des passes de réparation (ancrées sur une unité ciblée). */
+  repairDecisions: AnchoredValueDecision[];
+  /** Lot 113AN : décisions VALIDES utilisables pour la couverture (contrat porté par le prompt effectif), sinon null. */
+  usableDecisions: boolean;
+  /** Lot 113AN : valeurs structurées hors faits (métadonnées) pour la réconciliation. */
+  metadataValues: ReconciliationValue[];
+  /** Lot 113AN : réparation ciblée de couverture de l'analyse (compteurs). */
+  repairDiag: T1CoverageRepairDiagnostics;
+  /** Candidats Opération ancrés (valeurs structurées pour la réconciliation). */
+  candidates: readonly AnchoredOperationCandidate[];
 }
 
 type Obj = Record<string, unknown>;
@@ -149,6 +170,12 @@ export async function completeT1Extraction(p: {
   /** Vérification en base des cibles des faits de réparation. */
   verifyTargets?: (facts: T1Fact[]) => Promise<{ verifiedIds: AnalyzeDocumentResult['verifiedIds']; warnings: AnalysisWarning[] }>;
   env?: Record<string, string | undefined>;
+  /**
+   * Lot 113AN : le prompt T1 effectif porte-t-il le contrat des décisions de
+   * valeur (même condition que leur persistance) ? Absent : décisions non
+   * utilisées pour la couverture avant projection (prudence).
+   */
+  valueDecisionsUsable?: (promptVersion: string) => Promise<boolean>;
 }): Promise<SourceLayerDraft | null> {
   const x = p.analysed.extraction;
   if (!x) return null;
@@ -194,14 +221,26 @@ export async function completeT1Extraction(p: {
     structuredValues: [d.supplier?.siret ?? null, ...Object.values(d.supplier?.contacts ?? {})].filter((v): v is string => typeof v === 'string' && !!v.trim()),
     unresolved, repairPassCount: 0, repairCalls: 0, extras: x,
     pending: new Set(), attempted: new Set(), repairFacts: new Set(), confirmed: new Set(),
+    repairLinks: new Map(), extraLinks: new Map(), repairDecisions: [],
+    usableDecisions: p.valueDecisionsUsable ? await p.valueDecisionsUsable(p.analysed.promptVersion).catch(() => false) : false,
+    metadataValues: metadataValuesOf(d),
+    repairDiag: { passes: 0, calls: 0, selected: 0, attempted: 0, resolved: 0, factsAdded: 0, factsConfirmed: 0, decisions: 0, skipped: null },
+    candidates: p.analysed.operationCandidates ?? [],
   };
 
   // ── Réparation ciblée, bornée ──────────────────────────────────────────
+  // Lot 113AN : la sélection part de la couverture RÉCONCILIÉE (décisions de valeur, tableaux, répétitions…) :
+  // seules les vraies lacunes sont réparées ; le motif d'une réparation non exécutée est consigné.
   const { maxPasses, maxCalls, minUnits } = repairSettings(p.env);
+  if (maxPasses === 0) draft.repairDiag.skipped = 'DISABLED';
   for (let pass = 1; pass <= maxPasses; pass++) {
-    const cov = coverageOf(draft, a.facts);
+    const cov = coverageOf(draft, a.facts, decisionsForCoverage(draft, p.analysed), 'ANALYSIS');
     const cibles = selectRepairUnits(cov, maxPasses);
-    if (cibles.length === 0 || cibles.length < minUnits) break;
+    if (pass === 1) draft.repairDiag.selected = cibles.length;
+    if (cibles.length === 0 || cibles.length < minUnits) {
+      if (pass === 1) draft.repairDiag.skipped = cibles.length === 0 ? 'NO_TARGET' : 'BELOW_MIN_UNITS';
+      break;
+    }
     const r = await runRepairPass({
       input: p.input, groupIndices: p.groupIndices, ctx: p.ctx, capabilities: x.capabilities, v2Families: x.v2Families,
       units: cibles, maxCalls, pass, call: p.call,
@@ -218,14 +257,38 @@ export async function completeT1Extraction(p: {
     // Lot 49B (DEV-04) : unités hors budget de la passe — jamais « non interprétables » : reprise programmée.
     for (const id of r.notAttempted) if (!draft.attempted.has(id)) draft.pending.add(id);
     const ajoutes = mergeFacts(a.facts, r.facts);
-    for (const f of ajoutes) draft.repairFacts.add(f);
+    for (const f of ajoutes) {
+      draft.repairFacts.add(f);
+      const ids = r.links.get(f);
+      if (ids?.length) draft.repairLinks.set(f, ids);
+    }
+    draft.repairDiag.factsAdded += ajoutes.length;
     // Relecture CERTAINE d'un fait déjà lu (même valeur, même preuve) : confirmation — l'incertitude d'un
     // fait conflictuel ou d'une cellule de tableau incertain est levée pour la couverture (jamais le fait).
     const parEmpreinte = new Map(a.facts.filter((f) => !ajoutes.includes(f)).map((f) => [factFingerprint(f), f]));
+    // Lot 113AN : empreinte d'un fait de réparation identique à un fait existant → ce fait (décisions rattachées).
+    const refsDoublons = new Map<string, string>();
     for (const f of r.facts) {
-      const existant = f.confidence === 'certain' && !ajoutes.includes(f) ? parEmpreinte.get(factFingerprint(f)) : undefined;
-      if (existant) draft.confirmed.add(existant);
+      if (ajoutes.includes(f)) continue;
+      const existant = parEmpreinte.get(factFingerprint(f));
+      if (!existant) continue;
+      if (f.confidence === 'certain') draft.confirmed.add(existant);
+      // La réparation a relu CE fait dans une unité ciblée : l'unité est couverte par lui (jamais un doublon de fait).
+      const ids = r.links.get(f) ?? [];
+      if (ids.length) {
+        const s = draft.extraLinks.get(existant) ?? new Set<string>();
+        for (const id of ids) s.add(id);
+        draft.extraLinks.set(existant, s);
+        draft.repairDiag.factsConfirmed++;
+      }
+      const ref = (f as T1Fact & { t1FactRef?: string }).t1FactRef;
+      const refExistant = (existant as T1Fact & { t1FactRef?: string }).t1FactRef;
+      if (ref && refExistant) refsDoublons.set(ref, refExistant);
     }
+    for (const dec of r.decisions) {
+      draft.repairDecisions.push({ ...dec, relatedFactRefs: [...new Set(dec.relatedFactRefs.map((x) => refsDoublons.get(x) ?? x))] });
+    }
+    draft.repairDiag.decisions += r.decisions.length;
     if (ajoutes.length > 0 && p.verifyTargets) {
       const v = await p.verifyTargets(ajoutes);
       for (const k of Object.keys(v.verifiedIds) as Array<keyof typeof v.verifiedIds>) {
@@ -233,15 +296,69 @@ export async function completeT1Extraction(p: {
       }
       p.analysed.warnings.push(...v.warnings);
     }
-    console.info(`[t1-repair] passe ${pass} : ${cibles.length} unité(s) ciblée(s), ${r.calls} appel(s), ${ajoutes.length} fait(s) ajouté(s), ${r.failed.size} en échec`);
+    draft.repairDiag.passes = draft.repairPassCount;
+    draft.repairDiag.calls = draft.repairCalls;
+    draft.repairDiag.attempted = draft.attempted.size;
+    console.info(`[t1-repair] passe ${pass} : ${cibles.length} unité(s) ciblée(s), ${r.calls} appel(s), ${ajoutes.length} fait(s) ajouté(s), `
+      + `${r.decisions.length} décision(s) de valeur, ${r.failed.size} en échec`);
     if (ajoutes.length === 0 && r.failed.size === 0) break;
+  }
+  // Lot 113AN : décisions de la réparation persistées avec celles de l'analyse (même validation, même écriture).
+  if (draft.repairDecisions.length > 0) {
+    p.analysed.valueDecisions = [...(p.analysed.valueDecisions ?? []), ...draft.repairDecisions];
   }
   return draft;
 }
 
+/** Valeurs des métadonnées du document (montant, date, SIRET) — réconciliation. */
+function metadataValuesOf(d: AnalyzeDocumentResult['analysis']['document']): ReconciliationValue[] {
+  const out: ReconciliationValue[] = [];
+  if (d.amountCents) out.push({ ref: 'amount', source: 'METADATA', values: [d.amountCents.value / 100], page: d.amountCents.evidence?.page ?? null });
+  if (d.documentDate) out.push({ ref: 'documentDate', source: 'METADATA', values: [d.documentDate.value], page: d.documentDate.evidence?.page ?? null });
+  if (d.supplier?.siret) out.push({ ref: 'supplier', source: 'METADATA', values: [d.supplier.siret], page: d.supplier.evidence?.page ?? null });
+  return out;
+}
+
+/** Valeurs structurées des candidats Opération (références métier, montants, dates). */
+function candidateValuesOf(cands: readonly AnchoredOperationCandidate[]): ReconciliationValue[] {
+  return cands.map((c) => ({
+    ref: c.candidateKey, source: 'CANDIDATE' as const, page: null,
+    values: [
+      ...c.businessReferences.map((r) => r.value),
+      ...c.financialHints.flatMap((h) => [h.amountMinor / 100, h.economicDate, h.periodStart, h.periodEnd]),
+      ...Object.values(c.temporalHints ?? {}),
+    ].filter((v) => v !== null && v !== undefined),
+  }));
+}
+
+/**
+ * Lot 113AN — décisions de valeur VALIDÉES (serveur) utilisables par la
+ * couverture pendant l'analyse : passe principale, lots de pages et passes
+ * de réparation. Contrat non porté : aucune (prudence, comme la persistance).
+ */
+function decisionsForCoverage(draft: SourceLayerDraft, analysed: AnalyzeDocumentResult): PreparedValueDecision[] {
+  if (!draft.usableDecisions) return [];
+  const toutes = [...(analysed.valueDecisions ?? []), ...draft.repairDecisions];
+  if (toutes.length === 0) return [];
+  const kept = (analysed.analysis.facts as Array<T1Fact & { t1FactRef?: string }>).filter((f) => f.t1FactRef);
+  return validateValueDecisions(toutes, {
+    units: draft.units,
+    keptFactRefs: new Set(kept.map((f) => f.t1FactRef!)),
+    candidateKeys: new Set(draft.candidates.map((c) => c.candidateKey)),
+    facts: factContextOf(kept as never, draft.units),
+  });
+}
+
+/** Unités d'un fait : lien local d'une réparation, sinon preuve retrouvée ; plus les unités où la réparation l'a relu. */
+function unitsOfFact(draft: SourceLayerDraft, f: T1Fact): string[] {
+  const base = draft.repairLinks.get(f) ?? draft.linker.link(evidenceOf(f));
+  const extra = draft.extraLinks.get(f);
+  return extra ? [...new Set([...base, ...extra])] : base;
+}
+
 function factLinks(draft: SourceLayerDraft, facts: readonly T1Fact[]): FactLink[] {
   return facts.map((f) => ({
-    unitIds: draft.linker.link(evidenceOf(f)),
+    unitIds: unitsOfFact(draft, f),
     confidence: draft.confirmed.has(f) ? 'certain' as const : f.confidence,
     values: [f.rawValue, f.normalizedValue],
     ...(draft.repairFacts.has(f) || draft.confirmed.has(f) ? { repair: true } : {}),
@@ -323,7 +440,27 @@ export function normalisationBalance(draft: Pick<SourceLayerDraft, 'unresolved' 
   };
 }
 
-function coverageOf(draft: SourceLayerDraft, facts: readonly T1Fact[]) {
+function coverageOf(draft: SourceLayerDraft, facts: readonly T1Fact[], decisions: readonly PreparedValueDecision[], stage: ReconciliationStage,
+  candidates: readonly AnchoredOperationCandidate[] = draft.candidates): CoveredSourceUnit[] {
+  // Lot 113AN : réconciliation des unités NON RÉSOLUES avec ce qui est réellement structuré (provenance tracée).
+  return reconcileCoverage(baseCoverageOf(draft, facts), {
+    stage,
+    facts: facts.map((f, i): ReconciliationFact => ({
+      ref: (f as T1Fact & { t1FactRef?: string }).t1FactRef ?? `index:${i}`,
+      unitIds: unitsOfFact(draft, f),
+      values: [f.rawValue, f.normalizedValue],
+      labels: [f.rawKey, f.label, f.attribute, f.canonicalKey],
+      excerpt: f.evidence?.excerpt ?? null,
+      page: f.evidence?.page ?? null,
+    })),
+    values: [...draft.metadataValues, ...candidateValuesOf(candidates)],
+    decisions: decisions.filter((d) => d.validity === 'VALID' && d.sourceUnitId).map((d, i): ReconciliationDecision => ({
+      ref: `${d.origin}:${i}`, sourceUnitId: d.sourceUnitId!, kind: d.kind, normalizedValue: d.normalizedValue, decision: d.decision,
+    })),
+  });
+}
+
+function baseCoverageOf(draft: SourceLayerDraft, facts: readonly T1Fact[]) {
   return computeCoverage(draft.units, {
     facts: factLinks(draft, facts),
     metadataUnitIds: draft.metadataUnitIds,
@@ -358,6 +495,13 @@ export function finalizeSourceLayer(draft: SourceLayerDraft, p: {
   projectionWarnings: readonly ProjectionWarning[];
   warningCodes: readonly string[];
   retryAllowed?: boolean;
+  /**
+   * Lot 113AN : décisions de valeur VALIDÉES qui seront persistées (passe
+   * principale, lots, réparation) et candidats retenus par la barrière —
+   * réconciliation finale de la couverture.
+   */
+  valueDecisions?: readonly PreparedValueDecision[];
+  candidates?: readonly AnchoredOperationCandidate[];
 }): { layer: SourceLayer; warnings: AnalysisWarning[] } {
   for (const f of p.projected) {
     f.sourceUnitIds = draft.linker.link({
@@ -366,9 +510,12 @@ export function finalizeSourceLayer(draft: SourceLayerDraft, p: {
       visualPage: f.visualEvidence?.page ?? null, values: [f.rawValue, f.value], labels: [f.rawKey, f.label, f.attribute],
     });
   }
-  const cov = withRepairStates(coverageOf(draft, p.analysisFacts), {
+  const reconciliee = coverageOf(draft, p.analysisFacts, p.valueDecisions ?? [], 'ANALYSIS', p.candidates ?? draft.candidates);
+  // Lot 113AN : politique EXPLICITE de chaque unité restante (jamais une clôture silencieuse).
+  const cov = withResidualPolicies(withRepairStates(reconciliee, {
     attempted: draft.attempted, pending: draft.pending, cap: repairAttemptCap(),
-  });
+  }), { repairSkipped: draft.repairDiag.skipped === 'NO_TARGET' ? null : draft.repairDiag.skipped });
+  draft.repairDiag.resolved = cov.filter((u) => draft.attempted.has(u.sourceUnitId) && (u.status === 'COVERED' || u.status === 'NON_INFORMATIONAL')).length;
   const couvertes = new Set(cov.filter((u) => u.status === 'COVERED' && u.reason === 'fact').map((u) => u.sourceUnitId));
   const records = draft.unresolved.map((r) => (
     r.status === 'UNRESOLVED' && DROP_REASONS.has(r.reason) && r.sourceUnitIds.length > 0
@@ -406,6 +553,11 @@ export function finalizeSourceLayer(draft: SourceLayerDraft, p: {
     verification: draft.extras.verification ?? null,
     normalisation: normalisationBalance(draft),
   });
+  if (report.diagnostics) {
+    report.diagnostics.coverageRepair = { ...draft.repairDiag };
+    report.diagnostics.reconciliation = reconciliationSummary(cov, 'ANALYSIS');
+    report.diagnostics.residualPolicies = residualCounts(cov);
+  }
   const warnings: AnalysisWarning[] = [];
   if (report.failedUnits > 0) {
     warnings.push({

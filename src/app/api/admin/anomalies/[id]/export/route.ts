@@ -53,7 +53,12 @@ export async function GET(request: NextRequest, { params }: { params: Promise<{ 
       await audit('FAILURE', { code: 'NOT_FOUND' });
       return NextResponse.json({ error: 'Anomalie introuvable', code: 'NOT_FOUND' }, { status: 404, headers: NO_STORE });
     }
-    await audit('SUCCESS', { count: 1, occurrences: rec.historique?.length ?? 0 });
+    // Lot 113AQ (#751) : section structurée des contradictions d'attributs — tracée, jamais prétendue complète si bornée.
+    const complet = !rec.conflitsAttributs || rec.conflitsAttributs.complet;
+    await audit('SUCCESS', {
+      count: 1, occurrences: rec.historique?.length ?? 0,
+      ...(rec.conflitsAttributs ? { conflicts: { contract: rec.conflitsAttributs.contrat, complete: complet, error: rec.conflitsAttributs.erreur } } : {}),
+    });
     if (format === 'md') {
       return new Response(anomalyMarkdown(rec, baseUrl), { status: 200, headers: { ...NO_STORE, 'Content-Type': 'text/markdown; charset=utf-8' } });
     }
@@ -61,7 +66,7 @@ export async function GET(request: NextRequest, { params }: { params: Promise<{ 
     const body = {
       format: ANOMALY_EXPORT_FORMAT, schema: ANOMALY_EXPORT_SCHEMA, schemaVersion: ANOMALY_EXPORT_SCHEMA_VERSION,
       generatedAt: now.toISOString(), generatedAtParis: parisDateTime(now), timeZone: 'Europe/Paris',
-      source: 'BO › Supervision › anomalie', total: 1, items: [rec], exported: 1, complete: true,
+      source: 'BO › Supervision › anomalie', total: 1, items: [rec], exported: 1, complete: complet,
     };
     const headers: Record<string, string> = { ...NO_STORE, 'Content-Type': 'application/json; charset=utf-8' };
     if (sp.get('download') === '1') headers['Content-Disposition'] = contentDisposition(anomalyExportFileName(rec.statut === 'ouverte' ? 'open' : 'resolved', 'json', now, id));

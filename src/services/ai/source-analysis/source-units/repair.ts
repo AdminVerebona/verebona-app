@@ -38,6 +38,8 @@ import type { AssetFamily as V2AssetFamily } from '@/lib/referential/v2';
 import { SourceUnitLinker } from './coverage';
 import { maxCompletenessRetries } from './repository';
 import type { CoveredSourceUnit, SourceUnit } from './types';
+import { unitOfCell } from './build-units';
+import type { AnchoredValueDecision } from '../value-decisions/validate';
 
 const REPAIR_MAX_UNITS = 120;
 const REPAIR_MAX_CHARS = 24_000;
@@ -93,7 +95,11 @@ export type RepairCall = (p: {
   input: SourceInput; groupIndices: number[]; ctx: AnalysisContext;
   capabilities: AccountCapabilities; v2Families: V2AssetFamily[];
   attachments: never[]; sources: string; triggerCode: string;
-}) => Promise<{ output: { facts: T1Fact[] } & Parameters<typeof enforceT1Capabilities>[0] }>;
+}) => Promise<{
+  output: { facts: T1Fact[] } & Parameters<typeof enforceT1Capabilities>[0];
+  /** Lot 113AN : décisions de valeur de la réparation (contrat 91D), ancrées sur les empreintes des faits rendus. */
+  valueDecisions?: AnchoredValueDecision[] | null;
+}>;
 
 interface RepairPassResult {
   /** Faits prouvés par une unité ciblée (page renseignée). */
@@ -107,6 +113,18 @@ interface RepairPassResult {
   outOfScope: number;
   /** Lot 49B (DEV-04) : unités sélectionnées au-delà du budget d'appels de la passe — à reprendre. */
   notAttempted: string[];
+  /**
+   * Lot 113AN (#741) : unités CIBLÉES qui prouvent chaque fait rendu (lien local
+   * à la zone transmise, jamais recalculé sur tout le document : la page citée
+   * par le modèle est celle de l'extrait, pas celle du document).
+   */
+  links: Map<T1Fact, string[]>;
+  /**
+   * Lot 113AN : décisions de valeur rendues par la réparation et rattachées à
+   * une unité CIBLÉE (identifiant transmis `[page:1:field:2]`, sinon extrait
+   * retrouvé) — jusqu'ici ignorées : l'unité restait `not_extracted`.
+   */
+  decisions: AnchoredValueDecision[];
 }
 
 export async function runRepairPass(p: {
@@ -120,7 +138,7 @@ export async function runRepairPass(p: {
   pass: number;
   call: RepairCall;
 }): Promise<RepairPassResult> {
-  const res: RepairPassResult = { facts: [], attempted: [], failed: new Map(), calls: 0, outOfScope: 0, notAttempted: [] };
+  const res: RepairPassResult = { facts: [], attempted: [], failed: new Map(), calls: 0, outOfScope: 0, notAttempted: [], links: new Map(), decisions: [] };
   const { batches, left } = batchRepairUnits(p.units, p.maxCalls);
   res.notAttempted = left.map((u) => u.sourceUnitId);
   const name = p.input.displayNames[p.groupIndices[0]] ?? 'document';
@@ -156,9 +174,23 @@ export async function runRepairPass(p: {
         const unite = parId.get(ids[0]);
         const { table: _t, ...evidence } = check.fact.evidence;
         void _t;
-        res.facts.push({
-          ...check.fact,
-          evidence: { ...evidence, excerpt, ...(unite?.page && !evidence.page ? { page: unite.page } : {}) },
+        // Lot 113AN : la page est TOUJOURS celle de l'unité prouvée — la page citée par le modèle est
+        // celle de l'extrait transmis (pseudo-document d'une page), qui rattachait le fait à une autre page.
+        const repare = { ...check.fact, evidence: { ...evidence, excerpt, ...(unite?.page ? { page: unite.page } : {}) } };
+        res.facts.push(repare);
+        res.links.set(repare, ids);
+      }
+      for (const d of r.valueDecisions ?? []) {
+        if (d.schemaInvalid) continue;
+        const cite = d.sourceUnitId ? d.sourceUnitId.replace(/^\[|\]$/g, '').trim() : null;
+        const excerpt = (d.evidence?.excerpt ?? '').replace(PREFIXE, '').trim();
+        const id = cite && parId.has(unitOfCell(cite)) ? unitOfCell(cite)
+          : excerpt ? linker.link({ excerpt, provenance: 'TEXT_EXTRACTION' })[0] ?? null : null;
+        const unite = id ? parId.get(id) : undefined;
+        if (!unite) continue;
+        res.decisions.push({
+          ...d, sourceUnitId: unite.sourceUnitId,
+          evidence: { ...(d.evidence ?? {}), ...(excerpt ? { excerpt } : {}), ...(unite.page ? { page: unite.page } : {}) },
         });
       }
     } catch (e) {

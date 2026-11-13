@@ -10,4 +10,7 @@ export {
   listAssetDocuments,
   DocumentLinkOwnershipError,
   type UnlinkInput,
+  type LinkDocumentInput,
+  type LinkDocumentResult,
 } from './document-asset-links.service';
+export * from './admission';

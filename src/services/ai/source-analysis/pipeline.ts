@@ -73,7 +73,7 @@ import { markSourcesGrouped } from '@/services/documents/grouped-sources';
 // Prompt maître T1 — seul moteur depuis le lot 16b-3 (CDC 15 §23, §29).
 import { analyseGroupWithMaster, type MasterGroupAnalysis } from './master/analyse-group-master';
 import { enqueueT3ForAffectedAssets, enqueueT3ForAffectedEntities } from './master/reconciliation-fanout';
-import { computeMasterDocumentLinks, withoutAssetAttachment, writeMasterDocumentLinks } from './master/document-links';
+import { computeMasterDocumentLinks, justifyMasterDocumentLinks, withoutAssetAttachment, writeMasterDocumentLinks } from './master/document-links';
 import { syncDocumentRulesFromAnalysis } from '@/services/to-process/document-rule-bridge';
 import { groupUpload } from './steps/group-upload.step';
 import { loadAssetIdentifiers } from '../reconciliation/document-asset/asset-identifiers.repository';
@@ -595,12 +595,16 @@ export async function runSourceAnalysis(
       // un motif « utilisateur »).
       // Lot 113V (#719) : « Aucun » choisi par l'utilisateur et en vigueur — aucun rattachement
       // silencieux par une (ré)analyse : biens désignés seulement CITÉS, ni colonne, ni question close.
-      const liensT1 = computeMasterDocumentLinks({
+      // Lot 113AM (#739) : chaque lien porte sa justification (étape, règle, preuves), jugée par la garde
+      // d'admission partagée avant l'écriture — une adresse non qualifiée « lieu du bien » n'en est pas une.
+      const entreesLiens = {
         facts: master.facts,
         assetCandidates: result.assetCandidates,
         documentAssetId: master.documentAssetId,
         knownAssetId: input.linkedAssetId ?? null,
-      });
+      };
+      const liensT1 = justifyMasterDocumentLinks(computeMasterDocumentLinks(entreesLiens), entreesLiens);
+      const justificationPrincipale = liensT1.find((l) => l.assetId === assetId)?.justification;
       const aucunBien = (assetId !== null || liensT1.some((l) => l.role !== 'MENTIONED'))
         && await import('@/services/to-process/no-asset-decision').then((m) => m.explicitNoAssetActive(input.accountId, leadSourceId), () => false);
       if (assetId !== null && assetId !== (input.linkedAssetId ?? null) && !aucunBien) {
@@ -636,7 +640,9 @@ export async function runSourceAnalysis(
       // de documents) pour un bien retenu automatiquement — jamais par-dessus
       // un choix ou un retrait de l'utilisateur (`ASSET_LINK_SLOT.writeAuto`).
       if (assetId !== null && assetId !== (input.linkedAssetId ?? null) && !aucunBien) {
-        await writeAutomaticPrimaryColumn(input.accountId, leadSourceId, assetId).then(() => rec.ok('PRIMARY_ASSET', { assetId }), (e: Error) => {
+        await writeAutomaticPrimaryColumn(input.accountId, leadSourceId, assetId, {
+          step: 'T1_PRIMARY_COLUMN', rule: justificationPrincipale?.rule ?? 'DOCUMENT_ASSET', proofs: justificationPrincipale?.proofs ?? [],
+        }).then((ecrit) => rec.ok('PRIMARY_ASSET', { assetId, written: ecrit }), (e: Error) => {
           rec.fail('PRIMARY_ASSET', e);
           console.error(`[source-analysis] rattachement principal du fichier ${leadSourceId} non écrit :`, e.message);
         });
@@ -668,6 +674,10 @@ export async function runSourceAnalysis(
             entityId: c.entityId, verified: c.verified, score: c.score, confidence: c.confidence,
           })),
           documentAssetId: assetId,
+          // Lot 113AM (#739) : justification du bien du document (garde d'admission de la colonne).
+          ...(assetId !== null && justificationPrincipale
+            ? { assetLinkJustification: { step: 'T1_RULE_BRIDGE' as const, rule: justificationPrincipale.rule, proofs: justificationPrincipale.proofs } }
+            : {}),
           // Lot 31B (ticket T3, §9) : sans bien certain, T3 DOCUMENT_ASSET
           // reprend IMMÉDIATEMENT (abonné `source_analyzed`) ; la question
           // « À quel bien rattacher ce document ? » n'est posée qu'après

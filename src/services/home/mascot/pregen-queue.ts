@@ -49,6 +49,7 @@
 import { processingEligibleSql } from '@/services/account/processing-eligibility';
 import { pgClient } from '@/db';
 import { envNumber } from '@/lib/env-number';
+import { currentT6Trigger } from './t6-execution-scope';
 
 type Row = Record<string, unknown>;
 const rows = async (sql: string, params: unknown[] = []): Promise<Row[]> =>
@@ -92,8 +93,23 @@ async function exhaustColumnsReady(): Promise<boolean> {
   }
   return colonnesEpuisement;
 }
+/** Lot 113AO (B) : colonne 1670 `trigger_execution_id` présente ? Mémorisé (présente : définitivement). */
+let colonneDeclencheur: boolean | null = null;
+async function triggerColumnReady(): Promise<boolean> {
+  if (colonneDeclencheur) return true;
+  try {
+    const [r] = await rows(
+      `SELECT count(*)::int AS n FROM information_schema.columns
+        WHERE table_name = 'home_mascot_pregen_requests' AND column_name = 'trigger_execution_id'`,
+    );
+    colonneDeclencheur = Number(r?.n ?? 0) === 1;
+  } catch {
+    colonneDeclencheur = false;
+  }
+  return colonneDeclencheur;
+}
 /** Réservé aux tests. */
-export function resetPregenColumnsProbe(): void { colonnesEpuisement = null; }
+export function resetPregenColumnsProbe(): void { colonnesEpuisement = null; colonneDeclencheur = null; }
 
 /** Événements du bus qui changent la situation présentée par la mascotte. */
 export const PREGEN_EVENT_TYPES: ReadonlySet<string> = new Set([
@@ -107,19 +123,21 @@ export const PREGEN_EVENT_TYPES: ReadonlySet<string> = new Set([
  * Signale un changement de situation du compte. Ne lève jamais ; une ligne
  * par compte (la plus récente l'emporte).
  */
-export async function requestMascotPregeneration(accountId: number, reason: string): Promise<void> {
+export async function requestMascotPregeneration(accountId: number, reason: string, opts: { causedBy?: string | null } = {}): Promise<void> {
   if (!Number.isSafeInteger(accountId) || accountId <= 0) return;
   try {
     // Lot 81B (C) : un nouveau signal remet aussi à zéro l'épuisement (situation nouvelle).
     const epuisement = await exhaustColumnsReady() ? ', exhausted_count = 0' : '';
+    // Lot 113AO (B) : déclencheur métier du DERNIER signal (lien de causalité, jamais l'exécution des appels T6).
+    const declencheur = await triggerColumnReady();
     await rows(
       // Lot 82A (C-Q10) : aucune demande pour un compte non éligible (non
       // actif, suspendu, lecture seule) — la reprise en redemande une.
-      `INSERT INTO home_mascot_pregen_requests (account_id, requested_at, reason)
-       SELECT $1::int, clock_timestamp(), $2 WHERE ${ELIGIBLE_PARAM}
+      `INSERT INTO home_mascot_pregen_requests (account_id, requested_at, reason${declencheur ? ', trigger_execution_id' : ''})
+       SELECT $1::int, clock_timestamp(), $2${declencheur ? ', $3' : ''} WHERE ${ELIGIBLE_PARAM}
        ON CONFLICT (account_id) DO UPDATE
-         SET requested_at = clock_timestamp(), reason = EXCLUDED.reason, attempts = 0${epuisement}`,
-      [accountId, reason.slice(0, 60)],
+         SET requested_at = clock_timestamp(), reason = EXCLUDED.reason, attempts = 0${epuisement}${declencheur ? ', trigger_execution_id = EXCLUDED.trigger_execution_id' : ''}`,
+      declencheur ? [accountId, reason.slice(0, 60), (opts.causedBy !== undefined ? opts.causedBy : currentT6Trigger())?.slice(0, 160) ?? null] : [accountId, reason.slice(0, 60)],
     );
   } catch (e) {
     // Table absente (migration 0271 en cours) ou base indisponible : le chemin
@@ -189,9 +207,12 @@ const EN_ATTENTE = `(processed_at IS NULL OR requested_at > processed_at)
   AND attempts < ${MAX_ATTEMPTS}
   AND ${processingEligibleSql('home_mascot_pregen_requests.account_id')}`;
 
-interface Claim { accountId: number; requestedAt: string }
+interface Claim { accountId: number; requestedAt: string; triggerExecutionId?: string | null }
+
+const declencheurOf = (x: Row): string | null => (typeof x.trigger === 'string' && x.trigger ? x.trigger : null);
 
 async function claimBatch(limit: number): Promise<Claim[]> {
+  const declencheur = await triggerColumnReady() ? ', r.trigger_execution_id AS "trigger"' : '';
   const r = await rows(
     `UPDATE home_mascot_pregen_requests r
         SET claimed_until = clock_timestamp() + ($2::int * INTERVAL '1 millisecond'), attempts = r.attempts + 1
@@ -201,21 +222,22 @@ async function claimBatch(limit: number): Promise<Claim[]> {
          ORDER BY requested_at
          LIMIT $3
          FOR UPDATE SKIP LOCKED)
-      RETURNING r.account_id AS "accountId", r.requested_at::text AS "requestedAt"`,
+      RETURNING r.account_id AS "accountId", r.requested_at::text AS "requestedAt"${declencheur}`,
     [PREGEN_SETTLE_MS, CLAIM_MS, limit],
   );
-  return r.map((x) => ({ accountId: Number(x.accountId), requestedAt: String(x.requestedAt) }));
+  return r.map((x) => ({ accountId: Number(x.accountId), requestedAt: String(x.requestedAt), triggerExecutionId: declencheurOf(x) }));
 }
 
 async function claimAccount(accountId: number, settleMs: number): Promise<Claim | null> {
+  const declencheur = await triggerColumnReady() ? ', trigger_execution_id AS "trigger"' : '';
   const r = await rows(
     `UPDATE home_mascot_pregen_requests
         SET claimed_until = clock_timestamp() + ($2::int * INTERVAL '1 millisecond'), attempts = attempts + 1
       WHERE account_id = $3 AND ${EN_ATTENTE}
-      RETURNING account_id AS "accountId", requested_at::text AS "requestedAt"`,
+      RETURNING account_id AS "accountId", requested_at::text AS "requestedAt"${declencheur}`,
     [settleMs, CLAIM_MS, accountId],
   );
-  return r[0] ? { accountId: Number(r[0].accountId), requestedAt: String(r[0].requestedAt) } : null;
+  return r[0] ? { accountId: Number(r[0].accountId), requestedAt: String(r[0].requestedAt), triggerExecutionId: declencheurOf(r[0]) } : null;
 }
 
 /** Générations T6 de pré-génération du compte sur 24 h glissantes. */
@@ -238,6 +260,8 @@ async function pregenGeneratedToday(accountId: number): Promise<number> {
  * pris pour « toutes les échéances évaluées ».
  */
 type PregenOutcome = 'formulated' | 'nothing_to_say' | 'fallback' | 'capped' | 'error' | 'resumed' | 'evaluation_waiting' | 'evaluation_failed'
+  /** Lot 113AO (A) : bulle entièrement calculée par le serveur — aucune formulation demandée, demande close. */
+  | 'deterministic'
   /** Lot 81B (C) : tentatives de la demande épuisées (balayage de la tâche). */
   | 'attempts_exhausted';
 
@@ -311,11 +335,14 @@ async function processClaim(c: Claim): Promise<PregenOutcome> {
     const { getMascotPresentation } = await import('./mascot.service');
     let reprise = false;
     let progres: import('./t6-interpellation.service').T6EvaluationProgress | null = null;
-    const p = await getMascotPresentation(c.accountId, 'pregen', null, {
+    // Lot 113AO (B) : la pré-génération est SA propre exécution T6 — jamais celle
+    // du travail (T1…) qui l'a demandée, conservé comme lien de causalité.
+    const { inT6Execution } = await import('./t6-execution-scope');
+    const p = await inT6Execution(() => getMascotPresentation(c.accountId, 'pregen', null, {
       onResume: () => { reprise = true; },
       onEvaluation: (x) => { progres = x; },
       formulate: !plafond,
-    });
+    }), { causedBy: c.triggerExecutionId ?? null });
     const formulable = p.paragraphs.some((x) => x.sourceCode !== 'CLEAR');
     // Lot 78C : des évaluations éligibles restent à traiter — jamais clos
     // « rien à dire » : report durable à l'instant attendu, ou motif d'échec.
@@ -328,7 +355,7 @@ async function processClaim(c: Claim): Promise<PregenOutcome> {
     const outcome: PregenOutcome = reprise ? 'resumed' : evaluations?.outcome === 'evaluation_failed' ? 'evaluation_failed'
       // Lot 81B (A) : évaluations achevées (ou sans objet), formulation plafonnée.
       : plafond ? 'capped'
-        : !formulable ? 'nothing_to_say' : p.source === 't6' ? 'formulated' : 'fallback';
+        : !formulable ? 'nothing_to_say' : p.source === 't6' ? 'formulated' : p.source === 'deterministic' ? 'deterministic' : 'fallback';
     // T6 n'a pas formulé (panne passagère, disjoncteur) : nouvel essai borné.
     await close(c, outcome, outcome === 'capped' ? null : p.contextHash, outcome === 'fallback');
     return outcome;
@@ -358,6 +385,8 @@ export async function processMascotPregenerationFor(accountId: number): Promise<
 interface PregenRunResult {
   claimed: number;
   formulated: number;
+  /** Lot 113AO (A) : bulles entièrement déterministes (aucun appel de formulation). */
+  deterministic?: number;
   /** Lot 71G : passages d'évaluation partielle (reprise demandée). */
   resumed?: number;
   /** Lot 78C : demandes reportées (évaluations en cours ou essai planifié) / closes sur échec d'évaluation. */
@@ -444,6 +473,7 @@ export async function runMascotPregeneration(opts: { deadline?: number; batch?: 
     }
     const o = await processClaim(c);
     if (o === 'formulated') out.formulated += 1;
+    else if (o === 'deterministic') out.deterministic = (out.deterministic ?? 0) + 1;
     else if (o === 'fallback') out.fallback += 1;
     else if (o === 'capped') out.capped += 1;
     else if (o === 'nothing_to_say') out.nothing += 1;

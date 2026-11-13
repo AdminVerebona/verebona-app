@@ -380,6 +380,13 @@ export async function reviewDocumentValueDecisions(p: {
     await projectDocumentKnowledgeToAsset({ accountId: p.accountId, userId, fileId: p.fileId, assetId })
       .catch((e: Error) => console.error('[t1-value-decisions] projection sur le bien :', e.message));
   }
+  // Lot 113AN (#741) : décisions et faits arrivés APRÈS l'analyse → couverture réconciliée (sans IA) ; jusqu'ici la
+  // couche A gardait `not_extracted` pour une valeur pourtant qualifiée par le réexamen.
+  if (total.written > 0 || newFacts > 0) {
+    const { reconcileStoredDocumentCoverage } = await import('../source-units/stored-reconciliation');
+    await reconcileStoredDocumentCoverage({ accountId: p.accountId, fileId: p.fileId, apply: true, origin: `value-review:${origin}` })
+      .catch((e: Error) => console.error('[t1-value-decisions] réconciliation de la couverture :', e.message));
+  }
   progress.remaining = Math.max(0, demandees.length - progress.examined);
   progress.stopReasons = [...stopReasons];
   if (progress.batches === 0) return { ...vide('FAILED', { calls, units: [], error: derniereErreur ?? 'échec' }), progress };

@@ -80,6 +80,12 @@ export async function analyseGroupWithMaster(
   const draft = await completeT1Extraction({
     input, groupIndices, ctx, analysed,
     call: (c) => callAnalyzeDocument(c),
+    // Lot 113AN : décisions de valeur utilisées par la couverture aux MÊMES conditions que leur persistance.
+    valueDecisionsUsable: async (promptVersion) => {
+      const { valueDecisionsCapability } = await import('../value-decisions/contract');
+      const cap = await valueDecisionsCapability();
+      return cap.carried && (cap.version === null || cap.version === promptVersion);
+    },
     verifyTargets: async (facts) => {
       const v = await verifyAll({ ...analysed.analysis, entities: { assets: [], rooms: [], equipments: [], suppliers: [], multiAsset: false } }, facts, input.accountId);
       return { verifiedIds: v.verifiedIds, warnings: v.warnings };
@@ -134,23 +140,9 @@ export async function analyseGroupWithMaster(
     result.warnings.push({ code: 'FACT_REJECTED_BY_RULE', message: `Page fournisseur : ${input.webPage.removedZones} zone(s) de produits connexes écartée(s) (${input.webPage.relatedProductCodes.length} code(s) produit), jamais rattachée(s).` });
   }
 
-  // Lot 34F : provenance des faits (sourceUnitIds), rapport de complétude,
-  // anomalies fonctionnelles (SOURCE_UNIT_FAILED, COVERAGE_INCOMPLETE).
+  // Lot 113AN : la couche A est finalisée APRÈS la barrière des candidats et la validation des décisions de
+  // valeur (ci-dessous) — la couverture les prend en compte (faux `not_extracted` d'une valeur qualifiée par T1).
   let sourceLayer: SourceLayer | undefined;
-  if (draft) {
-    const fin = finalizeSourceLayer(draft, {
-      analysisFacts: analysed.analysis.facts,
-      projected: projection.facts,
-      projectionWarnings: projection.warnings,
-      warningCodes: result.warnings.map((w) => w.code),
-    });
-    sourceLayer = fin.layer;
-    result.warnings.push(...fin.warnings);
-    result.extractedFields.forEach((f, i) => {
-      const ids = projection.facts[i]?.sourceUnitIds;
-      if (ids?.length) f.sourceUnitIds = ids;
-    });
-  }
 
   // Lot 40 : barrière serveur des candidats Opération (règles fermées,
   // indépendantes du texte du prompt actif) — après la réparation ciblée
@@ -203,7 +195,7 @@ export async function analyseGroupWithMaster(
   // Lot 108K (§C) : conformité de la sortie au contrat (présent / vide / absent / mal formé / tronqué), consignée avec
   // l'extraction — jamais une décision inventée, jamais un blocage.
   let valueDecisionsOutput: ValueDecisionsOutputRecord | undefined;
-  if (sourceLayer && analysed.valueDecisionsPasses?.length) {
+  if (draft && analysed.valueDecisionsPasses?.length) {
     const { valueDecisionsCapability } = await import('../value-decisions/contract');
     const { valueDecisionsOutputRecord } = await import('../value-decisions/output-conformity');
     const cap = await valueDecisionsCapability();
@@ -216,23 +208,43 @@ export async function analyseGroupWithMaster(
         + `version ${analysed.promptVersion}) — constat COH-DOC-EXTRACT-CHAIN, réexamen ciblé des valeurs omises.`);
     }
   }
-  if (analysed.valueDecisions && sourceLayer) {
+  if (analysed.valueDecisions && draft) {
     const { valueDecisionsCapability } = await import('../value-decisions/contract');
     const cap = await valueDecisionsCapability();
     if (cap.carried && (cap.version === null || cap.version === analysed.promptVersion)) {
       // Lot 108K (§A) : contexte des faits conservés (valeur, libellé, preuve, unités) et preuves des candidats retenus.
       const kept = (a.facts as T1FactWithRef[]).filter((f) => f.t1FactRef);
       valueDecisions = validateValueDecisions(analysed.valueDecisions, {
-        units: sourceLayer.units,
+        units: draft.units,
         keptFactRefs: new Set(kept.map((f) => f.t1FactRef!)),
         candidateKeys: new Set(gate.candidates.map((c) => c.candidateKey)),
-        facts: factContextOf(kept, sourceLayer.units),
+        facts: factContextOf(kept, draft.units),
         candidateFacts: new Map(gate.candidates.map((c) => [c.candidateKey, c.evidenceFactRefs ?? []])),
       });
     } else if (analysed.valueDecisions.length > 0) {
       console.info(`[t1-value-decisions] fichier ${input.sourceIds[groupIndices[0]]} : ${analysed.valueDecisions.length} décision(s) ignorée(s) `
         + `(contrat ${cap.reason}${cap.carried ? ', version du prompt différente' : ''}).`);
     }
+  }
+
+  // Lot 34F : provenance des faits (sourceUnitIds), rapport de complétude,
+  // anomalies fonctionnelles (SOURCE_UNIT_FAILED, COVERAGE_INCOMPLETE).
+  // Lot 113AN : réconciliation finale avec les décisions de valeur validées et les candidats retenus.
+  if (draft) {
+    const fin = finalizeSourceLayer(draft, {
+      analysisFacts: analysed.analysis.facts,
+      projected: projection.facts,
+      projectionWarnings: projection.warnings,
+      warningCodes: result.warnings.map((w) => w.code),
+      valueDecisions: valueDecisions ?? [],
+      candidates: gate.candidates,
+    });
+    sourceLayer = fin.layer;
+    result.warnings.push(...fin.warnings);
+    result.extractedFields.forEach((f, i) => {
+      const ids = projection.facts[i]?.sourceUnitIds;
+      if (ids?.length) f.sourceUnitIds = ids;
+    });
   }
 
   // Lot 97A : période facturée et mois principal (contrat t1-billing-period-v1, demande 87D) — conservés avec le
