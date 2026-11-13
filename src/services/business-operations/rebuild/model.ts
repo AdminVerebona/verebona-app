@@ -51,6 +51,7 @@
  */
 
 import { LEGACY_CLAIM_TABLES } from '../claims/legacy-schema';
+import { DEADLINE_REMINDER_KEY_PREFIX, LEGACY_DEADLINE_KEY_PREFIX } from '@/lib/notifications/scheduled/deadline-reminder-policy';
 
 /** Version des règles de reconstruction : la changer rend tous les comptes « à reconstruire ». */
 export const REBUILD_VERSION = 'l85a-v1';
@@ -327,6 +328,12 @@ export const REBUILD_SCOPE: readonly ScopeTable[] = [
   { table: 'agenda_equipment_links', filter: ITEMS },
   { table: 'agenda_item_sources', filter: `(${ITEMS} OR (t.agenda_item_id IS NULL AND t.asset_file_id IN (SELECT id FROM asset_files WHERE account_id = $1)))` },
   { table: 'agenda_occurrence_events', filter: ACC },
+  // Correctif CI 13/11 (lot 113AH #732) : la reconstruction réécrit l'Agenda, donc les rappels J−7 de ses
+  // échéances (supprimés en cascade avec les anciennes lignes, recréés pour les nouvelles selon la date du jour)
+  // et leur ligne d'outbox. Sans eux dans le périmètre, « Restaurer » ne ramenait pas EXACTEMENT le compte.
+  // Outbox : uniquement les rappels d'échéance du compte (clés `deadline:v2:` et anciennes `deadline:j7:`).
+  { table: 'agenda_deadline_reminders', filter: ACC },
+  { table: 'notification_outbox', filter: `t.account_id = $1 AND (t.dedupe_key LIKE '${DEADLINE_REMINDER_KEY_PREFIX}%' OR t.dedupe_key LIKE '${LEGACY_DEADLINE_KEY_PREFIX}%')` },
   { table: 'agenda_item_removals', filter: ACC },
   { table: 'agenda_intervention_consolidations', filter: ACC },
   { table: 'agenda_data_conflicts', filter: ACC },
