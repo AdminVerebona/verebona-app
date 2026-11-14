@@ -67,7 +67,9 @@ describe('périmètre du contrôle tarifaire (lot 16b : tous les usages)', () =>
     await expect(assertPricingReady()).resolves.toBeUndefined();
   });
 
-  it('CAT-16 — lot 35B : un modèle sans tarif ne bloque JAMAIS le démarrage, même en production (signalé, coût non calculable)', async () => {
+  // Lot 114 (Trello #770) : le démarrage reste non bloquant ; le modèle sans tarif, lui, n'est plus appelé (garde de la passerelle).
+  it('CAT-16 — un modèle sans tarif ne bloque JAMAIS le démarrage, même en production (signalé : il ne sera pas appelé)', async () => {
+    (await import('../pricing/pricing.repository')).__setVerifiedTestPricesForTests(false);
     vi.stubEnv('NODE_ENV', 'production');
     const t3 = listLlmOperations().find((o) => o.operationCode === 't3_value_conflict')!.primaryModel;
     primePricingCache(tous().filter((p) => p.model !== t3));
@@ -75,7 +77,7 @@ describe('périmètre du contrôle tarifaire (lot 16b : tous les usages)', () =>
     expect(state.missingForRunning).toContain(`gemini/${t3}`);
     expect(state.blocking).toBe(false);
     await expect(assertPricingReady()).resolves.toBeUndefined();
-    expect(vi.mocked(console.warn).mock.calls.flat().join(' ')).toMatch(/coûts marqués non calculables/);
+    expect(vi.mocked(console.warn).mock.calls.flat().join(' ')).toMatch(/ils ne seront pas appelés tant que leur tarif officiel n’est pas vérifié/);
   });
 
   it('ne bloque jamais hors production', async () => {

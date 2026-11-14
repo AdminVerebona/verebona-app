@@ -31,7 +31,7 @@ import { subscriptionNotificationText } from './subscription-messages';
 import { deadlineReminderTitle } from './scheduled/deadline-reminder-policy';
 import { formatUnpaidDeadline } from '@/services/billing/unpaid-cycle.rules';
 import { uploadNotificationText } from './upload-notification-text';
-import { formatSecurityIncidentDate } from '@/lib/auth/security-email';
+import { formatSecurityIncidentDate, formatSecurityEventWhen, PASSKEY_ADDED_TEMPLATE_CODE, TOTP_ENABLED_TEMPLATE_CODE } from '@/lib/auth/security-email';
 
 export type NotificationCategory =
   | 'deadlines'
@@ -77,6 +77,18 @@ export interface RenderedContent {
    * livraison, jamais présentée comme un envoi.
    */
   emailSkipReason?: string;
+  /**
+   * Carte #774 : variables PROPRES au gabarit d'e-mail dédié (en plus de
+   * {{title}} / {{body}} / {{actionUrl}}), composées par le code à partir de
+   * l'événement — jamais un secret, un code ni un jeton.
+   */
+  emailVariables?: Record<string, string>;
+  /**
+   * Carte #774 : gabarit de repli quand le gabarit dédié n'est pas (encore)
+   * en base (migration non appliquée) — l'e-mail de sécurité obligatoire part
+   * alors sous son ancienne forme plutôt que de ne pas partir.
+   */
+  emailFallbackTemplateCode?: string;
 }
 
 export interface CatalogEntry {
@@ -830,7 +842,10 @@ export const NOTIFICATION_CATALOG: { [K in NotificationType]?: CatalogEntry } = 
   [T.MFA_SECURITY_EVENT]: {
     ...securityInformation(T.MFA_SECURITY_EVENT, 'Sécurité de votre compte modifiée', 'Une méthode de sécurité de votre compte a été modifiée.'),
     render: (p) => mfaSecurityContent(p),
-    deepLink: () => '/mon-compte#securite',
+    // Carte #774 : clé d'accès ajoutée / TOTP activé — le lien survit au passage
+    // par la connexion (`?ouvrir=securite`, l'ancre seule n'est pas transmise
+    // au serveur). Autres événements MFA : lien inchangé.
+    deepLink: (p) => (mfaDedicatedTemplate(p) ? MFA_SECURITY_CTA_LINK : '/mon-compte#securite'),
     payloadSchema: z.object({
       event: z.enum(['passkey_added', 'passkey_removed', 'totp_enabled', 'totp_replaced', 'totp_removed', 'recovery_regenerated', 'recovery_used']),
       at: z.string(),
@@ -1021,6 +1036,31 @@ const MFA_EVENT_TEXT: Readonly<Record<string, { title: string; body: string }>> 
   recovery_used: { title: 'Code de récupération utilisé', body: 'Un code de récupération a été utilisé pour accéder à votre compte Verebona' },
 };
 
+/**
+ * Carte #774 — lien du bouton « Vérifier la sécurité de mon compte » : Mon
+ * compte › Sécurité. Lien INTERNE, sans jeton ; `ouvrir=securite` rouvre la
+ * carte Sécurité même après un détour par la connexion (`returnUrl` ne porte
+ * pas l'ancre), l'ancre l'ouvre directement pour une session déjà active.
+ */
+export const MFA_SECURITY_CTA_LINK = '/mon-compte?ouvrir=securite#securite';
+
+/**
+ * Carte #774 — événements MFA portés par un gabarit DÉDIÉ du gabarit
+ * transactionnel commun (migration 1698). Les autres événements MFA gardent
+ * le gabarit `notif_security` (inventaire et plan de migration : fiche de
+ * recette 114M).
+ */
+const MFA_DEDICATED_TEMPLATES: Readonly<Record<string, string>> = {
+  passkey_added: PASSKEY_ADDED_TEMPLATE_CODE,
+  totp_enabled: TOTP_ENABLED_TEMPLATE_CODE,
+};
+
+function mfaDedicatedTemplate(p: unknown): string | null {
+  const event = (p ?? {}) as { event?: unknown };
+  if (typeof event.event !== 'string' || !Object.prototype.hasOwnProperty.call(MFA_DEDICATED_TEMPLATES, event.event)) return null;
+  return MFA_DEDICATED_TEMPLATES[event.event];
+}
+
 export function mfaSecurityContent(p: unknown): RenderedContent {
   const x = (p ?? {}) as { event?: unknown; at?: unknown };
   const t = (typeof x.event === 'string' && MFA_EVENT_TEXT[x.event]) || { title: 'Sécurité de votre compte modifiée', body: 'Une méthode de sécurité de votre compte Verebona a été modifiée' };
@@ -1028,6 +1068,17 @@ export function mfaSecurityContent(p: unknown): RenderedContent {
   const when = at ? ` le ${formatSecurityIncidentDate(at)}` : '';
   const body = `${t.body}${when}. Si c’est vous, vous n’avez rien à faire. Sinon, ouvrez Mon compte › Sécurité, `
     + 'vérifiez vos méthodes de sécurité et vos appareils connectés, puis changez votre mot de passe.';
+  // Carte #774 : gabarit dédié (objet, pré-en-tête, titre et marche à suivre
+  // propres à l'événement). {{title}} / {{body}} restent composés : ils servent
+  // au gabarit de repli `notif_security` si le gabarit dédié manque en base.
+  const dedicated = mfaDedicatedTemplate(x);
+  if (dedicated) {
+    return {
+      ...content(t.title, body, undefined, dedicated),
+      emailVariables: { eventWhen: formatSecurityEventWhen(x.at) },
+      emailFallbackTemplateCode: 'notif_security',
+    };
+  }
   return content(t.title, body, undefined, 'notif_security');
 }
 

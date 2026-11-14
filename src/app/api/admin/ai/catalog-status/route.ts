@@ -9,6 +9,10 @@
  *        `unavailableTitle` « 1 modèle actif indisponible — 5 usages
  *        impactés »), avec le diagnostic du dernier contrôle (message
  *        fournisseur nettoyé, date, source, statut). Aucun secret.
+ *        Lot 114 (carte #771) : code HTTP et code fournisseur, accès
+ *        concerné pseudonymisé, prochaine sonde ; `operationalWatch` —
+ *        modèles `suspect` / `inconclusive` et incident global du
+ *        fournisseur, à part des indisponibilités confirmées.
  *        Lecture seule, aucun appel fournisseur.
  * POST : `{ acknowledge: string[] }` — ferme le bandeau : acquitte EN BASE,
  *        en une action, les modèles qu'il affichait (persistant, survit à
@@ -21,7 +25,7 @@ import { z } from 'zod';
 import { requireAdminContext, toErrorResponse } from '../config-versions/_shared';
 import { acknowledgeAnnouncedModels, bannerText, listAnnouncedModels } from '@/services/ai/provider/new-models.service';
 import {
-  anomalyMessage, detectActiveModelAnomalies, groupAnomaliesByModel, loadActiveChains, loadSecoursContext, unavailableBannerTitle,
+  anomalyMessage, detectActiveModelAnomalies, groupAnomaliesByModel, loadActiveChains, loadSecoursContext, operationalWatchOf, unavailableBannerTitle,
 } from '@/services/ai/provider/active-model-anomalies';
 import { loadOperationalDiagnostics } from '@/services/ai/provider/model-operational.service';
 import { loadUsableModelsContext } from '@/services/ai/registry/usable-models';
@@ -42,7 +46,7 @@ export async function GET(req: NextRequest) {
     // Lot 87A (INV-10) : secours réellement admissible pour chaque usage.
     const brutes = detectActiveModelAnomalies(chains, ctx, chains.length ? await loadSecoursContext() : undefined);
     const anomalies = brutes.map((a) => ({ ...a, message: anomalyMessage(a) }));
-    const diagnostics = brutes.length ? await loadOperationalDiagnostics().catch(() => new Map()) : new Map();
+    const diagnostics = await loadOperationalDiagnostics().catch(() => new Map());
     const unavailableModels = groupAnomaliesByModel(brutes, diagnostics);
     return NextResponse.json({
       newModels,
@@ -50,6 +54,8 @@ export async function GET(req: NextRequest) {
       anomalies,
       unavailableModels,
       unavailableTitle: unavailableBannerTitle(unavailableModels),
+      // #771 (B01 / B04) : états suspect / inconclusive et incident global, séparés des indisponibilités confirmées.
+      operationalWatch: operationalWatchOf(diagnostics),
       catalogRefreshedAt: state?.refreshedAt ?? null,
       lastSyncAt: state?.lastSyncAt ?? null,
     });

@@ -269,8 +269,12 @@ describe('plafonds et secondaires (§4, §12)', () => {
     // « Où en est l'analyse ? » sur la seule présence de documents).
     const clear = present(raw({ onboarding: { activeAssets: [{ id: 1, name: 'M' }], activeAssetCount: 1, documentCount: 3 } }), catalogue({}));
     expect(clear.secondaries).toEqual([]);
+    // Règle remplacée (carte #773, décision PO n° 29) : `home_analysis` (« Où en est l'analyse de mes
+    // documents ? ») est retirée du catalogue — le catalogue d'accueil ne la rend plus ; reste la
+    // question d'état conservée (n° 35). En production la mascotte ne reçoit plus de catalogue (108J).
     const enAnalyse = present(raw({ onboarding: { activeAssets: [{ id: 1, name: 'M' }], activeAssetCount: 1, documentCount: 3 } }), catalogue({ documentsInAnalysis: 1 }));
-    expect(enAnalyse.secondaries.map((s) => s.sourceCode)).toEqual(['Q:home_analysis']);
+    expect(enAnalyse.secondaries.map((s) => s.sourceCode)).toEqual(['Q:state_analysis']);
+    expect(enAnalyse.secondaries.map((s) => s.action.label)).not.toContain('Où en est l’analyse de mes documents ?');
   });
 
   it('T2-02 / SEC-004 — question équivalente à un sujet affiché : exclue', () => {
@@ -291,11 +295,19 @@ describe('plafonds et secondaires (§4, §12)', () => {
   // Lot 111L (audit) : `buildSecondaries` reçoit ici un catalogue explicite ; en production la
   // mascotte n'en reçoit plus (108J : `buildSecondaries(…, [])`). Test du transport d'intention, inchangé.
   it('T2-01 — une question transporte son intention T2 CANONIQUE et, s’il y a lieu, le bien (jamais « Que sais-tu sur X ? »)', () => {
-    const p = present(raw({ agenda: [agenda({ date: '2026-09-20', id: 8 })] }), catalogue({}, { id: 1, name: 'Maison', documents: 4 }));
+    // Règle remplacée (carte #773, décision PO n° 30) : `home_asset_docs` (« Quels sont les documents
+    // {de_bien} ? ») est retirée du catalogue ; le transport de l'intention et du bien est vérifié sur
+    // une question conservée qui nomme un bien (date du dernier entretien, lot 112C).
+    const avecBien: CatalogQuestion[] = suggestionsForRoute('/accueil', {
+      state: { ...EMPTY_ACCOUNT_STATE, assetsTotal: 2, documentsTotal: 12 },
+      provenAssets: [{ id: 1, name: 'Maison', documents: 4, lastService: 1 }],
+    });
+    const p = present(raw({ agenda: [agenda({ date: '2026-09-20', id: 8 })] }), avecBien);
     expect(p.secondaries.some((s) => /Que sais-tu/.test(s.action.label))).toBe(false);
-    const qDocs = p.secondaries.find((s) => s.sourceCode === 'Q:home_asset_docs');
-    expect(qDocs?.action.target).toEqual({
-      kind: 'ask', question: 'Quels sont les documents de Maison ?', context: { intent: 'ACCOUNT_SEARCH_DOCUMENT', assetId: 1 },
+    expect(p.secondaries.some((s) => s.sourceCode === 'Q:home_asset_docs')).toBe(false);
+    const qBien = p.secondaries.find((s) => s.sourceCode === 'Q:home_asset_last_service');
+    expect(qBien?.action.target).toEqual({
+      kind: 'ask', question: 'Quelle est la date du dernier entretien de Maison ?', context: { intent: 'ACCOUNT_FACT_ASSET', assetId: 1 },
     });
   });
 });

@@ -35,6 +35,8 @@ import { publishableCardCondition } from '@/services/to-process/publishability';
 import { documentCodeLabel, documentCodesMatchingWord } from '@/lib/referential/document-codes';
 import { documentTitleFromRecord } from '@/lib/documents/document-title-source';
 import { documentTypeLabelOrNull } from '@/lib/referential/user-facing-labels';
+import { resolveNotesDescription } from '@/lib/documents/notes-description';
+import { currentFieldSql } from '@/services/documents/notes-description/current-field';
 import type { DocumentAnalysisFilter } from '../core/query-terms';
 import type { AnyPgColumn } from 'drizzle-orm/pg-core';
 import { likePatterns, likePatternsTolerants, nearMatchRatio, normalizeWord, termMatchRatio, type QueryTerm } from '../core/query-terms';
@@ -670,11 +672,14 @@ async function searchDocumentsCanonical(q: RetrievalQuery): Promise<RetrievedSou
   const termes = (q.terms ?? []).filter((t) => t.exact || !(typeStems.has(t.stem) || typeStems.has(t.raw)));
   const qq: RetrievalQuery = { ...q, terms: termes };
 
+  // Carte #767 (E01) : le champ COURANT « Notes / Description » (règle unique de
+  // `resolveNotesDescription`) est cherché — plus `description` et `notes`
+  // séparément : une description masquée par une note, ou effacée par
+  // l'utilisateur, n'est plus trouvée par son ancien texte.
+  const champ = await currentFieldSql('"asset_files"');
   const cond = await conditionTermes([
     assetFiles.retainedTitle, assetFiles.originalFilename, assetFiles.supplier,
-    assetFiles.description, assetFiles.documentType, assetFiles.documentTypeCode, assetFiles.extractedText,
-    // Lot 113Z (#723) : la note de l'utilisateur (« Notes / Description ») est cherchée aussi.
-    assetFiles.notes,
+    sql.raw(champ.current), assetFiles.documentType, assetFiles.documentTypeCode, assetFiles.extractedText,
   ], termes, q.tolerant);
   if (cond) conditions.push(cond);
 
@@ -686,6 +691,8 @@ async function searchDocumentsCanonical(q: RetrievalQuery): Promise<RetrievedSou
       webLinkTitle: assetFiles.webLinkTitle, storageName: assetFiles.filename, s3Key: assetFiles.s3Key, publicId: assetFiles.publicId,
       documentType: assetFiles.documentType, documentTypeCode: assetFiles.documentTypeCode, documentDate: assetFiles.documentDate,
       supplier: assetFiles.supplier, description: assetFiles.description, notes: assetFiles.notes,
+      // Carte #767 (E01) : reprise en main et provenance, pour résoudre le champ courant.
+      notesUserOwned: sql<boolean>`${sql.raw(champ.owned)}`,
       assetId: assetFiles.assetId, linkedAssetId: assetFiles.linkedAssetId, assetName: assets.name,
       analysisState: assetFiles.analysisState,
       contentHash: assetFiles.sha256Hash, size: assetFiles.size, groupedIntoFileId: assetFiles.groupedIntoFileId,
@@ -715,17 +722,22 @@ async function searchDocumentsCanonical(q: RetrievalQuery): Promise<RetrievedSou
     const bonus = (assetId !== null ? 0.05 : 0) + (cible === l.id ? 0.1 : 0)
       + (titresIndices.some((h) => plainT(`${titre} ${l.filename ?? ''}`).includes(h)) ? 0.05 : 0)
       + bonusRecence(l.documentDate) + bonusPeriode(q, l.documentDate);
+    // Carte #767 (E01) : UNE valeur courante — la note (déclarée) OU la description, jamais les deux,
+    // jamais une description masquée ou effacée (éligibilité, score et contenu : même priorité).
+    const courant = resolveNotesDescription({ notes: l.notes, description: l.description, notesUserOwned: l.notesUserOwned === true });
+    const descriptionCourante = courant.fromNotes ? null : courant.text || null;
+    const noteCourante = courant.fromNotes ? courant.text || null : null;
     const e = eligibiliteAssistant(qq, 'documents', {
       entityType: 'document', entityId: l.id, displayName: titre,
       fields: {
-        title: l.title, originalFilename: l.filename, supplier: l.supplier, description: l.description,
+        title: l.title, originalFilename: l.filename, supplier: l.supplier, description: descriptionCourante,
         documentType: [l.documentTypeCode, l.documentType], content: l.textHead, assetName: l.assetName,
-        notes: l.notes,
+        notes: noteCourante,
       },
     });
     if (!e) return [];
-    const note = userDeclaredNote(l.notes);
-    const score = classer(qq, [titre, l.filename, l.supplier, l.documentType, l.documentTypeCode, l.description, l.notes, l.textHead].filter(Boolean).join(' '), bonus, e);
+    const note = userDeclaredNote(noteCourante);
+    const score = classer(qq, [titre, l.filename, l.supplier, l.documentType, l.documentTypeCode, descriptionCourante, noteCourante, l.textHead].filter(Boolean).join(' '), bonus, e);
     const statut = documentAnalysisStatus(l.analysisState);
     return [{
       id: `doc_${l.id}`,
@@ -734,7 +746,7 @@ async function searchDocumentsCanonical(q: RetrievalQuery): Promise<RetrievedSou
       // Lot 87D : type en libellé français (Type V2 enregistré, sinon nature V1) — jamais un code.
       // Lot 113Z : la note de l'utilisateur est rendue À PART, avec sa provenance
       // « déclarée par l'utilisateur » — jamais confondue avec un fait du document.
-      content: extrait([documentTypeLabelOrNull(l.documentTypeCode) ?? (documentCodeLabel(l.documentType) || null), l.supplier, l.documentDate, periodes.get(l.id), l.description, note]),
+      content: extrait([documentTypeLabelOrNull(l.documentTypeCode) ?? (documentCodeLabel(l.documentType) || null), l.supplier, l.documentDate, periodes.get(l.id), descriptionCourante, note]),
       meta: {
         documentId: l.id, assetId: l.assetId ?? l.linkedAssetId ?? null, assetName: l.assetName ?? null,
         date: l.documentDate ?? null, analysisStatus: statut,

@@ -16,7 +16,7 @@
  * Aucun réseau : listing Google, page tarifaire (extrait représentatif) et
  * épreuves de qualification sont simulés.
  */
-import { afterAll, beforeAll, expect, it, vi } from 'vitest';
+import { afterAll, beforeAll, expect, it, vi, beforeEach } from 'vitest';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { scenario } from '../scenario';
@@ -31,7 +31,24 @@ vi.mock('@/lib/session-service', () => ({
 }));
 
 const CLE = 'cle-e2e-l35b';
-const PAGE = readFileSync(join(process.cwd(), 'src/services/ai/gateway/pricing/__tests__/fixtures/google-pricing-2026-10.md.txt'), 'utf8');
+// Lot 114 (Trello #770) — règle remplacée : « un modèle découvert sans tarif est qualifié et proposé quand même ».
+// Le nouveau modèle du scénario (gemini-9-flash) est désormais PUBLIÉ sur la page tarifaire officielle : la
+// synchronisation lit son tarif AVANT de l'éprouver. Un second modèle découvert, absent de la page
+// (gemini-9-sans-tarif), prouve qu'aucune épreuve payante n'a lieu sans tarif vérifié (R04).
+const PAGE = `${readFileSync(join(process.cwd(), 'src/services/ai/gateway/pricing/__tests__/fixtures/google-pricing-2026-10.md.txt'), 'utf8')}
+
+## Gemini 9 Flash
+
+*[\`gemini-9-flash\`](https://ai.google.dev/gemini-api/docs/models/gemini-9-flash)*
+
+### Standard
+
+|  | Free Tier | Paid Tier, per 1M tokens in USD |
+|---|---|---|
+| Input price | Free of charge | $0.40 |
+| Output price (including thinking tokens) | Free of charge | $1.60 |
+| Used to improve our products | Yes | No |
+`;
 const CONNUS = ['gemini-3.5-flash-lite', 'gemini-3.1-flash-lite', 'gemini-3.6-flash', 'gemini-3.5-flash', 'gemini-2.5-pro'];
 
 /** Listing `GET /v1beta/models` simulé. */
@@ -55,6 +72,8 @@ const qualifOk = vi.fn(async (i: { responseSchema?: unknown; attachments: unknow
 const sonde = async () => ({ rawText: 'OK' });
 
 scenario('L35B', 'Catalogue IA dynamique : découverte, qualification, preview, tarifs, bandeau, retraits', ({ sql, make }) => {
+  // Lot 114 (#770) : scénario du RÉFÉRENTIEL tarifaire — éprouvé sans la preuve tarifaire de test du socle.
+  beforeEach(async () => { (await import('@/services/ai/gateway/pricing/pricing.repository')).__setVerifiedTestPricesForTests(false); });
   let versionsAvant = '';
   beforeAll(async () => {
     const admin = await make.user({ role: 'ADMIN' });
@@ -126,7 +145,7 @@ scenario('L35B', 'Catalogue IA dynamique : découverte, qualification, preview, 
   it('CAT-01 à CAT-07, CAT-12, CAT-13 — nouveaux modèles via le BOUTON « Actualiser le catalogue » (même fonction que la tâche)', async () => {
     // Google expose trois nouveaux modèles et retire gemini-3.5-flash (repli 1 du code T1/T3/T4).
     const models = [...CONNUS.filter((m) => m !== 'gemini-3.5-flash'),
-      { name: 'gemini-9-flash', displayName: 'Gemini 9 Flash' }, { name: 'gemini-9-pro-preview', displayName: 'Gemini 9 Pro Preview' }, 'gemini-9-flash-exp'];
+      { name: 'gemini-9-flash', displayName: 'Gemini 9 Flash' }, { name: 'gemini-9-pro-preview', displayName: 'Gemini 9 Pro Preview' }, 'gemini-9-flash-exp', 'gemini-9-sans-tarif'];
     const fetchSpy = vi.spyOn(globalThis, 'fetch').mockImplementation((async (url: string) => (String(url).includes('pricing')
       ? new Response(PAGE, { status: 200 })
       : new Response(JSON.stringify(listing(models)), { status: 200 }))) as never);
@@ -140,7 +159,7 @@ scenario('L35B', 'Catalogue IA dynamique : découverte, qualification, preview, 
       const body = await res.json() as Record<string, any>;
       expect(res.status).toBe(200);
       // CAT-02 — découverte.
-      expect(body.discovered.sort()).toEqual(['gemini-9-flash', 'gemini-9-flash-exp', 'gemini-9-pro-preview']);
+      expect(body.discovered.sort()).toEqual(['gemini-9-flash', 'gemini-9-flash-exp', 'gemini-9-pro-preview', 'gemini-9-sans-tarif']);
       expect(body.disappeared).toEqual(['gemini-3.5-flash']);
     } finally {
       fetchSpy.mockRestore();
@@ -176,16 +195,20 @@ scenario('L35B', 'Catalogue IA dynamique : découverte, qualification, preview, 
     }
     const t2 = cat.body.modelsByTreatment.T2 as Array<{ model: string; status: string; priced: boolean }>;
     expect(t2.find((m) => m.model === 'gemini-9-pro-preview')).toBeUndefined();
-    expect(t2.find((m) => m.model === 'gemini-9-flash')).toMatchObject({ priced: false });
+    expect(t2.find((m) => m.model === 'gemini-9-flash')).toMatchObject({ priced: true });
+    // #770 (R04) — découvert SANS tarif officiel : visible au catalogue, jamais éprouvé (aucune épreuve payante), jamais proposé.
+    expect(q.some((x) => x.model === 'gemini-9-sans-tarif')).toBe(false);
+    for (const t of ['T1', 'T2', 'T3', 'T4']) expect((cat.body.modelsByTreatment[t] as Array<{ model: string }>).map((m) => m.model), t).not.toContain('gemini-9-sans-tarif');
+    expect((await sql`SELECT available FROM ai_model_catalog WHERE model = 'gemini-9-sans-tarif'`)[0]).toMatchObject({ available: true });
 
     // CAT-07 — tarif UNKNOWN, jamais inventé (catalogue tarifaire et registre du BO).
-    const [p] = await sql<{ status: string; input_per_million: string | null; reason: string }[]>`SELECT status, input_per_million, reason FROM ai_model_price_status WHERE model = 'gemini-9-flash'`;
+    const [p] = await sql<{ status: string; input_per_million: string | null; reason: string }[]>`SELECT status, input_per_million, reason FROM ai_model_price_status WHERE model = 'gemini-9-sans-tarif'`;
     expect(p).toMatchObject({ status: 'UNKNOWN', input_per_million: null, reason: 'absent de la page tarifaire officielle' });
     const [connu] = await sql<{ status: string; input_per_million: string }[]>`SELECT status, input_per_million FROM ai_model_price_status WHERE model = 'gemini-3.6-flash'`;
     expect(connu).toMatchObject({ status: 'KNOWN' });
     expect(Number(connu.input_per_million)).toBe(1.5);
     const reg = await get('/api/admin/ai/model-registry', import('@/app/api/admin/ai/model-registry/route') as never);
-    const vue = (reg.body.models as Array<{ model: string; pricing: { status: string }; status: string; price: unknown }>).find((m) => m.model === 'gemini-9-flash')!;
+    const vue = (reg.body.models as Array<{ model: string; pricing: { status: string }; status: string; price: unknown }>).find((m) => m.model === 'gemini-9-sans-tarif')!;
     expect(vue).toMatchObject({ pricing: { status: 'UNKNOWN' }, price: null });
     expect((reg.body.models as Array<{ model: string; status: string }>).find((m) => m.model === 'gemini-9-pro-preview')?.status).toBe('preview');
   });
@@ -229,7 +252,9 @@ scenario('L35B', 'Catalogue IA dynamique : découverte, qualification, preview, 
   });
 
   it('CAT-11 — un nouveau modèle ultérieur (tâche planifiée) rouvre un bandeau, pour lui seul', async () => {
-    const r = await sync([...CONNUS.filter((m) => m !== 'gemini-3.5-flash'), 'gemini-9-flash', 'gemini-9-pro-preview', 'gemini-9-flash-exp', { name: 'gemini-9-ultra', displayName: 'Gemini 9 Ultra' }]);
+    const r = await sync([...CONNUS.filter((m) => m !== 'gemini-3.5-flash'), 'gemini-9-flash', 'gemini-9-pro-preview', 'gemini-9-flash-exp', { name: 'gemini-9-ultra', displayName: 'Gemini 9 Ultra' }],
+      // #770 : annoncé seulement s'il est utilisable — donc tarifé sur la page officielle lue par ce même passage.
+      async () => `${PAGE}\n## Gemini 9 Ultra\n\n*[\`gemini-9-ultra\`](https://ai.google.dev/gemini-api/docs/models/gemini-9-ultra)*\n\n### Standard\n\n|  | Free Tier | Paid Tier, per 1M tokens in USD |\n|---|---|---|\n| Input price | Free of charge | $3.00 |\n| Output price (including thinking tokens) | Free of charge | $12.00 |\n`);
     expect(r.catalog.discovered).toEqual(['gemini-9-ultra']);
     const s = await statut();
     expect((s.body.newModels as Array<{ model: string }>).map((m) => m.model)).toEqual(['gemini-9-ultra']);

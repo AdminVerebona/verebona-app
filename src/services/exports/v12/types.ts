@@ -71,6 +71,8 @@ export interface DocItem {
   corrupted?: boolean;
   tone?: Nullable<string>;
   detail?: Nullable<string>;
+  /** Carte #767 (E03) : texte « Notes / Description » de la pièce, seulement si l'inclusion a été cochée. */
+  note?: Nullable<string>;
   fileName?: Nullable<string>;
   sizeBytes?: Nullable<number>;
   preview?: Nullable<DocPreview>;
@@ -303,6 +305,11 @@ export interface RenderContext {
   asset: (file: string | null | undefined) => string | null;
   stylesheets: string[];
   pageMap: PageMap | null;
+  /**
+   * Carte #767 (E03) : « Notes / Description » des pièces retenues (inclusion cochée) — posé par
+   * `renderDossierHtml` à partir de `data.documents`, rendu par `assemble` pour les six modèles.
+   */
+  documentNotes?: Array<{ title: string; text: string }>;
 }
 
 export interface RenderedHtml {

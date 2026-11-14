@@ -675,7 +675,12 @@ export async function searchDocumentText(
 ): Promise<KnowledgeTextHit[]> {
   const clean = terms.map((t) => t.trim()).filter((t) => t.length >= 3).slice(0, 8);
   if (clean.length === 0) return [];
-  const haystack = `unaccent(lower(coalesce(e.title,'') || ' ' || coalesce(e.description,'') || ' ' || coalesce(e.supplier_name,'') || ' ' || coalesce(e.full_text,'')))`;
+  // Carte #767 (E01) : la description T1 de l'extraction n'est cherchée et rendue que si la description
+  // EST le champ courant du document (ni masquée par une note, ni effacée par l'utilisateur). Le texte
+  // intégral, le titre et l'émetteur — contenu réellement extrait du document — restent cherchés.
+  const champ = await (await import('@/services/documents/notes-description/current-field')).currentFieldSql('af');
+  const descriptionT1 = `(CASE WHEN ${champ.descriptionIsCurrent} THEN e.description ELSE NULL END)`;
+  const haystack = `unaccent(lower(coalesce(e.title,'') || ' ' || coalesce(${descriptionT1},'') || ' ' || coalesce(e.supplier_name,'') || ' ' || coalesce(e.full_text,'')))`;
   // Lot 33 : début de mot (`~`), jamais une sous-chaîne d'un autre mot.
   const scoreSql = clean.map((_, i) => `(CASE WHEN ${haystack} ~ $${i + 3} THEN 1 ELSE 0 END)`).join(' + ');
   const params: unknown[] = [accountId, opts.assetId ?? null, ...clean.map(wordStartPattern)];
@@ -683,7 +688,7 @@ export async function searchDocumentText(
     `SELECT * FROM (
        SELECT e.file_id AS "fileId", e.title,
               coalesce(af.asset_id, af.linked_asset_id) AS "assetId",
-              coalesce(e.full_text, e.description, '') AS body,
+              coalesce(e.full_text, ${descriptionT1}, '') AS body,
               (${scoreSql}) AS "matchedTerms"
          FROM document_extractions e
          JOIN asset_files af ON af.id = e.file_id AND af.account_id = e.account_id AND af.deleted_at IS NULL

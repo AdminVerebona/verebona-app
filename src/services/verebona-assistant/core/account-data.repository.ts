@@ -14,6 +14,7 @@ import { createCanonicalAccountDataRepository, type BaseAccountDataPort } from '
 import { assistantAssetAvailability } from './asset-availability';
 import { assetDesignationsIn } from '@/lib/asset-taxonomy';
 import { wordStartPattern } from './search-sql';
+import { currentFieldSql } from '@/services/documents/notes-description/current-field';
 // Lot 34C : état d'analyse EFFECTIF (job de file réel) — jamais « en cours
 // d'analyse » pour un document qu'aucun traitement n'attend.
 import { effectiveAnalysisStateSql } from '@/services/ai/processing-status/effective-state-sql';
@@ -163,7 +164,10 @@ const baseAccountDataRepository: BaseAccountDataPort = {
     // description) et le contenu extrait par T1 (texte intégral).
     const clean = terms.filter((t) => t.length >= 3).slice(0, 8);
     if (clean.length === 0) return [];
-    const hay = `unaccent(lower(coalesce(f.retained_title,'') || ' ' || coalesce(f.original_filename,'') || ' ' || coalesce(f.supplier,'') || ' ' || coalesce(f.description,'') || ' ' || coalesce(f.notes,'')))`; // lot 113Z : note de l'utilisateur
+    // Carte #767 (E01) : le champ COURANT « Notes / Description » (règle unique de `resolveNotesDescription`)
+    // — plus `description` et `notes` séparément : une description masquée ou effacée n'est plus trouvée.
+    const champ = await currentFieldSql('f');
+    const hay = `unaccent(lower(coalesce(f.retained_title,'') || ' ' || coalesce(f.original_filename,'') || ' ' || coalesce(f.supplier,'') || ' ' || ${champ.current}))`;
     // Lot 33 : début de mot, jamais une sous-chaîne d'un autre mot.
     const score = clean.map((_, i) => `(CASE WHEN ${hay} ~ $${i + 3} THEN 1 ELSE 0 END)`).join(' + ');
     const meta = rows<DocumentHit & { matchedTerms: number }>(await withDocumentTitles(pgClient.unsafe(

@@ -21,7 +21,7 @@ const {
 } = await import('../capability-registry');
 const { pickSuggestionAssets, assetIdFromRoute } = await import('../../core/account-state');
 
-const vide = { toProcessPending: 0, deadlinesSoon: 0, documentsInAnalysis: 0, documentsFailed: 0, exportsReady: 0, documentsUnlinked: 0 };
+const vide = { toProcessPending: 0, deadlinesSoon: 0, documentsInAnalysis: 0, exportsReady: 0, documentsUnlinked: 0 };
 const ROUTES = ['/', '/accueil', '/accueil/a-traiter', '/assets', '/assets/42', '/assets/42/documents', '/documents', '/agenda', '/mon-compte', '/aide', '/inconnue'];
 
 describe('AC8.1 — jamais « ce bien » ni « sa fiche »', () => {
@@ -42,17 +42,23 @@ describe('AC8.1 — jamais « ce bien » ni « sa fiche »', () => {
 
 // Lot 111L (audit #409) : règle de NOMMAGE du catalogue (lot 32), toujours valide ; la suggestion
 // spontanée des listes est refusée en amont par le service partagé (tests L111L).
+// Règle remplacée (carte #773, décision PO n° 30) : « Quels sont les documents {de_bien} ? »
+// (`asset_docs`, `home_asset_docs`, `docs_asset`) est RETIRÉE du catalogue ; la règle de nommage
+// est désormais vérifiée sur la question conservée « Quelles sont les prochaines échéances {de_bien} ? ».
 describe('AC8.2 — fiche d’un bien : le bien est nommé', () => {
-  it('« Quels sont les documents de Cupra ? », « Quelles sont les prochaines échéances de Cupra ? »', () => {
+  it('« Quelles sont les prochaines échéances de Cupra ? » ; plus de « Quels sont les documents de Cupra ? » (carte #773)', () => {
     const l = suggestionsForRoute('/assets/42', { state: vide, pageAsset: { name: 'Cupra', documents: 2, deadlines: 1 } }).map((s) => s.label);
     expect(l.slice(0, 3)).toEqual([
-      'Quels sont les documents de Cupra ?',
       'Quelles sont les prochaines échéances de Cupra ?',
       'Comment compléter la fiche d’un bien ?',
+      'Comment ajouter un document ?',
     ]);
+    expect(l).not.toContain('Quels sont les documents de Cupra ?');
   });
   it('sous-onglet de la fiche (/assets/42/documents) : même règle', () => {
-    expect(suggestionsForRoute('/assets/42/documents', { pageAsset: { name: 'Cupra', documents: 1 } })[0].label).toBe('Quels sont les documents de Cupra ?');
+    const l = suggestionsForRoute('/assets/42/documents', { pageAsset: { name: 'Cupra', documents: 1, deadlines: 1 } }).map((s) => s.label);
+    expect(l[0]).toBe('Quelles sont les prochaines échéances de Cupra ?');
+    expect(l).not.toContain('Quels sont les documents de Cupra ?');
   });
   it('élision devant une voyelle', () => {
     expect(deBien('Appartement d’Annecy')).toBe('d’Appartement d’Annecy');
@@ -82,10 +88,13 @@ describe('AC8.3 — hors fiche : général, ou un vrai bien du compte', () => {
       expect(ids.some((x) => x.startsWith('asset_')), r).toBe(false);
     }
   });
-  it('accueil, documents, biens : le bien du compte est nommé (documents seulement s’il en a)', () => {
+  // Règle remplacée (carte #773, décision PO n° 30) : plus aucune question « Quels sont les documents
+  // de <bien> ? » sur l'accueil ni sur Documents, que le bien ait des documents ou non ; le bien du
+  // compte reste nommé par la question d'échéances conservée (liste des biens).
+  it('accueil, documents, biens : le bien du compte est nommé pour ses échéances ; plus de question sur ses documents (carte #773)', () => {
     const ctx = { state: vide, accountAsset: { name: 'Polo', documents: 2, deadlines: 1 } };
-    expect(suggestionsForRoute('/accueil', ctx).map((s) => s.label)).toContain('Quels sont les documents de Polo ?');
-    expect(suggestionsForRoute('/documents', ctx).map((s) => s.label)).toContain('Quels sont les documents de Polo ?');
+    expect(suggestionsForRoute('/accueil', ctx).map((s) => s.label)).not.toContain('Quels sont les documents de Polo ?');
+    expect(suggestionsForRoute('/documents', ctx).map((s) => s.label)).not.toContain('Quels sont les documents de Polo ?');
     expect(suggestionsForRoute('/assets', ctx).map((s) => s.label)).toContain('Quelles sont les prochaines échéances de Polo ?');
     expect(suggestionsForRoute('/accueil', { state: vide, accountAsset: { name: 'Polo', documents: 0 } }).map((s) => s.label))
       .not.toContain('Quels sont les documents de Polo ?');
@@ -114,7 +123,7 @@ describe('AC8.4 — exemples dépendant des données', () => {
   // Lot 34 : 3 est un MAXIMUM — 0, 1 ou 2 exemples sont une réponse valide.
   it('0 à 3 exemples, sans doublon, sur chaque page', () => {
     for (const r of ROUTES) {
-      for (const c of [undefined, { state: vide }, { state: { ...vide, toProcessPending: 1, deadlinesSoon: 1, documentsFailed: 1, exportsReady: 1 }, accountAsset: { name: 'Polo', documents: 1 } }]) {
+      for (const c of [undefined, { state: vide }, { state: { ...vide, toProcessPending: 1, deadlinesSoon: 1, documentsInAnalysis: 1, exportsReady: 1 }, accountAsset: { name: 'Polo', documents: 1 } }]) {
         const l = suggestionsForRoute(r, c).map((s) => s.label);
         expect(l.length, r).toBeLessThanOrEqual(3);
         expect(new Set(l).size, r).toBe(l.length);

@@ -30,6 +30,8 @@
  * ══════════════════════════════════════════════════════════════════════════
  */
 
+import { rejectedParameterOf } from '../gateway/diagnostics/classify';
+
 // ── Paramètres de la sonde (ticket 11) ──────────────────────────────────────
 
 /** Aucune donnée utilisateur ; la réponse attendue tient en un mot. */
@@ -57,8 +59,12 @@ export type ProbeErrorKind =
   | 'forbidden_model'
   | 'model_not_found'
   | 'model_retired'
+  /** Lot 114 (#771) : le fournisseur ferme CE modèle à CET accès (clé / projet) — pas un retrait global. */
+  | 'model_access_closed'
   | 'unsupported_method'
   | 'model_invalid_request'
+  /** Lot 114 (#771, S01) : un PARAMÈTRE de la sonde (raisonnement, plafond…) est refusé par ce modèle — la sonde est en cause, pas le modèle. */
+  | 'probe_parameter_rejected'
   | 'probe_error';
 
 export type ProbeOutcome =
@@ -79,8 +85,10 @@ export const PROBE_ERROR_KIND_LABELS: Readonly<Record<ProbeErrorKind, string>> =
   forbidden_model: 'accès refusé à ce modèle',
   model_not_found: 'modèle introuvable pour cette clé',
   model_retired: 'modèle retiré par le fournisseur',
+  model_access_closed: 'modèle fermé à cet accès (clé ou projet) par le fournisseur',
   unsupported_method: 'génération (generateContent) non prise en charge',
   model_invalid_request: 'requête refusée pour ce modèle',
+  probe_parameter_rejected: 'paramètre de la sonde refusé par ce modèle (non concluant)',
   probe_error: 'erreur de la sonde (non concluant)',
 };
 
@@ -152,6 +160,11 @@ const RE_NETWORK = /ECONNRESET|ECONNREFUSED|ETIMEDOUT|ENOTFOUND|EAI_AGAIN|EPIPE|
 const RE_KEY = /API[_ ]?key (?:not valid|invalid|expired|was reported as leaked)|API_KEY_INVALID|API_KEY_EXPIRED|UNAUTHENTICATED|invalid authentication|missing (?:api )?key|Aucune clé|credentials/i;
 const RE_PROJECT = /billing|has not been used in project|SERVICE_DISABLED|API has not been (?:used|enabled)|consumer|CONSUMER_INVALID|project .* (?:suspended|denied|disabled)|organization policy|location is not supported|User location is not supported/i;
 const RE_RETIRED = /no longer (?:available|supported|served)|has been (?:deprecated|retired|discontinued|shut ?down|removed)|is deprecated|was (?:retired|shut ?down|discontinued)|end[- ]of[- ]life/i;
+/**
+ * Lot 114 (#771, appel 15389) : refus EXPLICITE et définitif du modèle pour l'accès utilisé (« is no longer
+ * available to new users ») — ce n'est pas la preuve d'un retrait global chez le fournisseur.
+ */
+const RE_ACCESS_CLOSED = /(?:not|no longer) (?:available|accessible|offered|supported) (?:to|for) (?:new (?:users|customers|accounts|projects)|(?:your|this) (?:account|project|organization|api key|key))/i;
 const RE_UNSUPPORTED = /not supported for generateContent|does not support generateContent|generateContent is not supported|method is not supported/i;
 const RE_NOT_FOUND_MODEL = /models\/[\w.-]+ is not found|model[^.]{0,80}(?:is )?not found|NOT_FOUND[^.]{0,80}model|unknown model|model .* does not exist/i;
 
@@ -188,6 +201,8 @@ export function classifyProbeFailure(
   // 3. Indisponibilité attribuable au modèle.
   // Retrait explicite : message qui vise le modèle, ou 404 de l'appel de
   // génération (l'URL appelée EST celle du modèle).
+  // Lot 114 (#771) : fermeture du modèle à CET accès — explicite et définitive pour la route, sans retrait global.
+  if (RE_ACCESS_CLOSED.test(brut) && (mentionsModel(brut, opts.model) || status === 404)) return ko('model_access_closed', true);
   if (RE_RETIRED.test(brut) && (mentionsModel(brut, opts.model) || status === 404)) return ko('model_retired', true);
   if (RE_UNSUPPORTED.test(brut)) return ko(status === 404 || RE_NOT_FOUND_MODEL.test(brut) ? 'model_not_found' : 'unsupported_method', true);
   if (status === 404 || /\bNOT_FOUND\b/.test(brut)) {
@@ -201,6 +216,10 @@ export function classifyProbeFailure(
     return mentionsModel(brut, opts.model) ? ko('forbidden_model', false) : nc('forbidden_ambiguous');
   }
   if (status === 400 || /INVALID_ARGUMENT|FAILED_PRECONDITION/.test(brut)) {
+    // Lot 114 (#771, S01 / R05) : le fournisseur NOMME un paramètre de la requête (niveau de raisonnement, plafond
+    // de sortie…) — la sonde est incompatible avec ce modèle, rien n'est conclu sur sa disponibilité. Même
+    // détection que la passerelle (`PARAMETER_REJECTED`).
+    if (rejectedParameterOf(brut)) return nc('probe_parameter_rejected');
     return mentionsModel(brut, opts.model) ? ko('model_invalid_request', false) : nc('probe_error');
   }
 
@@ -279,4 +298,51 @@ export function reinterpretLegacyState(row: { ok: boolean | null; checkStatus: C
   if (row.checkStatus !== null || row.ok !== false) return row.ok;
   if (row.error == null || /^réponse vide/i.test(row.error.trim())) return null;
   return classifyProbeFailure(row.error).status === 'failed' ? false : null;
+}
+
+
+// ── Lot 114 (carte #771) : diagnostic restitué, recontrôle borné ─────────────
+
+/** Capacité éprouvée par la sonde (la seule aujourd'hui) et point d'accès appelé. */
+export const PROBE_CAPABILITY = 'text_generation' as const;
+export const PROBE_ENDPOINT = 'generateContent' as const;
+
+/**
+ * Codes d'erreur d'un contrôle de disponibilité (trace technique, export, BO) — #771, S07 / B04 :
+ *   · `MODEL_UNAVAILABLE_CONFIRMED` — refus explicite et définitif attribuable au modèle pour cet accès ;
+ *   · `MODEL_UNAVAILABLE_SUSPECTED` — échec présumé, en attente de confirmation ;
+ *   · `PROVIDER_AUTH_FAILURE`       — incident GLOBAL (clé, authentification, projet) : aucun modèle en cause ;
+ *   · `PROBE_INCONCLUSIVE`          — rien n'est conclu (quota, 5xx, délai, réseau, réponse vide, erreur de sonde).
+ */
+export type ProbeErrorCode = 'MODEL_UNAVAILABLE_CONFIRMED' | 'MODEL_UNAVAILABLE_SUSPECTED' | 'PROVIDER_AUTH_FAILURE' | 'PROBE_INCONCLUSIVE';
+
+/** Catégories GLOBALES (clé, projet) : jamais imputées à un modèle. */
+export const GLOBAL_PROBE_KINDS: ReadonlySet<ProbeErrorKind> = new Set<ProbeErrorKind>(['auth_global', 'project_global']);
+
+/** Code d'erreur d'une issue de contrôle (pure) ; `null` : le modèle a répondu. */
+export function probeErrorCodeOf(outcome: ProbeOutcome): ProbeErrorCode | null {
+  if (outcome.status === 'ok') return null;
+  if (outcome.status === 'failed') return outcome.definitive ? 'MODEL_UNAVAILABLE_CONFIRMED' : 'MODEL_UNAVAILABLE_SUSPECTED';
+  return GLOBAL_PROBE_KINDS.has(outcome.kind) ? 'PROVIDER_AUTH_FAILURE' : 'PROBE_INCONCLUSIVE';
+}
+
+/** Code HTTP et code fournisseur (`NOT_FOUND`…) lus dans une erreur ou un message nettoyé (pure). */
+export function providerCodesOf(err: unknown): { httpStatus: number | null; providerCode: string | null } {
+  const brut = typeof err === 'string' ? err : String((err as { message?: unknown } | null)?.message ?? err ?? '');
+  const google = googleErrorOf(brut);
+  const httpStatus = httpStatusOf(err, brut) ?? google?.code ?? null;
+  const m = /"status"\s*:\s*"([A-Z_]+)"/.exec(brut)
+    ?? /\b(RESOURCE_EXHAUSTED|INVALID_ARGUMENT|PERMISSION_DENIED|UNAUTHENTICATED|DEADLINE_EXCEEDED|UNAVAILABLE|INTERNAL|NOT_FOUND|FAILED_PRECONDITION)\b/.exec(brut);
+  return { httpStatus, providerCode: google?.status ?? (m ? m[1] : null) };
+}
+
+/**
+ * Recontrôle BORNÉ d'un modèle confirmé indisponible (#771, A06) : délai doublé à chaque échec confirmé
+ * consécutif, de `baseMs` à `maxMs` — jamais d'exclusion permanente, jamais de retest en boucle. Pure.
+ */
+export const REPROBE_BASE_MS = 60 * 60_000;
+export const REPROBE_MAX_MS = 24 * 60 * 60_000;
+export function nextProbeDelayMs(failureCount: number, baseMs: number = REPROBE_BASE_MS, maxMs: number = REPROBE_MAX_MS): number {
+  const n = Math.max(1, Math.floor(failureCount));
+  return Math.min(maxMs, baseMs * 2 ** Math.min(n - 1, 20));
 }

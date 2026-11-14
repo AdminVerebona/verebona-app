@@ -443,6 +443,24 @@ export function Cards(items: Nullable<Array<{ when?: Nullable<string>; title: Nu
     .join('')}</div>`;
 }
 
+/** Carte #767 (E03) — titre et chapô de la section « Notes / Description » d'un dossier (chapô à valider par le PO). */
+export const DOCUMENT_NOTES_SECTION_TITLE = 'Notes / Description des documents';
+export const DOCUMENT_NOTES_SECTION_LEAD = 'Textes associés aux documents, inclus à la demande de l’auteur du dossier. Ils ne font pas partie des documents eux-mêmes.';
+
+/**
+ * DocumentNotesSection — carte #767 (E03) : « Notes / Description » des pièces retenues, imprimées
+ * seulement quand l'inclusion a été cochée à la préparation. Une carte par pièce (titre + texte
+ * affiché, sauts de ligne conservés, texte entier : jamais tronqué). Liste vide : chaîne vide.
+ */
+export function DocumentNotesSection(notes: Nullable<Array<{ title: string; text: string }>>): string {
+  const kept = (notes ?? []).filter((n) => !isEmpty(n?.title) && !isEmpty(n?.text));
+  if (!kept.length) return '';
+  const body = `<div class="cards sm doc-notes">${kept
+    .map((n) => `<div class="card"><div class="t">${esc(n.title)}</div><div class="d">${esc(n.text).replace(/\r?\n/g, '<br>')}</div></div>`)
+    .join('')}</div>`;
+  return Section({ eyebrow: 'Documents', title: DOCUMENT_NOTES_SECTION_TITLE, lead: esc(DOCUMENT_NOTES_SECTION_LEAD), first: true, body });
+}
+
 /** Lignes datées encadrées (suivi rassurant, échanges, état). items : [{ date, title, aside }]. */
 export function LineRows(items: Nullable<Array<{ date?: Nullable<string>; dateLabel?: Nullable<string>; title: Nullable<string>; aside?: Nullable<string> }>>): string {
   const kept = (items ?? []).filter((i) => !isEmpty(i.title));

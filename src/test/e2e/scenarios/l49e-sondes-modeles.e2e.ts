@@ -203,9 +203,14 @@ scenario('L49E-11', 'Sondes Gemini fiabilisées, diagnostic BO, alerte unique pa
     }
   });
 
-  it('T11-AC07 — modèle de nouveau sain : rétabli au contrôle suivant, plus d’anomalie', async () => {
+  // Règle remplacée (carte #771, A06) : un modèle CONFIRMÉ indisponible n'est plus resondé à chaque passage planifié —
+  // seulement à son échéance de recontrôle (délai doublé de 1 h à 24 h) ou au geste « Actualiser le catalogue ».
+  // Avant : « rétabli au contrôle suivant », quel que soit le délai écoulé.
+  it('T11-AC07 — modèle de nouveau sain : rétabli au contrôle suivant (à l’échéance ou au geste de l’administrateur), plus d’anomalie', async () => {
     comportement.clear();
     await sync();
+    expect(await etat('gemini-3.6-flash')).toMatchObject({ ok: false, check_status: 'failed_confirmed' }); // échéance non atteinte : pas de sonde
+    await sync('manual');
     expect(await etat('gemini-3.6-flash')).toMatchObject({ ok: true, check_status: 'ok' });
     expect((await statut()).body.unavailableTitle).toBeNull();
   });

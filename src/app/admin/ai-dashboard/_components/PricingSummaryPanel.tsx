@@ -20,8 +20,10 @@ import { AlertTriangle, ArrowRight, CheckCircle2, Info } from 'lucide-react';
 export interface PricingSummaryView {
   severity: 'ok' | 'info' | 'warning' | 'critical';
   title: string;
+  /** Lot 114 (#770) : rappel des appels historiques non chiffrés (information). */
+  historicalNote?: string | null;
   evaluatedAt: string;
-  counters: { activeUnpriced: number; unpricedCalls: number; unpricedCallModels: number; stale: number; sourceFailed: boolean; openAlerts: number; resolvedRecently: number };
+  counters: { activeUnpriced: number; unpricedCalls: number; currentUnpricedCalls?: number; unpricedCallModels: number; stale: number; sourceFailed: boolean; openAlerts: number; resolvedRecently: number };
   active: Array<{ model: string; usages: string; cause: string }>;
   calls: Array<{ model: string; calls: number; lastAt: string; priceNow: boolean; inActiveChain: boolean }>;
   stale: string[];
@@ -55,7 +57,8 @@ function Compteur({ valeur, libelle, alerte }: { valeur: number | string; libell
 
 export function PricingSummaryPanel({ summary }: { summary: PricingSummaryView }) {
   const s = summary;
-  if (s.severity === 'ok' && s.counters.resolvedRecently === 0) return null;
+  // Lot 114 (#770) : l'indicateur d'historique reste affiché même sans risque ouvert (information financière, jamais une alerte).
+  if (s.severity === 'ok' && s.counters.resolvedRecently === 0 && s.counters.unpricedCalls === 0) return null;
   const Icone = s.severity === 'ok' ? CheckCircle2 : s.severity === 'info' ? Info : AlertTriangle;
   return (
     <section data-testid="pricing-summary" aria-label="Synthèse de la tarification IA"
@@ -65,16 +68,19 @@ export function PricingSummaryPanel({ summary }: { summary: PricingSummaryView }
         <span className="break-words">{s.title}</span>
       </p>
 
-      <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
-        <Compteur valeur={s.counters.activeUnpriced} libelle="Chaînes actives sans tarif (appels futurs)" alerte={s.counters.activeUnpriced > 0} />
-        <Compteur valeur={s.counters.unpricedCalls} libelle={`Appels historiques non chiffrés (${s.counters.unpricedCallModels} modèle(s))`} alerte={s.counters.unpricedCalls > 0} />
+      {s.historicalNote && <p className="text-xs text-[color:var(--text-secondary)] break-words" data-testid="pricing-historical-note">{s.historicalNote}</p>}
+
+      <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-2">
+        <Compteur valeur={s.counters.activeUnpriced} libelle="Chaînes actives sans tarif vérifié (rang non appelé)" alerte={s.counters.activeUnpriced > 0} />
+        <Compteur valeur={s.counters.currentUnpricedCalls ?? 0} libelle="Appels exécutés sans tarif vérifié depuis la bascule" alerte={(s.counters.currentUnpricedCalls ?? 0) > 0} />
+        <Compteur valeur={s.counters.unpricedCalls} libelle={`Appels historiques non chiffrés — information (${s.counters.unpricedCallModels} modèle(s))`} alerte={false} />
         <Compteur valeur={s.counters.stale} libelle="Tarifs non confirmés (STALE)" alerte={false} />
         <Compteur valeur={s.counters.sourceFailed ? 'Rejetée' : 'Lue'} libelle="Page officielle Google" alerte={s.counters.sourceFailed} />
       </div>
 
       {s.active.length > 0 && (
         <details open className="text-xs">
-          <summary className="cursor-pointer font-medium text-[color:var(--text-primary)]">Modèles de chaînes actives sans tarif ({s.active.length})</summary>
+          <summary className="cursor-pointer font-medium text-[color:var(--text-primary)]">Modèles de chaînes actives sans tarif vérifié ({s.active.length})</summary>
           <ul className="mt-1 space-y-1">
             {s.active.map((a) => (
               <li key={a.model} className="break-words text-[color:var(--text-secondary)]">

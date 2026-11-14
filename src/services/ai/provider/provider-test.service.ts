@@ -143,6 +143,17 @@ export async function testProviderKey(
       }
     }
 
+    // Lot 114 (Trello #770) : la génération de test consomme des jetons — refusée, AVANT l'envoi, pour un modèle
+    // sans tarif officiel vérifié. L'authentification et le catalogue ci-dessus (métadonnées) restent vérifiés.
+    {
+      const refus = await (await import('../gateway/pricing/pricing-guard')).pricingRefusalFor(model);
+      if (refus !== null) {
+        detail.error = `Génération de test non envoyée : ${model} n’a pas de tarif officiel vérifié (${refus}). Choisissez un modèle tarifé ou lancez la synchronisation des tarifs.`;
+        await trace(accountId, userId, model, false, Date.now() - started, detail.error);
+        return { ok: false, detail };
+      }
+    }
+
     // 2. Génération minimale — la seule qui prouve que le modèle est servi.
     generationSent = true;
     const generation = await fetch(

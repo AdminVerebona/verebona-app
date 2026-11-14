@@ -21,6 +21,16 @@
  *     (correction, réanalyse, avenant reçu) — balayage par le contrôle
  *     COH-OPS-PERIOD-RESOLUTION et après chaque passage T3.
  * Desktop et mobile : composants génériques de la file. Jamais « Opération ».
+ *
+ * CARTE #766 (E06, E07) :
+ *   · une carte n'est JAMAIS posée parce que l'IA n'a pas pu travailler : réexamen T3 en attente (quel
+ *     que soit son âge), en échec technique (essais épuisés) ou capacité T3 illisible (incident) → pas
+ *     de carte ; la divergence reste affichée comme telle sur les fiches ;
+ *   · un échec technique épuisé est réarmé ici, de façon bornée (`rearmFailedRelationReviews`) ;
+ *   · une paire dont l'ordre n'est pas prouvé (borne manquante) fait l'objet d'une DEMANDE de réexamen
+ *     T3 quand la branche est disponible — jamais d'une carte ;
+ *   · sans la branche T3 (bloc 29 absent ou coupure volontaire : configuration, pas incident), le
+ *     comportement 113AA est conservé : question pour deux documents qualifiés par T1.
  * ══════════════════════════════════════════════════════════════════════════
  */
 import { and, eq, sql } from 'drizzle-orm';
@@ -84,15 +94,27 @@ interface SyncReport {
   operations: number; created: number; updated: number; closed: number; skipped: number; error?: string;
   /** Lot 113AD : réexamens T3 demandés (divergences jamais examinées, bloc 29 actif). */
   reviewsRequested?: number;
+  /** Carte #766 (E07) : réexamens en échec technique réarmés pour un nouveau cycle borné. */
+  reviewsRearmed?: number;
+  /** Carte #766 (E07) : questions NON posées parce que la capacité T3 est illisible (incident technique). */
+  deferredByIncident?: number;
 }
 
-/** Lot 113AD : la branche PERIOD_RELATION est-elle exécutable (prompt T3 effectif, coupure) ? Ne lève jamais. */
-async function relationAvailable(): Promise<boolean> {
+/**
+ * Lot 113AD, carte #766 (E07) — la branche PERIOD_RELATION est-elle exécutable ? Trois états, jamais
+ * confondus : `AVAILABLE` ; `ABSENT` (configuration : bloc 29 non collé, marqueur manquant, coupure
+ * volontaire) → comportement 113AA ; `UNKNOWN` (INCIDENT : version du prompt illisible, erreur) → aucune
+ * question n'est posée de ce seul fait. Ne lève jamais.
+ */
+export type RelationCapabilityState = 'AVAILABLE' | 'ABSENT' | 'UNKNOWN';
+export async function relationCapabilityState(): Promise<RelationCapabilityState> {
   try {
     const { relationDecider } = await import('./relation-decider');
-    return (await relationDecider().capability()).available;
+    const cap = await relationDecider().capability();
+    if (cap.available) return 'AVAILABLE';
+    return cap.contractState === 'UNREADABLE' ? 'UNKNOWN' : 'ABSENT';
   } catch {
-    return false;
+    return 'UNKNOWN';
   }
 }
 
@@ -125,19 +147,32 @@ export async function syncPeriodConflictCards(accountId: number, scope: { fileId
       import('./service'), import('@/services/to-process/to-process-action.service'),
     ]);
     const gardees = new Set<string>();
-    let capacite: boolean | null = null;
+    let capacite: RelationCapabilityState | null = null;
     for (const opId of ops) {
       const r = await operationPeriodResolution(pgClient, accountId, opId);
       const parId = new Map(r.coverages.map((c) => [c.id, c]));
       // Lot 113AD : divergence jamais examinée et prompt T3 porteur de la branche PERIOD_RELATION (bloc 29) →
       // réexamen T3 DEMANDÉ (aucun appel ici : passage T3 du compte), question différée. Sans le bloc : rien.
+      // Carte #766 (E06) : les paires dont l'ordre n'est pas prouvé sont demandées de la même façon (jamais de carte).
       let differees = new Set<string>();
-      if (r.conflicts.some((x) => x.review === 'NONE')) {
-        capacite ??= await relationAvailable();
-        if (capacite) {
-          const { requestRelationReviews } = await import('./relation-review');
-          differees = new Set(await requestRelationReviews(pgClient, accountId, opId, r.conflicts));
+      const aExaminer = [...r.conflicts, ...r.uncertain];
+      if (aExaminer.some((x) => x.review === 'NONE' || (x.review === 'FAILED' && x.rearmable))) {
+        capacite ??= await relationCapabilityState();
+        if (capacite === 'AVAILABLE') {
+          const { requestRelationReviews, rearmFailedRelationReviews } = await import('./relation-review');
+          differees = new Set(await requestRelationReviews(pgClient, accountId, opId, aExaminer));
           rep.reviewsRequested = (rep.reviewsRequested ?? 0) + differees.size;
+          // Carte #766 (E07) : nouvel essai BORNÉ d'un réexamen en échec technique (aucun appel ici).
+          const rearmes = await rearmFailedRelationReviews(pgClient, accountId, opId, aExaminer.filter((x) => x.review === 'FAILED' && x.rearmable).map((x) => x.fingerprint));
+          if (rearmes.length) rep.reviewsRearmed = (rep.reviewsRearmed ?? 0) + rearmes.length;
+        } else if (capacite === 'UNKNOWN') {
+          // Carte #766 (E07) : capacité T3 illisible = incident — aucune question posée de ce seul fait ; une
+          // carte déjà ouverte est conservée (ni posée ni fermée par une panne).
+          for (const c of r.conflicts.filter((x) => x.needsUser && x.review === 'NONE')) {
+            differees.add(c.fingerprint);
+            gardees.add(periodConflictRelationKey(opId, c.fingerprint));
+            rep.deferredByIncident = (rep.deferredByIncident ?? 0) + 1;
+          }
         }
       }
       for (const c of r.conflicts.filter((x) => x.needsUser && !differees.has(x.fingerprint))) {

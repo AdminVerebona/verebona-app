@@ -600,6 +600,7 @@ export function resolveTemplateVariables(
   let missingCount = 0;
   for (const name of names) {
     if (name === 'logoUrl') continue; // géré par le service d'e-mail
+    if (name === 'supportEmail') continue; // carte #774 : adresse d'assistance des réglages e-mail, posée par le service d'e-mail
     const value = known[name];
     if (value) variables[name] = value;
     else {

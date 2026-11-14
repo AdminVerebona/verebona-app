@@ -137,7 +137,7 @@ import {
   presumedDuplicateComponents, purchaseIsOwnershipCost, structuredDocumentPurchaseAssessment, unjustifiedComponent, type ComponentProvenance, type PresumedDuplicate,
 } from './fact-identity';
 import {
-  applyTcoUndatedConfirmations, applyTcoUserDecisions, tcoLineUndated, type TcoLineUserDecision, type TcoUndatedConfirmation, type TcoUserDecision,
+  applyTcoUndatedConfirmations, applyTcoUserDecisions, tcoLineUndated, type TcoAmbiguousUndatedConfirmation, type TcoLineUserDecision, type TcoUndatedConfirmation, type TcoUserDecision,
 } from './user-decisions';
 import { assessSamePurchase, pickSameFact, purchaseDatesCompatible, type PurchaseFact, type SameFactAssessment } from './fact-matching';
 import { computeUsageComplement, type UsageComplement, type UsageLineAssignment } from './usage-complement';
@@ -428,6 +428,15 @@ export interface TcoEconomicLine {
   semantic?: import('../finance/semantic-qualification').SemanticLineTrace;
   /** Lot 113AL : clé stable du fait déjà compté qui représente ce montant (ligne reliée par `duplicateOf`). */
   representedBy?: string;
+  /** Carte #769 : période QUALIFIÉE de la dépense (échéance, période couverte) — absente si aucune borne n'est établie. */
+  period?: { start: string | null; end: string | null };
+  /**
+   * Carte #769 : clé du FAIT ÉCONOMIQUE INDIVIDUEL (`tcoFactKeys`) — la clé stable, complétée d'un discriminant
+   * quand plusieurs dépenses retenues la partagent. Porte la confirmation « sans date » (une confirmation, un fait).
+   */
+  factKey?: string;
+  /** Carte #769 : version des propriétés matérielles de la ligne (`tcoLineVersion`) — décision obsolète refusée. */
+  version?: string;
 }
 
 export interface TcoResult {
@@ -522,7 +531,11 @@ export interface TcoResult {
   /** Lot 80A : décisions de l'utilisateur appliquées, doublons présumés ajoutés, décisions sans ligne (BO). */
   userDecisions: { applied: number; includedDuplicates: number; orphans: TcoUserDecision[] };
   /** Lot 113N : confirmations « conservée sans date » appliquées et sans ligne correspondante (BO). */
-  undatedConfirmations?: { applied: number; orphans: TcoUndatedConfirmation[] };
+  undatedConfirmations?: {
+    applied: number; orphans: TcoUndatedConfirmation[];
+    /** Carte #769 : confirmations dont la clé désigne plusieurs dépenses distinctes (jamais appliquées, à arbitrer). */
+    ambiguous?: TcoAmbiguousUndatedConfirmation[];
+  };
   /**
    * Lot 111F : indicateurs de la fiche (coût total, coût annuel moyen de
    * possession, coût net estimé, financement) et motif de chaque valeur non
@@ -1119,6 +1132,8 @@ export function computeTco(input: TcoInput): TcoResult {
       ...(d.compositionOf ? { compositionOf: d.compositionOf } : {}), ...(d.mergedFacts?.length ? { mergedFacts: d.mergedFacts } : {}),
       // Lot 113AL : trace de l'arbitrage sémantique T3 et fait déjà compté qui représente ce montant.
       ...(d.semantic ? { semantic: d.semantic } : {}), ...(d.representedBy ? { representedBy: d.representedBy } : {}),
+      // Carte #769 : période qualifiée lue sur le justificatif (distingue deux échéances de même montant d'un même document).
+      ...(d.periodStart || d.periodEnd ? { period: { start: d.periodStart ?? null, end: d.periodEnd ?? null } } : {}),
     };
     if (d.status !== null || !d.kind) {
       // Lot 75D (D) : montant inconnu — jamais présenté comme 0 €.
@@ -1254,6 +1269,8 @@ export function computeTco(input: TcoInput): TcoResult {
         ...(p ? { sourceFileIds: [...p.documentFileIds] } : {}),
         // Lot 85A (O-9) : identités stables des sources non documentaires (clé de décision sans justificatif).
         ...(p?.otherSourceKeys?.length ? { sourceIdentities: [...p.otherSourceKeys] } : {}),
+        // Carte #769 : période qualifiée de la composante (distingue deux échéances de même montant d'un même justificatif).
+        ...(c && (c.periodStart || c.periodEnd) ? { period: { start: c.periodStart ?? null, end: c.periodEnd ?? null } } : {}),
         ...dateEco(datesEco.get(e.componentId), e),
         ...nonRealisee(e, op),
       };
@@ -1563,7 +1580,9 @@ export function computeTco(input: TcoInput): TcoResult {
     entries,
     annual,
     userDecisions: decisionsUtilisateur,
-    ...(input.undatedConfirmations?.length ? { undatedConfirmations: confirmationsSansDate } : {}),
+    ...(input.undatedConfirmations?.length ? {
+      undatedConfirmations: { applied: confirmationsSansDate.applied, orphans: confirmationsSansDate.orphans, ...(confirmationsSansDate.ambiguous.length ? { ambiguous: confirmationsSansDate.ambiguous } : {}) },
+    } : {}),
     indicators,
     valuations: evaluationValeurs,
   };

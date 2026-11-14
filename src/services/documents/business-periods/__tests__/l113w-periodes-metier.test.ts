@@ -122,7 +122,10 @@ describe('L113W-U-MODEL — qualification depuis la connaissance T1 persistée',
       billing: { billedPeriod: null, statedMonth: { value: '2026-02', quote: 'Abonnement février 2026' }, hasBillingBlock: true },
     })).toEqual([expect.objectContaining({ kind: 'BILLING', start: '2026-02', end: '2026-02', basis: 'T1_STATED_MONTH' })]);
   });
-  it('échéance d’un contrat sans période lisible → « non renseignée » ; couverture = facturation identique : la couverture seule', () => {
+  // Règle remplacée (carte #766, E01) : une couverture et une période facturée de mêmes bornes ne sont plus
+  // réduites à « la couverture seule » — ce sont DEUX faits de natures distinctes, conservés tous les deux
+  // (preuves séparées) ; la période principale reste unique (couverture), la facturation est secondaire.
+  it('échéance d’un contrat sans période lisible → « non renseignée » ; couverture = facturation identiques : DEUX faits, une seule principale', () => {
     expect(derive({ candidates: [cand({ payload: { sourceRoleHint: 'INVOICE' } })] }))
       .toEqual([expect.objectContaining({ kind: 'BILLING', start: null, end: null, basis: 'T1_BILLING_UNDATED' })]);
     const d = derive({
@@ -130,7 +133,13 @@ describe('L113W-U-MODEL — qualification depuis la connaissance T1 persistée',
         cand({ candidateKey: 'op2', payload: { sourceRoleHint: 'INVOICE' } })],
       billing: { billedPeriod: { start: '2025-04-01', end: '2026-03-31', source: 'T1_COST_PERIOD' }, statedMonth: null, hasBillingBlock: false },
     });
-    expect(d.map((x) => x.kind)).toEqual(['COVERAGE']);
+    expect(d.map((x) => [x.kind, x.start, x.end, x.basis])).toEqual([
+      ['COVERAGE', '2025-04-01', '2026-03-31', 'T1_CONTRACT_DATES'],
+      ['BILLING', '2025-04-01', '2026-03-31', 'T1_COST_PERIOD'],
+    ]);
+    expect(d[0].evidence).toEqual({ candidateKeys: ['op1'] });
+    expect(d[1].evidence).toEqual({ candidateKeys: ['op2'] });
+    expect(m.principalKind(d)).toBe('COVERAGE');
   });
   it('le titre ne définit jamais la période (aucune entrée titre) ; période des faits génériques ≠ période facturée', () => {
     expect(derive({

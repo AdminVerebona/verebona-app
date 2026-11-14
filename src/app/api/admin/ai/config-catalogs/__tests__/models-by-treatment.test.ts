@@ -24,7 +24,12 @@ vi.mock('@/services/ai/provider/model-operational.service', () => ({
 vi.mock('@/services/ai/gateway/pricing/pricing.repository', () => ({
   getCacheState: () => ({ loadedAt: new Date(), size: 1, degraded: false, lastError: null }),
   loadPricingCache: async () => undefined,
-  getCachedPrice: () => ({ verified: false }),
+  // Lot 114 (#770) : tarif ADMISSIBLE (page officielle, confirmé par la dernière lecture) — sans lui, aucun modèle ne serait proposé.
+  getCachedPrice: () => ({ provider: 'gemini', model: 'm', inputMicros: 0.1, outputMicros: 0.4, currency: 'USD', source: 'public_catalog', verified: false, pageStatus: 'KNOWN', fetchedAt: new Date() }),
+  pricingReadState: () => ({ degraded: false, loaded: true }),
+  verifiedTestPricesActive: () => false,
+  refreshPricingCacheIfStale: async () => false,
+  selectApplicablePrices: () => [],
 }));
 vi.mock('@/services/verebona-assistant/config/assistant-settings', () => ({
   refreshAssistantSettings: async () => undefined, effectiveSetting: () => false,

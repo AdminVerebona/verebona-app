@@ -102,7 +102,7 @@ beforeEach(() => { execute.mockReset(); unsafe.mockReset(); unsafe.mockImplement
 describe('L55A-01 — constat : la question du catalogue contredisait la bulle', () => {
   it('rouge avant correctif : « À traiter » sans priorité → bulle « Aucun sujet… », catalogue « Que dois-je traiter en priorité ? »', () => {
     // Le catalogue déterministe (ancienne source des questions de la mascotte).
-    const catalogue = suggestionsForRoute('/accueil', { state: { toProcessPending: 1, deadlinesSoon: 0, documentsInAnalysis: 0, documentsFailed: 0, exportsReady: 0, actionsDueToday: 0, deadlinesUpcoming: 1 } });
+    const catalogue = suggestionsForRoute('/accueil', { state: { toProcessPending: 1, deadlinesSoon: 0, documentsInAnalysis: 0, exportsReady: 0, actionsDueToday: 0, deadlinesUpcoming: 1 } });
     expect(catalogue.map((x) => x.label)).toContain('Que dois-je traiter en priorité ?');
     const c = buildCandidates(raw());
     const s = selectSubjects(c.candidates);

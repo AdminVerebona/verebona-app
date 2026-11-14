@@ -23,8 +23,11 @@ import { and, eq, isNull } from 'drizzle-orm';
 import { isCilEligible } from '@/lib/asset-capabilities';
 import { normalizeExportCode, isDossierEligibleForFamily, isDossierCode, type DossierCode } from '@/services/exports/catalog';
 import { notifySupportOfExportFailure } from '@/services/exports/export-support-notifier';
-import { loadExportSource, type ExportSource } from '../data/source';
-import { buildDefaultChoices, choicesFromLegacyOptions, type ExportChoices, type LegacyDrawerOptions, type OutputFormat } from '../data/choices';
+import { attachNotesDescription, loadExportSource, type ExportSource } from '../data/source';
+import {
+  buildDefaultChoices, choicesFromLegacyOptions, includesNotesDescription, planSelection,
+  type ExportChoices, type LegacyDrawerOptions, type OutputFormat,
+} from '../data/choices';
 import { renderDossier, type RenderedDossier } from '../render/render-dossier';
 import type { FetchToFile } from '../render/media';
 import { templateVersion } from '../templates';
@@ -59,6 +62,8 @@ interface JobDeps {
   fetchToFile?: FetchToFile;
   upload: UploadFn;
   loadSource: typeof loadExportSource;
+  /** Carte #767 (E03) : texte « Notes / Description » des pièces retenues (lecture stricte, fail-closed). */
+  attachNotes: typeof attachNotesDescription;
   notifySupport: typeof notifySupportOfExportFailure;
   /** Objets envoyés mais non rattachés à la génération → file de purge. */
   scheduleOrphans: typeof scheduleOrphanedOutputs;
@@ -72,6 +77,7 @@ interface JobDeps {
 const defaultJobDeps = (): JobDeps => ({
   upload: s3UploadFile,
   loadSource: loadExportSource,
+  attachNotes: attachNotesDescription,
   notifySupport: notifySupportOfExportFailure,
   scheduleOrphans: scheduleOrphanedOutputs,
   now: () => new Date(),
@@ -105,6 +111,12 @@ function buildSnapshot(code: DossierCode, source: ExportSource, choices: ExportC
     export: { type: code, templateVersion: templateVersion(code), createdAt },
     sections: Object.entries(rendered?.plan.sections ?? choices.sections).map(([id, enabled]) => ({ id, enabled })),
     choices,
+    // Carte #767 (E03) : choix d'inclusion de « Notes / Description » — vérifiable après coup
+    // (`included`), avec le nombre de pièces qui portent un texte (jamais le texte ici : il est dans `data`).
+    notesDescription: {
+      included: includesNotesDescription(choices),
+      documents: includesNotesDescription(choices) ? source.documents.filter((d) => !!d.notesDescription).length : 0,
+    },
     zip: { enabled: (rendered?.zipEntries.length ?? 0) > 0 },
     warnings: rendered?.warnings.map((w) => w.code) ?? [],
     thresholds: rendered ? { pages: rendered.pageCount, integratedPdf: rendered.counts.integratedPdf, zipItems: rendered.counts.zip } : null,
@@ -190,6 +202,20 @@ export async function runGeneration(row: GenerationRow, workerId: string, opts: 
       throw new ExportGenerationError('NOT_ELIGIBLE', current, `CIL-RULE-002 : ${ids.length ? `${ids.join(', ')} à compléter` : 'bloc bloquant à compléter'}`);
     }
     const choices = effectiveChoices(code, source, req, today);
+    // Carte #767 (E03) : « Notes / Description » des pièces RETENUES, seulement si l'inclusion a été
+    // cochée à la préparation (choix `user` explicite). Lecture stricte : métadonnées indisponibles →
+    // la génération échoue (aucun dossier produit avec une valeur de repli, DEC-002).
+    if (includesNotesDescription(choices)) {
+      try {
+        const retenues = planSelection(code, source, choices, today).documents.map((pd) => pd.doc.id);
+        source = await deps.attachNotes(source, row.accountId, retenues, `dossier ${code} (génération ${row.id})`);
+      } catch (e) {
+        throw asGenerationError(e, current);
+      }
+      await log('info', current, 'Notes / Description des documents : inclusion demandée.', {
+        details: { documentsWithText: source.documents.filter((d) => !!d.notesDescription).length },
+      });
+    }
     await updateOwnedGeneration(row.id, workerId, {
       snapshotJson: { ...buildSnapshot(code, source, choices, req, generatedAt), request: req } as Record<string, unknown>,
       templateVersion: tplVersion,

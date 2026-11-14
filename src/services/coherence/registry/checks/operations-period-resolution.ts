@@ -24,8 +24,19 @@
  *                  aucune question prématurée — signalée (Supervision) ; elle
  *                  se résout par la requalification T1 du document (analyse
  *                  suivante, ou réanalyse ciblée décidée par le PO) ;
+ *       REPAIRABLE PERIOD_RELATION_REVIEW_FAILED (carte #766, E07, version 3)
+ *                  réexamen T3 en ÉCHEC TECHNIQUE dont les essais sont épuisés
+ *                  et qu'un nouveau cycle borné peut reprendre : la réparation
+ *                  le RÉARME (aucun appel IA ici), jamais une question ;
+ *       FINDING    PERIOD_RELATION_REVIEW_BLOCKED (carte #766, E07) réexamen T3
+ *                  bloqué — échec technique dont tous les cycles sont épuisés,
+ *                  ou demande en attente depuis plus longtemps que le seuil de
+ *                  supervision (budget, file, panne) : signalé au BO ; aucune
+ *                  question n'est posée à l'utilisateur pour un incident ;
  *   · réparation : `syncPeriodConflictCards` (pose / ferme les cartes
  *     PERIOD-CONFLICT ; idempotent).
+ * Carte #766 (E06) : une paire dont l'ordre n'est pas prouvé (borne manquante)
+ * est demandée au réexamen T3 comme une divergence jamais examinée, sans carte.
  * Interdits : appeler l'IA, modifier une période d'un document (encore moins
  * une période corrigée par l'utilisateur), trancher une divergence à la place
  * de l'utilisateur, « le dernier document gagne », écrire une date
@@ -47,7 +58,8 @@ const OBJETS_SQL = `o.account_id = $1 AND o.invalidated_at IS NULL AND o.merged_
 export const operationsPeriodResolutionCheck: CoherenceCheck = {
   id: OPERATIONS_PERIOD_RESOLUTION_CHECK_ID,
   // Lot 113AD : version 2 (réexamen T3 demandé pour le stock quand le bloc 29 est actif).
-  version: 2,
+  // Carte #766 : version 3 (incident technique du réexamen distingué de la divergence ; ordre non prouvé demandé à T3).
+  version: 3,
   status: 'ACTIVE',
   title: 'Événements de référence : périodes de couverture des justificatifs résolues (succession, avenant, rectificatif, divergence)',
   domain: 'operations',
@@ -57,7 +69,7 @@ export const operationsPeriodResolutionCheck: CoherenceCheck = {
   sources: ['business_operations', 'business_operation_documents', 'document_business_periods', 'business_period_decisions', 'business_period_relation_reviews', 'to_process_actions'],
   applicability: 'compte éligible (actif et modifiable)',
   invariant: 'une divergence de périodes que les preuves n’expliquent pas (documents qualifiés par T1) fait l’objet d’une seule question ouverte, jamais redemandée une fois tranchée ; aucune question ne reste ouverte sans divergence ; aucune résolution n’est inventée',
-  anomalies: ['PERIOD_CONFLICT_CARD_MISSING', 'PERIOD_CONFLICT_CARD_OBSOLETE', 'PERIOD_RELATION_REVIEW_MISSING', 'PERIOD_DIVERGENCE_UNQUALIFIED'],
+  anomalies: ['PERIOD_CONFLICT_CARD_MISSING', 'PERIOD_CONFLICT_CARD_OBSOLETE', 'PERIOD_RELATION_REVIEW_MISSING', 'PERIOD_RELATION_REVIEW_FAILED', 'PERIOD_RELATION_REVIEW_BLOCKED', 'PERIOD_DIVERGENCE_UNQUALIFIED'],
   autoRepairWhen: 'les questions ouvertes diffèrent des divergences que la résolution (lecture seule, sans IA) laisse à l’utilisateur, ou une divergence jamais examinée attend le réexamen T3 (bloc 29 actif)',
   forbiddenRepairs: [
     'appeler l’IA', 'modifier une période d’un document', 'trancher une divergence à la place de l’utilisateur',
@@ -68,7 +80,7 @@ export const operationsPeriodResolutionCheck: CoherenceCheck = {
   triggers: ['SOURCE_ANALYZED', 'BUSINESS_OPERATION_CHANGED'],
   frequency: 'campagne exhaustive quotidienne + contrôle ciblé après analyse ou écriture d’un événement de référence',
   criticality: 'MEDIUM',
-  tests: ['L113AA-U-RESOLUTION', 'L113AA-E2E-D11', 'L113AD-E2E-STOCK'],
+  tests: ['L113AA-U-RESOLUTION', 'L113AA-E2E-D11', 'L113AD-E2E-STOCK', 'L114R-E2E-E07'],
 
   async listObjects(ctx, accountId, afterId, limit) {
     return idsOf(await rows(ctx.sql, `SELECT o.id FROM business_operations o WHERE ${OBJETS_SQL} AND o.id > $2 ORDER BY o.id LIMIT $3`, [accountId, afterId, limit]));
@@ -106,12 +118,24 @@ export const operationsPeriodResolutionCheck: CoherenceCheck = {
       if (!vivantes.has(id)) { out.set(id, { verdict: 'GONE' }); continue; }
       const r = await operationPeriodResolution(ctx.sql, accountId, id);
       // Lot 113AD : divergence jamais examinée, bloc 29 actif → demande de réexamen (réparation sans IA).
-      const aDemander = r.conflicts.filter((c) => c.review === 'NONE');
+      // Carte #766 (E06) : l'ordre non prouvé d'une paire est demandé de la même façon (aucune question).
+      const suivies = [...r.conflicts, ...r.uncertain];
+      const aDemander = suivies.filter((c) => c.review === 'NONE');
       if (aDemander.length && await reexamen()) {
         const fps = aDemander.map((c) => c.fingerprint).sort();
         out.set(id, {
           verdict: 'REPAIRABLE', anomaly: 'PERIOD_RELATION_REVIEW_MISSING', faultyLink: 'T3', expected: fps, observed: [],
           detail: { operationId: id, divergences: aDemander.length }, inputHash: hashOf({ id, review: fps }),
+        });
+        continue;
+      }
+      // Carte #766 (E07) : échec technique épuisé, nouveau cycle permis → réarmement (réparation sans IA).
+      const aRearmer = suivies.filter((c) => c.review === 'FAILED' && c.rearmable);
+      if (aRearmer.length && await reexamen()) {
+        const fps = aRearmer.map((c) => c.fingerprint).sort();
+        out.set(id, {
+          verdict: 'REPAIRABLE', anomaly: 'PERIOD_RELATION_REVIEW_FAILED', faultyLink: 'T3', expected: fps, observed: [],
+          detail: { operationId: id, failed: aRearmer.length }, inputHash: hashOf({ id, rearm: fps }),
         });
         continue;
       }
@@ -128,8 +152,21 @@ export const operationsPeriodResolutionCheck: CoherenceCheck = {
         });
         continue;
       }
+      // Carte #766 (E07) : réexamen bloqué (cycles épuisés) ou en retard — supervision BO, jamais une question.
+      const bloquees = suivies.filter((c) => c.review === 'FAILED' || (c.review === 'AWAITING' && c.late));
+      if (bloquees.length) {
+        out.set(id, {
+          verdict: 'FINDING', anomaly: 'PERIOD_RELATION_REVIEW_BLOCKED', faultyLink: 'T3',
+          detail: {
+            operationId: id, failed: bloquees.filter((c) => c.review === 'FAILED').length, late: bloquees.filter((c) => c.review === 'AWAITING').length,
+            fileIds: [...new Set(bloquees.flatMap((c) => c.fileIds))].slice(0, 10),
+            remedy: 'incident technique du réexamen T3 (panne, quota, budget, file en retard) : vérifier BO › Exécutions & logs et la file IA ; aucune question n’est posée à l’utilisateur',
+          },
+        });
+        continue;
+      }
       // Lot 113AD : une divergence dont le réexamen T3 est en attente n'est pas un constat (question différée, bornée).
-      const nonQualifiees = r.conflicts.filter((c) => !c.needsUser && c.review !== 'AWAITING');
+      const nonQualifiees = r.conflicts.filter((c) => !c.needsUser && c.review !== 'AWAITING' && c.review !== 'FAILED');
       if (nonQualifiees.length) {
         out.set(id, {
           verdict: 'FINDING', anomaly: 'PERIOD_DIVERGENCE_UNQUALIFIED', faultyLink: 'T1',
@@ -138,7 +175,7 @@ export const operationsPeriodResolutionCheck: CoherenceCheck = {
         });
         continue;
       }
-      const enAttente = r.conflicts.filter((c) => c.review === 'AWAITING').length;
+      const enAttente = suivies.filter((c) => c.review === 'AWAITING').length;
       out.set(id, { verdict: 'CONSISTENT', detail: { operationId: id, coverages: r.coverages.length, ...(enAttente ? { awaitingReview: enAttente } : {}) } });
     }
     return out;
@@ -151,7 +188,11 @@ export const operationsPeriodResolutionCheck: CoherenceCheck = {
       const r = await syncPeriodConflictCards(accountId, { operationIds: [id] });
       out.set(id, {
         called: true, service: 'syncPeriodConflictCards', aiCalls: 0,
-        result: { created: r.created, updated: r.updated, closed: r.closed, ...(r.reviewsRequested ? { reviewsRequested: r.reviewsRequested } : {}), ...(r.error ? { error: r.error } : {}) },
+        result: {
+          created: r.created, updated: r.updated, closed: r.closed, ...(r.reviewsRequested ? { reviewsRequested: r.reviewsRequested } : {}),
+          ...(r.reviewsRearmed ? { reviewsRearmed: r.reviewsRearmed } : {}), ...(r.deferredByIncident ? { deferredByIncident: r.deferredByIncident } : {}),
+          ...(r.error ? { error: r.error } : {}),
+        },
         rollbackRef: `to_process_action_events:rule_code=${RULE}`,
       });
     }

@@ -15,7 +15,7 @@
  *       journaliers à part, rapport des coûts sans double comptage ;
  *   E · routes BO (Fournisseur IA › tarifs, Coûts IA › non chiffrés).
  */
-import { afterAll, beforeAll, expect, it, vi } from 'vitest';
+import { afterAll, beforeAll, expect, it, vi, beforeEach } from 'vitest';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { scenario } from '../scenario';
@@ -37,6 +37,8 @@ const NOV = new Date('2026-11-04T09:00:00Z');
 const page = (text: string) => async () => ({ text, finalUrl: 'https://aistudio.google.com/docs/pricing', status: 200, contentType: 'text/plain; charset=utf-8' });
 
 scenario('L109L', 'Tarifs Gemini et coûts IA : lecture, STALE, priorité, statut tarifaire, diagnostic, régularisation', ({ sql, make }) => {
+  // Lot 114 (#770) : scénario du RÉFÉRENTIEL tarifaire — éprouvé sans la preuve tarifaire de test du socle.
+  beforeEach(async () => { (await import('@/services/ai/gateway/pricing/pricing.repository')).__setVerifiedTestPricesForTests(false); });
   let accountId = 0;
   const fetchSpy = vi.fn();
 

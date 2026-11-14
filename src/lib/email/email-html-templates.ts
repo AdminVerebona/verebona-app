@@ -13,6 +13,7 @@
  * remplacé à l'envoi par le bloc logo hébergé (`EmailService.getVerebonaEmailLogo`).
  */
 import { EMAIL_COLORS as C, EMAIL_FONT_STACK as F, EMAIL_STYLES as S, emailButton, emailCallout, emailDocument } from './email-layout';
+import { PASSKEY_ADDED_HTML, TOTP_ENABLED_HTML } from './security-notification-templates';
 
 const p = (html: string) => `<p style="${S.p}">${html}</p>`;
 const muted = (html: string) => `<p class="vb-muted" style="${S.muted}">${html}</p>`;
@@ -268,4 +269,7 @@ export const EMAIL_HTML_TEMPLATES_L66: Readonly<Record<string, string>> = {
 export const EMAIL_HTML_TEMPLATES_CURRENT: Readonly<Record<string, string>> = {
   ...EMAIL_HTML_TEMPLATES_L66,
   WITHDRAWAL_RECEIPT: WITHDRAWAL_RECEIPT_HTML,
+  // Carte #774 (migration 1698) : gabarit transactionnel commun — clé d'accès ajoutée, TOTP activé.
+  NOTIF_MFA_PASSKEY_ADDED: PASSKEY_ADDED_HTML,
+  NOTIF_MFA_TOTP_ENABLED: TOTP_ENABLED_HTML,
 };

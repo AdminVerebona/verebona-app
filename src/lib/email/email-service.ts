@@ -3,7 +3,8 @@ import { db } from '@/db';
 import { emailTemplates, emailSettings, emailLogs } from '@/db/schema';
 import { eq, sql } from 'drizzle-orm';
 import { isTransactionalEmailActive, transactionalRetiredReason, COMMUNICATION_RETIRED_ERROR } from '@/lib/notifications/channel-activation';
-import { EMAIL_COLORS, EMAIL_STYLES, emailButton, emailDocument, emailLogoHtml } from './email-layout';
+import { EMAIL_COLORS, EMAIL_COMPACT_LOGO_SIZE, EMAIL_STYLES, emailButton, emailDocument, emailLogoHtml, isTransactionalLayout } from './email-layout';
+import { transactionalHtmlToText } from './transactional-template';
 import { neutralizeEmptyGreeting, safeTemplateVariables } from './variable-safety';
 import { buildContactEmail, type ContactInput } from './contact-message';
 
@@ -438,7 +439,18 @@ class EmailService {
     settingsArg?: any,
   ): Promise<RenderedEmail> {
     const settings = settingsArg ?? (await this.getSettings());
-    const computedLogo = await this.getVerebonaEmailLogo();
+    // Carte #774 : gabarit transactionnel commun — logo compact (120 × 30),
+    // adresse d'assistance CONFIGURÉE ({{supportEmail}} : réglages e-mail du BO,
+    // jamais une adresse écrite dans le gabarit) et version texte dérivée de la
+    // structure. Les autres gabarits ne sont pas concernés (rendu inchangé).
+    const commonLayout = isTransactionalLayout(template.body);
+    const computedLogo: LogoResult = commonLayout
+      ? { content: emailLogoHtml((this.makeAbsoluteUrl('/') ?? 'https://app.verebona.fr/').replace(/\/+$/, ''), 'Verebona', EMAIL_COMPACT_LOGO_SIZE), type: 'html' }
+      : await this.getVerebonaEmailLogo();
+    if (commonLayout) {
+      const support = typeof settings?.replyToEmail === 'string' ? settings.replyToEmail.trim() : '';
+      variables = { ...(variables ?? {}), supportEmail: support };
+    }
     const aliased = withActionLinkAliases(variables ?? {});
     const year = new Date().getFullYear().toString();
     // Lot 73A (point 3) : valeurs neutralisées par version — échappées pour le
@@ -464,8 +476,10 @@ class EmailService {
     html = this.fixLogoSizing(html);
     // Version texte : balises retirées du GABARIT, puis valeurs « texte » insérées
     // (une valeur n'est jamais réinterprétée comme balise, entité ou ligne).
-    const text = stripUnresolvedPlaceholders(fillPlainText(template.body.replace(/<[^>]*>/g, ''), textVariables))
-      .replace(/\n\n+/g, '\n\n');
+    const text = commonLayout
+      ? stripUnresolvedPlaceholders(fillPlainText(transactionalHtmlToText(template.body), textVariables))
+      : stripUnresolvedPlaceholders(fillPlainText(template.body.replace(/<[^>]*>/g, ''), textVariables))
+        .replace(/\n\n+/g, '\n\n');
     return { subject, html, text, unresolved, missingLinks };
   }
 

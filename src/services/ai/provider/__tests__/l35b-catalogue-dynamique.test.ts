@@ -32,7 +32,7 @@ function ctx(over: Partial<UsableModelsContext> = {}): UsableModelsContext {
     },
     codeCatalog: [],
     // gemini-9-flash : aucun tarif récupérable.
-    price: (m) => (m.startsWith('gemini-9') ? null : { verified: false }),
+    price: (m) => (m === 'gemini-9-sans-tarif' ? null : { verified: false, eligible: true }),
     operational: new Map(),
     qualifications: new Map([
       ['gemini-9-flash', OK], ['gemini-9-pro-preview', OK], ['gemini-9-flash-exp', OK],
@@ -78,9 +78,13 @@ describe('CAT-05 à CAT-07 — Preview et tarif inconnu', () => {
     expect(noms('T2')).not.toContain('gemini-9-pro-preview');
     expect(usableModelsForTreatment('T2', ctx()).find((m) => m.model === 'gemini-9-pro-preview')).toBeUndefined();
   });
-  it('CAT-06/CAT-07 — sans tarif récupérable : proposé quand même, priced=false (UNKNOWN), aucun montant', () => {
-    const m = usableModelsForTreatment('T2', ctx()).find((x) => x.model === 'gemini-9-flash');
-    expect(m).toMatchObject({ priced: false, verified: false });
+  // Lot 114 (Trello #770) — règle remplacée : « sans tarif récupérable : proposé quand même » (lot 35B).
+  it('CAT-06/CAT-07 (#770) — sans tarif officiel vérifié : visible avec son motif, JAMAIS proposé ; tarif confirmé : proposé', () => {
+    const c = ctx({ price: (m: string) => (m === 'gemini-9-flash' ? null : { verified: false, eligible: true }) });
+    expect(usableModelsForTreatment('T2', c).find((x) => x.model === 'gemini-9-flash')).toBeUndefined();
+    expect(evaluateModelForTreatment('T2', 'gemini-9-flash', c)).toMatchObject({ usable: false, priced: false, reasons: ['PRICING_NOT_VERIFIED'] });
+    // À la synchronisation tarifaire validée suivante, il redevient candidat sans autre intervention.
+    expect(usableModelsForTreatment('T2', ctx()).find((x) => x.model === 'gemini-9-flash')).toMatchObject({ priced: true });
   });
 });
 
@@ -145,6 +149,8 @@ describe('CAT-15/CAT-16 — coût au tarif de l’appel, jamais estimé', () => 
   it('tarif inconnu : coût non calculable (null), jetons toujours comptés par l’appelant', async () => {
     const { calcCostMicros } = await import('../../gateway/cost-catalog');
     vi.spyOn(console, 'warn').mockImplementation(() => {});
+    // Sans la preuve tarifaire de test du socle (#770) : aucun tarif, donc aucun montant inventé.
+    (await import('../../gateway/pricing/pricing.repository')).__setVerifiedTestPricesForTests(false);
     expect(calcCostMicros('gemini-9-flash', 1000, 100)).toBeNull();
   });
   it('palier de taille d’invite appliqué à toute la requête au-delà du seuil', async () => {

@@ -101,6 +101,18 @@ export interface TcoUndatedConfirmation {
   key: string;
   confirmedAt: string;
   confirmedByUserId: number | null;
+  /**
+   * Carte #769 : identifiant technique de la ligne au moment du choix (`line_id` de la table). Sert UNIQUEMENT à
+   * départager une clé devenue commune à plusieurs dépenses (jamais à étendre une confirmation).
+   */
+  lineId?: string | null;
+}
+
+/** Carte #769 : confirmation dont la clé désigne plusieurs dépenses distinctes — jamais appliquée, à arbitrer. */
+export interface TcoAmbiguousUndatedConfirmation {
+  confirmation: TcoUndatedConfirmation;
+  /** Dépenses retenues sans date que la clé désigne indistinctement. */
+  lineIds: string[];
 }
 
 /** Lot 113N : dépense RETENUE dont la date économique n'est pas établie (comptée, rattachée à aucune année). */
@@ -193,6 +205,108 @@ export function tcoLineKeys(l: KeyLine): { primary: string; secondary: string[] 
     primary: `f:${principal}:${fait}`,
     secondary: [...fichiers.filter((f) => f !== principal).sort((a, b) => a - b).map((f) => `f:${f}:${fait}`), ...reunis.filter((k) => k !== `f:${principal}:${fait}`)],
   };
+}
+
+/*
+ * ══════════════════════════════════════════════════════════════════════════
+ * Carte #769 — IDENTITÉ DU FAIT ÉCONOMIQUE INDIVIDUEL (`factKey`)
+ *
+ * La clé ci-dessus (`tcoLineKeys`) désigne un fait par son justificatif, sa
+ * nature, son montant et sa devise. Elle ne distingue PAS deux dépenses
+ * réelles de même nature et de même montant portées par le même justificatif
+ * (deux échéances d'un même contrat, deux périodes) : le moteur les compte
+ * toutes les deux, la clé est commune. Une confirmation « sans date » ne doit
+ * porter que sur UNE dépense.
+ *
+ *   · clé non partagée (cas général) : `factKey` = clé principale, inchangée
+ *     (aucune donnée existante à reprendre) ;
+ *   · clé partagée par plusieurs dépenses RETENUES (toutes comptées par le
+ *     moteur : ce sont des faits distincts) :
+ *       `<clé>#p:<début>~<fin>`  la période qualifiée de la dépense, quand
+ *                                elle la distingue des autres (identité
+ *                                durable : survit aux reconsolidations) ;
+ *       `<clé>#l:<ligne>`        sinon, la ligne elle-même (aucune propriété
+ *                                durable ne distingue ces dépenses : si la
+ *                                ligne est remplacée, la confirmation devient
+ *                                ambiguë — signalée, jamais étendue).
+ * Le montant seul, le justificatif seul ou la période seule ne prouvent
+ * jamais le même fait : la période ne sert qu'à DISTINGUER deux dépenses
+ * d'une même clé, jamais à en réunir deux.
+ * ══════════════════════════════════════════════════════════════════════════
+ */
+type FactLine = KeyLine & Pick<TcoEconomicLine, 'status'> & Partial<Pick<TcoEconomicLine, 'period'>>;
+
+const jourIso = (d: string | null | undefined): string | null => (d && /^\d{4}-\d{2}-\d{2}/.test(d) ? d.slice(0, 10) : null);
+/** Période QUALIFIÉE d'une ligne (`début~fin`), null si aucune borne n'est établie. */
+const periodeDe = (l: Partial<Pick<TcoEconomicLine, 'period'>>): string | null => {
+  const [a, b] = [jourIso(l.period?.start), jourIso(l.period?.end)];
+  return a || b ? `${a ?? ''}~${b ?? ''}` : null;
+};
+
+/** Décompose une clé de fait : clé de base et discriminant (période ou ligne). */
+export function parseTcoFactKey(key: string): { base: string; period: string | null; lineId: string | null } {
+  const i = key.indexOf('#');
+  if (i < 0) return { base: key, period: null, lineId: null };
+  const suffixe = key.slice(i + 1);
+  return {
+    base: key.slice(0, i),
+    period: suffixe.startsWith('p:') ? suffixe.slice(2) : null,
+    lineId: suffixe.startsWith('l:') ? suffixe.slice(2) : null,
+  };
+}
+
+/**
+ * Carte #769 : clé du FAIT INDIVIDUEL de chaque ligne (pure) — voir le bloc ci-dessus. Rend, par identifiant de
+ * ligne, la clé de fait ; les lignes non retenues gardent leur clé principale (représentations d'un fait compté
+ * ailleurs, ou dépenses non comptées : jamais confirmables « sans date »).
+ */
+export function tcoFactKeys(lines: readonly FactLine[]): Map<string, string> {
+  const out = new Map<string, string>();
+  const groupes = new Map<string, FactLine[]>();
+  for (const l of lines) {
+    const k = tcoLineKeys(l).primary;
+    out.set(l.id, k);
+    if (!RETENUE(l.status)) continue;
+    groupes.set(k, [...(groupes.get(k) ?? []), l]);
+  }
+  for (const [k, g] of groupes) {
+    if (g.length < 2) continue;
+    const periodes = g.map(periodeDe);
+    g.forEach((l, i) => {
+      const p = periodes[i];
+      const distinctive = p != null && periodes.filter((x) => x === p).length === 1;
+      out.set(l.id, distinctive ? `${k}#p:${p}` : `${k}#l:${l.id}`);
+    });
+  }
+  return out;
+}
+
+/** FNV-1a 32 bits (pur, sans dépendance : ce module est aussi chargé par l'interface). */
+const fnv = (s: string, seed: number): string => {
+  let h = seed >>> 0;
+  for (let i = 0; i < s.length; i++) { h ^= s.charCodeAt(i); h = Math.imul(h, 0x01000193) >>> 0; }
+  return h.toString(16).padStart(8, '0');
+};
+
+/**
+ * Carte #769 (écart D) — VERSION des propriétés matérielles d'une ligne (pure) : nature, montant, devise,
+ * période qualifiée, date économique (ou son absence), contre-valeur en euros et traitement AUTOMATIQUE
+ * (retenue ou motif d'écart). Une décision reçue avec une autre version porte sur une dépense qui a changé
+ * depuis l'affichage : refusée (`DECISION_STALE`). N'entrent PAS dans la version : l'identifiant technique, la
+ * source (justificatif repris par un événement de référence : re-clé prouvée par les clés secondaires), le
+ * libellé, ni les choix de l'utilisateur (une requête répétée à l'identique reste idempotente).
+ */
+export function tcoLineVersion(
+  l: Pick<TcoEconomicLine, 'kind' | 'amountMinor' | 'currency' | 'status' | 'date' | 'eurCents'> & Partial<Pick<TcoEconomicLine, 'period' | 'undated' | 'userDecision' | 'economicDate' | 'amountUnknown'>>,
+): string {
+  const statut = l.userDecision?.applied ? l.userDecision.automaticStatus : l.status;
+  const canon = [
+    l.kind ?? '', l.amountMinor, String(l.currency ?? '').trim().toUpperCase(), periodeDe(l) ?? '',
+    RETENUE(statut) ? 'R' : statut, jourIso(l.date) ?? '', !l.date && (l.undated === true || l.economicDate?.status === 'UNDETERMINED') ? 'U' : '',
+    // Contre-valeur par la conversion du moteur (identique avant et après un ajout par l'utilisateur).
+    tcoLineEurCents({ eurCents: l.eurCents, amountMinor: l.amountMinor, currency: l.currency, amountUnknown: l.amountUnknown }) ?? '',
+  ].join('|');
+  return `v1:${fnv(canon, 0x811c9dc5)}${fnv(canon, 0x01234567)}`;
 }
 
 /** Une ligne retenue peut-elle être retirée ? (le prix de cession n'est pas une dépense). */
@@ -441,46 +555,73 @@ const sansNature = (k: string): string | null => { const m = /^f:(\d+):[^:]+:(.+
 /**
  * Lot 113N — applique les confirmations « conservée sans date » aux lignes (mutation, APRÈS les décisions
  * d'inclusion / exclusion, AVANT les diagnostics). AUCUN effet sur le grand livre : ni montant, ni total, ni
- * année (la ligne reste rattachée à aucune année). Même rattachement au fait que les décisions : clé
- * principale, sinon clé secondaire (fait repris par une autre ligne — consolidation T3), sinon même
- * justificatif et même montant (nature requalifiée). Une confirmation ne s'applique qu'à une ligne RETENUE
- * dont la date reste non établie : une ligne datée depuis (preuve nouvelle) ou retirée n'en porte aucune — la
+ * année (la ligne reste rattachée à aucune année). Une confirmation ne s'applique qu'à une ligne RETENUE dont
+ * la date reste non établie : une ligne datée depuis (preuve nouvelle) ou retirée n'en porte aucune — la
  * confirmation est conservée sans objet, jamais un point rouvert ni une date inventée.
+ *
+ * Carte #769 (écart A) — UNE confirmation, UN fait. Règle remplacée (carte #769) : la confirmation n'est plus
+ * diffusée à toutes les lignes de sa clé. Pose aussi `factKey` et `version` sur chaque ligne. Rattachement,
+ * dans l'ordre, parmi les dépenses retenues sans date :
+ *   1. la ligne dont la clé de FAIT est exactement la clé confirmée ;
+ *   2. sinon les lignes de même clé de base en clé principale ; 3. sinon en clé secondaire (fait repris par
+ *      un événement de référence — consolidation T3) ; 4. sinon même justificatif et même montant (nature
+ *      requalifiée) — jamais une ligne dont la période qualifiée diffère de celle de la confirmation.
+ * Une seule dépense désignée : confirmée (représentation prouvée par l'unicité). Plusieurs : départagées par
+ * la ligne décidée à l'origine (`lineId`) si elle existe encore ; sinon AMBIGUË — aucune dépense n'est
+ * acquittée, la confirmation reste en base (traçable) et est rendue dans `ambiguous` (arbitrage ciblé :
+ * chaque dépense concernée redevient « à confirmer »).
  */
 export function applyTcoUndatedConfirmations(
   lines: TcoEconomicLine[], confirmations: readonly TcoUndatedConfirmation[],
-): { applied: number; orphans: TcoUndatedConfirmation[] } {
+): { applied: number; orphans: TcoUndatedConfirmation[]; ambiguous: TcoAmbiguousUndatedConfirmation[] } {
   const orphans: TcoUndatedConfirmation[] = [];
-  if (!confirmations.length) return { applied: 0, orphans };
+  const ambiguous: TcoAmbiguousUndatedConfirmation[] = [];
+  const faits = tcoFactKeys(lines);
   const index = (m: Map<string, TcoEconomicLine[]>, k: string, l: TcoEconomicLine) => m.set(k, [...(m.get(k) ?? []), l]);
+  const parFait = new Map<string, TcoEconomicLine[]>();
   const parPrincipale = new Map<string, TcoEconomicLine[]>();
   const parSecondaire = new Map<string, TcoEconomicLine[]>();
   const parSansNature = new Map<string, TcoEconomicLine[]>();
   for (const l of lines) {
     const k = tcoLineKeys(l);
+    l.factKey = faits.get(l.id) ?? k.primary;
+    l.version = tcoLineVersion(l);
+    index(parFait, l.factKey, l);
     index(parPrincipale, k.primary, l);
     for (const s of k.secondary) index(parSecondaire, s, l);
     const a = sansNature(k.primary);
     if (a) index(parSansNature, a, l);
   }
+  if (!confirmations.length) return { applied: 0, orphans, ambiguous };
   let applied = 0;
+  const sansDate = (ls: readonly TcoEconomicLine[] | undefined) => (ls ?? []).filter((l) => tcoLineUndated(l));
   const ordre = [...confirmations].sort((a, b) => b.confirmedAt.localeCompare(a.confirmedAt) || a.key.localeCompare(b.key));
   for (const c of ordre) {
-    const libres = (ls: readonly TcoEconomicLine[] | undefined) => (ls ?? []).filter((l) => !l.undatedConfirmation && tcoLineUndated(l));
-    const a = sansNature(c.key);
-    let cibles = libres(parPrincipale.get(c.key));
-    if (!cibles.length) cibles = libres(parSecondaire.get(c.key));
-    if (!cibles.length && a && !parPrincipale.has(c.key) && !parSecondaire.has(c.key)) cibles = libres(parSansNature.get(a));
+    const cle = parseTcoFactKey(c.key);
+    const a = sansNature(cle.base);
+    // Une période qualifiée différente prouve une AUTRE dépense : jamais la cible d'une confirmation de période.
+    const compatibles = (ls: readonly TcoEconomicLine[]) => (cle.period == null ? [...ls] : ls.filter((l) => { const p = periodeDe(l); return p == null || p === cle.period; }));
+    let cibles = sansDate(parFait.get(c.key));
+    if (!cibles.length) cibles = compatibles(sansDate(parPrincipale.get(cle.base)));
+    if (!cibles.length) cibles = compatibles(sansDate(parSecondaire.get(cle.base)));
+    if (!cibles.length && a && !parPrincipale.has(cle.base) && !parSecondaire.has(cle.base)) cibles = compatibles(sansDate(parSansNature.get(a)));
     if (!cibles.length) {
-      if (!parPrincipale.has(c.key) && !parSecondaire.has(c.key) && !(a && parSansNature.has(a))) orphans.push(c);
+      if (!parFait.has(c.key) && !parPrincipale.has(cle.base) && !parSecondaire.has(cle.base) && !(a && parSansNature.has(a))) orphans.push(c);
       continue;
     }
-    for (const l of cibles) {
-      l.undatedConfirmation = { key: c.key, confirmedAt: c.confirmedAt, confirmedByUserId: c.confirmedByUserId };
-      applied += 1;
+    if (cibles.length > 1) {
+      // Ligne décidée à l'origine, toujours présente : c'est elle (même enregistrement, même clé) — et elle seule.
+      const origine = cle.lineId ?? c.lineId ?? null;
+      const exacte = origine ? cibles.filter((l) => l.id === origine) : [];
+      if (exacte.length !== 1) { ambiguous.push({ confirmation: c, lineIds: cibles.map((l) => l.id) }); continue; }
+      cibles = exacte;
     }
+    const l = cibles[0];
+    if (l.undatedConfirmation) continue; // déjà confirmée par un choix plus récent : rien à ajouter
+    l.undatedConfirmation = { key: c.key, confirmedAt: c.confirmedAt, confirmedByUserId: c.confirmedByUserId };
+    applied += 1;
   }
-  return { applied, orphans };
+  return { applied, orphans, ambiguous };
 }
 
 /**

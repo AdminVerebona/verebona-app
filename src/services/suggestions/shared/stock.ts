@@ -7,11 +7,12 @@
  *
  *   A. EXPLOITER — questions personnelles sur ce que le compte contient
  *      vraiment. Lot 112C : des VALEURS précises (coût de possession, fin de
- *      garantie, dépenses d'entretien d'un bien, dépenses de l'année, date du
- *      dernier entretien), proposées seulement quand la lecture de T2 qui y
- *      répond est prouvée sur les données du compte ; les anciennes listes
- *      (documents d'un bien, non rattachés, exports) restent dans le stock,
- *      jamais promues (lot 111L) ;
+ *      garantie, dépenses d'entretien d'un bien, date du dernier entretien),
+ *      proposées seulement quand la lecture de T2 qui y répond est prouvée
+ *      sur les données du compte ; les anciennes listes conservées (documents
+ *      non rattachés, exports) restent dans le stock, jamais promues (lot
+ *      111L). Carte #773 : les dépenses de l'année, les documents d'un bien
+ *      et l'état de l'analyse sont RETIRÉS du stock (décision PO) ;
  *   B. ANTICIPER — échéances réelles à venir (la prochaine, celles d'un bien
  *      nommé) ;
  *   C. ACCOMPAGNER puis FAIRE DÉCOUVRIR — guide progressif : prise en main
@@ -24,8 +25,8 @@
  * intention T2 canonique, préconditions sur des compteurs lus côté
  * serveur), déjà couvertes par le test contractuel « affichée → cliquée →
  * intention → source → réponse » (L34). Les entrées d'action (« Que dois-je
- * faire aujourd'hui ? », « Que dois-je traiter en priorité ? ») n'en font
- * pas partie : la zone des suggestions n'est pas un « À traiter » bis.
+ * traiter en priorité ? ») n'en font pas partie : la zone des suggestions
+ * n'est pas un « À traiter » bis.
  *
  * C est ÉDITORIAL : chaque question déclare l'article qui y répond
  * (Centre d'aide `AID-…` ou Ressource `A01…`). Elle n'est proposée comme
@@ -36,8 +37,8 @@
  * questions posées, exports), jamais une ancienneté en jours ni un clic.
  *
  * Lot 111L : être constructible et répondable ne suffit plus. Chaque entrée
- * déclare le BESOIN qu'elle sert (`need`) ; une simple liste (« Quels sont
- * les documents de Maison ? ») ou une information déjà affichée n'est plus
+ * déclare le BESOIN qu'elle sert (`need`) ; une simple liste (documents non
+ * rattachés, exports prêts) ou une information déjà affichée n'est plus
  * promue spontanément (`utility.ts`). Moins de trois questions de qualité :
  * le service en rend moins, jamais un remplissage.
  *
@@ -128,16 +129,16 @@ export interface AccountStockEntry {
  * besoin apporte plus que la navigation sont promues en suggestion.
  */
 export const ACCOUNT_STOCK: readonly AccountStockEntry[] = [
-  // Liste des documents d'un bien : fiche du bien › Documents, filtre « Bien » de Documents.
-  { catalogId: 'home_asset_docs', objective: 'EXPLOIT', priority: 1, need: 'INVENTORY', navigation: 'Fiche du bien › Documents ; Documents › filtre Bien' },
+  // Carte #773 (décision PO du 13/11/2026) : `home_asset_docs`, `home_analysis` et
+  // `home_year_spend` sont retirés du stock (et du catalogue) — aucune entrée de
+  // remplacement. Leur retrait change `STOCK_VERSION` : les sélections mémorisées
+  // avant le déploiement sont remplacées à leur prochaine lecture.
   { catalogId: 'assets_deadlines', objective: 'ANTICIPATE', priority: 1, need: 'ANTICIPATION' },
   { catalogId: 'home_next_deadline', objective: 'ANTICIPATE', priority: 2, need: 'FACT' },
   // Liste des documents sans bien : Documents › filtre Bien « Sans bien ».
   { catalogId: 'docs_unlinked', objective: 'EXPLOIT', priority: 2, need: 'INVENTORY', navigation: 'Documents › filtre Bien « Sans bien »' },
   // Liste des exports prêts : page des exports et dossiers.
   { catalogId: 'state_exports', objective: 'EXPLOIT', priority: 3, need: 'INVENTORY', navigation: 'Exports et dossiers' },
-  // État de l'analyse : la mascotte affiche déjà « N documents sont en cours d'analyse » (même fait, PROC-DOC-ANALYSIS).
-  { catalogId: 'home_analysis', objective: 'EXPLOIT', priority: 4, need: 'FACT', shownBy: 'MASCOT' },
   // ── Lot 112C : « Exploiter » — valeurs PRÉCISES lues dans les données du compte ──
   // Chaque entrée est une question du catalogue T2 dont la précondition est le
   // fait demandé, PROUVÉ par la lecture même de T2 (aucune règle hors du stock
@@ -149,8 +150,6 @@ export const ACCOUNT_STOCK: readonly AccountStockEntry[] = [
     proof: { strategy: 'target.asset_field', fact: 'Fin de garantie canonique du bien lisible, aujourd’hui ou plus tard (warrantyEndDate)' } },
   { catalogId: 'home_asset_maintenance_spend', objective: 'EXPLOIT', priority: 3, need: 'FACT',
     proof: { strategy: 'structured.sum_qualified', fact: 'Dépenses d’entretien qualifiées du bien > 0 (sumQualifiedExpenses, thème entretien)' } },
-  { catalogId: 'home_year_spend', objective: 'EXPLOIT', priority: 4, need: 'FACT',
-    proof: { strategy: 'structured.sum_qualified', fact: 'Dépenses qualifiées du compte sur l’année civile en cours > 0 (sumQualifiedExpenses, année)' } },
   { catalogId: 'home_asset_last_service', objective: 'EXPLOIT', priority: 5, need: 'FACT',
     proof: { strategy: 'target.asset_field', fact: 'Date du dernier entretien canonique du bien lisible (lastRevision)' } },
 ];

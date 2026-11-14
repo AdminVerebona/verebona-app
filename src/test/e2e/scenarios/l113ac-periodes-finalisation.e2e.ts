@@ -232,12 +232,37 @@ scenario('L113AC', 'Périodes métier — finalisation (D11 sur les surfaces, li
     expect(lot3.queued).toEqual([]);
     expect((await jobs()).length).toBe(3);
 
-    // Analyses terminées : l'une rend la sortie v2 (requalifiée), l'autre non (jamais redemandée, recensée à part).
+    // Analyses terminées : l'une rend la sortie v2 (requalifiée), l'autre non.
+    // Règle remplacée (carte #766, E13) : « l'autre n'est jamais redemandée » → sortie INCOMPLÈTE, reprise par le lot
+    // suivant, au plus 3 demandes par document ; ensuite ÉCHEC DÉFINITIF (bloqué, listé au rapport, plus jamais demandé).
     await faits(q, ancien[0], v2('2022-01-01/2022-12-31'));
-    await sql`UPDATE ai_job_queue SET status = 'DONE' WHERE account_id = ${q.id} AND trigger_code = 'business-periods-v2-requalification' AND target_id = ANY(${[String(ancien[0]), String(ancien[1])]})`;
+    const terminer = (statut: 'DONE' | 'FAILED' | 'CANCELLED', ids: number[]) => sql`
+      UPDATE ai_job_queue SET status = ${statut} WHERE account_id = ${q.id} AND trigger_code = 'business-periods-v2-requalification'
+         AND status IN ('PENDING', 'RUNNING') AND target_id = ANY(${ids.map(String)})`;
+    await terminer('DONE', [ancien[0], ancien[1]]);
     const fin = await runBusinessPeriodsRequalification({ apply: false, accountId: q.id, sql }, actif);
-    expect(fin.before).toEqual({ toRequalify: 0, requestedPending: 1, requestedQualified: 1, requestedWithoutV2: 1, qualifiedOtherwise: 1 });
-    expect(fin.batch).toEqual([]);
+    expect(fin.before).toEqual({ toRequalify: 0, requestedPending: 1, requestedQualified: 1, requestedIncomplete: 1, requestedFailed: 0, requestedExhausted: 0, qualifiedOtherwise: 1 });
+    expect(fin).toMatchObject({ batch: [ancien[1]], batchRetries: [ancien[1]], blocked: [], maxAttempts: 3 });
+    // 2e demande (reprise) : erreur technique cette fois → encore reprise ; contrat inactif : aucune reprise.
+    const inactif = await runBusinessPeriodsRequalification({ apply: true, accountId: q.id, sql }, { ...actif, availability: async () => availabilityFrom('ABSENT', null) });
+    expect(inactif).toMatchObject({ refused: 'CONTRACT_NOT_ACTIVE', queued: [] });
+    expect((await runBusinessPeriodsRequalification({ apply: true, accountId: q.id, sql }, actif)).queued).toEqual([ancien[1]]);
+    // Demande en cours : jamais doublée.
+    expect((await runBusinessPeriodsRequalification({ apply: true, accountId: q.id, sql }, actif)).queued).toEqual([]);
+    await terminer('FAILED', [ancien[1]]);
+    const apresEchec = await runBusinessPeriodsRequalification({ apply: false, accountId: q.id, sql }, actif);
+    expect(apresEchec.before).toMatchObject({ requestedIncomplete: 0, requestedFailed: 1, requestedExhausted: 0 });
+    expect(apresEchec.batchRetries).toEqual([ancien[1]]);
+    // 3e et dernière demande, toujours sans sortie v2 : bloqué — plus jamais demandé, listé pour le diagnostic.
+    expect((await runBusinessPeriodsRequalification({ apply: true, accountId: q.id, sql }, actif)).queued).toEqual([ancien[1]]);
+    await terminer('DONE', [ancien[1]]);
+    const bloque = await runBusinessPeriodsRequalification({ apply: true, accountId: q.id, sql }, actif);
+    expect(bloque.before).toMatchObject({ requestedIncomplete: 0, requestedFailed: 0, requestedExhausted: 1, requestedPending: 1 });
+    expect(bloque).toMatchObject({ batch: [], queued: [], blocked: [{ fileId: ancien[1], accountId: q.id, lastStatus: 'DONE', attempts: 3 }] });
+    expect((await jobs()).filter((x) => Number(x.target_id) === ancien[1]).length).toBe(3);
+    const resume = summarizeBackfill('business-periods-v2-requalification', 'simulate', null, { result: bloque });
+    expect(resume.counters).toEqual(expect.arrayContaining([{ label: 'Avant — bloqués (plafond de 3 demandes atteint)', value: 1 }]));
+    expect(resume.warnings.join(' ')).toContain(`#${ancien[1]} (compte ${q.id}, DONE)`);
 
     // Filtre compte : un autre compte n'est jamais touché ; compte non éligible : écarté du lot, compté.
     const r = await make.account({ plan: 'premium' });

@@ -106,7 +106,7 @@ function Source({ s, d, assetId, onShowLine, decide }: { s: TcoDiagnosticSource;
         {s.assetField && d.action?.kind === 'ASSET_FIELD' && <LienChamp assetId={assetId} field={s.assetField} label={d.action.label} />}
       </div>
       {decide && s.lineId && (s.actions ?? []).length > 0 && (
-        <TcoDecisionActions lineId={s.lineId} lineKey={s.lineKey ?? null} options={s.actions ?? []} onDecide={decide.onDecide} categoryLabels={decide.categoryLabels} categories={decide.categories} />
+        <TcoDecisionActions lineId={s.lineId} lineKey={s.lineKey ?? null} lineVersion={s.lineVersion ?? null} options={s.actions ?? []} onDecide={decide.onDecide} categoryLabels={decide.categoryLabels} categories={decide.categories} />
       )}
     </li>
   );
@@ -252,7 +252,7 @@ export function TcoDecidedDiagnostics({ diagnostics, onShowLine, decide }: { dia
                 )}
               </div>
               {decide && s.lineId && annulation(s).length > 0 && (
-                <TcoDecisionActions lineId={s.lineId} lineKey={s.lineKey ?? null} options={annulation(s)} onDecide={decide.onDecide} />
+                <TcoDecisionActions lineId={s.lineId} lineKey={s.lineKey ?? null} lineVersion={s.lineVersion ?? null} options={annulation(s)} onDecide={decide.onDecide} />
               )}
             </li>
           ))}

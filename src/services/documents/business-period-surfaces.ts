@@ -16,8 +16,14 @@
  *     événements de référence (T2) — lot 113AC : délègue à la lecture groupée
  *     publique `readOperationsCoverageHistories` (113AA), donc la MÊME
  *     résolution D11 que la fiche ; parité vérifiée en e2e ;
- *   · `unsettledCoverages` / `dossierPeriodLines` (113AC) : couvertures
- *     remplacées ou en conflit, jamais présentées comme établies (T2, dossiers) ;
+ *   · `coverageSettlements` / `dossierPeriodReport` / `dossierPeriodLines`
+ *     (113AC, carte #766 E02) : couvertures remplacées ou en conflit, jamais
+ *     présentées comme établies (T2, dossiers) — et, carte #766, « aucun
+ *     conflit » distingué de « résolution indisponible ou partielle » : une
+ *     couverture dont la résolution n'a pas pu être validée n'est PAS publiée
+ *     comme établie (fermeture sur l'affirmation, jamais sur le dossier) ;
+ *   · `readExpenseLinePeriods` (carte #766, E09) : période propre à chaque
+ *     ligne de dépense (composante financière ou montant d'un justificatif) ;
  *   · `readReferenceEvent` : la fiche d'UN événement de référence (libellé
  *     utilisateur, historique de couverture via la fonction publique du lot
  *     113W, justificatifs, élément d'agenda éventuel) ;
@@ -26,10 +32,14 @@
  * Bornée au compte dans CHAQUE requête (un document ou un événement d'un
  * autre compte n'existe pas). Table absente (migration 1560 non appliquée) :
  * lecture vide, jamais d'erreur.
+ *
+ * Carte #766 (E03) : la lecture groupée propage la durée indéterminée établie
+ * (`end_open`) et passe par le formateur commun `periodLine` — même libellé
+ * que la fiche sur la dépense, l'Assistant et les dossiers.
  */
 import type postgres from 'postgres';
 import { documentTitleColumnsSql, documentTitleOf } from '@/lib/documents/document-title-source';
-import { periodLine, principalLine, type BusinessPeriodKind, type PartialDate } from '@/lib/documents/business-periods';
+import { endToken, periodLine, principalLine, type BusinessPeriodKind, type PartialDate, type PeriodBounds } from '@/lib/documents/business-periods';
 import { principalKind } from './business-periods/model';
 import type { CoverageEntry, PeriodView } from './business-periods/service';
 
@@ -47,9 +57,12 @@ function toView(r: Row): PeriodView & { principalHint: boolean; fileId: number }
   const kind = r.period_kind as BusinessPeriodKind;
   const start = (r.start_on as PartialDate | null) ?? null;
   const end = (r.end_on as PartialDate | null) ?? null;
+  // Carte #766 (E03) : durée indéterminée ÉTABLIE propagée (jamais rendue comme une fin inconnue).
+  const openEnded = r.end_open === true && end === null;
   return {
-    id: Number(r.id), kind, segment: Number(r.segment_index), start, end, line: periodLine(kind, { start, end }),
+    id: Number(r.id), kind, segment: Number(r.segment_index), start, end, line: periodLine(kind, { start, end, openEnded }),
     userCorrected: r.user_locked === true, principalHint: r.principal_hint === true, fileId: Number(r.file_id),
+    ...(openEnded ? { openEnded: true } : {}),
   };
 }
 const strip = ({ principalHint: _p, fileId: _f, ...v }: ReturnType<typeof toView>): PeriodView => v;
@@ -73,7 +86,7 @@ export async function readDocumentPeriodSummaries(accountId: number, fileIds: re
   let rows: Row[] = [];
   try {
     rows = (await sql.unsafe(
-      `SELECT p.id, p.file_id, p.period_kind, p.segment_index, p.start_on, p.end_on, p.principal_hint, p.user_locked
+      `SELECT p.id, p.file_id, p.period_kind, p.segment_index, p.start_on, p.end_on, p.end_open, p.principal_hint, p.user_locked
          FROM document_business_periods p
          JOIN asset_files f ON f.id = p.file_id AND f.account_id = p.account_id AND f.deleted_at IS NULL
         WHERE p.account_id = $1 AND p.file_id = ANY($2::int[]) AND p.status = 'ACTIVE'
@@ -131,64 +144,227 @@ export interface CoverageSettlement {
   note: string;
 }
 
-const cle = (fileId: number, start: PartialDate | null, end: PartialDate | null) => `${fileId}|${start ?? ''}|${end ?? ''}`;
+// Carte #766 (E10) : la modalité de fin fait partie de la clé (fin inconnue ≠ durée indéterminée).
+const cle = (fileId: number, p: PeriodBounds) => `${fileId}|${p.start ?? ''}|${endToken(p)}`;
 
 /**
- * Lot 113AC — périodes de COUVERTURE NON ÉTABLIES (remplacées ou en conflit, D11) de plusieurs documents,
- * clé « document|début|fin » : une requête d'appartenance puis la lecture groupée des historiques (113AA).
- * Un même fait porté par plusieurs justificatifs (`otherSources`) reçoit le statut de sa ligne. Ne lève pas
- * (lecture impossible : table vide — l'appelant garde son comportement d'avant, prudent).
+ * Carte #766 (E02) — état de la résolution des couvertures :
+ *   · `RESOLVED`    : résolution lue en entier — l'absence d'une période dans `settlements` signifie
+ *                     « aucun remplacement, aucun conflit » ;
+ *   · `PARTIAL`     : une borne de lecture a été atteinte — les documents de `unvalidated` n'ont pas été
+ *                     résolus (ou seulement en partie) ;
+ *   · `UNAVAILABLE` : la résolution n'a pas pu être lue (erreur SQL, délai dépassé, table absente) — AUCUN
+ *                     document n'est validé.
+ * « Aucun conflit » n'est donc jamais déduit d'une lecture impossible.
  */
-export async function unsettledCoverages(accountId: number, fileIds: readonly number[]): Promise<Map<string, CoverageSettlement>> {
-  const out = new Map<string, CoverageSettlement>();
-  const liste = ids(fileIds, SURFACE_MAX_DOCUMENTS);
-  if (!liste.length) return out;
-  try {
-    const sql = await sqlClient();
-    const ops = (await sql.unsafe(
-      `SELECT DISTINCT d.operation_id FROM business_operation_documents d
-         JOIN business_operations o ON o.id = d.operation_id AND o.account_id = d.account_id AND o.invalidated_at IS NULL
-        WHERE d.account_id = $1 AND d.file_id = ANY($2::int[]) AND d.active ORDER BY 1 LIMIT ${SURFACE_MAX_OPERATIONS}`,
-      [accountId, liste] as never[],
-    )) as unknown as Row[];
-    if (!ops.length) return out;
-    const voulus = new Set(liste);
-    for (const h of (await readOperationsCoverage(accountId, ops.map((o) => Number(o.operation_id)))).values()) {
-      for (const c of h) {
-        if (!c.resolution) continue;
-        const v: CoverageSettlement = { status: c.resolution.status, note: c.resolution.note };
-        for (const f of [c.fileId, ...(c.otherSources ?? []).map((o) => o.fileId)]) {
-          const k = cle(f, c.start, c.end);
-          // Un conflit l'emporte sur un remplacement (jamais présenté comme établi).
-          if (voulus.has(f) && (!out.has(k) || v.status === 'CONFLICT')) out.set(k, v);
-        }
+export type CoverageResolutionState = 'RESOLVED' | 'PARTIAL' | 'UNAVAILABLE';
+export type CoverageResolutionCause = 'READ_FAILED' | 'TABLE_MISSING' | 'DOCUMENT_LIMIT' | 'MEMBERSHIP_LIMIT' | 'EVENT_LIMIT' | 'PERIOD_LIMIT';
+
+export interface CoverageSettlements {
+  state: CoverageResolutionState;
+  /** Couvertures NON établies (remplacées ou en conflit), clé interne « document|début|fin ». */
+  settlements: Map<string, CoverageSettlement>;
+  /** Documents dont la résolution des couvertures n'a pas pu être validée (jamais « établie » pour eux). */
+  unvalidated: Set<number>;
+  cause: CoverageResolutionCause | null;
+  /** Message technique de l'échec (journal seulement, jamais affiché). */
+  error?: string;
+}
+
+/** Appartenances lues par résolution (au-delà : résolution partielle, documents non validés). */
+const SURFACE_MAX_MEMBERSHIPS = 2_000;
+/** Nouvel essai d'une lecture en échec (erreur transitoire) avant de fermer sur l'affirmation. */
+const SETTLEMENT_READ_RETRIES = 1;
+
+/**
+ * Lot 113AC, carte #766 (E02) — périodes de COUVERTURE NON ÉTABLIES (remplacées ou en conflit, D11) de
+ * plusieurs documents, AVEC l'état de la résolution : une requête d'appartenance puis la résolution groupée
+ * des événements de référence (113AA). Un même fait porté par plusieurs justificatifs (`otherSources`)
+ * reçoit le statut de sa ligne. Ne lève jamais : un échec est rendu comme `UNAVAILABLE` (après un nouvel
+ * essai), une lecture bornée comme `PARTIAL` — l'appelant ne publie alors AUCUNE couverture non validée.
+ */
+export async function coverageSettlements(accountId: number, fileIds: readonly number[]): Promise<CoverageSettlements> {
+  const demandes = ids(fileIds, Number.MAX_SAFE_INTEGER);
+  const vide = (): CoverageSettlements => ({ state: 'RESOLVED', settlements: new Map(), unvalidated: new Set(), cause: null });
+  if (!demandes.length) return vide();
+  let derniere: unknown = null;
+  for (let essai = 0; essai <= SETTLEMENT_READ_RETRIES; essai++) {
+    try {
+      return await readCoverageSettlements(accountId, demandes);
+    } catch (e) {
+      derniere = e;
+    }
+  }
+  const error = String((derniere as Error)?.message ?? derniere).slice(0, 200);
+  console.warn(JSON.stringify({ event: 'business_period.resolution_unavailable', accountId, documents: demandes.length, error }));
+  return { state: 'UNAVAILABLE', settlements: new Map(), unvalidated: new Set(demandes), cause: tableMissing(derniere) ? 'TABLE_MISSING' : 'READ_FAILED', error };
+}
+
+async function readCoverageSettlements(accountId: number, demandes: readonly number[]): Promise<CoverageSettlements> {
+  const out: CoverageSettlements = { state: 'RESOLVED', settlements: new Map(), unvalidated: new Set(), cause: null };
+  const partiel = (cause: CoverageResolutionCause, fichiers: Iterable<number>) => {
+    out.state = 'PARTIAL';
+    out.cause ??= cause;
+    for (const f of fichiers) out.unvalidated.add(f);
+  };
+  // Toute résolution partielle est journalisée avec sa cause, quel que soit le point de sortie.
+  const rendre = (): CoverageSettlements => {
+    if (out.state !== 'RESOLVED') console.warn(JSON.stringify({ event: 'business_period.resolution_partial', accountId, cause: out.cause, unvalidated: out.unvalidated.size }));
+    return out;
+  };
+  const liste = demandes.slice(0, SURFACE_MAX_DOCUMENTS);
+  if (demandes.length > liste.length) partiel('DOCUMENT_LIMIT', demandes.slice(SURFACE_MAX_DOCUMENTS));
+  const sql = await sqlClient();
+  const liens = (await sql.unsafe(
+    `SELECT d.file_id, d.operation_id FROM business_operation_documents d
+       JOIN business_operations o ON o.id = d.operation_id AND o.account_id = d.account_id AND o.invalidated_at IS NULL
+      WHERE d.account_id = $1 AND d.file_id = ANY($2::int[]) AND d.active ORDER BY d.operation_id, d.file_id LIMIT ${SURFACE_MAX_MEMBERSHIPS + 1}`,
+    [accountId, liste] as never[],
+  )) as unknown as Row[];
+  if (!liens.length) return rendre();
+  // Appartenances tronquées : on ne sait plus quels documents sont membres de quoi — aucun n'est validé.
+  if (liens.length > SURFACE_MAX_MEMBERSHIPS) partiel('MEMBERSHIP_LIMIT', liste);
+  const parOp = new Map<number, number[]>();
+  for (const l of liens) { const op = Number(l.operation_id); parOp.set(op, [...(parOp.get(op) ?? []), Number(l.file_id)]); }
+  const ops = [...parOp.keys()];
+  const resolues = ops.slice(0, SURFACE_MAX_OPERATIONS);
+  for (const op of ops.slice(SURFACE_MAX_OPERATIONS)) partiel('EVENT_LIMIT', parOp.get(op) ?? []);
+  const { operationsPeriodResolution } = await import('./business-periods/service');
+  const res = await operationsPeriodResolution(sql, accountId, resolues);
+  const voulus = new Set(liste);
+  for (const op of resolues) {
+    const r = res.get(op);
+    // Événement absent du résultat ou lu en partie : ses documents ne sont pas validés.
+    if (!r) { partiel('READ_FAILED', parOp.get(op) ?? []); continue; }
+    if (r.truncated) partiel('PERIOD_LIMIT', parOp.get(op) ?? []);
+    for (const c of r.coverages) {
+      if (!c.resolution) continue;
+      const v: CoverageSettlement = { status: c.resolution.status, note: c.resolution.note };
+      for (const f of [c.fileId, ...(c.otherSources ?? []).map((o) => o.fileId)]) {
+        const k = cle(f, c);
+        // Un conflit l'emporte sur un remplacement (jamais présenté comme établi).
+        if (voulus.has(f) && (!out.settlements.has(k) || v.status === 'CONFLICT')) out.settlements.set(k, v);
       }
     }
-  } catch (e) {
-    if (!tableMissing(e)) console.warn('[business-period-surfaces] résolution des couvertures illisible', (e as Error)?.message);
+  }
+  return rendre();
+}
+
+/** Résolution d'une période d'un document (couverture seulement), sinon `undefined` (pure). */
+export function settlementOf(fileId: number, p: Pick<PeriodView, 'kind' | 'start' | 'end' | 'openEnded'>, m: ReadonlyMap<string, CoverageSettlement>): CoverageSettlement | undefined {
+  return p.kind === 'COVERAGE' ? m.get(cle(fileId, p)) : undefined;
+}
+
+/** Motif d'une période principale NON publiée dans un dossier. */
+export type DossierOmissionCause = 'REPLACED' | 'CONFLICT' | 'RESOLUTION_UNAVAILABLE' | 'RESOLUTION_PARTIAL';
+
+export interface DossierPeriodReport {
+  /** Période principale publiée, par pièce. */
+  lines: Map<number, string>;
+  /** Pièces dont la période principale n'est PAS publiée, avec le motif (la pièce reste dans le dossier). */
+  omitted: Array<{ fileId: number; cause: DossierOmissionCause }>;
+  resolution: { state: CoverageResolutionState; cause: CoverageResolutionCause | null };
+}
+
+/**
+ * Carte #766 (E02) — décision de publication (pure) : la période principale d'une pièce est publiée, SAUF
+ * si c'est une couverture remplacée, en conflit, ou dont la résolution n'a pas pu être validée. Les autres
+ * natures (facturation, validité…) ne dépendent pas de la résolution des couvertures.
+ */
+export function dossierPeriodDecision(resumes: ReadonlyMap<number, DocumentPeriodSummary>, res: CoverageSettlements): DossierPeriodReport {
+  const out: DossierPeriodReport = { lines: new Map(), omitted: [], resolution: { state: res.state, cause: res.cause } };
+  for (const [id, p] of resumes) {
+    if (!p.principal) continue;
+    if (p.principal.kind === 'COVERAGE') {
+      const st = p.principal.segments.map((s) => settlementOf(id, s, res.settlements)).filter((x): x is CoverageSettlement => !!x);
+      if (st.length) { out.omitted.push({ fileId: id, cause: st.some((x) => x.status === 'CONFLICT') ? 'CONFLICT' : 'REPLACED' }); continue; }
+      // Fermeture sur l'affirmation : « aucun conflit connu » n'est pas « aucun conflit » quand la résolution manque.
+      if (res.unvalidated.has(id)) { out.omitted.push({ fileId: id, cause: res.state === 'UNAVAILABLE' ? 'RESOLUTION_UNAVAILABLE' : 'RESOLUTION_PARTIAL' }); continue; }
+    }
+    out.lines.set(id, p.principal.line);
   }
   return out;
 }
 
-/** Résolution d'une période d'un document (couverture seulement), sinon `undefined` (pure). */
-export function settlementOf(fileId: number, p: Pick<PeriodView, 'kind' | 'start' | 'end'>, m: ReadonlyMap<string, CoverageSettlement>): CoverageSettlement | undefined {
-  return p.kind === 'COVERAGE' ? m.get(cle(fileId, p.start, p.end)) : undefined;
+/**
+ * Lot 113AC, carte #766 (E02) — période principale de chaque pièce d'un DOSSIER utilisateur (V12), avec le
+ * compte rendu des omissions : jamais une période non établie présentée comme établie (tableau 113AA :
+ * « à exclure »), jamais une couverture dont la résolution est indisponible ou partielle. La pièce reste
+ * dans le dossier (règles d'export inchangées) ; l'omission et sa cause sont journalisées.
+ */
+export async function dossierPeriodReport(accountId: number, fileIds: readonly number[]): Promise<DossierPeriodReport> {
+  if (!fileIds.length) return { lines: new Map(), omitted: [], resolution: { state: 'RESOLVED', cause: null } };
+  const [resumes, res] = await Promise.all([readDocumentPeriodSummaries(accountId, fileIds), coverageSettlements(accountId, fileIds)]);
+  const rapport = dossierPeriodDecision(resumes, res);
+  const nonValidees = rapport.omitted.filter((o) => o.cause === 'RESOLUTION_UNAVAILABLE' || o.cause === 'RESOLUTION_PARTIAL');
+  if (nonValidees.length) {
+    console.warn(JSON.stringify({
+      event: 'dossier.period_omitted', accountId, state: res.state, cause: res.cause, count: nonValidees.length,
+      fileIds: nonValidees.slice(0, 50).map((o) => o.fileId),
+    }));
+  }
+  return rapport;
 }
 
-/**
- * Lot 113AC — période principale de chaque pièce d'un DOSSIER utilisateur (V12) : la ligne de la fiche,
- * SAUF quand l'une de ses périodes de couverture est remplacée (avenant, rectificatif, choix de
- * l'utilisateur) ou en conflit entre justificatifs — jamais une période non établie présentée comme
- * établie (tableau 113AA : « à exclure »). Lecture sûre (vide en cas d'échec).
- */
+/** Périodes principales publiées d'un dossier (voir `dossierPeriodReport`). */
 export async function dossierPeriodLines(accountId: number, fileIds: readonly number[]): Promise<Map<number, string>> {
-  const out = new Map<number, string>();
-  if (!fileIds.length) return out;
-  const [resumes, nonEtablies] = await Promise.all([readDocumentPeriodSummaries(accountId, fileIds), unsettledCoverages(accountId, fileIds)]);
-  for (const [id, p] of resumes) {
-    if (!p.principal) continue;
-    if (p.principal.segments.some((s) => settlementOf(id, s, nonEtablies))) continue;
-    out.set(id, p.principal.line);
+  return (await dossierPeriodReport(accountId, fileIds)).lines;
+}
+
+// ── Carte #766 (E09) : période propre à une ligne de dépense ────────────────
+
+export interface ExpenseLinePeriod { start: string | null; end: string | null }
+export const SURFACE_MAX_EXPENSE_LINES = 300;
+const jourIso = (v: unknown): string | null => (typeof v === 'string' && /^\d{4}-\d{2}-\d{2}/.test(v) ? v.slice(0, 10) : null);
+
+/**
+ * Carte #766 (E09) — période FACTURÉE PROPRE à chaque ligne de dépense, lue là où T1 / T3 l'ont
+ * établie (aucune règle nouvelle, aucune écriture, TCO non consulté) :
+ *   · `c:<composante>`                : `business_operation_financial_components.period_start / period_end` ;
+ *   · `doc:<fichier>:<candidat>:<n>`  : le n-ième montant (`financialHints`) du candidat T1 du justificatif.
+ * Toute autre ligne (fiche du bien, net d'un achat, montant global) n'a pas de période propre : absente du
+ * résultat. Bornée au compte ; une ligne d'un autre compte est absente. Au plus 300 lignes.
+ */
+export async function readExpenseLinePeriods(accountId: number, lineIds: readonly string[], runner?: Sql): Promise<Map<string, ExpenseLinePeriod>> {
+  const out = new Map<string, ExpenseLinePeriod>();
+  const lignes = [...new Set(lineIds)].slice(0, SURFACE_MAX_EXPENSE_LINES);
+  const composantes = new Map<number, string>();
+  const montants: Array<{ lineId: string; fileId: number; candidateId: number; index: number }> = [];
+  for (const l of lignes) {
+    let m: RegExpExecArray | null;
+    if ((m = /^c:(\d{1,15})$/.exec(l))) composantes.set(Number(m[1]), l);
+    else if ((m = /^doc:(\d{1,10}):(\d{1,15}):(\d{1,3})$/.exec(l))) montants.push({ lineId: l, fileId: Number(m[1]), candidateId: Number(m[2]), index: Number(m[3]) });
+  }
+  if (!composantes.size && !montants.length) return out;
+  const sql = runner ?? await sqlClient();
+  if (composantes.size) {
+    const r = (await sql.unsafe(
+      `SELECT id, period_start::text AS period_start, period_end::text AS period_end FROM business_operation_financial_components
+        WHERE account_id = $1 AND active AND id = ANY($2::bigint[])`,
+      [accountId, `{${[...composantes.keys()].join(',')}}`] as never[],
+    )) as unknown as Row[];
+    for (const x of r) {
+      const p = { start: jourIso(x.period_start), end: jourIso(x.period_end) };
+      if (p.start || p.end) out.set(composantes.get(Number(x.id))!, p);
+    }
+  }
+  if (montants.length) {
+    const r = (await sql.unsafe(
+      `SELECT id, file_id, payload FROM document_operation_candidates
+        WHERE account_id = $1 AND status = 'ACTIVE' AND id = ANY($2::bigint[])`,
+      [accountId, `{${[...new Set(montants.map((x) => x.candidateId))].join(',')}}`] as never[],
+    )) as unknown as Row[];
+    const parId = new Map(r.map((x) => [Number(x.id), x]));
+    for (const mnt of montants) {
+      const c = parId.get(mnt.candidateId);
+      if (!c || Number(c.file_id) !== mnt.fileId) continue;
+      let payload: unknown = c.payload;
+      if (typeof payload === 'string') { try { payload = JSON.parse(payload); } catch { payload = null; } }
+      const hints = (payload as { financialHints?: unknown } | null)?.financialHints;
+      const h = Array.isArray(hints) ? hints[mnt.index] as { periodStart?: unknown; periodEnd?: unknown } | undefined : undefined;
+      const p = { start: jourIso(h?.periodStart), end: jourIso(h?.periodEnd) };
+      if (p.start || p.end) out.set(mnt.lineId, p);
+    }
   }
   return out;
 }
@@ -300,15 +476,24 @@ export async function documentPeriodTexts(accountId: number, fileIds: readonly n
   try {
     const { documentPeriodsText } = await import('@/lib/documents/business-period-surfaces');
     // Lot 113AC (D11) : une couverture remplacée ou en conflit est dite comme telle, jamais comme établie.
-    const [resumes, nonEtablies] = await Promise.all([readDocumentPeriodSummaries(accountId, fileIds), unsettledCoverages(accountId, fileIds)]);
+    const [resumes, res] = await Promise.all([readDocumentPeriodSummaries(accountId, fileIds), coverageSettlements(accountId, fileIds)]);
+    const nonEtablies = res.settlements;
     const marquer = (id: number, v: PeriodView) => { const r = settlementOf(id, v, nonEtablies); return r ? { ...v, resolution: r } : v; };
+    // Carte #766 (E02) : résolution indisponible ou partielle — une couverture NON VALIDÉE n'est pas dite à
+    // l'Assistant (ni établie, ni en conflit : rien) ; les autres natures du document restent fournies.
+    const validee = (id: number, kind: BusinessPeriodKind) => kind !== 'COVERAGE' || !res.unvalidated.has(id);
+    let omises = 0;
     for (const [id, s] of resumes) {
+      const principal = s.principal && validee(id, s.principal.kind) ? s.principal : null;
+      const secondary = s.secondary.filter((v) => validee(id, v.kind));
+      if (principal !== s.principal || secondary.length !== s.secondary.length) omises++;
       const t = documentPeriodsText({
-        principal: s.principal ? { ...s.principal, segments: s.principal.segments.map((v) => marquer(id, v)), resolution: s.principal.segments.length === 1 ? settlementOf(id, s.principal.segments[0], nonEtablies) : undefined } : null,
-        secondary: s.secondary.map((v) => marquer(id, v)),
+        principal: principal ? { ...principal, segments: principal.segments.map((v) => marquer(id, v)), resolution: principal.segments.length === 1 ? settlementOf(id, principal.segments[0], nonEtablies) : undefined } : null,
+        secondary: secondary.map((v) => marquer(id, v)),
       });
       if (t) out.set(id, t);
     }
+    if (omises) console.warn(JSON.stringify({ event: 'assistant.period_omitted', accountId, state: res.state, cause: res.cause, count: omises }));
   } catch (e) {
     console.warn('[business-period-surfaces] lecture des périodes pour T2 impossible', (e as Error)?.message);
   }

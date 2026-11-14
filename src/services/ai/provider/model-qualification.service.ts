@@ -375,6 +375,8 @@ export function defaultQualificationCall(secret?: string | null): QualificationC
     const started = Date.now();
     const { getAiProvider } = await import('../gateway/providers');
     const { traceTechnicalCall } = await import('./model-operational.service');
+    // Lot 114 (#770) : aucune épreuve (elle consomme des jetons) sur un modèle sans tarif officiel vérifié.
+    await (await import('../gateway/pricing/pricing-guard')).assertModelPricingVerified(input.model);
     try {
       const r = await getAiProvider().call(input);
       await traceTechnicalCall('model_qualification_probe', input.model, true, Date.now() - started,

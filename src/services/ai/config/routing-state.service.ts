@@ -181,6 +181,29 @@ export async function promote(input: PromoteInput, userId: number, deps: {
         `« ${input.model} » ne fait pas partie de la chaîne configurée de ${treatment} (${chaine.map((c) => c.model).join(', ')}) : `
         + 'une promotion n’ordonne que les couples de la configuration active (OPT-03).');
     }
+    // Lot 114 (Trello #770, R07) : aucun modèle sans tarif officiel vérifié n'est promu — contrôle FINAL, lu dans
+    // cette transaction (le tarif a pu être retiré ou invalidé depuis la campagne). Vaut pour le geste
+    // administrateur comme pour la promotion automatique.
+    {
+      const { pricingRefusalInTx } = await import('../gateway/pricing/pricing-guard');
+      const refusTarif = await pricingRefusalInTx(sql as unknown as Parameters<typeof pricingRefusalInTx>[0], input.model);
+      if (refusTarif !== null) {
+        throw new ConfigOperationRefused('MODEL_PRICING_UNVERIFIED', `« ${input.model} » n’a pas de tarif officiel vérifié (${refusTarif}) : promotion refusée.`);
+      }
+    }
+    // Lot 114 (carte #771, A03) : aucun modèle CONFIRMÉ indisponible n'est promu — contrôle FINAL de l'état
+    // opérationnel canonique, lu dans cette transaction pour l'accès actif (le verdict a pu tomber entre la
+    // campagne ou le verrou A1 et cette écriture). Dimension distincte du tarif (#770, ci-dessus) : les deux
+    // contrôles se cumulent. Les preuves de qualification du modèle ne sont ni lues ni effacées.
+    {
+      const { operationalRefusalInTx } = await import('../provider/model-operational.service');
+      const indispo = await operationalRefusalInTx(sql, input.model);
+      if (indispo !== null) {
+        throw new ConfigOperationRefused('BLOCKED_MODEL_UNAVAILABLE',
+          `« ${input.model} » est confirmé indisponible pour la clé active${indispo.error ? ` (${indispo.error})` : ''} : promotion refusée.`,
+          { model: input.model, checkedAt: indispo.checkedAt });
+      }
+    }
     const actuelles = await listActivePromotions(environment, sql);
     const enPlace = actuelles.find((p) => p.operationCode === input.operationCode);
     const avant = applyRoutingOverlay(chaine, treatment, input.operationCode, { exclusions, promotions: new Map(actuelles.map((p) => [p.operationCode, { model: p.model, promotionId: p.id }])) });

@@ -84,18 +84,14 @@ describe('modèles', () => {
     expect(issues[0].message).toContain('catalogue fournisseur');
   });
 
-  it('CAT-06 — lot 35B : un modèle sans tarif connu n’est PAS bloqué (signalement non bloquant)', () => {
+  // Lot 114 (Trello #770) — règles remplacées : « sans tarif connu : signalé, non bloquant » (lot 35B, CAT-06) et
+  // « le tarif n'est plus un motif bloquant ».
+  it('CAT-06 (#770) — un modèle sans tarif officiel vérifié est BLOQUÉ, à chaque rang ; avec tarif : aucun motif', () => {
     const cat = catalogues({ pricedModels: new Set(['m-repli']) });
-    expect(bloquants(valide(), cat)).toEqual([]);
-    const tous = validateTreatment(valide(), cat);
-    expect(tous.some((i) => !i.blocking && /Tarif inconnu.*coûts marqués non calculables/.test(i.message))).toBe(true);
-  });
-
-  it('modèle absent du catalogue : seul motif bloquant restant (le tarif n’en est plus un)', () => {
-    const cat = catalogues({ availableModels: new Set(['m-principal']), pricedModels: new Set() });
     const messages = bloquants(valide(), cat).map((i) => i.message);
-    expect(messages.some((m) => m.includes('tarif'))).toBe(false);
-    expect(messages.some((m) => m.includes('catalogue fournisseur'))).toBe(false);
+    expect(messages).toContain('Le modèle « m-principal » n’est pas utilisable pour T1 : tarif officiel non vérifié.');
+    expect(messages.some((m) => m.includes('m-repli'))).toBe(false);
+    expect(validateTreatment(valide(), cat).some((i) => /appels autorisés/.test(i.message))).toBe(false);
   });
 
   it('refuse un repli identique au principal', () => {

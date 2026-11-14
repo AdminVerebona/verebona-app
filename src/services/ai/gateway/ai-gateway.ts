@@ -14,13 +14,15 @@ import { randomUUID } from 'crypto';
 import type { AiGatewayRequest, AiGatewayResponse } from './types';
 import { AiGatewayError, AiSuspendedError, isAiGatewayError, isDeterministicLocalError, type AiErrorCode, type GatewayCallStats } from './errors';
 import {
-  admitCandidate, causeOfFailure, chainOutcome, decisionOf, CAUSE_POLICY, ADMISSION_LABELS, ADMITTED_REASONS,
+  admitCandidate, causeOfFailure, chainOutcome, decisionOf, CAUSE_POLICY, ADMISSION_LABELS, ADMITTED_REASONS, NO_GENERATION_STAGES,
   type CoupleQualification, type FailureCause, type FallbackDecision,
 } from './fallback-policy';
 import { fallbackContext, noteKnownUnavailableSkipped, type CoupleQualificationView, type OperationalHint } from './fallback-context';
 import { isModelExcluded } from '../config/routing-overlay';
 import { getOperation, isMasterOperation } from '../registry/operations';
 import { calcCostMicros } from './cost-catalog';
+import { loadPricingCache, pricingReadState, refreshPricingCacheIfStale } from './pricing/pricing.repository';
+import { evaluatePricing } from './pricing/pricing-guard';
 import { errorOf } from './output-validator';
 import { redactVariables, redactWithReport, previewForLog, outputDigestForLog, stripRawExcerpt } from './redaction';
 import { resolveOutput, reporterCompteurs, type Resolution } from './output-resolution/resolve-output';
@@ -676,7 +678,7 @@ export class AiGateway {
     // ══════════════════════════════════════════════════════════════════════
     const fbCtx = fallbackContext();
     const rangForce = traceConfig.triggerCode === 'qualification';
-    const knownDown: ReadonlyMap<string, OperationalHint> = rangForce
+    let knownDown: ReadonlyMap<string, OperationalHint> = rangForce
       ? new Map() : await fbCtx.knownUnavailable().catch(() => new Map<string, OperationalHint>());
     // Exclusions manuelles EN VIGUEUR (86B), lues au moment de l'appel : la
     // chaîne figée au démarrage (RUN-04) perd ainsi un modèle exclu depuis.
@@ -697,6 +699,21 @@ export class AiGateway {
       }
       return qualifView.byModel.get(model) ?? 'UNKNOWN';
     };
+    // ── Lot 114 (Trello #770) : garde tarifaire AVANT toute consommation ────
+    // Un rang dont le tarif n'est pas une preuve officielle admissible n'est
+    // jamais contacté (génération, réparation, nouvel essai, escalade,
+    // secours, épreuve de qualification comprise). Statut illisible = refus.
+    const pricingRefusals = new Map<string, string>();
+    // Processus qui n'a jamais chargé le référentiel (travail asynchrone démarré avant le contrôle de démarrage) : une lecture, sinon refus.
+    if (!pricingReadState().loaded) await loadPricingCache().catch(() => 0);
+    else await refreshPricingCacheIfStale().catch(() => false);
+    {
+      for (const m of new Set(models)) {
+        // Même clé que le chiffrage de l'appel (`op.provider`) : le tarif contrôlé est celui qui sera appliqué.
+        const e = evaluatePricing(m, op.provider);
+        if (!e.ok) pricingRefusals.set(m, e.label);
+      }
+    }
     const decisions: FallbackDecision[] = [];
     /** Échec (ou saut) qui conduit au rang suivant ; `null` : premier modèle à considérer. */
     let previous: { cause: FailureCause; model: string; truncatedAt: number | null } | null = null;
@@ -707,8 +724,9 @@ export class AiGateway {
     let lastTransfer: (AttachmentTransferFailure & { model: string; callIndex: number; attempt: number | null }) | null = null;
     /** Rang sans appel (modèle sauté ou secours refusé) : trace d'usage + capture « aucun envoi ». */
     const traceNoCall = async (p: { model: string; rankIndex: number; decision: FallbackDecision; reasoning: ProviderCallInput['reasoning'] | null; timeoutMs: number; request?: RequestTrace | null }) => {
-      const code = p.decision.decision === 'KNOWN_UNAVAILABLE' ? 'MODEL_KNOWN_UNAVAILABLE' : 'FALLBACK_NOT_ADMISSIBLE';
-      const message = `${p.model} non sollicité : ${p.decision.decisionLabel}${p.decision.afterCause ? ` (après « ${p.decision.afterCauseLabel} » sur ${p.decision.afterModel ?? '?'})` : ''}.`;
+      const code = p.decision.decision === 'KNOWN_UNAVAILABLE' ? 'MODEL_KNOWN_UNAVAILABLE'
+        : p.decision.decision === 'PRICING_UNVERIFIED' ? 'MODEL_PRICING_UNVERIFIED' : 'FALLBACK_NOT_ADMISSIBLE';
+      const message = `${p.model} non sollicité : ${p.decision.decisionLabel}${p.decision.decision === 'PRICING_UNVERIFIED' && pricingRefusals.get(p.model) ? ` (${pricingRefusals.get(p.model)})` : ''}${p.decision.afterCause ? ` (après « ${p.decision.afterCauseLabel} » sur ${p.decision.afterModel ?? '?'})` : ''}.`;
       const elapsedMs = Date.now() - startedAt;
       await recordCallTrace({
         traceId, useCaseCode: op.useCaseCode, operationCode, accountId: req.accountId, userId: req.userId,
@@ -754,7 +772,13 @@ export class AiGateway {
         const maxOutputTokens = built.ok ? built.params.maxOutputTokens ?? undefined : undefined;
 
         // ── Lot 87A (P7) : ce rang peut-il être sollicité ? ─────────────────
-        const down = knownDown.get(model) ?? null;
+        // Lot 114 (#771, E02 / E06) : état opérationnel relu JUSTE AVANT ce rang (cache d'instance suivi par la
+        // clé de version partagée — aucune sonde, aucun appel fournisseur) : un verdict publié pendant la
+        // tentative précédente, ici ou par une autre instance, est opposable à ce rang. Lecture impossible :
+        // l'état lu au début de l'appel est conservé.
+        if (!rangForce && i > 0) knownDown = await fbCtx.knownUnavailable().catch(() => knownDown);
+        const sansTarif = pricingRefusals.has(model);
+        const down = sansTarif ? null : knownDown.get(model) ?? null;
         let excluded = false;
         let qualification: CoupleQualification = 'UNKNOWN';
         // Exclusions EN VIGUEUR (une exclusion prise pendant l'exécution ne
@@ -762,7 +786,7 @@ export class AiGateway {
         if (!down) excluded = exclusVifs.has(model);
         if (previous !== null && !down && !excluded) qualification = await qualificationOf(model);
         const admission = admitCandidate({
-          model, rankIndex: i + premierRang, knownUnavailable: down !== null, excluded, qualification,
+          model, rankIndex: i + premierRang, knownUnavailable: down !== null, pricingUnverified: sansTarif, excluded, qualification,
           maxOutputTokens: built.ok ? built.params.maxOutputTokens ?? null : null,
         }, previous ? { cause: previous.cause, truncatedAtMaxOutputTokens: previous.truncatedAt, unknownAlternativesUsed } : null,
         { configOrigin: (qualifView as CoupleQualificationView | null)?.origin ?? null });
@@ -772,8 +796,14 @@ export class AiGateway {
         });
         decisions.push(decision);
         if (!admission.admitted) {
-          failures.push(`${model} : ${ADMISSION_LABELS[admission.reason]}`);
+          failures.push(`${model} : ${ADMISSION_LABELS[admission.reason]}${admission.reason === 'PRICING_UNVERIFIED' ? ` (${pricingRefusals.get(model)})` : ''}`);
           await traceNoCall({ model, rankIndex: i + premierRang, decision, reasoning, timeoutMs, request: built.trace });
+          if (admission.reason === 'PRICING_UNVERIFIED') {
+            // #770 : rang sauté sans contacter le modèle (coût 0 : aucun appel) ; seul le rang configuré suivant est considéré.
+            if (!previous) previous = { cause: 'PRICING_UNVERIFIED', model, truncatedAt: null };
+            if (!lastCause) lastCause = 'PRICING_UNVERIFIED';
+            continue;
+          }
           if (admission.reason === 'KNOWN_UNAVAILABLE') {
             // RUN-03 : vérification bornée de rétablissement (sonde existante).
             noteKnownUnavailableSkipped(model, down!);
@@ -915,6 +945,13 @@ export class AiGateway {
             stage: c.stage, transferKind: c.transfer?.kind ?? null,
           });
           if (c.transfer) lastTransfer = { ...c.transfer, model, callIndex, attempt: currentJobContext()?.jobAttempt ?? null };
+          // Lot 114 (#771, E04) : refus d'un appel RÉEL attribuable au modèle — même classification que les sondes.
+          // Explicite et définitif : l'état canonique est mis à jour sans attendre la sonde quotidienne (les
+          // appels suivants sautent ce rang) ; présumé : sonde bornée ; 429, 5xx, délai, réseau, clé, transfert,
+          // construction locale : rien n'est écrit. Borné, ne lève jamais, aucun appel fournisseur ici.
+          const refusSignale = !c.transfer && !NO_GENERATION_STAGES.has(String(c.stage ?? ''))
+            ? await fbCtx.reportRefusal({ model, error: e, httpStatus: c.httpStatus, sentAt: new Date(attemptStart) }).catch(() => null)
+            : null;
           previous = { cause, model, truncatedAt: null };
           lastCause = cause;
           if (CAUSE_POLICY[cause].countsForBreaker) attempts.push({ model, succeeded: false });
@@ -926,6 +963,9 @@ export class AiGateway {
             schema: schemaRefOf(soStatus), repairs: [], informedOfPreviousError: informed,
             ...(c.transfer ? { transfer: c.transfer } : {}),
           });
+          if (refusSignale) {
+            console.info(`[ai-gateway] ${model} : refus du fournisseur attribuable au modèle (${operationCode}) — ${refusSignale === 'recorded' ? 'indisponibilité confirmée enregistrée, rang sauté aux prochains appels' : 'sonde de confirmation demandée'}.`);
+          }
           const requests = withTrailKinds(sent.slice(attemptFrom), trail);
           const attemptMs = Date.now() - attemptStart;
           const elapsedMs = Date.now() - startedAt;

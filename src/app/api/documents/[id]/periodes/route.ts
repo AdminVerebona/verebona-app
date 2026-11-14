@@ -7,10 +7,15 @@
  *       autres natures, historique de couverture des événements de référence
  *       dont le document est membre. Lecture seule, aucune IA, aucune
  *       réanalyse à la consultation.
- *   PUT /api/documents/:id/periodes { periodId?, kind?, start, end }
+ *   PUT /api/documents/:id/periodes { periodId?, kind?, start, end, openEnded? }
  *     correction de l'utilisateur (dates partielles AAAA | AAAA-MM |
  *     AAAA-MM-JJ, ou null) — même fait, que la correction vienne du document
  *     ou de l'événement de référence ; protégée des retraitements.
+ *     Carte #766 : `openEnded` (booléen facultatif) — durée indéterminée
+ *     établie ; absent : le statut du fait est conservé (E04). Création d'une
+ *     nature sans fait (`kind` sans `periodId`) : refusée (422) si rien ne la
+ *     qualifie pour ce document (E12). Une couverture partagée par plusieurs
+ *     justificatifs du même événement de référence est corrigée sur chacun (E08).
  *
  * Compte actif de la session seulement (un document d'un autre compte,
  * supprimé ou inexistant → 404) ; écriture refusée à un compte en lecture
@@ -20,7 +25,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { SessionService } from '@/lib/session-service';
 import { apiError } from '@/lib/api-errors';
 import { refuserSiLectureSeule } from '@/lib/write-access-guard';
-import { isBusinessPeriodKind, isPartialDate, PERIOD_INVALID_MESSAGE } from '@/lib/documents/business-periods';
+import { isBusinessPeriodKind, isPartialDate, PERIOD_INVALID_MESSAGE, PERIOD_NOT_RELEVANT_MESSAGE } from '@/lib/documents/business-periods';
 
 type RouteContext = { params: Promise<{ id: string }> };
 
@@ -68,22 +73,28 @@ export async function PUT(req: NextRequest, context: RouteContext) {
   const end = borne(body?.end);
   const periodId = body?.periodId == null ? null : Number(body.periodId);
   const kind = body?.kind == null ? null : body.kind;
-  if (start === undefined || end === undefined || (periodId !== null && !Number.isSafeInteger(periodId))
+  // Carte #766 (E04) : booléen strict, ou absent (statut conservé) — jamais une valeur devinée.
+  const openEnded: boolean | null | undefined = body?.openEnded == null ? null : typeof body.openEnded === 'boolean' ? body.openEnded : undefined;
+  if (start === undefined || end === undefined || openEnded === undefined || (periodId !== null && !Number.isSafeInteger(periodId))
     || (periodId === null && !isBusinessPeriodKind(kind))) {
     return apiError(400, 'INVALID_INPUT', PERIOD_INVALID_MESSAGE);
   }
   try {
     const { correctDocumentPeriod, readDocumentPeriods } = await import('@/services/documents/business-periods/service');
     const r = await correctDocumentPeriod(c.accountId, c.userId, c.id, {
-      periodId, kind: isBusinessPeriodKind(kind) ? kind : null, start, end,
+      periodId, kind: isBusinessPeriodKind(kind) ? kind : null, start, end, openEnded,
     }, `user:${c.userId ?? 0}:periodes:${c.id}`);
     if (!r.ok) {
       if (r.error === 'NOT_FOUND') return apiError(404, 'NOT_FOUND', 'Période introuvable. Rechargez le document.');
       if (r.error === 'UNAVAILABLE') return apiError(503, 'INTERNAL_ERROR', 'La correction n’est pas disponible pour le moment.');
+      if (r.error === 'NOT_RELEVANT') return apiError(422, 'INVALID_INPUT', PERIOD_NOT_RELEVANT_MESSAGE);
       return apiError(400, 'INVALID_INPUT', PERIOD_INVALID_MESSAGE);
     }
     const { emitBusinessEvent } = await import('@/services/verebona-assistant/events/business-events');
-    await emitBusinessEvent({ type: 'DOCUMENT_UPDATED', accountId: c.accountId, entityId: c.id }).catch(() => {});
+    // Carte #766 (E08) : les autres justificatifs du même fait ont changé aussi (mêmes abonnés).
+    for (const id of [c.id, ...r.propagatedFileIds]) {
+      await emitBusinessEvent({ type: 'DOCUMENT_UPDATED', accountId: c.accountId, entityId: id }).catch(() => {});
+    }
     return NextResponse.json({ period: r.period, periods: await readDocumentPeriods(c.accountId, c.id) });
   } catch (err) {
     console.error('[api/documents/:id/periodes] PUT', (err as Error).message);

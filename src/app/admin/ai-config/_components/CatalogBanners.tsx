@@ -19,6 +19,10 @@
  *     statut (ok | inconclusive | suspect | failed_confirmed), message
  *     Google nettoyé (aucun secret), date et source. La cause se lit sans
  *     consultation SQL.
+ *     Lot 114 (carte #771) : code HTTP et code Google, accès concerné
+ *     (pseudonymisé), prochaine sonde ; et, à part, la « Surveillance des
+ *     sondes » : incident global du fournisseur, modèles `suspect` et
+ *     `inconclusive` (qui restent appelables), décompte des contrôles.
  *
  * Page réservée aux administrateurs (layout du BO + route garde-fou).
  * Même rendu desktop et mobile : bloc pleine largeur, contenu en `flex-wrap`,
@@ -43,6 +47,21 @@ interface ModelDiagnostic {
   errorKindLabel: string | null;
   checkedAt: string | null;
   sourceLabel: string | null;
+  /** Lot 114 (#771) — absents : serveur ou schéma antérieur. */
+  httpStatus?: number | null;
+  providerCode?: string | null;
+  access?: string | null;
+  nextProbeAt?: string | null;
+}
+interface WatchEntry {
+  model: string; status: 'suspect' | 'inconclusive'; error: string | null; errorKindLabel: string | null;
+  httpStatus: number | null; providerCode: string | null; checkedAt: string; sourceLabel: string; operational: boolean | null;
+}
+export interface OperationalWatchView {
+  providerIncident: { kindLabel: string; error: string | null; checkedAt: string; access: string | null; models: string[] } | null;
+  suspect: WatchEntry[];
+  inconclusive: WatchEntry[];
+  summary: string;
 }
 interface UnavailableModelGroupView {
   model: string;
@@ -58,6 +77,8 @@ interface CatalogStatus {
   /** Lot 49 : anomalies regroupées par modèle (absent : serveur antérieur). */
   unavailableModels?: UnavailableModelGroupView[];
   unavailableTitle?: string | null;
+  /** Lot 114 (#771) : états suspect / inconclusive et incident global (absent : serveur antérieur). */
+  operationalWatch?: OperationalWatchView;
 }
 
 const STATUT_CONTROLE: Record<ModelDiagnostic['status'], string> = {
@@ -111,10 +132,77 @@ export function UnavailableModelCard({ group }: { group: UnavailableModelGroupVi
             </dd>
           </>
         )}
+        {(d.httpStatus != null || d.providerCode) && (
+          <>
+            <dt className="text-[color:var(--text-muted)]">Code</dt>
+            <dd className="text-[color:var(--text-primary)] break-words" data-testid="unavailable-model-code">
+              {[d.httpStatus != null ? `HTTP ${d.httpStatus}` : null, d.providerCode].filter(Boolean).join(' · ')}
+            </dd>
+          </>
+        )}
         <dt className="text-[color:var(--text-muted)]">Date · source</dt>
         <dd className="text-[color:var(--text-primary)] break-words">{dateCourte(d.checkedAt)} · {d.sourceLabel ?? '—'}</dd>
+        {d.access && (
+          <>
+            <dt className="text-[color:var(--text-muted)]">Accès concerné</dt>
+            <dd className="text-[color:var(--text-primary)] break-words" data-testid="unavailable-model-access">{d.access}</dd>
+          </>
+        )}
+        {d.status === 'failed_confirmed' && d.nextProbeAt && (
+          <>
+            <dt className="text-[color:var(--text-muted)]">Prochaine sonde</dt>
+            <dd className="text-[color:var(--text-primary)] break-words" data-testid="unavailable-model-next-probe">au plus tôt le {dateCourte(d.nextProbeAt)}</dd>
+          </>
+        )}
       </dl>
     </li>
+  );
+}
+
+function codeDe(e: Pick<WatchEntry, 'httpStatus' | 'providerCode'>): string {
+  const c = [e.httpStatus != null ? `HTTP ${e.httpStatus}` : null, e.providerCode].filter(Boolean).join(' · ');
+  return c ? ` — ${c}` : '';
+}
+
+/**
+ * Lot 114 (carte #771, B01 / B04) — surveillance des sondes : incident global du fournisseur et contrôles
+ * non concluants ou à confirmer, À PART des indisponibilités confirmées. Aucun de ces modèles n'est écarté.
+ * Même rendu desktop et mobile (bloc pleine largeur, textes repliables).
+ */
+export function OperationalWatchPanel({ watch }: { watch: OperationalWatchView }) {
+  const lignes = [...watch.suspect, ...watch.inconclusive];
+  if (!watch.providerIncident && lignes.length === 0) return null;
+  return (
+    <div role="status" data-testid="operational-watch" className="rounded-xl border border-[color:var(--border-subtle)] bg-[color:var(--bg-card)] p-3 sm:p-4 space-y-2 min-w-0">
+      <p className="text-sm font-semibold text-[color:var(--text-primary)] break-words">Surveillance des sondes de modèles</p>
+      <p className="text-xs text-[color:var(--text-muted)] break-words">{watch.summary}</p>
+      {watch.providerIncident && (
+        <div data-testid="provider-incident" className="rounded-lg border border-[color:var(--border-danger)] p-2.5 space-y-0.5 min-w-0">
+          <p className="text-xs font-semibold text-[color:var(--text-danger)] break-words">
+            Incident global du fournisseur — {watch.providerIncident.kindLabel}
+          </p>
+          <p className="text-xs text-[color:var(--text-primary)] break-words">
+            {watch.providerIncident.error ?? '—'} · {dateCourte(watch.providerIncident.checkedAt)}{watch.providerIncident.access ? ` · ${watch.providerIncident.access}` : ''}
+          </p>
+          <p className="text-xs text-[color:var(--text-muted)] break-words">
+            Aucun modèle n’est déclaré indisponible pour ce motif ({watch.providerIncident.models.length} sonde{watch.providerIncident.models.length > 1 ? 's' : ''} sans conclusion).
+          </p>
+        </div>
+      )}
+      {lignes.length > 0 && (
+        <ul className="space-y-1.5">
+          {lignes.map((e) => (
+            <li key={`${e.status}-${e.model}`} data-testid={`watch-${e.status}`} className="text-xs text-[color:var(--text-primary)] break-words">
+              <code className="font-semibold break-all">{e.model}</code>{' '}
+              <span className="text-[color:var(--text-muted)]">
+                {e.status === 'suspect' ? 'suspect — échec à confirmer, modèle toujours appelable' : 'inconclusive — rien n’est conclu, état conservé'}
+              </span>
+              {e.error ? ` : ${e.error}` : ''}{e.errorKindLabel ? ` (${e.errorKindLabel})` : ''}{codeDe(e)} · {dateCourte(e.checkedAt)} · {e.sourceLabel}
+            </li>
+          ))}
+        </ul>
+      )}
+    </div>
   );
 }
 
@@ -147,7 +235,9 @@ export function CatalogBanners({ refreshKey = 0 }: { refreshKey?: number }) {
     }
   };
 
-  if (!data || (!data.banner && data.anomalies.length === 0)) return null;
+  const veille = data?.operationalWatch;
+  const veilleVisible = Boolean(veille && (veille.providerIncident || veille.suspect.length > 0 || veille.inconclusive.length > 0));
+  if (!data || (!data.banner && data.anomalies.length === 0 && !veilleVisible)) return null;
 
   return (
     <div className="space-y-3" data-testid="catalog-banners">
@@ -205,6 +295,8 @@ export function CatalogBanners({ refreshKey = 0 }: { refreshKey?: number }) {
           </p>
         </div>
       )}
+
+      {veille && veilleVisible && <OperationalWatchPanel watch={veille} />}
     </div>
   );
 }

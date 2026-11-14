@@ -195,10 +195,17 @@ describe('L113AA-U-RESOLUTION — D11 : résolution contextuelle des périodes d
     expect(statuts(r).every(([, s]) => s === 'ESTABLISHED')).toBe(true);
   });
 
-  it('même fait (duplicata) : un seul fait, sources réunies ; borne inconnue : chevauchement non établi = succession', () => {
+  // Règle remplacée (carte #766, E06) : une borne inconnue ne donnait « pas de chevauchement établi », donc une
+  // SUCCESSION. L'absence de preuve de chevauchement n'est plus une preuve de non-chevauchement : la paire est
+  // « ordre non prouvé » (UNDETERMINED) — périodes conservées et établies, aucune divergence, aucune question.
+  it('même fait (duplicata) : un seul fait, sources réunies ; borne inconnue : ordre NON PROUVÉ, jamais une succession affirmée', () => {
     const r = res.resolvePeriods([e(1, 10, '2024-04-01', '2025-03-31'), e(2, 11, '2024-04-01', '2025-03-31'), e(3, 12, '2024-06-01', null)]);
     expect(statuts(r)).toEqual([[1, 'ESTABLISHED', null], [2, 'SAME_AS', 10], [3, 'ESTABLISHED', null]]);
     expect(r.conflicts).toEqual([]);
+    expect(r.pairs.find((p) => p.a === 1 && p.b === 3)?.relation).toBe('UNDETERMINED');
+    expect(r.pairs.some((p) => p.relation === 'SUCCESSION')).toBe(false);
+    // Une seule paire à examiner (le duplicata ne la double pas), sans question à l'utilisateur.
+    expect(r.uncertain).toEqual([expect.objectContaining({ periodIds: [1, 3], needsUser: false, review: 'NONE' })]);
   });
 
   it('natures différentes : jamais une contradiction', () => {
@@ -333,7 +340,9 @@ describe('L113AA-U-COH — registres et catalogues', () => {
     expect(ids.slice(ids.indexOf('COH-DOC-DESCRIPTION-T1'), ids.indexOf('COH-OPS-PERIOD-RESOLUTION') + 1)).toEqual(['COH-DOC-DESCRIPTION-T1', 'COH-OPS-PERIOD-RESOLUTION']);
     const c = COHERENCE_REGISTRY.find((x) => x.id === 'COH-OPS-PERIOD-RESOLUTION')!;
     // Lot 113AD : version 2 (réexamen T3 demandé pour le stock quand le bloc 29 est actif).
-    expect(c).toMatchObject({ status: 'ACTIVE', version: 2, objectType: 'business_operation' });
+    // Carte #766 : version 3 (incident technique du réexamen distingué de la divergence, E07 ; ordre non prouvé, E06).
+    expect(c).toMatchObject({ status: 'ACTIVE', version: 3, objectType: 'business_operation' });
+    expect(c.anomalies).toEqual(expect.arrayContaining(['PERIOD_RELATION_REVIEW_FAILED', 'PERIOD_RELATION_REVIEW_BLOCKED']));
     expect(c.forbiddenRepairs.join(' ')).toMatch(/appeler l’IA/);
     expect(c.forbiddenRepairs.join(' ')).toMatch(/dernier document/);
     expect(COVERAGE_INVENTORY.some((d) => d.checks.includes('COH-OPS-PERIOD-RESOLUTION'))).toBe(true);

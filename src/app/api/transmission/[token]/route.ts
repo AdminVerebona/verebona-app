@@ -32,7 +32,11 @@ import { s3Client, S3_BUCKET } from '@/lib/s3-client';
 import { generateS3Key, parseS3Key } from '@/lib/s3-naming';
 import { withoutSaleFields } from '@/lib/assets/sale-fields';
 import { notesDescriptionForThirdParty } from '@/services/documents/notes-description/third-party';
-import { markDescriptionSourceT1, markNotesUserOwned, readNotesDescriptionMetaMany } from '@/services/documents/notes-description/store';
+import {
+  markDescriptionSourceT1, markNotesUserOwned, notesDescriptionSchemaState, readCurrentNotesDescriptionManyStrict,
+  NotesDescriptionUnavailableError, NotesIntentUnavailableError, type CurrentNotesDescriptionRow,
+} from '@/services/documents/notes-description/store';
+import { THIRD_PARTY_NOTES_UNAVAILABLE_MESSAGE } from '@/services/documents/notes-description/third-party';
 
 /**
  * Copie un objet S3 vers une nouvelle clé propre au destinataire.
@@ -296,6 +300,28 @@ export async function POST(
   }
 
   // ══════════════════════════════════════════════════════════════════════
+  // CARTE #767 (E02) — INCLUSION DE « NOTES / DESCRIPTION » : FAIL-CLOSED
+  //
+  // L'émetteur a coché l'inclusion : elle n'est honorée que si la priorité
+  // (reprise en main) et la provenance sont LISIBLES. Schéma 1580 incomplet
+  // ou illisible → la transmission est refusée ici, avant toute réservation
+  // et toute copie (elle reste en attente, un nouvel essai est possible).
+  // Jamais de valeur de repli : une description masquée ou effacée par
+  // l'émetteur pourrait partir chez le destinataire.
+  // ══════════════════════════════════════════════════════════════════════
+  const inclusionNotesDemandee = selected.includeNotesDescription === true && selected.includeDocuments === true;
+  if (inclusionNotesDemandee) {
+    const etatSchema = await notesDescriptionSchemaState();
+    if (etatSchema !== 'READY') {
+      console.error(`[Transmission] acceptation refusée (transmission ${row.id}) : inclusion « Notes / Description » demandée, schéma 1580 ${etatSchema === 'MISSING' ? 'incomplet' : 'illisible'}.`);
+      return NextResponse.json({
+        error: 'NOTES_DESCRIPTION_UNAVAILABLE', reason: etatSchema === 'MISSING' ? 'SCHEMA_MISSING' : 'SCHEMA_UNKNOWN',
+        message: THIRD_PARTY_NOTES_UNAVAILABLE_MESSAGE,
+      }, { status: 503 });
+    }
+  }
+
+  // ══════════════════════════════════════════════════════════════════════
   // QUI ACCEPTE ?
   //
   // Le destinataire était résolu par « session > `recipientUserId` du corps >
@@ -540,17 +566,29 @@ export async function POST(
 
       // Lot 113Z (#723) : « Notes / Description » EXCLU par défaut ; inclus
       // (texte affiché seul) uniquement si l'émetteur l'a choisi explicitement.
+      //
+      // Carte #767 (E02) — fail-closed : les valeurs COURANTES (note, description,
+      // reprise en main, provenance) sont relues ensemble, en lecture STRICTE.
+      // Lecture impossible → l'erreur remonte, la copie est annulée (rien chez le
+      // destinataire) et la transmission est refusée explicitement. L'erreur de
+      // lecture n'est plus avalée : une panne n'est plus prise pour une absence
+      // légitime de métadonnées, et l'instantané (figé à l'envoi) ne sert plus
+      // de valeur de repli pour ce texte.
       const inclureNotes = selected.includeNotesDescription === true;
-      const metaNotes = inclureNotes && row.accountId
-        ? await readNotesDescriptionMetaMany(row.accountId, docsToTransfer.map((d) => d.id)).catch(() => new Map())
+      const valeursNotes: Map<number, CurrentNotesDescriptionRow> = inclureNotes
+        ? await readCurrentNotesDescriptionManyStrict(row.accountId, docsToTransfer.map((d) => d.id), `transmission ${row.id}`)
         : new Map();
 
       // Insert all docs in DB first (sequential — each needs a new ID for the S3 key)
       const insertedDocs: Array<{ newFileId: number; doc: DocumentRef }> = [];
       for (const doc of docsToTransfer) {
-        const nd = notesDescriptionForThirdParty({ ...doc, ...(metaNotes.get(doc.id) ?? {}) }, inclureNotes);
+        // Document sans valeurs lues (absent du compte émetteur) : aucun texte, jamais un repli.
+        const courant = valeursNotes.get(doc.id);
+        const nd = notesDescriptionForThirdParty(courant ?? {}, inclureNotes && !!courant);
         try {
-          const [newFile] = await db.insert(assetFiles).values({
+          // Carte #767 (E05) : le document et sa provenance sont écrits ensemble (tout ou rien).
+          const newFile = await db.transaction(async (tx) => {
+          const [cree] = await tx.insert(assetFiles).values({
             userId: recipientUser!.id,
             accountId: recipientUser!.accountId!,
             assetId: duplicatedAssetId!,
@@ -581,10 +619,15 @@ export async function POST(
             createdAt: now,
             updatedAt: now,
           }).returning({ id: assetFiles.id });
-          if (nd.notesUserOwned) await markNotesUserOwned(db, recipientUser!.accountId!, newFile.id);
-          if (nd.descriptionSource === 'T1') await markDescriptionSourceT1(db, recipientUser!.accountId!, newFile.id);
+          if (nd.notesUserOwned) await markNotesUserOwned(tx, recipientUser!.accountId!, cree.id);
+          if (nd.descriptionSource === 'T1') await markDescriptionSourceT1(tx, recipientUser!.accountId!, cree.id);
+          return cree;
+          });
           insertedDocs.push({ newFileId: newFile.id, doc });
         } catch (err) {
+          // Carte #767 : la provenance d'un texte inclus n'a pas pu être écrite → refus de toute la
+          // transmission (jamais un document livré avec un texte de provenance fausse).
+          if (err instanceof NotesIntentUnavailableError || err instanceof NotesDescriptionUnavailableError) throw err;
           console.error(`[Transmission] Failed to insert doc id=${doc.id} (${doc.originalFilename}):`, err);
         }
       }
@@ -767,6 +810,19 @@ export async function POST(
       if (agendaCopied > 0) console.info(`[Transmission] Copied ${agendaCopied}/${linkedItems.length} agenda item(s) to asset ${duplicatedAssetId}`);
     }
   } catch (err) {
+    // Carte #767 (E02) : métadonnées « Notes / Description » indisponibles alors que l'inclusion est
+    // demandée → refus explicite et traçable ; le journal ne porte qu'un motif (jamais de texte documentaire).
+    if (err instanceof NotesDescriptionUnavailableError || err instanceof NotesIntentUnavailableError) {
+      // Les documents déjà copiés chez le destinataire pour ce bien sont retirés avec lui.
+      if (duplicatedAssetId && recipientUser.accountId) {
+        await db.update(assetFiles).set({ deletedAt: new Date() })
+          .where(and(eq(assetFiles.assetId, duplicatedAssetId), eq(assetFiles.accountId, recipientUser.accountId))).catch(() => {});
+      }
+      await rollback(`inclusion « Notes / Description » impossible (${err.reason})`);
+      return NextResponse.json({
+        error: 'NOTES_DESCRIPTION_UNAVAILABLE', reason: err.reason, message: THIRD_PARTY_NOTES_UNAVAILABLE_MESSAGE,
+      }, { status: 503 });
+    }
     await rollback(err);
     return NextResponse.json({
       error: 'COPY_FAILED',

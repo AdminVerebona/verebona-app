@@ -366,6 +366,9 @@ export function toDocItem(pd: PlannedDocument, section: string, m: MapInput, ext
     preview,
     // Lot 113AB (#725) : période principale de la pièce, telle que sur sa fiche (jamais Notes / Description).
     ...(exportPeriodDetail(d.periodLine) ? { detail: exportPeriodDetail(d.periodLine) } : {}),
+    // Carte #767 (E03) : texte affiché de « Notes / Description », présent seulement si l'inclusion
+    // a été cochée (posé par `withNotesDescription`) ; jamais pour une pièce exclue (fichier inutilisable).
+    ...(d.notesDescription && !failed ? { note: d.notesDescription } : {}),
     ...extra,
   };
 }

@@ -342,10 +342,10 @@ export const RECETTE_EXCLUDED: Readonly<Record<string, string>> = {
   ai_instructions: 'configuration IA (prompts)', ai_legacy_usage_mapping: 'technique IA', ai_log_archives: 'archives des journaux IA',
   ai_master_corpus_runs: 'qualification IA', ai_master_prompt_activations: 'configuration IA (prompts)', ai_master_prompt_test_runs: 'qualification IA',
   ai_master_prompt_versions: 'configuration IA (prompts)', ai_model_catalog: 'catalogue des modèles', ai_model_catalog_refresh: 'catalogue des modèles',
-  ai_model_operational_status: 'catalogue des modèles', ai_model_price_changes: 'tarifs des modèles', ai_model_price_status: 'tarifs des modèles',
+  ai_model_operational_status: 'catalogue des modèles', ai_model_operational_history: 'catalogue des modèles (historique des contrôles de disponibilité)', ai_model_price_changes: 'tarifs des modèles', ai_model_price_status: 'tarifs des modèles',
   ai_model_pricing: 'tarifs des modèles', ai_model_pricing_refresh_log: 'tarifs des modèles', ai_model_qualification: 'qualification IA',
   // Lot 113O : page tarifaire réellement reçue et cache tarifaire par instance.
-  ai_model_pricing_page_snapshots: 'tarifs des modèles (page reçue)', ai_pricing_cache_instances: 'tarifs des modèles (cache par instance)',
+  ai_model_pricing_page_snapshots: 'tarifs des modèles (page reçue)', ai_pricing_cache_instances: 'tarifs des modèles (cache par instance)', ai_pricing_policy_rebase: 'tarifs des modèles (bascule de politique tarifaire)',
   ai_provider_transfer_checks: 'vérifications de l’envoi de fichiers au fournisseur IA',
   // Lot 85C (Pilotage IA V2 P4) : journal des changements de capacités des modèles.
   ai_model_capability_changes: 'configuration IA (journal des capacités des modèles)',

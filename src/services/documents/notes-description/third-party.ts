@@ -19,6 +19,25 @@ export const THIRD_PARTY_NOTES_DESCRIPTION_DEFAULT = false as const;
 /** Libellé de l'option d'inclusion (à valider par le PO). */
 export const THIRD_PARTY_NOTES_DESCRIPTION_OPTION_LABEL = 'Inclure « Notes / Description » des documents';
 
+/**
+ * Carte #767 (E03) : libellé de l'option à la préparation d'un dossier destiné
+ * à un tiers — texte de la carte, repris à l'identique.
+ */
+export const THIRD_PARTY_DOSSIER_NOTES_OPTION_LABEL = 'Inclure Notes / Description des documents';
+/** Aide sous l'option du dossier (à valider par le PO). */
+export const THIRD_PARTY_DOSSIER_NOTES_OPTION_HINT =
+  'Décochée par défaut. Si vous la cochez, le texte affiché dans « Notes / Description » des documents retenus est imprimé dans le dossier.';
+/** Ligne du résumé de préparation : choix vérifiable avant de générer (à valider par le PO). */
+export const THIRD_PARTY_DOSSIER_NOTES_SUMMARY_LABEL = 'Notes / Description des documents';
+export const thirdPartyDossierNotesSummaryValue = (included: boolean): string => (included ? 'Incluses' : 'Non incluses');
+
+/**
+ * Carte #767 (E02) : refus d'une sortie vers un tiers dont l'inclusion a été
+ * cochée alors que la priorité / provenance est indisponible (à valider par le PO).
+ */
+export const THIRD_PARTY_NOTES_UNAVAILABLE_MESSAGE =
+  'L’inclusion de « Notes / Description » des documents a été demandée, mais ces informations ne peuvent pas être vérifiées pour le moment. Rien n’a été transmis. Réessayez dans un instant ; si le problème persiste, contactez le support.';
+
 export interface ThirdPartyNotesDescription {
   notes: string | null;
   description: string | null;

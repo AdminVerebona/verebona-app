@@ -82,6 +82,22 @@ const TRIAL_COMMERCIAL_SPEC = {
 };
 
 /**
+ * Carte #774 : e-mails de sécurité du gabarit transactionnel commun (clé
+ * d'accès ajoutée, application d'authentification activée). Le lien vers Mon
+ * compte › Sécurité et la date de l'événement doivent rester présents.
+ */
+/** Posée par le service d'e-mail (réglages du BO) : non proposée à l'insertion. */
+const SUPPORT_EMAIL: TemplateVariable = { name: 'supportEmail', label: 'Adresse d’assistance (réglages e-mail du BO)', kind: 'text', system: true };
+const SECURITY_EVENT_SPEC = {
+  variables: [
+    v('eventWhen', 'Date et heure de l’événement, heure de Paris (« le 13 novembre 2026 à 17 h 06 (heure de Paris) »)'),
+    v('actionUrl', 'Lien vers Mon compte › Sécurité', 'url'),
+    SUPPORT_EMAIL,
+  ],
+  required: [req('lien vers Mon compte › Sécurité', 'actionUrl'), req('date de l’événement', 'eventWhen')],
+};
+
+/**
  * Variables FOURNIES par le code d'envoi de chaque gabarit (appelants audités au
  * lot 70A) et variables obligatoires. Clé : type en majuscules.
  */
@@ -233,6 +249,11 @@ const DECLARED: Record<string, { variables: TemplateVariable[]; required: Requir
     variables: [v('requestedAt', 'Date de la demande de suppression'), v('deletedAt', 'Date de la suppression')],
     required: [req('date de la suppression', 'deletedAt')],
   },
+  // Carte #774 (migration 1698) : gabarit transactionnel commun — e-mails de
+  // sécurité dédiés. Déclarés ici (et non par la règle générale des `notif_*`) :
+  // ils n'emploient ni {{title}} ni {{body}}, leur texte est dans le gabarit.
+  NOTIF_MFA_PASSKEY_ADDED: SECURITY_EVENT_SPEC,
+  NOTIF_MFA_TOTP_ENABLED: SECURITY_EVENT_SPEC,
 };
 
 // ── Lot 73A : modèles d'e-mails des NOTIFICATIONS (`notif_*`) ─────────────────
@@ -257,6 +278,12 @@ interface NotificationEmailTemplate {
   label: string;
   /** Événements du catalogue qui envoient ce gabarit (vide : gabarit non utilisé). */
   events: readonly string[];
+  /**
+   * Carte #774 : données d'exemple de l'événement pour l'aperçu et le test du
+   * BO, quand un même événement du catalogue emploie plusieurs gabarits selon
+   * sa nature (jamais une donnée réelle ; la date d'exemple est celle de l'aperçu).
+   */
+  previewPayload?: Readonly<Record<string, string>>;
 }
 
 /** Clé : type en majuscules. Contrôlé contre le catalogue (test L73A-NOTIF-01). */
@@ -284,6 +311,9 @@ export const NOTIFICATION_EMAIL_TEMPLATES: Readonly<Record<string, NotificationE
   NOTIF_PAYMENT_INCIDENT: { label: 'Incident de paiement', events: ['PAYMENT_FAILED', 'PAYMENT_ACTION_REQUIRED', 'SUBSCRIPTION_SUSPENDED', 'ACCOUNT_READ_ONLY'] },
   NOTIF_ACCOUNT_DELETION: { label: 'Suppression de compte programmée (clôture, rappel J−7)', events: ['ACCOUNT_DELETION_SCHEDULED', 'ACCOUNT_DELETION_REMINDER'] },
   NOTIF_SECURITY: { label: 'Sécurité du compte', events: ['PASSWORD_CHANGED', 'EMAIL_CHANGE_REQUESTED', 'EMAIL_CHANGED', 'PASSWORD_RESET_COMPLETED', 'AUTH_IDENTITY_LINKED', 'AUTH_IDENTITY_UNLINKED', 'MFA_SECURITY_EVENT'] },
+  // Carte #774 (migration 1698) : gabarits dédiés du gabarit transactionnel commun, non désactivables.
+  NOTIF_MFA_PASSKEY_ADDED: { label: 'Sécurité — clé d’accès ajoutée', events: ['MFA_SECURITY_EVENT'], previewPayload: { event: 'passkey_added' } },
+  NOTIF_MFA_TOTP_ENABLED: { label: 'Sécurité — application d’authentification activée', events: ['MFA_SECURITY_EVENT'], previewPayload: { event: 'totp_enabled' } },
   // Lot 96B (CDC 18 Q6, migration 0832) : gabarit dédié, non désactivable.
   NOTIF_NEW_DEVICE_LOGIN: { label: 'Sécurité — connexion depuis un nouvel appareil', events: ['NEW_DEVICE_LOGIN'] },
   // Lot 100D (décision PO A2, migration 0878) : gabarit dédié, non désactivable.

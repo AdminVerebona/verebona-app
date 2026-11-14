@@ -21,6 +21,18 @@
  *     les gestes « Retirer du TCO » / « Ajouter au TCO » ; jamais de carte
  *     « À traiter » pour un simple constat.
  * Aucune IA, aucune écriture, idempotent (lecture pure).
+ *
+ * Carte #769 (version 2) — IDENTITÉ DU FAIT D'UNE CONFIRMATION « SANS DATE » :
+ * une confirmation « conservée sans date » (`asset_cost_line_decisions.
+ * date_decision`) dont la clé désigne désormais PLUSIEURS dépenses retenues
+ * distinctes (ancienne clé commune à deux échéances d'un même justificatif,
+ * ligne d'origine remplacée) n'est appliquée à AUCUNE d'elles par le moteur
+ * (`applyTcoUndatedConfirmations`) : elle reste en base, traçable, et ce
+ * contrôle l'ISOLE (verdict AMBIGUOUS, anomalie
+ * `UNDATED_CONFIRMATION_AMBIGUOUS`) — l'arbitrage ciblé est le geste existant
+ * de l'utilisateur sur chaque dépense concernée (« Conserver dans le TCO sans
+ * date »), qui remplace l'ancienne clé. Jamais d'écriture ici : ni
+ * confirmation étendue, ni décision INCLUDE / EXCLUDE, ni journal touchés.
  */
 import type { CoherenceCheck, Inspection } from '../types';
 import { hashOf, idsOf, intArray, rows } from '../util';
@@ -29,7 +41,8 @@ const OPERATION_CHANGED = 'BUSINESS_OPERATION_CHANGED';
 
 export const tcoSameFactCheck: CoherenceCheck = {
   id: 'COH-TCO-SAME-FACT',
-  version: 1,
+  // Carte #769 : version 2 — confirmation « sans date » ambiguë entre plusieurs dépenses (stock réexaminé).
+  version: 2,
   status: 'ACTIVE',
   title: 'TCO : un même achat représenté par plusieurs sources compté une seule fois',
   domain: 'tco',
@@ -40,16 +53,16 @@ export const tcoSameFactCheck: CoherenceCheck = {
     'business_operation_financial_component_sources', 'field_evidence', 'asset_cost_line_decisions'],
   applicability: 'compte éligible (actif) ; lecture TCO complète (une lecture partielle est une erreur de contrôle, jamais un résultat conforme)',
   invariant: 'un achat établi par faisceau de preuves (montant, objet, cible, fournisseur, références, dates proches) contribue une seule fois, toutes ses sources restant consultables ; deux transactions distinctes de même montant restent deux coûts ; un rapprochement incertain reste compté et signalé',
-  anomalies: ['SAME_FACT_UNCERTAIN', 'SAME_FACT_COUNTED_TWICE'],
+  anomalies: ['SAME_FACT_UNCERTAIN', 'SAME_FACT_COUNTED_TWICE', 'UNDATED_CONFIRMATION_AMBIGUOUS'],
   autoRepairWhen: 'aucune écriture nécessaire : le TCO est recalculé à la lecture par le moteur corrigé (stock repris d’office) ; incertitude → arbitrage de l’utilisateur (gestes du TCO)',
   forbiddenRepairs: ['fusionner sur le seul montant, fournisseur, intitulé ou proximité de dates', 'créer, fusionner ou invalider un événement de référence',
-    'écraser une décision « Ajouter / Retirer du TCO »', 'supprimer un justificatif', 'règle propre à un fournisseur, un montant ou un intervalle d’exemple', 'appeler l’IA'],
+    'écraser une décision « Ajouter / Retirer du TCO »', 'étendre une confirmation « sans date » à plusieurs dépenses', 'supprimer un justificatif', 'règle propre à un fournisseur, un montant ou un intervalle d’exemple', 'appeler l’IA'],
   services: ['business-operations/tco/service#readAssetTco'],
   chain: ['T1', 'T3', 'PERSISTENCE'],
   triggers: ['SOURCE_ANALYZED', 'DOCUMENT_UPDATED', 'ASSET_UPDATED', OPERATION_CHANGED],
   frequency: 'campagne exhaustive quotidienne + contrôle ciblé à chaque changement de la fiche, d’un justificatif ou d’un événement de référence',
   criticality: 'HIGH',
-  tests: ['L108A-U-RC-01', 'L108A-U-RC-02', 'L108A-U-MAT', 'L108A-U-COH', 'L108A-E2E-01', 'L108A-E2E-03'],
+  tests: ['L108A-U-RC-01', 'L108A-U-RC-02', 'L108A-U-MAT', 'L108A-U-COH', 'L108A-E2E-01', 'L108A-E2E-03', 'L114C-TCO-U-COH', 'L114C-TCO-E03'],
 
   async listObjects(ctx, accountId, afterId, limit) {
     return idsOf(await rows(ctx.sql, `SELECT a.id FROM assets a WHERE a.account_id = $1 AND a.deleted_at IS NULL AND a.id > $2 ORDER BY a.id LIMIT $3`, [accountId, afterId, limit]));
@@ -99,6 +112,18 @@ export const tcoSameFactCheck: CoherenceCheck = {
           verdict: 'FINDING', anomaly: 'SAME_FACT_COUNTED_TWICE', faultyLink: 'T3',
           expected: 'un seul achat du bien retenu par fait rapproché', observed: audit.countedTwice,
           detail: { merged: audit.merged.length }, inputHash: hashOf({ assetId, c: audit.countedTwice }),
+        });
+        continue;
+      }
+      // Carte #769 : confirmation « sans date » dont la clé désigne plusieurs dépenses distinctes — isolée, jamais étendue.
+      const ambigues = tco.undatedConfirmations?.ambiguous ?? [];
+      if (ambigues.length) {
+        const observed = ambigues.map((a) => ({ lineKey: a.confirmation.key, confirmedAt: a.confirmation.confirmedAt, lineIds: [...a.lineIds].sort() }));
+        out.set(assetId, {
+          verdict: 'AMBIGUOUS', anomaly: 'UNDATED_CONFIRMATION_AMBIGUOUS', faultyLink: 'PERSISTENCE',
+          expected: 'une confirmation « conservée sans date » désigne une seule dépense : arbitrage de l’utilisateur sur chaque dépense concernée (« Conserver dans le TCO sans date »)',
+          observed, detail: { merged: audit.merged.length, uncertain: audit.uncertain.length, arbitration: 'TCO_UNDATED_CONFIRMATION' },
+          inputHash: hashOf({ assetId, a: observed.map((x) => [x.lineKey, x.lineIds]) }),
         });
         continue;
       }

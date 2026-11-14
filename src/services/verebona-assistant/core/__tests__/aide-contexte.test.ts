@@ -223,19 +223,22 @@ describe('suggestions contextuelles par page (§8.1, §8.2)', () => {
   const labels = (r: string) => suggestionsForRoute(r).map((s) => s.id);
   it('fiche d’un bien : suggestions du bien, jamais celles de l’accueil', () => {
     const l = suggestionsForRoute('/assets/42', { pageAsset: { name: 'Cupra', documents: 2, deadlines: 1 } }).map((s) => s.id);
-    expect(l.slice(0, 3)).toEqual(['asset_docs', 'asset_deadlines', 'asset_complete']);
+    // Règle remplacée (carte #773, décision PO n° 30) : `asset_docs` (« Quels sont les documents {de_bien} ? ») est retirée.
+    expect(l.slice(0, 3)).toEqual(['asset_deadlines', 'asset_complete', 'asset_add_doc']);
+    expect(l).not.toContain('asset_docs');
     expect(l.some((x) => x.startsWith('home_'))).toBe(false);
   });
   it('accueil : suggestions d’accueil ; agenda, À traiter, compte : les leurs', () => {
     // Lot 34 : l'accueil ne propose que des questions dont les données
     // existent — sans contexte serveur, aucune ; avec, celles de l'accueil.
     expect(labels('/accueil')).toEqual([]);
-    const ctx = { state: { toProcessPending: 0, deadlinesSoon: 1, deadlinesUpcoming: 1, documentsInAnalysis: 0, documentsFailed: 0, exportsReady: 0 } };
+    const ctx = { state: { toProcessPending: 0, deadlinesSoon: 1, deadlinesUpcoming: 1, documentsInAnalysis: 0, exportsReady: 0 } };
     expect(suggestionsForRoute('/', ctx)[0].id).toBe('home_next_deadline');
     expect(suggestionsForRoute('/agenda', ctx)[0].id).toBe('agenda_next');
     expect(labels('/agenda')[0]).toBe('agenda_sync');
     expect(labels('/accueil/a-traiter')[0]).toBe('todo_explain');
-    expect(labels('/mon-compte')[0]).toBe('account_plan');
+    // Règle remplacée (carte #773, décision PO n° 37) : `account_plan` (« Que comprend mon offre ? ») est retirée.
+    expect(labels('/mon-compte')).toEqual(['account_notif']);
   });
   it('page sans suggestion propre : les génériques (aide), sans doublon ni remplissage', () => {
     const l = suggestionsForRoute('/page-inconnue');

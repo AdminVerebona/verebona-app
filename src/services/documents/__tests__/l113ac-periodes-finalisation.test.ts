@@ -108,14 +108,22 @@ describe('L113AC-U-05 — requalification T1 du stock', () => {
     expect(a.reason).toContain('bloc 28');
   });
 
-  it('classement : jamais demandé / demandé en attente / requalifié / demandé sans sortie v2', () => {
+  // Règle remplacée (carte #766, E13) : « demandé sans sortie v2 — jamais redemandé » est remplacé par trois états
+  // (sortie incomplète, erreur technique : repris de façon bornée ; plafond atteint : échec définitif).
+  it('classement : jamais demandé / demandé en attente / requalifié / sortie incomplète / erreur technique / bloqué', () => {
     expect(censusBucket({ qualified: false, jobStatus: null })).toBe('toRequalify');
     expect(censusBucket({ qualified: true, jobStatus: null })).toBe('qualifiedOtherwise');
     expect(censusBucket({ qualified: false, jobStatus: 'PENDING' })).toBe('requestedPending');
     expect(censusBucket({ qualified: false, jobStatus: 'RUNNING' })).toBe('requestedPending');
     expect(censusBucket({ qualified: true, jobStatus: 'DONE' })).toBe('requestedQualified');
-    expect(censusBucket({ qualified: false, jobStatus: 'DONE' })).toBe('requestedWithoutV2');
-    expect(censusBucket({ qualified: false, jobStatus: 'FAILED' })).toBe('requestedWithoutV2');
+    expect(censusBucket({ qualified: false, jobStatus: 'DONE' })).toBe('requestedIncomplete');
+    expect(censusBucket({ qualified: false, jobStatus: 'FAILED' })).toBe('requestedFailed');
+    expect(censusBucket({ qualified: false, jobStatus: 'CANCELLED', attempts: 2 })).toBe('requestedFailed');
+    expect(censusBucket({ qualified: false, jobStatus: 'DONE', attempts: 3 })).toBe('requestedExhausted');
+    expect(censusBucket({ qualified: false, jobStatus: 'FAILED', attempts: 5 })).toBe('requestedExhausted');
+    // Le plafond ne s'applique ni à un travail en cours ni à un document désormais qualifié.
+    expect(censusBucket({ qualified: false, jobStatus: 'RUNNING', attempts: 3 })).toBe('requestedPending');
+    expect(censusBucket({ qualified: true, jobStatus: 'FAILED', attempts: 3 })).toBe('requestedQualified');
   });
 
   it('estimation : moyenne observée × documents ; jamais sur zéro document', () => {
@@ -133,10 +141,12 @@ describe('L113AC-U-05 — requalification T1 du stock', () => {
   });
 
   it('rapport : refus explicite sans le contrat ; avant / après en application', () => {
-    const census = { toRequalify: 3, requestedPending: 0, requestedQualified: 0, requestedWithoutV2: 0, qualifiedOtherwise: 1 };
+    // Carte #766 (E13) : recensement à trois états pour un travail terminé sans qualification v2 (règle remplacée).
+    const census = { toRequalify: 3, requestedPending: 0, requestedQualified: 0, requestedIncomplete: 0, requestedFailed: 0, requestedExhausted: 0, qualifiedOtherwise: 1 };
     const base = {
       action: 'apply' as const, availability: availabilityFrom('ABSENT', null), batchSize: 100, before: census,
       estimate: { averageMicrosPerDocument: 20_000, estimatedMicros: 60_000, windowDays: 30, sampleDocuments: 10 }, batch: [1, 2, 3], ineligibleAccounts: [],
+      batchRetries: [] as number[], blocked: [], maxAttempts: 3,
     };
     const refus = summarizeBackfill('business-periods-v2-requalification', 'apply', null, { result: { ...base, refused: 'CONTRACT_NOT_ACTIVE', queued: [], notAccepted: [], after: census } });
     expect(refus.headline).toMatch(/^Application refusée : Inactif/);

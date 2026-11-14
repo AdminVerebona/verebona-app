@@ -99,7 +99,9 @@ describe('L113X-U — dépenses sans date fiable : liste exacte, comptages du mo
     const u = toTcoDto(computeTco(input())).undatedExpenses;
     for (const i of u.items) {
       expect(i.target).toEqual({ kind: 'NONE' });
-      expect(i.options.map((o) => o.label)).toEqual(['Conserver dans le TCO sans date']);
+      // Règle remplacée (carte #769, écart B) : le panneau ne se limite plus aux gestes de la date — « Retirer du TCO »
+      // est proposé depuis la même dépense (geste distinct, jamais un acquittement de la date).
+      expect(i.options.map((o) => o.label)).toEqual(['Conserver dans le TCO sans date', 'Retirer du TCO']);
     }
   });
 
@@ -167,7 +169,8 @@ describe('L113X-U — dépenses sans date fiable : liste exacte, comptages du mo
     expect(u).toMatchObject({ count: 2, costsCents: 52_835 });
     for (const i of u.items) {
       expect(i.confirmedUndated).toBe(true);
-      expect(i.options.map((o) => o.action)).toEqual(['REVERT_UNDATED']);
+      // Règle remplacée (carte #769, écart B) : « Retirer du TCO » reste proposé à côté de « Annuler mon choix ».
+      expect(i.options.map((o) => o.action)).toEqual(['REVERT_UNDATED', 'EXCLUDE']);
     }
     expect(t.summary.cumulativeCostCents).toBe(t0.summary.cumulativeCostCents);
   });

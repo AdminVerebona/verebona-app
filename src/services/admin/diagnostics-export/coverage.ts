@@ -522,6 +522,8 @@ export const DIAG_TABLE_COVERAGE: Readonly<Record<string, DiagTableCoverage>> = 
   ai_model_catalog: T('referentiels', 'catalogue des modèles'),
   ai_model_catalog_refresh: T('referentiels', 'catalogue des modèles'),
   ai_model_operational_status: T('referentiels', 'état opérationnel des modèles'),
+  // Lot 114 (#771) : historique des contrôles de disponibilité, par accès (empreinte de clé, jamais la clé).
+  ai_model_operational_history: T('technique', 'état opérationnel des modèles : historique des contrôles (#771)'),
   ai_model_price_changes: T('referentiels', 'tarifs des modèles'),
   ai_model_price_status: T('referentiels', 'tarifs des modèles'),
   ai_model_pricing: T('referentiels', 'tarifs des modèles'),
@@ -529,6 +531,7 @@ export const DIAG_TABLE_COVERAGE: Readonly<Record<string, DiagTableCoverage>> = 
   // Lot 113O : page tarifaire réellement reçue (publique, sans secret) et état du cache par instance.
   ai_model_pricing_page_snapshots: T('referentiels', 'tarifs des modèles : page reçue'),
   ai_pricing_cache_instances: T('technique', 'tarifs des modèles : cache par instance'),
+  ai_pricing_policy_rebase: T('technique', 'tarifs des modèles : bascule de politique tarifaire et remise à zéro des alertes héritées (#770)'),
   // Lot 113R : vérifications de l'envoi de fichiers au fournisseur IA (test BO, sonde de rétablissement) — sans secret.
   ai_provider_transfer_checks: T('technique', 'vérifications de l’envoi de fichiers au fournisseur IA'),
   // Lot 109L : régularisation des coûts IA (exécutions, plan, corrections — multi-comptes).

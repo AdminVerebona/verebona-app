@@ -22,6 +22,21 @@
  *            résolution (`resolvePeriods`), SOUS la décision de l'utilisateur.
  * Une paire déjà classée n'est JAMAIS renvoyée à l'IA (une ligne par
  * empreinte et par compte). Aucune période de document n'est modifiée.
+ *
+ * CARTE #766 (E07) — INCIDENT TECHNIQUE ≠ AMBIGUÏTÉ MÉTIER (règle remplacée) :
+ *   · une demande en attente (budget épuisé, file en retard) ou en échec technique (panne, quota, 403 /
+ *     429, délai dépassé) ne devient PLUS une question au bout de `PERIOD_RELATION_MAX_WAIT_HOURS` :
+ *     ce délai n'est plus qu'un seuil de SUPERVISION (demande « en retard », signalée au BO) ;
+ *   · reprises BORNÉES : `PERIOD_RELATION_MAX_ATTEMPTS` appels par cycle, espacés de `RETRY_AFTER_HOURS` ;
+ *     essais épuisés → état `FAILED` (jamais une question ; la divergence reste affichée comme telle) ;
+ *     un nouveau cycle peut être réarmé (`rearmFailedRelationReviews`, par la synchronisation des cartes
+ *     ou le contrôle COH-OPS-PERIOD-RESOLUTION), au plus un par `REARM_AFTER_HOURS` et tant que le total
+ *     des appels de la divergence reste sous `PERIOD_RELATION_MAX_TOTAL_CALLS` ; au-delà : blocage
+ *     signalé au BO, plus aucun appel ;
+ *   · version du prompt T3 ILLISIBLE (incident) : les demandes restent en attente — elles ne sont plus
+ *     closes « indisponibles » (ce qui ramenait la question) ; branche réellement retirée ou coupure
+ *     volontaire (configuration) : comportement 113AA inchangé ;
+ *   · la question n'est posée que lorsque T3 a réellement travaillé sans expliquer la divergence.
  * ══════════════════════════════════════════════════════════════════════════
  */
 import type postgres from 'postgres';
@@ -32,11 +47,15 @@ type Sql = postgres.Sql | postgres.TransactionSql;
 type Row = Record<string, unknown>;
 
 /**
- * Délai pendant lequel une question PERIOD-CONFLICT attend le réexamen T3 demandé (heures). Au-delà
- * (budget épuisé, file en retard), la question est posée comme au lot 113AA ; un classement rendu ensuite la
- * ferme s'il explique la divergence. Paramètre centralisé, à valider par le PO.
+ * Carte #766 (E07) — règle remplacée : seuil de SUPERVISION (heures) au-delà duquel une demande de
+ * réexamen toujours en attente est signalée « en retard » au BO. Ce n'est plus un délai au bout duquel la
+ * question est posée à l'utilisateur. Paramètre centralisé, à valider par le PO.
  */
 export const PERIOD_RELATION_MAX_WAIT_HOURS = 24;
+/** Carte #766 (E07) : total des appels IA permis pour UNE divergence, tous cycles confondus (à valider par le PO). */
+export const PERIOD_RELATION_MAX_TOTAL_CALLS = 9;
+/** Carte #766 (E07) : délai minimal entre deux cycles d'essais d'une même divergence (heures ; à valider par le PO). */
+export const REARM_AFTER_HOURS = 24;
 /** Nouvel essai après un échec technique de l'appel (heures), au plus `PERIOD_RELATION_MAX_ATTEMPTS` appels. */
 const RETRY_AFTER_HOURS = 6;
 export const PERIOD_RELATION_MAX_ATTEMPTS = 3;
@@ -60,7 +79,9 @@ export async function loadRelationStates(sql: Sql, accountId: number, fileIds: r
   try {
     r = (await sql.unsafe(
       `SELECT fingerprint, status, relation, replacing_file_id, confidence, evidence,
-              (requested_at > now() - make_interval(hours => ${PERIOD_RELATION_MAX_WAIT_HOURS})) AS fresh
+              (requested_at > now() - make_interval(hours => ${PERIOD_RELATION_MAX_WAIT_HOURS})) AS fresh,
+              (status = 'AI_FAILED' AND (retry_at IS NULL OR attempts >= ${PERIOD_RELATION_MAX_ATTEMPTS})) AS exhausted,
+              (ai_calls < ${PERIOD_RELATION_MAX_TOTAL_CALLS}) AS rearmable
          FROM business_period_relation_reviews
         WHERE account_id = $1 AND file_ids && $2::int[] AND status NOT IN ('OBSOLETE', 'UNAVAILABLE')`,
       [accountId, `{${ids.join(',')}}`] as never[],
@@ -82,8 +103,13 @@ export async function loadRelationStates(sql: Sql, accountId: number, fileIds: r
         citation: c ? { fileId: Number(c.fileId), excerpt: String(c.excerpt) } : null,
       };
     }
-    if ((status === 'PENDING' || status === 'AI_FAILED') && x.fresh === true) return { fingerprint, state: 'AWAITING' };
-    return { fingerprint, state: 'EXAMINED' };
+    // Carte #766 (E07) — règle remplacée : un incident technique n'est jamais une ambiguïté métier.
+    //   · essais épuisés après des échecs techniques : FAILED (aucune question) ;
+    //   · demande en attente ou nouvel essai planifié : AWAITING, quel que soit son âge (`late` : supervision).
+    if (status === 'AI_FAILED' && x.exhausted === true) return { fingerprint, state: 'FAILED', ...(x.rearmable === true ? { rearmable: true } : {}) };
+    if (status === 'PENDING' || status === 'AI_FAILED') return { fingerprint, state: 'AWAITING', ...(x.fresh === true ? {} : { late: true }) };
+    // T3 a travaillé : abstention, sortie refusée, confiance insuffisante, ou contradiction certaine.
+    return { fingerprint, state: 'EXAMINED', ...(status === 'DECIDED' && x.confidence === 'certain' && relation === 'CONTRADICTION' ? { contradiction: true } : {}) };
   });
 }
 
@@ -110,6 +136,28 @@ export async function requestRelationReviews(sql: Sql, accountId: number, operat
     if (r.length) out.push(c.fingerprint);
   }
   return out;
+}
+
+/**
+ * Carte #766 (E07) — réarme un NOUVEAU cycle d'essais pour les divergences en échec technique dont les
+ * essais sont épuisés (aucun appel IA ici) : au plus un cycle par `REARM_AFTER_HOURS`, et seulement tant
+ * que le total des appels de la divergence reste sous `PERIOD_RELATION_MAX_TOTAL_CALLS`. Rend les
+ * empreintes réarmées. Bornée au compte et à l'événement de référence.
+ */
+export async function rearmFailedRelationReviews(sql: Sql, accountId: number, operationId: number, fingerprints: readonly string[]): Promise<string[]> {
+  const fps = [...new Set(fingerprints)];
+  if (!fps.length) return [];
+  const r = (await sql.unsafe(
+    `UPDATE business_period_relation_reviews
+        SET status = 'PENDING', attempts = 0, retry_at = NULL, requested_at = now(), updated_at = now()
+      WHERE account_id = $1 AND operation_id = $2 AND fingerprint = ANY($3::text[]) AND status = 'AI_FAILED'
+        AND (retry_at IS NULL OR attempts >= ${PERIOD_RELATION_MAX_ATTEMPTS}) AND ai_calls < ${PERIOD_RELATION_MAX_TOTAL_CALLS}
+        AND updated_at <= now() - make_interval(hours => ${REARM_AFTER_HOURS})
+      RETURNING fingerprint`,
+    [accountId, operationId, fps] as never[],
+  )) as unknown as Row[];
+  if (r.length) console.info(JSON.stringify({ event: 't3.period_relation.rearmed', accountId, operationId, count: r.length }));
+  return r.map((x) => String(x.fingerprint));
 }
 
 /** Prédicat SQL « le compte a une demande de réexamen à traiter » (balayage horaire du passage T3). */
@@ -221,6 +269,13 @@ export async function runPeriodRelationPhase(accountId: number, opts: {
   const touchees = new Set<number>();
 
   const cap = await decider.capability();
+  if (!cap.available && cap.contractState === 'UNREADABLE') {
+    // Carte #766 (E07) : version du prompt T3 illisible = INCIDENT, pas une configuration — les demandes
+    // restent en attente (aucune clôture « indisponible », donc aucune question ramenée par une panne).
+    out.unavailable = 'UNREADABLE';
+    console.warn(JSON.stringify({ event: 't3.period_relation.capability_unreadable', accountId, pending: demandes.length }));
+    return out;
+  }
   if (!cap.available) {
     // Branche retirée (ou coupure) : les demandes sont closes « indisponibles » et la question revient (113AA).
     for (const d of demandes) {
@@ -234,7 +289,8 @@ export async function runPeriodRelationPhase(accountId: number, opts: {
     for (const d of demandes) {
       // La divergence existe-t-elle encore (correction, réanalyse, décision de l'utilisateur, avenant reçu) ?
       const res = (await svc.operationsPeriodResolution(sql, accountId, [d.operationId])).get(d.operationId);
-      const conflit = res?.conflicts.find((c) => c.fingerprint === d.fingerprint) ?? null;
+      // Carte #766 (E06) : une paire dont l'ordre n'est pas prouvé est examinée comme une divergence.
+      const conflit = [...(res?.conflicts ?? []), ...(res?.uncertain ?? [])].find((c) => c.fingerprint === d.fingerprint) ?? null;
       const raw = conflit ? await loadRawContext(sql, accountId, d.operationId, conflit.periodIds, conflit.kind, todayParis(now())) : null;
       if (!conflit || !raw) {
         await complete(sql, d.id, { status: 'OBSOLETE', reason: conflit ? 'PERIOD_GONE' : 'DIVERGENCE_GONE' });
@@ -256,10 +312,16 @@ export async function runPeriodRelationPhase(accountId: number, opts: {
       } catch (e) {
         const { isExecutionCancelled } = await import('@/services/ai/queue/execution-control');
         if (isExecutionCancelled(e)) throw e;
+        const dernier = d.attempts + 1 >= PERIOD_RELATION_MAX_ATTEMPTS;
         await complete(sql, d.id, {
           status: 'AI_FAILED', reason: 'AI_CALL_FAILED', error: String((e as Error)?.message ?? e), deciderVersion: cap.version, called: true,
-          retry: d.attempts + 1 < PERIOD_RELATION_MAX_ATTEMPTS,
+          retry: !dernier,
         });
+        // Carte #766 (E07) : journalisation de l'incident (jamais une question ; supervision BO).
+        console.warn(JSON.stringify({
+          event: 't3.period_relation.failed', accountId, operationId: d.operationId, reviewId: d.id, attempt: d.attempts + 1,
+          exhausted: dernier, error: String((e as Error)?.message ?? e).slice(0, 200),
+        }));
         compter('AI_FAILED');
         continue;
       }

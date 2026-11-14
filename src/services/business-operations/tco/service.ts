@@ -989,6 +989,8 @@ async function readTcoLineDecisions(r: Runner, accountId: number, assetId: numbe
     undatedConfirmations.push({
       key: String(d.line_key), confirmedAt: new Date(j.date_decided_at).toISOString(),
       confirmedByUserId: j.date_decided_by == null ? null : Number(j.date_decided_by),
+      // Carte #769 : ligne décidée à l'origine (départage une clé devenue commune à plusieurs dépenses).
+      ...(typeof j.line_id === 'string' && j.line_id ? { lineId: j.line_id } : {}),
     });
   }
   const decisions = x

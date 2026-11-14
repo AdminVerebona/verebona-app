@@ -34,7 +34,7 @@ const labels = (route: string, ctx: SuggestionContext | null) => suggestionsForR
 /** Contexte où TOUTES les préconditions positives sont satisfaites. */
 const RICHE: SuggestionContext = {
   state: etat({
-    toProcessPending: 3, actionsDueToday: 0, deadlinesSoon: 2, deadlinesUpcoming: 4, documentsInAnalysis: 1, documentsFailed: 1,
+    toProcessPending: 3, actionsDueToday: 0, deadlinesSoon: 2, deadlinesUpcoming: 4, documentsInAnalysis: 1,
     exportsReady: 1, documentsUnlinked: 2,
   }),
   pageAsset: { id: 42, name: 'Cupra', documents: 3, deadlines: 1 },
@@ -56,8 +56,9 @@ describe('L34-SUGG — contrat de chaque suggestion du catalogue unique', () => 
         expect(SUGGESTION_DOMAIN_SOURCES[s.domain].some((t) => attendus.includes(t as never)), `${s.id} : ${s.domain} / ${attendus}`).toBe(true);
       }
       // Une question qui lit le compte a des préconditions explicites ;
-      // seule l'aide produit (et l'offre) peut être proposée sans condition.
-      if (s.domain !== 'HELP' && s.domain !== 'PLAN') expect(s.requires?.length ?? 0, s.id).toBeGreaterThan(0);
+      // seule l'aide produit peut être proposée sans condition (carte #773 :
+      // l'entrée d'offre `account_plan`, domaine PLAN, est retirée).
+      if (s.domain !== 'HELP') expect(s.requires?.length ?? 0, s.id).toBeGreaterThan(0);
       if (s.asset) expect(s.requires?.some((r) => r.fact.startsWith('asset.')), s.id).toBe(true);
     }
   });
@@ -80,7 +81,9 @@ describe('L34-SUGG — contrat de chaque suggestion du catalogue unique', () => 
         if (o.kind === 'route') expect(o.route.intent, `${route} « ${s.label} »`).toBe(s.canonicalIntent);
       }
     }
-    // Les questions d'actions sont reconnues par le résolveur du ticket 1.
+    // Les questions d'actions sont reconnues par le résolveur du ticket 1 (carte #773 :
+    // « Que dois-je faire aujourd'hui ? » n'est plus une suggestion, mais reste une
+    // question LIBRE reconnue — aucune interdiction lexicale).
     expect(analyserDemandeActionnable('Que dois-je faire aujourd’hui ?', '2026-10-09')?.intentResolution).toBe('ACTIONS_TEMPORAL');
     expect(analyserDemandeActionnable('Que dois-je traiter en priorité ?', '2026-10-09')?.intentResolution).toBe('TO_PROCESS_OPEN');
   });
@@ -96,24 +99,30 @@ describe('L34-SUGG — contrat de chaque suggestion du catalogue unique', () => 
         else (state as unknown as Record<string, number>)[r.fact] = v;
       }
       const route = e.routeExact?.[0] ?? e.routePrefix ?? (e.routePattern ? '/assets/42' : '/fournisseurs');
-      // Lot 112C : biens PROUVÉS (`asset: 'proven'`) et année du contexte serveur (`{annee}`).
-      const rendues = suggestionsForRoute(route, { state, pageAsset: bien, accountAsset: bien, provenAssets: [bien], year: 2026 });
+      // Lot 112C : biens PROUVÉS (`asset: 'proven'`). Carte #773 : plus de gabarit `{annee}`.
+      const rendues = suggestionsForRoute(route, { state, pageAsset: bien, accountAsset: bien, provenAssets: [bien] });
       expect(rendues.map((x) => x.id), `${e.id} sur ${route}`).toContain(e.id);
     }
   });
 });
 
 describe('L34-SUGG — cas 1 à 6 du ticket', () => {
-  // Lot 111L (audit #409) : ce test porte sur le CATALOGUE T2 et sa route d'exemples par page
-  // (`/api/verebona/suggestions`, affichée par aucune surface depuis 108J/110C) : la question est
-  // répondable et nomme le bien. Sa promotion SPONTANÉE est refusée par le service partagé
-  // (critère d'utilité, `suggestions/shared/utility.ts`, tests L111L) — assertions inchangées.
-  it('Cas 1 — bien avec documents : « Quels sont les documents de Cupra ? », jamais « Que sais-tu sur Cupra ? »', () => {
+  // Règle remplacée (carte #773, décision PO n° 30) : « Quels sont les documents {de_bien} ? »
+  // (`home_asset_docs`, `asset_docs`, `docs_asset`) est RETIRÉE du catalogue. Le cas 1 du lot 34
+  // imposait sa présence ; il impose désormais son absence sur toutes les pages, même pour un bien
+  // qui a des documents. « Que sais-tu sur X ? » reste interdit (assertion de fond conservée).
+  it('Cas 1 — bien avec documents : plus de « Quels sont les documents de Cupra ? » (carte #773), jamais « Que sais-tu sur Cupra ? »', () => {
     const fiche = labels('/assets/42', { state: etat(), pageAsset: { id: 42, name: 'Cupra', documents: 2, deadlines: 0 } });
-    expect(fiche).toContain('Quels sont les documents de Cupra ?');
+    expect(fiche).not.toContain('Quels sont les documents de Cupra ?');
     const accueil = labels('/accueil', { state: etat(), accountAsset: { id: 42, name: 'Cupra', documents: 2 } });
-    expect(accueil).toContain('Quels sont les documents de Cupra ?');
-    for (const r of ROUTES) for (const l of labels(r, RICHE)) expect(l).not.toMatch(/Que sais-tu/);
+    expect(accueil).not.toContain('Quels sont les documents de Cupra ?');
+    for (const r of ROUTES) for (const l of labels(r, RICHE)) {
+      expect(l).not.toMatch(/Que sais-tu/);
+      expect(l, r).not.toMatch(/^Quels sont les documents /);
+    }
+    // Le bien reste nommé par la question conservée (échéances du bien).
+    expect(labels('/assets/42', { state: etat(), pageAsset: { id: 42, name: 'Cupra', documents: 2, deadlines: 1 } }))
+      .toContain('Quelles sont les prochaines échéances de Cupra ?');
   });
 
   it('Cas 2 — bien sans document : aucune question sur ses documents', () => {
@@ -123,17 +132,25 @@ describe('L34-SUGG — cas 1 à 6 du ticket', () => {
     }
   });
 
-  it('Cas 3 — À traiter présent (toProcessPending > 0) : « Que dois-je traiter en priorité ? », jamais « Que dois-je faire aujourd’hui ? » sur ce seul critère', () => {
+  // Règle remplacée (carte #773, décision PO n° 27) : « Que dois-je faire aujourd'hui ? » (`home_today`)
+  // est RETIRÉE — plus jamais proposée, même avec des éléments dus aujourd'hui. « Que dois-je traiter
+  // en priorité ? » (n° 28, conservée) garde EXACTEMENT sa condition : À traiter présent ET aucun
+  // élément en retard ou dû aujourd'hui (pas de promotion nouvelle).
+  it('Cas 3 — À traiter présent (toProcessPending > 0) : « Que dois-je traiter en priorité ? » ; « Que dois-je faire aujourd’hui ? » n’existe plus (carte #773)', () => {
     const l = labels('/accueil', { state: etat({ toProcessPending: 4 }) });
     expect(l).toContain('Que dois-je traiter en priorité ?');
     expect(l).not.toContain('Que dois-je faire aujourd’hui ?');
     const s = suggestionsForRoute('/accueil', { state: etat({ toProcessPending: 4 }) }).find((x) => x.label === 'Que dois-je traiter en priorité ?');
     expect(s?.canonicalIntent).toBe('ACCOUNT_TO_PROCESS');
-    // « Que dois-je faire aujourd'hui ? » : seulement si le résolveur trouve
-    // des éléments en retard ou dus aujourd'hui — et alors pas les deux.
-    const auj = labels('/accueil', { state: etat({ toProcessPending: 4, actionsDueToday: 1 }) });
-    expect(auj).toContain('Que dois-je faire aujourd’hui ?');
-    expect(auj).not.toContain('Que dois-je traiter en priorité ?');
+    // Éléments en retard ou dus aujourd'hui : « aujourd'hui » n'est plus proposée, et l'entrée
+    // d'accueil `home_todo_priority` reste absente comme avant (condition antérieure conservée).
+    // La question n° 28 est alors rendue par l'entrée d'état `state_todo` (même libellé), que le
+    // sujet « actions » de `home_today` masquait auparavant.
+    const auj = suggestionsForRoute('/accueil', { state: etat({ toProcessPending: 4, actionsDueToday: 1 }) });
+    expect(auj.map((x) => x.label)).not.toContain('Que dois-je faire aujourd’hui ?');
+    expect(auj.map((x) => x.id)).not.toContain('home_todo_priority');
+    expect(auj.map((x) => x.id)).not.toContain('home_today');
+    expect(auj.map((x) => x.id)).toContain('state_todo');
     // Compteur inconnu (résolveur non évalué) : jamais « aujourd'hui ».
     expect(labels('/accueil', { state: { ...etat({ toProcessPending: 1 }), actionsDueToday: undefined } })).not.toContain('Que dois-je faire aujourd’hui ?');
   });
@@ -146,10 +163,15 @@ describe('L34-SUGG — cas 1 à 6 du ticket', () => {
     expect(labels('/accueil', { state: etat({ deadlinesUpcoming: 1 }) })).toContain('Quelle est ma prochaine échéance ?');
   });
 
-  it('Cas 5 — « Où en est l’analyse de mes documents ? » uniquement si documentsInAnalysis > 0', () => {
-    expect(labels('/accueil', { state: etat({ documentsInAnalysis: 0 }) })).not.toContain('Où en est l’analyse de mes documents ?');
-    expect(labels('/accueil', { state: etat({ documentsInAnalysis: 2 }) })).toContain('Où en est l’analyse de mes documents ?');
+  // Règle remplacée (carte #773, décision PO n° 29) : « Où en est l'analyse de mes documents ? »
+  // (`home_analysis`) est RETIRÉE, avec ou sans document en analyse. La question n° 35 conservée
+  // (« Pourquoi un document est-il encore en analyse ? ») garde sa précondition.
+  it('Cas 5 — « Où en est l’analyse de mes documents ? » n’est plus jamais proposée (carte #773) ; « encore en analyse » garde sa précondition', () => {
+    for (const r of ROUTES) for (const n of [0, 2]) {
+      expect(labels(r, { state: etat({ documentsInAnalysis: n }) }), `${r} ${n}`).not.toContain('Où en est l’analyse de mes documents ?');
+    }
     expect(labels('/documents', { state: etat({ documentsInAnalysis: 0 }) })).not.toContain('Pourquoi un document est-il encore en analyse ?');
+    expect(labels('/documents', { state: etat({ documentsInAnalysis: 2 }) })).toContain('Pourquoi un document est-il encore en analyse ?');
   });
 
   it('Cas 6 — aucune donnée exploitable : moins de 3 suggestions, aucune fabriquée', () => {
@@ -159,7 +181,7 @@ describe('L34-SUGG — cas 1 à 6 du ticket', () => {
     for (const r of ROUTES) {
       const l = suggestionsForRoute(r, rien);
       expect(l.length, r).toBeLessThanOrEqual(MAX_SUGGESTIONS);
-      for (const s of l) expect(['HELP', 'PLAN'], `${r} ${s.id}`).toContain(s.domain);
+      for (const s of l) expect(s.domain, `${r} ${s.id}`).toBe('HELP');
     }
   });
 

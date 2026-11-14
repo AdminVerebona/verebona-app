@@ -59,7 +59,9 @@ describe('testProviderKey', () => {
       { model: 'a', secret: 'secret', outcome: { status: 'ok' }, source: 'provider_test' },
       expect.objectContaining({
         model: 'b', source: 'provider_test',
-        outcome: expect.objectContaining({ status: 'failed', kind: 'model_retired', definitive: true, error: expect.stringMatching(/no longer available/) }),
+        // Règle remplacée (carte #771) : « no longer available to new users » est un refus explicite et définitif du
+        // modèle POUR L'ACCÈS utilisé (`model_access_closed`), plus un retrait global (`model_retired`). Toujours définitif.
+        outcome: expect.objectContaining({ status: 'failed', kind: 'model_access_closed', definitive: true, error: expect.stringMatching(/no longer available/) }),
       }),
     ]);
   });

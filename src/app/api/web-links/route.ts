@@ -1,5 +1,5 @@
-import { NOTES_MAX_LENGTH } from '@/lib/documents/notes-description';
-import { markNotesUserOwned } from '@/services/documents/notes-description/store';
+import { validateNotesInput } from '@/lib/documents/notes-description';
+import { markNotesUserOwned, NotesIntentUnavailableError, NOTES_INTENT_UNAVAILABLE_MESSAGE } from '@/services/documents/notes-description/store';
 import { NextRequest, NextResponse } from 'next/server';
 import { db } from '@/db';
 import { assetFiles, assets } from '@/db/schema';
@@ -78,8 +78,12 @@ export async function POST(request: NextRequest) {
     // Lot 113Z (#723) : le nom du lien est son titre ; le texte libre est la
     // note de l'utilisateur (« Notes / Description »), jamais la description
     // T1. Client antérieur : `description` (« Titre / Description ») lu comme une note.
-    const noteSaisie = (typeof notes === 'string' && notes.trim() ? notes.trim()
-      : typeof description === 'string' && description.trim() ? description.trim() : '').slice(0, NOTES_MAX_LENGTH) || null;
+    // Carte #767 (E04) : plus de troncature silencieuse — au-delà de la limite, refus (400), rien n'est créé.
+    const validationNote = validateNotesInput(notes, description);
+    if (!validationNote.ok) {
+      return NextResponse.json({ error: validationNote.code, code: validationNote.code, message: validationNote.message, maxLength: validationNote.max }, { status: 400 });
+    }
+    const noteSaisie = validationNote.notes;
 
     if (!url || !url.trim()) return NextResponse.json({ error: 'MISSING_URL', message: 'URL requise' }, { status: 400 });
     if (!title || !title.trim()) return NextResponse.json({ error: 'MISSING_TITLE', message: 'Nom du document requis' }, { status: 400 });
@@ -101,7 +105,9 @@ export async function POST(request: NextRequest) {
     const now = new Date();
     // Lot 108D : jamais le jour d'import pré-rempli comme date du document (voir upload-document-date).
     const dateDepot = resolveUploadDocumentDate({ documentDate, documentDateSource }, now);
-    const [newWebLink] = await db.insert(assetFiles).values({
+    // Carte #767 (E05) : le lien et la reprise en main de sa note sont écrits ensemble (tout ou rien).
+    const [newWebLink] = await db.transaction(async (tx) => {
+    const crees = await tx.insert(assetFiles).values({
       userId: session.userId,
       accountId,
       assetId: assetIdInt,
@@ -131,12 +137,19 @@ export async function POST(request: NextRequest) {
       createdAt: now,
       updatedAt: now,
     }).returning();
+    if (!crees[0]) throw new Error('Échec de la création');
+    if (noteSaisie) await markNotesUserOwned(tx, accountId, crees[0].id);
+    return crees;
+    });
 
     if (!newWebLink) throw new Error('Échec de la création');
-    if (noteSaisie) await markNotesUserOwned(db, accountId, newWebLink.id);
 
     return NextResponse.json({ success: true, webLink: newWebLink }, { status: 201 });
   } catch (error) {
+    // Carte #767 (E05) : intention utilisateur non persistable → rien n'est créé, erreur explicite.
+    if (error instanceof NotesIntentUnavailableError) {
+      return NextResponse.json({ error: error.code, code: error.code, reason: error.reason, message: NOTES_INTENT_UNAVAILABLE_MESSAGE }, { status: 503 });
+    }
     console.error('[POST /api/web-links]', error);
     return NextResponse.json({ error: 'INTERNAL_ERROR', message: (error as Error).message }, { status: 500 });
   }

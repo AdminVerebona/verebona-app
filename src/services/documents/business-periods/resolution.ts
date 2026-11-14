@@ -13,9 +13,10 @@
  * Pour chaque paire de documents DIFFÉRENTS, la relation est classée :
  *   · DIFFERENT_NATURE : natures différentes (effet contractuel ≠
  *     couverture ≠ facturation…) — jamais une contradiction ;
- *   · SUCCESSION       : périodes qui ne se chevauchent pas (au plus
- *     `COVERAGE_OVERLAP_TOLERANCE_DAYS`), ou chevauchement NON ÉTABLI (une
- *     borne inconnue) — succession normale, toutes conservées ;
+ *   · SUCCESSION       : périodes dont le non-chevauchement est PROUVÉ (au
+ *     plus `COVERAGE_OVERLAP_TOLERANCE_DAYS` jours communs) — succession
+ *     normale, toutes conservées (carte #766, E06 : une borne inconnue qui
+ *     empêche de conclure ne donne plus une succession, voir plus bas) ;
  *   · SAME_FACT        : mêmes bornes (duplicata, même attestation reçue
  *     deux fois) — un seul fait, sources réunies ;
  *   · AMENDMENT / RECTIFICATION : l'un des deux documents DÉCLARE (T1) être
@@ -46,9 +47,25 @@
  * d'identifiants ne tranche), juxtaposition présentée comme une résolution,
  * remplacement automatique d'une période CORRIGÉE par l'utilisateur (une
  * telle paire devient une question).
+ *
+ * CARTE #766 (pré-MEP) — règles remplacées ou ajoutées :
+ *   · E06 — SUCCESSION n'est affirmée que si les bornes PROUVENT le non-chevauchement (`boundsProof` :
+ *     quatre bornes connues, ou fin connue de l'une avant le début connu de l'autre). Une borne manquante
+ *     qui empêche de conclure donne `UNDETERMINED` : les deux périodes restent établies avec leurs
+ *     preuves, AUCUNE succession n'est affirmée, AUCUNE question n'est posée ; un réexamen T3 hors
+ *     lecture est demandé (`uncertain`) quand la branche est disponible. Seul un classement T3 CERTAIN
+ *     « contradiction » en fait une divergence ;
+ *   · E10 — SAME_FACT exige la même modalité de fin : fin inconnue ≠ durée indéterminée établie ;
+ *   · E07 — un réexamen T3 en ÉCHEC TECHNIQUE (`FAILED` : panne, quota, délai, refus d'accès) ou encore
+ *     EN ATTENTE (quel que soit son âge) ne produit jamais de question : la question n'est posée que
+ *     lorsque T3 a réellement travaillé sans expliquer la divergence (`EXAMINED`), ou qu'aucun
+ *     réexamen n'est possible par configuration (bloc 29 absent : comportement 113AA) ;
+ *   · E08 — continuité d'un fait corrigé : une période dont les bornes sont celles qu'avait une période
+ *     CORRIGÉE par l'utilisateur avant sa correction est le même fait, non corrigé sur cet autre
+ *     justificatif (`CORRECTED_SAME_FACT`) : elle est remplacée par la correction, sans question.
  * ══════════════════════════════════════════════════════════════════════════
  */
-import { lowerBound, upperBound, type BusinessPeriodKind, type PartialDate } from '@/lib/documents/business-periods';
+import { boundsProof, endToken, samePeriodBounds, type BusinessPeriodKind, type PartialDate, type PeriodBounds } from '@/lib/documents/business-periods';
 import type { DocumentRelation } from './t1-v2';
 import type { ExplainingRelation } from './relation-contract';
 
@@ -70,12 +87,18 @@ export interface ResolutionEntry {
   /** Document qualifié sous le contrat T1 v2 (pertinence rendue par T1). */
   qualified: boolean;
   relation: DocumentRelation | null;
+  /** Carte #766 (E10) : durée indéterminée ÉTABLIE (≠ fin inconnue). */
+  openEnded?: boolean;
+  /** Carte #766 (E08) : bornes de la période avant sa correction par l'utilisateur (`before_correction`). */
+  correctedFrom?: PeriodBounds | null;
 }
 
 export type PairRelation =
   | 'DIFFERENT_NATURE' | 'SUCCESSION' | 'SAME_FACT' | 'AMENDMENT' | 'RECTIFICATION' | 'USER_DECISION' | 'CONTRADICTION' | 'UNQUALIFIED'
   // Lot 113AD : classement par le réexamen T3 (décision certaine validée).
-  | 'AI_SUCCESSION' | 'AI_SAME_FACT' | 'AI_DIFFERENT_NATURE' | 'AI_AMENDMENT' | 'AI_RECTIFICATION';
+  | 'AI_SUCCESSION' | 'AI_SAME_FACT' | 'AI_DIFFERENT_NATURE' | 'AI_AMENDMENT' | 'AI_RECTIFICATION'
+  // Carte #766 : ordre non prouvé (E06) ; même fait qu'une période corrigée, avant sa correction (E08).
+  | 'UNDETERMINED' | 'CORRECTED_SAME_FACT';
 
 export interface UserPeriodDecision {
   fingerprint: string;
@@ -86,16 +109,23 @@ export interface UserPeriodDecision {
 
 /**
  * Lot 113AD — état du réexamen T3 d'une divergence (mémoire `business_period_relation_reviews`) :
- *   · AWAITING : examen demandé, pas encore rendu (question différée, dans la limite du délai) ;
- *   · EXAMINED : examiné sans explication applicable (contradiction, abstention, sortie refusée,
- *     confiance insuffisante, délai dépassé) — comportement 113AA ;
+ *   · AWAITING : examen demandé, pas encore rendu, ou nouvel essai planifié après un échec technique —
+ *     question différée. Carte #766 (E07), règle remplacée : SANS limite de délai (un dépassement est
+ *     signalé au BO par `late`, il ne devient plus une question) ;
+ *   · FAILED   : carte #766 (E07) — échec TECHNIQUE dont les essais sont épuisés (panne, quota, délai,
+ *     refus d'accès). Jamais une question ; `rearmable` : un nouveau cycle d'essais est encore permis ;
+ *   · EXAMINED : T3 a travaillé sans explication applicable (contradiction, abstention, sortie refusée,
+ *     confiance insuffisante) — comportement 113AA ; `contradiction` : classement CERTAIN
+ *     « contradiction » (seul cas qui fait une divergence d'un ordre non prouvé, E06) ;
  *   · DECIDED  : classement CERTAIN qui explique la divergence.
  */
 export type AiPeriodRelation =
-  | { fingerprint: string; state: 'AWAITING' | 'EXAMINED' }
+  | { fingerprint: string; state: 'AWAITING'; late?: boolean }
+  | { fingerprint: string; state: 'FAILED'; rearmable?: boolean }
+  | { fingerprint: string; state: 'EXAMINED'; contradiction?: boolean }
   | { fingerprint: string; state: 'DECIDED'; relation: ExplainingRelation; replacingFileId: number | null };
 
-export type ReviewState = 'NONE' | 'AWAITING' | 'EXAMINED';
+export type ReviewState = 'NONE' | 'AWAITING' | 'EXAMINED' | 'FAILED';
 
 export type EntryStatus = 'ESTABLISHED' | 'SAME_AS' | 'REPLACED' | 'CONFLICT';
 
@@ -117,37 +147,34 @@ export interface PeriodConflict {
   needsUser: boolean;
   /** Lot 113AD : état du réexamen T3 de CETTE divergence (NONE : jamais demandé). */
   review: ReviewState;
+  /** Carte #766 (E07) : réexamen en attente depuis plus longtemps que le délai de supervision. */
+  late?: boolean;
+  /** Carte #766 (E07) : échec technique dont un nouveau cycle d'essais est encore permis. */
+  rearmable?: boolean;
 }
 
 export interface ResolutionResult {
   entries: Map<number, EntryResolution>;
   pairs: Array<{ a: number; b: number; relation: PairRelation }>;
   conflicts: PeriodConflict[];
-}
-
-const DAY = 86_400_000;
-const days = (iso: string) => Date.parse(`${iso.slice(0, 10)}T00:00:00Z`) / DAY;
-/** Plus grande date possible d'une borne de fin partielle (jour réel du mois). */
-function lastDay(v: PartialDate): string {
-  if (v.length === 7) {
-    const [y, m] = v.split('-').map(Number);
-    return new Date(Date.UTC(y, m, 0)).toISOString().slice(0, 10);
-  }
-  return upperBound(v);
+  /**
+   * Carte #766 (E06) : paires dont l'ordre n'est PAS prouvé (borne manquante) — ni succession affirmée, ni
+   * divergence, ni question (`needsUser` toujours faux) : candidates au réexamen T3 hors lecture.
+   */
+  uncertain: PeriodConflict[];
 }
 
 /** Empreinte STABLE d'une divergence (indépendante des identifiants de faits, ordre des documents normalisé). */
-export function conflictFingerprint(kind: BusinessPeriodKind, a: Pick<ResolutionEntry, 'fileId' | 'start' | 'end'>, b: Pick<ResolutionEntry, 'fileId' | 'start' | 'end'>): string {
+// Carte #766 (E10) : la durée indéterminée entre dans l'empreinte (`INDEFINITE`) ; une fin inconnue reste
+// vide — les empreintes déjà enregistrées (quatre bornes connues) sont inchangées.
+export function conflictFingerprint(kind: BusinessPeriodKind, a: Pick<ResolutionEntry, 'fileId' | 'start' | 'end' | 'openEnded'>, b: Pick<ResolutionEntry, 'fileId' | 'start' | 'end' | 'openEnded'>): string {
   const [x, y] = a.fileId <= b.fileId ? [a, b] : [b, a];
-  return `${kind}|${x.fileId}:${x.start ?? ''}/${x.end ?? ''}|${y.fileId}:${y.start ?? ''}/${y.end ?? ''}`;
+  return `${kind}|${x.fileId}:${x.start ?? ''}/${endToken(x)}|${y.fileId}:${y.start ?? ''}/${endToken(y)}`;
 }
 
 /** Jours de chevauchement ÉTABLI (quatre bornes connues), sinon 0. Pur. */
 export function overlapDays(a: Pick<ResolutionEntry, 'start' | 'end'>, b: Pick<ResolutionEntry, 'start' | 'end'>): number {
-  if (!a.start || !a.end || !b.start || !b.end) return 0;
-  const debut = Math.max(days(lowerBound(a.start)), days(lowerBound(b.start)));
-  const fin = Math.min(days(lastDay(a.end)), days(lastDay(b.end)));
-  return Math.max(0, fin - debut + 1);
+  return boundsProof(a, b).days ?? 0;
 }
 
 const declares = (e: ResolutionEntry) => e.relation === 'AMENDMENT' || e.relation === 'RECTIFICATION';
@@ -171,11 +198,23 @@ export function amendmentTargets(entries: readonly ResolutionEntry[]): Map<numbe
 /** Classement d'une paire (pur, symétrique hors relation déclarée). `targets` : cibles des avenants (défaut : toute paire). */
 export function classifyPair(a: ResolutionEntry, b: ResolutionEntry, decisions: ReadonlyMap<string, UserPeriodDecision>, targets?: ReadonlyMap<number, number>,
   ai?: ReadonlyMap<string, AiPeriodRelation>):
-  { relation: PairRelation; winner?: ResolutionEntry; loser?: ResolutionEntry; fingerprint?: string; review?: ReviewState } {
+  { relation: PairRelation; winner?: ResolutionEntry; loser?: ResolutionEntry; fingerprint?: string; review?: ReviewState; late?: boolean; rearmable?: boolean } {
   if (a.kind !== b.kind) return { relation: 'DIFFERENT_NATURE' };
-  if (a.start === b.start && a.end === b.end) return { relation: 'SAME_FACT' };
-  // Chevauchement ÉTABLI seulement si les quatre bornes sont connues (une borne inconnue ne prouve rien).
-  if (overlapDays(a, b) <= COVERAGE_OVERLAP_TOLERANCE_DAYS) return { relation: 'SUCCESSION' };
+  // Carte #766 (E10) : même fait = mêmes bornes ET même modalité de fin.
+  if (samePeriodBounds(a, b)) return { relation: 'SAME_FACT' };
+  // Carte #766 (E08) : l'autre justificatif porte encore la valeur que la période corrigée avait AVANT sa
+  // correction (même fait, datée) — la correction de l'utilisateur vaut pour lui aussi, sans question.
+  if (a.userCorrected !== b.userCorrected) {
+    const corrigee = a.userCorrected ? a : b;
+    const autre = corrigee === a ? b : a;
+    const avant = corrigee.correctedFrom;
+    if (avant && (avant.start !== null || avant.end !== null || avant.openEnded === true) && samePeriodBounds(avant, autre)) {
+      return { relation: 'CORRECTED_SAME_FACT', winner: corrigee, loser: autre };
+    }
+  }
+  // Carte #766 (E06) — règle remplacée : l'absence de preuve de chevauchement n'est plus une succession.
+  const preuve = boundsProof(a, b, COVERAGE_OVERLAP_TOLERANCE_DAYS).proof;
+  if (preuve === 'DISJOINT') return { relation: 'SUCCESSION' };
   const fingerprint = conflictFingerprint(a.kind, a, b);
   const d = decisions.get(fingerprint);
   if (d) {
@@ -195,7 +234,17 @@ export function classifyPair(a: ResolutionEntry, b: ResolutionEntry, decisions: 
       return { relation: ia.relation === 'SUCCESSION' ? 'AI_SUCCESSION' : ia.relation === 'SAME_FACT' ? 'AI_SAME_FACT' : 'AI_DIFFERENT_NATURE', fingerprint };
     }
   }
-  const review: ReviewState = !ia ? 'NONE' : ia.state === 'AWAITING' ? 'AWAITING' : 'EXAMINED';
+  const review: ReviewState = !ia ? 'NONE' : ia.state === 'DECIDED' ? 'EXAMINED' : ia.state;
+  const suivi = {
+    review,
+    ...(ia?.state === 'AWAITING' && ia.late ? { late: true } : {}),
+    ...(ia?.state === 'FAILED' && ia.rearmable ? { rearmable: true } : {}),
+  };
+  // Carte #766 (E06) : ordre non prouvé — ni succession, ni divergence, ni question. Seul un classement
+  // T3 certain « contradiction » en fait une divergence (traitée ci-dessous comme les autres).
+  if (preuve === 'UNKNOWN' && !(ia?.state === 'EXAMINED' && ia.contradiction === true)) {
+    return { relation: 'UNDETERMINED', fingerprint, ...suivi };
+  }
   // Relation DÉCLARÉE par un seul des deux documents (avenant, rectificatif) : elle explique la divergence
   // avec la période qu'il modifie (et seulement elle).
   if (declares(a) !== declares(b)) {
@@ -205,7 +254,7 @@ export function classifyPair(a: ResolutionEntry, b: ResolutionEntry, decisions: 
     // Une période corrigée par l'utilisateur n'est jamais remplacée automatiquement : il décide.
     if (cible && !loser.userCorrected) return { relation: winner.relation as 'AMENDMENT' | 'RECTIFICATION', winner, loser, fingerprint };
   }
-  return { relation: a.qualified && b.qualified ? 'CONTRADICTION' : 'UNQUALIFIED', fingerprint, review };
+  return { relation: a.qualified && b.qualified ? 'CONTRADICTION' : 'UNQUALIFIED', fingerprint, ...suivi };
 }
 
 /** Résolution des périodes d'un événement de référence (pure, déterministe, ordre stable). */
@@ -217,6 +266,7 @@ export function resolvePeriods(entries: readonly ResolutionEntry[], decisions: r
   const out = new Map<number, EntryResolution>(tri.map((e) => [e.id, { status: 'ESTABLISHED' as EntryStatus }]));
   const pairs: ResolutionResult['pairs'] = [];
   const conflicts: PeriodConflict[] = [];
+  const incertaines: PeriodConflict[] = [];
   const rang: Record<EntryStatus, number> = { ESTABLISHED: 0, CONFLICT: 1, SAME_AS: 2, REPLACED: 3 };
   const poser = (id: number, r: EntryResolution) => { if (rang[r.status] > rang[out.get(id)!.status]) out.set(id, r); };
   for (let i = 0; i < tri.length; i++) {
@@ -228,12 +278,20 @@ export function resolvePeriods(entries: readonly ResolutionEntry[], decisions: r
       if (c.relation === 'SAME_FACT') poser(b.id, { status: 'SAME_AS', byFileId: a.fileId, basis: 'SAME_FACT' });
       else if (c.winner && c.loser) {
         poser(c.loser.id, { status: 'REPLACED', byFileId: c.winner.fileId, basis: c.relation, ...(c.relation.startsWith('AI_') ? { conflict: c.fingerprint } : {}) });
+      } else if (c.relation === 'UNDETERMINED') {
+        // Carte #766 (E06) : les deux périodes restent établies ; réexamen T3 hors lecture, jamais de question.
+        incertaines.push({
+          fingerprint: c.fingerprint!, kind: a.kind, periodIds: [a.id, b.id], fileIds: [a.fileId, b.fileId], needsUser: false, review: c.review ?? 'NONE',
+          ...(c.late ? { late: true } : {}), ...(c.rearmable ? { rearmable: true } : {}),
+        });
       } else if (c.relation === 'CONTRADICTION' || c.relation === 'UNQUALIFIED') {
         const review = c.review ?? 'NONE';
         conflicts.push({
           fingerprint: c.fingerprint!, kind: a.kind, periodIds: [a.id, b.id], fileIds: [a.fileId, b.fileId],
           // Lot 113AD : un réexamen T3 en attente diffère la question (jamais une question que T3 peut encore expliquer).
-          needsUser: c.relation === 'CONTRADICTION' && review !== 'AWAITING', review,
+          // Carte #766 (E07) : un échec TECHNIQUE du réexamen ne fait jamais une question.
+          needsUser: c.relation === 'CONTRADICTION' && review !== 'AWAITING' && review !== 'FAILED', review,
+          ...(c.late ? { late: true } : {}), ...(c.rearmable ? { rearmable: true } : {}),
         });
         poser(a.id, { status: 'CONFLICT', basis: c.relation, conflict: c.fingerprint });
         poser(b.id, { status: 'CONFLICT', basis: c.relation, conflict: c.fingerprint });
@@ -242,5 +300,7 @@ export function resolvePeriods(entries: readonly ResolutionEntry[], decisions: r
   }
   // Une divergence avec une période déjà remplacée ou identique à une autre n'est plus une question.
   const vivantes = conflicts.filter((c) => c.periodIds.every((id) => out.get(id)!.status === 'CONFLICT'));
-  return { entries: out, pairs, conflicts: vivantes };
+  // Un ordre non prouvé avec une période remplacée, identique à une autre ou déjà divergente n'est plus à examiner.
+  const aExaminer = incertaines.filter((c) => c.periodIds.every((id) => out.get(id)!.status === 'ESTABLISHED'));
+  return { entries: out, pairs, conflicts: vivantes, uncertain: aExaminer };
 }

@@ -18,6 +18,12 @@
  * La sélection ne vérifiait que la RÉPONDABILITÉ (préconditions, corpus),
  * jamais l'UTILITÉ : une question constructible et répondable était publiée.
  *
+ * Carte #773 (13/11/2026) : l'entrée `home_asset_docs` décrite ci-dessus (et
+ * ses variantes `asset_docs`, `docs_asset`) est désormais RETIRÉE du stock et
+ * du catalogue par décision du PO ; le diagnostic reste l'historique de la
+ * règle, qui continue de s'appliquer aux listes conservées (`docs_unlinked`,
+ * `state_exports`) et à toute entrée future.
+ *
  * RÈGLE (générale, aucune phrase ni cas codé)
  *
  * Avant d'être promue spontanément, une candidate doit servir un BESOIN

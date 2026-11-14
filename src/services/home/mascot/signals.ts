@@ -336,7 +336,8 @@ function onboardingSubjects(raw: MascotRawData): MascotSubject[] {
 // file (`todo-items.ts`, `MascotPresentation.todo`). La phrase de niveau 1 les
 // compte sans les répéter. Le moteur ne garde de la file que ce qui sert à
 // écarter les doublons (échéances déjà portées par une action, ATP-004) et
-// l'éligibilité de la question « Que dois-je faire aujourd'hui ? ».
+// l'éligibilité de la question « Que dois-je traiter en priorité ? » (carte #773 :
+// « Que dois-je faire aujourd'hui ? » n'est plus une suggestion).
 
 const PRIORITY_RANK = { DO_FIRST: 0, DO_NEXT: 1, CAN_WAIT: 2 } as const;
 

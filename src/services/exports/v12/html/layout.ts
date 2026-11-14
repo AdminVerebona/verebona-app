@@ -11,7 +11,7 @@
  * d'annexe (une page chacune) sont suivies d'une unique page « Références ».
  */
 
-import { htmlDocument, pageSetup, IntegratedPages, isEmpty, type PlannedDoc } from './components';
+import { htmlDocument, pageSetup, IntegratedPages, isEmpty, DocumentNotesSection, type PlannedDoc } from './components';
 import type { RenderContext, RenderedHtml } from '../types';
 
 /** Libellé de pagination de la couverture (hors boîtes de marge) : « Page 1 / N ». */
@@ -20,7 +20,10 @@ export const coverPageLabel = (ctx: RenderContext): string => `Page 1 / ${ctx.pa
 export function assemble({ ctx, title, headerLabel, cover, groups, annexes = [], references }: {
   ctx: RenderContext; title: string; headerLabel: string; cover: string; groups: string[]; annexes?: PlannedDoc[]; references: string;
 }): RenderedHtml {
-  const pages = (groups ?? []).filter((g) => !isEmpty(g?.trim?.() ?? g))
+  // Carte #767 (E03) : « Notes / Description » des pièces (inclusion cochée) — dernier groupe de pages,
+  // avant les annexes intégrées (l'invariant « annexes puis Références » est conservé). Vide : rien.
+  const notes = DocumentNotesSection(ctx.documentNotes);
+  const pages = [...(groups ?? []), notes].filter((g) => !isEmpty(g?.trim?.() ?? g))
     .map((g) => `<div class="pg">\n${g}\n</div>`).join('\n');
   const body = [cover, pages, IntegratedPages(annexes), references].filter(Boolean).join('\n');
   return {

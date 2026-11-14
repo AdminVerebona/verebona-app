@@ -79,7 +79,7 @@ export async function deliverEmail(
   entry: CatalogEntry,
   rendered: RenderResult,
 ): Promise<DeliveryOutcome> {
-  const templateCode = rendered.emailTemplateCode;
+  let templateCode = rendered.emailTemplateCode;
   if (!templateCode) {
     // Lot 81E : cause explicite quand l'e-mail générique est couvert par une
     // communication durable (confirmation contractuelle, fin d'offre).
@@ -95,12 +95,21 @@ export async function deliverEmail(
   // Lot 1 : les templates `notif_*` sont seedés au Lot 5. Tant qu'ils n'existent
   // pas, on ignore proprement (skipped_unavailable) plutôt que de générer des
   // échecs. Dès qu'un template est seedé, l'email part sans changement de code.
-  const [tpl] = await db.select({ type: emailTemplates.type }).from(emailTemplates).where(eq(emailTemplates.type, templateCode)).limit(1);
+  let [tpl] = await db.select({ type: emailTemplates.type }).from(emailTemplates).where(eq(emailTemplates.type, templateCode)).limit(1);
+  // Carte #774 : gabarit dédié absent de la base (migration non appliquée) —
+  // l'e-mail part avec le gabarit de repli de l'événement, s'il en déclare un.
+  const fallbackCode = rendered.emailFallbackTemplateCode;
+  if (!tpl && fallbackCode && fallbackCode !== templateCode) {
+    [tpl] = await db.select({ type: emailTemplates.type }).from(emailTemplates).where(eq(emailTemplates.type, fallbackCode)).limit(1);
+    if (tpl) templateCode = fallbackCode;
+  }
   if (!tpl) {
     return { status: 'skipped_unavailable', errorCode: 'template_not_seeded' };
   }
 
   const variables: Record<string, string> = {
+    // Carte #774 : variables propres au gabarit dédié (date de l'événement…).
+    ...(rendered.emailVariables ?? {}),
     title: rendered.bellTitle,
     body: rendered.bellBody,
     // Lien absolu HTTPS (§15.3).

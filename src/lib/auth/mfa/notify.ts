@@ -9,6 +9,13 @@
  * SEUL (`recipientUserIds: [userId]`) — jamais l'autre membre d'un Duo.
  * Contenu : nature de l'événement, date et heure ; aucun secret, aucun code,
  * aucun nom d'appareil saisi. Jamais bloquant.
+ *
+ * Carte #774 : « clé d'accès ajoutée » et « application d'authentification
+ * activée » emploient chacune un gabarit DÉDIÉ du gabarit transactionnel
+ * commun (`notif_mfa_passkey_added`, `notif_mfa_totp_enabled`, migration
+ * 1698 ; choix fait par le catalogue). Même événement, même émission, même
+ * file : aucun envoi ajouté. `at` est la date de l'ÉVÉNEMENT affichée dans
+ * l'e-mail (heure de Paris), jamais la date d'envoi.
  */
 import { randomUUID } from 'node:crypto';
 import type { NextRequest } from 'next/server';

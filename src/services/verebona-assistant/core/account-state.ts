@@ -3,14 +3,14 @@
  *
  * Des requêtes bornées au compte (§13.2) qui ne rendent que des compteurs
  * et, depuis le lot 32 (point 8), le NOM d'un bien à citer dans un exemple
- * (« Quels sont les documents de Cupra ? ») : celui de la fiche ouverte, ou
- * un bien du compte hors fiche. Le nom n'est rendu qu'à l'utilisateur du
+ * (« Quelles sont les prochaines échéances de Cupra ? ») : celui de la fiche
+ * ouverte, ou un bien du compte hors fiche. Le nom n'est rendu qu'à l'utilisateur du
  * compte, dans un libellé du catalogue validé.
  */
 import { pgClient } from '@/db';
 import { publishableCardSql } from '@/services/to-process/publishability';
 import {
-  SUGGESTIONS, isAssetNameSuggestable,
+  isAssetNameSuggestable,
   type AccountSuggestionState, type SuggestionAsset, type SuggestionContext,
 } from '../registries/capability-registry';
 import { assistantAssetAvailableSql } from './asset-availability';
@@ -31,15 +31,23 @@ const SUGGESTION_SOON_DAYS = 30;
 const BORNE = 50;
 
 /**
+ * Demande d'actions du jour soumise au résolveur (lot 34) pour compter ce qui
+ * est en retard ou dû aujourd'hui. Carte #773 : ce texte n'est PLUS une
+ * suggestion (l'entrée `home_today` est retirée du catalogue) — il n'est
+ * jamais affiché ni servi ; il reste la demande type lue par le résolveur,
+ * parce que le compteur conditionne toujours « Que dois-je traiter en
+ * priorité ? » sur l'accueil (condition inchangée).
+ */
+export const ACTIONS_DUE_TODAY_PROBE = 'Que dois-je faire aujourd’hui ?';
+
+/**
  * Lot 34 : nombre d'éléments en retard ou dus aujourd'hui que le RÉSOLVEUR
- * des demandes d'actions rend pour le libellé exact de la suggestion
- * « Que dois-je faire aujourd'hui ? » — mêmes lectures canoniques, même
- * sélection. 0 si le résolveur ne reconnaît pas la question : la suggestion
- * n'est alors jamais proposée.
+ * des demandes d'actions rend pour la demande d'actions du jour — mêmes
+ * lectures canoniques, même sélection. 0 si le résolveur ne reconnaît pas
+ * la demande.
  */
 async function countActionsDueToday(accountId: number, today = aujourdhuiParis()): Promise<number> {
-  const label = SUGGESTIONS.find((s) => s.id === 'home_today')?.label ?? '';
-  const req = analyserDemandeActionnable(label, today);
+  const req = analyserDemandeActionnable(ACTIONS_DUE_TODAY_PROBE, today);
   if (!req) return 0;
   const w = actionableReadWindow(req, today);
   const lu = await listActionables(accountId, {
@@ -57,8 +65,6 @@ export async function loadAccountSuggestionState(accountId: number): Promise<Acc
        (SELECT count(*)::int FROM asset_files WHERE account_id = $1 AND deleted_at IS NULL) AS "documentsTotal",
        (SELECT count(*)::int FROM asset_files
          WHERE account_id = $1 AND deleted_at IS NULL AND ${effectiveAnalysisStateSql('asset_files')} IN ('UPLOADING', 'UPLOADED', 'ANALYZING')) AS "documentsInAnalysis",
-       (SELECT count(*)::int FROM asset_files
-         WHERE account_id = $1 AND deleted_at IS NULL AND ${effectiveAnalysisStateSql('asset_files')} = 'ANALYSIS_FAILED') AS "documentsFailed",
        (SELECT count(*)::int FROM export_generation WHERE account_id = $1 AND status IN ('ready', 'partial')) AS "exportsReady",
        (SELECT count(*)::int FROM asset_files
          WHERE account_id = $1 AND deleted_at IS NULL AND asset_id IS NULL AND linked_asset_id IS NULL) AS "documentsUnlinked"`,
@@ -80,7 +86,6 @@ export async function loadAccountSuggestionState(accountId: number): Promise<Acc
     assetsTotal: Number(r?.assetsTotal ?? 0),
     documentsTotal: Number(r?.documentsTotal ?? 0),
     documentsInAnalysis: Number(r?.documentsInAnalysis ?? 0),
-    documentsFailed: Number(r?.documentsFailed ?? 0),
     exportsReady: Number(r?.exportsReady ?? 0),
     documentsUnlinked: Number(r?.documentsUnlinked ?? 0),
   };

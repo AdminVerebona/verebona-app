@@ -9,6 +9,7 @@
 
 import type { DossierCode } from '@/services/exports/catalog';
 import type { DossierDataMap, RenderContext, RenderedHtml } from '../types';
+import { selected } from '../html/selection';
 import * as cil from './cil';
 import * as dossierComplet from './dossier-complet';
 import * as vente from './vente';
@@ -34,7 +35,20 @@ export const TEMPLATES: { [C in DossierCode]: TemplateEntry<C> } = {
 
 /** Rendu HTML d'un dossier (typage conservé par code). */
 export function renderDossierHtml<C extends DossierCode>(code: C, data: DossierDataMap[C], ctx: RenderContext): RenderedHtml {
-  return (TEMPLATES[code] as TemplateEntry<C>).render(data, ctx);
+  // Carte #767 (E03) : « Notes / Description » des pièces retenues — vide (donc rendu inchangé)
+  // tant que l'inclusion n'a pas été cochée ; même section pour les six modèles (`assemble`).
+  const documentNotes = documentNotesOf(data.documents);
+  return (TEMPLATES[code] as TemplateEntry<C>).render(data, documentNotes.length ? { ...ctx, documentNotes } : ctx);
+}
+
+/**
+ * Carte #767 (E03) — textes « Notes / Description » à imprimer : pièces RETENUES seulement (ni
+ * décochées, ni fichier inutilisable, ni données d'occupant), dans l'ordre du dossier. Pure.
+ */
+export function documentNotesOf(documents: DossierDataMap[DossierCode]['documents']): Array<{ title: string; text: string }> {
+  return selected(documents)
+    .filter((d) => typeof d.note === 'string' && d.note.trim().length > 0)
+    .map((d) => ({ title: d.title, text: String(d.note).trim() }));
 }
 
 export function templateVersion(code: DossierCode): string {

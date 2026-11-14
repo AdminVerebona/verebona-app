@@ -91,6 +91,8 @@ export interface TcoDiagnosticSource {
   retained: boolean;
   /** Lot 111V : clé stable de la ligne (geste envoyé au serveur). */
   lineKey?: string | null;
+  /** Carte #769 : version des propriétés matérielles de la ligne (décision obsolète refusée). */
+  lineVersion?: string | null;
   /** Lot 111V : gestes contextuels possibles sur cette source (vide : aucun geste, motif suffisant). */
   actions?: TcoDecisionOption[];
   /** Lot 111V : ligne comptée à la place (doublon présumé) — libellé, date et montant retenu, pour comparer. */
@@ -351,7 +353,8 @@ function deLigne(l: TcoEconomicLine, visible: boolean, detail: string | null = n
   return {
     lineId: l.id, fileId: l.fileId ?? l.sourceFileIds?.[0] ?? null, relatedFileId: l.relatedFileId, operationId: l.operationId,
     assetField: null, label: l.label, detail, amountCents, date: l.date, visible, retained: RETENUE(l),
-    lineKey: l.decisionKey ?? null,
+    // Carte #769 : clé du fait individuel et version affichée (validées par le serveur à chaque geste).
+    lineKey: l.factKey ?? l.decisionKey ?? null, ...(l.version ? { lineVersion: l.version } : {}),
     decision: l.userDecision?.applied ? { value: l.userDecision.decision, contradicted: !!l.userDecision.contradicted } : null,
   };
 }

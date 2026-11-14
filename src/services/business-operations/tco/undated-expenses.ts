@@ -32,12 +32,26 @@
  * Seules des dépenses RETENUES et RÉALISÉES figurent ici : un devis ou une
  * dépense prévue n'y est jamais, une date saisie ne transforme donc jamais une
  * prévision en dépense effective.
+ *
+ * Carte #769 — TROIS ISSUES DEPUIS LA MÊME DÉPENSE, TROIS QUANTITÉS DISTINCTES
+ *
+ *   · écart B : chaque dépense du panneau porte ses gestes du serveur —
+ *     « Conserver dans le TCO sans date » / « Annuler mon choix » (date),
+ *     la saisie de la date quand un champ métier existe, et « Retirer du
+ *     TCO » (décision d'inclusion existante, réversible depuis « Dépenses
+ *     non retenues » ; jamais un acquittement de la date) ;
+ *   · écart C : `count` (dépenses sans date — couverture, stable tant que la
+ *     date n'est pas établie ni la dépense retirée), `pendingCount`
+ *     (confirmations de date encore attendues) et `confirmedCount`
+ *     (confirmations déjà faites), calculés sur la trace COMPLÈTE du moteur,
+ *     jamais sur la liste abrégée. Une confirmation n'est ni une nouvelle
+ *     dépense ni une anomalie.
  * ══════════════════════════════════════════════════════════════════════════
  */
 import { isIsoDate } from '../finance/engine';
 import type { TcoEconomicLine, TcoResult } from './model';
 import type { TcoDiagnostics } from './diagnostics';
-import { TCO_DATE_ACTIONS, tcoLineDecisionOptions, type TcoDecisionOption } from './user-decisions';
+import { TCO_DATE_ACTIONS, tcoLineDecisionOptions, tcoLineUndated, type TcoDecisionOption } from './user-decisions';
 
 /** Plus ancienne date de dépense acceptée (contrôle de plausibilité, paramètre centralisé). */
 export const TCO_EXPENSE_DATE_MIN = '1900-01-01';
@@ -60,7 +74,10 @@ export type TcoUndatedOrigin = 'ASSET' | 'EQUIPMENT' | 'DOCUMENT' | 'OPERATION';
 
 export interface TcoUndatedExpense {
   lineId: string;
+  /** Carte #769 : clé du FAIT INDIVIDUEL (`factKey`), à défaut la clé stable de la ligne. */
   lineKey: string | null;
+  /** Carte #769 : version des propriétés matérielles affichées (renvoyée avec chaque geste). */
+  lineVersion: string | null;
   label: string;
   /** Montant RETENU dans le coût total (centimes EUR). */
   amountCents: number;
@@ -77,7 +94,10 @@ export interface TcoUndatedExpense {
   target: TcoUndatedTarget;
   /** #712 : conservée sans date par l'utilisateur (point de décision clos). */
   confirmedUndated: boolean;
-  /** #712 : gestes de la date (« Conserver dans le TCO sans date » / « Annuler mon choix ») — serveur seulement. */
+  /**
+   * #712 : gestes de la date (« Conserver dans le TCO sans date » / « Annuler mon choix ») — serveur seulement.
+   * Carte #769 (écart B) : et « Retirer du TCO » quand la dépense peut l'être (jamais confondu avec la date).
+   */
   options: TcoDecisionOption[];
 }
 
@@ -86,6 +106,10 @@ export interface TcoUndatedExpenses {
   count: number;
   /** Montant retenu correspondant (= `annual.undated.costsCents`). */
   costsCents: number;
+  /** Carte #769 : confirmations de date encore attendues (dépenses sans date ni choix « conserver sans date »). */
+  pendingCount: number;
+  /** Carte #769 : confirmations de date déjà faites (« Vos choix confirmés »). */
+  confirmedCount: number;
   items: TcoUndatedExpense[];
   truncated: boolean;
 }
@@ -102,6 +126,13 @@ export const TCO_UNDATED_TEXTS = {
   close: 'Fermer',
   confirmDate: 'Confirmer cette date',
   reference: 'Voir l’événement de référence',
+  // Carte #769 (écart C) — à valider par le PO.
+  counters: (pending: number, confirmed: number): string =>
+    `Conservation sans date : ${pending} choix à confirmer, ${confirmed} déjà ${confirmed > 1 ? 'confirmés' : 'confirmé'}.`,
+  pendingBadge: 'Choix à confirmer',
+  // Carte #769 (écart B) — à valider par le PO : retrait de plusieurs dépenses indissociables (même clé stable).
+  removeShared: (n: number): string =>
+    `Retirer du coût de possession les ${n} dépenses de même montant portées par ce justificatif ? Elles ne peuvent pas être retirées séparément. Vous pourrez les ajouter de nouveau.`,
   noField: 'Cette date ne se saisit pas ici : corrigez-la sur le justificatif ou sur l’événement de référence de la dépense.',
   savedOne: 'Date enregistrée',
   savedMany: (n: number) => `${n} dates enregistrées`,
@@ -166,6 +197,16 @@ export function tcoUndatedExpenses(t: Pick<TcoResult, 'lines'>, shown: readonly 
     vues.add(l.id);
     lignes.push(l);
   }
+  // Carte #769 (écart B) : « Retirer du TCO » suit la décision d'inclusion existante, rattachée à la clé stable ; si
+  // plusieurs dépenses retenues la partagent, le retrait les concerne toutes — la confirmation le dit explicitement.
+  const partage = new Map<string, number>();
+  for (const l of t.lines) if (RETENUE(l.status) && l.decisionKey) partage.set(l.decisionKey, (partage.get(l.decisionKey) ?? 0) + 1);
+  const gestes = (l: TcoEconomicLine): TcoDecisionOption[] => tcoLineDecisionOptions(l, shown)
+    .filter((o) => TCO_DATE_ACTIONS.has(o.action) || o.action === 'EXCLUDE')
+    .map((o) => {
+      const n = o.action === 'EXCLUDE' && l.decisionKey ? partage.get(l.decisionKey) ?? 1 : 1;
+      return n > 1 ? { ...o, confirm: TCO_UNDATED_TEXTS.removeShared(n) } : o;
+    });
   const items = lignes.slice(0, TCO_UNDATED_MAX_ITEMS).map((l): TcoUndatedExpense => {
     const docs = new Map<number, string | null>();
     if (l.fileId != null) docs.set(l.fileId, l.source === 'DOCUMENT' ? l.label : null);
@@ -173,16 +214,19 @@ export function tcoUndatedExpenses(t: Pick<TcoResult, 'lines'>, shown: readonly 
     const ui = l as TcoEconomicLine & { supportingDocuments?: Array<{ fileId: number; title: string }> };
     for (const d of ui.supportingDocuments ?? []) if (!docs.has(d.fileId) || docs.get(d.fileId) == null) docs.set(d.fileId, d.title);
     return {
-      lineId: l.id, lineKey: l.decisionKey ?? null, label: l.label, amountCents: l.includedCents, category: l.category,
+      lineId: l.id, lineKey: l.factKey ?? l.decisionKey ?? null, lineVersion: l.version ?? null, label: l.label, amountCents: l.includedCents, category: l.category,
       origin: ORIGINE[l.source], operationId: l.operationId, operationLabel: l.operationLabel,
       documents: [...docs].map(([fileId, title]) => ({ fileId, title })),
       currentDate: isIsoDate(l.date) ? l.date.slice(0, 10) : null,
       note: l.note, target: tcoUndatedTarget(l), confirmedUndated: !!l.undatedConfirmation,
-      options: tcoLineDecisionOptions(l, shown).filter((o) => TCO_DATE_ACTIONS.has(o.action)),
+      options: gestes(l),
     };
   });
+  const confirmees = lignes.filter((l) => !!l.undatedConfirmation).length;
   return {
     count: lignes.length, costsCents: lignes.reduce((n, l) => n + l.includedCents, 0),
+    // Carte #769 (écart C) : trace complète (jamais la liste abrégée). « Attendue » : le geste de confirmation existe.
+    pendingCount: lignes.filter((l) => !l.undatedConfirmation && tcoLineUndated(l)).length, confirmedCount: confirmees,
     items, truncated: lignes.length > items.length,
   };
 }

@@ -28,7 +28,7 @@
 import type { Treatment } from '../config/treatments';
 import { evaluateModelForTreatment, type UnusableReason, type UsableModelsContext } from '../registry/usable-models';
 import type { OperationalDiagnostic } from './model-operational.service';
-import { PROBE_ERROR_KIND_LABELS } from './probe-classification';
+import { GLOBAL_PROBE_KINDS, PROBE_ERROR_KIND_LABELS, type ProbeErrorKind } from './probe-classification';
 import type { CoupleQualification } from '../gateway/fallback-policy';
 
 export type ChainRank = 'primaryModel' | 'fallback1' | 'fallback2';
@@ -191,6 +191,16 @@ interface ModelDiagnosticView {
   checkedAt: string | null;
   source: string | null;
   sourceLabel: string | null;
+  // ── Lot 114 (#771, B01) — absents tant que la migration 1692 n'est pas appliquée ──
+  httpStatus?: number | null;
+  providerCode?: string | null;
+  /** Accès concerné, pseudonymisé (jamais la clé). */
+  access?: string | null;
+  capability?: string | null;
+  probeCallId?: number | null;
+  confirmedAt?: string | null;
+  /** Prochain recontrôle au plus tôt. */
+  nextProbeAt?: string | null;
 }
 
 /** Un modèle actif indisponible, avec TOUS ses usages (BO, alerte). */
@@ -208,6 +218,9 @@ const SOURCE_LABELS: Readonly<Record<string, string>> = {
   provider_test: 'test de la clé fournisseur',
   catalog_refresh: 'actualisation du catalogue (sonde)',
   qualification: 'qualification technique',
+  // Lot 114 (#771) — libellés à valider par le PO.
+  gateway_call: 'refus reçu par un appel réel',
+  recovery_check: 'recontrôle de rétablissement (sonde)',
 };
 
 /** Vue BO d'un diagnostic (pure). */
@@ -219,6 +232,10 @@ function diagnosticView(d: OperationalDiagnostic | undefined | null): ModelDiagn
     status: d.checkStatus, operational: d.ok, error: d.error, errorKind: d.errorKind,
     errorKindLabel: d.errorKind ? PROBE_ERROR_KIND_LABELS[d.errorKind] ?? d.errorKind : null,
     checkedAt: d.checkedAt, source: d.source, sourceLabel: SOURCE_LABELS[d.source] ?? d.source,
+    ...(d.access !== undefined ? {
+      httpStatus: d.httpStatus ?? null, providerCode: d.providerCode ?? null, access: d.access ?? null, capability: d.capability ?? null,
+      probeCallId: d.probeCallId ?? null, confirmedAt: d.confirmedAt ?? null, nextProbeAt: d.nextProbeAt ?? null,
+    } : {}),
   };
 }
 
@@ -280,10 +297,22 @@ export function groupMessage(g: UnavailableModelGroup): string {
 
 type RaiseFn = (a: import('../alerts/alerts.repository').AlertInput) => Promise<boolean>;
 
+/** Code de l'alerte « modèle actif indisponible » et de l'incident global du fournisseur (#771, B04). */
+export const ACTIVE_MODEL_ALERT_CODE = 'ai_active_model_unavailable';
+export const PROVIDER_AUTH_ALERT_CODE = 'ai_provider_auth_failure';
+
 /**
- * Lève l'alerte d'exploitation (`ai_alerts`) : UNE par modèle et fenêtre
- * (jour), quel que soit le nombre d'usages ; `details.usages` les porte
- * tous (traitement, rang, source, fallbackAvailable). Sévérité agrégée.
+ * Lève l'alerte d'exploitation (`ai_alerts`) : UNE par modèle, quel que soit
+ * le nombre d'usages ; `details.usages` les porte tous (traitement, rang,
+ * source, fallbackAvailable). Sévérité agrégée.
+ *
+ * Lot 114 (carte #771, B03) : alerte de CONDITION — une seule alerte non
+ * résolue par modèle et par accès tant que l'indisponibilité dure (clé
+ * `ai:active-model:<modèle>:<accès>`) : un passage planifié, un redémarrage ou
+ * une actualisation la met à jour (usages, sévérité relevée ou abaissée,
+ * `last_seen_at`) sans en créer une autre. Sans l'index des conditions
+ * (migration 1521) : clé journalière historique. `raise` injecté (tests) :
+ * comportement historique, une alerte par modèle et par jour.
  */
 export async function raiseActiveModelAlerts(
   anomalies: readonly ActiveModelAnomaly[],
@@ -292,12 +321,13 @@ export async function raiseActiveModelAlerts(
   diagnostics?: ReadonlyMap<string, OperationalDiagnostic>,
 ): Promise<number> {
   if (anomalies.length === 0) return 0;
-  const lever: RaiseFn = raise ?? (await import('../alerts/alerts.repository')).raiseAlert;
+  const R = raise ? null : await import('../alerts/alerts.repository');
   let n = 0;
   for (const g of groupAnomaliesByModel(anomalies, diagnostics)) {
-    const ok = await lever({
-      kind: 'anomaly',
-      code: 'ai_active_model_unavailable',
+    const jour = `ai:active-model:${g.model}:${now.toISOString().slice(0, 10)}`;
+    const alerte = {
+      kind: 'anomaly' as const,
+      code: ACTIVE_MODEL_ALERT_CODE,
       treatment: null,
       severity: g.severity,
       message: groupMessage(g),
@@ -305,14 +335,170 @@ export async function raiseActiveModelAlerts(
         model: g.model,
         reasons: g.reasons,
         usages: g.usages.map((u) => ({ treatment: u.treatment, rank: u.rank, source: u.source, fallbackAvailable: u.fallbackAvailable, ...(u.secours ? { secours: u.secours } : {}) })),
-        diagnostic: { status: g.diagnostic.status, error: g.diagnostic.error, checkedAt: g.diagnostic.checkedAt, source: g.diagnostic.source },
+        diagnostic: {
+          status: g.diagnostic.status, error: g.diagnostic.error, checkedAt: g.diagnostic.checkedAt, source: g.diagnostic.source,
+          ...(g.diagnostic.access !== undefined ? {
+            httpStatus: g.diagnostic.httpStatus ?? null, providerCode: g.diagnostic.providerCode ?? null, errorKind: g.diagnostic.errorKind,
+            access: g.diagnostic.access ?? null, nextProbeAt: g.diagnostic.nextProbeAt ?? null, probeCallId: g.diagnostic.probeCallId ?? null,
+          } : {}),
+        },
+        // #771 (B02) : modèles distincts et usages comptés séparément.
+        counts: { models: 1, usages: g.usages.length },
       },
       drilldownHref: '/admin/ai-config',
-      dedupeKey: `ai:active-model:${g.model}:${now.toISOString().slice(0, 10)}`,
-    }).catch(() => false);
-    if (ok) n++;
+    };
+    if (raise) {
+      if (await raise({ ...alerte, dedupeKey: jour }).catch(() => false)) n++;
+      continue;
+    }
+    try {
+      const r = await R!.raiseConditionAlert({
+        ...alerte, conditionKey: `ai:active-model:${g.model}:${g.diagnostic.access ?? 'acces-inconnu'}`, fallbackDedupeKey: jour,
+      });
+      if (r.created) {
+        n++;
+        // Alertes journalières antérieures du même modèle : remplacées par l'alerte de condition (jamais supprimées).
+        if (r.id !== null) {
+          const anciennes = (await R!.listUnresolvedAlerts([ACTIVE_MODEL_ALERT_CODE]))
+            .filter((a) => a.id !== r.id && (a.details as { model?: unknown } | null)?.model === g.model);
+          await R!.resolveAlerts(anciennes.map((a) => a.id), {
+            code: 'SUPERSEDED', reason: 'Remplacée par l’alerte de condition du même modèle (#771).', supersededBy: r.id,
+          });
+        }
+      }
+    } catch { /* alerte non levée : le passage suivant la relèvera */ }
   }
   return n;
+}
+
+/**
+ * Lot 114 (carte #771, B03) — RÉSOLUTION automatique : une alerte « modèle actif indisponible » dont le modèle
+ * n'est plus en anomalie (rétabli, ou retiré des chaînes actives) est résolue (jamais supprimée). À n'appeler
+ * qu'après une détection RÉUSSIE des anomalies. Rend le nombre d'alertes résolues ; ne lève jamais.
+ */
+export async function resolveRecoveredModelAlerts(anomalies: readonly ActiveModelAnomaly[]): Promise<number> {
+  try {
+    const R = await import('../alerts/alerts.repository');
+    const enAnomalie = new Set(anomalies.map((a) => a.model));
+    const ouvertes = await R.listUnresolvedAlerts([ACTIVE_MODEL_ALERT_CODE]);
+    const retablies = ouvertes.filter((a) => {
+      const model = (a.details as { model?: unknown } | null)?.model;
+      return typeof model === 'string' && !enAnomalie.has(model);
+    });
+    return await R.resolveAlerts(retablies.map((a) => a.id), {
+      code: 'MODEL_AVAILABLE_AGAIN',
+      reason: 'Le modèle n’est plus en anomalie dans les chaînes actives (rétabli ou remplacé) — résolution automatique.',
+    });
+  } catch {
+    return 0;
+  }
+}
+
+// ── Lot 114 (carte #771, B01 / B04 / B05) : surveillance des sondes ─────────
+
+/** Un modèle dont le dernier contrôle n'a rien conclu, ou attend une confirmation. */
+interface WatchEntry {
+  model: string;
+  status: 'suspect' | 'inconclusive';
+  error: string | null;
+  errorKindLabel: string | null;
+  httpStatus: number | null;
+  providerCode: string | null;
+  checkedAt: string;
+  sourceLabel: string;
+  /** État RETENU, inchangé par ce contrôle : `true` sain, `false` indisponible confirmé, `null` inconnu. */
+  operational: boolean | null;
+}
+
+/** Incident GLOBAL du fournisseur (clé, authentification, projet) : aucun modèle n'en est tenu responsable. */
+interface ProviderIncident {
+  code: 'PROVIDER_AUTH_FAILURE';
+  kind: string;
+  kindLabel: string;
+  error: string | null;
+  checkedAt: string;
+  access: string | null;
+  /** Modèles dont le dernier contrôle a buté sur l'incident (état retenu inchangé). */
+  models: string[];
+}
+
+export interface OperationalWatch {
+  providerIncident: ProviderIncident | null;
+  /** Échec présumé en attente de confirmation — le modèle reste appelable. */
+  suspect: WatchEntry[];
+  /** Dernier contrôle non concluant (hors incident global) — état retenu inchangé. */
+  inconclusive: WatchEntry[];
+  /** Décompte des DERNIERS contrôles avec la clé active : jamais « tout est sain » faute de sonde. */
+  counts: { controlled: number; ok: number; failedConfirmed: number; suspect: number; inconclusive: number };
+  summary: string;
+}
+
+/**
+ * Vue de surveillance des sondes (pure) : états `suspect` et `inconclusive` affichés à part des indisponibilités
+ * confirmées, incident global du fournisseur séparé (`PROVIDER_AUTH_FAILURE`), décompte des contrôles.
+ * L'incident global est en cours tant qu'aucun modèle n'a répondu depuis.
+ */
+export function operationalWatchOf(diagnostics: ReadonlyMap<string, OperationalDiagnostic>): OperationalWatch {
+  const tous = [...diagnostics.values()].sort((a, b) => a.model.localeCompare(b.model));
+  const globaux = tous.filter((d) => d.checkStatus === 'inconclusive' && d.errorKind !== null && GLOBAL_PROBE_KINDS.has(d.errorKind as ProbeErrorKind));
+  const dernierOk = tous.filter((d) => d.checkStatus === 'ok').reduce((m, d) => Math.max(m, Date.parse(d.checkedAt)), 0);
+  const recent = globaux.reduce<OperationalDiagnostic | null>((m, d) => (m === null || Date.parse(d.checkedAt) > Date.parse(m.checkedAt) ? d : m), null);
+  const enCours = recent !== null && Date.parse(recent.checkedAt) > dernierOk;
+  const entree = (d: OperationalDiagnostic, status: WatchEntry['status']): WatchEntry => ({
+    model: d.model, status, error: d.error, errorKindLabel: d.errorKind ? PROBE_ERROR_KIND_LABELS[d.errorKind] ?? d.errorKind : null,
+    httpStatus: d.httpStatus ?? null, providerCode: d.providerCode ?? null, checkedAt: d.checkedAt,
+    sourceLabel: SOURCE_LABELS[d.source] ?? d.source, operational: d.ok,
+  });
+  const suspect = tous.filter((d) => d.checkStatus === 'suspect').map((d) => entree(d, 'suspect'));
+  const inconclusive = tous.filter((d) => d.checkStatus === 'inconclusive' && !globaux.includes(d)).map((d) => entree(d, 'inconclusive'));
+  const counts = {
+    controlled: tous.length,
+    ok: tous.filter((d) => d.checkStatus === 'ok').length,
+    failedConfirmed: tous.filter((d) => d.checkStatus === 'failed_confirmed').length,
+    suspect: suspect.length,
+    inconclusive: tous.filter((d) => d.checkStatus === 'inconclusive').length,
+  };
+  return {
+    providerIncident: enCours && recent ? {
+      code: 'PROVIDER_AUTH_FAILURE', kind: String(recent.errorKind), kindLabel: PROBE_ERROR_KIND_LABELS[recent.errorKind as ProbeErrorKind] ?? String(recent.errorKind),
+      error: recent.error, checkedAt: recent.checkedAt, access: recent.access ?? null, models: globaux.map((d) => d.model),
+    } : null,
+    suspect, inconclusive, counts,
+    summary: counts.controlled === 0
+      ? 'Aucun modèle contrôlé avec la clé active : état inconnu (aucune sonde exécutée).'
+      : `${pluriel(counts.controlled, 'modèle contrôlé', 'modèles contrôlés')} avec la clé active : ${counts.ok} ok, ${counts.failedConfirmed} indisponible(s) confirmé(s), ${counts.suspect} à confirmer, ${counts.inconclusive} non concluant(s).`,
+  };
+}
+
+/**
+ * Alerte de CONDITION de l'incident global du fournisseur (`ai_provider_auth_failure`) : levée une fois par
+ * accès tant qu'il dure, résolue dès qu'un modèle répond. Distincte des indisponibilités de modèles et des
+ * alertes tarifaires (#770), qu'elle ne touche pas. Ne lève jamais.
+ */
+export async function reconcileProviderIncidentAlert(watch: OperationalWatch): Promise<'raised' | 'resolved' | null> {
+  try {
+    const R = await import('../alerts/alerts.repository');
+    const inc = watch.providerIncident;
+    if (inc) {
+      const r = await R.raiseConditionAlert({
+        kind: 'anomaly', code: PROVIDER_AUTH_ALERT_CODE, treatment: null, severity: 'critical',
+        message: `Incident global du fournisseur IA (${inc.kindLabel}) : ${pluriel(inc.models.length, 'sonde n’a', 'sondes n’ont')} rien pu conclure. `
+          + 'Aucun modèle n’est déclaré indisponible pour ce motif : vérifiez la clé et le projet dans BO › Fournisseur.',
+        details: { kind: inc.kind, error: inc.error, checkedAt: inc.checkedAt, access: inc.access, models: inc.models },
+        drilldownHref: '/admin/ai-config',
+        conditionKey: `ai:provider-auth:gemini:${inc.access ?? 'acces-inconnu'}`,
+        fallbackDedupeKey: `ai:provider-auth:gemini:${inc.checkedAt.slice(0, 10)}`,
+      });
+      return r.created ? 'raised' : null;
+    }
+    const ouvertes = await R.listUnresolvedAlerts([PROVIDER_AUTH_ALERT_CODE]);
+    const n = await R.resolveAlerts(ouvertes.map((a) => a.id), {
+      code: 'PROVIDER_ACCESS_RESTORED', reason: 'Un modèle a répondu depuis l’incident — résolution automatique.',
+    });
+    return n > 0 ? 'resolved' : null;
+  } catch {
+    return null;
+  }
 }
 
 /**

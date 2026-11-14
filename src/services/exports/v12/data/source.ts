@@ -27,6 +27,8 @@ import {
   classifyDocument, documentTitle, documentTypeLabel, fileFormatOf, isIntegrable, type DocKind,
 } from './documents';
 import type { ExportSourceTrace } from './canonical-source';
+import type { NotesDescriptionRecord } from '@/lib/documents/notes-description';
+import { notesDescriptionForThirdParty } from '@/services/documents/notes-description/third-party';
 
 /**
  * Valeurs des informations complémentaires (contrat `getAssetAdditionalInfos`) :
@@ -63,6 +65,13 @@ export interface SourceDocument {
   // Lot 113Z (#723) : plus de `description` — un dossier destiné à un tiers ne
   // porte jamais le contenu « Notes / Description » d'un document (T1 ou
   // utilisateur), même indirectement par une autre section.
+  /**
+   * Carte #767 (E03) : texte AFFICHÉ de « Notes / Description »
+   * (`resolveNotesDescription`), posé UNIQUEMENT par `withNotesDescription`
+   * quand l'utilisateur a coché l'inclusion à la préparation du dossier.
+   * Absent du chargement de la source (`loadExportSource`) : exclu par défaut.
+   */
+  notesDescription?: string | null;
   cilRubricCodes: string[];
   /** Tous les codes connus (types V1/V2, fonction retenue, rubriques CIL), en capitales. */
   codes: string[];
@@ -341,6 +350,41 @@ async function documentPeriodLines(accountId: number, fileIds: number[]): Promis
 /** Pose la période principale de chaque pièce (pure). */
 export function withPeriodLines(docs: SourceDocument[], lines: ReadonlyMap<number, string>): SourceDocument[] {
   return docs.map((d) => (lines.has(d.id) ? { ...d, periodLine: lines.get(d.id)! } : d));
+}
+
+/**
+ * Carte #767 (E03) — pose sur les pièces RETENUES le texte affiché de « Notes /
+ * Description » (pure). `values` : valeurs courantes lues en lecture stricte
+ * (`readCurrentNotesDescriptionManyStrict`). Une pièce absente de `values`, ou
+ * dont le texte affiché est vide (y compris effacement volontaire), ne porte
+ * rien — jamais la description masquée par une note.
+ */
+export function withNotesDescription(
+  docs: SourceDocument[], selectedIds: ReadonlySet<number>, values: ReadonlyMap<number, NotesDescriptionRecord>,
+): SourceDocument[] {
+  return docs.map((d) => {
+    const v = selectedIds.has(d.id) ? values.get(d.id) : undefined;
+    const texte = v ? notesDescriptionForThirdParty(v, true) : null;
+    const affiche = texte ? (texte.notes ?? texte.description) : null;
+    return affiche ? { ...d, notesDescription: affiche } : d;
+  });
+}
+
+/**
+ * Carte #767 (E03) — source enrichie du texte « Notes / Description » des
+ * pièces retenues, pour un dossier dont l'inclusion a été cochée. Lecture
+ * STRICTE (fail-closed) : schéma 1580 incomplet ou illisible, erreur SQL →
+ * l'erreur remonte et la génération échoue ; aucun dossier n'est produit avec
+ * une valeur de repli.
+ */
+export async function attachNotesDescription(
+  source: ExportSource, accountId: number, selectedDocumentIds: readonly number[], contexte: string,
+): Promise<ExportSource> {
+  const ids = new Set(selectedDocumentIds);
+  if (ids.size === 0) return source;
+  const { readCurrentNotesDescriptionManyStrict } = await import('@/services/documents/notes-description/store');
+  const values = await readCurrentNotesDescriptionManyStrict(accountId, [...ids], contexte);
+  return { ...source, documents: withNotesDescription(source.documents, ids, values) };
 }
 
 function toSourcePhotos(photos: PhotoRef[]): SourcePhoto[] {

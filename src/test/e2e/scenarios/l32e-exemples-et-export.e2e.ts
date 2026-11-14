@@ -174,7 +174,11 @@ scenario('L32E', 'Lot 32E — exemples « Par exemple » répondables, export d�
     const tous = vus.join('\n');
     expect(tous).toContain('Que dois-je traiter en priorité ?');
     expect(tous).toContain('Quels documents ne sont rattachés à aucun bien ?');
-    expect(tous).toMatch(/Quels sont les documents de Cupra \?/);
+    // Règle remplacée (carte #773) : les formulations retirées par le PO ne sont plus des exemples, sur aucune
+    // page, même pour ce compte riche (documents rattachés, document en erreur, document en analyse, offre) ;
+    // l'exemple qui nomme le bien est celui des échéances (conservé).
+    expect(tous).not.toMatch(/Quels sont les documents d|Que dois-je faire aujourd|Où en est l’analyse de mes documents|Comment arbitrer entre deux valeurs|Que comprend mon offre|Pourquoi un document est-il en erreur|Combien ai-je dépensé en \d{4}/);
+    expect(tous).toMatch(/Quelles sont les prochaines échéances de Cupra \?/);
   });
 
   it('AC8.8 — fiche : le bien est NOMMÉ et la réponse porte sur ce bien ; jamais « ce bien »', async () => {
@@ -184,15 +188,18 @@ scenario('L32E', 'Lot 32E — exemples « Par exemple » répondables, export d�
     await bien(c, 'Polo');
     await fichier(c, cupra, 'Facture entretien garage');
     await make.agendaItem(c as never, { title: 'Contrôle technique', startDate: dans(12), assetIds: [cupra] });
+    // Règle remplacée (carte #773, décision PO n° 30) : « Quels sont les documents de Cupra ? » n'est plus un
+    // exemple de la fiche ; le bien reste NOMMÉ par l'exemple des échéances. Posée librement depuis la fiche,
+    // la question des documents du bien reste répondue sur ce bien.
     const l = await exemples(c, `/assets/${cupra}`);
     expect(l.map((s) => s.label)).toEqual([
-      'Quels sont les documents de Cupra ?',
       'Quelles sont les prochaines échéances de Cupra ?',
       'Comment compléter la fiche d’un bien ?',
+      'Comment ajouter un document ?',
     ]);
-    const docs = await demander(c, l[0].label, { pageContext: await contexte(`/assets/${cupra}`, 'web') });
+    const docs = await demander(c, 'Quels sont les documents de Cupra ?', { pageContext: await contexte(`/assets/${cupra}`, 'web') });
     expect(docs.answer).toContain('Facture entretien garage');
-    const ech = await demander(c, l[1].label, { pageContext: await contexte(`/assets/${cupra}`, 'web') });
+    const ech = await demander(c, l[0].label, { pageContext: await contexte(`/assets/${cupra}`, 'web') });
     expect(ech.answer).toMatch(/Contrôle technique/);
     expect(ech.answer).toMatch(/Cupra/);
     for (const r of ['/accueil', '/documents', '/assets', '/agenda']) {

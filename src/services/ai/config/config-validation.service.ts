@@ -131,19 +131,16 @@ function validateModels(c: TreatmentConfig, cat: ConfigCatalogs): ValidationIssu
       const e = cat.modelEligibility(t, model);
       if (!e.usable) {
         out.push(issue(t, field, `Le modèle « ${model} » n’est pas utilisable pour ${t} : ${e.reasonText}.`));
-      } else if (!e.priced) {
-        // Lot 35B : jamais bloquant — signalé pour que le coût « non
-        // calculable » ne surprenne personne.
-        out.push(issue(t, field, `Tarif inconnu pour « ${model} » : appels autorisés, coûts marqués non calculables.`, false));
       }
+      // Lot 114 (Trello #770) — règle du lot 35B remplacée (« tarif inconnu : signalé, jamais bloquant ») : un modèle
+      // sans tarif officiel vérifié n'est PAS utilisable (`PRICING_NOT_VERIFIED`, motif précis dans `reasonText`).
       continue;
     }
     if (!cat.availableModels.has(model)) {
       out.push(issue(t, field, `Le modèle « ${model} » ne figure pas au catalogue fournisseur.`));
     } else if (!cat.pricedModels.has(model)) {
-      // Lot 35B : un modèle sans tarif connu reste utilisable (UNKNOWN) —
-      // signalé, jamais bloquant.
-      out.push(issue(t, field, `Tarif inconnu pour « ${model} » : appels autorisés, coûts marqués non calculables.`, false));
+      // Lot 114 (Trello #770) — règle du lot 35B remplacée : sans tarif officiel vérifié, le modèle est refusé.
+      out.push(issue(t, field, `Le modèle « ${model} » n’est pas utilisable pour ${t} : tarif officiel non vérifié.`));
     }
   }
 

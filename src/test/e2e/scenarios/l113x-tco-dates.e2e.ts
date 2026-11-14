@@ -249,13 +249,17 @@ scenario('L113X', 'TCO — une seule alerte « dépenses sans date fiable » et 
     let t = (await getTco(v.asset.id)).body.tco;
     for (const c of [QUITTANCES, AVIS]) {
       const i = item(t, c);
-      expect(i.options.map((o: Json) => o.label)).toEqual(['Conserver dans le TCO sans date']);
+      // Règle remplacée (carte #769, écart B) : « Retirer du TCO » est aussi proposé depuis la même dépense du panneau.
+      expect(i.options.map((o: Json) => o.label)).toEqual(['Conserver dans le TCO sans date', 'Retirer du TCO']);
       const r = await decide(v.asset.id, { lineId: i.lineId, lineKey: i.lineKey, action: 'CONFIRM_UNDATED' });
       expect(r.status, JSON.stringify(r.body)).toBe(200);
       t = r.body.tco;
     }
     expect(t.undatedExpenses.count).toBe(5);
-    for (const c of [QUITTANCES, AVIS]) expect(item(t, c)).toMatchObject({ confirmedUndated: true, options: [expect.objectContaining({ action: 'REVERT_UNDATED' })] });
+    // Règle remplacée (carte #769, écart B) : « Annuler mon choix » ET « Retirer du TCO » depuis la même dépense.
+    for (const c of [QUITTANCES, AVIS]) {
+      expect(item(t, c)).toMatchObject({ confirmedUndated: true, options: [expect.objectContaining({ action: 'REVERT_UNDATED' }), expect.objectContaining({ action: 'EXCLUDE' })] });
+    }
     const ouvert = (t.diagnostics.items as Json[]).find((d) => d.code === 'ECONOMIC_DATE_UNDETERMINED');
     expect(ouvert).toMatchObject({ status: 'OPEN', count: 2 });
     // Une date sur une autre dépense ne rouvre aucun choix confirmé.
@@ -296,7 +300,8 @@ scenario('L113X', 'TCO — une seule alerte « dépenses sans date fiable » et 
     const t = (await getTco(asset.id)).body.tco;
     expect(t.undatedExpenses.count).toBe(2);
     const r = await saisir(asset.id, [entree(t, ACHAT, '2024-03-15'), entree(t, EQUIPEMENT, '2024-03-15')]);
-    expect(r.body.tco.undatedExpenses).toEqual({ count: 0, costsCents: 0, items: [], truncated: false });
+    // Règle remplacée (carte #769, écart C) : le résultat porte aussi les deux compteurs de confirmations (0 ici).
+    expect(r.body.tco.undatedExpenses).toEqual({ count: 0, costsCents: 0, pendingCount: 0, confirmedCount: 0, items: [], truncated: false });
     expect(r.body.tco.summary.cumulativeCostCents).toBe(ACHAT + EQUIPEMENT);
     coherent(r.body.tco);
   });

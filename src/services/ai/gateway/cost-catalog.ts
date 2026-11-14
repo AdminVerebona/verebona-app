@@ -321,12 +321,11 @@ export async function assertPricingReady(): Promise<void> {
   }
 
   if (state.missingForRunning.length > 0) {
-    // Lot 35B : JAMAIS bloquant, dans aucun environnement. Les appels
-    // fonctionnent, les jetons sont comptés, le coût est « non calculable »
-    // (jamais estimé) et les agrégats le distinguent des coûts connus.
+    // Lot 114 (Trello #770) — règle du lot 35B remplacée : le DÉMARRAGE n'est jamais bloqué, mais un modèle sans
+    // tarif officiel vérifié n'est plus appelé (garde de la passerelle : rang sauté, rang configuré suivant essayé).
     console.warn(
       `[ai-cost] Modèles sans tarif connu (${state.missingForRunning.join(', ')}) : `
-      + 'appels autorisés, coûts marqués non calculables jusqu’à la prochaine synchronisation tarifaire.',
+      + 'ils ne seront pas appelés tant que leur tarif officiel n’est pas vérifié (prochaine synchronisation tarifaire).',
     );
   }
 

@@ -20,6 +20,13 @@
  * Une entrée absente de ce parcours fait échouer le test : une suggestion
  * qui ne satisfait pas ce contrat n'est pas publiable.
  *
+ * Carte #773 (lot 114S) : sept formulations sont retirées du catalogue
+ * (`home_year_spend`, `home_today`, `home_analysis`, `home_asset_docs`,
+ * `asset_docs`, `docs_asset`, `todo_arbitrate`, `account_plan`,
+ * `state_failed`). Le contrat porte sur les entrées RESTANTES, toutes
+ * vérifiées ; les cas réels qui imposaient ces libellés imposent désormais
+ * leur absence (règles remplacées, voir chaque test).
+ *
  * Modèle SIMULÉ (aucun réseau) : UNDERSTAND ne comprend rien (les questions
  * doivent être routées sans lui) ; ANSWER cite la première source d'aide.
  * Centre d'aide : instantané publié (`fixtures/help-corpus-t2.snapshot.json`).
@@ -137,15 +144,13 @@ scenario('L34-SUGG', 'Lot 34 — chaque suggestion affichée → cliquée → in
         case 'actionsDueToday': await echeance(c, cupra!, 'Contrôle technique', J); break;
         case 'deadlinesSoon': case 'deadlinesUpcoming': case 'asset.deadlines': await echeance(c, cupra!, 'Révision annuelle', dans(10)); break;
         case 'documentsInAnalysis': await fichier(c, cupra, 'Diagnostic énergie', 'ANALYZING'); break;
-        case 'documentsFailed': await fichier(c, cupra, 'Scan illisible', 'ANALYSIS_FAILED'); break;
         case 'documentsUnlinked': await fichier(c, null, 'Contrat assurance habitation'); break;
         case 'exportsReady':
           await sql`INSERT INTO export_generation (asset_id, account_id, user_id, export_type, status)
                     VALUES (${cupra}, ${c.id}, ${c.ownerUserId}, 'DOSSIER_COMPLET', 'ready')`;
           break;
-        case 'asset.documents': break; // le document de base est rattaché à Cupra
         // Lot 112C — faits « Exploiter » prouvés par les lectures de T2.
-        case 'asset.spend': case 'asset.maintenanceSpend': case 'yearSpend': {
+        case 'asset.spend': case 'asset.maintenanceSpend': {
           const f = await fichier(c, cupra, 'Facture révision garage');
           await sql`UPDATE asset_files SET document_type_code = 'MAINTENANCE_INVOICE', amount_cents = 32000, supplier = 'Garage Martin', document_date = ${J} WHERE id = ${f}`;
           break;
@@ -222,15 +227,15 @@ scenario('L34-SUGG', 'Lot 34 — chaque suggestion affichée → cliquée → in
               : r.cascade?.diagnostic === 'SEARCH_NO_RESULT' || r.cascade?.diagnostic === 'TARGET_NOT_FOUND' ? r.cascade.diagnostic
                 : r.cascade?.fallbackUsed === true ? `repli ${r.cascade?.fallbackReason ?? ''}`
                   : NON_REPONSE.test(answer) ? `réponse « ${answer.slice(0, 90)} »`
-                    // Offre : réponse calculée par les règles d'offre (gabarit), sans source document.
-                    : (r.sources ?? []).length === 0 && !(e.domain === 'PLAN' && String(r.cascade?.strategy).startsWith('template.')) ? 'aucune source'
+                    // Carte #773 : l'entrée d'offre (domaine PLAN, réponse par gabarit sans source) est retirée du catalogue.
+                    : (r.sources ?? []).length === 0 ? 'aucune source'
                       : types.some((t) => !admis.includes(t)) ? `sources hors domaine ${e.domain} : ${types.join(', ')}`
                         : null;
       if (raison) echecs.push(`${e.id} « ${s.label} » (${route}) → ${raison}`);
       verifies.push(e.id);
 
       // Demandes d'actions : lecture canonique SQL, aucun appel modèle.
-      if (e.domain === 'ACTIONS' || e.domain === 'TO_PROCESS') {
+      if (e.domain === 'TO_PROCESS') {
         // Appels T2 seulement (la formulation T6 de la mascotte, asynchrone, n'en est pas un).
         expect(sim.calls.filter((x) => x.task === 'UNDERSTAND' || x.task === 'ANSWER'), e.id).toEqual([]);
         expect(r.cascade?.aiCalls, e.id).toBe(0);
@@ -243,7 +248,11 @@ scenario('L34-SUGG', 'Lot 34 — chaque suggestion affichée → cliquée → in
     expect(verifies.sort()).toEqual(ALL_SUGGESTIONS.map((x) => x.id).sort());
   });
 
-  it('Cas 3 (réel) — « À traiter » seul : « Que dois-je traiter en priorité ? » ; avec une échéance du jour : « Que dois-je faire aujourd’hui ? »', async () => {
+  // Règle remplacée (carte #773, décision PO n° 27) : avec une échéance du jour, le catalogue proposait
+  // « Que dois-je faire aujourd'hui ? » (`home_today`) ; cette formulation est RETIRÉE — elle n'apparaît
+  // plus dans aucun cas. « Que dois-je traiter en priorité ? » (n° 28, conservée) reste proposée tant
+  // qu'un « À traiter » existe.
+  it('Cas 3 (réel) — « À traiter » : « Que dois-je traiter en priorité ? » ; même avec une échéance du jour, plus jamais « Que dois-je faire aujourd’hui ? » (carte #773)', async () => {
     const c = await compte();
     const cupra = await bien(c, 'Cupra');
     await fichier(c, cupra, 'Facture entretien garage');
@@ -257,9 +266,20 @@ scenario('L34-SUGG', 'Lot 34 — chaque suggestion affichée → cliquée → in
     l = (await exemples(c, '/accueil')).map((x) => x.label);
     expect(l).not.toContain('Que dois-je faire aujourd’hui ?');
     await echeance(c, cupra, 'Contrôle technique', J);
-    l = (await exemples(c, '/accueil')).map((x) => x.label);
-    expect(l).toContain('Que dois-je faire aujourd’hui ?');
-    expect(l).not.toContain('Que dois-je traiter en priorité ?');
+    const avecEcheanceDuJour = await exemples(c, '/accueil');
+    l = avecEcheanceDuJour.map((x) => x.label);
+    expect(l).not.toContain('Que dois-je faire aujourd’hui ?');
+    expect(avecEcheanceDuJour.map((x) => x.id)).not.toContain('home_today');
+    // L'entrée d'accueil garde sa condition (rien en retard ni dû aujourd'hui) ; la question n° 28 reste
+    // rendue par l'entrée d'état du compte `state_todo` (même libellé), « À traiter » étant non vide.
+    expect(avecEcheanceDuJour.map((x) => x.id)).not.toContain('home_todo_priority');
+    expect(l).toContain('Que dois-je traiter en priorité ?');
+    // Posée librement, la question retirée reste traitée par T2 (lecture canonique, aucun appel modèle).
+    sim.calls.length = 0;
+    const r = await demander(c, 'Que dois-je faire aujourd’hui ?', { pageContext: await contexte('/accueil') });
+    expect(r.route?.intent).toBe('ACCOUNT_TO_PROCESS');
+    expect(r.cascade?.actionable?.queryStrategy).toBe('SQL_CANONICAL');
+    expect(String(r.answer ?? '')).toMatch(/Contrôle technique/);
   });
 
   it('Cas 1, 2, 4, 5, 6 (réel) — ni « Que sais-tu sur X ? », ni question sans données, moins de 3 accepté', async () => {
@@ -274,12 +294,22 @@ scenario('L34-SUGG', 'Lot 34 — chaque suggestion affichée → cliquée → in
     const fiche = (await exemples(c, `/assets/${cupra}`)).map((x) => x.label);
     expect(fiche.join('|')).not.toMatch(/documents de Cupra|échéances de Cupra|Que sais-tu/);
     expect((await exemples(c, '/agenda')).map((x) => x.id)).toEqual(['agenda_sync']);
-    // Cas 1 : un document → « Quels sont les documents de Cupra ? ».
+    // Règle remplacée (carte #773, décision PO n° 30) — cas 1 : un document rattaché ne fait plus proposer
+    // « Quels sont les documents de Cupra ? » (ni sur la fiche, ni sur l'accueil, ni sur Documents).
     await fichier(c, cupra, 'Facture entretien garage');
-    expect((await exemples(c, `/assets/${cupra}`)).map((x) => x.label)).toContain('Quels sont les documents de Cupra ?');
-    expect((await exemples(c, '/accueil')).map((x) => x.label)).toEqual(['Quels sont les documents de Cupra ?']);
-    // Cas 5 : un document en analyse → « Où en est l'analyse de mes documents ? ».
+    for (const route of [`/assets/${cupra}`, '/accueil', '/documents']) {
+      expect((await exemples(c, route)).map((x) => x.label).join('|'), route).not.toMatch(/Quels sont les documents d/);
+    }
+    expect(await exemples(c, '/accueil')).toEqual([]);
+    // Posée librement, la recherche des documents d'un bien reste traitée par T2 (CA05).
+    const docs = await demander(c, 'Quels sont les documents de Cupra ?', { pageContext: await contexte('/accueil') });
+    expect(docs.route?.intent).toBe('ACCOUNT_SEARCH_DOCUMENT');
+    expect((docs.sources ?? []).some((x: { type: string }) => x.type === 'document')).toBe(true);
+    expect(String(docs.answer ?? '')).not.toMatch(NON_REPONSE);
+    // Règle remplacée (carte #773, décision PO n° 29) — cas 5 : un document en analyse ne fait plus proposer
+    // « Où en est l'analyse de mes documents ? » ; la question n° 35 conservée garde sa précondition.
     await fichier(c, cupra, 'Diagnostic énergie', 'ANALYZING');
-    expect((await exemples(c, '/accueil')).map((x) => x.label)).toContain('Où en est l’analyse de mes documents ?');
+    expect((await exemples(c, '/accueil')).map((x) => x.label)).not.toContain('Où en est l’analyse de mes documents ?');
+    expect((await exemples(c, '/documents')).map((x) => x.label)).toContain('Pourquoi un document est-il encore en analyse ?');
   });
 });

@@ -169,15 +169,24 @@ export function capabilitiesForPlan(plan: string): { open: AssistantCapability[]
  *     PRÉCONDITIONS explicites (`requires`, sur des compteurs lus côté
  *     serveur) — aucune IA ne décide d'une suggestion ;
  *   · « Que sais-tu sur X ? » n'existe plus (trop ouvert) ;
- *   · « Que dois-je faire aujourd'hui ? » n'est proposé que si le résolveur
- *     des demandes d'actions (lot 34, `actionable-request`) reconnaît la
- *     question ET trouve des éléments datés (retards actifs, dus aujourd'hui) ;
- *     sinon « Que dois-je traiter en priorité ? » (`toProcessPending > 0`) ;
+ *   · « Que dois-je traiter en priorité ? » (`toProcessPending > 0`) n'est
+ *     proposé sur l'accueil que si le résolveur des demandes d'actions (lot
+ *     34, `actionable-request`) ne trouve AUCUN élément en retard ou dû
+ *     aujourd'hui (`actionsDueToday`) — condition inchangée par la carte #773 ;
  *   · 0 à 3 suggestions : jamais de remplissage (les génériques ne servent
  *     que de liste de page aux pages sans liste propre).
  * Le contrat « affichée → cliquée → intention attendue → source du bon
  * domaine → réponse non fallback » est vérifié pour CHAQUE entrée par
  * `src/test/e2e/scenarios/l34-suggestions-repondables.e2e.ts`.
+ *
+ * Carte #773 (lot 114, décision PO du 13/11/2026) : sept formulations ont
+ * été RETIRÉES de ce catalogue — elles ne sont plus jamais proposées, par
+ * aucune surface ni aucun appelant de `suggestionsForRoute` (anciens
+ * identifiants : `home_year_spend`, `home_today`, `home_analysis`,
+ * `home_asset_docs`, `asset_docs`, `docs_asset`, `todo_arbitrate`,
+ * `account_plan`, `state_failed`). Posées librement, ces questions restent
+ * traitées par T2 comme toute autre question : rien ici ne filtre un texte.
+ * Le test `l114s-suggestions-retirees.test.ts` empêche leur retour.
  * ══════════════════════════════════════════════════════════════════════════
  */
 
@@ -218,8 +227,6 @@ export interface AccountSuggestionState {
   deadlinesSoon: number;
   /** Documents en cours d'analyse. */
   documentsInAnalysis: number;
-  /** Documents dont l'analyse a échoué. */
-  documentsFailed: number;
   /** Exports ou dossiers prêts. */
   exportsReady: number;
   /** Documents rattachés à aucun bien (lot 32). */
@@ -228,16 +235,16 @@ export interface AccountSuggestionState {
   deadlinesUpcoming?: number;
   /**
    * Lot 34 : éléments en retard ou dus aujourd'hui que le RÉSOLVEUR des
-   * demandes d'actions rend pour « Que dois-je faire aujourd'hui ? » (0 si
-   * le résolveur ne reconnaît pas la question).
+   * demandes d'actions rend pour une demande d'actions du jour (0 si le
+   * résolveur ne la reconnaît pas). Carte #773 : la question correspondante
+   * n'est plus proposée ; le compteur reste la condition de « Que dois-je
+   * traiter en priorité ? » sur l'accueil (inchangée).
    */
   actionsDueToday?: number;
   /** Lot 34 : biens disponibles du compte. */
   assetsTotal?: number;
   /** Lot 34 : documents non supprimés du compte. */
   documentsTotal?: number;
-  /** Lot 112C : dépenses qualifiées de l'année civile en cours (centimes, `sumQualifiedExpenses`). */
-  yearSpend?: number;
   /** Lot 112C : 1 si l'offre ouvre le coût de possession (Premium, Premium Duo — `premiumFeatures`), 0 sinon. */
   ownershipCostAvailable?: number;
 }
@@ -259,12 +266,10 @@ export interface SuggestionContext {
    * nomme le PREMIER qui satisfait toutes ses préconditions.
    */
   provenAssets?: readonly SuggestionAsset[] | null;
-  /** Lot 112C : année civile courante (Europe/Paris), pour `{annee}`. */
-  year?: number | null;
 }
 
 /** Compteur lu par une précondition ; `asset.*` : le bien désigné par l'entrée (`asset`). */
-type SuggestionFact = keyof AccountSuggestionState | 'asset.documents' | 'asset.deadlines'
+type SuggestionFact = keyof AccountSuggestionState | 'asset.deadlines'
   // Lot 112C : faits « Exploiter » prouvés d'un bien.
   | 'asset.maintenanceSpend' | 'asset.spend' | 'asset.warrantyUpcoming' | 'asset.lastService';
 
@@ -275,20 +280,17 @@ type SuggestionFact = keyof AccountSuggestionState | 'asset.documents' | 'asset.
 interface SuggestionRequirement { fact: SuggestionFact; is: 'positive' | 'zero' | 'notPositive' }
 
 /** Domaine de la réponse attendue (sources admissibles, vérifiées par le test contractuel). */
-type SuggestionDomain = 'ACTIONS' | 'TO_PROCESS' | 'AGENDA' | 'DOCUMENTS' | 'DOCUMENT_STATUS' | 'EXPORTS' | 'HELP' | 'PLAN'
+type SuggestionDomain = 'TO_PROCESS' | 'AGENDA' | 'DOCUMENTS' | 'EXPORTS' | 'HELP'
   // Lot 112C : montants calculés (dépenses qualifiées, coût de possession) ; champ d'un bien.
   | 'COSTS' | 'ASSET_FIELD';
 
 /** Types de sources T2 admissibles pour chaque domaine (aide : article ou règle produit). */
 export const SUGGESTION_DOMAIN_SOURCES: Readonly<Record<SuggestionDomain, readonly string[]>> = {
-  ACTIONS: ['to_process_item', 'agenda_item'],
   TO_PROCESS: ['to_process_item'],
   AGENDA: ['agenda_item'],
   DOCUMENTS: ['document'],
-  DOCUMENT_STATUS: ['document'],
   EXPORTS: ['export_item'],
   HELP: ['help_entry', 'product_rule'],
-  PLAN: ['product_rule', 'help_entry'],
   // Lot 112C : la source qui PORTE le total (`expenseSumSource`, `tco:<id>`), le bien, ses justificatifs.
   COSTS: ['document_extraction', 'asset_field', 'document'],
   // Lot 112C : champ canonique du bien (ou lu dans un document, `target.field_document`).
@@ -300,7 +302,7 @@ export interface SuggestionEntry {
   /**
    * Libellé ; `{de_bien}` est remplacé par « de <nom> » (« d’<nom> » devant
    * une voyelle) du bien désigné par `asset`. Lot 112C : `{bien}` par le
-   * nom seul, `{annee}` par l'année civile courante du contexte serveur.
+   * nom seul.
    */
   label: string;
   /** Intention T2 canonique que le libellé déclenche (routage déterministe vérifié). */
@@ -348,20 +350,16 @@ const R = (fact: SuggestionFact, is: SuggestionRequirement['is'] = 'positive'): 
 
 export const SUGGESTIONS: SuggestionEntry[] = [
   // Accueil — ce qui attend une action, puis ce qui arrive, puis les documents.
-  { id: 'home_today', label: 'Que dois-je faire aujourd’hui ?', canonicalIntent: 'ACCOUNT_TO_PROCESS', domain: 'ACTIONS', topic: 'actions', routeExact: HOME, priority: 1, requires: [R('actionsDueToday')] },
   { id: 'home_todo_priority', label: 'Que dois-je traiter en priorité ?', canonicalIntent: 'ACCOUNT_TO_PROCESS', domain: 'TO_PROCESS', topic: 'actions', routeExact: HOME, priority: 1, requires: [R('toProcessPending'), R('actionsDueToday', 'notPositive')] },
   { id: 'home_next_deadline', label: 'Quelle est ma prochaine échéance ?', canonicalIntent: 'ACCOUNT_SEARCH_AGENDA', domain: 'AGENDA', topic: 'deadlines', routeExact: HOME, priority: 2, requires: [R('deadlinesUpcoming')] },
-  { id: 'home_analysis', label: 'Où en est l’analyse de mes documents ?', canonicalIntent: 'ACCOUNT_FACT_DOCUMENT', domain: 'DOCUMENT_STATUS', topic: 'analysis', routeExact: HOME, priority: 3, requires: [R('documentsInAnalysis')] },
   // Lot 112C — questions « Exploiter » CONCRÈTES : chacune n'est rendue que si
   // le fait qu'elle demande est PROUVÉ par la lecture même de T2 (préconditions
-  // `asset.*` / `yearSpend` renseignées par `suggestions/shared/exploit-facts.ts`) ;
+  // `asset.*` renseignées par `suggestions/shared/exploit-facts.ts`) ;
   // contrat « affichée → cliquée → intention → source → réponse » : L34 (e2e).
   { id: 'home_asset_ownership_cost', label: 'Quel est le coût de possession {de_bien} ?', canonicalIntent: 'ACCOUNT_FACT_ASSET', domain: 'COSTS', topic: 'asset-costs', routeExact: HOME, priority: 4, asset: 'proven', requires: [R('ownershipCostAvailable'), R('asset.spend')] },
   { id: 'home_asset_warranty_end', label: 'Quelle est la date de fin de garantie {de_bien} ?', canonicalIntent: 'ACCOUNT_FACT_DOCUMENT', domain: 'ASSET_FIELD', topic: 'warranty', routeExact: HOME, priority: 4, asset: 'proven', requires: [R('asset.warrantyUpcoming')] },
   { id: 'home_asset_maintenance_spend', label: 'Combien ai-je dépensé en entretien pour {bien} ?', canonicalIntent: 'ACCOUNT_FACT_ASSET', domain: 'COSTS', topic: 'asset-costs', routeExact: HOME, priority: 4, asset: 'proven', requires: [R('asset.maintenanceSpend')] },
-  { id: 'home_year_spend', label: 'Combien ai-je dépensé en {annee} ?', canonicalIntent: 'ACCOUNT_FACT_ASSET', domain: 'COSTS', topic: 'year-spend', routeExact: HOME, priority: 4, requires: [R('yearSpend')] },
   { id: 'home_asset_last_service', label: 'Quelle est la date du dernier entretien {de_bien} ?', canonicalIntent: 'ACCOUNT_FACT_ASSET', domain: 'ASSET_FIELD', topic: 'last-service', routeExact: HOME, priority: 4, asset: 'proven', requires: [R('asset.lastService')] },
-  { id: 'home_asset_docs', label: 'Quels sont les documents {de_bien} ?', canonicalIntent: 'ACCOUNT_SEARCH_DOCUMENT', domain: 'DOCUMENTS', topic: 'asset-docs', routeExact: HOME, priority: 4, asset: 'account', requires: [R('asset.documents')] },
   // Accueil, premiers pas (compte vide, aucun document) : l'aide d'ajout.
   { id: 'home_add_asset', label: 'Comment ajouter un bien ?', canonicalIntent: 'PRODUCT_HELP_HOW_TO', domain: 'HELP', routeExact: HOME, priority: 5, requires: [R('assetsTotal', 'zero')] },
   { id: 'home_add_doc', label: 'Comment ajouter un document ?', canonicalIntent: 'PRODUCT_HELP_HOW_TO', domain: 'HELP', routeExact: HOME, priority: 6, requires: [R('documentsTotal', 'zero')] },
@@ -369,9 +367,7 @@ export const SUGGESTIONS: SuggestionEntry[] = [
   // À traiter
   { id: 'todo_priority', label: 'Que dois-je traiter en priorité ?', canonicalIntent: 'ACCOUNT_TO_PROCESS', domain: 'TO_PROCESS', topic: 'actions', routePrefix: '/accueil/a-traiter', priority: 1, requires: [R('toProcessPending')] },
   { id: 'todo_explain', label: 'Comment fonctionne la page « À traiter » ?', canonicalIntent: 'PRODUCT_HELP_HOW_TO', domain: 'HELP', routePrefix: '/accueil/a-traiter', priority: 2 },
-  { id: 'todo_arbitrate', label: 'Comment arbitrer entre deux valeurs ?', canonicalIntent: 'PRODUCT_HELP_HOW_TO', domain: 'HELP', routePrefix: '/accueil/a-traiter', priority: 3 },
   // Fiche d'un bien : le bien est NOMMÉ (jamais « ce bien »)
-  { id: 'asset_docs', label: 'Quels sont les documents {de_bien} ?', canonicalIntent: 'ACCOUNT_SEARCH_DOCUMENT', domain: 'DOCUMENTS', topic: 'asset-docs', routePattern: FICHE, priority: 1, asset: 'page', requires: [R('asset.documents')] },
   { id: 'asset_deadlines', label: 'Quelles sont les prochaines échéances {de_bien} ?', canonicalIntent: 'ACCOUNT_SEARCH_AGENDA', domain: 'AGENDA', topic: 'deadlines', routePattern: FICHE, priority: 2, asset: 'page', requires: [R('asset.deadlines')] },
   { id: 'asset_complete', label: 'Comment compléter la fiche d’un bien ?', canonicalIntent: 'PRODUCT_HELP_HOW_TO', domain: 'HELP', routePattern: FICHE, priority: 3 },
   { id: 'asset_add_doc', label: 'Comment ajouter un document ?', canonicalIntent: 'PRODUCT_HELP_HOW_TO', domain: 'HELP', routePattern: FICHE, priority: 4 },
@@ -381,14 +377,12 @@ export const SUGGESTIONS: SuggestionEntry[] = [
   { id: 'assets_transfer', label: 'Comment transmettre un bien ?', canonicalIntent: 'PRODUCT_HELP_HOW_TO', domain: 'HELP', routeExact: ['/assets'], priority: 3 },
   // Documents
   { id: 'docs_unlinked', label: 'Quels documents ne sont rattachés à aucun bien ?', canonicalIntent: 'ACCOUNT_SEARCH_DOCUMENT', domain: 'DOCUMENTS', routePrefix: '/documents', priority: 1, requires: [R('documentsUnlinked')] },
-  { id: 'docs_asset', label: 'Quels sont les documents {de_bien} ?', canonicalIntent: 'ACCOUNT_SEARCH_DOCUMENT', domain: 'DOCUMENTS', topic: 'asset-docs', routePrefix: '/documents', priority: 2, asset: 'account', requires: [R('asset.documents')] },
   { id: 'docs_in_analysis', label: 'Pourquoi un document est-il encore en analyse ?', canonicalIntent: 'PRODUCT_HELP_STATUS', domain: 'HELP', topic: 'analysis', routePrefix: '/documents', priority: 3, requires: [R('documentsInAnalysis')] },
   { id: 'docs_add', label: 'Comment ajouter un document ?', canonicalIntent: 'PRODUCT_HELP_HOW_TO', domain: 'HELP', routePrefix: '/documents', priority: 4 },
   // Agenda
   { id: 'agenda_next', label: 'Quelles échéances arrivent bientôt ?', canonicalIntent: 'ACCOUNT_SEARCH_AGENDA', domain: 'AGENDA', topic: 'deadlines', routePrefix: '/agenda', priority: 1, requires: [R('deadlinesSoon')] },
   { id: 'agenda_sync', label: 'Comment synchroniser mon agenda ?', canonicalIntent: 'PRODUCT_HELP_HOW_TO', domain: 'HELP', routePrefix: '/agenda', priority: 2 },
   // Mon compte
-  { id: 'account_plan', label: 'Que comprend mon offre ?', canonicalIntent: 'PRODUCT_PLAN_LIMIT', domain: 'PLAN', routePrefix: '/mon-compte', priority: 1 },
   { id: 'account_notif', label: 'Comment gérer mes notifications ?', canonicalIntent: 'PRODUCT_HELP_HOW_TO', domain: 'HELP', routePrefix: '/mon-compte', priority: 2 },
   // Génériques : la liste des pages qui n'en ont pas — jamais un complément.
   { id: 'generic_ask', label: 'Comment poser une question à Verebona ?', canonicalIntent: 'PRODUCT_HELP_HOW_TO', domain: 'HELP', priority: 9 },
@@ -405,7 +399,6 @@ export const SUGGESTIONS: SuggestionEntry[] = [
 export const ACCOUNT_STATE_SUGGESTIONS: Array<SuggestionEntry & { requires: readonly SuggestionRequirement[] }> = [
   { id: 'state_todo', label: 'Que dois-je traiter en priorité ?', canonicalIntent: 'ACCOUNT_TO_PROCESS', domain: 'TO_PROCESS', topic: 'actions', priority: 1, requires: [R('toProcessPending')] },
   { id: 'state_deadlines', label: 'Quelles échéances arrivent bientôt ?', canonicalIntent: 'ACCOUNT_SEARCH_AGENDA', domain: 'AGENDA', topic: 'deadlines', priority: 2, requires: [R('deadlinesSoon')] },
-  { id: 'state_failed', label: 'Pourquoi un document est-il en erreur ?', canonicalIntent: 'PRODUCT_HELP_STATUS', domain: 'HELP', topic: 'failed', priority: 3, requires: [R('documentsFailed')] },
   { id: 'state_analysis', label: 'Pourquoi un document est-il encore en analyse ?', canonicalIntent: 'PRODUCT_HELP_STATUS', domain: 'HELP', topic: 'analysis', priority: 4, requires: [R('documentsInAnalysis')] },
   { id: 'state_exports', label: 'Quels exports sont disponibles ?', canonicalIntent: 'ACCOUNT_SEARCH_DOCUMENT', domain: 'EXPORTS', topic: 'exports', priority: 5, requires: [R('exportsReady')] },
 ];
@@ -508,11 +501,6 @@ function render(s: SuggestionEntry, ctx: SuggestionContext | null): RenderedSugg
     label = label.replace('{de_bien}', deBien(bien.name)).replace('{bien}', bien.name.replace(/\s+/g, ' ').trim());
     assetId = bien.id;
   }
-  // Lot 112C : année civile du contexte SERVEUR (jamais celle du navigateur).
-  if (label.includes('{annee}')) {
-    if (!ctx?.year) return null;
-    label = label.replace('{annee}', String(ctx.year));
-  }
   return {
     id: s.id, label, priority: s.priority, canonicalIntent: s.canonicalIntent, domain: s.domain, topic: s.topic ?? s.id,
     ...(assetId ? { assetId } : {}),
@@ -558,7 +546,7 @@ export function suggestionsForRoute(route: string | undefined, ctx?: SuggestionC
 
 /** État d'un compte vide (aucun bien, aucun document, rien en attente). */
 export const EMPTY_ACCOUNT_STATE: AccountSuggestionState = {
-  toProcessPending: 0, deadlinesSoon: 0, documentsInAnalysis: 0, documentsFailed: 0, exportsReady: 0, documentsUnlinked: 0,
+  toProcessPending: 0, deadlinesSoon: 0, documentsInAnalysis: 0, exportsReady: 0, documentsUnlinked: 0,
   deadlinesUpcoming: 0, actionsDueToday: 0, assetsTotal: 0, documentsTotal: 0,
 };
 

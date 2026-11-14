@@ -22,17 +22,30 @@
  *     (synchronisation par construction), protégé des retraitements.
  * Bornées au compte : un document ou un événement d'un autre compte n'existe
  * pas (null). Aucune écriture `business_operation_*`.
+ *
+ * CARTE #766 (pré-MEP) — `correctDocumentPeriod` :
+ *   · E04 — la « durée indéterminée établie » est CONSERVÉE quand la correction ne la modifie pas
+ *     (début seul corrigé) ; elle se modifie explicitement (`openEnded`) ou en saisissant une fin ;
+ *     l'état d'avant est tracé (`before_correction`) ;
+ *   · E08 — FAIT PARTAGÉ : la correction d'une couverture datée s'applique aussi aux autres
+ *     justificatifs du MÊME événement de référence qui portent exactement ce fait (mêmes bornes, même
+ *     modalité de fin — le « même fait » de la résolution), dans la même transaction, avec la trace de
+ *     son origine (`before_correction.sharedFrom`). Jamais à une autre nature, à d'autres bornes, à un
+ *     autre événement de référence ni à une période facturée ;
+ *   · E12 — création d'une nature sans fait existant : seulement si la connaissance T1 persistée la
+ *     tient pour pertinente (fait dérivé) ou explicitement indéterminée (contrat v2) ; sinon refus.
  */
 import type postgres from 'postgres';
 import { documentTitleColumnsSql, documentTitleOf } from '@/lib/documents/document-title-source';
 import {
-  chronoKey, isBusinessPeriodKind, isPartialDate, orderedBounds, periodLine, principalLine,
-  type BusinessPeriodKind, type PartialDate,
+  chronoKey, isBusinessPeriodKind, isPartialDate, orderedBounds, periodLine, principalLine, samePeriodBounds,
+  type BusinessPeriodKind, type PartialDate, type PeriodBounds,
 } from '@/lib/documents/business-periods';
 import {
   deriveDocumentPeriods, planRefresh, principalKind, PERIOD_FACT_PREFIX,
   type DesiredPeriod, type PeriodCandidateInput, type PeriodEvidence, type PeriodFactInput, type PeriodInputs, type StoredPeriod,
 } from './model';
+import { parseRelevance } from './t1-v2';
 import { resolvePeriods, type EntryResolution, type PeriodConflict, type ResolutionEntry, type UserPeriodDecision } from './resolution';
 import { loadRelationStates, type RelationState } from './relation-review';
 
@@ -109,7 +122,15 @@ export async function loadPeriodInputs(sql: Sql | Tx, accountId: number, fileId:
 // ── Lecture des faits persistés ─────────────────────────────────────────────
 
 const PERIOD_COLUMNS = `p.id, p.file_id, p.period_kind, p.segment_index, p.start_on, p.end_on, p.principal_hint, p.origin, p.basis,
-  p.evidence, p.user_locked, p.corrected_at::text AS corrected_at, p.end_open`;
+  p.evidence, p.user_locked, p.corrected_at::text AS corrected_at, p.end_open, p.before_correction`;
+
+/** Carte #766 (E05, E08) : bornes du fait remplacé par une correction (`before_correction`) ; null : aucun fait antérieur. */
+function boundsBefore(v: unknown): PeriodBounds | null {
+  const o = asObj(v);
+  if (!('start' in o) && !('end' in o)) return null;
+  const borne = (x: unknown): PartialDate | null => (isPartialDate(x) ? x : null);
+  return { start: borne(o.start), end: borne(o.end), ...(o.openEnded === true ? { openEnded: true } : {}) };
+}
 
 function toStored(r: Row): StoredPeriod & { fileId: number; correctedAt: string | null } {
   return {
@@ -118,6 +139,7 @@ function toStored(r: Row): StoredPeriod & { fileId: number; correctedAt: string 
     principalHint: r.principal_hint === true, origin: r.origin as StoredPeriod['origin'], basis: String(r.basis),
     evidence: asObj(r.evidence) as PeriodEvidence, userLocked: r.user_locked === true, correctedAt: (r.corrected_at as string | null) ?? null,
     ...(r.end_open === true ? { openEnded: true } : {}),
+    ...(r.user_locked === true ? { lockedBefore: boundsBefore(r.before_correction) } : {}),
   };
 }
 
@@ -156,10 +178,10 @@ export async function previewDocumentBusinessPeriods(accountId: number, fileId: 
 }
 
 /** Lot 113AA : divergences de périodes des événements dont le document est membre, resynchronisées (ne lève jamais). */
-async function afterPeriodsChanged(accountId: number, fileId: number): Promise<void> {
+async function afterPeriodsChanged(accountId: number, fileId: number, others: readonly number[] = []): Promise<void> {
   try {
     const { syncPeriodConflictCards } = await import('./conflict-cards');
-    await syncPeriodConflictCards(accountId, { fileIds: [fileId] });
+    await syncPeriodConflictCards(accountId, { fileIds: [fileId, ...others] });
   } catch (e) {
     console.error(`[periodes-metier] divergences du document ${fileId} non resynchronisées :`, (e as Error).message);
   }
@@ -262,6 +284,8 @@ export const RESOLUTION_NOTES = {
   // Lot 113AD : classement par le réexamen T3 d'une divergence non déclarée, preuve citée (à valider par le PO).
   AI_AMENDMENT: (t: string, x: string | null) => `Actualisée par « ${t} »${x ? ` (avenant reconnu : « ${x} »)` : ''}`,
   AI_RECTIFICATION: (t: string, x: string | null) => `Remplacée par « ${t} »${x ? ` (rectificatif reconnu : « ${x} »)` : ''}`,
+  // Carte #766 (E08) : même fait, corrigé par l'utilisateur sur un autre justificatif (à valider par le PO).
+  USER_CORRECTION: (t: string) => `Remplacée par votre correction sur « ${t} »`,
   CONFLICT: 'Les justificatifs indiquent des périodes différentes.',
   CONFLICT_QUESTION: 'Une question vous est posée dans « À traiter ».',
 } as const;
@@ -337,15 +361,27 @@ async function activeDecisionsOf(sql: Sql | Tx, accountId: number, operationIds:
 /** Périodes de couverture actives des documents membres d'un événement de référence (même borne : 200 par événement). */
 const MAX_COVERAGE_ROWS_PER_OPERATION = 200;
 
+/** Résolution D11 des couvertures d'un événement de référence. */
+export interface OperationPeriodResolution {
+  coverages: CoverageEntry[];
+  conflicts: PeriodConflict[];
+  /** Carte #766 (E06) : paires dont l'ordre n'est pas prouvé (aucune question ; réexamen T3 hors lecture). */
+  uncertain: PeriodConflict[];
+  titles: Map<number, string>;
+  /**
+   * Carte #766 (E02) : la lecture a atteint sa borne — la résolution ne porte que sur une PARTIE des
+   * périodes de l'événement (jamais une base suffisante pour dire une couverture « établie » dans un export).
+   */
+  truncated?: true;
+}
+
 /**
  * Lot 113AA (D11, R13 / R14) — périodes de COUVERTURE de l'événement de référence RÉSOLUES
  * (`resolution.ts`, pure) : succession, même fait (sources réunies), avenant / rectificatif déclarés
  * par T1, décision de l'utilisateur, divergence. Lecture seule, sans IA — jamais une réanalyse.
  * Les périodes remplacées restent dans l'historique, avec leur justificatif et la raison.
  */
-export async function operationPeriodResolution(sql: Sql | Tx, accountId: number, operationId: number): Promise<{
-  coverages: CoverageEntry[]; conflicts: PeriodConflict[]; titles: Map<number, string>;
-}> {
+export async function operationPeriodResolution(sql: Sql | Tx, accountId: number, operationId: number): Promise<OperationPeriodResolution> {
   return (await operationsPeriodResolution(sql, accountId, [operationId])).get(operationId)!;
 }
 
@@ -354,11 +390,9 @@ export async function operationPeriodResolution(sql: Sql | Tx, accountId: number
  * DEUX requêtes (périodes, décisions) quel que soit leur nombre : listes, Assistant, dossiers sans N+1.
  * Chaque identifiant demandé est présent dans le résultat (vide s'il n'a aucune couverture).
  */
-export async function operationsPeriodResolution(sql: Sql | Tx, accountId: number, operationIds: readonly number[]): Promise<Map<number, {
-  coverages: CoverageEntry[]; conflicts: PeriodConflict[]; titles: Map<number, string>;
-}>> {
+export async function operationsPeriodResolution(sql: Sql | Tx, accountId: number, operationIds: readonly number[]): Promise<Map<number, OperationPeriodResolution>> {
   const ids = [...new Set(operationIds.filter((x) => Number.isSafeInteger(x) && x > 0))];
-  const out = new Map<number, { coverages: CoverageEntry[]; conflicts: PeriodConflict[]; titles: Map<number, string> }>();
+  const out = new Map<number, OperationPeriodResolution>();
   if (!ids.length) return out;
   let r: Row[] = [];
   try {
@@ -379,14 +413,16 @@ export async function operationsPeriodResolution(sql: Sql | Tx, accountId: numbe
   const decisions = await activeDecisionsOf(sql, accountId, ids);
   // Lot 113AD : états du réexamen T3 des divergences de ces documents (une requête ; table absente : aucun).
   const examens = await loadRelationStates(sql, accountId, [...new Set(r.map((x) => Number(x.file_id)))]);
-  for (const id of ids) out.set(id, resolveCoverageRows(parOp.get(id) ?? [], decisions.get(id) ?? [], examens));
+  for (const id of ids) {
+    const lignes = parOp.get(id) ?? [];
+    const res = resolveCoverageRows(lignes, decisions.get(id) ?? [], examens);
+    out.set(id, lignes.length >= MAX_COVERAGE_ROWS_PER_OPERATION ? { ...res, truncated: true } : res);
+  }
   return out;
 }
 
 /** Résolution D11 des lignes de couverture d'UN événement de référence (pure sur les lignes lues). */
-function resolveCoverageRows(r: readonly Row[], decisions: readonly UserPeriodDecision[], examens: readonly RelationState[] = []): {
-  coverages: CoverageEntry[]; conflicts: PeriodConflict[]; titles: Map<number, string>;
-} {
+function resolveCoverageRows(r: readonly Row[], decisions: readonly UserPeriodDecision[], examens: readonly RelationState[] = []): OperationPeriodResolution {
   const vues = r.map((x) => {
     const st = toStored(x);
     return { st, view: { ...toView(st), fileId: Number(x.file_id), documentTitle: documentTitleOf(x) } as CoverageEntry };
@@ -397,6 +433,8 @@ function resolveCoverageRows(r: readonly Row[], decisions: readonly UserPeriodDe
   const entrees: ResolutionEntry[] = uniques.map(({ st, view }) => ({
     id: st.id, fileId: view.fileId, kind: st.kind, start: st.start, end: st.end, userCorrected: st.userLocked,
     qualified: st.evidence?.qualified === true, relation: st.evidence?.relation ?? null,
+    // Carte #766 : modalité de fin (E10) et valeur d'avant correction (E08, continuité du fait corrigé).
+    ...(st.openEnded ? { openEnded: true } : {}), ...(st.userLocked ? { correctedFrom: st.lockedBefore ?? null } : {}),
   }));
   const res = resolvePeriods(entrees, decisions, examens);
   const citation = (fp: string | undefined) => {
@@ -410,14 +448,15 @@ function resolveCoverageRows(r: readonly Row[], decisions: readonly UserPeriodDe
     const e: EntryResolution = res.entries.get(st.id) ?? { status: 'ESTABLISHED' };
     if (e.status === 'SAME_AS') {
       // Même fait qu'un autre justificatif : réuni à la première ligne qui le porte.
-      const prim = uniques.find((u) => u.view.fileId === e.byFileId && u.st.start === st.start && u.st.end === st.end);
+      const prim = uniques.find((u) => u.view.fileId === e.byFileId && samePeriodBounds(u.st, st));
       if (prim) { memes.set(prim.st.id, [...(memes.get(prim.st.id) ?? []), { fileId: view.fileId, documentTitle: view.documentTitle }]); continue; }
     }
     if (e.status === 'REPLACED' && e.byFileId !== undefined) {
       const t = titles.get(e.byFileId) ?? 'Document';
       const note = e.basis === 'AMENDMENT' ? RESOLUTION_NOTES.AMENDMENT(t) : e.basis === 'RECTIFICATION' ? RESOLUTION_NOTES.RECTIFICATION(t)
         : e.basis === 'AI_AMENDMENT' ? RESOLUTION_NOTES.AI_AMENDMENT(t, citation(e.conflict)) : e.basis === 'AI_RECTIFICATION' ? RESOLUTION_NOTES.AI_RECTIFICATION(t, citation(e.conflict))
-          : RESOLUTION_NOTES.USER_DECISION(t);
+          : e.basis === 'CORRECTED_SAME_FACT' ? RESOLUTION_NOTES.USER_CORRECTION(t)
+            : RESOLUTION_NOTES.USER_DECISION(t);
       out.push({ ...view, resolution: { status: 'REPLACED', basis: String(e.basis), byFileId: e.byFileId, note } });
       continue;
     }
@@ -431,7 +470,7 @@ function resolveCoverageRows(r: readonly Row[], decisions: readonly UserPeriodDe
   for (const v of out) { const m = memes.get(v.id); if (m) v.otherSources = m; }
   return {
     coverages: out.sort((a, b) => chronoKey(a).localeCompare(chronoKey(b)) || a.fileId - b.fileId || a.segment - b.segment),
-    conflicts: res.conflicts, titles,
+    conflicts: res.conflicts, uncertain: res.uncertain, titles,
   };
 }
 
@@ -497,7 +536,7 @@ export async function operationOfAgendaItem(accountId: number, itemId: number): 
 
 // ── Correction de l'utilisateur ─────────────────────────────────────────────
 
-export type CorrectionError = 'NOT_FOUND' | 'INVALID_DATES' | 'INVALID_KIND' | 'UNAVAILABLE';
+export type CorrectionError = 'NOT_FOUND' | 'INVALID_DATES' | 'INVALID_KIND' | 'UNAVAILABLE' | 'NOT_RELEVANT';
 
 export interface CorrectionInput {
   /** Fait corrigé (préféré) ; sinon nature sans fait existant (première saisie). */
@@ -505,22 +544,79 @@ export interface CorrectionInput {
   kind?: BusinessPeriodKind | null;
   start: PartialDate | null;
   end: PartialDate | null;
+  /**
+   * Carte #766 (E04) — durée indéterminée ÉTABLIE (la fin n'existe pas). Absent / null : le statut du fait
+   * corrigé est CONSERVÉ (sauf si une fin est saisie) ; `true` / `false` : modification explicite.
+   */
+  openEnded?: boolean | null;
+}
+
+interface SharedFactRow {
+  id: number; fileId: number; segment: number; principalHint: boolean; origin: string; basis: string; evidence: PeriodEvidence;
+  start: PartialDate | null; end: PartialDate | null; openEnded: boolean;
+}
+
+/**
+ * Carte #766 (E08) — autres représentations du MÊME fait de couverture : périodes ACTIVES de même nature,
+ * de mêmes bornes et de même modalité de fin, portées par d'autres justificatifs (non supprimés) d'un
+ * événement de référence actif dont le document est membre. Seulement pour une couverture DATÉE (une
+ * période « non renseignée » n'identifie aucun fait). Bornée au compte ; au plus 50.
+ */
+async function sharedFactSiblings(sql: Sql | Tx, accountId: number, fileId: number, periodId: number): Promise<SharedFactRow[]> {
+  const r = (await sql.unsafe(
+    `SELECT DISTINCT ON (p2.id) p2.id, p2.file_id, p2.segment_index, p2.principal_hint, p2.origin, p2.basis, p2.evidence, p2.start_on, p2.end_on, p2.end_open
+       FROM document_business_periods p
+       JOIN business_operation_documents d ON d.account_id = p.account_id AND d.file_id = p.file_id AND d.active
+       JOIN business_operations o ON o.id = d.operation_id AND o.account_id = d.account_id AND o.invalidated_at IS NULL AND o.merged_into_operation_id IS NULL
+       JOIN business_operation_documents d2 ON d2.account_id = d.account_id AND d2.operation_id = d.operation_id AND d2.active AND d2.file_id <> p.file_id
+       JOIN asset_files f2 ON f2.id = d2.file_id AND f2.account_id = d2.account_id AND f2.deleted_at IS NULL
+       JOIN document_business_periods p2 ON p2.account_id = p.account_id AND p2.file_id = d2.file_id AND p2.status = 'ACTIVE'
+            AND p2.period_kind = p.period_kind AND p2.start_on IS NOT DISTINCT FROM p.start_on AND p2.end_on IS NOT DISTINCT FROM p.end_on
+            AND p2.end_open = p.end_open
+      WHERE p.account_id = $1 AND p.file_id = $2 AND p.id = $3 AND p.status = 'ACTIVE' AND p.period_kind = 'COVERAGE'
+        AND (p.start_on IS NOT NULL OR p.end_on IS NOT NULL OR p.end_open)
+      ORDER BY p2.id LIMIT 50`,
+    [accountId, fileId, periodId] as never[],
+  )) as unknown as Row[];
+  return r.map((x) => ({
+    id: Number(x.id), fileId: Number(x.file_id), segment: Number(x.segment_index), principalHint: x.principal_hint === true,
+    origin: String(x.origin), basis: String(x.basis), evidence: asObj(x.evidence) as PeriodEvidence,
+    start: (x.start_on as string | null) ?? null, end: (x.end_on as string | null) ?? null, openEnded: x.end_open === true,
+  }));
+}
+
+/**
+ * Carte #766 (E12) — la nature peut-elle être CRÉÉE sur ce document (aucun fait existant) ? Oui si la
+ * connaissance T1 persistée la qualifie pertinente (un fait de cette nature en est dérivé : connue, ou
+ * pertinente sans date), ou si T1 l'a rendue explicitement INDÉTERMINÉE (contrat v2 : l'utilisateur peut
+ * l'établir). Non si T1 l'a dite non pertinente, ou si rien ne la qualifie (document non qualifié sous le
+ * contrat v2 et aucune règle déterministe : aucun champ artificiel, achat ponctuel compris).
+ */
+export function creationAllowed(kind: BusinessPeriodKind, inputs: PeriodInputs): boolean {
+  if (deriveDocumentPeriods(inputs).some((d) => d.kind === kind)) return true;
+  return parseRelevance(inputs.facts)?.get(kind) === 'UNDETERMINED';
 }
 
 /**
  * Correction d'une période (même fait, quelle que soit la fiche d'où elle est
  * faite) : l'ancien fait passe en SUPERSEDED, le nouveau est USER et verrouillé
  * (`user_locked`), avec l'état d'avant. Les autres périodes (autres segments,
- * autres natures, périodes des dépenses) ne sont jamais touchées.
+ * autres natures, périodes des dépenses) ne sont jamais touchées — sauf les
+ * autres justificatifs du MÊME fait de couverture (carte #766, E08).
  */
 export async function correctDocumentPeriod(accountId: number, userId: number | null, fileId: number, input: CorrectionInput, correlationId?: string | null):
-  Promise<{ ok: true; period: PeriodView } | { ok: false; error: CorrectionError }> {
+  Promise<{ ok: true; period: PeriodView; propagatedFileIds: number[] } | { ok: false; error: CorrectionError }> {
   const { start, end } = input;
   if ((start !== null && !isPartialDate(start)) || (end !== null && !isPartialDate(end)) || !orderedBounds(start, end)) return { ok: false, error: 'INVALID_DATES' };
+  // Carte #766 (E04) : une durée indéterminée n'a pas de date de fin (jamais les deux).
+  if (input.openEnded === true && end !== null) return { ok: false, error: 'INVALID_DATES' };
   const sql = await sqlClient();
   try {
+    // Carte #766 (E08) : documents du même fait, lus d'abord SANS verrou pour verrouiller dans un ordre stable.
+    const pressentis = input.periodId != null ? await sharedFactSiblings(sql, accountId, fileId, input.periodId) : [];
+    const verrous = [...new Set([fileId, ...pressentis.map((x) => x.fileId)])].sort((a, b) => a - b);
     const r = await sql.begin(async (tx) => {
-      await tx.unsafe(`SELECT pg_advisory_xact_lock(hashtext('document_business_periods'), $1)`, [fileId] as never[]);
+      for (const f of verrous) await tx.unsafe(`SELECT pg_advisory_xact_lock(hashtext('document_business_periods'), $1)`, [f] as never[]);
       const doc = (await tx.unsafe(
         `SELECT 1 FROM asset_files WHERE id = $1 AND account_id = $2 AND deleted_at IS NULL`, [fileId, accountId] as never[],
       )) as unknown as Row[];
@@ -539,8 +635,15 @@ export async function correctDocumentPeriod(accountId: number, userId: number | 
         kind = input.kind;
         const memes = stored.filter((s) => s.kind === kind);
         if (memes.length) return { ok: false as const, error: 'NOT_FOUND' as const };
+        // Carte #766 (E12) : contrôle de pertinence CÔTÉ SERVICE (une requête forgée ne crée pas une nature sans objet).
+        if (!creationAllowed(kind, await loadPeriodInputs(tx, accountId, fileId))) return { ok: false as const, error: 'NOT_RELEVANT' as const };
         segment = 0;
       }
+      // Carte #766 (E04) : statut conservé s'il n'est pas explicitement modifié ; une fin saisie le retire.
+      const openEnded = end !== null ? false : input.openEnded == null ? cible?.openEnded === true : input.openEnded === true;
+      // Carte #766 (E08) : relus SOUS verrou ; un justificatif apparu entre-temps (non verrouillé) n'est pas touché ici
+      // (la résolution le rattache à la correction en lecture : `CORRECTED_SAME_FACT`).
+      const fratrie = cible ? (await sharedFactSiblings(tx, accountId, fileId, cible.id)).filter((x) => verrous.includes(x.fileId)) : [];
       if (cible) {
         await tx.unsafe(
           `UPDATE document_business_periods SET status = 'SUPERSEDED', superseded_at = now(), updated_at = now() WHERE id = $1 AND account_id = $2`,
@@ -550,12 +653,34 @@ export async function correctDocumentPeriod(accountId: number, userId: number | 
       const before = cible ? { start: cible.start, end: cible.end, origin: cible.origin, basis: cible.basis, ...(cible.openEnded ? { openEnded: true } : {}) } : null;
       const d: DesiredPeriod = {
         kind, segment, start, end, principalHint: cible?.principalHint ?? false, basis: 'USER', evidence: cible?.evidence ?? {},
+        ...(openEnded ? { openEnded: true } : {}),
       };
       const id = await insertPeriod(tx, accountId, fileId, d, 'USER', correlationId ?? null, { userId, before });
-      return { ok: true as const, period: { id, kind, segment, start, end, line: periodLine(kind, { start, end }), userCorrected: true } };
+      for (const f of fratrie) {
+        await tx.unsafe(
+          `UPDATE document_business_periods SET status = 'SUPERSEDED', superseded_at = now(), updated_at = now() WHERE id = $1 AND account_id = $2 AND status = 'ACTIVE'`,
+          [f.id, accountId] as never[],
+        );
+        await insertPeriod(tx, accountId, f.fileId, {
+          kind, segment: f.segment, start, end, principalHint: f.principalHint, basis: 'USER', evidence: f.evidence, ...(openEnded ? { openEnded: true } : {}),
+        }, 'USER', correlationId ?? null, {
+          userId,
+          before: { start: f.start, end: f.end, origin: f.origin, basis: f.basis, ...(f.openEnded ? { openEnded: true } : {}), sharedFrom: { fileId, periodId: cible!.id } },
+        });
+      }
+      return {
+        ok: true as const,
+        period: { id, kind, segment, start, end, line: periodLine(kind, { start, end, openEnded }), userCorrected: true, ...(openEnded ? { openEnded: true } : {}) },
+        propagatedFileIds: fratrie.map((f) => f.fileId),
+      };
     });
     // Lot 113AA : une correction peut faire disparaître (ou apparaître) une divergence — questions resynchronisées.
-    if (r.ok) await afterPeriodsChanged(accountId, fileId);
+    if (r.ok) {
+      await afterPeriodsChanged(accountId, fileId, r.propagatedFileIds);
+      if (r.propagatedFileIds.length) {
+        console.info(JSON.stringify({ event: 'business_period.shared_fact_corrected', accountId, fileId, periodId: r.period.id, propagated: r.propagatedFileIds.length }));
+      }
+    }
     return r;
   } catch (e) {
     if (tableMissing(e)) return { ok: false, error: 'UNAVAILABLE' };

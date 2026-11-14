@@ -17,8 +17,9 @@ import { AlertTriangle, CheckCircle2, Circle, Clock, Download, FileDown, History
 import { Button } from '@/components/ui/button';
 import { cn } from '@/lib/utils';
 import {
-  dossierOutline, formatBytes, generateDecision, isRegeneration, progressSteps, type PrepState,
+  dossierOutline, formatBytes, generateDecision, isRegeneration, offersNotesDescriptionOption, progressSteps, type PrepState,
 } from '@/lib/exports/preparation-state';
+import { THIRD_PARTY_DOSSIER_NOTES_SUMMARY_LABEL, thirdPartyDossierNotesSummaryValue } from '@/services/documents/notes-description/third-party';
 import { REGENERATION_NOTICE, REPLACED_FALLBACK_LABEL } from '@/lib/exports/regeneration';
 import { PREP_MESSAGES } from '@/services/exports/v12/preparation/messages';
 import { cilBlockingMessage, CIL_ACTION_REQUIRED_GENERIC_MESSAGE } from '@/lib/exports/cil-blocking';
@@ -246,6 +247,13 @@ export function PreparationSummary({ state, assetId, now, onGenerate, onCancel, 
         <Stat label="Photos PDF" value={String(e?.pdfPhotos ?? 0)} />
         <Stat label="Photos ZIP" value={String(e?.zipPhotos ?? 0)} />
         {(e?.events ?? 0) > 0 && <Stat label="Suivi" value={`${e!.events} élément${e!.events > 1 ? 's' : ''}`} />}
+        {/* Carte #767 (E03) : choix d'inclusion vérifiable avant de générer. */}
+        {offersNotesDescriptionOption(state) && (
+          <div className="col-span-2 min-w-0" data-testid="prep-summary-notes-description">
+            <dt className="text-[12px] font-semibold text-muted-foreground">{THIRD_PARTY_DOSSIER_NOTES_SUMMARY_LABEL}</dt>
+            <dd className="mt-0.5 text-sm font-semibold">{thirdPartyDossierNotesSummaryValue(state.includeNotesDescription)}</dd>
+          </div>
+        )}
       </dl>
 
       {(alerts.length > 0 || state.messages.length > 0) && !inGeneration && (

@@ -86,7 +86,7 @@ function ctx(operational: UsableModelsContext['operational'] = new Map()): Usabl
       models: listes.map((model) => ({ model, available: true, supportsGeneration: true, lifecycle: 'stable' as const })),
     },
     codeCatalog: [],
-    price: () => ({ verified: false }),
+    price: () => ({ verified: false, eligible: true }),
     operational,
     qualifications: new Map(),
     today: '2026-10-12',

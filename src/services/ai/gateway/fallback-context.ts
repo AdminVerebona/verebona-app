@@ -17,12 +17,28 @@
  * au plus une fois par 30 min et par instance, la sonde EXISTANTE
  * (`probeModels`, génération minimale sans donnée utilisateur) ; le modèle
  * redevient appelable dès que la sonde le confirme sain.
+ *
+ * Lot 114 (carte #771) :
+ *   · P03 — le cache d'instance suit la clé de version partagée de l'état
+ *     opérationnel (`verebona_cache_versions`, périmètre
+ *     `ai-model-operational`), relue au plus toutes les 5 s : un verdict écrit
+ *     par une autre instance (cron, « Actualiser le catalogue », test de clé,
+ *     refus d'un appel réel) est opposable ici sans redémarrage. Base
+ *     illisible : le dernier état connu est conservé (jamais vidé) ;
+ *   · E04 — `reportProviderRefusal` : le refus d'un APPEL RÉEL est classé par
+ *     la fonction commune des sondes ; explicite, définitif et visant le
+ *     modèle appelé, il est écrit dans l'état canonique ; présumé, il
+ *     déclenche la sonde bornée ; tout le reste (429, 5xx, délai, réseau, clé)
+ *     n'écrit rien ;
+ *   · A06 — la vérification de rétablissement respecte l'échéance partagée
+ *     `next_probe_at` (délai doublé de 1 h à 24 h) : plus de sonde toutes les
+ *     30 minutes par instance sur un modèle explicitement refusé.
  */
 import type { CoupleQualification } from './fallback-policy';
 import type { OverlayIntervention } from '../config/routing-overlay';
 import type { Treatment } from '../config/treatments';
 
-export interface OperationalHint { checkedAt: string | null; error: string | null }
+export interface OperationalHint { checkedAt: string | null; error: string | null; /** #771 : prochain recontrôle au plus tôt. */ nextProbeAt?: string | null }
 
 export interface CoupleQualificationView {
   /** Origine de la configuration exécutée (`null` : inconnue — exécution épinglée hors active). */
@@ -37,9 +53,19 @@ interface FallbackContextReader {
   coupleQualifications(p: { operationCode: string; configVersionId: number | null; configRevisionId: number | null }): Promise<CoupleQualificationView>;
   /** Exclusions manuelles EN VIGUEUR (une exclusion prise en cours d'exécution ne fait que retirer). */
   currentExclusions(treatment: Treatment | null): Promise<ReadonlyArray<OverlayIntervention>>;
+  /**
+   * Lot 114 (#771, E04) — refus reçu par un appel RÉEL : `recorded` (indisponibilité confirmée écrite dans
+   * l'état canonique), `probe_requested` (échec présumé : sonde bornée demandée), `null` (rien à conclure).
+   */
+  reportRefusal(p: ProviderRefusalReport): Promise<RefusalSignal>;
 }
 
+export interface ProviderRefusalReport { model: string; error: unknown; httpStatus: number | null; sentAt: Date }
+export type RefusalSignal = 'recorded' | 'probe_requested' | null;
+
 const STATUS_TTL_MS = 30_000;
+/** #771 (P03) : relecture de la clé de version partagée (délai maximal de propagation entre instances). */
+export const STATUS_VERSION_CHECK_MS = 5_000;
 const QUALIF_TTL_MS = 5 * 60_000;
 const LOOKUP_TIMEOUT_MS = 2_000;
 const RECHECK_AFTER_MS = 30 * 60_000;
@@ -75,7 +101,7 @@ function dbAllowed(): boolean {
 
 // ── État opérationnel ───────────────────────────────────────────────────────
 
-let statusCache: { at: number; value: Map<string, OperationalHint> } | null = null;
+let statusCache: { at: number; value: Map<string, OperationalHint>; version: number | null; versionCheckedAt: number } | null = null;
 const rechecks = new Map<string, number>();
 
 /** Vidé après une sonde de rétablissement (et par les tests). */
@@ -85,29 +111,35 @@ export function invalidateFallbackStatusCache(): void {
 
 async function defaultKnownUnavailable(): Promise<ReadonlyMap<string, OperationalHint>> {
   if (!dbAllowed()) return new Map();
-  if (statusCache && Date.now() - statusCache.at < STATUS_TTL_MS) return statusCache.value;
+  const now = Date.now();
+  const O = await import('../provider/model-operational.service');
+  if (statusCache && now - statusCache.at < STATUS_TTL_MS) {
+    if (now - statusCache.versionCheckedAt < STATUS_VERSION_CHECK_MS) return statusCache.value;
+    // #771 (P03) : un verdict écrit ailleurs a-t-il changé l'état ? (une lecture d'une ligne, bornée)
+    const v = await withTimeout(O.readOperationalVersion(), LOOKUP_TIMEOUT_MS, null);
+    if (!statusCache) return defaultKnownUnavailable();
+    statusCache.versionCheckedAt = now;
+    if (v === null || v === statusCache.version) return statusCache.value;
+  }
   const value = new Map<string, OperationalHint>();
+  // Version lue AVANT les états : un verdict écrit entre les deux lectures sera revu au contrôle suivant.
+  const version = await withTimeout(O.readOperationalVersion(), LOOKUP_TIMEOUT_MS, null);
   try {
-    const { loadOperationalStatuses } = await import('../provider/model-operational.service');
-    const all = await withTimeout(loadOperationalStatuses(), LOOKUP_TIMEOUT_MS, null);
+    const all = await withTimeout(O.loadOperationalStatuses(), LOOKUP_TIMEOUT_MS, null);
+    // Base illisible ou lente : dernier état connu conservé (jamais de réactivation par défaut de lecture).
     if (all === null) return statusCache?.value ?? value;
-    for (const [model, s] of all) if (s.ok === false) value.set(model, { checkedAt: s.checkedAt, error: s.error });
+    for (const [model, st] of all) {
+      if (st.ok === false) value.set(model, { checkedAt: st.checkedAt, error: st.error, ...(st.nextProbeAt ? { nextProbeAt: st.nextProbeAt } : {}) });
+    }
   } catch {
     return statusCache?.value ?? value;
   }
-  statusCache = { at: Date.now(), value };
+  statusCache = { at: now, value, version, versionCheckedAt: now };
   return value;
 }
 
-/**
- * Vérification BORNÉE de rétablissement d'un modèle sauté (RUN-03) : sonde
- * existante, au plus une fois par `RECHECK_AFTER_MS` et par instance, si le
- * dernier contrôle est lui-même plus ancien. Lancée sans attente ; ne lève jamais.
- */
-export function noteKnownUnavailableSkipped(model: string, hint: OperationalHint, now = Date.now()): boolean {
-  if (!dbAllowed() || injected?.knownUnavailable) return false;
-  const last = hint.checkedAt ? Date.parse(hint.checkedAt) : 0;
-  if (Number.isFinite(last) && now - last < RECHECK_AFTER_MS) return false;
+/** Sonde bornée d'un modèle (au plus une par `RECHECK_AFTER_MS` et par instance). Lancée sans attente ; ne lève jamais. */
+function lancerSondeBornee(model: string, now: number): boolean {
   const prev = rechecks.get(model);
   if (prev !== undefined && now - prev < RECHECK_AFTER_MS) return false;
   rechecks.set(model, now);
@@ -118,13 +150,72 @@ export function noteKnownUnavailableSkipped(model: string, hint: OperationalHint
       ]);
       const secret = await getProviderSecret('gemini');
       if (!secret) return;
-      await probeModels([model], secret);
+      await probeModels([model], secret, { source: 'recovery_check' });
       invalidateFallbackStatusCache();
     } catch (e) {
       console.warn('[fallback] vérification de rétablissement impossible (non bloquant) :', String((e as Error)?.message ?? e).slice(0, 200));
     }
   })();
   return true;
+}
+
+/**
+ * Vérification BORNÉE de rétablissement d'un modèle sauté (RUN-03) : sonde
+ * existante, au plus une fois par `RECHECK_AFTER_MS` et par instance, si le
+ * dernier contrôle est lui-même plus ancien. Lancée sans attente ; ne lève jamais.
+ * Lot 114 (#771, A06) : jamais avant l'échéance partagée `nextProbeAt` du modèle.
+ */
+export function noteKnownUnavailableSkipped(model: string, hint: OperationalHint, now = Date.now()): boolean {
+  if (!dbAllowed() || injected?.knownUnavailable) return false;
+  const echeance = hint.nextProbeAt ? Date.parse(hint.nextProbeAt) : NaN;
+  if (Number.isFinite(echeance) && now < echeance) return false;
+  const last = hint.checkedAt ? Date.parse(hint.checkedAt) : 0;
+  if (Number.isFinite(last) && now - last < RECHECK_AFTER_MS) return false;
+  return lancerSondeBornee(model, now);
+}
+
+// ── Lot 114 (#771, E04) : refus d'un appel réel ─────────────────────────────
+
+/** Catégories d'échec PRÉSUMÉ qui justifient une sonde bornée du modèle (jamais un paramètre refusé). */
+const PRESUME_A_SONDER: ReadonlySet<string> = new Set(['model_not_found', 'forbidden_model']);
+
+/**
+ * Décision pure (classification commune des sondes) : que faire du refus d'un appel réel ?
+ *   · `record` — refus explicite, définitif, dont le message cite le modèle APPELÉ ;
+ *   · `probe`  — échec présumé attribuable au modèle (404 nu, 403 visant le modèle) : la sonde tranchera ;
+ *   · `null`   — tout le reste : quota, 5xx, délai, réseau, clé, projet, paramètre, sortie invalide.
+ */
+export async function refusalDecision(p: Pick<ProviderRefusalReport, 'model' | 'error' | 'httpStatus'>): Promise<{
+  action: 'record' | 'probe'; outcome: Extract<import('../provider/probe-classification').ProbeOutcome, { status: 'failed' }>;
+} | null> {
+  const { classifyProbeFailure } = await import('../provider/probe-classification');
+  const outcome = classifyProbeFailure(p.error, { model: p.model, httpStatus: p.httpStatus });
+  if (outcome.status !== 'failed') return null;
+  const message = String((p.error as { message?: unknown } | null)?.message ?? p.error ?? '').toLowerCase();
+  if (outcome.definitive && message.includes(p.model.toLowerCase())) return { action: 'record', outcome };
+  return PRESUME_A_SONDER.has(outcome.kind) ? { action: 'probe', outcome } : null;
+}
+
+async function defaultReportRefusal(p: ProviderRefusalReport): Promise<RefusalSignal> {
+  const d = await refusalDecision(p);
+  if (!d || !dbAllowed()) return null;
+  if (d.action === 'probe') return lancerSondeBornee(p.model, Date.now()) ? 'probe_requested' : null;
+  try {
+    const [{ getProviderSecret }, O, { providerCodesOf }] = await Promise.all([
+      import('../provider/provider-secret'), import('../provider/model-operational.service'), import('../provider/probe-classification'),
+    ]);
+    const secret = await getProviderSecret('gemini');
+    if (!secret) return null;
+    const codes = providerCodesOf(p.error);
+    const etat = await withTimeout(O.recordOperationalCheck({
+      model: p.model, secret, outcome: d.outcome, source: 'gateway_call', observedAt: p.sentAt,
+      httpStatus: p.httpStatus ?? codes.httpStatus, providerCode: codes.providerCode,
+    }), LOOKUP_TIMEOUT_MS, null);
+    invalidateFallbackStatusCache();
+    return etat && etat.ok === false ? 'recorded' : null;
+  } catch {
+    return null;
+  }
 }
 
 // ── Qualification des couples ───────────────────────────────────────────────
@@ -183,5 +274,6 @@ export function fallbackContext(): FallbackContextReader {
     knownUnavailable: injected?.knownUnavailable ?? defaultKnownUnavailable,
     coupleQualifications: injected?.coupleQualifications ?? defaultCoupleQualifications,
     currentExclusions: injected?.currentExclusions ?? defaultCurrentExclusions,
+    reportRefusal: injected?.reportRefusal ?? defaultReportRefusal,
   };
 }

@@ -30,12 +30,16 @@ import type { TcoDecisionOption, TcoDecisionOptionAction, TcoDecisionSubmitActio
 import { openTcoJustificatif } from './tco-justificatif';
 
 /** Geste envoyé au serveur (`POST /api/assets/[id]/tco/decisions`). */
-export type TcoArbitrate = (x: { lineId: string; lineKey: string | null; action: TcoDecisionSubmitAction; category?: string | null; confirmDuplicate?: boolean })
+export type TcoArbitrate = (x: { lineId: string; lineKey: string | null; action: TcoDecisionSubmitAction; category?: string | null; confirmDuplicate?: boolean;
+  /** Carte 769 : version des propriétés matérielles affichées (le serveur refuse une dépense qui a changé). */
+  lineVersion?: string | null })
   => Promise<{ ok: true } | { ok: false; duplicateWarning?: string }>;
 
 interface Props {
   lineId: string;
   lineKey: string | null;
+  /** Carte 769 : version de la ligne affichée, renvoyée avec le geste. */
+  lineVersion?: string | null;
   options: readonly TcoDecisionOption[];
   onDecide: TcoArbitrate;
   /** Libellés des catégories (DTO) et catégories proposées pour une nature confirmée. */
@@ -48,7 +52,7 @@ interface Props {
 /** Lot 113N : geste envoyé au serveur (les autres ouvrent un formulaire existant). */
 const soumis = (a: TcoDecisionOptionAction): a is TcoDecisionSubmitAction => a !== 'EDIT_DOCUMENT' && a !== 'EDIT_ASSET_FIELD';
 
-export function TcoDecisionActions({ lineId, lineKey, options, onDecide, categoryLabels = {}, categories = [], exclude = [] }: Props) {
+export function TcoDecisionActions({ lineId, lineKey, lineVersion = null, options, onDecide, categoryLabels = {}, categories = [], exclude = [] }: Props) {
   const [choix, setChoix] = useState<TcoDecisionOption | null>(null);
   const [categorie, setCategorie] = useState<string>('');
   const [avertissement, setAvertissement] = useState<string | null>(null);
@@ -62,7 +66,7 @@ export function TcoDecisionActions({ lineId, lineKey, options, onDecide, categor
     setBusy(true);
     try {
       const r = await onDecide({
-        lineId, lineKey, action: choix.action,
+        lineId, lineKey, action: choix.action, ...(lineVersion ? { lineVersion } : {}),
         ...(choix.needsCategory && categorie ? { category: categorie } : {}),
         ...(avertissement ? { confirmDuplicate: true } : {}),
       });

@@ -49,7 +49,24 @@ export interface ExportChoices {
    * a plusieurs (absent : le plus récent). Figé dans le snapshot.
    */
   claimOperationId?: number | null;
+  /**
+   * Carte #767 (E03) : inclure « Notes / Description » des documents retenus
+   * dans ce dossier destiné à un tiers. Présent et `true` UNIQUEMENT sur choix
+   * explicite de l'écran de préparation (origine `user`) ; absent = exclu
+   * (défaut du lot 113Z, y compris pour toute demande antérieure, le tiroir
+   * historique et la pré-sélection). Figé dans l'instantané du dossier.
+   */
+  includeNotesDescription?: true;
 }
+
+/**
+ * Carte #767 (E03) — l'inclusion de « Notes / Description » est-elle demandée
+ * EXPLICITEMENT ? Vrai seulement pour des choix d'origine `user` portant le
+ * booléen `true` : une option omise, falsifiée (« true », 1…), ou portée par
+ * une autre origine ne l'active jamais. Pure.
+ */
+export const includesNotesDescription = (c: Pick<ExportChoices, 'origin' | 'includeNotesDescription'> | null | undefined): boolean =>
+  !!c && c.origin === 'user' && c.includeNotesDescription === true;
 
 // ─── Sections optionnelles par dossier (défauts §6.2) ───────────────────────
 
@@ -334,6 +351,8 @@ export function parseChoicesPayload(code: DossierCode, raw: unknown): { ok: true
     choices: {
       outputFormat: outputFormat!, origin: 'user', sections, items, acknowledgements: { pdfOnlyExcludesZipItems: ack.pdfOnlyExcludesZipItems === true },
       ...(claimOperationId !== null ? { claimOperationId } : {}),
+      // Carte #767 (E03) : booléen `true` strict — toute autre valeur (omise, « true », 1, objet) = exclu.
+      ...(body.includeNotesDescription === true ? { includeNotesDescription: true as const } : {}),
     },
   };
 }

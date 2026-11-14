@@ -537,17 +537,24 @@ describe('§20.1 — période non identifiable et action ambiguë', () => {
 // ── §8.2 — suggestions dérivées de l'état du compte ───────────────────────
 
 describe('§8.2 — suggestions : page > compte > générique', () => {
-  const vide = { toProcessPending: 0, deadlinesSoon: 0, documentsInAnalysis: 0, documentsFailed: 0, exportsReady: 0 };
+  const vide = { toProcessPending: 0, deadlinesSoon: 0, documentsInAnalysis: 0, exportsReady: 0 };
   it('sans état : comportement inchangé', () => {
     expect(suggestionsForRoute('/documents').map((s) => s.id)).toEqual(suggestionsForRoute('/documents', null).map((s) => s.id));
   });
-  it('documents en erreur et exports prêts : proposés après les suggestions de la page', () => {
+  // Règle remplacée (carte #773, décision PO n° 39) : `state_failed` (« Pourquoi un document est-il en
+  // erreur ? ») est retirée du catalogue. L'ordre « page, puis état du compte » reste vérifié avec les
+  // entrées d'état conservées (documents encore en analyse, exports prêts).
+  it('documents en analyse et exports prêts : proposés après les suggestions de la page ; plus de « document en erreur » (carte #773)', () => {
     // Lot 34 : « Quelles échéances arrivent bientôt ? » exige une échéance ;
     // au plus 3 suggestions.
-    const s = suggestionsForRoute('/agenda', { state: { ...vide, documentsFailed: 2, exportsReady: 1 } });
-    expect(s.map((x) => x.id)).toEqual(['agenda_sync', 'state_failed', 'state_exports']);
-    const t = suggestionsForRoute('/agenda', { state: { ...vide, deadlinesSoon: 1, documentsFailed: 2, exportsReady: 1 } });
-    expect(t.map((x) => x.id)).toEqual(['agenda_next', 'agenda_sync', 'state_failed']);
+    const s = suggestionsForRoute('/agenda', { state: { ...vide, documentsInAnalysis: 2, exportsReady: 1 } });
+    expect(s.map((x) => x.id)).toEqual(['agenda_sync', 'state_analysis', 'state_exports']);
+    const t = suggestionsForRoute('/agenda', { state: { ...vide, deadlinesSoon: 1, documentsInAnalysis: 2, exportsReady: 1 } });
+    expect(t.map((x) => x.id)).toEqual(['agenda_next', 'agenda_sync', 'state_analysis']);
+    for (const x of [...s, ...t]) {
+      expect(x.id).not.toBe('state_failed');
+      expect(x.label).not.toBe('Pourquoi un document est-il en erreur ?');
+    }
   });
   it('rien en attente : aucune suggestion d’état', () => {
     expect(suggestionsForRoute('/agenda', { state: vide }).some((x) => x.id.startsWith('state_'))).toBe(false);

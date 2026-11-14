@@ -82,6 +82,44 @@ export function notesWriteFromEdit(shown: string | null | undefined, edited: str
 /** Borne d'une note utilisateur (caractères). */
 export const NOTES_MAX_LENGTH = 5000;
 
+/** Code d'erreur d'une note trop longue (carte #767, E04). */
+export const NOTES_TOO_LONG_CODE = 'NOTES_TOO_LONG';
+/** Message d'une note trop longue — même texte que la modification d'un document (lot 113Z). */
+export const NOTES_TOO_LONG_MESSAGE = `${NOTES_DESCRIPTION_LABEL} : ${NOTES_MAX_LENGTH} caractères au plus`;
+/** Message d'un texte libre qui n'est pas une chaîne. */
+export const NOTES_INVALID_MESSAGE = `${NOTES_DESCRIPTION_LABEL} invalide`;
+
+export type NotesInputValidation =
+  | { ok: true; notes: string | null }
+  | { ok: false; code: typeof NOTES_TOO_LONG_CODE | 'INVALID_INPUT'; message: string; max: number; length: number | null };
+
+/**
+ * Carte #767 (E04) — validation du texte libre saisi à la CRÉATION d'un
+ * document (import, lien web). Plus aucune troncature silencieuse : au-delà de
+ * `NOTES_MAX_LENGTH`, la demande est refusée (aucune écriture), avec la limite.
+ *
+ *   · `notes` : champ courant ; `legacyDescription` : ancien champ « Titre /
+ *     Description » des clients antérieurs, lu comme texte libre de
+ *     l'utilisateur (→ `notes`, jamais la description T1) quand `notes` est vide ;
+ *   · longueur comptée comme le fait le champ de saisie (`maxLength` : unités
+ *     UTF-16 du texte reçu, avant rognage des bords) et comme la modification
+ *     d'un document — une même saisie est acceptée ou refusée partout ;
+ *   · vide, absent ou `null` → aucune note (`notes: null`).
+ * Pure.
+ */
+export function validateNotesInput(notes: unknown, legacyDescription?: unknown): NotesInputValidation {
+  const refusType: NotesInputValidation = { ok: false, code: 'INVALID_INPUT', message: NOTES_INVALID_MESSAGE, max: NOTES_MAX_LENGTH, length: null };
+  for (const v of [notes, legacyDescription]) {
+    if (v !== undefined && v !== null && typeof v !== 'string') return refusType;
+  }
+  const choisi = typeof notes === 'string' && notes.trim() ? notes
+    : typeof legacyDescription === 'string' && legacyDescription.trim() ? legacyDescription : '';
+  if (choisi.length > NOTES_MAX_LENGTH) {
+    return { ok: false, code: NOTES_TOO_LONG_CODE, message: NOTES_TOO_LONG_MESSAGE, max: NOTES_MAX_LENGTH, length: choisi.length };
+  }
+  return { ok: true, notes: choisi.trim() || null };
+}
+
 // ── Trace T1 de la description (diagnostic, jamais affichée à l'utilisateur) ──
 
 /** Constats T1 sur la description (colonne `description_t1_status`, migration 1580). */

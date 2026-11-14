@@ -70,7 +70,7 @@ import {
 } from '@/lib/documents/document-targets-selection';
 import { NativeCommerceNotice } from '@/components/native/NativeCommerceNotice';
 // Lot 113W (#724) : période métier principale du document et historique de couverture de l'événement de référence.
-import { DocumentBusinessPeriodField } from '@/components/documents/BusinessPeriods';
+import { DocumentBusinessPeriodField, DocumentPeriodsDetail, useDocumentPeriods } from '@/components/documents/BusinessPeriods';
 // Lot 113AB (#725) : fiche de l'événement de référence consultable sans élément d'agenda.
 import { DocumentReferenceEvents } from '@/components/documents/ReferenceEventSheet';
 
@@ -344,6 +344,8 @@ export function DocumentDrawer({ open, onOpenChange, document: doc, onRefresh, a
   // AI analysis — analysisState from DB (live via SSE)
   const [analysisState, setAnalysisState] = useState<string | null>(null);
   const [refreshTrigger, setRefreshTrigger] = useState(0);
+  // Carte #766 (E11) : périodes du document lues une fois (bloc principal + détail sous « Notes / Description »).
+  const periodesDocument = useDocumentPeriods(open ? doc?.id : null, refreshTrigger);
   const [liveProposals, setLiveProposals] = useState<any[]>([]);
   const [showDetectedInfo, setShowDetectedInfo] = useState(false);
 
@@ -1704,7 +1706,7 @@ export function DocumentDrawer({ open, onOpenChange, document: doc, onRefresh, a
                     {/* Lot 113W (#724) : période métier (couverture, facturation…) — rien si aucune n'est pertinente ; correction synchronisée. */}
                     <DocumentBusinessPeriodField
                       documentId={doc.id}
-                      refreshKey={refreshTrigger}
+                      periods={periodesDocument}
                       onOpenDocument={(id) => openDrawer({ kind: 'document', id }, { stack: true })}
                     />
                     {/* Lot 113AB (#725) : événements de référence du document sans élément d'agenda — leur fiche (couvertures, justificatifs). */}
@@ -1799,6 +1801,10 @@ export function DocumentDrawer({ open, onOpenChange, document: doc, onRefresh, a
                       </div>
                     );
                   })()}
+
+                  {/* Carte #766 (E11) : détail des périodes (discontinues, autres natures) rattaché à « Notes / Description » —
+                      calculé depuis les faits structurés à la lecture, jamais écrit dans les notes ni la description T1. */}
+                  <DocumentPeriodsDetail documentId={doc.id} periods={periodesDocument} />
 
                   {/* Linked agenda items */}
                   {linkedAgendaItems.length > 0 && (

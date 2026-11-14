@@ -481,10 +481,12 @@ export const BACKFILL_DEFINITIONS: readonly BackfillDefinition[] = [
     description: 'Les documents analysés avant l’activation du bloc 28 du guide des prompts n’ont pas la qualification v2 de leurs '
       + 'périodes (pertinence, effet contractuel, sens des dates de fin, avenant ou rectificatif déclaré) : leurs périodes restent sous '
       + 'les règles prudentes et leurs divergences sont seulement signalées. Simuler : recensement (à requalifier, demandés en attente, '
-      + 'requalifiés, demandés sans sortie v2), lot qui serait traité et coût indicatif (coût moyen T1 par document observé sur 30 jours), '
+      + 'requalifiés, à reprendre, bloqués), lot qui serait traité et coût indicatif (coût moyen T1 par document observé sur 30 jours), '
       + 'rien n’est écrit. Appliquer : met en file T1 UN lot de 100 documents au plus (traitement technique non facturé, visible dans '
       + 'File d’attente IA), avec un rapport avant / après. Arrêt : ne pas relancer ; reprise : relancer (lot suivant). Un document déjà '
-      + 'requalifié ou déjà demandé n’est jamais redemandé. Les corrections de l’utilisateur sont conservées. Inactif tant que le contrat '
+      + 'requalifié, ou dont la demande est en cours, n’est jamais redemandé ; un document dont l’analyse s’est terminée sans qualification '
+      + '(sortie incomplète ou erreur technique) est repris par les lots suivants, au plus 3 demandes par document, puis signalé « bloqué ». '
+      + 'Les corrections de l’utilisateur sont conservées. Inactif tant que le contrat '
       + 't1-business-periods-v2 n’est pas « satisfait » (Configuration IA › Conformité des prompts).',
     actions: ['simulate', 'apply'],
     accountFilter: true,

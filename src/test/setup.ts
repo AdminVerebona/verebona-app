@@ -19,6 +19,11 @@ export const fakeProvider = new FakeProvider();
 beforeEach(async () => {
   fakeProvider.reset();
   setAiProvider(fakeProvider);
+  // Lot 114 (#770) : aucun modèle n'est appelé sans tarif officiel vérifié. Le socle déclare une preuve tarifaire
+  // de test pour tout modèle sans ligne au cache ; les tests de la garde la retirent
+  // (`__setVerifiedTestPricesForTests(false)`).
+  // (un test qui simule entièrement le référentiel tarifaire n'expose pas ce réglage : sans objet pour lui)
+  try { (await import('@/services/ai/gateway/pricing/pricing.repository')).__setVerifiedTestPricesForTests(true); } catch { /* module simulé */ }
   process.env.GEMINI_API_KEY = 'test-key-not-used';
   // Aucun test unitaire ne doit ouvrir de connexion à la base.
   process.env.AI_IDEMPOTENCY_DISABLED = 'true';

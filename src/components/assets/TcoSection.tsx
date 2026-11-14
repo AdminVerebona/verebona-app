@@ -109,7 +109,7 @@ import { tcoKeptYear, TCO_REFRESH_WINDOW_MS, watchTcoMutations } from './tco-ref
 import { TcoLoanTermsSheet } from './TcoLoanTermsSheet';
 import { TcoLockedNotice } from './tco-locked';
 import { useNativeCommerceHidden } from '@/hooks/useNativeCommerceHidden';
-import { tcoSheetDiagnostics, tcoUndatedButtonLabel, tcoUndatedMessage } from '@/services/business-operations/tco/undated-expenses';
+import { TCO_UNDATED_TEXTS, tcoSheetDiagnostics, tcoUndatedButtonLabel, tcoUndatedMessage } from '@/services/business-operations/tco/undated-expenses';
 import { TcoUndatedDatesSheet } from './TcoUndatedDatesSheet';
 // Lot 113AB (#725) : période facturée du justificatif (même fait que la fiche du document) et fiche de l'événement de référence.
 import { TcoExpensePeriod, useExpensePeriods, type ExpensePeriodSummary } from './tco-expense-period';
@@ -323,7 +323,7 @@ function LigneDepense({ l, t, canEdit = false, onDecide, review = false, focused
         <span className={`shrink-0 tabular-nums ${l.amountUnknown ? 'text-muted-foreground' : ''}`}>{valeur}</span>
       </div>
       {/* Lot 113AB (#725) : période facturée du justificatif, corrigeable ici (même fait que le document ; TCO inchangé). */}
-      {l.fileId != null && <TcoExpensePeriod fileId={l.fileId} summary={periods?.[String(l.fileId)]} />}
+      {l.fileId != null && <TcoExpensePeriod fileId={l.fileId} lineId={l.id} summary={periods?.[String(l.fileId)]} />}
       {/* Lot 109C : ligne concernée par un point à vérifier (mention écrite, pas seulement une couleur). */}
       {review && <p className="text-xs font-medium text-[color:var(--attention-on-soft)] mt-0.5" data-tco-line-review-label>À revoir — voir « Points à vérifier »</p>}
       {!retenue && (
@@ -374,7 +374,7 @@ function LigneDepense({ l, t, canEdit = false, onDecide, review = false, focused
       )}
       {canEdit && arbitrate && actions && !confirm && (
         <TcoDecisionActions
-          lineId={l.id} lineKey={l.decisionKey ?? null} options={actions.options ?? []} onDecide={arbitrate}
+          lineId={l.id} lineKey={l.factKey ?? l.decisionKey ?? null} lineVersion={l.version ?? null} options={actions.options ?? []} onDecide={arbitrate}
           categoryLabels={t.categoryLabels} categories={t.requalifyCategories ?? []} exclude={['INCLUDE', 'EXCLUDE']}
         />
       )}
@@ -503,7 +503,7 @@ export function TcoSection({ assetId, readOnly = false, defaultOpen = false }: P
     ownWrite.current = true;
     try {
       const r = await apiClient.post<{ tco: TcoDto; outcome: string }>(`/api/assets/${assetId}/tco/decisions`, {
-        lineId: l.id, lineKey: l.decisionKey ?? null, action, confirmDuplicate,
+        lineId: l.id, lineKey: l.decisionKey ?? null, action, confirmDuplicate, ...(l.version ? { lineVersion: l.version } : {}),
       });
       // Le serveur rend le TCO recalculé : toute lecture encore en vol est désormais obsolète.
       coordinator.current?.supersede();
@@ -516,7 +516,8 @@ export function TcoSection({ assetId, readOnly = false, defaultOpen = false }: P
       const err = e as { code?: string; serverMessage?: string };
       if (err.code === 'DUPLICATE_CONFIRMATION_REQUIRED' && err.serverMessage) return { ok: false, duplicateWarning: err.serverMessage };
       toast.error(err.serverMessage ?? 'La décision n’a pas pu être enregistrée');
-      if (err.code === 'LINE_NOT_FOUND') void load();
+      // Carte #769 : dépense changée depuis l'affichage — aucune écriture, vue rafraîchie immédiatement.
+      if (err.code === 'LINE_NOT_FOUND' || err.code === 'DECISION_STALE') void load();
       return { ok: false };
     } finally {
       ownWrite.current = false;
@@ -524,11 +525,12 @@ export function TcoSection({ assetId, readOnly = false, defaultOpen = false }: P
   };
 
   // Lot 111V : arbitrages et gestes contextuels — même route, TCO recalculé rendu par le serveur (mise à jour immédiate).
-  const arbitrate: TcoArbitrate = async ({ lineId, lineKey, action, category, confirmDuplicate }) => {
+  const arbitrate: TcoArbitrate = async ({ lineId, lineKey, action, category, confirmDuplicate, lineVersion }) => {
     ownWrite.current = true;
     try {
       const r = await apiClient.post<{ tco: TcoDto; outcome: string }>(`/api/assets/${assetId}/tco/decisions`, {
         lineId, lineKey, action, ...(category ? { category } : {}), ...(confirmDuplicate ? { confirmDuplicate: true } : {}),
+        ...(lineVersion ? { lineVersion } : {}),
       });
       coordinator.current?.supersede();
       setData(r.tco);
@@ -540,7 +542,8 @@ export function TcoSection({ assetId, readOnly = false, defaultOpen = false }: P
       const err = e as { code?: string; serverMessage?: string };
       if (err.code === 'DUPLICATE_CONFIRMATION_REQUIRED' && err.serverMessage) return { ok: false, duplicateWarning: err.serverMessage };
       toast.error(err.serverMessage ?? 'Votre choix n’a pas pu être enregistré');
-      if (err.code === 'LINE_NOT_FOUND' || err.code === 'NOT_APPLICABLE') void load();
+      // Carte #769 : dépense changée depuis l'affichage (409 DECISION_STALE) — message du serveur, vue rafraîchie, aucun succès affiché.
+      if (err.code === 'LINE_NOT_FOUND' || err.code === 'NOT_APPLICABLE' || err.code === 'DECISION_STALE') void load();
       return { ok: false };
     } finally {
       ownWrite.current = false;
@@ -618,7 +621,7 @@ export function TcoSection({ assetId, readOnly = false, defaultOpen = false }: P
   const chargementAnnee = filtreAnnee && !!t?.linesTruncated && yearLines?.year !== anneeSel;
   const besoinAnnee = retainedOpen && chargementAnnee ? anneeSel : null;
   // Lot 113AB : périodes facturées des justificatifs affichés dans les sous-tiroirs (une requête, à l'ouverture).
-  const periodesDepenses = useExpensePeriods([...depensesFiltrees, ...creditsAnnee, ...ecartees].map((l) => l.fileId), retainedOpen || excludedOpen);
+  const periodesDepenses = useExpensePeriods([...depensesFiltrees, ...creditsAnnee, ...ecartees], retainedOpen || excludedOpen);
   useEffect(() => {
     if (besoinAnnee == null) return;
     let actif = true;
@@ -722,6 +725,13 @@ export function TcoSection({ assetId, readOnly = false, defaultOpen = false }: P
                   <div className="rounded-lg border border-border bg-card p-3 space-y-2" role="group" aria-label="Dépenses sans date fiable" data-tco-undated={sansDate.count}>
                     <p className="text-xs text-[color:var(--text-primary)] flex items-start gap-1.5" data-tco-undated-message>
                       <Info className="w-3.5 h-3.5 mt-px shrink-0 text-muted-foreground" aria-hidden /> <span>{messageSansDate}</span>
+                    </p>
+                    {/* Carte #769 (écart C) : choix de conservation sans date restant à confirmer / déjà confirmés (information neutre). */}
+                    <p
+                      className="text-xs text-muted-foreground" aria-live="polite"
+                      data-tco-undated-counters data-tco-undated-pending={sansDate.pendingCount} data-tco-undated-confirmed-count={sansDate.confirmedCount}
+                    >
+                      {TCO_UNDATED_TEXTS.counters(sansDate.pendingCount, sansDate.confirmedCount)}
                     </p>
                     {canEdit && (
                       <Button

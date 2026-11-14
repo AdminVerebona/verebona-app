@@ -22,8 +22,8 @@ import { verificationObjetActive, verifierObjetDepose } from '@/lib/upload-objec
 import { toUserFile } from '@/services/ai/processing-status/user-file';
 import { resolveUploadDocumentDate } from '@/services/documents/upload-document-date';
 import { isValidBusinessTitle } from '@/lib/documents/document-title-rules';
-import { NOTES_MAX_LENGTH } from '@/lib/documents/notes-description';
-import { markNotesUserOwned } from '@/services/documents/notes-description/store';
+import { validateNotesInput } from '@/lib/documents/notes-description';
+import { markNotesUserOwned, NotesIntentUnavailableError, NOTES_INTENT_UNAVAILABLE_MESSAGE } from '@/services/documents/notes-description/store';
 
 type LigneFichier = typeof assetFiles.$inferSelect;
 
@@ -144,6 +144,21 @@ export async function POST(request: NextRequest) {
       );
     }
     const empreinte = empreinteConfirm(body as Record<string, unknown>);
+
+    // ── Carte #767 (E04) — texte libre « Notes / Description » : validation ──
+    // AVANT toute écriture. Au-delà de la limite, la confirmation est refusée
+    // (HTTP 400, limite indiquée) : le fichier reste en attente, rien n'est
+    // écrit, aucune fin de note n'est perdue en silence. `description` (ancien
+    // « Titre / Description » d'un client antérieur) est lu comme texte libre
+    // de l'utilisateur, jamais comme description T1.
+    const validationNote = validateNotesInput(notes, description);
+    if (!validationNote.ok) {
+      return NextResponse.json(
+        { error: validationNote.code, code: validationNote.code, message: validationNote.message, maxLength: validationNote.max },
+        { status: 400 },
+      );
+    }
+    const noteValidee = validationNote.notes;
 
     // ── Limites de dépôt — AVANT toute écriture ─────────────────────────────
     // Dix analyses ensemble, c'est dix appels modèle sur un conteneur déjà
@@ -298,9 +313,9 @@ export async function POST(request: NextRequest) {
       updateData.retainedTitle = titreSaisi;
       updateData.titleSource = 'USER';
     }
-    const noteSaisie = typeof notes === 'string' && notes.trim() ? notes.trim()
-      : typeof description === 'string' && description.trim() ? description.trim() : '';
-    const noteEcrite = unSeul && noteSaisie ? noteSaisie.slice(0, NOTES_MAX_LENGTH) : null;
+    // Carte #767 (E04) : la note a été VALIDÉE avant toute écriture (`noteValidee`,
+    // plus haut) — plus aucune troncature silencieuse à 5 000 caractères.
+    const noteEcrite = unSeul ? noteValidee : null;
     if (noteEcrite) updateData.notes = noteEcrite;
     if (supplier && idsDemandes.length === 1) updateData.supplier = supplier;
     if (amountCents !== undefined && amountCents !== null && idsDemandes.length === 1) {
@@ -455,6 +470,12 @@ export async function POST(request: NextRequest) {
   } catch (error) {
     if (error instanceof Response) {
       return error;
+    }
+
+    // Carte #767 (E05) : la note saisie ne peut pas être enregistrée comme intention de l'utilisateur
+    // (schéma 1580 indisponible) — la transaction est annulée, rien n'est confirmé à tort.
+    if (error instanceof NotesIntentUnavailableError) {
+      return NextResponse.json({ error: error.code, code: error.code, reason: error.reason, message: NOTES_INTENT_UNAVAILABLE_MESSAGE }, { status: 503 });
     }
 
     const errMsg = (error as Error).message;

@@ -21,7 +21,13 @@
  *     signalée et enregistrée seulement après « Confirmer cette date » ;
  *   · laisser une dépense sans date et fermer : toujours possible, aucune
  *     date exigée ; #712 : « Conserver dans le TCO sans date » / « Annuler mon
- *     choix » (gestes du serveur, même route que les décisions du TCO).
+ *     choix » (gestes du serveur, même route que les décisions du TCO) ;
+ *   · carte #769 : « Retirer du TCO » depuis la même dépense (décision
+ *     d'inclusion existante, confirmation propre, jamais confondue avec la
+ *     date) ; compteurs « choix à confirmer / déjà confirmés » en tête, mis à
+ *     jour par le TCO recalculé que rend le serveur après chaque geste ;
+ *     chaque geste renvoie la clé et la version affichées (une dépense qui a
+ *     changé est refusée par le serveur, la liste est rafraîchie).
  * Après enregistrement, le TCO recalculé rendu par le serveur remplace les
  * données affichées (ventilation, alerte, compteurs) sans rechargement.
  * Lecture seule : aucune saisie (le déclencheur n'est pas proposé).
@@ -139,6 +145,13 @@ export function TcoUndatedDatesSheet({ open, onOpenChange, assetId, tco, canEdit
         <SheetHeader className="px-5 pt-5 pb-3 border-b border-border">
           <SheetTitle>{`${TCO_UNDATED_TEXTS.panelTitle} (${u.count})`}</SheetTitle>
           <SheetDescription>{TCO_UNDATED_TEXTS.panelDescription}</SheetDescription>
+          {/* Carte #769 (écart C) : trois quantités distinctes — dépenses sans date (titre), choix à confirmer, choix confirmés. */}
+          <p
+            className="text-xs text-muted-foreground" aria-live="polite"
+            data-tco-undated-panel-counters data-tco-undated-pending={u.pendingCount} data-tco-undated-confirmed-count={u.confirmedCount}
+          >
+            {TCO_UNDATED_TEXTS.counters(u.pendingCount, u.confirmedCount)}
+          </p>
         </SheetHeader>
         <div className="flex-1 overflow-y-auto px-5 py-3">
           <ul className="divide-y divide-border" aria-label={TCO_UNDATED_TEXTS.panelTitle}>
@@ -191,6 +204,10 @@ export function TcoUndatedDatesSheet({ open, onOpenChange, assetId, tco, canEdit
                     {TCO_UNDATED_TEXTS.currentDate} : {i.currentDate ? jj(i.currentDate) : TCO_UNDATED_TEXTS.noDate}
                   </p>
                   {i.confirmedUndated && <p className="text-xs text-muted-foreground" data-tco-undated-confirmed>{TCO_UNDATED_LABELS.decided}</p>}
+                  {/* Carte #769 : choix de conservation sans date encore attendu pour CETTE dépense (texte, jamais la couleur seule). */}
+                  {!i.confirmedUndated && i.options.some((o) => o.action === 'CONFIRM_UNDATED') && (
+                    <p className="text-xs text-muted-foreground" data-tco-undated-pending-item>{TCO_UNDATED_TEXTS.pendingBadge}</p>
+                  )}
                   {saisie ? (
                     <div className="space-y-1.5">
                       <label htmlFor={idChamp} className="text-xs font-medium text-[color:var(--text-primary)] flex items-center gap-1.5">
@@ -228,9 +245,9 @@ export function TcoUndatedDatesSheet({ open, onOpenChange, assetId, tco, canEdit
                       )}
                     </div>
                   )}
-                  {/* #712 : conserver sans date (ou annuler ce choix) — gestes du serveur, jamais exigés. */}
+                  {/* #712 : conserver sans date (ou annuler ce choix) — gestes du serveur, jamais exigés. Carte #769 : et « Retirer du TCO ». */}
                   {canEdit && arbitrate && i.options.length > 0 && (
-                    <TcoDecisionActions lineId={i.lineId} lineKey={i.lineKey} options={i.options} onDecide={arbitrate} />
+                    <TcoDecisionActions lineId={i.lineId} lineKey={i.lineKey} lineVersion={i.lineVersion} options={i.options} onDecide={arbitrate} />
                   )}
                 </li>
               );

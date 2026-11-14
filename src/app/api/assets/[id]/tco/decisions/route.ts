@@ -15,6 +15,11 @@
  * Standard → 403 `PREMIUM_REQUIRED` avant toute lecture financière.
  * Réponse : le TCO recalculé (même forme que GET), pour une mise à jour
  * immédiate des totaux.
+ *
+ * Carte #769 : corps `{ …, lineVersion? }` — la clé (`lineKey`) et la version
+ * (`lineVersion`) affichées sont validées contre la dépense ACTUELLE ; si elle
+ * a changé : 409 `DECISION_STALE`, aucune écriture, `tco` actuel dans la
+ * réponse (rafraîchissement immédiat de la vue).
  */
 import { NextRequest, NextResponse } from 'next/server';
 import { SessionService } from '@/lib/session-service';
@@ -48,7 +53,11 @@ export async function POST(request: NextRequest, { params }: Ctx) {
     });
   } catch (error) {
     if (error instanceof TcoDecisionError) {
-      return NextResponse.json({ error: error.code, code: error.code, message: error.message, ...error.details }, { status: error.status });
+      // Carte #769 : après un refus (dépense changée depuis l'affichage), le TCO ACTUEL est rendu pour rafraîchir la vue.
+      return NextResponse.json({
+        error: error.code, code: error.code, message: error.message, ...error.details,
+        ...(error.fresh ? { tco: toTcoDto(error.fresh), canEdit: true } : {}),
+      }, { status: error.status });
     }
     if (error instanceof AssetNotFoundForTcoError) return notFound();
     console.error('[tco] POST décision :', (error as Error).message);

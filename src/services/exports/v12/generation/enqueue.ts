@@ -33,7 +33,7 @@ import { cilActionRequiredMessage } from '@/lib/exports/cil-blocking';
 import { EXPORT_ERROR_MESSAGES } from '@/services/exports/export-errors';
 import type { AccessibleAsset } from '@/services/exports/export-access';
 import { loadExportSource } from '../data/source';
-import { parseChoicesPayload, type LegacyDrawerOptions, type OutputFormat } from '../data/choices';
+import { includesNotesDescription, parseChoicesPayload, type LegacyDrawerOptions, type OutputFormat } from '../data/choices';
 import type { ThresholdAlert } from '../thresholds';
 import { estimateSelection } from '../preparation/estimate';
 import { PREP_MESSAGES } from '../preparation/messages';
@@ -139,6 +139,21 @@ export async function enqueueGeneration(params: {
   } else if (body.options && typeof body.options === 'object') {
     req.legacyOptions = body.options as LegacyDrawerOptions;
   }
+  // Carte #767 (E03) — inclusion de « Notes / Description » cochée : refusée dès la demande si la
+  // priorité / provenance ne peut pas être lue (schéma 1580 incomplet ou illisible) ; rien n'est mis en file.
+  if (includesNotesDescription(req.choices)) {
+    const { notesDescriptionSchemaState } = await import('@/services/documents/notes-description/store');
+    const etatSchema = await notesDescriptionSchemaState();
+    if (etatSchema !== 'READY') {
+      const { THIRD_PARTY_NOTES_UNAVAILABLE_MESSAGE } = await import('@/services/documents/notes-description/third-party');
+      console.error(`[exports-v12] demande refusée (bien ${asset.id}, ${code}) : inclusion « Notes / Description » demandée, schéma 1580 ${etatSchema === 'MISSING' ? 'incomplet' : 'illisible'}.`);
+      return {
+        ok: false, status: 503, code: 'NOTES_DESCRIPTION_UNAVAILABLE', message: THIRD_PARTY_NOTES_UNAVAILABLE_MESSAGE,
+        extra: { reason: etatSchema === 'MISSING' ? 'SCHEMA_MISSING' : 'SCHEMA_UNKNOWN' },
+      };
+    }
+  }
+
   // Lot 44 (Q2) : sinistre du dossier Assurance-sinistre (choix, ou racine du corps pour les anciens appels).
   const claimRaw = req.choices?.claimOperationId ?? (body.claimOperationId == null ? null : Number(body.claimOperationId));
   if (claimRaw !== null && claimRaw !== undefined) {

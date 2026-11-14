@@ -31,8 +31,12 @@
  *        information (une valeur déjà enregistrée reste affichée, signalée
  *        « à régulariser », sans bascule silencieuse) ;
  *     E. pas explicitement non opérationnel avec la clé active.
- *   TARIFICATION : informative seulement (`priced`). Un modèle sans tarif
- *   connu (UNKNOWN) reste utilisable — NOT_PRICED n'existe plus.
+ *     F. lot 114 (Trello #770, remplace la règle « tarification informative »
+ *        de #412) : TARIF OFFICIEL VÉRIFIÉ ET APPLICABLE obligatoire
+ *        (`pricing-eligibility`). Un tarif officiel de 0 est valide ; un
+ *        tarif absent, inconnu, non confirmé ou périmé exclut le modèle
+ *        (`PRICING_NOT_VERIFIED`), qui reste VISIBLE au catalogue avec son
+ *        motif et redevient candidat dès que son tarif est confirmé.
  *   Plus de politique preview (réglage « preview_models_allowed », flag
  *   VEREBONA_ASSISTANT_ALLOW_PREVIEW_MODELS, PREVIEW_NOT_ALLOWED : supprimés).
  *
@@ -67,7 +71,9 @@ export type UnusableReason =
   | 'CAPABILITY_MISSING'
   | 'DEPRECATED'
   | 'RETIRED'
-  | 'NOT_OPERATIONAL';
+  | 'NOT_OPERATIONAL'
+  /** Lot 114 (#770) : pas de tarif officiel vérifié et applicable. */
+  | 'PRICING_NOT_VERIFIED';
 
 /** Libellés courts, en français (sélecteurs et messages du BO). */
 const UNUSABLE_REASON_LABELS: Readonly<Record<UnusableReason, string>> = {
@@ -85,6 +91,7 @@ const UNUSABLE_REASON_LABELS: Readonly<Record<UnusableReason, string>> = {
   DEPRECATED: 'déprécié',
   RETIRED: 'retiré',
   NOT_OPERATIONAL: 'non opérationnel avec la clé active',
+  PRICING_NOT_VERIFIED: 'tarif officiel non vérifié',
 };
 
 export interface ProviderModelState {
@@ -110,8 +117,13 @@ export interface UsableModelsContext {
   catalog: { refreshedAt: string | null; models: readonly ProviderModelState[] };
   /** Catalogue du code (relevé embarqué) : repli hors production tant que jamais vérifié. */
   codeCatalog: readonly string[];
-  /** Tarif connu (informatif), et s'il est vérifié (grille du compte). */
-  price: (model: string) => { verified: boolean } | null;
+  /**
+   * Tarif connu, s'il est vérifié (grille du compte) et — lot 114 (#770) — s'il est ADMISSIBLE
+   * (`eligible`, avec le motif précis sinon). `eligible` absent vaut refus : jamais d'admission par défaut.
+   */
+  price: (model: string) => { verified: boolean; eligible?: boolean; ineligibleLabel?: string } | null;
+  /** Motif tarifaire quand AUCUN tarif n'est servi (référentiel illisible, absent). */
+  priceRefusal?: (model: string) => string | null;
   /** Dernière génération minimale connue AVEC LA CLÉ ACTIVE, par modèle. */
   operational: ReadonlyMap<string, { ok: boolean; checkedAt?: string | null; error?: string | null }>;
   /** Qualification automatique AVEC LA CLÉ ACTIVE, par modèle (vide : aucune). */
@@ -132,8 +144,10 @@ export interface ModelEligibility {
   reasonText: string;
   /** Statut (exception déclarée, sinon statut fournisseur). */
   status: ModelLifecycleStatus;
-  /** Tarif connu (informatif : jamais un motif de refus). */
+  /** Tarif connu. Lot 114 (#770) : un tarif non admissible est un motif de refus (`PRICING_NOT_VERIFIED`). */
   priced: boolean;
+  /** Détail du refus tarifaire (absent, non confirmé, périmé…), `null` si le tarif est admissible. */
+  pricingRefusal: string | null;
   /** Tarif de la grille du compte (opposable à la facture). */
   verifiedPrice: boolean;
   /** Disponibilité établie par le catalogue fournisseur rafraîchi. */
@@ -271,12 +285,18 @@ export function evaluateModelForTreatment(treatment: Treatment, model: string, c
   const op = ctx.operational.get(model);
   if (op && !op.ok) reasons.push('NOT_OPERATIONAL');
 
+  // F — lot 114 (#770) : tarif officiel vérifié et applicable, sinon exclu.
   const price = ctx.price(model);
+  const pricingRefusal = price?.eligible === true ? null
+    : price ? price.ineligibleLabel ?? 'tarif non confirmé par une source officielle'
+      : ctx.priceRefusal?.(model) ?? 'aucun tarif officiel connu';
+  if (pricingRefusal !== null) reasons.push('PRICING_NOT_VERIFIED');
   return {
     treatment, model,
     usable: reasons.length === 0,
     reasons,
-    reasonText: reasons.map((r) => UNUSABLE_REASON_LABELS[r]).join(', '),
+    reasonText: reasons.map((r) => (r === 'PRICING_NOT_VERIFIED' ? `${UNUSABLE_REASON_LABELS[r]} (${pricingRefusal})` : UNUSABLE_REASON_LABELS[r])).join(', '),
+    pricingRefusal,
     status,
     priced: price !== null,
     verifiedPrice: price?.verified ?? false,
@@ -347,6 +367,7 @@ export async function loadUsableModelsContext(): Promise<UsableModelsContext> {
     import('../config/environment'),
     import('../provider/provider-secret'),
   ]);
+  const eligibility = await import('../gateway/pricing/pricing-guard');
   if (pricing.getCacheState().loadedAt === null) await pricing.loadPricingCache().catch(() => undefined);
   const state = await getCatalogState().catch(() => ({ refreshedAt: null, models: [] as ProviderModelState[] }));
   // Environnement illisible : politique la plus prudente (production).
@@ -366,7 +387,13 @@ export async function loadUsableModelsContext(): Promise<UsableModelsContext> {
     codeCatalog: GEMINI_PUBLIC_CATALOG.map((e) => e.model),
     price: (model) => {
       const p = pricing.getCachedPrice('gemini', model);
-      return p ? { verified: Boolean(p.verified) } : null;
+      if (!p) return null;
+      const e = eligibility.evaluatePricing(model);
+      return { verified: Boolean(p.verified), eligible: e.ok, ...(e.ok ? {} : { ineligibleLabel: e.label }) };
+    },
+    priceRefusal: (model) => {
+      const e = eligibility.evaluatePricing(model);
+      return e.ok ? null : e.label;
     },
     operational: await loadOperationalStatuses(secret),
     qualifications: await loadQualifications(secret),

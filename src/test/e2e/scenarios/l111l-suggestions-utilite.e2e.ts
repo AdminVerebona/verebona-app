@@ -135,7 +135,10 @@ scenario('L111L-UTIL', 'Lot 111L — suggestions : utilité réelle avant public
     for (const x of t) expect(types).toContain(x);
   };
 
-  it('L111L-E2E-01 — CA01 : immobilier + une facture → plus de « Quels sont les documents de Maison ? » ; écartée et tracée au BO', async () => {
+  // Règle remplacée (carte #773, décision PO n° 30) : l'entrée `home_asset_docs` était « écartée et tracée
+  // au BO » (répondable, non promue) ; elle est désormais RETIRÉE du stock — elle n'est plus examinée et
+  // n'apparaît donc plus dans les candidates écartées du diagnostic.
+  it('L111L-E2E-01 — CA01 : immobilier + une facture → plus de « Quels sont les documents de Maison ? » ; l’entrée n’existe plus (carte #773), rien au BO', async () => {
     const c = await compte();
     const maison = await bien(c, 'Maison', 'IMMOBILIER');
     await fichier(c, maison, 'Facture plombier');
@@ -143,7 +146,7 @@ scenario('L111L-UTIL', 'Lot 111L — suggestions : utilité réelle avant public
     sansInventaire(s);
     expect(s.items.length).toBeGreaterThan(0);
     const d = await diagnostic(c);
-    expect(d.notUseful).toContainEqual({ id: 'acc_home_asset_docs', decision: 'INVENTORY_DECLARED' });
+    expect((d.notUseful ?? []).map((x) => x.id)).not.toContain('acc_home_asset_docs');
     expect(d.quota).toMatchObject({ max: 3, served: s.items.length });
     // Aucune génération IA à l'ouverture.
     expect(sim.calls).toEqual([]);
@@ -163,7 +166,9 @@ scenario('L111L-UTIL', 'Lot 111L — suggestions : utilité réelle avant public
     expect(s.items.every((x) => x.objective === 'GUIDE')).toBe(true);
     const d = await diagnostic(c);
     const ecartees = (d.notUseful ?? []).map((x) => x.id).sort();
-    expect(ecartees).toEqual(expect.arrayContaining(['acc_docs_unlinked', 'acc_home_asset_docs', 'acc_state_exports']));
+    // Règle remplacée (carte #773) : `acc_home_asset_docs` n'est plus dans le stock ; les deux inventaires
+    // conservés (n° 34 et n° 40) restent écartés par le critère d'utilité — jamais réactivés.
+    expect(ecartees).toEqual(['acc_docs_unlinked', 'acc_state_exports']);
   });
 
   it('L111L-E2E-03 — CA03/CA04 : échéance réelle → question concrète → clic → agenda → réponse ; source modifiée puis retirée', async () => {

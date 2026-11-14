@@ -14,7 +14,7 @@ vi.mock('../../telemetry/ai-trace.service', () => ({
 
 const { AiGateway, rankAt } = await import('../ai-gateway');
 const { FakeProvider, setAiProvider } = await import('../providers');
-const { primePricingCache, clearPricingCache } = await import('../pricing/pricing.repository');
+const { primePricingCache, clearPricingCache, __setVerifiedTestPricesForTests } = await import('../pricing/pricing.repository');
 const { __setConfigForTests } = await import('../../config/config-resolver');
 const { runInJobContext } = await import('../../queue/job-context');
 const { emptyTreatmentConfig } = await import('../../config/config-types');
@@ -134,12 +134,52 @@ describe('coûts des appels', () => {
     expect(Number(traces[0].costMicros)).toBeGreaterThan(0);
   });
 
-  it('COST-008 : modèle sans tarif → coût NULL, jamais 0', async () => {
-    __setConfigForTests({ versionId: 1, entries: [t1('sans-tarif', null, null, [])] });
-    fake.on('sans-tarif', () => ({ rawText: OK, inputTokens: 10, outputTokens: 10 }));
-    const r = await AiGateway.execute(req());
-    expect(traces[0].costMicros).toBeNull();
-    // La réponse métier reste numérique : l'appelant n'a pas à gérer NULL.
-    expect(r.costMicros).toBe(0);
+  // Lot 114 (Trello #770) — règle remplacée : « modèle sans tarif → appelé, coût NULL » (COST-008).
+  describe('#770 — aucun appel sans tarif officiel vérifié', () => {
+    beforeEach(() => __setVerifiedTestPricesForTests(false));
+
+    it('R05 — principal sans tarif, repli tarifé : seul le repli configuré est appelé ; rang sauté tracé MODEL_PRICING_UNVERIFIED, coût 0, aucune requête', async () => {
+      __setConfigForTests({ versionId: 1, entries: [t1('sans-tarif', 'm-b', null, [])] });
+      let appelsSansTarif = 0; let appelsRepli = 0;
+      fake.on('sans-tarif', () => { appelsSansTarif++; return { rawText: OK, inputTokens: 10, outputTokens: 10 }; });
+      fake.on('m-b', () => { appelsRepli++; return { rawText: OK, inputTokens: 10, outputTokens: 10 }; });
+      const r = await AiGateway.execute(req());
+      expect([appelsSansTarif, appelsRepli]).toEqual([0, 1]);
+      expect(r.model).toBe('m-b');
+      expect(traces[0]).toMatchObject({ model: 'sans-tarif', status: 'error', errorCode: 'MODEL_PRICING_UNVERIFIED', billable: false, inputTokens: 0, outputTokens: 0, costMicros: 0, modelRank: 'primary' });
+      expect(String(traces[0].errorMessage)).toMatch(/sans-tarif non sollicité : modèle sans tarif officiel vérifié : non appelé \(aucun tarif officiel connu\)/);
+      expect(traces[1]).toMatchObject({ model: 'm-b', status: 'success' });
+    });
+
+    it('R05 — aucun rang tarifé : aucun appel fournisseur, suspension explicite (jamais un faux succès)', async () => {
+      __setConfigForTests({ versionId: 1, entries: [t1('sans-tarif', 'sans-tarif-2', 'sans-tarif-3', [])] });
+      let appels = 0;
+      for (const m of ['sans-tarif', 'sans-tarif-2', 'sans-tarif-3']) fake.on(m, () => { appels++; return { rawText: OK, inputTokens: 10, outputTokens: 10 }; });
+      await expect(AiGateway.execute(req())).rejects.toMatchObject({ name: 'AiSuspendedError' });
+      expect(appels).toBe(0);
+      expect(traces.map((t) => t.errorCode)).toEqual(['MODEL_PRICING_UNVERIFIED', 'MODEL_PRICING_UNVERIFIED', 'MODEL_PRICING_UNVERIFIED']);
+      expect(traces.every((t) => t.costMicros === 0 && t.billable === false)).toBe(true);
+    });
+
+    it('R03 — tarif connu mais non confirmé (amorçage embarqué, saisie manuelle non confirmée, périmé) : non appelé ; tarif officiel de 0 : appelé', async () => {
+      const base = { provider: 'gemini', inputMicros: 1, outputMicros: 2, currency: 'USD', fetchedAt: new Date() };
+      primePricingCache([
+        { ...base, model: 'amorce', source: 'public_catalog', verified: false },
+        { ...base, model: 'manuel', source: 'manual', verified: false },
+        { ...base, model: 'perime', source: 'public_catalog', verified: false, pageStatus: 'STALE', staleSince: new Date(Date.now() - 400 * 86_400_000) },
+        { ...base, model: 'gratuit', source: 'public_catalog', verified: false, inputMicros: 0, outputMicros: 0, pageStatus: 'KNOWN' },
+      ]);
+      let appels: string[] = [];
+      for (const m of ['amorce', 'manuel', 'perime', 'gratuit']) fake.on(m, () => { appels.push(m); return { rawText: OK, inputTokens: 10, outputTokens: 10 }; });
+      __setConfigForTests({ versionId: 1, entries: [t1('amorce', 'manuel', 'perime', [])] });
+      await expect(AiGateway.execute(req())).rejects.toMatchObject({ name: 'AiSuspendedError' });
+      expect(appels).toEqual([]);
+      traces.length = 0; appels = [];
+      __setConfigForTests({ versionId: 1, entries: [t1('gratuit', null, null, [])] });
+      const r = await AiGateway.execute(req());
+      expect(appels).toEqual(['gratuit']);
+      expect(r.costMicros).toBe(0);
+      expect(traces[0]).toMatchObject({ model: 'gratuit', status: 'success', costMicros: 0 });
+    });
   });
 });

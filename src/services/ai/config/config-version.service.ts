@@ -637,9 +637,27 @@ export async function activateQualifiedCandidate(versionId: number, opts: {
   // DERNIÈRE configuration active ; état antérieur du traitement et surveillance WATCHING dans le même commit.
   const { initialWatch } = await import('../qualification/promotion-watch');
   let r: Awaited<ReturnType<typeof repo.promoteTreatment>>;
+  // Lot 114 (carte #771, A03) : contrôle FINAL de disponibilité dans la transaction d'activation — un modèle de la
+  // chaîne promue confirmé indisponible depuis le démarrage des tests ou le verrou A1 fait refuser l'activation
+  // (`BLOCKED_MODEL_UNAVAILABLE`, journalisé) ; les preuves de qualification de la candidate sont conservées.
+  const gardeA1 = gate.transactionGuard(d.reference);
+  const chainePromue = version.entries.filter((e) => d.reference.treatment === null || e.treatment === d.reference.treatment)
+    .flatMap((e) => MODEL_FIELDS.map((f) => e[f])).filter((m): m is string => Boolean(m));
+  const gardeFinale = async (sql: repo.SqlLike): Promise<void> => {
+    await gardeA1(sql);
+    const { operationalRefusalInTx } = await import('../provider/model-operational.service');
+    for (const model of new Set(chainePromue)) {
+      const indispo = await operationalRefusalInTx(sql, model);
+      if (indispo !== null) {
+        throw new ConfigOperationRefused('BLOCKED_MODEL_UNAVAILABLE',
+          `Activation annulée dans la transaction : « ${model} » est confirmé indisponible pour la clé active${indispo.error ? ` (${indispo.error})` : ''}.`,
+          { model, checkedAt: indispo.checkedAt });
+      }
+    }
+  };
   try {
     r = await repo.promoteTreatment(versionId, {
-      summary: opts.summary, guard: gate.transactionGuard(d.reference), now: opts.watch?.now,
+      summary: opts.summary, guard: gardeFinale, now: opts.watch?.now,
       watch: (t) => initialWatch(t, { campaignId: opts.watch?.campaignId ?? d.reference.campaignId, operations: opts.watch?.operations, previousVersionId: t.globalActiveBefore?.versionId ?? null, now: opts.watch?.now }) as unknown as Record<string, unknown>,
     });
   } catch (e) {

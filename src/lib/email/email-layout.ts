@@ -95,11 +95,17 @@ const escAttr = (s: string) => String(s).replace(/&/g, '&amp;').replace(/"/g, '&
  * media query). `data-vb-logo` : exclut ces images du recalibrage `fixLogoSizing`.
  * Texte alternatif « Verebona » (images bloquées : le nom de marque reste lu).
  */
-export function emailLogoHtml(baseUrl: string = emailAssetBaseUrl(), alt = 'Verebona'): string {
+export function emailLogoHtml(
+  baseUrl: string = emailAssetBaseUrl(), alt = 'Verebona',
+  /** Carte #774 : dimensions du logo (gabarit transactionnel commun : 120 × 30). Défaut inchangé. */
+  size: { width: number; height: number } = { width: 160, height: 40 },
+): string {
   const a = escAttr(alt);
+  const w = size.width;
+  const h = size.height;
   return `<table role="presentation" cellpadding="0" cellspacing="0" border="0" style="border-collapse:collapse;"><tr><td style="padding:0;">`
-    + `<img data-vb-logo="light" class="vb-logo-light" src="${baseUrl}${EMAIL_LOGO_LIGHT_PATH}" width="160" height="40" alt="${a}" style="display:block;width:160px;height:40px;max-width:160px;border:0;outline:none;text-decoration:none;font-family:${F};font-size:20px;font-weight:700;color:${C.petrole};">`
-    + `<!--[if !mso]><!--><img data-vb-logo="dark" class="vb-logo-dark" src="${baseUrl}${EMAIL_LOGO_DARK_PATH}" width="160" height="40" alt="${a}" style="display:none;width:160px;height:40px;max-width:160px;max-height:0;overflow:hidden;border:0;outline:none;mso-hide:all;"><!--<![endif]-->`
+    + `<img data-vb-logo="light" class="vb-logo-light" src="${baseUrl}${EMAIL_LOGO_LIGHT_PATH}" width="${w}" height="${h}" alt="${a}" style="display:block;width:${w}px;height:${h}px;max-width:${w}px;border:0;outline:none;text-decoration:none;font-family:${F};font-size:20px;font-weight:700;color:${C.petrole};">`
+    + `<!--[if !mso]><!--><img data-vb-logo="dark" class="vb-logo-dark" src="${baseUrl}${EMAIL_LOGO_DARK_PATH}" width="${w}" height="${h}" alt="${a}" style="display:none;width:${w}px;height:${h}px;max-width:${w}px;max-height:0;overflow:hidden;border:0;outline:none;mso-hide:all;"><!--<![endif]-->`
     + `</td></tr></table>`;
 }
 
@@ -121,7 +127,7 @@ export function emailCallout(html: string, { tone = 'info' }: { tone?: 'info' | 
 }
 
 /** Feuille de style embarquée : police, mode sombre, petits écrans. */
-function headStyles(baseUrl: string, fontFace = true): string {
+function headStyles(baseUrl: string, fontFace = true, extraCss = ''): string {
   const D = C.dark;
   const dark = (p: string) => `
   ${p} .vb-page, ${p}.vb-page { background-color:${D.page} !important; }
@@ -154,20 +160,108 @@ function headStyles(baseUrl: string, fontFace = true): string {
     .vb-logo-dark { display:block !important; max-height:none !important; overflow:visible !important; }
   }${dark('[data-ogsc]')}
   [data-ogsc] .vb-logo-light { display:none !important; }
-  [data-ogsc] .vb-logo-dark { display:block !important; max-height:none !important; }
+  [data-ogsc] .vb-logo-dark { display:block !important; max-height:none !important; }${extraCss}
 </style>`;
 }
+
+/** Carte #774 — marque du gabarit transactionnel commun (posée sur `<body>`, lue par le service d'e-mail). */
+export const TRANSACTIONAL_LAYOUT_MARKER = 'data-vb-gabarit="transactionnel-v1"';
+
+/** Le corps d'un gabarit est-il construit sur le gabarit transactionnel commun (carte #774) ? */
+export function isTransactionalLayout(body: string | null | undefined): boolean {
+  return typeof body === 'string' && body.includes(TRANSACTIONAL_LAYOUT_MARKER);
+}
+
+/** Logo compact du gabarit transactionnel commun (PNG 4:1). */
+export const EMAIL_COMPACT_LOGO_SIZE = { width: 120, height: 30 } as const;
+
+/**
+ * Carte #774 — options du gabarit transactionnel COMMUN (variante compacte de
+ * l'enveloppe) : en-tête court (logo 120 × 30 et libellé sur une ligne, sans
+ * filet), un seul cadre, marges internes de 24 px, colonne fluide de 600 px au
+ * plus (lisible sans feuille de style : `width:100%;max-width:600px`),
+ * pré-en-tête masqué. Outlook (moteur Word) : table fantôme de 600 px en
+ * commentaire conditionnel.
+ */
+export interface EmailCompactOptions {
+  /** Libellé d'en-tête à droite du logo (ex. « Notification de sécurité »). Texte déjà échappé. */
+  headerLabel?: string;
+  /** Pré-en-tête (aperçu de la boîte de réception), masqué dans le message. Texte déjà échappé. */
+  preheader?: string;
+}
+
+/** Compléments de style du gabarit compact (petits écrans). */
+const COMPACT_CSS = `
+  @media screen and (max-width:620px) {
+    .vb-outer { padding:12px 8px !important; }
+  }`;
 
 /**
  * Document complet : fond ivoire, carte blanche (filet #D5DEDC, rayon 16), en-tête
  * logo, contenu, pied. `content`, `footer` et `logo` sont du HTML fourni par le code
  * ou par un gabarit (variables `{{…}}` comprises).
+ *
+ * Carte #774 : `compact` produit le gabarit transactionnel commun ; sans cette
+ * option, le document est celui du lot 66C, à l'octet près.
  */
-export function emailDocument({ title, content, footer, logo, baseUrl = emailAssetBaseUrl(), fontFace = true }: {
+export function emailDocument({ title, content, footer, logo, baseUrl = emailAssetBaseUrl(), fontFace = true, compact }: {
   title: string; content: string; footer: string; logo?: string; baseUrl?: string;
   /** false : pas de @font-face (gabarits stockés en base : aucune URL d'application figée). */
   fontFace?: boolean;
+  compact?: EmailCompactOptions;
 }): string {
+  if (compact) {
+    const label = compact.headerLabel
+      ? `<td class="vb-muted" align="right" valign="middle" style="padding:0 0 0 12px;font-family:${F};font-size:13px;line-height:1.4;font-weight:600;color:${C.gris};text-align:right;">${compact.headerLabel}</td>`
+      : '';
+    const preheader = compact.preheader
+      ? `\n  <div data-vb-preheader="1" style="display:none;font-size:1px;line-height:1px;max-height:0;max-width:0;opacity:0;overflow:hidden;mso-hide:all;color:${C.ivoire};">${compact.preheader}</div>`
+      : '';
+    return `<!DOCTYPE html>
+<html lang="fr" xmlns="http://www.w3.org/1999/xhtml">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta http-equiv="X-UA-Compatible" content="IE=edge">
+  <meta name="color-scheme" content="light dark">
+  <meta name="supported-color-schemes" content="light dark">
+  <title>${title}</title>
+  ${headStyles(baseUrl, fontFace, COMPACT_CSS)}
+</head>
+<body class="vb-page" ${TRANSACTIONAL_LAYOUT_MARKER} style="margin:0;padding:0;background-color:${C.ivoire};font-family:${F};color:${C.encre};">${preheader}
+  <table role="presentation" class="vb-page" width="100%" cellpadding="0" cellspacing="0" border="0" bgcolor="${C.ivoire}" style="background-color:${C.ivoire};">
+    <tr>
+      <td class="vb-outer" align="center" style="padding:24px 12px;">
+        <!--[if mso]><table role="presentation" width="600" align="center" cellpadding="0" cellspacing="0" border="0"><tr><td><![endif]-->
+        <table role="presentation" class="vb-container vb-card" width="600" cellpadding="0" cellspacing="0" border="0" bgcolor="${C.blanc}" style="width:100%;max-width:600px;background-color:${C.blanc};border:1px solid ${C.filet};border-radius:16px;border-collapse:separate;">
+          <tr>
+            <td class="vb-pad" align="left" style="padding:20px 24px 0 24px;">
+              <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="border-collapse:collapse;"><tr>
+                <td align="left" valign="middle" style="padding:0;">${logo ?? emailLogoHtml(baseUrl, 'Verebona', EMAIL_COMPACT_LOGO_SIZE)}</td>
+                ${label}
+              </tr></table>
+            </td>
+          </tr>
+          <tr>
+            <td class="vb-text vb-pad" align="left" style="padding:20px 24px 8px 24px;font-family:${F};font-size:16px;line-height:1.6;color:${C.encre};">
+              ${content}
+            </td>
+          </tr>
+        </table>
+        <table role="presentation" class="vb-container" width="600" cellpadding="0" cellspacing="0" border="0" style="width:100%;max-width:600px;">
+          <tr>
+            <td class="vb-foot vb-pad" align="center" style="padding:16px 24px 8px 24px;font-family:${F};font-size:13px;line-height:1.5;color:${C.gris};text-align:center;">
+              ${footer}
+            </td>
+          </tr>
+        </table>
+        <!--[if mso]></td></tr></table><![endif]-->
+      </td>
+    </tr>
+  </table>
+</body>
+</html>`;
+  }
   return `<!DOCTYPE html>
 <html lang="fr" xmlns="http://www.w3.org/1999/xhtml">
 <head>

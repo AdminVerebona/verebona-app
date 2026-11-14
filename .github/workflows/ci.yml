@@ -643,6 +643,16 @@ jobs:
         run: npm run test:e2e:t1-reprise-differee -- --reporter=default --reporter=junit --outputFile.junit=rapports/e2e-t1-reprise-differee.xml
       - name: Contradictions d'attributs — carte « Arbitrer » et arbitrage T3 (Trello #750)
         run: npm run test:e2e:arbitrage-attributs -- --reporter=default --reporter=junit --outputFile.junit=rapports/e2e-arbitrage-attributs.xml
+      - name: IA — aucun modèle sans tarif officiel vérifié, alertes tarifaires remises à zéro (Trello #770)
+        run: npm run test:e2e:tarifs-ia-eligibilite -- --reporter=default --reporter=junit --outputFile.junit=rapports/e2e-tarifs-ia-eligibilite.xml
+      - name: IA — sondes de modèles, indisponibilités propagées au routage et aux promotions (Trello #771)
+        run: npm run test:e2e:sondes-modeles-indisponibilites -- --reporter=default --reporter=junit --outputFile.junit=rapports/e2e-sondes-modeles-indisponibilites.xml
+      - name: Assistant — les 7 suggestions rejetées retirées du catalogue et du stock (Trello #773)
+        run: npm run test:e2e:suggestions-retirees -- --reporter=default --reporter=junit --outputFile.junit=rapports/e2e-suggestions-retirees.xml
+      - name: E-mails de sécurité — gabarit commun, clé d'accès et application d'authentification (Trello #774)
+        run: npm run test:e2e:emails-securite -- --reporter=default --reporter=junit --outputFile.junit=rapports/e2e-emails-securite.xml
+      - name: Coût de possession — confirmations sans date : une dépense, gestes, compteurs, vue obsolète (Trello #769)
+        run: npm run test:e2e:tco-confirmations -- --reporter=default --reporter=junit --outputFile.junit=rapports/e2e-tco-confirmations.xml
       - uses: actions/upload-artifact@v4
         if: always()
         with:

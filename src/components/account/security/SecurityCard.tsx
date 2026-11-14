@@ -42,6 +42,7 @@ import {
 } from '@/components/ui/dialog';
 import { apiClient, ApiClientError } from '@/lib/api-client';
 import { isNativeApp } from '@/lib/native/bridge';
+import { anchorFromOpenParam } from '@/lib/account/open-section';
 import { useReauth } from './ReauthProvider';
 import { SignInMethodsBlock } from './SignInMethodsBlock';
 import { BiometricsBlock } from './BiometricsBlock';
@@ -61,6 +62,8 @@ const PARIS = 'Europe/Paris';
 
 /** Lot 101C : ancre du sous-bloc « Appareils connectés » (liens d'e-mail, retour de confirmation). */
 export const CONNECTED_DEVICES_ANCHOR = 'appareils-connectes';
+/** Ancre de la carte Sécurité (liens d'e-mail ; carte #774 : aussi `?ouvrir=securite`). */
+export const SECURITY_ANCHOR = 'securite';
 
 /** Lot 101C : résumé de l'en-tête du sous-bloc fermé — « 2 appareils · dont celui-ci ». */
 export function devicesSummary(sessions: Pick<DeviceSession, 'current'>[] | null, loadError = false): string {
@@ -352,10 +355,17 @@ export function SecurityCard() {
   // détection unique `lib/native/bridge`, décidée après hydratation).
   const [nativeApp, setNativeApp] = useState(false);
   useEffect(() => { setNativeApp(isNativeApp()); }, []);
+  // Carte #774 : lien d'e-mail de sécurité suivi après un passage par la
+  // connexion (`?ouvrir=securite`, l'ancre n'ayant pas survécu) — l'ancre est
+  // rétablie, la carte s'ouvre et vient à l'écran (`CollapsibleCard`).
+  useEffect(() => {
+    const anchor = anchorFromOpenParam(window.location.search, window.location.hash, [SECURITY_ANCHOR]);
+    if (anchor) window.location.replace(`#${anchor}`);
+  }, []);
 
   return (
     <CollapsibleCard
-      anchorId="securite"
+      anchorId={SECURITY_ANCHOR}
       innerAnchorIds={[CONNECTED_DEVICES_ANCHOR]}
       icon={<ShieldCheck className="w-5 h-5" />}
       title="Sécurité"

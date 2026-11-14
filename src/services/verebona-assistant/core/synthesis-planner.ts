@@ -431,9 +431,11 @@ export const defaultDeps: SynthesisDeps = {
       conds.push(`(upper(coalesce(f.document_type_code, '')) = ANY($${i}::text[]) OR upper(coalesce(f.document_type, '')) = ANY($${i}::text[])
         ${mots.map((j) => `OR (f.document_type_code IS NULL AND unaccent(lower(coalesce(f.retained_title, f.original_filename, ''))) LIKE $${j})`).join(' ')})`);
     } else if (terms.length) {
+      // Carte #767 (E01) : champ COURANT « Notes / Description » — jamais une description masquée ou effacée.
+      const champ = await (await import('@/services/documents/notes-description/current-field')).currentFieldSql('f');
       const parts = terms.slice(0, 6).map((t) => {
         params.push(`%${t}%`);
-        return `unaccent(lower(coalesce(f.retained_title, '') || ' ' || coalesce(f.original_filename, '') || ' ' || coalesce(f.supplier, '') || ' ' || coalesce(f.description, ''))) LIKE unaccent($${params.length})`;
+        return `unaccent(lower(coalesce(f.retained_title, '') || ' ' || coalesce(f.original_filename, '') || ' ' || coalesce(f.supplier, '') || ' ' || ${champ.current})) LIKE unaccent($${params.length})`;
       });
       conds.push(`(${parts.join(' OR ')})`);
     }

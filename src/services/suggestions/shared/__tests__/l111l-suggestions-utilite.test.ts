@@ -58,11 +58,14 @@ const USAGE = (o: Partial<UsageSignals> = {}): UsageSignals => ({
 const labels = (ctx: SuggestionContext) => accountCandidatesOf(ctx).map((x) => x.label);
 
 describe('L111L-U01 — cause : une facture rattachée suffisait à proposer « Quels sont les documents de Maison ? »', () => {
-  it('la question vient du STOCK PERSONNEL (home_asset_docs, priorité 1), pas de T6 ni d’un repli', () => {
-    expect(ACCOUNT_STOCK[0]).toMatchObject({ catalogId: 'home_asset_docs', objective: 'EXPLOIT', priority: 1 });
-    // Constructible ET répondable : une seule facture suffit à rendre l'entrée du catalogue.
+  // Règle remplacée (carte #773, décision PO n° 30) : l'entrée `home_asset_docs`, cause du constat
+  // 111L, n'est plus seulement « non promue » — elle est RETIRÉE du stock et du catalogue. Le test
+  // prouvait qu'elle était constructible ; il prouve désormais qu'elle ne l'est plus.
+  it('la question venait du STOCK PERSONNEL (home_asset_docs) : l’entrée est retirée du stock et du catalogue (carte #773), pas de T6 ni de repli', () => {
+    expect(ACCOUNT_STOCK.map((e) => e.catalogId)).not.toContain('home_asset_docs');
+    // Même avec des documents rattachés au bien, plus aucune entrée ne rend cette question.
     const ctx = ctxAvec('Maison', { documents: 1 });
-    expect(renderSuggestionEntry('home_asset_docs', ctx)?.label).toBe('Quels sont les documents de Maison ?');
+    expect(renderSuggestionEntry('home_asset_docs', ctx)).toBeNull();
     // T6 ne fabrique plus de suggestions (bulle seule) : le service partagé n'importe aucune génération.
     const svc = readFileSync(join(ROOT, 'src/services/suggestions/shared/service.ts'), 'utf8');
     expect(svc).not.toMatch(/formulateWithT6|t6-suggestions'|generateMaster/);
@@ -72,7 +75,9 @@ describe('L111L-U01 — cause : une facture rattachée suffisait à proposer « 
     const ctx = ctxAvec('Maison', { documents: 1 });
     const r = reviewAccountCandidates(ctx);
     expect(r.accepted.map((x) => x.label)).not.toContain('Quels sont les documents de Maison ?');
-    expect(r.rejected).toContainEqual({ id: 'acc_home_asset_docs', decision: 'INVENTORY_DECLARED' });
+    // Règle remplacée (carte #773) : l'entrée n'est même plus EXAMINÉE (absente du stock) — elle
+    // n'apparaît donc plus parmi les candidates « répondables mais non promues » du diagnostic BO.
+    expect(r.rejected.map((x) => x.id)).not.toContain('acc_home_asset_docs');
   });
 });
 
@@ -119,9 +124,11 @@ describe('L111L-U02 — véhicule, équipement, autre ; ni reformulation de faç
       .toMatchObject({ promotable: false, decision: 'INVENTORY_UNDERSTOOD' });
   });
 
-  it('les questions d’inventaire restent des questions T2 du catalogue (posées librement, elles fonctionnent — L34 inchangé)', () => {
+  // Règle remplacée (carte #773) : `home_asset_docs` quitte la liste des inventaires du stock ; les deux
+  // inventaires CONSERVÉS par le PO (n° 34 et n° 40) restent dans le stock, répondables, jamais promus.
+  it('les questions d’inventaire conservées restent des questions T2 du catalogue (posées librement, elles fonctionnent)', () => {
     const ids = ACCOUNT_STOCK.filter((e) => e.need === 'INVENTORY').map((e) => e.catalogId);
-    expect(ids.sort()).toEqual(['docs_unlinked', 'home_asset_docs', 'state_exports']);
+    expect(ids.sort()).toEqual(['docs_unlinked', 'state_exports']);
     for (const id of ids) expect(renderSuggestionEntry(id, ctxAvec('Cupra', { documents: 1 }, { documentsUnlinked: 1, exportsReady: 1 }))).not.toBeNull();
   });
 });
@@ -151,10 +158,16 @@ describe('L111L-U03 — questions concrètes gardées seulement si la réponse e
 });
 
 describe('L111L-U04 — complémentarité : ni la mascotte, ni « À traiter », ni trois variantes du même besoin', () => {
-  it('documents en analyse : la mascotte l’affiche déjà (« N documents sont en cours d’analyse ») — non proposée', () => {
+  // Règle remplacée (carte #773, décision PO n° 29) : `home_analysis` est RETIRÉE du stock et du
+  // catalogue (elle n'était déjà pas promue : information affichée par la mascotte). La règle
+  // générale « déjà affiché ailleurs » reste vérifiée directement sur le critère d'utilité.
+  it('documents en analyse : l’entrée `home_analysis` est retirée (carte #773) ; une information déjà affichée par la mascotte reste non promouvable', () => {
     const r = reviewAccountCandidates(ctxAvec('Cupra', { documents: 2 }, { documentsInAnalysis: 2 }));
-    expect(r.rejected).toContainEqual({ id: 'acc_home_analysis', decision: 'SHOWN_ELSEWHERE' });
+    expect(r.rejected.map((x) => x.id)).not.toContain('acc_home_analysis');
     expect(r.accepted.map((x) => x.catalogId)).not.toContain('home_analysis');
+    expect(r.accepted.map((x) => x.label)).not.toContain('Où en est l’analyse de mes documents ?');
+    expect(qualifySuggestion({ need: 'FACT', shownBy: 'MASCOT', label: 'Quelle est ma prochaine échéance ?', canonicalIntent: 'ACCOUNT_SEARCH_AGENDA', proven: true }))
+      .toMatchObject({ promotable: false, decision: 'SHOWN_ELSEWHERE' });
   });
 
   it('ce qui attend une action relève d’« À traiter », quelle que soit la déclaration', () => {
@@ -175,10 +188,9 @@ describe('L111L-U05 — revue du stock', () => {
     const r = reviewAccountCandidates(ctx);
     const decision = Object.fromEntries([...r.rejected.map((x) => [x.id, x.decision]), ...r.accepted.map((x) => [`acc_${x.catalogId}`, 'USEFUL'])]);
     expect(decision).toEqual({
-      acc_home_asset_docs: 'INVENTORY_DECLARED',
+      // Règle remplacée (carte #773) : `acc_home_asset_docs` et `acc_home_analysis` ne sont plus dans le stock.
       acc_docs_unlinked: 'INVENTORY_DECLARED',
       acc_state_exports: 'INVENTORY_DECLARED',
-      acc_home_analysis: 'SHOWN_ELSEWHERE',
       acc_assets_deadlines: 'USEFUL',
       acc_home_next_deadline: 'USEFUL',
     });

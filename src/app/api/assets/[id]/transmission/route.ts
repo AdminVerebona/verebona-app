@@ -144,6 +144,23 @@ export async function POST(
     const { scopeTransmissionSelection } = await import('@/services/transmission/transmission-scope');
     const { selection: selectedPayload } = await scopeTransmissionSelection(accountId, assetId, selectedPayloadDemande, 'creation');
 
+    // Carte #767 (E02) — fail-closed dès la création : l'inclusion de « Notes /
+    // Description » n'est enregistrée que si la priorité (reprise en main) et la
+    // provenance sont lisibles. Sinon la transmission est refusée, rien n'est créé
+    // ni envoyé (revérifié à l'acceptation, lecture stricte).
+    if (selectedPayload.includeNotesDescription === true) {
+      const { notesDescriptionSchemaState } = await import('@/services/documents/notes-description/store');
+      const etatSchema = await notesDescriptionSchemaState();
+      if (etatSchema !== 'READY') {
+        const { THIRD_PARTY_NOTES_UNAVAILABLE_MESSAGE } = await import('@/services/documents/notes-description/third-party');
+        console.error(`[Transmission] création refusée (bien ${assetId}) : inclusion « Notes / Description » demandée, schéma 1580 ${etatSchema === 'MISSING' ? 'incomplet' : 'illisible'}.`);
+        return NextResponse.json({
+          error: 'NOTES_DESCRIPTION_UNAVAILABLE', reason: etatSchema === 'MISSING' ? 'SCHEMA_MISSING' : 'SCHEMA_UNKNOWN',
+          message: THIRD_PARTY_NOTES_UNAVAILABLE_MESSAGE,
+        }, { status: 503 });
+      }
+    }
+
     // Build snapshot at transmission time
     // X-02 (lot 16) : source canonique ; `snapshot.dataSource` est figé dans
     // `snapshotPayload`.

@@ -903,18 +903,29 @@ const usd = (micros: number | null) => (micros == null ? 'non estimable' : `${(m
 
 /** Lot 113AC — requalification T1 des périodes métier (textes à valider par le PO). */
 function businessPeriodsRequalification(action: BackfillAction, out: RawBackfillOutput): BackfillSummary {
-  const r = out.result as import('@/services/documents/business-periods/requalification').RequalificationReport;
+  const brut = out.result as import('@/services/documents/business-periods/requalification').RequalificationReport;
+  // Carte #766 (E13) : un rapport enregistré AVANT la carte n'a ni reprises ni blocages (tolérance de lecture).
+  const anciens = (c: typeof brut.before): typeof brut.before => ({
+    ...c, requestedIncomplete: c.requestedIncomplete ?? 0, requestedFailed: c.requestedFailed ?? 0, requestedExhausted: c.requestedExhausted ?? 0,
+  });
+  const r = {
+    ...brut, before: anciens(brut.before), ...(brut.after ? { after: anciens(brut.after) } : {}),
+    batchRetries: brut.batchRetries ?? [], blocked: brut.blocked ?? [], maxAttempts: brut.maxAttempts ?? 3,
+  };
   const recense = (c: typeof r.before, quand: string) => [
     { label: `${quand} — à requalifier`, value: c.toRequalify },
     { label: `${quand} — demandés, analyse en attente`, value: c.requestedPending },
     { label: `${quand} — requalifiés (sortie v2)`, value: c.requestedQualified },
-    { label: `${quand} — demandés, toujours sans sortie v2`, value: c.requestedWithoutV2 },
+    // Carte #766 (E13) : états distincts d'un travail terminé sans qualification v2 (textes à valider par le PO).
+    { label: `${quand} — à reprendre : sortie incomplète (sans qualification v2)`, value: c.requestedIncomplete },
+    { label: `${quand} — à reprendre : erreur technique`, value: c.requestedFailed },
+    { label: `${quand} — bloqués (plafond de ${r.maxAttempts} demandes atteint)`, value: c.requestedExhausted },
     { label: `${quand} — qualifiés v2 sans requalification`, value: c.qualifiedOtherwise },
   ];
   const headline = r.refused
     ? `Application refusée : ${r.availability.reason}`
     : action === 'simulate'
-      ? `Simulation : ${r.before.toRequalify} document(s) à requalifier ; prochain lot : ${r.batch.length} document(s) ; coût indicatif du reste : ${usd(r.estimate.estimatedMicros)}.${r.availability.available ? '' : ` ${r.availability.reason}`}`
+      ? `Simulation : ${r.before.toRequalify} document(s) à requalifier ; prochain lot : ${r.batch.length} document(s)${r.batchRetries.length ? ` (dont ${r.batchRetries.length} reprise(s))` : ''} ; coût indicatif du reste : ${usd(r.estimate.estimatedMicros)}.${r.availability.available ? '' : ` ${r.availability.reason}`}`
       : `Application : ${r.queued?.length ?? 0} document(s) mis en file T1 (lot de ${r.batchSize} au plus) ; ${r.notAccepted?.length ?? 0} non accepté(s) par la file.`;
   return {
     headline,
@@ -931,7 +942,11 @@ function businessPeriodsRequalification(action: BackfillAction, out: RawBackfill
     ambiguous: { count: 0, samples: [] },
     conflicts: { count: 0, samples: [] },
     warnings: [
-      ...(r.before.requestedWithoutV2 > 0 ? [`${r.before.requestedWithoutV2} document(s) déjà requalifié(s) restent sans sortie v2 : ils ne sont pas redemandés (à examiner dans le diagnostic du document).`] : []),
+      // Carte #766 (E13) — règle remplacée (« jamais redemandés ») : reprise bornée, puis blocage signalé.
+      ...(r.before.requestedIncomplete + r.before.requestedFailed > 0
+        ? [`${r.before.requestedIncomplete + r.before.requestedFailed} document(s) déjà demandé(s) sans qualification v2 seront repris par les prochains lots (au plus ${r.maxAttempts} demandes par document).`] : []),
+      ...(r.before.requestedExhausted > 0
+        ? [`${r.before.requestedExhausted} document(s) bloqué(s) après ${r.maxAttempts} demandes sans qualification v2 : ils ne sont plus redemandés (à examiner dans le diagnostic du document)${r.blocked.length ? ` — documents ${r.blocked.map((b) => `#${b.fileId} (compte ${b.accountId}, ${b.lastStatus})`).join(', ')}${r.before.requestedExhausted > r.blocked.length ? '…' : ''}` : ''}.`] : []),
       'Coût indicatif : moyenne observée des analyses T1 récentes, pas un devis. Suivi des analyses : BO › File d’attente IA (origine business-periods-v2-requalification).',
     ],
   };

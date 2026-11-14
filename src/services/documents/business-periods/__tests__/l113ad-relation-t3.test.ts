@@ -219,7 +219,10 @@ describe('L113AD-U-MEMOIRE — mémoire relue par la résolution, demande posée
     const appels: Array<{ q: string; p: unknown[] }> = [];
     return { appels, sql: { unsafe: async (q: string, p: unknown[]) => { appels.push({ q, p }); return rows; } } as never };
   };
-  it('états : classement certain → DECIDED (preuve) ; en attente récente → AWAITING ; sinon EXAMINED ; bornée au compte', async () => {
+  // Règle remplacée (carte #766, E07) : une demande en attente depuis plus de 24 h devenait « EXAMINED » (donc une
+  // question). Un incident technique n'est plus une ambiguïté métier : en attente → AWAITING quel que soit l'âge
+  // (`late` : supervision) ; essais épuisés → FAILED ; seul un travail réel de T3 donne EXAMINED.
+  it('états : classement certain → DECIDED (preuve) ; en attente → AWAITING (même en retard) ; T3 a travaillé → EXAMINED ; bornée au compte', async () => {
     const f = faux([
       { fingerprint: 'a', status: 'DECIDED', relation: 'AMENDMENT', confidence: 'certain', replacing_file_id: 11, evidence: [{ document: 'D2', fileId: 11, excerpt: 'modifiée' }], fresh: true },
       { fingerprint: 'b', status: 'DECIDED', relation: 'CONTRADICTION', confidence: 'certain', replacing_file_id: null, evidence: [], fresh: true },
@@ -230,7 +233,10 @@ describe('L113AD-U-MEMOIRE — mémoire relue par la résolution, demande posée
       { fingerprint: 'g', status: 'AI_FAILED', relation: null, confidence: null, replacing_file_id: null, evidence: [], fresh: true },
     ]);
     const s = await loadRelationStates(f.sql, 7, [10, 11, 11]);
-    expect(s.map((x) => [x.fingerprint, x.state])).toEqual([['a', 'DECIDED'], ['b', 'EXAMINED'], ['c', 'AWAITING'], ['d', 'EXAMINED'], ['e', 'EXAMINED'], ['f', 'EXAMINED'], ['g', 'AWAITING']]);
+    expect(s.map((x) => [x.fingerprint, x.state])).toEqual([['a', 'DECIDED'], ['b', 'EXAMINED'], ['c', 'AWAITING'], ['d', 'AWAITING'], ['e', 'EXAMINED'], ['f', 'EXAMINED'], ['g', 'AWAITING']]);
+    expect(s[1]).toMatchObject({ contradiction: true });
+    expect(s[2]).not.toHaveProperty('late');
+    expect(s[3]).toMatchObject({ late: true });
     expect(s[0]).toMatchObject({ relation: 'AMENDMENT', replacingFileId: 11, citation: { fileId: 11, excerpt: 'modifiée' } });
     expect(f.appels[0].p).toEqual([7, '{10,11}']);
     expect(f.appels[0].q).toMatch(/account_id = \$1/);

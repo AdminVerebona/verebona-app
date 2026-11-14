@@ -68,6 +68,12 @@ export interface UnpricedCalls {
   /** Un tarif est-il applicable AUJOURD'HUI (régularisation à simuler) ? */
   priceNow: boolean;
   inActiveChain: boolean;
+  /**
+   * Lot 114 (#770) : appels non chiffrés POSTÉRIEURS à la bascule de politique tarifaire — une anomalie ACTUELLE
+   * (la garde aurait dû empêcher l'appel). Le reste est de l'historique financier, sans alerte.
+   */
+  callsSincePolicy: number;
+  lastSincePolicyAt: string | null;
 }
 export interface StalePrice { model: string; since: string | null; reasonCode: string | null; reason: string | null }
 export interface SourceFailure { logId: number; at: string; code: string | null; reason: string | null }
@@ -80,10 +86,26 @@ export interface PricingConditions {
   source: SourceFailure | null;
   /** Dernière lecture : contenu intégral conservé (lot 113O) — une absence est-elle vérifiable ? */
   absenceVerifiable: boolean;
+  /**
+   * Lot 114 (#770) : date de la bascule « tarif officiel vérifié obligatoire » (migration 1691). `null` : bascule
+   * non enregistrée — tout appel non chiffré est alors traité comme actuel (jamais masqué).
+   */
+  policyRebaseAt: string | null;
 }
 
 const iso = (v: unknown) => (v == null ? null : new Date(String(v)).toISOString());
 const q = async (sql: string, params: unknown[] = []): Promise<Row[]> => ((await pgClient.unsafe(sql, params as never[])) as unknown as Row[]) ?? [];
+
+/** Politique enregistrée par la migration 1691 (#770). */
+export const PRICING_POLICY_REBASE = 'REBASE_PRICING_POLICY_PRE_MEP';
+
+/** Date de la bascule de politique tarifaire (#770), ou `null` (migration 1691 absente). Ne lève jamais. */
+export async function pricingPolicyRebaseAt(): Promise<string | null> {
+  try {
+    const [r] = await q(`SELECT applied_at FROM ai_pricing_policy_rebase WHERE policy = $1`, [PRICING_POLICY_REBASE]);
+    return r ? iso(r.applied_at) : null;
+  } catch { return null; }
+}
 
 /** Modèles servis distincts par identifiant demandé (alias résolus par l'API), sur `days` jours. */
 export async function servedModelsObserved(days: number): Promise<Map<string, Map<string, number>>> {
@@ -106,22 +128,27 @@ export async function servedModelsObserved(days: number): Promise<Map<string, Ma
 }
 
 /** Appels réellement non chiffrés (sans correction active), par modèle. Lecture seule. */
-export async function unpricedCallsByModel(days: number): Promise<Array<Omit<UnpricedCalls, 'priceNow' | 'inActiveChain'>>> {
+export async function unpricedCallsByModel(days: number, policyRebaseAt: string | null = null): Promise<Array<Omit<UnpricedCalls, 'priceNow' | 'inActiveChain'>>> {
   const st = pricingStatusSql('u');
   const rows = await q(
-    `SELECT u.model, ${st} AS st, COUNT(*)::int AS n, MIN(u.created_at) AS first_at, MAX(u.created_at) AS last_at
+    `SELECT u.model, ${st} AS st, COUNT(*)::int AS n, MIN(u.created_at) AS first_at, MAX(u.created_at) AS last_at,
+            COUNT(*) FILTER (WHERE $2::timestamptz IS NULL OR u.created_at > $2::timestamptz)::int AS n_since,
+            MAX(u.created_at) FILTER (WHERE $2::timestamptz IS NULL OR u.created_at > $2::timestamptz) AS last_since
        FROM ai_usage_event u
        ${activeCorrectionJoin('u', 'c')}
       WHERE u.provider = 'gemini' AND u.model IS NOT NULL AND u.created_at >= NOW() - ($1 || ' days')::interval
         AND c.id IS NULL AND ${st} IN ('missing', 'insufficient_usage', 'legacy_undetermined')
       GROUP BY 1, 2`,
-    [String(days)],
+    [String(days), policyRebaseAt],
   );
-  const par = new Map<string, { calls: number; firstAt: string; lastAt: string; byStatus: Record<string, number> }>();
+  const par = new Map<string, { calls: number; firstAt: string; lastAt: string; byStatus: Record<string, number>; callsSincePolicy: number; lastSincePolicyAt: string | null }>();
   for (const r of rows) {
     const k = String(r.model);
-    const e = par.get(k) ?? { calls: 0, firstAt: iso(r.first_at)!, lastAt: iso(r.last_at)!, byStatus: {} };
+    const e = par.get(k) ?? { calls: 0, firstAt: iso(r.first_at)!, lastAt: iso(r.last_at)!, byStatus: {}, callsSincePolicy: 0, lastSincePolicyAt: null };
     e.calls += Number(r.n);
+    e.callsSincePolicy += Number(r.n_since ?? 0);
+    const depuis = iso(r.last_since);
+    if (depuis && (!e.lastSincePolicyAt || depuis > e.lastSincePolicyAt)) e.lastSincePolicyAt = depuis;
     e.byStatus[String(r.st)] = (e.byStatus[String(r.st)] ?? 0) + Number(r.n);
     if (iso(r.first_at)! < e.firstAt) e.firstAt = iso(r.first_at)!;
     if (iso(r.last_at)! > e.lastAt) e.lastAt = iso(r.last_at)!;
@@ -142,8 +169,11 @@ async function freshCache(): Promise<typeof import('./pricing.repository')> {
 
 /** Évalue les trois risques (lecture seule). */
 export async function evaluatePricingConditions(now: Date = new Date()): Promise<PricingConditions> {
-  const P = await freshCache();
-  const priced = (m: string) => P.getCachedPrice('gemini', m) !== null;
+  await freshCache();
+  // Lot 114 (#770) : « tarifé » = tarif officiel VÉRIFIÉ et applicable (un tarif connu mais non admissible ne suffit plus).
+  const { evaluatePricing } = await import('./pricing-guard');
+  const priced = (m: string) => evaluatePricing(m, 'gemini', now).ok;
+  const policyRebaseAt = await pricingPolicyRebaseAt();
   const { loadPriceStatuses } = await import('./pricing-sync.service');
   const statuts = await loadPriceStatuses().catch(() => new Map());
   const servis = await servedModelsObserved(PRICING_SUPERVISION_DAYS).catch(() => new Map<string, Map<string, number>>());
@@ -167,15 +197,13 @@ export async function evaluatePricingConditions(now: Date = new Date()): Promise
   }
 
   // 2. Appels historiques réellement non chiffrés.
-  const appels = await unpricedCallsByModel(PRICING_SUPERVISION_DAYS).catch(() => []);
+  const appels = await unpricedCallsByModel(PRICING_SUPERVISION_DAYS, policyRebaseAt).catch(() => []);
   const unpricedCalls: UnpricedCalls[] = appels.map((a) => ({ ...a, priceNow: priced(a.model) || [...(servis.get(a.model)?.keys() ?? [])].some(priced), inActiveChain: actifs.has(a.model) }));
 
-  // 3. STALE (modèles utilisés ou actifs) et source rejetée.
-  const utilises = new Set<string>([...actifs.keys(), ...appels.map((a) => a.model)]);
-  try {
-    const { modelsActuallyUsed } = await import('./pricing-sync.service');
-    for (const m of await modelsActuallyUsed(PRICING_SUPERVISION_DAYS)) utilises.add(m);
-  } catch { /* table illisible */ }
+  // 3. STALE et source rejetée. Lot 114 (#770) : seuls les modèles des chaînes ACTIVES comptent — une preuve non
+  // reconfirmée y annonce un blocage à l'échéance du délai de validité ; un modèle seulement utilisé par le passé
+  // (ou découvert, exclu du routage) n'ouvre plus d'alerte.
+  const utilises = new Set<string>(actifs.keys());
   const stale: StalePrice[] = [...statuts.values()]
     .filter((s) => s.status === 'STALE' && utilises.has(s.model))
     .map((s) => ({ model: s.model, since: s.staleSince ?? null, reasonCode: s.reasonCode ?? null, reason: s.reason ?? null }))
@@ -186,7 +214,7 @@ export async function evaluatePricingConditions(now: Date = new Date()): Promise
     : null;
 
   return {
-    evaluatedAt: now.toISOString(), activeUnpriced, unpricedCalls, stale, source,
+    evaluatedAt: now.toISOString(), activeUnpriced, unpricedCalls, stale, source, policyRebaseAt,
     absenceVerifiable: Boolean(last && last.snapshot_id != null),
   };
 }
@@ -226,24 +254,28 @@ export function expectedPricingAlerts(c: PricingConditions): AlertSpec[] {
   for (const a of c.activeUnpriced) {
     out.push({
       conditionKey: `pricing:active:${a.model}`, code: PRICING_ALERT_CODES.active, severity: 'warning', model: a.model, category: 'active',
-      message: `Chaîne active sans tarif : ${a.model} (${a.usages.map((u) => `${u.treatment} ${RANG[u.rank] ?? u.rank}`).join(', ')}) — ses prochains appels ne seront pas chiffrés (${unpricedCauseText(a, c.absenceVerifiable)}).`,
+      message: `Chaîne active sans tarif officiel vérifié : ${a.model} (${a.usages.map((u) => `${u.treatment} ${RANG[u.rank] ?? u.rank}`).join(', ')}) — ce rang n’est plus appelé, le rang configuré suivant est essayé (${unpricedCauseText(a, c.absenceVerifiable)}).`,
       details: { model: a.model, usages: a.usages, pageStatus: a.pageStatus, reasonCode: a.reasonCode, servedModels: a.servedModels },
       drilldownHref: '/admin/ai-provider#tarifs',
     });
   }
+  // Lot 114 (Trello #770) — règle remplacée : « une alerte par modèle ayant des appels historiques non chiffrés ».
+  // L'historique seul n'ouvre plus d'alerte (il reste visible, avec son vrai nombre, dans Coûts IA). Seul un appel
+  // non chiffré POSTÉRIEUR à la bascule est une anomalie actuelle : la garde aurait dû empêcher cet appel.
   for (const u of c.unpricedCalls) {
+    if (!(u.callsSincePolicy > 0)) continue;
     out.push({
-      conditionKey: `pricing:calls:${u.model}`, code: PRICING_ALERT_CODES.calls, severity: u.priceNow ? 'info' : 'warning', model: u.model, category: 'calls',
-      message: `Appels IA non chiffrés : ${u.calls} appel(s) de ${u.model} sans coût calculable sur ${PRICING_SUPERVISION_DAYS} jours (dernier le ${fr(u.lastAt)}) — `
-        + (u.priceNow ? 'tarif désormais applicable : simulation de régularisation possible.' : 'aucun tarif applicable prouvé.'),
-      details: { model: u.model, calls: u.calls, byStatus: u.byStatus, firstAt: u.firstAt, lastAt: u.lastAt, priceNow: u.priceNow, inActiveChain: u.inActiveChain },
+      conditionKey: `pricing:calls:${u.model}`, code: PRICING_ALERT_CODES.calls, severity: 'warning', model: u.model, category: 'calls',
+      message: `Appel IA exécuté sans tarif vérifié : ${u.callsSincePolicy} appel(s) de ${u.model} sans coût calculable depuis la bascule tarifaire (dernier le ${fr(u.lastSincePolicyAt)}) — `
+        + 'la garde tarifaire n’a pas empêché cet appel : voie d’appel à vérifier.',
+      details: { model: u.model, calls: u.callsSincePolicy, historicalCalls: u.calls - u.callsSincePolicy, byStatus: u.byStatus, lastAt: u.lastSincePolicyAt, priceNow: u.priceNow, inActiveChain: u.inActiveChain, policyRebaseAt: c.policyRebaseAt },
       drilldownHref: `/admin/ai-costs?unpriced=1&model=${encodeURIComponent(u.model)}`,
     });
   }
   if (c.stale.length > 0) {
     out.push({
       conditionKey: 'pricing:stale', code: PRICING_ALERT_CODES.stale, severity: 'info', model: null, category: 'stale',
-      message: `Tarifs non confirmés (STALE) : ${c.stale.length} modèle(s) utilisé(s) — dernier montant documenté appliqué, non confirmé par la dernière lecture (${c.stale.slice(0, 8).map((s) => s.model).join(', ')}${c.stale.length > 8 ? '…' : ''}).`,
+      message: `Tarifs non confirmés (STALE) : ${c.stale.length} modèle(s) de chaînes actives — dernier montant documenté appliqué pendant le délai de validité de la preuve, puis le modèle ne sera plus appelé (${c.stale.slice(0, 8).map((s) => s.model).join(', ')}${c.stale.length > 8 ? '…' : ''}).`,
       details: { models: c.stale.map((s) => s.model), stale: c.stale.slice(0, 50) },
       drilldownHref: '/admin/ai-provider#tarifs',
     });
@@ -361,7 +393,9 @@ export async function noteUnpricedCalls(provider: string, model: string, now: Da
     const { raiseConditionAlert } = await import('../../alerts/alerts.repository');
     await raiseConditionAlert({
       kind: 'anomaly', code: PRICING_ALERT_CODES.calls, severity: 'warning',
-      message: `Appels IA non chiffrés : aucun tarif applicable pour ${provider}/${model} (coût non calculable, jamais estimé).`,
+      // Lot 114 (#770) : un appel RÉELLEMENT exécuté sans tarif applicable est une anomalie actuelle (la garde
+      // tarifaire ne l'a pas empêché) — jamais un simple rappel d'historique.
+      message: `Appel IA exécuté sans tarif vérifié : aucun tarif applicable pour ${provider}/${model} (coût non calculable, jamais estimé) — voie d’appel à vérifier.`,
       details: { provider, model, source: 'trace', category: 'calls' },
       drilldownHref: `/admin/ai-costs?unpriced=1&model=${encodeURIComponent(model)}`,
       conditionKey: `pricing:calls:${model}`,
@@ -375,8 +409,10 @@ export async function noteUnpricedCalls(provider: string, model: string, now: Da
 export interface PricingSummary {
   severity: 'ok' | 'info' | 'warning' | 'critical';
   title: string;
+  /** Lot 114 (#770) : rappel des appels HISTORIQUES non chiffrés (information, jamais une alerte) ; `null` s'il n'y en a pas. */
+  historicalNote: string | null;
   evaluatedAt: string;
-  counters: { activeUnpriced: number; unpricedCalls: number; unpricedCallModels: number; stale: number; sourceFailed: boolean; openAlerts: number; resolvedRecently: number };
+  counters: { activeUnpriced: number; unpricedCalls: number; currentUnpricedCalls: number; unpricedCallModels: number; stale: number; sourceFailed: boolean; openAlerts: number; resolvedRecently: number };
   active: Array<{ model: string; usages: string; cause: string }>;
   calls: Array<{ model: string; calls: number; lastAt: string; priceNow: boolean; inActiveChain: boolean }>;
   stale: string[];
@@ -388,20 +424,26 @@ export interface PricingSummary {
 /** Synthèse groupée (pur, testé) : un bloc au lieu d'un bandeau par alerte. */
 export function summarizePricing(c: PricingConditions, openAlerts: number, resolved: PricingSummary['recentlyResolved']): PricingSummary {
   const totalCalls = c.unpricedCalls.reduce((n, u) => n + u.calls, 0);
-  const severity: PricingSummary['severity'] = c.activeUnpriced.length > 0 || c.source ? 'warning'
-    : c.unpricedCalls.some((u) => !u.priceNow) ? 'warning'
-      : totalCalls > 0 || c.stale.length > 0 ? 'info' : 'ok';
+  const actuels = c.unpricedCalls.reduce((n, u) => n + u.callsSincePolicy, 0);
+  // Lot 114 (#770) : les appels HISTORIQUES non chiffrés restent comptés et affichés (information financière), mais
+  // ne colorent plus la synthèse : seul un incident présent (chaîne active non conforme, appel exécuté sans tarif
+  // depuis la bascule, source rejetée) est un risque ouvert.
+  const severity: PricingSummary['severity'] = c.activeUnpriced.length > 0 || c.source || actuels > 0 ? 'warning'
+    : c.stale.length > 0 ? 'info' : 'ok';
   const parts: string[] = [];
-  if (c.activeUnpriced.length) parts.push(`${c.activeUnpriced.length} modèle(s) de chaînes actives sans tarif`);
-  if (totalCalls) parts.push(`${totalCalls} appel(s) historiques non chiffrés (${c.unpricedCalls.length} modèle(s))`);
+  if (c.activeUnpriced.length) parts.push(`${c.activeUnpriced.length} modèle(s) de chaînes actives sans tarif vérifié (non appelés)`);
+  if (actuels) parts.push(`${actuels} appel(s) exécuté(s) sans tarif vérifié depuis la bascule`);
   if (c.stale.length) parts.push(`${c.stale.length} tarif(s) non confirmé(s)`);
   if (c.source) parts.push('source officielle rejetée');
   return {
     severity,
     title: parts.length ? `Tarification IA : ${parts.join(' · ')}` : 'Tarification IA : aucun risque ouvert',
+    historicalNote: totalCalls - actuels > 0
+      ? `${totalCalls - actuels} appel(s) historique(s) non chiffré(s) sur ${PRICING_SUPERVISION_DAYS} jours (${c.unpricedCalls.filter((u) => u.calls > u.callsSincePolicy).length} modèle(s)) — information financière, consultable dans Coûts IA ; aucune alerte.`
+      : null,
     evaluatedAt: c.evaluatedAt,
     counters: {
-      activeUnpriced: c.activeUnpriced.length, unpricedCalls: totalCalls, unpricedCallModels: c.unpricedCalls.length,
+      activeUnpriced: c.activeUnpriced.length, unpricedCalls: totalCalls, currentUnpricedCalls: actuels, unpricedCallModels: c.unpricedCalls.length,
       stale: c.stale.length, sourceFailed: Boolean(c.source), openAlerts, resolvedRecently: resolved.length,
     },
     active: c.activeUnpriced.map((a) => ({ model: a.model, usages: a.usages.map((u) => `${u.treatment} ${RANG[u.rank] ?? u.rank}`).join(', '), cause: unpricedCauseText(a, c.absenceVerifiable) })),

@@ -37,7 +37,7 @@ const contexte = (): UsableModelsContext => ({
   environment: 'preprod',
   catalog: { refreshedAt: '2026-10-07T08:00:00Z', models: [...disponible].map((model) => ({ model, available: true, supportsGeneration: true })) },
   codeCatalog: [],
-  price: () => ({ verified: true }),
+  price: () => ({ verified: true, eligible: true }),
   operational: new Map(),
   today: '2026-10-07',
 });

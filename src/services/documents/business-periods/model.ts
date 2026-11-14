@@ -55,12 +55,22 @@
  * Sans ce fait (bloc absent) : comportement 113W inchangé (pertinence par le
  * rôle T1 de la pièce), documenté comme « dépend du bloc prompt ».
  * Une fin `INDEFINITE` = durée indéterminée ÉTABLIE (≠ fin inconnue).
+ *
+ * CARTE #766 (pré-MEP) :
+ *   · E01 — une couverture et une période facturée de mêmes bornes sont DEUX faits (natures distinctes,
+ *     preuves séparées) : la facturation n'est plus retirée ; la période principale reste unique
+ *     (`principalKind`), l'autre est secondaire ;
+ *   · E10 — deux faits d'une même nature ne sont réunis que s'ils ont les mêmes bornes ET la même
+ *     modalité de fin (`samePeriodBounds`) : « fin inconnue » et « durée indéterminée » restent deux
+ *     interprétations, conservées toutes les deux ;
+ *   · E05 — `planRefresh` protège le FAIT corrigé (et ce qui n'en est pas prouvé distinct), plus la
+ *     nature entière : un autre segment prouvé disjoint peut être ajouté, mis à jour ou retiré.
  * ══════════════════════════════════════════════════════════════════════════
  */
 import { contractualDateSource } from '@/services/business-operations/consolidation/model';
 import {
-  BUSINESS_PERIOD_KINDS, chronoKey, isPartialDate, orderedBounds,
-  type BusinessPeriodKind, type PartialDate,
+  BUSINESS_PERIOD_KINDS, boundsProof, chronoKey, isPartialDate, orderedBounds, samePeriodBounds,
+  type BusinessPeriodKind, type PartialDate, type PeriodBounds,
 } from '@/lib/documents/business-periods';
 import { isOpenEndToken, parseRelation, parseRelevance, type DocumentRelation, type PeriodRelevance } from './t1-v2';
 
@@ -193,9 +203,10 @@ export function deriveDocumentPeriods(inp: PeriodInputs): DesiredPeriod[] {
   const parNature = new Map<BusinessPeriodKind, Omit<DesiredPeriod, 'segment'>[]>();
   const ajouter = (p: Omit<DesiredPeriod, 'segment'>) => {
     const l = parNature.get(p.kind) ?? [];
-    if (l.some((x) => x.start === p.start && x.end === p.end)) {
+    // Carte #766 (E10) : même fait = mêmes bornes ET même modalité de fin (inconnue ≠ durée indéterminée).
+    const x = l.find((y) => samePeriodBounds(y, p));
+    if (x) {
       // Même période citée deux fois : une seule ligne, preuves réunies.
-      const x = l.find((y) => y.start === p.start && y.end === p.end)!;
       x.evidence = mergeEvidence(x.evidence, p.evidence);
       x.principalHint = x.principalHint || p.principalHint;
     } else l.push(p);
@@ -284,20 +295,18 @@ export function deriveDocumentPeriods(inp: PeriodInputs): DesiredPeriod[] {
     }
   }
 
-  // Une couverture et une période facturée identiques : la couverture seule (pas de doublon visible).
-  const couv = parNature.get('COVERAGE') ?? [];
-  const fact = parNature.get('BILLING');
-  if (fact && couv.length) {
-    const restantes = fact.filter((b) => !(b.start !== null && couv.some((c) => c.start === b.start && c.end === b.end)));
-    if (restantes.length) parNature.set('BILLING', restantes); else parNature.delete('BILLING');
-  }
+  // Carte #766 (E01) — règle remplacée : une couverture et une période facturée de mêmes bornes restent
+  // DEUX faits (natures distinctes, preuves et provenances séparées). Rien n'est retiré ici : la période
+  // principale reste unique (`principalKind`), la facturation est secondaire, et la dépense comme
+  // l'Assistant retrouvent le fait BILLING.
 
   const out: DesiredPeriod[] = [];
   for (const kind of BUSINESS_PERIOD_KINDS) {
     const l = (parNature.get(kind) ?? []).slice()
       // Une période datée rend inutile une ligne « non renseignée » de la même nature.
       .filter((p, _i, all) => p.start !== null || p.end !== null || p.openEnded || all.every((x) => x.start === null && x.end === null && !x.openEnded))
-      .sort((a, b) => chronoKey(a).localeCompare(chronoKey(b)));
+      // Carte #766 (E10) : à bornes égales, la fin inconnue précède la durée indéterminée (ordre stable).
+      .sort((a, b) => chronoKey(a).localeCompare(chronoKey(b)) || Number(a.openEnded === true) - Number(b.openEnded === true));
     l.slice(0, MAX_SEGMENTS_PER_KIND).forEach((p, i) => out.push({ ...p, segment: i }));
   }
   return out;
@@ -330,6 +339,11 @@ export interface StoredPeriod {
   userLocked: boolean;
   /** Lot 113AA : durée indéterminée établie (colonne `end_open`, migration 1590). */
   openEnded?: boolean;
+  /**
+   * Carte #766 (E05, E08) — fait corrigé par l'utilisateur : bornes du fait automatique qu'il a remplacé
+   * (`before_correction`) ; null : fait saisi sans fait antérieur de cette nature.
+   */
+  lockedBefore?: PeriodBounds | null;
 }
 
 /** Nature principale (pure) : désignée par T1, sinon priorité de la décision 1. */
@@ -356,18 +370,42 @@ function normalizeEvidence(e: PeriodEvidence): PeriodEvidence {
   };
 }
 
+/** Borne du rang d'un segment (contrainte SQL `segment_index < 50`). */
+const SEGMENT_INDEX_LIMIT = 50;
+
 /**
- * Plan de mise à jour (pure) : les natures CORRIGÉES par l'utilisateur
- * (au moins un fait verrouillé) lui appartiennent entièrement — aucun fait
- * automatique n'y est écrit ni retiré (décision 9). Ailleurs : faits
- * identiques conservés, autres remplacés.
+ * Plan de mise à jour (pure). Carte #766 (E05) — règle remplacée : ce n'est plus la NATURE entière qui
+ * appartient à l'utilisateur dès qu'un fait y est corrigé, mais le FAIT corrigé et sa continuité :
+ *   · un fait verrouillé n'est jamais retiré ni réécrit (décision 9) ;
+ *   · un fait voulu de la même nature est ÉCARTÉ s'il n'est pas PROUVÉ disjoint du fait corrigé, de sa
+ *     valeur d'avant correction (le même fait relu par T1), ou si l'une de ces étendues est inconnue
+ *     (« non renseignée », borne manquante) — jamais un doublon du fait corrigé, jamais une fusion ;
+ *   · un fait voulu prouvé disjoint (autre segment, autre justificatif) est ajouté, conservé ou remplacé
+ *     comme partout ailleurs, sur un rang de segment laissé libre par les faits corrigés (rangs
+ *     attribués dans l'ordre chronologique : déterministe, donc stable d'une reprise à l'autre).
+ * Natures sans fait corrigé : faits identiques conservés, autres remplacés (inchangé).
  */
 export function planRefresh(stored: readonly StoredPeriod[], desired: readonly DesiredPeriod[]): {
   keep: number[]; supersede: number[]; insert: DesiredPeriod[];
 } {
-  const verrouillees = new Set(stored.filter((s) => s.userLocked).map((s) => s.kind));
-  const auto = stored.filter((s) => !verrouillees.has(s.kind));
-  const voulus = desired.filter((d) => !verrouillees.has(d.kind));
+  const verrous = stored.filter((s) => s.userLocked);
+  const auto = stored.filter((s) => !s.userLocked);
+  const distinct = (d: DesiredPeriod, b: PeriodBounds) => boundsProof(d, b).proof === 'DISJOINT';
+  const protege = (d: DesiredPeriod) => verrous.some((v) => v.kind === d.kind
+    && (!distinct(d, v) || (v.lockedBefore != null && !distinct(d, v.lockedBefore))));
+  const reserves = new Map<BusinessPeriodKind, Set<number>>();
+  for (const v of verrous) reserves.set(v.kind, (reserves.get(v.kind) ?? new Set<number>()).add(v.segment));
+  const prochain = new Map<BusinessPeriodKind, number>();
+  const voulus: DesiredPeriod[] = [];
+  for (const d of desired) {
+    if (protege(d)) continue;
+    const pris = reserves.get(d.kind);
+    if (!pris) { voulus.push(d); continue; }
+    let rang = prochain.get(d.kind) ?? 0;
+    while (pris.has(rang)) rang++;
+    prochain.set(d.kind, rang + 1);
+    if (rang < SEGMENT_INDEX_LIMIT) voulus.push(rang === d.segment ? d : { ...d, segment: rang });
+  }
   const parSig = new Map(auto.map((s) => [periodSignature(s), s.id]));
   const keep: number[] = [];
   const insert: DesiredPeriod[] = [];

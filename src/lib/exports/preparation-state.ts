@@ -76,12 +76,19 @@ export interface PrepState {
   estimateFailures: number;
   /** Lot 111B : génération active que la prochaine génération remplacera (« Régénérer »). */
   replacing: { publicId: string } | null;
+  /**
+   * Carte #767 (E03) : « Inclure Notes / Description des documents » — décochée
+   * par défaut à CHAQUE création (ouverture de la préparation, retour aux choix
+   * après une génération) ; jamais reprise d'une préparation précédente.
+   */
+  includeNotesDescription: boolean;
 }
 
 export const initialPrepState: PrepState = {
   status: 'idle', returnTo: null, prep: null, items: {}, sections: {}, memory: {}, estimate: null,
   actions: { canGeneratePdf: false, canGenerateZip: false }, messages: [], modified: false, revision: 0,
   generation: null, error: null, confirmPdfOnly: false, autosave: 'idle', estimateFailures: 0, replacing: null,
+  includeNotesDescription: false,
 };
 
 export type PrepAction =
@@ -112,7 +119,9 @@ export type PrepAction =
   | { type: 'BACK_TO_EDIT' }
   /** Lot 111B : pendant une génération, revenir aux choix pour la remplacer par une nouvelle version. */
   | { type: 'EDIT_AND_REGENERATE' }
-  | { type: 'AUTOSAVE'; status: AutosaveStatus };
+  | { type: 'AUTOSAVE'; status: AutosaveStatus }
+  /** Carte #767 (E03) : case « Inclure Notes / Description des documents ». */
+  | { type: 'SET_INCLUDE_NOTES_DESCRIPTION'; include: boolean };
 
 const EDITABLE: ReadonlySet<PrepStatus> = new Set(['ready_pristine', 'ready_modified', 'estimating', 'estimation_ready', 'estimate_failed', 'blocked_threshold', 'failed']);
 
@@ -367,12 +376,20 @@ export function prepReducer(s: PrepState, a: PrepAction): PrepState {
     }
 
     case 'BACK_TO_EDIT':
-      return s.prep ? { ...s, status: 'ready_modified', generation: null, error: null, revision: s.revision + 1 } : s;
+      // Carte #767 (E03) : nouvelle création → l'inclusion de « Notes / Description » redevient décochée.
+      return s.prep ? { ...s, status: 'ready_modified', generation: null, error: null, revision: s.revision + 1, includeNotesDescription: false } : s;
 
     case 'EDIT_AND_REGENERATE': {
       const publicId = s.generation?.publicId;
       if (!s.prep || s.status !== 'generating' || !publicId) return s;
-      return { ...s, status: 'ready_modified', replacing: { publicId }, generation: null, error: null, revision: s.revision + 1 };
+      // Carte #767 (E03) : la régénération est une nouvelle création → inclusion décochée, à recocher explicitement.
+      return { ...s, status: 'ready_modified', replacing: { publicId }, generation: null, error: null, revision: s.revision + 1, includeNotesDescription: false };
+    }
+
+    case 'SET_INCLUDE_NOTES_DESCRIPTION': {
+      // Choix explicite de l'utilisateur ; sans effet hors édition. L'estimation (pages, taille) n'en dépend pas.
+      if (!isEditable(s) || s.includeNotesDescription === a.include) return s;
+      return { ...s, includeNotesDescription: a.include, modified: true };
     }
 
     case 'AUTOSAVE': {
@@ -437,8 +454,14 @@ export function buildChoices(s: PrepState, outputFormat: OutputFormat, pdfOnlyEx
     acknowledgements: { pdfOnlyExcludesZipItems },
     // Lot 44 (O5, Q2) : sinistre du dossier Assurance-sinistre retenu par la préparation.
     ...(s.prep?.claim?.selectedOperationId ? { claimOperationId: s.prep.claim.selectedOperationId } : {}),
+    // Carte #767 (E03) : transmis seulement quand la case est cochée (absent = exclu, défaut serveur).
+    ...(s.includeNotesDescription === true ? { includeNotesDescription: true as const } : {}),
   };
 }
+
+/** Carte #767 (E03) : le dossier propose-t-il des documents (donc l'option d'inclusion) ? */
+export const offersNotesDescriptionOption = (s: PrepState): boolean =>
+  !!s.prep?.sections.some((x) => x.itemType === 'document' && x.items.length > 0);
 
 /**
  * Corps de `POST /api/assets/{id}/exports` (génération, §17.2).

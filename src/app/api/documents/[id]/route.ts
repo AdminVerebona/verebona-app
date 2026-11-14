@@ -15,7 +15,7 @@ import {
 } from '@/services/security/account-ownership';
 import { documentTargetsErrorResponse, prepareTargetLists } from '@/services/documents/document-targets/route-support';
 import { NOTES_MAX_LENGTH, notesWriteFromEdit, resolveNotesDescription } from '@/lib/documents/notes-description';
-import { markNotesUserOwned, readNotesDescriptionMeta } from '@/services/documents/notes-description/store';
+import { markNotesUserOwned, readNotesDescriptionMeta, NotesIntentUnavailableError, NOTES_INTENT_UNAVAILABLE_MESSAGE } from '@/services/documents/notes-description/store';
 
 /** Identifiant de cible envoyé : `undefined` (absent), `null` (retiré) ou entier. */
 function cible(v: unknown): number | null | undefined {
@@ -531,6 +531,10 @@ export async function PUT(
   } catch (error) {
     if (error instanceof Response) {
       return error;
+    }
+    // Carte #767 (E05) : intention « Notes / Description » non persistable → transaction annulée, erreur explicite.
+    if (error instanceof NotesIntentUnavailableError) {
+      return NextResponse.json({ error: error.code, reason: error.reason, message: NOTES_INTENT_UNAVAILABLE_MESSAGE }, { status: 503 });
     }
     console.error('PUT /api/documents/[id] error:', error instanceof Error ? error.message : error);
     return NextResponse.json(

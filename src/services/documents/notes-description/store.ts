@@ -2,8 +2,15 @@
  * Persistance du champ unique « Notes / Description » — lot 113Z (Trello #723).
  *
  * Colonnes de la migration 1580, NON déclarées dans Drizzle (comme 0223 /
- * 0337) : leur présence est vérifiée avant toute lecture ou écriture ;
- * absentes → comportement antérieur (aucune erreur, aucune écriture).
+ * 0337) : leur présence est vérifiée avant toute lecture ou écriture.
+ *
+ * Carte #767 (E02 / E05) — colonnes absentes OU illisibles :
+ *   · lectures de l'application (tiroir, diagnostic) : valeurs neutres, comme
+ *     avant — les parcours indépendants ne sont pas bloqués ;
+ *   · écriture d'une intention utilisateur (`markNotesUserOwned`) : REFUSÉE,
+ *     dans la transaction de la note (aucun succès trompeur) ;
+ *   · sortie vers un tiers (`readCurrentNotesDescriptionManyStrict`) : REFUSÉE
+ *     (jamais une valeur de repli).
  *
  *   · `notes_user_owned` / `notes_updated_at`   reprise en main utilisateur ;
  *   · `description_source`                      provenance établie ('T1') ;
@@ -16,16 +23,93 @@ import type { DescriptionT1Status } from '@/lib/documents/notes-description';
 type Tx = Parameters<Parameters<typeof db.transaction>[0]>[0];
 type Exec = typeof db | Tx;
 
-let pret: Promise<boolean> | null = null;
-/** Colonnes de la migration 1580 présentes ? Mémorisé (seul un résultat positif l'est). */
-export function notesDescriptionColumnsReady(): Promise<boolean> {
-  pret ??= Promise.resolve().then(() => pgClient.unsafe(`SELECT count(*)::int AS n FROM information_schema.columns
+/**
+ * État du schéma 1580 (carte #767, E02 / E05) :
+ *   · READY    les colonnes indispensables sont là ;
+ *   · MISSING  la base a répondu : au moins une colonne manque (migration non appliquée ou défaite) ;
+ *   · UNKNOWN  la base n'a PAS répondu (erreur SQL, délai) — on ne sait pas.
+ * « Absent » et « illisible » ne sont plus confondus : une sortie vers un tiers
+ * ou une écriture d'intention utilisateur refuse dans les deux cas (fail-closed).
+ */
+export type NotesDescriptionSchemaState = 'READY' | 'MISSING' | 'UNKNOWN';
+
+/** Colonnes indispensables de la migration 1580 (les trois sondées depuis le lot 113Z). */
+export const NOTES_DESCRIPTION_REQUIRED_COLUMNS = ['notes_user_owned', 'description_source', 'description_t1_status'] as const;
+
+let etat: Promise<NotesDescriptionSchemaState> | null = null;
+/** État du schéma 1580. Mémorisé (seul un résultat READY l'est). Ne lève jamais. */
+export function notesDescriptionSchemaState(): Promise<NotesDescriptionSchemaState> {
+  etat ??= Promise.resolve().then(() => pgClient.unsafe(`SELECT count(*)::int AS n FROM information_schema.columns
       WHERE table_schema = 'public' AND table_name = 'asset_files'
         AND column_name IN ('notes_user_owned', 'description_source', 'description_t1_status')`) as unknown as Promise<Array<{ n: number }>>)
-    .then((r) => Number(r[0]?.n) === 3)
-    .catch(() => false)
-    .then((ok) => { if (!ok) pret = null; return ok; });
-  return pret;
+    .then((r): NotesDescriptionSchemaState => (Number(r[0]?.n) === NOTES_DESCRIPTION_REQUIRED_COLUMNS.length ? 'READY' : 'MISSING'))
+    .catch((): NotesDescriptionSchemaState => 'UNKNOWN')
+    .then((s) => { if (s !== 'READY') etat = null; return s; });
+  return etat;
+}
+
+/** Remise à zéro de la mémoire de l'état du schéma (tests). */
+export function resetNotesDescriptionSchemaCache(): void {
+  etat = null;
+}
+
+/** Colonnes de la migration 1580 présentes ? Mémorisé (seul un résultat positif l'est). */
+export function notesDescriptionColumnsReady(): Promise<boolean> {
+  return notesDescriptionSchemaState().then((s) => s === 'READY');
+}
+
+/** Motif d'indisponibilité (journal et réponse : jamais de texte documentaire). */
+export type NotesDescriptionUnavailableReason = 'SCHEMA_MISSING' | 'SCHEMA_UNKNOWN' | 'READ_FAILED' | 'WRITE_FAILED';
+
+/**
+ * Carte #767 (E05) : l'intention de l'utilisateur (prise en main, modification,
+ * effacement de « Notes / Description ») ne peut pas être persistée — colonnes
+ * 1580 indisponibles ou écriture du drapeau impossible. Levée DANS la
+ * transaction de l'écriture de `notes` : rien n'est écrit, rien n'est confirmé.
+ */
+export class NotesIntentUnavailableError extends Error {
+  readonly code = 'NOTES_INTENT_UNAVAILABLE' as const;
+  readonly reason: NotesDescriptionUnavailableReason;
+  constructor(reason: NotesDescriptionUnavailableReason) {
+    super(`intention « Notes / Description » non persistable (${reason})`);
+    this.name = 'NotesIntentUnavailableError';
+    this.reason = reason;
+  }
+}
+
+/**
+ * Carte #767 (E02 / E03) : les valeurs de priorité / provenance nécessaires à
+ * une sortie vers un tiers sont indisponibles. L'appelant REFUSE la sortie :
+ * aucune valeur de repli (une description masquée par l'utilisateur pourrait
+ * être divulguée).
+ */
+export class NotesDescriptionUnavailableError extends Error {
+  readonly code = 'NOTES_DESCRIPTION_UNAVAILABLE' as const;
+  readonly reason: NotesDescriptionUnavailableReason;
+  constructor(reason: NotesDescriptionUnavailableReason) {
+    super(`métadonnées « Notes / Description » indisponibles (${reason})`);
+    this.name = 'NotesDescriptionUnavailableError';
+    this.reason = reason;
+  }
+}
+
+/** Texte de l'erreur rendue à l'utilisateur quand son intention ne peut pas être enregistrée (à valider par le PO). */
+export const NOTES_INTENT_UNAVAILABLE_MESSAGE =
+  'Votre modification de « Notes / Description » n’a pas pu être enregistrée : rien n’a été modifié. Réessayez dans un instant ; si le problème persiste, contactez le support.';
+
+const motifSchema = (s: NotesDescriptionSchemaState): NotesDescriptionUnavailableReason => (s === 'MISSING' ? 'SCHEMA_MISSING' : 'SCHEMA_UNKNOWN');
+
+/**
+ * Carte #767 (E05) : à appeler AVANT une écriture qui porte une intention
+ * utilisateur sur « Notes / Description » — lève si elle ne pourra pas être
+ * persistée (aucune écriture n'a encore eu lieu).
+ */
+export async function assertNotesIntentPersistable(): Promise<void> {
+  const s = await notesDescriptionSchemaState();
+  if (s !== 'READY') {
+    console.error(`[notes-description] intention utilisateur refusée : schéma 1580 ${s === 'MISSING' ? 'incomplet' : 'illisible'} (aucune écriture).`);
+    throw new NotesIntentUnavailableError(motifSchema(s));
+  }
 }
 
 export interface NotesDescriptionMeta {
@@ -65,12 +149,27 @@ export async function readNotesDescriptionMeta(accountId: number, fileId: number
 
 /**
  * Reprise en main utilisateur, dans la transaction de l'écriture de `notes`.
- * Rend `false` si les colonnes manquent (la note est écrite, sans drapeau).
+ *
+ * Carte #767 (E05) — règle remplacée : le lot 113Z rendait `false` quand les
+ * colonnes manquaient (« la note est écrite, sans drapeau ») : un effacement
+ * volontaire ne survivait pas et l'ancienne description réapparaissait.
+ * Désormais l'écriture est REFUSÉE (`NotesIntentUnavailableError`) : levée dans
+ * la transaction de l'appelant, elle annule aussi l'écriture de `notes` — tout
+ * ou rien (`notes`, `notes_user_owned`, `notes_updated_at`).
  */
-export async function markNotesUserOwned(x: Exec, accountId: number, fileId: number): Promise<boolean> {
-  if (!(await notesDescriptionColumnsReady())) return false;
-  await x.execute(sql`UPDATE asset_files SET notes_user_owned = true, notes_updated_at = now()
-    WHERE id = ${fileId} AND account_id = ${accountId}`);
+export async function markNotesUserOwned(x: Exec, accountId: number, fileId: number): Promise<true> {
+  await assertNotesIntentPersistable();
+  let r: unknown;
+  try {
+    r = await x.execute(sql`UPDATE asset_files SET notes_user_owned = true, notes_updated_at = now()
+    WHERE id = ${fileId} AND account_id = ${accountId} RETURNING id`);
+  } catch (e) {
+    console.error(`[notes-description] drapeau de reprise en main non écrit (fichier ${fileId}) :`, (e as Error).message);
+    throw new NotesIntentUnavailableError('WRITE_FAILED');
+  }
+  const lignes = (Array.isArray(r) ? r : (r as { rows?: unknown[] } | null)?.rows ?? []) as unknown[];
+  // Aucune ligne : document absent du compte — l'intention n'est pas persistée, donc pas confirmée.
+  if (lignes.length === 0) throw new NotesIntentUnavailableError('WRITE_FAILED');
   return true;
 }
 
@@ -130,4 +229,58 @@ export async function readNotesDescriptionMetaMany(accountId: number, fileIds: n
 export async function markDescriptionSourceT1(x: Exec, accountId: number, fileId: number): Promise<void> {
   if (!(await notesDescriptionColumnsReady())) return;
   await x.execute(sql`UPDATE asset_files SET description_source = 'T1' WHERE id = ${fileId} AND account_id = ${accountId}`);
+}
+
+/** Valeurs COURANTES d'un document, nécessaires à `resolveNotesDescription` (lecture stricte). */
+export interface CurrentNotesDescriptionRow {
+  notes: string | null;
+  description: string | null;
+  notesUserOwned: boolean;
+  descriptionSource: string | null;
+}
+
+/**
+ * Carte #767 (E02 / E03) — lecture STRICTE, pour une sortie vers un tiers, des
+ * valeurs courantes (`notes`, `description`, reprise en main, provenance) des
+ * documents d'un compte, en UNE requête (jamais un mélange « instantané ancien
+ * + métadonnées du jour »).
+ *
+ * Fail-closed : schéma 1580 incomplet ou illisible, erreur SQL, délai → lève
+ * `NotesDescriptionUnavailableError` (l'appelant refuse la sortie). Un document
+ * absent du résultat (supprimé du compte entre-temps) n'a pas d'entrée :
+ * l'appelant n'inclut alors AUCUN texte pour lui (jamais un repli).
+ * Le journal ne porte que des nombres et un motif — jamais de texte documentaire.
+ */
+export async function readCurrentNotesDescriptionManyStrict(
+  accountId: number, fileIds: readonly number[], contexte: string,
+): Promise<Map<number, CurrentNotesDescriptionRow>> {
+  const out = new Map<number, CurrentNotesDescriptionRow>();
+  const ids = [...new Set(fileIds.filter((n) => Number.isSafeInteger(n) && n > 0))];
+  const s = await notesDescriptionSchemaState();
+  if (s !== 'READY') {
+    console.error(`[notes-description] ${contexte} : inclusion refusée — schéma 1580 ${s === 'MISSING' ? 'incomplet' : 'illisible'} (compte ${accountId}, ${ids.length} document(s)).`);
+    throw new NotesDescriptionUnavailableError(motifSchema(s));
+  }
+  if (ids.length === 0) return out;
+  let r: Array<{ id: number; notes: string | null; description: string | null; notes_user_owned: boolean | null; description_source: string | null }>;
+  try {
+    r = (await pgClient.unsafe(
+      `SELECT id, notes, description, notes_user_owned, description_source FROM asset_files WHERE account_id = $1 AND id = ANY($2::int[])`,
+      [accountId, ids] as never[],
+    )) as unknown as typeof r;
+  } catch (e) {
+    const code = (e as { code?: string } | null)?.code;
+    console.error(`[notes-description] ${contexte} : inclusion refusée — lecture des métadonnées en échec (compte ${accountId}, ${ids.length} document(s), code ${code ?? 'inconnu'}).`);
+    throw new NotesDescriptionUnavailableError('READ_FAILED');
+  }
+  for (const x of r) {
+    out.set(Number(x.id), {
+      notes: x.notes ?? null, description: x.description ?? null,
+      notesUserOwned: x.notes_user_owned === true, descriptionSource: x.description_source ?? null,
+    });
+  }
+  if (out.size < ids.length) {
+    console.warn(`[notes-description] ${contexte} : ${ids.length - out.size} document(s) sans métadonnées (absents du compte ${accountId}) — aucun texte inclus pour eux.`);
+  }
+  return out;
 }

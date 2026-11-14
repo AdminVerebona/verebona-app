@@ -634,7 +634,13 @@ function notificationPreviewVariables(
   const ev = typeof eventCode === 'string' && events.includes(eventCode) ? eventCode : events[0];
   const entry = ev ? getCatalogEntry(ev) : undefined;
   if (!ev || !entry) return { variables: {}, eventCode: null };
-  const payload = contextPayload(selected, accountId);
+  // Carte #774 : gabarit dédié à UNE nature de l'événement (clé d'accès
+  // ajoutée, TOTP activé) — données d'exemple déclarées avec le gabarit ; la
+  // date d'exemple est celle de l'aperçu (aucune donnée réelle).
+  const example = NOTIFICATION_EMAIL_TEMPLATES[code]?.previewPayload;
+  const payload = example
+    ? { ...contextPayload(selected, accountId), ...example, at: new Date().toISOString() }
+    : contextPayload(selected, accountId);
   const parsed = entry.payloadSchema.safeParse(payload);
   let rendered: ReturnType<typeof renderContent> | null = null;
   try {
@@ -648,6 +654,8 @@ function notificationPreviewVariables(
   return {
     eventCode: ev,
     variables: {
+      // Carte #774 : variables propres au gabarit dédié (date de l'événement).
+      ...(rendered?.emailVariables ?? {}),
       title: usable(rendered?.bellTitle),
       body: usable(rendered?.bellBody),
       ...(href ? { actionUrl: /^https?:\/\//i.test(href) ? href : `${root}${href.startsWith('/') ? '' : '/'}${href}` } : {}),

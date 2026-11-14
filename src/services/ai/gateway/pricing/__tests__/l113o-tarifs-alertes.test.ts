@@ -173,21 +173,32 @@ describe('trace : alias résolu par l’API, modalité, coût inconnu jamais con
 });
 
 describe('supervision : trois risques séparés, une alerte par condition, libellés factuels', () => {
-  const vide: PricingConditions = { evaluatedAt: NOV.toISOString(), activeUnpriced: [], unpricedCalls: [], stale: [], source: null, absenceVerifiable: true };
+  const vide: PricingConditions = { evaluatedAt: NOV.toISOString(), activeUnpriced: [], unpricedCalls: [], stale: [], source: null, absenceVerifiable: true, policyRebaseAt: '2026-11-13T12:00:00.000Z' };
 
-  it('historique seul : aucune fausse alerte « chaîne active » ; appels signalés au bon endroit', () => {
-    const c: PricingConditions = { ...vide, unpricedCalls: [{ model: 'gemini-omni-1.1-flash', calls: 4, firstAt: '2026-10-20T00:00:00Z', lastAt: '2026-10-28T00:00:00Z', byStatus: { missing: 4 }, priceNow: false, inActiveChain: false }] };
-    const a = expectedPricingAlerts(c);
-    expect(a.map((x) => x.code)).toEqual([PRICING_ALERT_CODES.calls]);
-    expect(a[0]).toMatchObject({ conditionKey: 'pricing:calls:gemini-omni-1.1-flash', severity: 'warning' });
-    expect(a[0].message).toMatch(/4 appel\(s\) de gemini-omni-1\.1-flash/);
-    const s = summarizePricing(c, 1, []);
-    expect(s.counters).toMatchObject({ activeUnpriced: 0, unpricedCalls: 4, unpricedCallModels: 1 });
+  // Lot 114 (Trello #770) — règles remplacées : « historique seul → alerte "appels non chiffrés" » et « tarif
+  // redevenu applicable → alerte d'information "à régulariser" ». L'historique reste compté, sans alerte.
+  it('R11 (#770) — historique seul : AUCUNE alerte ; le vrai nombre reste compté et annoncé comme information', () => {
+    const c: PricingConditions = { ...vide, unpricedCalls: [{ model: 'gemini-omni-1.1-flash', calls: 1868, firstAt: '2026-10-20T00:00:00Z', lastAt: '2026-10-28T00:00:00Z', byStatus: { missing: 1868 }, priceNow: false, inActiveChain: false, callsSincePolicy: 0, lastSincePolicyAt: null }] };
+    expect(expectedPricingAlerts(c)).toEqual([]);
+    const s = summarizePricing(c, 0, []);
+    expect(s.severity).toBe('ok');
+    expect(s.title).toBe('Tarification IA : aucun risque ouvert');
+    expect(s.counters).toMatchObject({ activeUnpriced: 0, unpricedCalls: 1868, currentUnpricedCalls: 0, unpricedCallModels: 1, openAlerts: 0 });
+    expect(s.historicalNote).toMatch(/^1868 appel\(s\) historique\(s\) non chiffré\(s\) sur 30 jours \(1 modèle\(s\)\) — information financière, consultable dans Coûts IA ; aucune alerte\.$/);
+    expect(s.calls).toEqual([expect.objectContaining({ model: 'gemini-omni-1.1-flash', calls: 1868 })]);
   });
 
-  it('tarif redevenu applicable : appels à régulariser en information, plus d’alerte « chaîne active »', () => {
-    const c: PricingConditions = { ...vide, unpricedCalls: [{ model: 'm', calls: 2, firstAt: '2026-11-01T00:00:00Z', lastAt: '2026-11-02T00:00:00Z', byStatus: { missing: 2 }, priceNow: true, inActiveChain: true }] };
-    expect(expectedPricingAlerts(c)[0]).toMatchObject({ severity: 'info', message: expect.stringMatching(/simulation de régularisation possible/) });
+  it('R12 (#770) — appel exécuté sans tarif APRÈS la bascule : alerte ciblée (anomalie actuelle), historique non compté dedans', () => {
+    const c: PricingConditions = { ...vide, unpricedCalls: [{ model: 'm', calls: 5, firstAt: '2026-11-01T00:00:00Z', lastAt: '2026-11-14T08:00:00Z', byStatus: { missing: 5 }, priceNow: false, inActiveChain: true, callsSincePolicy: 2, lastSincePolicyAt: '2026-11-14T08:00:00Z' }] };
+    const a = expectedPricingAlerts(c);
+    expect(a.map((x) => x.code)).toEqual([PRICING_ALERT_CODES.calls]);
+    expect(a[0]).toMatchObject({ conditionKey: 'pricing:calls:m', severity: 'warning', details: expect.objectContaining({ calls: 2, historicalCalls: 3 }) });
+    expect(a[0].message).toMatch(/^Appel IA exécuté sans tarif vérifié : 2 appel\(s\) de m sans coût calculable depuis la bascule tarifaire \(dernier le 14\/11\/2026\)/);
+    const s = summarizePricing(c, 1, []);
+    expect(s).toMatchObject({ severity: 'warning', counters: expect.objectContaining({ unpricedCalls: 5, currentUnpricedCalls: 2 }) });
+    expect(s.historicalNote).toMatch(/^3 appel\(s\) historique/);
+    // Corrigé (plus aucun appel postérieur non chiffré) : plus d'alerte attendue — la réconciliation la résout, sans rien supprimer.
+    expect(expectedPricingAlerts({ ...c, unpricedCalls: [{ ...c.unpricedCalls[0], callsSincePolicy: 0, lastSincePolicyAt: null }] })).toEqual([]);
     expect(clearedReason(PRICING_ALERT_CODES.active, 'm', c)).toMatch(/tarif applicable ou modèle absent des chaînes actives/);
   });
 
@@ -204,11 +215,14 @@ describe('supervision : trois risques séparés, une alerte par condition, libel
     const c: PricingConditions = {
       ...vide,
       activeUnpriced: modeles.slice(0, 2).map((m) => ({ model: m, usages: [{ treatment: 'T1', rank: 'fallback2' }], pageStatus: 'UNKNOWN', reasonCode: 'ABSENT', reason: null, servedModels: [] })),
-      unpricedCalls: modeles.map((m) => ({ model: m, calls: 3, firstAt: '2026-11-01T00:00:00Z', lastAt: '2026-11-05T00:00:00Z', byStatus: { missing: 3 }, priceNow: false, inActiveChain: false })),
+      unpricedCalls: modeles.map((m) => ({ model: m, calls: 3, firstAt: '2026-11-01T00:00:00Z', lastAt: '2026-11-05T00:00:00Z', byStatus: { missing: 3 }, priceNow: false, inActiveChain: false, callsSincePolicy: 0, lastSincePolicyAt: null })),
     };
     const s = summarizePricing(c, 19, []);
     expect(s.severity).toBe('warning');
-    expect(s.title).toBe('Tarification IA : 2 modèle(s) de chaînes actives sans tarif · 51 appel(s) historiques non chiffrés (17 modèle(s))');
+    // #770 : les 51 appels historiques ne sont plus un risque ouvert — ils restent annoncés en information.
+    expect(s.title).toBe('Tarification IA : 2 modèle(s) de chaînes actives sans tarif vérifié (non appelés)');
+    expect(s.historicalNote).toMatch(/^51 appel\(s\) historique\(s\) non chiffré\(s\) sur 30 jours \(17 modèle\(s\)\)/);
+    expect(expectedPricingAlerts(c).map((x) => x.category)).toEqual(['active', 'active']);
     expect(summarizePricing(vide, 0, []).severity).toBe('ok');
   });
 });

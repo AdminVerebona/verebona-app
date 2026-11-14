@@ -12,7 +12,7 @@
  *     fichier sans être restaurée (seuils, drapeaux, tailles de page…) ne
  *     change plus le comportement des fichiers suivants.
  */
-import { inject, beforeEach, afterAll } from 'vitest';
+import { inject, beforeAll, beforeEach, afterAll } from 'vitest';
 import { cloneE2eDatabase, derivedDatabaseName, dropE2eDatabasesWithPrefix, withDatabase } from './db-bootstrap';
 import { restoreProcessEnv } from './isolation';
 
@@ -74,6 +74,17 @@ process.env.COHERENCE_T1_RELAUNCH_DAILY_MAX = process.env.COHERENCE_T1_RELAUNCH_
 
 // Aucun appel réseau sortant : seul le serveur PostgreSQL local est joignable
 // (le pilote `postgres` n'utilise pas `fetch`).
+// Lot 114 (Trello #770) : aucun modèle n'est appelé sans tarif officiel vérifié. Les scénarios sollicitent la
+// passerelle avec un fournisseur simulé, sur une base sans tarif : le socle déclare une preuve tarifaire de test
+// pour tout modèle SANS ligne au référentiel. Les scénarios tarifaires la retirent
+// (`__setVerifiedTestPricesForTests(false)`) pour éprouver la garde sur le référentiel réel.
+const preuveTarifaireDeTest = async () => {
+  (await import('@/services/ai/gateway/pricing/pricing.repository')).__setVerifiedTestPricesForTests(true);
+};
+// Aussi avant les préparations de fichier (`beforeAll` des scénarios : synchronisation du catalogue, premiers appels).
+beforeAll(preuveTarifaireDeTest);
+beforeEach(preuveTarifaireDeTest);
+
 const fetchOrigine = globalThis.fetch;
 beforeEach(() => {
   globalThis.fetch = (async (input: unknown) => {

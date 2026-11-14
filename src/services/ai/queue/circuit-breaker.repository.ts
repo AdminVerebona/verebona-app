@@ -389,7 +389,11 @@ export async function runDueProbes(probe: ProbeFn = defaultProbe): Promise<Probe
 
     const results: ModelAttempt[] = [];
     const models = await modelsForTreatment(treatment);
+    const { pricingRefusalFor } = await import('../gateway/pricing/pricing-guard');
     for (const [rank, model] of models.entries()) {
+      // Lot 114 (Trello #770) : la sonde de reprise est une génération — un rang sans tarif officiel vérifié
+      // n'est pas sondé (ni réussite, ni échec du modèle) ; le rang configuré suivant est essayé.
+      if (await pricingRefusalFor(model) !== null) continue;
       const succeeded = await probe(model, treatment, rank);
       results.push({ model, succeeded });
       if (succeeded) break;

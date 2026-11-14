@@ -64,7 +64,7 @@ function ctx(over: Partial<UsableModelsContext> = {}): UsableModelsContext {
       })),
     },
     codeCatalog: ['gemini-a', 'gemini-b', 'gemini-absent'],
-    price: (m) => (m === 'gemini-sans-tarif' ? null : { verified: m === 'gemini-a' }),
+    price: (m) => (m === 'gemini-sans-tarif' ? null : { verified: m === 'gemini-a', eligible: true }),
     operational: new Map([['gemini-en-panne', { ok: false, error: '404 no longer available' }], ['gemini-a', { ok: true }]]),
     today: '2026-10-07',
     declared: REGISTRE,
@@ -142,12 +142,22 @@ describe('MOD — règles Verebona, preview, dépréciation, tarif, état opéra
     // Avant la date : sélectionnable.
     expect(noms('T1', ctx({ today: '2026-09-30' }))).toContain('gemini-retire');
   });
-  it('MOD-12 (lot 35B) — sans tarif : PROPOSÉ (priced: false), la validation le signale sans bloquer', () => {
-    expect(noms('T1')).toContain('gemini-sans-tarif');
-    expect(usableModelsForTreatment('T1', ctx()).find((m) => m.model === 'gemini-sans-tarif')).toMatchObject({ priced: false });
+  // Lot 114 (Trello #770) — règle remplacée : « sans tarif : proposé, signalé sans bloquer » (lot 35B).
+  it('MOD-12 (#770) — sans tarif officiel vérifié : EXCLU (PRICING_NOT_VERIFIED, motif précis), la validation bloque', () => {
+    expect(noms('T1')).not.toContain('gemini-sans-tarif');
+    const e = evaluateModelForTreatment('T1', 'gemini-sans-tarif', ctx());
+    expect(e).toMatchObject({ usable: false, priced: false, pricingRefusal: 'aucun tarif officiel connu' });
+    expect(e.reasons).toEqual(['PRICING_NOT_VERIFIED']);
+    expect(e.reasonText).toBe('tarif officiel non vérifié (aucun tarif officiel connu)');
     const issues = validateTreatment(config('T1', { primaryModel: 'gemini-sans-tarif' }), catalogues(ctx())).filter((i) => i.field === 'primaryModel');
-    expect(issues.filter((i) => i.blocking)).toEqual([]);
-    expect(issues.find((i) => !i.blocking)?.message).toMatch(/Tarif inconnu pour « gemini-sans-tarif » : appels autorisés, coûts marqués non calculables/);
+    expect(issues.filter((i) => i.blocking).map((i) => i.message)).toEqual(['Le modèle « gemini-sans-tarif » n’est pas utilisable pour T1 : tarif officiel non vérifié (aucun tarif officiel connu).']);
+  });
+  it('MOD-12b (#770) — tarif connu mais NON admissible (non confirmé, périmé) : exclu avec son motif ; tarif admissible à 0 : proposé', () => {
+    const c = ctx({ price: (m: string) => (m === 'gemini-b' ? { verified: false, eligible: false, ineligibleLabel: 'preuve tarifaire périmée (non reconfirmée dans le délai de validité)' } : { verified: true, eligible: true }) });
+    expect(evaluateModelForTreatment('T1', 'gemini-b', c)).toMatchObject({ usable: false, priced: true, reasons: ['PRICING_NOT_VERIFIED'], pricingRefusal: 'preuve tarifaire périmée (non reconfirmée dans le délai de validité)' });
+    expect(evaluateModelForTreatment('T1', 'gemini-a', c)).toMatchObject({ usable: true, pricingRefusal: null });
+    // `eligible` absent : jamais d'admission par défaut.
+    expect(evaluateModelForTreatment('T1', 'gemini-a', ctx({ price: () => ({ verified: true }) })).usable).toBe(false);
   });
   it('MOD-13 — explicitement non opérationnel avec la clé active : absent ; opérationnel connu : signalé', () => {
     expect(noms('T1')).not.toContain('gemini-en-panne');

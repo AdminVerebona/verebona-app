@@ -26,6 +26,7 @@ import { buildHealthReport, type HealthCheckResult } from '@/lib/health/diagnost
 import { withDeadline } from '@/lib/health/probes';
 import { isSet, retiredEnvVariables } from './env-catalog';
 import { redactDeep } from './redact';
+import { readNotesDescriptionSchemaHealth, type NotesDescriptionSchemaHealth } from '@/services/documents/notes-description/schema-health';
 
 const BUDGET_MS = 2_000;
 
@@ -65,6 +66,11 @@ export interface AdminHealthReport {
    * 1125, `disposable_email_refusals`) sur 30 jours, par voie — jamais
    * d'adresse. `table: false` : migration 1125 non appliquée.
    */
+  /**
+   * Carte #767 (E05) : colonnes « Notes / Description » (migration 1580) RELUES en base — incomplètes ou
+   * illisibles, l'enregistrement de la note et l'inclusion vers un tiers sont refusés. Noms et nombres seulement.
+   */
+  notesDescriptionSchema?: NotesDescriptionSchemaHealth;
   disposableRefusals?: { table: boolean; days: number; total: number; byChannel: Array<{ channel: string; refusals: number }>; lastAt: string | null; error: string | null };
 }
 
@@ -190,6 +196,10 @@ export async function getAdminHealth(env: Record<string, string | undefined> = p
     runtime: { node: process.version, nodeEnv: env.NODE_ENV ?? null, appEnv: env.NEXT_PUBLIC_APP_ENV ?? null },
     memory: await memoryView(env),
     disposableRefusals: await withDeadline(disposableRefusalsView(), BUDGET_MS).catch(() => undefined),
+    notesDescriptionSchema: await withDeadline(readNotesDescriptionSchemaHealth(), BUDGET_MS).catch((e): NotesDescriptionSchemaHealth => ({
+      state: 'UNKNOWN', missingColumns: [], appliedMigrations: null, userOwnedDocuments: null,
+      error: `lecture impossible : ${(e as Error).message?.slice(0, 200) ?? 'erreur'}`,
+    })),
   };
   return redactDeep(rapport);
 }

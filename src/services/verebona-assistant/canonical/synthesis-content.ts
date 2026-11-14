@@ -104,9 +104,15 @@ export async function buildSynthesisContent(accountId: number, opts: SynthesisCo
     fileIds = rows.map((r) => Number(r.id));
   }
   if (fileIds.length === 0) return [];
+  // Carte #767 (E01) : la description T1 de l'extraction n'est passée au modèle que si la description EST
+  // le champ courant du document (ni masquée par une note, ni effacée par l'utilisateur) ; le texte intégral
+  // (contenu extrait du document) reste lu. Lecture en échec : aucun extrait (comme avant), jamais un repli.
+  const champ = await (await import('@/services/documents/notes-description/current-field')).currentFieldSql('f');
   const textes = (await pgClient.unsafe(
-    `SELECT file_id AS "fileId", coalesce(description, '') || ' ' || coalesce(full_text, '') AS t
-       FROM document_extractions WHERE account_id = $1 AND file_id = ANY($2::int[])`,
+    `SELECT e.file_id AS "fileId", coalesce(CASE WHEN ${champ.descriptionIsCurrent} THEN e.description ELSE NULL END, '') || ' ' || coalesce(e.full_text, '') AS t
+       FROM document_extractions e
+       JOIN asset_files f ON f.id = e.file_id AND f.account_id = e.account_id
+      WHERE e.account_id = $1 AND e.file_id = ANY($2::int[])`,
     [accountId, fileIds] as never[],
   ).catch(() => [])) as unknown as Array<{ fileId: number; t: string }>;
   const parFichier = new Map(textes.map((x) => [Number(x.fileId), x.t]));

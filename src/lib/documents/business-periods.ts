@@ -69,6 +69,14 @@ export const PERIOD_CORRECT_ACTION = 'Corriger';
 export const PERIOD_SAVED_TOAST = 'Période enregistrée';
 export const PERIOD_INVALID_MESSAGE = 'Indiquez une date (JJ/MM/AAAA), un mois (MM/AAAA) ou une année (AAAA) ; la fin ne peut pas précéder le début.';
 export const PERIOD_USER_MENTION = 'Corrigée par vous';
+/** Carte #766 (E04) — à valider par le PO : case de l'éditeur existant (fin inexistante, ≠ fin inconnue). */
+export const PERIOD_OPEN_ENDED_LABEL = 'Durée indéterminée (pas de date de fin)';
+/** Carte #766 (E12) — à valider par le PO : création d'une nature que rien ne qualifie pour ce document. */
+export const PERIOD_NOT_RELEVANT_MESSAGE = 'Cette période ne s’applique pas à ce document.';
+/** Carte #766 (E11) — à valider par le PO : sous-section rattachée à « Notes / Description » (lecture des faits, jamais écrite dans les notes). */
+export const PERIOD_DETAIL_TITLE = 'Autres dates et périodes du document';
+/** Carte #766 (E09) — à valider par le PO : justificatif à plusieurs périodes facturées, lien avec CETTE dépense non établi. */
+export const EXPENSE_PERIOD_UNDETERMINED = 'Période facturée de cette dépense non établie : le justificatif en indique plusieurs.';
 
 // ── Dates partielles ────────────────────────────────────────────────────────
 
@@ -177,6 +185,85 @@ export function periodLine(kind: BusinessPeriodKind, b: PeriodBounds): string {
 export function principalLine(kind: BusinessPeriodKind, segments: readonly PeriodBounds[]): string {
   if (segments.length > 1) return SEVERAL_PERIODS_LABEL;
   return periodLine(kind, segments[0] ?? { start: null, end: null });
+}
+
+// ── Carte #766 : identité et étendue PROUVÉE d'une période ───────────────────
+
+/**
+ * Carte #766 (E10) — même fait de période ? Mêmes bornes ET même modalité de fin : une fin INCONNUE
+ * (`end` nul) et une durée indéterminée ÉTABLIE (`openEnded`) ont les mêmes bornes stockées mais pas le
+ * même sens — jamais confondues. Pure.
+ */
+export function samePeriodBounds(a: PeriodBounds, b: PeriodBounds): boolean {
+  return a.start === b.start && a.end === b.end && (a.end === null && a.openEnded === true) === (b.end === null && b.openEnded === true);
+}
+
+/** Jeton de fin d'une empreinte : la date, `INDEFINITE` (durée indéterminée établie) ou vide (inconnue). Pure. */
+export const endToken = (b: PeriodBounds): string => b.end ?? (b.openEnded ? 'INDEFINITE' : '');
+
+/** Dernier jour réel d'une borne de fin partielle (mois : 28 à 31 ; année : 31/12). Pure. */
+export function lastDayOf(v: PartialDate): string {
+  if (v.length === 7) {
+    const [y, m] = v.split('-').map(Number);
+    return new Date(Date.UTC(y, m, 0)).toISOString().slice(0, 10);
+  }
+  return upperBound(v);
+}
+
+const DAY_MS = 86_400_000;
+const dayNumber = (iso: string): number => Date.parse(`${iso.slice(0, 10)}T00:00:00Z`) / DAY_MS;
+
+/**
+ * Carte #766 (E06, E05) — ce que les bornes PROUVENT de deux périodes :
+ *   · `DISJOINT` : non-chevauchement prouvé (au plus `toleranceDays` jours communs) — soit les quatre
+ *     bornes sont connues, soit la fin connue de l'une précède le début connu de l'autre ;
+ *   · `OVERLAP`  : chevauchement prouvé (quatre bornes connues, plus de `toleranceDays` jours communs) ;
+ *   · `UNKNOWN`  : une borne manquante empêche de conclure — l'ABSENCE de preuve de chevauchement n'est
+ *     jamais une preuve de non-chevauchement.
+ * Une durée indéterminée établie n'a pas de fin : elle ne prouve aucun chevauchement à elle seule (fin
+ * traitée comme non bornée — jamais une contradiction fabriquée avec une attestation annuelle).
+ * `days` : jours communs quand les quatre bornes sont connues, sinon null. Pure.
+ */
+export type BoundsProof = 'DISJOINT' | 'OVERLAP' | 'UNKNOWN';
+export function boundsProof(a: PeriodBounds, b: PeriodBounds, toleranceDays = 0): { proof: BoundsProof; days: number | null } {
+  const sa = a.start ? dayNumber(lowerBound(a.start)) : null;
+  const ea = a.end ? dayNumber(lastDayOf(a.end)) : null;
+  const sb = b.start ? dayNumber(lowerBound(b.start)) : null;
+  const eb = b.end ? dayNumber(lastDayOf(b.end)) : null;
+  if (sa !== null && ea !== null && sb !== null && eb !== null) {
+    const days = Math.max(0, Math.min(ea, eb) - Math.max(sa, sb) + 1);
+    return { proof: days > toleranceDays ? 'OVERLAP' : 'DISJOINT', days };
+  }
+  // Fin connue de l'une avant le début connu de l'autre : ordre prouvé, quelles que soient les bornes manquantes.
+  if (ea !== null && sb !== null && ea - sb + 1 <= toleranceDays) return { proof: 'DISJOINT', days: null };
+  if (eb !== null && sa !== null && eb - sa + 1 <= toleranceDays) return { proof: 'DISJOINT', days: null };
+  return { proof: 'UNKNOWN', days: null };
+}
+
+// ── Carte #766 (E09) : période facturée d'UNE dépense ────────────────────────
+
+/** Période propre à une ligne de dépense (jours ISO), telle que T1 / T3 l'ont établie. */
+export interface ExpenseLineOwnPeriod { start: string | null; end: string | null }
+
+/** Lignes de dépense dont la période propre peut être lue (composante financière, montant d'un justificatif). Pure. */
+export const expenseLineHasReadablePeriod = (lineId: string): boolean => /^(c:\d{1,15}|doc:\d{1,10}:\d{1,15}:\d{1,3})$/.test(lineId);
+
+/**
+ * Carte #766 (E09) — période(s) facturée(s) à afficher pour UNE dépense (pure) :
+ *   · le justificatif porte au plus une période facturée : c'est la sienne (inchangé) ;
+ *   · il en porte plusieurs (facture récapitulative) : seulement celle qui CONTIENT la période propre de
+ *     la ligne (établie par T1 / T3), si elle est unique ;
+ *   · sinon (ligne sans période propre, aucune ou plusieurs périodes correspondantes) : aucune période
+ *     n'est associée — `undetermined` : l'incertitude est affichée plutôt qu'une association fausse.
+ * Aucune règle d'imputation : le coût de possession n'est ni lu ni modifié.
+ */
+export function expenseBillingPeriods<T extends PeriodBounds>(billing: readonly T[], own: ExpenseLineOwnPeriod | null | undefined): { periods: T[]; undetermined: boolean } {
+  if (billing.length <= 1) return { periods: [...billing], undetermined: false };
+  const debut = own?.start ?? own?.end ?? null;
+  const fin = own?.end ?? own?.start ?? null;
+  if (!debut || !fin) return { periods: [], undetermined: true };
+  const contient = billing.filter((b) => !!b.start && !!b.end && lowerBound(b.start) <= debut.slice(0, 10) && lastDayOf(b.end) >= fin.slice(0, 10));
+  return contient.length === 1 ? { periods: contient, undetermined: false } : { periods: [], undetermined: true };
 }
 
 /** Clé de tri chronologique (bornes inconnues en dernier). Pure. */

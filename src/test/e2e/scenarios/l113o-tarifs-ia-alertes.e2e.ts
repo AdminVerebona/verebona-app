@@ -19,7 +19,7 @@
  *   D · rapport de réconciliation JSON / CSV des 17 identifiants, cache par
  *       instance, migrations 1520-1522 rejouables.
  */
-import { afterAll, beforeAll, expect, it, vi } from 'vitest';
+import { afterAll, beforeAll, expect, it, vi, beforeEach } from 'vitest';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { scenario } from '../scenario';
@@ -47,6 +47,8 @@ const MODELES = ['gemini-3.5-flash-lite', 'gemini-3.1-flash-lite', 'gemini-2.5-p
 const page = (text: string, status = 200) => async () => ({ text, finalUrl: 'https://aistudio.google.com/docs/pricing?authuser=1', status, contentType: 'text/plain; charset=utf-8' });
 
 scenario('L113O', 'Tarifs IA : page réellement reçue, absence vérifiée, alias, multimodal, cycle de vie des alertes, réconciliation', ({ sql, make }) => {
+  // Lot 114 (#770) : scénario du RÉFÉRENTIEL tarifaire — éprouvé sans la preuve tarifaire de test du socle.
+  beforeEach(async () => { (await import('@/services/ai/gateway/pricing/pricing.repository')).__setVerifiedTestPricesForTests(false); });
   let accountId = 0;
 
   beforeAll(async () => {
@@ -210,7 +212,10 @@ scenario('L113O', 'Tarifs IA : page réellement reçue, absence vérifiée, alia
     const open = await ouvertes();
     // Plus aucune alerte héritée ouverte : 34 alertes → une par condition.
     expect(open.filter((a) => a.condition_key === null)).toHaveLength(0);
-    expect(open.filter((a) => a.condition_key === `pricing:calls:${HISTO}`)).toHaveLength(1);
+    // Lot 114 (Trello #770) — règle remplacée : « une alerte par modèle ayant des appels historiques non chiffrés ».
+    // Ces appels sont ANTÉRIEURS à la bascule tarifaire : comptés (information financière), sans alerte.
+    expect(open.filter((a) => a.condition_key === `pricing:calls:${HISTO}`)).toHaveLength(0);
+    expect(r!.conditions.unpricedCalls.find((u) => u.model === HISTO)).toMatchObject({ calls: 3, callsSincePolicy: 0 });
     // Modèle seulement dans l'historique : aucune fausse alerte « chaîne active ».
     if (!chaines.includes(HISTO)) expect(open.some((a) => a.condition_key === `pricing:active:${HISTO}`)).toBe(false);
     // Les chaînes actives sans tarif, elles, restent visibles (risque futur).
@@ -222,13 +227,10 @@ scenario('L113O', 'Tarifs IA : page réellement reçue, absence vérifiée, alia
       SELECT COUNT(*) FILTER (WHERE resolution_code = 'SUPERSEDED')::int AS sup, COUNT(*) FILTER (WHERE resolution_code = 'CONDITION_CLEARED')::int AS clr
         FROM ai_alerts WHERE code = 'ai_pricing_model_unpriced'`;
     expect(sup + clr).toBe(34); // historique conservé : aucune ligne supprimée
-    expect(sup).toBeGreaterThanOrEqual(4);
     // Recontrôle répété : aucune nouvelle alerte (une par condition, pas une par jour).
     const avant = (await ouvertes()).length;
     await reconcilePricingAlerts('e2e-2');
     expect((await ouvertes()).length).toBe(avant);
-    const [{ occ }] = await sql<Array<{ occ: number }>>`SELECT occurrences AS occ FROM ai_alerts WHERE condition_key = ${`pricing:calls:${HISTO}`} AND resolved_at IS NULL`;
-    expect(occ).toBeGreaterThanOrEqual(2);
   });
 
   it('C2 — tarif redevenu applicable : appels « à régulariser » (information) ; régularisation → alerte résolue ; la vraie inconnue reste visible', async () => {
@@ -240,8 +242,8 @@ scenario('L113O', 'Tarifs IA : page réellement reçue, absence vérifiée, alia
       paidTier: true, tier: 'standard', modality: 'text_image_pdf', thinkingIncluded: true, note: 'relevé e2e du tarif officiel',
     }) }) as never);
     expect(res.status).toBe(200);
-    const calls = (await ouvertes()).find((a) => a.condition_key === `pricing:calls:${REVIENT}`);
-    expect(calls).toMatchObject({ severity: 'info', details: expect.objectContaining({ priceNow: true }) });
+    // #770 — règle remplacée : plus d'alerte d'information « à régulariser » sur l'historique ; la régularisation reste possible.
+    expect((await ouvertes()).some((a) => a.condition_key === `pricing:calls:${REVIENT}`)).toBe(false);
     expect((await ouvertes()).some((a) => a.condition_key === `pricing:active:${REVIENT}`)).toBe(false);
 
     const R = await import('@/services/ai/telemetry/cost-regularization');
@@ -252,11 +254,13 @@ scenario('L113O', 'Tarifs IA : page réellement reçue, absence vérifiée, alia
     const reg = await R.applyRegularization(dr.runId, session.adminId);
     expect(reg.status).toBe('completed');
     const { reconcilePricingAlerts } = await import('@/services/ai/gateway/pricing/pricing-supervision');
-    await reconcilePricingAlerts('e2e-apres-regularisation');
+    const apresReg = await reconcilePricingAlerts('e2e-apres-regularisation');
     const open = await ouvertes();
     expect(open.some((a) => a.condition_key === `pricing:calls:${REVIENT}`)).toBe(false);
-    // Vraie inconnue : toujours signalée, au bon endroit (appels historiques).
-    expect(open.some((a) => a.condition_key === `pricing:calls:${HISTO}`)).toBe(true);
+    // Vraie inconnue : toujours VISIBLE avec son vrai nombre (historique financier) — sans alerte (#770).
+    expect(open.some((a) => a.condition_key === `pricing:calls:${HISTO}`)).toBe(false);
+    expect(apresReg!.conditions.unpricedCalls.find((u) => u.model === HISTO)).toMatchObject({ calls: 3 });
+    expect(apresReg!.conditions.unpricedCalls.some((u) => u.model === REVIENT)).toBe(false);
     // Coût d'origine conservé, correction à part.
     const [e] = await sql<Array<{ cost_micros: number | null }>>`SELECT cost_micros FROM ai_usage_event WHERE model = ${REVIENT} LIMIT 1`;
     expect(e.cost_micros).toBeNull();
@@ -264,8 +268,9 @@ scenario('L113O', 'Tarifs IA : page réellement reçue, absence vérifiée, alia
     expect(c).toBe(2);
     // Historique des résolutions consultable.
     const { listAlerts } = await import('@/services/ai/alerts/alerts.repository');
-    const resolues = await listAlerts({ status: 'resolved', codes: ['ai_pricing_unpriced_calls'] });
-    expect(resolues.some((a) => (a.details as { model?: string }).model === REVIENT && a.resolutionCode === 'CONDITION_CLEARED')).toBe(true);
+    // (#770 : plus d'alerte « appels historiques » à résoudre — l'historique consultable est celui des alertes héritées.)
+    const resolues = await listAlerts({ status: 'resolved', codes: ['ai_pricing_model_unpriced'] });
+    expect(resolues.some((a) => (a.details as { model?: string }).model === REVIENT && (a.resolutionCode === 'CONDITION_CLEARED' || a.resolutionCode === 'SUPERSEDED'))).toBe(true);
   });
 
   it('B3 — alias historique non chiffré : régularisé au tarif du modèle servi (preuve API), coût d’origine conservé, aucun appel IA', async () => {

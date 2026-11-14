@@ -84,7 +84,7 @@ describe('L87A-Q04 — INV-10 : anomalies reliées aux secours qualifiés', () =
       models: [['gemini-3.6-flash', false], ['gemini-3.5-flash-lite', true], ['gemini-3.1-flash-lite', true]]
         .map(([model, available]) => ({ model: model as string, available: available as boolean, supportsGeneration: true, lifecycle: 'stable' as const })),
     },
-    codeCatalog: [], price: () => ({ verified: false }), operational: new Map(), qualifications: new Map(), today: '2026-10-10',
+    codeCatalog: [], price: () => ({ verified: false, eligible: true }), operational: new Map(), qualifications: new Map(), today: '2026-10-10',
   } as UsableModelsContext;
   const chains = [
     { treatment: 'T3' as const, rank: 'primaryModel' as const, model: 'gemini-3.6-flash', source: 'version' as const },

@@ -26,12 +26,14 @@ import {
   AlertDialogFooter, AlertDialogHeader, AlertDialogTitle,
 } from '@/components/ui/alert-dialog';
 import { Button } from '@/components/ui/button';
+import { Checkbox } from '@/components/ui/checkbox';
+import { THIRD_PARTY_DOSSIER_NOTES_OPTION_HINT, THIRD_PARTY_DOSSIER_NOTES_OPTION_LABEL } from '@/services/documents/notes-description/third-party';
 import { Skeleton } from '@/components/ui/skeleton';
 import { AssetAdditionalInfosSection } from '@/components/assets/AssetAdditionalInfosSection';
 import { OFFERS_PATH } from '@/lib/write-blocked';
 import { cn } from '@/lib/utils';
 import {
-  buildChoices, buildEstimateBody, buildGenerateBody, generateDecision, initialPrepState, isEditable,
+  buildChoices, buildEstimateBody, buildGenerateBody, generateDecision, initialPrepState, isEditable, offersNotesDescriptionOption,
   needsCloseConfirmation, prepReducer, sectionCounts, estimateRetryDelayMs, MAX_AUTO_ESTIMATE_RETRIES,
   type AutosaveStatus, type PrepAction,
 } from '@/lib/exports/preparation-state';
@@ -491,6 +493,25 @@ export function ExportPreparationScreen({ assetId, exportType, onClose, api: api
                   ) : null}
                 </PreparationSection>
               ))}
+              {/* Carte #767 (E03) : inclusion VOLONTAIRE de « Notes / Description » — décochée par défaut à chaque création. */}
+              {offersNotesDescriptionOption(state) && (
+                <div className="rounded-xl border border-border bg-card p-4" data-testid="prep-include-notes-description">
+                  <label htmlFor="prep-include-notes-description-box" className={cn('flex items-start gap-3', editable ? 'cursor-pointer' : 'cursor-not-allowed opacity-70')}>
+                    <Checkbox
+                      id="prep-include-notes-description-box"
+                      className="mt-0.5"
+                      checked={state.includeNotesDescription}
+                      disabled={!editable}
+                      onCheckedChange={(v) => dispatch({ type: 'SET_INCLUDE_NOTES_DESCRIPTION', include: v === true })}
+                      aria-describedby="prep-include-notes-description-hint"
+                    />
+                    <span className="min-w-0 flex-1">
+                      <span className="block text-sm font-medium">{THIRD_PARTY_DOSSIER_NOTES_OPTION_LABEL}</span>
+                      <span id="prep-include-notes-description-hint" className="mt-0.5 block text-xs text-muted-foreground">{THIRD_PARTY_DOSSIER_NOTES_OPTION_HINT}</span>
+                    </span>
+                  </label>
+                </div>
+              )}
               {/* VENTE-RULE-002 : annonces hors PDF, dans l'interface. */}
               {prep.saleAds && <SaleAdsPanel ads={prep.saleAds} />}
             </div>

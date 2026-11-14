@@ -22,6 +22,14 @@
  * quelle que soit la fiche : les deux tiroirs se relisent
  * (`business-periods-mutated`). Rien n'est affiché quand aucune période n'est
  * pertinente. Aucun « expiré », aucun statut présumé, aucune réanalyse.
+ *
+ * Carte #766 :
+ *   · E04 — l'éditeur EXISTANT porte une case « Durée indéterminée » : le statut établi est conservé
+ *     quand on ne corrige que le début, et se modifie explicitement (aucun second parcours d'édition) ;
+ *   · E11 — le bloc de la période garde UNE période principale ; le détail (périodes discontinues, autres
+ *     natures) est affiché par `DocumentPeriodsDetail`, sous-section rattachée à « Notes / Description »,
+ *     CALCULÉE à la lecture depuis les faits structurés — jamais écrite, concaténée ni réenregistrée dans
+ *     les notes de l'utilisateur ou la description T1. La correction reste celle de la ligne existante.
  */
 import { useCallback, useEffect, useState } from "react";
 import { CalendarRange, FileText, Pencil } from "lucide-react";
@@ -29,9 +37,10 @@ import { toast } from "sonner";
 import { apiClient } from "@/lib/api-client";
 import { useWriteGuard } from "@/contexts/WriteGuardContext";
 import { Button } from "@/components/ui/button";
+import { Checkbox } from "@/components/ui/checkbox";
 import { Input } from "@/components/ui/input";
 import {
-  BUSINESS_PERIOD_LABELS, COVERAGE_HISTORY_TITLE, PERIOD_CORRECT_ACTION, PERIOD_INVALID_MESSAGE, PERIOD_SAVED_TOAST,
+  BUSINESS_PERIOD_LABELS, COVERAGE_HISTORY_TITLE, PERIOD_CORRECT_ACTION, PERIOD_DETAIL_TITLE, PERIOD_INVALID_MESSAGE, PERIOD_OPEN_ENDED_LABEL, PERIOD_SAVED_TOAST,
   PERIOD_USER_MENTION, orderedBounds, parsePartialInput, partialToInput,
   type BusinessPeriodKind, type PartialDate,
 } from "@/lib/documents/business-periods";
@@ -47,6 +56,8 @@ export interface PeriodView {
   end: PartialDate | null;
   line: string;
   userCorrected: boolean;
+  /** Carte #766 (E03 / E04) : durée indéterminée ÉTABLIE (≠ fin inconnue). */
+  openEnded?: boolean;
 }
 export interface CoverageEntry extends PeriodView {
   fileId: number;
@@ -54,7 +65,7 @@ export interface CoverageEntry extends PeriodView {
   resolution?: { status: "REPLACED" | "CONFLICT"; note: string };
   otherSources?: Array<{ fileId: number; documentTitle: string }>;
 }
-interface DocumentPeriodsView {
+export interface DocumentPeriodsView {
   documentId: number;
   principal: { kind: BusinessPeriodKind; line: string; segments: PeriodView[] } | null;
   secondary: PeriodView[];
@@ -66,6 +77,8 @@ interface DocumentPeriodsView {
 function PeriodEditor({ fileId, period, onDone }: { fileId: number; period: PeriodView; onDone: (saved: boolean) => void }) {
   const [debut, setDebut] = useState(partialToInput(period.start));
   const [fin, setFin] = useState(partialToInput(period.end));
+  // Carte #766 (E04) : le statut établi est repris tel quel ; il ne change que si l'utilisateur y touche.
+  const [indeterminee, setIndeterminee] = useState(period.openEnded === true);
   const [erreur, setErreur] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const labels = BUSINESS_PERIOD_LABELS[period.kind];
@@ -77,7 +90,8 @@ function PeriodEditor({ fileId, period, onDone }: { fileId: number; period: Peri
     setBusy(true);
     setErreur(null);
     try {
-      await apiClient.put(`/api/documents/${fileId}/periodes`, { periodId: period.id, start, end });
+      // Une fin saisie exclut la durée indéterminée ; sinon la case dit explicitement ce qui est voulu.
+      await apiClient.put(`/api/documents/${fileId}/periodes`, { periodId: period.id, start, end, openEnded: end === null ? indeterminee : false });
       toast.success(PERIOD_SAVED_TOAST);
       window.dispatchEvent(new CustomEvent(BUSINESS_PERIODS_MUTATED, { detail: { fileId } }));
       onDone(true);
@@ -100,6 +114,10 @@ function PeriodEditor({ fileId, period, onDone }: { fileId: number; period: Peri
           <Input value={fin} onChange={(e) => setFin(e.target.value)} inputMode="numeric" placeholder="JJ/MM/AAAA" aria-label={labels.end} />
         </label>
       </div>
+      <label className="flex min-h-[32px] cursor-pointer items-center gap-2 text-xs text-muted-foreground" data-testid="business-period-open-ended">
+        <Checkbox checked={indeterminee && !fin.trim()} disabled={!!fin.trim()} onCheckedChange={(v) => setIndeterminee(v === true)} aria-label={PERIOD_OPEN_ENDED_LABEL} />
+        <span>{PERIOD_OPEN_ENDED_LABEL}</span>
+      </label>
       {erreur && <p className="text-xs text-[color:var(--danger)]" role="alert">{erreur}</p>}
       <div className="flex flex-wrap justify-end gap-2">
         <Button type="button" variant="secondary" size="sm" onClick={() => onDone(false)} disabled={busy}>Annuler</Button>
@@ -188,11 +206,14 @@ export function CoverageHistoryList({ coverages, currentFileId, onOpenDocument, 
 
 // ── Tiroir du document ──────────────────────────────────────────────────────
 
-export function DocumentBusinessPeriodField({ documentId, refreshKey, onOpenDocument }: {
-  documentId: number; refreshKey?: number; onOpenDocument?: (fileId: number) => void;
-}) {
+/**
+ * Carte #766 (E11) — périodes d'un document, lues UNE fois pour le bloc de la période principale et pour
+ * la sous-section de détail rattachée à « Notes / Description » (relues après une correction).
+ */
+export function useDocumentPeriods(documentId: number | null | undefined, refreshKey?: number): { view: DocumentPeriodsView | null; reload: () => void } {
   const [view, setView] = useState<DocumentPeriodsView | null>(null);
   const charger = useCallback(async () => {
+    if (!documentId) { setView(null); return; }
     try {
       const r = await apiClient.get<{ periods: DocumentPeriodsView }>(`/api/documents/${documentId}/periodes`);
       setView(r?.periods ?? null);
@@ -206,34 +227,62 @@ export function DocumentBusinessPeriodField({ documentId, refreshKey, onOpenDocu
     window.addEventListener(BUSINESS_PERIODS_MUTATED, h);
     return () => window.removeEventListener(BUSINESS_PERIODS_MUTATED, h);
   }, [charger]);
+  return { view, reload: () => { void charger(); } };
+}
 
-  if (!view || (!view.principal && !view.secondary.length && !view.coverageHistories.length)) return null;
+/**
+ * Bloc de la période du document : UNE période principale (une ligne, ou « Plusieurs périodes
+ * concernées ») et l'historique de couverture. Le détail est dans `DocumentPeriodsDetail` (carte #766, E11).
+ */
+export function DocumentBusinessPeriodField({ documentId, periods, onOpenDocument }: {
+  documentId: number; periods: { view: DocumentPeriodsView | null; reload: () => void }; onOpenDocument?: (fileId: number) => void;
+}) {
+  const { view, reload } = periods;
+  if (!view || view.documentId !== documentId || (!view.principal && !view.coverageHistories.length)) return null;
   const p = view.principal;
   return (
     <div className="space-y-2" data-testid="document-business-periods">
       {p && (p.segments.length > 1 ? (
-        <div className="space-y-1">
-          <p className="flex items-center gap-1.5 text-sm text-[color:var(--text-primary)]" data-testid="business-period-principal">
-            <CalendarRange className="w-3.5 h-3.5 text-muted-foreground" />{p.line}
-          </p>
-          <div className="pl-5 space-y-1">
-            {p.segments.map((s) => <PeriodRow key={s.id} fileId={documentId} period={s} muted onSaved={charger} />)}
-          </div>
-        </div>
+        <p className="flex items-center gap-1.5 text-sm text-[color:var(--text-primary)]" data-testid="business-period-principal">
+          <CalendarRange className="w-3.5 h-3.5 text-muted-foreground" />{p.line}
+        </p>
       ) : p.segments[0] ? (
         <div className="flex items-start gap-1.5" data-testid="business-period-principal">
           <CalendarRange className="mt-0.5 w-3.5 h-3.5 shrink-0 text-muted-foreground" />
-          <div className="flex-1 min-w-0"><PeriodRow fileId={documentId} period={p.segments[0]} onSaved={charger} /></div>
+          <div className="flex-1 min-w-0"><PeriodRow fileId={documentId} period={p.segments[0]} onSaved={reload} /></div>
         </div>
       ) : null)}
-      {view.secondary.length > 0 && (
-        <div className="pl-5 space-y-1" data-testid="business-period-secondary">
-          {view.secondary.map((s) => <PeriodRow key={s.id} fileId={documentId} period={s} muted onSaved={charger} />)}
+      {view.coverageHistories.map((h) => (
+        <CoverageHistoryList key={h.operationId} coverages={h.coverages} currentFileId={documentId} onOpenDocument={onOpenDocument} onSaved={reload} />
+      ))}
+    </div>
+  );
+}
+
+/**
+ * Carte #766 (E11) — détail des périodes, rattaché à la zone « Notes / Description » du document : périodes
+ * discontinues de la nature principale, puis autres natures. Affichage CALCULÉ depuis les faits structurés
+ * à chaque lecture : rien n'est écrit dans les notes de l'utilisateur ni dans la description T1. Rien n'est
+ * affiché s'il n'y a pas de détail. La correction est celle de la ligne existante (même fait, même route).
+ */
+export function DocumentPeriodsDetail({ documentId, periods }: { documentId: number; periods: { view: DocumentPeriodsView | null; reload: () => void } }) {
+  const { view, reload } = periods;
+  if (!view || view.documentId !== documentId) return null;
+  const segments = view.principal && view.principal.segments.length > 1 ? view.principal.segments : [];
+  if (!segments.length && !view.secondary.length) return null;
+  return (
+    <div className="pt-1 space-y-1" data-testid="document-periods-detail">
+      <p className="vb-app-label flex items-center gap-1"><CalendarRange className="w-3 h-3" />{PERIOD_DETAIL_TITLE}</p>
+      {segments.length > 0 && (
+        <div className="space-y-1" data-testid="business-period-segments">
+          {segments.map((s) => <PeriodRow key={s.id} fileId={documentId} period={s} muted onSaved={reload} />)}
         </div>
       )}
-      {view.coverageHistories.map((h) => (
-        <CoverageHistoryList key={h.operationId} coverages={h.coverages} currentFileId={documentId} onOpenDocument={onOpenDocument} onSaved={charger} />
-      ))}
+      {view.secondary.length > 0 && (
+        <div className="space-y-1" data-testid="business-period-secondary">
+          {view.secondary.map((s) => <PeriodRow key={s.id} fileId={documentId} period={s} muted onSaved={reload} />)}
+        </div>
+      )}
     </div>
   );
 }

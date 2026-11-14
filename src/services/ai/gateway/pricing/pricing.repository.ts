@@ -48,6 +48,13 @@ export interface CachedPrice extends ModelPrice {
   effectiveFrom?: Date;
   /** Lot 109L : non confirmé par la dernière lecture de la source (STALE). */
   stale?: boolean;
+  /**
+   * Lot 114 (#770) : statut de la DERNIÈRE lecture validée de la page officielle pour ce modèle
+   * (`ai_model_price_status`) ; absent : jamais évalué par la synchronisation. Sert à l'éligibilité tarifaire.
+   */
+  pageStatus?: 'KNOWN' | 'STALE' | 'UNKNOWN' | null;
+  /** Depuis quand la page ne confirme plus ce tarif (`STALE`). */
+  staleSince?: Date | null;
 }
 
 const cache = new Map<string, CachedPrice>();
@@ -81,7 +88,7 @@ export function sourceRank(source: string, verified: boolean): number {
 interface PriceRow {
   id?: number; provider: string; model: string; input_micros: unknown; output_micros: unknown; currency: unknown;
   source: unknown; source_reference: unknown; verified: unknown; fetched_at: unknown; effective_from?: unknown; tiers?: unknown;
-  stale?: unknown;
+  stale?: unknown; page_status?: unknown; stale_since?: unknown;
 }
 
 /** Choisit, par modèle, la ligne applicable selon la priorité des sources (pur). */
@@ -102,6 +109,8 @@ export function selectApplicablePrices(rows: readonly PriceRow[]): CachedPrice[]
       ...(r.id != null ? { id: Number(r.id) } : {}),
       ...(r.effective_from != null ? { effectiveFrom: new Date(String(r.effective_from)) } : {}),
       ...(r.stale === true && r.source === 'public_catalog' ? { stale: true } : {}),
+      ...(r.page_status === 'KNOWN' || r.page_status === 'STALE' || r.page_status === 'UNKNOWN' ? { pageStatus: r.page_status } : {}),
+      ...(r.stale_since != null ? { staleSince: new Date(String(r.stale_since)) } : {}),
     };
     const rank = sourceRank(p.source, p.verified);
     const at = p.effectiveFrom?.getTime() ?? 0;
@@ -137,7 +146,7 @@ export async function loadPricingCache(): Promise<number> {
       rows = await pgClient.unsafe(
         `SELECT p.id, p.provider, p.model, p.input_micros, p.output_micros, p.currency,
                 p.source, p.source_reference, p.verified, p.fetched_at, p.effective_from, p.tiers,
-                (s.status = 'STALE') AS stale
+                (s.status = 'STALE') AS stale, s.status AS page_status, s.stale_since
            FROM ai_model_pricing p
            LEFT JOIN ai_model_price_status s ON s.provider = p.provider AND s.model = p.model
           WHERE p.effective_from <= NOW() AND p.invalidated_at IS NULL`,
@@ -237,7 +246,35 @@ export function clearPricingCache(): void {
 }
 
 export function getCachedPrice(provider: string, model: string): CachedPrice | null {
-  return cache.get(key(provider, model)) ?? null;
+  return cache.get(key(provider, model)) ?? (verifiedTestPricesActive() ? testPrice(provider, model) : null);
+}
+
+// ── Lot 114 (Trello #770) : socle de TEST ───────────────────────────────────
+// Depuis #770, aucun modèle n'est appelé sans tarif officiel vérifié. Les suites
+// de tests sollicitent la passerelle avec un fournisseur simulé et des modèles
+// fictifs : le socle de test peut déclarer que tout modèle SANS ligne au cache
+// porte une preuve tarifaire de test (grille du compte, vérifiée, montant 0).
+// Refusé ET ignoré hors `NODE_ENV=test` : ce n'est pas un contournement de la garde. L'état est porté par une clé
+// globale (comme les autres réglages de test du dépôt) : il survit à `vi.resetModules()`.
+const TEST_PRICES_KEY = Symbol.for('verebona.ai.verifiedTestPrices');
+const testPrice = (provider: string, model: string): CachedPrice => ({
+  provider, model, inputMicros: 0, outputMicros: 0, currency: 'USD', source: 'billing_api',
+  sourceReference: 'test:tarif-verifie', verified: true, fetchedAt: new Date('2026-01-01T00:00:00Z'),
+});
+export function __setVerifiedTestPricesForTests(on: boolean): void {
+  if (process.env.NODE_ENV !== 'test') throw new Error('__setVerifiedTestPricesForTests : réservé aux tests');
+  (globalThis as unknown as Record<symbol, boolean>)[TEST_PRICES_KEY] = on;
+}
+
+/** Socle de test actif (#770) — voir `__setVerifiedTestPricesForTests`. */
+export function verifiedTestPricesActive(): boolean {
+  return process.env.NODE_ENV === 'test' && (globalThis as unknown as Record<symbol, boolean>)[TEST_PRICES_KEY] === true;
+}
+
+/** État du référentiel vu par l'éligibilité tarifaire (#770) : jamais chargé ou illisible = refus. */
+export function pricingReadState(): { degraded: boolean; loaded: boolean } {
+  if (verifiedTestPricesActive()) return { degraded: false, loaded: true };
+  return { degraded, loaded: loadedAt !== null };
 }
 
 interface PricingCacheState {
