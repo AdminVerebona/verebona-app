@@ -36,24 +36,24 @@ import type { AnalysisContext, SourceInput } from '../types';
 import type { AccountCapabilities } from '@/services/account-capabilities.service';
 import type { AssetFamily as V2AssetFamily } from '@/lib/referential/v2';
 import { SourceUnitLinker } from './coverage';
-import { maxCompletenessRetries } from './repository';
+import { repairBounds, retryLimits } from './retry-policy';
 import type { CoveredSourceUnit, SourceUnit } from './types';
 import { unitOfCell } from './build-units';
 import type { AnchoredValueDecision } from '../value-decisions/validate';
 
 const REPAIR_MAX_UNITS = 120;
 const REPAIR_MAX_CHARS = 24_000;
-const DEFAULT_MAX_REPAIR_PASSES = 1;
-const DEFAULT_REPAIR_MAX_CALLS = 3;
-
+/**
+ * Bornes de la réparation. Lot 114H (#775) : passes et appels sont lus par la règle unique des reprises
+ * (`retry-policy.ts`) — une seule définition des défauts et des plages.
+ */
 export function repairSettings(env: Record<string, string | undefined> = process.env) {
   const n = (v: string | undefined, def: number, min: number, max: number) => {
     const x = Number(v);
     return v !== undefined && v.trim() !== '' && Number.isFinite(x) ? Math.min(max, Math.max(min, Math.trunc(x))) : def;
   };
   return {
-    maxPasses: n(env.T1_MAX_REPAIR_PASSES, DEFAULT_MAX_REPAIR_PASSES, 0, 2),
-    maxCalls: n(env.T1_REPAIR_MAX_CALLS, DEFAULT_REPAIR_MAX_CALLS, 1, 10),
+    ...repairBounds(env),
     /** Nombre minimal d'unités à réparer pour déclencher un appel (réglage de coût ; 1 = toute lacune). */
     minUnits: n(env.T1_REPAIR_MIN_UNITS, 1, 1, 1_000),
   };
@@ -61,7 +61,7 @@ export function repairSettings(env: Record<string, string | undefined> = process
 
 /** Lot 49B : plafond de tentatives de réparation d'une unité (passes de l'analyse + reprises automatiques). */
 export function repairAttemptCap(env: Record<string, string | undefined> = process.env): number {
-  return Math.max(1, repairSettings(env).maxPasses + maxCompletenessRetries(env));
+  return retryLimits(env).unitCap;
 }
 
 /** Lots d'unités pour la réparation (ordre de lecture). Le surplus au-delà de `maxCalls` lots est rendu à part. */

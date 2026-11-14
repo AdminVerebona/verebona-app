@@ -31,6 +31,7 @@
  */
 import { sql, type SQL } from 'drizzle-orm';
 import { BusinessOperationIntegrityError } from './errors';
+import { reassignGraphOnMerge } from './graph/store';
 import { reassignGroupingOnMerge } from './grouping/merge';
 import { drizzleRunner } from './grouping/runner';
 import type { BusinessOperationEventBuffer } from './events';
@@ -1066,6 +1067,8 @@ export class BusinessOperationRepository {
    *     du Sinistre, suppressions de projection ; éléments d'agenda, principal
    *     unique, appartenance USER des documents et Pièces par le service de
    *     regroupement (`grouping/merge.ts`, lot 82D : aucune absorption) ;
+   *   · relations entre Opérations et liens d'Agenda supplémentaires du graphe
+   *     canonique (lot 114O, `graph/store.ts` : `reassignGraphOnMerge`) ;
    *   · références croisées (contrat d'assurance d'un Sinistre) — lot 83D :
    *     plus de hiérarchie parent / enfant à reprendre ;
    *   · décisions de rapprochement remappées (F-051) ;
@@ -1183,6 +1186,9 @@ export class BusinessOperationRepository {
     // Lot 82D (CDC v5 O-1) : éléments d'agenda, principal unique, appartenance USER
     // des documents et Pièces par le service unique de regroupement (aucune absorption).
     await reassignGroupingOnMerge(drizzleRunner(this.tx), acct, A, C);
+    // Lot 114O (#744, CDC V2.0 §5, §7) : graphe canonique — relations entre Opérations et liens d'Agenda supplémentaires de
+    // l'absorbée reportés sur la canonique (sans doublon, sans relation réflexive, refus de l'utilisateur conservé).
+    await reassignGraphOnMerge(drizzleRunner(this.tx), acct, A, C, { correlationId: this.ctx.correlationId, actorUserId: this.ctx.actorUserId });
     await this.tx.execute(sql`UPDATE document_operation_candidates SET t3_operation_id = ${C} WHERE t3_operation_id = ${A} AND account_id = ${acct}`);
     await step('details');
 

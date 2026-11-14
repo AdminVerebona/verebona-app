@@ -128,6 +128,67 @@ export async function enqueueFileAnalyses(
 }
 
 /**
+ * Lot 114H (Trello #775, P1-B) — ISSUE RÉELLE d'une mise en file T1, par fichier.
+ *
+ * `enqueueFileAnalyses` ne rend que les identifiants « nouvellement acceptés » :
+ * un appelant ne pouvait pas distinguer « un travail vivant existe déjà »
+ * (rien à refaire) de « refusé » (rien n'a été mis en file). Chaque issue est
+ * ici la traduction d'une VRAIE réponse de la file (`job-queue.repository`) :
+ *
+ *   ACCEPTED              `decision = create` — travail créé (`jobId`) ;
+ *   ALREADY_RUNNING       `skip` / DUPLICATE_PENDING, `coalesce` /
+ *                         DUPLICATE_RUNNING (passage supplémentaire demandé
+ *                         sur l'exécution en cours), ALREADY_QUEUED, ou
+ *                         insertion concurrente refusée par l'index unique des
+ *                         travaux vivants (23505) : un travail vivant du MÊME
+ *                         fichier existe (`jobId` quand la file le rend) ;
+ *   ACCOUNT_NOT_ELIGIBLE  `skip` / ACCOUNT_INELIGIBLE (lot 82A) ;
+ *   REJECTED_FINAL        `skip` / CROSS_ACCOUNT_SCOPE (lot 49), identifiant de
+ *                         fichier invalide : rejouer ne changerait rien ;
+ *   REJECTED_TRANSIENT    erreur d'écriture de la file (SCR-08 : jamais
+ *                         acquittée) : à retenter.
+ */
+export type T1EnqueueStatus = 'ACCEPTED' | 'ALREADY_RUNNING' | 'ACCOUNT_NOT_ELIGIBLE' | 'REJECTED_FINAL' | 'REJECTED_TRANSIENT';
+
+export interface T1EnqueueOutcome {
+  fileId: number;
+  status: T1EnqueueStatus;
+  /** Travail créé, ou travail vivant qui a absorbé la demande (null : non rendu par la file). */
+  jobId: number | null;
+  /** Motif exact rendu par la file (`reasonCode`), ou code local (INVALID_FILE_ID, CONCURRENT_ENQUEUE, ENQUEUE_ERROR). */
+  reason: string | null;
+  /** Message technique d'une erreur d'écriture (jamais de contenu de document). */
+  error?: string;
+}
+
+/** Un travail vivant corrélé au fichier est-il garanti par cette issue ? (pure) */
+export function t1EnqueueConfirmed(o: Pick<T1EnqueueOutcome, 'status'>): boolean {
+  return o.status === 'ACCEPTED' || o.status === 'ALREADY_RUNNING';
+}
+
+/** Traduction d'une réponse d'`enqueue` (pure, testée) — voir l'en-tête de `T1EnqueueStatus`. */
+export function t1EnqueueOutcomeOf(fileId: number, r: { decision: string; jobId: number | null; reasonCode?: string | null }): T1EnqueueOutcome {
+  if (r.decision === 'create') return { fileId, status: 'ACCEPTED', jobId: r.jobId, reason: null };
+  if (r.reasonCode === 'ACCOUNT_INELIGIBLE') return { fileId, status: 'ACCOUNT_NOT_ELIGIBLE', jobId: null, reason: r.reasonCode };
+  if (r.reasonCode === 'CROSS_ACCOUNT_SCOPE') return { fileId, status: 'REJECTED_FINAL', jobId: null, reason: r.reasonCode };
+  // `skip` (travail en attente), `coalesce` (travail en cours), continuation déjà en file : un travail vivant existe.
+  if (r.jobId !== null) return { fileId, status: 'ALREADY_RUNNING', jobId: r.jobId, reason: r.reasonCode ?? (r.decision === 'coalesce' ? 'DUPLICATE_RUNNING' : 'DUPLICATE_PENDING') };
+  // Aucune création et aucun travail désigné : motif inconnu de ce code — jamais présenté comme une réussite.
+  return { fileId, status: 'REJECTED_TRANSIENT', jobId: null, reason: r.reasonCode ?? 'UNKNOWN_SKIP' };
+}
+
+/** `enqueueFileAnalyses` en rendant l'issue de CHAQUE fichier (lot 114H, #775). Ne lève pas. */
+export async function enqueueFileAnalysesDetailed(
+  fileIds: number[], accountId: number, options: Parameters<typeof enqueueFileAnalyses>[2],
+): Promise<T1EnqueueOutcome[]> {
+  if (options.origin === UPLOAD_ORIGIN && !(await t1TriggerActive('source_uploaded'))) {
+    return [...new Set(fileIds)].map((fileId) => ({ fileId, status: 'REJECTED_FINAL' as const, jobId: null, reason: 'TRIGGER_INACTIVE' }));
+  }
+  await marquerEnFile(fileIds, accountId);
+  return enqueueDurableFileAnalysesDetailed(fileIds, accountId, options);
+}
+
+/**
  * Met une analyse de fichier dans la file durable, sans contrôle de
  * déclencheur ni marquage (voir `enqueueFileAnalyses`).
  *
@@ -166,16 +227,28 @@ export async function enqueueDurableFileAnalyses(
     resume?: true | string;
   },
 ): Promise<number[]> {
-  const acceptes: number[] = [];
+  // Lot 114H (#775) : même mise en file, l'issue détaillée est réduite aux fichiers NOUVELLEMENT acceptés
+  // (contrat historique des appelants : dépôt, analyse par lot, reprise serveur).
+  return (await enqueueDurableFileAnalysesDetailed(fileIds, accountId, options)).filter((o) => o.status === 'ACCEPTED').map((o) => o.fileId);
+}
+
+/** Mise en file durable, issue par fichier (lot 114H, #775) — voir `T1EnqueueStatus`. Ne lève pas. */
+export async function enqueueDurableFileAnalysesDetailed(
+  fileIds: number[], accountId: number, options: Parameters<typeof enqueueDurableFileAnalyses>[2],
+): Promise<T1EnqueueOutcome[]> {
+  const issues: T1EnqueueOutcome[] = [];
   const visibilite = normalizeProcessingVisibility(options.processingVisibility);
 
   for (const fileId of [...new Set(fileIds)]) {
-    if (!Number.isInteger(fileId)) continue;
+    if (!Number.isInteger(fileId)) {
+      issues.push({ fileId, status: 'REJECTED_FINAL', jobId: null, reason: 'INVALID_FILE_ID' });
+      continue;
+    }
     try {
       const reprise = options.resume === undefined ? null
         : typeof options.resume === 'string' ? options.resume
           : await (await import('../../business-execution/repository')).latestT1ExecutionIdForFile(accountId, fileId);
-      const { decision } = await enqueue({
+      const r = await enqueue({
         treatment: 'T1',
         scope: { accountId, targetType: TARGET_TYPE, targetId: fileId },
         // CDC 15 OBS-CFG : un dépôt est le déclencheur `source_uploaded` du
@@ -194,27 +267,30 @@ export async function enqueueDurableFileAnalyses(
       });
       // `skip` : un travail équivalent attend déjà. Ce n'est pas un refus, mais
       // le fichier n'a pas à être compté deux fois comme nouvellement accepté.
-      if (decision === 'create') acceptes.push(fileId);
+      issues.push(t1EnqueueOutcomeOf(fileId, r));
     } catch (e) {
       // Mise en file concurrente du même fichier (deux dépôts, dépôt + reprise) :
       // l'index unique des jobs vivants a refusé le doublon — le fichier EST en
       // file, ce n'est pas une panne. Non compté comme nouvellement accepté.
       if ((e as { code?: string })?.code === '23505') {
         console.info(`[t1-queue] fichier ${fileId} déjà en file (mise en file concurrente).`);
+        issues.push({ fileId, status: 'ALREADY_RUNNING', jobId: null, reason: 'CONCURRENT_ENQUEUE' });
         continue;
       }
       // Le SCR-08 interdit d'acquitter une mise en file non persistée : on ne
       // compte pas ce fichier, et l'appelant peut le constater.
       console.error(`[t1-queue] mise en file impossible pour le fichier ${fileId} :`, (e as Error).message);
+      issues.push({ fileId, status: 'REJECTED_TRANSIENT', jobId: null, reason: 'ENQUEUE_ERROR', error: String((e as Error).message ?? e).slice(0, 300) });
     }
   }
 
+  const acceptes = issues.filter((o) => o.status === 'ACCEPTED').map((o) => o.fileId);
   // Lot 50 : visibilité du traitement posée dès la mise en file (« en file »
   // est déjà un état présenté par la mascotte pour un dépôt).
   if (acceptes.length > 0) await markAnalysisVisibility(acceptes, accountId, visibilite);
   // Un dépôt n'attend pas le tour suivant du boucleur (15 s) : réveil immédiat.
   if (acceptes.length > 0) nudgeQueueWorker();
-  return acceptes;
+  return issues;
 }
 
 /**

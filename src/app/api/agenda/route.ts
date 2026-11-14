@@ -77,7 +77,7 @@ export async function POST(req: NextRequest) {
 
     const body = await req.json();
     // Lot 113P (#715) : un `manualStatus` envoyé par un ancien client est IGNORÉ (plus de statut d'événement).
-    const { title, description, startDate, startTime, endDate, endTime, assetIds, fileIds, substructureIds, equipmentIds, noDeadline } = body;
+    const { title, description, startDate, startTime, endDate, endTime, assetIds, fileIds, substructureIds, equipmentIds, noDeadline, situation } = body;
 
     if (!title || typeof title !== 'string' || !title.trim()) {
       return NextResponse.json({ error: 'title est requis' }, { status: 400 });
@@ -90,7 +90,8 @@ export async function POST(req: NextRequest) {
 
     const item = await createAgendaItem(
       // Lot 77A : « Sans échéance » validée par le service (booléen, incompatible avec une date).
-      { title: title.trim(), description, startDate, startTime, endDate, endTime, assetIds, fileIds, substructureIds, equipmentIds, noDeadline },
+      // Lot 114V (#742) : « Situation de l'événement » validée par le service ; absente (ancien client) → « À prévoir ».
+      { title: title.trim(), description, startDate, startTime, endDate, endTime, assetIds, fileIds, substructureIds, equipmentIds, noDeadline, situation },
       accountId,
       session.userId
     );

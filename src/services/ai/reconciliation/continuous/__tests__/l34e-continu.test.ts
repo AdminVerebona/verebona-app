@@ -117,8 +117,10 @@ describe('déclenchement événementiel + réconciliation compte (orchestration 
     // Lot 114B (#753, M19) : la création d'un bien vit dans la façade métier, appelée par la route ET par l'Assistant.
     expect(src('src/services/assets/asset-write.facade.ts')).toMatch(/event: 'asset_updated', objectType: 'asset'/);
     expect(src('src/app/api/assets/route.ts')).toMatch(/createAssetForAccount\(/);
-    expect(src('src/app/api/assets/[id]/equipments/route.ts')).toMatch(/event: 'entity_updated', objectType: 'equipment'/);
-    expect(src('src/app/api/assets/[id]/equipments/[equipId]/route.ts')).toMatch(/event: 'entity_updated'/);
+    // Lot 114 (#753, W04 – W09) : règle déplacée — le corps de la route est dans la façade métier `structure-write.facade` (partagée avec l'Assistant).
+    expect(src('src/services/assets/structure-write.facade.ts').match(/event: 'entity_updated', objectType: 'equipment'/g)).toHaveLength(2);
+    expect(src('src/app/api/assets/[id]/equipments/route.ts')).toContain('createEquipmentForAccount');
+    expect(src('src/app/api/assets/[id]/equipments/[equipId]/route.ts')).toContain('updateEquipmentForAccount');
   });
   it('phase non bloquante : une erreur n’arrête pas la réconciliation compte', async () => {
     vi.resetModules();

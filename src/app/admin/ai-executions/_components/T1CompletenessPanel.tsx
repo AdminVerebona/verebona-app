@@ -12,6 +12,7 @@ import { useEffect, useState } from 'react';
 import { AlertTriangle } from 'lucide-react';
 import { apiClient } from '@/lib/api-client';
 import { verificationFollowup } from '@/services/ai/source-analysis/source-units/verification-followup';
+import { COVERAGE_ISSUES, COVERAGE_ISSUE_LABEL, type CoverageIssue } from '@/services/ai/source-analysis/source-units/coverage-issue';
 import { T1CompletenessUnits } from './T1CompletenessUnits';
 
 type Quality = 'COMPLETE' | 'COMPLETE_WITH_UNRESOLVED' | 'VERIFICATION_INCOMPLETE' | 'INCOMPLETE_RETRYABLE' | 'INCOMPLETE_FINAL';
@@ -26,6 +27,8 @@ interface Row {
   lastRetryAt?: string | null; lastRetryResult?: string | null;
   /** Lot 53 (D19) : reprise automatique programmée. */
   nextRetryAt?: string | null;
+  /** Lot 114H (#775) : issue actuelle (recalculée), motif vérifiable et prochaine action réelle. */
+  issue?: { issue: CoverageIssue; label: string; reason: string; nextAction: string; actionable: boolean };
 }
 interface Diagnostics {
   verificationReason?: string | null;
@@ -52,6 +55,53 @@ interface Overview {
   bySourceVerification?: Record<string, number>;
   maxRetries?: number;
   totals?: Totals;
+  /** Lot 114H (#775) : documents de la période par issue actuelle. */
+  byIssue?: Record<CoverageIssue, number>;
+  byIssueTruncated?: boolean;
+}
+
+/** Lot 114H (#775, P1-C) : bilan cumulé de la réévaluation automatique du stock (compteurs seulement). */
+export interface ReassessmentReport {
+  rulesVersion: number; available: boolean; documents: number; byOutcome: Record<string, number>;
+  transitions: Array<{ from: string; to: string; documents: number }>;
+  unitsRequalified: number; alertsClosed: number; alertsMaintained: number; alertsOpened: number;
+  retriesScheduled: number; retriesCancelled: number; errors: number; remaining: number; openAlerts: number;
+  totalDurationMs: number; aiCalls: number; aiCost: number; firstAt: string | null; lastAt: string | null;
+}
+
+/** Issues d'une réévaluation — libellés BO (textes nouveaux, à valider par le PO). */
+export const REASSESSMENT_OUTCOME_LABEL: Record<string, string> = {
+  RESOLVED: 'devenue(s) complète(s)',
+  RECONCILED: 'réconciliée(s) sur preuve (résidu restant)',
+  REPAIR_SCHEDULED: 'réparation ciblée programmée',
+  STILL_UNRESOLVED: 'encore non résolue(s)',
+  UNVERIFIABLE: 'non vérifiable(s) (incertitude conservée)',
+  FINAL_GAP: 'lacune réelle sans reprise admissible',
+  UNCHANGED: 'inchangée(s)',
+  ERROR: 'en erreur',
+};
+
+/** Bilan de la réévaluation, en lignes courtes (pure ; compteurs seulement). */
+export function reassessmentText(r: ReassessmentReport | null | undefined): string[] {
+  if (!r || !r.available) return [];
+  if (r.documents === 0 && r.remaining === 0 && r.alertsClosed === 0) return [`Réévaluation du stock (règles v${r.rulesVersion}) : aucun document concerné.`];
+  const issues = Object.entries(r.byOutcome).filter(([, n]) => n > 0).map(([k, n]) => `${n} ${REASSESSMENT_OUTCOME_LABEL[k] ?? k}`).join(' · ');
+  const lignes = [
+    `Réévaluation du stock sans IA (règles v${r.rulesVersion}) : ${r.documents} document(s) examiné(s)${issues ? ` — ${issues}` : ''} · ${r.remaining} restant(s)`,
+    `Unités requalifiées sur preuve : ${r.unitsRequalified} · reprises ciblées programmées : ${r.retriesScheduled} · échéances retirées (plus de reprise admissible) : ${r.retriesCancelled}`,
+    `Alertes de Supervision : ${r.alertsClosed} close(s) (cause disparue) · ${r.alertsMaintained} maintenue(s) · ${r.alertsOpened} ouverte(s) · ${r.openAlerts} encore active(s)`,
+    `Durée cumulée : ${Math.round(r.totalDurationMs / 1000)} s · appels IA : ${r.aiCalls} · coût IA : ${r.aiCost}`
+      + `${r.lastAt ? ` · dernier passage ${new Date(r.lastAt).toLocaleString('fr-FR')}` : ''}`,
+  ];
+  if (r.transitions.length > 0) lignes.push(`États avant → après : ${r.transitions.slice(0, 8).map((t) => `${t.from} → ${t.to} (${t.documents})`).join(' · ')}`);
+  return lignes;
+}
+
+/** Documents de la période par issue actuelle (pure). */
+export function issuesText(byIssue: Record<string, number> | undefined | null, truncated?: boolean): string {
+  if (!byIssue) return '';
+  const parts = COVERAGE_ISSUES.filter((i) => (byIssue[i] ?? 0) > 0).map((i) => `${byIssue[i]} ${COVERAGE_ISSUE_LABEL[i]}`);
+  return parts.length ? `État actuel : ${parts.join(' · ')}${truncated ? ' (documents les plus récents)' : ''}` : '';
 }
 
 const QUALITY_LABEL: Record<Quality, string> = {
@@ -59,6 +109,7 @@ const QUALITY_LABEL: Record<Quality, string> = {
   COMPLETE_WITH_UNRESOLVED: 'complète, part non structurée conservée',
   // Lot 53 (D19) : couverture du document original non vérifiable — jamais « complète ».
   VERIFICATION_INCOMPLETE: 'vérification incomplète — pages non vérifiables',
+  // Lot 114H (#775) : cet état n'existe plus sans reprise admissible (règle unique des reprises).
   INCOMPLETE_RETRYABLE: 'incomplète — reprise programmée',
   INCOMPLETE_FINAL: 'incomplète — définitive',
 };
@@ -159,6 +210,8 @@ export function totalsText(t: Totals | undefined | null): string[] {
   ];
 }
 
+const ECHEC_REPRISE = 'échec de la reprise';
+
 export function T1CompletenessPanel({ days = 7 }: { days?: number }) {
   const [data, setData] = useState<Overview | null>(null);
   const [anomaly, setAnomaly] = useState<string>('');
@@ -166,14 +219,30 @@ export function T1CompletenessPanel({ days = 7 }: { days?: number }) {
   // Lot 113AN : rapport de complétude unité par unité d'un document (ligne de la liste ou numéro saisi).
   const [detail, setDetail] = useState<number | null>(null);
   const [saisie, setSaisie] = useState('');
+  const [bilan, setBilan] = useState<ReassessmentReport | null>(null);
+  const [refus, setRefus] = useState<Record<number, string>>({});
 
   // Lot 53 (D19) : reprise manuelle d'une vérification incomplète (relecture du fichier, tracée).
   const relancer = (fileId: number) => {
     setReprises((x) => ({ ...x, [fileId]: 'en cours…' }));
-    apiClient.post<{ ok: boolean; queued: boolean }>('/api/admin/ai/t1-completeness/retry', { fileId })
-      .then((r) => setReprises((x) => ({ ...x, [fileId]: r.queued ? 'analyse relancée' : 'déjà en file' })))
-      .catch(() => setReprises((x) => ({ ...x, [fileId]: 'échec de la reprise' })));
+    // Lot 114H (#775, P1-B) : l'écran dit l'issue réelle — relancée, déjà en file, ou refusée (motif du serveur).
+    apiClient.post<{ ok: boolean; queued: boolean; alreadyRunning?: boolean }>('/api/admin/ai/t1-completeness/retry', { fileId })
+      .then((r) => setReprises((x) => ({ ...x, [fileId]: !r.queued ? ECHEC_REPRISE : r.alreadyRunning ? 'analyse déjà en file' : 'analyse relancée' })))
+      .catch((e: unknown) => {
+        const motif = (e as { serverMessage?: string } | null)?.serverMessage;
+        setRefus((x) => ({ ...x, [fileId]: motif ?? '' }));
+        setReprises((x) => ({ ...x, [fileId]: ECHEC_REPRISE }));
+      });
   };
+
+  // Lot 114H (#775, P1-C) : bilan de la réévaluation automatique du stock.
+  useEffect(() => {
+    let annule = false;
+    apiClient.get<ReassessmentReport>('/api/admin/ai/t1-completeness/reassessment')
+      .then((r) => { if (!annule) setBilan(r); })
+      .catch(() => { if (!annule) setBilan(null); });
+    return () => { annule = true; };
+  }, []);
 
   useEffect(() => {
     let annule = false;
@@ -198,8 +267,13 @@ export function T1CompletenessPanel({ days = 7 }: { days?: number }) {
       {detail !== null && !data.rows.slice(0, 20).some((r) => r.fileId === detail) && <div className="w-full"><T1CompletenessUnits key={detail} fileId={detail} /></div>}
     </div>
   );
+  const reevaluation = reassessmentText(bilan).length > 0 && (
+    <ul className="text-xs text-[color:var(--text-muted)] space-y-0.5" data-testid="t1-coverage-reassessment">
+      {reassessmentText(bilan).map((l) => <li key={l} className="break-words">{l}</li>)}
+    </ul>
+  );
   if (anomalies.length === 0 && !anomaly) {
-    return <div className="rounded-xl border border-[color:var(--border-subtle)] p-4 space-y-2" data-testid="t1-completeness-panel">{recherche}</div>;
+    return <div className="rounded-xl border border-[color:var(--border-subtle)] p-4 space-y-2" data-testid="t1-completeness-panel">{recherche}{reevaluation}</div>;
   }
 
   return (
@@ -215,6 +289,10 @@ export function T1CompletenessPanel({ days = 7 }: { days?: number }) {
         {data.averageCoverage !== null && ` · couverture moyenne ${Math.round(data.averageCoverage * 100)} %`}
         {` · ${data.repairPasses} passe(s) de réparation ciblée`}
       </p>
+      {issuesText(data.byIssue, data.byIssueTruncated) && (
+        <p className="text-xs text-[color:var(--text-secondary)] break-words" data-testid="t1-completeness-issues">{issuesText(data.byIssue, data.byIssueTruncated)}</p>
+      )}
+      {reevaluation}
       {totalsText(data.totals).length > 0 && (
         <ul className="text-xs text-[color:var(--text-muted)] space-y-0.5" data-testid="t1-completeness-totals">
           {totalsText(data.totals).map((l) => <li key={l} className="break-words">{l}</li>)}
@@ -247,6 +325,12 @@ export function T1CompletenessPanel({ days = 7 }: { days?: number }) {
               {r.chunkCount > 0 && ` · ${r.chunkCount} lot(s) de pages`}
               {r.retryAttempts > 0 && ` · ${r.retryAttempts} reprise(s)`}
               <span className="text-[color:var(--text-muted)]"> — {r.anomalies.map((a) => ANOMALY_LABEL[a] ?? a).join(', ')}</span>
+              {r.issue && (
+                <span className="block break-words" data-testid="t1-coverage-issue">
+                  <span className="font-medium text-[color:var(--text-primary)]">État actuel : {r.issue.label}</span>
+                  {` · Motif : ${r.issue.reason} · Prochaine action : ${r.issue.nextAction}`}
+                </span>
+              )}
               {diagnosticsText(r) && <span className="block break-words text-[color:var(--text-muted)]">{diagnosticsText(r)}</span>}
               <button type="button" onClick={() => setDetail(detail === r.fileId ? null : r.fileId)}
                 className="mt-0.5 text-xs rounded border border-[color:var(--border-subtle)] px-2 py-0.5 text-[color:var(--text-secondary)]">
@@ -263,11 +347,12 @@ export function T1CompletenessPanel({ days = 7 }: { days?: number }) {
                     {f.pages && ` · Pages : ${f.pages.slice(0, 20).join(', ')}${f.pages.length > 20 ? '…' : ''}`}
                     {` · Prochaine action : ${f.nextAction}`}
                     {f.manualRetry && (
-                      <button type="button" onClick={() => relancer(r.fileId)} disabled={!!reprises[r.fileId] && reprises[r.fileId] !== 'échec de la reprise'}
+                      <button type="button" onClick={() => relancer(r.fileId)} disabled={!!reprises[r.fileId] && reprises[r.fileId] !== ECHEC_REPRISE}
                         className="ml-2 text-xs rounded border border-[color:var(--border-subtle)] px-2 py-0.5 text-[color:var(--text-secondary)] disabled:opacity-60">
                         {reprises[r.fileId] ?? 'Relancer l’analyse'}
                       </button>
                     )}
+                    {reprises[r.fileId] === ECHEC_REPRISE && refus[r.fileId] && <span className="ml-2 text-[color:var(--text-primary)]" role="alert">{refus[r.fileId]}</span>}
                   </span>
                 );
               })()}

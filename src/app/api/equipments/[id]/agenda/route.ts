@@ -51,6 +51,8 @@ export async function GET(
         originType: agendaItems.originType,
         originFieldKey: agendaItems.originFieldKey,
         noDeadline: agendaItems.noDeadline,
+        // Lot 114V (#742) : situation de l'événement (libellé d'un élément sans date).
+        situation: agendaItems.situation,
       })
       .from(agendaItems)
       .where(
@@ -72,6 +74,7 @@ export async function GET(
       originType: item.originType,
       // Lot 77A : tâche « Sans échéance » (mention dans la fiche équipement).
       noDeadline: item.noDeadline === true,
+      situation: item.situation ?? null,
       // Lot 109A : provenance (DIRECT / VIA_OPERATION) et Opérations de contexte.
       provenance: provenance.get(item.id)?.provenance ?? 'DIRECT',
       viaOperations: provenance.get(item.id)?.viaOperations ?? [],

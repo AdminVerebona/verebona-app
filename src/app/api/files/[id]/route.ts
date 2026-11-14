@@ -1,5 +1,4 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { emitBusinessEvent } from '@/services/verebona-assistant/events/business-events';
 import { db } from '@/db';
 import { assetFiles } from '@/db/schema';
 import { eq } from 'drizzle-orm';
@@ -133,28 +132,10 @@ export async function DELETE(
       return ApiErrors.resourceDeleted('File');
     }
 
-    // Soft delete
-    const now = new Date();
-    const [deletedFile] = await db
-      .update(assetFiles)
-      .set({
-        deletedAt: now,
-        updatedAt: now,
-      })
-      .where(eq(assetFiles.id, fileId))
-      .returning();
-
-    // Log success
-
-    // CDC Assistant §25.7 : événement métier (caches de l'assistant, §31.4).
-    if (file.accountId) await emitBusinessEvent({ type: 'DOCUMENT_DELETED', accountId: file.accountId, entityId: fileId });
-
-    // CDC 15 T3-03 : preuves du document retirées, biens touchés réconciliés
-    // (ne lève jamais).
-    if (file.accountId) {
-      const { onDocumentsDeleted } = await import('@/services/ai/evidence/document-evidence-lifecycle');
-      await onDocumentsDeleted({ accountId: file.accountId, userId, fileIds: [fileId] });
-    }
+    // Lot 114 (#753, W14) : suppression logique, événement DOCUMENT_DELETED et cycle de vie des preuves par la
+    // façade métier — la même que l'Assistant Verebona.
+    const { softDeleteDocument } = await import('@/services/documents/document-write.facade');
+    const deletedFile = await softDeleteDocument({ fileId, fileAccountId: file.accountId, userId });
 
     return NextResponse.json(
       {

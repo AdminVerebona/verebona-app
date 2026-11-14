@@ -15,6 +15,8 @@
  *   · non cochée et sans date : comportement antérieur (décision PO 72C).
  */
 
+import { UNDATED_GROUP_LABELS, undatedGroupOf } from './situation';
+
 export const NO_DEADLINE_LABEL = 'Sans échéance';
 export const NO_DEADLINE_HELP = 'Cette tâche n’a pas de date à respecter.';
 export const NO_DEADLINE_CONFIRM_TITLE = 'Retirer la date ?';
@@ -54,9 +56,15 @@ export function withDateEntry(s: AgendaDateFormState, patch: Partial<Omit<Agenda
   return formHasDate({ startDate: patch.startDate ?? '', endDate: patch.endDate ?? '' }) ? { ...next, noDeadline: false } : next;
 }
 
-/** Libellé d'un élément SANS date : « Sans échéance » s'il est déclaré tel, sinon « Sans date ». */
-export function undatedLabel(item: { noDeadline?: boolean | null }): string {
-  return item.noDeadline ? NO_DEADLINE_LABEL : UNDATED_LABEL;
+/**
+ * Libellé d'un élément SANS date : « Sans échéance » s'il est déclaré tel ;
+ * sinon, lot 114V (#742), selon sa situation — « À prévoir », « Date
+ * inconnue » (a eu lieu) ; non qualifié : « Sans date » (libellé antérieur).
+ */
+export function undatedLabel(item: { noDeadline?: boolean | null; situation?: string | null }): string {
+  if (item.noDeadline) return NO_DEADLINE_LABEL;
+  const groupe = undatedGroupOf(item);
+  return groupe === 'NON_QUALIFIE' ? UNDATED_LABEL : UNDATED_GROUP_LABELS[groupe];
 }
 
 // ══════════════════════════════════════════════════════════════════════════

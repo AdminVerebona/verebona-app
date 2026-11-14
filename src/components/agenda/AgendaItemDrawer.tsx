@@ -41,6 +41,8 @@ import { openDrawer } from "@/lib/drawers";
 import { useWriteGuard } from '@/contexts/WriteGuardContext';
 import { displayDocumentTitle } from '@/lib/documents/document-title-rules';
 import { NoDeadlineField } from "@/components/agenda/NoDeadlineField";
+import { SituationField } from "@/components/agenda/SituationField";
+import { SITUATION_FIELD_LABEL, situationLabel, situationOf, type AgendaSituation } from "@/lib/agenda/situation";
 import { NO_DEADLINE_HELP, NO_DEADLINE_LABEL, toggleNoDeadline, undatedLabel, withDateEntry, type AgendaDateFormState } from "@/lib/agenda/no-deadline";
 // Lot 84B (CDC v5 O-3, §14) : regroupement de l'élément — événement de référence, élément rattaché, élément seul.
 import { AgendaGroupingSection } from "@/components/agenda/AgendaGroupingSection";
@@ -124,6 +126,8 @@ export function AgendaItemDrawer({ item: itemProp, open, onClose, onMutated, onO
   const [editEndTime, setEditEndTime] = useState("");
   // Lot 77A : option « Sans échéance » (incompatible avec une date).
   const [editNoDeadline, setEditNoDeadline] = useState(false);
+  // Lot 114V (#742) : situation PERSISTÉE de l'élément (jamais réinitialisée au défaut) ; `null` : non qualifié.
+  const [editSituation, setEditSituation] = useState<AgendaSituation | null>(null);
   const editDates: AgendaDateFormState = {
     startDate: editStartDate, startTime: editStartTime, endDate: editEndDate, endTime: editEndTime, noDeadline: editNoDeadline,
   };
@@ -191,6 +195,7 @@ export function AgendaItemDrawer({ item: itemProp, open, onClose, onMutated, onO
       setEditEndDate(item.endDate ?? "");
       setEditEndTime(item.endTime ?? "");
       setEditNoDeadline(item.noDeadline === true);
+      setEditSituation(situationOf(item.situation));
       setEditAssetIds(item.assetLinks.map((l) => l.assetId));
       setEditSubstructureIds(item.roomLinks.map((l) => l.substructureId));
       setEditEquipmentIds(item.equipmentLinks.map((l) => l.equipmentId));
@@ -264,6 +269,7 @@ export function AgendaItemDrawer({ item: itemProp, open, onClose, onMutated, onO
     setEditEndDate(item.endDate ?? "");
     setEditEndTime(item.endTime ?? "");
     setEditNoDeadline(item.noDeadline === true);
+    setEditSituation(situationOf(item.situation));
     setEditAssetIds(item.assetLinks.map((l) => l.assetId));
     setEditSubstructureIds(item.roomLinks.map((l) => l.substructureId));
     setEditEquipmentIds(item.equipmentLinks.map((l) => l.equipmentId));
@@ -312,6 +318,8 @@ export function AgendaItemDrawer({ item: itemProp, open, onClose, onMutated, onO
         endDate: editEndDate || null,
         endTime: editEndTime || null,
         noDeadline: editNoDeadline,
+        // Lot 114V (#742) : transmise seulement si elle est choisie (un élément non qualifié n'est jamais reclassé d'office).
+        ...(editSituation ? { situation: editSituation } : {}),
         assetIds: editAssetIds,
         substructureIds: editSubstructureIds,
         equipmentIds: editEquipmentIds,
@@ -512,8 +520,9 @@ export function AgendaItemDrawer({ item: itemProp, open, onClose, onMutated, onO
                       <p className="text-xs text-[color:var(--text-muted)] mt-0.5">{NO_DEADLINE_HELP}</p>
                     </div>
                   ) : (
+                    // Lot 114V (#742) : « À prévoir » / « Date inconnue » selon la situation ; non qualifié : libellé antérieur.
                     <p className="text-sm text-[color:var(--text-muted)]">
-                      Sans date définie
+                      {situationOf(item.situation) ? undatedLabel(item) : "Sans date définie"}
                     </p>
                   )}
                 </div>
@@ -577,6 +586,29 @@ export function AgendaItemDrawer({ item: itemProp, open, onClose, onMutated, onO
               </div>
             )}
 
+            {/* Lot 114V (#742) : « Situation de l'événement » — lecture (valeur persistée) puis sélecteur en modification. */}
+            {mode === "view" ? (
+              situationLabel(situationOf(item.situation)) && (
+                <div data-testid="agenda-situation-lecture">
+                  <p className="vb-app-label mb-1">{SITUATION_FIELD_LABEL}</p>
+                  <p className="text-sm text-[color:var(--text-primary)]">{situationLabel(situationOf(item.situation))}</p>
+                </div>
+              )
+            ) : (
+              <SituationField
+                id={`agenda-${item.id}-situation`}
+                value={editSituation}
+                labelClassName="text-[13px] font-semibold text-[color:var(--text-muted)]"
+                onChange={(next) => {
+                  setEditSituation(next);
+                  // « Sans échéance » ne décrit qu'une tâche à prévoir : l'option est retirée (les dates sont gardées).
+                  if (next === "A_EU_LIEU" && editNoDeadline) setEditNoDeadline(false);
+                  setDirty(true);
+                  setSaveError(null);
+                }}
+              />
+            )}
+
             {/* Dates (edit mode) */}
             {mode === "edit" && (
               <div>
@@ -622,13 +654,13 @@ export function AgendaItemDrawer({ item: itemProp, open, onClose, onMutated, onO
                   </div>
                 </div>
                 {/* Lot 77A : « Sans échéance » — saisir une date la décoche ; la cocher retire la date (confirmation). */}
-                <div className="mt-3">
+                {editSituation !== "A_EU_LIEU" && <div className="mt-3">
                   <NoDeadlineField
                     id={`agenda-${item.id}-sans-echeance`}
                     state={editDates}
                     onChange={(checked) => applyEditDates(toggleNoDeadline(editDates, checked))}
                   />
-                </div>
+                </div>}
                 {temporalError && (
                   <p className="text-xs text-[color:var(--danger)] mt-1">{temporalError}</p>
                 )}

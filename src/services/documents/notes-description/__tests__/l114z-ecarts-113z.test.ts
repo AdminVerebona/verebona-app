@@ -121,7 +121,10 @@ describe('L114Z-U-T2 — E01 : tous les chemins de recherche T2 passent par le c
     expect(lire(CHEMINS[3])).toMatch(/coalesce\(e\.full_text,''\)/);
   });
   it('pas d’appel T1 ni d’index nouveau : le cache T2 est invalidé par l’événement métier existant', () => {
-    const put = lire('src/app/api/documents/[id]/route.ts');
+    // Lot 114 (#753) — règle déplacée : le corps de la modification d'un document vit dans la façade métier partagée
+    // avec l'Assistant ; la route l'appelle.
+    expect(lire('src/app/api/documents/[id]/route.ts')).toMatch(/updateDocumentForAccount\(/);
+    const put = lire('src/services/documents/document-write.facade.ts');
     expect(put).toMatch(/emitBusinessEvent\(\{ type: 'DOCUMENT_UPDATED'/);
     expect(put).toMatch(/\.filter\(\(k\) => k !== 'updatedAt' && k !== 'assetId' && k !== 'userEditedFields' && k !== 'titleSource' && k !== 'notes'\)/);
   });
@@ -274,7 +277,8 @@ describe('L114Z-U-VALID — E04 : validation du texte libre (plus de troncature 
     expect(lib.validateNotesInput('ok', 12)).toMatchObject({ ok: false, code: 'INVALID_INPUT' });
   });
   it('même message que la modification d’un document (lot 113Z)', () => {
-    expect(lire('src/app/api/documents/[id]/route.ts')).toContain('`Notes / Description : ${NOTES_MAX_LENGTH} caractères au plus`');
+    // Lot 114 (#753) — règle déplacée dans la façade métier (voir plus haut).
+    expect(lire('src/services/documents/document-write.facade.ts')).toContain('`Notes / Description : ${NOTES_MAX_LENGTH} caractères au plus`');
     expect(lib.NOTES_TOO_LONG_MESSAGE).toBe('Notes / Description : 5000 caractères au plus');
   });
 });
@@ -295,7 +299,9 @@ describe('L114Z-U-STATIC — routes : fail-closed, validation, erreur explicite'
     expect(creation.indexOf("error: 'NOTES_DESCRIPTION_UNAVAILABLE'")).toBeLessThan(creation.indexOf('.insert(assetTransmissions)'));
   });
   it('E04 : plus aucune troncature `.slice(0, NOTES_MAX_LENGTH)` à l’import ni au lien web', () => {
-    for (const f of ['src/app/api/files/confirm/route.ts', 'src/app/api/web-links/route.ts']) {
+    // Lot 114 (#753) — règle déplacée : la création d'un lien web vit dans la façade métier ; la route l'appelle.
+    expect(lire('src/app/api/web-links/route.ts')).toMatch(/createWebDocumentForAccount\(/);
+    for (const f of ['src/app/api/files/confirm/route.ts', 'src/services/documents/document-write.facade.ts']) {
       const s = lire(f);
       expect(s, f).not.toMatch(/\.slice\(0, NOTES_MAX_LENGTH\)/);
       expect(s, f).toMatch(/validateNotesInput\(notes, description\)/);
@@ -316,8 +322,9 @@ describe('L114Z-U-STATIC — routes : fail-closed, validation, erreur explicite'
       expect(s, f).toMatch(/NOTES_INTENT_UNAVAILABLE_MESSAGE \}, \{ status: 503 \}/);
     }
     // Lien web : création et reprise en main dans la même transaction (tout ou rien).
-    expect(lire('src/app/api/web-links/route.ts')).toMatch(/db\.transaction\(async \(tx\) => \{[\s\S]*markNotesUserOwned\(tx, accountId, crees\[0\]\.id\)/);
-    expect(lire('src/app/api/documents/[id]/route.ts')).toMatch(/markNotesUserOwned\(tx, accountIdEcriture, documentId\)/);
+    // (lot 114, #753 — règle déplacée dans la façade métier ; les routes gardent la réponse 503 vérifiée ci-dessus)
+    expect(lire('src/services/documents/document-write.facade.ts')).toMatch(/db\.transaction\(async \(tx\) => \{[\s\S]*markNotesUserOwned\(tx, accountId, crees\[0\]\.id\)/);
+    expect(lire('src/services/documents/document-write.facade.ts')).toMatch(/markNotesUserOwned\(tx, accountIdEcriture, documentId\)/);
   });
 });
 

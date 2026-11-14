@@ -36,15 +36,17 @@ const lookup = (items: Candidate[], vu: { q?: unknown } = {}): Lookup => ({
 });
 
 describe('L114B-A01 — W15 : la date est facultative', () => {
-  it('sans date : échéance préparée « Sans date », jamais une question obligatoire', async () => {
+  // Règle remplacée (carte #742) : une échéance créée sans date est annoncée « À prévoir » (situation
+  // enregistrée par défaut par le service de l'Agenda), et non plus « Sans date ».
+  it('sans date : échéance préparée « À prévoir », jamais une question obligatoire', async () => {
     const d = parseCommand('Ajoute un entretien pour la Clio', TODAY)!;
     expect(d).toMatchObject({ command: 'CREATE_AGENDA_ITEM', date: null, noDeadline: false, assetWords: ['clio'] });
     const a = await resolveDraft(d, input, lookup([]));
     expect(a).not.toHaveProperty('needInfo');
     expect(a).toMatchObject({ command: 'CREATE_AGENDA_ITEM', params: { startDate: null, assetIds: [7] } });
     expect((a as { params: object }).params).not.toHaveProperty('noDeadline');
-    expect((a as { preview: string }).preview).toBe('Créer l’échéance « Entretien » (sans date), rattachée à Clio.');
-    expect((a as { effects: string[] }).effects).toContain('Date : Sans date');
+    expect((a as { preview: string }).preview).toBe('Créer l’échéance « Entretien » (à prévoir), rattachée à Clio.');
+    expect((a as { effects: string[] }).effects).toContain('Date : À prévoir');
   });
 
   it('avec date : comportement inchangé', async () => {

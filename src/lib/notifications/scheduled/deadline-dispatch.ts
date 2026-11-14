@@ -66,6 +66,7 @@ export async function checkDeadlineReminderAtDispatch(
     `SELECT id, occurrence_nature AS nature FROM agenda_items
       WHERE id = ANY(string_to_array($1, ',')::int[]) AND account_id = $2
         AND start_date = $3::date AND home_category = 'action'
+        AND situation IS DISTINCT FROM 'A_EU_LIEU'
       ORDER BY id`,
     [ids.join(','), Number(row.account_id), date] as never[],
   )) as unknown as Array<{ id: number; nature: string | null }>;

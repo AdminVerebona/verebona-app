@@ -15,8 +15,12 @@
  *     analyse complète).
  */
 import type { T1CompletenessReport, T1QualityState } from './types';
+import { COVERAGE_ISSUES, coverageIssueOf, type CoverageIssue, type CoverageIssueInput, type CoverageIssueView } from './coverage-issue';
 
-const completenessFingerprint = (fileId: number) => `ai:t1-completeness:${fileId}`;
+/** Empreinte de l'anomalie de Supervision « analyse T1 incomplète » d'un document. */
+export const completenessFingerprint = (fileId: number) => `ai:t1-completeness:${fileId}`;
+/** Préfixes des alertes de Supervision T1 de couverture (réévaluation du stock, lot 114H). */
+export const T1_COVERAGE_ALERT_PREFIXES = ['ai:t1-completeness:', 'ai:t1-normalisation-loss:'] as const;
 
 /** Ligne de journal (exportée pour les tests) — compteurs seulement. */
 export function completenessLogLine(fileId: number, r: T1CompletenessReport): string {
@@ -59,7 +63,31 @@ export function completenessLogLine(fileId: number, r: T1CompletenessReport): st
   })}`;
 }
 
-const normalisationLossFingerprint = (fileId: number) => `ai:t1-normalisation-loss:${fileId}`;
+/** Empreinte de l'anomalie de Supervision « perte de normalisation non compensée » d'un document. */
+export const normalisationLossFingerprint = (fileId: number) => `ai:t1-normalisation-loss:${fileId}`;
+
+/**
+ * Signale en Supervision une analyse T1 DÉFINITIVEMENT incomplète (lacune réelle sans reprise admissible).
+ * Façade partagée (lot 114H, #775) : écriture d'une analyse ou d'une reprise, et réévaluation du stock.
+ */
+export async function reportT1IncompleteFinal(p: {
+  accountId: number; fileId: number; persisted: boolean;
+  report: Pick<T1CompletenessReport, 'qualityState' | 'anomalies' | 'coverageRatio' | 'failedUnits' | 'truncatedSectionsCount' | 'droppedFactsCount'>;
+}): Promise<number | null> {
+  const { reportAnomaly } = await import('@/services/admin/anomaly.service');
+  const r = p.report;
+  return reportAnomaly({
+    domain: 'ai',
+    fingerprint: completenessFingerprint(p.fileId),
+    title: `Analyse T1 incomplète (document ${p.fileId}) : ${r.anomalies.join(', ') || 'couverture incomplète'}`,
+    accountId: p.accountId,
+    detail: {
+      fileId: p.fileId, qualityState: r.qualityState, anomalies: r.anomalies, coverageRatio: r.coverageRatio,
+      failedUnits: r.failedUnits, truncatedSections: r.truncatedSectionsCount, droppedFacts: r.droppedFactsCount,
+      persisted: p.persisted,
+    },
+  });
+}
 
 export async function recordT1Completeness(p: {
   accountId: number; fileId: number; report: T1CompletenessReport; persisted: boolean;
@@ -69,17 +97,7 @@ export async function recordT1Completeness(p: {
   if (r.anomalies.length > 0) console.warn(line); else console.info(line);
   const { autoResolveAnomaly, reportAnomaly } = await import('@/services/admin/anomaly.service');
   if (r.qualityState === 'INCOMPLETE_FINAL') {
-    await reportAnomaly({
-      domain: 'ai',
-      fingerprint: completenessFingerprint(p.fileId),
-      title: `Analyse T1 incomplète (document ${p.fileId}) : ${r.anomalies.join(', ') || 'couverture incomplète'}`,
-      accountId: p.accountId,
-      detail: {
-        fileId: p.fileId, qualityState: r.qualityState, anomalies: r.anomalies, coverageRatio: r.coverageRatio,
-        failedUnits: r.failedUnits, truncatedSections: r.truncatedSectionsCount, droppedFacts: r.droppedFactsCount,
-        persisted: p.persisted,
-      },
-    });
+    await reportT1IncompleteFinal({ accountId: p.accountId, fileId: p.fileId, report: r, persisted: p.persisted });
   } else if (r.qualityState === 'COMPLETE' || r.qualityState === 'COMPLETE_WITH_UNRESOLVED' || r.qualityState === 'VERIFICATION_INCOMPLETE') {
     // D19 : une vérification incomplète n'est pas un échec définitif (pas de
     // Supervision) — elle reste visible dans BO › Complétude T1 avec sa reprise.
@@ -128,6 +146,8 @@ interface CompletenessDocumentRow {
   lastRetryResult: string | null;
   /** Lot 53 (D19) : reprise automatique programmée (null : aucune). */
   nextRetryAt?: string | null;
+  /** Lot 114H (#775, § 6) : issue ACTUELLE (recalculée à la lecture), motif vérifiable et prochaine action réelle. */
+  issue?: CoverageIssueView;
 }
 
 interface CompletenessOverview {
@@ -148,7 +168,17 @@ interface CompletenessOverview {
   totals?: T1DiagnosticsTotals;
   /** Couche A absente (migrations 0295-0297 non appliquées). */
   unavailable?: boolean;
+  /**
+   * Lot 114H (#775, § 6) : documents de la période par issue ACTUELLE (`coverage-issue.ts`) — résolue, réparation
+   * programmée, anomalie technique, plafond atteint, limite de vérification (sans action), non résolue actionnable.
+   * `byIssueTruncated` : période trop volumineuse, compteurs sur les `ISSUE_SCAN_CAP` documents les plus récents.
+   */
+  byIssue?: Record<CoverageIssue, number>;
+  byIssueTruncated?: boolean;
 }
+
+/** Documents au plus lus pour les compteurs par issue (lecture légère : codes et compteurs). */
+const ISSUE_SCAN_CAP = 5_000;
 
 /** Lot 54G (§6) — totaux des diagnostics de couverture réelle sur la période. */
 interface T1DiagnosticsTotals {
@@ -190,7 +220,7 @@ export async function getT1CompletenessOverview(opts: { days?: number; limit?: n
   if (!(await sourceLayerReady())) return { ...empty, unavailable: true };
   const { pgClient } = await import('@/db');
   const since = new Date(Date.now() - days * 86_400_000).toISOString();
-  const [agg, anomalies, rows, verifs, totaux] = await Promise.all([
+  const [agg, anomalies, rows, verifs, totaux, pourIssues] = await Promise.all([
     pgClient.unsafe(
       `SELECT quality_state AS q, COUNT(*)::int AS n, AVG(coverage_ratio)::float8 AS avg, SUM(repair_pass_count)::int AS repairs
          FROM document_extraction_coverage WHERE updated_at >= $1 GROUP BY quality_state`,
@@ -227,6 +257,14 @@ export async function getT1CompletenessOverview(opts: { days?: number; limit?: n
     ) as unknown as Promise<Array<{ v: string; n: number }>>,
     (pgClient.unsafe(diagnosticsTotalsSql(), [since] as never[]) as unknown as Promise<Array<Record<string, number>>>)
       .catch(() => [] as Array<Record<string, number>>),
+    // Lot 114H (#775) : état courant de chaque document de la période (codes et compteurs) pour les issues.
+    (pgClient.unsafe(
+      `SELECT c.quality_state AS "qualityState", c.anomalies, c.next_retry_at AS "nextRetryAt", c.retry_attempts AS "retryAttempts",
+              to_jsonb(c) ->> 'source_verification' AS "sourceVerification", to_jsonb(c) -> 'verification' AS verification,
+              to_jsonb(c) ->> 'last_retry_result' AS "lastRetryResult"
+         FROM document_extraction_coverage c WHERE c.updated_at >= $1 ORDER BY c.updated_at DESC LIMIT $2`,
+      [since, ISSUE_SCAN_CAP + 1] as never[],
+    ) as unknown as Promise<CoverageIssueInput[]>).catch(() => [] as CoverageIssueInput[]),
   ]);
   const out = { ...empty, byQuality: { ...empty.byQuality } };
   let total = 0;
@@ -240,11 +278,19 @@ export async function getT1CompletenessOverview(opts: { days?: number; limit?: n
   out.averageCoverage = total > 0 ? Math.round((somme / total) * 10_000) / 10_000 : null;
   for (const a of anomalies) out.byAnomaly[a.code] = Number(a.n);
   for (const v of verifs) out.bySourceVerification[v.v] = Number(v.n);
-  out.rows = rows.map((r) => ({ ...r, coverageRatio: Number(r.coverageRatio) }));
+  const { maxCompletenessRetries } = await import('./repository');
+  out.maxRetries = maxCompletenessRetries();
+  const objet = (v: unknown): Record<string, unknown> | null => (typeof v === 'string' ? JSON.parse(v) : v) as Record<string, unknown> | null;
+  out.rows = rows.map((r) => ({
+    ...r, coverageRatio: Number(r.coverageRatio),
+    issue: coverageIssueOf({ ...r, verification: objet(r.verification), maxRetries: out.maxRetries }),
+  }));
+  const byIssue = Object.fromEntries(COVERAGE_ISSUES.map((i) => [i, 0])) as Record<CoverageIssue, number>;
+  for (const r of pourIssues.slice(0, ISSUE_SCAN_CAP)) byIssue[coverageIssueOf({ ...r, verification: objet(r.verification), maxRetries: out.maxRetries }).issue]++;
+  out.byIssue = byIssue;
+  if (pourIssues.length > ISSUE_SCAN_CAP) out.byIssueTruncated = true;
   if (totaux[0]) {
     out.totals = Object.fromEntries(Object.entries(totaux[0]).map(([k, v]) => [k, Number(v ?? 0)])) as unknown as T1DiagnosticsTotals;
   }
-  const { maxCompletenessRetries } = await import('./repository');
-  out.maxRetries = maxCompletenessRetries();
   return out;
 }

@@ -1793,6 +1793,17 @@ export const agendaItems = pgTable('agenda_items', {
    * la retire dès qu'une date est posée. Jamais posée par un traitement.
    */
   noDeadline: boolean('no_deadline').notNull().default(false),
+  /**
+   * Lot 114V (#742, migration 1730) — « Situation de l'événement » :
+   * 'A_PREVOIR' | 'A_EU_LIEU' ; NULL = non qualifié (hérité, traitement).
+   * INTENTION de l'utilisateur, indépendante de la date ; ce n'est pas un
+   * statut (`manual_status` reste obsolète). Écrite par le chemin MANUEL
+   * seulement (`@/lib/agenda/situation`), jamais par T4 ni la projection.
+   */
+  situation: text('situation'),
+  /** Lot 114V — provenance : USER (choix explicite) | DEFAULT (création manuelle sans choix) | MIGRATION. */
+  situationSource: text('situation_source'),
+  situationDecidedAt: pgTimestamp('situation_decided_at', { withTimezone: true }),
   createdAt: tstz('created_at'),
   updatedAt: tstz('updated_at'),
 }, (table) => ({
@@ -1803,6 +1814,8 @@ export const agendaItems = pgTable('agenda_items', {
   homeCategoryIdx: index('agenda_items_home_category_idx').on(table.homeCategory),
   // Composite index for home summary query: accountId + startDate
   accountIdStartDateIdx: index('agenda_items_account_id_start_date_idx').on(table.accountId, table.startDate),
+  situationCheck: check('agenda_items_situation_check', sql`${table.situation} IS NULL OR ${table.situation} IN ('A_PREVOIR', 'A_EU_LIEU')`),
+  situationSourceCheck: check('agenda_items_situation_source_check', sql`${table.situationSource} IS NULL OR ${table.situationSource} IN ('USER', 'DEFAULT', 'MIGRATION')`),
   manualStatusCheck: check('agenda_items_manual_status_check', sql`${table.manualStatus} IS NULL OR ${table.manualStatus} IN ('realise', 'annule')`),
   originTypeCheck: check('agenda_items_origin_type_check', sql`${table.originType} IN ('manual','asset_field','qualified_document','deduced_rule','legacy_event_migration','legacy_deadline_migration')`),
   homeCategoryCheck: check('agenda_items_home_category_check', sql`${table.homeCategory} IS NULL OR ${table.homeCategory} IN ('action', 'information')`),
@@ -4081,7 +4094,8 @@ export const businessOperationSources = pgTable('business_operation_sources', {
   createdAt: tstz('created_at'),
 }, (t) => ({
   operationFk: foreignKey({ name: 'business_operation_sources_operation_fk', columns: [t.operationId, t.accountId], foreignColumns: [businessOperations.id, businessOperations.accountId] }).onDelete('cascade').onUpdate('cascade'),
-  kindChk: check('business_operation_sources_kind_chk', sql`${t.sourceKind} IN (${BO_SOURCE_KINDS_SQL})`),
+  // Lot 114O (#744, migration 1718) : nature USER_DECLARATION (déclaration enregistrée de l'utilisateur) — sources seulement.
+  kindChk: check('business_operation_sources_kind_chk', sql`${t.sourceKind} IN (${BO_SOURCE_KINDS_SQL}, 'USER_DECLARATION')`),
   entityKeyChk: check('business_operation_sources_entity_key_chk', sql`${t.sourceEntityKey} <> ''`),
   roleChk: check('business_operation_sources_role_chk', sql`${t.sourceRole} IS NULL OR ${t.sourceRole} IN ('QUOTE', 'ORDER', 'INVOICE', 'DEPOSIT_INVOICE', 'CREDIT_NOTE', 'REFUND_PROOF', 'PAYMENT_PROOF', 'CONTRACT_DOCUMENT', 'CLAIM_DOCUMENT', 'SALE_DOCUMENT', 'REPORT', 'OTHER_EVIDENCE')`),
   locatorChk: check('business_operation_sources_locator_chk', sql`jsonb_typeof(${t.locator}) = 'object'`),
@@ -4584,6 +4598,134 @@ export const businessOperationAttributeArbitrations = pgTable('business_operatio
   updatedAt: tstz('updated_at'),
 }, (t) => ({
   fpUidx: uniqueIndex('business_operation_attribute_arbitrations_fp_uidx').on(t.accountId, t.fingerprint),
+}));
+
+/**
+ * Lot 114O (Trello #744, CDC Opérations / Agenda V2.0 §4, §9, lot B, migration 1715) —
+ * GRAPHE CANONIQUE : association persistante entre deux Opérations DISTINCTES du
+ * même compte. Ni fusion, ni parent / enfant, ni allocation financière. Une
+ * ligne par paire non ordonnée (index unique LEAST / GREATEST posé par la
+ * migration, non exprimable ici) ; REJECTED = refus durable de l'utilisateur.
+ * Écrite par `services/business-operations/operation-write.facade.ts` seulement.
+ */
+export const businessOperationRelations = pgTable('business_operation_relations', {
+  id: bigserial('id', { mode: 'number' }).primaryKey(),
+  accountId: integer('account_id').notNull().references(() => accounts.id, { onDelete: 'cascade' }),
+  fromOperationId: bigint('from_operation_id', { mode: 'number' }).notNull().references(() => businessOperations.id, { onDelete: 'cascade' }),
+  toOperationId: bigint('to_operation_id', { mode: 'number' }).notNull().references(() => businessOperations.id, { onDelete: 'cascade' }),
+  nature: text('nature').notNull(),
+  state: text('state').notNull().default('ACTIVE'),
+  origin: text('origin').notNull(),
+  reasonCode: text('reason_code').notNull(),
+  evidence: jsonb('evidence').notNull().default([]),
+  evidenceFingerprint: text('evidence_fingerprint'),
+  version: integer('version').notNull().default(1),
+  validFrom: pgDate('valid_from', { mode: 'string' }),
+  validTo: pgDate('valid_to', { mode: 'string' }),
+  decidedByUserId: integer('decided_by_user_id').references(() => users.id, { onDelete: 'set null' }),
+  decidedAt: tstz('decided_at'),
+  endedAt: tstzOptional('ended_at'),
+  createdAt: tstz('created_at'),
+  updatedAt: tstz('updated_at'),
+}, (t) => ({
+  notSelfChk: check('business_operation_relations_not_self_chk', sql`${t.fromOperationId} <> ${t.toOperationId}`),
+  natureChk: check('business_operation_relations_nature_chk', sql`${t.nature} IN ('FINANCING', 'CLAIM_REPAIR', 'ASSOCIATED')`),
+  stateChk: check('business_operation_relations_state_chk', sql`${t.state} IN ('ACTIVE', 'REMOVED', 'REJECTED')`),
+  originChk: check('business_operation_relations_origin_chk', sql`${t.origin} IN ('USER', 'AI', 'MIGRATION', 'SYSTEM')`),
+  fromIdx: index('business_operation_relations_from_idx').on(t.accountId, t.fromOperationId, t.state),
+  toIdx: index('business_operation_relations_to_idx').on(t.accountId, t.toOperationId, t.state),
+}));
+
+/**
+ * Lot 114O (#744, CDC V2.0 §4, §12, lot B, migration 1716) — GRAPHE CANONIQUE :
+ * lien N↔N Opération ↔ élément d'Agenda, SANS rôle « principal ». Une ligne par
+ * couple. `legacyColumn` : lien aussi porté par la colonne historique
+ * `agenda_items.business_operation_id`, tenu à l'identique par le déclencheur
+ * `agenda_items_operation_link_sync` (compatibilité des écrans existants). Le
+ * refus de l'utilisateur reste dans `business_operation_match_decisions`.
+ */
+export const businessOperationAgendaLinks = pgTable('business_operation_agenda_links', {
+  id: bigserial('id', { mode: 'number' }).primaryKey(),
+  accountId: integer('account_id').notNull().references(() => accounts.id, { onDelete: 'cascade' }),
+  operationId: bigint('operation_id', { mode: 'number' }).notNull().references(() => businessOperations.id, { onDelete: 'cascade' }),
+  agendaItemId: integer('agenda_item_id').notNull().references(() => agendaItems.id, { onDelete: 'cascade' }),
+  state: text('state').notNull().default('ACTIVE'),
+  origin: text('origin').notNull(),
+  legacyColumn: boolean('legacy_column').notNull().default(false),
+  reasonCode: text('reason_code').notNull(),
+  evidence: jsonb('evidence').notNull().default([]),
+  version: integer('version').notNull().default(1),
+  decidedByUserId: integer('decided_by_user_id').references(() => users.id, { onDelete: 'set null' }),
+  decidedAt: tstz('decided_at'),
+  endedAt: tstzOptional('ended_at'),
+  createdAt: tstz('created_at'),
+  updatedAt: tstz('updated_at'),
+}, (t) => ({
+  stateChk: check('business_operation_agenda_links_state_chk', sql`${t.state} IN ('ACTIVE', 'REMOVED')`),
+  originChk: check('business_operation_agenda_links_origin_chk', sql`${t.origin} IN ('USER', 'AI', 'MIGRATION', 'SYSTEM')`),
+  pairUidx: uniqueIndex('business_operation_agenda_links_pair_uidx').on(t.operationId, t.agendaItemId),
+  itemIdx: index('business_operation_agenda_links_item_idx').on(t.accountId, t.agendaItemId, t.state),
+  operationIdx: index('business_operation_agenda_links_operation_idx').on(t.accountId, t.operationId, t.state),
+}));
+
+/**
+ * Lot 114O (#744, CDC V2.0 §4, §19, §20, lot B, migration 1717) — JOURNAL en ajout
+ * seul des commandes de la façade d'écriture du graphe (avant / après, auteur,
+ * preuves, clé d'idempotence et résultat rendu pour le rejeu). Identifiants
+ * d'objets sans clé étrangère : la trace survit au retrait de l'objet.
+ */
+export const businessOperationGraphHistory = pgTable('business_operation_graph_history', {
+  id: bigserial('id', { mode: 'number' }).primaryKey(),
+  accountId: integer('account_id').notNull().references(() => accounts.id, { onDelete: 'cascade' }),
+  relationKind: text('relation_kind').notNull(),
+  operationId: bigint('operation_id', { mode: 'number' }).notNull(),
+  otherOperationId: bigint('other_operation_id', { mode: 'number' }),
+  agendaItemId: integer('agenda_item_id'),
+  fileId: integer('file_id'),
+  supplierId: integer('supplier_id'),
+  action: text('action').notNull(),
+  origin: text('origin').notNull(),
+  channel: text('channel'),
+  actorUserId: integer('actor_user_id').references(() => users.id, { onDelete: 'set null' }),
+  reasonCode: text('reason_code').notNull(),
+  evidence: jsonb('evidence').notNull().default([]),
+  beforeJson: jsonb('before_json'),
+  afterJson: jsonb('after_json'),
+  command: text('command'),
+  idempotencyKey: text('idempotency_key'),
+  inputHash: text('input_hash'),
+  resultJson: jsonb('result_json'),
+  correlationId: text('correlation_id'),
+  createdAt: tstz('created_at'),
+}, (t) => ({
+  kindChk: check('business_operation_graph_history_kind_chk', sql`${t.relationKind} IN ('OPERATION_RELATION', 'AGENDA_LINK', 'DOCUMENT_LINK', 'SUPPLIER_LINK', 'OPERATION')`),
+  operationIdx: index('business_operation_graph_history_operation_idx').on(t.accountId, t.operationId, t.id),
+  idemIdx: index('business_operation_graph_history_idem_idx').on(t.accountId, t.idempotencyKey).where(sql`idempotency_key IS NOT NULL`),
+}));
+
+/**
+ * Lot 114O (#744, CDC V2.0 §5, §6, AC01, migration 1718) — DÉCLARATION de
+ * l'utilisateur, source durable d'un événement de référence (création ou
+ * correction) : texte utile borné, auteur, canal, horodatage, empreinte. Suit
+ * son Opération (clé composée, ON UPDATE CASCADE). Écrite par la façade
+ * `operation-write.facade.ts` seulement.
+ */
+export const businessOperationDeclarations = pgTable('business_operation_declarations', {
+  id: bigserial('id', { mode: 'number' }).primaryKey(),
+  accountId: integer('account_id').notNull().references(() => accounts.id, { onDelete: 'cascade' }),
+  operationId: bigint('operation_id', { mode: 'number' }),
+  purpose: text('purpose').notNull(),
+  channel: text('channel').notNull(),
+  authorUserId: integer('author_user_id').references(() => users.id, { onDelete: 'set null' }),
+  declarationText: text('declaration_text').notNull(),
+  fingerprint: text('fingerprint').notNull(),
+  declaredAt: tstz('declared_at'),
+  createdAt: tstz('created_at'),
+}, (t) => ({
+  operationFk: foreignKey({ name: 'business_operation_declarations_operation_fk', columns: [t.operationId, t.accountId], foreignColumns: [businessOperations.id, businessOperations.accountId] }).onDelete('cascade').onUpdate('cascade'),
+  purposeChk: check('business_operation_declarations_purpose_chk', sql`${t.purpose} IN ('CREATE', 'UPDATE')`),
+  operationIdx: index('business_operation_declarations_operation_idx').on(t.accountId, t.operationId),
+  fingerprintIdx: index('business_operation_declarations_fingerprint_idx').on(t.accountId, t.purpose, t.fingerprint),
 }));
 
 /**

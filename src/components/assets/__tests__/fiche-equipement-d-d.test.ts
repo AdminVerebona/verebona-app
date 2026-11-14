@@ -35,7 +35,9 @@ describe('fiche équipement : champs saisissables', () => {
   });
 
   it('route PUT : fiche validée puis écrite par recordManualEntityEdit (origine USER), comme les montants', () => {
-    const put = src('app', 'api', 'assets', '[id]', 'equipments', '[equipId]', 'route.ts');
+    // Lot 114 (#753, W04 – W09) : règle déplacée — le corps de la route est dans la façade métier `structure-write.facade` (partagée avec l'Assistant).
+    expect(src('app', 'api', 'assets', '[id]', 'equipments', '[equipId]', 'route.ts')).toContain('updateEquipmentForAccount');
+    const put = src('services', 'assets', 'structure-write.facade.ts');
     expect(put).toContain('parseEquipmentFiche(body.fiche)');
     expect(put).toMatch(/const after: Record<string, unknown> = \{ \.\.\.fiche\.values \};/);
     expect(put).toContain('recordManualEntityEdit');

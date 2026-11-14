@@ -47,6 +47,7 @@ import { sql, type SQL } from 'drizzle-orm';
 import { isBusinessOperationIntegrityError } from '../errors';
 import type { DbTx } from '../lock';
 import type { BusinessOperationStatus, BusinessOperationTypeCode, Confidence, OperationTypeInput, ReferenceKind } from '../model';
+import { USER_INVALIDATION_REASON } from '../model';
 import type { BusinessOperationRepository } from '../repository';
 import { withBusinessOperationWrite } from '../write';
 import { NON_BUSINESS_DOCUMENT_TYPES } from '@/services/ai/source-analysis/operation-candidates/prepare';
@@ -730,6 +731,9 @@ export async function reconsolidateOperation(
   const op = await repo.load(operationId, { allowInactive: true, allowMerged: true });
   if (!cards.reviewedOperations.includes(operationId)) cards.reviewedOperations.push(operationId);
   if (op.mergedIntoOperationId !== null) return;
+  // Lot 114O (#744, CDC Opérations / Agenda V2.0 §7, §19, AC47) : événement de référence invalidé PAR L'UTILISATEUR
+  // (« créé à tort », façade d'écriture) — T3 ne le réactive ni ne le recalcule ; seul l'utilisateur le restaure.
+  if (op.invalidatedAt !== null && op.invalidationReason === USER_INVALIDATION_REASON) return;
 
   const srcRows = await rows<Row>(tx, sql`
     SELECT id, source_kind, source_entity_key, locator->>'candidateKey' AS key, authority,

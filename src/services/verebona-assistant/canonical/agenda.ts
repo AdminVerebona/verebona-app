@@ -20,6 +20,7 @@ import { resolveEventSemantics } from '@/services/agenda/agenda-functional-key';
 import { agendaFunctionalColumnsReady } from '@/services/agenda/agenda-columns';
 import { HISTORICAL_FIELD_KEYS, historicalSql } from '@/services/agenda/agenda-historical';
 import { agendaDateRole, type AgendaDateRole } from '@/services/agenda/agenda-date-role';
+import { situationOf, type AgendaSituation } from '@/lib/agenda/situation';
 import type { RetrievedSource } from '../types/sources';
 
 /** Champs du registre dont l'effet agenda est un fait passé (D-14) — règle partagée (lot 47B). */
@@ -50,6 +51,12 @@ export interface CanonicalAgendaItem {
    * l'utilisateur (SCHEDULED_EVENT) — règle partagée avec la mascotte.
    */
   dateRole?: AgendaDateRole;
+  /**
+   * Lot 114V (#742) : « Situation de l'événement » qualifiée par l'utilisateur
+   * (`A_PREVOIR` / `A_EU_LIEU`) ; `null` / absente : non qualifiée. Renseignée
+   * par `getCanonicalAgendaItem` (élément ciblé).
+   */
+  situation?: AgendaSituation | null;
   assets: Array<{ assetId: number; name: string }>;
   sources: Array<{ fileId: number; title: string; role: string | null }>;
 }
@@ -64,13 +71,14 @@ export async function getCanonicalAgendaItem(accountId: number, itemId: number):
             i.occurrence_nature AS "occurrenceNature", i.home_category AS category, i.is_automatic AS "isAutomatic",
             i.is_automatic_modified AS "isAutomaticModified", i.origin_field_key AS "originFieldKey",
             i.origin_type AS "originType", to_jsonb(i) ->> 'projection_origin' AS "projectionOrigin",
+            to_jsonb(i) ->> 'situation' AS situation,
             ${col ? 'i.event_nature' : 'NULL::text'} AS "eventNature", ${col ? 'i.business_type' : 'NULL::text'} AS "businessType"
        FROM agenda_items i WHERE i.id = $1 AND i.account_id = $2`,
     [itemId, accountId] as never[],
   )) as unknown as Array<{
     id: number; title: string; date: string | null; occurrenceNature: string | null; category: string | null;
     isAutomatic: boolean; isAutomaticModified: boolean; originFieldKey: string | null; eventNature: string | null; businessType: string | null;
-    originType: string | null; projectionOrigin: string | null;
+    originType: string | null; projectionOrigin: string | null; situation: string | null;
   }>;
   if (!r) return null;
   const [assets, sources] = await Promise.all([
@@ -93,6 +101,7 @@ export async function getCanonicalAgendaItem(accountId: number, itemId: number):
       forecast: r.occurrenceNature === 'FORECAST', isAutomatic: r.isAutomatic, originType: r.originType ?? 'manual',
       projectionOrigin: r.projectionOrigin, eventNature: r.eventNature,
     }),
+    situation: situationOf(r.situation),
     assets, sources,
   };
 }

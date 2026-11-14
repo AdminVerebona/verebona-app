@@ -173,8 +173,9 @@ export const PUBLISHABILITY_CONTRACTS: Readonly<Record<string, PublishabilityCon
   // ── Agenda ─────────────────────────────────────────────────────────────
   'DATA-AGENDA-DATE': {
     family: 'AGENDA', decisions: 'FAMILY_DECISION', reason: 'DATE_KNOWN_OR_EVENT_SETTLED', atCreation: true,
-    // Date saisie ailleurs, ou « Sans échéance » choisi par l'utilisateur (lot 113P : plus de statut d'événement).
-    noLongerUseful: (a) => agendaItem(a, `i.start_date IS NOT NULL OR i.no_deadline = true`),
+    // Date saisie ailleurs, ou « Sans échéance » choisi par l'utilisateur (lot 113P : plus de statut d'événement),
+    // ou situation QUALIFIÉE (lot 114V, #742 : « À prévoir » / « A eu lieu » — l'absence de date n'est plus une question).
+    noLongerUseful: (a) => agendaItem(a, `i.start_date IS NOT NULL OR i.no_deadline = true OR i.situation IS NOT NULL`),
     cleanup: { by: PUBLISHABILITY_CHECK_ID, service: 'produceAgendaActions' },
   },
   'AGENDA-DUPLICATE': parProduction('AGENDA', 'COH-TODO-ORPHAN-CARDS'),

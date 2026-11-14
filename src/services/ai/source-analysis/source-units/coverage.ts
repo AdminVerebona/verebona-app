@@ -373,7 +373,10 @@ export interface ReportInput {
   chunkCount: number;
   /** Codes d'avertissement de l'analyse. */
   warningCodes: readonly string[];
-  /** Une nouvelle tentative automatique reste-t-elle permise (plafond de reprises) ? */
+  /**
+   * Une reprise automatique reste-t-elle ADMISSIBLE ? Lot 114H (#775) : valeur rendue par la règle unique
+   * (`retry-policy.ts`, `decideRetry().automatic`) — toutes les bornes, pas le seul plafond de reprises.
+   */
   retryAllowed: boolean;
   /**
    * Lot 49B (DEV-01) : vérification de la source. Absente : non contrôlée
@@ -421,16 +424,30 @@ export function buildCompletenessReport(units: readonly CoveredSourceUnit[], p: 
   let quality: T1QualityState;
   if (failed > 0 || p.truncatedSectionsCount > 0) {
     quality = p.truncatedSectionsCount === 0 && retryableFailures && p.retryAllowed ? 'INCOMPLETE_RETRYABLE' : 'INCOMPLETE_FINAL';
-  } else if (pending > 0 || missing > 0) {
+  } else if ((pending > 0 || missing > 0) && p.retryAllowed) {
     // Lecture ou réparation encore nécessaire et réalisable (reprise programmée).
     quality = 'INCOMPLETE_RETRYABLE';
+  } else if (missing > 0) {
+    // ════════════════════════════════════════════════════════════════════
+    // Lot 114H (Trello #775, P1-A) — règle remplacée : une page manquante ou
+    // une unité en attente rendait INCOMPLETE_RETRYABLE même quand plus aucune
+    // reprise n'était permise (`retryAllowed = false`), d'où une reprise
+    // reprogrammée sans fin. Sans reprise admissible (`retry-policy.ts`) :
+    //   · page manquante = lacune RÉELLE → INCOMPLETE_FINAL, jamais COMPLETE ;
+    //   · unités seulement en attente → l'état est celui des branches
+    //     suivantes (vérification incomplète, ou part non structurée
+    //     conservée) : elles restent non résolues, donc jamais COMPLETE.
+    // ════════════════════════════════════════════════════════════════════
+    quality = 'INCOMPLETE_FINAL';
   } else if (nonVerifiee) {
     // Lot 53 (retour PO D19) : couverture documentaire NON VÉRIFIABLE — jamais
     // « complète », même avec des points non résolus : vérification incomplète.
     quality = 'VERIFICATION_INCOMPLETE';
   } else if (unresolved > 0 || uncertain > 0 || dropped > 0 || pertes > 0 || nonInterpretes > 0
     // Lot 54G (point 5) : relecture du fichier ou réparation encore active — jamais COMPLETE.
-    || etat('NEEDS_SOURCE') > 0 || etat('ATTEMPTED_FAILED') > 0 || tablesIncertains > 0) {
+    || etat('NEEDS_SOURCE') > 0 || etat('ATTEMPTED_FAILED') > 0 || tablesIncertains > 0
+    // Lot 114H (#775) : unité en attente sans reprise admissible — travail non fait, jamais COMPLETE.
+    || pending > 0) {
     quality = 'COMPLETE_WITH_UNRESOLVED';
   } else {
     quality = 'COMPLETE';
@@ -445,7 +462,8 @@ export function buildCompletenessReport(units: readonly CoveredSourceUnit[], p: 
   if (v && (v.reason === 'source_unreadable' || v.reason === 'pdf_unreadable')) anomalies.add('SOURCE_UNREADABLE');
   else if (v && (v.unverified.length > 0 || v.status === 'UNVERIFIABLE')) anomalies.add('PAGE_UNVERIFIED');
   if (missing > 0) anomalies.add('PAGE_MISSING');
-  if (pending > 0) anomalies.add('REPAIR_PENDING');
+  // Lot 114H (#775) : « réparation en attente » n'est annoncée que si une reprise reste admissible.
+  if (pending > 0 && quality === 'INCOMPLETE_RETRYABLE') anomalies.add('REPAIR_PENDING');
   if (exhausted > 0) anomalies.add('REPAIR_EXHAUSTED');
   if (pertes > 0) anomalies.add('NORMALISATION_LOSS');
   if (quality === 'VERIFICATION_INCOMPLETE') anomalies.add('COVERAGE_UNVERIFIED');

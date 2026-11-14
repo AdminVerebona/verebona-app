@@ -234,7 +234,8 @@ describe('L86E-U-06 — type affiché = type enregistré (une seule correspondan
   it('Mes documents, équipement : même libellé ; route PUT : code V1 facultatif et jamais réécrit', () => {
     expect(read('src/components/documents/v2/DocumentsByRubric.tsx')).toMatch(/documentTypeCode: doc\.documentTypeCode \?\? null/);
     expect(read('src/app/api/equipments/[id]/documents/route.ts')).toMatch(/documentTypeLabel: documentTypeDisplayLabel\(doc\.documentTypeCode\)/);
-    const route = read('src/app/api/documents/[id]/route.ts');
+    // Lot 114 (#753, W10 / W12 / W14) : règle déplacée — la logique de la route est dans la façade métier `document-write.facade` (partagée avec l'Assistant).
+    const route = read('src/services/documents/document-write.facade.ts');
     expect(route).toMatch(/const typeModifie = documentType !== undefined && documentType !== null && documentType !== oldDoc\.documentType/);
     expect(route).toMatch(/\.\.\.\(typeModifie \? \{ documentType \} : \{\}\)/);
   });

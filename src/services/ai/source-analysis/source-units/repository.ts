@@ -26,8 +26,8 @@ import { documentTitleJsonSql, withDocumentTitles } from '@/lib/documents/docume
 import { missingFromPresenceFlags } from '@/lib/schema-readiness-log';
 import { cachedSchemaProbe } from '../../telemetry/trace-schema';
 import { wordStartPattern } from '@/lib/search/match-engine';
-import { needsSourceRetryDue, verificationAutoRetryDue } from './verification-followup';
-import type { CoverageStatus, SourceLayer, SourceUnitKind, T1CompletenessReport, UnresolvedFactRecord } from './types';
+import { completenessMaxRetries, retryLimits, settleLayerRetry } from './retry-policy';
+import type { CoverageStatus, SourceLayer, SourceUnitKind, T1CompletenessReport, T1CoverageDiagnostics, UnresolvedFactRecord } from './types';
 
 type Tx = { unsafe: (q: string, p?: never[]) => Promise<unknown> };
 const json = (v: unknown) => JSON.stringify(v ?? null);
@@ -83,11 +83,12 @@ async function layerDiagnosticsReady(): Promise<boolean> {
   return ready;
 }
 
-/** Reprises automatiques d'un document INCOMPLETE_RETRYABLE (`T1_COMPLETENESS_MAX_RETRIES`, 2 par défaut, 0 à 5). */
+/**
+ * Reprises automatiques d'un document INCOMPLETE_RETRYABLE (`T1_COMPLETENESS_MAX_RETRIES`, 2 par défaut, 0 à 5).
+ * Lot 114H (#775) : lue par la règle unique des reprises (`retry-policy.ts`) — une seule définition.
+ */
 export function maxCompletenessRetries(env: Record<string, string | undefined> = process.env): number {
-  const v = env.T1_COMPLETENESS_MAX_RETRIES;
-  const n = Number(v);
-  return v !== undefined && v.trim() !== '' && Number.isFinite(n) ? Math.min(5, Math.max(0, Math.trunc(n))) : 2;
+  return completenessMaxRetries(env);
 }
 
 /** Lignes d'insertion envoyées en JSON (une requête par paquet). */
@@ -106,21 +107,47 @@ export async function writeSourceLayer(tx: Tx, p: {
   lastError?: string | null;
   /** Lot 49B : résultat de la reprise automatique en cours (BO « dernière reprise »). */
   retryResult?: string | null;
+  /** Lot 114H (#775) : environnement des bornes de reprise (défaut : celui du processus) — même source que l'appelant. */
+  env?: Record<string, string | undefined>;
 }): Promise<void> {
-  const { layer } = p;
   let retryAttempts = p.retryAttempts ?? 0;
+  type AvecContinuation = T1CoverageDiagnostics & { continuationRuns?: number };
+  let continuationRuns = Number((p.layer.report.diagnostics as AvecContinuation | undefined)?.continuationRuns ?? 0);
   if ((p.origin ?? 'ANALYSIS') === 'ANALYSIS') {
     // Les reprises consommées survivent à une nouvelle analyse (une lacune de
     // pages repasse par la file T1) : jamais de boucle analyse ↔ reprise.
     const prev = (await tx.unsafe(
-      `SELECT retry_attempts FROM document_extraction_coverage WHERE file_id = $1`, [p.fileId] as never[],
-    )) as Array<{ retry_attempts: number }>;
+      `SELECT retry_attempts, to_jsonb(c) -> 'verification' ->> 'continuationRuns' AS runs
+         FROM document_extraction_coverage c WHERE c.file_id = $1`, [p.fileId] as never[],
+    )) as Array<{ retry_attempts: number; runs?: string | null }>;
     retryAttempts = Number(prev[0]?.retry_attempts ?? 0);
-    if (layer.report.qualityState === 'INCOMPLETE_RETRYABLE' && retryAttempts >= maxCompletenessRetries()) {
-      layer.report.qualityState = 'INCOMPLETE_FINAL';
-      layer.retryable = false;
+    // Lot 114H (#775) : les passages de continuation déjà consommés survivent aussi à une nouvelle analyse.
+    continuationRuns = Math.max(continuationRuns, Number(prev[0]?.runs ?? 0) || 0);
+    if (continuationRuns > 0 && p.layer.report.diagnostics) {
+      (p.layer.report.diagnostics as AvecContinuation).continuationRuns = continuationRuns;
     }
   }
+  // ══════════════════════════════════════════════════════════════════════
+  // LOT 114H (Trello #775, P1-A) — GARDE FINALE DES REPRISES, TOUTES ORIGINES
+  //
+  // Règle remplacée : seule l'écriture d'une ANALYSE ramenait
+  // INCOMPLETE_RETRYABLE à INCOMPLETE_FINAL, et sur le seul plafond de
+  // reprises ; les écritures RETRY (reprise ciblée, réconciliation) pouvaient
+  // laisser « reprise programmée » sans reprise possible. La règle unique
+  // (`retry-policy.ts`) décide maintenant pour toute écriture : sans action
+  // automatique admissible, état final cohérent avec la cause, attentes
+  // levées, et AUCUN `next_retry_at` (y compris celui qu'un appelant aurait
+  // calculé). Mutation en place conservée (l'appelant relit `layer.report`).
+  // ══════════════════════════════════════════════════════════════════════
+  const regle = settleLayerRetry(p.layer, { retryAttempts, continuationRuns }, retryLimits(p.env));
+  if (regle.settled) {
+    p.layer.units = regle.layer.units;
+    p.layer.report.qualityState = regle.layer.report.qualityState;
+    p.layer.report.anomalies = regle.layer.report.anomalies;
+    if (regle.layer.report.diagnostics) p.layer.report.diagnostics = regle.layer.report.diagnostics;
+    p.layer.retryable = false;
+  }
+  const { layer } = p;
   // Lot 49B : état de réparation et diagnostics (colonnes 0329) si présents.
   const diagnostics = await layerDiagnosticsReady();
   const colonnes1665 = await coverageProvenanceReady();
@@ -214,13 +241,13 @@ export async function writeSourceLayer(tx: Tx, p: {
       r.uncertainUnits, r.failedUnits, r.factsCount, r.droppedFactsCount, r.truncatedSectionsCount, r.batchedSectionsCount,
       r.chunkCount, r.repairPassCount, r.coverageRatio, r.qualityState, r.anomalies, p.origin ?? 'ANALYSIS', layer.layerVersion,
       retryAttempts,
-      (p.nextRetryAt !== undefined ? p.nextRetryAt
-        : (r.qualityState === 'INCOMPLETE_RETRYABLE'
-          // Lot 53 (D19) : vérification incomplète pour une cause transitoire (source illisible) : relecture programmée.
-          || verificationAutoRetryDue({ qualityState: r.qualityState, verificationReason: verif?.verificationReason ?? null, retryAttempts, maxRetries: maxCompletenessRetries() })
-          // Lot 54G (point 2) : observation incertaine → relecture du fichier programmée (bornée).
-          || needsSourceRetryDue({ needsSourceUnits: verif?.needsSourceUnits ?? 0, retryAttempts, maxRetries: maxCompletenessRetries() })
-          ? new Date(Date.now() + 15 * 60_000) : null))?.toISOString() ?? null,
+      // Lot 114H (#775) : une échéance n'est écrite QUE si la règle unique admet une action automatique —
+      // lacune réparable, source momentanément illisible (lot 53, D19), relecture du fichier (lot 54G).
+      // Une échéance DEMANDÉE par l'appelant (réparation IA optionnelle de la reprise historique) n'est gardée que
+      // si une reprise consommant une tentative reste possible (`manual`) : toujours bornée par le plafond.
+      (p.nextRetryAt !== undefined
+        ? (p.nextRetryAt !== null && (regle.decision.automatic || regle.decision.manual) ? p.nextRetryAt : null)
+        : regle.decision.automatic ? new Date(Date.now() + 15 * 60_000) : null)?.toISOString() ?? null,
       p.lastError ?? null,
     ] as never[],
   );

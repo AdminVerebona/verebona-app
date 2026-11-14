@@ -13,6 +13,7 @@ import { buildCompletenessReport, type ReportInput } from '../coverage';
 import { verificationNotApplicable, verificationUnverifiable, verifyNonPdf } from '../source-verification';
 import { verificationAutoRetryDue, verificationFollowup } from '../verification-followup';
 import { T1_COMPLETENESS_ANOMALIES, T1_QUALITY_STATES } from '../types';
+import { decideRetry, retryFactsOf, retryLimits } from '../retry-policy';
 
 const base: ReportInput = {
   factsCount: 3, unresolvedFacts: [], truncatedSectionsCount: 0, batchedSectionsCount: 0, repairPassCount: 0, chunkCount: 0,
@@ -69,7 +70,18 @@ describe('PO-D19 — couverture non vérifiable : jamais « complète »', () =>
     const auto = verificationFollowup({ ...illisible, sourceVerification: 'UNVERIFIABLE', retryAttempts: 0, retryScheduled: true })!;
     expect(auto).toMatchObject({ autoRetry: true, nextAction: 'Relecture automatique du fichier programmée.' });
     // Écriture : relecture programmée par défaut ; reprise : relecture du fichier ou contrôle manuel tracé.
-    expect(lire('src/services/ai/source-analysis/source-units/repository.ts')).toMatch(/verificationAutoRetryDue\(\{ qualityState: r\.qualityState/);
+    // Règle remplacée (carte #775, lot 114H) : l'écriture ne recalcule plus elle-même « relecture due » ; elle n'écrit
+    // une échéance que si la règle unique des reprises (`retry-policy.ts`) admet une action automatique — dont la
+    // relecture d'une source momentanément illisible, vérifiée ci-dessous sur la règle elle-même.
+    const depot = lire('src/services/ai/source-analysis/source-units/repository.ts');
+    expect(depot).toMatch(/settleLayerRetry\(p\.layer/);
+    expect(depot).toMatch(/regle\.decision\.automatic \? new Date\(Date\.now\(\) \+ 15 \* 60_000\) : null/);
+    const limites = retryLimits({});
+    const transitoire = retryFactsOf([], { qualityState: 'VERIFICATION_INCOMPLETE', verificationReason: 'source_unreadable', pagesMissing: [] }, limites);
+    expect(decideRetry(transitoire, { retryAttempts: 0, continuationRuns: 0 }, limites)).toMatchObject({ automatic: true, actions: ['REQUEUE_T1'] });
+    expect(decideRetry(transitoire, { retryAttempts: 2, continuationRuns: 0 }, limites)).toMatchObject({ automatic: false, blocked: 'RETRY_CAP_REACHED' });
+    const image = retryFactsOf([], { qualityState: 'VERIFICATION_INCOMPLETE', verificationReason: 'image_not_checkable', pagesMissing: [] }, limites);
+    expect(decideRetry(image, { retryAttempts: 0, continuationRuns: 0 }, limites)).toMatchObject({ automatic: false, blocked: 'NOTHING_TO_RETRY' });
     const jobs = lire('src/services/ai/source-analysis/source-units/jobs.ts');
     expect(jobs).toContain("p.qualityState === 'VERIFICATION_INCOMPLETE'");
     expect(jobs).toContain("last_retry_result = 'MANUAL_CHECK_REQUIRED'");

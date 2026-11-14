@@ -48,7 +48,6 @@ describe('O1-01 vocabulaire fermé : code = contraintes SQL (C1.1, C20)', () => 
   it.each([
     ['business_operation_types_code_chk', BUSINESS_OPERATION_TYPE_CODES],
     ['business_operations_status_chk', BUSINESS_OPERATION_STATUSES],
-    ['business_operation_sources_kind_chk', SOURCE_KINDS],
     ['business_operation_sources_role_chk', SOURCE_ROLES],
     ['business_operation_sources_authority_chk', AUTHORITIES],
     ['business_operation_sources_match_method_chk', MATCH_METHODS],
@@ -58,9 +57,25 @@ describe('O1-01 vocabulaire fermé : code = contraintes SQL (C1.1, C20)', () => 
     ['business_operation_contract_details_periodicity_chk', CONTRACT_PERIODICITIES],
     ['business_operation_claim_details_status_chk', CLAIM_FILE_STATUSES],
     ['document_operation_candidates_type_hint_chk', BUSINESS_OPERATION_TYPE_CODES],
-    ['business_operation_match_decisions_kind_chk', SOURCE_KINDS],
   ] as const)('%s', (nom, attendu) => {
     expect(valeursCheck(SQL_O1, nom)).toEqual([...attendu]);
+  });
+
+  // RÈGLE REMPLACÉE (carte #744, CDC Opérations / Agenda V2.0 §5, §6, AC01 — lot 114O). L'ancienne règle « natures de source =
+  // liste de la migration 0316, identique pour les sources et pour les décisions » est remplacée : la nature USER_DECLARATION
+  // (déclaration enregistrée de l'utilisateur, fondement durable d'un événement de référence sans document) s'ajoute aux
+  // SOURCES par la migration 1718, qui élargit la contrainte sans retirer aucune valeur. Les décisions de rapprochement
+  // gardent la liste d'origine (une déclaration n'est jamais l'objet d'une décision de rapprochement).
+  it('business_operation_sources_kind_chk (remplacée, #744) : liste de 0316 + USER_DECLARATION (migration 1718), aucune valeur retirée', () => {
+    const origine = valeursCheck(SQL_O1, 'business_operation_sources_kind_chk');
+    expect([...SOURCE_KINDS]).toEqual([...origine, 'USER_DECLARATION']);
+    const m1718 = lire('1718_l114o_declarations_evenements_reference.sql');
+    const elargie = /ADD CONSTRAINT business_operation_sources_kind_chk\s+CHECK \(source_kind IN \(([^)]*)\)\)/.exec(m1718);
+    expect(elargie).not.toBeNull();
+    expect([...elargie![1].matchAll(/'([^']+)'/g)].map((x) => x[1])).toEqual([...SOURCE_KINDS]);
+  });
+  it('business_operation_match_decisions_kind_chk (remplacée, #744) : liste d’origine, sans USER_DECLARATION', () => {
+    expect(valeursCheck(SQL_O1, 'business_operation_match_decisions_kind_chk')).toEqual(SOURCE_KINDS.filter((k) => k !== 'USER_DECLARATION'));
   });
 
   it('ACC-006 / C27 : 7 types, seed SQL identique au référentiel du code (libellés, descriptions)', () => {

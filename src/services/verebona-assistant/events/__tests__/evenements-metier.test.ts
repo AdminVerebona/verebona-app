@@ -114,8 +114,9 @@ describe('points d’émission branchés (§25.7)', () => {
     // DOCUMENT_ANALYSIS_COMPLETED n'y était publié que par `emitDocumentAnalyzed`, SANS AUCUN appelant
     // (code mort) : aucune publication réelle n'existait — point ouvert signalé au rapport du lot 82B.
     ['src/app/api/assets/route.ts', 'ASSET_UPDATED'],
-    ['src/app/api/documents/[id]/route.ts', 'DOCUMENT_UPDATED'],
-    ['src/app/api/files/[id]/route.ts', 'DOCUMENT_DELETED'],
+    // Lot 114 (#753, W10 / W12 / W14) : règle déplacée — la logique de la route est dans la façade métier `document-write.facade` (partagée avec l'Assistant).
+    ['src/services/documents/document-write.facade.ts', 'DOCUMENT_UPDATED'],
+    ['src/services/documents/document-write.facade.ts', 'DOCUMENT_DELETED'],
     ['src/services/agenda/write-agenda-item.ts', 'AGENDA_ITEM_CREATED'],
     ['src/app/api/agenda/[id]/route.ts', 'AGENDA_ITEM_UPDATED'],
     ['src/app/api/agenda/[id]/route.ts', 'AGENDA_ITEM_DELETED'],

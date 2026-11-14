@@ -55,7 +55,8 @@ describe('dérivation', () => {
 
   it('le résumé expose le bloc, sur les échéances actives du compte', () => {
     const svc = readFileSync(join(process.cwd(), 'src/services/home/HomeSummaryService.ts'), 'utf8');
-    expect(svc).toMatch(/upcoming: \{ items: upcoming \}/);
+    // Règle remplacée (carte #742) : le bloc porte aussi le groupe « À prévoir » (événements ouverts sans date).
+    expect(svc).toMatch(/upcoming: \{ items: upcoming, toPlan \}/);
     // #715 : plus de filtre sur un statut d'événement.
     expect(svc).toMatch(/eq\(agendaItems\.accountId, accountId\)/);
     expect(svc).not.toMatch(/agendaItems\.manualStatus/);

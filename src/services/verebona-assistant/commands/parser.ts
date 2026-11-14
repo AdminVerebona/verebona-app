@@ -58,6 +58,60 @@ export type CommandDraft =
       assetWords: string[];
       assetFromContext: boolean;
     }
+  | {
+      command: 'CREATE_SUPPLIER';
+      /** Nom du fournisseur, ou null s'il n'a pas été donné (il est alors demandé). */
+      name: string | null;
+      phone: string | null;
+      email: string | null;
+      website: string | null;
+    }
+  | {
+      command: 'UPDATE_SUPPLIER';
+      /** Mots du nom du fournisseur visé. */
+      supplierWords: string[];
+      field: 'name' | 'phone' | 'email' | 'website';
+      /** Nouvelle valeur ; null avec `clear` = effacement demandé ; null sans `clear` = valeur non comprise. */
+      value: string | null;
+      clear: boolean;
+    }
+  | { command: 'ARCHIVE_SUPPLIER'; supplierWords: string[] }
+  | {
+      command: 'CREATE_WEB_DOCUMENT';
+      /** Lien http(s) tel qu'écrit, ou null s'il manque. */
+      url: string | null;
+      /** Titre donné au lien, ou null (il est alors demandé). */
+      title: string | null;
+      assetWords: string[];
+      assetFromContext: boolean;
+    }
+  | ({
+      command: 'UPDATE_DOCUMENT';
+      field: 'title' | 'date' | 'notes';
+      /** Nouvelle valeur ; null avec `clear` = effacement ; null sans `clear` = valeur non comprise. */
+      value: string | null;
+      clear: boolean;
+    } & DocumentTargetDraft)
+  | ({ command: 'DELETE_DOCUMENT' } & DocumentTargetDraft)
+  | ({
+      /** Pièce ou équipement d'un bien (lot 114, W04 – W09). */
+      command: 'CREATE_ROOM' | 'CREATE_EQUIPMENT';
+      /** Nom donné, ou null (il est alors demandé). */
+      name: string | null;
+      /** Équipement : pièce où il se trouve (« dans la pièce Cuisine »), mots de son nom. */
+      roomWords: string[];
+    } & AssetScopeDraft)
+  | ({ command: 'RENAME_ROOM' | 'RENAME_EQUIPMENT'; targetWords: string[]; newName: string | null } & AssetScopeDraft)
+  | ({ command: 'DELETE_ROOM' | 'ARCHIVE_EQUIPMENT'; targetWords: string[] } & AssetScopeDraft)
+  /** Lot 114F (W02) — nouveau nom d'un bien, tel qu'écrit ; null : il est alors demandé. */
+  | ({ command: 'RENAME_ASSET'; newName: string | null } & AssetScopeDraft)
+  /** Lot 114F (W27) — effacer une caractéristique d'un bien : clé du champ (liste fermée : asset-fields.ts). */
+  | ({ command: 'CLEAR_ASSET_FIELD'; fieldKey: string } & AssetScopeDraft)
+  /**
+   * Lot 114F (W13) — rattacher un document à un bien, ou l'en détacher. `structureTarget` : la demande vise une
+   * pièce ou un équipement (non pris en charge depuis l'Assistant : c'est dit, rien n'est proposé).
+   */
+  | ({ command: 'UPDATE_DOCUMENT_TARGETS'; mode: 'attach' | 'detach'; structureTarget: boolean } & DocumentTargetDraft & AssetScopeDraft)
   | ({
       command: 'DELETE_AGENDA_ITEM';
       /** SERIES seulement si la série est demandée (« toute la série », « tous les… »). */
@@ -77,6 +131,12 @@ export type AgendaTargetDraft = {
   assetWords: string[];
   assetFromContext: boolean;
 };
+
+/** Lot 114 (#753, W12 / W14) — document désigné par les mots de son titre, ou « ce document » (document du fil). */
+export type DocumentTargetDraft = { documentWords: string[]; documentFromContext: boolean };
+
+/** Bien concerné par une commande de structure : mots de son nom, ou « ce bien » (bien du fil / de la page). */
+export type AssetScopeDraft = { assetWords: string[]; assetFromContext: boolean };
 
 /** Segment d'un message à plusieurs commandes. */
 interface CommandSegment {
@@ -328,13 +388,402 @@ function parseAssetDeletion(message: string): CommandDraft | null {
   return { command: 'DELETE_ASSET', assetWords: assetFromContext ? [] : mots, assetFromContext };
 }
 
+// ── Lot 114F (#753, W02 / W27) : renommer un bien, effacer une caractéristique ─
+
+/** Début du message utile : après les espaces et une demande polie (« peux-tu … »). */
+function debutUtile(brut: string): number {
+  const tete = brut.match(/^\s*/)![0].length;
+  const poli = brut.slice(tete).match(DEMANDE_POLIE)?.[0].length ?? 0;
+  return tete + poli + brut.slice(tete + poli).match(/^\s*/)![0].length;
+}
+
+const DET_BIEN = String.raw`(ma|mon|mes|la|le|l'|notre|votre|ce|cet|cette)`;
+
+/**
+ * « Renomme la Clio en Clio de Paul », « renomme ce bien en Maison de Lyon »,
+ * « change le nom de la Clio en Clio de Paul » (pure, testée). Jamais si ce
+ * qui est renommé est une échéance ou un autre objet (document, pièce,
+ * équipement, fournisseur : leurs analyseurs passent avant). Le nouveau nom
+ * est repris tel qu'écrit (accents, casse).
+ */
+function parseAssetRename(message: string): CommandDraft | null {
+  const nfc = message.normalize('NFC');
+  const brut = plain(nfc);
+  const decalage = debutUtile(brut);
+  const m = brut.slice(decalage);
+  const hit = m.match(new RegExp(String.raw`^(?:renomme|renommer)\s+${DET_BIEN}\s*(.*?)\s+en\s+(.+)$`))
+    ?? m.match(new RegExp(String.raw`^(?:change|changer|modifie|modifier|corrige|corriger|remplace|remplacer)\s+le\s+nom\s+(?:de\s+|du\s+|d')(?:${DET_BIEN}\s*)?(.*?)\s+(?:en|par)\s+(.+)$`));
+  if (!hit) return null;
+  const zone = hit[2].replace(/^bien\b\s*/, '');
+  if (AGENDA_TARGET.test(hit[2]) || AUTRE_OBJET.test(hit[2])) return null;
+  const assetFromContext = /^(ce|cet|cette)$/.test(hit[1] ?? '');
+  const mots = assetFromContext ? [] : motsUtiles(zone);
+  // Bien non désigné par un mot exploitable : pas une commande (jamais le bien de la page à la place).
+  if (!assetFromContext && mots.length === 0) return null;
+  const nom = sansGuillemets(origine(nfc, decalage + m.lastIndexOf(hit[3]))).replace(/\s+/g, ' ');
+  return { command: 'RENAME_ASSET', newName: nom ? nom.slice(0, 120) : null, assetWords: mots, assetFromContext };
+}
+
+/**
+ * « Efface la date d'achat de la Clio », « supprime le kilométrage de ce
+ * véhicule », « vide l'assureur de la maison » (pure, testée). Le champ —
+ * liste fermée du registre — suit IMMÉDIATEMENT le verbe ; le reste ne peut
+ * être que le bien. Passe AVANT la suppression d'un bien : « efface la date
+ * d'achat de la Clio » ne propose jamais de supprimer la Clio.
+ *
+ * Une formulation qui nomme aussi une échéance (« supprime le contrôle
+ * technique de la Clio », « l'échéance de l'assurance ») reste une demande
+ * sur l'Agenda, comme avant — sauf si elle dit « la date du … ».
+ */
+function parseAssetFieldClear(message: string): CommandDraft | null {
+  const nfc = message.normalize('NFC');
+  const brut = plain(nfc);
+  const decalage = debutUtile(brut);
+  const m = brut.slice(decalage);
+  const debut = m.match(/^(?:efface|effacer|supprime|supprimer|retire|retirer|enleve|enlever|vide|vider)\s+(?:(?:le|la|les|mon|ma|mes)\s+|l')/);
+  if (!debut) return null;
+  const hit = findAssetField(nfc);
+  if (!hit || hit.index !== decalage + debut[0].length) return null;
+  if (AGENDA_TARGET.test(hit.alias) && !hit.alias.startsWith('date')) return null;
+  const reste = m.slice(debut[0].length + hit.alias.length).replace(/[.!?\s]+$/, '').trim();
+  if (AUTRE_OBJET.test(reste)) return null;
+  if (!reste) return { command: 'CLEAR_ASSET_FIELD', fieldKey: hit.def.key, assetWords: [], assetFromContext: false };
+  const bien = reste.match(new RegExp(String.raw`^(?:pour\s+|sur\s+|de\s+|du\s+|d')(?:${DET_BIEN}\s*)?([a-z0-9][a-z0-9' -]*)$`));
+  if (!bien) return null;
+  const assetFromContext = /^(ce|cet|cette)$/.test(bien[1] ?? '');
+  const mots = assetFromContext ? [] : motsUtiles(bien[2]);
+  if (!assetFromContext && mots.length === 0) return null;
+  return { command: 'CLEAR_ASSET_FIELD', fieldKey: hit.def.key, assetWords: mots, assetFromContext };
+}
+
+// ── Lot 114 (#753, W18 – W20) : créer / modifier / archiver un fournisseur ─
+
+const FOURNISSEUR = /\b(fournisseur|prestataire)s?\b/;
+const TEL = /(?:\+33\s?|0)[1-9](?:[\s.-]?\d{2}){4}/;
+const MAIL = /[^\s@,;:«»"]+@[^\s@,;:«»"]+\.[a-z]{2,}/i;
+const SITE = /(?:https?:\/\/|www\.)[^\s,;«»"]+/i;
+const CHAMP_FOURNISSEUR: ReadonlyArray<{ re: RegExp; field: 'name' | 'phone' | 'email' | 'website' }> = [
+  { re: /^(?:numero de telephone|telephone|numero|portable|tel)\b/, field: 'phone' },
+  { re: /^(?:adresse e-mail|adresse email|adresse mail|e-mail|email|mail|courriel)\b/, field: 'email' },
+  { re: /^(?:site internet|site web|site)\b/, field: 'website' },
+  { re: /^nom\b/, field: 'name' },
+];
+/** Texte d'origine (accents, casse) entre deux positions du texte normalisé (mêmes longueurs en NFC). */
+const origine = (message: string, from: number, to?: number) => message.normalize('NFC').slice(from, to).trim();
+const motsNom = (s: string) => plain(s).split(/[^a-z0-9]+/).filter((w) => w.length >= 2 && !['le', 'la', 'les', 'du', 'de', 'des', 'mon', 'ma', 'ce', 'cet', 'cette'].includes(w));
+
+/**
+ * « Ajoute le fournisseur Plomberie Durand, téléphone 06 12 34 56 78 »,
+ * « change l'e-mail du fournisseur Durand en contact@durand.fr », « efface le
+ * téléphone du fournisseur Durand », « renomme le fournisseur Durand en Durand
+ * & Fils », « archive le fournisseur Durand » (pure, testée). Le nom et les
+ * valeurs sont repris tels qu'écrits ; les coordonnées bancaires ne se
+ * modifient jamais depuis l'Assistant.
+ */
+function parseSupplierCommand(message: string): CommandDraft | null {
+  const nfc = message.normalize('NFC');
+  const brut = plain(nfc);
+  const poli = brut.match(/^\s*/)![0].length + (brut.trimStart().match(DEMANDE_POLIE)?.[0].length ?? 0);
+  const decalage = poli + (brut.slice(poli).match(/^\s*/)![0].length);
+  const m = brut.slice(decalage);
+  if (!FOURNISSEUR.test(m)) return null;
+
+  // Créer.
+  const creer = m.match(/^(?:ajoute|ajouter|cree|creer|enregistre|enregistrer)\s+(?:un|une|le|la|mon|ce)\s+(?:nouveau\s+|nouvelle\s+)?(?:fournisseur|prestataire)\b\s*/);
+  if (creer) {
+    const reste = m.slice(creer[0].length);
+    const fin = reste.search(/\s*(?:,|;|\bavec\b|\btelephone\b|\btel\b|\bportable\b|\bnumero\b|\be-?mail\b|\bmail\b|\bcourriel\b|\bsite\b|\(|$)/);
+    let name = nomDonne(message);
+    if (!name) {
+      const zone = origine(nfc, decalage + creer[0].length, decalage + creer[0].length + (fin < 0 ? reste.length : fin));
+      name = zone.replace(/^(?:nommé|nommée|appelé|appelée)\s+/i, '').replace(/[\s.!?:]+$/, '').trim() || null;
+    }
+    // Une coordonnée n'est jamais prise pour un nom.
+    if (name && (TEL.test(name) || MAIL.test(name) || SITE.test(name))) name = null;
+    return {
+      command: 'CREATE_SUPPLIER', name: name ? name.slice(0, 200) : null,
+      phone: nfc.match(TEL)?.[0].trim() ?? null, email: nfc.match(MAIL)?.[0] ?? null, website: nfc.match(SITE)?.[0].replace(/[.)]+$/, '') ?? null,
+    };
+  }
+
+  // Renommer.
+  const renommer = m.match(/^(?:renomme|renommer)\s+(?:le|la|mon|ce)\s+(?:fournisseur|prestataire)\s+(.+?)\s+en\s+(.+)$/);
+  if (renommer) {
+    const debutValeur = decalage + m.lastIndexOf(renommer[2]);
+    const valeur = origine(nfc, debutValeur).replace(/^[«"“]\s*|\s*[»"”]?[\s.!?]*$/g, '');
+    return { command: 'UPDATE_SUPPLIER', supplierWords: motsNom(renommer[1]), field: 'name', value: valeur || null, clear: false };
+  }
+
+  // Modifier ou effacer une coordonnée.
+  const champ = m.match(/^(modifie|modifier|change|changer|mets|mettre|met|corrige|corriger|remplace|remplacer|actualise|actualiser|renseigne|renseigner|ajoute|ajouter|efface|effacer|supprime|supprimer|retire|retirer|enleve|enlever|vide|vider)\s+(?:le\s+|la\s+|l')\s*(.+?)\s+(?:du|de mon|de ma|de la|de l'|de)\s*(?:fournisseur|prestataire)\s+(.+)$/);
+  if (champ) {
+    const def = CHAMP_FOURNISSEUR.find((c) => c.re.test(champ[2]));
+    if (!def) return null;
+    const clear = /^(efface|effacer|supprime|supprimer|retire|retirer|enleve|enlever|vide|vider)$/.test(champ[1]);
+    const suite = champ[3];
+    if (clear) return { command: 'UPDATE_SUPPLIER', supplierWords: motsNom(suite), field: def.field, value: null, clear: true };
+    const motif = def.field === 'phone' ? TEL : def.field === 'email' ? MAIL : def.field === 'website' ? SITE : null;
+    if (motif) {
+      const v = nfc.match(motif);
+      const avant = v ? plain(nfc.slice(0, v.index)).slice(decalage + m.indexOf(suite)) : suite;
+      return {
+        command: 'UPDATE_SUPPLIER', field: def.field, clear: false,
+        supplierWords: motsNom(avant.replace(/\s*(?::|\ba\b|\ben\b|\bpar\b|\bau\b|=|\bavec\b)\s*$/, '')),
+        value: v ? v[0].trim().replace(/[.)]+$/, '') : null,
+      };
+    }
+    // Nom : « change le nom du fournisseur Durand en Durand & Fils ».
+    const sep = suite.match(/\s+(?:en|par|:)\s+/);
+    if (!sep || sep.index === undefined) return { command: 'UPDATE_SUPPLIER', supplierWords: motsNom(suite), field: 'name', value: null, clear: false };
+    const debutValeur = decalage + m.indexOf(suite) + sep.index + sep[0].length;
+    return {
+      command: 'UPDATE_SUPPLIER', supplierWords: motsNom(suite.slice(0, sep.index)), field: 'name', clear: false,
+      value: origine(nfc, debutValeur).replace(/^[«"“]\s*|\s*[»"”]?[\s.!?]*$/g, '') || null,
+    };
+  }
+
+  // Archiver (le retrait d'un fournisseur est un archivage : rien n'est supprimé).
+  const archiver = m.match(/^(?:archive|archiver|supprime|supprimer|retire|retirer|efface|effacer|enleve|enlever)\s+(?:definitivement\s+)?(?:le|la|mon|ma)\s+(?:fournisseur|prestataire)\s+(.+)$/);
+  if (archiver) {
+    const mots = motsNom(archiver[1].replace(/[.!?]+$/, ''));
+    return mots.length ? { command: 'ARCHIVE_SUPPLIER', supplierWords: mots } : null;
+  }
+  return null;
+}
+
+// ── Lot 114 (#753, W10 / W12 / W14) : lien web, modifier ou supprimer un document ─
+
+const DOC_NOM = String.raw`(?:document web|document|fichier|lien web|lien)`;
+const LIEN_HTTP = /https?:\/\/[^\s«»"<>]+/i;
+const motsDocument = (s: string) => plain(s).split(/[^a-z0-9]+/).filter((w) => w.length >= 2 && !['le', 'la', 'les', 'du', 'de', 'des', 'mon', 'ma', 'ce', 'cet', 'cette', 'document', 'fichier', 'lien', 'web', 'intitule', 'nomme', 'appele'].includes(w));
+const sansGuillemets = (s: string) => s.replace(/^[«"“]\s*|\s*[»"”]?[\s.!?]*$/g, '').trim();
+
+/**
+ * Date d'un DOCUMENT : sans année écrite, la dernière occurrence passée (ou aujourd'hui) — la date d'une pièce
+ * n'est pas dans le futur. L'aperçu affiche toujours la date complète avant confirmation.
+ */
+export function documentDateFr(valeur: string, today: string): string | null {
+  const d = parseDateFr(valeur, today);
+  if (!d || /\b\d{4}\b/.test(valeur) || /\/\d{2}\s*$/.test(valeur.trim()) || d <= today) return d;
+  return `${Number(d.slice(0, 4)) - 1}${d.slice(4)}`;
+}
+
+/** Cible « ce document » (fil) ou mots du titre. */
+function cibleDocument(zone: string, contexte: boolean): DocumentTargetDraft | null {
+  if (contexte) return { documentWords: [], documentFromContext: true };
+  const mots = motsDocument(zone.replace(/[.!?]+$/, ''));
+  return mots.length ? { documentWords: mots, documentFromContext: false } : null;
+}
+
+/**
+ * « Ajoute le lien https://… intitulé « Notice chaudière » pour la maison »,
+ * « renomme le document Facture EDF en Facture électricité mars », « change la
+ * date du document Facture EDF au 12 mars 2025 », « ajoute la note « payée »
+ * au document Facture EDF », « efface la note de ce document », « supprime le
+ * document Facture EDF » (pure, testée). Le lien n'est jamais ouvert ni lu.
+ */
+function parseDocumentCommand(message: string, today: string): CommandDraft | null {
+  const nfc = message.normalize('NFC');
+  const brut = plain(nfc);
+  const tete = brut.match(/^\s*/)![0].length;
+  const poli = brut.slice(tete).match(DEMANDE_POLIE)?.[0].length ?? 0;
+  const decalage = tete + poli + brut.slice(tete + poli).match(/^\s*/)![0].length;
+  const m = brut.slice(decalage);
+  const D = `(?:(le|la|ce|cet|cette|mon|ma)\\s+)${DOC_NOM}`;
+
+  // Lien web : le verbe de création est suivi d'un « lien » ou d'une adresse http(s).
+  const lien = m.match(/^(?:ajoute|ajouter|cree|creer|enregistre|enregistrer)\s+(?:(?:un|une|le|la|ce|cet|cette)\s+)?(?:lien web|lien|document web|site web|site|page web|page|adresse web|url)\b/)
+    ?? (LIEN_HTTP.test(nfc) ? m.match(/^(?:ajoute|ajouter|cree|creer|enregistre|enregistrer)\s+(?=https?:\/\/)/) : null);
+  if (lien) {
+    const url = nfc.match(LIEN_HTTP)?.[0].replace(/[.,;)]+$/, '') ?? null;
+    const sansUrl = url ? nfc.replace(url, ' ') : nfc;
+    const titre = nomDonne(sansUrl) ?? (() => {
+      const t = plain(sansUrl).match(/\b(?:sous le nom|avec le titre|avec le nom|comme titre|titre)\s*:?\s+/);
+      if (!t || t.index === undefined) return null;
+      return sansGuillemets(sansUrl.slice(t.index + t[0].length).split(/\s+(?:pour|sur)\s+(?:ma|mon|la|le|l'|ce|cet|cette)\b/i)[0]) || null;
+    })();
+    const sansTitre = titre ? plain(sansUrl).replace(plain(titre), ' ') : plain(sansUrl);
+    const pour = sansTitre.match(/\b(?:pour|sur)\s+(ma|mon|mes|la|le|l'|notre|ce|cet|cette)\s*([a-z0-9' -]+?)\s*[.!?]*\s*$/);
+    const contexte = !!pour && /^(ce|cet|cette)$/.test(pour[1]);
+    return {
+      command: 'CREATE_WEB_DOCUMENT', url, title: titre ? titre.slice(0, 200) : null,
+      assetWords: pour && !contexte ? motsUtiles(pour[2]) : [], assetFromContext: contexte,
+    };
+  }
+
+  // Renommer.
+  const renommer = m.match(new RegExp(`^(?:renomme|renommer)\\s+${D}\\s*(.*?)\\s+en\\s+(.+)$`));
+  if (renommer) {
+    const cible = cibleDocument(renommer[2], /^(ce|cet|cette)$/.test(renommer[1]));
+    if (!cible) return null;
+    const valeur = sansGuillemets(origine(nfc, decalage + m.lastIndexOf(renommer[3])));
+    return { command: 'UPDATE_DOCUMENT', field: 'title', value: valeur || null, clear: false, ...cible };
+  }
+
+  // Titre, date ou note d'un document.
+  const champ = m.match(new RegExp(`^(modifie|modifier|change|changer|mets|mettre|met|corrige|corriger|remplace|remplacer|actualise|actualiser|ajoute|ajouter|efface|effacer|supprime|supprimer|retire|retirer|enleve|enlever|vide|vider)\\s+(?:le\\s+|la\\s+|l'|une\\s+|un\\s+)(titre|nom|date|note|notes|commentaire|description)\\b\\s*(.*?)\\s*(?:(?:du|au)\\s+${DOC_NOM}|(?:de|a|sur|pour)\\s+${D})\\s*(.*)$`));
+  if (champ) {
+    const field = /^(titre|nom)$/.test(champ[2]) ? 'title' as const : champ[2] === 'date' ? 'date' as const : 'notes' as const;
+    const clear = /^(efface|effacer|supprime|supprimer|retire|retirer|enleve|enlever|vide|vider)$/.test(champ[1]);
+    const contexte = /^(ce|cet|cette)$/.test(champ[4] ?? '');
+    const apres = champ[5];
+    if (clear) {
+      const cible = cibleDocument(apres, contexte);
+      return cible && field !== 'title' ? { command: 'UPDATE_DOCUMENT', field, value: null, clear: true, ...cible } : null;
+    }
+    // Valeur placée AVANT la cible (« ajoute la note « payée » au document X ») ou APRÈS (« … du document X : payée »).
+    const debutApres = decalage + m.length - apres.length;
+    const sep = apres.match(field === 'date' ? /\s*(?::|\bau\b|\ba\b|\ben\b|\bpar\b)\s+(?=\S)/ : /\s*(?::|\ben\b|\bpar\b)\s+(?=\S)/);
+    const avantCible = champ[3].trim();
+    let zoneCible = apres;
+    let valeur: string | null = null;
+    if (avantCible) {
+      valeur = sansGuillemets(origine(nfc, decalage + m.indexOf(champ[3], champ[1].length), decalage + m.indexOf(champ[3], champ[1].length) + champ[3].length));
+    } else if (sep && sep.index !== undefined) {
+      zoneCible = apres.slice(0, sep.index);
+      valeur = sansGuillemets(origine(nfc, debutApres + sep.index + sep[0].length));
+    }
+    const cible = cibleDocument(zoneCible, contexte);
+    if (!cible) return null;
+    if (field === 'date') return { command: 'UPDATE_DOCUMENT', field, value: valeur ? documentDateFr(valeur, today) : null, clear: false, ...cible };
+    return { command: 'UPDATE_DOCUMENT', field, value: valeur || null, clear: false, ...cible };
+  }
+
+  // Lot 114F (W13) — rattacher à un bien / détacher d'un bien : le bien est le DERNIER complément de la phrase.
+  const lier = m.match(new RegExp(`^(rattache|rattacher|associe|associer|relie|relier|lie|lier|detache|detacher|dissocie|dissocier)\\s+${D}\\s*(.*)$`));
+  if (lier) {
+    const mode = /^(detache|detacher|dissocie|dissocier)$/.test(lier[1]) ? 'detach' : 'attach';
+    const sep = mode === 'attach' ? String.raw`(?:a\s+|au\s+)` : String.raw`(?:de\s+|du\s+|d')`;
+    const fin = ` ${lier[3].replace(/[.!?\s]+$/, '')}`.match(new RegExp(String.raw`^(.*)\s${sep}(?:${DET_BIEN}\s*)?([a-z0-9][a-z0-9' -]*)$`));
+    if (!fin) return null;
+    const cible = cibleDocument(fin[1], /^(ce|cet|cette)$/.test(lier[2]));
+    if (!cible) return null;
+    const structureTarget = /^(piece|equipement)\b/.test(fin[3]);
+    const assetFromContext = !structureTarget && /^(ce|cet|cette)$/.test(fin[2] ?? '');
+    const mots = structureTarget || assetFromContext ? [] : motsUtiles(fin[3]);
+    if (!structureTarget && !assetFromContext && mots.length === 0) return null;
+    return { command: 'UPDATE_DOCUMENT_TARGETS', mode, structureTarget, assetWords: mots, assetFromContext, ...cible };
+  }
+
+  // Supprimer.
+  const supprimer = m.match(new RegExp(`^(?:supprime|supprimer|efface|effacer|retire|retirer|enleve|enlever)\\s+(?:definitivement\\s+)?${D}\\s*(.*)$`));
+  if (supprimer) {
+    const cible = cibleDocument(supprimer[2], /^(ce|cet|cette)$/.test(supprimer[1]));
+    return cible ? { command: 'DELETE_DOCUMENT', ...cible } : null;
+  }
+  return null;
+}
+
+// ── Lot 114 (#753, W04 – W09) : pièces et équipements d'un bien ────────────
+
+/** « pièce jointe », « pièce d'identité », « pièce justificative » : des documents, jamais une pièce d'un logement. */
+const PIECE_DOCUMENT = /\bpieces?\s+(?:jointes?|justificatives?|d'identite|comptables?|detachees?|de rechange)\b/;
+/** Fin de phrase qui désigne le bien : « … de la maison », « … dans mon appartement », « … du garage », « … pour ce bien ». */
+const BIEN_FINAL = /^(.*)\s+(?:(?:dans|a|pour|de|sur)\s+(ma|mon|mes|la|le|l'|notre|ce|cet|cette)\s*|(?:du|au)\s+)([a-z0-9' -]+?)\s*[.!?]*\s*$/;
+
+/** Sépare « <nom> de la maison » en nom et bien (dernier complément introduit par un article). */
+function separerBien(zone: string): { reste: string } & AssetScopeDraft {
+  // Préfixe glouton : c'est le DERNIER complément de la phrase qui désigne le bien (« … dans la pièce Cellier de la maison »).
+  const hit = ` ${zone}`.match(BIEN_FINAL);
+  if (!hit) return { reste: zone, assetWords: [], assetFromContext: false };
+  // « dans la pièce … » situe un équipement, pas le bien.
+  if (/^piece\b/.test(hit[3])) return { reste: zone, assetWords: [], assetFromContext: false };
+  const contexte = /^(ce|cet|cette)$/.test(hit[2] ?? '');
+  const mots = contexte ? [] : motsUtiles(hit[3]);
+  if (!contexte && mots.length === 0) return { reste: zone, assetWords: [], assetFromContext: false };
+  return { reste: hit[1].slice(1), assetWords: mots, assetFromContext: contexte };
+}
+const motsCible = (s: string) => plain(s).split(/[^a-z0-9]+/).filter((w) => w.length >= 2 && !['le', 'la', 'les', 'du', 'de', 'des', 'mon', 'ma', 'ce', 'cet', 'cette', 'piece', 'equipement', 'nomme', 'nommee', 'appele', 'appelee'].includes(w));
+
+/**
+ * « Ajoute une pièce Cuisine dans la maison », « renomme la pièce Cuisine en
+ * Cuisine d'été », « supprime la pièce Bureau de l'appartement », « ajoute un
+ * équipement Chaudière dans la pièce Cellier de la maison », « renomme
+ * l'équipement Chaudière en Chaudière gaz », « retire l'équipement Chaudière »
+ * (pure, testée). Le nom est repris tel qu'écrit.
+ */
+function parseStructureCommand(message: string): CommandDraft | null {
+  const nfc = message.normalize('NFC');
+  const brut = plain(nfc);
+  const tete = brut.match(/^\s*/)![0].length;
+  const poli = brut.slice(tete).match(DEMANDE_POLIE)?.[0].length ?? 0;
+  const decalage = tete + poli + brut.slice(tete + poli).match(/^\s*/)![0].length;
+  const m = brut.slice(decalage).replace(/[.!?\s]+$/, '');
+  if (PIECE_DOCUMENT.test(m)) return null;
+  const NOM = '(piece|equipement)';
+
+  const creer = m.match(new RegExp(`^(?:ajoute|ajouter|cree|creer|enregistre|enregistrer)\\s+(?:une|un|la|le|l')\\s*(?:nouvelle\\s+|nouvel\\s+|nouveau\\s+)?${NOM}\\b\\s*`));
+  if (creer) {
+    const piece = creer[1] === 'piece';
+    let zone = m.slice(creer[0].length);
+    let roomWords: string[] = [];
+    // Guillemets : le nom est pris tel quel ; le reste de la phrase situe l'équipement et le bien.
+    const cite = nomDonne(message);
+    const guillemets = /[«"“]/.test(nfc);
+    if (guillemets && cite) zone = zone.replace(plain(cite), ' ').replace(/[«»"“”]/g, ' ');
+    const bien = separerBien(zone);
+    zone = bien.reste;
+    if (!piece) {
+      const dans = zone.match(/\s*\bdans\s+(?:la\s+piece|le|la|l')\s*([a-z0-9' -]+?)\s*$/);
+      if (dans && dans.index !== undefined) { roomWords = motsCible(dans[1]); zone = zone.slice(0, dans.index); }
+    }
+    let name = guillemets ? cite : null;
+    if (!name) {
+      const debut = decalage + creer[0].length;
+      const brutNom = origine(nfc, debut, debut + zone.length).replace(/^(?:nommé|nommée|appelé|appelée)\s+/i, '').replace(/[\s.!?:,]+$/, '').trim();
+      name = brutNom || null;
+    }
+    return { command: piece ? 'CREATE_ROOM' : 'CREATE_EQUIPMENT', name: name ? name.slice(0, 120) : null, roomWords, assetWords: bien.assetWords, assetFromContext: bien.assetFromContext };
+  }
+
+  const renommer = m.match(new RegExp(`^(?:renomme|renommer)\\s+(?:la|le|l'|ma|mon|cette|cet)\\s*${NOM}\\s+(.+?)\\s+en\\s+(.+)$`));
+  if (renommer) {
+    const bien = separerBien(renommer[2]);
+    const cible = motsCible(bien.reste);
+    if (!cible.length) return null;
+    const valeur = sansGuillemets(origine(nfc, decalage + m.lastIndexOf(renommer[3])));
+    return { command: renommer[1] === 'piece' ? 'RENAME_ROOM' : 'RENAME_EQUIPMENT', targetWords: cible, newName: valeur ? valeur.slice(0, 120) : null, assetWords: bien.assetWords, assetFromContext: bien.assetFromContext };
+  }
+
+  const retirer = m.match(new RegExp(`^(?:supprime|supprimer|efface|effacer|retire|retirer|enleve|enlever|archive|archiver)\\s+(?:definitivement\\s+)?(?:la|le|l'|ma|mon|cette|cet)\\s*${NOM}\\s+(.+)$`));
+  if (retirer) {
+    const bien = separerBien(retirer[2]);
+    const cible = motsCible(bien.reste);
+    if (!cible.length) return null;
+    return { command: retirer[1] === 'piece' ? 'DELETE_ROOM' : 'ARCHIVE_EQUIPMENT', targetWords: cible, assetWords: bien.assetWords, assetFromContext: bien.assetFromContext };
+  }
+  return null;
+}
+
 /** Brouillon de commande, ou `null` si le message n'est pas une commande claire. */
 export function parseCommand(message: string, today: string): CommandDraft | null {
   const m = plain(message).trim();
 
+
+  // ── Fournisseurs (lot 114) : avant les biens — « ajoute le fournisseur … » ne crée jamais un bien.
+  // Les formes reconnues sont ancrées en début de message (« ajoute un rappel pour le fournisseur … » reste une échéance).
+  if (!INTERROGATIF.test(m) && !LECTURE_MOI.test(m)) {
+    const fournisseur = parseSupplierCommand(message);
+    if (fournisseur) return fournisseur;
+  }
+
+  // ── Pièces et équipements (lot 114) : formes ancrées en début de message.
+  if (!INTERROGATIF.test(m) && !LECTURE_MOI.test(m) && /\b(piece|equipement)\b/.test(m)) {
+    const structure = parseStructureCommand(message);
+    if (structure) return structure;
+  }
+
+  // ── Documents (lot 114) : avant les échéances — « supprime le document Entretien chaudière » ne vise jamais l'Agenda.
+  if (!INTERROGATIF.test(m) && !LECTURE_MOI.test(m)) {
+    const document = parseDocumentCommand(message, today);
+    if (document) return document;
+  }
+
   // ── Créer / supprimer un bien (lot 114B) ──────────────────────────────
   if (!INTERROGATIF.test(m) && !LECTURE_MOI.test(m)) {
-    const bien = parseAssetCreation(message) ?? parseAssetDeletion(message);
+    // Lot 114F : renommer un bien et effacer une caractéristique AVANT la suppression d'un bien —
+    // « efface la date d'achat de la Clio » n'est jamais une demande de suppression de la Clio.
+    const bien = parseAssetCreation(message) ?? parseAssetRename(message) ?? parseAssetFieldClear(message) ?? parseAssetDeletion(message);
     if (bien) return bien;
   }
 
@@ -386,7 +835,7 @@ export function parseCommand(message: string, today: string): CommandDraft | nul
 }
 
 /** Verbes qui ouvrent une nouvelle commande dans un même message. */
-const DEBUT_COMMANDE = /\s+(puis|ensuite|et ensuite|et puis|et)\s+(?=(ajoute|ajouter|crée|cree|créer|creer|programme|planifie|enregistre|marque|marquer|indique|passe|annule|annuler|mets|modifie|change|renseigne|corrige|supprime|efface|retire|enlève|enleve|déplace|deplace|reporte|décale|decale|repousse|avance|renomme)\b)/i;
+const DEBUT_COMMANDE = /\s+(puis|ensuite|et ensuite|et puis|et)\s+(?=(ajoute|ajouter|crée|cree|créer|creer|programme|planifie|enregistre|marque|marquer|indique|passe|annule|annuler|mets|modifie|change|renseigne|corrige|supprime|efface|retire|enlève|enleve|déplace|deplace|reporte|décale|decale|repousse|avance|renomme|rattache|détache|detache|dissocie)\b)/i;
 
 /**
  * Découpe un message en commandes successives (« ajoute… et marque… »,

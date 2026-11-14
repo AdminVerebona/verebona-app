@@ -56,9 +56,15 @@ async function readOperationFlags(sql: Sql, accountId: number): Promise<Operatio
     SELECT o.id, o.invalidated_at IS NOT NULL AS invalidated, o.merged_into_operation_id AS merged_into,
            EXISTS (SELECT 1 FROM business_operation_history h WHERE h.operation_id = o.id AND h.account_id = o.account_id AND h.actor_user_id IS NOT NULL) AS user_history,
            EXISTS (SELECT 1 FROM business_operation_sources s WHERE s.operation_id = o.id AND s.account_id = o.account_id
-                     AND (s.source_kind IN ('CLAIM_FORM', 'USER_ARBITRATION', 'MIGRATION') OR (s.source_kind = 'AGENDA' AND s.locator ? 'grouping'))) AS user_source,
-           EXISTS (SELECT 1 FROM business_operation_match_decisions d WHERE d.candidate_operation_id = o.id AND d.account_id = o.account_id
-                     AND d.active AND d.origin IN ('USER_ARBITRATION', 'ADMIN_REVIEW')) AS user_decision,
+                     AND (s.source_kind IN ('CLAIM_FORM', 'USER_ARBITRATION', 'MIGRATION', 'USER_DECLARATION') OR (s.source_kind = 'AGENDA' AND s.locator ? 'grouping'))) AS user_source,
+           (EXISTS (SELECT 1 FROM business_operation_match_decisions d WHERE d.candidate_operation_id = o.id AND d.account_id = o.account_id
+                     AND d.active AND d.origin IN ('USER_ARBITRATION', 'ADMIN_REVIEW'))
+            -- Lot 114O (#744) : décisions de l'utilisateur dans le graphe canonique (relation posée ou REFUSÉE, lien d'Agenda posé) —
+            -- l'Opération est conservée : une purge ne doit ni perdre ni rouvrir une décision de l'utilisateur.
+            OR EXISTS (SELECT 1 FROM business_operation_relations gr WHERE gr.account_id = o.account_id
+                        AND (gr.from_operation_id = o.id OR gr.to_operation_id = o.id) AND (gr.origin = 'USER' OR gr.state = 'REJECTED'))
+            OR EXISTS (SELECT 1 FROM business_operation_agenda_links gl WHERE gl.account_id = o.account_id AND gl.operation_id = o.id
+                        AND gl.state = 'ACTIVE' AND gl.origin = 'USER')) AS user_decision,
            EXISTS (SELECT 1 FROM business_operation_asset_exclusions x WHERE x.operation_id = o.id) AS exclusion,
            EXISTS (SELECT 1 FROM business_operation_projection_suppressions p WHERE p.operation_id = o.id AND p.account_id = o.account_id) AS suppression,
            EXISTS (SELECT 1 FROM agenda_items i WHERE i.business_operation_id = o.id AND i.account_id = o.account_id AND i.operation_role_origin = 'USER') AS user_agenda_role,

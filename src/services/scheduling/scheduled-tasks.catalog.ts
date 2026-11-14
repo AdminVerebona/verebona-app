@@ -54,6 +54,10 @@
  *                                   qu'il reste des documents     document (idempotent) — 0295
  *   t1-completeness-retry           toutes les 15 min             tentatives comptées par document,
  *                                                                 `next_retry_at` (0295)
+ *   t1-coverage-reassessment        au démarrage, puis /h tant    journal par document × version des
+ *                                   qu'il reste des documents     règles (1705, unique) ; aucun appel IA ;
+ *                                   (lot 114H, #775)              ne traite pas un document tenu par
+ *                                                                 `t1-completeness-retry` (échéance proche)
  *   ai-catalog-sync                 chaque jour à 7 h 15 (85C)    bail `ai-catalog-sync` (même
  *                                                                 fonction que « Actualiser le
  *                                                                 catalogue »), upserts idempotents
@@ -594,6 +598,22 @@ export const SCHEDULED_TASKS: readonly ScheduledTaskDef[] = [
       const r = await runCompletenessRetry({ deadline: Math.min(deadline, Date.now() + 8 * MIN) });
       if (r.disabled) return { note: 'migrations 0295-0297 absentes : rien à faire' };
       if (r.examined > 0) return { note: JSON.stringify(r) };
+    },
+  },
+  {
+    // Lot 114H (Trello #775, P1-C) : après un correctif des règles de couverture ou de reprise T1, le STOCK est
+    // réévalué sans action de personne — réconciliation et re-vérification SANS IA, règle unique des reprises,
+    // clôture des seules alertes dont la cause a disparu. Reprenable (journal 1705), paginée, idempotente.
+    // N'exécute aucune réparation : une lacune réparable est seulement programmée pour `t1-completeness-retry`.
+    code: 't1-coverage-reassessment',
+    label: 'IA : réévaluation de la couverture T1 du stock et des alertes (sans IA)',
+    schedule: { kind: 'startup', delayMs: 9 * MIN, retryMs: HOUR },
+    timeoutMs: 10 * MIN,
+    run: async ({ deadline }) => {
+      const { runCoverageReassessment } = await import('@/services/ai/source-analysis/source-units/historical-reassessment');
+      const r = await runCoverageReassessment({ deadline: Math.min(deadline, Date.now() + 8 * MIN) });
+      if (r.disabled) return { note: `réévaluation inactive : ${r.disabled}` };
+      return { note: JSON.stringify(r).slice(0, 1500), again: r.more, ...(r.errors > 0 && r.examined === r.errors && r.examined > 0 ? { error: `${r.errors} document(s) en erreur` } : {}) };
     },
   },
   {

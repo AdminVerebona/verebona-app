@@ -42,6 +42,8 @@ import {
   type AgendaItemValues, type AgendaItemLinks, type WriteAgendaItemResult, type WriteAgendaItemOptions,
 } from './write-agenda-item';
 
+import type { AgendaSituation, AgendaSituationSource } from '@/lib/agenda/situation';
+
 export type { AgendaSourceRef, AgendaSourceRole } from './agenda-source-links';
 type AgendaOrigin = 'MANUAL' | 'AUTOMATIC';
 
@@ -69,6 +71,13 @@ interface AgendaItemDetails {
    * (geste de l'utilisateur), jamais par T4 ni la projection.
    */
   noDeadline?: boolean;
+  /**
+   * Lot 114V (#742) : « Situation de l'événement » et sa provenance — posées
+   * par le chemin MANUEL seulement (choix de l'utilisateur ou défaut d'une
+   * création manuelle), jamais par T4 ni la projection.
+   */
+  situation?: AgendaSituation;
+  situationSource?: AgendaSituationSource;
 }
 
 export interface AgendaUpsertInput {
@@ -165,6 +174,8 @@ export function agendaItemValues(input: AgendaUpsertInput): Partial<AgendaItemVa
         homeCategory: input.category ?? null,
         // Lot 77A : colonne écrite seulement si l'utilisateur coche l'option (parité des valeurs sinon).
         ...(d.noDeadline ? { noDeadline: true } : {}),
+        // Lot 114V : colonnes écrites seulement si une situation est fournie (parité des valeurs sinon).
+        ...(d.situation ? { situation: d.situation, situationSource: d.situationSource ?? 'USER', situationDecidedAt: new Date() } : {}),
       };
     }
     return {
@@ -204,6 +215,12 @@ export function agendaItemValues(input: AgendaUpsertInput): Partial<AgendaItemVa
   if (defini(d.isAutomaticModified)) v.isAutomaticModified = d.isAutomaticModified;
   // Lot 77A : « Sans échéance » — chemin manuel seulement (un traitement automatique ne la pose jamais).
   if (defini(d.noDeadline) && input.origin === 'MANUAL') v.noDeadline = d.noDeadline;
+  // Lot 114V : situation — chemin manuel seulement (une réanalyse n'efface jamais une décision de l'utilisateur).
+  if (defini(d.situation) && input.origin === 'MANUAL') {
+    v.situation = d.situation;
+    v.situationSource = d.situationSource ?? 'USER';
+    v.situationDecidedAt = new Date();
+  }
   if (defini(d.originRefType)) v.originRefType = d.originRefType;
   if (defini(d.originRefId)) v.originRefId = d.originRefId;
   if (!defini(d.originRefType) && input.origin === 'AUTOMATIC' && defini(input.sources) && input.sources.every((s) => s.role !== 'PROOF')) {

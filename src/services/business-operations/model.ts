@@ -58,7 +58,9 @@ export function isBusinessOperationStatus(v: unknown): v is BusinessOperationSta
 
 // ── Sources (C2, C2.1, C20) ────────────────────────────────────────────────
 
-export const SOURCE_KINDS = ['DOCUMENT', 'ASSET_DATA', 'EQUIPMENT_DATA', 'AGENDA', 'CLAIM_FORM', 'USER_ARBITRATION', 'MIGRATION'] as const;
+// Lot 114O (#744, CDC V2.0 §5, §6, migration 1718) : USER_DECLARATION — déclaration de l'utilisateur enregistrée
+// (`business_operation_declarations`), fondement durable d'un événement de référence sans document.
+export const SOURCE_KINDS = ['DOCUMENT', 'ASSET_DATA', 'EQUIPMENT_DATA', 'AGENDA', 'CLAIM_FORM', 'USER_ARBITRATION', 'MIGRATION', 'USER_DECLARATION'] as const;
 export type SourceKind = (typeof SOURCE_KINDS)[number];
 
 /**
@@ -67,7 +69,8 @@ export type SourceKind = (typeof SOURCE_KINDS)[number];
  * agenda_items.id ; ASSET_DATA et CLAIM_FORM = assets.id (le champ / le
  * dossier précis dans `locator`) ; EQUIPMENT_DATA = equipments.id ;
  * USER_ARBITRATION = to_process_actions.id ; MIGRATION = clé stable dérivée
- * du compte, du bien, du champ et de la version de migration (C23.1).
+ * du compte, du bien, du champ et de la version de migration (C23.1) ;
+ * USER_DECLARATION = business_operation_declarations.id (lot 114O).
  */
 export const SOURCE_KEY_TABLE: Readonly<Record<SourceKind, string | null>> = {
   DOCUMENT: 'asset_files',
@@ -77,6 +80,7 @@ export const SOURCE_KEY_TABLE: Readonly<Record<SourceKind, string | null>> = {
   EQUIPMENT_DATA: 'equipments',
   USER_ARBITRATION: 'to_process_actions',
   MIGRATION: null,
+  USER_DECLARATION: 'business_operation_declarations',
 };
 
 export const SOURCE_ROLES = [
@@ -193,6 +197,14 @@ export function normalizeOperationTypeHint(raw: unknown): BusinessOperationTypeC
   const v = raw.trim().toUpperCase();
   return isBusinessOperationTypeCode(v) ? v : null;
 }
+
+/**
+ * Lot 114O (#744, CDC V2.0 §7, §19, AC47) — motif d'invalidation d'un
+ * événement de référence « créé à tort », posé par l'UTILISATEUR (façade
+ * `operation-write.facade.ts`). La consolidation T3 ne réactive jamais une
+ * Opération invalidée pour ce motif ; seul l'utilisateur la restaure.
+ */
+export const USER_INVALIDATION_REASON = 'USER_INVALIDATED';
 
 // ── Transitions de statut (C8, B7) ─────────────────────────────────────────
 

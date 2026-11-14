@@ -66,6 +66,11 @@ const ECRIVAINS: Record<string, string> = {
   'src/services/business-operations/semantic/identity-apply.ts': 'T3 identité multi-sources : décisions de rattachement AI_IDENTITY par le dépôt (lot 97A) — métier délégué à T3',
   // Lot 112D (06/11/2026) : SEUL écrivain des conditions de prêt SAISIES (colonnes 1415 de `business_operation_financing_details`)
   // et de leur historique — décision utilisateur du domaine financement, sous le verrou d'écriture ; le TCO ne fait que relire.
+  // Lot 114O (#744, CDC Opérations / Agenda V2.0 §4, §20, lot B) : graphe canonique — relations entre Opérations, liens N↔N
+  // d'Agenda, journal, déclarations. `graph/store.ts` est le SEUL écrivain des tables 1715-1718 ; la façade ouvre l'écriture (transaction,
+  // verrou du compte, droits, idempotence) et délègue documents et colonne historique au service unique de regroupement.
+  'src/services/business-operations/graph/store.ts': 'graphe canonique 114O : relations entre Opérations, liens N↔N d’Agenda supplémentaires, journal des commandes, déclarations de l’utilisateur (sous le verrou du compte)',
+  'src/services/business-operations/operation-write.facade.ts': 'façade métier 114O des commandes d’écriture du graphe (documentation des tables ; écritures par graph/store.ts et le regroupement)',
   'src/services/business-operations/financing/loan-terms-decisions.ts': 'financement 112D : conditions de prêt saisies par l’utilisateur (origine par champ, historique) sous withBusinessOperationWrite — TCO consommateur',
 };
 
@@ -102,8 +107,22 @@ describe('ACC-015 / ACC-016 / ACC-017 / ACC-019 / INV-048 / INV-033 / INV-035 �
     const hits = sources.filter((f) => /OPERATIONS?_(ENABLED|SHADOW)|BUSINESS_OPERATIONS?_(ENABLED|DISABLED|SHADOW)|OPERATION_SHADOW_MODE|shadowMode/.test(readFileSync(f, 'utf8')));
     expect(hits.map(rel)).toEqual([]);
   });
-  it('INV-048 / INV-047 — aucun graphe générique de relations : un seul parent (colonne), pas de table de relations Opération ↔ Opération', () => {
-    expect(sql).not.toMatch(/CREATE TABLE IF NOT EXISTS\s+business_operation_(relations?|links?|edges?)\b/);
+  // RÈGLE REMPLACÉE (carte #744, CDC Opérations / Agenda V2.0 §4, §9, §31 — lot 114O). L'ancienne règle INV-048 / INV-047
+  // (« un seul parent, pas de table de relations Opération ↔ Opération ») est abrogée par le CDC V2.0 : les relations entre
+  // Opérations sont N↔N et persistantes, et la hiérarchie parent / enfant ne doit pas être réintroduite. Nouvelle règle :
+  // UNE table de relations typée et bornée (jamais un graphe générique d'arêtes), sans relation réflexive ni doublon de
+  // paire, et aucune colonne de parent ajoutée par les migrations du graphe.
+  it('INV-048 / INV-047 (remplacée, #744) — relations Opération ↔ Opération : une table typée, sans réflexivité ni doublon, sans parent / enfant', () => {
+    expect(sql).not.toMatch(/CREATE TABLE IF NOT EXISTS\s+business_operation_(links?|edges?)\b/);
+    const m1715 = readFileSync(join(ROOT, 'src/db/migrations/1715_l114o_relations_evenements_reference.sql'), 'utf8').replace(/--.*$/gm, '');
+    expect(m1715).toMatch(/CREATE TABLE IF NOT EXISTS business_operation_relations \(/);
+    expect(m1715).toMatch(/CHECK \(from_operation_id <> to_operation_id\)/);
+    expect(m1715).toMatch(/CREATE UNIQUE INDEX IF NOT EXISTS business_operation_relations_pair_uidx[\s\S]*LEAST\(from_operation_id, to_operation_id\), GREATEST\(from_operation_id, to_operation_id\)/);
+    expect(m1715).toMatch(/CHECK \(nature IN \('FINANCING', 'CLAIM_REPAIR', 'ASSOCIATED'\)\)/);
+    for (const f of readdirSync(join(ROOT, 'src/db/migrations')).filter((x) => /^17(1[5-9]|2[0-4])_/.test(x))) {
+      expect(readFileSync(join(ROOT, 'src/db/migrations', f), 'utf8').replace(/--.*$/gm, ''), f).not.toMatch(/parent_operation_id|parent_id/);
+    }
+    // L'ancienne colonne de parent reste créée par la migration d'origine (historique des migrations inchangé).
     expect(sql).toMatch(/parent_operation_id\s+BIGINT/);
   });
 });

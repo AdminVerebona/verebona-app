@@ -26,6 +26,8 @@ import { assetSupportsStructuralFeatures } from "@/types/domain";
 import { useWriteGuard } from "@/contexts/WriteGuardContext";
 import { isWriteBlockedCode } from "@/lib/write-blocked";
 import { NoDeadlineField } from "@/components/agenda/NoDeadlineField";
+import { SituationField } from "@/components/agenda/SituationField";
+import { DEFAULT_NEW_SITUATION, type AgendaSituation } from "@/lib/agenda/situation";
 // Lot 103E : « Fournisseur / intervenant » (facultatif) — composant dédié.
 import { AgendaSuppliersField, EMPTY_SUPPLIERS_SELECTION, suppliersPayload, type AgendaSuppliersSelection } from "@/components/agenda/AgendaSuppliersSection";
 import { toggleNoDeadline, withDateEntry, type AgendaDateFormState } from "@/lib/agenda/no-deadline";
@@ -106,6 +108,8 @@ export function CreateAgendaItemDrawer({
   const [showEndDate, setShowEndDate] = useState(false);
   // Lot 77A : option « Sans échéance » (incompatible avec une date).
   const [noDeadline, setNoDeadline] = useState(false);
+  // Lot 114V (#742) : « Situation de l'événement » — « À prévoir » présélectionné, enregistré sans aucun clic.
+  const [situation, setSituation] = useState<AgendaSituation>(DEFAULT_NEW_SITUATION);
   // Lot 103E : fournisseurs choisis / nouveaux noms (créés seulement à l'enregistrement).
   const [suppliers, setSuppliers] = useState<AgendaSuppliersSelection>(EMPTY_SUPPLIERS_SELECTION);
   const dateState: AgendaDateFormState = { startDate, startTime, endDate, endTime, noDeadline };
@@ -229,6 +233,7 @@ export function CreateAgendaItemDrawer({
     setAssetDetails({});
     setShowEndDate(false);
     setNoDeadline(false);
+    setSituation(DEFAULT_NEW_SITUATION);
     setSuppliers(EMPTY_SUPPLIERS_SELECTION);
     setError(null);
   };
@@ -264,6 +269,8 @@ export function CreateAgendaItemDrawer({
         endDate: endDate || null,
         endTime: endTime || null,
         noDeadline,
+        // Lot 114V (#742) : toujours transmise (défaut « À prévoir ») ; la date reste facultative dans les deux cas.
+        situation,
         assetIds: selectedAssetIds,
         fileIds: prefilledFileId ? [prefilledFileId] : [],
         // Lot 103D : pièces / équipements seulement avec un logement sélectionné (règle `lib/agenda/housing-scope`).
@@ -489,6 +496,17 @@ export function CreateAgendaItemDrawer({
             {/* Lot 103E : Fournisseur / intervenant (toutes catégories, facultatif). */}
             <AgendaSuppliersField value={suppliers} onChange={(next) => setSuppliers(next)} idPrefix="creation-agenda-fournisseurs" />
 
+            {/* Lot 114V (#742) : « A eu lieu | À prévoir » — ne masque ni ne vide la date. */}
+            <SituationField
+              id="creation-agenda-situation"
+              value={situation}
+              onChange={(next) => {
+                setSituation(next);
+                // « Sans échéance » ne décrit qu'une tâche à prévoir : l'option est retirée (les dates saisies sont gardées).
+                if (next === "A_EU_LIEU" && noDeadline) setNoDeadline(false);
+              }}
+            />
+
             {/* Dates */}
             <div className="grid grid-cols-2 gap-3">
               <div className="space-y-1.5">
@@ -509,14 +527,14 @@ export function CreateAgendaItemDrawer({
             </div>
 
             {/* Lot 77A : « Sans échéance » — saisir une date la décoche ; la cocher retire la date (confirmation). */}
-            <NoDeadlineField
+            {situation !== "A_EU_LIEU" && <NoDeadlineField
               id="creation-agenda-sans-echeance"
               state={dateState}
               onChange={(checked) => {
                 applyDates(toggleNoDeadline(dateState, checked));
                 if (checked) setShowEndDate(false);
               }}
-            />
+            />}
 
             {/* End date toggle */}
             {!showEndDate ? (

@@ -19,6 +19,7 @@ import { isEquipmentFilterActive, type EquipmentFacet } from '@/lib/filters/equi
 import { selectedRoomId, type RoomFacet } from '@/lib/filters/room-filter';
 import { agendaItemIdsByRoom, listRoomsOfAssets, type AssetRoom } from '@/services/rooms/room-scope.service';
 import { normalizeLocalQuery } from '@/lib/search/local-search';
+import { isUpcomingBySituation, situationOf, undatedMatchesPeriod, type AgendaSituation } from '@/lib/agenda/situation';
 
 interface AgendaQueryParams {
   accountId: number;
@@ -94,6 +95,12 @@ export interface AgendaItemFull {
    * objets construits ailleurs (tests, projections).
    */
   noDeadline?: boolean;
+  /**
+   * Lot 114V (#742) : « Situation de l'événement » — `A_PREVOIR`, `A_EU_LIEU`,
+   * ou `null` (non qualifié : hérité, produit par un traitement). Toujours
+   * renseignée par `enrichItems` ; optionnelle pour les objets construits ailleurs.
+   */
+  situation?: AgendaSituation | null;
   createdAt: Date;
   updatedAt: Date;
   /** Lot 103D : `assetCategory` / `assetSubtype` — règle unique `lib/agenda/housing-scope` (vues desktop et mobile). */
@@ -302,6 +309,7 @@ async function enrichItems(rows: typeof agendaItems.$inferSelect[]): Promise<Age
       confirmationMode: item.confirmationMode ?? null,
       recurrenceRule: (item.recurrenceJson as { rule?: string } | null)?.rule ?? null,
       noDeadline: item.noDeadline === true,
+      situation: situationOf(item.situation),
       createdAt: item.createdAt,
       updatedAt: item.updatedAt,
       assetLinks: itemAssets.map(a => ({ id: a.id, assetId: a.assetId, assetName: a.assetName ?? '', assetCategory: a.assetCategory ?? null, assetSubtype: a.assetSubtype ?? null })),
@@ -337,8 +345,9 @@ export async function loadEventNatures(ids: number[]): Promise<Map<number, { nat
  * vente…). `eventNature` absent (élément antérieur à la 0223) : échéance.
  * Lot 113P : plus de statut (« réalisé » / « annulé ») à exclure.
  */
-export function isUpcomingDeadlineCandidate(item: { eventNature?: 'HISTORICAL' | 'DEADLINE' | null }): boolean {
-  return item.eventNature !== 'HISTORICAL';
+export function isUpcomingDeadlineCandidate(item: { eventNature?: 'HISTORICAL' | 'DEADLINE' | null; situation?: string | null }): boolean {
+  // Lot 114V (#742) : un événement qualifié « A eu lieu » n'est jamais une échéance à venir.
+  return item.eventNature !== 'HISTORICAL' && isUpcomingBySituation(item);
 }
 
 /**
@@ -350,7 +359,9 @@ export function isUpcomingDeadlineCandidate(item: { eventNature?: 'HISTORICAL' |
 export async function upcomingDeadlinesSqlFilter(alias = ''): Promise<string> {
   if (!(await agendaFunctionalColumnsReady())) return '';
   const a = alias ? `${alias}.` : '';
-  return ` AND (${a}event_nature IS DISTINCT FROM 'HISTORICAL')`;
+  // Lot 114V (#742) : un événement qualifié « A eu lieu » (daté du jour compris) n'est jamais une échéance à venir
+  // — accueil, mascotte / rappels T6 (même filtre partagé).
+  return ` AND (${a}event_nature IS DISTINCT FROM 'HISTORICAL') AND (${a}situation IS DISTINCT FROM 'A_EU_LIEU')`;
 }
 
 /**
@@ -514,7 +525,8 @@ async function getAgendaItemsInScope(params: AgendaQueryParams, extraIds: readon
   // Filter by period
   if (period && period !== 'all') {
     rows = rows.filter(item => {
-      if (!item.startDate) return includeUndated ?? true;
+      // Lot 114V (#742) : sans date, la situation situe l'élément (« A eu lieu » jamais dans l'à-venir).
+      if (!item.startDate) return (includeUndated ?? true) && undatedMatchesPeriod(item, period);
       if (period === 'past') return item.startDate < today;
       if (period === 'today') return item.startDate === today;
       if (period === 'upcoming') return item.startDate >= today;

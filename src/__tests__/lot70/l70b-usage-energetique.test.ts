@@ -165,11 +165,12 @@ describe('L70-ENER-06 — tiroir équipement (même composant desktop et mobile)
 
 describe('L70-ENER-07 — routes : la route PUT écrit ce qu’elle lit', () => {
   it('PUT écrit category et energy_usage, POST aussi ; valeurs invalides refusées', () => {
-    const put = read('src/app/api/assets/[id]/equipments/[equipId]/route.ts');
+    // Lot 114 (#753, W04 – W09) : règle déplacée — le corps de la route est dans la façade métier `structure-write.facade` (partagée avec l'Assistant).
+    const put = read('src/services/assets/structure-write.facade.ts');
     expect(put).toContain('sets.push(`category = $${p++}`)');
     expect(put).toContain('sets.push(`energy_usage = $${p++}`)');
     expect(put).toContain("'Invalid energy usage'");
-    const post = read('src/app/api/assets/[id]/equipments/route.ts');
+    const post = put;
     expect(post).toMatch(/INSERT INTO equipments \(asset_id, substructure_id, name, type, category, energy_usage, status/);
   });
   it('préparation CIL et source d’export lisent l’usage déclaré (même entrée de règle)', () => {

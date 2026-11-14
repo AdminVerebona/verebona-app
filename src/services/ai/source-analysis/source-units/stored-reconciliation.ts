@@ -20,8 +20,9 @@
  */
 import { candidateReconciliationValue, reconcileCoverage, reconciliationSummary, residualCounts, withResidualPolicies, type ReconciliationInput } from './coverage-reconciliation';
 import { buildCompletenessReport } from './coverage';
+import { decideRetry, releaseUnschedulablePending, retryFactsOf, retryLimits } from './retry-policy';
 import {
-  loadDocumentCoverage, loadDocumentSourceUnits, loadUnresolvedDocumentFacts, maxCompletenessRetries, writeSourceLayer,
+  loadDocumentCoverage, loadDocumentSourceUnits, loadUnresolvedDocumentFacts, writeSourceLayer,
 } from './repository';
 import { SOURCE_LAYER_VERSION, type CoveredSourceUnit, type T1CoverageDiagnostics, type UnresolvedFactRecord } from './types';
 
@@ -96,6 +97,22 @@ export interface StoredReconciliationResult {
   requalified: StoredRequalification[];
   before: { covered: number; unresolved: number; uncertain: number; qualityState: string | null };
   after: { covered: number; unresolved: number; uncertain: number; qualityState: string | null };
+  /**
+   * Lot 114H (#775) — état des reprises AVANT / APRÈS le recalcul par la règle unique (`retry-policy.ts`) :
+   * anomalies de complétude, reprise programmée, unités en attente levées, motif d'absence de reprise.
+   * Absent pour un document sans couche A.
+   */
+  retry?: {
+    anomaliesBefore: string[]; anomaliesAfter: string[];
+    scheduledBefore: boolean; scheduledAfter: boolean;
+    /** Unités en attente dont l'attente a été levée (plus aucun chemin exécutable). */
+    pendingReleased: number;
+    /** Actions automatiques admissibles après recalcul (vide : aucune). */
+    actions: string[];
+    blocked: string | null;
+    /** L'état, les anomalies ou l'échéance ont changé sans requalification d'unité. */
+    stateChanged: boolean;
+  };
 }
 
 const compte = (units: readonly CoveredSourceUnit[], s: string) => units.filter((u) => u.status === s).length;
@@ -118,7 +135,7 @@ export async function reconcileStoredDocumentCoverage(p: {
   }
   const { toCovered, storedDiagnostics } = await import('./jobs');
   const units = stored.map(toCovered);
-  const majs = await reconcileStoredUnits(sql, { accountId: p.accountId, fileId: p.fileId, units });
+  let majs = await reconcileStoredUnits(sql, { accountId: p.accountId, fileId: p.fileId, units });
   const requalified: StoredRequalification[] = [];
   majs.forEach((u, i) => {
     const a = units[i];
@@ -128,18 +145,38 @@ export async function reconcileStoredDocumentCoverage(p: {
       rule: u.coverageProvenance?.rule ?? null, refs: u.coverageProvenance?.refs ?? [],
     });
   });
-  const politiquesChangees = majs.some((u, i) => (u.residualPolicy ?? null) !== (units[i].residualPolicy ?? null));
   const before = { covered: compte(units, 'COVERED'), unresolved: compte(units, 'UNRESOLVED'), uncertain: compte(units, 'UNCERTAIN'), qualityState: cov.qualityState };
 
   // Rapport recalculé avec les règles de l'analyse (données conservées de la ligne de couverture).
   const diag = storedDiagnostics(cov.verification ?? null);
+  // ══════════════════════════════════════════════════════════════════════
+  // LOT 114H (Trello #775, P1-A / P1-C) — LA RÉCONCILIATION APPLIQUE AUSSI LA RÈGLE DES REPRISES
+  //
+  // Règle remplacée : `retryAllowed = tentatives < plafond` et échéance
+  // recopiée telle quelle ; un document sans requalification d'unité était
+  // rendu « inchangé » même quand son état annonçait une reprise devenue
+  // impossible. La règle unique décide : attentes sans chemin levées, état
+  // et anomalies recalculés, échéance retirée si plus rien n'est admissible,
+  // reposée (15 min) pour une lacune RÉPARABLE restée sans échéance (ancien
+  // refus de remise en file). Jamais de nouvelle échéance pour une simple
+  // relecture d'image / de scan (aucune relance de masse).
+  // ══════════════════════════════════════════════════════════════════════
+  const limits = retryLimits();
+  const budget = { retryAttempts: cov.retryAttempts, continuationRuns: diag.continuationRuns };
+  const faits = { qualityState: cov.qualityState, verificationReason: diag.verification?.reason ?? null, pagesMissing: diag.verification?.missing ?? [] };
+  const regle = decideRetry(retryFactsOf(majs, faits, limits), budget, limits);
+  const enAttenteAvant = majs.filter((u) => u.repairState === 'PENDING').length;
+  if (!regle.automatic) majs = releaseUnschedulablePending(majs, regle);
+  const pendingReleased = enAttenteAvant - majs.filter((u) => u.repairState === 'PENDING').length;
+  const politiquesChangees = majs.some((u, i) => (u.residualPolicy ?? null) !== (units[i].residualPolicy ?? null)
+    || (u.repairState ?? null) !== (units[i].repairState ?? null));
   const unresolved: UnresolvedFactRecord[] = (await loadUnresolvedDocumentFacts(p.fileId, { accountId: p.accountId }))
     .map(({ id: _i, fileId: _f, createdAt: _c, ...x }) => { void _i; void _f; void _c; return x; });
   const report = buildCompletenessReport(majs, {
     factsCount: cov.factsCount, unresolvedFacts: unresolved, truncatedSectionsCount: cov.truncatedSectionsCount,
     batchedSectionsCount: cov.batchedSectionsCount, repairPassCount: cov.repairPassCount, chunkCount: cov.chunkCount,
     warningCodes: (cov.anomalies ?? []).includes('PARTIAL_EXTRACTION') ? ['PARTIAL_EXTRACTION'] : [],
-    retryAllowed: cov.retryAttempts < maxCompletenessRetries(),
+    retryAllowed: regle.automatic,
     verification: diag.verification ? { ...diag.verification, verified: Array.from({ length: diag.pagesVerified }, (_, i) => i + 1) } : null,
     normalisation: diag.normalisation, sourceReread: diag.sourceReread,
   });
@@ -152,19 +189,33 @@ export async function reconcileStoredDocumentCoverage(p: {
     d.residualPolicies = residualCounts(majs);
   }
   const after = { covered: report.coveredUnits, unresolved: report.unresolvedUnits, uncertain: report.uncertainUnits, qualityState: report.qualityState };
-  if (requalified.length === 0 && !politiquesChangees) return { outcome: 'UNCHANGED', requalified, before, after: before };
-  if (!p.apply) return { outcome: 'SIMULATED', requalified, before, after };
+  const programmeeAvant = cov.nextRetryAt !== null && cov.nextRetryAt !== undefined;
+  // Échéance : conservée si une action automatique reste admissible ; reposée seulement pour une lacune réparable
+  // (INCOMPLETE_RETRYABLE) restée sans échéance ; retirée sinon.
+  const prochaine = !regle.automatic ? null
+    : programmeeAvant ? new Date(cov.nextRetryAt!)
+      : report.qualityState === 'INCOMPLETE_RETRYABLE' ? new Date(Date.now() + 15 * 60_000) : null;
+  const anomaliesAvant = [...(cov.anomalies ?? [])].sort();
+  const anomaliesApres = [...report.anomalies].sort();
+  const stateChanged = report.qualityState !== cov.qualityState || anomaliesAvant.join('|') !== anomaliesApres.join('|')
+    || programmeeAvant !== (prochaine !== null);
+  const retry = {
+    anomaliesBefore: anomaliesAvant, anomaliesAfter: anomaliesApres, scheduledBefore: programmeeAvant, scheduledAfter: prochaine !== null,
+    pendingReleased, actions: [...regle.actions], blocked: regle.blocked, stateChanged,
+  };
+  if (requalified.length === 0 && !politiquesChangees && !stateChanged) return { outcome: 'UNCHANGED', requalified, before, after: before, retry };
+  if (!p.apply) return { outcome: 'SIMULATED', requalified, before, after, retry };
 
   await pgClient.begin(async (tx) => {
     await writeSourceLayer(tx as never, {
       accountId: p.accountId, fileId: p.fileId, extractionId: cov.extractionId ?? null, origin: 'RETRY',
       layer: { layerVersion: SOURCE_LAYER_VERSION, units: majs, unresolvedFacts: unresolved, report, retryable: report.qualityState === 'INCOMPLETE_RETRYABLE' },
       retryAttempts: cov.retryAttempts,
-      nextRetryAt: cov.nextRetryAt ? new Date(cov.nextRetryAt) : null,
-      retryResult: requalified.length > 0 ? `RECONCILED_${requalified.length}` : 'RECONCILED_POLICIES',
+      nextRetryAt: prochaine,
+      retryResult: requalified.length > 0 ? `RECONCILED_${requalified.length}` : politiquesChangees ? 'RECONCILED_POLICIES' : 'RECONCILED_STATE',
     });
   });
   console.info(`[t1-reconciliation] fichier ${p.fileId} (${p.origin}) : ${requalified.length} unité(s) requalifiée(s), `
     + `${before.qualityState} → ${after.qualityState}`);
-  return { outcome: 'APPLIED', requalified, before, after };
+  return { outcome: 'APPLIED', requalified, before, after, retry };
 }

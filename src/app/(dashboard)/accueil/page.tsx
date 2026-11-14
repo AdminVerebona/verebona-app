@@ -307,7 +307,7 @@ export default function DashboardPage() {
               </p>
             )}
             <HomeAssets assets={orderedAssets} onAddAsset={() => setShowAssetDialog(true)} />
-            <UpcomingEvents items={summary.blocks.upcoming?.items ?? []} />
+            <UpcomingEvents items={summary.blocks.upcoming?.items ?? []} toPlan={summary.blocks.upcoming?.toPlan ?? null} />
             <VerebonaWork items={summary.blocks.verebonaWork?.items ?? []} onNavigate={(href) => router.push(href)} />
             <RecentDocuments
               docs={summary.blocks.recentDocuments?.items ?? []}

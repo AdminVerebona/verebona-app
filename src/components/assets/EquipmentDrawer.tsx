@@ -105,6 +105,8 @@ interface EquipmentAgendaItem {
   originType: string;
   /** Lot 77A : tâche « Sans échéance ». */
   noDeadline?: boolean;
+  /** Lot 114V (#742) : situation de l'événement (libellé d'un élément sans date). */
+  situation?: string | null;
   /** Lot 109A : DIRECT ou VIA_OPERATION (élément d'un événement de référence de l'équipement). */
   provenance?: 'DIRECT' | 'VIA_OPERATION';
 }

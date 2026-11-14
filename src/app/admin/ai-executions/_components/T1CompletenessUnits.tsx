@@ -38,7 +38,25 @@ interface Detail {
 }
 const PAGE = 100;
 const ETATS = ['UNRESOLVED', 'UNCERTAIN', 'FAILED', 'COVERED', 'NON_INFORMATIONAL'] as const;
-interface Reconcile { outcome: string; requalified: Array<{ unitId: string; from: { status: string }; to: { status: string; reason: string | null }; rule: string | null }>; before: { qualityState: string | null }; after: { qualityState: string | null } }
+interface Reconcile {
+  outcome: string; requalified: Array<{ unitId: string; from: { status: string }; to: { status: string; reason: string | null }; rule: string | null }>;
+  before: { qualityState: string | null }; after: { qualityState: string | null };
+  /** Lot 114H (#775) : reprises avant / après le recalcul (échéance, attentes levées, motif d'absence de reprise). */
+  retry?: { scheduledBefore: boolean; scheduledAfter: boolean; pendingReleased: number; actions: string[]; blocked: string | null; stateChanged: boolean };
+}
+
+/** Lot 114H (#775) : effet du recalcul sur les reprises, en une ligne (pure). */
+export function retryChangeText(rec: Pick<Reconcile, 'before' | 'after' | 'retry'>): string {
+  const r = rec.retry;
+  if (!r) return '';
+  const parts: string[] = [];
+  if (rec.before.qualityState !== rec.after.qualityState) parts.push(`état ${rec.before.qualityState} → ${rec.after.qualityState}`);
+  if (r.scheduledBefore && !r.scheduledAfter) parts.push('reprise programmée retirée (plus aucune reprise admissible)');
+  if (!r.scheduledBefore && r.scheduledAfter) parts.push('reprise ciblée programmée');
+  if (r.pendingReleased > 0) parts.push(`${r.pendingReleased} unité(s) en attente : attente levée`);
+  if (r.blocked && REPAIR_SKIP_LABEL[r.blocked]) parts.push(REPAIR_SKIP_LABEL[r.blocked]);
+  return parts.length ? `Reprises : ${parts.join(' · ')}` : '';
+}
 
 /** Politique d'une unité restante — libellés BO (codes stables de `residualPolicyOf`). */
 export const RESIDUAL_POLICY_LABEL: Record<string, string> = {
@@ -57,6 +75,11 @@ export const REPAIR_SKIP_LABEL: Record<string, string> = {
   DISABLED: 'réparation désactivée (T1_MAX_REPAIR_PASSES=0)',
   BELOW_MIN_UNITS: 'sous le seuil T1_REPAIR_MIN_UNITS',
   NO_TARGET: 'aucune unité à réparer',
+  // Lot 114H (#775, P1-A) : unité jamais tentée parce que plus aucune reprise n'est admissible (≠ réparation épuisée).
+  RETRIES_DISABLED: 'reprises désactivées (T1_COMPLETENESS_MAX_RETRIES=0)',
+  RETRY_CAP_REACHED: 'plafond de reprises du document atteint',
+  CONTINUATION_CAP_REACHED: 'plafond de passages de continuation atteint',
+  UNIT_CAP_REACHED: 'plafond de tentatives de l’unité atteint',
 };
 
 /** Libellé d'une politique (pure). */
@@ -166,6 +189,7 @@ export function T1CompletenessUnits({ fileId }: { fileId: number }) {
         </button>
         {action && <span className="text-xs text-[color:var(--text-muted)]">{action}</span>}
       </div>
+      {rec && retryChangeText(rec) && <p className="text-xs text-[color:var(--text-muted)] break-words" data-testid="t1-retry-change">{retryChangeText(rec)}</p>}
       {rec && rec.requalified.length > 0 && (
         <p className="text-xs text-[color:var(--text-muted)] break-words">
           {rec.before.qualityState} → {rec.after.qualityState} : {rec.requalified.slice(0, 30).map((q) => `${q.unitId} ${q.from.status}→${q.to.status} (${q.rule ?? q.to.reason})`).join(' · ')}

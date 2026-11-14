@@ -25,6 +25,7 @@
  */
 import { createHash } from 'node:crypto';
 import { buildCompletenessReport } from './coverage';
+import { decideRetry, retryFactsOf, retryLimits } from './retry-policy';
 import { pageTextsFromRawExtract } from './page-text-layer';
 import { SOURCE_VERIFIER_VERSION, verifyPdfCoverage, type PageProbe, type SourceVerification } from './source-verification';
 import type { CoveredSourceUnit, T1CoverageDiagnostics } from './types';
@@ -150,6 +151,14 @@ export async function reverifyStoredCoverage(p: { accountId: number; fileId: num
     factCount: u.factCount, repairAttempts: u.repairAttempts, repairState: (u.repairState ?? null) as CoveredSourceUnit['repairState'],
   }));
   const maxRetries = p.maxRetries ?? maxCompletenessRetries();
+  // Lot 114H (#775, P1-A) : « une reprise reste-t-elle admissible ? » — règle unique (`retry-policy.ts`), avec la
+  // vérification RECALCULÉE (pages manquantes objectivées). Sans reprise admissible, une page manquante rend
+  // INCOMPLETE_FINAL (jamais « reprise programmée » sans reprise).
+  const limits = { ...retryLimits(), maxRetries };
+  const regle = decideRetry(
+    retryFactsOf(covered, { qualityState: null, verificationReason: v.reason ?? null, pagesMissing: v.missing }, limits),
+    { retryAttempts: cov.retryAttempts, continuationRuns: Number(d.continuationRuns ?? 0) || 0 }, limits,
+  );
   const report = buildCompletenessReport(covered, {
     factsCount: cov.factsCount,
     unresolvedFacts: anciens,
@@ -158,7 +167,7 @@ export async function reverifyStoredCoverage(p: { accountId: number; fileId: num
     repairPassCount: cov.repairPassCount,
     chunkCount: cov.chunkCount,
     warningCodes: (cov.anomalies ?? []).includes('PARTIAL_EXTRACTION') ? ['PARTIAL_EXTRACTION'] : [],
-    retryAllowed: cov.retryAttempts < maxRetries,
+    retryAllowed: regle.automatic,
     verification: v,
     normalisation: {
       truncations: Number(d.truncations ?? 0), originalsPreserved: Number(d.originalsPreserved ?? 0), losses: Number(d.normalisationLosses ?? 0),
@@ -184,10 +193,19 @@ export async function reverifyStoredCoverage(p: { accountId: number; fileId: num
   )) as unknown as Row[];
   if (rows.length === 0) return skip('coverage_changed', avant);
   let requeued = false;
-  if (result === 'MISSING_PAGES' && cov.retryAttempts < maxRetries) {
+  if (result === 'MISSING_PAGES' && regle.actions.includes('REQUEUE_T1')) {
     // Omission OBJECTIVÉE : relecture ciblée par la file T1 (la continuation relit ces seules pages). Bornée.
-    const { requeueDocumentForReread } = await import('./jobs');
-    requeued = await requeueDocumentForReread({ fileId: p.fileId, accountId: p.accountId, attempt: cov.retryAttempts + 1, origin: 't1-coverage-reverify', result: 'REQUEUED_T1_PAGES_MISSING' });
+    // Lot 114H (#775, P1-B) : « remis en file » seulement si un travail vivant est confirmé ; un refus transitoire
+    // repose une échéance (la tâche de reprise retentera), sans consommer de reprise.
+    const { requeueDocumentForRereadDetailed } = await import('./jobs');
+    requeued = (await requeueDocumentForRereadDetailed({
+      fileId: p.fileId, accountId: p.accountId, attempt: cov.retryAttempts + 1, origin: 't1-coverage-reverify', result: 'REQUEUED_T1_PAGES_MISSING', scheduled: true,
+    })).queued;
+  }
+  if (apres === 'INCOMPLETE_FINAL' && avant !== 'INCOMPLETE_FINAL') {
+    // Lot 114H (#775) : lacune réelle sans reprise admissible — visible en Supervision (même signalement que l'analyse).
+    const { recordT1Completeness } = await import('./monitoring');
+    await recordT1Completeness({ accountId: p.accountId, fileId: p.fileId, report, persisted: true }).catch(() => undefined);
   }
   console.info(`[t1-coverage-reverify] fichier ${p.fileId} : ${result} (${avant} → ${apres}), ${v.verified.length}/${pageCount} page(s) vérifiée(s)`
     + `${v.missing.length ? `, manquantes ${v.missing.join(',')}` : ''}${v.unverified.length ? `, non vérifiables ${v.unverified.join(',')}` : ''}`);

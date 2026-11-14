@@ -655,6 +655,10 @@ jobs:
         run: npm run test:e2e:tco-confirmations -- --reporter=default --reporter=junit --outputFile.junit=rapports/e2e-tco-confirmations.xml
       - name: IA T1 — refus de schéma mémorisés, supervision et alertes de compatibilité (Trello #776)
         run: npm run test:e2e:schemas-structures -- --reporter=default --reporter=junit --outputFile.junit=rapports/e2e-schemas-structures.xml
+      - name: T1 — reprises fiabilisées, historique réévalué sans IA, alertes obsolètes closes (Trello #775)
+        run: npm run test:e2e:t1-reprises-historique -- --reporter=default --reporter=junit --outputFile.junit=rapports/e2e-t1-reprises-historique.xml
+      - name: E2E Agenda — événements à prévoir ou ayant eu lieu (#742)
+        run: npm run test:e2e:agenda-situation -- --reporter=default --reporter=junit --outputFile.junit=rapports/e2e-agenda-situation.xml
       - uses: actions/upload-artifact@v4
         if: always()
         with:

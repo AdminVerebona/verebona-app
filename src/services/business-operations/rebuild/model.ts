@@ -298,6 +298,8 @@ const DAMAGES = 't.damage_id IN (SELECT d.id FROM business_operation_claim_damag
 export const REBUILD_SCOPE: readonly ScopeTable[] = [
   { table: 'business_operations', filter: ACC },
   { table: 'business_operation_sources', filter: ACC },
+  // Lot 114O (#744, 1718) : déclarations de l'utilisateur (cascade d'une Opération purgée → restaurables ; jamais purgées : `user_source`).
+  { table: 'business_operation_declarations', filter: ACC },
   { table: 'business_operation_asset_links', filter: ACC },
   { table: 'business_operation_equipment_links', filter: ACC },
   { table: 'business_operation_room_links', filter: ACC },
@@ -309,6 +311,8 @@ export const REBUILD_SCOPE: readonly ScopeTable[] = [
   { table: 'business_operation_projection_suppressions', filter: ACC },
   { table: 'business_operation_references', filter: ACC },
   { table: 'business_operation_match_decisions', filter: ACC },
+  // Lot 114O (#744) : relations entre Opérations (supprimées en cascade avec une Opération purgée → restaurables).
+  { table: 'business_operation_relations', filter: ACC },
   { table: 'business_operation_side_amounts', filter: ACC },
   { table: 'business_operation_asset_exclusions', filter: ACC },
   { table: 'business_operation_asset_data_marks', filter: ACC },
@@ -322,6 +326,8 @@ export const REBUILD_SCOPE: readonly ScopeTable[] = [
   ...LEGACY_CLAIM_TABLES.map((table) => ({ table, filter: table.endsWith('_marks') ? ACC : OPS })),
   { table: 'document_operation_candidates', filter: ACC },
   { table: 'agenda_items', filter: ACC },
+  // Lot 114O (#744) : liens N↔N Opération ↔ élément d'Agenda (cascade d'une Opération purgée ; tenus par le déclencheur 1716).
+  { table: 'business_operation_agenda_links', filter: ACC },
   { table: 'agenda_asset_links', filter: ITEMS },
   { table: 'agenda_file_links', filter: ITEMS },
   { table: 'agenda_room_links', filter: ITEMS },

@@ -1,11 +1,11 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { emitBusinessEvent } from '@/services/verebona-assistant/events/business-events';
 import { db } from '@/db';
 import { apiError } from '@/lib/api-errors';
 import { SessionService } from '@/lib/session-service';
 import { canUsePremiumFeature } from '@/services/entitlements.service';
 import { assetSupportsStructuralFeatures } from '@/types/domain';
 import { refuserSiModificationBiensSuspendue } from '@/lib/asset-quota-guard';
+import { createRoomForAccount } from '@/services/assets/structure-write.facade';
 
 export async function GET(
   request: NextRequest,
@@ -127,18 +127,8 @@ export async function POST(
       return apiError(400, 'MISSING_FIELD', 'Name is required');
     }
 
-    const now = new Date().toISOString();
-    const [newSubstructure] = await db.$client<{ id: number; name: string; asset_id: number; order_index: number }[]>`
-      INSERT INTO substructures (asset_id, name, order_index, scope, public_id, created_at, updated_at)
-      VALUES (${assetId}, ${name.trim()}, 0, 'personal', gen_random_uuid(), ${now}, ${now})
-      RETURNING id, name, asset_id, order_index
-    `;
-
-    // CDC Assistant §25.7, §31.7 : pièce ajoutée au bien.
-    await emitBusinessEvent({ type: 'ASSET_UPDATED', accountId: session.currentAccountId!, entityId: assetId });
-    // Lot 84E (CDC v5 O-6, §9.3) : nouvelle Pièce → reconsolidation ciblée (file T3 Opérations, non bloquante).
-    const { notifyOperationsEvent } = await import('@/services/business-operations/consolidation/queue');
-    notifyOperationsEvent(session.currentAccountId!, { trigger: 'asset_updated', assetId, roomId: Number(newSubstructure.id) });
+    // Lot 114 (#753, W07) : création par la façade métier — la même que l'Assistant Verebona (événements compris).
+    const newSubstructure = await createRoomForAccount(session.currentAccountId, assetId, name);
     return NextResponse.json({ id: newSubstructure.id, name: newSubstructure.name, assetId: newSubstructure.asset_id, orderIndex: newSubstructure.order_index }, { status: 201 });
   } catch (error) {
     console.error('POST substructure error:', error);

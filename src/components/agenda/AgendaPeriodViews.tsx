@@ -26,6 +26,7 @@ import { DateChip } from '@/components/ui/date-chip';
 import { Calendar, List, CalendarRange, ChevronLeft, ChevronRight } from 'lucide-react';
 import type { AgendaItemFull } from '@/services/agenda/AgendaQueryService';
 import { NO_DEADLINE_LABEL } from '@/lib/agenda/no-deadline';
+import { groupUndated } from '@/lib/agenda/situation';
 import { AGENDA_EVENT_LABELS } from '@/lib/agenda/grouping-view';
 
 // Lot 113P (#715, décision PO du 06/11/2026) : plus de statut d'événement — ni badge,
@@ -181,10 +182,11 @@ export function CalendarView({ items, month, onItemClick }: { items: AgendaItemF
       </div>
 
       {/* Sans date block */}
-      {undated.length > 0 && (
-        <div className="space-y-2">
-          <p className="vb-group-label px-1">Sans date · {undated.length}</p>
-          {undated.map(item => (
+      {/* Lot 114V (#742) — règle remplacée : « À prévoir », « Sans date » (non qualifiés), « Date inconnue » (ont eu lieu). */}
+      {groupUndated(undated).map((g) => (
+        <div key={g.group} className="space-y-2" data-agenda-group={`sans-date-${g.group}`}>
+          <p className="vb-group-label px-1">{g.label} · {g.items.length}</p>
+          {g.items.map(item => (
             <button
               key={item.id}
               onClick={() => onItemClick(item)}
@@ -202,7 +204,7 @@ export function CalendarView({ items, month, onItemClick }: { items: AgendaItemF
             </button>
           ))}
         </div>
-      )}
+      ))}
     </div>
   );
 }

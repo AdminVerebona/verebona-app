@@ -63,7 +63,8 @@ describe('D-14 — prochaines échéances', () => {
   });
   it('fragment SQL : HISTORICAL exclu dès que la 0223 est appliquée ; vide sinon', async () => {
     colonnes.pretes = true;
-    expect(await upcomingDeadlinesSqlFilter('i')).toBe(" AND (i.event_nature IS DISTINCT FROM 'HISTORICAL')");
+    // Règle complétée (carte #742) : un événement qualifié « A eu lieu » n'est pas non plus une échéance à venir.
+    expect(await upcomingDeadlinesSqlFilter('i')).toBe(" AND (i.event_nature IS DISTINCT FROM 'HISTORICAL') AND (i.situation IS DISTINCT FROM 'A_EU_LIEU')");
     colonnes.pretes = false;
     expect(await upcomingDeadlinesSqlFilter('i')).toBe('');
     colonnes.pretes = true;

@@ -69,6 +69,13 @@ scenario('L77A-SE', 'Agenda : option « Sans échéance » et carte « À traite
   const balayage = async (c: Compte, trigger: 'SWEEP' | 'BACKFILL' = 'SWEEP') =>
     (await import('@/services/to-process/producers.service')).produceAgendaActions(c.id, { trigger });
 
+  /**
+   * Règle remplacée (carte #742) : une création manuelle sans date est désormais qualifiée « À prévoir » (défaut
+   * serveur) et ne reçoit plus de carte de date (décision 72C remplacée pour les éléments qualifiés). La décision
+   * 72C et l'option « Sans échéance » restent vérifiées sur un élément HÉRITÉ, non qualifié (situation NULL).
+   */
+  const herite = async (id: number) => { await sql`UPDATE agenda_items SET situation = NULL, situation_source = NULL, situation_decided_at = NULL WHERE id = ${id}`; };
+
   it('prépare deux comptes', async () => {
     moi = await make.account();
     autre = await make.account();
@@ -105,6 +112,7 @@ scenario('L77A-SE', 'Agenda : option « Sans échéance » et carte « À traite
     const r = await creer({ title: 'Appeler le plombier' });
     const id = r.body.item!.id;
     expect(r.body.item!.noDeadline).toBe(false);
+    await herite(id);
     await balayage(moi);
     const [carte] = await cartes(id);
     expect(carte).toMatchObject({ open: true });
@@ -182,6 +190,7 @@ scenario('L77A-SE', 'Agenda : option « Sans échéance » et carte « À traite
   it('L77A-E7 — isolation des comptes : un autre compte ne lit ni ne modifie l’option ; son balayage ne touche pas aux cartes de ce compte', async () => {
     as(moi);
     const id = (await creer({ title: 'Tâche privée' })).body.item!.id;
+    await herite(id);
     await balayage(moi);
     const [carte] = await cartes(id);
     as(autre);

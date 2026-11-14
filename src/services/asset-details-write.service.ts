@@ -336,6 +336,14 @@ async function writeSectionCanonical(
         throw new AssetDetailsError('VALIDATION_ERROR', errs.map((e) => e.message).join(' '), { fields: errs });
       }
 
+      // Lot 114F (#753, W02) : nom attendu en place (`expectedCurrent.name`), vérifié SOUS VERROU comme les
+      // champs canoniques — un bien renommé entre l'aperçu et la confirmation n'est pas renommé une seconde fois.
+      // Sans `expectedCurrent.name` (fiche du bien) : comportement inchangé.
+      if ('name' in fields && p.expectedCurrent && 'name' in p.expectedCurrent
+        && String((row as Record<string, unknown>).name ?? '') !== String(p.expectedCurrent.name ?? '')) {
+        throw new AssetDetailsError('CONFLICT', '« name » a été modifié entre-temps.');
+      }
+
       const columns: Record<string, unknown> = {};
       for (const [key, value] of Object.entries(fields)) {
         if (canoniques.has(key)) continue;

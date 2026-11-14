@@ -137,6 +137,8 @@ export const FILE_SCOPED_TABLES: ReadonlyArray<readonly [table: string, column: 
   ['document_business_periods', 'file_id'],
   // Lot 113AK (#736) : journal de provenance des faits du document (références d'unités, preuves) — suit le document.
   ['document_fact_provenance_events', 'file_id'],
+  // Lot 114H (#775) : journal de la réévaluation de la couverture T1 du document (1705) — suit le document.
+  ['t1_coverage_reassessments', 'file_id'],
 ];
 
 /** Tables des données du BIEN (colonne `asset_id`) qui suivent le bien. */
@@ -209,6 +211,10 @@ export const ACCOUNT_OWNED_TABLES: Readonly<Record<string, string>> = {
   business_operation_documents: 'Opérations : appartenance d’un document à une Opération (lot 82D) — SOURCE suit les sources (déclencheur 0655), USER intercomptes retiré (detachCrossAccountGroupingInTx)',
   business_period_decisions: 'Périodes métier : décision de l’utilisateur sur une divergence de périodes de SON événement de référence (lot 113AA, #725) — suit l’Opération (clé operation_id), reste au compte',
   business_operation_attribute_arbitrations: 'Opérations : mémoire de l’arbitrage T3 d’une contradiction d’attribut de SON événement de référence (lot 114, #750) — trace IA, suit l’Opération (clé operation_id), reste au compte',
+  business_operation_relations: 'Opérations : relation entre deux Opérations (lot 114O, #744) — suit ses DEUX Opérations si elles changent ensemble de compte, retirée (REMOVED, tracée) si une seule part (detachCrossAccountGraphInTx) : aucune relation entre comptes',
+  business_operation_agenda_links: 'Opérations : lien N↔N Opération ↔ élément d’Agenda (lot 114O, #744) — suit le couple s’il change ensemble de compte, retiré (REMOVED, tracé) sinon (detachCrossAccountGraphInTx) ; le lien de la colonne historique est tenu par le déclencheur 1716',
+  business_operation_graph_history: 'Opérations : journal des commandes d’écriture du graphe (lot 114O, #744) — trace d’exploitation du compte qui a décidé, jamais déplacée',
+  business_operation_declarations: 'Opérations : déclaration de l’utilisateur, source durable d’un événement de référence (lot 114O, #744) — suit SON Opération (clé composée operation_id + account_id, ON UPDATE CASCADE : transferAssetOperationsInTx)',
   business_period_relation_reviews: 'Périodes métier : mémoire du réexamen T3 d’une divergence de périodes de SON événement de référence (lot 113AD, #725) — trace IA, suit l’Opération (clé operation_id), reste au compte',
 };
 

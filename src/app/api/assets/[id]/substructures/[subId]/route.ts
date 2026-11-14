@@ -1,11 +1,11 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { emitBusinessEvent } from '@/services/verebona-assistant/events/business-events';
 import { db } from '@/db';
-import { substructures, assets } from '@/db/schema';
+import { assets } from '@/db/schema';
 import { eq, and } from 'drizzle-orm';
 import { apiError } from '@/lib/api-errors';
 import { SessionService } from '@/lib/session-service';
 import { refuserSiLectureSeule } from '@/lib/write-access-guard';
+import { deleteRoomForAccount, renameRoomForAccount } from '@/services/assets/structure-write.facade';
 
 export async function PUT(
   request: NextRequest,
@@ -53,19 +53,12 @@ export async function PUT(
       return apiError(400, 'MISSING_FIELD', 'Name is required');
     }
 
-    const rows = await db.$client<{ id: number; name: string; asset_id: number }[]>`
-      UPDATE substructures
-      SET name = ${name.trim()}, updated_at = NOW()
-      WHERE id = ${substructureId} AND asset_id = ${assetId}
-      RETURNING id, name, asset_id
-    `;
-
-    if (!rows.length) {
+    // Lot 114 (#753, W08) : renommage par la façade métier — la même que l'Assistant Verebona.
+    const row = await renameRoomForAccount(session.currentAccountId, assetId, substructureId, name);
+    if (!row) {
       return apiError(404, 'NOT_FOUND', 'Substructure not found');
     }
-
-    // CDC Assistant §25.7, §31.7 : pièce modifiée.
-    await emitBusinessEvent({ type: 'ASSET_UPDATED', accountId: session.currentAccountId!, entityId: assetId });
+    const rows = [row];
     return NextResponse.json({ id: rows[0].id, name: rows[0].name, assetId: rows[0].asset_id });
   } catch (error) {
     console.error('PUT substructure error:', error);
@@ -112,17 +105,10 @@ export async function DELETE(
     const refus = await refuserSiLectureSeule(session.currentAccountId);
     if (refus) return refus;
 
-    const [deletedSubstructure] = await db
-      .delete(substructures)
-      .where(and(eq(substructures.id, substructureId), eq(substructures.assetId, assetId)))
-      .returning();
-
-    if (!deletedSubstructure) {
+    // Lot 114 (#753, W09) : suppression par la façade métier — la même que l'Assistant Verebona.
+    if (!(await deleteRoomForAccount(session.currentAccountId, assetId, substructureId))) {
       return apiError(404, 'NOT_FOUND', 'Substructure not found');
     }
-
-    // CDC Assistant §25.7, §31.7 : pièce supprimée.
-    await emitBusinessEvent({ type: 'ASSET_UPDATED', accountId: session.currentAccountId!, entityId: assetId });
     return NextResponse.json({ message: 'Substructure deleted successfully' });
   } catch (error) {
     console.error('DELETE substructure error:', error);

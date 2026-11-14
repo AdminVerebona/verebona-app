@@ -239,7 +239,9 @@ describe('L113Z-U-STATIC — tiroir, import, route, dossiers', () => {
     expect(s).toContain('DocumentBusinessPeriodField');
   });
   it('route PUT : `description` jamais écrite ; notes seules → pas de réanalyse', () => {
-    const s = lire('src/app/api/documents/[id]/route.ts');
+    // Lot 114 (#753, W10 / W12 / W14) : règle déplacée — la logique de la route est dans la façade métier `document-write.facade` (partagée avec l'Assistant).
+    const s = lire('src/services/documents/document-write.facade.ts');
+    expect(lire('src/app/api/documents/[id]/route.ts')).toContain('updateDocumentForAccount');
     expect(s).not.toMatch(/updateData\.description\s*=/);
     expect(s).toMatch(/k !== 'notes'/);
     expect(s).toMatch(/!rienPourT1\) \{\n\s*reanalyser\(\)/);
@@ -251,6 +253,7 @@ describe('L113Z-U-STATIC — tiroir, import, route, dossiers', () => {
     const c = lire('src/app/api/files/confirm/route.ts');
     expect(c).not.toMatch(/updateData\.description\s*=/);
     expect(lire('src/app/api/web-links/route.ts')).not.toMatch(/description: description/);
+    expect(lire('src/services/documents/document-write.facade.ts')).not.toMatch(/description: description/);
   });
   it('dossiers V12 : aucune description documentaire dans la source des dossiers', () => {
     const s = lire('src/services/exports/v12/data/source.ts');

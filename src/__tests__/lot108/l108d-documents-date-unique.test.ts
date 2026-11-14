@@ -167,8 +167,22 @@ describe('L108D-U-SRC — aucune substitution date d’ajout ↔ date du documen
     expect(s).toMatch(/documentDateSource: documentDate \? 'USER' : null/);
   });
   it('confirmation de dépôt et lien web : date passée par la décision unique', () => {
-    for (const f of ['src/app/api/files/confirm/route.ts', 'src/app/api/web-links/route.ts']) {
-      const s = sansCommentaires(src(f));
+    // Lot 114 (#753, W10) — règle déplacée : la création d'un lien web vit dans la façade métier partagée avec
+    // l'Assistant ; la route l'appelle. La décision unique de date y est lue, au même titre qu'avant dans la route.
+    expect(src('src/app/api/web-links/route.ts')).toMatch(/createWebDocumentForAccount\(/);
+    // La façade porte AUSSI la modification d'un document (corps de `PUT /api/documents/[id]`, que ce test
+    // n'a jamais lu) : seule la fonction de création du lien web est lue ici, comme l'était la route.
+    const facade = src('src/services/documents/document-write.facade.ts');
+    const debut = facade.indexOf('export async function createWebDocumentForAccount');
+    const fin = facade.indexOf('export async function softDeleteDocument');
+    expect(debut).toBeGreaterThan(-1);
+    expect(fin).toBeGreaterThan(debut);
+    const sources: Array<[string, string]> = [
+      ['src/app/api/files/confirm/route.ts', src('src/app/api/files/confirm/route.ts')],
+      ['document-write.facade.ts#createWebDocumentForAccount', facade.slice(debut, fin)],
+    ];
+    for (const [f, texte] of sources) {
+      const s = sansCommentaires(texte);
       expect(s, f).toMatch(/resolveUploadDocumentDate\(/);
       expect(s, f).not.toMatch(/documentDate: documentDate \|\| null/);
     }

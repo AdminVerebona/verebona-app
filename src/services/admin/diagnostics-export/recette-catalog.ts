@@ -124,6 +124,7 @@ export const RECETTE_TABLES: Readonly<Record<string, { domain: Exclude<RecetteDo
   document_source_units: { domain: 'extraits-ia', description: 'Unités sources (pages, blocs) des extractions.' },
   // Lot 113AK (#736) : journal de provenance (fait → unité du même document, preuves orphelines).
   document_fact_provenance_events: { domain: 'extraits-ia', description: 'Journal de provenance : références d’unités sources invalides, provenances rétablies ou non reconstituables, preuves par champ retirées (bien ou document supprimé, transféré, fusionné).' },
+  t1_coverage_reassessments: { domain: 'extraits-ia', description: 'Réévaluation automatique, sans IA, de la couverture T1 des documents déjà analysés : état avant / après, version des règles, alertes de Supervision closes, maintenues ou ouvertes (lot 114H, #775).' },
   document_tables: { domain: 'extraits-ia', description: 'Tableaux extraits.' },
   document_table_cells: { domain: 'extraits-ia', description: 'Cellules des tableaux extraits.' },
   document_unresolved_facts: { domain: 'extraits-ia', description: 'Faits T1 non résolus.' },
@@ -216,6 +217,10 @@ export const RECETTE_TABLES: Readonly<Record<string, { domain: Exclude<RecetteDo
   claim_legacy_cleanup_runs: { domain: 'operations', description: 'Sinistres : exécutions du rattrapage de nettoyage de l’ancien modèle (lot 83D : simulation, application, restauration, refus sans point de restauration).' },
   claim_legacy_cleanup_journal: { domain: 'operations', description: 'Sinistres : journal du nettoyage de l’ancien modèle (image avant de chaque ligne purgée, restaurable par exécution — lot 83D).' },
   business_operation_room_links: { domain: 'operations', description: 'Liens Opération ↔ Pièce (lot 82D).' },
+  business_operation_relations: { domain: 'operations', description: 'Relations entre deux événements de référence distincts (financement ↔ acquisition, sinistre ↔ réparation, association) : nature, état (active, retirée, refusée), origine, preuves, version (lot 114O, #744).' },
+  business_operation_agenda_links: { domain: 'operations', description: 'Liens N↔N événement de référence ↔ élément d’Agenda, sans rôle principal ; `legacy_column` : lien aussi porté par la colonne historique (lot 114O, #744).' },
+  business_operation_graph_history: { domain: 'operations', description: 'Journal des commandes d’écriture du graphe des événements de référence : avant / après, auteur, preuves, clé d’idempotence (lot 114O, #744).' },
+  business_operation_declarations: { domain: 'operations', description: 'Déclarations de l’utilisateur qui fondent ou corrigent un événement de référence : texte utile, auteur, canal, horodatage (source USER_DECLARATION, lot 114O, #744).' },
   business_operation_documents: { domain: 'operations', description: 'Documents d’une Opération avec leur rôle (lot 82D).' },
   // Lot 84E (CDC v5 O-6, §27.6) : journal des reconsolidations ciblées.
   business_operation_targeted_runs: { domain: 'operations', description: 'Reconsolidations ciblées (équipement, bien, Pièce, série de documents récurrents, liens directs Document ↔ Équipement) : déclencheur, cible, compteurs, appels IA, issue (lot 84E).' },

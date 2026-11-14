@@ -44,7 +44,9 @@ import {
 import {
   SOURCE_LAYER_VERSION, type CoveredSourceUnit, type SourceLayer, type T1CoverageDiagnostics, type UnresolvedFactRecord,
 } from './types';
-import { needsSourceRetryDue, verificationAutoRetryDue } from './verification-followup';
+import { verificationAutoRetryDue } from './verification-followup';
+import { decideRetry, releaseUnschedulablePending, retryFactsOf, retryLimits } from './retry-policy';
+import type { T1EnqueueOutcome, T1EnqueueStatus } from '../queue/t1-handler';
 import { partitionUnitRefs, relinkFromStored, type StoredUnitView } from './provenance-integrity';
 import { provenanceJournalReady, recordProvenanceEvents } from './provenance-repair';
 import type { AnalysisContext, ExtractedTable, SourceInput, VisualObservation } from '../types';
@@ -285,17 +287,17 @@ export const toCovered = (u: StoredSourceUnit): CoveredSourceUnit => ({
   residualPolicy: u.residualPolicy ?? null,
 });
 
-interface RetryResult { examined: number; repaired: number; requeued: number; final: number; failed: number; more: boolean; disabled?: boolean }
+interface RetryResult {
+  examined: number; repaired: number; requeued: number; final: number; failed: number; more: boolean; disabled?: boolean;
+  /** Lot 114H (#775, P1-B) : remises en file T1 demandées mais NON confirmées (refus, compte non éligible) — jamais comptées « requeued ». */
+  notQueued: number;
+}
 
 /** Bail d'une reprise en cours (protection contre les exécutions concurrentes ; worker arrêté → reprise après le bail). */
 const RETRY_LEASE_MINUTES = 30;
-/** Passages de CONTINUATION (unités jamais examinées faute de budget) au plus par document. */
-function continuationMaxRuns(env: Record<string, string | undefined> = process.env): number {
-  return Math.min(200, Math.max(1, Math.trunc(num(env.T1_REPAIR_CONTINUATION_MAX_RUNS, 20))));
-}
 
 export async function runCompletenessRetry(opts: { deadline?: number; env?: Record<string, string | undefined> } = {}): Promise<RetryResult> {
-  const res: RetryResult = { examined: 0, repaired: 0, requeued: 0, final: 0, failed: 0, more: false };
+  const res: RetryResult = { examined: 0, repaired: 0, requeued: 0, final: 0, failed: 0, more: false, notQueued: 0 };
   if (!(await sourceLayerReady())) return { ...res, disabled: true };
   const s = jobSettings(opts.env);
   const { pgClient } = await import('@/db');
@@ -355,6 +357,7 @@ export async function runCompletenessRetry(opts: { deadline?: number; env?: Reco
         userId: Number(r.owner_user_id), title: r.title == null ? null : String(r.title), env: opts.env,
       }), { origin: 't1-completeness-retry' });
       if (out === 'requeued') res.requeued++;
+      else if (out === 'not_queued') res.notQueued++;
       else if (out === 'final') res.final++;
       else res.repaired++;
     } catch (err) {
@@ -418,34 +421,194 @@ function propagationSummary(o: RepairPropagationOutcome): Record<string, unknown
   };
 }
 
+/** Lot 114H (#775, P1-B) — refus TRANSITOIRES de mise en file tolérés avant de consommer une reprise. */
+export const REQUEUE_TRANSIENT_MAX = 3;
+/** Délai avant de retenter une mise en file refusée pour une cause transitoire (15 min, 30 min, 1 h…). */
+const requeueTransientDelayMs = (refusals: number) => 15 * 60_000 * 2 ** Math.max(0, refusals - 1);
+const requeueFingerprint = (fileId: number) => `ai:t1-requeue:${fileId}`;
+
+/** Issue d'une demande de relecture du fichier par la file T1 (lot 114H, #775 P1-B). */
+export interface RequeueResult {
+  /** Réponse réelle de la file (`T1EnqueueStatus`). */
+  status: T1EnqueueStatus;
+  /** Un travail vivant du document est CONFIRMÉ (créé, ou déjà présent) — seule condition de « REQUEUED_T1 ». */
+  queued: boolean;
+  jobId: number | null;
+  /** Motif exact du refus (code de la file) ; null si confirmé. */
+  reason: string | null;
+  /** Une reprise a-t-elle été consommée ? */
+  attemptConsumed: boolean;
+  /** Code consigné sur la couverture (`last_retry_result`). */
+  result: string;
+}
+
+/** Écritures de la couverture après une demande de mise en file (pure, testée). */
+export function requeueCoverageUpdate(p: {
+  status: T1EnqueueStatus; attempt: number; result: string; reason: string | null; maxRetries: number;
+  /** Refus transitoires déjà subis par cette demande. */
+  transientRefusals: number;
+  /** Demande de la tâche planifiée (la ligne est sous bail : l'échéance doit être reposée). */
+  scheduled: boolean; nowMs: number;
+}): {
+  result: string; consumeAttempt: boolean; transientRefusals: number; lastError: string | null; alert: boolean;
+  /** `Date` : échéance à poser ; `null` : aucune ; `'KEEP'` : échéance inchangée. */
+  nextRetryAt: Date | null | 'KEEP';
+} {
+  switch (p.status) {
+    case 'ACCEPTED':
+      return { result: p.result, consumeAttempt: true, transientRefusals: 0, lastError: null, alert: false, nextRetryAt: null };
+    case 'ALREADY_RUNNING':
+      // Le travail vivant n'est pas né de CETTE demande : aucune reprise consommée (tentatives exactes).
+      return { result: 'REQUEUE_ALREADY_RUNNING', consumeAttempt: false, transientRefusals: 0, lastError: null, alert: false, nextRetryAt: null };
+    case 'ACCOUNT_NOT_ELIGIBLE':
+      // La demande reste DUE : la tâche planifiée ne prend que les comptes éligibles (lot 82A) et repart à la réactivation.
+      return {
+        result: 'REQUEUE_ACCOUNT_NOT_ELIGIBLE', consumeAttempt: false, transientRefusals: p.transientRefusals,
+        lastError: 'mise en file T1 refusée : compte non éligible au traitement', alert: false,
+        nextRetryAt: p.scheduled ? new Date(p.nowMs) : 'KEEP',
+      };
+    case 'REJECTED_TRANSIENT': {
+      const n = p.transientRefusals + 1;
+      const erreur = `mise en file T1 refusée (transitoire) : ${p.reason ?? 'cause inconnue'}`;
+      if (n <= REQUEUE_TRANSIENT_MAX) {
+        return {
+          result: 'REQUEUE_REJECTED_TRANSIENT', consumeAttempt: false, transientRefusals: n, lastError: erreur, alert: false,
+          nextRetryAt: p.scheduled ? new Date(p.nowMs + requeueTransientDelayMs(n)) : 'KEEP',
+        };
+      }
+      // Refus transitoires répétés : une reprise est consommée (jamais de boucle) ; au plafond, plus d'échéance.
+      const reste = p.attempt < p.maxRetries;
+      return {
+        result: 'REQUEUE_REJECTED_TRANSIENT', consumeAttempt: true, transientRefusals: 0, lastError: erreur, alert: !reste,
+        nextRetryAt: !p.scheduled ? 'KEEP' : reste ? new Date(p.nowMs + retryDelayMs(p.attempt + 1)) : null,
+      };
+    }
+    case 'REJECTED_FINAL':
+      return {
+        result: 'REQUEUE_REJECTED_FINAL', consumeAttempt: false, transientRefusals: 0, alert: true,
+        lastError: `mise en file T1 refusée (définitif) : ${p.reason ?? 'cause inconnue'}`, nextRetryAt: null,
+      };
+  }
+}
+
 /**
  * Relecture du FICHIER : le document repasse dans la file T1 (traitement
- * technique, non facturé, non annoncé). Consomme une tentative. Lot 53 (D19) :
- * partagée par la reprise d'une lacune de pages, d'une vérification
- * incomplète transitoire et la reprise manuelle du BO (`result`).
+ * technique, non facturé, non annoncé). Lot 53 (D19) : partagée par la
+ * reprise d'une lacune de pages, d'une vérification incomplète transitoire,
+ * la reprise manuelle du BO et le contrôle de cohérence (`result`).
+ *
+ * ══════════════════════════════════════════════════════════════════════════
+ * LOT 114H (Trello #775, P1-B) — PLUS DE REJEU FICTIF
+ *
+ * Règle remplacée : quelle que soit la réponse de la file, la couverture
+ * recevait `retry_attempts = attempt`, `next_retry_at = NULL` et le résultat
+ * demandé (« REQUEUED_T1 ») ; les appelants de la reprise planifiée ignoraient
+ * le booléen rendu. Un refus consommait donc une reprise, effaçait l'échéance
+ * et s'affichait comme une remise en file réussie.
+ *
+ * Désormais : l'issue RÉELLE de la file est lue (`enqueueFileAnalysesDetailed`),
+ * la présence du travail est RELUE en base après la mise en file, et la
+ * couverture n'est écrite « remise en file » que si un travail vivant du
+ * document est confirmé. Voir `requeueCoverageUpdate` pour chaque issue.
+ * Refus définitif, ou transitoire répété jusqu'au plafond : anomalie de
+ * Supervision (`ai:t1-requeue:<document>`), résolue à la prochaine mise en
+ * file confirmée. La mise en file et l'écriture de la couverture ne peuvent
+ * pas partager une transaction (la file a la sienne) : si le processus
+ * s'arrête entre les deux, le bail de la ligne expire et la reprise suivante
+ * constate le travail vivant (ALREADY_RUNNING) — aucune reprise comptée deux fois.
+ * ══════════════════════════════════════════════════════════════════════════
+ */
+export async function requeueDocumentForRereadDetailed(p: {
+  fileId: number; accountId: number; attempt: number; origin: string; result: string;
+  /** Demande de la tâche planifiée `t1-completeness-retry` (ligne sous bail). */
+  scheduled?: boolean;
+  env?: Record<string, string | undefined>;
+}): Promise<RequeueResult> {
+  const { pgClient } = await import('@/db');
+  let issue: T1EnqueueOutcome;
+  try {
+    const { enqueueFileAnalysesDetailed } = await import('../queue/t1-handler');
+    // Lot 83C (R22) : relecture = reprise ciblée de la dernière exécution du document.
+    const issues = await enqueueFileAnalysesDetailed([p.fileId], p.accountId, { origin: p.origin, billable: false, processingVisibility: 'TECHNICAL', resume: true });
+    issue = issues.find((o) => o.fileId === p.fileId) ?? { fileId: p.fileId, status: 'REJECTED_TRANSIENT', jobId: null, reason: 'NO_OUTCOME' };
+  } catch (e) {
+    issue = { fileId: p.fileId, status: 'REJECTED_TRANSIENT', jobId: null, reason: 'ENQUEUE_ERROR', error: String((e as Error).message ?? e).slice(0, 300) };
+  }
+  // Présence du travail RELUE après l'opération : le travail créé (quel que soit son état), ou un travail vivant du document.
+  if (issue.status === 'ACCEPTED' || issue.status === 'ALREADY_RUNNING') {
+    const vivant = (await pgClient.unsafe(
+      `SELECT id FROM ai_job_queue
+        WHERE treatment = 'T1' AND account_id = $1 AND target_type = 'asset_file' AND target_id = $2
+          AND (id = $3 OR status IN ('PENDING', 'RUNNING'))
+        ORDER BY id DESC LIMIT 1`,
+      [p.accountId, String(p.fileId), issue.jobId] as never[],
+    ).catch(() => [])) as unknown as Array<{ id: number }>;
+    if (vivant.length === 0) issue = { fileId: p.fileId, status: 'REJECTED_TRANSIENT', jobId: null, reason: 'JOB_NOT_FOUND_AFTER_ENQUEUE' };
+    else if (issue.jobId === null) issue = { ...issue, jobId: Number(vivant[0].id) };
+  }
+  const [avant] = (await pgClient.unsafe(
+    `SELECT to_jsonb(c) -> 'verification' -> 'requeue' ->> 'transientRefusals' AS refus FROM document_extraction_coverage c WHERE c.file_id = $1 AND c.account_id = $2`,
+    [p.fileId, p.accountId] as never[],
+  ).catch(() => [])) as unknown as Array<{ refus: string | null }>;
+  const maj = requeueCoverageUpdate({
+    status: issue.status, attempt: p.attempt, result: p.result, reason: issue.reason, maxRetries: jobSettings(p.env).maxRetries,
+    transientRefusals: Number(avant?.refus ?? 0) || 0, scheduled: p.scheduled === true, nowMs: Date.now(),
+  });
+  const garder = maj.nextRetryAt === 'KEEP';
+  await pgClient.unsafe(
+    `UPDATE document_extraction_coverage
+        SET retry_attempts = CASE WHEN $3::boolean THEN GREATEST(retry_attempts, $4::int) ELSE retry_attempts END,
+            next_retry_at = CASE WHEN $5::boolean THEN next_retry_at ELSE $6::timestamptz END,
+            origin = CASE WHEN $3::boolean THEN 'RETRY' ELSE origin END,
+            last_error = $7, updated_at = NOW()
+      WHERE file_id = $1 AND account_id = $2`,
+    [p.fileId, p.accountId, maj.consumeAttempt, p.attempt, garder, garder || maj.nextRetryAt === null ? null : (maj.nextRetryAt as Date).toISOString(), maj.lastError] as never[],
+  );
+  // Colonnes 0329 (dernière reprise, diagnostics) : écrites si présentes — issue exacte de la demande, sans contenu.
+  await pgClient.unsafe(
+    `UPDATE document_extraction_coverage
+        SET last_retry_at = NOW(), last_retry_result = $3,
+            verification = jsonb_set(coalesce(verification, '{}'::jsonb), '{requeue}', $4::jsonb, true)
+      WHERE file_id = $1 AND account_id = $2`,
+    [p.fileId, p.accountId, maj.result, JSON.stringify({
+      status: issue.status, reason: issue.reason, jobId: issue.jobId, origin: p.origin, at: new Date().toISOString(),
+      transientRefusals: maj.transientRefusals, attemptConsumed: maj.consumeAttempt,
+    })] as never[],
+  ).catch(() => undefined);
+  const queued = issue.status === 'ACCEPTED' || issue.status === 'ALREADY_RUNNING';
+  if (!queued) console.warn(`[t1-requeue] fichier ${p.fileId} (${p.origin}) : remise en file T1 non confirmée — ${issue.status}${issue.reason ? ` (${issue.reason})` : ''}`);
+  // Supervision : une vraie erreur est visible ; elle se résout à la prochaine mise en file confirmée.
+  try {
+    const { autoResolveAnomaly, reportAnomaly } = await import('@/services/admin/anomaly.service');
+    if (maj.alert) {
+      await reportAnomaly({
+        domain: 'ai', fingerprint: requeueFingerprint(p.fileId), accountId: p.accountId,
+        title: `Relecture T1 non mise en file (document ${p.fileId}) : ${issue.status}${issue.reason ? ` — ${issue.reason}` : ''}`,
+        detail: { fileId: p.fileId, status: issue.status, reason: issue.reason, origin: p.origin, attempt: p.attempt },
+        materialKey: `${issue.status}:${issue.reason ?? ''}`,
+      });
+    } else if (queued) {
+      await autoResolveAnomaly(requeueFingerprint(p.fileId), { origin: 't1_requeue', cause: `mise en file T1 confirmée (${issue.status})` });
+    }
+  } catch { /* la Supervision ne fait jamais échouer une reprise */ }
+  return { status: issue.status, queued, jobId: issue.jobId, reason: queued ? null : issue.reason, attemptConsumed: maj.consumeAttempt, result: maj.result };
+}
+
+/**
+ * Forme historique (booléen) de `requeueDocumentForRereadDetailed`, gardée pour le contrôle de cohérence.
+ * Lot 114H (#775) : `true` signifie désormais « un travail vivant du document est confirmé » (créé OU déjà
+ * présent) ; un travail déjà en file n'est plus rendu comme un refus.
  */
 export async function requeueDocumentForReread(p: {
   fileId: number; accountId: number; attempt: number; origin: string; result: string;
 }): Promise<boolean> {
-  const { pgClient } = await import('@/db');
-  const { enqueueFileAnalyses } = await import('../queue/t1-handler');
-  // Lot 83C (R22) : relecture = reprise ciblée de la dernière exécution du document.
-  const acceptes = await enqueueFileAnalyses([p.fileId], p.accountId, { origin: p.origin, billable: false, processingVisibility: 'TECHNICAL', resume: true });
-  const ok = acceptes.includes(p.fileId);
-  await pgClient.unsafe(
-    `UPDATE document_extraction_coverage SET retry_attempts = $2, next_retry_at = NULL, origin = 'RETRY', updated_at = NOW(),
-            last_error = $3 WHERE file_id = $1`,
-    [p.fileId, p.attempt, ok ? null : 'mise en file T1 refusée'] as never[],
-  );
-  await pgClient.unsafe(
-    `UPDATE document_extraction_coverage SET last_retry_at = NOW(), last_retry_result = $2 WHERE file_id = $1`, [p.fileId, p.result] as never[],
-  ).catch(() => undefined);
-  return ok;
+  return (await requeueDocumentForRereadDetailed(p)).queued;
 }
 
 /** Issue d'une reprise ciblée d'un document (lot 83B : détail rendu au contrôle de cohérence). */
 interface DocumentRetryOutcome {
-  outcome: 'repaired' | 'requeued' | 'final';
+  /** `not_queued` (lot 114H, #775) : remise en file T1 demandée mais NON confirmée — jamais « requeued ». */
+  outcome: 'repaired' | 'requeued' | 'final' | 'not_queued';
   /** Appels ANALYZE_DOCUMENT de la passe textuelle et de la relecture du fichier. */
   calls: number;
   /** Unités soumises à la passe textuelle. */
@@ -477,9 +640,11 @@ async function retryDocument(p: {
   if (p.qualityState === 'VERIFICATION_INCOMPLETE' && !p.textOnly) {
     const cov = await loadDocumentCoverage(p.fileId, p.accountId);
     const raison = ((cov?.verification ?? {}) as { verificationReason?: string | null }).verificationReason ?? null;
+    // Lot 114H (#775) : `maxRetries = 0` désactive toute reprise automatique (`verificationAutoRetryDue` : 0 < 0 faux).
     if (verificationAutoRetryDue({ qualityState: p.qualityState, verificationReason: raison, retryAttempts: p.attempt - 1, maxRetries: p.maxRetries })) {
-      await requeueDocumentForReread({ fileId: p.fileId, accountId: p.accountId, attempt: p.attempt, origin: 't1-completeness-retry', result: 'REQUEUED_T1' });
-      return issue('requeued', 'REQUEUED_T1');
+      // Lot 114H (#775, P1-B) : « REQUEUED_T1 » seulement si la file confirme un travail vivant.
+      const rq = await requeueDocumentForRereadDetailed({ fileId: p.fileId, accountId: p.accountId, attempt: p.attempt, origin: 't1-completeness-retry', result: 'REQUEUED_T1', scheduled: true, env: p.env });
+      return issue(rq.queued ? 'requeued' : 'not_queued', rq.result);
     }
     // Lot 54G (point 2) : une observation NEEDS_SOURCE (image, scan) a une VRAIE reprise :
     // relecture ciblée du fichier, même si la couverture globale reste non vérifiable.
@@ -510,22 +675,38 @@ async function retryDocument(p: {
   ]);
   const sqlR = pgClient as unknown as Parameters<typeof loadStoredReconciliationInput>[0];
   const units = reconcileCoverage(stored.map(toCovered), { ...(await loadStoredReconciliationInput(sqlR, p.accountId, p.fileId)), stage: 'STORED' });
-  const lacunes = units.filter((u) => u.kind === 'PAGE_GAP' && u.status === 'FAILED' && u.payload.retryable === true);
-
-  // Lacune de pages : seule une relecture du fichier peut la combler → file T1.
-  if (lacunes.length > 0 && p.attempt <= p.maxRetries && !p.textOnly) {
-    await requeueDocumentForReread({ fileId: p.fileId, accountId: p.accountId, attempt: p.attempt, origin: 't1-completeness-retry', result: 'REQUEUED_T1' });
-    return issue('requeued', 'REQUEUED_T1');
-  }
-
-  const { repairAttemptCap, repairSettings, runRepairPass } = await import('./repair');
-  const cap = repairAttemptCap(p.env);
-  const cibles = selectRepairUnits(units, cap);
   const couverture = await loadDocumentCoverage(p.fileId, p.accountId);
   const diag = storedDiagnostics(couverture?.verification);
+  // ══════════════════════════════════════════════════════════════════════
+  // LOT 114H (Trello #775, P1-A) — GARDE D'ENTRÉE : la règle unique décide
+  //
+  // Règle remplacée : chaque maillon testait sa propre borne (`attempt <=
+  // maxRetries`, passages de continuation) et la reprise d'un document sans
+  // action exécutable consommait une tentative puis se reprogrammait. Avant
+  // tout appel IA, `decideRetry` dit ce qui reste admissible ; sans action
+  // (ni automatique, ni reprise manuelle demandée), AUCUN appel n'est fait,
+  // aucune tentative n'est consommée, et l'écriture finale retire l'échéance.
+  // ══════════════════════════════════════════════════════════════════════
+  const limits = { ...retryLimits(p.env), maxRetries: p.maxRetries };
+  const verifStockee = { qualityState: p.qualityState ?? couverture?.qualityState ?? null, verificationReason: diag.verification?.reason ?? null, pagesMissing: diag.verification?.missing ?? [] };
+  const entree = decideRetry(retryFactsOf(units, verifStockee, limits), { retryAttempts: p.attempt - 1, continuationRuns: diag.continuationRuns }, limits);
+  const admissible = entree.automatic || entree.manual;
+
+  // Lacune de pages, ou page manquante (omission objectivée) : seule une relecture du fichier peut la combler → file T1.
+  // Lot 114H (#775) : la page manquante n'avait AUCUNE action — la reprise tournait à vide ; elle suit la lacune de pages.
+  if (entree.actions.includes('REQUEUE_T1') && !p.textOnly) {
+    const rq = await requeueDocumentForRereadDetailed({ fileId: p.fileId, accountId: p.accountId, attempt: p.attempt, origin: 't1-completeness-retry', result: 'REQUEUED_T1', scheduled: true, env: p.env });
+    return issue(rq.queued ? 'requeued' : 'not_queued', rq.result);
+  }
+
+  const { repairSettings, runRepairPass } = await import('./repair');
+  const cap = limits.unitCap;
   // Lot 49B (DEV-04) : unités jamais examinées faute de budget — une CONTINUATION ne consomme pas de tentative.
-  const enAttente = units.filter((u) => u.repairState === 'PENDING').length;
-  const continuation = enAttente > 0 && diag.continuationRuns < continuationMaxRuns(p.env);
+  const continuation = entree.actions.includes('CONTINUATION');
+  const resteUneReprise = limits.maxRetries > 0 && p.attempt <= limits.maxRetries;
+  // Lot 114H (#775) : au-delà du plafond de reprises, une continuation ne soumet QUE les unités en attente
+  // (jamais d'appel IA « gratuit » pour des unités déjà examinées).
+  const cibles = selectRepairUnits(units, cap).filter((u) => resteUneReprise || u.repairState === 'PENDING');
   const facts: T1Fact[] = [];
   let failed = new Map<string, { reason: string; retryable: boolean }>();
   let attempted: string[] = [];
@@ -533,14 +714,14 @@ async function retryDocument(p: {
   let calls = 0;
   // Lot 54G (point 2) : unités NEEDS_SOURCE — relecture du FICHIER (bornée, comptée à part).
   const sourceCap = sourceRereadCap(p.env);
-  const aRelire = p.attempt <= p.maxRetries && !p.textOnly ? selectSourceRereadUnits(units, sourceCap) : [];
+  const aRelire = admissible && resteUneReprise && !p.textOnly ? selectSourceRereadUnits(units, sourceCap) : [];
   let relecture: SourceRereadResult | null = null;
   // Lot 114G (#760, P1-02 / P1-03) : liens locaux fait ↔ unité et décisions de valeur de la passe de
   // réparation — jusqu'ici perdus par la reprise différée (seuls faits et compteurs étaient repris).
   let liensLocaux: Map<T1Fact, string[]> | undefined;
   let decisionsRecues: AnchoredValueDecision[] = [];
   let decisionsEcartees = { schemaInvalid: 0, unitNotFound: 0 };
-  const textuelle = cibles.length > 0 && (p.attempt <= p.maxRetries || continuation);
+  const textuelle = admissible && cibles.length > 0 && (resteUneReprise || continuation);
   if (aRelire.length > 0 || textuelle) {
     const [{ loadAnalysisContext }, { getAccountCapabilities }, { loadAssetFamilies }, step] = await Promise.all([
       import('../pipeline'),
@@ -632,16 +813,18 @@ async function retryDocument(p: {
   // autre unité, valeurs déjà structurées, répétitions ; jamais une promotion sans preuve.
   majs = reconcileCoverage(majs, { ...(await loadStoredReconciliationInput(sqlR, p.accountId, p.fileId)), stage: attempted.length > 0 ? 'REPAIR' : 'STORED' });
   const progression = attempted.some((id) => units.find((u) => u.sourceUnitId === id)?.repairState === 'PENDING') && failed.size === 0;
-  const consomme = !(continuation && progression) || relecture !== null;
+  // Lot 114H (#775) : rien d'admissible à l'entrée → rien n'a été tenté, aucune tentative consommée.
+  const consomme = admissible && (!(continuation && progression) || relecture !== null);
   const tentativesStockees = consomme ? p.attempt : p.attempt - 1;
   const runs = diag.continuationRuns + (continuation && attempted.length > 0 ? 1 : 0);
   majs = withRepairStates(majs, { attempted: new Set([...tentees, ...relues]), pending: new Set(notAttempted), cap, sourceCap });
-  if (runs >= continuationMaxRuns(p.env)) {
-    // Plafond de continuation atteint : les unités restantes sont « plafond atteint », explicitement.
-    majs = majs.map((u) => (u.repairState === 'PENDING' ? { ...u, repairState: 'EXHAUSTED' } : u));
-  }
   // Lot 113AN : politique explicite de chaque unité restante.
   majs = withResidualPolicies(majs);
+  // Lot 114H (#775, P1-A) : ce qui reste admissible APRÈS cette passe (règle unique). Règle remplacée : au plafond
+  // de continuation, les unités en attente passaient « épuisées » alors qu'elles n'avaient jamais été tentées ;
+  // l'attente est maintenant levée avec le motif du plafond (`REPAIR_NOT_RUN:<motif>`), distinct de REPAIR_EXHAUSTED.
+  const suite = decideRetry(retryFactsOf(majs, verifStockee, limits), { retryAttempts: tentativesStockees, continuationRuns: runs }, limits);
+  if (!suite.automatic) majs = releaseUnschedulablePending(majs, suite);
   const anciens = await loadUnresolvedDocumentFacts(p.fileId, { accountId: p.accountId });
   const unresolved: UnresolvedFactRecord[] = anciens.map(({ id: _i, fileId: _f, createdAt: _c, ...x }) => {
     void _i; void _f; void _c;
@@ -654,7 +837,7 @@ async function retryDocument(p: {
     [p.fileId] as never[],
   )) as unknown as Row[];
   const pr = prev[0] ?? {};
-  const retryAllowed = tentativesStockees < p.maxRetries;
+  const retryAllowed = suite.automatic;
   const report = buildCompletenessReport(majs, {
     factsCount: Number(pr.facts_count ?? 0) + nouveaux.length,
     unresolvedFacts: unresolved,
@@ -690,11 +873,11 @@ async function retryDocument(p: {
   }
   // Unités en attente avec progression : continuation rapprochée ; sinon délai croissant.
   // Lot 54G (point 2) : relecture du fichier encore due (NEEDS_SOURCE, tentatives restantes) : reprise programmée.
-  const relectureDue = needsSourceRetryDue({ needsSourceUnits: report.diagnostics!.needsSourceUnits, retryAttempts: tentativesStockees, maxRetries: p.maxRetries });
-  const prochaine = report.qualityState === 'INCOMPLETE_RETRYABLE'
-    ? new Date(Date.now() + (progression && report.diagnostics!.pendingRepairUnits > 0 ? 5 * 60_000 : retryDelayMs(tentativesStockees + 1)))
-    : relectureDue ? new Date(Date.now() + retryDelayMs(tentativesStockees + 1)) : null;
-  const resultatTexte = attempted.length === 0 ? 'NOTHING_TO_REPAIR'
+  // Lot 114H (#775, P1-A) : une échéance n'existe QUE si la règle unique admet une action automatique.
+  const prochaine = !suite.automatic ? null
+    : new Date(Date.now() + (progression && suite.actions.includes('CONTINUATION') ? 5 * 60_000 : retryDelayMs(tentativesStockees + 1)));
+  const resultatTexte = !admissible ? `RETRY_NOT_ADMISSIBLE:${entree.blocked ?? 'NOTHING_TO_RETRY'}`
+    : attempted.length === 0 ? 'NOTHING_TO_REPAIR'
     : failed.size > 0 ? 'REPAIR_FAILED' : nouveaux.length > 0 ? `REPAIRED_${nouveaux.length}` : 'NO_NEW_FACT';
   const resultatRelecture = !relecture ? null
     : relecture.failed && relecture.resolved.length === 0 ? 'SOURCE_REREAD_FAILED'
@@ -709,6 +892,7 @@ async function retryDocument(p: {
       retryAttempts: tentativesStockees,
       nextRetryAt: prochaine,
       retryResult: resultat,
+      env: { ...(p.env ?? process.env), T1_COMPLETENESS_MAX_RETRIES: String(p.maxRetries) },
     });
   });
   const { recordT1Completeness } = await import('./monitoring');

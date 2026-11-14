@@ -188,6 +188,10 @@ export const DIAG_TABLE_COVERAGE: Readonly<Record<string, DiagTableCoverage>> = 
   business_operation_asset_links: C('relations'),
   business_operation_equipment_links: C('relations'),
   business_operation_room_links: C('relations'),
+  // Lot 114O (#744, 1715-1717) : graphe canonique des événements de référence — relations entre Opérations,
+  // liens N↔N Opération ↔ élément d'Agenda (sans rôle principal), journal des commandes de la façade d'écriture.
+  business_operation_relations: C('relations'),
+  business_operation_agenda_links: C('relations'),
   business_operation_asset_exclusions: C('relations'),
   business_operation_asset_data_marks: C('relations'),
   business_operation_financial_component_sources: C('relations', { filter: `t.component_id IN (SELECT c.id FROM business_operation_financial_components c WHERE c.account_id = {{A}})` }),
@@ -211,6 +215,8 @@ export const DIAG_TABLE_COVERAGE: Readonly<Record<string, DiagTableCoverage>> = 
   document_source_units: C('extractions-ia'),
   // Lot 113AK (#736) : journal des références de provenance invalides et de leur traitement (unités, preuves orphelines).
   document_fact_provenance_events: C('extractions-ia'),
+  // Lot 114H (#775) : journal de la réévaluation sans IA de la couverture T1 du stock (avant / après, alertes closes ou maintenues).
+  t1_coverage_reassessments: C('extractions-ia'),
   document_tables: C('extractions-ia'),
   document_table_cells: C('extractions-ia'),
   document_analysis_runs: C('extractions-ia'),
@@ -338,6 +344,9 @@ export const DIAG_TABLE_COVERAGE: Readonly<Record<string, DiagTableCoverage>> = 
   cdc15_migration_backups: C('rapprochements-agenda-controles'),
   // ── Historique ───────────────────────────────────────────────────────────
   business_operation_history: C('historique'),
+  business_operation_graph_history: C('historique'),
+  // Lot 114O (#744, 1718) : déclarations de l'utilisateur, source durable d'un événement de référence (texte utile borné).
+  business_operation_declarations: C('historique'),
   subscription_history: C('historique'),
   account_audit_log: C('historique'),
   document_rename_events: C('historique'),

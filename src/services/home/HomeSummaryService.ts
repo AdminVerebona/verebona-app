@@ -21,11 +21,12 @@ import { OTHER_ASSET_IDS_SQL, documentInAssetsCondition } from '@/services/docum
 import { effectiveThumbnailUrl, loadDefaultAssetPhotos } from '@/services/assets/default-asset-photo';
 import { getToProcessPage } from '@/services/to-process/to-process-query.service';
 import {
-  deriveUpcoming, deriveVerebonaWork, docStatus, docTone,
+  deriveToPlan, deriveUpcoming, deriveVerebonaWork, docStatus, docTone, MAX_TO_PLAN, type HomeToPlan,
   type HomeRecentDocument, type HomeUpcomingItem, type VerebonaWorkItem,
 } from '@/services/home/home-blocks';
 import { isAgendaActionItemT4 } from '@/services/home/mascot/collector';
 import { upcomingDeadlinesSqlFilter } from '@/services/agenda/AgendaQueryService';
+import { isUpcomingBySituation } from '@/lib/agenda/situation';
 import { getRubric } from '@/lib/referential/v2';
 import { aiFieldUpdatesTargetReady } from '@/services/canonical/entity-state/entity-schema';
 import { OUT_OF_PORTFOLIO_ASSET_STATUSES } from '@/lib/asset-status';
@@ -91,7 +92,11 @@ export interface HomeSummaryPayload {
     /** « Documents récents » — Direction D v2 §3.5 (4 tuiles). */
     recentDocuments: { items: HomeRecentDocument[] };
     /** « Prochaines échéances » — prototype D v2 (décision produit), 5 au plus. */
-    upcoming: { items: HomeUpcomingItem[] };
+    upcoming: {
+      items: HomeUpcomingItem[];
+      /** Lot 114V (#742) — groupe « À prévoir » : événements ouverts sans date (bornés) et leur total. */
+      toPlan: HomeToPlan;
+    };
   };
   assets: { items: HomeAsset[]; total: number };
   /** Total des documents du compte (compte vide, §12ter). */
@@ -175,6 +180,8 @@ export async function buildHomeSummary(accountId: number): Promise<HomeSummaryPa
       homeCategory: agendaItems.homeCategory,
       occurrenceNature: agendaItems.occurrenceNature,
       originFieldKey: agendaItems.originFieldKey,
+      // Lot 114V (#742) : un événement « A eu lieu » n'est jamais une échéance à venir.
+      situation: agendaItems.situation,
       // Colonnes 0223 : non déclarées dans Drizzle, lues seulement si présentes.
       eventNature: t4 ? sql<string | null>`agenda_items.event_nature` : sql<string | null>`NULL::text`,
       businessType: t4 ? sql<string | null>`agenda_items.business_type` : sql<string | null>`NULL::text`,
@@ -408,7 +415,7 @@ export async function buildHomeSummary(accountId: number): Promise<HomeSummaryPa
 
     // Prochaine date par bien (via agenda asset links)
     agendaOuverts.forEach(item => {
-      if (!item.startDate || item.startDate < today) return;
+      if (!item.startDate || item.startDate < today || !isUpcomingBySituation(item)) return;
       const links = agendaAssetMap[item.id] ?? [];
       links.forEach(({ assetId }) => {
         if (!assetIds.includes(assetId)) return;
@@ -546,7 +553,7 @@ export async function buildHomeSummary(accountId: number): Promise<HomeSummaryPa
   // statut d'événement), bornées par l'horizon de la requête.
   const upcoming = deriveUpcoming(
     agendaOuverts
-      .filter((i) => !!i.startDate)
+      .filter((i) => !!i.startDate && isUpcomingBySituation(i))
       .map((i) => ({
         id: i.id,
         title: i.title,
@@ -561,7 +568,29 @@ export async function buildHomeSummary(accountId: number): Promise<HomeSummaryPa
     today,
   );
 
-  const isEmpty = assetRows.length === 0 && agendaRows.length === 0;
+  // Lot 114V (#742) — groupe « À prévoir » : événements OUVERTS SANS DATE du compte (situation « À prévoir »),
+  // les plus récents d'abord, bornés ; le total donne accès à la liste complète (Agenda). Aucune date n'est
+  // calculée : ces lignes ne sont jamais triées avec les échéances datées (qui restent prioritaires, au-dessus).
+  const conditionAPrevoir = and(eq(agendaItems.accountId, accountId), isNull(agendaItems.startDate), eq(agendaItems.situation, 'A_PREVOIR'));
+  const [aPrevoirRows, aPrevoirTotal] = await Promise.all([
+    db.select({ id: agendaItems.id, title: agendaItems.title }).from(agendaItems).where(conditionAPrevoir)
+      .orderBy(desc(agendaItems.createdAt), desc(agendaItems.id)).limit(MAX_TO_PLAN),
+    db.select({ n: sql<number>`count(*)::int` }).from(agendaItems).where(conditionAPrevoir),
+  ]);
+  const aPrevoirBiens = aPrevoirRows.length
+    ? await db.select({ agendaItemId: agendaAssetLinks.agendaItemId, assetName: assets.name })
+      .from(agendaAssetLinks)
+      .innerJoin(assets, and(eq(agendaAssetLinks.assetId, assets.id), eq(assets.accountId, accountId)))
+      .where(inArray(agendaAssetLinks.agendaItemId, aPrevoirRows.map((r) => r.id)))
+      .orderBy(asc(agendaAssetLinks.id))
+    : [];
+  const toPlan = deriveToPlan(
+    aPrevoirRows.map((r) => ({ id: r.id, title: r.title, assetName: aPrevoirBiens.find((b) => b.agendaItemId === r.id)?.assetName ?? null })),
+    Number(aPrevoirTotal[0]?.n ?? 0),
+  );
+
+  // Compte vide : un événement à prévoir sans date compte aussi (il n'est pas lu par la requête datée ci-dessus).
+  const isEmpty = assetRows.length === 0 && agendaRows.length === 0 && toPlan.total === 0;
 
   // Les signed URLs S3 sont intentionnellement absentes ici pour ne pas bloquer
   // le rendu initial. Elles sont chargées côté client via useThumbnailUrl (cache 55 min).
@@ -596,7 +625,7 @@ export async function buildHomeSummary(accountId: number): Promise<HomeSummaryPa
     blocks: {
       verebonaWork: { items: verebonaWork },
       recentDocuments: { items: recentDocuments },
-      upcoming: { items: upcoming },
+      upcoming: { items: upcoming, toPlan },
     },
     assets: {
       items: enrichedAssets,

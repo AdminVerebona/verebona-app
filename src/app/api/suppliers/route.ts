@@ -1,11 +1,8 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { emitBusinessEvent } from '@/services/verebona-assistant/events/business-events';
-import { db } from '@/db';
-import { suppliers } from '@/db/schema';
 import { SessionService } from '@/lib/session-service';
 import { refuserSiLectureSeule } from '@/lib/write-access-guard';
 import { apiError } from '@/lib/api-errors';
-import { normalizeName } from '@/services/suppliers/supplier-service';
+import { createSupplierForAccount } from '@/services/suppliers/supplier-write.facade';
 import { listSuppliers, parseSupplierListQuery } from '@/services/suppliers/supplier-list.service';
 
 // GET /api/suppliers — liste / recherche paginées (IBAN exclu).
@@ -56,42 +53,13 @@ export async function POST(request: NextRequest) {
       return NextResponse.json(await checkSupplierDuplicate(accountId, String(name)));
     }
 
-    const normalizedName = normalizeName(name.trim());
-
-    const [newSupplier] = await db.insert(suppliers).values({
-      accountId,
-      createdByUserId: session.userId,
-      name: name.trim(),
-      normalizedName,
-      email: email?.trim() || null,
-      phone: phone?.trim() || null,
-      website: website?.trim() || null,
-      addressLine1: addressLine1?.trim() || null,
-      addressLine2: addressLine2?.trim() || null,
-      postalCode: postalCode?.trim() || null,
-      city: city?.trim() || null,
-      country: country?.trim() || null,
-      siret: siret?.trim() || null,
-      vatNumber: vatNumber?.trim() || null,
-      iban: iban?.trim() || null,
-      ibanHolderName: ibanHolderName?.trim() || null,
-      source: source ?? 'manual',
-      // Lot 109B : aucun statut de vérification (notion supprimée).
-      status: 'active',
-      createdAt: new Date(),
-      updatedAt: new Date(),
-    }).returning({ id: suppliers.id, publicId: suppliers.publicId, name: suppliers.name, status: suppliers.status });
-
-    // Lot 113G (#706) : « Créer quand même » malgré des fiches proches = identités DISTINCTES décidées par
-    // l'utilisateur, mémorisées par paire (jamais reproposées par la cohérence ni un nouveau document).
-    if (newSupplier && Array.isArray(body.confirmedDistinctFrom) && body.confirmedDistinctFrom.length) {
-      const { recordDistinctFromCandidates } = await import('@/services/agenda/agenda-suppliers');
-      const ids = (body.confirmedDistinctFrom as unknown[]).map(Number).filter((x) => Number.isSafeInteger(x) && x > 0);
-      await recordDistinctFromCandidates(db as never, accountId, newSupplier.id, ids, session.userId ?? null);
-    }
-
-    // CDC Assistant §31.7 : modification d'un fournisseur (signal hors catalogue §25.7).
-    await emitBusinessEvent({ type: 'SUPPLIER_CHANGED', accountId, entityId: newSupplier?.id ?? null });
+    // Lot 114 (#753, W18) : création par la façade métier — la même que l'Assistant Verebona (validations,
+    // mémoire des identités distinctes décidées par l'utilisateur, événement SUPPLIER_CHANGED).
+    const newSupplier = await createSupplierForAccount({
+      accountId, userId: session.userId,
+      input: { name, email, phone, website, addressLine1, addressLine2, postalCode, city, country, siret, vatNumber, iban, ibanHolderName, source },
+      confirmedDistinctFrom: Array.isArray(body.confirmedDistinctFrom) ? (body.confirmedDistinctFrom as unknown[]).map(Number) : [],
+    });
     return NextResponse.json({ supplier: newSupplier }, { status: 201 });
   } catch (err) {
     return SessionService.handleSessionError(err);

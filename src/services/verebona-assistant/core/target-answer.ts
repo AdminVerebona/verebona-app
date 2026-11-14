@@ -181,14 +181,22 @@ export function agendaTargetAnswer(i: CanonicalAgendaItem, attr: AgendaAttribute
   const quand = i.date ? formatDateFr(i.date) : null;
   const passe = !!i.date && i.date < today;
   // Lot 53 (D27) : « prévu » seulement pour un événement saisi par l'utilisateur.
-  const datation = !quand ? `Aucune date n’est enregistrée pour ${t}.`
+  // Lot 114V (#742) : situation qualifiée par l'utilisateur — sans date, l'assistant dit « à prévoir » ou
+  // « a eu lieu, date inconnue » (jamais une date inventée, jamais « a-t-il eu lieu ? ») ; à une question de
+  // réalisation, il rapporte le choix de l'utilisateur. Non qualifiée : formulations du lot 113P inchangées.
+  const datation = !quand
+    ? i.situation === 'A_PREVOIR' ? `${t} est à prévoir : aucune date n’est encore fixée.`
+      : i.situation === 'A_EU_LIEU' ? `${t} a eu lieu ; sa date n’est pas connue.`
+        : `Aucune date n’est enregistrée pour ${t}.`
     : i.nature === 'HISTORICAL' ? `${t} est daté du ${quand} dans votre historique.`
       : i.forecast ? `${t} est estimé autour du ${quand} (date prévisionnelle, à confirmer par un document).`
         : (i.dateRole ?? 'DEADLINE') === 'SCHEDULED_EVENT'
           ? `${t} ${passe ? 'était prévu le' : 'est prévu le'} ${quand}.`
           : `${t} ${passe ? 'était à prévoir pour le' : 'est à prévoir pour le'} ${quand}.`;
-  const text = attr === 'date' ? datation
-    : `${datation} L’agenda situe l’événement dans le temps, sans indiquer s’il a été réalisé.`;
+  const realisation = i.situation === 'A_EU_LIEU' ? (quand ? 'Vous avez indiqué que cet événement a eu lieu.' : '')
+    : i.situation === 'A_PREVOIR' ? (quand ? 'Vous avez indiqué que cet événement reste à prévoir.' : '')
+      : 'L’agenda situe l’événement dans le temps, sans indiquer s’il a été réalisé.';
+  const text = attr === 'date' ? datation : `${datation} ${realisation}`.trim();
   const src: RetrievedSource = {
     id: `agenda_${i.id}`, type: 'agenda_item', title: i.title,
     content: [i.date, i.nature === 'HISTORICAL' ? 'fait passé' : null, i.forecast ? 'date prévisionnelle' : null,

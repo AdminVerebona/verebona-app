@@ -51,6 +51,7 @@ import {
   toProcessActions,
 } from '@/db/schema';
 import type { ActionProposal } from './action-model';
+import { SITUATION_QUESTION, situationOf } from '@/lib/agenda/situation';
 import type { TraceFailure } from './trace-retries';
 import { upsertAction } from './to-process-action.service';
 import {
@@ -130,6 +131,12 @@ export interface AgendaDateFacts {
    */
   noDeadline?: boolean;
   /**
+   * Lot 114V (#742) : « Situation de l'événement » QUALIFIÉE (`A_PREVOIR` /
+   * `A_EU_LIEU`) — l'intention est connue : l'absence de date n'est plus une
+   * question. `null` / absente : élément non qualifié (hérité, traitement).
+   */
+  situation?: string | null;
+  /**
    * Lot 83A (CDC v5 §11.5, §13.6, §16) : l'élément est le PRINCIPAL d'une
    * Opération active — l'événement global : sa date est nécessaire (Timeline
    * regroupée, dossier Assurance/Sinistre), même s'il est informatif.
@@ -169,6 +176,13 @@ const ORIGINES_UTILISATEUR = ['manual', 'legacy_event_migration'];
  *   · lot 83A — événement PRINCIPAL d'une Opération active (événement global,
  *     CDC v5 §11.5) : la date est nécessaire (OPERATION_PRINCIPAL_DATE), même
  *     pour un événement informatif ; « Sans échéance » prime toujours.
+ *   · lot 114V (#742) — situation QUALIFIÉE (« À prévoir » ou « A eu lieu »,
+ *     choisie au formulaire, par défaut d'une création manuelle, sur la carte
+ *     ou reprise) : la date est JUSTIFIÉE non nécessaire
+ *     (SITUATION_QUALIFIED) — même priorité que « Sans échéance » : prime sur
+ *     la catégorie, la décision 72C (règle remplacée pour les éléments
+ *     qualifiés) et l'événement principal. Seul un élément NON qualifié peut
+ *     encore recevoir la carte, devenue une question neutre de qualification.
  * La décision « Non applicable » de l'utilisateur est protégée à l'écriture
  * (empreinte de `upsertAction`) : critère sans objet ici.
  */
@@ -177,7 +191,8 @@ export function agendaDateAdmissibility(f: AgendaDateFacts, now: Date = new Date
   const ecrivable = !!f.sourceDate && f.isAutomatic && !f.isAutomaticModified;
   const saisiParUtilisateur = !f.isAutomatic && ORIGINES_UTILISATEUR.includes(f.originType);
   const sansEcheance = f.noDeadline === true;
-  const necessaire = sansEcheance ? false : f.operationPrincipal ? true
+  const qualifie = situationOf(f.situation) !== null;
+  const necessaire = sansEcheance || qualifie ? false : f.operationPrincipal ? true
     : f.homeCategory === 'information' ? false : f.homeCategory === 'action' ? true : saisiParUtilisateur ? true : null;
   return decideAdmissibility({
     ruleCode: 'DATA-AGENDA-DATE',
@@ -192,7 +207,7 @@ export function agendaDateAdmissibility(f: AgendaDateFacts, now: Date = new Date
     },
     notApplicable: ['userDecided'],
     motives: {
-      neededForUse: sansEcheance ? NO_DEADLINE_REASON : f.homeCategory === 'information' ? 'INFORMATIONAL_EVENT' : 'CATEGORY_UNKNOWN',
+      neededForUse: sansEcheance ? NO_DEADLINE_REASON : qualifie ? SITUATION_QUALIFIED_REASON : f.homeCategory === 'information' ? 'INFORMATIONAL_EVENT' : 'CATEGORY_UNKNOWN',
       autoResolvable: 'DATE_FOUND_AT_SOURCE',
       timely: 'QUALIFICATION_PENDING',
     },
@@ -206,6 +221,24 @@ export function agendaDateAdmissibility(f: AgendaDateFacts, now: Date = new Date
     },
   });
 }
+
+/**
+ * Lot 114V (#742 §6) — question de la carte DATA-AGENDA-DATE d'un élément
+ * sans date NON qualifié (pure) :
+ *   · élément AMBIGU (intention inconnue, aucune preuve) : question NEUTRE de
+ *     qualification, texte exact de la carte — jamais « a-t-il (eu) lieu ? »
+ *     présupposé ; deux choix sans présélection, date facultative ;
+ *   · FAIT établi par les données — nature HISTORICAL du registre (achat,
+ *     sinistre, vente…) ou événement PRINCIPAL d'un événement de référence
+ *     (lots 83A / 85E) : il n'y a pas d'ambiguïté sur sa réalité, seule la
+ *     date manque — question de date antérieure, inchangée.
+ */
+export function agendaDateQuestion(f: { title: string; eventNature?: string | null; operationPrincipal?: boolean }): string {
+  return f.operationPrincipal || f.eventNature === 'HISTORICAL' ? `À quelle date « ${f.title} » a-t-il lieu ?` : SITUATION_QUESTION;
+}
+
+/** Lot 114V (#742) : motif (tracé) — situation de l'événement qualifiée, aucune date à réclamer. */
+export const SITUATION_QUALIFIED_REASON = 'SITUATION_QUALIFIED';
 
 /** Lot 77A : motif (tracé) de la fermeture d'une carte de date d'une tâche « Sans échéance ». */
 export const NO_DEADLINE_REASON = 'NO_DEADLINE_BY_USER';
@@ -320,6 +353,10 @@ export async function produceAgendaActions(accountId: number, opts: ProducerRunO
       isAutomatic: agendaItems.isAutomatic, isAutomaticModified: agendaItems.isAutomaticModified,
       requiresQualification: agendaItems.requiresQualification, createdAt: agendaItems.createdAt,
       noDeadline: agendaItems.noDeadline,
+      // Lot 114V (#742) : situation qualifiée → aucune carte de date ; nature (0223, lue sans la déclarer) →
+      // un FAIT établi (achat, sinistre…) garde la question de date, jamais la question de qualification.
+      situation: agendaItems.situation,
+      eventNature: sql<string | null>`to_jsonb(${agendaItems}) ->> 'event_nature'`,
     })
     .from(agendaItems)
     .where(
@@ -342,7 +379,7 @@ export async function produceAgendaActions(accountId: number, opts: ProducerRunO
     const decision = agendaDateAdmissibility({ ...item, sourceDate: sources.get(item.id) ?? null, operationPrincipal: !!principal });
     const evidence = { homeCategory: item.homeCategory, originType: item.originType, automatic: item.isAutomatic, modifiedByUser: item.isAutomaticModified,
       requiresQualification: item.requiresQualification, sourceDate: sources.get(item.id) ?? null, sourceFileId: item.originRefType === 'asset_file' ? item.originRefId : null,
-      noDeadline: item.noDeadline === true,
+      noDeadline: item.noDeadline === true, situation: situationOf(item.situation),
       ...(principal ? { operationPrincipal: true, contestedDates: principal.contested } : {}) };
     const trace = async (effect: FamilyDecisionRecord['effect'], actionIds: FamilyDecisionRecord['actionIds'] = null, d = decision, error: string | null = null) =>
       traceFailure(report, accountId, 'AGENDA_ITEM', item.id, 'DATA-AGENDA-DATE', await recordFamilyDecision({ accountId, targetType: 'AGENDA_ITEM', targetId: item.id, ruleCode: 'DATA-AGENDA-DATE', dataKey: 'date', trigger,
@@ -353,7 +390,7 @@ export async function produceAgendaActions(accountId: number, opts: ProducerRunO
       const ecrit = (await pgClient.unsafe(
         `UPDATE agenda_items SET start_date = $3::date, date_source = COALESCE(date_source, 'EXPLICIT_DATE'), updated_at = now()
           WHERE id = $1 AND account_id = $2 AND start_date IS NULL AND is_automatic = true AND is_automatic_modified = false
-            AND no_deadline = false
+            AND no_deadline = false AND situation IS NULL
           RETURNING to_char(start_date, 'YYYY-MM-DD') AS d`,
         [item.id, accountId, date] as never[],
       )) as unknown as Array<{ d: string }>;
@@ -372,7 +409,7 @@ export async function produceAgendaActions(accountId: number, opts: ProducerRunO
         cause: 'écriture de la date retrouvée non confirmée', targetType: 'AGENDA_ITEM', targetId: item.id });
       const repli = decideAdmissibility({ ruleCode: 'DATA-AGENDA-DATE', checks: { ...decision.checks, autoResolvable: false } });
       const r = await upsertAction({ accountId, targetType: 'AGENDA_ITEM', targetId: item.id, fieldKey: 'date', actionKind: 'COMPLETE',
-        ruleCode: 'DATA-AGENDA-DATE', question: `À quelle date « ${item.title} » a-t-il lieu ?` });
+        ruleCode: 'DATA-AGENDA-DATE', question: agendaDateQuestion({ title: item.title, eventNature: item.eventNature, operationPrincipal: !!principal }) });
       if (r.status === 'CREATED') report.created += 1; else if (r.status === 'UPDATED') report.updated += 1;
       await trace(r.status === 'CREATED' ? 'CREATED' : r.status === 'UPDATED' ? 'KEPT' : 'NONE', r.actionId ? { [r.status === 'CREATED' ? 'created' : 'kept']: [r.actionId] } : null, repli,
         'écriture de la date retrouvée non confirmée');
@@ -408,7 +445,8 @@ export async function produceAgendaActions(accountId: number, opts: ProducerRunO
       fieldKey: 'date',
       actionKind: 'COMPLETE',
       ruleCode: 'DATA-AGENDA-DATE',
-      question: `À quelle date « ${item.title} » a-t-il lieu ?`,
+      // Lot 114V (#742) — règle remplacée pour un élément AMBIGU : question neutre de qualification.
+      question: agendaDateQuestion({ title: item.title, eventNature: item.eventNature, operationPrincipal: !!principal }),
     });
     if (result.status === 'CREATED' || (rouverte && result.actionId === rouverte)) report.created += 1;
     else if (result.status === 'UPDATED') report.updated += 1;

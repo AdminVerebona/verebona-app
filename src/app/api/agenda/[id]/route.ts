@@ -70,6 +70,8 @@ export async function PUT(req: NextRequest, context: RouteContext) {
     if (body && typeof body === 'object' && 'dissociateIncompatible' in body && (body as Record<string, unknown>).dissociateIncompatible !== true) delete (body as Record<string, unknown>).dissociateIncompatible;
     // Lot 113P (#715) : un `manualStatus` envoyé par un ancien client est ignoré (plus de statut d'événement).
     if (body && typeof body === 'object') delete (body as Record<string, unknown>).manualStatus;
+    // Lot 114V (#742) : la provenance de la situation est décidée par le service, jamais par le client.
+    if (body && typeof body === 'object') delete (body as Record<string, unknown>).situationSource;
     // Lot 77A : l'auteur est tracé avec l'option « Sans échéance » (cochée / retirée).
     const item = await updateAgendaItem(id, body, accountId, session.userId ?? null);
     const suppliers = fournisseurs ? await appliquerFournisseurs(accountId, id, session.userId ?? null, fournisseurs) : undefined;

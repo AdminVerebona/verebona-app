@@ -896,5 +896,9 @@ export async function detachCrossAccountGroupingInTx(r: GroupingRunner, accountI
   // Lot 109A : liens Opération ↔ fournisseur devenus intercomptes (Opération déplacée, fiche restée) retirés, tracés.
   const { detachCrossAccountOperationSuppliers } = await import('@/services/relations/operation-suppliers');
   await detachCrossAccountOperationSuppliers(r, accountIds);
+  // Lot 114O (#744) : graphe canonique — relations entre Opérations et liens N↔N d'Agenda : suivis si le couple a changé
+  // de compte ensemble, retirés (tracés) sinon ; liens de la colonne historique resynchronisés.
+  const { detachCrossAccountGraphInTx } = await import('../graph/store');
+  await detachCrossAccountGraphInTx(r, accountIds);
   return { agendaItems: items.length, documents: docs.length, rooms: rooms.length };
 }

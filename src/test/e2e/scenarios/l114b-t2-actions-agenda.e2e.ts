@@ -53,7 +53,8 @@ scenario('L114B-AGENDA', 'Lot 114B — créer sans date, modifier, supprimer une
   it('L114B-AGENDA-E01 — W15 : échéance créée sans date, après confirmation seulement', async () => {
     const { c } = await preparer();
     const r = planDe(await demander(c, 'Ajoute un entretien pour la Clio'));
-    expect(r.preview.summary).toMatch(/Créer l’échéance « Entretien » \(sans date\), rattachée à Clio\. Confirmez-vous \?/);
+    // Règle remplacée (carte #742) : annoncée « À prévoir » (situation par défaut d'une création manuelle), plus « Sans date ».
+    expect(r.preview.summary).toMatch(/Créer l’échéance « Entretien » \(à prévoir\), rattachée à Clio\. Confirmez-vous \?/);
     // E04 : rien n'est écrit avant la confirmation.
     expect(await echeances(c)).toHaveLength(0);
     const conf = await confirmer(c, r.plan.planId);

@@ -19,6 +19,8 @@ import { drizzleRunner } from '@/services/business-operations/grouping/runner';
 import { logStructuralLinkDecision, planStructuralLinks } from './housing-scope.service';
 import { upsertAgendaItem, agendaItemValues, type AgendaUpsertInput } from './agenda-write-primitive';
 import { resolveNoDeadlineWrite } from '@/lib/agenda/no-deadline';
+import { resolveSituationWrite, situationOf, type AgendaSituation, type AgendaSituationSource } from '@/lib/agenda/situation';
+import { todayParisDateStr } from '@/lib/notifications/time-paris';
 import type { AgendaDeletionScope } from './agenda-user-deletion';
 
 interface CreateAgendaItemInput {
@@ -48,7 +50,20 @@ interface CreateAgendaItemInput {
    * par un traitement automatique.
    */
   noDeadline?: boolean;
+  /**
+   * Lot 114V (#742) : « Situation de l'événement » (`A_EU_LIEU` | `A_PREVOIR`)
+   * — choix de l'UTILISATEUR (sélecteur des tiroirs, carte « À traiter » de
+   * qualification). Validée par `resolveSituationWrite` : absente d'une
+   * création manuelle → « À prévoir » (défaut serveur) ; « A eu lieu » avec
+   * une date future → refus explicite. Jamais transmise par un traitement.
+   */
+  situation?: AgendaSituation | null;
+  /** Renseignée par le service (provenance) — jamais lue d'une demande. */
+  situationSource?: AgendaSituationSource;
 }
+
+/** Horloge injectable (tests indépendants de la date du jour). */
+interface AgendaWriteClock { today?: string }
 
 type UpdateAgendaItemInput = Partial<CreateAgendaItemInput> & {
   /**
@@ -63,13 +78,30 @@ type UpdateAgendaItemInput = Partial<CreateAgendaItemInput> & {
 export async function createAgendaItem(
   input: CreateAgendaItemInput,
   accountId: number,
-  createdByUserId: number | null
+  createdByUserId: number | null,
+  clock: AgendaWriteClock = {},
 ): Promise<AgendaItemFull> {
   // Lot 77A : « Sans échéance » validée d'abord (incompatible avec une date).
   const sansEcheance = resolveNoDeadlineWrite(input);
   if (!sansEcheance.ok) throw new AgendaValidationError(sansEcheance.error);
   if (sansEcheance.clearDates) input = { ...input, startDate: null, startTime: null, endDate: null, endTime: null };
   input = { ...input, noDeadline: sansEcheance.noDeadline === true };
+
+  // Lot 114V (#742) : situation de l'événement — AVANT toute écriture et tout
+  // appel modèle. Création MANUELLE par l'utilisateur sans situation transmise
+  // (ancien client, Assistant) : « À prévoir ». Un élément créé par un
+  // traitement par ce chemin (donnée à qualifier, origine non manuelle) reste
+  // non qualifié.
+  const situation = resolveSituationWrite({
+    situation: input.situation,
+    effectiveStartDate: input.startDate ?? null,
+    requestedNoDeadline: input.noDeadline === true,
+    defaultForManualCreation: (input.originType ?? 'manual') === 'manual' && !input.isAutomatic && !input.requiresQualification,
+    coupleTouched: true,
+    today: clock.today ?? todayParisDateStr(),
+  });
+  if (!situation.ok) throw new AgendaValidationError(situation.error);
+  input = { ...input, situation: situation.situation ?? null, situationSource: situation.source };
 
   // 1-2. Contrôles de dates et de cohérence des liens — AVANT la
   // classification : une demande invalide ne coûte aucun appel modèle.
@@ -158,6 +190,8 @@ export function manualUpsertInput(
       originRefId: input.originRefId ?? null,
       // Lot 77A : écrite seulement si l'utilisateur a coché l'option.
       ...(input.noDeadline ? { noDeadline: true } : {}),
+      // Lot 114V : écrite seulement si le service l'a résolue (choix transmis ou défaut manuel).
+      ...(input.situation ? { situation: input.situation, situationSource: input.situationSource ?? 'USER' } : {}),
     },
   };
 }
@@ -176,6 +210,7 @@ export async function updateAgendaItem(
   input: UpdateAgendaItemInput,
   accountId: number,
   actorUserId: number | null = null,
+  clock: AgendaWriteClock = {},
 ): Promise<AgendaItemFull> {
   const existing = await getAgendaItemById(id, accountId);
   if (!existing) throw new Error('Item not found');
@@ -185,7 +220,27 @@ export async function updateAgendaItem(
   const sansEcheance = resolveNoDeadlineWrite(input);
   if (!sansEcheance.ok) throw new AgendaValidationError(sansEcheance.error);
   if (sansEcheance.clearDates) input = { ...input, startDate: null, startTime: null, endDate: null, endTime: null };
-  const noDeadlineChange = sansEcheance.noDeadline !== undefined && sansEcheance.noDeadline !== (existing.noDeadline ?? false);
+  let noDeadlineEcrit: boolean | undefined = sansEcheance.noDeadline;
+
+  // Lot 114V (#742) : situation de l'événement — le COUPLE situation / date
+  // de début après l'écriture est contrôlé dès que l'une des deux change
+  // (« A eu lieu » + date future : refus explicite, rien n'est écrit). Sans
+  // situation transmise, celle de l'élément est conservée (un élément non
+  // qualifié le reste : jamais reclassé d'office).
+  const situationAvant = situationOf(existing.situation);
+  const situation = resolveSituationWrite({
+    situation: input.situation,
+    effectiveStartDate: sansEcheance.clearDates ? null : input.startDate !== undefined ? input.startDate : existing.startDate,
+    requestedNoDeadline: sansEcheance.noDeadline === true,
+    existing: situationAvant,
+    coupleTouched: input.startDate !== undefined || sansEcheance.clearDates,
+    today: clock.today ?? todayParisDateStr(),
+  });
+  if (!situation.ok) throw new AgendaValidationError(situation.error);
+  const situationChange = situation.situation !== undefined;
+  // « A eu lieu » : l'option « Sans échéance » déjà en base est retirée (elle ne décrit qu'une tâche à prévoir).
+  if (situationChange && situation.situation === 'A_EU_LIEU' && existing.noDeadline === true && noDeadlineEcrit === undefined) noDeadlineEcrit = false;
+  const noDeadlineChange = noDeadlineEcrit !== undefined && noDeadlineEcrit !== (existing.noDeadline ?? false);
 
   const assetIds = input.assetIds ?? existing.assetLinks.map(l => l.assetId);
   const fileIds = input.fileIds ?? existing.fileLinks.map(l => l.assetFileId);
@@ -233,7 +288,9 @@ export async function updateAgendaItem(
   const isAutomaticModified = existing.isAutomatic &&
     (input.title !== undefined || input.description !== undefined ||
      input.startDate !== undefined || input.startTime !== undefined ||
-     input.endDate !== undefined || input.endTime !== undefined || noDeadlineChange);
+     input.endDate !== undefined || input.endTime !== undefined || noDeadlineChange
+     // Lot 114V : qualifier la situation est une décision de l'utilisateur — T4 ne réécrit plus l'élément.
+     || situationChange);
 
   // Occurrence PRÉVISIONNELLE dont l'utilisateur fixe la date : sa valeur est
   // protégée (isAutomaticModified) et l'occurrence devient confirmée par
@@ -259,7 +316,8 @@ export async function updateAgendaItem(
       isAutomaticModified: existing.isAutomaticModified || isAutomaticModified,
       // Check if title was the temp qualification title and is now replaced
       requiresQualification: checkQualification(existing, input.title ?? existing.title),
-      ...(sansEcheance.noDeadline !== undefined ? { noDeadline: sansEcheance.noDeadline } : {}),
+      ...(noDeadlineEcrit !== undefined ? { noDeadline: noDeadlineEcrit } : {}),
+      ...(situationChange ? { situation: situation.situation, situationSource: situation.source } : {}),
       extra: confirmeParUtilisateur ? {
         occurrenceNature: 'CONFIRMED',
         dateSource: 'USER',
@@ -305,6 +363,24 @@ export async function updateAgendaItem(
       after: { date: full.startDate, noDeadline: full.noDeadline ?? false },
     }, actorUserId);
     await refreshAgendaDateCard(accountId, id);
+  }
+
+  // Lot 114V (#742) : situation qualifiée ou changée par l'utilisateur —
+  // tracée (avant / après, auteur), puis : carte de qualification « À
+  // traiter » réévaluée IMMÉDIATEMENT (fermée, jamais régénérée : la décision
+  // est persistée sur l'élément) et rappels d'échéance réévalués (« A eu
+  // lieu » : la couverture en file est annulée ; « À prévoir » daté : rappel
+  // normal). Aucun élément créé, aucun lien touché.
+  if (situationOf(full.situation) !== situationAvant) {
+    const { recordOccurrenceEvent } = await import('./agenda-persistence');
+    await recordOccurrenceEvent(id, accountId, 'SITUATION_SET', {
+      before: { situation: situationAvant, date: existing.startDate },
+      after: { situation: situationOf(full.situation), date: full.startDate },
+      source: 'USER',
+    }, actorUserId);
+    if ((existing.noDeadline ?? false) === (full.noDeadline ?? false)) await refreshAgendaDateCard(accountId, id);
+    const { evaluerRappelEcheance } = await import('./write-agenda-item');
+    await evaluerRappelEcheance(accountId, id);
   }
 
   // Lot 46 (O7, C4 déclencheur Agenda) : correction utilisateur d'un élément

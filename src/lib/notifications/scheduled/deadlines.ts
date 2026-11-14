@@ -114,12 +114,15 @@ async function coverForRecipient(accountId: number, userId: number, o: {
         UPDATE agenda_deadline_reminders r SET state = 'cancelled', outcome = 'stale', updated_at = now()
          WHERE r.account_id = ${accountId} AND r.recipient_user_id = ${userId} AND r.state = 'pending'
            AND NOT EXISTS (SELECT 1 FROM agenda_items i WHERE i.id = r.agenda_item_id AND i.account_id = r.account_id
-                            AND i.start_date = r.due_date AND i.home_category = 'action')`);
+                            AND i.start_date = r.due_date AND i.home_category = 'action'
+                            -- Lot 114V (#742) : « A eu lieu » — le rappel en file est annulé (plus rien à venir).
+                            AND i.situation IS DISTINCT FROM 'A_EU_LIEU')`);
 
       const candidats = rows<{ id: number; due: string; nature: string | null }>(await tx.execute(sql`
         SELECT i.id, to_char(i.start_date, 'YYYY-MM-DD') AS due, i.occurrence_nature AS nature
           FROM agenda_items i
          WHERE i.account_id = ${accountId} AND i.home_category = 'action'
+           AND i.situation IS DISTINCT FROM 'A_EU_LIEU'
            AND i.start_date BETWEEN ${today}::date AND ${last}::date
            AND (${idsCsv}::text IS NULL OR i.id = ANY(string_to_array(${idsCsv}::text, ',')::int[]))
            AND (i.start_date > ${today}::date OR i.start_time IS NULL OR i.start_time > ${clock}::time)

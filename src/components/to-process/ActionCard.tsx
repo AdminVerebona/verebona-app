@@ -48,6 +48,8 @@ import { AssetLinkChoices } from './AssetLinkChoices';
 import { NO_ASSET_CHOICE, NO_ASSET_CHOICE_LABEL } from '@/services/to-process/no-asset-choice';
 import { PROPOSAL_BUTTON_CLASS } from './proposal-button';
 import { notifyToProcessChanged } from './useToProcessResolution';
+import { AgendaSituationChoice } from './AgendaSituationChoice';
+import { SITUATION_QUESTION } from '@/lib/agenda/situation';
 
 export interface ActionProposalView {
   value: string | number | boolean | null;
@@ -225,6 +227,14 @@ function Tags({ action, className = '' }: { action: ActionView; className?: stri
 export { PROPOSAL_BUTTON_CLASS };
 
 /**
+ * Lot 114V (#742 §6) : carte de QUALIFICATION d'un événement d'Agenda ambigu — reconnue à sa question neutre
+ * (texte unique de `@/lib/agenda/situation`, écrit par le producteur). La carte de date d'un fait établi
+ * (achat, événement principal) garde sa question et son bouton « Ouvrir ».
+ */
+export const isSituationQualificationCard = (action: Pick<ActionView, 'ruleCode' | 'actionKind' | 'targetType' | 'question'>): boolean =>
+  action.ruleCode === 'DATA-AGENDA-DATE' && action.actionKind === 'COMPLETE' && action.targetType === 'AGENDA_ITEM' && action.question === SITUATION_QUESTION;
+
+/**
  * Contrôles de résolution. Les zones tactiles restent à 36 px de haut au
  * moins et les propositions passent à la ligne plutôt que de se tronquer
  * (§16.1).
@@ -244,6 +254,12 @@ function Controls({ action, onChoose, onOpenTarget, busy }: { action: ActionView
         onNone={() => onChoose(action, { value: NO_ASSET_CHOICE, label: NO_ASSET_CHOICE_LABEL })}
       />
     );
+  }
+  // Lot 114V (#742 §6) : événement d'Agenda hérité sans date — qualification neutre (« A eu lieu » / « À prévoir »,
+  // aucun choix présélectionné, date facultative), écrite par le service de l'Agenda. L'arbitrage entre dates
+  // contradictoires (ARBITRATE, lot 83A) garde ses propositions.
+  if (isSituationQualificationCard(action)) {
+    return <AgendaSituationChoice agendaItemId={action.targetId} question={action.question} busy={busy} onOpen={() => onOpenTarget(action)} />;
   }
   if (action.actionKind === 'COMPLETE' && action.inputType) {
     return <InlineCompletion action={action} onChoose={onChoose} onOpenTarget={onOpenTarget} busy={busy} />;

@@ -293,6 +293,31 @@ export interface HomeUpcomingItem {
 }
 
 export const MAX_UPCOMING = 5;
+
+/**
+ * Lot 114V (#742) — groupe « À prévoir » du bloc « Prochaines échéances » :
+ * événements OUVERTS SANS DATE (situation « À prévoir »). Jamais de date
+ * inventée, jamais « Aujourd'hui », « Demain » ni « En retard » : la ligne
+ * porte la mention « À prévoir » et l'action « Planifier ».
+ */
+export interface HomeToPlanItem {
+  id: number;
+  title: string;
+  assetName: string | null;
+}
+export interface HomeToPlan {
+  /** Lignes visibles (bornées à `MAX_TO_PLAN`), les plus récentes d'abord. */
+  items: HomeToPlanItem[];
+  /** Nombre total d'événements à prévoir sans date du compte (accès à la liste complète : l'Agenda). */
+  total: number;
+}
+/** Plafond des lignes « À prévoir » de l'accueil — les échéances datées restent prioritaires (paramètre à valider par le PO). */
+export const MAX_TO_PLAN = 3;
+
+/** Groupe « À prévoir » (pur) : lignes déjà triées par le lecteur, bornées ici ; le total n'est jamais tronqué. */
+export function deriveToPlan(rows: HomeToPlanItem[], total: number, max = MAX_TO_PLAN): HomeToPlan {
+  return { items: rows.slice(0, Math.max(0, max)), total: Math.max(total, rows.length) };
+}
 /** Une échéance à moins de 30 jours est « proche » (amber). */
 const UPCOMING_SOON_DAYS = 30;
 

@@ -21,7 +21,8 @@ import { getAssetIcon } from '@/lib/asset-icons';
 import { useThumbnailUrl } from '@/hooks/useThumbnailUrl';
 import { displayThumbnailKey } from '@/lib/assets/display-thumbnail';
 import { openDrawer } from '@/lib/drawers';
-import { relativeAgo, type HomeRecentDocument, type HomeUpcomingItem, type VerebonaWorkItem } from '@/services/home/home-blocks';
+import { relativeAgo, type HomeRecentDocument, type HomeToPlan, type HomeUpcomingItem, type VerebonaWorkItem } from '@/services/home/home-blocks';
+import { PLAN_ACTION_LABEL, SITUATION_LABELS } from '@/lib/agenda/situation';
 import type { HomeAsset } from '@/services/home/HomeSummaryService';
 import { DateChip, DATE_CHIP_LABEL_TONE, type DateChipTone } from '@/components/ui/date-chip';
 
@@ -248,10 +249,13 @@ const UPCOMING_CHIP_TONE: Record<HomeUpcomingItem['tone'], DateChipTone> = {
  * d'urgence), titre en gras, bien dessous, délai à droite. Un clic ouvre la
  * fiche de l'échéance en tiroir. Desktop : 3 lignes ; mobile : 2.
  */
-export function UpcomingEvents({ items, className = '' }: { items: HomeUpcomingItem[]; className?: string }) {
+export function UpcomingEvents({ items, toPlan, className = '' }: { items: HomeUpcomingItem[]; toPlan?: HomeToPlan | null; className?: string }) {
+  const aPrevoir = toPlan?.items ?? [];
   return (
     <HomeSection id="home-echeances" title="Prochaines échéances" link={{ href: '/agenda', label: 'Mon agenda', short: 'Agenda' }} className={className} bodyClassName="mt-1.5 md:mt-2">
       {items.length === 0 ? (
+        // Lot 114V (#742) : le message « aucune échéance » ne s'affiche pas au-dessus d'un groupe « À prévoir ».
+        aPrevoir.length > 0 ? null :
         <p className="m-0 py-2 text-[13px] leading-normal text-[color:var(--muted-foreground)] md:text-[13.5px]">
           Aucune échéance pour l’instant. Elles apparaîtront ici dès que je les aurai lues dans vos documents.
         </p>
@@ -278,9 +282,66 @@ export function UpcomingEvents({ items, className = '' }: { items: HomeUpcomingI
           })}
         </ul>
       )}
+      {aPrevoir.length > 0 && <ToPlanGroup toPlan={toPlan!} separated={items.length > 0} />}
     </HomeSection>
   );
 }
+
+/**
+ * Lot 114V (#742) — groupe « À prévoir » du bloc « Prochaines échéances » :
+ * événements OUVERTS SANS DATE, sous les échéances datées (prioritaires).
+ * Aucune date n'est affichée ni inventée : la pastille porte un tiret
+ * (décoratif) et la mention « À prévoir » est ÉCRITE. Deux commandes par
+ * ligne, jamais imbriquées : l'intitulé ouvre la fiche (tiroir) ;
+ * « Planifier » ouvre directement la modification de la date du MÊME
+ * événement. Lignes bornées par le serveur ; au-delà, un lien mène à la liste
+ * complète (Agenda). Mêmes composants sur desktop et mobile.
+ */
+function ToPlanGroup({ toPlan, separated }: { toPlan: HomeToPlan; separated: boolean }) {
+  const reste = toPlan.total - toPlan.items.length;
+  return (
+    <div data-home-group="a-prevoir" className={separated ? 'mt-2 border-t border-[color:var(--border)] pt-3' : ''}>
+      <h3 id="home-echeances-a-prevoir" className="m-0 text-[12px] font-bold uppercase tracking-[.05em] text-[color:var(--text-muted)]">
+        {SITUATION_LABELS.A_PREVOIR}
+      </h3>
+      <ul aria-labelledby="home-echeances-a-prevoir" className="m-0 -mx-2 mt-1 flex list-none flex-col p-0">
+        {toPlan.items.map((e) => (
+          <li key={e.id} className="flex items-center gap-2 rounded-xl px-2 py-1.5 md:gap-3.5 md:py-2">
+            <button
+              type="button"
+              onClick={() => openDrawer({ kind: 'echeance', id: e.id })}
+              className={`flex min-w-0 flex-1 items-center gap-3 rounded-xl text-left transition-colors duration-150 hover:bg-[color:var(--accent-soft)] md:gap-3.5 ${FOCUS_RING}`}
+            >
+              <DateChip day="—" month="" />
+              <span className="flex min-w-0 flex-1 flex-col gap-[3px]">
+                <span className="line-clamp-2 text-[13px] font-semibold leading-[1.35] text-[color:var(--text-primary)] md:text-[14px]">{e.title}</span>
+                <span className="truncate text-[12px] text-[color:var(--text-muted)]">
+                  {e.assetName ? `${e.assetName} · ${SITUATION_LABELS.A_PREVOIR}` : SITUATION_LABELS.A_PREVOIR}
+                </span>
+              </span>
+            </button>
+            <button
+              type="button"
+              aria-label={`${PLAN_ACTION_LABEL} : ${e.title}`}
+              onClick={() => openDrawer({ kind: 'echeance', id: e.id, initialMode: 'edit' })}
+              className={`min-h-9 flex-shrink-0 rounded-[8px] border border-[color:var(--border)] bg-[color:var(--bg-card)] px-3 text-[12px] font-semibold text-[color:var(--accent)] transition-colors duration-150 hover:bg-[color:var(--accent-soft)] ${FOCUS_RING}`}
+            >
+              {PLAN_ACTION_LABEL}
+            </button>
+          </li>
+        ))}
+      </ul>
+      {reste > 0 && (
+        <Link href="/agenda" className={`mt-1 inline-block rounded text-[13px] font-semibold text-[color:var(--accent)] underline-offset-2 hover:text-[color:var(--accent-hover)] hover:underline ${FOCUS_RING}`}>
+          {toPlanSeeAllLabel(toPlan.total)}
+        </Link>
+      )}
+    </div>
+  );
+}
+
+/** Lien vers la liste complète des événements à prévoir (texte à valider par le PO). */
+export const toPlanSeeAllLabel = (total: number) => `Voir les ${total} événements à prévoir`;
 
 // ── Ce que j'ai fait ────────────────────────────────────────────────────────
 

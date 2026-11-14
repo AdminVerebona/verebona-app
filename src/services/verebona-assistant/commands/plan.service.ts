@@ -25,7 +25,7 @@ import type { AssistantRequestInput } from '../types/contracts';
 import type {
   ActionResult, CommandPlanPreview, PlannedAction, PlanStatus,
 } from './catalog';
-import { WRITE_COMMAND_CATALOG } from './catalog';
+import { WRITE_COMMAND_CATALOG, type DocumentCommandField, type SupplierCommandField } from './catalog';
 import { parseCommands, type CommandDraft } from './parser';
 import { runAction, EXECUTORS, type Executor, type ExecutionContext } from './executors';
 import { agendaVersion, armUndo, purgeExpiredUndoSteps, type UndoCapture } from './undo.service';
@@ -37,6 +37,7 @@ import { tenureEndKey, tenureSituationHint, TENURE_END_LABEL } from '@/lib/asset
 import { validateDetailChanges } from '@/lib/asset-detail-rules';
 import { plain } from '../core/routing-text';
 import { undatedLabel } from '@/lib/agenda/no-deadline';
+import { DEFAULT_NEW_SITUATION } from '@/lib/agenda/situation';
 import { getAssetCategories, getAssetFamily } from '@/lib/asset-taxonomy';
 
 /** Validité d'un plan non confirmé. */
@@ -77,6 +78,98 @@ export interface CommandLookup {
   assetCreationRefusal?(accountId: number): Promise<string | null>;
   /** Lot 114B (#753, W03) : décompte de ce que la suppression du bien emportera ; `null` : bien absent du compte. */
   assetDeletionSummary?(accountId: number, assetId: number): Promise<(Record<string, number> & { name: string }) | null>;
+  /** Lot 114 (#753, W18 – W20) : fiches fournisseur du compte (jamais supprimées) dont le nom porte TOUS ces mots. */
+  findSuppliers?(accountId: number, words: string[]): Promise<Array<{ id: number; name: string; status: string }>>;
+  /** Fiche fournisseur du compte : coordonnées modifiables, empreinte de l'état présenté, relations conservées. */
+  getSupplierState?(accountId: number, supplierId: number): Promise<SupplierState | null>;
+  /** Doublon possible d'un nom (même rapprochement que les documents et le tiroir Agenda) — lecture seule. */
+  supplierDuplicates?(accountId: number, name: string): Promise<{ decision: 'certain' | 'uncertain' | 'new'; candidates: Array<{ id: number; name: string }> }>;
+  /** Lot 114 (#753, W04 – W09) : nature du bien (pièces et équipements possibles ou non). */
+  getAssetKind?(accountId: number, assetId: number): Promise<{ category: string; subtype: string | null } | null>;
+  /** Création d'une pièce ou d'un équipement sur ce bien : `null` si permise, sinon le refus de l'offre (façade métier). */
+  structureRefusal?(accountId: number, asset: { category: string; subtype: string | null }, kind: 'room' | 'equipment'): Promise<string | null>;
+  /** Pièces du compte dont le nom porte TOUS ces mots (dans ce bien si `assetId`). */
+  findRooms?(accountId: number, words: string[], assetId: number | null): Promise<StructureCandidate[]>;
+  getRoomState?(accountId: number, roomId: number): Promise<RoomState | null>;
+  /** Équipements NON archivés du compte dont le nom porte TOUS ces mots (dans ce bien si `assetId`). */
+  findEquipments?(accountId: number, words: string[], assetId: number | null): Promise<StructureCandidate[]>;
+  getEquipmentState?(accountId: number, equipmentId: number): Promise<EquipmentState | null>;
+  /** Lot 114 (#753, W12 / W14) : documents du compte (non supprimés) dont le titre affiché porte TOUS ces mots. */
+  findDocuments?(accountId: number, words: string[]): Promise<Array<{ id: number; title: string; documentDate: string | null }>>;
+  /** Document du compte : titre affiché, date, note de l'utilisateur, empreinte de l'état présenté. */
+  getDocumentState?(accountId: number, documentId: number): Promise<DocumentState | null>;
+  /**
+   * Lot 114F (#753, W13) : biens auxquels le document est rattaché — `chosen` : choisis en propre (liste que le
+   * tiroir du document enregistre) ; `implied` : déduits d'une pièce ou d'un équipement rattaché. `null` : document
+   * absent du compte. Même lecture que le tiroir (`document-targets`).
+   */
+  getDocumentAssetTargets?(accountId: number, documentId: number): Promise<DocumentAssetTargets | null>;
+}
+
+export interface DocumentAssetTargets {
+  chosen: Array<{ id: number; name: string }>;
+  implied: Array<{ id: number; name: string }>;
+}
+
+/** Empreinte des rattachements présentés (document tel que présenté + biens choisis, sans ordre) — pure. */
+export function documentTargetsVersion(documentVersionShown: string, chosenAssetIds: number[]): string {
+  return createHash('sha256').update(JSON.stringify([documentVersionShown, [...chosenAssetIds].sort((a, b) => a - b)])).digest('hex').slice(0, 32);
+}
+
+export interface StructureCandidate { id: number; name: string; assetId: number; assetName: string }
+export interface RoomState extends StructureCandidate {
+  /** Ce qui est rattaché à la pièce (conservé dans le bien à sa suppression, sauf les liens d'échéances). */
+  documents: number; equipments: number; agenda: number;
+  version: string;
+}
+export interface EquipmentState extends StructureCandidate {
+  roomName: string | null;
+  documents: number; agenda: number;
+  version: string;
+}
+/** Empreinte d'une pièce ou d'un équipement tel que présenté (pure). */
+export function structureVersion(kind: 'room' | 'equipment', s: { id: number; name: string; assetId: number }, counts: number[]): string {
+  return createHash('sha256').update(JSON.stringify([kind, s.id, s.name, s.assetId, ...counts])).digest('hex').slice(0, 32);
+}
+
+export interface DocumentState {
+  id: number;
+  /** Titre affiché (règle unique des vues). */
+  title: string;
+  originalFilename: string | null;
+  documentDate: string | null;
+  /** Texte affiché du champ unique « Notes / Description » (note de l'utilisateur, sinon description lue). */
+  notesShown: string;
+  /** La note affichée est-elle celle de l'utilisateur ? (une description lue ne s'« efface » pas : elle se remplace) */
+  notesUserOwned: boolean;
+  isWebLink: boolean;
+  webLinkUrl: string | null;
+  assetLabel: string | null;
+  /** Empreinte de l'état présenté — recontrôlée à l'exécution. */
+  version: string;
+}
+
+/** Empreinte d'un document tel que présenté (pure). */
+export function documentVersion(d: Pick<DocumentState, 'id' | 'title' | 'documentDate' | 'notesShown'>): string {
+  return createHash('sha256').update(JSON.stringify([d.id, d.title, d.documentDate, d.notesShown])).digest('hex').slice(0, 32);
+}
+
+export interface SupplierState {
+  id: number;
+  name: string;
+  status: string;
+  phone: string | null;
+  email: string | null;
+  website: string | null;
+  /** Empreinte de l'état présenté (coordonnées, statut) — recontrôlée à l'exécution. */
+  version: string;
+  /** Relations conservées par l'archivage (totaux de la fiche). */
+  links: { documents: number; assets: number; equipments: number; agenda: number };
+}
+
+/** Empreinte d'une fiche fournisseur telle que présentée (pure). */
+export function supplierVersion(s: Pick<SupplierState, 'id' | 'name' | 'status' | 'phone' | 'email' | 'website'>): string {
+  return createHash('sha256').update(JSON.stringify([s.id, s.name, s.status, s.phone, s.email, s.website])).digest('hex').slice(0, 32);
 }
 
 export interface AgendaCandidate {
@@ -163,6 +256,146 @@ export const sqlLookup: CommandLookup = {
     const r = await readAssetDeletionSummary(accountId, assetId);
     return r ? { ...r } as unknown as Record<string, number> & { name: string } : null;
   },
+  async getAssetKind(accountId, assetId) {
+    const [r] = (await pgClient.unsafe(
+      `SELECT a.category, a.subtype FROM assets a WHERE a.id = $1 AND a.account_id = $2 AND a.deleted_at IS NULL`,
+      [assetId, accountId] as never[],
+    )) as unknown as Array<{ category: string; subtype: string | null }>;
+    return r ?? null;
+  },
+  async structureRefusal(accountId, asset, kind) {
+    const { structureCreationRefusal } = await import('@/services/assets/structure-write.facade');
+    return (await structureCreationRefusal(accountId, asset, kind))?.message ?? null;
+  },
+  async findRooms(accountId, words, assetId) {
+    const w = words.filter((x) => x.length >= 2).slice(0, 6);
+    if (w.length === 0) return [];
+    const cond = w.map((_, i) => `unaccent(lower(r.name)) LIKE unaccent(lower($${i + 3}))`).join(' AND ');
+    return (await pgClient.unsafe(
+      `SELECT r.id, r.name, a.id AS "assetId", a.name AS "assetName"
+         FROM substructures r JOIN assets a ON a.id = r.asset_id AND a.account_id = $1 AND a.deleted_at IS NULL
+        WHERE ($2::int IS NULL OR a.id = $2::int) AND ${cond}
+        ORDER BY r.name, r.id LIMIT 11`,
+      [accountId, assetId, ...w.map((x) => `%${x}%`)] as never[],
+    )) as unknown as StructureCandidate[];
+  },
+  async getRoomState(accountId, roomId) {
+    const [r] = (await pgClient.unsafe(
+      `SELECT r.id, r.name, a.id AS "assetId", a.name AS "assetName",
+              (SELECT count(*)::int FROM asset_files f WHERE f.account_id = $2 AND f.deleted_at IS NULL AND f.substructure_id = r.id) AS documents,
+              (SELECT count(*)::int FROM equipments e WHERE e.substructure_id = r.id AND e.archived_at IS NULL) AS equipments,
+              (SELECT count(*)::int FROM agenda_room_links l JOIN agenda_items i ON i.id = l.agenda_item_id AND i.account_id = $2 WHERE l.substructure_id = r.id) AS agenda
+         FROM substructures r JOIN assets a ON a.id = r.asset_id AND a.account_id = $2 AND a.deleted_at IS NULL
+        WHERE r.id = $1`,
+      [roomId, accountId] as never[],
+    )) as unknown as Array<Omit<RoomState, 'version'>>;
+    if (!r) return null;
+    const base = { id: Number(r.id), name: r.name, assetId: Number(r.assetId), assetName: r.assetName, documents: Number(r.documents), equipments: Number(r.equipments), agenda: Number(r.agenda) };
+    return { ...base, version: structureVersion('room', base, [base.documents, base.equipments, base.agenda]) };
+  },
+  async findEquipments(accountId, words, assetId) {
+    const w = words.filter((x) => x.length >= 2).slice(0, 6);
+    if (w.length === 0) return [];
+    const cond = w.map((_, i) => `unaccent(lower(e.name)) LIKE unaccent(lower($${i + 3}))`).join(' AND ');
+    return (await pgClient.unsafe(
+      `SELECT e.id, e.name, a.id AS "assetId", a.name AS "assetName"
+         FROM equipments e JOIN assets a ON a.id = e.asset_id AND a.account_id = $1 AND a.deleted_at IS NULL
+        WHERE e.archived_at IS NULL AND ($2::int IS NULL OR a.id = $2::int) AND ${cond}
+        ORDER BY e.name, e.id LIMIT 11`,
+      [accountId, assetId, ...w.map((x) => `%${x}%`)] as never[],
+    )) as unknown as StructureCandidate[];
+  },
+  async getEquipmentState(accountId, equipmentId) {
+    const [r] = (await pgClient.unsafe(
+      `SELECT e.id, e.name, a.id AS "assetId", a.name AS "assetName",
+              (SELECT r.name FROM substructures r WHERE r.id = e.substructure_id AND r.asset_id = a.id) AS "roomName",
+              (SELECT count(*)::int FROM asset_files f WHERE f.account_id = $2 AND f.deleted_at IS NULL AND f.equipment_id = e.id) AS documents,
+              (SELECT count(*)::int FROM agenda_equipment_links l JOIN agenda_items i ON i.id = l.agenda_item_id AND i.account_id = $2 WHERE l.equipment_id = e.id) AS agenda
+         FROM equipments e JOIN assets a ON a.id = e.asset_id AND a.account_id = $2 AND a.deleted_at IS NULL
+        WHERE e.id = $1 AND e.archived_at IS NULL`,
+      [equipmentId, accountId] as never[],
+    )) as unknown as Array<Omit<EquipmentState, 'version'>>;
+    if (!r) return null;
+    const base = { id: Number(r.id), name: r.name, assetId: Number(r.assetId), assetName: r.assetName, roomName: r.roomName ?? null, documents: Number(r.documents), agenda: Number(r.agenda) };
+    return { ...base, version: structureVersion('equipment', base, [base.documents, base.agenda]) };
+  },
+  async findDocuments(accountId, words) {
+    const w = words.filter((x) => x.length >= 2).slice(0, 6);
+    if (w.length === 0) return [];
+    const { documentTitleColumnsSql, documentTitleOf } = await import('@/lib/documents/document-title-source');
+    // Le titre cherché est celui que les vues affichent (titre retenu, titre du lien, nom du fichier).
+    const cond = w.map((_, i) => `unaccent(lower(coalesce(f.retained_title, '') || ' ' || coalesce(f.web_link_title, '') || ' ' || coalesce(f.original_filename, ''))) LIKE unaccent(lower($${i + 2}))`).join(' AND ');
+    const rows = (await pgClient.unsafe(
+      `SELECT f.id, to_char(f.document_date, 'YYYY-MM-DD') AS "documentDate", ${documentTitleColumnsSql('f')}
+         FROM asset_files f
+        WHERE f.account_id = $1 AND f.deleted_at IS NULL AND ${cond}
+        ORDER BY f.document_date DESC NULLS LAST, f.id DESC LIMIT 11`,
+      [accountId, ...w.map((x) => `%${x}%`)] as never[],
+    )) as unknown as Array<{ id: number; documentDate: string | null } & Record<string, unknown>>;
+    // Seuls les documents dont le titre AFFICHÉ porte les mots sont retenus (jamais un nom de fichier masqué).
+    const plat = (t: string) => plain(t);
+    return rows.map((r) => ({ id: Number(r.id), title: documentTitleOf(r as never), documentDate: r.documentDate }))
+      .filter((d) => w.every((x) => plat(d.title).includes(plat(x))));
+  },
+  async getDocumentState(accountId, documentId) {
+    const { documentTitleColumnsSql, documentTitleOf } = await import('@/lib/documents/document-title-source');
+    const [r] = (await pgClient.unsafe(
+      `SELECT f.id, f.original_filename AS "originalFilename", to_char(f.document_date, 'YYYY-MM-DD') AS "documentDate", f.notes, f.description,
+              f.is_web_link AS "isWebLink", f.web_link_url AS "webLinkUrl", ${documentTitleColumnsSql('f')},
+              (SELECT a.name FROM assets a WHERE a.id = f.asset_id AND a.account_id = f.account_id AND a.deleted_at IS NULL) AS "assetLabel"
+         FROM asset_files f WHERE f.id = $1 AND f.account_id = $2 AND f.deleted_at IS NULL`,
+      [documentId, accountId] as never[],
+    )) as unknown as Array<Record<string, unknown>>;
+    if (!r) return null;
+    // Même règle que le tiroir du document pour le champ unique « Notes / Description » (lot 113Z).
+    const { readNotesDescriptionMeta } = await import('@/services/documents/notes-description/store');
+    const { resolveNotesDescription } = await import('@/lib/documents/notes-description');
+    const meta = await readNotesDescriptionMeta(accountId, documentId).catch(() => null);
+    const vue = resolveNotesDescription({
+      notes: (r.notes as string | null) ?? null, description: (r.description as string | null) ?? null,
+      notesUserOwned: meta?.notesUserOwned ?? false, descriptionSource: meta?.descriptionSource ?? null,
+    });
+    const base = { id: Number(r.id), title: documentTitleOf(r as never), documentDate: (r.documentDate as string | null) ?? null, notesShown: vue.text ?? '' };
+    return {
+      ...base, originalFilename: (r.originalFilename as string | null) ?? null,
+      notesUserOwned: !!((r.notes as string | null) ?? '').trim(),
+      isWebLink: r.isWebLink === true, webLinkUrl: (r.webLinkUrl as string | null) ?? null, assetLabel: (r.assetLabel as string | null) ?? null,
+      version: documentVersion(base),
+    };
+  },
+  async getDocumentAssetTargets(accountId, documentId) {
+    const [{ db }, { readDocumentTargets }] = await Promise.all([import('@/db'), import('@/services/documents/document-targets/service')]);
+    const vue = await readDocumentTargets(db as unknown as import('@/services/documents/document-targets/service').TargetsExecutor, accountId, documentId);
+    if (!vue) return null;
+    const bien = (a: { id: number; name: string }) => ({ id: a.id, name: a.name });
+    return { chosen: vue.assets.filter((a) => !a.implied).map(bien), implied: vue.assets.filter((a) => a.implied).map(bien) };
+  },
+  async findSuppliers(accountId, words) {
+    const w = words.filter((x) => x.length >= 2).slice(0, 6);
+    if (w.length === 0) return [];
+    const cond = w.map((_, i) => `unaccent(lower(s.name)) LIKE unaccent(lower($${i + 2}))`).join(' AND ');
+    return (await pgClient.unsafe(
+      `SELECT s.id, s.name, s.status FROM suppliers s
+        WHERE s.account_id = $1 AND s.status <> 'deleted' AND ${cond}
+        ORDER BY (s.status = 'active') DESC, s.name, s.id LIMIT 11`,
+      [accountId, ...w.map((x) => `%${x}%`)] as never[],
+    )) as unknown as Array<{ id: number; name: string; status: string }>;
+  },
+  async getSupplierState(accountId, supplierId) {
+    // Même lecture que la fiche fournisseur (compte borné, fiche non supprimée, totaux exacts des sections).
+    const { getSupplierDetail } = await import('@/services/suppliers/supplier-detail.service');
+    const d = await getSupplierDetail(accountId, supplierId);
+    if (!d) return null;
+    const base = { id: d.supplier.id, name: d.supplier.name, status: d.supplier.status, phone: d.supplier.phone, email: d.supplier.email, website: d.supplier.website };
+    return {
+      ...base, version: supplierVersion(base),
+      links: { documents: d.documents.total, assets: d.assets.total, equipments: d.equipments.total, agenda: d.agendaItems.length },
+    };
+  },
+  async supplierDuplicates(accountId, name) {
+    const { checkSupplierDuplicate } = await import('@/services/agenda/agenda-suppliers');
+    return checkSupplierDuplicate(accountId, name);
+  },
   async getAssetState(accountId, id) {
     // CDC 15 T2-40 : la valeur présentée à la confirmation (« A → B ») est
     // la valeur CANONIQUE — celle que l'assistant lit et que la fiche affiche
@@ -207,7 +440,9 @@ export async function resolveDraft(
       assetIds = [found[0].id]; targets.push({ type: 'asset', id: found[0].id, label: nomBien(found[0]) });
     }
     const bien = targets[0] ? `, rattachée à ${targets[0].label}` : '';
-    const quand = draft.date ? formatDateFr(draft.date) : undatedLabel({ noDeadline: draft.noDeadline });
+    // Lot 114V (#742) — règle remplacée : une échéance créée sans date n'est plus annoncée « Sans date » mais
+    // « À prévoir » (situation enregistrée par défaut par le service de l'Agenda pour toute création manuelle).
+    const quand = draft.date ? formatDateFr(draft.date) : undatedLabel({ noDeadline: draft.noDeadline, situation: DEFAULT_NEW_SITUATION });
     return {
       actionId, command: 'CREATE_AGENDA_ITEM', targets, dependsOn: [],
       params: { title: draft.title, startDate: draft.date, assetIds, ...(draft.noDeadline ? { noDeadline: true } : {}) },
@@ -230,6 +465,19 @@ export async function resolveDraft(
     return resolveAgendaChange(draft, input, lookup, actionId);
   }
 
+  if (draft.command === 'CREATE_SUPPLIER' || draft.command === 'UPDATE_SUPPLIER' || draft.command === 'ARCHIVE_SUPPLIER') {
+    return resolveSupplierCommand(draft, input, lookup, actionId);
+  }
+  if (draft.command === 'CREATE_ROOM' || draft.command === 'CREATE_EQUIPMENT' || draft.command === 'RENAME_ROOM' || draft.command === 'RENAME_EQUIPMENT'
+    || draft.command === 'DELETE_ROOM' || draft.command === 'ARCHIVE_EQUIPMENT') {
+    return resolveStructureCommand(draft, input, lookup, actionId);
+  }
+  if (draft.command === 'CREATE_WEB_DOCUMENT' || draft.command === 'UPDATE_DOCUMENT' || draft.command === 'DELETE_DOCUMENT') {
+    return resolveDocumentCommand(draft, input, lookup, actionId);
+  }
+  if (draft.command === 'UPDATE_DOCUMENT_TARGETS') return resolveDocumentTargets(draft, input, lookup, actionId);
+  if (draft.command === 'RENAME_ASSET') return resolveAssetRename(draft, input, lookup, actionId);
+  if (draft.command === 'CLEAR_ASSET_FIELD') return resolveAssetFieldClear(draft, input, lookup, actionId);
   if (draft.command === 'CREATE_ASSET') return resolveAssetCreation(draft, input, lookup, actionId);
   if (draft.command === 'DELETE_ASSET') return resolveAssetDeletion(draft, input, lookup, actionId);
 
@@ -338,6 +586,563 @@ async function resolveAssetDeletion(
       contenu.length ? `Supprimés avec le bien : ${contenu.join(', ')}.` : 'Aucun document, échéance ni autre élément n’est rattaché à ce bien.',
       'Pour garder un document, téléchargez-le avant de supprimer le bien.',
       'Cette action est irréversible.',
+    ],
+  };
+}
+
+// ── Lot 114F (#753, W02 / W27 / W13) : renommer un bien, effacer une caractéristique, rattacher un document ──
+
+const BIEN_NON_MODIFIABLE = (nom: string) => `${nom} n’est pas modifiable actuellement (bien archivé ou verrouillé par votre offre).`;
+
+/** Bien visé par une commande sur sa fiche : désigné, sinon celui du fil / de la page ; jamais choisi au hasard. */
+async function bienAModifier(
+  lookup: CommandLookup, input: AssistantRequestInput, d: { assetWords: string[]; assetFromContext: boolean }, question: string,
+): Promise<{ asset: AssetState } | { needInfo: string }> {
+  if (!lookup.getAssetState) return { needInfo: 'Je ne peux pas faire cette modification depuis l’assistant.' };
+  // `bienDesigne` est déclaré plus bas (fonction : disponible ici).
+  const r = await bienDesigne(lookup, input, d, question);
+  if ('needInfo' in r) return r;
+  if (!r.bien) return { needInfo: question };
+  const asset = await lookup.getAssetState(input.accountId, r.bien.id);
+  if (!asset) return { needInfo: `Je n’ai pas trouvé ce bien dans votre compte. ${question}` };
+  if (asset.status === 'ARCHIVED' || (asset.lockState && asset.lockState !== 'NONE')) return { needInfo: BIEN_NON_MODIFIABLE(nomBien(asset)) };
+  return { asset };
+}
+
+/**
+ * Lot 114F (Trello #753, CDC T2 §14.3 W02) — renommer un bien : ancien nom → nouveau nom, présentés avant toute
+ * confirmation. Le nom s'écrit par le service de la fiche (`updateAssetDetails`, section commune), comme
+ * `PATCH /api/assets/[id]/details/common`. L'ancien nom est figé : s'il a changé à la confirmation, rien n'est écrit.
+ */
+async function resolveAssetRename(
+  draft: Extract<CommandDraft, { command: 'RENAME_ASSET' }>, input: AssistantRequestInput, lookup: CommandLookup, actionId: string,
+): Promise<PlannedAction | { needInfo: string }> {
+  const cible = await bienAModifier(lookup, input, draft, 'Quel bien voulez-vous renommer ?');
+  if ('needInfo' in cible) return cible;
+  const asset = cible.asset;
+  const nom = (draft.newName ?? '').trim().replace(/\s+/g, ' ');
+  if (!nom) return { needInfo: `Quel nouveau nom voulez-vous donner à ${nomBien(asset)} ?` };
+  if (nom === asset.name.trim()) return { needInfo: `Ce bien s’appelle déjà « ${asset.name} ».` };
+  return {
+    actionId, command: 'RENAME_ASSET', dependsOn: [],
+    targets: [{ type: 'asset', id: asset.id, label: nomBien(asset) }],
+    params: { kind: 'asset_rename', renamedAssetId: asset.id, assetNewName: nom, expectedName: asset.name },
+    preview: `Renommer le bien « ${asset.name} » en « ${nom} ».`,
+    effects: [
+      `Nom : ${asset.name} → ${nom}`,
+      'Le nouveau nom apparaîtra partout où ce bien est cité.',
+      'Pour revenir à l’ancien nom, refaites une demande de renommage.',
+    ],
+  };
+}
+
+/**
+ * Lot 114F (Trello #753, CDC T2 §14.3 W27) — effacement VOLONTAIRE d'une caractéristique d'un bien : champ de la
+ * liste fermée du registre (aucun champ fantôme), applicable à la famille du bien, valeur actuelle présentée.
+ * Écrit `null` par le service de la fiche, origine USER — le même marqueur d'effacement que le formulaire.
+ * La valeur présentée est figée : si elle a changé à la confirmation, rien n'est effacé.
+ */
+async function resolveAssetFieldClear(
+  draft: Extract<CommandDraft, { command: 'CLEAR_ASSET_FIELD' }>, input: AssistantRequestInput, lookup: CommandLookup, actionId: string,
+): Promise<PlannedAction | { needInfo: string }> {
+  const def = ASSISTANT_ASSET_FIELDS.find((f) => f.key === draft.fieldKey);
+  if (!def) return { needInfo: 'Je ne peux pas modifier ce champ depuis l’assistant.' };
+  const cible = await bienAModifier(lookup, input, draft, `Pour quel bien voulez-vous effacer « ${def.label} » ?`);
+  if ('needInfo' in cible) return cible;
+  const asset = cible.asset;
+  const section = def.sections[familyOf(asset.category)];
+  if (!section) return { needInfo: `« ${def.label} » ne s’applique pas à ${nomBien(asset)}.` };
+  const previous = asset.characteristics[def.key] ?? null;
+  if (previous === null || previous === '') return { needInfo: `« ${def.label} » de ${nomBien(asset)} n’est pas renseigné : il n’y a rien à effacer.` };
+  const avant = formatFieldValue(def, previous);
+  return {
+    actionId, command: 'CLEAR_ASSET_FIELD', dependsOn: [],
+    targets: [{ type: 'asset', id: asset.id, label: nomBien(asset) }],
+    params: { kind: 'asset_field_clear', clearAssetId: asset.id, clearSection: section, clearedField: def.key, clearedPrevious: previous },
+    preview: `Effacer « ${def.label} » de ${nomBien(asset)} (valeur actuelle : ${avant}).`,
+    effects: [
+      `Bien : ${nomBien(asset)}`,
+      `Champ : ${def.label}`,
+      `Valeur actuelle : ${avant}`,
+      'Nouvelle valeur : non renseigné',
+      'Le champ sera vide : cet effacement est enregistré comme votre décision.',
+    ],
+  };
+}
+
+/**
+ * Lot 114F (Trello #753, CDC T2 §14.3 W13, §14.4 « Documents ») — rattacher un document à un bien du compte, ou
+ * l'en détacher. La liste COMPLÈTE des biens après l'action est figée (celle que le tiroir du document
+ * enregistrerait) ; les autres rattachements sont conservés. Détacher est une dissociation : le document reste
+ * dans le compte. Pièces et équipements : depuis le document (non proposé ici).
+ */
+async function resolveDocumentTargets(
+  draft: Extract<CommandDraft, { command: 'UPDATE_DOCUMENT_TARGETS' }>, input: AssistantRequestInput, lookup: CommandLookup, actionId: string,
+): Promise<PlannedAction | { needInfo: string }> {
+  const acc = input.accountId;
+  if (!lookup.getDocumentAssetTargets) return { needInfo: 'Je ne peux pas faire cette modification depuis l’assistant.' };
+  if (draft.structureTarget) {
+    return { needInfo: 'Depuis l’assistant, un document se rattache à un bien. Pour une pièce ou un équipement, ouvrez le document et modifiez ses rattachements.' };
+  }
+  const attacher = draft.mode === 'attach';
+  const doc = await documentDesigne(lookup, input, draft, attacher ? 'rattacher' : 'détacher');
+  if ('needInfo' in doc) return doc;
+  const d = doc.state;
+  const question = attacher ? `À quel bien voulez-vous rattacher « ${d.title} » ?` : `De quel bien voulez-vous détacher « ${d.title} » ?`;
+  if (!draft.assetWords.length && !draft.assetFromContext) return { needInfo: question };
+  const r = await bienDesigne(lookup, input, draft, question);
+  if ('needInfo' in r) return r;
+  if (!r.bien) return { needInfo: question };
+  const bien = r.bien;
+  const cibles = await lookup.getDocumentAssetTargets(acc, d.id);
+  if (!cibles) return { needInfo: `Je n’ai pas trouvé ce document dans votre compte. Quel document voulez-vous ${attacher ? 'rattacher' : 'détacher'} ?` };
+  const choisis = cibles.chosen.map((a) => a.id);
+  const liste = (biens: Array<{ name: string }>) => (biens.length ? biens.map((a) => a.name).join(', ') : 'aucun');
+  let apres: Array<{ id: number; name: string }>;
+  if (attacher) {
+    if (choisis.includes(bien.id) || cibles.implied.some((a) => a.id === bien.id)) return { needInfo: `« ${d.title} » est déjà rattaché à ${nomBien(bien)}.` };
+    apres = [...cibles.chosen, { id: bien.id, name: bien.name }];
+  } else {
+    if (cibles.implied.some((a) => a.id === bien.id)) {
+      return { needInfo: `« ${d.title} » est rattaché à ${nomBien(bien)} par une pièce ou un équipement. Ouvrez le document pour modifier ce rattachement.` };
+    }
+    if (!choisis.includes(bien.id)) return { needInfo: `« ${d.title} » n’est pas rattaché à ${nomBien(bien)}.` };
+    apres = cibles.chosen.filter((a) => a.id !== bien.id);
+  }
+  return {
+    actionId, command: 'UPDATE_DOCUMENT_TARGETS', dependsOn: [],
+    targets: [{ type: 'document', id: d.id, label: d.title }, { type: 'asset', id: bien.id, label: nomBien(bien) }],
+    params: {
+      kind: 'document_targets', documentId: d.id, targetAssetIds: apres.map((a) => a.id), expectedAssetIds: choisis,
+      expectedVersion: documentTargetsVersion(d.version, choisis),
+    },
+    preview: attacher ? `Rattacher le document « ${d.title} » à ${nomBien(bien)}.` : `Détacher le document « ${d.title} » de ${nomBien(bien)}.`,
+    effects: [
+      `Document : ${d.title}`,
+      `Biens rattachés : ${liste(cibles.chosen)} → ${liste(apres)}`,
+      attacher ? 'Les autres rattachements du document sont conservés.' : 'Le document reste dans vos documents : il n’est pas supprimé.',
+      'Ce rattachement est votre décision : il ne sera pas défait par une analyse.',
+    ],
+  };
+}
+
+// ── Lot 114 (#753, W04 – W09) : pièces et équipements d'un bien ────────────
+
+type StructureDraft = Extract<CommandDraft, { command: 'CREATE_ROOM' | 'CREATE_EQUIPMENT' | 'RENAME_ROOM' | 'RENAME_EQUIPMENT' | 'DELETE_ROOM' | 'ARCHIVE_EQUIPMENT' }>;
+const memeNom = (a: string, b: string) => plain(a).replace(/\s+/g, ' ').trim() === plain(b).replace(/\s+/g, ' ').trim();
+
+/** Bien désigné par la demande (mots, ou bien du fil / de la page) ; `null` : aucun bien désigné. */
+async function bienDesigne(
+  lookup: CommandLookup, input: AssistantRequestInput, d: { assetWords: string[]; assetFromContext: boolean }, question: string,
+): Promise<{ bien: { id: number; name: string; city?: string | null } | null } | { needInfo: string }> {
+  const acc = input.accountId;
+  if (d.assetWords.length) {
+    const found = await lookup.findAssets(acc, d.assetWords);
+    if (found.length === 0) return { needInfo: `Je n’ai pas trouvé ce bien dans votre compte. ${question}` };
+    if (found.length > 1) return { needInfo: `Plusieurs biens correspondent : ${found.slice(0, 5).map((a) => nomBien(a)).join(', ')}. Précisez lequel dans votre demande.` };
+    return { bien: found[0] };
+  }
+  const id = input.reference?.type === 'asset' ? input.reference.id : Number(input.pageContext?.assetId) || null;
+  const bien = id ? await lookup.getAsset(acc, id) : null;
+  if (!bien && d.assetFromContext) return { needInfo: question };
+  return { bien };
+}
+
+/**
+ * Lot 114 (Trello #753, CDC T2 §14.3 W04 – W09, §14.4, E2E-07) :
+ *   · créer : nom et bien seulement ; le bien doit accepter des pièces / équipements et l'offre le permettre
+ *     (mêmes contrôles que les écrans, refus dit AVANT tout plan) ; jamais un doublon de nom dans le même bien ;
+ *   · renommer : ancien → nouveau ;
+ *   · supprimer une pièce : ce qui y est rattaché est annoncé — conservé dans le bien, sans pièce ;
+ *   · retirer un équipement : ARCHIVAGE (règle existante), rien n'est supprimé.
+ * Jamais un bien, une pièce ou un équipement choisi à la place de l'utilisateur.
+ */
+async function resolveStructureCommand(
+  draft: StructureDraft, input: AssistantRequestInput, lookup: CommandLookup, actionId: string,
+): Promise<PlannedAction | { needInfo: string }> {
+  const acc = input.accountId;
+  const piece = draft.command === 'CREATE_ROOM' || draft.command === 'RENAME_ROOM' || draft.command === 'DELETE_ROOM';
+  const nom = piece ? { un: 'cette pièce', le: 'la pièce', objet: 'pièce' } : { un: 'cet équipement', le: 'l’équipement', objet: 'équipement' };
+  if (!lookup.findRooms || !lookup.getRoomState || !lookup.findEquipments || !lookup.getEquipmentState || !lookup.getAssetKind || !lookup.structureRefusal) {
+    return { needInfo: 'Je ne peux pas faire cette modification depuis l’assistant.' };
+  }
+
+  if ('roomWords' in draft) {
+    if (!draft.name) return { needInfo: piece ? 'Quel nom voulez-vous donner à cette pièce ?' : 'Quel nom voulez-vous donner à cet équipement ?' };
+    const r = await bienDesigne(lookup, input, draft, `Dans quel bien voulez-vous créer ${nom.un} ?`);
+    if ('needInfo' in r) return r;
+    if (!r.bien) return { needInfo: `Dans quel bien voulez-vous créer ${nom.un} ?` };
+    const bien = r.bien;
+    const nature = await lookup.getAssetKind(acc, bien.id);
+    if (!nature) return { needInfo: `Dans quel bien voulez-vous créer ${nom.un} ?` };
+    const refus = await lookup.structureRefusal(acc, nature, piece ? 'room' : 'equipment');
+    if (refus) return { needInfo: refus };
+    const homonymes = (piece ? await lookup.findRooms(acc, plain(draft.name).split(/[^a-z0-9]+/).filter((w) => w.length >= 2), bien.id)
+      : await lookup.findEquipments(acc, plain(draft.name).split(/[^a-z0-9]+/).filter((w) => w.length >= 2), bien.id)).filter((x) => memeNom(x.name, draft.name!));
+    if (homonymes.length) return { needInfo: `${piece ? 'La pièce' : 'L’équipement'} « ${homonymes[0].name} » existe déjà dans ${nomBien(bien)}.` };
+    if (piece) {
+      return {
+        actionId, command: 'CREATE_ROOM', dependsOn: [], targets: [{ type: 'asset', id: bien.id, label: nomBien(bien) }],
+        params: { kind: 'room_create', roomAssetId: bien.id, roomName: draft.name },
+        preview: `Créer la pièce « ${draft.name} » dans ${nomBien(bien)}.`,
+        effects: [`Pièce : ${draft.name}`, `Bien : ${nomBien(bien)}`],
+      };
+    }
+    let salle: StructureCandidate | null = null;
+    if (draft.roomWords.length) {
+      const salles = await lookup.findRooms(acc, draft.roomWords, bien.id);
+      if (salles.length === 0) return { needInfo: `Je n’ai pas trouvé cette pièce dans ${nomBien(bien)}. Dans quelle pièce se trouve cet équipement ?` };
+      const exactes = salles.filter((x) => plain(x.name).split(/[^a-z0-9]+/).filter(Boolean).join(' ') === draft.roomWords.join(' '));
+      const retenues = exactes.length === 1 ? exactes : salles;
+      if (retenues.length > 1) return { needInfo: `Plusieurs pièces correspondent : ${retenues.slice(0, 5).map((x) => x.name).join(', ')}. Précisez laquelle dans votre demande.` };
+      salle = retenues[0];
+    }
+    return {
+      actionId, command: 'CREATE_EQUIPMENT', dependsOn: [], targets: [{ type: 'asset', id: bien.id, label: nomBien(bien) }],
+      params: { kind: 'equipment_create', equipmentAssetId: bien.id, equipmentName: draft.name, equipmentRoomId: salle?.id ?? null },
+      preview: `Créer l’équipement « ${draft.name} » dans ${nomBien(bien)}${salle ? ` (pièce « ${salle.name} »)` : ''}.`,
+      effects: [`Équipement : ${draft.name}`, `Bien : ${nomBien(bien)}`, salle ? `Pièce : ${salle.name}` : 'Pièce : aucune'],
+    };
+  }
+
+  // Renommer / retirer : la cible est cherchée dans le compte (dans le bien nommé s'il l'est).
+  const verbe = 'newName' in draft ? 'renommer' : piece ? 'supprimer' : 'retirer';
+  const r = await bienDesigne(lookup, input, { assetWords: draft.assetWords, assetFromContext: draft.assetFromContext }, `Dans quel bien se trouve ${nom.un} ?`);
+  if ('needInfo' in r) return r;
+  // Le bien du fil ne restreint la recherche que s'il a été demandé (« de ce bien ») ou nommé.
+  const filtre = draft.assetWords.length || draft.assetFromContext ? r.bien?.id ?? null : null;
+  const trouves = piece ? await lookup.findRooms(acc, draft.targetWords, filtre) : await lookup.findEquipments(acc, draft.targetWords, filtre);
+  if (trouves.length === 0) return { needInfo: `Je n’ai pas trouvé ${nom.un} dans votre compte. ${piece ? 'Quelle pièce' : 'Quel équipement'} voulez-vous ${verbe} ?` };
+  const exacts = trouves.filter((x) => plain(x.name).split(/[^a-z0-9]+/).filter(Boolean).join(' ') === draft.targetWords.join(' '));
+  const retenus = exacts.length === 1 ? exacts : trouves;
+  if (retenus.length > 1) {
+    return { needInfo: `${piece ? 'Plusieurs pièces correspondent' : 'Plusieurs équipements correspondent'} : ${retenus.slice(0, 5).map((x) => `${x.name} (${x.assetName})`).join(', ')}. Précisez ${piece ? 'laquelle' : 'lequel'} dans votre demande.` };
+  }
+  const cible = retenus[0];
+  const etat = piece ? await lookup.getRoomState(acc, cible.id) : await lookup.getEquipmentState(acc, cible.id);
+  if (!etat) return { needInfo: `Je n’ai pas trouvé ${nom.un} dans votre compte. ${piece ? 'Quelle pièce' : 'Quel équipement'} voulez-vous ${verbe} ?` };
+  const targets: PlannedAction['targets'] = [{ type: piece ? 'room' : 'equipment', id: etat.id, label: etat.name }];
+
+  if ('newName' in draft) {
+    if (!draft.newName) return { needInfo: `Quel nouveau nom voulez-vous donner à ${nom.le} « ${etat.name} » ?` };
+    if (draft.newName === etat.name) return { needInfo: `${piece ? 'Cette pièce' : 'Cet équipement'} s’appelle déjà « ${etat.name} ».` };
+    const autres = (piece ? await lookup.findRooms(acc, plain(draft.newName).split(/[^a-z0-9]+/).filter((w) => w.length >= 2), etat.assetId)
+      : await lookup.findEquipments(acc, plain(draft.newName).split(/[^a-z0-9]+/).filter((w) => w.length >= 2), etat.assetId)).filter((x) => x.id !== etat.id && memeNom(x.name, draft.newName!));
+    if (autres.length) return { needInfo: `${piece ? 'La pièce' : 'L’équipement'} « ${autres[0].name} » existe déjà dans ${etat.assetName}.` };
+    return piece
+      ? {
+        actionId, command: 'RENAME_ROOM', dependsOn: [], targets,
+        params: { kind: 'room_rename', roomId: etat.id, roomAssetId: etat.assetId, roomName: draft.newName, expectedVersion: etat.version },
+        preview: `Renommer la pièce « ${etat.name} » (${etat.assetName}) en « ${draft.newName} ».`, effects: [`Pièce : ${etat.name} → ${draft.newName}`, `Bien : ${etat.assetName}`],
+      }
+      : {
+        actionId, command: 'RENAME_EQUIPMENT', dependsOn: [], targets,
+        params: { kind: 'equipment_rename', equipmentId: etat.id, equipmentAssetId: etat.assetId, equipmentName: draft.newName, expectedVersion: etat.version },
+        preview: `Renommer l’équipement « ${etat.name} » (${etat.assetName}) en « ${draft.newName} ».`, effects: [`Équipement : ${etat.name} → ${draft.newName}`, `Bien : ${etat.assetName}`],
+      };
+  }
+
+  if (piece) {
+    const e = etat as RoomState;
+    const contenu = [
+      ...(e.documents ? [pluriel(e.documents, 'document', 'documents')] : []),
+      ...(e.equipments ? [pluriel(e.equipments, 'équipement', 'équipements')] : []),
+    ];
+    return {
+      actionId, command: 'DELETE_ROOM', dependsOn: [], targets,
+      params: { kind: 'room_delete', roomId: e.id, roomAssetId: e.assetId, expectedVersion: e.version },
+      preview: `Supprimer la pièce « ${e.name} » de ${e.assetName}.`,
+      effects: [
+        contenu.length ? `Conservés dans ${e.assetName}, sans pièce : ${contenu.join(', ')}.` : 'Aucun document ni équipement n’est rattaché à cette pièce.',
+        ...(e.agenda ? [`${pluriel(e.agenda, 'échéance ne sera plus liée', 'échéances ne seront plus liées')} à cette pièce (${e.agenda > 1 ? 'elles restent' : 'elle reste'} dans l’Agenda).`] : []),
+        'Cette action est irréversible.',
+      ],
+    };
+  }
+  const e = etat as EquipmentState;
+  const liens = [
+    ...(e.documents ? [pluriel(e.documents, 'document', 'documents')] : []),
+    ...(e.agenda ? [pluriel(e.agenda, 'échéance', 'échéances')] : []),
+  ];
+  return {
+    actionId, command: 'ARCHIVE_EQUIPMENT', dependsOn: [], targets,
+    params: { kind: 'equipment_archive', equipmentId: e.id, equipmentAssetId: e.assetId, expectedVersion: e.version },
+    preview: `Retirer l’équipement « ${e.name} » de ${e.assetName}.`,
+    effects: [
+      'L’équipement est archivé : il n’apparaît plus dans le bien, rien n’est supprimé.',
+      liens.length ? `Conservés : ${liens.join(', ')}.` : 'Aucun document ni échéance ne lui est rattaché.',
+    ],
+  };
+}
+
+// ── Lot 114 (#753, W10 / W12 / W14) : documents ────────────────────────────
+
+/** Libellés des champs d'un document modifiables depuis l'Assistant (textes à valider par le PO). */
+export const DOCUMENT_FIELD_LABELS: Readonly<Record<DocumentCommandField, { label: string; article: string }>> = {
+  title: { label: 'Titre', article: 'le titre' },
+  date: { label: 'Date du document', article: 'la date' },
+  notes: { label: 'Notes / Description', article: 'la note' },
+};
+const extrait = (t: string, n = 80) => (t.length > n ? `${t.slice(0, n - 1)}…` : t);
+const dateOuVide = (d: string | null) => (d ? formatDateFr(d) : '(aucune)');
+
+/** Document unique désigné (« ce document » du fil, ou mots du titre), ou la précision à demander. */
+async function documentDesigne(
+  lookup: CommandLookup, input: AssistantRequestInput, d: { documentWords: string[]; documentFromContext: boolean }, pourQuoi: string,
+): Promise<{ state: DocumentState } | { needInfo: string }> {
+  if (!lookup.findDocuments || !lookup.getDocumentState) return { needInfo: 'Je ne peux pas faire cette modification depuis l’assistant.' };
+  const acc = input.accountId;
+  if (d.documentFromContext) {
+    const id = input.reference?.type === 'document' ? input.reference.id : Number((input.pageContext as { documentId?: unknown } | undefined)?.documentId) || null;
+    const state = id ? await lookup.getDocumentState(acc, id) : null;
+    return state ? { state } : { needInfo: `Quel document voulez-vous ${pourQuoi} ?` };
+  }
+  const trouves = await lookup.findDocuments(acc, d.documentWords);
+  if (trouves.length === 0) return { needInfo: `Je n’ai pas trouvé ce document dans votre compte. Quel document voulez-vous ${pourQuoi} ?` };
+  const mots = (t: string) => plain(t).split(/[^a-z0-9]+/).filter(Boolean).join(' ');
+  const exacts = trouves.filter((x) => mots(x.title) === d.documentWords.join(' '));
+  const retenus = exacts.length === 1 ? exacts : trouves;
+  if (retenus.length > 1) {
+    const liste = retenus.slice(0, 5).map((x) => `« ${x.title} »${x.documentDate ? ` du ${formatDateFr(x.documentDate)}` : ''}`).join(', ');
+    return { needInfo: `Plusieurs documents correspondent : ${liste}. Précisez lequel dans votre demande.` };
+  }
+  const state = await lookup.getDocumentState(acc, retenus[0].id);
+  return state ? { state } : { needInfo: `Je n’ai pas trouvé ce document dans votre compte. Quel document voulez-vous ${pourQuoi} ?` };
+}
+
+/**
+ * Lot 114 (Trello #753, CDC T2 §14.3 W10, W12, W14, §14.4 « Documents ») :
+ *   · lien web : adresse http(s) et titre obligatoires, bien facultatif ; le lien est enregistré, jamais ouvert ;
+ *   · modifier : titre, date ou note — un champ à la fois, ancien → nouveau ; la décision de l'utilisateur est
+ *     protégée des analyses (règles du tiroir du document) ;
+ *   · supprimer : le document quitte le compte (suppression logique), comme depuis la liste des documents.
+ */
+async function resolveDocumentCommand(
+  draft: Extract<CommandDraft, { command: 'CREATE_WEB_DOCUMENT' | 'UPDATE_DOCUMENT' | 'DELETE_DOCUMENT' }>,
+  input: AssistantRequestInput,
+  lookup: CommandLookup,
+  actionId: string,
+): Promise<PlannedAction | { needInfo: string }> {
+  const acc = input.accountId;
+
+  if (draft.command === 'CREATE_WEB_DOCUMENT') {
+    if (!draft.url) return { needInfo: 'Quelle est l’adresse du lien à enregistrer (elle commence par http:// ou https://) ?' };
+    const { isValidWebDocumentUrl } = await import('@/services/documents/document-write.facade');
+    if (!isValidWebDocumentUrl(draft.url)) return { needInfo: 'Cette adresse ne semble pas valide : elle doit commencer par http:// ou https://.' };
+    if (!draft.title) return { needInfo: 'Quel titre voulez-vous donner à ce lien ?' };
+    let bien: { id: number; name: string; city?: string | null } | null = null;
+    if (draft.assetFromContext) {
+      const id = input.reference?.type === 'asset' ? input.reference.id : Number(input.pageContext?.assetId) || null;
+      bien = id ? await lookup.getAsset(acc, id) : null;
+      if (!bien) return { needInfo: 'À quel bien voulez-vous rattacher ce lien ?' };
+    } else if (draft.assetWords.length) {
+      const found = await lookup.findAssets(acc, draft.assetWords);
+      if (found.length === 0) return { needInfo: 'Je n’ai pas trouvé ce bien dans votre compte. À quel bien voulez-vous rattacher ce lien ?' };
+      if (found.length > 1) return { needInfo: `Plusieurs biens correspondent : ${found.slice(0, 5).map((a) => nomBien(a)).join(', ')}. Précisez lequel dans votre demande.` };
+      bien = found[0];
+    }
+    return {
+      actionId, command: 'CREATE_WEB_DOCUMENT', dependsOn: [],
+      targets: bien ? [{ type: 'asset', id: bien.id, label: nomBien(bien) }] : [],
+      params: { kind: 'document_web_create', url: draft.url, linkTitle: draft.title, linkAssetId: bien?.id ?? null },
+      preview: `Ajouter le lien « ${draft.title} »${bien ? `, rattaché à ${nomBien(bien)}` : ''}.`,
+      effects: [`Titre : ${draft.title}`, `Adresse : ${draft.url}`, bien ? `Bien : ${nomBien(bien)}` : 'Bien : aucun', 'Le lien est enregistré tel quel : la page n’est pas lue.'],
+    };
+  }
+
+  if (draft.command === 'UPDATE_DOCUMENT') {
+    const cible = await documentDesigne(lookup, input, draft, 'modifier');
+    if ('needInfo' in cible) return cible;
+    const d = cible.state;
+    const def = DOCUMENT_FIELD_LABELS[draft.field];
+    if (!draft.clear && !draft.value) {
+      return { needInfo: draft.field === 'date' ? `Quelle date voulez-vous enregistrer pour « ${d.title} » ?` : `Quelle valeur voulez-vous enregistrer pour ${def.article} de « ${d.title} » ?` };
+    }
+    const base = { actionId, command: 'UPDATE_DOCUMENT' as const, dependsOn: [], targets: [{ type: 'document' as const, id: d.id, label: d.title }] };
+    const params = (newValue: string | null) => ({ kind: 'document_update' as const, documentId: d.id, documentField: draft.field, newValue, expectedVersion: d.version });
+    if (draft.field === 'title') {
+      const titre = draft.value!.trim().replace(/\s+/g, ' ').slice(0, 200);
+      if (titre === d.title) return { needInfo: `Ce document s’appelle déjà « ${d.title} ».` };
+      return { ...base, params: params(titre), preview: `Renommer le document « ${d.title} » en « ${titre} ».`, effects: [`Titre : ${d.title} → ${titre}`, 'Ce titre ne sera pas remplacé par une analyse.'] };
+    }
+    if (draft.field === 'date') {
+      if (draft.clear && !d.documentDate) return { needInfo: `« ${d.title} » n’a pas de date enregistrée.` };
+      const date = draft.clear ? null : draft.value!;
+      if (date === d.documentDate) return { needInfo: `La date de « ${d.title} » est déjà le ${formatDateFr(date!)}.` };
+      if (date && date > lookup.today()) return { needInfo: 'La date d’un document ne peut pas être dans le futur. Pouvez-vous la vérifier ?' };
+      return {
+        ...base, params: params(date),
+        preview: date ? `Changer la date du document « ${d.title} » : ${dateOuVide(d.documentDate)} → ${formatDateFr(date)}.` : `Effacer la date du document « ${d.title} » (${dateOuVide(d.documentDate)}).`,
+        effects: [`Document : ${d.title}`, `Date du document : ${dateOuVide(d.documentDate)} → ${dateOuVide(date)}`, 'Cette date ne sera pas remplacée par une analyse.'],
+      };
+    }
+    // Note de l'utilisateur (champ unique « Notes / Description »).
+    if (draft.clear) {
+      if (!d.notesShown.trim()) return { needInfo: `« ${d.title} » n’a aucune note.` };
+      return {
+        ...base, params: params(null), preview: `Effacer la note du document « ${d.title} ».`,
+        effects: [`Document : ${d.title}`, `Note effacée : « ${extrait(d.notesShown)} »`, 'Le champ restera vide : il ne sera pas rempli de nouveau par une analyse.'],
+      };
+    }
+    const note = draft.value!.trim();
+    const { NOTES_MAX_LENGTH } = await import('@/lib/documents/notes-description');
+    if (note.length > NOTES_MAX_LENGTH) return { needInfo: `Une note fait ${NOTES_MAX_LENGTH} caractères au plus.` };
+    if (note === d.notesShown.trim()) return { needInfo: `Cette note est déjà enregistrée sur « ${d.title} ».` };
+    return {
+      ...base, params: params(note),
+      preview: d.notesShown.trim() ? `Remplacer la note du document « ${d.title} ».` : `Ajouter une note au document « ${d.title} ».`,
+      effects: [
+        `Document : ${d.title}`,
+        ...(d.notesShown.trim() ? [`Texte actuel : « ${extrait(d.notesShown)} »`] : []),
+        `Nouvelle note : « ${extrait(note)} »`,
+      ],
+    };
+  }
+
+  const cible = await documentDesigne(lookup, input, draft, 'supprimer');
+  if ('needInfo' in cible) return cible;
+  const d = cible.state;
+  return {
+    actionId, command: 'DELETE_DOCUMENT', dependsOn: [],
+    targets: [{ type: 'document', id: d.id, label: d.title }],
+    params: { kind: 'document_delete', documentId: d.id, expectedVersion: d.version },
+    preview: `Supprimer le document « ${d.title} »${d.documentDate ? ` du ${formatDateFr(d.documentDate)}` : ''}${d.assetLabel ? ` (${d.assetLabel})` : ''}.`,
+    effects: [
+      'Le document ne sera plus visible dans votre compte.',
+      'Les informations qu’il justifiait sont retirées des fiches concernées, qui sont recalculées.',
+      'Cette suppression ne s’annule pas depuis l’Assistant.',
+    ],
+  };
+}
+
+// ── Lot 114 (#753, W18 – W20) : fournisseurs ───────────────────────────────
+
+/** Libellés des coordonnées modifiables depuis l'Assistant (textes à valider par le PO). */
+export const SUPPLIER_FIELD_LABELS: Readonly<Record<SupplierCommandField, { label: string; article: string }>> = {
+  name: { label: 'Nom', article: 'le nom' },
+  phone: { label: 'Téléphone', article: 'le téléphone' },
+  email: { label: 'E-mail', article: 'l’e-mail' },
+  website: { label: 'Site web', article: 'le site web' },
+};
+const vide = (v: string | null) => (v && v.trim() ? v : '(vide)');
+const pluriel = (n: number, un: string, plusieurs: string) => `${n} ${n > 1 ? plusieurs : un}`;
+
+/** Fiche unique désignée par des mots, ou la précision à demander. */
+async function fournisseurDesigne(
+  lookup: CommandLookup, accountId: number, words: string[], pourQuoi: string,
+): Promise<{ state: SupplierState } | { needInfo: string }> {
+  if (!lookup.findSuppliers || !lookup.getSupplierState) return { needInfo: 'Je ne peux pas faire cette modification depuis l’assistant.' };
+  const trouves = await lookup.findSuppliers(accountId, words);
+  if (trouves.length === 0) return { needInfo: `Je n’ai pas trouvé ce fournisseur dans votre compte. Quel fournisseur voulez-vous ${pourQuoi} ?` };
+  // Un nom exact l'emporte sur les fiches qui le contiennent (« Durand » face à « Durand & Fils »).
+  const exacts = trouves.filter((s) => plain(s.name).split(/[^a-z0-9]+/).filter(Boolean).join(' ') === words.join(' '));
+  const retenus = exacts.length === 1 ? exacts : trouves;
+  if (retenus.length > 1) {
+    return { needInfo: `Plusieurs fournisseurs correspondent : ${retenus.slice(0, 5).map((s) => s.name).join(', ')}. Précisez lequel dans votre demande.` };
+  }
+  const state = await lookup.getSupplierState(accountId, retenus[0].id);
+  return state ? { state } : { needInfo: `Je n’ai pas trouvé ce fournisseur dans votre compte. Quel fournisseur voulez-vous ${pourQuoi} ?` };
+}
+
+/**
+ * Lot 114 (Trello #753, CDC T2 §14.3 W18 – W20, §14.4 « Fournisseurs », X65 – X68) :
+ *   · créer : seul le nom est demandé ; un doublon CERTAIN n'est jamais créé ; des fiches PROCHES sont annoncées
+ *     dans l'aperçu — confirmer vaut décision « fournisseurs distincts », conservée (jamais une fusion par similarité) ;
+ *   · modifier : une coordonnée à la fois, validée comme sur la fiche ; l'effacement est une décision protégée ;
+ *   · retirer : ARCHIVAGE (règle métier existante) — rien n'est supprimé, les relations sont conservées.
+ * Les coordonnées bancaires ne se modifient jamais depuis l'Assistant.
+ */
+async function resolveSupplierCommand(
+  draft: Extract<CommandDraft, { command: 'CREATE_SUPPLIER' | 'UPDATE_SUPPLIER' | 'ARCHIVE_SUPPLIER' }>,
+  input: AssistantRequestInput,
+  lookup: CommandLookup,
+  actionId: string,
+): Promise<PlannedAction | { needInfo: string }> {
+  const acc = input.accountId;
+  const { validateSupplierPatch } = await import('@/services/suppliers/supplier-validation');
+
+  if (draft.command === 'CREATE_SUPPLIER') {
+    if (!draft.name) return { needInfo: 'Quel est le nom du fournisseur à créer ?' };
+    const v = validateSupplierPatch({ name: draft.name, ...(draft.phone ? { phone: draft.phone } : {}), ...(draft.email ? { email: draft.email } : {}), ...(draft.website ? { website: draft.website } : {}) });
+    if (!v.ok) {
+      return { needInfo: v.field === 'email' ? 'Cette adresse e-mail ne semble pas valide. Pouvez-vous la vérifier ?' : 'Ces informations ne peuvent pas être enregistrées telles quelles. Pouvez-vous les vérifier ?' };
+    }
+    const nom = v.updates.name!;
+    const doublon = lookup.supplierDuplicates ? await lookup.supplierDuplicates(acc, nom) : { decision: 'new' as const, candidates: [] };
+    if (doublon.decision === 'certain' && doublon.candidates[0]) {
+      return { needInfo: `Le fournisseur « ${doublon.candidates[0].name} » existe déjà dans votre compte : je ne crée pas de doublon.` };
+    }
+    const proches = doublon.decision === 'uncertain' ? doublon.candidates : [];
+    return {
+      actionId, command: 'CREATE_SUPPLIER', targets: [], dependsOn: [],
+      params: {
+        kind: 'supplier_create', name: nom, phone: v.updates.phone ?? null, email: v.updates.email ?? null, website: v.updates.website ?? null,
+        distinctFrom: proches.map((c) => c.id),
+      },
+      preview: `Créer le fournisseur « ${nom} ».`,
+      effects: [
+        `Nom : ${nom}`,
+        ...(v.updates.phone ? [`Téléphone : ${v.updates.phone}`] : []),
+        ...(v.updates.email ? [`E-mail : ${v.updates.email}`] : []),
+        ...(v.updates.website ? [`Site web : ${v.updates.website}`] : []),
+        ...(proches.length ? [
+          `Attention : ${proches.length > 1 ? 'des fournisseurs proches existent' : 'un fournisseur proche existe'} déjà : ${proches.map((c) => `« ${c.name} »`).join(', ')}.`,
+          'En confirmant, vous indiquez qu’il s’agit d’un fournisseur différent : ce choix sera conservé.',
+        ] : []),
+      ],
+    };
+  }
+
+  if (draft.command === 'UPDATE_SUPPLIER') {
+    const cible = await fournisseurDesigne(lookup, acc, draft.supplierWords, 'modifier');
+    if ('needInfo' in cible) return cible;
+    const s = cible.state;
+    const def = SUPPLIER_FIELD_LABELS[draft.field];
+    if (draft.field === 'name' && draft.clear) return { needInfo: 'Le nom d’un fournisseur ne peut pas être vide.' };
+    if (!draft.clear && !draft.value) return { needInfo: `Quelle valeur voulez-vous enregistrer pour ${def.article} de « ${s.name} » ?` };
+    const v = validateSupplierPatch({ [draft.field]: draft.clear ? '' : draft.value });
+    if (!v.ok) {
+      return { needInfo: draft.field === 'email' ? 'Cette adresse e-mail ne semble pas valide. Pouvez-vous la vérifier ?' : 'Cette valeur ne peut pas être enregistrée telle quelle. Pouvez-vous la vérifier ?' };
+    }
+    const nouvelle = (v.updates[draft.field] ?? null) as string | null;
+    const actuelle = s[draft.field];
+    if ((actuelle ?? '') === (nouvelle ?? '')) {
+      return { needInfo: nouvelle ? `${def.label} de « ${s.name} » : c’est déjà ${nouvelle}.` : `${def.label} de « ${s.name} » : aucune valeur n’est enregistrée.` };
+    }
+    return {
+      actionId, command: 'UPDATE_SUPPLIER', dependsOn: [],
+      targets: [{ type: 'supplier', id: s.id, label: s.name }],
+      params: { kind: 'supplier_update', supplierId: s.id, patch: { [draft.field]: nouvelle }, expectedVersion: s.version },
+      preview: nouvelle
+        ? `Modifier ${def.article} du fournisseur « ${s.name} » : ${vide(actuelle)} → ${nouvelle}.`
+        : `Effacer ${def.article} du fournisseur « ${s.name} » (${vide(actuelle)}).`,
+      effects: [
+        `Fournisseur : ${s.name}`,
+        `${def.label} : ${vide(actuelle)} → ${vide(nouvelle)}`,
+        nouvelle ? 'Cette valeur ne sera pas remplacée par celle d’un document.' : 'Cette valeur ne sera pas rétablie par un document.',
+      ],
+    };
+  }
+
+  const cible = await fournisseurDesigne(lookup, acc, draft.supplierWords, 'archiver');
+  if ('needInfo' in cible) return cible;
+  const s = cible.state;
+  if (s.status === 'archived') return { needInfo: `Le fournisseur « ${s.name} » est déjà archivé.` };
+  const liens = [
+    ...(s.links.documents ? [pluriel(s.links.documents, 'document', 'documents')] : []),
+    ...(s.links.assets ? [pluriel(s.links.assets, 'bien', 'biens')] : []),
+    ...(s.links.equipments ? [pluriel(s.links.equipments, 'équipement', 'équipements')] : []),
+    ...(s.links.agenda ? [pluriel(s.links.agenda, 'échéance', 'échéances')] : []),
+  ];
+  return {
+    actionId, command: 'ARCHIVE_SUPPLIER', dependsOn: [],
+    targets: [{ type: 'supplier', id: s.id, label: s.name }],
+    params: { kind: 'supplier_archive', supplierId: s.id, expectedVersion: s.version },
+    preview: `Archiver le fournisseur « ${s.name} ».`,
+    effects: [
+      'Un fournisseur ne se supprime pas : il est archivé.',
+      liens.length ? `Conservés et toujours rattachés à lui : ${liens.join(', ')}.` : 'Aucun document, bien, équipement ni échéance ne lui est rattaché.',
+      'Sa fiche reste consultable et peut être réactivée depuis vos fournisseurs.',
     ],
   };
 }

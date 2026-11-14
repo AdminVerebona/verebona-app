@@ -75,7 +75,8 @@ describe('MASC50-AC04 — visibilité du traitement, générique', () => {
     'src/app/api/documents/analyze-batch/route.ts': 'USER',
     // Lot 64A : `triggerRetroactiveAnalysis` (jamais appelée) retirée du webhook Stripe — plus d'appel d'analyse.
     'src/services/document-ai/retroactive-analysis.service.ts': 'USER',
-    'src/app/api/documents/[id]/route.ts': 'TECHNICAL',
+    // Lot 114 (#753, W10 / W12 / W14) : règle déplacée — la logique de la route est dans la façade métier `document-write.facade` (partagée avec l'Assistant).
+    'src/services/documents/document-write.facade.ts': 'TECHNICAL',
     'src/app/api/documents/bulk-move/route.ts': 'TECHNICAL',
     'src/app/api/cron/documents/referential-upgrade/route.ts': 'TECHNICAL',
     'src/services/document-ai/analysis-recovery.service.ts': 'TECHNICAL',
@@ -84,12 +85,12 @@ describe('MASC50-AC04 — visibilité du traitement, générique', () => {
     // Lot 86A : `governance/corpus/pipeline-runner.ts` retiré (harnais historique absorbé par la qualification par couple, qui n'appelle pas le pipeline).
   };
 
-  /** Appels réels (commentaires retirés) de l'analyse dans un fichier, texte complet de chaque appel. */
+  /** Appels réels (commentaires retirés) de l'analyse dans un fichier, texte complet de chaque appel. Lot 114H (#775) : `enqueueFileAnalysesDetailed` (issue réelle de la file) est un appel d'analyse au même titre. */
   const appelsDe = (rel: string): string[] => {
     const brut = readFileSync(join(process.cwd(), rel), 'utf8');
     const s = brut.replace(/\/\*[\s\S]*?\*\//g, (m) => m.replace(/[^\n]/g, ' ')).replace(/(^|[^:'"`])\/\/.*$/gm, '$1');
     const out: string[] = [];
-    for (const m of s.matchAll(/\b(analyzeFileSources|enqueueFileAnalyses)\(/g)) {
+    for (const m of s.matchAll(/\b(analyzeFileSources|enqueueFileAnalyses(?:Detailed)?)\(/g)) {
       if (/function\s+$/.test(s.slice(Math.max(0, m.index! - 20), m.index!))) continue;
       let prof = 0, fin = m.index! + m[0].length - 1;
       for (let i = fin; i < s.length; i++) {

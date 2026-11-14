@@ -31,6 +31,7 @@ import {
 } from '@/lib/agenda/agenda-filters';
 import { AgendaSearchPeriodNotice } from '@/components/agenda/AgendaSearchPeriodNotice';
 import { NO_DEADLINE_LABEL } from '@/lib/agenda/no-deadline';
+import { PLAN_ACTION_LABEL, groupUndated, undatedGroupOf } from '@/lib/agenda/situation';
 import { LocalSearchField } from '@/components/search/LocalSearchField';
 import { LOCAL_SEARCH_PARAM, localSearchNoResult, readLocalQuery, searchWithLocalQuery } from '@/lib/search/local-search';
 import { AGENDA_EVENT_LABELS } from '@/lib/agenda/grouping-view';
@@ -57,7 +58,7 @@ function formatShortDate(dateStr: string | null): string {
   });
 }
 
-function AgendaItemRow({ item, onClick }: { item: AgendaItemFull; onClick: () => void }) {
+function AgendaItemRow({ item, onClick, onPlan }: { item: AgendaItemFull; onClick: () => void; onPlan?: () => void }) {
   const firstAsset = item.assetLinks[0];
   const extraAssets = item.assetLinks.length - 1;
 
@@ -103,6 +104,19 @@ function AgendaItemRow({ item, onClick }: { item: AgendaItemFull; onClick: () =>
         </div>
       </div>
 
+      {/* Lot 114V (#742) : « Planifier » — ouvre la modification de CE même événement (sa date), sans rien créer. */}
+      {onPlan && !item.startDate && undatedGroupOf(item) === 'A_PREVOIR' && (
+        <Button
+          type="button"
+          variant="outline"
+          size="sm"
+          className="shrink-0"
+          aria-label={`${PLAN_ACTION_LABEL} : ${item.title}`}
+          onClick={(e) => { e.stopPropagation(); onPlan(); }}
+        >
+          {PLAN_ACTION_LABEL}
+        </Button>
+      )}
     </div>
   );
 }
@@ -142,6 +156,8 @@ function AgendaPageInner() {
   const [loadedOnce, setLoadedOnce] = useState(false);
   const [refreshKey, setRefreshKey] = useState(0);
   const [selectedItem, setSelectedItem] = useState<AgendaItemFull | null>(null);
+  // Lot 114V (#742) : « Planifier » ouvre le tiroir directement en modification.
+  const [selectedMode, setSelectedMode] = useState<'view' | 'edit'>('view');
   const [showCreate, setShowCreate] = useState(false);
   // Lot 71 : panneau de filtres intégré à la page (le tiroir a disparu,
   // téléphone compris), replié par défaut comme sur « Mes documents ».
@@ -214,6 +230,7 @@ function AgendaPageInner() {
   const onMutated = () => {
     setRefreshKey(k => k + 1);
     setSelectedItem(null);
+    setSelectedMode('view');
   };
 
   // Refresh when any agenda mutation happens elsewhere (e.g. from DocumentDrawer)
@@ -275,8 +292,10 @@ function AgendaPageInner() {
       return (a.startTime ?? 'zzz').localeCompare(b.startTime ?? 'zzz');
     });
 
-    const groups: { date: string | null; label: string; items: AgendaItemFull[] }[] = [];
-    if (undated.length > 0) groups.push({ date: null, label: 'Sans date', items: undated });
+    // Lot 114V (#742) — règle remplacée : plus un seul groupe « Sans date ». Hors calendrier daté :
+    // « À prévoir » (ouverts), « Sans date » (non qualifiés), « Date inconnue » (ont eu lieu) — jamais triés par date.
+    const groups: { key: string; date: string | null; label: string; items: AgendaItemFull[] }[] = groupUndated(undated)
+      .map((g) => ({ key: `sans-date-${g.group}`, date: null, label: g.label, items: g.items }));
 
     const byDate: Record<string, AgendaItemFull[]> = {};
     for (const item of dated) {
@@ -286,6 +305,7 @@ function AgendaPageInner() {
     }
     for (const [date, dateItems] of Object.entries(byDate)) {
       groups.push({
+        key: date,
         date,
         label: formatShortDate(date),
         items: dateItems,
@@ -437,9 +457,16 @@ function AgendaPageInner() {
         ) : (
           <div className="space-y-2">
             {grouped.map(group => (
-              <div key={group.date ?? 'undated'} className="space-y-2">
+              <div key={group.key} className="space-y-2" data-agenda-group={group.key}>
+                {/* Lot 114V (#742) : section nommée des éléments sans date (hors calendrier daté), avec son décompte. */}
+                {group.date === null && <p className="vb-group-label px-1">{group.label} · {group.items.length}</p>}
                 {group.items.map(item => (
-                  <AgendaItemRow key={item.id} item={item} onClick={() => setSelectedItem(item)} />
+                  <AgendaItemRow
+                    key={item.id}
+                    item={item}
+                    onClick={() => { setSelectedMode('view'); setSelectedItem(item); }}
+                    onPlan={() => { setSelectedMode('edit'); setSelectedItem(item); }}
+                  />
                 ))}
               </div>
             ))}
@@ -452,9 +479,10 @@ function AgendaPageInner() {
       <AgendaItemDrawer
         item={selectedItem}
         open={!!selectedItem}
-        onClose={() => setSelectedItem(null)}
+        onClose={() => { setSelectedItem(null); setSelectedMode('view'); }}
         onMutated={onMutated}
         onOpenDocument={(fileId) => setDocDrawerFileId(fileId)}
+        initialMode={selectedMode}
       />
 
       {docDrawerFileId && (

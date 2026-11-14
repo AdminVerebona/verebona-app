@@ -1,24 +1,14 @@
-import { validateNotesInput } from '@/lib/documents/notes-description';
-import { markNotesUserOwned, NotesIntentUnavailableError, NOTES_INTENT_UNAVAILABLE_MESSAGE } from '@/services/documents/notes-description/store';
 import { NextRequest, NextResponse } from 'next/server';
 import { db } from '@/db';
-import { assetFiles, assets } from '@/db/schema';
+import { assetFiles } from '@/db/schema';
 import { eq, and, isNull } from 'drizzle-orm';
 import { getSession } from '@/lib/auth-guards';
 import { refuserSiLectureSeule } from '@/lib/write-access-guard';
 import { AccountService } from '@/services/account-service';
-import { resolveUploadDocumentDate } from '@/services/documents/upload-document-date';
+import { createWebDocumentForAccount, type WebDocumentInput } from '@/services/documents/document-write.facade';
+import { NotesIntentUnavailableError, NOTES_INTENT_UNAVAILABLE_MESSAGE } from '@/services/documents/notes-description/store';
 
 export const dynamic = 'force-dynamic';
-
-function isValidUrl(url: string): boolean {
-  try {
-    const u = new URL(url);
-    return u.protocol === 'http:' || u.protocol === 'https:';
-  } catch {
-    return false;
-  }
-}
 
 async function resolveAccountId(userId: number, jwtAccountId?: number): Promise<number | null> {
   if (jwtAccountId) return jwtAccountId;
@@ -71,78 +61,10 @@ export async function POST(request: NextRequest) {
     try { body = await request.json(); }
     catch { return NextResponse.json({ error: 'INVALID_BODY' }, { status: 400 }); }
 
-    const { url, title, documentType, assetId, documentDate, documentDateSource, description, notes, supplier, amountCents } = body as {
-      url?: string; title?: string; documentType?: string; assetId?: number | string | null;
-      documentDate?: string; documentDateSource?: string; description?: string; notes?: string; supplier?: string; amountCents?: number;
-    };
-    // Lot 113Z (#723) : le nom du lien est son titre ; le texte libre est la
-    // note de l'utilisateur (« Notes / Description »), jamais la description
-    // T1. Client antérieur : `description` (« Titre / Description ») lu comme une note.
-    // Carte #767 (E04) : plus de troncature silencieuse — au-delà de la limite, refus (400), rien n'est créé.
-    const validationNote = validateNotesInput(notes, description);
-    if (!validationNote.ok) {
-      return NextResponse.json({ error: validationNote.code, code: validationNote.code, message: validationNote.message, maxLength: validationNote.max }, { status: 400 });
-    }
-    const noteSaisie = validationNote.notes;
-
-    if (!url || !url.trim()) return NextResponse.json({ error: 'MISSING_URL', message: 'URL requise' }, { status: 400 });
-    if (!title || !title.trim()) return NextResponse.json({ error: 'MISSING_TITLE', message: 'Nom du document requis' }, { status: 400 });
-    if (!isValidUrl(url.trim())) return NextResponse.json({ error: 'INVALID_URL', message: "L'URL doit commencer par http:// ou https://" }, { status: 400 });
-
-    let assetIdInt: number | null = null;
-    if (assetId && assetId !== 0 && assetId !== '0') {
-      assetIdInt = parseInt(String(assetId));
-      if (isNaN(assetIdInt)) return NextResponse.json({ error: 'INVALID_ASSET_ID' }, { status: 400 });
-
-      const [asset] = await db.select({ id: assets.id })
-        .from(assets)
-        .where(and(eq(assets.id, assetIdInt), eq(assets.accountId, accountId), isNull(assets.deletedAt)))
-        .limit(1);
-
-      if (!asset) return NextResponse.json({ error: 'ASSET_NOT_FOUND', message: 'Bien introuvable' }, { status: 404 });
-    }
-
-    const now = new Date();
-    // Lot 108D : jamais le jour d'import pré-rempli comme date du document (voir upload-document-date).
-    const dateDepot = resolveUploadDocumentDate({ documentDate, documentDateSource }, now);
-    // Carte #767 (E05) : le lien et la reprise en main de sa note sont écrits ensemble (tout ou rien).
-    const [newWebLink] = await db.transaction(async (tx) => {
-    const crees = await tx.insert(assetFiles).values({
-      userId: session.userId,
-      accountId,
-      assetId: assetIdInt,
-      isWebLink: true,
-      webLinkUrl: url.trim(),
-      webLinkTitle: title.trim(),
-      originalFilename: title.trim(),
-      filename: `weblink-${Date.now()}`,
-      mimeType: 'application/x-web-link',
-      fileExtension: 'url',
-      size: 0,
-      sha256Hash: `weblink-${session.userId}-${Date.now()}`,
-      s3Key: 'weblink',
-      s3Bucket: 'weblink',
-      s3Region: 'weblink',
-      documentType: (typeof documentType === 'string' && documentType) ? documentType : 'AUTRE',
-      documentDate: dateDepot.documentDate,
-      ...(dateDepot.markUserEdited ? { userEditedFields: { documentDate: true } } : {}),
-      notes: noteSaisie,
-      supplier: supplier || null,
-      amountCents: amountCents || null,
-      uploadStatus: 'COMPLETED',
-      scope: 'personal',
-      isDraft: false,
-      isIgnored: false,
-      uploadedAt: now,
-      createdAt: now,
-      updatedAt: now,
-    }).returning();
-    if (!crees[0]) throw new Error('Échec de la création');
-    if (noteSaisie) await markNotesUserOwned(tx, accountId, crees[0].id);
-    return crees;
-    });
-
-    if (!newWebLink) throw new Error('Échec de la création');
+    // Lot 114 (#753, W10) : validation et création par la façade métier — la même que l'Assistant Verebona.
+    const r = await createWebDocumentForAccount({ userId: session.userId, currentAccountId: accountId }, body as WebDocumentInput);
+    if (!r.ok) return NextResponse.json({ error: r.error, ...(r.extra ?? {}), ...(r.message ? { message: r.message } : {}) }, { status: r.status });
+    const newWebLink = r.webLink;
 
     return NextResponse.json({ success: true, webLink: newWebLink }, { status: 201 });
   } catch (error) {

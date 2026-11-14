@@ -1,11 +1,8 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { emitBusinessEvent } from '@/services/verebona-assistant/events/business-events';
-import { db } from '@/db';
-import { suppliers } from '@/db/schema';
-import { eq, and } from 'drizzle-orm';
 import { SessionService } from '@/lib/session-service';
 import { refuserSiLectureSeule } from '@/lib/write-access-guard';
 import { apiError } from '@/lib/api-errors';
+import { setSupplierArchived } from '@/services/suppliers/supplier-write.facade';
 
 // POST /api/suppliers/[id]/archive — logical archive
 // Lot 109B : archivage depuis la fiche (confirmation côté écran). Les relations
@@ -30,24 +27,11 @@ export async function POST(
     const supplierId = parseInt(id);
     if (isNaN(supplierId)) return apiError(400, 'INVALID_INPUT', 'Invalid supplier id');
 
-    const [existing] = await db
-      .select({ id: suppliers.id, status: suppliers.status })
-      .from(suppliers)
-      .where(and(eq(suppliers.id, supplierId), eq(suppliers.accountId, accountId)))
-      .limit(1);
-
-    if (!existing) return apiError(404, 'NOT_FOUND', 'Supplier not found');
-
-    if (existing.status === 'deleted') return apiError(404, 'NOT_FOUND', 'Supplier not found');
+    // Lot 114 (#753, W20) : archivage par la façade métier — la même que l'Assistant Verebona.
     const body = await request.json().catch(() => ({})) as { restore?: unknown };
-    const status = body?.restore === true ? 'active' : 'archived';
-
-    await db.update(suppliers)
-      .set({ status, updatedAt: new Date() })
-      .where(and(eq(suppliers.id, supplierId), eq(suppliers.accountId, accountId)));
-
-    // CDC Assistant §31.7 : fournisseur archivé.
-    await emitBusinessEvent({ type: 'SUPPLIER_CHANGED', accountId, entityId: supplierId });
+    const r = await setSupplierArchived({ accountId, supplierId, restore: body?.restore === true });
+    if (!r.ok) return apiError(404, 'NOT_FOUND', 'Supplier not found');
+    const status = r.status;
     return NextResponse.json({ success: true, status });
   } catch (err) {
     return SessionService.handleSessionError(err);
