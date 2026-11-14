@@ -171,6 +171,11 @@ function ProviderRequest({ r }: { r: ProviderRequestTrace }) {
     ['Nœuds du schéma', r.schemaNodes == null ? null : String(r.schemaNodes)],
     ['Mots-clés retirés', r.droppedKeywords.length ? r.droppedKeywords.join(', ') : null],
     ['Motif d’omission du schéma', r.schemaOmittedReason],
+    // Lot 114 (carte #776) : état mémorisé du couple avant l'appel et décision (schéma transmis ou non, réexamen).
+    ['Compatibilité du schéma avant l’appel', r.schemaCompat
+      ? `${r.schemaCompat.state} · ${r.schemaCompat.decision === 'sent' ? 'schéma transmis' : 'schéma non transmis'} (${r.schemaCompat.why})${r.schemaCompat.retest ? ' · essai de réexamen' : ''} · politique ${r.schemaCompat.policyVersion} · adaptateur ${r.schemaCompat.adapterVersion}`
+      : null],
+    ['Branches que la projection aurait perdues', r.lostBranches?.length ? r.lostBranches.join(', ') : null],
     ['responseMimeType', r.responseMimeType ?? 'aucun (texte)'],
     ['maxOutputTokens', r.maxOutputTokens == null ? 'défaut du modèle' : fmtInt(r.maxOutputTokens)],
     ['thinkingConfig', r.thinkingConfig],

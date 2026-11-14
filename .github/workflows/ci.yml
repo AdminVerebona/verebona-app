@@ -653,6 +653,8 @@ jobs:
         run: npm run test:e2e:emails-securite -- --reporter=default --reporter=junit --outputFile.junit=rapports/e2e-emails-securite.xml
       - name: Coût de possession — confirmations sans date, une dépense à la fois, gestes, compteurs, vue obsolète (Trello #769)
         run: npm run test:e2e:tco-confirmations -- --reporter=default --reporter=junit --outputFile.junit=rapports/e2e-tco-confirmations.xml
+      - name: IA T1 — refus de schéma mémorisés, supervision et alertes de compatibilité (Trello #776)
+        run: npm run test:e2e:schemas-structures -- --reporter=default --reporter=junit --outputFile.junit=rapports/e2e-schemas-structures.xml
       - uses: actions/upload-artifact@v4
         if: always()
         with:

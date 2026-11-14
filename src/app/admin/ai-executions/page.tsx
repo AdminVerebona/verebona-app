@@ -97,6 +97,7 @@ import { ExecutionDiagnosisPanel, type DiagnosisView } from './_components/Execu
 import { historyClassSummary, type HistoryClass } from '@/services/ai/history-reclassification/rule';
 import { RuntimeContractPanel, type ContractCallView } from './_components/RuntimeContractPanel';
 import { T1CompletenessPanel } from './_components/T1CompletenessPanel';
+import { SchemaCompatibilityPanel } from './_components/SchemaCompatibilityPanel';
 import { QualificationCampaignsPanel } from './_components/QualificationCampaignsPanel';
 import { ExecutionReportsTab, LinkedExecutionReports } from './_components/ExecutionReportPanel';
 import { JobAttemptsPanel, type JobExecutionViewDto, type UserViewDto } from './_components/JobAttemptsPanel';
@@ -256,12 +257,14 @@ export default function AiExecutionsPage() {
   );
 }
 
-type TechTab = 'tech' | 'calls' | 't2' | 'reports' | 'completeness' | 'archives' | 'qualification';
+type TechTab = 'tech' | 'calls' | 't2' | 'reports' | 'completeness' | 'archives' | 'qualification' | 'schemas';
 const TECH_TABS: ReadonlyArray<readonly [TechTab, string]> = [
   ['calls', 'Appels modèles'], ['tech', 'Exécutions techniques'], ['t2', 'Requêtes T2 (routage)'],
   ['reports', 'Rapports T1/T3/T6'], ['completeness', 'Complétude T1'], ['archives', 'Archives (> 90 j)'],
   // Lot 86A (Pilotage IA V2 P5) : campagnes de qualification par couple (techniques, jamais des exécutions métier).
   ['qualification', 'Qualification'],
+  // Lot 114 (carte #776) : usage réel du schéma imposé, refus, nouveaux essais sans schéma, compatibilité par couple.
+  ['schemas', 'Schémas structurés'],
 ];
 
 interface JournalResponse {
@@ -378,7 +381,7 @@ function AiExecutionsScreen() {
         const r = await apiClient.get<JournalResponse>(`/api/admin/ai/business-executions?${journalParams(jf, 'TECHNICAL', { offset: String(jOffset), limit: '50' })}`);
         setJournal(r);
         if (r.synthesis) { setSynthese(r.synthesis); setSyntheseErreur(null); }
-      } else if (tab === 'reports' || tab === 'completeness' || tab === 'qualification') {
+      } else if (tab === 'reports' || tab === 'completeness' || tab === 'qualification' || tab === 'schemas') {
         // Lots 58C et 34F : l'onglet charge lui-même ses données.
       } else if (tab === 'archives') {
         setArchives(await apiClient.get<Archives>('/api/admin/ai/log-archives?limit=100'));
@@ -438,7 +441,7 @@ function AiExecutionsScreen() {
   };
 
   const total = vue === 'metier' || tab === 'tech' ? journal?.total ?? 0
-    : tab === 'reports' || tab === 'completeness' || tab === 'qualification' ? 0 : tab === 't2' ? t2?.total ?? 0 : tab === 'archives' ? archives?.totals.archives ?? 0 : page?.total ?? 0;
+    : tab === 'reports' || tab === 'completeness' || tab === 'qualification' || tab === 'schemas' ? 0 : tab === 't2' ? t2?.total ?? 0 : tab === 'archives' ? archives?.totals.archives ?? 0 : page?.total ?? 0;
   const journalList = listeOuverte && (vue === 'metier' || tab === 'tech');
 
   return (
@@ -536,7 +539,7 @@ function AiExecutionsScreen() {
         )}
 
         {/* Filtres des appels — lus depuis l'URL, réécrits à chaque changement */}
-        {vue === 'technique' && !journalList && tab !== 'completeness' && tab !== 'qualification' && (
+        {vue === 'technique' && !journalList && tab !== 'completeness' && tab !== 'qualification' && tab !== 'schemas' && (
       <div className="flex flex-wrap gap-2 items-center">
         {tab === 'calls' && (
           <>
@@ -626,6 +629,8 @@ function AiExecutionsScreen() {
         <T1CompletenessPanel />
       ) : tab === 'qualification' ? (
         <QualificationCampaignsPanel />
+      ) : tab === 'schemas' ? (
+        <SchemaCompatibilityPanel initialOperation={searchParams.get('schemaOperation') ?? ''} />
       ) : tab === 'reports' ? (
         <ExecutionReportsTab accountId={filters.accountId} />
       ) : tab === 'archives' ? (

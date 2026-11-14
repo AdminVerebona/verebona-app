@@ -538,6 +538,11 @@ async function runEvaluators(): Promise<void> {
   // modèle résolu / attendu, dépréciation annoncée d'un modèle actif.
   await run('assistant_alerts', 3_600, async () =>
     (await import('@/services/verebona-assistant/observability/assistant-alerts')).evaluateAssistantAlerts());
+  // Lot 114 (carte #776, travail 11) : réévaluation quotidienne des alertes de compatibilité de SCHÉMA (clôture
+  // des seules alertes dont la cause a disparu) — passage réservé en base comme les autres évaluateurs : aucune
+  // tâche planifiée de plus, aucun appel fournisseur, aucune écriture sur les documents (domaine de la carte #775).
+  await run('schema_compat_alerts', 86_400 - 600, async () =>
+    (await import('../gateway/schema-compat/alerts')).reevaluateSchemaCompatAlerts());
 }
 
 // ── Pool d'exécution borné ─────────────────────────────────────────────────

@@ -38,8 +38,12 @@ import {
   renderStructuredPrompt, promptHash, StructuredContextError, type MasterExecutionConfig, type BuiltExecutionContext,
 } from '../master-prompts/structured-context';
 import {
-  providerJsonSchema, structuredOutputEnabled, noteSchemaRejected, schemaRejectedRecently,
+  providerJsonSchema, structuredOutputEnabled, PROVIDER_SCHEMA_ADAPTER_VERSION,
 } from './output-resolution/provider-schema';
+import {
+  decideSchemaUse, reportSchemaOutcome, schemaHeldRejected, noteSchemaUnsupported, coupleKeyId,
+  type SchemaCoupleKey, type SchemaDecision,
+} from './schema-compat';
 import { buildRepairPrompt, mergeRepair, repairPassEnabled, REPAIR_MAX_INPUT_CHARS } from './output-resolution/repair-pass';
 import { classifyCallError, failureSignature, isGenericInvalidArgument, isTruncated, type ClassifiedFailure } from './diagnostics/classify';
 import {
@@ -66,7 +70,7 @@ import { buildModelRequest, type ModelRequestResult, type RequestTrace } from '.
 import { estimateTokens, INPUT_SAFETY_MARGIN_RATIO } from './budget-resolution';
 import { capabilitiesOf } from '../provider/model-capabilities';
 import { ensureModelCapabilitiesLoaded } from '../provider/model-capabilities.repository';
-import type { ModelRank } from '../telemetry/execution-context';
+import { getAppVersion, type ModelRank } from '../telemetry/execution-context';
 import type { AiProvider, ProviderCallInput, ProviderCallOutput, ProviderResponseMeta } from './providers/provider.port';
 import type { ZodType } from 'zod';
 import type { AiOperationDefinition } from '../registry/operations';
@@ -829,8 +833,18 @@ export class AiGateway {
         const informed = previousFailure?.family === 'INVALID_OUTPUT' && previousFailure.subtype !== 'OUTPUT_TRUNCATED'
           && previousFailure.subtype !== 'EMPTY_RESPONSE';
         const notice = informed ? fallbackNotice(previousFailure!) : '';
-        // Structured output transmis à CE modèle ? (refus récent mémorisé : non.)
-        const sendSchema = providerSchema?.schema && !schemaRejectedRecently(model, contract.schemaHash) ? providerSchema.schema : null;
+        // Structured output transmis à CE modèle ? Lot 114 (#776) : décision par COUPLE (fournisseur, modèle,
+        // opération, contrat, schéma projeté, adaptateur), lue dans la mémoire partagée et durable — refus
+        // mémorisé : non ; réexamen dû : UNE instance le réserve et le tente, les autres restent sans schéma.
+        const coupleKey: SchemaCoupleKey = {
+          provider: provider.name, model, operationCode, contractId: contract.contractId, contractVersion: contract.contractVersion,
+          schemaHash: contract.schemaHash, providerSchemaHash: psHash, adapterVersion: PROVIDER_SCHEMA_ADAPTER_VERSION,
+        };
+        const schemaDecision: SchemaDecision | null = providerSchema?.schema ? await decideSchemaUse(coupleKey) : null;
+        // Schéma non transmissible (contrôle statique) : couple et motif tracés dans la matrice, jamais envoyé.
+        if (providerSchema && !providerSchema.schema) noteSchemaUnsupported(coupleKey, providerSchema.omitted ?? 'unknown', getAppVersion());
+        const sendSchema = providerSchema?.schema && schemaDecision?.send ? providerSchema.schema : null;
+        const schemaOutcome = { reported: false };
         const attemptPrompt = `${withContract(!sendSchema)}${notice}`;
         const entree = estimerEntree(model, attemptPrompt, maxOutputTokens ?? null);
         const attemptStart = Date.now();
@@ -853,6 +867,7 @@ export class AiGateway {
               : !structuredOutputEnabled() ? 'structured_output_off'
                 : !providerSchema?.schema ? providerSchema?.omitted ?? 'unknown'
                   : 'recent_rejection',
+          compat: schemaDecision,
         });
 
         const baseTrace = {
@@ -868,6 +883,8 @@ export class AiGateway {
         //    refus AVANT appel, catégorie explicite (journal P3), aucun coût ;
         //    le rang suivant, avec son propre profil, peut prendre le relais. ──
         if (!built.ok) {
+          // #776 : aucun appel — un réexamen réservé est rendu (rien n'est conclu sur le schéma).
+          if (schemaDecision?.retest) reportSchemaOutcome(schemaDecision, { kind: 'INCONCLUSIVE' });
           const refus = built.refusal;
           failures.push(`${model} : ${refus.message}`);
           lastFailureCode = 'MODEL_PARAMETERS_INCOMPATIBLE';
@@ -911,14 +928,25 @@ export class AiGateway {
             ...(jsonResponse ? { jsonResponse: true } : {}),
             ...(attachmentSession ? { attachmentSession } : {}),
           }, sendSchema,
-          (s) => { soStatus = s; }, () => noteSchemaRejected(model, contract.schemaHash),
+          (s) => { soStatus = s; },
+          // #776 : refus constaté (explicite, ou 400 générique levé par l'essai sans schéma) → mémoire partagée.
+          (reason, cRefus) => {
+            schemaOutcome.reported = true;
+            if (schemaDecision) reportSchemaOutcome(schemaDecision, { kind: 'REJECTED', reason }, { httpStatus: cRefus.httpStatus, providerCode: cRefus.providerErrorCode, appVersion: getAppVersion() });
+          },
           // Schéma refusé : même modèle, sans structured output — le schéma
           // DÉRIVÉ du même contrat passe alors dans le prompt.
           `${withContract(true)}${notice}`,
           // Lot 52B : 400 INVALID_ARGUMENT générique → essai diagnostique.
           { trail, providerSchemaHash: psHash, diagnosticRetry: true });
+          // #776 : le fournisseur a répondu à la requête portant le schéma — couple qualifié par un appel RÉEL
+          // (jamais par la réussite d'un essai sans schéma).
+          if (sendSchema && schemaDecision && soStatus === 'requested_schema') reportSchemaOutcome(schemaDecision, { kind: 'ACCEPTED' }, { appVersion: getAppVersion() });
           if (soStatus === 'requested_schema' && !sendSchema) soStatus = 'schema_skipped_recent_rejection';
         } catch (raw) {
+          // #776 : échec sans conclusion sur le schéma (délai, réseau, quota, 400 non levé par l'essai sans
+          // schéma) — rien n'est mémorisé ; un réexamen réservé est rendu.
+          if (sendSchema && schemaDecision && !schemaOutcome.reported) reportSchemaOutcome(schemaDecision, { kind: 'INCONCLUSIVE' });
           // ── Échec AVANT toute sortie exploitable (fournisseur, réseau, délai) ──
           // Lot 61 : erreur locale déterministe (construction de la requête) →
           // REQUEST_BUILD_FAILED non récupérable : aucun repli, jamais
@@ -1031,7 +1059,12 @@ export class AiGateway {
         if (!first.ok && repairAllowed && first.repairable && !first.taskMismatch) {
           repairRun = await this.repairPass({
             provider: capturing, model, operationCode, op, resolveBase, first, reasoning, maxOutputTokens, timeoutMs, generation: built.params,
-            providerSchema: providerSchema?.schema && !schemaRejectedRecently(model, contract.schemaHash) ? providerSchema.schema : null,
+            // #776 : lecture SANS réservation — la réparation ne tente jamais un réexamen.
+            providerSchema: providerSchema?.schema && !schemaHeldRejected(coupleKey) ? providerSchema.schema : null,
+            onSchemaRejected: (reason, cRefus) => reportSchemaOutcome(
+              { key: coupleKey, keyId: coupleKeyId(coupleKey), retest: false }, { kind: 'REJECTED', reason },
+              { httpStatus: cRefus.httpStatus, providerCode: cRefus.providerErrorCode, appVersion: getAppVersion() },
+            ),
             discriminant, traceConfig, contract, schemaRefOf,
           });
           final = repairRun?.resolution ?? first;
@@ -1270,6 +1303,8 @@ export class AiGateway {
     /** Lot 85C : paramètres résolus du rang (même constructeur que l'analyse). */
     generation?: ProviderCallInput['generation'];
     providerSchema: Record<string, unknown> | null;
+    /** Lot 114 (#776) : refus du schéma constaté pendant la réparation → mémoire partagée du couple. */
+    onSchemaRejected: SchemaRejectedCallback;
     discriminant: { field: string; value: string } | null;
     traceConfig: { task: string | null };
     /** Lot 34D : contrat runtime EXACT de l'exécution (jamais reconstruit). */
@@ -1290,7 +1325,6 @@ export class AiGateway {
     });
     const start = Date.now();
     let soStatus = p.providerSchema ? 'requested_schema' : 'json_mode';
-    const schemaHash = p.contract.schemaHash;
     let out: ProviderCallOutput;
     try {
       out = await callWithSchemaFallback(p.provider, {
@@ -1298,7 +1332,7 @@ export class AiGateway {
         maxOutputTokens: p.maxOutputTokens, reasoning: p.reasoning, operationCode: p.operationCode,
         ...(p.generation ? { generation: p.generation } : {}),
         ...(p.traceConfig.task ? { task: p.traceConfig.task } : {}), jsonResponse: true, callKind: 'repair',
-      }, p.providerSchema, (s) => { soStatus = s; }, () => noteSchemaRejected(p.model, schemaHash));
+      }, p.providerSchema, (s) => { soStatus = s; }, p.onSchemaRejected);
     } catch (e) {
       const c = classifyCallError(e);
       return {
@@ -1442,12 +1476,15 @@ interface RepairRun {
  * de réparation garde le comportement historique.
  * ══════════════════════════════════════════════════════════════════════════
  */
+/** Lot 114 (#776) — refus du schéma constaté : motif (explicite, ou 400 générique levé par l'essai sans schéma) et classification. */
+type SchemaRejectedCallback = (reason: 'EXPLICIT_SCHEMA_REJECTION' | 'GENERIC_400_ANSWERED_WITHOUT_SCHEMA', c: ClassifiedFailure) => void;
+
 async function callWithSchemaFallback(
   provider: AiProvider,
   input: ProviderCallInput,
   schema: Record<string, unknown> | null,
   setStatus: (s: string) => void,
-  onRejected: () => void,
+  onRejected: SchemaRejectedCallback,
   /** Lot 34D : prompt du nouvel essai sans structured output (schéma du contrat inclus). */
   promptWithoutSchema?: string,
   /** Lot 52B : tentatives internes (tracées) et essai diagnostique autorisé. */
@@ -1483,7 +1520,7 @@ async function callWithSchemaFallback(
       ...input, jsonResponse: true, ...(promptWithoutSchema !== undefined ? { prompt: promptWithoutSchema } : {}),
     };
     if (c.subtype === 'STRUCTURED_OUTPUT_REJECTED') {
-      onRejected();
+      onRejected('EXPLICIT_SCHEMA_REJECTION', c);
       setStatus('schema_rejected_retried_without');
       return timed(sansSchema, 'schema_rejected_retry');
     }
@@ -1495,7 +1532,7 @@ async function callWithSchemaFallback(
       // Cause non démontrée : erreur d'origine, aucune mémorisation.
       throw e;
     }
-    onRejected();
+    onRejected('GENERIC_400_ANSWERED_WITHOUT_SCHEMA', c);
     setStatus('schema_rejected_retried_without');
     return out;
   }
@@ -1591,7 +1628,9 @@ function providerRequestOf(p: {
   model: string; maxOutputTokens: number | undefined; reasoning: ProviderCallInput['reasoning']; jsonResponse: boolean;
   generation?: ProviderCallInput['generation'];
   sendSchema: Record<string, unknown> | null; attachments: ProviderCallInput['attachments'];
-  psHash: string | null; providerSchema: { nodes: number; dropped: string[]; issues?: string[] } | null; omittedReason: string | null;
+  psHash: string | null; providerSchema: { nodes: number; dropped: string[]; issues?: string[]; lostBranches?: string[] } | null; omittedReason: string | null;
+  /** Lot 114 (#776) : décision de compatibilité du couple pour cet appel (`null` : aucun schéma transmissible). */
+  compat?: SchemaDecision | null;
 }): ProviderRequestTrace {
   const g = describeGenerationConfig({
     model: p.model, maxOutputTokens: p.maxOutputTokens, reasoning: p.reasoning, jsonResponse: p.jsonResponse,
@@ -1605,6 +1644,14 @@ function providerRequestOf(p: {
     droppedKeywords: p.providerSchema ? [...p.providerSchema.dropped].slice(0, 40) : [],
     schemaOmittedReason: p.omittedReason,
     ...(p.providerSchema?.issues?.length ? { schemaIssues: p.providerSchema.issues.slice(0, 20) } : {}),
+    // Lot 114 (#776) : état de compatibilité du couple AVANT l'appel, motif de la décision, réexamen, versions.
+    ...(p.compat ? {
+      schemaCompat: {
+        state: p.compat.state, decision: p.compat.send ? 'sent' as const : 'skipped' as const, why: p.compat.why, retest: p.compat.retest,
+        policyVersion: p.compat.policyVersion, adapterVersion: p.compat.key.adapterVersion,
+      },
+    } : {}),
+    ...(p.providerSchema?.lostBranches?.length ? { lostBranches: p.providerSchema.lostBranches.slice(0, 20) } : {}),
     responseMimeType: g.responseMimeType,
     maxOutputTokens: g.maxOutputTokens,
     thinkingConfig: g.thinkingConfig,

@@ -403,11 +403,21 @@ export interface ProviderRequestTrace {
    * Motif d'absence de `responseSchema` : `not_requested`,
    * `structured_output_off` (AI_STRUCTURED_OUTPUT=off), `too_complex`,
    * `unrepresentable`, `recent_rejection` (refus mémorisé), `provider_contract`
-   * (lot 109J : écart au contrat Gemini détecté avant appel) ; `null` si transmis.
+   * (lot 109J : écart au contrat Gemini détecté avant appel), `projection_lossy`
+   * (lot 114, #776 : la projection aurait perdu une branche du contrat) ; `null` si transmis.
    */
   schemaOmittedReason: string | null;
   /** Lot 109J : écarts du schéma dérivé au contrat Gemini (codes compacts `CODE@chemin`), transmis ou non. */
   schemaIssues?: string[];
+  /**
+   * Lot 114 (#776) : compatibilité du couple (fournisseur, modèle, opération, contrat, schéma projeté,
+   * adaptateur) AVANT l'appel — état mémorisé, décision (`sent` / `skipped`), motif (`not_tested`, `qualified`,
+   * `retest_due`, `recent_rejection`, `retest_in_progress`, `retest_not_claimed`, `memory_unavailable`),
+   * réexamen réservé, versions de la politique et de l'adaptateur. Absent : aucun schéma transmissible.
+   */
+  schemaCompat?: { state: string; decision: 'sent' | 'skipped'; why: string; retest: boolean; policyVersion: number; adapterVersion: string };
+  /** Lot 114 (#776) : branches du contrat que la projection aurait perdues (motif `projection_lossy` : schéma non transmis). */
+  lostBranches?: string[];
   /** `application/json` ou `null` (texte libre). */
   responseMimeType: string | null;
   maxOutputTokens: number | null;
