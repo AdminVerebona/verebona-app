@@ -651,7 +651,7 @@ jobs:
         run: npm run test:e2e:suggestions-retirees -- --reporter=default --reporter=junit --outputFile.junit=rapports/e2e-suggestions-retirees.xml
       - name: E-mails de sécurité — gabarit commun, clé d'accès et application d'authentification (Trello #774)
         run: npm run test:e2e:emails-securite -- --reporter=default --reporter=junit --outputFile.junit=rapports/e2e-emails-securite.xml
-      - name: Coût de possession — confirmations sans date : une dépense, gestes, compteurs, vue obsolète (Trello #769)
+      - name: Coût de possession — confirmations sans date, une dépense à la fois, gestes, compteurs, vue obsolète (Trello #769)
         run: npm run test:e2e:tco-confirmations -- --reporter=default --reporter=junit --outputFile.junit=rapports/e2e-tco-confirmations.xml
       - uses: actions/upload-artifact@v4
         if: always()
