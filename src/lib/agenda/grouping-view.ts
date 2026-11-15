@@ -67,6 +67,13 @@ export interface AgendaGroupingView {
    */
   linkedDocuments: GroupingDocumentRef[];
   /**
+   * #744 lot C (CDC V2.0 §12, AC23) : TOUS les événements de référence actifs
+   * de cet élément, lus dans le graphe N↔N (un élément peut en avoir
+   * plusieurs), chacun ouvrable directement — sans passer par un élément
+   * « principal ». Absent ou vide : élément autonome.
+   */
+  referenceEvents?: Array<{ id: number; label: string }>;
+  /**
    * Lot 103D (règle `lib/agenda/housing-scope`) : les catégories « Pièces » et
    * « Équipements » n'existent que si au moins un LOGEMENT est rattaché
    * (biens de l'ensemble et de l'événement de référence). Absent ou

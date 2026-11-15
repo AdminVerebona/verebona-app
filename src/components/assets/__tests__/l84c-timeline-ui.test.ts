@@ -26,8 +26,9 @@ type State = Parameters<typeof AssetTimelineList>[0]['state'];
 const lire = (p: string) => readFileSync(resolve(__dirname, '..', '..', '..', p), 'utf8').replace(/\r\n?/g, '\n');
 const item = (id: string, date: string | null, title = `Élément ${id}`) =>
   ({ itemType: 'agenda' as const, id, title, effectiveDate: date, isDone: false, isOverdue: false, toConfirm: false, effectiveStatus: 'a_venir' as const });
+// Règle remplacée (carte #744, lot C) : un groupe est un ÉVÉNEMENT DE RÉFÉRENCE (identité `op-<n>`), plus un élément « principal ».
 const groupe: TimelineEntry = {
-  kind: 'group', ...item('11', '2026-03-12', 'Dégât des eaux'),
+  kind: 'group', itemType: 'operation', id: 'op-11', operationId: 11, title: 'Dégât des eaux', effectiveDate: '2026-03-12', dateBasis: 'REFERENCE_EVENT',
   members: [item('22', '2026-04-18', 'Réparation plafond'), item('21', '2026-03-21', 'Visite expert')],
   counters: { events: 2, documents: 5, assets: 1, rooms: 1, equipments: 0 },
 };
@@ -52,21 +53,21 @@ describe('L84C-UI — Timeline du bien', () => {
 
   it('L84C-UI2 — groupe replié : principal, compteurs distincts, bouton accessible ; éléments liés absents de la liste', () => {
     const html = rendre(etat());
-    expect(html).toContain('data-timeline-group="11"');
+    expect(html).toContain('data-timeline-group="op-11"');
     expect(html).toContain('Dégât des eaux');
     expect(html).toContain('2 événements liés · 5 documents · 1 bien · 1 pièce');
     expect(html).not.toContain('0 équipement');
     expect(html).toContain('aria-expanded="false"');
-    expect(html).toContain('aria-controls="timeline-desktop-groupe-11"');
+    expect(html).toContain('aria-controls="timeline-desktop-groupe-op-11"');
     expect(html).toContain('Afficher les 2 éléments liés');
     expect(html).not.toContain('Visite expert');
     expect(html).toContain('data-timeline-mode="grouped"');
   });
 
   it('L84C-UI3 — groupe déplié : éléments liés listés et ouvrables', () => {
-    const html = rendre(etat({ expanded: new Set(['11']) }));
+    const html = rendre(etat({ expanded: new Set(['op-11']) }));
     expect(html).toContain('aria-expanded="true"');
-    expect(html).toContain('id="timeline-desktop-groupe-11"');
+    expect(html).toContain('id="timeline-desktop-groupe-op-11"');
     expect(html).toContain('Masquer les 2 éléments liés');
     expect(html.indexOf('Réparation plafond')).toBeLessThan(html.indexOf('Visite expert'));
     expect(html).toContain('data-timeline-item="21"');
@@ -74,8 +75,8 @@ describe('L84C-UI — Timeline du bien', () => {
   });
 
   it('L84C-UI4 — mobile : même rendu, cibles tactiles agrandies, titres non tronqués', () => {
-    const mob = rendre(etat({ expanded: new Set(['11']) }), 'mobile');
-    expect(mob).toContain('aria-controls="timeline-mobile-groupe-11"');
+    const mob = rendre(etat({ expanded: new Set(['op-11']) }), 'mobile');
+    expect(mob).toContain('aria-controls="timeline-mobile-groupe-op-11"');
     expect(mob).toContain('2 événements liés · 5 documents · 1 bien · 1 pièce');
     expect(mob).toContain('min-h-[32px]');
     expect(mob).not.toContain('truncate');
@@ -113,14 +114,58 @@ describe('L84C-UI — Timeline du bien', () => {
     expect(fiche.match(/onOpenItem=\{openTimelineItem\}/g)).toHaveLength(2);
     expect(fiche).toContain("import('@/components/agenda/AgendaItemDrawer')");
     const src = lire('components/assets/timeline/AssetTimeline.tsx');
-    expect(src).toContain("onOpenItem({ itemId: entry.id, context: 'group' })");
+    // Règle remplacée (carte #744, lot C) : la ligne du groupe demande la fiche de l'événement de référence lui-même.
+    expect(src).toContain("onOpenItem({ itemId: entry.id, context: 'group', operationId: entry.operationId })");
+    expect(src).toContain("onOpenItem({ itemId: entry.id, context: 'reference', operationId: r.operationId })");
+    expect(fiche).toContain("if ((req.context === 'group' || req.context === 'reference') && req.operationId != null) {");
+    expect(fiche).toContain("import('@/components/documents/ReferenceEventSheet')");
     expect(src).toContain("onOpenItem({ itemId: m.id, context: 'member', groupItemId: entry.id })");
     expect(src).toContain("onOpenItem({ itemId: entry.id, context: 'item' })");
     expect(src).not.toMatch(/Drawer|Sheet/);
   });
 
+  it('L114O-C-UI1 — #744 : événement de référence sans élément d’agenda et sans date — ligne explicite, aucun chevron, aucune date', () => {
+    const seul: TimelineEntry = {
+      kind: 'group', itemType: 'operation', id: 'op-12', operationId: 12, title: 'Intervention — Remplacement de la chaudière', effectiveDate: null, dateBasis: null,
+      members: [], counters: { events: 0, documents: 0, assets: 1, rooms: 0, equipments: 0 },
+    };
+    for (const v of ['desktop', 'mobile'] as const) {
+      const html = rendre(etat({ entries: [seul] }), v);
+      expect(html, v).toContain('data-timeline-group="op-12"');
+      expect(html, v).toContain('Intervention — Remplacement de la chaudière');
+      expect(html, v).toMatch(/data-timeline-undated[^>]*>Sans date</);
+      expect(html, v).not.toContain('aria-expanded');
+      expect(html, v).not.toContain('éléments liés');
+      expect(html, v).not.toContain('élément lié');
+      expect(html, v).not.toMatch(/\d{4}/);
+    }
+    // Un élément d'agenda sans date garde son rendu d'avant (aucune mention ajoutée).
+    expect(rendre(etat({ entries: [{ kind: 'item', ...item('13', null, 'Entretien à prévoir') }] }))).not.toContain('Sans date');
+  });
+
+  it('L114O-C-UI2 — #744 : mode détaillé — élément partagé rendu UNE fois, un lien par événement de référence (texte existant)', async () => {
+    const partage: TimelineEntry = {
+      kind: 'item', ...item('21', '2026-03-21', 'Visite expert'),
+      operations: [{ operationId: 11, label: 'Sinistre — Dégât des eaux' }, { operationId: 15, label: 'Intervention — Réparation plafond' }],
+    };
+    for (const v of ['desktop', 'mobile'] as const) {
+      const html = rendre(etat({ mode: 'detailed', entries: [partage, { kind: 'item', ...item('10', '2026-05-02', 'Contrôle chaudière'), operations: [] }] }), v);
+      expect(html.match(/data-timeline-item="21"/g), v).toHaveLength(1);
+      expect(html, v).toContain('data-timeline-reference="11"');
+      expect(html, v).toContain('data-timeline-reference="15"');
+      expect(html, v).toContain('Voir l’événement de référence : Sinistre — Dégât des eaux');
+      expect(html, v).toContain('Voir l’événement de référence : Intervention — Réparation plafond');
+      expect(html.match(/data-timeline-references=/g), v).toHaveLength(1);
+      expect(html, v).not.toMatch(/op[ée]ration/i);
+    }
+    // Texte repris à l'identique du lien existant (lot 113X) et de l'Agenda.
+    const { TIMELINE_REFERENCE_EVENT_LINK, TIMELINE_UNDATED_LABEL } = await import('@/services/agenda/timeline/labels');
+    expect(lire('components/documents/ReferenceEventSheet.tsx')).toContain(`export const REFERENCE_EVENT_OPEN_LABEL = "${TIMELINE_REFERENCE_EVENT_LINK}";`);
+    expect(lire('components/agenda/AgendaGroupingPanel.tsx')).toContain(`: "${TIMELINE_UNDATED_LABEL}");`);
+  });
+
   it('L84C-UI8 — aucun mot « Opération » visible', () => {
-    const html = [rendre(etat({ expanded: new Set(['11']), nextCursor: 'x', rest: 2 })), rendre(etat(), 'mobile'),
+    const html = [rendre(etat({ expanded: new Set(['op-11']), nextCursor: 'x', rest: 2 })), rendre(etat(), 'mobile'),
       renderToStaticMarkup(h(TimelineModeSwitch, { mode: 'detailed', onChange: () => undefined }))].join('');
     expect(html).not.toMatch(/op[ée]ration/i);
   });

@@ -293,6 +293,8 @@ scenario('L84B', 'Opérations v5 — O-3 : Agenda et navigation (liens manuels, 
     // AC28 : secondaire léger — contexte global chiffré et accès au principal, jamais le détail.
     const s = (await vue(visite.id)).body.view;
     expect(s).toEqual({
+      // Règle complétée (carte #744, travaux C) : le tiroir porte aussi un lien par événement de référence de l'événement (lu dans le graphe).
+      referenceEvents: [{ id: op, label: 'Sinistre — Dégât des eaux' }],
       itemId: visite.id, role: 'MEMBER', mainWithdrawn: false, ensemble: null,
       main: { id: degat.id, title: 'Dégât des eaux', startDate: '2026-03-12' },
       counts: { items: 1, documents: 2, assets: 2, rooms: 1, equipments: 1 },

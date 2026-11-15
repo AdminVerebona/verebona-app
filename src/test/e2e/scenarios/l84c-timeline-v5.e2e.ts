@@ -7,7 +7,13 @@
  * (dates fixes en 2026 ; seuls les états « en retard » dépendent du jour réel
  * et ne sont pas vérifiés ici).
  *
- *   L84C-E01  AC22 : « regroupée » par défaut — principal daté = groupe, éléments liés masqués et portés par le groupe
+ * RÈGLE REMPLACÉE (carte #744, lot C — CDC V2.0 §13) : un groupe n'est plus
+ * « le principal daté et ses éléments liés » mais un ÉVÉNEMENT DE RÉFÉRENCE
+ * (identité `op-<n>`), lu dans le graphe canonique ; tous ses éléments réels
+ * présents sur la Timeline du bien sont portés par le groupe, principal
+ * compris. Les tests E01, E04, E05, E06, E08 et E09 sont réécrits en ce sens.
+ *
+ *   L84C-E01  AC22 : « regroupée » par défaut — événement de référence = groupe, ses éléments masqués et portés par le groupe
  *   L84C-E02  AC23 : « détaillée » = toutes les lignes ; annulés exclus comme avant
  *   L84C-E03  AC24 : mode jamais mémorisé ; mode / curseur invalides refusés
  *   L84C-E04  AC25 / §13.5 : principal non daté, sans principal, principal annulé, principal hors du bien, Opération invalidée
@@ -37,7 +43,7 @@ vi.mock('@/services/verebona-assistant/events/business-events', async (o) => ({
 }));
 
 type Json = Record<string, any>;
-interface Entry { kind: 'item' | 'group'; id: string; title: string; effectiveDate: string | null; members?: Entry[]; counters?: Json }
+interface Entry { kind: 'item' | 'group'; id: string; title: string; effectiveDate: string | null; operationId?: number; dateBasis?: string | null; members?: Entry[]; counters?: Json }
 interface Page { timeline: Entry[]; timelinePage: { mode: string; nextCursor: string | null; remaining: number } }
 
 const grouping = () => import('@/services/business-operations/grouping/service');
@@ -90,6 +96,8 @@ scenario('L84C', 'Opérations v5 — O-4 : Timeline regroupée / détaillée, re
     await fn(tx as unknown as typeof sql);
   });
   const S = (n: number) => String(n);
+  /** Identité d'un groupe (#744 lot C) : celle de l'événement de référence. */
+  const G = (op: number) => `op-${op}`;
 
   /** Jeu « dégât des eaux » de l'exemple métier du CDC (§5). */
   async function degatDesEaux() {
@@ -107,17 +115,19 @@ scenario('L84C', 'Opérations v5 — O-4 : Timeline regroupée / détaillée, re
     return { compte, bien, garage, op, controle, principal, visite, reparation, relance };
   }
 
-  it('L84C-E01 — AC22 : « regroupée » par défaut ; principal daté = groupe dépliable ; éléments liés masqués de la liste', async () => {
+  // Règle remplacée (carte #744, lot C) : le groupe est l'événement de référence ; son repère est ici la date de son plus ancien élément.
+  it('L84C-E01 — AC22 : « regroupée » par défaut ; événement de référence = groupe dépliable ; ses éléments masqués de la liste', async () => {
     const d = await degatDesEaux();
     asUser(d.compte);
     const r = await overview(d.bien.id);
     expect(r.status).toBe(200);
     expect(r.body.timelinePage).toMatchObject({ mode: 'grouped', nextCursor: null, remaining: 2 });
-    expect(ids(r.body.timeline)).toEqual([S(d.controle), S(d.principal)]);
+    expect(ids(r.body.timeline)).toEqual([S(d.controle), G(d.op)]);
     const g = r.body.timeline[1];
-    expect(g).toMatchObject({ kind: 'group', title: 'Dégât des eaux', effectiveDate: '2026-03-12' });
-    // Éléments liés présents sur la Timeline de ce bien, triés comme elle.
-    expect(ids(g.members!)).toEqual([S(d.reparation), S(d.visite), S(d.relance)]);
+    expect(g).toMatchObject({ kind: 'group', itemType: 'operation', operationId: d.op, effectiveDate: '2026-03-12', dateBasis: 'FIRST_EVENT' });
+    expect(g.title).not.toMatch(/op[ée]ration/i);
+    // Éléments réels présents sur la Timeline de ce bien (l'ancien « principal » compris), triés comme elle.
+    expect(ids(g.members!)).toEqual([S(d.reparation), S(d.visite), S(d.principal), S(d.relance)]);
     expect(r.body.timeline[0]).toMatchObject({ kind: 'item', title: 'Contrôle chaudière' });
     // Rien n'a été écrit pour la Timeline : aucune table propre (calcul de lecture).
     const [t] = await sql<{ n: number }[]>`SELECT count(*)::int AS n FROM information_schema.tables WHERE table_schema = 'public' AND table_name ILIKE '%timeline%'`;
@@ -162,7 +172,9 @@ scenario('L84C', 'Opérations v5 — O-4 : Timeline regroupée / détaillée, re
     expect(p.n).toBe(0);
   });
 
-  it('L84C-E04 — AC25 / §13.5 / §13.6 : principal non daté, sans principal, principal supprimé ou hors du bien, Opération invalidée → rien masqué', async () => {
+  // Règle remplacée (carte #744, lot C) : sans « principal », avec un principal non daté, supprimé ou porté par un autre bien,
+  // l'événement de référence reste UN groupe ; seul un événement de référence invalidé ne regroupe plus rien.
+  it('L84C-E04 — #744 : principal non daté, absent, supprimé ou hors du bien → un groupe par événement de référence ; invalidé → rien masqué', async () => {
     const { compte, bien } = await compteEtBien();
     const garage = await make.asset(compte, { category: 'IMMOBILIER', name: 'Garage' });
     // Principal SANS date : ses éléments liés datés restent visibles à leur date ; il est placé avec les éléments sans date.
@@ -202,15 +214,23 @@ scenario('L84C', 'Opérations v5 — O-4 : Timeline regroupée / détaillée, re
 
     asUser(compte);
     const g = await overview(bien.id);
-    expect(g.body.timeline.every((e) => e.kind === 'item')).toBe(true);
-    expect(ids(g.body.timeline)).toEqual([
-      S(serrure), S(plainte), S(a2), S(a1), S(mAnn), S(mAilleurs), S(mInv), S(pInv), S(vol),
-    ]);
-    expect(g.body.timeline.at(-1)).toMatchObject({ title: 'Vol', effectiveDate: null, kind: 'item' });
+    expect(ids(g.body.timeline)).toEqual([G(opVol), G(opSans), G(opAnn), G(opAilleurs), S(mInv), S(pInv)]);
+    const par = (op: number) => g.body.timeline.find((e) => e.id === G(op))!;
+    // Repère = plus ancien élément réel de l'événement de référence sur CE bien ; l'élément sans date reste dans le dépliage.
+    expect(par(opVol)).toMatchObject({ kind: 'group', effectiveDate: '2026-02-01', dateBasis: 'FIRST_EVENT' });
+    expect(ids(par(opVol).members!)).toEqual([S(serrure), S(plainte), S(vol)]);
+    expect(ids(par(opSans).members!)).toEqual([S(a2), S(a1)]);
+    expect(ids(par(opAnn).members!)).toEqual([S(mAnn)]);
+    // Multi-biens : une seule identité, éléments filtrés selon le bien affiché (AC30).
+    expect(par(opAilleurs)).toMatchObject({ effectiveDate: '2025-12-02' });
+    expect(ids(par(opAilleurs).members!)).toEqual([S(mAilleurs)]);
+    // Événement de référence invalidé : ses éléments sont des lignes individuelles.
+    expect(g.body.timeline.slice(-2).every((e) => e.kind === 'item')).toBe(true);
     const autre = await overview(garage.id);
     expect(autre.body.timeline).toHaveLength(1);
-    expect(autre.body.timeline[0]).toMatchObject({ kind: 'group', id: S(pAilleurs), members: [] });
-    expect(autre.body.timeline[0].counters).toMatchObject({ events: 1 });
+    expect(autre.body.timeline[0]).toMatchObject({ kind: 'group', id: G(opAilleurs), operationId: opAilleurs, effectiveDate: '2025-12-01' });
+    expect(ids(autre.body.timeline[0].members!)).toEqual([S(pAilleurs)]);
+    expect(autre.body.timeline[0].counters).toMatchObject({ events: 2 });
   });
 
   it('L84C-E05 — AC26 : compteurs distincts ; objets d\'un autre compte, supprimés ou annulés jamais comptés', async () => {
@@ -245,8 +265,10 @@ scenario('L84C', 'Opérations v5 — O-4 : Timeline regroupée / détaillée, re
     asUser(d.compte);
     const r = await overview(d.bien.id);
     const grp = r.body.timeline.find((e) => e.kind === 'group')!;
-    // Événements liés HORS principal ; documents = appartenance ∪ liens du principal (supprimé et étranger exclus).
-    expect(grp.counters).toEqual({ events: 3, documents: 3, assets: 2, rooms: 2, equipments: 1 });
+    // Règle remplacée (carte #744, lot C) : compteurs de l'ÉVÉNEMENT DE RÉFÉRENCE — tous ses éléments réels (4, l'ancien
+    // « principal » compris) ; documents, pièces et biens = son appartenance seule (les liens directs d'un élément ne s'y
+    // ajoutent plus ; supprimé et étranger exclus).
+    expect(grp.counters).toEqual({ events: 4, documents: 2, assets: 2, rooms: 1, equipments: 1 });
   });
 
   it('L84C-E06 — E10 : jeu > 1 page — un groupe n\'est jamais coupé ; regroupée ∪ éléments liés = détaillée', async () => {
@@ -266,7 +288,8 @@ scenario('L84C', 'Opérations v5 — O-4 : Timeline regroupée / détaillée, re
         await rattacher(compte, op, m);
         membres.push(m);
       }
-      groupes.set(p, membres);
+      // Règle remplacée (carte #744, lot C) : le groupe est identifié par l'événement de référence et porte TOUS ses éléments.
+      groupes.set(op, [p, ...membres]);
       tous.push(p, ...membres);
     }
     asUser(compte);
@@ -278,9 +301,9 @@ scenario('L84C', 'Opérations v5 — O-4 : Timeline regroupée / détaillée, re
       expect(new Set(ids(reg.entries)).size).toBe(reg.entries.length);
       const vus: string[] = [];
       for (const e of reg.entries) {
-        vus.push(e.id);
+        if (e.kind !== 'group') vus.push(e.id);
         if (e.kind === 'group') {
-          expect(ids(e.members!).sort(), `groupe ${e.id} (limite ${limit})`).toEqual(groupes.get(Number(e.id))!.map(S).sort());
+          expect(ids(e.members!).sort(), `groupe ${e.id} (limite ${limit})`).toEqual(groupes.get(e.operationId!)!.map(S).sort());
           vus.push(...ids(e.members!));
         }
       }
@@ -292,13 +315,13 @@ scenario('L84C', 'Opérations v5 — O-4 : Timeline regroupée / détaillée, re
       expect(new Set(ids(det.entries)).size).toBe(det.entries.length);
       expect([...vus].sort()).toEqual(ids(det.entries).sort());
       expect(ids(det.entries).sort()).toEqual(tous.map(S).sort());
-      // Ordre stable : date décroissante, sans date en dernier, puis identifiant décroissant.
-      const cle = (e: Entry) => [e.effectiveDate ?? '0000-00-00', Number(e.id)] as const;
+      // Ordre stable : date décroissante, sans date en dernier, événement de référence avant élément, puis identifiant décroissant.
+      const cle = (e: Entry) => [e.effectiveDate ?? '0000-00-00', e.kind === 'group' ? 1 : 0, e.kind === 'group' ? e.operationId! : Number(e.id)] as const;
       for (const l of [reg.entries, det.entries]) {
         for (let k = 1; k < l.length; k++) {
-          const [da, ia] = cle(l[k - 1]);
-          const [db, ib] = cle(l[k]);
-          expect(da > db || (da === db && ia > ib), `ordre ${l[k - 1].id} → ${l[k].id}`).toBe(true);
+          const [da, ra, ia] = cle(l[k - 1]);
+          const [db, rb, ib] = cle(l[k]);
+          expect(da > db || (da === db && (ra > rb || (ra === rb && ia > ib))), `ordre ${l[k - 1].id} → ${l[k].id}`).toBe(true);
         }
       }
     }
@@ -307,7 +330,7 @@ scenario('L84C', 'Opérations v5 — O-4 : Timeline regroupée / détaillée, re
     const posGroupe = p1.findIndex((e) => e.kind === 'group');
     const coupe = await overview(bien.id, `?section=timeline&limit=${posGroupe + 1}`);
     expect(coupe.body.timeline.at(-1)!.kind).toBe('group');
-    expect(coupe.body.timeline.at(-1)!.members).toHaveLength(4);
+    expect(coupe.body.timeline.at(-1)!.members).toHaveLength(5);
   });
 
   it('L84C-E07 — isolation : élément d\'un autre compte lié à mon bien jamais lu ; bien d\'un autre compte : 404', async () => {
@@ -369,8 +392,9 @@ scenario('L84C', 'Opérations v5 — O-4 : Timeline regroupée / détaillée, re
     await sql`ANALYZE agenda_items`;
     await sql`ANALYZE agenda_asset_links`;
     await sql`ANALYZE business_operations`;
+    await sql`ANALYZE business_operation_agenda_links`;
 
-    const { TIMELINE_PAGE_SQL, TIMELINE_MEMBERS_SQL, TIMELINE_COUNTERS_SQL } = await import('@/services/agenda/timeline/read');
+    const { TIMELINE_PAGE_SQL, TIMELINE_MEMBERS_SQL, TIMELINE_COUNTERS_SQL, TIMELINE_OPERATION_LABELS_SQL } = await import('@/services/agenda/timeline/read');
     const plan = async (text: string, params: unknown[]) => {
       const [r] = await sql.unsafe(`EXPLAIN (ANALYZE, FORMAT JSON) ${text}`, params as never[]);
       return (r as Json)['QUERY PLAN'][0] as Json;
@@ -395,7 +419,7 @@ scenario('L84C', 'Opérations v5 — O-4 : Timeline regroupée / détaillée, re
     };
 
     const debut = Date.now();
-    const p1 = await plan(TIMELINE_PAGE_SQL, [compte.id, bien.id, 'grouped', null, null, 13]);
+    const p1 = await plan(TIMELINE_PAGE_SQL, [compte.id, bien.id, 'grouped', null, null, 13, 0]);
     const tous = verifier(p1, { indexOn: 'agenda_asset_links', borne: 13 });
     // Le parcours du bien passe par l'index du bien (jamais par les 20 000 éléments du bruit).
     const parcours = tous.filter((n) => String(n['Index Name'] ?? '').startsWith('agenda_asset_links_'));
@@ -410,13 +434,15 @@ scenario('L84C', 'Opérations v5 — O-4 : Timeline regroupée / détaillée, re
     const ops = tous.filter((n) => n['Relation Name'] === 'business_operations');
     expect(ops.every((n) => /Index/.test(String(n['Node Type'])))).toBe(true);
     // Page suivante (curseur) et mode détaillé : mêmes garanties.
-    verifier(await plan(TIMELINE_PAGE_SQL, [compte.id, bien.id, 'detailed', '2023-01-01', 999999999, 13]), { indexOn: 'agenda_asset_links', borne: 13 });
+    verifier(await plan(TIMELINE_PAGE_SQL, [compte.id, bien.id, 'detailed', '2023-01-01', 999999999, 13, 0]), { indexOn: 'agenda_asset_links', borne: 13 });
     // Groupes de la page : éléments liés et compteurs par les index menés par l'Opération.
-    const page = await sql.unsafe(TIMELINE_PAGE_SQL, [compte.id, bien.id, 'grouped', '2024-06-01', 2_000_000_000, 13] as never[]);
-    const heads = (page as Json[]).filter((r) => r.is_head);
+    // Règle remplacée (carte #744, lot C) : têtes de groupe = événements de référence (graphe), lus par les index du graphe.
+    const page = await sql.unsafe(TIMELINE_PAGE_SQL, [compte.id, bien.id, 'grouped', '2024-06-01', 2_000_000_000, 13, 1] as never[]);
+    const heads = (page as Json[]).filter((r) => r.is_group);
     expect(heads.length).toBeGreaterThan(0);
-    verifier(await plan(TIMELINE_MEMBERS_SQL, [compte.id, bien.id, heads.map((h) => Number(h.op)), heads.map((h) => Number(h.id))]), { indexOn: 'agenda_items' });
-    verifier(await plan(TIMELINE_COUNTERS_SQL, [compte.id, heads.map((h) => Number(h.op)), heads.map((h) => Number(h.id))]), {});
+    verifier(await plan(TIMELINE_MEMBERS_SQL, [compte.id, bien.id, heads.map((h) => Number(h.id))]), { indexOn: 'agenda_items' });
+    verifier(await plan(TIMELINE_COUNTERS_SQL, [compte.id, heads.map((h) => Number(h.id))]), {});
+    verifier(await plan(TIMELINE_OPERATION_LABELS_SQL, [compte.id, heads.map((h) => Number(h.id))]), { indexOn: 'business_operations' });
     expect(Number(p1['Execution Time'])).toBeLessThan(2000);
     console.info(`[L84C-E08] page 1 regroupée : ${p1['Execution Time']} ms (3 000 éléments sur le bien, 5 000 sur un voisin, 20 000 + 20 000 Opérations de bruit)`);
 
@@ -459,7 +485,7 @@ scenario('L84C', 'Opérations v5 — O-4 : Timeline regroupée / détaillée, re
     const { readAssetTimelineAll } = await import('@/services/agenda/timeline/read');
     expect(ligne.regroupee).toEqual(JSON.parse(JSON.stringify(await readAssetTimelineAll({ accountId: d.compte.id, assetId: d.bien.id, mode: 'grouped', today: '2026-06-01' }))));
     expect(ligne.detaillee).toEqual(JSON.parse(JSON.stringify(await readAssetTimelineAll({ accountId: d.compte.id, assetId: d.bien.id, mode: 'detailed', today: '2026-06-01' }))));
-    expect(ligne.regroupee[1]).toMatchObject({ kind: 'group', id: S(d.principal) });
+    expect(ligne.regroupee[1]).toMatchObject({ kind: 'group', id: G(d.op), operationId: d.op });
     const dict = JSON.parse(store.get(`${recettePrefix('l84c-e09')}dictionnaire.json`)!.toString('utf8')) as { computed: Json[] };
     expect(dict.computed.some((c) => c.path === 'calculs/timeline.part-NNNN.ndjson.gz')).toBe(true);
   });

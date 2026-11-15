@@ -138,7 +138,10 @@ scenario('L113AP', 'Opérations / Agenda CDC V2.0 — socle : Agenda unique, Tim
     const detail = await timeline(bien.id, 'detailed');
     expect(detail.map((e) => Number(e.id)).sort()).toEqual([...ids].sort());
     const regroupee = await timeline(bien.id, 'grouped');
-    const vus = regroupee.flatMap((e) => [Number(e.id), ...((e.members ?? []) as Json[]).map((m) => Number(m.id))]);
+    // Règle remplacée (carte #744, lot C) : un groupe est un ÉVÉNEMENT DE RÉFÉRENCE (identité `op-<n>`, pas un élément
+    // d'agenda) ; tous ses éléments réels sont dans son dépliage — y compris sans « principal » (second événement).
+    expect(regroupee.filter((e) => e.kind === 'group').map((e) => e.operationId).sort()).toEqual([op, autre].sort());
+    const vus = regroupee.flatMap((e) => (e.kind === 'group' ? ((e.members ?? []) as Json[]).map((m) => Number(m.id)) : [Number(e.id)]));
     expect(vus.sort()).toEqual([...ids].sort());
     expect(new Set(vus).size).toBe(vus.length);
     const dates = new Map(detail.map((e) => [Number(e.id), e.effectiveDate]));

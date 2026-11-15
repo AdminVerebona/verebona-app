@@ -17,20 +17,43 @@
  *     à ce composant.
  *
  * Le mot « Opération » n'apparaît jamais (P1).
+ *
+ * RÈGLE REMPLACÉE (carte #744, lot C — CDC V2.0 §13, AC26 à AC31) : un groupe
+ * n'est plus « l'élément principal daté et ses éléments liés » mais un
+ * ÉVÉNEMENT DE RÉFÉRENCE (identité propre, y compris sans élément d'agenda ou
+ * sans date). Le clic sur sa ligne demande l'ouverture de SA fiche
+ * (`context: 'group'`, `operationId`) ; le chevron, indépendant, ne déplie
+ * que ses éléments d'agenda réels. En mode détaillé, chaque élément porte un
+ * lien vers chacun de ses événements de référence (`context: 'reference'`).
+ * Toutes les ouvertures passent toujours par `onOpenItem`.
  */
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { ChevronDown, ChevronRight } from 'lucide-react';
 import { apiClient } from '@/lib/api-client';
 import { SegmentedControl } from '@/components/documents/v2/DocumentsToolbar';
-import type { TimelineEntry, TimelineItemView, TimelineMode } from '@/services/agenda/timeline/model';
-import { TIMELINE_MODE_LABELS, visibleCounters } from '@/services/agenda/timeline/labels';
+import type { TimelineEntry, TimelineMode } from '@/services/agenda/timeline/model';
+import { TIMELINE_MODE_LABELS, TIMELINE_REFERENCE_EVENT_LINK, TIMELINE_UNDATED_LABEL, visibleCounters } from '@/services/agenda/timeline/labels';
 
-/** Ce qui est demandé au tiroir : l'élément, et s'il ouvre un groupe ou un élément d'un groupe. */
+/**
+ * Ce qui est demandé à l'écran : un élément d'agenda (`item`, `member`) ou un
+ * événement de référence (`group` : la ligne du groupe ; `reference` : le
+ * lien porté par un élément en mode détaillé).
+ */
 export interface TimelineOpenRequest {
+  /** Identifiant de l'entrée cliquée (élément d'agenda, ou `op-<n>` pour un groupe). */
   itemId: string;
-  context: 'item' | 'group' | 'member';
-  /** Élément représentant le groupe (contexte « member »). */
+  context: 'item' | 'group' | 'member' | 'reference';
+  /** Entrée du groupe (contexte « member »). */
   groupItemId?: string;
+  /** Événement de référence à ouvrir (contextes « group » et « reference »). */
+  operationId?: number;
+}
+
+/** Ce qu'une ligne affiche : un élément d'agenda ou la tête d'un groupe. */
+interface TimelineRowItem {
+  id: string;
+  title: string;
+  effectiveDate: string | null;
 }
 
 export interface TimelinePageInfo {
@@ -137,7 +160,9 @@ function fromPage(mode: TimelineMode, entries: TimelineEntry[], page: TimelinePa
 const DOT_CLASS = 'bg-[color:var(--text-muted)]';
 
 interface RowProps {
-  item: TimelineItemView;
+  item: TimelineRowItem;
+  /** Ligne d'un événement de référence sans date : mention explicite (aucune date inventée). */
+  undatedLabel?: string;
   variant: 'desktop' | 'mobile';
   readOnly: boolean;
   busy: boolean;
@@ -147,7 +172,7 @@ interface RowProps {
 }
 
 /** Ligne d'un élément : pastille, date, titre (lot 113P : aucune mention d'état). */
-function TimelineRow({ item, variant, readOnly, busy, onOpen, small, children }: RowProps) {
+function TimelineRow({ item, undatedLabel, variant, readOnly, busy, onOpen, small, children }: RowProps) {
   const dot = small ? 'w-2.5 h-2.5 mt-1.5' : 'w-3.5 h-3.5 mt-1';
   return (
     <div className={`relative flex gap-3 ${variant === 'mobile' ? 'pb-4' : 'pb-5'}`} data-timeline-item={item.id}>
@@ -159,11 +184,15 @@ function TimelineRow({ item, variant, readOnly, busy, onOpen, small, children }:
           onClick={readOnly ? undefined : onOpen}
           disabled={busy || readOnly}
         >
-          {item.effectiveDate && (
+          {item.effectiveDate ? (
             <p className="text-[10px] text-muted-foreground leading-none mb-0.5">
               {formatDate(item.effectiveDate)}
             </p>
-          )}
+          ) : undatedLabel ? (
+            <p className="text-[10px] text-muted-foreground leading-none mb-0.5" data-timeline-undated>
+              {undatedLabel}
+            </p>
+          ) : null}
           <p className={`text-xs font-medium leading-snug ${variant === 'desktop' ? 'truncate' : ''} text-foreground`}>
             {item.title}
           </p>
@@ -209,10 +238,28 @@ export function AssetTimelineList({ state, actions, variant, readOnly = false, b
       <ul className="space-y-0 list-none p-0 m-0">
         {state.entries.map((entry) => {
           if (entry.kind !== 'group') {
+            const refs = entry.operations ?? [];
             return (
               <li key={key(entry.id)}>
                 <TimelineRow item={entry} variant={variant} readOnly={readOnly} busy={busyItemId === entry.id}
-                  onOpen={() => onOpenItem({ itemId: entry.id, context: 'item' })} />
+                  onOpen={() => onOpenItem({ itemId: entry.id, context: 'item' })}>
+                  {refs.length > 0 && (
+                    <ul className="mt-1 list-none p-0 m-0 flex flex-col items-start" data-timeline-references={entry.id}>
+                      {refs.map((r) => (
+                        <li key={key(`${entry.id}-ref-${r.operationId}`)} className="max-w-full">
+                          <button
+                            type="button"
+                            onClick={() => onOpenItem({ itemId: entry.id, context: 'reference', operationId: r.operationId })}
+                            className={`inline-flex max-w-full items-center rounded-[8px] text-[11px] font-semibold text-[color:var(--accent)] hover:bg-[color:var(--accent-soft)] px-1.5 -ml-1.5 text-left ${variant === 'mobile' ? 'min-h-[32px]' : 'py-0.5'}`}
+                            data-timeline-reference={r.operationId}
+                          >
+                            <span className={variant === 'desktop' ? 'truncate' : ''}>{TIMELINE_REFERENCE_EVENT_LINK} : {r.label}</span>
+                          </button>
+                        </li>
+                      ))}
+                    </ul>
+                  )}
+                </TimelineRow>
               </li>
             );
           }
@@ -222,8 +269,8 @@ export function AssetTimelineList({ state, actions, variant, readOnly = false, b
           const n = entry.members.length;
           return (
             <li key={key(entry.id)} data-timeline-group={entry.id}>
-              <TimelineRow item={entry} variant={variant} readOnly={readOnly} busy={busyItemId === entry.id}
-                onOpen={() => onOpenItem({ itemId: entry.id, context: 'group' })}>
+              <TimelineRow item={entry} undatedLabel={TIMELINE_UNDATED_LABEL} variant={variant} readOnly={readOnly} busy={busyItemId === entry.id}
+                onOpen={() => onOpenItem({ itemId: entry.id, context: 'group', operationId: entry.operationId })}>
                 {counters.length > 0 && (
                   <p className="text-[11px] text-muted-foreground leading-snug mt-1" data-timeline-counters>
                     {counters.map((c) => c.label).join(' · ')}

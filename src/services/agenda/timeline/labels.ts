@@ -10,6 +10,20 @@ export const TIMELINE_MODE_LABELS: Record<TimelineMode, string> = {
   detailed: 'Détaillée',
 };
 
+/**
+ * #744 lot C — lien d'un élément vers son événement de référence (mode
+ * détaillé). Texte EXISTANT repris à l'identique (`REFERENCE_EVENT_OPEN_LABEL`
+ * du lot 113X, « Voir l'événement de référence ») : égalité vérifiée par
+ * `l84c-timeline-ui.test.ts`.
+ */
+export const TIMELINE_REFERENCE_EVENT_LINK = 'Voir l’événement de référence';
+
+/**
+ * #744 lot C — événement de référence sans date : mention explicite, aucune
+ * date inventée. Texte EXISTANT de l'Agenda (`AgendaGroupingPanel`, « Sans date »).
+ */
+export const TIMELINE_UNDATED_LABEL = 'Sans date';
+
 const COUNTER_ORDER: ReadonlyArray<keyof TimelineGroupCounters> = ['events', 'documents', 'assets', 'rooms', 'equipments'];
 
 /** « 3 événements liés », « 1 document »… (pluriel français). */

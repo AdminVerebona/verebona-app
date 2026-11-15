@@ -30,6 +30,39 @@
  * stable : date décroissante, sans date en dernier, puis identifiant).
  *
  * Aucun libellé produit ici ne contient le mot « Opération » (P1).
+ *
+ * ── RÈGLE REMPLACÉE (carte #744, lot C — CDC « Opérations / Agenda V2.0 »
+ *    §13, AC26 à AC31, AC38, AC40) ──────────────────────────────────────────
+ * Le mode REGROUPÉ ne dépend plus de l'élément « principal » ni de la colonne
+ * historique `agenda_items.business_operation_id` : il lit le GRAPHE CANONIQUE
+ * (`business_operation_agenda_links`, N↔N, lot B).
+ *   · une entrée `group` par ÉVÉNEMENT DE RÉFÉRENCE actif pertinent pour le
+ *     bien : celui qui a au moins un élément d'agenda sur la Timeline du bien,
+ *     OU qui est relié au bien (`business_operation_asset_links`) — y compris
+ *     sans aucun élément d'agenda et sans date (AC26, AC35) ; aucun élément
+ *     fictif n'est fabriqué ;
+ *   · l'identité de l'entrée est celle de l'événement de référence
+ *     (`operationId`), jamais celle d'un élément d'agenda ;
+ *   · son dépliage ne porte QUE ses éléments d'agenda réels présents sur la
+ *     Timeline de CE bien (AC27, AC30) ; un élément partagé par deux
+ *     événements de référence figure dans le dépliage de chacun, une seule
+ *     fois par liste, avec la même identité ;
+ *   · les éléments d'agenda sans événement de référence actif restent des
+ *     entrées individuelles (AC29) ;
+ *   · REPÈRE de date du groupe (`effectiveDate`, `dateBasis`) : date propre de
+ *     l'événement de référence (réalisation, sinon début, sinon date prévue) ;
+ *     à défaut, la date la plus ancienne de ses éléments d'agenda présents sur
+ *     cette Timeline ; à défaut, AUCUNE date (entrée « sans date », en fin de
+ *     Timeline, jamais d'horodatage inventé). CHOIX PAR DÉFAUT À VALIDER PAR
+ *     LE PO (point non tranché : « date affichée d'un événement de référence
+ *     sans date »). Ce repère ne déplace aucun élément d'agenda : en mode
+ *     détaillé et dans l'Agenda, chacun reste à SA date (AC25).
+ * Le mode DÉTAILLÉ est inchangé (un élément = une ligne, à sa date, une seule
+ * fois même s'il est partagé — AC31) ; chaque ligne porte en plus la liste de
+ * ses événements de référence (`operations`).
+ * Pagination : identités TYPÉES (événement de référence / élément), tri
+ * (date décroissante, sans date en dernier, événement de référence avant
+ * élément à date égale, identifiant décroissant) — AC38.
  * ══════════════════════════════════════════════════════════════════════════
  */
 
@@ -42,6 +75,13 @@ export const DEFAULT_TIMELINE_MODE: TimelineMode = 'grouped';
 export const TIMELINE_PAGE_DEFAULT = 12;
 export const TIMELINE_PAGE_MAX = 100;
 
+/** Événement de référence d'un élément d'agenda (lien cliquable ; jamais le mot « Opération »). */
+export interface TimelineOperationRef {
+  operationId: number;
+  /** Libellé utilisateur existant (`referenceEventLabel`). */
+  label: string;
+}
+
 /** Élément d'agenda tel qu'affiché sur la Timeline (forme historique de la vue d'ensemble). */
 export interface TimelineItemView {
   itemType: 'agenda';
@@ -49,6 +89,11 @@ export interface TimelineItemView {
   title: string;
   /** AAAA-MM-JJ ; null : élément sans date. */
   effectiveDate: string | null;
+  /**
+   * #744 lot C : événements de référence ACTIFS de l'élément (graphe N↔N),
+   * renseigné en mode détaillé. Absent ou vide : élément autonome.
+   */
+  operations?: TimelineOperationRef[];
   /*
    * Lot 113P (#715, décision PO du 06/11/2026) : plus de statut d'événement —
    * `isDone`, `isOverdue`, `toConfirm` et `effectiveStatus` sont RETIRÉS. La
@@ -56,9 +101,29 @@ export interface TimelineItemView {
    */
 }
 
+/**
+ * Origine du repère de date d'un groupe (#744 lot C) : date propre de
+ * l'événement de référence, ou date de son plus ancien élément d'agenda
+ * présent sur la Timeline du bien ; null : sans date.
+ */
+export type TimelineGroupDateBasis = 'REFERENCE_EVENT' | 'FIRST_EVENT';
+
+/** Événement de référence tel qu'affiché en tête de groupe (#744 lot C). */
+export interface TimelineGroupView {
+  itemType: 'operation';
+  /** Identité TYPÉE de l'entrée (`op-<identifiant>`) : ne se confond jamais avec un élément d'agenda. */
+  id: string;
+  operationId: number;
+  /** Libellé utilisateur de l'événement de référence. */
+  title: string;
+  /** Repère de date (AAAA-MM-JJ) ; null : événement de référence sans date (aucune date inventée). */
+  effectiveDate: string | null;
+  dateBasis: TimelineGroupDateBasis | null;
+}
+
 /** Compteurs distincts d'un groupe (§13.7, AC26). */
 export interface TimelineGroupCounters {
-  /** Éléments d'agenda liés, HORS principal. */
+  /** Éléments d'agenda réels liés à l'événement de référence (compte entier ; #744 : plus de « principal » à exclure). */
   events: number;
   documents: number;
   assets: number;
@@ -72,9 +137,9 @@ export interface TimelineGroupCounters {
  */
 export type TimelineEntry =
   | (TimelineItemView & { kind: 'item' })
-  | (TimelineItemView & {
+  | (TimelineGroupView & {
       kind: 'group';
-      /** Éléments liés masqués de la liste (présents sur la Timeline de ce bien), triés comme la Timeline. */
+      /** Éléments d'agenda RÉELS de l'événement de référence présents sur la Timeline de ce bien, triés comme la Timeline. */
       members: TimelineItemView[];
       counters: TimelineGroupCounters;
     });
@@ -121,12 +186,22 @@ export interface TimelineCursor {
   /** AAAA-MM-JJ, ou '-infinity' pour la section « sans date ». */
   sortDate: string;
   id: number;
+  /**
+   * #744 lot C : nature de la dernière entrée servie. Absent : élément
+   * d'agenda (curseurs historiques et mode détaillé inchangés).
+   */
+  kind?: 'group';
 }
+
+/** Identité typée d'un groupe dans la liste (`op-12`). */
+export const timelineGroupEntryId = (operationId: number): string => `op-${operationId}`;
 
 const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
 
 export function encodeTimelineCursor(c: TimelineCursor): string {
-  return Buffer.from(JSON.stringify([c.mode === 'grouped' ? 'g' : 'd', c.sortDate, c.id]), 'utf8').toString('base64url');
+  const v: unknown[] = [c.mode === 'grouped' ? 'g' : 'd', c.sortDate, c.id];
+  if (c.kind === 'group') v.push('o');
+  return Buffer.from(JSON.stringify(v), 'utf8').toString('base64url');
 }
 
 /** Curseur décodé ; null : absent ; 'INVALID' : illisible ou d'un autre mode. */
@@ -134,13 +209,15 @@ export function decodeTimelineCursor(raw: string | null | undefined, mode: Timel
   if (!raw) return null;
   try {
     const v = JSON.parse(Buffer.from(raw, 'base64url').toString('utf8')) as unknown;
-    if (!Array.isArray(v) || v.length !== 3) return 'INVALID';
+    if (!Array.isArray(v) || (v.length !== 3 && v.length !== 4)) return 'INVALID';
     const [m, d, id] = v as [unknown, unknown, unknown];
+    // Quatrième valeur : entrée « événement de référence », en mode regroupé seulement.
+    if (v.length === 4 && (v[3] !== 'o' || m !== 'g')) return 'INVALID';
     const cm: TimelineMode | null = m === 'g' ? 'grouped' : m === 'd' ? 'detailed' : null;
     if (cm !== mode) return 'INVALID';
     if (typeof d !== 'string' || (d !== '-infinity' && !DATE_RE.test(d))) return 'INVALID';
     if (typeof id !== 'number' || !Number.isSafeInteger(id) || id < 1) return 'INVALID';
-    return { mode, sortDate: d, id };
+    return v.length === 4 ? { mode, sortDate: d, id, kind: 'group' } : { mode, sortDate: d, id };
   } catch {
     return 'INVALID';
   }

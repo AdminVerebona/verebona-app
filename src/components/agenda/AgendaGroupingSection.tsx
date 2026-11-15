@@ -29,6 +29,9 @@
  * mémorisée) ; après chaque geste, `agenda-mutated` relit les autres tiroirs
  * ouverts (tiroir du document compris) — synchronisation immédiate.
  *
+ * #744 lot C : sous le panneau, un lien par ÉVÉNEMENT DE RÉFÉRENCE de
+ * l'élément (graphe N↔N, `view.referenceEvents`) ouvre sa fiche directement.
+ *
  * Accessibilité : chaque geste est un vrai bouton nommé (« Retirer « Devis » »),
  * cibles ≥ 44 px sur mobile ; le choix d'un objet s'ouvre dans un tiroir
  * EMPILÉ (composant de base 81F : zones sûres, bouton « Fermer », retour
@@ -50,6 +53,7 @@ import {
 } from "@/lib/agenda/grouping-view";
 import { AGENDA_HOUSING_REMOVAL_HAS_DEPENDENTS, HOUSING_SCOPE_LABELS } from "@/lib/agenda/housing-scope";
 import { AgendaGroupingPanel, GroupingPicker } from "@/components/agenda/AgendaGroupingPanel";
+import { ReferenceEventLink } from "@/components/documents/ReferenceEventSheet";
 
 export { AgendaGroupingPanel, GroupingPicker, MAIN_CATEGORIES, categoryRows, visibleMainCategories } from "@/components/agenda/AgendaGroupingPanel";
 
@@ -140,6 +144,13 @@ export function AgendaGroupingSection({ itemId, onOpenDocument, onChanged, onRol
         onOpenMain={(id) => openDrawer({ kind: "echeance", id }, { stack: true })}
         onOpenDocument={onOpenDocument ?? ((id) => openDrawer({ kind: "document", id }, { stack: true }))}
       />
+      {/* #744 lot C (CDC V2.0 §12, AC23) : chaque événement de référence de l'élément (graphe N↔N) s'ouvre
+          directement, sans passer par un élément « principal ». Texte existant du lien (lot 113X). */}
+      {(view.referenceEvents?.length ?? 0) > 0 && (
+        <div className="flex flex-col items-start gap-1" data-testid="agenda-reference-events">
+          {(view.referenceEvents ?? []).map((e) => <ReferenceEventLink key={e.id} operationId={e.id} label={e.label} />)}
+        </div>
+      )}
       <GroupingPicker
         open={picker !== null}
         title={picker ? L.pickerTitle[picker] : ""}

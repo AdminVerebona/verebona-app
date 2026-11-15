@@ -12,7 +12,9 @@
  *     (`PUT /api/documents/:fileId/periodes`) : tous les tiroirs ouverts se
  *     relisent (`business-periods-mutated`) ;
  *   · les justificatifs de l'événement (ouvrent le tiroir du document) ;
- *   · l'élément d'agenda relié, s'il existe (« Ouvrir dans l'agenda »).
+ *   · l'élément d'agenda relié, s'il existe (« Ouvrir dans l'agenda ») ;
+ *     #744 lot C : s'il y en a plusieurs (graphe N↔N), TOUS sont listés, chacun
+ *     à sa date propre et ouvrable — plus de dépendance à un « principal ».
  * Sans couverture : rien pour une intervention ou un achat (aucun champ
  * artificiel) ; « Aucune période de couverture établie. » pour un contrat.
  * Aucune période facturée (chaque dépense garde la sienne), aucun statut
@@ -35,7 +37,11 @@ import { COVERAGE_HISTORY_EMPTY, COVERAGE_HISTORY_TITLE } from "@/lib/documents/
 import {
   REFERENCE_EVENT_AGENDA_LINK, REFERENCE_EVENT_DOCUMENTS_TITLE, REFERENCE_EVENT_NOT_FOUND, REFERENCE_EVENT_TITLE,
 } from "@/lib/documents/business-period-surfaces";
+import { AGENDA_EVENT_LABELS } from "@/lib/agenda/grouping-view";
 import { BUSINESS_PERIODS_MUTATED, CoverageHistoryList, type CoverageEntry } from "./BusinessPeriods";
+
+/** #744 lot C — élément d'agenda sans date dans la fiche : texte EXISTANT de l'Agenda (« Sans date »). */
+const REFERENCE_EVENT_UNDATED = "Sans date";
 
 /** Texte du lien d'ouverture (repris du lot 113X, « Voir l'événement de référence »). */
 export const REFERENCE_EVENT_OPEN_LABEL = "Voir l’événement de référence";
@@ -48,6 +54,8 @@ interface ReferenceEventView {
   coverages: CoverageEntry[];
   documents: Array<{ fileId: number; title: string; date: string | null }>;
   agendaItemId: number | null;
+  /** #744 lot C : tous les éléments d'agenda réels (absent : réponse d'avant le lot). */
+  agendaItems?: Array<{ id: number; title: string; date: string | null }>;
 }
 
 const jj = (d: string | null) => (d && /^\d{4}-\d{2}-\d{2}$/.test(d) ? `${d.slice(8, 10)}/${d.slice(5, 7)}/${d.slice(0, 4)}` : null);
@@ -116,7 +124,29 @@ export function ReferenceEventSheet({ operationId, open, onOpenChange }: { opera
                   </ul>
                 </div>
               )}
-              {view.agendaItemId != null && (
+              {/* #744 lot C : plusieurs éléments d'agenda réels — chacun à SA date, chacun ouvrable (jamais un seul « principal »). */}
+              {(view.agendaItems?.length ?? 0) > 1 && (
+                <div className="space-y-2" data-testid="reference-event-agenda-items">
+                  <p className="flex items-center gap-1.5 text-xs font-semibold text-muted-foreground"><CalendarDays className="w-3.5 h-3.5" />{AGENDA_EVENT_LABELS.events}</p>
+                  <ul className="space-y-1">
+                    {(view.agendaItems ?? []).map((a) => (
+                      <li key={a.id}>
+                        <button
+                          type="button"
+                          onClick={() => { onOpenChange(false); openDrawer({ kind: "echeance", id: a.id }); }}
+                          className="inline-flex min-h-[44px] md:min-h-[32px] max-w-full items-center gap-1.5 text-sm text-[color:var(--accent)] hover:underline text-left"
+                          aria-label={`${REFERENCE_EVENT_AGENDA_LINK} : ${a.title}`}
+                          data-reference-event-agenda-item={a.id}
+                        >
+                          <span className="truncate">{a.title}</span>
+                          <span className="shrink-0 text-xs text-muted-foreground">· {jj(a.date) ?? REFERENCE_EVENT_UNDATED}</span>
+                        </button>
+                      </li>
+                    ))}
+                  </ul>
+                </div>
+              )}
+              {view.agendaItemId != null && (view.agendaItems?.length ?? 0) <= 1 && (
                 <button
                   type="button"
                   onClick={() => { onOpenChange(false); openDrawer({ kind: "echeance", id: view.agendaItemId! }); }}

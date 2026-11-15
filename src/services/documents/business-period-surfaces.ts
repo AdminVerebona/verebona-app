@@ -396,6 +396,11 @@ export interface ReferenceEventView {
   documents: Array<{ fileId: number; title: string; date: string | null }>;
   /** Élément d'agenda relié (le plus ancien), s'il existe — la fiche reste consultable sans lui. */
   agendaItemId: number | null;
+  /**
+   * #744 lot C : TOUS les éléments d'agenda réels de l'événement de référence
+   * (graphe N↔N), chacun à sa date propre (null : sans date). Vide : aucun.
+   */
+  agendaItems: Array<{ id: number; title: string; date: string | null }>;
 }
 
 /** Fiche d'un événement de référence ACTIF du compte (redirection des regroupements) ; null sinon. */
@@ -418,8 +423,14 @@ export async function readReferenceEvent(accountId: number, operationId: number)
       ORDER BY f.document_date NULLS LAST, f.id LIMIT 200`,
     [accountId, id] as never[],
   )) as unknown as Row[];
+  // #744 lot C (règle remplacée) : éléments d'agenda lus dans le graphe canonique N↔N (plus la colonne historique) —
+  // TOUS les éléments réels de l'événement de référence, chacun à SA date, sans rôle « principal ».
   const agenda = (await sql.unsafe(
-    `SELECT id FROM agenda_items WHERE account_id = $1 AND business_operation_id = $2 ORDER BY id LIMIT 1`,
+    `SELECT i.id, i.title, to_char(i.start_date, 'YYYY-MM-DD') AS start_date
+       FROM business_operation_agenda_links l
+       JOIN agenda_items i ON i.id = l.agenda_item_id AND i.account_id = l.account_id
+      WHERE l.account_id = $1 AND l.operation_id = $2 AND l.state = 'ACTIVE'
+      ORDER BY i.start_date NULLS LAST, i.id`,
     [accountId, id] as never[],
   ).catch(() => [])) as unknown as Row[];
   const documents = docs.map((d) => ({ fileId: Number(d.id), title: documentTitleOf(d), date: (d.document_date as string | null) ?? null }));
@@ -435,6 +446,7 @@ export async function readReferenceEvent(accountId: number, operationId: number)
     coverages: h.coverages.map(publicCoverage),
     documents,
     agendaItemId: agenda[0] ? Number(agenda[0].id) : null,
+    agendaItems: agenda.map((a) => ({ id: Number(a.id), title: String(a.title ?? ''), date: (a.start_date as string | null) ?? null })),
   };
 }
 

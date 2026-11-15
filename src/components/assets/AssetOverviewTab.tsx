@@ -31,6 +31,11 @@ const DocumentDrawer = dynamic(
 );
 
 import type { DocumentDrawerItem } from '@/components/assets/DocumentDrawer';
+
+const ReferenceEventSheet = dynamic(
+  () => import('@/components/documents/ReferenceEventSheet').then(m => ({ default: m.ReferenceEventSheet })),
+  { ssr: false },
+);
 import { OCCUPANCY_USAGE_LABELS } from '@/lib/assets/occupancy';
 import { displayDocumentTitle } from '@/lib/documents/document-title-rules';
 import type { TimelineEntry } from '@/services/agenda/timeline/model';
@@ -273,6 +278,9 @@ export function AssetOverviewTab({ assetId, onTabChange, readOnly = false }: Pro
   const [drawerItem, setDrawerItem] = useState<AgendaItemFull | null>(null);
   const [drawerOpen, setDrawerOpen] = useState(false);
   const [loadingItem, setLoadingItem] = useState<string | null>(null);
+  // #744 lot C : événement de référence ouvert depuis la Timeline (null : fermé).
+  const [referenceEventId, setReferenceEventId] = useState<number | null>(null);
+  const closeReferenceEvent = useCallback((v: boolean) => { if (!v) setReferenceEventId(null); }, []);
   const [docDrawerDoc, setDocDrawerDoc] = useState<DocumentDrawerItem | null>(null);
   const [docDrawerOpen, setDocDrawerOpen] = useState(false);
   const [recentExports, setRecentExports] = useState<RecentExport[]>([]);
@@ -326,6 +334,13 @@ export function AssetOverviewTab({ assetId, onTabChange, readOnly = false }: Pro
   // groupe. Aujourd'hui : le tiroir Agenda EXISTANT de l'élément demandé. Un
   // tiroir dédié au groupe (chantier 84B) se branche ICI selon `req.context`.
   const openTimelineItem = useCallback(async (req: TimelineOpenRequest) => {
+    // #744 lot C : la ligne d'un groupe et le lien d'un élément ouvrent la
+    // fiche de l'ÉVÉNEMENT DE RÉFÉRENCE lui-même (fiche existante du lot
+    // 113AB), sans passer par un élément d'agenda « principal ».
+    if ((req.context === 'group' || req.context === 'reference') && req.operationId != null) {
+      setReferenceEventId(req.operationId);
+      return;
+    }
     const itemId = req.itemId;
     setLoadingItem(itemId);
     try {
@@ -570,6 +585,14 @@ export function AssetOverviewTab({ assetId, onTabChange, readOnly = false }: Pro
         )}
       </div>
 
+      {/* #744 lot C : fiche de l'événement de référence ouverte depuis la Timeline */}
+      {referenceEventId != null && (
+        <ReferenceEventSheet
+          operationId={referenceEventId}
+          open
+          onOpenChange={closeReferenceEvent}
+        />
+      )}
       {/* Agenda item drawer */}
       <AgendaItemDrawer
         item={drawerItem}

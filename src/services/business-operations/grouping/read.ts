@@ -107,7 +107,10 @@ export async function getAgendaGroupingView(accountId: number, itemId: number, r
   const it = await itemContext(r, accountId, itemId);
   if (!it) return null;
   const linkedDocuments = await itemDocuments(r, accountId, itemId);
-  if (it.op === null) return { itemId, role: 'NONE', main: null, mainWithdrawn: false, ensemble: null, counts: null, linkedDocuments };
+  // #744 lot C : événements de référence de l'élément, lus dans le graphe canonique (N↔N, sans rôle).
+  const { readAgendaItemsReferenceEvents } = await import('../graph/read');
+  const referenceEvents = ((await readAgendaItemsReferenceEvents(accountId, [itemId], r)).get(itemId) ?? []).map((e) => ({ id: e.operationId, label: e.label }));
+  if (it.op === null) return { itemId, role: 'NONE', main: null, mainWithdrawn: false, ensemble: null, counts: null, linkedDocuments, referenceEvents };
   const op = it.op;
   const items = await ensembleItems(r, accountId, op, itemId);
   const retire = await withdrawn(r, accountId, op);
@@ -117,14 +120,14 @@ export async function getAgendaGroupingView(accountId: number, itemId: number, r
     return {
       itemId, role: 'MAIN', main: null, mainWithdrawn: false,
       ensemble: { items, documents: await ensembleDocuments(r, accountId, op, itemId), ...(await ensembleTargets(r, accountId, op)) },
-      counts: null, linkedDocuments,
+      counts: null, linkedDocuments, referenceEvents,
       structuralScope: { allowed: housingAssetIds.length > 0, housingAssetIds },
     };
   }
   const principal = items.find((i) => i.isMain) ?? null;
   if (!principal) {
     // Ensemble sans événement de référence : les autres éléments sont le seul accès à l'ensemble.
-    return { itemId, role: 'MEMBER', main: null, mainWithdrawn: retire, ensemble: { items, documents: [], assets: [], rooms: [], equipments: [] }, counts: null, linkedDocuments };
+    return { itemId, role: 'MEMBER', main: null, mainWithdrawn: retire, ensemble: { items, documents: [], assets: [], rooms: [], equipments: [] }, counts: null, linkedDocuments, referenceEvents };
   }
   const [c] = await r.q<{ docs: number; assets: number; rooms: number; equips: number }>(
     `SELECT (SELECT count(*)::int FROM business_operation_documents d JOIN asset_files f ON f.id = d.file_id AND f.deleted_at IS NULL
@@ -136,7 +139,7 @@ export async function getAgendaGroupingView(accountId: number, itemId: number, r
     // Événements de l'ensemble hors événement de référence (§13.7), cet élément compris.
     items: items.filter((i) => !i.isMain).length + 1, documents: Number(c?.docs ?? 0), assets: Number(c?.assets ?? 0), rooms: Number(c?.rooms ?? 0), equipments: Number(c?.equips ?? 0),
   };
-  return { itemId, role: 'MEMBER', main: { id: principal.id, title: principal.title, startDate: principal.startDate }, mainWithdrawn: false, ensemble: null, counts, linkedDocuments };
+  return { itemId, role: 'MEMBER', main: { id: principal.id, title: principal.title, startDate: principal.startDate }, mainWithdrawn: false, ensemble: null, counts, linkedDocuments, referenceEvents };
 }
 
 /**

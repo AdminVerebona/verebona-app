@@ -26,14 +26,15 @@ const lire = (p: string) => readFileSync(resolve(__dirname, '..', '..', '..', p)
 const item = (id: string, title: string, date = '2026-04-04'): TimelineItemView => ({
   itemType: 'agenda', id, title, effectiveDate: date,
 });
+// Règle remplacée (carte #744, lot C) : un groupe est un événement de référence (identité `op-<n>`).
 const groupe: TimelineEntry = {
-  kind: 'group', ...item('11', 'Achat — Draisienne', '2020-01-02'),
+  kind: 'group', itemType: 'operation', id: 'op-11', operationId: 11, title: 'Achat — Draisienne', effectiveDate: '2020-01-02', dateBasis: 'REFERENCE_EVENT',
   members: [item('21', 'Garantie', '2021-05-01'), item('22', 'Révision', '2099-01-01')],
   counters: { events: 2, documents: 1, assets: 1, rooms: 0, equipments: 0 },
 };
 const etat = (p: Partial<State> = {}): State => ({
   mode: 'grouped', entries: [{ kind: 'item', ...item('10', 'Contrôle') }, groupe],
-  nextCursor: null, rest: 0, loading: false, error: false, expanded: new Set(['11']), ...p,
+  nextCursor: null, rest: 0, loading: false, error: false, expanded: new Set(['op-11']), ...p,
 });
 const actions = { setMode: () => undefined, loadMore: () => undefined, toggle: () => undefined };
 const rendre = (state: State, variant: 'desktop' | 'mobile') =>

@@ -29,7 +29,8 @@
  * jamais le mot « Opération »).
  */
 import { db } from '@/db';
-import { drizzleRunner, type GroupingRunner } from '../grouping/runner';
+import { documentTitleJsonSql, documentTitleOf, type DocumentTitleColumns } from '@/lib/documents/document-title-source';
+import { drizzleRunner, intArray, type GroupingRunner } from '../grouping/runner';
 import type { GraphEvidence, GraphOrigin, OperationRelationNature } from './model';
 
 type Row = Record<string, unknown>;
@@ -191,6 +192,67 @@ export async function readAgendaItemOperations(accountId: number, agendaItemId: 
   const out: AgendaItemOperationView[] = [];
   for (const o of x) {
     out.push({ operationId: n(o.id), typeCode: (o.type_code as string | null) ?? null, label: await label(o), origin: o.origin as GraphOrigin, legacyColumn: o.legacy_column === true });
+  }
+  return out;
+}
+
+/** Événement de référence d'un élément d'Agenda, tel que l'écran le nomme (lot C, #744). */
+export interface AgendaItemReferenceEvent {
+  operationId: number;
+  /** Libellé utilisateur — le MÊME que la fiche (`readReferenceEvent`) : titre du premier justificatif en repli. */
+  label: string;
+}
+
+/** Objet JSON lu en base (jsonb déjà décodé, ou texte selon le pilote). */
+function jsonObject(v: unknown): Record<string, unknown> | null {
+  if (v && typeof v === 'object') return v as Record<string, unknown>;
+  if (typeof v !== 'string') return null;
+  try {
+    const o = JSON.parse(v) as unknown;
+    return o && typeof o === 'object' ? (o as Record<string, unknown>) : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * LOT C (#744, CDC §12, AC23, AC24) — événements de référence ACTIFS de
+ * PLUSIEURS éléments d'Agenda du compte, en UNE requête (aucune lecture par
+ * élément). Lecture du graphe N↔N : un élément partagé rend tous ses
+ * événements de référence, sans rôle « principal » ; un élément autonome est
+ * absent du résultat (ce n'est pas une anomalie). Bornée au compte ; aucun
+ * événement de référence invalidé ou fusionné ; aucune écriture, aucune IA.
+ */
+export async function readAgendaItemsReferenceEvents(
+  accountId: number, agendaItemIds: readonly number[], runner: GroupingRunner = drizzleRunner(db),
+): Promise<Map<number, AgendaItemReferenceEvent[]>> {
+  const out = new Map<number, AgendaItemReferenceEvent[]>();
+  const ids = [...new Set(agendaItemIds)].filter((x) => Number.isSafeInteger(x) && x > 0);
+  if (!ids.length) return out;
+  const rows = await runner.q<Row>(
+    `SELECT l.agenda_item_id AS item_id, o.id, o.type_code, o.technical_label, o.provider,
+            (SELECT ${documentTitleJsonSql('f')}
+               FROM business_operation_documents d
+               JOIN asset_files f ON f.id = d.file_id AND f.account_id = d.account_id AND f.deleted_at IS NULL
+              WHERE d.account_id = $1 AND d.operation_id = o.id AND d.active
+              ORDER BY f.document_date NULLS LAST, f.id LIMIT 1) AS first_document
+       FROM business_operation_agenda_links l
+       JOIN agenda_items i ON i.id = l.agenda_item_id AND i.account_id = $1
+       JOIN business_operations o ON o.id = l.operation_id AND o.account_id = l.account_id AND ${actif('o')}
+      WHERE l.account_id = $1 AND l.agenda_item_id = ANY($2::int[]) AND l.state = 'ACTIVE'
+      ORDER BY l.agenda_item_id, o.id`, [accountId, intArray(ids)]);
+  const { referenceEventLabel } = await import('@/services/documents/business-period-surfaces');
+  for (const x of rows) {
+    const doc = jsonObject(x.first_document);
+    const list = out.get(n(x.item_id)) ?? [];
+    list.push({
+      operationId: n(x.id),
+      label: referenceEventLabel({
+        typeCode: (x.type_code as string | null) ?? null, technicalLabel: (x.technical_label as string | null) ?? null,
+        provider: (x.provider as string | null) ?? null, firstDocumentTitle: doc ? documentTitleOf(doc as DocumentTitleColumns) : null,
+      }),
+    });
+    out.set(n(x.item_id), list);
   }
   return out;
 }

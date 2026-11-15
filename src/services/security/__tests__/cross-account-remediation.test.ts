@@ -137,7 +137,11 @@ describe('PO-D23-03 — lectures bornées au compte (jointures corrigées)', () 
     // Lot 84C : la Timeline de la fiche est lue par `services/agenda/timeline/read.ts`, bornée au compte.
     const tl = readFileSync(join(process.cwd(), 'src/services/agenda/timeline/read.ts'), 'utf8');
     expect(tl).toContain('aal.asset_id = $2 AND ai.account_id = $1');
-    expect(tl).toContain('bo.account_id = ai.account_id');
+    // Règle remplacée (carte #744, lot C) : l'événement de référence n'est plus lu par la colonne historique de l'élément
+    // mais par le graphe ; il reste borné au compte demandé (clé primaire + compte), comme chaque lien du graphe.
+    expect(tl).toContain('`${a}.account_id = $1 AND ${a}.invalidated_at IS NULL AND ${a}.merged_into_operation_id IS NULL`');
+    expect(tl).toContain("WHERE bo.id = ${id} AND ${opActif('bo')})");
+    expect(tl).toContain('l.account_id = $1 AND l.agenda_item_id = i.id');
     expect(tl.match(/account_id = \$1/g)?.length).toBeGreaterThanOrEqual(10);
     const kn = readFileSync(join(process.cwd(), 'src/services/ai/knowledge/document-knowledge.service.ts'), 'utf8');
     expect(kn).toContain('af.account_id = f.account_id');

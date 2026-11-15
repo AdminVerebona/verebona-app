@@ -301,7 +301,7 @@ function ToPlanGroup({ toPlan, separated }: { toPlan: HomeToPlan; separated: boo
   const reste = toPlan.total - toPlan.items.length;
   return (
     <div data-home-group="a-prevoir" className={separated ? 'mt-2 border-t border-[color:var(--border)] pt-3' : ''}>
-      <h3 id="home-echeances-a-prevoir" className="m-0 text-[12px] font-bold uppercase tracking-[.05em] text-[color:var(--text-muted)]">
+      <h3 id="home-echeances-a-prevoir" className="m-0 text-[12px] font-bold text-[color:var(--text-muted)]">
         {SITUATION_LABELS.A_PREVOIR}
       </h3>
       <ul aria-labelledby="home-echeances-a-prevoir" className="m-0 -mx-2 mt-1 flex list-none flex-col p-0">
