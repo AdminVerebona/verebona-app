@@ -39,6 +39,7 @@ import { plain } from '../core/routing-text';
 import { undatedLabel } from '@/lib/agenda/no-deadline';
 import { DEFAULT_NEW_SITUATION } from '@/lib/agenda/situation';
 import { getAssetCategories, getAssetFamily } from '@/lib/asset-taxonomy';
+import type { ReferenceEventQuery, ReferenceEventState } from './reference-event-model';
 
 /** Validité d'un plan non confirmé. */
 const PLAN_TTL_MS = 15 * 60_000;
@@ -104,6 +105,13 @@ export interface CommandLookup {
    * absent du compte. Même lecture que le tiroir (`document-targets`).
    */
   getDocumentAssetTargets?(accountId: number, documentId: number): Promise<DocumentAssetTargets | null>;
+  /**
+   * Lot 114X (#753, W21 – W26) : événements de référence ACTIFS du compte qui répondent à une désignation (type,
+   * mots, date complète) — lecteur canonique des Opérations, jamais un autre compte, jamais un événement supprimé.
+   */
+  findReferenceEvents?(accountId: number, q: ReferenceEventQuery): Promise<ReferenceEventState[]>;
+  /** Événement de référence actif du compte : état présenté, version recontrôlée à l'exécution, échéances rattachées. */
+  getReferenceEventState?(accountId: number, operationId: number): Promise<ReferenceEventState | null>;
 }
 
 export interface DocumentAssetTargets {
@@ -396,6 +404,12 @@ export const sqlLookup: CommandLookup = {
     const { checkSupplierDuplicate } = await import('@/services/agenda/agenda-suppliers');
     return checkSupplierDuplicate(accountId, name);
   },
+  async findReferenceEvents(accountId, q) {
+    return (await import('./reference-events')).sqlFindReferenceEvents(accountId, q);
+  },
+  async getReferenceEventState(accountId, operationId) {
+    return (await import('./reference-events')).sqlGetReferenceEventState(accountId, operationId);
+  },
   async getAssetState(accountId, id) {
     // CDC 15 T2-40 : la valeur présentée à la confirmation (« A → B ») est
     // la valeur CANONIQUE — celle que l'assistant lit et que la fiche affiche
@@ -480,6 +494,11 @@ export async function resolveDraft(
   if (draft.command === 'CLEAR_ASSET_FIELD') return resolveAssetFieldClear(draft, input, lookup, actionId);
   if (draft.command === 'CREATE_ASSET') return resolveAssetCreation(draft, input, lookup, actionId);
   if (draft.command === 'DELETE_ASSET') return resolveAssetDeletion(draft, input, lookup, actionId);
+  // Lot 114X (#753, W21 – W26) : événements de référence — résolus dans `reference-events.ts`.
+  if (draft.command === 'CREATE_REFERENCE_EVENT' || draft.command === 'UPDATE_REFERENCE_EVENT' || draft.command === 'INVALIDATE_REFERENCE_EVENT'
+    || draft.command === 'ASSOCIATE_REFERENCE_EVENTS' || draft.command === 'LINK_DOCUMENT_REFERENCE_EVENT' || draft.command === 'LINK_SUPPLIER_REFERENCE_EVENT') {
+    return (await import('./reference-events')).resolveReferenceEventCommand(draft, input, lookup, actionId);
+  }
 
   // Lot 113P (#715) : plus de « marquer réalisée » / « annuler » (aucun statut d'événement).
   return { needInfo: 'Je ne peux pas faire cette modification depuis l’assistant.' };
@@ -732,7 +751,7 @@ type StructureDraft = Extract<CommandDraft, { command: 'CREATE_ROOM' | 'CREATE_E
 const memeNom = (a: string, b: string) => plain(a).replace(/\s+/g, ' ').trim() === plain(b).replace(/\s+/g, ' ').trim();
 
 /** Bien désigné par la demande (mots, ou bien du fil / de la page) ; `null` : aucun bien désigné. */
-async function bienDesigne(
+export async function bienDesigne(
   lookup: CommandLookup, input: AssistantRequestInput, d: { assetWords: string[]; assetFromContext: boolean }, question: string,
 ): Promise<{ bien: { id: number; name: string; city?: string | null } | null } | { needInfo: string }> {
   const acc = input.accountId;
@@ -887,7 +906,7 @@ const extrait = (t: string, n = 80) => (t.length > n ? `${t.slice(0, n - 1)}…`
 const dateOuVide = (d: string | null) => (d ? formatDateFr(d) : '(aucune)');
 
 /** Document unique désigné (« ce document » du fil, ou mots du titre), ou la précision à demander. */
-async function documentDesigne(
+export async function documentDesigne(
   lookup: CommandLookup, input: AssistantRequestInput, d: { documentWords: string[]; documentFromContext: boolean }, pourQuoi: string,
 ): Promise<{ state: DocumentState } | { needInfo: string }> {
   if (!lookup.findDocuments || !lookup.getDocumentState) return { needInfo: 'Je ne peux pas faire cette modification depuis l’assistant.' };
@@ -1028,7 +1047,7 @@ const vide = (v: string | null) => (v && v.trim() ? v : '(vide)');
 const pluriel = (n: number, un: string, plusieurs: string) => `${n} ${n > 1 ? plusieurs : un}`;
 
 /** Fiche unique désignée par des mots, ou la précision à demander. */
-async function fournisseurDesigne(
+export async function fournisseurDesigne(
   lookup: CommandLookup, accountId: number, words: string[], pourQuoi: string,
 ): Promise<{ state: SupplierState } | { needInfo: string }> {
   if (!lookup.findSuppliers || !lookup.getSupplierState) return { needInfo: 'Je ne peux pas faire cette modification depuis l’assistant.' };
@@ -1365,6 +1384,15 @@ export async function prepareCommand(
 ): Promise<Preparation | null> {
   const segments = parseCommands(input.message, lookup.today());
   if (!segments) return null;
+  // Lot 114X (#753, W21 – W26), non-régression : une phrase sur un événement de référence n'est une commande que si
+  // elle désigne quelque chose de réel dans le compte (`isReferenceEventCommand`) — sinon le message suit le
+  // parcours de réponse normal, comme avant.
+  for (const seg of segments) {
+    const d = seg.draft;
+    if ((d.command === 'CREATE_REFERENCE_EVENT' || d.command === 'UPDATE_REFERENCE_EVENT' || d.command === 'INVALIDATE_REFERENCE_EVENT'
+      || d.command === 'ASSOCIATE_REFERENCE_EVENTS' || d.command === 'LINK_DOCUMENT_REFERENCE_EVENT' || d.command === 'LINK_SUPPLIER_REFERENCE_EVENT')
+      && !(await (await import('./reference-events')).isReferenceEventCommand(d, input, lookup))) return null;
+  }
 
   // Construction du plan : chaque segment résolu dans le compte ; « puis »
   // rend un segment dépendant de TOUTES les actions du précédent.
@@ -1696,7 +1724,7 @@ export async function confirmCommandPlan(
   const captures = new Map<string, UndoCapture>();
   const results = await executeActions(
     actions,
-    { accountId: p.accountId, userId: p.userId, recordUndo: (c) => { captures.set(c.actionId, c); } },
+    { accountId: p.accountId, userId: p.userId, planId: p.planId, referenceEventVersions: new Map(), recordUndo: (c) => { captures.set(c.actionId, c); } },
     deps.executors,
   );
   const status = planStatusFrom(results);

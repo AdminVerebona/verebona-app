@@ -23,6 +23,14 @@ import {
 export interface ExecutionContext {
   accountId: number;
   userId: number;
+  /** Lot 114X : plan en cours d'exécution — sert de clé d'idempotence aux façades qui en acceptent une (événements de référence). */
+  planId?: string;
+  /**
+   * Lot 114X : version des événements de référence déjà écrits PAR CE PLAN (identifiant → version après écriture).
+   * Deux actions d'un même plan sur le même événement ne se refusent pas l'une l'autre ; toute autre modification
+   * survenue depuis l'aperçu reste un refus.
+   */
+  referenceEventVersions?: Map<number, number>;
   /** Reçoit la description d'annulation de chaque action réussie (undo.service). */
   recordUndo?: (capture: UndoCapture) => void;
 }
@@ -488,6 +496,15 @@ export const EXECUTORS: Record<PlannedAction['command'], Executor> = {
       entity: { type: 'agenda_item', id: p.agendaItemId },
     };
   },
+
+  // Lot 114X (#753, W21 – W26) — événements de référence : exécuteurs de `reference-events.ts`, qui n'écrivent que par
+  // la façade métier du graphe (`operation-write.facade`, carte #744) et traduisent chacun de ses résultats.
+  async CREATE_REFERENCE_EVENT(action, ctx) { return (await import('./reference-events')).REFERENCE_EVENT_EXECUTORS.CREATE_REFERENCE_EVENT(action, ctx); },
+  async UPDATE_REFERENCE_EVENT(action, ctx) { return (await import('./reference-events')).REFERENCE_EVENT_EXECUTORS.UPDATE_REFERENCE_EVENT(action, ctx); },
+  async INVALIDATE_REFERENCE_EVENT(action, ctx) { return (await import('./reference-events')).REFERENCE_EVENT_EXECUTORS.INVALIDATE_REFERENCE_EVENT(action, ctx); },
+  async ASSOCIATE_REFERENCE_EVENTS(action, ctx) { return (await import('./reference-events')).REFERENCE_EVENT_EXECUTORS.ASSOCIATE_REFERENCE_EVENTS(action, ctx); },
+  async LINK_DOCUMENT_REFERENCE_EVENT(action, ctx) { return (await import('./reference-events')).REFERENCE_EVENT_EXECUTORS.LINK_DOCUMENT_REFERENCE_EVENT(action, ctx); },
+  async LINK_SUPPLIER_REFERENCE_EVENT(action, ctx) { return (await import('./reference-events')).REFERENCE_EVENT_EXECUTORS.LINK_SUPPLIER_REFERENCE_EVENT(action, ctx); },
 };
 
 // Lot 113P (#715) : plus de commande de STATUT d'échéance (réalisée / annulée) ni d'inverse associé.

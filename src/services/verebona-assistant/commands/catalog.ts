@@ -11,6 +11,7 @@
  * appelle le service existant de l'interface classique (voir executors.ts).
  */
 import type { VerebonaActionType } from '../types/actions';
+import type { ReferenceEventParams } from './reference-event-model';
 
 export type ActionKind = 'navigation' | 'start_flow' | 'write_command' | 'display';
 
@@ -48,6 +49,10 @@ const WRITE_COMMANDS = [
   'RENAME_ASSET', 'CLEAR_ASSET_FIELD',
   // Lot 114F (W13) : biens auxquels un document est rattaché, par la façade `document-write.facade`.
   'UPDATE_DOCUMENT_TARGETS',
+  // Lot 114X (W21 – W26) : événements de référence, par la façade métier `operation-write.facade` (carte #744) —
+  // la seule écriture du graphe ; acteur « utilisateur », canal « Assistant ». Le retrait est une INVALIDATION logique.
+  'CREATE_REFERENCE_EVENT', 'UPDATE_REFERENCE_EVENT', 'INVALIDATE_REFERENCE_EVENT',
+  'ASSOCIATE_REFERENCE_EVENTS', 'LINK_DOCUMENT_REFERENCE_EVENT', 'LINK_SUPPLIER_REFERENCE_EVENT',
 ] as const;
 export type WriteCommandType = (typeof WRITE_COMMANDS)[number];
 
@@ -66,16 +71,21 @@ interface WriteCommandDefinition {
    */
   spec?: {
     capabilityCode: string;
-    targetKind: 'asset' | 'agenda_item' | 'supplier' | 'document' | 'room' | 'equipment';
+    targetKind: 'asset' | 'agenda_item' | 'supplier' | 'document' | 'room' | 'equipment' | 'reference_event';
     requiredFields: readonly string[];
     optionalFields: readonly string[];
     readBeforeWrite: boolean;
-    deletePolicy: 'NONE' | 'HARD_DELETE_WITH_EXCLUSION_TRACE' | 'HARD_DELETE_WITH_CONTENT' | 'ARCHIVE_KEEPING_LINKS' | 'SOFT_DELETE' | 'HARD_DELETE_DETACHING_CONTENT';
+    deletePolicy: 'NONE' | 'HARD_DELETE_WITH_EXCLUSION_TRACE' | 'HARD_DELETE_WITH_CONTENT' | 'ARCHIVE_KEEPING_LINKS' | 'SOFT_DELETE' | 'HARD_DELETE_DETACHING_CONTENT'
+      /** Invalidation logique (jamais un DELETE) : documents, échéances, fournisseurs et faits conservés. */
+      | 'LOGICAL_INVALIDATION';
     undoPolicy: 'REVERSIBLE_15_MIN' | 'IRREVERSIBLE';
     sideEffects: readonly string[];
     successEvent: string;
-    /** Un second envoi de la même confirmation ne rejoue jamais l'écriture (prise atomique du plan). */
-    retrySafety: 'PLAN_TAKEN_ONCE';
+    /**
+     * Un second envoi de la même confirmation ne rejoue jamais l'écriture (prise atomique du plan). Lot 114X :
+     * les commandes des événements de référence passent en plus une clé d'idempotence (plan + action) à la façade.
+     */
+    retrySafety: 'PLAN_TAKEN_ONCE' | 'PLAN_TAKEN_ONCE_AND_IDEMPOTENCY_KEY';
   };
 }
 
@@ -278,6 +288,73 @@ export const WRITE_COMMAND_CATALOG: Record<WriteCommandType, WriteCommandDefinit
       successEvent: 'DOCUMENT_UPDATED', retrySafety: 'PLAN_TAKEN_ONCE',
     },
   },
+  // Lot 114X (Trello #753, CDC T2 §14.3 W21 – W26, §14.4 « Opérations », X69 – X73) — événements de référence.
+  CREATE_REFERENCE_EVENT: {
+    type: 'CREATE_REFERENCE_EVENT', label: 'Enregistrer un événement de référence',
+    service: 'operation-write.facade.createOperation', requiresWriteAccess: true,
+    spec: {
+      capabilityCode: 'REFERENCE_EVENT_CREATE', targetKind: 'reference_event',
+      requiredFields: ['declaration', 'typeCode', 'status'], optionalFields: ['label', 'attributes', 'assetIds', 'distinctFrom'],
+      readBeforeWrite: true, deletePolicy: 'NONE', undoPolicy: 'IRREVERSIBLE',
+      sideEffects: ['déclaration de l’utilisateur enregistrée comme source durable', 'aucun document, aucune échéance, aucun montant créé', 'même déclaration rejouée : rien n’est créé en double'],
+      successEvent: 'BUSINESS_OPERATION_CREATED', retrySafety: 'PLAN_TAKEN_ONCE_AND_IDEMPOTENCY_KEY',
+    },
+  },
+  UPDATE_REFERENCE_EVENT: {
+    type: 'UPDATE_REFERENCE_EVENT', label: 'Corriger un événement de référence',
+    service: 'operation-write.facade.updateOperation', requiresWriteAccess: true,
+    spec: {
+      capabilityCode: 'REFERENCE_EVENT_UPDATE', targetKind: 'reference_event',
+      requiredFields: ['operationId', 'declaration', 'patch', 'expectedVersion'], optionalFields: [],
+      readBeforeWrite: true, deletePolicy: 'NONE', undoPolicy: 'IRREVERSIBLE',
+      sideEffects: ['correction enregistrée comme déclaration de l’utilisateur : dates et prestataire ne sont plus réécrits par une analyse'],
+      successEvent: 'BUSINESS_OPERATION_UPDATED', retrySafety: 'PLAN_TAKEN_ONCE_AND_IDEMPOTENCY_KEY',
+    },
+  },
+  INVALIDATE_REFERENCE_EVENT: {
+    type: 'INVALIDATE_REFERENCE_EVENT', label: 'Supprimer un événement de référence',
+    service: 'operation-write.facade.invalidateOperation', requiresWriteAccess: true,
+    spec: {
+      capabilityCode: 'REFERENCE_EVENT_INVALIDATE', targetKind: 'reference_event',
+      requiredFields: ['operationId', 'expectedVersion'], optionalFields: [],
+      readBeforeWrite: true, deletePolicy: 'LOGICAL_INVALIDATION', undoPolicy: 'IRREVERSIBLE',
+      sideEffects: ['documents, échéances (détachées, conservées à leur date), fournisseurs et montants conservés', 'une analyse ne réactive pas l’événement retiré par l’utilisateur'],
+      successEvent: 'BUSINESS_OPERATION_INVALIDATED', retrySafety: 'PLAN_TAKEN_ONCE_AND_IDEMPOTENCY_KEY',
+    },
+  },
+  ASSOCIATE_REFERENCE_EVENTS: {
+    type: 'ASSOCIATE_REFERENCE_EVENTS', label: 'Associer deux événements de référence',
+    service: 'operation-write.facade.associateOperations', requiresWriteAccess: true,
+    spec: {
+      capabilityCode: 'REFERENCE_EVENTS_ASSOCIATE', targetKind: 'reference_event',
+      requiredFields: ['fromOperationId', 'toOperationId', 'nature', 'expectedVersions'], optionalFields: [],
+      readBeforeWrite: true, deletePolicy: 'NONE', undoPolicy: 'IRREVERSIBLE',
+      sideEffects: ['les deux événements restent distincts : aucune fusion', 'aucun document déplacé, aucun montant, aucune date, aucune échéance créés'],
+      successEvent: 'GRAPH_HISTORY_ONLY', retrySafety: 'PLAN_TAKEN_ONCE_AND_IDEMPOTENCY_KEY',
+    },
+  },
+  LINK_DOCUMENT_REFERENCE_EVENT: {
+    type: 'LINK_DOCUMENT_REFERENCE_EVENT', label: 'Rattacher un document à un événement de référence',
+    service: 'operation-write.facade.linkDocument', requiresWriteAccess: true,
+    spec: {
+      capabilityCode: 'REFERENCE_EVENT_DOCUMENT_LINK', targetKind: 'reference_event',
+      requiredFields: ['operationId', 'documentId', 'expectedVersion', 'documentVersion'], optionalFields: [],
+      readBeforeWrite: true, deletePolicy: 'NONE', undoPolicy: 'IRREVERSIBLE',
+      sideEffects: ['rattachement décidé par l’utilisateur', 'le document reste dans les documents du compte et garde ses autres rattachements'],
+      successEvent: 'GRAPH_HISTORY_ONLY', retrySafety: 'PLAN_TAKEN_ONCE_AND_IDEMPOTENCY_KEY',
+    },
+  },
+  LINK_SUPPLIER_REFERENCE_EVENT: {
+    type: 'LINK_SUPPLIER_REFERENCE_EVENT', label: 'Relier un fournisseur à un événement de référence',
+    service: 'operation-write.facade.linkSupplier', requiresWriteAccess: true,
+    spec: {
+      capabilityCode: 'REFERENCE_EVENT_SUPPLIER_LINK', targetKind: 'reference_event',
+      requiredFields: ['operationId', 'supplierId', 'role', 'expectedVersion', 'supplierVersion'], optionalFields: [],
+      readBeforeWrite: true, deletePolicy: 'NONE', undoPolicy: 'IRREVERSIBLE',
+      sideEffects: ['lien décidé par l’utilisateur : jamais modifié par une analyse', 'aucun document, aucun coût, aucune échéance créés'],
+      successEvent: 'GRAPH_HISTORY_ONLY', retrySafety: 'PLAN_TAKEN_ONCE_AND_IDEMPOTENCY_KEY',
+    },
+  },
   ARCHIVE_SUPPLIER: {
     type: 'ARCHIVE_SUPPLIER', label: 'Archiver un fournisseur',
     service: 'supplier-write.facade.setSupplierArchived', requiresWriteAccess: true,
@@ -342,7 +419,9 @@ export type CommandParams =
   // CLEAR_ASSET_FIELD (W27) : la valeur présentée comme « actuelle » est figée — si elle a changé, rien n'est effacé.
   | { kind: 'asset_field_clear'; clearAssetId: number; clearSection: string; clearedField: string; clearedPrevious: unknown }
   // UPDATE_DOCUMENT_TARGETS (W13) : liste COMPLÈTE des biens après l'action, et liste présentée à l'aperçu.
-  | { kind: 'document_targets'; documentId: number; targetAssetIds: number[]; expectedAssetIds: number[]; expectedVersion: string };
+  | { kind: 'document_targets'; documentId: number; targetAssetIds: number[]; expectedAssetIds: number[]; expectedVersion: string }
+  // Lot 114X (W21 – W26) : événements de référence — paramètres définis avec leurs commandes (`reference-events.ts`).
+  | ReferenceEventParams;
 
 /** Action d'un plan, préparée et figée avant toute confirmation. */
 export interface PlannedAction {
@@ -350,7 +429,7 @@ export interface PlannedAction {
   actionId: string;
   command: WriteCommandType;
   /** Cible(s), pour l'affichage et la trace. */
-  targets: Array<{ type: 'asset' | 'agenda_item' | 'supplier' | 'document' | 'room' | 'equipment'; id: number; label: string }>;
+  targets: Array<{ type: 'asset' | 'agenda_item' | 'supplier' | 'document' | 'room' | 'equipment' | 'reference_event'; id: number; label: string }>;
   params: CommandParams;
   /** Actions dont celle-ci dépend (exécutée seulement si elles réussissent). */
   dependsOn: string[];
@@ -367,7 +446,7 @@ export interface ActionResult {
   status: ActionOutcome;
   message: string;
   /** Objet créé ou modifié. */
-  entity?: { type: 'agenda_item' | 'asset' | 'supplier' | 'document' | 'room' | 'equipment'; id: number } | null;
+  entity?: { type: 'agenda_item' | 'asset' | 'supplier' | 'document' | 'room' | 'equipment' | 'reference_event'; id: number } | null;
 }
 
 export type PlanStatus =

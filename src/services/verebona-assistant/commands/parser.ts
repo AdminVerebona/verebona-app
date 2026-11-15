@@ -9,6 +9,7 @@
 import { findAssetField, parseFieldValue } from './asset-fields';
 import { plain } from '../core/routing-text';
 import { assetDesignationsIn } from '@/lib/asset-taxonomy';
+import { parseReferenceEventCommand, type ReferenceEventDraft } from './reference-event-parser';
 
 export type CommandDraft =
   | {
@@ -116,7 +117,9 @@ export type CommandDraft =
       command: 'DELETE_AGENDA_ITEM';
       /** SERIES seulement si la série est demandée (« toute la série », « tous les… »). */
       scope: 'OCCURRENCE' | 'SERIES';
-    } & AgendaTargetDraft);
+    } & AgendaTargetDraft)
+  /** Lot 114X (W21 – W26) — événements de référence : brouillons définis avec leur analyseur (`reference-event-parser.ts`). */
+  | ReferenceEventDraft;
 
 /**
  * Lot 114B (Trello #753, W16 / W17) — brouillons « modifier » et « supprimer »
@@ -391,7 +394,7 @@ function parseAssetDeletion(message: string): CommandDraft | null {
 // ── Lot 114F (#753, W02 / W27) : renommer un bien, effacer une caractéristique ─
 
 /** Début du message utile : après les espaces et une demande polie (« peux-tu … »). */
-function debutUtile(brut: string): number {
+export function debutUtile(brut: string): number {
   const tete = brut.match(/^\s*/)![0].length;
   const poli = brut.slice(tete).match(DEMANDE_POLIE)?.[0].length ?? 0;
   return tete + poli + brut.slice(tete + poli).match(/^\s*/)![0].length;
@@ -759,6 +762,15 @@ function parseStructureCommand(message: string): CommandDraft | null {
 export function parseCommand(message: string, today: string): CommandDraft | null {
   const m = plain(message).trim();
 
+  // ── Événements de référence (lot 114X, W21 – W26) : AVANT tout le reste — ces formes nomment toujours
+  // l'objet (« événement de référence », ou un type : intervention, achat, contrat…) et sont ancrées en début
+  // de message. « Relie le fournisseur Durand à l'intervention … » ne crée pas un fournisseur ; « rattache le
+  // document … à l'intervention … » ne cherche pas un bien ; « supprime l'événement de référence … » ne vise
+  // pas l'Agenda. Une caractéristique de bien du registre (« date d'achat ») reste à son analyseur.
+  if (!INTERROGATIF.test(m) && !LECTURE_MOI.test(m)) {
+    const evenement = parseReferenceEventCommand(message, today);
+    if (evenement) return evenement;
+  }
 
   // ── Fournisseurs (lot 114) : avant les biens — « ajoute le fournisseur … » ne crée jamais un bien.
   // Les formes reconnues sont ancrées en début de message (« ajoute un rappel pour le fournisseur … » reste une échéance).
@@ -835,7 +847,7 @@ export function parseCommand(message: string, today: string): CommandDraft | nul
 }
 
 /** Verbes qui ouvrent une nouvelle commande dans un même message. */
-const DEBUT_COMMANDE = /\s+(puis|ensuite|et ensuite|et puis|et)\s+(?=(ajoute|ajouter|crée|cree|créer|creer|programme|planifie|enregistre|marque|marquer|indique|passe|annule|annuler|mets|modifie|change|renseigne|corrige|supprime|efface|retire|enlève|enleve|déplace|deplace|reporte|décale|decale|repousse|avance|renomme|rattache|détache|detache|dissocie)\b)/i;
+const DEBUT_COMMANDE = /\s+(puis|ensuite|et ensuite|et puis|et)\s+(?=(ajoute|ajouter|crée|cree|créer|creer|programme|planifie|enregistre|marque|marquer|indique|passe|annule|annuler|mets|modifie|change|renseigne|corrige|supprime|efface|retire|enlève|enleve|déplace|deplace|reporte|décale|decale|repousse|avance|renomme|rattache|détache|detache|dissocie|associe|relie|déclare|declare|invalide)\b)/i;
 
 /**
  * Découpe un message en commandes successives (« ajoute… et marque… »,
