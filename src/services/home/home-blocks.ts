@@ -17,7 +17,10 @@
  * n'écrit donc jamais « j'ai rattaché », seulement « j'ai analysé … (bien) ».
  * ══════════════════════════════════════════════════════════════════════════
  */
-import { formatDateFr } from './mascot/signals';
+// Carte #752 : règles de dates et de délais partagées (module pur, web et mobile).
+import {
+  anneeNecessaire, dateCourteFr, dateLongueFr, estJourValide, joursEntre, libelleDelai, MOIS_COURTS,
+} from '@/lib/dates/delai-calendaire';
 
 // ── Types ────────────────────────────────────────────────────────────────────
 
@@ -147,7 +150,7 @@ function fieldEvents(rows: WorkFieldUpdateRow[]): VerebonaWorkItem[] {
 function deadlineEvents(rows: WorkDeadlineRow[]): VerebonaWorkItem[] {
   return rows.map((r) => {
     const ou = r.documentTitle ? `dans ${q(r.documentTitle)}` : r.assetName ? `pour ${r.assetName}` : 'dans vos documents';
-    const quand = r.date ? ` le ${formatDateFr(r.date)}` : ', date à préciser';
+    const quand = r.date ? ` le ${dateLongueFr(r.date)}` : ', date à préciser';
     return {
       id: `deadline:${r.id}`,
       kind: 'deadline' as const,
@@ -210,8 +213,8 @@ export function relativeAgo(iso: string, now: Date = new Date()): string {
     const s = Math.floor(n / 7);
     return s === 1 ? 'Il y a 1 semaine' : `Il y a ${s} semaines`;
   }
-  const MOIS = ['janv.', 'févr.', 'mars', 'avr.', 'mai', 'juin', 'juil.', 'août', 'sept.', 'oct.', 'nov.', 'déc.'];
-  return `${d.getDate()} ${MOIS[d.getMonth()]}${d.getFullYear() !== now.getFullYear() ? ` ${d.getFullYear()}` : ''}`;
+  // Mois abrégés : ceux de la charte, partagés (carte #752).
+  return `${d.getDate()} ${MOIS_COURTS[d.getMonth()]}${d.getFullYear() !== now.getFullYear() ? ` ${d.getFullYear()}` : ''}`;
 }
 
 // ── Documents récents (§3.5) ────────────────────────────────────────────────
@@ -283,13 +286,37 @@ export interface HomeUpcomingItem {
   title: string;
   assetName: string | null;
   date: string;
-  /** Pastille de date : « 12 » / « oct. ». */
+  /** Pastille de date : « 12 » / « oct. ». Décorative (`aria-hidden`), sans l'année : son gabarit (44/48 px) ne la tient pas. */
   day: string;
   month: string;
-  /** « Aujourd'hui », « Dans 3 semaines »… */
+  /**
+   * Carte #752 — mention courte AVEC l'année, à côté de la pastille, quand
+   * l'année est nécessaire pour situer l'échéance (autre année civile que le
+   * jour de référence) : « 18 avr. 2028 ». `null` la même année : la pastille
+   * dit déjà le jour et le mois, et la ligne reste sobre.
+   */
+  dateWithYear: string | null;
+  /**
+   * Carte #752 — date complète en clair, année toujours comprise
+   * (« 18 avril 2028 ») : nom accessible du bouton, indépendamment de la
+   * pastille décorative. La durée relative est complémentaire, jamais le
+   * seul moyen de connaître la date.
+   */
+  dateFull: string;
+  /** « Aujourd'hui », « Dans 3 semaines », « Dans 1 an et 5 mois »… */
   rel: string;
   tone: UpcomingTone;
   forecast: boolean;
+}
+
+/**
+ * Nom accessible du bouton d'une échéance de l'accueil (carte #752, point 6) :
+ * l'événement, le bien s'il y en a un, la DATE COMPLÈTE avec son année, puis
+ * le délai. La pastille de date étant `aria-hidden`, c'est ici que la date
+ * exacte est annoncée. Composition à valider par le PO.
+ */
+export function upcomingAccessibleName(e: HomeUpcomingItem): string {
+  return [e.title, e.assetName, e.dateFull, e.rel].filter((x): x is string => !!x).join(' — ');
 }
 
 export const MAX_UPCOMING = 5;
@@ -321,20 +348,19 @@ export function deriveToPlan(rows: HomeToPlanItem[], total: number, max = MAX_TO
 /** Une échéance à moins de 30 jours est « proche » (amber). */
 const UPCOMING_SOON_DAYS = 30;
 
-const MOIS_COURTS = ['janv.', 'févr.', 'mars', 'avr.', 'mai', 'juin', 'juil.', 'août', 'sept.', 'oct.', 'nov.', 'déc.'];
-
-function ecart(from: string, to: string): number {
-  return Math.round((Date.parse(`${to.slice(0, 10)}T00:00:00Z`) - Date.parse(`${from.slice(0, 10)}T00:00:00Z`)) / 86_400_000);
-}
-
-/** Délai lisible depuis `today` (lot 113P : jamais « En retard » — une date passée se lit « Aujourd’hui » au plus tôt, l'accueil n'en présente pas). */
-export function relativeDue(days: number): string {
-  if (days <= 0) return 'Aujourd’hui';
-  if (days === 1) return 'Demain';
-  if (days < 14) return `Dans ${days} jours`;
-  if (days < 60) return `Dans ${Math.round(days / 7)} semaines`;
-  const mois = Math.round(days / 30);
-  return mois >= 12 && mois < 18 ? 'Dans 1 an' : mois >= 18 ? `Dans ${Math.round(mois / 12)} ans` : `Dans ${mois} mois`;
+/**
+ * Délai lisible du jour de référence `today` vers l'échéance `date`
+ * (lot 113P : jamais « En retard » — une date passée se lit « Aujourd’hui »
+ * au plus tôt, et l'accueil n'en présente pas).
+ *
+ * RÈGLE REMPLACÉE (carte #752) : la signature prenait un nombre de JOURS et
+ * arrondissait (30 jours = 1 mois, 12 à 17 mois = « Dans 1 an », 18 mois et
+ * plus = « Dans N ans »), ce qui produisait des délais faux. Le calcul est
+ * désormais une différence de calendrier partagée
+ * (`lib/dates/delai-calendaire.ts`), web et mobile.
+ */
+export function relativeDue(today: string, date: string): string {
+  return libelleDelai(today, date) ?? '';
 }
 
 /**
@@ -344,17 +370,23 @@ export function relativeDue(days: number): string {
  */
 export function deriveUpcoming(rows: UpcomingRow[], today: string, max = MAX_UPCOMING): HomeUpcomingItem[] {
   return rows
-    .map((r) => ({ r, d: ecart(today, r.date) }))
+    .map((r) => ({ r, jour: r.date.slice(0, 10), d: joursEntre(today, r.date) }))
     // Lot 113P (#715) : une échéance passée n'est jamais « en retard » — seules les dates à venir.
-    .filter(({ d }) => d >= 0)
+    // Carte #752 : un jour qui n'existe pas (30 février, texte libre) sort ici
+    // AVANT tout calcul — `Date` le reporterait au mois suivant et l'accueil
+    // afficherait un délai inventé.
+    .filter(({ jour, d }) => estJourValide(jour) && d >= 0)
     .sort((a, b) => a.d - b.d || a.r.id - b.r.id)
     .slice(0, max)
-    .map(({ r, d }) => {
-      const [, m, j] = r.date.slice(0, 10).split('-').map(Number);
+    .map(({ r, jour, d }) => {
+      const [, m, j] = jour.split('-').map(Number);
       return {
-        id: r.id, title: r.title, assetName: r.assetName, date: r.date.slice(0, 10),
+        id: r.id, title: r.title, assetName: r.assetName, date: jour,
         day: String(j), month: MOIS_COURTS[m - 1],
-        rel: `${relativeDue(d)}${r.forecast ? ' (estimée)' : ''}`,
+        // Carte #752 : l'année n'est écrite que lorsqu'elle est nécessaire (autre année civile).
+        dateWithYear: anneeNecessaire(today, jour) ? dateCourteFr(jour, true) : null,
+        dateFull: dateLongueFr(jour),
+        rel: `${relativeDue(today, jour)}${r.forecast ? ' (estimée)' : ''}`,
         tone: d <= UPCOMING_SOON_DAYS ? 'amber' : 'green',
         forecast: r.forecast,
       };

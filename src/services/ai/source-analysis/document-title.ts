@@ -57,7 +57,8 @@ import {
 } from '@/lib/documents/document-title-rules';
 import {
   canonicalTitleKey, composePeriodicTitle, disambiguatorFor, formatTitleDate, PERIODIC_NATURES,
-  presentBilledPeriod, presentSupplier, TITLE_CONVENTION_PERIODIC, TITLE_SEPARATOR,
+  presentBilledPeriod, presentSupplier, supplierIdentityFromAnalysis, supplierTitleName,
+  TITLE_CONVENTION_PERIODIC, TITLE_SEPARATOR,
   type DisambiguationMember, type PrincipalMonth, type TitleConvention,
 } from '@/lib/documents/document-title-convention';
 import {
@@ -434,7 +435,9 @@ export function titleInputsFromAnalysis(
         ...(result.extractedFields ?? []).map((f) => f?.subject),
         ...(d.visual?.observations ?? []).map((o) => o?.subject),
       ].filter((s): s is string => typeof s === 'string' && s.length > 0),
-      supplier: d.supplier?.value?.name ?? null,
+      // Carte #783 : enseigne (sinon raison sociale) quand le bloc PO 52 est collé et que T1 a
+      // décomposé l'émetteur avec sa preuve ; sinon le nom lu aujourd'hui, inchangé.
+      supplier: supplierTitleName(supplierIdentityFromAnalysis(result), d.supplier?.value?.name ?? null),
       documentDate: d.date?.value ?? null,
     },
   };

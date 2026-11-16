@@ -82,13 +82,17 @@
  * ══════════════════════════════════════════════════════════════════════════
  */
 import {
-  DOCUMENT_TITLE_RULE_VERSION, evaluateBusinessTitle, isValidBusinessTitle, normalizeTitle, shouldReplaceSystemTitle, titleHasPhrase,
+  DOCUMENT_TITLE_RULE_VERSION, evaluateBusinessTitle, isValidBusinessTitle, normalizeTitle, shouldReplaceSystemTitle,
+  titleCarriesStalePeriod, titleHasPhrase,
   type TitleEvaluation, type TitleIdentifiers,
 } from '@/lib/documents/document-title-rules';
 import {
   billedPeriodFromAnalysis, hasLegacyTitleTypography, principalMonthFromAnalysis, type DisambiguationMember,
 } from '@/lib/documents/document-title-convention';
-import { readStoredPeriodDecision } from '@/lib/documents/document-title-period';
+import {
+  readStoredPeriodDecision, titleEligibleFactPeriods, type QualifiedPeriodBounds,
+} from '@/lib/documents/document-title-period';
+import { isBusinessPeriodKind } from '@/lib/documents/business-periods';
 import {
   periodFactsOf, planBusinessTitle, titleContextFingerprint, titleInputsFromAnalysis, type BillingBasis, type TitleContext, type TitleInputs, type TitlePlan,
 } from '@/services/ai/source-analysis/document-title';
@@ -263,6 +267,48 @@ export function withPersistedGaps(inputs: TitleInputs, persisted: TitleInputs | 
 const REFERENCE_FACT_KEYS = ['contractNumber', 'insuranceContractNumber', 'dpeAdemeNumber'];
 
 /**
+ * Carte #783 — périodes de faits d'un document, avec la CLÉ du fait qui les porte : la nature de la
+ * période décide si elle peut nommer le document (`titleEligibleFactPeriods`). Lecture bornée.
+ */
+const FACT_PERIODS_SQL = `SELECT DISTINCT COALESCE(raw_key, fact_key) AS key, to_char(period_start, 'YYYY-MM-DD') AS s,
+          to_char(period_end, 'YYYY-MM-DD') AS e FROM document_facts
+        WHERE file_id = $1 AND account_id = $2 AND status = 'active' AND period_start IS NOT NULL AND period_end IS NOT NULL
+        ORDER BY 1, 2, 3 LIMIT $3`;
+
+/**
+ * Carte #783 — périodes métier QUALIFIÉES du document (lot 113W, `document_business_periods`) :
+ * elles donnent la NATURE de bornes portées par un fait sans clé `period.*` exploitable. Table
+ * absente (migration 1560 non appliquée) ou lecture en échec : aucune nature connue, comportement
+ * d'avant la carte.
+ */
+async function loadQualifiedPeriodBounds(sql: Sql, fileId: number, accountId: number): Promise<QualifiedPeriodBounds[]> {
+  const rows = (await sql.unsafe(
+    `SELECT period_kind AS kind, to_char(start_on, 'YYYY-MM-DD') AS start, to_char(end_on, 'YYYY-MM-DD') AS "end"
+       FROM document_business_periods
+      WHERE file_id = $1 AND account_id = $2 AND status = 'ACTIVE' ORDER BY id LIMIT 40`,
+    [fileId, accountId] as never[],
+  ).catch(() => [])) as unknown as Array<{ kind: string; start: string | null; end: string | null }>;
+  return rows.filter((r) => isBusinessPeriodKind(r.kind)).map((r) => ({ kind: r.kind as QualifiedPeriodBounds['kind'], start: r.start, end: r.end }));
+}
+
+/** Périodes de faits ÉLIGIBLES au titre (carte #783) : lecture des faits, des natures, puis filtre pur. */
+async function loadTitleFactPeriods(sql: Sql, fileId: number, accountId: number, limit: number): Promise<Array<{ s: string | null; e: string | null }>> {
+  return (await readTitleFactPeriods(sql, fileId, accountId, limit)).periods;
+}
+
+/** Idem, en rendant AUSSI le nombre de périodes écartées par leur nature (carte #783). */
+async function readTitleFactPeriods(sql: Sql, fileId: number, accountId: number, limit: number): Promise<{
+  periods: Array<{ s: string | null; e: string | null }>; excluded: number;
+}> {
+  const [faits, qualifiees] = await Promise.all([
+    sql.unsafe(FACT_PERIODS_SQL, [fileId, accountId, limit] as never[]).catch(() => []) as unknown as Promise<Array<{ key: string | null; s: string | null; e: string | null }>>,
+    loadQualifiedPeriodBounds(sql, fileId, accountId),
+  ]);
+  const retenues = titleEligibleFactPeriods(faits, qualifiees);
+  return { periods: retenues.map((f) => ({ s: f.s, e: f.e })), excluded: faits.length - retenues.length };
+}
+
+/**
  * Contexte du titre lu dans l'état ACTUEL du compte (borné, aucune analyse) :
  * bien rattaché, équipement / pièce identifié (lien actif ou cible d'un fait,
  * seulement s'il est UNIQUE), période métier des faits, référence, nombre de
@@ -307,12 +353,8 @@ async function loadTitleAccountContext(fileId: number, accountId: number): Promi
     ).catch(() => []) as unknown as Promise<Array<{ id: number; name: string }>>,
     // Lot 87D : la période des faits n'est retenue que si elle est UNIQUE
     // (deux périodes différentes : ambiguïté, jamais tranchée par le code).
-    sql.unsafe(
-      `SELECT DISTINCT to_char(period_start, 'YYYY-MM-DD') AS s, to_char(period_end, 'YYYY-MM-DD') AS e FROM document_facts
-        WHERE file_id = $1 AND account_id = $2 AND status = 'active' AND period_start IS NOT NULL AND period_end IS NOT NULL
-        LIMIT 2`,
-      [fileId, accountId] as never[],
-    ) as unknown as Promise<Array<{ s: string | null; e: string | null }>>,
+    // Carte #783 : seules les périodes dont la NATURE identifie le document (la garantie, non).
+    loadTitleFactPeriods(sql, fileId, accountId, 4),
     sql.unsafe(
       `SELECT COALESCE(normalized_value, value_text) AS v FROM document_facts
         WHERE file_id = $1 AND account_id = $2 AND status = 'active' AND canonical_key = ANY($3::text[])
@@ -349,7 +391,13 @@ async function loadSimilarTitles(fileId: number, accountId: number, title: strin
 }
 
 /** Plan du titre (meilleur candidat + attentes + empreinte), titres similaires ou groupe canonique compris. */
-export async function planTitleForDocument(fileId: number, accountId: number, inputs: TitleInputs): Promise<{ plan: TitlePlan; fingerprint: string; basis: BillingBasis }> {
+export async function planTitleForDocument(fileId: number, accountId: number, inputs: TitleInputs): Promise<{
+  plan: TitlePlan; fingerprint: string; basis: BillingBasis;
+  /** Carte #783 : nombre de périodes de faits ÉCARTÉES parce que leur nature ne nomme pas le document. */
+  excludedPeriods: number;
+}> {
+  const sqlExcl = await sqlClient();
+  const { excluded } = await readTitleFactPeriods(sqlExcl, fileId, accountId, 5);
   const billing = await loadBillingBasis(fileId, accountId, inputs.ctx.documentDate ?? null);
   const ctx: TitleContext = { ...inputs.ctx, ...(await loadTitleAccountContext(fileId, accountId)), selfId: fileId, billing };
   let plan = planBusinessTitle(inputs.modelTitle, ctx);
@@ -361,7 +409,7 @@ export async function planTitleForDocument(fileId: number, accountId: number, in
     const similaires = await loadSimilarTitles(fileId, accountId, plan.title);
     if (similaires.length) plan = planBusinessTitle(inputs.modelTitle, { ...ctx, similarTitles: similaires });
   }
-  return { plan, fingerprint: titleContextFingerprint(plan), basis: billing };
+  return { plan, fingerprint: titleContextFingerprint(plan), basis: billing, excludedPeriods: excluded };
 }
 
 // ── Lot 87D : données de nommage persistées ─────────────────────────────────
@@ -449,12 +497,8 @@ async function loadBillingBasis(fileId: number, accountId: number, issueDate: st
         WHERE file_id = $1 AND account_id = $2 AND status = 'ACTIVE' ORDER BY id LIMIT 20`,
       [fileId, accountId] as never[],
     ).catch(() => []) as unknown as Promise<Array<{ payload: unknown }>>,
-    sql.unsafe(
-      `SELECT DISTINCT to_char(period_start, 'YYYY-MM-DD') AS s, to_char(period_end, 'YYYY-MM-DD') AS e FROM document_facts
-        WHERE file_id = $1 AND account_id = $2 AND status = 'active' AND period_start IS NOT NULL AND period_end IS NOT NULL
-        LIMIT 3`,
-      [fileId, accountId] as never[],
-    ) as unknown as Promise<Array<{ s: string | null; e: string | null }>>,
+    // Carte #783 : périodes de faits filtrées par leur NATURE (une garantie ne nomme pas un document).
+    loadTitleFactPeriods(sql, fileId, accountId, 5),
     // Mois principal (point d'extension) : le résultat n'est relu que s'il porte le bloc.
     sql.unsafe(
       `SELECT raw_response_json AS raw FROM document_analysis_runs
@@ -738,7 +782,7 @@ export async function ensureBusinessTitle(p: {
         const ecrit = await stampChecked(p.fileId, p.accountId, 'NO_ANALYSIS_DATA');
         return fin(valide ? 'NO_CHANGE' : 'INSUFFICIENT_DATA', valide ? 'NO_BETTER_TITLE' : 'NO_ANALYSIS_DATA', null, !valide && ecrit);
       }
-      const { plan, fingerprint: fp, basis } = await planTitleForDocument(p.fileId, p.accountId, inputs);
+      const { plan, fingerprint: fp, basis, excludedPeriods } = await planTitleForDocument(p.fileId, p.accountId, inputs);
       fingerprint = fp;
       const meta = { record: titleBasisRecord(plan, basis, inputs.ctx.supplier ?? null), convention: plan.convention, key: plan.canonicalKey };
       const cleModifiee = row.title_canonical_key !== plan.canonicalKey;
@@ -793,6 +837,13 @@ export async function ensureBusinessTitle(p: {
         // composition v3 des MÊMES informations (jamais de perte).
         if (!decision.replace && valide && hasLegacyTitleTypography(row.retained_title) && !titleLosesInformation(row.retained_title!, candidat, plan)) {
           decision = { replace: true, reason: 'TYPOGRAPHY_NORMALIZED' };
+        }
+        // Carte #783 : une période a été ÉCARTÉE parce que sa nature ne nomme pas le document
+        // (bornes de garantie d'une facture d'achat) et le titre en place la porte encore : le
+        // titre est recomposé. Hors de ce cas, la règle « jamais de perte de période » est
+        // inchangée — un titre n'est jamais privé d'une période légitime.
+        if (!decision.replace && excludedPeriods > 0 && titleCarriesStalePeriod(row.retained_title, candidat)) {
+          decision = { replace: true, reason: 'EXCLUDED_PERIOD_REMOVED' };
         }
       }
       if (!decision.replace) return sansRenommage('NO_CHANGE', 'NO_BETTER_TITLE', (e) => e && contexteModifie);

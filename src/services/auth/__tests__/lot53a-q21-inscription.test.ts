@@ -80,13 +80,16 @@ describe('PO-Q21 — inscription non énumérable', () => {
 
 describe('PO-D1 — traçabilité dans BO › Utilisateurs › fiche', () => {
   it('PO-D1-16 libellés des tentatives : réussite, échec (motif), pause (règle, durée)', () => {
-    expect(describeLoginActivity('LOGIN_SUCCESS', JSON.stringify({ trustedDevice: true }))).toEqual({ result: 'success', detail: null });
+    // Carte #799 : le contrat porte en plus la catégorie typée, l'identifiant
+    // de tentative et le code du refus initial (null quand non tracés).
+    const sansDiag = { attemptId: null, refusalCode: null };
+    expect(describeLoginActivity('LOGIN_SUCCESS', JSON.stringify({ trustedDevice: true }))).toEqual({ result: 'success', detail: null, category: 'success', ...sansDiag });
     expect(describeLoginActivity('LOGIN_SUCCESS', JSON.stringify({ trustedDevice: false })).detail).toBe('Premier succès sur cet appareil');
-    expect(describeLoginActivity('LOGIN_SUCCESS', null)).toEqual({ result: 'success', detail: null });
-    expect(describeLoginActivity('LOGIN_FAILED', JSON.stringify({ reason: 'invalid_password', trustedDevice: false }))).toEqual({ result: 'failure', detail: 'Mot de passe incorrect' });
+    expect(describeLoginActivity('LOGIN_SUCCESS', null)).toEqual({ result: 'success', detail: null, category: 'success', ...sansDiag });
+    expect(describeLoginActivity('LOGIN_FAILED', JSON.stringify({ reason: 'invalid_password', trustedDevice: false }))).toEqual({ result: 'failure', detail: 'Mot de passe incorrect', category: 'failure', ...sansDiag });
     expect(describeLoginActivity('LOGIN_FAILED', JSON.stringify({ reason: 'invalid_password', trustedDevice: true })).detail).toBe('Mot de passe incorrect · appareil reconnu');
     expect(describeLoginActivity('AUTH_LOGIN_THROTTLED', JSON.stringify({ rule: 'identifier_untrusted', retryAfterSeconds: 900 })))
-      .toEqual({ result: 'throttled', detail: 'Pause des appareils non reconnus (attaque possible) — 15 min' });
-    expect(describeLoginActivity('LOGIN_FAILED', '{pas du json')).toEqual({ result: 'failure', detail: 'Échec' });
+      .toEqual({ result: 'throttled', detail: 'Pause des appareils non reconnus (attaque possible) — 15 min', category: 'anti_abuse', ...sansDiag });
+    expect(describeLoginActivity('LOGIN_FAILED', '{pas du json')).toEqual({ result: 'failure', detail: 'Échec', category: 'failure', ...sansDiag });
   });
 });

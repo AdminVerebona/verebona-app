@@ -35,6 +35,7 @@
  * conservée pendant une indisponibilité : c'est un affichage, jamais un droit.
  * ══════════════════════════════════════════════════════════════════════════
  */
+import { MFA_REQUIRED_CODE, MFA_REQUIRED_MESSAGE } from '@/lib/auth/mfa/constants';
 import type { UserRole, PlanType, SubscriptionStatus } from '@/types/domain';
 
 export interface User {
@@ -74,12 +75,18 @@ export interface User {
   legalReacceptance?: import('@/lib/legal/reacceptance-gate').ReacceptanceState;
 }
 
-export type SessionStatus = 'checking' | 'authenticated' | 'unauthenticated' | 'temporarily-unavailable';
+/**
+ * Carte #793 : `reauth-required` — la session EXISTE et le serveur l'a
+ * comprise, mais son niveau de preuve est insuffisant face à l'obligation de
+ * double authentification (403 `MFA_REQUIRED`). Ce n'est ni une absence de
+ * session (401), ni une indisponibilité du service (503, réseau, lenteur).
+ */
+export type SessionStatus = 'checking' | 'authenticated' | 'unauthenticated' | 'reauth-required' | 'temporarily-unavailable';
 
 /** Erreur de session typée, exposée au shell. */
 export interface SessionError {
-  kind: 'unauthenticated' | 'unavailable';
-  /** Code stable (AUTH_REQUIRED, ACCOUNT_SUSPENDED, REQUEST_TIMEOUT, SIGNED_OUT…). */
+  kind: 'unauthenticated' | 'reauth-required' | 'unavailable';
+  /** Code stable (AUTH_REQUIRED, ACCOUNT_SUSPENDED, MFA_REQUIRED, REQUEST_TIMEOUT, SIGNED_OUT…). */
   code: string;
   status: number;
   message: string;
@@ -110,11 +117,24 @@ const UNAUTHENTICATED_CODES = new Set([
 /**
  * Classe une erreur de `/api/users/me`. Fondée sur le statut HTTP et le code
  * stable, jamais sur un message libre.
+ *
+ * Carte #793 — un `403 MFA_REQUIRED` (refus VOLONTAIRE du serveur : session de
+ * niveau 1 alors que la double authentification est obligatoire) tombait dans
+ * la branche finale et devenait `kind: 'unavailable'` : la coquille affichait
+ * « Connexion au service momentanément impossible… le service n'a pas répondu
+ * à temps », avec un bouton « Réessayer » qui recevait exactement le même
+ * refus. Il a maintenant son propre genre : la reconnexion forte est proposée.
+ * (Règle remplacée — carte #793 ; `unlock-machine.unlockSessionStatus`
+ * rattrapait déjà ce cas pour le verrou natif.)
  */
 export function classifySessionError(err: unknown): SessionError {
   const e = (err ?? {}) as { status?: number; code?: string; message?: string; requestId?: string };
   const status = typeof e.status === 'number' ? e.status : 0;
   const code = typeof e.code === 'string' && e.code ? e.code : 'UNKNOWN_ERROR';
+  if (status === 403 && code === MFA_REQUIRED_CODE) {
+    // Message du serveur (lot 110B), déjà rédigé pour l'utilisateur.
+    return { kind: 'reauth-required', code, status, message: MFA_REQUIRED_MESSAGE, requestId: e.requestId };
+  }
   if (status === 401 || (status === 403 && code === 'ACCOUNT_SUSPENDED') || (status !== 0 && status < 500 && UNAUTHENTICATED_CODES.has(code))) {
     return { kind: 'unauthenticated', code, status, message: 'Votre session a expiré. Merci de vous reconnecter.', requestId: e.requestId };
   }
@@ -122,7 +142,10 @@ export function classifySessionError(err: unknown): SessionError {
     kind: 'unavailable',
     code,
     status,
-    message: 'Le service est momentanément indisponible. Vos données sont intactes : réessayez dans un instant.',
+    // Carte #793 : plus d'affirmation invérifiable (« votre session n'est pas
+    // en cause », « vos données sont intactes ») — on dit seulement ce que
+    // l'on sait : la vérification n'a pas abouti.
+    message: 'La vérification de votre session n’a pas abouti. Réessayez dans un instant.',
     requestId: e.requestId,
   };
 }
@@ -212,6 +235,12 @@ export class SessionStore {
         if (error.kind === 'unauthenticated') {
           // Session invalide : l'identité est purgée, pas seulement masquée.
           this.set({ status: 'unauthenticated', user: null, error });
+          this.deps.persist?.(null);
+        } else if (error.kind === 'reauth-required') {
+          // Carte #793 (CA08) : preuve forte exigée → l'identité est PURGÉE.
+          // Aucun bien, document ni ancienne identité ne reste affiché comme
+          // preuve d'accès pendant une double authentification non satisfaite.
+          this.set({ status: 'reauth-required', user: null, error });
           this.deps.persist?.(null);
         } else {
           // Lenteur, 5xx, réseau : la dernière identité de CE contexte reste

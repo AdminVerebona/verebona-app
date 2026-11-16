@@ -34,10 +34,65 @@
  * Aucune dépendance serveur (importable par les composants).
  * ══════════════════════════════════════════════════════════════════════════
  */
+import { periodKindOfFactKey, type BusinessPeriodKind } from './business-periods';
 import { formatTitleMonth, presentBilledPeriod } from './document-title-convention';
 
 /** Marqueur exact du contrat dans le texte du prompt maître T3 (branche DOCUMENT_NAMING). */
 export const T3_NAMING_PERIOD_CONTRACT = 't3-naming-period-v1';
+
+// ── Carte #783 : quelles NATURES de période identifient un document ─────────
+
+/**
+ * Carte #783 — natures de période qui N'IDENTIFIENT PAS un document et ne
+ * peuvent donc jamais devenir la période de son titre automatique :
+ *
+ *   · `WARRANTY` — la GARANTIE est une conséquence de l'objet acheté, portée
+ *     par la facture : « du 14 novembre 2026 au 14 novembre 2028 » ne dit pas
+ *     quel document on regarde, et deux achats du même jour auraient le même
+ *     titre. Elle reste une période STRUCTURÉE du document (lot 113W), lue,
+ *     affichée et éditable : seul le TITRE ne la reprend plus.
+ *
+ * Les autres natures sont inchangées (période facturée d'une facture
+ * d'abonnement, couverture d'une attestation annuelle, validité, prestation,
+ * effet contractuel, réalisation) : rien n'est supprimé en bloc. Une période
+ * sans nature connue (fait générique) reste traitée comme avant.
+ */
+export const TITLE_EXCLUDED_PERIOD_KINDS: readonly BusinessPeriodKind[] = ['WARRANTY'];
+
+/** La nature d'une période peut-elle identifier un document dans son titre ? Pure. */
+export const periodKindIdentifiesDocument = (kind: BusinessPeriodKind | null | undefined): boolean =>
+  !kind || !TITLE_EXCLUDED_PERIOD_KINDS.includes(kind);
+
+/** Bornes d'une période (jour ISO), telles que lues des faits ou des périodes qualifiées. */
+export interface TitleFactPeriod { s: string | null; e: string | null; key?: string | null }
+/** Période métier QUALIFIÉE d'un document (`document_business_periods`, lot 113W). */
+export interface QualifiedPeriodBounds { kind: BusinessPeriodKind; start: string | null; end: string | null }
+
+const boundsKey = (s: string | null | undefined, e: string | null | undefined) => `${s ?? ''}|${e ?? ''}`;
+
+/**
+ * Carte #783 — périodes de faits ÉLIGIBLES au titre d'un document (pure). Une période est écartée
+ * quand sa nature n'identifie pas le document, établie de DEUX façons complémentaires :
+ *   · la clé du fait T1 qui la porte (`period.warranty`, référentiel `PERIOD_FACT_KEYS`) ;
+ *   · à défaut de clé exploitable, les bornes qualifiées du document (lot 113W) : des bornes qui sont
+ *     celles d'une période exclue ET d'aucune autre nature ne peuvent pas nommer le document.
+ * Tout le reste est conservé tel quel — y compris une période sans nature connue.
+ */
+export function titleEligibleFactPeriods<T extends TitleFactPeriod>(
+  factPeriods: readonly T[], qualified: readonly QualifiedPeriodBounds[] = [],
+): T[] {
+  const exclues = new Set<string>();
+  const admises = new Set<string>();
+  for (const q of qualified) {
+    (periodKindIdentifiesDocument(q.kind) ? admises : exclues).add(boundsKey(q.start, q.end));
+  }
+  return factPeriods.filter((f) => {
+    const kind = periodKindOfFactKey(f.key);
+    if (kind) return periodKindIdentifiesDocument(kind);
+    const k = boundsKey(f.s, f.e);
+    return !exclues.has(k) || admises.has(k);
+  });
+}
 
 /** Représentations possibles de la période dans un titre. */
 export const PERIOD_REPRESENTATIONS = ['MONTH', 'DATE_RANGE', 'MULTI_MONTH', 'NONE'] as const;

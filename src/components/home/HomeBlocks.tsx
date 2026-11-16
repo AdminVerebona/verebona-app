@@ -21,7 +21,7 @@ import { getAssetIcon } from '@/lib/asset-icons';
 import { useThumbnailUrl } from '@/hooks/useThumbnailUrl';
 import { displayThumbnailKey } from '@/lib/assets/display-thumbnail';
 import { openDrawer } from '@/lib/drawers';
-import { relativeAgo, type HomeRecentDocument, type HomeToPlan, type HomeUpcomingItem, type VerebonaWorkItem } from '@/services/home/home-blocks';
+import { relativeAgo, upcomingAccessibleName, type HomeRecentDocument, type HomeToPlan, type HomeUpcomingItem, type VerebonaWorkItem } from '@/services/home/home-blocks';
 import { PLAN_ACTION_LABEL, SITUATION_LABELS } from '@/lib/agenda/situation';
 import type { HomeAsset } from '@/services/home/HomeSummaryService';
 import { DateChip, DATE_CHIP_LABEL_TONE, type DateChipTone } from '@/components/ui/date-chip';
@@ -248,6 +248,16 @@ const UPCOMING_CHIP_TONE: Record<HomeUpcomingItem['tone'], DateChipTone> = {
  * Lignes d'échéance : pastille de date (jour + mois abrégé, couleur
  * d'urgence), titre en gras, bien dessous, délai à droite. Un clic ouvre la
  * fiche de l'échéance en tiroir. Desktop : 3 lignes ; mobile : 2.
+ *
+ * Carte #752 — deux ajouts, sans toucher au gabarit de `DateChip` (partagé
+ * avec l'Agenda) :
+ *   · l'ANNÉE est écrite sous le titre, à côté de la pastille, quand elle est
+ *     nécessaire (« Cupra · 18 avr. 2028 ») — le serveur décide (`dateWithYear`) ;
+ *   · le délai peut tenir plusieurs termes (« Dans 1 an et 5 mois ») : il
+ *     n'est plus forcé sur une seule ligne et sa largeur est bornée, pour ne
+ *     pas écraser le titre ni déborder de la carte sur un petit écran.
+ * Le bouton porte la date complète avec son année dans son nom accessible
+ * (`upcomingAccessibleName`), la pastille restant décorative.
  */
 export function UpcomingEvents({ items, toPlan, className = '' }: { items: HomeUpcomingItem[]; toPlan?: HomeToPlan | null; className?: string }) {
   const aPrevoir = toPlan?.items ?? [];
@@ -267,15 +277,20 @@ export function UpcomingEvents({ items, toPlan, className = '' }: { items: HomeU
               <li key={e.id} className={i >= 2 ? 'hidden md:block' : ''}>
                 <button
                   type="button"
+                  aria-label={upcomingAccessibleName(e)}
                   onClick={() => openDrawer({ kind: 'echeance', id: e.id })}
                   className={`flex w-full items-center gap-3 rounded-xl px-2 py-1.5 text-left transition-colors duration-150 hover:bg-[color:var(--accent-soft)] md:gap-3.5 md:py-2 ${FOCUS_RING}`}
                 >
                   <DateChip day={e.day} month={e.month} tone={tone} />
                   <span className="flex min-w-0 flex-1 flex-col gap-[3px]">
                     <span className="line-clamp-2 text-[13px] font-semibold leading-[1.35] text-[color:var(--text-primary)] md:text-[14px]">{e.title}</span>
-                    {e.assetName && <span className="truncate text-[12px] text-[color:var(--text-muted)]">{e.assetName}</span>}
+                    {(e.assetName || e.dateWithYear) && (
+                      <span className="truncate text-[12px] text-[color:var(--text-muted)]">
+                        {[e.assetName, e.dateWithYear].filter(Boolean).join(' · ')}
+                      </span>
+                    )}
                   </span>
-                  <span className={`flex-shrink-0 whitespace-nowrap text-[12px] font-bold ${DATE_CHIP_LABEL_TONE[tone]}`}>{e.rel}</span>
+                  <span className={`max-w-[6.5rem] flex-shrink-0 text-right text-[12px] font-bold md:max-w-[9.5rem] ${DATE_CHIP_LABEL_TONE[tone]}`}>{e.rel}</span>
                 </button>
               </li>
             );

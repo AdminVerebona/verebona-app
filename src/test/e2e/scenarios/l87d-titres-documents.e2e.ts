@@ -29,6 +29,7 @@ import { NextRequest } from 'next/server';
 import { scenario } from '../scenario';
 import { drainQueues, sortieT1, useTargetState } from '../chain';
 import { cand, cible, fh, operationsKit, ref } from '../datasets/operations-v1';
+import { DOCUMENT_TITLE_RULE_VERSION as VERSION_REGLES } from '@/lib/documents/document-title-rules';
 import type { AccountRow } from '../factories';
 
 const session = vi.hoisted(() => ({ userId: 0, currentAccountId: 0 as number | null }));
@@ -172,7 +173,8 @@ scenario('L87D', 'Titres homogènes des factures périodiques, même titre parto
     expect(d.retained_title).toBe('Facture Homiris — Février 2026');
     expect(d.title_source).toBe('SYSTEM');
     expect(d.title_convention).toBe('PERIODIC');
-    expect(d.title_rule_version).toBe(3);
+    // Règle remplacée (carte #783) : la version des règles de titre est passée de 3 à 4.
+    expect(d.title_rule_version).toBe(VERSION_REGLES);
     expect(d.title_basis).toMatchObject({
       billedPeriod: { start: '2026-02-01', end: '2026-02-28', source: 'T1_INSTALLMENT' }, principalMonth: null,
       invoiceReferences: ['94741358'], issueDate: '2026-02-06', supplier: 'Homiris',

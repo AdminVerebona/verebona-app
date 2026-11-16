@@ -10,6 +10,7 @@
  */
 import crypto from 'crypto';
 import { pgClient } from '@/db';
+import { LOGIN_RESULT_CATEGORY, type LoginCategory, type LoginResult } from '@/lib/admin/login-activity';
 
 /** USR-D01 / REC-USR-05 : fenêtre de l'historique de connexion. */
 export const LOGIN_HISTORY_DAYS = 90;
@@ -148,10 +149,27 @@ export interface LoginEntry {
   result: LoginResult;
   /** Libellé du motif (échec, règle de la pause), sans donnée technique. */
   detail: string | null;
+  /**
+   * Carte #799 : CATÉGORIE typée de l'événement, indépendante du libellé —
+   * `security` n'est posé que sur un incident de sécurité qualifié.
+   */
+  category: LoginCategory;
+  /** Carte #799 : identifiant de tentative (code de diagnostic), ou null. */
+  attemptId: string | null;
+  /**
+   * Carte #799 : code métier du refus qui a fermé la session (`MFA_REQUIRED`,
+   * `AUTH_REQUIRED`…) quand il a été tracé ; null = non disponible.
+   */
+  refusalCode: string | null;
 }
 
-/** Lot 79C : `session_revoked` — sessions révoquées par précaution (jeton de renouvellement réutilisé). */
-type LoginResult = 'success' | 'failure' | 'throttled' | 'session_revoked';
+/**
+ * Lot 79C : `session_revoked` — sessions révoquées par précaution (jeton de
+ * renouvellement réutilisé). Carte #799 : résultats, catégories et libellés
+ * vivent dans le contrat PARTAGÉ `lib/admin/login-activity` (lu aussi par la
+ * page du BO), où est expliqué pourquoi deux événements de sens opposé ne
+ * peuvent plus porter le même libellé.
+ */
 
 const FAILURE_LABELS: Record<string, string> = {
   invalid_password: 'Mot de passe incorrect',
@@ -178,39 +196,69 @@ export function formatRotationAge(ms: number): string {
   return `${Math.floor(m / 60)} h ${String(m % 60).padStart(2, '0')}`;
 }
 
-export function describeLoginActivity(activityType: string, rawDetails: string | null | undefined): { result: LoginResult; detail: string | null } {
+/** Carte #799 : code métier tracé du refus initial (format contrôlé), ou null. */
+function refusalCodeOf(d: Record<string, unknown>): string | null {
+  const v = typeof d.refusalCode === 'string' ? d.refusalCode.toUpperCase() : '';
+  return /^[A-Z0-9_]{2,64}$/.test(v) ? v : null;
+}
+
+/** Carte #799 : identifiant de tentative tracé (code de diagnostic), ou null. */
+function attemptIdOf(d: Record<string, unknown>): string | null {
+  return typeof d.loginAttemptId === 'string' && /^[A-Z0-9]{8,16}$/.test(d.loginAttemptId) ? d.loginAttemptId : null;
+}
+
+export function describeLoginActivity(
+  activityType: string,
+  rawDetails: string | null | undefined,
+): { result: LoginResult; detail: string | null; category: LoginCategory; attemptId: string | null; refusalCode: string | null } {
   let d: Record<string, unknown> = {};
   try { d = rawDetails ? JSON.parse(rawDetails) : {}; } catch { d = {}; }
   const trusted = d.trustedDevice === true ? ' · appareil reconnu' : '';
+  const commun = { attemptId: attemptIdOf(d), refusalCode: refusalCodeOf(d) };
+  const rendre = (result: LoginResult, detail: string | null) => ({ result, detail, category: LOGIN_RESULT_CATEGORY[result], ...commun });
+
   if (activityType === 'AUTH_LOGIN_THROTTLED') {
     const minutes = typeof d.retryAfterSeconds === 'number' ? Math.max(1, Math.ceil(d.retryAfterSeconds / 60)) : null;
     const label = THROTTLE_LABELS[String(d.rule)] ?? 'Pause anti-force brute';
-    return { result: 'throttled', detail: `${label}${minutes ? ` — ${minutes} min` : ''}` };
+    return rendre('throttled', `${label}${minutes ? ` — ${minutes} min` : ''}`);
   }
   if (activityType === 'LOGIN_FAILED') {
-    return { result: 'failure', detail: `${FAILURE_LABELS[String(d.reason)] ?? 'Échec'}${trusted}${diagSuffix(d)}` };
+    return rendre('failure', `${FAILURE_LABELS[String(d.reason)] ?? 'Échec'}${trusted}${diagSuffix(d)}`);
   }
   // Lot 79C (diagnostic des déconnexions, sans SQL) : l'âge de la rotation
   // distingue une réponse perdue (quelques dizaines de secondes à minutes)
   // d'un jeton rejoué longtemps après — sans rien conclure à lui seul.
+  //
+  // Carte #799 (CA02) : « Déconnexion par précaution » n'est conservé que si
+  // la sévérité « incident de sécurité » est bien enregistrée. Une détection
+  // non qualifiée reste un incident de SESSION : on ne qualifie pas un
+  // incident de sécurité à la place de la source.
   if (activityType === 'AUTH_TOKEN_REUSE_DETECTED') {
     const age = typeof d.rotationAgeMs === 'number' ? formatRotationAge(d.rotationAgeMs) : null;
-    return {
-      result: 'session_revoked',
-      detail: `Sessions révoquées par précaution : ancien jeton présenté${age ? ` ${age} après son renouvellement` : ''}${d.sessionsRevoked === false ? ' (révocation non confirmée)' : ''}`,
-    };
+    const detail = `ancien jeton présenté${age ? ` ${age} après son renouvellement` : ''}${d.sessionsRevoked === false ? ' (révocation non confirmée)' : ''}`;
+    return d.severity === 'security_incident'
+      ? rendre('session_revoked', `Sessions révoquées par précaution : ${detail}`)
+      : rendre('app_signed_out', `Jeton de renouvellement représenté (sévérité non qualifiée) : ${detail}`);
   }
   // Lot 103A : sortie lancée par l'application après un refus d'authentification
-  // (renouvellement impossible). Juste après un succès, elle signe un rejet
-  // post-connexion (session non conservée par l'appareil) — à rapprocher du
-  // code de diagnostic affiché sur le téléphone.
+  // (renouvellement impossible). Carte #799 (CA01) : ce n'est PAS « Déconnexion
+  // par précaution » — c'est une sortie décidée par l'application, et le code
+  // du refus initial est affiché quand il a été tracé.
   if (activityType === 'AUTH_LOGOUT') {
-    return { result: 'session_revoked', detail: `Session fermée par l’application après un refus d’authentification${diagSuffix(d)}` };
+    if (d.trigger === 'auth-failure') {
+      const refus = refusalCodeOf(d);
+      return rendre(
+        'app_signed_out',
+        `Session fermée par l’application après un refus d’authentification · refus initial : ${refus ?? 'non disponible'}${diagSuffix(d)}`,
+      );
+    }
+    // Sortie volontaire (ou origine non déclarée) : jamais un incident.
+    return rendre('signed_out', `Déconnexion demandée depuis l’application${diagSuffix(d)}`);
   }
   const base = d.trustedDevice === false ? 'Premier succès sur cet appareil' : null;
   const suffix = diagSuffix(d);
-  if (activityType === 'LOGIN_SUCCESS' && suffix) return { result: 'success', detail: `${base ?? 'Connexion acceptée'}${suffix}` };
-  return { result: 'success', detail: base };
+  if (activityType === 'LOGIN_SUCCESS' && suffix) return rendre('success', `${base ?? 'Connexion acceptée'}${suffix}`);
+  return rendre('success', base);
 }
 
 const CLIENT_LABELS: Record<string, string> = { IOS: 'app iPhone', ANDROID: 'app Android', WEB: 'Web', PWA: 'app Web installée' };

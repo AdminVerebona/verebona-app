@@ -18,14 +18,19 @@
 import { createContext, useContext, useEffect, useLayoutEffect, useRef } from 'react';
 import { usePathname } from 'next/navigation';
 import { apiClient } from '@/lib/api-client';
+import { isAuthPage } from '@/lib/auth/auth-pages';
 import { beginSessionTransition, onSessionTransition } from '@/lib/session/session-lifecycle';
 import { SessionStore, type User } from '@/lib/session/session-store';
 
-/** Pages où aucune session n'est attendue (même liste que les droits). */
-const PAGES_SANS_SESSION = ['/login', '/signup', '/forgot-password', '/reset-password', '/verify-email'];
-
+/**
+ * Pages où aucune session n'est attendue (même liste que les droits et que la
+ * garde anti-boucle du client HTTP depuis la carte #798 : `lib/auth/auth-pages`
+ * — la seconde étape de la double authentification, l'enrôlement et le retour
+ * Google / Apple y manquaient, d'où une transition de session « login » et une
+ * relecture d'identité AVANT qu'aucune session n'existe).
+ */
 export function isPageSansSession(pathname: string | null | undefined): boolean {
-  return Boolean(pathname && PAGES_SANS_SESSION.some((p) => pathname.startsWith(p)));
+  return isAuthPage(pathname);
 }
 
 function persistDisplayCopy(user: User | null): void {

@@ -12,6 +12,9 @@
 import { expect, it, vi } from 'vitest';
 import { scenario } from '../scenario';
 import { drainQueues, sortieT1, useTargetState, type FaitT1 } from '../chain';
+// Règle remplacée (carte #783) : la version des règles de titre a changé (3 → 4) ; les assertions
+// suivent désormais la version COURANTE, la reprise du stock se faisant par ce changement.
+import { DOCUMENT_TITLE_RULE_VERSION as VERSION_REGLES } from '@/lib/documents/document-title-rules';
 
 vi.mock('@/services/verebona-assistant/events/business-events', async (o) => ({
   ...(await o<object>()), emitBusinessEvent: async () => {}, emitBusinessEvents: async () => {},
@@ -69,8 +72,8 @@ scenario('L34E-TITRE', 'Moteur de titre v2 : meilleur titre métier, repasse T3 
     const maison = await make.asset(compte, { category: 'IMMOBILIER', name: 'Maison' });
     const doc = await make.assetFile(compte, { assetId: maison.id });
     await analyser(compte, doc.id, facture({ title: 'Facture fibre internet', supplier: 'Orange', date: '2026-09-05', subject: 'fibre', assets: [{ id: maison.id, label: 'Maison' }] }));
-    expect(await fichier(doc.id)).toMatchObject({ retained_title: ATTENDU, title_source: 'SYSTEM', title_rule_version: 3 });
-    expect((await evenements(doc.id)).at(-1)).toMatchObject({ origin: 'T1', outcome: 'UPDATED', new_title: ATTENDU, rule_version: 3 });
+    expect(await fichier(doc.id)).toMatchObject({ retained_title: ATTENDU, title_source: 'SYSTEM', title_rule_version: VERSION_REGLES });
+    expect((await evenements(doc.id)).at(-1)).toMatchObject({ origin: 'T1', outcome: 'UPDATED', new_title: ATTENDU, rule_version: VERSION_REGLES });
   });
 
   it('TITLE2-AC2 / TITLE2-AC8 — stock : titre valide mais médiocre « Facture fibre internet » → rattrapage T3 sans T1 ; titre suffisant et titre utilisateur intacts', async () => {
@@ -90,12 +93,12 @@ scenario('L34E-TITRE', 'Moteur de titre v2 : meilleur titre métier, repasse T3 
     const c = await balayer(compte);
     expect(appelsT1(replay)).toBe(0);
     expect(c.UPDATED).toBe(1);
-    expect(await fichier(mediocre.id)).toMatchObject({ retained_title: ATTENDU, title_rule_version: 3 });
+    expect(await fichier(mediocre.id)).toMatchObject({ retained_title: ATTENDU, title_rule_version: VERSION_REGLES });
     expect((await evenements(mediocre.id)).at(-1)).toMatchObject({
-      origin: 'T3', outcome: 'UPDATED', reason: 'SUPPLIER_ADDED', trigger_reason: 'RULE_VERSION_UPGRADE', old_title: 'Facture fibre internet', new_title: ATTENDU, rule_version: 3,
+      origin: 'T3', outcome: 'UPDATED', reason: 'SUPPLIER_ADDED', trigger_reason: 'RULE_VERSION_UPGRADE', old_title: 'Facture fibre internet', new_title: ATTENDU, rule_version: VERSION_REGLES,
     });
     // AC8 : le titre déjà suffisant est CONTRÔLÉ (version posée) sans être renommé ; le titre USER n'est jamais touché.
-    expect(await fichier(bon.id)).toMatchObject({ retained_title: ATTENDU, title_rule_version: 3 });
+    expect(await fichier(bon.id)).toMatchObject({ retained_title: ATTENDU, title_rule_version: VERSION_REGLES });
     expect(await fichier(user.id)).toMatchObject({ retained_title: 'Ma facture', title_source: 'USER', title_rule_version: null });
   });
 
@@ -176,7 +179,7 @@ scenario('L34E-TITRE', 'Moteur de titre v2 : meilleur titre métier, repasse T3 
     await stock(doc.id, ATTENDU); // titre déjà bon, règles antérieures
     await balayer(compte);
     const f1 = await fichier(doc.id);
-    expect(f1).toMatchObject({ retained_title: ATTENDU, title_rule_version: 3 });
+    expect(f1).toMatchObject({ retained_title: ATTENDU, title_rule_version: VERSION_REGLES });
     const ev1 = (await evenements(doc.id)).length;
     const c2 = await balayer(compte);
     expect(c2).toEqual({ UPDATED: 0, NO_CHANGE: 0, SKIP_USER_TITLE: 0, INSUFFICIENT_DATA: 0, FAILED: 0 });
@@ -205,6 +208,6 @@ scenario('L34E-TITRE', 'Moteur de titre v2 : meilleur titre métier, repasse T3 
     const titres = await Promise.all(docs.map(async (d) => (await fichier(d.id)).retained_title));
     // Discriminant métier (période), jamais « (2) ».
     expect(titres).toEqual(['Facture fibre Orange — 4 juillet 2026', 'Facture fibre Orange — 4 août 2026', 'Facture fibre Orange — 4 septembre 2026']);
-    for (const d of docs) expect((await fichier(d.id)).title_rule_version).toBe(3);
+    for (const d of docs) expect((await fichier(d.id)).title_rule_version).toBe(VERSION_REGLES);
   });
 });

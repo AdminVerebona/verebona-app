@@ -97,8 +97,10 @@ describe('Ce que j’ai fait', () => {
 
 describe('Prochaines échéances', () => {
   it('lignes : pastille de date, titre, bien, délai ; lien « Mon agenda » ; 3 au plus', () => {
+    // Carte #752 : même année que la référence ici — aucune mention d'année en plus de la pastille.
     const e = (id: number, title: string, tone: 'red' | 'amber' | 'green', rel: string) =>
-      ({ id, title, assetName: 'Ferrari Testarossa', date: '2026-10-12', day: '12', month: 'oct.', rel, tone, forecast: false });
+      ({ id, title, assetName: 'Ferrari Testarossa', date: '2026-10-12', day: '12', month: 'oct.',
+        dateWithYear: null, dateFull: '12 octobre 2026', rel, tone, forecast: false });
     const html = renderToStaticMarkup(h(UpcomingEvents, { items: [e(1, 'Révision annuelle', 'red', 'En retard (2 j)'), e(2, 'Contrôle technique', 'amber', 'Dans 2 semaines'), e(3, 'Bail', 'green', 'Dans 3 mois'), e(4, 'Quatrième', 'green', 'Dans 1 an')] }));
     expect(html).toContain('Prochaines échéances');
     expect(html).toContain('href="/agenda"');

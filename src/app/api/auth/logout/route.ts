@@ -5,7 +5,7 @@ import { logUserActivity } from '@/lib/audit-logger';
 import { endSession } from '@/lib/auth/session-registry';
 import { invalidateReauthProofs } from '@/lib/auth/reauth';
 import { withAuthDiag } from '@/lib/auth/auth-diagnostics';
-import { readLoginAttemptId, readLogoutReason } from '@/lib/auth/login-diagnostics';
+import { readLoginAttemptId, readLogoutCode, readLogoutReason } from '@/lib/auth/login-diagnostics';
 import { clearPendingCookie } from '@/lib/auth/mfa/pending';
 
 /**
@@ -65,9 +65,18 @@ async function logout(request: NextRequest): Promise<NextResponse> {
   // juste après une connexion acceptée signe un rejet post-connexion.
   const trigger = readLogoutReason(request.headers);
   const loginAttemptId = readLoginAttemptId(request.headers);
+  // Carte #799 : CODE du refus qui a déclenché la sortie (`AUTH_REQUIRED`,
+  // `MFA_REQUIRED`, `SESSION_REVOKED`…), déclaré par le client et validé au
+  // format. C'est l'information que le BO n'avait pas : il affichait « après
+  // un refus d'authentification » sans jamais dire lequel. Aucun jeton,
+  // cookie, mot de passe ni adresse IP n'est ajouté. Absent (sortie
+  // volontaire, client antérieur) : rien n'est écrit, et le BO affiche
+  // « refus initial : non disponible ».
+  const refusalCode = readLogoutCode(request.headers);
   const details: Record<string, string> = {
     ...(loggedOut ? { sid: loggedOut.sid } : {}),
     ...(trigger ? { trigger } : {}),
+    ...(refusalCode ? { refusalCode } : {}),
     ...(loginAttemptId ? { loginAttemptId } : {}),
   };
   void logUserActivity({

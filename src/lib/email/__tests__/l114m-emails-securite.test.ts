@@ -640,7 +640,9 @@ describe('L114M-08 — canal e-mail : gabarit dédié, sinon repli, jamais deux 
     const payload = { event: 'totp_enabled', at: AT };
     const o = await deliverEmail({ ...ctx, payload }, MFA, renderContent(MFA, payload));
     s.mockRestore();
-    expect(o).toEqual({ status: 'skipped_unavailable', errorCode: 'template_not_seeded' });
+    // Règle complétée (carte #800) : l'issue porte en plus l'étape et la catégorie du diagnostic ; le statut et le
+    // code d'erreur, eux, sont inchangés — c'est ce que cette règle vérifie.
+    expect(o).toMatchObject({ status: 'skipped_unavailable', errorCode: 'template_not_seeded' });
     expect(sent).toEqual([]);
   });
 

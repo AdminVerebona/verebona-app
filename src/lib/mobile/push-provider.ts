@@ -26,7 +26,7 @@
  * authentification du compte de service / APNs → `config`.
  * ══════════════════════════════════════════════════════════════════════════
  */
-import { createSign } from 'node:crypto';
+import { createHash, createSign } from 'node:crypto';
 
 export interface MobilePushMessage {
   token: string;
@@ -40,9 +40,23 @@ export interface MobilePushMessage {
   priority: 'normal' | 'high';
 }
 
+/**
+ * Lot 115B (#800) — étape de la chaîne d'envoi où la tentative s'est arrêtée.
+ * `mobile_push_config` ne disait pas si c'était l'obtention du jeton d'accès
+ * du compte de service ou la réponse de FCM : désormais c'est écrit.
+ * Facultatif : un fournisseur de test peut ne pas le renseigner.
+ */
+export type MobilePushFailureStep = 'oauth_fournisseur' | 'appel_fournisseur' | 'reponse_fournisseur';
+
 export type MobilePushSendResult =
   | { ok: true; messageId: string | null }
-  | { ok: false; kind: 'invalid_token' | 'transient' | 'config' | 'rejected'; code: string; statusCode?: number };
+  | {
+      ok: false;
+      kind: 'invalid_token' | 'transient' | 'config' | 'rejected';
+      code: string;
+      statusCode?: number;
+      step?: MobilePushFailureStep;
+    };
 
 export interface MobilePushProvider {
   readonly name: string;
@@ -77,6 +91,69 @@ export function fcmConfigStatus(env: Env = process.env): { configured: boolean; 
   return { configured: true, projectId, issue: null };
 }
 
+/**
+ * Lot 115B (#800) — état de configuration EFFECTIVE du push mobile, pour le
+ * diagnostic du BO.
+ *
+ * `configured` n'est pas une preuve de livraison : il dit seulement que la
+ * structure est lisible. Ce diagnostic ajoute ce qui manquait pour trancher
+ * devant 72 échecs `mobile_push_config` : la variable est-elle posée ? est-elle
+ * lisible ? le projet déclaré concorde-t-il avec celui du compte de service ?
+ *
+ * AUCUNE VALEUR SECRÈTE N'EN SORT : pas de JSON, pas de clé privée, pas
+ * d'adresse de compte de service, pas même l'identifiant de projet en clair —
+ * seulement une EMPREINTE tronquée, suffisante pour comparer deux
+ * environnements entre eux sans rien révéler.
+ */
+export interface FcmConfigDiagnostic {
+  /** `FIREBASE_SERVICE_ACCOUNT_JSON` posée (quelle que soit sa valeur). */
+  compteDeServicePresent: boolean;
+  /** Décodable (JSON ou base64) et porteuse de `client_email` + `private_key`. */
+  compteDeServiceLisible: boolean;
+  /** `FIREBASE_PROJECT_ID` posée. */
+  variableProjetPresente: boolean;
+  /**
+   * `FIREBASE_PROJECT_ID` et le projet du compte de service désignent le même
+   * projet. `null` : non vérifiable (une des deux sources manque).
+   */
+  projetConcordant: boolean | null;
+  /** Empreinte non secrète du projet effectif (comparaison préprod / prod). */
+  empreinteProjet: string | null;
+  /** Fournisseur réellement instanciable. */
+  configure: boolean;
+  /** Anomalie de réglage constatée, sans valeur (texte de `fcmConfigStatus`). */
+  anomalie: string | null;
+  /**
+   * Toujours `false` : un diagnostic n'appelle NI l'API FCM ni OAuth (#800
+   * §6). Les droits réels ne sont donc PAS vérifiés ici — le dire plutôt que
+   * de laisser croire le contraire.
+   */
+  permissionsVerifiees: false;
+}
+
+/** Empreinte non réversible et tronquée d'une valeur de configuration. */
+function empreinte(valeur: string): string {
+  return createHash('sha256').update(valeur).digest('hex').slice(0, 12);
+}
+
+export function fcmConfigDiagnostic(env: Env = process.env): FcmConfigDiagnostic {
+  const brut = env.FIREBASE_SERVICE_ACCOUNT_JSON?.trim();
+  const sa = brut ? readServiceAccount(env) : null;
+  const variableProjet = env.FIREBASE_PROJECT_ID?.trim() || null;
+  const projetCompte = sa?.project_id?.trim() || null;
+  const st = fcmConfigStatus(env);
+  return {
+    compteDeServicePresent: !!brut,
+    compteDeServiceLisible: !!sa,
+    variableProjetPresente: !!variableProjet,
+    projetConcordant: variableProjet && projetCompte ? variableProjet === projetCompte : null,
+    empreinteProjet: st.projectId ? empreinte(st.projectId) : null,
+    configure: st.configured,
+    anomalie: st.issue,
+    permissionsVerifiees: false,
+  };
+}
+
 const FCM_SCOPE = 'https://www.googleapis.com/auth/firebase.messaging';
 const DEFAULT_TOKEN_URI = 'https://oauth2.googleapis.com/token';
 const HTTP_TIMEOUT_MS = 10_000;
@@ -101,7 +178,9 @@ class FcmProvider implements MobilePushProvider {
       body: new URLSearchParams({ grant_type: 'urn:ietf:params:oauth:grant-type:jwt-bearer', assertion: `${unsigned}.${signature}` }),
       signal: AbortSignal.timeout(HTTP_TIMEOUT_MS),
     });
-    if (!res.ok) throw Object.assign(new Error(`oauth_${res.status}`), { config: true });
+    // Lot 115B : le statut HTTP de l'échange OAuth est conservé — un 401 du
+    // compte de service et un 403 de permission ne se corrigent pas pareil.
+    if (!res.ok) throw Object.assign(new Error(`oauth_${res.status}`), { config: true, statusCode: res.status });
     const json = await res.json() as { access_token: string; expires_in?: number };
     this.access = { token: json.access_token, expiresAt: Date.now() + (json.expires_in ?? 3600) * 1000 };
     return json.access_token;
@@ -112,7 +191,15 @@ class FcmProvider implements MobilePushProvider {
     try {
       token = await this.accessToken();
     } catch (e) {
-      return { ok: false, kind: (e as { config?: boolean }).config ? 'config' : 'transient', code: (e as Error).message.slice(0, 60) || 'oauth_error' };
+      const statut = (e as { statusCode?: number }).statusCode;
+      return {
+        ok: false,
+        kind: (e as { config?: boolean }).config ? 'config' : 'transient',
+        code: (e as Error).message.slice(0, 60) || 'oauth_error',
+        // Lot 115B : l'étape est « obtention du jeton d'accès », pas l'appel FCM.
+        step: 'oauth_fournisseur',
+        ...(typeof statut === 'number' ? { statusCode: statut } : {}),
+      };
     }
     const collapse = m.collapseKey.slice(0, 64);
     const body = {
@@ -136,7 +223,9 @@ class FcmProvider implements MobilePushProvider {
         signal: AbortSignal.timeout(HTTP_TIMEOUT_MS),
       });
     } catch (e) {
-      return { ok: false, kind: 'transient', code: (e as Error).name === 'TimeoutError' ? 'timeout' : 'network_error' };
+      // Lot 115B : aucune réponse HTTP — l'étape est l'appel lui-même, et il
+      // n'y a PAS de statut à afficher (ne rien inventer).
+      return { ok: false, kind: 'transient', code: (e as Error).name === 'TimeoutError' ? 'timeout' : 'network_error', step: 'appel_fournisseur' };
     }
     if (res.ok) {
       const json = await res.json().catch(() => ({})) as { name?: string };
@@ -155,19 +244,22 @@ export function classifyFcmError(
 ): Extract<MobilePushSendResult, { ok: false }> {
   const fcmCode = error?.details?.find((d) => d?.errorCode)?.errorCode ?? error?.status ?? `http_${statusCode}`;
   const code = String(fcmCode).slice(0, 60);
+  // Lot 115B : FCM a répondu — l'étape est donc « réponse du fournisseur », et
+  // le statut HTTP comme le code EXACT reçu sont rendus tels quels.
+  const step = 'reponse_fournisseur' as const;
   if (fcmCode === 'UNREGISTERED' || fcmCode === 'SENDER_ID_MISMATCH' || statusCode === 404) {
-    return { ok: false, kind: 'invalid_token', code, statusCode };
+    return { ok: false, kind: 'invalid_token', code, statusCode, step };
   }
   if (fcmCode === 'INVALID_ARGUMENT' && /registration token/i.test(error?.message ?? '')) {
-    return { ok: false, kind: 'invalid_token', code, statusCode };
+    return { ok: false, kind: 'invalid_token', code, statusCode, step };
   }
   if (fcmCode === 'THIRD_PARTY_AUTH_ERROR' || statusCode === 401 || statusCode === 403) {
-    return { ok: false, kind: 'config', code, statusCode };
+    return { ok: false, kind: 'config', code, statusCode, step };
   }
   if (statusCode === 429 || statusCode >= 500 || fcmCode === 'QUOTA_EXCEEDED' || fcmCode === 'UNAVAILABLE' || fcmCode === 'INTERNAL') {
-    return { ok: false, kind: 'transient', code, statusCode };
+    return { ok: false, kind: 'transient', code, statusCode, step };
   }
-  return { ok: false, kind: 'rejected', code, statusCode };
+  return { ok: false, kind: 'rejected', code, statusCode, step };
 }
 
 let override: MobilePushProvider | null | undefined;

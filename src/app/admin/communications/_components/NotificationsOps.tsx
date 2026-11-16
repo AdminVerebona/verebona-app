@@ -21,6 +21,7 @@ import {
 } from '@/components/ui/alert-dialog';
 import { apiClient } from '@/lib/api-client';
 import { formatDateTime } from '@/lib/admin/format';
+import { NotificationsDiagnostic } from '@/components/admin/notifications/NotificationsDiagnostic';
 
 interface Health {
   fenetreHeures: number;
@@ -223,6 +224,15 @@ export function NotificationsOps() {
           </div>
         ))}
       </div>
+
+      {/*
+        Lot 115B (#800) : diagnostic exhaustif, copiable et téléchargeable.
+        Il remplace la lecture à l'aveugle ci-dessus (statut + dernière erreur)
+        pour toute investigation : étape fautive, statut HTTP, code exact du
+        fournisseur, appareil visé, complétude. Il n'envoie et ne réémet rien —
+        la réémission reste le bouton ci-dessus, explicite et confirmé.
+      */}
+      <NotificationsDiagnostic />
 
       {/* §20.3 condition 4 : confirmation explicite, aperçu préalable. */}
       <AlertDialog open={!!cible} onOpenChange={(o) => { if (!o && !busy) setCible(null); }}>

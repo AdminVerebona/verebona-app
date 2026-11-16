@@ -24,6 +24,7 @@
  * altéré mène à l'accueil, pas à une page d'erreur.
  * ══════════════════════════════════════════════════════════════════════════
  */
+import { isAuthPage } from '@/lib/auth/auth-pages';
 
 /** Destination par défaut après authentification. */
 export const DEFAULT_AFTER_AUTH_PATH = '/accueil';
@@ -61,9 +62,8 @@ export function safeReturnUrl(
   fallback: string = DEFAULT_AFTER_AUTH_PATH,
 ): string {
   const path = safeInternalPath(raw, fallback);
-  // Lot 110B : pages de la seconde étape (vérification, enrôlement, récupération).
-  const AUTH_PAGES = ['/login', '/signup', '/forgot-password', '/reset-password', '/verify-email', '/verification', '/securiser-mon-compte', '/recuperation'];
-  return AUTH_PAGES.some((p) => path === p || path.startsWith(`${p}?`) || path.startsWith(`${p}/`))
-    ? fallback
-    : path;
+  // Lot 110B : pages de la seconde étape (vérification, enrôlement,
+  // récupération). Carte #798 : liste FERMÉE et unique (`lib/auth/auth-pages`)
+  // — celle d'ici oubliait le retour Google / Apple (`/connexion-sociale`).
+  return isAuthPage(path) ? fallback : path;
 }

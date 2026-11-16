@@ -19,7 +19,7 @@
  * demandé la suppression de son compte (PENDING_DELETION) ne peut être ni
  * désactivé ni réactivé : seul lui peut annuler sa demande (GDP-008).
  */
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import { useParams, useRouter } from 'next/navigation';
 import Link from 'next/link';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
@@ -50,7 +50,12 @@ import {
 } from 'lucide-react';
 import { EcranEnErreur } from '@/components/admin/EcranEnErreur';
 import { Textarea } from '@/components/ui/textarea';
+import { Input } from '@/components/ui/input';
+import { Label } from '@/components/ui/label';
 import { formatDate, formatDateTime } from '@/lib/admin/format';
+import {
+  LOGIN_RESULT_LABEL, filterLoginEntries, loginRowTone, type LoginActivityRow,
+} from '@/lib/admin/login-activity';
 import { UserSessionsCard } from './_components/UserSessionsCard';
 
 interface UserDetails {
@@ -126,16 +131,17 @@ interface Communication {
   status: 'sent' | 'failed' | 'pending' | 'skipped';
 }
 
-interface LoginEntry { at: string; device: string | null; ip: string | null; result?: 'success' | 'failure' | 'throttled' | 'session_revoked'; detail?: string | null }
-
-/** Lot 53A (D1) : résultat de la tentative — échecs et pauses anti-force brute visibles. */
-const LOGIN_RESULT_LABEL: Record<'success' | 'failure' | 'throttled' | 'session_revoked', string> = {
-  success: 'Réussie',
-  failure: 'Échec',
-  throttled: 'Pause',
-  // Lot 79C : diagnostic des déconnexions (jeton de renouvellement réutilisé).
-  session_revoked: 'Déconnexion par précaution',
-};
+/**
+ * Lot 53A (D1) : résultat de la tentative — échecs et pauses anti-force brute
+ * visibles. Carte #799 : résultats, catégories, libellés, ton et recherche
+ * viennent du contrat PARTAGÉ `lib/admin/login-activity` (module pur, lu
+ * aussi par le service qui construit ces lignes).
+ */
+interface LoginEntry extends LoginActivityRow {
+  at: string;
+  device: string | null;
+  ip: string | null;
+}
 
 interface UserData {
   user: UserDetails;
@@ -253,6 +259,12 @@ export default function UserDetailPage() {
   // Lot 72D (décision PO Q4) : réattribution manuelle d'un essai consommé.
   const [trialDialogOpen, setTrialDialogOpen] = useState(false);
   const [trialReason, setTrialReason] = useState('');
+  // Carte #799 (CA04) : retrouver une tentative depuis son code de diagnostic.
+  const [rechercheTentative, setRechercheTentative] = useState('');
+  const tentativesFiltrees = useMemo(
+    () => filterLoginEntries(data?.loginHistory.entries ?? [], rechercheTentative),
+    [data, rechercheTentative],
+  );
 
   const loadUserData = useCallback(async () => {
     try {
@@ -639,28 +651,66 @@ export default function UserDetailPage() {
           {loginHistory.entries.length === 0 ? (
             <p className="text-sm text-muted-foreground">Aucune connexion ni tentative sur les {loginHistory.days} derniers jours.</p>
           ) : (
-            <div className="overflow-x-auto max-h-96 overflow-y-auto">
-              <table className="w-full text-sm">
-                <thead className="text-left text-muted-foreground border-b">
-                  <tr><th className="py-2 pr-3">Date</th><th className="py-2 pr-3">Résultat</th><th className="py-2 pr-3">Appareil / navigateur</th><th className="py-2">IP (tronquée)</th></tr>
-                </thead>
-                <tbody>
-                  {loginHistory.entries.map((l, i) => (
-                    <tr key={i} className="border-b last:border-0">
-                      <td className="py-2 pr-3 whitespace-nowrap">{formatDateTime(l.at)}</td>
-                      <td className="py-2 pr-3">
-                        <span className={l.result === 'success' || !l.result ? '' : 'text-destructive'}>
-                          {LOGIN_RESULT_LABEL[l.result ?? 'success']}
-                        </span>
-                        {l.detail ? <span className="block text-xs text-muted-foreground">{l.detail}</span> : null}
-                      </td>
-                      <td className="py-2 pr-3">{l.device ?? '—'}</td>
-                      <td className="py-2 font-mono text-xs">{l.ip ?? '—'}</td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
+            <>
+              {/* Carte #799 (CA04) : retrouver une tentative depuis son code de
+                  diagnostic, sans accès SQL ni journaux Scalingo. */}
+              <div className="mb-3 max-w-xs">
+                <Label htmlFor="recherche-tentative" className="text-xs text-muted-foreground">
+                  Rechercher une tentative (code de diagnostic)
+                </Label>
+                <Input
+                  id="recherche-tentative"
+                  value={rechercheTentative}
+                  onChange={(e) => setRechercheTentative(e.target.value)}
+                  placeholder="Ex. B77RTX8W3E"
+                  className="mt-1 font-mono"
+                  data-testid="recherche-tentative"
+                />
+              </div>
+              <div className="overflow-x-auto max-h-96 overflow-y-auto">
+                <table className="w-full text-sm">
+                  <thead className="text-left text-muted-foreground border-b">
+                    <tr><th className="py-2 pr-3">Date</th><th className="py-2 pr-3">Résultat</th><th className="py-2 pr-3">Appareil / navigateur</th><th className="py-2 pr-3">IP (tronquée)</th><th className="py-2">Diagnostic</th></tr>
+                  </thead>
+                  <tbody>
+                    {tentativesFiltrees.map((l, i) => (
+                      <tr key={i} className="border-b last:border-0">
+                        <td className="py-2 pr-3 whitespace-nowrap">{formatDateTime(l.at)}</td>
+                        <td className="py-2 pr-3">
+                          <span className={loginRowTone(l)}>
+                            {LOGIN_RESULT_LABEL[l.result ?? 'success']}
+                          </span>
+                          {l.detail ? <span className="block text-xs text-muted-foreground">{l.detail}</span> : null}
+                        </td>
+                        <td className="py-2 pr-3">{l.device ?? '—'}</td>
+                        <td className="py-2 pr-3 font-mono text-xs">{l.ip ?? '—'}</td>
+                        {/* Carte #799 (CA05) : ce qui est affiché est ce qui est
+                            enregistré ; une trace absente est dite absente. */}
+                        <td className="py-2 text-xs">
+                          <span className="font-mono">{l.attemptId ?? '—'}</span>
+                          {l.result === 'app_signed_out' ? (
+                            <span className="block text-muted-foreground">
+                              refus initial : <span className="font-mono">{l.refusalCode ?? 'non disponible'}</span>
+                            </span>
+                          ) : null}
+                        </td>
+                      </tr>
+                    ))}
+                    {tentativesFiltrees.length === 0 ? (
+                      <tr><td colSpan={5} className="py-3 text-muted-foreground">Aucune tentative ne porte ce code de diagnostic.</td></tr>
+                    ) : null}
+                  </tbody>
+                </table>
+              </div>
+              {/* Carte #799 (§2.4) : dire ce qui n'est PAS tracé, plutôt que de
+                  laisser croire que la séquence complète est visible ici. */}
+              <p className="mt-3 text-xs text-muted-foreground">
+                Les étapes « appel refusé » et « renouvellement » d’une tentative ne sont pas conservées en base :
+                elles restent seulement dans les journaux techniques (rechercher le code de diagnostic). Le tableau
+                montre les événements enregistrés : connexion, échec, pause, sortie décidée par l’application avec le
+                code de son refus initial, et révocation de sécurité.
+              </p>
+            </>
           )}
         </CardContent>
       </Card>

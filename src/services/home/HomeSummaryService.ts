@@ -27,6 +27,9 @@ import {
 import { isAgendaActionItemT4 } from '@/services/home/mascot/collector';
 import { upcomingDeadlinesSqlFilter } from '@/services/agenda/AgendaQueryService';
 import { isUpcomingBySituation } from '@/lib/agenda/situation';
+// Carte #752 : jour civil de l'utilisateur (fuseau de présentation) et arithmétique de jours partagée.
+import { todayIn } from '@/lib/filters/date-filter';
+import { addDaysToDateStr } from '@/lib/notifications/time-paris';
 import { getRubric } from '@/lib/referential/v2';
 import { aiFieldUpdatesTargetReady } from '@/services/canonical/entity-state/entity-schema';
 import { OUT_OF_PORTFOLIO_ASSET_STATUSES } from '@/lib/asset-status';
@@ -106,14 +109,22 @@ export interface HomeSummaryPayload {
 
 // ── Helpers ─────────────────────────────────────────────────────────────────
 
+/**
+ * Jour de référence de l'accueil : le jour civil de l'utilisateur, dans le
+ * fuseau de présentation du produit (`DATE_FILTER_TIME_ZONE` = Europe/Paris).
+ *
+ * RÈGLE REMPLACÉE (carte #752) : c'était `new Date().toISOString()`, donc le
+ * jour UTC. Entre minuit et 1 h (heure d'hiver) ou 2 h (heure d'été) à Paris,
+ * le serveur était encore « la veille » : une échéance du jour se lisait
+ * « Demain », et le lendemain d'une échéance d'hier la faisait réapparaître.
+ * `Intl` gère les changements d'heure, aucune heure UTC n'est supposée.
+ */
 function todayStr(): string {
-  return new Date().toISOString().slice(0, 10);
+  return todayIn();
 }
 
 function dateIn(days: number): string {
-  const d = new Date();
-  d.setDate(d.getDate() + days);
-  return d.toISOString().slice(0, 10);
+  return addDaysToDateStr(todayStr(), days);
 }
 
 /** « Fin de garantie » → « fin de garantie » (un sigle en tête garde sa casse). */
@@ -122,9 +133,7 @@ function minusculeLibelle(t: string): string {
 }
 
 function dateMinus(days: number): string {
-  const d = new Date();
-  d.setDate(d.getDate() - days);
-  return d.toISOString().slice(0, 10);
+  return addDaysToDateStr(todayStr(), -days);
 }
 
 // ── Aperçus des « Documents récents » (lot 26, point 16) ────────────────────

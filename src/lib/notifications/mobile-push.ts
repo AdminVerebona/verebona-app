@@ -39,12 +39,12 @@ import { pgClient } from '@/db';
 import { getAppBaseUrl } from '@/lib/app-url';
 import { withSpaceParam } from '@/lib/shell/space-link';
 import { isMobileFeatureEnabled } from '@/lib/mobile/mobile-config';
-import { getMobilePushProvider } from '@/lib/mobile/push-provider';
+import { getMobilePushProvider, type MobilePushSendResult } from '@/lib/mobile/push-provider';
 import {
   activeInstallationsForUser, markInstallationFailure, markInstallationInvalid, markInstallationSent,
 } from '@/lib/mobile/push-installations';
 import type { CatalogEntry, NotificationCategory } from './catalog';
-import type { DeliveryContext, DeliveryOutcome } from './channels';
+import type { DeliveryContext, DeliveryFailureStep, DeliveryOutcome } from './channels';
 import type { RenderResult } from './content-renderer';
 
 export type MobilePushRule = 'yes' | 'optional' | 'no';
@@ -149,14 +149,20 @@ export async function deliverMobilePush(
   }
   if (installations.length === 0) return [];
 
-  const skipAll = (code: string): MobilePushDelivery[] =>
-    installations.map((i) => ({ installationRowId: i.id, outcome: { status: 'skipped_unavailable', errorCode: code } }));
+  // Lot 115B (#800) : chaque décision porte son ÉTAPE — « pas au catalogue »,
+  // « non configuré » et « déjà servi » ne se corrigent pas de la même façon,
+  // et le BO doit pouvoir les distinguer sans lire ce fichier.
+  const skipAll = (code: string, step: DeliveryFailureStep): MobilePushDelivery[] =>
+    installations.map((i) => ({
+      installationRowId: i.id,
+      outcome: { status: 'skipped_unavailable', errorCode: code, failureStep: step, failureCategory: 'ignore' },
+    }));
 
-  if (mobilePushPolicy(entry) === 'no') return skipAll(MOBILE_PUSH_CODES.notInCatalog);
+  if (mobilePushPolicy(entry) === 'no') return skipAll(MOBILE_PUSH_CODES.notInCatalog, 'catalogue');
   const provider = getMobilePushProvider();
-  if (!provider) return skipAll(MOBILE_PUSH_CODES.notConfigured);
+  if (!provider) return skipAll(MOBILE_PUSH_CODES.notConfigured, 'configuration');
   if (ctx.eventType === 'TO_PROCESS_DAILY_DIGEST' && await digestAlreadyPushedToday(ctx.userId, ctx.outboxId)) {
-    return skipAll(MOBILE_PUSH_CODES.digestAlreadyPushed);
+    return skipAll(MOBILE_PUSH_CODES.digestAlreadyPushed, 'deduplication');
   }
 
   const dejaServis = await alreadySent(ctx.outboxId);
@@ -172,16 +178,16 @@ export async function deliverMobilePush(
   const out: MobilePushDelivery[] = [];
   for (const inst of installations) {
     if (!isMobileFeatureEnabled('push', inst.platform)) {
-      out.push({ installationRowId: inst.id, outcome: { status: 'skipped_unavailable', errorCode: MOBILE_PUSH_CODES.disabled } });
+      out.push({ installationRowId: inst.id, outcome: { status: 'skipped_unavailable', errorCode: MOBILE_PUSH_CODES.disabled, failureStep: 'configuration', failureCategory: 'ignore' } });
       continue;
     }
     if (dejaServis.has(inst.id)) {
-      out.push({ installationRowId: inst.id, outcome: { status: 'skipped_unavailable', errorCode: MOBILE_PUSH_CODES.duplicate } });
+      out.push({ installationRowId: inst.id, outcome: { status: 'skipped_unavailable', errorCode: MOBILE_PUSH_CODES.duplicate, failureStep: 'deduplication', failureCategory: 'ignore' } });
       continue;
     }
     if (!inst.token) {
       await markInstallationInvalid(inst.id, MOBILE_PUSH_CODES.tokenUnreadable);
-      out.push({ installationRowId: inst.id, outcome: { status: 'expired', errorCode: MOBILE_PUSH_CODES.tokenUnreadable } });
+      out.push({ installationRowId: inst.id, outcome: { status: 'expired', errorCode: MOBILE_PUSH_CODES.tokenUnreadable, failureStep: 'jeton_appareil', failureCategory: 'invalid_token' } });
       continue;
     }
     const res = await provider.send({
@@ -192,16 +198,33 @@ export async function deliverMobilePush(
       data,
       collapseKey,
       priority: entry.priority === 'high' ? 'high' : 'normal',
-    }).catch((e: unknown) => ({ ok: false as const, kind: 'transient' as const, code: ((e as Error)?.message ?? 'send_error').slice(0, 60) }));
+    }).catch((e: unknown) => ({
+      ok: false as const, kind: 'transient' as const,
+      code: ((e as Error)?.message ?? 'send_error').slice(0, 60),
+      // Exception LEVÉE par le fournisseur : l'appel n'a pas abouti ; aucune
+      // réponse HTTP n'est connue, on n'en invente pas.
+      step: 'appel_fournisseur' as const,
+    }));
+    // Lot 115B (#800) : le nom du fournisseur, son statut HTTP, son code EXACT
+    // et l'étape sont persistés avec la livraison. `last_error_code` conserve
+    // la classe interne historique (`mobile_push_config`) pour ne casser aucun
+    // indicateur existant.
+    const trace = (r: Omit<Extract<MobilePushSendResult, { ok: false }>, 'ok'>) => ({
+      providerName: provider.name,
+      providerErrorCode: r.code,
+      ...(typeof r.statusCode === 'number' ? { providerStatusCode: r.statusCode } : {}),
+      ...(r.step ? { failureStep: r.step } : {}),
+      failureCategory: r.kind,
+    });
     if (res.ok) {
       await markInstallationSent(inst.id);
-      out.push({ installationRowId: inst.id, outcome: { status: 'sent', ...(res.messageId ? { providerMessageId: res.messageId } : {}) } });
+      out.push({ installationRowId: inst.id, outcome: { status: 'sent', providerName: provider.name, ...(res.messageId ? { providerMessageId: res.messageId } : {}) } });
     } else if (res.kind === 'invalid_token') {
       await markInstallationInvalid(inst.id, res.code);
-      out.push({ installationRowId: inst.id, outcome: { status: 'expired', errorCode: `invalid_token:${res.code}` } });
+      out.push({ installationRowId: inst.id, outcome: { status: 'expired', errorCode: `invalid_token:${res.code}`, ...trace(res) } });
     } else {
       await markInstallationFailure(inst.id, res.code);
-      out.push({ installationRowId: inst.id, outcome: { status: 'failed', errorCode: `mobile_push_${res.kind}`, errorMessage: res.code } });
+      out.push({ installationRowId: inst.id, outcome: { status: 'failed', errorCode: `mobile_push_${res.kind}`, errorMessage: res.code, ...trace(res) } });
     }
   }
   return out;

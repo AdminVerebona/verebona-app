@@ -32,7 +32,8 @@ import { apiClient } from '@/lib/api-client';
 import { useMountedOnce } from '@/hooks/useMountedOnce';
 import { useToProcessCount } from '@/hooks/useToProcessCount';
 import { useWelcomeOnboardingNeed } from '@/hooks/useWelcomeOnboardingNeed';
-import { LogoutStatusScreen, SessionUnavailableScreen } from './shell/SessionStateScreen';
+import { LogoutStatusScreen, SessionReauthRequiredScreen, SessionUnavailableScreen } from './shell/SessionStateScreen';
+import { safeReturnUrl } from '@/lib/safe-redirect';
 import { NoSpaceScreen } from './shell/NoSpaceScreen';
 import { CguvReacceptanceScreen } from './shell/CguvReacceptanceScreen';
 import { CguvCheckUnavailableNotice } from './shell/CguvCheckUnavailableNotice';
@@ -79,6 +80,16 @@ export function DashboardLayout({ children, user: userProp }: DashboardLayoutPro
     setRetryingSession(true);
     void sessionResult.refetch().finally(() => setRetryingSession(false));
   }, [sessionResult]);
+  // Carte #793 : reconnexion FORTE depuis la coquille — parcours existant
+  // (`/login?reason=mfa_required&returnUrl=…`), destination contrôlée par le
+  // garde-fou de redirection (chemin interne, jamais une page
+  // d'authentification : aucune boucle possible). Action explicite de
+  // l'utilisateur, jamais une navigation automatique répétée.
+  const goToStrongSignIn = useCallback(() => {
+    if (typeof window === 'undefined') return;
+    const back = safeReturnUrl(`${window.location.pathname}${window.location.search}`);
+    window.location.assign(`/login?reason=mfa_required&returnUrl=${encodeURIComponent(back)}`);
+  }, []);
   const { theme, toggleTheme } = useThemeToggle();
 
   const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false);
@@ -378,6 +389,19 @@ export function DashboardLayout({ children, user: userProp }: DashboardLayoutPro
   }
 
   if (!user) {
+    // Carte #793 : session valide mais preuve insuffisante (403
+    // MFA_REQUIRED). Ce refus VOLONTAIRE du serveur devenait
+    // « temporairement indisponible » : écran de panne et boucle
+    // « Réessayer » sur un appel qui recevait toujours le même refus.
+    // Désormais : reconnexion forte proposée, sans réessai.
+    if (!userProp && sessionResult.status === 'reauth-required') {
+      return (
+        <SessionReauthRequiredScreen
+          onSignIn={goToStrongSignIn}
+          requestId={sessionResult.sessionError?.requestId}
+        />
+      );
+    }
     // Lenteur, panne, réseau : la session n'est pas en cause. Reprise
     // explicite plutôt qu'un retour injustifié à la connexion.
     if (!userProp && sessionResult.status === 'temporarily-unavailable') {

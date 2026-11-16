@@ -119,8 +119,10 @@ describe('titres similaires du compte : discriminant métier, jamais « (2) »',
 });
 
 describe('TITLE2-AC8 — reprise du stock : version des règles', () => {
-  it('DOCUMENT_TITLE_RULE_VERSION = 3 (lot 87D) ; le contrôle ciblé reprend tout titre SYSTEM d’une version antérieure, plus seulement les titres techniques', () => {
-    expect(DOCUMENT_TITLE_RULE_VERSION).toBe(3);
+  // Règle remplacée (carte #783) : la version des règles de titre passe de 3 (lot 87D) à 4 — la
+  // reprise du stock des titres automatiques se fait par ce changement de version, comme au lot 87D.
+  it('DOCUMENT_TITLE_RULE_VERSION = 4 (carte #783) ; le contrôle ciblé reprend tout titre SYSTEM d’une version antérieure, plus seulement les titres techniques', () => {
+    expect(DOCUMENT_TITLE_RULE_VERSION).toBe(4);
     const sql = TITLE_SWEEP_SQL.replace(/\s+/g, ' ');
     expect(sql).toContain('f.title_rule_version IS DISTINCT FROM $4::int');
     expect(sql).toContain("f.title_source = 'SYSTEM'");

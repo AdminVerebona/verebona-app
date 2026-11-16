@@ -162,8 +162,16 @@ export function technicalTitleSqlPredicate(col: string): string {
  *     factures périodiques « Facture Homiris — Février 2026 » (mois principal
  *     IA, sinon période exacte), séparateur « — », dates au jour, données de
  *     nommage persistées (`asset_files.title_basis`).
+ *   · 4 — carte #783 : la NATURE d'une période décide si elle peut nommer le
+ *     document (une GARANTIE ne le nomme jamais ; les autres natures sont
+ *     inchangées), et l'enseigne du fournisseur est préférée quand T1 l'a
+ *     décomposée avec sa preuve (bloc PO 52, facultatif). Le passage de 3 à 4
+ *     est la REPRISE du stock : le contrôle de cohérence COH-DOC-TITLES
+ *     retrouve les titres SYSTÈME d'une version antérieure, les simule, les
+ *     réécrit seulement s'ils changent, et ne touche jamais un titre
+ *     utilisateur.
  */
-export const DOCUMENT_TITLE_RULE_VERSION = 3;
+export const DOCUMENT_TITLE_RULE_VERSION = 4;
 
 const TITLE_QUALITY_REASONS = [
   'TECHNICAL_TITLE', 'GENERIC_TITLE', 'MISSING_SUBJECT', 'MISSING_SUPPLIER', 'MISSING_TARGET', 'MISSING_PERIOD',
@@ -176,7 +184,9 @@ type TitleChangeReason =
   | 'NON_COMPLIANT_TITLE' | 'GENERIC_TITLE' | 'SUPPLIER_ADDED' | 'PERIOD_ADDED' | 'TARGET_ADDED' | 'EQUIPMENT_ADDED'
   | 'DUPLICATE_DISAMBIGUATED' | 'FIRST_TITLE' | 'NO_BETTER_TITLE' | 'USER_TITLE_PROTECTED'
   // Lot 87D : convention périodique appliquée ; ancienne typographie (« _ ») normalisée.
-  | 'CONVENTION_APPLIED' | 'TYPOGRAPHY_NORMALIZED';
+  | 'CONVENTION_APPLIED' | 'TYPOGRAPHY_NORMALIZED'
+  // Carte #783 : le titre en place portait une période dont la NATURE ne nomme pas le document.
+  | 'EXCLUDED_PERIOD_REMOVED';
 
 /** Ce que le MEILLEUR titre constructible porte (attentes d'un titre suffisant). */
 export interface TitleExpectations {
@@ -209,6 +219,30 @@ export function titleHasPeriod(title: string | null | undefined): boolean {
   const t = normalizeTitle(title);
   return new RegExp(`\\b(${MOIS})\\s+\\d{4}\\b`).test(t) || /\b\d{1,2}\s+\d{1,2}\s+\d{2,4}\b/.test(t) || /\b(19|20)\d{2}\s+\d{2}\b/.test(t)
     || /\b(t[1-4]|trimestre|semestre)\b.*\b(19|20)\d{2}\b/.test(t);
+}
+
+/**
+ * Carte #783 — repères temporels d'un titre (pure) : « novembre 2026 », « 14 11 2026 », « 2026 12 ».
+ * Sert à comparer DEUX titres, jamais à composer : aucune date n'est inventée ni reformulée.
+ */
+export function titlePeriodMarkers(title: string | null | undefined): string[] {
+  const t = normalizeTitle(title);
+  const out = new Set<string>();
+  for (const re of [new RegExp(`\\b(?:${MOIS})\\s+\\d{4}\\b`, 'g'), /\b\d{1,2}\s+\d{1,2}\s+\d{2,4}\b/g, /\b(?:19|20)\d{2}\s+\d{2}\b/g]) {
+    for (const m of t.matchAll(re)) out.add(m[0]);
+  }
+  return [...out];
+}
+
+/**
+ * Carte #783 — le titre EN PLACE porte-t-il un repère temporel que le titre composé AUJOURD'HUI ne
+ * porte pas ? C'est le cas d'une plage injustifiée laissée par une période dont la nature ne nomme
+ * pas le document (bornes de garantie d'une facture d'achat). Pure : ne décide rien à elle seule,
+ * l'appelant ne l'utilise que lorsqu'une période a effectivement été ÉCARTÉE par sa nature.
+ */
+export function titleCarriesStalePeriod(current: string | null | undefined, candidate: string | null | undefined): boolean {
+  const attendus = new Set(titlePeriodMarkers(candidate));
+  return titlePeriodMarkers(current).some((m) => !attendus.has(m));
 }
 
 /** Tous les mots significatifs de `phrase` figurent-ils dans le titre ? */

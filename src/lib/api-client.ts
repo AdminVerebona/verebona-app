@@ -9,6 +9,7 @@ import { notifyAppUpdateRequired } from '@/lib/mobile/native-shell';
 import { nativeSignOutPush } from '@/lib/native/push';
 import { nativeSignOutBiometrics } from '@/lib/native/biometric-consent';
 import {
+  LOGOUT_CODE_HEADER,
   LOGOUT_REASON_HEADER,
   classifyAuthExit,
   currentLoginAttempt,
@@ -16,6 +17,7 @@ import {
   type AuthExitReason,
   type LogoutReason,
 } from '@/lib/auth/login-diagnostics';
+import { isAuthPage } from '@/lib/auth/auth-pages';
 import {
   beginSessionTransition,
   getSessionEpoch,
@@ -684,10 +686,19 @@ export const apiClient = {
             // (avant une connexion, un changement de compte) — son refus ne
             // dit rien de la session actuelle. Lancer la procédure de sortie
             // révoquerait la session tout juste ouverte (rejet post-connexion).
+            // Verdict FINAL du refus : le code du renouvellement refusé s'il
+            // existe (c'est lui qui conclut), sinon celui du refus initial.
+            const refusalCode = lastRefreshRefusal ?? code ?? 'UNAUTHORIZED';
             const stale = getSessionEpoch() !== epochAtStart;
-            if (onAuthFailure !== 'silent' && !stale) void this.handleAuthFailure();
+            if (onAuthFailure !== 'silent' && !stale) void this.handleAuthFailure({ code: refusalCode });
             report('http_error');
-            throw new ApiClientError(response.status, 'UNAUTHORIZED', {}, errorBody.requestId);
+            // Carte #798 : le CODE RÉEL du refus est conservé (il était écrasé
+            // par « UNAUTHORIZED »). Sans lui, l'appelant — la vérification
+            // d'après connexion en premier — ne pouvait pas distinguer
+            // « aucune preuve présentée » (cookie non transmis par la vue) de
+            // « jeton refusé » ou « session révoquée », et l'écran de
+            // connexion affirmait la première cause pour toutes.
+            throw new ApiClientError(response.status, refusalCode, {}, errorBody.requestId);
           } else if (response.status === 403) {
             // Refus de droits (essai terminé, quota…) sur une ACTION de
             // l'utilisateur : la fenêtre partagée s'ouvre, quel que soit l'écran.
@@ -707,8 +718,14 @@ export const apiClient = {
             // Lot 110B : double authentification exigée (session sans preuve
             // forte) — retour à la connexion, qui mène à la seconde étape ou à
             // « Sécurisez votre compte ». Jamais en boucle depuis une page d'authentification.
+            // Carte #798 : même liste FERMÉE que la garde anti-boucle de la
+            // procédure de sortie (`lib/auth/auth-pages`) — les deux gardes
+            // divergeaient. Lecture SILENCIEUSE : aucune navigation ici, le
+            // magasin de session la classe (`reauth-required`) et la coquille
+            // propose « Se reconnecter » — une seule logique, pas deux
+            // redirections concurrentes (carte #793 §3).
             if (errorBody?.code === MFA_REQUIRED_CODE && onAuthFailure !== 'silent' && typeof window !== 'undefined'
-              && !/^\/(login|verification|securiser-mon-compte|recuperation)(\/|$)/.test(window.location.pathname)) {
+              && !isAuthPage(window.location.pathname)) {
               const back = `${window.location.pathname}${window.location.search}`;
               window.location.assign(`/login?reason=mfa_required&returnUrl=${encodeURIComponent(back)}`);
             }
@@ -890,7 +907,7 @@ export const apiClient = {
    * nettoyage JavaScript n'efface pas un cookie HttpOnly et ne révoque rien.
    * @internal
    */
-  async requestServerLogout(reason: LogoutReason = 'user'): Promise<ServerSignOutOutcome> {
+  async requestServerLogout(reason: LogoutReason = 'user', refusalCode?: string | null): Promise<ServerSignOutOutcome> {
     const attempt = attemptSignal(null, LOGOUT_TIMEOUT_MS);
     try {
       const res = await fetch('/api/auth/logout', {
@@ -898,7 +915,14 @@ export const apiClient = {
         credentials: 'include',
         cache: 'no-store',
         // Lot 103A : origine de la déconnexion et corrélation (journal serveur, BO).
-        headers: { 'Content-Type': 'application/json', [LOGOUT_REASON_HEADER]: reason, ...loginAttemptHeaders() },
+        // Carte #799 : code métier du refus qui a déclenché la sortie (jamais
+        // de jeton, de cookie ni de donnée personnelle).
+        headers: {
+          'Content-Type': 'application/json',
+          [LOGOUT_REASON_HEADER]: reason,
+          ...(refusalCode && /^[A-Za-z0-9_]{2,64}$/.test(refusalCode) ? { [LOGOUT_CODE_HEADER]: refusalCode } : {}),
+          ...loginAttemptHeaders(),
+        },
         signal: attempt.signal,
       });
       if (!res.ok) return 'failed';
@@ -1014,8 +1038,15 @@ export const apiClient = {
     if (typeof window === 'undefined') return Promise.resolve();
 
     // Evite toute boucle de redirection sur les pages d'authentification.
+    // Carte #798 : la garde ne couvrait que /login et /signup. Depuis
+    // /verification (seconde étape de la double authentification, où AUCUNE
+    // session complète n'existe encore), un refus lançait donc une vraie
+    // sortie — `POST /api/auth/logout` `trigger=auth-failure`, ligne BO
+    // « Déconnexion par précaution » — puis renvoyait sur /login avec le
+    // motif « session non conservée ». Liste FERMÉE et unique désormais
+    // (`lib/auth/auth-pages`), partagée avec le contexte de session.
     const path = window.location.pathname;
-    if (path.startsWith('/login') || path.startsWith('/signup')) return Promise.resolve();
+    if (isAuthPage(path)) return Promise.resolve();
     if (authFailureInProgress) return Promise.resolve();
     authFailureInProgress = true;
 
@@ -1026,17 +1057,27 @@ export const apiClient = {
     // Lot 103A : motif codé (session expirée, absence de session, session
     // révoquée, rejet juste après une connexion acceptée) — l'écran de
     // connexion affiche le message de CE motif, une seule fois.
+    // Carte #798 : le code du refus est passé par l'appelant (verdict final)
+    // quand il le connaît ; l'état de module `lastRefreshRefusal` n'est qu'un
+    // dernier recours (il peut appartenir à une tentative antérieure).
+    const refusalCode = opts.code ?? lastRefreshRefusal;
     const reason: AuthExitReason = opts.code === 'ACCOUNT_SUSPENDED'
       ? 'account_suspended'
-      : opts.reason ?? classifyAuthExit({ refreshCode: lastRefreshRefusal, lastAttempt: currentLoginAttempt() });
+      : opts.reason ?? classifyAuthExit({ refreshCode: refusalCode, lastAttempt: currentLoginAttempt() });
     const diag = currentLoginAttempt()?.id;
+    // Carte #798 : le code de diagnostic accompagne TOUT motif de rejet
+    // consécutif à une connexion acceptée (il n'était joint qu'à
+    // `post_login_rejected`, donc absent du nouveau motif distinct).
+    const avecDiag = reason === 'post_login_rejected' || reason === 'post_login_refused';
     const target = reason === 'account_suspended'
       ? '/login?error=ACCOUNT_SUSPENDED'
-      : `/login?expired=1&returnUrl=${encodeURIComponent(returnUrl)}&reason=${reason}${reason === 'post_login_rejected' && diag ? `&diag=${diag}` : ''}`;
+      : `/login?expired=1&returnUrl=${encodeURIComponent(returnUrl)}&reason=${reason}${avecDiag && diag ? `&diag=${diag}` : ''}`;
 
     // Invalidation cote serveur : effacer le cookie sans revoquer la session
     // ne suffit pas (CDC §8). Bornée : la redirection suit dans tous les cas.
-    return this.requestServerLogout('auth-failure').then(() => { navigate(target); });
+    // Carte #799 : le code du refus voyage avec la déconnexion, pour que le BO
+    // puisse dire QUEL refus a fermé la session (sans ouvrir Scalingo).
+    return this.requestServerLogout('auth-failure', refusalCode).then(() => { navigate(target); });
   },
 
   get<T = unknown>(url: string, options?: ApiClientOptions): Promise<T> {

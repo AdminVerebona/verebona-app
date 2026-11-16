@@ -95,6 +95,12 @@ export const IDENTITY_WAIT_MS = 6_000;
  * le magasin de session) devient `reauth-required`.
  */
 export function unlockSessionStatus(status: string, errorCode?: string | null): SessionKnown {
+  // Carte #793 : le magasin de session classe désormais lui-même ce refus
+  // (`status: 'reauth-required'`). Le rattrapage sur « indisponible +
+  // MFA_REQUIRED » reste pour les états issus d'un code antérieur à la carte
+  // (instantané conservé, test existant) : les deux chemins donnent le même
+  // verdict, aucune boucle ni divergence.
+  if (status === 'reauth-required') return 'reauth-required';
   if (status === 'temporarily-unavailable' && errorCode === MFA_REQUIRED_CODE) return 'reauth-required';
   if (status === 'checking' || status === 'authenticated' || status === 'unauthenticated' || status === 'temporarily-unavailable') return status;
   return 'temporarily-unavailable';

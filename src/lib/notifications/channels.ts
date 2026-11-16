@@ -21,11 +21,40 @@ import { withSpaceParam } from '@/lib/shell/space-link';
 
 export type DeliveryStatus = 'sent' | 'failed' | 'skipped_preference' | 'skipped_unavailable' | 'expired';
 
+/**
+ * Lot 115B (#800) — étape de la chaîne où la tentative s'est arrêtée.
+ * Vocabulaire fermé, identique à la contrainte de la migration 1745 : il est
+ * lu tel quel par le diagnostic du BO. `null` / absent = « non enregistré ».
+ */
+export type DeliveryFailureStep =
+  | 'catalogue'            // l'événement n'autorise pas ce canal (§18.3)
+  | 'configuration'        // canal / fournisseur non configuré ou illisible
+  | 'jeton_appareil'       // jeton d'appareil absent, illisible ou refusé
+  | 'deduplication'        // déjà servi (doublon, récapitulatif du jour, regroupement)
+  | 'oauth_fournisseur'    // obtention du jeton d'accès du fournisseur
+  | 'appel_fournisseur'    // requête HTTP vers le fournisseur (réseau, délai)
+  | 'reponse_fournisseur'  // réponse d'erreur rendue par le fournisseur
+  | 'canal'                // canal supprimé, coupé au BO, porté ailleurs
+  | 'ecriture_locale';     // écriture en base (cloche)
+
+/** Lot 115B — catégorie de cause, telle que la classe le fournisseur. */
+export type DeliveryFailureCategory = 'config' | 'transient' | 'rejected' | 'invalid_token' | 'ignore';
+
 export interface DeliveryOutcome {
   status: DeliveryStatus;
   providerMessageId?: string;
   errorCode?: string;
   errorMessage?: string;
+  /**
+   * Lot 115B (#800) : instrumentation structurée de la tentative, persistée
+   * par le dispatcher. Jamais un jeton, jamais un contenu — un vocabulaire
+   * d'étapes, un nom de fournisseur, un statut HTTP et le code EXACT reçu.
+   */
+  failureStep?: DeliveryFailureStep;
+  failureCategory?: DeliveryFailureCategory;
+  providerName?: string;
+  providerStatusCode?: number;
+  providerErrorCode?: string;
 }
 
 export interface DeliveryContext {
@@ -67,9 +96,12 @@ export async function deliverBell(
       category: ctx.category,
       createdAt: new Date(),
     }).onConflictDoNothing({ target: notifications.dedupeKey }).returning({ id: notifications.id });
-    return { status: 'sent', notificationId: inserted[0]?.id };
+    return { status: 'sent', notificationId: inserted[0]?.id, providerName: 'cloche' };
   } catch (err) {
-    return { status: 'failed', errorCode: 'bell_insert_error', errorMessage: (err as Error).message };
+    return {
+      status: 'failed', errorCode: 'bell_insert_error', errorMessage: (err as Error).message,
+      failureStep: 'ecriture_locale', failureCategory: 'transient', providerName: 'cloche',
+    };
   }
 }
 
@@ -83,13 +115,16 @@ export async function deliverEmail(
   if (!templateCode) {
     // Lot 81E : cause explicite quand l'e-mail générique est couvert par une
     // communication durable (confirmation contractuelle, fin d'offre).
-    return { status: 'skipped_unavailable', errorCode: rendered.emailSkipReason ?? 'no_email_template' };
+    return {
+      status: 'skipped_unavailable', errorCode: rendered.emailSkipReason ?? 'no_email_template',
+      failureStep: 'catalogue', failureCategory: 'ignore',
+    };
   }
 
   // Adresse du destinataire.
   const [user] = await db.select({ email: users.email }).from(users).where(eq(users.id, ctx.userId)).limit(1);
   if (!user?.email) {
-    return { status: 'skipped_unavailable', errorCode: 'no_recipient_email' };
+    return { status: 'skipped_unavailable', errorCode: 'no_recipient_email', failureStep: 'configuration', failureCategory: 'ignore' };
   }
 
   // Lot 1 : les templates `notif_*` sont seedés au Lot 5. Tant qu'ils n'existent
@@ -104,7 +139,7 @@ export async function deliverEmail(
     if (tpl) templateCode = fallbackCode;
   }
   if (!tpl) {
-    return { status: 'skipped_unavailable', errorCode: 'template_not_seeded' };
+    return { status: 'skipped_unavailable', errorCode: 'template_not_seeded', failureStep: 'configuration', failureCategory: 'ignore' };
   }
 
   const variables: Record<string, string> = {
@@ -122,8 +157,13 @@ export async function deliverEmail(
   const res = await emailService.send({ templateCode, to: user.email, variables, userId: ctx.userId, skipChannelCheck: true });
   // `sent` = ACCEPTÉ par le prestataire ; la livraison finale se lit sur le
   // journal des envois (`email_logs.delivery_status`, même identifiant).
-  if (res.success) return { status: 'sent', ...(res.providerMessageId ? { providerMessageId: res.providerMessageId } : {}) };
-  return { status: 'failed', errorCode: 'email_send_error', errorMessage: res.error };
+  if (res.success) {
+    return { status: 'sent', providerName: 'resend', ...(res.providerMessageId ? { providerMessageId: res.providerMessageId } : {}) };
+  }
+  return {
+    status: 'failed', errorCode: 'email_send_error', errorMessage: res.error,
+    failureStep: 'reponse_fournisseur', failureCategory: 'rejected', providerName: 'resend',
+  };
 }
 
 function absoluteUrl(href: string): string {

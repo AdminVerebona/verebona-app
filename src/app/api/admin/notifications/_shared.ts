@@ -27,7 +27,11 @@ export async function requireAdminContext(
 /** Journalise une action de notifications (ne lève jamais). */
 export async function logNotificationAction(
   admin: { adminId: number; adminEmail?: string },
-  action: Extract<AdminActionEntry['action'], 'NOTIFICATION_SEARCH' | 'NOTIFICATION_REEMIT' | 'NOTIFICATION_RESEND'>,
+  action: Extract<
+    AdminActionEntry['action'],
+    'NOTIFICATION_SEARCH' | 'NOTIFICATION_REEMIT' | 'NOTIFICATION_RESEND'
+    | 'NOTIFICATION_DIAGNOSTIC_READ' | 'NOTIFICATION_DIAGNOSTIC_EXPORT'
+  >,
   result: AdminActionEntry['result'],
   details: Record<string, unknown>,
 ): Promise<void> {

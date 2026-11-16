@@ -39,6 +39,29 @@ export const BUSINESS_PERIOD_KINDS = ['COVERAGE', 'VALIDITY', 'WARRANTY', 'SERVI
 export const PRIORITY_ARBITRATION_113W2 = ['COVERAGE', 'VALIDITY', 'WARRANTY', 'SERVICE', 'BILLING'] as const;
 export type BusinessPeriodKind = (typeof BUSINESS_PERIOD_KINDS)[number];
 
+/**
+ * Clés des faits génériques de période rendus par T1 (contrat
+ * `t1-business-periods-v1`) et nature correspondante. DÉFINIES ICI (module pur)
+ * depuis la carte #783 : le nommage des documents a besoin de la NATURE d'une
+ * période de fait, et il ne doit pas dépendre d'un service.
+ * `services/documents/business-periods/model.ts` les réexporte (aucun appelant changé).
+ */
+export const PERIOD_FACT_PREFIX = 'period.';
+export const PERIOD_FACT_KEYS: Record<string, BusinessPeriodKind> = {
+  'period.coverage': 'COVERAGE',
+  'period.billing': 'BILLING',
+  'period.validity': 'VALIDITY',
+  'period.warranty': 'WARRANTY',
+  'period.service': 'SERVICE',
+  // Lot 113AA (contrat t1-business-periods-v2, bloc 28).
+  'period.contract': 'CONTRACT',
+  'period.realization': 'REALIZATION',
+};
+
+/** Nature d'une période portée par une clé de fait T1 (`period.*`), sinon null. Pure. */
+export const periodKindOfFactKey = (key: string | null | undefined): BusinessPeriodKind | null =>
+  (typeof key === 'string' ? PERIOD_FACT_KEYS[key.trim().toLowerCase()] ?? null : null);
+
 export const isBusinessPeriodKind = (v: unknown): v is BusinessPeriodKind =>
   typeof v === 'string' && (BUSINESS_PERIOD_KINDS as readonly string[]).includes(v);
 
@@ -65,8 +88,20 @@ export const NOT_PROVIDED_LABEL = 'non renseignée';
 /** À valider par le PO. */
 export const COVERAGE_HISTORY_TITLE = 'Périodes de couverture';
 export const COVERAGE_HISTORY_EMPTY = 'Aucune période de couverture établie.';
-export const PERIOD_CORRECT_ACTION = 'Corriger';
+/**
+ * Carte #782 — RÈGLE REMPLACÉE : l'action permanente « Corriger » d'une ligne de période est
+ * supprimée. Une période est une donnée structurée normale, pas une anomalie : là où un parcours
+ * général « Modifier » existe (tiroir du document), l'édition s'y fait ; là où il n'en existe pas
+ * (dépense, fiche de l'événement de référence, tiroir d'agenda), l'action de la ligne s'appelle
+ * « Modifier ». Le mot « Corriger » est réservé à une anomalie EFFECTIVEMENT qualifiée : aucune ne
+ * l'est aujourd'hui pour une période, donc aucun écran ne l'affiche.
+ */
+export const PERIOD_EDIT_ACTION = 'Modifier';
 export const PERIOD_SAVED_TOAST = 'Période enregistrée';
+/** Carte #782 — à valider par le PO : section des périodes dans le parcours « Modifier le document ». */
+export const PERIOD_EDIT_SECTION_TITLE = 'Dates et périodes du document';
+/** Carte #782 — à valider par le PO : le document est enregistré, une période a été refusée par le serveur. */
+export const PERIOD_EDIT_SAVE_FAILED = 'Les autres modifications sont enregistrées ; une période n’a pas pu l’être.';
 export const PERIOD_INVALID_MESSAGE = 'Indiquez une date (JJ/MM/AAAA), un mois (MM/AAAA) ou une année (AAAA) ; la fin ne peut pas précéder le début.';
 export const PERIOD_USER_MENTION = 'Corrigée par vous';
 /** Carte #766 (E04) — à valider par le PO : case de l'éditeur existant (fin inexistante, ≠ fin inconnue). */
@@ -264,6 +299,37 @@ export function expenseBillingPeriods<T extends PeriodBounds>(billing: readonly 
   if (!debut || !fin) return { periods: [], undetermined: true };
   const contient = billing.filter((b) => !!b.start && !!b.end && lowerBound(b.start) <= debut.slice(0, 10) && lastDayOf(b.end) >= fin.slice(0, 10));
   return contient.length === 1 ? { periods: contient, undetermined: false } : { periods: [], undetermined: true };
+}
+
+// ── Carte #782 : édition d'une période dans le parcours « Modifier » ─────────
+
+/** Saisie d'une période dans le formulaire (bornes en forme française, ou vides). */
+export interface PeriodEditInput { start: string; end: string; openEnded: boolean }
+
+/** Bornes retenues d'une saisie (dates partielles ou absentes, durée indéterminée établie). */
+export interface PeriodEditBounds { start: PartialDate | null; end: PartialDate | null; openEnded: boolean }
+
+/**
+ * Carte #782 — bornes retenues d'UNE saisie, ou `null` si elle est illisible ou si la fin précède le
+ * début (mêmes règles que l'éditeur d'une ligne : dates partielles JJ/MM/AAAA, MM/AAAA, AAAA, valeur
+ * absente, et une fin saisie exclut la durée indéterminée). Aucune borne n'est inventée. Pure.
+ */
+export function periodEditBounds(input: PeriodEditInput): PeriodEditBounds | null {
+  const start = parsePartialInput(input.start);
+  const end = parsePartialInput(input.end);
+  if (start === undefined || end === undefined || !orderedBounds(start, end)) return null;
+  return { start, end, openEnded: end === null ? input.openEnded === true : false };
+}
+
+/**
+ * Carte #782 — la saisie change-t-elle le fait ÉTABLI ? Une période qu'on n'a pas touchée n'est pas
+ * réécrite : elle ne devient donc pas « corrigée par vous » et reste ouverte à une requalification T1.
+ * Une fin INCONNUE et une durée indéterminée ÉTABLIE ne sont jamais confondues. Pure.
+ */
+export function periodEditChanged(established: PeriodBounds, next: PeriodEditBounds): boolean {
+  return (established.start ?? null) !== next.start
+    || (established.end ?? null) !== next.end
+    || (established.openEnded === true) !== next.openEnded;
 }
 
 /** Clé de tri chronologique (bornes inconnues en dernier). Pure. */

@@ -70,7 +70,8 @@ import {
 } from '@/lib/documents/document-targets-selection';
 import { NativeCommerceNotice } from '@/components/native/NativeCommerceNotice';
 // Lot 113W (#724) : période métier principale du document et historique de couverture de l'événement de référence.
-import { DocumentBusinessPeriodField, DocumentPeriodsDetail, useDocumentPeriods } from '@/components/documents/BusinessPeriods';
+import { DocumentBusinessPeriodField, DocumentPeriodsDetail, DocumentPeriodsEditFields, useDocumentPeriods, useDocumentPeriodsEdit } from '@/components/documents/BusinessPeriods';
+import { PERIOD_EDIT_SAVE_FAILED } from '@/lib/documents/business-periods';
 // Lot 113AB (#725) : fiche de l'événement de référence consultable sans élément d'agenda.
 import { DocumentReferenceEvents } from '@/components/documents/ReferenceEventSheet';
 
@@ -346,6 +347,8 @@ export function DocumentDrawer({ open, onOpenChange, document: doc, onRefresh, a
   const [refreshTrigger, setRefreshTrigger] = useState(0);
   // Carte #766 (E11) : périodes du document lues une fois (bloc principal + détail sous « Notes / Description »).
   const periodesDocument = useDocumentPeriods(open ? doc?.id : null, refreshTrigger);
+  // Carte #782 : les périodes s'éditent dans le parcours général « Modifier » (plus d'action par ligne).
+  const editionPeriodes = useDocumentPeriodsEdit(periodesDocument);
   const [liveProposals, setLiveProposals] = useState<any[]>([]);
   const [showDetectedInfo, setShowDetectedInfo] = useState(false);
 
@@ -775,6 +778,8 @@ export function DocumentDrawer({ open, onOpenChange, document: doc, onRefresh, a
       roomIds: fullData.substructureId ? [fullData.substructureId] : [],
       equipmentIds: fullData.equipmentId ? [fullData.equipmentId] : [],
     });
+    // Carte #782 : périodes établies reprises telles quelles (aucune n'est réécrite si on n'y touche pas).
+    editionPeriodes.reinitialiser();
     setIsEditing(true);
 
     // Cibles proposées : biens du compte, groupés avec leurs pièces et équipements.
@@ -783,7 +788,7 @@ export function DocumentDrawer({ open, onOpenChange, document: doc, onRefresh, a
       const opts = await apiClient.get<{ groups: TargetOptionGroupView[] }>('/api/document-targets/options');
       setTargetGroups(Array.isArray(opts?.groups) ? opts.groups : []);
     } catch { /* ignore */ }
-  }, [fullData, targetsView]);
+  }, [fullData, targetsView, editionPeriodes]);
 
   const handleSave = useCallback(async () => {
     if (!doc || !fullData) return;
@@ -791,6 +796,8 @@ export function DocumentDrawer({ open, onOpenChange, document: doc, onRefresh, a
     // Lot 58A : montant converti à la validation ; saisie invalide → aucun envoi.
     const montant = parseMoneyInputToCents(editAmount);
     if (!montant.ok) { setEditAmountError(true); toast.error(`Montant : ${montant.error}`); return; }
+    // Carte #782 : dates des périodes contrôlées AVANT toute écriture (message sur la ligne concernée).
+    if (!editionPeriodes.valider()) return;
     setIsSaving(true);
     try {
       const amountCents = montant.cents;
@@ -881,6 +888,13 @@ export function DocumentDrawer({ open, onOpenChange, document: doc, onRefresh, a
           } : prev);
         }
       } catch { /* relecture au prochain chargement */ }
+      // Carte #782 : périodes RÉELLEMENT modifiées enregistrées par la route du même fait (ses
+      // contrôles, sa propagation et la relecture des autres tiroirs) — jamais par le corps ci-dessus.
+      if (!(await editionPeriodes.enregistrer(doc.id))) {
+        toast.error(PERIOD_EDIT_SAVE_FAILED);
+        onRefresh();
+        return;
+      }
       toast.success('Document mis à jour');
       setIsEditing(false);
       onRefresh();
@@ -889,7 +903,7 @@ export function DocumentDrawer({ open, onOpenChange, document: doc, onRefresh, a
     } finally {
       setIsSaving(false);
     }
-  }, [doc, fullData, editFilename, editClassement, editDocDate, editSupplier, editAmount, shownNotesDescription, editNotesDescription, editTargets, onRefresh]);
+  }, [doc, fullData, editFilename, editClassement, editDocDate, editSupplier, editAmount, shownNotesDescription, editNotesDescription, editTargets, editionPeriodes, onRefresh]);
 
   // Lot 113U : état relu après TOUT échec de lancement (flux, refus HTTP,
   // réseau) — jamais l'état local périmé (« analyse non finalisée » alors
@@ -1608,6 +1622,9 @@ export function DocumentDrawer({ open, onOpenChange, document: doc, onRefresh, a
                   <Label>Date du document</Label>
                   <DatePicker value={editDocDate} onChange={v => setEditDocDate(v)} placeholder="jj/mm/aaaa" />
                 </div>
+                {/* Carte #782 : périodes métier du document (principale, segments, autres natures) —
+                    éditées ICI, dans le parcours général, et plus par une action « Corriger » de ligne. */}
+                <DocumentPeriodsEditFields editor={editionPeriodes} idPrefix={`doc-${doc.id}`} disabled={isSaving} />
                 <div className="space-y-1.5">
                   <Label>Fournisseur</Label>
                   <Input value={editSupplier} onChange={e => setEditSupplier(e.target.value)} placeholder="Ex: Garage Dupont" />
@@ -1944,7 +1961,8 @@ export function DocumentDrawer({ open, onOpenChange, document: doc, onRefresh, a
                 <button
                   type="button"
                   className="flex-1 flex flex-col items-center gap-1.5 py-3 px-2 hover:bg-muted/60 transition-colors text-foreground disabled:opacity-40 disabled:cursor-not-allowed"
-                  onClick={() => setIsEditing(false)}
+                  // Carte #782 : annuler rend aussi les périodes à leur valeur établie (aucune écriture).
+                  onClick={() => { editionPeriodes.reinitialiser(); setIsEditing(false); }}
                   disabled={isSaving}
                 >
                   <X className="w-4 h-4" />

@@ -11,6 +11,7 @@ import {
   canonicalTitleKey, composePeriodicTitle, disambiguatorFor, formatTitleMonth, hasLegacyTitleTypography,
   presentBilledPeriod, presentSupplier, principalMonthFromAnalysis, TITLE_SEPARATOR,
 } from '@/lib/documents/document-title-convention';
+import { DOCUMENT_TITLE_RULE_VERSION } from '@/lib/documents/document-title-rules';
 import { documentTitleJsonSql, documentTitleOf, withDocumentTitles } from '@/lib/documents/document-title-source';
 import { planBusinessTitle, type BillingBasis } from '@/services/ai/source-analysis/document-title';
 import { billingBasisFrom, titleLosesInformation } from '../document-title.service';
@@ -197,7 +198,8 @@ describe('L87D-U-07 — même titre partout : une seule règle d’affichage, lu
 describe('L87D-U-COH — contrôle COH-DOC-TITLES : diagnostic pur', () => {
   const attendu = { title: 'Facture Homiris — Février 2026', convention: 'PERIODIC', key: 'k', fingerprint: 'fp', record: { v: 1, invoiceReferences: ['94741358'] }, principalMonth: '2026-02', invoiceReferences: ['94741358'], typographyReplaceable: true };
   const etat = (p: Partial<DocumentTitleState> = {}): DocumentTitleState => ({
-    fileId: 1, title: 'Facture Homiris — Février 2026', titleSource: 'SYSTEM', titleValid: true, ruleVersion: 3, contextFingerprint: 'fp',
+    // Carte #783 : version COURANTE des règles (passée de 3 à 4) — l'état « à jour » du diagnostic.
+    fileId: 1, title: 'Facture Homiris — Février 2026', titleSource: 'SYSTEM', titleValid: true, ruleVersion: DOCUMENT_TITLE_RULE_VERSION, contextFingerprint: 'fp',
     persisted: { basis: { v: 1, invoiceReferences: ['94741358'] }, convention: 'PERIODIC', key: 'k' }, expected: attendu,
     harmonized: false, searchLabel: 'Facture Homiris — Février 2026', sheetLabel: 'Facture Homiris — Février 2026', ...p,
   });

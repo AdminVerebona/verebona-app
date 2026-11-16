@@ -102,7 +102,19 @@ export function useNativeUnlock(featuresRef: MutableRefObject<Features>): Native
           window.location.assign(`/login?${motif}returnUrl=${encodeURIComponent(target)}`);
         });
       },
-      exitSession: () => { void apiClient.handleAuthFailure({}); },
+      // Carte #798 : le CODE du refus constaté à l'instant (la session vient
+      // d'être relue par `verifySession`) accompagne la sortie. Sans lui, le
+      // motif était déduit du dernier refus de renouvellement retenu en
+      // mémoire du client HTTP — éventuellement celui d'une lecture faite
+      // AVANT la connexion, sur l'écran de connexion de l'app : la sortie
+      // était alors étiquetée « session non conservée sur cet appareil » pour
+      // un refus qui n'avait rien à voir. C'est la voie NATIVE de la sortie
+      // (elle n'existe pas dans un navigateur), d'où un défaut visible dans
+      // l'application et pas dans Safari.
+      exitSession: () => {
+        const code = store.getSnapshot().error?.code;
+        void apiClient.handleAuthFailure(code ? { code } : {});
+      },
       onCover: setLockCover,
       isForeground: pageVisible,
       // Codes stables, aucun identifiant ni secret : journal local persistant

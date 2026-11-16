@@ -8,15 +8,15 @@
  *
  *   · la période affichée est celle du JUSTIFICATIF de la dépense
  *     (`document_business_periods`, nature « facturation ») : le même fait
- *     que la fiche du document — « Corriger » passe par
- *     `PUT /api/documents/:fileId/periodes`, et tous les écrans ouverts se
- *     relisent (`business-periods-mutated`) ;
+ *     que la fiche du document — l'action de la ligne (carte #782 : « Modifier »,
+ *     plus « Corriger ») passe par `PUT /api/documents/:fileId/periodes`, et
+ *     tous les écrans ouverts se relisent (`business-periods-mutated`) ;
  *   · la correction ne touche ni la couverture, ni la durée contractuelle,
  *     ni l'imputation TCO (le moteur ne lit pas ce fait : montants, année et
  *     déduplication inchangés — test L113AB-E2E-03) ;
  *   · rien n'est affiché si le justificatif n'a pas de période facturée
  *     (achat ponctuel : aucun champ artificiel) ;
- *   · lecture seule : la garde d'écriture existante refuse « Corriger ».
+ *   · lecture seule : la garde d'écriture existante refuse l'édition.
  * Une seule requête pour toutes les lignes affichées (`GET /api/documents/periodes`).
  *
  * Carte #766 (E09) — la période est celle de LA DÉPENSE, pas toutes celles du justificatif : quand un
@@ -97,7 +97,8 @@ export function TcoExpensePeriod({ fileId, lineId, summary }: { fileId: number |
   return (
     <div className="mt-0.5 space-y-0.5" data-tco-line-period={fileId}>
       {undetermined && <p className="text-xs text-muted-foreground" data-tco-line-period-undetermined>{EXPENSE_PERIOD_UNDETERMINED}</p>}
-      {periods.map((p) => <PeriodRow key={p.id} fileId={fileId} period={p} muted onSaved={rafraichi} />)}
+      {/* Carte #782 : la dépense n'a pas de parcours « Modifier » général — la ligne garde son action, nommée « Modifier ». */}
+      {periods.map((p) => <PeriodRow key={p.id} fileId={fileId} period={p} muted action="edit" onSaved={rafraichi} />)}
     </div>
   );
 }

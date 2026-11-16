@@ -136,7 +136,9 @@ describe('L114V-UI — Agenda : sections hors calendrier daté', () => {
 });
 
 describe('L114V-UI — accueil : groupe « À prévoir » de « Prochaines échéances »', () => {
-  const datee = { id: 7, title: 'Contrôle technique', assetName: 'Clio', date: '2026-11-20', day: '20', month: 'nov.', rel: 'Dans 6 jours', tone: 'amber' as const, forecast: false };
+  // Carte #752 : la ligne datée porte aussi la date complète (nom accessible) et, si nécessaire, l'année.
+  const datee = { id: 7, title: 'Contrôle technique', assetName: 'Clio', date: '2026-11-20', day: '20', month: 'nov.',
+    dateWithYear: null, dateFull: '20 novembre 2026', rel: 'Dans 6 jours', tone: 'amber' as const, forecast: false };
   const toPlan = { items: [{ id: 41, title: 'Entretien pompe à chaleur', assetName: 'Maison' }, { id: 42, title: 'Ramonage', assetName: null }], total: 5 };
 
   it('L114V-UI9 — dans le bloc existant, SOUS les échéances datées ; intitulé, bien, mention « À prévoir », aucune date ni délai inventé', () => {

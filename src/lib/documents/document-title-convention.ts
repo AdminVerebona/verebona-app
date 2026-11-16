@@ -157,6 +157,75 @@ export function presentSupplier(name: string): string {
   return s.split(' ').map((w) => (/^\p{Lu}{5,}$/u.test(w) ? w.charAt(0) + w.slice(1).toLocaleLowerCase('fr-FR') : w)).join(' ');
 }
 
+// ── Carte #783 : identité du fournisseur (bloc PO 52, facultatif) ───────────
+
+/**
+ * Carte #783 — marqueur du bloc PO facultatif qui demande à T1 de DISTINGUER, avec leurs preuves,
+ * la raison sociale, l'enseigne, l'établissement et l'adresse de l'émetteur
+ * (`docs/exploitation/prompts-a-appliquer-par-le-po.md`, étape 52). Sans ce bloc collé, T1 ne rend
+ * pas la rubrique : le titre garde EXACTEMENT le fournisseur d'aujourd'hui.
+ */
+export const T1_SUPPLIER_IDENTITY_CONTRACT = 't1-supplier-identity-v1';
+
+/** Coupure d'urgence : `T1_SUPPLIER_IDENTITY_ENABLED=0` → la rubrique est ignorée. Pure. */
+export const supplierIdentityEnabled = (env: Record<string, string | undefined> = process.env): boolean =>
+  (env.T1_SUPPLIER_IDENTITY_ENABLED ?? '1').trim() !== '0';
+
+/** Identité de l'émetteur telle que T1 la rend (bloc 52) ; `null` : rubrique absente ou non exploitable. */
+export interface SupplierIdentity {
+  /** Raison sociale (« Conforama France SA »). */
+  legalName: string | null;
+  /** Enseigne (« Conforama »). */
+  tradeName: string | null;
+  /** Établissement / agence (« Chasse-sur-Rhône ») — JAMAIS dans un titre. */
+  establishment: string | null;
+  /** Citation du document qui porte ces valeurs (exigée : rien n'est retenu sans preuve). */
+  quote: string;
+}
+
+const texte = (v: unknown): string | null => {
+  const s = typeof v === 'string' ? v.trim().replace(/\s+/g, ' ') : '';
+  return s ? s.slice(0, 200) : null;
+};
+
+/**
+ * Carte #783 — identité de l'émetteur lue dans le résultat PERSISTÉ d'une analyse T1 (rubrique
+ * facultative `document.supplier.identity`, bloc PO 52). Tolérante par construction : rubrique
+ * absente → `null` et comportement d'avant. Retenue SEULEMENT si la confiance est « certain », si
+ * une preuve est citée et si au moins l'enseigne ou la raison sociale est lisible — une rubrique
+ * incomplète, hésitante ou sans preuve n'a aucun effet (y compris si un modèle l'inventait sans le
+ * bloc). Pure.
+ */
+export function supplierIdentityFromAnalysis(raw: unknown, env?: Record<string, string | undefined>): SupplierIdentity | null {
+  if (!supplierIdentityEnabled(env)) return null;
+  const doc = (raw && typeof raw === 'object' ? (raw as { document?: unknown }).document : null) as Record<string, unknown> | null;
+  const sup = doc && typeof doc === 'object' ? doc.supplier as Record<string, unknown> | undefined : undefined;
+  if (!sup || typeof sup !== 'object') return null;
+  const inner = (sup.value && typeof sup.value === 'object' ? sup.value as Record<string, unknown> : sup);
+  const id = inner.identity && typeof inner.identity === 'object' ? inner.identity as Record<string, unknown> : null;
+  if (!id) return null;
+  if (id.confidence !== 'certain') return null;
+  const ev = id.evidence && typeof id.evidence === 'object' ? id.evidence as Record<string, unknown> : null;
+  const quote = texte(ev?.quote);
+  if (!quote) return null;
+  const legalName = texte(id.legalName);
+  const tradeName = texte(id.tradeName);
+  if (!legalName && !tradeName) return null;
+  return { legalName, tradeName, establishment: texte(id.establishment), quote };
+}
+
+/**
+ * Carte #783 — nom du fournisseur À AFFICHER dans un titre (pure) : l'ENSEIGNE si elle est prouvée,
+ * sinon la RAISON SOCIALE ; jamais l'établissement, jamais l'adresse, et jamais une troncature
+ * arbitraire d'un nom non décomposé. Sans identité exploitable, le nom lu aujourd'hui est rendu tel
+ * quel (aucune invention, aucun nom perdu : la réponse T1 d'origine reste persistée).
+ */
+export function supplierTitleName(identity: SupplierIdentity | null, current: string | null | undefined): string | null {
+  const actuel = texte(current);
+  if (!identity) return actuel;
+  return identity.tradeName ?? identity.legalName ?? actuel;
+}
+
 /** Clé canonique (pure) d'un titre périodique : même nature, même fournisseur, même période. */
 export function canonicalTitleKey(nature: string, supplier: string, period: string): string {
   return [nature, supplier, period].map(normalizeTitle).join('|');

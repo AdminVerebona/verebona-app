@@ -15,8 +15,8 @@ import { publicSiteUrl } from '@/lib/external-urls';
 import { AuthBackHomeLink } from '@/components/auth/AuthBackHomeLink';
 import { apiClient } from '@/lib/api-client';
 import {
-  AUTH_EXIT_MESSAGES, LOGIN_BANNER_PARAMS, isLoginAttemptId, loginBannerFromParams, loginFailureMessage,
-  newLoginAttemptId, rememberLoginAttempt,
+  AUTH_EXIT_MESSAGES, LOGIN_BANNER_PARAMS, classifyPostLoginCheck, isLoginAttemptId, loginBannerFromParams,
+  loginFailureMessage, newLoginAttemptId, rememberLoginAttempt,
 } from '@/lib/auth/login-diagnostics';
 import { runAuthStorageMigration } from '@/lib/auth-migration';
 import { safeReturnUrl } from '@/lib/safe-redirect';
@@ -53,9 +53,12 @@ function LoginForm() {
   );
   // Lot 103A : code de diagnostic (identifiant de la tentative de connexion),
   // affiché pour que le support retrouve les traces serveur — aucun secret.
+  // Carte #798 : les DEUX motifs de rejet consécutifs à une connexion
+  // acceptée affichent le code (le nouveau motif distinct compris).
   const [diagCode, setDiagCode] = useState<string | null>(() => {
     const d = searchParams.get('diag')?.toUpperCase() ?? null;
-    return searchParams.get('reason') === 'post_login_rejected' && isLoginAttemptId(d) ? d : null;
+    const r = searchParams.get('reason');
+    return (r === 'post_login_rejected' || r === 'post_login_refused') && isLoginAttemptId(d) ? d : null;
   });
   // Code d'erreur : diagnostic, et proposition de renvoi du lien de
   // vérification quand le serveur répond EMAIL_NOT_VERIFIED — ce qu'il ne
@@ -217,13 +220,28 @@ function LoginForm() {
       // (WKWebView / WebView Android : cookies HttpOnly) ? Un refus ici n'est
       // pas une expiration : l'utilisateur reste sur l'écran, avec un message
       // dédié et le code de diagnostic. Une lenteur ou une panne ne bloque pas.
+      //
+      // Carte #798 — CAUSE RACINE : seul `status === 401` était traité. Un
+      // 403 `MFA_REQUIRED` (obligation de double authentification sur une
+      // session de niveau 1), un 403 de compte ou tout autre refus étaient
+      // AVALÉS, et l'accueil s'ouvrait avec une session que le serveur
+      // refuse ; son premier appel — non silencieux — recevait le même refus
+      // et lançait la procédure de sortie (`logout trigger=auth-failure`,
+      // ligne BO « Déconnexion par précaution », bandeau « la session n'a pas
+      // pu être conservée sur cet appareil »). Toutes les suites sont
+      // désormais classées (`classifyPostLoginCheck`, pur et testé) : le
+      // refus est dit tel quel, l'incident technique ne bloque pas.
       try {
         await apiClient.get('/api/users/me', { onAuthFailure: 'silent', dedupe: false, cache: 'no-store' });
       } catch (checkError) {
-        const status = (checkError as { status?: unknown })?.status;
-        if (status === 401) {
-          setError(AUTH_EXIT_MESSAGES.post_login_rejected);
-          setErrorCode('POST_LOGIN_SESSION_MISSING');
+        const e = checkError as { status?: number; code?: string };
+        const verdict = classifyPostLoginCheck({ status: e?.status, code: e?.code });
+        if (verdict.kind === 'stay') {
+          setError(AUTH_EXIT_MESSAGES[verdict.reason]);
+          // Code affiché dans l'attribut de diagnostic de l'alerte : le motif
+          // « aucune preuve présentée » garde son code historique
+          // (POST_LOGIN_SESSION_MISSING), les autres portent le leur.
+          setErrorCode(verdict.reason === 'post_login_rejected' ? 'POST_LOGIN_SESSION_MISSING' : verdict.code);
           setDiagCode(attemptId);
           setIsLoading(false);
           return;

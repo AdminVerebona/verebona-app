@@ -10,9 +10,14 @@
  * · Sortie : déconnexion en cours (bornée), puis, si le serveur n'a pas
  *   confirmé, un choix explicite — réessayer ou quitter — sans annoncer une
  *   révocation qui n'a pas eu lieu.
+ * · Carte #793 : preuve forte exigée (403 `MFA_REQUIRED`). La session EXISTE
+ *   et le serveur l'a comprise : ce n'est pas une panne. Écran propre, avec
+ *   la reconnexion demandée et AUCUN bouton « Réessayer » (le même appel
+ *   recevrait le même refus : c'était la boucle signalée par la carte).
  */
 import { LogoLoader } from '@/components/LogoLoader';
 import { Button } from '@/components/ui/button';
+import { MFA_REQUIRED_MESSAGE } from '@/lib/auth/mfa/constants';
 
 const cadre = 'min-h-screen flex items-center justify-center bg-[color:var(--bg-page)] p-6';
 const carte = 'w-full max-w-sm space-y-4 rounded-2xl border border-[color:var(--border-subtle)] bg-[color:var(--bg-card)] p-6 text-center shadow-relief-md';
@@ -33,12 +38,48 @@ export function SessionUnavailableScreen({
         <h1 className="text-base font-semibold text-[color:var(--text-primary)]">
           Connexion au service momentanément impossible
         </h1>
+        {/* Carte #793 §5 : plus d'affirmation que le système ne peut pas
+            garantir (« votre session n'est pas en cause », « vos données sont
+            intactes »). Texte NOUVEAU, à valider par le PO. */}
         <p className="text-sm text-[color:var(--text-muted)]">
-          Votre session n&apos;est pas en cause : le service n&apos;a pas répondu à temps.
-          Vos données sont intactes.
+          La vérification de votre session n&apos;a pas abouti. Réessayez dans un instant.
         </p>
         <Button onClick={onRetry} disabled={retrying} className="w-full">
           {retrying ? 'Nouvelle tentative…' : 'Réessayer'}
+        </Button>
+        {requestId && (
+          <p className="text-xs text-[color:var(--text-muted)]">Référence : {requestId}</p>
+        )}
+      </div>
+    </div>
+  );
+}
+
+/**
+ * Carte #793 — session valide mais de preuve insuffisante face à l'obligation
+ * de double authentification (403 `MFA_REQUIRED`). Aucun réessai : une seule
+ * action, la reconnexion forte, vers le parcours EXISTANT
+ * (`/login?reason=mfa_required&returnUrl=…`), qui mène à la clé d'accès, au
+ * code de sécurité ou à « Sécurisez votre compte » selon l'enrôlement.
+ */
+export function SessionReauthRequiredScreen({
+  onSignIn,
+  requestId,
+}: {
+  onSignIn: () => void;
+  requestId?: string;
+}) {
+  return (
+    <div className={cadre}>
+      <div className={carte} role="alert" data-testid="session-reauth-required">
+        {/* Titre NOUVEAU, à valider par le PO. */}
+        <h1 className="text-base font-semibold text-[color:var(--text-primary)]">
+          Confirmez votre identité pour continuer
+        </h1>
+        {/* Message du serveur (lot 110B), repris à l'identique. */}
+        <p className="text-sm text-[color:var(--text-muted)]">{MFA_REQUIRED_MESSAGE}</p>
+        <Button onClick={onSignIn} className="w-full" data-testid="session-reauth-signin">
+          Se reconnecter
         </Button>
         {requestId && (
           <p className="text-xs text-[color:var(--text-muted)]">Référence : {requestId}</p>

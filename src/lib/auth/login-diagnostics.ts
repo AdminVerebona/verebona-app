@@ -21,12 +21,31 @@
  *     expirée ».
  * ══════════════════════════════════════════════════════════════════════════
  */
+import { MFA_REQUIRED_CODE } from '@/lib/auth/mfa/constants';
 
 /** En-tête de corrélation d'une tentative de connexion (aucune donnée secrète). */
 export const LOGIN_ATTEMPT_HEADER = 'X-Verebona-Login-Attempt';
 
 /** En-tête : qui demande la déconnexion (utilisateur, refus d'authentification…). */
 export const LOGOUT_REASON_HEADER = 'X-Verebona-Logout-Reason';
+
+/**
+ * Carte #799 — CODE du refus qui a déclenché la sortie (`AUTH_REQUIRED`,
+ * `MFA_REQUIRED`, `SESSION_REVOKED`…). Le BO affichait « Session fermée par
+ * l'application après un refus d'authentification » SANS jamais dire lequel :
+ * l'administrateur devait ouvrir les journaux Scalingo. Un code métier n'est
+ * ni un jeton, ni un cookie, ni une donnée personnelle ; le format est
+ * contrôlé à la lecture et toute autre valeur est ignorée.
+ */
+export const LOGOUT_CODE_HEADER = 'X-Verebona-Logout-Code';
+
+const BUSINESS_CODE = /^[A-Z0-9_]{2,64}$/;
+
+/** Lecture tolérante du code de refus (serveur) : null si absent ou mal formé. */
+export function readLogoutCode(headers: { get(name: string): string | null }): string | null {
+  const v = headers.get(LOGOUT_CODE_HEADER)?.trim().toUpperCase() ?? '';
+  return BUSINESS_CODE.test(v) ? v : null;
+}
 
 export const LOGOUT_REASONS = ['user', 'auth-failure'] as const;
 export type LogoutReason = typeof LOGOUT_REASONS[number];
@@ -119,6 +138,10 @@ export const AUTH_EXIT_REASONS = [
   'no_session',
   'session_revoked',
   'post_login_rejected',
+  // Carte #798 : refus du premier appel APRÈS une connexion acceptée, dont la
+  // cause N'EST PAS « aucune preuve présentée ». On ne prétend alors pas que
+  // l'appareil a perdu le cookie : le motif est distinct, avec son code.
+  'post_login_refused',
   'account_suspended',
   // Lot 110B : session sans double authentification alors qu'elle est obligatoire.
   'mfa_required',
@@ -139,20 +162,42 @@ export const AUTH_EXIT_MESSAGES: Readonly<Record<AuthExitReason, string>> = Obje
   post_login_rejected:
     'Votre connexion a bien été acceptée, mais la session n’a pas pu être conservée sur cet appareil. '
     + 'Réessayez. Si le problème continue, contactez l’assistance en indiquant le code de diagnostic ci-dessous.',
+  // Carte #798 — texte NOUVEAU, à valider par le PO. N'affirme rien sur la
+  // cause (ni cookie perdu, ni session expirée) : le premier accès a été
+  // refusé, le code de diagnostic permet de retrouver le refus exact.
+  post_login_refused:
+    'Votre connexion a bien été acceptée, mais le premier accès a été refusé. '
+    + 'Réessayez. Si le problème continue, contactez l’assistance en indiquant le code de diagnostic ci-dessous.',
   account_suspended: 'Votre compte est suspendu. Contactez l’assistance.',
   mfa_required: 'Pour protéger vos biens et vos documents, reconnectez-vous puis confirmez votre identité avec votre méthode de sécurité.',
 });
+
+/** Codes qui signifient « AUCUNE preuve de session n'a été présentée ». */
+const NO_CREDENTIAL_CODES = new Set(['AUTH_REQUIRED', 'MISSING_TOKEN']);
 
 /**
  * Motif d'un refus définitif (renouvellement impossible), d'après le code du
  * refus de `/api/auth/refresh` et la dernière tentative de connexion (pur).
  *
- *   · AUTH_REQUIRED (aucun jeton de renouvellement présenté) : pas de
+ *   · AUTH_REQUIRED / MISSING_TOKEN (aucune preuve présentée) : pas de
  *     session — ou, juste après une connexion ACCEPTÉE, session non
  *     conservée / non transmise par la vue (cookie absent) ;
+ *   · MFA_REQUIRED : la session existe, sa preuve est insuffisante ;
  *   · SESSION_REVOKED : appareil déconnecté (Mon compte, BO, mot de passe) ;
  *   · ACCOUNT_SUSPENDED : compte suspendu ;
  *   · sinon (jeton expiré, invalide, révoqué par la borne globale) : expiration.
+ *
+ * ── RÈGLE REMPLACÉE (carte #798) ──────────────────────────────────────────
+ * Un code de refus VIDE (`''`) comptait comme « session non conservée »
+ * lorsqu'une connexion venait d'être acceptée. Or il est vide dans deux cas
+ * très différents : aucun renouvellement n'a été tenté (un 403 ne passe pas
+ * par `/api/auth/refresh` : MFA exigée, droits, compte), ou la réponse du
+ * refus était illisible. L'écran affirmait alors « la session n'a pas pu être
+ * conservée sur cet appareil » pour un refus qui n'a rien à voir avec un
+ * cookie — c'est précisément le faux diagnostic signalé par la carte, et il
+ * laissait la ligne BO « Déconnexion par précaution » derrière lui. Seuls
+ * `AUTH_REQUIRED` et `MISSING_TOKEN` peuvent désormais le dire ; tout autre
+ * refus juste après une connexion acceptée donne `post_login_refused`.
  */
 export function classifyAuthExit(input: {
   refreshCode: string | null | undefined;
@@ -163,10 +208,66 @@ export function classifyAuthExit(input: {
   const code = (input.refreshCode ?? '').toUpperCase();
   const recentLogin = !!input.lastAttempt?.ok && now - input.lastAttempt.at <= POST_LOGIN_WINDOW_MS;
   if (code === 'ACCOUNT_SUSPENDED') return 'account_suspended';
-  if (recentLogin && (code === 'AUTH_REQUIRED' || code === 'MISSING_TOKEN' || code === '')) return 'post_login_rejected';
-  if (code === 'AUTH_REQUIRED' || code === 'MISSING_TOKEN') return 'no_session';
+  if (code === MFA_REQUIRED_CODE) return 'mfa_required';
+  if (recentLogin && NO_CREDENTIAL_CODES.has(code)) return 'post_login_rejected';
+  if (NO_CREDENTIAL_CODES.has(code)) return 'no_session';
   if (code === 'SESSION_REVOKED') return 'session_revoked';
+  // Juste après une connexion ACCEPTÉE, un jeton de 15 minutes ne peut pas
+  // avoir expiré : ne pas annoncer une expiration.
+  if (recentLogin) return 'post_login_refused';
   return 'session_expired';
+}
+
+/**
+ * Suite de la vérification faite AVANT de quitter l'écran de connexion
+ * (lot 103A : la session tout juste émise est-elle utilisable ?). Pur, testé.
+ *
+ * ══════════════════════════════════════════════════════════════════════════
+ * CAUSE RACINE #798 — UNE SEULE BRANCHE ÉTAIT TRAITÉE
+ *
+ * L'écran ne regardait que `status === 401`. Tout AUTRE refus du premier
+ * appel authentifié (403 `MFA_REQUIRED` d'une obligation de double
+ * authentification, 403 compte, 426 version d'app, 503, lenteur, réseau)
+ * était avalé par le `catch`, et la navigation vers l'accueil avait lieu
+ * QUAND MÊME, avec une session que le serveur refuse. Le premier appel de
+ * l'accueil — lui, non silencieux — recevait le même refus et lançait la
+ * procédure de sortie : `POST /api/auth/logout` `trigger=auth-failure` (ligne
+ * BO « Déconnexion par précaution ») puis
+ * `/login?reason=post_login_rejected&diag=…`, c'est-à-dire exactement la
+ * signature observée le 16/11 à 14 h 07. Le bandeau accusait l'appareil
+ * d'avoir perdu le cookie alors que le refus pouvait être volontaire.
+ * ══════════════════════════════════════════════════════════════════════════
+ *
+ *   · `stay`     : rester sur Connexion, afficher le message du motif et le
+ *                  code de diagnostic (aucune déconnexion n'est demandée :
+ *                  aucune session utilisable n'a été ouverte ici) ;
+ *   · `continue` : incident TECHNIQUE (lenteur, 5xx, réseau, abandon) — la
+ *                  vérification n'est pas un verrou, l'accueil s'ouvre et la
+ *                  coquille gère la reprise ;
+ *   · `ok`       : session utilisable.
+ */
+export type PostLoginCheck =
+  | { kind: 'ok' }
+  | { kind: 'stay'; reason: AuthExitReason; code: string }
+  | { kind: 'continue' };
+
+/** Codes d'incident technique : ni refus, ni succès (le client les produit lui-même). */
+const TECHNICAL_CODES = new Set(['REQUEST_TIMEOUT', 'NETWORK_ERROR', 'SERVICE_UNAVAILABLE', 'INVALID_RESPONSE', 'RESPONSE_TOO_LARGE', 'REQUEST_ABORTED']);
+
+export function classifyPostLoginCheck(input: { status: number | undefined; code: string | null | undefined }): PostLoginCheck {
+  const status = typeof input.status === 'number' ? input.status : 0;
+  const code = (input.code ?? '').toUpperCase();
+  if (status === 0 || status >= 500 || TECHNICAL_CODES.has(code)) return { kind: 'continue' };
+  // Version d'application trop ancienne : le client HTTP affiche déjà son
+  // écran bloquant dédié — ne rien ajouter ici.
+  if (status === 426 || code === 'APP_UPDATE_REQUIRED') return { kind: 'continue' };
+  if (status === 403 && code === MFA_REQUIRED_CODE) return { kind: 'stay', reason: 'mfa_required', code };
+  if (code === 'ACCOUNT_SUSPENDED') return { kind: 'stay', reason: 'account_suspended', code };
+  if (status === 401 && NO_CREDENTIAL_CODES.has(code)) return { kind: 'stay', reason: 'post_login_rejected', code: code || 'AUTH_REQUIRED' };
+  if (status === 401 || status === 403) return { kind: 'stay', reason: 'post_login_refused', code: code || `HTTP_${status}` };
+  // 4xx inattendu (409, 429…) : ni refus d'authentification démontré, ni
+  // panne — on ne bloque pas, la coquille reverra la session.
+  return { kind: 'continue' };
 }
 
 /** Message affiché par l'écran de connexion pour ses paramètres d'URL (pur). */

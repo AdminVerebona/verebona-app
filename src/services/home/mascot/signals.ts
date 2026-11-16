@@ -15,6 +15,7 @@
  * traduit un état déjà décidé en sujet présentable.
  * ══════════════════════════════════════════════════════════════════════════
  */
+import { dateLongueFr } from '@/lib/dates/delai-calendaire';
 import type { ToProcessActionView } from '@/services/to-process/to-process-query.service';
 import type { MascotAction, MascotFamily, MascotInterpellation, MascotPriority, MascotReminderRef, MascotSubject } from './types';
 import { MAX_ACTIONS_PER_SUBJECT } from './types';
@@ -170,13 +171,14 @@ export interface MascotCandidates {
 
 // ── Formats ──────────────────────────────────────────────────────────────────
 
-const MOIS = ['janvier', 'février', 'mars', 'avril', 'mai', 'juin', 'juillet', 'août',
-  'septembre', 'octobre', 'novembre', 'décembre'];
-
-/** « 25 septembre 2026 » — toujours absolue (DAT-005, T6-008). */
+/**
+ * « 25 septembre 2026 » — toujours absolue (DAT-005, T6-008).
+ * Carte #752 : une seule définition du format long, partagée avec l'accueil
+ * et l'interface (`lib/dates/delai-calendaire.ts`) ; un jour illisible ne
+ * produit plus de date bancale, mais une chaîne vide.
+ */
 export function formatDateFr(day: string): string {
-  const [y, m, d] = day.slice(0, 10).split('-').map(Number);
-  return `${d === 1 ? '1er' : d} ${MOIS[m - 1]} ${y}`;
+  return dateLongueFr(day);
 }
 
 const q = (s: string) => `« ${s} »`;

@@ -55,8 +55,10 @@ const asset = (id: number, name: string): HomeAsset => ({
   documentCount: 3, documentLabels: [], todoCount: 0,
 });
 const doc = (id: number) => ({ id, title: `Document ${id}`, assetId: 1, assetName: 'Polo', typeLabel: 'Facture', date: '2026-07-31', status: null, tone: 'slate' as const });
+// Carte #752 : la ligne porte aussi la date avec son année (mention courte) et la date complète du nom accessible.
 const up = (id: number, tone: 'red' | 'amber' | 'green', rel: string) =>
-  ({ id, title: `Échéance ${id}`, assetName: 'Cupra', date: '2028-04-18', day: '18', month: 'avr.', rel, tone, forecast: false });
+  ({ id, title: `Échéance ${id}`, assetName: 'Cupra', date: '2028-04-18', day: '18', month: 'avr.',
+    dateWithYear: '18 avr. 2028', dateFull: '18 avril 2028', rel, tone, forecast: false });
 const hier = new Date(Date.now() - 86_400_000).toISOString();
 const work = (id: string, at: string): VerebonaWorkItem => ({ id, kind: 'fields', text: `Action ${id}`, at, tone: 'blue', cta: 'Voir la fiche', target: { kind: 'asset', assetId: 1 } });
 

@@ -69,23 +69,17 @@
  */
 import { contractualDateSource } from '@/services/business-operations/consolidation/model';
 import {
-  BUSINESS_PERIOD_KINDS, boundsProof, chronoKey, isPartialDate, orderedBounds, samePeriodBounds,
+  BUSINESS_PERIOD_KINDS, boundsProof, chronoKey, isPartialDate, orderedBounds, PERIOD_FACT_KEYS, samePeriodBounds,
   type BusinessPeriodKind, type PartialDate, type PeriodBounds,
 } from '@/lib/documents/business-periods';
 import { isOpenEndToken, parseRelation, parseRelevance, type DocumentRelation, type PeriodRelevance } from './t1-v2';
 
-/** Préfixe des clés de faits génériques T1 (contrat `t1-business-periods-v1`). */
-export const PERIOD_FACT_PREFIX = 'period.';
-export const PERIOD_FACT_KEYS: Record<string, BusinessPeriodKind> = {
-  'period.coverage': 'COVERAGE',
-  'period.billing': 'BILLING',
-  'period.validity': 'VALIDITY',
-  'period.warranty': 'WARRANTY',
-  'period.service': 'SERVICE',
-  // Lot 113AA (contrat t1-business-periods-v2, bloc 28).
-  'period.contract': 'CONTRACT',
-  'period.realization': 'REALIZATION',
-};
+/**
+ * Préfixe et clés des faits génériques T1 (contrat `t1-business-periods-v1`) :
+ * DÉFINIS dans `@/lib/documents/business-periods` depuis la carte #783 (module pur,
+ * lu aussi par le nommage des documents) et réexportés ici — un seul référentiel.
+ */
+export { PERIOD_FACT_KEYS, PERIOD_FACT_PREFIX } from '@/lib/documents/business-periods';
 /** Marqueur du bloc PO (documentation ; aucun code ne le lit). */
 export const T1_BUSINESS_PERIODS_CONTRACT = 't1-business-periods-v1';
 /** Borne du nombre de segments par nature (contrainte SQL < 50). */

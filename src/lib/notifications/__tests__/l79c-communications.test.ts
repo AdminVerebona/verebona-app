@@ -263,8 +263,13 @@ describe('L79C-AC11 — diagnostic des déconnexions lisible au BO (sans SQL)', 
     expect(formatRotationAge(45_200)).toBe('45 s');
     expect(formatRotationAge(185_000)).toBe('3 min');
     expect(formatRotationAge(2 * 3_600_000 + 5 * 60_000)).toBe('2 h 05');
+    // Carte #799 : catégorie typée « security » réservée à la sévérité
+    // qualifiée ; identifiant de tentative et code de refus si tracés.
     expect(describeLoginActivity('AUTH_TOKEN_REUSE_DETECTED', JSON.stringify({ severity: 'security_incident', rotationAgeMs: 45_000, sessionsRevoked: true })))
-      .toEqual({ result: 'session_revoked', detail: 'Sessions révoquées par précaution : ancien jeton présenté 45 s après son renouvellement' });
+      .toEqual({
+        result: 'session_revoked', category: 'security', attemptId: null, refusalCode: null,
+        detail: 'Sessions révoquées par précaution : ancien jeton présenté 45 s après son renouvellement',
+      });
     expect(describeLoginActivity('AUTH_TOKEN_REUSE_DETECTED', JSON.stringify({ severity: 'security_incident', sessionsRevoked: false })).detail)
       .toBe('Sessions révoquées par précaution : ancien jeton présenté (révocation non confirmée)');
   });

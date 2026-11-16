@@ -266,7 +266,8 @@ export function ReferenceEventPageContent({ fiche, openers, actions }: {
           <Card data-testid="reference-event-page-coverages">
             <CardContent className="pt-6">
               {fiche.coverages.length > 0
-                ? <CoverageHistoryList coverages={fiche.coverages} onOpenDocument={openers.openDocument} onSaved={openers.onPeriodsSaved} />
+                /* Carte #782 : cette page n'a pas de parcours « Modifier » général — la ligne garde son action, nommée « Modifier ». */
+                ? <CoverageHistoryList coverages={fiche.coverages} onOpenDocument={openers.openDocument} action="edit" onSaved={openers.onPeriodsSaved} />
                 : (
                   <div className="space-y-1" data-testid="coverage-history-empty">
                     <p className="text-xs font-semibold text-muted-foreground">{COVERAGE_HISTORY_TITLE}</p>

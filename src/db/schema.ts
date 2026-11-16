@@ -3121,6 +3121,15 @@ export const notificationDeliveries = pgTable('notification_deliveries', {
   attemptCount: integer('attempt_count').notNull().default(0),
   lastErrorCode: text('last_error_code'),
   lastErrorMessage: text('last_error_message'), // minimisé
+  // Lot 115B (1745, #800) : instrumentation structurée d'une tentative — où la
+  // chaîne a cassé, et ce que le fournisseur a RÉELLEMENT répondu. NULL =
+  // « non enregistré » (lignes antérieures à la migration) : jamais reconstruit.
+  // Aucune donnée sensible (ni jeton, ni contenu) : des codes et des statuts.
+  failureStep: text('failure_step'),
+  providerName: text('provider_name'),
+  providerStatusCode: integer('provider_status_code'),
+  providerErrorCode: text('provider_error_code'),
+  failureCategory: text('failure_category'),
   attemptedAt: tstzOptional('attempted_at'),
   sentAt: tstzOptional('sent_at'),
   createdAt: tstz('created_at'),

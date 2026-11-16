@@ -103,7 +103,12 @@ describe('L103A-3 — motif du retour à la connexion', () => {
     ['AUTH_REQUIRED', { id: 'ABCDEFGH23', at: now - 5_000, ok: false }, 'no_session'],
     ['SESSION_REVOKED', null, 'session_revoked'],
     ['INVALID_TOKEN', null, 'session_expired'],
-    ['INVALID_TOKEN', { id: 'ABCDEFGH23', at: now - 5_000, ok: true }, 'session_expired'],
+    // Règle remplacée (carte #798) : un jeton « invalide » quelques secondes
+    // après une connexion ACCEPTÉE ne peut pas être une expiration (le jeton
+    // d'accès vit 15 min) et n'est pas non plus une preuve que l'appareil a
+    // perdu le cookie. Motif distinct `post_login_refused`, qui n'affirme
+    // aucune cause et porte le code de diagnostic.
+    ['INVALID_TOKEN', { id: 'ABCDEFGH23', at: now - 5_000, ok: true }, 'post_login_refused'],
     ['ACCOUNT_SUSPENDED', null, 'account_suspended'],
   ] as const)('%s / %j → %s', (refreshCode, lastAttempt, attendu) => {
     expect(classifyAuthExit({ refreshCode, lastAttempt, now })).toBe(attendu);

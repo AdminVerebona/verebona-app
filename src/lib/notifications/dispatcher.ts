@@ -58,6 +58,14 @@ async function recordDelivery(
     providerMessageId: outcome.providerMessageId ?? null,
     lastErrorCode: outcome.errorCode ?? null,
     lastErrorMessage: outcome.errorMessage ? outcome.errorMessage.slice(0, 500) : null,
+    // Lot 115B (#800) : instrumentation structurée de la tentative. `null` =
+    // le canal n'a rien à dire sur ce point ; le BO affiche « non enregistré »
+    // plutôt qu'une cause supposée.
+    failureStep: outcome.failureStep ?? null,
+    failureCategory: outcome.failureCategory ?? null,
+    providerName: outcome.providerName ?? null,
+    providerStatusCode: outcome.providerStatusCode ?? null,
+    providerErrorCode: outcome.providerErrorCode ? outcome.providerErrorCode.slice(0, 60) : null,
     attemptCount: 1,
     attemptedAt: now,
     sentAt: terminal ? now : null,
@@ -117,6 +125,8 @@ async function processRow(row: OutboxRow): Promise<'sent' | 'partial' | 'failed'
     for (const channel of (['bell', 'email', 'push'] as const).filter((c) => restricted[c])) {
       await recordDelivery(row.id, row.recipient_user_id, channel, {
         status: 'skipped_unavailable', errorCode: GROUPED_INCIDENT_ERROR_CODE, errorMessage: `regroupé avec ${grouping.absorbedBy}`,
+        // Lot 115B (#800) : regroupement — ni échec, ni envoi.
+        failureStep: 'deduplication', failureCategory: 'ignore',
       });
     }
     await markGrouped(row.id, grouping.absorbedBy);
@@ -126,7 +136,9 @@ async function processRow(row: OutboxRow): Promise<'sent' | 'partial' | 'failed'
   // annulée entre-temps) — ignoré, cause tracée, jamais une anomalie.
   if (grouping.skipReason) {
     for (const channel of (['bell', 'email', 'push'] as const).filter((c) => restricted[c])) {
-      await recordDelivery(row.id, row.recipient_user_id, channel, { status: 'skipped_unavailable', errorCode: grouping.skipReason });
+      await recordDelivery(row.id, row.recipient_user_id, channel, {
+        status: 'skipped_unavailable', errorCode: grouping.skipReason, failureStep: 'deduplication', failureCategory: 'ignore',
+      });
     }
     await markProcessed(row.id, 'skipped', { reason: grouping.skipReason });
     await afterProcessed(row, 'skipped');
@@ -178,7 +190,7 @@ async function processRow(row: OutboxRow): Promise<'sent' | 'partial' | 'failed'
 
   // Trace : canal supprimé (lot 79C ; cloche : lot 101B) — ni envoi, ni échec.
   for (const channel of retired) {
-    const o: DeliveryOutcome = { status: 'skipped_unavailable', errorCode: CHANNEL_RETIRED_ERROR_CODE };
+    const o: DeliveryOutcome = { status: 'skipped_unavailable', errorCode: CHANNEL_RETIRED_ERROR_CODE, failureStep: 'canal', failureCategory: 'ignore' };
     await recordDelivery(row.id, ctx.userId, channel, o);
     noter(o);
   }
@@ -186,7 +198,7 @@ async function processRow(row: OutboxRow): Promise<'sent' | 'partial' | 'failed'
   // Trace de diagnostic : le canal était prévu mais a été coupé par l'admin.
   // « skipped_* » n'est pas un échec (§18.4) et n'est pas compté comme envoi.
   for (const channel of blocked) {
-    const o: DeliveryOutcome = { status: 'skipped_unavailable', errorCode: CHANNEL_DISABLED_ERROR_CODE };
+    const o: DeliveryOutcome = { status: 'skipped_unavailable', errorCode: CHANNEL_DISABLED_ERROR_CODE, failureStep: 'canal', failureCategory: 'ignore' };
     await recordDelivery(row.id, ctx.userId, channel, o);
     noter(o);
   }
@@ -201,7 +213,7 @@ async function processRow(row: OutboxRow): Promise<'sent' | 'partial' | 'failed'
   // Lot 100G (E2) : e-mail porté par la séquence de fin d'essai (même gabarit,
   // contrôles juste avant l'envoi, journal propre) — jamais deux circuits.
   if (channels.email && entry.emailDeliveredBy) {
-    const o: DeliveryOutcome = { status: 'skipped_unavailable', errorCode: EMAIL_DELIVERED_ELSEWHERE_ERROR_CODE };
+    const o: DeliveryOutcome = { status: 'skipped_unavailable', errorCode: EMAIL_DELIVERED_ELSEWHERE_ERROR_CODE, failureStep: 'canal', failureCategory: 'ignore' };
     await recordDelivery(row.id, ctx.userId, 'email', o);
     noter(o);
   } else if (channels.email) {
@@ -215,7 +227,7 @@ async function processRow(row: OutboxRow): Promise<'sent' | 'partial' | 'failed'
     // envoi à un navigateur. Aucun appareil → une ligne skipped.
     const mobileResults = await deliverMobilePush(ctx, entry, rendered, bellNotificationId);
     if (mobileResults.length === 0) {
-      const o: DeliveryOutcome = { status: 'skipped_unavailable', errorCode: 'no_active_subscription' };
+      const o: DeliveryOutcome = { status: 'skipped_unavailable', errorCode: 'no_active_subscription', failureStep: 'jeton_appareil', failureCategory: 'ignore' };
       await recordDelivery(row.id, ctx.userId, 'push', o);
       noter(o);
     } else {

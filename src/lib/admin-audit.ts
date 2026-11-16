@@ -84,6 +84,11 @@ export type AdminActionType =
   | 'NOTIFICATION_SEARCH'
   | 'NOTIFICATION_REEMIT'
   | 'NOTIFICATION_RESEND'
+  // Lot 115B (Trello #800) : diagnostic des échecs de notification — chaque
+  // consultation, recherche filtrée et export est tracée (qui, quand,
+  // périmètre, volume), sans donnée personnelle ni secret.
+  | 'NOTIFICATION_DIAGNOSTIC_READ'
+  | 'NOTIFICATION_DIAGNOSTIC_EXPORT'
   // Caches de l'assistant et de l'IA : invalidation (CDC Assistant §32.6 ;
   // lot 23) — auteur, date, cache, motif.
   | 'AI_CACHE_INVALIDATE'
