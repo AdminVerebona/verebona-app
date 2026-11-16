@@ -648,10 +648,16 @@ export async function activateQualifiedCandidate(versionId: number, opts: {
     const { operationalRefusalInTx } = await import('../provider/model-operational.service');
     for (const model of new Set(chainePromue)) {
       const indispo = await operationalRefusalInTx(sql, model);
-      if (indispo !== null) {
+      if (indispo.kind === 'refused') {
         throw new ConfigOperationRefused('BLOCKED_MODEL_UNAVAILABLE',
           `Activation annulée dans la transaction : « ${model} » est confirmé indisponible pour la clé active${indispo.error ? ` (${indispo.error})` : ''}.`,
           { model, checkedAt: indispo.checkedAt });
+      }
+      // #786 (E01) : contrôle final impossible — activation refusée, candidate et preuves conservées.
+      if (indispo.kind === 'unverifiable') {
+        throw new ConfigOperationRefused('BLOCKED_MODEL_UNAVAILABLE',
+          `Activation annulée dans la transaction : la disponibilité de « ${model} » n’a pas pu être contrôlée (${indispo.detail}).`,
+          { model, unverifiable: true });
       }
     }
   };

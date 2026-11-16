@@ -30,6 +30,7 @@ import { evaluateModelForTreatment, type UnusableReason, type UsableModelsContex
 import type { OperationalDiagnostic } from './model-operational.service';
 import { GLOBAL_PROBE_KINDS, PROBE_ERROR_KIND_LABELS, type ProbeErrorKind } from './probe-classification';
 import type { CoupleQualification } from '../gateway/fallback-policy';
+import type { AiUseCaseCode } from '../registry/use-cases';
 
 export type ChainRank = 'primaryModel' | 'fallback1' | 'fallback2';
 
@@ -39,6 +40,13 @@ export interface ActiveChainEntry {
   model: string;
   /** `version` : version de configuration effective ; `code` : référentiel. */
   source: 'version' | 'code';
+  /**
+   * Lot 115 (carte #786, E08) : VARIANTE propre à une opération du traitement
+   * (surcouche d'exclusion, promotion de routage, import historique) — absent
+   * quand le rang est celui de la chaîne du traitement. La même éligibilité
+   * que le routage s'y applique, et les usages ne sont pas comptés deux fois.
+   */
+  operationCode?: string;
 }
 
 export interface ActiveModelAnomaly extends ActiveChainEntry {
@@ -122,7 +130,15 @@ export function detectActiveModelAnomalies(chains: readonly ActiveChainEntry[], 
   return out;
 }
 
-/** Chaînes de la configuration EFFECTIVE (version active, sinon référentiel). Lecture seule. */
+/**
+ * Chaînes de la configuration EFFECTIVE (version active, sinon référentiel). Lecture seule.
+ *
+ * Lot 115 (carte #786, E08) : les VARIANTES par opération sont ajoutées — pour chaque opération du
+ * traitement, la chaîne réellement exécutée est celle que la passerelle applique (surcouche d'exclusion,
+ * promotion de routage), lue par la MÊME fonction que le routage (`applyRoutingOverlay`). Une opération dont
+ * la chaîne est identique à celle du traitement n'ajoute RIEN (aucun doublon par rang). Lecture impossible :
+ * les chaînes de traitement restent rendues, aucune variante n'est inventée.
+ */
 export async function loadActiveChains(): Promise<ActiveChainEntry[]> {
   const [{ TREATMENTS, TREATMENT_DEFINITIONS }, { resolveTreatmentConfig }, { listOperationsByUseCase }] = await Promise.all([
     import('../config/treatments'),
@@ -133,10 +149,13 @@ export async function loadActiveChains(): Promise<ActiveChainEntry[]> {
   for (const t of TREATMENTS) {
     const entry = await resolveTreatmentConfig(t).catch(() => null);
     if (entry?.primaryModel) {
+      const base: Array<string | null> = [];
       for (const rank of ['primaryModel', 'fallback1', 'fallback2'] as const) {
         const model = entry[rank];
+        base.push(model ?? null);
         if (model) out.push({ treatment: t, rank, model, source: 'version' });
       }
+      out.push(...await variantesParOperation(t, TREATMENT_DEFINITIONS[t].useCaseCode, entry, base));
       continue;
     }
     const op = listOperationsByUseCase(TREATMENT_DEFINITIONS[t].useCaseCode).find((o) => o.provider !== 'none' && o.active);
@@ -146,6 +165,35 @@ export async function loadActiveChains(): Promise<ActiveChainEntry[]> {
       if (model) out.push({ treatment: t, rank: (['primaryModel', 'fallback1', 'fallback2'] as const)[i], model, source: 'code' });
     });
   }
+  return out;
+}
+
+/**
+ * Lot 115 (#786, E08) — chaînes RÉELLEMENT exécutées par opération, quand elles diffèrent de celle du
+ * traitement (surcouche, promotion). Pure lecture ; ne lève jamais.
+ */
+async function variantesParOperation(
+  treatment: Treatment, useCaseCode: AiUseCaseCode, entry: unknown, base: Array<string | null>,
+): Promise<ActiveChainEntry[]> {
+  const out: ActiveChainEntry[] = [];
+  try {
+    const [{ listOperationsByUseCase }, { applyRoutingOverlay, configuredChain }, { currentRoutingOverlay }] = await Promise.all([
+      import('../registry/operations'), import('../config/routing-overlay'), import('../config/config-resolver'),
+    ]);
+    const overlay = await currentRoutingOverlay().catch(() => null);
+    if (!overlay) return out;
+    const chaine = configuredChain(entry as Parameters<typeof configuredChain>[0]);
+    const ordre: ChainRank[] = ['primaryModel', 'fallback1', 'fallback2'];
+    for (const op of listOperationsByUseCase(useCaseCode)) {
+      if (op.provider === 'none' || !op.active) continue;
+      const effective = applyRoutingOverlay(chaine, treatment, op.operationCode, overlay).chain.map((c) => c.model);
+      // Identique à la chaîne du traitement : aucun usage supplémentaire (jamais de doublon par rang).
+      if (effective.length === base.filter(Boolean).length && effective.every((m, i) => m === base[i])) continue;
+      effective.slice(0, 3).forEach((model, i) => {
+        if (model) out.push({ treatment, rank: ordre[i], model, source: 'version', operationCode: op.operationCode });
+      });
+    }
+  } catch { /* variantes non lues : les chaînes de traitement restent rendues */ }
   return out;
 }
 
@@ -173,6 +221,8 @@ interface ModelUsage {
   treatment: Treatment;
   rank: ChainRank;
   rankLabel: string;
+  /** #786 (E08) : variante propre à une opération du traitement (absent : chaîne du traitement). */
+  operationCode?: string;
   source: 'version' | 'code';
   fallbackAvailable: boolean;
   /** Lot 87A : secours relié (INV-10), si l'état de qualification est connu. */
@@ -256,6 +306,7 @@ export function groupAnomaliesByModel(
       model,
       usages: liste.map((a) => ({
         treatment: a.treatment, rank: a.rank, rankLabel: RANK_LABELS[a.rank], source: a.source, fallbackAvailable: a.fallbackAvailable,
+        ...(a.operationCode ? { operationCode: a.operationCode } : {}),
         ...(a.secours ? { secours: a.secours } : {}),
       })),
       reasons,
@@ -376,7 +427,19 @@ export async function raiseActiveModelAlerts(
  * n'est plus en anomalie (rétabli, ou retiré des chaînes actives) est résolue (jamais supprimée). À n'appeler
  * qu'après une détection RÉUSSIE des anomalies. Rend le nombre d'alertes résolues ; ne lève jamais.
  */
-export async function resolveRecoveredModelAlerts(anomalies: readonly ActiveModelAnomaly[]): Promise<number> {
+export async function resolveRecoveredModelAlerts(
+  anomalies: readonly ActiveModelAnomaly[],
+  /**
+   * Lot 115 (carte #786, E08) : la détection repose-t-elle sur une lecture COMPLÈTE ET FIABLE ?
+   * `false` — état opérationnel illisible, chaînes non lues : AUCUNE alerte n'est résolue ni abaissée (une
+   * erreur de base n'est pas un rétablissement). Règle complétée, carte #786.
+   */
+  reliable = true,
+): Promise<number> {
+  if (!reliable) {
+    console.warn('[active-model-anomalies] résolution automatique suspendue : lecture incomplète de l’état de disponibilité (#786).');
+    return 0;
+  }
   try {
     const R = await import('../alerts/alerts.repository');
     const enAnomalie = new Set(anomalies.map((a) => a.model));
@@ -428,8 +491,18 @@ export interface OperationalWatch {
   suspect: WatchEntry[];
   /** Dernier contrôle non concluant (hors incident global) — état retenu inchangé. */
   inconclusive: WatchEntry[];
-  /** Décompte des DERNIERS contrôles avec la clé active : jamais « tout est sain » faute de sonde. */
-  counts: { controlled: number; ok: number; failedConfirmed: number; suspect: number; inconclusive: number };
+  /**
+   * Décompte des DERNIERS contrôles avec la clé active : jamais « tout est sain » faute de sonde.
+   * Lot 115 (#786, E08) : `failedConfirmed` compte l'ÉTAT RETENU (`ok = false`), plus le seul dernier
+   * `checkStatus` — une route refusée dont le dernier recontrôle n'a rien conclu reste comptée indisponible
+   * (`unavailableWithInconclusiveLastCheck` la détaille).
+   */
+  counts: {
+    controlled: number; ok: number; failedConfirmed: number; suspect: number; inconclusive: number;
+    unavailableWithInconclusiveLastCheck: number;
+  };
+  /** #786 (E08) : l'état opérationnel a-t-il été lu de façon fiable ? `false` : aucun décompte n'est opposable. */
+  reliable?: boolean;
   summary: string;
 }
 
@@ -438,7 +511,11 @@ export interface OperationalWatch {
  * confirmées, incident global du fournisseur séparé (`PROVIDER_AUTH_FAILURE`), décompte des contrôles.
  * L'incident global est en cours tant qu'aucun modèle n'a répondu depuis.
  */
-export function operationalWatchOf(diagnostics: ReadonlyMap<string, OperationalDiagnostic>): OperationalWatch {
+export function operationalWatchOf(
+  diagnostics: ReadonlyMap<string, OperationalDiagnostic>,
+  /** #786 (E08) : lecture fiable de l'état opérationnel (`false` : aucun décompte n'est opposable). */
+  reliable = true,
+): OperationalWatch {
   const tous = [...diagnostics.values()].sort((a, b) => a.model.localeCompare(b.model));
   const globaux = tous.filter((d) => d.checkStatus === 'inconclusive' && d.errorKind !== null && GLOBAL_PROBE_KINDS.has(d.errorKind as ProbeErrorKind));
   const dernierOk = tous.filter((d) => d.checkStatus === 'ok').reduce((m, d) => Math.max(m, Date.parse(d.checkedAt)), 0);
@@ -454,19 +531,24 @@ export function operationalWatchOf(diagnostics: ReadonlyMap<string, OperationalD
   const counts = {
     controlled: tous.length,
     ok: tous.filter((d) => d.checkStatus === 'ok').length,
-    failedConfirmed: tous.filter((d) => d.checkStatus === 'failed_confirmed').length,
+    // #786 (E08) : état RETENU, pas le dernier contrôle (règle remplacée, carte #786).
+    failedConfirmed: tous.filter((d) => d.ok === false).length,
     suspect: suspect.length,
     inconclusive: tous.filter((d) => d.checkStatus === 'inconclusive').length,
+    unavailableWithInconclusiveLastCheck: tous.filter((d) => d.ok === false && d.checkStatus !== 'failed_confirmed').length,
   };
   return {
     providerIncident: enCours && recent ? {
       code: 'PROVIDER_AUTH_FAILURE', kind: String(recent.errorKind), kindLabel: PROBE_ERROR_KIND_LABELS[recent.errorKind as ProbeErrorKind] ?? String(recent.errorKind),
       error: recent.error, checkedAt: recent.checkedAt, access: recent.access ?? null, models: globaux.map((d) => d.model),
     } : null,
-    suspect, inconclusive, counts,
-    summary: counts.controlled === 0
-      ? 'Aucun modèle contrôlé avec la clé active : état inconnu (aucune sonde exécutée).'
-      : `${pluriel(counts.controlled, 'modèle contrôlé', 'modèles contrôlés')} avec la clé active : ${counts.ok} ok, ${counts.failedConfirmed} indisponible(s) confirmé(s), ${counts.suspect} à confirmer, ${counts.inconclusive} non concluant(s).`,
+    suspect, inconclusive, counts, reliable,
+    summary: !reliable
+      // #786 (E08) — texte à valider par le PO.
+      ? 'État de disponibilité illisible : aucun décompte n’est opposable (les interdictions déjà connues restent appliquées).'
+      : counts.controlled === 0
+        ? 'Aucun modèle contrôlé avec la clé active : état inconnu (aucune sonde exécutée).'
+        : `${pluriel(counts.controlled, 'modèle contrôlé', 'modèles contrôlés')} avec la clé active : ${counts.ok} ok, ${counts.failedConfirmed} indisponible(s) confirmé(s), ${counts.suspect} à confirmer, ${counts.inconclusive} non concluant(s).`,
   };
 }
 

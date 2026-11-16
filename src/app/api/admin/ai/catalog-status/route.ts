@@ -27,7 +27,8 @@ import { acknowledgeAnnouncedModels, bannerText, listAnnouncedModels } from '@/s
 import {
   anomalyMessage, detectActiveModelAnomalies, groupAnomaliesByModel, loadActiveChains, loadSecoursContext, operationalWatchOf, unavailableBannerTitle,
 } from '@/services/ai/provider/active-model-anomalies';
-import { loadOperationalDiagnostics } from '@/services/ai/provider/model-operational.service';
+import { loadOperationalDiagnostics, operationalSchemaState } from '@/services/ai/provider/model-operational.service';
+import { admissionMetrics, SEND_POINTS } from '@/services/ai/provider/operational-admission';
 import { loadUsableModelsContext } from '@/services/ai/registry/usable-models';
 import { getCatalogState } from '@/services/ai/provider/model-catalog.service';
 
@@ -55,7 +56,18 @@ export async function GET(req: NextRequest) {
       unavailableModels,
       unavailableTitle: unavailableBannerTitle(unavailableModels),
       // #771 (B01 / B04) : états suspect / inconclusive et incident global, séparés des indisponibilités confirmées.
-      operationalWatch: operationalWatchOf(diagnostics),
+      operationalWatch: operationalWatchOf(diagnostics, ctx.operationalReliable !== false),
+      /**
+       * Lot 115 (carte #786, E08) : MESURES fidèles de l'admission des envois — envois autorisés et refusés par
+       * motif et par point d'envoi, sondes autorisées, verdicts servis depuis le dernier état fiable. Aucun coût
+       * ni appel fictif n'y est compté : un envoi refusé n'a jamais eu lieu. Décomptes de CETTE instance.
+       */
+      admission: {
+        metrics: admissionMetrics(),
+        sendPoints: SEND_POINTS,
+        // Migration critique absente : signalée, jamais remplacée par un repli silencieux.
+        schema: operationalSchemaState(),
+      },
       catalogRefreshedAt: state?.refreshedAt ?? null,
       lastSyncAt: state?.lastSyncAt ?? null,
     });

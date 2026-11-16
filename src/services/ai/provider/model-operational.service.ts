@@ -64,6 +64,32 @@
  *     trace et l'export (`MODEL_UNAVAILABLE_CONFIRMED`… au lieu d'`UNKNOWN`).
  * Disponibilité, tarif (#770) et aptitude métier restent trois dimensions
  * distinctes et cumulatives : ce module ne lit ni n'écrit aucun tarif.
+ *
+ * ══════════════════════════════════════════════════════════════════════════
+ * LOT 115 (carte #786) — LECTURE FIABLE, ORDRE, IDEMPOTENCE, RÉSERVATION
+ *
+ *   · E01 — une lecture qui ÉCHOUE n'est plus un état vide : `readPublishedVerdict`
+ *     et `loadOperationalSnapshot` disent si la lecture est FIABLE. Les
+ *     appelants conservent alors leur dernier verdict fiable
+ *     (`operational-admission.ts`) : un refus confirmé ne redevient jamais
+ *     appelable par une panne de base ou l'expiration d'un cache ;
+ *   · E01 — `operationalRefusalInTx` distingue « rien ne s'oppose » de
+ *     « contrôle final IMPOSSIBLE » : une promotion ou une activation est
+ *     refusée dans le second cas (jamais admise sans contrôle) ;
+ *   · E04 — chaque contrôle porte un IDENTIFIANT STABLE (`checkId`) figé à la
+ *     source, l'instant d'envoi et le contexte d'accès : le rejouer n'ouvre
+ *     aucune ligne, ne change aucun compteur ni échéance. À instant d'envoi
+ *     ÉGAL, un succès ne lève pas un refus confirmé ; une horloge de worker
+ *     en avance est ramenée à l'heure de la base ;
+ *   · E04 / E08 — le dernier RÉSULTAT reçu est conservé à part du dernier
+ *     VERDICT retenu (`last_result_*`) : un recontrôle non concluant est
+ *     visible sans effacer le refus ;
+ *   · E05 — l'accès est celui qui a ENVOYÉ (`accessFingerprint` figé au
+ *     départ) : une rotation de clé en vol n'attribue plus le résultat à la
+ *     nouvelle clé. Environnement et version d'API sont figés avec lui ;
+ *   · E07 — `acquireProbeLease` : réservation ATOMIQUE et partagée d'un
+ *     recontrôle par route (bail borné, reprise après crash du détenteur) —
+ *     deux instances à échéance ne sondent plus deux fois.
  */
 import { createHash } from 'node:crypto';
 import { pgClient } from '@/db';
@@ -73,6 +99,7 @@ import {
   reinterpretLegacyState, sanitizeProviderError,
   type CheckStatus, type KnownOperationalState, type NextOperationalState, type ProbeErrorKind, type ProbeOutcome,
 } from './probe-classification';
+import { unknownVerdict, type PublishedVerdict } from './operational-admission';
 
 type Row = Record<string, unknown>;
 
@@ -125,6 +152,18 @@ export interface OperationalDiagnostic {
   nextProbeAt?: string | null;
 }
 
+/** #786 (E05) : version d'API du point d'accès sondé, figée avec le contrôle. */
+export const PROBE_API_VERSION = 'v1beta' as const;
+
+/** Environnement de l'accès (jamais inventé : `null` si le référentiel ne le dit pas). */
+async function environnementCourant(): Promise<string | null> {
+  try {
+    return (await import('../config/environment')).getAiEnvironment();
+  } catch {
+    return null;
+  }
+}
+
 /** Accès pseudonymisé affiché (8 premiers caractères de l'empreinte, non réversible). */
 export function accessLabel(fingerprint: string): string {
   return `clé …${fingerprint.slice(0, 8)}`;
@@ -133,6 +172,21 @@ export function accessLabel(fingerprint: string): string {
 /** Empreinte non réversible d'une clé (jamais la clé elle-même). */
 export function keyFingerprint(secret: string): string {
   return createHash('sha256').update(secret).digest('hex').slice(0, 16);
+}
+
+/**
+ * #786 (E05) — empreinte de l'accès ACTIF, à figer AVANT un envoi : le
+ * résultat sera attribué à l'accès qui a envoyé, jamais à la clé qui serait
+ * active à la réception (rotation en vol). `null` : aucune clé active, ou
+ * clé illisible. Ne lève jamais ; la clé elle-même n'est jamais rendue.
+ */
+export async function activeAccessFingerprint(): Promise<string | null> {
+  try {
+    const secret = await (await import('./provider-secret')).getProviderSecret('gemini');
+    return secret ? keyFingerprint(secret) : null;
+  } catch {
+    return null;
+  }
 }
 
 const iso = (v: unknown): string | null => (v == null ? null : new Date(String(v)).toISOString());
@@ -176,6 +230,48 @@ export interface RecordedOperationalState extends NextOperationalState {
 function schemaAnterieur(e: unknown): boolean {
   const code = (e as { code?: string } | null)?.code;
   return code === '42703' || code === '42P10' || code === '42P01';
+}
+
+// ── #786 : état du schéma (migration critique absente = signal, pas de repli silencieux) ──
+
+/** Colonnes de la migration 1815 présentes ? `null` : pas encore constaté. */
+let colonnes1815: boolean | null = null;
+/** Une écriture a-t-elle dû retomber sur un schéma antérieur dans ce processus ? */
+let schemaDegradeMotif: string | null = null;
+
+/**
+ * #786 (E01) — le schéma de l'état opérationnel est-il COMPLET ? Une migration
+ * critique absente est SIGNALÉE (journal, BO) et rend l'admission prudente :
+ * jamais un repli silencieux vers un schéma qui perdrait l'isolation par
+ * accès, l'ordre des contrôles ou l'historique.
+ */
+export function operationalSchemaState(): { complete: boolean | null; degradedReason: string | null } {
+  return { complete: colonnes1815, degradedReason: schemaDegradeMotif };
+}
+
+/** Réservé aux tests : oublie l'état constaté du schéma. */
+export function __resetOperationalSchemaState(): void {
+  colonnes1815 = null;
+  schemaDegradeMotif = null;
+}
+
+/** Les colonnes 1815 existent-elles ? (une lecture par processus ; prudent en cas d'échec) */
+async function has1815(): Promise<boolean> {
+  if (colonnes1815 !== null) return colonnes1815;
+  try {
+    const rows = (await pgClient.unsafe(
+      `SELECT 1 FROM information_schema.columns
+        WHERE table_name = 'ai_model_operational_status' AND column_name = 'check_id' LIMIT 1`,
+    )) as unknown as Row[];
+    colonnes1815 = rows.length > 0;
+    if (!colonnes1815) {
+      schemaDegradeMotif = 'migration 1815 non appliquée : identifiant de contrôle, contexte d’accès et dernier résultat non conservés';
+      console.warn(`[model-operational] ${schemaDegradeMotif}.`);
+    }
+  } catch {
+    colonnes1815 = false;
+  }
+  return colonnes1815;
 }
 
 /** Incrémente la clé de version partagée dans la transaction du verdict. */
@@ -235,9 +331,23 @@ export async function recordOperationalCheck(p: {
   prev?: KnownOperationalState | null; now?: Date;
   /** #771 : instant d'envoi du contrôle, appel technique tracé, codes du fournisseur. */
   observedAt?: Date; probeCallId?: number | null; httpStatus?: number | null; providerCode?: string | null;
+  /**
+   * #786 (E04) : identifiant STABLE du contrôle, figé à la source. Rejouer le
+   * même identifiant ne change rien (ni état, ni compteur, ni échéance, ni
+   * ligne d'historique) : un même échec reçu deux fois n'est pas deux sondes.
+   */
+  checkId?: string | null;
+  /**
+   * #786 (E05) : empreinte de l'accès qui a ENVOYÉ le contrôle, figée au
+   * départ. Une rotation de clé en vol n'attribue plus le résultat à la
+   * nouvelle clé. Par défaut : l'empreinte du secret transmis.
+   */
+  accessFingerprint?: string | null;
 }): Promise<RecordedOperationalState> {
-  const fp = keyFingerprint(p.secret);
+  const fp = p.accessFingerprint ?? keyFingerprint(p.secret);
   const now = p.now ?? new Date();
+  const checkId = p.checkId ?? null;
+  const environment = await environnementCourant();
   const observedAt = p.observedAt ?? now;
   const brut = p.outcome.status === 'ok' ? null : p.outcome.error;
   const lus = brut ? providerCodesOf(brut) : { httpStatus: null, providerCode: null };
@@ -245,6 +355,9 @@ export async function recordOperationalCheck(p: {
   const providerCode = p.providerCode ?? lus.providerCode;
   const definitive = p.outcome.status === 'failed' ? p.outcome.definitive : null;
   const kind = p.outcome.status === 'ok' ? null : p.outcome.kind;
+
+  // Colonnes 1815 présentes ? (lu hors transaction : une requête échouée l'avorterait)
+  const etendu = await has1815();
 
   const transaction = async (sql: SqlRunner): Promise<RecordedOperationalState> => {
     await sql.unsafe(`SELECT pg_advisory_xact_lock(hashtext($1))`, [`ai-model-operational:${p.model}:${fp}`] as never[]);
@@ -256,21 +369,50 @@ export async function recordOperationalCheck(p: {
     )) as unknown as Row[])[0];
     const prev = row ? toKnown(row) : p.prev ?? null;
     const version = Number(row?.state_version ?? 0);
-    const historise = async (etat: { checkStatus: CheckStatus | null; ok: boolean | null }, applied: boolean, v: number) => {
+    /** Instant d'ENVOI retenu : une horloge de worker en AVANCE sur la base est ramenée à l'heure de la base (E04). */
+    let envoye = observedAt;
+    const historise = async (
+      etat: { checkStatus: CheckStatus | null; ok: boolean | null }, applied: boolean, v: number, discardedReason: string | null = null,
+    ) => {
       await sql.unsafe(
         `INSERT INTO ai_model_operational_history
            (provider, model, key_fingerprint, capability, endpoint, source, outcome, definitive, error_kind, http_status, provider_code,
-            error, check_status, ok_after, applied, state_version, probe_call_id, observed_at)
-         VALUES ('gemini', $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17)`,
+            error, check_status, ok_after, applied, state_version, probe_call_id, observed_at${etendu ? ', check_id, environment, api_version, discarded_reason' : ''})
+         VALUES ('gemini', $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17${etendu ? ', $18, $19, $20, $21' : ''})`,
         [p.model, fp, PROBE_CAPABILITY, PROBE_ENDPOINT, p.source, p.outcome.status, definitive, kind, httpStatus, providerCode,
-         brut ? sanitizeProviderError(brut, p.secret) : null, etat.checkStatus, etat.ok, applied, v, p.probeCallId ?? null, observedAt.toISOString()] as never[],
+         brut ? sanitizeProviderError(brut, p.secret) : null, etat.checkStatus, etat.ok, applied, v, p.probeCallId ?? null, envoye.toISOString(),
+         ...(etendu ? [checkId, environment, PROBE_API_VERSION, discardedReason] : [])] as never[],
       );
     };
+    /** État rendu sans rien changer (contrôle écarté ou déjà enregistré). */
+    const inchange = (stale: boolean): RecordedOperationalState => ({
+      ...(prev as KnownOperationalState), error: row?.error == null ? null : String(row.error),
+      errorKind: (row?.error_kind == null ? null : String(row.error_kind)) as ProbeErrorKind | null,
+      healthy: false, ...(stale ? { stale: true } : {}), changed: false, nextProbeAt: iso(row?.next_probe_at),
+    });
+
+    // #786 (E04) : REJEU — ce contrôle (identifiant stable) est déjà enregistré pour cette route et cet accès.
+    // Rien n'est réécrit : ni état, ni compteur, ni échéance, ni seconde ligne d'historique.
+    if (etendu && checkId && row && prev) {
+      const deja = (await sql.unsafe(
+        `SELECT 1 FROM ai_model_operational_history
+          WHERE provider = 'gemini' AND model = $1 AND key_fingerprint = $2 AND check_id = $3 LIMIT 1`,
+        [p.model, fp, checkId] as never[],
+      ).catch(() => [])) as unknown as Row[];
+      if (deja.length > 0) return inchange(false);
+    }
+
+    // #786 (E04) : horloge du worker en avance sur la base — l'instant d'envoi est ramené, jamais extrapolé.
+    const basesNow = ((await sql.unsafe(`SELECT now() AS t`).catch(() => [])) as unknown as Row[])[0]?.t;
+    if (basesNow && observedAt.getTime() > new Date(String(basesNow)).getTime() + 60_000) {
+      envoye = new Date(String(basesNow));
+      console.info(`[model-operational] ${p.model} : instant d'envoi ramené à l'heure de la base (horloge du worker en avance).`);
+    }
 
     // Hors ordre : ce contrôle a été ENVOYÉ avant celui qui fonde l'état en vigueur — écarté, état inchangé.
     const enVigueur = row?.observed_at == null ? null : new Date(String(row.observed_at));
-    if (row && prev && enVigueur && observedAt.getTime() < enVigueur.getTime()) {
-      await historise({ checkStatus: prev.checkStatus, ok: prev.ok }, false, version);
+    if (row && prev && enVigueur && envoye.getTime() < enVigueur.getTime()) {
+      await historise({ checkStatus: prev.checkStatus, ok: prev.ok }, false, version, 'out_of_order');
       return {
         ...prev, error: row.error == null ? null : String(row.error),
         errorKind: (row.error_kind == null ? null : String(row.error_kind)) as ProbeErrorKind | null,
@@ -278,10 +420,20 @@ export async function recordOperationalCheck(p: {
       };
     }
 
+    // #786 (E04) : instant d'envoi ÉGAL à celui du verdict en vigueur — l'ordre n'est pas tranchable par les
+    // dates. Un refus confirmé est conservé (il ne peut pas être levé par un résultat qui ne lui est pas
+    // postérieur) ; le résultat est historisé comme écarté.
+    if (row && prev && prev.ok === false && enVigueur && envoye.getTime() === enVigueur.getTime() && p.outcome.status === 'ok') {
+      await historise({ checkStatus: prev.checkStatus, ok: prev.ok }, false, version, 'equal_instant');
+      return inchange(true);
+    }
+
     // Réception idempotente (E06) : les appels réels encore en vol au moment du verdict rapportent le même
     // refus — il est déjà opposable, rien n'est réécrit (ni échéance de recontrôle repoussée).
+    // #786 (E04) : le REJEU d'un contrôle d'une autre source est écarté par son identifiant stable (ci-dessus) —
+    // un recontrôle NOUVEAU qui échoue de nouveau garde, lui, son effet (échéance doublée, A06).
     if (row && prev && prev.ok === false && p.source === 'gateway_call' && p.outcome.status === 'failed') {
-      await historise({ checkStatus: prev.checkStatus, ok: prev.ok }, false, version);
+      await historise({ checkStatus: prev.checkStatus, ok: prev.ok }, false, version, 'already_opposable');
       return {
         ...prev, error: row.error == null ? null : String(row.error),
         errorKind: (row.error_kind == null ? null : String(row.error_kind)) as ProbeErrorKind | null,
@@ -302,10 +454,15 @@ export async function recordOperationalCheck(p: {
     await sql.unsafe(
       `INSERT INTO ai_model_operational_status
          (provider, model, key_fingerprint, ok, error, source, checked_at, check_status, error_kind, suspect_since, last_ok_at,
-          http_status, provider_code, capability, endpoint, probe_call_id, observed_at, confirmed_at, failure_count, next_probe_at, state_version)
+          http_status, provider_code, capability, endpoint, probe_call_id, observed_at, confirmed_at, failure_count, next_probe_at, state_version${
+  etendu ? ',\n          check_id, environment, api_version, last_result_status, last_result_kind, last_result_at' : ''})
        VALUES ('gemini', $1, $2, $3, $4, $5, NOW(), $6, $7, $8, CASE WHEN $9::boolean THEN NOW() ELSE NULL END,
-               $10, $11, $12, $13, $14, $15, CASE WHEN $16::boolean THEN NOW() ELSE NULL END, $17, $18, $19)
-       ON CONFLICT (provider, model, key_fingerprint) DO UPDATE SET
+               $10, $11, $12, $13, $14, $15, CASE WHEN $16::boolean THEN NOW() ELSE NULL END, $17, $18, $19${
+  etendu ? ',\n               $20, $21, $22, $23, $24, NOW()' : ''})
+       ON CONFLICT (provider, model, key_fingerprint) DO UPDATE SET${etendu ? `
+         check_id = EXCLUDED.check_id, environment = EXCLUDED.environment, api_version = EXCLUDED.api_version,
+         last_result_status = EXCLUDED.last_result_status, last_result_kind = EXCLUDED.last_result_kind,
+         last_result_at = EXCLUDED.last_result_at,` : ''}
          ok = EXCLUDED.ok, error = EXCLUDED.error, source = EXCLUDED.source, checked_at = NOW(),
          check_status = EXCLUDED.check_status, error_kind = EXCLUDED.error_kind, suspect_since = EXCLUDED.suspect_since,
          last_ok_at = CASE WHEN $9::boolean THEN NOW() ELSE ai_model_operational_status.last_ok_at END,
@@ -315,8 +472,10 @@ export async function recordOperationalCheck(p: {
                              ELSE COALESCE(ai_model_operational_status.confirmed_at, NOW()) END,
          failure_count = EXCLUDED.failure_count, next_probe_at = EXCLUDED.next_probe_at, state_version = EXCLUDED.state_version`,
       [p.model, fp, next.ok, error, p.source, next.checkStatus, next.errorKind, next.suspectSince, next.healthy,
-       httpStatus, providerCode, PROBE_CAPABILITY, PROBE_ENDPOINT, p.probeCallId ?? null, observedAt.toISOString(),
-       next.checkStatus === 'failed_confirmed', failureCount, nextProbeAt, version + 1] as never[],
+       httpStatus, providerCode, PROBE_CAPABILITY, PROBE_ENDPOINT, p.probeCallId ?? null, envoye.toISOString(),
+       next.checkStatus === 'failed_confirmed', failureCount, nextProbeAt, version + 1,
+       // #786 : identifiant stable du contrôle retenu, contexte d'accès figé, et dernier RÉSULTAT reçu (à part du verdict).
+       ...(etendu ? [checkId, environment, PROBE_API_VERSION, p.outcome.status, kind] : [])] as never[],
     );
     await historise({ checkStatus: next.checkStatus, ok: next.ok }, true, version + 1);
     if (changed) await bumpOperationalVersion(sql, `${p.source}:${next.ok === false ? 'indisponible' : next.ok ? 'sain' : 'inconnu'}`);
@@ -357,18 +516,36 @@ export async function recordOperationalCheck(p: {
 }
 
 /**
+ * Verdict du contrôle FINAL de disponibilité, lu dans la transaction de l'appelant (#771, A03 ; #786, E01).
+ *   · `clear`        — rien ne s'oppose (sain, absent ou inconnu : un état inconnu n'est jamais une
+ *                      indisponibilité, P04) ;
+ *   · `refused`      — route confirmée indisponible pour l'accès actif ;
+ *   · `unverifiable` — le contrôle final est IMPOSSIBLE (lecture en erreur, schéma incomplet, clé active
+ *                      illisible) : l'appelant REFUSE la promotion ou l'activation et conserve les preuves,
+ *                      au lieu d'admettre sans contrôle.
+ */
+export type OperationalTxVerdict =
+  | { kind: 'clear' }
+  | { kind: 'refused'; error: string | null; checkedAt: string | null }
+  | { kind: 'unverifiable'; detail: string };
+
+/**
  * Contrôle de disponibilité FINAL, lu dans la transaction de l'appelant (promotion, activation) — #771, A03 :
  * le modèle a pu être confirmé indisponible entre la campagne et l'écriture. Lecture directe de l'état canonique
- * (pas du cache d'instance), pour l'accès actif. Rend le motif nettoyé, ou `null` si rien ne s'oppose.
- * État absent, inconnu ou illisible : `null` — un état inconnu n'est jamais une indisponibilité (P04).
+ * (pas du cache d'instance), pour l'accès actif.
+ *
+ * Règle remplacée (carte #786, E01) : une lecture impossible rendait `null` (« rien ne s'oppose ») et laissait
+ * passer la promotion. Elle rend désormais `unverifiable`.
  */
 export async function operationalRefusalInTx(
   sql: SqlRunner, model: string, activeSecret?: string | null,
-): Promise<{ error: string | null; checkedAt: string | null } | null> {
+): Promise<OperationalTxVerdict> {
   const secret = activeSecret === undefined
-    ? await (await import('./provider-secret')).getProviderSecret('gemini').catch(() => null)
+    ? await (await import('./provider-secret')).getProviderSecret('gemini').catch(() => undefined)
     : activeSecret;
-  if (!secret) return null;
+  if (secret === undefined) return { kind: 'unverifiable', detail: 'clé active du fournisseur illisible' };
+  // Aucune clé active configurée : aucune route n'existe pour cet accès, il n'y a rien à contrôler.
+  if (!secret) return { kind: 'clear' };
   try {
     await sql.unsafe(`SAVEPOINT l114q_disponibilite`);
     const rows = (await sql.unsafe(
@@ -378,11 +555,14 @@ export async function operationalRefusalInTx(
     )) as unknown as Row[];
     await sql.unsafe(`RELEASE SAVEPOINT l114q_disponibilite`);
     const r = rows[0];
-    if (!r || toKnown(r).ok !== false) return null;
-    return { error: r.error == null ? null : sanitizeProviderError(String(r.error)), checkedAt: iso(r.checked_at) };
-  } catch {
+    if (!r || toKnown(r).ok !== false) return { kind: 'clear' };
+    return { kind: 'refused', error: r.error == null ? null : sanitizeProviderError(String(r.error)), checkedAt: iso(r.checked_at) };
+  } catch (e) {
     await sql.unsafe(`ROLLBACK TO SAVEPOINT l114q_disponibilite`).catch(() => undefined);
-    return null;
+    // Table absente (migrations 0273 / 0335 jamais appliquées) : l'état n'est pas tenu, il n'y a rien à
+    // contrôler. Toute autre erreur rend le contrôle final impossible.
+    if ((e as { code?: string } | null)?.code === '42P01') return { kind: 'clear' };
+    return { kind: 'unverifiable', detail: `état de disponibilité illisible dans la transaction (${(e as { code?: string } | null)?.code ?? 'erreur'})` };
   }
 }
 
@@ -427,12 +607,28 @@ async function rowsForActiveKey(activeSecret?: string | null): Promise<Row[]> {
  * indisponible : vide.
  */
 export async function loadOperationalStatuses(activeSecret?: string | null): Promise<Map<string, OperationalStatus>> {
-  const out = new Map<string, OperationalStatus>();
+  return (await loadOperationalSnapshot(activeSecret)).statuses;
+}
+
+/**
+ * #786 (E01) — MÊME lecture, en disant si elle est FIABLE. Une lecture en
+ * erreur (base indisponible, délai, schéma illisible) rend `reliable: false`
+ * avec une table vide : l'appelant doit alors conserver son dernier
+ * instantané fiable, et ne JAMAIS en conclure qu'aucun modèle n'est exclu.
+ *
+ * Règle remplacée (carte #786) : `loadOperationalStatuses` absorbait l'erreur
+ * et rendait une table vide, indiscernable d'une lecture fiable sans aucune
+ * indisponibilité.
+ */
+export async function loadOperationalSnapshot(
+  activeSecret?: string | null,
+): Promise<{ reliable: boolean; statuses: Map<string, OperationalStatus> }> {
+  const statuses = new Map<string, OperationalStatus>();
   try {
     for (const r of await rowsForActiveKey(activeSecret)) {
       const known = toKnown(r);
       if (known.ok === null) continue;
-      out.set(String(r.model), {
+      statuses.set(String(r.model), {
         ok: known.ok,
         checkedAt: new Date(String(r.checked_at)).toISOString(),
         error: r.error == null ? null : String(r.error),
@@ -441,9 +637,149 @@ export async function loadOperationalStatuses(activeSecret?: string | null): Pro
       });
     }
   } catch {
-    /* état inconnu */
+    return { reliable: false, statuses: new Map() };
   }
-  return out;
+  return { reliable: true, statuses };
+}
+
+/**
+ * #786 (E02) — VERDICT PUBLIÉ d'une route, lu à la frontière d'un envoi : une
+ * seule ligne, par clé primaire (fournisseur, modèle, accès actif), sans
+ * aucun délai de tolérance, sans sonde ni appel fournisseur. `reliable: false`
+ * quand la lecture échoue : l'appelant (`operational-admission.ts`) retombe
+ * alors sur son dernier verdict fiable, ou suspend l'envoi.
+ */
+export async function readPublishedVerdict(model: string, activeSecret?: string | null): Promise<PublishedVerdict> {
+  let secret: string | null;
+  try {
+    secret = activeSecret === undefined ? await (await import('./provider-secret')).getProviderSecret('gemini') : activeSecret;
+  } catch {
+    return unknownVerdict(model, false);
+  }
+  // Aucune clé active : aucune route n'est joignable de toute façon — rien à vérifier.
+  if (!secret) return unknownVerdict(model, true);
+  const fp = keyFingerprint(secret);
+  const etendu = await has1815();
+  const colonnes = etendu
+    ? `ok, check_status, error, suspect_since, checked_at, confirmed_at, next_probe_at, capability, endpoint,
+       environment, api_version, last_result_status, last_result_kind, last_result_at`
+    : `ok, check_status, error, suspect_since, checked_at, confirmed_at, next_probe_at, capability, endpoint`;
+  let rows: Row[];
+  try {
+    rows = (await pgClient.unsafe(
+      `SELECT ${colonnes} FROM ai_model_operational_status
+        WHERE provider = 'gemini' AND model = $1 AND key_fingerprint = $2`,
+      [model, fp] as never[],
+    )) as unknown as Row[];
+  } catch (e) {
+    // Colonnes 1692 absentes : le schéma ne tient ni l'isolation par accès, ni l'ordre, ni l'historique.
+    // Signalé, et lecture déclarée NON fiable : l'admission devient prudente (jamais un repli silencieux).
+    if (schemaAnterieur(e)) {
+      schemaDegradeMotif = schemaDegradeMotif
+        ?? 'migration 1692 non appliquée : état par accès, ordre des contrôles et historique indisponibles';
+      console.warn(`[model-operational] ${schemaDegradeMotif}.`);
+    }
+    return unknownVerdict(model, false);
+  }
+  const r = rows[0];
+  const base = { ...unknownVerdict(model, true), access: accessLabel(fp) };
+  if (!r) return base;
+  const known = toKnown(r);
+  return {
+    ...base,
+    state: known.ok === false ? 'unavailable' : known.ok === true ? 'healthy' : 'unknown',
+    checkStatus: known.checkStatus,
+    error: r.error == null ? null : sanitizeProviderError(String(r.error)),
+    checkedAt: r.checked_at == null ? null : iso(r.checked_at),
+    confirmedAt: iso(r.confirmed_at),
+    nextProbeAt: iso(r.next_probe_at),
+    capability: r.capability == null ? null : String(r.capability),
+    endpoint: r.endpoint == null ? null : String(r.endpoint),
+    environment: r.environment == null ? null : String(r.environment),
+    apiVersion: r.api_version == null ? null : String(r.api_version),
+    lastResultStatus: r.last_result_status == null ? null : (String(r.last_result_status) as CheckStatus),
+    lastResultAt: iso(r.last_result_at),
+    lastResultKind: r.last_result_kind == null ? null : (String(r.last_result_kind) as ProbeErrorKind),
+  };
+}
+
+// ── #786 (E07) : réservation partagée d'un recontrôle ───────────────────────
+
+/** Issue d'une demande de réservation de recontrôle. */
+export interface ProbeLease {
+  acquired: boolean;
+  reason: 'acquired' | 'no_state' | 'held_elsewhere' | 'not_due' | 'unreadable';
+  /** Fin du bail (quand il est obtenu). */
+  until: string | null;
+}
+
+/** Durée par défaut d'un bail de recontrôle (à valider par le PO). */
+export const PROBE_LEASE_MS = 120_000;
+
+/**
+ * Réserve ATOMIQUEMENT le recontrôle d'une route (E07) : un seul `UPDATE`
+ * conditionnel, donc une seule instance l'obtient, même si le cron, le BO et
+ * plusieurs workers arrivent ensemble à l'échéance. Le bail est BORNÉ : s'il
+ * expire (arrêt brutal du détenteur), une autre instance peut reprendre, et
+ * l'ancien détenteur ne peut plus écrire une réservation périmée.
+ *   · `immediate` : geste manuel explicite (« Actualiser le catalogue ») —
+ *     l'échéance partagée est ignorée, mais la réservation reste exigée
+ *     (double clic, deux administrateurs : une seule sonde) ;
+ *   · route sans état connu : `no_state` (rien à dédupliquer, la sonde part) ;
+ *   · lecture impossible : `unreadable` — la sonde ne part PAS (aucune rafale
+ *     non bornée pendant une panne de base).
+ */
+export async function acquireProbeLease(p: {
+  model: string; secret?: string | null; owner: string; leaseMs?: number; immediate?: boolean;
+}): Promise<ProbeLease> {
+  if (!(await has1815())) return { acquired: false, reason: 'unreadable', until: null };
+  let secret: string | null;
+  try {
+    secret = p.secret === undefined ? await (await import('./provider-secret')).getProviderSecret('gemini') : p.secret;
+  } catch {
+    return { acquired: false, reason: 'unreadable', until: null };
+  }
+  if (!secret) return { acquired: false, reason: 'unreadable', until: null };
+  const fp = keyFingerprint(secret);
+  const ms = Math.max(1_000, p.leaseMs ?? PROBE_LEASE_MS);
+  try {
+    const rows = (await pgClient.unsafe(
+      `UPDATE ai_model_operational_status
+          SET probe_lease_owner = $3, probe_lease_until = now() + ($4 || ' milliseconds')::interval, probe_lease_at = now()
+        WHERE provider = 'gemini' AND model = $1 AND key_fingerprint = $2
+          AND (probe_lease_until IS NULL OR probe_lease_until <= now())
+          AND ($5::boolean OR next_probe_at IS NULL OR next_probe_at <= now())
+        RETURNING probe_lease_until`,
+      [p.model, fp, p.owner.slice(0, 100), String(ms), Boolean(p.immediate)] as never[],
+    )) as unknown as Row[];
+    if (rows[0]) return { acquired: true, reason: 'acquired', until: iso(rows[0].probe_lease_until) };
+    // Refus : la ligne existe-t-elle, et pourquoi n'a-t-elle pas été prise ?
+    const etat = (await pgClient.unsafe(
+      `SELECT next_probe_at, probe_lease_until FROM ai_model_operational_status
+        WHERE provider = 'gemini' AND model = $1 AND key_fingerprint = $2`,
+      [p.model, fp] as never[],
+    )) as unknown as Row[];
+    if (!etat[0]) return { acquired: true, reason: 'no_state', until: null };
+    const bail = etat[0].probe_lease_until == null ? 0 : Date.parse(String(etat[0].probe_lease_until));
+    if (bail > Date.now()) return { acquired: false, reason: 'held_elsewhere', until: iso(etat[0].probe_lease_until) };
+    return { acquired: false, reason: 'not_due', until: null };
+  } catch {
+    return { acquired: false, reason: 'unreadable', until: null };
+  }
+}
+
+/** Libère le bail de recontrôle, s'il appartient toujours au détenteur (ne lève jamais). */
+export async function releaseProbeLease(p: { model: string; secret?: string | null; owner: string }): Promise<void> {
+  if (!(await has1815())) return;
+  try {
+    const secret = p.secret === undefined ? await (await import('./provider-secret')).getProviderSecret('gemini') : p.secret;
+    if (!secret) return;
+    await pgClient.unsafe(
+      `UPDATE ai_model_operational_status SET probe_lease_owner = NULL, probe_lease_until = NULL
+        WHERE provider = 'gemini' AND model = $1 AND key_fingerprint = $2 AND probe_lease_owner = $3`,
+      [p.model, keyFingerprint(secret), p.owner.slice(0, 100)] as never[],
+    );
+  } catch { /* bail laissé à son expiration */ }
 }
 
 /** Diagnostic de chaque modèle contrôlé avec la clé active (BO). */
@@ -520,11 +856,15 @@ interface Controle {
   probeCallId: number | null;
   httpStatus: number | null;
   providerCode: string | null;
+  /** #786 (E04) : identifiant stable, figé avant l'envoi. */
+  checkId: string;
 }
 
 /** Un contrôle : appel, classification, trace technique. */
 async function controle(model: string, secret: string, call: ProbeCall, traced: boolean): Promise<Controle> {
   const started = Date.now();
+  // #786 (E04) : identifiant STABLE de ce contrôle, figé AVANT l'envoi et transmis jusqu'à l'écriture.
+  const checkId = `probe:${crypto.randomUUID()}`;
   let tokens = { inputTokens: 0, outputTokens: 0 };
   let outcome: ProbeOutcome;
   let raw: string | null = null;
@@ -544,7 +884,7 @@ async function controle(model: string, secret: string, call: ProbeCall, traced: 
     probeCallId = await traceTechnicalCall('model_operational_probe', model, outcome.status === 'ok', Date.now() - started, tokens,
       error, { input: probeCallInput(model), responseRaw: raw }, { outcome, ...codes });
   }
-  return { outcome, observedAt: new Date(started), probeCallId, ...codes };
+  return { outcome, observedAt: new Date(started), probeCallId, checkId, ...codes };
 }
 
 /**
@@ -561,7 +901,13 @@ async function controle(model: string, secret: string, call: ProbeCall, traced: 
 export async function probeModels(
   models: readonly string[],
   secret: string,
-  deps: { call?: ProbeCall; confirmDelayMs?: number; source?: OperationalSource } = {},
+  deps: {
+    call?: ProbeCall; confirmDelayMs?: number; source?: OperationalSource;
+    /** #786 (E07) : réserver la route avant de sonder (déduplication entre instances). */
+    reserve?: boolean;
+    /** #786 (E07) : geste manuel — l'échéance partagée est ignorée, la réservation reste exigée. */
+    immediate?: boolean;
+  } = {},
 ): Promise<ProbeResult[]> {
   const call: ProbeCall = deps.call ?? (async (model: string) => {
     const { getAiProvider } = await import('../gateway/providers');
@@ -575,15 +921,38 @@ export async function probeModels(
   models = (await (await import('../gateway/pricing/pricing-guard')).splitByPricing(models)).priced;
   // #771 (S04) : incident global constaté pendant ce passage — les sondes non encore envoyées sont abandonnées.
   let incidentGlobal: Exclude<ProbeOutcome, { status: 'ok' }> | null = null;
+  // #786 (E05) : l'accès est celui qui a ENVOYÉ la sonde (empreinte figée au départ du passage), jamais celui
+  // qui serait actif à la réception — une rotation de clé en vol n'attribue plus le résultat à la nouvelle clé.
+  const accessFingerprint = keyFingerprint(secret);
   const enregistrer = (model: string, c: Controle) => recordOperationalCheck({
     model, secret, outcome: c.outcome, source, observedAt: c.observedAt, probeCallId: c.probeCallId,
-    httpStatus: c.httpStatus, providerCode: c.providerCode,
+    httpStatus: c.httpStatus, providerCode: c.providerCode, checkId: c.checkId, accessFingerprint,
   });
+  const owner = `${process.pid}:probeModels`;
   const sonder = async (model: string): Promise<ProbeResult> => {
+    // #786 (E07) : réservation ATOMIQUE partagée — une seule instance sonde la route à son échéance.
+    if (deps.reserve) {
+      const bail = await acquireProbeLease({ model, secret, owner, immediate: deps.immediate });
+      if (!bail.acquired) {
+        console.info(`[model-operational] sonde de ${model} non envoyée : ${bail.reason} (réservation partagée, #786).`);
+        return { model, ok: false, error: null, transient: true, checkStatus: 'inconclusive', notSent: true };
+      }
+      try {
+        return await sonderSansReservation(model);
+      } finally {
+        await releaseProbeLease({ model, secret, owner });
+      }
+    }
+    return sonderSansReservation(model);
+  };
+  const sonderSansReservation = async (model: string): Promise<ProbeResult> => {
     if (incidentGlobal) {
       // Sonde NON ENVOYÉE : le dernier contrôle du modèle est noté non concluant pour le motif global (état
       // retenu inchangé, aucun appel tracé) — le BO montre que rien n'a été conclu, jamais un modèle fautif.
-      const etat = await recordOperationalCheck({ model, secret, outcome: incidentGlobal, source });
+      const etat = await recordOperationalCheck({
+        model, secret, outcome: incidentGlobal, source, accessFingerprint,
+        checkId: `probe-not-sent:${crypto.randomUUID()}`,
+      });
       return { model, ok: false, error: etat.error, transient: true, checkStatus: 'inconclusive', notSent: true };
     }
     const premier = await controle(model, secret, call, traced);

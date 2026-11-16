@@ -213,8 +213,20 @@ describe('L87A-U03 — état opérationnel lu AVANT appel (RUN-03)', () => {
     expect(h.outcomes).toEqual([expect.objectContaining({ attempts: [], chainSucceeded: null })]);
   });
 
-  it('qualification d’un couple : le modèle désigné est toujours atteint (rang forcé, jamais sauté)', async () => {
+  // Règle remplacée (carte #786, E03) : une épreuve de qualification (rang forcé) n'était PAS soumise à l'état
+  // opérationnel (`triggerCode=qualification` vidait les indisponibilités). Une qualification n'est pas une
+  // sonde de récupération : elle ne contourne plus la garde de disponibilité. Seules les sondes explicites de
+  // disponibilité et de rétablissement l'ignorent (`operational-admission.ts`).
+  it('qualification d’un couple dont la route est confirmée indisponible : aucun envoi, blocage technique', async () => {
     __setFallbackContextForTests({ knownUnavailable: async () => new Map([['m-a', { checkedAt: null, error: null }]]) });
+    fake.on('m-a', () => OK);
+    const e = await AiGateway.execute(req({ triggerCode: 'qualification', maxModelAttempts: 1 })).catch((x) => x);
+    expect(e).toMatchObject({ code: 'AI_SUSPENDED', failureCause: 'KNOWN_UNAVAILABLE' });
+    expect(fake.calls).toHaveLength(0);
+  });
+
+  it('qualification d’un couple dont la route est saine : le modèle désigné est toujours atteint (rang forcé)', async () => {
+    __setFallbackContextForTests({ knownUnavailable: async () => new Map() });
     fake.on('m-a', () => OK);
     const r = await AiGateway.execute(req({ triggerCode: 'qualification', maxModelAttempts: 1 }));
     expect(r.model).toBe('m-a');

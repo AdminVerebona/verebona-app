@@ -198,10 +198,16 @@ export async function promote(input: PromoteInput, userId: number, deps: {
     {
       const { operationalRefusalInTx } = await import('../provider/model-operational.service');
       const indispo = await operationalRefusalInTx(sql, input.model);
-      if (indispo !== null) {
+      if (indispo.kind === 'refused') {
         throw new ConfigOperationRefused('BLOCKED_MODEL_UNAVAILABLE',
           `« ${input.model} » est confirmé indisponible pour la clé active${indispo.error ? ` (${indispo.error})` : ''} : promotion refusée.`,
           { model: input.model, checkedAt: indispo.checkedAt });
+      }
+      // #786 (E01) : contrôle final IMPOSSIBLE — la promotion est refusée, jamais admise sans contrôle.
+      if (indispo.kind === 'unverifiable') {
+        throw new ConfigOperationRefused('BLOCKED_MODEL_UNAVAILABLE',
+          `La disponibilité de « ${input.model} » n’a pas pu être contrôlée dans la transaction (${indispo.detail}) : promotion refusée par prudence.`,
+          { model: input.model, unverifiable: true });
       }
     }
     const actuelles = await listActivePromotions(environment, sql);

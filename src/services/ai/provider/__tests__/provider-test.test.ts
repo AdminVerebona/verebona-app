@@ -55,10 +55,14 @@ describe('testProviderKey', () => {
       .mockResolvedValueOnce(new Response('no longer available to new users', { status: 404 })));
     await testProviderKey('secret', 'b', 1, 1, ['b']);
     // Lot 49 : issue CLASSÉE — retrait explicite (404 « no longer available ») = échec définitif du modèle.
+    // Règle complétée (carte #786, E04) : chaque contrôle porte aussi l'instant d'ENVOI et un identifiant stable.
     expect(operationnel).toEqual([
-      { model: 'a', secret: 'secret', outcome: { status: 'ok' }, source: 'provider_test' },
       expect.objectContaining({
-        model: 'b', source: 'provider_test',
+        model: 'a', secret: 'secret', outcome: { status: 'ok' }, source: 'provider_test',
+        observedAt: expect.any(Date), checkId: expect.stringMatching(/^provider_test:/),
+      }),
+      expect.objectContaining({
+        model: 'b', source: 'provider_test', observedAt: expect.any(Date), checkId: expect.stringMatching(/^provider_test:/),
         // Règle remplacée (carte #771) : « no longer available to new users » est un refus explicite et définitif du
         // modèle POUR L'ACCÈS utilisé (`model_access_closed`), plus un retrait global (`model_retired`). Toujours définitif.
         outcome: expect.objectContaining({ status: 'failed', kind: 'model_access_closed', definitive: true, error: expect.stringMatching(/no longer available/) }),

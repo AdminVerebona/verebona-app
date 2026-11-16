@@ -82,6 +82,9 @@ export const FAILURE_CAUSES = [
   'QUOTA', 'UNAVAILABLE', 'TIMEOUT', 'MODEL_LIMIT', 'KNOWN_UNAVAILABLE',
   // Lot 114 (#770) : rang sauté SANS appel — pas de tarif officiel vérifié et applicable.
   'PRICING_UNVERIFIED',
+  // Lot 115 (#786, E01) : disponibilité INVÉRIFIABLE (état partagé illisible, aucun verdict fiable) — rien n'est
+  // envoyé, rien n'est conclu sur le modèle : suspension technique, reprise au rétablissement de la lecture.
+  'ADMISSION_UNVERIFIABLE',
   'PARAMETER_REJECTED', 'PARAMETER_INCOMPATIBLE',
   'COMMON_DEFECT', 'GLOBAL_ACCESS',
   'INVALID_OUTPUT', 'OUTPUT_TRUNCATED',
@@ -117,6 +120,13 @@ export const CAUSE_POLICY: Readonly<Record<FailureCause, CausePolicy>> = {
   MODEL_LIMIT: { row: 'MODEL_SPECIFIC', fallback: 'ALLOWED', suspendWithoutFallback: false, countsForBreaker: true, label: 'limite propre au modèle (taille de la demande)', commonDependency: null },
   KNOWN_UNAVAILABLE: { row: 'MODEL_SPECIFIC', fallback: 'ALLOWED', suspendWithoutFallback: true, countsForBreaker: false, label: 'modèle connu indisponible (état opérationnel)', commonDependency: null },
   PRICING_UNVERIFIED: { row: 'MODEL_SPECIFIC', fallback: 'ALLOWED', suspendWithoutFallback: true, countsForBreaker: false, label: 'modèle sans tarif officiel vérifié (non appelé)', commonDependency: null },
+  // #786 (E01) : la lecture de l'état partagé est commune à tous les rangs — un secours échouerait de la même
+  // façon. Arrêt de la chaîne et suspension technique, sans déclarer aucun modèle retiré.
+  ADMISSION_UNVERIFIABLE: {
+    row: 'COMMON_DEFECT', fallback: 'STOP', suspendWithoutFallback: true, countsForBreaker: false,
+    label: 'disponibilité invérifiable (état partagé illisible) : aucun envoi',
+    commonDependency: 'lecture de l’état de disponibilité partagé : commune à tous les modèles de la chaîne',
+  },
   PARAMETER_REJECTED: { row: 'REQUEST_INCOMPATIBILITY', fallback: 'ALLOWED', suspendWithoutFallback: true, countsForBreaker: false, label: 'paramètre refusé par ce modèle', commonDependency: null },
   PARAMETER_INCOMPATIBLE: { row: 'REQUEST_INCOMPATIBILITY', fallback: 'ALLOWED', suspendWithoutFallback: true, countsForBreaker: false, label: 'réglage incompatible avec ce modèle (refus avant appel)', commonDependency: null },
   COMMON_DEFECT: { row: 'COMMON_DEFECT', fallback: 'STOP', suspendWithoutFallback: false, countsForBreaker: true, label: 'défaut commun (prompt, contrat ou construction de la requête)', commonDependency: 'prompt, contrat de sortie ou construction locale de la requête (identiques pour tous les modèles)' },
@@ -183,6 +193,9 @@ export const TRANSFER_SUSPEND_CAUSES: ReadonlySet<string> = new Set<FailureCause
  * attribuable avec certitude au modèle ou à un défaut commun est UNKNOWN.
  */
 export function causeOfFailure(f: FailureFacts): FailureCause {
+  // #786 (E02) : refus à la frontière d'admission — cause donnée par le code, jamais déduite du message.
+  if (f.code === 'MODEL_KNOWN_UNAVAILABLE') return 'KNOWN_UNAVAILABLE';
+  if (f.code === 'MODEL_ADMISSION_UNVERIFIABLE') return 'ADMISSION_UNVERIFIABLE';
   if (f.stage === 'attachment_transfer') return transferCauseOf(f);
   const sub = f.subtype ?? null;
   if (sub === 'PARAMETER_REJECTED') return 'PARAMETER_REJECTED';
@@ -221,7 +234,7 @@ export type AdmissionReason =
   // Admis
   | 'FIRST' | 'QUALIFIED' | 'MANUAL_UNTESTED'
   // Refusés (aucun appel)
-  | 'KNOWN_UNAVAILABLE' | 'PRICING_UNVERIFIED' | 'EXCLUDED' | 'CAUSE_STOPS_CHAIN' | 'UNKNOWN_CAUSE_LIMIT' | 'PROFILE_CANNOT_RESOLVE'
+  | 'KNOWN_UNAVAILABLE' | 'PRICING_UNVERIFIED' | 'ADMISSION_UNVERIFIABLE' | 'EXCLUDED' | 'CAUSE_STOPS_CHAIN' | 'UNKNOWN_CAUSE_LIMIT' | 'PROFILE_CANNOT_RESOLVE'
   | 'COUPLE_REFUSED' | 'NOT_QUALIFIED_AUTOMATIC'
   /** Lot 113R : le secours dépend du même transfert de pièce jointe (même clé, même projet, même Files API). */
   | 'SHARED_TRANSFER';
@@ -232,6 +245,7 @@ export const ADMISSION_LABELS: Readonly<Record<AdmissionReason, string>> = {
   MANUAL_UNTESTED: 'secours non testé — choix de l’administrateur (chaîne configurée)',
   KNOWN_UNAVAILABLE: 'modèle connu indisponible : non appelé',
   PRICING_UNVERIFIED: 'modèle sans tarif officiel vérifié : non appelé',
+  ADMISSION_UNVERIFIABLE: 'disponibilité de la route invérifiable : envoi suspendu, le modèle n’est pas déclaré retiré',
   EXCLUDED: 'modèle exclu par un administrateur',
   CAUSE_STOPS_CHAIN: 'la cause de l’échec rend tout secours inutile',
   UNKNOWN_CAUSE_LIMIT: 'cause indéterminée : un seul essai alternatif',
@@ -248,6 +262,8 @@ interface Candidate {
   knownUnavailable: boolean;
   /** Lot 114 (#770) : le tarif du modèle n'est pas une preuve admissible — AUCUN appel, quel que soit le rang. */
   pricingUnverified?: boolean;
+  /** Lot 115 (#786, E01) : état partagé illisible et aucun verdict fiable — AUCUN envoi n'est tenté. */
+  admissionUnverifiable?: boolean;
   excluded: boolean;
   qualification: CoupleQualification;
   /** Plafond de sortie effectif que recevrait ce modèle (`null` : inconnu / refusé avant appel). */
@@ -270,6 +286,9 @@ export function admitCandidate(c: Candidate, previous: {
   // Lot 114 (#770) : avant tout autre motif — un modèle sans tarif vérifié n'est jamais contacté.
   if (c.pricingUnverified) return { admitted: false, reason: 'PRICING_UNVERIFIED' };
   if (c.knownUnavailable) return { admitted: false, reason: 'KNOWN_UNAVAILABLE' };
+  // #786 (E01) : on ne peut pas savoir si la route est admissible — on n'envoie pas (prudence), sans
+  // déclarer le modèle indisponible.
+  if (c.admissionUnverifiable) return { admitted: false, reason: 'ADMISSION_UNVERIFIABLE' };
   if (c.excluded) return { admitted: false, reason: 'EXCLUDED' };
   if (previous === null) return { admitted: true, reason: 'FIRST' };
   const pol = CAUSE_POLICY[previous.cause];
@@ -324,21 +343,30 @@ export function decisionOf(p: {
  * de secours, modèle connu indisponible) — aucune requête : ni un appel, ni
  * une génération échouée dans les décomptes.
  */
-export const NOT_CALLED_ERROR_CODES: ReadonlySet<string> = new Set(['FALLBACK_NOT_ADMISSIBLE', 'MODEL_KNOWN_UNAVAILABLE', 'MODEL_PRICING_UNVERIFIED']);
+export const NOT_CALLED_ERROR_CODES: ReadonlySet<string> = new Set([
+  'FALLBACK_NOT_ADMISSIBLE', 'MODEL_KNOWN_UNAVAILABLE', 'MODEL_PRICING_UNVERIFIED',
+  // Lot 115 (#786) : envoi refusé à la frontière d'admission — aucune requête n'est partie.
+  'MODEL_ADMISSION_UNVERIFIABLE',
+]);
 
 /**
  * Lot 113R : étapes d'échec où AUCUNE génération n'a été demandée au modèle
  * (construction locale, transfert de la pièce jointe) — ni génération
  * échouée, ni défaut du modèle dans les décomptes.
  */
-export const NO_GENERATION_STAGES: ReadonlySet<string> = new Set(['request_build', 'attachment_transfer']);
+export const NO_GENERATION_STAGES: ReadonlySet<string> = new Set([
+  'request_build', 'attachment_transfer',
+  // Lot 115 (#786, E02) : refus à la frontière d'admission — rien n'a été transmis au fournisseur, et le
+  // refus ne doit surtout pas être re-signalé comme un refus du fournisseur.
+  'availability_guard',
+]);
 
 /** Lot 109J : décisions qui SOLLICITENT le modèle (les autres : aucune requête, jamais une génération échouée). */
 export const ADMITTED_REASONS: ReadonlySet<AdmissionReason> = new Set<AdmissionReason>(['FIRST', 'QUALIFIED', 'MANUAL_UNTESTED']);
 
 /** Motifs de refus qui traduisent l'ABSENCE de secours admissible (et non une limite de la politique). */
 const SANS_SECOURS_ADMISSIBLE: ReadonlySet<AdmissionReason> = new Set<AdmissionReason>([
-  'KNOWN_UNAVAILABLE', 'PRICING_UNVERIFIED', 'EXCLUDED', 'COUPLE_REFUSED', 'NOT_QUALIFIED_AUTOMATIC',
+  'KNOWN_UNAVAILABLE', 'PRICING_UNVERIFIED', 'ADMISSION_UNVERIFIABLE', 'EXCLUDED', 'COUPLE_REFUSED', 'NOT_QUALIFIED_AUTOMATIC',
 ]);
 
 /**

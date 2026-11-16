@@ -752,9 +752,13 @@ async function runCampaign(campaignId: number, deps: CampaignDeps = {}): Promise
         const obsCand = plan.filter((x) => x.candidateVersionId === cand.versionId).flatMap((x) => runs.get(keyOf(x.couple))?.all ?? []);
         const bloquee = etat === 'INCONCLUSIVE' && obsCand.some((o) => o.blockedBy === 'TECHNICAL_ACCOUNT');
         const sansBudget = etat === 'INCONCLUSIVE' && !bloquee && obsCand.some((o) => o.blockedBy === 'BUDGET');
+        // Lot 115 (#786, E03) : route refusée pendant la campagne — blocage TECHNIQUE, jamais un refus métier
+        // du couple ; les preuves déjà obtenues sont conservées (texte à valider par le PO).
+        const routeBloquee = etat === 'INCONCLUSIVE' && !bloquee && !sansBudget && obsCand.some((o) => o.blockedBy === 'MODEL_UNAVAILABLE');
         await cfg.setCandidateState(cand.versionId, etat, bloquee ? `${PREREQUISITE_CANDIDATE_PREFIX}CORPUS_ACCOUNT_INVALID — compte technique de qualification non éligible pendant la campagne : non concluante faute de prérequis (reprise automatique au prochain passage).`
           : sansBudget ? `${BUDGET_CANDIDATE_PREFIX} ${obsCand.find((o) => o.blockedBy === 'BUDGET')?.inconclusiveReason ?? 'budget d’amélioration indisponible'} — en attente du budget (aucun appel, pas un défaut).`.slice(0, 1000)
-            : choix.reasons[a.key] ?? null);
+            : routeBloquee ? `${PREREQUISITE_CANDIDATE_PREFIX}MODEL_UNAVAILABLE — ${obsCand.find((o) => o.blockedBy === 'MODEL_UNAVAILABLE')?.inconclusiveReason ?? 'route non admissible'} : blocage technique, pas un refus métier (reprise au rétablissement).`.slice(0, 1000)
+              : choix.reasons[a.key] ?? null);
         const oid = objectiveOfCandidate.get(cand.versionId);
         if (oid != null) {
           const obj = await import('./improvement-objectives');
@@ -763,6 +767,7 @@ async function runCampaign(campaignId: number, deps: CampaignDeps = {}): Promise
             const blocage = obsCand.find((o) => o.blockedBy === 'BUDGET')?.inconclusiveReason ?? '';
             await obj.transitionObjective(oid, ['EXPERIMENTING'], 'WAITING_BUDGET', { reason: blocage.slice(0, 500), nextEligibleMonth: /BUDGET_UNAVAILABLE/.test(blocage) ? prochain : null });
           } else if (bloquee) await obj.transitionObjective(oid, ['EXPERIMENTING'], 'QUEUED', { reason: 'compte technique non éligible : reprise au prochain passage' });
+          else if (routeBloquee) await obj.transitionObjective(oid, ['EXPERIMENTING'], 'QUEUED', { reason: 'route non admissible (disponibilité) : reprise au rétablissement' });
           else if (etat === 'QUALIFIED') await obj.transitionObjective(oid, ['EXPERIMENTING'], 'QUALIFYING', { reason: 'candidate qualifiée : promotion ciblée en cours' });
           else if (etat === 'INCONCLUSIVE') await obj.transitionObjective(oid, ['EXPERIMENTING'], 'INCONCLUSIVE', { reason: (choix.reasons[a.key] ?? 'qualification non concluante').slice(0, 500) });
           else await obj.transitionObjective(oid, ['EXPERIMENTING'], 'COMPLETED_NO_GAIN', { reason: (choix.reasons[a.key] ?? etat).slice(0, 500) });

@@ -37,6 +37,8 @@ interface AnnouncedModel { model: string; displayName: string | null; status: st
 interface Anomaly { treatment: string; rank: string; model: string; message: string; fallbackAvailable: boolean }
 interface ModelUsage {
   treatment: string; rank: string; rankLabel: string; source: string; fallbackAvailable: boolean;
+  /** Lot 115 (#786, E08) : variante propre à un traitement unitaire (surcouche, promotion de routage). */
+  operationCode?: string;
   /** Lot 87A (INV-10) : secours que la passerelle choisira (absent : état de qualification non lu). */
   secours?: { model: string | null; decision: 'QUALIFIED' | 'MANUAL_UNTESTED' | 'NONE'; label: string };
 }
@@ -112,8 +114,8 @@ export function UnavailableModelCard({ group }: { group: UnavailableModelGroupVi
       </div>
       <ul className="flex flex-wrap gap-1.5" aria-label={`Usages de ${group.model}`}>
         {group.usages.map((u) => (
-          <li key={`${u.treatment}-${u.rank}`} className="text-[11px] px-1.5 py-0.5 rounded border border-[color:var(--border-subtle)] text-[color:var(--text-secondary)] max-w-full break-words">
-            {u.treatment} {u.rankLabel}{u.rank === 'primaryModel' && u.secours
+          <li key={`${u.treatment}-${u.rank}-${u.operationCode ?? ''}`} className="text-[11px] px-1.5 py-0.5 rounded border border-[color:var(--border-subtle)] text-[color:var(--text-secondary)] max-w-full break-words">
+            {u.treatment} {u.rankLabel}{u.operationCode ? ` · ${u.operationCode}` : ''}{u.rank === 'primaryModel' && u.secours
               ? (u.secours.model ? ` · ${u.secours.label} : ${u.secours.model}` : ' · aucun secours admissible (suspendu)')
               : u.rank === 'primaryModel' && !u.fallbackAvailable ? ' · sans repli' : ''}
           </li>

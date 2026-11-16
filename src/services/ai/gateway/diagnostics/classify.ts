@@ -363,6 +363,11 @@ export function classifyCallError(err: unknown): ClassifiedFailure {
       transfer,
     };
   }
+  // Lot 115 (#786, E02) : refus à la frontière d'admission — AVANT toute autre règle (le message cite le
+  // motif du refus, jamais une réponse du fournisseur). Aucune requête n'est partie.
+  if (code === 'MODEL_KNOWN_UNAVAILABLE' || code === 'MODEL_ADMISSION_UNVERIFIABLE') {
+    return out(code === 'MODEL_KNOWN_UNAVAILABLE' ? 'INPUT_ERROR' : 'INTERNAL_ERROR', 'availability_guard');
+  }
   // Lot 85C (P4, CFG-03) : combinaison connue comme incompatible, refusée avant appel.
   if (code === 'MODEL_PARAMETERS_INCOMPATIBLE') {
     return { ...out('INPUT_ERROR', 'request_build', 'PARAMETER_INCOMPATIBLE'), rejectedParameter: typeof e.rejectedParameter === 'string' ? e.rejectedParameter : null };

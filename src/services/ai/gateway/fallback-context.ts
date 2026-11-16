@@ -60,7 +60,13 @@ interface FallbackContextReader {
   reportRefusal(p: ProviderRefusalReport): Promise<RefusalSignal>;
 }
 
-export interface ProviderRefusalReport { model: string; error: unknown; httpStatus: number | null; sentAt: Date }
+export interface ProviderRefusalReport {
+  model: string; error: unknown; httpStatus: number | null; sentAt: Date;
+  /** #786 (E05) : accès qui a ENVOYÉ la requête (empreinte figée au départ), jamais celui actif à la réception. */
+  accessFingerprint?: string | null;
+  /** #786 (E04) : identifiant stable de ce constat, figé au départ. */
+  checkId?: string | null;
+}
 export type RefusalSignal = 'recorded' | 'probe_requested' | null;
 
 const STATUS_TTL_MS = 30_000;
@@ -84,12 +90,32 @@ export function __setFallbackContextForTests(r: Partial<FallbackContextReader> |
   injected = r;
   statusCache = null;
   qualifCache.clear();
+  rechecks.clear();
+  dernierFiable = null;
+  // #786 (E02) : la garde commune des envois lit la MÊME source que le routage. Quand un test simule l'état
+  // partagé, la garde le lit aussi : les deux ne peuvent pas diverger dans les tests.
+  void (async () => {
+    const A = await import('../provider/operational-admission');
+    A.__setPublishedVerdictReaderForTests(r?.knownUnavailable
+      ? async (model: string) => {
+        const m = await r.knownUnavailable!();
+        const h = m.get(model) ?? null;
+        return {
+          ...A.unknownVerdict(model, true),
+          state: h ? 'unavailable' : 'unknown',
+          error: h?.error ?? null, checkedAt: h?.checkedAt ?? null, nextProbeAt: h?.nextProbeAt ?? null,
+        };
+      }
+      : null);
+  })();
 }
 
 /** Réservé aux e2e : autorise les lectures en base sous `NODE_ENV=test`. */
 export function __enableFallbackContextDbForTests(on: boolean): void {
   dbForcedInTests = on;
+  void import('../provider/operational-admission').then((A) => A.__enableAdmissionDbForTests(on));
   statusCache = null;
+  dernierFiable = null;
   qualifCache.clear();
   rechecks.clear();
 }
@@ -102,11 +128,26 @@ function dbAllowed(): boolean {
 // ── État opérationnel ───────────────────────────────────────────────────────
 
 let statusCache: { at: number; value: Map<string, OperationalHint>; version: number | null; versionCheckedAt: number } | null = null;
+/**
+ * #786 (E01) : dernier état lu de façon FIABLE. Il survit à l'invalidation du cache (sonde de
+ * rétablissement, changement de verdict) : pendant une panne de base, les interdictions déjà connues
+ * restent appliquées même si le cache de lecture vient d'être vidé.
+ */
+let dernierFiable: Map<string, OperationalHint> | null = null;
 const rechecks = new Map<string, number>();
 
-/** Vidé après une sonde de rétablissement (et par les tests). */
+/**
+ * Vidé après une sonde de rétablissement (et par les tests) : la prochaine lecture repart de l'état partagé.
+ * #786 (E01) : le dernier état FIABLE n'est PAS oublié — il sert de repli si cette lecture échoue.
+ */
 export function invalidateFallbackStatusCache(): void {
   statusCache = null;
+}
+
+/** Réservé aux tests : oublie aussi le dernier état fiable (démarrage à froid d'une instance). */
+export function __forgetLastReliableStatuses(): void {
+  statusCache = null;
+  dernierFiable = null;
 }
 
 async function defaultKnownUnavailable(): Promise<ReadonlyMap<string, OperationalHint>> {
@@ -125,38 +166,87 @@ async function defaultKnownUnavailable(): Promise<ReadonlyMap<string, Operationa
   // Version lue AVANT les états : un verdict écrit entre les deux lectures sera revu au contrôle suivant.
   const version = await withTimeout(O.readOperationalVersion(), LOOKUP_TIMEOUT_MS, null);
   try {
-    const all = await withTimeout(O.loadOperationalStatuses(), LOOKUP_TIMEOUT_MS, null);
-    // Base illisible ou lente : dernier état connu conservé (jamais de réactivation par défaut de lecture).
-    if (all === null) return statusCache?.value ?? value;
-    for (const [model, st] of all) {
+    // #786 (E01) : lecture FIABLE ou non. Une lecture en erreur rendait auparavant une table VIDE,
+    // indiscernable d'une lecture fiable sans aucune indisponibilité : les exclusions du cache chaud étaient
+    // alors remplacées par rien. Désormais, lecture impossible, lente ou en erreur = dernier état connu
+    // conservé, et le cache n'est PAS remplacé (règle remplacée, carte #786).
+    const snapshot = await withTimeout(O.loadOperationalSnapshot(), LOOKUP_TIMEOUT_MS, null);
+    if (snapshot === null || !snapshot.reliable) {
+      if (snapshot !== null) console.warn('[fallback] état de disponibilité illisible : dernier verdict fiable conservé (aucune réactivation).');
+      return statusCache?.value ?? dernierFiable ?? value;
+    }
+    for (const [model, st] of snapshot.statuses) {
       if (st.ok === false) value.set(model, { checkedAt: st.checkedAt, error: st.error, ...(st.nextProbeAt ? { nextProbeAt: st.nextProbeAt } : {}) });
     }
   } catch {
-    return statusCache?.value ?? value;
+    return statusCache?.value ?? dernierFiable ?? value;
   }
   statusCache = { at: now, value, version, versionCheckedAt: now };
+  dernierFiable = value;
   return value;
 }
 
-/** Sonde bornée d'un modèle (au plus une par `RECHECK_AFTER_MS` et par instance). Lancée sans attente ; ne lève jamais. */
-function lancerSondeBornee(model: string, now: number): boolean {
+/**
+ * Sonde bornée d'un modèle. Lancée sans attente ; ne lève jamais.
+ *
+ * Lot 115 (#786, E07) : la limite par instance (`RECHECK_AFTER_MS`, table
+ * locale) ne dédupliquait rien entre instances — plusieurs workers arrivés
+ * ensemble à l'échéance sondaient chacun une fois. La sonde n'est maintenant
+ * envoyée qu'après une RÉSERVATION ATOMIQUE PARTAGÉE de la route (bail borné,
+ * reprise après arrêt du détenteur) : une seule sonde part, où que soit le
+ * worker, et une demande manuelle immédiate est dédupliquée avec le contrôle
+ * en cours. Lecture impossible : aucune sonde (pas de rafale pendant une panne).
+ */
+function lancerSondeBornee(model: string, now: number, immediate = false): boolean {
   const prev = rechecks.get(model);
-  if (prev !== undefined && now - prev < RECHECK_AFTER_MS) return false;
+  if (!immediate && prev !== undefined && now - prev < RECHECK_AFTER_MS) return false;
   rechecks.set(model, now);
   void (async () => {
+    const owner = `${process.pid}:${PROBE_OWNER_ID}`;
+    let secret: string | null = null;
     try {
-      const [{ getProviderSecret }, { probeModels }] = await Promise.all([
+      const [{ getProviderSecret }, O] = await Promise.all([
         import('../provider/provider-secret'), import('../provider/model-operational.service'),
       ]);
-      const secret = await getProviderSecret('gemini');
+      secret = await getProviderSecret('gemini');
       if (!secret) return;
-      await probeModels([model], secret, { source: 'recovery_check' });
+      const bail = await O.acquireProbeLease({ model, secret, owner, immediate });
+      if (!bail.acquired) {
+        console.info(`[fallback] recontrôle de ${model} non lancé : ${bail.reason} (réservation partagée, #786).`);
+        return;
+      }
+      try {
+        await probeUnderReservation(model, secret);
+      } finally {
+        await O.releaseProbeLease({ model, secret, owner });
+      }
       invalidateFallbackStatusCache();
     } catch (e) {
       console.warn('[fallback] vérification de rétablissement impossible (non bloquant) :', String((e as Error)?.message ?? e).slice(0, 200));
     }
   })();
   return true;
+}
+
+/** Identifiant du détenteur de bail, propre à cette instance (jamais une donnée de compte). */
+const PROBE_OWNER_ID = Math.random().toString(36).slice(2, 10);
+
+/**
+ * Sonde de rétablissement sous réservation (#786, E06) : la sonde EXISTANTE
+ * (génération minimale, sans donnée utilisateur). Un succès probant lève le
+ * blocage de disponibilité et MARQUE les qualifications du modèle comme
+ * obsolètes (campagne ciblée au passage suivant) ; un résultat non concluant
+ * ne lève rien.
+ */
+async function probeUnderReservation(model: string, secret: string): Promise<void> {
+  const { probeModels } = await import('../provider/model-operational.service');
+  const [r] = await probeModels([model], secret, { source: 'recovery_check' });
+  if (!r?.ok) return;
+  try {
+    const { markRequalificationRequired } = await import('../provider/model-qualification.service');
+    await markRequalificationRequired([model], secret,
+      'modèle rétabli après une indisponibilité confirmée (#786) : qualifications antérieures à requalifier');
+  } catch { /* marquage non bloquant : le passage suivant le refera */ }
 }
 
 /**
@@ -172,6 +262,16 @@ export function noteKnownUnavailableSkipped(model: string, hint: OperationalHint
   const last = hint.checkedAt ? Date.parse(hint.checkedAt) : 0;
   if (Number.isFinite(last) && now - last < RECHECK_AFTER_MS) return false;
   return lancerSondeBornee(model, now);
+}
+
+/**
+ * #786 (E07) — demande MANUELLE immédiate de recontrôle d'une route (geste
+ * administrateur) : l'échéance partagée est ignorée, mais la réservation reste
+ * exigée — deux clics, ou deux administrateurs, ne lancent qu'une sonde.
+ */
+export function requestImmediateRecheck(model: string, now = Date.now()): boolean {
+  if (!dbAllowed() || injected?.knownUnavailable) return false;
+  return lancerSondeBornee(model, now, true);
 }
 
 // ── Lot 114 (#771, E04) : refus d'un appel réel ─────────────────────────────
@@ -210,6 +310,9 @@ async function defaultReportRefusal(p: ProviderRefusalReport): Promise<RefusalSi
     const etat = await withTimeout(O.recordOperationalCheck({
       model: p.model, secret, outcome: d.outcome, source: 'gateway_call', observedAt: p.sentAt,
       httpStatus: p.httpStatus ?? codes.httpStatus, providerCode: codes.providerCode,
+      // #786 : accès de l'envoi et identifiant stable du constat.
+      ...(p.accessFingerprint ? { accessFingerprint: p.accessFingerprint } : {}),
+      ...(p.checkId ? { checkId: p.checkId } : {}),
     }), LOOKUP_TIMEOUT_MS, null);
     invalidateFallbackStatusCache();
     return etat && etat.ok === false ? 'recorded' : null;

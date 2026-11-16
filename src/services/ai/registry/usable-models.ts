@@ -126,6 +126,13 @@ export interface UsableModelsContext {
   priceRefusal?: (model: string) => string | null;
   /** Dernière génération minimale connue AVEC LA CLÉ ACTIVE, par modèle. */
   operational: ReadonlyMap<string, { ok: boolean; checkedAt?: string | null; error?: string | null }>;
+  /**
+   * Lot 115 (carte #786, E08) : l'état opérationnel a-t-il été lu de façon FIABLE ?
+   * `false` — base illisible : la table `operational` est vide SANS que cela signifie
+   * « aucune indisponibilité ». Aucune alerte ne doit être résolue ni abaissée sur une
+   * telle lecture. Absent : réputé fiable (contextes de test construits à la main).
+   */
+  operationalReliable?: boolean;
   /** Qualification automatique AVEC LA CLÉ ACTIVE, par modèle (vide : aucune). */
   qualifications?: ReadonlyMap<string, QualificationState>;
   /** AAAA-MM-JJ (dates de retrait). */
@@ -358,7 +365,7 @@ export function excludedModelsByTreatment(ctx: UsableModelsContext): Record<Trea
  * active. Lectures seulement — AUCUN appel fournisseur.
  */
 export async function loadUsableModelsContext(): Promise<UsableModelsContext> {
-  const [{ GEMINI_PUBLIC_CATALOG }, pricing, { getCatalogState }, { loadOperationalStatuses }, { loadQualifications }, { getAiEnvironment }, secrets] = await Promise.all([
+  const [{ GEMINI_PUBLIC_CATALOG }, pricing, { getCatalogState }, { loadOperationalSnapshot }, { loadQualifications }, { getAiEnvironment }, secrets] = await Promise.all([
     import('../gateway/pricing/gemini-public-catalog'),
     import('../gateway/pricing/pricing.repository'),
     import('../provider/model-catalog.service'),
@@ -374,6 +381,8 @@ export async function loadUsableModelsContext(): Promise<UsableModelsContext> {
   let environment: UsableModelsContext['environment'] = 'production';
   try { environment = getAiEnvironment(); } catch { /* prudence */ }
   const secret = await secrets.getProviderSecret('gemini').catch(() => null);
+  // #786 (E08) : lecture FIABLE ou non de l'état opérationnel (jamais « tout sain » faute de lecture).
+  const instantane = await loadOperationalSnapshot(secret);
   return {
     environment,
     catalog: {
@@ -395,7 +404,8 @@ export async function loadUsableModelsContext(): Promise<UsableModelsContext> {
       const e = eligibility.evaluatePricing(model);
       return e.ok ? null : e.label;
     },
-    operational: await loadOperationalStatuses(secret),
+    operational: instantane.statuses,
+    operationalReliable: instantane.reliable,
     qualifications: await loadQualifications(secret),
     today: new Date().toISOString().slice(0, 10),
   };

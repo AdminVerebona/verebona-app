@@ -54,8 +54,13 @@ interface AiCatalogSyncResult {
    */
   operational: {
     probed: number; failed: string[]; deferred?: string[]; notSent?: string[];
-    verdicts?: { controlled: number; ok: number; failedConfirmed: number; suspect: number; inconclusive: number };
+    verdicts?: {
+      controlled: number; ok: number; failedConfirmed: number; suspect: number; inconclusive: number;
+      unavailableWithInconclusiveLastCheck: number;
+    };
     providerIncident?: string | null;
+    /** #786 (E08) : état de disponibilité illisible — aucun décompte opposable, aucune résolution d'alerte. */
+    stateUnreadable?: boolean;
   };
   pricing: Pick<PricingSyncResult, 'status' | 'sourceRead' | 'error'> & {
     known: number; unknown: number; changed: number;
@@ -233,27 +238,34 @@ export async function syncAiCatalog(
       for (let i = 0; i < lot.length && Date.now() < finBudget; i += 4) {
         const paquet = lot.slice(i, i + 4);
         traites += paquet.length;
-        const resultats = await Promise.all(paquet.map(async (model) => ({
-          model,
-          // Lot 85C : épreuves construites d'après la fiche de capacités (constructeur unique).
-          r: await Q.qualifyModel(model, call, {
-            secret, supportsThinking: parModele.get(model)?.supportsThinking ?? null, capabilities: capabilitiesOf(model),
-          }),
-        })));
+        // #786 (E04) : instant d'ENVOI et identifiant stable du contrôle, figés AVANT les épreuves — un
+        // résultat reçu tard ne lève plus un refus plus récent, et le rejouer ne compte pas pour une sonde.
+        const departs = new Map<string, { observedAt: Date; checkId: string }>();
+        const resultats = await Promise.all(paquet.map(async (model) => {
+          departs.set(model, { observedAt: new Date(), checkId: `qualification:${crypto.randomUUID()}` });
+          return {
+            model,
+            // Lot 85C : épreuves construites d'après la fiche de capacités (constructeur unique).
+            r: await Q.qualifyModel(model, call, {
+              secret, supportsThinking: parModele.get(model)?.supportsThinking ?? null, capabilities: capabilitiesOf(model),
+            }),
+          };
+        }));
         for (const { model, r } of resultats) {
+          const ordre = departs.get(model)!;
           const issue = r.generateOutcome ?? (r.generate === true ? { status: 'ok' as const } : null);
           if (r.generate === null) {
             result.qualification.inconclusive.push(model);
             // Non concluant : état retenu inchangé (diagnostic mis à jour).
             // Échec présumé : suspect, puis second contrôle par la sonde.
             if (issue) {
-              const etat = await recordOperationalCheck({ model, secret, outcome: issue, source: 'qualification' });
+              const etat = await recordOperationalCheck({ model, secret, outcome: issue, source: 'qualification', ...ordre });
               if (etat.checkStatus === 'suspect') aConfirmer.add(model);
             }
             continue;
           }
           await Q.recordQualification(model, secret, r);
-          if (issue) await recordOperationalCheck({ model, secret, outcome: issue, source: 'qualification' });
+          if (issue) await recordOperationalCheck({ model, secret, outcome: issue, source: 'qualification', ...ordre });
           qualifiesIci.add(model);
           (r.generate && r.structured !== false ? result.qualification.qualified : result.qualification.failed).push(model);
         }
@@ -280,6 +292,9 @@ export async function syncAiCatalog(
         const probes = await probeModels(aSonder, secret, {
           ...(deps.probeCall ? { call: deps.probeCall } : {}),
           ...(deps.confirmDelayMs !== undefined ? { confirmDelayMs: deps.confirmDelayMs } : {}),
+          // #786 (E07) : réservation partagée des sondes — cron, BO et workers ne sondent pas en double ;
+          // le geste manuel ignore l'échéance mais reste dédupliqué avec un contrôle en cours.
+          ...(deps.probeCall ? {} : { reserve: true, immediate: manuel }),
         });
         const nonEnvoyees = probes.filter((p) => p.notSent).map((p) => p.model);
         result.operational = {
@@ -307,13 +322,17 @@ export async function syncAiCatalog(
       // Lot 114 (carte #771, B01 / B05) : diagnostics toujours lus — surveillance des sondes et incident global.
       const diagnostics = await loadOperationalDiagnostics(secret ?? null);
       await A.raiseActiveModelAlerts(result.anomalies, now, deps.raiseAlert, diagnostics);
-      const veille = A.operationalWatchOf(diagnostics);
+      // #786 (E08) : une lecture NON fiable de l'état ne vaut ni décompte, ni rétablissement.
+      const fiable = ctx.operationalReliable !== false;
+      const veille = A.operationalWatchOf(diagnostics, fiable);
       result.operational.verdicts = veille.counts;
       result.operational.providerIncident = veille.providerIncident?.kind ?? null;
+      if (!fiable) result.operational.stateUnreadable = true;
       if (!deps.raiseAlert) {
         // #771 (B03 / B04) : résolution automatique après rétablissement ; incident global séparé des modèles.
-        await A.resolveRecoveredModelAlerts(result.anomalies);
-        await A.reconcileProviderIncidentAlert(veille);
+        // #786 (E08) : résolution SEULEMENT sur lecture complète et fiable (erreur de base ≠ rétablissement).
+        await A.resolveRecoveredModelAlerts(result.anomalies, fiable);
+        if (fiable) await A.reconcileProviderIncidentAlert(veille);
       }
     } catch (e) {
       console.warn('[ai-catalog-sync] contrôle des modèles actifs impossible :', (e as Error).message);

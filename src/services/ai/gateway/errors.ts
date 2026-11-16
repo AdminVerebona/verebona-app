@@ -108,7 +108,21 @@ export type AiErrorCode =
    * l'appelant prend son repli sans IA. Cause et décisions de secours portées
    * par `AiSuspendedError`.
    */
-  | 'AI_SUSPENDED';
+  | 'AI_SUSPENDED'
+  /**
+   * Lot 115 (carte #786, E02) : envoi REFUSÉ à la frontière d'admission —
+   * la route est confirmée indisponible pour l'accès actif. Aucune requête
+   * n'est partie, aucun jeton consommé. Récupérable : le rang configuré
+   * suivant peut prendre le relais.
+   */
+  | 'MODEL_KNOWN_UNAVAILABLE'
+  /**
+   * Lot 115 (carte #786, E01) : la disponibilité de la route n'a pas pu être
+   * VÉRIFIÉE (état partagé illisible et aucun verdict fiable en mémoire).
+   * Rien n'est envoyé et le modèle n'est PAS déclaré retiré : l'exécution est
+   * suspendue puis reprise quand la lecture redevient possible. Code interne.
+   */
+  | 'MODEL_ADMISSION_UNVERIFIABLE';
 
 /**
  * Codes TECHNIQUES internes (lot 34D) : défaut du moteur ou de sa
@@ -119,7 +133,7 @@ const INTERNAL_AI_ERROR_CODES: ReadonlySet<AiErrorCode> = new Set<AiErrorCode>([
   'RUNTIME_CONTRACT_MISMATCH', 'REQUEST_BUILD_FAILED',
   'T4_INPUT_CONTRACT_MISSING_FIELD', 'T4_INPUT_CONTRACT_INVALID_TYPE', 'T4_TASK_NOT_ALLOWED',
   'T4_OUTPUT_CONTRACT_MISSING', 'T4_CONTRACT_VERSION_NOT_FOUND', 'T4_EXECUTION_CONTEXT_BUILD_FAILED',
-  'MODEL_PARAMETERS_INCOMPATIBLE', 'AI_SUSPENDED',
+  'MODEL_PARAMETERS_INCOMPATIBLE', 'AI_SUSPENDED', 'MODEL_ADMISSION_UNVERIFIABLE',
 ]);
 
 /** Code interne au moteur (jamais exposé à l'utilisateur final) ? */

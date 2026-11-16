@@ -154,8 +154,24 @@ export async function testProviderKey(
       }
     }
 
+    // Lot 115 (carte #786, E03) : MÊME garde de disponibilité que les traitements, à la frontière de l'envoi.
+    // « Tester la clé » n'est pas une sonde de rétablissement : il n'envoie rien vers une route confirmée
+    // indisponible (l'authentification et le catalogue ci-dessus restent vérifiés).
+    {
+      const A = await import('./operational-admission');
+      const adm = await A.guardSend({ model, point: 'provider_key_test' });
+      if (!adm.admitted) {
+        detail.error = `Génération de test non envoyée : ${adm.label}${adm.verdict.error ? ` (${adm.verdict.error})` : ''}.`;
+        await trace(accountId, userId, model, false, Date.now() - started, detail.error);
+        return { ok: false, detail };
+      }
+    }
+
     // 2. Génération minimale — la seule qui prouve que le modèle est servi.
     generationSent = true;
+    // #786 (E04 / E05) : instant d'ENVOI, identifiant stable du contrôle et accès effectif, figés AVANT la requête.
+    const envoiLe = new Date();
+    const checkId = `provider_test:${crypto.randomUUID()}`;
     const generation = await fetch(
       `${MODELS_ENDPOINT}/${encodeURIComponent(model)}:generateContent?key=${encodeURIComponent(secret)}`,
       {
@@ -178,7 +194,7 @@ export async function testProviderKey(
       // panne du modèle (non concluant, état conservé).
       await recordOperational(model, secret, classifyProbeFailure(texte || `HTTP ${generation.status}`, {
         model, secret, httpStatus: generation.status,
-      }));
+      }), { observedAt: envoiLe, checkId, httpStatus: generation.status });
       return { ok: false, detail };
     }
 
@@ -192,7 +208,7 @@ export async function testProviderKey(
     const texteGenere = (reponse.candidates?.[0]?.content?.parts ?? [])
       .filter((x) => typeof x.text === 'string' && x.thought !== true).map((x) => x.text).join('');
     // Réponse vide : non concluant (lot 49), jamais une indisponibilité.
-    await recordOperational(model, secret, classifyProbeResponse(texteGenere));
+    await recordOperational(model, secret, classifyProbeResponse(texteGenere), { observedAt: envoiLe, checkId });
     const usage = reponse.usageMetadata;
     await trace(accountId, userId, model, true, Date.now() - started, undefined, {
       inputTokens: Number(usage?.promptTokenCount ?? 0),
@@ -206,9 +222,20 @@ export async function testProviderKey(
   }
 }
 
-async function recordOperational(model: string, secret: string, outcome: ProbeOutcome): Promise<void> {
+/**
+ * Enregistre l'issue du test de clé. Lot 115 (#786, E04) : l'instant d'ENVOI et l'identifiant stable du
+ * contrôle sont ceux figés avant la requête — un résultat ancien reçu tard ne lève plus un refus récent, et le
+ * rejouer ne compte pas pour une seconde sonde.
+ */
+async function recordOperational(
+  model: string, secret: string, outcome: ProbeOutcome,
+  ordre?: { observedAt: Date; checkId: string; httpStatus?: number | null },
+): Promise<void> {
   const { recordOperationalCheck } = await import('./model-operational.service');
-  await recordOperationalCheck({ model, secret, outcome, source: 'provider_test' });
+  await recordOperationalCheck({
+    model, secret, outcome, source: 'provider_test',
+    ...(ordre ? { observedAt: ordre.observedAt, checkId: ordre.checkId, httpStatus: ordre.httpStatus ?? null } : {}),
+  });
 }
 
 /**

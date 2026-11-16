@@ -18,8 +18,12 @@ vi.mock('@/services/ai/provider/model-catalog.service', async (orig) => ({
     models: listes.map((model) => ({ model, displayName: null, available: true, supportsGeneration: true, supportsThinking: null, inputTokenLimit: null, outputTokenLimit: null, lastSeenAt: '2026-10-07T08:00:00Z' })),
   }),
 }));
+// Règle complétée (carte #786, E01) : le contexte lit un INSTANTANÉ qui dit aussi si la lecture est FIABLE
+// (une lecture en erreur n'est plus indiscernable d'« aucune indisponibilité »).
+const etats = () => new Map([['gemini-3.6-flash', { ok: false, checkedAt: '2026-10-07T08:00:00Z', error: '404', source: 'catalog_refresh' }]]);
 vi.mock('@/services/ai/provider/model-operational.service', () => ({
-  loadOperationalStatuses: async () => new Map([['gemini-3.6-flash', { ok: false, checkedAt: '2026-10-07T08:00:00Z', error: '404', source: 'catalog_refresh' }]]),
+  loadOperationalStatuses: async () => etats(),
+  loadOperationalSnapshot: async () => ({ reliable: true, statuses: etats() }),
 }));
 vi.mock('@/services/ai/gateway/pricing/pricing.repository', () => ({
   getCacheState: () => ({ loadedAt: new Date(), size: 1, degraded: false, lastError: null }),

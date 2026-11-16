@@ -155,7 +155,10 @@ describe('L114Y-B04 — API', () => {
 
   it('la route des messages rend les blocs au rejeu d’une demande', () => {
     const route = readFileSync(join(process.cwd(), 'src/app/api/verebona/messages/route.ts'), 'utf8');
-    expect(route).toMatch(/answerBlocks: answerBlocksForApi\(deja\.content\)/);
+    // Règle inchangée, écriture déplacée (carte #790) : les blocs du rejeu sont calculés depuis le texte enregistré,
+    // désormais par une variable locale posée avant la réponse.
+    expect(route).toMatch(/const blocs = answerBlocksForApi\(deja\.content\)/);
+    expect(route).toMatch(/answerBlocks: blocs/);
     expect(route).toMatch(/resultGroups: deja\.resultGroups/);
   });
 });

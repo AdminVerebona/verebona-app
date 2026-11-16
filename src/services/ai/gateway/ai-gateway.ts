@@ -18,6 +18,8 @@ import {
   type CoupleQualification, type FailureCause, type FallbackDecision,
 } from './fallback-policy';
 import { fallbackContext, noteKnownUnavailableSkipped, type CoupleQualificationView, type OperationalHint } from './fallback-context';
+import { guardSend } from '../provider/operational-admission';
+import { activeAccessFingerprint } from '../provider/model-operational.service';
 import { isModelExcluded } from '../config/routing-overlay';
 import { getOperation, isMasterOperation } from '../registry/operations';
 import { calcCostMicros } from './cost-catalog';
@@ -561,10 +563,30 @@ export class AiGateway {
     // ensuite à partir de la configuration courante.
     // ══════════════════════════════════════════════════════════════════════
     const sent: CapturedRequest[] = [];
+    // ══════════════════════════════════════════════════════════════════════
+    // LOT 115 (carte #786, E02) — GARDE COMMUNE À LA FRONTIÈRE DE L'ENVOI
+    //
+    // Toutes les requêtes de la passerelle passent par ce port : appel
+    // initial, essai interne sans schéma, essai diagnostique, passe de
+    // réparation, rang de secours, escalade. La garde lit le verdict PUBLIÉ de
+    // la route (une ligne, sans délai de tolérance, aucun appel fournisseur)
+    // juste avant chaque envoi : un verdict publié par une autre instance
+    // PENDANT la tentative précédente est opposable tout de suite. Les
+    // requêtes DÉJÀ parties finissent ; aucune nouvelle ne part.
+    // ══════════════════════════════════════════════════════════════════════
     const capturing: AiProvider = {
       name: provider.name,
       isConfigured: () => provider.isConfigured(),
       call: async (i: ProviderCallInput) => {
+        const admission = await guardSend({ model: i.model, point: 'gateway_send' });
+        if (!admission.admitted) {
+          const message = `${i.model} : ${admission.label}.`;
+          throw Object.assign(
+            new AiGatewayError(admission.code === 'MODEL_UNAVAILABLE' ? 'MODEL_KNOWN_UNAVAILABLE' : 'MODEL_ADMISSION_UNVERIFIABLE',
+              operationCode, message, { recoverable: true }),
+            { aiStage: 'availability_guard' },
+          );
+        }
         const entry = capturedRequestOf(i, psHash);
         sent.push(entry);
         try {
@@ -730,7 +752,9 @@ export class AiGateway {
     /** Rang sans appel (modèle sauté ou secours refusé) : trace d'usage + capture « aucun envoi ». */
     const traceNoCall = async (p: { model: string; rankIndex: number; decision: FallbackDecision; reasoning: ProviderCallInput['reasoning'] | null; timeoutMs: number; request?: RequestTrace | null }) => {
       const code = p.decision.decision === 'KNOWN_UNAVAILABLE' ? 'MODEL_KNOWN_UNAVAILABLE'
-        : p.decision.decision === 'PRICING_UNVERIFIED' ? 'MODEL_PRICING_UNVERIFIED' : 'FALLBACK_NOT_ADMISSIBLE';
+        : p.decision.decision === 'PRICING_UNVERIFIED' ? 'MODEL_PRICING_UNVERIFIED'
+          // #786 (E01) : rang non sollicité faute de pouvoir vérifier la disponibilité.
+          : p.decision.decision === 'ADMISSION_UNVERIFIABLE' ? 'MODEL_ADMISSION_UNVERIFIABLE' : 'FALLBACK_NOT_ADMISSIBLE';
       const message = `${p.model} non sollicité : ${p.decision.decisionLabel}${p.decision.decision === 'PRICING_UNVERIFIED' && pricingRefusals.get(p.model) ? ` (${pricingRefusals.get(p.model)})` : ''}${p.decision.afterCause ? ` (après « ${p.decision.afterCauseLabel} » sur ${p.decision.afterModel ?? '?'})` : ''}.`;
       const elapsedMs = Date.now() - startedAt;
       await recordCallTrace({
@@ -783,7 +807,17 @@ export class AiGateway {
         // l'état lu au début de l'appel est conservé.
         if (!rangForce && i > 0) knownDown = await fbCtx.knownUnavailable().catch(() => knownDown);
         const sansTarif = pricingRefusals.has(model);
-        const down = sansTarif ? null : knownDown.get(model) ?? null;
+        // Lot 115 (#786, E02 / E03) : verdict PUBLIÉ de la route, lu à l'admission du rang — une ligne, sans
+        // délai de tolérance. Une épreuve de qualification (rang forcé) N'EST PAS exemptée : seules les sondes
+        // explicites de disponibilité le sont (E03). Le refus déjà connu par la table d'instance (`knownDown`)
+        // reste opposable : les deux lectures ne font que s'ajouter, jamais s'annuler.
+        const admissionRang = sansTarif ? null : await guardSend({ model, point: 'gateway_rank' });
+        const refusRang = admissionRang && !admissionRang.admitted ? admissionRang : null;
+        const invérifiable = refusRang?.code === 'ADMISSION_UNVERIFIABLE';
+        const down = sansTarif || invérifiable ? null
+          : refusRang?.code === 'MODEL_UNAVAILABLE'
+            ? { checkedAt: refusRang.verdict.checkedAt, error: refusRang.verdict.error, ...(refusRang.verdict.nextProbeAt ? { nextProbeAt: refusRang.verdict.nextProbeAt } : {}) }
+            : knownDown.get(model) ?? null;
         let excluded = false;
         let qualification: CoupleQualification = 'UNKNOWN';
         // Exclusions EN VIGUEUR (une exclusion prise pendant l'exécution ne
@@ -791,7 +825,8 @@ export class AiGateway {
         if (!down) excluded = exclusVifs.has(model);
         if (previous !== null && !down && !excluded) qualification = await qualificationOf(model);
         const admission = admitCandidate({
-          model, rankIndex: i + premierRang, knownUnavailable: down !== null, pricingUnverified: sansTarif, excluded, qualification,
+          model, rankIndex: i + premierRang, knownUnavailable: down !== null, pricingUnverified: sansTarif,
+          admissionUnverifiable: invérifiable, excluded, qualification,
           maxOutputTokens: built.ok ? built.params.maxOutputTokens ?? null : null,
         }, previous ? { cause: previous.cause, truncatedAtMaxOutputTokens: previous.truncatedAt, unknownAlternativesUsed } : null,
         { configOrigin: (qualifView as CoupleQualificationView | null)?.origin ?? null });
@@ -815,6 +850,20 @@ export class AiGateway {
             if (!previous) previous = { cause: 'KNOWN_UNAVAILABLE', model, truncatedAt: null };
             if (!lastCause) lastCause = 'KNOWN_UNAVAILABLE';
             continue;
+          }
+          // #786 (E01) : disponibilité invérifiable — la lecture est COMMUNE à tous les rangs : la chaîne
+          // s'arrête ici, les rangs suivants sont refusés du même motif, et la cause suspend l'exécution
+          // (aucune écriture métier, reprise quand la lecture redevient possible). Aucun modèle n'est retiré.
+          if (admission.reason === 'ADMISSION_UNVERIFIABLE') {
+            previous = { cause: 'ADMISSION_UNVERIFIABLE', model, truncatedAt: null };
+            lastCause = 'ADMISSION_UNVERIFIABLE';
+            for (let k = i + 1; k < models.length; k++) {
+              const d = decisionOf({ rank: rankAt(k + premierRang), model: models[k], admission, afterCause: 'ADMISSION_UNVERIFIABLE', afterModel: model, qualification: 'UNKNOWN' });
+              decisions.push(d);
+              failures.push(`${models[k]} : ${ADMISSION_LABELS[admission.reason]}`);
+              await traceNoCall({ model: models[k], rankIndex: k + premierRang, decision: d, reasoning: rankSettings(op, configuration, k + premierRang).reasoning, timeoutMs });
+            }
+            break;
           }
           // Cause qui arrête la chaîne (défaut commun, cause indéterminée déjà
           // retentée) : les rangs suivants sont refusés pour le même motif.
@@ -858,6 +907,10 @@ export class AiGateway {
         const attemptPrompt = `${withContract(!sendSchema)}${notice}`;
         const entree = estimerEntree(model, attemptPrompt, maxOutputTokens ?? null);
         const attemptStart = Date.now();
+        // Lot 115 (#786, E05) : accès qui ENVOIE cette tentative, figé AVANT la requête — un refus reçu après
+        // une rotation de clé est attribué à cet accès, jamais à la nouvelle clé. `null` : accès inconnu.
+        const accesEnvoi = await activeAccessFingerprint();
+        const checkIdEnvoi = `gateway_call:${traceId}:${callIndex}`;
         const attemptFrom = sent.length;
         // Sortie du fournisseur conservée hors du try : si la VALIDATION échoue,
         // les jetons ont été consommés et facturés — COST-005 exige de garder
@@ -1012,7 +1065,11 @@ export class AiGateway {
           // appels suivants sautent ce rang) ; présumé : sonde bornée ; 429, 5xx, délai, réseau, clé, transfert,
           // construction locale : rien n'est écrit. Borné, ne lève jamais, aucun appel fournisseur ici.
           const refusSignale = !c.transfer && !NO_GENERATION_STAGES.has(String(c.stage ?? ''))
-            ? await fbCtx.reportRefusal({ model, error: e, httpStatus: c.httpStatus, sentAt: new Date(attemptStart) }).catch(() => null)
+            ? await fbCtx.reportRefusal({
+              model, error: e, httpStatus: c.httpStatus, sentAt: new Date(attemptStart),
+              // #786 (E04 / E05) : accès de l'envoi et identifiant stable du constat.
+              accessFingerprint: accesEnvoi, checkId: checkIdEnvoi,
+            }).catch(() => null)
             : null;
           previous = { cause, model, truncatedAt: null };
           lastCause = cause;

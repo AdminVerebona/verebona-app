@@ -286,6 +286,39 @@ export function needsQualification(q: StoredQualification | undefined, _now?: Da
   return Boolean(q.requalificationRequiredAt);
 }
 
+/**
+ * Lot 115 (carte #786, E06) — marque les qualifications d'un ou plusieurs
+ * modèles comme OBSOLÈTES pour l'accès actif : leur historique est conservé
+ * (aucune ligne supprimée, aucun résultat réécrit), mais `needsQualification`
+ * les reprend et la campagne ciblée du passage suivant les requalifie
+ * (dédupliquée : la marque est effacée par le résultat qui la lève, donc
+ * reprenable sans doublon).
+ *
+ * Appelée après un RÉTABLISSEMENT probant : « disponible à requalifier » n'est
+ * pas « qualifié ». Ne lève jamais ; rend le nombre de fiches marquées.
+ */
+export async function markRequalificationRequired(models: readonly string[], secret: string, reason: string): Promise<number> {
+  if (models.length === 0) return 0;
+  try {
+    const rows = (await pgClient.unsafe(
+      `UPDATE ai_model_qualification
+          SET requalification_required_at = NOW(), requalification_reason = $3
+        WHERE provider = 'gemini' AND key_fingerprint = $2 AND model = ANY($1::text[])
+          AND requalification_required_at IS NULL
+        RETURNING model`,
+      [models as unknown as never, keyFingerprint(secret), reason.slice(0, 300)] as never[],
+    )) as unknown as Row[];
+    if (rows.length > 0) {
+      console.info(`[model-qualification] ${rows.length} qualification(s) marquée(s) à requalifier : ${reason}`);
+    }
+    return rows.length;
+  } catch (e) {
+    // Colonnes 0708 absentes ou base indisponible : rien n'est marqué (le passage suivant réessaiera).
+    console.warn('[model-qualification] marque de requalification non écrite :', (e as Error).message.slice(0, 200));
+    return 0;
+  }
+}
+
 /** Enregistre un résultat CONCLUANT sur la génération (best effort : ne lève jamais). */
 export async function recordQualification(model: string, secret: string, r: QualificationResult): Promise<boolean> {
   if (r.generate === null) return false;
@@ -377,6 +410,9 @@ export function defaultQualificationCall(secret?: string | null): QualificationC
     const { traceTechnicalCall } = await import('./model-operational.service');
     // Lot 114 (#770) : aucune épreuve (elle consomme des jetons) sur un modèle sans tarif officiel vérifié.
     await (await import('../gateway/pricing/pricing-guard')).assertModelPricingVerified(input.model);
+    // Lot 115 (carte #786, E03) : garde de disponibilité AVANT CHAQUE épreuve — une qualification n'est pas une
+    // sonde de récupération. Un refus publié entre la sélection des modèles et cette épreuve l'arrête ici.
+    await (await import('./operational-admission')).assertSendAdmissible({ model: input.model, point: 'qualification_trial' });
     try {
       const r = await getAiProvider().call(input);
       await traceTechnicalCall('model_qualification_probe', input.model, true, Date.now() - started,

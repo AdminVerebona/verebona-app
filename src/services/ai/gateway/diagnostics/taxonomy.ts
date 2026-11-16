@@ -88,6 +88,12 @@ export const AI_FAILURE_STAGES = [
    * échouée ni un défaut du prompt : le modèle n'a pas été sollicité.
    */
   'attachment_transfer',
+  /**
+   * Lot 115 (carte #786, E02) : envoi REFUSÉ à la frontière d'admission —
+   * route confirmée indisponible, ou disponibilité invérifiable. Rien n'a été
+   * transmis : ni génération échouée, ni défaut du modèle ou du prompt.
+   */
+  'availability_guard',
   'provider_request',
   'provider_generation',
   'response_reception',
@@ -105,7 +111,7 @@ export type AiFailureStage = (typeof AI_FAILURE_STAGES)[number];
  * Étapes où le modèle N'A PAS répondu (par opposition à « a répondu mais
  * Verebona a rejeté sa sortie ») — ticket §2.
  */
-export const PRE_RESPONSE_STAGES: readonly AiFailureStage[] = ['request_build', 'attachment_transfer', 'provider_request', 'provider_generation'];
+export const PRE_RESPONSE_STAGES: readonly AiFailureStage[] = ['request_build', 'attachment_transfer', 'availability_guard', 'provider_request', 'provider_generation'];
 
 // ══════════════════════════════════════════════════════════════════════════
 // LOT 113R (carte #717) — ÉCHEC DE TRANSFERT D'UNE PIÈCE JOINTE

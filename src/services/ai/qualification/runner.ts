@@ -47,7 +47,14 @@ export const productionGatewayCall: GatewayCall = async (req, ctx) => {
  * jamais « non établie ») — compte technique de qualification (corpus) ou
  * compte de données d'un rejeu devenu non éligible (C-Q10).
  */
-export type PrerequisiteBlock = 'TECHNICAL_ACCOUNT' | 'REPLAY_ACCOUNT' | 'BUDGET';
+export type PrerequisiteBlock = 'TECHNICAL_ACCOUNT' | 'REPLAY_ACCOUNT' | 'BUDGET'
+  /**
+   * Lot 115 (carte #786, E03) : la ROUTE du couple est confirmée indisponible
+   * (ou sa disponibilité est invérifiable) — blocage TECHNIQUE d'exploitation,
+   * jamais une régression métier du couple. Les essais restants de cette route
+   * ne sont pas envoyés ; les preuves déjà obtenues sont conservées.
+   */
+  | 'MODEL_UNAVAILABLE';
 
 /** Lot 113I : préfixe stable d'un essai NON appelé faute de réservation budgétaire (WAITING_BUDGET, jamais un défaut). */
 export const BUDGET_REASON_PREFIX = 'budget d’amélioration';
@@ -56,9 +63,20 @@ export const BUDGET_REASON_PREFIX = 'budget d’amélioration';
  * Lot 113I : codes d'échec levés AVANT tout contact fournisseur (aucune facturation possible) — la réservation est
  * libérée. Tout autre échec est réputé « appel envoyé, coût à rapprocher » (FIN-005).
  */
-const NOT_SENT = new Set(['ACCOUNT_INELIGIBLE', 'REQUEST_BUILD_FAILED', 'AI_SUSPENDED', 'COST_CAP_REACHED', 'MASTER_PROMPT_INVALID']);
+const NOT_SENT = new Set([
+  'ACCOUNT_INELIGIBLE', 'REQUEST_BUILD_FAILED', 'AI_SUSPENDED', 'COST_CAP_REACHED', 'MASTER_PROMPT_INVALID',
+  // Lot 115 (#786) : refusé à la frontière d'admission — aucune requête n'est partie.
+  'MODEL_KNOWN_UNAVAILABLE', 'MODEL_ADMISSION_UNVERIFIABLE',
+]);
 
 export type Observation = CaseObservation & { advisory: boolean; blockedBy?: PrerequisiteBlock };
+
+/**
+ * Lot 115 (#786, E03) : codes d'un essai NON ENVOYÉ parce que la route n'est pas admissible — préfixe stable du
+ * motif, pour que le BO et la reprise les distinguent d'un défaut du couple. À valider par le PO.
+ */
+const ROUTE_NOT_ADMISSIBLE = new Set(['MODEL_KNOWN_UNAVAILABLE', 'MODEL_ADMISSION_UNVERIFIABLE']);
+export const ROUTE_BLOCK_REASON_PREFIX = 'route non admissible';
 
 /** Préfixe stable des motifs « prérequis » (reconnu par la reprise automatique et le BO). */
 export const PREREQUISITE_REASON_PREFIX = 'prérequis d’exploitation';
@@ -106,6 +124,11 @@ export async function runCoupleCases(p: {
   const limit = sync ? th.concurrency.synchronousSimultaneous : th.concurrency.queuedPerWorker;
   const groupLimit = sync ? th.concurrency.synchronousSimultaneous : th.concurrency.queuedPerTreatment;
   let requestRejected: CoupleRun['requestRejected'] = null;
+  /**
+   * Lot 115 (#786, E03) : refus d'admission reçu PENDANT la campagne — les essais suivants de cette route ne
+   * partent plus (un filtre au démarrage de la campagne ne couvre pas un refus publié en cours de route).
+   */
+  let routeBloquee: string | null = null;
   const ctx: AiJobContext = {
     jobId: null, treatment: p.couple.treatment, configVersionId: p.couple.versionId, configRevisionId: p.couple.revisionId, triggerCode: 'qualification',
   };
@@ -127,6 +150,10 @@ export async function runCoupleCases(p: {
       servedModel: null, traceId: null, accountId: c.accountId, captureId: c.captureId, historicalSha256: outputSha256(c.historicalOutput),
       observedSha256: null, matchesHistorical: null, manifestCaseId: c.manifestCaseId ?? null, attempts: 0,
     };
+    // #786 (E03) : la route a été refusée pendant cette campagne — aucun nouvel essai n'est envoyé.
+    if (routeBloquee) {
+      return { ...base, blockedBy: 'MODEL_UNAVAILABLE', inconclusiveReason: `${ROUTE_BLOCK_REASON_PREFIX} : ${routeBloquee}` };
+    }
     const accountId = c.accountId ?? p.technicalAccountId;
     const technique = c.accountId == null;
     if (!accountId) {
@@ -186,6 +213,13 @@ export async function runCoupleCases(p: {
         derniere = `${code} : ${String((e as Error)?.message ?? e).slice(0, 200)}`;
         if (code === 'INVALID_OUTPUT') {
           return { ...base, outcome: 'FAILED', defects: [{ category: 'SCHEMA', message: `sortie non conforme : ${String((e as Error).message).slice(0, 300)}` }] };
+        }
+        // #786 (E03) : refus d'admission de la route — blocage technique, essais restants arrêtés, preuves conservées.
+        if (ROUTE_NOT_ADMISSIBLE.has(code) || (code === 'KNOWN_UNAVAILABLE')
+          || (e as { failureCause?: unknown })?.failureCause === 'KNOWN_UNAVAILABLE'
+          || (e as { failureCause?: unknown })?.failureCause === 'ADMISSION_UNVERIFIABLE') {
+          routeBloquee ??= `${code} — ${String((e as Error)?.message ?? e).slice(0, 200)}`;
+          return { ...base, blockedBy: 'MODEL_UNAVAILABLE', inconclusiveReason: `${ROUTE_BLOCK_REASON_PREFIX} : ${routeBloquee}` };
         }
         if (REQUEST_REJECTED.has(code)) {
           const parameter = (e as { rejectedParameter?: string }).rejectedParameter ?? null;

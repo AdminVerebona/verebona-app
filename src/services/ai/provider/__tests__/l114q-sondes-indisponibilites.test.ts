@@ -341,16 +341,19 @@ describe('L114Q-U07 — recontrôle borné d’un modèle refusé (A06)', () => 
 
 describe('L114Q-U08 — contrôle final de disponibilité dans une transaction (A03)', () => {
   it('confirmé indisponible pour la clé active : refus ; sain, inconnu, suspect, autre clé ou illisible : aucun refus', async () => {
+    // Règle remplacée (carte #786, E01) : la fonction rendait `null` dans tous les cas où rien ne s'opposait,
+    // y compris quand la lecture était IMPOSSIBLE. Elle rend désormais un verdict à trois états, et une
+    // lecture impossible vaut `unverifiable` (la promotion est alors refusée par prudence).
     const tx = { unsafe: (await import('@/db')).pgClient.unsafe as (q: string, p?: never[]) => Promise<unknown> };
-    expect(await O.operationalRefusalInTx(tx, MODELE, CLE)).toBeNull(); // jamais contrôlé
+    expect(await O.operationalRefusalInTx(tx, MODELE, CLE)).toEqual({ kind: 'clear' }); // jamais contrôlé
     await O.recordOperationalCheck({ model: MODELE, secret: CLE, outcome: C.classifyProbeFailure(erreur15389(), { model: MODELE }), source: 'catalog_refresh' });
-    expect(await O.operationalRefusalInTx(tx, MODELE, CLE)).toMatchObject({ error: `HTTP 404 NOT_FOUND — ${MESSAGE_15389}`, checkedAt: expect.any(String) });
-    expect(await O.operationalRefusalInTx(tx, MODELE, AUTRE_CLE)).toBeNull();
-    expect(await O.operationalRefusalInTx(tx, MODELE, null)).toBeNull();
+    expect(await O.operationalRefusalInTx(tx, MODELE, CLE)).toMatchObject({ kind: 'refused', error: `HTTP 404 NOT_FOUND — ${MESSAGE_15389}`, checkedAt: expect.any(String) });
+    expect(await O.operationalRefusalInTx(tx, MODELE, AUTRE_CLE)).toEqual({ kind: 'clear' });
+    expect(await O.operationalRefusalInTx(tx, MODELE, null)).toEqual({ kind: 'clear' });
     await O.recordOperationalCheck({ model: 'm-suspect', secret: CLE, outcome: { status: 'failed', kind: 'model_not_found', error: 'HTTP 404', definitive: false }, source: 'catalog_refresh' });
-    expect(await O.operationalRefusalInTx(tx, 'm-suspect', CLE)).toBeNull();
+    expect(await O.operationalRefusalInTx(tx, 'm-suspect', CLE)).toEqual({ kind: 'clear' });
     db.panne = true;
-    expect(await O.operationalRefusalInTx(tx, MODELE, CLE)).toBeNull();
+    expect(await O.operationalRefusalInTx(tx, MODELE, CLE)).toMatchObject({ kind: 'unverifiable' });
   });
 });
 
@@ -423,7 +426,11 @@ describe('L114Q-U09 — BO et alertes (R10, B01 à B04)', () => {
     expect(veille.providerIncident).toBeNull();
     expect(veille.suspect.map((e) => e.model)).toEqual(['m-suspect']);
     expect(veille.inconclusive).toEqual([expect.objectContaining({ model: 'm-quota', httpStatus: 429, providerCode: 'RESOURCE_EXHAUSTED', operational: null })]);
-    expect(veille.counts).toEqual({ controlled: 3, ok: 1, failedConfirmed: 0, suspect: 1, inconclusive: 1 });
+    // Règle complétée (carte #786, E08) : `failedConfirmed` compte l'ÉTAT RETENU, et un décompte des routes
+    // refusées dont le dernier contrôle n'a rien conclu est rendu à part.
+    expect(veille.counts).toEqual({
+      controlled: 3, ok: 1, failedConfirmed: 0, suspect: 1, inconclusive: 1, unavailableWithInconclusiveLastCheck: 0,
+    });
     const html = renderToStaticMarkup(h(OperationalWatchPanel, { watch: veille as never }));
     expect(html).toContain('m-suspect');
     expect(html).toContain('modèle toujours appelable');

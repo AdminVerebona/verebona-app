@@ -309,6 +309,17 @@ async function recordProbeTrace(p: {
  * (`recordProbeTrace`) — son coût est visible, séparé du coût métier.
  */
 async function defaultProbe(model: string, treatment?: Treatment, rank = 0): Promise<boolean> {
+  // Lot 115 (carte #786, E03) : la sonde du disjoncteur est un envoi ORDINAIRE — elle ne part pas vers une
+  // route confirmée indisponible (le rétablissement de la route a sa propre sonde, bornée et réservée). Rien
+  // n'est conclu sur le modèle : la sonde est simplement « non envoyée ».
+  {
+    const { guardSend } = await import('../provider/operational-admission');
+    const adm = await guardSend({ model, point: 'breaker_probe' });
+    if (!adm.admitted) {
+      console.info(`[circuit-breaker] sonde ${model} non envoyée : ${adm.label}.`);
+      return false;
+    }
+  }
   const { getAiProvider } = await import('../gateway/providers');
   const provider = getAiProvider();
   const started = Date.now();
