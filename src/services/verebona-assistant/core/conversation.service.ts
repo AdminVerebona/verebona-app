@@ -274,6 +274,12 @@ interface ReplayedAnswer {
    * export lancé depuis l'Assistant) — rendues à l'identique au rejeu, sans rien relancer. `null` : aucune carte.
    */
   resultGroups: unknown[] | null;
+  /**
+   * Carte #790, passage 115E (E02) — CHRONOLOGIE enregistrée avec la réponse
+   * (migration 0228). Le rejeu la rendait en texte seul : la même demande
+   * donnait une réponse appauvrie. `null` : réponse sans chronologie.
+   */
+  events: unknown[] | null;
 }
 
 export async function findReplayedAnswer(
@@ -281,8 +287,10 @@ export async function findReplayedAnswer(
   userId: number,
   clientRequestId: string,
 ): Promise<ReplayedAnswer | null> {
+  // Carte #790 (E02) : chronologie relue si la colonne existe (même garde que l'historique).
+  const chronologie = (await timelineColumnReady()) ? 'a.timeline_events_json' : 'NULL::jsonb AS timeline_events_json';
   const rows = await pgClient.unsafe(
-    `SELECT a.id, a.conversation_id, a.request_id, a.content, a.intent, a.mode, a.result_groups_json
+    `SELECT a.id, a.conversation_id, a.request_id, a.content, a.intent, a.mode, a.result_groups_json, ${chronologie}
        FROM verebona_messages q
        JOIN verebona_conversations c ON c.id = q.conversation_id
        JOIN verebona_messages a ON a.conversation_id = q.conversation_id
@@ -296,7 +304,7 @@ export async function findReplayedAnswer(
     // la réservation le refuse (« déjà traitée ») sans relancer le pipeline.
     [accountId, userId, clientRequestId, Math.max(1, Math.floor(getAssistantConfig().idempotencyTtlSeconds))],
   );
-  const r = (rows as unknown as Array<{ id: number; conversation_id: number; request_id: string; content: string | null; intent: string | null; mode: string | null; result_groups_json?: unknown }>)[0];
+  const r = (rows as unknown as Array<{ id: number; conversation_id: number; request_id: string; content: string | null; intent: string | null; mode: string | null; result_groups_json?: unknown; timeline_events_json?: unknown }>)[0];
   if (!r) return null;
   // Le rejeu rendait `sourcesAvailable: false` et `actions: []` : la même
   // demande donnait une réponse appauvrie. Sources et actions sont relues.
@@ -311,6 +319,7 @@ export async function findReplayedAnswer(
     conversationId: r.conversation_id, messageId: r.id, requestId: r.request_id, content: r.content ?? '',
     intent: r.intent, mode: r.mode,
     resultGroups: Array.isArray(r.result_groups_json) && r.result_groups_json.length ? r.result_groups_json : null,
+    events: Array.isArray(r.timeline_events_json) && r.timeline_events_json.length ? r.timeline_events_json : null,
     sourceCount: src?.n ?? 0,
     actions: act
       .filter((a) => !a.expires_at || new Date(a.expires_at).getTime() > Date.now())

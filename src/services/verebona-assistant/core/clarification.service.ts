@@ -142,6 +142,32 @@ export async function chargerClarification(
 }
 
 /**
+ * Carte #790, passage 115E (E02) — CLARIFICATION ENCORE VALIDE D'UN FIL, dans la
+ * forme de l'API.
+ *
+ * Façade partagée : la reprise d'un fil (GET conversation) et le rejeu d'une
+ * demande (même `clientRequestId`) rendaient la même chose de deux façons — le
+ * rejeu, lui, rendait `clarification: null`, et la question posée disparaissait
+ * après un incident réseau. Un seul endroit décide maintenant ce qui est encore
+ * à répondre : état présent, question réellement posée, statut en attente et
+ * non expirée. L'état interne (candidats résolus, tentatives) ne sort jamais.
+ */
+export async function clarificationEnAttentePourApi(
+  accountId: number,
+  userId: number,
+  conversationId: number,
+): Promise<{ clarificationId: string; question: string; expiresAt: string; choices: Array<{ choiceId: string; label: string; secondaryLabel?: string }> } | null> {
+  const { etat } = await chargerClarification(accountId, userId, undefined, conversationId);
+  if (!etat || !etat.originalMessage || (etat.status && etat.status !== 'PENDING') || isExpired(etat)) return null;
+  return {
+    clarificationId: etat.clarificationId,
+    question: etat.question,
+    expiresAt: etat.expiresAt,
+    choices: etat.candidates.map((c) => ({ choiceId: c.id, label: c.label, secondaryLabel: c.secondaryLabel })),
+  };
+}
+
+/**
  * Efface la clarification traitée.
  *
  * Appelée que la reprise ait abouti ou échoué définitivement : une

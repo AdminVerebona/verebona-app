@@ -59,6 +59,17 @@ export type CommandDraft =
       command: 'DELETE_ASSET';
       assetWords: string[];
       assetFromContext: boolean;
+      /**
+       * Carte #790 (E01) — la demande a la forme « <quelque chose> DE <bien> »
+       * (« efface la couleur de la Clio ») : ce qui précède le « de » peut être
+       * une PROPRIÉTÉ du bien, et non une partie de son nom. Mots de ce premier
+       * segment ; absent quand la demande désigne le bien directement. La
+       * résolution arbitre : nom du bien qui les porte => suppression (« la Clio
+       * de Paul ») ; sinon JAMAIS une suppression, mais une question.
+       */
+      propertyWords?: string[];
+      /** Mots du segment qui suit le « de » (le bien porteur présumé). */
+      ownerWords?: string[];
     }
   | {
       command: 'CREATE_SUPPLIER';
@@ -409,18 +420,69 @@ function parseAssetCreation(message: string): CommandDraft | null {
 }
 
 /**
+ * Carte #790 (E01) — séparateur de possession d'une désignation : « la couleur
+ * DE la Clio », « la date D'achat de la Clio ». Le DERNIER sépare la propriété
+ * présumée du bien porteur présumé. Pure.
+ */
+const SEPARATEUR_POSSESSION = /\s(?:de|du|des)\s+|\sd'/g;
+
+/** Déterminant en tête du segment du bien (« de LA Clio »), retiré avant les mots. */
+const DET_EN_TETE = /^(?:ma|mon|mes|la|le|les|notre|votre|ce|cet|cette)\s+|^l'/;
+
+/**
+ * Carte #790 (E01) — ARBITRAGE D'INTENTION PAR TYPE D'OBJET.
+ *
+ * « Efface la couleur de la Clio » parle d'une PROPRIÉTÉ de la Clio, pas de la
+ * Clio : la demande ne doit jamais basculer vers la suppression définitive du
+ * bien. Cette fonction découpe la désignation en « propriété présumée » et
+ * « bien porteur présumé » ; la résolution tranche dans le compte (un bien
+ * nommé « Clio de Paul » reste supprimable).
+ *
+ * Rend `null` — et la demande garde EXACTEMENT son sens d'avant — quand :
+ * le premier segment désigne lui-même un bien (famille ou catégorie du
+ * référentiel : « supprime la voiture de Paul », « supprime le vélo cargo de
+ * la maison »), ou quand l'un des deux segments ne porte aucun mot utile.
+ */
+function proprieteDeBien(reste: string): { propertyWords: string[]; ownerWords: string[] } | null {
+  SEPARATEUR_POSSESSION.lastIndex = 0;
+  let dernier: { debut: number; fin: number } | null = null;
+  for (let h = SEPARATEUR_POSSESSION.exec(reste); h; h = SEPARATEUR_POSSESSION.exec(reste)) {
+    dernier = { debut: h.index, fin: h.index + h[0].length };
+  }
+  if (!dernier) return null;
+  const avant = reste.slice(0, dernier.debut);
+  const apres = reste.slice(dernier.fin).replace(DET_EN_TETE, '');
+  const propertyWords = motsUtiles(avant);
+  const ownerWords = motsUtiles(apres);
+  if (!propertyWords.length || !ownerWords.length) return null;
+  // Le premier segment désigne un bien : la demande porte bien sur un bien.
+  if (assetDesignationsIn(avant).length > 0) return null;
+  return { propertyWords, ownerWords };
+}
+
+/**
  * « Supprime la Clio », « supprime mon vélo cargo », « supprime ce bien »
  * (pure, testée). Jamais si le message parle d'un autre objet (« supprime le
  * document de la Clio ») ni d'une échéance.
+ *
+ * Carte #790 (E01) : la forme « <propriété> de <bien> » est signalée à la
+ * résolution (`propertyWords`), qui n'en fait une suppression que si le nom du
+ * bien porte réellement ces mots. « Le bien … » nommé explicitement lève le
+ * doute : l'intention est alors sans ambiguïté sur le TYPE D'OBJET.
  */
 function parseAssetDeletion(message: string): CommandDraft | null {
   const m = plain(message).trim().replace(DEMANDE_POLIE, '').trim();
-  const debut = m.match(/^(?:supprime|supprimer|efface|effacer)\s+(?:definitivement\s+)?(ma|mon|mes|la|le|l'|notre|ce|cet|cette)\s*(?:bien\s+)?/);
+  const debut = m.match(/^(?:supprime|supprimer|efface|effacer)\s+(?:definitivement\s+)?(ma|mon|mes|la|le|l'|notre|ce|cet|cette)\s*(bien\s+)?/);
   if (!debut || AGENDA_TARGET.test(m) || AUTRE_OBJET.test(m)) return null;
   const assetFromContext = /^(ce|cet|cette)$/.test(debut[1]);
-  const mots = motsUtiles(m.slice(debut[0].length)).filter((w) => !['definitivement', 'compte', 'tout', 'tous'].includes(w));
+  const reste = m.slice(debut[0].length);
+  const mots = motsUtiles(reste).filter((w) => !['definitivement', 'compte', 'tout', 'tous'].includes(w));
   if (!assetFromContext && mots.length === 0) return null;
-  return { command: 'DELETE_ASSET', assetWords: assetFromContext ? [] : mots, assetFromContext };
+  const propriete = assetFromContext || debut[2] ? null : proprieteDeBien(reste);
+  return {
+    command: 'DELETE_ASSET', assetWords: assetFromContext ? [] : mots, assetFromContext,
+    ...(propriete ?? {}),
+  };
 }
 
 // ── Lot 114F (#753, W02 / W27) : renommer un bien, effacer une caractéristique ─

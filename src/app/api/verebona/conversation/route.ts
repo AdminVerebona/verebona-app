@@ -18,8 +18,7 @@ import {
   findOwnedConversation,
   listActiveMessages,
 } from '@/services/verebona-assistant/core/conversation.service';
-import { chargerClarification } from '@/services/verebona-assistant/core/clarification.service';
-import { isExpired } from '@/services/verebona-assistant/core/clarification-builder';
+import { clarificationEnAttentePourApi } from '@/services/verebona-assistant/core/clarification.service';
 import { reverifierCartesDesMessages } from '@/services/verebona-assistant/core/source-availability.service';
 import { rafraichirCartesExport } from '@/services/verebona-assistant/core/export-card-state';
 import { reverifierChronologiesDesMessages } from '@/services/verebona-assistant/core/timeline-persistence';
@@ -90,15 +89,9 @@ async function lire(req: NextRequest, httpId: string): Promise<NextResponse> {
   // Clarification encore en attente dans ce fil : rendue pour que l'utilisateur
   // puisse y répondre après un rechargement ou une reconnexion. Seuls la
   // question et les choix sortent — l'état interne reste côté serveur.
-  const { etat } = await chargerClarification(accountId, session.userId, undefined, conversationId);
-  const clarification = etat && etat.originalMessage && (!etat.status || etat.status === 'PENDING') && !isExpired(etat)
-    ? {
-        clarificationId: etat.clarificationId,
-        question: etat.question,
-        expiresAt: etat.expiresAt,
-        choices: etat.candidates.map((c) => ({ choiceId: c.id, label: c.label, secondaryLabel: c.secondaryLabel })),
-      }
-    : null;
+  // Carte #790 (E02) : façade partagée avec le rejeu d'une demande — une seule
+  // définition de « clarification encore valide ».
+  const clarification = await clarificationEnAttentePourApi(accountId, session.userId, conversationId);
   // Commandes proposées dans ce fil, avec leur état réel (§9.6 : en attente,
   // annulée, expirée, exécutée) : une proposition encore en attente reste
   // annulable après un rechargement ; une proposition close n'offre plus de

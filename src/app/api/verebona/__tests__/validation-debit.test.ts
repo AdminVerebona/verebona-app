@@ -37,7 +37,12 @@ vi.mock('@/services/verebona-assistant/core/conversation.service', () => ({
   clearUserHistory: vi.fn(async () => ({ conversations: 1, messages: 0, cachedModelResponses: 0 })),
   MESSAGE_OWNED_BY_USER: () => 'TRUE',
 }));
-vi.mock('@/services/verebona-assistant/core/clarification.service', () => ({ chargerClarification: vi.fn(async () => ({ etat: null })) }));
+// Carte #790 (E02) : la reprise d'un fil et le rejeu d'une demande passent par la
+// MÊME façade « clarification encore valide » (`clarificationEnAttentePourApi`).
+vi.mock('@/services/verebona-assistant/core/clarification.service', () => ({
+  chargerClarification: vi.fn(async () => ({ etat: null })),
+  clarificationEnAttentePourApi: vi.fn(async () => null),
+}));
 vi.mock('@/services/verebona-assistant/commands/plan.service', () => ({ listThreadCommandPlans: vi.fn(async () => []) }));
 vi.mock('@/services/verebona-assistant/core/source-availability.service', () => ({
   reverifierCartesDesMessages: vi.fn(async (m: unknown) => m),

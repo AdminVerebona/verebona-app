@@ -756,9 +756,13 @@ export async function runAssistant(
         base.route = route;
         trace.intent = 'WRITE_COMMAND';
         done('template', prep.kind === 'plan' ? 'command.preview' : 'command.need_info', null, 0);
+        // Carte #790 (E02) : le plan est posé sur `base` AVANT `finalize` — c'est `finalize` qui
+        // PERSISTE la réponse, et c'est la persistance qui rattache le plan à son message
+        // (`verebona_command_plans.message_id`). Posé après, le rattachement n'avait jamais lieu :
+        // l'historique rechargé et le rejeu d'une demande perdaient la proposition à confirmer.
+        if (prep.kind === 'plan') base.commandPlan = prep.preview;
         const result = await finalize(base, machine, 'deterministic',
           prep.kind === 'plan' ? prep.preview.summary : prep.message, [], [], [], ports, input);
-        if (prep.kind === 'plan') result.commandPlan = prep.preview;
         return result;
       }
     }
@@ -1092,9 +1096,10 @@ export async function runAssistant(
       base.route = routeForIntent('UNSUPPORTED_ACTION', input.planType, 'action comprise par le sens');
       trace.intent = 'WRITE_COMMAND';
       done('template', prepIndices.kind === 'plan' ? 'command.hint_preview' : 'command.hint_need_info', null, 0);
+      // Carte #790 (E02) : plan posé AVANT `finalize` (voir plus haut) — sinon il n'est jamais rattaché à son message.
+      if (prepIndices.kind === 'plan') base.commandPlan = prepIndices.preview;
       const resultat = await finalize(base, machine, 'deterministic',
         prepIndices.kind === 'plan' ? prepIndices.preview.summary : prepIndices.message, [], [], [], ports, input);
-      if (prepIndices.kind === 'plan') resultat.commandPlan = prepIndices.preview;
       return resultat;
     };
 
@@ -1249,9 +1254,10 @@ export async function runAssistant(
       if (prep.kind === 'need_info') trace.escalationReasons.push(`INTERACTION:PROPOSAL_REFUSED:${prep.reason}`);
       if (noteMixte) trace.escalationReasons.push('INTERACTION:MIXED_QUESTION_DEFERRED');
       done('template', prep.kind === 'plan' ? 'command.proposal_preview' : 'command.proposal_need_info', null, 0);
+      // Carte #790 (E02) : plan posé AVANT `finalize` (voir plus haut) — sinon il n'est jamais rattaché à son message.
+      if (prep.kind === 'plan') base.commandPlan = prep.preview;
       const result = await finalize(base, machine, 'deterministic',
         `${prep.kind === 'plan' ? prep.preview.summary : prep.message}${noteMixte}${contexteNonEnregistre}`, [], [], [], ports, input);
-      if (prep.kind === 'plan') result.commandPlan = prep.preview;
       return result;
     };
 

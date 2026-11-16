@@ -641,6 +641,42 @@ async function resolveAssetCreation(
 }
 
 /**
+ * Carte #790 (E01) — le nom du bien porte-t-il TOUS les mots de la propriété
+ * présumée ? « Clio de Paul » porte « clio » : « supprime la Clio de Paul »
+ * reste une suppression de bien. « Clio » ne porte pas « couleur » : « efface la
+ * couleur de la Clio » n'en est pas une. Pure.
+ */
+function nomPorteLesMots(nom: string, mots: readonly string[]): boolean {
+  const n = plain(nom);
+  return mots.every((w) => n.includes(w));
+}
+
+/**
+ * Carte #790 (E01) — REFUS D'UN EFFACEMENT DE PROPRIÉTÉ INCONNUE.
+ *
+ * La demande visait une caractéristique que l'Assistant ne sait pas écrire : il
+ * le dit, rappelle celles qu'il sait effacer POUR CE BIEN (sa famille, depuis le
+ * registre canonique — aucune liste parallèle) et donne la formulation explicite
+ * d'une vraie suppression de bien. Il ne prépare RIEN.
+ */
+async function refusEffacementChampInconnu(
+  draft: Extract<CommandDraft, { command: 'DELETE_ASSET' }>,
+  bien: { id: number; name: string },
+  accountId: number,
+  lookup: CommandLookup,
+): Promise<string> {
+  const etat = lookup.getAssetState ? await lookup.getAssetState(accountId, bien.id).catch(() => null) : null;
+  const famille = etat ? familyOf(etat.category) : null;
+  const champs = ASSISTANT_ASSET_FIELDS
+    .filter((d) => !famille || d.sections[famille])
+    .map((d) => d.label.toLowerCase());
+  const propriete = (draft.propertyWords ?? []).join(' ');
+  return `Je ne sais pas effacer « ${propriete} » sur ${nomBien(bien)}.`
+    + (champs.length ? ` Je peux effacer : ${champs.join(', ')}.` : '')
+    + ` Pour supprimer le bien lui-même, écrivez « Supprime le bien ${bien.name} ».`;
+}
+
+/**
  * Lot 114B (Trello #753, CDC T2 §9.2, §14.2-3, §14.3 W03, M20-M21, D08 / D29) —
  * supprimer DÉFINITIVEMENT un bien et tout son contenu. L'aperçu donne le
  * décompte réel (le même que la fiche) ; aucune conservation des documents
@@ -667,6 +703,12 @@ async function resolveAssetDeletion(
       return { needInfo: `Plusieurs biens correspondent : ${found.slice(0, 5).map((a) => nomBien(a)).join(', ')}. Précisez lequel dans votre demande.` };
     }
     bien = found[0];
+    // Carte #790 (E01) : « efface la couleur de la Clio » — le nom du bien trouvé ne
+    // porte pas la propriété demandée : la demande visait une CARACTÉRISTIQUE, jamais
+    // le bien. Aucune proposition de suppression, une question.
+    if (draft.propertyWords?.length && !nomPorteLesMots(bien.name, draft.propertyWords)) {
+      return { needInfo: await refusEffacementChampInconnu(draft, bien, acc, lookup) };
+    }
   }
   const resume = await lookup.assetDeletionSummary(acc, bien.id);
   if (!resume) return { needInfo: 'Je n’ai pas trouvé ce bien dans votre compte. Quel bien voulez-vous supprimer ?' };
@@ -2376,6 +2418,35 @@ interface ThreadCommandPlan extends CommandPlanPreview {
  * rechargé montre leur état réel (en attente et encore annulable, annulé,
  * expiré, exécuté). Seuls les plans du compte ET de l'utilisateur sortent.
  */
+/** Ligne de `verebona_command_plans` telle que relue pour un fil ou un message. */
+interface StoredPlanRow {
+  planId: string; accountId: number; userId: number; conversationId: number | null; messageId: number;
+  status: PlanStatus; summary: string; actionsPayload: string; expiresAt: string | Date; undoUntil?: string | Date | null;
+}
+
+/** Colonnes relues : partagées par le fil et par le rejeu (carte #790, E02) — une seule lecture. */
+const PLAN_ROW_COLUMNS = `plan_id AS "planId", account_id AS "accountId", user_id AS "userId", conversation_id AS "conversationId",
+            message_id AS "messageId", status, summary, actions_payload AS "actionsPayload", expires_at AS "expiresAt",
+            undo_until AS "undoUntil"`;
+
+/** Ligne de plan → plan du fil (aperçu, état réel, fenêtre « Annuler »). Pure ; `null` : charge utile illisible. */
+function planDuFil(r: StoredPlanRow): ThreadCommandPlan | null {
+  let actions: PlannedAction[];
+  try { actions = JSON.parse(r.actionsPayload) as PlannedAction[]; } catch { return null; }
+  // Carte #790 (E02) : TOUJOURS la forme ISO, celle du premier retour. Le pilote
+  // rend ici un horodatage PostgreSQL brut (« 2026-11-16 21:13:29.286+01 ») que
+  // le client ne lit pas comme une date : le plan relu dans l'historique ou au
+  // rejeu portait une échéance illisible, différente de celle annoncée.
+  const brut = r.expiresAt instanceof Date ? r.expiresAt : new Date(String(r.expiresAt));
+  const expiresAt = Number.isNaN(brut.getTime()) ? String(r.expiresAt) : brut.toISOString();
+  const preview = toPreview({ ...r, actions, expiresAt });
+  const annulable = (r.status === 'EXECUTED' || r.status === 'PARTIAL') && r.undoUntil;
+  return {
+    ...preview, messageId: r.messageId, status: r.status,
+    undoUntil: annulable ? new Date(r.undoUntil as string | Date).toISOString() : null,
+  };
+}
+
 export async function listThreadCommandPlans(
   accountId: number,
   userId: number,
@@ -2383,30 +2454,45 @@ export async function listThreadCommandPlans(
 ): Promise<ThreadCommandPlan[]> {
   await expirePendingPlans({ accountId, userId });
   const rows = (await pgClient.unsafe(
-    `SELECT plan_id AS "planId", account_id AS "accountId", user_id AS "userId", conversation_id AS "conversationId",
-            message_id AS "messageId", status, summary, actions_payload AS "actionsPayload", expires_at AS "expiresAt",
-            undo_until AS "undoUntil"
+    `SELECT ${PLAN_ROW_COLUMNS}
        FROM verebona_command_plans
       WHERE account_id = $1 AND user_id = $2 AND conversation_id = $3 AND message_id IS NOT NULL
       ORDER BY created_at ASC`,
     [accountId, userId, conversationId] as never[],
-  )) as unknown as Array<{
-    planId: string; accountId: number; userId: number; conversationId: number | null; messageId: number;
-    status: PlanStatus; summary: string; actionsPayload: string; expiresAt: string | Date; undoUntil?: string | Date | null;
-  }>;
+  )) as unknown as StoredPlanRow[];
   const out: ThreadCommandPlan[] = [];
   for (const r of rows) {
-    let actions: PlannedAction[];
-    try { actions = JSON.parse(r.actionsPayload) as PlannedAction[]; } catch { continue; }
-    const expiresAt = r.expiresAt instanceof Date ? r.expiresAt.toISOString() : String(r.expiresAt);
-    const preview = toPreview({ ...r, actions, expiresAt });
-    const annulable = (r.status === 'EXECUTED' || r.status === 'PARTIAL') && r.undoUntil;
-    out.push({
-      ...preview, messageId: r.messageId, status: r.status,
-      undoUntil: annulable ? new Date(r.undoUntil as string | Date).toISOString() : null,
-    });
+    const p = planDuFil(r);
+    if (p) out.push(p);
   }
   return out;
+}
+
+/**
+ * Carte #790, passage 115E (E02) — PLAN PRÉSENTÉ PAR UN MESSAGE, pour un rejeu.
+ *
+ * Le rejeu d'une même demande (`clientRequestId`) ne rendait aucun plan : la
+ * proposition disparaissait après un incident réseau, alors qu'elle était bien
+ * enregistrée et toujours confirmable. Le plan est relu ici, borné au COMPTE et
+ * à l'UTILISATEUR (jamais celui d'un autre membre Duo) ; les propositions
+ * dépassées sont d'abord expirées, comme pour l'historique. L'ÉTAT du serveur
+ * fait foi : un plan clos (annulé, expiré, exécuté) sort avec son statut, et
+ * l'appelant n'en réaffiche pas de bouton « Confirmer ».
+ */
+export async function findMessageCommandPlan(
+  accountId: number,
+  userId: number,
+  messageId: number,
+): Promise<ThreadCommandPlan | null> {
+  await expirePendingPlans({ accountId, userId });
+  const rows = (await pgClient.unsafe(
+    `SELECT ${PLAN_ROW_COLUMNS}
+       FROM verebona_command_plans
+      WHERE account_id = $1 AND user_id = $2 AND message_id = $3
+      ORDER BY created_at DESC LIMIT 1`,
+    [accountId, userId, messageId] as never[],
+  )) as unknown as StoredPlanRow[];
+  return rows[0] ? planDuFil(rows[0]) : null;
 }
 
 /**

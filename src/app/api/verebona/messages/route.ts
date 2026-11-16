@@ -35,7 +35,8 @@ import type { AssistantApiResponse, ResponseMode } from '@/services/verebona-ass
 import type { VerebonaIntent } from '@/services/verebona-assistant/types/intents';
 import { answerBlocksForApi, toApiPayload } from '@/services/verebona-assistant/core/api-payload';
 import { misesAJourDuFil } from '@/services/verebona-assistant/core/export-card-state';
-import { resoudreClarification } from '@/services/verebona-assistant/core/clarification.service';
+import { clarificationEnAttentePourApi, resoudreClarification } from '@/services/verebona-assistant/core/clarification.service';
+import { findMessageCommandPlan } from '@/services/verebona-assistant/commands/plan.service';
 import { executerIssueClarification } from '@/services/verebona-assistant/core/clarification-flow';
 import { assistantPlanFromEntitlements, assistantPlanLimit } from '@/services/verebona-assistant/core/plan-eligibility';
 import { assistantAiAccessFromEntitlements } from '@/services/verebona-assistant/core/ai-access';
@@ -135,6 +136,18 @@ async function traiter(req: NextRequest, httpId: string): Promise<NextResponse> 
   // ne retrouve rien — il n'accède jamais à la réponse d'un autre.
   const deja = await findReplayedAnswer(accountId, session.userId, clientRequestId);
   if (deja) {
+    // Carte #790, passage 115E (E02) — PARITÉ DU REJEU. La réponse rejouée portait
+    // le texte, les sources, les actions et les cartes, mais perdait la
+    // CHRONOLOGIE, la CLARIFICATION encore à répondre et le PLAN à confirmer : un
+    // incident réseau appauvrissait le contenu fonctionnel. Tout est relu en base,
+    // borné au compte ET à l'utilisateur ; aucun appel modèle, aucune écriture,
+    // aucune réexécution. L'ÉTAT DU SERVEUR fait foi : un plan clos (annulé,
+    // expiré, exécuté) ne réaffiche aucun bouton « Confirmer ».
+    const [clarification, plan] = await Promise.all([
+      clarificationEnAttentePourApi(accountId, session.userId, deja.conversationId).catch(() => null),
+      findMessageCommandPlan(accountId, session.userId, deja.messageId).catch(() => null),
+    ]);
+    const blocs = answerBlocksForApi(deja.content);
     const replay: AssistantApiResponse = {
       requestId: deja.requestId,
       messageId: String(deja.messageId),
@@ -147,11 +160,23 @@ async function traiter(req: NextRequest, httpId: string): Promise<NextResponse> 
       sourcesAvailable: deja.sourceCount > 0,
       sourceCount: deja.sourceCount,
       actions: deja.actions as AssistantApiResponse['actions'],
-      clarification: null,
+      clarification,
       // Trello #753 (CDC T2 §8.3, §13.8) : mêmes blocs qu'à la première réponse (dérivés du texte enregistré).
-      ...(answerBlocksForApi(deja.content) ? { answerBlocks: answerBlocksForApi(deja.content)! } : {}),
+      // Carte #790 (E02) : comme au premier retour, pas de blocs pour une chronologie.
+      ...(blocs && !deja.events ? { answerBlocks: blocs } : {}),
       // Trello #753 (CDC T2 §14.2 point 5) : cartes enregistrées avec la réponse, rendues à l'identique.
       ...(deja.resultGroups ? { resultGroups: deja.resultGroups as NonNullable<AssistantApiResponse['resultGroups']> } : {}),
+      // Mêmes champs qu'au premier retour (`api-payload`) : la chronologie enregistrée
+      // porte en plus la référence interne de l'objet, qui ne sort jamais de l'API.
+      ...(deja.events
+        ? {
+          events: (deja.events as Array<{ date: string; text: string; href: string | null }>)
+            .map(({ date, text, href }) => ({ date, text, href })),
+        }
+        : {}),
+      ...(plan && plan.status === 'PENDING_CONFIRMATION'
+        ? { commandPlan: { planId: plan.planId, summary: plan.summary, actions: plan.actions, expiresAt: plan.expiresAt } }
+        : {}),
     };
     return NextResponse.json({ ...replay, replayed: true });
   }
