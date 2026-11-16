@@ -60,13 +60,20 @@ interface CurrencyCardNeed {
  */
 export interface AttributeCardNeed {
   operationId: number;
-  /** Document le plus récent parmi ceux qui portent une des valeurs : il porte la carte. */
-  fileId: number;
+  /**
+   * Document le plus récent parmi ceux qui portent une des valeurs : il porte
+   * la carte. Lot 115 (#791, E06) : `null` quand AUCUN document n'est
+   * associable (sources structurées, imports, pièce supprimée) — la carte est
+   * alors portée par un ÉVÉNEMENT RÉEL de l'Agenda de cet événement de
+   * référence ; aucun document n'est inventé, et sans objet réel il n'y a pas
+   * de carte (jamais un faux succès).
+   */
+  fileId: number | null;
   field: 'plannedDate' | 'startDate' | 'realizedDate' | 'endDate' | 'provider';
   /** Rôle sémantique comparé (même fait). */
   role: string;
   reasonCode: string;
-  /** Toutes les valeurs réellement différentes (y compris une troisième), avec leurs documents. */
+  /** TOUTES les valeurs réellement différentes (y compris au-delà de la troisième), avec leurs documents. */
   options: Array<{ value: string; normalized: string; fileIds: number[] }>;
   /** Valeur actuellement portée par l'événement de référence (jamais écrasée avant la réponse). */
   retained: string | null;

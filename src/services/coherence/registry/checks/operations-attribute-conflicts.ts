@@ -33,6 +33,14 @@
  *     T3 si le bloc 38 est actif (aucun appel IA ici), sinon elle pose la
  *     carte. Le résultat dit ce qui a été fait (`card`, `t3Requested`) ;
  *     rien n'est tranché par ce contrôle.
+ *
+ * Version 3 (lot 115, Trello #791, écart E03) — la contradiction d'une DATE DE
+ * RÉALISATION n'est plus exclue du contrôle par la simple présence d'un
+ * événement d'Agenda rattaché. La carte de date de l'Agenda (lot 83A) n'existe
+ * que pour un élément SANS date, porteur d'un fait, avec au moins deux dates en
+ * présence : partout ailleurs, la contradiction restait invisible ET hors du
+ * contrôle. Seule une action d'Agenda EFFECTIVEMENT ACTIONNABLE, sur le même
+ * sujet et les mêmes alternatives, déduplique.
  */
 import type { CoherenceCheck, Inspection, RepairResult } from '../types';
 import { idsOf, intArray, rows } from '../util';
@@ -56,7 +64,23 @@ const ARBITRABLE_LINE_SQL = `c->>'qualification' = 'REAL_CONFLICT_UNRESOLVED'
                    WHERE a.account_id = o.account_id AND a.rule_code = 'OPERATION-ATTRIBUTE'
                      AND a.relation_key = 'operationAttribute:' || o.id || ':' || (c->>'field') || ':' || (c->>'role')
                      AND (a.resolved_at IS NULL OR a.resolution_reason IS DISTINCT FROM 'OBSOLETE'))
-  AND NOT (c->>'field' = 'realizedDate' AND EXISTS (SELECT 1 FROM agenda_items i WHERE i.account_id = o.account_id AND i.business_operation_id = o.id))`;
+  -- Règle remplacée (carte #791, E03) : la seule PRÉSENCE d'un événement d'Agenda rattaché excluait la détection
+  -- sur la date de réalisation — une contradiction pouvait donc rester invisible ET hors du contrôle. Seule une
+  -- action d'Agenda EFFECTIVEMENT ACTIONNABLE (carte DATA-AGENDA-DATE ouverte, de nature ARBITRATE, portée par un
+  -- élément PORTEUR d'un fait de cet événement, dont les propositions couvrent toutes les alternatives) déduplique.
+  AND NOT (c->>'field' = 'realizedDate' AND EXISTS (
+             SELECT 1 FROM to_process_actions a
+               JOIN agenda_items i ON i.id = a.target_id AND i.account_id = a.account_id
+              WHERE a.account_id = o.account_id AND a.target_type = 'AGENDA_ITEM' AND a.rule_code = 'DATA-AGENDA-DATE'
+                AND a.action_kind = 'ARBITRATE' AND a.resolved_at IS NULL
+                AND EXISTS (SELECT 1 FROM business_operation_agenda_links g
+                             WHERE g.account_id = i.account_id AND g.operation_id = o.id AND g.agenda_item_id = i.id
+                               AND g.state = 'ACTIVE' AND g.fact_key IS NOT NULL)
+                AND NOT EXISTS (
+                      SELECT 1 FROM jsonb_array_elements(CASE WHEN jsonb_typeof(c->'values') = 'array' THEN c->'values' ELSE '[]'::jsonb END) v
+                       WHERE NOT EXISTS (SELECT 1 FROM jsonb_array_elements(
+                                           CASE WHEN jsonb_typeof(a.proposals_json) = 'array' THEN a.proposals_json ELSE '[]'::jsonb END) p
+                                          WHERE p->>'value' = v->>'normalized'))))`;
 
 /** Lot 114 : relevé qualifié (version 2) dont une contradiction réelle attend sa carte ou sa demande d'arbitrage. */
 const MISSING_ARBITRATION_SQL = `o.account_id = $1 AND o.invalidated_at IS NULL AND o.merged_into_operation_id IS NULL
@@ -68,7 +92,8 @@ const IN_SCOPE_SQL = `((${LEGACY_SQL}) OR (${MISSING_ARBITRATION_SQL}))`;
 
 export const operationsAttributeConflictsCheck: CoherenceCheck = {
   id: OPERATIONS_ATTRIBUTE_CONFLICTS_CHECK_ID,
-  version: 2,
+  // Version 3 (lot 115, #791, E03) : la déduplication par l'Agenda exige une action EFFECTIVEMENT actionnable.
+  version: 3,
   status: 'ACTIVE',
   title: 'Événements de référence : contradictions d’attributs qualifiées (même attribut, même rôle, même fait) et arbitrage des contradictions réelles demandé',
   domain: 'operations',
@@ -89,7 +114,7 @@ export const operationsAttributeConflictsCheck: CoherenceCheck = {
   triggers: ['BUSINESS_OPERATION_CHANGED'],
   frequency: 'campagne exhaustive quotidienne + contrôle ciblé après écriture d’un événement de référence',
   criticality: 'MEDIUM',
-  tests: ['L113AQ-U-QUALIF', 'L113AQ-E2E-REPRISE', 'L114T-E2E-05'],
+  tests: ['L113AQ-U-QUALIF', 'L113AQ-E2E-REPRISE', 'L114T-E2E-05', 'L115F-E01', 'L115F-E02'],
 
   async listObjects(ctx, accountId, afterId, limit) {
     return idsOf(await rows(ctx.sql, `SELECT o.id FROM business_operations o WHERE ${IN_SCOPE_SQL} AND o.id > $2 ORDER BY o.id LIMIT $3`, [accountId, afterId, limit]));

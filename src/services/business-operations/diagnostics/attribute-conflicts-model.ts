@@ -172,6 +172,13 @@ export interface T3ReviewInfo {
   valueBefore: string | null;
   valueAfter: string | null;
   applied: boolean;
+  /**
+   * Lot 115 (#791, E09) : état d'APPLICATION de la décision (RECEIVED,
+   * APPLYING, APPLIED, APPLY_FAILED). Null : décision sans effet à appliquer,
+   * ou ligne antérieure à la migration 1785 — « décidé » n'est alors pas
+   * présenté comme « appliqué » (seul `applied` le dit, et il est relu en base).
+   */
+  applicationState?: string | null;
   evidence: Array<{ fileId: number | null; excerpt: string }>;
   requestedAt: string | null;
   decidedAt: string | null;
@@ -191,6 +198,16 @@ export const T3_REVIEW_LABELS: Readonly<Record<string, string>> = {
   AI_FAILED: 'Appel T3 en échec technique (nouvel essai borné)',
   OBSOLETE: 'Constat disparu avant l’examen',
   UNAVAILABLE: 'Arbitrage T3 indisponible (bloc 38 absent du prompt actif)',
+  // Lot 115 (#791, E02) — texte nouveau, à valider par le PO.
+  INCOMPLETE: 'Preuves non couvertes en entier : aucun arbitrage (le diagnostic reste ouvert)',
+};
+
+/** Lot 115 (#791, E09) — états d'APPLICATION d'une décision T3 (BO — textes à valider par le PO). */
+export const T3_APPLICATION_LABELS: Readonly<Record<string, string>> = {
+  RECEIVED: 'Décision reçue, application non encore vérifiée',
+  APPLYING: 'Application en cours',
+  APPLIED: 'Application vérifiée sur l’événement de référence',
+  APPLY_FAILED: 'Application sans effet (valeur protégée ou saisie non gérée) : reprise',
 };
 
 export interface DiagnosticValue {
@@ -228,7 +245,8 @@ export interface ConflictDiagnosticEntry {
   };
   arbitration: { actionId: number; state: 'OPEN' | 'RESOLVED' } | null;
   /** Lot 114 (#750, issue B) : dernier examen T3 de cette ligne (null : jamais examinée). */
-  t3: (T3ReviewInfo & { label: string }) | null;
+  /** Lot 115 (#791, E09) : `applicationLabel` dit si la décision est seulement REÇUE ou vraiment APPLIQUÉE. */
+  t3: (T3ReviewInfo & { label: string; applicationLabel?: string | null }) | null;
   protection: string | null;
   lineState: ConflictLineState;
   lineStateReason: string;
@@ -343,7 +361,10 @@ export function buildConflictEntries(op: OperationConflictInput, now: Date = new
               : ALERTING_QUALIFICATIONS.includes(qualification) ? { kind: 'VALUES_KEPT', detail: 'Valeurs conservées, aucune écrasée ; valeur retenue inchangée.' }
                 : { kind: 'NONE', detail: 'Aucune action nécessaire.' },
         arbitration: arbitration ? { actionId: arbitration.actionId, state: arbitration.state } : null,
-        t3: examen ? { ...examen, label: T3_REVIEW_LABELS[examen.status] ?? examen.status } : null,
+        t3: examen ? {
+          ...examen, label: T3_REVIEW_LABELS[examen.status] ?? examen.status,
+          applicationLabel: examen.applicationState ? T3_APPLICATION_LABELS[examen.applicationState] ?? examen.applicationState : null,
+        } : null,
         protection: typeof c.protection === 'string' ? c.protection : null,
         lineState,
         lineStateReason,

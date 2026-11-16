@@ -221,13 +221,16 @@ describe('L78A §2C / §6 — consolidation : provenance, contradictions d\'attr
     expect(s.provenance.realizedDate).toEqual({ sourceId: 1, value: '2025-05-12' });
     expect(s.provenance.provider).toEqual({ sourceId: 1, value: 'Tikamoon' });
     expect(s.attributeConflicts.map((c) => [c.field, c.retained])).toEqual([['realizedDate', '2025-05-12'], ['provider', 'Tikamoon']]);
-    // Dates dans la fenêtre d'une même transaction : règle historique (première date), aucune contradiction.
+    // Règle complétée (carte #791, E01) : des dates DANS la fenêtre d'une même transaction sont désormais
+    // RELEVÉES (deux jours d'écart ne sont plus invisibles), mais l'écart n'est pas « matériel » : la règle de
+    // rétention ne change pas (la date la plus ancienne reste conservée, rien n'est écrasé).
     const t = consolidateOperationState('ACQUISITION', [
       { sourceId: 1, identity: acte({ dates: date('2021-07-02') }) },
       { sourceId: 2, identity: acte({ dates: date('2021-06-30') }) },
     ], '2026-10-12');
     expect(t.realizedDate).toBe('2021-06-30');
-    expect(t.attributeConflicts).toEqual([]);
+    expect(t.attributeConflicts.map((c) => [c.field, c.retained, c.materialGap ?? false])).toEqual([['realizedDate', '2021-06-30', false]]);
+    expect(t.attributeConflicts[0].values.map((v) => v.value).sort()).toEqual(['2021-06-30', '2021-07-02']);
   });
 
   it('L78A-T19 — chaque composante porte, par source, le candidat T1, l\'indice et le fait persisté qui la justifient', async () => {

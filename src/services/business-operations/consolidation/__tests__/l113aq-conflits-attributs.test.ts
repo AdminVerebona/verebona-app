@@ -81,14 +81,35 @@ describe('L113AQ-U-CAUSES — causes de faux conflits démontrées sur le relev�
     expect(eq.divergences[0].reasonCode).toBe('FORMAT_EQUIVALENT');
   });
 
-  it('cause 4 — révision successive d’une relation durable (avenant, autre date d’effet) → divergence légitime, valeur actuelle non remplacée', () => {
-    const r = relever('CONTRACT', [
-      src(1, cand({ type: 'CONTRACT', role: 'CONTRACT_DOCUMENT', provider: 'Assureur A', providerKey: 'assureura', refs: [ref('CONTRACT', 'P-1')], dates: d({ startDate: '2022-01-01' }) })),
-      src(2, cand({ candidateId: 2, fileId: 11, type: 'CONTRACT', role: 'CONTRACT_DOCUMENT', provider: 'Assureur B', providerKey: 'assureurb', refs: [ref('CONTRACT', 'P-1')], dates: d({ startDate: '2024-01-01' }) })),
+  it('cause 4 — révision successive d’une relation durable : PROUVÉE (relation déclarée) → divergence légitime ; règle remplacée (carte #791, E05) : sans preuve → contradiction réelle', () => {
+    const assureur = (over: Partial<CandidateIdentity>) => cand({ type: 'CONTRACT', role: 'CONTRACT_DOCUMENT', refs: [ref('CONTRACT', 'P-1')], ...over });
+    // Règle remplacée (carte #791, E05) : deux dates d'effet différentes NE SUFFISENT PLUS. L'assureur de 2022
+    // maintenu face à une source de 2024, sans aucune preuve de remplacement, est une contradiction réelle.
+    const sans = relever('CONTRACT', [
+      src(1, assureur({ provider: 'Assureur A', providerKey: 'assureura', dates: d({ startDate: '2022-01-01' }) })),
+      src(2, assureur({ candidateId: 2, fileId: 11, provider: 'Assureur B', providerKey: 'assureurb', dates: d({ startDate: '2024-01-01' }) })),
     ]);
-    expect(r.alerting).toEqual([]);
-    expect(r.divergences[0]).toMatchObject({ qualification: 'LEGITIMATE_DIFFERENCE', reasonCode: 'SUCCESSIVE_REVISION', role: 'SUPPLIER' });
-    expect(r.state.provider).toBe('Assureur A'); // règle de rétention inchangée (113AQ n'écrit rien de plus)
+    expect(sans.alerting.map((x) => [x.field, x.role, x.qualification, x.reasonCode])).toEqual([
+      ['startDate', 'CONTRACT_EFFECTIVE', 'REAL_CONFLICT_UNRESOLVED', 'SAME_REFERENCE'],
+      ['provider', 'SUPPLIER', 'REAL_CONFLICT_UNRESOLVED', 'SAME_REFERENCE'],
+    ]);
+    expect(sans.state.provider).toBe('Assureur A'); // règle de rétention inchangée : rien n'est écrasé avant la réponse
+    // Preuve admise : le document DÉCLARE la relation (fait T1 `period.relation` = avenant).
+    const avenant = relever('CONTRACT', [
+      src(1, assureur({ provider: 'Assureur A', providerKey: 'assureura', dates: d({ startDate: '2022-01-01' }) })),
+      src(2, assureur({ candidateId: 2, fileId: 11, provider: 'Assureur B', providerKey: 'assureurb', dates: d({ startDate: '2024-01-01' }), documentRelation: 'AMENDMENT' })),
+    ]);
+    expect(avenant.alerting).toEqual([]);
+    expect(avenant.divergences.map((x) => [x.field, x.reasonCode])).toEqual([['startDate', 'SUCCESSIVE_REVISION'], ['provider', 'SUCCESSIVE_REVISION']]);
+    expect(avenant.state.provider).toBe('Assureur A');
+    // Preuve admise : périodes contractuelles qualifiées par T1 DISJOINTES (l'une remplace l'autre).
+    const terme = (start: string, end: string) => ({ evaluated: true, contractTerms: [{ start, end, openEnded: false }] });
+    const periodes = relever('CONTRACT', [
+      src(1, assureur({ provider: 'Assureur A', providerKey: 'assureura', dates: d({ startDate: '2022-01-01' }), termQualification: terme('2022-01-01', '2023-12-31') })),
+      src(2, assureur({ candidateId: 2, fileId: 11, provider: 'Assureur B', providerKey: 'assureurb', dates: d({ startDate: '2024-01-01' }), termQualification: terme('2024-01-01', '2025-12-31') })),
+    ]);
+    expect(periodes.alerting).toEqual([]);
+    expect(periodes.divergences.every((x) => x.reasonCode === 'SUCCESSIVE_REVISION')).toBe(true);
   });
 
   it('cause 5 — mauvaise identité de source : doute d’identité OUVERT (78A) → SOURCE_LINK_ERROR_SUSPECTED, jamais « conflit prouvé »', () => {

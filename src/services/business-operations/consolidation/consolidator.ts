@@ -52,7 +52,7 @@ import { creationRefusedByUserInvalidation, USER_INVALIDATED_SOURCE_REASON, user
 import type { BusinessOperationRepository } from '../repository';
 import { withBusinessOperationWrite } from '../write';
 import { NON_BUSINESS_DOCUMENT_TYPES } from '@/services/ai/source-analysis/operation-candidates/prepare';
-import { termQualificationOf, type TermQualification } from '@/services/documents/business-periods/t1-v2';
+import { parseRelation, termQualificationOf, type DocumentRelation, type TermQualification } from '@/services/documents/business-periods/t1-v2';
 import {
   buildCandidateIdentity, consolidateOperationState, hasRecurringPeriod, normalizeProvider,
   type CandidateIdentity, type CandidateRecord, type SourceContribution,
@@ -188,6 +188,8 @@ interface FileRow {
   id: number; accountId: number; deleted: boolean; assetId: number | null; documentTypeCode: string | null; amountCents?: number | null;
   /** Lot 113AA (#725) : sens des dates qualifié par T1 (contrat t1-business-periods-v2), sinon non évalué. */
   termQualification?: TermQualification | null;
+  /** Lot 115 (#791, E05) : relation DÉCLARÉE par le document (avenant, rectificatif, renouvellement), sinon null. */
+  documentRelation?: DocumentRelation | null;
 }
 
 async function loadFile(tx: DbTx, accountId: number, fileId: number): Promise<FileRow | null> {
@@ -200,11 +202,14 @@ async function loadFile(tx: DbTx, accountId: number, fileId: number): Promise<Fi
     SELECT COALESCE(raw_key, fact_key) AS raw_key, normalized_value, raw_value, confidence FROM document_facts
      WHERE file_id = ${fileId} AND account_id = ${accountId} AND status = 'active' AND COALESCE(raw_key, fact_key) LIKE 'period.%'
      ORDER BY id LIMIT 60`);
-  const termQualification = termQualificationOf(faits.map((x) => ({
+  const qualif = faits.map((x) => ({
     rawKey: x.raw_key, normalizedValue: x.normalized_value == null ? null : String(x.normalized_value), rawValue: x.raw_value, confidence: x.confidence,
-  })));
+  }));
+  const termQualification = termQualificationOf(qualif);
+  // Lot 115 (#791, E05) : relation déclarée par le document (même lecture, aucun accès de plus) — preuve d'un lien de révision.
+  const documentRelation = parseRelation(qualif)?.relation ?? null;
   // Lot 109D : montant TTC du document (réconciliation des achats composés, `finance/commercial-adjustments`).
-  return { id: Number(f.id), accountId: Number(f.account_id), deleted: f.deleted, assetId: num(f.asset_id), documentTypeCode: f.document_type_code, amountCents: num(f.amount_cents), termQualification };
+  return { id: Number(f.id), accountId: Number(f.account_id), deleted: f.deleted, assetId: num(f.asset_id), documentTypeCode: f.document_type_code, amountCents: num(f.amount_cents), termQualification, documentRelation };
 }
 
 interface CandidateRow extends CandidateRecord {
@@ -274,7 +279,7 @@ export async function prepareOperationMatch(accountId: number, candidateId: numb
     if (!file || file.deleted || (file.documentTypeCode && NON_BUSINESS_DOCUMENT_TYPES.has(file.documentTypeCode))) return null;
     const ids = targetIdsOf([c], file.assetId);
     const actx = await loadAssetContext(tx, accountId, ids.assets, ids.equipments, ids.rooms);
-    const identity = buildCandidateIdentity(c, { fileAssetId: file.assetId, fileDocumentTypeCode: file.documentTypeCode, fileTermQualification: file.termQualification, liveAssetIds: actx.live, equipmentAssets: actx.equipments, roomAssets: actx.rooms, providerCanonical: actx.providers,
+    const identity = buildCandidateIdentity(c, { fileAssetId: file.assetId, fileDocumentTypeCode: file.documentTypeCode, fileTermQualification: file.termQualification, fileDocumentRelation: file.documentRelation, liveAssetIds: actx.live, equipmentAssets: actx.equipments, roomAssets: actx.rooms, providerCanonical: actx.providers,
       ...documentIdentityContext(file, await loadActiveCandidatesRead(tx, accountId, c.fileId), todayUtc(), actx) });
     // Lot 53 (D7) : le LOT courant de l'examen progressif (au plus 5 Opérations),
     // à défaut (trace antérieure au lot 53) les Opérations plausibles.
@@ -731,7 +736,7 @@ async function contributionOf(tx: DbTx, accountId: number, s: OpSource, agenda?:
   if (!c || c.confidence === 'conflictual') return null;
   const ids = targetIdsOf([c], file.assetId);
   const actx = await loadAssetContext(tx, accountId, ids.assets, ids.equipments, ids.rooms);
-  const identity = buildCandidateIdentity(c, { fileAssetId: file.assetId, fileDocumentTypeCode: file.documentTypeCode, fileTermQualification: file.termQualification, liveAssetIds: actx.live, equipmentAssets: actx.equipments, roomAssets: actx.rooms, providerCanonical: actx.providers,
+  const identity = buildCandidateIdentity(c, { fileAssetId: file.assetId, fileDocumentTypeCode: file.documentTypeCode, fileTermQualification: file.termQualification, fileDocumentRelation: file.documentRelation, liveAssetIds: actx.live, equipmentAssets: actx.equipments, roomAssets: actx.rooms, providerCanonical: actx.providers,
     ...documentIdentityContext(file, tousCandidats, agenda?.today ?? todayUtc(), actx) });
   // Lot 109D : candidat qui ne porte qu'une remise intégrée au net d'un autre achat du document — jamais une réalité
   // propre (faux avoir historique) : sa source est retirée (tracée), l'Opération n'est maintenue que par ses autres preuves.
@@ -1013,19 +1018,27 @@ export async function reconsolidateOperation(
   await writeAttributeProvenance(tx, accountId, operationId, {
     ...state.provenance, ...(label && apres.technicalLabel ? { label: { sourceId: label.sourceId, value: apres.technicalLabel } } : {}),
   }, conflits.open.map(courant), conflits.arbitrated.map((c) => courant(markAdminArbitrated(c))), qualifiees.divergences.map(courant));
-  // Lot 114 (#750, issue C) : UNE carte « Arbitrer » par sujet (attribut, rôle) pour une contradiction réelle à incidence
-  // métier. La date de réalisation d'un événement déjà représenté dans l'Agenda reste arbitrée par la carte de date
-  // existante (lot 83A, DATA-AGENDA-DATE) : jamais deux cartes pour le même sujet.
+  // Lot 114 (#750, issue C) : UNE carte « Arbitrer » par sujet (attribut, rôle) pour une contradiction réelle à
+  // incidence métier.
+  //
+  // Lot 115 (#791, E03) — **règle remplacée** : la seule PRÉSENCE d'un événement d'Agenda rattaché faisait
+  // disparaître la carte de la date de réalisation. Or la carte de date de l'Agenda (lot 83A, DATA-AGENDA-DATE)
+  // n'existe QUE pour un élément SANS date, porteur d'un fait, avec au moins deux dates en présence : dans tous les
+  // autres cas (élément daté, élément sans rapport, carte déjà fermée), la contradiction devenait INVISIBLE. La
+  // déduplication n'a lieu que si une action d'Agenda est **effectivement actionnable** sur le MÊME sujet (même
+  // événement, même attribut, même rôle, mêmes alternatives).
   const dateParAgenda = conflits.open.some((c) => c.field === 'realizedDate' && needsArbitrationCard(c))
-    && (await rows(tx, sql`SELECT 1 FROM agenda_items WHERE account_id = ${accountId} AND business_operation_id = ${operationId} LIMIT 1`)).length > 0;
+    && await agendaDateArbitrationCovers(tx, accountId, operationId,
+      conflits.open.filter((c) => c.field === 'realizedDate' && needsArbitrationCard(c)).flatMap((c) => c.values.map((v) => v.normalized)));
   for (const c of conflits.open) {
     if (!needsArbitrationCard(c) || (c.field === 'realizedDate' && dateParAgenda)) continue;
     const options = c.values.map((v) => ({
       value: v.value, normalized: v.normalized,
       fileIds: [...new Set(v.sourceIds.map((id) => fichierDe.get(id)).filter((f): f is number => f !== undefined))],
     }));
-    const fileId = fichierDe.get(Math.max(...c.values.flatMap((v) => v.sourceIds).filter((id) => fichierDe.has(id)), -1));
-    if (fileId === undefined) continue;
+    // Lot 115 (#791, E06) : sans document associable (sources structurées, imports, pièce supprimée), la carte est
+    // portée par un ÉVÉNEMENT RÉEL de l'Agenda de cet événement de référence — jamais par un document inventé.
+    const fileId = fichierDe.get(Math.max(...c.values.flatMap((v) => v.sourceIds).filter((id) => fichierDe.has(id)), -1)) ?? null;
     cards.attribute.push({ operationId, fileId, field: c.field, role: c.role, reasonCode: c.reasonCode, options, retained: apres[c.field] ?? null });
   }
   // Lot 55B (E) : dernière réconciliation RÉELLEMENT effectuée (ni historique, ni version).
@@ -1052,6 +1065,39 @@ interface StoredAttributeProvenance {
 }
 
 /** Lot 113AQ : sources de l'Opération visées par un doute d'identité OUVERT (78A, SUSPECT). */
+/**
+ * Lot 115 (#791, E03) — une action d'Agenda traite-t-elle DÉJÀ ce sujet, et
+ * est-elle **effectivement actionnable** ? Conditions cumulatives :
+ *   · une carte « À traiter » DATA-AGENDA-DATE encore OUVERTE, de nature
+ *     ARBITRATE (une carte « Compléter » ne départage aucune valeur) ;
+ *   · portée par un élément d'Agenda de CET événement de référence, rattaché
+ *     par le graphe N↔N et PORTEUR d'un fait (`fact_key`) — la même lecture
+ *     que le producteur de cette carte (travaux F de la carte #744) ;
+ *   · dont les propositions couvrent TOUTES les alternatives de la
+ *     contradiction (mêmes dates : sinon ce n'est pas le même arbitrage).
+ * Sinon : la carte « Arbitrer » de l'attribut est conservée, et le contrôle de
+ * cohérence continue de la réclamer. Jamais de conflit invisible, jamais de
+ * doublon.
+ */
+async function agendaDateArbitrationCovers(tx: DbTx, accountId: number, operationId: number, alternatives: readonly string[]): Promise<boolean> {
+  const attendues = [...new Set(alternatives)].sort();
+  if (attendues.length < 2) return false;
+  const r = await rows<{ valeurs: string[] | null }>(tx, sql`
+    SELECT COALESCE((SELECT array_agg(DISTINCT p->>'value') FROM jsonb_array_elements(
+                       CASE WHEN jsonb_typeof(a.proposals_json) = 'array' THEN a.proposals_json ELSE '[]'::jsonb END) p), '{}') AS valeurs
+      FROM to_process_actions a
+      JOIN agenda_items i ON i.id = a.target_id AND i.account_id = a.account_id
+     WHERE a.account_id = ${accountId} AND a.target_type = 'AGENDA_ITEM' AND a.rule_code = 'DATA-AGENDA-DATE'
+       AND a.action_kind = 'ARBITRATE' AND a.resolved_at IS NULL
+       AND EXISTS (SELECT 1 FROM business_operation_agenda_links g
+                    WHERE g.account_id = i.account_id AND g.operation_id = ${operationId} AND g.agenda_item_id = i.id
+                      AND g.state = 'ACTIVE' AND g.fact_key IS NOT NULL)`);
+  return r.some((x) => {
+    const proposees = new Set((x.valeurs ?? []).map(String));
+    return attendues.every((v) => proposees.has(v));
+  });
+}
+
 async function loadSuspectSourceIds(tx: DbTx, accountId: number, operationId: number): Promise<Set<number>> {
   const r = await rows<{ id: string }>(tx, sql`
     SELECT s.id FROM business_operation_sources s
@@ -1628,7 +1674,7 @@ export async function previewSeriesGrouping(accountId: number, fileIds: readonly
       const tids = targetIdsOf(actifs, file.assetId);
       const actx = await loadAssetContext(tx, accountId, tids.assets, tids.equipments, tids.rooms);
       for (const c of actifs) {
-        const identity = buildCandidateIdentity(c, { fileAssetId: file.assetId, fileDocumentTypeCode: file.documentTypeCode, fileTermQualification: file.termQualification, liveAssetIds: actx.live, equipmentAssets: actx.equipments, roomAssets: actx.rooms, providerCanonical: actx.providers,
+        const identity = buildCandidateIdentity(c, { fileAssetId: file.assetId, fileDocumentTypeCode: file.documentTypeCode, fileTermQualification: file.termQualification, fileDocumentRelation: file.documentRelation, liveAssetIds: actx.live, equipmentAssets: actx.equipments, roomAssets: actx.rooms, providerCanonical: actx.providers,
           ...documentIdentityContext(file, actifs, todayUtc(), actx) });
         const memeSource = docSources.filter((s) => s.key === c.candidateKey && s.active && !s.opMerged && !s.opInvalidated);
         if (!memeSource.length) continue;
@@ -1739,7 +1785,7 @@ export async function previewOperationDuplicates(accountId: number, operationIds
         const docSources = await loadDocumentSources(tx, accountId, fileId);
         const tids = targetIdsOf([c], file.assetId);
         const actx = await loadAssetContext(tx, accountId, tids.assets, tids.equipments, tids.rooms);
-        const identity = buildCandidateIdentity(c, { fileAssetId: file.assetId, fileDocumentTypeCode: file.documentTypeCode, fileTermQualification: file.termQualification, liveAssetIds: actx.live, equipmentAssets: actx.equipments, roomAssets: actx.rooms, providerCanonical: actx.providers,
+        const identity = buildCandidateIdentity(c, { fileAssetId: file.assetId, fileDocumentTypeCode: file.documentTypeCode, fileTermQualification: file.termQualification, fileDocumentRelation: file.documentRelation, liveAssetIds: actx.live, equipmentAssets: actx.equipments, roomAssets: actx.rooms, providerCanonical: actx.providers,
           ...documentIdentityContext(file, candidatsDoc, todayUtc(), actx) });
         const memeSource = docSources.filter((s) => s.key === c.candidateKey && s.active && !s.opMerged && !s.opInvalidated);
         if (!memeSource.length) continue;
@@ -1933,7 +1979,7 @@ export async function consolidateDocument(accountId: number, fileId: number, opt
       cards.reviewedFiles.push(fileId);
       // Lot 78A (§2A) : identités de tous les candidats actifs du document, et
       // Opérations où chacun a déjà sa source (doublons d'un même document à la réanalyse).
-      const identites = new Map(actifs.map((c) => [c.id, buildCandidateIdentity(c, { fileAssetId: file?.assetId ?? null, fileDocumentTypeCode: file?.documentTypeCode ?? null, fileTermQualification: file?.termQualification ?? null, liveAssetIds: actx.live, equipmentAssets: actx.equipments, roomAssets: actx.rooms, providerCanonical: actx.providers,
+      const identites = new Map(actifs.map((c) => [c.id, buildCandidateIdentity(c, { fileAssetId: file?.assetId ?? null, fileDocumentTypeCode: file?.documentTypeCode ?? null, fileTermQualification: file?.termQualification ?? null, fileDocumentRelation: file?.documentRelation ?? null, liveAssetIds: actx.live, equipmentAssets: actx.equipments, roomAssets: actx.rooms, providerCanonical: actx.providers,
         ...documentIdentityContext(file, actifs, today, actx) })]));
       const opsDuDocument = new Map<number, CandidateIdentity[]>();
       for (const s of docSources.filter((x) => x.active && !x.opMerged && !x.opInvalidated)) {

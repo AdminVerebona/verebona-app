@@ -108,8 +108,15 @@ export interface ArbitrationScope {
   texts: Partial<Record<DocRef, string[]>>;
   /** Formes de comparaison de TOUTES les valeurs de la ligne (même au-delà des bornes). */
   known: string[];
-  /** Contexte complet (aucune valeur ni document retiré par les bornes) : condition d'un arbitrage. */
+  /**
+   * Contexte complet : aucune valeur ni document retiré par les bornes, chaque
+   * valeur rattachée à au moins un document (ou protégée), et chaque document
+   * retenu RÉELLEMENT chargé avec un texte à citer. Lot 115 (#791, E02) :
+   * condition de TOUT verdict, et non plus du seul `RESOLVED`.
+   */
   complete: boolean;
+  /** Lot 115 (#791, E02) : ce qui manque à la couverture (trace, jamais affiché). */
+  incomplete?: 'VALUES_DROPPED' | 'DOCUMENTS_DROPPED' | 'EXCERPTS_DROPPED' | 'VALUE_WITHOUT_DOCUMENT' | 'DOCUMENT_NOT_LOADED';
 }
 
 const borne = (s: string, n: number) => (s.length > n ? s.slice(0, n) : s);
@@ -124,8 +131,12 @@ export function buildArbitrationInput(raw: RawArbitrationContext): { input: Arbi
   const retenus = fichiers.slice(0, B.maxDocuments);
   const refDe = new Map(retenus.map((id, i) => [id, DOC_REFS[i]]));
   let extraitsRetires = 0;
+  // Lot 115 (#791, E02) : un document retenu mais jamais CHARGÉ (pagination rompue, source supprimée) laisse un
+  // trou dans le contexte — il est compté, et la couverture ne peut plus être prouvée.
+  let nonCharges = 0;
   const documents: ArbitrationDocumentInput[] = retenus.map((id) => {
     const d = raw.documents.find((x) => x.id === id);
+    if (!d) nonCharges++;
     const extraits = (d?.excerpts ?? []).filter((e) => typeof e === 'string' && e.trim()).map((e) => borne(e.trim(), B.maxExcerptLength));
     extraitsRetires += Math.max(0, extraits.length - B.maxExcerptsPerDocument);
     return {
@@ -146,12 +157,19 @@ export function buildArbitrationInput(raw: RawArbitrationContext): { input: Arbi
   });
   const droppedValues = toutes.length - valeurs.length;
   const droppedDocuments = fichiers.length - retenus.length;
-  scope.complete = droppedValues === 0 && droppedDocuments === 0 && values.every((v) => v.documents.length > 0 || v.protectedByUser);
+  // Lot 115 (#791, E02) : la couverture est prouvée ou elle ne l'est pas — et le motif est tracé.
+  const manque: ArbitrationScope['incomplete'] | undefined = droppedValues > 0 ? 'VALUES_DROPPED'
+    : droppedDocuments > 0 ? 'DOCUMENTS_DROPPED'
+      : nonCharges > 0 ? 'DOCUMENT_NOT_LOADED'
+        : values.some((v) => v.documents.length === 0 && !v.protectedByUser) ? 'VALUE_WITHOUT_DOCUMENT'
+          : extraitsRetires > 0 ? 'EXCERPTS_DROPPED' : undefined;
+  scope.complete = manque === undefined;
+  if (manque) scope.incomplete = manque;
   return {
     input: {
       contractVersion: ATTRIBUTE_ARBITRATION_CONTRACT_VERSION, task: ATTRIBUTE_ARBITRATION_TASK, today: raw.today,
       attribute: { field: raw.field, role: raw.role }, operation: { type: raw.operation.typeCode, label: raw.operation.label },
-      values, documents, bounds: { complete: scope.complete && extraitsRetires === 0, droppedValues, droppedDocuments, droppedExcerpts: extraitsRetires },
+      values, documents, bounds: { complete: scope.complete, droppedValues, droppedDocuments, droppedExcerpts: extraitsRetires },
     },
     scope,
   };
@@ -239,6 +257,14 @@ export function validateArbitration(output: unknown, scope: ArbitrationScope): A
     const cite = norm(e.excerpt);
     if (!cite || !textes.some((t) => norm(t).includes(cite))) problems.push({ issue: 'EXCERPT_NOT_FOUND', detail: `${e.document} : extrait absent des textes fournis` });
   }
+  // Lot 115 (#791, E02) — **règle complétée** : la preuve de COUVERTURE est exigée pour TOUT verdict, et plus
+  // seulement pour une valeur retenue. « Faits distincts », « indécidable » et « document étranger » décidaient
+  // jusqu'ici sur un contexte tronqué (au-delà de 4 valeurs ou 6 documents, ou avec une pièce non chargée) : une
+  // divergence pouvait être déclarée légitime sans que la preuve décisive ait été lue. Seule l'ABSTENTION reste
+  // recevable sur un contexte partiel.
+  if (v.outcome !== 'ABSTAIN' && !scope.complete) {
+    problems.push({ issue: 'CONTEXT_INCOMPLETE', detail: `couverture non prouvée (${scope.incomplete ?? 'BOUNDS'}) : aucun verdict sur un contexte partiel` });
+  }
   const retenue = v.retainedValue ? scope.values[v.retainedValue] : undefined;
   if (v.retainedValue) {
     if (!retenue) problems.push({ issue: 'UNKNOWN_REFERENCE', detail: `${v.retainedValue} : valeur hors du contexte` });
@@ -246,8 +272,12 @@ export function validateArbitration(output: unknown, scope: ArbitrationScope): A
       if (!v.evidence.some((e) => retenue.documents.includes(e.document))) problems.push({ issue: 'RETAINED_EVIDENCE_MISSING', detail: `aucune preuve citée dans un document qui porte ${v.retainedValue}` });
       const protegee = Object.entries(scope.values).find(([ref, x]) => x?.userProtected && ref !== v.retainedValue);
       if (protegee) problems.push({ issue: 'PROTECTED_VALUE', detail: `${protegee[0]} saisie ou choisie par l’utilisateur` });
-      if (!scope.complete) problems.push({ issue: 'CONTEXT_INCOMPLETE', detail: 'valeurs ou documents au-delà des bornes : aucun arbitrage sur un contexte partiel' });
     }
+  }
+  // Lot 115 (#791, E02) : un document ÉTRANGER désigné doit l'être sur une preuve citée DANS ce document.
+  if (v.foreignDocument && scope.documents[v.foreignDocument] !== undefined
+    && !v.evidence.some((e) => e.document === v.foreignDocument)) {
+    problems.push({ issue: 'RETAINED_EVIDENCE_MISSING', detail: `aucune preuve citée dans ${v.foreignDocument}, désigné comme étranger` });
   }
   if (v.foreignDocument && scope.documents[v.foreignDocument] === undefined) problems.push({ issue: 'UNKNOWN_REFERENCE', detail: `${v.foreignDocument} : document hors du contexte` });
   if (problems.length) return { ok: false, problems };

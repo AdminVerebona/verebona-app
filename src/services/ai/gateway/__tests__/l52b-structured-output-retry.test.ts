@@ -15,6 +15,7 @@
  */
 import { describe, it, expect, beforeEach } from 'vitest';
 import { vi } from 'vitest';
+import type { ProviderAttemptTrace, ProviderRequestTrace } from '../diagnostics/taxonomy';
 
 const capture = vi.hoisted(() => ({ diags: [] as Array<Record<string, unknown>>, traces: [] as Array<Record<string, unknown>> }));
 vi.mock('../diagnostics/diagnostic.repository', async (orig) => ({
@@ -39,12 +40,14 @@ const { isDefinitiveGatewayFailure } = await import('../../source-analysis/failu
 const { T1GroupUploadOutput } = await import('../../source-analysis/master/t1-contract');
 const { T1_TEST_OPERATION, t1TestVariables } = await import('./t1-master-request');
 
-type Attempt = { step: number; kind: string; responseSchemaSent: boolean; providerSchemaHash: string | null; responseMimeType: string | null; outcome: string; httpStatus: number | null; providerErrorCode: string | null; family: string | null };
+// Lot 115 (#784) : la trace d'une tentative s'est enrichie (profil du schéma, extrait d'erreur du fournisseur).
+// Ce test lit le type réel de la taxonomie au lieu d'en redéclarer une copie qui vieillit.
+type Attempt = ProviderAttemptTrace & { step: number; kind: string };
 type Trace = {
   model: string; status: string; errorCode?: string; callKind?: string;
   providerMeta?: { structuredOutput?: string };
   runtimeContract?: { contractId: string; contractVersion: number; schemaVersion: string; schemaHash: string; compatTableVersion: number; structuredOutput: boolean; providerSchemaHash: string | null };
-  providerRequest?: Record<string, unknown>;
+  providerRequest?: ProviderRequestTrace & Record<string, unknown>;
   providerAttempts?: Attempt[];
   failure?: { family: string; subtype: string | null; stage: string | null };
 };
@@ -142,10 +145,25 @@ describe('AC2 — retry réussi : avec schéma → 400 générique, sans schéma
     expect(typeof t.providerRequest!.schemaNodes).toBe('number');
     expect(t.providerRequest!.thinkingConfig).toEqual(expect.any(String));
     // Jamais de prompt, de contenu ni de schéma dans la trace.
+    // Règle complétée (carte #784, §A et §D1) : la trace porte désormais le PROFIL du schéma transmis
+    // (`schemaProfile.properties` : un NOMBRE de propriétés) et un extrait expurgé de l'erreur du
+    // fournisseur. L'interdiction visée reste la même — aucun CORPS de schéma, de prompt ni de contenu —
+    // mais elle ne peut plus se vérifier par l'absence du mot « properties » : on vérifie que les
+    // dimensions sont des mesures, et qu'aucun objet de schéma n'est sérialisé.
     const json = JSON.stringify({ r: t.providerRequest, a: t.providerAttempts });
     expect(json).not.toContain('CONTRAT RUNTIME');
-    expect(json).not.toContain('"properties"');
     expect(json).not.toContain('facture');
+    // Aucun objet de schéma : ni une table de propriétés, ni un nœud typé, ni une énumération de valeurs.
+    expect(json).not.toMatch(/"properties"\s*:\s*[[{]/);
+    expect(json).not.toContain('"type":"object"');
+    expect(json).not.toMatch(/"enum"\s*:/);
+    // Les dimensions tracées sont des MESURES (nombres), jamais le schéma lui-même.
+    expect(typeof t.providerRequest!.schemaProfile!.properties).toBe('number');
+    expect(typeof t.providerAttempts![0].schemaChars).toBe('number');
+    // Extrait d'erreur : borné, et c'est le message du fournisseur — pas un contenu de document.
+    const extrait = t.providerAttempts![0].providerErrorExcerpt!;
+    expect(extrait.length).toBeLessThanOrEqual(400);
+    expect(extrait).toContain('INVALID_ARGUMENT');
   });
 });
 

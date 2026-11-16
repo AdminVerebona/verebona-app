@@ -136,6 +136,64 @@ export async function recordIdentityReviews(
 }
 
 /**
+ * Lot 115 (#791, E08) — DOUTE DE RATTACHEMENT ouvert par un arbitrage T3 : T3
+ * a établi, preuve citée, qu'un document est ÉTRANGER à l'événement de
+ * référence (issue `LINK_ERROR`). Jusqu'ici ce verdict ne produisait qu'une
+ * ligne de diagnostic : rien ne le rendait au moteur qui sait réparer.
+ *
+ * Ce qui est fait ici, et RIEN de plus :
+ *   · une entrée SUSPECT du journal 0609 est ouverte (idempotente : une seule
+ *     par événement et par candidat, ses signaux sont mis à jour) — la
+ *     contradiction d'attribut devient « rattachement douteux », traitée
+ *     d'abord, et la valeur n'est plus arbitrée sur une source douteuse ;
+ *   · le candidat est remis en consolidation (`t3_pending`), comme le fait la
+ *     détection du stock : le réexamen EXISTANT (`reviewExistingAttachment`)
+ *     tranche — séparation seulement sur contradiction CERTAINE face à la
+ *     source fondatrice, sinon le doute reste et la source RESTE.
+ *
+ * Aucun détachement, aucune fusion et aucune séparation ne sont décidés ici
+ * par un traitement (décision du PO) ; aucun appel d'IA ; aucune valeur
+ * métier écrite — ce module n'appelle aucune commande de la façade. Le
+ * rétablissement BO (`revertIdentitySeparation`) reste la voie de retour.
+ */
+export async function recordArbitrationLinkDoubt(
+  tx: { execute(q: SQL): Promise<unknown> }, accountId: number,
+  p: { operationId: number; fileId: number; signals: readonly string[]; correlationId: string | null },
+): Promise<'OPENED' | 'KEPT' | 'SKIPPED'> {
+  if (!(await identityJournalReady(tx as DbTx))) return 'SKIPPED';
+  // Candidat du document rattaché à CET événement, dans CE compte (jamais un identifiant rendu par l'IA).
+  const [s] = await rows<{ id: string; candidate_key: string | null }>(tx as DbTx, sql`
+    SELECT s.id, s.locator->>'candidateKey' AS candidate_key FROM business_operation_sources s
+     WHERE s.account_id = ${accountId} AND s.operation_id = ${p.operationId} AND s.active
+       AND s.source_kind = 'DOCUMENT' AND s.source_entity_key = ${String(p.fileId)}
+     ORDER BY s.id LIMIT 1`);
+  if (!s?.candidate_key) return 'SKIPPED';
+  const signaux = JSON.stringify([...p.signals].slice(0, 10));
+  const [deja] = await rows<{ id: string }>(tx as DbTx, sql`
+    SELECT id FROM business_operation_identity_reviews
+     WHERE account_id = ${accountId} AND operation_id = ${p.operationId} AND file_id = ${p.fileId}
+       AND candidate_key = ${s.candidate_key} AND kind = 'SUSPECT' AND status = 'OPEN' ORDER BY id LIMIT 1`);
+  if (deja) {
+    await tx.execute(sql`
+      UPDATE business_operation_identity_reviews SET signals = ${signaux}::jsonb, updated_at = now() WHERE id = ${Number(deja.id)}`);
+  } else {
+    await tx.execute(sql`
+      INSERT INTO business_operation_identity_reviews
+        (account_id, operation_id, kind, status, file_id, candidate_key, source_id, target_operation_id, basis, signals, review_version, correlation_id)
+      SELECT ${accountId}, ${p.operationId}, 'SUSPECT', 'OPEN', ${p.fileId}, ${s.candidate_key}, ${Number(s.id)}, ${p.operationId},
+             'T3_ATTRIBUTE_ARBITRATION', ${signaux}::jsonb, ${IDENTITY_REVIEW_VERSION}, ${p.correlationId}
+       WHERE EXISTS (SELECT 1 FROM business_operations WHERE id = ${p.operationId} AND account_id = ${accountId})`);
+  }
+  // Réexamen par le moteur EXISTANT au prochain passage du compte (aucune écriture métier ici).
+  await tx.execute(sql`
+    UPDATE document_operation_candidates
+       SET t3_pending = true,
+           t3_detail = COALESCE(t3_detail, '{}'::jsonb) || jsonb_build_object('arbitrationLinkDoubt', jsonb_build_object('operationId', ${p.operationId}::bigint, 'at', now()))
+     WHERE account_id = ${accountId} AND file_id = ${p.fileId} AND candidate_key = ${s.candidate_key} AND status = 'ACTIVE'`);
+  return deja ? 'KEPT' : 'OPENED';
+}
+
+/**
  * Détection bornée du stock (voir l'en-tête) : remet en consolidation les
  * candidats dont le rattachement doit être réévalué, estampille les autres.
  * Rend les documents remis et s'il en reste à examiner. Aucune écriture métier.

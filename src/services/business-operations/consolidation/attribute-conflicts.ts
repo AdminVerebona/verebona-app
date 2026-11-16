@@ -46,8 +46,16 @@
  * Aucune règle par enseigne, mot-clé ou exemple : seulement les rôles des
  * sources (`SOURCE_ROLES`) et l'identité économique déjà persistée.
  */
+import { lowerBound, upperBound } from '@/lib/documents/business-periods';
 import type { BusinessOperationTypeCode, SourceRole } from '../model';
-import { normalizeProvider, transactionWindowDays, type AttributeProvenance, type CandidateIdentity, type SourceContribution } from './model';
+import {
+  normalizeProvider, semanticRoleOf, SEMANTIC_UNKNOWN_ROLE, SEMANTIC_USER_ROLE,
+  type AttributeProvenance, type CandidateIdentity, type ProvenancedField, type SourceContribution,
+} from './model';
+
+// Référentiel UNIQUE du rôle sémantique (lot 115, #791 : il vit dans `model.ts`, lu aussi par le choix
+// du prestataire canonique). Ré-exporté ici : les appelants historiques ne changent pas.
+export { semanticRoleOf };
 
 /** Version de la règle de qualification (portée par chaque provenance écrite). */
 export const ATTRIBUTE_CONFLICT_RULES_VERSION = 2;
@@ -64,7 +72,7 @@ export const ALERTING_QUALIFICATIONS: readonly AttributeConflictQualification[] 
   'REAL_CONFLICT_UNRESOLVED', 'SOURCE_LINK_ERROR_SUSPECTED', 'INSUFFICIENT_EVIDENCE', 'CHECK_FAILED',
 ];
 
-export type ConflictField = 'plannedDate' | 'startDate' | 'realizedDate' | 'endDate' | 'provider';
+export type ConflictField = ProvenancedField;
 export const CONFLICT_FIELDS: readonly ConflictField[] = ['plannedDate', 'startDate', 'realizedDate', 'endDate', 'provider'];
 
 /** Relevé 78A (forme persistée historique). */
@@ -109,6 +117,12 @@ export interface QualifiedAttributeConflict {
   current?: string | null;
   /** Lot 114 (#750, issue B) : issue du dernier examen T3 de cette ligne (absente : jamais examinée). */
   t3?: { outcome: AttributeReview['outcome']; reviewId?: number };
+  /**
+   * Lot 115 (#791, E07) : périmètre MATÉRIEL des preuves de la ligne
+   * (`evidenceScopeKeyOf`). Un examen T3 rendu sur un autre périmètre ne la
+   * couvre plus ; vingt scans identiques ne le changent pas.
+   */
+  evidenceKey?: string;
 }
 
 export interface QualificationContext {
@@ -152,59 +166,21 @@ export interface AttributeReview {
   known: string[];
   outcome: 'LEGITIMATE_DIFFERENCE' | 'UNDECIDABLE' | 'LINK_ERROR' | 'ABSTAINED' | 'FAILED' | 'PENDING';
   reviewId?: number;
+  /**
+   * Lot 115 (#791, E02, E07) : périmètre MATÉRIEL des preuves SOUMISES à cet
+   * examen. Absent (examen antérieur au lot 115) : toléré, la couverture reste
+   * jugée sur les seules valeurs — aucun réexamen de masse au déploiement.
+   */
+  evidenceKey?: string;
 }
 
 export const attributeChoiceKey = (field: ConflictField, role: string): string => `${field}|${role}`;
 export const attributeReviewKey = attributeChoiceKey;
 
-// ── Rôles sémantiques ─────────────────────────────────────────────────────
+// ── Rôles sémantiques (référentiel unique : `model.ts`) ───────────────────
 
-const USER_ROLE = 'USER_ENTRY';
-const UNKNOWN_ROLE = 'UNKNOWN';
-
-const BILLING: ReadonlySet<string> = new Set(['INVOICE', 'DEPOSIT_INVOICE', 'CREDIT_NOTE']);
-
-/**
- * Rôle sémantique d'une valeur selon l'attribut et le rôle de sa source :
- * deux valeurs ne sont comparables que si ce rôle est le même.
- */
-export function semanticRoleOf(field: ConflictField, identity: Pick<CandidateIdentity, 'role' | 'agenda' | 'structured' | 'coverageDocument'>,
-  authority: string | null = null): string {
-  if (identity.agenda || authority === 'USER') return USER_ROLE;
-  if (identity.structured) {
-    // Donnée structurée du bien : un achat / une cession portent la date du fait lui-même.
-    return field === 'realizedDate' ? 'REALIZATION' : field === 'provider' ? 'SUPPLIER' : `STRUCTURED_${field.toUpperCase()}`;
-  }
-  const r = identity.role;
-  if (r === null || r === 'OTHER_EVIDENCE') return UNKNOWN_ROLE;
-  if (field === 'provider') {
-    if (r === 'QUOTE' || r === 'ORDER' || BILLING.has(r) || r === 'CONTRACT_DOCUMENT') return 'SUPPLIER';
-    if (r === 'REPORT') return 'EXECUTANT';
-    if (r === 'PAYMENT_PROOF' || r === 'REFUND_PROOF') return 'PAYMENT_INTERMEDIARY';
-    if (r === 'SALE_DOCUMENT') return 'DEED_ISSUER';
-    return 'CLAIM_PARTY';
-  }
-  if (field === 'realizedDate') {
-    if (r === 'PAYMENT_PROOF' || r === 'REFUND_PROOF') return 'PAYMENT';
-    if (r === 'CREDIT_NOTE') return 'CREDIT';
-    if (r === 'QUOTE') return 'QUOTE';
-    return 'REALIZATION';
-  }
-  if (field === 'plannedDate') {
-    if (r === 'QUOTE') return 'QUOTE_PLANNED';
-    if (r === 'ORDER') return 'ORDER_PLANNED';
-    if (r === 'CONTRACT_DOCUMENT') return 'CONTRACT_PLANNED';
-    return 'PLANNED';
-  }
-  // startDate / endDate
-  const bord = field === 'startDate' ? 'START' : 'END';
-  if (identity.coverageDocument) return `COVERAGE_${bord}`;
-  if (r === 'CONTRACT_DOCUMENT') return field === 'startDate' ? 'CONTRACT_EFFECTIVE' : 'CONTRACT_END';
-  if (r === 'QUOTE') return `QUOTE_VALIDITY_${bord}`;
-  if (BILLING.has(r)) return `BILLING_PERIOD_${bord}`;
-  if (r === 'PAYMENT_PROOF' || r === 'REFUND_PROOF') return `PAYMENT_${bord}`;
-  return bord;
-}
+const USER_ROLE = SEMANTIC_USER_ROLE;
+const UNKNOWN_ROLE = SEMANTIC_UNKNOWN_ROLE;
 
 // ── Normalisation (formats équivalents) ───────────────────────────────────
 
@@ -236,8 +212,6 @@ export function normalizeConflictProvider(raw: string, canonicalKey: string | nu
   return normalizeProvider(etendu) ?? normalizeProvider(raw) ?? raw.trim().toLowerCase();
 }
 
-const ecart = (a: string, b: string): number => Math.abs(Date.parse(`${a}T00:00:00Z`) - Date.parse(`${b}T00:00:00Z`)) / 86_400_000;
-
 // ── Qualification ─────────────────────────────────────────────────────────
 
 const IMPACT: Record<ConflictField, string[]> = {
@@ -262,13 +236,21 @@ function valuesOf(items: readonly Item[]): QualifiedConflictValue[] {
   return out.sort((a, b) => (a.value < b.value ? -1 : a.value > b.value ? 1 : 0));
 }
 
-/** Valeurs distinctes (normalisées) qui se contredisent selon la règle 78A (fenêtre de la transaction pour une date). */
-function contradicts(field: ConflictField, normalized: readonly string[], window: number | null): boolean {
-  const d = [...new Set(normalized)].sort();
-  if (d.length < 2) return false;
-  if (field === 'provider') return true;
-  if (window === null) return false;
-  return ecart(d[0], d[d.length - 1]) > window;
+/**
+ * Valeurs distinctes (normalisées) du MÊME attribut et du MÊME rôle qui se
+ * contredisent.
+ *
+ * Lot 115 (#791, E01) — **règle remplacée** : aucun seuil de jours. Deux
+ * valeurs du même attribut, du même rôle de date et de la même période se
+ * contredisent, qu'elles soient à 7 jours ou à 7 ans ; et un contrat ou un
+ * financement (sans fenêtre) n'est plus exclu de la détection. Ce qui rend une
+ * différence LÉGITIME se prouve ailleurs, par le fait lui-même : rôle
+ * sémantique différent (devis ≠ facture ≠ réalisation, signature ≠ prise
+ * d'effet ≠ couverture), format équivalent, ou révision PROUVÉE
+ * (`provenRevision`).
+ */
+function contradicts(normalized: readonly string[]): boolean {
+  return new Set(normalized).size >= 2;
 }
 
 const refsOf = (i: CandidateIdentity | null): string[] => (i?.refs ?? []).map((r) => `${r.kind}:${r.normalized}`);
@@ -301,8 +283,22 @@ function disjointTargets(items: readonly Item[]): boolean {
   return true;
 }
 
-/** Révisions successives d'une relation durable : chaque valeur portée par une date d'effet distincte. */
-function successiveRevisions(items: readonly Item[]): boolean {
+/**
+ * Révisions successives d'une relation durable (avenant, rectificatif,
+ * renouvellement) : chaque valeur portée par une date d'effet distincte.
+ *
+ * Lot 115 (#791, E05) — **règle complétée** : des dates d'effet différentes ne
+ * suffisent plus. Le lien de révision doit être PROUVÉ, par l'une de ces deux
+ * preuves seulement :
+ *   · une source d'une des valeurs DÉCLARE la relation (fait T1
+ *     `period.relation` : avenant, rectificatif, renouvellement) ;
+ *   · les PÉRIODES contractuelles qualifiées par T1 (`period.contract`) des
+ *     valeurs sont DISJOINTES (l'une remplace l'autre dans le temps).
+ * Sans preuve, la différence n'est pas certifiée « légitime » : l'assureur de
+ * 2022 maintenu face à une source de 2024 devient une contradiction réelle, et
+ * l'utilisateur tranche (valeur historique / valeur actuelle).
+ */
+function provenRevision(items: readonly Item[]): boolean {
   const effets = new Map<string, Set<string>>();
   for (const it of items) {
     const d = it.identity?.dates.startDate;
@@ -313,7 +309,62 @@ function successiveRevisions(items: readonly Item[]): boolean {
   }
   const vus = new Set<string>();
   for (const s of effets.values()) for (const d of s) { if (vus.has(d)) return false; vus.add(d); }
-  return effets.size >= 2;
+  if (effets.size < 2) return false;
+  // Preuve 1 : relation déclarée par un des documents comparés.
+  if (items.some((i) => !!i.identity?.documentRelation)) return true;
+  // Preuve 2 : périodes contractuelles qualifiées disjointes entre deux valeurs différentes.
+  return disjointContractTerms(items);
+}
+
+/** Bornes d'une période contractuelle qualifiée par T1, en jour comparable (préfixe AAAA[-MM[-JJ]]). */
+const termBounds = (it: Item): Array<{ start: string | null; end: string | null }> =>
+  (it.identity?.termQualification?.contractTerms ?? []).map((t) => ({ start: t.start ?? null, end: t.openEnded ? null : t.end ?? null }));
+
+/** Deux valeurs différentes dont TOUTES les périodes contractuelles qualifiées ne se chevauchent pas. */
+function disjointContractTerms(items: readonly Item[]): boolean {
+  const parValeur = new Map<string, Array<{ start: string | null; end: string | null }>>();
+  for (const it of items) {
+    const b = termBounds(it);
+    if (!b.length) continue;
+    parValeur.set(it.normalized, [...(parValeur.get(it.normalized) ?? []), ...b]);
+  }
+  const ens = [...parValeur.values()];
+  if (ens.length < 2) return false;
+  // Bornes partielles comparées par les helpers du référentiel des périodes (une année, un mois, un jour).
+  const chevauche = (a: { start: string | null; end: string | null }, b: { start: string | null; end: string | null }): boolean =>
+    (a.end === null || b.start === null || lowerBound(b.start) <= upperBound(a.end))
+    && (b.end === null || a.start === null || lowerBound(a.start) <= upperBound(b.end));
+  for (let i = 0; i < ens.length; i++) {
+    for (let j = i + 1; j < ens.length; j++) {
+      for (const a of ens[i]) for (const b of ens[j]) if (chevauche(a, b)) return false;
+    }
+  }
+  return true;
+}
+
+/**
+ * Lot 115 (#791, E05) — deux valeurs portées par des DEVIS distincts : deux
+ * offres concurrentes, ou un devis révisé, ne se contredisent pas (un devis
+ * n'engage rien : seules la commande et la facture le font). Deux valeurs
+ * contradictoires portées par le MÊME document, en revanche, ne sont pas une
+ * révision : la contradiction suit son cours au lieu d'être certifiée
+ * « légitime ». Une relation déclarée (rectificatif, avenant) suffit aussi.
+ */
+function provenQuoteAlternatives(items: readonly Item[]): boolean {
+  if (items.some((i) => !!i.identity?.documentRelation)) return true;
+  const parValeur = new Map<string, Set<number>>();
+  for (const it of items) {
+    const f = it.identity?.fileId;
+    if (f === undefined) return false;
+    const s = parValeur.get(it.normalized) ?? new Set<number>();
+    s.add(f);
+    parValeur.set(it.normalized, s);
+  }
+  const ens = [...parValeur.values()];
+  if (ens.length < 2) return false;
+  // Aucun document commun entre deux valeurs : des devis distincts les portent.
+  for (let i = 0; i < ens.length; i++) for (let j = i + 1; j < ens.length; j++) if ([...ens[i]].some((f) => ens[j].has(f))) return false;
+  return true;
 }
 
 const SINGLE_FACT: ReadonlySet<string> = new Set(['ACQUISITION', 'DISPOSAL', 'CLAIM']);
@@ -350,8 +401,15 @@ function choiceState(choice: AttributeChoice | undefined, its: readonly Item[]):
   return its.some((i) => i.normalized === choice.normalized) ? 'COVERED' : 'VALUE_WITHDRAWN';
 }
 
-const reviewCovers = (r: AttributeReview | undefined, its: readonly Item[]): r is AttributeReview =>
-  !!r && its.every((i) => r.known.includes(i.normalized)) && r.known.every((k) => its.some((i) => i.normalized === k));
+/**
+ * L'examen T3 couvre-t-il ce groupe ? Mêmes valeurs des deux côtés ET, depuis
+ * le lot 115 (#791, E02 / E07), MÊME périmètre matériel de preuves : un
+ * verdict rendu sans avoir vu une pièce décisive (plus autoritaire, révision
+ * déclarée, identité ou date d'effet nouvelle) ne couvre plus la ligne.
+ */
+const reviewCovers = (r: AttributeReview | undefined, its: readonly Item[], evidenceKey: string): r is AttributeReview =>
+  !!r && its.every((i) => r.known.includes(i.normalized)) && r.known.every((k) => its.some((i) => i.normalized === k))
+  && (r.evidenceKey === undefined || r.evidenceKey === evidenceKey);
 
 /**
  * Qualifie le relevé 78A (pur, déterministe). `alerting` : lignes qui
@@ -362,7 +420,6 @@ export function qualifyAttributeConflicts(raw: readonly RawAttributeConflict[], 
   alerting: QualifiedAttributeConflict[]; divergences: QualifiedAttributeConflict[];
 } {
   const byId = new Map(ctx.contributions.map((c) => [c.sourceId, c.identity]));
-  const window = transactionWindowDays(ctx.type);
   const alerting: QualifiedAttributeConflict[] = [];
   const divergences: QualifiedAttributeConflict[] = [];
 
@@ -379,13 +436,14 @@ export function qualifyAttributeConflicts(raw: readonly RawAttributeConflict[], 
     let groupes = 0;
     for (const role of comparables) {
       const its = items.filter((i) => i.src.role === role);
-      if (!contradicts(c.field, its.map((i) => i.normalized), window)) continue;
+      if (!contradicts(its.map((i) => i.normalized))) continue;
       groupes++;
       const suspect = its.some((i) => ctx.suspectSourceIds?.has(i.sourceId));
       const choix = ctx.choices?.get(attributeChoiceKey(c.field, role));
       const etat = choiceState(choix, its);
+      const evidenceKey = evidenceScopeKeyOf(its);
       const examen = ctx.reviews?.get(attributeReviewKey(c.field, role));
-      const examine = reviewCovers(examen, its) ? examen : undefined;
+      const examine = reviewCovers(examen, its, evidenceKey) ? examen : undefined;
       let e: QualifiedAttributeConflict;
       if (role === UNKNOWN_ROLE) {
         e = { ...base(role, its), qualification: 'INSUFFICIENT_EVIDENCE', reasonCode: 'ROLE_UNKNOWN', impact };
@@ -413,10 +471,11 @@ export function qualifyAttributeConflicts(raw: readonly RawAttributeConflict[], 
         e = { ...base(role, its), qualification: 'LEGITIMATE_DIFFERENCE', reasonCode: 'T3_DISTINCT_FACTS', impact: [], ...(examine.reviewId !== undefined ? { resolution: { by: 'T3' as const, reviewId: examine.reviewId } } : {}) };
       } else if (examine?.outcome === 'LINK_ERROR') {
         e = { ...base(role, its), qualification: 'SOURCE_LINK_ERROR_SUSPECTED', reasonCode: 'T3_LINK_ERROR_SUSPECTED', impact };
-      } else if (DURABLE.has(ctx.type ?? '') && successiveRevisions(its)) {
+      } else if (DURABLE.has(ctx.type ?? '') && provenRevision(its)) {
         e = { ...base(role, its), qualification: 'LEGITIMATE_DIFFERENCE', reasonCode: 'SUCCESSIVE_REVISION', impact: [] };
-      } else if (role === 'QUOTE_PLANNED' || role.startsWith('QUOTE_VALIDITY') || role === 'QUOTE') {
-        // Un devis révisé ou concurrent ne contredit pas la réalisation : seules la commande / la facture engagent.
+      } else if ((role === 'QUOTE_PLANNED' || role.startsWith('QUOTE_VALIDITY') || role === 'QUOTE') && provenQuoteAlternatives(its)) {
+        // Deux devis DISTINCTS (ou un devis qui déclare rectifier) ne contredisent pas la réalisation : seules
+        // la commande / la facture engagent. Lot 115 (#791, E05) : deux exemplaires du MÊME devis, si.
         e = { ...base(role, its), qualification: 'LEGITIMATE_DIFFERENCE', reasonCode: 'QUOTE_REVISION', impact: [] };
       } else if (sharedReference(its)) {
         e = { ...base(role, its), qualification: 'REAL_CONFLICT_UNRESOLVED', reasonCode: 'SAME_REFERENCE', impact };
@@ -434,6 +493,7 @@ export function qualifyAttributeConflicts(raw: readonly RawAttributeConflict[], 
           e.reasonCode = 'T3_UNDECIDABLE';
         }
       }
+      e.evidenceKey = evidenceKey;
       (ALERTING_QUALIFICATIONS.includes(e.qualification) ? alerting : divergences).push(e);
     }
     // Valeur saisie par l'utilisateur (Agenda, fiche) NON retenue alors qu'un document la contredit : jamais masqué.
@@ -470,6 +530,43 @@ export function qualifyAttributeConflicts(raw: readonly RawAttributeConflict[], 
 /** Lot 79A : contradiction arbitrée par un rétablissement BO — qualification « tranchée par l'administrateur ». */
 export function markAdminArbitrated(c: QualifiedAttributeConflict): QualifiedAttributeConflict {
   return { ...c, qualification: 'REAL_CONFLICT_RESOLVED', reasonCode: 'ADMIN_RESTORED_SOURCE', impact: [], resolution: { by: 'ADMIN' }, protection: 'ADMIN' };
+}
+
+// ── Lot 115 (#791, E07) : PÉRIMÈTRE MATÉRIEL des preuves d'une ligne ──────
+
+/** Empreinte pure, stable et bornée (FNV-1a 32 bits) — aucune dépendance au runtime (module lu côté BO). */
+function fnv1a(s: string): string {
+  let h = 0x811c9dc5;
+  for (let i = 0; i < s.length; i++) { h ^= s.charCodeAt(i); h = Math.imul(h, 0x01000193) >>> 0; }
+  return h.toString(16).padStart(8, '0');
+}
+
+const MATERIAL_KEY_MAX = 600;
+
+/**
+ * Lot 115 (#791, E07) — périmètre MATÉRIEL des preuves d'une ligne : ce qui,
+ * en changeant, justifie un nouvel examen. Y entrent, par valeur comparée :
+ * le rôle sémantique, le rôle du document, l'autorité, la relation DÉCLARÉE
+ * (avenant, rectificatif, renouvellement), les références d'identité et les
+ * bornes d'effet. N'y entrent PAS l'identifiant du document, celui de la
+ * source ni l'horodatage : vingt scans identiques, ou une pièce ÉQUIVALENTE
+ * redéposée, donnent la même empreinte et ne relancent aucun examen. Une
+ * pièce plus autoritaire, une révision déclarée, une identité ou une date
+ * d'effet nouvelle la changent.
+ */
+export function evidenceScopeKeyOf(items: ReadonlyArray<{
+  normalized: string; identity: CandidateIdentity | null; src: Pick<ConflictValueSource, 'role' | 'documentRole' | 'authority'>;
+}>): string {
+  const parts = new Set<string>();
+  for (const it of items) {
+    const i = it.identity;
+    parts.add([
+      it.normalized, it.src.role, it.src.documentRole ?? '-', it.src.authority ?? '-', i?.documentRelation ?? '-',
+      refsOf(i).sort().join('+') || '-', i?.dates.startDate ?? '-', i?.dates.endDate ?? '-',
+    ].join('|'));
+  }
+  const materiel = [...parts].sort().join('\u0001');
+  return `l115:${fnv1a(materiel)}:${Math.min(materiel.length, MATERIAL_KEY_MAX)}`;
 }
 
 /** Empreinte stable d'une ligne (attribut, rôle, valeurs normalisées, qualification) — anti-réouverture. */

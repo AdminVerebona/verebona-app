@@ -40,7 +40,7 @@
 import { corroborateAcquisition, type AcquisitionEvidenceIndex, type Corroboration } from './acquisition-corroboration';
 import { createHash } from 'node:crypto';
 import { isCoveragePeriodDocumentType } from '@/lib/referential/v2/coverage-document-types';
-import { dayMatchesBound, type TermQualification } from '@/services/documents/business-periods/t1-v2';
+import { dayMatchesBound, type DocumentRelation, type TermQualification } from '@/services/documents/business-periods/t1-v2';
 import {
   isBusinessOperationStatus, isIsoCurrency, isIsoDate, isMinorAmount, normalizeBusinessReference, normalizeOperationTypeHint,
   type BusinessOperationStatus, type BusinessOperationTypeCode, type Confidence, type FinancialComponentKind,
@@ -119,6 +119,13 @@ interface IdentityContext {
    * règle prudente 113W2 (Type de couverture) puis 86C.
    */
   fileTermQualification?: TermQualification | null;
+  /**
+   * Lot 115 (#791, E05) : RELATION que le document DÉCLARE (fait T1
+   * `period.relation` : avenant, rectificatif, renouvellement) — seule preuve
+   * admise d'un lien de révision entre deux valeurs d'un même attribut.
+   * Absente : aucune révision n'est présumée.
+   */
+  fileDocumentRelation?: DocumentRelation | null;
   /**
    * Lot 109D : candidats ACTIFS et établis du MÊME document (celui-ci compris) et montant TTC du document — la
    * qualification des montants est faite au niveau du document (`finance/commercial-adjustments`). Absent : le
@@ -201,6 +208,14 @@ export interface CandidateIdentity {
    */
   termQualification?: TermQualification;
   /**
+   * Lot 115 (#791, E05) : relation DÉCLARÉE par le document (avenant,
+   * rectificatif, renouvellement), lue du fait T1 `period.relation`. Preuve du
+   * lien de révision entre deux valeurs successives d'un même attribut : sans
+   * elle, deux dates d'effet différentes ne suffisent plus à déclarer les
+   * faits distincts.
+   */
+  documentRelation?: DocumentRelation;
+  /**
    * Lot 43 (O4) : identité d'une donnée STRUCTURÉE du bien (source
    * ASSET_DATA, `asset-data.ts`) et non d'un candidat T1 — sa nature et
    * l'origine de sa date (champ saisi, ou repli « passage au statut »).
@@ -228,6 +243,90 @@ export interface CandidateIdentity {
     /** L'élément EST l'enregistrement de la réalisation (fait historique, « fait ») : sa date prime. */
     realizationRecord: boolean;
   };
+}
+
+// ── Rôle SÉMANTIQUE d'une valeur d'attribut (même attribut, même fait) ────
+
+/** Valeur saisie ou corrigée par l'utilisateur (Agenda, fiche) : jamais comparée à un document. */
+export const SEMANTIC_USER_ROLE = 'USER_ENTRY';
+/** Rôle du document inconnu : rien n'est comparable (ni conflit prouvé, ni divergence certifiée). */
+export const SEMANTIC_UNKNOWN_ROLE = 'UNKNOWN';
+
+const BILLING_ROLES: ReadonlySet<string> = new Set(['INVOICE', 'DEPOSIT_INVOICE', 'CREDIT_NOTE']);
+
+/**
+ * Rôle sémantique d'une valeur selon l'attribut et le rôle de sa source :
+ * deux valeurs ne sont comparables que si ce rôle est le même (lot 113AQ,
+ * Trello #750). Référentiel UNIQUE, lu par la qualification des
+ * contradictions (`attribute-conflicts.ts`, qui le ré-exporte) ET par le choix
+ * du prestataire canonique (lot 115, #791, E04) : aucune énumération locale,
+ * aucune règle par enseigne.
+ */
+export function semanticRoleOf(field: ProvenancedField, identity: Pick<CandidateIdentity, 'role' | 'agenda' | 'structured' | 'coverageDocument'>,
+  authority: string | null = null): string {
+  if (identity.agenda || authority === 'USER') return SEMANTIC_USER_ROLE;
+  if (identity.structured) {
+    // Donnée structurée du bien : un achat / une cession portent la date du fait lui-même.
+    return field === 'realizedDate' ? 'REALIZATION' : field === 'provider' ? 'SUPPLIER' : `STRUCTURED_${field.toUpperCase()}`;
+  }
+  const r = identity.role;
+  if (r === null || r === 'OTHER_EVIDENCE') return SEMANTIC_UNKNOWN_ROLE;
+  if (field === 'provider') {
+    if (r === 'QUOTE' || r === 'ORDER' || BILLING_ROLES.has(r) || r === 'CONTRACT_DOCUMENT') return 'SUPPLIER';
+    if (r === 'REPORT') return 'EXECUTANT';
+    if (r === 'PAYMENT_PROOF' || r === 'REFUND_PROOF') return 'PAYMENT_INTERMEDIARY';
+    if (r === 'SALE_DOCUMENT') return 'DEED_ISSUER';
+    return 'CLAIM_PARTY';
+  }
+  if (field === 'realizedDate') {
+    if (r === 'PAYMENT_PROOF' || r === 'REFUND_PROOF') return 'PAYMENT';
+    if (r === 'CREDIT_NOTE') return 'CREDIT';
+    if (r === 'QUOTE') return 'QUOTE';
+    return 'REALIZATION';
+  }
+  if (field === 'plannedDate') {
+    if (r === 'QUOTE') return 'QUOTE_PLANNED';
+    if (r === 'ORDER') return 'ORDER_PLANNED';
+    if (r === 'CONTRACT_DOCUMENT') return 'CONTRACT_PLANNED';
+    return 'PLANNED';
+  }
+  // startDate / endDate
+  const bord = field === 'startDate' ? 'START' : 'END';
+  if (identity.coverageDocument) return `COVERAGE_${bord}`;
+  if (r === 'CONTRACT_DOCUMENT') return field === 'startDate' ? 'CONTRACT_EFFECTIVE' : 'CONTRACT_END';
+  if (r === 'QUOTE') return `QUOTE_VALIDITY_${bord}`;
+  if (BILLING_ROLES.has(r)) return `BILLING_PERIOD_${bord}`;
+  if (r === 'PAYMENT_PROOF' || r === 'REFUND_PROOF') return `PAYMENT_${bord}`;
+  return bord;
+}
+
+/**
+ * Lot 115 (#791, E04) — AUTORITÉ SÉMANTIQUE des parties pour le prestataire
+ * de l'événement de référence : la partie qui facture ou qui contracte
+ * d'abord, puis l'exécutant d'un rapport, puis une partie de sinistre, et en
+ * DERNIER les intermédiaires qui ne sont jamais le prestataire du fait
+ * (banque d'une preuve de paiement, office notarial d'un acte). Le rang ne
+ * dépend que du rôle sémantique ci-dessus : le résultat est donc invariant à
+ * l'ordre d'ingestion des sources. Une valeur de l'utilisateur prime.
+ */
+const PROVIDER_ROLE_RANK: Readonly<Record<string, number>> = {
+  [SEMANTIC_USER_ROLE]: 0, SUPPLIER: 1, EXECUTANT: 2, CLAIM_PARTY: 3, DEED_ISSUER: 4, PAYMENT_INTERMEDIARY: 5, [SEMANTIC_UNKNOWN_ROLE]: 6,
+};
+const providerRoleRank = (identity: CandidateIdentity): number => PROVIDER_ROLE_RANK[semanticRoleOf('provider', identity)] ?? 6;
+
+/**
+ * Prestataire canonique (pur) : la valeur portée par la source de plus forte
+ * autorité sémantique ; à rang égal, la source FONDATRICE (la plus ancienne).
+ * Avant le lot 115 (#791, E04) : le premier prestataire non nul dans l'ordre
+ * d'ingestion — une banque, un notaire ou un assureur retiré pouvait donc
+ * devenir « le prestataire ». Les valeurs écartées restent exposées par le
+ * relevé de contradictions (jamais perdues), et la contradiction du MÊME rôle
+ * reste arbitrée (carte « À traiter » ou T3).
+ */
+export function canonicalProvider(srcs: readonly SourceContribution[]): string | null {
+  const porteuses = srcs.filter((s) => !!s.identity.provider);
+  if (!porteuses.length) return null;
+  return [...porteuses].sort((a, b) => providerRoleRank(a.identity) - providerRoleRank(b.identity) || a.sourceId - b.sourceId)[0].identity.provider;
 }
 
 const SUFFIXES_JURIDIQUES = /\b(sas|sasu|sarl|eurl|sa|sci|snc|ag|gmbh|ltd|llc|inc|bv|nv|spa|srl)\b/g;
@@ -333,6 +432,7 @@ export function buildCandidateIdentity(c: CandidateRecord, ctx: IdentityContext)
     hints,
     ...(isCoveragePeriodDocumentType(ctx.fileDocumentTypeCode) ? { coverageDocument: true } : {}),
     ...(ctx.fileTermQualification?.evaluated ? { termQualification: ctx.fileTermQualification } : {}),
+    ...(ctx.fileDocumentRelation ? { documentRelation: ctx.fileDocumentRelation } : {}),
   };
 }
 
@@ -890,7 +990,8 @@ export interface ConsolidatedState {
   attributeConflicts: AttributeConflict[];
 }
 
-type ProvenancedField = 'plannedDate' | 'startDate' | 'realizedDate' | 'endDate' | 'provider';
+/** Attributs dont la valeur conservée est justifiée par une source (et donc arbitrable). */
+export type ProvenancedField = 'plannedDate' | 'startDate' | 'realizedDate' | 'endDate' | 'provider';
 export type AttributeProvenance = Partial<Record<ProvenancedField, {
   sourceId: number; value: string;
   /** Lot 85E : origine de la valeur canonique du bien qui a daté l'Opération (T1, T3, document…). */
@@ -902,13 +1003,31 @@ interface AttributeConflict {
   values: Array<{ value: string; sourceIds: number[] }>;
   /** Valeur conservée. */
   retained: string | null;
+  /**
+   * Lot 115 (#791, E01) : l'écart dépasse la FENÊTRE de la transaction (dates),
+   * ou les tiers sont distincts. Ce drapeau ne sert plus qu'à la règle de
+   * RÉTENTION historique (la date de la source fondatrice d'un fait unique) :
+   * il n'est JAMAIS la condition d'absence de contradiction. Avant le lot 115,
+   * un écart dans la fenêtre — ou un contrat / financement, sans fenêtre du
+   * tout — n'était pas même relevé : deux dates du même fait à 7 jours d'écart
+   * restaient invisibles.
+   */
+  materialGap?: boolean;
 }
 
 const ecartJoursModel = (a: string, b: string): number => Math.abs(Date.parse(`${a}T00:00:00Z`) - Date.parse(`${b}T00:00:00Z`)) / 86_400_000;
 
 /**
- * Lot 78A (§2C) : valeurs d'un attribut selon les sources, contradiction
- * au-delà de la fenêtre de la transaction (dates) ou tiers distincts (pure).
+ * Lot 78A (§2C) : valeurs d'un attribut selon les sources (pure).
+ *
+ * Lot 115 (#791, E01) : TOUTES les valeurs distinctes sont relevées, sans
+ * aucun seuil de jours comme condition d'absence de contradiction, et
+ * **contrats et financements compris** (ils n'ont pas de fenêtre). Ce qui
+ * départage un faux d'un vrai conflit est l'identité du fait, le RÔLE de la
+ * date, la période et la révision — c'est le travail de la qualification
+ * (`attribute-conflicts.ts`), pas d'un écart de calendrier. La fenêtre de la
+ * transaction est conservée comme simple MATÉRIALITÉ de l'écart
+ * (`materialGap`), pour ne rien changer aux valeurs retenues.
  */
 function attributeConflict(
   field: ProvenancedField, srcs: readonly SourceContribution[], valueOf: (s: SourceContribution) => string | null,
@@ -922,12 +1041,12 @@ function attributeConflict(
     if (o) o.sourceIds.push(s.sourceId); else vals.push({ value: v, sourceIds: [s.sourceId] });
   }
   if (vals.length < 2) return null;
+  let materialGap = true;
   if (field !== 'provider') {
-    if (window === null) return null;
     const tri = vals.map((x) => x.value).sort();
-    if (ecartJoursModel(tri[0], tri[tri.length - 1]) <= window) return null;
+    materialGap = window !== null && ecartJoursModel(tri[0], tri[tri.length - 1]) > window;
   }
-  return { field, values: vals, retained: null };
+  return { field, values: vals, retained: null, ...(materialGap ? { materialGap: true } : {}) };
 }
 
 /**
@@ -956,8 +1075,10 @@ export function computeProvenance(
     if (canon) out[k] = { sourceId: canon.sourceId, value: val, origin: canon.identity.structured!.canonicalDate!.origin };
   }
   if (v.provider) {
-    const s = srcs.find((x) => x.identity.provider === v.provider);
-    if (s) out.provider = { sourceId: s.sourceId, value: v.provider };
+    // Lot 115 (#791, E04) : la source la plus AUTORITAIRE qui porte la valeur (à rang égal, la plus ancienne).
+    const porteuses = srcs.filter((x) => x.identity.provider === v.provider)
+      .sort((a, b) => providerRoleRank(a.identity) - providerRoleRank(b.identity) || a.sourceId - b.sourceId);
+    if (porteuses.length) out.provider = { sourceId: porteuses[0].sourceId, value: v.provider };
   }
   return out;
 }
@@ -1057,7 +1178,9 @@ export function consolidateOperationState(
     const conflit = attributeConflict(k, liste, (s) => s.identity.dates[k], fenetre);
     if (conflit) attributeConflicts.push(conflit);
   }
-  const conflitRealise = attributeConflicts.find((c) => c.field === 'realizedDate');
+  // Lot 115 (#791, E01) : la RÉTENTION ne change pas — seul un écart MATÉRIEL (au-delà de la fenêtre de
+  // la transaction) fait conserver la date de la source fondatrice. Le relevé, lui, est désormais exhaustif.
+  const conflitRealise = attributeConflicts.find((c) => c.field === 'realizedDate' && c.materialGap === true);
   if (conflitRealise && (type === 'ACQUISITION' || type === 'DISPOSAL' || type === 'CLAIM')) realizedDate = conflitRealise.values[0].value;
   // Une réalisation non prouvée n'a pas de date de réalisation (la date prévue reste).
   if (status !== 'REALIZED') realizedDate = null;
@@ -1065,7 +1188,8 @@ export function consolidateOperationState(
   if (type === 'CONTRACT' && status === 'REALIZED' && startDate !== null && startDate > today) status = 'ENVISAGED';
   if (startDate && endDate && endDate < startDate) endDate = null;
 
-  const provider = srcs.map((s) => s.identity.provider).find((p) => !!p) ?? null;
+  // Lot 115 (#791, E04) : prestataire par l'AUTORITÉ SÉMANTIQUE de la partie (jamais le premier venu).
+  const provider = canonicalProvider(srcs);
   const conflitTiers = attributeConflict('provider', srcs, (s) => s.identity.provider, null, (v) => normalizeProvider(v) ?? v);
   if (conflitTiers) attributeConflicts.push(conflitTiers);
 

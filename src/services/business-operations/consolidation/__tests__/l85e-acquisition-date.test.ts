@@ -118,6 +118,8 @@ describe('L85E — enrichissement d’une Opération ACQUISITION existante', () 
     expect(s.realizedDate).toBe('2019-06-01');
     expect(s.attributeConflicts).toEqual([{
       field: 'realizedDate', retained: '2019-06-01',
+      // Carte #791 (E01) : l'écart est MATÉRIEL (hors fenêtre de l'achat) — la règle de rétention s'applique.
+      materialGap: true,
       values: [{ value: '2019-06-01', sourceIds: [1] }, { value: '2021-03-01', sourceIds: [3] }],
     }]);
     // Contradiction documentaire déjà tracée : la date canonique s'y ajoute (une seule contradiction).

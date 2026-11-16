@@ -60,8 +60,21 @@ function modele(input: ProviderCallInput): unknown {
   return { task: 'OPERATION_MATCH', decision: 'AMBIGUOUS', matchedCandidateId: null, confidence: 'probable', reason: 'éléments insuffisants', concordantSignals: ['même prestataire'], contradictions: [] };
 }
 
-/** Tables techniques (journaux, IA, file, cohérence) : hors de l'état métier comparé. */
-const TECHNIQUES = /^(ai_|coherence_|operations_rebuild_|ops_backfill|admin_|business_operation_targeted_runs$|agenda_intervention_reprise_runs$|claim_legacy_cleanup|scheduled_task|job_locks|t3_enqueue|user_session|auth_|idempotency)/;
+/**
+ * Tables techniques (journaux, IA, file, cohérence) : hors de l'état métier comparé.
+ *
+ * RÈGLE COMPLÉTÉE (carte #791) : `to_process_decisions` et
+ * `to_process_evaluation_passages` y entrent. Ce sont les JOURNAUX des
+ * décisions de la file « À traiter » (une ligne par règle évaluée, même sans
+ * carte), avec leur propre rétention, et ils sont DÉLIBÉRÉMENT hors du
+ * périmètre de reconstruction (`REBUILD_SCOPE`) : une restauration ne peut donc
+ * pas — et ne doit pas — les défaire. Depuis que les contradictions de dates
+ * sont détectées sans seuil (#791, E01), une reconstruction fait évaluer une
+ * règle de plus (la date d'un élément d'Agenda porteur dont les dates se
+ * contredisent) : la trace reste, la CARTE elle-même (`to_process_actions`,
+ * toujours comparée) est bien restaurée.
+ */
+const TECHNIQUES = /^(ai_|coherence_|operations_rebuild_|ops_backfill|admin_|business_operation_targeted_runs$|agenda_intervention_reprise_runs$|claim_legacy_cleanup|scheduled_task|job_locks|t3_enqueue|user_session|auth_|idempotency|to_process_decisions$|to_process_evaluation_passages$)/;
 
 scenario('L85A', 'Opérations v5 O-2 / O-9 : purge et reconstruction (préproduction), TCO', ({ sql, make, replay }) => {
   useTargetState();

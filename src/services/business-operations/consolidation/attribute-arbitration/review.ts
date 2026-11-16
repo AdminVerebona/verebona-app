@@ -66,32 +66,57 @@ async function arbitrationTableReady(x: Exec): Promise<boolean> {
   tablePrete = !!r?.ok;
   return tablePrete;
 }
+let colonnes1785: boolean | null = null;
+/**
+ * Les colonnes de la migration 1785 (lot 115, #791) existent-elles ? Le code
+ * est TOLÉRANT à son absence : sans elles, la couverture des preuves est
+ * contrôlée en mémoire (aucun verdict sur contexte partiel) et l'application
+ * n'est simplement pas tracée état par état — rien n'échoue.
+ */
+async function arbitrationStateColumnsReady(x: Exec): Promise<boolean> {
+  if (colonnes1785 !== null) return colonnes1785;
+  const [r] = await rows<{ ok: boolean }>(x, sql`
+    SELECT EXISTS (SELECT 1 FROM information_schema.columns
+                    WHERE table_name = 'business_operation_attribute_arbitrations' AND column_name = 'application_state') AS ok`);
+  colonnes1785 = !!r?.ok;
+  return colonnes1785;
+}
+
 /** Réservé aux tests. */
-export function __resetArbitrationTableProbeForTests(): void { tablePrete = null; }
+export function __resetArbitrationTableProbeForTests(): void { tablePrete = null; colonnes1785 = null; }
+
+/**
+ * Lot 115 (#791, E07) — mémoire d'un constat déjà soumis : son périmètre
+ * MATÉRIEL de preuves (null : examen antérieur au lot 115, toléré) et le fait
+ * qu'il ait RETENU une valeur. Une valeur retenue n'est jamais remise en
+ * examen par une pièce de plus : la rouvrir reviendrait à défaire l'écriture
+ * en attendant un nouveau verdict (choix par défaut n° 4, à valider).
+ */
+interface ExaminedLine { evidenceKey: string | null; resolved: boolean }
 
 export interface LoadedAttributeReviews {
   /** Valeurs retenues par T3 (RESOLVED certain), à appliquer sous les protections. */
   choices: AttributeChoice[];
   /** Dernier examen par sujet (attribut, rôle) qui n'a pas retenu de valeur. */
   reviews: Map<string, AttributeReview>;
-  /** Empreintes déjà demandées ou examinées (jamais redemandées). */
-  fingerprints: Set<string>;
+  /** Empreintes déjà demandées ou examinées, et le périmètre de preuves de chacune. */
+  fingerprints: Map<string, ExaminedLine>;
   ready: boolean;
 }
 
 /** Arbitrages et examens T3 de l'événement (table absente : aucun — la contradiction réelle va à la carte). */
 export async function loadAttributeReviews(x: Exec, accountId: number, operationId: number): Promise<LoadedAttributeReviews> {
-  const out: LoadedAttributeReviews = { choices: [], reviews: new Map(), fingerprints: new Set(), ready: false };
+  const out: LoadedAttributeReviews = { choices: [], reviews: new Map(), fingerprints: new Map(), ready: false };
   if (!(await arbitrationTableReady(x))) return out;
   out.ready = true;
   const r = await rows(x, sql`
     SELECT id, field, role, fingerprint, presented_values, status, outcome, retained_normalized, confidence, attempts,
+           to_jsonb(business_operation_attribute_arbitrations) ->> 'evidence_key' AS evidence_key,
            (requested_at > now() - make_interval(hours => ${ATTRIBUTE_ARBITRATION_MAX_WAIT_HOURS})) AS fresh
       FROM business_operation_attribute_arbitrations
      WHERE account_id = ${accountId} AND operation_id = ${operationId} AND status NOT IN ('OBSOLETE', 'UNAVAILABLE')
      ORDER BY id`);
   for (const l of r) {
-    out.fingerprints.add(String(l.fingerprint));
     const field = String(l.field) as ConflictField;
     const role = String(l.role);
     const known = (Array.isArray(l.presented_values) ? l.presented_values as Array<{ normalized?: unknown }> : [])
@@ -100,17 +125,23 @@ export async function loadAttributeReviews(x: Exec, accountId: number, operation
     const reviewId = Number(l.id);
     const status = String(l.status);
     const certain = status === 'DECIDED' && l.confidence === 'certain';
+    // Lot 115 (#791, E07) : périmètre matériel soumis (colonne 1785 ; absente ou nulle : inconnu, toléré).
+    const evidenceKey = typeof l.evidence_key === 'string' && l.evidence_key ? l.evidence_key : null;
+    const resolved = certain && l.outcome === 'RESOLVED' && typeof l.retained_normalized === 'string';
+    out.fingerprints.set(String(l.fingerprint), { evidenceKey, resolved });
     // Le constat le plus récent d'un sujet remplace le précédent (valeurs différentes : autre empreinte).
     out.choices = out.choices.filter((c) => attributeChoiceKey(c.field, c.role) !== cle);
     out.reviews.delete(cle);
-    if (certain && l.outcome === 'RESOLVED' && typeof l.retained_normalized === 'string') {
-      out.choices.push({ field, role, normalized: l.retained_normalized, known, by: 'T3', reviewId });
+    const examen = (outcome: AttributeReview['outcome']): AttributeReview =>
+      ({ field, role, known, reviewId, outcome, ...(evidenceKey ? { evidenceKey } : {}) });
+    if (resolved) {
+      out.choices.push({ field, role, normalized: String(l.retained_normalized), known, by: 'T3', reviewId });
     } else if (certain && (l.outcome === 'DISTINCT_FACTS' || l.outcome === 'UNDECIDABLE' || l.outcome === 'LINK_ERROR')) {
-      out.reviews.set(cle, { field, role, known, reviewId, outcome: l.outcome === 'DISTINCT_FACTS' ? 'LEGITIMATE_DIFFERENCE' : l.outcome });
+      out.reviews.set(cle, examen(l.outcome === 'DISTINCT_FACTS' ? 'LEGITIMATE_DIFFERENCE' : l.outcome));
     } else if ((status === 'PENDING' || (status === 'AI_FAILED' && Number(l.attempts ?? 0) < ATTRIBUTE_ARBITRATION_MAX_ATTEMPTS)) && l.fresh === true) {
-      out.reviews.set(cle, { field, role, known, reviewId, outcome: 'PENDING' });
+      out.reviews.set(cle, examen('PENDING'));
     } else {
-      out.reviews.set(cle, { field, role, known, reviewId, outcome: status === 'AI_FAILED' || status === 'PENDING' ? 'FAILED' : 'ABSTAINED' });
+      out.reviews.set(cle, examen(status === 'AI_FAILED' || status === 'PENDING' ? 'FAILED' : 'ABSTAINED'));
     }
   }
   return out;
@@ -138,11 +169,25 @@ export async function requestAttributeReviews(
 ): Promise<Set<string>> {
   const out = new Set<string>();
   if (!loaded.ready) return out;
-  const candidates = open.filter((c) => eligibleForArbitration(c) && !loaded.fingerprints.has(lineFingerprint(operationId, c)));
+  /**
+   * Lot 115 (#791, E07) : un constat déjà examiné n'est REPRIS que si le
+   * périmètre MATÉRIEL de ses preuves a changé (pièce plus autoritaire,
+   * révision déclarée, identité ou date d'effet nouvelle) — jamais sur vingt
+   * scans ni sur une pièce équivalente. Une valeur déjà RETENUE n'est jamais
+   * remise en examen (elle serait défaite en attendant un nouveau verdict).
+   */
+  const aExaminer = (c: QualifiedAttributeConflict): boolean => {
+    const deja = loaded.fingerprints.get(lineFingerprint(operationId, c));
+    if (deja === undefined) return true;
+    if (deja.resolved || deja.evidenceKey === null || c.evidenceKey === undefined) return false;
+    return deja.evidenceKey !== c.evidenceKey;
+  };
+  const candidates = open.filter((c) => eligibleForArbitration(c) && aExaminer(c));
   if (!candidates.length) return out;
   const { arbitrationDecider } = await import('./decider');
   const cap = await arbitrationDecider().capability();
   if (!cap.available) return out;
+  const traceEtat = await arbitrationStateColumnsReady(x);
   for (const c of candidates) {
     const presentees = c.values.map((v) => ({
       value: v.value, normalized: v.normalized, sourceIds: v.sourceIds,
@@ -152,15 +197,29 @@ export async function requestAttributeReviews(
     const fichiers = [...new Set(presentees.flatMap((v) => v.fileIds))].sort((a, b) => a - b);
     // Sans document à citer, T3 n'a aucune preuve à examiner : la ligne suit son cours.
     if (!fichiers.length) continue;
-    const r = await rows(x, sql`
-      INSERT INTO business_operation_attribute_arbitrations (account_id, operation_id, field, role, fingerprint, presented_values, file_ids, status, contract_version)
-      VALUES (${accountId}, ${operationId}, ${c.field}, ${c.role}, ${lineFingerprint(operationId, c)}, ${JSON.stringify(presentees)}::jsonb,
-              ${intArray(fichiers)}::int[], 'PENDING', ${ATTRIBUTE_ARBITRATION_CONTRACT_VERSION})
-      ON CONFLICT (account_id, fingerprint) DO UPDATE
-         SET status = 'PENDING', presented_values = EXCLUDED.presented_values, file_ids = EXCLUDED.file_ids,
-             requested_at = now(), updated_at = now(), attempts = 0, retry_at = NULL, error = NULL
-       WHERE business_operation_attribute_arbitrations.status IN ('OBSOLETE', 'UNAVAILABLE')
-      RETURNING id`);
+    const cle = c.evidenceKey ?? null;
+    const r = traceEtat
+      ? await rows(x, sql`
+        INSERT INTO business_operation_attribute_arbitrations (account_id, operation_id, field, role, fingerprint, presented_values, file_ids, status, contract_version, evidence_key)
+        VALUES (${accountId}, ${operationId}, ${c.field}, ${c.role}, ${lineFingerprint(operationId, c)}, ${JSON.stringify(presentees)}::jsonb,
+                ${intArray(fichiers)}::int[], 'PENDING', ${ATTRIBUTE_ARBITRATION_CONTRACT_VERSION}, ${cle})
+        ON CONFLICT (account_id, fingerprint) DO UPDATE
+           SET status = 'PENDING', presented_values = EXCLUDED.presented_values, file_ids = EXCLUDED.file_ids, evidence_key = EXCLUDED.evidence_key,
+               requested_at = now(), updated_at = now(), attempts = 0, retry_at = NULL, error = NULL
+         WHERE business_operation_attribute_arbitrations.status IN ('OBSOLETE', 'UNAVAILABLE')
+            OR (business_operation_attribute_arbitrations.evidence_key IS DISTINCT FROM EXCLUDED.evidence_key
+                AND business_operation_attribute_arbitrations.status NOT IN ('PENDING')
+                AND NOT (business_operation_attribute_arbitrations.status = 'DECIDED' AND business_operation_attribute_arbitrations.outcome = 'RESOLVED'))
+        RETURNING id`)
+      : await rows(x, sql`
+        INSERT INTO business_operation_attribute_arbitrations (account_id, operation_id, field, role, fingerprint, presented_values, file_ids, status, contract_version)
+        VALUES (${accountId}, ${operationId}, ${c.field}, ${c.role}, ${lineFingerprint(operationId, c)}, ${JSON.stringify(presentees)}::jsonb,
+                ${intArray(fichiers)}::int[], 'PENDING', ${ATTRIBUTE_ARBITRATION_CONTRACT_VERSION})
+        ON CONFLICT (account_id, fingerprint) DO UPDATE
+           SET status = 'PENDING', presented_values = EXCLUDED.presented_values, file_ids = EXCLUDED.file_ids,
+               requested_at = now(), updated_at = now(), attempts = 0, retry_at = NULL, error = NULL
+         WHERE business_operation_attribute_arbitrations.status IN ('OBSOLETE', 'UNAVAILABLE')
+        RETURNING id`);
     if (r.length) out.add(attributeSubjectKey(c));
   }
   return out;
@@ -195,8 +254,13 @@ async function complete(x: Exec, id: number, r: {
   status: string; outcome?: string | null; retainedValue?: string | null; retainedNormalized?: string | null; foreignFileId?: number | null;
   confidence?: string | null; evidence?: unknown; reason?: string | null; aiOutput?: unknown; validation?: Record<string, unknown>;
   deciderVersion?: string | null; traceId?: string | null; called?: boolean; error?: string | null; retry?: boolean;
+  /** Lot 115 (#791, E09) : état d'APPLICATION de la décision (colonne 1785 ; ignoré si la migration n'est pas passée). */
+  applicationState?: 'RECEIVED' | 'APPLYING' | 'APPLIED' | 'APPLY_FAILED';
 }): Promise<void> {
   const appele = r.called === true;
+  if (r.applicationState && await arbitrationStateColumnsReady(x)) {
+    await x.execute(sql`UPDATE business_operation_attribute_arbitrations SET application_state = ${r.applicationState} WHERE id = ${id}`);
+  }
   await x.execute(sql`
     UPDATE business_operation_attribute_arbitrations
        SET status = ${r.status}, outcome = COALESCE(${r.outcome ?? null}, outcome),
@@ -236,10 +300,33 @@ export interface AttributeArbitrationPhaseResult {
   /** Événements de référence reconsolidés (valeur appliquée, carte posée ou fermée). */
   operations: number[];
   outcomes: Record<string, number>;
-  /** Valeurs réellement écrites sur un événement de référence. */
+  /** Valeurs réellement écrites sur un événement de référence (application VÉRIFIÉE). */
   applied: number;
+  /** Lot 115 (#791, E09) : applications reprises (décision reçue, effet jamais vérifié). */
+  resumed?: number;
+  /** Lot 115 (#791, E09) : décisions dont l'application a été vérifiée SANS effet (valeur protégée, saisie non gérée). */
+  applyFailed?: number;
   /** Capacité absente (bloc 38 non collé, coupure) : aucune demande traitée par l'IA. */
   unavailable?: string;
+}
+
+/**
+ * Lot 115 (#791, E09) — décisions REÇUES dont l'effet métier n'a jamais été
+ * vérifié (panne entre la décision et la reconsolidation, échec SQL, rejeu
+ * concurrent). Reprises au passage suivant, sans aucun appel à l'IA : la
+ * valeur retenue est relue par la consolidation (idempotente), puis l'effet
+ * est VÉRIFIÉ sur l'événement.
+ */
+async function pendingApplications(x: Exec, accountId: number, limit: number): Promise<Array<{ id: number; operationId: number; field: ConflictField; value: string }>> {
+  if (!(await arbitrationStateColumnsReady(x))) return [];
+  const r = await rows(x, sql`
+    SELECT id, operation_id, field, retained_value
+      FROM business_operation_attribute_arbitrations
+     WHERE account_id = ${accountId} AND status = 'DECIDED' AND outcome = 'RESOLVED' AND retained_value IS NOT NULL
+       AND application_state IN ('RECEIVED', 'APPLYING', 'APPLY_FAILED') AND applied_at IS NULL
+       AND application_attempts < ${ATTRIBUTE_ARBITRATION_MAX_ATTEMPTS}
+     ORDER BY id LIMIT ${limit}`);
+  return r.map((l) => ({ id: Number(l.id), operationId: Number(l.operation_id), field: String(l.field) as ConflictField, value: String(l.retained_value) }));
 }
 
 const todayParis = (d: Date) => new Intl.DateTimeFormat('en-CA', { timeZone: 'Europe/Paris' }).format(d);
@@ -259,7 +346,9 @@ export async function runAttributeArbitrationPhase(accountId: number, opts: {
   const x: Exec = db;
   if (!(await arbitrationTableReady(x))) return out;
   const demandes = await pendingRequests(x, accountId, opts.limit ?? REQUESTS_PER_PASS);
-  if (!demandes.length) return out;
+  // Lot 115 (#791, E09) : d'abord les applications inachevées du compte (aucun appel IA).
+  const reprises = await pendingApplications(x, accountId, opts.limit ?? REQUESTS_PER_PASS);
+  if (!demandes.length && !reprises.length) return out;
   const now = opts.now ?? (() => new Date());
   const decider = opts.decider ?? deciderMod.arbitrationDecider();
   const parJour = opts.dailyMax ?? m3.operationMatchCallsPerDay();
@@ -269,8 +358,17 @@ export async function runAttributeArbitrationPhase(accountId: number, opts: {
   /** Arbitrages RESOLVED de ce passage : valeur avant, à comparer après la reconsolidation. */
   const resolus: Array<{ id: number; operationId: number; field: ConflictField; before: string | null; value: string }> = [];
 
+  // Lot 115 (#791, E09) : les reprises entrent dans le même cycle « appliquer puis VÉRIFIER » que les décisions du passage.
+  for (const r of reprises) {
+    resolus.push({ id: r.id, operationId: r.operationId, field: r.field, before: await valueOf(x, accountId, r.operationId, r.field), value: r.value });
+    touchees.add(r.operationId);
+  }
+  if (reprises.length) out.resumed = reprises.length;
+
   const cap = await decider.capability();
-  if (!cap.available) {
+  if (!cap.available && !demandes.length) {
+    // Rien à demander : seules les reprises d'application sont traitées (elles n'appellent pas l'IA).
+  } else if (!cap.available) {
     // Branche retirée (ou coupure) : demandes closes « indisponibles » — la contradiction réelle va à la carte.
     for (const d of demandes) {
       await complete(x, d.id, { status: 'UNAVAILABLE', reason: cap.reason, validation: { contractState: cap.contractState ?? null } });
@@ -299,6 +397,19 @@ export async function runAttributeArbitrationPhase(accountId: number, opts: {
         values: d.values.map((v) => ({ value: v.value, normalized: v.normalized, fileIds: v.fileIds, held: etat.current !== null && v.value === etat.current, userProtected: v.userProtected })),
         documents: docs.map((doc) => ({ id: doc.id, type: doc.type, title: doc.title, date: doc.date, provider: doc.provider, references: doc.references, excerpts: doc.excerpts })),
       });
+      // Lot 115 (#791, E02) : la COUVERTURE des preuves n'est pas prouvée (valeurs ou documents au-delà des
+      // bornes, pièce non chargée, pagination rompue, source supprimée) → aucun appel, aucun verdict ; le
+      // diagnostic est MAINTENU et la carte « À traiter » est posée. Un seul enregistrement, motif tracé.
+      if (!b.scope.complete) {
+        await complete(x, d.id, {
+          status: 'INCOMPLETE', reason: `CONTEXT_INCOMPLETE:${b.scope.incomplete ?? 'BOUNDS'}`,
+          validation: { complete: false, missing: b.scope.incomplete ?? 'BOUNDS', bounds: b.input.bounds, documents: fichiers.length, loaded: docs.length },
+        });
+        touchees.add(d.operationId);
+        compter('INCOMPLETE');
+        out.processed++;
+        continue;
+      }
       await opts.beforeCall?.('T3 arbitrage d’une contradiction d’attribut — décision sémantique');
       out.aiCalls++;
       out.processed++;
@@ -334,12 +445,25 @@ export async function runAttributeArbitrationPhase(accountId: number, opts: {
         await complete(x, d.id, { ...base, status: 'NOT_CERTAIN' });
         compter('NOT_CERTAIN');
       } else if (v.effect.outcome === 'RESOLVED') {
-        await complete(x, d.id, { ...base, status: 'DECIDED', retainedValue: v.effect.value, retainedNormalized: v.effect.normalized });
+        // Lot 115 (#791, E09) : décision REÇUE — « appliqué » ne sera écrit qu'après vérification de l'effet.
+        await complete(x, d.id, { ...base, status: 'DECIDED', retainedValue: v.effect.value, retainedNormalized: v.effect.normalized, applicationState: 'RECEIVED' });
         resolus.push({ id: d.id, operationId: d.operationId, field: d.field, before: etat.current, value: v.effect.value });
         compter('DECIDED_RESOLVED');
       } else {
-        await complete(x, d.id, { ...base, status: 'DECIDED', foreignFileId: v.effect.outcome === 'LINK_ERROR' ? v.effect.foreignFileId : null });
+        const etranger = v.effect.outcome === 'LINK_ERROR' ? v.effect.foreignFileId : null;
+        await complete(x, d.id, { ...base, status: 'DECIDED', foreignFileId: etranger });
         compter(`DECIDED_${v.effect.outcome}`);
+        if (etranger !== null) {
+          // Lot 115 (#791, E08) : le verdict est RENDU au moteur qui sait réparer — un doute de rattachement est
+          // ouvert au journal 0609 et le candidat est remis en consolidation. La séparation reste décidée par le
+          // réexamen existant, sur contradiction CERTAINE seulement : aucun détachement automatique ici.
+          const { recordArbitrationLinkDoubt } = await import('../identity-review');
+          const doute = await recordArbitrationLinkDoubt(x, accountId, {
+            operationId: d.operationId, fileId: etranger, correlationId: 't3-attribute-arbitration',
+            signals: ['T3_LINK_ERROR', `FIELD:${d.field}`, `ROLE:${d.role}`, `REVIEW:${d.id}`],
+          });
+          compter(`LINK_DOUBT_${doute}`);
+        }
       }
       console.info(JSON.stringify({ event: 't3.attribute_arbitration', accountId, operationId: d.operationId, reviewId: d.id, outcome: dec.outcome, confidence: dec.confidence }));
     }
@@ -347,18 +471,36 @@ export async function runAttributeArbitrationPhase(accountId: number, opts: {
   // Reconsolidation : valeur retenue écrite sous les protections, carte « À traiter » posée ou fermée.
   out.operations = [...touchees].sort((a, b) => a - b);
   if (out.operations.length) {
+    const traceEtat = await arbitrationStateColumnsReady(x);
+    // Lot 115 (#791, E09) : APPLICATION EN COURS, écrite AVANT la reconsolidation — une panne, un échec SQL ou
+    // un arrêt laisse une trace durable, reprise (idempotente) au passage suivant, jamais un « appliqué » faux.
+    if (traceEtat && resolus.length) {
+      await x.execute(sql`
+        UPDATE business_operation_attribute_arbitrations
+           SET application_state = 'APPLYING', application_attempts = application_attempts + 1, updated_at = now()
+         WHERE id = ANY(${intArray(resolus.map((r) => r.id))}::bigint[])`);
+    }
     const { reconsolidateOperations } = await import('../consolidator');
     await reconsolidateOperations(accountId, out.operations, { correlationId: 't3-attribute-arbitration' });
     for (const r of resolus) {
+      // Application VÉRIFIÉE : la valeur est relue sur l'événement de référence (jamais déduite de la décision).
       const apres = await valueOf(x, accountId, r.operationId, r.field);
       const appliquee = apres === r.value;
       if (appliquee && apres !== r.before) out.applied++;
+      if (!appliquee) out.applyFailed = (out.applyFailed ?? 0) + 1;
       await x.execute(sql`
         UPDATE business_operation_attribute_arbitrations
            SET value_before = ${r.before}, value_after = ${apres}, applied_at = CASE WHEN ${appliquee} THEN now() ELSE NULL END,
                validation = validation || ${JSON.stringify({ applied: appliquee, ...(appliquee ? {} : { notApplied: 'PROTECTED_OR_UNMANAGED_VALUE' }) })}::jsonb,
                updated_at = now()
          WHERE id = ${r.id}`);
+      if (traceEtat) {
+        await x.execute(sql`
+          UPDATE business_operation_attribute_arbitrations
+             SET application_state = ${appliquee ? 'APPLIED' : 'APPLY_FAILED'},
+                 application_error = ${appliquee ? null : 'PROTECTED_OR_UNMANAGED_VALUE'}, updated_at = now()
+           WHERE id = ${r.id}`);
+      }
     }
   }
   return out;

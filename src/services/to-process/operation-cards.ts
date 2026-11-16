@@ -222,7 +222,21 @@ export function attributeQuestion(field: AttributeField, type: string | null): s
     : `Ces documents indiquent des ${DATES_QUALIFIEES[field]} différentes pour ${nom} : laquelle est la bonne ?`;
 }
 
-/** Propositions (f) — pures : toutes les valeurs réellement différentes (au plus 4), la valeur en place en dernier. */
+/**
+ * Propositions (f) — pures : TOUTES les valeurs réellement différentes, la
+ * valeur en place en dernier et marquée.
+ *
+ * Lot 115 (#791, E06) — **règle complétée** : le plafond de 4 valeurs est
+ * retiré (la cinquième alternative était perdue dès la construction). Les
+ * valeurs sont ordonnées par confiance décroissante dans leur ordre d'arrivée,
+ * et c'est la règle d'affichage COMMUNE (§8.5, `selectDisplayedProposals` :
+ * deux propositions plus la valeur en place, puis « Autre ») qui décide de ce
+ * que l'écran montre — jamais une troncature propre à cette carte. Le contexte
+ * de la carte, lui, porte toutes les valeurs avec leurs provenances, et la
+ * réponse accepte n'importe laquelle d'entre elles.
+ */
+export const ATTRIBUTE_PROPOSALS_MAX = 12;
+
 export function attributeProposals(
   field: AttributeField, options: ReadonlyArray<{ value: string; normalized: string; title: string | null }>, retained: string | null,
 ): ActionProposal[] {
@@ -231,8 +245,9 @@ export function attributeProposals(
   const vues = new Set<string>();
   const distinctes = options.filter((o) => (vues.has(o.normalized) ? false : (vues.add(o.normalized), true)));
   const enPlace = distinctes.find((o) => retained !== null && o.value === retained) ?? null;
+  const autres = distinctes.filter((o) => o !== enPlace).slice(0, ATTRIBUTE_PROPOSALS_MAX - (enPlace ? 1 : 0));
   return [
-    ...distinctes.filter((o) => o !== enPlace).slice(0, enPlace ? 3 : 4).map((o, i) => ({ value: `ATTRIBUTE:${o.normalized}`, label: lib(o), confidence: 0.6 - i * 0.1 })),
+    ...autres.map((o, i) => ({ value: `ATTRIBUTE:${o.normalized}`, label: lib(o), confidence: Math.max(0.1, 0.6 - i * 0.1) })),
     ...(enPlace ? [{ value: `ATTRIBUTE:${enPlace.normalized}`, label: lib(enPlace), confidence: 1, isCurrentValue: true }] : []),
   ];
 }
@@ -468,28 +483,45 @@ export async function syncOperationCards(accountId: number, needs: OperationCard
       const options = n.options.map((o) => ({ value: o.value, normalized: o.normalized, title: o.fileIds.map((f) => titres.get(f)).find(Boolean) ?? null }));
       const proposals = attributeProposals(n.field, options, n.retained);
       if (proposals.length < 2) continue;
+      // Lot 115 (#791, E06) : sans document associable, la carte est portée par un ÉVÉNEMENT RÉEL de l'Agenda de
+      // cet événement de référence (lecture partagée des cartes d'événements de référence, graphe N↔N). Aucun
+      // objet n'est créé : sans objet réel, aucune carte — et aucun faux succès.
+      const { agendaItemOfOperations } = await import('./reference-event-card-anchor');
+      const itemId = n.fileId === null ? await agendaItemOfOperations(accountId, [n.operationId], null) : null;
+      if (n.fileId === null && itemId === null) {
+        console.warn(`[to-process] contradiction d’attribut de l’événement de référence ${n.operationId} (${n.field}/${n.role}) sans objet réel : aucune carte`);
+        continue;
+      }
+      const cible = n.fileId !== null ? { targetType: 'DOCUMENT' as const, targetId: n.fileId } : { targetType: 'AGENDA_ITEM' as const, targetId: itemId! };
       const r = await upsertAction({
-        accountId, targetType: 'DOCUMENT', targetId: n.fileId, relationKey: attributeRelationKey(n.operationId, n.field, n.role),
+        ...cible,
+        accountId, relationKey: attributeRelationKey(n.operationId, n.field, n.role),
         actionKind: 'ARBITRATE', ruleCode: OPERATION_ATTRIBUTE_RULE,
         question: attributeQuestion(n.field, type), proposals,
         triggerContext: {
           kind: 'operation_attribute', operationId: n.operationId, field: n.field, role: n.role, reasonCode: n.reasonCode,
-          // Toutes les valeurs connues à la question (une valeur nouvelle rouvrira la contradiction, avec son motif).
-          options: n.options.map((o) => ({ value: o.value, normalized: o.normalized })),
+          // TOUTES les valeurs connues à la question, avec leur provenance (une valeur nouvelle rouvrira la
+          // contradiction, avec son motif). L'écran en montre deux plus la valeur en place (§8.5) ; la réponse
+          // accepte n'importe laquelle de celles-ci, et aucune autre.
+          options: n.options.map((o) => ({ value: o.value, normalized: o.normalized, fileIds: o.fileIds })),
+          optionCount: n.options.length,
           documents: [...new Set(n.options.flatMap((o) => o.fileIds))].map((f) => ({ fileId: f, title: titres.get(f) ?? 'Document' })),
+          ...(n.fileId === null ? { anchor: 'AGENDA_ITEM' as const } : {}),
         },
       });
       compter(r.status);
-      gardees.add(`T:${n.fileId}:${attributeRelationKey(n.operationId, n.field, n.role)}`);
+      gardees.add(`T:${cible.targetId}:${attributeRelationKey(n.operationId, n.field, n.role)}`);
     }
 
     // Fermeture automatique : cartes des documents / Opérations réexaminés que ce passage ne reconduit pas.
+    // Lot 115 (#791, E06) : une carte d'attribut peut être portée par un ÉVÉNEMENT de l'Agenda — elle entre dans
+    // le même balayage de fermeture (sinon une carte périmée resterait ouverte jusqu'au contrôle quotidien).
     const ouvertes = (await pgClient.unsafe(
       `SELECT id, rule_code, target_id, relation_key, (trigger_context->>'operationId')::bigint AS op,
               trigger_context->>'candidateKey' AS candidate_key
          FROM to_process_actions
-        WHERE account_id = $1 AND target_type = 'DOCUMENT' AND resolved_at IS NULL AND rule_code = ANY($2::text[])
-          AND ((rule_code = $3 AND target_id = ANY($4::int[]))
+        WHERE account_id = $1 AND target_type IN ('DOCUMENT', 'AGENDA_ITEM') AND resolved_at IS NULL AND rule_code = ANY($2::text[])
+          AND ((rule_code = $3 AND target_type = 'DOCUMENT' AND target_id = ANY($4::int[]))
                OR (rule_code <> $3 AND (trigger_context->>'operationId')::bigint = ANY($5::bigint[])))`,
       [accountId, `{${OPERATION_CARD_RULES.join(',')}}`, OPERATION_MATCH_RULE, intArray(needs.reviewedFiles), intArray(needs.reviewedOperations)] as never[],
     )) as unknown as Array<{ id: number; rule_code: string; target_id: number; relation_key: string; candidate_key: string | null }>;

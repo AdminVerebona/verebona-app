@@ -364,12 +364,13 @@ function enrichAcquisitionDate(out: ConsolidatedState, saisies: readonly SourceC
   if (i >= 0) {
     const c = conflits[i];
     if (!c.values.some((v) => v.value === cd.date)) {
-      conflits[i] = { ...c, values: [...c.values, { value: cd.date, sourceIds: [porteuse.sourceId] }], retained: out.realizedDate };
+      // Lot 115 (#791, E01) : l'écart est MATÉRIEL (hors fenêtre de l'achat) — la date existante est conservée.
+      conflits[i] = { ...c, values: [...c.values, { value: cd.date, sourceIds: [porteuse.sourceId] }], retained: out.realizedDate, materialGap: true };
     }
   } else {
     const fondatrice = out.provenance?.realizedDate?.value === out.realizedDate ? [out.provenance.realizedDate.sourceId] : [];
     conflits.push({
-      field: 'realizedDate', retained: out.realizedDate,
+      field: 'realizedDate', retained: out.realizedDate, materialGap: true,
       values: [{ value: out.realizedDate, sourceIds: fondatrice }, { value: cd.date, sourceIds: [porteuse.sourceId] }],
     });
   }
