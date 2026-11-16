@@ -20,6 +20,15 @@
  * Gravité `error` : le schéma ne doit pas partir tel quel (la passerelle ne
  * l'envoie pas et le signale, au lieu de payer un 400 puis un repli JSON
  * libre) ; `warning` : transmis, signalé dans la trace. Pur, sans dépendance.
+ *
+ * Lot 115 (carte #784, §A) — ajout du PROFIL DE COMPLEXITÉ mesuré
+ * (`geminiSchemaMetrics`) : propriétés, longueur des noms, valeurs
+ * d'énumération, unions, listes, profondeur, bornes imbriquées, taille. La
+ * cause des HTTP 400 observés en préproduction N'A PAS pu être établie (aucun
+ * accès au fournisseur) : ces mesures ne concluent rien, elles rendent le
+ * prochain refus RÉEL corrélable à une dimension documentée. Aucun seuil
+ * nouveau ne bloque l'envoi ; un plafond de propriétés peut être posé en
+ * exploitation, et seulement là.
  */
 
 type Json = Record<string, unknown>;
@@ -44,15 +53,105 @@ export const GEMINI_SCHEMA_LIMITS = {
 } as const;
 
 export interface GeminiSchemaIssue {
-  code: 'UNSUPPORTED_KEYWORD' | 'INVALID_TYPE' | 'INVALID_ENUM' | 'NESTED_ARRAY_BOUNDS' | 'TOO_DEEP' | 'TOO_LARGE' | 'UNTYPED_NODE';
+  code: 'UNSUPPORTED_KEYWORD' | 'INVALID_TYPE' | 'INVALID_ENUM' | 'NESTED_ARRAY_BOUNDS' | 'TOO_DEEP' | 'TOO_LARGE' | 'UNTYPED_NODE'
+  /** Lot 115 (carte #784, A2) : plafond de propriétés CONFIGURÉ en exploitation et dépassé (aucun plafond par défaut). */
+  | 'PROPERTY_CAP_EXCEEDED';
   severity: 'error' | 'warning';
   /** Chemin JSON du nœud (`$.properties.families.items…`). */
   path: string;
   detail: string;
 }
 
+/**
+ * Lot 115 (carte #784, §A) — PROFIL DE COMPLEXITÉ du schéma réellement
+ * transmis, sur les dimensions que la documentation du fournisseur citée par
+ * la carte désigne comme causes possibles d'un refus « too many states » :
+ * bornes de liste imbriquées, nombre de propriétés, valeurs d'énumération,
+ * unions, profondeur, taille.
+ *
+ * Ce sont des MESURES, pas des causes : aucune ne déclenche à elle seule un
+ * refus ni n'empêche l'envoi (sauf le plafond de propriétés explicitement
+ * configuré en exploitation). Elles sont tracées pour que le PROCHAIN refus
+ * réel soit corrélable à une dimension au lieu d'être attribué au hasard.
+ */
+export interface GeminiSchemaMetrics {
+  /** Nœuds objets du schéma (toutes branches). */
+  nodes: number;
+  /** Propriétés déclarées (toutes profondeurs, unions comprises). */
+  properties: number;
+  /** Caractères cumulés des NOMS de propriétés (la documentation cite la longueur des noms). */
+  propertyNameChars: number;
+  /** Valeurs d'énumération cumulées. */
+  enumValues: number;
+  /** Branches d'union (`anyOf` / `oneOf`) cumulées. */
+  unionBranches: number;
+  /** Listes déclarées. */
+  arrays: number;
+  /** Propriétés obligatoires cumulées. */
+  requiredProperties: number;
+  /** Profondeur maximale atteinte. */
+  depth: number;
+  /** Produit maximal des bornes `maxItems` le long d'un chemin (1 : aucune borne transmise). */
+  nestedArrayBound: number;
+  /** Taille sérialisée (caractères). */
+  serializedChars: number;
+}
+
+const ZERO_METRICS: GeminiSchemaMetrics = {
+  nodes: 0, properties: 0, propertyNameChars: 0, enumValues: 0, unionBranches: 0, arrays: 0,
+  requiredProperties: 0, depth: 0, nestedArrayBound: 1, serializedChars: 0,
+};
+
+/** Profil de complexité d'un schéma (pure). Schéma absent : tout à zéro. */
+export function geminiSchemaMetrics(schema: Json | null | undefined): GeminiSchemaMetrics {
+  if (!schema) return { ...ZERO_METRICS };
+  const m: GeminiSchemaMetrics = { ...ZERO_METRICS, serializedChars: JSON.stringify(schema).length };
+  const walk = (n: unknown, depth: number, bound: number): void => {
+    if (!n || typeof n !== 'object' || Array.isArray(n)) return;
+    const node = n as Json;
+    m.nodes++;
+    if (depth > m.depth) m.depth = depth;
+    if (bound > m.nestedArrayBound) m.nestedArrayBound = bound;
+    if (Array.isArray(node.enum)) m.enumValues += node.enum.length;
+    if (Array.isArray(node.required)) m.requiredProperties += node.required.length;
+    if (node.properties && typeof node.properties === 'object') {
+      for (const [k, v] of Object.entries(node.properties as Json)) {
+        m.properties++;
+        m.propertyNameChars += k.length;
+        walk(v, depth + 1, bound);
+      }
+    }
+    if (node.items) {
+      m.arrays++;
+      const max = typeof node.maxItems === 'number' && node.maxItems > 0 ? node.maxItems : 1;
+      walk(node.items, depth + 1, bound * max);
+    }
+    for (const key of ['anyOf', 'oneOf', 'prefixItems'] as const) {
+      const l = node[key];
+      if (!Array.isArray(l)) continue;
+      if (key !== 'prefixItems') m.unionBranches += l.length;
+      l.forEach((x) => walk(x, depth + 1, bound));
+    }
+    if (node.additionalProperties && typeof node.additionalProperties === 'object') walk(node.additionalProperties, depth + 1, bound);
+    if (node.$defs && typeof node.$defs === 'object') for (const v of Object.values(node.$defs as Json)) walk(v, depth + 1, bound);
+  };
+  walk(schema, 0, 1);
+  return m;
+}
+
+/** Mots-clés du schéma hors du sous-ensemble documenté (pure) — invariant de la projection. */
+export function unsupportedKeywordsIn(schema: Json | null | undefined): string[] {
+  return [...new Set(geminiSchemaIssues(schema).filter((i) => i.code === 'UNSUPPORTED_KEYWORD').map((i) => i.detail))].sort();
+}
+
+/** Options du contrôle (lot 115, #784) : plafonds d'exploitation, aucun par défaut. */
+export interface GeminiSchemaCheckOptions {
+  /** Plafond de propriétés transmises ; `null` / absent : aucun plafond (comportement d'origine). */
+  maxProperties?: number | null;
+}
+
 /** Problèmes du schéma au regard du contrat Gemini (pure). Vide : schéma conforme. */
-export function geminiSchemaIssues(schema: Json | null | undefined): GeminiSchemaIssue[] {
+export function geminiSchemaIssues(schema: Json | null | undefined, opts: GeminiSchemaCheckOptions = {}): GeminiSchemaIssue[] {
   if (!schema) return [];
   const issues: GeminiSchemaIssue[] = [];
   const seen = new Set<string>();
@@ -104,6 +203,15 @@ export function geminiSchemaIssues(schema: Json | null | undefined): GeminiSchem
   const size = JSON.stringify(schema).length;
   if (size > GEMINI_SCHEMA_LIMITS.maxSerializedChars) {
     add({ code: 'TOO_LARGE', severity: 'error', path: '$', detail: `${size} caractères > ${GEMINI_SCHEMA_LIMITS.maxSerializedChars}` });
+  }
+  // Lot 115 (#784, A2) — plafond de propriétés : AUCUN par défaut. Il n'est
+  // posé qu'en exploitation (voir `providerSchemaPropertyCap`), quand un refus
+  // réel a été constaté et corrélé au nombre de propriétés : la carte interdit
+  // d'attribuer arbitrairement une cause à un HTTP 400.
+  const cap = opts.maxProperties;
+  if (typeof cap === 'number' && Number.isFinite(cap) && cap > 0) {
+    const props = geminiSchemaMetrics(schema).properties;
+    if (props > cap) add({ code: 'PROPERTY_CAP_EXCEEDED', severity: 'error', path: '$', detail: `${props} propriétés > plafond d’exploitation ${cap}` });
   }
   return issues;
 }

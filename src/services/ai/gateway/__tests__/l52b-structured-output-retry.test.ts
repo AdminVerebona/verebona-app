@@ -15,7 +15,6 @@
  */
 import { describe, it, expect, beforeEach } from 'vitest';
 import { vi } from 'vitest';
-import type { ProviderAttemptTrace, ProviderRequestTrace } from '../diagnostics/taxonomy';
 
 const capture = vi.hoisted(() => ({ diags: [] as Array<Record<string, unknown>>, traces: [] as Array<Record<string, unknown>> }));
 vi.mock('../diagnostics/diagnostic.repository', async (orig) => ({
@@ -40,14 +39,12 @@ const { isDefinitiveGatewayFailure } = await import('../../source-analysis/failu
 const { T1GroupUploadOutput } = await import('../../source-analysis/master/t1-contract');
 const { T1_TEST_OPERATION, t1TestVariables } = await import('./t1-master-request');
 
-// Lot 115 (#784) : la trace d'une tentative s'est enrichie (profil du schéma, extrait d'erreur du fournisseur).
-// Ce test lit le type réel de la taxonomie au lieu d'en redéclarer une copie qui vieillit.
-type Attempt = ProviderAttemptTrace & { step: number; kind: string };
+type Attempt = { step: number; kind: string; responseSchemaSent: boolean; providerSchemaHash: string | null; responseMimeType: string | null; outcome: string; httpStatus: number | null; providerErrorCode: string | null; family: string | null };
 type Trace = {
   model: string; status: string; errorCode?: string; callKind?: string;
   providerMeta?: { structuredOutput?: string };
   runtimeContract?: { contractId: string; contractVersion: number; schemaVersion: string; schemaHash: string; compatTableVersion: number; structuredOutput: boolean; providerSchemaHash: string | null };
-  providerRequest?: ProviderRequestTrace & Record<string, unknown>;
+  providerRequest?: Record<string, unknown>;
   providerAttempts?: Attempt[];
   failure?: { family: string; subtype: string | null; stage: string | null };
 };

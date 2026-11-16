@@ -13,6 +13,16 @@ export interface SchemaCompatCoupleView {
   keyId: string;
   provider: string; model: string; operationCode: string; contractId: string; contractVersion: number;
   schemaHash: string; providerSchemaHash: string | null; adapterVersion: string;
+  /**
+   * Lot 115 (carte #784, §A3) — empreinte du profil de génération effectif,
+   * composante de l'identité du couple (`'-'` : aucun paramètre matériel, donc
+   * identité inchangée depuis avant ce lot).
+   */
+  generationProfileHash: string;
+  /** Dernière version de modèle réellement SERVIE observée ; `null` : jamais observée. */
+  servedModelVersion: string | null;
+  /** Le fournisseur n'a pas indiqué la version servie : incertitude MARQUÉE, rien n'est inventé. */
+  versionUncertain: boolean;
   state: SchemaCompatState; stateLabel: string; reason: string | null;
   /** Le couple est celui que la passerelle transmet aujourd'hui ; sinon : état historique. */
   current: boolean;
@@ -49,7 +59,9 @@ export async function getSchemaCompatOverview(f: SchemaUsageFilters, now: Date =
   return {
     usage,
     couples: rows === null ? null : rows.map((r) => ({
-      keyId: r.keyId, ...r.key, state: r.state, stateLabel: SCHEMA_COMPAT_STATE_LABELS[r.state], reason: r.reason,
+      keyId: r.keyId, ...r.key, generationProfileHash: r.key.generationProfileHash ?? '-',
+      servedModelVersion: r.servedModelVersion ?? null, versionUncertain: r.versionUncertain === true,
+      state: r.state, stateLabel: SCHEMA_COMPAT_STATE_LABELS[r.state], reason: r.reason,
       current: isCurrentCouple(r.key), acceptedCount: r.acceptedCount, rejectionCount: r.rejectionCount,
       consecutiveRejections: r.consecutiveRejections, retestCount: r.retestCount, firstRejectedAt: iso(r.firstRejectedAt),
       lastRejectedAt: iso(r.lastRejectedAt), lastAcceptedAt: iso(r.lastAcceptedAt), nextRetestAt: iso(r.nextRetestAt),

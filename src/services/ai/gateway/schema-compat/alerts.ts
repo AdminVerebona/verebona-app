@@ -20,6 +20,7 @@
  */
 import { pgClient } from '@/db';
 import { SCHEMA_COMPAT_STATE_LABELS, type SchemaCoupleState } from './policy';
+import type { CoupleRoutingStatus } from './static-matrix';
 
 type Row = Record<string, unknown>;
 
@@ -73,13 +74,15 @@ export async function raiseSchemaIncompatibilityAlert(s: SchemaCoupleState): Pro
 
 export type SchemaAlertResolution = 'SCHEMA_ACCEPTED_AGAIN' | 'SCHEMA_SUPERSEDED';
 
-const RESOLUTION_REASONS: Record<SchemaAlertResolution, string> = {
+const RESOLUTION_REASONS: Record<SchemaAlertResolutionAll, string> = {
   SCHEMA_ACCEPTED_AGAIN: 'Le fournisseur a répondu à un appel réel portant ce schéma — résolution automatique.',
   SCHEMA_SUPERSEDED: 'Le contrat, le schéma transmis ou l’adaptateur de ce couple a changé (ou ce type d’appel est retiré) : ce refus ne concerne plus les appels actuels — résolution automatique. Les refus restent dans l’historique des appels.',
+  // Lot 115 (carte #784, §E1) — texte nouveau, à valider par le PO.
+  SCHEMA_MODEL_WITHDRAWN: 'Ce modèle n’est plus configuré pour ce type d’appel et n’est plus au référentiel des modèles : ce refus ne concerne plus les appels actuels — résolution automatique. Les refus restent dans l’historique des appels.',
 };
 
 /** Résout l'alerte non résolue d'un couple. Rend le nombre d'alertes résolues ; ne lève jamais. */
-export async function resolveSchemaIncompatibilityAlert(keyId: string, code: SchemaAlertResolution): Promise<number> {
+export async function resolveSchemaIncompatibilityAlert(keyId: string, code: SchemaAlertResolutionAll): Promise<number> {
   try {
     const rows = (await pgClient.unsafe(
       `SELECT id FROM ai_alerts WHERE code = $1 AND condition_key = $2 AND resolved_at IS NULL`,
@@ -93,22 +96,75 @@ export async function resolveSchemaIncompatibilityAlert(keyId: string, code: Sch
   }
 }
 
+export type SchemaAlertResolutionAll = SchemaAlertResolution | 'SCHEMA_MODEL_WITHDRAWN';
+
 export interface SchemaAlertReevaluation {
   /** Alertes de compatibilité non résolues examinées. */
   examined: number;
   /** Alertes résolues, par motif. */
-  resolved: Record<SchemaAlertResolution, number>;
+  resolved: Record<SchemaAlertResolutionAll, number>;
   /** Alertes conservées : le couple est toujours refusé et toujours transmis. */
   keptActive: number;
   /** Alertes conservées faute de pouvoir conclure (couple illisible). */
   keptUndetermined: number;
+  /**
+   * Lot 115 (carte #784, §E1) — alertes conservées parce que le ROUTAGE RÉEL
+   * n'a pas pu être établi, ou que le modèle est hors chaîne mais toujours
+   * déclaré : une indisponibilité ponctuelle ou un état inconnu ne ferme
+   * JAMAIS une alerte (et ne la rouvre donc pas le lendemain).
+   */
+  keptRoutingUnknown: number;
   /** Alertes levées pour un couple refusé qui n'en avait pas (alerte non écrite lors du refus). */
   raised: number;
+  /**
+   * Lot 115 (carte #784, §E1) — alertes qu'on s'est ABSTENU de lever parce que
+   * le routage réel du couple n'a pas pu être établi : les lever rouvrirait au
+   * passage suivant ce qui vient d'être clos. Le prochain passage, routage
+   * lisible, lèvera ce qui doit l'être.
+   */
+  raiseSkippedRoutingUnknown: number;
   /** Lecture interrompue (migration absente, base illisible) : rien n'a été modifié au-delà de ce compte. */
   unavailable: boolean;
+  /**
+   * Lot 115 (carte #784, §E2) — RATTRAPAGE REPRENABLE. `done` : l'ensemble a
+   * été parcouru en entier. Sinon le budget de ce passage est épuisé et
+   * `resumeFromAlertId` dit où reprendre — aucune alerte n'est sautée, aucune
+   * n'est traitée deux fois.
+   */
+  done: boolean;
+  resumeFromAlertId: number | null;
+  /**
+   * Bilan AVANT / APRÈS (carte #784, §E2) : alertes de ce code non résolues au
+   * début et à la fin du passage, et couples par état. `null` : non mesurable.
+   */
+  before: { openAlerts: number | null; couplesByState: Record<string, number> | null };
+  after: { openAlerts: number | null };
+  /** Couples refusés PARCOURUS pour le rattrapage (parcours exhaustif, jamais borné à 2 000). */
+  couplesScanned: number;
 }
 
 const PAGE = 100;
+
+/**
+ * Budget d'UN passage, en nombre d'alertes examinées. Il ne tronque RIEN en
+ * silence : `done: false` et `resumeFromAlertId` disent qu'il reste à faire.
+ * La valeur par défaut couvre très largement les volumétries citées par la
+ * carte (> 5 000 alertes) ; le passage quotidien et le BO peuvent la réduire.
+ */
+export const REEVAL_DEFAULT_MAX_ALERTS = 100_000;
+
+/** Alertes de ce code non résolues (bilan). `null` : non mesurable. */
+async function countOpenAlerts(): Promise<number | null> {
+  try {
+    const rows = (await pgClient.unsafe(
+      `SELECT COUNT(*)::int AS n FROM ai_alerts WHERE code = $1 AND resolved_at IS NULL`,
+      [SCHEMA_COMPAT_ALERT_CODE] as never[],
+    )) as unknown as Row[];
+    return rows[0] ? Number(rows[0].n) : null;
+  } catch {
+    return null;
+  }
+}
 
 /**
  * RÉÉVALUATION des alertes de compatibilité — automatique (passage quotidien
@@ -117,44 +173,114 @@ const PAGE = 100;
  * IDEMPOTENTE (une alerte résolue n'est plus relue ; un second passage ne
  * change rien). Aucun appel fournisseur, aucune réanalyse de document.
  */
-export async function reevaluateSchemaCompatAlerts(opts: { maxPages?: number } = {}): Promise<SchemaAlertReevaluation> {
+export async function reevaluateSchemaCompatAlerts(
+  opts: {
+    maxPages?: number; maxAlerts?: number; fromAlertId?: number;
+    /**
+     * Lot 115 (carte #784, §E1) — lecture de la chaîne de modèles réellement
+     * configurée pour une opération (injectable : scénarios de bout en bout et
+     * tests). Par défaut, la configuration résolue de l'opération.
+     */
+    readChain?: (operationCode: string) => Promise<readonly string[]>;
+  } = {},
+): Promise<SchemaAlertReevaluation> {
   const out: SchemaAlertReevaluation = {
-    examined: 0, resolved: { SCHEMA_ACCEPTED_AGAIN: 0, SCHEMA_SUPERSEDED: 0 }, keptActive: 0, keptUndetermined: 0, raised: 0, unavailable: false,
+    examined: 0, resolved: { SCHEMA_ACCEPTED_AGAIN: 0, SCHEMA_SUPERSEDED: 0, SCHEMA_MODEL_WITHDRAWN: 0 },
+    keptActive: 0, keptUndetermined: 0, keptRoutingUnknown: 0, raised: 0, raiseSkippedRoutingUnknown: 0, unavailable: false,
+    done: false, resumeFromAlertId: null,
+    before: { openAlerts: null, couplesByState: null }, after: { openAlerts: null }, couplesScanned: 0,
   };
   const [S, M] = await Promise.all([import('./store'), import('./static-matrix')]);
+  // Bilan AVANT (carte #784, §E2) : jamais une remise à zéro, un constat.
+  out.before.openAlerts = await countOpenAlerts();
+  out.before.couplesByState = await S.countCouples().catch(() => null);
+  // Budget d'un passage : le `maxPages` historique reste honoré s'il est fourni.
+  const budget = opts.maxAlerts ?? (opts.maxPages !== undefined ? opts.maxPages * PAGE : REEVAL_DEFAULT_MAX_ALERTS);
   const ouvertes = new Set<string>();
-  let cursor = 0;
+  /**
+   * Statut de routage par (opération, modèle), calculé UNE fois par passage :
+   * la configuration ne change pas sous nos pieds au milieu d'un rattrapage, et
+   * un couple fréquent ne relit pas la configuration à chaque alerte.
+   */
+  const routage = new Map<string, CoupleRoutingStatus>();
+  const statutRoutage = async (operationCode: string, model: string): Promise<CoupleRoutingStatus> => {
+    const k = `${operationCode}\u0000${model}`;
+    const vu = routage.get(k);
+    if (vu) return vu;
+    const s = await M.coupleRoutingStatus({ operationCode, model }, opts.readChain);
+    routage.set(k, s);
+    return s;
+  };
+  let cursor = Math.max(0, Math.floor(opts.fromAlertId ?? 0));
   try {
-    for (let page = 0; page < (opts.maxPages ?? 50); page++) {
+    // Parcours PAGINÉ et EXHAUSTIF des alertes non résolues, par identifiant
+    // croissant (ordre stable : une résolution ne déplace pas une ligne). Le
+    // curseur est la DONNÉE elle-même — une interruption ne perd aucun travail
+    // et n'en refait aucun : les alertes déjà résolues ne sont plus relues.
+    for (;;) {
+      if (out.examined >= budget) { out.resumeFromAlertId = cursor; break; }
       const rows = (await pgClient.unsafe(
         `SELECT id, details FROM ai_alerts WHERE code = $1 AND resolved_at IS NULL AND id > $2 ORDER BY id LIMIT $3`,
-        [SCHEMA_COMPAT_ALERT_CODE, cursor, PAGE] as never[],
+        [SCHEMA_COMPAT_ALERT_CODE, cursor, Math.min(PAGE, budget - out.examined)] as never[],
       )) as unknown as Row[];
-      if (rows.length === 0) break;
+      if (rows.length === 0) { out.done = true; break; }
       for (const r of rows) {
         cursor = Number(r.id);
         out.examined++;
         const keyId = String((r.details as { keyId?: unknown } | null)?.keyId ?? '');
         const couple = keyId ? await S.getCouple(keyId) : null;
+        // Couple illisible : l'alerte est CONSERVÉE (on ne ferme jamais sur une absence de preuve).
         if (!couple) { out.keptUndetermined++; if (keyId) ouvertes.add(keyId); continue; }
-        const code: SchemaAlertResolution | null = couple.state === 'QUALIFIED' ? 'SCHEMA_ACCEPTED_AGAIN'
-          : !M.isCurrentCouple(couple.key) ? 'SCHEMA_SUPERSEDED' : null;
-        if (code === null) { out.keptActive++; ouvertes.add(keyId); continue; }
-        out.resolved[code] += await resolveSchemaIncompatibilityAlert(keyId, code);
+        if (couple.state === 'QUALIFIED') {
+          out.resolved.SCHEMA_ACCEPTED_AGAIN += await resolveSchemaIncompatibilityAlert(keyId, 'SCHEMA_ACCEPTED_AGAIN');
+          continue;
+        }
+        if (!M.isCurrentCouple(couple.key)) {
+          out.resolved.SCHEMA_SUPERSEDED += await resolveSchemaIncompatibilityAlert(keyId, 'SCHEMA_SUPERSEDED');
+          continue;
+        }
+        // Lot 115 (carte #784, §E1) : le couple est bien celui que la passerelle projette — mais le
+        // MODÈLE est-il encore routé ? Preuve de retrait : on clôt avec ce motif. État inconnu ou
+        // indisponibilité : on CONSERVE (et le lendemain, même constat : aucune réouverture).
+        const routeStatus = await statutRoutage(couple.key.operationCode, couple.key.model);
+        if (routeStatus === 'WITHDRAWN') {
+          out.resolved.SCHEMA_MODEL_WITHDRAWN += await resolveSchemaIncompatibilityAlert(keyId, 'SCHEMA_MODEL_WITHDRAWN');
+          continue;
+        }
+        if (routeStatus === 'UNKNOWN') { out.keptRoutingUnknown++; ouvertes.add(keyId); continue; }
+        out.keptActive++;
+        ouvertes.add(keyId);
       }
-      if (rows.length < PAGE) break;
     }
     // Couple refusé, toujours transmis, sans alerte ouverte : alerte levée (une fois).
-    const refuses = await S.loadRejectedCouples();
-    if (refuses === null) { out.unavailable = true; return out; }
-    for (const c of refuses) {
-      if (ouvertes.has(c.keyId) || !M.isCurrentCouple(c.key)) continue;
-      if (await raiseSchemaIncompatibilityAlert(c)) out.raised++;
+    // Lot 115 (carte #784, §B1 et §E2) : PARCOURS EXHAUSTIF de la mémoire, page par page et par
+    // `key_id` — la lecture bornée aux 2 000 refus les plus récents omettait les refus anciens, qui
+    // restaient donc sans alerte. Un refus ancien est désormais traité comme un refus récent.
+    let apres: string | null = null;
+    for (;;) {
+      const page = await S.scanCouples({ states: ['REJECTED_CONFIRMED', 'NEEDS_RECHECK'], afterKeyId: apres });
+      if (page === null) { out.unavailable = true; return out; }
+      if (page.length === 0) break;
+      for (const c of page) {
+        out.couplesScanned++;
+        apres = c.keyId;
+        if (ouvertes.has(c.keyId) || !M.isCurrentCouple(c.key)) continue;
+        // Lot 115 (carte #784, §E1) : une alerte n'est levée que si le modèle est RÉELLEMENT routé.
+        //   · WITHDRAWN : le couple ne sert plus — aucune alerte à lever ;
+        //   · UNKNOWN   : on ne sait pas. Lever ici ROUVRIRAIT, dès le passage suivant, une alerte
+        //     que l'on vient de clore faute de routage lisible — ce que la carte interdit
+        //     explicitement (« ne pas rouvrir le lendemain une alerte à cause disparue »). On
+        //     s'abstient et on le COMPTE : le prochain passage, routage lisible, lèvera ce qui doit l'être.
+        const statut = await statutRoutage(c.key.operationCode, c.key.model);
+        if (statut !== 'ACTIVE') { if (statut === 'UNKNOWN') out.raiseSkippedRoutingUnknown++; continue; }
+        if (await raiseSchemaIncompatibilityAlert(c)) out.raised++;
+      }
     }
   } catch (e) {
     const code = (e as { code?: string } | null)?.code;
     if (code !== '42P01' && code !== '42703') throw e;
     out.unavailable = true;
   }
+  out.after.openAlerts = await countOpenAlerts();
   return out;
 }

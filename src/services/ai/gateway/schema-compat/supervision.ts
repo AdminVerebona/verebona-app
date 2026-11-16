@@ -18,10 +18,18 @@
  * recalculé ni réécrit, la période choisie relit les appels tels qu'ils ont
  * eu lieu (y compris ceux d'anciennes versions de l'application).
  *
- * Coût par tentative : une requête refusée en HTTP 400 ne consomme aucun
- * jeton (le fournisseur ne génère rien) ; les jetons et le coût de l'appel
- * sont ceux de la tentative qui a répondu. Les DURÉES sont relevées par
- * tentative.
+ * Coût par tentative : les jetons et le coût relevés sur l'appel sont ceux
+ * que le fournisseur a RENDUS. Lot 115 (carte #784, §D1) : un refus HTTP 400
+ * ne prouve PAS à lui seul une facturation nulle — une tentative dont la
+ * consommation n'a pas été rendue a un coût INCONNU, jamais 0 € supposé, et
+ * reste comptée comme requête fournisseur réelle. Les DURÉES sont relevées
+ * par tentative.
+ *
+ * Lot 115 (carte #784, §D2) : les TOTAUX et les TAUX sont calculés sur
+ * l'ENSEMBLE FILTRÉ, par une lecture d'agrégat sans regroupement, AVANT toute
+ * pagination. La ventilation par couple reste paginée (`groups`), et
+ * `groupsTruncated` dit qu'elle est incomplète : au-delà de la page, les
+ * totaux restent exacts — ils ne sont plus la somme des groupes affichés.
  *
  * AUCUN CONTENU : compteurs, codes, identifiants, versions et empreintes.
  */
@@ -67,6 +75,20 @@ export interface SchemaUsageCounts {
   outputTokens: number;
   /** Coût total en micro-unités ; `null` : au moins un appel sans tarif (non calculable). */
   costMicros: number | null;
+  /**
+   * Lot 115 (carte #784, §D1) — TENTATIVES fournisseur par nature de coût,
+   * comptées à part du total : `attemptsCostObserved` chiffrées sur une
+   * consommation rendue ; `attemptsCostZero` consommation explicitement NULLE
+   * rendue (0 € justifié) ; `attemptsCostUnknown` aucune consommation rendue
+   * ou tarif inconnu — un refus HTTP 400 ne prouve pas 0 €, et « non
+   * mesurable » n'est jamais présenté comme zéro.
+   *
+   * Traces d'avant ce lot : ces compteurs valent 0 (la nature du coût n'y
+   * était pas relevée) — absence de mesure, pas une mesure nulle.
+   */
+  attemptsCostObserved: number;
+  attemptsCostZero: number;
+  attemptsCostUnknown: number;
   /** Temps passé dans les requêtes refusées ou en échec avant la réponse (ms). */
   failedAttemptMs: number;
 }
@@ -104,8 +126,21 @@ export interface SchemaUsageReport {
   from: string;
   to: string;
   filters: { operationCode: string | null; model: string | null; contractVersion: number | null };
-  totals: SchemaUsageCounts & { rates: SchemaUsageRates };
+  /**
+   * Lot 115 (carte #784, §D2) : totaux et taux EXACTS sur l'ensemble filtré,
+   * lus sans regroupement et AVANT pagination — jamais la somme des groupes
+   * affichés. `durationP50Ms` / `durationP95Ms` : latence de l'ensemble.
+   */
+  totals: SchemaUsageCounts & { rates: SchemaUsageRates; durationP50Ms: number | null; durationP95Ms: number | null };
+  /** Ventilation PAGINÉE (la plus sollicitée d'abord). */
   groups: SchemaUsageGroup[];
+  /**
+   * Lot 115 (carte #784, §D2) : nombre TOTAL de couples de l'ensemble filtré
+   * (`null` : non mesurable). `groupsTruncated` : la ventilation affichée est
+   * incomplète — les totaux restent exacts.
+   */
+  groupCount: number | null;
+  groupsTruncated: boolean;
   trend: SchemaUsageDay[];
   /** Lecture impossible (délai, base) : indicateurs absents — jamais zéro. */
   unavailable: string | null;
@@ -127,13 +162,14 @@ export function schemaUsageRates(c: Pick<SchemaUsageCounts, 'calls' | 'schemaSen
 const ZERO: SchemaUsageCounts = {
   calls: 0, schemaSent: 0, schemaAccepted: 0, schemaRefused400: 0, schemaFailedOther: 0, retriesWithoutSchema: 0, answeredAfterRetry: 0,
   skippedKnownRejection: 0, omittedStatic: 0, notRequested: 0, retests: 0, finalSuccess: 0, providerRequests: 0, inputTokens: 0, outputTokens: 0,
-  costMicros: 0, failedAttemptMs: 0,
+  costMicros: 0, attemptsCostObserved: 0, attemptsCostZero: 0, attemptsCostUnknown: 0, failedAttemptMs: 0,
 };
 
 type NumericKey = Exclude<keyof SchemaUsageCounts, 'costMicros'>;
 const NUMERIC_KEYS: readonly NumericKey[] = [
   'calls', 'schemaSent', 'schemaAccepted', 'schemaRefused400', 'schemaFailedOther', 'retriesWithoutSchema', 'answeredAfterRetry',
-  'skippedKnownRejection', 'omittedStatic', 'notRequested', 'retests', 'finalSuccess', 'providerRequests', 'inputTokens', 'outputTokens', 'failedAttemptMs',
+  'skippedKnownRejection', 'omittedStatic', 'notRequested', 'retests', 'finalSuccess', 'providerRequests', 'inputTokens', 'outputTokens',
+  'attemptsCostObserved', 'attemptsCostZero', 'attemptsCostUnknown', 'failedAttemptMs',
 ];
 
 /** Somme de groupes (pure) ; un coût non calculable dans un groupe rend le total non calculable. */
@@ -156,7 +192,9 @@ function countsOf(r: Row): SchemaUsageCounts {
     schemaFailedOther: n(r.schema_failed_other), retriesWithoutSchema: n(r.retries_without_schema), answeredAfterRetry: n(r.answered_after_retry),
     skippedKnownRejection: n(r.skipped_known_rejection), omittedStatic: n(r.omitted_static), notRequested: n(r.not_requested), retests: n(r.retests),
     finalSuccess: n(r.final_success), providerRequests: n(r.provider_requests), inputTokens: n(r.input_tokens), outputTokens: n(r.output_tokens),
-    costMicros: n(r.cost_unknown) > 0 ? null : n(r.cost_micros), failedAttemptMs: n(r.failed_attempt_ms),
+    costMicros: n(r.cost_unknown) > 0 ? null : n(r.cost_micros),
+    attemptsCostObserved: n(r.attempts_cost_observed), attemptsCostZero: n(r.attempts_cost_zero), attemptsCostUnknown: n(r.attempts_cost_unknown),
+    failedAttemptMs: n(r.failed_attempt_ms),
   };
 }
 
@@ -177,6 +215,41 @@ const AGG = `
                      AND NOT (COALESCE(pr->>'schemaOmittedReason', '') = ANY($5::text[])))::int AS not_requested`;
 
 /**
+ * Lot 115 (carte #784, §D2) — agrégats COMMUNS à la ventilation paginée et aux
+ * totaux exacts. Une seule expression pour les deux : un total ne peut plus
+ * diverger de la somme des groupes autrement que par la pagination elle-même.
+ */
+const AGG_CALL = `
+  COALESCE(SUM((SELECT COUNT(*) FROM jsonb_array_elements(COALESCE(attempts, '[]'::jsonb)) a
+                 WHERE a->>'kind' IN ('schema_rejected_retry', 'diagnostic_retry'))), 0)::int AS retries_without_schema,
+  COUNT(*) FILTER (WHERE so = 'schema_rejected_retried_without')::int AS answered_after_retry,
+  COUNT(*) FILTER (WHERE pr->'schemaCompat'->>'retest' = 'true')::int AS retests,
+  COUNT(*) FILTER (WHERE status = 'success')::int AS final_success,
+  COALESCE(SUM(GREATEST(jsonb_array_length(COALESCE(attempts, '[]'::jsonb)), 1)), 0)::int AS provider_requests,
+  COALESCE(SUM(input_tokens), 0)::bigint AS input_tokens, COALESCE(SUM(output_tokens), 0)::bigint AS output_tokens,
+  COALESCE(SUM(cost_micros), 0)::bigint AS cost_micros,
+  COUNT(*) FILTER (WHERE cost_micros IS NULL AND (input_tokens > 0 OR output_tokens > 0))::int AS cost_unknown,
+  -- Lot 115 (carte #784, §D1) — TENTATIVES dont le coût n'est pas établi : le fournisseur n'a rendu
+  -- aucune consommation (refus, délai), ou son tarif est inconnu. Comptées À PART du coût confirmé :
+  -- le total observé reste lisible, et ce compteur dit ce qui pourrait avoir été facturé en plus.
+  -- Un HTTP 400 ne prouve pas 0 € ; « non mesurable » n'est jamais présenté comme 0.
+  COALESCE(SUM((SELECT COUNT(*) FROM jsonb_array_elements(COALESCE(attempts, '[]'::jsonb)) a
+                 WHERE a->>'costStatus' IN ('UNKNOWN', 'NO_PRICE'))), 0)::int AS attempts_cost_unknown,
+  -- Tentatives dont le fournisseur a explicitement rendu une consommation NULLE (0 € justifié).
+  COALESCE(SUM((SELECT COUNT(*) FROM jsonb_array_elements(COALESCE(attempts, '[]'::jsonb)) a
+                 WHERE a->>'costStatus' = 'ZERO_REPORTED')), 0)::int AS attempts_cost_zero,
+  -- Tentatives chiffrées sur une consommation réellement rendue (coût OBSERVÉ).
+  COALESCE(SUM((SELECT COUNT(*) FROM jsonb_array_elements(COALESCE(attempts, '[]'::jsonb)) a
+                 WHERE a->>'costStatus' = 'OBSERVED')), 0)::int AS attempts_cost_observed,
+  COALESCE(SUM((SELECT SUM((a->>'durationMs')::numeric) FROM jsonb_array_elements(COALESCE(attempts, '[]'::jsonb)) a
+                 WHERE a->>'outcome' = 'FAILED')), 0)::bigint AS failed_attempt_ms,
+  (percentile_cont(0.5) WITHIN GROUP (ORDER BY duration_ms))::int AS duration_p50,
+  (percentile_cont(0.95) WITHIN GROUP (ORDER BY duration_ms))::int AS duration_p95`;
+
+/** Taille d'une page de ventilation (les totaux n'en dépendent pas). */
+export const SCHEMA_USAGE_GROUP_PAGE = 200;
+
+/**
  * Rapport d'usage du schéma imposé. `run` : exécuteur de lecture (par défaut
  * la session en lecture seule de l'observabilité, délai borné côté base).
  * Lecture impossible : `unavailable` renseigné, aucun compteur inventé.
@@ -191,7 +264,8 @@ export async function getSchemaUsageReport(
   const filters = { operationCode: f.operationCode || null, model: f.model || null, contractVersion: f.contractVersion ?? null };
   const base: SchemaUsageReport = {
     days, from: from.toISOString(), to: to.toISOString(), filters,
-    totals: { ...ZERO, rates: schemaUsageRates(ZERO) }, groups: [], trend: [], unavailable: null,
+    totals: { ...ZERO, rates: schemaUsageRates(ZERO), durationP50Ms: null, durationP95Ms: null },
+    groups: [], groupCount: null, groupsTruncated: false, trend: [], unavailable: null,
   };
   const exec = run ?? (async (sql: string, params: unknown[]) => (await import('../../telemetry/observability.repository')).readOnlyObservabilityQuery(sql, params));
   const params = [from.toISOString(), to.toISOString(), filters.operationCode, filters.model, [...STATIC_OMISSION_REASONS], filters.contractVersion === null ? null : String(filters.contractVersion)];
@@ -213,32 +287,27 @@ export async function getSchemaUsageReport(
       `SELECT operation_code, model, rc->>'contractId' AS contract_id, rc->>'contractVersion' AS contract_version,
               rc->>'schemaHash' AS schema_hash, pr->>'providerSchemaHash' AS provider_schema_hash,
               ${AGG},
-              COALESCE(SUM((SELECT COUNT(*) FROM jsonb_array_elements(COALESCE(attempts, '[]'::jsonb)) a
-                             WHERE a->>'kind' IN ('schema_rejected_retry', 'diagnostic_retry'))), 0)::int AS retries_without_schema,
-              COUNT(*) FILTER (WHERE so = 'schema_rejected_retried_without')::int AS answered_after_retry,
-              COUNT(*) FILTER (WHERE pr->'schemaCompat'->>'retest' = 'true')::int AS retests,
-              COUNT(*) FILTER (WHERE status = 'success')::int AS final_success,
-              COALESCE(SUM(GREATEST(jsonb_array_length(COALESCE(attempts, '[]'::jsonb)), 1)), 0)::int AS provider_requests,
-              COALESCE(SUM(input_tokens), 0)::bigint AS input_tokens, COALESCE(SUM(output_tokens), 0)::bigint AS output_tokens,
-              COALESCE(SUM(cost_micros), 0)::bigint AS cost_micros,
-              COUNT(*) FILTER (WHERE cost_micros IS NULL AND (input_tokens > 0 OR output_tokens > 0))::int AS cost_unknown,
-              COALESCE(SUM((SELECT SUM((a->>'durationMs')::numeric) FROM jsonb_array_elements(COALESCE(attempts, '[]'::jsonb)) a
-                             WHERE a->>'outcome' = 'FAILED')), 0)::bigint AS failed_attempt_ms,
-              (percentile_cont(0.5) WITHIN GROUP (ORDER BY duration_ms))::int AS duration_p50,
-              (percentile_cont(0.95) WITHIN GROUP (ORDER BY duration_ms))::int AS duration_p95
+              ${AGG_CALL}
          ${source}
         GROUP BY 1, 2, 3, 4, 5, 6
         ORDER BY calls DESC, operation_code, model
-        LIMIT 200`,
+        LIMIT ${SCHEMA_USAGE_GROUP_PAGE + 1}`,
       params,
     );
+    // Lot 115 (carte #784, §D2) — TOTAUX EXACTS : agrégat de l'ENSEMBLE FILTRÉ, sans regroupement et
+    // sans borne, lu AVANT toute pagination. Les totaux ne sont donc plus la somme des groupes
+    // affichés : au-delà d'une page de ventilation, ils restent justes. Lecture distincte et bornée
+    // par le délai de la session d'observabilité, comme les autres.
+    const [totalRow] = await exec(`SELECT ${AGG}, ${AGG_CALL}, COUNT(DISTINCT (operation_code, model, rc->>'contractId', rc->>'contractVersion',
+              rc->>'schemaHash', pr->>'providerSchemaHash'))::int AS group_count ${source}`, params);
     const trend = await exec(
       `SELECT to_char(created_at AT TIME ZONE 'Europe/Paris', 'YYYY-MM-DD') AS day, ${AGG}
          ${source}
         GROUP BY 1 ORDER BY 1`,
       params,
     );
-    base.groups = groups.map((r) => {
+    base.groupsTruncated = groups.length > SCHEMA_USAGE_GROUP_PAGE;
+    base.groups = groups.slice(0, SCHEMA_USAGE_GROUP_PAGE).map((r) => {
       const c = countsOf(r);
       return {
         operationCode: String(r.operation_code), model: String(r.model), contractId: sn(r.contract_id), contractVersion: nn(r.contract_version),
@@ -246,8 +315,14 @@ export async function getSchemaUsageReport(
         durationP50Ms: nn(r.duration_p50), durationP95Ms: nn(r.duration_p95), rates: schemaUsageRates(c),
       };
     });
-    const totals = sumSchemaUsage(base.groups);
-    base.totals = { ...totals, rates: schemaUsageRates(totals) };
+    // Totaux lus sur l'ensemble filtré (jamais `sumSchemaUsage(base.groups)` : la page tronquerait).
+    // Ensemble vide : la lecture d'agrégat rend une ligne de zéros — aucun compteur inventé.
+    const totals = totalRow ? countsOf(totalRow) : { ...ZERO };
+    base.totals = {
+      ...totals, rates: schemaUsageRates(totals),
+      durationP50Ms: totalRow ? nn(totalRow.duration_p50) : null, durationP95Ms: totalRow ? nn(totalRow.duration_p95) : null,
+    };
+    base.groupCount = totalRow ? n(totalRow.group_count) : null;
     base.trend = trend.map((r) => {
       const c = { calls: n(r.calls), schemaSent: n(r.schema_sent), schemaAccepted: n(r.schema_accepted), schemaRefused400: n(r.schema_refused_400),
         skippedKnownRejection: n(r.skipped_known_rejection), omittedStatic: n(r.omitted_static), notRequested: n(r.not_requested) };

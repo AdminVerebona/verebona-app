@@ -31,7 +31,7 @@ const { FakeProvider, setAiProvider } = await import('../providers');
 const { resolveOutput } = await import('../output-resolution/resolve-output');
 const rc = await import('../output-resolution/runtime-contract');
 const { FIELD_COMPAT_MAPPINGS, COMPAT_TABLE_VERSION, applyFieldCompatMappings } = await import('../output-resolution/compat-mappings');
-const { providerJsonSchema, clearSchemaRejections } = await import('../output-resolution/provider-schema');
+const { providerJsonSchema, clearSchemaRejections, resolveSchemaRefs, schemaBranches } = await import('../output-resolution/provider-schema');
 const { isInternalAiErrorCode } = await import('../errors');
 const { MASTER_OUTPUT_SCHEMAS } = await import('../master-output-schemas');
 const { T1GroupUploadOutput, T1AnalyzeDocumentOutput } = await import('../../source-analysis/master/t1-contract');
@@ -296,9 +296,28 @@ const props = (j: Json | undefined): Record<string, Json> => j?.properties ?? j?
 
 describe('RTC-T1 — audit document.title / description / documentDate / supplier / amountCents, EvidenceValue', () => {
   const c = contratT1();
-  const fournisseur = providerJsonSchema(c.canonical).schema as Json;
+  /**
+   * Règle complétée (carte #784, §A2) : la projection peut désormais transmettre
+   * un sous-schéma RÉPÉTÉ une seule fois, en `$defs` / `$ref` (sous-ensemble
+   * documenté du fournisseur). Cet audit porte sur ce que le fournisseur doit
+   * DÉCODER : la forme déréférencée. L'exigence vérifiée est inchangée — mêmes
+   * propriétés, même preuve, aucune branche perdue.
+   */
+  const projete = providerJsonSchema(c.canonical).schema;
+  const fournisseur = resolveSchemaRefs(projete as never) as Json;
   const document = props(props(fournisseur).document);
   const EVIDENCE_KEYS = ['excerpt', 'page', 'section', 'table'];
+
+  it('la forme transmise et sa forme déréférencée portent EXACTEMENT les mêmes branches (carte #784, §A2 — aucune perte)', () => {
+    // Le déréférencement n'est pas une complaisance du test : la projection le fait elle-même avant
+    // de décider, et refuse de transmettre un schéma qui perdrait une branche (`projection_lossy`).
+    // La forme transmise, une fois déréférencée, porte EXACTEMENT les branches de la forme déployée
+    // du même contrat : factoriser réduit la taille, jamais le contrat.
+    const deployee = providerJsonSchema(c.canonical, { shape: 'inline' }).schema;
+    expect(schemaBranches(fournisseur)).toEqual(schemaBranches(deployee));
+    // Et la forme réellement transmise est bien plus COMPACTE que la forme déployée.
+    expect(JSON.stringify(projete).length).toBeLessThan(JSON.stringify(deployee).length);
+  });
 
   it.each(['title', 'description', 'documentDate', 'amountCents'])('document.%s : { value, confidence, evidence } — schéma fournisseur = schéma de validation', (k) => {
     expect(Object.keys(props(document[k])).sort()).toEqual(['confidence', 'evidence', 'value']);

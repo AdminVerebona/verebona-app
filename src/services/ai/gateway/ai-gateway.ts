@@ -41,14 +41,15 @@ import {
   providerJsonSchema, structuredOutputEnabled, PROVIDER_SCHEMA_ADAPTER_VERSION,
 } from './output-resolution/provider-schema';
 import {
-  decideSchemaUse, reportSchemaOutcome, schemaHeldRejected, noteSchemaUnsupported, coupleKeyId,
+  decideSchemaUse, reportSchemaOutcome, reportServedModelVersion, schemaHeldRejected, noteSchemaUnsupported, coupleKeyId,
+  generationProfileHashOf,
   type SchemaCoupleKey, type SchemaDecision,
 } from './schema-compat';
 import { buildRepairPrompt, mergeRepair, repairPassEnabled, REPAIR_MAX_INPUT_CHARS } from './output-resolution/repair-pass';
 import { classifyCallError, failureSignature, isGenericInvalidArgument, isTruncated, type ClassifiedFailure } from './diagnostics/classify';
 import {
   emptyControlChain, providerFailureCategory,
-  type CallDiagnostic, type ProviderCallMetadata, type ProviderAttemptTrace, type ProviderRequestTrace,
+  type CallDiagnostic, type ProviderCallMetadata, type ProviderAttemptTrace, type ProviderRequestTrace, type AttemptCostStatus,
 } from './diagnostics/taxonomy';
 import { describeGenerationConfig } from './providers/gemini-generation-config';
 import { describeAttachments, attachmentTransport } from './providers/gemini-files';
@@ -836,9 +837,18 @@ export class AiGateway {
         // Structured output transmis à CE modèle ? Lot 114 (#776) : décision par COUPLE (fournisseur, modèle,
         // opération, contrat, schéma projeté, adaptateur), lue dans la mémoire partagée et durable — refus
         // mémorisé : non ; réexamen dû : UNE instance le réserve et le tente, les autres restent sans schéma.
+        // Lot 115 (#784, A3) : le PROFIL DE GÉNÉRATION effectif (plafond de sortie, réflexion, température, mode
+        // JSON) entre dans l'identité du couple — un autre profil ne contraint pas le décodage de la même façon et
+        // n'hérite donc d'aucune qualification ni d'aucun refus.
         const coupleKey: SchemaCoupleKey = {
           provider: provider.name, model, operationCode, contractId: contract.contractId, contractVersion: contract.contractVersion,
           schemaHash: contract.schemaHash, providerSchemaHash: psHash, adapterVersion: PROVIDER_SCHEMA_ADAPTER_VERSION,
+          generationProfileHash: generationProfileHashOf({
+            maxOutputTokens: built.ok ? built.params.maxOutputTokens : maxOutputTokens ?? null,
+            thinkingConfig: built.ok && built.params.thinking ? JSON.stringify(built.params.thinking) : null,
+            jsonResponse,
+            generation: built.ok ? { temperature: built.params.temperature } : null,
+          }),
         };
         const schemaDecision: SchemaDecision | null = providerSchema?.schema ? await decideSchemaUse(coupleKey) : null;
         // Schéma non transmissible (contrôle statique) : couple et motif tracés dans la matrice, jamais envoyé.
@@ -938,10 +948,34 @@ export class AiGateway {
           // DÉRIVÉ du même contrat passe alors dans le prompt.
           `${withContract(true)}${notice}`,
           // Lot 52B : 400 INVALID_ARGUMENT générique → essai diagnostique.
-          { trail, providerSchemaHash: psHash, diagnosticRetry: true });
+          // Lot 115 (#784, D1) : chiffrage PAR TENTATIVE et profil du schéma transmis (diagnostic d'un refus réel).
+          {
+            trail, providerSchemaHash: psHash, diagnosticRetry: true,
+            costOf: (t) => {
+              const entrees = t.inputTokens ?? 0;
+              const sorties = (t.outputTokens ?? 0) + Math.max(0, t.thoughtsTokens ?? 0);
+              if (entrees === 0 && sorties === 0) {
+                // Consommation explicitement nulle rendue par le fournisseur ≠ absence de mesure.
+                return t.inputTokens === null && t.outputTokens === null
+                  ? { costMicros: null, costStatus: 'UNKNOWN' }
+                  : { costMicros: 0, costStatus: 'ZERO_REPORTED' };
+              }
+              const micros = calcCostMicros(model, entrees, sorties, op.provider);
+              return micros === null ? { costMicros: null, costStatus: 'NO_PRICE' } : { costMicros: micros, costStatus: 'OBSERVED' };
+            },
+            schemaProfile: {
+              chars: providerSchema?.schema ? JSON.stringify(providerSchema.schema).length : null,
+              shape: providerSchema?.shape ?? null,
+              properties: providerSchema?.metrics?.properties ?? null,
+            },
+          });
           // #776 : le fournisseur a répondu à la requête portant le schéma — couple qualifié par un appel RÉEL
           // (jamais par la réussite d'un essai sans schéma).
-          if (sendSchema && schemaDecision && soStatus === 'requested_schema') reportSchemaOutcome(schemaDecision, { kind: 'ACCEPTED' }, { appVersion: getAppVersion() });
+          // Lot 115 (#784, A3) : version RÉELLEMENT servie relevée dans la réponse (`null` : non indiquée → incertitude marquée).
+          const servedModelVersion = out?.meta?.modelVersion ?? null;
+          if (sendSchema && schemaDecision && soStatus === 'requested_schema') reportSchemaOutcome(schemaDecision, { kind: 'ACCEPTED', servedModelVersion }, { appVersion: getAppVersion() });
+          // Couple refusé dont la version servie a changé : le refus mémorisé ne commande plus les appels d'aujourd'hui.
+          else if (providerSchema?.schema) reportServedModelVersion(coupleKey, servedModelVersion);
           if (soStatus === 'requested_schema' && !sendSchema) soStatus = 'schema_skipped_recent_rejection';
         } catch (raw) {
           // #776 : échec sans conclusion sur le schéma (délai, réseau, quota, 400 non levé par l'essai sans
@@ -1487,23 +1521,57 @@ async function callWithSchemaFallback(
   onRejected: SchemaRejectedCallback,
   /** Lot 34D : prompt du nouvel essai sans structured output (schéma du contrat inclus). */
   promptWithoutSchema?: string,
-  /** Lot 52B : tentatives internes (tracées) et essai diagnostique autorisé. */
-  opts: { trail?: ProviderAttemptTrace[]; providerSchemaHash?: string | null; diagnosticRetry?: boolean } = {},
+  /** Lot 52B : tentatives internes (tracées) et essai diagnostique autorisé. Lot 115 (#784, D1) : coût par tentative. */
+  opts: {
+    trail?: ProviderAttemptTrace[]; providerSchemaHash?: string | null; diagnosticRetry?: boolean;
+    /** Lot 115 (#784, D1) : chiffrage d'une tentative (coût et nature du coût) — jamais de 0 € supposé. */
+    costOf?: (t: { inputTokens: number | null; outputTokens: number | null; thoughtsTokens: number | null }) => { costMicros: number | null; costStatus: AttemptCostStatus };
+    /** Lot 115 (#784, A, D1) : profil du schéma transmis, pour corréler un refus réel à une dimension documentée. */
+    schemaProfile?: { chars: number | null; shape: string | null; properties: number | null };
+  } = {},
 ): Promise<ProviderCallOutput> {
   const trail = opts.trail;
   const note = (a: Omit<ProviderAttemptTrace, 'step'>) => { trail?.push({ step: (trail?.length ?? 0) + 1, ...a }); };
   const mime = (structured: boolean, i: ProviderCallInput) => (structured || i.jsonResponse ? 'application/json' : null);
+  const chiffrage = (t: { inputTokens: number | null; outputTokens: number | null; thoughtsTokens: number | null }) =>
+    (opts.costOf ? opts.costOf(t) : { costMicros: null, costStatus: 'UNKNOWN' as AttemptCostStatus });
   const timed = async (i: ProviderCallInput, kind: ProviderAttemptTrace['kind']): Promise<ProviderCallOutput> => {
     const structured = i.responseSchema !== undefined;
     const t0 = Date.now();
-    const base = { kind, responseSchemaSent: structured, providerSchemaHash: structured ? opts.providerSchemaHash ?? null : null, responseMimeType: mime(structured, i) };
+    const base = {
+      kind, responseSchemaSent: structured, providerSchemaHash: structured ? opts.providerSchemaHash ?? null : null, responseMimeType: mime(structured, i),
+      ...(structured && opts.schemaProfile
+        ? { schemaChars: opts.schemaProfile.chars, schemaShape: opts.schemaProfile.shape, schemaProperties: opts.schemaProfile.properties }
+        : { schemaChars: null, schemaShape: null, schemaProperties: null }),
+    };
     try {
       const out = await provider.call(i);
-      note({ ...base, outcome: 'SUCCESS', httpStatus: null, providerErrorCode: null, family: null, durationMs: Date.now() - t0 });
+      const jetons = { inputTokens: out.inputTokens ?? null, outputTokens: out.outputTokens ?? null, thoughtsTokens: out.meta?.thoughtsTokens ?? null };
+      note({
+        ...base, outcome: 'SUCCESS', httpStatus: null, providerErrorCode: null, family: null, durationMs: Date.now() - t0,
+        ...jetons, totalTokens: out.meta?.totalTokens ?? null, ...chiffrage(jetons),
+        servedModelVersion: out.meta?.modelVersion ?? null, providerErrorExcerpt: null,
+      });
       return out;
     } catch (e) {
       const c = classifyCallError(e);
-      note({ ...base, outcome: 'FAILED', httpStatus: c.httpStatus, providerErrorCode: c.providerErrorCode, family: c.family, durationMs: Date.now() - t0 });
+      // Une tentative REFUSÉE ne rend en général aucune consommation : le coût est alors INCONNU, jamais 0 €
+      // supposé (un HTTP 400 ne prouve pas à lui seul l'absence de facturation — carte #784, D1). Si le
+      // fournisseur a tout de même rendu des métadonnées de consommation, elles sont relevées et chiffrées.
+      // Un total de jetons n'est NI une consommation d'entrée NI une de sortie : il ne peut pas être
+      // chiffré (les tarifs d'entrée et de sortie diffèrent) et il n'est donc PAS rangé dans l'une des
+      // deux colonnes. Il est relevé tel quel (`totalTokens`), le coût reste INCONNU : une tentative
+      // facturable reste ainsi visible, sans qu'aucun montant soit inventé.
+      const meta = (e as { providerMeta?: ProviderResponseMeta })?.providerMeta;
+      const total = meta?.totalTokens ?? null;
+      const pensees = meta?.thoughtsTokens ?? null;
+      note({
+        ...base, outcome: 'FAILED', httpStatus: c.httpStatus, providerErrorCode: c.providerErrorCode, family: c.family, durationMs: Date.now() - t0,
+        inputTokens: null, outputTokens: null, thoughtsTokens: pensees, totalTokens: total,
+        costMicros: null, costStatus: 'UNKNOWN',
+        servedModelVersion: meta?.modelVersion ?? null,
+        providerErrorExcerpt: attemptErrorExcerpt(c.providerErrorMessage ?? (e instanceof Error ? e.message : String(e))),
+      });
       throw e;
     }
   };
@@ -1628,7 +1696,13 @@ function providerRequestOf(p: {
   model: string; maxOutputTokens: number | undefined; reasoning: ProviderCallInput['reasoning']; jsonResponse: boolean;
   generation?: ProviderCallInput['generation'];
   sendSchema: Record<string, unknown> | null; attachments: ProviderCallInput['attachments'];
-  psHash: string | null; providerSchema: { nodes: number; dropped: string[]; issues?: string[]; lostBranches?: string[] } | null; omittedReason: string | null;
+  psHash: string | null; omittedReason: string | null;
+  providerSchema: {
+    nodes: number; dropped: string[]; issues?: string[]; lostBranches?: string[];
+    /** Lot 115 (#784) : profil de complexité et forme du schéma transmis. */
+    metrics?: { serializedChars: number; properties: number; enumValues: number; unionBranches: number; depth: number; nestedArrayBound: number };
+    shape?: string;
+  } | null;
   /** Lot 114 (#776) : décision de compatibilité du couple pour cet appel (`null` : aucun schéma transmissible). */
   compat?: SchemaDecision | null;
 }): ProviderRequestTrace {
@@ -1649,6 +1723,20 @@ function providerRequestOf(p: {
       schemaCompat: {
         state: p.compat.state, decision: p.compat.send ? 'sent' as const : 'skipped' as const, why: p.compat.why, retest: p.compat.retest,
         policyVersion: p.compat.policyVersion, adapterVersion: p.compat.key.adapterVersion,
+        generationProfileHash: p.compat.key.generationProfileHash ?? '-',
+        servedModelVersion: p.compat.servedModelVersion ?? null,
+      },
+    } : {}),
+    // Lot 115 (#784, A) : profil de complexité du schéma transmis (corrélation d'un refus réel).
+    ...(p.providerSchema?.metrics && p.sendSchema ? {
+      schemaProfile: {
+        shape: p.providerSchema.shape ?? 'inline',
+        chars: p.providerSchema.metrics.serializedChars,
+        properties: p.providerSchema.metrics.properties,
+        enumValues: p.providerSchema.metrics.enumValues,
+        unionBranches: p.providerSchema.metrics.unionBranches,
+        depth: p.providerSchema.metrics.depth,
+        nestedArrayBound: p.providerSchema.metrics.nestedArrayBound,
       },
     } : {}),
     ...(p.providerSchema?.lostBranches?.length ? { lostBranches: p.providerSchema.lostBranches.slice(0, 20) } : {}),
@@ -1679,6 +1767,21 @@ function masksOfVariables(vars: Record<string, unknown>): Record<string, number>
   };
   walk(vars);
   return out;
+}
+
+/**
+ * Lot 115 (carte #784, §A et §D1) — EXTRAIT EXPURGÉ du corps d'erreur d'une
+ * tentative : masques de la passerelle appliqués, longueur bornée. C'est ce
+ * qui rendra le PROCHAIN refus réel diagnosticable (code du fournisseur,
+ * message, à côté du schéma projeté et de sa taille) sans jamais exposer de
+ * contenu de document, de prompt ni de secret. Pur.
+ */
+export const ATTEMPT_ERROR_EXCERPT_MAX = 400;
+
+export function attemptErrorExcerpt(message: string | null | undefined): string | null {
+  const brut = (message ?? '').trim();
+  if (!brut) return null;
+  return redactWithReport(brut).text.replace(/\s+/g, ' ').slice(0, ATTEMPT_ERROR_EXCERPT_MAX);
 }
 
 /** Nature des essais internes d'un appel (structuré, puis sans schéma), dans l'ordre des requêtes. Pur. */

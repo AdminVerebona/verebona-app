@@ -24,6 +24,8 @@ interface Counts {
   calls: number; schemaSent: number; schemaAccepted: number; schemaRefused400: number; schemaFailedOther: number;
   retriesWithoutSchema: number; answeredAfterRetry: number; skippedKnownRejection: number; omittedStatic: number; notRequested: number;
   retests: number; finalSuccess: number; providerRequests: number; inputTokens: number; outputTokens: number; costMicros: number | null; failedAttemptMs: number;
+  /** Lot 115 (#784, D1) : tentatives par nature de coût — observé, 0 € explicitement rendu, inconnu. */
+  attemptsCostObserved: number; attemptsCostZero: number; attemptsCostUnknown: number;
 }
 interface Group extends Counts {
   operationCode: string; model: string; contractId: string | null; contractVersion: number | null; schemaHash: string | null;
@@ -33,6 +35,8 @@ interface Day { day: string; calls: number; schemaAccepted: number; schemaRefuse
 interface Couple {
   keyId: string; model: string; operationCode: string; contractId: string; contractVersion: number; schemaHash: string;
   providerSchemaHash: string | null; adapterVersion: string; state: string; stateLabel: string; reason: string | null; current: boolean;
+  /** Lot 115 (#784, A3) : profil de génération effectif et version de modèle réellement servie. */
+  generationProfileHash: string; servedModelVersion: string | null; versionUncertain: boolean;
   acceptedCount: number; rejectionCount: number; consecutiveRejections: number; retestCount: number;
   lastRejectedAt: string | null; lastAcceptedAt: string | null; nextRetestAt: string | null; retestInProgress: boolean;
   lastHttpStatus: number | null; lastProviderCode: string | null; appVersion: string | null;
@@ -42,11 +46,24 @@ interface StaticRow {
   adapterVersion: string; nodes: number; serializedChars: number | null; omitted: string | null; droppedKeywords: string[]; issues: string[]; lostBranches: string[];
 }
 interface Overview {
-  usage: { days: number; totals: Counts & { rates: Rates }; groups: Group[]; trend: Day[]; unavailable: string | null };
+  usage: {
+    days: number;
+    /** Lot 115 (#784, D2) : totaux EXACTS de l'ensemble filtré, jamais la somme de la page affichée. */
+    totals: Counts & { rates: Rates; durationP50Ms: number | null; durationP95Ms: number | null };
+    groups: Group[];
+    /** Nombre total de couples de l'ensemble ; `groupsTruncated` : la ventilation affichée est partielle. */
+    groupCount: number | null; groupsTruncated: boolean;
+    trend: Day[]; unavailable: string | null;
+  };
   couples: Couple[] | null; staticMatrix: StaticRow[]; openAlerts: number | null; appVersion: string | null;
   policy: { version: number; firstRetestMs: number; retestAfterQualifiedMs: number; maxRetestMs: number };
 }
-interface Bilan { examined: number; resolved: Record<string, number>; keptActive: number; keptUndetermined: number; raised: number; unavailable: boolean }
+interface Bilan {
+  examined: number; resolved: Record<string, number>; keptActive: number; keptUndetermined: number; raised: number; unavailable: boolean;
+  /** Lot 115 (#784, E1/E2) : routage non établi, abstentions, exhaustivité et bilan chiffré. */
+  keptRoutingUnknown: number; raiseSkippedRoutingUnknown: number; done: boolean; couplesScanned: number;
+  before: { openAlerts: number | null }; after: { openAlerts: number | null };
+}
 
 const pct = (v: number | null): string => (v === null ? 'non mesurable' : `${(v * 100).toLocaleString('fr-FR', { maximumFractionDigits: 1 })} %`);
 const euros = (micros: number | null): string => (micros === null ? 'non calculable' : `${(micros / 1_000_000).toLocaleString('fr-FR', { minimumFractionDigits: 4, maximumFractionDigits: 4 })} €`);
@@ -58,6 +75,8 @@ const MOTIF: Record<string, string> = {
   GENERIC_400_ANSWERED_WITHOUT_SCHEMA: 'requête avec schéma refusée (HTTP 400 sans précision), réponse obtenue sans schéma',
   ACCEPTED_ON_REAL_CALL: 'réponse du fournisseur à un appel réel portant le schéma',
   RETEST_INCONCLUSIVE: 'dernier essai avec schéma sans conclusion (délai, réseau ou autre refus)',
+  // Lot 115 (#784, A3) — libellé à valider par le PO.
+  SERVED_VERSION_CHANGED: 'version de modèle servie différente de celle du refus : un essai avec schéma est de nouveau dû',
 };
 const motifOf = (r: string | null): string => (r === null ? '—' : MOTIF[r] ?? (r.startsWith('STATIC_') ? `contrôle statique : ${r.slice(7)}` : r));
 
@@ -157,7 +176,9 @@ export function SchemaCompatibilityPanel({ initialOperation = '' }: { initialOpe
               ['Réussite finale', `${t.finalSuccess} / ${t.calls}`, 'appels d’analyse ayant sollicité le fournisseur'],
               ['Requêtes fournisseur réelles', String(t.providerRequests), `${t.rates.requestsPerCall ?? '—'} par appel · ${t.retests} essai(s) de réexamen`],
               ['Jetons', `${t.inputTokens.toLocaleString('fr-FR')} / ${t.outputTokens.toLocaleString('fr-FR')}`, 'entrée / sortie'],
-              ['Coût', euros(t.costMicros), `${Math.round(t.failedAttemptMs / 1000)} s passées dans des requêtes refusées ou en échec`],
+              ['Coût confirmé', euros(t.costMicros),
+                `${t.attemptsCostUnknown} tentative(s) au coût inconnu · ${t.attemptsCostZero} à 0 € rendu · ${Math.round(t.failedAttemptMs / 1000)} s dans des requêtes refusées`],
+              ['Latence', `P50 ${t.durationP50Ms ?? '—'} ms · P95 ${t.durationP95Ms ?? '—'} ms`, 'sur l’ensemble de la période filtrée'],
             ] as const).map(([titre, valeur, detail]) => (
               <div key={titre} className="rounded-lg border border-[color:var(--border-subtle)] p-3 min-w-0">
                 <p className="text-xs text-[color:var(--text-muted)] break-words">{titre}</p>
@@ -173,6 +194,12 @@ export function SchemaCompatibilityPanel({ initialOperation = '' }: { initialOpe
         <div className="rounded-xl border border-[color:var(--border-subtle)] bg-[color:var(--bg-card)] p-4 space-y-2 min-w-0">
           <p className="text-sm font-medium text-[color:var(--text-primary)]">Par type d’appel, modèle et contrat</p>
           {data.usage.groups.length === 0 && <p className="text-sm text-[color:var(--text-muted)]">Aucun appel sur la période.</p>}
+          {data.usage.groupsTruncated && (
+            <p className="text-xs text-[color:var(--text-secondary)] break-words">
+              Ventilation partielle : {data.usage.groups.length} couple(s) affiché(s) sur {data.usage.groupCount ?? '—'}. Les totaux
+              ci-dessus portent sur l’ensemble de la période filtrée, pas sur cette page.
+            </p>
+          )}
           {data.usage.groups.map((g) => (
             <div key={`${g.operationCode}|${g.model}|${g.schemaHash}|${g.providerSchemaHash}`} className="rounded-lg border border-[color:var(--border-subtle)] p-3 space-y-0.5 min-w-0" data-testid="schema-usage-group">
               <p className="text-sm text-[color:var(--text-primary)] break-words">
@@ -184,6 +211,7 @@ export function SchemaCompatibilityPanel({ initialOperation = '' }: { initialOpe
               <Ligne label="Sans schéma">{g.skippedKnownRejection} par refus mémorisé · {g.omittedStatic} pour motif statique · {g.notRequested} non demandé</Ligne>
               <Ligne label="Appels">{g.calls} · réussite finale {g.finalSuccess} · requêtes fournisseur {g.providerRequests}</Ligne>
               <Ligne label="Jetons, coût, durée">{g.inputTokens.toLocaleString('fr-FR')} / {g.outputTokens.toLocaleString('fr-FR')} · {euros(g.costMicros)} · P50 {g.durationP50Ms ?? '—'} ms · P95 {g.durationP95Ms ?? '—'} ms</Ligne>
+              <Ligne label="Tentatives chiffrées">{g.attemptsCostObserved} au coût observé · {g.attemptsCostZero} à 0 € rendu · {g.attemptsCostUnknown} au coût inconnu</Ligne>
             </div>
           ))}
           {data.usage.trend.length > 1 && (
@@ -216,7 +244,7 @@ export function SchemaCompatibilityPanel({ initialOperation = '' }: { initialOpe
           </p>
           {bilan && (
             <p className="text-xs text-[color:var(--text-secondary)] break-words" data-testid="schema-reevaluation">
-              Réévaluation : {bilan.examined} alerte(s) examinée(s) · {bilan.resolved.SCHEMA_ACCEPTED_AGAIN ?? 0} résolue(s) (schéma de nouveau accepté) · {bilan.resolved.SCHEMA_SUPERSEDED ?? 0} résolue(s) (contrat ou schéma remplacé) · {bilan.keptActive} conservée(s) (refus toujours actif) · {bilan.keptUndetermined} conservée(s) faute de preuve · {bilan.raised} levée(s){bilan.unavailable ? ' · lecture incomplète' : ''}
+              Réévaluation : {bilan.examined} alerte(s) examinée(s) · {bilan.resolved.SCHEMA_ACCEPTED_AGAIN ?? 0} résolue(s) (schéma de nouveau accepté) · {bilan.resolved.SCHEMA_SUPERSEDED ?? 0} résolue(s) (contrat ou schéma remplacé) · {bilan.resolved.SCHEMA_MODEL_WITHDRAWN ?? 0} résolue(s) (modèle retiré du routage et du référentiel) · {bilan.keptActive} conservée(s) (refus toujours actif) · {bilan.keptUndetermined} conservée(s) faute de preuve · {bilan.keptRoutingUnknown} conservée(s) faute de routage établi · {bilan.raised} levée(s){bilan.raiseSkippedRoutingUnknown > 0 ? ` · ${bilan.raiseSkippedRoutingUnknown} non levée(s) faute de routage établi` : ''} · {bilan.couplesScanned} couple(s) parcouru(s){bilan.before.openAlerts !== null && bilan.after.openAlerts !== null ? ` · ouvertes ${bilan.before.openAlerts} → ${bilan.after.openAlerts}` : ''}{bilan.done ? ' · parcours terminé' : ' · parcours à poursuivre (budget du passage atteint)'}{bilan.unavailable ? ' · lecture incomplète' : ''}
             </p>
           )}
           {data.couples === null && <p className="text-sm text-[color:var(--text-warning)]">Mémoire de compatibilité indisponible (migration 1710 non appliquée).</p>}
@@ -230,6 +258,14 @@ export function SchemaCompatibilityPanel({ initialOperation = '' }: { initialOpe
               </p>
               <Ligne label="Motif">{motifOf(c.reason)}{c.lastHttpStatus ? ` · HTTP ${c.lastHttpStatus}` : ''}{c.lastProviderCode ? ` ${c.lastProviderCode}` : ''}</Ligne>
               <Ligne label="Empreintes">contrat {c.schemaHash} · schéma transmis {c.providerSchemaHash ?? 'aucun'} · adaptateur {c.adapterVersion}</Ligne>
+              {/* Lot 115 (#784, A3) : ce qui identifie VRAIMENT le couple, et la version réellement servie. */}
+              <Ligne label="Profil de génération">
+                {c.generationProfileHash === '-' ? 'aucun paramètre matériel' : c.generationProfileHash}
+              </Ligne>
+              <Ligne label="Version de modèle servie">
+                {c.servedModelVersion ?? 'jamais indiquée par le fournisseur'}
+                {c.versionUncertain ? ' · non indiquée au dernier constat (incertitude conservée, aucune version supposée)' : ''}
+              </Ligne>
               <Ligne label="Constats">{c.acceptedCount} acceptation(s) relevée(s) · {c.rejectionCount} refus ({c.consecutiveRejections} consécutif(s)) · {c.retestCount} réexamen(s)</Ligne>
               <Ligne label="Dates">dernier refus {c.lastRejectedAt ? formatDateTime(c.lastRejectedAt) : '—'} · dernière acceptation {c.lastAcceptedAt ? formatDateTime(c.lastAcceptedAt) : '—'}
                 {c.nextRetestAt ? ` · prochain essai avec schéma au plus tôt ${formatDateTime(c.nextRetestAt)}` : ''}{c.retestInProgress ? ' · essai en cours' : ''}</Ligne>

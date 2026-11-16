@@ -55,11 +55,15 @@ const requete = () => ({
   promptVariables: t1TestVariables('facture'), outputSchema: T1GroupUploadOutput, idempotencyKey: `l114j-${Math.random()}`,
 });
 const contrat = () => rc.resolveRuntimeContract({ schemaName: 'T1GroupUploadOutput', operationCode: T1_TEST_OPERATION, callerSchema: T1GroupUploadOutput }).contract;
+// Règle complétée (carte #784, A3) : l'identité d'un couple porte l'empreinte du PROFIL DE GÉNÉRATION effectif.
+// Les tests la relèvent telle que la passerelle l'a écrite — aucune valeur figée, aucun profil deviné.
+const profilCourant = (): string => [...base.values()][0]?.key.generationProfileHash ?? '-';
 const cleDe = (model: string, over: Partial<Key> = {}): Key => {
   const c = contrat();
   return {
     provider: 'fake', model, operationCode: T1_TEST_OPERATION, contractId: c.contractId, contractVersion: c.contractVersion, schemaHash: c.schemaHash,
-    providerSchemaHash: rc.providerSchemaHash(providerJsonSchema(c.canonical).schema), adapterVersion: PROVIDER_SCHEMA_ADAPTER_VERSION, ...over,
+    providerSchemaHash: rc.providerSchemaHash(providerJsonSchema(c.canonical).schema), adapterVersion: PROVIDER_SCHEMA_ADAPTER_VERSION,
+    generationProfileHash: profilCourant(), ...over,
   };
 };
 const traces = () => capture.traces as Trace[];
@@ -72,7 +76,25 @@ const enLigne = (s: import('../schema-compat').SchemaCoupleState): CoupleRow => 
   ...s, firstRejectedAt: s.lastRejectedAt, lastHttpStatus: null, lastProviderCode: null, appVersion: null, createdAt: null, updatedAt: null,
 });
 const magasin: Partial<StoreApi> = {
-  loadKnownCouples: async () => [...base.values()].filter((r) => r.state !== 'UNSUPPORTED_BY_CONTRACT' && r.state !== 'NOT_TESTED'),
+  // Règle complétée (carte #784, B1) : la lecture du cache dit si elle est TRONQUÉE, et la décision d'un couple
+  // absent du cache passe par une lecture par clé (`getCouple`).
+  loadKnownCouples: async () => ({
+    rows: [...base.values()].filter((r) => r.state !== 'UNSUPPORTED_BY_CONTRACT' && r.state !== 'NOT_TESTED'),
+    truncated: false,
+  }),
+  getCouple: async (keyId) => base.get(keyId) ?? null,
+  scanCouples: async (f = {}) => [...base.values()]
+    .filter((r) => (!f.states || f.states.length === 0 || f.states.includes(r.state)) && (!f.afterKeyId || r.keyId > f.afterKeyId))
+    .sort((a, b) => (a.keyId < b.keyId ? -1 : 1)).slice(0, f.limit ?? 500),
+  // Lot 115 (#784, A3) : version servie mémorisée ; une version différente de celle du refus rend l'essai dû.
+  noteServedModelVersion: async (keyId, version, now) => {
+    const prev = base.get(keyId);
+    const next = prev ? C.applyServedVersion(prev, version, now) : null;
+    if (!next) return null;
+    const row = enLigne(next);
+    base.set(keyId, row);
+    return row;
+  },
   recordRejection: async (key, ev, now) => {
     ecritures.rejections++;
     const prev = base.get(C.coupleKeyId(key)) ?? null;
@@ -81,10 +103,10 @@ const magasin: Partial<StoreApi> = {
     base.set(next.keyId, next);
     return { state: next, transition: !dejaMemorise };
   },
-  recordAcceptance: async (key, _app, now) => {
+  recordAcceptance: async (key, _app, now, servedModelVersion = null) => {
     ecritures.acceptances++;
     const prev = base.get(C.coupleKeyId(key)) ?? null;
-    const next = enLigne(C.applySchemaOutcome(prev, key, { kind: 'ACCEPTED' }, now));
+    const next = enLigne(C.applySchemaOutcome(prev, key, { kind: 'ACCEPTED', servedModelVersion }, now));
     base.set(next.keyId, next);
     return { state: next, previous: prev?.state ?? null };
   },
@@ -153,7 +175,15 @@ describe('L114J-GW — refus mémorisé : partagé, durable, tracé (AC06, AC17)
     ]);
     for (const a of t.providerAttempts!) expect(typeof a.durationMs).toBe('number');
     // Décision tracée : couple non testé, schéma transmis, versions de politique et d'adaptateur.
-    expect(t.providerRequest!.schemaCompat).toEqual({ state: 'NOT_TESTED', decision: 'sent', why: 'not_tested', retest: false, policyVersion: P.version, adapterVersion: PROVIDER_SCHEMA_ADAPTER_VERSION });
+    // Règle complétée (carte #784, A3) : la trace porte en plus l'empreinte du PROFIL DE GÉNÉRATION
+    // effectif (composante de l'identité du couple) et la version de modèle SERVIE connue — `null` ici,
+    // le couple n'ayant jamais été observé : aucune version n'est inventée.
+    expect(t.providerRequest!.schemaCompat).toEqual({
+      state: 'NOT_TESTED', decision: 'sent', why: 'not_tested', retest: false, policyVersion: P.version,
+      adapterVersion: PROVIDER_SCHEMA_ADAPTER_VERSION, generationProfileHash: profilCourant(), servedModelVersion: null,
+    });
+    // Le profil n'est pas une valeur figée : il est MESURÉ (empreinte stable, non vide pour ce profil réel).
+    expect(profilCourant()).toMatch(/^[0-9a-f]{12}$/);
     // Mémoire PARTAGÉE : une ligne par couple, motif et réexamen.
     const row = base.get(C.coupleKeyId(cleDe(res.model)))!;
     expect(row).toMatchObject({ state: 'REJECTED_CONFIRMED', reason: 'GENERIC_400_ANSWERED_WITHOUT_SCHEMA', rejectionCount: 1, nextRetestAt: T0 + P.firstRetestMs, lastHttpStatus: 400, lastProviderCode: 'INVALID_ARGUMENT' });

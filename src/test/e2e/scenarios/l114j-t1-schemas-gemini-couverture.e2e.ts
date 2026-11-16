@@ -89,7 +89,10 @@ scenario('L114J', 'Schémas de sortie : mémoire partagée des refus, réexamen 
     expect(prises.filter((x) => x !== null)).toHaveLength(1);
     expect(await store.getCouple(keyId)).toMatchObject({ state: 'NEEDS_RECHECK', retestCount: 1, retestClaimedUntil: du + P.retestLeaseMs });
     // La passerelle d'une autre instance connaît l'état (refus et réexamen en cours).
-    expect((await store.loadKnownCouples())!.find((c) => c.keyId === keyId)?.state).toBe('NEEDS_RECHECK');
+    // Règle complétée (carte #784, B1) : la lecture bornée du cache dit maintenant si elle est TRONQUÉE
+    // (`{ rows, truncated }`) — l'état reste lu de la même façon, et la décision d'un couple absent du
+    // cache passe désormais par une lecture par clé.
+    expect((await store.loadKnownCouples())!.rows.find((c) => c.keyId === keyId)?.state).toBe('NEEDS_RECHECK');
 
     // Réexamen refusé : délai doublé, réservation levée.
     const r2 = await store.recordRejection(key, refus, du + 50);
@@ -125,8 +128,12 @@ scenario('L114J', 'Schémas de sortie : mémoire partagée des refus, réexamen 
     // Matrice du BO : les deux couples, filtrés par modèle.
     expect((await store.listCouples({ model: 'modele-e2e-114j' }))!.map((c) => c.keyId)).toEqual([keyId]);
     // Aucun contenu en base : identifiants, versions, empreintes, compteurs.
+    // Règle complétée (carte #784, §A3, migration 1795) : quatre colonnes ADDITIVES — empreinte du
+    // profil de génération, version de modèle servie (courante et au moment de l'état) et marque
+    // d'incertitude. Ce sont des empreintes, des versions et un booléen : l'interdiction visée
+    // (aucun contenu de document, de prompt ni de schéma) reste entièrement tenue.
     const [ligne] = await sql`SELECT * FROM ai_schema_compatibility WHERE key_id = ${keyId}`;
-    expect(Object.keys(ligne).sort()).toEqual(['accepted_count', 'adapter_version', 'app_version', 'consecutive_rejections', 'contract_id', 'contract_version', 'created_at', 'first_rejected_at', 'id', 'key_id', 'last_accepted_at', 'last_http_status', 'last_provider_code', 'last_rejected_at', 'model', 'next_retest_at', 'operation_code', 'policy_version', 'provider', 'provider_schema_hash', 'reason_code', 'rejection_count', 'retest_claimed_until', 'retest_count', 'schema_hash', 'state', 'updated_at']);
+    expect(Object.keys(ligne).sort()).toEqual(['accepted_count', 'adapter_version', 'app_version', 'consecutive_rejections', 'contract_id', 'contract_version', 'created_at', 'first_rejected_at', 'generation_profile_hash', 'id', 'key_id', 'last_accepted_at', 'last_http_status', 'last_provider_code', 'last_rejected_at', 'model', 'next_retest_at', 'operation_code', 'policy_version', 'provider', 'provider_schema_hash', 'reason_code', 'rejection_count', 'retest_claimed_until', 'retest_count', 'schema_hash', 'served_model_version', 'served_version_at_state', 'state', 'updated_at', 'version_uncertain']);
   });
 
   it('E2E-L114J-02 (AC04, AC06, AC17, AC18) — T1 : refus mémorisé en base, connu après redémarrage, supervision et alerte, réexamen accepté', async () => {
@@ -264,8 +271,23 @@ scenario('L114J', 'Schémas de sortie : mémoire partagée des refus, réexamen 
     expect(await alertes()).toHaveLength(3);
     const autresAvant = await sql<{ n: number }[]>`SELECT count(*)::int AS n FROM ai_alerts WHERE code <> ${CODE} AND resolved_at IS NULL`;
 
-    const bilan = await alerts.reevaluateSchemaCompatAlerts();
-    expect(bilan).toEqual({ examined: 3, resolved: { SCHEMA_ACCEPTED_AGAIN: 1, SCHEMA_SUPERSEDED: 1 }, keptActive: 1, keptUndetermined: 0, raised: 1, unavailable: false });
+    // Règle complétée (carte #784, §E1) : la réévaluation croise désormais le ROUTAGE RÉEL. Les modèles
+    // de ce scénario sont fictifs : la chaîne configurée est injectée pour qu'ils soient tenus pour
+    // ACTIFS — sans quoi ils seraient « retirés » et le scénario perdrait son objet. Le cas du modèle
+    // réellement retiré, et celui du routage illisible, sont couverts plus bas (E2E-L784-02).
+    const chaineFictive = async () => ['modele-114j-a', 'modele-114j-b', 'modele-114j-c', 'modele-114j-d'];
+    const bilan = await alerts.reevaluateSchemaCompatAlerts({ readChain: chaineFictive });
+    expect(bilan).toMatchObject({
+      examined: 3, resolved: { SCHEMA_ACCEPTED_AGAIN: 1, SCHEMA_SUPERSEDED: 1, SCHEMA_MODEL_WITHDRAWN: 0 },
+      keptActive: 1, keptUndetermined: 0, keptRoutingUnknown: 0, raised: 1, unavailable: false,
+    });
+    // Règle complétée (carte #784, §E2) : le parcours est allé jusqu'au bout, et le bilan est chiffré.
+    expect(bilan.done).toBe(true);
+    expect(bilan.resumeFromAlertId).toBeNull();
+    expect(bilan.before.openAlerts).toBe(3);
+    expect(bilan.after.openAlerts).toBe(2);
+    expect(bilan.couplesScanned).toBeGreaterThanOrEqual(3);
+    expect(bilan.before.couplesByState).toMatchObject({ REJECTED_CONFIRMED: expect.any(Number) });
     const al = await alertes();
     const par = (m: string) => al.filter((a) => a.details.model === m);
     expect(par('modele-114j-a')[0]).toMatchObject({ resolution_code: 'SCHEMA_SUPERSEDED' });
@@ -278,8 +300,13 @@ scenario('L114J', 'Schémas de sortie : mémoire partagée des refus, réexamen 
     expect((await store.getCouple(coupleKeyId(ancien)))!).toMatchObject({ state: 'REJECTED_CONFIRMED', rejectionCount: 1 });
 
     // Second passage (contrôle quotidien) : rien ne change, aucun doublon.
-    const bis = await alerts.reevaluateSchemaCompatAlerts();
-    expect(bis).toEqual({ examined: 2, resolved: { SCHEMA_ACCEPTED_AGAIN: 0, SCHEMA_SUPERSEDED: 0 }, keptActive: 2, keptUndetermined: 0, raised: 0, unavailable: false });
+    const bis = await alerts.reevaluateSchemaCompatAlerts({ readChain: chaineFictive });
+    expect(bis).toMatchObject({
+      examined: 2, resolved: { SCHEMA_ACCEPTED_AGAIN: 0, SCHEMA_SUPERSEDED: 0, SCHEMA_MODEL_WITHDRAWN: 0 },
+      keptActive: 2, keptUndetermined: 0, keptRoutingUnknown: 0, raised: 0, unavailable: false, done: true,
+    });
+    // Idempotence chiffrée : autant d'alertes ouvertes avant qu'après le second passage.
+    expect(bis.after.openAlerts).toBe(bis.before.openAlerts);
     expect(await alertes()).toHaveLength(4);
     // Alertes des autres domaines (couverture T1 #775, modèles #771, tarifs #770) : jamais touchées.
     const autresApres = await sql<{ n: number }[]>`SELECT count(*)::int AS n FROM ai_alerts WHERE code <> ${CODE} AND resolved_at IS NULL`;

@@ -111,10 +111,10 @@ describe('L115E-PROJ — la factorisation réduit les dimensions documentées SA
     expect(JSON.stringify(d.schema)).not.toContain('"$defs"');
     expect([...SCHEMA_SHAPES]).toEqual(['factorise', 'inline']);
     // Forme par défaut : factorisée ; `AI_PROVIDER_SCHEMA_SHAPE=inline` rend la forme antérieure sans redéploiement.
-    expect(providerSchemaShape({} as unknown as NodeJS.ProcessEnv)).toBe('factorise');
-    expect(providerSchemaShape({ AI_PROVIDER_SCHEMA_SHAPE: 'inline' } as unknown as NodeJS.ProcessEnv)).toBe('inline');
-    expect(providerSchemaShape({ AI_PROVIDER_SCHEMA_SHAPE: ' INLINE ' } as unknown as NodeJS.ProcessEnv)).toBe('inline');
-    expect(providerSchemaShape({ AI_PROVIDER_SCHEMA_SHAPE: 'factorise' } as unknown as NodeJS.ProcessEnv)).toBe('factorise');
+    expect(providerSchemaShape({} as NodeJS.ProcessEnv)).toBe('factorise');
+    expect(providerSchemaShape({ AI_PROVIDER_SCHEMA_SHAPE: 'inline' } as NodeJS.ProcessEnv)).toBe('inline');
+    expect(providerSchemaShape({ AI_PROVIDER_SCHEMA_SHAPE: ' INLINE ' } as NodeJS.ProcessEnv)).toBe('inline');
+    expect(providerSchemaShape({ AI_PROVIDER_SCHEMA_SHAPE: 'factorise' } as NodeJS.ProcessEnv)).toBe('factorise');
   });
 
   it('L115E-PROJ-06 — une référence non résolue est détectée comme PERTE (la factorisation ne masque rien)', () => {
@@ -142,10 +142,10 @@ describe('L115E-PROJ — profil de complexité et plafond d’exploitation (A2)'
   });
 
   it('L115E-PROJ-08 — AUCUN plafond de propriétés par défaut ; posé en exploitation, le schéma n’est plus transmis', () => {
-    expect(providerSchemaPropertyCap({} as unknown as NodeJS.ProcessEnv)).toBeNull();
-    expect(providerSchemaPropertyCap({ AI_PROVIDER_SCHEMA_MAX_PROPERTIES: '0' } as unknown as NodeJS.ProcessEnv)).toBeNull();
-    expect(providerSchemaPropertyCap({ AI_PROVIDER_SCHEMA_MAX_PROPERTIES: 'abc' } as unknown as NodeJS.ProcessEnv)).toBeNull();
-    expect(providerSchemaPropertyCap({ AI_PROVIDER_SCHEMA_MAX_PROPERTIES: ' 120 ' } as unknown as NodeJS.ProcessEnv)).toBe(120);
+    expect(providerSchemaPropertyCap({} as NodeJS.ProcessEnv)).toBeNull();
+    expect(providerSchemaPropertyCap({ AI_PROVIDER_SCHEMA_MAX_PROPERTIES: '0' } as NodeJS.ProcessEnv)).toBeNull();
+    expect(providerSchemaPropertyCap({ AI_PROVIDER_SCHEMA_MAX_PROPERTIES: 'abc' } as NodeJS.ProcessEnv)).toBeNull();
+    expect(providerSchemaPropertyCap({ AI_PROVIDER_SCHEMA_MAX_PROPERTIES: ' 120 ' } as NodeJS.ProcessEnv)).toBe(120);
     const contract = contratT1();
     const sansPlafond = providerJsonSchema(contract.canonical, { shape: 'factorise', maxProperties: null });
     expect(sansPlafond.omitted).toBeNull();

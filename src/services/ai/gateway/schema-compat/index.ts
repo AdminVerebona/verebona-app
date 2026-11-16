@@ -19,7 +19,7 @@
  * s'applique ; un réexamen non réservable n'a pas lieu (jamais de rafale).
  */
 import {
-  SCHEMA_COMPAT_POLICY, applySchemaOutcome, claimRetestOf, coupleKeyId, schemaUseOf,
+  SCHEMA_COMPAT_POLICY, applySchemaOutcome, applyServedVersion, claimRetestOf, coupleKeyId, schemaUseOf,
   type SchemaCompatState, type SchemaCoupleKey, type SchemaCoupleState, type SchemaOutcome,
 } from './policy';
 
@@ -28,6 +28,15 @@ export * from './policy';
 /** Relecture de la mémoire partagée (délai maximal de propagation d'un refus entre instances). */
 export const SHARED_TTL_MS = 10_000;
 const LOOKUP_TIMEOUT_MS = 2_000;
+/**
+ * Lot 115 (carte #784, §B1) — BORNES des mémoires de ce processus. Le cache
+ * partagé ne porte que les couples les plus récemment actifs : au-delà, la
+ * décision d'un couple absent est prise par une LECTURE PAR CLÉ, jamais par
+ * une absence (un refus ancien ne doit pas être oublié parce qu'il est vieux).
+ */
+const LOCAL_MAX = 5_000;
+/** Durée pendant laquelle « ce couple n'existe pas en base » est tenu pour acquis (évite une lecture par appel). */
+const MISS_TTL_MS = SHARED_TTL_MS;
 
 /** Décision d'envoi du schéma pour UN appel, tracée avec la requête fournisseur. */
 export interface SchemaDecision {
@@ -42,14 +51,27 @@ export interface SchemaDecision {
   /** `not_tested`, `qualified`, `retest_due`, `recent_rejection`, `retest_in_progress`, `retest_not_claimed`. */
   why: string;
   policyVersion: number;
+  /** Lot 115 (#784, A3) : dernière version de modèle SERVIE connue pour ce couple ; `null` : jamais observée. */
+  servedModelVersion?: string | null;
 }
 
 // ── Mémoire locale (premier niveau) ─────────────────────────────────────────
 
 const local = new Map<string, SchemaCoupleState>();
-let shared: { at: number; byKey: Map<string, SchemaCoupleState> } | null = null;
+let shared: { at: number; byKey: Map<string, SchemaCoupleState>; truncated: boolean } | null = null;
 let sharedLoading: Promise<void> | null = null;
 const notedOnce = new Map<string, number>();
+/** Couples lus par clé et ABSENTS de la base (bornée dans le temps et en taille). */
+const misses = new Map<string, number>();
+
+/** Mémoires de ce processus bornées : la plus anciennement vue sort d'abord. */
+function bound<T>(m: Map<string, T>, max: number): void {
+  while (m.size > max) {
+    const first = m.keys().next();
+    if (first.done) return;
+    m.delete(first.value);
+  }
+}
 let dbForcedInTests = false;
 let storeOverride: Partial<typeof import('./store')> | null = null;
 
@@ -76,6 +98,7 @@ export function __resetSchemaCompatProcessForTests(): void {
   shared = null;
   sharedLoading = null;
   notedOnce.clear();
+  misses.clear();
 }
 
 /** Réservé aux tests (nom historique, lot 33D) : oublie les refus mémorisés localement. */
@@ -102,13 +125,19 @@ async function refreshShared(now: number): Promise<void> {
   if (!sharedLoading) {
     sharedLoading = (async () => {
       try {
-        const rows = await withTimeout((await store()).loadKnownCouples(), null);
+        const page = await withTimeout((await store()).loadKnownCouples(), null);
         // Illisible ou lente : dernier état connu conservé (un refus mémorisé n'est jamais levé par défaut de lecture).
-        if (rows === null) { if (shared) shared.at = now; return; }
-        shared = { at: now, byKey: new Map<string, SchemaCoupleState>(rows.map((r): [string, SchemaCoupleState] => [r.keyId, r])) };
-        // Un couple que la base ne tient plus pour refusé (accepté ailleurs) n'est plus refusé ici.
-        for (const [k, s] of local) {
-          if ((s.state === 'REJECTED_CONFIRMED' || s.state === 'NEEDS_RECHECK') && !shared.byKey.has(k) && (s.lastRejectedAt ?? 0) < now - SHARED_TTL_MS) local.delete(k);
+        if (page === null) { if (shared) shared.at = now; return; }
+        shared = {
+          at: now, truncated: page.truncated,
+          byKey: new Map<string, SchemaCoupleState>(page.rows.map((r): [string, SchemaCoupleState] => [r.keyId, r])),
+        };
+        // Un couple que la base ne tient plus pour refusé (accepté ailleurs) n'est plus refusé ici. Jamais
+        // lorsque le cache est TRONQUÉ : une absence ne voudrait alors rien dire (lot 115, #784, B1).
+        if (!page.truncated) {
+          for (const [k, s] of local) {
+            if ((s.state === 'REJECTED_CONFIRMED' || s.state === 'NEEDS_RECHECK') && !shared.byKey.has(k) && (s.lastRejectedAt ?? 0) < now - SHARED_TTL_MS) local.delete(k);
+          }
         }
       } finally { sharedLoading = null; }
     })();
@@ -131,6 +160,36 @@ function lastEventOf(s: SchemaCoupleState): number {
 }
 
 /**
+ * Lot 115 (carte #784, §B1) — ÉTAT RÉEL d'un couple pour la DÉCISION.
+ *
+ * Le cache partagé est borné : un couple actif mais ancien peut en être
+ * absent. Une absence ne vaut donc pas « jamais testé » : quand le cache est
+ * tronqué (ou n'a jamais été lisible), le couple est lu PAR SA CLÉ avant de
+ * décider. Le résultat alimente les mémoires de ce processus ; une absence
+ * confirmée est retenue brièvement (`MISS_TTL_MS`) pour ne pas relire la base
+ * à chaque appel d'un couple réellement nouveau. Ne lève jamais.
+ */
+async function resolveCouple(keyId: string, now: number): Promise<SchemaCoupleState | null> {
+  const connu = known(keyId);
+  if (connu) return connu;
+  if (!dbAllowed()) return null;
+  // Cache complet et à jour : l'absence est une information (le couple n'est ni refusé ni qualifié).
+  if (shared && !shared.truncated) return null;
+  const vu = misses.get(keyId);
+  if (vu !== undefined && now - vu < MISS_TTL_MS) return null;
+  const row = await withTimeout((await store()).getCouple(keyId), null);
+  if (!row) {
+    misses.set(keyId, now);
+    bound(misses, LOCAL_MAX);
+    return null;
+  }
+  local.set(keyId, row);
+  bound(local, LOCAL_MAX);
+  shared?.byKey.set(keyId, row);
+  return row;
+}
+
+/**
  * Faut-il transmettre le schéma à ce couple ? Lit la mémoire (partagée si
  * accessible) ; un réexamen dû est RÉSERVÉ avant d'être tenté (en base :
  * atomique entre instances). Ne lève jamais.
@@ -140,10 +199,11 @@ export async function decideSchemaUse(key: SchemaCoupleKey, now: number = Date.n
   const base = { keyId, key, policyVersion: SCHEMA_COMPAT_POLICY.version };
   try {
     await refreshShared(now);
-    const s = known(keyId);
+    const s = await resolveCouple(keyId, now);
     const use = schemaUseOf(s, now);
     const state: SchemaCompatState = s?.state ?? 'NOT_TESTED';
-    if (!use.retest) return { ...base, send: use.send, retest: false, state, why: use.why };
+    const servedModelVersion = s?.servedModelVersion ?? null;
+    if (!use.retest) return { ...base, send: use.send, retest: false, state, why: use.why, servedModelVersion };
     // Réexamen dû : réservation locale d'abord (requêtes concurrentes du même processus)…
     const claimed = claimRetestOf(s!, now);
     if (!claimed) return { ...base, send: false, retest: false, state, why: 'retest_in_progress' };
@@ -164,7 +224,7 @@ export async function decideSchemaUse(key: SchemaCoupleKey, now: number = Date.n
         shared?.byKey.set(keyId, row);
       }
     }
-    return { ...base, send: true, retest: true, state, why: 'retest_due' };
+    return { ...base, send: true, retest: true, state, why: 'retest_due', servedModelVersion };
   } catch {
     return { ...base, send: !isLocallyRejected(keyId, now), retest: false, state: local.get(keyId)?.state ?? 'NOT_TESTED', why: 'memory_unavailable' };
   }
@@ -233,6 +293,8 @@ export function reportSchemaOutcome(d: Pick<SchemaDecision, 'key' | 'keyId' | 'r
   const next = applySchemaOutcome(prev, d.key, o, now);
   if (o.kind === 'INCONCLUSIVE' && !d.retest) return;
   local.set(d.keyId, next);
+  bound(local, LOCAL_MAX);
+  misses.delete(d.keyId);
   if (!dbAllowed()) return;
   if (o.kind === 'ACCEPTED' && prev?.state === 'QUALIFIED') {
     const last = notedOnce.get(d.keyId) ?? 0;
@@ -244,7 +306,7 @@ export function reportSchemaOutcome(d: Pick<SchemaDecision, 'key' | 'keyId' | 'r
       const S = await store();
       const appVersion = ev.appVersion ?? null;
       if (o.kind === 'ACCEPTED') {
-        const r = await S.recordAcceptance(d.key, appVersion, now);
+        const r = await S.recordAcceptance(d.key, appVersion, now, o.servedModelVersion ?? null);
         if (!r) return;
         shared?.byKey.set(d.keyId, r.state);
         local.set(d.keyId, r.state);
@@ -252,7 +314,10 @@ export function reportSchemaOutcome(d: Pick<SchemaDecision, 'key' | 'keyId' | 'r
           await onTransition({ key: d.key, keyId: d.keyId, to: 'QUALIFIED', from: r.previous, state: r.state });
         }
       } else if (o.kind === 'REJECTED') {
-        const r = await S.recordRejection(d.key, { reason: o.reason, httpStatus: ev.httpStatus ?? null, providerCode: ev.providerCode ?? null, appVersion }, now);
+        const r = await S.recordRejection(d.key, {
+          reason: o.reason, httpStatus: ev.httpStatus ?? null, providerCode: ev.providerCode ?? null, appVersion,
+          servedModelVersion: o.servedModelVersion ?? null,
+        }, now);
         if (!r) return;
         shared?.byKey.set(d.keyId, r.state);
         local.set(d.keyId, r.state);
@@ -262,6 +327,42 @@ export function reportSchemaOutcome(d: Pick<SchemaDecision, 'key' | 'keyId' | 'r
       }
     } catch (e) {
       console.warn('[schema-compat] mémoire partagée non écrite (non bloquant) :', String((e as Error)?.message ?? e).slice(0, 200));
+    }
+  })();
+  pending.add(p);
+  void p.finally(() => pending.delete(p));
+}
+
+/**
+ * Lot 115 (carte #784, §A3) — VERSION DE MODÈLE RÉELLEMENT SERVIE, relevée
+ * après la réponse du fournisseur (que le schéma ait été transmis ou non : un
+ * appel en mode JSON renseigne la version tout autant).
+ *
+ *   · version absente → incertitude MARQUÉE, rien n'est déduit ni inventé ;
+ *   · version différente de celle du refus mémorisé → ce refus a été constaté
+ *     sur une autre version servie : le prochain essai avec schéma devient dû
+ *     (UN seul, réservé — aucune rafale, aucune cascade vers d'autres
+ *     modèles). L'état reste « refusé » : rien n'est déclaré compatible.
+ *
+ * Écriture lancée SANS attente, jamais bloquante pour l'appel. Un couple
+ * inconnu n'est pas créé.
+ */
+export function reportServedModelVersion(key: SchemaCoupleKey, servedModelVersion: string | null, now: number = Date.now()): void {
+  const keyId = coupleKeyId(key);
+  const prev = known(keyId);
+  if (!prev) return;
+  const next = applyServedVersion(prev, servedModelVersion, now);
+  if (!next) return;
+  local.set(keyId, next);
+  bound(local, LOCAL_MAX);
+  shared?.byKey.set(keyId, next);
+  if (!dbAllowed()) return;
+  const p: Promise<void> = (async () => {
+    try {
+      const row = await (await store()).noteServedModelVersion(keyId, servedModelVersion, now);
+      if (row) { local.set(keyId, row); shared?.byKey.set(keyId, row); }
+    } catch (e) {
+      console.warn('[schema-compat] version servie non mémorisée (non bloquant) :', String((e as Error)?.message ?? e).slice(0, 200));
     }
   })();
   pending.add(p);

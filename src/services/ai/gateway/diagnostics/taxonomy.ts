@@ -415,7 +415,20 @@ export interface ProviderRequestTrace {
    * `retest_due`, `recent_rejection`, `retest_in_progress`, `retest_not_claimed`, `memory_unavailable`),
    * réexamen réservé, versions de la politique et de l'adaptateur. Absent : aucun schéma transmissible.
    */
-  schemaCompat?: { state: string; decision: 'sent' | 'skipped'; why: string; retest: boolean; policyVersion: number; adapterVersion: string };
+  schemaCompat?: {
+    state: string; decision: 'sent' | 'skipped'; why: string; retest: boolean; policyVersion: number; adapterVersion: string;
+    /** Lot 115 (#784, A3) : empreinte du profil de génération effectif, composante de l'identité du couple ('-' : aucun paramètre matériel). */
+    generationProfileHash?: string;
+    /** Lot 115 (#784, A3) : dernière version de modèle SERVIE connue pour ce couple ; `null` : jamais observée. */
+    servedModelVersion?: string | null;
+  };
+  /**
+   * Lot 115 (#784, §A) — PROFIL DE COMPLEXITÉ du schéma transmis (propriétés,
+   * énumérations, unions, profondeur, bornes imbriquées, taille) et forme
+   * (`factorise` / `inline`). Mesure, jamais cause : de quoi corréler un refus
+   * réel à une dimension documentée au lieu de lui attribuer une cause.
+   */
+  schemaProfile?: { shape: string; chars: number; properties: number; enumValues: number; unionBranches: number; depth: number; nestedArrayBound: number };
   /** Lot 114 (#776) : branches du contrat que la projection aurait perdues (motif `projection_lossy` : schéma non transmis). */
   lostBranches?: string[];
   /** `application/json` ou `null` (texte libre). */
@@ -432,6 +445,16 @@ export interface ProviderRequestTrace {
  * puis l'éventuel nouvel essai du MÊME modèle sans `responseSchema`. Ce
  * n'est ni un fallback modèle, ni une tentative du job, ni une réparation.
  */
+/**
+ * Lot 115 (carte #784, §D1) — NATURE DU COÛT d'une tentative :
+ *   · `OBSERVED`      le fournisseur a rendu une consommation et le tarif est connu ;
+ *   · `ZERO_REPORTED` le fournisseur a explicitement rendu une consommation NULLE ;
+ *   · `NO_PRICE`      consommation rendue, tarif du modèle inconnu : coût non calculable ;
+ *   · `UNKNOWN`       aucune consommation rendue (refus, délai, transfert) — un
+ *                     HTTP 400 ne prouve PAS à lui seul 0 € : rien n'est supposé.
+ */
+export type AttemptCostStatus = 'OBSERVED' | 'ZERO_REPORTED' | 'NO_PRICE' | 'UNKNOWN';
+
 export interface ProviderAttemptTrace {
   /** 1 : tentative initiale ; 2 : nouvel essai sans schéma. */
   step: number;
@@ -449,6 +472,42 @@ export interface ProviderAttemptTrace {
   providerErrorCode: string | null;
   family: AiFailureFamily | null;
   durationMs: number;
+  /**
+   * Lot 115 (carte #784, §D1) — CONSOMMATION ET COÛT DE CETTE TENTATIVE. Les
+   * agrégats de l'appel ne doivent pas faire disparaître une tentative
+   * facturable : chaque requête fournisseur réelle porte ici ses jetons et son
+   * coût, ou dit qu'ils sont inconnus. `null` : non rendu par le fournisseur.
+   */
+  inputTokens?: number | null;
+  outputTokens?: number | null;
+  /** Jetons de raisonnement (comptés dans le plafond de sortie chez Gemini). */
+  thoughtsTokens?: number | null;
+  /**
+   * Total rendu par le fournisseur quand il ne distingue pas entrée et sortie
+   * (cas d'une tentative REFUSÉE). Un total n'est ni une entrée ni une sortie :
+   * il n'est pas chiffrable (les tarifs diffèrent) et n'est jamais rangé dans
+   * l'une des deux colonnes — la tentative reste visible, le coût reste
+   * `UNKNOWN`, aucun montant n'est inventé.
+   */
+  totalTokens?: number | null;
+  /** Coût en micro-unités ; `null` : non calculable (voir `costStatus`), jamais 0 supposé. */
+  costMicros?: number | null;
+  costStatus?: AttemptCostStatus;
+  /** Version de modèle réellement SERVIE pour cette tentative (`null` : non indiquée). */
+  servedModelVersion?: string | null;
+  /**
+   * Lot 115 (carte #784, §A, §D1) — DIAGNOSTICABILITÉ d'un refus réel :
+   * extrait EXPURGÉ (masques de la passerelle) du corps d'erreur du
+   * fournisseur, borné. Aucun contenu de document ni de prompt — le corps d'une
+   * erreur de requête ne porte que le message du fournisseur.
+   */
+  providerErrorExcerpt?: string | null;
+  /** Taille sérialisée du schéma transmis par cette tentative (caractères) ; `null` : aucun schéma. */
+  schemaChars?: number | null;
+  /** Forme du schéma transmis (`factorise` : sous-schémas répétés en `$defs` / `$ref`). */
+  schemaShape?: string | null;
+  /** Propriétés du schéma transmis (dimension citée par la documentation du fournisseur). */
+  schemaProperties?: number | null;
 }
 
 /** Nouvel essai du même modèle sans structured output (compteur `structuredOutputRetries`). */

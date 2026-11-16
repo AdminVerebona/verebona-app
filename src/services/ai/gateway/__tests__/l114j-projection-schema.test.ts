@@ -12,7 +12,7 @@ import { AI_OPERATIONS, isMasterOperation } from '../../registry/operations';
 import { masterOutputSchemaFor } from '../master-output-schemas';
 import { resolveRuntimeContract } from '../output-resolution/runtime-contract';
 import {
-  providerJsonSchema, schemaBranches, lostBranchesOf, PROVIDER_SCHEMA_ADAPTER_VERSION, PROVIDER_MAX_ITEMS_KEPT,
+  providerJsonSchema, schemaBranches, lostBranchesOf, resolveSchemaRefs, PROVIDER_SCHEMA_ADAPTER_VERSION, PROVIDER_MAX_ITEMS_KEPT,
 } from '../output-resolution/provider-schema';
 import { splitPipe } from '../output-resolution/field-validation';
 import { geminiSchemaAcceptable, geminiSchemaIssues } from '../providers/gemini-schema-contract';
@@ -29,7 +29,10 @@ describe('L114J-PROJ — aucune branche du contrat n’est perdue (AC07)', () =>
     const { contract } = resolveRuntimeContract({ schemaName: 'T1AnalyzeDocumentOutput', operationCode: 't1_analyze_document', callerSchema: T1AnalyzeDocumentOutput });
     const ps = providerJsonSchema(contract.canonical);
     expect(ps.schema).not.toBeNull();
-    const branches = schemaBranches(ps.schema);
+    // Règle complétée (carte #784) : le schéma transmis est FACTORISÉ (`$defs` / `$ref`, sous-ensemble documenté
+    // du fournisseur). Les branches se lisent donc sur sa forme déployée — l'égalité stricte avec le contrat
+    // canonique reste exigée, à l'identique.
+    const branches = schemaBranches(resolveSchemaRefs(ps.schema!));
     // Familles nommées par la carte (travail 6) et le critère AC07.
     for (const top of ['document', 'entities', 'facts', 'tables', 'transcription', 'visual', 'businessOperationCandidates', 'valueDecisions']) {
       expect(branches, top).toContain(`$.${top}`);
@@ -98,7 +101,11 @@ describe('L114J-PROJ — adaptateur versionné (AC06 : invalidation après chang
     // Si ce test échoue : la projection a changé. INCRÉMENTER `PROVIDER_SCHEMA_ADAPTER_VERSION` (les
     // qualifications et refus mémorisés pour l'ancienne projection cessent de s'appliquer), puis mettre à jour
     // les deux valeurs ci-dessous ENSEMBLE.
-    expect({ version: PROVIDER_SCHEMA_ADAPTER_VERSION, empreinte }).toEqual({ version: 'ps-2026-11-a', empreinte: 'dcabac46d4a139fb' });
+    // Règle complétée (carte #784) : version 'ps-2026-11-b' — `$defs` / `$ref` transmis et forme factorisée par
+    // défaut. L'empreinte de CE schéma de référence est inchangée : il ne comporte aucun sous-schéma répété, donc
+    // sa forme factorisée n'étant pas plus petite, la forme déployée reste transmise.
+    expect({ version: PROVIDER_SCHEMA_ADAPTER_VERSION, empreinte }).toEqual({ version: 'ps-2026-11-b', empreinte: 'dcabac46d4a139fb' });
+    expect(ps.shape).toBe('inline');
     const txt = JSON.stringify(ps.schema);
     expect(txt).not.toContain('"pattern"');
     expect(txt).not.toContain('"maxLength"');
