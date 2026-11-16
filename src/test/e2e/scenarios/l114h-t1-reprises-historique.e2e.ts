@@ -237,15 +237,36 @@ scenario('L114H', 'T1 — reprises bornées, remise en file réelle, réévaluat
        WHERE file_id IN (${a}, ${b}, ${img}, ${d}) ORDER BY file_id`;
     expect(journal.map((j) => Number(j.file_id)).sort((x, y) => x - y)).toEqual([a, b, img].sort((x, y) => x - y));
     const ja = journal.find((j) => Number(j.file_id) === a)!;
+    // ════════════════════════════════════════════════════════════════════
+    // Règle remplacée (carte #792, écart P1-01) : l'issue était
+    // `STILL_UNRESOLVED`, car aucune unité n'était requalifiée. Le contrôle
+    // par valeur ne demande plus DEUX valeurs significatives : l'unité 1, que
+    // ce scénario déclare COUVERTE PAR UN FAIT sans écrire le moindre fait en
+    // base, n'a donc plus de preuve relue pour sa valeur et redevient non
+    // résolue — l'issue de la réévaluation est `RECONCILED`. Le reste de
+    // l'intention du scénario est inchangé et toujours vérifié : échéance
+    // retirée, alerte obsolète close, aucun appel IA, campagne idempotente.
+    // ════════════════════════════════════════════════════════════════════
     expect(ja).toMatchObject({
-      account_id: c1.id, rules_version: T1_COVERAGE_RULES_VERSION, outcome: 'STILL_UNRESOLVED', attempts: 1,
+      account_id: c1.id, rules_version: T1_COVERAGE_RULES_VERSION, outcome: 'RECONCILED', attempts: 1,
       state_before: { qualityState: 'INCOMPLETE_RETRYABLE', retryScheduled: true }, state_after: { qualityState: 'COMPLETE_WITH_UNRESOLVED', retryScheduled: false },
       detail: { aiCalls: 0, retry: { pendingReleased: 1 } },
     });
+    // La requalification est MOTIVÉE et ancrée sur l'absence de preuve relue (jamais un faux COUVERT).
+    const ua = await sql<Json[]>`
+      SELECT source_unit_id AS id, coverage_status AS status, coverage_reason AS reason, coverage_provenance AS prov
+        FROM document_source_units WHERE file_id = ${a} ORDER BY ordinal`;
+    expect(ua[0]).toMatchObject({ status: 'UNRESOLVED', reason: 'values_partially_structured' });
+    expect(ua[0].prov).toMatchObject({ rule: 'covered_unit_values_partially_structured', previous: { status: 'COVERED', reason: 'fact' } });
     expect(ja.alerts).toEqual([expect.objectContaining({ action: 'CLOSED', fingerprint: `ai:t1-completeness:${a}` })]);
-    expect(journal.find((j) => Number(j.file_id) === b)).toMatchObject({ account_id: c2.id, outcome: 'UNCHANGED' });
+    // Règle remplacée (carte #792, écart P1-01), même cause que ci-dessus : l'unité 1 de ces documents est
+    // déclarée couverte par un fait que ce scénario n'écrit pas. Sa requalification fait de l'issue une
+    // écriture réelle (`FINAL_GAP`, `RECONCILED`) au lieu de « inchangé ». L'ESSENTIEL est inchangé et
+    // vérifié plus haut : la lacune avérée de (b) reste INCOMPLETE_FINAL avec son alerte OUVERTE, et
+    // l'incertitude de l'image (c) est conservée, sans alerte ni reprise.
+    expect(journal.find((j) => Number(j.file_id) === b)).toMatchObject({ account_id: c2.id, outcome: 'FINAL_GAP' });
     expect(journal.find((j) => Number(j.file_id) === b)!.alerts).toEqual([expect.objectContaining({ action: 'MAINTAINED' })]);
-    expect(journal.find((j) => Number(j.file_id) === img)).toMatchObject({ outcome: 'UNCHANGED' });
+    expect(journal.find((j) => Number(j.file_id) === img)).toMatchObject({ outcome: 'RECONCILED' });
 
     // Bilan cumulé (résultat réel de la base, comparé à l'état d'avant la campagne).
     const bilan = await getCoverageReassessmentReport();

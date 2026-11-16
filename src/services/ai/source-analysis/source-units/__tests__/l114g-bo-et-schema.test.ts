@@ -12,13 +12,19 @@
  */
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
-const base = vi.hoisted(() => ({ colonnes: ['coverage_provenance', 'residual_policy'] as string[], panne: false, requetes: [] as string[] }));
+// Carte #792 (écart P2-07) : les colonnes simulées comprennent `repair_state` (migration 0329), dont dépend
+// le MÊME chemin d'écriture que la provenance (1665) — chaque sonde répond sur ses propres colonnes.
+const base = vi.hoisted(() => ({
+  colonnes: ['coverage_provenance', 'repair_state', 'residual_policy'] as string[], panne: false, requetes: [] as string[],
+}));
 vi.mock('@/db', () => ({
   pgClient: {
     unsafe: vi.fn(async (q: string) => {
       if (base.panne) throw new Error('connexion perdue');
       if (/information_schema\.columns/.test(q) && /column_name = ANY/.test(q)) return base.colonnes.map((c) => ({ c }));
-      if (/information_schema\.columns/.test(q)) return [{ n: base.colonnes.length }];
+      // Sonde des colonnes de diagnostics (0329) : `repair_state` + 4 colonnes de la ligne de couverture.
+      if (/information_schema\.columns/.test(q) && /repair_state/.test(q)) return [{ n: base.colonnes.includes('repair_state') ? 5 : 4 }];
+      if (/information_schema\.columns/.test(q)) return [{ n: base.colonnes.filter((c) => c !== 'repair_state').length }];
       return [];
     }),
   },
@@ -30,14 +36,20 @@ const { pageCompletenessUnits, COMPLETENESS_PAGE_MAX } = await import('../comple
 const { deferredRepairText, pagingText, policyLabel } = await import('@/app/admin/ai-executions/_components/T1CompletenessUnits');
 type Row = import('../completeness-detail').CompletenessUnitRow;
 
-beforeEach(() => { base.colonnes = ['coverage_provenance', 'residual_policy']; base.panne = false; base.requetes = []; repo.__resetCoverageProvenanceProbeForTests(); });
+beforeEach(() => {
+  base.colonnes = ['coverage_provenance', 'repair_state', 'residual_policy'];
+  base.panne = false;
+  base.requetes = [];
+  repo.__resetCoverageProvenanceProbeForTests();
+  repo.__resetLayerDiagnosticsProbeForTests();
+});
 
 describe('L114G-S01 — P2-07 : migration 1665', () => {
   it('présente : prête ; partielle : colonne manquante nommée ; absente : les deux ; base en panne : non prête, sans lever', async () => {
     expect(await repo.coverageSchemaStatus()).toMatchObject({ ready: true, missing: [] });
-    base.colonnes = ['coverage_provenance'];
+    base.colonnes = ['coverage_provenance', 'repair_state'];
     expect(await repo.coverageSchemaStatus()).toMatchObject({ ready: false, missing: ['residual_policy'] });
-    base.colonnes = [];
+    base.colonnes = ['repair_state'];
     expect(await repo.coverageSchemaStatus()).toMatchObject({ ready: false, missing: ['coverage_provenance', 'residual_policy'] });
     base.panne = true;
     const r = await repo.coverageSchemaStatus();
@@ -65,6 +77,16 @@ describe('L114G-S01 — P2-07 : migration 1665', () => {
       expect((err as { code: string }).code).toBe('T1_COVERAGE_MIGRATION_1665_MISSING');
       expect(base.requetes.some((q) => q.startsWith('DELETE'))).toBe(false);
     }
+  });
+
+  // Carte #792 (écart P2-07) : défaut reproduit puis corrigé — 1665 appliquée, 0329 absente.
+  it('1665 présente mais `repair_state` (0329) absente : la provenance ne serait PAS écrite → même refus, colonne nommée', async () => {
+    base.colonnes = ['coverage_provenance', 'residual_policy'];
+    const t = tx();
+    const err = await repo.writeSourceLayer(t as never, couche({ residualPolicy: 'REPAIR_PENDING' }) as never).catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(repo.CoverageSchemaError);
+    expect((err as { missing: string[] }).missing).toEqual(['repair_state']);
+    expect(base.requetes.some((q) => q.startsWith('DELETE'))).toBe(false);
   });
 
   it('colonnes présentes : écriture normale (le refus ne concerne que la migration manquante)', async () => {
@@ -128,7 +150,11 @@ describe('L114G-S03 — P2-10 : libellés sans ambiguïté', () => {
       coverageRepair: null, sourceReread: { runs: 1, failed: 0, resolved: 2 }, retryAttempts: 1, lastRetryResult: 'NO_NEW_FACT',
       deferredRepair: { calls: 1, attemptedUnits: 3, newFacts: 0, decisions: { received: 2, valid: 1, invalid: 1, persisted: 2 }, linkage: { local: 1, relinked: 0, duplicates: 1 } },
     });
-    expect(t).toMatch(/Dernière reprise différée : 1 appel\(s\), 3 unité\(s\) soumise\(s\), 0 fait\(s\) ajouté\(s\)/);
+    // Lot 115F (carte #792, écart P2-10) : le total d'appels est dit « au total », les familles étant
+    // ventilées séparément (texte ciblé avec son coût, relecture du fichier).
+    expect(t).toMatch(/Dernière reprise différée : 1 appel\(s\) au total, 3 unité\(s\) soumise\(s\), 0 fait\(s\) ajouté\(s\)/);
+    // Diagnostic sans ventilation (écrit avant ce lot) : aucune ligne « Texte ciblé » inventée.
+    expect(t).not.toContain('Texte ciblé');
     expect(t).toMatch(/décisions de valeur : 2 reçue\(s\), 1 valide\(s\), 1 invalide\(s\), 2 écrite\(s\)/);
     expect(t).toMatch(/rattachements : 1 local\(aux\), 0 recalculé\(s\), 1 fait\(s\) déjà présent\(s\)/);
     expect(t).toMatch(/Relectures du fichier : 1 \(2 unité\(s\) levée\(s\), 0 en échec\)/);

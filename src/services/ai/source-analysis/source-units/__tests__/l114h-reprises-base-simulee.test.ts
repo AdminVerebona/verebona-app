@@ -60,6 +60,20 @@ const requete = vi.hoisted(() => async (q: string, params: unknown[] = []) => {
   if (/SELECT retry_attempts, to_jsonb\(c\) -> 'verification' ->> 'continuationRuns'/.test(x)) {
     return etat.couverture ? [{ retry_attempts: etat.couverture.retryAttempts, runs: String((etat.couverture.verification as Row | null)?.continuationRuns ?? 0) }] : [];
   }
+  // ────────────────────────────────────────────────────────────────────
+  // Carte #785 (§ 1) : le DROIT de remise en file est lu puis RÉSERVÉ avant tout enfilement.
+  //   · lecture des tentatives de la ligne (filtrée par le compte) ;
+  //   · réservation CONDITIONNELLE : la ligne n'est rendue que si le plafond le permet encore.
+  // ────────────────────────────────────────────────────────────────────
+  if (/SELECT retry_attempts FROM document_extraction_coverage WHERE file_id = \$1 AND account_id = \$2/.test(x)) {
+    return etat.couverture ? [{ retry_attempts: etat.couverture.retryAttempts }] : [];
+  }
+  if (/SET retry_attempts = retry_attempts \+ 1, updated_at = NOW\(\)/.test(x)) {
+    const c = etat.couverture;
+    if (!c || Number(c.retryAttempts) >= Number(params[2])) return [];
+    c.retryAttempts = Number(c.retryAttempts) + 1;
+    return [{ n: c.retryAttempts }];
+  }
   // Remise en file : travail vivant relu, refus transitoires déjà subis.
   if (/FROM ai_job_queue/.test(x)) return etat.travaux;
   if (/'requeue' ->> 'transientRefusals'/.test(x)) return [{ refus: String(etat.refusTransitoires) }];
@@ -88,6 +102,8 @@ vi.mock('../repository', async (orig) => ({
   ...(await orig<typeof import('../repository')>()),
   sourceLayerReady: async () => true,
   loadDocumentSourceUnits: async () => etat.unites,
+  // Carte #792 (écart P2-09) : la lecture COMPLÈTE de la couche A (pages successives) remplace `limit: 50 000`.
+  loadAllDocumentSourceUnits: async () => etat.unites,
   loadDocumentCoverage: async () => etat.couverture,
   loadUnresolvedDocumentFacts: async () => [],
 }));
@@ -96,7 +112,7 @@ vi.mock('../repair', async (orig) => ({
   ...(await orig<typeof import('../repair')>()),
   runRepairPass: async (p: { units: Array<{ sourceUnitId: string }> }) => {
     etat.reparations.push({ units: p.units.map((u) => u.sourceUnitId) });
-    return { facts: [], attempted: p.units.map((u) => u.sourceUnitId), failed: new Map(), calls: 1, outOfScope: 0, notAttempted: [], links: new Map(), decisions: [], decisionsDropped: { schemaInvalid: 0, unitNotFound: 0 } };
+    return { facts: [], attempted: p.units.map((u) => u.sourceUnitId), failed: new Map(), calls: 1, outOfScope: 0, notAttempted: [], links: new Map(), linksAmbiguous: 0, linksByCitedId: 0, decisions: [], decisionsDropped: { schemaInvalid: 0, unitNotFound: 0 } };
   },
 }));
 vi.mock('../../pipeline', () => ({ loadAnalysisContext: async () => ({}) }));
@@ -119,7 +135,12 @@ const stockee = (n: number, over: Partial<StoredSourceUnit> = {}): StoredSourceU
   text: TEXTES[n - 1], label: null, value: null, payload: {}, location: {}, origin: 'PASS_1', salient: true,
   coverageStatus: 'UNRESOLVED', coverageReason: 'not_extracted', factCount: 0, repairAttempts: 0, repairState: null, coverageProvenance: null, residualPolicy: null, ...over,
 });
-const couverteStockee = (n: number) => stockee(n, { coverageStatus: 'COVERED', coverageReason: 'fact', factCount: 1 });
+// Carte #792 (écart P1-01) : une unité COUVERTE par un fait n'est confirmée que si CHACUNE de ses valeurs
+// significatives est expliquée par une donnée persistée ; cette simulation ne charge aucun fait du document,
+// l'unité de référence ne porte donc aucune valeur (le sujet de ces tests est la règle des REPRISES).
+const couverteStockee = (n: number) => stockee(n, {
+  coverageStatus: 'COVERED', coverageReason: 'fact', factCount: 1, text: 'Conditions generales applicables au present contrat',
+});
 const enAttente = (n: number) => stockee(n, { repairState: 'PENDING', residualPolicy: 'REPAIR_PENDING' });
 
 const poser = (p: { qualityState: string; retryAttempts?: number; nextRetryAt?: string | null; anomalies?: string[]; verification?: Row; unites: StoredSourceUnit[] }) => {

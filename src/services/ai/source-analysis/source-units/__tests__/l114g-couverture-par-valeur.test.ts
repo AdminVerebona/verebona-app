@@ -167,7 +167,10 @@ describe('L114G-V04 — P2-08 : politique résiduelle déduite d’une trace ré
 
   it('« non structuré » : conservé seulement si le texte ne porte AUCUNE valeur exploitable', () => {
     expect(residualPolicyOf({ ...base, reason: 'not_structured', salient: false, text: 'Merci de votre confiance et à bientôt' })).toBe('PRESERVED_UNSTRUCTURED');
-    expect(residualPolicyOf({ ...base, reason: 'not_structured', salient: false, text: 'Solde restant dû : 45,20 € au 12/03/2026' })).toBe('REPAIR_NOT_ATTEMPTED');
+    // Règle remplacée (carte #792, écart P2-08) : cette unité porte une valeur mais n'est PAS saillante — la
+    // réparation ciblée ne la soumettra jamais (`selectRepairUnits`). Elle était annoncée « non tentée, reprise
+    // ciblée possible » (alerte sans action) ; elle est maintenant « non réparable », avec son motif.
+    expect(residualPolicyOf({ ...base, reason: 'not_structured', salient: false, text: 'Solde restant dû : 45,20 € au 12/03/2026' })).toBe('REPAIR_NOT_ELIGIBLE:NOT_SALIENT');
     // Appel historique sans texte : comportement d'avant conservé.
     expect(residualPolicyOf({ ...base, reason: 'not_structured', salient: false })).toBe('PRESERVED_UNSTRUCTURED');
   });

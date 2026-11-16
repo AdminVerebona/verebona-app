@@ -267,13 +267,38 @@ async function safeRows(steps: ReportStep[], label: string, sql: string, params:
   }
 }
 
+/** Clé de recherche d'une connaissance dans les faits relus (clé du fait, valeur). Pure. */
+export const factKnowledgeKey = (k: unknown, v: unknown) => `${String(k ?? '').toLowerCase()}\u0001${String(v ?? '').trim().toLowerCase()}`;
+
+/**
+ * Lot 115F (Trello #792, écart P2-10) — CONNAISSANCE CONSERVÉE, SUR PREUVE RELUE.
+ *
+ * `true` seulement si l'une des clés, avec l'une des valeurs, est RETROUVÉE
+ * dans les faits relus en base ; `false` si la relecture a eu lieu sans la
+ * retrouver ; `null` si la relecture n'a pas pu être faite (inconnu justifié,
+ * jamais annoncé conservé). Pure — une seule règle pour les projections non
+ * écrites et pour les attributs métier.
+ */
+export function knowledgePreservedBy(
+  relus: ReadonlySet<string> | null, keys: ReadonlyArray<unknown>, values: ReadonlyArray<unknown>,
+): boolean | null {
+  if (relus === null) return null;
+  return keys.filter((k) => k !== null && k !== undefined && k !== '')
+    .some((k) => values.some((v) => relus.has(factKnowledgeKey(k, v))));
+}
+
+/** Famille de perte d'une connaissance non écrite, selon la relecture (pure). */
+export function knowledgeLossFamily(conserve: boolean | null, kept: string): string {
+  return conserve === true ? kept : conserve === false ? 'KNOWLEDGE_NOT_FOUND_AFTER_REREAD' : 'KNOWLEDGE_NOT_VERIFIABLE';
+}
+
 /** Construit les lignes du rapport par relecture en base (exporté pour les tests). */
 export async function buildT1Entries(rec: T1ExecutionRecorder, p: { accountId: number; fileId: number }): Promise<{ entries: ReportEntry[]; readSteps: ReportStep[]; counters: Record<string, number> }> {
   const entries: ReportEntry[] = [];
   // Lot 114G (#760, P2-10) : faits réellement relus en base pour cette extraction (`null` : relecture impossible).
   // Sert à ne dire « connaissance conservée » que lorsqu'elle est vérifiée.
   let faitsRelus: Set<string> | null = null;
-  const cleFait = (k: unknown, v: unknown) => `${String(k ?? '').toLowerCase()}\u0001${String(v ?? '').trim().toLowerCase()}`;
+  const cleFait = factKnowledgeKey;
   const readSteps: ReportStep[] = [];
   const knowledgeOk = rec.steps.some((s) => s.step === 'KNOWLEDGE' && s.status === 'OK');
   const knowledgeErr = rec.steps.find((s) => s.step === 'KNOWLEDGE' && s.status === 'FAILED')?.error ?? null;
@@ -482,8 +507,7 @@ export async function buildT1Entries(rec: T1ExecutionRecorder, p: { accountId: n
   for (const s of rec.projection?.skipped ?? []) {
     const fct = s.fact;
     const echecEcriture = s.reason === 'WRITE_FAILED' || s.reason === 'SCHEMA_NOT_READY';
-    const conserve: boolean | null = faitsRelus === null ? null
-      : [fct.canonicalKey, fct.rawKey].filter(Boolean).some((k) => [fct.value, fct.rawValue].some((v) => faitsRelus!.has(cleFait(k, v))));
+    const conserve = knowledgePreservedBy(faitsRelus, [fct.canonicalKey, fct.rawKey], [fct.value, fct.rawValue]);
     entries.push({
       section: 'PROJECTION', tableName: 'field_evidence', fieldKey: fct.canonicalKey ?? fct.rawKey, label: fct.label,
       entityType: fct.target.targetType, entityId: fct.target.targetEntityId, value: fct.value, valueType: fct.valueType ?? valueTypeOf(fct.value),
@@ -495,8 +519,7 @@ export async function buildT1Entries(rec: T1ExecutionRecorder, p: { accountId: n
         // reste dans document_facts (connaissance conservée) ; seules les unités NON RÉSOLUES sont des lacunes.
         // Lot 114G (#760, P2-10) : « conservée » seulement si le fait est RETROUVÉ à la relecture de document_facts ;
         // relecture impossible → non vérifiable (null), jamais annoncé conservé ; introuvable → perte signalée.
-        lossFamily: echecEcriture ? 'TECHNICAL_WRITE_FAILURE' : conserve === true ? 'PROJECTION_ONLY_KNOWLEDGE_KEPT'
-          : conserve === false ? 'KNOWLEDGE_NOT_FOUND_AFTER_REREAD' : 'KNOWLEDGE_NOT_VERIFIABLE',
+        lossFamily: echecEcriture ? 'TECHNICAL_WRITE_FAILURE' : knowledgeLossFamily(conserve, 'PROJECTION_ONLY_KNOWLEDGE_KEPT'),
         knowledgePreserved: conserve,
       },
     });
@@ -532,14 +555,29 @@ export async function buildT1Entries(rec: T1ExecutionRecorder, p: { accountId: n
   for (const a of rec.attributes) {
     const writeResult = a.outcome === 'WRITTEN' ? 'WRITTEN' : a.outcome === 'FAILED' ? 'FAILED'
       : a.outcome === 'NOT_CONFIRMED' ? 'DECIDED_NOT_CONFIRMED' : 'NOT_WRITTEN';
+    // ════════════════════════════════════════════════════════════════════
+    // LOT 115F (Trello #792, écart P2-10) — règle remplacée : un attribut non
+    // écrit (valeur déjà en place, conflit délégué à T3, non confirmé) était
+    // déclaré `knowledgePreserved: true` SANS AUCUNE RELECTURE. La conservation
+    // est maintenant jugée sur les faits réellement relus en base, comme pour
+    // les projections : sinon `false`, ou inconnu justifié si la relecture n'a
+    // pas pu être faite.
+    // ════════════════════════════════════════════════════════════════════
+    const conserveAttr = knowledgePreservedBy(faitsRelus, [a.fieldKey], [a.value]);
+    const nonEcrit = writeResult === 'NOT_WRITTEN' || writeResult === 'DECIDED_NOT_CONFIRMED';
+    if (nonEcrit) {
+      inc(conserveAttr === true ? 'attributeNotWrittenKnowledgeKept'
+        : conserveAttr === false ? 'attributeNotWrittenKnowledgeMissing' : 'attributeNotWrittenKnowledgeUnverified');
+    }
     entries.push({
       section: 'ATTRIBUTE', tableName: a.targetType === 'ASSET' ? 'assets' : a.targetType === 'EQUIPMENT' ? 'equipments' : 'substructures',
       recordId: String(a.entityId), columnPath: 'key_characteristics', fieldKey: a.fieldKey, entityType: a.targetType, entityId: a.entityId,
       value: a.value as never, valueType: valueTypeOf(a.value), writeResult, reasonCode: a.outcome === 'WRITTEN' ? a.reasonCode : `${a.outcome}:${a.reasonCode}`,
       reason: a.reason, links: {
         evidenceIds: a.evidenceIds,
-        // Lot 113AN : valeur existante, conflit délégué à T3, non confirmée — connaissance conservée, jamais une perte d'extraction.
-        ...(writeResult === 'NOT_WRITTEN' || writeResult === 'DECIDED_NOT_CONFIRMED' ? { lossFamily: 'DELEGATED_OR_UNCHANGED_KNOWLEDGE_KEPT', knowledgePreserved: true } : {}),
+        // Lot 113AN : valeur existante, conflit délégué à T3, non confirmée — jamais une perte d'extraction ;
+        // lot 115F (#792, écart P2-10) : « conservée » seulement sur preuve RELUE en base.
+        ...(nonEcrit ? { lossFamily: knowledgeLossFamily(conserveAttr, 'DELEGATED_OR_UNCHANGED_KNOWLEDGE_KEPT'), knowledgePreserved: conserveAttr } : {}),
       },
     });
     inc(`attribute_${a.outcome}`);

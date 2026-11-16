@@ -301,7 +301,11 @@ describe('L114H-U05 — R5 : issue RÉELLE d’une remise en file T1 et écritur
     const jobs = lire('src/services/ai/source-analysis/source-units/jobs.ts');
     expect(jobs).not.toMatch(/await requeueDocumentForReread\(\{[^}]*\}\);\s*return issue\('requeued', 'REQUEUED_T1'\)/);
     expect(jobs.match(/return issue\(rq\.queued \? 'requeued' : 'not_queued', rq\.result\)/g)).toHaveLength(2);
-    expect(lire('src/app/api/admin/ai/t1-completeness/retry/route.ts')).toContain("error: 'NOT_QUEUED'");
+    // Carte #785 (§ 1) : la route distingue le refus de la FILE (`NOT_QUEUED`) du refus de la RÈGLE COMMUNE
+    // (`NOT_ADMISSIBLE`, prononcé avant tout enfilement) ; les deux codes sont rendus par la même branche.
+    const route = lire('src/app/api/admin/ai/t1-completeness/retry/route.ts');
+    expect(route).toContain("'NOT_ADMISSIBLE' : 'NOT_QUEUED'");
+    expect(route).toContain("requestedBy: 'BO'");
   });
 });
 

@@ -8,7 +8,7 @@
  * du texte. Le contenu reste consultable par les écrans à accès restreint
  * existants (diagnostic, rapport d'exécution).
  */
-import { coverageSchemaStatus, loadDocumentCoverage, loadDocumentSourceUnits } from './repository';
+import { coverageSchemaStatus, loadAllDocumentSourceUnits, loadDocumentCoverage } from './repository';
 import { unitValueForms } from './coverage-reconciliation';
 import type { CoverageStatus, T1CoverageDiagnostics } from './types';
 
@@ -52,7 +52,11 @@ export interface CompletenessDetail {
    * mesure (rapport d'exécution, `repairCalls`), jamais additionnée à celles-ci.
    */
   repairSteps: {
-    coverageRepair: { calls: number; attempted: number; resolved: number; skipped: string | null } | null;
+    coverageRepair: {
+      calls: number; attempted: number; resolved: number; skipped: string | null;
+      /** Lot 115F (#792, écart P2-10) : échecs d'appel et coût de cette famille (absents : non consignés). */
+      callsFailed?: number; costMicros?: number; costUnknownCalls?: number;
+    } | null;
     deferredRepair: Record<string, unknown> | null;
     sourceReread: { runs: number; failed: number; resolved: number } | null;
     retryAttempts: number;
@@ -72,6 +76,14 @@ export interface CompletenessUnitsQuery {
   page?: number | null;
   /** Recherche par identifiant d'unité (`sourceUnitId`, sous-chaîne). */
   unitId?: string | null;
+  /**
+   * Lot 115F (Trello #792, écart P2-09) : PROVENANCE de la requalification — origine de la preuve
+   * (`FACT`, `TABLE`, `METADATA`, `CANDIDATE`, `VALUE_DECISION`, `UNIT`, `REPAIR`). Filtre manquant :
+   * la provenance était affichée mais ne pouvait pas être cherchée.
+   */
+  provenance?: string | null;
+  /** Lot 115F (#792, écart P2-09) : RÈGLE de requalification (codes de `reconciliation.byRule`). */
+  rule?: string | null;
   /** Unités requalifiées seulement (provenance présente). */
   requalified?: boolean;
   offset?: number;
@@ -85,11 +97,16 @@ export const COMPLETENESS_PAGE_MAX = 500;
 export function pageCompletenessUnits(rows: readonly CompletenessUnitRow[], q: CompletenessUnitsQuery = {}): { units: CompletenessUnitRow[]; paging: CompletenessDetail['paging'] } {
   const liste = q.all ? [...rows] : rows.filter((r) => (r.status !== 'COVERED' && r.status !== 'NON_INFORMATIONAL') || r.provenance !== null);
   const cherche = (q.unitId ?? '').trim().toLowerCase();
+  const provenance = (q.provenance ?? '').trim().toUpperCase();
+  const regle = (q.rule ?? '').trim();
   const filtres = liste.filter((r) => (!q.status || r.status === q.status)
     && (!q.reason || r.reason === q.reason)
     && (!q.policy || r.residualPolicy === q.policy || (r.residualPolicy ?? '').startsWith(`${q.policy}:`))
     && (q.page === null || q.page === undefined || r.page === q.page)
     && (!cherche || r.unitId.toLowerCase().includes(cherche))
+    // Lot 115F (#792, écart P2-09) : provenance (origine de la preuve) et règle de requalification.
+    && (!provenance || (r.provenance?.sources ?? []).some((s) => s.toUpperCase() === provenance))
+    && (!regle || r.provenance?.rule === regle)
     && (!q.requalified || r.provenance !== null));
   const demande = Math.trunc(Number(q.limit));
   const limit = Number.isFinite(demande) && demande > 0 ? Math.min(COMPLETENESS_PAGE_MAX, demande) : COMPLETENESS_PAGE_DEFAULT;
@@ -101,7 +118,7 @@ export function pageCompletenessUnits(rows: readonly CompletenessUnitRow[], q: C
 export async function loadCompletenessDetail(fileId: number, opts: CompletenessUnitsQuery = {}): Promise<CompletenessDetail | null> {
   const cov = await loadDocumentCoverage(fileId);
   if (!cov) return null;
-  const stored = await loadDocumentSourceUnits(fileId, { accountId: cov.accountId, limit: 50_000 });
+  const stored = await loadAllDocumentSourceUnits(fileId, { accountId: cov.accountId });
   const v = (cov.verification ?? {}) as Partial<T1CoverageDiagnostics>;
   const rows: CompletenessUnitRow[] = stored.map((u) => {
     const pv = (typeof u.coverageProvenance === 'string' ? JSON.parse(u.coverageProvenance) : u.coverageProvenance) ?? null;
@@ -132,7 +149,14 @@ export async function loadCompletenessDetail(fileId: number, opts: CompletenessU
     lastRetryResult: cov.lastRetryResult ?? null,
     ...pageCompletenessUnits(rows, opts),
     repairSteps: {
-      coverageRepair: v.coverageRepair ? { calls: v.coverageRepair.calls, attempted: v.coverageRepair.attempted, resolved: v.coverageRepair.resolved, skipped: v.coverageRepair.skipped ?? null } : null,
+      coverageRepair: v.coverageRepair ? {
+        calls: v.coverageRepair.calls, attempted: v.coverageRepair.attempted, resolved: v.coverageRepair.resolved,
+        skipped: v.coverageRepair.skipped ?? null,
+        // Lot 115F (#792, écart P2-10) : repris tels quels — absents d'un diagnostic antérieur, donc inconnus.
+        ...(v.coverageRepair.callsFailed !== undefined ? { callsFailed: v.coverageRepair.callsFailed } : {}),
+        ...(v.coverageRepair.costMicros !== undefined ? { costMicros: v.coverageRepair.costMicros } : {}),
+        ...(v.coverageRepair.costUnknownCalls !== undefined ? { costUnknownCalls: v.coverageRepair.costUnknownCalls } : {}),
+      } : null,
       deferredRepair: ((v as { deferredRepair?: Record<string, unknown> }).deferredRepair) ?? null,
       sourceReread: (v as { sourceReread?: { runs: number; failed: number; resolved: number } }).sourceReread ?? null,
       retryAttempts: cov.retryAttempts,

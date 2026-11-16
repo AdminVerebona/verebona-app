@@ -103,7 +103,7 @@ export interface ReverificationOutcome {
  */
 export async function reverifyStoredCoverage(p: { accountId: number; fileId: number; maxRetries?: number }): Promise<ReverificationOutcome> {
   const { pgClient } = await import('@/db');
-  const { loadDocumentCoverage, loadDocumentSourceUnits, loadUnresolvedDocumentFacts, maxCompletenessRetries } = await import('./repository');
+  const { loadAllDocumentSourceUnits, loadDocumentCoverage, loadUnresolvedDocumentFacts, maxCompletenessRetries } = await import('./repository');
   const skip = (reason: string, q: string | null = null): ReverificationOutcome => ({ fileId: p.fileId, result: 'SKIPPED', reason, qualityBefore: q, qualityAfter: q });
   const cov = await loadDocumentCoverage(p.fileId, p.accountId);
   if (!cov) return skip('no_coverage');
@@ -116,7 +116,7 @@ export async function reverifyStoredCoverage(p: { accountId: number; fileId: num
        FROM document_raw_extracts WHERE file_id = $1 AND account_id = $2`,
     [p.fileId, p.accountId] as never[],
   ).catch(() => [])) as unknown as Row[];
-  const stored = await loadDocumentSourceUnits(p.fileId, { accountId: p.accountId, limit: 50_000 });
+  const stored = await loadAllDocumentSourceUnits(p.fileId, { accountId: p.accountId });
   const extractSha = (x?.source_sha256 as string | null) ?? null;
   const empreinte = reverificationFingerprint({ extractSha, units: stored });
   const precedente = (d.reverification as { fingerprint?: string } | undefined)?.fingerprint;
@@ -200,6 +200,8 @@ export async function reverifyStoredCoverage(p: { accountId: number; fileId: num
     const { requeueDocumentForRereadDetailed } = await import('./jobs');
     requeued = (await requeueDocumentForRereadDetailed({
       fileId: p.fileId, accountId: p.accountId, attempt: cov.retryAttempts + 1, origin: 't1-coverage-reverify', result: 'REQUEUED_T1_PAGES_MISSING', scheduled: true,
+      // Lot 115H (#785, § 1) : même règle de droit que les autres origines (le service la contrôle avant d'enfiler).
+      requestedBy: 'REVERIFICATION',
     })).queued;
   }
   if (apres === 'INCOMPLETE_FINAL' && avant !== 'INCOMPLETE_FINAL') {

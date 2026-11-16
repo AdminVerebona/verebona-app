@@ -22,7 +22,7 @@ import { candidateReconciliationValue, reconcileCoverage, reconciliationSummary,
 import { buildCompletenessReport } from './coverage';
 import { decideRetry, releaseUnschedulablePending, retryFactsOf, retryLimits } from './retry-policy';
 import {
-  loadDocumentCoverage, loadDocumentSourceUnits, loadUnresolvedDocumentFacts, writeSourceLayer,
+  loadAllDocumentSourceUnits, loadDocumentCoverage, loadUnresolvedDocumentFacts, writeSourceLayer,
 } from './repository';
 import { SOURCE_LAYER_VERSION, type CoveredSourceUnit, type T1CoverageDiagnostics, type UnresolvedFactRecord } from './types';
 
@@ -127,7 +127,7 @@ export async function reconcileStoredDocumentCoverage(p: {
 }): Promise<StoredReconciliationResult> {
   const { pgClient } = await import('@/db');
   const sql = pgClient as unknown as Sql;
-  const stored = await loadDocumentSourceUnits(p.fileId, { accountId: p.accountId, limit: 50_000 });
+  const stored = await loadAllDocumentSourceUnits(p.fileId, { accountId: p.accountId });
   const cov = await loadDocumentCoverage(p.fileId, p.accountId);
   if (stored.length === 0 || !cov) {
     const vide = { covered: 0, unresolved: 0, uncertain: 0, qualityState: cov?.qualityState ?? null };
@@ -164,7 +164,8 @@ export async function reconcileStoredDocumentCoverage(p: {
   const limits = retryLimits();
   const budget = { retryAttempts: cov.retryAttempts, continuationRuns: diag.continuationRuns };
   const faits = { qualityState: cov.qualityState, verificationReason: diag.verification?.reason ?? null, pagesMissing: diag.verification?.missing ?? [] };
-  const regle = decideRetry(retryFactsOf(majs, faits, limits), budget, limits);
+  const faitsReprise = retryFactsOf(majs, faits, limits);
+  const regle = decideRetry(faitsReprise, budget, limits);
   const enAttenteAvant = majs.filter((u) => u.repairState === 'PENDING').length;
   if (!regle.automatic) majs = releaseUnschedulablePending(majs, regle);
   const pendingReleased = enAttenteAvant - majs.filter((u) => u.repairState === 'PENDING').length;
@@ -190,11 +191,31 @@ export async function reconcileStoredDocumentCoverage(p: {
   }
   const after = { covered: report.coveredUnits, unresolved: report.unresolvedUnits, uncertain: report.uncertainUnits, qualityState: report.qualityState };
   const programmeeAvant = cov.nextRetryAt !== null && cov.nextRetryAt !== undefined;
-  // Échéance : conservée si une action automatique reste admissible ; reposée seulement pour une lacune réparable
-  // (INCOMPLETE_RETRYABLE) restée sans échéance ; retirée sinon.
+  // ══════════════════════════════════════════════════════════════════════
+  // LOT 115H (Trello #785, § 3) — UNE ÉCHÉANCE ABSENTE EST REPOSÉE D'APRÈS
+  // L'ACTION RÉELLEMENT ADMISSIBLE, ET PAS SEULEMENT D'APRÈS L'ÉTAT
+  //
+  // Règle complétée : une échéance absente n'était reposée que pour l'état
+  // INCOMPLETE_RETRYABLE. Un document VERIFICATION_INCOMPLETE pour une cause
+  // TRANSITOIRE (`source_unreadable`) dont il reste des tentatives a pourtant
+  // une action `REQUEUE_T1` réellement admissible : après un ancien refus qui
+  // avait effacé son échéance, il restait sans échéance — donc jamais repris,
+  // alors que la règle commune autorisait l'action. Ce cas est ajouté.
+  //
+  // Ce qui N'EST PAS programmé, délibérément (pas de relance de masse) : une
+  // image ou un scan NON VÉRIFIABLE dont une observation visuelle reste
+  // incertaine. Une relecture du fichier y est bien « admissible » au sens des
+  // bornes, mais elle ne peut apporter aucune preuve nouvelle sur une source
+  // que la vérification a déclarée non contrôlable : l'incertitude est
+  // CONSERVÉE, sans alerte de réparation non actionnable ni relances
+  // périodiques identiques. Une telle relecture reste possible à la demande.
+  // Au-delà des bornes, aucune action n'est admissible : aucune boucle.
+  // ══════════════════════════════════════════════════════════════════════
+  const programmable = report.qualityState === 'INCOMPLETE_RETRYABLE'
+    || (faitsReprise.transientVerification && regle.actions.includes('REQUEUE_T1'));
   const prochaine = !regle.automatic ? null
     : programmeeAvant ? new Date(cov.nextRetryAt!)
-      : report.qualityState === 'INCOMPLETE_RETRYABLE' ? new Date(Date.now() + 15 * 60_000) : null;
+      : programmable ? new Date(Date.now() + 15 * 60_000) : null;
   const anomaliesAvant = [...(cov.anomalies ?? [])].sort();
   const anomaliesApres = [...report.anomalies].sort();
   const stateChanged = report.qualityState !== cov.qualityState || anomaliesAvant.join('|') !== anomaliesApres.join('|')

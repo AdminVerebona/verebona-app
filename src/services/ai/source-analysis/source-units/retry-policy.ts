@@ -200,6 +200,51 @@ export function decideRetry(f: RetryFacts, b: RetryBudget, limits: RetryLimits):
   return { actions, automatic: false, manual, blocked, unitMotive };
 }
 
+/** Origine d'une demande de remise en file T1 (toutes passent par la MÊME règle). */
+export type RequeueOrigin = 'BO' | 'SCHEDULER' | 'COHERENCE' | 'REVERIFICATION' | 'OTHER';
+
+/** Droit de remettre un document dans la file T1 (pure). */
+export interface RequeueRight {
+  /** Une reprise peut être réservée et consommée. */
+  allowed: boolean;
+  /** Motif stable du refus (null si accordé) — jamais « refusé » sans motif. */
+  block: Extract<RetryBlock, 'RETRIES_DISABLED' | 'RETRY_CAP_REACHED'> | null;
+  /** Reprises encore disponibles pour ce document (0 si refusé). */
+  attemptsLeft: number;
+}
+
+/**
+ * ══════════════════════════════════════════════════════════════════════════
+ * LOT 115H (Trello #785, § 1) — LE DROIT DE REMISE EN FILE, AVANT TOUT
+ * ENFILEMENT, POUR TOUTES LES ORIGINES
+ *
+ * Règle complétée. Le lot 114H avait posé LA règle des reprises
+ * (`decideRetry`) et l'issue réelle de la file (`requeueCoverageUpdate`), mais
+ * la remise en file ELLE-MÊME enfilait d'abord et ne consultait le plafond
+ * qu'ensuite, au moment de décider la consommation : une demande du BO (relance
+ * complète) était donc acceptée et un travail T1 créé alors que le plafond
+ * valait ZÉRO ou était déjà consommé. Le droit est maintenant contrôlé AVANT
+ * l'enfilement, dans le service commun, pour le BO, le planificateur, le
+ * contrôle de cohérence, la re-vérification et tout autre appelant.
+ *
+ * La règle est celle de `decideRetry` (même condition `reste`), ni plus
+ * permissive pour une origine ni plus stricte pour une autre : un plafond à 0,
+ * atteint, ou abaissé APRÈS programmation (valeur réduite, donc déjà dépassée)
+ * vaut « atteint ». Aucune dérogation automatique n'existe : une dérogation
+ * manuelle devrait être une action séparée, autorisée, motivée et auditée.
+ *
+ * Les autres bornes (unité, continuation, relecture, appels) et le budget IA
+ * du compte restent appliqués là où ils le sont déjà, au moment de l'exécution :
+ * ils ne rendent jamais une demande admissible.
+ * ══════════════════════════════════════════════════════════════════════════
+ */
+export function decideRequeueRight(b: Pick<RetryBudget, 'retryAttempts'>, limits: Pick<RetryLimits, 'maxRetries'>): RequeueRight {
+  if (limits.maxRetries <= 0) return { allowed: false, block: 'RETRIES_DISABLED', attemptsLeft: 0 };
+  const reste = limits.maxRetries - Math.max(0, b.retryAttempts);
+  if (reste <= 0) return { allowed: false, block: 'RETRY_CAP_REACHED', attemptsLeft: 0 };
+  return { allowed: true, block: null, attemptsLeft: reste };
+}
+
 /**
  * SYNCHRONISE les unités avec l'absence de reprise automatique (carte § 2.4) —
  * à n'appeler que si `decision.automatic` est faux. Pure et idempotente.

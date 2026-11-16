@@ -22,7 +22,12 @@ interface UnitRow {
 interface Detail {
   fileId: number; qualityState: string;
   totals: { total: number; covered: number; nonInformational: number; uncertain: number; unresolved: number; failed: number; requalified: number };
-  coverageRepair: { passes: number; calls: number; selected: number; attempted: number; resolved: number; factsAdded: number; factsConfirmed: number; decisions: number; skipped: string | null } | null;
+  coverageRepair: {
+    passes: number; calls: number; selected: number; attempted: number; resolved: number; factsAdded: number;
+    factsConfirmed: number; decisions: number; skipped: string | null;
+    /** Lot 115F (#792, écart P2-10) : absents d'un diagnostic écrit avant ce lot — coût alors inconnu. */
+    callsFailed?: number; costMicros?: number; costUnknownCalls?: number;
+  } | null;
   reconciliation: { requalified: number; byRule: Record<string, number> } | null;
   residualPolicies: Record<string, number>;
   retryAttempts: number; lastRetryResult: string | null;
@@ -30,7 +35,14 @@ interface Detail {
   paging?: { offset: number; limit: number; listed: number; matched: number };
   repairSteps?: {
     coverageRepair: { calls: number; attempted: number; resolved: number; skipped: string | null } | null;
-    deferredRepair: { calls?: number; attemptedUnits?: number; newFacts?: number; decisions?: { received: number; valid: number; invalid: number; persisted: number }; linkage?: { local: number; relinked: number; duplicates: number } } | null;
+    deferredRepair: {
+      calls?: number; attemptedUnits?: number; newFacts?: number;
+      decisions?: { received: number; valid: number; invalid: number; persisted: number };
+      linkage?: { local: number; relinked: number; duplicates: number };
+      /** Lot 115F (#792, écart P2-10) : appels, échecs et coût de la famille « reprise différée (texte ciblé) ». */
+      textRepair?: { calls: number; callsFailed: number; costMicros: number; costUnknownCalls: number };
+      sourceReread?: { calls: number; callsFailed: number };
+    } | null;
     sourceReread: { runs: number; failed: number; resolved: number } | null;
     retryAttempts: number; lastRetryResult: string | null;
   };
@@ -38,6 +50,17 @@ interface Detail {
 }
 const PAGE = 100;
 const ETATS = ['UNRESOLVED', 'UNCERTAIN', 'FAILED', 'COVERED', 'NON_INFORMATIONAL'] as const;
+/** Lot 115F (#792, écart P2-09) : origines d'une preuve de requalification (codes stables de la provenance). */
+const PROVENANCES = ['FACT', 'TABLE', 'METADATA', 'CANDIDATE', 'VALUE_DECISION', 'UNIT', 'REPAIR'] as const;
+export const PROVENANCE_LABEL: Record<string, string> = {
+  FACT: 'fait',
+  TABLE: 'ligne de tableau',
+  METADATA: 'métadonnée',
+  CANDIDATE: 'candidat d’événement de référence',
+  VALUE_DECISION: 'décision de valeur',
+  UNIT: 'autre unité (répétition, chevauchement)',
+  REPAIR: 'réparation ciblée',
+};
 interface Reconcile {
   outcome: string; requalified: Array<{ unitId: string; from: { status: string }; to: { status: string; reason: string | null }; rule: string | null }>;
   before: { qualityState: string | null }; after: { qualityState: string | null };
@@ -82,18 +105,57 @@ export const REPAIR_SKIP_LABEL: Record<string, string> = {
   UNIT_CAP_REACHED: 'plafond de tentatives de l’unité atteint',
 };
 
+/**
+ * Lot 115F (#792, écart P2-08) — motif pour lequel la réparation ciblée ne soumettra JAMAIS l'unité,
+ * avec la prochaine action réellement possible (jamais une alerte sans action).
+ */
+export const REPAIR_NOT_ELIGIBLE_LABEL: Record<string, string> = {
+  NO_TEXT: 'aucun texte à relire — conservée en l’état',
+  KIND_NOT_REPAIRABLE: 'nature non relisible par le texte — relecture du fichier ou arbitrage T3/T2',
+  NOT_SALIENT: 'texte sans valeur saillante à réextraire — conservée, réinterprétable T3/T2',
+  FINAL_FAILURE: 'échec définitif de réparation — reprise manuelle seulement',
+  VALUE_DECISION_REVIEW: 'valeurs à expliquer — réexamen des décisions de valeur (sans réextraction)',
+  NOTHING_TO_REPAIR: 'aucune lacune que la réparation ciblée puisse combler',
+};
+
 /** Libellé d'une politique (pure). */
 export function policyLabel(code: string | null): string {
   if (!code) return '';
   if (code.startsWith('REPAIR_NOT_RUN:')) return `réparation non exécutée (${REPAIR_SKIP_LABEL[code.slice(15)] ?? code.slice(15)})`;
+  if (code.startsWith('REPAIR_NOT_ELIGIBLE:')) {
+    const m = code.slice(20);
+    return `non réparable par la passe ciblée : ${REPAIR_NOT_ELIGIBLE_LABEL[m] ?? m}`;
+  }
   return RESIDUAL_POLICY_LABEL[code] ?? code;
+}
+
+/**
+ * Lot 115F (Trello #792, écart P2-10) — APPELS, ÉCHECS ET COÛT d'une famille, en clair (pure).
+ *
+ * Un coût que la passerelle n'a pas rendu n'est JAMAIS affiché comme nul : le
+ * nombre d'appels concernés est dit, et le total porte « au moins ». Aucun
+ * appel : « aucun appel » (coût nul établi, non inconnu).
+ */
+export function callCostText(c: { calls: number; callsFailed?: number; costMicros?: number; costUnknownCalls?: number }): string {
+  if (c.calls === 0) return 'aucun appel, aucun coût';
+  const echecs = c.callsFailed ?? 0;
+  const inconnus = c.costUnknownCalls ?? null;
+  const parts = [`${c.calls} appel(s)`];
+  if (echecs > 0) parts.push(`${echecs} en échec`);
+  if (inconnus === null) parts.push('coût non consigné');
+  else if (inconnus >= c.calls) parts.push(`coût inconnu (${inconnus} appel(s))`);
+  else {
+    const euros = ((c.costMicros ?? 0) / 1_000_000).toFixed(4);
+    parts.push(inconnus > 0 ? `coût au moins ${euros} (${inconnus} appel(s) au coût inconnu)` : `coût ${euros}`);
+  }
+  return parts.join(', ');
 }
 
 /** Ligne de synthèse de la réparation ciblée de couverture (pure, compteurs seulement). */
 export function coverageRepairText(r: Detail['coverageRepair']): string {
   if (!r) return 'Réparation ciblée de couverture : non consignée (analyse antérieure au lot 113AN).';
   if (r.skipped && r.calls === 0) return `Réparation ciblée de couverture : non exécutée — ${REPAIR_SKIP_LABEL[r.skipped] ?? r.skipped} (${r.selected} unité(s) sélectionnée(s)).`;
-  return `Réparation ciblée de couverture : ${r.passes} passe(s), ${r.calls} appel(s), ${r.selected} unité(s) sélectionnée(s), ${r.attempted} soumise(s), `
+  return `Réparation ciblée de couverture : ${r.passes} passe(s), ${callCostText(r)}, ${r.selected} unité(s) sélectionnée(s), ${r.attempted} soumise(s), `
     + `${r.resolved} couverte(s) à l’issue · ${r.factsAdded} fait(s) ajouté(s), ${r.factsConfirmed} relecture(s) d’un fait existant, ${r.decisions} décision(s) de valeur.`;
 }
 
@@ -104,14 +166,17 @@ export function coverageRepairText(r: Detail['coverageRepair']): string {
 export function deferredRepairText(r: Detail['repairSteps']): string {
   if (!r) return '';
   const d = r.deferredRepair;
+  // Lot 115F (#792, écart P2-10) : la reprise différée est ventilée par famille d'appels — texte ciblé
+  // (avec son coût) et relecture du fichier — au lieu d'un total unique.
+  const texteCible = d?.textRepair ? ` Texte ciblé : ${callCostText(d.textRepair)}.` : '';
   const reprise = d
-    ? `Dernière reprise différée : ${d.calls ?? 0} appel(s), ${d.attemptedUnits ?? 0} unité(s) soumise(s), ${d.newFacts ?? 0} fait(s) ajouté(s)`
+    ? `Dernière reprise différée : ${d.calls ?? 0} appel(s) au total, ${d.attemptedUnits ?? 0} unité(s) soumise(s), ${d.newFacts ?? 0} fait(s) ajouté(s)`
       + (d.decisions ? `, décisions de valeur : ${d.decisions.received} reçue(s), ${d.decisions.valid} valide(s), ${d.decisions.invalid} invalide(s), ${d.decisions.persisted} écrite(s)` : '')
       + (d.linkage ? `, rattachements : ${d.linkage.local} local(aux), ${d.linkage.relinked} recalculé(s), ${d.linkage.duplicates} fait(s) déjà présent(s)` : '') + '.'
     : `Reprise différée : ${r.retryAttempts} tentative(s) consommée(s)${r.lastRetryResult ? `, dernier résultat ${r.lastRetryResult}` : ', aucune reprise exécutée'}.`;
   const relecture = r.sourceReread && r.sourceReread.runs > 0
     ? ` Relectures du fichier : ${r.sourceReread.runs} (${r.sourceReread.resolved} unité(s) levée(s), ${r.sourceReread.failed} en échec).` : ' Relectures du fichier : aucune.';
-  return reprise + relecture;
+  return reprise + texteCible + relecture;
 }
 
 /** Lot 114G (#760, P2-09) — « 101–200 sur 1 240 (1 240 dans la liste) » (pure). */
@@ -123,7 +188,8 @@ export function pagingText(p: Detail['paging'], shown: number): string {
 
 export function T1CompletenessUnits({ fileId }: { fileId: number }) {
   // Lot 114G (#760, P2-09) : filtres et pagination côté serveur — plus de liste coupée à 300 sans le dire.
-  const [filtre, setFiltre] = useState({ all: false, status: '', unit: '', page: '', offset: 0 });
+  // Lot 115F (#792, écart P2-09) : la provenance d'une requalification est aussi un filtre.
+  const [filtre, setFiltre] = useState({ all: false, status: '', unit: '', page: '', provenance: '', offset: 0 });
   const [d, setD] = useState<Detail | null>(null);
   const [erreur, setErreur] = useState<string | null>(null);
   const [rec, setRec] = useState<Reconcile | null>(null);
@@ -135,6 +201,7 @@ export function T1CompletenessUnits({ fileId }: { fileId: number }) {
     if (filtre.status) q.set('status', filtre.status);
     if (filtre.unit.trim()) q.set('unit', filtre.unit.trim());
     if (/^\d+$/.test(filtre.page.trim())) q.set('page', filtre.page.trim());
+    if (filtre.provenance) q.set('provenance', filtre.provenance);
     apiClient.get<Detail>(`/api/admin/ai/t1-completeness/${fileId}?${q.toString()}`)
       .then((r) => { setD(r); setErreur(null); })
       .catch(() => setErreur('Détail indisponible.'));
@@ -167,7 +234,7 @@ export function T1CompletenessUnits({ fileId }: { fileId: number }) {
       {d.repairSteps && <p className="text-xs text-[color:var(--text-muted)] break-words">{deferredRepairText(d.repairSteps)}</p>}
       {d.schema && !d.schema.ready && (
         <p className="text-xs text-[color:var(--text-primary)] break-words" role="alert">
-          Migration 1665 non appliquée (colonnes absentes : {d.schema.missing.join(', ')}) : la couche de couverture n’est plus écrite sans sa provenance. Appliquer la migration, puis relancer la reprise.
+          Migrations de la couverture T1 incomplètes (colonnes absentes : {d.schema.missing.join(', ')}) : la couche de couverture n’est plus écrite sans sa provenance ni sa politique. Appliquer les migrations 0329 et 1665, puis relancer la reprise.
         </p>
       )}
       {Object.keys(d.residualPolicies).length > 0 && (
@@ -214,6 +281,13 @@ export function T1CompletenessUnits({ fileId }: { fileId: number }) {
         <label className="flex items-center gap-1">
           Page
           <input value={filtre.page} onChange={(e) => setFiltre({ ...filtre, page: e.target.value, offset: 0 })} inputMode="numeric" className="w-12 rounded border border-[color:var(--border-subtle)] bg-transparent px-1 py-0.5" />
+        </label>
+        <label className="flex items-center gap-1">
+          Provenance
+          <select value={filtre.provenance} onChange={(e) => setFiltre({ ...filtre, provenance: e.target.value, offset: 0 })} className="rounded border border-[color:var(--border-subtle)] bg-transparent px-1 py-0.5">
+            <option value="">toutes</option>
+            {PROVENANCES.map((x) => <option key={x} value={x}>{PROVENANCE_LABEL[x]}</option>)}
+          </select>
         </label>
         <span className="text-[color:var(--text-muted)]" data-testid="t1-completeness-paging">{pagingText(d.paging, d.units.length)}</span>
         <button type="button" disabled={filtre.offset === 0} onClick={() => setFiltre({ ...filtre, offset: Math.max(0, filtre.offset - PAGE) })} className="rounded border border-[color:var(--border-subtle)] px-2 py-0.5 disabled:opacity-40">

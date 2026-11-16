@@ -164,11 +164,30 @@ export interface FactLink {
  * déclarée intégralement exploitée.
  */
 export function unstructuredContactValues(text: string | null | undefined, represented: Iterable<string>): string[] {
-  const vals = readContactValues(text).filter((v) => !v.excluded && v.field !== 'siret');
+  const vals = contactValuesOf(text);
   if (vals.length === 0) return [];
-  const forme = (x: string) => x.toLowerCase().replace(/[\s.\-()]/g, '').replace(/^\+33/, '0').replace(/^0033/, '0');
-  const reps = [...represented].map((x) => forme(String(x))).filter((x) => x.length >= 4);
-  return vals.filter((v) => { const f = forme(v.value); return !reps.some((r) => r.includes(f) || (r.length >= 8 && f.includes(r))); }).map((v) => v.value);
+  const reps = [...represented];
+  return vals.filter((v) => !contactValueRepresented(v.form, reps)).map((v) => v.value);
+}
+
+/** Forme de comparaison d'une coordonnée (casse, séparateurs, indicatif international). */
+const formeContact = (x: string) => x.toLowerCase().replace(/[\s.\-()]/g, '').replace(/^\+33/, '0').replace(/^0033/, '0');
+
+/**
+ * Lot 115F (Trello #792, écart P2-06) — coordonnées de contact STRUCTURABLES
+ * d'un passage (hors télécopie, clés invalides, SIRET), avec leur champ et
+ * leur forme de comparaison. Pure : une seule lecture pour la couverture et
+ * pour la réconciliation coordonnée par coordonnée.
+ */
+export function contactValuesOf(text: string | null | undefined): Array<{ value: string; field: string; form: string }> {
+  return readContactValues(text).filter((v) => !v.excluded && v.field !== 'siret')
+    .map((v) => ({ value: v.value, field: String(v.field), form: formeContact(v.value) }));
+}
+
+/** Une coordonnée (forme) est-elle représentée par l'une de ces valeurs structurées ? Pure — RÈGLE UNIQUE. */
+export function contactValueRepresented(form: string, represented: Iterable<string>): boolean {
+  const reps = [...represented].map((x) => formeContact(String(x))).filter((x) => x.length >= 4);
+  return reps.some((r) => r.includes(form) || (r.length >= 8 && form.includes(r)));
 }
 
 interface CoverageInput {
@@ -296,6 +315,44 @@ export function resolveTableParents<U extends CoveredSourceUnit>(units: readonly
 const REPARABLES = new Set(['TEXT_BLOCK', 'LABEL_VALUE', 'FORM_FIELD']);
 
 /**
+ * Lot 115F (Trello #792, écart P2-08) — MOTIF STRUCTUREL pour lequel la
+ * réparation ciblée textuelle ne soumettra JAMAIS cette unité (`null` :
+ * éligible, une tentative reste réellement possible). Une seule définition,
+ * partagée par la SÉLECTION (`selectRepairUnits`) et par la POLITIQUE
+ * résiduelle (`residualPolicyOf`) : la politique ne peut plus annoncer
+ * « reprise ciblée possible » pour une unité que la sélection écarte.
+ * Pure. Les bornes (tentatives, budget, plafonds) ne sont PAS ici : elles
+ * relèvent de l'état de réparation (`PENDING`, `EXHAUSTED`) et de la règle
+ * unique des reprises.
+ *   NO_TEXT                aucun texte à relire (texte inconnu : non jugé) ;
+ *   VALUE_DECISION_REVIEW  unité couverte à valeurs partiellement
+ *                          structurées — son remède est le réexamen ciblé
+ *                          des décisions de valeur, pas une réextraction ;
+ *   KIND_NOT_REPAIRABLE    nature d'unité qu'une relecture TEXTUELLE ne peut
+ *                          pas lever (observation visuelle, tableau, lacune) ;
+ *   NOT_SALIENT            texte sans valeur saillante à réextraire ;
+ *   FINAL_FAILURE          échec définitif de réparation (jamais rejoué) ;
+ *   NOTHING_TO_REPAIR      état / motif hors du périmètre de la passe.
+ */
+export function repairIneligibility(u: Pick<CoveredSourceUnit, 'kind' | 'status' | 'reason' | 'salient'>
+  & { text?: string | null; coverageProvenance?: { rule: string } | null }): string | null {
+  if (u.text !== undefined && (u.text === null || u.text === '')) return 'NO_TEXT';
+  if (u.coverageProvenance?.rule === 'covered_unit_values_partially_structured') return 'VALUE_DECISION_REVIEW';
+  if (!REPARABLES.has(u.kind) && u.kind !== 'TABLE_ROW') return 'KIND_NOT_REPAIRABLE';
+  const echec = (): string | null => (u.reason === 'repair_failed:retryable' ? null : 'FINAL_FAILURE');
+  if (u.kind === 'TABLE_ROW') {
+    if (!u.salient) return 'NOT_SALIENT';
+    if (u.status === 'UNCERTAIN') return null;
+    return u.status === 'FAILED' ? echec() : 'NOTHING_TO_REPAIR';
+  }
+  if (u.status === 'UNRESOLVED') {
+    return u.salient || u.reason === 'fact_dropped' || u.reason === 'values_not_structured' ? null : 'NOT_SALIENT';
+  }
+  if (u.status === 'UNCERTAIN') return u.reason === 'fact_conflictual' ? null : 'NOTHING_TO_REPAIR';
+  return u.status === 'FAILED' ? echec() : 'NOTHING_TO_REPAIR';
+}
+
+/**
  * Unités à soumettre à la réparation ciblée TEXTUELLE (lot 49B, DEV-02) :
  *   · texte (bloc, libellé : valeur, formulaire) non couvert porteur d'une
  *     valeur (ou lié à un fait écarté), ou INCERTAIN (fait conflictuel) :
@@ -312,13 +369,10 @@ export function selectRepairUnits(units: readonly CoveredSourceUnit[], maxAttemp
   // Lot 114G (#760, P1-01) : une unité déjà liée à un fait mais dont une AUTRE valeur n'est pas expliquée
   // (`covered_unit_values_partially_structured`) n'est pas réextraite ici : son remède est le réexamen ciblé des
   // décisions de valeur (lot 91D, contrôle de cohérence), borné et idempotent — jamais deux mécanismes sur la même unité.
-  return units.filter((u) => u.text && u.repairAttempts < maxAttempts && u.coverageProvenance?.rule !== 'covered_unit_values_partially_structured' && (
-    (REPARABLES.has(u.kind) && (
-      (u.status === 'UNRESOLVED' && (u.salient || u.reason === 'fact_dropped' || u.reason === 'values_not_structured'))
-      || (u.status === 'UNCERTAIN' && u.reason === 'fact_conflictual')
-      || (u.status === 'FAILED' && u.reason === 'repair_failed:retryable')))
-    || (u.kind === 'TABLE_ROW' && u.salient && (u.status === 'UNCERTAIN' || (u.status === 'FAILED' && u.reason === 'repair_failed:retryable')))
-  )).sort((a, b) => Number(b.repairState === 'PENDING') - Number(a.repairState === 'PENDING') || a.ordinal - b.ordinal);
+  // Lot 115F (#792, écart P2-08) : les critères STRUCTURELS sont ceux de `repairIneligibility` (définition unique,
+  // partagée avec la politique résiduelle) — ici ne restent que les bornes de tentatives et l'ordre de passage.
+  return units.filter((u) => u.repairAttempts < maxAttempts && repairIneligibility(u) === null)
+    .sort((a, b) => Number(b.repairState === 'PENDING') - Number(a.repairState === 'PENDING') || a.ordinal - b.ordinal);
 }
 
 /** Observations visuelles incertaines : seule une relecture du fichier pourrait les lever (lot 49B). */

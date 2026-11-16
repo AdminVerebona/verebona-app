@@ -40,6 +40,15 @@ export function factLinkKey(f: LinkableFact): string {
  */
 export class LocalLinks {
   private readonly files = new Map<string, string[][]>();
+  /**
+   * Lot 115F (Trello #792, écart P1-03) : clés dont la file portait, À LA
+   * CONSTRUCTION, des unités DIFFÉRENTES. L'information est retenue par clé et
+   * non recalculée sur la file restante : sans cela, le DERNIER fait d'une file
+   * épuisée était rendu comme un lien propre (`ordered: false`) alors que son
+   * appariement reposait lui aussi sur l'ordre de lecture — le fallback de la
+   * fin de file n'était jamais compté.
+   */
+  private readonly parOrdre = new Set<string>();
 
   constructor(links?: ReadonlyMap<LinkableFact, readonly string[]> | null) {
     for (const [f, ids] of links ?? []) {
@@ -47,14 +56,62 @@ export class LocalLinks {
       const k = factLinkKey(f);
       this.files.set(k, [...(this.files.get(k) ?? []), [...ids]]);
     }
+    for (const [k, file] of this.files) {
+      if (new Set(file.map((l) => l.join('\u0001'))).size > 1) this.parOrdre.add(k);
+    }
   }
 
   /** Unités qui prouvent ce fait d'après la zone ciblée ; `null` : aucun lien local exploitable. */
   take(f: LinkableFact): string[] | null {
-    const file = this.files.get(factLinkKey(f));
+    return this.takeDetailed(f)?.ids ?? null;
+  }
+
+  /**
+   * Lot 115F (Trello #792, écart P1-03) — même consommation, en SIGNALANT le
+   * fallback : `ordered` vaut `true` quand plusieurs faits de MÊME clé
+   * (libellé, valeur, extrait) portent des unités DIFFÉRENTES — l'appariement
+   * repose alors sur l'ordre de lecture, pas sur une preuve propre à chaque
+   * fait. L'appelant le compte (jamais silencieux).
+   */
+  takeDetailed(f: LinkableFact): { ids: string[]; ordered: boolean } | null {
+    const cle = factLinkKey(f);
+    const file = this.files.get(cle);
     if (!file?.length) return null;
     // Le dernier lien reste disponible : une relecture du même fait garde sa preuve.
-    return file.length > 1 ? file.shift()! : [...file[0]];
+    return { ids: file.length > 1 ? file.shift()! : [...file[0]], ordered: this.parOrdre.has(cle) };
+  }
+
+  get size(): number { return this.files.size; }
+}
+
+/**
+ * Lot 115F (Trello #792, écart P1-04) — EMPREINTES DES FAITS RENDUS, par fait.
+ *
+ * Règle remplacée : l'empreinte (`t1FactRef`) d'un fait projeté était prise
+ * comme « la première empreinte connue pour cette clé de correspondance ».
+ * Deux faits distincts de même libellé, même valeur et même extrait (deux
+ * attributs, deux cibles) recevaient donc la MÊME empreinte, donc les mêmes
+ * identifiants de faits persistés : les décisions de valeur de la reprise
+ * pouvaient être rattachées au mauvais fait. Chaque fait consomme maintenant
+ * SON empreinte, dans l'ordre de lecture ; la dernière reste disponible pour
+ * une relecture du même fait.
+ */
+export class FactRefs {
+  private readonly files = new Map<string, string[]>();
+
+  constructor(facts: Iterable<LinkableFact & { t1FactRef?: string | null }>) {
+    for (const f of facts) {
+      if (!f.t1FactRef) continue;
+      const k = factLinkKey(f);
+      this.files.set(k, [...(this.files.get(k) ?? []), f.t1FactRef]);
+    }
+  }
+
+  /** Empreinte de CE fait, sinon `null`. */
+  take(f: LinkableFact): string | null {
+    const file = this.files.get(factLinkKey(f));
+    if (!file?.length) return null;
+    return file.length > 1 ? file.shift()! : file[0];
   }
 
   get size(): number { return this.files.size; }

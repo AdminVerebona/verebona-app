@@ -6,7 +6,8 @@
  * requalifiées), réparation ciblée de couverture (passes, appels, unités
  * ciblées / résolues, motif d'absence), réconciliation (règles), politiques
  * des unités restantes, et la liste des unités non couvertes ou requalifiées
- * (`?all=1` : toutes). Lot 114G (#760) : `status`, `reason`, `policy`, `page`, `unit`, `requalified=1`,
+ * (`?all=1` : toutes). Lot 115F (#792) : `provenance` (origine de la preuve) et `rule` (règle de
+ * requalification). Lot 114G (#760) : `status`, `reason`, `policy`, `page`, `unit`, `requalified=1`,
  * `offset`, `limit` (100 par défaut, 500 au plus) ; `paging` porte le total réel. AUCUN contenu de document (identifiants, états,
  * motifs, provenance technique, nombre de valeurs par nature).
  */
@@ -28,6 +29,8 @@ export async function GET(req: NextRequest, { params }: { params: Promise<{ file
     const detail = await loadCompletenessDetail(fileId, {
       all: q.get('all') === '1', status: q.get('status'), reason: q.get('reason'), policy: q.get('policy'),
       page: entier('page') ?? null, unitId: q.get('unit'), requalified: q.get('requalified') === '1',
+      // Lot 115F (#792, écart P2-09) : provenance (origine de la preuve) et règle de requalification.
+      provenance: q.get('provenance'), rule: q.get('rule'),
       offset: entier('offset'), limit: entier('limit'),
     });
     if (!detail) return NextResponse.json({ error: 'NOT_FOUND', message: 'Aucune couverture T1 pour ce document.' }, { status: 404 });

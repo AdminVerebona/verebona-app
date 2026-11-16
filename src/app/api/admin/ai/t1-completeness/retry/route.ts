@@ -26,6 +26,14 @@ const REQUEUE_REFUSAL_MESSAGE: Record<string, string> = {
   ACCOUNT_NOT_ELIGIBLE: 'Analyse non relancée : le compte n’est pas éligible au traitement.',
   REJECTED_TRANSIENT: 'Analyse non relancée : la file d’analyse a refusé la demande (erreur passagère). Réessayer dans quelques minutes.',
   REJECTED_FINAL: 'Analyse non relancée : la file d’analyse a refusé la demande (refus définitif). Voir la Supervision.',
+  // Lot 115H (#785, § 1) : refus par la règle commune des reprises, AVANT tout enfilement (textes nouveaux,
+  // à valider par le PO). Aucune reprise n'a été consommée et aucun travail n'a été créé.
+  NOT_ADMISSIBLE: 'Analyse non relancée : ce document n’a plus de reprise disponible (plafond atteint ou reprises désactivées). Aucune reprise n’a été consommée.',
+};
+/** Motif précis du refus de la règle commune (affiché après le message). */
+const NOT_ADMISSIBLE_REASON: Record<string, string> = {
+  RETRIES_DISABLED: 'Les reprises automatiques sont désactivées par le paramétrage.',
+  RETRY_CAP_REACHED: 'Le plafond de reprises de ce document est atteint.',
 };
 
 export async function POST(req: NextRequest) {
@@ -56,6 +64,9 @@ export async function POST(req: NextRequest) {
     const r = await requeueDocumentForRereadDetailed({
       fileId, accountId: Number(row.account_id), attempt: Number(row.retry_attempts ?? 0) + 1,
       origin: 't1-completeness-retry', result: 'REQUEUED_T1_ADMIN',
+      // Lot 115H (#785, § 1) : la relance complète du BO passe par la MÊME règle de droit que les autres
+      // origines — aucun contournement implicite par cette route.
+      requestedBy: 'BO',
     });
     await logAdminAction({
       adminId: guard.ctx.adminUserId, action: 'AI_EXECUTION_RELAUNCH', targetType: 'AI_EXECUTION', targetId: fileId, result: r.queued ? 'SUCCESS' : 'FAILURE',
@@ -63,7 +74,15 @@ export async function POST(req: NextRequest) {
     });
     console.info(`[t1-completeness] reprise manuelle du document ${fileId} par l'administrateur ${guard.ctx.adminUserId} : ${r.status}${r.reason ? ` (${r.reason})` : ''}`);
     if (!r.queued) {
-      return NextResponse.json({ ok: false, queued: false, status: r.status, reason: r.reason, error: 'NOT_QUEUED', message: REQUEUE_REFUSAL_MESSAGE[r.status] ?? 'Mise en file refusée.' }, { status: 409 });
+      // Lot 115H (#785, § 1) : un refus de la règle commune est distinct d'un refus de la file — il dit son motif
+      // et garantit qu'aucune reprise n'a été consommée.
+      const message = r.status === 'NOT_ADMISSIBLE'
+        ? `${REQUEUE_REFUSAL_MESSAGE.NOT_ADMISSIBLE}${r.reason && NOT_ADMISSIBLE_REASON[r.reason] ? ` ${NOT_ADMISSIBLE_REASON[r.reason]}` : ''}`
+        : REQUEUE_REFUSAL_MESSAGE[r.status] ?? 'Mise en file refusée.';
+      return NextResponse.json({
+        ok: false, queued: false, status: r.status, reason: r.reason, attemptConsumed: r.attemptConsumed,
+        error: r.status === 'NOT_ADMISSIBLE' ? 'NOT_ADMISSIBLE' : 'NOT_QUEUED', message,
+      }, { status: 409 });
     }
     return NextResponse.json({ ok: true, queued: true, status: r.status, alreadyRunning: r.status === 'ALREADY_RUNNING', jobId: r.jobId });
   } catch (e) {

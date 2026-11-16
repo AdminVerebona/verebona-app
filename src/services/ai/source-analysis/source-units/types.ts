@@ -247,6 +247,14 @@ export interface T1CoverageRepairDiagnostics {
   decisions: number;
   /** Motif d'absence de réparation : DISABLED (T1_MAX_REPAIR_PASSES=0), BELOW_MIN_UNITS, NO_TARGET ; null : exécutée. */
   skipped: string | null;
+  /**
+   * Lot 115F (Trello #792, écart P2-10) : appels en ÉCHEC, coût rendu par la passerelle (micro-unités) et
+   * nombre d'appels dont le coût est INCONNU. Un coût inconnu n'est jamais compté zéro. Absents des
+   * diagnostics écrits avant ce lot : les lectures les traitent comme inconnus.
+   */
+  callsFailed?: number;
+  costMicros?: number;
+  costUnknownCalls?: number;
 }
 
 export const T1_COMPLETENESS_ANOMALIES = [

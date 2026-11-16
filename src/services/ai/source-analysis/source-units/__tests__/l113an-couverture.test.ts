@@ -345,7 +345,13 @@ describe('C — BO : libellés du rapport de complétude (compteurs seulement)',
     expect(coverageRepairText(null)).toContain('non consignée');
     expect(coverageRepairText({ passes: 0, calls: 0, selected: 0, attempted: 0, resolved: 0, factsAdded: 0, factsConfirmed: 0, decisions: 0, skipped: 'NO_TARGET' }))
       .toBe('Réparation ciblée de couverture : non exécutée — aucune unité à réparer (0 unité(s) sélectionnée(s)).');
+    // Lot 115F (carte #792, écart P2-10) : la ligne porte désormais les ÉCHECS et le COÛT de la famille
+    // (diagnostic écrit avant ce lot : coût non consigné, jamais affiché nul).
     expect(coverageRepairText({ passes: 1, calls: 1, selected: 2, attempted: 2, resolved: 1, factsAdded: 1, factsConfirmed: 0, decisions: 1, skipped: null }))
-      .toContain('1 passe(s), 1 appel(s), 2 unité(s) sélectionnée(s), 2 soumise(s), 1 couverte(s)');
+      .toContain('1 passe(s), 1 appel(s), coût non consigné, 2 unité(s) sélectionnée(s), 2 soumise(s), 1 couverte(s)');
+    expect(coverageRepairText({
+      passes: 1, calls: 2, selected: 2, attempted: 2, resolved: 1, factsAdded: 1, factsConfirmed: 0, decisions: 1, skipped: null,
+      callsFailed: 1, costMicros: 12_500, costUnknownCalls: 1,
+    })).toContain('2 appel(s), 1 en échec, coût au moins 0.0125 (1 appel(s) au coût inconnu)');
   });
 });

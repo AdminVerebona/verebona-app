@@ -31,6 +31,33 @@ export function promptCarriesValueDecisions(text: string | null | undefined): bo
   return typeof text === 'string' && text.includes(T1_VALUE_DECISIONS_CONTRACT);
 }
 
+/**
+ * Lot 115F (Trello #792, écart P1-02) — CONTRAT RÉELLEMENT UTILISÉ PAR L'APPEL.
+ *
+ * Règle remplacée : les décisions d'une passe de RÉPARATION n'étaient
+ * persistées que si la version effective du prompt T1 était ÉGALE à celle
+ * enregistrée sur l'extraction (`document_extractions.prompt_version`) —
+ * c'est-à-dire à celle de l'analyse d'ORIGINE. Un prompt publié entre
+ * l'analyse et la reprise faisait donc écarter (`CONTRACT_NOT_CARRIED`) des
+ * décisions pourtant rendues par un appel qui portait le contrat. Seul compte
+ * désormais le contrat de l'appel qui vient d'être fait ; la version
+ * enregistrée avec les décisions est celle qui les a produites, et un
+ * changement de version est signalé (traçabilité), jamais bloquant. Pure.
+ */
+export function repairDecisionContract(cap: Pick<ValueDecisionsCapability, 'carried' | 'version'>, extractionPromptVersion: string | null): {
+  carried: boolean;
+  /** Version à enregistrer avec les décisions : celle de l'appel, à défaut celle de l'extraction. */
+  promptVersion: string | null;
+  /** La version de l'appel diffère de celle de l'analyse d'origine. */
+  versionChanged: boolean;
+} {
+  return {
+    carried: cap.carried,
+    promptVersion: cap.version ?? extractionPromptVersion,
+    versionChanged: cap.version !== null && extractionPromptVersion !== null && cap.version !== extractionPromptVersion,
+  };
+}
+
 export interface ValueDecisionsCapability {
   /** Contrat porté par la version effective (et non coupé). */
   carried: boolean;

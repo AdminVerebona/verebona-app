@@ -99,6 +99,11 @@ export type RepairCall = (p: {
   output: { facts: T1Fact[] } & Parameters<typeof enforceT1Capabilities>[0];
   /** Lot 113AN : décisions de valeur de la réparation (contrat 91D), ancrées sur les empreintes des faits rendus. */
   valueDecisions?: AnchoredValueDecision[] | null;
+  /**
+   * Lot 115F (Trello #792, écart P2-10) : issue de l'appel telle que la passerelle la rend — le COÛT en
+   * micro-unités de CET appel. Absent ou non numérique : coût INCONNU pour cet appel, jamais compté zéro.
+   */
+  res?: { costMicros?: number | null } | null;
 }>;
 
 interface RepairPassResult {
@@ -120,6 +125,14 @@ interface RepairPassResult {
    */
   links: Map<T1Fact, string[]>;
   /**
+   * Lot 115F (Trello #792, écart P1-03) : faits dont l'extrait est retrouvé dans PLUSIEURS unités ciblées sans
+   * que la preuve désigne laquelle (aucun identifiant d'unité cité) — association REFUSÉE : aucun lien local
+   * n'est posé, le rattachement est recalculé par l'appelant et le fallback est compté, jamais silencieux.
+   */
+  linksAmbiguous: number;
+  /** Lot 115F (#792, écart P1-03) : faits rattachés par l'IDENTIFIANT d'unité cité en tête de l'extrait transmis. */
+  linksByCitedId: number;
+  /**
    * Lot 113AN : décisions de valeur rendues par la réparation et rattachées à
    * une unité CIBLÉE (identifiant transmis `[page:1:field:2]`, sinon extrait
    * retrouvé) — jusqu'ici ignorées : l'unité restait `not_extracted`.
@@ -130,6 +143,18 @@ interface RepairPassResult {
    * élément mal formé (`schemaInvalid`) ou unité ciblée introuvable. Jamais écartées en silence.
    */
   decisionsDropped: { schemaInvalid: number; unitNotFound: number };
+  /**
+   * Lot 115F (Trello #792, écart P2-10) — VENTILATION DES APPELS DE CETTE PASSE.
+   *
+   * `calls` compte les appels ÉMIS ; `callsFailed` ceux qui ont échoué (lot
+   * d'unités marqué en échec). `costMicros` est la somme des coûts RENDUS par
+   * la passerelle et `costUnknownCalls` le nombre d'appels dont le coût n'a pas
+   * été rendu : un coût inconnu n'est jamais assimilé à zéro, l'appelant et le
+   * BO affichent « coût partiellement inconnu ».
+   */
+  callsFailed: number;
+  costMicros: number;
+  costUnknownCalls: number;
 }
 
 export async function runRepairPass(p: {
@@ -143,7 +168,11 @@ export async function runRepairPass(p: {
   pass: number;
   call: RepairCall;
 }): Promise<RepairPassResult> {
-  const res: RepairPassResult = { facts: [], attempted: [], failed: new Map(), calls: 0, outOfScope: 0, notAttempted: [], links: new Map(), decisions: [], decisionsDropped: { schemaInvalid: 0, unitNotFound: 0 } };
+  const res: RepairPassResult = {
+    facts: [], attempted: [], failed: new Map(), calls: 0, outOfScope: 0, notAttempted: [], links: new Map(),
+    linksAmbiguous: 0, linksByCitedId: 0, decisions: [], decisionsDropped: { schemaInvalid: 0, unitNotFound: 0 },
+    callsFailed: 0, costMicros: 0, costUnknownCalls: 0,
+  };
   const { batches, left } = batchRepairUnits(p.units, p.maxCalls);
   res.notAttempted = left.map((u) => u.sourceUnitId);
   const name = p.input.displayNames[p.groupIndices[0]] ?? 'document';
@@ -165,6 +194,9 @@ export async function runRepairPass(p: {
         }]),
         triggerCode: `t1_repair_pass_${p.pass}`,
       });
+      // Lot 115F (#792, écart P2-10) : coût de CET appel tel que la passerelle le rend ; non rendu → inconnu, jamais zéro.
+      const cout = r.res?.costMicros;
+      if (typeof cout === 'number' && Number.isFinite(cout)) res.costMicros += cout; else res.costUnknownCalls++;
       const { output } = enforceT1Capabilities(r.output, p.capabilities);
       const linker = new SourceUnitLinker(lot);
       const parId = new Map(lot.map((u) => [u.sourceUnitId, u]));
@@ -173,17 +205,49 @@ export async function runRepairPass(p: {
         if (f.provenance === 'VISUAL_ANALYSIS') { res.outOfScope++; continue; }
         const check = checkFactEvidence(f);
         if (!check.ok) { res.outOfScope++; continue; }
-        const excerpt = (check.fact.evidence.excerpt ?? '').replace(PREFIXE, '').trim();
-        const ids = linker.link({ excerpt, provenance: 'TEXT_EXTRACTION' });
+        const brut = check.fact.evidence.excerpt ?? '';
+        const excerpt = brut.replace(PREFIXE, '').trim();
+        // ────────────────────────────────────────────────────────────────
+        // Lot 115F (Trello #792, écart P1-03) — LIEN PAR IDENTIFIANT CITÉ,
+        // PUIS REFUS DE L'AMBIGUÏTÉ
+        //
+        // Chaque unité transmise est précédée de son identifiant
+        // (`repairContent`). Quand l'extrait rendu le recopie, il DÉSIGNE son
+        // unité : ce lien explicite fait foi (même chemin que les décisions de
+        // valeur). Sinon l'extrait est retrouvé dans la zone ciblée ; s'il
+        // correspond à PLUSIEURS unités, l'association est refusée (aucun lien
+        // local, fallback compté) et la page n'est jamais fabriquée à partir
+        // d'une unité choisie arbitrairement.
+        // ────────────────────────────────────────────────────────────────
+        const cite = /\[((?:page|doc):[^\]]+)\]/.exec(brut)?.[1] ?? null;
+        const parCite = cite && parId.has(unitOfCell(cite)) ? [unitOfCell(cite)] : null;
+        const ids = parCite ?? linker.link({ excerpt, provenance: 'TEXT_EXTRACTION' });
         if (ids.length === 0) { res.outOfScope++; continue; }
-        const unite = parId.get(ids[0]);
-        const { table: _t, ...evidence } = check.fact.evidence;
+        if (parCite) res.linksByCitedId++;
+        const pages = new Set(ids.map((id) => parId.get(unitOfCell(id))?.page ?? null));
+        const page = pages.size === 1 ? [...pages][0] : null;
+        // ────────────────────────────────────────────────────────────────
+        // Lot 115F (Trello #792, écart P1-03) — LA PAGE RENDUE PAR LE MODÈLE
+        // EST ÉCARTÉE, TOUJOURS
+        //
+        // Règle complétée : le lot 113AN posait déjà que la page d'un fait de
+        // réparation est celle de l'unité PROUVÉE, la page citée par le modèle
+        // étant celle de l'extrait transmis (pseudo-document d'une page).
+        // Elle n'était pourtant retirée que lorsqu'une page prouvée venait la
+        // remplacer : quand l'unité restait AMBIGUË (même passage sur deux
+        // pages), la page du modèle survivait et tranchait l'ambiguïté toute
+        // seule, en aval, au rattachement recalculé — le rattachement arbitraire
+        // que cet écart interdit. Elle est désormais retirée dans tous les cas.
+        // ────────────────────────────────────────────────────────────────
+        const { table: _t, page: _p, ...evidence } = check.fact.evidence;
         void _t;
+        void _p;
         // Lot 113AN : la page est TOUJOURS celle de l'unité prouvée — la page citée par le modèle est
         // celle de l'extrait transmis (pseudo-document d'une page), qui rattachait le fait à une autre page.
-        const repare = { ...check.fact, evidence: { ...evidence, excerpt, ...(unite?.page ? { page: unite.page } : {}) } };
+        const repare = { ...check.fact, evidence: { ...evidence, excerpt, ...(page ? { page } : {}) } };
         res.facts.push(repare);
-        res.links.set(repare, ids);
+        if (!parCite && ids.length > 1) res.linksAmbiguous++;
+        else res.links.set(repare, ids);
       }
       for (const d of r.valueDecisions ?? []) {
         if (d.schemaInvalid) { res.decisionsDropped.schemaInvalid++; continue; }
@@ -200,6 +264,10 @@ export async function runRepairPass(p: {
       }
     } catch (e) {
       if (isExecutionCancelled(e) || isCostCapReached(e)) throw e;
+      // Lot 115F (#792, écart P2-10) : appel en ÉCHEC compté à part — un appel émis sans résultat n'est ni
+      // une tentative réussie ni une absence d'appel ; son coût n'est pas rendu, donc il reste inconnu.
+      res.callsFailed++;
+      res.costUnknownCalls++;
       const retryable = !isDefinitiveGatewayFailure(e);
       for (const u of lot) res.failed.set(u.sourceUnitId, { reason: `repair_failed:${retryable ? 'retryable' : 'final'}`, retryable });
       console.warn(`[t1-repair] passe ${p.pass} en échec (${lot.length} unité(s)) :`, (e as Error).message);

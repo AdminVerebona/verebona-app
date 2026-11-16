@@ -38,14 +38,15 @@ import {
   type EvidenceRef,
 } from './coverage';
 import {
-  loadDocumentCoverage, loadDocumentSourceUnits, loadUnresolvedDocumentFacts, maxCompletenessRetries, sourceLayerReady, writeSourceLayer,
+  loadAllDocumentSourceUnits, loadDocumentCoverage, loadDocumentSourceUnits, loadUnresolvedDocumentFacts, maxCompletenessRetries, sourceLayerReady, writeSourceLayer,
   type StoredSourceUnit,
 } from './repository';
 import {
   SOURCE_LAYER_VERSION, type CoveredSourceUnit, type SourceLayer, type T1CoverageDiagnostics, type UnresolvedFactRecord,
 } from './types';
 import { verificationAutoRetryDue } from './verification-followup';
-import { decideRetry, releaseUnschedulablePending, retryFactsOf, retryLimits } from './retry-policy';
+import { decideRequeueRight, decideRetry, releaseUnschedulablePending, retryFactsOf, retryLimits } from './retry-policy';
+import type { RequeueOrigin } from './retry-policy';
 import type { T1EnqueueOutcome, T1EnqueueStatus } from '../queue/t1-handler';
 import { partitionUnitRefs, relinkFromStored, type StoredUnitView } from './provenance-integrity';
 import { provenanceJournalReady, recordProvenanceEvents } from './provenance-repair';
@@ -56,7 +57,7 @@ import type { SourceRereadCall, SourceRereadResult } from './source-reread';
 import type { ProjectedFact, T1AnalyzeDocumentOutput, T1Fact } from '../master/t1-contract';
 import type { RepairPropagationOutcome } from '../operation-candidates/repair-propagation.store';
 
-import { KnownFacts, LocalLinks, factCoreIdentity, factLinkKey, type FactIdentityInput } from './repair-identity';
+import { FactRefs, KnownFacts, LocalLinks, factCoreIdentity, type FactIdentityInput } from './repair-identity';
 import type { AnchoredValueDecision } from '../value-decisions/validate';
 type Row = Record<string, unknown>;
 const num = (v: unknown, def: number) => {
@@ -429,8 +430,13 @@ const requeueFingerprint = (fileId: number) => `ai:t1-requeue:${fileId}`;
 
 /** Issue d'une demande de relecture du fichier par la file T1 (lot 114H, #775 P1-B). */
 export interface RequeueResult {
-  /** Réponse réelle de la file (`T1EnqueueStatus`). */
-  status: T1EnqueueStatus;
+  /**
+   * Réponse réelle de la file (`T1EnqueueStatus`), ou, lot 115H (#785, § 1),
+   * `NOT_ADMISSIBLE` : la demande a été refusée par la règle commune AVANT tout
+   * enfilement (plafond à zéro, atteint ou abaissé). Aucun travail n'a été créé,
+   * aucune reprise consommée, aucune reprise promise.
+   */
+  status: T1EnqueueStatus | 'NOT_ADMISSIBLE';
   /** Un travail vivant du document est CONFIRMÉ (créé, ou déjà présent) — seule condition de « REQUEUED_T1 ». */
   queued: boolean;
   jobId: number | null;
@@ -523,8 +529,81 @@ export async function requeueDocumentForRereadDetailed(p: {
   /** Demande de la tâche planifiée `t1-completeness-retry` (ligne sous bail). */
   scheduled?: boolean;
   env?: Record<string, string | undefined>;
+  /**
+   * Lot 115H (#785, § 1) : origine de la demande, consignée avec le refus.
+   * Déduite de `origin` si elle n'est pas donnée. Aucune origine n'a de
+   * privilège : la règle du droit est la même pour toutes.
+   */
+  requestedBy?: RequeueOrigin;
 }): Promise<RequeueResult> {
   const { pgClient } = await import('@/db');
+  // ══════════════════════════════════════════════════════════════════════
+  // LOT 115H (Trello #785, § 1) — LE DROIT EST CONTRÔLÉ ET RÉSERVÉ AVANT
+  // TOUT ENFILEMENT
+  //
+  // Règle remplacée : la file était sollicitée d'abord (`enqueueFileAnalyses…`)
+  // et le plafond n'intervenait qu'ensuite, dans le traitement de certains
+  // refus — une demande du BO était donc acceptée, et un travail T1 créé, à
+  // plafond ZÉRO ou déjà consommé. Le droit est maintenant jugé par la règle
+  // commune (`decideRequeueRight`) et RÉSERVÉ dans la même instruction que son
+  // contrôle, avant le moindre enfilement, pour toutes les origines.
+  //
+  // La réservation est atomique et filtrée par le compte : deux demandes
+  // simultanées (deux clics, BO + planificateur, deux processus) ne peuvent pas
+  // réserver la même et dernière reprise. Elle rend aussi le compteur EXACT en
+  // cas d'arrêt juste après l'enfilement : la tentative est déjà comptée, au
+  // lieu d'être perdue. Quand l'issue de la file dit qu'aucune reprise ne doit
+  // être consommée (travail déjà vivant, refus transitoire toléré), la
+  // réservation est RELÂCHÉE plus bas, à la valeur même qu'elle avait.
+  // ══════════════════════════════════════════════════════════════════════
+  const limites = retryLimits(p.env);
+  const origine: RequeueOrigin = p.requestedBy ?? (p.scheduled ? 'SCHEDULER' : 'OTHER');
+  const [etat] = (await pgClient.unsafe(
+    `SELECT retry_attempts FROM document_extraction_coverage WHERE file_id = $1 AND account_id = $2`,
+    [p.fileId, p.accountId] as never[],
+  ).catch(() => [])) as unknown as Array<{ retry_attempts: number | null }>;
+  // Ligne de couverture ABSENTE (document sans couche A relue, contrôle de cohérence) : il n'y a rien à réserver,
+  // et les tentatives ne peuvent pas être lues. Le droit est alors jugé sur le numéro de tentative que
+  // l'appelant a lui-même calculé — jamais accordé sans contrôle.
+  const ligne = etat !== undefined;
+  const tentatives = ligne ? Number(etat.retry_attempts ?? 0) || 0 : Math.max(0, p.attempt - 1);
+  const droit = decideRequeueRight({ retryAttempts: tentatives }, limites);
+  // Réservation CONDITIONNELLE : la ligne n'est modifiée que si le plafond le permet encore.
+  const reserve = droit.allowed && ligne
+    ? ((await pgClient.unsafe(
+        // `origin` n'est PAS touchée ici : elle ne passe à « RETRY » qu'avec la consommation réelle (ci-dessous),
+        // pour qu'une réservation relâchée ne laisse aucune trace d'une reprise qui n'a pas eu lieu.
+        `UPDATE document_extraction_coverage
+            SET retry_attempts = retry_attempts + 1, updated_at = NOW()
+          WHERE file_id = $1 AND account_id = $2 AND retry_attempts < $3::int
+          RETURNING retry_attempts AS n`,
+        [p.fileId, p.accountId, limites.maxRetries] as never[],
+      )) as unknown as Array<{ n: number }>)
+    : [];
+  if (!droit.allowed || (ligne && reserve.length === 0)) {
+    const motif = droit.block ?? 'RETRY_CAP_REACHED';
+    const resultat = `REQUEUE_NOT_ADMISSIBLE:${motif}`;
+    // Refus EXPLICITE : rien n'est consommé, aucune échéance n'est posée ni retirée (aucune reprise promise),
+    // et l'origine de la demande refusée est consignée.
+    await pgClient.unsafe(
+      `UPDATE document_extraction_coverage
+          SET last_retry_at = NOW(), last_retry_result = $3, last_error = $4, updated_at = NOW(),
+              verification = jsonb_set(coalesce(verification, '{}'::jsonb), '{requeue}', $5::jsonb, true)
+        WHERE file_id = $1 AND account_id = $2`,
+      [p.fileId, p.accountId, resultat,
+        motif === 'RETRIES_DISABLED' ? 'remise en file T1 refusée : les reprises sont désactivées'
+          : 'remise en file T1 refusée : plafond de reprises atteint',
+        JSON.stringify({
+          status: 'NOT_ADMISSIBLE', reason: motif, jobId: null, origin: p.origin, requestedBy: origine,
+          at: new Date().toISOString(), attemptConsumed: false, maxRetries: limites.maxRetries, retryAttempts: tentatives,
+        })] as never[],
+    ).catch(() => undefined);
+    console.warn(`[t1-requeue] fichier ${p.fileId} (${p.origin}, ${origine}) : demande REFUSÉE avant tout enfilement — ${motif} `
+      + `(${tentatives} reprise(s) consommée(s), plafond ${limites.maxRetries}).`);
+    return { status: 'NOT_ADMISSIBLE', queued: false, jobId: null, reason: motif, attemptConsumed: false, result: resultat };
+  }
+  /** Valeur de la réservation : la relâcher consiste à revenir à `tentatives`. `-1` : aucune ligne, rien à relâcher. */
+  const reserveeA = reserve.length > 0 ? Number(reserve[0].n) : -1;
   let issue: T1EnqueueOutcome;
   try {
     const { enqueueFileAnalysesDetailed } = await import('../queue/t1-handler');
@@ -555,14 +634,22 @@ export async function requeueDocumentForRereadDetailed(p: {
     transientRefusals: Number(avant?.refus ?? 0) || 0, scheduled: p.scheduled === true, nowMs: Date.now(),
   });
   const garder = maj.nextRetryAt === 'KEEP';
+  // Lot 115H (#785, § 1) : la reprise est DÉJÀ réservée (incrémentée) — la règle de consommation de 114H
+  // (`requeueCoverageUpdate`) est conservée telle quelle, et décide seulement si la réservation est TENUE
+  // ou RENDUE. Le relâchement RETIRE exactement ce que cette demande avait pris (`- 1`, jamais sous zéro) :
+  // deux demandes simultanées réservent chacune la leur, et celle qui ne consomme pas rend la sienne — ni
+  // double consommation, ni tentative oubliée, quel que soit l'ordre des deux écritures.
   await pgClient.unsafe(
     `UPDATE document_extraction_coverage
-        SET retry_attempts = CASE WHEN $3::boolean THEN GREATEST(retry_attempts, $4::int) ELSE retry_attempts END,
+        SET retry_attempts = CASE WHEN $3::boolean THEN GREATEST(retry_attempts, $4::int)
+                                  WHEN $8::boolean THEN GREATEST(0, retry_attempts - 1)
+                                  ELSE retry_attempts END,
             next_retry_at = CASE WHEN $5::boolean THEN next_retry_at ELSE $6::timestamptz END,
             origin = CASE WHEN $3::boolean THEN 'RETRY' ELSE origin END,
             last_error = $7, updated_at = NOW()
       WHERE file_id = $1 AND account_id = $2`,
-    [p.fileId, p.accountId, maj.consumeAttempt, p.attempt, garder, garder || maj.nextRetryAt === null ? null : (maj.nextRetryAt as Date).toISOString(), maj.lastError] as never[],
+    [p.fileId, p.accountId, maj.consumeAttempt, p.attempt, garder, garder || maj.nextRetryAt === null ? null : (maj.nextRetryAt as Date).toISOString(),
+      maj.lastError, reserveeA >= 0] as never[],
   );
   // Colonnes 0329 (dernière reprise, diagnostics) : écrites si présentes — issue exacte de la demande, sans contenu.
   await pgClient.unsafe(
@@ -601,6 +688,8 @@ export async function requeueDocumentForRereadDetailed(p: {
  */
 export async function requeueDocumentForReread(p: {
   fileId: number; accountId: number; attempt: number; origin: string; result: string;
+  /** Lot 115H (#785, § 1) : origine de la demande (défaut : `OTHER`). Le droit est contrôlé pour elle aussi. */
+  requestedBy?: RequeueOrigin;
 }): Promise<boolean> {
   return (await requeueDocumentForRereadDetailed(p)).queued;
 }
@@ -667,7 +756,7 @@ async function retryDocument(p: {
     }
   }
 
-  const stored = await loadDocumentSourceUnits(p.fileId, { accountId: p.accountId, limit: 50_000 });
+  const stored = await loadAllDocumentSourceUnits(p.fileId, { accountId: p.accountId });
   // Lot 113AN (#741) : unités d'abord RÉCONCILIÉES avec les données persistées (faits, décisions de valeur,
   // métadonnées, tableaux) — seules les vraies lacunes sont envoyées au modèle ; aucun appel pour un faux négatif.
   const [{ loadStoredReconciliationInput }, { reconcileCoverage, reconciliationSummary, residualCounts, withResidualPolicies }] = await Promise.all([
@@ -721,6 +810,21 @@ async function retryDocument(p: {
   let liensLocaux: Map<T1Fact, string[]> | undefined;
   let decisionsRecues: AnchoredValueDecision[] = [];
   let decisionsEcartees = { schemaInvalid: 0, unitNotFound: 0 };
+  // Lot 115F (#792, écart P1-03) : liens explicites par identifiant cité, et associations ambiguës refusées.
+  let liensPasse = { byCitedId: 0, ambiguous: 0 };
+  // ══════════════════════════════════════════════════════════════════════
+  // LOT 115F (Trello #792, écart P2-10) — APPELS ET COÛT, PAR FAMILLE
+  //
+  // La reprise différée (texte ciblé) et la relecture du FICHIER sont deux
+  // familles d'appels distinctes : leurs appels, leurs échecs et leur coût ne
+  // sont plus additionnés sous un seul compteur `calls`. Un coût que la
+  // passerelle n'a pas rendu reste INCONNU (jamais zéro) : le nombre d'appels
+  // concernés est consigné, et le BO l'affiche.
+  // ══════════════════════════════════════════════════════════════════════
+  const cout = {
+    textCalls: 0, textCallsFailed: 0, textCostMicros: 0, textCostUnknownCalls: 0,
+    rereadCalls: 0, rereadCallsFailed: 0,
+  };
   const textuelle = admissible && cibles.length > 0 && (resteUneReprise || continuation);
   if (aRelire.length > 0 || textuelle) {
     const [{ loadAnalysisContext }, { getAccountCapabilities }, { loadAssetFamilies }, step] = await Promise.all([
@@ -736,6 +840,9 @@ async function retryDocument(p: {
       relecture = await rereadSource({ ...p, targets: aRelire, ctx: { ...ctx, capabilities }, capabilities, v2Families, call: (c) => step.callAnalyzeDocument(c) });
       facts.push(...relecture.facts);
       calls += relecture.calls;
+      cout.rereadCalls = relecture.calls;
+      // Relecture en échec : l'appel a bien été émis (compté), son résultat est perdu.
+      cout.rereadCallsFailed = relecture.failed ? 1 : 0;
       console.info(`[t1-source-reread] fichier ${p.fileId} : ${aRelire.length} unité(s) NEEDS_SOURCE, ${relecture.calls} appel(s), `
         + `${relecture.resolved.length} levée(s)${relecture.failed ? `, échec : ${relecture.error}` : ''}`);
     }
@@ -755,8 +862,13 @@ async function retryDocument(p: {
       attempted = r.attempted;
       notAttempted = r.notAttempted;
       liensLocaux = r.links;
+      liensPasse = { byCitedId: r.linksByCitedId, ambiguous: r.linksAmbiguous };
       decisionsRecues = r.decisions;
       decisionsEcartees = r.decisionsDropped;
+      cout.textCalls = r.calls;
+      cout.textCallsFailed = r.callsFailed;
+      cout.textCostMicros = r.costMicros;
+      cout.textCostUnknownCalls = r.costUnknownCalls;
     }
   }
 
@@ -860,7 +972,17 @@ async function retryDocument(p: {
     // Lot 114G (#760, P1-02 / P1-03 / P2-10) : ce que CETTE reprise a reçu, validé, écrit et rattaché.
     (report.diagnostics as T1CoverageDiagnostics & { deferredRepair?: Record<string, unknown> }).deferredRepair = {
       calls, attemptedUnits: attempted.length, newFacts: nouveaux.length,
-      decisions: decisionsDiag, ...(ajout.linkage ? { linkage: ajout.linkage } : {}),
+      decisions: decisionsDiag,
+      // Lot 115F (#792, écart P2-10) : appels de CETTE reprise par famille, échecs et coût rendu
+      // (`costUnknownCalls` : appels dont le coût n'a pas été rendu — inconnu, jamais zéro).
+      textRepair: {
+        calls: cout.textCalls, callsFailed: cout.textCallsFailed,
+        costMicros: cout.textCostMicros, costUnknownCalls: cout.textCostUnknownCalls,
+      },
+      sourceReread: { calls: cout.rereadCalls, callsFailed: cout.rereadCallsFailed },
+      // Lot 115F (#792, écart P1-03) : rattachements de CETTE passe — liens explicites, ambiguïtés refusées,
+      // appariements par ordre et relecture des unités prouvantes enregistrées.
+      ...(ajout.linkage ? { linkage: { ...ajout.linkage, ...liensPasse } } : { linkage: liensPasse }),
     };
     if (diag.coverageRepair) report.diagnostics.coverageRepair = diag.coverageRepair;
     report.diagnostics.reconciliation = reconciliationSummary(majs, 'STORED');
@@ -911,6 +1033,14 @@ export interface RepairDecisionsDiag {
   received: number; valid: number; invalid: number; persisted: number;
   /** Décisions non exploitées, par motif (contrat non porté, table absente, écriture impossible, rejets de validation). */
   skipped: Record<string, number>;
+  /** Lot 115F (#792, écart P1-02) : version de prompt qui a produit les décisions (celle de l'appel). */
+  promptVersion?: string | null;
+  /** La version de l'appel diffère de celle de l'analyse d'origine (jamais bloquant). */
+  contractVersionChanged?: boolean;
+  /** Clés de candidats ACTIFS du document fournies à la validation (contexte réellement persisté). */
+  candidateKeys?: number;
+  /** Décisions RELUES en base après écriture (actives, VALIDES) — `null` : relecture impossible. */
+  rereadActive?: number | null;
 }
 
 /**
@@ -935,26 +1065,45 @@ export async function persistRepairDecisions(p: {
   const ecarter = (motif: string, n: number) => { if (n > 0) diag.skipped[motif] = (diag.skipped[motif] ?? 0) + n; };
   if (p.decisions.length === 0) return diag;
   try {
-    const [{ valueDecisionsCapability }, { validateValueDecisions, factContextOf }, { insertValueDecisions, valueDecisionsTableReady }, { pgClient }] = await Promise.all([
+    const [{ valueDecisionsCapability, repairDecisionContract }, { validateValueDecisions, factContextOf }, { insertValueDecisions, valueDecisionsTableReady }, { pgClient }] = await Promise.all([
       import('../value-decisions/contract'), import('../value-decisions/validate'), import('../value-decisions/store'), import('@/db'),
     ]);
     const ext = ((await pgClient.unsafe(
       `SELECT prompt_version FROM document_extractions WHERE file_id = $1 AND account_id = $2`, [p.fileId, p.accountId] as never[],
     )) as unknown as Row[])[0];
-    const promptVersion = ext?.prompt_version == null ? null : String(ext.prompt_version);
-    // Mêmes conditions que la persistance de l'analyse : contrat porté par la version de prompt effective.
-    const cap = await valueDecisionsCapability();
-    if (!cap.carried || (cap.version !== null && promptVersion !== null && cap.version !== promptVersion)) {
+    // Lot 115F (#792, écart P1-02) : le contrat jugé est celui de l'APPEL qui vient d'être fait (version effective),
+    // pas celui de l'analyse d'origine ; la version enregistrée est celle qui a produit les décisions.
+    const contrat = repairDecisionContract(await valueDecisionsCapability(), ext?.prompt_version == null ? null : String(ext.prompt_version));
+    const promptVersion = contrat.promptVersion;
+    diag.promptVersion = promptVersion;
+    diag.contractVersionChanged = contrat.versionChanged;
+    if (!contrat.carried) {
       ecarter('CONTRACT_NOT_CARRIED', p.decisions.length);
       return diag;
     }
     if (!(await valueDecisionsTableReady())) { ecarter('TABLE_MISSING', p.decisions.length); return diag; }
     // Seuls les faits réellement PERSISTÉS (nouveaux ou déjà présents) peuvent justifier une décision.
     const gardes = (p.facts as Array<T1Fact & { t1FactRef?: string }>).filter((f) => f.t1FactRef && p.factIdsByRef.has(f.t1FactRef));
+    // ══════════════════════════════════════════════════════════════════════
+    // LOT 115F (Trello #792, écart P1-02) — VALIDATION CONTRE LE CONTEXTE PERSISTÉ
+    //
+    // Règle remplacée : `candidateKeys: new Set()` — aucun candidat connu, donc
+    // toute décision COMPONENT_OR_CONTEXT rattachée à un candidat de
+    // l'événement de référence était déclarée INVALIDE (`LINK_MISSING`), alors
+    // que le candidat existe et est ACTIF en base. Les clés réellement
+    // persistées du document sont maintenant chargées (table absente : aucune
+    // clé, jamais une erreur).
+    // ══════════════════════════════════════════════════════════════════════
+    const candidats = ((await pgClient.unsafe(
+      `SELECT candidate_key FROM document_operation_candidates
+        WHERE account_id = $1 AND file_id = $2 AND status = 'ACTIVE' ORDER BY id`,
+      [p.accountId, p.fileId] as never[],
+    ).catch(() => [])) as unknown as Row[]).map((c) => String(c.candidate_key));
+    diag.candidateKeys = candidats.length;
     const preparees = validateValueDecisions(p.decisions, {
       units: p.units,
       keptFactRefs: new Set(gardes.map((f) => f.t1FactRef!)),
-      candidateKeys: new Set(),
+      candidateKeys: new Set(candidats),
       facts: factContextOf(gardes as never, p.units),
     });
     diag.valid = preparees.filter((d) => d.validity === 'VALID').length;
@@ -967,6 +1116,18 @@ export async function persistRepairDecisions(p: {
         factIds: p.factIdsByRef,
       }, preparees);
     });
+    // Lot 115F (#792, écart P1-02) : décisions RELUES après le commit — « écrite » n'est plus déduite du
+    // compte rendu de l'écriture. Relecture impossible : `null` (jamais une erreur, jamais un faux succès).
+    diag.rereadActive = await (async () => {
+      try {
+        const { loadActiveValueDecisions } = await import('../value-decisions/store');
+        const relues = await loadActiveValueDecisions(pgClient as never, p.accountId, [p.fileId]);
+        return relues.filter((d) => d.validity === 'VALID').length;
+      } catch (e) {
+        console.warn(`[t1-completeness-retry] relecture des décisions du fichier ${p.fileId} impossible :`, (e as Error).message);
+        return null;
+      }
+    })();
   } catch (e) {
     ecarter('WRITE_FAILED', p.decisions.length);
     console.error(`[t1-completeness-retry] décisions de valeur du fichier ${p.fileId} non écrites :`, (e as Error).message);
@@ -1105,8 +1266,15 @@ export async function appendRepairedFacts(p: {
   inserted: ProjectedFact[]; all: ProjectedFact[]; propagation?: RepairPropagationOutcome;
   /** Lot 114G (#760) : empreinte du fait rendu (`t1FactRef`) → fait(s) persistés, nouveaux ou déjà présents. */
   factIdsByRef?: Map<string, number[]>;
-  /** Lot 114G (#760, P1-03 / P1-04) : origine des rattachements et issue de la déduplication. */
-  linkage?: { local: number; relinked: number; relinkedReason: string | null; duplicates: number; relinkedExisting: number };
+  /**
+   * Lot 114G (#760, P1-03 / P1-04) : origine des rattachements et issue de la déduplication.
+   * Lot 115F (#792, écart P1-03) : appariements par ordre (`localOrdered`) et relecture des unités
+   * prouvantes réellement enregistrées (`verified` / `mismatched`).
+   */
+  linkage?: {
+    local: number; relinked: number; relinkedReason: string | null; duplicates: number; relinkedExisting: number;
+    localOrdered: number; verified: number; mismatched: number;
+  };
 }> {
   const [{ projectDocumentFacts }, { toFact }, { projectedFactToExtractedField }, step, { insertFactRows }, { documentFactsCanonicalReady }, registry] = await Promise.all([
     import('../projection/document-projection'),
@@ -1144,17 +1312,21 @@ export async function appendRepairedFacts(p: {
   // Lot 114G (#760, P1-03) : le lien LOCAL de la réparation (unité ciblée qui prouve le fait) est conservé
   // jusqu'à l'écriture. Sans lien local exploitable seulement, rattachement recalculé sur le document.
   const locaux = new LocalLinks(p.localLinks);
-  const refs = new Map<string, string[]>();
-  for (const f of p.facts) {
-    const ref = (f as T1Fact & { t1FactRef?: string }).t1FactRef;
-    if (ref) refs.set(factLinkKey(f), [...(refs.get(factLinkKey(f)) ?? []), ref]);
-  }
-  const linkage = { local: 0, relinked: 0, relinkedReason: null as string | null, duplicates: 0, relinkedExisting: 0 };
+  // Lot 115F (#792, écart P1-04) : chaque fait consomme SON empreinte (plus de « première empreinte de la clé »).
+  const refs = new FactRefs(p.facts as Array<T1Fact & { t1FactRef?: string }>);
+  const linkage = {
+    local: 0, relinked: 0, relinkedReason: null as string | null, duplicates: 0, relinkedExisting: 0,
+    /** Lot 115F (#792, écart P1-03) : liens locaux appariés par ORDRE (faits de même clé, unités différentes). */
+    localOrdered: 0,
+    /** Lot 115F (#792, écart P1-03) : faits dont le `source_unit_ids` relu en base diffère de celui écrit. */
+    verified: 0, mismatched: 0,
+  };
   for (const f of projection.facts) {
-    const local = locaux.take(f);
-    if (local?.length) {
-      f.sourceUnitIds = local;
+    const local = locaux.takeDetailed(f);
+    if (local?.ids.length) {
+      f.sourceUnitIds = local.ids;
       linkage.local++;
+      if (local.ordered) linkage.localOrdered++;
       continue;
     }
     f.sourceUnitIds = p.linker.link({
@@ -1178,10 +1350,12 @@ export async function appendRepairedFacts(p: {
   const avant = await activeFactIds(p.fileId, p.accountId);
   const factIdsByRef = new Map<string, number[]>();
   const noter = (f: ProjectedFact, id: number) => {
-    const ref = refs.get(factLinkKey(f))?.[0];
+    const ref = refs.take(f);
     if (ref) factIdsByRef.set(ref, [...new Set([...(factIdsByRef.get(ref) ?? []), id])]);
   };
   const neufs: ProjectedFact[] = [];
+  /** Lot 115F (#792, écart P1-03) : unités prouvantes ATTENDUES par fait persisté — relues après le commit. */
+  const attendus = new Map<number, Set<string>>();
   // ══════════════════════════════════════════════════════════════════════
   // LOT 114G (#760, P1-04) — DÉDUPLICATION PAR IDENTITÉ, SOUS VERROU
   //
@@ -1235,6 +1409,7 @@ export async function appendRepairedFacts(p: {
       // P1-03 : fait déjà présent RELU dans une unité ciblée — ses unités prouvantes sont complétées (jamais retirées).
       const deja = new Set((parId.get(id)?.sourceUnitIds ?? []) as string[]);
       const ajout = (f.sourceUnitIds ?? []).filter((u) => !deja.has(u));
+      attendus.set(id, new Set([...deja, ...(f.sourceUnitIds ?? [])]));
       if (ajout.length > 0) {
         await tx.unsafe(
           `UPDATE document_facts SET source_unit_ids = ARRAY(SELECT DISTINCT unnest(coalesce(source_unit_ids, '{}'::text[]) || $3::text[]))
@@ -1250,10 +1425,40 @@ export async function appendRepairedFacts(p: {
       provider: ext.provider == null ? null : String(ext.provider), model: ext.model == null ? null : String(ext.model),
       promptVersion: ext.prompt_version == null ? null : String(ext.prompt_version),
     }, Number(ext.id), aEcrire.map((x) => x.record), { canonical, provenance: true });
-    aEcrire.forEach((x, i) => { if (ids[i] !== undefined) noter(x.fait, ids[i]); neufs.push(x.fait); });
+    aEcrire.forEach((x, i) => {
+      if (ids[i] !== undefined) { noter(x.fait, ids[i]); attendus.set(ids[i], new Set(x.fait.sourceUnitIds ?? [])); }
+      neufs.push(x.fait);
+    });
     await tx.unsafe(`UPDATE document_extractions SET fact_count = fact_count + $2, updated_at = NOW() WHERE id = $1`,
       [Number(ext.id), aEcrire.length] as never[]);
   });
+  // ══════════════════════════════════════════════════════════════════════
+  // LOT 115F (Trello #792, écart P1-03) — RELECTURE DU `source_unit_ids` ÉCRIT
+  //
+  // Les liens n'étaient jamais RELUS : une écriture partielle ou un tableau
+  // tronqué restait invisible. Après le commit, les unités prouvantes
+  // attendues sont confrontées à celles réellement enregistrées ; tout écart
+  // est compté et consigné (jamais une erreur : les faits sont écrits).
+  // ══════════════════════════════════════════════════════════════════════
+  if (attendus.size > 0) {
+    try {
+      const relus = (await pgClient.unsafe(
+        `SELECT id, source_unit_ids AS ids FROM document_facts WHERE id = ANY($1::int[]) AND account_id = $2`,
+        [[...attendus.keys()], p.accountId] as never[],
+      )) as unknown as Array<{ id: number; ids: string[] | null }>;
+      for (const r of relus) {
+        const ecrits = new Set((r.ids ?? []).map(String));
+        const attendu = attendus.get(Number(r.id)) ?? new Set<string>();
+        if ([...attendu].every((x) => ecrits.has(x))) linkage.verified++;
+        else linkage.mismatched++;
+      }
+      if (linkage.mismatched > 0) {
+        console.warn(`[t1-repair] fichier ${p.fileId} : ${linkage.mismatched} fait(s) dont les unités prouvantes relues diffèrent de celles écrites.`);
+      }
+    } catch (e) {
+      console.warn(`[t1-repair] relecture des unités prouvantes du fichier ${p.fileId} impossible :`, (e as Error).message);
+    }
+  }
   if (neufs.length === 0) return { inserted: [], all: projection.facts, factIdsByRef, linkage };
   // Après commit des faits : la propagation ne peut jamais les emporter (elle ne lève pas).
   const propagation = await propagateRepairToCandidates({ accountId: p.accountId, fileId: p.fileId, beforeFactIds: avant, origin: p.propagationOrigin ?? 't1-repair' });

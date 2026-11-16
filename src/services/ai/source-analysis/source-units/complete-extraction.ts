@@ -300,8 +300,14 @@ export async function completeT1Extraction(p: {
     draft.repairDiag.passes = draft.repairPassCount;
     draft.repairDiag.calls = draft.repairCalls;
     draft.repairDiag.attempted = draft.attempted.size;
-    console.info(`[t1-repair] passe ${pass} : ${cibles.length} unité(s) ciblée(s), ${r.calls} appel(s), ${ajoutes.length} fait(s) ajouté(s), `
-      + `${r.decisions.length} décision(s) de valeur, ${r.failed.size} en échec`);
+    // Lot 115F (#792, écart P2-10) : appels en échec et coût de CETTE famille (réparation ciblée de couverture),
+    // cumulés passe par passe. Un appel dont le coût n'est pas rendu est compté INCONNU, jamais zéro.
+    draft.repairDiag.callsFailed = (draft.repairDiag.callsFailed ?? 0) + r.callsFailed;
+    draft.repairDiag.costMicros = (draft.repairDiag.costMicros ?? 0) + r.costMicros;
+    draft.repairDiag.costUnknownCalls = (draft.repairDiag.costUnknownCalls ?? 0) + r.costUnknownCalls;
+    console.info(`[t1-repair] passe ${pass} : ${cibles.length} unité(s) ciblée(s), ${r.calls} appel(s) `
+      + `(${r.callsFailed} en échec), ${ajoutes.length} fait(s) ajouté(s), `
+      + `${r.decisions.length} décision(s) de valeur, ${r.failed.size} unité(s) en échec`);
     if (ajoutes.length === 0 && r.failed.size === 0) break;
   }
   // Lot 113AN : décisions de la réparation persistées avec celles de l'analyse (même validation, même écriture).

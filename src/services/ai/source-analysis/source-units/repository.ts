@@ -165,8 +165,20 @@ export async function writeSourceLayer(tx: Tx, p: {
   // la migration est appliquée. Une couche sans provenance ni politique
   // s'écrit toujours.
   // ══════════════════════════════════════════════════════════════════════
-  if (!colonnes1665 && layer.units.some((u) => u.coverageProvenance || u.residualPolicy)) {
-    throw new CoverageSchemaError(p.fileId);
+  // ══════════════════════════════════════════════════════════════════════
+  // LOT 115F (Trello #792, écart P2-07) — règle complétée : le refus ne
+  // regardait que les colonnes 1665. Or la provenance et la politique ne sont
+  // écrites que si la colonne `repair_state` (migration 0329) est AUSSI
+  // présente (`provenance = diagnostics && colonnes1665`) : un schéma 1665
+  // appliqué mais 0329 manquant écrivait la couche A en perdant chaque
+  // provenance, sans aucun signal. Le refus porte désormais sur ce qui serait
+  // RÉELLEMENT écrit, et nomme les colonnes absentes.
+  // ══════════════════════════════════════════════════════════════════════
+  if (!provenance && layer.units.some((u) => u.coverageProvenance || u.residualPolicy)) {
+    throw new CoverageSchemaError(p.fileId, [
+      ...(colonnes1665 ? [] : COVERAGE_PROVENANCE_COLUMNS),
+      ...(diagnostics ? [] : ['repair_state']),
+    ]);
   }
   await tx.unsafe(`DELETE FROM document_source_units WHERE file_id = $1`, [p.fileId] as never[]);
   for (let i = 0; i < layer.units.length; i += PAQUET) {
@@ -270,6 +282,11 @@ let provenanceCols: { ready: boolean; checkedAt: number } | null = null;
 
 /** Lot 114G (#760, P2-07) — colonnes de la migration 1665 exigées par la couverture T1. */
 export const COVERAGE_PROVENANCE_COLUMNS = ['coverage_provenance', 'residual_policy'] as const;
+/**
+ * Lot 115F (#792, écart P2-07) — colonnes SANS LESQUELLES la provenance et la politique ne sont PAS écrites :
+ * celles de la migration 1665 et `repair_state` (migration 0329), dont dépend le même chemin d'écriture.
+ */
+export const COVERAGE_SCHEMA_COLUMNS = ['coverage_provenance', 'repair_state', 'residual_policy'] as const;
 export const COVERAGE_SCHEMA_ERROR_CODE = 'T1_COVERAGE_MIGRATION_1665_MISSING';
 
 /**
@@ -279,9 +296,14 @@ export const COVERAGE_SCHEMA_ERROR_CODE = 'T1_COVERAGE_MIGRATION_1665_MISSING';
  */
 export class CoverageSchemaError extends Error {
   readonly code = COVERAGE_SCHEMA_ERROR_CODE;
-  constructor(readonly fileId: number) {
-    super(`${COVERAGE_SCHEMA_ERROR_CODE} : colonnes ${COVERAGE_PROVENANCE_COLUMNS.join(', ')} absentes de document_source_units — `
-      + `couche A du fichier ${fileId} non écrite (provenance de couverture non conservable). Appliquer la migration 1665.`);
+  /**
+   * Lot 115F (#792, écart P2-07) : `missing` nomme ce qui manque RÉELLEMENT —
+   * colonnes de la migration 1665, et / ou `document_source_units.repair_state`
+   * (migration 0329) sans laquelle la provenance n'est pas écrite non plus.
+   */
+  constructor(readonly fileId: number, readonly missing: readonly string[] = COVERAGE_PROVENANCE_COLUMNS) {
+    super(`${COVERAGE_SCHEMA_ERROR_CODE} : colonne(s) ${missing.join(', ')} absente(s) de document_source_units — `
+      + `couche A du fichier ${fileId} non écrite (provenance de couverture non conservable). Appliquer les migrations 0329 et 1665.`);
     this.name = 'CoverageSchemaError';
   }
 }
@@ -296,19 +318,24 @@ export async function coverageSchemaStatus(): Promise<{ ready: boolean; present:
     const r = (await pgClient.unsafe(
       `SELECT column_name AS c FROM information_schema.columns
         WHERE table_schema = current_schema() AND table_name = 'document_source_units' AND column_name = ANY($1::text[])`,
-      [[...COVERAGE_PROVENANCE_COLUMNS]] as never[],
+      [[...COVERAGE_SCHEMA_COLUMNS]] as never[],
     )) as unknown as Array<{ c: string }>;
     const present = r.map((x) => String(x.c)).sort();
-    const missing = COVERAGE_PROVENANCE_COLUMNS.filter((c) => !present.includes(c));
-    provenanceCols = { ready: missing.length === 0, checkedAt: Date.now() };
-    return { ready: missing.length === 0, present, missing, error: null };
+    const missing = COVERAGE_SCHEMA_COLUMNS.filter((c) => !present.includes(c));
+    // La sonde d'écriture ne porte que sur les colonnes 1665 (celles de `coverageProvenanceReady`).
+    const pretes1665 = COVERAGE_PROVENANCE_COLUMNS.every((c) => present.includes(c));
+    provenanceCols = { ready: pretes1665, checkedAt: Date.now() };
+    return { ready: missing.length === 0, present, missing: [...missing], error: null };
   } catch (e) {
-    return { ready: false, present: [], missing: [...COVERAGE_PROVENANCE_COLUMNS], error: (e as Error).message };
+    return { ready: false, present: [], missing: [...COVERAGE_SCHEMA_COLUMNS], error: (e as Error).message };
   }
 }
 
 /** Tests : oublie la sonde mémorisée. */
 export function __resetCoverageProvenanceProbeForTests(): void { provenanceCols = null; }
+
+/** Tests (lot 115F, #792) : oublie la sonde des colonnes de diagnostics (0329). */
+export function __resetLayerDiagnosticsProbeForTests(): void { diag = null; }
 
 /**
  * Lot 113AN (#741) — colonnes 1665 (`coverage_provenance`, `residual_policy`)
@@ -424,6 +451,42 @@ export async function loadDocumentSourceUnits(fileId: number, opts: LoadSourceUn
     }
   }
   return rows.map((u) => ({ ...u, facts: parUnite.get(u.sourceUnitId) ?? [] }));
+}
+
+/** Pages d'unités d'un document : au plus `MAX_UNIT_PAGES` lectures successives (garde-fou, jamais une boucle). */
+const MAX_UNIT_PAGES = 1_000;
+/** Taille d'une page de lecture des unités (le plafond d'une seule requête reste 50 000). */
+export const UNIT_PAGE_SIZE = 10_000;
+
+/**
+ * Lot 115F (Trello #792, écart P2-09) — TOUTES les unités d'un document, lues
+ * PAGE PAR PAGE dans l'ordre de lecture.
+ *
+ * Règle remplacée : les traitements qui ont besoin de la couche A complète
+ * (reprise ciblée, réconciliation du stock, revérification, rapport BO)
+ * demandaient `limit: 50 000`. Au-delà, les unités suivantes étaient
+ * SILENCIEUSEMENT absentes : le rapport annonçait un total faux et, pour les
+ * chemins qui réécrivent la couche (`writeSourceLayer` remplace par fichier),
+ * les unités non lues auraient été perdues. La lecture se poursuit maintenant
+ * jusqu'à épuisement (ordinal croissant, garde-fou de pages).
+ */
+export async function loadAllDocumentSourceUnits(
+  fileId: number, opts: Omit<LoadSourceUnitsOptions, 'afterOrdinal' | 'limit'> & { pageSize?: number } = {},
+): Promise<StoredSourceUnit[]> {
+  const taille = Math.min(Math.max(opts.pageSize ?? UNIT_PAGE_SIZE, 1), 50_000);
+  const out: StoredSourceUnit[] = [];
+  let after = -1;
+  for (let page = 0; page < MAX_UNIT_PAGES; page++) {
+    const lot = await loadDocumentSourceUnits(fileId, { ...opts, afterOrdinal: after, limit: taille });
+    out.push(...lot);
+    if (lot.length < taille) return out;
+    const dernier = lot[lot.length - 1].ordinal;
+    // Ordinaux non croissants (donnée inattendue) : on s'arrête plutôt que de relire la même page.
+    if (dernier <= after) return out;
+    after = dernier;
+  }
+  console.warn(`[t1-source-units] fichier ${fileId} : lecture des unités arrêtée après ${MAX_UNIT_PAGES} pages de ${taille}.`);
+  return out;
 }
 
 interface StoredCoverage extends T1CompletenessReport {
