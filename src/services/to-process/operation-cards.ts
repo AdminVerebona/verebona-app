@@ -209,7 +209,8 @@ export function currencyProposals(candidates: readonly string[]): ActionProposal
 // ── Lot 114 (#750, issue C) : contradiction réelle d'un attribut — textes à valider par le PO ──
 
 type AttributeField = 'plannedDate' | 'startDate' | 'realizedDate' | 'endDate' | 'provider';
-const DATES_QUALIFIEES: Readonly<Record<Exclude<AttributeField, 'provider'>, string>> = {
+/** Dates QUALIFIÉES, au pluriel — libellés déjà posés par la carte (#750) et repris à l'identique par la carte #744. */
+export const DATES_QUALIFIEES: Readonly<Record<Exclude<AttributeField, 'provider'>, string>> = {
   plannedDate: 'dates prévues', startDate: 'dates de début', realizedDate: 'dates de réalisation', endDate: 'dates de fin',
 };
 

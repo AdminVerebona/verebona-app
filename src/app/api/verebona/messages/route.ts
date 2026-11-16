@@ -33,7 +33,8 @@ import {
 } from '@/services/verebona-assistant/core/conversation.service';
 import type { AssistantApiResponse, ResponseMode } from '@/services/verebona-assistant/types/contracts';
 import type { VerebonaIntent } from '@/services/verebona-assistant/types/intents';
-import { toApiPayload } from '@/services/verebona-assistant/core/api-payload';
+import { answerBlocksForApi, toApiPayload } from '@/services/verebona-assistant/core/api-payload';
+import { misesAJourDuFil } from '@/services/verebona-assistant/core/export-card-state';
 import { resoudreClarification } from '@/services/verebona-assistant/core/clarification.service';
 import { executerIssueClarification } from '@/services/verebona-assistant/core/clarification-flow';
 import { assistantPlanFromEntitlements, assistantPlanLimit } from '@/services/verebona-assistant/core/plan-eligibility';
@@ -147,6 +148,10 @@ async function traiter(req: NextRequest, httpId: string): Promise<NextResponse> 
       sourceCount: deja.sourceCount,
       actions: deja.actions as AssistantApiResponse['actions'],
       clarification: null,
+      // Trello #753 (CDC T2 §8.3, §13.8) : mêmes blocs qu'à la première réponse (dérivés du texte enregistré).
+      ...(answerBlocksForApi(deja.content) ? { answerBlocks: answerBlocksForApi(deja.content)! } : {}),
+      // Trello #753 (CDC T2 §14.2 point 5) : cartes enregistrées avec la réponse, rendues à l'identique.
+      ...(deja.resultGroups ? { resultGroups: deja.resultGroups as NonNullable<AssistantApiResponse['resultGroups']> } : {}),
     };
     return NextResponse.json({ ...replay, replayed: true });
   }
@@ -284,7 +289,11 @@ async function traiter(req: NextRequest, httpId: string): Promise<NextResponse> 
     }
 
     const payload: AssistantApiResponse = toApiPayload(result, conversationId);
-    return NextResponse.json(payload);
+    // Passage 114AA (#753, W28) : l'utilisateur vient d'écrire dans le fil — c'est le moment de relire l'état
+    // d'un dossier d'export mis en préparation plus tôt dans CE fil. Aucune tâche de fond, aucune lecture de
+    // génération si le fil ne porte aucune carte « En préparation », et rien n'est réécrit en base.
+    const cardUpdates = await misesAJourDuFil({ accountId, userId: session.userId, conversationId });
+    return NextResponse.json(cardUpdates.length ? { ...payload, cardUpdates } : payload);
   } catch (e) {
     if (requestId) await closePendingRequest(requestId, 'error', 'ASSISTANT_UNAVAILABLE');
     console.error(`[POST /api/verebona/messages][${httpId}]`, e);

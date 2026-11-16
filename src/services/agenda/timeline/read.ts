@@ -27,6 +27,8 @@
  * bien) ; volume rendu borné par la page. Plan vérifié par l'e2e L84C-E08.
  */
 import { documentTitleJsonSql, documentTitleOf, type DocumentTitleColumns } from '@/lib/documents/document-title-source';
+import { presentationBasisOf } from '@/lib/reference-events/presentation-date';
+import { presentationScalarSql } from '@/services/business-operations/graph/presentation-date';
 import {
   DEFAULT_TIMELINE_MODE, decodeTimelineCursor, TIMELINE_PAGE_DEFAULT, TIMELINE_PAGE_MAX, compareTimelineItems, encodeTimelineCursor, timelineGroupEntryId, timelineItemView,
   type TimelineCursor, type TimelineEntry, type TimelineGroupCounters, type TimelineGroupDateBasis, type TimelineItemRow, type TimelineItemView,
@@ -71,8 +73,12 @@ const opScalaire = (col: string, id: string): string =>
  *   · `op_ids` : événements de référence pertinents pour le bien = ceux de
  *     `links` ∪ ceux reliés au bien (`business_operation_asset_links`, index
  *     par bien) — jamais un parcours de tous les événements de référence ;
- *   · `ops`    : repère de date = date propre, sinon plus ancien élément lié
- *     présent sur cette Timeline, sinon aucune ;
+ *   · `ops`    : repère de date = DATE DE PRÉSENTATION du CDC §11 (carte
+ *     #744, point F — RÈGLE REMPLACÉE : plus de repli sur la date du plus
+ *     ancien élément d'agenda lié). Règle unique :
+ *     `@/lib/reference-events/presentation-date`, faits lus par
+ *     `presentationScalarSql` (une sous-requête scalaire par événement de
+ *     référence pertinent, sur la clé primaire) ; sans fait daté : aucune date ;
  *   · `entries`: mode regroupé = un rang 1 par événement de référence + les
  *     éléments sans lien actif ; mode détaillé = tous les éléments, une fois.
  */
@@ -85,7 +91,7 @@ WITH items AS MATERIALIZED (
     JOIN agenda_items ai ON ai.id = aal.agenda_item_id
    WHERE aal.asset_id = $2 AND ai.account_id = $1
 ), links AS MATERIALIZED (
-  SELECT l.agenda_item_id AS item_id, l.operation_id AS op, i.d
+  SELECT l.agenda_item_id AS item_id, l.operation_id AS op
     FROM items i
     JOIN business_operation_agenda_links l ON l.account_id = $1 AND l.agenda_item_id = i.id AND l.state = 'ACTIVE'
    WHERE $3 = 'grouped' AND ${opScalaire('bo.id', 'l.operation_id')} IS NOT NULL
@@ -95,12 +101,10 @@ WITH items AS MATERIALIZED (
   SELECT b.operation_id FROM business_operation_asset_links b
    WHERE $3 = 'grouped' AND b.asset_id = $2 AND b.account_id = $1 AND b.active
      AND ${opScalaire('bo.id', 'b.operation_id')} IS NOT NULL
+), op_pd AS MATERIALIZED (
+  SELECT x.op, ${presentationScalarSql('x.op')} AS pd FROM op_ids x
 ), ops AS (
-  SELECT x.op,
-         ${opScalaire('COALESCE(bo.realized_date, bo.start_date, bo.planned_date)', 'x.op')} AS own_d,
-         ev.event_d
-    FROM op_ids x
-    LEFT JOIN (SELECT k.op, min(k.d) AS event_d FROM links k GROUP BY k.op) ev ON ev.op = x.op
+  SELECT y.op, split_part(y.pd, '|', 1)::date AS d, split_part(y.pd, '|', 2) AS basis FROM op_pd y
 ), entries AS (
   SELECT 0 AS rank, i.id::bigint AS id, i.title, i.start_date, i.origin_field_key, i.event_nature, i.business_type,
          i.start_time, i.end_date, i.end_time,
@@ -108,10 +112,9 @@ WITH items AS MATERIALIZED (
     FROM items i
    WHERE $3 = 'detailed' OR i.id NOT IN (SELECT k.item_id FROM links k)
   UNION ALL
-  SELECT 1 AS rank, o.op AS id, NULL::text AS title, to_char(COALESCE(o.own_d, o.event_d), 'YYYY-MM-DD') AS start_date,
+  SELECT 1 AS rank, o.op AS id, NULL::text AS title, to_char(o.d, 'YYYY-MM-DD') AS start_date,
          NULL::text, NULL::text, NULL::text, NULL::text, NULL::text, NULL::text,
-         COALESCE(o.own_d, o.event_d, '-infinity'::date) AS sort_date,
-         CASE WHEN o.own_d IS NOT NULL THEN 'REFERENCE_EVENT' WHEN o.event_d IS NOT NULL THEN 'FIRST_EVENT' END AS date_basis
+         COALESCE(o.d, '-infinity'::date) AS sort_date, o.basis AS date_basis
     FROM ops o
 )
 SELECT e.rank, e.id, e.title, e.start_date, e.origin_field_key, e.event_nature, e.business_type,
@@ -307,7 +310,7 @@ export async function readAssetTimelinePage(input: ReadTimelineInput): Promise<T
   const entries: TimelineEntry[] = page.map((r): TimelineEntry => {
     if (r.is_group === true) {
       const op = Number(r.id);
-      const basis: TimelineGroupDateBasis | null = r.date_basis === 'REFERENCE_EVENT' || r.date_basis === 'FIRST_EVENT' ? r.date_basis : null;
+      const basis: TimelineGroupDateBasis | null = presentationBasisOf(r.date_basis);
       return {
         kind: 'group', itemType: 'operation', id: timelineGroupEntryId(op), operationId: op,
         title: labels.get(op) ?? '',

@@ -160,18 +160,20 @@ scenario('L114OC', 'Opérations / Agenda CDC V2.0 — travaux C : Agenda génér
 
     // Timeline regroupée : un groupe par événement de référence (identité propre), l'élément autonome en ligne individuelle.
     const reg = await timeline(d.bien.id, 'grouped');
-    expect(ids(reg)).toEqual([G(d.vente), S(d.seul), G(d.diagnostic)]);
-    const gVente = reg[0];
-    const gDiag = reg[2];
-    // La vente n'a pas de date propre : repère = son plus ancien élément réel sur ce bien (choix par défaut à valider).
-    expect(gVente).toMatchObject({ kind: 'group', itemType: 'operation', operationId: d.vente, title: 'Cession — Vente de la maison', effectiveDate: '2030-06-09', dateBasis: 'FIRST_EVENT' });
-    expect(gDiag).toMatchObject({ kind: 'group', itemType: 'operation', operationId: d.diagnostic, title: 'Intervention — DPE', effectiveDate: '2020-06-10', dateBasis: 'REFERENCE_EVENT' });
+    // Règle remplacée (carte #744, point F) : le repère d'un groupe est la date de présentation du CDC §11. La vente n'a
+    // aucun fait daté propre : elle est « sans date » (en fin de liste) — la date de son élément d'agenda (2030) n'est
+    // plus empruntée ; l'élément lui-même reste à SA date dans le dépliage, la Timeline détaillée et l'Agenda.
+    expect(ids(reg)).toEqual([S(d.seul), G(d.diagnostic), G(d.vente)]);
+    const gVente = reg[2];
+    const gDiag = reg[1];
+    expect(gVente).toMatchObject({ kind: 'group', itemType: 'operation', operationId: d.vente, title: 'Cession — Vente de la maison', effectiveDate: null, dateBasis: null });
+    expect(gDiag).toMatchObject({ kind: 'group', itemType: 'operation', operationId: d.diagnostic, title: 'Intervention — DPE', effectiveDate: '2020-06-10', dateBasis: 'REALIZED' });
     // Le dépliage ne porte que des éléments réels, à LEUR date ; l'élément partagé figure dans chacun, avec la MÊME identité.
     expect(gVente.members!.map((m) => [m.id, m.effectiveDate])).toEqual([[S(d.expiration), '2030-06-09']]);
     expect(gDiag.members!.map((m) => [m.id, m.effectiveDate])).toEqual([[S(d.expiration), '2030-06-09'], [S(d.realisation), '2020-06-10']]);
     expect(gDiag.counters).toMatchObject({ events: 2 });
     expect(gVente.counters).toMatchObject({ events: 1 });
-    expect(reg[1]).toMatchObject({ kind: 'item', itemType: 'agenda', title: 'Contrôle technique' });
+    expect(reg[0]).toMatchObject({ kind: 'item', itemType: 'agenda', title: 'Contrôle technique' });
     // Aucun texte affiché ne dit « Opération ».
     expect([...reg, ...det].map((e) => `${e.title} ${(e.operations ?? []).map((o) => o.label).join(' ')}`).join(' ')).not.toMatch(/op[ée]ration/i);
 
@@ -203,7 +205,7 @@ scenario('L114OC', 'Opérations / Agenda CDC V2.0 — travaux C : Agenda génér
     const reg = await timeline(bien.id, 'grouped');
     // Flux daté d'abord ; « sans date » en dernier, l'événement de référence avant l'élément (tri stable).
     expect(ids(reg)).toEqual([S(ramonage), G(avecDate), G(sansDate), S(aPrevoir)]);
-    expect(reg[1]).toMatchObject({ kind: 'group', title: 'Intervention — Réfection de la toiture', effectiveDate: '2023-03-14', dateBasis: 'REFERENCE_EVENT', members: [] });
+    expect(reg[1]).toMatchObject({ kind: 'group', title: 'Intervention — Réfection de la toiture', effectiveDate: '2023-03-14', dateBasis: 'REALIZED', members: [] });
     expect(reg[1].counters).toEqual({ events: 0, documents: 0, assets: 1, rooms: 0, equipments: 0 });
     // AC35 : aucune date affichée ni stockée à la place d'une date inconnue.
     expect(reg[2]).toMatchObject({ kind: 'group', operationId: sansDate, title: 'Intervention — Remplacement de la chaudière', effectiveDate: null, dateBasis: null, members: [] });
@@ -349,7 +351,11 @@ scenario('L114OC', 'Opérations / Agenda CDC V2.0 — travaux C : Agenda génér
     // AC40 (Timeline) : désigner puis changer l'élément « principal » (chemin historique de T4) ne change RIEN à la lecture.
     const g = await grouping();
     await g.withGroupingWrite(d.compte.id, (ctx) => g.designatePrincipal(ctx, { operationId: d.diagnostic, itemId: d.expiration, origin: 'T4', reasonCode: 'L114OC_E2E' }));
-    expect(await sql<Json[]>`SELECT operation_role AS role FROM agenda_items WHERE id = ${d.expiration}`).toEqual([{ role: 'PRINCIPAL' }]);
+    // RÈGLE REMPLACÉE (carte #744, travaux F) : la désignation ne pose plus le rôle `operation_role = 'PRINCIPAL'`
+    // (la colonne historique reste tenue à RELATED par son déclencheur) mais le FAIT PORTÉ par le lien N↔N.
+    expect(await sql<Json[]>`SELECT operation_role AS role FROM agenda_items WHERE id = ${d.expiration}`).toEqual([{ role: 'RELATED' }]);
+    expect(await sql<Json[]>`SELECT agenda_item_id AS item FROM business_operation_agenda_links
+      WHERE operation_id = ${d.diagnostic} AND state = 'ACTIVE' AND fact_key IS NOT NULL`).toEqual([{ item: d.expiration }]);
     expect(await timeline(d.bien.id, 'grouped')).toEqual(regAvant);
     expect(await timeline(d.bien.id, 'detailed')).toEqual(detAvant);
     await g.withGroupingWrite(d.compte.id, (ctx) => g.designatePrincipal(ctx, { operationId: d.diagnostic, itemId: d.realisation, origin: 'T4', reasonCode: 'L114OC_E2E' }));

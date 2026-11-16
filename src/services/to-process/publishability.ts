@@ -252,6 +252,52 @@ export const PUBLISHABILITY_CONTRACTS: Readonly<Record<string, PublishabilityCon
     family: 'EVENEMENTS_DE_REFERENCE', decisions: 'PRODUCTION', reason: 'REFERENCE_EVENT_WITHDRAWN',
     noLongerUseful: (a) => evenementRetire(a, `${a}.trigger_context->>'operationId'`), cleanup: { by: 'COH-TODO-OPERATION-CARDS' },
   },
+  // Carte #744 : association refusée rapprochée par une preuve nouvelle — inutile dès que l'un des deux événements de
+  // référence est retiré, ou que la relation n'est plus refusée (associée ou retirée entre-temps par l'utilisateur).
+  'OPERATION-RELATION': {
+    family: 'EVENEMENTS_DE_REFERENCE', decisions: 'PRODUCTION', reason: 'ASSOCIATION_ALREADY_SETTLED', atCreation: true,
+    noLongerUseful: (a) => `(${evenementRetire(a, `${a}.trigger_context->>'fromOperationId'`)}
+                          OR ${evenementRetire(a, `${a}.trigger_context->>'toOperationId'`)}
+                          OR NOT EXISTS (SELECT 1 FROM business_operation_relations r
+                                          WHERE r.account_id = ${a}.account_id AND r.id = ${idDe(`${a}.trigger_context->>'relationId'`)}
+                                            AND r.state = 'REJECTED'))`,
+    cleanup: { by: PUBLISHABILITY_CHECK_ID, service: 'closeCardsNoLongerUseful' },
+  },
+  // Carte #744 (décision du PO du 16/11/2026) : rattachement d'Agenda SUPPLÉMENTAIRE proposé sur un justificatif
+  // commun — inutile dès que l'événement de référence visé est retiré, ou que le rattachement existe déjà (posé
+  // entre-temps depuis la page ou l'Assistant). Le refus, lui, n'est pas un état : la question reste la même.
+  'AGENDA-LINK': {
+    family: 'EVENEMENTS_DE_REFERENCE', decisions: 'PRODUCTION', reason: 'REFERENCE_EVENT_WITHDRAWN', atCreation: true,
+    noLongerUseful: (a) => `(${evenementRetire(a, `${a}.trigger_context->>'operationId'`)}
+                          OR EXISTS (SELECT 1 FROM business_operation_agenda_links l
+                                      WHERE l.account_id = ${a}.account_id AND l.state = 'ACTIVE'
+                                        AND l.agenda_item_id = ${a}.target_id
+                                        AND l.operation_id = ${idDe(`${a}.trigger_context->>'operationId'`)}))`,
+    cleanup: { by: PUBLISHABILITY_CHECK_ID, service: 'closeCardsNoLongerUseful' },
+  },
+  // Carte #744 (CDC §7, §8) : « même événement de référence, ou deux ? » — inutile dès que l'un des deux est retiré
+  // (fusionné ailleurs ou invalidé) : la question ne se pose plus.
+  'REFERENCE-EVENT-MERGE': {
+    family: 'EVENEMENTS_DE_REFERENCE', decisions: 'PRODUCTION', reason: 'REFERENCE_EVENT_WITHDRAWN', atCreation: true,
+    noLongerUseful: (a) => `(${evenementRetire(a, `${a}.trigger_context->>'canonicalOperationId'`)}
+                          OR ${evenementRetire(a, `${a}.trigger_context->>'absorbedOperationId'`)})`,
+    cleanup: { by: PUBLISHABILITY_CHECK_ID, service: 'closeCardsNoLongerUseful' },
+  },
+  // Carte #744 (CDC §8, §11) : « quel fait est correct ? » entre deux événements de référence — inutile dès que l'un
+  // des deux est retiré, ou que la relation qui les associe n'est plus active (deux faits sans rapport ne se
+  // contredisent plus).
+  'REFERENCE-EVENT-FACT': {
+    family: 'EVENEMENTS_DE_REFERENCE', decisions: 'PRODUCTION', reason: 'REFERENCE_EVENT_WITHDRAWN', atCreation: true,
+    noLongerUseful: (a) => `(${evenementRetire(a, `${a}.trigger_context#>>'{sides,0,operationId}'`)}
+                          OR ${evenementRetire(a, `${a}.trigger_context#>>'{sides,1,operationId}'`)}
+                          OR NOT EXISTS (SELECT 1 FROM business_operation_relations r
+                                          WHERE r.account_id = ${a}.account_id AND r.state = 'ACTIVE'
+                                            AND LEAST(r.from_operation_id, r.to_operation_id)
+                                                = LEAST(${idDe(`${a}.trigger_context#>>'{sides,0,operationId}'`)}, ${idDe(`${a}.trigger_context#>>'{sides,1,operationId}'`)})
+                                            AND GREATEST(r.from_operation_id, r.to_operation_id)
+                                                = GREATEST(${idDe(`${a}.trigger_context#>>'{sides,0,operationId}'`)}, ${idDe(`${a}.trigger_context#>>'{sides,1,operationId}'`)})))`,
+    cleanup: { by: PUBLISHABILITY_CHECK_ID, service: 'closeCardsNoLongerUseful' },
+  },
   // Lot 113AA (#725, D11) : divergence de périodes — fermée par la résolution (COH-OPS-PERIOD-RESOLUTION, passage T3).
   'PERIOD-CONFLICT': {
     family: 'EVENEMENTS_DE_REFERENCE', decisions: 'PRODUCTION', reason: 'REFERENCE_EVENT_WITHDRAWN',

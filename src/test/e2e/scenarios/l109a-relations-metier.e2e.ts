@@ -183,9 +183,13 @@ scenario('L109A-RELATIONS-METIER', 'Relations métier : Opération pivot, contra
     const docs = (await (await rc()).listEntityDocuments(a.id, { kind: 'agenda_item', id: principal }))!;
     expect(docs.totals).toEqual({ all: 6, direct: 1, viaOperationOnly: 5 });
     const ag = (await (await rc()).listSupplierAgendaItems(a.id, x.s))!;
-    expect(ag.items.map((i) => [i.id, i.provenance, i.operationRole])).toEqual([[principal, 'VIA_OPERATION', 'PRINCIPAL']]);
-    // Un seul principal ; l'événement autonome reste hors de l'ensemble.
-    expect((await sql`SELECT id FROM agenda_items WHERE business_operation_id = ${op} AND operation_role = 'PRINCIPAL'`)).toHaveLength(1);
+    // Règle remplacée (carte #744) : le contrat rend le FAIT PORTÉ par le lien N↔N, plus un rôle.
+    expect(ag.items.map((i) => [i.id, i.provenance, i.carriedFact])).toEqual([[principal, 'VIA_OPERATION', 'CONTRACT:END']]);
+    // Un seul porteur du fait ; l'événement autonome reste hors de l'ensemble ; plus aucune DÉSIGNATION en base.
+    // La colonne historique reste EN PLACE et tenue à RELATED par son seul déclencheur (elle ne dit plus que « rattaché »).
+    expect((await sql`SELECT agenda_item_id FROM business_operation_agenda_links WHERE operation_id = ${op} AND state = 'ACTIVE' AND fact_key IS NOT NULL`)).toHaveLength(1);
+    expect((await sql`SELECT id FROM agenda_items WHERE business_operation_id = ${op} AND operation_role = 'PRINCIPAL'`)).toHaveLength(0);
+    expect((await sql`SELECT DISTINCT operation_role AS r FROM agenda_items WHERE business_operation_id = ${op}`)).toEqual([{ r: 'RELATED' }]);
     expect((await sql<{ op: number | null }[]>`SELECT business_operation_id AS op FROM agenda_items WHERE id = ${autonome}`)[0].op).toBeNull();
     // Reconsolidation T3 : le lien direct et la provenance du groupe sont conservés.
     await k.passer(a, { fileIds: x.factures });

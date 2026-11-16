@@ -26,7 +26,7 @@ function item(over: Partial<AgendaItemSnapshot> = {}): AgendaItemSnapshot {
   return {
     id: 100, title: 'Événement', date: '2026-03-12', isAutomatic: false, isAutomaticModified: false, projected: false,
     businessOperationId: 10, linkedOperationActive: true, nature: null, businessType: null, homeCategory: null, functionalKey: null,
-    originRefType: null, originRefId: null, assetIds: [5], equipmentIds: [], fileIds: [], operationRole: 'RELATED', operationRoleOrigin: 'USER', ...over,
+    originRefType: null, originRefId: null, assetIds: [5], equipmentIds: [], fileIds: [], carriedFact: null, carrierOrigin: 'USER', ...over,
   };
 }
 const plan = (o: OperationSnapshot, p: { linked?: AgendaItemSnapshot[]; candidates?: AgendaItemSnapshot[] } = {}) =>
@@ -57,23 +57,26 @@ describe('L83A-U01 — clé de projection = principal (E01, E04, AC15, AC34)', (
   });
   it('principal en place (quel qu’en soit l’auteur) : seul emplacement ; les étapes ne sont ni promues ni absorbées', () => {
     const principal = item({ id: 4, title: 'Dégât des eaux', projected: true, isAutomatic: true, nature: 'HISTORICAL', businessType: 'claim',
-      homeCategory: 'information', functionalKey: 'bo:v1:10:CLAIM', operationRole: 'PRINCIPAL', operationRoleOrigin: 'T4' });
-    const etapes = [item({ id: 5, title: 'Visite expert', date: '2026-03-21' }), item({ id: 6, title: 'Réparation plafond', date: '2026-04-18', operationRoleOrigin: 'T3' })];
+      homeCategory: 'information', functionalKey: 'bo:v1:10:CLAIM', carriedFact: 'CLAIM', carrierOrigin: 'AI' });
+    const etapes = [item({ id: 5, title: 'Visite expert', date: '2026-03-21' }), item({ id: 6, title: 'Réparation plafond', date: '2026-04-18', carrierOrigin: 'AI' })];
     expect(plan(op(), { linked: [principal, ...etapes] })).toEqual([]);
   });
   it('propre projection d’un AUTRE type d’événement global (type requalifié) : reste l’emplacement, mise à jour, jamais dupliquée', () => {
     const ancienne = item({ id: 7, title: 'Intervention', projected: true, isAutomatic: true, nature: 'HISTORICAL', businessType: 'maintenance',
-      homeCategory: 'information', functionalKey: 'bo:v1:10:INTERVENTION', operationRole: 'PRINCIPAL', operationRoleOrigin: 'T4' });
-    expect(plan(op(), { linked: [ancienne] })).toEqual([{
-      kind: 'SYNC', itemId: 7, changes: { title: 'Dégât des eaux', businessType: 'claim', functionalKey: 'bo:v1:10:CLAIM' },
-    }]);
+      homeCategory: 'information', functionalKey: 'bo:v1:10:INTERVENTION', carriedFact: 'INTERVENTION', carrierOrigin: 'AI' });
+    // Règle remplacée (carte #744) : l'emplacement reste le même élément, et le FAIT PORTÉ par son lien
+    // suit la requalification du type (le rôle, lui, ne disait pas QUEL fait l'élément portait).
+    expect(plan(op(), { linked: [ancienne] })).toEqual([
+      { kind: 'SYNC', itemId: 7, changes: { title: 'Dégât des eaux', businessType: 'claim', functionalKey: 'bo:v1:10:CLAIM' } },
+      { kind: 'CARRY', itemId: 7, fact: 'CLAIM' },
+    ]);
   });
   it('C16.1 / V-Q4 : propre projection INTACTE + membre qui représente CERTAINEMENT la même occurrence → la projection (vrai doublon) part, le membre devient principal ; une étape ne l’évince jamais', () => {
     const projection = item({ id: 20, title: 'Dégât des eaux', projected: true, isAutomatic: true, nature: 'HISTORICAL', businessType: 'claim',
-      homeCategory: 'information', functionalKey: 'bo:v1:10:CLAIM', operationRole: 'PRINCIPAL', operationRoleOrigin: 'T4' });
+      homeCategory: 'information', functionalKey: 'bo:v1:10:CLAIM', carriedFact: 'CLAIM', carrierOrigin: 'AI' });
     // Lot 87B — test corrigé : le vrai doublon n'est établi d'office que par PROVENANCE (source AGENDA établie par T3) ;
     // sur de simples signaux, la projection reste et T4 décide.
-    const saisi = item({ id: 21, title: 'Dégâts des eaux salle de bain', date: '2026-03-13', operationRoleOrigin: 'T3', agendaSourceOperationIds: [10] });
+    const saisi = item({ id: 21, title: 'Dégâts des eaux salle de bain', date: '2026-03-13', carrierOrigin: 'AI', agendaSourceOperationIds: [10] });
     expect(plan(op(), { linked: [projection, saisi] })).toEqual([
       { kind: 'REMOVE', itemId: 20, reason: 'DUPLICATE_PROJECTION' },
       { kind: 'LINK', itemId: 21, reason: expect.stringContaining('élément du regroupement') },
@@ -87,11 +90,11 @@ describe('L83A-U01 — clé de projection = principal (E01, E04, AC15, AC34)', (
     expect(plan(op(), { linked: [projection, etape] })).toEqual([]);
     // Projection modifiée par l'utilisateur, ou principal choisi par l'utilisateur : jamais évincé.
     expect(plan(op(), { linked: [{ ...projection, isAutomaticModified: true }, saisi] }).some((a) => a.kind === 'REMOVE')).toBe(false);
-    expect(plan(op(), { linked: [{ ...projection, operationRoleOrigin: 'USER' }, saisi] }).some((a) => a.kind === 'REMOVE')).toBe(false);
+    expect(plan(op(), { linked: [{ ...projection, carrierOrigin: 'USER' }, saisi] }).some((a) => a.kind === 'REMOVE')).toBe(false);
   });
   it('rôle posé par l’utilisateur jamais modifié par la projection (principal retiré par l’utilisateur : la projection ne le repromeut pas)', () => {
     const relache = item({ id: 8, title: 'Dégât des eaux', projected: true, isAutomatic: true, nature: 'HISTORICAL', businessType: 'claim',
-      homeCategory: 'information', functionalKey: 'bo:v1:10:CLAIM', operationRole: 'RELATED', operationRoleOrigin: 'USER' });
+      homeCategory: 'information', functionalKey: 'bo:v1:10:CLAIM', carriedFact: null, carrierOrigin: 'USER' });
     expect(plan(op(), { linked: [relache] })).toEqual([]);
   });
 });
@@ -107,9 +110,9 @@ describe('L83A-U02 — principal sans date, date découverte, dates contradictoi
   });
   it('AC19 : date établie ensuite → posée sur la projection intacte ; posée sur un principal T4 automatique intact resté sans date ; jamais sur une saisie', () => {
     const projete = item({ id: 9, title: 'Dégât des eaux', date: null, projected: true, isAutomatic: true, nature: 'HISTORICAL', businessType: 'claim',
-      homeCategory: 'information', functionalKey: 'bo:v1:10:CLAIM', operationRole: 'PRINCIPAL', operationRoleOrigin: 'T4' });
+      homeCategory: 'information', functionalKey: 'bo:v1:10:CLAIM', carriedFact: 'CLAIM', carrierOrigin: 'AI' });
     expect(plan(op(), { linked: [projete] })).toEqual([{ kind: 'SYNC', itemId: 9, changes: { date: '2026-03-12' } }]);
-    const t4 = item({ id: 10, title: 'Sinistre', date: null, isAutomatic: true, operationRole: 'PRINCIPAL', operationRoleOrigin: 'T4' });
+    const t4 = item({ id: 10, title: 'Sinistre', date: null, isAutomatic: true, carriedFact: 'CLAIM', carrierOrigin: 'AI' });
     expect(plan(op(), { linked: [t4] })).toEqual([{ kind: 'DATE', itemId: 10, date: '2026-03-12' }]);
     expect(plan(op(), { linked: [{ ...t4, isAutomaticModified: true }] })).toEqual([]);
     expect(plan(op(), { linked: [{ ...t4, isAutomatic: false }] })).toEqual([]);
@@ -123,14 +126,14 @@ describe('L83A-U02 — principal sans date, date découverte, dates contradictoi
     expect(realizedDateContested(op({ realizedDateConflict: ['2026-03-12', 'n/a'] }))).toBe(false);
     expect(decideProjection(conteste, AUJ)).toMatchObject({ kind: 'PROJECT', desired: { date: null, creatable: true } });
     const projete = item({ id: 11, title: 'Dégât des eaux', projected: true, isAutomatic: true, nature: 'HISTORICAL', businessType: 'claim',
-      homeCategory: 'information', functionalKey: 'bo:v1:10:CLAIM', operationRole: 'PRINCIPAL', operationRoleOrigin: 'T4' });
+      homeCategory: 'information', functionalKey: 'bo:v1:10:CLAIM', carriedFact: 'CLAIM', carrierOrigin: 'AI' });
     expect(plan(conteste, { linked: [projete] })).toEqual([{ kind: 'SYNC', itemId: 11, changes: { date: null } }]);
     expect(plan(conteste, { linked: [{ ...projete, isAutomaticModified: true }] })).toEqual([]);
   });
   // #715 : plus de statut d'événement — la projection ne pose plus « réalisé » (MARK_DONE retiré) : date seule.
   it('F-140 conservé : une occurrence PLANIFIÉE projetée garde sa date quand la réalisation n’a pas de date (aucun statut posé)', () => {
     const planifie = item({ id: 12, title: 'Dégât des eaux', projected: true, isAutomatic: true, nature: 'DEADLINE', businessType: 'maintenance',
-      homeCategory: 'action', functionalKey: 'bo:v1:10:INTERVENTION', date: '2026-02-01', operationRole: 'PRINCIPAL', operationRoleOrigin: 'T4' });
+      homeCategory: 'action', functionalKey: 'bo:v1:10:INTERVENTION', date: '2026-02-01', carriedFact: 'INTERVENTION', carrierOrigin: 'AI' });
     expect(plan(op({ typeCode: 'INTERVENTION', realizedDate: null }), { linked: [planifie] })).toEqual([]);
   });
 });
@@ -145,19 +148,22 @@ describe('L83A-U03 — principal facultatif : relation durable, regroupement non
   it('contrat sans échéance : rien n’est créé ; un principal DÉDUIT est rétrogradé, celui de l’utilisateur reste ; aucun élément détaché', () => {
     const contrat = op({ typeCode: 'CONTRACT', realizedDate: null });
     expect(plan(contrat)).toEqual([]);
-    const deduit = item({ id: 13, operationRole: 'PRINCIPAL', operationRoleOrigin: 'T4' });
-    expect(plan(contrat, { linked: [deduit] })).toEqual([{ kind: 'ROLE', itemId: 13, role: 'RELATED' }]);
-    expect(plan(contrat, { linked: [{ ...deduit, operationRoleOrigin: 'USER' }] })).toEqual([]);
+    const deduit = item({ id: 13, carriedFact: 'INTERVENTION', carrierOrigin: 'AI' });
+    // Règle remplacée (carte #744) : plus aucun rôle n'est posé — le FAIT PORTÉ déduit est RETIRÉ du lien
+    // (l'élément et son lien restent : membre de plein droit).
+    expect(plan(contrat, { linked: [deduit] })).toEqual([{ kind: 'CARRY', itemId: 13, fact: null }]);
+    expect(plan(contrat, { linked: [{ ...deduit, carrierOrigin: 'USER' }] })).toEqual([]);
   });
   it('contrat avec échéance : l’échéance est un élément lié ; un principal déduit ailleurs est rétrogradé (une action par élément)', () => {
     const contrat = op({ typeCode: 'CONTRACT', contractEffectiveTo: '2027-03-01', realizedDate: null });
     const echeance = item({ id: 14, title: 'Fin de contrat', date: '2027-03-01', projected: true, isAutomatic: true, nature: 'DEADLINE', businessType: 'contract',
-      homeCategory: 'action', functionalKey: 'bo:v1:10:CONTRACT:END:2027-03-01', fileIds: [77], operationRole: 'PRINCIPAL', operationRoleOrigin: 'T4' });
-    expect(plan(contrat, { linked: [echeance] })).toEqual([{ kind: 'ROLE', itemId: 14, role: 'RELATED' }]);
+      homeCategory: 'action', functionalKey: 'bo:v1:10:CONTRACT:END:2027-03-01', fileIds: [77], carriedFact: 'CONTRACT:END', carrierOrigin: 'AI' });
+    // Règle remplacée (carte #744) : le fait porté déduit est retiré du lien, aucun rôle n'est écrit.
+    expect(plan(contrat, { linked: [echeance] })).toEqual([{ kind: 'CARRY', itemId: 14, fact: null }]);
   });
   it('regroupement non qualifié (type nul) ou financement : aucun élément détaché, aucun principal créé ; projection intacte retirée', () => {
     const a = item({ id: 15 });
-    const proj = item({ id: 16, projected: true, isAutomatic: true, operationRoleOrigin: 'T4' });
+    const proj = item({ id: 16, projected: true, isAutomatic: true, carrierOrigin: 'AI' });
     for (const typeCode of [null, 'OTHER', 'FINANCING'] as const) {
       expect(plan(op({ typeCode }), { linked: [a, proj] })).toEqual([{ kind: 'REMOVE', itemId: 16, reason: 'TYPE_NOT_PROJECTED' }]);
     }

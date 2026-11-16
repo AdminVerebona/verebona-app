@@ -48,8 +48,14 @@ describe('snapshot canonique des autres chemins d’export', () => {
 
 describe('les trois chemins lisent la source canonique (lot 16b-3)', () => {
   const lire = (p: string) => readFileSync(join(process.cwd(), p), 'utf8');
+  it('la route des exports passe par la façade (règle déplacée, carte #753) et ne construit plus de snapshot elle-même', () => {
+    const src = lire('src/app/api/assets/[id]/exports/route.ts');
+    expect(src).toContain("from '@/services/exports/export-request.facade'");
+    expect(src).not.toMatch(/\bbuildAssetSnapshot\(/);
+  });
   it.each([
-    ['src/app/api/assets/[id]/exports/route.ts', 'EXPORT_BRUT'],
+    // Règle déplacée (carte #753, W28) : le corps de la route des exports vit dans la façade partagée avec l'Assistant.
+    ['src/services/exports/export-request.facade.ts', 'EXPORT_BRUT'],
     ['src/app/api/assets/[id]/transmission/route.ts', 'TRANSMISSION'],
     ['src/services/admin/export-preview.service.ts', 'ADMIN_PREVIEW'],
   ])('%s → buildExportAssetSnapshot(…, %s), plus d’appel direct à buildAssetSnapshot', (fichier, contexte) => {

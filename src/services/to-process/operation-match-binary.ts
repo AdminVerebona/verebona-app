@@ -29,7 +29,10 @@
  *     réponse désigne l'Opération affichée — une carte mise à jour entre la
  *     lecture et le clic est refusée « STALE », jamais réinterprétée).
  *   · Le groupe de références est l'APPARTENANCE persistée à l'Opération
- *     (`business_operation_documents` actif, `agenda_items.business_operation_id`),
+ *     (`business_operation_documents` actif, et — carte #744 — les liens
+ *     N↔N `business_operation_agenda_links` ACTIVE, sans rôle « principal » :
+ *     un événement partagé par deux événements de référence est cité par
+ *     chacun, à SA date propre),
  *     jamais une ressemblance de titre, le même bien, le même fournisseur ou
  *     des montants / dates proches. Les autres Opérations candidates ne sont
  *     ni affichées ni mêlées : elles restent dans le contexte
@@ -293,11 +296,16 @@ export async function loadOperationReferences(accountId: number, operationIds: r
       [accountId, intArray(ids)] as never[],
     ) as unknown as Promise<Array<Row & DocumentTitleColumns>>,
     pgClient.unsafe(
-      `SELECT i.business_operation_id AS operation_id, i.id, i.title, i.start_date::text AS start_date
-         FROM agenda_items i
-         JOIN business_operations o ON o.id = i.business_operation_id AND o.account_id = $1 AND o.invalidated_at IS NULL AND o.merged_into_operation_id IS NULL
-        WHERE i.account_id = $1 AND i.business_operation_id = ANY($2::bigint[])
-        ORDER BY i.business_operation_id, i.id
+      // Carte #744 (CDC « Opérations / Agenda V2.0 » §4, §12, AC23) : les événements de l'événement de référence sont
+      // lus dans le GRAPHE N↔N (`business_operation_agenda_links`), plus dans la colonne historique ni par le rôle
+      // « principal ». Le graphe contient toujours les liens de la colonne (déclencheur `agenda_items_operation_link_sync`),
+      // plus les liens supplémentaires : un événement partagé est donc cité par chacun de ses événements de référence.
+      `SELECT l.operation_id, i.id, i.title, i.start_date::text AS start_date
+         FROM business_operation_agenda_links l
+         JOIN business_operations o ON o.id = l.operation_id AND o.account_id = $1 AND o.invalidated_at IS NULL AND o.merged_into_operation_id IS NULL
+         JOIN agenda_items i ON i.id = l.agenda_item_id AND i.account_id = $1
+        WHERE l.account_id = $1 AND l.state = 'ACTIVE' AND l.operation_id = ANY($2::bigint[])
+        ORDER BY l.operation_id, i.id
         LIMIT 2000`,
       [accountId, intArray(ids)] as never[],
     ) as unknown as Promise<Row[]>,

@@ -73,7 +73,8 @@ const SUITES: Readonly<Record<string, readonly string[]>> = {
     // Lot 78A : index partiel du rattrapage de l'identité économique (0609).
     '0609_l78a_identite_economique.sql'],
   // Lot 78A : provenance des attributs (0609).
-  business_operations: ['0325_operation_diagnostics.sql', '0609_l78a_identite_economique.sql'],
+  // Lot 114O (#744, travaux D « contenu ») : « Notes / Description » de l'utilisateur (1722).
+  business_operations: ['0325_operation_diagnostics.sql', '0609_l78a_identite_economique.sql', '1722_l114o_notes_evenement_reference.sql'],
   // Lot 78A : lien composante → indice T1 → fait (0609).
   business_operation_financial_component_sources: ['0609_l78a_identite_economique.sql'],
   // Lot 44 (O5) : ancre historique du Sinistre et clé stable des lignes de ses listes (0323).

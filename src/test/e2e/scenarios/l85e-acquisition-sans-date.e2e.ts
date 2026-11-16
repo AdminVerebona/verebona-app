@@ -97,9 +97,16 @@ scenario('L85E', 'Acquisition réalisée sans date : enrichissement par la date 
   const sources = (opId: number) => sql<Json[]>`
     SELECT source_kind AS kind, authority, active, locator->>'nature' AS nature, match_reason FROM business_operation_sources WHERE operation_id = ${opId} ORDER BY id`;
   const historique = async (compte: AccountRow) => (await sql<{ n: number }[]>`SELECT count(*)::int AS n FROM business_operation_history WHERE account_id = ${compte.id}`)[0].n;
+  /**
+   * RÈGLE REMPLACÉE (carte #744, travaux F) : `agenda_items.operation_role` n'est plus écrit (la colonne reste tenue à
+   * RELATED / NULL par son seul déclencheur). `role` est DÉRIVÉ du FAIT PORTÉ par le lien N↔N : porteur → PRINCIPAL,
+   * membre de plein droit → RELATED, non rattaché → NULL. Le vocabulaire des attentes est inchangé, seule sa SOURCE change.
+   */
   const evenements = (compte: AccountRow) => sql<Json[]>`
-    SELECT id, title, start_date::text AS date, business_operation_id::int AS op, operation_role AS role, is_automatic_modified AS modified, projection_origin AS proj
-      FROM agenda_items WHERE account_id = ${compte.id} ORDER BY id`;
+    SELECT i.id, i.title, i.start_date::text AS date, i.business_operation_id::int AS op, (SELECT CASE WHEN g.fact_key IS NOT NULL THEN 'PRINCIPAL' ELSE 'RELATED' END FROM business_operation_agenda_links g
+             WHERE g.account_id = i.account_id AND g.operation_id = i.business_operation_id AND g.agenda_item_id = i.id AND g.state = 'ACTIVE') AS role,
+           i.is_automatic_modified AS modified, i.projection_origin AS proj
+      FROM agenda_items i WHERE i.account_id = ${compte.id} ORDER BY i.id`;
   const cartesDate = (itemId: number) => sql<Json[]>`
     SELECT rule_code, action_kind, question, resolved_at IS NOT NULL AS resolu, resolution_reason, proposals_json AS proposals
       FROM to_process_actions WHERE target_type = 'AGENDA_ITEM' AND target_id = ${itemId} AND field_key = 'date' ORDER BY id`;

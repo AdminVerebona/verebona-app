@@ -344,6 +344,42 @@ async function writeSectionCanonical(
         throw new AssetDetailsError('CONFLICT', '« name » a été modifié entre-temps.');
       }
 
+      // ══════════════════════════════════════════════════════════════════
+      // Passage 114AB (#753, W02) — CATÉGORIE DE BIEN ET STATUT SOUS VERROU
+      //
+      // Ces deux valeurs sont portées par des colonnes d'identité, hors du
+      // registre canonique : jusqu'ici, l'Assistant relisait l'état AVANT
+      // d'appeler ce service, mais rien ne le revérifiait SOUS VERROU — deux
+      // onglets qui écrivent à la seconde près pouvaient donc se croiser
+      // (limite annoncée au passage 114AA). La valeur attendue est désormais
+      // vérifiée ici, dans la MÊME transaction que l'écriture, comme le nom.
+      //
+      // La catégorie est comparée NORMALISÉE (`normalizeAssetCategory`), la
+      // même forme que celle qui est écrite plus bas : un ancien libellé en
+      // base ne passe donc pas pour un changement.
+      //
+      // Sans `expectedCurrent` (fiche du bien, back-office) : comportement
+      // strictement inchangé.
+      // ══════════════════════════════════════════════════════════════════
+      const attenduIdentite: ReadonlyArray<{ key: 'subCategory' | 'status'; lu: () => string | null }> = [
+        {
+          key: 'subCategory',
+          lu: () => {
+            const brut = (row as Record<string, unknown>).subtype;
+            return brut === null || brut === undefined || brut === '' ? null : normalizeAssetCategory(String(brut));
+          },
+        },
+        { key: 'status', lu: () => ((row as Record<string, unknown>).status as string | null) ?? null },
+      ];
+      for (const { key, lu } of attenduIdentite) {
+        if (!(key in fields) || !p.expectedCurrent || !(key in p.expectedCurrent)) continue;
+        const attendu = p.expectedCurrent[key];
+        const normalise = (v: unknown): string => (v === null || v === undefined || v === '' ? '' : String(v));
+        if (normalise(lu()) !== normalise(key === 'subCategory' && attendu ? normalizeAssetCategory(String(attendu)) : attendu)) {
+          throw new AssetDetailsError('CONFLICT', `« ${key} » a été modifié entre-temps.`);
+        }
+      }
+
       const columns: Record<string, unknown> = {};
       for (const [key, value] of Object.entries(fields)) {
         if (canoniques.has(key)) continue;

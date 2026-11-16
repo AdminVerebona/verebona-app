@@ -20,14 +20,14 @@ interface DrawerActionResult { action: GroupingAction; changed: boolean; operati
 
 const R = (a: GroupingAction) => `USER_DRAWER_${a.toUpperCase().replace(/-/g, '_')}`;
 
-async function groupOf(ctx: GroupingContext, itemId: number): Promise<{ op: number | null; role: string | null }> {
-  const [i] = await ctx.runner.q<{ op: string | null; role: string | null; account_id: number; active: boolean | null }>(
-    `SELECT i.business_operation_id AS op, i.operation_role AS role, i.account_id,
+async function groupOf(ctx: GroupingContext, itemId: number): Promise<{ op: number | null }> {
+  const [i] = await ctx.runner.q<{ op: string | null; account_id: number; active: boolean | null }>(
+    `SELECT i.business_operation_id AS op, i.account_id,
             (o.id IS NOT NULL AND o.account_id = i.account_id AND o.invalidated_at IS NULL AND o.merged_into_operation_id IS NULL) AS active
        FROM agenda_items i LEFT JOIN business_operations o ON o.id = i.business_operation_id WHERE i.id = $1`, [itemId]);
   if (!i) throw new GroupingError('ITEM_NOT_FOUND', `Élément d'agenda ${itemId} introuvable.`);
   if (Number(i.account_id) !== ctx.accountId) throw new GroupingError('CROSS_ACCOUNT', `Élément d'agenda ${itemId} d'un autre compte.`);
-  return { op: i.op !== null && i.active ? Number(i.op) : null, role: i.role };
+  return { op: i.op !== null && i.active ? Number(i.op) : null };
 }
 
 function requireGroup(g: { op: number | null }, itemId: number): number {
@@ -121,6 +121,7 @@ export async function applyAgendaDrawerAction(
         return { action, changed: await detachEquipment(ctx, { operationId: op, equipmentId: target(), origin: 'USER', reasonCode }), operationId: op };
       }
       case 'designer-reference': {
+        // Lot 114O (#744) : pose le FAIT PORTÉ par le lien N↔N, aucun rôle.
         const op = requireGroup(g, itemId);
         const r = await designatePrincipal(ctx, { operationId: op, itemId, origin: 'USER', reasonCode });
         return { action, changed: r.changed, operationId: op };

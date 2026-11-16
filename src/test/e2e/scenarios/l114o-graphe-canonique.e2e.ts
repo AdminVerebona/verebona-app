@@ -1,12 +1,13 @@
 /**
  * Lot 114O (Trello #744, CDC « Opérations / Agenda V2.0 », LOT B « identité et
  * graphe canonique ») — sur PostgreSQL 16 réel, par les chemins de PRODUCTION :
- * migrations 1715 à 1717 rejouées, façade métier `operation-write.facade.ts`,
+ * migrations 1715 à 1718 et 1721 rejouées, façade métier `operation-write.facade.ts`,
  * service unique de regroupement, fusion existante du dépôt, lecteur
  * `graph/read.ts`, vraie route de l'Agenda (seule la session est simulée).
  * Aucune IA.
  *
- *   L114O-E01  migrations rejouables ; reprise 1716 exacte, sans toucher un élément d'Agenda, un rôle, une date, un rappel
+ *   L114O-E01  migrations 1715 à 1718 et 1721 rejouables ; reprise 1716 et 1721 exactes, sans toucher un élément d'Agenda,
+ *              une date, un rappel ; le rôle historique n'est plus écrit (carte #744, travaux F)
  *   L114O-E02  SC-05 à SC-07, AC15, AC49 à AC51 : financement ↔ acquisitions (N↔N), lecture dans les deux sens, aucun doublon,
  *              aucune relation réflexive, aucun coût, aucune date, aucun événement, aucun rappel créé
  *   L114O-E03  AC13, AC14, AC18 : refus durable de l'utilisateur ; même preuve → jamais recréée ; preuve nouvelle → arbitrage
@@ -53,7 +54,11 @@ const facade = () => import('@/services/business-operations/operation-write.faca
 const lecture = () => import('@/services/business-operations/graph/read');
 const magasin = () => import('@/services/business-operations/graph/store');
 const grouping = () => import('@/services/business-operations/grouping/service');
-const MIGRATIONS = ['1715_l114o_relations_evenements_reference.sql', '1716_l114o_liens_evenement_reference_agenda.sql', '1717_l114o_journal_graphe_evenements_reference.sql', '1718_l114o_declarations_evenements_reference.sql'];
+const MIGRATIONS = ['1715_l114o_relations_evenements_reference.sql', '1716_l114o_liens_evenement_reference_agenda.sql', '1717_l114o_journal_graphe_evenements_reference.sql', '1718_l114o_declarations_evenements_reference.sql',
+  // Travaux F (#744) : 1721 ajoute le FAIT PORTÉ au lien N↔N et repose le déclencheur de 1716 ; rejouée ICI (schéma `public`,
+  // comme en préproduction) et pas dans `FICHIERS_O1` : ce dernier rejoue dans un schéma isolé qu'il DÉTRUIT ensuite, ce qui
+  // emporterait le déclencheur réel de `public.agenda_items` (la table, elle, n'est pas recréée dans le schéma isolé).
+  '1721_l114o_fait_porte_lien_agenda.sql'];
 
 scenario('L114O', 'Opérations / Agenda CDC V2.0 — lot B : graphe canonique (relations entre événements de référence, liens N↔N d’Agenda, façade d’écriture)', ({ sql, make }) => {
   const user = (c: AccountRow, over: Partial<OperationWriteContext> = {}): OperationWriteContext =>
@@ -106,7 +111,7 @@ scenario('L114O', 'Opérations / Agenda CDC V2.0 — lot B : graphe canonique (r
     return (await r.json()).items as Json[];
   }
 
-  it('L114O-E01 — migrations 1715 à 1718 rejouables ; reprise 1716 exacte et sans effet sur les éléments d’Agenda', async () => {
+  it('L114O-E01 — migrations 1715 à 1718 et 1721 rejouables ; reprise exacte et sans effet sur les éléments d’Agenda', async () => {
     const compte = await make.account({ plan: 'premium' });
     const op = await operation(compte, 'INTERVENTION', { realized: '2024-03-01' });
     const ref = await element(compte, 'Remplacement chaudière', '2024-03-01');
@@ -131,11 +136,15 @@ scenario('L114O', 'Opérations / Agenda CDC V2.0 — lot B : graphe canonique (r
         { op, item: etape, state: 'ACTIVE', origin: 'MIGRATION', legacy: true },
       ]);
     }
-    // Aucun élément créé, modifié, daté ou supprimé ; rôles historiques intacts (lus par les écrans existants) ; aucun rappel.
+    // Aucun élément créé, modifié, daté ou supprimé ; aucun rappel.
     expect(await sql<Json[]>`SELECT md5(string_agg(t::text, '|' ORDER BY id)) AS h FROM agenda_items t WHERE account_id = ${compte.id}`).toEqual(avant);
     expect(await sql<Json[]>`SELECT count(*)::int AS n FROM notification_outbox`).toEqual(rappels);
+    // RÈGLE REMPLACÉE (carte #744), travaux F : le rôle « principal » n'est PLUS écrit par le service de regroupement
+    // (`designatePrincipal` pose le FAIT PORTÉ sur le lien N↔N). La colonne historique `operation_role` reste EN PLACE et
+    // tenue À L'IDENTIQUE par son seul déclencheur `agenda_items_operation_role_sync` (0652) : RELATED dès qu'un élément est
+    // rattaché, NULL quand il ne l'est pas — plus jamais PRINCIPAL. Avant : `ref` portait PRINCIPAL.
     expect(await sql<Json[]>`SELECT id, operation_role AS role FROM agenda_items WHERE account_id = ${compte.id} ORDER BY id`)
-      .toEqual([{ id: ref, role: 'PRINCIPAL' }, { id: etape, role: 'RELATED' }, { id: seul, role: null }]);
+      .toEqual([{ id: ref, role: 'RELATED' }, { id: etape, role: 'RELATED' }, { id: seul, role: null }]);
     expect(await relations(compte)).toEqual([]);
     expect(await audit(compte)).toEqual([]);
 

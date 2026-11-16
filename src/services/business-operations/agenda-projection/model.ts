@@ -27,17 +27,25 @@
  *                            financement n'est portée par les règles Agenda)
  *
  * Lot 83A (CDC v5 O-7, §6.1, §11, §12, E01–E05) — PLUSIEURS ÉLÉMENTS PAR
- * OPÉRATION, LA CLÉ DE PROJECTION EST CELLE DU PRINCIPAL. Une Opération
- * regroupe 0..N éléments d'agenda (étapes, rendez-vous, échéances…) ; la
- * projection ne gère QUE sa représentation : pour un événement global
- * (intervention, sinistre, achat, cession) l'emplacement est l'élément
- * PRINCIPAL (`operation_role`), à défaut sa propre projection ; les autres
- * membres restent des éléments autonomes — jamais promus parce qu'ils sont
- * liés, jamais absorbés, jamais détachés par la projection (seule
- * l'invalidation de l'Opération les libère). Principal FACULTATIF : aucun
- * principal n'est déduit pour une relation durable (contrat, financement,
- * §11.10, AC52) ni pour un regroupement non qualifié ; le principal par
- * document reste la décision de T4 (demande IA 82D-t4-principal, en attente).
+ * OPÉRATION. Une Opération regroupe 0..N éléments d'agenda (étapes,
+ * rendez-vous, échéances…) ; la projection ne gère QUE sa représentation ; les
+ * autres membres restent des éléments autonomes — jamais promus parce qu'ils
+ * sont liés, jamais absorbés, jamais détachés par la projection (seule
+ * l'invalidation de l'Opération les libère).
+ *
+ * Lot 114O (carte #744, CDC « Opérations / Agenda V2.0 » §4, §16, §20, AC40,
+ * AC52) — AUCUN RÔLE : la projection N'ÉCRIT PLUS le rôle « principal »
+ * (`agenda_items.operation_role`) et ne le lit plus. Elle pose les liens N↔N et
+ * le FAIT PORTÉ par le lien (`business_operation_agenda_links.fact_key`, clé de
+ * projection sans sa partie datée) :
+ *   · l'EMPLACEMENT d'un événement global est l'élément dont le lien PORTE le
+ *     fait, à défaut la propre projection de l'Opération — « porte le fait »
+ *     remplace « est le principal », sans hiérarchie entre les éléments ;
+ *   · une ÉCHÉANCE (contrat) ne fait porter aucun fait : son emplacement est
+ *     choisi par la règle de représentation inchangée (choix de l'utilisateur,
+ *     saisi avant projeté, intact, plus ancien) ;
+ *   · aucun fait n'est DÉDUIT pour une relation durable (contrat, financement,
+ *     §11.10, AC52) ni pour un regroupement non qualifié.
  * Événement établi SANS date (§11.4, AC17) : créé sans date (ni date
  * inventée, ni « Sans échéance ») ; la carte « À traiter » de date existante
  * (DATA-AGENDA-DATE) la demande, ou l'arbitre si T3 a trouvé des dates
@@ -73,7 +81,7 @@ import { findDuplicate } from '@/services/ai/agenda/dedupe.service';
 import { natureTokens } from '../consolidation/matching';
 import type { AgendaEventNature } from '@/services/agenda/agenda-functional-key';
 import type { BusinessOperationStatus, BusinessOperationTypeCode } from '../model';
-import { isDurableRelation, projectionRoleOf, type OperationRole } from '../grouping/model';
+import { factKeyOf, isDurableRelation, isGlobalEventFact } from '../grouping/model';
 
 /** Valeur de `agenda_items.projection_origin` d'un événement GÉNÉRÉ (0318). */
 export const PROJECTION_ORIGIN = 'OPERATION';
@@ -175,12 +183,14 @@ export interface AgendaItemSnapshot {
    */
   coveredByOperationId?: number | null;
   /**
-   * Lot 82D (0652, CDC v5 §27.2) : rôle de l'élément dans son Opération
-   * (PRINCIPAL | RELATED ; null hors Opération) et son auteur. `undefined` :
-   * non lu (instantané de test) — aucune action de rôle n'est alors planifiée.
+   * Lot 114O (#744, migration 1721) : FAIT que le lien de l'élément avec son
+   * Opération PORTE (`fact_key` ; null : aucun — état normal d'un membre) et
+   * ORIGINE de ce lien (USER / AI / MIGRATION / SYSTEM). `undefined` : non lu
+   * (instantané de test) — aucune action sur le fait porté n'est planifiée.
+   * Remplace le rôle « principal » et son auteur (0652).
    */
-  operationRole?: OperationRole | null;
-  operationRoleOrigin?: string | null;
+  carriedFact?: string | null;
+  carrierOrigin?: string | null;
   /**
    * Lot 87B : l'utilisateur a pris une décision sur un lien Document ↔ cet
    * élément (détachement mémorisé, AGENDA_FILE_LINK) — une projection
@@ -216,7 +226,8 @@ export interface AgendaItemSnapshot {
  * Opération. `STEP` / `INDEPENDENT` / `DUPLICATE` (doublon d'une occurrence
  * conservée, resté par protection) : l'élément n'est plus un candidat à la
  * représentation de l'événement global (aucune nouvelle demande, aucune
- * carte) ; `PRINCIPAL` est porté par le rôle lui-même.
+ * carte). Lot 114O (#744) : `PRINCIPAL` est le vocabulaire du CONTRAT DE
+ * SORTIE T4 (jamais persisté) — il est traduit en FAIT PORTÉ par le lien.
  */
 export type T4RepresentationRole = 'PRINCIPAL' | 'STEP' | 'INDEPENDENT' | 'DUPLICATE';
 
@@ -543,9 +554,9 @@ export function coveredEquivalents(op: OperationSnapshot, desired: DesiredProjec
     if (vus.has(c.id)) return false;
     vus.add(c.id);
     return !!c.date && !c.projected && c.isAutomatic && !isTouched(c) && c.pendingStatus !== true
-      // Lot 82D (V-Q4) : un principal n'est jamais absorbé, ni un élément
-      // que l'utilisateur a rattaché comme élément distinct (étape).
-      && c.operationRole !== 'PRINCIPAL' && c.operationRoleOrigin !== 'USER'
+      // Lot 82D (V-Q4) : un élément qui PORTE un fait n'est jamais absorbé, ni un
+      // élément que l'utilisateur a rattaché comme élément distinct (étape).
+      && c.carriedFact == null && c.carrierOrigin !== 'USER'
       && (c.businessOperationId === null || c.businessOperationId === op.id || !c.linkedOperationActive)
       && c.originRefType === 'asset_file' && c.originRefId !== null && docs.has(c.originRefId) && c.originLinkRejected !== true
       && c.businessType !== null && CONSOLIDABLE_INTERVENTION_TYPES.includes(c.businessType)
@@ -566,7 +577,7 @@ function provenanceEquivalents(op: OperationSnapshot, desired: DesiredProjection
     if (vus.has(c.id)) return false;
     vus.add(c.id);
     return !!c.date && !c.projected && c.isAutomatic && !isTouched(c) && c.pendingStatus !== true
-      && c.operationRole !== 'PRINCIPAL' && c.operationRoleOrigin !== 'USER'
+      && c.carriedFact == null && c.carrierOrigin !== 'USER'
       && (c.businessOperationId === null || c.businessOperationId === op.id || !c.linkedOperationActive)
       && c.originRefType === 'asset_file' && c.originRefId !== null && docs.has(c.originRefId) && c.originLinkRejected !== true
       && (c.businessType === null || compatibles.includes(c.businessType))
@@ -663,12 +674,12 @@ export type ProjectionAction =
   }
   | { kind: 'SUPPRESSED'; key: string }
   /**
-   * Lot 82D (CDC v5 §11, V-Q5) : rôle de l'élément qui représente
-   * l'Opération selon la projection T4 (événement global → PRINCIPAL,
-   * échéance → RELATED), appliqué par le service de regroupement (un
-   * principal choisi par l'utilisateur n'est jamais remplacé).
+   * Lot 114O (#744, remplace l'action ROLE du lot 82D) : FAIT que le lien de
+   * cet élément porte pour l'Opération (`null` : il n'en porte aucun), appliqué
+   * par le service de regroupement — un fait posé par l'utilisateur n'est
+   * jamais repris. Qualification de la relation, jamais un rang.
    */
-  | { kind: 'ROLE'; itemId: number; role: OperationRole }
+  | { kind: 'CARRY'; itemId: number; fact: string | null }
   /**
    * Lot 83A (§11.7, AC19) : date établie posée sur un principal AUTOMATIQUE
    * intact resté sans date (élément T4 d'un document) — jamais sur une saisie.
@@ -723,61 +734,71 @@ const sameSet =(a: readonly number[], b: readonly number[]): boolean => {
 const cleDe = (i: AgendaItemSnapshot): string | null => parseProjectionFunctionalKey(i.functionalKey)?.key ?? null;
 
 /**
- * Lot 83A (CDC v5 O-7, E01, E04) — emplacement d'un ÉVÉNEMENT GLOBAL : la
- * clé de projection est celle du PRINCIPAL. L'élément principal de
- * l'Opération (quel qu'en soit l'auteur) ; à défaut la propre projection de
- * l'Opération représentant un événement global (clé PRINCIPAL, même après
- * requalification du type), touchée ou non ; sinon AUCUN — un membre lié
- * n'est jamais l'emplacement du seul fait d'être lié (§6.5, AC34).
+ * Lot 83A (CDC v5 O-7, E01, E04) / lot 114O (#744) — emplacement d'un
+ * ÉVÉNEMENT GLOBAL : l'élément dont le lien PORTE un fait de l'Opération (quel
+ * qu'en soit l'auteur ; le fait exact d'abord) ; à défaut la propre projection
+ * de l'Opération représentant un événement global (même après requalification
+ * du type), touchée ou non ; sinon AUCUN — un membre lié n'est jamais
+ * l'emplacement du seul fait d'être lié (§6.5, AC34).
  */
-function principalSlot(linked: readonly AgendaItemSnapshot[], key: string): AgendaItemSnapshot | null {
-  const principal = linked.find((i) => i.operationRole === 'PRINCIPAL');
-  if (principal) return principal;
-  const propres = linked.filter((i) => i.projected && projectionRoleOf(cleDe(i) ?? key) === 'PRINCIPAL');
+function porteurEvenementGlobal(linked: readonly AgendaItemSnapshot[], key: string): AgendaItemSnapshot | null {
+  const fait = factKeyOf(key);
+  const porteurs = linked.filter((i) => i.carriedFact != null);
+  const porteur = porteurs.find((i) => i.carriedFact === fait) ?? porteurs[0];
+  if (porteur) return porteur;
+  const propres = linked.filter((i) => i.projected && isGlobalEventFact(factKeyOf(cleDe(i) ?? key)));
   return propres.sort((a, b) => Number(cleDe(b) === key) - Number(cleDe(a) === key) || Number(isTouched(a)) - Number(isTouched(b)) || a.id - b.id)[0] ?? null;
 }
 
 /**
- * Emplacement d'une ÉCHÉANCE (clé RELATED : fin de contrat) — règle de
+ * Emplacement d'une ÉCHÉANCE (fin de contrat : aucun fait porté) — règle de
  * représentation inchangée (lot 46 / 82D) : choix de l'utilisateur, saisi /
  * T4 avant projeté, intact après touché, plus ancien.
  */
-function deadlineSlot(linked: readonly AgendaItemSnapshot[]): AgendaItemSnapshot | null {
-  const choixUtilisateur = (i: AgendaItemSnapshot) => Number(i.operationRole === 'PRINCIPAL' && i.operationRoleOrigin === 'USER');
+function porteurEcheance(linked: readonly AgendaItemSnapshot[]): AgendaItemSnapshot | null {
+  const choixUtilisateur = (i: AgendaItemSnapshot) => Number(i.carriedFact != null && i.carrierOrigin === 'USER');
   return [...linked].sort((a, b) => choixUtilisateur(b) - choixUtilisateur(a)
     || Number(a.projected) - Number(b.projected)
     || Number(isTouched(b)) - Number(isTouched(a)) || a.id - b.id)[0] ?? null;
 }
 
 /**
- * Action de rôle si l'élément représentatif n'a pas le rôle voulu par la
- * projection. Lot 83A : un rôle posé par l'UTILISATEUR n'est jamais modifié
- * par la projection (§10, P8).
+ * Fait VOULU par la projection pour son emplacement (lot 114O, #744) :
+ * l'événement global fait porter son fait ; une échéance n'en fait porter
+ * aucun (traduction de la table C16, sans hiérarchie).
  */
-function roleActions(item: AgendaItemSnapshot, key: string, principalWithdrawn = false): ProjectionAction[] {
-  if (item.operationRole === undefined || item.operationRoleOrigin === 'USER') return [];
-  const voulu = projectionRoleOf(key);
-  // Lot 84B : rôle principal retiré par l'utilisateur — jamais rétabli par la projection.
-  if (voulu === 'PRINCIPAL' && principalWithdrawn && item.operationRole !== 'PRINCIPAL') return [];
-  return item.operationRole === voulu ? [] : [{ kind: 'ROLE', itemId: item.id, role: voulu }];
+const faitVoulu = (key: string): string | null => (isGlobalEventFact(factKeyOf(key)) ? factKeyOf(key) : null);
+
+/**
+ * Action sur le FAIT PORTÉ si l'emplacement ne porte pas le fait voulu
+ * (remplace l'action de rôle du lot 82D). Lot 83A : un fait posé par
+ * l'UTILISATEUR n'est jamais modifié par la projection (§10, P8).
+ */
+function carryActions(item: AgendaItemSnapshot, key: string, principalWithdrawn = false): ProjectionAction[] {
+  if (item.carriedFact === undefined || item.carrierOrigin === 'USER') return [];
+  const voulu = faitVoulu(key);
+  // Lot 84B : désignation retirée par l'utilisateur — jamais rétablie par la projection.
+  if (voulu !== null && principalWithdrawn && item.carriedFact !== voulu) return [];
+  return item.carriedFact === voulu ? [] : [{ kind: 'CARRY', itemId: item.id, fact: voulu }];
 }
 
 /**
- * Lot 83A (§11.10, AC52) : principal DÉDUIT (T4, T3, reprise) d'une relation
- * durable → rétrogradé en élément lié (l'élément reste) ; jamais un choix de
- * l'utilisateur. Même règle que l'invariant O7-NO-INFERRED-PRINCIPAL.
+ * Lot 83A (§11.10, AC52) : fait DÉDUIT (T4, T3, reprise) porté dans une
+ * relation durable → retiré (l'élément et son lien restent, membre de plein
+ * droit) ; jamais un choix de l'utilisateur. Même règle que l'invariant
+ * O7-NO-INFERRED-PRINCIPAL.
  */
 function durableRelationDemotions(op: OperationSnapshot, linked: readonly AgendaItemSnapshot[]): ProjectionAction[] {
   if (!isDurableRelation(op.typeCode)) return [];
-  return linked.filter((i) => i.operationRole === 'PRINCIPAL' && i.operationRoleOrigin !== 'USER')
-    .map((i) => ({ kind: 'ROLE' as const, itemId: i.id, role: 'RELATED' as const }));
+  return linked.filter((i) => i.carriedFact != null && i.carrierOrigin !== 'USER')
+    .map((i) => ({ kind: 'CARRY' as const, itemId: i.id, fact: null }));
 }
 
-/** Une action de rôle par élément (la première l'emporte), ordre conservé. */
+/** Une action sur le fait porté par élément (la première l'emporte), ordre conservé. */
 function uniqueRoles(actions: ProjectionAction[]): ProjectionAction[] {
   const vus = new Set<number>();
   return actions.filter((a) => {
-    if (a.kind !== 'ROLE') return true;
+    if (a.kind !== 'CARRY') return true;
     if (vus.has(a.itemId)) return false;
     vus.add(a.itemId);
     return true;
@@ -798,15 +819,15 @@ function dateActions(item: AgendaItemSnapshot, d: DesiredProjection): Projection
  * Plan d'actions pour UNE Opération (pur, idempotent : un état à jour rend un plan vide).
  *
  * Lot 83A (CDC v5 O-7) — la projection n'agit que sur SA représentation :
- *   · événement global (clé PRINCIPAL) : emplacement = principal, sinon sa
- *     propre projection (`principalSlot`) ; sans emplacement, l'événement est
+ *   · événement global : emplacement = l'élément qui PORTE le fait, sinon sa
+ *     propre projection (`porteurEvenementGlobal`) ; sans emplacement, l'événement est
  *     RECONNU parmi les éléments existants (rapprochement certain C16.1 ou
  *     représentations T4 établies par T3, 76H) — membres compris, mais un
  *     membre n'est jamais choisi parce qu'il est lié — sinon CRÉÉ, daté ou
  *     non (§11.3, §11.4) ;
- *   · échéance (clé RELATED) : règle de représentation inchangée ;
+ *   · échéance : règle de représentation inchangée, aucun fait porté ;
  *   · les autres membres ne sont ni promus, ni absorbés, ni détachés ;
- *     relation durable : aucun principal déduit (AC52).
+ *     relation durable : aucun fait déduit (AC52).
  *
  * Lot 87B (ticket « orchestration T3/T4 », CODE-03, CODE-04) — le plan ne
  * DÉCIDE plus aucune identité d'occurrence : il rattache seulement sur
@@ -833,19 +854,19 @@ export function planOperationProjection(p: PlanInput): ProjectionAction[] {
 
   const d = decision.desired;
   const fk = projectionFunctionalKey(op.id, d.key);
-  const evenementGlobal = projectionRoleOf(d.key) === 'PRINCIPAL';
-  const item = evenementGlobal ? principalSlot(p.linked, d.key) : deadlineSlot(p.linked);
+  const evenementGlobal = isGlobalEventFact(factKeyOf(d.key));
+  const item = evenementGlobal ? porteurEvenementGlobal(p.linked, d.key) : porteurEcheance(p.linked);
 
   // Lot 87B (CODE-03, CODE-11) : une étape ou un événement indépendant décidé par T4 n'est plus un candidat.
   const libre = (c: AgendaItemSnapshot) => !decideParT4(p, c);
   let demandeMembres: ProjectionAction | null = null;
-  if (item && evenementGlobal && item.projected && !isTouched(item) && item.operationRoleOrigin !== 'USER' && d.date && !p.principalWithdrawn) {
+  if (item && evenementGlobal && item.projected && !isTouched(item) && item.carrierOrigin !== 'USER' && d.date && !p.principalWithdrawn) {
     // Lot 83A (C16.1, V-Q4) : la propre projection INTACTE fait double emploi avec un membre qui représente
-    // la même occurrence — vrai doublon : la projection est retirée, le membre devient le principal (AC15).
+    // la même occurrence — vrai doublon : la projection est retirée, le membre porte le fait (AC15).
     // Lot 87B (CODE-04) : seulement sur PROVENANCE exacte (document de l'Opération, source AGENDA T3) ; même
     // bien + type + date ne sont que des signaux → décision T4 demandée, la projection reste. Une projection
     // qui porte une décision de l'utilisateur (lien détaché) ne cède jamais sa place automatiquement.
-    const membres = p.linked.filter((i) => i.id !== item.id && !i.projected && i.operationRole !== 'PRINCIPAL' && libre(i));
+    const membres = p.linked.filter((i) => i.id !== item.id && !i.projected && i.carriedFact == null && libre(i));
     const reconnu = membres.length ? matchExistingItem(op, d, membres) : { kind: 'none' as const };
     if (reconnu.kind === 'certain' && item.userLinkDecision !== true) {
       return [
@@ -859,12 +880,12 @@ export function planOperationProjection(p: PlanInput): ProjectionAction[] {
   if (item) {
     // Doublons (fusion, lien posé à côté d'une projection) : propres projections INTACTES de la même
     // représentation retirées (C22 « unifier » — vrai doublon de l'emplacement). Lot 82D (V-Q4) : une
-    // échéance d'une autre clé est une occurrence distincte ; lot 83A : un élément principal ou un
-    // membre non projeté ne l'est jamais.
+    // échéance d'une autre clé est une occurrence distincte ; lot 83A : un élément qui porte un fait
+    // ou un membre non projeté ne l'est jamais.
     for (const autre of p.linked) {
-      if (autre.id === item.id || !autre.projected || isTouched(autre) || autre.operationRole === 'PRINCIPAL') continue;
+      if (autre.id === item.id || !autre.projected || isTouched(autre) || autre.carriedFact != null) continue;
       const cle = cleDe(autre);
-      const meme = evenementGlobal ? projectionRoleOf(cle ?? d.key) === 'PRINCIPAL' : cle === null || cle === d.key;
+      const meme = evenementGlobal ? isGlobalEventFact(factKeyOf(cle ?? d.key)) : cle === null || cle === d.key;
       if (meme) actions.push({ kind: 'REMOVE', itemId: autre.id, reason: 'DUPLICATE_PROJECTION' });
     }
     actions.push(...occupiedSlotActions(p, d, fk, item));
@@ -887,10 +908,10 @@ export function planOperationProjection(p: PlanInput): ProjectionAction[] {
     return [{ kind: 'CREATE', desired: d, functionalKey: fk }];
   }
   const pool = (p.taken?.size ? p.candidates.filter((c) => !p.taken!.has(c.id)) : p.candidates).filter(libre);
-  // Lot 83A : membres de l'Opération non projetés (étapes, saisies, éléments T3) — candidats à la
-  // reconnaissance du principal (AC15) ; « même Opération ≠ doublon » (§6.5) : un membre seulement
+  // Lot 83A : membres de l'Opération non projetés (étapes, saisies, éléments T3) — candidats à porter
+  // le fait de l'événement global (AC15) ; « même Opération ≠ doublon » (§6.5) : un membre seulement
   // vaguement ressemblant n'est jamais l'objet d'une abstention.
-  const membres = evenementGlobal ? p.linked.filter((i) => !i.projected && i.operationRole !== 'PRINCIPAL' && !pool.includes(i) && libre(i)) : [];
+  const membres = evenementGlobal ? p.linked.filter((i) => !i.projected && i.carriedFact == null && !pool.includes(i) && libre(i)) : [];
   // Lot 76H : T3 a établi que la preuve d'intervention de ces documents est CETTE Opération.
   const couverts = coveredEquivalents(op, d, [...pool, ...membres]);
   if (couverts.length) {
@@ -923,14 +944,14 @@ export function planOperationProjection(p: PlanInput): ProjectionAction[] {
       },
     ];
   }
-  // AC15 : un membre qui représente l'événement global avec PROVENANCE exacte devient le principal.
+  // AC15 : un membre qui représente l'événement global avec PROVENANCE exacte porte son fait.
   const reconnu = membres.length ? matchExistingItem(op, d, membres) : { kind: 'none' as const };
   if (reconnu.kind === 'certain') {
     actions.push({ kind: 'LINK', itemId: reconnu.item.id, reason: `élément du regroupement : ${reconnu.reason}` });
     return actions;
   }
   // Lot 87B (CODE-04) : membre seulement SIGNALÉ (même bien, type compatible ou même intitulé, date proche)
-  // — l'ancienne règle le promouvait principal d'office. Ni promotion, ni projection à côté : décision T4
+  // — l'ancienne règle le promouvait d'office. Ni promotion, ni projection à côté : décision T4
   // demandée et, à défaut, carte D14 (« Oui, … » / « Non, ajouter un nouvel événement »).
   const membresForts = reconnu.kind === 'probable' ? reconnu.candidates.filter((c) => c.strong) : [];
   if (membresForts.length) {
@@ -972,7 +993,7 @@ function occupiedSlotActions(p: PlanInput, d: DesiredProjection, fk: string, ite
       ...p.candidates.filter((c) => c.id !== item.id && c.businessOperationId !== op.id && !p.taken?.has(c.id)),
     ].filter((c) => !decideParT4(p, c));
     const couverts = coveredEquivalents(op, d, pool);
-    const projectionTechnique = item.projected && !isTouched(item) && item.operationRoleOrigin !== 'USER' && item.userLinkDecision !== true && !p.principalWithdrawn;
+    const projectionTechnique = item.projected && !isTouched(item) && item.carrierOrigin !== 'USER' && item.userLinkDecision !== true && !p.principalWithdrawn;
     // Candidats NON liés à l'Opération (autre document, saisie, provenance sans exclusivité T3) : signaux.
     const autres = matchExistingItem(op, d, pool.filter((c) => c.businessOperationId !== op.id && !couverts.includes(c)
       && !(c.coveredByOperationId != null && c.coveredByOperationId !== op.id)));
@@ -1014,10 +1035,10 @@ function occupiedSlotActions(p: PlanInput, d: DesiredProjection, fk: string, ite
     if (item.homeCategory !== categorie) changes.homeCategory = categorie;
     if (item.functionalKey !== fk) changes.functionalKey = fk;
     if (item.businessOperationId !== op.id) changes.businessOperationId = op.id;
-    // Lot 82D (§7.1) : les documents d'un PRINCIPAL sont propagés par le service de
-    // regroupement (OPERATION_PRINCIPAL, refus utilisateur respectés) — la projection
+    // Lot 82D (§7.1) : les documents de l'Opération sont propagés vers son élément PORTEUR par le
+    // service de regroupement (OPERATION_PRINCIPAL, refus utilisateur respectés) — la projection
     // ne les recopie plus ; une échéance garde ses liens directs (AI_DIRECT).
-    const principalVoulu = projectionRoleOf(d.key) === 'PRINCIPAL';
+    const principalVoulu = isGlobalEventFact(factKeyOf(d.key));
     const links = principalVoulu
       ? { assetIds: op.assetIds, equipmentIds: op.equipmentIds }
       : { assetIds: op.assetIds, equipmentIds: op.equipmentIds, fileIds: op.documentFileIds };
@@ -1025,7 +1046,7 @@ function occupiedSlotActions(p: PlanInput, d: DesiredProjection, fk: string, ite
       changes.links = links;
     }
     if (Object.keys(changes).length) actions.push({ kind: 'SYNC', itemId: item.id, changes });
-    actions.push(...roleActions(item, d.key, p.principalWithdrawn));
+    actions.push(...carryActions(item, d.key, p.principalWithdrawn));
     return actions;
   }
   // Élément saisi, produit par T4, ou projeté puis modifié : jamais réécrit
@@ -1034,7 +1055,7 @@ function occupiedSlotActions(p: PlanInput, d: DesiredProjection, fk: string, ite
   // 83A : un élément T4 intact resté sans date reçoit la date établie.
   actions.push(...retitleActions(op, item));
   actions.push(...dateActions(item, d));
-  actions.push(...roleActions(item, d.key, p.principalWithdrawn));
+  actions.push(...carryActions(item, d.key, p.principalWithdrawn));
   return actions;
 }
 
@@ -1045,7 +1066,7 @@ function occupiedSlotActions(p: PlanInput, d: DesiredProjection, fk: string, ite
  * l'utilisateur a détaché l'origine.
  */
 function soleProvenance(op: OperationSnapshot, c: AgendaItemSnapshot): boolean {
-  return c.isAutomatic && !c.projected && !isTouched(c) && c.pendingStatus !== true && c.operationRoleOrigin !== 'USER'
+  return c.isAutomatic && !c.projected && !isTouched(c) && c.pendingStatus !== true && c.carrierOrigin !== 'USER'
     && c.originLinkRejected !== true && c.originRefType === 'asset_file' && c.originSoleOperationId === op.id;
 }
 

@@ -9,23 +9,29 @@
  * responsabilité de l'orchestrateur (fonction d'éligibilité de 82A) — ces
  * fonctions ne la revérifient pas.
  *
+ * Lot 114O (carte #744, CDC « Opérations / Agenda V2.0 » §4, §16, AC40) : le
+ * rôle « principal » n'est plus ni écrit ni lu — ces invariants portent
+ * désormais sur le FAIT PORTÉ par le lien N↔N
+ * (`business_operation_agenda_links.fact_key`). Les identifiants et les
+ * natures des constats sont CONSERVÉS (catalogue de cohérence inchangé).
+ *
  *   id                         niveau  réparation      objet
- *   O1-PRINCIPAL-UNIQUE        N1      DÉTERMINISTE    au plus un principal par Opération
+ *   O1-PRINCIPAL-UNIQUE        N1      DÉTERMINISTE    au plus un porteur par fait d'une Opération
  *   O1-AGENDA-ONE-OPERATION    N1      DÉTERMINISTE    0..1 Opération ACTIVE du MÊME compte par
- *                                                      élément ; rôle ⇔ appartenance
+ *                                                      élément (colonne historique)
  *   O1-LINK-PROVENANCE         N1      DÉTERMINISTE    tout lien Document ↔ Agenda a ≥ 1 provenance
- *   O1-PRINCIPAL-DOCUMENTS     N2      DÉTERMINISTE    P4 : documents membres liés au principal ;
- *                                                      aucune propagation hors du principal
+ *   O1-PRINCIPAL-DOCUMENTS     N2      DÉTERMINISTE    P4 : documents membres liés au porteur ;
+ *                                                      aucune propagation hors du porteur
  *   O1-DOCUMENT-MEMBERSHIP     N2      DÉTERMINISTE    appartenance SOURCE = sources DOCUMENT actives
  *   O1-ANTI-CARTESIAN          N2      CONSTAT SEUL    aucun produit Documents × Équipements
  *                                                      automatique (P19, AC50)
- *   O7-NO-INFERRED-PRINCIPAL   N2      DÉTERMINISTE    lot 83A (O-7, §11.10, AC52) : aucun principal
+ *   O7-NO-INFERRED-PRINCIPAL   N2      DÉTERMINISTE    lot 83A (O-7, §11.10, AC52) : aucun porteur
  *                                                      DÉDUIT (T4, T3, reprise) sur une relation
  *                                                      durable (contrat, financement) ; le choix de
  *                                                      l'utilisateur reste
- *   O3-PRINCIPAL-WITHDRAWN     N2      DÉTERMINISTE    lot 84B (O-3, §10, §11.9) : rôle principal
- *                                                      RETIRÉ par l'utilisateur (décision mémorisée)
- *                                                      jamais rétabli par une inférence
+ *   O3-PRINCIPAL-WITHDRAWN     N2      DÉTERMINISTE    lot 84B (O-3, §10, §11.9) : désignation
+ *                                                      RETIRÉE par l'utilisateur (décision mémorisée)
+ *                                                      jamais rétablie par une inférence
  *
  * Les évaluateurs `evaluate*` sont PURS (instantanés en entrée) : testables
  * sans base, réutilisables par l'export de diagnostic. `detect` charge
@@ -33,14 +39,18 @@
  * évalue. Idempotence : un état conforme rend une liste vide ; une réparation
  * rejouée n'écrit rien.
  */
-import { DURABLE_RELATION_TYPES, detectCartesian, inferredProvenance, isDurableRelation, planPrincipalLinks, type OperationRole, type RoleOrigin } from './model';
+import {
+  DURABLE_RELATION_TYPES, detectCartesian, inferredProvenance, isDurableRelation, planPrincipalLinks,
+  roleOriginOfGraphOrigin, type RoleOrigin,
+} from './model';
 import { addFileLinkProvenance } from './provenance';
-import { recomputePrincipal, stripPrincipalLinks } from './principal';
+import { recomputePrincipal, stripPropagatedDocumentLinks } from './principal';
 import { intArray, lockGroupingAccount, type GroupingRunner } from './runner';
 import { attachAgendaItem, detachAgendaItem, releasePrincipal, type GroupingContext } from './service';
 
 /** Lot 83A : + O7-NO-INFERRED-PRINCIPAL (v2) ; lot 84B : + O3-PRINCIPAL-WITHDRAWN (v3). */
-export const GROUPING_INVARIANTS_VERSION = 'l84b-v3';
+/** Lot 114O (#744) : + lecture du FAIT PORTÉ à la place du rôle (v4). */
+export const GROUPING_INVARIANTS_VERSION = 'l114o-v4';
 
 type GroupingInvariantId =
   | 'O1-PRINCIPAL-UNIQUE' | 'O1-AGENDA-ONE-OPERATION' | 'O1-LINK-PROVENANCE'
@@ -84,18 +94,26 @@ interface AgendaMembershipRow {
   itemId: number;
   accountId: number;
   operationId: number | null;
-  role: OperationRole | null;
+  /** Fait porté par le lien avec cette Opération (null : aucun — état normal). */
+  fact: string | null;
   /** Opération introuvable : null. */
   operationAccountId: number | null;
   operationActive: boolean | null;
   mergedInto: number | null;
 }
 
+/** Au plus UN porteur par fait d'une Opération (pur) — plusieurs faits distincts ne sont pas un écart. */
 export function evaluatePrincipalUniqueness(accountId: number, rows: readonly AgendaMembershipRow[]): GroupingFinding[] {
-  const par = new Map<number, number[]>();
-  for (const r of rows) if (r.operationId !== null && r.role === 'PRINCIPAL') par.set(r.operationId, [...(par.get(r.operationId) ?? []), r.itemId]);
-  return [...par].filter(([, ids]) => ids.length > 1).map(([op, ids]) => ({
-    invariantId: 'O1-PRINCIPAL-UNIQUE', accountId, objectKey: `operation:${op}`, nature: 'MULTIPLE_PRINCIPALS',
+  const par = new Map<string, { op: number; ids: number[] }>();
+  for (const r of rows) {
+    if (r.operationId === null || r.fact === null) continue;
+    const k = `${r.operationId}|${r.fact}`;
+    par.set(k, { op: r.operationId, ids: [...(par.get(k)?.ids ?? []), r.itemId] });
+  }
+  const parOp = new Map<number, number[]>();
+  for (const { op, ids } of par.values()) if (ids.length > 1) parOp.set(op, [...new Set([...(parOp.get(op) ?? []), ...ids])]);
+  return [...parOp].map(([op, ids]) => ({
+    invariantId: 'O1-PRINCIPAL-UNIQUE' as const, accountId, objectKey: `operation:${op}`, nature: 'MULTIPLE_PRINCIPALS',
     detail: { operationId: op, itemIds: ids.sort((a, b) => a - b) }, repairable: true,
   }));
 }
@@ -104,28 +122,27 @@ export function evaluateAgendaMembership(accountId: number, rows: readonly Agend
   const out: GroupingFinding[] = [];
   const f = (r: AgendaMembershipRow, nature: string, detail: Record<string, unknown> = {}): GroupingFinding => ({
     invariantId: 'O1-AGENDA-ONE-OPERATION', accountId, objectKey: `agenda_item:${r.itemId}`, nature,
-    detail: { itemId: r.itemId, operationId: r.operationId, role: r.role, ...detail }, repairable: true,
+    detail: { itemId: r.itemId, operationId: r.operationId, fact: r.fact, ...detail }, repairable: true,
   });
+  // Règle remplacée (carte #744) : les natures ROLE_WITHOUT_OPERATION et OPERATION_WITHOUT_ROLE
+  // disparaissent — un élément lié ne doit plus porter de rôle, et ne porter AUCUN fait est l'état
+  // normal d'un membre (CDC V2.0 §4, §16). Seule l'appartenance (colonne historique) est contrôlée.
   for (const r of rows) {
-    if (r.operationId === null) {
-      if (r.role !== null) out.push(f(r, 'ROLE_WITHOUT_OPERATION'));
-      continue;
-    }
+    if (r.operationId === null) continue;
     if (r.operationAccountId === null) out.push(f(r, 'OPERATION_MISSING'));
     else if (r.operationAccountId !== r.accountId) out.push(f(r, 'CROSS_ACCOUNT', { operationAccountId: r.operationAccountId }));
     else if (r.mergedInto !== null) out.push(f(r, 'MERGED_OPERATION', { canonicalId: r.mergedInto }));
     else if (r.operationActive === false) out.push(f(r, 'INACTIVE_OPERATION'));
-    else if (r.role === null) out.push(f(r, 'OPERATION_WITHOUT_ROLE'));
   }
   return out;
 }
 
-interface FileLinkRow { itemId: number; fileId: number; provenances: readonly string[]; projected: boolean; isAutomatic: boolean; role: OperationRole | null }
+interface FileLinkRow { itemId: number; fileId: number; provenances: readonly string[]; projected: boolean; isAutomatic: boolean; carriesFact: boolean }
 
 export function evaluateLinkProvenance(accountId: number, rows: readonly FileLinkRow[]): GroupingFinding[] {
   return rows.filter((r) => !r.provenances.length).map((r) => ({
     invariantId: 'O1-LINK-PROVENANCE', accountId, objectKey: `agenda_file_link:${r.itemId}:${r.fileId}`, nature: 'EMPTY_PROVENANCE',
-    detail: { itemId: r.itemId, fileId: r.fileId, inferred: inferredProvenance({ projected: r.projected, isAutomatic: r.isAutomatic, role: r.role }) },
+    detail: { itemId: r.itemId, fileId: r.fileId, inferred: inferredProvenance({ projected: r.projected, isAutomatic: r.isAutomatic, carriesFact: r.carriesFact }) },
     repairable: true,
   }));
 }
@@ -216,16 +233,19 @@ export function evaluateWithdrawnPrincipal(accountId: number, rows: readonly Wit
 const opFilter = (scope?: { operationIds?: readonly number[] }) => (scope?.operationIds?.length ? intArray(scope.operationIds) : null);
 
 async function loadMemberships(r: GroupingRunner, accountId: number, scope?: { operationIds?: readonly number[] }): Promise<AgendaMembershipRow[]> {
-  const x = await r.q<{ id: number; account_id: number; op: string | null; role: OperationRole | null; op_account: number | null; active: boolean | null; merged: string | null }>(
-    `SELECT i.id, i.account_id, i.business_operation_id AS op, i.operation_role AS role, o.account_id AS op_account,
+  const x = await r.q<{ id: number; account_id: number; op: string | null; fact: string | null; op_account: number | null; active: boolean | null; merged: string | null }>(
+    `SELECT i.id, i.account_id, i.business_operation_id AS op, g.fact_key AS fact, o.account_id AS op_account,
             (o.invalidated_at IS NULL AND o.merged_into_operation_id IS NULL) AS active, o.merged_into_operation_id AS merged
-       FROM agenda_items i LEFT JOIN business_operations o ON o.id = i.business_operation_id
-      WHERE i.account_id = $1 AND (i.business_operation_id IS NOT NULL OR i.operation_role IS NOT NULL)
+       FROM agenda_items i
+       LEFT JOIN business_operations o ON o.id = i.business_operation_id
+       LEFT JOIN business_operation_agenda_links g ON g.account_id = i.account_id AND g.operation_id = i.business_operation_id
+              AND g.agenda_item_id = i.id AND g.state = 'ACTIVE'
+      WHERE i.account_id = $1 AND i.business_operation_id IS NOT NULL
         AND ($2::bigint[] IS NULL OR i.business_operation_id = ANY($2::bigint[]))
       ORDER BY i.id`,
     [accountId, opFilter(scope)]);
   return x.map((y) => ({
-    itemId: Number(y.id), accountId: Number(y.account_id), operationId: y.op === null ? null : Number(y.op), role: y.role,
+    itemId: Number(y.id), accountId: Number(y.account_id), operationId: y.op === null ? null : Number(y.op), fact: y.fact,
     operationAccountId: y.op_account === null ? null : Number(y.op_account), operationActive: y.active, mergedInto: y.merged === null ? null : Number(y.merged),
   }));
 }
@@ -233,7 +253,8 @@ async function loadMemberships(r: GroupingRunner, accountId: number, scope?: { o
 async function loadPrincipalSnapshots(r: GroupingRunner, accountId: number, scope?: { operationIds?: readonly number[] }): Promise<OperationPrincipalSnapshot[]> {
   const ops = await r.q<{ id: string; principal: number | null; items: number[] | null; files: number[] | null; rejected: string[] | null; link_rejected: string[] | null }>(
     `SELECT o.id,
-            (SELECT min(i.id) FROM agenda_items i WHERE i.business_operation_id = o.id AND i.account_id = o.account_id AND i.operation_role = 'PRINCIPAL') AS principal,
+            (SELECT min(g.agenda_item_id) FROM business_operation_agenda_links g
+              WHERE g.operation_id = o.id AND g.account_id = o.account_id AND g.state = 'ACTIVE' AND g.fact_key IS NOT NULL) AS principal,
             (SELECT array_agg(i.id ORDER BY i.id) FROM agenda_items i WHERE i.business_operation_id = o.id AND i.account_id = o.account_id) AS items,
             (SELECT array_agg(d.file_id ORDER BY d.file_id) FROM business_operation_documents d JOIN asset_files f ON f.id = d.file_id AND f.deleted_at IS NULL
               WHERE d.operation_id = o.id AND d.active) AS files,
@@ -241,7 +262,9 @@ async function loadPrincipalSnapshots(r: GroupingRunner, accountId: number, scop
               WHERE m.candidate_operation_id = o.id AND m.active AND m.source_kind = 'PRINCIPAL_LINK' AND m.decision = 'REJECTED') AS rejected,
             -- Lot 86D : liens détachés par l'utilisateur de l'élément principal (décision portée par le lien).
             (SELECT array_agg(split_part(m.source_entity_key, ':', 2)) FROM business_operation_match_decisions m
-              JOIN agenda_items pi ON pi.business_operation_id = o.id AND pi.account_id = o.account_id AND pi.operation_role = 'PRINCIPAL'
+              JOIN business_operation_agenda_links pg ON pg.operation_id = o.id AND pg.account_id = o.account_id
+                   AND pg.state = 'ACTIVE' AND pg.fact_key IS NOT NULL
+              JOIN agenda_items pi ON pi.id = pg.agenda_item_id AND pi.account_id = o.account_id
               WHERE m.account_id = o.account_id AND m.candidate_operation_id IS NULL AND m.active AND m.source_kind = 'AGENDA_FILE_LINK'
                 AND m.decision = 'REJECTED' AND split_part(m.source_entity_key, ':', 1) = pi.id::text) AS link_rejected
        FROM business_operations o
@@ -268,7 +291,7 @@ async function loadPrincipalSnapshots(r: GroupingRunner, accountId: number, scop
 export const OPERATIONS_GROUPING_INVARIANTS: readonly GroupingInvariant[] = [
   {
     id: 'O1-PRINCIPAL-UNIQUE', version: 1, domain: 'operations', level: 'N1', objects: ['agenda_items', 'business_operations'], repair: 'DETERMINISTIC',
-    description: 'Au plus un élément d’agenda principal par Opération (CDC v5 §27.2). Réparation : rétrogradation des excédents par rang d’autorité (USER > T4 > T3 > SYSTEM) puis ancienneté, propagation recalculée.',
+    description: 'Au plus un élément d’agenda PORTEUR d’un même fait par Opération (CDC v5 §27.2 ; carte #744 : fait porté par le lien N↔N, aucun rôle). Réparation : retrait du fait porté en excédent par rang d’autorité (USER > T4 > T3 > SYSTEM) puis ancienneté, propagation recalculée.',
     detect: async (r, accountId, scope) => evaluatePrincipalUniqueness(accountId, await loadMemberships(r, accountId, scope)),
     repairFinding: async (ctx, f) => {
       const res = await recomputePrincipalFor(ctx, Number(f.detail.operationId));
@@ -277,7 +300,7 @@ export const OPERATIONS_GROUPING_INVARIANTS: readonly GroupingInvariant[] = [
   },
   {
     id: 'O1-AGENDA-ONE-OPERATION', version: 1, domain: 'operations', level: 'N1', objects: ['agenda_items'], repair: 'DETERMINISTIC',
-    description: 'Un élément d’agenda appartient à 0 ou 1 Opération ACTIVE de son compte, avec un rôle ; hors Opération, aucun rôle (CDC v5 §6.1, E26). Réparation : rattachement à la canonique d’une Opération fusionnée, détachement d’une Opération invalidée, introuvable ou d’un autre compte, rôle remis en cohérence.',
+    description: 'Un élément d’agenda appartient à 0 ou 1 Opération ACTIVE de son compte (colonne historique, CDC v5 §6.1, E26 ; carte #744 : aucun rôle). Réparation : rattachement à la canonique d’une Opération fusionnée, détachement d’une Opération invalidée, introuvable ou d’un autre compte.',
     detect: async (r, accountId, scope) => evaluateAgendaMembership(accountId, await loadMemberships(r, accountId, scope)),
     repairFinding: async (ctx, f) => {
       const itemId = Number(f.detail.itemId);
@@ -294,14 +317,6 @@ export const OPERATIONS_GROUPING_INVARIANTS: readonly GroupingInvariant[] = [
           const res = await detachAgendaItem(ctx, { itemId, operationId: Number(f.detail.operationId), origin: 'SYSTEM', reasonCode: `COHERENCE_${f.nature}` });
           return { repaired: true, changed: res.changed };
         }
-        case 'ROLE_WITHOUT_OPERATION': {
-          const x = await ctx.runner.q(`UPDATE agenda_items SET operation_role = NULL, operation_role_origin = NULL WHERE id = $1 AND account_id = $2 AND business_operation_id IS NULL AND operation_role IS NOT NULL RETURNING id`, [itemId, ctx.accountId]);
-          return { repaired: true, changed: x.length > 0 };
-        }
-        case 'OPERATION_WITHOUT_ROLE': {
-          const x = await ctx.runner.q(`UPDATE agenda_items SET operation_role = 'RELATED', operation_role_origin = 'SYSTEM' WHERE id = $1 AND account_id = $2 AND operation_role IS NULL AND business_operation_id IS NOT NULL RETURNING id`, [itemId, ctx.accountId]);
-          return { repaired: true, changed: x.length > 0 };
-        }
         default:
           return { repaired: false, changed: false };
       }
@@ -311,11 +326,14 @@ export const OPERATIONS_GROUPING_INVARIANTS: readonly GroupingInvariant[] = [
     id: 'O1-LINK-PROVENANCE', version: 1, domain: 'operations', level: 'N1', objects: ['agenda_file_links'], repair: 'DETERMINISTIC',
     description: 'Tout lien Document ↔ Agenda porte au moins une provenance MANUAL_DIRECT, AI_DIRECT ou OPERATION_PRINCIPAL (CDC v5 §7.4). Réparation : provenance déduite de l’origine de l’élément (règle de la reprise 0654).',
     detect: async (r, accountId) => {
-      const x = await r.q<{ item_id: number; file_id: number; provenances: string[]; projected: boolean; is_automatic: boolean; role: OperationRole | null }>(
-        `SELECT l.agenda_item_id AS item_id, l.asset_file_id AS file_id, l.provenances, i.projection_origin IS NOT NULL AS projected, i.is_automatic, i.operation_role AS role
+      const x = await r.q<{ item_id: number; file_id: number; provenances: string[]; projected: boolean; is_automatic: boolean; carries_fact: boolean }>(
+        `SELECT l.agenda_item_id AS item_id, l.asset_file_id AS file_id, l.provenances, i.projection_origin IS NOT NULL AS projected, i.is_automatic,
+                (g.fact_key IS NOT NULL) AS carries_fact
            FROM agenda_file_links l JOIN agenda_items i ON i.id = l.agenda_item_id
+           LEFT JOIN business_operation_agenda_links g ON g.account_id = i.account_id AND g.operation_id = i.business_operation_id
+                  AND g.agenda_item_id = i.id AND g.state = 'ACTIVE'
           WHERE i.account_id = $1 AND cardinality(l.provenances) = 0 ORDER BY 1, 2`, [accountId]);
-      return evaluateLinkProvenance(accountId, x.map((y) => ({ itemId: Number(y.item_id), fileId: Number(y.file_id), provenances: y.provenances ?? [], projected: y.projected, isAutomatic: y.is_automatic, role: y.role })));
+      return evaluateLinkProvenance(accountId, x.map((y) => ({ itemId: Number(y.item_id), fileId: Number(y.file_id), provenances: y.provenances ?? [], projected: y.projected, isAutomatic: y.is_automatic, carriesFact: y.carries_fact === true })));
     },
     repairFinding: async (ctx, f) => {
       await lockGroupingAccount(ctx.runner, ctx.accountId);
@@ -325,15 +343,17 @@ export const OPERATIONS_GROUPING_INVARIANTS: readonly GroupingInvariant[] = [
   },
   {
     id: 'O1-PRINCIPAL-DOCUMENTS', version: 1, domain: 'operations', level: 'N2', objects: ['agenda_file_links', 'business_operation_documents'], repair: 'DETERMINISTIC',
-    description: 'P4 : quand une Opération a un principal, chacun de ses documents (non refusé par l’utilisateur) lui est lié (OPERATION_PRINCIPAL) ; aucune propagation sur un élément qui n’est pas principal. Réparation : recomputePrincipal (premier maillon, sans reconsolidation).',
+    description: 'P4 : quand une Opération a un élément PORTEUR d’un fait, chacun de ses documents (non refusé par l’utilisateur) lui est lié (OPERATION_PRINCIPAL) ; aucune propagation sur un élément qui ne porte aucun fait. Réparation : recomputePrincipal (premier maillon, sans reconsolidation).',
     detect: async (r, accountId, scope) => {
       const ops = evaluatePrincipalDocuments(accountId, await loadPrincipalSnapshots(r, accountId, scope));
       const errants = await r.q<{ item_id: number; files: number[] }>(
         `SELECT l.agenda_item_id AS item_id, array_agg(l.asset_file_id ORDER BY l.asset_file_id) AS files
            FROM agenda_file_links l JOIN agenda_items i ON i.id = l.agenda_item_id
            LEFT JOIN business_operations o ON o.id = i.business_operation_id
+           LEFT JOIN business_operation_agenda_links g ON g.account_id = i.account_id AND g.operation_id = i.business_operation_id
+                  AND g.agenda_item_id = i.id AND g.state = 'ACTIVE'
           WHERE i.account_id = $1 AND 'OPERATION_PRINCIPAL' = ANY(l.provenances)
-            AND (i.business_operation_id IS NULL OR i.operation_role IS DISTINCT FROM 'PRINCIPAL'
+            AND (i.business_operation_id IS NULL OR g.fact_key IS NULL
                  OR o.invalidated_at IS NOT NULL OR o.merged_into_operation_id IS NOT NULL)
             AND ($2::bigint[] IS NULL OR i.business_operation_id IS NULL OR i.business_operation_id = ANY($2::bigint[]))
           GROUP BY l.agenda_item_id ORDER BY 1`, [accountId, opFilter(scope)]);
@@ -347,7 +367,7 @@ export const OPERATIONS_GROUPING_INVARIANTS: readonly GroupingInvariant[] = [
         return { repaired: true, changed: res.added + res.removed > 0, detail: { added: res.added, removed: res.removed } };
       }
       await lockGroupingAccount(ctx.runner, ctx.accountId);
-      const n = await stripPrincipalLinks(ctx.runner, [Number(f.detail.itemId)]);
+      const n = await stripPropagatedDocumentLinks(ctx.runner, [Number(f.detail.itemId)]);
       return { repaired: true, changed: n > 0 };
     },
   },
@@ -407,51 +427,54 @@ export const OPERATIONS_GROUPING_INVARIANTS: readonly GroupingInvariant[] = [
     description: 'Lot 83A (CDC v5 §11.10, AC52) : une relation durable (contrat, financement) n’a jamais d’élément principal DÉDUIT (T4, T3, reprise) — un abonnement ne crée pas d’événement global artificiel ; un principal choisi par l’utilisateur reste. Réparation : releasePrincipal (service de regroupement) — l’élément reste lié, rien n’est supprimé.',
     detect: async (r, accountId, scope) => {
       const x = await r.q<{ op: string; type_code: string | null; item_id: number; origin: RoleOrigin | null }>(
-        `SELECT o.id AS op, o.type_code, i.id AS item_id, i.operation_role_origin AS origin
-           FROM agenda_items i JOIN business_operations o ON o.id = i.business_operation_id AND o.account_id = i.account_id
-          WHERE i.account_id = $1 AND i.operation_role = 'PRINCIPAL' AND i.operation_role_origin IS DISTINCT FROM 'USER'
+        `SELECT o.id AS op, o.type_code, g.agenda_item_id AS item_id, g.origin AS origin
+           FROM business_operation_agenda_links g JOIN business_operations o ON o.id = g.operation_id AND o.account_id = g.account_id
+          WHERE g.account_id = $1 AND g.state = 'ACTIVE' AND g.fact_key IS NOT NULL AND g.origin IS DISTINCT FROM 'USER'
             AND o.invalidated_at IS NULL AND o.merged_into_operation_id IS NULL AND o.type_code = ANY($3::text[])
             AND ($2::bigint[] IS NULL OR o.id = ANY($2::bigint[]))
-          ORDER BY o.id, i.id`, [accountId, opFilter(scope), `{${DURABLE_RELATION_TYPES.join(',')}}`]);
-      return evaluateInferredPrincipal(accountId, x.map((y) => ({ operationId: Number(y.op), typeCode: y.type_code, itemId: Number(y.item_id), origin: y.origin })));
+          ORDER BY o.id, g.agenda_item_id`, [accountId, opFilter(scope), `{${DURABLE_RELATION_TYPES.join(',')}}`]);
+      return evaluateInferredPrincipal(accountId, x.map((y) => ({
+        operationId: Number(y.op), typeCode: y.type_code, itemId: Number(y.item_id), origin: roleOriginOfGraphOrigin(y.origin),
+      })));
     },
     repairFinding: async (ctx, f) => {
       // Le service refuse de retirer un principal choisi par l'utilisateur (autorité, §10).
       const changed = await releasePrincipal(ctx, { operationId: Number(f.detail.operationId), origin: 'T4', reasonCode: 'COHERENCE_INFERRED_PRINCIPAL_DURABLE' });
       const [reste] = await ctx.runner.q(
-        `SELECT 1 FROM agenda_items i JOIN business_operations o ON o.id = i.business_operation_id
-          WHERE o.id = $1 AND i.account_id = $2 AND i.operation_role = 'PRINCIPAL' AND i.operation_role_origin IS DISTINCT FROM 'USER' LIMIT 1`,
+        `SELECT 1 FROM business_operation_agenda_links g
+          WHERE g.operation_id = $1 AND g.account_id = $2 AND g.state = 'ACTIVE' AND g.fact_key IS NOT NULL
+            AND g.origin IS DISTINCT FROM 'USER' LIMIT 1`,
         [Number(f.detail.operationId), ctx.accountId]);
       return { repaired: !reste, changed };
     },
   },
   {
     id: 'O3-PRINCIPAL-WITHDRAWN', version: 1, domain: 'operations', level: 'N2', objects: ['agenda_items', 'business_operation_match_decisions'], repair: 'DETERMINISTIC',
-    description: 'Lot 84B (CDC v5 §10, §11.9 ; point ouvert 83A) : un rôle principal RETIRÉ par l’utilisateur (décision mémorisée) n’est jamais rétabli par une inférence — aucun principal déduit (T4, T3, reprise) dans l’ensemble tant que le retrait est actif ; une nouvelle désignation par l’utilisateur lève le retrait. Réparation : releasePrincipal (service de regroupement) — l’élément reste lié, rien n’est supprimé.',
+    description: 'Lot 84B (CDC v5 §10, §11.9 ; point ouvert 83A) : une désignation RETIRÉE par l’utilisateur (décision mémorisée) n’est jamais rétabli par une inférence — aucun principal déduit (T4, T3, reprise) dans l’ensemble tant que le retrait est actif ; une nouvelle désignation par l’utilisateur lève le retrait. Réparation : releasePrincipal (service de regroupement) — l’élément reste lié, rien n’est supprimé.',
     detect: async (r, accountId, scope) => {
       const x = await r.q<{ op: string; item_id: number; origin: RoleOrigin | null; withdrawn: string[] | null }>(
-        `SELECT o.id AS op, i.id AS item_id, i.operation_role_origin AS origin,
+        `SELECT o.id AS op, g.agenda_item_id AS item_id, g.origin AS origin,
                 (SELECT array_agg(m.source_entity_key ORDER BY m.source_entity_key) FROM business_operation_match_decisions m
                   WHERE m.account_id = o.account_id AND m.candidate_operation_id = o.id AND m.source_kind = 'PRINCIPAL'
                     AND m.decision = 'REJECTED' AND m.active) AS withdrawn
-           FROM agenda_items i JOIN business_operations o ON o.id = i.business_operation_id AND o.account_id = i.account_id
-          WHERE i.account_id = $1 AND i.operation_role = 'PRINCIPAL' AND i.operation_role_origin IS DISTINCT FROM 'USER'
+           FROM business_operation_agenda_links g JOIN business_operations o ON o.id = g.operation_id AND o.account_id = g.account_id
+          WHERE g.account_id = $1 AND g.state = 'ACTIVE' AND g.fact_key IS NOT NULL AND g.origin IS DISTINCT FROM 'USER'
             AND o.invalidated_at IS NULL AND o.merged_into_operation_id IS NULL
             AND ($2::bigint[] IS NULL OR o.id = ANY($2::bigint[]))
             AND EXISTS (SELECT 1 FROM business_operation_match_decisions m
                          WHERE m.account_id = o.account_id AND m.candidate_operation_id = o.id AND m.source_kind = 'PRINCIPAL'
                            AND m.decision = 'REJECTED' AND m.active)
-          ORDER BY o.id, i.id`, [accountId, opFilter(scope)]);
+          ORDER BY o.id, g.agenda_item_id`, [accountId, opFilter(scope)]);
       return evaluateWithdrawnPrincipal(accountId, x.map((y) => ({
-        operationId: Number(y.op), itemId: Number(y.item_id), origin: y.origin, withdrawnItemIds: (y.withdrawn ?? []).map(Number).filter(Number.isSafeInteger),
+        operationId: Number(y.op), itemId: Number(y.item_id), origin: roleOriginOfGraphOrigin(y.origin), withdrawnItemIds: (y.withdrawn ?? []).map(Number).filter(Number.isSafeInteger),
       })));
     },
     repairFinding: async (ctx, f) => {
       // Rang d'autorité : jamais un principal choisi par l'utilisateur (non détecté de toute façon).
       const changed = await releasePrincipal(ctx, { operationId: Number(f.detail.operationId), origin: 'T4', reasonCode: 'COHERENCE_PRINCIPAL_WITHDRAWN_BY_USER' });
       const [reste] = await ctx.runner.q(
-        `SELECT 1 FROM agenda_items i WHERE i.business_operation_id = $1 AND i.account_id = $2
-            AND i.operation_role = 'PRINCIPAL' AND i.operation_role_origin IS DISTINCT FROM 'USER' LIMIT 1`,
+        `SELECT 1 FROM business_operation_agenda_links g WHERE g.operation_id = $1 AND g.account_id = $2
+            AND g.state = 'ACTIVE' AND g.fact_key IS NOT NULL AND g.origin IS DISTINCT FROM 'USER' LIMIT 1`,
         [Number(f.detail.operationId), ctx.accountId]);
       return { repaired: !reste, changed };
     },

@@ -8,21 +8,23 @@
  */
 import { useEffect, useState } from 'react';
 import {
-  ArrowRight, Building2, CalendarDays, CircleAlert, Clock, FileText, Home, Info, Loader2, Package, Settings, Trash2,
+  ArrowRight, Building2, CalendarDays, CircleAlert, Clock, FileText, Home, Info, Layers, Loader2, Package, Settings, Trash2,
 } from 'lucide-react';
 import { liveSubtitle, type LiveResult } from '@/lib/verebona/live-search';
 import type { VerebonaAction, VerebonaMessage } from '@/lib/verebona/useVerebona';
 import { OFFLINE_PENDING_LABEL } from '@/lib/verebona/offline';
 import { processingStatus, visibleResultGroups } from '@/lib/verebona/assistant-ui';
 import {
-  objectsFromCards, olderLabel, railTone, showAnswerText, splitTurns, timelineRows, turnSummary,
+  isExportDownloadHref, objectsFromCards, olderLabel, railTone, showAnswerText, splitTurns, timelineRows, turnSummary,
   type SpaceObject, type SpaceTurn,
 } from '@/lib/verebona/space';
 import { openDrawerFromLink } from '@/lib/drawers';
 import { openCreateFlow } from '@/lib/create-flows';
 import { assistantActionKind, executeAssistantAction } from '@/lib/verebona/assistant-actions';
 import { trackAssistantUsage } from '@/lib/verebona/usage-events';
+import { answerBlocksFor } from '@/lib/verebona/answer-blocks';
 import { VerebonaCommandPlan } from '../VerebonaCommandPlan';
+import { AnswerBlocks } from './AnswerBlocks';
 import { VerebonaExplanation } from '../VerebonaExplanation';
 import { useVerebonaSpace, type VerebonaSpaceApi } from './VerebonaSpaceProvider';
 
@@ -84,6 +86,10 @@ function ObjectRow({ o, variant, onLocal, onLeave }: { o: SpaceObject; variant: 
   if (o.actionId) {
     return <button type="button" className={cls} onClick={() => onLocal(o.actionId!)}>{inner}</button>;
   }
+  if (o.href && isExportDownloadHref(o.href)) {
+    // Trello #753 (W28) : téléchargement d'un export — l'espace de réponse reste ouvert, aucun tiroir.
+    return <a href={o.href} className={cls} download>{inner}</a>;
+  }
   if (o.href) {
     // Mobile : l'espace plein écran se ferme d'abord, sinon il masquerait le tiroir.
     return <a href={o.href} className={cls} onClick={(e) => { onLeave(); openDrawerFromLink(e, o.href); }}>{inner}</a>;
@@ -119,7 +125,10 @@ function Answer({ msg, variant, api }: { msg: VerebonaMessage; variant: SpaceVar
   });
   // Ni « Voir les sources » ni avis 👍/👎 sous les réponses (décision produit
   // du 2 oct. 2026) : l'action SHOW_SOURCES proposée par le serveur est écartée.
-  const serverActions = (msg.actions ?? []).filter((a) => a.type !== 'SHOW_SOURCES');
+  // Trello #753 (CDC T2 §7.6, §8.2) : l'article d'aide dont le serveur connaît le TITRE s'affiche en lien
+  // textuel sous la réponse — « les boutons servent aux actions ». Sans titre, l'action garde son bouton.
+  const helpLinks = (msg.actions ?? []).filter((a) => a.type === 'OPEN_HELP' && !!a.linkTitle && !!a.href);
+  const serverActions = (msg.actions ?? []).filter((a) => a.type !== 'SHOW_SOURCES').filter((a) => !helpLinks.includes(a));
   // Lot 113F : action principale identifiable — la première action métier
   // (ordre du serveur), sauf si une action locale est déjà principale.
   const rangPrincipal = (msg.local?.actions ?? []).some((a) => a.primary)
@@ -159,13 +168,41 @@ function Answer({ msg, variant, api }: { msg: VerebonaMessage; variant: SpaceVar
         </ol>
       )}
 
-      {chrono.length === 0 && showAnswerText(msg) && (
+      {/* Trello #753 (CDC T2 §8.5) : la réponse est présentée en blocs (paragraphes, listes, montants en évidence),
+          dérivés de son texte validé. Un message d'erreur reste un paragraphe simple, dans sa couleur. */}
+      {chrono.length === 0 && showAnswerText(msg) && (isError ? (
         <p
           className={`m-0 whitespace-pre-line leading-normal ${variant === 'mobile' ? 'text-[15px]' : 'text-[14.5px]'}`}
-          style={{ color: isError ? 'var(--on-red)' : 'var(--text-primary)' }}
+          style={{ color: 'var(--on-red)' }}
           onCopy={() => trackAssistantUsage({ type: 'ANSWER_COPY', intent: msg.intent ?? null })}
         >
           {msg.content}
+        </p>
+      ) : (
+        <AnswerBlocks
+          blocks={answerBlocksFor(msg.content, msg.answerBlocks)}
+          variant={variant}
+          onCopy={() => trackAssistantUsage({ type: 'ANSWER_COPY', intent: msg.intent ?? null })}
+        />
+      ))}
+
+      {/* Trello #753 (CDC T2 §7.6) : lecture complémentaire — le titre de l'article, cliquable, jamais un bouton
+          de source. Même rendu sur ordinateur et sur mobile ; le lecteur d'écran entend l'intitulé du serveur. */}
+      {helpLinks.length > 0 && (
+        <p className={`m-0 flex flex-wrap gap-x-2 gap-y-1 ${variant === 'mobile' ? 'text-[15px]' : 'text-[14.5px]'}`}>
+          {helpLinks.map((a, rang) => (
+            <a
+              key={a.actionId}
+              href={a.href!}
+              data-analytics={a.analyticsCode}
+              data-help-link
+              aria-label={`${a.label} « ${a.linkTitle} »`}
+              className="min-w-0 break-words text-[color:var(--text-primary)] underline decoration-[color:var(--border)] underline-offset-2 hover:decoration-[color:var(--accent)]"
+              onClick={(e) => { clicAction(a, rang); onAction(a, e); }}
+            >
+              {a.linkTitle}
+            </a>
+          ))}
         </p>
       )}
 
@@ -390,6 +427,8 @@ export const LIVE_OPTION_ID = (i: number) => `verebona-suggestion-${i}`;
 // fiche du bien (`asset-equipments-panel`, `asset-substructures-panel`).
 const LIVE_ICONS: Record<LiveResult['kind'], typeof Package> = {
   nav: ArrowRight, asset: Package, document: FileText, agenda: CalendarDays, equipment: Settings, room: Home,
+  // Carte #744 (travaux D) : même pictogramme que le lien « Voir l’événement de référence ».
+  reference_event: Layers,
 };
 
 function LiveResults({ api }: { api: VerebonaSpaceApi }) {

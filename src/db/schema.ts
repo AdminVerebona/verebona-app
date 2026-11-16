@@ -4055,6 +4055,12 @@ export const businessOperations = pgTable('business_operations', {
   lastReconciledAt: tstzOptional('last_reconciled_at'),
   /** Lot 78A (0609) — provenance des valeurs conservées (source, valeur) et contradictions d'attributs. */
   attributeProvenance: jsonb('attribute_provenance'),
+  // Lot 114O (#744, migration 1722) — « Notes / Description » de l'UTILISATEUR sur l'événement de référence
+  // (CDC « Opérations / Agenda V2.0 » §5, §14 ; AC42). Sa parole : écrite SEULEMENT par la commande
+  // `setOperationNotes` de la façade métier, jamais par T1, T3, T4 ni la reconstruction, et n'entre dans aucun calcul.
+  userNotes: text('user_notes'),
+  userNotesUpdatedAt: tstzOptional('user_notes_updated_at'),
+  userNotesAuthorUserId: integer('user_notes_author_user_id').references(() => users.id, { onDelete: 'set null' }),
   version: integer('version').notNull().default(1),
   createdAt: tstz('created_at'),
   updatedAt: tstz('updated_at'),
@@ -4066,6 +4072,8 @@ export const businessOperations = pgTable('business_operations', {
   mergedInvalidatedChk: check('business_operations_merged_invalidated_chk', sql`${t.mergedIntoOperationId} IS NULL OR ${t.invalidatedAt} IS NOT NULL`),
   invalidationReasonChk: check('business_operations_invalidation_reason_chk', sql`${t.invalidatedAt} IS NULL OR ${t.invalidationReason} IS NOT NULL`),
   versionChk: check('business_operations_version_chk', sql`${t.version} >= 1`),
+  /** Migration 1722 : texte utile seulement (« aucune note » s'écrit NULL), borné comme le champ d'un document. */
+  userNotesChk: check('business_operations_user_notes_chk', sql`${t.userNotes} IS NULL OR char_length(btrim(${t.userNotes})) BETWEEN 1 AND 5000`),
   accountActiveIdx: index('business_operations_account_active_idx').on(t.accountId, t.typeCode, t.status).where(sql`invalidated_at IS NULL`),
   accountRealizedIdx: index('business_operations_account_realized_idx').on(t.accountId, t.realizedDate),
   mergedIntoIdx: index('business_operations_merged_into_idx').on(t.mergedIntoOperationId).where(sql`merged_into_operation_id IS NOT NULL`),
@@ -4652,6 +4660,17 @@ export const businessOperationAgendaLinks = pgTable('business_operation_agenda_l
   state: text('state').notNull().default('ACTIVE'),
   origin: text('origin').notNull(),
   legacyColumn: boolean('legacy_column').notNull().default(false),
+  /**
+   * Lot 114O (#744, migration 1721, travaux F) — FAIT PORTÉ par ce lien : la
+   * clé de projection sans sa partie datée (ACQUISITION, INTERVENTION, CLAIM,
+   * DISPOSAL, CONTRACT:END, FINANCING, OTHER, UNQUALIFIED) ; NULL = aucun fait
+   * porté. REMPLACE le rôle « principal » (`agenda_items.operation_role`, plus
+   * écrit) : qualification de la RELATION, sans hiérarchie entre les éléments
+   * d'un même événement de référence — au plus un porteur par fait, tous les
+   * autres liens sont des membres de plein droit, et le même élément peut
+   * porter un fait de deux événements de référence (élément partagé).
+   */
+  factKey: text('fact_key'),
   reasonCode: text('reason_code').notNull(),
   evidence: jsonb('evidence').notNull().default([]),
   version: integer('version').notNull().default(1),

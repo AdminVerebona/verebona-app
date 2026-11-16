@@ -8,9 +8,20 @@
 import type { AssistantApiResponse, AssistantRunResult } from '../types/contracts';
 import { isAssistantFlagOn } from '../config/assistant-flags.server';
 import { createCommandFor } from '@/lib/verebona/assistant-actions';
+import { buildAnswerBlocks, isPlainAnswer, type AnswerBlock } from '@/lib/verebona/answer-blocks';
+
+/**
+ * Blocs de présentation d'une réponse (Trello #753, CDC T2 §8.3) : dérivés du texte validé — le même pour l'envoi,
+ * le rejeu d'une demande et la relecture de l'historique. `null` : rien à transmettre (paragraphe simple, texte vide).
+ */
+export function answerBlocksForApi(answer: string | null | undefined): AnswerBlock[] | null {
+  const blocks = buildAnswerBlocks(answer);
+  return isPlainAnswer(blocks) ? null : blocks;
+}
 
 export function toApiPayload(result: AssistantRunResult, conversationId?: number | null): AssistantApiResponse {
   const sourcesOn = isAssistantFlagOn('sources');
+  const blocs = answerBlocksForApi(result.answer);
   return {
     requestId: result.requestId,
     messageId: result.messageId,
@@ -42,6 +53,9 @@ export function toApiPayload(result: AssistantRunResult, conversationId?: number
         }
       : null,
     commandPlan: result.commandPlan ?? null,
+    // Trello #753 (CDC T2 §8.3, §12.4) : présentation en blocs du texte validé — jamais pour une erreur ni
+    // pour une chronologie (présentée par `events`).
+    ...(!result.error && !result.events?.length && blocs ? { answerBlocks: blocs } : {}),
     ...(result.resultGroups?.length ? { resultGroups: result.resultGroups } : {}),
     // CDC 15 T2-35 : chronologie structurée (date · libellé · lien), liens
     // résolus côté serveur ; identifiant interne de l'objet non exposé.

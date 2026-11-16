@@ -212,7 +212,11 @@ describe('L113S — catalogue : les règles actives classées (formulation)', ()
     expect(checkRulesCatalog()).toEqual([]);
     // Lot 113AA (#725) : + PERIOD-CONFLICT (constat déterministe, NO_AI_DECISION).
     // Lot 114 (#750) : + OPERATION-ATTRIBUTE (contradiction réelle d'un attribut, NO_AI_DECISION).
-    expect(PROCESSING_RULES).toHaveLength(29);
+    // Carte #744 : + OPERATION-RELATION (association refusée rapprochée par une preuve nouvelle, NO_AI_DECISION).
+    // Carte #744 (décision du PO du 16/11/2026) : + AGENDA-LINK (rattachement supplémentaire proposé sur un
+    // justificatif commun, NO_AI_DECISION) ; + REFERENCE-EVENT-MERGE et REFERENCE-EVENT-FACT (les deux questions de
+    // fusion du CDC §8, NO_AI_DECISION).
+    expect(PROCESSING_RULES).toHaveLength(33);
     for (const r of PROCESSING_RULES) expect(['AI_CONTEXTUAL', 'DETERMINISTIC'], r.code).toContain(r.formulation.kind);
   });
 

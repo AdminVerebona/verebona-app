@@ -619,9 +619,13 @@ async function loadLegacyExportSource(params: LoadParams): Promise<{ source: Exp
       : [];
     const equipmentInstallations = Object.fromEntries(eqInstRows.map((r) => [Number(r.id), { at: r.at ?? null, operationId: r.op == null ? null : Number(r.op) }]));
     const opIds = [...new Set([...instRows.map((r) => r.op), ...eqInstRows.map((r) => r.op)].filter((x): x is number => x != null).map(Number))];
+    // Carte #744, point G : un dossier ne cite QUE des événements de référence qui existent encore dans le compte —
+    // un événement invalidé (supprimé à tort) ou regroupé dans un autre n'est plus nommé (AC47, AC67, AC69). Sans
+    // nom, la pose reste imprimée avec sa date : aucune donnée n'est inventée pour combler le vide.
     const opRows = opIds.length
       ? (await pgClient.unsafe(`SELECT id::int AS id, technical_label, to_char(realized_date, 'YYYY-MM-DD') AS d FROM business_operations
-           WHERE account_id = $1 AND id = ANY($2::bigint[])`, [accountId, `{${opIds.join(',')}}`] as never[])) as unknown as Array<{ id: number; technical_label: string | null; d: string | null }>
+           WHERE account_id = $1 AND id = ANY($2::bigint[])
+             AND invalidated_at IS NULL AND merged_into_operation_id IS NULL`, [accountId, `{${opIds.join(',')}}`] as never[])) as unknown as Array<{ id: number; technical_label: string | null; d: string | null }>
       : [];
     const installationOperations = Object.fromEntries(opRows.map((o) => [Number(o.id), { label: o.technical_label ?? null, date: o.d ?? null }]));
     cil = {

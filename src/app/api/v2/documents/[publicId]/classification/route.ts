@@ -22,18 +22,9 @@
  * ══════════════════════════════════════════════════════════════════════════
  */
 import { NextRequest, NextResponse } from 'next/server';
-import { emitBusinessEvent } from '@/services/verebona-assistant/events/business-events';
-import { and, eq } from 'drizzle-orm';
-import { db } from '@/db';
-import { assetFiles } from '@/db/schema';
 import { SessionService } from '@/lib/session-service';
 import { refuserSiLectureSeule } from '@/lib/write-access-guard';
-import { REFERENTIAL_VERSION, getDocumentType, getRubric } from '@/lib/referential/v2';
-import {
-  applyClassificationChange,
-  type DocumentClassification,
-} from '@/services/documents/rubric-classification';
-import { resolveActionsForData } from '@/services/to-process/to-process-action.service';
+import { updateDocumentClassificationForAccount } from '@/services/documents/document-write.facade';
 
 export const dynamic = 'force-dynamic';
 
@@ -65,95 +56,24 @@ export async function PATCH(
     return NextResponse.json({ error: 'INVALID_BODY' }, { status: 400 });
   }
 
-  // Codes inconnus rejetés avant toute écriture : une Rubrique inventée
-  // rendrait le document invisible dans tous les regroupements.
-  if (body.rubricCode != null && !getRubric(body.rubricCode)) {
-    return NextResponse.json({ error: 'UNKNOWN_RUBRIC' }, { status: 400 });
-  }
-  if (body.documentTypeCode != null && !getDocumentType(body.documentTypeCode)) {
-    return NextResponse.json({ error: 'UNKNOWN_TYPE' }, { status: 400 });
-  }
+  // Passage 114AB (#753, W12) : le corps de ce geste est la façade métier
+  // partagée `document-write.facade.updateDocumentClassificationForAccount` —
+  // le tiroir du document et l'Assistant passent par le MÊME code. Les règles,
+  // les statuts et le JSON rendus ici sont inchangés.
+  const r = await updateDocumentClassificationForAccount(
+    { userId: session.userId, currentAccountId: accountId },
+    { publicId },
+    {
+      ...('rubricCode' in body ? { rubricCode: body.rubricCode ?? null } : {}),
+      ...('documentTypeCode' in body ? { documentTypeCode: body.documentTypeCode ?? null } : {}),
+    },
+  );
+  if (!r.ok) return NextResponse.json({ error: r.error }, { status: r.status });
 
-  const [row] = await db
-    .select({
-      id: assetFiles.id,
-      rubricCode: assetFiles.rubricCode,
-      documentTypeCode: assetFiles.documentTypeCode,
-      rubricOrigin: assetFiles.rubricOrigin,
-      typeOrigin: assetFiles.typeOrigin,
-      rubricUserValidated: assetFiles.rubricUserValidated,
-      typeUserValidated: assetFiles.typeUserValidated,
-    })
-    .from(assetFiles)
-    .where(and(eq(assetFiles.publicId, publicId), eq(assetFiles.accountId, accountId)))
-    .limit(1);
-
-  if (!row) return NextResponse.json({ error: 'NOT_FOUND' }, { status: 404 });
-
-  const current: DocumentClassification = {
-    rubricCode: row.rubricCode as never,
-    documentTypeCode: row.documentTypeCode,
-    rubricOrigin: row.rubricOrigin as never,
-    typeOrigin: row.typeOrigin as never,
-    rubricUserValidated: row.rubricUserValidated,
-    typeUserValidated: row.typeUserValidated,
-  };
-
-  const outcome = applyClassificationChange({
-    current,
-    // `undefined` = champ non fourni donc inchangé ; `null` = retiré. La
-    // distinction est portée par la présence de la clé dans le corps.
-    nextRubric: 'rubricCode' in body ? (body.rubricCode as never) : undefined,
-    nextType: 'documentTypeCode' in body ? body.documentTypeCode : undefined,
-    origin: 'USER',
-  });
-
-  await db
-    .update(assetFiles)
-    .set({
-      rubricCode: outcome.result.rubricCode,
-      documentTypeCode: outcome.result.documentTypeCode,
-      rubricOrigin: outcome.result.rubricOrigin,
-      typeOrigin: outcome.result.typeOrigin,
-      rubricUserValidated: outcome.result.rubricUserValidated,
-      typeUserValidated: outcome.result.typeUserValidated,
-      classificationReferentialVersion: REFERENTIAL_VERSION,
-      classificationUpdatedAt: new Date(),
-      updatedAt: new Date(),
-    })
-    .where(eq(assetFiles.id, row.id));
-
-  // §5.3 — les deux natures sont fermées d'un coup : une donnée renseignée ne
-  // laisse subsister ni l'arbitrage qui proposait, ni la complétion qui
-  // réclamait.
-  const resolved: Record<string, number> = {};
-  if (outcome.result.rubricCode !== current.rubricCode) {
-    resolved.rubricCode = await resolveActionsForData(
-      accountId, 'DOCUMENT', row.id, 'rubricCode', 'USER_COMPLETED',
-    );
-  }
-  if (outcome.result.documentTypeCode !== current.documentTypeCode) {
-    resolved.documentTypeCode = await resolveActionsForData(
-      accountId, 'DOCUMENT', row.id, 'documentTypeCode', 'USER_COMPLETED',
-    );
-  }
-
-  // Lot 28 : le Type décide de la pertinence des données documentaires
-  // (fin de contrat, fin de garantie…) — « À traiter » est réévalué.
-  if (outcome.result.documentTypeCode !== current.documentTypeCode) {
-    const { onDocumentEditedByUser } = await import('@/services/to-process/document-rule-bridge');
-    await onDocumentEditedByUser(accountId, row.id);
-    // Lot 41 (C4 TRG-007) : un type non métier retire les contributions du document aux Opérations.
-    const { notifyOperationsEvent } = await import('@/services/business-operations/consolidation/queue');
-    notifyOperationsEvent(accountId, { trigger: 'document_reclassified', fileId: row.id });
-  }
-
-  // CDC Assistant §25.7, §31.7 : classement du document modifié.
-  await emitBusinessEvent({ type: 'DOCUMENT_UPDATED', accountId, entityId: row.id });
   return NextResponse.json({
-    classification: outcome.result,
-    changes: outcome.changes,
-    rejected: outcome.rejected,
-    resolvedActions: resolved,
+    classification: r.classification,
+    changes: r.changes,
+    rejected: r.rejected,
+    resolvedActions: r.resolvedActions,
   });
 }

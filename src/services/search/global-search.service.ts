@@ -22,6 +22,8 @@
 import { documentTitleColumnsSql, documentTitleOf, type DocumentTitleColumns } from '@/lib/documents/document-title-source';
 import { documentTypeLabelOrNull } from '@/lib/referential/user-facing-labels';
 import { pgClient } from '@/db';
+import { REFERENCE_EVENT_SEARCH_CATEGORY, referenceEventDay, referenceEventHref, REFERENCE_EVENT_PAGE_LABELS } from '@/lib/reference-events/reference-event-page';
+import { BUSINESS_OPERATION_TYPE_CODES } from '@/services/business-operations/model';
 import { drawerHref } from '@/lib/drawers';
 import { getField } from '@/services/canonical/registry';
 import { parseKc } from '@/services/canonical/asset-state';
@@ -38,7 +40,7 @@ import {
 /** Barre de recherche : TOUS les mots de la requête doivent être retrouvés. */
 const GLOBAL_SEARCH_POLICY: SearchPolicy = { requireAllTokens: true, allowSemantic: false };
 
-const LIMITES = { asset: 5, document: 8, agenda_item: 5, equipment: 5, room: 5 } as const;
+const LIMITES = { asset: 5, document: 8, agenda_item: 5, equipment: 5, room: 5, reference_event: 5 } as const;
 const CANDIDATS_MAX = 100;
 
 interface SearchMatchInfo {
@@ -56,7 +58,7 @@ interface SearchMatchInfo {
 interface GlobalSearchRow {
   id: string;
   /** Lot 71 : « Équipement » et « Pièce » (sous-structure), bien parent en `sublabel`. */
-  category: 'Bien' | 'Document' | 'Agenda' | 'Équipement' | 'Pièce';
+  category: 'Bien' | 'Document' | 'Agenda' | 'Équipement' | 'Pièce' | typeof REFERENCE_EVENT_SEARCH_CATEGORY;
   label: string;
   sublabel?: string;
   href: string;
@@ -443,6 +445,103 @@ async function nestedCandidates(
     } as SearchCandidate & { _assetId: number; _assetName: string | null }));
 }
 
+/**
+ * Carte #744, travaux D (CDC « Opérations / Agenda V2.0 » §15 ; AC01, AC56) —
+ * ÉVÉNEMENTS DE RÉFÉRENCE : type de résultat propre, jamais confondu avec un
+ * document ou un événement de l'Agenda. Candidats : événements de référence
+ * ACTIFS du compte (ni invalidés, ni regroupés — un résultat désigne toujours
+ * l'identité courante) dont un mot apparaît dans l'intitulé, le prestataire,
+ * une déclaration de l'utilisateur, une référence, un fournisseur relié, le
+ * titre d'un justificatif ou un bien concerné, ou dont le NOM DE TYPE est un
+ * mot de la requête (« contrat », « sinistre »). Un événement de référence
+ * sans bien, sans document et sans événement est candidat comme les autres :
+ * aucune jointure obligatoire. Borné au compte dans chaque sous-requête.
+ * L'éligibilité (correspondance explicable) reste celle du moteur
+ * (`SEARCH_FIELDS.reference_event`) : le bien concerné ne suffit jamais seul.
+ */
+async function referenceEventCandidates(accountId: number, q: ParsedQuery, mode: Awaited<ReturnType<typeof searchExprMode>>): Promise<SearchCandidate[]> {
+  const { REFERENCE_EVENT_SEARCH_SQL, referenceEventSearchFactsOf } = await import('@/services/business-operations/graph/reference-event-page');
+  const { referenceEventLabel } = await import('@/services/documents/business-period-surfaces');
+  const p = new Params();
+  const acc = p.add(accountId); // `$1` : les sous-requêtes de `REFERENCE_EVENT_SEARCH_SQL` s'y réfèrent.
+  if (acc !== '$1') throw new Error('recherche des événements de référence : le compte doit être le premier paramètre');
+  const propre = anyTokenLike(mode, p, q, ['o.technical_label', 'o.provider'], ['o.technical_label']);
+  const declaration = anyTokenLike(mode, p, q, ['d.declaration_text']);
+  const reference = anyTokenLike(mode, p, q, ['r.reference_value', 'r.normalized_value']);
+  const fournisseur = anyTokenLike(mode, p, q, ['s.name']);
+  const bien = anyTokenLike(mode, p, q, ['a.name']);
+  const justificatif = anyTokenLike(mode, p, q, ['f.retained_title', 'f.web_link_title', 'f.original_filename']);
+  // Nom de type (référentiel des types, libellé utilisateur existant) cité par la requête.
+  const sansAccent = (v: string) => v.normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase();
+  const formes = q.tokens.flatMap((t) => candidatePatterns(t)).filter((f) => f.length >= 3);
+  const types = BUSINESS_OPERATION_TYPE_CODES.filter((code) => {
+    const nom = sansAccent(referenceEventLabel({ typeCode: code, technicalLabel: null }));
+    return formes.some((f) => nom.startsWith(f));
+  });
+  const condType = types.length ? `o.type_code = ANY(${p.add(types)}::text[])` : 'false';
+  const rows = (await pgClient.unsafe(
+    `SELECT o.id, o.type_code, o.technical_label, o.provider,
+            to_char(o.planned_date, 'YYYY-MM-DD') AS planned_date, to_char(o.start_date, 'YYYY-MM-DD') AS start_date,
+            to_char(o.realized_date, 'YYYY-MM-DD') AS realized_date,
+            ${REFERENCE_EVENT_SEARCH_SQL.assetNames} AS asset_names,
+            ${REFERENCE_EVENT_SEARCH_SQL.supplierNames} AS supplier_names,
+            ${REFERENCE_EVENT_SEARCH_SQL.declarations} AS declarations,
+            ${REFERENCE_EVENT_SEARCH_SQL.foundingDeclaration} AS founding_declaration,
+            ${REFERENCE_EVENT_SEARCH_SQL.references} AS reference_values,
+            ${REFERENCE_EVENT_SEARCH_SQL.firstDocument} AS first_document,
+            ${REFERENCE_EVENT_SEARCH_SQL.presentationFacts}
+       FROM business_operations o
+      WHERE o.account_id = ${acc} AND o.invalidated_at IS NULL AND o.merged_into_operation_id IS NULL
+        AND (${propre} OR ${condType}
+             OR EXISTS (SELECT 1 FROM business_operation_declarations d
+                         WHERE d.account_id = ${acc} AND d.operation_id = o.id AND ${declaration})
+             OR EXISTS (SELECT 1 FROM business_operation_references r
+                         WHERE r.account_id = ${acc} AND r.operation_id = o.id AND r.active AND ${reference})
+             OR EXISTS (SELECT 1 FROM business_operation_suppliers bs
+                          JOIN suppliers s ON s.id = bs.supplier_id AND s.account_id = ${acc} AND s.status <> 'deleted'
+                         WHERE bs.account_id = ${acc} AND bs.operation_id = o.id AND bs.status = 'ACTIVE' AND ${fournisseur})
+             OR EXISTS (SELECT 1 FROM business_operation_asset_links l
+                          JOIN assets a ON a.id = l.asset_id AND a.account_id = ${acc} AND a.deleted_at IS NULL
+                         WHERE l.account_id = ${acc} AND l.operation_id = o.id AND l.active AND ${bien})
+             OR EXISTS (SELECT 1 FROM business_operation_documents bd
+                          JOIN asset_files f ON f.id = bd.file_id AND f.account_id = bd.account_id AND f.deleted_at IS NULL
+                         WHERE bd.account_id = ${acc} AND bd.operation_id = o.id AND bd.active AND ${justificatif}))
+      ORDER BY o.id DESC
+      LIMIT ${CANDIDATS_MAX}`,
+    p.values as never[],
+  )) as unknown as Row[];
+  const out: SearchCandidate[] = [];
+  for (const r of rows) {
+    const f = await referenceEventSearchFactsOf(r);
+    out.push({
+      entityType: 'reference_event' as const,
+      entityId: f.id,
+      displayName: f.title,
+      fields: {
+        title: f.title, reference: f.references, provider: f.provider, supplierNames: f.supplierNames,
+        declaration: f.declarations, assetNames: f.assetNames,
+      },
+      retrievalStrategy: 'sql.token_like',
+      _assets: f.assetNames.join(', '),
+      _date: f.ownDate,
+    } as SearchCandidate & { _assets: string; _date: string | null });
+  }
+  return out;
+}
+
+/**
+ * Événements de référence : une panne de CETTE lecture (table absente d'une base non migrée, erreur SQL) ne doit
+ * jamais priver l'utilisateur des autres résultats — elle est journalisée et rend une liste vide.
+ */
+async function referenceEventCandidatesSafe(accountId: number, q: ParsedQuery, mode: Awaited<ReturnType<typeof searchExprMode>>): Promise<SearchCandidate[]> {
+  try {
+    return await referenceEventCandidates(accountId, q, mode);
+  } catch (e) {
+    console.error('[search] événements de référence non lus', (e as Error)?.message);
+    return [];
+  }
+}
+
 // ── Pipeline ─────────────────────────────────────────────────────────────
 
 /** Classement stable : correspondances EXACTES du nom d'abord (AC12), puis l'ordre du moteur. */
@@ -481,24 +580,27 @@ async function documentPeriodLinesSafe(accountId: number, fileIds: number[]): Pr
   return out;
 }
 
-/** Recherche globale du compte (biens, documents, échéances, équipements, pièces). */
+/** Recherche globale du compte (biens, documents, échéances, équipements, pièces, événements de référence — #744). */
 export async function globalSearch(accountId: number, rawQuery: string, opts: { debug?: boolean } = {}): Promise<GlobalSearchOutput> {
   const q = parseSearchQuery(rawQuery);
   if (q.tokens.length === 0) return { results: [], ...(opts.debug ? { trace: [] } : {}) };
   const mode = await searchExprMode();
-  const [assets, docs, agenda, equips, rooms] = await Promise.all([
+  const [assets, docs, agenda, equips, rooms, references] = await Promise.all([
     assetCandidates(accountId, q, mode),
     documentCandidates(accountId, q, mode),
     agendaCandidates(accountId, q, mode),
     nestedCandidates('equipment', accountId, q, mode),
     nestedCandidates('room', accountId, q, mode),
+    referenceEventCandidatesSafe(accountId, q, mode),
   ]);
   const ra = runSearchPipeline(q, assets, GLOBAL_SEARCH_POLICY);
   const rd = runSearchPipeline(q, docs, GLOBAL_SEARCH_POLICY);
   const rg = runSearchPipeline(q, agenda, GLOBAL_SEARCH_POLICY);
   const re = runSearchPipeline(q, equips, GLOBAL_SEARCH_POLICY);
   const rr = runSearchPipeline(q, rooms, GLOBAL_SEARCH_POLICY);
+  const rv = runSearchPipeline(q, references, GLOBAL_SEARCH_POLICY);
   const retenus = {
+    referenceEvent: exactsDabord(q, rv.results).slice(0, LIMITES.reference_event),
     asset: ra.results.slice(0, LIMITES.asset), document: rd.results.slice(0, LIMITES.document), agenda: rg.results.slice(0, LIMITES.agenda_item),
     equipment: exactsDabord(q, re.results).slice(0, LIMITES.equipment), room: exactsDabord(q, rr.results).slice(0, LIMITES.room),
   };
@@ -548,9 +650,20 @@ export async function globalSearch(accountId: number, rawQuery: string, opts: { 
         assetId: c._assetId, ...exact(c.displayName), match: matchInfo(r),
       };
     })),
+    // Carte #744, travaux D (AC56) : événements de référence — catégorie propre, lien vers la PAGE ENTIÈRE (jamais
+    // un tiroir). Sous-titre : biens concernés puis date propre ; sans date propre : « Sans date » (rien n'est inventé).
+    ...retenus.referenceEvent.map((r) => {
+      const c = r.candidate as SearchCandidate & { _assets: string; _date: string | null };
+      const id = Number(c.entityId);
+      const parts = [c._assets || null, referenceEventDay(c._date) ?? REFERENCE_EVENT_PAGE_LABELS.undated].filter(Boolean);
+      return {
+        id: `reference-event-${id}`, category: REFERENCE_EVENT_SEARCH_CATEGORY, label: c.displayName,
+        sublabel: parts.join(' · '), href: referenceEventHref(id), ...exact(c.displayName), match: matchInfo(r),
+      };
+    }),
   ];
 
-  const trace = [...ra.trace, ...rd.trace, ...rg.trace, ...re.trace, ...rr.trace];
+  const trace = [...ra.trace, ...rd.trace, ...rg.trace, ...re.trace, ...rr.trace, ...rv.trace];
   if (process.env.SEARCH_TRACE === '1') {
     console.info('[search] trace', JSON.stringify({ query: q.raw, accountId, entries: trace }));
   }

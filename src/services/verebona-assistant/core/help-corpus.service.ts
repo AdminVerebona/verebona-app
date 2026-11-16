@@ -23,6 +23,7 @@
  * ══════════════════════════════════════════════════════════════════════════
  */
 import { resourceAnswerFromSources } from './resources-answer';
+import { helpArticleTitle } from './help-article-link';
 import { HELP_T2_CORPUS_PATH } from '@/lib/help-center/catalog';
 import { helpScreenForRoute } from '@/lib/help-center/screens';
 import { parseEnvironment, type AiEnvironment } from '@/services/ai/config/environment';
@@ -1050,7 +1051,8 @@ function helpExcerpt(text: string, max = 240): string {
   return fin >= 80 ? coupe.slice(0, fin + 1) : `${coupe.replace(/\s+\S*$/, '')}…`;
 }
 
-const titreArticle = (s: RetrievedSource) => String(s.title).split(' — ')[0];
+/** Titre de l'article d'une source d'aide — règle partagée avec le lien textuel (`help-article-link`). */
+const titreArticle = (s: RetrievedSource) => helpArticleTitle(s);
 
 /**
  * Réponse sans modèle à une question d'usage — T2-01, T2-03, §10.6.

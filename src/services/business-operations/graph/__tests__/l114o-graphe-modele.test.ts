@@ -15,6 +15,7 @@ import {
   commandInputHash, declarationFingerprint, isIsoDay, normalizeDeclarationText, normalizeOperationPatch, DECLARATION_TEXT_MAX,
   type AssociateRequest, type GraphEvidence, type OperationFacts, type RelationSnapshot,
 } from '../model';
+import { NOTES_MAX_LENGTH } from '@/lib/documents/notes-description';
 
 const ROOT = process.cwd();
 const lire = (f: string): string => readFileSync(join(ROOT, f), 'utf8');
@@ -23,6 +24,7 @@ const M1715 = sqlSansCommentaires('1715_l114o_relations_evenements_reference.sql
 const M1716 = sqlSansCommentaires('1716_l114o_liens_evenement_reference_agenda.sql');
 const M1717 = sqlSansCommentaires('1717_l114o_journal_graphe_evenements_reference.sql');
 const M1718 = sqlSansCommentaires('1718_l114o_declarations_evenements_reference.sql');
+const M1722 = sqlSansCommentaires('1722_l114o_notes_evenement_reference.sql');
 const liste = (xs: readonly string[]): string => xs.map((x) => `'${x}'`).join(', ');
 
 const op = (id: number, typeCode: OperationFacts['typeCode'] = null, active = true): OperationFacts => ({ id, typeCode, active });
@@ -243,17 +245,26 @@ describe('L114O-09 gardes d’architecture : un seul écrivain, compte toujours 
     expect(code(facade)).toMatch(/return refused\('FAILED', 'TECHNICAL_FAILURE'\);/);
     const commandes = [...code(facade).matchAll(/^export function (\w+)\(ctx: OperationWriteContext/gm)].map((m) => m[1]).sort();
     expect(commandes).toEqual([
-      'associateOperations', 'createOperation', 'dissociateOperations', 'invalidateOperation', 'linkAgendaItem', 'linkDocument', 'linkSupplier',
-      'moveDocument', 'restoreOperation', 'unlinkAgendaItem', 'unlinkDocument', 'unlinkSupplier', 'updateOperation']);
+      // Règle complétée (carte #744) : `correctOperation` (écriture depuis la fiche), `splitOperation` (scission,
+      // CDC §7 et §14, AC46), `mergeOperations` (réponse de l'utilisateur à un arbitrage de fusion de « À traiter » ;
+      // la fusion elle-même reste celle du dépôt, aucun moteur parallèle) et `setOperationNotes` (note libre de
+      // l'utilisateur, travaux D « contenu », migration 1722) s'ajoutent aux 13 commandes du lot B.
+      'associateOperations', 'correctOperation', 'createOperation', 'dissociateOperations', 'invalidateOperation', 'linkAgendaItem', 'linkDocument',
+      'linkSupplier', 'mergeOperations', 'moveDocument', 'restoreOperation', 'setOperationNotes', 'splitOperation', 'unlinkAgendaItem',
+      'unlinkDocument', 'unlinkSupplier', 'updateOperation']);
     // Chaque commande livrée est documentée en tête de fichier ; chacune passe par l'exécution commune (droits, verrou, rejeu, journal).
     const entete = facade.slice(0, facade.indexOf('*/'));
     for (const c of commandes) expect(entete, c).toMatch(new RegExp(`\\b${c}\\b`));
     const corps = code(facade);
-    expect((corps.match(/runCommand<[^>]+>\(ctx, /g) ?? []).length).toBe(12);
+    expect((corps.match(/runCommand<[^>]+>\(ctx, /g) ?? []).length).toBe(16);
     expect(corps).toMatch(/return supplierCommand\(ctx, 'linkSupplier', input\);/);
     expect(corps).toMatch(/return supplierCommand\(ctx, 'unlinkSupplier', input\);/);
+    // La scission ne duplique AUCUNE règle : elle réutilise les corps des gestes de la page, dans sa transaction.
+    for (const appel of ['unlinkAgendaItemBody(ctx, g,', 'linkAgendaItemBody(ctx, g,', 'moveDocumentBody(ctx, g,', 'supplierBody(ctx, g,']) {
+      expect(corps.slice(corps.indexOf("'splitOperation', input, async")), appel).toContain(appel);
+    }
     // Commandes réservées à l'utilisateur : refus explicite d'une inférence, avant toute lecture.
-    for (const c of ['createOperation', 'updateOperation', 'invalidateOperation', 'restoreOperation', 'linkDocument', 'unlinkDocument', 'moveDocument']) {
+    for (const c of ['createOperation', 'updateOperation', 'invalidateOperation', 'restoreOperation', 'linkDocument', 'unlinkDocument', 'moveDocument', 'splitOperation', 'mergeOperations', 'setOperationNotes']) {
       const debut = corps.indexOf(`'${c}', input, async`);
       expect(corps.slice(debut, debut + 200), c).toMatch(/ctx\.actor\.kind !== 'USER'\) return stop\(refused\('FORBIDDEN', 'USER_ONLY'\)\)/);
     }
@@ -349,5 +360,41 @@ describe('L114O-11 déclaration, correction et empreinte d’entrée (règles pu
     const garde = c.indexOf('if (op.invalidatedAt !== null && op.invalidationReason === USER_INVALIDATION_REASON) return;', debut);
     expect(garde).toBeGreaterThan(debut);
     expect(garde).toBeLessThan(c.indexOf('FROM business_operation_sources WHERE operation_id', debut));
+  });
+});
+
+describe('L114O-12 migration 1722 : notes de l’utilisateur sur un événement de référence (CDC §5, §14 ; AC42)', () => {
+  it('additive, idempotente, rejouable : colonnes ajoutées sur la table EXISTANTE, aucune table nouvelle', () => {
+    for (const col of ['user_notes TEXT', 'user_notes_updated_at TIMESTAMPTZ', 'user_notes_author_user_id INTEGER']) {
+      expect(M1722).toContain(`ALTER TABLE business_operations ADD COLUMN IF NOT EXISTS ${col}`);
+    }
+    expect(M1722).not.toMatch(/CREATE TABLE/);
+    expect(M1722).not.toMatch(/\b(DROP TABLE|DROP COLUMN|DROP CONSTRAINT|TRUNCATE|DELETE FROM)\b|\bUPDATE \w+\s+SET\b/);
+    // Chaque contrainte posée ne l'est que si elle manque (rejouable).
+    for (const m of M1722.matchAll(/ADD CONSTRAINT (\w+)/g)) expect(M1722, m[1]).toContain(`conname = '${m[1]}'`);
+  });
+  it('AUCUNE donnée reprise : aucun texte existant recopié, aucune provenance supposée', () => {
+    expect(M1722).not.toMatch(/INSERT INTO/);
+    expect(M1722).not.toMatch(/notes_user_owned|description_source|SELECT .* FROM asset_files/);
+  });
+  it('texte utile seulement, borné comme le champ « Notes / Description » d’un document ; auteur détachable', () => {
+    expect(M1722).toContain(`CHECK (user_notes IS NULL OR char_length(btrim(user_notes)) BETWEEN 1 AND ${NOTES_MAX_LENGTH})`);
+    expect(M1722).toMatch(/FOREIGN KEY \(user_notes_author_user_id\) REFERENCES users\(id\) ON DELETE SET NULL/);
+  });
+  it('aucun rôle, aucun parent, aucun effet dérivé (ni agenda, ni composante, ni notification)', () => {
+    expect(M1722).not.toMatch(/parent_operation_id|PRINCIPAL|is_main|operation_role/);
+    expect(M1722).not.toMatch(/agenda_items|business_operation_financial_components|notification|reminder/i);
+  });
+  it('la note n’est écrite que par la façade (commande réservée à l’utilisateur), et par rien d’autre', () => {
+    const ecrivains = ['src/services/business-operations/graph/store.ts'];
+    expect(lire(ecrivains[0])).toMatch(/UPDATE business_operations\s+SET user_notes = \$3/);
+    // Aucun traitement automatique (T1, T3, T4, reconstruction, exports) ne touche la colonne.
+    const interdits = [
+      'src/services/business-operations/consolidation/consolidator.ts',
+      'src/services/business-operations/repository.ts',
+      'src/services/business-operations/rebuild/reconstruct.ts',
+      'src/services/business-operations/agenda-projection/model.ts',
+    ];
+    for (const f of interdits) expect(lire(f), f).not.toMatch(/user_notes/);
   });
 });

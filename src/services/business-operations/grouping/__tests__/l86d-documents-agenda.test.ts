@@ -23,7 +23,7 @@ const lire = (p: string) => readFileSync(resolve(__dirname, '../../../../..', p)
 
 const base: LinkEvidenceSnapshot = {
   linkId: 1, itemId: 10, fileId: 20, provenances: [], itemAccountId: 7, fileAccountId: 7, fileDeleted: false,
-  itemProjected: false, operationId: null, role: null, fileMember: false, propagationRefused: false, userDetached: false,
+  itemProjected: false, operationId: null, carriesFact: false, fileMember: false, propagationRefused: false, userDetached: false,
   productionTraces: [], originRef: false,
 };
 const lien = (p: Partial<LinkEvidenceSnapshot>): LinkEvidenceSnapshot => ({ ...base, ...p });
@@ -38,11 +38,12 @@ describe('L86D-U-01 — pertinence d’une association selon ses preuves (pure)'
   });
 
   it('OPERATION_PRINCIPAL : fondée seulement sur l’événement de référence d’un ensemble actif dont le document est membre', () => {
-    const ok = lien({ provenances: ['OPERATION_PRINCIPAL'], operationId: 3, role: 'PRINCIPAL', fileMember: true });
+    // Règle remplacée (carte #744) : « porte un fait de l'ensemble » remplace « est le principal ».
+    const ok = lien({ provenances: ['OPERATION_PRINCIPAL'], operationId: 3, carriesFact: true, fileMember: true });
     expect(evaluateLinkRelevance(ok)).toMatchObject({ verdict: 'CONSISTENT', justified: [{ provenance: 'OPERATION_PRINCIPAL', basis: 'PRINCIPAL_OF_ENSEMBLE_WITH_MEMBER_DOCUMENT' }] });
     const cas: Array<[Partial<LinkEvidenceSnapshot>, string]> = [
       [{ operationId: null }, 'NO_ACTIVE_ENSEMBLE'],
-      [{ role: 'RELATED' }, 'NOT_REFERENCE_EVENT'],
+      [{ carriesFact: false }, 'NOT_REFERENCE_EVENT'],
       [{ fileMember: false }, 'DOCUMENT_NOT_MEMBER'],
       [{ fileDeleted: true }, 'DOCUMENT_IN_TRASH'],
       [{ propagationRefused: true }, 'PROPAGATION_REFUSED'],
@@ -59,13 +60,13 @@ describe('L86D-U-01 — pertinence d’une association selon ses preuves (pure)'
       .toEqual([{ provenance: 'AI_DIRECT', basis: 'PRODUCTION_TRACE' }]);
     expect(evaluateLinkRelevance(lien({ provenances: ['AI_DIRECT'], originRef: true })).justified)
       .toEqual([{ provenance: 'AI_DIRECT', basis: 'ITEM_ORIGIN' }]);
-    expect(evaluateLinkRelevance(lien({ provenances: ['AI_DIRECT'], itemProjected: true, operationId: 3, role: 'RELATED', fileMember: true })))
+    expect(evaluateLinkRelevance(lien({ provenances: ['AI_DIRECT'], itemProjected: true, operationId: 3, carriesFact: false, fileMember: true })))
       .toMatchObject({ verdict: 'CONSISTENT', justified: [{ provenance: 'AI_DIRECT', basis: 'PROJECTION_OF_ENSEMBLE_MEMBER' }] });
   });
 
   it('AI_DIRECT d’un élément projeté dont le document a quitté l’ensemble (copie de projection périmée) : démontrée infondée', () => {
     for (const p of [{ fileMember: false, operationId: 3 }, { operationId: null }, { fileMember: true, operationId: 3, fileDeleted: true }]) {
-      expect(evaluateLinkRelevance(lien({ provenances: ['AI_DIRECT'], itemProjected: true, role: 'RELATED', ...p })))
+      expect(evaluateLinkRelevance(lien({ provenances: ['AI_DIRECT'], itemProjected: true, carriesFact: false, ...p })))
         .toMatchObject({ verdict: 'REPAIRABLE', unjustified: [{ provenance: 'AI_DIRECT', reason: 'PROJECTION_DOCUMENT_LEFT_ENSEMBLE' }] });
     }
   });
@@ -79,13 +80,13 @@ describe('L86D-U-01 — pertinence d’une association selon ses preuves (pure)'
   });
 
   it('détachement de l’utilisateur : toute provenance automatique est infondée, même prouvée', () => {
-    const r = evaluateLinkRelevance(lien({ provenances: ['AI_DIRECT', 'OPERATION_PRINCIPAL'], userDetached: true, productionTraces: ['linked:SOURCE'], operationId: 3, role: 'PRINCIPAL', fileMember: true }));
+    const r = evaluateLinkRelevance(lien({ provenances: ['AI_DIRECT', 'OPERATION_PRINCIPAL'], userDetached: true, productionTraces: ['linked:SOURCE'], operationId: 3, carriesFact: true, fileMember: true }));
     expect(r.verdict).toBe('REPAIRABLE');
     expect(r.unjustified.map((u) => [u.provenance, u.reason]).sort()).toEqual([['AI_DIRECT', 'USER_DETACHED'], ['OPERATION_PRINCIPAL', 'USER_DETACHED']]);
   });
 
   it('cumul : une provenance infondée est retirée, la provenance fondée reste (le lien demeure)', () => {
-    const r = evaluateLinkRelevance(lien({ provenances: ['AI_DIRECT', 'OPERATION_PRINCIPAL'], productionTraces: ['created:'], operationId: 3, role: 'RELATED' }));
+    const r = evaluateLinkRelevance(lien({ provenances: ['AI_DIRECT', 'OPERATION_PRINCIPAL'], productionTraces: ['created:'], operationId: 3, carriesFact: false }));
     expect(r).toMatchObject({ verdict: 'REPAIRABLE', unjustified: [{ provenance: 'OPERATION_PRINCIPAL', reason: 'NOT_REFERENCE_EVENT' }], justified: [{ provenance: 'AI_DIRECT', basis: 'PRODUCTION_TRACE' }] });
   });
 
@@ -102,7 +103,7 @@ describe('L86D-U-02 — inspection du contrôle COH-DOC-AGENDA-LINKS', async () 
   const { inspectLink } = await import('@/services/coherence/registry/checks/document-agenda-links');
   it('verdicts, anomalies, maillon fautif, preuves tracées', () => {
     expect(inspectLink(lien({ provenances: ['AI_DIRECT'], originRef: true }))).toEqual({ verdict: 'CONSISTENT' });
-    const rep = inspectLink(lien({ provenances: ['OPERATION_PRINCIPAL'], operationId: 3, role: 'RELATED' }));
+    const rep = inspectLink(lien({ provenances: ['OPERATION_PRINCIPAL'], operationId: 3, carriesFact: false }));
     expect(rep).toMatchObject({ verdict: 'REPAIRABLE', anomaly: 'AUTOMATIC_LINK_UNJUSTIFIED', faultyLink: 'LINK', expected: { provenances: [] } });
     expect(rep.detail).toMatchObject({ itemId: 10, fileId: 20, unjustified: [{ provenance: 'OPERATION_PRINCIPAL', reason: 'NOT_REFERENCE_EVENT' }] });
     const amb = inspectLink(lien({ provenances: ['AI_DIRECT'] }));

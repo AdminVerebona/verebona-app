@@ -64,7 +64,7 @@ async function loadLinkEvidence(r: GroupingRunner, accountId: number, linkIds: r
   const x = await r.q<Row>(`
     SELECT l.id, l.agenda_item_id AS item_id, l.asset_file_id AS file_id, l.provenances,
            i.account_id AS item_account, f.account_id AS file_account, (f.deleted_at IS NOT NULL) AS file_deleted,
-           (i.projection_origin IS NOT NULL) AS projected, i.operation_role AS role,
+           (i.projection_origin IS NOT NULL) AS projected, (g.fact_key IS NOT NULL) AS carries_fact,
            CASE WHEN o.id IS NOT NULL AND o.account_id = i.account_id AND o.invalidated_at IS NULL AND o.merged_into_operation_id IS NULL
                 THEN o.id END AS op,
            EXISTS (SELECT 1 FROM business_operation_documents d
@@ -83,12 +83,14 @@ async function loadLinkEvidence(r: GroupingRunner, accountId: number, linkIds: r
       JOIN agenda_items i ON i.id = l.agenda_item_id AND i.account_id = $1
       LEFT JOIN asset_files f ON f.id = l.asset_file_id
       LEFT JOIN business_operations o ON o.id = i.business_operation_id
+      LEFT JOIN business_operation_agenda_links g ON g.account_id = i.account_id AND g.operation_id = i.business_operation_id
+             AND g.agenda_item_id = i.id AND g.state = 'ACTIVE'
      WHERE l.id = ANY($2::int[])
      ORDER BY l.id`, [accountId, pgIntArray(linkIds)]);
   return x.map((y: Row) => ({
     linkId: Number(y.id), itemId: Number(y.item_id), fileId: Number(y.file_id), provenances: (y.provenances as string[] | null) ?? [],
     itemAccountId: Number(y.item_account), fileAccountId: y.file_account == null ? null : Number(y.file_account), fileDeleted: y.file_deleted === true,
-    itemProjected: y.projected === true, operationId: y.op == null ? null : Number(y.op), role: (y.role as 'PRINCIPAL' | 'RELATED' | null) ?? null,
+    itemProjected: y.projected === true, operationId: y.op == null ? null : Number(y.op), carriesFact: y.carries_fact === true,
     fileMember: y.member === true, propagationRefused: y.propagation_refused === true, userDetached: y.detached === true,
     productionTraces: ((y.traces as string[] | null) ?? []).slice().sort(), originRef: y.origin_ref === true,
   }));
@@ -98,7 +100,7 @@ async function loadLinkEvidence(r: GroupingRunner, accountId: number, linkIds: r
 export function inspectLink(s: LinkEvidenceSnapshot): Inspection {
   const r = evaluateLinkRelevance(s);
   const preuves = {
-    itemId: s.itemId, fileId: s.fileId, provenances: [...s.provenances].sort(), operationId: s.operationId, role: s.role,
+    itemId: s.itemId, fileId: s.fileId, provenances: [...s.provenances].sort(), operationId: s.operationId, carriesFact: s.carriesFact,
     fileMember: s.fileMember, productionTraces: s.productionTraces, originRef: s.originRef, projected: s.itemProjected,
     userDetached: s.userDetached, propagationRefused: s.propagationRefused,
   };
@@ -191,7 +193,7 @@ export const documentAgendaLinksCheck: CoherenceCheck = {
         const res = await withdrawAutomaticLinkProvenances(g, {
           itemId: s.itemId, fileId: s.fileId, provenances: r.unjustified.map((u) => u.provenance),
           reasonCode: 'COHERENCE_AUTOMATIC_LINK_UNJUSTIFIED',
-          evidence: { unjustified: r.unjustified, justified: r.justified, productionTraces: s.productionTraces, fileMember: s.fileMember, role: s.role },
+          evidence: { unjustified: r.unjustified, justified: r.justified, productionTraces: s.productionTraces, fileMember: s.fileMember, carriesFact: s.carriesFact },
         });
         return { state: 'WITHDRAWN' as const, itemId: s.itemId, fileId: s.fileId, ...res, unjustified: r.unjustified };
       }, { correlationId: ctx.correlationId });

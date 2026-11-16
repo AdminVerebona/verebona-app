@@ -65,7 +65,17 @@ const ITEM_COLUMNS = (journal: boolean) => `
   (i.confirmation_mode IS NOT DISTINCT FROM 'USER') AS confirmed,
   (i.projection_origin IS NOT DISTINCT FROM 'OPERATION') AS projected,
   i.business_operation_id, (lo.id IS NOT NULL AND lo.invalidated_at IS NULL AND lo.merged_into_operation_id IS NULL) AS op_active,
-  i.operation_role, i.operation_role_origin,
+  -- Lot 114O (#744) : le CONTEXTE T4 garde son vocabulaire (contrat de sortie inchangé), mais il est
+  -- DÉRIVÉ du lien N↔N — « porte un fait » ⇒ PRINCIPAL, membre sans fait ⇒ RELATED. Aucun rôle n'est lu.
+  CASE WHEN i.business_operation_id IS NULL THEN NULL
+       WHEN (SELECT g.fact_key FROM business_operation_agenda_links g
+              WHERE g.account_id = i.account_id AND g.operation_id = i.business_operation_id
+                AND g.agenda_item_id = i.id AND g.state = 'ACTIVE') IS NOT NULL THEN 'PRINCIPAL'
+       ELSE 'RELATED' END AS operation_role,
+  (SELECT CASE g.origin WHEN 'USER' THEN 'USER' WHEN 'AI' THEN 'T4' ELSE 'SYSTEM' END
+     FROM business_operation_agenda_links g
+    WHERE g.account_id = i.account_id AND g.operation_id = i.business_operation_id
+      AND g.agenda_item_id = i.id AND g.state = 'ACTIVE') AS operation_role_origin,
   COALESCE((SELECT array_agg(l.asset_file_id ORDER BY l.asset_file_id) FROM agenda_file_links l WHERE l.agenda_item_id = i.id), '{}') AS file_ids,
   CASE WHEN i.origin_ref_type = 'asset_file' THEN i.origin_ref_id END AS origin_file_id,
   COALESCE((SELECT jsonb_agg(jsonb_build_object('fileId', s.asset_file_id, 'role', s.source_role) ORDER BY s.id) FROM agenda_item_sources s WHERE s.agenda_item_id = i.id), '[]') AS sources,
@@ -189,8 +199,11 @@ async function loadDecisions(sql: Sql, accountId: number, operationId: number, i
     SELECT source_entity_key FROM business_operation_match_decisions
      WHERE account_id = $1 AND active AND source_kind = 'AGENDA_FILE_LINK' AND decision = 'REJECTED'
        AND split_part(source_entity_key, ':', 1) = ANY($2::text[])`, [accountId, `{${[...new Set(itemIds)].join(',')}}`] as never[]).catch(() => [] as Row[]) : [];
+  // Lot 114O (#744) : élément désigné par l'UTILISATEUR — porteur d'un fait dont le lien vient de lui.
   const [p] = await sql.unsafe<Row[]>(`
-    SELECT id FROM agenda_items WHERE account_id = $1 AND business_operation_id = $2 AND operation_role = 'PRINCIPAL' AND operation_role_origin = 'USER' LIMIT 1`,
+    SELECT agenda_item_id AS id FROM business_operation_agenda_links
+     WHERE account_id = $1 AND operation_id = $2 AND state = 'ACTIVE' AND fact_key IS NOT NULL AND origin = 'USER'
+     ORDER BY agenda_item_id LIMIT 1`,
   [accountId, operationId] as never[]);
   const s = await sql.unsafe<Row[]>(`
     SELECT projection_key FROM business_operation_projection_suppressions WHERE operation_id = $1 AND account_id = $2 ORDER BY projection_key`,

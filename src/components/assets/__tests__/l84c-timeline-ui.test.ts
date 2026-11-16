@@ -28,7 +28,7 @@ const item = (id: string, date: string | null, title = `Élément ${id}`) =>
   ({ itemType: 'agenda' as const, id, title, effectiveDate: date, isDone: false, isOverdue: false, toConfirm: false, effectiveStatus: 'a_venir' as const });
 // Règle remplacée (carte #744, lot C) : un groupe est un ÉVÉNEMENT DE RÉFÉRENCE (identité `op-<n>`), plus un élément « principal ».
 const groupe: TimelineEntry = {
-  kind: 'group', itemType: 'operation', id: 'op-11', operationId: 11, title: 'Dégât des eaux', effectiveDate: '2026-03-12', dateBasis: 'REFERENCE_EVENT',
+  kind: 'group', itemType: 'operation', id: 'op-11', operationId: 11, title: 'Dégât des eaux', effectiveDate: '2026-03-12', dateBasis: 'REALIZED',
   members: [item('22', '2026-04-18', 'Réparation plafond'), item('21', '2026-03-21', 'Visite expert')],
   counters: { events: 2, documents: 5, assets: 1, rooms: 1, equipments: 0 },
 };
@@ -100,8 +100,12 @@ describe('L84C-UI — Timeline du bien', () => {
     const fiche = lire('components/assets/AssetOverviewTab.tsx');
     for (const s of [src, fiche]) {
       expect(s).not.toMatch(/localStorage|sessionStorage|indexedDB|document\.cookie/);
-      expect(s).not.toMatch(/searchParams\.set\(['"]mode|router\.(push|replace)/);
+      expect(s).not.toMatch(/searchParams\.set\(['"]mode/);
     }
+    expect(src).not.toMatch(/router\.(push|replace)/);
+    // Règle précisée (carte #744, travaux D) : la vue d'ensemble navigue UNE fois — vers la page entière de
+    // l'événement de référence ; jamais pour écrire le mode dans l'adresse.
+    expect(fiche.match(/router\.(push|replace)\([^)]*\)?/g)).toEqual(['router.push(referenceEventHref(req.operationId)']);
     expect(src).toContain("useState<AssetTimelineState>(() => fromPage('grouped'");
     expect(src).toContain("useRef<TimelineMode>('grouped')");
     // La vue d'ensemble est demandée sans mode : défaut serveur « regroupée ».
@@ -118,7 +122,9 @@ describe('L84C-UI — Timeline du bien', () => {
     expect(src).toContain("onOpenItem({ itemId: entry.id, context: 'group', operationId: entry.operationId })");
     expect(src).toContain("onOpenItem({ itemId: entry.id, context: 'reference', operationId: r.operationId })");
     expect(fiche).toContain("if ((req.context === 'group' || req.context === 'reference') && req.operationId != null) {");
-    expect(fiche).toContain("import('@/components/documents/ReferenceEventSheet')");
+    // Règle remplacée (carte #744, travaux D — AC27, AC41) : la fiche est une PAGE ENTIÈRE, plus un panneau latéral.
+    expect(fiche).toContain('router.push(referenceEventHref(req.operationId));');
+    expect(fiche).not.toContain('ReferenceEventSheet');
     expect(src).toContain("onOpenItem({ itemId: m.id, context: 'member', groupItemId: entry.id })");
     expect(src).toContain("onOpenItem({ itemId: entry.id, context: 'item' })");
     expect(src).not.toMatch(/Drawer|Sheet/);

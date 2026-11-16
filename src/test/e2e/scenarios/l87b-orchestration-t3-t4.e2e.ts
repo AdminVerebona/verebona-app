@@ -134,8 +134,21 @@ scenario('L87B', 'Orchestration T3 → T4 et réévaluation sémantique (context
       kind: 'business_operations_agenda' as never, accountId: compte.id, events: [{ operationIds, correlationId: `l87b-job:${compte.id}` }], requestedAt: null,
     }, { assertActive: async () => undefined } as never);
   }
+  /**
+   * RÈGLE REMPLACÉE (carte #744, travaux F) : la projection T4 n'écrit plus le rôle
+   * `agenda_items.operation_role` (tenu à RELATED par son seul déclencheur, jamais plus PRINCIPAL).
+   * `role` est désormais DÉRIVÉ du FAIT PORTÉ par le lien N↔N : porteur du fait → PRINCIPAL,
+   * membre de plein droit → RELATED, non rattaché → NULL. Le vocabulaire des attentes de ce
+   * scénario (et du contexte T4) est donc inchangé ; seule sa SOURCE change.
+   * `role_legacy` expose la colonne historique, pour prouver qu'elle ne porte plus de désignation.
+   */
   const evenements = (compte: AccountRow) => sql<Json[]>`
-    SELECT i.id, i.title, i.start_date::text AS date, i.business_type, i.business_operation_id::int AS op, i.operation_role AS role,
+    SELECT i.id, i.title, i.start_date::text AS date, i.business_type, i.business_operation_id::int AS op,
+           (SELECT CASE WHEN g.fact_key IS NOT NULL THEN 'PRINCIPAL' ELSE 'RELATED' END
+              FROM business_operation_agenda_links g
+             WHERE g.account_id = i.account_id AND g.operation_id = i.business_operation_id
+               AND g.agenda_item_id = i.id AND g.state = 'ACTIVE') AS role,
+           i.operation_role AS role_legacy,
            i.operation_role_origin AS role_origin, i.projection_origin,
            COALESCE((SELECT array_agg(l.asset_file_id ORDER BY l.asset_file_id) FROM agenda_file_links l WHERE l.agenda_item_id = i.id), '{}') AS files,
            (SELECT count(*)::int FROM agenda_item_sources s WHERE s.agenda_item_id = i.id) AS sources

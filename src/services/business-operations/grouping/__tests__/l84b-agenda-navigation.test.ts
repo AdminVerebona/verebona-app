@@ -34,7 +34,7 @@ function item(over: Partial<AgendaItemSnapshot> = {}): AgendaItemSnapshot {
   return {
     id: 100, title: 'Événement', date: '2026-03-12', isAutomatic: false, isAutomaticModified: false, projected: false,
     businessOperationId: 10, linkedOperationActive: true, nature: null, businessType: null, homeCategory: null, functionalKey: null,
-    originRefType: null, originRefId: null, assetIds: [5], equipmentIds: [], fileIds: [], operationRole: 'RELATED', operationRoleOrigin: 'USER', ...over,
+    originRefType: null, originRefId: null, assetIds: [5], equipmentIds: [], fileIds: [], carriedFact: null, carrierOrigin: 'USER', ...over,
   };
 }
 const plan = (o: OperationSnapshot, p: { linked?: AgendaItemSnapshot[]; candidates?: AgendaItemSnapshot[]; withdrawn?: boolean } = {}) =>
@@ -70,14 +70,16 @@ describe('L84B-U02 — projection T4 face à un retrait mémorisé (V-Q5 : T4 d�
     const degat = item({ id: 2, title: 'Dégâts des eaux cuisine', date: '2026-03-12', agendaSourceOperationIds: [10] });
     expect(plan(op(), { linked: [degat] })).toEqual([expect.objectContaining({ kind: 'LINK', itemId: 2 })]);
     const p = plan(op(), { linked: [degat], withdrawn: true });
-    expect(p.some((a) => a.kind === 'LINK' || a.kind === 'ROLE' || a.kind === 'CREATE')).toBe(false);
+    // Règle remplacée (carte #744, travaux F) : plus d'action ROLE dans la projection.
+    expect(p.some((a) => a.kind === 'LINK' || a.kind === 'CREATE')).toBe(false);
   });
   it('avec retrait : la propre projection redevenue élément lié n’est pas repromue (même si son rôle vient de T4) et n’est pas évincée', () => {
     const projection = item({ id: 20, title: 'Dégât des eaux', projected: true, isAutomatic: true, nature: 'HISTORICAL', businessType: 'claim',
-      homeCategory: 'information', functionalKey: 'bo:v1:10:CLAIM', operationRole: 'RELATED', operationRoleOrigin: 'T4' });
-    expect(plan(op(), { linked: [projection] })).toEqual([{ kind: 'ROLE', itemId: 20, role: 'PRINCIPAL' }]);
+      homeCategory: 'information', functionalKey: 'bo:v1:10:CLAIM', carriedFact: null, carrierOrigin: 'AI' });
+    // Règle remplacée (carte #744) : l'action ROLE devient CARRY (fait porté par le lien N↔N).
+    expect(plan(op(), { linked: [projection] })).toEqual([{ kind: 'CARRY', itemId: 20, fact: 'CLAIM' }]);
     expect(plan(op(), { linked: [projection], withdrawn: true })).toEqual([]);
-    const saisi = item({ id: 21, title: 'Dégâts des eaux salle de bain', date: '2026-03-13', operationRoleOrigin: 'T3' });
+    const saisi = item({ id: 21, title: 'Dégâts des eaux salle de bain', date: '2026-03-13', carrierOrigin: 'AI' });
     expect(plan(op(), { linked: [projection, saisi], withdrawn: true }).some((a) => a.kind === 'REMOVE' || a.kind === 'LINK')).toBe(false);
   });
   it('la projection lit le retrait dans la mémoire unifiée (décision PRINCIPAL REJECTED active)', () => {
@@ -88,13 +90,14 @@ describe('L84B-U02 — projection T4 face à un retrait mémorisé (V-Q5 : T4 d�
 });
 
 describe('L84B-U03 — invariant O3-PRINCIPAL-WITHDRAWN (registre de cohérence, C-Q11)', () => {
-  it('déclaré à la suite des invariants existants, réparation déterministe par le service ; version de l’ensemble l84b-v3', () => {
+  it('déclaré à la suite des invariants existants, réparation déterministe par le service ; version de l’ensemble l114o-v4', () => {
     const ids = OPERATIONS_GROUPING_INVARIANTS.map((i) => i.id);
     expect(ids.slice(-2)).toEqual(['O7-NO-INFERRED-PRINCIPAL', 'O3-PRINCIPAL-WITHDRAWN']);
     const inv = OPERATIONS_GROUPING_INVARIANTS.find((i) => i.id === 'O3-PRINCIPAL-WITHDRAWN')!;
     expect(inv).toMatchObject({ level: 'N2', repair: 'DETERMINISTIC', domain: 'operations', version: 1 });
     expect(inv.repairFinding).toBeTypeOf('function');
-    expect(GROUPING_INVARIANTS_VERSION).toBe('l84b-v3');
+    // Règle complétée (carte #744) : les invariants lisent le fait porté par le lien N↔N, plus le rôle.
+    expect(GROUPING_INVARIANTS_VERSION).toBe('l114o-v4');
   });
   it('constat : principal déduit après un retrait actif ; jamais un principal choisi par l’utilisateur, jamais sans retrait', () => {
     expect(evaluateWithdrawnPrincipal(5, [

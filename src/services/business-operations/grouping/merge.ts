@@ -8,37 +8,46 @@
  * utilisateur Agenda ↔ Agenda), la fusion
  *   · rattache à la canonique les éléments d'agenda de l'absorbée SANS
  *     absorber aucun élément (§6.5 : même Opération ≠ doublon ; V-Q4 : le
- *     principal et ses étapes restent distincts) ;
- *   · garde UN principal (`principalAfterMerge`) : l'autre redevient lié ;
+ *     porteur du fait et ses étapes restent distincts) ;
+ *   · garde UN porteur par fait (`principalAfterMerge`, autorité puis
+ *     ancienneté) : l'autre reste un membre de plein droit — lot 114O (#744) :
+ *     le fait est porté par le LIEN N↔N, aucun rôle n'est écrit ;
  *   · rapatrie l'appartenance USER des documents (l'appartenance SOURCE suit
  *     les sources par déclencheur 0655) et les Pièces ;
- *   · recalcule la propagation vers le principal.
+ *   · recalcule la propagation vers l'élément porteur.
  * Même transaction que la fusion : tout ou rien.
  */
 import { principalAfterMerge } from './model';
-import { currentPrincipal, recomputePrincipal, stripPrincipalLinks } from './principal';
+import { currentFactCarrier, recomputePrincipal, stripPropagatedDocumentLinks } from './principal';
 import { lockGroupingAccount, type GroupingRunner } from './runner';
+import { clearAgendaLinkFacts, readAgendaFactCarriers, stampAgendaLinkFact } from '../graph/store';
 import { reassignOperationSuppliersOnMerge } from '@/services/relations/operation-suppliers';
 
 export async function reassignGroupingOnMerge(r: GroupingRunner, accountId: number, absorbedId: number, canonicalId: number): Promise<void> {
   await lockGroupingAccount(r, accountId);
-  const pc = await currentPrincipal(r, accountId, canonicalId);
-  const pa = await currentPrincipal(r, accountId, absorbedId);
+  // Faits portés des deux côtés, AVANT le déplacement (le déclencheur 1716 retire le lien de l'absorbée).
+  const pc = await currentFactCarrier(r, accountId, canonicalId);
+  const pa = await currentFactCarrier(r, accountId, absorbedId);
+  const faitsAbsorbee = await readAgendaFactCarriers(r, accountId, absorbedId);
   const { keep, demote } = principalAfterMerge(pc, pa);
   if (demote.length) {
-    await stripPrincipalLinks(r, demote);
-    await r.q(`UPDATE agenda_items SET operation_role = 'RELATED', updated_at = now() WHERE id = ANY($1::int[]) AND account_id = $2`,
-      [`{${demote.join(',')}}`, accountId]);
+    await stripPropagatedDocumentLinks(r, demote);
+    await clearAgendaLinkFacts(r, accountId, canonicalId, demote, 'OPERATION_MERGED');
+    await clearAgendaLinkFacts(r, accountId, absorbedId, demote, 'OPERATION_MERGED');
   }
   await r.q(
-    `UPDATE agenda_items
-        SET business_operation_id = $3,
-            operation_role = CASE WHEN id = $4::int THEN 'PRINCIPAL' ELSE 'RELATED' END,
-            operation_role_origin = CASE WHEN id = $4::int THEN $5::text ELSE operation_role_origin END,
-            updated_at = now()
+    `UPDATE agenda_items SET business_operation_id = $3, updated_at = now()
       WHERE business_operation_id = $1 AND account_id = $2`,
-    [absorbedId, accountId, canonicalId, keep?.itemId ?? 0, keep?.origin ?? null],
+    [absorbedId, accountId, canonicalId],
   );
+  // Le fait porté suit son élément sur la canonique (sauf celui que la fusion vient de retirer).
+  for (const f of faitsAbsorbee) {
+    if (demote.includes(f.itemId)) continue;
+    if (keep !== null && keep.itemId !== f.itemId && pc !== null && pc.factKey === f.factKey) continue;
+    await stampAgendaLinkFact(r, accountId, {
+      operationId: canonicalId, itemId: f.itemId, factKey: f.factKey, origin: f.origin, reasonCode: 'OPERATION_MERGED',
+    });
+  }
   // Appartenance USER des documents.
   await r.q(
     `INSERT INTO business_operation_documents (account_id, operation_id, file_id, origins)

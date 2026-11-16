@@ -56,9 +56,12 @@ scenario('L113Y-FOURNISSEUR-DOCUMENTS', 'Fiche fournisseur : une seule rubrique 
        VALUES ($1, 'ACQUISITION', 'REALIZED', $2${o.invalide ? ", now(), 'E2E_L113Y'" : ''}) RETURNING id`, [a.id, label]))[0].id);
     if (o.titre) {
       const item = (await make.agendaItem(a, { title: o.titre })).id;
-      // Rattachement puis rôle (le déclencheur de synchronisation rend « RELATED » un déplacement hors service).
+      // RÈGLE REMPLACÉE (carte #744, travaux F) : l'élément qui REPRÉSENTE l'événement de référence n'est plus désigné
+      // par le rôle `operation_role = 'PRINCIPAL'` (plus jamais écrit) mais par le FAIT PORTÉ par son lien N↔N.
+      // Le rattachement crée le lien (déclencheur 1716) ; on pose ensuite le fait, comme le fait le service.
       await sql`UPDATE agenda_items SET business_operation_id = ${id} WHERE id = ${item}`;
-      await sql`UPDATE agenda_items SET operation_role = 'PRINCIPAL', operation_role_origin = 'USER' WHERE id = ${item}`;
+      await sql`UPDATE business_operation_agenda_links SET fact_key = 'ACQUISITION', origin = 'USER'
+                 WHERE operation_id = ${id} AND agenda_item_id = ${item} AND state = 'ACTIVE'`;
     }
     return id;
   };

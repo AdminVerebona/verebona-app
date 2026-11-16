@@ -34,7 +34,22 @@ import { debutUtile, documentDateFr, parseDateFr, type AssetScopeDraft, type Doc
 import { TYPE_NOUNS, type DeclarableTypeCode, type DeclaredStatus, type ReferenceEventSupplierRole } from './reference-event-model';
 
 /** Événement de référence désigné : type nommé (ou `null` : « événement de référence »), mots, date complète éventuelle. */
-export type ReferenceEventTargetDraft = { typeCode: DeclarableTypeCode | null; words: string[]; date: string | null };
+export type ReferenceEventTargetDraft = {
+  typeCode: DeclarableTypeCode | null; words: string[]; date: string | null;
+  /**
+   * Passage 114Z4 (#753) : désignation SANS mot ni date — « à cet événement de référence », « à celui-ci ». Dans
+   * une phrase à deux actions (« Déclare … puis relie … à celui-ci »), c'est l'événement que l'action précédente
+   * vient d'enregistrer. Partout ailleurs, la désignation reste insuffisante : l'Assistant pose la question.
+   */
+  fromContext?: boolean;
+  /**
+   * Passage 114AA (#753) : la désignation vient d'un PRONOM seul (« à celui-ci », « à ce dernier »), pas du nom
+   * de l'objet. Un pronom seul pourrait désigner autre chose (un bien, un document) : il ne vaut que là où
+   * aucune autre lecture n'est possible, et seulement si le fil porte un événement de référence — sinon la
+   * phrase suit le parcours de réponse normal, exactement comme avant (`isReferenceEventCommand`).
+   */
+  pronounOnly?: boolean;
+};
 
 /** Champ visé par une correction ; `date` : LA date de l'événement (le champ exact dépend de sa situation, résolu ensuite). */
 export type ReferenceEventFieldDraft = 'date' | 'plannedDate' | 'startDate' | 'endDate' | 'provider' | 'label' | 'type' | 'status';
@@ -64,7 +79,18 @@ export type ReferenceEventDraft =
   | { command: 'INVALIDATE_REFERENCE_EVENT'; target: ReferenceEventTargetDraft }
   | { command: 'ASSOCIATE_REFERENCE_EVENTS'; first: ReferenceEventTargetDraft; second: ReferenceEventTargetDraft }
   | ({ command: 'LINK_DOCUMENT_REFERENCE_EVENT'; target: ReferenceEventTargetDraft } & DocumentTargetDraft)
-  | { command: 'LINK_SUPPLIER_REFERENCE_EVENT'; supplierWords: string[]; role: ReferenceEventSupplierRole; target: ReferenceEventTargetDraft };
+  | { command: 'LINK_SUPPLIER_REFERENCE_EVENT'; supplierWords: string[]; role: ReferenceEventSupplierRole; target: ReferenceEventTargetDraft }
+  /**
+   * Passage 114AB (#753) — GESTES INVERSES, que le point d'écriture de la carte #744 sait déjà faire :
+   * rétablir un événement supprimé, dissocier deux événements, retirer un document ou un fournisseur,
+   * rattacher une échéance de l'Agenda. Ce ne sont pas des capacités W du CDC : ce sont les inverses de
+   * W23, W24, W25 et W26, exposés à l'Assistant comme les autres commandes (plan figé, confirmation).
+   */
+  | { command: 'RESTORE_REFERENCE_EVENT'; target: ReferenceEventTargetDraft }
+  | { command: 'DISSOCIATE_REFERENCE_EVENTS'; first: ReferenceEventTargetDraft; second: ReferenceEventTargetDraft }
+  | ({ command: 'UNLINK_DOCUMENT_REFERENCE_EVENT'; target: ReferenceEventTargetDraft } & DocumentTargetDraft)
+  | { command: 'UNLINK_SUPPLIER_REFERENCE_EVENT'; supplierWords: string[]; target: ReferenceEventTargetDraft }
+  | { command: 'LINK_AGENDA_REFERENCE_EVENT'; itemWords: string[]; itemDate: string | null; target: ReferenceEventTargetDraft };
 
 const EDR = 'evenement de reference';
 const MOIS = 'janvier|fevrier|mars|avril|mai|juin|juillet|aout|septembre|octobre|novembre|decembre';
@@ -101,12 +127,19 @@ const JOUR_RELATIF = /\b(avant-hier|hier|aujourd'hui|demain)\b/;
 
 function cible(nom: string, zone: string, today: string): ReferenceEventTargetDraft {
   const hit = zone.match(DATE_COMPLETE);
+  const words = motsEvenement(hit ? zone.replace(hit[0], ' ') : zone);
   return {
     typeCode: TYPE_NOUNS.get(nom) ?? null,
-    words: motsEvenement(hit ? zone.replace(hit[0], ' ') : zone),
+    words,
     date: hit ? parseDateFr(hit[0], today) : null,
+    // Rien pour désigner : à résoudre dans la phrase (action précédente), sinon question.
+    ...(words.length === 0 && !hit ? { fromContext: true } : {}),
   };
 }
+
+/** « … à celui-ci », « … à ce dernier » : l'événement de l'action précédente de la même phrase. */
+const ANAPHORE = String.raw`(?:a|avec)\s+(?:celui-ci|celui la|celui-la|ce dernier|cet evenement|le meme)`;
+const CIBLE_PRECEDENTE: ReferenceEventTargetDraft = { typeCode: null, words: [], date: null, fromContext: true, pronounOnly: true };
 
 /** Le message désigne-t-il une caractéristique de BIEN du registre dont le nom porte ce mot (« date d'achat », « fin de contrat ») ? */
 function champDeBien(nfc: string, nom: string): boolean {
@@ -183,15 +216,89 @@ function creation(
   };
 }
 
-/** Brouillon d'une commande sur un événement de référence, ou `null` (pure, testée). */
-export function parseReferenceEventCommand(message: string, today: string): ReferenceEventDraft | null {
+/**
+ * Brouillon d'une commande sur un événement de référence, ou `null` (pure, testée).
+ *
+ * `anaphore` (passage 114Z4) : « … à celui-ci » après une déclaration de la MÊME phrase — fournisseur et
+ * document. `anaphoreFil` (passage 114AA) : « Relie le fournisseur … à celui-ci » d'un tour à l'autre, LA SEULE
+ * forme pronominale qui ne peut rien désigner d'autre (relier un fournisseur à un bien n'est pas une action de
+ * l'Assistant). « Rattache le document … à celui-ci » garde donc son sens d'avant (rattachement au BIEN).
+ */
+export function parseReferenceEventCommand(message: string, today: string, anaphore = false, anaphoreFil = false): ReferenceEventDraft | null {
   const nfc = message.normalize('NFC');
   const brut = plain(nfc);
   const decalage = debutUtile(brut);
   const m = brut.slice(decalage).replace(/[.!?\s]+$/, '');
-  if (!new RegExp(String.raw`\b${N}\b`).test(m) && !/^j'ai\s/.test(m)) return null;
+  // Passage 114Z4 : « … à celui-ci » désigne un événement de référence sans le nommer (phrase à deux actions).
+  const versPrecedent = (anaphore || anaphoreFil) && new RegExp(String.raw`${ANAPHORE}(?:\s+comme\s+(?:prestataire|intervenant))?$`).test(m);
+  if (!new RegExp(String.raw`\b${N}\b`).test(m) && !/^j'ai\s/.test(m) && !versPrecedent) return null;
   const origine = (from: number): string => nfc.slice(decalage + from).trim();
   const declaration = nfc.replace(/\s+/g, ' ').trim();
+
+  // W26 — relier un fournisseur à l'événement que la phrase vient de déclarer (« … puis relie … à celui-ci »).
+  const fournisseurPrecedent = (anaphore || anaphoreFil) ? m.match(new RegExp(String.raw`^(?:relie|relier|lie|lier|associe|associer|rattache|rattacher|ajoute|ajouter)\s+(?:le|la|ce|mon)\s+(?:fournisseur|prestataire)\s+(.+?)\s+${ANAPHORE}(?:\s+comme\s+(prestataire|intervenant))?\s*$`)) : null;
+  if (fournisseurPrecedent) {
+    const supplierWords = motsNom(fournisseurPrecedent[1]);
+    if (!supplierWords.length) return null;
+    return {
+      command: 'LINK_SUPPLIER_REFERENCE_EVENT', supplierWords,
+      role: fournisseurPrecedent[2] === 'intervenant' ? 'INTERVENER' : 'PROVIDER', target: CIBLE_PRECEDENTE,
+    };
+  }
+
+  // W25 — rattacher un document à l'événement que la phrase vient de déclarer.
+  const documentPrecedent = anaphore ? m.match(new RegExp(String.raw`^(?:rattache|rattacher|associe|associer|relie|relier|lie|lier)\s+(le|la|ce|cet|cette|mon|ma)\s+${DOC}\s*(.*?)\s+${ANAPHORE}\s*$`)) : null;
+  if (documentPrecedent) {
+    const contexte = /^(ce|cet|cette)$/.test(documentPrecedent[1]);
+    const documentWords = contexte ? [] : motsDocument(documentPrecedent[2]);
+    if (!contexte && documentWords.length === 0) return null;
+    return { command: 'LINK_DOCUMENT_REFERENCE_EVENT', documentWords, documentFromContext: contexte, target: CIBLE_PRECEDENTE };
+  }
+
+  // ── Passage 114AB : GESTES INVERSES (W23 à W26 à l'envers) — avant les gestes directs, car ils
+  // partagent leurs verbes (« retire », « détache ») et leurs compléments.
+
+  // Retirer un DOCUMENT d'un événement de référence (inverse de W25).
+  const retraitDocument = m.match(new RegExp(String.raw`^(?:retire|retirer|detache|detacher|dissocie|dissocier|enleve|enlever|sors|sortir)\s+(le|la|ce|cet|cette|mon|ma)\s+${DOC}\s*(.*?)(?:^|\s)${DE}${N}\b\s*(.*)$`));
+  if (retraitDocument) {
+    const contexte = /^(ce|cet|cette)$/.test(retraitDocument[1]);
+    const documentWords = contexte ? [] : motsDocument(retraitDocument[2]);
+    if (!contexte && documentWords.length === 0) return null;
+    return { command: 'UNLINK_DOCUMENT_REFERENCE_EVENT', documentWords, documentFromContext: contexte, target: cible(retraitDocument[3], retraitDocument[4], today) };
+  }
+
+  // Retirer un FOURNISSEUR d'un événement de référence (inverse de W26).
+  const retraitFournisseur = m.match(new RegExp(String.raw`^(?:retire|retirer|detache|detacher|dissocie|dissocier|enleve|enlever|delie|delier)\s+(?:le|la|ce|mon)\s+(?:fournisseur|prestataire)\s+(.+?)\s+${DE}${N}\b\s*(.*)$`));
+  if (retraitFournisseur) {
+    const supplierWords = motsNom(retraitFournisseur[1]);
+    if (!supplierWords.length) return null;
+    return { command: 'UNLINK_SUPPLIER_REFERENCE_EVENT', supplierWords, target: cible(retraitFournisseur[2], retraitFournisseur[3], today) };
+  }
+
+  // Rattacher une ÉCHÉANCE de l'Agenda à un événement de référence (le point d'écriture de #744 le sait faire ;
+  // l'échéance garde son identité, sa date et ses rappels).
+  const echeance = m.match(new RegExp(String.raw`^(?:rattache|rattacher|relie|relier|lie|lier|associe|associer)\s+(?:l'|la\s+|le\s+|cette\s+|ce\s+|mon\s+|ma\s+)(?:echeance|rappel|rendez-vous|rdv)\s*(.*?)(?:^|\s)${VERS}${N}\b\s*(.*)$`));
+  if (echeance) {
+    const zone = echeance[1];
+    const hit = zone.match(DATE_ECRITE);
+    const itemWords = motsNom(hit ? zone.replace(hit[0], ' ') : zone);
+    const itemDate = hit ? parseDateFr(hit[1], today) : null;
+    if (!itemWords.length && !itemDate) return null;
+    return { command: 'LINK_AGENDA_REFERENCE_EVENT', itemWords, itemDate, target: cible(echeance[2], echeance[3], today) };
+  }
+
+  // DISSOCIER deux événements de référence (inverse de W24).
+  const dissocier = m.match(new RegExp(String.raw`^(?:dissocie|dissocier|separe|separer|delie|delier|detache|detacher)\s+${DET}${N}\b\s*(.*?)(?:^|\s)${DE}${N}\b\s*(.*)$`));
+  if (dissocier) {
+    return { command: 'DISSOCIATE_REFERENCE_EVENTS', first: cible(dissocier[1], dissocier[2], today), second: cible(dissocier[3], dissocier[4], today) };
+  }
+
+  // RÉTABLIR un événement de référence supprimé (inverse de W23).
+  const retablir = m.match(new RegExp(String.raw`^(?:retablis|retablir|restaure|restaurer|reactive|reactiver|remets|remettre)\s+${DET}${N}\b\s*(.*)$`));
+  if (retablir) {
+    if (champDeBien(nfc, retablir[1])) return null;
+    return { command: 'RESTORE_REFERENCE_EVENT', target: cible(retablir[1], retablir[2], today) };
+  }
 
   // W26 — relier un fournisseur à un événement de référence.
   const fournisseur = m.match(new RegExp(String.raw`^(?:relie|relier|lie|lier|associe|associer|rattache|rattacher|ajoute|ajouter)\s+(?:le|la|ce|mon)\s+(?:fournisseur|prestataire)\s+(.+?)\s+${VERS}${N}\b\s*(.*)$`));

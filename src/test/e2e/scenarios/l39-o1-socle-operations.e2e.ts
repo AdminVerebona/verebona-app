@@ -24,7 +24,18 @@ const MIG = join(process.cwd(), 'src/db/migrations');
 // Lot 86D : 0736 y ajoute l'objet AGENDA_FILE_LINK ; lot 86F : 0744 ajoute la date économique résolue des composantes. Lot 97A : 0836 ajoute l'origine AI_IDENTITY des décisions de rattachement.
 // Lot 112D : 1415 (conditions de prêt saisies sur `business_operation_financing_details`) rejouée avec les migrations du socle.
 // Lot 114O (#744) : 1718 élargit les natures de source (USER_DECLARATION) ; rejouée avec les migrations du socle.
-const FICHIERS_O1 = readdirSync(MIG).filter((f) => /^(03(1[6-9]|2[0135]|79)|0609|0656|0684|0736|0744|0836|1415|1718)_.*\.sql$/.test(f)).sort();
+// Lot 114O (#744), travaux F — pourquoi 1716 et 1721 n'y sont PAS, et où elles sont rejouées :
+// ces deux migrations POSENT UN DÉCLENCHEUR SUR `agenda_items` (`agenda_items_operation_link_sync`), table que le rejeu
+// ci-dessous ne recrée PAS dans son schéma isolé. Avec `search_path = <schéma isolé>, public`, la FONCTION est créée dans
+// le schéma isolé mais le DÉCLENCHEUR se pose sur `public.agenda_items` ; le `DROP SCHEMA … CASCADE` final emporterait
+// alors le déclencheur RÉEL de la base E2E (vérifié sur PostgreSQL 16), et tous les scénarios suivants perdraient la
+// synchronisation du graphe. Elles ne touchent d'ailleurs aucune des tables du socle comparées par O1-E02.
+// Leur rejeu (deux passages, reprise comprise) est donc fait sur le schéma `public`, comme en préproduction, par
+// `l114o-graphe-canonique.e2e.ts` (L114O-E01) ; la non-régression de la reprise 1721 est prouvée par
+// `l114or-abandon-role-non-regression.e2e.ts`.
+// Règle complétée (carte #744) : 1722 ajoute les colonnes « Notes / Description » de l'utilisateur à
+// `business_operations` — le schéma de référence du socle les porte donc aussi.
+const FICHIERS_O1 = readdirSync(MIG).filter((f) => /^(03(1[6-9]|2[0135]|79)|0609|0656|0684|0736|0744|0836|1415|1718|1722)_.*\.sql$/.test(f)).sort();
 
 const svc = () => import('@/services/business-operations/write');
 const lifecycle = () => import('@/services/business-operations/asset-lifecycle');

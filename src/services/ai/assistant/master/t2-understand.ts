@@ -25,7 +25,7 @@ import { VEREBONA_INTENTS, type VerebonaIntent } from '@/services/verebona-assis
 import { getIntentDefinition } from '@/services/verebona-assistant/registries/intent-registry';
 import type { AssistantRequestInput, IntentRoute } from '@/services/verebona-assistant/types/contracts';
 import { T2UnderstandOutput, type T2SemanticDecision } from './t2-contract';
-import type { RouteInteraction } from '@/services/verebona-assistant/types/contracts';
+import type { ActionHint, RouteInteraction } from '@/services/verebona-assistant/types/contracts';
 import { t2MasterVariables } from './t2-answer';
 
 const SCHEMA_DESCRIPTION =
@@ -69,6 +69,8 @@ interface T2Understanding {
   scopeCardinality?: NonNullable<T2UnderstandOutput['scopeCardinality']>;
   informationNeeds?: Array<{ code: string; role: 'explicit' | 'useful_complement' }>;
   unresolvedDimensions?: NonNullable<T2UnderstandOutput['unresolvedDimensions']>;
+  /** Trello #753 (annexe A13, bloc PO n° 40) : actions comprises par le sens — indices, jamais une commande. */
+  actions?: ActionHint[];
   /** Réparation / escalade (trace). */
   events: string[];
 }
@@ -115,6 +117,19 @@ const FIELD_KEYS = (): Set<string> => new Set(catalogForT2Read().fields.map((f) 
 /** Sortie validée ; les champs du lot 54E restent facultatifs pour les appelants historiques. */
 type UnderstandOut = Omit<T2UnderstandOutput, 'interactionMode' | 'suppliedFacts'> & Partial<Pick<T2UnderstandOutput, 'interactionMode' | 'suppliedFacts'>>;
 
+/** Actions comprises par le sens (pure) : indices bornés et nettoyés ; liste vide si le prompt n'en produit pas. */
+function actionHintsOf(out: Pick<UnderstandOut, 'actionIntents'>): ActionHint[] {
+  const brutes = out.actionIntents ?? [];
+  const txt = (v: string | null | undefined) => (typeof v === 'string' && v.trim() ? v.trim().slice(0, 200) : null);
+  return brutes.slice(0, 5).map((a) => ({
+    operation: a.operation,
+    entityType: a.entityType,
+    targetHint: txt(a.targetHint),
+    fieldChanges: (a.fieldChanges ?? []).slice(0, 10).map((c) => ({ fieldHint: c.fieldHint.trim().slice(0, 120), value: txt(c.value ?? null), unit: txt(c.unit ?? null) })),
+    evidencePhrase: txt(a.evidencePhrase ?? null),
+  }));
+}
+
 export function toT2Understanding(out: UnderstandOut, events: string[] = []): T2Understanding {
   const cles = FIELD_KEYS();
   const facts = [...new Set(out.requestedFacts.filter((k) => cles.has(k)))];
@@ -151,6 +166,8 @@ export function toT2Understanding(out: UnderstandOut, events: string[] = []): T2
     ...(out.scopeCardinality ? { scopeCardinality: out.scopeCardinality } : {}),
     ...(out.informationNeeds?.length ? { informationNeeds: out.informationNeeds.map((n) => ({ code: n.code.trim(), role: n.role ?? 'explicit' })) } : {}),
     ...(out.unresolvedDimensions?.length ? { unresolvedDimensions: [...new Set(out.unresolvedDimensions)] } : {}),
+    // Trello #753 : `actionIntents` (nom du CDC) ; textes nettoyés, aucune destination technique.
+    ...(actionHintsOf(out).length ? { actions: actionHintsOf(out) } : {}),
     events: horsCatalogue.length ? [...events, `T2_UNDERSTAND:FACTS_OUT_OF_CATALOG:${horsCatalogue.length}`] : events,
   };
 }

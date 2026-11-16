@@ -38,8 +38,10 @@ import { validateDetailChanges } from '@/lib/asset-detail-rules';
 import { plain } from '../core/routing-text';
 import { undatedLabel } from '@/lib/agenda/no-deadline';
 import { DEFAULT_NEW_SITUATION } from '@/lib/agenda/situation';
-import { getAssetCategories, getAssetFamily } from '@/lib/asset-taxonomy';
+import { assetDesignationsIn, assetFamilyLabel, getAssetCategories, getAssetFamily, normalizeAssetCategory, toAssetFamilyCode } from '@/lib/asset-taxonomy';
+import { ASSET_STATUSES, ASSET_STATUS_LABELS, normalizeAssetStatus, OUT_OF_PORTFOLIO_ASSET_STATUSES } from '@/lib/asset-status';
 import type { ReferenceEventQuery, ReferenceEventState } from './reference-event-model';
+import type { RubricCode } from '@/lib/referential/v2';
 
 /** Validité d'un plan non confirmé. */
 const PLAN_TTL_MS = 15 * 60_000;
@@ -112,16 +114,39 @@ export interface CommandLookup {
   findReferenceEvents?(accountId: number, q: ReferenceEventQuery): Promise<ReferenceEventState[]>;
   /** Événement de référence actif du compte : état présenté, version recontrôlée à l'exécution, échéances rattachées. */
   getReferenceEventState?(accountId: number, operationId: number): Promise<ReferenceEventState | null>;
+  /**
+   * Passage 114AB (#753) : événements de référence SUPPRIMÉS PAR L'UTILISATEUR dans ce compte — les seuls
+   * que le point d'écriture accepte de rétablir. Lecture bornée au compte, jamais une suppression faite pour
+   * une autre raison (preuves retirées, regroupement).
+   */
+  findInvalidatedReferenceEvents?(accountId: number, q: ReferenceEventQuery): Promise<ReferenceEventState[]>;
 }
 
 export interface DocumentAssetTargets {
   chosen: Array<{ id: number; name: string }>;
   implied: Array<{ id: number; name: string }>;
+  /**
+   * Passage 114AA (W13) : pièces et équipements auxquels le document est rattaché EN PROPRE (`chosen`) — le
+   * niveau « bien » qu'ils impliquent reste dans `implied`. Absent pour un appelant qui ne les lit pas.
+   */
+  rooms?: Array<{ id: number; name: string }>;
+  equipments?: Array<{ id: number; name: string }>;
 }
 
-/** Empreinte des rattachements présentés (document tel que présenté + biens choisis, sans ordre) — pure. */
-export function documentTargetsVersion(documentVersionShown: string, chosenAssetIds: number[]): string {
-  return createHash('sha256').update(JSON.stringify([documentVersionShown, [...chosenAssetIds].sort((a, b) => a - b)])).digest('hex').slice(0, 32);
+/**
+ * Empreinte des rattachements présentés (document tel que présenté + cibles choisies, sans ordre) — pure.
+ * Passage 114AA : les pièces et les équipements entrent dans l'empreinte, sinon un changement de ce niveau
+ * entre l'aperçu et la confirmation passerait inaperçu.
+ */
+export function documentTargetsVersion(
+  documentVersionShown: string, chosenAssetIds: number[],
+  chosenRoomIds: number[] = [], chosenEquipmentIds: number[] = [],
+): string {
+  const tri = (a: number[]) => [...a].sort((x, y) => x - y);
+  // Sans pièce ni équipement choisi, l'empreinte reste CELLE D'AVANT (les plans déjà préparés restent valides).
+  const base: unknown[] = [documentVersionShown, tri(chosenAssetIds)];
+  if (chosenRoomIds.length || chosenEquipmentIds.length) base.push(tri(chosenRoomIds), tri(chosenEquipmentIds));
+  return createHash('sha256').update(JSON.stringify(base)).digest('hex').slice(0, 32);
 }
 
 export interface StructureCandidate { id: number; name: string; assetId: number; assetName: string }
@@ -153,6 +178,12 @@ export interface DocumentState {
   isWebLink: boolean;
   webLinkUrl: string | null;
   assetLabel: string | null;
+  /**
+   * Passage 114AB (W12) — NATURE du document : Rubrique et Type du référentiel V2, tels qu'enregistrés
+   * (jamais l'ancien « Type de document » V1). Absents pour un appelant qui ne les lit pas.
+   */
+  rubricCode?: string | null;
+  documentTypeCode?: string | null;
   /** Empreinte de l'état présenté — recontrôlée à l'exécution. */
   version: string;
 }
@@ -160,6 +191,17 @@ export interface DocumentState {
 /** Empreinte d'un document tel que présenté (pure). */
 export function documentVersion(d: Pick<DocumentState, 'id' | 'title' | 'documentDate' | 'notesShown'>): string {
   return createHash('sha256').update(JSON.stringify([d.id, d.title, d.documentDate, d.notesShown])).digest('hex').slice(0, 32);
+}
+
+/**
+ * Passage 114AB (W12) — empreinte du CLASSEMENT présenté (document + Rubrique + Type), pure. Distincte de
+ * `documentVersion` : un plan déjà préparé avant cette livraison garde son empreinte, et une Rubrique ou un
+ * Type modifié entre l'aperçu et la confirmation empêche l'écriture.
+ */
+export function documentClassificationVersion(d: Pick<DocumentState, 'version' | 'rubricCode' | 'documentTypeCode'>): string {
+  return createHash('sha256')
+    .update(JSON.stringify([d.version, d.rubricCode ?? null, d.documentTypeCode ?? null]))
+    .digest('hex').slice(0, 32);
 }
 
 export interface SupplierState {
@@ -199,10 +241,23 @@ export interface AssetState {
   status: string | null;
   lockState: string | null;
   characteristics: Record<string, unknown>;
+  /**
+   * Passage 114AA (W02) — « Catégorie de bien » de la fiche (colonne `subtype`, familles Immobilier et
+   * Véhicule) ; `objectCategory` : catégorie d'un OBJET (colonne `object_category`, non modifiable ici).
+   */
+  subtype?: string | null;
+  objectCategory?: string | null;
 }
 
 /** Plafond d'une action en masse : au-delà, on demande de restreindre. */
 export const MAX_BULK_TARGETS = 50;
+
+/**
+ * Passage 114AB (#753, W14) — plafond d'une suppression de PLUSIEURS documents en une demande : un aperçu
+ * reste lisible, et une demande qui en nomme davantage est probablement mal comprise. Choix par défaut, à
+ * valider par le PO (fiche de recette).
+ */
+export const MAX_BULK_DOCUMENTS = 10;
 
 
 export const sqlLookup: CommandLookup = {
@@ -350,6 +405,7 @@ export const sqlLookup: CommandLookup = {
     const [r] = (await pgClient.unsafe(
       `SELECT f.id, f.original_filename AS "originalFilename", to_char(f.document_date, 'YYYY-MM-DD') AS "documentDate", f.notes, f.description,
               f.is_web_link AS "isWebLink", f.web_link_url AS "webLinkUrl", ${documentTitleColumnsSql('f')},
+              f.rubric_code AS "rubricCode", f.document_type_code AS "documentTypeCode",
               (SELECT a.name FROM assets a WHERE a.id = f.asset_id AND a.account_id = f.account_id AND a.deleted_at IS NULL) AS "assetLabel"
          FROM asset_files f WHERE f.id = $1 AND f.account_id = $2 AND f.deleted_at IS NULL`,
       [documentId, accountId] as never[],
@@ -368,6 +424,8 @@ export const sqlLookup: CommandLookup = {
       ...base, originalFilename: (r.originalFilename as string | null) ?? null,
       notesUserOwned: !!((r.notes as string | null) ?? '').trim(),
       isWebLink: r.isWebLink === true, webLinkUrl: (r.webLinkUrl as string | null) ?? null, assetLabel: (r.assetLabel as string | null) ?? null,
+      // Passage 114AB (W12) : nature du document (Rubrique et Type V2), telle que le tiroir l'enregistre.
+      rubricCode: (r.rubricCode as string | null) ?? null, documentTypeCode: (r.documentTypeCode as string | null) ?? null,
       version: documentVersion(base),
     };
   },
@@ -376,7 +434,12 @@ export const sqlLookup: CommandLookup = {
     const vue = await readDocumentTargets(db as unknown as import('@/services/documents/document-targets/service').TargetsExecutor, accountId, documentId);
     if (!vue) return null;
     const bien = (a: { id: number; name: string }) => ({ id: a.id, name: a.name });
-    return { chosen: vue.assets.filter((a) => !a.implied).map(bien), implied: vue.assets.filter((a) => a.implied).map(bien) };
+    return {
+      chosen: vue.assets.filter((a) => !a.implied).map(bien), implied: vue.assets.filter((a) => a.implied).map(bien),
+      // Passage 114AA (W13) : pièces et équipements choisis en propre (un niveau déduit n'est pas « choisi »).
+      rooms: vue.rooms.filter((r) => !r.implied).map(bien),
+      equipments: vue.equipments.filter((e) => !e.implied).map(bien),
+    };
   },
   async findSuppliers(accountId, words) {
     const w = words.filter((x) => x.length >= 2).slice(0, 6);
@@ -409,6 +472,9 @@ export const sqlLookup: CommandLookup = {
   },
   async getReferenceEventState(accountId, operationId) {
     return (await import('./reference-events')).sqlGetReferenceEventState(accountId, operationId);
+  },
+  async findInvalidatedReferenceEvents(accountId, q) {
+    return (await import('./reference-events-inverse')).sqlFindInvalidatedReferenceEvents(accountId, q);
   },
   async getAssetState(accountId, id) {
     // CDC 15 T2-40 : la valeur présentée à la confirmation (« A → B ») est
@@ -489,15 +555,26 @@ export async function resolveDraft(
   if (draft.command === 'CREATE_WEB_DOCUMENT' || draft.command === 'UPDATE_DOCUMENT' || draft.command === 'DELETE_DOCUMENT') {
     return resolveDocumentCommand(draft, input, lookup, actionId);
   }
+  if (draft.command === 'UPDATE_DOCUMENT_CLASSIFICATION') return resolveDocumentClassification(draft, input, lookup, actionId);
+  if (draft.command === 'DELETE_DOCUMENTS') return resolveDocumentsDeletion(draft, input, lookup, actionId);
   if (draft.command === 'UPDATE_DOCUMENT_TARGETS') return resolveDocumentTargets(draft, input, lookup, actionId);
   if (draft.command === 'RENAME_ASSET') return resolveAssetRename(draft, input, lookup, actionId);
   if (draft.command === 'CLEAR_ASSET_FIELD') return resolveAssetFieldClear(draft, input, lookup, actionId);
+  // Passage 114AA (#753, W02) : catégorie et statut d'un bien.
+  if (draft.command === 'UPDATE_ASSET_CATEGORY') return resolveAssetCategory(draft, input, lookup, actionId);
+  if (draft.command === 'UPDATE_ASSET_STATUS') return resolveAssetStatus(draft, input, lookup, actionId);
   if (draft.command === 'CREATE_ASSET') return resolveAssetCreation(draft, input, lookup, actionId);
   if (draft.command === 'DELETE_ASSET') return resolveAssetDeletion(draft, input, lookup, actionId);
   // Lot 114X (#753, W21 – W26) : événements de référence — résolus dans `reference-events.ts`.
   if (draft.command === 'CREATE_REFERENCE_EVENT' || draft.command === 'UPDATE_REFERENCE_EVENT' || draft.command === 'INVALIDATE_REFERENCE_EVENT'
     || draft.command === 'ASSOCIATE_REFERENCE_EVENTS' || draft.command === 'LINK_DOCUMENT_REFERENCE_EVENT' || draft.command === 'LINK_SUPPLIER_REFERENCE_EVENT') {
     return (await import('./reference-events')).resolveReferenceEventCommand(draft, input, lookup, actionId);
+  }
+  // Passage 114AB (#753) : gestes INVERSES des événements de référence — résolus dans `reference-events-inverse.ts`.
+  if (draft.command === 'RESTORE_REFERENCE_EVENT' || draft.command === 'DISSOCIATE_REFERENCE_EVENTS'
+    || draft.command === 'UNLINK_DOCUMENT_REFERENCE_EVENT' || draft.command === 'UNLINK_SUPPLIER_REFERENCE_EVENT'
+    || draft.command === 'LINK_AGENDA_REFERENCE_EVENT') {
+    return (await import('./reference-events-inverse')).resolveInverseReferenceEventCommand(draft, input, lookup, actionId);
   }
 
   // Lot 113P (#715) : plus de « marquer réalisée » / « annuler » (aucun statut d'événement).
@@ -655,6 +732,168 @@ async function resolveAssetRename(
   };
 }
 
+// ── Passage 114AA (Trello #753, CDC T2 §14.3 W02) : catégorie et statut d'un bien ──
+
+/** Libellés repris de la fiche du bien (rien de nouveau). */
+const CATEGORIE_LABEL = 'Catégorie de bien';
+const STATUT_LABEL = 'Statut';
+
+/** Statuts proposés par l'assistant : ceux du référentiel, sauf l'archivage (parcours propre, depuis la fiche). */
+const STATUTS_PROPOSES = ASSET_STATUSES.filter((s) => s !== 'ARCHIVED');
+const listeStatuts = () => STATUTS_PROPOSES.map((s) => ASSET_STATUS_LABELS[s].toLowerCase()).join(', ');
+
+/**
+ * Passage 114AA (W02) — CATÉGORIE DE BIEN (colonne `subtype`) : une catégorie du RÉFÉRENTIEL
+ * (`lib/asset-taxonomy`), applicable à la famille du bien. Écrite par le service de la fiche
+ * (`updateAssetDetails`, section commune, champ `subCategory`), comme le sélecteur « Catégorie de bien ».
+ * La catégorie présentée est figée : si elle a changé à la confirmation, rien n'est écrit.
+ *
+ * Un OBJET n'est pas concerné : sa catégorie est portée par un autre champ, que l'assistant ne modifie pas.
+ */
+async function resolveAssetCategory(
+  draft: Extract<CommandDraft, { command: 'UPDATE_ASSET_CATEGORY' }>, input: AssistantRequestInput, lookup: CommandLookup, actionId: string,
+): Promise<PlannedAction | { needInfo: string }> {
+  const cible = await bienAModifier(lookup, input, draft, `Pour quel bien voulez-vous changer « ${CATEGORIE_LABEL} » ?`);
+  if ('needInfo' in cible) return cible;
+  const asset = cible.asset;
+  const famille = toAssetFamilyCode(asset.category);
+  // Passage 114AB (#753, W02) — règle remplacée (passage 114AA : « un OBJET n'est pas concerné ») : la
+  // catégorie d'un bien de la famille OBJET est désormais modifiable aussi. Elle est portée par un autre
+  // champ de sa fiche (`objectCategory`, section « Identification », valeurs du registre canonique) et non
+  // par la colonne `subtype` : la résolution lui est propre, l'écriture passe par le même service.
+  if (famille === 'OBJECT') return resolveObjectCategory(draft, asset, actionId);
+  const options = famille ? getAssetCategories(famille) : [];
+  if (!famille || options.length === 0) {
+    return { needInfo: `Depuis l’assistant, « ${CATEGORIE_LABEL} » se modifie pour un bien immobilier ou un véhicule. Pour ${nomBien(asset)}, ouvrez sa fiche.` };
+  }
+  const liste = options.map((c) => c.label.toLowerCase()).join(', ');
+  const designation = draft.requestedCategory ? assetDesignationsIn(draft.requestedCategory).find((d) => d.kind === 'category') : undefined;
+  const trouvee = designation && designation.family === famille ? options.find((c) => c.value === designation.category) ?? null : null;
+  if (!trouvee) {
+    if (designation) {
+      return { needInfo: `« ${draft.requestedCategory} » n’est pas une catégorie de ${assetFamilyLabel(famille).toLowerCase()}. Catégories possibles pour ${nomBien(asset)} : ${liste}.` };
+    }
+    return { needInfo: `Quelle catégorie voulez-vous donner à ${nomBien(asset)} ? Par exemple : ${liste}.` };
+  }
+  const actuelle = normalizeAssetCategory(asset.subtype ?? null);
+  if (actuelle && actuelle === trouvee.value) return { needInfo: `La catégorie de ${nomBien(asset)} est déjà « ${trouvee.label} ».` };
+  const avant = actuelle ?? 'non renseigné';
+  return {
+    actionId, command: 'UPDATE_ASSET_CATEGORY', dependsOn: [],
+    targets: [{ type: 'asset', id: asset.id, label: nomBien(asset) }],
+    params: { kind: 'asset_category', classifiedAssetId: asset.id, categoryValue: trouvee.value, expectedCategory: actuelle },
+    preview: `Modifier « ${CATEGORIE_LABEL} » de ${nomBien(asset)} : ${avant} → ${trouvee.label}.`,
+    effects: [
+      `Bien : ${nomBien(asset)}`,
+      `${CATEGORIE_LABEL} : ${avant} → ${trouvee.label}`,
+      'La famille du bien (immobilier, véhicule, objet) n’est pas modifiée.',
+      'La catégorie oriente les rubriques de la fiche et les documents attendus.',
+      'Pour revenir en arrière, refaites une demande.',
+    ],
+  };
+}
+
+/**
+ * Passage 114AB (Trello #753, CDC T2 §14.3 W02) — CATÉGORIE d'un bien de la famille **OBJET**.
+ *
+ * Elle n'est pas portée par la colonne `subtype` des autres familles mais par un champ CANONIQUE de la fiche
+ * (`objectCategory`, section « Identification »), dont les valeurs et les libellés viennent du REGISTRE :
+ * rien n'est énuméré ici. L'écriture passe par le même service que la fiche, et la valeur présentée est
+ * revérifiée sous verrou (champ canonique).
+ *
+ * Les formulations acceptées sont les libellés du registre et leurs segments (« tech », « électronique »,
+ * « sport », « maison ») : un libellé comme « Tech / IT / Électronique » ne s'écrit pas en entier dans une
+ * phrase. Une catégorie d'une AUTRE famille est refusée en le disant.
+ */
+function resolveObjectCategory(
+  draft: Extract<CommandDraft, { command: 'UPDATE_ASSET_CATEGORY' }>, asset: AssetState, actionId: string,
+): PlannedAction | { needInfo: string } {
+  const def = getField('objectCategory');
+  const valeurs = def?.enumValues ?? [];
+  const libelle = (code: string): string => def?.enumLabels?.[code] ?? code;
+  const liste = valeurs.map((c) => libelle(c)).join(', ');
+  if (valeurs.length === 0) return { needInfo: `Depuis l’assistant, « ${CATEGORIE_LABEL} » ne se modifie pas pour ${nomBien(asset)}. Ouvrez sa fiche.` };
+  if (!draft.requestedCategory) {
+    return { needInfo: `Quelle catégorie voulez-vous donner à ${nomBien(asset)} ? Par exemple : ${liste}.` };
+  }
+  // Mots du libellé et de ses segments (« / », « & ») : « tech », « it », « electronique »…
+  const mots = (s: string) => plain(s).split(/[^a-z0-9]+/).filter(Boolean);
+  const demandes = mots(draft.requestedCategory);
+  const candidats = valeurs.filter((c) => {
+    const l = mots(libelle(c));
+    return demandes.length > 0 && demandes.every((w) => l.includes(w));
+  });
+  if (candidats.length > 1) {
+    return { needInfo: `Plusieurs catégories correspondent : ${candidats.map((c) => libelle(c)).join(', ')}. Précisez laquelle dans votre demande.` };
+  }
+  if (candidats.length === 0) {
+    const autreFamille = assetDesignationsIn(draft.requestedCategory).find((d) => d.kind === 'category');
+    return { needInfo: autreFamille
+      ? `« ${draft.requestedCategory} » n’est pas une catégorie d’objet. Catégories possibles pour ${nomBien(asset)} : ${liste}.`
+      : `Quelle catégorie voulez-vous donner à ${nomBien(asset)} ? Par exemple : ${liste}.` };
+  }
+  const choisie = candidats[0];
+  const actuelle = ((asset.characteristics.objectCategory as string | null) ?? asset.objectCategory ?? null);
+  if (actuelle === choisie) return { needInfo: `La catégorie de ${nomBien(asset)} est déjà « ${libelle(choisie)} ».` };
+  const avant = actuelle ? libelle(actuelle) : 'non renseigné';
+  return {
+    actionId, command: 'UPDATE_ASSET_CATEGORY', dependsOn: [],
+    targets: [{ type: 'asset', id: asset.id, label: nomBien(asset) }],
+    params: { kind: 'asset_category', classifiedAssetId: asset.id, categoryValue: choisie, expectedCategory: actuelle, objectCategory: true },
+    preview: `Modifier « ${def?.label ?? CATEGORIE_LABEL} » de ${nomBien(asset)} : ${avant} → ${libelle(choisie)}.`,
+    effects: [
+      `Bien : ${nomBien(asset)}`,
+      `${def?.label ?? CATEGORIE_LABEL} : ${avant} → ${libelle(choisie)}`,
+      'La famille du bien (immobilier, véhicule, objet) n’est pas modifiée.',
+      'La catégorie oriente les rubriques de la fiche et les documents attendus.',
+      'Pour revenir en arrière, refaites une demande.',
+    ],
+  };
+}
+
+/**
+ * Passage 114AA (W02) — STATUT d'un bien : un statut du référentiel (`lib/asset-status`), écrit par le service
+ * de la fiche. L'archivage n'est pas proposé (il a son propre parcours, depuis la fiche) ; un bien déjà archivé
+ * ou verrouillé est refusé plus haut, comme pour toute modification.
+ */
+async function resolveAssetStatus(
+  draft: Extract<CommandDraft, { command: 'UPDATE_ASSET_STATUS' }>, input: AssistantRequestInput, lookup: CommandLookup, actionId: string,
+): Promise<PlannedAction | { needInfo: string }> {
+  const cible = await bienAModifier(lookup, input, draft, `Pour quel bien voulez-vous changer « ${STATUT_LABEL} » ?`);
+  if ('needInfo' in cible) return cible;
+  const asset = cible.asset;
+  if (draft.requestedStatus === 'ARCHIVED') {
+    return { needInfo: `L’archivage d’un bien ne se fait pas depuis l’assistant : ouvrez la fiche de ${nomBien(asset)}.` };
+  }
+  const demande = STATUTS_PROPOSES.find((s) => s === draft.requestedStatus);
+  if (!demande) return { needInfo: `Quel statut voulez-vous donner à ${nomBien(asset)} ? Par exemple : ${listeStatuts()}.` };
+  const actuel = normalizeAssetStatus(asset.status);
+  if (actuel === demande) return { needInfo: `Le statut de ${nomBien(asset)} est déjà « ${ASSET_STATUS_LABELS[demande]} ».` };
+  const sortie = (OUT_OF_PORTFOLIO_ASSET_STATUSES as readonly string[]).includes(demande);
+  return {
+    actionId, command: 'UPDATE_ASSET_STATUS', dependsOn: [],
+    targets: [{ type: 'asset', id: asset.id, label: nomBien(asset) }],
+    params: { kind: 'asset_status', classifiedAssetId: asset.id, statusValue: demande, expectedStatus: actuel },
+    preview: `Modifier « ${STATUT_LABEL} » de ${nomBien(asset)} : ${ASSET_STATUS_LABELS[actuel]} → ${ASSET_STATUS_LABELS[demande]}.`,
+    effects: [
+      `Bien : ${nomBien(asset)}`,
+      `${STATUT_LABEL} : ${ASSET_STATUS_LABELS[actuel]} → ${ASSET_STATUS_LABELS[demande]}`,
+      ...(sortie
+        ? [
+            'Ce bien sort du portefeuille actif : il n’apparaît plus par défaut dans vos listes et vos compteurs.',
+            'Ses documents, ses échéances et son historique sont conservés : rien n’est supprimé.',
+            // Règle existante de l'assistant : un bien sorti du portefeuille n'est plus une cible (asset-availability).
+            'L’assistant ne le retrouvera plus par son nom : pour revenir en arrière, passez par sa fiche.',
+          ]
+        : [
+            'Ce bien revient dans le portefeuille actif.',
+            'Ses documents, ses échéances et son historique sont conservés : rien n’est supprimé.',
+            'Pour revenir en arrière, refaites une demande.',
+          ]),
+    ],
+  };
+}
+
 /**
  * Lot 114F (Trello #753, CDC T2 §14.3 W27) — effacement VOLONTAIRE d'une caractéristique d'un bien : champ de la
  * liste fermée du registre (aucun champ fantôme), applicable à la famille du bien, valeur actuelle présentée.
@@ -690,19 +929,17 @@ async function resolveAssetFieldClear(
 }
 
 /**
- * Lot 114F (Trello #753, CDC T2 §14.3 W13, §14.4 « Documents ») — rattacher un document à un bien du compte, ou
- * l'en détacher. La liste COMPLÈTE des biens après l'action est figée (celle que le tiroir du document
- * enregistrerait) ; les autres rattachements sont conservés. Détacher est une dissociation : le document reste
- * dans le compte. Pièces et équipements : depuis le document (non proposé ici).
+ * Lot 114F, complété au passage 114AA (Trello #753, CDC T2 §14.3 W13, §14.4 « Documents ») — rattacher un
+ * document à un BIEN, à une PIÈCE ou à un ÉQUIPEMENT du compte, ou l'en détacher. La liste COMPLÈTE du niveau
+ * concerné après l'action est figée (celle que le tiroir du document enregistrerait) ; les autres niveaux et
+ * les autres rattachements sont conservés. Détacher est une dissociation : le document reste dans le compte.
  */
 async function resolveDocumentTargets(
   draft: Extract<CommandDraft, { command: 'UPDATE_DOCUMENT_TARGETS' }>, input: AssistantRequestInput, lookup: CommandLookup, actionId: string,
 ): Promise<PlannedAction | { needInfo: string }> {
   const acc = input.accountId;
   if (!lookup.getDocumentAssetTargets) return { needInfo: 'Je ne peux pas faire cette modification depuis l’assistant.' };
-  if (draft.structureTarget) {
-    return { needInfo: 'Depuis l’assistant, un document se rattache à un bien. Pour une pièce ou un équipement, ouvrez le document et modifiez ses rattachements.' };
-  }
+  if (draft.structureTarget) return resolveDocumentStructureTargets(draft, draft.structureTarget, input, lookup, actionId);
   const attacher = draft.mode === 'attach';
   const doc = await documentDesigne(lookup, input, draft, attacher ? 'rattacher' : 'détacher');
   if ('needInfo' in doc) return doc;
@@ -740,6 +977,86 @@ async function resolveDocumentTargets(
       `Document : ${d.title}`,
       `Biens rattachés : ${liste(cibles.chosen)} → ${liste(apres)}`,
       attacher ? 'Les autres rattachements du document sont conservés.' : 'Le document reste dans vos documents : il n’est pas supprimé.',
+      'Ce rattachement est votre décision : il ne sera pas défait par une analyse.',
+    ],
+  };
+}
+
+/**
+ * Passage 114AA (Trello #753, CDC T2 §14.3 W13) — rattacher un document à une PIÈCE ou à un ÉQUIPEMENT du
+ * compte, ou l'en détacher. Même service que le tiroir du document (`document-write.facade`) : seul le niveau
+ * concerné change, le niveau « bien » et l'autre niveau gardent leur sélection.
+ *
+ * Jamais un choix au hasard : une pièce ou un équipement introuvable, ou plusieurs qui répondent, donnent une
+ * question et rien n'est préparé. Le bien porteur est annoncé (c'est lui qui apparaît sur les fiches).
+ */
+async function resolveDocumentStructureTargets(
+  draft: Extract<CommandDraft, { command: 'UPDATE_DOCUMENT_TARGETS' }>,
+  structure: { kind: 'room' | 'equipment'; words: string[] },
+  input: AssistantRequestInput, lookup: CommandLookup, actionId: string,
+): Promise<PlannedAction | { needInfo: string }> {
+  const acc = input.accountId;
+  const piece = structure.kind === 'room';
+  const nom = piece ? 'pièce' : 'équipement';
+  /** « la pièce » / « l'équipement » : élision et genre, repris dans chaque phrase. */
+  const le = piece ? `la ${nom}` : `l’${nom}`;
+  const chercher = piece ? lookup.findRooms : lookup.findEquipments;
+  if (!chercher || !lookup.getDocumentAssetTargets) return { needInfo: 'Je ne peux pas faire cette modification depuis l’assistant.' };
+  const attacher = draft.mode === 'attach';
+
+  const doc = await documentDesigne(lookup, input, draft, attacher ? 'rattacher' : 'détacher');
+  if ('needInfo' in doc) return doc;
+  const d = doc.state;
+
+  // Pièce ou équipement du compte (tous biens confondus : la phrase ne nomme pas forcément le bien).
+  const trouves = await chercher(acc, structure.words, null);
+  if (trouves.length === 0) {
+    return { needInfo: piece
+      ? `Je n’ai pas trouvé cette pièce dans votre compte. À quelle pièce voulez-vous rattacher « ${d.title} » ?`
+      : `Je n’ai pas trouvé cet équipement dans votre compte. À quel équipement voulez-vous rattacher « ${d.title} » ?` };
+  }
+  if (trouves.length > 1) {
+    const quoi = piece ? 'Plusieurs pièces correspondent' : 'Plusieurs équipements correspondent';
+    return { needInfo: `${quoi} : ${trouves.slice(0, 5).map((s) => `« ${s.name} » (${s.assetName})`).join(', ')}. Précisez ${piece ? 'laquelle' : 'lequel'} dans votre demande.` };
+  }
+  const cible = trouves[0];
+
+  const cibles = await lookup.getDocumentAssetTargets(acc, d.id);
+  if (!cibles) return { needInfo: `Je n’ai pas trouvé ce document dans votre compte. Quel document voulez-vous ${attacher ? 'rattacher' : 'détacher'} ?` };
+  const actuels = (piece ? cibles.rooms : cibles.equipments) ?? [];
+  const choisis = actuels.map((s) => s.id);
+  const liste = (l: Array<{ name: string }>) => (l.length ? l.map((s) => s.name).join(', ') : 'aucun');
+  let apres: Array<{ id: number; name: string }>;
+  if (attacher) {
+    if (choisis.includes(cible.id)) return { needInfo: `« ${d.title} » est déjà rattaché à ${le} « ${cible.name} » (${cible.assetName}).` };
+    apres = [...actuels, { id: cible.id, name: cible.name }];
+  } else {
+    if (!choisis.includes(cible.id)) return { needInfo: `« ${d.title} » n’est pas rattaché à ${le} « ${cible.name} » (${cible.assetName}).` };
+    apres = actuels.filter((s) => s.id !== cible.id);
+  }
+
+  const ou = `${le} « ${cible.name} » (${cible.assetName})`;
+  return {
+    actionId, command: 'UPDATE_DOCUMENT_TARGETS', dependsOn: [],
+    targets: [{ type: 'document', id: d.id, label: d.title }, { type: piece ? 'room' : 'equipment', id: cible.id, label: cible.name }],
+    params: {
+      kind: 'document_targets', documentId: d.id,
+      // Le niveau « bien » n'est PAS touché : il garde sa sélection actuelle.
+      targetAssetIds: cibles.chosen.map((a) => a.id), expectedAssetIds: cibles.chosen.map((a) => a.id),
+      level: piece ? 'room' : 'equipment', targetStructureIds: apres.map((s) => s.id), expectedStructureIds: choisis,
+      expectedVersion: documentTargetsVersion(
+        d.version, cibles.chosen.map((a) => a.id),
+        (cibles.rooms ?? []).map((s) => s.id), (cibles.equipments ?? []).map((s) => s.id),
+      ),
+    },
+    preview: attacher ? `Rattacher le document « ${d.title} » à ${ou}.` : `Détacher le document « ${d.title} » de ${ou}.`,
+    effects: [
+      `Document : ${d.title}`,
+      `${piece ? 'Pièces rattachées' : 'Équipements rattachés'} : ${liste(actuels)} → ${liste(apres)}`,
+      attacher
+        ? `Le bien « ${cible.assetName} » reste rattaché par ${piece ? 'cette pièce' : 'cet équipement'}.`
+        : 'Le document reste dans vos documents : il n’est pas supprimé.',
+      'Les autres rattachements du document sont conservés.',
       'Ce rattachement est votre décision : il ne sera pas défait par une analyse.',
     ],
   };
@@ -1029,6 +1346,158 @@ async function resolveDocumentCommand(
     effects: [
       'Le document ne sera plus visible dans votre compte.',
       'Les informations qu’il justifiait sont retirées des fiches concernées, qui sont recalculées.',
+      'Cette suppression ne s’annule pas depuis l’Assistant.',
+    ],
+  };
+}
+
+// ── Passage 114AB (#753, W12) : NATURE d'un document (Rubrique et Type V2) ──
+
+/**
+ * Passage 114AB (Trello #753, CDC T2 §14.3 W12) — Rubrique ou Type d'un document.
+ *
+ * La valeur vient du RÉFÉRENTIEL V2, jamais d'un libellé libre. Les règles de classement ne sont pas
+ * reprises ici : l'aperçu appelle la fonction PURE `applyClassificationChange` — celle que la façade
+ * d'écriture appelle — et annonce donc exactement l'état qui sera enregistré (Rubrique déduite d'un Type,
+ * Type vidé s'il ne relève plus de la Rubrique). L'écriture passe par le point d'écriture unique
+ * `document-write.facade.updateDocumentClassificationForAccount`, le même que le tiroir du document.
+ *
+ * Jamais un choix au hasard : valeur inconnue du référentiel → la question liste les valeurs possibles ;
+ * plusieurs valeurs de même libellé (« Autre » existe dans chaque Rubrique) → la liste et une question ;
+ * valeur déjà en place → c'est dit, et aucun plan.
+ */
+async function resolveDocumentClassification(
+  draft: Extract<CommandDraft, { command: 'UPDATE_DOCUMENT_CLASSIFICATION' }>,
+  input: AssistantRequestInput, lookup: CommandLookup, actionId: string,
+): Promise<PlannedAction | { needInfo: string }> {
+  const [
+    { CLASSIFICATION_LABELS, ambiguousList, matchDocumentType, matchRubric, rubricLabelOf, rubricList, typeLabelOf, typeList },
+    { applyClassificationChange },
+  ] = await Promise.all([import('./document-classification'), import('@/services/documents/rubric-classification')]);
+  const def = CLASSIFICATION_LABELS[draft.level];
+  const cible = await documentDesigne(lookup, input, draft, 'classer');
+  if ('needInfo' in cible) return cible;
+  const d = cible.state;
+  const rubriqueActuelle = (d.rubricCode ?? null) as RubricCode | null;
+  const typeActuel = d.documentTypeCode ?? null;
+
+  if (!draft.requestedValue) {
+    return { needInfo: draft.level === 'rubric'
+      ? `Quelle rubrique voulez-vous donner à « ${d.title} » ? Par exemple : ${rubricList()}.`
+      : `Quel type voulez-vous donner à « ${d.title} » ? Par exemple : ${typeList(rubriqueActuelle)}.` };
+  }
+
+  let nextRubric: RubricCode | undefined;
+  let nextType: string | undefined;
+  let valeurLabel: string;
+  if (draft.level === 'rubric') {
+    const r = matchRubric(draft.requestedValue);
+    if (r.kind === 'ambiguous') {
+      return { needInfo: `Plusieurs rubriques correspondent : ${ambiguousList(r.values)}. Précisez laquelle dans votre demande.` };
+    }
+    if (r.kind === 'unknown') {
+      return { needInfo: `« ${draft.requestedValue} » n’est pas une rubrique du référentiel. Rubriques possibles : ${rubricList()}.` };
+    }
+    nextRubric = r.value.code;
+    valeurLabel = r.value.label;
+  } else {
+    const t = matchDocumentType(draft.requestedValue, rubriqueActuelle);
+    if (t.kind === 'ambiguous') {
+      return { needInfo: `Plusieurs types correspondent : ${ambiguousList(t.values)}. Précisez lequel dans votre demande (en nommant sa rubrique).` };
+    }
+    if (t.kind === 'unknown') {
+      return { needInfo: `« ${draft.requestedValue} » n’est pas un type de document du référentiel. Types possibles${rubriqueActuelle ? ` pour la rubrique « ${rubricLabelOf(rubriqueActuelle)} »` : ''} : ${typeList(rubriqueActuelle)}.` };
+    }
+    nextType = t.value.code;
+    valeurLabel = t.value.label;
+  }
+
+  const actuel = {
+    rubricCode: rubriqueActuelle, documentTypeCode: typeActuel,
+    rubricOrigin: null, typeOrigin: null, rubricUserValidated: false, typeUserValidated: false,
+  };
+  // Les règles du classement, appliquées À BLANC : l'aperçu annonce l'état exact qui sera écrit.
+  const apres = applyClassificationChange({
+    current: actuel,
+    ...(nextRubric !== undefined ? { nextRubric } : {}),
+    ...(nextType !== undefined ? { nextType } : {}),
+    origin: 'USER',
+  }).result;
+  if (apres.rubricCode === rubriqueActuelle && apres.documentTypeCode === typeActuel) {
+    return { needInfo: draft.level === 'rubric'
+      ? `La rubrique de « ${d.title} » est déjà « ${valeurLabel} ».`
+      : `Le type de « ${d.title} » est déjà « ${valeurLabel} ».` };
+  }
+  const rubriqueChange = apres.rubricCode !== rubriqueActuelle;
+  const typeChange = apres.documentTypeCode !== typeActuel;
+  return {
+    actionId, command: 'UPDATE_DOCUMENT_CLASSIFICATION', dependsOn: [],
+    targets: [{ type: 'document', id: d.id, label: d.title }],
+    params: {
+      kind: 'document_classification', documentId: d.id, classificationLevel: draft.level,
+      ...(nextRubric !== undefined ? { rubricValue: nextRubric } : {}),
+      ...(nextType !== undefined ? { typeValue: nextType } : {}),
+      expectedRubric: rubriqueActuelle, expectedType: typeActuel,
+      expectedVersion: documentClassificationVersion(d),
+    },
+    preview: `Modifier « ${def.label} » du document « ${d.title} » : ${draft.level === 'rubric' ? rubricLabelOf(rubriqueActuelle) : typeLabelOf(typeActuel)} → ${valeurLabel}.`,
+    effects: [
+      `Document : ${d.title}`,
+      ...(rubriqueChange ? [`Rubrique : ${rubricLabelOf(rubriqueActuelle)} → ${rubricLabelOf(apres.rubricCode)}`] : []),
+      ...(typeChange ? [`Type : ${typeLabelOf(typeActuel)} → ${typeLabelOf(apres.documentTypeCode)}`] : []),
+      ...(draft.level === 'type' && rubriqueChange ? ['La rubrique est déduite de ce type : c’est elle qui range le document.'] : []),
+      ...(draft.level === 'rubric' && typeChange && apres.documentTypeCode === null && typeActuel !== null
+        ? ['Le type actuel ne relève pas de cette rubrique : il sera vidé, et vous pourrez en choisir un autre.'] : []),
+      'Ce classement est votre décision : il ne sera pas remplacé par une analyse.',
+      'Pour revenir en arrière, refaites une demande.',
+    ],
+  };
+}
+
+// ── Passage 114AB (#753, W14) : supprimer PLUSIEURS documents à la fois ─────
+
+/**
+ * Passage 114AB (Trello #753, CDC T2 §14.3 W14) — suppression de PLUSIEURS documents en une demande.
+ *
+ * Action destructive : le plan est figé, la liste COMPLÈTE des documents visés est annoncée avant la
+ * confirmation (titre et date de chacun), et un REFUS PARTIEL N'ÉCRIT RIEN — l'exécuteur relit les
+ * documents un par un et n'en supprime aucun si l'un d'eux a changé, a disparu ou n'est pas du compte.
+ *
+ * Chaque désignation est résolue séparément : une désignation introuvable, ambiguë ou répétée donne une
+ * question et aucun plan. Jamais une suppression « de tous les documents » d'un bien : l'utilisateur
+ * nomme ce qu'il supprime.
+ */
+async function resolveDocumentsDeletion(
+  draft: Extract<CommandDraft, { command: 'DELETE_DOCUMENTS' }>,
+  input: AssistantRequestInput, lookup: CommandLookup, actionId: string,
+): Promise<PlannedAction | { needInfo: string }> {
+  if (draft.documentGroups.length < 2) return { needInfo: 'Quels documents voulez-vous supprimer ? Nommez-les, séparés par « et ».' };
+  if (draft.documentGroups.length > MAX_BULK_DOCUMENTS) {
+    return { needInfo: `Je ne supprime pas plus de ${MAX_BULK_DOCUMENTS} documents à la fois : faites-le en plusieurs demandes.` };
+  }
+  const etats: DocumentState[] = [];
+  for (const mots of draft.documentGroups) {
+    const r = await documentDesigne(lookup, input, { documentWords: mots, documentFromContext: false }, 'supprimer');
+    if ('needInfo' in r) return r;
+    if (etats.some((e) => e.id === r.state.id)) {
+      return { needInfo: `« ${r.state.title} » est nommé deux fois dans votre demande. Précisez les documents à supprimer.` };
+    }
+    etats.push(r.state);
+  }
+  const ligne = (d: DocumentState) => `« ${d.title} »${d.documentDate ? ` du ${formatDateFr(d.documentDate)}` : ''}${d.assetLabel ? ` (${d.assetLabel})` : ''}`;
+  return {
+    actionId, command: 'DELETE_DOCUMENTS', dependsOn: [],
+    targets: etats.map((d) => ({ type: 'document' as const, id: d.id, label: d.title })),
+    params: {
+      kind: 'documents_delete',
+      documents: etats.map((d) => ({ documentId: d.id, expectedVersion: d.version, title: d.title })),
+    },
+    preview: `Supprimer ${etats.length} documents : ${etats.map(ligne).join(', ')}.`,
+    effects: [
+      ...etats.map((d) => `Document : ${ligne(d)}`),
+      'Ces documents ne seront plus visibles dans votre compte.',
+      'Les informations qu’ils justifiaient sont retirées des fiches concernées, qui sont recalculées.',
+      'Tout ou rien : si l’un d’eux a changé entre-temps, aucun n’est supprimé.',
       'Cette suppression ne s’annule pas depuis l’Assistant.',
     ],
   };
@@ -1384,14 +1853,35 @@ export async function prepareCommand(
 ): Promise<Preparation | null> {
   const segments = parseCommands(input.message, lookup.today());
   if (!segments) return null;
+  return prepareCommandSegments(segments, input, lookup, now);
+}
+
+/**
+ * Prépare et fige le plan de brouillons DÉJÀ reconnus (Trello #753). Corps de `prepareCommand`, partagé avec les
+ * actions comprises par le sens (`action-hints.ts`) : même résolution dans le compte, mêmes contrôles, même plan.
+ */
+export async function prepareCommandSegments(
+  segments: NonNullable<ReturnType<typeof parseCommands>>,
+  input: AssistantRequestInput,
+  lookup: CommandLookup = sqlLookup,
+  now: Date = new Date(),
+): Promise<Preparation | null> {
   // Lot 114X (#753, W21 – W26), non-régression : une phrase sur un événement de référence n'est une commande que si
   // elle désigne quelque chose de réel dans le compte (`isReferenceEventCommand`) — sinon le message suit le
   // parcours de réponse normal, comme avant.
-  for (const seg of segments) {
+  for (const [i, seg] of segments.entries()) {
     const d = seg.draft;
+    // Passage 114Z4 : un segment DÉPENDANT d'une déclaration de la même phrase vise l'événement qu'elle
+    // enregistre — il n'a rien à désigner dans le compte.
+    const memePhrase = seg.dependsOnPrevious && segments[i - 1]?.draft.command === 'CREATE_REFERENCE_EVENT';
+    // Passage 114AB : les GESTES INVERSES suivent exactement la même règle de non-régression (un geste sur un
+    // événement supprimé n'est une commande que si le compte en porte un qui réponde à la désignation).
     if ((d.command === 'CREATE_REFERENCE_EVENT' || d.command === 'UPDATE_REFERENCE_EVENT' || d.command === 'INVALIDATE_REFERENCE_EVENT'
-      || d.command === 'ASSOCIATE_REFERENCE_EVENTS' || d.command === 'LINK_DOCUMENT_REFERENCE_EVENT' || d.command === 'LINK_SUPPLIER_REFERENCE_EVENT')
-      && !(await (await import('./reference-events')).isReferenceEventCommand(d, input, lookup))) return null;
+      || d.command === 'ASSOCIATE_REFERENCE_EVENTS' || d.command === 'LINK_DOCUMENT_REFERENCE_EVENT' || d.command === 'LINK_SUPPLIER_REFERENCE_EVENT'
+      || d.command === 'RESTORE_REFERENCE_EVENT' || d.command === 'DISSOCIATE_REFERENCE_EVENTS'
+      || d.command === 'UNLINK_DOCUMENT_REFERENCE_EVENT' || d.command === 'UNLINK_SUPPLIER_REFERENCE_EVENT'
+      || d.command === 'LINK_AGENDA_REFERENCE_EVENT')
+      && !(await (await import('./reference-events')).isReferenceEventCommand(d, input, lookup, memePhrase))) return null;
   }
 
   // Construction du plan : chaque segment résolu dans le compte ; « puis »
@@ -1399,7 +1889,19 @@ export async function prepareCommand(
   const actions: PlannedAction[] = [];
   let precedent: string[] = [];
   for (const [i, seg] of segments.entries()) {
-    const r = await resolveDraft(seg.draft, input, lookup, `a${i + 1}`);
+    // Passage 114Z4 (#753) : « Déclare … PUIS relie / rattache … à celui-ci ». L'événement n'existe pas encore :
+    // le document ou le fournisseur sont figés maintenant, l'événement est celui que l'action précédente
+    // enregistre (posé à l'exécution, et seulement si elle a réussi). Hors de ce cas, rien ne change : une
+    // désignation sans mot reste insuffisante et l'Assistant pose la question.
+    const precedentCree = segments[i - 1]?.draft.command === 'CREATE_REFERENCE_EVENT' && precedent.length === 1;
+    const versCree = seg.dependsOnPrevious && precedentCree
+      && (seg.draft.command === 'LINK_SUPPLIER_REFERENCE_EVENT' || seg.draft.command === 'LINK_DOCUMENT_REFERENCE_EVENT')
+      && seg.draft.target.fromContext === true;
+    const r = versCree
+      ? await (await import('./reference-events')).resolveReferenceEventLinkToCreated(
+        seg.draft as Extract<typeof seg.draft, { command: 'LINK_SUPPLIER_REFERENCE_EVENT' | 'LINK_DOCUMENT_REFERENCE_EVENT' }>,
+        input, lookup, `a${i + 1}`, precedent[0])
+      : await resolveDraft(seg.draft, input, lookup, `a${i + 1}`);
     if ('needInfo' in r) {
       // Un plan partiellement compris n'est jamais proposé.
       return { kind: 'need_info', message: segments.length > 1 ? `Action ${i + 1} : ${r.needInfo}` : r.needInfo };
@@ -1610,6 +2112,21 @@ export type Confirmation =
  * arrière automatique : ce qui a réussi reste acquis (l'utilisateur peut
  * ensuite « Annuler » un plan réversible, voir undo.service).
  */
+/**
+ * Passage 114Z4 (#753) : action dont l'événement de référence visé est celui qu'une AUTRE action du plan vient
+ * d'enregistrer (`operationFromAction`) — son identifiant est posé ICI, depuis le RÉSULTAT de cette action
+ * (jamais depuis le modèle ni le client), juste avant d'exécuter. Elle ne s'exécute que si cette action a réussi
+ * (sinon SKIPPED_DEPENDENCY, plus haut) ; si son résultat ne porte aucun événement, l'identifiant reste absent et
+ * l'exécuteur refuse sans rien écrire.
+ */
+function cibleDifferee(a: PlannedAction, byId: Map<string, ActionResult>): PlannedAction {
+  const p = a.params as { operationFromAction?: string } | null;
+  if (!p?.operationFromAction) return a;
+  const e = byId.get(p.operationFromAction)?.entity;
+  const id = e && e.type === 'reference_event' ? e.id : 0;
+  return { ...a, params: { ...a.params, operationId: id } as PlannedAction['params'] };
+}
+
 export async function executeActions(
   actions: PlannedAction[],
   ctx: ExecutionContext,
@@ -1622,7 +2139,7 @@ export async function executeActions(
     const bloquante = a.dependsOn.find((d) => byId.get(d)?.status !== 'SUCCESS');
     const r: ActionResult = bloquante
       ? { actionId: a.actionId, status: 'SKIPPED_DEPENDENCY', message: `${a.preview.replace(/\.$/, '')} — non exécutée : l’action ${bloquante} n’a pas réussi.` }
-      : await runAction(a, ctx, executors);
+      : await runAction(cibleDifferee(a, byId), ctx, executors);
     byId.set(a.actionId, r);
     results.push(r);
   }
@@ -1735,6 +2252,8 @@ export async function confirmCommandPlan(
   });
   const summary = summarizeResults(results);
   await recordPlanOutcome(fil, outcomeText(summary, results));
+  // Passage 114AA (#753) : l'événement de référence du FIL — « celui-ci » au tour suivant.
+  await noterEvenementDuFil(fil, actions, results);
   return { ok: true, status, results, summary, undoUntil: undo.undoUntil };
 }
 
@@ -1923,6 +2442,45 @@ export async function recordPlanOutcome(
   } catch (e) {
     console.error('[verebona] issue de commande non enregistrée dans le fil :', (e as Error).message);
   }
+}
+
+/**
+ * Passage 114AA (Trello #753, CDC T2 §6.1) — ÉVÉNEMENT DE RÉFÉRENCE DU FIL (pure pour le choix, puis écriture).
+ *
+ * Le dernier événement de référence sur lequel une action de ce plan a RÉELLEMENT abouti devient celui que
+ * « celui-ci » / « cet événement de référence » désigne au tour suivant, dans CE fil seulement. Une suppression
+ * (invalidation) l'OUBLIE : l'événement n'existe plus, il ne doit pas rester la cible implicite du fil.
+ * Rien n'est mémorisé si aucune action du plan n'a porté sur un événement de référence (le fil garde ce qu'il
+ * avait) ; rien n'est mémorisé non plus pour un plan refusé ou en échec.
+ */
+export function evenementDuFilApres(actions: PlannedAction[], results: ActionResult[]): number | null | undefined {
+  const parId = new Map(actions.map((a) => [a.actionId, a]));
+  let choisi: number | null | undefined;
+  for (const r of results) {
+    if (r.status !== 'SUCCESS') continue;
+    const a = parId.get(r.actionId);
+    if (!a || !REFERENCE_EVENT_COMMANDS.has(a.command)) continue;
+    // Supprimé : le fil n'a plus d'événement implicite. Sinon : l'événement écrit (rendu par l'exécuteur).
+    choisi = a.command === 'INVALIDATE_REFERENCE_EVENT' ? null : (r.entity?.type === 'reference_event' ? r.entity.id : choisi);
+  }
+  return choisi;
+}
+
+const REFERENCE_EVENT_COMMANDS: ReadonlySet<PlannedAction['command']> = new Set([
+  'CREATE_REFERENCE_EVENT', 'UPDATE_REFERENCE_EVENT', 'INVALIDATE_REFERENCE_EVENT',
+  'ASSOCIATE_REFERENCE_EVENTS', 'LINK_DOCUMENT_REFERENCE_EVENT', 'LINK_SUPPLIER_REFERENCE_EVENT',
+]);
+
+/** Mémorise (ou oublie) l'événement de référence du fil après une exécution. Ne lève jamais. */
+async function noterEvenementDuFil(
+  fil: { accountId: number; userId: number; conversationId: number | null },
+  actions: PlannedAction[],
+  results: ActionResult[],
+): Promise<void> {
+  const choisi = evenementDuFilApres(actions, results);
+  if (choisi === undefined || !fil.conversationId) return;
+  const { noterEvenementDeReferenceDuFil } = await import('../core/conversation.service');
+  await noterEvenementDeReferenceDuFil(fil, choisi);
 }
 
 /** Texte de l'issue d'une exécution, tel qu'il est montré et enregistré. */

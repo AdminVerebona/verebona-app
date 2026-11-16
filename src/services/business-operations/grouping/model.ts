@@ -77,12 +77,85 @@ export function mayDesignatePrincipal(requester: RoleOrigin, withdrawnByUser: bo
   return requester === 'USER' || !withdrawnByUser;
 }
 
+// ── Fait porté par un lien N↔N (lot 114O, #744, migration 1721) ────────────
+
+/**
+ * FAIT PORTÉ par un lien N↔N (`business_operation_agenda_links.fact_key`) —
+ * REMPLACE le rôle « principal » (CDC V2.0 §4, §16, AC40) : le lien dit QUEL
+ * FAIT de l'événement de référence l'élément porte, et non quel élément
+ * passe devant les autres.
+ *
+ * Pourquoi cette notion SUFFIT là où le rôle servait :
+ *   · la projection T4 n'a jamais eu besoin que d'une réponse à « ce fait
+ *     est-il déjà porté par un élément de cet événement de référence ? »
+ *     (idempotence : ne rien créer deux fois) — le fait y répond
+ *     exactement, et plus finement que le rôle (un même événement de
+ *     référence peut porter son achat ET sa fin de contrat) ;
+ *   · elle ne hiérarchise pas : 0..N porteurs, AU PLUS UN PAR FAIT, et tout
+ *     autre élément lié est un membre de plein droit, visible à sa date, avec
+ *     son rappel et sa fiche (AC21 à AC27) ;
+ *   · elle est portée PAR LA RELATION : un élément PARTAGÉ peut porter un
+ *     fait de deux événements de référence (AC24, AC31) — ce que la colonne
+ *     de rôle, unique et attachée à une seule Opération, ne pouvait pas dire.
+ */
+export const UNQUALIFIED_FACT = 'UNQUALIFIED';
+
+/** Faits d'un ÉVÉNEMENT GLOBAL (table C16 : historique d'achat, d'intervention, de sinistre, de cession). */
+export const GLOBAL_EVENT_FACTS = ['ACQUISITION', 'INTERVENTION', 'CLAIM', 'DISPOSAL'] as const;
+export const isGlobalEventFact = (factKey: string | null | undefined): boolean =>
+  factKey != null && (GLOBAL_EVENT_FACTS as readonly string[]).includes(factKey);
+
+/**
+ * Fait porté par une clé de projection : la clé SANS sa partie datée
+ * (`CONTRACT:END:2030-01-01` → `CONTRACT:END`), pour que le fait porté survive
+ * au déplacement de la date du fait (la date reste celle de l'élément).
+ */
+export function factKeyOf(projectionKey: string | null | undefined): string {
+  if (!projectionKey) return UNQUALIFIED_FACT;
+  return projectionKey.replace(/:\d{4}-\d{2}-\d{2}$/, '');
+}
+
+/**
+ * Fait que porte l'élément qui REPRÉSENTE un événement de référence de ce type
+ * (traduction de la table C16, sans jugement sémantique) : type projeté → son
+ * fait ; type non projeté (financement, autre, inconnu) → le fait n'est pas
+ * qualifié, ce qui n'empêche ni le lien, ni la visibilité de l'élément.
+ */
+export function factKeyOfOperationType(typeCode: string | null | undefined): string {
+  if (!typeCode) return UNQUALIFIED_FACT;
+  if (typeCode === 'CONTRACT') return 'CONTRACT:END';
+  return typeCode;
+}
+
+/** Auteur d'un geste de regroupement → origine d'une relation du graphe (CDC §4 : IA / utilisateur / migration). */
+export function graphOriginOfRoleOrigin(origin: RoleOrigin): 'USER' | 'AI' | 'MIGRATION' | 'SYSTEM' {
+  if (origin === 'USER') return 'USER';
+  return origin === 'T4' || origin === 'T3' ? 'AI' : 'SYSTEM';
+}
+
+/**
+ * Origine d'une relation du graphe → autorité comparable (`ROLE_ORIGIN_RANK`) :
+ * l'IA ne reprend pas le fait porté d'un choix de l'utilisateur, et une reprise
+ * déterministe ne reprend pas celui de l'IA.
+ */
+export function roleOriginOfGraphOrigin(origin: string | null | undefined): RoleOrigin | null {
+  if (origin === 'USER') return 'USER';
+  if (origin === 'AI') return 'T4';
+  if (origin === 'MIGRATION' || origin === 'SYSTEM') return 'SYSTEM';
+  return null;
+}
+
 /**
  * Rôle de l'élément qui REPRÉSENTE une Opération dans la projection T4 (table
  * C16, `agenda-projection/model.ts`) : l'historique d'une intervention, d'un
  * sinistre, d'un achat ou d'une cession est l'événement global (PRINCIPAL) ;
  * une échéance de contrat est une étape (RELATED) — une relation durable
  * n'impose aucun événement global (§11.10, AC52).
+ *
+ * Lot 114O (#744) : ce vocabulaire n'est plus PERSISTÉ (plus aucun rôle écrit).
+ * Il reste la traduction de la table C16 lue par les appelants historiques
+ * (`to-process`, contrat de sortie T4) ; le service de regroupement la convertit
+ * en FAIT PORTÉ (`factKeyOf`) avant toute écriture.
  */
 export function projectionRoleOf(projectionKey: string | null): OperationRole {
   if (!projectionKey) return 'RELATED';
@@ -114,12 +187,15 @@ export const withoutProvenance = (v: readonly unknown[] | null | undefined, p: L
 
 /**
  * Provenance par défaut d'un lien existant sans justification (reprise 0654 et
- * réparation INV-O1-PROVENANCE) : principal projeté → OPERATION_PRINCIPAL ;
- * élément projeté ou automatique → AI_DIRECT ; élément saisi → MANUAL_DIRECT.
- * Déterministe : lit l'origine de l'élément, jamais son contenu.
+ * réparation INV-O1-PROVENANCE) : projection qui PORTE un fait de son
+ * événement de référence → OPERATION_PRINCIPAL (nom de valeur historique, §7.4,
+ * contrainte CHECK existante) ; élément projeté ou automatique → AI_DIRECT ;
+ * élément saisi → MANUAL_DIRECT. Déterministe : lit l'origine de l'élément,
+ * jamais son contenu. Lot 114O (#744) : « porte un fait » remplace « est le
+ * principal ».
  */
-export function inferredProvenance(item: { projected: boolean; isAutomatic: boolean; role: OperationRole | null }): LinkProvenance {
-  if (item.projected && item.role === 'PRINCIPAL') return 'OPERATION_PRINCIPAL';
+export function inferredProvenance(item: { projected: boolean; isAutomatic: boolean; carriesFact: boolean }): LinkProvenance {
+  if (item.projected && item.carriesFact) return 'OPERATION_PRINCIPAL';
   if (item.projected || item.isAutomatic) return 'AI_DIRECT';
   return 'MANUAL_DIRECT';
 }

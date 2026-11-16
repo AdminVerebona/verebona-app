@@ -196,6 +196,77 @@ export async function stampAgendaLinkDecision(
       WHERE account_id = $1 AND operation_id = $2 AND agenda_item_id = $3`, [accountId, operationId, itemId, p.reasonCode, p.userId]);
 }
 
+// ── Fait porté par un lien (migration 1721, travaux F de la carte #744) ────
+
+/**
+ * Le FAIT qu'un lien N↔N porte : la clé de projection sans sa partie datée.
+ * Qualification de la RELATION (CDC §4), pas un rang : au plus un porteur par
+ * fait d'un événement de référence, et tous ses autres liens sont des membres
+ * de plein droit. `origin` : auteur du lien (utilisateur, IA, migration,
+ * reprise) — c'est lui qui décide si une inférence peut reprendre le fait.
+ */
+export interface AgendaFactCarrier { itemId: number; factKey: string; origin: GraphOrigin }
+
+const toCarrier = (x: Row): AgendaFactCarrier => ({ itemId: n(x.agenda_item_id), factKey: String(x.fact_key), origin: x.origin as GraphOrigin });
+
+/** Faits portés par les liens ACTIFS d'un événement de référence (ordre stable). */
+export async function readAgendaFactCarriers(r: GroupingRunner, accountId: number, operationId: number): Promise<AgendaFactCarrier[]> {
+  const x = await r.q<Row>(
+    `SELECT agenda_item_id, fact_key, origin FROM business_operation_agenda_links
+      WHERE account_id = $1 AND operation_id = $2 AND state = 'ACTIVE' AND fact_key IS NOT NULL
+      ORDER BY agenda_item_id`, [accountId, operationId]);
+  return x.map(toCarrier);
+}
+
+/** Faits portés par les liens ACTIFS de plusieurs événements de référence (lecture d'un passage de projection). */
+export async function readAgendaFactCarriersOf(
+  r: GroupingRunner, accountId: number, operationIds: readonly number[],
+): Promise<Array<AgendaFactCarrier & { operationId: number }>> {
+  const liste = [...new Set(operationIds)].filter((v) => Number.isSafeInteger(v) && v > 0);
+  if (!liste.length) return [];
+  const x = await r.q<Row>(
+    `SELECT operation_id, agenda_item_id, fact_key, origin FROM business_operation_agenda_links
+      WHERE account_id = $1 AND operation_id = ANY($2::bigint[]) AND state = 'ACTIVE' AND fact_key IS NOT NULL
+      ORDER BY operation_id, agenda_item_id`, [accountId, `{${liste.join(',')}}`]);
+  return x.map((y) => ({ ...toCarrier(y), operationId: n(y.operation_id) }));
+}
+
+/**
+ * Pose le fait porté par le lien (élément déjà relié : le lien existe, tenu par
+ * la colonne historique ou supplémentaire). Rend vrai si le lien a changé.
+ * `factKey` nul : le lien ne porte plus aucun fait (l'élément reste relié).
+ */
+export async function stampAgendaLinkFact(
+  r: GroupingRunner, accountId: number,
+  p: { operationId: number; itemId: number; factKey: string | null; origin: GraphOrigin; reasonCode: string; userId?: number | null },
+): Promise<boolean> {
+  const x = await r.q<Row>(
+    `UPDATE business_operation_agenda_links
+        SET fact_key = $4, origin = $5, reason_code = $6,
+            decided_by_user_id = COALESCE($7::int, decided_by_user_id), decided_at = now(),
+            version = version + 1, updated_at = now()
+      WHERE account_id = $1 AND operation_id = $2 AND agenda_item_id = $3 AND state = 'ACTIVE'
+        AND (fact_key IS DISTINCT FROM $4::text OR origin IS DISTINCT FROM $5::text)
+      RETURNING id`,
+    [accountId, p.operationId, p.itemId, p.factKey, p.origin, p.reasonCode, p.userId ?? null]);
+  return x.length > 0;
+}
+
+/** Retire le fait porté par les liens ACTIFS de ces éléments (les liens restent). Rend les éléments touchés. */
+export async function clearAgendaLinkFacts(
+  r: GroupingRunner, accountId: number, operationId: number, itemIds: readonly number[], reasonCode: string,
+): Promise<number[]> {
+  const liste = [...new Set(itemIds)].filter((v) => Number.isSafeInteger(v) && v > 0);
+  if (!liste.length) return [];
+  const x = await r.q<Row>(
+    `UPDATE business_operation_agenda_links
+        SET fact_key = NULL, reason_code = $4, version = version + 1, updated_at = now()
+      WHERE account_id = $1 AND operation_id = $2 AND agenda_item_id = ANY($3::int[]) AND fact_key IS NOT NULL
+      RETURNING agenda_item_id`,
+    [accountId, operationId, `{${liste.join(',')}}`, reasonCode]);
+  return x.map((y) => n(y.agenda_item_id));
+}
+
 // ── Déclarations de l'utilisateur (source durable, migration 1718) ─────────
 
 /** Enregistre une déclaration (texte utile déjà normalisé). `operationId` null : posée par `attachDeclaration` après la création. */
@@ -228,6 +299,43 @@ export async function findActiveDeclaration(r: GroupingRunner, accountId: number
       ORDER BY d.id LIMIT 1`, [accountId, fingerprint]);
   if (!x) return null;
   return { declarationId: n(x.id), operationId: n(x.operation_id), typeCode: (x.type_code as BusinessOperationTypeCode | null) ?? null, status: String(x.status), version: n(x.version) };
+}
+
+// ── Notes / Description de l'utilisateur (migration 1722) ─────────────────
+
+/** Note enregistrée sur un événement de référence (texte utile déjà normalisé, ou null : aucune). */
+export interface OperationNotesSnapshot { notes: string | null; updatedAt: string | null; version: number }
+
+/** Note COURANTE d'un événement de référence du compte (sous verrou) ; null : introuvable dans ce compte. */
+export async function readOperationNotes(r: GroupingRunner, accountId: number, operationId: number): Promise<OperationNotesSnapshot | null> {
+  const [o] = await r.q<Row>(
+    `SELECT user_notes, to_char(user_notes_updated_at, 'YYYY-MM-DD"T"HH24:MI:SSOF') AS updated_at, version
+       FROM business_operations WHERE id = $1 AND account_id = $2`, [operationId, accountId]);
+  if (!o) return null;
+  const t = typeof o.user_notes === 'string' && o.user_notes.trim() ? o.user_notes : null;
+  return { notes: t, updatedAt: typeof o.updated_at === 'string' ? o.updated_at : null, version: n(o.version) };
+}
+
+/**
+ * Enregistre (ou retire) la note de l'utilisateur. Texte déjà normalisé et
+ * borné par l'appelant ; `null` retire la note (choix explicite : la note
+ * disparaît, rien d'autre). Rien n'est écrit si le texte est déjà celui-là
+ * (false). La version de l'événement de référence est incrémentée pour qu'un
+ * écran resté ouvert soit averti ; AUCUN événement métier n'est émis : une
+ * note n'est pas un fait à consolider.
+ */
+export async function writeOperationNotes(
+  r: GroupingRunner, accountId: number, operationId: number, notes: string | null, authorUserId: number | null,
+): Promise<boolean> {
+  const x = await r.q<Row>(
+    `UPDATE business_operations
+        SET user_notes = $3, user_notes_updated_at = CASE WHEN $3::text IS NULL THEN NULL ELSE now() END,
+            user_notes_author_user_id = CASE WHEN $3::text IS NULL THEN NULL ELSE $4::int END,
+            version = version + 1, updated_at = now()
+      WHERE id = $1 AND account_id = $2 AND COALESCE(user_notes, '') <> COALESCE($3::text, '')
+      RETURNING id`,
+    [operationId, accountId, notes, authorUserId]);
+  return x.length > 0;
 }
 
 // ── Journal et rejeu ───────────────────────────────────────────────────────
@@ -264,6 +372,56 @@ export async function journalGraph(r: GroupingRunner, accountId: number, e: Grap
     [accountId, e.relationKind, e.operationId, e.otherOperationId ?? null, e.agendaItemId ?? null, e.fileId ?? null, e.action, e.origin,
       e.channel ?? null, e.actorUserId ?? null, e.reasonCode, JSON.stringify(e.evidence ?? []), json(e.before), json(e.after),
       e.command ?? null, e.idempotencyKey ?? null, json(e.result), e.correlationId ?? null, e.supplierId ?? null, e.inputHash ?? null]);
+}
+
+/**
+ * ABSTENTION TRACÉE (CDC §6, §16, §20 ; AC20 : « fournisseur IA indisponible :
+ * abstention, aucune écriture infondée et reprise idempotente »).
+ *
+ * Quand un passage ne peut PAS conclure parce que l'IA est indisponible, en
+ * échec, ou qu'elle refuse de trancher, il n'invente rien et ne pose aucune
+ * carte : il écrit CETTE ligne de journal, en AJOUT seul, et le cas reste en
+ * attente. L'action est `NO_CHANGE` (rien n'a changé — vocabulaire fermé des
+ * migrations 1715 à 1717, aucune valeur nouvelle) et le motif dit pourquoi
+ * (`ABSTAIN_…`). Aucune commande, aucune clé d'idempotence, aucun résultat :
+ * une abstention n'est jamais rejouée comme une écriture.
+ *
+ * IDEMPOTENCE : la même abstention sur la MÊME situation (empreinte) n'est
+ * tracée qu'UNE fois — un balayage horaire ne remplit pas le journal. Rend vrai
+ * si la ligne a été écrite, faux si elle y était déjà.
+ */
+export interface GraphAbstention {
+  relationKind: GraphRelationKind;
+  operationId: number;
+  otherOperationId?: number | null;
+  agendaItemId?: number | null;
+  fileId?: number | null;
+  /** Motif préfixé `ABSTAIN_` (indisponible, en échec, refus de trancher). */
+  reasonCode: string;
+  /** Empreinte de la SITUATION évaluée (contexte de l'IA, issue) : la mémoire de ce qui est déjà tracé. */
+  situationHash: string;
+  origin?: GraphOrigin;
+  channel?: string | null;
+  evidence?: readonly GraphEvidence[];
+  /** Détail d'exploitation (statut de la trace IA, version du prompt) — jamais une donnée métier. */
+  detail?: unknown;
+  correlationId?: string | null;
+}
+
+export async function recordAiAbstention(r: GroupingRunner, accountId: number, a: GraphAbstention): Promise<boolean> {
+  const [deja] = await r.q<Row>(
+    `SELECT id FROM business_operation_graph_history
+      WHERE account_id = $1 AND operation_id = $2 AND reason_code = $3 AND input_hash = $4 LIMIT 1`,
+    [accountId, a.operationId, a.reasonCode, a.situationHash]);
+  if (deja) return false;
+  await journalGraph(r, accountId, {
+    relationKind: a.relationKind, operationId: a.operationId, otherOperationId: a.otherOperationId ?? null,
+    agendaItemId: a.agendaItemId ?? null, fileId: a.fileId ?? null,
+    action: 'NO_CHANGE', origin: a.origin ?? 'AI', channel: a.channel ?? null, reasonCode: a.reasonCode,
+    evidence: a.evidence ?? [], before: null, after: { abstained: true, ...(a.detail !== undefined ? { detail: a.detail } : {}) },
+    inputHash: a.situationHash, correlationId: a.correlationId ?? null,
+  });
+  return true;
 }
 
 /**

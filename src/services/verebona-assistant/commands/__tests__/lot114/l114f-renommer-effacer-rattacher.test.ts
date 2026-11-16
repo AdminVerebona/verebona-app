@@ -181,7 +181,7 @@ describe('L114F-F03 — W27 passe avant la suppression d’un bien ; l’Agenda 
 describe('L114F-F04 — W13 : rattacher un document à un bien, l’en détacher', () => {
   it('« rattache le document Garantie à la Clio » : liste complète figée, autres rattachements conservés', async () => {
     const d = parseCommand('Rattache le document Garantie à la Clio', TODAY)!;
-    expect(d).toEqual({ command: 'UPDATE_DOCUMENT_TARGETS', mode: 'attach', structureTarget: false, assetWords: ['clio'], assetFromContext: false, documentWords: ['garantie'], documentFromContext: false });
+    expect(d).toEqual({ command: 'UPDATE_DOCUMENT_TARGETS', mode: 'attach', structureTarget: null, assetWords: ['clio'], assetFromContext: false, documentWords: ['garantie'], documentFromContext: false });
     const cibles = { 33: { chosen: [{ id: 5, name: 'Maison' }], implied: [] } };
     const a = await resolveDraft(d, input, lookup({ cibles }));
     expect(a).toMatchObject({
@@ -237,11 +237,15 @@ describe('L114F-F04 — W13 : rattacher un document à un bien, l’en détacher
     expect(besoin(await resolveDraft(b, input, lookup()))).toBe('À quel bien voulez-vous rattacher « Garantie » ?');
   });
 
-  it('pièce ou équipement : dit, rien n’est proposé (depuis le document)', async () => {
-    const d = parseCommand('Rattache le document Garantie à la pièce Cuisine', TODAY)!;
-    expect(d).toMatchObject({ command: 'UPDATE_DOCUMENT_TARGETS', structureTarget: true, assetWords: [] });
-    expect(besoin(await resolveDraft(d, input, lookup())))
-      .toBe('Depuis l’assistant, un document se rattache à un bien. Pour une pièce ou un équipement, ouvrez le document et modifiez ses rattachements.');
+  // Règle remplacée (carte #753, passage 114AA) : une pièce ou un équipement était refusé (« ouvrez le
+  // document… »). Le rattachement à une pièce et à un équipement est désormais pris en charge ; ce test
+  // vérifie que le brouillon porte le TYPE et les mots de la cible, et le reste est prouvé dans
+  // `l114aa-document-piece-equipement.test.ts`.
+  it('pièce ou équipement : le brouillon porte le type et les mots de la cible', () => {
+    expect(parseCommand('Rattache le document Garantie à la pièce Cuisine', TODAY))
+      .toMatchObject({ command: 'UPDATE_DOCUMENT_TARGETS', structureTarget: { kind: 'room', words: ['cuisine'] }, assetWords: [] });
+    expect(parseCommand('Rattache le document Garantie à l’équipement Chaudière', TODAY))
+      .toMatchObject({ command: 'UPDATE_DOCUMENT_TARGETS', structureTarget: { kind: 'equipment', words: ['chaudiere'] }, assetWords: [] });
   });
 });
 
@@ -307,7 +311,8 @@ describe('L114F-F06 — une seule écriture métier, fiches de commande', () => 
     const lier = executeur('UPDATE_DOCUMENT_TARGETS');
     expect(lier).toMatch(/updateDocumentForAccount\(/);
     expect(lier).toMatch(/assetIds: p\.targetAssetIds/);
-    expect(lier).toMatch(/documentTargetsVersion\(etat\.version, cibles\.chosen\.map\(\(a\) => a\.id\)\) !== p\.expectedVersion/);
+    expect(lier).toMatch(/documentTargetsVersion\(\s*etat\.version, cibles\.chosen\.map\(\(a\) => a\.id\)/);
+    expect(lier).toMatch(/relue !== p\.expectedVersion/);
     expect(lier).not.toMatch(/INSERT INTO|UPDATE asset_files|document_links/);
   });
 

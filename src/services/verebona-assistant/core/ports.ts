@@ -28,6 +28,7 @@ import type { ActionIntent } from '../types/actions';
 import { retrieve, retrieveNear } from './retrieval.service';
 import { detectHelpContradiction, helpArticlePublished, isHelpIntent } from './help-corpus.service';
 import { areWriteCommandsEnabled, getAssistantConfig } from '../config/assistant-config';
+import { isAssistantFlagOn } from '../config/assistant-flags.server';
 import { cachedRetrieve } from './retrieval-cache';
 import { RETRIEVAL_CACHE_HIT_EVENT } from './assistant-orchestrator.service';
 import { registerAssistantBusinessEventHandlers } from '../events/handlers';
@@ -35,6 +36,7 @@ import { checkMonthlyBudget } from './budget.service';
 import { isRequestCancelled } from './request-lifecycle.service';
 import { resolveSourcesForDisplay } from './source-resolver.service';
 import { resolveActions, exigeUneCible, type AccessChecker } from './action-resolver.service';
+import { withHelpArticleLinks } from './help-article-link';
 import { parseEntityRef } from './entity-ref';
 import { PAYLOAD_SOURCES, idsPresentes } from './action-selection';
 import type { Claim } from '../types/sources';
@@ -415,7 +417,10 @@ export function buildOrchestratorPorts(): OrchestratorPorts {
         planType: input.planType,
         planLimit: accountLimitOf(input),
         premiumExports: premiumBusinessRightOf(input),
-      }).then((actions) => actions.filter((a) => a.href !== null || !a.type.startsWith('OPEN_'))),
+      }).then((actions) => actions.filter((a) => a.href !== null || !a.type.startsWith('OPEN_')))
+        // Trello #753 (CDC T2 §7.6) : l'article d'aide s'affiche en LIEN TEXTUEL portant son titre, pris sur les
+        // sources lues par le serveur (jamais sur une sortie de modèle) ; sans titre connu, l'action reste un bouton.
+        .then((actions) => withHelpArticleLinks(actions, sources)),
 
     persist: (result, input) => persistResult(result, input),
 
@@ -465,6 +470,46 @@ export function buildOrchestratorPorts(): OrchestratorPorts {
       const r = await prepareCommand(input);
       if (!r) return null;
       return r.kind === 'plan' ? { kind: 'plan' as const, preview: r.preview } : r;
+    },
+
+    // Trello #753 (W11) : dépôt d'un fichier demandé — même interrupteur que les actions de l'Assistant.
+    prepareUpload: async (input) => {
+      if (!areWriteCommandsEnabled()) return null;
+      const { answerUploadRequest, parseUploadRequest, sqlUploadDeps } = await import('../commands/upload-request');
+      if (!parseUploadRequest(input.message)) return null;
+      return answerUploadRequest(input, await sqlUploadDeps());
+    },
+
+    // Trello #753 (annexe A13, bloc PO n° 40) : actions comprises par le sens — même interrupteur que les commandes.
+    prepareActionHints: async (input, hints, opts) => {
+      if (!areWriteCommandsEnabled()) return null;
+      const { prepareFromActionHints, sqlActionHintsDeps } = await import('../commands/action-hints');
+      return prepareFromActionHints(input, hints, opts, await sqlActionHintsDeps());
+    },
+
+    // Trello #753 (D25) : sources sur demande — lues dans l'enregistrement de la réponse précédente du fil.
+    // Flag `sources` coupé : rien n'est exposé (la demande suit le parcours normal).
+    discloseSources: async (input) => {
+      if (!input.conversationId || !isAssistantFlagOn('sources')) return null;
+      const { discloseSources, sqlSourceDisclosureDeps } = await import('./source-disclosure');
+      return discloseSources({ accountId: input.accountId, userId: input.userId, conversationId: input.conversationId }, await sqlSourceDisclosureDeps());
+    },
+
+    // Trello #753 (W28) : export demandé dans le fil — génération directe par la façade du service d'export.
+    // Coupé avec les actions de l'Assistant (même interrupteur) : la demande suit alors le parcours d'aide, comme avant.
+    generateExport: async (input) => {
+      if (!areWriteCommandsEnabled()) return null;
+      const { answerExportRequest, parseExportRequest, sqlExportDeps } = await import('../commands/export-request');
+      if (!parseExportRequest(input.message)) return null;
+      try {
+        return await answerExportRequest(input, await sqlExportDeps());
+      } catch (e) {
+        // La phrase EST une demande d'export : une panne se dit (message du service d'export), elle ne se
+        // transforme pas en réponse d'aide.
+        console.error('[verebona] export demandé depuis l’assistant : échec inattendu :', (e as Error).message);
+        const { EXPORT_ERROR_MESSAGES } = await import('@/services/exports/export-errors');
+        return { kind: 'refused' as const, message: EXPORT_ERROR_MESSAGES.EXPORT_INTERNAL_ERROR };
+      }
     },
 
     // Annulation effective (§7.8, §9.7) : consultée avant chaque appel modèle.

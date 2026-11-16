@@ -71,6 +71,8 @@ export interface RouteUnderstanding {
    * QUERY sans information apportée (versions de prompt antérieures).
    */
   interaction?: RouteInteraction;
+  /** Trello #753 (annexe A13) : actions comprises par le sens — absentes avec un prompt qui ne les produit pas. */
+  actions?: ActionHint[];
 }
 
 export type InteractionMode = 'QUERY' | 'UPDATE_PROPOSAL' | 'ACTION_REQUEST' | 'CONTEXT_ONLY' | 'MIXED' | 'AMBIGUOUS';
@@ -90,6 +92,18 @@ export interface SuppliedFact {
 export interface RouteInteraction {
   mode: InteractionMode;
   suppliedFacts: SuppliedFact[];
+}
+
+/**
+ * Trello #753 (CDC T2 §9.3, annexe A13) — action comprise par le sens (UNDERSTAND) : INDICES, jamais une commande.
+ * Le serveur seul la rapproche de son catalogue fermé, résout la cible dans le compte et prépare un plan à confirmer.
+ */
+export interface ActionHint {
+  operation: 'CREATE' | 'UPDATE' | 'DELETE' | 'LINK' | 'UNLINK' | 'EXPORT';
+  entityType: 'asset' | 'equipment' | 'room' | 'document' | 'agenda_item' | 'business_operation' | 'supplier' | 'relation' | 'export';
+  targetHint: string | null;
+  fieldChanges: Array<{ fieldHint: string; value: string | null; unit: string | null }>;
+  evidencePhrase: string | null;
 }
 
 /**
@@ -124,6 +138,13 @@ export interface AssistantApiResponse {
     expiresAt: string;
     choices: Array<{ choiceId: string; label: string; secondaryLabel?: string }>;
   } | null;
+  /**
+   * Trello #753 (CDC T2 §8.3, §12.4, §13.8) — présentation de `answer` en blocs (paragraphes, listes, montants mis
+   * en évidence), DÉRIVÉE du texte validé : même contenu factuel, rien d'ajouté. Facultatif : absent quand la
+   * réponse tient en un paragraphe simple, en cas d'erreur, ou pour une chronologie (`events`). Un client qui
+   * l'ignore affiche `answer`.
+   */
+  answerBlocks?: import('@/lib/verebona/answer-blocks').AnswerBlock[];
   /** Commande préparée : aperçu à confirmer (jamais de paramètres modifiables). */
   commandPlan?: import('../commands/catalog').CommandPlanPreview | null;
   /**
@@ -145,6 +166,13 @@ export interface AssistantApiResponse {
   error?: { code: VerebonaErrorCode; message: string; recoverable: boolean } | null;
   /** §27.11 : codes informatifs non bloquants (voir `AssistantRunResult.notices`). */
   notices?: AssistantNotice[];
+  /**
+   * Trello #753, passage 114AA (CDC T2 §9.10, §14.3 W28) — cartes d'un message ANTÉRIEUR du fil dont l'état a
+   * changé depuis qu'il a été répondu : un dossier d'export mis en préparation est devenu prêt. Le client
+   * remplace les cartes de ce message (« En préparation » → « Prêt », avec son lien). Rien n'est réécrit en
+   * base ; absent quand rien n'a changé — c'est-à-dire presque toujours.
+   */
+  cardUpdates?: import('../core/export-card-state').MiseAJourCarte[];
 }
 
 /** Codes fonctionnels stables — CDC §27.11. */
@@ -225,6 +253,14 @@ export interface AssistantRequestInput {
   reference?: { type: 'asset' | 'document' | 'agenda_item' | 'equipment' | 'room'; id: number; label?: string | null; method: string };
   /** Contexte borné du fil, pour le modèle s'il est appelé. */
   threadContextText?: string;
+  /**
+   * Trello #753, passage 114AA (CDC T2 §6.1, §14.3 W21 – W26) — ÉVÉNEMENT DE RÉFÉRENCE du fil : le dernier sur
+   * lequel une action de CE fil a réellement abouti. Il donne un sens à « celui-ci » / « cet événement de
+   * référence » d'un tour à l'autre. Lu dans le contexte du fil de l'utilisateur, jamais fourni par le client, et
+   * toujours re-vérifié dans le compte avant d'être utilisé (une action le concernant demande une confirmation
+   * comme n'importe quelle autre).
+   */
+  threadReferenceEventId?: number | null;
   /** Une revalidation ciblée a déjà eu lieu pour cette demande (pas de boucle). */
   revalidationDone?: boolean;
   /**

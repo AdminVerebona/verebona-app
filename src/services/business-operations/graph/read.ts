@@ -256,3 +256,29 @@ export async function readAgendaItemsReferenceEvents(
   }
   return out;
 }
+
+// ── Mémoire d'une SCISSION (CDC §7, AC46 « refus de refusion ») ────────────
+
+/**
+ * Ces deux événements de référence ont-ils été SÉPARÉS par l'utilisateur (une
+ * scission depuis la fiche, `splitOperation`) ? La mémoire est le motif
+ * `USER_SPLIT` de la relation gardée entre eux, dans un sens ou dans l'autre,
+ * quel que soit son état actuel (même dissociés ensuite, la séparation a eu
+ * lieu).
+ *
+ * À LIRE AVANT TOUTE REFUSION (fusion automatique de T3, carte « À traiter »
+ * proposant de regrouper) : une séparation décidée par l'utilisateur ne
+ * s'inverse pas sans lui (CDC §7 : « Mémoriser la séparation ; un rejeu T3
+ * n'inverse pas cette décision »). Lecture seule, bornée au compte.
+ */
+export async function wasSplitApart(
+  accountId: number, operationAId: number, operationBId: number, runner: GroupingRunner = drizzleRunner(db),
+): Promise<boolean> {
+  const [x] = await runner.q<Row>(
+    `SELECT 1 AS ok FROM business_operation_relations
+      WHERE account_id = $1 AND reason_code = 'USER_SPLIT'
+        AND LEAST(from_operation_id, to_operation_id) = LEAST($2::bigint, $3::bigint)
+        AND GREATEST(from_operation_id, to_operation_id) = GREATEST($2::bigint, $3::bigint)
+      LIMIT 1`, [accountId, operationAId, operationBId]);
+  return !!x;
+}

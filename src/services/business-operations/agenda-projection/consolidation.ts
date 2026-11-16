@@ -82,13 +82,16 @@ export const ABSORBABLE_SQL = `
                      AND (k.absorbed_item_id = i.id OR (k.kind <> 'ABSORB' AND k.principal_item_id = i.id)))`;
 
 /**
- * Lot 82D (V-Q4) : la fusion reste réservée aux occurrences réellement identiques — un élément ABSORBÉ n'est
- * jamais le principal d'une Opération, ni un élément que l'utilisateur a rattaché comme élément distinct
- * (étape, échéance). (Le changement d'intitulé du principal garde `ABSORBABLE_SQL` seul.)
+ * Lot 82D (V-Q4) : la fusion reste réservée aux occurrences réellement identiques — un élément ABSORBÉ ne
+ * PORTE jamais un fait de son Opération, et n'est jamais un élément que l'utilisateur a rattaché comme
+ * élément distinct (étape, échéance). (Le changement d'intitulé garde `ABSORBABLE_SQL` seul.)
+ * Lot 114O (#744) : lu sur le LIEN N↔N (fait porté, origine du lien), plus sur un rôle.
  */
 export const ABSORBABLE_ROLE_SQL = `
-  AND i.operation_role IS DISTINCT FROM 'PRINCIPAL'
-  AND i.operation_role_origin IS DISTINCT FROM 'USER'`;
+  AND NOT EXISTS (SELECT 1 FROM business_operation_agenda_links g
+                   WHERE g.account_id = i.account_id AND g.operation_id = i.business_operation_id
+                     AND g.agenda_item_id = i.id AND g.state = 'ACTIVE'
+                     AND (g.fact_key IS NOT NULL OR g.origin = 'USER'))`;
 
 interface ConsolidationInput {
   accountId: number;

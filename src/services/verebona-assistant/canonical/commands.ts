@@ -29,6 +29,9 @@ export async function commandAssetState(accountId: number, assetId: number, run:
     status: (r.status as string | null) ?? null,
     lockState: (r.lock_state as string | null) ?? null,
     characteristics,
+    // Passage 114AA (W02) : classement du bien, tel que la fiche l'affiche (« Catégorie de bien »).
+    subtype: (r.subtype as string | null) ?? null,
+    objectCategory: (r.object_category as string | null) ?? null,
   };
 }
 

@@ -198,17 +198,17 @@ describe('O7-20 — plan : création, mise à jour, statut, idempotence', () => 
   // #715 : plus de MARK_DONE / PROPOSE_DONE (aucun statut d'événement, aucune demande de confirmation).
   it('O7-23 — élément T4 lié et intact, élément saisi : ni marqué réalisé, ni réalisation proposée ; jamais réécrit', () => {
     // Lot 83A : l'élément qui représente l'Opération est son PRINCIPAL (rôle porté par l'instantané).
-    const t4 = item({ id: 22, isAutomatic: true, businessOperationId: 10, nature: 'DEADLINE', title: 'Entretien chaudière', operationRole: 'PRINCIPAL', operationRoleOrigin: 'T4' });
+    const t4 = item({ id: 22, isAutomatic: true, businessOperationId: 10, nature: 'DEADLINE', title: 'Entretien chaudière', carriedFact: 'INTERVENTION', carrierOrigin: 'AI' });
     expect(plan(op(), { linked: [t4] })).toEqual([]);
     // Lot 83A : membre lié sans être principal ; lot 87B — test corrigé : sans provenance (même bien, intitulé, date),
     // il n'est plus promu principal d'office : décision T4 demandée et carte D14 ; avec provenance, reconnu (AC15).
-    expect(plan(op(), { linked: [{ ...t4, operationRole: 'RELATED' }] })).toEqual([
+    expect(plan(op(), { linked: [{ ...t4, carriedFact: null }] })).toEqual([
       expect.objectContaining({ kind: 'ABSTAIN', itemId: 22 }), { kind: 'REPRESENTATION_REQUIRED', itemIds: [22], reason: 'MEMBER_MAY_REPRESENT_EVENT' },
     ]);
-    expect(plan(op(), { linked: [{ ...t4, operationRole: 'RELATED', fileIds: [77] }] })).toEqual([
+    expect(plan(op(), { linked: [{ ...t4, carriedFact: null, fileIds: [77] }] })).toEqual([
       { kind: 'LINK', itemId: 22, reason: expect.stringContaining('élément du regroupement') },
     ]);
-    const manuel = item({ id: 23, businessOperationId: 10, title: 'Mon RDV', operationRole: 'PRINCIPAL', operationRoleOrigin: 'USER' });
+    const manuel = item({ id: 23, businessOperationId: 10, title: 'Mon RDV', carriedFact: 'INTERVENTION', carrierOrigin: 'USER' });
     expect(plan(op(), { linked: [manuel] })).toEqual([]);
   });
   it('O7-24 — projection modifiée par l\'utilisateur : jamais réécrite (titre, date)', () => {
@@ -225,13 +225,14 @@ describe('O7-20 — plan : création, mise à jour, statut, idempotence', () => 
   });
   it('O7-26 — fusion / lien posé à côté d\'une projection : un seul événement (C22 « unifier ») — lot 83A : seulement face au PRINCIPAL', () => {
     // Lot 83A — test corrigé : la projection n'est retirée que comme doublon du principal ; une étape liée (AC34) ne l'évince jamais.
-    const user = item({ id: 26, businessOperationId: 10, title: 'Sinistre cuisine', nature: 'HISTORICAL', operationRole: 'PRINCIPAL', operationRoleOrigin: 'USER' });
-    const proj = item({ id: 27, projected: true, isAutomatic: true, businessOperationId: 10, functionalKey: 'bo:v1:3:CLAIM', operationRole: 'RELATED', operationRoleOrigin: 'T4' });
+    const user = item({ id: 26, businessOperationId: 10, title: 'Sinistre cuisine', nature: 'HISTORICAL', carriedFact: 'CLAIM', carrierOrigin: 'USER' });
+    const proj = item({ id: 27, projected: true, isAutomatic: true, businessOperationId: 10, functionalKey: 'bo:v1:3:CLAIM', carriedFact: null, carrierOrigin: 'AI' });
     expect(plan(op({ typeCode: 'CLAIM' }), { linked: [proj, user] })).toEqual([{ kind: 'REMOVE', itemId: 27, reason: 'DUPLICATE_PROJECTION' }]);
-    const etape = { ...user, title: 'Visite expert', operationRole: 'RELATED' as const };
-    const principal = { ...proj, operationRole: 'PRINCIPAL' as const };
+    const etape = { ...user, title: 'Visite expert', carriedFact: null };
+    const principal = { ...proj, carriedFact: 'CLAIM' };
     const p2 = plan(op({ typeCode: 'CLAIM' }), { linked: [principal, etape] });
-    expect(p2.some((a) => a.kind === 'REMOVE' || (a.kind === 'ROLE' && a.itemId === 26))).toBe(false);
+    // Règle remplacée (carte #744, travaux F) : la projection ne pose plus de rôle ; l'action ROLE n'existe plus.
+    expect(p2.some((a) => a.kind === 'REMOVE')).toBe(false);
   });
   it('C22 — Opération invalidée : projection intacte retirée, touchée ou saisie détachée', () => {
     const proj = item({ id: 30, projected: true, isAutomatic: true, businessOperationId: 10 });

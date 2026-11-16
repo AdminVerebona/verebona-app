@@ -366,8 +366,12 @@ scenario('L105C', 'T4 : un prompt maître, une activation (bundle complet)', ({ 
       const res = await sem.reevaluateRepresentation({ accountId: x.compte.id, operationId: x.op, trigger: 'MANUAL', today: AUJ, extraItemIds: [] });
       expect(res).toMatchObject({ status: 'APPLIED', aiCalls: 1 });
       expect(appels.t4.at(-1)).toMatchObject({ task: 'AGENDA_REPRESENTATION' });
+      // RÈGLE REMPLACÉE (carte #744, travaux F) : la représentation T4 appliquée ne pose plus de rôle — elle pose le
+      // FAIT PORTÉ sur le lien N↔N. La colonne historique reste tenue à RELATED par son déclencheur.
       const evts = await sql<Json[]>`SELECT operation_role FROM agenda_items WHERE account_id = ${x.compte.id}`;
-      expect(evts).toEqual([{ operation_role: 'PRINCIPAL' }]);
+      expect(evts).toEqual([{ operation_role: 'RELATED' }]);
+      expect(await sql<Json[]>`SELECT fact_key IS NOT NULL AS porte FROM business_operation_agenda_links
+        WHERE operation_id = ${x.op} AND state = 'ACTIVE'`).toEqual([{ porte: true }]);
 
       // b) Réponse qui désigne un élément absent du contexte : refusée en bloc, aucune écriture.
       setDefaultResponder('t4_agenda_representation', 'AGENDA_REPRESENTATION', (input) => {

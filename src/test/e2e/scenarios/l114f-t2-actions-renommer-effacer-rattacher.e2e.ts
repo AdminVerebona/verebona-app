@@ -218,6 +218,78 @@ scenario('L114F-ACTIONS', 'Lot 114F — renommer un bien, effacer une caractéri
     expect(await biensDe(b, docB)).toEqual([poloB]);
   });
 
+  it('L114F-E08 — W13 (passage 114AA) : document rattaché à une pièce puis à un équipement, détaché ; autres niveaux conservés', async () => {
+    const c = await compte();
+    const autre = await compte();
+    const maison = await make.asset(c as never, { name: 'Maison', category: 'IMMOBILIER' });
+    await sql`UPDATE assets SET status = 'EN_SERVICE', subtype = 'Maison' WHERE id = ${maison.id}`;
+    const clio = await bien(c, 'Clio');
+    const [cuisine] = await sql<Json[]>`
+      INSERT INTO substructures (asset_id, name, order_index, scope, public_id, created_at, updated_at)
+      VALUES (${maison.id}, 'Cuisine', 0, 'personal', gen_random_uuid(), now(), now()) RETURNING id`;
+    const [chaudiere] = await sql<Json[]>`
+      INSERT INTO equipments (asset_id, substructure_id, name, status, created_at, updated_at)
+      VALUES (${maison.id}, ${cuisine.id}, 'Chaudière', 'EN_SERVICE', now(), now()) RETURNING id`;
+    const id = await document(c, clio, 'Garantie');
+    const niveaux = async () => {
+      const [{ db }, { readDocumentTargets }] = await Promise.all([import('@/db'), import('@/services/documents/document-targets/service')]);
+      const vue = await readDocumentTargets(db as never, c.id, id);
+      const propres = (l: Array<{ id: number; implied: boolean }>) => l.filter((x) => !x.implied).map((x) => x.id).sort((a, b) => a - b);
+      return { biens: propres(vue!.assets), pieces: propres(vue!.rooms), equipements: propres(vue!.equipments) };
+    };
+    expect(await niveaux()).toEqual({ biens: [clio], pieces: [], equipements: [] });
+
+    // Rattacher à une pièce : seul le niveau « pièce » change ; le bien rattaché reste.
+    const r = planDe(await demander(c, 'Rattache le document Garantie à la pièce Cuisine'));
+    expect(r.preview.summary).toBe('Rattacher le document « Garantie » à la pièce « Cuisine » (Maison). Confirmez-vous ?');
+    expect(r.plan.actions[0].effects).toContain('Pièces rattachées : aucun → Cuisine');
+    expect(await niveaux()).toEqual({ biens: [clio], pieces: [], equipements: [] });
+    expect(await confirmer(c, r.plan.planId)).toMatchObject({ ok: true, status: 'EXECUTED', undoUntil: null });
+    expect(await niveaux()).toEqual({ biens: [clio], pieces: [Number(cuisine.id)], equipements: [] });
+    // Le document n'est pas supprimé et garde son titre et sa date.
+    const [f] = await sql<Json[]>`SELECT deleted_at, document_date::text AS document_date, retained_title FROM asset_files WHERE id = ${id}`;
+    expect(f).toMatchObject({ deleted_at: null, document_date: '2026-03-10', retained_title: 'Garantie' });
+    // Déjà rattaché : aucun plan.
+    expect(await demander(c, 'Rattache le document Garantie à la pièce Cuisine'))
+      .toMatchObject({ kind: 'need_info', message: '« Garantie » est déjà rattaché à la pièce « Cuisine » (Maison).' });
+
+    // Rattacher à un équipement : la pièce et le bien gardent leur sélection.
+    const e = planDe(await demander(c, 'Rattache le document Garantie à l’équipement Chaudière'));
+    expect(e.preview.summary).toBe('Rattacher le document « Garantie » à l’équipement « Chaudière » (Maison). Confirmez-vous ?');
+    expect(await confirmer(c, e.plan.planId)).toMatchObject({ ok: true, status: 'EXECUTED' });
+    expect(await niveaux()).toEqual({ biens: [clio], pieces: [Number(cuisine.id)], equipements: [Number(chaudiere.id)] });
+
+    // Détacher la pièce : l'équipement et le bien restent.
+    const d = planDe(await demander(c, 'Détache le document Garantie de la pièce Cuisine'));
+    expect(d.preview.summary).toBe('Détacher le document « Garantie » de la pièce « Cuisine » (Maison). Confirmez-vous ?');
+    expect(await confirmer(c, d.plan.planId)).toMatchObject({ ok: true, status: 'EXECUTED' });
+    expect(await niveaux()).toEqual({ biens: [clio], pieces: [], equipements: [Number(chaudiere.id)] });
+    expect(await demander(c, 'Détache le document Garantie de la pièce Cuisine'))
+      .toMatchObject({ kind: 'need_info', message: '« Garantie » n’est pas rattaché à la pièce « Cuisine » (Maison).' });
+
+    // Niveau modifié entre l'aperçu et la confirmation : rien n'est écrit (l'empreinte couvre les trois niveaux).
+    const p = planDe(await demander(c, 'Rattache le document Garantie à la pièce Cuisine'));
+    const q = planDe(await demander(c, 'Détache le document Garantie de l’équipement Chaudière'));
+    expect(await confirmer(c, q.plan.planId)).toMatchObject({ ok: true, status: 'EXECUTED' });
+    const conf = await confirmer(c, p.plan.planId);
+    expect(conf).toMatchObject({ ok: true, status: 'FAILED' });
+    expect(JSON.stringify(conf)).toMatch(/modifié depuis l’aperçu : rien n’a été fait/);
+    expect(await niveaux()).toEqual({ biens: [clio], pieces: [], equipements: [] });
+
+    // Cloisonnement : la pièce et l'équipement d'un autre compte ne sont jamais atteints.
+    const maisonB = await make.asset(autre as never, { name: 'Maison', category: 'IMMOBILIER' });
+    await sql`UPDATE assets SET status = 'EN_SERVICE', subtype = 'Maison' WHERE id = ${maisonB.id}`;
+    const docB = await document(autre, maisonB.id as number, 'Notice');
+    expect(await demander(autre, 'Rattache le document Notice à la pièce Cuisine'))
+      .toMatchObject({ kind: 'need_info', message: 'Je n’ai pas trouvé cette pièce dans votre compte. À quelle pièce voulez-vous rattacher « Notice » ?' });
+    expect(await demander(autre, 'Rattache le document Notice à l’équipement Chaudière'))
+      .toMatchObject({ kind: 'need_info', message: expect.stringMatching(/^Je n’ai pas trouvé cet équipement dans votre compte\./) });
+    expect(await demander(c, 'Rattache le document Notice à la pièce Cuisine'))
+      .toMatchObject({ kind: 'need_info', message: expect.stringMatching(/^Je n’ai pas trouvé ce document/) });
+    const [fb] = await sql<Json[]>`SELECT substructure_id, equipment_id FROM asset_files WHERE id = ${docB}`;
+    expect(fb).toMatchObject({ substructure_id: null, equipment_id: null });
+  });
+
   it('L114F-E07 — non-régression : modifier une caractéristique (corps partagé avec l’effacement), puis « Annuler »', async () => {
     const c = await compte();
     const clio = await bien(c, 'Clio', { keyCharacteristics: { mileage: 45000 } });

@@ -64,13 +64,27 @@ scenario('L83A', 'Opérations v5 — O-7 : projection Agenda multi-éléments, p
     ids ? { operationIds: ids, correlationId: 'l83a', today: AUJ } : { all: true, correlationId: 'l83a', today: AUJ });
   const g = async <T>(compte: AccountRow, fn: (ctx: import('@/services/business-operations/grouping/service').GroupingContext) => Promise<T>, actorUserId: number | null = null) =>
     (await grouping()).withGroupingWrite(compte.id, fn, { actorUserId });
+  /**
+   * RÈGLE REMPLACÉE (carte #744, travaux F) : la projection T4 et le service de regroupement n'écrivent plus
+   * `agenda_items.operation_role` / `operation_role_origin` (la colonne historique reste tenue à RELATED / NULL par son
+   * seul déclencheur `agenda_items_operation_role_sync`). `role` et `origin` sont DÉRIVÉS du lien N↔N :
+   * porteur du FAIT PORTÉ → PRINCIPAL, membre de plein droit → RELATED, non rattaché → NULL ; l'autorité vient de
+   * l'origine du lien (USER → USER, AI → T4, MIGRATION / SYSTEM → SYSTEM). Le vocabulaire des attentes est inchangé,
+   * seule sa SOURCE change. Conséquence assumée : l'origine du graphe ne distingue pas T3 de T4 (toutes deux « AI »).
+   */
   const elements = (compte: AccountRow) => sql<Json[]>`
-    SELECT id, title, start_date::text AS date, no_deadline, projection_origin AS proj, business_operation_id::int AS op,
-           operation_role AS role, operation_role_origin AS origin, event_nature AS nature, is_automatic_modified AS modified
-      FROM agenda_items WHERE account_id = ${compte.id} ORDER BY id`;
+    SELECT i.id, i.title, i.start_date::text AS date, i.no_deadline, i.projection_origin AS proj, i.business_operation_id::int AS op,
+           (SELECT CASE WHEN g.fact_key IS NOT NULL THEN 'PRINCIPAL' ELSE 'RELATED' END FROM business_operation_agenda_links g
+             WHERE g.account_id = i.account_id AND g.operation_id = i.business_operation_id AND g.agenda_item_id = i.id AND g.state = 'ACTIVE') AS role,
+           (SELECT CASE g.origin WHEN 'USER' THEN 'USER' WHEN 'AI' THEN 'T4' ELSE 'SYSTEM' END FROM business_operation_agenda_links g
+             WHERE g.account_id = i.account_id AND g.operation_id = i.business_operation_id AND g.agenda_item_id = i.id AND g.state = 'ACTIVE') AS origin, i.event_nature AS nature, i.is_automatic_modified AS modified
+      FROM agenda_items i WHERE i.account_id = ${compte.id} ORDER BY i.id`;
   const element = async (id: number) => (await sql<Json[]>`
-    SELECT id, title, start_date::text AS date, no_deadline, projection_origin AS proj, business_operation_id::int AS op,
-           operation_role AS role, operation_role_origin AS origin, is_automatic_modified AS modified FROM agenda_items WHERE id = ${id}`)[0];
+    SELECT i.id, i.title, i.start_date::text AS date, i.no_deadline, i.projection_origin AS proj, i.business_operation_id::int AS op,
+           (SELECT CASE WHEN g.fact_key IS NOT NULL THEN 'PRINCIPAL' ELSE 'RELATED' END FROM business_operation_agenda_links g
+             WHERE g.account_id = i.account_id AND g.operation_id = i.business_operation_id AND g.agenda_item_id = i.id AND g.state = 'ACTIVE') AS role,
+           (SELECT CASE g.origin WHEN 'USER' THEN 'USER' WHEN 'AI' THEN 'T4' ELSE 'SYSTEM' END FROM business_operation_agenda_links g
+             WHERE g.account_id = i.account_id AND g.operation_id = i.business_operation_id AND g.agenda_item_id = i.id AND g.state = 'ACTIVE') AS origin, i.is_automatic_modified AS modified FROM agenda_items i WHERE i.id = ${id}`)[0];
   const cartesDate = (itemId: number) => sql<Json[]>`
     SELECT id, public_id, rule_code, action_kind, resolved_at IS NOT NULL AS resolu, resolution_reason, proposals_json AS proposals
       FROM to_process_actions WHERE target_type = 'AGENDA_ITEM' AND target_id = ${itemId} AND field_key = 'date' ORDER BY id`;
@@ -144,7 +158,7 @@ scenario('L83A', 'Opérations v5 — O-7 : projection Agenda multi-éléments, p
     const principal = tous.find((i) => i.role === 'PRINCIPAL')!;
     expect(principal).toMatchObject({ op, title: 'Dégât des eaux', date: '2026-03-12', proj: 'OPERATION', origin: 'T4', nature: 'HISTORICAL' });
     expect(await element(visite.id)).toMatchObject({ op, role: 'RELATED', origin: 'USER' });
-    expect(await element(reparation.id)).toMatchObject({ op, role: 'RELATED', origin: 'T3' });
+    expect(await element(reparation.id)).toMatchObject({ op, role: 'RELATED', origin: 'T4' }); // T3 et T4 partagent l'origine « AI » du graphe
     expect(tous).toHaveLength(3);
     expect((await projeter(c.compte, [op])).changes).toBe(0);
   });
@@ -167,6 +181,16 @@ scenario('L83A', 'Opérations v5 — O-7 : projection Agenda multi-éléments, p
     const [p] = await elements(c.compte);
     // AC17 / AC18 / §11.5 : créé sans date, aucune date inventée, « Sans échéance » NON posée.
     expect(p).toMatchObject({ op, role: 'PRINCIPAL', origin: 'T4', proj: 'OPERATION', date: null, no_deadline: false, title: 'Dégât des eaux' });
+    // ⚠ DÉPENDANCE À TRAITER HORS DE CE PÉRIMÈTRE (carte #744, travaux F) — ROUGE ASSUMÉ ET SIGNALÉ.
+    // `src/services/to-process/producers.service.ts`, fonction `principalDateContexts`, dernière ligne de la requête :
+    //     AND i.operation_role = 'PRINCIPAL'
+    // est la DERNIÈRE lecture du rôle qui change un comportement visible. La projection T4 n'écrivant plus le rôle,
+    // cette carte n'est plus produite. Correctif (une ligne, à appliquer par l'agent de `src/services/to-process/`) :
+    //     AND EXISTS (SELECT 1 FROM business_operation_agenda_links g
+    //                  WHERE g.account_id = i.account_id AND g.operation_id = i.business_operation_id
+    //                    AND g.agenda_item_id = i.id AND g.state = 'ACTIVE' AND g.fact_key IS NOT NULL)
+    // L'attente ci-dessous est CONSERVÉE TELLE QUELLE : c'est le comportement attendu, et sa rougeur est la preuve
+    // de la régression. Elle redevient verte dès le correctif ci-dessus, sans rien changer à ce scénario.
     // Carte « À traiter » EXISTANTE (DATA-AGENDA-DATE) : la date du principal est nécessaire (Timeline, dossier).
     expect(await cartesDate(p.id)).toEqual([expect.objectContaining({ rule_code: 'DATA-AGENDA-DATE', action_kind: 'COMPLETE', resolu: false })]);
     // Rejouée : aucune écriture, aucune seconde carte.

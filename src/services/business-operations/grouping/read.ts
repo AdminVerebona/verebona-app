@@ -18,17 +18,21 @@ import { operationDisplayHousingAssetIds } from '@/services/agenda/housing-scope
 
 const CANDIDATE_LIMIT = 30;
 
-interface ItemCtx { id: number; op: number | null; role: 'PRINCIPAL' | 'RELATED' | null }
+/** Lot 114O (#744) : `carriesFact` — le lien N↔N porte un fait de l'ensemble (remplace le rôle « principal »). */
+interface ItemCtx { id: number; op: number | null; carriesFact: boolean }
 
 async function itemContext(r: GroupingRunner, accountId: number, itemId: number): Promise<ItemCtx | null> {
-  const [i] = await r.q<{ id: number; op: string | null; role: 'PRINCIPAL' | 'RELATED' | null; active: boolean | null }>(
-    `SELECT i.id, i.business_operation_id AS op, i.operation_role AS role,
+  const [i] = await r.q<{ id: number; op: string | null; fact: string | null; active: boolean | null }>(
+    `SELECT i.id, i.business_operation_id AS op, g.fact_key AS fact,
             (o.id IS NOT NULL AND o.account_id = i.account_id AND o.invalidated_at IS NULL AND o.merged_into_operation_id IS NULL) AS active
-       FROM agenda_items i LEFT JOIN business_operations o ON o.id = i.business_operation_id
+       FROM agenda_items i
+       LEFT JOIN business_operations o ON o.id = i.business_operation_id
+       LEFT JOIN business_operation_agenda_links g ON g.account_id = i.account_id AND g.operation_id = i.business_operation_id
+              AND g.agenda_item_id = i.id AND g.state = 'ACTIVE'
       WHERE i.id = $1 AND i.account_id = $2`, [itemId, accountId]);
   if (!i) return null;
   const op = i.op !== null && i.active ? Number(i.op) : null;
-  return { id: Number(i.id), op, role: op === null ? null : i.role };
+  return { id: Number(i.id), op, carriesFact: op !== null && i.fact !== null };
 }
 
 // Lot 87D : mêmes sources que toutes les vues (titre du lien web compris).
@@ -36,11 +40,13 @@ const titreDoc = (d: { retained_title: string | null; web_link_title?: string | 
   displayDocumentTitle({ retainedTitle: d.retained_title, webLinkTitle: d.web_link_title ?? null, originalFilename: d.original_filename, filename: d.filename, s3Key: d.s3_key, publicId: d.public_id }, `Document n° ${d.id}`);
 
 async function ensembleItems(r: GroupingRunner, accountId: number, op: number, exceptId: number): Promise<GroupingItemRef[]> {
-  const x = await r.q<{ id: number; title: string; d: string | null; role: string | null }>(
-    `SELECT id, title, start_date::text AS d, operation_role AS role FROM agenda_items
-      WHERE account_id = $1 AND business_operation_id = $2 AND id <> $3
-      ORDER BY start_date NULLS LAST, id`, [accountId, op, exceptId]);
-  return x.map((y) => ({ id: Number(y.id), title: y.title, startDate: y.d, isMain: y.role === 'PRINCIPAL' }));
+  const x = await r.q<{ id: number; title: string; d: string | null; fact: string | null }>(
+    `SELECT i.id, i.title, i.start_date::text AS d, g.fact_key AS fact FROM agenda_items i
+       LEFT JOIN business_operation_agenda_links g ON g.account_id = i.account_id AND g.operation_id = i.business_operation_id
+              AND g.agenda_item_id = i.id AND g.state = 'ACTIVE'
+      WHERE i.account_id = $1 AND i.business_operation_id = $2 AND i.id <> $3
+      ORDER BY i.start_date NULLS LAST, i.id`, [accountId, op, exceptId]);
+  return x.map((y) => ({ id: Number(y.id), title: y.title, startDate: y.d, isMain: y.fact !== null }));
 }
 
 /** Documents de l'ensemble (appartenance active) + liens directs de l'élément, avec la nature du lien de l'élément. */
@@ -114,7 +120,7 @@ export async function getAgendaGroupingView(accountId: number, itemId: number, r
   const op = it.op;
   const items = await ensembleItems(r, accountId, op, itemId);
   const retire = await withdrawn(r, accountId, op);
-  if (it.role === 'PRINCIPAL') {
+  if (it.carriesFact) {
     // Lot 103D : Pièces / Équipements seulement si un logement est rattaché (règle unique).
     const housingAssetIds = await operationDisplayHousingAssetIds(r, accountId, op);
     return {
@@ -226,9 +232,11 @@ interface DocumentAgendaLinkView {
 export async function getDocumentAgendaLinks(accountId: number, fileId: number, r: GroupingRunner = drizzleRunner(db)): Promise<DocumentAgendaLinkView[] | null> {
   const [f] = await r.q(`SELECT 1 FROM asset_files WHERE id = $1 AND account_id = $2 AND deleted_at IS NULL`, [fileId, accountId]);
   if (!f) return null;
-  const x = await r.q<{ id: number; prov: string[] | null; role: string | null }>(
-    `SELECT i.id, l.provenances AS prov, i.operation_role AS role FROM agenda_file_links l
+  const x = await r.q<{ id: number; prov: string[] | null; fact: string | null }>(
+    `SELECT i.id, l.provenances AS prov, g.fact_key AS fact FROM agenda_file_links l
        JOIN agenda_items i ON i.id = l.agenda_item_id AND i.account_id = $2
+       LEFT JOIN business_operation_agenda_links g ON g.account_id = i.account_id AND g.operation_id = i.business_operation_id
+              AND g.agenda_item_id = i.id AND g.state = 'ACTIVE'
       WHERE l.asset_file_id = $1 ORDER BY i.start_date NULLS LAST, i.id`, [fileId, accountId]);
   return x.map((y) => {
     const prov = y.prov ?? [];
@@ -236,7 +244,7 @@ export async function getDocumentAgendaLinks(accountId: number, fileId: number, 
       itemId: Number(y.id),
       direct: prov.includes('MANUAL_DIRECT') || prov.includes('AI_DIRECT') || prov.length === 0,
       viaGroup: prov.includes('OPERATION_PRINCIPAL'),
-      isMain: y.role === 'PRINCIPAL',
+      isMain: y.fact !== null,
     };
   });
 }

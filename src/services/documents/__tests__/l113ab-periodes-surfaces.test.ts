@@ -125,9 +125,14 @@ describe('L113AB-U-05 — écrans (desktop et mobile, même composant)', () => {
   const drawer = lire('src/components/assets/DocumentDrawer.tsx');
   it('fiche de l’événement de référence ouverte depuis le tiroir du document (sans agenda) et la ligne de dépense', () => {
     expect(drawer).toContain('<DocumentReferenceEvents documentId={doc.id} />');
-    expect(sheet).toMatch(/r\.hasAgenda/);
-    expect(sheet).toContain('/api/evenements-reference/');
-    expect(sheet).toContain('<CoverageHistoryList');
+    // Règle remplacée (carte #744, travaux D — CDC §14, AC41) : la fiche n'est plus un panneau latéral mais la PAGE
+    // ENTIÈRE ; le tiroir du document y mène pour TOUS ses événements de référence (plus de filtre « sans agenda »).
+    expect(sheet).not.toMatch(/hasAgenda\)|<Sheet\b/);
+    expect(sheet).toContain('href={href}');
+    expect(sheet).toContain('const href = referenceEventHref(operationId);');
+    expect(sheet).toContain('{refs.map((r) => <ReferenceEventLink key={r.id} operationId={r.id} label={r.label} />)}');
+    expect(lire('src/app/(dashboard)/agenda/evenements-reference/[id]/page.tsx')).toContain('fetch(`/api/evenements-reference/${id}/fiche`');
+    expect(lire('src/components/reference-events/ReferenceEventPageContent.tsx')).toContain('<CoverageHistoryList');
     expect(tco).toContain('<ReferenceEventLink operationId={l.operationId} />');
     expect(REFERENCE_EVENT_TITLE).toBe('Événement de référence');
   });
@@ -139,7 +144,7 @@ describe('L113AB-U-05 — écrans (desktop et mobile, même composant)', () => {
     expect((tco.match(/<LigneDepense key=\{l\.id\} l=\{l\} t=\{t\} periods=\{periodesDepenses\}/g) ?? []).length).toBe(6);
   });
   it('charte : jetons seulement (aucune couleur brute) ; jamais « Opération » affiché', () => {
-    for (const s of [sheet, periode]) {
+    for (const s of [sheet, periode, lire('src/components/reference-events/ReferenceEventPageContent.tsx')]) {
       // Code seulement (les commentaires citent « #725 »).
       const visibles = s.split('\n').filter((l) => !/^\s*(\*|\/\/|\/\*|import )/.test(l)).map((l) => l.replace(/\{\/\*.*?\*\/\}/g, '')).join('\n');
       expect(visibles).not.toMatch(/#[0-9a-fA-F]{3,8}\b|rgba?\(|\b(?:text|bg|border)-(?:red|green|blue|gray|slate|amber|yellow|orange|emerald|zinc|neutral)-\d{2,3}\b/);

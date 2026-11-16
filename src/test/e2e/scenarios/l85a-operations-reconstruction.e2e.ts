@@ -202,8 +202,14 @@ scenario('L85A', 'Opérations v5 O-2 / O-9 : purge et reconstruction (préproduc
     expect((await sql`SELECT 1 FROM business_operations WHERE id = ${d.premium.sinistre}`).length).toBe(1);
     const garde = a.plan!.kept.find((x) => x.id === designe.business_operation_id);
     expect(garde?.reasons).toEqual(expect.arrayContaining(['USER_AGENDA_ROLE', 'USER_DECISION']));
+    // RÈGLE REMPLACÉE (carte #744) : la désignation de l'utilisateur protégée par la reconstruction n'est plus le rôle
+    // `operation_role = 'PRINCIPAL'` (plus jamais écrit) mais le FAIT PORTÉ par le lien N↔N, d'origine USER.
+    // La colonne historique reste tenue à RELATED par son déclencheur. Avant : PRINCIPAL / USER.
     const [principal] = await sql`SELECT business_operation_id::int AS op, operation_role, operation_role_origin FROM agenda_items WHERE id = ${designe.id}`;
-    expect(principal).toMatchObject({ op: designe.business_operation_id, operation_role: 'PRINCIPAL', operation_role_origin: 'USER' });
+    expect(principal).toMatchObject({ op: designe.business_operation_id, operation_role: 'RELATED', operation_role_origin: null });
+    expect(await sql`SELECT fact_key, origin FROM business_operation_agenda_links
+      WHERE operation_id = ${designe.business_operation_id} AND agenda_item_id = ${designe.id} AND state = 'ACTIVE'`)
+      .toEqual([{ fact_key: expect.any(String), origin: 'USER' }]);
     // L'élément relié manuellement à un document n'est jamais retiré, même s'il était une projection automatique.
     expect((await sql`SELECT 1 FROM agenda_items WHERE id = ${lie.id}`).length).toBe(1);
     // Saisies de l'utilisateur intactes.

@@ -415,12 +415,15 @@ export async function readReferenceEvent(accountId: number, operationId: number)
     [id, accountId] as never[],
   )) as unknown as Row[];
   if (!op) return null;
+  // #744 recette (CDC « Opérations / Agenda V2.0 » §20, AC39 — règle remplacée) : plus AUCUNE limite
+  // silencieuse de 200 justificatifs. La requête est bornée par l'événement de référence lui-même ; au-delà
+  // de 200 membres, la fiche les rendait sans le dire (L114REC-E10 le prouvait). Ordre déterministe conservé.
   const docs = (await sql.unsafe(
     `SELECT f.id, to_char(f.document_date, 'YYYY-MM-DD') AS document_date, ${documentTitleColumnsSql('f')}
        FROM business_operation_documents d
        JOIN asset_files f ON f.id = d.file_id AND f.account_id = d.account_id AND f.deleted_at IS NULL
       WHERE d.account_id = $1 AND d.operation_id = $2 AND d.active
-      ORDER BY f.document_date NULLS LAST, f.id LIMIT 200`,
+      ORDER BY f.document_date NULLS LAST, f.id`,
     [accountId, id] as never[],
   )) as unknown as Row[];
   // #744 lot C (règle remplacée) : éléments d'agenda lus dans le graphe canonique N↔N (plus la colonne historique) —

@@ -74,7 +74,9 @@ describe('service : une seule section « Documents » (lignes et total sur le m�
     expect(q).toContain("l.supplier_id = $1 AND l.account_id = $2 AND l.status = 'ACTIVE'");
     expect(q).toContain("l.role IN ('PROVIDER', 'INTERVENER')");
     expect(q).toMatch(/NOT EXISTS \( SELECT 1 FROM document_suppliers xo JOIN suppliers xs ON xs.id = xo.supplier_id AND xs.account_id = \$2 AND xs.status <> 'deleted' WHERE xo.document_id = d.file_id AND xo.supplier_id <> \$1\)/);
-    expect(q).toContain("i.account_id = $2 AND i.operation_role = 'PRINCIPAL'");
+    // Règle remplacée (carte #744) : l'intitulé lu est celui de l'élément qui PORTE un fait de l'événement
+    // de référence (lien N↔N), plus celui du « principal ».
+    expect(q).toContain("g.state = 'ACTIVE' AND g.fact_key IS NOT NULL");
     expect(q).toMatch(/\(f.upload_status = 'COMPLETED' OR f.upload_status IS NULL\)/);
     expect(q).not.toMatch(/LIMIT \d/);
     // Plus de lecture séparée « via événement » : une seule logique de récupération / pagination.

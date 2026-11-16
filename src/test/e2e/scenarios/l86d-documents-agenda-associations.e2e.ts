@@ -89,7 +89,17 @@ scenario('L86D', 'Documents / Agenda — associations : gestion bidirectionnelle
   }
 
   // ── Lectures ──────────────────────────────────────────────────────────────
-  const element = async (id: number) => (await sql<Json[]>`SELECT id, business_operation_id::int AS op, operation_role AS role FROM agenda_items WHERE id = ${id}`)[0];
+  /**
+   * RÈGLE REMPLACÉE (carte #744, travaux F) : la projection T4 et le service de regroupement n'écrivent plus
+   * `agenda_items.operation_role` / `operation_role_origin` (la colonne historique reste tenue à RELATED / NULL par son
+   * seul déclencheur `agenda_items_operation_role_sync`). `role` et `origin` sont DÉRIVÉS du lien N↔N :
+   * porteur du FAIT PORTÉ → PRINCIPAL, membre de plein droit → RELATED, non rattaché → NULL ; l'autorité vient de
+   * l'origine du lien (USER → USER, AI → T4, MIGRATION / SYSTEM → SYSTEM). Le vocabulaire des attentes est inchangé,
+   * seule sa SOURCE change. Conséquence assumée : l'origine du graphe ne distingue pas T3 de T4 (toutes deux « AI »).
+   */
+  const element = async (id: number) => (await sql<Json[]>`SELECT i.id, i.business_operation_id::int AS op,
+    (SELECT CASE WHEN g.fact_key IS NOT NULL THEN 'PRINCIPAL' ELSE 'RELATED' END FROM business_operation_agenda_links g
+             WHERE g.account_id = i.account_id AND g.operation_id = i.business_operation_id AND g.agenda_item_id = i.id AND g.state = 'ACTIVE') AS role FROM agenda_items i WHERE i.id = ${id}`)[0];
   const liensDe = (itemId: number) => sql<{ file: number; prov: string[] }[]>`
     SELECT asset_file_id AS file, provenances AS prov FROM agenda_file_links WHERE agenda_item_id = ${itemId} ORDER BY asset_file_id`;
   const membres = (opId: number) => sql<{ file_id: number }[]>`SELECT file_id FROM business_operation_documents WHERE operation_id = ${opId} AND active ORDER BY file_id`;
@@ -118,7 +128,8 @@ scenario('L86D', 'Documents / Agenda — associations : gestion bidirectionnelle
     }
     const { projectAccountOperations } = await import('@/services/business-operations/agenda-projection/service');
     await projectAccountOperations(compte.id, { operationIds: [op], correlationId: 'l86d', today: AUJ });
-    const [p] = await sql<{ id: number }[]>`SELECT id FROM agenda_items WHERE business_operation_id = ${op} AND operation_role = 'PRINCIPAL'`;
+    const [p] = await sql<{ id: number }[]>`SELECT agenda_item_id AS id FROM business_operation_agenda_links
+      WHERE operation_id = ${op} AND state = 'ACTIVE' AND fact_key IS NOT NULL`;
     return { op, principal: p.id };
   }
   /** Élément automatique produit par T4 depuis un document (lien AI_DIRECT + trace de production). */

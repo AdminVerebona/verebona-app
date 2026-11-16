@@ -53,6 +53,13 @@ export interface ThreadContext {
   currentAssetId: number | null;
   currentDocumentId: number | null;
   pendingClarification: string | null;
+  /**
+   * Trello #753, passage 114AA : dernier ÉVÉNEMENT DE RÉFÉRENCE sur lequel une action de ce fil a abouti —
+   * « celui-ci » d'un tour à l'autre. Il n'entre PAS dans la résolution générale des références (les
+   * événements de référence n'apparaissent dans aucune liste présentée) : seules les commandes qui portent
+   * sur eux l'utilisent, et après re-vérification dans le compte. Absent pour un fil antérieur au passage.
+   */
+  lastReferenceEventId?: number | null;
 }
 
 type ReferenceResolution =

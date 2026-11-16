@@ -9,12 +9,14 @@
  *
  * Contenu (§16) : détails d'assurance, dommages détaillés (photos et
  * justificatifs RELIÉS), TOUS les documents actifs de l'Opération, Pièces et
- * équipements concernés (82D), chronologie (éléments d'Agenda : principal
- * puis étapes), coûts et indemnité. Lot 54 (SEC-04) : toute référence
+ * équipements concernés (82D), chronologie (éléments d'Agenda lus dans le
+ * GRAPHE canonique — carte #744, point G : colonne historique ∪ liens actifs
+ * N↔N, chaque élément une seule fois), coûts et indemnité. Lot 54 (SEC-04) : toute référence
  * secondaire est restituée SEULEMENT si elle appartient au compte.
  */
 import { sql, type SQL } from 'drizzle-orm';
 import type { ClaimFileStatus } from '../model';
+import { loadClaimChronology } from './agenda-chronology';
 import { claimCosts, type ClaimRecord } from './model';
 import { componentEurMinor } from '../finance/engine';
 
@@ -87,11 +89,9 @@ export async function loadClaimRecords(x: SqlExecutor, accountId: number, by: { 
       SELECT l.operation_id, e.id, e.name, e.asset_id FROM business_operation_equipment_links l
         JOIN equipments e ON e.id = l.equipment_id JOIN assets a ON a.id = e.asset_id AND a.account_id = ${accountId}
        WHERE l.operation_id = ANY(${liste}::bigint[]) AND l.active ORDER BY l.operation_id, e.name, e.id`);
-  const agenda = await rows(x, sql`
-      SELECT ai.business_operation_id AS operation_id, ai.id, ai.title, ai.start_date::text AS date, ai.operation_role AS role
-        FROM agenda_items ai
-       WHERE ai.business_operation_id = ANY(${liste}::bigint[]) AND ai.account_id = ${accountId}
-       ORDER BY ai.business_operation_id, (ai.operation_role IS NOT DISTINCT FROM 'PRINCIPAL') DESC, ai.start_date NULLS LAST, ai.id`);
+  // Carte #744, point G : chronologie lue dans le GRAPHE (colonne historique ∪ liens actifs N↔N),
+  // chaque élément une seule fois — un élément partagé n'apparaît jamais en double (`./agenda-chronology`).
+  const agenda = await loadClaimChronology(x, accountId, ops.map((o) => Number(o.id)));
 
   return ops.map((o): ClaimRecord => {
     const id = Number(o.id);
@@ -104,7 +104,7 @@ export async function loadClaimRecords(x: SqlExecutor, accountId: number, by: { 
     });
     // Indemnité connue en euros ; une indemnité non convertible n'est jamais « 0 € » (E09).
     const ownIndemnity = cs.filter((c) => c.kind === 'INDEMNITY' && c.amountCents !== null);
-    const chrono = agenda.filter(mine).map((a) => ({ id: Number(a.id), title: String(a.title), date: txt(a.date), role: a.role === 'PRINCIPAL' ? 'PRINCIPAL' as const : 'RELATED' as const }));
+    const chrono = agenda.filter((a) => a.operationId === id).map((a) => ({ id: a.id, title: a.title, date: a.date, role: a.principal ? 'PRINCIPAL' as const : 'RELATED' as const }));
     return {
       id,
       accountId: Number(o.account_id),

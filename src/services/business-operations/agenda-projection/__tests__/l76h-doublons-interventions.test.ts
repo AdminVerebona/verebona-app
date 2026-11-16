@@ -131,28 +131,28 @@ describe('L76H — projection : une intervention établie = une représentation 
 
   it('L76H-08 — réanalyse après consolidation : état à jour → plan VIDE (aucun doublon recréé, aucune écriture)', () => {
     const principal = entretien();
-    // Lot 83A : après consolidation, l'élément conservé est le PRINCIPAL de l'Opération.
-    const lie = { ...principal, businessOperationId: 10, linkedOperationActive: true, title: 'Remplacement du ballon d’eau chaude', operationRole: 'PRINCIPAL' as const, operationRoleOrigin: 'T4' };
+    // Lot 83A / lot 114O (#744) : après consolidation, l'élément conservé PORTE le fait de l'Opération.
+    const lie = { ...principal, businessOperationId: 10, linkedOperationActive: true, title: 'Remplacement du ballon d’eau chaude', carriedFact: 'INTERVENTION', carrierOrigin: 'AI' };
     expect(plan(op(), { linked: [lie], candidates: [lie], taken: [lie.id] })).toEqual([]);
   });
 
   it('L76H-09 — Opération liée à plusieurs événements T4 équivalents : lot 87B — plus aucune absorption par le code, décision T4, convergence une fois décidée', () => {
-    const a = { ...reparation(), businessOperationId: 10, linkedOperationActive: true, operationRole: 'RELATED' as const, operationRoleOrigin: 'T4' };
-    const b = { ...entretien(), businessOperationId: 10, linkedOperationActive: true, operationRole: 'RELATED' as const, operationRoleOrigin: 'T4' };
+    const a = { ...reparation(), businessOperationId: 10, linkedOperationActive: true, carriedFact: null, carrierOrigin: 'AI' };
+    const b = { ...entretien(), businessOperationId: 10, linkedOperationActive: true, carriedFact: null, carrierOrigin: 'AI' };
     const actions = plan(op(), { linked: [a, b], candidates: [a, b], taken: [101, 102] });
-    // Lot 83A : sans principal, aucun membre n'est l'emplacement du seul fait d'être lié. Lot 87B — test
+    // Lot 83A : sans porteur du fait, aucun membre n'est l'emplacement du seul fait d'être lié. Lot 87B — test
     // corrigé : ni absorption, ni principal choisi par le code — décision T4 (et carte D14 à défaut).
     expect(actions).toEqual([
       expect.objectContaining({ kind: 'ABSTAIN', itemId: 102 }),
       { kind: 'REPRESENTATION_REQUIRED', itemIds: [101, 102], reason: 'SEVERAL_COVERED_REPRESENTATIONS' },
     ]);
-    // Principal déjà désigné : il garde son rôle ; l'autre n'est plus absorbé — T4 dit s'il est un doublon ou une étape.
-    const avecPrincipal = plan(op(), { linked: [{ ...a, operationRole: 'PRINCIPAL' }, b], candidates: [a, b], taken: [101, 102] });
+    // Porteur déjà désigné : il garde le fait ; l'autre n'est plus absorbé — T4 dit s'il est un doublon ou une étape.
+    const avecPrincipal = plan(op(), { linked: [{ ...a, carriedFact: 'INTERVENTION' }, b], candidates: [a, b], taken: [101, 102] });
     expect(avecPrincipal[0]).toEqual({ kind: 'REPRESENTATION_REQUIRED', itemIds: [101, 102], reason: 'EQUIVALENTS_BESIDE_SLOT' });
     expect(avecPrincipal.some((x) => x.kind === 'REMOVE' || x.kind === 'LINK')).toBe(false);
     // T4 a décidé (étape distincte) : plus aucune demande, plus aucune carte (convergence, CODE-11).
     const decide = planOperationProjection({
-      op: op(), decision: decideProjection(op(), AUJ), linked: [{ ...a, operationRole: 'PRINCIPAL' }, b], suppressedKeys: new Set(),
+      op: op(), decision: decideProjection(op(), AUJ), linked: [{ ...a, carriedFact: 'INTERVENTION' }, b], suppressedKeys: new Set(),
       candidates: [a, b], taken: new Set([101, 102]), t4Roles: new Map([[101, 'PRINCIPAL'], [102, 'STEP']]),
     });
     expect(decide.some((x) => x.kind === 'REPRESENTATION_REQUIRED' || x.kind === 'ABSTAIN')).toBe(false);

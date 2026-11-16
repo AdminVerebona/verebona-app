@@ -323,7 +323,12 @@ async function principalDateContexts(accountId: number, itemIds: number[]): Prom
        FROM agenda_items i
        JOIN business_operations o ON o.id = i.business_operation_id AND o.account_id = i.account_id
             AND o.invalidated_at IS NULL AND o.merged_into_operation_id IS NULL
-      WHERE i.account_id = $1 AND i.id = ANY($2::int[]) AND i.operation_role = 'PRINCIPAL'`,
+      WHERE i.account_id = $1 AND i.id = ANY($2::int[])
+        -- Règle remplacée (carte #744, travaux F) : le rôle « principal » n'est plus écrit par T4 ; l'élément
+        -- PORTEUR du fait est celui dont le lien N↔N actif porte un fait (fact_key).
+        AND EXISTS (SELECT 1 FROM business_operation_agenda_links g
+                     WHERE g.account_id = i.account_id AND g.operation_id = i.business_operation_id
+                       AND g.agenda_item_id = i.id AND g.state = 'ACTIVE' AND g.fact_key IS NOT NULL)`,
     [accountId, itemIds] as never[],
   )) as unknown as Array<{ id: number; contested: string[] | null }>;
   for (const r of rows) out.set(Number(r.id), { contested: (r.contested ?? []).map(String) });
@@ -913,14 +918,14 @@ interface AccountProductionReport extends ProducerReport {
 const documentRuleErrorLabel = (e: DocumentProducerReport['ruleErrors'][number]) =>
   `documents : compte ${e.accountId} · document ${e.fileId} · règle ${e.ruleCode} · étape ${e.step}${e.kind ? ` (${e.kind})` : ''} — ${e.cause}`.slice(0, 300);
 
-/** Familles balayées par compte (agenda, équipements, fournisseurs, documents, incohérences). */
-const FAMILIES = 5;
+/** Familles balayées par compte (agenda, équipements, fournisseurs, documents, incohérences, événements de référence). */
+const FAMILIES = 6;
 
 /** Balaye les familles nées d'un état de la base, pour un compte. */
 export async function produceAccountActions(accountId: number): Promise<AccountProductionReport> {
   const errors: string[] = [];
   const familles: ScanErrorDetail[] = [];
-  const [agenda, equipements, fournisseurs, documents, incoherences] = await Promise.all([
+  const [agenda, equipements, fournisseurs, documents, incoherences, evenementsReference] = await Promise.all([
     produceAgendaActions(accountId).catch(reportError('agenda', accountId, errors, familles)),
     produceEquipmentActions(accountId).catch(reportError('équipements', accountId, errors, familles)),
     produceSupplierActions(accountId).catch(reportError('fournisseurs', accountId, errors, familles)),
@@ -931,8 +936,14 @@ export async function produceAccountActions(accountId: number): Promise<AccountP
     import('./document-asset-conflict')
       .then(async ({ closeObsoleteAssetConflicts }) => ({ ...EMPTY, closed: await closeObsoleteAssetConflicts(accountId) }))
       .catch(reportError('incohérences de rattachement', accountId, errors, familles)),
+    // Carte #744 (CDC §6, §7, §8, §20) : les trois questions des événements de
+    // référence (rattachement proposé sur pièce, doublon probable, fait
+    // contradictoire) et l'ABSTENTION tracée quand l'IA n'a pas tranché.
+    import('./reference-event-sweep')
+      .then(({ produceReferenceEventActions }) => produceReferenceEventActions(accountId))
+      .catch(reportError('événements de référence', accountId, errors, familles)),
   ]);
-  const fusion = merge(agenda, equipements, fournisseurs, documents, incoherences);
+  const fusion = merge(agenda, equipements, fournisseurs, documents, incoherences, evenementsReference);
   // Lot 61 (écart 5) : les erreurs des règles documentaires remontent au bilan.
   for (const e of documents.ruleErrors.slice(0, 20)) errors.push(documentRuleErrorLabel(e));
   if (documents.ruleErrors.length > 20) errors.push(`documents : ${documents.ruleErrors.length - 20} autre(s) règle(s) en erreur`);

@@ -286,6 +286,10 @@ export type OperationWriteCode =
   | 'VERSION_MISMATCH' | 'IDEMPOTENCY_KEY_REUSED'
   | 'INVALID_INPUT' | 'READ_ONLY_ACCOUNT' | 'NOT_A_MEMBER' | 'NOT_FOUND_IN_ACCOUNT' | 'OPERATION_INACTIVE' | 'REFLEXIVE'
   | 'NATURE_TYPE_MISMATCH' | 'EVIDENCE_REQUIRED' | 'USER_REJECTED' | 'USER_RELATION_PROTECTED' | 'LINKED_ELSEWHERE' | 'NOT_LINKED'
+  // Scission (carte #744, CDC §7, AC46) : un fait désigné n'est plus rattaché à l'événement scindé ; aucune part à déplacer.
+  | 'SPLIT_PART_NOT_LINKED' | 'SPLIT_NOTHING_TO_MOVE'
+  // Fusion (carte #744, travaux E) : deux événements de référence de types métier différents ne fusionnent pas.
+  | 'TYPE_MISMATCH'
   | 'USER_ONLY' | 'TYPE_DETAILS_PRESENT' | 'STATUS_TRANSITION_REFUSED' | 'NOT_RESTORABLE' | 'DUPLICATE_DECLARATION'
   | 'TECHNICAL_FAILURE';
 

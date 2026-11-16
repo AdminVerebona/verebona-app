@@ -48,6 +48,7 @@ import { isBusinessOperationIntegrityError } from '../errors';
 import type { DbTx } from '../lock';
 import type { BusinessOperationStatus, BusinessOperationTypeCode, Confidence, OperationTypeInput, ReferenceKind } from '../model';
 import { USER_INVALIDATION_REASON } from '../model';
+import { creationRefusedByUserInvalidation, USER_INVALIDATED_SOURCE_REASON, userInvalidatedSourceSql } from './user-invalidation';
 import type { BusinessOperationRepository } from '../repository';
 import { withBusinessOperationWrite } from '../write';
 import { NON_BUSINESS_DOCUMENT_TYPES } from '@/services/ai/source-analysis/operation-candidates/prepare';
@@ -296,20 +297,25 @@ function toCandidateRow(x: Row): CandidateRow {
   });
 }
 
-interface DocSource { id: number; operationId: number; active: boolean; key: string; opInvalidated: boolean; opMerged: boolean }
+interface DocSource {
+  id: number; operationId: number; active: boolean; key: string; opInvalidated: boolean; opMerged: boolean;
+  /** Carte #744 : source d'un événement de référence invalidé PAR L'UTILISATEUR (active, ou retirée depuis cette invalidation). */
+  userInvalidated: boolean;
+}
 
 /** Sources DOCUMENT gérées par T3 (locator.candidateKey) d'un document, actives ou non. */
 async function loadDocumentSources(tx: DbTx, accountId: number, fileId: number): Promise<DocSource[]> {
   const r = await rows<Row>(tx, sql`
     SELECT s.id, s.operation_id, s.active, s.locator->>'candidateKey' AS key,
-           o.invalidated_at IS NOT NULL AS inv, o.merged_into_operation_id IS NOT NULL AS merged
+           o.invalidated_at IS NOT NULL AS inv, o.merged_into_operation_id IS NOT NULL AS merged,
+           ${sql.raw(userInvalidatedSourceSql('s', 'o'))} AS user_inv
       FROM business_operation_sources s JOIN business_operations o ON o.id = s.operation_id AND o.account_id = s.account_id
      WHERE s.account_id = ${accountId} AND s.source_kind = 'DOCUMENT' AND s.source_entity_key = ${String(fileId)}
        AND s.locator ? 'candidateKey'
      ORDER BY s.id`);
   return r.map((x) => ({
     id: Number(x.id), operationId: Number(x.operation_id), active: Boolean(x.active), key: String(x.key),
-    opInvalidated: Boolean(x.inv), opMerged: Boolean(x.merged),
+    opInvalidated: Boolean(x.inv), opMerged: Boolean(x.merged), userInvalidated: Boolean(x.user_inv),
   }));
 }
 
@@ -610,6 +616,9 @@ async function loadDecisions(tx: DbTx, accountId: number, fileId: number, candid
  * Couples d'Opérations qu'une décision utilisateur sépare (une même source
  * CONFIRMED sur l'une, REJECTED sur l'autre) : jamais fusionnés (F-046).
  */
+/** Réservé aux tests : la porte unique des fusions automatiques, telle que la lit la consolidation. */
+export const __loadNonMergeableForTests = (tx: DbTx, accountId: number, ids: readonly number[]): Promise<Set<string>> => loadNonMergeable(tx, accountId, ids);
+
 async function loadNonMergeable(tx: DbTx, accountId: number, ids: readonly number[]): Promise<Set<string>> {
   if (ids.length < 2) return new Set();
   const r = await rows<{ a: string; b: string }>(tx, sql`
@@ -629,7 +638,20 @@ async function loadNonMergeable(tx: DbTx, accountId: number, ids: readonly numbe
        AND s.source_entity_key = d.source_entity_key
      WHERE d.account_id = ${accountId} AND d.active AND d.decision = 'REJECTED' AND d.source_kind = 'DOCUMENT'
        AND s.operation_id <> d.candidate_operation_id
-       AND d.candidate_operation_id = ANY(${intArray(ids)}::bigint[]) AND s.operation_id = ANY(${intArray(ids)}::bigint[])`);
+       AND d.candidate_operation_id = ANY(${intArray(ids)}::bigint[]) AND s.operation_id = ANY(${intArray(ids)}::bigint[])
+    UNION
+    -- Carte #744 (CDC §7 « mémoriser la séparation ; un rejeu T3 n'inverse pas cette décision » ; AC12) :
+    -- l'utilisateur a répondu « ce sont deux événements différents » à la carte « À traiter » de fusion. La paire
+    -- n'est plus jamais fusionnée automatiquement. Clé de la carte : « referenceEventMerge:<petit>:<grand> ».
+    SELECT p.a, p.b FROM (
+      SELECT CASE WHEN split_part(ta.relation_key, ':', 2) ~ '^[0-9]{1,18}$' THEN split_part(ta.relation_key, ':', 2)::bigint END AS a,
+             CASE WHEN split_part(ta.relation_key, ':', 3) ~ '^[0-9]{1,18}$' THEN split_part(ta.relation_key, ':', 3)::bigint END AS b
+        FROM to_process_actions ta
+        JOIN to_process_action_events te ON te.action_id = ta.id AND te.account_id = ta.account_id
+       WHERE ta.account_id = ${accountId} AND ta.rule_code = 'REFERENCE-EVENT-MERGE'
+         AND ta.resolution_reason = 'USER_ARBITRATED' AND te.event = 'RESOLVED_ARBITRATION'
+         AND te.new_value->>'kind' = 'KEEP_DISTINCT') p
+     WHERE p.a = ANY(${intArray(ids)}::bigint[]) AND p.b = ANY(${intArray(ids)}::bigint[])`);
   return new Set(r.map((x) => {
     const [a, b] = [Number(x.a), Number(x.b)].sort((m, n) => m - n);
     return `${a}:${b}`;
@@ -1992,6 +2014,12 @@ export async function consolidateDocument(accountId: number, fileId: number, opt
             if (r.recorded) recordedDecisions.set(c.id, r.recorded);
           }
         }
+        // Carte #744 (CDC Opérations / Agenda V2.0 §5, §7, §19, AC13, AC47) : ce document fondait un événement de
+        // référence que l'UTILISATEUR a supprimé (« créé à tort ») — T3 n'en crée pas un NOUVEAU à partir des mêmes
+        // preuves. Un rapprochement avec un événement existant reste permis ; seul l'utilisateur rétablit le sien.
+        if (d.outcome === 'CREATE_NEW' && creationRefusedByUserInvalidation(docSources.filter((s) => s.userInvalidated).map((s) => s.key), c.candidateKey, actifs.map((x) => x.candidateKey))) {
+          d = { ...d, outcome: 'NO_OPERATION', operationId: null, matchMethod: null, reason: USER_INVALIDATED_SOURCE_REASON };
+        }
         const trace = recordedDecisions.get(c.id) ?? d;
         decisions.set(c.id, trace);
         // Lot 78A (§5, §6) : rattachements historiques séparés ou douteux → journal.
@@ -2064,6 +2092,10 @@ export async function consolidateDocument(accountId: number, fileId: number, opt
 
       // C9 : contributions du document qu'aucun candidat ne revendique plus.
       for (const s of docSources) {
+        // Carte #744 : la source d'un événement de référence supprimé par l'utilisateur n'est pas retirée par un
+        // simple nouveau passage (elle porte la mémoire du refus et permet la restauration) — sauf document
+        // supprimé ou sorti du périmètre métier.
+        if (valid && s.active && s.userInvalidated && !claimed.has(s.id)) continue;
         if (s.active && !claimed.has(s.id)) {
           // Lot 78A : une séparation pour contradiction d'identité garde son motif (historique, BO).
           changes.track(await repo.deactivateSource(s.id, !valid ? (!file || file.deleted ? 'DOCUMENT_DELETED' : 'DOCUMENT_RECLASSIFIED')

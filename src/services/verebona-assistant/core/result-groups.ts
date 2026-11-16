@@ -131,6 +131,23 @@ export function buildResultGroups(candidates: RetrievedSource[]): ResultGroup[] 
     }));
 }
 
+/**
+ * Trello #753 (W28) — carte d'un export lancé depuis l'Assistant : téléchargement d'un export prêt, ou suivi d'un
+ * dossier en préparation. Même groupe que les exports trouvés par une recherche (« des documents produits par
+ * l'application »). `id` : référence du BIEN (revérifiée à la relecture de l'historique) ; `href` : construit par le
+ * serveur (route de téléchargement des exports, ou onglet « Exports » du bien).
+ */
+export function exportResultGroup(card: { id: string; title: string; subtitle: string | null; status: string | null; href: string | null }): ResultGroup {
+  return {
+    type: 'document',
+    label: GROUP_LABELS.document,
+    items: [{ id: card.id, typeLabel: 'Export', title: card.title, subtitle: card.subtitle, date: null, status: card.status, excerpt: null, href: card.href }],
+    total: 1,
+    hasMore: false,
+    moreHref: null,
+  };
+}
+
 const FORMES: Record<ResultGroupType, [string, string]> = {
   asset: ['bien', 'biens'], document: ['document', 'documents'], agenda: ['échéance', 'échéances'],
   supplier: ['fournisseur', 'fournisseurs'], to_process: ['élément à traiter', 'éléments à traiter'],

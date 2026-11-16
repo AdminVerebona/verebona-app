@@ -60,9 +60,27 @@ export type ReferenceEventParams =
   // ASSOCIATE_REFERENCE_EVENTS (W24) : relation orientée (origine → cible) ou simple association ; versions présentées figées.
   | { kind: 'reference_events_associate'; fromOperationId: number; toOperationId: number; nature: OperationRelationNature; expectedVersions: [number, number] }
   // LINK_DOCUMENT_REFERENCE_EVENT (W25).
-  | { kind: 'reference_event_document'; operationId: number; linkedDocumentId: number; expectedVersion: number; documentVersion: string }
+  | { kind: 'reference_event_document'; operationId: number; linkedDocumentId: number; expectedVersion: number; documentVersion: string; operationFromAction?: string }
   // LINK_SUPPLIER_REFERENCE_EVENT (W26).
-  | { kind: 'reference_event_supplier'; operationId: number; linkedSupplierId: number; role: ReferenceEventSupplierRole; expectedVersion: number; supplierVersion: string };
+  | { kind: 'reference_event_supplier'; operationId: number; linkedSupplierId: number; role: ReferenceEventSupplierRole; expectedVersion: number; supplierVersion: string; operationFromAction?: string }
+  /**
+   * Passage 114AB (#753) — GESTES INVERSES du point d'écriture de la carte #744 : rétablir un événement
+   * supprimé, dissocier deux événements, retirer un document ou un fournisseur, rattacher une échéance.
+   * Mêmes règles que les gestes directs : version présentée figée, état relu avant d'écrire.
+   */
+  | { kind: 'reference_event_restore'; operationId: number; expectedVersion: number }
+  | { kind: 'reference_events_dissociate'; fromOperationId: number; toOperationId: number; expectedVersions: [number, number] }
+  | { kind: 'reference_event_document_unlink'; operationId: number; linkedDocumentId: number; expectedVersion: number; documentVersion: string }
+  | { kind: 'reference_event_supplier_unlink'; operationId: number; linkedSupplierId: number; expectedVersion: number; supplierVersion: string }
+  | { kind: 'reference_event_agenda'; operationId: number; agendaItemId: number; expectedVersion: number; agendaItemVersion: string };
+
+/**
+ * Passage 114Z4 (#753) : `operationFromAction` — l'événement visé est celui qu'une AUTRE action du même plan
+ * enregistre (« Déclare … puis relie … à celui-ci »). `operationId` vaut 0 dans l'aperçu : il est remplacé à
+ * l'exécution par l'identifiant réellement créé, et seulement si l'action dont il dépend a réussi (sinon
+ * SKIPPED_DEPENDENCY). Aucun identifiant ne vient du modèle ni du client.
+ */
+export const DEFERRED_OPERATION_ID = 0;
 
 // ── État lu d'un événement de référence ────────────────────────────────────
 
@@ -89,6 +107,11 @@ export interface ReferenceEventState {
   agendaItems?: number;
   /** Documents MEMBRES de l'événement (fondateurs ou rattachés par l'utilisateur) — lu pour l'aperçu d'une suppression seulement. */
   documentCount?: number;
+  /**
+   * Passage 114AB (#753) : `true` pour un événement SUPPRIMÉ par l'utilisateur, lu seulement pour l'aperçu
+   * d'un rétablissement. Un état sans ce marqueur est toujours un événement ACTIF du compte.
+   */
+  invalidated?: true;
 }
 
 /** Recherche d'un événement de référence dans le compte. */
@@ -213,6 +236,9 @@ export const WRITE_CODE_TEXT: Readonly<Record<Exclude<OperationWriteCode, 'OK' |
   NEW_EVIDENCE_AFTER_REFUSAL: 'Cette association avait été refusée ; un élément nouveau demande votre décision dans « À traiter » : rien n’a été écrit.',
   VERSION_MISMATCH: REFERENCE_EVENT_CHANGED_SINCE_PREVIEW,
   IDEMPOTENCY_KEY_REUSED: 'Cette action a déjà été traitée : rien n’a été refait.',
+  SPLIT_PART_NOT_LINKED: 'Un des éléments à séparer n’appartient pas à cet événement de référence : rien n’a été écrit.',
+  SPLIT_NOTHING_TO_MOVE: 'Il faut choisir au moins un élément à séparer : rien n’a été écrit.',
+  TYPE_MISMATCH: 'Ces deux événements de référence ne sont pas de même nature : ils ne peuvent pas être réunis ; rien n’a été écrit.',
   INVALID_INPUT: 'Ces informations ne peuvent pas être enregistrées telles quelles : rien n’a été écrit.',
   READ_ONLY_ACCOUNT: 'Votre compte est en lecture seule : rien n’a été écrit.',
   NOT_A_MEMBER: 'Vous n’avez pas accès à ce compte : rien n’a été écrit.',

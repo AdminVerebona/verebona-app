@@ -168,7 +168,9 @@ describe('§31.7 — chaque chemin de modification émet son événement', () =>
     ['documents/[id]/fusion/route.ts', ['DOCUMENT_DELETED']],
     ['documents/bulk-delete/route.ts', ['DOCUMENT_DELETED']],
     ['documents/bulk-move/route.ts', ['DOCUMENT_UPDATED']],
-    ['v2/documents/[publicId]/classification/route.ts', ['DOCUMENT_UPDATED']],
+    // Lot 114 (#753, W12, passage 114AB) : règle déplacée — la nature d'un document (Rubrique + Type) est écrite et
+    // émise par la façade métier `document-write.facade`, appelée par la route du tiroir ET par l'Assistant.
+    ['../../services/documents/document-write.facade.ts', ['DOCUMENT_UPDATED']],
     // Lot 114 (#753, W18 – W20, M30) : règle déplacée — création, modification et archivage d'un fournisseur sont
     // émis (et attendus) par la façade métier `supplier-write.facade`, appelée par les trois routes ET par l'Assistant.
     ['../../services/suppliers/supplier-write.facade.ts', ['SUPPLIER_CHANGED']],

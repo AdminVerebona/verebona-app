@@ -10,10 +10,12 @@
 import type { DrawerTarget } from '@/lib/drawers';
 import { LOCAL_SEARCH_PARAM, localSearchHref, normalizeLocalQuery } from '@/lib/search/local-search';
 import { AGENDA_EVENT_LABELS } from '@/lib/agenda/grouping-view';
+import { REFERENCE_EVENT_ROUTE, REFERENCE_EVENT_SEARCH_CATEGORY } from '@/lib/reference-events/reference-event-page';
 
 export interface LiveResult {
   id: string;
-  kind: 'nav' | 'asset' | 'document' | 'agenda' | 'equipment' | 'room';
+  /** Carte #744 (travaux D) : `reference_event` — événement de référence, ouvert en PAGE ENTIÈRE. */
+  kind: 'nav' | 'asset' | 'document' | 'agenda' | 'equipment' | 'room' | 'reference_event';
   title: string;
   sub: string | null;
   href: string;
@@ -59,7 +61,11 @@ interface ApiSearchRow {
 
 const KIND: Record<string, LiveResult['kind']> = {
   Bien: 'asset', Document: 'document', Agenda: 'agenda', 'Équipement': 'equipment', 'Pièce': 'room',
+  [REFERENCE_EVENT_SEARCH_CATEGORY]: 'reference_event',
 };
+
+/** Carte #744 : une suggestion d'événement de référence ne mène qu'à SA page (adresse interne validée). */
+const pageEvenementReference = (href: string): boolean => new RegExp(`^${REFERENCE_EVENT_ROUTE}/\\d{1,15}$`).test(href);
 
 /** Tiroirs qu'une suggestion peut ouvrir (lien profond validé, jamais une valeur libre). */
 const TIROIRS = new Set<DrawerTarget['kind']>(['document', 'echeance', 'equipement', 'piece']);
@@ -80,6 +86,7 @@ function liveSub(r: Pick<ApiSearchRow, 'sublabel' | 'periodLine' | 'category'>):
 export function toLiveResults(q: string, rows: ApiSearchRow[] | null | undefined): LiveResult[] {
   const api = (rows ?? [])
     .filter((r) => r && r.label && r.href && KIND[r.category ?? ''])
+    .filter((r) => KIND[r.category!] !== 'reference_event' || pageEvenementReference(r.href!))
     .map((r) => ({
       id: String(r.id), kind: KIND[r.category!], title: r.label!, sub: liveSub(r), href: r.href!,
       ...(tiroirValide(r.drawer) ? { drawer: { kind: r.drawer.kind, id: r.drawer.id } } : {}),
@@ -90,12 +97,19 @@ export function toLiveResults(q: string, rows: ApiSearchRow[] | null | undefined
   const nav = navMatches(q);
   // Pages bornées pour laisser toujours la place aux correspondances exactes.
   const pages = nav.slice(0, Math.max(0, LIVE_MAX_RESULTS - Math.min(exacts.length, LIVE_MAX_RESULTS)));
-  return [...pages, ...exacts, ...autres].slice(0, LIVE_MAX_RESULTS);
+  const tous = [...pages, ...exacts, ...autres];
+  const retenus = tous.slice(0, LIVE_MAX_RESULTS);
+  // Carte #744 (AC56) : les événements de référence sont servis en dernier ; le plafond ne doit pas masquer la
+  // catégorie entière — le PREMIER d'entre eux prend la dernière place s'il n'en reste aucun dans les suggestions.
+  const masque = tous.slice(LIVE_MAX_RESULTS).find((r) => r.kind === 'reference_event');
+  if (masque && !retenus.some((r) => r.kind === 'reference_event')) retenus[retenus.length - 1] = masque;
+  return retenus;
 }
 
 /** Nature affichée de chaque suggestion. */
 const LIVE_KIND_LABELS: Readonly<Record<LiveResult['kind'], string>> = {
   nav: 'Page', asset: 'Bien', document: 'Document', agenda: 'Échéance', equipment: 'Équipement', room: 'Pièce',
+  reference_event: REFERENCE_EVENT_SEARCH_CATEGORY,
 };
 
 /** Sous-titre : nature puis contexte (« Équipement · Maison Lyon »). */

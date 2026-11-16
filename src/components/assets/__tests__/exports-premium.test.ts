@@ -34,7 +34,9 @@ describe('exports — offre Standard', () => {
   });
 
   it('le serveur refuse un dossier Premium à un compte Standard, pas l’export brut', () => {
-    const route = read('src/app/api/assets/[id]/exports/route.ts');
+    // Règle déplacée (carte #753, W28) : le corps de la route vit dans la façade partagée avec l'Assistant ; la route l'appelle.
+    expect(read('src/app/api/assets/[id]/exports/route.ts')).toContain('requestExportForAsset(');
+    const route = read('src/services/exports/export-request.facade.ts');
     const enqueue = read('src/services/exports/v12/generation/enqueue.ts');
     // Moteur V12 : chaque dossier passe par la mise en file, qui contrôle l'offre.
     expect(enqueue).toContain('canUsePremiumFeature(asset.accountId)');

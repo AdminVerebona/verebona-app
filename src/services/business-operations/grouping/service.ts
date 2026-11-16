@@ -7,9 +7,11 @@
  * UN SEUL CHEMIN D'ÉCRITURE DU REGROUPEMENT
  *
  * Toute écriture de l'appartenance d'un élément d'agenda à une Opération
- * (`agenda_items.business_operation_id`, `operation_role`), de l'appartenance
+ * (`agenda_items.business_operation_id` — colonne historique tenue à l'identique
+ * dans le graphe par le déclencheur 1716 — et le FAIT PORTÉ par le lien N↔N
+ * `business_operation_agenda_links.fact_key`), de l'appartenance
  * d'un document (`business_operation_documents`), des Pièces
- * (`business_operation_room_links`), de la propagation vers le principal
+ * (`business_operation_room_links`), de la propagation vers l'élément porteur
  * (`agenda_file_links.provenances` OPERATION_PRINCIPAL) et des décisions
  * utilisateur de regroupement passe par ce service. Il réutilise le dépôt des
  * Opérations (`repository.ts` : création, sources, biens, équipements,
@@ -18,22 +20,23 @@
  *
  *   attachAgendaItem / detachAgendaItem   0..1 Opération par élément (§6.1),
  *                                         déplacement explicite seulement ;
- *   designatePrincipal / releasePrincipal rôle PRINCIPAL décidé par T4 ou
- *                                         l'utilisateur (V-Q5) — jamais déduit ;
+ *   designatePrincipal / releasePrincipal FAIT PORTÉ par le lien, décidé par T4
+ *                                         ou l'utilisateur (V-Q5) — jamais déduit,
+ *                                         JAMAIS un rôle (#744, §4, §16, AC40) ;
  *   attachDocument / detachDocument       appartenance ≠ provenance (§27.3) ;
  *   attachRoom / detachRoom               Pièces (table `substructures`, V-Q6) ;
  *   attachEquipment / detachEquipment     équipements existants (V-Q8) ;
  *   attachAsset / detachAsset             biens ;
  *   linkAgendaItems                       Agenda ↔ Agenda, quatre cas (§8.3) ;
  *   mergeOperations                       fusion existante du dépôt ;
- *   recomputePrincipal                    unicité + propagation (P4, §11.9) ;
- *   recomputeOperation                    membres, principal, existence (§8.4) ;
+ *   recomputePrincipal                    un porteur par fait + propagation (P4, §11.9) ;
+ *   recomputeOperation                    membres, porteur, existence (§8.4) ;
  *   deleteOrInvalidateOperation           invalidation, objets sources conservés.
  *
  * Décisions utilisateur (§10) : tout geste USER est mémorisé
  * (`decisions.ts`) ; une inférence (T3, T4, SYSTEM) ne recrée jamais un
- * rattachement refusé, ne remplace jamais un principal posé par
- * l'utilisateur et — lot 84B — ne rétablit jamais un rôle principal que
+ * rattachement refusé, ne remplace jamais un fait porté posé par
+ * l'utilisateur et — lot 84B — ne redésigne jamais un porteur que
  * l'utilisateur a retiré (décision PRINCIPAL, `principalWithdrawnByUser`).
  *
  * Lot 84B (O-3, interface) : `linkDocumentToAgendaItem` (lien manuel
@@ -60,8 +63,12 @@
 import { withBusinessOperationWrite, type WriteOptions, type WriteSession } from '../write';
 import type { BusinessOperationRepository } from '../repository';
 import { isRejected, liftPrincipalWithdrawals, principalWithdrawnByUser, recordAssetDecision, recordGroupingDecision, recordLinkDecision } from './decisions';
-import { canReplacePrincipal, mayDesignatePrincipal, planLinkAgendaItems, type OperationRole, type RoleOrigin } from './model';
-import { currentPrincipal, recomputePrincipal as recompute, stripPrincipalLinks, type PrincipalRecompute } from './principal';
+import {
+  canReplacePrincipal, factKeyOfOperationType, graphOriginOfRoleOrigin, mayDesignatePrincipal, planLinkAgendaItems,
+  roleOriginOfGraphOrigin, type OperationRole, type RoleOrigin,
+} from './model';
+import { currentFactCarrier, recomputePrincipal as recompute, stripPropagatedDocumentLinks, type PrincipalRecompute } from './principal';
+import { clearAgendaLinkFacts, stampAgendaLinkFact } from '../graph/store';
 import { drizzleRunner, intArray, lockGroupingAccount, type GroupingRunner } from './runner';
 
 type GroupingErrorCode =
@@ -108,23 +115,36 @@ export function withGroupingWrite<T>(accountId: number, fn: (ctx: GroupingContex
 // ── Lectures internes (sous verrou) ────────────────────────────────────────
 
 interface ItemRow {
-  id: number; account_id: number; op: number | null; role: OperationRole | null; origin: RoleOrigin | null;
+  id: number; account_id: number; op: number | null;
+  /**
+   * Lot 114O (#744) — FAIT PORTÉ par le lien avec `op` (null : aucun). Remplace
+   * le rôle « principal » : le lien dit quel fait l'élément porte, jamais quel
+   * élément passe devant les autres.
+   */
+  fact: string | null;
+  /** Auteur du lien (autorité sur le fait porté : utilisateur > IA > reprise). */
+  origin: RoleOrigin | null;
   projected: boolean; op_active: boolean | null; op_account: number | null;
 }
 
 async function loadItem(ctx: GroupingContext, itemId: number): Promise<ItemRow> {
-  const [i] = await ctx.runner.q<ItemRow>(
-    `SELECT i.id, i.account_id, i.business_operation_id::int AS op, i.operation_role AS role, i.operation_role_origin AS origin,
+  const [i] = await ctx.runner.q<ItemRow & { graph_origin: string | null }>(
+    `SELECT i.id, i.account_id, i.business_operation_id::int AS op,
+            g.fact_key AS fact, g.origin AS graph_origin,
             (i.projection_origin IS NOT NULL) AS projected,
             (o.id IS NOT NULL AND o.invalidated_at IS NULL AND o.merged_into_operation_id IS NULL) AS op_active,
             o.account_id AS op_account
-       FROM agenda_items i LEFT JOIN business_operations o ON o.id = i.business_operation_id
+       FROM agenda_items i
+       LEFT JOIN business_operations o ON o.id = i.business_operation_id
+       LEFT JOIN business_operation_agenda_links g
+              ON g.account_id = i.account_id AND g.operation_id = i.business_operation_id
+             AND g.agenda_item_id = i.id AND g.state = 'ACTIVE'
       WHERE i.id = $1 FOR UPDATE OF i`,
     [itemId],
   );
   if (!i) throw new GroupingError('ITEM_NOT_FOUND', `Élément d'agenda ${itemId} introuvable.`);
   if (Number(i.account_id) !== ctx.accountId) throw new GroupingError('CROSS_ACCOUNT', `Élément d'agenda ${itemId} d'un autre compte.`);
-  return { ...i, op: i.op === null ? null : Number(i.op) };
+  return { ...i, op: i.op === null ? null : Number(i.op), origin: roleOriginOfGraphOrigin(i.graph_origin) };
 }
 
 async function loadOperation(ctx: GroupingContext, operationId: number, opts: { allowInactive?: boolean } = {}): Promise<{ id: number; active: boolean; merged: number | null }> {
@@ -162,7 +182,18 @@ function requireSession(ctx: GroupingContext, what: string): { session: WriteSes
 interface AttachAgendaInput {
   operationId: number;
   itemId: number;
-  /** Rôle voulu ; défaut : rôle actuel dans cette Opération, sinon RELATED. */
+  /**
+   * Lot 114O (#744) — FAIT que l'élément porte pour cet événement de référence
+   * (`factKeyOf` d'une clé de projection) ; `null` : aucun fait porté ;
+   * absent : le fait actuel est conservé.
+   */
+  fact?: string | null;
+  /**
+   * Vocabulaire HISTORIQUE de la table C16, encore rendu par le contrat de
+   * sortie T4 et par « À traiter » : PRINCIPAL = « porte le fait de cet
+   * événement de référence », RELATED = « n'en porte aucun ». Traduit en fait
+   * porté ; AUCUN rôle n'est écrit (CDC V2.0 §4, §16, AC40).
+   */
   role?: OperationRole;
   origin: RoleOrigin;
   reasonCode: string;
@@ -172,9 +203,24 @@ interface AttachAgendaInput {
 
 interface AttachAgendaResult {
   changed: boolean;
+  /**
+   * Vue DÉRIVÉE du fait porté, dans le vocabulaire historique des appelants
+   * (PRINCIPAL = porte un fait, RELATED = membre sans fait, null = non membre).
+   * Aucun rôle n'est stocké.
+   */
   role: OperationRole | null;
   skipped?: 'USER_REJECTED' | 'LINKED_ELSEWHERE' | 'PRINCIPAL_PROTECTED';
 }
+
+/** Fait voulu pour cet événement de référence quand l'appelant parle encore « principal ». */
+async function factOfOperation(ctx: GroupingContext, operationId: number): Promise<string> {
+  const [o] = await ctx.runner.q<{ type_code: string | null }>(
+    `SELECT o.type_code FROM business_operations o WHERE o.id = $1 AND o.account_id = $2`, [operationId, ctx.accountId]);
+  return factKeyOfOperationType(o?.type_code ?? null);
+}
+
+/** Vue historique du fait porté (jamais stockée). */
+const roleOfFact = (op: number | null, fact: string | null): OperationRole | null => (op === null ? null : fact ? 'PRINCIPAL' : 'RELATED');
 
 /**
  * Rattache un élément d'agenda à une Opération (même compte, Opération
@@ -188,57 +234,75 @@ export async function attachAgendaItem(ctx: GroupingContext, p: AttachAgendaInpu
   const user = p.origin === 'USER';
   if (!user && await isRejected(ctx.runner, ctx.accountId, p.operationId, 'AGENDA', p.itemId)) return { changed: false, role: null, skipped: 'USER_REJECTED' };
   if (item.op !== null && item.op !== p.operationId && item.op_active) {
-    if (!(user && p.move)) return { changed: false, role: item.role, skipped: 'LINKED_ELSEWHERE' };
+    if (!(user && p.move)) return { changed: false, role: roleOfFact(item.op, item.fact), skipped: 'LINKED_ELSEWHERE' };
     await detachAgendaItem(ctx, { itemId: p.itemId, operationId: item.op, origin: 'USER', reasonCode: `${p.reasonCode}_MOVED_OUT` });
     item.op = null;
-    item.role = null;
+    item.fact = null;
   }
   const meme = item.op === p.operationId;
-  let role: OperationRole = p.role ?? (meme && item.role ? item.role : 'RELATED');
+  // Fait voulu : demandé explicitement, traduit du vocabulaire historique, ou fait actuel conservé.
+  const demande = p.fact !== undefined ? p.fact
+    : p.role === 'PRINCIPAL' ? await factOfOperation(ctx, p.operationId)
+      : p.role === 'RELATED' ? null
+        : (meme ? item.fact : null);
+  let fact: string | null = demande;
   let skipped: AttachAgendaResult['skipped'];
-  // Lot 84B (§10, §11.9) : rôle principal RETIRÉ par l'utilisateur — une inférence ne le rétablit
+  const demandeExplicite = p.fact !== undefined || p.role !== undefined;
+  // Lot 84B (§10, §11.9) : désignation RETIRÉE par l'utilisateur — une inférence ne la rétablit
   // ni sur cet élément, ni sur un autre (aucune écriture, aucun rattachement de substitution).
-  if (role === 'PRINCIPAL' && !(meme && item.role === 'PRINCIPAL')
+  if (fact !== null && !(meme && item.fact === fact)
       && !mayDesignatePrincipal(p.origin, await principalWithdrawnByUser(ctx.runner, ctx.accountId, p.operationId))) {
-    return { changed: false, role: item.op === p.operationId ? item.role : null, skipped: 'USER_REJECTED' };
+    return { changed: false, role: roleOfFact(item.op === p.operationId ? item.op : null, item.fact), skipped: 'USER_REJECTED' };
   }
-  if (role === 'PRINCIPAL') {
-    const cur = await currentPrincipal(ctx.runner, ctx.accountId, p.operationId);
+  if (fact !== null) {
+    const cur = await currentFactCarrier(ctx.runner, ctx.accountId, p.operationId, fact);
     if (cur && cur.itemId !== p.itemId) {
       if (canReplacePrincipal(cur.origin, p.origin)) {
-        await stripPrincipalLinks(ctx.runner, [cur.itemId]);
-        await ctx.runner.q(`UPDATE agenda_items SET operation_role = 'RELATED', updated_at = now() WHERE id = $1 AND account_id = $2`, [cur.itemId, ctx.accountId]);
+        await stripPropagatedDocumentLinks(ctx.runner, [cur.itemId]);
+        await clearAgendaLinkFacts(ctx.runner, ctx.accountId, p.operationId, [cur.itemId], `${p.reasonCode}_FACT_MOVED`);
       } else {
-        role = 'RELATED';
+        fact = meme ? item.fact : null;
         skipped = 'PRINCIPAL_PROTECTED';
       }
     }
-  } else if (meme && item.role === 'PRINCIPAL' && p.role === 'RELATED' && !canReplacePrincipal(item.origin, p.origin)) {
-    // Un principal posé par l'utilisateur n'est pas rétrogradé par une inférence.
+  } else if (meme && item.fact !== null && demandeExplicite && !canReplacePrincipal(item.origin, p.origin)) {
+    // Un fait porté posé par l'utilisateur n'est pas retiré par une inférence.
     return { changed: false, role: 'PRINCIPAL', skipped: 'PRINCIPAL_PROTECTED' };
   }
-  const origine = meme && item.role === role && !p.role ? item.origin : p.origin;
-  const changed = !meme || item.role !== role || (item.origin !== origine && role === 'PRINCIPAL');
+  const origine = meme && item.fact === fact && !demandeExplicite ? item.origin : p.origin;
+  const faitChange = !meme || item.fact !== fact || (item.origin !== origine && fact !== null);
+  const changed = faitChange;
   if (changed) {
-    if (item.role === 'PRINCIPAL' && role !== 'PRINCIPAL') await stripPrincipalLinks(ctx.runner, [p.itemId]);
-    await ctx.runner.q(
-      `UPDATE agenda_items SET business_operation_id = $3, operation_role = $4, operation_role_origin = $5, updated_at = now()
-        WHERE id = $1 AND account_id = $2`,
-      [p.itemId, ctx.accountId, p.operationId, role, origine],
-    );
+    if (item.fact !== null && fact === null) await stripPropagatedDocumentLinks(ctx.runner, [p.itemId]);
+    // La colonne historique `business_operation_id` reste la seule écriture sur l'élément : aucun rôle.
+    // Le déclencheur 1716 en tient le lien N↔N à l'identique dans le graphe.
+    if (!meme) {
+      await ctx.runner.q(
+        `UPDATE agenda_items SET business_operation_id = $3, updated_at = now() WHERE id = $1 AND account_id = $2`,
+        [p.itemId, ctx.accountId, p.operationId],
+      );
+    }
+    // Fait porté et auteur : sur le LIEN (graphe canonique), jamais sur l'élément.
+    if (fact !== null || item.fact !== null || !meme) {
+      await stampAgendaLinkFact(ctx.runner, ctx.accountId, {
+        operationId: p.operationId, itemId: p.itemId, factKey: fact,
+        origin: graphOriginOfRoleOrigin(origine ?? p.origin), reasonCode: p.reasonCode,
+        userId: user ? ctx.actorUserId : null,
+      });
+    }
     await history(ctx, p.operationId, p.reasonCode,
-      meme ? { agenda_item_id: p.itemId, role: item.role } : null,
-      { agenda_item_id: p.itemId, role, origin: origine });
+      meme ? { agenda_item_id: p.itemId, fact: item.fact } : null,
+      { agenda_item_id: p.itemId, fact, origin: origine });
     notify(ctx, p.operationId, p.reasonCode);
   }
   if (user) await recordGroupingDecision(ctx.runner, { accountId: ctx.accountId, operationId: p.operationId, subject: 'AGENDA', entityId: p.itemId, decision: 'CONFIRMED', reasonCode: p.reasonCode });
-  // Lot 84B : désignation par l'utilisateur — mémorisée ; elle lève ses retraits antérieurs du rôle.
-  if (user && p.role === 'PRINCIPAL' && role === 'PRINCIPAL') {
+  // Lot 84B : désignation par l'utilisateur — mémorisée ; elle lève ses retraits antérieurs.
+  if (user && demandeExplicite && fact !== null) {
     await liftPrincipalWithdrawals(ctx.runner, ctx.accountId, p.operationId);
     await recordGroupingDecision(ctx.runner, { accountId: ctx.accountId, operationId: p.operationId, subject: 'PRINCIPAL', entityId: p.itemId, decision: 'CONFIRMED', reasonCode: p.reasonCode });
   }
   if (changed) await recompute(ctx.runner, ctx.accountId, p.operationId);
-  return { changed, role, ...(skipped ? { skipped } : {}) };
+  return { changed, role: roleOfFact(p.operationId, fact), ...(skipped ? { skipped } : {}) };
 }
 
 interface DetachAgendaInput {
@@ -264,7 +328,7 @@ export async function detachAgendaItem(ctx: GroupingContext, p: DetachAgendaInpu
     }
     return { changed: false, operationId: op };
   }
-  await stripPrincipalLinks(ctx.runner, [p.itemId]);
+  await stripPropagatedDocumentLinks(ctx.runner, [p.itemId]);
   await ctx.runner.q(
     `UPDATE agenda_items
         SET business_operation_id = NULL,
@@ -276,7 +340,7 @@ export async function detachAgendaItem(ctx: GroupingContext, p: DetachAgendaInpu
   );
   // Opération d'un autre compte (lien historique) : aucune écriture sur elle.
   if (item.op_account !== null && Number(item.op_account) === ctx.accountId) {
-    await history(ctx, op, p.reasonCode, { agenda_item_id: p.itemId, role: item.role }, null);
+    await history(ctx, op, p.reasonCode, { agenda_item_id: p.itemId, fact: item.fact }, null);
     if (p.origin === 'USER') {
       await recordGroupingDecision(ctx.runner, { accountId: ctx.accountId, operationId: op, subject: 'AGENDA', entityId: p.itemId, decision: 'REJECTED', reasonCode: p.reasonCode });
       // Regroupement créé par un lien utilisateur : la source de cet élément ne le justifie plus.
@@ -289,42 +353,45 @@ export async function detachAgendaItem(ctx: GroupingContext, p: DetachAgendaInpu
       }
     }
     notify(ctx, op, p.reasonCode);
-    if (item.role === 'PRINCIPAL') await recompute(ctx.runner, ctx.accountId, op);
+    if (item.fact !== null) await recompute(ctx.runner, ctx.accountId, op);
     if (ctx.session && p.origin === 'USER') await recomputeOperation(ctx, op, p.reasonCode);
   }
   return { changed: true, operationId: op };
 }
 
-/** Désigne le principal (décision T4 ou utilisateur, V-Q5). Voir `attachAgendaItem`. */
-export function designatePrincipal(ctx: GroupingContext, p: Omit<AttachAgendaInput, 'role'>): Promise<AttachAgendaResult> {
-  return attachAgendaItem(ctx, { ...p, role: 'PRINCIPAL' });
+/**
+ * Désigne l'élément qui PORTE le fait de cet événement de référence (décision
+ * T4 ou utilisateur, V-Q5). Lot 114O (#744) : aucun rôle n'est écrit — le fait
+ * est posé sur le LIEN N↔N. Voir `attachAgendaItem`.
+ */
+export function designatePrincipal(ctx: GroupingContext, p: Omit<AttachAgendaInput, 'role' | 'fact'> & { fact?: string }): Promise<AttachAgendaResult> {
+  return attachAgendaItem(ctx, p.fact === undefined ? { ...p, role: 'PRINCIPAL' } : { ...p, fact: p.fact });
 }
 
 /**
- * Retire le rôle principal (l'élément reste lié) — refusé à une inférence face à un choix utilisateur.
+ * Retire le fait porté (l'élément reste lié) — refusé à une inférence face à un choix utilisateur.
  * Lot 84B (§10, §11.9 ; point ouvert 83A) : retiré par l'UTILISATEUR, le retrait est MÉMORISÉ
- * (décision PRINCIPAL REJECTED) — aucune inférence ne rétablit ensuite de principal dans
+ * (décision PRINCIPAL REJECTED) — aucune inférence ne redésigne ensuite de porteur dans
  * l'Opération (invariant O3-PRINCIPAL-WITHDRAWN). `itemId` : ne retire que si cet élément est
- * encore le principal (geste depuis son tiroir).
+ * encore le porteur (geste depuis son tiroir).
  */
 export async function releasePrincipal(ctx: GroupingContext, p: { operationId: number; origin: RoleOrigin; reasonCode: string; itemId?: number }): Promise<boolean> {
   await lockGroupingAccount(ctx.runner, ctx.accountId);
-  const cur = await currentPrincipal(ctx.runner, ctx.accountId, p.operationId);
+  const cur = await currentFactCarrier(ctx.runner, ctx.accountId, p.operationId);
   if (!cur || !canReplacePrincipal(cur.origin, p.origin)) return false;
   if (p.itemId !== undefined && cur.itemId !== p.itemId) return false;
   if (p.origin === 'USER') {
     await recordGroupingDecision(ctx.runner, { accountId: ctx.accountId, operationId: p.operationId, subject: 'PRINCIPAL', entityId: cur.itemId, decision: 'REJECTED', reasonCode: p.reasonCode });
   }
-  await stripPrincipalLinks(ctx.runner, [cur.itemId]);
-  await ctx.runner.q(`UPDATE agenda_items SET operation_role = 'RELATED', operation_role_origin = $3, updated_at = now() WHERE id = $1 AND account_id = $2`,
-    [cur.itemId, ctx.accountId, p.origin]);
-  await history(ctx, p.operationId, p.reasonCode, { principal_item_id: cur.itemId }, { principal_item_id: null });
+  await stripPropagatedDocumentLinks(ctx.runner, [cur.itemId]);
+  await clearAgendaLinkFacts(ctx.runner, ctx.accountId, p.operationId, [cur.itemId], p.reasonCode);
+  await history(ctx, p.operationId, p.reasonCode, { carrier_item_id: cur.itemId }, { carrier_item_id: null });
   notify(ctx, p.operationId, p.reasonCode);
   await recompute(ctx.runner, ctx.accountId, p.operationId);
   return true;
 }
 
-/** Unicité du principal et propagation des documents (idempotent). */
+/** Unicité du porteur par fait et propagation des documents (idempotent). */
 export async function recomputePrincipal(ctx: GroupingContext, operationId: number): Promise<PrincipalRecompute> {
   await lockGroupingAccount(ctx.runner, ctx.accountId);
   return recompute(ctx.runner, ctx.accountId, operationId);
@@ -508,7 +575,7 @@ export async function detachDocumentFromAgendaItem(
   const op = item.op !== null && item.op_active && Number(item.op_account) === ctx.accountId ? item.op : null;
   await recordLinkDecision(ctx.runner, { accountId: ctx.accountId, itemId: p.itemId, fileId: p.fileId, decision: 'REJECTED', reasonCode: reason });
   if (!lien) return { removed: false, provenances, operationId: op };
-  if (op !== null && (provenances.includes('OPERATION_PRINCIPAL') || item.role === 'PRINCIPAL')) {
+  if (op !== null && (provenances.includes('OPERATION_PRINCIPAL') || item.fact !== null)) {
     await recordGroupingDecision(ctx.runner, { accountId: ctx.accountId, operationId: op, subject: 'PRINCIPAL_LINK', entityId: p.fileId, decision: 'REJECTED', reasonCode: reason });
   }
   const { removeFileLinkProvenance } = await import('./provenance');
@@ -603,10 +670,13 @@ export async function dependentsOfAssetRemoval(ctx: GroupingContext, operationId
   const { housingAssetIdsOf, operationScopeAssetIds } = await import('@/services/agenda/housing-scope.service');
   const { incompatibleStructuralLinks } = await import('@/lib/agenda/housing-scope');
   // Le bien reste rattaché à l'ensemble par son événement de référence : rien ne devient incompatible.
-  const [parPrincipal] = await ctx.runner.q(
-    `SELECT 1 FROM agenda_items i JOIN agenda_asset_links al ON al.agenda_item_id = i.id AND al.asset_id = $3
-      WHERE i.account_id = $1 AND i.business_operation_id = $2 AND i.operation_role = 'PRINCIPAL' LIMIT 1`, [ctx.accountId, operationId, assetId]);
-  if (parPrincipal) return { roomIds: [], equipmentIds: [] };
+  const [parPorteur] = await ctx.runner.q(
+    `SELECT 1 FROM agenda_items i
+       JOIN agenda_asset_links al ON al.agenda_item_id = i.id AND al.asset_id = $3
+       JOIN business_operation_agenda_links g ON g.account_id = i.account_id AND g.operation_id = $2
+            AND g.agenda_item_id = i.id AND g.state = 'ACTIVE' AND g.fact_key IS NOT NULL
+      WHERE i.account_id = $1 AND i.business_operation_id = $2 LIMIT 1`, [ctx.accountId, operationId, assetId]);
+  if (parPorteur) return { roomIds: [], equipmentIds: [] };
   const restants = (await operationScopeAssetIds(ctx.runner, ctx.accountId, operationId)).filter((a) => a !== assetId);
   const logements = await housingAssetIdsOf(ctx.runner, ctx.accountId, restants);
   const rooms = await ctx.runner.q<{ id: number; asset_id: number }>(
@@ -858,7 +928,7 @@ async function releaseInvalidatedOperation(ctx: GroupingContext, operationId: nu
   const items = await ctx.runner.q<{ id: number; projected: boolean }>(
     `SELECT id, projection_origin IS NOT NULL AS projected FROM agenda_items WHERE account_id = $1 AND business_operation_id = $2 ORDER BY id`,
     [ctx.accountId, operationId]);
-  await stripPrincipalLinks(ctx.runner, items.map((i) => Number(i.id)));
+  await stripPropagatedDocumentLinks(ctx.runner, items.map((i) => Number(i.id)));
   for (const i of items.filter((x) => !x.projected)) {
     await detachAgendaItem(ctx, { itemId: Number(i.id), operationId, origin: 'SYSTEM', reasonCode: `${reasonCode}_OPERATION_INVALIDATED` });
   }
@@ -869,8 +939,8 @@ async function releaseInvalidatedOperation(ctx: GroupingContext, operationId: nu
 
 /**
  * Déplacement d'un bien (Duo) : aucun regroupement ne franchit les comptes.
- * Éléments d'agenda liés à une Opération d'un autre compte détachés (rôle et
- * propagation retirés) ; appartenances USER et Pièces intercomptes retirées.
+ * Éléments d'agenda liés à une Opération d'un autre compte détachés (fait porté
+ * et propagation retirés) ; appartenances USER et Pièces intercomptes retirées.
  * Appelée par `transferAssetDataInTx` (étape 9) dans sa transaction.
  */
 export async function detachCrossAccountGroupingInTx(r: GroupingRunner, accountIds: readonly number[]): Promise<{ agendaItems: number; documents: number; rooms: number }> {
@@ -880,7 +950,7 @@ export async function detachCrossAccountGroupingInTx(r: GroupingRunner, accountI
     `SELECT ai.id FROM agenda_items ai JOIN business_operations o ON o.id = ai.business_operation_id
       WHERE ai.account_id = ANY($1::int[]) AND o.account_id <> ai.account_id`, [comptes]);
   if (items.length) {
-    await stripPrincipalLinks(r, items.map((i) => Number(i.id)));
+    await stripPropagatedDocumentLinks(r, items.map((i) => Number(i.id)));
     await r.q(`UPDATE agenda_items SET business_operation_id = NULL, updated_at = now() WHERE id = ANY($1::int[])`, [intArray(items.map((i) => Number(i.id)))]);
   }
   const docs = await r.q(

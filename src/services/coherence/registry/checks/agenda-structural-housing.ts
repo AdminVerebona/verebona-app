@@ -39,7 +39,10 @@ const PERIMETRE_SQL = `
   i.account_id = $1 AND (
     EXISTS (SELECT 1 FROM agenda_room_links r WHERE r.agenda_item_id = i.id)
     OR EXISTS (SELECT 1 FROM agenda_equipment_links e WHERE e.agenda_item_id = i.id)
-    OR (i.operation_role = 'PRINCIPAL' AND i.business_operation_id IS NOT NULL AND (
+    OR (EXISTS (SELECT 1 FROM business_operation_agenda_links g
+                 WHERE g.account_id = i.account_id AND g.operation_id = i.business_operation_id
+                   AND g.agenda_item_id = i.id AND g.state = 'ACTIVE' AND g.fact_key IS NOT NULL)
+        AND i.business_operation_id IS NOT NULL AND (
       EXISTS (SELECT 1 FROM business_operation_room_links l WHERE l.operation_id = i.business_operation_id AND l.active)
       OR EXISTS (SELECT 1 FROM business_operation_equipment_links l WHERE l.operation_id = i.business_operation_id AND l.active))))`;
 
@@ -62,8 +65,12 @@ const AGENDA_USER_TOUCH_EVENT_TYPES: readonly string[] = ['STATUS_CHANGED', 'USE
 /** Diagnostic (lecture seule) d'un élément du compte ; null : hors périmètre ou disparu. */
 export async function diagnoseStructuralHousing(r: GroupingRunner, accountId: number, itemId: number): Promise<StructuralHousingDiagnosis | null> {
   const { agendaItemAssetIds, housingAssetIdsOf, loadStructuralParents, operationScopeAssetIds } = await import('@/services/agenda/housing-scope.service');
-  const [i] = await r.q<{ id: number; is_automatic: boolean; is_automatic_modified: boolean; op: number | null; role: string | null; op_active: boolean | null; touched: boolean }>(
-    `SELECT i.id, i.is_automatic, i.is_automatic_modified, i.business_operation_id AS op, i.operation_role AS role,
+  const [i] = await r.q<{ id: number; is_automatic: boolean; is_automatic_modified: boolean; op: number | null; fact: string | null; op_active: boolean | null; touched: boolean }>(
+    `SELECT i.id, i.is_automatic, i.is_automatic_modified, i.business_operation_id AS op,
+            -- Lot 114O (#744) : fait porté par le lien N↔N (remplace le rôle « principal »).
+            (SELECT g.fact_key FROM business_operation_agenda_links g
+              WHERE g.account_id = i.account_id AND g.operation_id = i.business_operation_id
+                AND g.agenda_item_id = i.id AND g.state = 'ACTIVE') AS fact,
             (o.id IS NOT NULL AND o.account_id = i.account_id AND o.invalidated_at IS NULL AND o.merged_into_operation_id IS NULL) AS op_active,
             EXISTS (SELECT 1 FROM agenda_occurrence_events e WHERE e.agenda_item_id = i.id AND e.event_type = ANY($3::text[])) AS touched
        FROM agenda_items i LEFT JOIN business_operations o ON o.id = i.business_operation_id
@@ -90,7 +97,7 @@ export async function diagnoseStructuralHousing(r: GroupingRunner, accountId: nu
   }
 
   // 2. Liens de l'ensemble dont l'élément est l'événement de référence.
-  if (i.role === 'PRINCIPAL' && i.op !== null && i.op_active === true) {
+  if (i.fact !== null && i.op !== null && i.op_active === true) {
     const op = Number(i.op);
     out.operationId = op;
     const lr = await r.q<{ id: number; asset_id: number; authority: string | null }>(

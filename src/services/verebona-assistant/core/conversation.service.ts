@@ -268,7 +268,12 @@ interface ReplayedAnswer {
   mode: string | null;
   /** Rejeu fidèle (§31.9, CA-29) : mêmes sources et mêmes actions. */
   sourceCount: number;
-  actions: Array<{ actionId: string; type: string; label: string; href: string | null; requiresConfirmation: boolean; expiresAt: string | null; analyticsCode: string }>;
+  actions: Array<{ actionId: string; type: string; label: string; href: string | null; requiresConfirmation: boolean; expiresAt: string | null; analyticsCode: string; linkTitle?: string; command?: import('@/lib/verebona/assistant-actions').AssistantCreateCommand }>;
+  /**
+   * Trello #753 (CDC T2 §14.2 point 5, M12) : cartes de résultats enregistrées avec la réponse (dont la carte d'un
+   * export lancé depuis l'Assistant) — rendues à l'identique au rejeu, sans rien relancer. `null` : aucune carte.
+   */
+  resultGroups: unknown[] | null;
 }
 
 export async function findReplayedAnswer(
@@ -277,7 +282,7 @@ export async function findReplayedAnswer(
   clientRequestId: string,
 ): Promise<ReplayedAnswer | null> {
   const rows = await pgClient.unsafe(
-    `SELECT a.id, a.conversation_id, a.request_id, a.content, a.intent, a.mode
+    `SELECT a.id, a.conversation_id, a.request_id, a.content, a.intent, a.mode, a.result_groups_json
        FROM verebona_messages q
        JOIN verebona_conversations c ON c.id = q.conversation_id
        JOIN verebona_messages a ON a.conversation_id = q.conversation_id
@@ -291,7 +296,7 @@ export async function findReplayedAnswer(
     // la réservation le refuse (« déjà traitée ») sans relancer le pipeline.
     [accountId, userId, clientRequestId, Math.max(1, Math.floor(getAssistantConfig().idempotencyTtlSeconds))],
   );
-  const r = (rows as unknown as Array<{ id: number; conversation_id: number; request_id: string; content: string | null; intent: string | null; mode: string | null }>)[0];
+  const r = (rows as unknown as Array<{ id: number; conversation_id: number; request_id: string; content: string | null; intent: string | null; mode: string | null; result_groups_json?: unknown }>)[0];
   if (!r) return null;
   // Le rejeu rendait `sourcesAvailable: false` et `actions: []` : la même
   // demande donnait une réponse appauvrie. Sources et actions sont relues.
@@ -299,12 +304,13 @@ export async function findReplayedAnswer(
     `SELECT count(*)::int AS n FROM verebona_message_sources WHERE message_id = $1`, [r.id],
   )) as unknown as Array<{ n: number }>;
   const act = (await pgClient.unsafe(
-    `SELECT id, action_type, label, resolved_href, requires_confirmation, analytics_code, expires_at, target_type, target_id
+    `SELECT id, action_type, label, resolved_href, requires_confirmation, analytics_code, expires_at, target_type, target_id, payload_json
        FROM verebona_message_actions WHERE message_id = $1 ORDER BY id ASC`, [r.id],
-  )) as unknown as Array<{ id: number; action_type: string; label: string; resolved_href: string | null; requires_confirmation: boolean; analytics_code: string | null; expires_at: Date | null; target_type: string | null; target_id: string | number | null }>;
+  )) as unknown as Array<{ id: number; action_type: string; label: string; resolved_href: string | null; requires_confirmation: boolean; analytics_code: string | null; expires_at: Date | null; target_type: string | null; target_id: string | number | null; payload_json: unknown }>;
   return {
     conversationId: r.conversation_id, messageId: r.id, requestId: r.request_id, content: r.content ?? '',
     intent: r.intent, mode: r.mode,
+    resultGroups: Array.isArray(r.result_groups_json) && r.result_groups_json.length ? r.result_groups_json : null,
     sourceCount: src?.n ?? 0,
     actions: act
       .filter((a) => !a.expires_at || new Date(a.expires_at).getTime() > Date.now())
@@ -318,6 +324,12 @@ export async function findReplayedAnswer(
         actionId: `replay-${a.id}`, type: a.action_type, label: a.label,
         requiresConfirmation: Boolean(a.requires_confirmation), expiresAt: a.expires_at ? new Date(a.expires_at).toISOString() : null,
         analyticsCode: a.analytics_code ?? `verebona.action.${a.action_type.toLowerCase()}`,
+        // Trello #753 (CDC T2 §7.6) : titre de l'article d'aide enregistré avec l'action — la demande rejouée
+        // réaffiche le même LIEN TEXTUEL, jamais un bouton de source.
+        ...(() => {
+          const t = (a.payload_json as { linkTitle?: unknown } | null)?.linkTitle;
+          return typeof t === 'string' && t ? { linkTitle: t } : {};
+        })(),
       })),
   };
 }
@@ -1023,5 +1035,35 @@ export async function loadThreadContext(
     currentAssetId: typeof c.currentAssetId === 'number' ? c.currentAssetId : null,
     currentDocumentId: typeof c.currentDocumentId === 'number' ? c.currentDocumentId : null,
     pendingClarification: conv[0].clarification_state_json?.clarificationId ?? null,
+    // Passage 114AA : événement de référence du fil (« celui-ci » d'un tour à l'autre). Entier positif
+    // seulement ; il est de toute façon re-vérifié dans le compte avant d'être utilisé.
+    lastReferenceEventId: Number.isInteger(c.lastReferenceEventId) && Number(c.lastReferenceEventId) > 0 ? Number(c.lastReferenceEventId) : null,
   };
+}
+
+/**
+ * Passage 114AA (Trello #753) — ÉVÉNEMENT DE RÉFÉRENCE DU FIL.
+ *
+ * Mémorise, dans le contexte du fil de CET utilisateur, le dernier événement de référence sur lequel une action
+ * a abouti : c'est lui que désigne « celui-ci » au tour suivant. `null` l'oublie (événement supprimé).
+ *
+ * Aucune migration : la colonne `context_json` du fil porte déjà le contexte conversationnel. Le fil doit
+ * appartenir à l'utilisateur et être actif — un identifiant de fil d'un autre membre n'écrit rien. Ne lève
+ * jamais : l'action est déjà faite quand cette fonction s'exécute.
+ */
+export async function noterEvenementDeReferenceDuFil(
+  p: { accountId: number; userId: number; conversationId: number | null },
+  operationId: number | null,
+): Promise<void> {
+  if (!p.conversationId) return;
+  try {
+    await pgClient.unsafe(
+      `UPDATE verebona_conversations
+          SET context_json = coalesce(context_json, '{}'::jsonb) || $4::jsonb
+        WHERE id = $1 AND account_id = $2 AND user_id = $3 AND status = 'active'`,
+      [p.conversationId, p.accountId, p.userId, JSON.stringify({ lastReferenceEventId: operationId })] as never[],
+    );
+  } catch (e) {
+    console.warn('[verebona] événement de référence du fil non mémorisé :', (e as Error).message);
+  }
 }

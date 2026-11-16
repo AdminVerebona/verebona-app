@@ -39,6 +39,9 @@ const { proposalsFromAnalysis } = await import('../document-rule-bridge');
 const { rankCandidates } = await import('@/services/ai/reconciliation/document-asset/decision');
 const { todoItemFrom, todoTitle } = await import('@/services/home/mascot/todo-items');
 const periodes = await import('@/services/documents/business-periods/conflict-cards');
+const relations = await import('../operation-relation-cards');
+const rattachements = await import('../operation-agenda-link-cards');
+const fusions = await import('../operation-merge-cards');
 const { ActionCard } = await import('@/components/to-process/ActionCard');
 import type { ActionProposal, TargetType } from '../action-model';
 import type { ToProcessActionView } from '../to-process-query.service';
@@ -226,6 +229,22 @@ describe('L77B-03 — toutes les familles : aucun libellé technique', () => {
     ['PERIOD-CONFLICT', vue({ targetType: 'DOCUMENT', ruleCode: 'PERIOD-CONFLICT', relationKey: 'periodConflict:1:a', label: 'Attestation 2024-2025',
       question: periodes.PERIOD_CONFLICT_QUESTION, proposals: periodes.periodConflictProposals([
         { fileId: 10, title: 'Attestation A', line: 'Période couverte : du 01/04/2024 au 31/03/2025' }, { fileId: 11, title: 'Attestation B', line: 'Période couverte : du 01/07/2024 au 30/06/2025' }]) })],
+    // Carte #744 : association de deux événements de référence refusée, rapprochée par une preuve nouvelle.
+    ['OPERATION-RELATION', vue({ targetType: 'DOCUMENT', ruleCode: 'OPERATION-RELATION', relationKey: 'operationRelation:3:8', label: 'Offre de prêt',
+      question: relations.operationRelationQuestion('Prêt immobilier — Maison', 'Achat — Maison'), proposals: relations.operationRelationProposals([10]) })],
+    // Carte #744 (décision du PO du 16/11/2026) : rattachement d'Agenda supplémentaire proposé sur un justificatif commun.
+    ['AGENDA-LINK', vue({ targetType: 'AGENDA_ITEM', ruleCode: 'AGENDA-LINK', relationKey: 'operationAgendaLink:3:9', label: 'Passage du couvreur',
+      question: rattachements.agendaLinkQuestion('Passage du couvreur', 'Réparation de la toiture', 'Dégât des eaux', 'Devis toiture'),
+      proposals: rattachements.agendaLinkProposals([10]) })],
+    // Carte #744 (CDC §7, §8) : les deux questions de fusion entre deux événements de référence.
+    ['REFERENCE-EVENT-MERGE', vue({ targetType: 'DOCUMENT', ruleCode: 'REFERENCE-EVENT-MERGE', relationKey: 'referenceEventMerge:3:8', label: 'Facture de plomberie',
+      question: fusions.referenceEventMergeQuestion('Réparation de fuite — Maison', 'Intervention plomberie — Maison'),
+      proposals: fusions.referenceEventMergeProposals([10]) })],
+    ['REFERENCE-EVENT-FACT', vue({ targetType: 'DOCUMENT', ruleCode: 'REFERENCE-EVENT-FACT', relationKey: 'referenceEventFact:3:8:realizedDate', label: 'Facture de plomberie',
+      question: fusions.referenceEventFactQuestion('realizedDate', 'Réparation de fuite — Maison', 'Intervention plomberie — Maison'),
+      proposals: fusions.referenceEventFactProposals([
+        { operationId: 3, title: 'Réparation de fuite — Maison', value: '2025-03-10' },
+        { operationId: 8, title: 'Intervention plomberie — Maison', value: '2025-03-12' }]) })],
     ['DOC-RUB / DOC-TYP / DATA-SUPPLIER / DATA-WARRANTY-END (repli cible)', vue({ targetType: 'DOCUMENT', ruleCode: 'DOC-RUB', fieldKey: 'rubric', kind: 'COMPLETE', label: '' })],
   ];
 

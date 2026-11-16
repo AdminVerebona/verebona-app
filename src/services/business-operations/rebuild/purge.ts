@@ -17,8 +17,8 @@
  *      / Pièce, appartenances, composantes et leurs sources, références,
  *      historique, revues d'identité, décisions système, montants hors
  *      total, détails dérivés ; éléments d'agenda conservés DÉTACHÉS par la
- *      clé `agenda_items_business_operation_fk` ON DELETE SET NULL — rôle
- *      retiré par le déclencheur `agenda_items_operation_role_sync`) ;
+ *      clé `agenda_items_business_operation_fk` ON DELETE SET NULL — lien du
+ *      graphe retiré par le déclencheur `agenda_items_operation_link_sync`) ;
  *   6. repères de la migration structurée (lot 43) du compte → supprimés
  *      (les données de la fiche sont reconsolidées) ;
  *   7. candidats T1 actifs du compte → remis en consolidation (trace T3
@@ -64,10 +64,15 @@ async function readOperationFlags(sql: Sql, accountId: number): Promise<Operatio
             OR EXISTS (SELECT 1 FROM business_operation_relations gr WHERE gr.account_id = o.account_id
                         AND (gr.from_operation_id = o.id OR gr.to_operation_id = o.id) AND (gr.origin = 'USER' OR gr.state = 'REJECTED'))
             OR EXISTS (SELECT 1 FROM business_operation_agenda_links gl WHERE gl.account_id = o.account_id AND gl.operation_id = o.id
-                        AND gl.state = 'ACTIVE' AND gl.origin = 'USER')) AS user_decision,
+                        AND gl.state = 'ACTIVE' AND gl.origin = 'USER')
+            -- Lot 114O (#744, travaux D « contenu », migration 1722) : la NOTE LIBRE est la parole de l'utilisateur.
+            -- Une reconstruction ne doit pas l'effacer : l'événement de référence qui en porte une est conservé.
+            OR o.user_notes IS NOT NULL) AS user_decision,
            EXISTS (SELECT 1 FROM business_operation_asset_exclusions x WHERE x.operation_id = o.id) AS exclusion,
            EXISTS (SELECT 1 FROM business_operation_projection_suppressions p WHERE p.operation_id = o.id AND p.account_id = o.account_id) AS suppression,
-           EXISTS (SELECT 1 FROM agenda_items i WHERE i.business_operation_id = o.id AND i.account_id = o.account_id AND i.operation_role_origin = 'USER') AS user_agenda_role,
+           -- Lot 114O (#744) : lien N↔N posé ou qualifié par l'UTILISATEUR (remplace l'auteur du rôle).
+           EXISTS (SELECT 1 FROM business_operation_agenda_links g WHERE g.operation_id = o.id AND g.account_id = o.account_id
+                     AND g.state = 'ACTIVE' AND g.origin = 'USER') AS user_agenda_role,
            EXISTS (SELECT 1 FROM business_operation_documents bd WHERE bd.operation_id = o.id AND bd.account_id = o.account_id AND 'USER' = ANY(bd.origins)) AS user_document,
            EXISTS (SELECT 1 FROM business_operation_claim_damages cd WHERE cd.operation_id = o.id) AS claim_damages,
            (${legacy}) AS legacy_claim,

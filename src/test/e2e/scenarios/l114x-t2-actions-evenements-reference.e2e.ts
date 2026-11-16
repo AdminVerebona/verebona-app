@@ -11,7 +11,9 @@
  *   E04  W24 : financement ↔ achat associés, deux événements distincts, aucune fusion ; redemandé : déjà associés ;
  *   E05  W25, W26 : document rattaché, fournisseur relié (décision de l'utilisateur) ;
  *   E06  un seul plan, plusieurs actions sur le même événement ; déclaration implicite ;
- *   E07  cloisonnement des comptes ; plan d'un autre compte ; compte passé en lecture seule.
+ *   E07  cloisonnement des comptes ; plan d'un autre compte ; compte passé en lecture seule ;
+ *   E08  passage 114Z4 : « Déclare … PUIS relie / rattache … à celui-ci » — l'événement visé est celui que la
+ *        première action enregistre (identifiant posé à l'exécution) ; la déclaration refusée n'écrit rien.
  */
 import { expect, it, vi } from 'vitest';
 import { scenario } from '../scenario';
@@ -296,5 +298,40 @@ scenario('L114X-EVENEMENTS-REFERENCE', 'Lot 114X — créer, corriger, supprimer
     for (const plan of [r, p]) expect(await confirmer(a, plan.plan.planId)).toMatchObject({ ok: false, code: 'WRITE_REFUSED' });
     expect(await evenements(a)).toEqual([expect.objectContaining({ id: ev.id, invalide: false })]);
     expect(await evenements(b)).toHaveLength(0);
+  });
+
+  it('L114X-E08 — passage 114Z4 : « Déclare … puis relie … à celui-ci » — une confirmation, l’événement créé est la cible', async () => {
+    const c = await compte();
+    const clio = await bien(c, 'Clio');
+    const facture = await document(c, clio, 'Facture Norauto');
+    const garage = await fournisseur(c, 'Garage Martin');
+
+    const r = planDe(await demander(c, `${VIDANGE} puis relie le fournisseur Garage Martin à celui-ci`));
+    expect(r.preview.actions).toHaveLength(2);
+    expect(r.preview.actions[1].preview).toBe('Relier le fournisseur « Garage Martin » à l’événement de référence qui vient d’être enregistré.');
+    expect(r.preview.actions[1].dependsOn).toEqual([r.preview.actions[0].actionId]);
+    expect(JSON.stringify(r.preview)).not.toMatch(/op[ée]ration/i);
+    // Rien n'est écrit avant la confirmation.
+    expect(await evenements(c)).toHaveLength(0);
+
+    expect(await confirmer(c, r.plan.planId)).toMatchObject({ ok: true, status: 'EXECUTED' });
+    const [ev] = await evenements(c);
+    expect(ev).toMatchObject({ type_code: 'INTERVENTION', technical_label: 'Vidange', invalide: false });
+    expect(await sql<Json[]>`SELECT supplier_id::int AS supplier_id, role, origin FROM business_operation_suppliers WHERE operation_id = ${ev.id} AND status = 'ACTIVE'`)
+      .toEqual([{ supplier_id: garage, role: 'PROVIDER', origin: 'USER' }]);
+
+    // Même forme pour un document, sur un second événement.
+    const d = planDe(await demander(c, 'Déclare une intervention « Freins » réalisée le 2 juin 2024 pour la Clio puis rattache le document Facture Norauto à celui-ci'));
+    expect(d.preview.actions[1].preview).toBe('Rattacher le document « Facture Norauto » à l’événement de référence qui vient d’être enregistré.');
+    expect(await confirmer(c, d.plan.planId)).toMatchObject({ ok: true, status: 'EXECUTED' });
+    const freins = (await evenements(c)).find((x) => x.technical_label === 'Freins')!;
+    expect(await sql<Json[]>`SELECT file_id::int AS file_id FROM business_operation_documents WHERE operation_id = ${freins.id} AND active`)
+      .toEqual([{ file_id: facture }]);
+
+    // La déclaration refusée (compte en lecture seule) : le lien n'est pas exécuté, rien n'est écrit.
+    const p = planDe(await demander(c, `Déclare une intervention « Pneus » réalisée le 3 juin 2024 pour la Clio puis relie le fournisseur Garage Martin à celui-ci`));
+    await lectureSeule(c);
+    expect(await confirmer(c, p.plan.planId)).toMatchObject({ ok: false, code: 'WRITE_REFUSED' });
+    expect((await evenements(c)).map((x) => x.technical_label).sort()).toEqual(['Freins', 'Vidange']);
   });
 });

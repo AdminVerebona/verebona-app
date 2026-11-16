@@ -75,6 +75,13 @@ scenario('L82D', 'Opérations v5 — socle O-1 : principal, intégrité, provena
     (await grouping()).withGroupingWrite(compte.id, fn, { actorUserId });
   const role = async (itemId: number) => (await sql<Json[]>`
     SELECT business_operation_id::int AS op, operation_role AS role, operation_role_origin AS origin FROM agenda_items WHERE id = ${itemId}`)[0];
+  /**
+   * Carte #744 (travaux F) : le FAIT PORTÉ par le lien N↔N remplace le rôle « principal ».
+   * `porteurs` = les éléments qui portent un fait de cette Opération (au plus un par fait).
+   */
+  const porteurs = (opId: number) => sql<Json[]>`
+    SELECT agenda_item_id AS item, fact_key AS fait, origin FROM business_operation_agenda_links
+     WHERE operation_id = ${opId} AND state = 'ACTIVE' AND fact_key IS NOT NULL ORDER BY agenda_item_id`;
   const liensDe = (itemId: number) => sql<{ file: number; prov: string[] }[]>`
     SELECT asset_file_id AS file, provenances AS prov FROM agenda_file_links WHERE agenda_item_id = ${itemId} ORDER BY asset_file_id`;
   const membres = (opId: number) => sql<{ file_id: number; origins: string[]; active: boolean }[]>`
@@ -129,7 +136,7 @@ scenario('L82D', 'Opérations v5 — socle O-1 : principal, intégrité, provena
 
   // ══ Principal ════════════════════════════════════════════════════════════
 
-  it('L82D-E02 — au plus un principal (index unique, service) ; T4 ne remplace jamais le principal choisi par l’utilisateur', async () => {
+  it('L82D-E02 — au plus un porteur par fait (service, réparation) ; T4 ne remplace jamais le porteur choisi par l’utilisateur', async () => {
     const c = await contexte();
     const f = await make.assetFile(c.compte, { assetId: c.maison.id });
     const op = await operation(c.compte, c.maison.id, f.id);
@@ -137,19 +144,38 @@ scenario('L82D', 'Opérations v5 — socle O-1 : principal, intégrité, provena
     const b = await make.agendaItem(c.compte, { title: 'Sinistre cuisine', startDate: '2026-03-12' });
     const { designatePrincipal, attachAgendaItem } = await grouping();
     expect(await g(c.compte, (ctx) => designatePrincipal(ctx, { operationId: op, itemId: a.id, origin: 'T4', reasonCode: 'E2E' }))).toMatchObject({ changed: true, role: 'PRINCIPAL' });
-    // Base : un second principal est refusé (23505) ; un chemin hors service qui déplace un élément n'hérite jamais du rôle.
+    // RÈGLE REMPLACÉE (carte #744) : l'unicité n'est plus tenue par l'index unique de la colonne de rôle
+    // (`agenda_items_operation_principal_uidx`), que PLUS AUCUN écrivain n'alimente, mais par le service unique de
+    // regroupement sur le FAIT PORTÉ du lien N↔N. La migration 1721 ne pose DÉLIBÉRÉMENT aucun index unique sur
+    // `fact_key` : un écrivain existant hors du service (fusion, transfert de bien, réparateur) ne doit jamais échouer.
+    // AVANT : `UPDATE agenda_items SET operation_role = 'PRINCIPAL'` était refusé par la base (23505).
     await g(c.compte, (ctx) => attachAgendaItem(ctx, { operationId: op, itemId: b.id, origin: 'T3', reasonCode: 'E2E' }));
-    await expect(sql`UPDATE agenda_items SET operation_role = 'PRINCIPAL' WHERE id = ${b.id}`).rejects.toMatchObject({ code: '23505' });
+    expect(await porteurs(op)).toEqual([{ item: a.id, fait: 'INTERVENTION', origin: 'AI' }]);
+    // La base ACCEPTE un second porteur du même fait posé hors service…
+    await sql`UPDATE business_operation_agenda_links SET fact_key = 'INTERVENTION' WHERE operation_id = ${op} AND agenda_item_id = ${b.id}`;
+    expect((await porteurs(op)).map((p) => p.item)).toEqual([a.id, b.id].sort((x, y) => x - y));
+    // … et le service le RÉPARE : l'excédent perd son fait (le lien, lui, reste), le plus autorisé puis le plus ancien gagne.
+    const { recomputePrincipal } = await grouping();
+    expect(await g(c.compte, (ctx) => recomputePrincipal(ctx, op))).toMatchObject({ principalItemId: a.id, demoted: [b.id] });
+    expect(await porteurs(op)).toEqual([{ item: a.id, fait: 'INTERVENTION', origin: 'AI' }]);
+    expect((await role(b.id)).op).toBe(op); // membre de plein droit : toujours rattaché
     const legacy = await make.agendaItem(c.compte, { title: 'Chemin historique' });
     await sql`UPDATE agenda_items SET business_operation_id = ${op}, operation_role = 'PRINCIPAL' WHERE id = ${legacy.id}`;
     expect(await role(legacy.id)).toEqual({ op, role: 'RELATED', origin: null });
-    // Choix de l'utilisateur : remplace celui de T4, qui redevient lié.
+    // Choix de l'utilisateur : le fait porté passe à `b`, `a` redevient membre de plein droit.
+    // RÈGLE REMPLACÉE (carte #744) : la colonne historique ne distingue plus les deux (RELATED pour les deux, tenue par
+    // le seul déclencheur `agenda_items_operation_role_sync`) ; le vocabulaire PRINCIPAL / RELATED du CONTRAT de service
+    // est conservé en retour (traduit du fait porté), il n'est simplement plus persisté.
     await g(c.compte, (ctx) => designatePrincipal(ctx, { operationId: op, itemId: b.id, origin: 'USER', reasonCode: 'E2E' }));
-    expect([await role(a.id), await role(b.id)]).toEqual([{ op, role: 'RELATED', origin: 'T4' }, { op, role: 'PRINCIPAL', origin: 'USER' }]);
+    // `operation_role_origin` n'est plus écrit non plus : l'autorité de la désignation est portée par l'origine du LIEN.
+    expect([await role(a.id), await role(b.id)]).toEqual([{ op, role: 'RELATED', origin: null }, { op, role: 'RELATED', origin: null }]);
+    expect(await porteurs(op)).toEqual([{ item: b.id, fait: 'INTERVENTION', origin: 'USER' }]);
     // T4 ne le remplace pas ; ni ne le rétrograde.
     expect(await g(c.compte, (ctx) => designatePrincipal(ctx, { operationId: op, itemId: a.id, origin: 'T4', reasonCode: 'E2E' }))).toMatchObject({ changed: false, role: 'RELATED', skipped: 'PRINCIPAL_PROTECTED' });
     expect(await g(c.compte, (ctx) => attachAgendaItem(ctx, { operationId: op, itemId: b.id, role: 'RELATED', origin: 'T4', reasonCode: 'E2E' }))).toMatchObject({ changed: false, skipped: 'PRINCIPAL_PROTECTED' });
-    expect((await sql`SELECT id FROM agenda_items WHERE business_operation_id = ${op} AND operation_role = 'PRINCIPAL'`).map((r) => r.id)).toEqual([b.id]);
+    expect((await porteurs(op)).map((p) => p.item)).toEqual([b.id]);
+    // Plus AUCUN rôle « principal » en base, quel que soit le chemin.
+    expect(await sql`SELECT id FROM agenda_items WHERE business_operation_id = ${op} AND operation_role = 'PRINCIPAL'`).toEqual([]);
     // Rejoué : aucune écriture.
     expect(await g(c.compte, (ctx) => designatePrincipal(ctx, { operationId: op, itemId: b.id, origin: 'USER', reasonCode: 'E2E' }))).toMatchObject({ changed: false });
   });
@@ -172,7 +198,10 @@ scenario('L82D', 'Opérations v5 — socle O-1 : principal, intégrité, provena
     expect(await role(it1.id)).toMatchObject({ op: op1 });
     // Déplacement (§8.4) : geste utilisateur, mémorisé des deux côtés.
     await g(c.compte, (ctx) => attachAgendaItem(ctx, { operationId: op2, itemId: it1.id, origin: 'USER', move: true, reasonCode: 'E2E_MOVE' }), c.compte.owner.id);
-    expect(await role(it1.id)).toEqual({ op: op2, role: 'RELATED', origin: 'USER' });
+    // RÈGLE REMPLACÉE (carte #744) : `operation_role_origin` n'est plus écrit (l'autorité est portée par l'origine du lien
+    // N↔N) ; la colonne de rôle reste tenue à RELATED par son déclencheur. Avant : origin valait 'USER'.
+    expect(await role(it1.id)).toEqual({ op: op2, role: 'RELATED', origin: null });
+    expect(await sql<Json[]>`SELECT origin FROM business_operation_agenda_links WHERE operation_id = ${op2} AND agenda_item_id = ${it1.id} AND state = 'ACTIVE'`).toEqual([{ origin: 'USER' }]);
     expect(await decisions(c.compte)).toEqual(expect.arrayContaining([
       { kind: 'AGENDA', key: String(it1.id), op: op1, decision: 'REJECTED' }, { kind: 'AGENDA', key: String(it1.id), op: op2, decision: 'CONFIRMED' },
     ]));
@@ -308,7 +337,10 @@ scenario('L82D', 'Opérations v5 — socle O-1 : principal, intégrité, provena
     expect(cree.case).toBe('CREATE');
     const [op] = await k.actives(c.compte);
     expect(op).toMatchObject({ id: cree.operationId, type_code: null });
-    expect([await role(degat.id), await role(visite.id)]).toEqual([{ op: op.id, role: 'RELATED', origin: 'USER' }, { op: op.id, role: 'RELATED', origin: 'USER' }]);
+    // RÈGLE REMPLACÉE (carte #744) : `operation_role_origin` n'est plus écrit — l'autorité est portée par l'origine du
+    // lien N↔N (ici USER des deux côtés). Avant : origin valait 'USER' sur la colonne historique.
+    expect([await role(degat.id), await role(visite.id)]).toEqual([{ op: op.id, role: 'RELATED', origin: null }, { op: op.id, role: 'RELATED', origin: null }]);
+    expect((await sql<Json[]>`SELECT DISTINCT origin FROM business_operation_agenda_links WHERE operation_id = ${op.id} AND state = 'ACTIVE'`)).toEqual([{ origin: 'USER' }]);
     expect(await g(c.compte, (ctx) => linkAgendaItems(ctx, { itemA: visite.id, itemB: reparation.id }))).toEqual({ case: 'ATTACH', operationId: op.id });
     expect(await g(c.compte, (ctx) => linkAgendaItems(ctx, { itemA: degat.id, itemB: reparation.id }))).toEqual({ case: 'NOOP', operationId: op.id });
     // Deux regroupements, chacun avec son principal, liés par l'utilisateur : fusion existante, un seul principal.
@@ -321,7 +353,11 @@ scenario('L82D', 'Opérations v5 — socle O-1 : principal, intégrité, provena
     expect(fusion).toEqual({ case: 'MERGE', operationId: Math.min(op.id, autre.operationId) });
     const restants = await sql<Json[]>`SELECT id, operation_role AS role FROM agenda_items WHERE business_operation_id = ${fusion.operationId} ORDER BY id`;
     expect(restants.map((r) => r.id)).toEqual([degat.id, visite.id, reparation.id, constat.id, devis.id]);
-    expect(restants.filter((r) => r.role === 'PRINCIPAL').map((r) => r.id)).toEqual([degat.id]);
+    // RÈGLE REMPLACÉE (carte #744) : « un seul principal après fusion » devient « au plus un PORTEUR par fait » — lu sur
+    // le lien N↔N. Le porteur de l'Opération absorbée perd son fait, son élément reste membre de plein droit.
+    // Avant : `restants.filter((r) => r.role === 'PRINCIPAL')` valait [degat.id].
+    expect(restants.every((r) => r.role === 'RELATED')).toBe(true);
+    expect((await porteurs(fusion.operationId)).map((p) => p.item)).toEqual([degat.id]);
     expect((await k.actives(c.compte)).map((o) => o.id)).toEqual([fusion.operationId]);
     // Rejoué : aucun changement.
     expect(await g(c.compte, (ctx) => linkAgendaItems(ctx, { itemA: devis.id, itemB: reparation.id }))).toEqual({ case: 'NOOP', operationId: fusion.operationId });
@@ -489,6 +525,9 @@ scenario('L82D', 'Opérations v5 — socle O-1 : principal, intégrité, provena
     expect(r.absorbed).toEqual([doublon]);
     expect(r.protectedIds.sort((a, b) => a - b)).toEqual([etape, principalAilleurs].sort((a, b) => a - b));
     expect((await sql`SELECT id FROM agenda_items WHERE id IN (${etape}, ${principalAilleurs}) ORDER BY id`).length).toBe(2);
-    expect(await role(principal)).toMatchObject({ op, role: 'PRINCIPAL' });
+    // RÈGLE REMPLACÉE (carte #744) : le porteur n'est plus reconnaissable au rôle de la colonne historique mais au FAIT
+    // PORTÉ par son lien N↔N. Avant : `role` valait 'PRINCIPAL'.
+    expect(await role(principal)).toMatchObject({ op, role: 'RELATED' });
+    expect((await porteurs(op)).map((p) => p.item)).toEqual([principal]);
   });
 });

@@ -28,7 +28,7 @@ const item = (id: string, title: string, date = '2026-04-04'): TimelineItemView 
 });
 // Règle remplacée (carte #744, lot C) : un groupe est un événement de référence (identité `op-<n>`).
 const groupe: TimelineEntry = {
-  kind: 'group', itemType: 'operation', id: 'op-11', operationId: 11, title: 'Achat — Draisienne', effectiveDate: '2020-01-02', dateBasis: 'REFERENCE_EVENT',
+  kind: 'group', itemType: 'operation', id: 'op-11', operationId: 11, title: 'Achat — Draisienne', effectiveDate: '2020-01-02', dateBasis: 'REALIZED',
   members: [item('21', 'Garantie', '2021-05-01'), item('22', 'Révision', '2099-01-01')],
   counters: { events: 2, documents: 1, assets: 1, rooms: 0, equipments: 0 },
 };

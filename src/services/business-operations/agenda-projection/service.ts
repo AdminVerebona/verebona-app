@@ -47,7 +47,7 @@ import {
 } from './model';
 import type { AgendaEventNature } from '@/services/agenda/agenda-functional-key';
 import type { BusinessOperationStatus, BusinessOperationTypeCode } from '../model';
-import { projectionRoleOf } from '../grouping/model';
+import { factKeyOf, isGlobalEventFact } from '../grouping/model';
 
 type Row = Record<string, unknown>;
 interface Executor { execute: (q: SQL) => Promise<unknown> }
@@ -163,7 +163,11 @@ export interface ProjectionRunResult {
   representationRequired?: Array<{ operationId: number; itemIds: number[]; reason: string }>;
   /** Lot 76H : plans calculés d'une simulation (`dryRun`), Opérations avec au moins une action. */
   plans?: PlannedOperation[];
-  /** Lot 82D : rôles d'éléments posés ; liens propagés vers le principal (ajoutés + retirés). */
+  /**
+   * Lot 114O (#744, remplace « rôles posés » du lot 82D) : faits portés posés ou
+   * retirés sur les liens N↔N ; liens de documents propagés vers l'élément
+   * porteur (ajoutés + retirés).
+   */
   roles?: number;
   principalLinks?: number;
   /** Lot 54D (E07) : pages traitées (passage complet), dernier identifiant atteint. */
@@ -273,7 +277,15 @@ const itemColumnsSql = (journal: boolean) => sql.raw(`
    ${journal ? `OR EXISTS (SELECT 1 FROM agenda_intervention_consolidations k
                  WHERE k.account_id = i.account_id AND k.restored_at IS NOT NULL
                    AND (k.absorbed_item_id = i.id OR (k.kind <> 'ABSORB' AND k.principal_item_id = i.id)))` : ''}) AS pending_status,
-  i.origin_field_key, i.operation_role, i.operation_role_origin,
+  i.origin_field_key,
+  -- Lot 114O (#744) : FAIT PORTÉ par le lien N↔N avec l'Opération de l'élément, et origine du lien
+  -- (remplace le rôle de l'élément et son auteur, plus lus).
+  (SELECT g.fact_key FROM business_operation_agenda_links g
+    WHERE g.account_id = i.account_id AND g.operation_id = i.business_operation_id AND g.agenda_item_id = i.id
+      AND g.state = 'ACTIVE') AS carried_fact,
+  (SELECT g.origin FROM business_operation_agenda_links g
+    WHERE g.account_id = i.account_id AND g.operation_id = i.business_operation_id AND g.agenda_item_id = i.id
+      AND g.state = 'ACTIVE') AS carrier_origin,
   (SELECT count(*)::int FROM agenda_item_sources s WHERE s.agenda_item_id = i.id) AS source_count,
   -- Lot 87B : décision de l'utilisateur sur un lien Document ↔ cet élément (une projection qui la porte ne cède pas sa place).
   EXISTS (SELECT 1 FROM business_operation_match_decisions md WHERE md.account_id = i.account_id AND md.source_kind = 'AGENDA_FILE_LINK'
@@ -331,8 +343,8 @@ function toItem(x: Row): AgendaItemSnapshot {
     pendingStatus: x.pending_status === true,
     originFieldKey: txt(x.origin_field_key),
     sourceCount: Number(x.source_count ?? 0),
-    operationRole: (txt(x.operation_role) as 'PRINCIPAL' | 'RELATED' | null),
-    operationRoleOrigin: txt(x.operation_role_origin),
+    carriedFact: txt(x.carried_fact),
+    carrierOrigin: txt(x.carrier_origin),
     userLinkDecision: x.user_link_decision === true,
     originLinkRejected: x.origin_link_rejected === true,
     agendaSourceOperationIds: nums(x.agenda_source_ops),
@@ -439,16 +451,22 @@ async function grouping<T>(accountId: number, correlationId: string | null, fn: 
   return db.transaction((tx) => fn(runnerContext(drizzleRunner(tx), accountId, { correlationId })));
 }
 
-async function attachProjected(op: OperationSnapshot, itemId: number, role: 'PRINCIPAL' | 'RELATED', correlationId: string | null, reasonCode: string): Promise<boolean> {
+/**
+ * Lot 114O (#744) : rattache l'élément et pose le FAIT PORTÉ par le lien N↔N
+ * (`fact` nul : le lien ne porte aucun fait). AUCUN rôle n'est écrit.
+ */
+async function attachProjected(op: OperationSnapshot, itemId: number, fact: string | null, correlationId: string | null, reasonCode: string): Promise<boolean> {
   const { attachAgendaItem } = await import('../grouping/service');
-  const r = await grouping(op.accountId, correlationId, (ctx) => attachAgendaItem(ctx, { operationId: op.id, itemId, role, origin: 'T4', reasonCode }));
+  const r = await grouping(op.accountId, correlationId, (ctx) => attachAgendaItem(ctx, { operationId: op.id, itemId, fact, origin: 'T4', reasonCode }));
   return r.changed;
 }
 
 async function applyAction(
   op: OperationSnapshot, a: ProjectionAction, res: ProjectionRunResult,
   opts: Required<Pick<ProjectionRunOptions, 'beforeWrite'>> & {
-    correlationId: string | null; runId?: string | null; role: 'PRINCIPAL' | 'RELATED';
+    correlationId: string | null; runId?: string | null;
+    /** Lot 114O (#744) : fait que la projection fait porter à son emplacement (null : aucun). */
+    fact: string | null;
     /** Lot 83A : éléments dont la date a changé ou manque (carte de date à réévaluer). */
     dateCards: Set<number>;
   },
@@ -467,8 +485,8 @@ async function applyAction(
         occurrenceNature: 'CONFIRMED', dateSource: d.date ? 'EXPLICIT_DATE' : null,
         projectionOrigin: PROJECTION_ORIGIN, projectionCorrelationId: opts.correlationId,
       };
-      // Lot 82D : documents d'un principal propagés par le service de regroupement (OPERATION_PRINCIPAL).
-      const links = opts.role === 'PRINCIPAL'
+      // Lot 82D : documents propagés vers l'élément PORTEUR par le service de regroupement (OPERATION_PRINCIPAL).
+      const links = opts.fact !== null
         ? { assetIds: op.assetIds, equipmentIds: op.equipmentIds, substructureIds: [] }
         : { assetIds: op.assetIds, equipmentIds: op.equipmentIds, fileIds: op.documentFileIds, substructureIds: [] };
       const write = (itemId?: number) => writeAgendaItem({
@@ -498,7 +516,7 @@ async function applyAction(
           throw e;
         }
       }
-      await attachProjected(op, w.id, opts.role, opts.correlationId, 'T4_PROJECTION_CREATED');
+      await attachProjected(op, w.id, opts.fact, opts.correlationId, 'T4_PROJECTION_CREATED');
       if (!d.date) opts.dateCards.add(w.id);
       return w.id;
     }
@@ -514,7 +532,7 @@ async function applyAction(
       }, { accountId, channel: 'T4', linkMode: 'replace', onlyIfUntouched: true, notify: false, statusProposal: false });
       if (!w.protected) {
         res.updated++; res.changes++;
-        if (c.businessOperationId !== undefined) await attachProjected(op, a.itemId, opts.role, opts.correlationId, 'T4_PROJECTION_SYNC');
+        if (c.businessOperationId !== undefined) await attachProjected(op, a.itemId, opts.fact, opts.correlationId, 'T4_PROJECTION_SYNC');
         if (c.date !== undefined) opts.dateCards.add(a.itemId);
       }
       return null;
@@ -535,14 +553,15 @@ async function applyAction(
     case 'LINK': {
       await garde('rapprochement');
       // Lot 82D : service unique de regroupement — jamais un élément d'une autre Opération active, refus utilisateur respecté.
-      const applied = await attachProjected(op, a.itemId, opts.role, opts.correlationId, 'T4_PROJECTION_LINK');
+      const applied = await attachProjected(op, a.itemId, opts.fact, opts.correlationId, 'T4_PROJECTION_LINK');
       if (applied) { res.linked++; res.changes++; }
       console.info(JSON.stringify({ event: 't4.operation_projection_link', accountId, operationId: op.id, itemId: a.itemId, reason: a.reason, applied }));
       return null;
     }
-    case 'ROLE': {
-      await garde('rôle de l’élément');
-      if (await attachProjected(op, a.itemId, a.role, opts.correlationId, 'T4_PROJECTION_ROLE')) { res.roles = (res.roles ?? 0) + 1; res.changes++; }
+    case 'CARRY': {
+      // Lot 114O (#744) : pose ou retire le FAIT PORTÉ par le lien N↔N — jamais un rôle.
+      await garde('fait porté par le lien');
+      if (await attachProjected(op, a.itemId, a.fact, opts.correlationId, 'T4_PROJECTION_FACT')) { res.roles = (res.roles ?? 0) + 1; res.changes++; }
       return null;
     }
     case 'REPRESENTATION_REQUIRED':
@@ -726,14 +745,15 @@ async function projectIds(
         if (action.kind === 'REPRESENTATION_REQUIRED') (res.representationRequired ??= []).push({ operationId: op.id, itemIds: action.itemIds, reason: action.reason });
         continue;
       }
-      const role = decision.kind === 'PROJECT' ? projectionRoleOf(decision.desired.key) : 'RELATED';
-      const created = await applyAction(op, action, res, { beforeWrite, correlationId, runId: opts.runId ?? null, role, dateCards });
+      // Lot 114O (#744) : fait porté voulu par la projection (événement global) ; une échéance n'en pose aucun.
+      const fait = decision.kind === 'PROJECT' && isGlobalEventFact(factKeyOf(decision.desired.key)) ? factKeyOf(decision.desired.key) : null;
+      const created = await applyAction(op, action, res, { beforeWrite, correlationId, runId: opts.runId ?? null, fact: fait, dateCards });
       if (created !== null) taken.add(created);
     }
-    // Lot 82D (CDC v5 §7.1, P4) : documents de l'Opération propagés vers son principal (idempotent) —
+    // Lot 82D (CDC v5 §7.1, P4) : documents de l'Opération propagés vers son élément porteur (idempotent) —
     // seulement pour une Opération qui a (ou vient de recevoir) des éléments d'agenda.
     const representee = linked.some((i) => i.businessOperationId === op.id)
-      || plan.some((a) => a.kind === 'CREATE' || a.kind === 'LINK' || a.kind === 'ROLE');
+      || plan.some((a) => a.kind === 'CREATE' || a.kind === 'LINK' || a.kind === 'CARRY');
     if (!opts.dryRun && representee) {
       const { recomputePrincipal } = await import('../grouping/service');
       const r = await grouping(accountId, correlationId, (ctx) => recomputePrincipal(ctx, op.id));

@@ -81,7 +81,11 @@ export async function classifyAssistantIntent(
   if (!r) return null;
   return {
     ...toIntentRoute(r.plan, input.planType),
-    understanding: { requestedFacts: r.requestedFacts, requestedTopics: r.requestedTopics, filters: r.filters ?? {}, interaction: r.interaction },
+    understanding: {
+      requestedFacts: r.requestedFacts, requestedTopics: r.requestedTopics, filters: r.filters ?? {}, interaction: r.interaction,
+      // Trello #753 (annexe A13) : actions comprises par le sens — indices, résolus ensuite par le serveur.
+      ...(r.actions?.length ? { actions: r.actions } : {}),
+    },
   };
 }
 

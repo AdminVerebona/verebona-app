@@ -215,7 +215,11 @@ export async function readSignatureOperations(sql: import('postgres').Sql, accou
            COALESCE((SELECT jsonb_agg(jsonb_build_object('kind', c.kind, 'amountMinor', c.amount_minor, 'currency', trim(c.currency), 'date', c.economic_date::text,
                                                          'periodStart', c.period_start::text, 'periodEnd', c.period_end::text))
                        FROM business_operation_financial_components c WHERE c.operation_id = o.id AND c.active), '[]'::jsonb) AS components,
-           COALESCE((SELECT jsonb_agg(jsonb_build_object('title', i.title, 'date', i.start_date::text, 'role', i.operation_role, 'automatic', i.is_automatic))
+           -- Lot 114O (#744) : « fait porté » par le lien N↔N à la place du rôle (empreinte avant / après).
+           COALESCE((SELECT jsonb_agg(jsonb_build_object('title', i.title, 'date', i.start_date::text, 'automatic', i.is_automatic,
+                                                         'fact', (SELECT g.fact_key FROM business_operation_agenda_links g
+                                                                   WHERE g.account_id = i.account_id AND g.operation_id = o.id
+                                                                     AND g.agenda_item_id = i.id AND g.state = 'ACTIVE')))
                        FROM agenda_items i WHERE i.business_operation_id = o.id AND i.account_id = o.account_id), '[]'::jsonb) AS agenda
       FROM business_operations o
      WHERE o.account_id = $1 AND o.invalidated_at IS NULL AND o.merged_into_operation_id IS NULL`, [accountId] as never[])) as unknown as Array<Record<string, unknown>>;

@@ -88,6 +88,13 @@ const SUJETS: Readonly<Record<string, { noun: string; fixed?: string }>> = {
   'OPERATION-ATTRIBUTE': { noun: 'Information', fixed: 'Information à confirmer' },
   // Lot 113AA (#725) — à valider par le PO.
   'PERIOD-CONFLICT': { noun: 'Période', fixed: 'Période à confirmer' },
+  // Carte #744 (association de deux événements de référence à arbitrer) — à valider par le PO.
+  'OPERATION-RELATION': { noun: 'Association', fixed: 'Association à confirmer' },
+  // Carte #744 (décision du PO du 16/11/2026) : rattachement d'Agenda supplémentaire proposé — à valider par le PO.
+  'AGENDA-LINK': { noun: 'Rattachement', fixed: 'Rattachement à confirmer' },
+  // Carte #744 (CDC §7, §8) : les deux questions de fusion — à valider par le PO.
+  'REFERENCE-EVENT-MERGE': { noun: 'Doublon', fixed: 'Doublon à confirmer' },
+  'REFERENCE-EVENT-FACT': { noun: 'Date', fixed: 'Date à confirmer' },
 };
 
 /** « Numéro d’immatriculation à vérifier », « Information à compléter »… (pure). */

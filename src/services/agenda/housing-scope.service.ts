@@ -76,10 +76,12 @@ export async function operationScopeAssetIds(r: GroupingRunner, accountId: numbe
     `SELECT l.asset_id FROM business_operation_asset_links l JOIN assets a ON a.id = l.asset_id AND a.account_id = $1 AND a.deleted_at IS NULL
       WHERE l.operation_id = $2 AND l.active
      UNION
-     SELECT al.asset_id FROM agenda_items i
+     -- Lot 114O (#744) : biens de l'élément qui PORTE un fait de l'ensemble (lien N↔N), plus du « principal ».
+     SELECT al.asset_id FROM business_operation_agenda_links g
+       JOIN agenda_items i ON i.id = g.agenda_item_id AND i.account_id = g.account_id
        JOIN agenda_asset_links al ON al.agenda_item_id = i.id
        JOIN assets a ON a.id = al.asset_id AND a.account_id = $1 AND a.deleted_at IS NULL
-      WHERE i.account_id = $1 AND i.business_operation_id = $2 AND i.operation_role = 'PRINCIPAL'`, [accountId, operationId]);
+      WHERE g.account_id = $1 AND g.operation_id = $2 AND g.state = 'ACTIVE' AND g.fact_key IS NOT NULL`, [accountId, operationId]);
   return [...new Set(x.map((y) => Number(y.asset_id)))].sort((a, b) => a - b);
 }
 

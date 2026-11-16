@@ -95,6 +95,8 @@ export async function applyRepresentationMutations(sql: Sql, p: ApplyInput): Pro
           break;
         }
         case 'ATTACH': {
+          // Lot 114O (#744) : le rôle rendu par le CONTRAT DE SORTIE T4 est traduit en FAIT PORTÉ par le
+          // service de regroupement (`attachAgendaItem`) ; aucun rôle n'est écrit en base.
           const r = await grouping.attachAgendaItem(ctx, { operationId: p.operationId, itemId: m.itemId, role: m.role, origin: 'T4', reasonCode: 'T4_SEMANTIC_REPRESENTATION' });
           if (r.skipped && !(r.skipped === 'PRINCIPAL_PROTECTED' && r.changed)) { refused.push({ mutation: m, reason: SKIP_REASON[r.skipped] ?? 'USER_DETACHED' }); break; }
           if (r.skipped === 'PRINCIPAL_PROTECTED') refused.push({ mutation: m, reason: 'USER_PRINCIPAL' });
@@ -130,7 +132,11 @@ export async function applyRepresentationMutations(sql: Sql, p: ApplyInput): Pro
     if (refused.length) throw new RepresentationApplyRefused(refused);
     await grouping.recomputePrincipal(ctx, p.operationId);
     if (applied.length) {
-      const [principal] = await tx.unsafe<Row[]>(`SELECT id FROM agenda_items WHERE account_id = $1 AND business_operation_id = $2 AND operation_role = 'PRINCIPAL' LIMIT 1`, [p.accountId, p.operationId] as never[]);
+      // Lot 114O (#744) : élément PORTEUR d'un fait de cet événement de référence (lien N↔N), plus de rôle.
+      const [principal] = await tx.unsafe<Row[]>(`
+        SELECT agenda_item_id AS id FROM business_operation_agenda_links
+         WHERE account_id = $1 AND operation_id = $2 AND state = 'ACTIVE' AND fact_key IS NOT NULL
+         ORDER BY agenda_item_id LIMIT 1`, [p.accountId, p.operationId] as never[]);
       const cible = principal ? Number(principal.id) : null;
       const ids = [...new Set(applied.flatMap((m) => ('itemId' in m ? [m.itemId] : 'keepId' in m ? [m.keepId] : 'absorbedItemId' in m ? [m.absorbedItemId] : [])))];
       for (const id of [...new Set([...(cible ? [cible] : []), ...ids])].slice(0, 20)) {

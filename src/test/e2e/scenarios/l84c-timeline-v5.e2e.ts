@@ -115,7 +115,9 @@ scenario('L84C', 'Opérations v5 — O-4 : Timeline regroupée / détaillée, re
     return { compte, bien, garage, op, controle, principal, visite, reparation, relance };
   }
 
-  // Règle remplacée (carte #744, lot C) : le groupe est l'événement de référence ; son repère est ici la date de son plus ancien élément.
+  // Règle remplacée (carte #744, lot C) : le groupe est l'événement de référence.
+  // Règle remplacée (carte #744, point F) : son repère est la date de présentation du CDC §11 — jamais la date de son plus
+  // ancien élément d'agenda. Sans fait daté propre : « sans date », en fin de liste ; ses éléments gardent LEUR date.
   it('L84C-E01 — AC22 : « regroupée » par défaut ; événement de référence = groupe dépliable ; ses éléments masqués de la liste', async () => {
     const d = await degatDesEaux();
     asUser(d.compte);
@@ -124,11 +126,19 @@ scenario('L84C', 'Opérations v5 — O-4 : Timeline regroupée / détaillée, re
     expect(r.body.timelinePage).toMatchObject({ mode: 'grouped', nextCursor: null, remaining: 2 });
     expect(ids(r.body.timeline)).toEqual([S(d.controle), G(d.op)]);
     const g = r.body.timeline[1];
-    expect(g).toMatchObject({ kind: 'group', itemType: 'operation', operationId: d.op, effectiveDate: '2026-03-12', dateBasis: 'FIRST_EVENT' });
+    expect(g).toMatchObject({ kind: 'group', itemType: 'operation', operationId: d.op, effectiveDate: null, dateBasis: null });
+    expect(g.members!.map((m) => m.effectiveDate)).toEqual(['2026-04-18', '2026-03-21', '2026-03-12', null]);
     expect(g.title).not.toMatch(/op[ée]ration/i);
     // Éléments réels présents sur la Timeline de ce bien (l'ancien « principal » compris), triés comme elle.
     expect(ids(g.members!)).toEqual([S(d.reparation), S(d.visite), S(d.principal), S(d.relance)]);
     expect(r.body.timeline[0]).toMatchObject({ kind: 'item', title: 'Contrôle chaudière' });
+    // Dès que l'événement de référence porte un fait daté (réalisation attestée), ce fait est son repère ; rien d'autre ne bouge.
+    await sql`UPDATE business_operations SET realized_date = '2026-03-12' WHERE id = ${d.op}`;
+    const date = await overview(d.bien.id);
+    expect(ids(date.body.timeline)).toEqual([S(d.controle), G(d.op)]);
+    expect(date.body.timeline[1]).toMatchObject({ kind: 'group', effectiveDate: '2026-03-12', dateBasis: 'REALIZED' });
+    expect(ids(date.body.timeline[1].members!)).toEqual([S(d.reparation), S(d.visite), S(d.principal), S(d.relance)]);
+    await sql`UPDATE business_operations SET realized_date = NULL WHERE id = ${d.op}`;
     // Rien n'a été écrit pour la Timeline : aucune table propre (calcul de lecture).
     const [t] = await sql<{ n: number }[]>`SELECT count(*)::int AS n FROM information_schema.tables WHERE table_schema = 'public' AND table_name ILIKE '%timeline%'`;
     expect(t.n).toBe(0);
@@ -214,23 +224,31 @@ scenario('L84C', 'Opérations v5 — O-4 : Timeline regroupée / détaillée, re
 
     asUser(compte);
     const g = await overview(bien.id);
-    expect(ids(g.body.timeline)).toEqual([G(opVol), G(opSans), G(opAnn), G(opAilleurs), S(mInv), S(pInv)]);
+    // Règle remplacée (carte #744, point F) : aucun de ces événements de référence n'a de fait daté propre — ils sont
+    // « sans date » (après le flux daté, identifiant décroissant) ; la date d'un élément d'agenda n'est plus empruntée.
+    expect(ids(g.body.timeline)).toEqual([S(mInv), S(pInv), G(opAilleurs), G(opAnn), G(opSans), G(opVol)]);
     const par = (op: number) => g.body.timeline.find((e) => e.id === G(op))!;
-    // Repère = plus ancien élément réel de l'événement de référence sur CE bien ; l'élément sans date reste dans le dépliage.
-    expect(par(opVol)).toMatchObject({ kind: 'group', effectiveDate: '2026-02-01', dateBasis: 'FIRST_EVENT' });
+    expect(par(opVol)).toMatchObject({ kind: 'group', effectiveDate: null, dateBasis: null });
+    expect(par(opVol).members!.map((m) => m.effectiveDate)).toEqual(['2026-02-10', '2026-02-01', null]);
     expect(ids(par(opVol).members!)).toEqual([S(serrure), S(plainte), S(vol)]);
     expect(ids(par(opSans).members!)).toEqual([S(a2), S(a1)]);
     expect(ids(par(opAnn).members!)).toEqual([S(mAnn)]);
     // Multi-biens : une seule identité, éléments filtrés selon le bien affiché (AC30).
-    expect(par(opAilleurs)).toMatchObject({ effectiveDate: '2025-12-02' });
+    expect(par(opAilleurs)).toMatchObject({ effectiveDate: null, dateBasis: null });
     expect(ids(par(opAilleurs).members!)).toEqual([S(mAilleurs)]);
     // Événement de référence invalidé : ses éléments sont des lignes individuelles.
-    expect(g.body.timeline.slice(-2).every((e) => e.kind === 'item')).toBe(true);
+    expect(g.body.timeline.slice(0, 2).every((e) => e.kind === 'item')).toBe(true);
     const autre = await overview(garage.id);
     expect(autre.body.timeline).toHaveLength(1);
-    expect(autre.body.timeline[0]).toMatchObject({ kind: 'group', id: G(opAilleurs), operationId: opAilleurs, effectiveDate: '2025-12-01' });
+    expect(autre.body.timeline[0]).toMatchObject({ kind: 'group', id: G(opAilleurs), operationId: opAilleurs, effectiveDate: null, dateBasis: null });
     expect(ids(autre.body.timeline[0].members!)).toEqual([S(pAilleurs)]);
     expect(autre.body.timeline[0].counters).toMatchObject({ events: 2 });
+    // Un fait daté propre (réalisation attestée) donne le MÊME repère sur chaque bien — il ne dépend plus du bien affiché.
+    await sql`UPDATE business_operations SET realized_date = '2026-01-15' WHERE id = ${opAilleurs}`;
+    const ici = await overview(bien.id);
+    expect(ids(ici.body.timeline)).toEqual([G(opAilleurs), S(mInv), S(pInv), G(opAnn), G(opSans), G(opVol)]);
+    expect(ici.body.timeline[0]).toMatchObject({ effectiveDate: '2026-01-15', dateBasis: 'REALIZED' });
+    expect((await overview(garage.id)).body.timeline[0]).toMatchObject({ id: G(opAilleurs), effectiveDate: '2026-01-15', dateBasis: 'REALIZED' });
   });
 
   it('L84C-E05 — AC26 : compteurs distincts ; objets d\'un autre compte, supprimés ou annulés jamais comptés', async () => {
@@ -359,7 +377,8 @@ scenario('L84C', 'Opérations v5 — O-4 : Timeline regroupée / détaillée, re
     await sql.begin(async (tx) => {
       await tx`SELECT set_config('verebona.grouping_write', 'on', true)`;
       const ops = await tx<{ id: number }[]>`
-        INSERT INTO business_operations (account_id, status) SELECT ${compte.id}, 'REALIZED' FROM generate_series(1, ${OPS}) RETURNING id::int`;
+        INSERT INTO business_operations (account_id, status, realized_date)
+        SELECT ${compte.id}, 'REALIZED', DATE '2020-01-01' + ((k * 7) % 2500)::int FROM generate_series(1, ${OPS}) AS k RETURNING id::int`;
       const opIds = ops.map((o) => o.id);
       // 300 groupes : principal daté + 4 éléments liés ; 1 500 éléments seuls (dont 10 % sans date).
       await tx`

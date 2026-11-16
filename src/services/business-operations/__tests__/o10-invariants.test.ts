@@ -100,8 +100,22 @@ describe('ACC-015 / ACC-016 / ACC-017 / ACC-019 / INV-048 / INV-033 / INV-035 �
     const { FINANCIAL_COMPONENT_KINDS } = await import('../model');
     expect(FINANCIAL_COMPONENT_KINDS).not.toContain('PAYMENT');
   });
-  it('ACC-017 — aucune scission automatique générique : aucun « split » dans le domaine', () => {
-    for (const f of domaine) expect(readFileSync(f, 'utf8'), rel(f)).not.toMatch(/\bsplit(Operation|Into)|SPLIT_OPERATION|scission automatique/i);
+  // RÈGLE REMPLACÉE (carte #744, CDC Opérations / Agenda V2.0 §14). L'ancienne règle interdisait tout « split » dans le
+  // domaine. Le CDC demande désormais une SCISSION DEMANDÉE PAR L'UTILISATEUR (commande `splitOperation` de la façade,
+  // geste de la page). Ce qui reste interdit : une scission AUTOMATIQUE, c'est-à-dire décidée par la consolidation,
+  // l'identité sémantique, la projection ou tout autre traitement.
+  it('ACC-017 — aucune scission automatique : seule la façade d’écriture scinde, sur demande de l’utilisateur', () => {
+    const autorises = ['src/services/business-operations/operation-write.facade.ts', 'src/services/business-operations/graph/store.ts',
+      'src/services/business-operations/graph/model.ts', 'src/services/business-operations/graph/reference-event-page.ts',
+      'src/services/business-operations/graph/read.ts'];
+    for (const f of domaine) {
+      const t = readFileSync(f, 'utf8');
+      if (autorises.includes(rel(f))) continue;
+      expect(t, rel(f)).not.toMatch(/\bsplit(Operation|Into)|SPLIT_OPERATION|scission automatique/i);
+    }
+    // Aucun traitement (consolidation, identité sémantique, projection) ne scinde, même par la façade.
+    const traitements = domaine.filter((f) => /\/(consolidation|semantic|grouping)\//.test(rel(f)));
+    for (const f of traitements) expect(readFileSync(f, 'utf8'), rel(f)).not.toMatch(/\bsplitOperation\b/);
   });
   it('ACC-019 / INV-FINAL-026 / F-196 / F-197 — aucun mode shadow ni interrupteur fonctionnel du système Opération (variables ou code)', () => {
     const hits = sources.filter((f) => /OPERATIONS?_(ENABLED|SHADOW)|BUSINESS_OPERATIONS?_(ENABLED|DISABLED|SHADOW)|OPERATION_SHADOW_MODE|shadowMode/.test(readFileSync(f, 'utf8')));

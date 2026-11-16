@@ -98,5 +98,12 @@ export interface VerebonaAction {
    * Une création n'a plus de `href` (`lib/verebona/assistant-actions`).
    */
   command?: import('@/lib/verebona/assistant-actions').AssistantCreateCommand | null;
+  /**
+   * Trello #753 (CDC T2 §7.6, §8.1, §8.2) : TITRE de l'article d'aide ou de la Ressource, à afficher comme un
+   * LIEN TEXTUEL sous la réponse — « le titre de l'article sous forme de texte cliquable », jamais un bouton de
+   * source. Le titre vient du corpus lu par le serveur (source `help_entry`), jamais du modèle ; l'adresse reste
+   * celle construite par le serveur (`href`). Absent : l'action garde son bouton (« Ouvrir l'aide »).
+   */
+  linkTitle?: string | null;
 }
 

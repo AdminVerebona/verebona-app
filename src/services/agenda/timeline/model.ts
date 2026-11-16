@@ -49,14 +49,14 @@
  *     fois par liste, avec la même identité ;
  *   · les éléments d'agenda sans événement de référence actif restent des
  *     entrées individuelles (AC29) ;
- *   · REPÈRE de date du groupe (`effectiveDate`, `dateBasis`) : date propre de
- *     l'événement de référence (réalisation, sinon début, sinon date prévue) ;
- *     à défaut, la date la plus ancienne de ses éléments d'agenda présents sur
- *     cette Timeline ; à défaut, AUCUNE date (entrée « sans date », en fin de
- *     Timeline, jamais d'horodatage inventé). CHOIX PAR DÉFAUT À VALIDER PAR
- *     LE PO (point non tranché : « date affichée d'un événement de référence
- *     sans date »). Ce repère ne déplace aucun élément d'agenda : en mode
- *     détaillé et dans l'Agenda, chacun reste à SA date (AC25).
+ *   · REPÈRE de date du groupe (`effectiveDate`, `dateBasis`) — RÈGLE
+ *     REMPLACÉE (carte #744, point F) : la DATE DE PRÉSENTATION du CDC §11
+ *     (`@/lib/reference-events/presentation-date` : réalisation, premier
+ *     devis, début, première couverture connue, date prévue, selon le type) ;
+ *     à défaut, AUCUNE date (entrée « sans date », en fin de Timeline, jamais
+ *     d'horodatage inventé, jamais la date d'un élément d'agenda). Ce repère
+ *     ne déplace aucun élément d'agenda : en mode détaillé et dans l'Agenda,
+ *     chacun reste à SA date (AC25).
  * Le mode DÉTAILLÉ est inchangé (un élément = une ligne, à sa date, une seule
  * fois même s'il est partagé — AC31) ; chaque ligne porte en plus la liste de
  * ses événements de référence (`operations`).
@@ -65,6 +65,8 @@
  * élément à date égale, identifiant décroissant) — AC38.
  * ══════════════════════════════════════════════════════════════════════════
  */
+
+import type { PresentationDateBasis } from '@/lib/reference-events/presentation-date';
 
 export type TimelineMode = 'grouped' | 'detailed';
 const TIMELINE_MODES: readonly TimelineMode[] = ['grouped', 'detailed'];
@@ -102,11 +104,13 @@ export interface TimelineItemView {
 }
 
 /**
- * Origine du repère de date d'un groupe (#744 lot C) : date propre de
- * l'événement de référence, ou date de son plus ancien élément d'agenda
- * présent sur la Timeline du bien ; null : sans date.
+ * Fondement du repère de date d'un groupe ; null : sans date.
+ * RÈGLE REMPLACÉE (carte #744, point F — CDC §11) : le repère est la DATE DE
+ * PRÉSENTATION de l'événement de référence (`presentationDateOf`), et non
+ * plus « date propre, sinon plus ancien élément d'agenda lié ». Les anciennes
+ * valeurs `REFERENCE_EVENT` / `FIRST_EVENT` n'existent plus.
  */
-export type TimelineGroupDateBasis = 'REFERENCE_EVENT' | 'FIRST_EVENT';
+export type TimelineGroupDateBasis = PresentationDateBasis;
 
 /** Événement de référence tel qu'affiché en tête de groupe (#744 lot C). */
 export interface TimelineGroupView {

@@ -301,6 +301,17 @@ function formatIsoDay(iso: string | null | undefined): string | null {
   return m ? `${m[3]}/${m[2]}/${m[1]}` : iso;
 }
 
+/**
+ * Trello #753 (W28) : le lien d'une carte est-il un TÉLÉCHARGEMENT d'export (route serveur qui revérifie les
+ * droits) ? Un téléchargement ne quitte pas l'espace de réponse et se présente « Télécharger ».
+ */
+export function isExportDownloadHref(href: string | null | undefined): boolean {
+  return typeof href === 'string' && /^\/api\/export-generations\/[A-Za-z0-9_-]+\/download(?:\?|$)/.test(href);
+}
+
+/** Libellé du lien d'une carte de téléchargement. */
+export const DOWNLOAD_CTA = 'Télécharger';
+
 /** Cartes du serveur → objets de l'espace (href construit par le serveur, §22.1). */
 export function objectsFromCards(cards: Array<UiResultCard & { groupType: UiResultGroup['type'] }>): SpaceObject[] {
   return cards.map((c) => ({
@@ -310,7 +321,7 @@ export function objectsFromCards(cards: Array<UiResultCard & { groupType: UiResu
     sub: c.subtitle ?? c.typeLabel ?? null,
     meta: [formatIsoDay(c.date), c.status].filter((x): x is string => !!x && x.trim() !== '').join(' · ') || null,
     href: c.href,
-    cta: CTA[c.groupType] ?? 'Ouvrir',
+    cta: isExportDownloadHref(c.href) ? DOWNLOAD_CTA : CTA[c.groupType] ?? 'Ouvrir',
     tone: TONE[c.groupType] ?? 'slate',
     icon: ICON[c.groupType] ?? 'file-text',
   }));

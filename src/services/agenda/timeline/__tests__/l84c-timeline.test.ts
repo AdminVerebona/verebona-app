@@ -120,9 +120,13 @@ describe('L84C — Timeline : requête et assemblage', () => {
     expect(sql).toContain("FROM business_operation_asset_links b WHERE $3 = 'grouped' AND b.asset_id = $2 AND b.account_id = $1 AND b.active");
     // Chaque lecture d'un événement de référence passe par sa clé primaire (sous-requête scalaire), jamais par une jointure.
     expect(sql).not.toMatch(/JOIN business_operations/);
-    expect(sql.match(/FROM business_operations bo WHERE bo\.id = /g)).toHaveLength(3);
-    // Repère : date propre, sinon plus ancien élément lié ; aucune date système (AC35).
-    expect(sql).toContain('(SELECT COALESCE(bo.realized_date, bo.start_date, bo.planned_date) FROM business_operations bo WHERE bo.id = x.op');
+    expect(sql.match(/FROM business_operations bo WHERE bo\.id = /g)).toHaveLength(2);
+    // Règle remplacée (carte #744, point F) : le repère est la DATE DE PRÉSENTATION du CDC §11, lue par UNE sous-requête
+    // scalaire sur la clé primaire (compte filtré, événement actif) — plus « date propre, sinon plus ancien élément lié ».
+    expect(sql.match(/FROM business_operations pdo WHERE pdo\.id = x\.op AND pdo\.account_id = \$1 AND pdo\.invalidated_at IS NULL AND pdo\.merged_into_operation_id IS NULL/g)).toHaveLength(1);
+    expect(sql).toContain("split_part(y.pd, '|', 1)::date AS d, split_part(y.pd, '|', 2) AS basis FROM op_pd y");
+    expect(sql).not.toMatch(/own_d|event_d|FIRST_EVENT|min\(k\.d\)/);
+    // Aucune date système (AC35).
     expect(sql).not.toMatch(/created_at|updated_at|now\(\)|CURRENT_DATE/i);
     // Mode détaillé : tous les éléments, une fois ; mode regroupé : seulement les éléments sans lien actif.
     expect(sql).toContain("WHERE $3 = 'detailed' OR i.id NOT IN (SELECT k.item_id FROM links k)");
@@ -169,7 +173,7 @@ describe('L84C — Timeline : requête et assemblage', () => {
   it('L84C-U06 — règle remplacée (carte #744) : groupe = événement de référence + éléments réels + compteurs ; curseur typé', async () => {
     const page = [
       itemRow(10, '2026-04-18', { remaining: 4 }),
-      groupRow(900, '2026-03-12', 'REFERENCE_EVENT', { remaining: 4 }),
+      groupRow(900, '2026-03-12', 'REALIZED', { remaining: 4 }),
       itemRow(12, null, { remaining: 4 }),
     ];
     const { q, calls } = fakeQ(page,
@@ -187,7 +191,7 @@ describe('L84C — Timeline : requête et assemblage', () => {
     // Identité typée de l'événement de référence : jamais celle d'un élément d'agenda.
     expect(g).toMatchObject({
       kind: 'group', itemType: 'operation', id: 'op-900', operationId: 900, title: 'Sinistre — Dégât des eaux',
-      effectiveDate: '2026-03-12', dateBasis: 'REFERENCE_EVENT', counters: { events: 4, documents: 5, assets: 1, rooms: 1, equipments: 0 },
+      effectiveDate: '2026-03-12', dateBasis: 'REALIZED', counters: { events: 4, documents: 5, assets: 1, rooms: 1, equipments: 0 },
     });
     // Éléments réels triés comme la Timeline (date décroissante, sans date en dernier).
     expect(g.kind === 'group' && g.members.map((m) => m.id)).toEqual(['22', '21', '23']);
@@ -207,14 +211,18 @@ describe('L84C — Timeline : requête et assemblage', () => {
 
   it('L114O-C-U01 — événement de référence sans élément d’agenda et sans date : entrée de groupe, aucun élément fictif, aucune date inventée (AC26, AC35)', async () => {
     const { q } = fakeQ(
-      [groupRow(901, '2024-05-02', 'FIRST_EVENT'), groupRow(902, null, null)],
+      // Règle remplacée (carte #744) : le repère est la date de présentation du CDC §11 (ici le premier devis),
+      // jamais la date du plus ancien élément d'agenda (l'ancien fondement « FIRST_EVENT » n'existe plus).
+      [groupRow(901, '2024-05-02', 'FIRST_QUOTE'), groupRow(902, null, null), groupRow(903, '2024-01-01', 'FIRST_EVENT')],
       [{ ...row(31, '2024-05-02'), op: 901 }], [], [], [
         { op: 901, type_code: 'INTERVENTION', technical_label: null, provider: null, first_document: { titleRetained: 'Facture toiture' } },
         { op: 902, type_code: null, technical_label: null, provider: 'Plombier Martin', first_document: null },
       ]);
     const p = await readAssetTimelinePage({ accountId: 1, assetId: 2, today: '2026-06-01', q });
-    const [a, b] = p.entries;
-    expect(a).toMatchObject({ kind: 'group', id: 'op-901', title: 'Intervention — Facture toiture', effectiveDate: '2024-05-02', dateBasis: 'FIRST_EVENT' });
+    const [a, b, c] = p.entries;
+    expect(a).toMatchObject({ kind: 'group', id: 'op-901', title: 'Intervention — Facture toiture', effectiveDate: '2024-05-02', dateBasis: 'FIRST_QUOTE' });
+    // Un fondement inconnu (ancienne valeur) ne date jamais un groupe : sans date.
+    expect(c).toMatchObject({ kind: 'group', id: 'op-903', effectiveDate: null, dateBasis: null });
     expect(b).toMatchObject({ kind: 'group', id: 'op-902', effectiveDate: null, dateBasis: null, members: [], counters: { events: 0, documents: 0, assets: 0, rooms: 0, equipments: 0 } });
     // Type nul : libellé utilisateur existant (`referenceEventLabel`) ; les textes AFFICHÉS ne disent jamais « Opération ».
     expect(b.title).toBe('Dépense — Plombier Martin');

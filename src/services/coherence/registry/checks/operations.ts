@@ -63,7 +63,8 @@ const OPERATION_CHANGED = 'BUSINESS_OPERATION_CHANGED';
 async function compteConcerne(ctx: CheckContext, accountId: number): Promise<boolean> {
   const [r] = await rows(ctx.sql, `
     SELECT EXISTS (SELECT 1 FROM business_operations o WHERE o.account_id = $1)
-        OR EXISTS (SELECT 1 FROM agenda_items i WHERE i.account_id = $1 AND (i.business_operation_id IS NOT NULL OR i.operation_role IS NOT NULL))
+        OR EXISTS (SELECT 1 FROM agenda_items i WHERE i.account_id = $1 AND i.business_operation_id IS NOT NULL)
+        OR EXISTS (SELECT 1 FROM business_operation_agenda_links g WHERE g.account_id = $1)
         OR EXISTS (SELECT 1 FROM agenda_file_links l JOIN agenda_items i ON i.id = l.agenda_item_id WHERE i.account_id = $1) AS ok`, [accountId]);
   return r?.ok === true;
 }

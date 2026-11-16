@@ -169,6 +169,16 @@ scenario('L113AP', 'Opérations / Agenda CDC V2.0 — socle : Agenda unique, Tim
     const fin = await operation(compte, 'FINANCING');
     await sql`INSERT INTO business_operation_match_decisions (account_id, source_kind, source_entity_key, candidate_operation_id, decision, origin, reason_code)
               VALUES (${compte.id}, 'PRINCIPAL', 'agenda:0', ${fin}, 'REJECTED', 'USER_ARBITRATION', 'L113AP_E2E')`;
+    // RÈGLE REMPLACÉE (carte #744, travaux F) : le service de regroupement n'écrit PLUS le rôle historique — il pose le
+    // FAIT PORTÉ par le lien N↔N. L'inventaire de migration, lui, MESURE DÉLIBÉRÉMENT l'ancien modèle encore présent en
+    // préproduction (c'est son objet : dire ce que la bascule doit reprendre). L'état de préproduction est donc posé ici
+    // en SQL, hors déclencheurs, comme le fait déjà le socle pour les colonnes devenues inertes.
+    await sql.begin(async (tx) => {
+      await tx`SET LOCAL session_replication_role = replica`;
+      await tx`UPDATE agenda_items SET operation_role = 'PRINCIPAL', operation_role_origin = 'USER' WHERE id = ${achat}`;
+      await tx`UPDATE agenda_items SET operation_role = 'RELATED', operation_role_origin = 'T4' WHERE id = ${etape}`;
+      await tx`UPDATE agenda_items SET operation_role = 'PRINCIPAL', operation_role_origin = 'T4' WHERE id = ${proj}`;
+    });
     return { acq, inter, fin, proj };
   }
 

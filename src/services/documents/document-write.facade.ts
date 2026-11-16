@@ -30,6 +30,7 @@ import { documentTargetsErrorResponse, prepareTargetLists } from '@/services/doc
 import { NOTES_MAX_LENGTH, notesWriteFromEdit, resolveNotesDescription, validateNotesInput } from '@/lib/documents/notes-description';
 import { markNotesUserOwned, readNotesDescriptionMeta } from '@/services/documents/notes-description/store';
 import { resolveUploadDocumentDate } from '@/services/documents/upload-document-date';
+import type { DocumentClassification } from '@/services/documents/rubric-classification';
 
 /** Identifiant de cible envoyé : `undefined` (absent), `null` (retiré) ou entier. */
 function cible(v: unknown): number | null | undefined {
@@ -622,6 +623,174 @@ export async function createWebDocumentForAccount(session: DocumentWriteSession,
 
   if (!newWebLink) throw new Error('Échec de la création');
   return { ok: true, webLink: newWebLink };
+}
+
+// ══════════════════════════════════════════════════════════════════════════
+// Passage 114AB (#753, W12) — NATURE d'un document : RUBRIQUE et TYPE (V2).
+//
+// Le point d'écriture qui manquait. Le tiroir du document n'enregistre plus
+// l'ancien « Type de document » (V1, colonne `document_type`, traité plus
+// haut par `updateDocumentForAccount`) mais une **Rubrique** et un **Type**
+// du référentiel V2 — écrits jusqu'ici DANS la route
+// `PATCH /api/v2/documents/[publicId]/classification`, donc inaccessibles à
+// tout autre appelant. Le corps en est extrait TEL QUEL (règle 11 du brief :
+// une façade partagée plutôt qu'une logique dupliquée) ; la route l'appelle
+// désormais et répond exactement comme avant.
+//
+// Même forme que les autres gestes de cette façade :
+//   · CONTEXTE  : `DocumentWriteSession` (utilisateur et compte actif) ;
+//   · DROITS    : compte en écriture vérifié par l'appelant
+//                 (`refuserSiLectureSeule`) ; document borné au compte ici ;
+//   · ÉTAT RELU : `expectedCurrent` — la Rubrique et le Type présentés à
+//                 l'aperçu sont exigés en place, sinon RIEN n'est écrit ;
+//   · RÉSULTAT  : explicite (`{ ok: true, … }` / `{ ok: false, status, error }`),
+//                 jamais une exception pour un refus métier.
+// ══════════════════════════════════════════════════════════════════════════
+
+/** Cible du geste : identifiant interne (Assistant) ou identifiant public (route du tiroir). */
+export type DocumentClassificationTarget = { documentId: number } | { publicId: string };
+
+export interface DocumentClassificationInput {
+  /** Rubrique voulue : clé absente = inchangée ; `null` = retirée. */
+  rubricCode?: string | null;
+  /** Type voulu : clé absente = inchangé ; `null` = retiré. */
+  documentTypeCode?: string | null;
+  /**
+   * État relu exigé (facultatif) : Rubrique et Type en place au moment de
+   * l'aperçu. Un écart → refus `STATE_CHANGED`, rien n'est écrit. Absent
+   * (tiroir du document) : comportement inchangé.
+   */
+  expectedCurrent?: { rubricCode: string | null; documentTypeCode: string | null };
+}
+
+export type DocumentClassificationResult =
+  | {
+      ok: true;
+      documentId: number;
+      classification: DocumentClassification;
+      /** Ce qui a changé, et ce que les règles de classement ont refusé (§12.1). */
+      changes: string[];
+      rejected: string[];
+      /** Cartes « À traiter » fermées par la saisie (§5.3). */
+      resolvedActions: Record<string, number>;
+    }
+  | {
+      ok: false;
+      status: 400 | 404 | 409;
+      error: 'UNKNOWN_RUBRIC' | 'UNKNOWN_TYPE' | 'NOT_FOUND' | 'STATE_CHANGED';
+      message: string;
+    };
+
+/**
+ * Enregistre la Rubrique et / ou le Type d'un document du compte, par décision
+ * de l'UTILISATEUR (`origin: 'USER'`) : la valeur est donc protégée de toute
+ * réécriture automatique (§5.1, §12.2), les actions « À traiter » qui la
+ * réclamaient sont fermées (§5.3), « À traiter » est réévalué quand le Type
+ * change (lot 28) et les Opérations en sont informées (lot 41, TRG-007).
+ */
+export async function updateDocumentClassificationForAccount(
+  session: DocumentWriteSession,
+  target: DocumentClassificationTarget,
+  input: DocumentClassificationInput,
+): Promise<DocumentClassificationResult> {
+  const accountId = session.currentAccountId;
+  const { getDocumentType, getRubric, REFERENTIAL_VERSION } = await import('@/lib/referential/v2');
+  const { applyClassificationChange } = await import('@/services/documents/rubric-classification');
+  const { resolveActionsForData } = await import('@/services/to-process/to-process-action.service');
+
+  // Codes inconnus rejetés AVANT toute écriture : une Rubrique inventée
+  // rendrait le document invisible dans tous les regroupements.
+  if (input.rubricCode != null && !getRubric(input.rubricCode)) {
+    return { ok: false, status: 400, error: 'UNKNOWN_RUBRIC', message: 'Rubrique inconnue du référentiel.' };
+  }
+  if (input.documentTypeCode != null && !getDocumentType(input.documentTypeCode)) {
+    return { ok: false, status: 400, error: 'UNKNOWN_TYPE', message: 'Type inconnu du référentiel.' };
+  }
+
+  const colonnes = {
+    id: assetFiles.id,
+    rubricCode: assetFiles.rubricCode,
+    documentTypeCode: assetFiles.documentTypeCode,
+    rubricOrigin: assetFiles.rubricOrigin,
+    typeOrigin: assetFiles.typeOrigin,
+    rubricUserValidated: assetFiles.rubricUserValidated,
+    typeUserValidated: assetFiles.typeUserValidated,
+  };
+  // Par identifiant public : MÊME filtre que la route d'origine (compte seul).
+  // Par identifiant interne (Assistant) : un document supprimé ne se reclasse pas.
+  const [row] = 'publicId' in target
+    ? await db.select(colonnes).from(assetFiles)
+      .where(and(eq(assetFiles.publicId, target.publicId), eq(assetFiles.accountId, accountId))).limit(1)
+    : await db.select(colonnes).from(assetFiles)
+      .where(and(eq(assetFiles.id, target.documentId), eq(assetFiles.accountId, accountId), isNull(assetFiles.deletedAt))).limit(1);
+
+  if (!row) return { ok: false, status: 404, error: 'NOT_FOUND', message: 'Document non trouvé' };
+
+  const current: DocumentClassification = {
+    rubricCode: row.rubricCode as DocumentClassification['rubricCode'],
+    documentTypeCode: row.documentTypeCode,
+    rubricOrigin: row.rubricOrigin as DocumentClassification['rubricOrigin'],
+    typeOrigin: row.typeOrigin as DocumentClassification['typeOrigin'],
+    rubricUserValidated: row.rubricUserValidated,
+    typeUserValidated: row.typeUserValidated,
+  };
+
+  // État relu : ce qui a été annoncé est ce qui est écrit (CDC T2 §14.5).
+  if (input.expectedCurrent
+    && ((current.rubricCode ?? null) !== (input.expectedCurrent.rubricCode ?? null)
+      || (current.documentTypeCode ?? null) !== (input.expectedCurrent.documentTypeCode ?? null))) {
+    return { ok: false, status: 409, error: 'STATE_CHANGED', message: 'Le classement de ce document a changé depuis la lecture.' };
+  }
+
+  const outcome = applyClassificationChange({
+    current,
+    // `undefined` = champ non fourni donc inchangé ; `null` = retiré. La
+    // distinction est portée par la présence de la clé dans l'entrée.
+    nextRubric: 'rubricCode' in input ? (input.rubricCode as DocumentClassification['rubricCode']) : undefined,
+    nextType: 'documentTypeCode' in input ? input.documentTypeCode : undefined,
+    origin: 'USER',
+  });
+
+  await db
+    .update(assetFiles)
+    .set({
+      rubricCode: outcome.result.rubricCode,
+      documentTypeCode: outcome.result.documentTypeCode,
+      rubricOrigin: outcome.result.rubricOrigin,
+      typeOrigin: outcome.result.typeOrigin,
+      rubricUserValidated: outcome.result.rubricUserValidated,
+      typeUserValidated: outcome.result.typeUserValidated,
+      classificationReferentialVersion: REFERENTIAL_VERSION,
+      classificationUpdatedAt: new Date(),
+      updatedAt: new Date(),
+    })
+    .where(eq(assetFiles.id, row.id));
+
+  // §5.3 — les deux natures sont fermées d'un coup : une donnée renseignée ne
+  // laisse subsister ni l'arbitrage qui proposait, ni la complétion qui réclamait.
+  const resolved: Record<string, number> = {};
+  if (outcome.result.rubricCode !== current.rubricCode) {
+    resolved.rubricCode = await resolveActionsForData(accountId, 'DOCUMENT', row.id, 'rubricCode', 'USER_COMPLETED');
+  }
+  if (outcome.result.documentTypeCode !== current.documentTypeCode) {
+    resolved.documentTypeCode = await resolveActionsForData(accountId, 'DOCUMENT', row.id, 'documentTypeCode', 'USER_COMPLETED');
+  }
+
+  // Lot 28 : le Type décide de la pertinence des données documentaires
+  // (fin de contrat, fin de garantie…) — « À traiter » est réévalué.
+  if (outcome.result.documentTypeCode !== current.documentTypeCode) {
+    await onDocumentEditedByUser(accountId, row.id);
+    // Lot 41 (C4 TRG-007) : un type non métier retire les contributions du document aux Opérations.
+    const { notifyOperationsEvent } = await import('@/services/business-operations/consolidation/queue');
+    notifyOperationsEvent(accountId, { trigger: 'document_reclassified', fileId: row.id });
+  }
+
+  // CDC Assistant §25.7, §31.7 : classement du document modifié.
+  await emitBusinessEvent({ type: 'DOCUMENT_UPDATED', accountId, entityId: row.id });
+  return {
+    ok: true, documentId: row.id, classification: outcome.result,
+    changes: outcome.changes, rejected: outcome.rejected, resolvedActions: resolved,
+  };
 }
 
 // ══════════════════════════════════════════════════════════════════════════

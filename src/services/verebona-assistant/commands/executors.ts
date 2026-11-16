@@ -165,6 +165,51 @@ export const EXECUTORS: Record<PlannedAction['command'], Executor> = {
   },
 
   /**
+   * Passage 114AA (#753, W02) — « Catégorie de bien » (colonne `subtype`), par le service de la fiche
+   * (`updateAssetDetails`, section commune, champ `subCategory`), comme le sélecteur de la fiche. La catégorie
+   * présentée à l'aperçu est RELUE avant d'écrire : si elle a changé entre-temps, rien n'est écrit.
+   */
+  async UPDATE_ASSET_CATEGORY(action, ctx) {
+    const p = action.params as Extract<CommandParams, { kind: 'asset_category' }>;
+    const { normalizeAssetCategory } = await import('@/lib/asset-taxonomy');
+    // Passage 114AB (#753, W02) : un bien de la famille OBJET porte sa catégorie sur un champ canonique de sa
+    // fiche (`objectCategory`, section « Identification »), et non sur la colonne `subtype`. Même service, même
+    // confirmation, même relecture — seul le champ écrit diffère, selon ce que la préparation a figé.
+    if (p.objectCategory === true) {
+      const { getField } = await import('@/services/canonical/registry');
+      const def = getField('objectCategory');
+      const libelleObjet = def?.enumLabels?.[p.categoryValue] ?? p.categoryValue;
+      return ecrireClassement(action, ctx, {
+        assetId: p.classifiedAssetId, field: 'objectCategory', section: 'object_identification',
+        value: p.categoryValue, libelle: 'La catégorie de ce bien',
+        relire: (etat) => (etat.characteristics.objectCategory as string | null) ?? etat.objectCategory ?? null,
+        attendu: p.expectedCategory,
+        succes: (nom) => `Catégorie de « ${nom} » : ${libelleObjet}.`,
+      });
+    }
+    return ecrireClassement(action, ctx, {
+      assetId: p.classifiedAssetId, field: 'subCategory', section: 'common', value: p.categoryValue, libelle: 'La catégorie de ce bien',
+      relire: (etat) => normalizeAssetCategory(etat.subtype ?? null), attendu: p.expectedCategory,
+      succes: (nom) => `Catégorie de « ${nom} » : ${p.categoryValue}.`,
+    });
+  },
+
+  /**
+   * Passage 114AA (#753, W02) — STATUT d'un bien, par le même service de la fiche (champ `status`, liste fermée
+   * du référentiel ; l'archivage n'arrive jamais ici). Statut relu avant d'écrire.
+   */
+  async UPDATE_ASSET_STATUS(action, ctx) {
+    const p = action.params as Extract<CommandParams, { kind: 'asset_status' }>;
+    const { normalizeAssetStatus, ASSET_STATUS_LABELS } = await import('@/lib/asset-status');
+    const libelleStatut = ASSET_STATUS_LABELS[p.statusValue as keyof typeof ASSET_STATUS_LABELS] ?? p.statusValue;
+    return ecrireClassement(action, ctx, {
+      assetId: p.classifiedAssetId, field: 'status', section: 'common', value: p.statusValue, libelle: 'Le statut de ce bien',
+      relire: (etat) => normalizeAssetStatus(etat.status), attendu: p.expectedStatus,
+      succes: (nom) => `Statut de « ${nom} » : ${libelleStatut}.`,
+    });
+  },
+
+  /**
    * Lot 114F (#753, W13) — biens d'un document, par la façade métier (celle de `PUT /api/documents/[id]`) : le
    * corps envoyé est celui du tiroir (nom et date actuels repris, liste complète des biens). L'état présenté —
    * document et biens rattachés — est recontrôlé ; la façade valide les biens pour le compte (anti-énumération,
@@ -176,8 +221,16 @@ export const EXECUTORS: Record<PlannedAction['command'], Executor> = {
     const etat = await sqlLookup.getDocumentState!(ctx.accountId, p.documentId);
     const cibles = etat ? await sqlLookup.getDocumentAssetTargets!(ctx.accountId, p.documentId) : null;
     if (!etat || !cibles) return refuse(action, 'Document introuvable ou hors de votre compte.');
-    if (documentTargetsVersion(etat.version, cibles.chosen.map((a) => a.id)) !== p.expectedVersion) return ko(action, DOCUMENT_CHANGED_SINCE_PREVIEW);
+    // Passage 114AA (W13) : l'empreinte couvre les trois niveaux dès que l'un d'eux porte une pièce ou un
+    // équipement — un changement de ce niveau depuis l'aperçu empêche l'écriture, comme pour les biens.
+    const relue = documentTargetsVersion(
+      etat.version, cibles.chosen.map((a) => a.id), (cibles.rooms ?? []).map((s) => s.id), (cibles.equipments ?? []).map((s) => s.id),
+    );
+    if (relue !== p.expectedVersion) return ko(action, DOCUMENT_CHANGED_SINCE_PREVIEW);
     const body: Record<string, unknown> = { fileName: etat.originalFilename || etat.title, documentDate: etat.documentDate, assetIds: p.targetAssetIds };
+    // Niveau pièce ou équipement : seule sa liste est envoyée ; les deux autres niveaux gardent leur sélection.
+    if (p.level === 'room') body.substructureIds = p.targetStructureIds ?? [];
+    if (p.level === 'equipment') body.equipmentIds = p.targetStructureIds ?? [];
     const { updateDocumentForAccount } = await import('@/services/documents/document-write.facade');
     const res = await updateDocumentForAccount({ userId: ctx.userId, currentAccountId: ctx.accountId }, p.documentId, body);
     if (res.status === 404) return refuse(action, 'Document ou bien introuvable dans votre compte : rien n’a été modifié.');
@@ -383,6 +436,71 @@ export const EXECUTORS: Record<PlannedAction['command'], Executor> = {
   },
 
   /**
+   * Passage 114AB (#753, W12) — NATURE d'un document (Rubrique et Type V2), par le point d'écriture unique
+   * de la façade métier (`updateDocumentClassificationForAccount`, celui du tiroir du document) : origine
+   * USER, cartes « À traiter » du classement fermées, données documentaires réévaluées, `DOCUMENT_UPDATED`.
+   *
+   * L'état est relu DEUX fois : ici (empreinte du document et de son classement, celle de l'aperçu), puis
+   * par la façade elle-même (`expectedCurrent`) — si la Rubrique ou le Type a changé, rien n'est écrit.
+   */
+  async UPDATE_DOCUMENT_CLASSIFICATION(action, ctx) {
+    const p = action.params as Extract<CommandParams, { kind: 'document_classification' }>;
+    const { sqlLookup, documentClassificationVersion } = await import('./plan.service');
+    const etat = await sqlLookup.getDocumentState!(ctx.accountId, p.documentId);
+    if (!etat) return refuse(action, 'Document introuvable ou hors de votre compte.');
+    if (documentClassificationVersion(etat) !== p.expectedVersion) return ko(action, DOCUMENT_CLASSIFICATION_CHANGED);
+    const { updateDocumentClassificationForAccount } = await import('@/services/documents/document-write.facade');
+    const r = await updateDocumentClassificationForAccount(
+      { userId: ctx.userId, currentAccountId: ctx.accountId }, { documentId: p.documentId },
+      {
+        ...(p.rubricValue !== undefined ? { rubricCode: p.rubricValue } : {}),
+        ...(p.typeValue !== undefined ? { documentTypeCode: p.typeValue } : {}),
+        expectedCurrent: { rubricCode: p.expectedRubric, documentTypeCode: p.expectedType },
+      },
+    );
+    if (!r.ok) {
+      if (r.error === 'NOT_FOUND') return refuse(action, 'Document introuvable ou hors de votre compte.');
+      if (r.error === 'STATE_CHANGED') return ko(action, DOCUMENT_CLASSIFICATION_CHANGED);
+      return ko(action, 'Ce classement ne peut pas être enregistré tel quel : rien n’a été modifié.');
+    }
+    ctx.recordUndo?.({ actionId: action.actionId, reversible: false, reason: 'classement d’un document : à corriger depuis le document ou par une nouvelle demande' });
+    const { rubricLabelOf, typeLabelOf } = await import('./document-classification');
+    const message = p.classificationLevel === 'rubric'
+      ? `Rubrique du document « ${etat.title} » : ${rubricLabelOf(r.classification.rubricCode)}.`
+      : `Type du document « ${etat.title} » : ${typeLabelOf(r.classification.documentTypeCode)}.`;
+    return { actionId: action.actionId, status: 'SUCCESS', message, entity: { type: 'document', id: p.documentId } };
+  },
+
+  /**
+   * Passage 114AB (#753, W14) — suppression de PLUSIEURS documents : action destructive, TOUT OU RIEN.
+   *
+   * Les documents sont TOUS relus et comparés à l'aperçu AVANT la première suppression : un seul écart
+   * (document disparu, hors du compte, modifié depuis) et aucun n'est supprimé. Les suppressions passent
+   * ensuite par le même point d'écriture que la suppression d'un document (`softDeleteDocument`).
+   */
+  async DELETE_DOCUMENTS(action, ctx) {
+    const p = action.params as Extract<CommandParams, { kind: 'documents_delete' }>;
+    const { sqlLookup } = await import('./plan.service');
+    const relus: Array<{ id: number; title: string }> = [];
+    for (const d of p.documents) {
+      const etat = await sqlLookup.getDocumentState!(ctx.accountId, d.documentId);
+      if (!etat) return refuse(action, `« ${d.title} » est introuvable dans votre compte : aucun document n’a été supprimé.`);
+      if (etat.version !== d.expectedVersion) {
+        return ko(action, `« ${etat.title} » a été modifié depuis l’aperçu : aucun document n’a été supprimé. Refaites votre demande.`);
+      }
+      relus.push({ id: etat.id, title: etat.title });
+    }
+    const { softDeleteDocument } = await import('@/services/documents/document-write.facade');
+    for (const d of relus) await softDeleteDocument({ fileId: d.id, fileAccountId: ctx.accountId, userId: ctx.userId });
+    ctx.recordUndo?.({ actionId: action.actionId, reversible: false, reason: 'suppression de plusieurs documents' });
+    return {
+      actionId: action.actionId, status: 'SUCCESS',
+      message: `${relus.length} documents supprimés : ${relus.map((d) => `« ${d.title} »`).join(', ')}.`,
+      entity: { type: 'document', id: relus[0].id },
+    };
+  },
+
+  /**
    * Lot 114 (#753, W18) — création par la façade métier (celle de `POST /api/suppliers`). Le doublon est
    * recontrôlé : une fiche devenue CERTAINE entre l'aperçu et la confirmation n'est jamais doublée ; les fiches
    * proches annoncées sont mémorisées comme DISTINCTES (décision de l'utilisateur, lot 113G).
@@ -505,9 +623,79 @@ export const EXECUTORS: Record<PlannedAction['command'], Executor> = {
   async ASSOCIATE_REFERENCE_EVENTS(action, ctx) { return (await import('./reference-events')).REFERENCE_EVENT_EXECUTORS.ASSOCIATE_REFERENCE_EVENTS(action, ctx); },
   async LINK_DOCUMENT_REFERENCE_EVENT(action, ctx) { return (await import('./reference-events')).REFERENCE_EVENT_EXECUTORS.LINK_DOCUMENT_REFERENCE_EVENT(action, ctx); },
   async LINK_SUPPLIER_REFERENCE_EVENT(action, ctx) { return (await import('./reference-events')).REFERENCE_EVENT_EXECUTORS.LINK_SUPPLIER_REFERENCE_EVENT(action, ctx); },
+
+  // Passage 114AB (#753) — GESTES INVERSES : exécuteurs de `reference-events-inverse.ts`, qui n'écrivent eux
+  // aussi que par la façade métier du graphe (`operation-write.facade`, carte #744).
+  async RESTORE_REFERENCE_EVENT(action, ctx) { return (await import('./reference-events-inverse')).INVERSE_REFERENCE_EVENT_EXECUTORS.RESTORE_REFERENCE_EVENT(action, ctx); },
+  async DISSOCIATE_REFERENCE_EVENTS(action, ctx) { return (await import('./reference-events-inverse')).INVERSE_REFERENCE_EVENT_EXECUTORS.DISSOCIATE_REFERENCE_EVENTS(action, ctx); },
+  async UNLINK_DOCUMENT_REFERENCE_EVENT(action, ctx) { return (await import('./reference-events-inverse')).INVERSE_REFERENCE_EVENT_EXECUTORS.UNLINK_DOCUMENT_REFERENCE_EVENT(action, ctx); },
+  async UNLINK_SUPPLIER_REFERENCE_EVENT(action, ctx) { return (await import('./reference-events-inverse')).INVERSE_REFERENCE_EVENT_EXECUTORS.UNLINK_SUPPLIER_REFERENCE_EVENT(action, ctx); },
+  async LINK_AGENDA_REFERENCE_EVENT(action, ctx) { return (await import('./reference-events-inverse')).INVERSE_REFERENCE_EVENT_EXECUTORS.LINK_AGENDA_REFERENCE_EVENT(action, ctx); },
 };
 
 // Lot 113P (#715) : plus de commande de STATUT d'échéance (réalisée / annulée) ni d'inverse associé.
+
+/**
+ * Passage 114AA (#753, W02) — écriture du CLASSEMENT d'un bien (catégorie de bien, statut) : corps commun de
+ * UPDATE_ASSET_CATEGORY et de UPDATE_ASSET_STATUS.
+ *
+ * Ces deux valeurs sont portées par des colonnes d'identité, hors du registre canonique : l'état est donc RELU
+ * ici (`getAssetState`, la même lecture que l'aperçu) et comparé à la valeur présentée avant d'appeler le
+ * service de la fiche. Le service refuse de son côté un bien archivé, verrouillé ou hors du compte, et une
+ * valeur hors de la liste fermée du référentiel.
+ */
+async function ecrireClassement(
+  action: PlannedAction, ctx: ExecutionContext,
+  p: {
+    assetId: number;
+    /**
+     * Passage 114AB (#753, W02) : `objectCategory` — la catégorie d'un bien de la famille OBJET, portée par un
+     * champ CANONIQUE de sa fiche (section « Identification »), et non par la colonne d'identité `subtype`.
+     */
+    field: 'subCategory' | 'status' | 'objectCategory';
+    /** Section de la fiche qui porte le champ (« common », ou « object_identification » pour un objet). */
+    section: string;
+    value: string; libelle: string;
+    relire: (etat: import('./plan.service').AssetState) => string | null; attendu: string | null;
+    succes: (nom: string) => string;
+  },
+): Promise<ActionResult> {
+  const { loadWritableAsset, updateAssetDetails, AssetDetailsError } = await import('@/services/asset-details-write.service');
+  const { sqlLookup } = await import('./plan.service');
+  const change = `${p.libelle} a changé depuis l’aperçu : rien n’a été écrit. Refaites votre demande.`;
+  const texte = (v: string | null) => (v === null ? '' : v);
+  try {
+    await loadWritableAsset(p.assetId, ctx.accountId);
+    const etat = await sqlLookup.getAssetState!(ctx.accountId, p.assetId);
+    if (!etat) return refuse(action, 'Bien introuvable ou hors de votre compte.');
+    if (texte(p.relire(etat)) !== texte(p.attendu)) return ko(action, change);
+    await updateAssetDetails({
+      assetId: p.assetId, accountId: ctx.accountId, section: p.section, fields: { [p.field]: p.value },
+      origin: 'USER', actorUserId: ctx.userId,
+      // Passage 114AB (#753) : la valeur présentée à l'aperçu est en plus revérifiée SOUS VERROU par le
+      // service de la fiche, dans la même transaction que l'écriture (ajout du passage 114AB) — deux onglets
+      // qui écrivent à la seconde près ne peuvent plus se croiser.
+      expectedCurrent: { [p.field]: p.attendu },
+      source: { type: 'assistant_command', id: action.actionId },
+      // Cache de l'assistant : aucune route ne publie ASSET_UPDATED ici.
+      emitEvent: true,
+    });
+  } catch (e) {
+    if (e instanceof AssetDetailsError) {
+      if (e.code === 'CONFLICT') return ko(action, change);
+      if (e.code === 'NOT_FOUND') return refuse(action, 'Bien introuvable ou hors de votre compte.');
+      // Bien archivé, verrouillé par l'offre, modification suspendue (quota) : refus du service, tel quel.
+      if (e.code === 'ASSET_UNAVAILABLE' || e.code === 'WRITE_BLOCKED') return refuse(action, e.message);
+      return ko(action, 'Cette valeur ne peut pas être enregistrée telle quelle : rien n’a été modifié.');
+    }
+    throw e;
+  }
+  ctx.recordUndo?.({ actionId: action.actionId, reversible: false, reason: 'classement du bien modifié : à corriger par une nouvelle demande' });
+  return {
+    actionId: action.actionId, status: 'SUCCESS',
+    message: p.succes(action.targets[0]?.label ?? 'ce bien'), entity: { type: 'asset', id: p.assetId },
+  };
+}
 
 /**
  * Écriture d'UNE caractéristique d'un bien (modification, ou effacement quand `value` est `null`) — corps commun
@@ -599,6 +787,8 @@ async function refusStructure(accountId: number, assetId: number, kind: 'room' |
   return sqlLookup.structureRefusal!(accountId, nature, kind);
 }
 const DOCUMENT_CHANGED_SINCE_PREVIEW = 'Ce document a été modifié depuis l’aperçu : rien n’a été fait. Refaites votre demande.';
+/** Passage 114AB (W12) : la Rubrique ou le Type a changé entre l'aperçu et la confirmation — rien n'est écrit. */
+const DOCUMENT_CLASSIFICATION_CHANGED = 'Le classement de ce document a changé depuis l’aperçu : rien n’a été écrit. Refaites votre demande.';
 const SUPPLIER_CHANGED_SINCE_PREVIEW = 'Ce fournisseur a été modifié depuis l’aperçu : rien n’a été fait. Refaites votre demande.';
 const CHANGED_SINCE_PREVIEW = 'Cette échéance a été modifiée depuis l’aperçu : rien n’a été fait. Refaites votre demande.';
 const refuse = (a: PlannedAction, message: string): ActionResult => ({ actionId: a.actionId, status: 'REFUSED', message });

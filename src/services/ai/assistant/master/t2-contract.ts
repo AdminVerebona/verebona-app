@@ -75,6 +75,29 @@ export const t2SemanticDecision = z.object({
 });
 export type T2SemanticDecision = z.infer<typeof t2SemanticDecision>;
 
+/**
+ * Trello #753 (CDC T2 §9.1, §9.3, §12.1, annexe A13) — ACTION comprise par le sens : INDICES seulement. Aucun
+ * identifiant, aucune table, aucune route, aucun droit : le serveur rapproche l'indice d'une commande de son
+ * catalogue fermé, résout la cible DANS LE COMPTE, puis prépare un plan à confirmer (ou lance un export, sans
+ * écriture). Un indice qu'il ne sait pas rapprocher est ignoré.
+ */
+export const T2_ACTION_OPERATIONS = ['CREATE', 'UPDATE', 'DELETE', 'LINK', 'UNLINK', 'EXPORT'] as const;
+export const T2_ACTION_ENTITY_TYPES = ['asset', 'equipment', 'room', 'document', 'agenda_item', 'business_operation', 'supplier', 'relation', 'export'] as const;
+const t2ActionIntent = z.object({
+  operation: z.enum(T2_ACTION_OPERATIONS),
+  entityType: z.enum(T2_ACTION_ENTITY_TYPES),
+  /** Désignation littérale de l'objet visé (« la Clio ») — jamais un identifiant. */
+  targetHint: nullableString,
+  fieldChanges: z.array(z.object({
+    fieldHint: z.string().max(120),
+    value: looseValue,
+    unit: z.string().max(40).nullable().optional(),
+  })).max(10).default([]),
+  /** Court passage de l'utilisateur qui motive l'action. */
+  evidencePhrase: z.string().max(300).nullable().optional(),
+});
+export type T2ActionIntent = z.infer<typeof t2ActionIntent>;
+
 export const T2UnderstandOutput = z.object({
   mode: z.literal('UNDERSTAND'),
   intent: z.enum(VEREBONA_INTENTS as unknown as [string, ...string[]]),
@@ -108,6 +131,10 @@ export const T2UnderstandOutput = z.object({
     role: z.enum(['explicit', 'useful_complement']).default('explicit'),
   })).max(10).optional(),
   unresolvedDimensions: z.array(z.enum(T2_UNRESOLVED_DIMENSIONS)).max(6).optional(),
+  // Trello #753 (CDC T2 annexe A13, bloc PO n° 40) : actions comprises par le sens — champ ADDITIF et FACULTATIF.
+  // Une version de prompt qui ne le produit pas reste valide (aucune action : comportement inchangé). Schéma
+  // fermé et borné, de mêmes formes que `suppliedFacts` : il est transmis au fournisseur (sortie structurée).
+  actionIntents: z.array(t2ActionIntent).max(5).nullable().optional(),
 });
 export type T2UnderstandOutput = z.infer<typeof T2UnderstandOutput>;
 

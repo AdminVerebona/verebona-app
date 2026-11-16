@@ -63,7 +63,10 @@ export type RuleProducer =
   | 'T4_PROJECTION_MATCH'
   | 'DOCUMENT_INTERVENTION'
   | 'T3_IDENTITY_GROUP'
-  | 'T3_PERIOD_RESOLUTION';
+  | 'T3_PERIOD_RESOLUTION'
+  | 'REFERENCE_EVENT_GRAPH'
+  | 'REFERENCE_EVENT_AGENDA_LINK'
+  | 'REFERENCE_EVENT_MERGE';
 
 /** Où vit chaque producteur, et par quelle(s) fonction(s) il est appelé. */
 export const RULE_PRODUCERS: Readonly<Record<RuleProducer, {
@@ -107,6 +110,31 @@ export const RULE_PRODUCERS: Readonly<Record<RuleProducer, {
   T3_PERIOD_RESOLUTION: {
     module: 'src/services/documents/business-periods/conflict-cards.ts',
     entries: ['syncPeriodConflictCards', 'resolvePeriodConflictCard'], generic: false,
+  },
+  // Carte #744 (CDC Opérations / Agenda V2.0 §8, §20) : la façade d'écriture du graphe des événements de référence
+  // répond « arbitrage requis » (preuve nouvelle après un refus de l'utilisateur) — la question est posée par
+  // `associateOperationsOrAsk` (`business-operations/graph/arbitration.ts`) et résolue par la façade.
+  REFERENCE_EVENT_GRAPH: {
+    module: 'src/services/to-process/operation-relation-cards.ts',
+    entries: ['requestOperationRelationArbitration', 'resolveOperationRelationCard'], generic: false,
+  },
+  // Carte #744 (décision du PO du 16/11/2026) : une inférence (T3, T4, reprise) ne RATTACHE pas un événement de
+  // l'Agenda à un second événement de référence — elle le PROPOSE, et seulement sur un JUSTIFICATIF COMMUN. La
+  // proposition part de `proposeExtraAgendaLink` (`business-operations/graph/agenda-link-proposal.ts`) ; la réponse
+  // est appliquée par la façade d'écriture. Les couples sont ÉNUMÉRÉS par `agendaLinkCandidates` (même règle de
+  // preuve) et proposés par le balayage horaire (`reference-event-sweep.ts`, sixième famille).
+  REFERENCE_EVENT_AGENDA_LINK: {
+    module: 'src/services/to-process/operation-agenda-link-cards.ts',
+    entries: ['agendaLinkCandidates', 'requestAgendaLinkProposal', 'resolveOperationAgendaLinkCard'], generic: false,
+  },
+  // Carte #744 (CDC §7, §8 ; AC11, AC12) : les deux questions de fusion que le CDC exige — « même événement de
+  // référence, ou deux ? » et « quel fait est correct ? ». Posées par `proposeReferenceEventMerge`
+  // (`business-operations/graph/merge-proposal.ts`) ; résolues par la façade d'écriture. Les situations sont
+  // détectées par le balayage horaire (`reference-event-sweep.ts`) : verdict M3 déjà rendu par T3 pour le doublon,
+  // `factContradictionCandidates` pour le fait contradictoire.
+  REFERENCE_EVENT_MERGE: {
+    module: 'src/services/to-process/operation-merge-cards.ts',
+    entries: ['factContradictionCandidates', 'requestReferenceEventMergeArbitration', 'requestReferenceEventFactArbitration', 'resolveReferenceEventMergeCard'], generic: false,
   },
 };
 
@@ -603,6 +631,68 @@ export const PROCESSING_RULES: readonly ProcessingRule[] = [
     question: 'Ces documents indiquent des informations différentes : laquelle est la bonne ?',
     businessImpact: 64,
     producer: 'T3_OPERATIONS',
+    formulation: NO_AI_DECISION,
+  },
+  {
+    // Carte #744 (CDC Opérations / Agenda V2.0 §8, AC14, AC16, AC17) : deux événements de référence que
+    // l'utilisateur avait refusé d'associer sont rapprochés par une preuve NOUVELLE — la façade d'écriture répond
+    // « arbitrage requis », la question est posée ici, résolue par la façade, jamais reposée sur les mêmes preuves.
+    // Cible habituelle : le justificatif réel qui rapproche les deux (AC16 : à défaut, un ÉVÉNEMENT réel de l'Agenda
+    // de l'un des deux ; jamais un objet créé pour l'occasion). Voir `operation-relation-cards.ts`.
+    code: 'OPERATION-RELATION',
+    targetType: 'DOCUMENT',
+    relationKey: 'operationRelation',
+    arbitratePriority: 'DO_NEXT',
+    completePriority: null,
+    allowNotApplicable: false,
+    question: 'Un nouveau justificatif rapproche deux événements de référence que vous aviez choisi de ne pas associer : faut-il les associer ?',
+    businessImpact: 56,
+    producer: 'REFERENCE_EVENT_GRAPH',
+    formulation: NO_AI_DECISION,
+  },
+  {
+    // Carte #744 (CDC Opérations / Agenda V2.0 §4, §6, §8 ; AC08, AC17, AC24 — DÉCISION DU PO DU 16/11/2026) :
+    // une inférence propose de rattacher un événement de l'Agenda à un SECOND événement de référence, et seulement
+    // si un JUSTIFICATIF COMMUN relie les deux. Rien n'est proposé sans pièce, rien n'est écrit sans réponse.
+    // Cible : l'ÉVÉNEMENT DE L'AGENDA lui-même (objet réel, jamais créé). Voir `operation-agenda-link-cards.ts`.
+    code: 'AGENDA-LINK',
+    targetType: 'AGENDA_ITEM',
+    relationKey: 'operationAgendaLink',
+    arbitratePriority: 'DO_NEXT',
+    completePriority: null,
+    allowNotApplicable: false,
+    question: 'Un justificatif commun relie cet événement à un second événement de référence : faut-il l’y rattacher aussi ?',
+    businessImpact: 54,
+    producer: 'REFERENCE_EVENT_AGENDA_LINK',
+    formulation: NO_AI_DECISION,
+  },
+  {
+    // Carte #744 (CDC §7, §8 ; AC11, AC12, AC16, AC17) : un traitement croit avoir trouvé un doublon que le CDC ne
+    // l'autorise pas à fusionner seul — il DEMANDE. « Oui » applique la fusion par la façade (identité canonique,
+    // liens et faits transférés, ancien identifiant redirigé) ; « non » n'écrit rien et mémorise la séparation.
+    code: 'REFERENCE-EVENT-MERGE',
+    targetType: 'DOCUMENT',
+    relationKey: 'referenceEventMerge',
+    arbitratePriority: 'DO_NEXT',
+    completePriority: null,
+    allowNotApplicable: false,
+    question: 'Ces deux événements de référence décrivent peut-être la même réalité : est-ce le même, ou deux ?',
+    businessImpact: 66,
+    producer: 'REFERENCE_EVENT_MERGE',
+    formulation: NO_AI_DECISION,
+  },
+  {
+    // Carte #744 (CDC §8, §11 ; AC17) : deux événements de référence ASSOCIÉS portent, pour le même fait daté, deux
+    // valeurs contradictoires. La valeur retenue est posée sur celui qui ne la portait pas ; rien avant la réponse.
+    code: 'REFERENCE-EVENT-FACT',
+    targetType: 'DOCUMENT',
+    relationKey: 'referenceEventFact',
+    arbitratePriority: 'DO_NEXT',
+    completePriority: null,
+    allowNotApplicable: false,
+    question: 'Ces deux événements de référence indiquent des dates différentes pour le même fait : laquelle est la bonne ?',
+    businessImpact: 60,
+    producer: 'REFERENCE_EVENT_MERGE',
     formulation: NO_AI_DECISION,
   },
   {

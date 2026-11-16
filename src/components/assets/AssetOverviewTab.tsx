@@ -16,6 +16,7 @@ import {
 } from '@/types/domain';
 import { apiClient } from '@/lib/api-client';
 import dynamic from 'next/dynamic';
+import { useRouter } from 'next/navigation';
 import type { AgendaItemFull } from '@/services/agenda/AgendaQueryService';
 import { userFacingLabel } from '@/lib/referential/user-facing-labels';
 import { exportCodeLabel } from '@/services/exports/catalog';
@@ -32,10 +33,7 @@ const DocumentDrawer = dynamic(
 
 import type { DocumentDrawerItem } from '@/components/assets/DocumentDrawer';
 
-const ReferenceEventSheet = dynamic(
-  () => import('@/components/documents/ReferenceEventSheet').then(m => ({ default: m.ReferenceEventSheet })),
-  { ssr: false },
-);
+import { referenceEventHref } from '@/lib/reference-events/reference-event-page';
 import { OCCUPANCY_USAGE_LABELS } from '@/lib/assets/occupancy';
 import { displayDocumentTitle } from '@/lib/documents/document-title-rules';
 import type { TimelineEntry } from '@/services/agenda/timeline/model';
@@ -270,6 +268,7 @@ interface RecentExport {
 
 
 export function AssetOverviewTab({ assetId, onTabChange, readOnly = false }: Props) {
+  const router = useRouter();
   const [data, setData] = useState<OverviewData | null>(null);
   /** Motif d'indisponibilité — distinct d'un échec technique. */
   const [motifIndisponible, setMotifIndisponible] =
@@ -278,9 +277,6 @@ export function AssetOverviewTab({ assetId, onTabChange, readOnly = false }: Pro
   const [drawerItem, setDrawerItem] = useState<AgendaItemFull | null>(null);
   const [drawerOpen, setDrawerOpen] = useState(false);
   const [loadingItem, setLoadingItem] = useState<string | null>(null);
-  // #744 lot C : événement de référence ouvert depuis la Timeline (null : fermé).
-  const [referenceEventId, setReferenceEventId] = useState<number | null>(null);
-  const closeReferenceEvent = useCallback((v: boolean) => { if (!v) setReferenceEventId(null); }, []);
   const [docDrawerDoc, setDocDrawerDoc] = useState<DocumentDrawerItem | null>(null);
   const [docDrawerOpen, setDocDrawerOpen] = useState(false);
   const [recentExports, setRecentExports] = useState<RecentExport[]>([]);
@@ -334,11 +330,12 @@ export function AssetOverviewTab({ assetId, onTabChange, readOnly = false }: Pro
   // groupe. Aujourd'hui : le tiroir Agenda EXISTANT de l'élément demandé. Un
   // tiroir dédié au groupe (chantier 84B) se branche ICI selon `req.context`.
   const openTimelineItem = useCallback(async (req: TimelineOpenRequest) => {
-    // #744 lot C : la ligne d'un groupe et le lien d'un élément ouvrent la
-    // fiche de l'ÉVÉNEMENT DE RÉFÉRENCE lui-même (fiche existante du lot
-    // 113AB), sans passer par un élément d'agenda « principal ».
+    // #744 travaux D (règle remplacée — AC27, AC41) : la ligne d'un groupe et
+    // le lien d'un élément ouvrent la PAGE ENTIÈRE de l'ÉVÉNEMENT DE RÉFÉRENCE
+    // lui-même (plus un panneau latéral), sans passer par un élément d'agenda
+    // « principal ».
     if ((req.context === 'group' || req.context === 'reference') && req.operationId != null) {
-      setReferenceEventId(req.operationId);
+      router.push(referenceEventHref(req.operationId));
       return;
     }
     const itemId = req.itemId;
@@ -353,7 +350,7 @@ export function AssetOverviewTab({ assetId, onTabChange, readOnly = false }: Pro
     } finally {
       setLoadingItem(null);
     }
-  }, [onTabChange]);
+  }, [onTabChange, router]);
 
   // Lot 84C : état de Timeline partagé par les variantes desktop et mobile
   // (une seule lecture) ; mode « Regroupée » à chaque ouverture (AC22, AC24).
@@ -585,14 +582,6 @@ export function AssetOverviewTab({ assetId, onTabChange, readOnly = false }: Pro
         )}
       </div>
 
-      {/* #744 lot C : fiche de l'événement de référence ouverte depuis la Timeline */}
-      {referenceEventId != null && (
-        <ReferenceEventSheet
-          operationId={referenceEventId}
-          open
-          onOpenChange={closeReferenceEvent}
-        />
-      )}
       {/* Agenda item drawer */}
       <AgendaItemDrawer
         item={drawerItem}

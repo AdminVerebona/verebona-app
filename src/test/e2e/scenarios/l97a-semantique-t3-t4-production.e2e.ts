@@ -157,9 +157,14 @@ scenario('L97A', 'Réévaluations sémantiques T3 / T4 branchées sur le registr
     expect(r).toMatchObject({ status: 'APPLIED', aiCalls: 1 });
     expect(appels.t4).toHaveLength(1);
     expect(appels.t4[0]).toMatchObject({ task: 'AGENDA_REPRESENTATION', agenda_representation: { contractVersion: 't4-agenda-representation-v1', task: 'AGENDA_REPRESENTATION' } });
+    // RÈGLE REMPLACÉE (carte #744) : la projection T4 n'écrit plus aucun rôle. L'élément qui REPRÉSENTE l'événement de
+    // référence est celui dont le lien N↔N porte le FAIT ; la colonne historique reste tenue à RELATED par son
+    // déclencheur. Avant : `operation_role` valait 'PRINCIPAL'.
     const evts = await sql<Json[]>`SELECT id, business_operation_id::int AS op, operation_role FROM agenda_items WHERE account_id = ${c.compte.id} ORDER BY id`;
     expect(evts).toHaveLength(1);
-    expect(evts[0]).toMatchObject({ op, operation_role: 'PRINCIPAL' });
+    expect(evts[0]).toMatchObject({ op, operation_role: 'RELATED' });
+    expect(await sql<Json[]>`SELECT agenda_item_id AS item, fact_key AS fait FROM business_operation_agenda_links
+      WHERE operation_id = ${op} AND state = 'ACTIVE' AND fact_key IS NOT NULL`).toEqual([{ item: evts[0].id, fait: 'INTERVENTION' }]);
     const j = (await reevaluations(c.compte, 'T4')).at(-1)!;
     expect(j).toMatchObject({ status: 'APPLIED', ai_calls: 1, contract_version: 't4-agenda-representation-v1' });
     expect(j.decider_version).toMatch(/^t4_master_v1@pv/);

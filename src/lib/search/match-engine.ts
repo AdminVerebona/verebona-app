@@ -86,7 +86,7 @@ const SEMANTIC_MIN_SCORE = 0.82;
 
 // ── Champs autorisés par type d'entité (ticket §5) ───────────────────────
 
-export type SearchEntityType = 'asset' | 'document' | 'agenda_item' | 'equipment' | 'room' | 'supplier' | 'to_process' | 'export';
+export type SearchEntityType = 'asset' | 'document' | 'agenda_item' | 'equipment' | 'room' | 'supplier' | 'to_process' | 'export' | 'reference_event';
 
 /**
  * Nature d'un champ :
@@ -196,6 +196,17 @@ export const SEARCH_FIELDS: Readonly<Record<SearchEntityType, readonly SearchFie
     F('name', 'Nom', 'name', 1),
     F('exportType', 'Type de dossier', 'category', 0.6, 'free'),
     F('assetName', 'Bien', 'relation', 0.4),
+  ],
+  // Carte #744, travaux D (CDC §15, AC56) : l'événement de référence est un type de résultat PROPRE — trouvable
+  // par son titre, son prestataire, ses fournisseurs reliés, ses références et la déclaration de l'utilisateur
+  // qui le fonde (même sans bien, sans document et sans événement). Le bien concerné ne fait que compléter.
+  reference_event: [
+    F('title', 'Titre', 'name', 1),
+    F('reference', 'Référence', 'identifier', 0.95),
+    F('provider', 'Prestataire', 'text', 0.8),
+    F('supplierNames', 'Fournisseur', 'text', 0.75),
+    F('declaration', 'Déclaration', 'text', 0.7),
+    F('assetNames', 'Bien concerné', 'relation', 0.4),
   ],
 };
 

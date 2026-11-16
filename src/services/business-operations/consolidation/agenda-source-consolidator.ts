@@ -52,6 +52,7 @@ import {
 } from './consolidator';
 import { decideCandidate } from './matching';
 import { consolidateOperationState } from './model';
+import { isSourceOfUserInvalidatedOperation, USER_INVALIDATED_SOURCE_REASON } from './user-invalidation';
 // Lot 82D : appartenance Agenda ↔ Opération par le service unique de regroupement.
 import { attachAgendaItem, runnerContext } from '../grouping/service';
 import { drizzleRunner } from '../grouping/runner';
@@ -179,6 +180,12 @@ async function reconcileAgendaItemInSession(
     if (d.outcome === 'MATCH_AND_ENRICH' && d.operationId !== null && !d.mergeIds?.length) {
       operationId = d.operationId;
       reason = d.reason;
+    } else if (d.outcome === 'CREATE_NEW' && await isSourceOfUserInvalidatedOperation(tx, accountId, 'AGENDA', itemId)) {
+      // Carte #744 (CDC V2.0 §5, §19, AC13) : cet élément fondait un événement de référence que l'utilisateur a
+      // supprimé — T3 n'en crée pas un nouveau à partir du même élément (l'élément reste dans l'Agenda, à sa date).
+      res.reason = USER_INVALIDATED_SOURCE_REASON;
+      console.info(JSON.stringify({ event: 't3.agenda_source_user_invalidated', accountId, itemId }));
+      return fin();
     } else if (d.outcome === 'CREATE_NEW') {
       const s = applyAgendaAuthority(consolidateOperationState('INTERVENTION', [{ sourceId: 0, identity }], today), [{ sourceId: 0, identity }]);
       const created = await repo.create({

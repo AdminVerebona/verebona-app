@@ -21,6 +21,8 @@ import type {
 } from '../types/contracts';
 import type { RetrievedSource, ResolvedSource, Claim } from '../types/sources';
 import type { VerebonaAction } from '../types/actions';
+import { isSourceRequest } from './source-disclosure';
+import { UPLOAD_BUTTON_LABEL } from '../commands/upload-request';
 import { getAssistantConfig } from '../config/assistant-config';
 import { ConversationMachine } from './conversation-machine';
 import { routeClarificationReason, routeDeterministic, routeForIntent } from './intent-router.service';
@@ -207,6 +209,29 @@ export interface OrchestratorPorts {
     established: boolean;
     prudentAnswer?: string;
   }>;
+  /**
+   * Trello #753 (CDC T2 §9.2, W11) : dépôt d'un fichier demandé — le bien est résolu dans le compte ; le dépôt
+   * lui-même reste le parcours existant (bouton « Ajouter un document »). `null` : pas une demande de dépôt.
+   */
+  prepareUpload?(input: AssistantRequestInput): Promise<import('../commands/upload-request').UploadAnswer | null>;
+  /**
+   * Trello #753 (CDC T2 §9.3, annexe A13) : actions comprises par le sens (UNDERSTAND, champ `actionIntents`) —
+   * plan à confirmer préparé par le serveur, question, ou export direct. `null` : aucun indice exploitable.
+   */
+  prepareActionHints?(input: AssistantRequestInput, hints: import('../types/contracts').ActionHint[], opts: { allowWrites: boolean }): Promise<
+    import('../commands/action-hints').ActionHintsPreparation | null>;
+  /**
+   * Trello #753 (CDC T2 §7.6, D25) : sources sur demande — éléments du compte sur lesquels s'appuie la réponse
+   * PRÉCÉDENTE du fil, relus dans son enregistrement (aucune recherche, aucun modèle). `null` : aucune réponse
+   * précédente, ou sources coupées (flag) — la demande suit le parcours normal.
+   */
+  discloseSources?(input: AssistantRequestInput): Promise<import('./source-disclosure').SourceDisclosure | null>;
+  /**
+   * Trello #753 (CDC T2 §9.10, W28, D27) : export demandé dans le fil — génération DIRECTE, sans plan ni
+   * confirmation (aucune donnée métier n'est modifiée), par la façade du service d'export. `null` : le message
+   * n'est pas une demande d'export (parcours de réponse normal).
+   */
+  generateExport?(input: AssistantRequestInput): Promise<import('../commands/export-request').ExportAnswer | null>;
   prepareCommand?(input: AssistantRequestInput): Promise<
     | { kind: 'plan'; preview: import('../commands/catalog').CommandPlanPreview }
     | { kind: 'need_info'; message: string }
@@ -642,6 +667,30 @@ export async function runAssistant(
     // compris ici, sans modèle, à partir de l'ordre RÉELLEMENT affiché dans
     // CE fil — jamais d'un autre fil ni de l'autre membre d'un Duo.
     // ══════════════════════════════════════════════════════════════════════
+    // ══════════════════════════════════════════════════════════════════════
+    // SOURCES SUR DEMANDE — Trello #753 (CDC T2 §7.6, D24, D25)
+    //
+    // « D'où vient ce chiffre ? » : la phrase porte sur la RÉPONSE précédente du
+    // fil, pas sur un objet à retrouver. Elle est traitée avant la résolution
+    // des références (« ce chiffre » n'est pas un bien) : les sources
+    // enregistrées avec cette réponse sont présentées, revérifiées. Par défaut
+    // (sans cette demande), aucune source du compte n'est affichée.
+    // ══════════════════════════════════════════════════════════════════════
+    if (ports.discloseSources && !input.resume && !input.suggestion?.forceIntent && input.conversationId && isSourceRequest(input.message)) {
+      const div = await ports.discloseSources(input).catch((e) => {
+        console.error('[verebona] sources sur demande illisibles :', (e as Error).message);
+        return null;
+      });
+      if (div) {
+        const route = routeForIntent('ACCOUNT_SEARCH_DOCUMENT', input.planType, 'sources sur demande');
+        base.route = route;
+        trace.intent = 'SOURCE_DISCLOSURE';
+        done('structured', div.count ? 'sources.disclosure' : 'sources.none', null, div.count);
+        if (div.resultGroups.length) base.resultGroups = div.resultGroups;
+        return finalize(base, machine, 'deterministic', div.message, [], [], [], ports, input);
+      }
+    }
+
     const early = await applyThreadMemory(input, ports, trace);
     input = early.input;
     if (early.contextUpdate) base.contextUpdate = early.contextUpdate;
@@ -658,6 +707,37 @@ export async function runAssistant(
       const resolvedEarly = early.answer.sources.length ? await ports.resolveSources(early.answer.sources, input.accountId) : [];
       return finalize(base, machine, 'deterministic', early.answer.text, early.answer.claims ?? [], resolvedEarly, actions, ports, input,
         early.answer.claims?.length ? 'supported' : null);
+    }
+
+    // ══════════════════════════════════════════════════════════════════════
+    // EXPORT DEMANDÉ — Trello #753 (CDC T2 §9.10, W28, D27)
+    //
+    // Générer un export ne modifie aucune donnée métier : pas de plan, pas de
+    // confirmation. Les droits sont ceux du service d'export (offre, bien,
+    // seuils) — y compris en lecture seule, où l'export des données brutes
+    // reste ouvert comme depuis la fiche du bien. Une suggestion d'aide ou la
+    // reprise d'une clarification n'est jamais une demande d'export.
+    // ══════════════════════════════════════════════════════════════════════
+    /** Réponse à une demande d'export (écrite, ou comprise par le sens) : texte, carte, bouton éventuel. */
+    const servirExport = async (exp: import('../commands/export-request').ExportAnswer): Promise<AssistantRunResult> => {
+      const route = routeForIntent('EXPORT_HELP', input.planType, 'export demandé');
+      base.route = route;
+      trace.intent = 'EXPORT_COMMAND';
+      done('template', `export.${exp.kind}`, null, 0);
+      if (exp.resultGroups?.length) base.resultGroups = exp.resultGroups;
+      // Refus à lever dans la préparation du dossier : bouton existant vers les exports du bien.
+      const actions = exp.exportAreaAssetId
+        ? (await ports.resolveActions(route, { ...input, pageContext: { ...(input.pageContext ?? {}), assetId: String(exp.exportAreaAssetId) } }, [], [])
+            .catch(() => [] as VerebonaAction[])).filter((a) => a.type === 'OPEN_EXPORT_AREA')
+        : [];
+      return finalize(base, machine, 'deterministic', exp.message, [], [], actions, ports, input);
+    };
+    if (ports.generateExport && !input.resume && !input.suggestion?.forceIntent) {
+      const exp = await ports.generateExport(input).catch((e) => {
+        console.error('[verebona] demande d’export impossible :', (e as Error).message);
+        return null;
+      });
+      if (exp) return servirExport(exp);
     }
 
     // ══════════════════════════════════════════════════════════════════════
@@ -680,6 +760,40 @@ export async function runAssistant(
           prep.kind === 'plan' ? prep.preview.summary : prep.message, [], [], [], ports, input);
         if (prep.kind === 'plan') result.commandPlan = prep.preview;
         return result;
+      }
+    }
+
+    // ══════════════════════════════════════════════════════════════════════
+    // DÉPÔT D'UN FICHIER DEMANDÉ — Trello #753 (CDC T2 §9.2, W11)
+    //
+    // Un dépôt exige un fichier réel : l'Assistant ne l'exécute pas, il propose
+    // le bouton existant qui ouvre la fenêtre de dépôt, bien présélectionné.
+    // Après les commandes (un lien web, une note de document sont reconnus
+    // avant). Compte en lecture seule : c'est dit, aucun bouton.
+    // ══════════════════════════════════════════════════════════════════════
+    if (ports.prepareUpload && !input.resume && !input.suggestion?.forceIntent) {
+      const depot = await ports.prepareUpload(input).catch((e) => {
+        console.error('[verebona] demande de dépôt impossible :', (e as Error).message);
+        return null;
+      });
+      if (depot) {
+        const route = routeForIntent('PRODUCT_HELP_HOW_TO', input.planType, 'dépôt de fichier demandé');
+        const pageDemande: NonNullable<AssistantRequestInput['pageContext']> = input.pageContext ?? {};
+        const { assetId: _page, ...pageSansBien } = pageDemande;
+        // Bouton existant « Ajouter un document » (commande de création, bien contrôlé par le résolveur).
+        const actions = depot.kind === 'open' && !ecritureBloquee
+          ? (await ports.resolveActions(route, {
+              ...input, message: UPLOAD_BUTTON_LABEL, reference: undefined, resume: undefined,
+              pageContext: { ...pageSansBien, ...(depot.assetId ? { assetId: String(depot.assetId) } : {}) },
+            }, [], []).catch(() => [] as VerebonaAction[])).filter((a) => a.type === 'START_ADD_DOCUMENT')
+          : [];
+        // Sans bouton disponible, la demande suit le parcours normal (jamais une promesse sans moyen de la tenir).
+        if (ecritureBloquee || depot.kind === 'need_info' || actions.length) {
+          base.route = route;
+          trace.intent = 'UPLOAD_COMMAND';
+          done('template', ecritureBloquee ? 'upload.read_only' : `upload.${depot.kind}`, null, 0);
+          return finalize(base, machine, 'deterministic', ecritureBloquee ? UPDATE_READ_ONLY_MESSAGE : depot.message, [], [], actions, ports, input);
+        }
       }
     }
 
@@ -960,8 +1074,34 @@ export async function runAssistant(
       }
     };
 
+    // ── Trello #753 (CDC T2 §9.3, annexe A13, bloc PO n° 40) — ACTIONS COMPRISES PAR LE SENS ──────────
+    // Indices du modèle, jamais une commande : le serveur les rapproche de son catalogue fermé, retrouve la
+    // cible dans le compte et prépare un plan À CONFIRMER (ou lance un export, sans écriture). Aucun indice
+    // exploitable — ou champ absent du prompt actif : `null`, la suite est celle d'avant.
+    const traiterIndices = async (compris: IntentRoute | null): Promise<AssistantRunResult | null> => {
+      const indices = compris?.understanding?.actions ?? [];
+      if (!indices.length || !ports.prepareActionHints || input.resume || input.suggestion?.forceIntent) return null;
+      const prepIndices = await ports.prepareActionHints(input, indices, { allowWrites: !ecritureBloquee }).catch((e) => {
+        console.error('[verebona] actions comprises par le sens : préparation impossible :', (e as Error).message);
+        return null;
+      });
+      if (!prepIndices) return null;
+      trace.escalationReasons.push(`INTERACTION:ACTION_HINTS:${indices.length}`);
+      marquer('COMPLETE', [], 'understand');
+      if (prepIndices.kind === 'export') return servirExport(prepIndices.answer);
+      base.route = routeForIntent('UNSUPPORTED_ACTION', input.planType, 'action comprise par le sens');
+      trace.intent = 'WRITE_COMMAND';
+      done('template', prepIndices.kind === 'plan' ? 'command.hint_preview' : 'command.hint_need_info', null, 0);
+      const resultat = await finalize(base, machine, 'deterministic',
+        prepIndices.kind === 'plan' ? prepIndices.preview.summary : prepIndices.message, [], [], [], ports, input);
+      if (prepIndices.kind === 'plan') resultat.commandPlan = prepIndices.preview;
+      return resultat;
+    };
+
     const traiterInteraction = async (compris: IntentRoute | null): Promise<AssistantRunResult | null> => {
       if (compris) await noterPromptT2();
+      const parIndices = await traiterIndices(compris);
+      if (parIndices) return parIndices;
       const inter = compris?.understanding?.interaction;
       if (!inter || input.resume) return null;
       semTrace.interactionMode = inter.mode;
@@ -1554,6 +1694,11 @@ export async function runAssistant(
       });
       if (issue.kind === 'interaction') return traiterInteraction(issue.route);
       if (issue.kind === 'reroute') {
+        // Trello #753 (passage 114Z2) : la compréhension obtenue ICI (périmètre non résolu par le serveur) peut
+        // porter des actions comprises par le sens — elles sont traitées avant que la route du modèle ne prime.
+        // Aucun indice exploitable : la suite est exactement celle d'avant.
+        const parIndices = await traiterIndices(issue.route);
+        if (parIndices) return parIndices;
         route = affinerRoute(issue.route, input);
         base.route = route;
         trace.intent = route.intent;
@@ -2602,7 +2747,14 @@ async function applyThreadMemory(
     entity: null,
     activeObjects: actifs.slice(0, 10),
   };
-  let enriched: AssistantRequestInput = { ...input, threadContextText: formatConversationForPrompt(ctx, null) };
+  let enriched: AssistantRequestInput = {
+    ...input,
+    threadContextText: formatConversationForPrompt(ctx, null),
+    // Passage 114AA (#753) : événement de référence du fil — « celui-ci » d'un tour à l'autre. Il ne change
+    // ni le routage, ni le retrieval, ni le contexte transmis au modèle : seules les commandes sur les
+    // événements de référence s'en servent, après re-vérification dans le compte.
+    threadReferenceEventId: ctx.lastReferenceEventId ?? null,
+  };
 
   if (res.kind === 'ambiguous') {
     const memeType = res.candidates.every((c) => c.type === res.candidates[0].type);

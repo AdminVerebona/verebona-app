@@ -30,7 +30,8 @@
  *   · `t1:<ref>` : référence interne au document CIBLE de la carte ;
  *   · contexte de la carte (`trigger_context`) : périmètre d'une carte groupée
  *     (105D), documents d'un sinistre ou d'une projection, élément d'agenda,
- *     événement de référence (`operationId` → élément PRINCIPAL) ;
+ *     événement de référence (`operationId` → un de ses événements réels, lu
+ *     dans le graphe N↔N depuis la carte #744 : plus de rôle « principal ») ;
  *   · valeur ACTUELLE d'un bien : dernière écriture journalisée
  *     (`canonical_field_writes`, `outcome = written`) si — et seulement si —
  *     elle porte cette valeur ET vient d'un document. Sinon la valeur actuelle
@@ -255,7 +256,7 @@ export interface LinkData {
   equipments: Map<number, { label: string; available: boolean }>;
   rooms: Map<number, { label: string }>;
   agenda: Map<number, { label: string }>;
-  /** Événement de référence : opération → élément d'agenda PRINCIPAL. */
+  /** Événement de référence : opération → un de ses événements réels (graphe N↔N, carte #744 ; aucun rôle). */
   references: Map<number, { itemId: number; label: string }>;
   suppliers: Map<number, { label: string }>;
   /** `${assetId}:${key}` → dernière écriture appliquée (valeur, document source ou null). */
@@ -320,7 +321,8 @@ export function assembleCardLinks(c: CardLinkInput, plan: CardPlan, data: LinkDa
       }
       case 'reference': {
         const r = data.references.get(t.id);
-        // Le lien ouvre l'élément d'agenda PRINCIPAL (destination native existante).
+        // Le lien ouvre un événement RÉEL de l'événement de référence (destination native existante) ; carte #744 :
+        // choisi dans le graphe N↔N, jamais par le rôle « principal ».
         return r ? { kind: 'reference', id: r.itemId, label: r.label } : null;
       }
       case 'supplier': {
@@ -530,10 +532,16 @@ export async function loadLinkData(accountId: number, plans: CardPlan[]): Promis
   }
   if (operationIds.size) {
     for (const r of await q(
-      `SELECT DISTINCT ON (business_operation_id) business_operation_id AS op, id, title
-         FROM agenda_items
-        WHERE account_id = $1 AND business_operation_id = ANY($2::bigint[]) AND operation_role = 'PRINCIPAL'
-        ORDER BY business_operation_id, id`,
+      // Carte #744 (CDC « Opérations / Agenda V2.0 » §4, §12, §16 ; règle remplacée : le lien n'ouvre plus
+      // « l'élément PRINCIPAL » — ce rôle est abandonné). Le lien est résolu dans le GRAPHE N↔N
+      // (`business_operation_agenda_links` ACTIVE, qui contient toujours les liens de la colonne historique) :
+      // l'événement RÉEL le plus ancien de l'événement de référence (sans date en dernier, puis le plus ancien
+      // identifiant) — donc aussi quand aucun élément ne portait le rôle « principal ».
+      `SELECT DISTINCT ON (l.operation_id) l.operation_id AS op, i.id, i.title
+         FROM business_operation_agenda_links l
+         JOIN agenda_items i ON i.id = l.agenda_item_id AND i.account_id = l.account_id
+        WHERE l.account_id = $1 AND l.state = 'ACTIVE' AND l.operation_id = ANY($2::bigint[])
+        ORDER BY l.operation_id, i.start_date ASC NULLS LAST, i.id`,
       [accountId, intArray(operationIds)],
     )) data.references.set(Number(r.op), { itemId: Number(r.id), label: String(r.title ?? '').trim() || LABELS.reference });
   }

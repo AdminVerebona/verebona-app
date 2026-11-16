@@ -106,4 +106,50 @@ scenario('L114B-BIENS', 'Lot 114B — créer et supprimer un bien depuis l’Ass
     expect(r).toMatchObject({ kind: 'need_info' });
     expect(await biens(a)).toHaveLength(1);
   });
+
+  it('L114B-BIENS-E06 — W02 (passage 114AA) : catégorie et statut d’un bien, après confirmation seulement', async () => {
+    const c = await compte();
+    const autre = await compte();
+    const clio = await bien(c, 'Clio');
+    await sql`UPDATE assets SET subtype = 'Voiture' WHERE id = ${clio}`;
+    const lire = async (id: number) => (await sql<Array<{ subtype: string | null; status: string; deleted_at: string | null; name: string }>>`
+      SELECT subtype, status, deleted_at, name FROM assets WHERE id = ${id}`)[0];
+
+    // Catégorie : du référentiel, écrite par le service de la fiche.
+    const r = planDe(await demander(c, 'Change la catégorie de la Clio en moto'));
+    expect(r.preview.summary).toBe('Modifier « Catégorie de bien » de Clio : Voiture → Moto. Confirmez-vous ?');
+    expect((await lire(clio)).subtype).toBe('Voiture');
+    expect(await confirmer(c, r.plan.planId)).toMatchObject({ ok: true, status: 'EXECUTED', undoUntil: null });
+    expect((await lire(clio)).subtype).toBe('Moto');
+    expect(await confirmer(c, r.plan.planId)).toMatchObject({ ok: false, code: 'PLAN_ALREADY_HANDLED' });
+    // Déjà en place : aucun plan.
+    expect(await demander(c, 'Change la catégorie de la Clio en moto'))
+      .toMatchObject({ kind: 'need_info', message: 'La catégorie de Clio est déjà « Moto ».' });
+
+    // Catégorie modifiée entre l'aperçu et la confirmation : rien n'est écrit.
+    const p = planDe(await demander(c, 'Change la catégorie de la Clio en vélo'));
+    await sql`UPDATE assets SET subtype = 'Camion' WHERE id = ${clio}`;
+    const conf = await confirmer(c, p.plan.planId);
+    expect(conf).toMatchObject({ ok: true, status: 'FAILED' });
+    expect(JSON.stringify(conf)).toMatch(/La catégorie de ce bien a changé depuis l’aperçu : rien n’a été écrit/);
+    expect((await lire(clio)).subtype).toBe('Camion');
+
+    // Archivage : jamais depuis l'assistant.
+    expect(await demander(c, 'Marque la Clio comme archivée'))
+      .toMatchObject({ kind: 'need_info', message: 'L’archivage d’un bien ne se fait pas depuis l’assistant : ouvrez la fiche de Clio.' });
+
+    // Cloisonnement : le bien d'un autre compte n'est jamais atteint.
+    expect(await demander(autre, 'Change la catégorie de la Clio en moto')).toMatchObject({ kind: 'need_info' });
+    expect(await demander(autre, 'Marque la Clio comme vendue')).toMatchObject({ kind: 'need_info' });
+
+    // Statut : le bien sort du portefeuille actif, rien n'est supprimé — et l'assistant ne le retrouve plus
+    // ensuite par son nom (règle existante `core/asset-availability`, annoncée dans l'aperçu).
+    const s = planDe(await demander(c, 'Marque la Clio comme vendue'));
+    expect(s.preview.summary).toBe('Modifier « Statut » de Clio : En service → Vendu. Confirmez-vous ?');
+    expect(s.plan.actions[0].effects).toContain('L’assistant ne le retrouvera plus par son nom : pour revenir en arrière, passez par sa fiche.');
+    expect(await confirmer(c, s.plan.planId)).toMatchObject({ ok: true, status: 'EXECUTED' });
+    expect(await lire(clio)).toMatchObject({ status: 'VENDU', deleted_at: null, name: 'Clio', subtype: 'Camion' });
+    expect(await demander(c, 'Marque la Clio comme transmise'))
+      .toMatchObject({ kind: 'need_info', message: expect.stringMatching(/^Je n’ai pas trouvé ce bien dans votre compte\./) });
+  });
 });

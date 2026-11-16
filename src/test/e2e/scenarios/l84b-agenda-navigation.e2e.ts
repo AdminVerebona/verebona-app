@@ -97,8 +97,19 @@ scenario('L84B', 'Opérations v5 — O-3 : Agenda et navigation (liens manuels, 
   }
 
   // ── Lectures ──────────────────────────────────────────────────────────────
+  /**
+   * RÈGLE REMPLACÉE (carte #744, travaux F) : la projection T4 et le service de regroupement n'écrivent plus
+   * `agenda_items.operation_role` / `operation_role_origin` (la colonne historique reste tenue à RELATED / NULL par son
+   * seul déclencheur `agenda_items_operation_role_sync`). `role` et `origin` sont DÉRIVÉS du lien N↔N :
+   * porteur du FAIT PORTÉ → PRINCIPAL, membre de plein droit → RELATED, non rattaché → NULL ; l'autorité vient de
+   * l'origine du lien (USER → USER, AI → T4, MIGRATION / SYSTEM → SYSTEM). Le vocabulaire des attentes est inchangé,
+   * seule sa SOURCE change. Conséquence assumée : l'origine du graphe ne distingue pas T3 de T4 (toutes deux « AI »).
+   */
   const element = async (id: number) => (await sql<Json[]>`
-    SELECT business_operation_id::int AS op, operation_role AS role, operation_role_origin AS origin FROM agenda_items WHERE id = ${id}`)[0];
+    SELECT i.business_operation_id::int AS op, (SELECT CASE WHEN g.fact_key IS NOT NULL THEN 'PRINCIPAL' ELSE 'RELATED' END FROM business_operation_agenda_links g
+             WHERE g.account_id = i.account_id AND g.operation_id = i.business_operation_id AND g.agenda_item_id = i.id AND g.state = 'ACTIVE') AS role,
+           (SELECT CASE g.origin WHEN 'USER' THEN 'USER' WHEN 'AI' THEN 'T4' ELSE 'SYSTEM' END FROM business_operation_agenda_links g
+             WHERE g.account_id = i.account_id AND g.operation_id = i.business_operation_id AND g.agenda_item_id = i.id AND g.state = 'ACTIVE') AS origin FROM agenda_items i WHERE i.id = ${id}`)[0];
   const liensDe = (itemId: number) => sql<{ file: number; prov: string[] }[]>`
     SELECT asset_file_id AS file, provenances AS prov FROM agenda_file_links WHERE agenda_item_id = ${itemId} ORDER BY asset_file_id`;
   const membres = (opId: number) => sql<{ file_id: number; origins: string[] }[]>`
@@ -352,7 +363,9 @@ scenario('L84B', 'Opérations v5 — O-3 : Agenda et navigation (liens manuels, 
     const op = await operation(c.compte, { assetId: c.maison.id, fileId: constat.id });
     // T4 projette l'événement global (principal créé par la projection).
     await projeter(c.compte, [op]);
-    const [p] = await sql<{ id: number }[]>`SELECT id FROM agenda_items WHERE account_id = ${c.compte.id} AND business_operation_id = ${op} AND operation_role = 'PRINCIPAL'`;
+    // RÈGLE REMPLACÉE (carte #744) : le porteur se lit sur le FAIT PORTÉ du lien N↔N, plus sur le rôle de la colonne.
+    const [p] = await sql<{ id: number }[]>`SELECT agenda_item_id AS id FROM business_operation_agenda_links
+      WHERE account_id = ${c.compte.id} AND operation_id = ${op} AND state = 'ACTIVE' AND fact_key IS NOT NULL`;
     expect(p).toBeTruthy();
     expect(await liensDe(p.id)).toEqual([{ file: constat.id, prov: ['OPERATION_PRINCIPAL'] }]);
     // Une étape saisie, même bien, même date (la projection la reconnaîtrait comme l'événement global).
@@ -364,7 +377,10 @@ scenario('L84B', 'Opérations v5 — O-3 : Agenda et navigation (liens manuels, 
     const r = await geste(p.id, 'retirer-reference');
     expect(r.status).toBe(200);
     expect(r.body.changed).toBe(true);
-    expect(await element(p.id)).toEqual({ op, role: 'RELATED', origin: 'USER' });
+    // RÈGLE REMPLACÉE (carte #744) : le retrait du fait porté ne réécrit plus l'autorité sur l'élément. L'origine du LIEN
+    // dit qui a établi le RATTACHEMENT (ici T4 / « AI »), le retrait est porté par la décision mémorisée PRINCIPAL
+    // REJECTED (vérifiée juste en dessous). Avant : `operation_role_origin` passait à 'USER'.
+    expect(await element(p.id)).toEqual({ op, role: 'RELATED', origin: 'T4' });
     expect(await liensDe(p.id)).toEqual([]);
     expect(await decisions(c.compte, 'PRINCIPAL')).toEqual([{ key: String(p.id), op, decision: 'REJECTED', active: true }]);
     expect(r.body.view).toMatchObject({ role: 'MEMBER', main: null, mainWithdrawn: true });
@@ -392,10 +408,10 @@ scenario('L84B', 'Opérations v5 — O-3 : Agenda et navigation (liens manuels, 
     expect(await empreinte(c.compte)).toEqual({ ...avant, items: await sql`SELECT id, business_operation_id, operation_role, operation_role_origin, updated_at FROM agenda_items WHERE account_id = ${c.compte.id} ORDER BY id` });
 
     // Contournement (chemin hors service) : l'invariant O3 le détecte, la réparation passe par le service.
-    await sql.begin(async (tx) => {
-      await tx`SET LOCAL session_replication_role = replica`;
-      await tx`UPDATE agenda_items SET operation_role = 'PRINCIPAL', operation_role_origin = 'T4' WHERE id = ${saisi.id}`;
-    });
+    // RÈGLE REMPLACÉE (carte #744) : le contournement ne consiste plus à poser le rôle sur l'élément mais le FAIT PORTÉ
+    // sur le lien N↔N, d'origine AI (l'invariant lit le fait, plus le rôle).
+    await sql`UPDATE business_operation_agenda_links SET fact_key = 'CLAIM', origin = 'AI'
+               WHERE account_id = ${c.compte.id} AND operation_id = ${op} AND agenda_item_id = ${saisi.id} AND state = 'ACTIVE'`;
     const inv = (await invariants()).OPERATIONS_GROUPING_INVARIANTS.find((i) => i.id === 'O3-PRINCIPAL-WITHDRAWN')!;
     const { drizzleRunner } = await runner();
     const { db } = await import('@/db');

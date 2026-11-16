@@ -138,8 +138,14 @@ scenario('L85D', 'Lecture seule (routes d’écriture) et « Ajouter un document
     fournisseurs: await sql`SELECT id FROM suppliers WHERE account_id = ${c.id} ORDER BY id`,
     echeances: await sql`SELECT id FROM deadlines WHERE account_id = ${c.id} ORDER BY id`,
   });
+  /**
+   * RÈGLE REMPLACÉE (carte #744, travaux F) : `agenda_items.operation_role` n'est plus écrit (la colonne reste tenue à
+   * RELATED / NULL par son seul déclencheur). `role` est DÉRIVÉ du FAIT PORTÉ par le lien N↔N : porteur → PRINCIPAL,
+   * membre de plein droit → RELATED, non rattaché → NULL. Le vocabulaire des attentes est inchangé, seule sa SOURCE change.
+   */
   const element = async (id: number) => (await sql<Json[]>`
-    SELECT business_operation_id::int AS op, operation_role AS role FROM agenda_items WHERE id = ${id}`)[0];
+    SELECT i.business_operation_id::int AS op, (SELECT CASE WHEN g.fact_key IS NOT NULL THEN 'PRINCIPAL' ELSE 'RELATED' END FROM business_operation_agenda_links g
+             WHERE g.account_id = i.account_id AND g.operation_id = i.business_operation_id AND g.agenda_item_id = i.id AND g.state = 'ACTIVE') AS role FROM agenda_items i WHERE i.id = ${id}`)[0];
   const liensDe = (itemId: number) => sql<{ file: number; prov: string[] }[]>`
     SELECT asset_file_id AS file, provenances AS prov FROM agenda_file_links WHERE agenda_item_id = ${itemId} ORDER BY asset_file_id`;
   const membres = (opId: number) => sql<{ file_id: number }[]>`

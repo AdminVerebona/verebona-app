@@ -106,7 +106,12 @@ scenario('L47B', 'Agenda source T3 (TRG-012 à 014) et historique passé affich�
     // Lot 83A (O-7) — test corrigé : l'élément est RECONNU comme l'événement global (rapprochement certain,
     // AC15) et désigné principal par le service de regroupement (compté « lié », plus « rôle ») ; même état final.
     expect(await projeter(compte, [op.id])).toMatchObject({ created: 0, linked: 1, changes: 1 });
-    expect(await sql`SELECT operation_role, operation_role_origin FROM agenda_items WHERE id = ${evt.id}`).toEqual([{ operation_role: 'PRINCIPAL', operation_role_origin: 'T4' }]);
+    // RÈGLE REMPLACÉE (carte #744, travaux F) : la projection T4 n'écrit plus aucun rôle — elle pose le FAIT PORTÉ sur le
+    // lien N↔N. La colonne historique reste tenue à RELATED / NULL par son seul déclencheur.
+    // Avant : operation_role = 'PRINCIPAL', operation_role_origin = 'T4'.
+    expect(await sql`SELECT operation_role, operation_role_origin FROM agenda_items WHERE id = ${evt.id}`).toEqual([{ operation_role: 'RELATED', operation_role_origin: null }]);
+    expect(await sql`SELECT fact_key, origin FROM business_operation_agenda_links
+      WHERE operation_id = ${op.id} AND agenda_item_id = ${evt.id} AND state = 'ACTIVE'`).toEqual([{ fact_key: 'INTERVENTION', origin: 'AI' }]);
     expect(await projeter(compte, [op.id])).toMatchObject({ created: 0, changes: 0 });
     expect(await items(compte)).toHaveLength(1);
     // Idempotence (NFR-OP-004) : second passage sans écriture.

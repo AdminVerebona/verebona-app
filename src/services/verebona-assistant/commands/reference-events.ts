@@ -35,7 +35,7 @@ import type { ExecutionContext } from './executors';
 import { bienDesigne, documentDesigne, fournisseurDesigne, type CommandLookup } from './plan.service';
 import { declaredDate, type ReferenceEventDraft, type ReferenceEventTargetDraft } from './reference-event-parser';
 import {
-  DATE_FIELD_LABELS, REFERENCE_EVENT_CHANGED_SINCE_PREVIEW, REFERENCE_EVENT_NOT_FOUND, TYPE_NOUNS, declaredDateField, matchReferenceEvents,
+  DATE_FIELD_LABELS, DEFERRED_OPERATION_ID, REFERENCE_EVENT_CHANGED_SINCE_PREVIEW, REFERENCE_EVENT_NOT_FOUND, TYPE_NOUNS, declaredDateField, matchReferenceEvents,
   relationBetween, relationSentence, shownDate, situationLabel, translateWriteResult, typeChoices, typeLabel,
   type DeclarableTypeCode, type ReferenceEventParams, type ReferenceEventQuery, type ReferenceEventState,
 } from './reference-event-model';
@@ -110,12 +110,26 @@ const motsDe = (t: string): string => plain(t).split(/[^a-z0-9]+/).filter(Boolea
 const memeTexte = (a: string, b: string): boolean => motsDe(a) === motsDe(b);
 const pluriel = (n: number, un: string, plusieurs: string): string => `${n} ${n > 1 ? plusieurs : un}`;
 
-/** Événement de référence unique désigné par la demande, ou la précision à demander. Jamais un choix au hasard. */
+/**
+ * Événement de référence unique désigné par la demande, ou la précision à demander. Jamais un choix au hasard.
+ *
+ * Passage 114AA (#753) : quand la demande ne désigne RIEN (« Supprime celui-ci », « Relie le fournisseur … à cet
+ * événement de référence »), c'est l'événement de référence DU FIL — le dernier sur lequel une action de ce fil
+ * a abouti. Il est relu dans le compte (`getReferenceEventState`) : supprimé, inactif ou hors du compte, la
+ * question est posée comme avant. Il ne vaut JAMAIS pour un autre fil ni pour un autre membre d'un Duo (il est
+ * lu dans le contexte du fil de l'utilisateur), et l'action qu'il vise passe par la confirmation habituelle.
+ */
 async function evenementDesigne(
-  lookup: CommandLookup, accountId: number, cible: ReferenceEventTargetDraft, pourQuoi: string,
+  lookup: CommandLookup, input: AssistantRequestInput, cible: ReferenceEventTargetDraft, pourQuoi: string,
 ): Promise<{ state: ReferenceEventState } | { needInfo: string }> {
+  const accountId = input.accountId;
   if (!lookup.findReferenceEvents || !lookup.getReferenceEventState) return { needInfo: IMPOSSIBLE };
   if (!cible.typeCode && cible.words.length === 0 && !cible.date) {
+    const duFil = input.threadReferenceEventId;
+    if (duFil) {
+      const state = await lookup.getReferenceEventState(accountId, duFil);
+      if (state) return { state };
+    }
     return { needInfo: `Quel événement de référence voulez-vous ${pourQuoi} ? Donnez son intitulé, sa date complète ou son bien.` };
   }
   const introuvable = { needInfo: `Je n’ai pas trouvé cet événement de référence dans votre compte. Lequel voulez-vous ${pourQuoi} ?` };
@@ -132,6 +146,12 @@ async function evenementDesigne(
 }
 
 const cibleDe = (s: ReferenceEventState): PlannedAction['targets'][number] => ({ type: 'reference_event', id: s.id, label: s.label });
+
+/**
+ * Passage 114AB (#753) : la MÊME désignation, pour les gestes inverses (`reference-events-inverse.ts`) —
+ * aucune règle de désignation n'est dupliquée (événement du fil compris).
+ */
+export const evenementDesignePublic = evenementDesigne;
 
 // ── W21 : créer sur déclaration ────────────────────────────────────────────
 
@@ -240,7 +260,7 @@ const estDate = (f: string): f is OperationPatchDateField => (DATE_FIELDS as rea
 async function resolveUpdate(
   draft: Extract<ReferenceEventDraft, { command: 'UPDATE_REFERENCE_EVENT' }>, input: AssistantRequestInput, lookup: CommandLookup, actionId: string,
 ): Promise<Resolution> {
-  const cible = await evenementDesigne(lookup, input.accountId, draft.target, 'corriger');
+  const cible = await evenementDesigne(lookup, input, draft.target, 'corriger');
   if ('needInfo' in cible) return cible;
   const s = cible.state;
   const today = lookup.today();
@@ -307,7 +327,7 @@ async function resolveUpdate(
 async function resolveInvalidation(
   draft: Extract<ReferenceEventDraft, { command: 'INVALIDATE_REFERENCE_EVENT' }>, input: AssistantRequestInput, lookup: CommandLookup, actionId: string,
 ): Promise<Resolution> {
-  const cible = await evenementDesigne(lookup, input.accountId, draft.target, 'supprimer');
+  const cible = await evenementDesigne(lookup, input, draft.target, 'supprimer');
   if ('needInfo' in cible) return cible;
   const s = cible.state;
   const documents = s.documentCount ?? s.documentTitles.length;
@@ -336,9 +356,9 @@ async function resolveInvalidation(
 async function resolveAssociation(
   draft: Extract<ReferenceEventDraft, { command: 'ASSOCIATE_REFERENCE_EVENTS' }>, input: AssistantRequestInput, lookup: CommandLookup, actionId: string,
 ): Promise<Resolution> {
-  const premier = await evenementDesigne(lookup, input.accountId, draft.first, 'associer');
+  const premier = await evenementDesigne(lookup, input, draft.first, 'associer');
   if ('needInfo' in premier) return premier;
-  const second = await evenementDesigne(lookup, input.accountId, draft.second, 'associer');
+  const second = await evenementDesigne(lookup, input, draft.second, 'associer');
   if ('needInfo' in second) return second;
   const a = premier.state;
   const b = second.state;
@@ -365,7 +385,7 @@ async function resolveDocumentLink(
 ): Promise<Resolution> {
   const doc = await documentDesigne(lookup, input, draft, 'rattacher');
   if ('needInfo' in doc) return doc;
-  const cible = await evenementDesigne(lookup, input.accountId, draft.target, 'compléter');
+  const cible = await evenementDesigne(lookup, input, draft.target, 'compléter');
   if ('needInfo' in cible) return cible;
   const s = cible.state;
   const d = doc.state;
@@ -394,7 +414,7 @@ async function resolveSupplierLink(
 ): Promise<Resolution> {
   const fournisseur = await fournisseurDesigne(lookup, input.accountId, draft.supplierWords, 'relier');
   if ('needInfo' in fournisseur) return fournisseur;
-  const cible = await evenementDesigne(lookup, input.accountId, draft.target, 'compléter');
+  const cible = await evenementDesigne(lookup, input, draft.target, 'compléter');
   if ('needInfo' in cible) return cible;
   const s = cible.state;
   const f = fournisseur.state;
@@ -413,9 +433,66 @@ async function resolveSupplierLink(
   };
 }
 
-/** Résout un brouillon en action figée — ou dit ce qui manque (appelé par `resolveDraft`). */
+// ── Passage 114Z4 : « Déclare … puis relie / rattache … à celui-ci » ───────
+
+/**
+ * Lien vers l'événement qu'une AUTRE action du même plan enregistre (W25, W26).
+ *
+ * L'événement n'existe pas encore au moment de l'aperçu : seuls le document ou le fournisseur sont résolus et
+ * figés ici ; l'identifiant de l'événement est posé à l'exécution, depuis le résultat de l'action dont celle-ci
+ * dépend (`operationFromAction`). Si cet enregistrement échoue, l'action n'est pas exécutée (SKIPPED_DEPENDENCY)
+ * et rien n'est écrit. L'aperçu le dit en toutes lettres : jamais un lien vers un événement choisi au hasard.
+ */
+export async function resolveReferenceEventLinkToCreated(
+  draft: Extract<ReferenceEventDraft, { command: 'LINK_DOCUMENT_REFERENCE_EVENT' | 'LINK_SUPPLIER_REFERENCE_EVENT' }>,
+  input: AssistantRequestInput, lookup: CommandLookup, actionId: string, fromActionId: string,
+): Promise<Resolution> {
+  const commun = ['Événement de référence : celui que l’action précédente enregistre.',
+    'Si cet enregistrement n’aboutit pas, ce lien n’est pas fait et rien n’est écrit.'];
+  if (draft.command === 'LINK_SUPPLIER_REFERENCE_EVENT') {
+    const fournisseur = await fournisseurDesigne(lookup, input.accountId, draft.supplierWords, 'relier');
+    if ('needInfo' in fournisseur) return fournisseur;
+    const f = fournisseur.state;
+    return {
+      actionId, command: 'LINK_SUPPLIER_REFERENCE_EVENT', dependsOn: [], targets: [{ type: 'supplier', id: f.id, label: f.name }],
+      params: {
+        kind: 'reference_event_supplier', operationId: DEFERRED_OPERATION_ID, operationFromAction: fromActionId,
+        linkedSupplierId: f.id, role: draft.role, expectedVersion: 0, supplierVersion: f.version,
+      },
+      preview: `Relier le fournisseur « ${f.name} » à l’événement de référence qui vient d’être enregistré.`,
+      effects: [`Fournisseur : ${f.name}`, `Rôle : ${ROLE_LABELS[draft.role]}`, ...commun,
+        'Aucun document, aucun coût et aucune échéance ne sont créés.',
+        'Ce lien est votre décision : il ne sera pas modifié par une analyse.'],
+    };
+  }
+  const doc = await documentDesigne(lookup, input, draft, 'rattacher');
+  if ('needInfo' in doc) return doc;
+  const d = doc.state;
+  return {
+    actionId, command: 'LINK_DOCUMENT_REFERENCE_EVENT', dependsOn: [], targets: [{ type: 'document', id: d.id, label: d.title }],
+    params: {
+      kind: 'reference_event_document', operationId: DEFERRED_OPERATION_ID, operationFromAction: fromActionId,
+      linkedDocumentId: d.id, expectedVersion: 0, documentVersion: d.version,
+    },
+    preview: `Rattacher le document « ${d.title} » à l’événement de référence qui vient d’être enregistré.`,
+    effects: [`Document : ${d.title}${d.documentDate ? ` du ${formatDateFr(d.documentDate)}` : ''}`, ...commun,
+      'Le document reste dans vos documents et garde ses autres rattachements.',
+      'Ce rattachement est votre décision. Il n’ajoute par lui-même aucun montant à cet événement de référence.'],
+  };
+}
+
+/**
+ * Résout un brouillon en action figée — ou dit ce qui manque (appelé par `resolveDraft`).
+ * Passage 114AB (#753) : les GESTES INVERSES ont leur propre résolveur
+ * (`reference-events-inverse.ts`), vers lequel `plan.service.ts` les envoie ; ils sont donc
+ * exclus d'ici, ce qui garde ce choix exhaustif.
+ */
 export async function resolveReferenceEventCommand(
-  draft: ReferenceEventDraft, input: AssistantRequestInput, lookup: CommandLookup, actionId: string,
+  draft: Exclude<ReferenceEventDraft, {
+    command: 'RESTORE_REFERENCE_EVENT' | 'DISSOCIATE_REFERENCE_EVENTS' | 'UNLINK_DOCUMENT_REFERENCE_EVENT'
+      | 'UNLINK_SUPPLIER_REFERENCE_EVENT' | 'LINK_AGENDA_REFERENCE_EVENT';
+  }>,
+  input: AssistantRequestInput, lookup: CommandLookup, actionId: string,
 ): Promise<Resolution> {
   switch (draft.command) {
     case 'CREATE_REFERENCE_EVENT': return resolveCreation(draft, input, lookup, actionId);
@@ -440,8 +517,13 @@ export async function resolveReferenceEventCommand(
  *     type reste donc traité comme avant.
  * Une phrase qui dit « événement de référence » est toujours une commande (question précise si rien n'est trouvé).
  * `false` → `prepareCommand` rend `null` : le message suit le parcours de réponse normal.
+ *
+ * `sameSentenceAnaphora` (passage 114Z4) : ce segment vise l'événement que la DÉCLARATION de la même phrase
+ * enregistre — il n'a donc rien à désigner dans le compte, et le fil n'a pas à porter d'événement.
  */
-export async function isReferenceEventCommand(draft: ReferenceEventDraft, input: AssistantRequestInput, lookup: CommandLookup): Promise<boolean> {
+export async function isReferenceEventCommand(
+  draft: ReferenceEventDraft, input: AssistantRequestInput, lookup: CommandLookup, sameSentenceAnaphora = false,
+): Promise<boolean> {
   if (draft.command === 'CREATE_REFERENCE_EVENT') {
     if (draft.typeCode === 'CLAIM') return false;
     if (!draft.implicit) return true;
@@ -449,8 +531,20 @@ export async function isReferenceEventCommand(draft: ReferenceEventDraft, input:
     const id = input.reference?.type === 'asset' ? input.reference.id : Number(input.pageContext?.assetId) || null;
     return !!id && !!(await lookup.getAsset(input.accountId, id));
   }
-  const cibles = draft.command === 'ASSOCIATE_REFERENCE_EVENTS' ? [draft.first, draft.second] : [draft.target];
+  // Passage 114AB : un geste INVERSE sur un événement SUPPRIMÉ se vérifie dans les suppressions de
+  // l'utilisateur ; sans aucune, la phrase suit le parcours de réponse normal, comme avant.
+  if (draft.command === 'RESTORE_REFERENCE_EVENT') {
+    if (draft.target.typeCode === null && draft.target.words.length === 0 && !draft.target.date) return false;
+    if (!lookup.findInvalidatedReferenceEvents) return false;
+    return (await lookup.findInvalidatedReferenceEvents(input.accountId, draft.target)).length > 0;
+  }
+  const cibles = draft.command === 'ASSOCIATE_REFERENCE_EVENTS' || draft.command === 'DISSOCIATE_REFERENCE_EVENTS'
+    ? [draft.first, draft.second] : [draft.target];
   for (const cible of cibles) {
+    // Passage 114AA : un PRONOM seul (« à celui-ci ») ne désigne un événement de référence que si le fil en
+    // porte un. Sinon la phrase suit le parcours de réponse normal, exactement comme avant ce passage —
+    // jamais une question sur un objet dont le fil n'a jamais parlé.
+    if (cible.pronounOnly && !sameSentenceAnaphora && !input.threadReferenceEventId) return false;
     if (cible.typeCode === null) continue;
     if (!lookup.findReferenceEvents || (await lookup.findReferenceEvents(input.accountId, cible)).length === 0) return false;
   }
@@ -532,7 +626,10 @@ export const REFERENCE_EVENT_EXECUTORS = {
     return terminer(ctx, action, translateWriteResult(action, r, {
       done: `Événement de référence « ${nom} » enregistré. ${NOT_YET_VISIBLE}`,
       alreadyDone: 'Cet événement de référence était déjà enregistré (même déclaration) : rien n’a été créé en double.',
-    }, r.data?.operationId ?? null), 'événement de référence enregistré : il se supprime par une nouvelle demande');
+      // Passage 114Z4 : la version de l'événement CRÉÉ est retenue — une action suivante du même plan
+      // (« … puis relie … à celui-ci ») écrit sur l'état que ce plan vient d'établir.
+    }, r.data?.operationId ?? null), 'événement de référence enregistré : il se supprime par une nouvelle demande',
+    r.data?.operationId ? [{ operationId: r.data.operationId, version: r.data.version }] : []);
   },
 
   /** W22 — `updateOperation` : un champ, version présentée exigée par la façade (sous verrou). */

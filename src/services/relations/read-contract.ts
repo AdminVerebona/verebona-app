@@ -117,7 +117,11 @@ export interface RelatedAgendaItem extends RelationBase {
   title: string;
   startDate: string | null;
   businessOperationId: number | null;
-  operationRole: string | null;
+  /**
+   * Lot 114O (#744) : FAIT PORTÉ par le lien N↔N avec l'événement de référence
+   * (null : membre sans fait porté). Remplace le rôle « principal », plus lu.
+   */
+  carriedFact: string | null;
 }
 
 export interface RelatedEquipment extends RelationBase {
@@ -247,7 +251,9 @@ const REL_DOCUMENTS: Record<RelationEntityKind, string> = {
      WHERE l.agenda_item_id = $2
        AND (cardinality(l.provenances) = 0 OR l.provenances && ARRAY['MANUAL_DIRECT', 'AI_DIRECT']::text[])
     UNION ALL
-    SELECT d.file_id, 'VIA_OPERATION', o.id, 'OPERATION_MEMBER', i.operation_role, NULL::text, NULL::jsonb, d.origins
+    SELECT d.file_id, 'VIA_OPERATION', o.id, 'OPERATION_MEMBER', (SELECT g.fact_key FROM business_operation_agenda_links g
+                    WHERE g.account_id = i.account_id AND g.operation_id = i.business_operation_id
+                      AND g.agenda_item_id = i.id AND g.state = 'ACTIVE'), NULL::text, NULL::jsonb, d.origins
       FROM agenda_items i
       JOIN business_operations o ON o.id = i.business_operation_id AND ${OP_ACTIVE('o')}
       JOIN business_operation_documents d ON d.operation_id = o.id AND d.account_id = $1 AND d.active
@@ -260,7 +266,9 @@ const REL_AGENDA: Record<'supplier' | 'equipment', string> = {
            NULL::text AS role, l.provenance AS origin, jsonb_build_object('sourceDocumentId', l.source_document_id) AS proof, NULL::text[] AS membership
       FROM agenda_item_suppliers l WHERE l.supplier_id = $2 AND l.account_id = $1
     UNION ALL
-    SELECT i.id, 'VIA_OPERATION', l.operation_id, 'OPERATION_ITEM', l.role, l.origin, NULL::jsonb, ARRAY[COALESCE(i.operation_role, 'RELATED')]
+    SELECT i.id, 'VIA_OPERATION', l.operation_id, 'OPERATION_ITEM', l.role, l.origin, NULL::jsonb, ARRAY[COALESCE((SELECT g.fact_key FROM business_operation_agenda_links g
+                    WHERE g.account_id = i.account_id AND g.operation_id = i.business_operation_id
+                      AND g.agenda_item_id = i.id AND g.state = 'ACTIVE'), 'MEMBER')]
       FROM business_operation_suppliers l
       JOIN business_operations o ON o.id = l.operation_id AND ${OP_ACTIVE('o')}
       JOIN agenda_items i ON i.business_operation_id = l.operation_id AND i.account_id = $1
@@ -270,7 +278,9 @@ const REL_AGENDA: Record<'supplier' | 'equipment', string> = {
            NULL::text AS role, NULL::text AS origin, '{}'::jsonb AS proof, NULL::text[] AS membership
       FROM agenda_equipment_links l WHERE l.equipment_id = $2
     UNION ALL
-    SELECT i.id, 'VIA_OPERATION', l.operation_id, 'OPERATION_ITEM', NULL::text, l.authority, NULL::jsonb, ARRAY[COALESCE(i.operation_role, 'RELATED')]
+    SELECT i.id, 'VIA_OPERATION', l.operation_id, 'OPERATION_ITEM', NULL::text, l.authority, NULL::jsonb, ARRAY[COALESCE((SELECT g.fact_key FROM business_operation_agenda_links g
+                    WHERE g.account_id = i.account_id AND g.operation_id = i.business_operation_id
+                      AND g.agenda_item_id = i.id AND g.state = 'ACTIVE'), 'MEMBER')]
       FROM business_operation_equipment_links l
       JOIN business_operations o ON o.id = l.operation_id AND ${OP_ACTIVE('o')}
       JOIN agenda_items i ON i.business_operation_id = l.operation_id AND i.account_id = $1
@@ -372,11 +382,14 @@ export async function listEntityDocuments(accountId: number, entity: RelationEnt
 // ── Agenda ──────────────────────────────────────────────────────────────────
 
 const AGENDA_VISIBLE_JOIN = `JOIN agenda_items x ON x.id = {obj} AND x.account_id = $1`;
-const AGENDA_SELECT = `x.id, x.public_id::text AS public_id, x.title, x.start_date, x.business_operation_id, x.operation_role`;
+const AGENDA_SELECT = `x.id, x.public_id::text AS public_id, x.title, x.start_date, x.business_operation_id,
+  (SELECT g.fact_key FROM business_operation_agenda_links g
+    WHERE g.account_id = x.account_id AND g.operation_id = x.business_operation_id
+      AND g.agenda_item_id = x.id AND g.state = 'ACTIVE') AS carried_fact`;
 const AGENDA_ORDER = 'x.start_date DESC NULLS LAST, x.id DESC';
 const toAgenda = (x: Row): RelatedAgendaItem => ({
   id: Number(x.id), publicId: (x.public_id as string | null) ?? null, title: String(x.title ?? ''), startDate: jour(x.start_date),
-  businessOperationId: x.business_operation_id == null ? null : Number(x.business_operation_id), operationRole: (x.operation_role as string | null) ?? null,
+  businessOperationId: x.business_operation_id == null ? null : Number(x.business_operation_id), carriedFact: (x.carried_fact as string | null) ?? null,
   ...base(x),
 });
 
@@ -424,7 +437,10 @@ export async function listEquipmentSuppliers(accountId: number, equipmentId: num
 const OPS_SQL: Record<RelationEntityKind | 'document', string> = {
   supplier: `SELECT l.operation_id AS id, l.role, l.origin FROM business_operation_suppliers l WHERE l.supplier_id = $2 AND l.account_id = $1 AND l.status = 'ACTIVE'`,
   equipment: `SELECT l.operation_id AS id, NULL::text AS role, l.authority AS origin FROM business_operation_equipment_links l WHERE l.equipment_id = $2 AND l.account_id = $1 AND l.active`,
-  agenda_item: `SELECT i.business_operation_id AS id, i.operation_role AS role, i.operation_role_origin AS origin FROM agenda_items i WHERE i.id = $2 AND i.account_id = $1 AND i.business_operation_id IS NOT NULL`,
+  agenda_item: `SELECT i.business_operation_id AS id, g.fact_key AS role, g.origin AS origin FROM agenda_items i
+                   LEFT JOIN business_operation_agenda_links g ON g.account_id = i.account_id AND g.operation_id = i.business_operation_id
+                          AND g.agenda_item_id = i.id AND g.state = 'ACTIVE'
+                  WHERE i.id = $2 AND i.account_id = $1 AND i.business_operation_id IS NOT NULL`,
   document: `SELECT d.operation_id AS id, array_to_string(d.origins, ',') AS role, NULL::text AS origin FROM business_operation_documents d WHERE d.file_id = $2 AND d.account_id = $1 AND d.active`,
 };
 
@@ -522,15 +538,18 @@ export async function getDocumentRelations(accountId: number, fileId: number, ru
                        WHERE l.operation_id = $2 AND l.account_id = $1 AND l.status = 'ACTIVE' ORDER BY l.role DESC, s.name, s.id`, [accountId, id]),
       await r.q<Row>(`SELECT e.id, e.name, e.asset_id FROM business_operation_equipment_links l JOIN equipments e ON e.id = l.equipment_id
                        JOIN assets a ON a.id = e.asset_id AND a.account_id = $1 WHERE l.operation_id = $2 AND l.account_id = $1 AND l.active ORDER BY e.name, e.id`, [accountId, id]),
-      await r.q<Row>(`SELECT i.id, i.title, i.operation_role,
+      await r.q<Row>(`SELECT i.id, i.title, g.fact_key AS carried_fact,
                              EXISTS (SELECT 1 FROM agenda_file_links fl WHERE fl.agenda_item_id = i.id AND fl.asset_file_id = $3) AS linked
-                        FROM agenda_items i WHERE i.business_operation_id = $2 AND i.account_id = $1 ORDER BY i.start_date NULLS LAST, i.id`, [accountId, id, fileId]),
+                        FROM agenda_items i
+                        LEFT JOIN business_operation_agenda_links g ON g.account_id = i.account_id AND g.operation_id = i.business_operation_id
+                               AND g.agenda_item_id = i.id AND g.state = 'ACTIVE'
+                       WHERE i.business_operation_id = $2 AND i.account_id = $1 ORDER BY i.start_date NULLS LAST, i.id`, [accountId, id, fileId]),
     ];
     operations.push({
       operationId: id, typeCode: (o.type_code as string | null) ?? null, status: String(o.status), membership: json<string[]>(o.origins, []),
       suppliers: sup.map((s) => ({ supplierId: Number(s.id), name: String(s.name), role: String(s.role), origin: String(s.origin) })),
       equipments: eqs.map((e) => ({ equipmentId: Number(e.id), name: String(e.name), assetId: Number(e.asset_id) })),
-      agendaItems: items.map((i) => ({ id: Number(i.id), title: String(i.title), role: (i.operation_role as string | null) ?? null, documentLinked: i.linked === true })),
+      agendaItems: items.map((i) => ({ id: Number(i.id), title: String(i.title), role: (i.carried_fact as string | null) ?? null, documentLinked: i.linked === true })),
     });
   }
   return { contract: RELATIONS_CONTRACT_VERSION, documentId: fileId, direct, operations };

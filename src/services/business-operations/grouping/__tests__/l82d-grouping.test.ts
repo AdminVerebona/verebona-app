@@ -63,10 +63,11 @@ describe('L82D-U03 — provenances', () => {
     expect(withProvenance(['AI_DIRECT'], 'OPERATION_PRINCIPAL')).toEqual(['AI_DIRECT', 'OPERATION_PRINCIPAL']);
     expect(withoutProvenance(['AI_DIRECT', 'OPERATION_PRINCIPAL'], 'AI_DIRECT')).toEqual(['OPERATION_PRINCIPAL']);
     expect(withoutProvenance(['AI_DIRECT'], 'ALL')).toEqual([]);
-    expect(inferredProvenance({ projected: true, isAutomatic: true, role: 'PRINCIPAL' })).toBe('OPERATION_PRINCIPAL');
-    expect(inferredProvenance({ projected: true, isAutomatic: true, role: 'RELATED' })).toBe('AI_DIRECT');
-    expect(inferredProvenance({ projected: false, isAutomatic: true, role: null })).toBe('AI_DIRECT');
-    expect(inferredProvenance({ projected: false, isAutomatic: false, role: 'PRINCIPAL' })).toBe('MANUAL_DIRECT');
+    // Règle remplacée (carte #744) : « porte un fait de l'Opération » remplace « est le principal ».
+    expect(inferredProvenance({ projected: true, isAutomatic: true, carriesFact: true })).toBe('OPERATION_PRINCIPAL');
+    expect(inferredProvenance({ projected: true, isAutomatic: true, carriesFact: false })).toBe('AI_DIRECT');
+    expect(inferredProvenance({ projected: false, isAutomatic: true, carriesFact: false })).toBe('AI_DIRECT');
+    expect(inferredProvenance({ projected: false, isAutomatic: false, carriesFact: true })).toBe('MANUAL_DIRECT');
   });
 });
 
@@ -163,21 +164,24 @@ describe('L82D-U08 — invariants déclarés (registre 82B)', () => {
     expect(OPERATIONS_GROUPING_INVARIANTS.every((i) => (i.repair === 'DETECT_ONLY') === !i.repairFinding)).toBe(true);
   });
   const m = (over: Partial<Parameters<typeof evaluateAgendaMembership>[1][number]>) => ({
-    itemId: 1, accountId: 5, operationId: 7, role: 'RELATED' as const, operationAccountId: 5, operationActive: true, mergedInto: null, ...over,
+    itemId: 1, accountId: 5, operationId: 7, fact: null, operationAccountId: 5, operationActive: true, mergedInto: null, ...over,
   });
-  it('unicité du principal et appartenance 0..1 (même compte, Opération active, rôle cohérent)', () => {
-    expect(evaluatePrincipalUniqueness(5, [m({ itemId: 1, role: 'PRINCIPAL' }), m({ itemId: 2, role: 'PRINCIPAL' }), m({ itemId: 3 })]))
+  it('un porteur par fait et appartenance 0..1 (même compte, Opération active)', () => {
+    // Règle remplacée (carte #744) : l'unicité porte sur le FAIT PORTÉ par le lien (deux porteurs du MÊME
+    // fait = écart ; deux faits distincts = normal), et les natures de cohérence du rôle disparaissent.
+    expect(evaluatePrincipalUniqueness(5, [m({ itemId: 1, fact: 'INTERVENTION' }), m({ itemId: 2, fact: 'INTERVENTION' }), m({ itemId: 3 })]))
       .toEqual([expect.objectContaining({ objectKey: 'operation:7', nature: 'MULTIPLE_PRINCIPALS', detail: { operationId: 7, itemIds: [1, 2] } })]);
+    expect(evaluatePrincipalUniqueness(5, [m({ itemId: 1, fact: 'INTERVENTION' }), m({ itemId: 2, fact: 'CONTRACT:END' })])).toEqual([]);
     expect(evaluateAgendaMembership(5, [
-      m({}), m({ itemId: 2, operationId: null, role: 'RELATED' }), m({ itemId: 3, operationAccountId: 6 }), m({ itemId: 4, mergedInto: 8, operationActive: false }),
-      m({ itemId: 5, operationActive: false }), m({ itemId: 6, role: null }), m({ itemId: 7, operationAccountId: null }),
+      m({}), m({ itemId: 2, operationId: null }), m({ itemId: 3, operationAccountId: 6 }), m({ itemId: 4, mergedInto: 8, operationActive: false }),
+      m({ itemId: 5, operationActive: false }), m({ itemId: 6, fact: null }), m({ itemId: 7, operationAccountId: null }),
     ]).map((f) => [f.objectKey, f.nature])).toEqual([
-      ['agenda_item:2', 'ROLE_WITHOUT_OPERATION'], ['agenda_item:3', 'CROSS_ACCOUNT'], ['agenda_item:4', 'MERGED_OPERATION'],
-      ['agenda_item:5', 'INACTIVE_OPERATION'], ['agenda_item:6', 'OPERATION_WITHOUT_ROLE'], ['agenda_item:7', 'OPERATION_MISSING'],
+      ['agenda_item:3', 'CROSS_ACCOUNT'], ['agenda_item:4', 'MERGED_OPERATION'],
+      ['agenda_item:5', 'INACTIVE_OPERATION'], ['agenda_item:7', 'OPERATION_MISSING'],
     ]);
   });
   it('provenance non vide, propagation, appartenance SOURCE, anti-cartésien (constat non réparable)', () => {
-    expect(evaluateLinkProvenance(5, [{ itemId: 1, fileId: 2, provenances: [], projected: false, isAutomatic: true, role: null }, { itemId: 1, fileId: 3, provenances: ['AI_DIRECT'], projected: false, isAutomatic: true, role: null }]))
+    expect(evaluateLinkProvenance(5, [{ itemId: 1, fileId: 2, provenances: [], projected: false, isAutomatic: true, carriesFact: false }, { itemId: 1, fileId: 3, provenances: ['AI_DIRECT'], projected: false, isAutomatic: true, carriesFact: false }]))
       .toEqual([expect.objectContaining({ nature: 'EMPTY_PROVENANCE', detail: { itemId: 1, fileId: 2, inferred: 'AI_DIRECT' } })]);
     expect(evaluatePrincipalDocuments(5, [{ operationId: 7, principalItemId: 1, memberItemIds: [1], memberFileIds: [2], rejectedFileIds: [], links: [] }])[0])
       .toMatchObject({ nature: 'MISSING_PRINCIPAL_LINK', detail: { add: [{ itemId: 1, fileId: 2 }] } });
@@ -227,38 +231,40 @@ describe('L82D-U10 — 76H : jamais le principal, ni une étape rattachée par l
     const o = op({ typeCode: 'INTERVENTION', realizedDate: '2021-07-07', exclusiveFileIds: [40], contractEffectiveTo: null, endDate: null });
     const d = { key: 'INTERVENTION', nature: 'HISTORICAL' as const, businessType: 'maintenance', date: '2021-07-07', title: 'x', category: 'information' as const, target: 'REALIZED' as const, creatable: true };
     const t4 = (over: Partial<AgendaItemSnapshot>) => item({ projected: false, businessOperationId: null, linkedOperationActive: false, nature: 'HISTORICAL', businessType: 'repair', date: '2021-07-07', originRefType: 'asset_file', originRefId: 40, functionalKey: null, ...over });
-    const pool = [t4({ id: 1 }), t4({ id: 2, operationRole: 'PRINCIPAL', operationRoleOrigin: 'T4', businessOperationId: 7, linkedOperationActive: true }), t4({ id: 3, operationRole: 'RELATED', operationRoleOrigin: 'USER', businessOperationId: 7, linkedOperationActive: true })];
+    const pool = [t4({ id: 1 }), t4({ id: 2, carriedFact: 'INTERVENTION', carrierOrigin: 'AI', businessOperationId: 7, linkedOperationActive: true }), t4({ id: 3, carriedFact: null, carrierOrigin: 'USER', businessOperationId: 7, linkedOperationActive: true })];
     expect(coveredEquivalents(o, d, pool).map((x) => x.id)).toEqual([1]);
   });
   it('ABSORBABLE_ROLE_SQL est appliqué à l’absorption, pas au changement d’intitulé du principal', () => {
     const src = readFileSync(join(process.cwd(), 'src/services/business-operations/agenda-projection/consolidation.ts'), 'utf8');
     expect(src).toMatch(/AND \$\{ABSORBABLE_SQL\} \$\{ABSORBABLE_ROLE_SQL\}/);
     expect(src).toMatch(/i\.title = \$5 AND \$\{ABSORBABLE_SQL\}\s*\n\s*RETURNING/);
-    expect(src).toMatch(/operation_role IS DISTINCT FROM 'PRINCIPAL'[\s\S]*operation_role_origin IS DISTINCT FROM 'USER'/);
+    // Règle remplacée (carte #744) : la condition est lue sur le LIEN N↔N (fait porté, origine du lien).
+    expect(src).toMatch(/business_operation_agenda_links g[\s\S]*g\.fact_key IS NOT NULL OR g\.origin = 'USER'/);
   });
 });
 
-describe('L82D-U11 — projection : rôle de la représentation', () => {
+describe('L82D-U11 — projection : fait porté par la représentation (carte #744 : plus aucun rôle)', () => {
   const d = { key: 'INTERVENTION', nature: 'HISTORICAL' as const, businessType: 'maintenance', date: '2026-01-05', title: 'Toiture', category: 'information' as const, target: 'REALIZED' as const, creatable: true };
   const o = op({ typeCode: 'INTERVENTION', realizedDate: '2026-01-05', technicalLabel: 'Toiture', contractEffectiveTo: null, endDate: null });
   const projete = (over: Partial<AgendaItemSnapshot> = {}) => item({ title: 'Toiture', date: '2026-01-05', nature: 'HISTORICAL', businessType: 'maintenance', homeCategory: 'information', functionalKey: 'bo:v1:7:INTERVENTION', ...over });
-  it('élément représentatif encore RELATED → ROLE PRINCIPAL ; déjà principal → aucun ; rôle non lu (undefined) → aucun', () => {
-    expect(planOperationProjection({ op: o, decision: { kind: 'PROJECT', desired: d }, linked: [projete({ operationRole: 'RELATED' })], suppressedKeys: new Set(), candidates: [] }))
-      .toEqual([{ kind: 'ROLE', itemId: 1, role: 'PRINCIPAL' }]);
-    expect(planOperationProjection({ op: o, decision: { kind: 'PROJECT', desired: d }, linked: [projete({ operationRole: 'PRINCIPAL' })], suppressedKeys: new Set(), candidates: [] })).toEqual([]);
+  it('emplacement qui ne porte pas encore le fait → CARRY ; fait déjà porté → aucun ; fait non lu (undefined) → aucun', () => {
+    // Règle remplacée (carte #744) : l'action ROLE devient CARRY (fait porté par le lien N↔N, aucun rôle).
+    expect(planOperationProjection({ op: o, decision: { kind: 'PROJECT', desired: d }, linked: [projete({ carriedFact: null })], suppressedKeys: new Set(), candidates: [] }))
+      .toEqual([{ kind: 'CARRY', itemId: 1, fact: 'INTERVENTION' }]);
+    expect(planOperationProjection({ op: o, decision: { kind: 'PROJECT', desired: d }, linked: [projete({ carriedFact: 'INTERVENTION' })], suppressedKeys: new Set(), candidates: [] })).toEqual([]);
     expect(planOperationProjection({ op: o, decision: { kind: 'PROJECT', desired: d }, linked: [projete()], suppressedKeys: new Set(), candidates: [] })).toEqual([]);
   });
-  it('principal : les documents ne sont plus recopiés par la projection (propagation du service de regroupement)', () => {
-    const plan = planOperationProjection({ op: { ...o, documentFileIds: [40] }, decision: { kind: 'PROJECT', desired: d }, linked: [projete({ operationRole: 'PRINCIPAL', fileIds: [] })], suppressedKeys: new Set(), candidates: [] });
+  it('porteur du fait : les documents ne sont plus recopiés par la projection (propagation du service de regroupement)', () => {
+    const plan = planOperationProjection({ op: { ...o, documentFileIds: [40] }, decision: { kind: 'PROJECT', desired: d }, linked: [projete({ carriedFact: 'INTERVENTION', fileIds: [] })], suppressedKeys: new Set(), candidates: [] });
     expect(plan).toEqual([]);
   });
-  it('un principal désigné par l’utilisateur reste la représentation, même face à une projection', () => {
+  it('un porteur désigné par l’utilisateur reste la représentation, même face à une projection', () => {
     const plan = planOperationProjection({
       op: o, decision: { kind: 'PROJECT', desired: d }, suppressedKeys: new Set(), candidates: [],
-      linked: [projete({ id: 1, operationRole: 'RELATED' }), projete({ id: 2, projected: false, isAutomatic: false, title: 'Toit refait', operationRole: 'PRINCIPAL', operationRoleOrigin: 'USER' })],
+      linked: [projete({ id: 1, carriedFact: null }), projete({ id: 2, projected: false, isAutomatic: false, title: 'Toit refait', carriedFact: 'INTERVENTION', carrierOrigin: 'USER' })],
     });
     expect(plan).toContainEqual({ kind: 'REMOVE', itemId: 1, reason: 'DUPLICATE_PROJECTION' });
-    expect(plan.some((a) => a.kind === 'ROLE')).toBe(false);
+    expect(plan.some((a) => a.kind === 'CARRY')).toBe(false);
   });
 });
 

@@ -23,6 +23,11 @@ export interface VerebonaAction {
   analyticsCode: string;
   /** Lot 34G : commande d'une action de création (formulaire ouvert directement). */
   command?: import('./assistant-actions').AssistantCreateCommand | null;
+  /**
+   * Trello #753 (CDC T2 §7.6) : titre de l'article d'aide ou de la Ressource — l'action est alors affichée en
+   * LIEN TEXTUEL portant ce titre, et non en bouton. Titre et adresse viennent du serveur.
+   */
+  linkTitle?: string | null;
 }
 
 /** Commande préparée par l'assistant, à confirmer explicitement. */
@@ -67,6 +72,11 @@ export interface VerebonaMessage {
   commandPlan?: VerebonaCommandPlan | null;
   /** Cartes de résultats groupées par type (§11.3, §22.3). */
   resultGroups?: UiResultGroup[] | null;
+  /**
+   * Trello #753 (CDC T2 §8.3) : présentation en blocs transmise par le serveur (non contrôlée ici — l'affichage
+   * la vérifie et, à défaut, découpe `content` : `answerBlocksFor`). Absente pour l'historique et les réponses simples.
+   */
+  answerBlocks?: unknown;
   /**
    * Chronologie structurée (CDC 15 T2-35) : « date · libellé », avec lien
    * vers l'objet quand il est connu. Absente : la réponse texte suffit.
@@ -366,6 +376,7 @@ export function useVerebona(rawPageContext?: Record<string, string>, options: Us
         commandPlan: data.commandPlan ? { ...data.commandPlan, status: 'PENDING_CONFIRMATION' } : null,
         resultGroups: Array.isArray(data.resultGroups) ? data.resultGroups : null,
         events: Array.isArray(data.events) ? data.events : null,
+        answerBlocks: Array.isArray(data.answerBlocks) ? data.answerBlocks : undefined,
         notices: Array.isArray(data.notices) ? data.notices : undefined,
       };
       // Réponse `status: 'error'` (§27.11) : le libellé et les suites
@@ -376,7 +387,26 @@ export function useVerebona(rawPageContext?: Record<string, string>, options: Us
         assistantMsg.error = e;
         if (!assistantMsg.actions?.length) assistantMsg.actions = errorActions(e, assistantMsg.id);
       }
-      setState((s) => ({ ...s, messages: [...s.messages, assistantMsg], isLoading: false, error: assistantMsg.error?.message ?? null }));
+      // Trello #753, passage 114AA : cartes d'un message ANTÉRIEUR du fil dont l'état a changé (un dossier
+      // d'export mis en préparation est devenu prêt). Elles remplacent celles du message concerné, rien
+      // d'autre ; un client qui ignore ce champ garde la carte « En préparation » telle qu'elle a été répondue.
+      const majCartes = new Map<string, UiResultGroup[]>(
+        (Array.isArray(data.cardUpdates) ? data.cardUpdates : [])
+          .filter((u: unknown): u is { messageId: string; resultGroups: UiResultGroup[] } =>
+            !!u && typeof (u as { messageId?: unknown }).messageId === 'string' && Array.isArray((u as { resultGroups?: unknown }).resultGroups))
+          .map((u: { messageId: string; resultGroups: UiResultGroup[] }) => [u.messageId, u.resultGroups]),
+      );
+      setState((s) => ({
+        ...s,
+        messages: [
+          ...(majCartes.size
+            ? s.messages.map((m) => (majCartes.has(m.id) ? { ...m, resultGroups: majCartes.get(m.id)! } : m))
+            : s.messages),
+          assistantMsg,
+        ],
+        isLoading: false,
+        error: assistantMsg.error?.message ?? null,
+      }));
       return !assistantMsg.error;
     } catch (e) {
       if ((e as Error).name === 'AbortError') return false; // annulation volontaire
@@ -513,6 +543,7 @@ export function useVerebona(rawPageContext?: Record<string, string>, options: Us
         commandPlan: data.commandPlan ? { ...data.commandPlan, status: 'PENDING_CONFIRMATION' } : null,
         resultGroups: Array.isArray(data.resultGroups) ? data.resultGroups : null,
         events: Array.isArray(data.events) ? data.events : null,
+        answerBlocks: Array.isArray(data.answerBlocks) ? data.answerBlocks : undefined,
       };
       setState((s) => ({ ...s, messages: [...s.messages, assistantMsg], isLoading: false }));
       void refreshThreads();

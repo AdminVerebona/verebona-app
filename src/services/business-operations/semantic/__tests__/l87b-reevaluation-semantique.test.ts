@@ -240,8 +240,8 @@ describe('L87B-U-CAS — les cas du ticket au niveau de la projection (aucune fu
     expect(p).toContainEqual({ kind: 'REPRESENTATION_REQUIRED', itemIds: [100, 101], reason: 'SEVERAL_COVERED_REPRESENTATIONS' });
     // T4 a décidé : réparation principale (liée), visite étape (liée) — plus rien à demander, rien n'est créé ni retiré.
     const apres = planDe(op(), {
-      linked: [{ ...reparation, businessOperationId: 10, linkedOperationActive: true, operationRole: 'PRINCIPAL', operationRoleOrigin: 'T4' },
-        { ...visite, businessOperationId: 10, linkedOperationActive: true, operationRole: 'RELATED', operationRoleOrigin: 'T4' }],
+      linked: [{ ...reparation, businessOperationId: 10, linkedOperationActive: true, carriedFact: 'INTERVENTION', carrierOrigin: 'AI' },
+        { ...visite, businessOperationId: 10, linkedOperationActive: true, carriedFact: null, carrierOrigin: 'AI' }],
       roles: [[101, 'PRINCIPAL'], [100, 'STEP']],
     });
     expect(apres.some((a) => a.kind === 'REPRESENTATION_REQUIRED' || a.kind === 'ABSTAIN' || a.kind === 'REMOVE' || a.kind === 'CREATE')).toBe(false);
@@ -258,7 +258,7 @@ describe('L87B-U-CAS — les cas du ticket au niveau de la projection (aucune fu
 
   it('L87B-U-CAS-YIELD — projection technique et événement T4 d’un document dont l’Opération est la SEULE Opération : la projection cède sa place (provenance exacte) ; document partagé : décision T4', () => {
     const projete = t4({ id: 200, title: 'Réparation fuite cuisine', projected: true, businessOperationId: 10, linkedOperationActive: true,
-      originRefType: 'business_operation', originRefId: 10, functionalKey: 'bo:v1:10:INTERVENTION', fileIds: [], operationRole: 'PRINCIPAL', operationRoleOrigin: 'T4' });
+      originRefType: 'business_operation', originRefId: 10, functionalKey: 'bo:v1:10:INTERVENTION', fileIds: [], carriedFact: 'INTERVENTION', carrierOrigin: 'AI' });
     const evt = t4({ id: 100, title: 'Intervention plombier', originSoleOperationId: 10 });
     const o = op({ exclusiveFileIds: [] });
     expect(planDe(o, { linked: [projete], candidates: [projete, evt] }).slice(0, 2)).toEqual([

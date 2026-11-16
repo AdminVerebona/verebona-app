@@ -65,7 +65,8 @@ export interface LinkEvidenceSnapshot {
   itemProjected: boolean;
   /** Ensemble ACTIF du compte de l'élément, sinon null. */
   operationId: number | null;
-  role: 'PRINCIPAL' | 'RELATED' | null;
+  /** Lot 114O (#744) : le lien N↔N de l'élément avec son ensemble PORTE un fait (remplace le rôle « principal »). */
+  carriesFact: boolean;
   /** Le document est membre actif de l'ensemble de l'élément. */
   fileMember: boolean;
   /** Propagation de ce document vers l'événement de référence refusée (PRINCIPAL_LINK). */
@@ -112,7 +113,7 @@ export function evaluateLinkRelevance(s: LinkEvidenceSnapshot): LinkRelevance {
   if (prov.has('OPERATION_PRINCIPAL')) {
     const reason: UnjustifiedReason | null = s.userDetached ? 'USER_DETACHED'
       : !ensemble ? 'NO_ACTIVE_ENSEMBLE'
-        : s.role !== 'PRINCIPAL' ? 'NOT_REFERENCE_EVENT'
+        : !s.carriesFact ? 'NOT_REFERENCE_EVENT'
           : s.fileDeleted ? 'DOCUMENT_IN_TRASH'
             : !s.fileMember ? 'DOCUMENT_NOT_MEMBER'
               : s.propagationRefused ? 'PROPAGATION_REFUSED' : null;

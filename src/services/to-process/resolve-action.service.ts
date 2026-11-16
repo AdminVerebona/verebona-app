@@ -382,6 +382,27 @@ export async function resolveArbitration(
       return resolvePeriodConflictCard(tx, action, value, accountId, options);
     }
 
+    // Carte #744 (CDC Opérations / Agenda V2.0 §8, §20) : association de deux événements de référence refusée puis
+    // rapprochée par une preuve nouvelle — le choix est appliqué par la façade d'écriture du graphe.
+    if (action.ruleCode === 'OPERATION-RELATION') {
+      const { resolveOperationRelationCard } = await import('./operation-relation-cards');
+      return resolveOperationRelationCard(tx, action, value, accountId, options);
+    }
+
+    // Carte #744 (décision du PO du 16/11/2026) : rattachement d'Agenda SUPPLÉMENTAIRE proposé par une inférence sur
+    // un justificatif commun — « oui » est appliqué par la façade d'écriture du graphe, « non » n'écrit rien.
+    if (action.ruleCode === 'AGENDA-LINK') {
+      const { resolveOperationAgendaLinkCard } = await import('./operation-agenda-link-cards');
+      return resolveOperationAgendaLinkCard(tx, action, value, accountId, options);
+    }
+
+    // Carte #744 (CDC §7, §8) : « même événement de référence, ou deux ? » et « quel fait est correct ? » —
+    // la fusion et la correction sont appliquées par la façade d'écriture du graphe ; « deux » n'écrit rien.
+    {
+      const { isMergeCardRule, resolveReferenceEventMergeCard } = await import('./operation-merge-cards');
+      if (isMergeCardRule(action.ruleCode)) return resolveReferenceEventMergeCard(tx, action, value, accountId, options);
+    }
+
     // Ambiguïtés de consolidation des Opérations (lot 42, ch. 20, C19) :
     // décision durable (C6.3, B19) puis reconsolidation après commit.
     {

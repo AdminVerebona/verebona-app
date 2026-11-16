@@ -213,9 +213,13 @@ const SECTION_SQL: Record<SupplierSection, { from: string; select: string; order
               CASE WHEN ds.document_id IS NULL THEN (
                 SELECT count(DISTINCT v.operation_id)::int FROM (${VIA_EVENT_DOCUMENTS_SQL}) v WHERE v.file_id = f.id) END AS "viaEventCount",
               CASE WHEN ds.document_id IS NULL THEN (
+                -- Lot 114O (#744) : intitulé de l'élément qui PORTE un fait de l'événement de référence
+                -- (lien N↔N) — remplace la lecture du rôle « principal ».
                 SELECT array_agg(DISTINCT i.title) FROM agenda_items i
-                 WHERE i.account_id = $2 AND i.operation_role = 'PRINCIPAL' AND nullif(btrim(i.title), '') IS NOT NULL
-                   AND i.business_operation_id IN (SELECT v.operation_id FROM (${VIA_EVENT_DOCUMENTS_SQL}) v WHERE v.file_id = f.id)) END AS "viaEventTitles"`,
+                  JOIN business_operation_agenda_links g ON g.account_id = i.account_id AND g.agenda_item_id = i.id
+                       AND g.state = 'ACTIVE' AND g.fact_key IS NOT NULL
+                 WHERE i.account_id = $2 AND nullif(btrim(i.title), '') IS NOT NULL
+                   AND g.operation_id IN (SELECT v.operation_id FROM (${VIA_EVENT_DOCUMENTS_SQL}) v WHERE v.file_id = f.id)) END AS "viaEventTitles"`,
     order: 'ORDER BY f.document_date DESC NULLS LAST, f.id DESC',
   },
   // Biens : liens explicites, et biens des documents et équipements liés (relations persistées).

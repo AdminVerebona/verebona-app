@@ -9,6 +9,7 @@
 import { findAssetField, parseFieldValue } from './asset-fields';
 import { plain } from '../core/routing-text';
 import { assetDesignationsIn } from '@/lib/asset-taxonomy';
+import { ASSET_STATUSES, ASSET_STATUS_LABELS } from '@/lib/asset-status';
 import { parseReferenceEventCommand, type ReferenceEventDraft } from './reference-event-parser';
 
 export type CommandDraft =
@@ -94,6 +95,22 @@ export type CommandDraft =
       clear: boolean;
     } & DocumentTargetDraft)
   | ({ command: 'DELETE_DOCUMENT' } & DocumentTargetDraft)
+  /**
+   * Passage 114AB (W14) — supprimer PLUSIEURS documents en une demande. `documentGroups` : une liste de
+   * mots par document NOMMÉ (« les documents Facture EDF et Facture GDF ») — chacun est résolu
+   * séparément dans le compte, et un seul échec de désignation annule toute la demande.
+   */
+  | { command: 'DELETE_DOCUMENTS'; documentGroups: string[][] }
+  /**
+   * Passage 114AB (W12) — NATURE d'un document : sa **Rubrique** ou son **Type** (référentiel V2).
+   * `requestedValue` : la valeur telle qu'écrite ; `null` quand la demande nomme le niveau sans valeur
+   * exploitable — la question est alors posée avec les valeurs du référentiel.
+   */
+  | ({
+      command: 'UPDATE_DOCUMENT_CLASSIFICATION';
+      level: 'rubric' | 'type';
+      requestedValue: string | null;
+    } & DocumentTargetDraft)
   | ({
       /** Pièce ou équipement d'un bien (lot 114, W04 – W09). */
       command: 'CREATE_ROOM' | 'CREATE_EQUIPMENT';
@@ -109,10 +126,25 @@ export type CommandDraft =
   /** Lot 114F (W27) — effacer une caractéristique d'un bien : clé du champ (liste fermée : asset-fields.ts). */
   | ({ command: 'CLEAR_ASSET_FIELD'; fieldKey: string } & AssetScopeDraft)
   /**
-   * Lot 114F (W13) — rattacher un document à un bien, ou l'en détacher. `structureTarget` : la demande vise une
-   * pièce ou un équipement (non pris en charge depuis l'Assistant : c'est dit, rien n'est proposé).
+   * Passage 114AA (W02) — CATÉGORIE DE BIEN (« Catégorie de bien » de la fiche : `subtype`). `requestedCategory` :
+   * la catégorie demandée telle qu'écrite, normalisée (sans accent, minuscules) ; `null` quand la demande nomme
+   * « la catégorie » sans valeur exploitable — la question est alors posée avec les catégories du référentiel.
    */
-  | ({ command: 'UPDATE_DOCUMENT_TARGETS'; mode: 'attach' | 'detach'; structureTarget: boolean } & DocumentTargetDraft & AssetScopeDraft)
+  | ({ command: 'UPDATE_ASSET_CATEGORY'; requestedCategory: string | null } & AssetScopeDraft)
+  /**
+   * Passage 114AA (W02) — STATUT d'un bien. `requestedStatus` : le code du référentiel des statuts
+   * (`lib/asset-status`), déjà résolu ici ; `null` quand la demande nomme « le statut » sans valeur reconnue.
+   */
+  | ({ command: 'UPDATE_ASSET_STATUS'; requestedStatus: string | null } & AssetScopeDraft)
+  /**
+   * Lot 114F puis passage 114AA (W13) — rattacher un document à un BIEN, à une PIÈCE ou à un ÉQUIPEMENT, ou
+   * l'en détacher. `structureTarget` : la demande nomme une pièce ou un équipement — son type et les mots de
+   * son nom (le bien porteur est retrouvé ensuite, dans le compte).
+   */
+  | ({
+      command: 'UPDATE_DOCUMENT_TARGETS'; mode: 'attach' | 'detach';
+      structureTarget: { kind: 'room' | 'equipment'; words: string[] } | null;
+    } & DocumentTargetDraft & AssetScopeDraft)
   | ({
       command: 'DELETE_AGENDA_ITEM';
       /** SERIES seulement si la série est demandée (« toute la série », « tous les… »). */
@@ -427,6 +459,74 @@ function parseAssetRename(message: string): CommandDraft | null {
   return { command: 'RENAME_ASSET', newName: nom ? nom.slice(0, 120) : null, assetWords: mots, assetFromContext };
 }
 
+// ── Passage 114AA (#753, W02) : catégorie et statut d'un bien ───────────────
+
+/** Verbes d'une modification de classement (« change », « mets », « passe »…). */
+const VERBE_CLASSEMENT = String.raw`(?:change|changer|modifie|modifier|corrige|corriger|mets|mettre|met|remplace|remplacer|passe|passer|fixe|fixer)`;
+
+/**
+ * Formes reconnues d'un statut : le libellé du référentiel (`lib/asset-status`), plus ses accords simples
+ * (« vendue », « vendus », « transmise ») — DÉRIVÉES du libellé, aucune liste parallèle. Pure.
+ */
+function statutDemande(valeur: string): string | null {
+  const v = plain(valeur).replace(/[.!?]+$/, '').trim();
+  if (!v) return null;
+  for (const code of ASSET_STATUSES) {
+    const base = plain(ASSET_STATUS_LABELS[code]);
+    if (v === base || v === `${base}e` || v === `${base}s` || v === `${base}es` || v === plain(code).replace(/_/g, ' ')) return code;
+  }
+  return null;
+}
+
+/**
+ * Passage 114AA (W02) — CATÉGORIE et STATUT d'un bien (pure, testée).
+ *
+ *   « Change la catégorie de la Clio en moto », « Mets la catégorie de ce bien à appartement » ;
+ *   « Change le statut de la Clio en vendu », « Marque la Clio comme vendue ».
+ *
+ * Deux formes seulement : celle qui NOMME le champ (« la catégorie », « le statut ») — reconnue même si la
+ * valeur n'est pas comprise, pour pouvoir la demander —, et « marque … comme <statut du référentiel> », reconnue
+ * seulement si le statut en est un. Toute autre tournure garde exactement son comportement d'avant.
+ */
+function parseAssetClassification(message: string): CommandDraft | null {
+  const brut = plain(message.normalize('NFC'));
+  const m = brut.slice(debutUtile(brut));
+  if (AGENDA_TARGET.test(m) || AUTRE_OBJET.test(m)) return null;
+  const bien = (det: string | undefined, zone: string): AssetScopeDraft | null => {
+    const assetFromContext = /^(ce|cet|cette)$/.test(det ?? '');
+    const mots = assetFromContext ? [] : motsUtiles(zone.replace(/^bien\b\s*/, ''));
+    // Bien non désigné par un mot exploitable : pas une commande (jamais le bien de la page à la place).
+    if (!assetFromContext && mots.length === 0) return null;
+    return { assetWords: mots, assetFromContext };
+  };
+
+  const cat = m.match(new RegExp(String.raw`^${VERBE_CLASSEMENT}\s+la\s+categorie\s+(?:de\s+|du\s+|d')(?:${DET_BIEN}\s*)?(.*?)\s+(?:en|par|a|vers)\s+(.+)$`));
+  if (cat) {
+    const cible = bien(cat[1], cat[2]);
+    if (!cible) return null;
+    const valeur = plain(cat[3]).replace(/[.!?]+$/, '').trim();
+    return { command: 'UPDATE_ASSET_CATEGORY', requestedCategory: valeur || null, ...cible };
+  }
+
+  const nomme = m.match(new RegExp(String.raw`^${VERBE_CLASSEMENT}\s+le\s+statut\s+(?:de\s+|du\s+|d')(?:${DET_BIEN}\s*)?(.*?)\s+(?:en|par|a|sur)\s+(.+)$`));
+  if (nomme) {
+    const cible = bien(nomme[1], nomme[2]);
+    if (!cible) return null;
+    return { command: 'UPDATE_ASSET_STATUS', requestedStatus: statutDemande(nomme[3]), ...cible };
+  }
+
+  const comme = m.match(new RegExp(String.raw`^(?:marque|marquer|indique|indiquer|signale|signaler)\s+${DET_BIEN}\s*(.*?)\s+comme\s+(.+)$`));
+  if (comme) {
+    // Forme implicite : reconnue SEULEMENT si la valeur est un statut du référentiel ; sinon rien ne change.
+    const statut = statutDemande(comme[3]);
+    if (!statut) return null;
+    const cible = bien(comme[1], comme[2]);
+    if (!cible) return null;
+    return { command: 'UPDATE_ASSET_STATUS', requestedStatus: statut, ...cible };
+  }
+  return null;
+}
+
 /**
  * « Efface la date d'achat de la Clio », « supprime le kilométrage de ce
  * véhicule », « vide l'assureur de la maison » (pure, testée). Le champ —
@@ -652,6 +752,48 @@ function parseDocumentCommand(message: string, today: string): CommandDraft | nu
     return { command: 'UPDATE_DOCUMENT', field, value: valeur || null, clear: false, ...cible };
   }
 
+  // Passage 114AB (W12) — NATURE d'un document : sa Rubrique ou son Type (référentiel V2).
+  // « Change la rubrique du document Facture EDF en Assurances et sinistres », « Classe le document
+  // Facture EDF dans la rubrique Entretien et travaux », « Change le type du document Facture EDF en
+  // facture », « Mets la nature du document Facture EDF à facture ». Le document est désigné avant la
+  // valeur (« du document … en … ») ou après (« … pour le document … »).
+  const nature = m.match(new RegExp(`^(?:modifie|modifier|change|changer|mets|mettre|met|corrige|corriger|remplace|remplacer|actualise|actualiser|classe|classer|range|ranger)\\s+(?:le\\s+|la\\s+|l'|en\\s+)?(rubrique|type|nature|categorie)\\b\\s*(.*?)\\s*(?:(?:du|au)\\s+${DOC_NOM}|(?:de|a|sur|pour|dans)\\s+${D})\\s*(.*)$`));
+  if (nature) {
+    // « Catégorie » d'un document = sa Rubrique (le mot du tiroir est « Rubrique » ; « catégorie » est accepté).
+    const niveau = nature[1] === 'type' || nature[1] === 'nature' ? 'type' as const : 'rubric' as const;
+    const contexte = /^(ce|cet|cette)$/.test(nature[3] ?? '');
+    const apres = nature[4];
+    const debutApres = decalage + m.length - apres.length;
+    const avantCible = nature[2].trim();
+    // La valeur suit la cible après « : », « en », « à », « dans » — ou la précède (« la rubrique Médias du document … »).
+    const sep = apres.match(/\s*(?::|\ben\b|\ba\b|\bdans\b|\bvers\b)\s+(?=\S)/);
+    let zoneCible = apres;
+    let valeur: string | null = null;
+    if (avantCible) {
+      const i = decalage + m.indexOf(nature[2], nature[1].length);
+      valeur = sansGuillemets(origine(nfc, i, i + nature[2].length));
+    } else if (sep && sep.index !== undefined) {
+      zoneCible = apres.slice(0, sep.index);
+      valeur = sansGuillemets(origine(nfc, debutApres + sep.index + sep[0].length));
+    }
+    const cible = cibleDocument(zoneCible.replace(/^(?:la\s+rubrique|le\s+type|la\s+nature)\b/, ' '), contexte);
+    if (!cible) return null;
+    // La valeur peut être introduite par « la rubrique … » / « le type … » : ces mots ne font pas partie du libellé.
+    const propre = (valeur ?? '').replace(/^(?:la\s+rubrique|le\s+type|la\s+nature|la\s+categorie)\s+/i, '').trim();
+    return { command: 'UPDATE_DOCUMENT_CLASSIFICATION', level: niveau, requestedValue: propre || null, ...cible };
+  }
+
+  // Passage 114AB (W12) — « Classe le document Facture EDF dans la rubrique Entretien et travaux » : le
+  // document est nommé d'abord, le niveau et la valeur ensuite.
+  const classer = m.match(new RegExp(`^(?:classe|classer|range|ranger|deplace|deplacer)\\s+${D}\\s*(.*?)\\s+(?:dans|en|sous|vers)\\s+(?:la\\s+|le\\s+|l')?(rubrique|type|nature|categorie)\\b\\s*(?::\\s*)?(.*)$`));
+  if (classer) {
+    const niveau = classer[3] === 'type' || classer[3] === 'nature' ? 'type' as const : 'rubric' as const;
+    const cible = cibleDocument(classer[2], /^(ce|cet|cette)$/.test(classer[1]));
+    if (!cible) return null;
+    const valeur = sansGuillemets(origine(nfc, decalage + m.length - classer[4].length)).trim();
+    return { command: 'UPDATE_DOCUMENT_CLASSIFICATION', level: niveau, requestedValue: valeur || null, ...cible };
+  }
+
   // Lot 114F (W13) — rattacher à un bien / détacher d'un bien : le bien est le DERNIER complément de la phrase.
   const lier = m.match(new RegExp(`^(rattache|rattacher|associe|associer|relie|relier|lie|lier|detache|detacher|dissocie|dissocier)\\s+${D}\\s*(.*)$`));
   if (lier) {
@@ -661,11 +803,30 @@ function parseDocumentCommand(message: string, today: string): CommandDraft | nu
     if (!fin) return null;
     const cible = cibleDocument(fin[1], /^(ce|cet|cette)$/.test(lier[2]));
     if (!cible) return null;
-    const structureTarget = /^(piece|equipement)\b/.test(fin[3]);
-    const assetFromContext = !structureTarget && /^(ce|cet|cette)$/.test(fin[2] ?? '');
-    const mots = structureTarget || assetFromContext ? [] : motsUtiles(fin[3]);
-    if (!structureTarget && !assetFromContext && mots.length === 0) return null;
+    // Passage 114AA (W13) : « … à la pièce Cuisine », « … à l'équipement Chaudière » — le type est nommé, les
+    // mots suivants désignent la pièce ou l'équipement DANS LE COMPTE (jamais un bien).
+    const structure = fin[3].match(/^(pieces?|equipements?)\b\s*(.*)$/);
+    const motsStructure = structure ? motsUtiles(structure[2]) : [];
+    const structureTarget = structure && motsStructure.length
+      ? { kind: (/^piece/.test(structure[1]) ? 'room' : 'equipment') as 'room' | 'equipment', words: motsStructure }
+      : null;
+    // Une pièce ou un équipement nommé sans aucun mot utile : la demande reste incomplète, rien n'est proposé.
+    if (structure && !structureTarget) return null;
+    const assetFromContext = !structure && /^(ce|cet|cette)$/.test(fin[2] ?? '');
+    const mots = structure || assetFromContext ? [] : motsUtiles(fin[3]);
+    if (!structure && !assetFromContext && mots.length === 0) return null;
     return { command: 'UPDATE_DOCUMENT_TARGETS', mode, structureTarget, assetWords: mots, assetFromContext, ...cible };
+  }
+
+  // Passage 114AB (W14) — supprimer PLUSIEURS documents : « Supprime les documents Facture EDF et Facture GDF ».
+  // Les documents sont NOMMÉS un par un, séparés par « , » ou « et » ; aucune suppression « de tous les
+  // documents » d'un bien n'est reconnue (une demande destructive se lit, elle ne se devine pas).
+  const plusieurs = m.match(new RegExp(`^(?:supprime|supprimer|efface|effacer|retire|retirer|enleve|enlever)\\s+(?:definitivement\\s+)?(?:les|ces|mes)\\s+(?:documents|fichiers|liens)\\s+(.+)$`));
+  if (plusieurs) {
+    const groupes = plusieurs[1].split(/\s*,\s*|\s+et\s+/).map((z) => motsDocument(z.replace(/[.!?]+$/, ''))).filter((g) => g.length > 0);
+    // Une seule désignation (« supprime les documents de la maison ») n'est pas une suppression multiple :
+    // la phrase suit le parcours habituel, exactement comme avant.
+    return groupes.length >= 2 ? { command: 'DELETE_DOCUMENTS', documentGroups: groupes } : null;
   }
 
   // Supprimer.
@@ -758,8 +919,25 @@ function parseStructureCommand(message: string): CommandDraft | null {
   return null;
 }
 
+/**
+ * Options d'analyse (passage 114Z4, #753).
+ *
+ * `referenceEventAnaphora` : autorise « … à celui-ci » / « … à cet événement » à désigner l'événement de
+ * référence que la commande PRÉCÉDENTE de la même phrase enregistre. Jamais activée pour un message isolé : sans
+ * elle, « Rattache le document X à celui-ci » garde son sens d'avant (le bien de la page ou du fil).
+ */
+export interface ParseCommandOptions {
+  /** Passage 114Z4 : « … à celui-ci » après une déclaration de la MÊME phrase (fournisseur et document). */
+  referenceEventAnaphora?: boolean;
+  /**
+   * Passage 114AA : « Relie le fournisseur … à celui-ci » d'un TOUR À L'AUTRE — l'événement de référence du
+   * fil. Seule forme pronominale admise hors de la même phrase : aucune autre lecture n'est possible.
+   */
+  referenceEventThreadAnaphora?: boolean;
+}
+
 /** Brouillon de commande, ou `null` si le message n'est pas une commande claire. */
-export function parseCommand(message: string, today: string): CommandDraft | null {
+export function parseCommand(message: string, today: string, options: ParseCommandOptions = {}): CommandDraft | null {
   const m = plain(message).trim();
 
   // ── Événements de référence (lot 114X, W21 – W26) : AVANT tout le reste — ces formes nomment toujours
@@ -768,7 +946,7 @@ export function parseCommand(message: string, today: string): CommandDraft | nul
   // document … à l'intervention … » ne cherche pas un bien ; « supprime l'événement de référence … » ne vise
   // pas l'Agenda. Une caractéristique de bien du registre (« date d'achat ») reste à son analyseur.
   if (!INTERROGATIF.test(m) && !LECTURE_MOI.test(m)) {
-    const evenement = parseReferenceEventCommand(message, today);
+    const evenement = parseReferenceEventCommand(message, today, options.referenceEventAnaphora === true, options.referenceEventThreadAnaphora === true);
     if (evenement) return evenement;
   }
 
@@ -795,7 +973,10 @@ export function parseCommand(message: string, today: string): CommandDraft | nul
   if (!INTERROGATIF.test(m) && !LECTURE_MOI.test(m)) {
     // Lot 114F : renommer un bien et effacer une caractéristique AVANT la suppression d'un bien —
     // « efface la date d'achat de la Clio » n'est jamais une demande de suppression de la Clio.
-    const bien = parseAssetCreation(message) ?? parseAssetRename(message) ?? parseAssetFieldClear(message) ?? parseAssetDeletion(message);
+    // Passage 114AA : la catégorie et le statut d'un bien (W02) nomment leur champ ou un statut du référentiel ;
+    // elles passent après le renommage (« change le nom … ») et avant l'effacement d'une caractéristique.
+    const bien = parseAssetCreation(message) ?? parseAssetRename(message) ?? parseAssetClassification(message)
+      ?? parseAssetFieldClear(message) ?? parseAssetDeletion(message);
     if (bien) return bien;
   }
 
@@ -863,7 +1044,17 @@ export function parseCommands(message: string, today: string): CommandSegment[] 
   for (let i = 0; i < 10; i += 1) {
     const hit = reste.match(DEBUT_COMMANDE);
     const morceau = hit ? reste.slice(0, hit.index) : reste;
-    const draft = parseCommand(morceau, today);
+    // Passage 114Z4 : « Déclare … PUIS relie … à celui-ci » — l'anaphore n'est admise qu'après une déclaration
+    // d'événement de référence dont ce segment dépend ; partout ailleurs elle n'existe pas (aucun changement).
+    const precedent = segments[segments.length - 1]?.draft;
+    const draft = parseCommand(morceau, today, {
+      referenceEventAnaphora: dependance && precedent?.command === 'CREATE_REFERENCE_EVENT',
+      // Passage 114AA : hors de ce cas, le pronom seul ne vaut que pour « relie le fournisseur … à celui-ci »,
+      // et seulement si le fil porte un événement de référence (vérifié à la préparation du plan). Après une
+      // déclaration de la MÊME phrase reliée par « et » (actions indépendantes), il reste inadmis : « celui-ci »
+      // y désignerait l'événement du tour précédent, jamais celui que la phrase déclare (règle du passage 114Z).
+      referenceEventThreadAnaphora: precedent?.command !== 'CREATE_REFERENCE_EVENT',
+    });
     if (!draft) return null;
     segments.push({ draft, dependsOnPrevious: dependance });
     if (!hit) break;

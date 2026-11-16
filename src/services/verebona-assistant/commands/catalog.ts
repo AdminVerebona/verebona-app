@@ -41,18 +41,27 @@ const WRITE_COMMANDS = [
   'CREATE_SUPPLIER', 'UPDATE_SUPPLIER', 'ARCHIVE_SUPPLIER',
   // Documents (W10, W12, W14) : par la façade métier `document-write.facade`, la même que les routes.
   'CREATE_WEB_DOCUMENT', 'UPDATE_DOCUMENT', 'DELETE_DOCUMENT',
+  // Passage 114AB (W12, W14) : NATURE d'un document (Rubrique et Type V2) et suppression de PLUSIEURS
+  // documents à la fois — par la même façade métier (`updateDocumentClassificationForAccount`, `softDeleteDocument`).
+  'UPDATE_DOCUMENT_CLASSIFICATION', 'DELETE_DOCUMENTS',
   // Pièces et équipements (W04 – W09) : par la façade métier `structure-write.facade`, la même que les routes.
   // Le retrait d'un équipement est son ARCHIVAGE (règle existante) ; une pièce se supprime.
   'CREATE_ROOM', 'RENAME_ROOM', 'DELETE_ROOM', 'CREATE_EQUIPMENT', 'RENAME_EQUIPMENT', 'ARCHIVE_EQUIPMENT',
   // Lot 114F (W02, W27) : nom d'un bien et effacement d'une caractéristique, par le service de la fiche
   // (`asset-details-write.service`), le même que `PATCH /api/assets/[id]/details/[section]`.
   'RENAME_ASSET', 'CLEAR_ASSET_FIELD',
+  // Passage 114AA (W02) : catégorie de bien et statut, par le même service de la fiche.
+  'UPDATE_ASSET_CATEGORY', 'UPDATE_ASSET_STATUS',
   // Lot 114F (W13) : biens auxquels un document est rattaché, par la façade `document-write.facade`.
   'UPDATE_DOCUMENT_TARGETS',
   // Lot 114X (W21 – W26) : événements de référence, par la façade métier `operation-write.facade` (carte #744) —
   // la seule écriture du graphe ; acteur « utilisateur », canal « Assistant ». Le retrait est une INVALIDATION logique.
   'CREATE_REFERENCE_EVENT', 'UPDATE_REFERENCE_EVENT', 'INVALIDATE_REFERENCE_EVENT',
   'ASSOCIATE_REFERENCE_EVENTS', 'LINK_DOCUMENT_REFERENCE_EVENT', 'LINK_SUPPLIER_REFERENCE_EVENT',
+  // Passage 114AB : GESTES INVERSES, par la MÊME façade (#744) — rétablir, dissocier, retirer un document
+  // ou un fournisseur, rattacher une échéance. Ce ne sont pas des capacités W : ce sont les inverses de W23 – W26.
+  'RESTORE_REFERENCE_EVENT', 'DISSOCIATE_REFERENCE_EVENTS', 'UNLINK_DOCUMENT_REFERENCE_EVENT',
+  'UNLINK_SUPPLIER_REFERENCE_EVENT', 'LINK_AGENDA_REFERENCE_EVENT',
 ] as const;
 export type WriteCommandType = (typeof WRITE_COMMANDS)[number];
 
@@ -197,6 +206,39 @@ export const WRITE_COMMAND_CATALOG: Record<WriteCommandType, WriteCommandDefinit
       successEvent: 'DOCUMENT_DELETED', retrySafety: 'PLAN_TAKEN_ONCE',
     },
   },
+  // Passage 114AB (Trello #753, CDC T2 §14.3 W12) — NATURE d'un document : Rubrique et Type du référentiel V2.
+  UPDATE_DOCUMENT_CLASSIFICATION: {
+    type: 'UPDATE_DOCUMENT_CLASSIFICATION', label: 'Modifier la nature d’un document',
+    service: 'document-write.facade.updateDocumentClassificationForAccount', requiresWriteAccess: true,
+    spec: {
+      capabilityCode: 'DOCUMENT_UPDATE', targetKind: 'document',
+      requiredFields: ['documentId', 'classificationLevel', 'expectedRubric', 'expectedType', 'expectedVersion'],
+      optionalFields: ['rubricValue', 'typeValue'],
+      readBeforeWrite: true, deletePolicy: 'NONE', undoPolicy: 'IRREVERSIBLE',
+      sideEffects: [
+        'classement décidé par l’utilisateur : jamais remplacé par une analyse',
+        'la rubrique est déduite du type quand il en impose une ; un type qui ne relève plus de la rubrique est vidé',
+        'cartes « À traiter » du classement fermées, données documentaires du document réévaluées',
+      ],
+      successEvent: 'DOCUMENT_UPDATED', retrySafety: 'PLAN_TAKEN_ONCE',
+    },
+  },
+  // Passage 114AB (Trello #753, CDC T2 §14.3 W14) — suppression de PLUSIEURS documents : tout ou rien.
+  DELETE_DOCUMENTS: {
+    type: 'DELETE_DOCUMENTS', label: 'Supprimer plusieurs documents',
+    service: 'document-write.facade.softDeleteDocument', requiresWriteAccess: true,
+    spec: {
+      capabilityCode: 'DOCUMENT_DELETE', targetKind: 'document',
+      requiredFields: ['documents'], optionalFields: [],
+      readBeforeWrite: true, deletePolicy: 'SOFT_DELETE', undoPolicy: 'IRREVERSIBLE',
+      sideEffects: [
+        'liste complète annoncée avant la confirmation',
+        'tout ou rien : un seul document modifié ou disparu depuis l’aperçu et AUCUN n’est supprimé',
+        'informations que ces documents justifiaient retirées des fiches concernées, qui sont recalculées',
+      ],
+      successEvent: 'DOCUMENT_DELETED', retrySafety: 'PLAN_TAKEN_ONCE',
+    },
+  },
   // Lot 114 (Trello #753, CDC T2 §14.3 W04 – W09) — pièces et équipements d'un bien.
   CREATE_ROOM: {
     type: 'CREATE_ROOM', label: 'Créer une pièce',
@@ -278,11 +320,34 @@ export const WRITE_COMMAND_CATALOG: Record<WriteCommandType, WriteCommandDefinit
       successEvent: 'ASSET_UPDATED', retrySafety: 'PLAN_TAKEN_ONCE',
     },
   },
+  // Passage 114AA (Trello #753, CDC T2 §14.3 W02) — catégorie de bien et statut.
+  UPDATE_ASSET_CATEGORY: {
+    type: 'UPDATE_ASSET_CATEGORY', label: 'Modifier la catégorie d’un bien',
+    service: 'asset-details-write.service.updateAssetDetails', requiresWriteAccess: true,
+    spec: {
+      capabilityCode: 'ASSET_UPDATE', targetKind: 'asset', requiredFields: ['classifiedAssetId', 'categoryValue', 'expectedCategory'], optionalFields: [],
+      readBeforeWrite: true, deletePolicy: 'NONE', undoPolicy: 'IRREVERSIBLE',
+      sideEffects: ['la catégorie oriente les rubriques de la fiche, les natures de documents attendues et les exports'],
+      successEvent: 'ASSET_UPDATED', retrySafety: 'PLAN_TAKEN_ONCE',
+    },
+  },
+  UPDATE_ASSET_STATUS: {
+    type: 'UPDATE_ASSET_STATUS', label: 'Modifier le statut d’un bien',
+    service: 'asset-details-write.service.updateAssetDetails', requiresWriteAccess: true,
+    spec: {
+      capabilityCode: 'ASSET_UPDATE', targetKind: 'asset', requiredFields: ['classifiedAssetId', 'statusValue', 'expectedStatus'], optionalFields: [],
+      readBeforeWrite: true, deletePolicy: 'NONE', undoPolicy: 'IRREVERSIBLE',
+      sideEffects: ['un bien vendu ou transmis sort du portefeuille actif : il n’apparaît plus dans les listes et les compteurs par défaut', 'ses documents, ses échéances et son historique sont conservés'],
+      successEvent: 'ASSET_UPDATED', retrySafety: 'PLAN_TAKEN_ONCE',
+    },
+  },
   UPDATE_DOCUMENT_TARGETS: {
-    type: 'UPDATE_DOCUMENT_TARGETS', label: 'Rattacher un document à un bien',
+    type: 'UPDATE_DOCUMENT_TARGETS', label: 'Rattacher un document',
     service: 'document-write.facade.updateDocumentForAccount', requiresWriteAccess: true,
     spec: {
-      capabilityCode: 'DOCUMENT_LINK', targetKind: 'document', requiredFields: ['documentId', 'targetAssetIds', 'expectedAssetIds', 'expectedVersion'], optionalFields: [],
+      capabilityCode: 'DOCUMENT_LINK', targetKind: 'document', requiredFields: ['documentId', 'targetAssetIds', 'expectedAssetIds', 'expectedVersion'],
+      // Passage 114AA : niveau pièce ou équipement (W13 complété).
+      optionalFields: ['level', 'targetStructureIds', 'expectedStructureIds'],
       readBeforeWrite: true, deletePolicy: 'NONE', undoPolicy: 'IRREVERSIBLE',
       sideEffects: ['rattachement décidé par l’utilisateur : jamais défait par une analyse', 'le document reste dans vos documents ; un retrait est une dissociation, jamais une suppression', 'fiches des biens concernés et « À traiter » mis à jour'],
       successEvent: 'DOCUMENT_UPDATED', retrySafety: 'PLAN_TAKEN_ONCE',
@@ -355,6 +420,65 @@ export const WRITE_COMMAND_CATALOG: Record<WriteCommandType, WriteCommandDefinit
       successEvent: 'GRAPH_HISTORY_ONLY', retrySafety: 'PLAN_TAKEN_ONCE_AND_IDEMPOTENCY_KEY',
     },
   },
+  // Passage 114AB (Trello #753) — GESTES INVERSES des événements de référence, par la façade de la carte #744.
+  RESTORE_REFERENCE_EVENT: {
+    type: 'RESTORE_REFERENCE_EVENT', label: 'Rétablir un événement de référence',
+    service: 'operation-write.facade.restoreOperation', requiresWriteAccess: true,
+    spec: {
+      capabilityCode: 'REFERENCE_EVENT_RESTORE', targetKind: 'reference_event',
+      requiredFields: ['operationId', 'expectedVersion'], optionalFields: [],
+      readBeforeWrite: true, deletePolicy: 'NONE', undoPolicy: 'IRREVERSIBLE',
+      sideEffects: [
+        'seules les suppressions faites par l’utilisateur sont rétablissables',
+        'ses échéances détachées à la suppression ne lui sont pas rattachées de nouveau',
+      ],
+      successEvent: 'BUSINESS_OPERATION_UPDATED', retrySafety: 'PLAN_TAKEN_ONCE_AND_IDEMPOTENCY_KEY',
+    },
+  },
+  DISSOCIATE_REFERENCE_EVENTS: {
+    type: 'DISSOCIATE_REFERENCE_EVENTS', label: 'Dissocier deux événements de référence',
+    service: 'operation-write.facade.dissociateOperations', requiresWriteAccess: true,
+    spec: {
+      capabilityCode: 'REFERENCE_EVENTS_DISSOCIATE', targetKind: 'reference_event',
+      requiredFields: ['fromOperationId', 'toOperationId', 'expectedVersions'], optionalFields: [],
+      readBeforeWrite: true, deletePolicy: 'NONE', undoPolicy: 'IRREVERSIBLE',
+      sideEffects: ['seul le lien est retiré : les deux événements restent, avec leurs documents et leurs fournisseurs', 'retrait décidé par l’utilisateur : une analyse ne les associe plus d’elle-même'],
+      successEvent: 'GRAPH_HISTORY_ONLY', retrySafety: 'PLAN_TAKEN_ONCE_AND_IDEMPOTENCY_KEY',
+    },
+  },
+  UNLINK_DOCUMENT_REFERENCE_EVENT: {
+    type: 'UNLINK_DOCUMENT_REFERENCE_EVENT', label: 'Retirer un document d’un événement de référence',
+    service: 'operation-write.facade.unlinkDocument', requiresWriteAccess: true,
+    spec: {
+      capabilityCode: 'REFERENCE_EVENT_DOCUMENT_UNLINK', targetKind: 'reference_event',
+      requiredFields: ['operationId', 'documentId', 'expectedVersion', 'documentVersion'], optionalFields: [],
+      readBeforeWrite: true, deletePolicy: 'NONE', undoPolicy: 'IRREVERSIBLE',
+      sideEffects: ['le document reste dans le compte et garde ses autres rattachements', 'montants de l’événement recalculés par la consolidation'],
+      successEvent: 'GRAPH_HISTORY_ONLY', retrySafety: 'PLAN_TAKEN_ONCE_AND_IDEMPOTENCY_KEY',
+    },
+  },
+  UNLINK_SUPPLIER_REFERENCE_EVENT: {
+    type: 'UNLINK_SUPPLIER_REFERENCE_EVENT', label: 'Retirer un fournisseur d’un événement de référence',
+    service: 'operation-write.facade.unlinkSupplier', requiresWriteAccess: true,
+    spec: {
+      capabilityCode: 'REFERENCE_EVENT_SUPPLIER_UNLINK', targetKind: 'reference_event',
+      requiredFields: ['operationId', 'supplierId', 'expectedVersion', 'supplierVersion'], optionalFields: [],
+      readBeforeWrite: true, deletePolicy: 'NONE', undoPolicy: 'IRREVERSIBLE',
+      sideEffects: ['la fiche du fournisseur, ses documents et ses autres liens sont conservés', 'retrait décidé par l’utilisateur : jamais rétabli par une analyse'],
+      successEvent: 'GRAPH_HISTORY_ONLY', retrySafety: 'PLAN_TAKEN_ONCE_AND_IDEMPOTENCY_KEY',
+    },
+  },
+  LINK_AGENDA_REFERENCE_EVENT: {
+    type: 'LINK_AGENDA_REFERENCE_EVENT', label: 'Rattacher une échéance à un événement de référence',
+    service: 'operation-write.facade.linkAgendaItem', requiresWriteAccess: true,
+    spec: {
+      capabilityCode: 'REFERENCE_EVENT_AGENDA_LINK', targetKind: 'reference_event',
+      requiredFields: ['operationId', 'agendaItemId', 'expectedVersion', 'agendaItemVersion'], optionalFields: [],
+      readBeforeWrite: true, deletePolicy: 'NONE', undoPolicy: 'IRREVERSIBLE',
+      sideEffects: ['l’échéance garde son identité, sa date et ses rappels : aucune échéance créée ni copiée', 'une échéance déjà rattachée ailleurs est partagée, jamais déplacée'],
+      successEvent: 'GRAPH_HISTORY_ONLY', retrySafety: 'PLAN_TAKEN_ONCE_AND_IDEMPOTENCY_KEY',
+    },
+  },
   ARCHIVE_SUPPLIER: {
     type: 'ARCHIVE_SUPPLIER', label: 'Archiver un fournisseur',
     service: 'supplier-write.facade.setSupplierArchived', requiresWriteAccess: true,
@@ -407,6 +531,21 @@ export type CommandParams =
   | { kind: 'document_update'; documentId: number; documentField: DocumentCommandField; newValue: string | null; expectedVersion: string }
   // DELETE_DOCUMENT (W14) : suppression logique du document, comme depuis la liste des documents.
   | { kind: 'document_delete'; documentId: number; expectedVersion: string }
+  /**
+   * UPDATE_DOCUMENT_CLASSIFICATION (W12, passage 114AB) : NATURE d'un document — une Rubrique
+   * (`rubricValue`) OU un Type (`typeValue`) du référentiel V2, jamais un libellé libre. `expectedRubric`
+   * et `expectedType` sont l'état présenté à l'aperçu : la façade refuse d'écrire s'il a changé.
+   */
+  | {
+      kind: 'document_classification'; documentId: number; classificationLevel: 'rubric' | 'type';
+      rubricValue?: string; typeValue?: string;
+      expectedRubric: string | null; expectedType: string | null; expectedVersion: string;
+    }
+  /**
+   * DELETE_DOCUMENTS (W14, passage 114AB) : liste FIGÉE des documents annoncés, avec l'empreinte de chacun.
+   * Tout ou rien — un seul écart et aucun n'est supprimé.
+   */
+  | { kind: 'documents_delete'; documents: Array<{ documentId: number; expectedVersion: string; title: string }> }
   // Pièces (W07 – W09) et équipements (W04 – W06) d'un bien.
   | { kind: 'room_create'; roomAssetId: number; roomName: string }
   | { kind: 'room_rename'; roomId: number; roomAssetId: number; roomName: string; expectedVersion: string }
@@ -418,8 +557,29 @@ export type CommandParams =
   | { kind: 'asset_rename'; renamedAssetId: number; assetNewName: string; expectedName: string }
   // CLEAR_ASSET_FIELD (W27) : la valeur présentée comme « actuelle » est figée — si elle a changé, rien n'est effacé.
   | { kind: 'asset_field_clear'; clearAssetId: number; clearSection: string; clearedField: string; clearedPrevious: unknown }
-  // UPDATE_DOCUMENT_TARGETS (W13) : liste COMPLÈTE des biens après l'action, et liste présentée à l'aperçu.
-  | { kind: 'document_targets'; documentId: number; targetAssetIds: number[]; expectedAssetIds: number[]; expectedVersion: string }
+  /**
+   * UPDATE_ASSET_CATEGORY (W02, passage 114AA) : catégorie du RÉFÉRENTIEL (`lib/asset-taxonomy`), jamais un
+   * libellé libre. La catégorie présentée comme « actuelle » est figée — si elle a changé, rien n'est écrit.
+   */
+  | {
+      kind: 'asset_category'; classifiedAssetId: number; categoryValue: string; expectedCategory: string | null;
+      /**
+       * Passage 114AB (W02) : `true` pour un bien de la famille OBJET — sa catégorie est le champ CANONIQUE
+       * `objectCategory` de sa fiche (section « Identification »), et non la colonne d'identité `subtype`.
+       */
+      objectCategory?: true;
+    }
+  /** UPDATE_ASSET_STATUS (W02, passage 114AA) : statut du référentiel (`lib/asset-status`), archivage exclu. */
+  | { kind: 'asset_status'; classifiedAssetId: number; statusValue: string; expectedStatus: string }
+  // UPDATE_DOCUMENT_TARGETS (W13) : liste COMPLÈTE des cibles après l'action, et liste présentée à l'aperçu.
+  // Passage 114AA : `level` dit quel niveau change (bien, pièce ou équipement) ; les deux autres sont laissés
+  // intacts par la façade (un niveau absent du corps garde sa sélection).
+  | {
+      kind: 'document_targets'; documentId: number; targetAssetIds: number[]; expectedAssetIds: number[]; expectedVersion: string;
+      level?: 'asset' | 'room' | 'equipment';
+      /** Pièces ou équipements après l'action, et ceux présentés à l'aperçu (vides pour le niveau « bien »). */
+      targetStructureIds?: number[]; expectedStructureIds?: number[];
+    }
   // Lot 114X (W21 – W26) : événements de référence — paramètres définis avec leurs commandes (`reference-events.ts`).
   | ReferenceEventParams;
 
