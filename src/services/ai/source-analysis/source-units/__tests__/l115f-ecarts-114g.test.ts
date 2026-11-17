@@ -163,7 +163,7 @@ describe('L115F-É02 — P1-02 : contrat de l’appel et candidats réellement p
     const decision = {
       value: 'DEV-2026-0042', kind: 'IDENTIFIER' as const, normalizedValue: 'DEV20260042', decision: 'COMPONENT_OR_CONTEXT' as const,
       reason: 'reference reprise par le devis rattache a cette prestation', sourceUnitId: cible.sourceUnitId,
-      evidence: { excerpt: cible.text }, relatedFactRefs: [], relatedCandidateKeys: ['cand-1'],
+      evidence: { excerpt: cible.text ?? undefined }, relatedFactRefs: [], relatedCandidateKeys: ['cand-1'],
       confidence: 'certain' as const, origin: 'PASS_1' as const,
     };
     // Clé citée mais ABSENTE des candidats actifs : lien INCONNU (distinct d'une décision sans aucun lien cité).
