@@ -171,14 +171,36 @@ interface CompletenessOverview {
   /**
    * Lot 114H (#775, § 6) : documents de la période par issue ACTUELLE (`coverage-issue.ts`) — résolue, réparation
    * programmée, anomalie technique, plafond atteint, limite de vérification (sans action), non résolue actionnable.
-   * `byIssueTruncated` : période trop volumineuse, compteurs sur les `ISSUE_SCAN_CAP` documents les plus récents.
+   *
+   * ══════════════════════════════════════════════════════════════════════
+   * LOT 115H (Trello #785, § 6) — PLUS DE PLAFOND DE 5 000 SUR LES TOTAUX
+   *
+   * Règle remplacée : les compteurs par issue portaient sur les 5 000
+   * documents les plus RÉCENTS de la période, et une troncature était
+   * signalée. Au-delà, les totaux du BO étaient faux : un administrateur
+   * lisait « 12 anomalies techniques » sur un stock qui en comptait
+   * davantage, sans moyen de connaître le vrai nombre.
+   *
+   * Le balayage est maintenant EXHAUSTIF sur la période : il est paginé par
+   * clé (`updated_at`, `file_id`) et lit toute la période, par pages de
+   * `ISSUE_SCAN_PAGE`. `byIssueScanned` dit combien de documents ont été
+   * classés — et `byIssueTruncated` reste faux.
+   * ══════════════════════════════════════════════════════════════════════
    */
   byIssue?: Record<CoverageIssue, number>;
+  /** Documents réellement classés par issue (= tous ceux de la période). */
+  byIssueScanned?: number;
+  /** Conservé pour les appelants : toujours `false` depuis le lot 115H (aucun plafond). */
   byIssueTruncated?: boolean;
 }
 
-/** Documents au plus lus pour les compteurs par issue (lecture légère : codes et compteurs). */
-const ISSUE_SCAN_CAP = 5_000;
+/**
+ * Taille d'une PAGE de lecture des issues (technique, pas une borne de total) :
+  * la période est parcourue en entier, page par page.
+ */
+const ISSUE_SCAN_PAGE = 2_000;
+/** Pages au plus (garde-fou de boucle : 2 000 × 5 000 = 10 millions de documents). */
+const ISSUE_SCAN_MAX_PAGES = 5_000;
 
 /** Lot 54G (§6) — totaux des diagnostics de couverture réelle sur la période. */
 interface T1DiagnosticsTotals {
@@ -208,6 +230,45 @@ function diagnosticsTotalsSql(): string {
   return `SELECT COUNT(*)::float8 AS documents, ${[...TOTAL_COUNTERS.map(n), ...TOTAL_LISTS.map(([k, c]) => l(k, c))].join(', ')}
             FROM (SELECT to_jsonb(c) -> 'verification' AS verification FROM document_extraction_coverage c WHERE c.updated_at >= $1) x
            WHERE jsonb_typeof(verification) = 'object'`;
+}
+
+/**
+ * Lot 115H (#785, § 6) — état courant de TOUS les documents de la période, lu
+ * par pages de clé (`updated_at`, `file_id`) : aucun document n'est écarté par
+ * un plafond, et aucun n'est lu deux fois (pagination par clé, pas par OFFSET).
+ * Ne lève jamais : une période illisible rend une liste vide.
+ */
+async function lireIssuesDeLaPeriode(since: string): Promise<CoverageIssueInput[]> {
+  const { pgClient } = await import('@/db');
+  const out: CoverageIssueInput[] = [];
+  let curseurDate: string | null = null;
+  let curseurFichier = 0;
+  for (let page = 0; page < ISSUE_SCAN_MAX_PAGES; page++) {
+    let rows: Array<CoverageIssueInput & { updatedAt: string; fileId: number }>;
+    try {
+      rows = (await pgClient.unsafe(
+        `SELECT c.file_id AS "fileId", c.updated_at AS "updatedAt",
+                c.quality_state AS "qualityState", c.anomalies, c.next_retry_at AS "nextRetryAt", c.retry_attempts AS "retryAttempts",
+                to_jsonb(c) ->> 'source_verification' AS "sourceVerification", to_jsonb(c) -> 'verification' AS verification,
+                to_jsonb(c) ->> 'last_retry_result' AS "lastRetryResult"
+           FROM document_extraction_coverage c
+          WHERE c.updated_at >= $1
+            AND ($2::timestamptz IS NULL OR (c.updated_at, c.file_id) < ($2::timestamptz, $3::int))
+          ORDER BY c.updated_at DESC, c.file_id DESC
+          LIMIT $4`,
+        [since, curseurDate, curseurFichier, ISSUE_SCAN_PAGE] as never[],
+      )) as unknown as Array<CoverageIssueInput & { updatedAt: string; fileId: number }>;
+    } catch {
+      return out;
+    }
+    if (rows.length === 0) break;
+    out.push(...rows);
+    const dernier = rows[rows.length - 1];
+    curseurDate = new Date(dernier.updatedAt).toISOString();
+    curseurFichier = Number(dernier.fileId);
+    if (rows.length < ISSUE_SCAN_PAGE) break;
+  }
+  return out;
 }
 
 export async function getT1CompletenessOverview(opts: { days?: number; limit?: number; anomaly?: string | null } = {}): Promise<CompletenessOverview> {
@@ -257,14 +318,9 @@ export async function getT1CompletenessOverview(opts: { days?: number; limit?: n
     ) as unknown as Promise<Array<{ v: string; n: number }>>,
     (pgClient.unsafe(diagnosticsTotalsSql(), [since] as never[]) as unknown as Promise<Array<Record<string, number>>>)
       .catch(() => [] as Array<Record<string, number>>),
-    // Lot 114H (#775) : état courant de chaque document de la période (codes et compteurs) pour les issues.
-    (pgClient.unsafe(
-      `SELECT c.quality_state AS "qualityState", c.anomalies, c.next_retry_at AS "nextRetryAt", c.retry_attempts AS "retryAttempts",
-              to_jsonb(c) ->> 'source_verification' AS "sourceVerification", to_jsonb(c) -> 'verification' AS verification,
-              to_jsonb(c) ->> 'last_retry_result' AS "lastRetryResult"
-         FROM document_extraction_coverage c WHERE c.updated_at >= $1 ORDER BY c.updated_at DESC LIMIT $2`,
-      [since, ISSUE_SCAN_CAP + 1] as never[],
-    ) as unknown as Promise<CoverageIssueInput[]>).catch(() => [] as CoverageIssueInput[]),
+    // Lot 114H (#775), complété par le lot 115H (#785, § 6) : état courant de CHAQUE document de la période
+    // (codes et compteurs), lu EXHAUSTIVEMENT par pages — aucun plafond de total.
+    lireIssuesDeLaPeriode(since),
   ]);
   const out = { ...empty, byQuality: { ...empty.byQuality } };
   let total = 0;
@@ -286,9 +342,11 @@ export async function getT1CompletenessOverview(opts: { days?: number; limit?: n
     issue: coverageIssueOf({ ...r, verification: objet(r.verification), maxRetries: out.maxRetries }),
   }));
   const byIssue = Object.fromEntries(COVERAGE_ISSUES.map((i) => [i, 0])) as Record<CoverageIssue, number>;
-  for (const r of pourIssues.slice(0, ISSUE_SCAN_CAP)) byIssue[coverageIssueOf({ ...r, verification: objet(r.verification), maxRetries: out.maxRetries }).issue]++;
+  for (const r of pourIssues) byIssue[coverageIssueOf({ ...r, verification: objet(r.verification), maxRetries: out.maxRetries }).issue]++;
   out.byIssue = byIssue;
-  if (pourIssues.length > ISSUE_SCAN_CAP) out.byIssueTruncated = true;
+  out.byIssueScanned = pourIssues.length;
+  // Lot 115H (#785, § 6) : plus aucun plafond — le total EST le nombre de documents de la période.
+  out.byIssueTruncated = false;
   if (totaux[0]) {
     out.totals = Object.fromEntries(Object.entries(totaux[0]).map(([k, v]) => [k, Number(v ?? 0)])) as unknown as T1DiagnosticsTotals;
   }

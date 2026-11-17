@@ -150,10 +150,18 @@ scenario('L114H', 'T1 — reprises bornées, remise en file réelle, réévaluat
     expect((await couverture(f)).verification.requeue).toMatchObject({ status: 'ACCEPTED', jobId: Number(file[0].id), attemptConsumed: true });
 
     // Seconde demande pendant que le travail attend : confirmée « déjà vivante », aucune tentative de plus.
+    // ════════════════════════════════════════════════════════════════════
+    // Règle remplacée (carte #785, § 2) : l'issue était `ALREADY_RUNNING` (réponse de la FILE), et la demande
+    // avait quand même sollicité la file — ce qui posait `coalesce_requested` sur le travail en cours et créait
+    // un passage supplémentaire à sa clôture. La demande porte maintenant une IDENTITÉ : la même demande
+    // (mêmes preuves) retrouve son travail vivant et le CONSTATE (`IDENTICAL_REQUEST_ALIVE`), sans solliciter
+    // la file. L'essentiel du lot 114H est inchangé et toujours vérifié : travail confirmé, AUCUNE tentative
+    // consommée, un seul travail.
+    // ════════════════════════════════════════════════════════════════════
     const deja = await jobs.requeueDocumentForRereadDetailed({ fileId: f, accountId: c.id, attempt: 2, origin: 't1-completeness-retry', result: 'REQUEUED_T1', scheduled: true });
-    expect(deja).toMatchObject({ status: 'ALREADY_RUNNING', queued: true, attemptConsumed: false, jobId: Number(file[0].id) });
+    expect(deja).toMatchObject({ status: 'IDENTICAL_REQUEST_ALIVE', queued: true, attemptConsumed: false, jobId: Number(file[0].id) });
     expect(await travaux(f)).toHaveLength(1);
-    expect(await couverture(f)).toMatchObject({ attempts: 1, result: 'REQUEUE_ALREADY_RUNNING' });
+    expect(await couverture(f)).toMatchObject({ attempts: 1 });
 
     // Deux demandes simultanées (tâche planifiée + BO) : un seul travail, une seule tentative.
     const g = await fichier(c);
@@ -161,7 +169,9 @@ scenario('L114H', 'T1 — reprises bornées, remise en file réelle, réévaluat
     const demande = { fileId: g, accountId: c.id, attempt: 1, origin: 't1-completeness-retry', result: 'REQUEUED_T1' };
     const [x, y] = await Promise.all([jobs.requeueDocumentForRereadDetailed(demande), jobs.requeueDocumentForRereadDetailed(demande)]);
     expect([x.queued, y.queued]).toEqual([true, true]);
-    expect([x.status, y.status].sort()).toEqual(['ACCEPTED', 'ALREADY_RUNNING']);
+    // Une demande crée le travail ; l'autre le constate (par la file ou par son identité) — jamais deux travaux.
+    expect(x.status === 'ACCEPTED' || y.status === 'ACCEPTED').toBe(true);
+    expect([x, y].filter((r) => r.attemptConsumed)).toHaveLength(1);
     expect((await travaux(g)).filter((j) => j.status === 'PENDING' || j.status === 'RUNNING')).toHaveLength(1);
     expect(Number((await couverture(g)).attempts)).toBe(1);
 

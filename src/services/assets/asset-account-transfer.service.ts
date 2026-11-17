@@ -139,6 +139,8 @@ export const FILE_SCOPED_TABLES: ReadonlyArray<readonly [table: string, column: 
   ['document_fact_provenance_events', 'file_id'],
   // Lot 114H (#775) : journal de la réévaluation de la couverture T1 du document (1705) — suit le document.
   ['t1_coverage_reassessments', 'file_id'],
+  // Lot 115H (#785) : identité et réservation des demandes de reprise T1 du document (1805) — suivent le document.
+  ['t1_requeue_requests', 'file_id'],
 ];
 
 /** Tables des données du BIEN (colonne `asset_id`) qui suivent le bien. */

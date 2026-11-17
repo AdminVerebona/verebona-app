@@ -46,6 +46,10 @@ import {
 } from './types';
 import { verificationAutoRetryDue } from './verification-followup';
 import { decideRequeueRight, decideRetry, releaseUnschedulablePending, retryFactsOf, retryLimits } from './retry-policy';
+import {
+  openRequeueRequest, recordRequeueProgress, requeueEvidenceFingerprint, requeueRequestKey,
+  type RequeueRequestRecord,
+} from './requeue-identity';
 import type { RequeueOrigin } from './retry-policy';
 import type { T1EnqueueOutcome, T1EnqueueStatus } from '../queue/t1-handler';
 import { partitionUnitRefs, relinkFromStored, type StoredUnitView } from './provenance-integrity';
@@ -431,12 +435,19 @@ const requeueFingerprint = (fileId: number) => `ai:t1-requeue:${fileId}`;
 /** Issue d'une demande de relecture du fichier par la file T1 (lot 114H, #775 P1-B). */
 export interface RequeueResult {
   /**
-   * Réponse réelle de la file (`T1EnqueueStatus`), ou, lot 115H (#785, § 1),
-   * `NOT_ADMISSIBLE` : la demande a été refusée par la règle commune AVANT tout
-   * enfilement (plafond à zéro, atteint ou abaissé). Aucun travail n'a été créé,
-   * aucune reprise consommée, aucune reprise promise.
+   * Réponse réelle de la file (`T1EnqueueStatus`), ou, lot 115H (#785) :
+   *   `NOT_ADMISSIBLE` (§ 1) la demande a été refusée par la règle commune AVANT
+   *          tout enfilement (plafond à zéro, atteint ou abaissé). Aucun travail
+   *          créé, aucune reprise consommée, aucune reprise promise ;
+   *   `IDENTICAL_REQUEST_ALIVE` (§ 2) une demande RIGOUREUSEMENT identique
+   *          (mêmes preuves) est déjà servie par un travail vivant : il est
+   *          CONSTATÉ, sans nouvel enfilement, sans passage supplémentaire et
+   *          sans aucune consommation ;
+   *   `ALREADY_SATISFIED` (§ 2) la même demande a déjà été servie par un travail
+   *          TERMINÉ dont le résultat est acquis, et aucune preuve n'a changé
+   *          depuis : la rejouer refarait à l'identique. Rien n'est consommé.
    */
-  status: T1EnqueueStatus | 'NOT_ADMISSIBLE';
+  status: T1EnqueueStatus | 'NOT_ADMISSIBLE' | 'IDENTICAL_REQUEST_ALIVE' | 'ALREADY_SATISFIED';
   /** Un travail vivant du document est CONFIRMÉ (créé, ou déjà présent) — seule condition de « REQUEUED_T1 ». */
   queued: boolean;
   jobId: number | null;
@@ -497,6 +508,72 @@ export function requeueCoverageUpdate(p: {
   }
 }
 
+// ── Lot 115H (#785, § 2) : lecture des preuves d'une couverture ─────────────
+
+type DiagVerification = { verificationReason?: unknown; pagesMissing?: unknown; reverification?: { fingerprint?: unknown } };
+const diagDe = (v: unknown): DiagVerification => {
+  const o = (typeof v === 'string' ? JSON.parse(v) : v) as DiagVerification | null;
+  return o && typeof o === 'object' ? o : {};
+};
+function lireMotifVerification(v: unknown): string | null {
+  const r = diagDe(v).verificationReason;
+  return typeof r === 'string' ? r : null;
+}
+function lirePagesManquantes(v: unknown): number[] {
+  const m = diagDe(v).pagesMissing;
+  return Array.isArray(m) ? m.map(Number).filter((n) => Number.isInteger(n) && n > 0) : [];
+}
+function lireEmpreinteReverification(v: unknown): string | null {
+  const f = diagDe(v).reverification?.fingerprint;
+  return typeof f === 'string' ? f : null;
+}
+
+/**
+ * Lot 115H (#785, § 2) — demande d'identité DÉJÀ CONNUE : que faire ?
+ *
+ * `null` : rien à court-circuiter (la demande repart normalement, avec sa
+ * réservation). Sinon l'issue est rendue telle quelle : aucun enfilement, aucun
+ * passage supplémentaire, aucune consommation. L'état RÉEL du travail est lu en
+ * base (compte, document, travail, statut) : la seule existence d'un
+ * identifiant ne vaut jamais « travail vivant ».
+ */
+async function courtCircuitDemandeConnue(p: {
+  fileId: number; accountId: number; origin: string; demande: RequeueRequestRecord; origine: RequeueOrigin; cle: string;
+}): Promise<RequeueResult | null> {
+  const { demande } = p;
+  // Réservation acquise mais suite inaboutie : la demande REPREND sa réservation (voir plus bas), pas de court-circuit.
+  if (demande.state === 'RESERVED') return null;
+  // Refusée, rendue ou récupérée : la demande peut être refaite (les bornes seront recontrôlées).
+  if (demande.state === 'REFUSED' || demande.state === 'RELEASED' || demande.state === 'RECOVERED') return null;
+  const { inspectCorrelatedJob } = await import('../../queue/job-queue.repository');
+  const travail = await inspectCorrelatedJob({
+    treatment: 'T1', accountId: p.accountId, targetType: 'asset_file', targetId: p.fileId, jobId: demande.jobId,
+  });
+  if (travail.state === 'ALIVE') {
+    await recordRequeueProgress({ requestId: demande.id, steps: { inspected: true }, state: 'OBSERVED', jobId: travail.jobId, reason: 'IDENTICAL_REQUEST_ALIVE' });
+    console.info(`[t1-requeue] document ${p.fileId} (${p.origin}, ${p.origine}) : demande identique déjà servie par le travail `
+      + `${travail.jobId} (${travail.status}) — constatée, aucun passage supplémentaire, aucune reprise consommée.`);
+    return {
+      status: 'IDENTICAL_REQUEST_ALIVE', queued: true, jobId: travail.jobId, reason: null,
+      attemptConsumed: false, result: 'REQUEUE_IDENTICAL_ALIVE',
+    };
+  }
+  if (travail.state === 'DONE') {
+    // Travail TERMINÉ, résultat acquis, et aucune preuve n'a changé (l'empreinte est dans l'identité) : rejouer
+    // refarait la même confrontation. Rien n'est consommé, aucune reprise n'est promise.
+    await recordRequeueProgress({ requestId: demande.id, steps: { inspected: true }, jobId: travail.jobId, reason: 'ALREADY_SATISFIED' });
+    console.info(`[t1-requeue] document ${p.fileId} (${p.origin}, ${p.origine}) : demande identique déjà servie par le travail `
+      + `${travail.jobId} terminé${travail.businessResult ? ` (${travail.businessResult})` : ''} — non rejouée (preuves inchangées).`);
+    return {
+      status: 'ALREADY_SATISFIED', queued: false, jobId: travail.jobId, reason: 'ALREADY_SATISFIED',
+      attemptConsumed: false, result: 'REQUEUE_ALREADY_SATISFIED',
+    };
+  }
+  // Travail échoué, annulé ou disparu : la MÊME demande a droit à une nouvelle tentative, dans ses bornes.
+  await recordRequeueProgress({ requestId: demande.id, steps: { inspected: true }, reason: `travail précédent ${travail.state}` });
+  return null;
+}
+
 /**
  * Relecture du FICHIER : le document repasse dans la file T1 (traitement
  * technique, non facturé, non annoncé). Lot 53 (D19) : partagée par la
@@ -535,6 +612,14 @@ export async function requeueDocumentForRereadDetailed(p: {
    * privilège : la règle du droit est la même pour toutes.
    */
   requestedBy?: RequeueOrigin;
+  /**
+   * Lot 115H (#785, § 2) : identité IMPOSÉE de la demande. Absente, l'identité
+   * est déduite de l'origine et de l'empreinte des preuves du document : deux
+   * demandes identiques se retrouvent (idempotence), une demande portée par une
+   * preuve nouvelle est distincte. Une action du BO qui veut explicitement sa
+   * propre demande peut en imposer une.
+   */
+  requestKey?: string;
 }): Promise<RequeueResult> {
   const { pgClient } = await import('@/db');
   // ══════════════════════════════════════════════════════════════════════
@@ -559,17 +644,80 @@ export async function requeueDocumentForRereadDetailed(p: {
   const limites = retryLimits(p.env);
   const origine: RequeueOrigin = p.requestedBy ?? (p.scheduled ? 'SCHEDULER' : 'OTHER');
   const [etat] = (await pgClient.unsafe(
-    `SELECT retry_attempts FROM document_extraction_coverage WHERE file_id = $1 AND account_id = $2`,
+    // Lot 115H (#785, § 2) : les PREUVES du document sont lues avec les tentatives — ce sont elles qui
+    // distinguent « demande identique » de « demande réellement distincte » (codes et compteurs seulement).
+    `SELECT c.retry_attempts, c.quality_state, c.anomalies, c.unresolved_units, c.uncertain_units, c.failed_units,
+            c.layer_version, to_jsonb(c) ->> 'source_verification' AS source_verification,
+            to_jsonb(c) -> 'verification' AS verification,
+            (SELECT x.source_sha256 FROM document_raw_extracts x WHERE x.file_id = c.file_id AND x.account_id = c.account_id) AS source_sha256
+       FROM document_extraction_coverage c WHERE c.file_id = $1 AND c.account_id = $2`,
     [p.fileId, p.accountId] as never[],
-  ).catch(() => [])) as unknown as Array<{ retry_attempts: number | null }>;
+  ).catch(() => [])) as unknown as Array<{
+    retry_attempts: number | null; quality_state: string | null; anomalies: string[] | null;
+    unresolved_units: number | null; uncertain_units: number | null; failed_units: number | null;
+    layer_version: number | null; source_verification: string | null; verification: unknown; source_sha256: string | null;
+  }>;
+  // ══════════════════════════════════════════════════════════════════════
+  // LOT 115H (Trello #785, § 2) — UNE DEMANDE IDENTIQUE NE CRÉE PAS DE
+  // PASSAGE SUPPLÉMENTAIRE, ET UNE DEMANDE DISTINCTE A SA PROPRE IDENTITÉ
+  //
+  // Règle complétée : `ALREADY_RUNNING` ne consommait aucune reprise (acquis
+  // du lot 114H, conservé), mais la file POSAIT `coalesce_requested` sur le
+  // travail en cours — un PASSAGE SUPPLÉMENTAIRE naissait à sa clôture : une
+  // seconde analyse complète du même document, payée par personne et absente
+  // des compteurs. Des clics répétés, ou BO + planificateur, ou deux
+  // exécutants, en empilaient autant.
+  //
+  // Désormais la demande porte une IDENTITÉ persistante (compte, document,
+  // origine, empreinte des preuves — `t1_requeue_requests`) :
+  //   · identité déjà servie par un travail VIVANT : le travail est constaté
+  //     (`IDENTICAL_REQUEST_ALIVE`), sans enfilement, sans passage
+  //     supplémentaire, sans consommation ;
+  //   · identité déjà servie par un travail TERMINÉ dont le résultat est acquis,
+  //     preuves inchangées : `ALREADY_SATISFIED` — la confrontation identique
+  //     n'est pas rejouée ;
+  //   · identité restée RÉSERVÉE (arrêt entre deux écritures) : la réservation
+  //     acquise est REPRISE, jamais doublée ;
+  //   · preuve ou source réellement nouvelle : l'empreinte change, donc
+  //     l'identité — droit réservé et consommation exacte, et ce n'est pas
+  //     présenté comme une simple absence de doublon.
+  // L'enfilement demande désormais `OBSERVE_ONLY` : la coalescence légitime des
+  // AUTRES traitements (T3, T4) reste inchangée.
+  // ══════════════════════════════════════════════════════════════════════
+  const empreinte = requeueEvidenceFingerprint({
+    qualityState: etat?.quality_state ?? null, anomalies: etat?.anomalies ?? null,
+    verificationReason: lireMotifVerification(etat?.verification),
+    sourceVerification: etat?.source_verification ?? null,
+    pagesMissing: lirePagesManquantes(etat?.verification),
+    unresolvedUnits: etat?.unresolved_units ?? null, uncertainUnits: etat?.uncertain_units ?? null,
+    failedUnits: etat?.failed_units ?? null,
+    reverificationFingerprint: lireEmpreinteReverification(etat?.verification),
+    sourceSha256: etat?.source_sha256 ?? null, layerVersion: etat?.layer_version ?? null,
+  });
+  const cle = requeueRequestKey({ origin: p.origin, requestedBy: origine, evidenceFingerprint: empreinte, explicit: p.requestKey ?? null });
+  const demande = await openRequeueRequest({
+    accountId: p.accountId, fileId: p.fileId, requestKey: cle, origin: p.origin, requestedBy: origine, evidenceFingerprint: empreinte,
+  });
+  if (demande && !demande.fresh) {
+    const court = await courtCircuitDemandeConnue({ ...p, demande, origine, cle });
+    if (court) return court;
+  }
   // Ligne de couverture ABSENTE (document sans couche A relue, contrôle de cohérence) : il n'y a rien à réserver,
   // et les tentatives ne peuvent pas être lues. Le droit est alors jugé sur le numéro de tentative que
   // l'appelant a lui-même calculé — jamais accordé sans contrôle.
   const ligne = etat !== undefined;
   const tentatives = ligne ? Number(etat.retry_attempts ?? 0) || 0 : Math.max(0, p.attempt - 1);
   const droit = decideRequeueRight({ retryAttempts: tentatives }, limites);
+  /**
+   * Lot 115H (#785, § 4) : réservation DÉJÀ acquise par cette même demande avant un arrêt — elle est REPRISE,
+   * jamais doublée. Le compteur reste donc exact quelle que soit la frontière où le traitement s'est arrêté.
+   */
+  const reservationReprise = demande !== null && !demande.fresh && demande.state === 'RESERVED'
+    && demande.steps.reserved === true && demande.reservedAttempt !== null;
   // Réservation CONDITIONNELLE : la ligne n'est modifiée que si le plafond le permet encore.
-  const reserve = droit.allowed && ligne
+  const reserve = reservationReprise
+    ? [{ n: demande!.reservedAttempt as number }]
+    : droit.allowed && ligne
     ? ((await pgClient.unsafe(
         // `origin` n'est PAS touchée ici : elle ne passe à « RETRY » qu'avec la consommation réelle (ci-dessous),
         // pour qu'une réservation relâchée ne laisse aucune trace d'une reprise qui n'a pas eu lieu.
@@ -580,9 +728,10 @@ export async function requeueDocumentForRereadDetailed(p: {
         [p.fileId, p.accountId, limites.maxRetries] as never[],
       )) as unknown as Array<{ n: number }>)
     : [];
-  if (!droit.allowed || (ligne && reserve.length === 0)) {
+  if (!reservationReprise && (!droit.allowed || (ligne && reserve.length === 0))) {
     const motif = droit.block ?? 'RETRY_CAP_REACHED';
     const resultat = `REQUEUE_NOT_ADMISSIBLE:${motif}`;
+    if (demande) await recordRequeueProgress({ requestId: demande.id, state: 'REFUSED', reason: motif });
     // Refus EXPLICITE : rien n'est consommé, aucune échéance n'est posée ni retirée (aucune reprise promise),
     // et l'origine de la demande refusée est consignée.
     await pgClient.unsafe(
@@ -604,26 +753,53 @@ export async function requeueDocumentForRereadDetailed(p: {
   }
   /** Valeur de la réservation : la relâcher consiste à revenir à `tentatives`. `-1` : aucune ligne, rien à relâcher. */
   const reserveeA = reserve.length > 0 ? Number(reserve[0].n) : -1;
+  if (demande) {
+    await recordRequeueProgress({
+      requestId: demande.id, steps: { reserved: true }, state: 'RESERVED',
+      reservedAttempt: reserveeA >= 0 ? reserveeA : null,
+    });
+  }
   let issue: T1EnqueueOutcome;
   try {
     const { enqueueFileAnalysesDetailed } = await import('../queue/t1-handler');
     // Lot 83C (R22) : relecture = reprise ciblée de la dernière exécution du document.
-    const issues = await enqueueFileAnalysesDetailed([p.fileId], p.accountId, { origin: p.origin, billable: false, processingVisibility: 'TECHNICAL', resume: true });
+    // Lot 115H (#785, § 2) : `OBSERVE_ONLY` — une demande identique CONSTATE le travail en cours et ne demande
+    // PAS de passage supplémentaire à sa clôture (plus de seconde analyse gratuite). La coalescence des autres
+    // traitements est inchangée.
+    const issues = await enqueueFileAnalysesDetailed([p.fileId], p.accountId, {
+      origin: p.origin, billable: false, processingVisibility: 'TECHNICAL', resume: true, onRunning: 'OBSERVE_ONLY',
+    });
     issue = issues.find((o) => o.fileId === p.fileId) ?? { fileId: p.fileId, status: 'REJECTED_TRANSIENT', jobId: null, reason: 'NO_OUTCOME' };
   } catch (e) {
     issue = { fileId: p.fileId, status: 'REJECTED_TRANSIENT', jobId: null, reason: 'ENQUEUE_ERROR', error: String((e as Error).message ?? e).slice(0, 300) };
   }
-  // Présence du travail RELUE après l'opération : le travail créé (quel que soit son état), ou un travail vivant du document.
+  if (demande) await recordRequeueProgress({ requestId: demande.id, steps: { enqueued: true }, jobId: issue.jobId, reason: issue.reason });
+  // ══════════════════════════════════════════════════════════════════════
+  // LOT 115H (#785, § 2) — CONTRÔLE FINAL EN BASE : COMPTE, DOCUMENT,
+  // DEMANDE / TRAVAIL ET ÉTAT RÉEL
+  //
+  // Règle remplacée : la relecture acceptait `id = <rendu> OR status IN
+  // ('PENDING','RUNNING')` — la seule EXISTENCE de l'identifiant rendu valait
+  // « travail vivant », même pour un travail déjà terminé, échoué ou annulé
+  // entre les deux lectures. `inspectCorrelatedJob` distingue maintenant
+  // travail VIVANT, travail TERMINÉ au résultat acquis, travail ÉCHOUÉ ou
+  // ANNULÉ, et absence de travail.
+  // ══════════════════════════════════════════════════════════════════════
   if (issue.status === 'ACCEPTED' || issue.status === 'ALREADY_RUNNING') {
-    const vivant = (await pgClient.unsafe(
-      `SELECT id FROM ai_job_queue
-        WHERE treatment = 'T1' AND account_id = $1 AND target_type = 'asset_file' AND target_id = $2
-          AND (id = $3 OR status IN ('PENDING', 'RUNNING'))
-        ORDER BY id DESC LIMIT 1`,
-      [p.accountId, String(p.fileId), issue.jobId] as never[],
-    ).catch(() => [])) as unknown as Array<{ id: number }>;
-    if (vivant.length === 0) issue = { fileId: p.fileId, status: 'REJECTED_TRANSIENT', jobId: null, reason: 'JOB_NOT_FOUND_AFTER_ENQUEUE' };
-    else if (issue.jobId === null) issue = { ...issue, jobId: Number(vivant[0].id) };
+    const { inspectCorrelatedJob } = await import('../../queue/job-queue.repository');
+    const travail = await inspectCorrelatedJob({
+      treatment: 'T1', accountId: p.accountId, targetType: 'asset_file', targetId: p.fileId, jobId: issue.jobId,
+    });
+    if (travail.state === 'NONE') {
+      issue = { fileId: p.fileId, status: 'REJECTED_TRANSIENT', jobId: null, reason: 'JOB_NOT_FOUND_AFTER_ENQUEUE' };
+    } else if (travail.state === 'FAILED' || travail.state === 'CANCELLED') {
+      // Le travail créé a déjà échoué (ou été annulé) : la demande n'est PAS confirmée — jamais présentée comme
+      // une remise en file réussie. La reprise suivante retentera dans ses bornes.
+      issue = { fileId: p.fileId, status: 'REJECTED_TRANSIENT', jobId: travail.jobId, reason: `JOB_${travail.state}_AFTER_ENQUEUE` };
+    } else if (issue.jobId === null) {
+      issue = { ...issue, jobId: travail.jobId };
+    }
+    if (demande) await recordRequeueProgress({ requestId: demande.id, steps: { inspected: true }, jobId: travail.jobId });
   }
   const [avant] = (await pgClient.unsafe(
     `SELECT to_jsonb(c) -> 'verification' -> 'requeue' ->> 'transientRefusals' AS refus FROM document_extraction_coverage c WHERE c.file_id = $1 AND c.account_id = $2`,
@@ -663,6 +839,15 @@ export async function requeueDocumentForRereadDetailed(p: {
     })] as never[],
   ).catch(() => undefined);
   const queued = issue.status === 'ACCEPTED' || issue.status === 'ALREADY_RUNNING';
+  if (demande) {
+    // Lot 115H (#785, § 4) : la frontière « compté » est franchie — l'état final de la demande dit si la
+    // réservation a été TENUE (consommation) ou RENDUE, et la récupération après panne n'a plus rien à faire.
+    await recordRequeueProgress({
+      requestId: demande.id, steps: { counted: true, diagnosed: true },
+      state: maj.consumeAttempt ? 'CONFIRMED' : queued ? 'OBSERVED' : 'RELEASED',
+      attemptConsumed: maj.consumeAttempt, reason: issue.reason,
+    });
+  }
   if (!queued) console.warn(`[t1-requeue] fichier ${p.fileId} (${p.origin}) : remise en file T1 non confirmée — ${issue.status}${issue.reason ? ` (${issue.reason})` : ''}`);
   // Supervision : une vraie erreur est visible ; elle se résout à la prochaine mise en file confirmée.
   try {

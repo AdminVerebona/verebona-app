@@ -57,6 +57,8 @@ interface Overview {
   totals?: Totals;
   /** Lot 114H (#775) : documents de la période par issue actuelle. */
   byIssue?: Record<CoverageIssue, number>;
+  /** Lot 115H (#785, § 6) : documents réellement classés — le balayage est exhaustif, plus aucun plafond. */
+  byIssueScanned?: number;
   byIssueTruncated?: boolean;
 }
 
@@ -98,10 +100,18 @@ export function reassessmentText(r: ReassessmentReport | null | undefined): stri
 }
 
 /** Documents de la période par issue actuelle (pure). */
-export function issuesText(byIssue: Record<string, number> | undefined | null, truncated?: boolean): string {
+/**
+ * Lot 115H (#785, § 6) : les totaux ne sont plus plafonnés — le nombre de
+ * documents classés est annoncé. `truncated` reste accepté (une lecture
+ * antérieure au lot 115H peut encore le rendre) : le code en est tolérant.
+ */
+export function issuesText(byIssue: Record<string, number> | undefined | null, truncated?: boolean, scanned?: number): string {
   if (!byIssue) return '';
   const parts = COVERAGE_ISSUES.filter((i) => (byIssue[i] ?? 0) > 0).map((i) => `${byIssue[i]} ${COVERAGE_ISSUE_LABEL[i]}`);
-  return parts.length ? `État actuel : ${parts.join(' · ')}${truncated ? ' (documents les plus récents)' : ''}` : '';
+  if (!parts.length) return '';
+  const portee = truncated ? ' (documents les plus récents)'
+    : typeof scanned === 'number' ? ` (sur ${scanned} document(s) de la période, total exhaustif)` : '';
+  return `État actuel : ${parts.join(' · ')}${portee}`;
 }
 
 const QUALITY_LABEL: Record<Quality, string> = {
@@ -289,8 +299,8 @@ export function T1CompletenessPanel({ days = 7 }: { days?: number }) {
         {data.averageCoverage !== null && ` · couverture moyenne ${Math.round(data.averageCoverage * 100)} %`}
         {` · ${data.repairPasses} passe(s) de réparation ciblée`}
       </p>
-      {issuesText(data.byIssue, data.byIssueTruncated) && (
-        <p className="text-xs text-[color:var(--text-secondary)] break-words" data-testid="t1-completeness-issues">{issuesText(data.byIssue, data.byIssueTruncated)}</p>
+      {issuesText(data.byIssue, data.byIssueTruncated, data.byIssueScanned) && (
+        <p className="text-xs text-[color:var(--text-secondary)] break-words" data-testid="t1-completeness-issues">{issuesText(data.byIssue, data.byIssueTruncated, data.byIssueScanned)}</p>
       )}
       {reevaluation}
       {totalsText(data.totals).length > 0 && (

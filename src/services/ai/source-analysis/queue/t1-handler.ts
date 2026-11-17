@@ -171,7 +171,8 @@ export function t1EnqueueOutcomeOf(fileId: number, r: { decision: string; jobId:
   if (r.decision === 'create') return { fileId, status: 'ACCEPTED', jobId: r.jobId, reason: null };
   if (r.reasonCode === 'ACCOUNT_INELIGIBLE') return { fileId, status: 'ACCOUNT_NOT_ELIGIBLE', jobId: null, reason: r.reasonCode };
   if (r.reasonCode === 'CROSS_ACCOUNT_SCOPE') return { fileId, status: 'REJECTED_FINAL', jobId: null, reason: r.reasonCode };
-  // `skip` (travail en attente), `coalesce` (travail en cours), continuation déjà en file : un travail vivant existe.
+  // `skip` (travail en attente), `coalesce` (travail en cours), `OBSERVED_RUNNING` (lot 115H : travail en cours
+  // CONSTATÉ, sans passage supplémentaire), continuation déjà en file : un travail vivant existe.
   if (r.jobId !== null) return { fileId, status: 'ALREADY_RUNNING', jobId: r.jobId, reason: r.reasonCode ?? (r.decision === 'coalesce' ? 'DUPLICATE_RUNNING' : 'DUPLICATE_PENDING') };
   // Aucune création et aucun travail désigné : motif inconnu de ce code — jamais présenté comme une réussite.
   return { fileId, status: 'REJECTED_TRANSIENT', jobId: null, reason: r.reasonCode ?? 'UNKNOWN_SKIP' };
@@ -179,7 +180,9 @@ export function t1EnqueueOutcomeOf(fileId: number, r: { decision: string; jobId:
 
 /** `enqueueFileAnalyses` en rendant l'issue de CHAQUE fichier (lot 114H, #775). Ne lève pas. */
 export async function enqueueFileAnalysesDetailed(
-  fileIds: number[], accountId: number, options: Parameters<typeof enqueueFileAnalyses>[2],
+  fileIds: number[], accountId: number,
+  // Lot 115H (#785, § 2) : `onRunning` est porté par la mise en file durable — même contrat ici.
+  options: Parameters<typeof enqueueFileAnalyses>[2] & Pick<Parameters<typeof enqueueDurableFileAnalyses>[2], 'onRunning'>,
 ): Promise<T1EnqueueOutcome[]> {
   if (options.origin === UPLOAD_ORIGIN && !(await t1TriggerActive('source_uploaded'))) {
     return [...new Set(fileIds)].map((fileId) => ({ fileId, status: 'REJECTED_FINAL' as const, jobId: null, reason: 'TRIGGER_INACTIVE' }));
@@ -225,6 +228,15 @@ export async function enqueueDurableFileAnalyses(
      * jamais une seconde exécution ni un faux succès / échec.
      */
     resume?: true | string;
+    /**
+     * Lot 115H (#785, § 2) : que faire d'un travail T1 DÉJÀ EN COURS sur ce
+     * document ? `EXTRA_PASS` (défaut) demande un passage supplémentaire
+     * consolidé à sa clôture ; `OBSERVE_ONLY` le constate seulement — à
+     * employer quand la demande est identique à ce que l'exécution satisfait
+     * déjà (reprise T1 du même document, mêmes preuves), pour qu'aucune
+     * seconde analyse gratuite ne soit créée.
+     */
+    onRunning?: 'EXTRA_PASS' | 'OBSERVE_ONLY';
   },
 ): Promise<number[]> {
   // Lot 114H (#775) : même mise en file, l'issue détaillée est réduite aux fichiers NOUVELLEMENT acceptés
@@ -264,6 +276,8 @@ export async function enqueueDurableFileAnalysesDetailed(
           ...(reprise ? { businessExecution: { id: reprise, role: 'resume' } } : {}),
         },
         ...(options.delaySeconds ? { delaySeconds: options.delaySeconds } : {}),
+        // Lot 115H (#785, § 2) : une demande identique ne crée plus de passage supplémentaire à la clôture.
+        ...(options.onRunning ? { onRunning: options.onRunning } : {}),
       });
       // `skip` : un travail équivalent attend déjà. Ce n'est pas un refus, mais
       // le fichier n'a pas à être compté deux fois comme nouvellement accepté.

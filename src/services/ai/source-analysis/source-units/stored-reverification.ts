@@ -73,13 +73,41 @@ export function reverifyFromStored(p: {
   });
 }
 
-/** Une couverture enregistrée relève-t-elle de la re-vérification ? (pure) */
-export function reverificationDue(c: { qualityState: string; verification: Record<string, unknown> | null | undefined }): boolean {
-  const d = (c.verification ?? {}) as Partial<T1CoverageDiagnostics> & { reverification?: { fingerprint?: string } };
-  return c.qualityState === 'VERIFICATION_INCOMPLETE'
-    && d.sourceVerification === 'PARTIAL'
-    && d.verificationReason === 'pages_unverified'
-    && Number(d.verifierVersion ?? 1) < SOURCE_VERIFIER_VERSION;
+/**
+ * Une couverture enregistrée relève-t-elle de la re-vérification ? (pure)
+ *
+ * ══════════════════════════════════════════════════════════════════════════
+ * LOT 115H (Trello #785, § 5) — UNE PREUVE NOUVELLE SUFFIT, À VERSION
+ * CONSTANTE
+ *
+ * Règle complétée : la re-vérification exigeait une ANCIENNE version du
+ * vérificateur (`verifierVersion < SOURCE_VERIFIER_VERSION`). Un document déjà
+ * confronté par la version courante ne l'était donc plus JAMAIS, même quand sa
+ * preuve avait changé — nouveau texte original extrait, nouvelle lecture T1,
+ * nouveau fichier source : la preuve nouvelle ne suffisait pas seule.
+ *
+ * Désormais, deux conditions suffisent, l'une OU l'autre :
+ *   · la version du vérificateur a changé (règle du lot 109K, conservée) ;
+ *   · l'EMPREINTE DE LA SOURCE réellement lue a changé depuis la dernière
+ *     confrontation (`sourceSha256` ≠ celle consignée), ou aucune confrontation
+ *     n'a jamais été consignée.
+ * Et la confrontation elle-même reste bornée par son empreinte complète
+ * (`reverificationFingerprint`) : une confrontation RIGOUREUSEMENT identique
+ * n'est jamais rejouée — pas de boucle.
+ * ══════════════════════════════════════════════════════════════════════════
+ */
+export function reverificationDue(c: {
+  qualityState: string; verification: Record<string, unknown> | null | undefined;
+  /** Empreinte du fichier source actuellement lu (`document_raw_extracts.source_sha256`) — lot 115H. */
+  sourceSha256?: string | null;
+}): boolean {
+  const d = (c.verification ?? {}) as Partial<T1CoverageDiagnostics> & { reverification?: { fingerprint?: string; sourceSha?: string | null } };
+  if (c.qualityState !== 'VERIFICATION_INCOMPLETE' || d.sourceVerification !== 'PARTIAL' || d.verificationReason !== 'pages_unverified') return false;
+  if (Number(d.verifierVersion ?? 1) < SOURCE_VERIFIER_VERSION) return true;
+  // Preuve NOUVELLE à version constante : la source lue n'est plus celle de la dernière confrontation.
+  if (c.sourceSha256 === undefined) return false;
+  const confrontee = d.reverification?.sourceSha ?? null;
+  return (c.sourceSha256 ?? null) !== confrontee;
 }
 
 export interface ReverificationOutcome {
@@ -108,7 +136,6 @@ export async function reverifyStoredCoverage(p: { accountId: number; fileId: num
   const cov = await loadDocumentCoverage(p.fileId, p.accountId);
   if (!cov) return skip('no_coverage');
   const avant = cov.qualityState;
-  if (!reverificationDue({ qualityState: avant, verification: cov.verification })) return skip('not_due', avant);
   const d = (cov.verification ?? {}) as Partial<T1CoverageDiagnostics> & Record<string, unknown>;
 
   const [x] = (await pgClient.unsafe(
@@ -116,8 +143,10 @@ export async function reverifyStoredCoverage(p: { accountId: number; fileId: num
        FROM document_raw_extracts WHERE file_id = $1 AND account_id = $2`,
     [p.fileId, p.accountId] as never[],
   ).catch(() => [])) as unknown as Row[];
-  const stored = await loadAllDocumentSourceUnits(p.fileId, { accountId: p.accountId });
   const extractSha = (x?.source_sha256 as string | null) ?? null;
+  // Lot 115H (#785, § 5) : l'empreinte de la source lue entre dans la condition — une preuve nouvelle suffit.
+  if (!reverificationDue({ qualityState: avant, verification: cov.verification, sourceSha256: extractSha })) return skip('not_due', avant);
+  const stored = await loadAllDocumentSourceUnits(p.fileId, { accountId: p.accountId });
   const empreinte = reverificationFingerprint({ extractSha, units: stored });
   const precedente = (d.reverification as { fingerprint?: string } | undefined)?.fingerprint;
   if (precedente === empreinte) return skip('same_fingerprint', avant);
@@ -135,7 +164,7 @@ export async function reverifyStoredCoverage(p: { accountId: number; fileId: num
   };
   if (preuveIndisponible) {
     // Aucune preuve déterministe disponible : l'incertitude est CONSERVÉE, l'essai est consigné (jamais rejoué).
-    await marque('REVERIFY_NO_TEXT_LAYER', { ...d, verifierVersion: SOURCE_VERIFIER_VERSION, reverification: { fingerprint: empreinte, at: new Date().toISOString(), result: 'NO_TEXT_LAYER' } });
+    await marque('REVERIFY_NO_TEXT_LAYER', { ...d, verifierVersion: SOURCE_VERIFIER_VERSION, reverification: { fingerprint: empreinte, sourceSha: extractSha, at: new Date().toISOString(), result: 'NO_TEXT_LAYER' } });
     return skip('text_layer_unavailable', avant);
   }
 
@@ -181,7 +210,9 @@ export async function reverifyStoredCoverage(p: { accountId: number; fileId: num
     ...d, ...report.diagnostics,
     // Compteurs conservés de l'analyse (relectures, continuation) : la re-vérification ne les remet jamais à zéro.
     ...(d.continuationRuns != null ? { continuationRuns: d.continuationRuns } : {}),
-    reverification: { fingerprint: empreinte, at: new Date().toISOString(), result, qualityBefore: avant, qualityAfter: apres },
+    // Lot 115H (#785, § 5) : l'empreinte de la SOURCE confrontée est conservée — c'est elle qui dit si une
+    // preuve nouvelle est arrivée depuis, à version de vérificateur constante.
+    reverification: { fingerprint: empreinte, sourceSha: extractSha, at: new Date().toISOString(), result, qualityBefore: avant, qualityAfter: apres },
   };
   const rows = (await pgClient.unsafe(
     `UPDATE document_extraction_coverage

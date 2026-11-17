@@ -175,15 +175,42 @@ export function isBusinessResult(v: unknown): v is JobBusinessResult {
  */
 export type QueueDecision = 'create' | 'coalesce' | 'skip';
 
+/**
+ * ══════════════════════════════════════════════════════════════════════════
+ * LOT 115H (Trello #785, § 2) — CE QU'UNE DEMANDE IDENTIQUE DOIT FAIRE D'UN
+ * TRAVAIL EN COURS
+ *
+ * `EXTRA_PASS` (défaut, comportement du WF-10 conservé) : la demande annonce
+ * des données que l'exécution en cours ne verra PAS (un événement T3, une
+ * réanalyse T4) — un passage supplémentaire consolidé est demandé, et un seul
+ * quel que soit le nombre d'événements. La coalescence légitime des autres
+ * traitements et les vrais changements de source ou de preuve passent par là.
+ *
+ * `OBSERVE_ONLY` (lot 115H) : la demande est RIGOUREUSEMENT identique à celle
+ * que l'exécution en cours est déjà en train de satisfaire (même document,
+ * mêmes preuves — reprise T1 d'un document). Demander un passage
+ * supplémentaire créerait une SECONDE analyse complète à la clôture, gratuite
+ * pour les compteurs de reprise et invisible dans le décompte des appels. Le
+ * travail vivant est donc seulement CONSTATÉ.
+ *
+ * Une demande réellement DISTINCTE (preuve ou source nouvelle) ne passe pas
+ * par là : elle porte sa propre identité, réserve son droit et consomme sa
+ * reprise (`t1_requeue_requests`).
+ * ══════════════════════════════════════════════════════════════════════════
+ */
+export type RunningRequestMode = 'EXTRA_PASS' | 'OBSERVE_ONLY';
+
 export function decideQueueing(
   existing: { status: JobStatus } | null,
   origin: JobOrigin,
+  onRunning: RunningRequestMode = 'EXTRA_PASS',
 ): QueueDecision {
   // WF-11 : le lancement manuel contourne la déduplication, toujours.
   if (origin === 'manual') return 'create';
   if (!existing) return 'create';
   if (existing.status === 'PENDING') return 'skip';
-  if (existing.status === 'RUNNING') return 'coalesce';
+  // Un travail EN COURS : passage supplémentaire consolidé, ou simple constat (lot 115H, § 2).
+  if (existing.status === 'RUNNING') return onRunning === 'OBSERVE_ONLY' ? 'skip' : 'coalesce';
   return 'create';
 }
 

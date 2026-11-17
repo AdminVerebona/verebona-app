@@ -23,7 +23,10 @@ interface Anomalie { id: number; fingerprint: string; status: 'open' | 'resolved
 
 const base = vi.hoisted(() => ({
   docs: [] as Doc[], journal: [] as Journal[], anomalies: [] as Anomalie[],
-  schema: { layer: true, m1665: true, m1705: true },
+  /** `m1805` (carte #785) : bail, étapes, empreinte des preuves et curseurs durables. */
+  schema: { layer: true, m1665: true, m1705: true, m1805: false },
+  /** Lignes de curseur durable (carte #785, § 5). */
+  curseurs: new Map<string, number>(),
   /** État « après réconciliation » de chaque document (défaut : inchangé). */
   apres: new Map<number, Partial<Doc>>(),
   reconciliations: [] as Array<{ fileId: number; accountId: number; apply: boolean; origin: string }>,
@@ -38,24 +41,38 @@ vi.mock('@/db', () => ({
     unsafe: async (q: string, p: unknown[] = []) => {
       const x = q.replace(/\s+/g, ' ').trim();
       if (/to_regclass\('t1_coverage_reassessments'\)/.test(x)) return [{ ok: base.schema.m1705 }];
+      // Carte #785 : migration 1805 (bail, étapes, empreinte) et curseurs durables.
+      if (/to_regclass\('t1_requeue_requests'\)/.test(x)) return [{ ok: false }];
+      if (/to_regclass\('t1_reassessment_cursors'\)/.test(x)) return [{ ok: base.schema.m1805 }];
+      if (/information_schema\.columns/.test(x)) return [{ n: base.schema.m1805 ? 5 : 0 }];
+      if (/t1_reassessment_cursors/.test(x)) {
+        if (x.startsWith('SELECT position')) {
+          const v = base.curseurs.get(String(p[1]));
+          return v === undefined ? [] : [{ position: v }];
+        }
+        base.curseurs.set(String(p[1]), Number(p[2]));
+        return [];
+      }
       // A. sélection paginée du stock.
       if (x.startsWith('SELECT c.file_id, c.account_id, (c.next_retry_at IS NOT NULL')) {
         base.selections++;
-        const [apres, etats, version, maxEssais, limite, , compte] = p as [number, string[], number, number, number, number, number | null];
+        const [apres, etats, version, maxEssais, limite, , compte, nonTerminaux] = p as [number, string[], number, number, number, number, number | null, string[]];
         return base.docs.filter((d) => d.fileId > apres && !d.deleted && etats.includes(d.qualityState) && (compte === null || d.accountId === compte)
-          && !base.journal.some((j) => j.fileId === d.fileId && j.version === version && (j.outcome !== 'ERROR' || j.attempts >= maxEssais)))
+          && !base.journal.some((j) => j.fileId === d.fileId && j.version === version && (!nonTerminaux.includes(j.outcome) || j.attempts >= maxEssais)))
           .sort((a, b) => a.fileId - b.fileId).slice(0, limite)
-          .map((d) => ({ file_id: d.fileId, account_id: d.accountId, reprise_active: d.busy === true }));
+          .map((d) => ({ file_id: d.fileId, account_id: d.accountId, reprise_active: d.busy === true, analyse_en_cours: false, compte_exclu: false }));
       }
-      // Journal : une ligne par (document, version) ; une erreur est complétée, jamais une issue acquise.
+      // Journal : une ligne par (document, version) ; une issue NON TERMINALE est complétée, jamais une issue acquise.
       if (x.startsWith('INSERT INTO t1_coverage_reassessments')) {
         const [accountId, fileId, version, outcome, before, after, alerts] = p as [number, number, number, string, string, string, string];
+        const nonTerminaux = p[p.length - 1] as string[];
         const j = base.journal.find((r) => r.fileId === fileId && r.version === version);
         const ligne = { fileId, accountId, version, outcome, before: JSON.parse(before), after: JSON.parse(after), alerts: JSON.parse(alerts) };
         if (!j) base.journal.push({ ...ligne, attempts: 1 });
-        else if (j.outcome === 'ERROR') Object.assign(j, ligne, { attempts: j.attempts + 1 });
+        else if (nonTerminaux.includes(j.outcome)) Object.assign(j, ligne, { attempts: j.attempts + 1 });
         return [];
       }
+      if (x.startsWith('UPDATE t1_coverage_reassessments')) return [];
       // Alertes ouvertes d'un document.
       if (x.startsWith("SELECT id, fingerprint FROM admin_anomalies WHERE status = 'open' AND fingerprint = ANY")) {
         const fps = p[0] as string[];
@@ -63,14 +80,15 @@ vi.mock('@/db', () => ({
       }
       // B. alertes T1 ouvertes, par identifiant.
       if (x.startsWith('SELECT an.id, an.fingerprint, an.account_id FROM admin_anomalies an')) {
-        const [apres, , , limite, compte] = p as [number, string, string, number, number | null];
-        return base.anomalies.filter((a) => a.status === 'open' && a.id > apres && /^ai:t1-(completeness|normalisation-loss):/.test(a.fingerprint) && (compte === null || a.accountId === compte))
+        // Carte #785 (§ 6) : les préfixes sont passés en TABLEAU (inventaire des familles), plus deux paramètres.
+        const [apres, prefixes, limite, compte] = p as [number, string[], number, number | null];
+        return base.anomalies.filter((a) => a.status === 'open' && a.id > apres && prefixes.some((pre) => a.fingerprint.startsWith(pre)) && (compte === null || a.accountId === compte))
           .sort((a, b) => a.id - b.id).slice(0, limite).map((a) => ({ id: a.id, fingerprint: a.fingerprint, account_id: a.accountId }));
       }
       if (x.startsWith('SELECT af.id AS file, af.account_id, af.deleted_at')) {
         const d = base.docs.find((r) => r.fileId === p[0]);
         if (!d) return [{ file: null }];
-        return [{ file: d.fileId, account_id: d.accountId, deleted_at: d.deleted ? '2026-01-01' : null, qualityState: d.qualityState, anomalies: d.anomalies, coverageRatio: 0.9, failedUnits: 0, truncatedSectionsCount: 0, droppedFactsCount: 0, verification: { normalisationLosses: d.losses } }];
+        return [{ file: d.fileId, account_id: d.accountId, deleted_at: d.deleted ? '2026-01-01' : null, qualityState: d.qualityState, anomalies: d.anomalies, coverageRatio: 0.9, failedUnits: 0, truncatedSectionsCount: 0, droppedFactsCount: 0, verification: { normalisationLosses: d.losses }, lastRetryResult: null, retryScheduled: d.nextRetryAt !== null }];
       }
       throw new Error(`requête non prévue par le double : ${x.slice(0, 80)}`);
     },
@@ -124,9 +142,11 @@ const { runCoverageReassessment, T1_COVERAGE_RULES_VERSION, REASSESSMENT_MAX_ATT
 const doc = (fileId: number, over: Partial<Doc> = {}): Doc => ({ fileId, accountId: 1, qualityState: 'COMPLETE_WITH_UNRESOLVED', anomalies: [], nextRetryAt: null, losses: 0, ...over });
 const alerte = (id: number, fingerprint: string, accountId = 1): Anomalie => ({ id, fingerprint, status: 'open', accountId });
 
-beforeEach(() => {
-  base.docs = []; base.journal = []; base.anomalies = []; base.schema = { layer: true, m1665: true, m1705: true };
-  base.apres = new Map(); base.reconciliations = []; base.lectures = []; base.selections = 0;
+beforeEach(async () => {
+  base.docs = []; base.journal = []; base.anomalies = []; base.schema = { layer: true, m1665: true, m1705: true, m1805: false };
+  base.apres = new Map(); base.reconciliations = []; base.lectures = []; base.selections = 0; base.curseurs = new Map();
+  (await import('../historical-reassessment')).resetReassessmentSchemaCache();
+  (await import('../requeue-identity')).resetRequeueRequestsReadyCache();
 });
 
 describe('L114H-S01 — R7 : gros stock, pagination, point de reprise, idempotence', () => {
@@ -255,15 +275,19 @@ describe('L114H-S03 — R6 : alertes closes seulement si la cause a disparu', ()
     expect(base.anomalies[0].status).toBe('resolved');
   });
 
-  it('alertes sans document éligible : document supprimé ou inconnu → close ; couverture complète → close ; autre alerte IA → jamais touchée', async () => {
+  // RÈGLE REMPLACÉE (carte #785, § 6) : le recontrôle ne portait que sur `ai:t1-completeness:*` et
+  // `ai:t1-normalisation-loss:*` ; la famille `ai:t1-requeue:*` (refus de remise en file), pourtant produite par
+  // `jobs.ts`, restait ouverte indéfiniment même après une mise en file confirmée. Elle fait désormais partie de
+  // l'inventaire recontrôlé. Les alertes d'AUTRES domaines (`ai:schema-compat:*`) restent, elles, intouchées.
+  it('alertes sans document éligible : document supprimé ou inconnu → close ; couverture complète → close ; refus de remise en file levé → close ; alerte d’un autre domaine → jamais touchée', async () => {
     base.docs = [doc(1, { deleted: true, qualityState: 'INCOMPLETE_FINAL' }), doc(2, { qualityState: 'COMPLETE' }), doc(3, { qualityState: 'COMPLETE', losses: 1 })];
     base.anomalies = [
       alerte(10, 'ai:t1-completeness:1'), alerte(11, 'ai:t1-completeness:2'), alerte(12, 'ai:t1-normalisation-loss:3'),
       alerte(13, 'ai:t1-completeness:999'), alerte(14, 'ai:schema-compat:t1'), alerte(15, 'ai:t1-requeue:2'),
     ];
     const r = await runCoverageReassessment({});
-    expect(r).toMatchObject({ examined: 0, orphanAlertsExamined: 4, alertsClosed: 3, alertsMaintained: 1 });
-    expect(base.anomalies.map((a) => [a.id, a.status])).toEqual([[10, 'resolved'], [11, 'resolved'], [12, 'open'], [13, 'resolved'], [14, 'open'], [15, 'open']]);
+    expect(r).toMatchObject({ examined: 0, orphanAlertsExamined: 5, alertsClosed: 4, alertsMaintained: 1 });
+    expect(base.anomalies.map((a) => [a.id, a.status])).toEqual([[10, 'resolved'], [11, 'resolved'], [12, 'open'], [13, 'resolved'], [14, 'open'], [15, 'resolved']]);
     expect(base.anomalies[0].cause).toContain('document supprimé');
     expect(base.journal).toEqual([]);
   });
@@ -271,9 +295,9 @@ describe('L114H-S03 — R6 : alertes closes seulement si la cause a disparu', ()
 
 describe('L114H-S04 — R7 : migrations absentes', () => {
   it.each([
-    ['couche A absente', { layer: false, m1665: true, m1705: true }, 'SOURCE_LAYER_MISSING'],
-    ['migration 1665 absente', { layer: true, m1665: false, m1705: true }, 'MIGRATION_1665_MISSING'],
-    ['migration 1705 absente', { layer: true, m1665: true, m1705: false }, 'MIGRATION_1705_MISSING'],
+    ['couche A absente', { layer: false, m1665: true, m1705: true, m1805: false }, 'SOURCE_LAYER_MISSING'],
+    ['migration 1665 absente', { layer: true, m1665: false, m1705: true, m1805: false }, 'MIGRATION_1665_MISSING'],
+    ['migration 1705 absente', { layer: true, m1665: true, m1705: false, m1805: false }, 'MIGRATION_1705_MISSING'],
   ])('%s : campagne inactive, aucune lecture de document, aucune écriture', async (_nom, schema, motif) => {
     base.schema = schema;
     base.docs = [doc(1, { qualityState: 'INCOMPLETE_FINAL' })];

@@ -217,6 +217,10 @@ export const DIAG_TABLE_COVERAGE: Readonly<Record<string, DiagTableCoverage>> = 
   document_fact_provenance_events: C('extractions-ia'),
   // Lot 114H (#775) : journal de la réévaluation sans IA de la couverture T1 du stock (avant / après, alertes closes ou maintenues).
   t1_coverage_reassessments: C('extractions-ia'),
+  // Lot 115H (#785, § 2 et § 4) : identité persistante d'une demande de reprise T1 et réservation de son droit.
+  t1_requeue_requests: C('extractions-ia'),
+  // Lot 115H (#785, § 5) : points de reprise durables de la campagne de réévaluation T1.
+  t1_reassessment_cursors: T('extractions-ia', 'réévaluation T1 multi-comptes (curseurs)'),
   document_tables: C('extractions-ia'),
   document_table_cells: C('extractions-ia'),
   document_analysis_runs: C('extractions-ia'),

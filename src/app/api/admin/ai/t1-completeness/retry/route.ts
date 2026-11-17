@@ -29,6 +29,9 @@ const REQUEUE_REFUSAL_MESSAGE: Record<string, string> = {
   // Lot 115H (#785, § 1) : refus par la règle commune des reprises, AVANT tout enfilement (textes nouveaux,
   // à valider par le PO). Aucune reprise n'a été consommée et aucun travail n'a été créé.
   NOT_ADMISSIBLE: 'Analyse non relancée : ce document n’a plus de reprise disponible (plafond atteint ou reprises désactivées). Aucune reprise n’a été consommée.',
+  // Lot 115H (#785, § 2) : demande identique déjà servie par une analyse terminée, aucune preuve nouvelle depuis
+  // (texte nouveau, à valider par le PO).
+  ALREADY_SATISFIED: 'Analyse non relancée : cette demande a déjà été traitée et rien n’a changé depuis (même fichier, mêmes preuves). Aucune reprise n’a été consommée.',
 };
 /** Motif précis du refus de la règle commune (affiché après le message). */
 const NOT_ADMISSIBLE_REASON: Record<string, string> = {
@@ -81,10 +84,14 @@ export async function POST(req: NextRequest) {
         : REQUEUE_REFUSAL_MESSAGE[r.status] ?? 'Mise en file refusée.';
       return NextResponse.json({
         ok: false, queued: false, status: r.status, reason: r.reason, attemptConsumed: r.attemptConsumed,
-        error: r.status === 'NOT_ADMISSIBLE' ? 'NOT_ADMISSIBLE' : 'NOT_QUEUED', message,
+        error: r.status === 'NOT_ADMISSIBLE' ? 'NOT_ADMISSIBLE' : r.status === 'ALREADY_SATISFIED' ? 'ALREADY_SATISFIED' : 'NOT_QUEUED', message,
       }, { status: 409 });
     }
-    return NextResponse.json({ ok: true, queued: true, status: r.status, alreadyRunning: r.status === 'ALREADY_RUNNING', jobId: r.jobId });
+    return NextResponse.json({
+      ok: true, queued: true, status: r.status,
+      // Lot 115H (#785, § 2) : une demande identique CONSTATE le travail vivant — jamais un second passage.
+      alreadyRunning: r.status === 'ALREADY_RUNNING' || r.status === 'IDENTICAL_REQUEST_ALIVE', jobId: r.jobId,
+    });
   } catch (e) {
     return toErrorResponse(e, 'POST /api/admin/ai/t1-completeness/retry');
   }

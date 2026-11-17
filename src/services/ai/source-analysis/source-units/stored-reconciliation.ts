@@ -93,7 +93,13 @@ export interface StoredRequalification {
 }
 
 export interface StoredReconciliationResult {
-  outcome: 'APPLIED' | 'SIMULATED' | 'UNCHANGED' | 'NO_LAYER';
+  /**
+   * Lot 115H (#785, § 4) : `CONFLICT_DEFERRED` — une écriture plus récente de la
+   * couche (analyse, reprise, action du BO) est passée pendant le recalcul, deux
+   * fois de suite. RIEN n'a été écrit, l'état récent est préservé et le document
+   * est explicitement DIFFÉRÉ au passage suivant : jamais un succès fictif.
+   */
+  outcome: 'APPLIED' | 'SIMULATED' | 'UNCHANGED' | 'NO_LAYER' | 'CONFLICT_DEFERRED';
   requalified: StoredRequalification[];
   before: { covered: number; unresolved: number; uncertain: number; qualityState: string | null };
   after: { covered: number; unresolved: number; uncertain: number; qualityState: string | null };
@@ -123,6 +129,38 @@ const compte = (units: readonly CoveredSourceUnit[], s: string) => units.filter(
  * avec les MÊMES règles que l'analyse ; sinon simulation (rien n'est écrit).
  */
 export async function reconcileStoredDocumentCoverage(p: {
+  accountId: number; fileId: number; apply: boolean; origin: string;
+}): Promise<StoredReconciliationResult> {
+  // ══════════════════════════════════════════════════════════════════════
+  // LOT 115H (Trello #785, § 4) — CONTRÔLE DE VERSION SUR LE CHEMIN DE LA
+  // RÉCONCILIATION ENREGISTRÉE
+  //
+  // Règle complétée : la lecture (unités, couverture, faits, décisions) avait
+  // lieu AVANT la transaction d'écriture, sans aucune garde de version sur ce
+  // chemin — une analyse, une reprise ou une action du BO passée entre-temps
+  // était ÉCRASÉE par un état calculé sur des données périmées.
+  //
+  // Désormais la version lue (`updated_at`) est portée jusqu'à l'écriture, qui
+  // verrouille la ligne et la compare. En cas de conflit : on RELIT et on
+  // RECALCULE une fois ; si le conflit persiste, le document est explicitement
+  // DIFFÉRÉ (`CONFLICT_DEFERRED`), rien n'est écrit, et la couche plus récente
+  // reste intacte. Jamais de succès fictif.
+  // ══════════════════════════════════════════════════════════════════════
+  const { CoverageVersionConflictError } = await import('./repository');
+  for (let essai = 0; essai < 2; essai++) {
+    try {
+      return await reconcileStoredPass(p);
+    } catch (e) {
+      if (!(e instanceof CoverageVersionConflictError)) throw e;
+      console.info(`[t1-reconciliation] fichier ${p.fileId} (${p.origin}) : couche écrite entre-temps — `
+        + `${essai === 0 ? 'relecture et recalcul' : 'passage différé'}.`);
+    }
+  }
+  const vide = { covered: 0, unresolved: 0, uncertain: 0, qualityState: null };
+  return { outcome: 'CONFLICT_DEFERRED', requalified: [], before: vide, after: vide };
+}
+
+async function reconcileStoredPass(p: {
   accountId: number; fileId: number; apply: boolean; origin: string;
 }): Promise<StoredReconciliationResult> {
   const { pgClient } = await import('@/db');
@@ -234,6 +272,8 @@ export async function reconcileStoredDocumentCoverage(p: {
       retryAttempts: cov.retryAttempts,
       nextRetryAt: prochaine,
       retryResult: requalified.length > 0 ? `RECONCILED_${requalified.length}` : politiquesChangees ? 'RECONCILED_POLICIES' : 'RECONCILED_STATE',
+      // Lot 115H (#785, § 4) : la version LUE au début de ce recalcul — l'écriture est refusée si la couche a changé.
+      expectUpdatedAt: cov.updatedAt ?? null,
     });
   });
   console.info(`[t1-reconciliation] fichier ${p.fileId} (${p.origin}) : ${requalified.length} unité(s) requalifiée(s), `

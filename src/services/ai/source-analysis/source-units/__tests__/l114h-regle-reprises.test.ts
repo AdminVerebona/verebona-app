@@ -303,8 +303,11 @@ describe('L114H-U05 — R5 : issue RÉELLE d’une remise en file T1 et écritur
     expect(jobs.match(/return issue\(rq\.queued \? 'requeued' : 'not_queued', rq\.result\)/g)).toHaveLength(2);
     // Carte #785 (§ 1) : la route distingue le refus de la FILE (`NOT_QUEUED`) du refus de la RÈGLE COMMUNE
     // (`NOT_ADMISSIBLE`, prononcé avant tout enfilement) ; les deux codes sont rendus par la même branche.
+    // Règle complétée (carte #785, § 2) : un troisième code s'ajoute — `ALREADY_SATISFIED` (demande identique déjà
+    // servie, preuves inchangées). Les trois sortent toujours de la MÊME branche de refus.
     const route = lire('src/app/api/admin/ai/t1-completeness/retry/route.ts');
-    expect(route).toContain("'NOT_ADMISSIBLE' : 'NOT_QUEUED'");
+    expect(route).toContain("'NOT_ADMISSIBLE'");
+    expect(route).toContain("'ALREADY_SATISFIED' : 'NOT_QUEUED'");
     expect(route).toContain("requestedBy: 'BO'");
   });
 });
@@ -372,7 +375,10 @@ describe('L114H-U07 — issue d’une réévaluation, cible d’une empreinte', 
   it('empreintes des alertes T1 de couverture', () => {
     expect(alertTargetOf('ai:t1-completeness:388')).toEqual({ kind: 'COMPLETENESS', fileId: 388 });
     expect(alertTargetOf('ai:t1-normalisation-loss:126')).toEqual({ kind: 'NORMALISATION_LOSS', fileId: 126 });
-    for (const fp of ['ai:t1-completeness:', 'ai:t1-completeness:abc', 'ai:t1-requeue:12', 'ai:schema:t1']) expect(alertTargetOf(fp)).toBeNull();
+    // RÈGLE REMPLACÉE (carte #785, § 6) : `ai:t1-requeue:*` était ignorée (donc jamais recontrôlée alors que
+    // `jobs.ts` la produit) ; elle appartient désormais à l'inventaire des familles.
+    expect(alertTargetOf('ai:t1-requeue:12')).toEqual({ kind: 'REQUEUE_REFUSAL', fileId: 12 });
+    for (const fp of ['ai:t1-completeness:', 'ai:t1-completeness:abc', 'ai:t1-requeue:x', 'ai:schema:t1']) expect(alertTargetOf(fp)).toBeNull();
   });
 });
 

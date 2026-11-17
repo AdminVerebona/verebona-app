@@ -23,6 +23,7 @@ import { isTreatment, type Treatment } from '../config/treatments';
 import {
   dedupeKey, decideQueueing, afterFailure, afterDeferral, afterAiSuspension, MAX_ATTEMPTS,
   type JobOrigin, type JobScope, type JobStatus, type QueueDecision, type JobBusinessResult,
+  type RunningRequestMode,
 } from './queue-policy';
 import { abortLocalExecutions } from './execution-control';
 import { invalidateRuntimeGuardCache } from './runnable-guard';
@@ -129,6 +130,15 @@ interface EnqueueInput {
    */
   payloadOnDedupe?: 'replace' | 'append_events';
   /**
+   * Lot 115H (#785, § 2) — que faire d'un travail EN COURS portant la même clé ?
+   * `EXTRA_PASS` (défaut) : passage supplémentaire consolidé (WF-10 inchangé,
+   * coalescence légitime des autres traitements préservée). `OBSERVE_ONLY` :
+   * la demande est identique à ce que l'exécution satisfait déjà — le travail
+   * vivant est seulement CONSTATÉ (`OBSERVED_RUNNING`), sans passage
+   * supplémentaire gratuit à la clôture. Voir `RunningRequestMode`.
+   */
+  onRunning?: RunningRequestMode;
+  /**
    * Lot 31C — n'insère que si AUCUN job (quel que soit son statut) n'a jamais
    * porté cette clé de déduplication. Sert aux continuations idempotentes
    * (page suivante du balayage T3, clé unique par cycle et par page) : une
@@ -164,7 +174,14 @@ export interface EnqueueResult {
 /** Motifs de non-création rendus par `enqueue` (sous-ensemble des motifs T3 tracés). */
 type EnqueueReasonCode = 'CROSS_ACCOUNT_SCOPE' | 'DUPLICATE_PENDING' | 'DUPLICATE_RUNNING' | 'ALREADY_QUEUED'
   /** Lot 82A (C-Q10) : compte non actif, suspendu ou en lecture seule — rien n'est écrit, `jobId` nul. */
-  | 'ACCOUNT_INELIGIBLE';
+  | 'ACCOUNT_INELIGIBLE'
+  /**
+   * Lot 115H (#785, § 2) : travail EN COURS portant la même clé, CONSTATÉ sans
+   * demander de passage supplémentaire (`onRunning: 'OBSERVE_ONLY'`) — la
+   * demande est identique à celle que l'exécution satisfait déjà. Aucune
+   * seconde exécution n'est créée à la clôture, aucun appel masqué.
+   */
+  | 'OBSERVED_RUNNING';
 
 /** Trace `[t3-enqueue]` d'une issue d'`enqueue` (T3 seulement, jamais bloquante). */
 async function tracerT3(input: EnqueueInput, r: EnqueueResult | null, error?: unknown): Promise<void> {
@@ -175,7 +192,8 @@ async function tracerT3(input: EnqueueInput, r: EnqueueResult | null, error?: un
     origin: input.origin ?? 'automatic', triggerCode: input.triggerCode ?? null, accountId: scope.accountId ?? null,
     targetType: scope.targetType ?? null, targetId: scope.targetId ?? null,
     decision: error ? 'error' : r?.reasonCode === 'CROSS_ACCOUNT_SCOPE' || r?.reasonCode === 'ACCOUNT_INELIGIBLE' ? 'refused' : (r?.decision ?? 'error'),
-    reason: error ? 'INSERT_FAILED' : r?.reasonCode ?? null,
+    // Lot 115H (#785) : un travail en cours seulement CONSTATÉ est, pour la trace T3, un doublon en cours.
+    reason: error ? 'INSERT_FAILED' : r?.reasonCode === 'OBSERVED_RUNNING' ? 'DUPLICATE_RUNNING' : r?.reasonCode ?? null,
     jobId: r?.jobId ?? null,
     // RETURNING relit la ligne écrite dans la même instruction.
     persisted: r && r.decision === 'create' && r.jobId != null ? true : null,
@@ -235,10 +253,14 @@ async function enqueueUntraced(input: EnqueueInput): Promise<EnqueueResult> {
   );
   const existing = (existingRows as unknown as Row[])[0];
 
+  const statutExistant = existing ? (String(existing.status) as JobStatus) : null;
   const decision = decideQueueing(
-    existing ? { status: String(existing.status) as JobStatus } : null,
+    statutExistant ? { status: statutExistant } : null,
     origin,
+    input.onRunning ?? 'EXTRA_PASS',
   );
+  // Lot 115H (#785, § 2) : travail EN COURS seulement CONSTATÉ (aucun passage supplémentaire demandé).
+  const constate = decision === 'skip' && statutExistant === 'RUNNING';
 
   if (decision === 'skip' || decision === 'coalesce') {
     const existingId = Number(existing.id);
@@ -279,7 +301,10 @@ async function enqueueUntraced(input: EnqueueInput): Promise<EnqueueResult> {
         );
       }
     }
-    return { decision, jobId: existingId, reasonCode: decision === 'skip' ? 'DUPLICATE_PENDING' : 'DUPLICATE_RUNNING' };
+    return {
+      decision, jobId: existingId,
+      reasonCode: constate ? 'OBSERVED_RUNNING' : decision === 'skip' ? 'DUPLICATE_PENDING' : 'DUPLICATE_RUNNING',
+    };
   }
 
   const scope = input.scope ?? {};
@@ -319,6 +344,60 @@ async function enqueueUntraced(input: EnqueueInput): Promise<EnqueueResult> {
     throw new Error(`[queue] Job ${row.id} persisté sans son contexte de reprise : la demande n'est pas acquittée.`);
   }
   return { decision, jobId: Number(row.id), reasonCode: null };
+}
+
+/**
+ * ══════════════════════════════════════════════════════════════════════════
+ * LOT 115H (Trello #785, § 2) — ÉTAT RÉEL D'UN TRAVAIL CORRÉLÉ, LU EN BASE
+ *
+ * Règle complétée : les appelants relisaient la file avec
+ * `(id = <rendu> OR status IN ('PENDING','RUNNING'))` — la seule EXISTENCE de
+ * l'identifiant rendu par la mise en file valait donc « travail vivant », même
+ * si ce travail était déjà terminé, échoué ou annulé entre les deux lectures.
+ *
+ * Le contrôle final lit maintenant le compte, le document, le travail désigné
+ * et son ÉTAT, et distingue :
+ *   ALIVE      un travail PENDING ou RUNNING du document existe (le travail
+ *              désigné, ou un autre travail vivant du même document) ;
+ *   DONE       le travail désigné est terminé — son résultat est acquis (le
+ *              résultat métier est rendu : un DONE « échec métier » n'est pas
+ *              lisible comme une réussite) ;
+ *   FAILED     le travail désigné a échoué ;
+ *   CANCELLED  le travail désigné a été annulé ;
+ *   NONE       aucun travail du document, dans aucun état.
+ * Toute lecture est filtrée par le compte (isolation stricte).
+ * ══════════════════════════════════════════════════════════════════════════
+ */
+export type CorrelatedJobState = 'ALIVE' | 'DONE' | 'FAILED' | 'CANCELLED' | 'NONE';
+
+export interface CorrelatedJob {
+  state: CorrelatedJobState;
+  jobId: number | null;
+  /** Statut exact lu en base (null pour `NONE`). */
+  status: JobStatus | null;
+  /** Résultat métier du travail terminé (lot 31C) — `null` s'il n'en porte pas. */
+  businessResult: string | null;
+}
+
+export async function inspectCorrelatedJob(p: {
+  treatment: Treatment; accountId: number; targetType: string; targetId: string | number;
+  /** Travail désigné par la mise en file (son état est lu en priorité). */
+  jobId?: number | null;
+}): Promise<CorrelatedJob> {
+  const rows = (await pgClient.unsafe(
+    `SELECT id, status, business_result FROM ai_job_queue
+      WHERE treatment = $1 AND account_id = $2 AND target_type = $3 AND target_id = $4
+        AND ($5::bigint IS NULL OR id = $5::bigint OR status IN ('PENDING', 'RUNNING'))
+      ORDER BY (status IN ('PENDING', 'RUNNING')) DESC, id DESC
+      LIMIT 1`,
+    [p.treatment, p.accountId, p.targetType, String(p.targetId), p.jobId ?? null] as never[],
+  ).catch(() => [])) as unknown as Row[];
+  const row = rows[0];
+  if (!row) return { state: 'NONE', jobId: null, status: null, businessResult: null };
+  const status = String(row.status) as JobStatus;
+  const state: CorrelatedJobState = status === 'PENDING' || status === 'RUNNING' ? 'ALIVE'
+    : status === 'DONE' ? 'DONE' : status === 'FAILED' ? 'FAILED' : 'CANCELLED';
+  return { state, jobId: Number(row.id), status, businessResult: row.business_result == null ? null : String(row.business_result) };
 }
 
 /** Contrôle d'éligibilité de MISE EN FILE (lot 82A). `false` : refus journalisé. */

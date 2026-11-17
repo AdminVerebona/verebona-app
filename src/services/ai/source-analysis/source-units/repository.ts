@@ -98,6 +98,43 @@ const PAQUET = 2_000;
  * Remplace la couche A d'un document (unités, faits non résolus, rapport).
  * À appeler dans une transaction.
  */
+/**
+ * Lot 115H (#785, § 4) — écriture de la couche A refusée : la ligne de
+ * couverture a été réécrite entre la lecture de l'appelant et son écriture.
+ * Rien n'a été modifié (le refus précède tout DELETE).
+ */
+export const COVERAGE_VERSION_CONFLICT_CODE = 'T1_COVERAGE_VERSION_CONFLICT';
+
+export class CoverageVersionConflictError extends Error {
+  readonly code = COVERAGE_VERSION_CONFLICT_CODE;
+  constructor(readonly fileId: number, readonly expected: string | null, readonly actual: string | null) {
+    super(`${COVERAGE_VERSION_CONFLICT_CODE} : la couverture du document ${fileId} a changé entre la lecture et l’écriture `
+      + `(attendu ${expected ?? 'aucune ligne'}, trouvé ${actual ?? 'aucune ligne'}) — rien n’a été écrit.`);
+    this.name = 'CoverageVersionConflictError';
+  }
+}
+
+const instant = (v: Date | string | null | undefined): string | null => {
+  if (v === null || v === undefined) return null;
+  const d = v instanceof Date ? v : new Date(v);
+  return Number.isNaN(d.getTime()) ? null : d.toISOString();
+};
+
+/**
+ * Verrouille la ligne de couverture et compare sa version (lot 115H, § 4).
+ * `FOR UPDATE` : deux écritures concurrentes de la même couche se SÉRIALISENT —
+ * la seconde voit la version de la première et renonce proprement.
+ */
+async function assertCoverageVersion(tx: Tx, p: { accountId: number; fileId: number; expectUpdatedAt?: Date | string | null }): Promise<void> {
+  const rows = (await tx.unsafe(
+    `SELECT updated_at FROM document_extraction_coverage WHERE file_id = $1 AND account_id = $2 FOR UPDATE`,
+    [p.fileId, p.accountId] as never[],
+  )) as Array<{ updated_at: Date | string | null }>;
+  const actuel = rows[0] ? instant(rows[0].updated_at) : null;
+  const attendu = instant(p.expectUpdatedAt);
+  if (actuel !== attendu) throw new CoverageVersionConflictError(p.fileId, attendu, actuel);
+}
+
 export async function writeSourceLayer(tx: Tx, p: {
   accountId: number; fileId: number; extractionId: number | null; layer: SourceLayer;
   origin?: 'ANALYSIS' | 'BACKFILL' | 'RETRY';
@@ -109,7 +146,26 @@ export async function writeSourceLayer(tx: Tx, p: {
   retryResult?: string | null;
   /** Lot 114H (#775) : environnement des bornes de reprise (défaut : celui du processus) — même source que l'appelant. */
   env?: Record<string, string | undefined>;
+  /**
+   * ════════════════════════════════════════════════════════════════════════
+   * LOT 115H (Trello #785, § 4) — CONTRÔLE OPTIMISTE DE VERSION SUR CE CHEMIN
+   *
+   * Instant de la dernière écriture de la ligne de couverture, TEL QU'IL A ÉTÉ
+   * LU par l'appelant avant de calculer ce qu'il écrit. La couche est alors
+   * verrouillée puis comparée DANS la transaction : si une autre écriture
+   * (analyse, reprise, action du BO) est passée entre-temps, l'écriture est
+   * REFUSÉE (`CoverageVersionConflictError`) au lieu d'écraser une couche plus
+   * récente. L'appelant relit et recalcule, ou diffère explicitement — jamais
+   * un succès fictif.
+   *
+   * Absent : aucun contrôle (écritures de l'analyse, qui sont titulaires
+   * exclusives du document sous la garde du travail) — comportement antérieur
+   * inchangé.
+   * ════════════════════════════════════════════════════════════════════════
+   */
+  expectUpdatedAt?: Date | string | null;
 }): Promise<void> {
+  if (p.expectUpdatedAt !== undefined) await assertCoverageVersion(tx, p);
   let retryAttempts = p.retryAttempts ?? 0;
   type AvecContinuation = T1CoverageDiagnostics & { continuationRuns?: number };
   let continuationRuns = Number((p.layer.report.diagnostics as AvecContinuation | undefined)?.continuationRuns ?? 0);

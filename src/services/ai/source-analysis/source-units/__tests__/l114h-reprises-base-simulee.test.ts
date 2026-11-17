@@ -35,8 +35,11 @@ const etat = vi.hoisted(() => ({
   unites: [] as Array<Record<string, unknown>>,
   /** Réponse de la file T1 à la prochaine mise en file (objet) ou erreur levée. */
   file: { status: 'ACCEPTED', jobId: 501, reason: null } as { status: string; jobId: number | null; reason: string | null } | Error,
-  /** Travaux T1 vivants relus après la mise en file. */
-  travaux: [{ id: 501 }] as Array<{ id: number }>,
+  /**
+   * Travaux T1 relus après la mise en file. Carte #785 (§ 2) : le contrôle final lit aussi leur STATUT —
+   * la seule existence de l'identifiant ne vaut plus « travail vivant ».
+   */
+  travaux: [{ id: 501, status: 'PENDING', business_result: null }] as Array<{ id: number; status: string; business_result: string | null }>,
   misesEnFile: [] as Array<{ fileIds: number[]; accountId: number; options: Record<string, unknown> }>,
   refusTransitoires: 0,
   reparations: [] as Array<{ units: string[] }>,
@@ -65,9 +68,19 @@ const requete = vi.hoisted(() => async (q: string, params: unknown[] = []) => {
   //   · lecture des tentatives de la ligne (filtrée par le compte) ;
   //   · réservation CONDITIONNELLE : la ligne n'est rendue que si le plafond le permet encore.
   // ────────────────────────────────────────────────────────────────────
-  if (/SELECT retry_attempts FROM document_extraction_coverage WHERE file_id = \$1 AND account_id = \$2/.test(x)) {
-    return etat.couverture ? [{ retry_attempts: etat.couverture.retryAttempts }] : [];
+  // Carte #785 (§ 2) : la même lecture rend aussi les PREUVES du document (empreinte de l'identité de la demande).
+  if (/SELECT c.retry_attempts, c.quality_state/.test(x)) {
+    const c = etat.couverture;
+    return c
+      ? [{
+        retry_attempts: c.retryAttempts, quality_state: c.qualityState ?? null, anomalies: c.anomalies ?? [],
+        unresolved_units: 0, uncertain_units: 0, failed_units: 0, layer_version: 1,
+        source_verification: null, verification: c.verification ?? null, source_sha256: null,
+      }]
+      : [];
   }
+  // Carte #785 (§ 2) : migration 1805 absente dans cette base simulée — le § 1 doit tenir seul.
+  if (/to_regclass\('t1_requeue_requests'\)/.test(x)) return [{ ok: false }];
   if (/SET retry_attempts = retry_attempts \+ 1, updated_at = NOW\(\)/.test(x)) {
     const c = etat.couverture;
     if (!c || Number(c.retryAttempts) >= Number(params[2])) return [];
@@ -179,7 +192,7 @@ const reporter = () => {
 };
 
 beforeEach(() => {
-  etat.ecritures = []; etat.couverture = null; etat.unites = []; etat.file = { status: 'ACCEPTED', jobId: 501, reason: null }; etat.travaux = [{ id: 501 }];
+  etat.ecritures = []; etat.couverture = null; etat.unites = []; etat.file = { status: 'ACCEPTED', jobId: 501, reason: null }; etat.travaux = [{ id: 501, status: 'PENDING', business_result: null }];
   etat.misesEnFile = []; etat.refusTransitoires = 0; etat.reparations = []; etat.anomalies = [];
   repo.__resetCoverageProvenanceProbeForTests();
 });
@@ -255,7 +268,7 @@ describe('L114H-B02 — R5 : remise en file T1, issue réelle et tentatives exac
 
   it('déjà vivante (travail en attente ou en cours du même document) : confirmée, AUCUNE reprise consommée', async () => {
     etat.file = { status: 'ALREADY_RUNNING', jobId: 498, reason: 'DUPLICATE_RUNNING' };
-    etat.travaux = [{ id: 498 }];
+    etat.travaux = [{ id: 498, status: 'RUNNING', business_result: null }];
     const r = await demander();
     expect(r).toMatchObject({ status: 'ALREADY_RUNNING', queued: true, jobId: 498, attemptConsumed: false, result: 'REQUEUE_ALREADY_RUNNING' });
     expect(majRemiseEnFile()).toMatchObject({ consomme: false, garder: false, prochaine: null, resultat: 'REQUEUE_ALREADY_RUNNING' });

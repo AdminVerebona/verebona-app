@@ -86,6 +86,62 @@ const LIMIT_REASONS: Readonly<Record<string, string>> = {
 
 const nombre = (v: unknown): number => (typeof v === 'number' && Number.isFinite(v) ? v : Array.isArray(v) ? v.length : 0);
 
+/**
+ * ══════════════════════════════════════════════════════════════════════════
+ * LOT 115H (Trello #785, § 6) — RAPPORT HISTORIQUE IMMUABLE ≠ ÉTAT ACTUEL
+ *
+ * Règle complétée : une même ligne mêlait ce que l'ANALYSE avait conclu à sa
+ * date (état de qualité écrit alors, anomalies, compteurs d'unités) et ce
+ * qu'il en est AUJOURD'HUI (issue, reprise programmée, dernier résultat de
+ * reprise). Les vues, filtres, exports et compteurs pouvaient donc afficher
+ * deux statuts contradictoires pour le même document — par exemple « reprise
+ * programmée » dans un onglet et « plafond atteint » dans un autre.
+ *
+ * Cette fonction PURE sépare les deux faces, sans rien recalculer :
+ *   · `historical` — ce que le rapport d'analyse a consigné, immuable : il
+ *     décrit un passé et ne doit jamais être réécrit par un recalcul ;
+ *   · `current` — l'état du document maintenant : son issue, son motif, sa
+ *     prochaine action réelle, et si une action reste utile.
+ * Les deux portent le même document : c'est la LECTURE qui est séparée, pas
+ * la donnée. Aucun texte n'est dupliqué entre les deux faces.
+ * ══════════════════════════════════════════════════════════════════════════
+ */
+export interface CoverageHistoricalFace {
+  /** État de qualité CONSIGNÉ par l'analyse (ou le dernier recalcul écrit). */
+  qualityState: string;
+  anomalies: readonly string[];
+  /** Instant de la dernière écriture de ce rapport (null : inconnu). */
+  reportedAt: string | null;
+  /** Reprises déjà consommées à cet instant. */
+  retryAttempts: number;
+}
+
+export interface CoverageCurrentFace extends CoverageIssueView {
+  /** Une reprise automatique est-elle programmée MAINTENANT ? */
+  retryScheduled: boolean;
+  /** Dernier résultat de demande de reprise consigné (code), ou null. */
+  lastRetryResult: string | null;
+}
+
+export function splitHistoricalAndCurrent(p: CoverageIssueInput & { reportedAt?: string | Date | null }): {
+  historical: CoverageHistoricalFace; current: CoverageCurrentFace;
+} {
+  const quand = p.reportedAt instanceof Date ? p.reportedAt.toISOString() : typeof p.reportedAt === 'string' ? p.reportedAt : null;
+  return {
+    historical: {
+      qualityState: p.qualityState,
+      anomalies: [...(p.anomalies ?? [])],
+      reportedAt: quand,
+      retryAttempts: Number(p.retryAttempts ?? 0),
+    },
+    current: {
+      ...coverageIssueOf(p),
+      retryScheduled: Boolean(p.nextRetryAt),
+      lastRetryResult: p.lastRetryResult ?? null,
+    },
+  };
+}
+
 /** Issue actuelle d'une couverture (pure) — voir l'en-tête. */
 export function coverageIssueOf(p: CoverageIssueInput): CoverageIssueView {
   const d = p.verification ?? {};
