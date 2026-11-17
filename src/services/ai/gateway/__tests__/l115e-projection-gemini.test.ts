@@ -17,12 +17,14 @@
  *     héritée de l'autre.
  */
 import { describe, expect, it } from 'vitest';
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
 import { z } from 'zod';
 import { AI_OPERATIONS, isMasterOperation } from '../../registry/operations';
 import { masterOutputSchemaFor } from '../master-output-schemas';
 import { resolveRuntimeContract, providerSchemaHash } from '../output-resolution/runtime-contract';
 import {
-  providerJsonSchema, projectionVariants, providerSchemaPropertyCap, providerSchemaShape, resolveSchemaRefs,
+  providerJsonSchema, projectionVariants, providerSchemaShape, resolveSchemaRefs,
   schemaBranches, lostBranchesOf, SCHEMA_SHAPES,
 } from '../output-resolution/provider-schema';
 import { splitPipe } from '../output-resolution/field-validation';
@@ -43,7 +45,7 @@ const contratsMaitres = () => Object.entries(AI_OPERATIONS)
 describe('L115E-PROJ — le schéma transmis tient dans le sous-ensemble documenté', () => {
   it('L115E-PROJ-01 — aucun mot-clé hors contrat dans AUCUN contrat maître (invariant de la projection)', () => {
     for (const { code, contract } of contratsMaitres()) {
-      const ps = providerJsonSchema(contract.canonical, { shape: 'factorise', maxProperties: null });
+      const ps = providerJsonSchema(contract.canonical, { shape: 'factorise' });
       expect(ps.omitted, code).toBeNull();
       expect(unsupportedKeywordsIn(ps.schema), code).toEqual([]);
       expect(geminiSchemaAcceptable(geminiSchemaIssues(ps.schema)), code).toBe(true);
@@ -62,8 +64,8 @@ describe('L115E-PROJ — le schéma transmis tient dans le sous-ensemble documen
 describe('L115E-PROJ — la factorisation réduit les dimensions documentées SANS perte (AC02, AC07)', () => {
   it('L115E-PROJ-03 — T1 v7 : forme factorisée transmise, chaque dimension baisse, zéro branche perdue', () => {
     const contract = contratT1();
-    const factorise = providerJsonSchema(contract.canonical, { shape: 'factorise', maxProperties: null });
-    const deployee = providerJsonSchema(contract.canonical, { shape: 'inline', maxProperties: null });
+    const factorise = providerJsonSchema(contract.canonical, { shape: 'factorise' });
+    const deployee = providerJsonSchema(contract.canonical, { shape: 'inline' });
     expect(factorise.shape).toBe('factorise');
     expect(deployee.shape).toBe('inline');
     expect(factorise.omitted).toBeNull();
@@ -96,7 +98,7 @@ describe('L115E-PROJ — la factorisation réduit les dimensions documentées SA
 
   it('L115E-PROJ-04 — TOUS les contrats maîtres : zéro branche perdue dans la forme transmise', () => {
     for (const { code, contract } of contratsMaitres()) {
-      const ps = providerJsonSchema(contract.canonical, { shape: 'factorise', maxProperties: null });
+      const ps = providerJsonSchema(contract.canonical, { shape: 'factorise' });
       expect(ps.lostBranches ?? [], code).toEqual([]);
       expect(lostBranchesOf(canonicalJson(contract.canonical), resolveSchemaRefs(ps.schema!)), code).toEqual([]);
     }
@@ -104,17 +106,17 @@ describe('L115E-PROJ — la factorisation réduit les dimensions documentées SA
 
   it('L115E-PROJ-05 — les deux formes sont des COUPLES distincts : aucune qualification héritée', () => {
     const contract = contratT1();
-    const f = providerJsonSchema(contract.canonical, { shape: 'factorise', maxProperties: null });
-    const d = providerJsonSchema(contract.canonical, { shape: 'inline', maxProperties: null });
+    const f = providerJsonSchema(contract.canonical, { shape: 'factorise' });
+    const d = providerJsonSchema(contract.canonical, { shape: 'inline' });
     expect(providerSchemaHash(f.schema)).not.toBe(providerSchemaHash(d.schema));
     expect(JSON.stringify(f.schema)).toContain('"$defs"');
     expect(JSON.stringify(d.schema)).not.toContain('"$defs"');
     expect([...SCHEMA_SHAPES]).toEqual(['factorise', 'inline']);
     // Forme par défaut : factorisée ; `AI_PROVIDER_SCHEMA_SHAPE=inline` rend la forme antérieure sans redéploiement.
-    expect(providerSchemaShape({} as NodeJS.ProcessEnv)).toBe('factorise');
-    expect(providerSchemaShape({ AI_PROVIDER_SCHEMA_SHAPE: 'inline' } as NodeJS.ProcessEnv)).toBe('inline');
-    expect(providerSchemaShape({ AI_PROVIDER_SCHEMA_SHAPE: ' INLINE ' } as NodeJS.ProcessEnv)).toBe('inline');
-    expect(providerSchemaShape({ AI_PROVIDER_SCHEMA_SHAPE: 'factorise' } as NodeJS.ProcessEnv)).toBe('factorise');
+    expect(providerSchemaShape({} as unknown as NodeJS.ProcessEnv)).toBe('factorise');
+    expect(providerSchemaShape({ AI_PROVIDER_SCHEMA_SHAPE: 'inline' } as unknown as NodeJS.ProcessEnv)).toBe('inline');
+    expect(providerSchemaShape({ AI_PROVIDER_SCHEMA_SHAPE: ' INLINE ' } as unknown as NodeJS.ProcessEnv)).toBe('inline');
+    expect(providerSchemaShape({ AI_PROVIDER_SCHEMA_SHAPE: 'factorise' } as unknown as NodeJS.ProcessEnv)).toBe('factorise');
   });
 
   it('L115E-PROJ-06 — une référence non résolue est détectée comme PERTE (la factorisation ne masque rien)', () => {
@@ -141,21 +143,23 @@ describe('L115E-PROJ — profil de complexité et plafond d’exploitation (A2)'
     expect(geminiSchemaMetrics(null)).toMatchObject({ nodes: 0, properties: 0, serializedChars: 0 });
   });
 
-  it('L115E-PROJ-08 — AUCUN plafond de propriétés par défaut ; posé en exploitation, le schéma n’est plus transmis', () => {
-    expect(providerSchemaPropertyCap({} as NodeJS.ProcessEnv)).toBeNull();
-    expect(providerSchemaPropertyCap({ AI_PROVIDER_SCHEMA_MAX_PROPERTIES: '0' } as NodeJS.ProcessEnv)).toBeNull();
-    expect(providerSchemaPropertyCap({ AI_PROVIDER_SCHEMA_MAX_PROPERTIES: 'abc' } as NodeJS.ProcessEnv)).toBeNull();
-    expect(providerSchemaPropertyCap({ AI_PROVIDER_SCHEMA_MAX_PROPERTIES: ' 120 ' } as NodeJS.ProcessEnv)).toBe(120);
+  // Règle RETIRÉE (décision du PO du 16/11/2026, carte #784) : il n'y a AUCUN plafond sur le nombre de
+  // propriétés d'un schéma, et aucun réglage pour en poser un. Le test ne vérifie plus un plafond : il
+  // vérifie qu'il n'en existe aucun, et que le nombre de propriétés reste une MESURE de diagnostic.
+  it('L115E-PROJ-08 (décision PO) — aucun plafond de propriétés : le schéma est transmis quel qu’en soit le nombre', () => {
     const contract = contratT1();
-    const sansPlafond = providerJsonSchema(contract.canonical, { shape: 'factorise', maxProperties: null });
-    expect(sansPlafond.omitted).toBeNull();
-    const avecPlafond = providerJsonSchema(contract.canonical, { shape: 'factorise', maxProperties: 10 });
-    // Repli explicite, borné et observable : mode JSON, contrat complet au prompt, motif et écart tracés.
-    expect(avecPlafond.schema).toBeNull();
-    expect(avecPlafond.omitted).toBe('provider_contract');
-    expect(avecPlafond.issues?.some((c) => c.startsWith('PROPERTY_CAP_EXCEEDED'))).toBe(true);
-    // Le profil reste mesuré même quand le schéma n'est pas transmis (diagnostic).
-    expect(avecPlafond.metrics!.properties).toBeGreaterThan(10);
+    const projete = providerJsonSchema(contract.canonical, { shape: 'factorise' });
+    expect(projete.omitted).toBeNull();
+    expect(projete.schema).not.toBeNull();
+    expect(projete.metrics!.properties).toBeGreaterThan(10);
+    // Aucun écart lié à un plafond de propriétés ne peut plus être produit.
+    expect((projete.issues ?? []).some((c) => /PROPERTY_CAP/.test(c))).toBe(false);
+    expect(geminiSchemaIssues(projete.schema).some((i) => /PROPERTY_CAP/.test(i.code))).toBe(false);
+    // Aucun réglage d'exploitation ne permet d'en poser un (le nom de variable n'est plus lu nulle part).
+    const src = readFileSync(join(process.cwd(), 'src/services/ai/gateway/output-resolution/provider-schema.ts'), 'utf8')
+      + readFileSync(join(process.cwd(), 'src/services/ai/gateway/providers/gemini-schema-contract.ts'), 'utf8');
+    expect(src).not.toMatch(/AI_PROVIDER_SCHEMA_MAX_PROPERTIES/);
+    expect(src).not.toMatch(/PROPERTY_CAP_EXCEEDED/);
   });
 
   it('L115E-PROJ-09 — table de décision des variantes : chiffrée, sans perte, sans appel fournisseur', () => {

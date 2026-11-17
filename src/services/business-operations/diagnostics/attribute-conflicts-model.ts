@@ -105,6 +105,7 @@ export const REASON_TEXTS: Readonly<Record<string, string>> = {
   ADMIN_RESTORED_SOURCE: 'Contradiction due à une source rétablie au BO : tranchée par l’administrateur.',
   SAME_REFERENCE: 'Même attribut, même rôle et même référence de document : les valeurs se contredisent et aucune preuve ne permet de trancher sans risque.',
   SINGLE_FACT_OPERATION: 'Fait unique (achat, cession, sinistre) daté différemment par des sources de même rôle : contradiction non tranchée.',
+  SAME_ECONOMIC_DAY: 'Les dates désignent le même jour économique (quelques jours entre deux pièces d’un même fait) : la date de la source fondatrice est retenue, aucune question posée.',
   USER_VALUE_NOT_RETAINED: 'Une valeur saisie par l’utilisateur diffère de la valeur retenue : à examiner (protection utilisateur).',
   FACT_IDENTITY_NOT_ESTABLISHED: 'Même rôle, mais rien ne prouve que les sources décrivent le même fait (aucune référence commune) : non vérifiable.',
   ROLE_UNKNOWN: 'Rôle des sources non établi : les valeurs ne peuvent pas être comparées avec certitude.',
@@ -179,6 +180,14 @@ export interface T3ReviewInfo {
    * présenté comme « appliqué » (seul `applied` le dit, et il est relu en base).
    */
   applicationState?: string | null;
+  /**
+   * Lot 115 (#791, E08) : état de la RÉPARATION des valeurs dérivées après un
+   * verdict « document étranger » (`SOURCE_SEPARATED` : la séparation a eu
+   * lieu et les valeurs ont été recalculées). Null : rien à réparer, ou
+   * séparation non décidée — la source étrangère est alors toujours en place
+   * et le doute de rattachement reste ouvert.
+   */
+  linkRepair?: string | null;
   evidence: Array<{ fileId: number | null; excerpt: string }>;
   requestedAt: string | null;
   decidedAt: string | null;
@@ -200,6 +209,11 @@ export const T3_REVIEW_LABELS: Readonly<Record<string, string>> = {
   UNAVAILABLE: 'Arbitrage T3 indisponible (bloc 38 absent du prompt actif)',
   // Lot 115 (#791, E02) — texte nouveau, à valider par le PO.
   INCOMPLETE: 'Preuves non couvertes en entier : aucun arbitrage (le diagnostic reste ouvert)',
+};
+
+/** Lot 115 (#791, E08) — états de la RÉPARATION après un verdict « document étranger » (BO — texte à valider par le PO). */
+export const T3_LINK_REPAIR_LABELS: Readonly<Record<string, string>> = {
+  SOURCE_SEPARATED: 'Justificatif étranger retiré : valeurs dérivées recalculées et propagées',
 };
 
 /** Lot 115 (#791, E09) — états d'APPLICATION d'une décision T3 (BO — textes à valider par le PO). */
@@ -246,7 +260,8 @@ export interface ConflictDiagnosticEntry {
   arbitration: { actionId: number; state: 'OPEN' | 'RESOLVED' } | null;
   /** Lot 114 (#750, issue B) : dernier examen T3 de cette ligne (null : jamais examinée). */
   /** Lot 115 (#791, E09) : `applicationLabel` dit si la décision est seulement REÇUE ou vraiment APPLIQUÉE. */
-  t3: (T3ReviewInfo & { label: string; applicationLabel?: string | null }) | null;
+  /** Lot 115 (#791, E08) : `linkRepairLabel` dit si les valeurs dérivées ont été réparées après une séparation. */
+  t3: (T3ReviewInfo & { label: string; applicationLabel?: string | null; linkRepairLabel?: string | null }) | null;
   protection: string | null;
   lineState: ConflictLineState;
   lineStateReason: string;
@@ -364,6 +379,7 @@ export function buildConflictEntries(op: OperationConflictInput, now: Date = new
         t3: examen ? {
           ...examen, label: T3_REVIEW_LABELS[examen.status] ?? examen.status,
           applicationLabel: examen.applicationState ? T3_APPLICATION_LABELS[examen.applicationState] ?? examen.applicationState : null,
+          linkRepairLabel: examen.linkRepair ? T3_LINK_REPAIR_LABELS[examen.linkRepair] ?? examen.linkRepair : null,
         } : null,
         protection: typeof c.protection === 'string' ? c.protection : null,
         lineState,

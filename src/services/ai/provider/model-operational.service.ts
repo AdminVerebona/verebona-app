@@ -89,7 +89,15 @@
  *     nouvelle clé. Environnement et version d'API sont figés avec lui ;
  *   · E07 — `acquireProbeLease` : réservation ATOMIQUE et partagée d'un
  *     recontrôle par route (bail borné, reprise après crash du détenteur) —
- *     deux instances à échéance ne sondent plus deux fois.
+ *     deux instances à échéance ne sondent plus deux fois ;
+ *   · E05 (migration 1816) — la CAPACITÉ fait partie de la CLÉ CANONIQUE
+ *     (fournisseur, modèle, accès, capacité) : un refus ne vaut que pour la
+ *     capacité éprouvée, et seule la capacité de BASE (génération de texte)
+ *     étend sa portée à tout l'accès, parce qu'elle en est le prérequis
+ *     (`refusalCapabilityScope`, règle documentée et testée). Le PROJET du
+ *     fournisseur est une dimension EXPLICITÉE et vide : l'application n'en
+ *     connaît aucun, il n'est donc jamais inventé ni fusionné avec l'accès
+ *     (`operationalProjectDimension`).
  */
 import { createHash } from 'node:crypto';
 import { pgClient } from '@/db';
@@ -97,7 +105,8 @@ import {
   PROBE_CAPABILITY, PROBE_ENDPOINT, PROBE_MAX_OUTPUT_TOKENS, PROBE_PROMPT, PROBE_REASONING, PROBE_TIMEOUT_MS,
   GLOBAL_PROBE_KINDS, PROBE_ERROR_KIND_LABELS, classifyProbeFailure, classifyProbeResponse, nextOperationalState, nextProbeDelayMs, probeErrorCodeOf, providerCodesOf,
   reinterpretLegacyState, sanitizeProviderError,
-  type CheckStatus, type KnownOperationalState, type NextOperationalState, type ProbeErrorKind, type ProbeOutcome,
+  BASE_CAPABILITY, OPERATIONAL_CAPABILITY_LABELS, isOperationalCapability, refusalCapabilityScope,
+  type CheckStatus, type KnownOperationalState, type NextOperationalState, type OperationalCapability, type ProbeErrorKind, type ProbeOutcome,
 } from './probe-classification';
 import { unknownVerdict, type PublishedVerdict } from './operational-admission';
 
@@ -150,6 +159,11 @@ export interface OperationalDiagnostic {
   /** Indisponibilité confirmée depuis ; prochain recontrôle au plus tôt. */
   confirmedAt?: string | null;
   nextProbeAt?: string | null;
+  // ── Lot 115 (#786, E05) — portée exacte du verdict (absents avant la migration 1816) ──
+  /** Capacités réellement REFUSÉES pour cet accès (vide : aucune). */
+  refusedCapabilities?: OperationalCapability[];
+  /** Projet du fournisseur tel que l'application le connaît : toujours `null` aujourd'hui, jamais deviné. */
+  providerProject?: string | null;
 }
 
 /** #786 (E05) : version d'API du point d'accès sondé, figée avec le contrôle. */
@@ -252,7 +266,60 @@ export function operationalSchemaState(): { complete: boolean | null; degradedRe
 /** Réservé aux tests : oublie l'état constaté du schéma. */
 export function __resetOperationalSchemaState(): void {
   colonnes1815 = null;
+  colonnes1816 = null;
   schemaDegradeMotif = null;
+}
+
+/** #786 (E05) : la capacité fait-elle partie de la clé (migration 1816) ? `null` : pas encore constaté. */
+let colonnes1816: boolean | null = null;
+
+/**
+ * #786 (E05) — la CAPACITÉ est-elle une composante de la clé canonique
+ * (migration 1816) ? Tant qu'elle ne l'est pas, seule la capacité de BASE a un
+ * verdict retenu : un contrôle portant sur une autre capacité est HISTORISÉ
+ * sans toucher l'état retenu, plutôt que d'écraser le verdict de la base — un
+ * schéma incomplet ne fabrique aucune portée.
+ */
+async function has1816(): Promise<boolean> {
+  if (colonnes1816 !== null) return colonnes1816;
+  try {
+    const rows = (await pgClient.unsafe(
+      `SELECT 1 FROM information_schema.columns
+        WHERE table_name = 'ai_model_operational_status' AND column_name = 'provider_project' LIMIT 1`,
+    )) as unknown as Row[];
+    colonnes1816 = rows.length > 0;
+    if (!colonnes1816) {
+      schemaDegradeMotif = schemaDegradeMotif
+        ?? 'migration 1816 non appliquée : verdict par capacité et dimension « projet » indisponibles';
+      console.warn(`[model-operational] ${schemaDegradeMotif}.`);
+    }
+  } catch {
+    colonnes1816 = false;
+  }
+  return colonnes1816;
+}
+
+/**
+ * #786 (E05) — DIMENSION « PROJET DU FOURNISSEUR » : explicitée, jamais
+ * inventée. L'application n'en connaît aucun identifiant — une clé Gemini ne
+ * le restitue pas, et aucun référentiel ne le porte — donc la colonne
+ * `provider_project` reste VIDE : « non renseignée », jamais fusionnée avec
+ * l'empreinte de la clé. `missing` dit ce qu'il faudrait pour que la dimension
+ * existe réellement (textes à valider par le PO).
+ */
+export function operationalProjectDimension(): { known: false; label: string; missing: readonly string[] } {
+  return {
+    known: false,
+    label: 'projet du fournisseur : non connu de l’application (dimension conservée vide, jamais devinée)',
+    missing: [
+      'un identifiant de projet DÉCLARÉ à côté de la clé dans BO › Fournisseur (saisi par un administrateur, '
+      + 'conservé pseudonymisé comme l’empreinte de clé), ou une variable d’environnement dédiée posée par l’exploitant',
+      'à défaut, un point d’accès du fournisseur qui restitue le projet de la clé : aucun de ceux utilisés aujourd’hui '
+      + '(catalogue des modèles, génération) ne le fait',
+      'et, dans les deux cas, une reprise prudente des lignes existantes : elles resteraient « projet non renseigné » '
+      + 'plutôt que d’être rattachées au projet constaté plus tard (aucune portée fabriquée)',
+    ],
+  };
 }
 
 /** Les colonnes 1815 existent-elles ? (une lecture par processus ; prudent en cas d'échec) */
@@ -343,6 +410,14 @@ export async function recordOperationalCheck(p: {
    * nouvelle clé. Par défaut : l'empreinte du secret transmis.
    */
   accessFingerprint?: string | null;
+  /**
+   * #786 (E05) : CAPACITÉ (et modalité) réellement éprouvée par l'envoi. La
+   * portée du verdict en est déduite par la règle documentée unique
+   * (`refusalCapabilityScope`) : un refus de portée MODÈLE est retenu sur la
+   * capacité de base et vaut pour tout l'accès ; tout autre refus ne vaut que
+   * pour cette capacité. Par défaut : la capacité de base.
+   */
+  capability?: OperationalCapability;
 }): Promise<RecordedOperationalState> {
   const fp = p.accessFingerprint ?? keyFingerprint(p.secret);
   const now = p.now ?? new Date();
@@ -356,16 +431,25 @@ export async function recordOperationalCheck(p: {
   const definitive = p.outcome.status === 'failed' ? p.outcome.definitive : null;
   const kind = p.outcome.status === 'ok' ? null : p.outcome.kind;
 
-  // Colonnes 1815 présentes ? (lu hors transaction : une requête échouée l'avorterait)
+  // Colonnes 1815 / 1816 présentes ? (lu hors transaction : une requête échouée l'avorterait)
   const etendu = await has1815();
+  const parCapacite = await has1816();
+  // #786 (E05) : portée du verdict — capacité éprouvée, ou capacité de BASE pour un refus de portée modèle.
+  const { capability } = refusalCapabilityScope(p.outcome, p.capability ?? BASE_CAPABILITY);
+  /**
+   * Capacité réellement portée par la LIGNE d'état. Sans la migration 1816, la clé n'a pas de capacité : un
+   * contrôle d'une autre capacité que la base est alors seulement HISTORISÉ (aucun écrasement du verdict de
+   * base, aucune portée fabriquée).
+   */
+  const capaciteEtat: OperationalCapability | null = parCapacite ? capability : capability === BASE_CAPABILITY ? BASE_CAPABILITY : null;
 
   const transaction = async (sql: SqlRunner): Promise<RecordedOperationalState> => {
-    await sql.unsafe(`SELECT pg_advisory_xact_lock(hashtext($1))`, [`ai-model-operational:${p.model}:${fp}`] as never[]);
-    const row = ((await sql.unsafe(
+    await sql.unsafe(`SELECT pg_advisory_xact_lock(hashtext($1))`, [`ai-model-operational:${p.model}:${fp}:${capability}`] as never[]);
+    const row = capaciteEtat === null ? undefined : ((await sql.unsafe(
       `SELECT ok, check_status, error, suspect_since, error_kind, observed_at, failure_count, state_version, next_probe_at
          FROM ai_model_operational_status
-        WHERE provider = 'gemini' AND model = $1 AND key_fingerprint = $2`,
-      [p.model, fp] as never[],
+        WHERE provider = 'gemini' AND model = $1 AND key_fingerprint = $2${parCapacite ? ' AND capability = $3' : ''}`,
+      (parCapacite ? [p.model, fp, capaciteEtat] : [p.model, fp]) as never[],
     )) as unknown as Row[])[0];
     const prev = row ? toKnown(row) : p.prev ?? null;
     const version = Number(row?.state_version ?? 0);
@@ -379,7 +463,7 @@ export async function recordOperationalCheck(p: {
            (provider, model, key_fingerprint, capability, endpoint, source, outcome, definitive, error_kind, http_status, provider_code,
             error, check_status, ok_after, applied, state_version, probe_call_id, observed_at${etendu ? ', check_id, environment, api_version, discarded_reason' : ''})
          VALUES ('gemini', $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17${etendu ? ', $18, $19, $20, $21' : ''})`,
-        [p.model, fp, PROBE_CAPABILITY, PROBE_ENDPOINT, p.source, p.outcome.status, definitive, kind, httpStatus, providerCode,
+        [p.model, fp, capability, PROBE_ENDPOINT, p.source, p.outcome.status, definitive, kind, httpStatus, providerCode,
          brut ? sanitizeProviderError(brut, p.secret) : null, etat.checkStatus, etat.ok, applied, v, p.probeCallId ?? null, envoye.toISOString(),
          ...(etendu ? [checkId, environment, PROBE_API_VERSION, discardedReason] : [])] as never[],
       );
@@ -390,6 +474,16 @@ export async function recordOperationalCheck(p: {
       errorKind: (row?.error_kind == null ? null : String(row.error_kind)) as ProbeErrorKind | null,
       healthy: false, ...(stale ? { stale: true } : {}), changed: false, nextProbeAt: iso(row?.next_probe_at),
     });
+
+    // #786 (E05) : capacité hors base alors que la clé n'en porte pas (migration 1816 absente) — le contrôle est
+    // HISTORISÉ avec sa capacité, et le verdict de la capacité de base n'est NI écrasé, NI étendu. Signalé.
+    if (capaciteEtat === null) {
+      await historise({ checkStatus: null, ok: null }, false, version, 'capability_scope_unsupported');
+      return {
+        ok: prev?.ok ?? null, checkStatus: prev?.checkStatus ?? null, suspectSince: prev?.suspectSince ?? null,
+        error: null, errorKind: null, healthy: false, changed: false, stale: true, nextProbeAt: null,
+      };
+    }
 
     // #786 (E04) : REJEU — ce contrôle (identifiant stable) est déjà enregistré pour cette route et cet accès.
     // Rien n'est réécrit : ni état, ni compteur, ni échéance, ni seconde ligne d'historique.
@@ -459,7 +553,7 @@ export async function recordOperationalCheck(p: {
        VALUES ('gemini', $1, $2, $3, $4, $5, NOW(), $6, $7, $8, CASE WHEN $9::boolean THEN NOW() ELSE NULL END,
                $10, $11, $12, $13, $14, $15, CASE WHEN $16::boolean THEN NOW() ELSE NULL END, $17, $18, $19${
   etendu ? ',\n               $20, $21, $22, $23, $24, NOW()' : ''})
-       ON CONFLICT (provider, model, key_fingerprint) DO UPDATE SET${etendu ? `
+       ON CONFLICT (provider, model, key_fingerprint${parCapacite ? ', capability' : ''}) DO UPDATE SET${etendu ? `
          check_id = EXCLUDED.check_id, environment = EXCLUDED.environment, api_version = EXCLUDED.api_version,
          last_result_status = EXCLUDED.last_result_status, last_result_kind = EXCLUDED.last_result_kind,
          last_result_at = EXCLUDED.last_result_at,` : ''}
@@ -472,7 +566,7 @@ export async function recordOperationalCheck(p: {
                              ELSE COALESCE(ai_model_operational_status.confirmed_at, NOW()) END,
          failure_count = EXCLUDED.failure_count, next_probe_at = EXCLUDED.next_probe_at, state_version = EXCLUDED.state_version`,
       [p.model, fp, next.ok, error, p.source, next.checkStatus, next.errorKind, next.suspectSince, next.healthy,
-       httpStatus, providerCode, PROBE_CAPABILITY, PROBE_ENDPOINT, p.probeCallId ?? null, envoye.toISOString(),
+       httpStatus, providerCode, capaciteEtat, PROBE_ENDPOINT, p.probeCallId ?? null, envoye.toISOString(),
        next.checkStatus === 'failed_confirmed', failureCount, nextProbeAt, version + 1,
        // #786 : identifiant stable du contrôle retenu, contexte d'accès figé, et dernier RÉSULTAT reçu (à part du verdict).
        ...(etendu ? [checkId, environment, PROBE_API_VERSION, p.outcome.status, kind] : [])] as never[],
@@ -510,7 +604,7 @@ export async function recordOperationalCheck(p: {
   }
   // #771 (B05) : journal de propagation — sans secret ni donnée de compte.
   if (etat.changed || etat.stale) {
-    console.info(`[model-operational] ${p.model} (${accessLabel(fp)}) : ${etat.stale ? 'contrôle écarté (antérieur au verdict en vigueur)' : `état retenu → ${etat.ok === false ? 'indisponible confirmé' : etat.ok ? 'sain (blocage de disponibilité levé)' : 'inconnu'}`} — source ${p.source}${p.probeCallId ? `, appel ${p.probeCallId}` : ''}${etat.nextProbeAt ? `, prochain contrôle ${etat.nextProbeAt}` : ''}.`);
+    console.info(`[model-operational] ${p.model} (${accessLabel(fp)}, ${OPERATIONAL_CAPABILITY_LABELS[capability]}) : ${etat.stale ? 'contrôle écarté (antérieur au verdict en vigueur, hors ordre ou hors portée)' : `état retenu → ${etat.ok === false ? 'indisponible confirmé' : etat.ok ? 'sain (blocage de disponibilité levé)' : 'inconnu'}`} — source ${p.source}${p.probeCallId ? `, appel ${p.probeCallId}` : ''}${etat.nextProbeAt ? `, prochain contrôle ${etat.nextProbeAt}` : ''}.`);
   }
   return etat;
 }
@@ -526,7 +620,7 @@ export async function recordOperationalCheck(p: {
  */
 export type OperationalTxVerdict =
   | { kind: 'clear' }
-  | { kind: 'refused'; error: string | null; checkedAt: string | null }
+  | { kind: 'refused'; error: string | null; checkedAt: string | null; capability?: OperationalCapability }
   | { kind: 'unverifiable'; detail: string };
 
 /**
@@ -549,14 +643,20 @@ export async function operationalRefusalInTx(
   try {
     await sql.unsafe(`SAVEPOINT l114q_disponibilite`);
     const rows = (await sql.unsafe(
-      `SELECT ok, check_status, error, suspect_since, checked_at FROM ai_model_operational_status
+      `SELECT ok, check_status, error, suspect_since, checked_at, capability FROM ai_model_operational_status
         WHERE provider = 'gemini' AND model = $1 AND key_fingerprint = $2 FOR SHARE`,
       [model, keyFingerprint(secret)] as never[],
     )) as unknown as Row[];
     await sql.unsafe(`RELEASE SAVEPOINT l114q_disponibilite`);
-    const r = rows[0];
-    if (!r || toKnown(r).ok !== false) return { kind: 'clear' };
-    return { kind: 'refused', error: r.error == null ? null : sanitizeProviderError(String(r.error)), checkedAt: iso(r.checked_at) };
+    // #786 (E05) : la route porte un verdict PAR CAPACITÉ. Une promotion ou une activation engage toutes les
+    // capacités dont les opérations du traitement ont besoin : un refus confirmé sur N'IMPORTE LAQUELLE la
+    // refuse, en la NOMMANT. Règle complétée (carte #786) : le contrôle ne portait que sur l'unique ligne.
+    const r = rows.find((x) => toKnown(x).ok === false) ?? null;
+    if (!r) return { kind: 'clear' };
+    return {
+      kind: 'refused', error: r.error == null ? null : sanitizeProviderError(String(r.error)), checkedAt: iso(r.checked_at),
+      ...(isOperationalCapability(r.capability) ? { capability: r.capability } : {}),
+    };
   } catch (e) {
     await sql.unsafe(`ROLLBACK TO SAVEPOINT l114q_disponibilite`).catch(() => undefined);
     // Table absente (migrations 0273 / 0335 jamais appliquées) : l'état n'est pas tenu, il n'y a rien à
@@ -601,6 +701,39 @@ async function rowsForActiveKey(activeSecret?: string | null): Promise<Row[]> {
 }
 
 /**
+ * #786 (E05) — UNE ligne retenue par modèle, à partir des lignes PAR CAPACITÉ
+ * de la clé active (pure, déterministe) :
+ *   1. un refus confirmé l'emporte (la capacité de BASE d'abord : son refus
+ *      vaut pour tout l'accès) — jamais « tout sain » parce qu'une autre
+ *      capacité répond ;
+ *   2. sinon la ligne de la capacité de base ;
+ *   3. sinon la première capacité par ordre alphabétique (stable).
+ * `refusedCapabilities` liste toutes les capacités refusées : les décomptes et
+ * le BO disent la PORTÉE exacte, sans fusion implicite.
+ */
+function lignesParModele(rows: readonly Row[]): Array<{ model: string; row: Row; refusedCapabilities: OperationalCapability[] }> {
+  const parModele = new Map<string, Row[]>();
+  for (const r of rows) {
+    const m = String(r.model);
+    parModele.set(m, [...(parModele.get(m) ?? []), r]);
+  }
+  const rang = (r: Row): number => {
+    const cap = isOperationalCapability(r.capability) ? r.capability : BASE_CAPABILITY;
+    const refus = toKnown(r).ok === false;
+    return (refus ? 0 : 10) + (cap === BASE_CAPABILITY ? 0 : 1);
+  };
+  return [...parModele.entries()].map(([model, lignes]) => {
+    const triees = [...lignes].sort((a, b) => rang(a) - rang(b)
+      || String(a.capability ?? '').localeCompare(String(b.capability ?? '')));
+    return {
+      model, row: triees[0]!,
+      refusedCapabilities: triees.filter((r) => toKnown(r).ok === false)
+        .map((r) => (isOperationalCapability(r.capability) ? r.capability : BASE_CAPABILITY)),
+    };
+  });
+}
+
+/**
  * États RETENUS avec la clé active (lecture seule, aucun appel fournisseur).
  * Un état inconnu (`ok` NULL, ou ancien `ok=false` non concluant) est absent :
  * il n'écarte aucun modèle. Sans clé active, table absente ou base
@@ -625,7 +758,7 @@ export async function loadOperationalSnapshot(
 ): Promise<{ reliable: boolean; statuses: Map<string, OperationalStatus> }> {
   const statuses = new Map<string, OperationalStatus>();
   try {
-    for (const r of await rowsForActiveKey(activeSecret)) {
+    for (const { row: r } of lignesParModele(await rowsForActiveKey(activeSecret))) {
       const known = toKnown(r);
       if (known.ok === null) continue;
       statuses.set(String(r.model), {
@@ -649,7 +782,16 @@ export async function loadOperationalSnapshot(
  * quand la lecture échoue : l'appelant (`operational-admission.ts`) retombe
  * alors sur son dernier verdict fiable, ou suspend l'envoi.
  */
-export async function readPublishedVerdict(model: string, activeSecret?: string | null): Promise<PublishedVerdict> {
+export async function readPublishedVerdict(
+  model: string, activeSecret?: string | null,
+  /**
+   * #786 (E05) : capacité (et modalité) que l'envoi va réellement solliciter.
+   * Le verdict rendu est celui de CETTE capacité ; un refus de la capacité de
+   * BASE lui est opposable (règle documentée d'extension), un refus d'une
+   * AUTRE capacité ne l'est pas.
+   */
+  capability: OperationalCapability = BASE_CAPABILITY,
+): Promise<PublishedVerdict> {
   let secret: string | null;
   try {
     secret = activeSecret === undefined ? await (await import('./provider-secret')).getProviderSecret('gemini') : activeSecret;
@@ -666,6 +808,8 @@ export async function readPublishedVerdict(model: string, activeSecret?: string 
     : `ok, check_status, error, suspect_since, checked_at, confirmed_at, next_probe_at, capability, endpoint`;
   let rows: Row[];
   try {
+    // Une seule lecture, par la clé primaire (fournisseur, modèle, accès[, capacité]) : TOUTES les capacités
+    // de la route sont rendues (au plus quatre lignes). Aucune sonde, aucune recherche de modèle.
     rows = (await pgClient.unsafe(
       `SELECT ${colonnes} FROM ai_model_operational_status
         WHERE provider = 'gemini' AND model = $1 AND key_fingerprint = $2`,
@@ -681,8 +825,19 @@ export async function readPublishedVerdict(model: string, activeSecret?: string 
     }
     return unknownVerdict(model, false);
   }
-  const r = rows[0];
-  const base = { ...unknownVerdict(model, true), access: accessLabel(fp) };
+  // #786 (E05) : ligne de la capacité demandée ; à défaut, la ligne de la capacité de BASE (un refus de base
+  // est opposable à toutes les capacités). Un refus d'une AUTRE capacité n'est jamais retenu ici.
+  const parCapacite = new Map<string, Row>();
+  for (const x of rows) parCapacite.set(isOperationalCapability(x.capability) ? x.capability : BASE_CAPABILITY, x);
+  const demandee = parCapacite.get(capability) ?? null;
+  const ligneBase = parCapacite.get(BASE_CAPABILITY) ?? null;
+  const refusBase = ligneBase !== null && toKnown(ligneBase).ok === false;
+  const r = refusBase ? ligneBase : demandee ?? (capability === BASE_CAPABILITY ? ligneBase : null);
+  const base = {
+    ...unknownVerdict(model, true), access: accessLabel(fp),
+    askedCapability: capability,
+    ...(refusBase && capability !== BASE_CAPABILITY ? { scopeExtendedFromBase: true as const } : {}),
+  };
   if (!r) return base;
   const known = toKnown(r);
   return {
@@ -742,22 +897,24 @@ export async function acquireProbeLease(p: {
   if (!secret) return { acquired: false, reason: 'unreadable', until: null };
   const fp = keyFingerprint(secret);
   const ms = Math.max(1_000, p.leaseMs ?? PROBE_LEASE_MS);
+  // #786 (E05) : la sonde éprouve la capacité de BASE — la réservation porte sur sa ligne, jamais sur les autres.
+  const capacite = await has1816() ? ' AND capability = $6' : '';
   try {
     const rows = (await pgClient.unsafe(
       `UPDATE ai_model_operational_status
           SET probe_lease_owner = $3, probe_lease_until = now() + ($4 || ' milliseconds')::interval, probe_lease_at = now()
-        WHERE provider = 'gemini' AND model = $1 AND key_fingerprint = $2
+        WHERE provider = 'gemini' AND model = $1 AND key_fingerprint = $2${capacite}
           AND (probe_lease_until IS NULL OR probe_lease_until <= now())
           AND ($5::boolean OR next_probe_at IS NULL OR next_probe_at <= now())
         RETURNING probe_lease_until`,
-      [p.model, fp, p.owner.slice(0, 100), String(ms), Boolean(p.immediate)] as never[],
+      [p.model, fp, p.owner.slice(0, 100), String(ms), Boolean(p.immediate), ...(capacite ? [BASE_CAPABILITY] : [])] as never[],
     )) as unknown as Row[];
     if (rows[0]) return { acquired: true, reason: 'acquired', until: iso(rows[0].probe_lease_until) };
     // Refus : la ligne existe-t-elle, et pourquoi n'a-t-elle pas été prise ?
     const etat = (await pgClient.unsafe(
       `SELECT next_probe_at, probe_lease_until FROM ai_model_operational_status
-        WHERE provider = 'gemini' AND model = $1 AND key_fingerprint = $2`,
-      [p.model, fp] as never[],
+        WHERE provider = 'gemini' AND model = $1 AND key_fingerprint = $2${capacite ? ' AND capability = $3' : ''}`,
+      (capacite ? [p.model, fp, BASE_CAPABILITY] : [p.model, fp]) as never[],
     )) as unknown as Row[];
     if (!etat[0]) return { acquired: true, reason: 'no_state', until: null };
     const bail = etat[0].probe_lease_until == null ? 0 : Date.parse(String(etat[0].probe_lease_until));
@@ -774,10 +931,11 @@ export async function releaseProbeLease(p: { model: string; secret?: string | nu
   try {
     const secret = p.secret === undefined ? await (await import('./provider-secret')).getProviderSecret('gemini') : p.secret;
     if (!secret) return;
+    const capacite = await has1816() ? ' AND capability = $4' : '';
     await pgClient.unsafe(
       `UPDATE ai_model_operational_status SET probe_lease_owner = NULL, probe_lease_until = NULL
-        WHERE provider = 'gemini' AND model = $1 AND key_fingerprint = $2 AND probe_lease_owner = $3`,
-      [p.model, keyFingerprint(secret), p.owner.slice(0, 100)] as never[],
+        WHERE provider = 'gemini' AND model = $1 AND key_fingerprint = $2 AND probe_lease_owner = $3${capacite}`,
+      [p.model, keyFingerprint(secret), p.owner.slice(0, 100), ...(capacite ? [BASE_CAPABILITY] : [])] as never[],
     );
   } catch { /* bail laissé à son expiration */ }
 }
@@ -786,7 +944,7 @@ export async function releaseProbeLease(p: { model: string; secret?: string | nu
 export async function loadOperationalDiagnostics(activeSecret?: string | null): Promise<Map<string, OperationalDiagnostic>> {
   const out = new Map<string, OperationalDiagnostic>();
   try {
-    for (const r of await rowsForActiveKey(activeSecret)) {
+    for (const { row: r, refusedCapabilities } of lignesParModele(await rowsForActiveKey(activeSecret))) {
       const known = toKnown(r);
       const error = r.error == null ? null : sanitizeProviderError(String(r.error));
       // Ligne antérieure au lot 49 : statut déduit de la classification.
@@ -812,6 +970,9 @@ export async function loadOperationalDiagnostics(activeSecret?: string | null): 
         endpoint: r.endpoint == null ? null : String(r.endpoint),
         probeCallId: r.probe_call_id == null ? null : Number(r.probe_call_id),
         confirmedAt: iso(r.confirmed_at), nextProbeAt: iso(r.next_probe_at),
+        // #786 (E05) : PORTÉE exacte du refus — capacités réellement refusées, et projet (dimension vide).
+        refusedCapabilities,
+        providerProject: r.provider_project == null ? null : String(r.provider_project),
       });
     }
   } catch {

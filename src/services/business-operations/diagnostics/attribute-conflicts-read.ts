@@ -111,7 +111,9 @@ async function readContext(q: DiagQuery, ops: readonly Row[]) {
     SELECT r.id, r.operation_id, r.account_id, r.field, r.role, r.status, r.outcome, r.confidence, r.reason, r.retained_value, r.value_before, r.value_after,
            r.applied_at IS NOT NULL AS applied, r.evidence, r.requested_at, r.decided_at, r.decider_version, r.ai_trace_id, r.ai_calls, r.error,
            -- Lot 115 (#791, E09) : état d'application (colonne 1785 ; lue sans erreur si la migration n'est pas passée).
-           to_jsonb(r) ->> 'application_state' AS application_state
+           to_jsonb(r) ->> 'application_state' AS application_state,
+           -- Lot 115 (#791, E08) : réparation des valeurs dérivées après un verdict « document étranger ».
+           r.validation -> 'linkRepair' ->> 'state' AS link_repair
       FROM business_operation_attribute_arbitrations r
      WHERE r.operation_id = ANY($1::bigint[]) ORDER BY r.id`, [ids]) : [];
   return { sources, errors, cards: [...cards, ...attributeCards], reviews };
@@ -154,7 +156,7 @@ export async function readConflictDiagnostic(query: ConflictDiagnosticQuery = {}
         t3Reviews: new Map(ctx.reviews.filter((x) => Number(x.operation_id) === id && Number(x.account_id) === acc).map((x) => [`${String(x.field)}:${String(x.role)}`, {
           reviewId: Number(x.id), status: String(x.status), outcome: txt(x.outcome), confidence: txt(x.confidence), reason: txt(x.reason),
           retainedValue: txt(x.retained_value), valueBefore: txt(x.value_before), valueAfter: txt(x.value_after), applied: x.applied === true,
-          applicationState: txt(x.application_state),
+          applicationState: txt(x.application_state), linkRepair: txt(x.link_repair),
           evidence: (Array.isArray(x.evidence) ? x.evidence as Row[] : []).map((e) => ({ fileId: num(e.fileId), excerpt: String(e.excerpt ?? '') })),
           requestedAt: iso(x.requested_at), decidedAt: iso(x.decided_at), promptVersion: txt(x.decider_version), traceId: txt(x.ai_trace_id),
           aiCalls: Number(x.ai_calls ?? 0), error: txt(x.error),

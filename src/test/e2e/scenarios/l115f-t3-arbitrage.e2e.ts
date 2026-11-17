@@ -7,7 +7,8 @@
  * `COH-OPS-ATTRIBUTE-CONFLICTS`. L'IA est SIMULÉE par le port du décideur
  * (jamais d'appel à un fournisseur).
  *
- *   L115F-E01  E03 + E01 — deux dates de réalisation à 7 jours d'écart sur un
+ *   L115F-E01  E03 + E01 — deux dates de réalisation au-delà du même jour
+ *                économique (décision PO du 16/11) sur un
  *              événement qui a DÉJÀ un élément d'Agenda daté : la carte
  *              « Arbitrer » est posée (avant : la seule présence de l'élément
  *              la supprimait) et le contrôle de cohérence la réclame ; dès
@@ -120,17 +121,19 @@ scenario('L115F', 'Événements de référence — arbitrage d’attributs : dé
   }
 
   // ── E01 : la carte n'est plus masquée par l'Agenda (E03), et l'écart de 7 jours est vu (E01) ──
-  it('L115F-E01 — deux dates de réalisation à 7 jours : carte posée malgré un élément d’Agenda daté ; déduplication seulement sur une carte de date ACTIONNABLE', async () => {
+  it('L115F-E01 — deux dates de réalisation au-delà du même jour économique : carte posée malgré un élément d’Agenda daté ; déduplication seulement sur une carte de date ACTIONNABLE', async () => {
     const compte = await make.account({ plan: 'premium' });
     const maison = await make.asset(compte, { category: 'IMMOBILIER', name: 'Maison' });
-    const { opId } = await evenement(compte, maison.id, facture(maison.id), [facture(maison.id, { temporalHints: { realizedDate: '2026-03-19' } })]);
+    const { opId } = await evenement(compte, maison.id, facture(maison.id), [facture(maison.id, { temporalHints: { realizedDate: '2026-04-16' } })]);
 
-    // E01 : l'écart est DANS la fenêtre de la transaction (7 jours) — avant le lot 115, rien n'était même relevé.
+    // E01 : l'écart est DANS la fenêtre de la transaction — avant le lot 115, rien n'était même relevé.
+    // Règle remplacée (décision PO du 16/11) : l'écart doit dépasser le MÊME JOUR ÉCONOMIQUE (`SAME_DATE_DAYS`,
+    // 7 jours) pour être une contradiction ; en deçà, la date de la source fondatrice est retenue sans question.
     const p0 = await prov(opId);
     expect(p0.conflicts).toEqual([expect.objectContaining({
       field: 'realizedDate', role: 'REALIZATION', qualification: 'REAL_CONFLICT_UNRESOLVED', reasonCode: 'SAME_REFERENCE',
     })]);
-    expect(p0.conflicts[0].values.map((v: Json) => v.value).sort()).toEqual(['2026-03-12', '2026-03-19']);
+    expect(p0.conflicts[0].values.map((v: Json) => v.value).sort()).toEqual(['2026-03-12', '2026-04-16']);
     expect(await cartes(compte)).toHaveLength(1);
 
     // E03 : un élément d'Agenda DATÉ et porteur du fait est rattaché. La carte de date de l'Agenda (83A) n'existe
@@ -159,7 +162,7 @@ scenario('L115F', 'Événements de référence — arbitrage d’attributs : dé
     const pose = await upsertAction({
       accountId: compte.id, targetType: 'AGENDA_ITEM', targetId: sansDate, fieldKey: 'date', actionKind: 'ARBITRATE',
       ruleCode: 'DATA-AGENDA-DATE', question: 'Les documents donnent plusieurs dates pour « Remplacement du chauffe-eau » : laquelle est la bonne ?',
-      proposals: [{ value: '2026-03-12', label: '12/03/2026', confidence: 0.5 }, { value: '2026-03-19', label: '19/03/2026', confidence: 0.5 }],
+      proposals: [{ value: '2026-03-12', label: '12/03/2026', confidence: 0.5 }, { value: '2026-04-16', label: '16/04/2026', confidence: 0.5 }],
     });
     expect(pose.status).not.toBe('SKIPPED');
     await reconsolider(compte, opId);
@@ -264,7 +267,7 @@ scenario('L115F', 'Événements de référence — arbitrage d’attributs : dé
     const compte2 = await make.account({ plan: 'premium' });
     const maison2 = await make.asset(compte2, { category: 'IMMOBILIER', name: 'Maison' });
     const ev2 = await evenement(compte2, maison2.id, facture(maison2.id, { temporalHints: { realizedDate: '2026-03-12' } }),
-      [facture(maison2.id, { temporalHints: { realizedDate: '2026-03-19' } })]);
+      [facture(maison2.id, { temporalHints: { realizedDate: '2026-04-16' } })]);
     const t3 = await titre(ev2.fichiers[0]);
     etat.answer = (input) => {
       const v = input.values.find((x: Json) => x.value === '2026-03-12');
@@ -347,5 +350,32 @@ scenario('L115F', 'Événements de référence — arbitrage d’attributs : dé
     // Rejeu : le doute n'est pas dupliqué.
     await reconsolider(compte, opId);
     expect(await doutes(compte)).toHaveLength(1);
+    // Tant que la séparation n'est PAS décidée, rien n'est réparé de force (décision du PO : aucun détachement).
+    expect(await phase(compte)).not.toHaveProperty('linkRepairs');
+
+    // E08 (part faisable) : la séparation a LIEU — ici par le réexamen d'identité existant (contradiction
+    // certaine face à la source fondatrice), qui désactive la source. Les valeurs DÉRIVÉES de l'événement
+    // doivent alors être réparées et la correction propagée, sans aucune décision nouvelle.
+    const [sid] = await sql<Json[]>`
+      SELECT id FROM business_operation_sources
+       WHERE operation_id = ${opId} AND active AND source_kind = 'DOCUMENT' AND source_entity_key = ${String(fichiers[1])}`;
+    const { withBusinessOperationWrite } = await import('@/services/business-operations/write');
+    await withBusinessOperationWrite(compte.id, async (repo) => repo.deactivateSource(Number(sid.id), 'T3_IDENTITY_SEPARATED'));
+    const repare = await phase(compte);
+    expect(repare).toMatchObject({ linkRepairs: 1, aiCalls: 0 });
+    expect(repare.operations).toEqual([opId]);
+    expect(etat.calls).toBe(2);
+    // Valeurs recalculées depuis les seules sources ACTIVES : plus aucune contradiction, et la trace est écrite.
+    expect((await prov(opId)).conflicts).toEqual([]);
+    expect((await op(opId)).provider).toBe('Plomberie Durand');
+    expect(await cartes(compte)).toEqual([]);
+    const [apresReparation] = await arbitrages(compte);
+    expect(apresReparation.validation).toMatchObject({
+      linkRepair: { state: 'SOURCE_SEPARATED', derivedValuesRecomputed: true, foreignFileId: fichiers[1], detached: false },
+    });
+    // Idempotent : la réparation n'est pas refaite au passage suivant, et aucun appel n'est fait.
+    const encore = await phase(compte);
+    expect(encore).not.toHaveProperty('linkRepairs');
+    expect(etat.calls).toBe(2);
   });
 });

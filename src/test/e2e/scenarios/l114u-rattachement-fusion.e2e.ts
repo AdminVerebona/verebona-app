@@ -357,4 +357,106 @@ scenario('L114U', 'Opérations / Agenda CDC V2.0 — rattachement d’Agenda pro
     // Rien n'a été réécrit par une carte périmée.
     expect(await sql<Json[]>`SELECT realized_date::text AS d FROM business_operations WHERE id = ${reparation}`).toEqual([{ d: '2040-04-01' }]);
   });
+  // ══ 4. Lot 115 (#791, décision du PO du 16/11/2026) : le PRESTATAIRE ═══════
+
+  it('L115F-E05 — prestataire contradictoire entre deux événements ASSOCIÉS : la question est posée comme pour les dates, jamais sur des désignations équivalentes ni sur des rôles de partie différents, et la réponse est écrite et protégée (#791)', async () => {
+    const compte = await make.account({ plan: 'premium' });
+    const maison = await make.asset(compte, { category: 'IMMOBILIER', name: 'Maison' });
+    const sinistre = await evenement(compte, 'CLAIM', 'Dégât des eaux');
+    const reparation = await evenement(compte, 'INTERVENTION', 'Réfection de la salle de bains');
+    const f = await facade();
+    const factureA = await document(compte, 'Facture de plomberie', maison.id);
+    const factureB = await document(compte, 'Facture de carrelage', maison.id);
+    expect(await f.linkDocument(user(compte), { operationId: sinistre, fileId: factureA })).toMatchObject({ status: 'APPLIED' });
+    expect(await f.linkDocument(user(compte), { operationId: reparation, fileId: factureB })).toMatchObject({ status: 'APPLIED' });
+
+    /**
+     * Prestataire en place de chaque côté, AVEC sa provenance : la source documentaire qui le justifie et son
+     * rôle. C'est elle qui donne le rôle sémantique de la PARTIE (référentiel `semanticRoleOf`).
+     */
+    const poser = async (opId: number, fileId: number, provider: string, role = 'INVOICE') => {
+      let [src] = await sql<Json[]>`
+        SELECT id FROM business_operation_sources
+         WHERE operation_id = ${opId} AND active AND source_kind = 'DOCUMENT' AND source_entity_key = ${String(fileId)} ORDER BY id LIMIT 1`;
+      if (!src) {
+        const { withBusinessOperationWrite } = await import('@/services/business-operations/write');
+        const id = await withBusinessOperationWrite(compte.id, async (repo) => repo.addSource(opId, {
+          kind: 'DOCUMENT', entityKey: fileId, authority: 'DOCUMENT', confidence: 'certain', locator: {},
+        }, 'L115F_E2E_PROVIDER'));
+        src = { id };
+      }
+      await sql`UPDATE business_operation_sources SET source_role = ${role} WHERE id = ${src.id}`;
+      await sql`
+        UPDATE business_operations
+           SET provider = ${provider},
+               attribute_provenance = jsonb_build_object('provider', jsonb_build_object('sourceId', ${src.id}::bigint, 'value', ${provider}::text))
+         WHERE id = ${opId}`;
+      return Number(src.id);
+    };
+    await poser(sinistre, factureA, 'Plomberie Durand');
+    await poser(reparation, factureB, 'Plomberie Durand SAS');
+
+    const { proposeReferenceEventFact } = await pontFusion();
+    const { factContradictionCandidates } = await import('@/services/to-process/operation-merge-cards');
+
+    // (a) NON associés : la question n'a pas de sens (comme pour les dates).
+    expect((await proposeReferenceEventFact(t3(compte), { operationAId: sinistre, operationBId: reparation, field: 'provider' })).card)
+      .toMatchObject({ status: 'NOT_APPLICABLE', reason: 'NOT_ASSOCIATED' });
+    expect(await f.associateOperations(user(compte), { fromOperationId: sinistre, toOperationId: reparation, nature: 'CLAIM_REPAIR' })).toMatchObject({ status: 'APPLIED' });
+
+    // (b) Deux DÉSIGNATIONS ÉQUIVALENTES du même tiers : jamais une contradiction (aucune table d'enseignes).
+    expect((await proposeReferenceEventFact(t3(compte), { operationAId: sinistre, operationBId: reparation, field: 'provider' })).card)
+      .toMatchObject({ status: 'NOT_APPLICABLE', reason: 'EQUIVALENT_PROVIDER_DESIGNATIONS' });
+    expect(await factContradictionCandidates(compte.id)).toEqual([]);
+
+    // (c) Deux tiers différents, mais des RÔLES DE PARTIE différents (une banque de preuve de paiement face au
+    //     fournisseur d'une facture) : ce n'est pas le même fait, donc aucune question.
+    await poser(reparation, factureB, 'Banque de l’Ouest', 'PAYMENT_PROOF');
+    expect((await proposeReferenceEventFact(t3(compte), { operationAId: sinistre, operationBId: reparation, field: 'provider' })).card)
+      .toMatchObject({ status: 'NOT_APPLICABLE', reason: 'PROVIDER_ROLES_NOT_COMPARABLE' });
+    expect(await factContradictionCandidates(compte.id)).toEqual([]);
+    expect(await cartes(compte, 'REFERENCE-EVENT-FACT')).toEqual([]);
+
+    // (d) MÊME rôle de partie, deux tiers réellement différents : la question est posée.
+    await poser(reparation, factureB, 'Carrelages Bêta');
+    expect(await factContradictionCandidates(compte.id)).toEqual([
+      { operationAId: Math.min(sinistre, reparation), operationBId: Math.max(sinistre, reparation), field: 'provider' },
+    ]);
+    expect((await proposeReferenceEventFact(t3(compte), { operationAId: sinistre, operationBId: reparation, field: 'provider', evidence: [doc(factureA)] })).card)
+      .toMatchObject({ status: 'POSTED' });
+    const [carte, ...trop] = (await cartes(compte, 'REFERENCE-EVENT-FACT')).filter((c) => c.ouverte);
+    expect(trop).toEqual([]);
+    expect(carte.relation_key).toBe(`referenceEventFact:${Math.min(sinistre, reparation)}:${Math.max(sinistre, reparation)}:provider`);
+    expect(carte.question).toBe('« Sinistre — Dégât des eaux » et « Intervention — Réfection de la salle de bains » '
+      + 'indiquent des prestataires différents : lequel est le bon ?');
+    expect(carte.question).not.toMatch(/\bop[ée]ration/i);
+    expect((carte.proposals_json as Json[]).map((p) => p.value).sort()).toEqual(['FACT:Carrelages Bêta', 'FACT:Plomberie Durand']);
+    // Aucune valeur n'est écrasée avant la réponse, et la file l'affiche (sujet de la mascotte compris).
+    expect(await sql<Json[]>`SELECT provider FROM business_operations WHERE id = ${sinistre}`).toEqual([{ provider: 'Plomberie Durand' }]);
+    const vue = (await file(compte)).find((a) => a.publicId === carte.public_id)!;
+    expect(vue.proposals).toHaveLength(2);
+    const { todoTitle } = await import('@/services/home/mascot/todo-items');
+    expect(todoTitle('REFERENCE-EVENT-FACT', 'ARBITRATE', carte.relation_key as string)).toBe('Prestataire à confirmer');
+
+    // (e) Réponse : la valeur retenue est écrite par la FAÇADE sur celui qui ne la portait pas, et PROTÉGÉE.
+    expect(await resoudre(compte, carte.public_id, 'FACT:Carrelages Bêta')).toMatchObject({ ok: true, undoable: false });
+    expect(await sql<Json[]>`SELECT id::int AS id, provider FROM business_operations WHERE account_id = ${compte.id} ORDER BY id`)
+      .toEqual([{ id: sinistre, provider: 'Carrelages Bêta' }, { id: reparation, provider: 'Carrelages Bêta' }].sort((x, y) => x.id - y.id));
+    expect((await journal(compte)).filter((j) => j.command === 'updateOperation'))
+      .toMatchObject([{ origin: 'USER', channel: 'TO_PROCESS', u: compte.ownerUserId }]);
+    // La déclaration posée est TECHNIQUE : elle protège la valeur, et la fiche ne la montre pas.
+    const { CARD_FACT_ARBITRATION_DECLARATION_TEXT, PAGE_TECHNICAL_DECLARATION_TEXTS } = await import('@/services/business-operations/graph/reference-event-page');
+    expect(PAGE_TECHNICAL_DECLARATION_TEXTS.has(CARD_FACT_ARBITRATION_DECLARATION_TEXT)).toBe(true);
+    expect(await sql<Json[]>`
+      SELECT 1 FROM business_operation_sources s
+        JOIN business_operation_declarations d ON d.id = s.source_entity_key::bigint
+       WHERE s.operation_id = ${sinistre} AND s.active AND s.source_kind = 'USER_DECLARATION' AND s.authority = 'USER'
+         AND d.declaration_text = ${CARD_FACT_ARBITRATION_DECLARATION_TEXT}`).toHaveLength(1);
+
+    // (f) La question ne revient pas, et le détecteur ne la redonne plus.
+    expect((await proposeReferenceEventFact(t3(compte), { operationAId: sinistre, operationBId: reparation, field: 'provider' })).card)
+      .toMatchObject({ status: 'NOT_APPLICABLE', reason: 'NO_CONTRADICTION' });
+    expect(await factContradictionCandidates(compte.id)).toEqual([]);
+    expect((await cartes(compte, 'REFERENCE-EVENT-FACT')).filter((c) => c.ouverte)).toEqual([]);
+  });
 });

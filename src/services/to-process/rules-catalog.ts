@@ -690,7 +690,10 @@ export const PROCESSING_RULES: readonly ProcessingRule[] = [
     arbitratePriority: 'DO_NEXT',
     completePriority: null,
     allowNotApplicable: false,
-    question: 'Ces deux événements de référence indiquent des dates différentes pour le même fait : laquelle est la bonne ?',
+    // Lot 115 (#791, décision du PO du 16/11/2026) : le fait comparé peut être une DATE ou le PRESTATAIRE — ce
+    // repli du catalogue ne nomme donc plus les dates seules (texte NOUVEAU, à valider par le PO). La question
+    // réellement posée, elle, nomme le fait (`referenceEventFactQuestion`).
+    question: 'Ces deux événements de référence indiquent deux valeurs différentes pour le même fait : laquelle est la bonne ?',
     businessImpact: 60,
     producer: 'REFERENCE_EVENT_MERGE',
     formulation: NO_AI_DECISION,

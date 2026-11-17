@@ -196,7 +196,8 @@ async function upsertActionOnce(input: UpsertActionInput): Promise<UpsertActionR
 
   const dataKey = fieldKey ?? relationKey!;
   const now = new Date();
-  const displayed = selectDisplayedProposals(proposals);
+  // Lot 115 (#791, E06) : la borne d'affichage peut être propre à la règle (exception déclarée, §8.5).
+  const displayed = selectDisplayedProposals(proposals, input.ruleCode);
   const contextHash = computeTriggerContextHash({
     ruleCode: input.ruleCode,
     actionKind: input.actionKind,

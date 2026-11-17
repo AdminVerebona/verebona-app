@@ -71,14 +71,14 @@ describe('L114U-F-Q — questions et propositions : neutres, et jamais le mot in
     expect(q).toBe('« Sinistre tempête » et « Réparation de la toiture » indiquent des dates de réalisation '
       + 'différentes : laquelle est la bonne ?');
     expect(q).not.toMatch(/\bop[ée]ration/i);
-    const p = fusions.referenceEventFactProposals(factCtx().sides);
+    const p = fusions.referenceEventFactProposals('realizedDate', factCtx().sides);
     expect(p).toHaveLength(2);
     expect(p[0]).toMatchObject({ value: 'FACT:2025-03-10', label: '10/03/2025 — « Sinistre tempête »', emphasis: 'neutral' });
     expect(p[1]!.value).toBe('FACT:2025-03-12');
     // Deux valeurs en place sur deux objets distincts : aucune n'est « la » valeur actuelle.
     for (const x of p) expect(x.isCurrentValue).toBeUndefined();
     // Deux fois la même valeur ne fait qu'une proposition (jamais un choix factice).
-    expect(fusions.referenceEventFactProposals([
+    expect(fusions.referenceEventFactProposals('realizedDate', [
       { operationId: 3, title: 'A', value: '2025-03-10' }, { operationId: 8, title: 'B', value: '2025-03-10' },
     ])).toHaveLength(1);
   });
@@ -98,10 +98,57 @@ describe('L114U-F-Q — questions et propositions : neutres, et jamais le mot in
     expect(fusions.referenceEventFactKey(3, 8, 'startDate')).not.toBe(fusions.referenceEventFactKey(3, 8, 'realizedDate'));
   });
 
-  it('L114U-F-Q6 — les faits comparables sont ceux du référentiel, et jamais le prestataire ici', () => {
-    expect(fusions.FACT_FIELDS).toEqual(['plannedDate', 'startDate', 'realizedDate', 'endDate']);
+  // Règle remplacée (carte #791, décision du PO du 16/11/2026) : le PRESTATAIRE est désormais un fait
+  // comparable entre deux événements de référence associés. Le test n'est pas supprimé, il est réécrit.
+  it('L114U-F-Q6 — les faits comparables sont ceux du référentiel, prestataire COMPRIS (règle remplacée, carte #791)', () => {
+    expect(fusions.FACT_DATE_FIELDS).toEqual(['plannedDate', 'startDate', 'realizedDate', 'endDate']);
+    expect(fusions.FACT_FIELDS).toEqual(['plannedDate', 'startDate', 'realizedDate', 'endDate', 'provider']);
     for (const f of fusions.FACT_FIELDS) expect(fusions.isFactField(f)).toBe(true);
-    for (const v of ['provider', 'amount', 'realized_date', '', null, 1]) expect(fusions.isFactField(v)).toBe(false);
+    for (const f of fusions.FACT_DATE_FIELDS) expect(fusions.isFactDateField(f)).toBe(true);
+    expect(fusions.isFactDateField('provider')).toBe(false);
+    for (const v of ['amount', 'realized_date', 'PROVIDER', '', null, 1]) expect(fusions.isFactField(v)).toBe(false);
+  });
+
+  it('L115F-F-Q7 — « lequel est le bon ? » pour le prestataire : mêmes libellés que la carte #750, jamais le mot interdit', () => {
+    const q = fusions.referenceEventFactQuestion('provider', 'Sinistre tempête', 'Réparation de la toiture');
+    expect(q).toBe('« Sinistre tempête » et « Réparation de la toiture » indiquent des prestataires '
+      + 'différents : lequel est le bon ?');
+    expect(q).not.toMatch(/\bop[ée]ration/i);
+    expect(q).not.toMatch(/recommand|conseill|probable|sans doute/i);
+    const sides = [
+      { operationId: 3, title: 'Sinistre tempête', value: 'Assurance Alpha', version: 1 },
+      { operationId: 8, title: 'Réparation de la toiture', value: 'Toitures Bêta', version: 2 },
+    ];
+    const p = fusions.referenceEventFactProposals('provider', sides);
+    expect(p.map((x) => x.value)).toEqual(['FACT:Assurance Alpha', 'FACT:Toitures Bêta']);
+    expect(p[0]!.label).toBe('Assurance Alpha — « Sinistre tempête »');
+    for (const x of p) expect(x.isCurrentValue).toBeUndefined();
+    expect(fusions.parseFactChoice('FACT:Toitures Bêta', sides)).toBe('Toitures Bêta');
+    expect(fusions.parseFactChoice('FACT:Autre tiers', sides)).toBeNull();
+    // Contexte relu strictement : une date n'est pas une désignation, et une désignation vide est refusée.
+    expect(fusions.isReferenceEventFactContext({ ...factCtx(), field: 'provider', sides })).toBe(true);
+    expect(fusions.isReferenceEventFactContext({
+      ...factCtx(), field: 'provider',
+      sides: [{ operationId: 3, title: 'A', value: '   ', version: 1 }, { operationId: 8, title: 'B', value: 'X', version: 1 }],
+    })).toBe(false);
+    expect(fusions.isReferenceEventFactContext({
+      ...factCtx(), field: 'realizedDate',
+      sides: [{ operationId: 3, title: 'A', value: 'Assurance Alpha', version: 1 }, { operationId: 8, title: 'B', value: 'X', version: 1 }],
+    })).toBe(false);
+  });
+
+  it('L115F-F-Q8 — désignations équivalentes et rôles de partie : aucune fausse question (pur)', () => {
+    const eq = { canonical: new Map([['assurancealpha', 'alpha'], ['alpha', 'alpha']]), classes: new Map() };
+    expect(fusions.providerComparisonKey('Assurance Alpha', eq)).toBe(fusions.providerComparisonKey('Alpha', eq));
+    // « Ets Bêta & Fils » et « Société Beta et Fils » : même forme normalisée, sans aucune table d'enseignes.
+    expect(fusions.providerComparisonKey('Ets Bêta & Fils', null)).toBe(fusions.providerComparisonKey('Societe Beta et Fils', null));
+    expect(fusions.providerComparisonKey('Toitures Bêta', eq)).not.toBe(fusions.providerComparisonKey('Assurance Alpha', eq));
+    // « Même fait » = même rôle sémantique de la partie ; jamais une banque face à un fournisseur.
+    expect(fusions.comparableProviderRoles('SUPPLIER', 'SUPPLIER')).toBe(true);
+    expect(fusions.comparableProviderRoles('SUPPLIER', 'PAYMENT_INTERMEDIARY')).toBe(false);
+    expect(fusions.comparableProviderRoles('UNKNOWN', 'UNKNOWN')).toBe(false);
+    expect(fusions.comparableProviderRoles('USER_ENTRY', 'USER_ENTRY')).toBe(false);
+    expect(fusions.comparableProviderRoles(undefined, undefined)).toBe(false);
   });
 });
 
@@ -127,7 +174,11 @@ describe('L114U-F-C — contextes : relus strictement', () => {
     const refuses: unknown[] = [
       null, undefined, 'reference_event_fact', 42, [],
       factCtx({ kind: 'reference_event_merge' as never }),
-      factCtx({ field: 'provider' as never }), factCtx({ field: 'realized_date' as never }),
+      // Règle remplacée (carte #791) : `provider` EST un fait comparable — mais avec des valeurs de DATE,
+      // le contexte reste refusé (une date n'est pas une désignation de prestataire). Cas positif : L115F-F-Q7.
+      factCtx({ field: 'provider' as never, sides: [
+        { operationId: 3, title: 'A', value: '2025-03-10', version: 1 }, { operationId: 8, title: 'B', value: '', version: 1 }] }),
+      factCtx({ field: 'realized_date' as never }),
       // Un seul côté, ou deux fois le même événement.
       factCtx({ sides: [{ operationId: 3, title: 'A', value: '2025-03-10', version: 1 }] }),
       factCtx({ sides: [{ operationId: 3, title: 'A', value: '2025-03-10', version: 1 }, { operationId: 3, title: 'A', value: '2025-03-12', version: 1 }] }),

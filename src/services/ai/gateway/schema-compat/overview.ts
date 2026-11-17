@@ -7,7 +7,14 @@
  */
 import { SCHEMA_COMPAT_POLICY, SCHEMA_COMPAT_STATE_LABELS, type SchemaCompatState } from './policy';
 import { getSchemaUsageReport, type SchemaUsageFilters, type SchemaUsageReport } from './supervision';
-import { staticSchemaMatrix, isCurrentCouple, type StaticSchemaRow } from './static-matrix';
+import { staticSchemaMatrix, isCurrentCouple, coupleRoutingStatus, type CoupleRoutingStatus, type StaticSchemaRow } from './static-matrix';
+
+/** Libellés du statut de routage (BO) — à valider par le PO. */
+export const ROUTING_STATUS_LABELS: Readonly<Record<CoupleRoutingStatus, string>> = {
+  ACTIVE: 'modèle routé pour ce type d’appel',
+  WITHDRAWN: 'modèle retiré du routage et du référentiel (ce refus ne concerne plus les appels actuels)',
+  UNKNOWN: 'routage non établi (configuration illisible, ou modèle hors chaîne mais toujours déclaré) : rien n’est conclu',
+};
 
 export interface SchemaCompatCoupleView {
   keyId: string;
@@ -26,6 +33,16 @@ export interface SchemaCompatCoupleView {
   state: SchemaCompatState; stateLabel: string; reason: string | null;
   /** Le couple est celui que la passerelle transmet aujourd'hui ; sinon : état historique. */
   current: boolean;
+  /**
+   * Lot 115 (carte #784, §E1) — STATUT DE ROUTAGE du couple, calculé pour les
+   * alertes et désormais AFFICHÉ : `ACTIVE` le modèle est dans la chaîne
+   * réellement configurée de ce type d'appel ; `WITHDRAWN` il n'y est plus et
+   * n'est plus au référentiel (preuve de retrait) ; `UNKNOWN` on ne sait pas
+   * (configuration illisible, ou hors chaîne mais toujours déclaré) — et alors
+   * rien n'est conclu, ni ici ni sur les alertes.
+   */
+  routingStatus: CoupleRoutingStatus;
+  routingLabel: string;
   acceptedCount: number; rejectionCount: number; consecutiveRejections: number; retestCount: number;
   firstRejectedAt: string | null; lastRejectedAt: string | null; lastAcceptedAt: string | null;
   nextRetestAt: string | null; retestInProgress: boolean;
@@ -55,6 +72,13 @@ export async function getSchemaCompatOverview(f: SchemaUsageFilters, now: Date =
     const [{ listUnresolvedAlerts }, { SCHEMA_COMPAT_ALERT_CODE }] = await Promise.all([import('../../alerts/alerts.repository'), import('./alerts')]);
     openAlerts = (await listUnresolvedAlerts([SCHEMA_COMPAT_ALERT_CODE])).length;
   } catch { openAlerts = null; }
+  // Lot 115 (carte #784, §E1) : statut de routage par (type d'appel, modèle), calculé UNE fois par couple
+  // distinct — la même lecture que celle des alertes, sans la refaire par ligne affichée.
+  const routage = new Map<string, CoupleRoutingStatus>();
+  for (const r of rows ?? []) {
+    const cle = `${r.key.operationCode}\u0000${r.key.model}`;
+    if (!routage.has(cle)) routage.set(cle, await coupleRoutingStatus({ operationCode: r.key.operationCode, model: r.key.model }));
+  }
   const t = now.getTime();
   return {
     usage,
@@ -62,7 +86,10 @@ export async function getSchemaCompatOverview(f: SchemaUsageFilters, now: Date =
       keyId: r.keyId, ...r.key, generationProfileHash: r.key.generationProfileHash ?? '-',
       servedModelVersion: r.servedModelVersion ?? null, versionUncertain: r.versionUncertain === true,
       state: r.state, stateLabel: SCHEMA_COMPAT_STATE_LABELS[r.state], reason: r.reason,
-      current: isCurrentCouple(r.key), acceptedCount: r.acceptedCount, rejectionCount: r.rejectionCount,
+      current: isCurrentCouple(r.key),
+      routingStatus: routage.get(`${r.key.operationCode}\u0000${r.key.model}`) ?? 'UNKNOWN',
+      routingLabel: ROUTING_STATUS_LABELS[routage.get(`${r.key.operationCode}\u0000${r.key.model}`) ?? 'UNKNOWN'],
+      acceptedCount: r.acceptedCount, rejectionCount: r.rejectionCount,
       consecutiveRejections: r.consecutiveRejections, retestCount: r.retestCount, firstRejectedAt: iso(r.firstRejectedAt),
       lastRejectedAt: iso(r.lastRejectedAt), lastAcceptedAt: iso(r.lastAcceptedAt), nextRetestAt: iso(r.nextRetestAt),
       retestInProgress: r.retestClaimedUntil !== null && r.retestClaimedUntil > t, lastHttpStatus: r.lastHttpStatus,

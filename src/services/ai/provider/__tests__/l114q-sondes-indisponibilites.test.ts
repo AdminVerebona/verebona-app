@@ -369,6 +369,13 @@ describe('L114Q-U09 — BO et alertes (R10, B01 à B04)', () => {
     { treatment: 'T4', rank: 'fallback1', model: ACTIF, source: 'version' },
     { treatment: 'T6', rank: 'fallback1', model: ACTIF, source: 'version' },
     { treatment: 'T1', rank: 'fallback1', model: REPLI, source: 'version' },
+    // Carte #786 (E08) : la criticité se lit par UNITÉ DE ROUTAGE (« plus aucune route admissible »). Les
+    // chaînes de T2, T3, T4 et T6 portent donc leur principal sain — sans lui, ces unités n'auraient
+    // littéralement aucune route, et l'alerte serait critique à juste titre.
+    { treatment: 'T2', rank: 'primaryModel', model: REPLI, source: 'version' },
+    { treatment: 'T3', rank: 'primaryModel', model: REPLI, source: 'version' },
+    { treatment: 'T4', rank: 'primaryModel', model: REPLI, source: 'version' },
+    { treatment: 'T6', rank: 'primaryModel', model: REPLI, source: 'version' },
   ];
   const contexte = (operational: UsableModelsContext['operational']): UsableModelsContext => ({
     environment: 'production',
@@ -412,9 +419,11 @@ describe('L114Q-U09 — BO et alertes (R10, B01 à B04)', () => {
       details: { model: ACTIF, counts: { models: 1, usages: 5 }, diagnostic: { httpStatus: 404, providerCode: 'NOT_FOUND', errorKind: 'model_access_closed' } },
     });
     expect(JSON.stringify(levees)).not.toContain(CLE);
-    // Aucun repli utilisable pour un principal : critique.
+    // Règle remplacée (carte #786, E08) : plus aucune route admissible pour ces unités → critique.
     const sansRepli = A.detectActiveModelAnomalies(CHAINES.slice(0, 5), contexte(await O.loadOperationalStatuses(CLE)));
-    expect(A.groupAnomaliesByModel(sansRepli, diagnostics)[0].severity).toBe('critical');
+    const groupeCritique = A.groupAnomaliesByModel(sansRepli, diagnostics)[0];
+    expect(groupeCritique.severity).toBe('critical');
+    expect(groupeCritique.usages.every((u) => u.noAdmissibleRoute)).toBe(true);
   });
 
   it('suspect et inconclusive affichés à part des indisponibilités ; décompte jamais « tout est sain » faute de sonde', async () => {

@@ -649,6 +649,13 @@ export async function applyImport(content: string, opts: ApplyOptions, userId: n
       comment: `Import complet du fichier ${doc.integrity.signature.slice(0, 12)}… (${doc.source?.environment ?? '?'} v${doc.version?.number ?? '?'} r${doc.revision?.number ?? '?'})`,
     });
     if (deps.failAt === 'after_version') throw new Error('panne simulée après création de la version');
+    // Lot 115 (carte #786, E03) : CONTRÔLE FINAL de disponibilité dans la transaction de l'import — un fichier
+    // de configuration HISTORIQUE pouvait remettre en service un modèle confirmé indisponible pour la clé
+    // active. Même façade que l'activation manuelle et la promotion d'une candidate ; contrôle impossible →
+    // refus (E01) : la transaction est annulée en entier, la configuration active reste inchangée.
+    const { activationAvailabilityRefusal, chainModelsOf } = await import('./activation-availability');
+    const refusDispo = await activationAvailabilityRefusal(sql, chainModelsOf(entries), 'Import annulé');
+    if (refusDispo) throw new ConfigOperationRefused(refusDispo.code, refusDispo.message, refusDispo);
     const act = await activateVersionInTx(sql, environment, v.versionId, userId, { summary: `Import de la configuration IA (${label})` });
     if (deps.failAt === 'after_activation') throw new Error('panne simulée après activation');
     const email = (await q(sql, `SELECT email FROM users WHERE id = $1`, [userId]))[0]?.email ?? null;

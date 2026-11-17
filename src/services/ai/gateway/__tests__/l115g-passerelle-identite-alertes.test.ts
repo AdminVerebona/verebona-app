@@ -11,6 +11,8 @@
  * vérifiera qu'en préproduction (cf. `docs/exploitation/recette-115g-passerelle-ia.md`).
  */
 import { describe, expect, it } from 'vitest';
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
 import {
   applyServedVersion, applySchemaOutcome, coupleKeyId, generationProfileHashOf, GENERATION_PROFILE_KEYS,
   type GenerationProfile, type SchemaCoupleKey,
@@ -157,5 +159,65 @@ describe('L784-RT — le couple est-il encore routé ? (§E1)', () => {
 
   it('L784-RT-05 — opération inconnue du registre : WITHDRAWN (preuve de code, pas une indisponibilité)', async () => {
     expect(await coupleRoutingStatus({ operationCode: 'operation_qui_n_existe_pas', model: 'm' }, async () => ['m'])).toBe('WITHDRAWN');
+  });
+});
+
+describe('L784-BO — statut de routage AFFICHÉ dans la matrice du BO (§E1)', () => {
+  it('L784-BO-01 — les trois statuts ont un libellé, et « inconnu » ne conclut rien', async () => {
+    const { ROUTING_STATUS_LABELS } = await import('../schema-compat/overview');
+    expect(Object.keys(ROUTING_STATUS_LABELS).sort()).toEqual(['ACTIVE', 'UNKNOWN', 'WITHDRAWN']);
+    expect(ROUTING_STATUS_LABELS.ACTIVE).toMatch(/routé/);
+    expect(ROUTING_STATUS_LABELS.WITHDRAWN).toMatch(/retiré/);
+    expect(ROUTING_STATUS_LABELS.UNKNOWN).toMatch(/rien n’est conclu/);
+    // Aucun des libellés n'emploie le mot réservé aux événements de référence.
+    for (const l of Object.values(ROUTING_STATUS_LABELS)) expect(l).not.toMatch(/\bOpération\b/);
+  });
+
+  it('L784-BO-02 — la vue d’ensemble porte le statut, et l’écran l’affiche', async () => {
+    const src = readFileSync(join(process.cwd(), 'src/services/ai/gateway/schema-compat/overview.ts'), 'utf8');
+    expect(src).toMatch(/routingStatus/);
+    expect(src).toMatch(/coupleRoutingStatus\(/);
+    const panel = readFileSync(join(process.cwd(), 'src/app/admin/ai-executions/_components/SchemaCompatibilityPanel.tsx'), 'utf8');
+    expect(panel).toMatch(/c\.routingLabel/);
+    expect(panel).toMatch(/label="Routage"/);
+    // Charte Sérénité : aucune couleur brute dans ce qui vient d'être ajouté.
+    expect(panel).not.toMatch(/#[0-9a-fA-F]{6}\b/);
+  });
+
+  it('L784-BO-03 — un modèle hors chaîne mais toujours déclaré reste « inconnu » (aucune clôture)', async () => {
+    // Le modèle n'est pas dans la chaîne lue, mais il est au référentiel : rien n'est conclu.
+    expect(await coupleRoutingStatus({ operationCode: 't1_analyze_document', model: 'gemini-3.6-flash' },
+      async () => ['un-autre-modele'])).toBe('UNKNOWN');
+    // Configuration illisible : inconnu aussi.
+    expect(await coupleRoutingStatus({ operationCode: 't1_analyze_document', model: 'gemini-3.6-flash' },
+      async () => { throw new Error('configuration illisible'); })).toBe('UNKNOWN');
+  });
+});
+
+describe('L784-COORD — coordination avec les alertes de couverture T1 de #775 (§E3)', () => {
+  it('L784-COORD-01 — la famille d’alertes de #775 est lue dans SON référentiel (aucune énumération locale)', async () => {
+    const M = await import('../../source-analysis/source-units/monitoring');
+    expect(M.T1_COVERAGE_ALERT_PREFIXES).toEqual(['ai:t1-completeness:', 'ai:t1-normalisation-loss:']);
+    const src = readFileSync(join(process.cwd(), 'src/services/ai/gateway/schema-compat/alerts.ts'), 'utf8');
+    expect(src).toMatch(/T1_COVERAGE_ALERT_PREFIXES/);
+    // Aucun préfixe recopié à la main dans ce module.
+    expect(src).not.toMatch(/ai:t1-completeness:/);
+    expect(src).not.toMatch(/ai:t1-normalisation-loss:/);
+  });
+
+  it('L784-COORD-02 — aucun second passage planifié : la réévaluation reste UN évaluateur réservé', async () => {
+    const worker = readFileSync(join(process.cwd(), 'src/services/ai/queue/queue-worker.ts'), 'utf8');
+    const occurrences = worker.match(/reevaluateSchemaCompatAlerts/g) ?? [];
+    expect(occurrences).toHaveLength(1);
+    expect(worker).toMatch(/run\('schema_compat_alerts'/);
+  });
+
+  it('L784-COORD-03 — ce passage n’ÉCRIT jamais sur les anomalies de couverture T1', () => {
+    const src = readFileSync(join(process.cwd(), 'src/services/ai/gateway/schema-compat/alerts.ts'), 'utf8');
+    // Les seules écritures du module portent sur `ai_alerts` (son propre code) : aucune sur `admin_anomalies`.
+    const ecritures = src.match(/(UPDATE|INSERT INTO|DELETE FROM)\s+admin_anomalies/g) ?? [];
+    expect(ecritures).toEqual([]);
+    expect(src).toMatch(/SELECT COUNT\(\*\)::int AS n FROM admin_anomalies/); // lecture seule, en constat
+    expect(src).not.toMatch(/autoResolveAnomaly/);
   });
 });

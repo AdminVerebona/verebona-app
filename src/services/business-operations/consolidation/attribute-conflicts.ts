@@ -80,6 +80,17 @@ export interface RawAttributeConflict {
   field: ConflictField;
   values: Array<{ value: string; sourceIds: number[] }>;
   retained: string | null;
+  /**
+   * Lot 115 (#791, E01) : l'écart de dates dépasse la FENÊTRE de la transaction.
+   */
+  materialGap?: boolean;
+  /**
+   * Décision PO du 16/11 (carte #791) : les dates relevées désignent le même
+   * jour économique (`SAME_DATE_DAYS`) d'une TRANSACTION. Absent (relevé
+   * antérieur, écart au-delà de la tolérance, prestataire, contrat ou
+   * financement) : aucun adoucissement.
+   */
+  sameEconomicDay?: boolean;
 }
 
 /** Une source d'une valeur, avec son rôle sémantique (fait comparé). */
@@ -477,6 +488,13 @@ export function qualifyAttributeConflicts(raw: readonly RawAttributeConflict[], 
         // Deux devis DISTINCTS (ou un devis qui déclare rectifier) ne contredisent pas la réalisation : seules
         // la commande / la facture engagent. Lot 115 (#791, E05) : deux exemplaires du MÊME devis, si.
         e = { ...base(role, its), qualification: 'LEGITIMATE_DIFFERENCE', reasonCode: 'QUOTE_REVISION', impact: [] };
+      } else if (c.sameEconomicDay === true) {
+        // Décision PO du 16/11 (carte #791) : deux dates qui désignent le même JOUR ÉCONOMIQUE au sens
+        // du référentiel existant (`SAME_DATE_DAYS` : acte du 30/06 et attestation du 02/07 d'un même
+        // achat) ne posent aucune question à l'utilisateur — la date de la source fondatrice est
+        // retenue (règle de rétention inchangée) et la différence reste consultable dans la fiche.
+        // Au-delà de la tolérance, et pour un contrat ou un financement, la contradiction est entière.
+        e = { ...base(role, its), qualification: 'LEGITIMATE_DIFFERENCE', reasonCode: 'SAME_ECONOMIC_DAY', impact: [] };
       } else if (sharedReference(its)) {
         e = { ...base(role, its), qualification: 'REAL_CONFLICT_UNRESOLVED', reasonCode: 'SAME_REFERENCE', impact };
       } else if (c.field === 'realizedDate' && role === 'REALIZATION' && SINGLE_FACT.has(ctx.type ?? '')) {

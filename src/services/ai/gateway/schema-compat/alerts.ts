@@ -14,9 +14,16 @@
  *     reste ACTIVE ; rien n'est supprimé, aucune remise à zéro : les refus
  *     HTTP 400 restent dans les traces d'appels et dans la matrice.
  *
- * Périmètre : compatibilité de SCHÉMA seulement. Les alertes de couverture et
- * de reprise T1 (carte #775), de disponibilité des modèles (#771) et de
- * tarifs (#770) ne sont ni lues ni touchées ici.
+ * Périmètre : compatibilité de SCHÉMA seulement. Les alertes de disponibilité
+ * des modèles (#771) et de tarifs (#770) ne sont ni lues ni touchées ici.
+ *
+ * Lot 115 (carte #784, §E3) — COORDINATION avec les alertes de couverture et de
+ * normalisation T1 de la carte #775 : elles vivent dans `admin_anomalies`, avec
+ * leur propre passage quotidien. Ce passage-ci les lit en CONSTAT seulement
+ * (combien sont ouvertes avant et après) et n'en ferme, n'en ouvre ni n'en
+ * modifie AUCUNE : aucun second ordonnanceur, aucun double emploi, et une
+ * réussite en mode JSON après un refus de schéma ne masque jamais une
+ * couverture T1 incomplète. Le constat est rendu dans le bilan et affiché au BO.
  */
 import { pgClient } from '@/db';
 import { SCHEMA_COMPAT_STATE_LABELS, type SchemaCoupleState } from './policy';
@@ -141,6 +148,29 @@ export interface SchemaAlertReevaluation {
   after: { openAlerts: number | null };
   /** Couples refusés PARCOURUS pour le rattrapage (parcours exhaustif, jamais borné à 2 000). */
   couplesScanned: number;
+  /**
+   * Lot 115 (carte #784, §E3) — COORDINATION avec les alertes de couverture et
+   * de normalisation T1 de la carte #775. Elles vivent ailleurs
+   * (`admin_anomalies`, préfixes de LEUR référentiel), elles ont leur PROPRE
+   * passage quotidien, et
+   * ce passage-ci ne les lit qu'en CONSTAT : il n'en ferme, n'en ouvre et n'en
+   * modifie aucune. C'est ce que dit ce bilan, mesure à l'appui.
+   */
+  coverageCoordination: CoverageCoordination;
+}
+
+/** Constat de coordination avec les alertes de couverture T1 (#775) — lecture seule. */
+export interface CoverageCoordination {
+  /** Anomalies de couverture / normalisation T1 OUVERTES au moment du passage ; `null` : non mesurable. */
+  openCoverageAnomalies: number | null;
+  /** Même décompte APRÈS le passage : il doit être identique (`unchanged`). */
+  openCoverageAnomaliesAfter: number | null;
+  /** Le passage n'a touché AUCUNE de ces anomalies (toujours vrai : il n'écrit que sur son propre code). */
+  unchanged: boolean;
+  /** Passage réservé en base qui porte CETTE famille d'alertes (celui de #775 est distinct). */
+  evaluator: 'schema_compat_alerts';
+  /** Famille d'alertes de #775, pour la recette (aucun secret, aucun contenu). */
+  coverageFamily: readonly string[];
 }
 
 const PAGE = 100;
@@ -152,6 +182,41 @@ const PAGE = 100;
  * carte (> 5 000 alertes) ; le passage quotidien et le BO peuvent la réduire.
  */
 export const REEVAL_DEFAULT_MAX_ALERTS = 100_000;
+
+/**
+ * Lot 115 (carte #784, §E3) — préfixes des anomalies de couverture T1 (#775),
+ * lus dans LEUR référentiel (aucune énumération locale) ; repli silencieux si
+ * ce module évolue : la coordination devient alors « non mesurable », jamais
+ * fausse.
+ */
+async function coverageFamily(): Promise<readonly string[]> {
+  try {
+    const M = await import('../../source-analysis/source-units/monitoring');
+    return M.T1_COVERAGE_ALERT_PREFIXES;
+  } catch {
+    return [];
+  }
+}
+
+/**
+ * Anomalies de couverture / normalisation T1 (#775) OUVERTES — LECTURE SEULE.
+ * Ce module ne leur écrit jamais : elles ont leur propre passage quotidien, et
+ * une réussite en mode JSON ne ferme aucune lacune de couverture.
+ * `null` : non mesurable (table ou module absents).
+ */
+async function countOpenCoverageAnomalies(prefixes: readonly string[]): Promise<number | null> {
+  if (prefixes.length === 0) return null;
+  try {
+    const rows = (await pgClient.unsafe(
+      `SELECT COUNT(*)::int AS n FROM admin_anomalies
+        WHERE status = 'open' AND (${prefixes.map((_, i) => `fingerprint LIKE $${i + 1}`).join(' OR ')})`,
+      prefixes.map((p) => `${p}%`) as never[],
+    )) as unknown as Row[];
+    return rows[0] ? Number(rows[0].n) : null;
+  } catch {
+    return null;
+  }
+}
 
 /** Alertes de ce code non résolues (bilan). `null` : non mesurable. */
 async function countOpenAlerts(): Promise<number | null> {
@@ -189,10 +254,18 @@ export async function reevaluateSchemaCompatAlerts(
     keptActive: 0, keptUndetermined: 0, keptRoutingUnknown: 0, raised: 0, raiseSkippedRoutingUnknown: 0, unavailable: false,
     done: false, resumeFromAlertId: null,
     before: { openAlerts: null, couplesByState: null }, after: { openAlerts: null }, couplesScanned: 0,
+    coverageCoordination: {
+      openCoverageAnomalies: null, openCoverageAnomaliesAfter: null, unchanged: true,
+      evaluator: 'schema_compat_alerts', coverageFamily: [],
+    },
   };
   const [S, M] = await Promise.all([import('./store'), import('./static-matrix')]);
   // Bilan AVANT (carte #784, §E2) : jamais une remise à zéro, un constat.
   out.before.openAlerts = await countOpenAlerts();
+  // Coordination avec #775 (§E3) : CONSTAT avant / après, lecture seule, aucun second passage.
+  const familleCouverture = await coverageFamily();
+  out.coverageCoordination.coverageFamily = familleCouverture;
+  out.coverageCoordination.openCoverageAnomalies = await countOpenCoverageAnomalies(familleCouverture);
   out.before.couplesByState = await S.countCouples().catch(() => null);
   // Budget d'un passage : le `maxPages` historique reste honoré s'il est fourni.
   const budget = opts.maxAlerts ?? (opts.maxPages !== undefined ? opts.maxPages * PAGE : REEVAL_DEFAULT_MAX_ALERTS);
@@ -282,5 +355,14 @@ export async function reevaluateSchemaCompatAlerts(
     out.unavailable = true;
   }
   out.after.openAlerts = await countOpenAlerts();
+  // §E3 : les lacunes de couverture T1 réellement actives sont INTACTES — une réussite en mode JSON après un
+  // refus de schéma ne doit jamais en masquer une seule, et ce passage ne les touche pas.
+  out.coverageCoordination.openCoverageAnomaliesAfter = await countOpenCoverageAnomalies(familleCouverture);
+  out.coverageCoordination.unchanged = out.coverageCoordination.openCoverageAnomalies === null
+    || out.coverageCoordination.openCoverageAnomalies === out.coverageCoordination.openCoverageAnomaliesAfter;
+  if (!out.coverageCoordination.unchanged) {
+    console.warn('[schema-compat] coordination #775 : le nombre d’anomalies de couverture T1 ouvertes a changé '
+      + 'pendant ce passage (il ne les touche pas — un passage de #775 a pu tourner en parallèle).');
+  }
   return out;
 }

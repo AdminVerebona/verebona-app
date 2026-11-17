@@ -97,9 +97,22 @@ const SUJETS: Readonly<Record<string, { noun: string; fixed?: string }>> = {
   'REFERENCE-EVENT-FACT': { noun: 'Date', fixed: 'Date à confirmer' },
 };
 
+/**
+ * Lot 115 (#791, décision du PO du 16/11/2026) : la carte « quel fait est
+ * correct ? » couvre désormais aussi le PRESTATAIRE — son sujet suit le fait,
+ * lu de la clé de relation de la carte (`referenceEventFact:a:b:<fait>`).
+ * Aucune énumération de faits ici : seul le fait « prestataire » a un sujet
+ * propre, tout le reste garde celui des dates. **À valider par le PO.**
+ */
+const FACT_SUBJECTS: Readonly<Record<string, string>> = { provider: 'Prestataire à confirmer' };
+
 /** « Numéro d’immatriculation à vérifier », « Information à compléter »… (pure). */
-export function todoTitle(ruleCode: string, actionKind: string): string {
+export function todoTitle(ruleCode: string, actionKind: string, relationKey: string | null = null): string {
   const s = SUJETS[ruleCode];
+  if (ruleCode === 'REFERENCE-EVENT-FACT' && relationKey) {
+    const fait = relationKey.slice(relationKey.lastIndexOf(':') + 1);
+    if (FACT_SUBJECTS[fait]) return FACT_SUBJECTS[fait]!;
+  }
   if (s?.fixed) return s.fixed;
   const nom = s?.noun ?? 'Information';
   return `${nom} à ${actionKind === 'ARBITRATE' ? 'vérifier' : 'compléter'}`;
@@ -146,7 +159,7 @@ export function todoItemFrom(a: ToProcessActionView): MascotTodoItem {
     assetId: a.targetType === 'ASSET' ? a.targetId : (a.target.assetId ?? null),
     priority: a.priority,
     actionKind: a.actionKind,
-    title: todoTitle(a.ruleCode, a.actionKind),
+    title: todoTitle(a.ruleCode, a.actionKind, a.relationKey ?? null),
     subtitle: bien ? `${cible} · ${bien}` : cible,
     cta: cta(a, actionType),
     card: {

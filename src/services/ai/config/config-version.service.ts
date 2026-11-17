@@ -520,7 +520,17 @@ export async function activate(versionId: number, userId: number, opts: { confir
     if (!version.active) await assertVersionTechnicallyCompatible(version, catalogs);
     warnings = (await assertModelRegistryCoherence(version).catch((e: ConfigOperationRefused) => [{ message: e.message }])).map((i) => i.message);
   }
-  const r = await repo.activateVersion(versionId, userId).catch(asRefusal);
+  // Lot 115 (carte #786, E03) : CONTRÔLE FINAL de disponibilité dans la transaction d'activation — il manquait
+  // sur la réactivation d'une configuration HISTORIQUE (les contrôles métier y sont allégés, décision PO 06) :
+  // une ancienne version pouvait remettre en service un modèle confirmé indisponible. Même façade que la
+  // promotion d'une candidate et que l'import. Contrôle impossible → refus (E01), rien n'est écrit.
+  const { activationAvailabilityRefusal, chainModelsOf } = await import('./activation-availability');
+  const r = await repo.activateVersion(versionId, userId, undefined, {
+    guard: async (sql) => {
+      const refus = await activationAvailabilityRefusal(sql, chainModelsOf(version.entries), 'Activation annulée');
+      if (refus) throw new ConfigOperationRefused(refus.code, refus.message, refus);
+    },
+  }).catch(asRefusal);
   if (!r.alreadyActive) {
     await afterCommit(`activate:${versionId}:r${r.revisionNumber}`, r.masterPromptSwitches);
     await recordConfigAudit('ai_config_version_activate', userId,
@@ -645,21 +655,10 @@ export async function activateQualifiedCandidate(versionId: number, opts: {
     .flatMap((e) => MODEL_FIELDS.map((f) => e[f])).filter((m): m is string => Boolean(m));
   const gardeFinale = async (sql: repo.SqlLike): Promise<void> => {
     await gardeA1(sql);
-    const { operationalRefusalInTx } = await import('../provider/model-operational.service');
-    for (const model of new Set(chainePromue)) {
-      const indispo = await operationalRefusalInTx(sql, model);
-      if (indispo.kind === 'refused') {
-        throw new ConfigOperationRefused('BLOCKED_MODEL_UNAVAILABLE',
-          `Activation annulée dans la transaction : « ${model} » est confirmé indisponible pour la clé active${indispo.error ? ` (${indispo.error})` : ''}.`,
-          { model, checkedAt: indispo.checkedAt });
-      }
-      // #786 (E01) : contrôle final impossible — activation refusée, candidate et preuves conservées.
-      if (indispo.kind === 'unverifiable') {
-        throw new ConfigOperationRefused('BLOCKED_MODEL_UNAVAILABLE',
-          `Activation annulée dans la transaction : la disponibilité de « ${model} » n’a pas pu être contrôlée (${indispo.detail}).`,
-          { model, unverifiable: true });
-      }
-    }
+    // #786 (E03) : MÊME façade que l'activation manuelle et l'import (aucune logique dupliquée).
+    const { activationAvailabilityRefusal } = await import('./activation-availability');
+    const refus = await activationAvailabilityRefusal(sql, chainePromue, 'Activation annulée');
+    if (refus) throw new ConfigOperationRefused(refus.code, refus.message, refus);
   };
   try {
     r = await repo.promoteTreatment(versionId, {

@@ -298,7 +298,9 @@ describe('T11-AC09 à T11-AC15 — BO, regroupement, alerte, configuration', () 
     expect(alerte.dedupeKey).toBe('ai:active-model:gemini-3.6-flash:2026-10-12');
     expect(alerte.treatment).toBeNull();
     expect(alerte.details.usages).toHaveLength(5);
-    expect(alerte.details.usages[0]).toEqual({ treatment: 'T1', rank: 'primaryModel', source: 'version', fallbackAvailable: true });
+    // Règle complétée (carte #786, E08) : chaque usage dit aussi si son unité de routage n'a plus AUCUNE
+    // route admissible — c'est désormais ce qui porte la criticité.
+    expect(alerte.details.usages[0]).toEqual({ treatment: 'T1', rank: 'primaryModel', source: 'version', fallbackAvailable: true, noAdmissibleRoute: false });
     expect(alerte.details.diagnostic).toMatchObject({ status: 'failed_confirmed', source: 'catalog_refresh' });
     // Chaque principal a un repli utilisable : avertissement.
     expect(alerte.severity).toBe('warning');
@@ -310,11 +312,23 @@ describe('T11-AC09 à T11-AC15 — BO, regroupement, alerte, configuration', () 
     ]);
   });
 
-  it('T11-AC13 — critique si au moins un principal n’a aucun repli utilisable', () => {
+  // Règle REMPLACÉE (carte #786, E08) : la criticité suivait « un principal indisponible sans repli
+  // utilisable ». Elle suit désormais « cette unité de routage n'a plus AUCUNE route admissible », avec la
+  // même éligibilité que le routage. Le cas historique (T4 sans repli) reste critique — il n'a plus de route.
+  it('T11-AC13 (règle remplacée, carte #786) — critique quand une unité de routage n’a plus aucune route admissible', () => {
     const sansRepli = CHAINES.filter((c) => !(c.treatment === 'T4' && c.rank === 'fallback1'));
     const [g] = A.groupAnomaliesByModel(A.detectActiveModelAnomalies(sansRepli, ctx(indisponible())));
     expect(g.severity).toBe('critical');
+    expect(g.usages.filter((u) => u.noAdmissibleRoute).map((u) => u.treatment)).toEqual(['T4']);
+    expect(A.groupMessage(g)).toMatch(/Plus aucune route admissible pour T4/);
     expect(A.groupMessage(g)).toMatch(/Aucun repli utilisable pour T4/);
+    // Un rang d'une VARIANTE par type d'appel ne compte pas comme repli de la chaîne du traitement.
+    const variante = [
+      ...sansRepli,
+      { treatment: 'T4' as const, rank: 'fallback1' as const, model: 'gemini-3.1-flash-lite', source: 'version' as const, operationCode: 't4_autre' },
+    ];
+    const [gv] = A.groupAnomaliesByModel(A.detectActiveModelAnomalies(variante, ctx(indisponible())));
+    expect(gv.severity).toBe('critical');
   });
 
   it('T11-AC14 / T11-AC15 — aucune substitution : chaînes inchangées, replis toujours proposés', async () => {

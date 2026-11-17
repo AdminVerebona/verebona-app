@@ -66,6 +66,13 @@ export interface ProviderRefusalReport {
   accessFingerprint?: string | null;
   /** #786 (E04) : identifiant stable de ce constat, figé au départ. */
   checkId?: string | null;
+  /**
+   * #786 (E05) : CAPACITÉ (et modalité) réellement sollicitée par la requête
+   * refusée. La portée du verdict en est déduite par la règle documentée
+   * unique : un refus de portée MODÈLE est retenu sur la capacité de base (et
+   * vaut pour tout l'accès) ; tout autre refus ne vaut que pour cette capacité.
+   */
+  capability?: import('../provider/probe-classification').OperationalCapability;
 }
 export type RefusalSignal = 'recorded' | 'probe_requested' | null;
 
@@ -97,11 +104,12 @@ export function __setFallbackContextForTests(r: Partial<FallbackContextReader> |
   void (async () => {
     const A = await import('../provider/operational-admission');
     A.__setPublishedVerdictReaderForTests(r?.knownUnavailable
-      ? async (model: string) => {
+      ? async (model: string, capability) => {
         const m = await r.knownUnavailable!();
         const h = m.get(model) ?? null;
+        // L'état simulé est celui de la ROUTE (capacité de base) : il est opposable à toutes les capacités.
         return {
-          ...A.unknownVerdict(model, true),
+          ...A.unknownVerdict(model, true, capability),
           state: h ? 'unavailable' : 'unknown',
           error: h?.error ?? null, checkedAt: h?.checkedAt ?? null, nextProbeAt: h?.nextProbeAt ?? null,
         };
@@ -234,19 +242,33 @@ const PROBE_OWNER_ID = Math.random().toString(36).slice(2, 10);
 /**
  * Sonde de rétablissement sous réservation (#786, E06) : la sonde EXISTANTE
  * (génération minimale, sans donnée utilisateur). Un succès probant lève le
- * blocage de disponibilité et MARQUE les qualifications du modèle comme
- * obsolètes (campagne ciblée au passage suivant) ; un résultat non concluant
- * ne lève rien.
+ * blocage de disponibilité, MARQUE les qualifications du modèle comme
+ * obsolètes, puis relance TOUT DE SUITE la campagne ciblée du modèle rétabli
+ * (bornée, sous la MÊME réservation de route : une seule instance la mène ;
+ * dédupliquée par la marque, que le résultat efface). Un résultat non
+ * concluant ne lève rien et ne relance rien.
+ *
+ * Règle complétée (carte #786, E06) : la campagne attendait le passage
+ * planifié suivant. Elle part maintenant immédiatement ; ce qu'elle ne finit
+ * pas (budget, non concluant) reste marqué et le passage planifié EXISTANT le
+ * reprend — aucun second ordonnanceur, aucune réanalyse.
  */
 async function probeUnderReservation(model: string, secret: string): Promise<void> {
   const { probeModels } = await import('../provider/model-operational.service');
   const [r] = await probeModels([model], secret, { source: 'recovery_check' });
   if (!r?.ok) return;
   try {
-    const { markRequalificationRequired } = await import('../provider/model-qualification.service');
-    await markRequalificationRequired([model], secret,
+    const Q = await import('../provider/model-qualification.service');
+    await Q.markRequalificationRequired([model], secret,
       'modèle rétabli après une indisponibilité confirmée (#786) : qualifications antérieures à requalifier');
-  } catch { /* marquage non bloquant : le passage suivant le refera */ }
+    // Le cache de disponibilité est vidé AVANT la campagne : ses épreuves passent la garde d'admission avec
+    // le verdict rétabli, et non avec le refus que la sonde vient de lever.
+    invalidateFallbackStatusCache();
+    const bilan = await Q.runTargetedRequalification([model], secret, { max: 1 });
+    if (bilan.attempted.length === 0) {
+      console.info(`[fallback] campagne ciblée de ${model} non lancée (${bilan.skipped.map((s) => s.reason).join(', ') || 'rien à reprendre'}) : reprise au passage planifié.`);
+    }
+  } catch { /* marquage ou campagne non bloquants : le passage planifié les reprend */ }
 }
 
 /**
@@ -313,6 +335,8 @@ async function defaultReportRefusal(p: ProviderRefusalReport): Promise<RefusalSi
       // #786 : accès de l'envoi et identifiant stable du constat.
       ...(p.accessFingerprint ? { accessFingerprint: p.accessFingerprint } : {}),
       ...(p.checkId ? { checkId: p.checkId } : {}),
+      // #786 (E05) : capacité sollicitée par la requête refusée (la portée est déduite de la classification).
+      ...(p.capability ? { capability: p.capability } : {}),
     }), LOOKUP_TIMEOUT_MS, null);
     invalidateFallbackStatusCache();
     return etat && etat.ok === false ? 'recorded' : null;

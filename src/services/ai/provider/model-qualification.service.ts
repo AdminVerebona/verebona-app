@@ -319,6 +319,91 @@ export async function markRequalificationRequired(models: readonly string[], sec
   }
 }
 
+/** Issue d'une campagne ciblée de requalification (lot 115, carte #786, E06). */
+export interface TargetedRequalification {
+  /** Modèles réellement éprouvés à ce passage. */
+  attempted: string[];
+  qualified: string[];
+  failed: string[];
+  /** Épreuve non concluante (quota, délai, réseau, incident global) : la marque RESTE, reprise au passage suivant. */
+  inconclusive: string[];
+  /** Non éprouvés et pourquoi : `not_marked`, `unpriced` (#770), `refused` (route non admissible), `budget`. */
+  skipped: Array<{ model: string; reason: 'not_marked' | 'unpriced' | 'refused' | 'budget' }>;
+}
+
+/**
+ * Lot 115 (carte #786, E06) — CAMPAGNE CIBLÉE, LANCÉE TOUT DE SUITE au
+ * rétablissement d'une route.
+ *
+ * Règle complétée (carte #786) : le rétablissement se contentait de MARQUER les
+ * qualifications obsolètes, et la campagne ne repartait qu'au passage suivant
+ * (jusqu'à un jour plus tard) — « disponible à requalifier » restait donc
+ * affiché sans que rien ne soit relancé. La campagne est maintenant relancée
+ * IMMÉDIATEMENT, et strictement bornée :
+ *   · seuls les modèles réellement MARQUÉS à requalifier sont éprouvés — un
+ *     modèle déjà qualifié n'est jamais réessayé (dédupliqué par la marque
+ *     elle-même, que le résultat efface : rejouable sans doublon) ;
+ *   · bornée en nombre (`max`) et en temps (`budgetMs`) : au-delà, le passage
+ *     planifié existant reprend le reste (aucun second ordonnanceur) ;
+ *   · chaque épreuve passe la garde tarifaire (#770) et la garde d'admission
+ *     (E03) du port d'appel unique : une route non admissible n'est pas
+ *     éprouvée, et le motif est rendu ;
+ *   · AUCUNE activation, aucun modèle actif changé, aucune configuration
+ *     touchée : la campagne ne fait qu'établir des faits de qualification.
+ * Ne lève jamais.
+ */
+export async function runTargetedRequalification(
+  models: readonly string[], secret: string,
+  opts: { max?: number; budgetMs?: number; call?: QualificationCall; now?: Date } = {},
+): Promise<TargetedRequalification> {
+  const out: TargetedRequalification = { attempted: [], qualified: [], failed: [], inconclusive: [], skipped: [] };
+  if (models.length === 0) return out;
+  const fin = Date.now() + Math.max(1_000, opts.budgetMs ?? 20_000);
+  const max = Math.max(1, opts.max ?? 2);
+  try {
+    const stored = await loadQualifications(secret);
+    // Seuls les modèles MARQUÉS (ou jamais qualifiés) sont repris : la marque est la déduplication.
+    const aReprendre = models.filter((m) => {
+      if (needsQualification(stored.get(m), opts.now)) return true;
+      out.skipped.push({ model: m, reason: 'not_marked' });
+      return false;
+    });
+    if (aReprendre.length === 0) return out;
+    // #770 : aucune épreuve payante sur un modèle sans tarif officiel vérifié.
+    const { splitByPricing } = await import('../gateway/pricing/pricing-guard');
+    const tarif = await splitByPricing(aReprendre);
+    for (const u of tarif.unpriced) out.skipped.push({ model: u.model, reason: 'unpriced' });
+    const call = opts.call ?? defaultQualificationCall(secret);
+    const { guardSend } = await import('./operational-admission');
+    for (const model of tarif.priced) {
+      if (out.attempted.length >= max || Date.now() > fin) { out.skipped.push({ model, reason: 'budget' }); continue; }
+      // E03 : une qualification n'est PAS une sonde de récupération — la route doit être admissible avant la
+      // première épreuve, et chaque épreuve repasse la garde au port d'appel. Refus : la campagne le DIT.
+      const admission = await guardSend({ model, point: 'qualification_trial' });
+      if (!admission.admitted) { out.skipped.push({ model, reason: 'refused' }); continue; }
+      out.attempted.push(model);
+      try {
+        const r = await qualifyModel(model, call, { secret, capabilities: capabilitiesOf(model) });
+        if (r.generate === null) { out.inconclusive.push(model); continue; }
+        await recordQualification(model, secret, r);
+        (r.generate && r.structured !== false ? out.qualified : out.failed).push(model);
+      } catch (e) {
+        // Route refusée par la garde d'admission (E03) : la campagne ne force rien, et le dit.
+        const refus = (e as { name?: string } | null)?.name === 'ModelSendRefused';
+        out.attempted.pop();
+        out.skipped.push({ model, reason: refus ? 'refused' : 'budget' });
+        if (!refus) console.warn('[model-qualification] campagne ciblée interrompue :', sanitizeProviderError((e as Error).message, secret).slice(0, 200));
+      }
+    }
+  } catch (e) {
+    console.warn('[model-qualification] campagne ciblée impossible :', sanitizeProviderError((e as Error).message, secret).slice(0, 200));
+  }
+  if (out.attempted.length > 0) {
+    console.info(`[model-qualification] campagne ciblée : ${out.qualified.length} qualifié(s), ${out.failed.length} en échec, ${out.inconclusive.length} non concluant(s) sur ${out.attempted.length} éprouvé(s).`);
+  }
+  return out;
+}
+
 /** Enregistre un résultat CONCLUANT sur la génération (best effort : ne lève jamais). */
 export async function recordQualification(model: string, secret: string, r: QualificationResult): Promise<boolean> {
   if (r.generate === null) return false;

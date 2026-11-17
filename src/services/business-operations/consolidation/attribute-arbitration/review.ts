@@ -306,6 +306,12 @@ export interface AttributeArbitrationPhaseResult {
   resumed?: number;
   /** Lot 115 (#791, E09) : décisions dont l'application a été vérifiée SANS effet (valeur protégée, saisie non gérée). */
   applyFailed?: number;
+  /**
+   * Lot 115 (#791, E08) : verdicts « document étranger » dont la séparation a
+   * EU LIEU et dont les valeurs dérivées viennent d'être réparées (une seule
+   * fois par ligne). Jamais un détachement décidé par un traitement.
+   */
+  linkRepairs?: number;
   /** Capacité absente (bloc 38 non collé, coupure) : aucune demande traitée par l'IA. */
   unavailable?: string;
 }
@@ -329,6 +335,51 @@ async function pendingApplications(x: Exec, accountId: number, limit: number): P
   return r.map((l) => ({ id: Number(l.id), operationId: Number(l.operation_id), field: String(l.field) as ConflictField, value: String(l.retained_value) }));
 }
 
+/**
+ * Lot 115 (#791, E08 — part FAISABLE sans décision nouvelle) — RÉPARATION DES
+ * VALEURS DÉRIVÉES après un verdict « document étranger ».
+ *
+ * Le verdict `LINK_ERROR` ouvre un doute de rattachement et rend le candidat
+ * au réexamen d'identité EXISTANT (lot 78A), qui ne sépare que sur
+ * contradiction CERTAINE. Jusqu'ici, quand cette séparation avait LIEU — par
+ * le réexamen, par le rétablissement BO, ou parce que le justificatif a été
+ * retiré ou supprimé — rien ne refermait la boucle du côté de l'arbitrage :
+ * l'événement de référence gardait des valeurs (dates, prestataire,
+ * composantes, provenance, libellé) encore justifiées par la source partie.
+ *
+ * Cette lecture rend les lignes `LINK_ERROR` dont le document désigné N'EST
+ * PLUS une source ACTIVE de l'événement : elles entrent dans la
+ * reconsolidation CIBLÉE du passage (chaîne existante
+ * `reconsolidateOperations` : valeurs recalculées depuis les sources actives,
+ * provenance refaite, carte posée ou fermée, événements publiés après commit
+ * qui mettent à jour l'Agenda, le coût de possession et les exports). Une
+ * fois réparée, la ligne porte sa trace (`validation.linkRepair`) et n'est
+ * plus reprise : idempotent, borné, sans aucun appel à l'IA.
+ *
+ * CE QUI N'EST PAS FAIT, ET POURQUOI — aucun DÉTACHEMENT, aucune FUSION,
+ * aucune SCISSION n'est décidé ici : c'est une décision du PO qui manque
+ * (« faut-il détacher automatiquement un justificatif que T3 déclare
+ * étranger, à quel niveau de preuve, et que devient alors l'événement
+ * d'arrivée ? »). Tant qu'elle n'est pas prise, un document encore ACTIF et
+ * déclaré étranger garde son doute ouvert et sa source en place : rien n'est
+ * réparé de force.
+ */
+async function pendingLinkRepairs(x: Exec, accountId: number, limit: number): Promise<Array<{ id: number; operationId: number; fileId: number }>> {
+  const r = await rows(x, sql`
+    SELECT a.id, a.operation_id, a.foreign_file_id
+      FROM business_operation_attribute_arbitrations a
+      JOIN business_operations o ON o.id = a.operation_id AND o.account_id = a.account_id
+       AND o.invalidated_at IS NULL AND o.merged_into_operation_id IS NULL
+     WHERE a.account_id = ${accountId} AND a.status = 'DECIDED' AND a.outcome = 'LINK_ERROR'
+       AND a.foreign_file_id IS NOT NULL
+       AND NOT (COALESCE(a.validation, '{}'::jsonb) ? 'linkRepair')
+       AND NOT EXISTS (SELECT 1 FROM business_operation_sources s
+                        WHERE s.account_id = a.account_id AND s.operation_id = a.operation_id AND s.active
+                          AND s.source_kind = 'DOCUMENT' AND s.source_entity_key = a.foreign_file_id::text)
+     ORDER BY a.id LIMIT ${limit}`);
+  return r.map((l) => ({ id: Number(l.id), operationId: Number(l.operation_id), fileId: Number(l.foreign_file_id) }));
+}
+
 const todayParis = (d: Date) => new Intl.DateTimeFormat('en-CA', { timeZone: 'Europe/Paris' }).format(d);
 
 /**
@@ -348,7 +399,9 @@ export async function runAttributeArbitrationPhase(accountId: number, opts: {
   const demandes = await pendingRequests(x, accountId, opts.limit ?? REQUESTS_PER_PASS);
   // Lot 115 (#791, E09) : d'abord les applications inachevées du compte (aucun appel IA).
   const reprises = await pendingApplications(x, accountId, opts.limit ?? REQUESTS_PER_PASS);
-  if (!demandes.length && !reprises.length) return out;
+  // Lot 115 (#791, E08) : puis les valeurs dérivées à réparer après une séparation déjà décidée (aucun appel IA).
+  const reparations = await pendingLinkRepairs(x, accountId, opts.limit ?? REQUESTS_PER_PASS);
+  if (!demandes.length && !reprises.length && !reparations.length) return out;
   const now = opts.now ?? (() => new Date());
   const decider = opts.decider ?? deciderMod.arbitrationDecider();
   const parJour = opts.dailyMax ?? m3.operationMatchCallsPerDay();
@@ -364,6 +417,12 @@ export async function runAttributeArbitrationPhase(accountId: number, opts: {
     touchees.add(r.operationId);
   }
   if (reprises.length) out.resumed = reprises.length;
+
+  // Lot 115 (#791, E08) : la séparation a eu lieu (source partie) — les valeurs dérivées de l'événement sont
+  // recalculées par la reconsolidation ciblée ci-dessous, et la propagation est celle du dépôt (événements
+  // publiés après commit : Agenda, coût de possession, exports). Aucun détachement n'est décidé ici.
+  for (const r of reparations) touchees.add(r.operationId);
+  if (reparations.length) out.linkRepairs = reparations.length;
 
   const cap = await decider.capability();
   if (!cap.available && !demandes.length) {
@@ -482,6 +541,17 @@ export async function runAttributeArbitrationPhase(accountId: number, opts: {
     }
     const { reconsolidateOperations } = await import('../consolidator');
     await reconsolidateOperations(accountId, out.operations, { correlationId: 't3-attribute-arbitration' });
+    // Lot 115 (#791, E08) : les valeurs dérivées ont été recalculées depuis les sources ACTIVES (la source
+    // étrangère n'en est plus une) et la propagation est partie avec les événements publiés. La ligne porte sa
+    // trace : elle n'est plus reprise (idempotent), et le BO lit QUAND la réparation a eu lieu.
+    for (const r of reparations) {
+      await x.execute(sql`
+        UPDATE business_operation_attribute_arbitrations
+           SET validation = COALESCE(validation, '{}'::jsonb) || ${JSON.stringify({
+    linkRepair: { state: 'SOURCE_SEPARATED', derivedValuesRecomputed: true, foreignFileId: r.fileId, detached: false },
+  })}::jsonb, updated_at = now()
+         WHERE id = ${r.id} AND account_id = ${accountId}`);
+    }
     for (const r of resolus) {
       // Application VÉRIFIÉE : la valeur est relue sur l'événement de référence (jamais déduite de la décision).
       const apres = await valueOf(x, accountId, r.operationId, r.field);

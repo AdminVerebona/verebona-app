@@ -661,7 +661,7 @@ export async function checkCardLink(accountId: number, publicId: string, t: { ki
     publicId: String(row.public_id), ruleCode: String(row.rule_code), actionKind: row.action_kind as ActionKind,
     targetType: row.target_type as TargetType, targetId: Number(row.target_id),
     fieldKey: (row.field_key as string | null) ?? null, relationKey: (row.relation_key as string | null) ?? null,
-    proposals: selectDisplayedProposals((row.proposals_json as ActionProposal[] | null) ?? []),
+    proposals: selectDisplayedProposals((row.proposals_json as ActionProposal[] | null) ?? [], String(row.rule_code)),
     triggerContext: row.trigger_context, supplierId,
   };
   const links = (await resolveCardLinks(accountId, [card])).get(card.publicId);

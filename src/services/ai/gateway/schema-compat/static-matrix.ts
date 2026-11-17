@@ -13,7 +13,7 @@ import { AI_OPERATIONS, isMasterOperation } from '../../registry/operations';
 import { findDeclaredModel } from '../../registry/models';
 import { masterOutputSchemaFor } from '../master-output-schemas';
 import { resolveRuntimeContract, providerSchemaHash } from '../output-resolution/runtime-contract';
-import { providerJsonSchema, providerSchemaPropertyCap, PROVIDER_SCHEMA_ADAPTER_VERSION } from '../output-resolution/provider-schema';
+import { providerJsonSchema, PROVIDER_SCHEMA_ADAPTER_VERSION } from '../output-resolution/provider-schema';
 import type { GeminiSchemaMetrics } from '../providers/gemini-schema-contract';
 
 export interface StaticSchemaRow {
@@ -37,8 +37,6 @@ export interface StaticSchemaRow {
    * corrélé.
    */
   metrics: GeminiSchemaMetrics | null;
-  /** Plafond de propriétés posé en exploitation (`AI_PROVIDER_SCHEMA_MAX_PROPERTIES`) ; `null` : aucun. */
-  propertyCap: number | null;
   /** Motif statique d'absence de schéma ; `null` : transmissible. */
   omitted: string | null;
   /** Contraintes retirées de la projection (revalidées par Verebona). */
@@ -62,7 +60,7 @@ export function staticSchemaRowOf(operationCode: string): StaticSchemaRow | null
       operationCode, contractId: contract.contractId, contractVersion: contract.contractVersion, schemaVersion: contract.schemaVersion,
       schemaHash: contract.schemaHash, providerSchemaHash: providerSchemaHash(ps.schema), adapterVersion: PROVIDER_SCHEMA_ADAPTER_VERSION,
       nodes: ps.nodes, serializedChars: ps.schema ? JSON.stringify(ps.schema).length : null, omitted: ps.omitted,
-      metrics: ps.metrics ?? null, propertyCap: providerSchemaPropertyCap(),
+      metrics: ps.metrics ?? null,
       droppedKeywords: ps.dropped, issues: ps.issues ?? [], lostBranches: ps.lostBranches ?? [],
     };
   } catch {

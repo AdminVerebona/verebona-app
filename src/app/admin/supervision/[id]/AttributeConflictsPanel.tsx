@@ -185,6 +185,11 @@ export function AttributeConflictsPanel({ id }: { id: number }) {
                     <span className="block text-muted-foreground" data-testid="conflit-t3">
                       T3 #{e.t3.reviewId} : {e.t3.label}{e.t3.outcome ? ` — ${e.t3.outcome}` : ''}{e.t3.decidedAt ? ` · ${formatDateTime(e.t3.decidedAt)}` : ''}
                       {e.t3.reason ? <><br />motif : {e.t3.reason}</> : null}
+                      {/* Lot 115 (#791, E09) : « décidé » n'est jamais présenté comme « appliqué » — l'état
+                          d'application est lu à l'écran, pas seulement dans l'export. */}
+                      {e.t3.applicationLabel ? <><br />{e.t3.applicationLabel}</> : null}
+                      {/* Lot 115 (#791, E08) : réparation des valeurs dérivées après un verdict « document étranger ». */}
+                      {e.t3.linkRepairLabel ? <><br />{e.t3.linkRepairLabel}</> : null}
                       {e.t3.evidence.map((p, j) => <span className="block" key={j}>preuve{p.fileId ? ` (document #${p.fileId})` : ''} : « {p.excerpt} »</span>)}
                       {e.t3.promptVersion ? <><br />prompt : {e.t3.promptVersion}{e.t3.traceId ? ` · trace ${e.t3.traceId}` : ''}</> : null}
                     </span>

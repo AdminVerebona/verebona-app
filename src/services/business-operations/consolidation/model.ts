@@ -1013,9 +1013,26 @@ interface AttributeConflict {
    * restaient invisibles.
    */
   materialGap?: boolean;
+  /**
+   * Décision PO du 16/11 (carte #791) : les dates désignent le MÊME JOUR
+   * ÉCONOMIQUE au sens du référentiel existant (`SAME_DATE_DAYS`, acte du 30/06
+   * et attestation du 02/07 d'un même achat) — la qualification en fait une
+   * différence consultable, sans question posée. Absent dès que l'écart dépasse
+   * cette tolérance, pour le prestataire, et pour un type SANS fenêtre de
+   * transaction (contrat, financement) : la contradiction reste entière.
+   */
+  sameEconomicDay?: boolean;
 }
 
 const ecartJoursModel = (a: string, b: string): number => Math.abs(Date.parse(`${a}T00:00:00Z`) - Date.parse(`${b}T00:00:00Z`)) / 86_400_000;
+
+/**
+ * Écart (jours) en deçà duquel deux dates désignent le même jour économique.
+ * Référentiel unique, lu par l'identité économique (`economic-identity.ts`, qui
+ * le ré-exporte), par le rapprochement des faits du TCO et, depuis le lot 115
+ * (#791), par le relevé des contradictions de dates.
+ */
+export const SAME_DATE_DAYS = 7;
 
 /**
  * Lot 78A (§2C) : valeurs d'un attribut selon les sources (pure).
@@ -1028,6 +1045,14 @@ const ecartJoursModel = (a: string, b: string): number => Math.abs(Date.parse(`$
  * (`attribute-conflicts.ts`), pas d'un écart de calendrier. La fenêtre de la
  * transaction est conservée comme simple MATÉRIALITÉ de l'écart
  * (`materialGap`), pour ne rien changer aux valeurs retenues.
+ *
+ * Décision PO du 16/11 (carte #791) : deux dates qui désignent le MÊME JOUR
+ * ÉCONOMIQUE (`SAME_DATE_DAYS`, le référentiel déjà utilisé par l'identité
+ * économique et le TCO) restent relevées, mais comme différence consultable
+ * (`SAME_ECONOMIC_DAY`) : la date de la source fondatrice est posée, agenda
+ * compris, et aucune question n'est posée à l'utilisateur. Au-delà de cette
+ * tolérance, la contradiction est entière ; les types SANS fenêtre (contrat,
+ * financement) ne sont jamais adoucis : leur date d'effet est juridique.
  */
 function attributeConflict(
   field: ProvenancedField, srcs: readonly SourceContribution[], valueOf: (s: SourceContribution) => string | null,
@@ -1042,11 +1067,20 @@ function attributeConflict(
   }
   if (vals.length < 2) return null;
   let materialGap = true;
+  let memeJour = false;
   if (field !== 'provider') {
     const tri = vals.map((x) => x.value).sort();
-    materialGap = window !== null && ecartJoursModel(tri[0], tri[tri.length - 1]) > window;
+    const ecart = ecartJoursModel(tri[0], tri[tri.length - 1]);
+    materialGap = window !== null && ecart > window;
+    // Décision PO du 16/11 (carte #791) : même jour économique au sens du référentiel existant, et
+    // seulement pour un type de TRANSACTION (achat, cession, sinistre, intervention). Un contrat ou un
+    // financement n'a pas de fenêtre : sa date d'effet est une date juridique, jamais adoucie.
+    memeJour = window !== null && ecart <= SAME_DATE_DAYS;
   }
-  return { field, values: vals, retained: null, ...(materialGap ? { materialGap: true } : {}) };
+  return {
+    field, values: vals, retained: null,
+    ...(materialGap ? { materialGap: true } : {}), ...(memeJour ? { sameEconomicDay: true } : {}),
+  };
 }
 
 /**

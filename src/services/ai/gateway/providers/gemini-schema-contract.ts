@@ -53,9 +53,8 @@ export const GEMINI_SCHEMA_LIMITS = {
 } as const;
 
 export interface GeminiSchemaIssue {
-  code: 'UNSUPPORTED_KEYWORD' | 'INVALID_TYPE' | 'INVALID_ENUM' | 'NESTED_ARRAY_BOUNDS' | 'TOO_DEEP' | 'TOO_LARGE' | 'UNTYPED_NODE'
-  /** Lot 115 (carte #784, A2) : plafond de propriétés CONFIGURÉ en exploitation et dépassé (aucun plafond par défaut). */
-  | 'PROPERTY_CAP_EXCEEDED';
+  // Décision du PO (16/11/2026, carte #784) : aucun plafond de propriétés — l'écart correspondant est retiré.
+  code: 'UNSUPPORTED_KEYWORD' | 'INVALID_TYPE' | 'INVALID_ENUM' | 'NESTED_ARRAY_BOUNDS' | 'TOO_DEEP' | 'TOO_LARGE' | 'UNTYPED_NODE';
   severity: 'error' | 'warning';
   /** Chemin JSON du nœud (`$.properties.families.items…`). */
   path: string;
@@ -144,14 +143,8 @@ export function unsupportedKeywordsIn(schema: Json | null | undefined): string[]
   return [...new Set(geminiSchemaIssues(schema).filter((i) => i.code === 'UNSUPPORTED_KEYWORD').map((i) => i.detail))].sort();
 }
 
-/** Options du contrôle (lot 115, #784) : plafonds d'exploitation, aucun par défaut. */
-export interface GeminiSchemaCheckOptions {
-  /** Plafond de propriétés transmises ; `null` / absent : aucun plafond (comportement d'origine). */
-  maxProperties?: number | null;
-}
-
 /** Problèmes du schéma au regard du contrat Gemini (pure). Vide : schéma conforme. */
-export function geminiSchemaIssues(schema: Json | null | undefined, opts: GeminiSchemaCheckOptions = {}): GeminiSchemaIssue[] {
+export function geminiSchemaIssues(schema: Json | null | undefined): GeminiSchemaIssue[] {
   if (!schema) return [];
   const issues: GeminiSchemaIssue[] = [];
   const seen = new Set<string>();
@@ -204,15 +197,9 @@ export function geminiSchemaIssues(schema: Json | null | undefined, opts: Gemini
   if (size > GEMINI_SCHEMA_LIMITS.maxSerializedChars) {
     add({ code: 'TOO_LARGE', severity: 'error', path: '$', detail: `${size} caractères > ${GEMINI_SCHEMA_LIMITS.maxSerializedChars}` });
   }
-  // Lot 115 (#784, A2) — plafond de propriétés : AUCUN par défaut. Il n'est
-  // posé qu'en exploitation (voir `providerSchemaPropertyCap`), quand un refus
-  // réel a été constaté et corrélé au nombre de propriétés : la carte interdit
-  // d'attribuer arbitrairement une cause à un HTTP 400.
-  const cap = opts.maxProperties;
-  if (typeof cap === 'number' && Number.isFinite(cap) && cap > 0) {
-    const props = geminiSchemaMetrics(schema).properties;
-    if (props > cap) add({ code: 'PROPERTY_CAP_EXCEEDED', severity: 'error', path: '$', detail: `${props} propriétés > plafond d’exploitation ${cap}` });
-  }
+  // DÉCISION DU PO (16/11/2026, carte #784) : AUCUN plafond sur le nombre de propriétés — le contrôle ne
+  // porte que sur les limites DOCUMENTÉES du contrat du fournisseur. Le nombre de propriétés reste mesuré
+  // (`geminiSchemaMetrics`) comme élément de diagnostic, jamais comme seuil.
   return issues;
 }
 

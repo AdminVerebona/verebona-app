@@ -19,7 +19,10 @@
  *     marquée quand le fournisseur est muet, et un changement de version rend
  *     l'essai avec schéma dû SANS déclarer la moindre compatibilité ;
  *   · E2E-L784-05 (§D2, AC17/AC19) : plus de 200 combinaisons de traces —
- *     totaux et taux EXACTS sur l'ensemble, ventilation paginée signalée.
+ *     totaux et taux EXACTS sur l'ensemble, ventilation paginée signalée ;
+ *   · E2E-L784-06 (§E1, §E3) : le STATUT DE ROUTAGE est servi au BO par la vue
+ *     d'ensemble, et la COORDINATION avec les alertes de couverture T1 (#775)
+ *     est un constat : elles sont inchangées, aucune n'est touchée.
  */
 import { afterAll, expect, it } from 'vitest';
 import { scenario } from '../scenario';
@@ -338,5 +341,51 @@ scenario('L784', 'Passerelle des schémas : volumétrie, routage réel, rattrapa
     expect(r.totals.failedAttemptMs).toBe(COMBINAISONS * 120);
 
     await sql`DELETE FROM ai_usage_event WHERE operation_code = 'l784_supervision'`;
+  });
+
+  it('E2E-L784-06 (§E1, §E3) — statut de routage servi au BO ; alertes de couverture T1 (#775) inchangées', async () => {
+    await purger();
+    const store = await S();
+    const alerts = await A();
+    const { getSchemaCompatOverview } = await import('@/services/ai/gateway/schema-compat/overview');
+    const { T1_COVERAGE_ALERT_PREFIXES } = await import('@/services/ai/source-analysis/source-units/monitoring');
+    const base = await courantT1();
+    const t0 = Date.UTC(2026, 10, 16, 11, 0, 0);
+    const couple = { ...base, model: 'modele-784-bo-routage' };
+    const r = await store.recordRejection(couple, REFUS, t0);
+    expect(await alerts.raiseSchemaIncompatibilityAlert(r!.state)).toBe(true);
+
+    // §E1 : la vue d'ensemble du BO SERT le statut de routage de chaque couple, avec son libellé.
+    const vue = await getSchemaCompatOverview({ days: 1, operationCode: 't1_analyze_document' });
+    const ligne = (vue.couples ?? []).find((c) => c.model === couple.model);
+    expect(ligne).toBeDefined();
+    // Le modèle n'est pas dans la chaîne configurée de la préproduction de test : rien n'est conclu.
+    expect(['ACTIVE', 'WITHDRAWN', 'UNKNOWN']).toContain(ligne!.routingStatus);
+    expect(ligne!.routingLabel.length).toBeGreaterThan(10);
+
+    // §E3 : une anomalie de couverture T1 (#775) OUVERTE, dans son propre référentiel.
+    const compte = await make.account();
+    const [prefixe] = T1_COVERAGE_ALERT_PREFIXES;
+    await sql`DELETE FROM admin_anomalies WHERE fingerprint LIKE ${`${prefixe}%`}`;
+    await sql`INSERT INTO admin_anomalies (domain, fingerprint, title, status, account_id, technical_detail)
+              VALUES ('ai', ${`${prefixe}999777`}, 'Analyse T1 incomplète (e2e 784)', 'open', ${compte.id}, '{}'::jsonb)`;
+
+    // Réévaluation des alertes de SCHÉMA : elle CONSTATE la famille de #775, et n'y touche pas.
+    const bilan = await alerts.reevaluateSchemaCompatAlerts({ readChain: async () => ['modele-784-bo-routage'] });
+    expect(bilan.coverageCoordination).toMatchObject({
+      openCoverageAnomalies: 1, openCoverageAnomaliesAfter: 1, unchanged: true, evaluator: 'schema_compat_alerts',
+    });
+    expect(bilan.coverageCoordination.coverageFamily).toEqual([...T1_COVERAGE_ALERT_PREFIXES]);
+
+    // Le schéma est de nouveau ACCEPTÉ (réussite en mode JSON puis acceptation) : l'alerte de schéma est
+    // close… et la lacune de couverture T1 reste OUVERTE. Une réussite JSON ne masque aucune couverture.
+    await store.recordAcceptance(couple, 'sha-e2e-784', t0 + 60_000);
+    const apres = await alerts.reevaluateSchemaCompatAlerts({ readChain: async () => ['modele-784-bo-routage'] });
+    expect(apres.resolved.SCHEMA_ACCEPTED_AGAIN).toBe(1);
+    expect(apres.coverageCoordination).toMatchObject({ openCoverageAnomalies: 1, openCoverageAnomaliesAfter: 1, unchanged: true });
+    const [{ n }] = await sql<{ n: number }[]>`
+      SELECT count(*)::int AS n FROM admin_anomalies WHERE status = 'open' AND fingerprint LIKE ${`${prefixe}%`}`;
+    expect(n).toBe(1);
+    await sql`DELETE FROM admin_anomalies WHERE fingerprint LIKE ${`${prefixe}%`}`;
   });
 });

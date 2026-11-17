@@ -46,7 +46,7 @@
  * Ce module ne lit ni n'écrit aucun tarif : disponibilité (#771, #786), tarif
  * (#770) et aptitude métier restent trois dimensions distinctes et cumulatives.
  */
-import type { CheckStatus, ProbeErrorKind } from './probe-classification';
+import { BASE_CAPABILITY, OPERATIONAL_CAPABILITY_LABELS, type CheckStatus, type OperationalCapability, type ProbeErrorKind } from './probe-classification';
 
 // ── Inventaire des points d'envoi (E03, R17) ────────────────────────────────
 
@@ -115,7 +115,18 @@ export interface PublishedVerdict {
   nextProbeAt: string | null;
   /** Accès concerné, PSEUDONYMISÉ (jamais la clé). */
   access: string | null;
-  /** Contexte d'accès figé du verdict (E05) : capacité, point d'accès, environnement, version d'API. */
+  /**
+   * CAPACITÉ (et modalité) pour laquelle le verdict a été DEMANDÉ (E05) : le
+   * verdict ne vaut que pour elle.
+   */
+  askedCapability?: OperationalCapability;
+  /**
+   * E05 — le refus rendu est celui de la capacité de BASE (génération de
+   * texte), opposable à la capacité demandée parce qu'il en est le prérequis.
+   * C'est la SEULE extension de portée admise, et elle est dite.
+   */
+  scopeExtendedFromBase?: true;
+  /** Contexte d'accès figé du verdict (E05) : capacité ÉPROUVÉE, point d'accès, environnement, version d'API. */
   capability: string | null;
   endpoint: string | null;
   environment: string | null;
@@ -129,10 +140,10 @@ export interface PublishedVerdict {
 }
 
 /** Verdict « rien de lu, rien de conclu » (ne retire aucun modèle par lui-même). */
-export function unknownVerdict(model: string, reliable: boolean): PublishedVerdict {
+export function unknownVerdict(model: string, reliable: boolean, capability: OperationalCapability = BASE_CAPABILITY): PublishedVerdict {
   return {
     model, state: 'unknown', reliable, checkStatus: null, error: null, checkedAt: null, confirmedAt: null,
-    nextProbeAt: null, access: null, capability: null, endpoint: null, environment: null, apiVersion: null,
+    nextProbeAt: null, access: null, askedCapability: capability, capability: null, endpoint: null, environment: null, apiVersion: null,
     lastResultStatus: null, lastResultAt: null, lastResultKind: null,
   };
 }
@@ -170,8 +181,16 @@ export function admitSend(p: {
   // (bornée par l'échéance partagée et la réservation — jamais une qualification).
   if (sendKindOf(p.point) === 'authorized_probe') return { admitted: true, reason: 'AUTHORIZED_PROBE', verdict };
   // Refus confirmé : opposable, qu'il vienne de la lecture ou du dernier verdict fiable.
+  // #786 (E05) : il ne vaut que pour la CAPACITÉ du verdict rendu — la lecture (`readPublishedVerdict`) a déjà
+  // écarté le refus d'une autre capacité, et DIT quand le refus vient de la capacité de base.
   if (verdict.state === 'unavailable') {
-    return { admitted: false, code: 'MODEL_UNAVAILABLE', label: ADMISSION_REFUSAL_LABELS.MODEL_UNAVAILABLE, verdict };
+    const portee = verdict.scopeExtendedFromBase
+      ? `${ADMISSION_REFUSAL_LABELS.MODEL_UNAVAILABLE} (refus de la capacité de base, prérequis de `
+        + `« ${OPERATIONAL_CAPABILITY_LABELS[verdict.askedCapability ?? BASE_CAPABILITY]} »)`
+      : verdict.askedCapability && verdict.askedCapability !== BASE_CAPABILITY
+        ? `${ADMISSION_REFUSAL_LABELS.MODEL_UNAVAILABLE} (capacité « ${OPERATIONAL_CAPABILITY_LABELS[verdict.askedCapability]} » seulement)`
+        : ADMISSION_REFUSAL_LABELS.MODEL_UNAVAILABLE;
+    return { admitted: false, code: 'MODEL_UNAVAILABLE', label: portee, verdict };
   }
   // Lecture impossible ET aucun verdict fiable : admission invérifiable.
   if (!verdict.reliable && !verdict.fromLastReliable) {
@@ -238,11 +257,14 @@ export function __resetAdmissionMetrics(): void {
 const dernierFiable = new Map<string, PublishedVerdict>();
 let lectureFiableObtenue = false;
 
+/** Clé du dernier verdict fiable : la ROUTE **et** la capacité demandée (E05). */
+const cleFiable = (model: string, capability: OperationalCapability): string => `${model}\u0000${capability}`;
+
 /** Mémorise un verdict lu de façon fiable (E01). */
 export function rememberReliableVerdict(v: PublishedVerdict): void {
   if (!v.reliable) return;
   lectureFiableObtenue = true;
-  dernierFiable.set(v.model, { ...v, fromLastReliable: false });
+  dernierFiable.set(cleFiable(v.model, v.askedCapability ?? BASE_CAPABILITY), { ...v, fromLastReliable: false });
 }
 
 /**
@@ -251,10 +273,18 @@ export function rememberReliableVerdict(v: PublishedVerdict): void {
  * « invérifiable ». Une route lue fiablement comme absente reste admise :
  * l'inconnu ne retire aucun modèle (P04).
  */
-export function lastReliableVerdict(model: string): PublishedVerdict | null {
-  const v = dernierFiable.get(model);
-  if (v) return { ...v, reliable: false, fromLastReliable: true };
-  if (lectureFiableObtenue) return { ...unknownVerdict(model, false), fromLastReliable: true };
+export function lastReliableVerdict(model: string, capability: OperationalCapability = BASE_CAPABILITY): PublishedVerdict | null {
+  const v = dernierFiable.get(cleFiable(model, capability))
+    // #786 (E05) : à défaut de verdict pour cette capacité, le dernier verdict fiable de la capacité de BASE
+    // est opposable (prérequis) — mais seulement s'il REFUSE : il ne vaut jamais autorisation d'une autre capacité.
+    ?? (capability !== BASE_CAPABILITY ? dernierFiable.get(cleFiable(model, BASE_CAPABILITY)) : undefined);
+  if (v && (v.askedCapability ?? BASE_CAPABILITY) === capability) return { ...v, reliable: false, fromLastReliable: true };
+  if (v) {
+    return v.state === 'unavailable'
+      ? { ...v, reliable: false, fromLastReliable: true, askedCapability: capability, scopeExtendedFromBase: true }
+      : { ...unknownVerdict(model, false, capability), fromLastReliable: true };
+  }
+  if (lectureFiableObtenue) return { ...unknownVerdict(model, false, capability), fromLastReliable: true };
   return null;
 }
 
@@ -283,7 +313,7 @@ export class ModelSendRefused extends Error {
 }
 
 /** Lecteur du verdict partagé (injecté en test, sinon la lecture canonique). */
-export type PublishedVerdictReader = (model: string) => Promise<PublishedVerdict>;
+export type PublishedVerdictReader = (model: string, capability: OperationalCapability) => Promise<PublishedVerdict>;
 
 let lecteurInjecte: PublishedVerdictReader | null = null;
 let actifEnTest = false;
@@ -313,28 +343,28 @@ export function admissionActive(): boolean {
   return lecteurInjecte !== null || process.env.NODE_ENV !== 'test' || actifEnTest;
 }
 
-/** Verdict partagé d'une route, lu à la frontière (ne lève jamais). */
-export async function publishedVerdictOf(model: string): Promise<PublishedVerdict> {
+/** Verdict partagé d'une route et d'une CAPACITÉ, lu à la frontière (ne lève jamais). */
+export async function publishedVerdictOf(model: string, capability: OperationalCapability = BASE_CAPABILITY): Promise<PublishedVerdict> {
   if (lecteurInjecte) {
     try {
-      const v = await lecteurInjecte(model);
+      const v = await lecteurInjecte(model, capability);
       rememberReliableVerdict(v);
-      return v.reliable ? v : lastReliableVerdict(model) ?? v;
+      return v.reliable ? v : lastReliableVerdict(model, capability) ?? v;
     } catch {
-      return lastReliableVerdict(model) ?? unknownVerdict(model, false);
+      return lastReliableVerdict(model, capability) ?? unknownVerdict(model, false, capability);
     }
   }
-  if (!admissionActive()) return unknownVerdict(model, true);
+  if (!admissionActive()) return unknownVerdict(model, true, capability);
   try {
     const { readPublishedVerdict } = await import('./model-operational.service');
-    const v = await readPublishedVerdict(model);
+    const v = await readPublishedVerdict(model, undefined, capability);
     if (v.reliable) {
       rememberReliableVerdict(v);
       return v;
     }
-    return lastReliableVerdict(model) ?? v;
+    return lastReliableVerdict(model, capability) ?? v;
   } catch {
-    return lastReliableVerdict(model) ?? unknownVerdict(model, false);
+    return lastReliableVerdict(model, capability) ?? unknownVerdict(model, false, capability);
   }
 }
 
@@ -343,23 +373,28 @@ export async function publishedVerdictOf(model: string): Promise<PublishedVerdic
  * la route et rend la décision. Ne lève jamais ; ne fait AUCUN appel
  * fournisseur ; aucune sonde, aucune recherche de modèle.
  */
-export async function guardSend(p: { model: string; point: SendPoint }): Promise<SendAdmission> {
+export async function guardSend(p: {
+  model: string; point: SendPoint;
+  /** #786 (E05) : capacité (et modalité) que cet envoi va solliciter. Par défaut : la capacité de base. */
+  capability?: OperationalCapability;
+}): Promise<SendAdmission> {
   const dimensionActive = admissionActive();
+  const capability = p.capability ?? BASE_CAPABILITY;
   // Sonde autorisée : aucune lecture nécessaire (elle doit atteindre la route).
   const verdict = sendKindOf(p.point) === 'authorized_probe' || !dimensionActive
-    ? unknownVerdict(p.model, true)
-    : await publishedVerdictOf(p.model);
+    ? unknownVerdict(p.model, true, capability)
+    : await publishedVerdictOf(p.model, capability);
   const a = admitSend({ point: p.point, verdict, dimensionActive });
   compter(p.point, a);
   if (!a.admitted) {
     // Journal (E08) : envoi refusé, sans secret ni donnée de compte.
-    console.info(`[ia-admission] envoi refusé — ${p.model} (${p.point}) : ${a.code}${a.verdict.access ? `, accès ${a.verdict.access}` : ''}${a.verdict.fromLastReliable ? ', dernier verdict fiable' : ''}.`);
+    console.info(`[ia-admission] envoi refusé — ${p.model} (${p.point}, ${capability}) : ${a.code}${a.verdict.access ? `, accès ${a.verdict.access}` : ''}${a.verdict.scopeExtendedFromBase ? ', refus de la capacité de base' : ''}${a.verdict.fromLastReliable ? ', dernier verdict fiable' : ''}.`);
   }
   return a;
 }
 
 /** Même garde, pour les appelants hors passerelle : lève `ModelSendRefused` si l'envoi est refusé. */
-export async function assertSendAdmissible(p: { model: string; point: SendPoint }): Promise<void> {
+export async function assertSendAdmissible(p: { model: string; point: SendPoint; capability?: OperationalCapability }): Promise<void> {
   const a = await guardSend(p);
   if (!a.admitted) throw new ModelSendRefused(a, p.point);
 }

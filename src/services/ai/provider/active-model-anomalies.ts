@@ -28,7 +28,7 @@
 import type { Treatment } from '../config/treatments';
 import { evaluateModelForTreatment, type UnusableReason, type UsableModelsContext } from '../registry/usable-models';
 import type { OperationalDiagnostic } from './model-operational.service';
-import { GLOBAL_PROBE_KINDS, PROBE_ERROR_KIND_LABELS, type ProbeErrorKind } from './probe-classification';
+import { GLOBAL_PROBE_KINDS, OPERATIONAL_CAPABILITY_LABELS, PROBE_ERROR_KIND_LABELS, type ProbeErrorKind } from './probe-classification';
 import type { CoupleQualification } from '../gateway/fallback-policy';
 import type { AiUseCaseCode } from '../registry/use-cases';
 
@@ -54,6 +54,14 @@ export interface ActiveModelAnomaly extends ActiveChainEntry {
   reasonText: string;
   /** Un repli utilisable existe-t-il plus bas dans la chaîne ? (Lot 87A : ET admissible comme secours, si l'état de qualification est connu.) */
   fallbackAvailable: boolean;
+  /**
+   * Lot 115 (carte #786, E08) — l'unité de routage de cette anomalie (le
+   * traitement, ou sa VARIANTE propre à un type d'appel) n'a PLUS AUCUNE ROUTE
+   * ADMISSIBLE : aucun rang de sa chaîne effective ne passe la MÊME éligibilité
+   * que le routage (disponibilité **+** tarif **+** compatibilité **+**
+   * qualification). C'est ce qui fait la criticité.
+   */
+  noAdmissibleRoute: boolean;
   /**
    * Lot 87A (P7, INV-10) — secours que la passerelle choisira pour cet usage
    * (même règle que `fallback-policy`) : qualifié, non testé (choix de
@@ -106,24 +114,51 @@ const RANK_LABELS: Readonly<Record<ChainRank, string>> = {
   primaryModel: 'principal', fallback1: 'repli 1', fallback2: 'repli 2',
 };
 
-/** Anomalies des chaînes actives (pure). Lot 87A : `secours` relie chaque anomalie au secours admissible (INV-10). */
+/**
+ * Lot 115 (carte #786, E08) — UNITÉ DE ROUTAGE d'un rang : le traitement, ou
+ * sa VARIANTE propre à un type d'appel (surcouche d'exclusion, promotion de
+ * routage, import). C'est l'unité dont la passerelle épuise la chaîne : les
+ * rangs d'une variante ne servent jamais de repli à une autre.
+ */
+const uniteDeRoutage = (c: Pick<ActiveChainEntry, 'treatment' | 'operationCode'>): string => `${c.treatment}\u0000${c.operationCode ?? ''}`;
+
+/**
+ * Anomalies des chaînes actives (pure). Lot 87A : `secours` relie chaque anomalie au secours admissible (INV-10).
+ *
+ * Lot 115 (carte #786, E08) : deux corrections.
+ *   · les replis sont cherchés dans la MÊME unité de routage (un rang d'une variante par type d'appel ne
+ *     compte plus comme repli de la chaîne du traitement, ni l'inverse) ;
+ *   · chaque anomalie dit si son unité n'a plus AUCUNE route admissible — même éligibilité que le routage.
+ */
 export function detectActiveModelAnomalies(chains: readonly ActiveChainEntry[], ctx: UsableModelsContext, secours?: SecoursContext): ActiveModelAnomaly[] {
   const out: ActiveModelAnomaly[] = [];
   const ordre: ChainRank[] = ['primaryModel', 'fallback1', 'fallback2'];
+  /** Un rang est-il une route ADMISSIBLE ? (disponibilité + tarif + compatibilité + qualification, puis secours 87A) */
+  const admissible = (x: ActiveChainEntry): boolean => evaluateModelForTreatment(x.treatment, x.model, ctx).usable
+    && (!secours || secoursDecision(x.treatment, x.model, secours) !== null);
+  /** Unités de routage sans AUCUNE route admissible (calculé une fois). */
+  const sansRoute = new Set<string>();
+  for (const c of chains) {
+    const u = uniteDeRoutage(c);
+    if (sansRoute.has(u)) continue;
+    const rangs = chains.filter((x) => uniteDeRoutage(x) === u);
+    if (!rangs.some(admissible)) sansRoute.add(u);
+  }
   for (const c of chains) {
     const e = evaluateModelForTreatment(c.treatment, c.model, ctx);
     const pertes = e.reasons.filter((r) => PERTE.has(r));
     if (pertes.length === 0) continue;
-    const suivants = chains.filter((x) => x.treatment === c.treatment && ordre.indexOf(x.rank) > ordre.indexOf(c.rank));
+    const noAdmissibleRoute = sansRoute.has(uniteDeRoutage(c));
+    const suivants = chains.filter((x) => uniteDeRoutage(x) === uniteDeRoutage(c) && ordre.indexOf(x.rank) > ordre.indexOf(c.rank));
     const utilisables = suivants.filter((x) => evaluateModelForTreatment(x.treatment, x.model, ctx).usable);
     if (!secours) {
-      out.push({ ...c, reasons: e.reasons, reasonText: e.reasonText, fallbackAvailable: utilisables.length > 0 });
+      out.push({ ...c, reasons: e.reasons, reasonText: e.reasonText, fallbackAvailable: utilisables.length > 0, noAdmissibleRoute });
       continue;
     }
     const choisi = utilisables.map((x) => ({ x, d: secoursDecision(x.treatment, x.model, secours) })).find((y) => y.d !== null) ?? null;
     const decision = choisi?.d ?? 'NONE';
     out.push({
-      ...c, reasons: e.reasons, reasonText: e.reasonText, fallbackAvailable: choisi !== null,
+      ...c, reasons: e.reasons, reasonText: e.reasonText, fallbackAvailable: choisi !== null, noAdmissibleRoute,
       secours: { model: choisi?.x.model ?? null, decision, label: SECOURS_LABELS[decision] },
     });
   }
@@ -199,7 +234,9 @@ async function variantesParOperation(
 
 /** Message d'exploitation d'une anomalie (alerte et BO). */
 export function anomalyMessage(a: ActiveModelAnomaly): string {
-  return `${a.treatment} : le modèle ${RANK_LABELS[a.rank]} « ${a.model} » n’est plus utilisable (${a.reasonText}). `
+  return `${a.treatment}${a.operationCode ? ` (type d’appel ${a.operationCode})` : ''} : le modèle ${RANK_LABELS[a.rank]} « ${a.model} » n’est plus utilisable (${a.reasonText}). `
+    // #786 (E08) — texte à valider par le PO : la criticité est dite par la route, pas par le rang.
+    + (a.noAdmissibleRoute ? 'Plus aucune route admissible pour ce traitement (disponibilité, tarif, compatibilité et qualification réunis). ' : '')
     + (a.rank === 'primaryModel'
       ? (a.secours ? `${secoursText(a.secours)} `
         : a.fallbackAvailable ? 'La chaîne de repli prend le relais. ' : 'Aucun repli utilisable : le traitement risque d’échouer. ')
@@ -225,6 +262,8 @@ interface ModelUsage {
   operationCode?: string;
   source: 'version' | 'code';
   fallbackAvailable: boolean;
+  /** #786 (E08) : cette unité de routage n'a plus AUCUNE route admissible (même éligibilité que le routage). */
+  noAdmissibleRoute: boolean;
   /** Lot 87A : secours relié (INV-10), si l'état de qualification est connu. */
   secours?: AnomalySecours;
 }
@@ -251,6 +290,11 @@ interface ModelDiagnosticView {
   confirmedAt?: string | null;
   /** Prochain recontrôle au plus tôt. */
   nextProbeAt?: string | null;
+  // ── Lot 115 (#786, E05) : portée exacte du verdict ──
+  /** Capacités réellement REFUSÉES pour cet accès, en clair. */
+  refusedCapabilityLabels?: string[];
+  /** Projet du fournisseur : toujours « non renseigné » aujourd'hui (jamais deviné). */
+  providerProject?: string | null;
 }
 
 /** Un modèle actif indisponible, avec TOUS ses usages (BO, alerte). */
@@ -285,6 +329,9 @@ function diagnosticView(d: OperationalDiagnostic | undefined | null): ModelDiagn
     ...(d.access !== undefined ? {
       httpStatus: d.httpStatus ?? null, providerCode: d.providerCode ?? null, access: d.access ?? null, capability: d.capability ?? null,
       probeCallId: d.probeCallId ?? null, confirmedAt: d.confirmedAt ?? null, nextProbeAt: d.nextProbeAt ?? null,
+      // #786 (E05) : la portée du refus est AFFICHÉE, jamais supposée.
+      refusedCapabilityLabels: (d.refusedCapabilities ?? []).map((c) => OPERATIONAL_CAPABILITY_LABELS[c] ?? c),
+      providerProject: d.providerProject ?? null,
     } : {}),
   };
 }
@@ -306,12 +353,17 @@ export function groupAnomaliesByModel(
       model,
       usages: liste.map((a) => ({
         treatment: a.treatment, rank: a.rank, rankLabel: RANK_LABELS[a.rank], source: a.source, fallbackAvailable: a.fallbackAvailable,
+        noAdmissibleRoute: a.noAdmissibleRoute,
         ...(a.operationCode ? { operationCode: a.operationCode } : {}),
         ...(a.secours ? { secours: a.secours } : {}),
       })),
       reasons,
       reasonText: [...new Set(liste.map((a) => a.reasonText))].join(' ; '),
-      severity: liste.some((a) => a.rank === 'primaryModel' && !a.fallbackAvailable) ? 'critical' : 'warning',
+      // Règle remplacée (carte #786, E08) : la criticité suivait « un principal indisponible sans repli
+      // utilisable ». Elle suit désormais la seule question qui compte pour l'exploitation — une unité de
+      // routage (traitement, ou variante par type d'appel) n'a-t-elle plus AUCUNE route admissible, avec la
+      // MÊME éligibilité que le routage : disponibilité + tarif + compatibilité + qualification ?
+      severity: liste.some((a) => a.noAdmissibleRoute) ? 'critical' : 'warning',
       diagnostic: diagnosticView(diagnostics.get(model)),
     };
   }).sort((a, b) => Number(b.severity === 'critical') - Number(a.severity === 'critical') || a.model.localeCompare(b.model));
@@ -331,12 +383,26 @@ export function usageLabel(u: Pick<ModelUsage, 'treatment' | 'rank'>): string {
   return `${u.treatment} ${RANK_LABELS[u.rank]}`;
 }
 
+/**
+ * #786 (E08) — unités de routage de ce modèle qui n'ont plus AUCUNE route admissible, en clair
+ * (texte à valider par le PO ; « type d'appel » pour une variante, jamais le mot interdit).
+ */
+function sansRouteText(g: UnavailableModelGroup): string {
+  const unites = [...new Set(g.usages.filter((u) => u.noAdmissibleRoute)
+    .map((u) => (u.operationCode ? `${u.treatment} (type d’appel ${u.operationCode})` : u.treatment)))];
+  if (unites.length === 0) return '';
+  return `Plus aucune route admissible pour ${unites.join(', ')} — disponibilité, tarif, compatibilité et `
+    + 'qualification réunis, comme au routage : les exécutions concernées sont suspendues sans écriture et '
+    + 'reprises automatiquement au rétablissement. ';
+}
+
 /** Message d'exploitation d'un modèle (alerte), tous usages compris. */
 export function groupMessage(g: UnavailableModelGroup): string {
   const sansRepli = g.usages.filter((u) => u.rank === 'primaryModel' && !u.fallbackAvailable).map((u) => u.treatment);
   const relies = g.usages.filter((u) => u.rank === 'primaryModel' && u.secours);
   return `Le modèle « ${g.model} » n’est plus utilisable (${g.reasonText}) — `
     + `${pluriel(g.usages.length, 'usage impacté', 'usages impactés')} : ${g.usages.map(usageLabel).join(', ')}. `
+    + sansRouteText(g)
     + (relies.length
       // Lot 87A (INV-10) : secours réellement choisis par la passerelle.
       ? `${relies.map((u) => `${u.treatment} — ${secoursText(u.secours!)}`).join(' ')} `
@@ -385,7 +451,12 @@ export async function raiseActiveModelAlerts(
       details: {
         model: g.model,
         reasons: g.reasons,
-        usages: g.usages.map((u) => ({ treatment: u.treatment, rank: u.rank, source: u.source, fallbackAvailable: u.fallbackAvailable, ...(u.secours ? { secours: u.secours } : {}) })),
+        usages: g.usages.map((u) => ({
+          treatment: u.treatment, rank: u.rank, source: u.source, fallbackAvailable: u.fallbackAvailable,
+          // #786 (E08) : portée exacte de la criticité, par unité de routage.
+          noAdmissibleRoute: u.noAdmissibleRoute, ...(u.operationCode ? { operationCode: u.operationCode } : {}),
+          ...(u.secours ? { secours: u.secours } : {}),
+        })),
         diagnostic: {
           status: g.diagnostic.status, error: g.diagnostic.error, checkedAt: g.diagnostic.checkedAt, source: g.diagnostic.source,
           ...(g.diagnostic.access !== undefined ? {

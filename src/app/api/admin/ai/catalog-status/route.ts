@@ -27,8 +27,9 @@ import { acknowledgeAnnouncedModels, bannerText, listAnnouncedModels } from '@/s
 import {
   anomalyMessage, detectActiveModelAnomalies, groupAnomaliesByModel, loadActiveChains, loadSecoursContext, operationalWatchOf, unavailableBannerTitle,
 } from '@/services/ai/provider/active-model-anomalies';
-import { loadOperationalDiagnostics, operationalSchemaState } from '@/services/ai/provider/model-operational.service';
+import { loadOperationalDiagnostics, operationalProjectDimension, operationalSchemaState } from '@/services/ai/provider/model-operational.service';
 import { admissionMetrics, SEND_POINTS } from '@/services/ai/provider/operational-admission';
+import { OPERATIONAL_CAPABILITIES, OPERATIONAL_CAPABILITY_LABELS } from '@/services/ai/provider/probe-classification';
 import { loadUsableModelsContext } from '@/services/ai/registry/usable-models';
 import { getCatalogState } from '@/services/ai/provider/model-catalog.service';
 
@@ -67,6 +68,14 @@ export async function GET(req: NextRequest) {
         sendPoints: SEND_POINTS,
         // Migration critique absente : signalée, jamais remplacée par un repli silencieux.
         schema: operationalSchemaState(),
+        /**
+         * Lot 115 (carte #786, E05) : PÉRIMÈTRE exact d'un verdict — les capacités (et modalités) qui ont
+         * chacune leur verdict, et la dimension « projet du fournisseur », vide parce qu'INCONNUE de
+         * l'application : `missing` dit précisément ce qu'il faudrait pour qu'elle existe. Rien n'est deviné,
+         * rien n'est fusionné avec l'empreinte de la clé.
+         */
+        capabilities: OPERATIONAL_CAPABILITIES.map((c) => ({ capability: c, label: OPERATIONAL_CAPABILITY_LABELS[c] })),
+        project: operationalProjectDimension(),
       },
       catalogRefreshedAt: state?.refreshedAt ?? null,
       lastSyncAt: state?.lastSyncAt ?? null,

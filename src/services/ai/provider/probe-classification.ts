@@ -307,6 +307,64 @@ export function reinterpretLegacyState(row: { ok: boolean | null; checkStatus: C
 export const PROBE_CAPABILITY = 'text_generation' as const;
 export const PROBE_ENDPOINT = 'generateContent' as const;
 
+// ── Lot 115 (carte #786, E05) : la capacité fait partie de la CLÉ ───────────
+
+/**
+ * CAPACITÉS (et modalités) pour lesquelles un verdict de disponibilité peut
+ * être retenu séparément. Référentiel unique : aucune énumération locale.
+ *   · `text_generation`   capacité de BASE — une génération minimale aboutit.
+ *                         C'est le prérequis de toutes les autres ;
+ *   · `structured_output` sortie contrainte par un schéma transmis ;
+ *   · `multimodal`        une pièce (image, document) est acceptée en entrée ;
+ *   · `thinking`          un niveau de raisonnement explicite est accepté.
+ * Les mêmes noms que les capacités de qualification (`model-capabilities`),
+ * plus la capacité de base ; disponibilité et qualification restent deux
+ * dimensions distinctes et cumulatives.
+ */
+export const OPERATIONAL_CAPABILITIES = ['text_generation', 'structured_output', 'multimodal', 'thinking'] as const;
+export type OperationalCapability = (typeof OPERATIONAL_CAPABILITIES)[number];
+
+/** Capacité de BASE : son refus est le seul à valoir pour tout l'accès. */
+export const BASE_CAPABILITY: OperationalCapability = PROBE_CAPABILITY;
+
+/** Libellés (BO, recette) — à valider par le PO. */
+export const OPERATIONAL_CAPABILITY_LABELS: Readonly<Record<OperationalCapability, string>> = {
+  text_generation: 'génération de texte (capacité de base)',
+  structured_output: 'sortie contrainte par un schéma',
+  multimodal: 'pièce en entrée (image, document)',
+  thinking: 'raisonnement explicite',
+};
+
+/** Une valeur lue en base est-elle une capacité du référentiel ? (lignes anciennes, valeurs libres) */
+export function isOperationalCapability(v: unknown): v is OperationalCapability {
+  return typeof v === 'string' && (OPERATIONAL_CAPABILITIES as readonly string[]).includes(v);
+}
+
+/**
+ * Lot 115 (carte #786, E05) — PORTÉE d'un refus : jusqu'où vaut-il ?
+ *
+ * Règle documentée, et la SEULE extension admise : un refus dont la cause est
+ * le MODÈLE lui-même pour cet accès (retrait, modèle inconnu, accès fermé,
+ * méthode non servie) est retenu sur la capacité de BASE — il vaut donc pour
+ * toutes les capacités de cet accès, puisqu'aucune ne peut aboutir sans une
+ * génération. Tout autre refus (un PARAMÈTRE ou une modalité refusés, une
+ * requête invalide pour ce profil) ne vaut QUE pour la capacité éprouvée :
+ * il n'est jamais étendu au modèle entier.
+ *
+ * Pure. `asked` : capacité réellement éprouvée par l'envoi.
+ */
+const PORTEE_MODELE: ReadonlySet<ProbeErrorKind> = new Set<ProbeErrorKind>([
+  'model_not_found', 'model_retired', 'model_access_closed', 'unsupported_method', 'forbidden_model',
+]);
+
+export function refusalCapabilityScope(
+  outcome: ProbeOutcome, asked: OperationalCapability = BASE_CAPABILITY,
+): { capability: OperationalCapability; modelWide: boolean } {
+  if (outcome.status === 'ok') return { capability: asked, modelWide: false };
+  if (PORTEE_MODELE.has(outcome.kind)) return { capability: BASE_CAPABILITY, modelWide: true };
+  return { capability: asked, modelWide: asked === BASE_CAPABILITY };
+}
+
 /**
  * Codes d'erreur d'un contrôle de disponibilité (trace technique, export, BO) — #771, S07 / B04 :
  *   · `MODEL_UNAVAILABLE_CONFIRMED` — refus explicite et définitif attribuable au modèle pour cet accès ;

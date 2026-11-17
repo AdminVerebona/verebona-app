@@ -157,17 +157,50 @@ export function sanitizeArbitrationProposals(proposals: ActionProposal[], fieldK
   return out;
 }
 
+/** §8.5 : DEUX propositions au maximum, plus la valeur actuelle — règle commune à toutes les cartes. */
+export const DISPLAYED_PROPOSALS_MAX = 2;
+
+/**
+ * Lot 115 (#791, E06) — **règle commune complétée, par EXCEPTION DÉCLARÉE.**
+ *
+ * §8.5 borne l'affichage à deux propositions pour que la carte reste lisible.
+ * Cette borne reste celle de TOUTES les cartes : aucune ne change. Une
+ * contradiction d'attribut d'un événement de référence (#750) peut pourtant
+ * porter cinq valeurs ou plus, chacune portée par un justificatif réel ; en
+ * n'en montrant que deux, la carte cachait des alternatives que la donnée
+ * contenait (E06). Ces cartes-là, et elles seules, en montrent davantage.
+ *
+ * Ce qui ne change pas : l'ordre (confiance décroissante), la valeur en place
+ * en dernier et marquée, « Autre » ajouté par l'écran, et la donnée de la
+ * carte qui porte TOUTES les valeurs quoi qu'il arrive.
+ *
+ * Plafond d'affichage de ces cartes : **à valider par le PO** (une pagination
+ * reste une décision à prendre).
+ */
+export const DISPLAYED_PROPOSALS_MAX_BY_RULE: Readonly<Record<string, number>> = {
+  'OPERATION-ATTRIBUTE': 5,
+};
+
+/** Nombre de propositions affichables pour une règle (pure) : son exception déclarée, sinon §8.5. */
+export function displayedProposalsMax(ruleCode: string | null = null): number {
+  const x = ruleCode === null ? undefined : DISPLAYED_PROPOSALS_MAX_BY_RULE[ruleCode];
+  return x !== undefined && Number.isInteger(x) && x >= DISPLAYED_PROPOSALS_MAX ? x : DISPLAYED_PROPOSALS_MAX;
+}
+
 /**
  * Propositions retenues pour l'affichage (§8.5).
  *
- * Deux propositions au maximum, plus la valeur actuelle si elle est protégée.
- * Le front ajoute « Autre » ; il n'a pas à être présent dans les données.
+ * Deux propositions au maximum (sauf exception déclarée par règle, lot 115 —
+ * `DISPLAYED_PROPOSALS_MAX_BY_RULE`), plus la valeur actuelle si elle est
+ * protégée. Le front ajoute « Autre » ; il n'a pas à être présent dans les
+ * données. Sans code de règle, la borne commune s'applique : un appelant qui
+ * ne la précise pas voit EXACTEMENT ce qu'il voyait avant.
  */
-export function selectDisplayedProposals(proposals: ActionProposal[]): ActionProposal[] {
+export function selectDisplayedProposals(proposals: ActionProposal[], ruleCode: string | null = null): ActionProposal[] {
   const current = proposals.filter((p) => p.isCurrentValue);
   const candidates = proposals
     .filter((p) => !p.isCurrentValue)
     .sort((a, b) => b.confidence - a.confidence)
-    .slice(0, 2);
+    .slice(0, displayedProposalsMax(ruleCode));
   return [...candidates, ...current.slice(0, 1)];
 }

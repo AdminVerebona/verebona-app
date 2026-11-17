@@ -49,8 +49,20 @@ export const PAGE_CORRECTION_DECLARATION_TEXT = 'Correction faite depuis la fich
  */
 export const PAGE_SPLIT_DECLARATION_TEXT = 'Scission faite depuis la fiche d’un événement de référence.';
 
+/**
+ * Lot 115 (#791, décision du PO du 16/11/2026) — texte fixe de la source posée quand l'utilisateur répond à la
+ * carte « lequel est le bon ? » entre DEUX événements de référence associés qui désignent deux PRESTATAIRES
+ * différents. Le prestataire ne se corrige pas par `correctOperation` (règle de la carte #744) : la réponse est
+ * écrite par la commande W22, qui exige une déclaration. Celle-ci est TECHNIQUE (texte fixe, jamais saisi par
+ * l'utilisateur, jamais montré à l'écran) et protège la valeur choisie d'une réécriture par T3. **À valider par
+ * le PO.** La façade le réexporte.
+ */
+export const CARD_FACT_ARBITRATION_DECLARATION_TEXT = 'Prestataire choisi dans « À traiter », entre deux événements de référence associés.';
+
 /** Textes de déclaration TECHNIQUES, jamais montrés dans « Votre déclaration » (décision PO du 16/11/2026). */
-export const PAGE_TECHNICAL_DECLARATION_TEXTS: ReadonlySet<string> = new Set([PAGE_CORRECTION_DECLARATION_TEXT, PAGE_SPLIT_DECLARATION_TEXT]);
+export const PAGE_TECHNICAL_DECLARATION_TEXTS: ReadonlySet<string> = new Set([
+  PAGE_CORRECTION_DECLARATION_TEXT, PAGE_SPLIT_DECLARATION_TEXT, CARD_FACT_ARBITRATION_DECLARATION_TEXT,
+]);
 
 type Sql = postgres.Sql;
 type Row = Record<string, unknown>;

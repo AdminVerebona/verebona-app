@@ -242,7 +242,7 @@ describe('L77B-03 — toutes les familles : aucun libellé technique', () => {
       proposals: fusions.referenceEventMergeProposals([10]) })],
     ['REFERENCE-EVENT-FACT', vue({ targetType: 'DOCUMENT', ruleCode: 'REFERENCE-EVENT-FACT', relationKey: 'referenceEventFact:3:8:realizedDate', label: 'Facture de plomberie',
       question: fusions.referenceEventFactQuestion('realizedDate', 'Réparation de fuite — Maison', 'Intervention plomberie — Maison'),
-      proposals: fusions.referenceEventFactProposals([
+      proposals: fusions.referenceEventFactProposals('realizedDate', [
         { operationId: 3, title: 'Réparation de fuite — Maison', value: '2025-03-10' },
         { operationId: 8, title: 'Intervention plomberie — Maison', value: '2025-03-12' }]) })],
     ['DOC-RUB / DOC-TYP / DATA-SUPPLIER / DATA-WARRANTY-END (repli cible)', vue({ targetType: 'DOCUMENT', ruleCode: 'DOC-RUB', fieldKey: 'rubric', kind: 'COMPLETE', label: '' })],

@@ -35,6 +35,8 @@ interface Day { day: string; calls: number; schemaAccepted: number; schemaRefuse
 interface Couple {
   keyId: string; model: string; operationCode: string; contractId: string; contractVersion: number; schemaHash: string;
   providerSchemaHash: string | null; adapterVersion: string; state: string; stateLabel: string; reason: string | null; current: boolean;
+  /** Lot 115 (#784, E1) : statut de routage réel du couple (absent : serveur antérieur). */
+  routingStatus?: 'ACTIVE' | 'WITHDRAWN' | 'UNKNOWN'; routingLabel?: string;
   /** Lot 115 (#784, A3) : profil de génération effectif et version de modèle réellement servie. */
   generationProfileHash: string; servedModelVersion: string | null; versionUncertain: boolean;
   acceptedCount: number; rejectionCount: number; consecutiveRejections: number; retestCount: number;
@@ -63,6 +65,8 @@ interface Bilan {
   /** Lot 115 (#784, E1/E2) : routage non établi, abstentions, exhaustivité et bilan chiffré. */
   keptRoutingUnknown: number; raiseSkippedRoutingUnknown: number; done: boolean; couplesScanned: number;
   before: { openAlerts: number | null }; after: { openAlerts: number | null };
+  /** Lot 115 (#784, E3) : constat de coordination avec les alertes de couverture T1 (#775), lecture seule. */
+  coverageCoordination?: { openCoverageAnomalies: number | null; openCoverageAnomaliesAfter: number | null; unchanged: boolean };
 }
 
 const pct = (v: number | null): string => (v === null ? 'non mesurable' : `${(v * 100).toLocaleString('fr-FR', { maximumFractionDigits: 1 })} %`);
@@ -247,6 +251,15 @@ export function SchemaCompatibilityPanel({ initialOperation = '' }: { initialOpe
               Réévaluation : {bilan.examined} alerte(s) examinée(s) · {bilan.resolved.SCHEMA_ACCEPTED_AGAIN ?? 0} résolue(s) (schéma de nouveau accepté) · {bilan.resolved.SCHEMA_SUPERSEDED ?? 0} résolue(s) (contrat ou schéma remplacé) · {bilan.resolved.SCHEMA_MODEL_WITHDRAWN ?? 0} résolue(s) (modèle retiré du routage et du référentiel) · {bilan.keptActive} conservée(s) (refus toujours actif) · {bilan.keptUndetermined} conservée(s) faute de preuve · {bilan.keptRoutingUnknown} conservée(s) faute de routage établi · {bilan.raised} levée(s){bilan.raiseSkippedRoutingUnknown > 0 ? ` · ${bilan.raiseSkippedRoutingUnknown} non levée(s) faute de routage établi` : ''} · {bilan.couplesScanned} couple(s) parcouru(s){bilan.before.openAlerts !== null && bilan.after.openAlerts !== null ? ` · ouvertes ${bilan.before.openAlerts} → ${bilan.after.openAlerts}` : ''}{bilan.done ? ' · parcours terminé' : ' · parcours à poursuivre (budget du passage atteint)'}{bilan.unavailable ? ' · lecture incomplète' : ''}
             </p>
           )}
+          {/* Lot 115 (#784, E3) : coordination avec les alertes de couverture T1 (#775) — constat, jamais une action. */}
+          {bilan?.coverageCoordination && (
+            <p className="text-xs text-[color:var(--text-muted)] break-words" data-testid="schema-coverage-coordination">
+              Alertes de couverture T1 (suivi séparé) : {bilan.coverageCoordination.openCoverageAnomalies ?? 'non mesurable'} ouverte(s)
+              avant, {bilan.coverageCoordination.openCoverageAnomaliesAfter ?? 'non mesurable'} après —
+              {bilan.coverageCoordination.unchanged ? ' inchangées (ce passage ne les touche pas).' : ' écart constaté, à vérifier.'}
+              {' '}Une réussite en mode JSON après un refus de schéma ne ferme aucune lacune de couverture.
+            </p>
+          )}
           {data.couples === null && <p className="text-sm text-[color:var(--text-warning)]">Mémoire de compatibilité indisponible (migration 1710 non appliquée).</p>}
           {data.couples?.length === 0 && <p className="text-sm text-[color:var(--text-muted)]">Aucun couple observé pour ces filtres.</p>}
           {data.couples?.map((c) => (
@@ -258,6 +271,12 @@ export function SchemaCompatibilityPanel({ initialOperation = '' }: { initialOpe
               </p>
               <Ligne label="Motif">{motifOf(c.reason)}{c.lastHttpStatus ? ` · HTTP ${c.lastHttpStatus}` : ''}{c.lastProviderCode ? ` ${c.lastProviderCode}` : ''}</Ligne>
               <Ligne label="Empreintes">contrat {c.schemaHash} · schéma transmis {c.providerSchemaHash ?? 'aucun'} · adaptateur {c.adapterVersion}</Ligne>
+              {/* Lot 115 (#784, E1) : le statut de routage est CALCULÉ pour les alertes — il est maintenant affiché. */}
+              {c.routingLabel && (
+                <Ligne label="Routage">
+                  <span className={c.routingStatus === 'UNKNOWN' ? 'text-[color:var(--text-warning)]' : undefined}>{c.routingLabel}</span>
+                </Ligne>
+              )}
               {/* Lot 115 (#784, A3) : ce qui identifie VRAIMENT le couple, et la version réellement servie. */}
               <Ligne label="Profil de génération">
                 {c.generationProfileHash === '-' ? 'aucun paramètre matériel' : c.generationProfileHash}

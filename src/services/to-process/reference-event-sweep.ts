@@ -38,8 +38,12 @@
  *      DEMANDE.
  *   3. FAIT CONTRADICTOIRE (`REFERENCE-EVENT-FACT`) —
  *      `factContradictionCandidates` : deux événements de référence ASSOCIÉS
- *      portent deux valeurs différentes pour le même fait daté. Un constat,
- *      jamais un jugement.
+ *      portent deux valeurs différentes pour le même fait. Un constat, jamais
+ *      un jugement. Lot 115 (#791, décision du PO du 16/11/2026) : les faits
+ *      comparés sont les quatre dates ET le PRESTATAIRE — pour celui-ci, le
+ *      « même fait » est le même rôle sémantique de la partie, et deux
+ *      désignations équivalentes prouvées ne sont jamais une contradiction
+ *      (référentiels existants, aucune règle écrite dans ce passage).
  *
  * AC20 — ABSTENTION TRACÉE
  * Quand la trace M3 dit que l'IA était INDISPONIBLE (prompt absent, plafond de

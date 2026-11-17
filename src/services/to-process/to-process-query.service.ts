@@ -239,7 +239,7 @@ export async function getToProcessPage(
       priority: row.priority as ActionPriority,
       ruleCode: row.ruleCode,
       question: row.question,
-      proposals: selectDisplayedProposals(proposals),
+      proposals: selectDisplayedProposals(proposals, row.ruleCode),
       allowNotApplicable: getRule(row.ruleCode)?.allowNotApplicable ?? false,
       inputType: cardInputType(row.ruleCode, row.targetType, row.fieldKey ?? row.relationKey),
       activeSince: row.activeSince.toISOString(),
@@ -319,7 +319,7 @@ export async function getToProcessPage(
         targetId: row.targetId,
         fieldKey: row.fieldKey,
         relationKey: row.relationKey,
-        proposals: selectDisplayedProposals((row.proposalsJson as ActionProposal[] | null) ?? []),
+        proposals: selectDisplayedProposals((row.proposalsJson as ActionProposal[] | null) ?? [], row.ruleCode),
         triggerContext: row.triggerContext,
         supplierId: contexts.get(`${row.targetType}:${row.targetId}`)?.supplierId ?? null,
       })));

@@ -19,6 +19,7 @@ import {
 } from './fallback-policy';
 import { fallbackContext, noteKnownUnavailableSkipped, type CoupleQualificationView, type OperationalHint } from './fallback-context';
 import { guardSend } from '../provider/operational-admission';
+import type { OperationalCapability } from '../provider/probe-classification';
 import { activeAccessFingerprint } from '../provider/model-operational.service';
 import { isModelExcluded } from '../config/routing-overlay';
 import { getOperation, isMasterOperation } from '../registry/operations';
@@ -408,6 +409,10 @@ export class AiGateway {
     const models = req.maxModelAttempts === undefined
       ? chaine
       : chaine.slice(0, Math.max(0, Math.floor(req.maxModelAttempts)));
+    // Lot 115 (#786, E05) : MODALITÉ réellement sollicitée par cet appel. Le verdict de disponibilité est lu
+    // pour CETTE capacité : un refus propre à une autre capacité ne lui est pas opposable, et le refus de la
+    // capacité de base (prérequis) l'est toujours. Aucune autre dimension n'est déduite ici.
+    const capaciteAppel: OperationalCapability = needsImageInput(req.attachments) ? 'multimodal' : 'text_generation';
     const failures: string[] = [];
     let lastFailureCode: AiErrorCode | undefined;
     if (models.length === 0) failures.push('budget de tentatives modèle épuisé');
@@ -578,7 +583,7 @@ export class AiGateway {
       name: provider.name,
       isConfigured: () => provider.isConfigured(),
       call: async (i: ProviderCallInput) => {
-        const admission = await guardSend({ model: i.model, point: 'gateway_send' });
+        const admission = await guardSend({ model: i.model, point: 'gateway_send', capability: capaciteAppel });
         if (!admission.admitted) {
           const message = `${i.model} : ${admission.label}.`;
           throw Object.assign(
@@ -811,7 +816,7 @@ export class AiGateway {
         // délai de tolérance. Une épreuve de qualification (rang forcé) N'EST PAS exemptée : seules les sondes
         // explicites de disponibilité le sont (E03). Le refus déjà connu par la table d'instance (`knownDown`)
         // reste opposable : les deux lectures ne font que s'ajouter, jamais s'annuler.
-        const admissionRang = sansTarif ? null : await guardSend({ model, point: 'gateway_rank' });
+        const admissionRang = sansTarif ? null : await guardSend({ model, point: 'gateway_rank', capability: capaciteAppel });
         const refusRang = admissionRang && !admissionRang.admitted ? admissionRang : null;
         const invérifiable = refusRang?.code === 'ADMISSION_UNVERIFIABLE';
         const down = sansTarif || invérifiable ? null
@@ -1068,7 +1073,7 @@ export class AiGateway {
             ? await fbCtx.reportRefusal({
               model, error: e, httpStatus: c.httpStatus, sentAt: new Date(attemptStart),
               // #786 (E04 / E05) : accès de l'envoi et identifiant stable du constat.
-              accessFingerprint: accesEnvoi, checkId: checkIdEnvoi,
+              accessFingerprint: accesEnvoi, checkId: checkIdEnvoi, capability: capaciteAppel,
             }).catch(() => null)
             : null;
           previous = { cause, model, truncatedAt: null };

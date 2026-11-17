@@ -49,10 +49,18 @@
  *     appel IA.
  * ══════════════════════════════════════════════════════════════════════════
  */
+import { createHash } from 'node:crypto';
 import { and, eq } from 'drizzle-orm';
 import { pgClient } from '@/db';
 import { toProcessActionEvents, toProcessActions } from '@/db/schema';
 import { isPositiveId, normalizeEvidence, pairKey, type GraphEvidence } from '@/services/business-operations/graph/model';
+import { CARD_FACT_ARBITRATION_DECLARATION_TEXT } from '@/services/business-operations/graph/reference-event-page';
+import { SOURCE_ROLES, type SourceRole } from '@/services/business-operations/model';
+import {
+  normalizeProvider, semanticRoleOf, SEMANTIC_UNKNOWN_ROLE, SEMANTIC_USER_ROLE,
+} from '@/services/business-operations/consolidation/model';
+import { normalizeConflictProvider } from '@/services/business-operations/consolidation/attribute-conflicts';
+import { canonicalProviderKey, type ProviderEquivalence } from '@/services/business-operations/consolidation/provider-equivalence';
 import type { ActionProposal, ResolutionReason } from './action-model';
 import { DATES_QUALIFIEES, frDate } from './operation-cards';
 import {
@@ -70,13 +78,34 @@ export const MERGE_SAME_LABEL = 'Oui, c’est le même';
 /** À valider par le PO. */
 export const MERGE_DISTINCT_LABEL = 'Non, ce sont deux événements différents';
 
-/** Faits datés comparables entre deux événements de référence (référentiel de la carte #750, repris à l'identique). */
-export const FACT_FIELDS = ['plannedDate', 'startDate', 'realizedDate', 'endDate'] as const;
+/** Faits DATÉS comparables entre deux événements de référence (référentiel de la carte #750, repris à l'identique). */
+export const FACT_DATE_FIELDS = ['plannedDate', 'startDate', 'realizedDate', 'endDate'] as const;
+export type FactDateField = (typeof FACT_DATE_FIELDS)[number];
+/**
+ * Faits comparables entre deux événements de référence ASSOCIÉS.
+ *
+ * Lot 115 (#791) — **règle complétée, décision du PO du 16/11/2026** : le
+ * PRESTATAIRE en fait partie. Deux événements de référence associés qui
+ * désignent deux prestataires différents POUR LE MÊME FAIT posent désormais la
+ * même question que deux dates (« laquelle / lequel est le bon ? »). À
+ * l'INTÉRIEUR d'un même événement de référence, le prestataire est déjà
+ * arbitré par la carte d'attribut (#750) : cette carte-ci ne le refait pas.
+ *
+ * « Même fait » pour le prestataire = **même rôle sémantique de la partie**
+ * (référentiel unique `semanticRoleOf` : celle qui facture ou contracte,
+ * l'exécutant d'un rapport, une partie de sinistre, l'émetteur d'un acte,
+ * l'intermédiaire de paiement). La banque d'une preuve de paiement et le
+ * fournisseur d'une facture ne sont pas le même fait : aucune question (même
+ * règle que la qualification des contradictions, lot 113AQ).
+ */
+export const FACT_FIELDS = [...FACT_DATE_FIELDS, 'provider'] as const;
 export type FactField = (typeof FACT_FIELDS)[number];
 export const isFactField = (v: unknown): v is FactField => typeof v === 'string' && (FACT_FIELDS as readonly string[]).includes(v);
-/** Colonne qui porte chaque fait daté (un seul endroit : lecture des faits ET détection des contradictions). */
+/** Le fait est-il une DATE (les quatre dates de la carte #750) ? */
+export const isFactDateField = (f: FactField): f is FactDateField => f !== 'provider';
+/** Colonne qui porte chaque fait (un seul endroit : lecture des faits ET détection des contradictions). */
 export const FACT_COLUMNS: Readonly<Record<FactField, string>> = {
-  plannedDate: 'planned_date', startDate: 'start_date', realizedDate: 'realized_date', endDate: 'end_date',
+  plannedDate: 'planned_date', startDate: 'start_date', realizedDate: 'realized_date', endDate: 'end_date', provider: 'provider',
 };
 /** Paires examinées au plus par passage et par compte (le passage suivant reprend les autres). */
 export const FACT_PAIRS_PER_PASS = 20;
@@ -90,6 +119,29 @@ export const referenceEventMergeKey = (a: number, b: number): string => `${MERGE
 export const referenceEventFactKey = (a: number, b: number, field: FactField): string => `${FACT_RELATION}:${pairKey(a, b)}:${field}`;
 
 const ISO_DATE = /^\d{4}-\d{2}-\d{2}$/;
+/** Borne de la désignation d'un prestataire : celle du champ lui-même (`normalizeOperationPatch`). */
+const PROVIDER_MAX = 200;
+/**
+ * Jeton d'une valeur dans une clé d'idempotence (`isIdempotencyKey` :
+ * lettres, chiffres, `. _ : -`). Une date passe telle quelle — la clé des
+ * cartes de date ne change donc pas ; une désignation de prestataire (espaces,
+ * accents, apostrophes) passe par son empreinte stable. Pure.
+ */
+export const factIdempotencyToken = (v: string): string =>
+  (/^[A-Za-z0-9._:-]{1,40}$/.test(v) ? v : `h${createHash('sha1').update(v).digest('hex').slice(0, 24)}`);
+
+const isSourceRole = (v: unknown): v is SourceRole => typeof v === 'string' && (SOURCE_ROLES as readonly string[]).includes(v);
+
+/**
+ * Clé de comparaison d'une désignation de prestataire : la MÊME que celle de
+ * la qualification des contradictions (lot 113AQ) — équivalence PROUVÉE du
+ * compte (lot 86C) quand elle s'applique, sinon forme normalisée. Pure.
+ */
+export const providerComparisonKey = (raw: string, eq: ProviderEquivalence | null): string => {
+  const brute = normalizeProvider(raw);
+  const canonique = brute === null ? null : canonicalProviderKey(brute, eq);
+  return normalizeConflictProvider(raw, canonique !== null && canonique !== brute ? canonique : null);
+};
 
 // ── Contextes ──────────────────────────────────────────────────────────────
 
@@ -127,12 +179,19 @@ export function isReferenceEventMergeContext(c: unknown): c is ReferenceEventMer
     && x.evidenceKeys.length > 0 && Array.isArray(x.events) && x.events.length === 2;
 }
 
+/**
+ * Valeur recevable pour un fait : une date civile pour les quatre dates, une
+ * désignation de prestataire (bornée comme le champ) pour le prestataire.
+ */
+export const isFactValue = (field: FactField, v: unknown): v is string =>
+  typeof v === 'string' && (isFactDateField(field) ? ISO_DATE.test(v) : v.trim().length > 0 && v.length <= PROVIDER_MAX);
+
 export function isReferenceEventFactContext(c: unknown): c is ReferenceEventFactContext {
   const x = c as Partial<ReferenceEventFactContext> | null;
   if (!x || typeof x !== 'object' || x.kind !== 'reference_event_fact' || typeof x.pairKey !== 'string' || !isFactField(x.field)) return false;
   if (!Array.isArray(x.sides) || x.sides.length !== 2 || !Array.isArray(x.evidence) || !Array.isArray(x.evidenceKeys)) return false;
   const ids = new Set(x.sides.map((s) => s.operationId));
-  return ids.size === 2 && x.sides.every((s) => isPositiveId(s.operationId) && isPositiveId(s.version) && ISO_DATE.test(String(s.value)))
+  return ids.size === 2 && x.sides.every((s) => isPositiveId(s.operationId) && isPositiveId(s.version) && isFactValue(x.field!, s.value))
     && new Set(x.sides.map((s) => s.value)).size === 2;
 }
 
@@ -158,9 +217,16 @@ export function parseMergeChoice(value: unknown): 'MERGE' | 'KEEP_DISTINCT' | nu
   return value === 'MERGE' || value === 'KEEP_DISTINCT' ? value : null;
 }
 
-/** Question du fait contradictoire (pure) — reprend les libellés déjà posés par la carte #750. */
+/**
+ * Question du fait contradictoire (pure) — reprend les libellés déjà posés par
+ * la carte #750. Lot 115 (#791) : la forme « prestataire » est NOUVELLE (à
+ * valider par le PO) et reprend mot pour mot la carte d'attribut de #750
+ * (« indiquent des prestataires différents … : lequel est le bon ? »).
+ */
 export function referenceEventFactQuestion(field: FactField, titleA: string, titleB: string): string {
-  return `${g(titleA)} et ${g(titleB)} indiquent des ${DATES_QUALIFIEES[field]} différentes : laquelle est la bonne ?`;
+  return isFactDateField(field)
+    ? `${g(titleA)} et ${g(titleB)} indiquent des ${DATES_QUALIFIEES[field]} différentes : laquelle est la bonne ?`
+    : `${g(titleA)} et ${g(titleB)} indiquent des prestataires différents : lequel est le bon ?`;
 }
 
 /**
@@ -168,12 +234,15 @@ export function referenceEventFactQuestion(field: FactField, titleA: string, tit
  * nommant l'événement de référence qui la porte. Aucune n'est mise en avant :
  * les deux sont des valeurs en place, sur deux objets distincts.
  */
-export function referenceEventFactProposals(sides: ReadonlyArray<{ operationId: number; title: string; value: string }>): ActionProposal[] {
+export function referenceEventFactProposals(
+  field: FactField, sides: ReadonlyArray<{ operationId: number; title: string; value: string }>,
+): ActionProposal[] {
   const vues = new Set<string>();
+  const lib = (v: string) => (isFactDateField(field) ? frDate(v) ?? v : borne(v, 60));
   return sides
     .filter((s) => (vues.has(s.value) ? false : (vues.add(s.value), true)))
     .map((s) => ({
-      value: `FACT:${s.value}`, label: `${frDate(s.value) ?? s.value} — ${g(s.title)}`, confidence: 0.5, emphasis: 'neutral' as const,
+      value: `FACT:${s.value}`, label: `${lib(s.value)} — ${g(s.title)}`, confidence: 0.5, emphasis: 'neutral' as const,
     }));
 }
 
@@ -250,10 +319,11 @@ async function realAnchor(
   return item !== null ? { type: 'AGENDA_ITEM', id: item } : null;
 }
 
-/** Faits d'un événement de référence ACTIF du compte : version et valeur de chaque fait daté. */
+/** Faits d'un événement de référence ACTIF du compte : version et valeur de chaque fait comparable. */
 async function factsOf(accountId: number, ids: readonly number[]): Promise<Map<number, { version: number; values: Record<FactField, string | null> }>> {
   const r = (await pgClient.unsafe(
-    `SELECT id, version, ${FACT_FIELDS.map((f) => `to_char(${FACT_COLUMNS[f]}, 'YYYY-MM-DD') AS "${f}"`).join(', ')}
+    `SELECT id, version, ${FACT_DATE_FIELDS.map((f) => `to_char(${FACT_COLUMNS[f]}, 'YYYY-MM-DD') AS "${f}"`).join(', ')},
+            NULLIF(btrim(provider), '') AS "provider"
        FROM business_operations
       WHERE account_id = $1 AND id = ANY($2::bigint[]) AND invalidated_at IS NULL AND merged_into_operation_id IS NULL`,
     [accountId, `{${[...new Set(ids)].filter((x) => Number.isSafeInteger(x) && x > 0).join(',')}}`] as never[],
@@ -265,11 +335,60 @@ async function factsOf(accountId: number, ids: readonly number[]): Promise<Map<n
       values: {
         plannedDate: (x.plannedDate as string | null) ?? null, startDate: (x.startDate as string | null) ?? null,
         realizedDate: (x.realizedDate as string | null) ?? null, endDate: (x.endDate as string | null) ?? null,
+        provider: (x.provider as string | null) ?? null,
       },
     });
   }
   return out;
 }
+
+/**
+ * Rôle sémantique de la PARTIE qui porte le prestataire RETENU de chaque
+ * événement de référence (référentiel UNIQUE `semanticRoleOf`, lu par la
+ * qualification des contradictions et par le choix du prestataire canonique —
+ * aucune énumération locale, aucune règle par enseigne).
+ *
+ * La provenance persistée (`attribute_provenance.provider.sourceId`, lot 78A)
+ * désigne la source qui justifie la valeur en place ; son rôle de document,
+ * sa nature et son autorité donnent le rôle de la partie. Sans provenance
+ * lisible, le rôle est INCONNU : rien n'est comparable.
+ */
+async function providerPartyRoles(accountId: number, ids: readonly number[]): Promise<Map<number, string>> {
+  const r = (await pgClient.unsafe(
+    `SELECT o.id, s.source_kind, s.authority, COALESCE(s.source_role, c.payload->>'sourceRoleHint') AS role
+       FROM business_operations o
+       LEFT JOIN business_operation_sources s
+         ON s.account_id = o.account_id AND s.operation_id = o.id AND s.active
+        AND s.id = (o.attribute_provenance->'provider'->>'sourceId')::bigint
+       LEFT JOIN document_operation_candidates c
+         ON c.account_id = o.account_id AND c.status = 'ACTIVE' AND s.source_kind = 'DOCUMENT'
+        AND c.file_id::text = s.source_entity_key AND c.candidate_key = s.locator->>'candidateKey'
+      WHERE o.account_id = $1 AND o.id = ANY($2::bigint[])`,
+    [accountId, `{${[...new Set(ids)].filter((x) => Number.isSafeInteger(x) && x > 0).join(',')}}`] as never[],
+  )) as unknown as Row[];
+  const out = new Map<number, string>();
+  for (const x of r) {
+    if (x.source_kind === null || x.source_kind === undefined) { out.set(Number(x.id), SEMANTIC_UNKNOWN_ROLE); continue; }
+    const kind = String(x.source_kind);
+    const role = isSourceRole(x.role) ? x.role : null;
+    out.set(Number(x.id), semanticRoleOf('provider', {
+      role,
+      ...(kind === 'AGENDA' ? { agenda: { itemId: 0, realizedDate: null, realizationRecord: false } } : {}),
+      ...(kind === 'ASSET_DATA' ? { structured: { nature: 'ASSET_DATA' } } : {}),
+      coverageDocument: false,
+    }, typeof x.authority === 'string' ? x.authority : null));
+  }
+  return out;
+}
+
+/**
+ * Rôles de partie COMPARABLES entre deux événements de référence : le même, et
+ * ni inconnu (rien n'est comparable) ni une saisie de l'utilisateur (sa parole
+ * n'est pas confrontée à celle d'un document — lot 113AQ). Choix prudent, à
+ * valider par le PO. Pure.
+ */
+export const comparableProviderRoles = (a: string | undefined, b: string | undefined): boolean =>
+  a !== undefined && a === b && a !== SEMANTIC_UNKNOWN_ROLE && a !== SEMANTIC_USER_ROLE;
 
 /**
  * CONTRADICTIONS à arbitrer d'un compte : paires d'événements de référence
@@ -282,11 +401,13 @@ async function factsOf(accountId: number, ids: readonly number[]): Promise<Map<n
  */
 export async function factContradictionCandidates(accountId: number, limit = FACT_PAIRS_PER_PASS): Promise<Array<{ operationAId: number; operationBId: number; field: FactField }>> {
   if (!isPositiveId(accountId)) return [];
-  const diff = (f: FactField) => `(x.${FACT_COLUMNS[f]} IS NOT NULL AND y.${FACT_COLUMNS[f]} IS NOT NULL `
+  const diff = (f: FactDateField) => `(x.${FACT_COLUMNS[f]} IS NOT NULL AND y.${FACT_COLUMNS[f]} IS NOT NULL `
     + `AND x.${FACT_COLUMNS[f]} <> y.${FACT_COLUMNS[f]}) AS "${f}"`;
   const r = (await pgClient.unsafe(
     `SELECT LEAST(r.from_operation_id, r.to_operation_id) AS a, GREATEST(r.from_operation_id, r.to_operation_id) AS b,
-            ${FACT_FIELDS.map(diff).join(', ')}
+            ${FACT_DATE_FIELDS.map(diff).join(', ')},
+            NULLIF(btrim(x.provider), '') AS "providerX", NULLIF(btrim(y.provider), '') AS "providerY",
+            r.from_operation_id AS fromid
        FROM business_operation_relations r
        JOIN business_operations x ON x.id = r.from_operation_id AND x.account_id = r.account_id
         AND x.invalidated_at IS NULL AND x.merged_into_operation_id IS NULL
@@ -298,12 +419,54 @@ export async function factContradictionCandidates(accountId: number, limit = FAC
     [accountId, Math.max(1, Math.floor(limit))] as never[],
   )) as unknown as Row[];
   const out: Array<{ operationAId: number; operationBId: number; field: FactField }> = [];
+  /** Paires dont les deux prestataires sont renseignés et textuellement différents (candidates à vérifier). */
+  const tiers: Array<{ a: number; b: number; va: string; vb: string }> = [];
   for (const x of r) {
-    for (const f of FACT_FIELDS) {
+    for (const f of FACT_DATE_FIELDS) {
       if (x[f] === true) out.push({ operationAId: Number(x.a), operationBId: Number(x.b), field: f });
     }
+    // Lot 115 (#791, décision du PO) : le prestataire. L'orientation de la relation n'est pas celle de la paire :
+    // les valeurs sont remises dans l'ordre (a, b) avant toute comparaison.
+    const depuis = Number(x.fromid) === Number(x.a);
+    const va = (depuis ? x.providerX : x.providerY) as string | null;
+    const vb = (depuis ? x.providerY : x.providerX) as string | null;
+    if (va && vb && va !== vb) tiers.push({ a: Number(x.a), b: Number(x.b), va, vb });
+  }
+  if (!tiers.length) return out;
+  // Désignations ÉQUIVALENTES d'un même prestataire (lot 86C) : jamais une contradiction. Les équivalences du
+  // compte ne sont lues que s'il y a au moins une paire à vérifier.
+  const ids = [...new Set(tiers.flatMap((t) => [t.a, t.b]))];
+  const [eq, roles] = await Promise.all([
+    loadProviderEquivalenceForCards(accountId),
+    providerPartyRoles(accountId, ids),
+  ]);
+  // Équivalences illisibles : aucune question de prestataire (deux désignations d'un même tiers paraîtraient
+  // contradictoires). Les contradictions de DATES, elles, ne dépendent pas de cette lecture.
+  if (eq === null) return out;
+  for (const t of tiers) {
+    if (providerComparisonKey(t.va, eq) === providerComparisonKey(t.vb, eq)) continue;
+    // « Pour le MÊME fait » : même rôle sémantique de la partie des deux côtés (banque ≠ fournisseur).
+    if (!comparableProviderRoles(roles.get(t.a), roles.get(t.b))) continue;
+    out.push({ operationAId: t.a, operationBId: t.b, field: 'provider' });
   }
   return out;
+}
+
+/** Équivalences de désignations du compte (service PARTAGÉ, mêmes preuves que T3) ; `null` si illisibles. */
+async function loadProviderEquivalenceForCards(accountId: number): Promise<ProviderEquivalence | null> {
+  try {
+    const [{ loadAccountProviderEquivalence }, { postgresRunner }] = await Promise.all([
+      import('@/services/relations/operation-suppliers'),
+      import('@/services/business-operations/grouping/runner'),
+    ]);
+    const runner = postgresRunner(pgClient as unknown as { unsafe: (t: string, p?: never[]) => Promise<unknown> });
+    return await loadAccountProviderEquivalence(runner, accountId);
+  } catch (e) {
+    // Sans équivalences, deux désignations d'un même tiers pourraient paraître contradictoires : on ne pose
+    // alors AUCUNE question de prestataire (prudence — jamais une fausse contradiction).
+    console.error(`[to-process] équivalences de désignations illisibles (compte ${accountId}) :`, (e as Error).message);
+    return null;
+  }
 }
 
 export interface MergeCardOutcome {
@@ -457,6 +620,21 @@ export async function requestReferenceEventFactArbitration(accountId: number, re
     if (sides.some((s) => s.value === null)) return { status: 'NOT_APPLICABLE', reason: 'FACT_MISSING' };
     if (sides[0]!.value === sides[1]!.value) return { status: 'NOT_APPLICABLE', reason: 'NO_CONTRADICTION' };
     const retenus = sides as Array<{ operationId: number; title: string; value: string; version: number }>;
+    if (req.field === 'provider') {
+      // Une valeur qu'on ne pourrait pas réécrire (au-delà de la borne du champ) ne fait pas une question.
+      if (retenus.some((s) => !isFactValue('provider', s.value))) return { status: 'NOT_APPLICABLE', reason: 'PROVIDER_NOT_WRITABLE' };
+      // Mêmes gardes que la détection (jamais une fausse contradiction, même sur un appel direct) :
+      // désignations équivalentes prouvées du compte, et MÊME rôle sémantique de la partie des deux côtés.
+      const eq = await loadProviderEquivalenceForCards(accountId);
+      if (eq === null) return { status: 'NOT_APPLICABLE', reason: 'PROVIDER_EQUIVALENCE_UNREADABLE' };
+      if (providerComparisonKey(retenus[0]!.value, eq) === providerComparisonKey(retenus[1]!.value, eq)) {
+        return { status: 'NOT_APPLICABLE', reason: 'EQUIVALENT_PROVIDER_DESIGNATIONS' };
+      }
+      const roles = await providerPartyRoles(accountId, [req.operationAId, req.operationBId]);
+      if (!comparableProviderRoles(roles.get(req.operationAId), roles.get(req.operationBId))) {
+        return { status: 'NOT_APPLICABLE', reason: 'PROVIDER_ROLES_NOT_COMPARABLE' };
+      }
+    }
 
     const evidence = await evidenceOfAccount(accountId, recues);
     const dejaVues = await answeredKeysOf(accountId, REFERENCE_EVENT_FACT_RULE, cle);
@@ -481,7 +659,7 @@ export async function requestReferenceEventFactArbitration(accountId: number, re
     const u = await upsertAction({
       accountId, targetType: ancre.type, targetId: ancre.id, relationKey: cle, actionKind: 'ARBITRATE', ruleCode: REFERENCE_EVENT_FACT_RULE,
       question: referenceEventFactQuestion(req.field, retenus[0]!.title, retenus[1]!.title),
-      proposals: referenceEventFactProposals(retenus),
+      proposals: referenceEventFactProposals(req.field, retenus),
       triggerContext: ctx as unknown as Record<string, unknown>,
     });
     if (u.status === 'CREATED') return { status: 'POSTED', ...(u.actionId !== undefined ? { actionId: u.actionId } : {}) };
@@ -575,10 +753,20 @@ export async function resolveReferenceEventMergeCard(
   }
   const facade = await import('@/services/business-operations/operation-write.facade');
   for (const side of aCorriger) {
-    const r = await facade.correctOperation(contexte(`FACT:${retenue}:${side.operationId}`), {
-      operationId: side.operationId, expectedVersion: side.version,
-      attributes: { [ctx.field]: retenue } as Record<FactField, string>, reasonCode: 'TO_PROCESS_FACT_ARBITRATED',
-    });
+    const cle = contexte(`FACT:${factIdempotencyToken(retenue)}:${side.operationId}`);
+    // Une DATE se corrige par `correctOperation` (sans déclaration demandée) ; le PRESTATAIRE ne se corrige pas
+    // par cette commande (règle de la carte #744, inchangée) : il est posé par la commande W22 avec une
+    // déclaration TECHNIQUE fixe, jamais montrée à l'utilisateur — elle protège la valeur choisie de toute
+    // réécriture par T3, exactement comme la source de protection d'une correction de date.
+    const r = isFactDateField(ctx.field)
+      ? await facade.correctOperation(cle, {
+        operationId: side.operationId, expectedVersion: side.version,
+        attributes: { [ctx.field]: retenue } as Record<FactDateField, string>, reasonCode: 'TO_PROCESS_FACT_ARBITRATED',
+      })
+      : await facade.updateOperation(cle, {
+        operationId: side.operationId, expectedVersion: side.version, declaration: CARD_FACT_ARBITRATION_DECLARATION_TEXT,
+        attributes: { provider: retenue }, reasonCode: 'TO_PROCESS_FACT_ARBITRATED',
+      });
     if (r.status === 'FAILED') throw new Error(`[to-process] arbitrage d’un fait ${action.publicId} : écriture impossible (${r.code})`);
     if (r.status !== 'APPLIED') {
       if (r.status === 'FORBIDDEN' && ACTOR_REFUSALS.has(r.code)) return { ok: false, previousValue: null, error: 'FIELD_NOT_RESOLVABLE' };

@@ -14,6 +14,9 @@
  *   L115I-G04 (E01, R02)  disponibilité INVÉRIFIABLE : suspension technique, zéro envoi, aucun modèle retiré
  *   L115I-G05 (E03, R06)  épreuve de qualification : plus d'exemption (règle remplacée, carte #786)
  *   L115I-G06 (E08)       mesures : envois refusés comptés par point, aucun coût ni appel fictif
+ *   L115I-G07 (E02, R04)  ESCALADE demandée par un appelant (`firstModelIndex`) : même port, même garde
+ *   L115I-G08 (E05, R09)  verdict PAR CAPACITÉ : un refus propre à une autre modalité ne bloque pas l'envoi ;
+ *                         le refus de la capacité de base, lui, est opposable à toutes
  */
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { z } from 'zod';
@@ -52,20 +55,28 @@ let fake: InstanceType<typeof FakeProvider>;
 
 /** État PARTAGÉ simulé : ce que la garde et le routage lisent (jamais une sonde). */
 const indisponibles = new Set<string>();
+/** #786 (E05) : refus propres à une CAPACITÉ (modèle → capacité refusée), hors capacité de base. */
+const refusParCapacite = new Map<string, string>();
+/** Capacités réellement demandées à la garde (vérifie que la passerelle lit la MODALITÉ sollicitée). */
+const capacitesLues: string[] = [];
 /** La lecture de l'état partagé est-elle possible ? (`false` : base illisible) */
 let lectureFiable = true;
 /** Nombre de lectures du verdict (une par envoi : la garde ne tolère aucun délai). */
 let lectures = 0;
 
 function brancherEtat() {
-  A.__setPublishedVerdictReaderForTests(async (model: string) => {
+  A.__setPublishedVerdictReaderForTests(async (model: string, capability) => {
     lectures++;
-    if (!lectureFiable) return { ...A.unknownVerdict(model, false) };
+    capacitesLues.push(capability);
+    if (!lectureFiable) return { ...A.unknownVerdict(model, false, capability) };
+    // Refus de la capacité de BASE : opposable à toutes les capacités. Refus d'une AUTRE capacité : opposable
+    // à elle seule — exactement ce que rend la lecture canonique (`readPublishedVerdict`).
+    const refuse = indisponibles.has(model) || refusParCapacite.get(model) === capability;
     return {
-      ...A.unknownVerdict(model, true),
-      state: indisponibles.has(model) ? 'unavailable' : 'healthy',
-      checkStatus: indisponibles.has(model) ? 'failed_confirmed' : 'ok',
-      error: indisponibles.has(model) ? 'HTTP 404 NOT_FOUND — This model is no longer available to new users' : null,
+      ...A.unknownVerdict(model, true, capability),
+      state: refuse ? 'unavailable' : 'healthy',
+      checkStatus: refuse ? 'failed_confirmed' : 'ok',
+      error: refuse ? 'HTTP 404 NOT_FOUND — This model is no longer available to new users' : null,
       checkedAt: '2026-11-16T06:15:44.000Z',
     };
   });
@@ -87,6 +98,8 @@ const requetes = (model?: string) => fake.calls.filter((c) => !model || c.model 
 beforeEach(() => {
   h.traces.length = 0;
   indisponibles.clear();
+  refusParCapacite.clear();
+  capacitesLues.length = 0;
   lectureFiable = true;
   lectures = 0;
   fake = new FakeProvider();
@@ -259,5 +272,54 @@ describe('L115I-G06 — mesures d’admission (E08)', () => {
     expect(m.allowed).toBeGreaterThanOrEqual(1);
     // Aucun coût fictif : le rang sauté est tracé à 0.
     expect(sansAppel().every((t) => t.costMicros === 0 && t.inputTokens === 0)).toBe(true);
+  });
+});
+
+describe('L115I-G07 — escalade demandée par un appelant (E02, R04)', () => {
+  it('escalade vers un rang refusé : aucun envoi, suspension contrôlée (même port, même garde)', async () => {
+    // L'appelant (Assistant §15.4) demande que la chaîne commence au rang 1, sans rappeler le principal.
+    indisponibles.add('m-b');
+    fake.onAny(() => OK);
+    const e = await AiGateway.execute(req({ firstModelIndex: 1, maxModelAttempts: 1 })).catch((x) => x);
+    expect(e).toMatchObject({ code: 'AI_SUSPENDED', failureCause: 'KNOWN_UNAVAILABLE' });
+    expect(requetes()).toBe(0);
+    // Le rang sauté est bien celui de l'ESCALADE (jamais le principal, qui n'était pas demandé).
+    expect(sansAppel().map((t) => t.model)).toEqual(['m-b']);
+    expect(sansAppel().every((t) => t.costMicros === 0 && t.inputTokens === 0)).toBe(true);
+  });
+
+  it('escalade vers un rang sain : le modèle demandé est atteint, le principal n’est jamais rappelé', async () => {
+    indisponibles.add('m-a');
+    fake.on('m-b', () => OK);
+    const r = await AiGateway.execute(req({ firstModelIndex: 1, maxModelAttempts: 1 }));
+    expect(r.model).toBe('m-b');
+    expect(requetes('m-a')).toBe(0);
+    expect(requetes('m-b')).toBe(1);
+  });
+
+  it('escalade : le verdict est relu à chaque envoi — publié pendant la tentative, plus rien ne part', async () => {
+    fake.on('m-b', () => { indisponibles.add('m-b'); return OK; });
+    expect((await AiGateway.execute(req({ firstModelIndex: 1, maxModelAttempts: 1 }))).model).toBe('m-b');
+    const e = await AiGateway.execute(req({ firstModelIndex: 1, maxModelAttempts: 1 })).catch((x) => x);
+    expect(e).toMatchObject({ code: 'AI_SUSPENDED' });
+    expect(requetes('m-b')).toBe(1);
+  });
+});
+
+describe('L115I-G08 — verdict par capacité et par modalité (E05, R09)', () => {
+  it('un appel sans pièce lit la capacité de base ; un refus propre à la modalité « pièce » ne le bloque pas', async () => {
+    refusParCapacite.set('m-a', 'multimodal');
+    fake.on('m-a', () => OK);
+    const r = await AiGateway.execute(req());
+    expect(r.model).toBe('m-a');
+    expect(requetes('m-a')).toBe(1);
+    expect([...new Set(capacitesLues)]).toEqual(['text_generation']);
+  });
+
+  it('le refus de la capacité de BASE est opposable (prérequis de toutes les autres)', async () => {
+    indisponibles.add('m-a');
+    fake.on('m-b', () => OK);
+    expect((await AiGateway.execute(req())).model).toBe('m-b');
+    expect(requetes('m-a')).toBe(0);
   });
 });

@@ -26,7 +26,12 @@ import {
   type AttributeReview, type QualificationContext,
 } from '../attribute-conflicts';
 import { buildArbitrationInput, validateArbitration, type RawArbitrationContext } from '../attribute-arbitration/contract';
-import { attributeProposals, ATTRIBUTE_PROPOSALS_MAX } from '@/services/to-process/operation-cards';
+import { attributeProposals, ATTRIBUTE_PROPOSALS_MAX, OPERATION_ATTRIBUTE_RULE } from '@/services/to-process/operation-cards';
+import {
+  DISPLAYED_PROPOSALS_MAX, DISPLAYED_PROPOSALS_MAX_BY_RULE, displayedProposalsMax, isDisplayableArbitration,
+  selectDisplayedProposals,
+} from '@/services/to-process/action-model';
+import { PROCESSING_RULES } from '@/services/to-process/rules-catalog';
 
 const TODAY = '2026-11-16';
 const BIEN = 7;
@@ -81,15 +86,23 @@ describe('L115F-U-E01 — détection sans seuil de jours (E01)', () => {
     expect(r.state.realizedDate).toBe('2026-11-12');
   });
 
-  it('deux dates d’ACQUISITION dans la fenêtre (7 jours) : relevées et arbitrées ; la valeur conservée ne change pas', () => {
+  // Règle remplacée (décision PO du 16/11, carte #791) : deux dates du MÊME JOUR ÉCONOMIQUE
+  // (`SAME_DATE_DAYS`) sont relevées mais consultables — aucune question posée. Au-delà, contradiction.
+  it('deux dates d’ACQUISITION du même jour économique (2 jours) : relevées, consultables, aucune carte ; au-delà de la tolérance, contradiction', () => {
     const acte = (over: Partial<CandidateIdentity>) => cand({ type: 'ACQUISITION', role: 'SALE_DOCUMENT', refs: [ref('ORDER', 'A-1')], ...over });
-    const r = relever('ACQUISITION', [
-      src(1, acte({ dates: d({ realizedDate: '2026-03-12' }) })),
-      src(2, acte({ candidateId: 2, fileId: 11, dates: d({ realizedDate: '2026-03-19' }) })),
+    const deux = (a: string, b: string) => relever('ACQUISITION', [
+      src(1, acte({ dates: d({ realizedDate: a }) })),
+      src(2, acte({ candidateId: 2, fileId: 11, dates: d({ realizedDate: b }) })),
     ]);
-    expect(r.state.realizedDate).toBe('2026-03-12');
-    expect(ligne(r, 'realizedDate').map((c) => c.qualification)).toEqual(['REAL_CONFLICT_UNRESOLVED']);
-    expect(ligne(r, 'realizedDate')[0].values.map((v) => v.value)).toEqual(['2026-03-12', '2026-03-19']);
+    const proche = deux('2026-03-12', '2026-03-14');
+    expect(proche.state.realizedDate).toBe('2026-03-12');
+    expect(ligne(proche, 'realizedDate').map((c) => [c.qualification, c.reasonCode])).toEqual([['LEGITIMATE_DIFFERENCE', 'SAME_ECONOMIC_DAY']]);
+    expect(ligne(proche, 'realizedDate')[0].values.map((v) => v.value)).toEqual(['2026-03-12', '2026-03-14']);
+    expect(proche.alerting).toEqual([]);
+    const loin = deux('2026-03-12', '2026-03-28');
+    expect(loin.state.realizedDate).toBe('2026-03-12');
+    expect(ligne(loin, 'realizedDate').map((c) => [c.qualification, c.reasonCode])).toEqual([['REAL_CONFLICT_UNRESOLVED', 'SAME_REFERENCE']]);
+    expect(needsArbitrationCard(loin.alerting[0])).toBe(true);
   });
 
   it('dates légitimes très ÉLOIGNÉES mais de rôles différents (signature, couverture, paiement) : aucune contradiction réelle', () => {
@@ -330,6 +343,39 @@ describe('L115F-U-E06 — toutes les alternatives exposées (E06)', () => {
     const p = attributeProposals('realizedDate', valeurs(20), '2026-03-01');
     expect(p).toHaveLength(ATTRIBUTE_PROPOSALS_MAX);
     expect(p.at(-1)).toMatchObject({ isCurrentValue: true });
+  });
+
+  it('À L’ÉCRAN : plus de deux alternatives pour une contradiction d’attribut, la valeur en place toujours là (règle §8.5 complétée, carte #791)', () => {
+    const p = attributeProposals('realizedDate', valeurs(8), '2026-03-01');
+    const vues = selectDisplayedProposals(p, OPERATION_ATTRIBUTE_RULE);
+    // Cinq alternatives (avant le lot 115 : deux), plus la valeur en place, marquée et en dernier.
+    expect(vues).toHaveLength(6);
+    expect(vues.filter((x) => !x.isCurrentValue)).toHaveLength(displayedProposalsMax(OPERATION_ATTRIBUTE_RULE));
+    expect(vues.at(-1)).toMatchObject({ value: 'ATTRIBUTE:2026-03-01', isCurrentValue: true });
+    // L'ordre reste la confiance décroissante (jamais l'ordre d'arrivée réinventé).
+    expect(vues.slice(0, -1).map((x) => x.confidence)).toEqual([...vues.slice(0, -1).map((x) => x.confidence)].sort((a, b) => b - a));
+    // Et la DONNÉE de la carte porte toujours tout : l'écran borne, la donnée non.
+    expect(p.length).toBeGreaterThan(vues.length);
+  });
+
+  it('AUCUNE AUTRE CARTE n’est touchée : la borne commune reste deux, pour toutes les règles sauf les exceptions déclarées', () => {
+    expect(DISPLAYED_PROPOSALS_MAX).toBe(2);
+    expect(Object.keys(DISPLAYED_PROPOSALS_MAX_BY_RULE)).toEqual([OPERATION_ATTRIBUTE_RULE]);
+    const quatre = [
+      { value: 'A', label: 'A', confidence: 0.8 }, { value: 'B', label: 'B', confidence: 0.7 },
+      { value: 'C', label: 'C', confidence: 0.6 }, { value: 'D', label: 'D', confidence: 1, isCurrentValue: true },
+    ];
+    // Sans code de règle : exactement ce qui était affiché avant le lot 115.
+    expect(selectDisplayedProposals([...quatre]).map((x) => x.value)).toEqual(['A', 'B', 'D']);
+    for (const r of PROCESSING_RULES.filter((x) => x.code !== OPERATION_ATTRIBUTE_RULE)) {
+      expect(selectDisplayedProposals([...quatre], r.code).map((x) => x.value), r.code).toEqual(['A', 'B', 'D']);
+      expect(displayedProposalsMax(r.code), r.code).toBe(2);
+    }
+    // Une règle inconnue, une exception absurde : la borne commune s'applique (jamais moins de deux).
+    expect(displayedProposalsMax('RÈGLE-INCONNUE')).toBe(2);
+    expect(displayedProposalsMax(null)).toBe(2);
+    // §8.5 / ATP-05 inchangé : une valeur actuelle seule ne fait pas un arbitrage.
+    expect(isDisplayableArbitration([{ value: 'D', label: 'D', confidence: 1, isCurrentValue: true }])).toBe(false);
   });
 
   it('sources 100 % STRUCTURÉES (aucun document) : la contradiction est bien relevée et appelle une carte', () => {

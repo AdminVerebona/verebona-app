@@ -40,7 +40,7 @@
  * ══════════════════════════════════════════════════════════════════════════
  */
 import type { BusinessOperationTypeCode, ReferenceKind } from '../model';
-import { hasRecurringPeriod, transactionWindowDays, type CandidateIdentity, type PersistedFinancialHint } from './model';
+import { hasRecurringPeriod, SAME_DATE_DAYS, transactionWindowDays, type CandidateIdentity, type PersistedFinancialHint } from './model';
 
 export { transactionWindowDays };
 
@@ -115,8 +115,10 @@ const AMOUNT_COHERENT_TOLERANCE = 0.01;
 /**
  * Écart (jours) en deçà duquel une date de fiche et une date de document désignent le même jour économique.
  * Lot 108A : exporté — même paramètre pour le rapprochement des faits du TCO (`tco/fact-matching.ts`).
+ * Lot 115 (#791) : le référentiel est désormais porté par `model.ts` (lu aussi par
+ * le relevé des contradictions de dates) et ré-exporté ici — aucun appelant ne change.
  */
-export const SAME_DATE_DAYS = 7;
+export { SAME_DATE_DAYS };
 
 const PRINCIPAL_ROLES = new Set(['REALIZED_COST', 'FORECAST_COST', 'PROCEED']);
 const principalScope = (h: Pick<PersistedFinancialHint, 'amountScope'>) => h.amountScope === null || h.amountScope === undefined || h.amountScope === 'TOTAL';

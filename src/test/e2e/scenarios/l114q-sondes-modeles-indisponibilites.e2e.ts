@@ -165,7 +165,9 @@ scenario('L114Q', 'Sondes de modèles : verdict par accès, propagation jusqu’
       SELECT string_agg(a.attname, ',' ORDER BY array_position(c.conkey, a.attnum)) AS cols
         FROM pg_constraint c JOIN pg_attribute a ON a.attrelid = c.conrelid AND a.attnum = ANY(c.conkey)
        WHERE c.conrelid = 'ai_model_operational_status'::regclass AND c.contype = 'p'`;
-    expect(pk.cols).toBe('provider,model,key_fingerprint');
+    // Règle complétée (carte #786, E05, migration 1816) : la clé primaire porte en plus la CAPACITÉ — un
+    // verdict ne vaut que pour la capacité éprouvée. L'isolation par ACCÈS posée par 1692 est inchangée.
+    expect(pk.cols).toBe('provider,model,key_fingerprint,capability');
     const [{ n }] = await sql<{ n: number }[]>`SELECT count(*)::int AS n FROM information_schema.tables WHERE table_name = 'ai_model_operational_history'`;
     expect(n).toBe(1);
     // Une ligne par accès : deux clés pour le même modèle coexistent ; la même clé reste unique.
@@ -348,7 +350,10 @@ scenario('L114Q', 'Sondes de modèles : verdict par accès, propagation jusqu’
     // T1 n'a plus aucune route utilisable (principal et repli confirmés indisponibles) : alerte critique.
     const r = await sync();
     const g = (await alertes()).filter((a) => a.resolved_at === null);
-    expect(g.map((a) => [a.details.model, a.severity]).sort()).toEqual([[cible, 'warning'], [REFUSE, 'critical']].sort());
+    // Règle remplacée (carte #786, E08) : la criticité suit l'UNITÉ DE ROUTAGE. T1 n'a plus aucune route
+    // admissible, donc les DEUX modèles de sa chaîne portent une alerte critique — l'ancienne règle n'en
+    // marquait critique que le principal, alors que le repli concerne la même impossibilité.
+    expect(g.map((a) => [a.details.model, a.severity]).sort()).toEqual([[cible, 'critical'], [REFUSE, 'critical']].sort());
     expect(r.anomalies.length).toBeGreaterThan(5);
     // Remise en état pour la suite : le modèle répond à la sonde demandée par un administrateur.
     await sync('manual');

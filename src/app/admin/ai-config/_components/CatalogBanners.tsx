@@ -39,6 +39,11 @@ interface ModelUsage {
   treatment: string; rank: string; rankLabel: string; source: string; fallbackAvailable: boolean;
   /** Lot 115 (#786, E08) : variante propre à un traitement unitaire (surcouche, promotion de routage). */
   operationCode?: string;
+  /**
+   * Lot 115 (#786, E08) : cette unité de routage n'a plus AUCUNE route admissible — disponibilité, tarif,
+   * compatibilité et qualification réunis, comme au routage. C'est ce qui rend l'alerte critique.
+   */
+  noAdmissibleRoute?: boolean;
   /** Lot 87A (INV-10) : secours que la passerelle choisira (absent : état de qualification non lu). */
   secours?: { model: string | null; decision: 'QUALIFIED' | 'MANUAL_UNTESTED' | 'NONE'; label: string };
 }
@@ -54,6 +59,9 @@ interface ModelDiagnostic {
   providerCode?: string | null;
   access?: string | null;
   nextProbeAt?: string | null;
+  /** Lot 115 (#786, E05) : portée exacte du refus et dimension « projet » (absents : serveur antérieur). */
+  refusedCapabilityLabels?: string[];
+  providerProject?: string | null;
 }
 interface WatchEntry {
   model: string; status: 'suspect' | 'inconclusive'; error: string | null; errorKindLabel: string | null;
@@ -115,7 +123,7 @@ export function UnavailableModelCard({ group }: { group: UnavailableModelGroupVi
       <ul className="flex flex-wrap gap-1.5" aria-label={`Usages de ${group.model}`}>
         {group.usages.map((u) => (
           <li key={`${u.treatment}-${u.rank}-${u.operationCode ?? ''}`} className="text-[11px] px-1.5 py-0.5 rounded border border-[color:var(--border-subtle)] text-[color:var(--text-secondary)] max-w-full break-words">
-            {u.treatment} {u.rankLabel}{u.operationCode ? ` · ${u.operationCode}` : ''}{u.rank === 'primaryModel' && u.secours
+            {u.treatment} {u.rankLabel}{u.operationCode ? ` · type d’appel ${u.operationCode}` : ''}{u.noAdmissibleRoute ? ' · plus aucune route admissible' : ''}{u.rank === 'primaryModel' && u.secours
               ? (u.secours.model ? ` · ${u.secours.label} : ${u.secours.model}` : ' · aucun secours admissible (suspendu)')
               : u.rank === 'primaryModel' && !u.fallbackAvailable ? ' · sans repli' : ''}
           </li>
@@ -148,6 +156,19 @@ export function UnavailableModelCard({ group }: { group: UnavailableModelGroupVi
           <>
             <dt className="text-[color:var(--text-muted)]">Accès concerné</dt>
             <dd className="text-[color:var(--text-primary)] break-words" data-testid="unavailable-model-access">{d.access}</dd>
+          </>
+        )}
+        {/* Lot 115 (#786, E05) : la PORTÉE du refus est dite — capacités refusées, et projet jamais supposé. */}
+        {d.refusedCapabilityLabels !== undefined && (
+          <>
+            <dt className="text-[color:var(--text-muted)]">Portée du refus</dt>
+            <dd className="text-[color:var(--text-primary)] break-words" data-testid="unavailable-model-scope">
+              {d.refusedCapabilityLabels.length > 0
+                ? `capacité(s) refusée(s) : ${d.refusedCapabilityLabels.join(', ')}`
+                : 'aucune capacité refusée pour cet accès'}
+              {' · projet du fournisseur : '}
+              {d.providerProject ?? 'non renseigné (inconnu de l’application, jamais supposé)'}
+            </dd>
           </>
         )}
         {d.status === 'failed_confirmed' && d.nextProbeAt && (

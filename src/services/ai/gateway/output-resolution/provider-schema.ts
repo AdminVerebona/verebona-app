@@ -64,20 +64,19 @@ const KEEP = new Set(['type', 'properties', 'required', 'items', 'enum', 'anyOf'
 const SAFE_BOUND = 9_007_199_254_740_991;
 
 /**
- * Lot 115 (carte #784, §A2) — PLAFOND DE PROPRIÉTÉS du schéma transmis :
- * aucun par défaut. Il ne se pose qu'en exploitation, par la variable
- * d'environnement `AI_PROVIDER_SCHEMA_MAX_PROPERTIES` (nombre de propriétés),
- * lorsque la préproduction a constaté un refus RÉEL et l'a corrélé au nombre
- * de propriétés. Au-delà du plafond, le schéma n'est pas transmis (motif
- * `provider_contract`, écart `PROPERTY_CAP_EXCEEDED` tracé) : l'appel garde le
- * mode JSON et le contrat complet dans le prompt — repli explicite, borné et
- * observable, jamais une compatibilité déclarée. Aucun seuil n'est inventé
- * dans le code : la cause des HTTP 400 n'a pas pu être établie dans l'atelier.
+ * DÉCISION DU PO (16/11/2026, carte #784) — AUCUN PLAFOND sur le nombre de
+ * PROPRIÉTÉS d'un schéma, et aucun réglage pour en poser un.
+ *
+ * Règle retirée (décision PO) : le lot précédent laissait la possibilité d'un
+ * plafond d'exploitation, à trancher. Le PO a tranché : il n'y en a pas. Le
+ * schéma est transmis quel que soit son nombre de propriétés ; les seules
+ * limites qui peuvent encore empêcher la transmission sont celles du CONTRAT
+ * documenté du fournisseur (mots-clés, profondeur, bornes imbriquées, taille
+ * sérialisée) et la perte de branche, toutes vérifiées par ailleurs.
+ *
+ * Le nombre de propriétés reste MESURÉ (`metrics.properties`) : c'est un
+ * élément de diagnostic d'un éventuel refus réel, jamais un seuil.
  */
-export function providerSchemaPropertyCap(env: NodeJS.ProcessEnv = process.env): number | null {
-  const n = Number((env.AI_PROVIDER_SCHEMA_MAX_PROPERTIES ?? '').trim());
-  return Number.isFinite(n) && n > 0 ? Math.floor(n) : null;
-}
 
 interface ProviderSchema {
   schema: Json | null;
@@ -196,10 +195,8 @@ export function providerSchemaShape(env: NodeJS.ProcessEnv = process.env): Schem
   return /^inline$/i.test((env.AI_PROVIDER_SCHEMA_SHAPE ?? '').trim()) ? 'inline' : 'factorise';
 }
 
-/** Options de projection (lot 115, #784) : forme et plafonds d'exploitation seulement. */
+/** Options de projection (lot 115, #784) : la FORME transmise, et rien d'autre. */
 export interface ProviderSchemaOptions {
-  /** Plafond de propriétés ; par défaut celui de l'exploitation (`providerSchemaPropertyCap`). */
-  maxProperties?: number | null;
   /** Forme transmise ; par défaut celle de l'exploitation (`providerSchemaShape`). */
   shape?: SchemaShape;
 }
@@ -215,12 +212,11 @@ function project(json: Json): Projection {
   return { reduced, dropped, nodes: count.n };
 }
 
-/** Schéma JSON réduit pour le fournisseur (mémorisé par schéma, forme et plafond d'exploitation). */
+/** Schéma JSON réduit pour le fournisseur (mémorisé par schéma et par forme transmise). */
 export function providerJsonSchema(schema: ZodType, opts: ProviderSchemaOptions = {}): ProviderSchema {
-  const cap = opts.maxProperties === undefined ? providerSchemaPropertyCap() : opts.maxProperties;
   const shapeVoulue = opts.shape ?? providerSchemaShape();
   const byCap = cache.get(schema) ?? new Map<string, ProviderSchema>();
-  const cacheKey = `${shapeVoulue}/${cap ?? '-'}`;
+  const cacheKey = shapeVoulue;
   const hit = byCap.get(cacheKey);
   if (hit) return hit;
   let res: ProviderSchema;
@@ -251,7 +247,7 @@ export function providerJsonSchema(schema: ZodType, opts: ProviderSchemaOptions 
     // le schéma RÉELLEMENT TRANSMIS ; bornes imbriquées et profondeur sur sa
     // forme déréférencée — une factorisation ne doit pas masquer un état.
     const issues = [
-      ...geminiSchemaIssues(p.reduced, { maxProperties: cap }),
+      ...geminiSchemaIssues(p.reduced),
       ...(shape === 'factorise' ? geminiSchemaIssues(resolu).filter((i) => i.code === 'NESTED_ARRAY_BOUNDS' || i.code === 'TOO_DEEP') : []),
     ];
     const codes = schemaIssueCodes(issues);

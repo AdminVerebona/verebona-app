@@ -18,7 +18,13 @@
  *         marquées à requalifier, aucune activation, aucune configuration modifiée ;
  *   E08 · R14 — décomptes fidèles : refus + dernier contrôle non concluant reste compté indisponible, et une
  *         lecture illisible ne vaut aucun décompte ni aucune résolution d'alerte ;
- *   E09 · R02 / R10 — contrôle final de disponibilité dans une transaction : refus explicite.
+ *   E09 · R02 / R10 — contrôle final de disponibilité dans une transaction : refus explicite ;
+ *   E10 · R09 — migration 1816 : la CAPACITÉ est dans la clé primaire ; un refus par capacité n'affecte pas les
+ *         autres, le refus de la capacité de base est opposable à toutes, le PROJET reste vide ;
+ *   E11 · R11 — campagne ciblée relancée AU RÉTABLISSEMENT : marque posée puis effacée par le résultat, bornée,
+ *         aucune activation, aucune configuration modifiée ;
+ *   E12 · R10 — réactivation d'une configuration HISTORIQUE et IMPORT : contrôle final de disponibilité refusé
+ *         (refus confirmé comme contrôle impossible), et les deux gestes partagent la même façade.
  */
 import { afterAll, beforeAll, expect, it, vi } from 'vitest';
 import { readFile } from 'node:fs/promises';
@@ -346,5 +352,114 @@ scenario('L115I', 'IA — admission des envois : aucune requête ordinaire vers 
     const tout = JSON.stringify(await sql`SELECT * FROM ai_model_operational_status`) + JSON.stringify(await histo(REFUSE));
     expect(tout).not.toContain(CLE);
     expect(tout).not.toContain(AUTRE_CLE);
+  });
+
+  it('L115I-E10 (R09) — migration 1816 : un verdict PAR CAPACITÉ, portée exacte, projet jamais inventé', async () => {
+    const texte = await readFile(join(process.cwd(), 'src/db/migrations/1816_l115i_disponibilite_par_capacite.sql'), 'utf8');
+    await sql.unsafe(texte);
+    await sql.unsafe(texte); // rejouable sans effet
+    // La CAPACITÉ fait partie de la clé primaire.
+    const [{ cols }] = await sql<{ cols: string[] }[]>`
+      SELECT array_agg(a.attname ORDER BY a.attname) AS cols
+        FROM pg_constraint c JOIN unnest(c.conkey) k ON TRUE
+        JOIN pg_attribute a ON a.attrelid = c.conrelid AND a.attnum = k
+       WHERE c.conrelid = 'ai_model_operational_status'::regclass AND c.contype = 'p'`;
+    expect(cols).toEqual(['capability', 'key_fingerprint', 'model', 'provider']);
+    for (const t of ['ai_model_operational_status', 'ai_model_operational_history']) {
+      const c = (await sql<{ column_name: string }[]>`
+        SELECT column_name FROM information_schema.columns WHERE table_name = ${t}`).map((x) => x.column_name);
+      expect(c, t).toContain('provider_project');
+    }
+
+    await sql`DELETE FROM ai_model_operational_status`;
+    const { recordOperationalCheck, readPublishedVerdict, loadOperationalDiagnostics, operationalProjectDimension } = await O();
+    const { guardSend } = await A();
+    // Refus propre à une CAPACITÉ (paramètre refusé) : les autres capacités restent admises.
+    await recordOperationalCheck({
+      model: REFUSE, secret: CLE, source: 'qualification', checkId: 'e10-capacite', capability: 'structured_output',
+      outcome: { status: 'failed', kind: 'probe_parameter_rejected', error: 'HTTP 400 INVALID_ARGUMENT — paramètre refusé', definitive: true },
+    });
+    const lignes = await sql<Array<{ capability: string; ok: boolean | null; provider_project: string | null }>>`
+      SELECT capability, ok, provider_project FROM ai_model_operational_status WHERE model = ${REFUSE}`;
+    expect(lignes).toHaveLength(1);
+    expect(lignes[0]).toMatchObject({ capability: 'structured_output', ok: false, provider_project: null });
+    expect((await readPublishedVerdict(REFUSE, CLE, 'structured_output')).state).toBe('unavailable');
+    expect((await readPublishedVerdict(REFUSE, CLE, 'text_generation')).state).toBe('unknown');
+    expect((await guardSend({ model: REFUSE, point: 'gateway_send', capability: 'multimodal' })).admitted).toBe(true);
+    expect((await guardSend({ model: REFUSE, point: 'gateway_send', capability: 'structured_output' })).admitted).toBe(false);
+
+    // Refus de la capacité de BASE : opposable à TOUTES (prérequis), et la portée est dite.
+    await controler({ model: REFUSE, checkId: 'e10-base' });
+    expect(await readPublishedVerdict(REFUSE, CLE, 'multimodal')).toMatchObject({ state: 'unavailable', scopeExtendedFromBase: true });
+    expect((await guardSend({ model: REFUSE, point: 'gateway_send', capability: 'multimodal' })).admitted).toBe(false);
+    // Un succès sur la base ne lève PAS le refus de l'autre capacité.
+    await controler({ model: REFUSE, echec: false, checkId: 'e10-base-ok' });
+    expect((await readPublishedVerdict(REFUSE, CLE, 'text_generation')).state).toBe('healthy');
+    expect((await readPublishedVerdict(REFUSE, CLE, 'structured_output')).state).toBe('unavailable');
+    const diag = (await loadOperationalDiagnostics(CLE)).get(REFUSE);
+    expect(diag?.refusedCapabilities).toEqual(['structured_output']);
+    // Dimension « projet » : vide et explicitée (jamais devinée, jamais fusionnée avec l'accès).
+    expect(operationalProjectDimension().known).toBe(false);
+    expect(diag?.providerProject ?? null).toBeNull();
+    // La réservation de recontrôle porte sur la ligne de la capacité de base, jamais sur les autres.
+    const { acquireProbeLease, releaseProbeLease } = await O();
+    expect(await acquireProbeLease({ model: REFUSE, secret: CLE, owner: 'instance-E10' })).toMatchObject({ acquired: true });
+    const bails = await sql<Array<{ capability: string; probe_lease_owner: string | null }>>`
+      SELECT capability, probe_lease_owner FROM ai_model_operational_status WHERE model = ${REFUSE} ORDER BY capability`;
+    expect(bails.filter((b) => b.probe_lease_owner !== null).map((b) => b.capability)).toEqual(['text_generation']);
+    await releaseProbeLease({ model: REFUSE, secret: CLE, owner: 'instance-E10' });
+  });
+
+  it('L115I-E11 (R11) — rétablissement : campagne ciblée immédiate, bornée, aucune activation', async () => {
+    const { runTargetedRequalification, loadQualifications, markRequalificationRequired } = await import('@/services/ai/provider/model-qualification.service');
+    await sql`DELETE FROM ai_model_operational_status`;
+    await sql`DELETE FROM ai_model_qualification WHERE model IN (${REFUSE}, ${SAIN})`;
+    // Modèle rétabli, qualification ANCIENNE marquée à requalifier (ce que fait la sonde de rétablissement).
+    await controler({ model: REFUSE, echec: false, checkId: 'e11-retabli', source: 'recovery_check' });
+    await sql`INSERT INTO ai_model_qualification (provider, model, key_fingerprint, qualification_version, generate_ok, structured_ok, qualified_at)
+              VALUES ('gemini', ${REFUSE}, ${await empreinte()}, 'qualif-v2', TRUE, TRUE, now() - interval '3 days')`;
+    expect(await markRequalificationRequired([REFUSE], CLE, 'rétabli (e2e l115i E11)')).toBe(1);
+
+    const avant = await sql<Array<Record<string, unknown>>>`SELECT * FROM ai_config_versions WHERE status = 'ACTIVE'`;
+    const appels: string[] = [];
+    const bilan = await runTargetedRequalification([REFUSE], CLE, {
+      max: 1, call: async (i) => { appels.push(i.model); return { rawText: '{"ok":true,"mot":"ok"}', inputTokens: 1, outputTokens: 1 }; },
+    });
+    expect(bilan.attempted).toEqual([REFUSE]);
+    expect(appels.length).toBeGreaterThanOrEqual(1);
+    // Le résultat EFFACE la marque : la campagne est reprenable sans doublon.
+    const q = (await loadQualifications(CLE)).get(REFUSE);
+    expect(q?.requalificationRequiredAt ?? null).toBeNull();
+    expect(q?.version).toBe('qualif-v2');
+    // Relancée aussitôt : plus rien à reprendre (déduplication par la marque).
+    const bis = await runTargetedRequalification([REFUSE], CLE, { call: async () => ({ rawText: '{"ok":true,"mot":"ok"}' }) });
+    expect(bis.attempted).toEqual([]);
+    expect(bis.skipped).toEqual([{ model: REFUSE, reason: 'not_marked' }]);
+    // AUCUNE activation, aucune configuration modifiée.
+    expect(await sql<Array<Record<string, unknown>>>`SELECT * FROM ai_config_versions WHERE status = 'ACTIVE'`).toEqual(avant);
+    await sql`DELETE FROM ai_model_qualification WHERE model = ${REFUSE}`;
+  });
+
+  it('L115I-E12 (R10) — réactivation d’une configuration historique et import : contrôle final partagé', async () => {
+    const { activationAvailabilityRefusal, chainModelsOf } = await import('@/services/ai/config/activation-availability');
+    await sql`DELETE FROM ai_model_operational_status`;
+    const dans = <T>(fn: (tx: { unsafe: (q: string, p?: never[]) => Promise<unknown> }) => Promise<T>) =>
+      sql.begin(async (t) => fn({ unsafe: (q, p) => t.unsafe(q, (p ?? []) as never[]) as unknown as Promise<unknown> }));
+    const chaine = chainModelsOf([{ primaryModel: REFUSE, fallback1: SAIN }]);
+    expect(chaine).toEqual([REFUSE, SAIN]);
+    // Rien ne s'oppose encore.
+    expect(await dans((tx) => activationAvailabilityRefusal(tx, chaine, 'Activation annulée'))).toBeNull();
+    // Verdict publié : la réactivation d'une configuration historique est refusée…
+    await controler({ model: REFUSE, checkId: 'e12-refus' });
+    expect(await dans((tx) => activationAvailabilityRefusal(tx, chaine, 'Activation annulée'))).toMatchObject({
+      code: 'BLOCKED_MODEL_UNAVAILABLE', model: REFUSE,
+    });
+    // … et l'IMPORT aussi, avec le message de son geste.
+    const refusImport = await dans((tx) => activationAvailabilityRefusal(tx, chaine, 'Import annulé'));
+    expect(refusImport?.message).toMatch(/^Import annulé dans la transaction/);
+    // Les deux appelants partagent bien CETTE façade (aucune logique dupliquée).
+    for (const f of ['src/services/ai/config/config-version.service.ts', 'src/services/ai/config/config-import.service.ts']) {
+      expect(await readFile(join(process.cwd(), f), 'utf8'), f).toContain('activationAvailabilityRefusal');
+    }
   });
 });

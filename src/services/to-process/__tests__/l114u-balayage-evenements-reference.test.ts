@@ -99,7 +99,7 @@ describe('L114U-B-D — détecteurs : les règles qui existent déjà, jamais un
     const requete = cartesFusion.slice(cartesFusion.indexOf('export async function factContradictionCandidates'),
       cartesFusion.indexOf('export interface MergeCardOutcome'));
     // Les colonnes viennent du référentiel (aucune énumération locale) ; une valeur absente n'est pas une contradiction.
-    expect(requete).toContain('FACT_FIELDS.map(diff)');
+    expect(requete).toContain('FACT_DATE_FIELDS.map(diff)');
     expect(requete).toContain('IS NOT NULL AND y.');
     expect(requete).toContain("r.state = 'ACTIVE'");
     expect(requete).toContain('r.account_id = $1');
@@ -107,9 +107,14 @@ describe('L114U-B-D — détecteurs : les règles qui existent déjà, jamais un
     expect(requete).toContain('y.account_id = r.account_id');
     expect(requete).toContain('invalidated_at IS NULL');
     expect(requete).toContain('LIMIT $2');
-    // Le référentiel des faits reste celui de la carte d'arbitrage d'attribut (#750), avec sa colonne.
-    expect(FACT_FIELDS).toEqual(['plannedDate', 'startDate', 'realizedDate', 'endDate']);
+    // Règle complétée (carte #791, décision du PO du 16/11/2026) : le référentiel des faits comparables est
+    // celui de la carte d'arbitrage d'attribut (#750), PRESTATAIRE COMPRIS, chacun avec sa colonne.
+    expect(FACT_FIELDS).toEqual(['plannedDate', 'startDate', 'realizedDate', 'endDate', 'provider']);
     expect(Object.keys(FACT_COLUMNS).sort()).toEqual([...FACT_FIELDS].sort());
+    // Le prestataire est comparé par les référentiels EXISTANTS, jamais par une règle écrite ici.
+    expect(requete).toContain('comparableProviderRoles');
+    expect(requete).toContain('providerComparisonKey');
+    expect(requete).not.toMatch(/score|similarit|proximit/i);
   });
 
   it('L114U-B-D4 — doublon : le verdict M3 DÉJÀ rendu par T3, lu avec la règle existante (aucun appel d’IA ajouté)', () => {
