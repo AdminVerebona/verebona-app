@@ -36,6 +36,7 @@
  * ══════════════════════════════════════════════════════════════════════════
  */
 import { pgClient } from '@/db';
+import { noteDegraded } from '../../../degraded/degraded-mode';
 import { AiGateway } from '../../../gateway/ai-gateway';
 import { isExecutionCancelled, type ExecutionGuard } from '../../../queue/execution-control';
 import { isPermanentFailure, PermanentJobError, type JobBusinessResult } from '../../../queue/queue-policy';
@@ -350,7 +351,13 @@ export async function reviewDocumentAttachment(input: ReviewInput, deps: Attachm
 
   let decision: AttachmentReviewDecision;
   let status: ReviewStatus = 'REVIEWED';
-  if (!forced && prev?.key === key && reusableDecision(prev.decision)) {
+  // Carte #811 (P1-C) : signature de configuration NON RÉSOLUE — une décision mémorisée sous cette signature n'est
+  // jamais réutilisée (on ne peut pas prouver que la configuration est la même) ; le passage est tracé.
+  const signatureResolue = signature !== 'unresolved';
+  if (!signatureResolue) {
+    noteDegraded({ treatment: 'T3', operationCode: ATTACHMENT_REVIEW_OPERATION, accountId: input.accountId, component: 'CONFIG_SIGNATURE', reason: 'SIGNATURE_UNRESOLVED', impact: 'CALL_WITHOUT_PROTECTION' });
+  }
+  if (!forced && signatureResolue && prev?.key === key && reusableDecision(prev.decision)) {
     decision = prev.decision!;
     trace.aiReused = true;
     trace.promptVersion = prev.promptVersion;

@@ -124,8 +124,25 @@ export interface ReconciliationRun {
   conflictCount: number;
   /** Décisions assistées par l'IA (appel réel, cache ou mémoire) — pas un nombre d'appels. */
   aiReviewCount: number;
-  /** Lot 99A : appels RÉELS au fournisseur pendant ce run. */
+  /**
+   * Requêtes RÉELLEMENT émises vers le fournisseur pendant ce run (carte #811 : mesure de la passerelle, tous
+   * traitements ; `aiCountersSemantics = DECLARED` : demandes déclarées par le moteur, passerelle non observée).
+   */
   providerCalls?: number;
+  /** Carte #811 : `MEASURED_V1` (mesure de la passerelle) ou `DECLARED` (demandes déclarées). Absent : run antérieur. */
+  aiCountersSemantics?: string;
+  /** Carte #811 : demandes logiques à la passerelle. */
+  aiLogicalRequests?: number;
+  /** Carte #811 : tentatives de modèle et passes de réparation ayant émis une requête. */
+  aiProviderAttempts?: number;
+  /** Carte #811 : demandes d'arbitrage IA déclarées par le moteur (ancienne sémantique de `providerCalls`). */
+  aiDeclaredRequests?: number;
+  /** Carte #811 : requêtes émises pour un AUTRE traitement que T3 pendant ce run. */
+  providerCallsOtherTreatments?: number;
+  /** Carte #811 : décisions prises sans IA. */
+  deterministicDecisions?: number;
+  /** Carte #811 : relevé complet (par traitement, opération, modèle et rang, coût). */
+  aiActivity?: import('../measure/ai-activity').AiActivitySnapshot;
   /** Lot 99A : réponses servies par le cache temporaire (aucun appel). */
   aiCacheHits?: number;
   /** Lot 99A : décisions réutilisées sans appel (mémoire T3, arbitrage utilisateur déjà tranché). */

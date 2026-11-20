@@ -231,6 +231,8 @@ export const DIAG_TABLE_COVERAGE: Readonly<Record<string, DiagTableCoverage>> = 
   t3_knowledge_queries: C('extractions-ia'),
   // Lot 99A (0858) : réponses sans appel facturé (cache, demandes partagées) et décisions réutilisées, par jour.
   ai_reuse_counters: C('extractions-ia'),
+  // Carte #811 (1861) : passages en mode dégradé des protections anti-redondance IA, par jour (codes seulement).
+  ai_degraded_events: C('extractions-ia'),
   // Lot 91D : décisions de T1 sur les valeurs significatives des unités sources (historique SUPERSEDED compris).
   document_value_decisions: C('extractions-ia'),
   // Lot 108K (1090) : progression du réexamen ciblé des décisions T1 par unité (examinée, en échec, trop grande ; sortie T1).

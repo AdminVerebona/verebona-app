@@ -138,6 +138,8 @@ import {
 } from './technical-failure';
 import { resolveProjectionActor, type ProjectionEffect } from './projection-actor';
 import { createHash } from 'node:crypto';
+import { noteAiDecisionReuse } from '../../measure/ai-activity';
+import { noteDegraded } from '../../degraded/degraded-mode';
 import { readExplicitNoAssetDecision } from '@/services/to-process/no-asset-decision';
 import type { ExplicitNoAssetDecision } from '@/services/to-process/no-asset-choice';
 import { respectExplicitNoAsset, type RespectNoAssetDeps } from './explicit-no-asset';
@@ -556,6 +558,13 @@ export async function resolveDocumentAsset(
     const cross = await (deps.crossContractActive ?? crossDocumentContractActive)().catch(() => false);
     if (!documentAssetAiMemoryEnabled()) return { key: '', reuse: null, cross };
     const sig = await (deps.aiConfigSignature ?? defaultAiConfigSignature)().catch(() => 'unresolved');
+    // Carte #811 (P1-C) : signature de configuration NON RÉSOLUE — une décision mémorisée ne peut être ni
+    // réutilisée (peut-être obsolète) ni enregistrée sous cette signature (réutilisée à tort plus tard). La
+    // mémoire précédente reste intacte ; le passage est tracé (les bornes propres au rattachement s'appliquent).
+    if (sig === 'unresolved') {
+      noteDegraded({ treatment: 'T3', operationCode: 't3_link_ambiguity', accountId, component: 'CONFIG_SIGNATURE', reason: 'SIGNATURE_UNRESOLVED', impact: 'CALL_WITHOUT_PROTECTION' });
+      return { key: '', reuse: null, cross };
+    }
     const key = aiMemoryKey({ fingerprint: ctx.fingerprint, path, aiConfigSignature: sig, crossContract: cross });
     const prev = previousAiMemory(resolution);
     return { key, reuse: !forcedReevaluation(input) && prev?.key === key && prev.path === path ? prev : null, cross };
@@ -567,7 +576,9 @@ export async function resolveDocumentAsset(
     }
     aiReused = true;
     aiMemory = m;
-    void import('../../reuse/reuse-counters').then(({ noteReuse }) => noteReuse({ kind: 'DECISION_REUSED', accountId, treatment: 'T3', operationCode: 't3_link_ambiguity' })).catch(() => undefined);
+    // Carte #811 : porté dans la mesure de l'exécution tout de suite (l'écriture du compteur n'est pas attendue).
+    noteAiDecisionReuse({ kind: 'DECISION_REUSED', operationCode: 't3_link_ambiguity', treatment: 'T3' });
+    void import('../../reuse/reuse-counters').then(({ noteReuse }) => noteReuse({ kind: 'DECISION_REUSED', accountId, treatment: 'T3', operationCode: 't3_link_ambiguity', activityNoted: true })).catch(() => undefined);
     const ids = new Set(ctx.index.assets.map((a) => a.assetId));
     return {
       kind: 'ABSTAIN' as const, reasonCode: m.reasonCode as Extract<DocumentAssetDecision, { kind: 'ABSTAIN' }>['reasonCode'], ranked: m.ranked.filter((r) => ids.has(r.assetId) && !refuses.has(r.assetId)),

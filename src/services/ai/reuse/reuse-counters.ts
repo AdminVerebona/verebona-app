@@ -18,6 +18,7 @@
  * traitement (table absente → rien n'est compté, un avertissement unique).
  */
 import { pgClient } from '@/db';
+import { noteAiDecisionReuse } from '../measure/ai-activity';
 
 export const REUSE_KINDS = [
   'PROVIDER_CACHE_HIT', 'CONCURRENT_SHARED', 'CACHE_RENEWED',
@@ -48,6 +49,12 @@ export interface ReuseEvent {
   operationCode?: string | null;
   /** Nombre d'occurrences (défaut 1). */
   count?: number;
+  /**
+   * Carte #811 : l'appelant a déjà porté cette réutilisation dans la mesure de
+   * l'exécution (`noteAiDecisionReuse`, appel synchrone) — elle n'y est pas
+   * portée une seconde fois ici.
+   */
+  activityNoted?: boolean;
 }
 
 let absente = false;
@@ -55,6 +62,11 @@ let absente = false;
 /** Compte un événement de réutilisation. Ne lève JAMAIS. */
 export async function noteReuse(e: ReuseEvent): Promise<void> {
   const n = Math.max(0, Math.floor(e.count ?? 1));
+  // Carte #811 (P1-A) : décision réutilisée portée dans la mesure de l'exécution en cours — AVANT toute attente,
+  // et même si la table des compteurs est absente (la mesure du passage ne dépend pas de la migration 0858).
+  if (n > 0 && !e.activityNoted && (e.kind === 'DECISION_REUSED' || e.kind === 'USER_ARBITRATION_KEPT')) {
+    noteAiDecisionReuse({ kind: e.kind, operationCode: e.operationCode ?? null, treatment: e.treatment ?? null, count: n });
+  }
   if (n === 0 || absente) return;
   try {
     await pgClient.unsafe(
@@ -127,35 +139,65 @@ export async function readReuseTotals(p: {
 }
 
 export interface TreatmentAiUsage {
-  /** Appels RÉELS au fournisseur (`ai_usage_event`, usage métier du traitement). */
+  /**
+   * Requêtes RÉELLEMENT émises vers le fournisseur (carte #811) : somme de
+   * `ai_usage_event.metadata.networkRequests` ; pour un événement ANTÉRIEUR à
+   * cette mesure, une requête est comptée seulement si une réponse ou une
+   * consommation la prouve (sinon : `providerCallsUndetermined`).
+   */
   providerCalls: number;
   /** Réponses servies sans appel (cache, demandes simultanées partagées). */
   cacheResponses: number;
   /** Décisions réutilisées sans appel (mémoire T3, arbitrages utilisateur conservés). */
   decisionsReused: number;
+  /** Carte #811 : événements d'usage écrits (lignes `ai_usage_event`) — pas un nombre d'appels. */
+  usageEvents?: number;
+  /** Carte #811 : dont événements SANS requête émise (refus avant appel, rang non sollicité). */
+  usageEventsWithoutSend?: number;
+  /** Carte #811 : événements anciens dont on ne peut pas prouver qu'une requête est partie (ni compté, ni exclu). */
+  providerCallsUndetermined?: number;
 }
 
 /**
  * Lot 99A — usage de l'IA par traitement sur une période (instants), en
  * compteurs DISTINCTS : synthèse du Journal complet et diagnostic. Lecture
  * seule ; une table absente donne des zéros (`available` du cache à faux).
+ *
+ * Carte #811 (P1-A) : un événement d'usage n'est PAS un appel — un rang non
+ * sollicité ou un refus avant appel écrit aussi une ligne, et une tentative
+ * peut émettre plusieurs requêtes. `providerCalls` vient de la mesure figée
+ * avec chaque événement ; l'historique sans mesure n'est jamais reconstruit.
  */
 export async function readAiUsageByTreatment(p: {
   from: Date; to: Date; treatment?: string | null; accountId?: number | null;
 }): Promise<{ available: boolean; byTreatment: Record<string, TreatmentAiUsage> }> {
   const { treatmentOfUseCase } = await import('../config/treatments');
   const appels = (await pgClient.unsafe(
-    `SELECT use_case_code, count(*)::bigint AS n FROM ai_usage_event
+    `SELECT use_case_code, count(*)::bigint AS n,
+            coalesce(sum((metadata->>'networkRequests')::int) FILTER (WHERE metadata ? 'networkRequests'), 0)::bigint AS mesurees,
+            count(*) FILTER (WHERE metadata ? 'networkRequests' AND (metadata->>'networkRequests')::int = 0)::bigint AS sans_envoi,
+            count(*) FILTER (WHERE NOT (metadata ? 'networkRequests')
+                               AND (status = 'success' OR coalesce(input_tokens, 0) + coalesce(output_tokens, 0) > 0))::bigint AS anciennes_prouvees,
+            count(*) FILTER (WHERE NOT (metadata ? 'networkRequests')
+                               AND NOT (status = 'success' OR coalesce(input_tokens, 0) + coalesce(output_tokens, 0) > 0))::bigint AS anciennes_indeterminees
+       FROM ai_usage_event
       WHERE created_at >= $1::timestamptz AND created_at < $2::timestamptz AND ($3::int IS NULL OR account_id = $3)
       GROUP BY use_case_code`,
     [p.from.toISOString(), p.to.toISOString(), p.accountId ?? null] as never[],
-  )) as unknown as Array<{ use_case_code: string | null; n: string }>;
+  )) as unknown as Array<{ use_case_code: string | null; n: string; mesurees: string; sans_envoi: string; anciennes_prouvees: string; anciennes_indeterminees: string }>;
   const out: Record<string, TreatmentAiUsage> = {};
-  const de = (t: string) => (out[t] ??= { providerCalls: 0, cacheResponses: 0, decisionsReused: 0 });
+  const de = (t: string) => (out[t] ??= { providerCalls: 0, cacheResponses: 0, decisionsReused: 0, usageEvents: 0, usageEventsWithoutSend: 0, providerCallsUndetermined: 0 });
+  const N = (v: unknown) => Number(v) || 0;
   for (const r of appels) {
     let t: string | null = null;
     try { t = r.use_case_code ? treatmentOfUseCase(r.use_case_code as never) : null; } catch { t = null; }
-    if (t && (!p.treatment || p.treatment === t)) de(t).providerCalls += Number(r.n) || 0;
+    if (t && (!p.treatment || p.treatment === t)) {
+      const u = de(t);
+      u.providerCalls += N(r.mesurees) + N(r.anciennes_prouvees);
+      u.usageEvents = (u.usageEvents ?? 0) + N(r.n);
+      u.usageEventsWithoutSend = (u.usageEventsWithoutSend ?? 0) + N(r.sans_envoi);
+      u.providerCallsUndetermined = (u.providerCallsUndetermined ?? 0) + N(r.anciennes_indeterminees);
+    }
   }
   const jour = (d: Date) => d.toLocaleDateString('sv-SE', { timeZone: 'Europe/Paris' });
   const reuse = await readReuseTotals({ fromDay: jour(p.from), toDay: jour(p.to), treatment: p.treatment ?? null, accountId: p.accountId ?? null });

@@ -19,6 +19,7 @@
  */
 import { pgClient } from '@/db';
 import { currentJobContext } from '../queue/job-context';
+import { compactAiActivity } from '../measure/ai-activity';
 import {
   errorText, normalizeT3Reason, reportStatus, T3_NOT_WRITTEN_LABEL, T1_PROJECTION_REASON, valueTypeOf,
   type ReportEntry, type ReportStep,
@@ -50,8 +51,15 @@ export class T3ExecutionRecorder {
   readonly fields: T3FieldRecord[] = [];
   readonly steps: ReportStep[] = [];
   failure: string | null = null;
-  /** Lot 99A : appels RÉELS au fournisseur (un appel servi par le cache ou la mémoire n'en est pas un). */
+  /**
+   * Demandes d'arbitrage IA DÉCLARÉES par le moteur (0 ou 1 par champ soumis). Carte #811 : ce n'est pas un
+   * nombre de requêtes — la mesure (`aiActivity`, `aiPublished`) fait foi pour les appels réels.
+   */
   aiCalls = 0;
+  /** Carte #811 : relevé mesuré de l'activité IA du run (null : run sans mesure). */
+  aiActivity: import('../measure/ai-activity').AiActivitySnapshot | null = null;
+  /** Carte #811 : compteurs publiés (mesure, ou demandes déclarées étiquetées). */
+  aiPublished: import('../measure/ai-activity').MeasuredAiCounters | null = null;
   /** Lot 99A : réponses servies par le cache temporaire des réponses modèle (aucun appel). */
   aiCacheHits = 0;
   /** Lot 99A : décisions T3 mémorisées réutilisées à contexte identique (aucun appel). */
@@ -181,17 +189,25 @@ export async function buildT3Entries(rec: T3ExecutionRecorder, p: {
   entries.push(...informationEntries(rec, p));
 
   // Données pertinentes NON examinées : faits canoniques des documents du bien sans preuve projetée.
+  const pub = rec.aiPublished;
   const examined = rec.fields.map((f) => f.fieldKey);
   const sources: Record<string, unknown> = {
     fieldEvidence: { consulted: true, evidenceCited: evidenceIds.length },
     currentValues: { consulted: true },
     canonicalFacts: { consulted: 'indirect', note: 'via les preuves projetées par T1 (field_evidence)' },
-    aiCalls: rec.aiCalls,
+    aiCalls: pub?.providerCalls ?? rec.aiCalls,
     // Lot 99A : compteurs distincts (jamais confondus avec les appels réels).
+    // Carte #811 : `providerCalls` = requêtes RÉELLEMENT émises (mesure) ; demandes logiques, tentatives, demandes
+    // déclarées, autre traitement et coût à part ; `semantics` dit si la valeur est mesurée ou seulement déclarée.
     aiUsage: {
-      providerCalls: rec.aiCalls, cacheResponses: rec.aiCacheHits, decisionsReused: rec.decisionsReused,
+      providerCalls: pub?.providerCalls ?? rec.aiCalls, cacheResponses: pub && pub.semantics === 'MEASURED_V1' ? pub.cacheResponses : rec.aiCacheHits,
+      decisionsReused: rec.decisionsReused,
       userArbitrationsKept: rec.userArbitrationsKept, aiAssistedDecisions: rec.aiAssisted,
-      withoutAiCall: rec.aiCalls === 0, reevaluations: rec.reevaluations, conflictsUnchanged: rec.conflictsUnchanged,
+      withoutAiCall: (pub?.providerCalls ?? rec.aiCalls) === 0, reevaluations: rec.reevaluations, conflictsUnchanged: rec.conflictsUnchanged,
+      semantics: pub?.semantics ?? 'DECLARED', logicalRequests: pub?.logicalRequests ?? rec.aiCalls,
+      providerAttempts: pub?.providerAttempts ?? rec.aiCalls, declaredRequests: rec.aiCalls,
+      providerCallsOtherTreatments: pub?.providerCallsOtherTreatments ?? 0,
+      ...(rec.aiActivity ? { measured: compactAiActivity(rec.aiActivity) } : {}),
     },
   };
   if (!p.target) {
@@ -265,9 +281,18 @@ export async function buildT3Entries(rec: T3ExecutionRecorder, p: {
     conflicts: rec.fields.filter((f) => f.decision.action === 'create_conflict').length,
     decisionsIntended: rec.fields.filter((f) => f.decision.action === 'apply' || f.decision.action === 'update').length,
     // Lot 99A : appels réels / réponses cache / décisions réutilisées.
-    aiProviderCalls: rec.aiCalls,
-    aiCacheResponses: rec.aiCacheHits,
+    aiProviderCalls: pub?.providerCalls ?? rec.aiCalls,
+    aiCacheResponses: pub && pub.semantics === 'MEASURED_V1' ? pub.cacheResponses : rec.aiCacheHits,
     aiDecisionsReused: rec.decisionsReused + rec.userArbitrationsKept,
+    // Carte #811 : demandes logiques, tentatives ayant émis une requête, demandes déclarées, événements d'usage,
+    // coût observé / estimé (micro-dollars) et événements au coût inconnu.
+    aiLogicalRequests: pub?.logicalRequests ?? rec.aiCalls,
+    aiProviderAttempts: pub?.providerAttempts ?? rec.aiCalls,
+    aiDeclaredRequests: rec.aiCalls,
+    aiUsageEvents: rec.aiActivity?.total.usageEvents ?? 0,
+    aiCostObservedMicros: rec.aiActivity?.total.costObservedMicros ?? 0,
+    aiCostEstimatedMicros: rec.aiActivity?.total.costEstimatedMicros ?? 0,
+    aiCostUnknownEvents: rec.aiActivity?.total.costUnknownEvents ?? 0,
   };
   return { entries, readSteps, sources, counters };
 }

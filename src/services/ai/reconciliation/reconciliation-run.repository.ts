@@ -57,19 +57,25 @@ export async function recordDecisions(
 export async function closeRun(runId: number, summary: ReconciliationRun): Promise<void> {
   const base = [runId, summary.decisions.length, summary.appliedCount, summary.conflictCount, summary.aiReviewCount];
   // Lot 99A (0858) : appels réels / réponses cache / décisions réutilisées, en colonnes distinctes.
-  const ecrire = (avecCompteurs: boolean) => pgClient.unsafe(
+  // Carte #811 (1860) : sémantique des compteurs, demandes déclarées et relevé mesuré — colonnes AJOUTÉES ;
+  // `provider_calls` porte désormais les requêtes réellement émises quand la sémantique est `MEASURED_V1`.
+  const ecrire = (niveau: 0 | 1 | 2) => pgClient.unsafe(
     `UPDATE reconciliation_runs
         SET status = 'completed', finished_at = NOW(),
             decisions_count = $2, applied_count = $3,
-            conflict_count = $4, ai_review_count = $5${avecCompteurs ? ', provider_calls = $6, ai_cache_hits = $7, decisions_reused = $8' : ''}
+            conflict_count = $4, ai_review_count = $5${niveau >= 1 ? ', provider_calls = $6, ai_cache_hits = $7, decisions_reused = $8' : ''}${
+  niveau >= 2 ? ', ai_counters_semantics = $9, ai_requests_declared = $10, ai_activity = $11::jsonb' : ''}
       WHERE id = $1`,
-    (avecCompteurs
-      ? [...base, summary.providerCalls ?? null, summary.aiCacheHits ?? null, summary.decisionsReused ?? null]
-      : base) as never[],
+    [
+      ...base,
+      ...(niveau >= 1 ? [summary.providerCalls ?? null, summary.aiCacheHits ?? null, summary.decisionsReused ?? null] : []),
+      ...(niveau >= 2 ? [summary.aiCountersSemantics ?? null, summary.aiDeclaredRequests ?? null, summary.aiActivity ? JSON.stringify(summary.aiActivity) : null] : []),
+    ] as never[],
   );
-  await ecrire(true).catch((e) => {
-    if ((e as { code?: string })?.code !== '42703') throw e;
-    return ecrire(false);
+  const absente = (e: unknown) => (e as { code?: string })?.code === '42703';
+  await ecrire(2).catch((e) => {
+    if (!absente(e)) throw e;
+    return ecrire(1).catch((e2) => { if (!absente(e2)) throw e2; return ecrire(0); });
   });
 }
 

@@ -64,6 +64,7 @@ import { resolveOperationConfig, composePrompt } from '../config/config-resolver
 import { recordCallTrace } from '../telemetry/ai-trace.service';
 import { buildIdempotencyKey, withIdempotency } from '../idempotency/idempotency.service';
 import { treatmentOfUseCase, isTechnicalUseCase, type Treatment } from '../config/treatments';
+import { trackAiLogicalRequest } from '../measure/ai-activity';
 import { assertTreatmentRunnable } from '../queue/runnable-guard';
 import { noteGatewayOutcome as noteTreatmentOutcome, type GatewayOutcome, type ModelAttempt } from '../queue/circuit-breaker.repository';
 import { currentJobContext } from '../queue/job-context';
@@ -92,7 +93,14 @@ export function rankAt(index: number): ModelRank | null {
 export class AiGateway {
   static async execute<T>(req: AiGatewayRequest<T>): Promise<AiGatewayResponse<T>> {
     const op = getOperation(req.operationCode);
+    // Carte #811 (P1-A) : chaque `execute` est UNE demande logique de l'exécution mesurée en cours ; son issue
+    // (cache, partage, échec sans contact) est lue sur ce que la passerelle rend déjà. Sans mesure ouverte : aucun effet.
+    let traitement: string | null = null;
+    try { traitement = treatmentOfUseCase(op.useCaseCode); } catch { traitement = null; }
+    return trackAiLogicalRequest({ operationCode: op.operationCode, treatment: traitement }, () => this.executeRequest<T>(req, op));
+  }
 
+  private static async executeRequest<T>(req: AiGatewayRequest<T>, op: AiOperationDefinition): Promise<AiGatewayResponse<T>> {
     // ── Garde de cohérence référentielle (CDC §5.1) ────────────────────────
     if (op.useCaseCode !== req.useCaseCode) {
       throw new AiGatewayError('USE_CASE_MISMATCH', req.operationCode,

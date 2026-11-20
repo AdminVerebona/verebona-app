@@ -63,6 +63,9 @@ import type { T3Trigger } from './account-reconciliation.service';
 import type { ReconciliationDecision } from './types';
 import { envNumber } from '@/lib/env-number';
 import { OUT_OF_PORTFOLIO_ASSET_STATUSES } from '@/lib/asset-status';
+import {
+  openAiActivity, compactAiActivity, AI_COUNTERS_MEASURED, AI_COUNTERS_DECLARED, type AiActivitySnapshot,
+} from '../measure/ai-activity';
 
 /** Statuts hors portefeuille (constantes du code, jamais une saisie) en littéraux SQL. */
 const OUT_OF_PORTFOLIO_SQL = OUT_OF_PORTFOLIO_ASSET_STATUSES.map((x) => `'${x.replace(/'/g, "''")}'`).join(', ');
@@ -380,6 +383,38 @@ export function reconciliationBusinessResult(decisions: ReconciliationDecision[]
  * métier sinon (DONE).
  */
 export async function runT3Job(job: QueuedJob, guard: ExecutionGuard, deps: T3HandlerDeps): Promise<JobBusinessResult> {
+  // Carte #811 (P1-A) : TOUT travail T3 (compte, bien, entité, sortes enregistrées : rattachement, Opérations…)
+  // est exécuté dans une mesure de l'activité IA ; son relevé accompagne le résultat du travail (File IA).
+  const mesure = openAiActivity();
+  const res = await mesure.run(() => dispatchT3Job(job, guard, deps));
+  return withJobAiActivity(res, mesure.snapshot());
+}
+
+/**
+ * Carte #811 — ajoute au détail d'un travail le relevé MESURÉ de son activité IA (pur). Rien n'est ajouté à un
+ * travail sans aucune activité IA (balayage, cible disparue) ; un compteur déjà publié par l'exécutant n'est
+ * jamais écrasé.
+ */
+export function withJobAiActivity(res: JobBusinessResult, activite: AiActivitySnapshot): JobBusinessResult {
+  const t = activite.total;
+  const vide = t.logicalRequests + t.usageEvents + t.decisionsReused + t.userArbitrationsKept === 0;
+  if (vide) return res;
+  const detail = { ...(res.detail ?? {}) } as Record<string, unknown>;
+  const pose = (k: string, v: unknown) => { if (detail[k] === undefined) detail[k] = v; };
+  const autres = t.networkRequests - (activite.byTreatment.T3?.networkRequests ?? 0);
+  pose('aiCalls', t.networkRequests);
+  pose('aiCountersSemantics', AI_COUNTERS_MEASURED);
+  pose('aiLogicalRequests', t.logicalRequests);
+  pose('aiProviderAttempts', t.providerAttempts + t.repairAttempts);
+  pose('aiCacheResponses', t.cacheResponses + t.sharedResponses);
+  pose('aiDecisionsReused', t.decisionsReused + t.userArbitrationsKept);
+  pose('aiCallsOtherTreatments', autres);
+  pose('withoutAiCall', t.networkRequests === 0);
+  detail.aiActivity = compactAiActivity(activite);
+  return { ...res, detail };
+}
+
+async function dispatchT3Job(job: QueuedJob, guard: ExecutionGuard, deps: T3HandlerDeps): Promise<JobBusinessResult> {
   const r = resolveT3Job(job);
   if (r.spec.run) return r.spec.run({ job, payload: r.payload, guard });
   switch (r.kind) {
@@ -412,13 +447,22 @@ async function runAsset(job: QueuedJob, p: T3AssetPayload, guard: ExecutionGuard
   const confirmees = (run as { appliedCount?: unknown } | null)?.appliedCount;
   const res = reconciliationBusinessResult(decisionsDe(run), typeof confirmees === 'number' ? confirmees : null);
   // Lot 99A (point D) : appels réels / cache / décisions réutilisées du run local.
-  const u = (run ?? {}) as { providerCalls?: number; aiCacheHits?: number; decisionsReused?: number };
+  // Carte #811 : `aiCalls` = requêtes réellement émises (mesure du run) ; sémantique, demandes logiques,
+  // tentatives et demandes déclarées publiées à côté.
+  const u = (run ?? {}) as {
+    providerCalls?: number; aiCacheHits?: number; decisionsReused?: number; aiCountersSemantics?: string;
+    aiLogicalRequests?: number; aiProviderAttempts?: number; aiDeclaredRequests?: number; providerCallsOtherTreatments?: number;
+  };
   return {
     ...res,
     detail: {
       ...res.detail, assetId: p.assetId, runId: (run as { runId?: number } | null)?.runId ?? null,
       ...(u.providerCalls !== undefined ? {
         aiCalls: u.providerCalls, aiCacheResponses: u.aiCacheHits ?? 0, aiDecisionsReused: u.decisionsReused ?? 0, withoutAiCall: u.providerCalls === 0,
+        ...(u.aiCountersSemantics ? {
+          aiCountersSemantics: u.aiCountersSemantics, aiLogicalRequests: u.aiLogicalRequests ?? 0, aiProviderAttempts: u.aiProviderAttempts ?? 0,
+          aiDeclaredRequests: u.aiDeclaredRequests ?? 0, aiCallsOtherTreatments: u.providerCallsOtherTreatments ?? 0,
+        } : {}),
       } : {}),
     },
   };
@@ -502,6 +546,12 @@ async function runAccount(job: QueuedJob, p: T3AccountPayload, guard: ExecutionG
       .map(([n, ph]) => `${n} ${ph.status}${ph.error ? ` (${ph.error.slice(0, 120)})` : ''}`);
     throw new Error(`exécution T3 du compte ${accountId} (passage #${result.runId}) : phase(s) obligatoire(s) en échec — ${ko.join(' ; ')}`);
   }
+  // Carte #811 (P1-A) : `aiCalls` = requêtes RÉELLEMENT émises pendant le passage (mesure, toutes phases). Les
+  // demandes déclarées par les phases (ancienne valeur de `aiCalls`) sont publiées dans `aiDeclaredRequests`.
+  // Passage sans mesure (exécutant d'une version antérieure, jeu de test) : demandes déclarées, étiquetées.
+  const declares = (result.aiCalls ?? 0) + (result.openActions?.aiCalls ?? 0) + (result.documentNaming?.aiCalls ?? 0);
+  const mesure = result.providerCalls !== undefined && result.aiCountersSemantics !== undefined;
+  const appels = mesure ? result.providerCalls as number : declares;
   const detail = {
     runId: result.runId, scope, status: result.status, objectsExamined: result.objectsExamined,
     // Lot 52A (COR-04, COR-05) : objets modifiés et appels modèle du passage
@@ -509,11 +559,16 @@ async function runAccount(job: QueuedJob, p: T3AccountPayload, guard: ExecutionG
     objectsModified: result.objectsModified,
     // Lot 99A (point D) : `aiCalls` = appels RÉELS au fournisseur ; réponses du cache et décisions
     // réutilisées comptées à part ; `withoutAiCall` : passage sans aucun appel facturé.
-    aiCalls: (result.aiCalls ?? 0) + (result.openActions?.aiCalls ?? 0) + (result.documentNaming?.aiCalls ?? 0),
-    aiCacheResponses: result.aiCacheHits ?? 0,
+    aiCalls: appels,
+    aiCountersSemantics: mesure ? result.aiCountersSemantics : AI_COUNTERS_DECLARED,
+    aiLogicalRequests: mesure ? result.aiLogicalRequests ?? 0 : declares,
+    aiProviderAttempts: mesure ? result.aiProviderAttempts ?? 0 : declares,
+    aiDeclaredRequests: mesure ? result.aiDeclaredRequests ?? declares : declares,
+    aiCallsOtherTreatments: mesure ? result.providerCallsOtherTreatments ?? 0 : 0,
+    aiCacheResponses: result.aiCacheResponses ?? result.aiCacheHits ?? 0,
     aiDecisionsReused: result.decisionsReused ?? 0,
     conflictsUnchanged: result.conflictsUnchanged ?? 0,
-    withoutAiCall: (result.aiCalls ?? 0) + (result.openActions?.aiCalls ?? 0) + (result.documentNaming?.aiCalls ?? 0) === 0,
+    withoutAiCall: appels === 0,
     openActionsExamined: result.openActions?.examined ?? 0,
     // Lot 54A (écarts 4, 5) : passage GLOBAL du compte — toutes les cartes
     // ouvertes réexaminées ; vraies tentatives distinguées du simple constat.

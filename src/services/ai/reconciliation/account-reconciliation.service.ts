@@ -45,6 +45,10 @@ import type { ReconcileInput } from './reconciliation-engine';
 import type { ReconciliationRun } from './types';
 import { isExecutionCancelled } from '../queue/execution-control';
 import { envNumber } from '@/lib/env-number';
+import {
+  openAiActivity, publishedAiCounters, setAiActivityPhase, AI_COUNTERS_MEASURED,
+  type AiActivitySnapshot, type MeasuredAiCounters,
+} from '../measure/ai-activity';
 
 export type T3TriggerType = 'manual' | 'scheduled' | 'event';
 
@@ -69,8 +73,15 @@ export interface ObjectResult {
   conflicts: number;
   /** Décisions assistées par l'IA (appel, cache ou mémoire) — pas un nombre d'appels. */
   aiReviews: number;
-  /** Lot 99A : appels RÉELS au fournisseur (absent : run antérieur, `aiReviews` fait foi). */
+  /**
+   * Requêtes réellement émises vers le fournisseur pendant le run du bien (carte #811 : mesure de la
+   * passerelle ; absent : run antérieur, `aiReviews` fait foi).
+   */
   providerCalls?: number;
+  /** Carte #811 : demandes d'arbitrage IA déclarées par le moteur (ancienne sémantique de `providerCalls`). */
+  declaredRequests?: number;
+  /** Carte #811 : décisions prises sans IA. */
+  deterministicDecisions?: number;
   /** Lot 99A : réponses servies par le cache (aucun appel). */
   aiCacheHits?: number;
   /** Lot 99A : décisions réutilisées sans appel. */
@@ -95,8 +106,28 @@ interface AccountRunResult {
   conflictsCreated: number;
   arbitrationsNeeded: number;
   errors: number;
-  /** Lot 99A : appels RÉELS au fournisseur des biens examinés (plus jamais une décision servie par le cache ou la mémoire). */
+  /**
+   * Appels de la phase « biens » : somme des `providerCalls` des runs locaux (carte #811 : requêtes réellement
+   * émises quand le run est mesuré). Le total du PASSAGE, toutes phases, est `providerCalls`.
+   */
   aiCalls: number;
+  /**
+   * Carte #811 (P1-A) — compteurs MESURÉS du passage, toutes phases et sous-phases : requêtes réellement émises
+   * (`providerCalls`, dont `providerCallsOtherTreatments` pour un autre traitement que T3), tentatives, demandes
+   * logiques, réponses du cache, demandes déclarées par les phases ; `aiCountersSemantics` dit si la valeur est
+   * mesurée (`MEASURED_V1`) ou seulement déclarée (`DECLARED`). Absents : passage non exécuté.
+   */
+  providerCalls?: number;
+  providerCallsOtherTreatments?: number;
+  aiProviderAttempts?: number;
+  aiLogicalRequests?: number;
+  aiCacheResponses?: number;
+  aiDeclaredRequests?: number;
+  aiCountersSemantics?: MeasuredAiCounters['semantics'];
+  /** Carte #811 : relevé complet (par traitement, opération, phase, modèle et rang, coût observé / estimé / inconnu). */
+  aiActivity?: AiActivitySnapshot;
+  /** Carte #811 : décisions prises sans IA sur les biens examinés. */
+  deterministicDecisions?: number;
   /** Lot 99A : réponses servies par le cache temporaire (aucun appel). */
   aiCacheHits?: number;
   /** Lot 99A : décisions réutilisées sans appel (mémoire T3, arbitrage utilisateur déjà tranché). */
@@ -538,9 +569,8 @@ export async function reconcileAccount(
   }
 
   const details: ObjectResult[] = [];
-  let openKnowledge: AccountRunResult['openKnowledge'];
-  let openActions: AccountRunResult['openActions'];
-  let documentNaming: AccountRunResult['documentNaming'];
+  // Carte #811 : résultats des phases portés par un objet (ils sont écrits depuis le corps mesuré du passage).
+  const res: Pick<AccountRunResult, 'openKnowledge' | 'openActions' | 'documentNaming'> = {};
   const debutPassage = new Date();
   const phases = initialPhases(deps);
   // Lot 31C : une exécution INTERROMPUE (jeton révoqué, garde) ou arrêtée par
@@ -548,8 +578,14 @@ export async function reconcileAccount(
   // en file la croirait achevée (SUPERSEDED) alors qu'une partie des biens
   // n'a pas été vue.
   let interrompue = false;
+  // Carte #811 (P1-A) : mesure de l'activité IA de TOUT le passage (biens, connaissance ouverte, « À traiter »,
+  // nommage, sous-traitements déclenchés en ligne) — une seule source pour le journal, la file et le BO.
+  const mesure = openAiActivity();
   try {
+    await mesure.run(async () => {
     const { candidates, backfill } = await selectScope(accountId, scope, trigger);
+    // Carte #811 : les faits IA qui suivent sont rattachés à la phase en cours (phases séquentielles du passage).
+    setAiActivityPhase('ASSETS');
     for (const c of candidates) {
       if (!c.eligible) {
         details.push({ objectType: 'asset', objectId: c.id, status: 'SKIPPED', applied: 0, conflicts: 0, aiReviews: 0, reason: c.reason });
@@ -570,6 +606,8 @@ export async function reconcileAccount(
           status: run.conflictCount > 0 ? 'CONFLICT' : 'SUCCESS',
           applied: run.appliedCount, conflicts: run.conflictCount, aiReviews: run.aiReviewCount,
           ...(run.providerCalls !== undefined ? { providerCalls: run.providerCalls } : {}),
+          ...(run.aiDeclaredRequests !== undefined ? { declaredRequests: run.aiDeclaredRequests } : {}),
+          ...(run.deterministicDecisions !== undefined ? { deterministicDecisions: run.deterministicDecisions } : {}),
           ...(run.aiCacheHits ? { aiCacheHits: run.aiCacheHits } : {}),
           ...(run.decisionsReused ? { decisionsReused: run.decisionsReused } : {}),
           ...(run.conflictsUnchanged ? { conflictsUnchanged: run.conflictsUnchanged } : {}),
@@ -608,10 +646,11 @@ export async function reconcileAccount(
     if (deps.reconcileOpenKnowledge) {
       if (options.guard) await options.guard.assertActive('connaissance ouverte du compte');
       try {
-        openKnowledge = await deps.reconcileOpenKnowledge(accountId, { guard: options.guard, triggerCode: options.triggerCode ?? null });
+        setAiActivityPhase('OPEN_KNOWLEDGE');
+        res.openKnowledge = await deps.reconcileOpenKnowledge(accountId, { guard: options.guard, triggerCode: options.triggerCode ?? null });
         // Lot 105D : compteurs des identités documentaires (groupes, cartes groupées) ; erreur d'une sous-phase = passage partiel.
-        const idt = openKnowledge.identity;
-        const idtErr = (openKnowledge.errors ?? []).find((x) => x.startsWith('IDENTITY_GROUPS:'));
+        const idt = res.openKnowledge.identity;
+        const idtErr = (res.openKnowledge.errors ?? []).find((x) => x.startsWith('IDENTITY_GROUPS:'));
         // Lot 108E (A5) : graphe illisible / migration absente = phase ignorée pour erreur — jamais DONE.
         const idtPanne = identityPhaseFailure(idt);
         phases.IDENTITY_GROUPS = identityPhaseReport(idt, idtErr ?? null);
@@ -638,13 +677,14 @@ export async function reconcileAccount(
     if (deps.reconcileOpenActions) {
       if (options.guard) await options.guard.assertActive('« À traiter » ouverts du compte');
       try {
-        openActions = await deps.reconcileOpenActions(accountId, {
+        setAiActivityPhase('OPEN_ACTIONS');
+        res.openActions = await deps.reconcileOpenActions(accountId, {
           guard: options.guard, triggerCode: options.triggerCode ?? null, runStartedAt: debutPassage,
           reconciledAssetIds: new Set(details.filter((d) => d.status !== 'SKIPPED').map((d) => d.objectId)),
           // Lot 54A (écart 6) : journal durable rattaché au passage et au job porteur.
           accountRunId: runId, queueJobId: options.queueJob?.id ?? null,
         });
-        const oa = openActions;
+        const oa = res.openActions;
         phases.OPEN_ACTIONS = {
           status: oa.errors > 0 ? 'PARTIAL' : 'DONE', error: oa.errors > 0 ? `${oa.errors} carte(s) en erreur` : null,
           counts: {
@@ -669,10 +709,11 @@ export async function reconcileAccount(
     if (deps.reconcileDocumentNaming) {
       if (options.guard) await options.guard.assertActive('harmonisation documentaire du compte');
       try {
+        setAiActivityPhase('DOCUMENT_NAMING');
         const dn = await deps.reconcileDocumentNaming(accountId, {
           guard: options.guard, accountRunId: runId, triggerCode: options.triggerCode ?? null,
         });
-        documentNaming = dn;
+        res.documentNaming = dn;
         phases.DOCUMENT_NAMING = documentNamingPhaseReport(dn);
       } catch (e) {
         if (isExecutionCancelled(e)) throw e;
@@ -680,46 +721,99 @@ export async function reconcileAccount(
         console.error(`[t3] harmonisation documentaire du compte ${accountId} en échec :`, (e as Error).message);
       }
     }
+    });
   } catch (e) {
     interrompue = true;
     throw e;
   } finally {
     const totals = consolidate(details);
-    const issue = interrompue ? 'TECHNICAL_FAILURE' as const : issueDu(phases, totals, openActions);
+    const issue = interrompue ? 'TECHNICAL_FAILURE' as const : issueDu(phases, totals, res.openActions);
     const statut = interrompue ? 'failed' : statutDu(details, totals, issue);
-    // Lot 99A : appels réels de TOUTES les phases (biens, « À traiter », nommage) ; cache et réutilisations à part.
-    const appelsReels = totals.aiCalls + (openActions?.aiCalls ?? 0) + (documentNaming?.aiCalls ?? 0);
+    // Carte #811 (P1-A) : `provider_calls` = requêtes RÉELLEMENT émises pendant le passage (mesure de la
+    // passerelle, toutes phases et sous-phases, T4 déclenché en ligne compris et compté à part). L'ancienne
+    // somme des demandes déclarées par les phases (`aiCalls++` avant l'appel, `aiCalled`) est conservée dans
+    // `ai_requests_declared` : ce n'est pas un nombre d'appels. Un passage interrompu publie ce qui est déjà parti.
+    const activite = mesure.snapshot();
+    const publies = publishedAiCounters(activite, declaredAiRequests(details, res.openActions, res.documentNaming), 'T3');
+    notePhaseActivity(phases, activite);
+    const mesures = publies.semantics === AI_COUNTERS_MEASURED;
     const valeurs = [runId, statut, totals.objectsExamined, totals.objectsModified,
       totals.decisionsApplied, totals.conflictsCreated, totals.arbitrationsNeeded, totals.errors,
       totals.aiCalls, JSON.stringify(details)];
-    const ecrire = (avecPhases: boolean, avecCompteurs: boolean) => pgClient.unsafe(
+    const ecrire = (niveau: 0 | 1 | 2 | 3) => pgClient.unsafe(
       `UPDATE account_reconciliation_runs SET
          status = $2, finished_at = now(), objects_examined = $3, objects_modified = $4,
          decisions_applied = $5, conflicts_created = $6, arbitrations_needed = $7, errors = $8,
-         ai_calls = $9, details_json = $10::jsonb${avecPhases ? ', outcome = $11, phases_json = $12::jsonb' : ''}${
-  avecPhases && avecCompteurs ? ', provider_calls = $13, ai_cache_hits = $14, decisions_reused = $15' : ''}
+         ai_calls = $9, details_json = $10::jsonb${niveau >= 1 ? ', outcome = $11, phases_json = $12::jsonb' : ''}${
+  niveau >= 2 ? ', provider_calls = $13, ai_cache_hits = $14, decisions_reused = $15' : ''}${
+  niveau >= 3 ? `, ai_counters_semantics = $16, ai_requests_declared = $17, ai_logical_requests = $18,
+         provider_attempts = $19, provider_calls_other_treatments = $20, ai_activity = $21::jsonb` : ''}
        WHERE id = $1`,
-      (avecPhases
-        ? [...valeurs, issue, JSON.stringify(phases), ...(avecCompteurs ? [appelsReels, totals.aiCacheHits, totals.decisionsReused + (openActions?.aiReused ?? 0)] : [])]
-        : valeurs) as never[],
+      [
+        ...valeurs,
+        ...(niveau >= 1 ? [issue, JSON.stringify(phases)] : []),
+        ...(niveau >= 2 ? [publies.providerCalls, mesures ? publies.cacheResponses : totals.aiCacheHits, totals.decisionsReused + (res.openActions?.aiReused ?? 0)] : []),
+        ...(niveau >= 3 ? [publies.semantics, publies.declaredRequests, publies.logicalRequests, publies.providerAttempts,
+          publies.providerCallsOtherTreatments, JSON.stringify(activite)] : []),
+      ] as never[],
     );
-    // Colonnes 0410 / 0858 absentes (déploiement partiel) : statut seul, phases dans le résumé du job.
-    await ecrire(true, true).catch((e) => {
+    // Colonnes 1860 / 0858 / 0410 absentes (déploiement partiel) : écriture dégradée, jamais un passage perdu.
+    await ecrire(3).catch((e) => {
       if (!colonneAbsente(e)) throw e;
-      return ecrire(true, false).catch((e2) => { if (colonneAbsente(e2)) return ecrire(false, false); throw e2; });
+      return ecrire(2).catch((e2) => {
+        if (!colonneAbsente(e2)) throw e2;
+        return ecrire(1).catch((e3) => { if (colonneAbsente(e3)) return ecrire(0); throw e3; });
+      });
     });
   }
 
   const totals = consolidate(details);
-  const outcome = issueDu(phases, totals, openActions);
+  const outcome = issueDu(phases, totals, res.openActions);
+  const activite = mesure.snapshot();
+  const publies = publishedAiCounters(activite, declaredAiRequests(details, res.openActions, res.documentNaming), 'T3');
   return {
     runId, accountId, triggerType: trigger.type, scope, startedAt, finishedAt: new Date().toISOString(),
     details, ...totals, status: statutDu(details, totals, outcome),
-    ...(openKnowledge ? { openKnowledge } : {}),
-    ...(openActions ? { openActions } : {}),
-    ...(documentNaming ? { documentNaming } : {}),
+    providerCalls: publies.providerCalls, providerCallsOtherTreatments: publies.providerCallsOtherTreatments,
+    aiProviderAttempts: publies.providerAttempts, aiLogicalRequests: publies.logicalRequests,
+    aiCacheResponses: publies.semantics === AI_COUNTERS_MEASURED ? publies.cacheResponses : totals.aiCacheHits,
+    aiDeclaredRequests: publies.declaredRequests, aiCountersSemantics: publies.semantics, aiActivity: activite,
+    deterministicDecisions: details.reduce((n, d) => n + (d.deterministicDecisions ?? 0), 0),
+    ...(res.openKnowledge ? { openKnowledge: res.openKnowledge } : {}),
+    ...(res.openActions ? { openActions: res.openActions } : {}),
+    ...(res.documentNaming ? { documentNaming: res.documentNaming } : {}),
     phases, outcome,
   };
+}
+
+/**
+ * Carte #811 — demandes IA DÉCLARÉES par les phases d'un passage (pure) : revues demandées par le moteur des
+ * biens, cartes « À traiter » marquées `aiCalled`, appels de nommage comptés avant l'envoi. C'est l'ancienne
+ * valeur de `provider_calls` ; elle ne dit ni si une requête est partie, ni combien.
+ */
+export function declaredAiRequests(
+  details: ObjectResult[],
+  openActions: { aiCalls: number } | null | undefined,
+  documentNaming: { aiCalls: number } | null | undefined,
+): number {
+  return details.reduce((n, d) => n + (d.declaredRequests ?? d.providerCalls ?? d.aiReviews), 0)
+    + (openActions?.aiCalls ?? 0) + (documentNaming?.aiCalls ?? 0);
+}
+
+/**
+ * Carte #811 — reporte la mesure de chaque phase dans ses compteurs (pure, modifie `phases`) : demandes logiques,
+ * requêtes réellement émises, tentatives, réponses du cache. `aiCalls` d'une phase reste sa demande déclarée.
+ */
+export function notePhaseActivity(phases: RunPhases, activite: AiActivitySnapshot): void {
+  for (const [nom, c] of Object.entries(activite.byPhase)) {
+    const ph = (phases as Record<string, PhaseReport | undefined>)[nom];
+    if (!ph) continue;
+    ph.counts = {
+      ...(ph.counts ?? {}),
+      aiLogicalRequests: c.logicalRequests, providerNetworkRequests: c.networkRequests,
+      providerAttempts: c.providerAttempts + c.repairAttempts, aiCacheResponses: c.cacheResponses + c.sharedResponses,
+    };
+  }
 }
 
 /** Issue du passage (pure). */

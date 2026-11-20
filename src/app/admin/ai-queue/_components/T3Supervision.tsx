@@ -54,6 +54,12 @@ export interface T3JobSummary {
   /** Lot 99A : réponses du cache et décisions réutilisées (sans appel). */
   aiCacheResponses?: number | null;
   aiDecisionsReused?: number | null;
+  /** Carte #811 : sémantique des compteurs (`MEASURED_V1` : mesure ; absent : ancienne sémantique) et détail mesuré. */
+  aiCountersSemantics?: string | null;
+  aiLogicalRequests?: number | null;
+  aiProviderAttempts?: number | null;
+  aiDeclaredRequests?: number | null;
+  aiCallsOtherTreatments?: number | null;
   businessResult: string | null;
   reason: string | null;
 }
@@ -90,6 +96,111 @@ export interface T3SupervisionData {
     jobId: number | null; persisted: boolean | null; error: string | null;
   }> | null;
   creation?: Array<{ code: string; level: 'ok' | 'warn' | 'error'; message: string }>;
+  /** Carte #811 (P1-C) : protections anti-redondance du #596 — absent : serveur antérieur ; null : diagnostic illisible. */
+  protections?: T3ProtectionsData | null;
+}
+
+export interface T3ProtectionsData {
+  checkedAt: string;
+  status: 'ACTIVE' | 'DEGRADED' | 'INACTIVE';
+  statusLabel: string;
+  findings: Array<{ code: string; level: 'ok' | 'warn' | 'error'; message: string }>;
+  settings: Array<{ name: string; value: string; note: string }>;
+  degraded: {
+    durableAvailable: boolean;
+    last24h: Array<{ component: string; reason: string; impact: string; treatment: string; operationCode: string; accounts: number; count: number; firstAt: string | null; lastAt: string | null; technicalCode: string | null }>;
+    instance: { episodes: Array<{ component: string; reason: string; count: number; lastAt: string }>; callsAllowed: number; callsRefused: number; callsPerHour: number | null; cappedTreatments: string[] };
+  };
+}
+
+const COMPOSANT: Record<string, string> = {
+  DECISION_MEMORY: 'Mémoire durable des décisions T3', RESPONSE_CACHE: 'Cache temporaire des réponses',
+  CACHE_RESERVATION: 'Réservation multi-instances du cache', CONFIG_SIGNATURE: 'Signature de la configuration IA',
+};
+const RAISON: Record<string, string> = {
+  DISABLED_BY_CONFIG: 'désactivée par configuration', MIGRATION_MISSING: 'migration absente', READ_FAILED: 'lecture en échec',
+  WRITE_FAILED: 'écriture en échec', RESERVATION_FAILED: 'réservation impossible', LEASE_RENEWAL_FAILED: 'renouvellement du bail en échec',
+  LEASE_LOST: 'bail perdu pendant l’appel', SIGNATURE_UNRESOLVED: 'signature non résolue',
+};
+const EFFET: Record<string, string> = {
+  CALL_WITHOUT_PROTECTION: 'appel émis sans la protection', RESULT_NOT_STORED: 'résultat non conservé (rappel possible)',
+  CALL_REFUSED: 'appel refusé (borne atteinte), repli sans IA', NO_EXTRA_CALL: 'aucun appel supplémentaire',
+};
+
+/**
+ * Carte #811 (P1-C) — protections anti-redondance T3 : état global (jamais « actives » si une dépendance manque),
+ * constats, modes dégradés des dernières 24 h, réglages effectifs. Une colonne sur mobile, jetons existants.
+ */
+export function ProtectionsBlock({ data }: { data: T3SupervisionData }) {
+  if (data.protections === undefined) return null;
+  const p = data.protections;
+  if (p === null) {
+    return (
+      <div className="rounded-lg border border-[color:var(--border-subtle)] p-3 min-w-0" data-testid="t3-protections" data-status="UNKNOWN">
+        <p className="text-xs font-semibold text-[color:var(--text-primary)]">Protections anti-redondance T3</p>
+        <p className="text-xs text-[color:var(--text-warning-soft)] break-words flex items-start gap-1.5">
+          <AlertTriangle className="w-3.5 h-3.5 mt-0.5 shrink-0" />
+          <span>État inconnu : le diagnostic n’a pas pu être lu. Les protections ne sont pas présentées comme actives.</span>
+        </p>
+      </div>
+    );
+  }
+  const ton = p.status === 'ACTIVE' ? 'text-[color:var(--text-success)]' : p.status === 'INACTIVE' ? 'text-[color:var(--text-danger)]' : 'text-[color:var(--text-warning-soft)]';
+  const aSignaler = p.findings.filter((f) => f.level !== 'ok');
+  const enPlace = p.findings.filter((f) => f.level === 'ok');
+  return (
+    <div className="rounded-lg border border-[color:var(--border-subtle)] p-3 space-y-2 min-w-0" data-testid="t3-protections" data-status={p.status}>
+      <p className="text-xs font-semibold text-[color:var(--text-primary)]">Protections anti-redondance T3 (appels IA non répétés)</p>
+      <p className={`text-xs flex items-start gap-1.5 ${ton}`}>
+        {p.status === 'ACTIVE' ? <CheckCircle2 className="w-3.5 h-3.5 mt-0.5 shrink-0" /> : <AlertTriangle className="w-3.5 h-3.5 mt-0.5 shrink-0" />}
+        <span className="break-words font-medium">{p.statusLabel}</span>
+      </p>
+      {aSignaler.length > 0 && (
+        <ul className="space-y-1">
+          {aSignaler.map((f) => (
+            <li key={f.code} className={`text-xs flex items-start gap-1.5 ${f.level === 'error' ? 'text-[color:var(--text-danger)]' : 'text-[color:var(--text-warning-soft)]'}`}>
+              <AlertTriangle className="w-3.5 h-3.5 mt-0.5 shrink-0" />
+              <span className="break-words"><span className="font-medium">{f.code}</span> — {f.message}</span>
+            </li>
+          ))}
+        </ul>
+      )}
+      <details className="text-xs text-[color:var(--text-muted)]">
+        <summary className="cursor-pointer min-h-[32px] flex items-center">Vérifications réussies ({enPlace.length}) et réglages effectifs</summary>
+        <ul className="space-y-0.5 mt-1">
+          {enPlace.map((f) => <li key={f.code} className="break-words">{f.code} — {f.message}</li>)}
+        </ul>
+        <ul className="space-y-0.5 mt-2">
+          {p.settings.map((s) => <li key={s.name} className="break-words"><span className="font-medium">{s.name}</span> = {s.value} — {s.note}</li>)}
+        </ul>
+      </details>
+      <div className="space-y-0.5">
+        <p className="text-xs text-[color:var(--text-secondary)]">
+          Modes dégradés des dernières 24 h{p.degraded.durableAvailable ? ' (toutes instances)' : ' (trace durable absente : instance qui répond seulement)'}
+        </p>
+        {p.degraded.last24h.length === 0 && p.degraded.instance.episodes.length === 0 && (
+          <p className="text-xs text-[color:var(--text-muted)]">Aucun.</p>
+        )}
+        <ul className="space-y-0.5">
+          {p.degraded.last24h.map((r, i) => (
+            <li key={`${r.component}-${r.reason}-${r.impact}-${r.operationCode}-${i}`} className="text-xs text-[color:var(--text-muted)] break-words">
+              {COMPOSANT[r.component] ?? r.component} — {RAISON[r.reason] ?? r.reason} : {EFFET[r.impact] ?? r.impact} · {r.count} fois
+              {' · '}{r.treatment || '—'} / {r.operationCode || '—'} · {r.accounts} compte(s){r.technicalCode ? ` · code ${r.technicalCode}` : ''} · dernier {dt(r.lastAt)}
+            </li>
+          ))}
+          {p.degraded.last24h.length === 0 && p.degraded.instance.episodes.map((e) => (
+            <li key={`${e.component}-${e.reason}`} className="text-xs text-[color:var(--text-muted)] break-words">
+              {COMPOSANT[e.component] ?? e.component} — {RAISON[e.reason] ?? e.reason} · {e.count} fois · dernier {dt(e.lastAt)} (instance qui répond)
+            </li>
+          ))}
+        </ul>
+        <p className="text-xs text-[color:var(--text-muted)] break-words">
+          Borne des appels sans protection : {p.degraded.instance.callsPerHour === null ? 'aucune (désactivée)' : `${p.degraded.instance.callsPerHour} par heure, par traitement / opération / compte et par instance`}
+          {' '}({p.degraded.instance.cappedTreatments.join(', ') || 'aucun traitement'}) · instance qui répond : {p.degraded.instance.callsAllowed} admis, {p.degraded.instance.callsRefused} refusé(s). Vérifié {dt(p.checkedAt)}.
+        </p>
+      </div>
+    </div>
+  );
 }
 
 const DECISION_LABEL: Record<string, string> = {
@@ -164,6 +275,24 @@ export function formatDuration(ms: number | null): string {
   return `${m} min ${String(s % 60).padStart(2, '0')} s`;
 }
 
+/**
+ * Carte #811 — texte « appels » d'un travail (pur, testé). Mesuré : requêtes réellement émises, tentatives,
+ * demandes logiques, autre traitement. Sans mesure : la valeur est dite « demande(s) déclarée(s) », jamais « appel ».
+ */
+export function jobAiText(job: Pick<T3JobSummary, 'aiCalls' | 'aiCountersSemantics' | 'aiLogicalRequests' | 'aiProviderAttempts' | 'aiCallsOtherTreatments'>): string {
+  const n = job.aiCalls ?? 0;
+  if (job.aiCountersSemantics === 'MEASURED_V1') {
+    if (n === 0) return ` · aucune requête émise vers le modèle${job.aiLogicalRequests ? ` (${job.aiLogicalRequests} demande(s) logique(s) servie(s) ou refusée(s) sans appel)` : ''}`;
+    return ` · ${n} requête(s) réellement émise(s) vers le modèle`
+      + `${job.aiProviderAttempts != null ? ` en ${job.aiProviderAttempts} tentative(s)` : ''}`
+      + `${job.aiLogicalRequests != null ? ` pour ${job.aiLogicalRequests} demande(s) logique(s)` : ''}`
+      + `${job.aiCallsOtherTreatments ? ` dont ${job.aiCallsOtherTreatments} pour un autre traitement que T3` : ''}`;
+  }
+  return n === 0
+    ? ' · aucune demande IA déclarée (ancienne sémantique : appels réels non mesurés)'
+    : ` · ${n} demande(s) IA déclarée(s) (ancienne sémantique : appels réels non mesurés)`;
+}
+
 function JobBlock({ titre, job, onOpen }: { titre: string; job: T3JobSummary | null; onOpen: (id: number) => void }) {
   return (
     <div className="rounded-lg border border-[color:var(--border-subtle)] p-3 space-y-1 min-w-0">
@@ -186,7 +315,7 @@ function JobBlock({ titre, job, onOpen }: { titre: string; job: T3JobSummary | n
             <p className="text-xs text-[color:var(--text-muted)] break-words">
               {job.objectsExamined != null && `${job.objectsExamined} objet(s) examiné(s) · ${job.objectsModified ?? 0} modifié(s)`}
               {job.openActionsExamined != null && ` · ${job.openActionsExamined} « À traiter » réexaminé(s)`}
-              {job.aiCalls != null && (job.aiCalls === 0 ? ' · sans appel au modèle' : ` · ${job.aiCalls} appel(s) au modèle`)}
+              {job.aiCalls != null && jobAiText(job)}
               {!!job.aiCacheResponses && ` · ${job.aiCacheResponses} réponse(s) du cache`}
               {!!job.aiDecisionsReused && ` · ${job.aiDecisionsReused} décision(s) réutilisée(s)`}
             </p>
@@ -252,6 +381,7 @@ export function T3Supervision({ data, error, onOpenJob }: { data: T3SupervisionD
         </div>
       </div>
       <CreationBlock data={data} onOpen={onOpenJob} />
+      <ProtectionsBlock data={data} />
       <div className="grid gap-3 sm:grid-cols-3">
         <JobBlock titre="Dernier passage manuel" job={data.lastManual} onOpen={onOpenJob} />
         <JobBlock titre="Dernier passage automatique (compte)" job={data.lastAutomatic} onOpen={onOpenJob} />

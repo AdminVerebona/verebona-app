@@ -33,6 +33,11 @@ import type { ValueConflictOutcome, ValueConflictMasterInput } from '../master/v
 import { decisionFingerprint, reevaluationReasons, type FingerprintParts } from './fingerprint';
 import type { MemoryEntry, MemoryKey, MemoryOutcome, NewDecision } from './store';
 import type { ReuseEvent } from '../../reuse/reuse-counters';
+import {
+  admitDegradedCall, degradedRecently, noteDegraded, technicalCodeOf,
+  type DegradedComponent, type DegradedEvent, type DegradedReason, type DegradedScope,
+} from '../../degraded/degraded-mode';
+import { measureAiActivity } from '../../measure/ai-activity';
 
 export const T3_VALUE_CONFLICT_OPERATION = 't3_value_conflict';
 
@@ -59,8 +64,10 @@ export interface AiReviewOutcome {
   decision: ReconciliationDecision;
   /** Origine de la décision (voir `ReconciliationDecision.aiSource`). */
   source: NonNullable<ReconciliationDecision['aiSource']>;
-  /** Appels RÉELS au fournisseur provoqués (0 ou 1). */
+  /** Requêtes réellement émises vers le fournisseur pendant la revue (carte #811 : mesure de la passerelle). */
   providerCalls: number;
+  /** Carte #811 : demande d'arbitrage déclarée (0 ou 1) — ancienne valeur de `providerCalls`, conservée à part. */
+  declaredRequests?: number;
   /** Réponse servie par le cache temporaire (aucun appel). */
   cacheHit: boolean;
   /** Décision mémorisée réutilisée (aucun appel). */
@@ -68,6 +75,12 @@ export interface AiReviewOutcome {
   /** Motifs de la réévaluation (null : réutilisation ou mémoire indisponible). */
   reevaluation: string[] | null;
   memoryId: number | null;
+  /**
+   * Carte #811 : passage en mode dégradé — `CALL_WITHOUT_PROTECTION` (appel émis sans mémoire utilisable),
+   * `CALL_REFUSED` (budget dégradé épuisé : aucun appel, conflit prudent), `RESULT_NOT_STORED` (décision rendue
+   * mais non mémorisée). Absent : fonctionnement sain.
+   */
+  degraded?: 'CALL_WITHOUT_PROTECTION' | 'CALL_REFUSED' | 'RESULT_NOT_STORED';
 }
 
 export interface DecisionMemoryDeps {
@@ -80,7 +93,18 @@ export interface DecisionMemoryDeps {
   resolve(input: ValueConflictMasterInput, opts: { idempotencyKey?: string }): Promise<ValueConflictOutcome>;
   count(e: ReuseEvent): Promise<void>;
   now(): Date;
+  /** Carte #811 : raison de l'indisponibilité de la mémoire (absent : « migration absente » quand `ready()` est faux). */
+  unavailableReason?(): Promise<DegradedReason | null>;
+  /** Carte #811 : trace d'un passage en mode dégradé (absent : `degraded/degraded-mode`). */
+  noteDegraded?(e: DegradedEvent): void;
+  /** Carte #811 : un appel sans protection peut-il partir ? (absent : budget de `degraded/degraded-mode`). */
+  admitDegradedCall?(scope: DegradedScope): boolean;
+  /** Carte #811 : la portée a-t-elle été dégradée dans l'heure ? (absent : `degraded/degraded-mode`). */
+  degradedRecently?(scope: DegradedScope): boolean;
 }
+
+/** Signature rendue par la passerelle quand la configuration IA effective n'a pas pu être résolue. */
+export const UNRESOLVED_AI_CONFIG_SIGNATURE = 'unresolved';
 
 const defaultDeps: DecisionMemoryDeps = {
   async ready() { return (await import('./store')).memoryReady(); },
@@ -92,6 +116,7 @@ const defaultDeps: DecisionMemoryDeps = {
   async resolve(input, opts) { return (await import('../master/value-conflict')).resolveValueConflictMasterDetailed(input, opts); },
   async count(e) { return (await import('../../reuse/reuse-counters')).noteReuse(e); },
   now: () => new Date(),
+  async unavailableReason() { return (await import('./store')).memoryUnavailableReason(); },
 };
 
 const annule = async (e: unknown): Promise<boolean> => {
@@ -133,17 +158,47 @@ export async function reviewAmbiguousField(p: AmbiguousFieldInput, deps: Decisio
     currentValue: p.currentValue, currentOrigin: p.currentOrigin,
   };
   const appeler = async (idempotencyKey?: string) => {
-    const r = await deps.resolve(input, idempotencyKey ? { idempotencyKey } : {});
+    // Carte #811 (P1-A) : `providerCalls` = requêtes RÉELLEMENT émises pendant cette revue (mesure de la
+    // passerelle : repli, essai sans schéma et réparation compris — 0 pour un refus avant contact). Passerelle non
+    // observée (résolveur simulé d'un jeu de test) : valeur déclarée d'avant (0 ou 1).
+    const { result: r, activity } = await measureAiActivity(() => deps.resolve(input, idempotencyKey ? { idempotencyKey } : {}));
     const source: AiReviewOutcome['source'] = r.aiSource;
-    return { r, out: { decision: { ...r.decision, aiSource: source }, source, providerCalls: r.aiSource === 'PROVIDER' || r.providerContacted ? 1 : 0, cacheHit: r.aiSource === 'CACHE' } };
+    const declares = r.aiSource === 'PROVIDER' || r.providerContacted ? 1 : 0;
+    const providerCalls = activity.total.logicalRequests > 0 ? activity.total.networkRequests : declares;
+    return { r, out: { decision: { ...r.decision, aiSource: source }, source, providerCalls, declaredRequests: declares, cacheHit: r.aiSource === 'CACHE' } };
   };
 
-  // Mémoire indisponible : comportement antérieur au lot 99A.
+  // ── Carte #811 (P1-C) : modes dégradés TRACÉS et BORNÉS ───────────────────────────────────────────────────
+  // Sans mémoire utilisable, chaque passage reposerait la question au fournisseur. L'appel reste permis
+  // (continuité métier) mais il est tracé, et il consomme le budget dégradé de la portée ; budget épuisé :
+  // aucun appel, conflit prudent laissé à l'utilisateur, rien de mémorisé, reprise à un passage suivant.
+  const scope: DegradedScope = { treatment: 'T3', operationCode: T3_VALUE_CONFLICT_OPERATION, accountId: p.accountId };
+  const tracer = deps.noteDegraded ?? noteDegraded;
+  const admettre = deps.admitDegradedCall ?? admitDegradedCall;
+  const recemment = deps.degradedRecently ?? degradedRecently;
+  const sansIa = (): AiReviewOutcome => ({
+    decision: { ...p.decision, action: 'create_conflict', reasonCode: 'AMBIGUOUS_EVIDENCE', deterministic: true, aiSource: 'FAILED' },
+    source: 'FAILED', providerCalls: 0, cacheHit: false, reused: false, reevaluation: null, memoryId: null, degraded: 'CALL_REFUSED',
+  });
+  const appelDegrade = async (
+    component: DegradedComponent, reason: DegradedReason, technicalCode: string | null, idempotencyKey?: string,
+  ): Promise<AiReviewOutcome> => {
+    if (!admettre(scope)) {
+      tracer({ ...scope, component, reason, impact: 'CALL_REFUSED', technicalCode });
+      return sansIa();
+    }
+    tracer({ ...scope, component, reason, impact: 'CALL_WITHOUT_PROTECTION', technicalCode });
+    const { out } = await appeler(idempotencyKey);
+    return { ...out, reused: false, reevaluation: null, memoryId: null, degraded: 'CALL_WITHOUT_PROTECTION' };
+  };
+
+  // Mémoire indisponible : comportement antérieur au lot 99A (appel), désormais tracé et borné.
   let pret = false;
   try { pret = await deps.ready(); } catch { pret = false; }
   if (!pret) {
-    const { out } = await appeler();
-    return { ...out, reused: false, reevaluation: null, memoryId: null };
+    let raison: DegradedReason = 'MIGRATION_MISSING';
+    try { raison = (await deps.unavailableReason?.()) ?? 'MIGRATION_MISSING'; } catch { raison = 'READ_FAILED'; }
+    return appelDegrade('DECISION_MEMORY', raison, null);
   }
 
   const key: MemoryKey = { accountId: p.accountId, assetId: p.assetId, objectType: 'ASSET', objectId: p.assetId, fieldKey: p.decision.fieldKey };
@@ -174,12 +229,22 @@ export async function reviewAmbiguousField(p: AmbiguousFieldInput, deps: Decisio
   } catch (e) {
     if (await annule(e)) throw e;
     console.error('[t3-decision-memory] mémoire illisible, appel sans mémoire (non bloquant) :', (e as Error).message);
-    const { out } = await appeler();
-    return { ...out, reused: false, reevaluation: null, memoryId: null };
+    return appelDegrade('DECISION_MEMORY', 'READ_FAILED', technicalCodeOf(e));
   }
 
   const now = deps.now();
   const force = !!p.force;
+
+  // ── Carte #811 (P1-C) : signature de configuration NON RÉSOLUE ────────────────────────────────────────────
+  // On ne sait pas quelle configuration IA s'appliquerait : une décision mémorisée ne peut être ni réutilisée
+  // (elle serait peut-être obsolète), ni enregistrée sous cette signature (elle serait réutilisée à tort plus
+  // tard). L'entrée ACTIVE est laissée intacte : dès que la signature se résout à nouveau, elle redevient
+  // réutilisable si — et seulement si — la configuration est bien la même. L'appel, lui, est tracé et borné.
+  if (aiSig === UNRESOLVED_AI_CONFIG_SIGNATURE) {
+    const cle = `t3vc:a${p.accountId}:${fp.fingerprint}${force ? `:forced:${randomUUID()}` : ''}`;
+    return { ...(await appelDegrade('CONFIG_SIGNATURE', 'SIGNATURE_UNRESOLVED', null, cle)), reevaluation: ['AI_CONFIG_UNRESOLVED'] };
+  }
+
   if (isReusable(active, fp.fingerprint, now, force)) {
     await deps.noteReused(active!.id);
     await deps.count({ kind: 'DECISION_REUSED', accountId: p.accountId, treatment: 'T3', operationCode: T3_VALUE_CONFLICT_OPERATION });
@@ -190,6 +255,12 @@ export async function reviewAmbiguousField(p: AmbiguousFieldInput, deps: Decisio
   }
 
   const motifs = force ? ['FORCED'] : reevaluationReasons(active?.parts ?? null, fp.parts);
+  // Carte #811 : la dernière décision de cette portée n'a pas pu être mémorisée (écriture en échec dans l'heure)
+  // et aucune entrée n'existe pour ce champ — cet appel est peut-être un RAPPEL : il consomme le budget dégradé.
+  if (!force && !active && recemment(scope) && echecsEcriture.has(cleEchec(scope)) && !admettre(scope)) {
+    tracer({ ...scope, component: 'DECISION_MEMORY', reason: 'WRITE_FAILED', impact: 'CALL_REFUSED' });
+    return { ...sansIa(), reevaluation: motifs };
+  }
   // Clé du cache des réponses alignée sur l'empreinte ; une relance forcée ne lit jamais le cache.
   const cle = `t3vc:a${p.accountId}:${fp.fingerprint}${force ? `:forced:${randomUUID()}` : ''}`;
   const { r, out } = await appeler(cle);
@@ -199,22 +270,43 @@ export async function reviewAmbiguousField(p: AmbiguousFieldInput, deps: Decisio
     return { ...out, reused: false, reevaluation: motifs, memoryId: null };
   }
   let memoryId: number | null = null;
+  const nouvelle: NewDecision = {
+    fingerprint: fp.fingerprint, parts: fp.parts, operationCode: T3_VALUE_CONFLICT_OPERATION, aiConfigSignature: aiSig,
+    outcome: memoryOutcomeOf(r), decision: sansOrigine(r.decision),
+    aiSource: r.aiSource === 'FAILED' ? 'UNAVAILABLE' : r.aiSource, aiTraceId: r.traceId,
+    forced: force, forcedReason: force ? p.force!.reason.slice(0, 300) : null,
+    retryAfter: r.aiSource === 'FAILED' ? new Date(now.getTime() + failureRetryMinutes() * 60_000) : null,
+    supersedeReason: motifs.join(','),
+  };
+  let degraded: AiReviewOutcome['degraded'];
   try {
-    memoryId = await deps.record(key, {
-      fingerprint: fp.fingerprint, parts: fp.parts, operationCode: T3_VALUE_CONFLICT_OPERATION, aiConfigSignature: aiSig,
-      outcome: memoryOutcomeOf(r), decision: sansOrigine(r.decision),
-      aiSource: r.aiSource === 'FAILED' ? 'UNAVAILABLE' : r.aiSource, aiTraceId: r.traceId,
-      forced: force, forcedReason: force ? p.force!.reason.slice(0, 300) : null,
-      retryAfter: r.aiSource === 'FAILED' ? new Date(now.getTime() + failureRetryMinutes() * 60_000) : null,
-      supersedeReason: motifs.join(','),
-    });
-  } catch (e) {
-    if (await annule(e)) throw e;
-    console.error('[t3-decision-memory] décision non mémorisée (non bloquant) :', (e as Error).message);
+    memoryId = await deps.record(key, nouvelle);
+    echecsEcriture.delete(cleEchec(scope));
+  } catch (e1) {
+    if (await annule(e1)) throw e1;
+    // Carte #811 (P1-C) : une seconde tentative immédiate (incident passager), puis dégradation TRACÉE — sans
+    // mémoire, le passage suivant reposerait la question (le cache temporaire ne couvre qu'une heure).
+    try {
+      memoryId = await deps.record(key, nouvelle);
+      echecsEcriture.delete(cleEchec(scope));
+    } catch (e2) {
+      if (await annule(e2)) throw e2;
+      console.error('[t3-decision-memory] décision non mémorisée (non bloquant) :', (e2 as Error).message);
+      echecsEcriture.add(cleEchec(scope));
+      tracer({ ...scope, component: 'DECISION_MEMORY', reason: 'WRITE_FAILED', impact: 'RESULT_NOT_STORED', technicalCode: technicalCodeOf(e2) });
+      degraded = 'RESULT_NOT_STORED';
+    }
   }
   if (force) await deps.count({ kind: 'DECISION_FORCED', accountId: p.accountId, treatment: 'T3', operationCode: T3_VALUE_CONFLICT_OPERATION });
   else if (active) await deps.count({ kind: 'DECISION_REEVALUATED', accountId: p.accountId, treatment: 'T3', operationCode: T3_VALUE_CONFLICT_OPERATION });
-  return { ...out, reused: false, reevaluation: motifs, memoryId };
+  return { ...out, reused: false, reevaluation: motifs, memoryId, ...(degraded ? { degraded } : {}) };
 }
+
+/** Portées dont la dernière écriture en mémoire a échoué (instance courante). */
+const echecsEcriture = new Set<string>();
+const cleEchec = (s: DegradedScope) => `${s.operationCode ?? ''}|${s.accountId ?? 0}`;
+
+/** Réservé aux tests. */
+export function __resetDecisionMemoryDegradedForTests(): void { echecsEcriture.clear(); }
 
 type FingerprintInputVariables = import('./fingerprint').FingerprintInput['variables'];

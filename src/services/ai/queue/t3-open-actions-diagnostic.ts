@@ -47,10 +47,63 @@ interface T3RunDiagnostic {
     openAtStart: number | null; examined: number | null; resolutionAttempted: number | null; resolved: number | null;
     keptAmbiguous: number | null; delegated: number | null; errors: number | null; journaled: number;
   };
-  /** Appels IA du compte pendant le passage, par opération (télémétrie de la passerelle). */
+  /**
+   * Par opération. Carte #811 : requêtes RÉELLEMENT émises par CE passage (mesure du passage,
+   * `aiCallsBasis = 'MEASURED'`). Passage antérieur à la mesure : événements d'usage du compte dans la fenêtre
+   * du passage (`'USAGE_EVENTS_IN_WINDOW'`) — des lignes, pas des appels, et possiblement d'autres travaux du
+   * compte : ancienne sémantique, affichée comme telle.
+   */
   aiCallsByOperation: Record<string, number>;
+  aiCallsBasis?: 'MEASURED' | 'USAGE_EVENTS_IN_WINDOW';
+  /** Carte #811 : compteurs mesurés du passage (null : passage antérieur — ancienne sémantique). */
+  ai?: T3RunAiCounters | null;
   /** Cartes journalisées par motif. */
   byReasonCode: Record<string, number>;
+}
+
+/** Carte #811 — vérité mesurée d'un passage T3 (terminologie de `measure/ai-activity`). */
+export interface T3RunAiCounters {
+  semantics: string;
+  /** Requêtes réellement émises (tous traitements) ; dont pour un autre traitement que T3. */
+  providerCalls: number | null;
+  providerCallsOtherTreatments: number | null;
+  /** Tentatives de modèle et passes de réparation ayant émis une requête. */
+  providerAttempts: number | null;
+  logicalRequests: number | null;
+  /** Demandes déclarées par les phases (ancienne valeur de « appels réels »). */
+  declaredRequests: number | null;
+  cacheResponses: number | null;
+  decisionsReused: number | null;
+  usageEvents: number | null;
+  usageEventsWithoutSend: number | null;
+  costObservedMicros: number | null;
+  costEstimatedMicros: number | null;
+  costUnknownEvents: number | null;
+}
+
+/** Carte #811 — compteurs mesurés lus sur la ligne du passage (pur ; null : passage sans mesure). */
+export function runAiCounters(r: Record<string, unknown>): T3RunAiCounters | null {
+  const semantics = typeof r.ai_counters_semantics === 'string' ? r.ai_counters_semantics : null;
+  if (!semantics) return null;
+  const a = obj<{ total?: Record<string, unknown> }>(r.ai_activity);
+  const t = a?.total ?? {};
+  return {
+    semantics, providerCalls: num(r.provider_calls), providerCallsOtherTreatments: num(r.provider_calls_other_treatments),
+    providerAttempts: num(r.provider_attempts), logicalRequests: num(r.ai_logical_requests), declaredRequests: num(r.ai_requests_declared),
+    cacheResponses: num(r.ai_cache_hits), decisionsReused: num(r.decisions_reused),
+    usageEvents: num(t.usageEvents), usageEventsWithoutSend: num(t.usageEventsWithoutSend),
+    costObservedMicros: num(t.costObservedMicros), costEstimatedMicros: num(t.costEstimatedMicros), costUnknownEvents: num(t.costUnknownEvents),
+  };
+}
+
+/** Carte #811 — requêtes émises par opération d'après la mesure du passage (pur). */
+export function measuredCallsByOperation(r: Record<string, unknown>): Record<string, number> | null {
+  if (typeof r.ai_counters_semantics !== 'string' || r.ai_counters_semantics !== 'MEASURED_V1') return null;
+  const a = obj<{ byOperation?: Record<string, { networkRequests?: unknown }> }>(r.ai_activity);
+  if (!a?.byOperation) return null;
+  return Object.fromEntries(Object.entries(a.byOperation)
+    .map(([k, v]) => [k, num(v?.networkRequests) ?? 0] as const)
+    .filter(([, n]) => n > 0));
 }
 
 interface T3CardEvaluation {
@@ -259,6 +312,8 @@ async function loadRuns(f: ReturnType<typeof cleanFilters>): Promise<T3RunDiagno
       ).catch(() => []) as unknown as Promise<Array<{ op: string; n: number }>>,
     ]);
     const c = (k: string) => num(oaPhase[k]) ?? num(oa[k]);
+    // Carte #811 : la mesure du passage fait foi ; à défaut (passage antérieur), l'ancienne lecture par fenêtre, étiquetée.
+    const mesureParOperation = measuredCallsByOperation(r);
     out.push({
       runId, accountId, jobId: num(r.queue_job_id), jobStatus: row.job_status, businessResult: row.business_result,
       triggerType: String(r.trigger_type ?? ''), triggerCode: row.job_trigger, scope: (r.scope as string) ?? null, status: String(r.status),
@@ -268,7 +323,9 @@ async function loadRuns(f: ReturnType<typeof cleanFilters>): Promise<T3RunDiagno
         keptAmbiguous: c('keptAmbiguous'), delegated: c('delegated'), errors: c('errors'),
         journaled: journal.reduce((n, x) => n + Number(x.n), 0),
       },
-      aiCallsByOperation: Object.fromEntries(ia.map((x) => [x.op, Number(x.n)])),
+      aiCallsByOperation: mesureParOperation ?? Object.fromEntries(ia.map((x) => [x.op, Number(x.n)])),
+      aiCallsBasis: mesureParOperation ? 'MEASURED' : 'USAGE_EVENTS_IN_WINDOW',
+      ai: runAiCounters(r),
       byReasonCode: Object.fromEntries(journal.map((x) => [x.code, Number(x.n)])),
     });
   }

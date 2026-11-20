@@ -17,6 +17,11 @@
  */
 import { createHash, randomUUID } from 'crypto';
 import { pgClient } from '@/db';
+import { AiGatewayError } from '../gateway/errors';
+import {
+  admitDegradedCall, degradedRecently, noteDegraded, technicalCodeOf,
+  type DegradedComponent, type DegradedReason, type DegradedScope,
+} from '../degraded/degraded-mode';
 
 /**
  * Clés RÉSERVÉES de `ai_operation_idempotency` — à ne jamais purger.
@@ -88,7 +93,18 @@ const DEFAULT_TTL_SECONDS = 3600;
  */
 function leaseSeconds(): number {
   const v = Number(process.env.AI_IDEMPOTENCY_LEASE_SECONDS);
-  return Number.isFinite(v) && v > 0 ? Math.min(1800, Math.max(10, Math.floor(v))) : 180;
+  // Carte #811 : plancher ramené de 10 à 2 s — le bail est désormais RENOUVELÉ pendant l'appel, sa durée ne
+  // borne plus celle de l'appel mais seulement le délai de reprise après l'arrêt d'une instance.
+  return Number.isFinite(v) && v > 0 ? Math.min(1800, Math.max(2, Math.floor(v))) : 180;
+}
+/**
+ * Carte #811 (P1-C) — durée maximale pendant laquelle une instance renouvelle le bail d'un MÊME appel
+ * (`AI_IDEMPOTENCY_LEASE_MAX_SECONDS`, 1800 s par défaut, jamais moins que le bail). Au-delà, l'appel est réputé
+ * bloqué : le bail n'est plus renouvelé et une autre demande peut reprendre la clé.
+ */
+function leaseMaxSeconds(bail: number): number {
+  const v = Number(process.env.AI_IDEMPOTENCY_LEASE_MAX_SECONDS);
+  return Math.max(bail, Number.isFinite(v) && v > 0 ? Math.min(6 * 3600, Math.floor(v)) : 1800);
 }
 /** Intervalle de relecture d'une réservation tenue par une autre instance. */
 const POLL_MS = 200;
@@ -217,6 +233,84 @@ function marquer<T>(v: T, outcome: CacheOutcome): T {
   return (v && typeof v === 'object' ? { ...v, fromCache: true, cacheOutcome: outcome } : v) as T;
 }
 
+const porteeDe = (meta: IdempotencyMeta): DegradedScope => ({
+  treatment: meta.treatment ?? null, operationCode: meta.operationCode ?? null, accountId: meta.accountId ?? null,
+});
+
+/**
+ * Carte #811 (P1-C) — appel émis SANS la protection du cache (réservation impossible, base indisponible) : tracé,
+ * et borné par le budget dégradé de la portée. Budget épuisé : refus avant tout contact fournisseur.
+ */
+async function appelerSansProtection<T>(
+  fn: () => Promise<T>, meta: IdempotencyMeta, reason: DegradedReason, component: DegradedComponent, e?: unknown,
+): Promise<T> {
+  const scope = porteeDe(meta);
+  if (!admitDegradedCall(scope)) {
+    noteDegraded({ ...scope, component, reason, impact: 'CALL_REFUSED', technicalCode: technicalCodeOf(e) });
+    throw new AiGatewayError('DEGRADED_CALL_REFUSED', meta.operationCode ?? '?',
+      'Protection anti-redondance en mode dégradé et budget d’appels sans protection épuisé pour cette heure : appel non émis, repli sans IA.',
+      { recoverable: false });
+  }
+  noteDegraded({ ...scope, component, reason, impact: 'CALL_WITHOUT_PROTECTION', technicalCode: technicalCodeOf(e) });
+  return fn();
+}
+
+/** Renouvellements de bail en cours dans CE processus (arrêt simulé d'une instance : tests). */
+const renouvellements = new Set<{ stop(): void }>();
+
+/**
+ * Carte #811 (P1-C) — RENOUVELLEMENT DU BAIL d'une réservation pendant l'appel.
+ *
+ * Avant : le bail (180 s) n'était jamais prolongé. Un appel plus long que le bail (cascade de repli, réparation,
+ * modèle lent) voyait sa réservation reprise par une autre instance : DEUX appels fournisseur pour la même clé.
+ * Désormais l'instance qui appelle prolonge son bail tous les tiers de bail tant que l'appel dure (et au plus
+ * `leaseMaxSeconds`) ; une instance ARRÊTÉE ne renouvelle plus : son bail s'éteint seul et la clé est reprise
+ * (délai de reprise ≤ un bail). Connexion perdue : le renouvellement échoue, tracé en mode dégradé ; il est
+ * retenté au tiers suivant. Bail repris par une autre instance : `lost` (l'appel en cours se termine, sa réponse
+ * n'écrase jamais celle du repreneur). Aucune connexion retenue entre deux renouvellements.
+ */
+function renouvelerLeBail(key: string, token: string, bail: number, meta: IdempotencyMeta): { stop(): void; readonly lost: boolean } {
+  const debut = Date.now();
+  const max = leaseMaxSeconds(bail) * 1000;
+  let perdu = false;
+  let arrete = false;
+  let enCours = false;
+  const tour = async () => {
+    if (arrete || enCours) return;
+    if (Date.now() - debut > max) { controle.stop(); return; }
+    enCours = true;
+    try {
+      const rows = (await pgClient.unsafe(
+        `UPDATE ai_operation_idempotency SET expires_at = now() + ($3 || ' seconds')::interval
+          WHERE key_hash = $1 AND owner_token = $2 AND state = 'PENDING' RETURNING 1 AS ok`,
+        [key, token, String(bail)] as never[],
+      )) as unknown as unknown[];
+      if (rows.length === 0 && !arrete) {
+        perdu = true;
+        noteDegraded({ ...porteeDe(meta), component: 'CACHE_RESERVATION', reason: 'LEASE_LOST', impact: 'NO_EXTRA_CALL' });
+        controle.stop();
+      }
+    } catch (e) {
+      if (!arrete) noteDegraded({ ...porteeDe(meta), component: 'CACHE_RESERVATION', reason: 'LEASE_RENEWAL_FAILED', impact: 'NO_EXTRA_CALL', technicalCode: technicalCodeOf(e) });
+    } finally { enCours = false; }
+  };
+  const minuteur = setInterval(() => { void tour(); }, Math.max(250, Math.floor((bail * 1000) / 3)));
+  (minuteur as unknown as { unref?: () => void }).unref?.();
+  const controle: { stop(): void; readonly lost: boolean } = {
+    stop() { arrete = true; clearInterval(minuteur); renouvellements.delete(controle); },
+    get lost() { return perdu; },
+  };
+  renouvellements.add(controle);
+  return controle;
+}
+
+/** Réservé aux tests : simule l'ARRÊT de l'instance (plus aucun renouvellement de bail depuis ce processus). */
+export function __stopLeaseRenewalsForTests(): number {
+  const n = renouvellements.size;
+  for (const r of [...renouvellements]) r.stop();
+  return n;
+}
+
 async function compter(kind: import('../reuse/reuse-counters').ReuseKind, meta: IdempotencyMeta): Promise<void> {
   try {
     const { noteReuse } = await import('../reuse/reuse-counters');
@@ -231,7 +325,10 @@ const colonneAbsente = (e: unknown) => (e as { code?: string })?.code === '42703
 async function executerUneFois<T>(
   key: string, fn: () => Promise<T>, ttlSeconds: number, meta: IdempotencyMeta,
 ): Promise<{ value: T; outcome: CacheOutcome }> {
-  if (sansReservation && Date.now() - sansReservation.at < 300_000) return executerSansReservation(key, fn, ttlSeconds);
+  if (sansReservation && Date.now() - sansReservation.at < 300_000) {
+    noteDegraded({ ...porteeDe(meta), component: 'CACHE_RESERVATION', reason: 'MIGRATION_MISSING', impact: 'NO_EXTRA_CALL', technicalCode: '42703' });
+    return executerSansReservation(key, fn, ttlSeconds, meta);
+  }
   const token = randomUUID();
   const bail = leaseSeconds();
   let vides = 0;
@@ -241,22 +338,46 @@ async function executerUneFois<T>(
       r = await reserver(key, token, bail);
     } catch (e) {
       if (colonneAbsente(e)) {
+        // Colonnes 0857 absentes : le cache fonctionne encore (par processus), seul le partage multi-instances est perdu.
         sansReservation = { at: Date.now() };
-        return executerSansReservation(key, fn, ttlSeconds);
+        noteDegraded({ ...porteeDe(meta), component: 'CACHE_RESERVATION', reason: 'MIGRATION_MISSING', impact: 'NO_EXTRA_CALL', technicalCode: '42703' });
+        return executerSansReservation(key, fn, ttlSeconds, meta);
       }
-      // Base indisponible : on dégrade sans bloquer (un appel, pas de partage).
-      console.error('[ai-idempotency] réservation impossible (non bloquant) :', (e as Error).message);
-      return { value: await fn(), outcome: 'CALLED' };
+      // Base indisponible ou table absente : on dégrade sans bloquer (un appel, ni cache ni partage) — carte #811 :
+      // tracé, et BORNÉ par le budget dégradé (jamais une boucle d'appels silencieuse).
+      const tableAbsente = (e as { code?: string })?.code === '42P01';
+      return {
+        value: await appelerSansProtection(fn, meta, tableAbsente ? 'MIGRATION_MISSING' : 'RESERVATION_FAILED', tableAbsente ? 'RESPONSE_CACHE' : 'CACHE_RESERVATION', e),
+        outcome: 'CALLED',
+      };
     }
     if (r.kind === 'RESERVED') {
+      // Carte #811 : le résultat précédent n'a pas pu être conservé pour cette portée (écriture en échec) — l'appel
+      // qui repart est un appel sans protection : il consomme le budget dégradé, ou il est refusé.
+      const scope = porteeDe(meta);
+      if (ecrituresEnEchec.has(cleEcriture(scope)) && degradedRecently(scope) && !admitDegradedCall(scope)) {
+        await liberer(key, token);
+        noteDegraded({ ...scope, component: 'RESPONSE_CACHE', reason: 'WRITE_FAILED', impact: 'CALL_REFUSED' });
+        throw new AiGatewayError('DEGRADED_CALL_REFUSED', meta.operationCode ?? '?',
+          'Cache des réponses non inscriptible et budget d’appels sans protection épuisé pour cette heure : appel non émis, repli sans IA.',
+          { recoverable: false });
+      }
+      // Carte #811 : bail renouvelé tant que l'appel dure (un appel plus long que le bail n'est plus doublé).
+      const bailVivant = renouvelerLeBail(key, token, bail, meta);
       let value: T;
       try {
         value = await fn();
       } catch (e) {
+        bailVivant.stop();
         await liberer(key, token);
         throw e;
       }
-      await ecrire(key, token, value, ttlSeconds);
+      bailVivant.stop();
+      const ecrit = await ecrire(key, token, value, ttlSeconds);
+      if (!ecrit) {
+        ecrituresEnEchec.add(cleEcriture(scope));
+        noteDegraded({ ...scope, component: 'RESPONSE_CACHE', reason: 'WRITE_FAILED', impact: 'RESULT_NOT_STORED' });
+      } else ecrituresEnEchec.delete(cleEcriture(scope));
       if (r.renewed) void compter('CACHE_RENEWED', meta);
       return { value, outcome: r.renewed ? 'RENEWED' : 'CALLED' };
     }
@@ -281,7 +402,7 @@ async function executerUneFois<T>(
       continue;
     }
     // Aucune ligne visible après une réservation refusée (suppression concurrente) : on réessaie, puis on dégrade.
-    if (++vides >= 3) return { value: await fn(), outcome: 'CALLED' };
+    if (++vides >= 3) return { value: await appelerSansProtection(fn, meta, 'RESERVATION_FAILED', 'CACHE_RESERVATION'), outcome: 'CALLED' };
   }
 }
 
@@ -330,8 +451,15 @@ async function lireEtat(key: string): Promise<string | null> {
   } catch { return null; }
 }
 
-/** Réponse écrite READY. Une réservation reprise entre-temps par une autre instance n'est pas écrasée si elle a déjà répondu. */
-async function ecrire(key: string, token: string, value: unknown, ttlSeconds: number): Promise<void> {
+/** Portées dont la dernière écriture du cache a échoué (carte #811 : l'appel suivant est un appel sans protection). */
+const ecrituresEnEchec = new Set<string>();
+const cleEcriture = (s: DegradedScope) => `${s.treatment ?? ''}|${s.operationCode ?? ''}|${s.accountId ?? 0}`;
+
+/**
+ * Réponse écrite READY. Une réservation reprise entre-temps par une autre instance n'est pas écrasée si elle a déjà
+ * répondu. Rend faux quand l'écriture a ÉCHOUÉ (carte #811 : le résultat n'est pas conservé, tracé par l'appelant).
+ */
+async function ecrire(key: string, token: string, value: unknown, ttlSeconds: number): Promise<boolean> {
   try {
     await pgClient.unsafe(
       `INSERT INTO ai_operation_idempotency (key_hash, result_json, created_at, expires_at, state, owner_token)
@@ -344,8 +472,10 @@ async function ecrire(key: string, token: string, value: unknown, ttlSeconds: nu
             OR ai_operation_idempotency.state = 'READY' AND ai_operation_idempotency.expires_at <= now()`,
       [key, JSON.stringify(value), String(ttlSeconds), token] as never[],
     );
+    return true;
   } catch (e) {
     console.error('[ai-idempotency] écriture impossible (non bloquant) :', (e as Error).message);
+    return false;
   }
 }
 
@@ -369,7 +499,7 @@ async function noteHit(key: string): Promise<void> {
 }
 
 /** Fonctionnement sans les colonnes 0857 : dédoublonnage par processus, entrée expirée REMPLACÉE. */
-async function executerSansReservation<T>(key: string, fn: () => Promise<T>, ttlSeconds: number): Promise<{ value: T; outcome: CacheOutcome }> {
+async function executerSansReservation<T>(key: string, fn: () => Promise<T>, ttlSeconds: number, meta: IdempotencyMeta = {}): Promise<{ value: T; outcome: CacheOutcome }> {
   const value = await fn();
   try {
     await pgClient.unsafe(
@@ -382,6 +512,7 @@ async function executerSansReservation<T>(key: string, fn: () => Promise<T>, ttl
     );
   } catch (e) {
     console.error('[ai-idempotency] écriture impossible (non bloquant) :', (e as Error).message);
+    noteDegraded({ ...porteeDe(meta), component: 'RESPONSE_CACHE', reason: 'WRITE_FAILED', impact: 'RESULT_NOT_STORED', technicalCode: technicalCodeOf(e) });
   }
   return { value, outcome: 'CALLED' };
 }

@@ -25,6 +25,8 @@ import type { CallCaptureInput } from './call-capture';
 import type { AiAttachment } from '../gateway/types';
 import { writeCostClassification } from '../cost/cost-classification.store';
 import { technicalAccountInContext } from '../qualification/technical-context';
+import { aiCostNatureOf, noteAiUsageEvent } from '../measure/ai-activity';
+import { treatmentOfUseCase } from '../config/treatments';
 
 interface CallTrace {
   traceId: string;
@@ -254,6 +256,10 @@ export async function recordCallTrace(t0: CallTrace): Promise<number | null> {
   // exact, jetons de raisonnement facturés en sortie (voir trace-pricing.ts).
   const tarif = computeTracePricing(t0, { priceCall });
   const t: CallTrace = tarif.costMicros === t0.costMicros ? t0 : { ...t0, costMicros: tarif.costMicros };
+  // Carte #811 (P1-A) : requêtes RÉELLEMENT émises pour cet événement (relevé de la passerelle au point d'envoi).
+  // `null` : appelant sans capture (sonde) — au plus une requête, déduite de l'issue, jamais d'une intention.
+  const requetesEmises = t.capture ? t.capture.sent.length : null;
+  noteUsageEventActivity(t, tarif, requetesEmises);
   // Version IA effective et commit déployé (§9.1, GEN-008). Lus ici plutôt
   // que demandés à chaque appelant : une information de traçabilité qu'il
   // faut penser à passer finit par manquer là où elle compte le plus.
@@ -317,6 +323,9 @@ export async function recordCallTrace(t0: CallTrace): Promise<number | null> {
       errorMessage: t.errorMessage,
       metadata: {
         traceId: t.traceId, promptVersion: t.promptVersion, shadow: t.shadow,
+        // Carte #811 (P1-A) : nombre de requêtes réellement émises vers le fournisseur pour CET événement
+        // (0 : refus avant appel, rang non sollicité). Absent : trace antérieure ou appelant sans capture.
+        ...(requetesEmises !== null ? { networkRequests: requetesEmises } : {}),
         // COST-007 (§9.1, lot IA 2) : référence tarifaire FIGÉE avec l'appel —
         // le tarif appliqué reste lisible même après une révision de grille.
         // `null` = aucun tarif connu (coût non calculable, COST-008).
@@ -393,6 +402,32 @@ export async function recordCallTrace(t0: CallTrace): Promise<number | null> {
     await captureOf(t, null, execution.id);
     return null;
   }
+}
+
+/**
+ * Carte #811 (P1-A) — porte l'événement d'usage dans la mesure de l'exécution
+ * en cours (`measure/ai-activity`), avec EXACTEMENT les données de la ligne
+ * `ai_usage_event` écrite ensuite : les totaux d'un passage se concilient avec
+ * ses événements sources. Synchrone, sans écriture ; ne lève jamais.
+ */
+function noteUsageEventActivity(t: CallTrace, tarif: ReturnType<typeof computeTracePricing>, requetesEmises: number | null): void {
+  try {
+    const jetons = Math.max(0, t.inputTokens) + Math.max(0, t.outputTokens);
+    const emises = requetesEmises ?? (t.status === 'success' || jetons > 0 ? 1 : 0);
+    const ref = emises > 0 ? pricingRef(t.provider, tarif.pricedModel ?? t.model) : null;
+    let traitement: string | null = null;
+    try { traitement = treatmentOfUseCase(t.useCaseCode); } catch { traitement = null; }
+    noteAiUsageEvent({
+      traceId: t.traceId, operationCode: t.operationCode, treatment: traitement, model: t.model,
+      rank: t.modelRank ?? (t.usedFallback ? null : 'primary'), callKind: t.callKind === 'repair' ? 'repair' : 'analysis',
+      status: t.status, networkRequests: emises, inputTokens: t.inputTokens, outputTokens: t.outputTokens, costMicros: tarif.costMicros,
+      costNature: aiCostNatureOf({
+        networkRequests: emises, status: t.status, inputTokens: t.inputTokens, outputTokens: t.outputTokens,
+        pricingStatus: tarif.status, failureFamily: t.failure?.family ?? null,
+        priceConfirmed: !!ref && ref.verified === true && ref.stale !== true,
+      }),
+    });
+  } catch { /* la mesure ne fait jamais échouer une trace */ }
 }
 
 /** Lot 82C : capture de l'appel, rattachée à son événement d'usage. Ne lève jamais. */

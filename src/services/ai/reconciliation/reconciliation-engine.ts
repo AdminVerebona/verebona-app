@@ -33,6 +33,7 @@ import { guardDecisionAgainstUser } from '@/services/to-process/arbitration-memo
 import type { ReconciliationDecision, ReconciliationRun } from './types';
 import type { CollectedField } from './evidence-collector';
 import { assertJobActive } from '../queue/execution-control';
+import { noteAiDecisionReuse, openAiActivity, publishedAiCounters, type AiActivitySnapshot } from '../measure/ai-activity';
 import { T3ExecutionRecorder, writeT3Report } from '../execution-report/t3-report';
 import { isRegistryKey } from './canonical-key';
 import { guardFreeText, isFreeTextKey } from './information-check/inventory';
@@ -82,8 +83,10 @@ export async function reconcileAsset(input: ReconcileInput): Promise<Reconciliat
     accountId: input.accountId, assetId: input.assetId, reconciliationRunId: runId, accountRunId: input.accountRunId ?? null,
     sourceFileId: input.sourceFileId ?? null, triggeredBy: input.triggeredBy,
   });
+  // Carte #811 (P1-A) : mesure de l'activité IA du run local (demandes, cache, requêtes réellement émises, coût).
+  const mesure = openAiActivity();
   try {
-    const run = await runEngine(input, runId, traceId, rec);
+    const run = await mesure.run(() => runEngine(input, runId, traceId, rec, mesure));
     // Lot 113P (#715) : plus de réconciliation de STATUT des échéances (« réalisé » sur preuve) —
     // un événement n'a plus de statut ; le document reste lié et consultable.
     await projectCilAfter(input);
@@ -96,6 +99,11 @@ export async function reconcileAsset(input: ReconcileInput): Promise<Reconciliat
     const { isExecutionCancelled } = await import('../queue/execution-control');
     if (!isExecutionCancelled(e)) {
       rec.failure = (e as Error)?.message ?? String(e);
+      // Carte #811 : un run en échec publie quand même ce qui a été réellement émis avant l'échec.
+      if (!rec.aiPublished) {
+        rec.aiActivity = mesure.snapshot();
+        rec.aiPublished = publishedAiCounters(rec.aiActivity, rec.aiCalls, 'T3');
+      }
       await rapport();
     }
     throw e;
@@ -121,7 +129,10 @@ async function projectCilAfter(input: ReconcileInput): Promise<void> {
   }
 }
 
-async function runEngine(input: ReconcileInput, runId: number, traceId: string, rec?: T3ExecutionRecorder): Promise<ReconciliationRun> {
+async function runEngine(
+  input: ReconcileInput, runId: number, traceId: string, rec?: T3ExecutionRecorder,
+  mesure?: { snapshot(): AiActivitySnapshot },
+): Promise<ReconciliationRun> {
 
   // Lot 76J (T3 complétude) : prix d'achat ancrés dans les candidats
   // Opération T1 → preuves ordinaires, AVANT la collecte (même moteur).
@@ -217,7 +228,9 @@ async function runEngine(input: ReconcileInput, runId: number, traceId: string, 
       if (memoire && !input.forceAiReview && await memoire.isArbitrated({ ...decision, action: 'create_conflict' })) {
         decision = { ...decision, action: 'keep', proposedValue: decision.currentValue, reasonCode: 'ALREADY_DECIDED', aiSource: 'USER_ARBITRATION' };
         if (rec) rec.userArbitrationsKept++;
-        void noteReuseSafe({ kind: 'USER_ARBITRATION_KEPT', accountId: input.accountId, treatment: 'T3', operationCode: 't3_value_conflict' });
+        // Carte #811 : porté dans la mesure du passage tout de suite (l'écriture du compteur, elle, n'est pas attendue).
+        noteAiDecisionReuse({ kind: 'USER_ARBITRATION_KEPT', operationCode: 't3_value_conflict', treatment: 'T3' });
+        void noteReuseSafe({ kind: 'USER_ARBITRATION_KEPT', accountId: input.accountId, treatment: 'T3', operationCode: 't3_value_conflict', activityNoted: true });
       } else {
         const revue = await reviewAmbiguousField({
           accountId: input.accountId,
@@ -231,7 +244,8 @@ async function runEngine(input: ReconcileInput, runId: number, traceId: string, 
         });
         decision = revue.decision;
         if (rec) {
-          rec.aiCalls += revue.providerCalls;
+          // Carte #811 : `rec.aiCalls` = demandes DÉCLARÉES (0 ou 1 par champ) ; les requêtes réelles viennent de la mesure du run.
+          rec.aiCalls += revue.declaredRequests ?? revue.providerCalls;
           if (revue.cacheHit) rec.aiCacheHits++;
           if (revue.reused) rec.decisionsReused++;
           if (revue.reevaluation) rec.reevaluations.push({ fieldKey: decision.fieldKey, reasons: revue.reevaluation });
@@ -339,6 +353,14 @@ async function runEngine(input: ReconcileInput, runId: number, traceId: string, 
     );
   });
 
+  // Carte #811 (P1-A) : compteurs publiés = MESURE de la passerelle (requêtes réellement émises, tentatives,
+  // demandes logiques, cache) ; les demandes déclarées par le moteur (`rec.aiCalls`) restent à part. Sans
+  // passerelle observée (jeu de test qui simule la revue) : demandes déclarées, étiquetées comme telles.
+  const activite = mesure?.snapshot() ?? null;
+  const declarees = rec ? rec.aiCalls : decisions.filter((d) => d.aiSource === 'PROVIDER').length;
+  const publies = publishedAiCounters(activite, declarees, 'T3');
+  const mesures = publies.semantics === 'MEASURED_V1';
+  if (rec) { rec.aiActivity = activite; rec.aiPublished = publies; }
   const summary: ReconciliationRun = {
     runId,
     accountId: input.accountId,
@@ -354,8 +376,15 @@ async function runEngine(input: ReconcileInput, runId: number, traceId: string, 
     conflictCount: decisions.filter((d) => d.action === 'create_conflict').length,
     aiReviewCount: decisions.filter((d) => !d.deterministic).length,
     // Lot 99A : compteurs distincts (appels réels, cache, décisions réutilisées).
-    providerCalls: rec ? rec.aiCalls : decisions.filter((d) => d.aiSource === 'PROVIDER').length,
-    aiCacheHits: rec ? rec.aiCacheHits : decisions.filter((d) => d.aiSource === 'CACHE').length,
+    providerCalls: publies.providerCalls,
+    aiCacheHits: mesures ? publies.cacheResponses : rec ? rec.aiCacheHits : decisions.filter((d) => d.aiSource === 'CACHE').length,
+    aiCountersSemantics: publies.semantics,
+    aiLogicalRequests: publies.logicalRequests,
+    aiProviderAttempts: publies.providerAttempts,
+    aiDeclaredRequests: declarees,
+    providerCallsOtherTreatments: publies.providerCallsOtherTreatments,
+    deterministicDecisions: decisions.filter((d) => d.deterministic).length,
+    ...(activite ? { aiActivity: activite } : {}),
     decisionsReused: rec ? rec.decisionsReused + rec.userArbitrationsKept
       : decisions.filter((d) => d.aiSource === 'MEMORY' || d.aiSource === 'USER_ARBITRATION').length,
     ...(rec ? { conflictsUnchanged: rec.conflictsUnchanged } : {}),

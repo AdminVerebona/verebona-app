@@ -205,6 +205,9 @@ export async function registerNode(): Promise<void> {
 
   registerReconciliationHandlers();
   initAssistant();
+  // Carte #811 (P1-C) : état des protections anti-redondance T3 journalisé au démarrage (migrations, mémoire,
+  // cache, réservation, préfiltre) — jamais bloquant, jamais attendu.
+  void import('@/services/ai/reconciliation/t3-protections').then((m) => m.logT3ProtectionsAtStartup()).catch(() => undefined);
 
   // 5 bis. Adaptateurs de récupération de l'assistant.
   //

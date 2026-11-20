@@ -63,6 +63,15 @@ export type AiErrorCode =
    */
   | 'ACCOUNT_INELIGIBLE'
   /**
+   * Carte #811 (P1-C) : une protection anti-redondance (mémoire des décisions,
+   * cache des réponses, réservation) est en mode dégradé ET le budget d'appels
+   * émis sans protection de la portée (traitement, opération, compte) est
+   * épuisé pour l'heure. Refusé AVANT tout contact fournisseur (aucun coût),
+   * jamais récupérable dans l'appel : l'appelant prend son repli sans IA et le
+   * travail est repris à un passage suivant (`degraded/degraded-mode`).
+   */
+  | 'DEGRADED_CALL_REFUSED'
+  /**
    * Lot 34D (contrat runtime source unique) : le schéma de validation n'est
    * pas celui transmis au modèle (empreintes différentes) — défaut INTERNE du
    * moteur, détecté avant tout appel fournisseur. Jamais récupérable ;

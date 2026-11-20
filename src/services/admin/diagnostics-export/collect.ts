@@ -973,12 +973,22 @@ export async function previewPlan(plan: DiagPlan): Promise<{ manifest: DiagManif
 // ══════════════════════════════════════════════════════════════════════════
 
 export interface DiagAiUsageDistinct {
-  /** Appels RÉELS au fournisseur (`ai_usage_event`), par traitement / opération. */
+  /**
+   * Carte #811 : requêtes RÉELLEMENT émises vers le fournisseur, par opération — somme de
+   * `ai_usage_event.metadata.networkRequests` ; pour un événement antérieur à cette mesure, une requête est
+   * comptée seulement si une réponse ou une consommation la prouve. Un événement d'usage n'est pas un appel.
+   */
   providerCalls: { total: number; byOperation: Record<string, number> };
+  /** Carte #811 : événements d'usage (lignes), dont sans requête émise, et événements anciens indéterminés. */
+  usageEvents?: { total: number; withoutSend: number; legacyUndetermined: number };
   /** Réponses sans appel facturé et décisions réutilisées (`ai_reuse_counters`, 0858), par nature. */
   reuse: { available: boolean; byKind: Record<string, number>; cacheResponses: number; decisionsReused: number };
-  /** Passages T3 de compte terminés : avec / sans appel réel, non mesurés (antérieurs au lot 99A). */
-  t3Runs: { total: number; withoutAiCall: number; withAiCall: number; unmeasured: number };
+  /**
+   * Passages T3 de compte terminés : avec / sans appel réel, non mesurés (antérieurs au lot 99A).
+   * Carte #811 : `legacySemantics` = passages dont `provider_calls` porte l'ancienne somme des demandes
+   * déclarées par les phases (jamais recalculée) ; seuls les autres sont une mesure.
+   */
+  t3Runs: { total: number; withoutAiCall: number; withAiCall: number; unmeasured: number; legacySemantics?: number };
   /** Mémoire durable des décisions T3 (0856) : entrées actives, remplacées, réutilisations cumulées. */
   t3DecisionMemory: { available: boolean; active: number; superseded: number; reused: number };
 }
@@ -987,11 +997,21 @@ export interface DiagAiUsageDistinct {
 async function readAiUsageDistinct(q: DiagQuery, accounts: number[] | null): Promise<DiagAiUsageDistinct> {
   const f = (col: string) => (accounts === null ? 'TRUE' : `${col} = ANY($1::int[])`);
   const p = accounts === null ? [] : [accounts];
-  const appels = await q(`SELECT coalesce(operation_code, operation_type) AS op, count(*)::bigint AS n FROM ai_usage_event
+  // Carte #811 (P1-A) : requêtes mesurées avec l'événement ; l'historique sans mesure n'est jamais reconstruit.
+  const appels = await q(`SELECT coalesce(operation_code, operation_type) AS op, count(*)::bigint AS lignes,
+       (coalesce(sum((metadata->>'networkRequests')::int) FILTER (WHERE metadata ? 'networkRequests'), 0)
+        + count(*) FILTER (WHERE NOT (metadata ? 'networkRequests')
+                             AND (status = 'success' OR coalesce(input_tokens, 0) + coalesce(output_tokens, 0) > 0)))::bigint AS n,
+       count(*) FILTER (WHERE metadata ? 'networkRequests' AND (metadata->>'networkRequests')::int = 0)::bigint AS sans_envoi,
+       count(*) FILTER (WHERE NOT (metadata ? 'networkRequests')
+                          AND NOT (status = 'success' OR coalesce(input_tokens, 0) + coalesce(output_tokens, 0) > 0))::bigint AS indetermines
+     FROM ai_usage_event
      WHERE ${f('account_id')} GROUP BY 1`, p);
   const byOperation = Object.fromEntries(appels.map((r) => [String(r.op), Number(r.n)]));
+  const somme = (k: string) => appels.reduce((a, r) => a + (Number(r[k]) || 0), 0);
   const out: DiagAiUsageDistinct = {
     providerCalls: { total: Object.values(byOperation).reduce((a, b) => a + b, 0), byOperation },
+    usageEvents: { total: somme('lignes'), withoutSend: somme('sans_envoi'), legacyUndetermined: somme('indetermines') },
     reuse: { available: false, byKind: {}, cacheResponses: 0, decisionsReused: 0 },
     t3Runs: { total: 0, withoutAiCall: 0, withAiCall: 0, unmeasured: 0 },
     t3DecisionMemory: { available: false, active: 0, superseded: 0, reused: 0 },
@@ -1009,9 +1029,14 @@ async function readAiUsageDistinct(q: DiagQuery, accounts: number[] | null): Pro
   const [r] = await q(`SELECT count(*)::bigint AS total,
        count(*) FILTER (WHERE (to_jsonb(r) ->> 'provider_calls')::int = 0)::bigint AS sans,
        count(*) FILTER (WHERE (to_jsonb(r) ->> 'provider_calls')::int > 0)::bigint AS avec,
-       count(*) FILTER (WHERE to_jsonb(r) ->> 'provider_calls' IS NULL)::bigint AS inconnu
+       count(*) FILTER (WHERE to_jsonb(r) ->> 'provider_calls' IS NULL)::bigint AS inconnu,
+       count(*) FILTER (WHERE to_jsonb(r) ->> 'provider_calls' IS NOT NULL
+                          AND to_jsonb(r) ->> 'ai_counters_semantics' IS DISTINCT FROM 'MEASURED_V1')::bigint AS ancienne
      FROM account_reconciliation_runs r WHERE ${f('r.account_id')} AND r.status IN ('completed', 'partial')`, p);
-  out.t3Runs = { total: Number(r?.total ?? 0), withoutAiCall: Number(r?.sans ?? 0), withAiCall: Number(r?.avec ?? 0), unmeasured: Number(r?.inconnu ?? 0) };
+  out.t3Runs = {
+    total: Number(r?.total ?? 0), withoutAiCall: Number(r?.sans ?? 0), withAiCall: Number(r?.avec ?? 0), unmeasured: Number(r?.inconnu ?? 0),
+    legacySemantics: Number(r?.ancienne ?? 0),
+  };
   if (await existe('t3_decision_memory')) {
     const [m] = await q(`SELECT count(*) FILTER (WHERE status = 'ACTIVE')::bigint AS actives, count(*) FILTER (WHERE status = 'SUPERSEDED')::bigint AS remplacees,
          coalesce(sum(reuse_count), 0)::bigint AS reutilisations FROM t3_decision_memory WHERE ${f('account_id')}`, p);
@@ -1023,9 +1048,13 @@ async function readAiUsageDistinct(q: DiagQuery, accounts: number[] | null): Pro
 /** Lignes du rapport synthétique (pure). */
 export function usageSummaryLines(u: DiagAiUsageDistinct): Array<[string, string | number]> {
   return [
-    ['Appels IA réels (fournisseur)', u.providerCalls.total],
+    ['Appels IA réels (requêtes émises vers le fournisseur)', u.providerCalls.total],
+    ...(u.usageEvents ? [
+      ['Événements d’usage IA (lignes — pas des appels)', `${u.usageEvents.total}${u.usageEvents.withoutSend ? ` dont ${u.usageEvents.withoutSend} sans requête émise` : ''}`] as [string, string],
+      ...(u.usageEvents.legacyUndetermined ? [['Événements d’usage anciens indéterminés (ancienne sémantique, non comptés)', u.usageEvents.legacyUndetermined] as [string, number]] : []),
+    ] : []),
     ['Réponses IA servies par le cache (sans appel)', u.reuse.available ? u.reuse.cacheResponses : 'non mesuré (migration 0858 absente)'],
     ['Décisions IA réutilisées (sans appel)', u.reuse.available ? u.reuse.decisionsReused : 'non mesuré (migration 0858 absente)'],
-    ['Passages T3 sans appel IA', `${u.t3Runs.withoutAiCall} / ${u.t3Runs.total}${u.t3Runs.unmeasured ? ` (dont ${u.t3Runs.unmeasured} antérieurs au lot 99A, non mesurés)` : ''}`],
+    ['Passages T3 sans appel IA', `${u.t3Runs.withoutAiCall} / ${u.t3Runs.total}${u.t3Runs.unmeasured ? ` (dont ${u.t3Runs.unmeasured} antérieurs au lot 99A, non mesurés)` : ''}${u.t3Runs.legacySemantics ? ` ; ${u.t3Runs.legacySemantics} passage(s) en ancienne sémantique (demandes déclarées, non recalculées)` : ''}`],
   ];
 }

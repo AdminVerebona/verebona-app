@@ -60,7 +60,7 @@ import { T3OpenActionsDiagnostic } from './_components/T3OpenActionsDiagnostic';
 import { ToProcessRelevancePanel } from './_components/ToProcessRelevancePanel';
 import { LaunchRefusalsPanel } from './_components/LaunchRefusalsPanel';
 import {
-  T3Supervision, PHASE_LABEL, formatDuration, type ExecutionPhase, type T3SupervisionData,
+  T3Supervision, PHASE_LABEL, formatDuration, jobAiText, type ExecutionPhase, type T3SupervisionData,
 } from './_components/T3Supervision';
 
 type Treatment = 'T1' | 'T2' | 'T3' | 'T4' | 'T6';
@@ -137,7 +137,13 @@ function t3Counters(job: Job): string | null {
   if (d.outcome === 'PARTIAL_SUCCESS') parts.push('réussite PARTIELLE');
   if (d.journal === 'FAILED') parts.push('journal par carte EN ÉCHEC');
   if (n(d.enqueued) != null) parts.push(`${n(d.enqueued)} compte(s) mis en file`);
-  if (n(d.aiCalls) != null) parts.push(n(d.aiCalls) === 0 ? 'sans appel au modèle' : `${n(d.aiCalls)} appel(s) au modèle`);
+  // Carte #811 : requêtes réellement émises (mesure) ; un travail antérieur à la mesure dit « demandes déclarées ».
+  if (n(d.aiCalls) != null) {
+    parts.push(jobAiText({
+      aiCalls: n(d.aiCalls), aiCountersSemantics: typeof d.aiCountersSemantics === 'string' ? d.aiCountersSemantics : null,
+      aiLogicalRequests: n(d.aiLogicalRequests), aiProviderAttempts: n(d.aiProviderAttempts), aiCallsOtherTreatments: n(d.aiCallsOtherTreatments),
+    }).replace(/^ · /, ''));
+  }
   // Lot 99A (point D) : réponses du cache et décisions réutilisées — jamais comptées comme appels.
   if (n(d.aiCacheResponses)) parts.push(`${n(d.aiCacheResponses)} réponse(s) du cache`);
   if (n(d.aiDecisionsReused)) parts.push(`${n(d.aiDecisionsReused)} décision(s) réutilisée(s)`);

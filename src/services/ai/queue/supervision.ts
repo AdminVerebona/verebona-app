@@ -102,10 +102,20 @@ interface T3JobSummary {
   objectsExamined: number | null;
   objectsModified: number | null;
   openActionsExamined: number | null;
+  /**
+   * Carte #811 : requêtes réellement émises quand `aiCountersSemantics = MEASURED_V1` ; sinon demandes déclarées
+   * par les phases (travail antérieur à la mesure : ancienne sémantique).
+   */
   aiCalls: number | null;
   /** Lot 99A : réponses servies par le cache et décisions réutilisées (aucun appel). */
   aiCacheResponses: number | null;
   aiDecisionsReused: number | null;
+  /** Carte #811 : sémantique des compteurs, demandes logiques, tentatives, demandes déclarées, autre traitement. */
+  aiCountersSemantics: string | null;
+  aiLogicalRequests: number | null;
+  aiProviderAttempts: number | null;
+  aiDeclaredRequests: number | null;
+  aiCallsOtherTreatments: number | null;
   businessResult: string | null;
   /** Motif d'échec, d'attente ou d'abstention. */
   reason: string | null;
@@ -144,6 +154,11 @@ export function summarizeT3Job(job: QueuedJob & { attemptHistoryLength?: number 
     // Lot 99A (point D) : réponses du cache et décisions réutilisées — jamais des appels.
     aiCacheResponses: num(d.aiCacheResponses),
     aiDecisionsReused: num(d.aiDecisionsReused),
+    aiCountersSemantics: typeof d.aiCountersSemantics === 'string' ? d.aiCountersSemantics : null,
+    aiLogicalRequests: num(d.aiLogicalRequests),
+    aiProviderAttempts: num(d.aiProviderAttempts),
+    aiDeclaredRequests: num(d.aiDeclaredRequests),
+    aiCallsOtherTreatments: num(d.aiCallsOtherTreatments),
     businessResult: job.businessResult ?? null,
     reason,
   };
@@ -294,6 +309,11 @@ interface T3Supervision {
   lastAutomatic: T3JobSummary | null;
   /** Dernière racine de balayage planifié. */
   lastSweep: T3JobSummary | null;
+  /**
+   * Carte #811 (P1-C) : diagnostic des protections anti-redondance du #596 (migrations effectives, mémoire, cache,
+   * réservation, préfiltre, réglages, modes dégradés) — `null` : diagnostic illisible, jamais « actif » par défaut.
+   */
+  protections: import('../reconciliation/t3-protections').T3Protections | null;
 }
 
 export async function getT3Supervision(now: Date = new Date()): Promise<T3Supervision> {
@@ -362,7 +382,9 @@ export async function getT3Supervision(now: Date = new Date()): Promise<T3Superv
   const liveCommits = workers.instances.filter((i) => i.alive && i.buildCommit).map((i) => i.buildCommit as string);
 
   const c = compteurs ?? {};
+  const protections = await (await import('../reconciliation/t3-protections')).getT3Protections(now).catch(() => null);
   return {
+    protections,
     generatedAt: now.toISOString(),
     build: {
       commit: ident.commit, commitSource: ident.commitSource, container: ident.container,

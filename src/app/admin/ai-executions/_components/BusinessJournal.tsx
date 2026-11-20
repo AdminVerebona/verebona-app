@@ -169,7 +169,11 @@ export function JournalRowsView({ rows, view, onOpen }: { rows: BusinessExecutio
 /** Usage de l'IA par traitement (compteurs distincts, lot 99A). */
 export interface SynthesisAiUsage {
   available: boolean;
-  byTreatment: Record<string, { providerCalls: number; cacheResponses: number; decisionsReused: number }>;
+  byTreatment: Record<string, {
+    providerCalls: number; cacheResponses: number; decisionsReused: number;
+    /** Carte #811 : événements d'usage (lignes), dont sans requête émise ; événements anciens indéterminés. */
+    usageEvents?: number; usageEventsWithoutSend?: number; providerCallsUndetermined?: number;
+  }>;
 }
 
 const HEALTH_TONE: Record<JournalHealth, string> = {
@@ -255,6 +259,9 @@ export function JournalSynthesisView({ synthesis, aiUsage, view, periodLabel, op
                   <span className="block text-xs text-[color:var(--text-muted)] break-words" data-testid="journal-synthese-ia">
                     IA : {n(u.providerCalls, 'appel réel', 'appels réels')}
                     {aiUsage?.available !== false && ` · ${n(u.cacheResponses, 'réponse du cache', 'réponses du cache')} · ${n(u.decisionsReused, 'décision réutilisée', 'décisions réutilisées')}`}
+                    {/* Carte #811 : un événement d'usage n'est pas un appel ; l'historique sans mesure est dit, jamais reconstruit. */}
+                    {u.usageEvents ? ` · ${n(u.usageEvents, 'événement d’usage', 'événements d’usage')}${u.usageEventsWithoutSend ? ` dont ${u.usageEventsWithoutSend} sans requête émise` : ''}` : null}
+                    {u.providerCallsUndetermined ? ` · ${n(u.providerCallsUndetermined, 'événement ancien indéterminé', 'événements anciens indéterminés')} (ancienne sémantique)` : null}
                   </span>
                 )}
               </li>

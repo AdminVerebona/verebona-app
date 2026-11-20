@@ -40,19 +40,38 @@ export interface MemoryEntry {
   createdAt: Date;
 }
 
-let etat: { ok: boolean; at: number } | null = null;
+let etat: { ok: boolean; at: number; reason: MemoryUnavailableReason | null } | null = null;
+
+/** Carte #811 : pourquoi la mémoire est inutilisable (null : utilisable). */
+export type MemoryUnavailableReason = 'DISABLED_BY_CONFIG' | 'MIGRATION_MISSING' | 'READ_FAILED';
+
+/** Mémoire désactivée par configuration (`T3_DECISION_MEMORY_ENABLED=0`) ? */
+export function decisionMemoryDisabled(): boolean {
+  return process.env.T3_DECISION_MEMORY_ENABLED?.trim() === '0';
+}
 
 /** Table 0856 présente et mémoire activée (`T3_DECISION_MEMORY_ENABLED`, défaut 1) ? Ne lève jamais. */
 export async function memoryReady(): Promise<boolean> {
-  if (process.env.T3_DECISION_MEMORY_ENABLED?.trim() === '0') return false;
-  if (etat && (etat.ok || Date.now() - etat.at < 300_000)) return etat.ok;
+  return (await memoryUnavailableReason()) === null;
+}
+
+/**
+ * Carte #811 (P1-C) — raison pour laquelle la mémoire est inutilisable : désactivée par configuration, table
+ * 0856 absente, base illisible ; `null` : utilisable. Une table présente est mémorisée ; une absence ou un échec
+ * est revérifié toutes les 5 minutes. Ne lève jamais.
+ */
+export async function memoryUnavailableReason(): Promise<MemoryUnavailableReason | null> {
+  if (decisionMemoryDisabled()) return 'DISABLED_BY_CONFIG';
+  if (etat && (etat.ok || Date.now() - etat.at < 300_000)) return etat.reason;
   let ok = false;
+  let reason: MemoryUnavailableReason | null = 'MIGRATION_MISSING';
   try {
     const [r] = (await pgClient.unsafe(`SELECT to_regclass('t3_decision_memory') IS NOT NULL AS ok`)) as unknown as Array<{ ok: boolean }>;
     ok = r?.ok === true;
-  } catch { ok = false; }
-  etat = { ok, at: Date.now() };
-  return ok;
+    reason = ok ? null : 'MIGRATION_MISSING';
+  } catch { ok = false; reason = 'READ_FAILED'; }
+  etat = { ok, at: Date.now(), reason };
+  return reason;
 }
 
 /** Réinitialise la détection de la table (tests). */

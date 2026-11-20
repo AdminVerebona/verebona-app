@@ -35,6 +35,32 @@ interface Run {
   triggerType: string; triggerCode: string | null; scope: string | null; status: string; outcome: string | null;
   startedAt: string | null; finishedAt: string | null; phases: Record<string, Phase> | null;
   counters: Record<string, number | null>; aiCallsByOperation: Record<string, number>; byReasonCode: Record<string, number>;
+  /** Carte #811 : base du décompte par opération et compteurs MESURÉS du passage (absents : ancienne sémantique). */
+  aiCallsBasis?: 'MEASURED' | 'USAGE_EVENTS_IN_WINDOW';
+  ai?: {
+    semantics: string; providerCalls: number | null; providerCallsOtherTreatments: number | null; providerAttempts: number | null;
+    logicalRequests: number | null; declaredRequests: number | null; cacheResponses: number | null; decisionsReused: number | null;
+    usageEvents: number | null; usageEventsWithoutSend: number | null; costObservedMicros: number | null; costEstimatedMicros: number | null;
+    costUnknownEvents: number | null;
+  } | null;
+}
+
+/** Carte #811 — ligne « IA du passage » (pure, testée) : vérité mesurée, ou ancienne sémantique dite. */
+export function runAiLine(run: Pick<Run, 'ai' | 'aiCallsBasis'>): string {
+  const a = run.ai;
+  if (!a) return 'IA du passage : ancienne sémantique (passage antérieur à la mesure des appels réels — valeurs d’origine conservées, non recalculées).';
+  const v = (x: number | null) => (x === null ? '—' : x.toLocaleString('fr-FR'));
+  const usd = (micros: number | null) => (micros === null ? '—' : `${(micros / 1_000_000).toLocaleString('fr-FR', { minimumFractionDigits: 4, maximumFractionDigits: 4 })} USD`);
+  if (a.semantics !== 'MEASURED_V1') {
+    return `IA du passage : ${v(a.declaredRequests)} demande(s) déclarée(s) par les phases — passerelle non observée, aucun appel réel mesuré.`;
+  }
+  return `IA du passage (mesuré) : ${v(a.logicalRequests)} demande(s) logique(s) · ${v(a.providerCalls)} requête(s) réellement émise(s)`
+    + ` en ${v(a.providerAttempts)} tentative(s)${a.providerCallsOtherTreatments ? ` dont ${v(a.providerCallsOtherTreatments)} pour un autre traitement que T3` : ''}`
+    + ` · ${v(a.cacheResponses)} réponse(s) du cache · ${v(a.decisionsReused)} décision(s) réutilisée(s)`
+    + ` · ${v(a.usageEvents)} événement(s) d’usage${a.usageEventsWithoutSend ? ` dont ${v(a.usageEventsWithoutSend)} sans requête émise` : ''}`
+    + ` · coût observé ${usd(a.costObservedMicros)}${a.costEstimatedMicros ? ` · coût estimé ${usd(a.costEstimatedMicros)}` : ''}`
+    + `${a.costUnknownEvents ? ` · ${v(a.costUnknownEvents)} événement(s) au coût inconnu` : ''}`
+    + ` · demandes déclarées par les phases : ${v(a.declaredRequests)}`;
 }
 interface Card {
   id: number; createdAt: string; accountId: number; runId: number | null; jobId: number | null; actionId: number; ruleCode: string;
@@ -211,7 +237,13 @@ function RunBlock({ run, onFilter }: { run: Run; onFilter: (f: Partial<Filters>)
       <p className="text-xs text-[color:var(--text-muted)] break-words">
         {COUNTERS.map(([k, l]) => `${run.counters[k] ?? '—'} ${l}`).join(' · ')}
       </p>
-      <p className="text-xs text-[color:var(--text-muted)] break-words">Appels IA par opération : {kv(run.aiCallsByOperation)}</p>
+      <p className="text-xs text-[color:var(--text-secondary)] break-words" data-testid="t3-run-ai">{runAiLine(run)}</p>
+      <p className="text-xs text-[color:var(--text-muted)] break-words">
+        {run.aiCallsBasis === 'MEASURED'
+          ? 'Requêtes émises par opération (mesure du passage) : '
+          : 'Événements d’usage du compte pendant le passage, par opération (ancienne sémantique : des lignes, pas des appels) : '}
+        {kv(run.aiCallsByOperation)}
+      </p>
       <p className="text-xs text-[color:var(--text-muted)] break-words">
         Cartes par motif :{' '}
         {Object.keys(run.byReasonCode).length === 0 ? '—' : Object.entries(run.byReasonCode).map(([k, v], i) => (

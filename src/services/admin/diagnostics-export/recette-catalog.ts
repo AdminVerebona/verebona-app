@@ -139,6 +139,7 @@ export const RECETTE_TABLES: Readonly<Record<string, { domain: Exclude<RecetteDo
   document_rule_evaluations: { domain: 'extraits-ia', description: 'Évaluations de règles documentaires.' },
   // Lot 85F (0720) : mémoire des interprétations sémantiques T3 de la connaissance T1 (KNOWLEDGE_QUERY).
   ai_reuse_counters: { domain: 'extraits-ia', description: 'Compteurs quotidiens des réponses IA sans appel facturé (cache, demandes simultanées partagées, entrées renouvelées) et des décisions réutilisées ou réévaluées — lot 99A.' },
+  ai_degraded_events: { domain: 'extraits-ia', description: 'Compteurs quotidiens des passages en mode dégradé des protections anti-redondance IA (mémoire des décisions T3, cache des réponses, réservation, signature de configuration) : composant, raison, effet sur les appels, code technique — carte #811.' },
   t3_knowledge_queries: { domain: 'extraits-ia', description: 'Interprétations T3 de la connaissance T1 persistée (question, empreinte du contexte, issue validée, constats et preuves citées, refus, appels IA) — lot 85F.' },
   document_operation_candidates: { domain: 'extraits-ia', description: 'Candidats d’Opération T1 et décision T3.' },
   t1_quality_signals: { domain: 'extraits-ia', description: 'Signaux de qualité T1.' },
