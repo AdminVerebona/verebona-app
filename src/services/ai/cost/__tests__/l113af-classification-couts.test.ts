@@ -226,7 +226,7 @@ describe('113AF — rattrapage BO « IA : origine des coûts »', () => {
 });
 
 describe('113AF — textes BO', () => {
-  it('chaque origine et chaque raison ont un libellé ; jamais « Opération »', () => {
+  it('chaque origine et chaque raison ont un libellé ; jamais « événement de référence »', () => {
     for (const v of [...Object.values(COST_ORIGIN_LABELS), ...Object.values(COST_REASON_LABELS), ...Object.values(COST_SEGMENT_HELP)]) {
       expect(v.length).toBeGreaterThan(5);
       expect(v).not.toMatch(/Opération/);

@@ -48,7 +48,7 @@ vi.mock('@/services/verebona-assistant/events/business-events', async (o) => ({
 
 type Json = Record<string, any>;
 /** Catégorie de résultat de la recherche générale (travaux D) : « Événement de référence ». */
-const CATEGORIE = 'Événement de référence';
+const CATEGORIE = 'Opération';
 const facade = () => import('@/services/business-operations/operation-write.facade');
 
 scenario('L114OF', 'Opérations / Agenda CDC V2.0 — point F : date de présentation, coût de possession sans double compte, exports', ({ sql, make }) => {
@@ -307,7 +307,7 @@ scenario('L114OF', 'Opérations / Agenda CDC V2.0 — point F : date de présent
     const actifs = await k.actives(compte);
     const [pret] = actifs.filter((o) => o.type_code === 'FINANCING');
     const achats = actifs.filter((o) => o.type_code === 'ACQUISITION');
-    expect(pret, 'un événement de référence FINANCING').toBeTruthy();
+    expect(pret, 'une opération FINANCING').toBeTruthy();
     expect(achats.length, 'deux achats distincts').toBe(2);
     asUser(compte);
     const avant = { maison: empreinteTco(await tco(compte, maison.id)), voiture: empreinteTco(await tco(compte, voiture.id)) };
@@ -355,7 +355,7 @@ scenario('L114OF', 'Opérations / Agenda CDC V2.0 — point F : date de présent
     const reparation = await facture(compte, maison.id, { type: 'REPAIR_INVOICE', titre: 'Réparation après dégât des eaux', cents: 3_000_000, date: '2025-03-20', hint: 'INTERVENTION', reference: 'F-REPAR-744F' });
     await k.passer(compte, { today: AUJ });
     const intervention = (await k.actives(compte)).find((o) => o.type_code === 'INTERVENTION');
-    expect(intervention, 'un événement de référence INTERVENTION pour la réparation').toBeTruthy();
+    expect(intervention, 'une opération INTERVENTION pour la réparation').toBeTruthy();
     asUser(compte);
 
     const depart = empreinteTco(await tco(compte, maison.id));
@@ -372,7 +372,7 @@ scenario('L114OF', 'Opérations / Agenda CDC V2.0 — point F : date de présent
     expect(await (await facade()).linkDocument(user(compte), { operationId: sinistre, fileId: reparation, reasonCode: 'L114OF_E2E' })).toMatchObject({ status: 'APPLIED' });
     const [partage] = await sql<{ n: number }[]>`
       SELECT count(*)::int AS n FROM business_operation_documents WHERE account_id = ${compte.id} AND file_id = ${reparation} AND active`;
-    expect(partage.n, 'le justificatif appartient bien aux deux événements de référence').toBe(2);
+    expect(partage.n, 'le justificatif appartient bien aux deux opérations').toBe(2);
     expect(comptees(await tco(compte, maison.id), 3_000_000), 'justificatif partagé : toujours un seul coût').toBe(1);
     expect(totaux(await tco(compte, maison.id)), 'justificatif partagé : total inchangé').toEqual(departTotaux);
 
@@ -409,7 +409,7 @@ scenario('L114OF', 'Opérations / Agenda CDC V2.0 — point F : date de présent
     const reparation = await facture(compte, maison.id, { type: 'REPAIR_INVOICE', titre: 'Remise en état du plafond', cents: 1_200_000, date: '2025-03-20', hint: 'INTERVENTION', reference: 'F-PLAFOND-744G' });
     await k.passer(compte, { today: AUJ });
     const intervention = (await k.actives(compte)).find((o) => o.type_code === 'INTERVENTION');
-    expect(intervention, 'un événement de référence INTERVENTION').toBeTruthy();
+    expect(intervention, 'une opération INTERVENTION').toBeTruthy();
 
     // 1. Élément relié au sinistre par le GRAPHE SEUL (modèle cible : aucun rôle PRINCIPAL, aucune colonne historique).
     const expertise = await element(compte, 'Passage de l’expert', '2025-02-20', [maison.id]);

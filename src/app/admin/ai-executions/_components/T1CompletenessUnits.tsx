@@ -56,7 +56,7 @@ export const PROVENANCE_LABEL: Record<string, string> = {
   FACT: 'fait',
   TABLE: 'ligne de tableau',
   METADATA: 'métadonnée',
-  CANDIDATE: 'candidat d’événement de référence',
+  CANDIDATE: 'candidat d’opération métier',
   VALUE_DECISION: 'décision de valeur',
   UNIT: 'autre unité (répétition, chevauchement)',
   REPAIR: 'réparation ciblée',

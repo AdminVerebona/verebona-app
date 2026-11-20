@@ -65,10 +65,11 @@ describe('L103D-U-HOUSING-SCOPE — règle unique « logement rattaché »', () 
     expect(AGENDA_STRUCTURAL_LINK_INCOMPATIBLE).toBe('AGENDA_STRUCTURAL_LINK_INCOMPATIBLE');
     expect(AGENDA_HOUSING_REMOVAL_HAS_DEPENDENTS).toBe('AGENDA_HOUSING_REMOVAL_HAS_DEPENDENTS');
     expect(HOUSING_SCOPE_LABELS.confirmBody(2, 1)).toMatch(/2 pièces et 1 équipement.*restent dans Verebona/);
-    expect(JSON.stringify(HOUSING_SCOPE_LABELS)).not.toMatch(/Opération|élément de l’agenda/);
+    // Règle remplacée (carte #806, décision du PO du 17/11/2026) : la garde interdisait « Opération » ; à l’écran on dit désormais « opération », et c’est « événement de référence » qui est interdit.
+    expect(JSON.stringify(HOUSING_SCOPE_LABELS)).not.toMatch(/[ée]v[éeè]nements?\s+de\s+r[ée]f[ée]rence|élément de l’agenda/i);
   });
 
-  it('tiroir de l’événement de référence : aucune catégorie Pièces / Équipements sans logement (ni titre, ni « Aucun », ni bouton)', async () => {
+  it('tiroir de l’opération : aucune catégorie Pièces / Équipements sans logement (ni titre, ni « Aucun », ni bouton)', async () => {
     const { AgendaGroupingPanel, visibleMainCategories } = await import('@/components/agenda/AgendaGroupingPanel');
     const rien = () => undefined;
     const vue = (allowed: boolean): AgendaGroupingView => ({
@@ -165,14 +166,16 @@ describe('L103D-U-WORDING — associations Agenda', () => {
     expect(groupingActionToast('retirer-element')).toBe('Association retirée');
     expect(GROUPING_LABELS.dissociateEvent('Contrôle')).toBe('Dissocier « Contrôle »');
   });
-  it('aucun « élément de l’agenda » ni « Opération » visible dans ces libellés ; boutons « Associer… » sous « Associations »', () => {
+  it('aucun « élément de l’agenda » ni « événement de référence » visible dans ces libellés ; boutons « Associer… » sous « Associations »', () => {
     // Règle remplacée (carte #806) : « aucun libellé ne contient "Opération" » — décision du PO du 17/11/2026 (#806 §1) :
     // à l'écran on dit désormais « opération ». Le texte NOUVEAU de la carte #806 (`pickerGroupingNote`, sens du geste)
     // l'emploie ; les libellés EXISTANTS ne sont pas renommés ici et restent sous la garde d'origine.
     const { pickerGroupingNote, ...existants } = GROUPING_LABELS;
     const tout = JSON.stringify(existants) + GROUPING_LABELS.dissociateEvent('x');
-    expect(tout).not.toMatch(/[ée]l[ée]ment de l.agenda|[ée]l[ée]ment d.agenda|Relier cet élément|Opération/i);
-    expect(pickerGroupingNote).not.toMatch(/[ée]l[ée]ment de l.agenda|[ée]l[ée]ment d.agenda|Relier cet élément|Opération\b|événement de référence/);
+    // Règle remplacée (carte #806, décision du PO du 17/11/2026) : la garde interdisait « Opération » ; à l’écran on dit désormais « opération », et c’est « événement de référence » qui est interdit.
+    expect(tout).not.toMatch(/[ée]v[éeè]nements?\s+de\s+r[ée]f[ée]rence|[ée]l[ée]ment de l.agenda|[ée]l[ée]ment d.agenda|Relier cet élément/i);
+    // Règle remplacée (carte #806, décision du PO du 17/11/2026) : la garde interdisait « Opération » ; à l’écran on dit désormais « opération », et c’est « événement de référence » qui est interdit.
+    expect(pickerGroupingNote).not.toMatch(/[ée]v[éeè]nements?\s+de\s+r[ée]f[ée]rence|[ée]l[ée]ment de l.agenda|[ée]l[ée]ment d.agenda|Relier cet élément|événement de référence/i);
     expect(pickerGroupingNote).toMatch(/opération/);
     expect(GROUPING_LABELS.add.documents).toMatch(/^Associer/);
     const doc = lire('src/components/assets/DocumentDrawer.tsx');

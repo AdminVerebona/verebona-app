@@ -46,21 +46,23 @@ const factCtx = (over: Partial<import('../operation-merge-cards').ReferenceEvent
 });
 
 describe('L114U-F-Q — questions et propositions : neutres, et jamais le mot interdit', () => {
-  it('L114U-F-Q1 — « même événement de référence, ou deux ? » nomme les deux et ne suggère rien', () => {
+  it('L114U-F-Q1 — « même opération, ou deux ? » nomme les deux et ne suggère rien', () => {
     const q = fusions.referenceEventMergeQuestion('Réparation de fuite — Maison', 'Intervention plomberie — Maison');
-    expect(q).toBe('« Réparation de fuite — Maison » et « Intervention plomberie — Maison » : est-ce le même '
-      + 'événement de référence, ou deux ?');
-    expect(q).not.toMatch(/\bop[ée]ration/i);
+    expect(q).toBe('« Réparation de fuite — Maison » et « Intervention plomberie — Maison » : est-ce la même '
+      + 'opération, ou deux ?');
+    // Règle remplacée (carte #806, décision du PO du 17/11/2026) : la garde interdisait « Opération » ; à l’écran on dit désormais « opération », et c’est « événement de référence » qui est interdit.
+    expect(q).not.toMatch(/[ée]v[éeè]nements?\s+de\s+r[ée]f[ée]rence/i);
     expect(q).not.toMatch(/recommand|conseill|probable|sans doute|doublon [ée]vident/i);
   });
 
   it('L114U-F-Q2 — deux propositions : fusionner (jamais mise en avant) et garder deux événements (état actuel)', () => {
     const p = fusions.referenceEventMergeProposals([10, 11]);
     expect(p.map((x) => x.value)).toEqual(['MERGE', 'KEEP_DISTINCT']);
-    expect(p[0]).toMatchObject({ label: 'Oui, c’est le même', emphasis: 'neutral', evidenceIds: ['file:10', 'file:11'] });
-    expect(p[1]).toMatchObject({ label: 'Non, ce sont deux événements différents', isCurrentValue: true });
+    expect(p[0]).toMatchObject({ label: 'Oui, c’est la même', emphasis: 'neutral', evidenceIds: ['file:10', 'file:11'] });
+    expect(p[1]).toMatchObject({ label: 'Non, ce sont deux opérations différentes', isCurrentValue: true });
     expect(p[1].evidenceIds).toBeUndefined();
-    for (const x of p) expect(x.label).not.toMatch(/\bop[ée]ration/i);
+    // Règle remplacée (carte #806, décision du PO du 17/11/2026) : la garde interdisait « Opération » ; à l’écran on dit désormais « opération », et c’est « événement de référence » qui est interdit.
+    for (const x of p) expect(x.label).not.toMatch(/[ée]v[éeè]nements?\s+de\s+r[ée]f[ée]rence/i);
     expect(fusions.parseMergeChoice('MERGE')).toBe('MERGE');
     expect(fusions.parseMergeChoice('KEEP_DISTINCT')).toBe('KEEP_DISTINCT');
     for (const v of ['merge', 'ASSOCIATE', '', null, 1, {}]) expect(fusions.parseMergeChoice(v)).toBeNull();
@@ -70,7 +72,8 @@ describe('L114U-F-Q — questions et propositions : neutres, et jamais le mot in
     const q = fusions.referenceEventFactQuestion('realizedDate', 'Sinistre tempête', 'Réparation de la toiture');
     expect(q).toBe('« Sinistre tempête » et « Réparation de la toiture » indiquent des dates de réalisation '
       + 'différentes : laquelle est la bonne ?');
-    expect(q).not.toMatch(/\bop[ée]ration/i);
+    // Règle remplacée (carte #806, décision du PO du 17/11/2026) : la garde interdisait « Opération » ; à l’écran on dit désormais « opération », et c’est « événement de référence » qui est interdit.
+    expect(q).not.toMatch(/[ée]v[éeè]nements?\s+de\s+r[ée]f[ée]rence/i);
     const p = fusions.referenceEventFactProposals('realizedDate', factCtx().sides);
     expect(p).toHaveLength(2);
     expect(p[0]).toMatchObject({ value: 'FACT:2025-03-10', label: '10/03/2025 — « Sinistre tempête »', emphasis: 'neutral' });
@@ -113,7 +116,8 @@ describe('L114U-F-Q — questions et propositions : neutres, et jamais le mot in
     const q = fusions.referenceEventFactQuestion('provider', 'Sinistre tempête', 'Réparation de la toiture');
     expect(q).toBe('« Sinistre tempête » et « Réparation de la toiture » indiquent des prestataires '
       + 'différents : lequel est le bon ?');
-    expect(q).not.toMatch(/\bop[ée]ration/i);
+    // Règle remplacée (carte #806, décision du PO du 17/11/2026) : la garde interdisait « Opération » ; à l’écran on dit désormais « opération », et c’est « événement de référence » qui est interdit.
+    expect(q).not.toMatch(/[ée]v[éeè]nements?\s+de\s+r[ée]f[ée]rence/i);
     expect(q).not.toMatch(/recommand|conseill|probable|sans doute/i);
     const sides = [
       { operationId: 3, title: 'Sinistre tempête', value: 'Assurance Alpha', version: 1 },
@@ -233,7 +237,8 @@ describe('L114U-F-D — déclarations : catalogue, producteur, publiabilité, ma
         producer: 'REFERENCE_EVENT_MERGE', arbitratePriority: 'DO_NEXT',
       });
       expect(r.formulation.kind, codeRegle).toBe('DETERMINISTIC');
-      expect(r.question, codeRegle).not.toMatch(/\bop[ée]ration/i);
+      // Règle remplacée (carte #806, décision du PO du 17/11/2026) : la garde interdisait « Opération » ; à l’écran on dit désormais « opération », et c’est « événement de référence » qui est interdit.
+      expect(r.question, codeRegle).not.toMatch(/[ée]v[éeè]nements?\s+de\s+r[ée]f[ée]rence/i);
     }
   });
 
@@ -244,7 +249,7 @@ describe('L114U-F-D — déclarations : catalogue, producteur, publiabilité, ma
     for (const e of p.entries) expect(source, e).toContain(`export async function ${e}`);
   });
 
-  it('L114U-F-D3 — publiabilité : famille « événements de référence », prémisses contrôlées, fermeture déclarée', () => {
+  it('L114U-F-D3 — publiabilité : famille « opérations », prémisses contrôlées, fermeture déclarée', () => {
     const m = PUBLISHABILITY_CONTRACTS['REFERENCE-EVENT-MERGE'];
     expect(m).toMatchObject({ family: 'EVENEMENTS_DE_REFERENCE', decisions: 'PRODUCTION', atCreation: true });
     expect(m.cleanup).toEqual({ by: PUBLISHABILITY_CHECK_ID, service: 'closeCardsNoLongerUseful' });
@@ -262,7 +267,8 @@ describe('L114U-F-D — déclarations : catalogue, producteur, publiabilité, ma
   it('L114U-F-D4 — mascotte : des sujets dits en français, sans le mot interdit', () => {
     expect(todoTitle('REFERENCE-EVENT-MERGE', 'ARBITRATE')).toBe('Doublon à confirmer');
     expect(todoTitle('REFERENCE-EVENT-FACT', 'ARBITRATE')).toBe('Date à confirmer');
-    for (const c of ['REFERENCE-EVENT-MERGE', 'REFERENCE-EVENT-FACT']) expect(todoTitle(c, 'ARBITRATE')).not.toMatch(/\bop[ée]ration/i);
+    // Règle remplacée (carte #806, décision du PO du 17/11/2026) : la garde interdisait « Opération » ; à l’écran on dit désormais « opération », et c’est « événement de référence » qui est interdit.
+    for (const c of ['REFERENCE-EVENT-MERGE', 'REFERENCE-EVENT-FACT']) expect(todoTitle(c, 'ARBITRATE')).not.toMatch(/[ée]v[éeè]nements?\s+de\s+r[ée]f[ée]rence/i);
   });
 
   it('L114U-F-D5 — passerelle : le traitement DEMANDE, il ne fusionne pas (aucune écriture, aucune règle ici)', () => {

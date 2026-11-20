@@ -147,8 +147,12 @@ function cible(nom: string, zone: string, today: string): ReferenceEventTargetDr
   };
 }
 
-/** « … à celui-ci », « … à ce dernier » : l'événement de l'action précédente de la même phrase. */
-const ANAPHORE = String.raw`(?:a|avec)\s+(?:celui-ci|celui la|celui-la|ce dernier|cet evenement|le meme)`;
+/**
+ * « … à celle-ci », « … à cette dernière », « … à cette opération » : l'opération de l'action précédente de la même
+ * phrase. Carte #806 §1 : « opération » est féminin — les formes féminines sont comprises ; les formes masculines
+ * de l'ancien terme (« à celui-ci », « à cet événement ») le restent.
+ */
+const ANAPHORE = String.raw`(?:a|avec)\s+(?:celui-ci|celui la|celui-la|ce dernier|cet evenement|le meme|celle-ci|celle la|celle-la|cette derniere|cette operation|la meme)`;
 const CIBLE_PRECEDENTE: ReferenceEventTargetDraft = { typeCode: null, words: [], date: null, fromContext: true, pronounOnly: true };
 
 /** Le message désigne-t-il une caractéristique de BIEN du registre dont le nom porte ce mot (« date d'achat », « fin de contrat ») ? */

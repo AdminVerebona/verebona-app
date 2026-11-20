@@ -65,7 +65,7 @@ export type KeepReason = (typeof KEEP_REASONS)[number];
 export const KEEP_REASON_LABELS: Readonly<Record<KeepReason, string>> = {
   USER_GESTURE: 'geste de l’utilisateur dans l’historique',
   USER_SOURCE: 'source saisie ou reliée par l’utilisateur (ancien formulaire Sinistre, arbitrage, lien agenda)',
-  USER_DECISION: 'décision de l’utilisateur (rattaché, refusé, dissocié, événement de référence)',
+  USER_DECISION: 'décision de l’utilisateur (rattaché, refusé, dissocié, événement principal)',
   ASSET_EXCLUSION: 'bien retiré par l’utilisateur',
   PROJECTION_SUPPRESSED: 'événement supprimé par l’utilisateur (suppression mémorisée)',
   USER_AGENDA_ROLE: 'événement rattaché ou désigné par l’utilisateur',

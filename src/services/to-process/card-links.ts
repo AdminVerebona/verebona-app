@@ -277,7 +277,7 @@ const LABELS = {
   equipement: 'Équipement',
   piece: 'Pièce',
   echeance: 'Événement',
-  reference: 'Événement de référence',
+  reference: 'Opération',
   supplier: 'Fournisseur',
 } as const satisfies Record<CardLinkKind, string>;
 

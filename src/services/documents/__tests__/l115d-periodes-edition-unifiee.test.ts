@@ -18,6 +18,9 @@ import {
   PERIOD_USER_MENTION, periodEditBounds, periodEditChanged,
 } from '@/lib/documents/business-periods';
 
+/** Carte #806 : la garde de vocabulaire porte sur les textes VISIBLES — les commentaires de code en sont retirés. */
+const sansCommentaires806 = (s: string) => s.replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '').replace(/\{\/\*[\s\S]*?\*\/\}/g, '');
+
 const ROOT = process.cwd();
 const lire = (p: string) => readFileSync(join(ROOT, p), 'utf8');
 
@@ -120,7 +123,7 @@ describe('L115D-782-U-03 — parcours « Modifier » du document : les périodes
 });
 
 describe('L115D-782-U-04 — écrans sans parcours « Modifier » général : action conservée', () => {
-  it('détail d’une dépense, fiche de l’événement de référence, tiroir d’agenda : action « Modifier »', () => {
+  it('détail d’une dépense, fiche de l’opération, tiroir d’agenda : action « Modifier »', () => {
     expect(lire(DEPENSE)).toMatch(/<PeriodRow[^>]*action="edit"/);
     expect(lire(FICHE)).toMatch(/<CoverageHistoryList[^>]*action="edit"/);
     const agenda = lire(COMPOSANT).slice(lire(COMPOSANT).indexOf('export function AgendaCoverageHistory'));
@@ -169,7 +172,7 @@ describe('L115D-782-U-05 — règles pures de la saisie d’une période', () =>
 });
 
 describe('L115D-782-U-06 — charte Sérénité et vocabulaire', () => {
-  it('jetons de couleur seulement, cibles tactiles, et jamais « Opération » affiché', () => {
+  it('jetons de couleur seulement, cibles tactiles, et jamais « événement de référence » affiché', () => {
     for (const f of [COMPOSANT, DEPENSE]) {
       // Code seulement : commentaires JSX (multilignes compris), puis lignes de commentaire et imports.
       const visibles = lire(f)
@@ -177,8 +180,9 @@ describe('L115D-782-U-06 — charte Sérénité et vocabulaire', () => {
         .split('\n').filter((l) => !/^\s*(\*|\/\/|\/\*|import )/.test(l)).join('\n');
       expect(visibles, f).not.toMatch(/#[0-9a-fA-F]{3,8}\b|rgba?\(|\b(?:text|bg|border)-(?:red|green|blue|gray|slate|amber|yellow|orange|emerald|zinc|neutral)-\d{2,3}\b/);
     }
-    const chaines = [...lire(COMPOSANT).matchAll(/(['"`])((?:(?!\1).)*)\1/g)].map((x) => x[2]).join(' ');
-    expect(chaines).not.toMatch(/\bOpération\b|expiré/);
+    const chaines = [...sansCommentaires806(lire(COMPOSANT)).matchAll(/(['"`])((?:(?!\1).)*)\1/g)].map((x) => x[2]).join(' ');
+    // Règle remplacée (carte #806, décision du PO du 17/11/2026) : la garde interdisait « Opération » ; à l’écran on dit désormais « opération », et c’est « événement de référence » qui est interdit.
+    expect(chaines).not.toMatch(/[ée]v[éeè]nements?\s+de\s+r[ée]f[ée]rence|expiré/i);
     // Desktop ET mobile : une seule grille responsive, cible tactile de la case à cocher.
     const champs = lire(COMPOSANT).slice(lire(COMPOSANT).indexOf('export function DocumentPeriodsEditFields'));
     expect(champs).toContain('grid-cols-1 sm:grid-cols-2');

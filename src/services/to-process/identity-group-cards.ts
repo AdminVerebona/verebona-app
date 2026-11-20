@@ -89,7 +89,7 @@ export const EXCLUSION_LABELS: Readonly<Record<string, string>> = {
 const EVIDENCE_LABELS: Readonly<Record<string, string>> = {
   ADDRESS: 'adresse du bien', CADASTRAL: 'référence cadastrale', REGISTRATION: 'immatriculation', VIN: 'numéro VIN',
   CONTRACT_REF: 'même numéro de contrat qu’un document du groupe', DPE_REF: 'même numéro de DPE qu’un document du groupe',
-  OPERATION: 'même événement de référence qu’un document du groupe',
+  OPERATION: 'même opération qu’un document du groupe',
 };
 
 const borne = (s: string, n = 70) => (s.length > n ? `${s.slice(0, n - 1)}…` : s);

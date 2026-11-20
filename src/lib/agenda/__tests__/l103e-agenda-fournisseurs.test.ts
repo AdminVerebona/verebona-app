@@ -146,7 +146,7 @@ describe('L103E-U-COH — contrôle de cohérence existant étendu (sans nouveau
     expect(c.status).toBe('ACTIVE');
     expect(COVERAGE_INVENTORY.find((d) => d.domain === 'agenda')!.checks).toContain('COH-AGENDA-SUPPLIERS');
     expect(c.forbiddenRepairs.join(' ')).toMatch(/utilisateur/);
-    expect(c.forbiddenRepairs.join(' ')).toMatch(/même événement de référence/);
+    expect(c.forbiddenRepairs.join(' ')).toMatch(/même opération/);
     for (const t of c.triggers) expect(t === 'SOURCE_ANALYZED' || COHERENCE_BUSINESS_EVENTS.has(t)).toBe(true);
   });
   it('aucun planificateur ni tâche ajoutés par le lot', () => {
@@ -175,6 +175,7 @@ describe('L103E-U-UI — tiroir, fiche fournisseur, listes', () => {
     for (const f of ['src/components/agenda/AgendaPeriodViews.tsx']) expect(src(f)).not.toMatch(/fournisseur|supplier/i);
   });
   it('aucun mot « Opération » visible', () => {
-    for (const t of [section, fiche]) expect(t.replace(/\/\*[\s\S]*?\*\//g, '').replace(/\/\/.*$/gm, '')).not.toMatch(/Op[ée]ration/);
+    // Règle remplacée (carte #806, décision du PO du 17/11/2026) : la garde interdisait « Opération » ; à l’écran on dit désormais « opération », et c’est « événement de référence » qui est interdit.
+    for (const t of [section, fiche]) expect(t.replace(/\/\*[\s\S]*?\*\//g, '').replace(/\/\/.*$/gm, '')).not.toMatch(/[ée]v[éeè]nements?\s+de\s+r[ée]f[ée]rence/i);
   });
 });

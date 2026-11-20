@@ -36,7 +36,7 @@ export async function GET(req: NextRequest, context: RouteContext) {
   try {
     const { readReferenceEventPage } = await import('@/services/business-operations/graph/reference-event-page');
     const fiche = await readReferenceEventPage(session.currentAccountId, operationId);
-    if (!fiche) return apiError(404, 'NOT_FOUND', 'Événement de référence introuvable.');
+    if (!fiche) return apiError(404, 'NOT_FOUND', 'Opération introuvable.');
     return NextResponse.json({ fiche }, { headers: { 'Cache-Control': 'private, no-cache' } });
   } catch (err) {
     console.error('[api/evenements-reference/:id/fiche] GET', (err as Error).message);

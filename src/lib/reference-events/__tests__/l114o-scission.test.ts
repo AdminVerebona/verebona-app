@@ -50,12 +50,12 @@ const form = (over: Partial<ReferenceEventSplitForm> = {}): ReferenceEventSplitF
 describe('L114OS-U01 — textes de la scission', () => {
   it('le geste a sa phrase de réussite, et chaque refus propre à la scission a la sienne', () => {
     expect([...REFERENCE_EVENT_GESTURES]).toContain('split');
-    expect(REFERENCE_EVENT_SUCCESS.split).toBe('Événement de référence scindé. Le nouveau est associé à celui-ci.');
+    expect(REFERENCE_EVENT_SUCCESS.split).toBe('Opération scindée. La nouvelle est associée à celle-ci.');
     expect(REFERENCE_EVENT_WRITE_MESSAGES.SPLIT_PART_NOT_LINKED).toContain('refaites votre choix');
     expect(REFERENCE_EVENT_WRITE_MESSAGES.SPLIT_NOTHING_TO_MOVE).toContain('au moins un élément');
   });
 
-  it('aucun texte de la scission ne dit « Opération », n’affiche un code ni ne promet un calcul immédiat', () => {
+  it('aucun texte de la scission ne dit « événement de référence », n’affiche un code ni ne promet un calcul immédiat', () => {
     const textes = [
       REFERENCE_EVENT_SUCCESS.split, REFERENCE_EVENT_WRITE_MESSAGES.SPLIT_PART_NOT_LINKED, REFERENCE_EVENT_WRITE_MESSAGES.SPLIT_NOTHING_TO_MOVE,
       L.split, L.splitTitle, L.splitHint, L.splitLabelField, L.splitLabelPlaceholder, L.splitPartsLegend, L.splitPartAgenda,
@@ -64,7 +64,8 @@ describe('L114OS-U01 — textes de la scission', () => {
     ];
     for (const t of textes) {
       expect(t, t).toBeTruthy();
-      expect(t, t).not.toMatch(/Opération|opération|[A-Z]{3,}_[A-Z_]+/);
+      // Règle remplacée (carte #806, décision du PO du 17/11/2026) : la garde interdisait « Opération » ; à l’écran on dit désormais « opération », et c’est « événement de référence » qui est interdit.
+      expect(t, t).not.toMatch(/[ée]v[éeè]nements?\s+de\s+r[ée]f[ée]rence|[A-Z]{3,}_[A-Z_]+/i);
     }
     // Ce qui est dit à l'utilisateur : rien n'est effacé, rien n'est copié, les montants attendent l'analyse.
     expect(L.splitHint).toContain('Rien n’est effacé');
@@ -203,7 +204,8 @@ describe('L114OS-U05 — gardes de code', () => {
     // Aucun code de la façade, aucune phrase en dur, aucune couleur brute, cibles de 44 px.
     expect(dialogue).not.toMatch(/SPLIT_[A-Z_]+:|VERSION_MISMATCH|#[0-9a-fA-F]{3,8}\b|rgba?\(/);
     expect(dialogue).toMatch(/min-h-\[44px\]/);
-    expect(dialogue).not.toMatch(/Opération/);
+    // Règle remplacée (carte #806, décision du PO du 17/11/2026) : la garde interdisait « Opération » ; à l’écran on dit désormais « opération », et c’est « événement de référence » qui est interdit.
+    expect(dialogue).not.toMatch(/[ée]v[éeè]nements?\s+de\s+r[ée]f[ée]rence/i);
   });
 });
 
@@ -221,7 +223,7 @@ describe('L114OS-U06 — page rendue', () => {
   const rien = () => undefined;
   const actions = {
     correct: rien, remove: rien, linkAgenda: rien, unlinkAgenda: rien, linkDocument: rien, unlinkDocument: rien,
-    moveDocument: rien, linkSupplier: rien, unlinkSupplier: rien, associate: rien, dissociate: rien, split: rien,
+    linkSupplier: rien, unlinkSupplier: rien, associate: rien, dissociate: rien, split: rien,
   };
   const rendre = (f: ReferenceEventPageView, avecScission = true) =>
     renderToStaticMarkup(h(ReferenceEventPageContent, { fiche: f, openers, actions: avecScission ? actions : { ...actions, split: undefined } }));
@@ -230,7 +232,8 @@ describe('L114OS-U06 — page rendue', () => {
     const html = rendre(fiche());
     expect(html).toContain('data-testid="reference-event-action-split"');
     expect(html.match(/Scinder/g)?.length).toBe(1);
-    expect(html).not.toMatch(/Opération/);
+    // Règle remplacée (carte #806, décision du PO du 17/11/2026) : la garde interdisait « Opération » ; à l’écran on dit désormais « opération », et c’est « événement de référence » qui est interdit.
+    expect(html).not.toMatch(/[ée]v[éeè]nements?\s+de\s+r[ée]f[ée]rence/i);
   });
 
   it('rien à déplacer : le geste n’est pas proposé (une action dit son périmètre)', () => {

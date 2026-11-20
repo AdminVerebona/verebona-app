@@ -219,13 +219,13 @@ export function relationBetween(
 export function relationSentence(nature: OperationRelationNature, from: string, to: string): string {
   if (nature === 'FINANCING') return `« ${from} » sera indiqué comme le financement de « ${to} ».`;
   if (nature === 'CLAIM_REPAIR') return `« ${to} » sera indiqué comme la réparation de « ${from} ».`;
-  return 'Les deux événements de référence seront simplement associés.';
+  return 'Les deux opérations seront simplement associées.';
 }
 
 // ── Traduction des résultats de la façade ──────────────────────────────────
 
-export const REFERENCE_EVENT_NOT_FOUND = 'Événement de référence introuvable ou hors de votre compte.';
-export const REFERENCE_EVENT_CHANGED_SINCE_PREVIEW = 'Cet événement de référence a été modifié depuis l’aperçu : rien n’a été fait. Refaites votre demande.';
+export const REFERENCE_EVENT_NOT_FOUND = 'Opération introuvable ou hors de votre compte.';
+export const REFERENCE_EVENT_CHANGED_SINCE_PREVIEW = 'Cette opération a été modifiée depuis l’aperçu : rien n’a été fait. Refaites votre demande.';
 const IMPOSSIBLE_ICI = 'Cette action n’est pas possible depuis l’assistant : rien n’a été écrit.';
 
 /**
@@ -236,25 +236,25 @@ export const WRITE_CODE_TEXT: Readonly<Record<Exclude<OperationWriteCode, 'OK' |
   NEW_EVIDENCE_AFTER_REFUSAL: 'Cette association avait été refusée ; un élément nouveau demande votre décision dans « À traiter » : rien n’a été écrit.',
   VERSION_MISMATCH: REFERENCE_EVENT_CHANGED_SINCE_PREVIEW,
   IDEMPOTENCY_KEY_REUSED: 'Cette action a déjà été traitée : rien n’a été refait.',
-  SPLIT_PART_NOT_LINKED: 'Un des éléments à séparer n’appartient pas à cet événement de référence : rien n’a été écrit.',
+  SPLIT_PART_NOT_LINKED: 'Un des éléments à séparer n’appartient pas à cette opération : rien n’a été écrit.',
   SPLIT_NOTHING_TO_MOVE: 'Il faut choisir au moins un élément à séparer : rien n’a été écrit.',
-  TYPE_MISMATCH: 'Ces deux événements de référence ne sont pas de même nature : ils ne peuvent pas être réunis ; rien n’a été écrit.',
+  TYPE_MISMATCH: 'Ces deux opérations ne sont pas de même nature : elles ne peuvent pas être réunies ; rien n’a été écrit.',
   INVALID_INPUT: 'Ces informations ne peuvent pas être enregistrées telles quelles : rien n’a été écrit.',
   READ_ONLY_ACCOUNT: 'Votre compte est en lecture seule : rien n’a été écrit.',
   NOT_A_MEMBER: 'Vous n’avez pas accès à ce compte : rien n’a été écrit.',
   NOT_FOUND_IN_ACCOUNT: 'Un des éléments de cette action est introuvable dans votre compte : rien n’a été écrit.',
-  OPERATION_INACTIVE: 'Cet événement de référence n’est plus actif (il a été supprimé ou regroupé avec un autre) : rien n’a été écrit.',
-  REFLEXIVE: 'Un événement de référence ne peut pas être associé à lui-même : rien n’a été écrit.',
-  NATURE_TYPE_MISMATCH: 'Ces deux événements de référence ne peuvent pas être associés de cette façon : rien n’a été écrit.',
+  OPERATION_INACTIVE: 'Cette opération n’est plus active (elle a été supprimée ou regroupée avec une autre) : rien n’a été écrit.',
+  REFLEXIVE: 'Une opération ne peut pas être associée à elle-même : rien n’a été écrit.',
+  NATURE_TYPE_MISMATCH: 'Ces deux opérations ne peuvent pas être associées de cette façon : rien n’a été écrit.',
   EVIDENCE_REQUIRED: IMPOSSIBLE_ICI,
   USER_REJECTED: IMPOSSIBLE_ICI,
   USER_RELATION_PROTECTED: IMPOSSIBLE_ICI,
   USER_ONLY: IMPOSSIBLE_ICI,
-  LINKED_ELSEWHERE: 'Cet élément est déjà rattaché à un autre événement de référence : rien n’a été modifié.',
-  NOT_LINKED: 'Cet élément n’est pas rattaché à cet événement de référence : rien n’a été modifié.',
-  TYPE_DETAILS_PRESENT: 'Le type de cet événement de référence ne peut pas être changé : des informations propres à son type actuel y sont enregistrées. Rien n’a été écrit.',
-  STATUS_TRANSITION_REFUSED: 'La situation de cet événement de référence ne peut pas être changée ainsi : rien n’a été écrit. S’il a été enregistré à tort, supprimez-le.',
-  NOT_RESTORABLE: 'Cet événement de référence ne peut pas être rétabli : rien n’a été écrit.',
+  LINKED_ELSEWHERE: 'Cet élément est déjà rattaché à une autre opération : rien n’a été modifié.',
+  NOT_LINKED: 'Cet élément n’est pas rattaché à cette opération : rien n’a été modifié.',
+  TYPE_DETAILS_PRESENT: 'Le type de cette opération ne peut pas être changé : des informations propres à son type actuel y sont enregistrées. Rien n’a été écrit.',
+  STATUS_TRANSITION_REFUSED: 'La situation de cette opération ne peut pas être changée ainsi : rien n’a été écrit. Si elle a été enregistrée à tort, supprimez-la.',
+  NOT_RESTORABLE: 'Cette opération ne peut pas être rétablie : rien n’a été écrit.',
   DUPLICATE_DECLARATION: 'Cette déclaration est déjà enregistrée : rien n’a été créé en double.',
   TECHNICAL_FAILURE: 'Une erreur technique est survenue : rien n’a été écrit. Réessayez dans un instant.',
 };

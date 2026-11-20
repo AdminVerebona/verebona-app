@@ -34,7 +34,7 @@ import type { AccountRow } from '../factories';
 
 type Json = Record<string, any>;
 
-scenario('L115F', 'Événements de référence — arbitrage d’attributs : détection exhaustive, couverture des preuves, application vérifiée (#791)', ({ sql, make }) => {
+scenario('L115F', 'Opérations — arbitrage d’attributs : détection exhaustive, couverture des preuves, application vérifiée (#791)', ({ sql, make }) => {
   const k = operationsKit(sql, make);
   const etat = { available: false, answer: (_: Json): unknown => null, calls: 0 };
   beforeAll(async () => {

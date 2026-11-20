@@ -94,7 +94,8 @@ describe('L84C — Timeline : règles pures', () => {
       .toEqual(['2 événements liés', '1 bien', '3 équipements']);
     expect(Object.values(TIMELINE_MODE_LABELS)).toEqual(['Regroupée', 'Détaillée']);
     const tout = JSON.stringify([TIMELINE_MODE_LABELS, ...(['events', 'documents', 'assets', 'rooms', 'equipments'] as const).map((k) => counterLabel(k, 2))]);
-    expect(tout).not.toMatch(/op[ée]ration/i);
+    // Règle remplacée (carte #806, décision du PO du 17/11/2026) : la garde interdisait « Opération » ; à l’écran on dit désormais « opération », et c’est « événement de référence » qui est interdit.
+    expect(tout).not.toMatch(/[ée]v[éeè]nements?\s+de\s+r[ée]f[ée]rence/i);
   });
 });
 
@@ -138,7 +139,7 @@ describe('L84C — Timeline : requête et assemblage', () => {
     expect(TIMELINE_MEMBERS_SQL).not.toMatch(/LIMIT/);
   });
 
-  it('L84C-U09 — règle remplacée (carte #744) : cinq compteurs, appartenance à l’événement de référence, objets du compte seulement', () => {
+  it('L84C-U09 — règle remplacée (carte #744) : cinq compteurs, appartenance à l’opération, objets du compte seulement', () => {
     const sql = TIMELINE_COUNTERS_SQL.replace(/\s+/g, ' ');
     for (const c of ['events', 'documents', 'assets', 'rooms', 'equipments']) expect(sql).toContain(`AS ${c}`);
     expect(sql).not.toContain('g.head');
@@ -170,7 +171,7 @@ describe('L84C — Timeline : requête et assemblage', () => {
     ...row(id, date), rank: 0, is_group: false, date_basis: null, sort_key: date ?? '-infinity', ...extra,
   });
 
-  it('L84C-U06 — règle remplacée (carte #744) : groupe = événement de référence + éléments réels + compteurs ; curseur typé', async () => {
+  it('L84C-U06 — règle remplacée (carte #744) : groupe = opération + éléments réels + compteurs ; curseur typé', async () => {
     const page = [
       itemRow(10, '2026-04-18', { remaining: 4 }),
       groupRow(900, '2026-03-12', 'REALIZED', { remaining: 4 }),
@@ -209,7 +210,7 @@ describe('L84C — Timeline : requête et assemblage', () => {
     expect(suite.calls).toHaveLength(1);
   });
 
-  it('L114O-C-U01 — événement de référence sans élément d’agenda et sans date : entrée de groupe, aucun élément fictif, aucune date inventée (AC26, AC35)', async () => {
+  it('L114O-C-U01 — opération sans élément d’agenda et sans date : entrée de groupe, aucun élément fictif, aucune date inventée (AC26, AC35)', async () => {
     const { q } = fakeQ(
       // Règle remplacée (carte #744) : le repère est la date de présentation du CDC §11 (ici le premier devis),
       // jamais la date du plus ancien élément d'agenda (l'ancien fondement « FIRST_EVENT » n'existe plus).
@@ -226,10 +227,11 @@ describe('L84C — Timeline : requête et assemblage', () => {
     expect(b).toMatchObject({ kind: 'group', id: 'op-902', effectiveDate: null, dateBasis: null, members: [], counters: { events: 0, documents: 0, assets: 0, rooms: 0, equipments: 0 } });
     // Type nul : libellé utilisateur existant (`referenceEventLabel`) ; les textes AFFICHÉS ne disent jamais « Opération ».
     expect(b.title).toBe('Dépense — Plombier Martin');
-    expect(p.entries.map((e) => e.title).join(' ')).not.toMatch(/op[ée]ration/i);
+    // Règle remplacée (carte #806, décision du PO du 17/11/2026) : la garde interdisait « Opération » ; à l’écran on dit désormais « opération », et c’est « événement de référence » qui est interdit.
+    expect(p.entries.map((e) => e.title).join(' ')).not.toMatch(/[ée]v[éeè]nements?\s+de\s+r[ée]f[ée]rence/i);
   });
 
-  it('L84C-U07 — page détaillée : aucun groupe, aucune requête de membres ni de compteurs ; événements de référence de chaque élément (AC31)', async () => {
+  it('L84C-U07 — page détaillée : aucun groupe, aucune requête de membres ni de compteurs ; opérations de chaque élément (AC31)', async () => {
     const { q, calls } = fakeQ(
       [itemRow(21, '2026-03-21', { remaining: 2 }), itemRow(11, '2026-03-12', { remaining: 2 })], [], [],
       [{ item_id: 21, op: 900 }, { item_id: 21, op: 950 }],

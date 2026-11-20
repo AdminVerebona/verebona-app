@@ -17,7 +17,7 @@ export const TIMELINE_MODE_LABELS: Record<TimelineMode, string> = {
  * du lot 113X, « Voir l'événement de référence ») : égalité vérifiée par
  * `l84c-timeline-ui.test.ts`.
  */
-export const TIMELINE_REFERENCE_EVENT_LINK = 'Voir l’événement de référence';
+export const TIMELINE_REFERENCE_EVENT_LINK = 'Voir l’opération';
 
 /**
  * #744 lot C — événement de référence sans date : mention explicite, aucune

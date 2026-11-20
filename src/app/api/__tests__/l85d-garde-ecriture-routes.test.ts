@@ -37,6 +37,9 @@ const WRITE_GUARD_EXCEPTIONS: Readonly<Record<string, string>> = {
   'public/': 'Aide publique (retour sur un article), sans compte.',
   'contact/route.ts': 'Contact du support : doit rester possible, en particulier pour un compte restreint.',
   'transmission/[token]/route.ts': 'Destinataire d’une transmission, sans compte (jeton).',
+  // ── Fonction retirée ────────────────────────────────────────────────────
+  // Carte #806 §1 (décision du PO du 17/11/2026) : le déplacement d'un document vers une autre opération n'existe plus.
+  'evenements-reference/[id]/documents/route.ts PATCH': 'Fonction retirée : la méthode ne lit ni n’écrit rien, elle répond 410 avec la phrase « retirez puis rattachez » (session contrôlée).',
   // ── Sécurité, session ───────────────────────────────────────────────────
   'auth/': 'Sécurité et session (connexion, déconnexion, renouvellement, mot de passe, changement d’espace) : indispensable (82A).',
   'users/me/change-password/route.ts': 'Sécurité : indispensable (82A).',

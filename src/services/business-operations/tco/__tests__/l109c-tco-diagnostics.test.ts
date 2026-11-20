@@ -86,7 +86,8 @@ describe('L109C-M — matrice : inventaire complet des codes, classe fondée sur
     for (const m of Object.values(TCO_DIAGNOSTIC_MATRIX)) expect(m.text).not.toMatch(/le seront à leur date|sera comptée à sa date de paiement/);
     expect(TCO_WARNING_LABELS.NOT_REALIZED_EXPENSES).not.toMatch(/le seront à leur date de paiement/);
     // Jamais le mot « Opération » visible.
-    for (const m of Object.values(TCO_DIAGNOSTIC_MATRIX)) expect(`${m.title(2)} ${m.text} ${m.action?.label ?? ''}`).not.toMatch(/opération/i);
+    // Règle remplacée (carte #806, décision du PO du 17/11/2026) : la garde interdisait « Opération » ; à l’écran on dit désormais « opération », et c’est « événement de référence » qui est interdit.
+    for (const m of Object.values(TCO_DIAGNOSTIC_MATRIX)) expect(`${m.title(2)} ${m.text} ${m.action?.label ?? ''}`).not.toMatch(/[ée]v[éeè]nements?\s+de\s+r[ée]f[ée]rence/i);
   });
 });
 
@@ -304,12 +305,13 @@ describe('L109C-U — fiche (desktop et mobile, même composant)', () => {
     expect(ui).toMatch(/items: t\.amountRecovery\.items\.filter\(\(i\) => AMOUNT_RECOVERY_PENDING_STATES\.has\(i\.state\)\)/);
   });
 
-  it('L109C-U02 — aucune IA, aucune lecture de document, aucune carte « À traiter » à l’affichage ; jamais « Opération » visible', () => {
+  it('L109C-U02 — aucune IA, aucune lecture de document, aucune carte « À traiter » à l’affichage ; jamais « événement de référence » visible', () => {
     for (const src of [ui, comp109]) {
       expect(src).not.toMatch(/services\/ai|to-process\/(?!document-preview)|\/api\/ai|analy[sz]e\(/);
     }
     const visible = comp109.replace(/\/\*[\s\S]*?\*\//g, '').replace(/\/\/.*$/gm, '');
-    expect(visible).not.toMatch(/[Oo]pération/);
+    // Règle remplacée (carte #806, décision du PO du 17/11/2026) : la garde interdisait « Opération » ; à l’écran on dit désormais « opération », et c’est « événement de référence » qui est interdit.
+    expect(visible).not.toMatch(/[ée]v[éeè]nements?\s+de\s+r[ée]f[ée]rence/i);
   });
 
   it('L109C-U03 — rendu : groupe avec compteur, nature écrite (pas seulement une couleur), liens justificatif / dépense / fiche', async () => {

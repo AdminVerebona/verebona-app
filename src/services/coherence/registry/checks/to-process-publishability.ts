@@ -83,7 +83,7 @@ export const toProcessPublishabilityCheck: CoherenceCheck = {
   domain: 'a-traiter',
   level: 'N2',
   objectType: 'to_process_action',
-  scope: 'toutes les cartes ouvertes du compte, toutes familles (documents, agenda, équipements, fournisseurs, biens et pièces, événements de référence, familles futures)',
+  scope: 'toutes les cartes ouvertes du compte, toutes familles (documents, agenda, équipements, fournisseurs, biens et pièces, opérations, familles futures)',
   sources: ['to_process_actions', 'to_process_decisions', 'document_rule_evaluations', 'agenda_items', 'equipments', 'assets', 'asset_files',
     'document_asset_links', 'supplier_review_items', 'business_operations', 'document_operation_candidates'],
   applicability: 'compte éligible ; cible vivante (sinon : COH-TODO-ORPHAN-CARDS)',

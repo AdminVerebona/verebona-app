@@ -245,7 +245,7 @@ describe('L99C-U05 — contrat d’entrée (variables de production)', () => {
     expect(s.constraints).toMatchObject({ majorityMonthIsOnlyAHint: true, userTitlesAreNeverRenamed: true });
     expect(s.constraints.forbiddenPeriodSources).toEqual(expect.arrayContaining(['ISSUE_DATE', 'IMPORT_DATE', 'TODAY', 'DUE_DATE']));
   });
-  it('par facture : période facturée et provenance, mois écrit, indice, type, fournisseur, contrat, événement de référence', () => {
+  it('par facture : période facturée et provenance, mois écrit, indice, type, fournisseur, contrat, opération', () => {
     const [c] = vars.CANDIDATES as Array<Record<string, unknown>>;
     expect(c).toMatchObject({
       documentId: 41, role: 'TO_EXAMINE', documentType: 'FACTURE', supplier: 'Homiris', issueDate: '2026-03-06',

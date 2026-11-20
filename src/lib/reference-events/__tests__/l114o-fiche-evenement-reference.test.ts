@@ -88,10 +88,10 @@ describe('L114OD-U02 — titre de la page et du résultat de recherche', () => {
 describe('L114OD-U03 — relations et dates', () => {
   it('une relation est nommée dans les deux sens', () => {
     expect(referenceEventRelationLabel('FINANCING', 'OUTGOING')).toBe('Finance');
-    expect(referenceEventRelationLabel('FINANCING', 'INCOMING')).toBe('Financé par');
-    expect(referenceEventRelationLabel('CLAIM_REPAIR', 'OUTGOING')).toBe('Réparé par');
+    expect(referenceEventRelationLabel('FINANCING', 'INCOMING')).toBe('Financée par');
+    expect(referenceEventRelationLabel('CLAIM_REPAIR', 'OUTGOING')).toBe('Réparée par');
     expect(referenceEventRelationLabel('CLAIM_REPAIR', 'INCOMING')).toBe('Répare le sinistre');
-    expect(referenceEventRelationLabel('ASSOCIATED', 'UNDIRECTED')).toBe('Associé à');
+    expect(referenceEventRelationLabel('ASSOCIATED', 'UNDIRECTED')).toBe('Associée à');
     expect(referenceEventRelationLabel('CLAIM_CONTRACT', 'OUTGOING')).toBe('Contrat d’assurance');
     expect(referenceEventRelationLabel('CLAIM_CONTRACT', 'INCOMING')).toBe('Sinistre déclaré');
   });
@@ -107,8 +107,8 @@ describe('L114OD-U04 — page entière (même composant desktop et mobile)', () 
     const html = rendre(fiche());
     expect(html).toContain('data-testid="reference-event-page"');
     expect(html).toMatch(/<h1[^>]*data-testid="reference-event-page-title"[^>]*>Achat — Achat de la maison<\/h1>/);
-    expect(html).toContain('Événement de référence');
-    expect(html).toMatch(/Réalisé le<\/dt><dd[^>]*>15\/03\/2021<\/dd>/);
+    expect(html).toContain('Opération');
+    expect(html).toMatch(/Réalisée le<\/dt><dd[^>]*>15\/03\/2021<\/dd>/);
     expect(html).not.toContain('data-testid="reference-event-page-undated"');
     for (const id of ['declarations', 'assets', 'equipments', 'suppliers', 'documents', 'events', 'relations']) expect(html, id).toContain(`data-testid="reference-event-page-${id}"`);
     expect(html).toContain('Nous avons signé chez le notaire');
@@ -116,9 +116,9 @@ describe('L114OD-U04 — page entière (même composant desktop et mobile)', () 
     expect(html).toContain('href="/assets/7"');
     expect(html).toContain('href="/fournisseurs/5"');
     expect(html).toContain('href="/agenda/evenements-reference/43"');
-    expect(html).toContain('Financé par');
+    expect(html).toContain('Financée par');
     // Chaque événement à SA date ; sans date : « Sans date » ; partagé : signalé.
-    expect(html).toMatch(/Fin du prêt.*Partagé avec un autre événement de référence.*15\/03\/2041/);
+    expect(html).toMatch(/Fin du prêt.*Partagé avec une autre opération.*15\/03\/2041/);
     expect(html).toMatch(/Remise des clés.*Sans date/);
     // Aucune couverture pour un achat : aucune rubrique artificielle.
     expect(html).not.toContain('data-testid="reference-event-page-coverages"');
@@ -142,13 +142,14 @@ describe('L114OD-U04 — page entière (même composant desktop et mobile)', () 
     const contrat = rendre(fiche({ typeCode: 'CONTRACT' }));
     expect(contrat).toContain('data-testid="coverage-history-empty"');
   });
-  it('ni onglet, ni tiroir, ni état, ni « Opération » ; cibles tactiles ; charte (jetons seulement, pas de petites capitales)', () => {
+  it('ni onglet, ni tiroir, ni état, ni « événement de référence » ; cibles tactiles ; charte (jetons seulement, pas de petites capitales)', () => {
     const html = rendre(fiche());
     expect(html).not.toMatch(/role="tab(list|panel)?"|role="dialog"/);
     // Règle remplacée (carte #806) : « jamais "Opération" sur la fiche » — décision du PO du 17/11/2026 (#806 §1), à
     // l'écran on dit désormais « opération ». Les textes NOUVEAUX de la carte #806 (liste fermée `TEXTES_806`)
     // l'emploient ; les textes existants ne sont pas renommés ici et restent sous la garde d'origine.
-    expect(sansTextes806(html)).not.toMatch(/Opération|En cours|Expiré|Envisagé|Annulé|Terminé|Statut/i);
+    // Règle remplacée (carte #806, décision du PO du 17/11/2026) : la garde interdisait « Opération » ; à l’écran on dit désormais « opération », et c’est « événement de référence » qui est interdit.
+    expect(sansTextes806(html)).not.toMatch(/[ée]v[éeè]nements?\s+de\s+r[ée]f[ée]rence|En cours|Expiré|Envisagé|Annulé|Terminé|Statut/i);
     expect(html).toContain('Appartient à cette opération');
     for (const t of TEXTES_806) expect(t, t).not.toMatch(/événement de référence|élément de référence/i);
     expect(html).toContain('min-h-[44px]');
@@ -156,7 +157,8 @@ describe('L114OD-U04 — page entière (même composant desktop et mobile)', () 
       const code = visible(lire(p));
       expect(code, p).not.toMatch(/#[0-9a-fA-F]{3,8}\b|rgba?\(|\b(?:text|bg|border)-(?:red|green|blue|gray|slate|amber|yellow|orange|emerald|zinc|neutral)-\d{2,3}\b/);
       expect(code, p).not.toMatch(/\buppercase\b/);
-      expect(code, p).not.toMatch(/Opération/);
+      // Règle remplacée (carte #806, décision du PO du 17/11/2026) : la garde interdisait « Opération » ; à l’écran on dit désormais « opération », et c’est « événement de référence » qui est interdit.
+      expect(code, p).not.toMatch(/[ée]v[éeè]nements?\s+de\s+r[ée]f[ée]rence/i);
       expect(code, p).not.toMatch(/<Sheet\b|<Tabs\b|<Drawer\b/);
     }
   });
@@ -169,14 +171,14 @@ describe('L114OD-U05 — suggestions de la recherche', () => {
   it('catégorie propre, page entière, aucun tiroir', () => {
     const [r] = toLiveResults('assurance', [row(4)]);
     expect(r).toEqual({ id: 'reference-event-4', kind: 'reference_event', title: 'Contrat — Assurance 4', sub: 'Sans date', href: '/agenda/evenements-reference/4' });
-    expect(liveSubtitle(r)).toBe('Événement de référence · Sans date');
+    expect(liveSubtitle(r)).toBe('Opération · Sans date');
   });
-  it('une adresse qui n’est pas celle d’une page d’événement de référence est écartée', () => {
+  it('une adresse qui n’est pas celle d’une page d’opération est écartée', () => {
     for (const href of ['https://ailleurs.example/agenda/evenements-reference/4', '/agenda/evenements-reference/4/../../admin', '/agenda/evenements-reference/abc', '/assets/4']) {
       expect(toLiveResults('assurance', [row(4, { href })]), href).toEqual([]);
     }
   });
-  it('le plafond ne masque jamais toute la catégorie : le premier événement de référence prend la dernière place', () => {
+  it('le plafond ne masque jamais toute la catégorie : le premier opération prend la dernière place', () => {
     const docs = Array.from({ length: 8 }, (_, i) => ({ id: `doc-${i}`, category: 'Document', label: `Assurance ${i}`, href: `/documents?tiroir=document:${i}` }));
     const out = toLiveResults('assurance', [...docs, row(4), row(5)]);
     expect(out).toHaveLength(LIVE_MAX_RESULTS);
@@ -187,7 +189,7 @@ describe('L114OD-U05 — suggestions de la recherche', () => {
   });
 });
 
-describe('L114OD-U06 — moteur de recherche : champs autorisés d’un événement de référence', () => {
+describe('L114OD-U06 — moteur de recherche : champs autorisés d’une opération', () => {
   const politique = { requireAllTokens: true, allowSemantic: false };
   const candidat = (fields: SearchCandidate['fields'], displayName = 'Remplacer la chaudière'): SearchCandidate =>
     ({ entityType: 'reference_event', entityId: 1, displayName, fields, retrievalStrategy: 'sql.token_like' });
@@ -198,7 +200,7 @@ describe('L114OD-U06 — moteur de recherche : champs autorisés d’un événem
     ]);
     expect(SEARCH_FIELDS.reference_event.find((f) => f.field === 'assetNames')?.relationEligible).toBeUndefined();
   });
-  it('la déclaration suffit (événement de référence sans bien, sans document, sans événement)', () => {
+  it('la déclaration suffit (opération sans bien, sans document, sans événement)', () => {
     const r = cherche('chaudière', candidat({ title: 'Intervention', declaration: ['Je vais faire remplacer la chaudière'] }, 'Intervention'));
     expect(r).toHaveLength(1);
     expect(r[0].matchedField).toBe('declaration');
@@ -230,17 +232,17 @@ describe('L114OD-U07 — gardes de code', () => {
       expect(bloc.slice(0, bloc.indexOf('`,')), sous).toMatch(/account_id = \$1/);
     }
   });
-  it('recherche : événements de référence actifs du compte, panne isolée des autres catégories', () => {
+  it('recherche : opérations actives du compte, panne isolée des autres catégories', () => {
     const svc = lire('src/services/search/global-search.service.ts');
     expect(svc).toContain('WHERE o.account_id = ${acc} AND o.invalidated_at IS NULL AND o.merged_into_operation_id IS NULL');
     expect(svc).toContain('referenceEventCandidatesSafe(accountId, q, mode)');
     expect(svc).toContain('href: referenceEventHref(id)');
   });
-  it('liens existants « Voir l’événement de référence » : vers la page, tiroirs fermés au départ', () => {
+  it('liens existants « Voir l’opération » : vers la page, tiroirs fermés au départ', () => {
     const liens = lire('src/components/documents/ReferenceEventSheet.tsx');
     expect(liens).toContain('const href = referenceEventHref(operationId);');
     expect(liens).toContain('window.dispatchEvent(new CustomEvent(CLOSE_ALL_DRAWERS_EVENT));');
-    expect(liens).toContain('export const REFERENCE_EVENT_OPEN_LABEL = "Voir l’événement de référence";');
+    expect(liens).toContain('export const REFERENCE_EVENT_OPEN_LABEL = "Voir l’opération";');
     expect(visible(liens)).not.toMatch(/<Sheet\b/);
     expect(lire('src/components/agenda/AgendaGroupingSection.tsx')).toContain('<ReferenceEventLink key={e.id} operationId={e.id} label={e.label} />');
     expect(lire('src/components/assets/TcoSection.tsx')).toContain('<ReferenceEventLink operationId={l.operationId} />');

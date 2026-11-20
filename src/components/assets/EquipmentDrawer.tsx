@@ -92,7 +92,7 @@ interface EquipmentDocument {
 }
 
 /** Lot 109A : mention d'un rattachement par l'événement de référence (jamais un lien direct). */
-const VIA_REFERENCE_LABEL = 'Par un événement de référence';
+const VIA_REFERENCE_LABEL = 'Par une opération';
 
 interface EquipmentAgendaItem {
   id: number;

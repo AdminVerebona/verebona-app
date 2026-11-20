@@ -245,7 +245,8 @@ describe('L114M-02 — textes du ticket, événement exact, aucun secret', () =>
     for (const x of [p, t]) {
       expect(x).not.toMatch(/réinitialis|nouvelle connexion|nouvel appareil|récupération/i);
       expect(x).not.toContain('Sécurité de votre compte');
-      expect(x).not.toMatch(/Opération/);
+      // Règle remplacée (carte #806, décision du PO du 17/11/2026) : la garde interdisait « Opération » ; à l’écran on dit désormais « opération », et c’est « événement de référence » qui est interdit.
+      expect(x).not.toMatch(/[ée]v[éeè]nements?\s+de\s+r[ée]f[ée]rence/i);
     }
   });
 

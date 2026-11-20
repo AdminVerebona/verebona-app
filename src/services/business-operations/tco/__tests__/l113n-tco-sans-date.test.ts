@@ -341,7 +341,8 @@ describe('L113N-UI — « Points à vérifier » et « Vos choix confirmés » (
     expect(html).toContain('Retirer du TCO');
     expect(html).toContain('data-tco-date-entry="acquisitionDate"');
     expect(html).toContain('3 choix à faire');
-    expect(html).not.toMatch(/Op[ée]ration/);
+    // Règle remplacée (carte #806, décision du PO du 17/11/2026) : la garde interdisait « Opération » ; à l’écran on dit désormais « opération », et c’est « événement de référence » qui est interdit.
+    expect(html).not.toMatch(/[ée]v[éeè]nements?\s+de\s+r[ée]f[ée]rence/i);
     const lecture = renderToStaticMarkup(React.createElement(TcoOpenDiagnostics, { diagnostics: diag(t0), assetId: BIEN, onShowLine: () => {} }));
     expect(lecture).not.toContain('data-tco-arbitration=');
     const t = computeTco(input({ undatedConfirmations: [achat, quittance, avis].map((c) => conf(cle(t0, c))) }));

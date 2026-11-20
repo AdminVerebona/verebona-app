@@ -156,7 +156,8 @@ scenario('L42-O3b', 'Consolidation T3 : M3, décisions durables, fusion, réacti
     // Lot 110D (décision PO, ticket « Oui / Non au lieu de « A ou B ? » ») : question binaire, références listées à part.
     expect(carte.question).toBe('Ce document concerne-t-il la même intervention que le document suivant ?');
     expect(carte.proposals_json.map((p) => p.value)).toEqual([`YES:${op.id}`, `NO:${op.id}`]);
-    expect([carte.question, ...carte.proposals_json.map((p) => p.label)].join(' ')).not.toMatch(/op[ée]ration/i);
+    // Règle remplacée (carte #806, décision du PO du 17/11/2026) : la garde interdisait « Opération » ; à l’écran on dit désormais « opération », et c’est « événement de référence » qui est interdit.
+    expect([carte.question, ...carte.proposals_json.map((p) => p.label)].join(' ')).not.toMatch(/[ée]v[éeè]nements?\s+de\s+r[ée]f[ée]rence/i);
 
     // Dédoublonnage : un second passage (même contexte) met à jour la même carte, pas de seconde carte ni d'appel.
     await passer(compte, { reevaluateHolds: true });

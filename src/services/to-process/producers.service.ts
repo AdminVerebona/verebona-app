@@ -948,7 +948,7 @@ export async function produceAccountActions(accountId: number): Promise<AccountP
     // contradictoire) et l'ABSTENTION tracée quand l'IA n'a pas tranché.
     import('./reference-event-sweep')
       .then(({ produceReferenceEventActions }) => produceReferenceEventActions(accountId))
-      .catch(reportError('événements de référence', accountId, errors, familles)),
+      .catch(reportError('opérations', accountId, errors, familles)),
   ]);
   const fusion = merge(agenda, equipements, fournisseurs, documents, incoherences, evenementsReference);
   // Lot 61 (écart 5) : les erreurs des règles documentaires remontent au bilan.

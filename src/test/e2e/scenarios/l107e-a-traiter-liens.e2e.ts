@@ -270,7 +270,7 @@ scenario('L107E-LIENS', 'À traiter : liens directs vers l’objet et les justif
     expect((await sql<{ n: number }[]>`SELECT count(*)::int AS n FROM canonical_field_writes WHERE asset_id = ${bien.id}`)[0].n).toBe(writesAvant);
   });
 
-  it('L107E-E2E-08 — Agenda et événement de référence : l’événement exact (#715 : sans carte « c’est fait »)', async () => {
+  it('L107E-E2E-08 — Agenda et opération : l’événement exact (#715 : sans carte « c’est fait »)', async () => {
     const compte = await make.account();
     const bien = await make.asset(compte, { name: 'Chaudière' });
     const item = await make.agendaItem(compte, { title: 'Entretien chaudière', startDate: '2026-09-15', assetIds: [bien.id] });

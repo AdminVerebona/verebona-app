@@ -74,9 +74,9 @@ const MERGE_RELATION = 'referenceEventMerge';
 const FACT_RELATION = 'referenceEventFact';
 
 /** À valider par le PO. */
-export const MERGE_SAME_LABEL = 'Oui, c’est le même';
+export const MERGE_SAME_LABEL = 'Oui, c’est la même';
 /** À valider par le PO. */
-export const MERGE_DISTINCT_LABEL = 'Non, ce sont deux événements différents';
+export const MERGE_DISTINCT_LABEL = 'Non, ce sont deux opérations différentes';
 
 /** Faits DATÉS comparables entre deux événements de référence (référentiel de la carte #750, repris à l'identique). */
 export const FACT_DATE_FIELDS = ['plannedDate', 'startDate', 'realizedDate', 'endDate'] as const;
@@ -202,7 +202,7 @@ const g = (s: string) => `« ${borne(s.replace(/\s+/g, ' ').trim())} »`;
 
 /** Question de fusion (pure) — à valider par le PO. Neutre : aucune des deux réponses n'est suggérée. */
 export function referenceEventMergeQuestion(titleA: string, titleB: string): string {
-  return `${g(titleA)} et ${g(titleB)} : est-ce le même événement de référence, ou deux ?`;
+  return `${g(titleA)} et ${g(titleB)} : est-ce la même opération, ou deux ?`;
 }
 
 /** Propositions de fusion (pures) : fusionner, ou garder deux événements (état actuel). */

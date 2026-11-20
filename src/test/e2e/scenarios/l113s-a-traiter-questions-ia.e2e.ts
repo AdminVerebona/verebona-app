@@ -8,7 +8,7 @@
  *   S2  question absente, contrat inactif (avant le bloc 24) : formulation
  *       113L, provenance CODE, aucune anomalie ;
  *   S3  question invalide (trop longue, hors options, bien d'un AUTRE compte,
- *       autre bien du compte, « opération », e-mail) : repli tracé, motif ;
+ *       autre bien du compte, ancien terme « événement de référence », e-mail) : repli tracé, motif ;
  *       contrat actif → anomalie Supervision ; jamais présentée comme IA ;
  *   S4  carte existante (formulation d'avant) : la question de T3 la remplace —
  *       MÊME carte, même cycle, QUESTION_UPDATED, aucun doublon ; rejoué : rien ;
@@ -110,7 +110,7 @@ scenario('L113S', 'À traiter : questions d’arbitrage formulées par T3 / T4, 
     expect(await anomalies(compte)).toEqual([]);
   });
 
-  it('S3 — question invalide (longueur, hors options, autre compte, autre bien, « opération », e-mail) : repli tracé ; contrat actif → Supervision', async () => {
+  it('S3 — question invalide (longueur, hors options, autre compte, autre bien, « événement de référence », e-mail) : repli tracé ; contrat actif → Supervision', async () => {
     marqueurs.question = true;
     const { compte, maison, studio } = await conflit();
     await make.asset(compte, { category: 'IMMOBILIER', name: 'Appartement Villeurbanne' });
@@ -121,7 +121,8 @@ scenario('L113S', 'À traiter : questions d’arbitrage formulées par T3 / T4, 
       ['Cet avis concerne-t-il plutôt « Garage Dupont » que « Maison » ?', 'UNKNOWN_REFERENCE'],
       ['Cet avis concerne-t-il « Chalet Megève » plutôt que « Maison » ?', 'UNKNOWN_REFERENCE'],
       ['Cet avis concerne-t-il le bien Appartement Villeurbanne plutôt que « Maison » ?', 'FOREIGN_LABEL'],
-      ['Cet avis relève-t-il de la même opération que « Studio » ?', 'FORBIDDEN_TERM'],
+      // Règle remplacée (carte #806, décision du PO du 17/11/2026) : le terme refusé est désormais « événement de référence ».
+      ['Cet avis relève-t-il du même événement de référence que « Studio » ?', 'FORBIDDEN_TERM'],
       ['L’avis envoyé à demo@example.com concerne-t-il « Studio » ?', 'SENSITIVE_DATA'],
     ];
     for (const [q, code] of cas) {
@@ -241,11 +242,12 @@ scenario('L113S', 'À traiter : questions d’arbitrage formulées par T3 / T4, 
     expect(vue.choiceMode).toBe('BINARY');
     expect(vue.proposals.map((p) => p.label)).toEqual(['Oui', 'Non']);
 
-    // Question refusée (« opération ») sur un autre document : formulation binaire d'avant, tracée.
+    // Question refusée (ancien terme « événement de référence » — règle remplacée, carte #806) sur un autre document :
+    // formulation binaire d'avant, tracée.
     const compte2 = await make.account();
     const clio2 = await make.asset(compte2, { category: 'VEHICULE', name: 'Clio' });
     const x = await devisPuisFacture(compte2, clio2.id);
-    await rejouer([m3({ questionCandidateId: x.op.id, userQuestion: 'Cette facture relève-t-elle de la même opération que « Devis freinage » ?' })]);
+    await rejouer([m3({ questionCandidateId: x.op.id, userQuestion: 'Cette facture relève-t-elle du même événement de référence que « Devis freinage » ?' })]);
     await (await consolidator()).consolidateAccountOperations(compte2.id, { today: AUJOURDHUI });
     const [c2] = await cartes(x.facture, 'OPERATION-MATCH');
     expect(c2.question).toBe('Ce document concerne-t-il la même intervention que le document suivant ?');

@@ -109,7 +109,8 @@ describe('L105D-U-CARD — carte groupée « Le logement du … est-il votre bie
     const q = cards.identityGroupQuestion({ family: 'PROPERTY', label: '12 rue des Érables Fictifs, 69000 Lyon', assetName: 'Maison' });
     expect(q).toBe('Le logement du 12 rue des Érables Fictifs, 69000 Lyon est-il votre bien « Maison » ?');
     expect(technicalLabelIssues(q, { userContent: true })).toEqual([]);
-    expect(q).not.toMatch(/op[ée]ration/i);
+    // Règle remplacée (carte #806, décision du PO du 17/11/2026) : la garde interdisait « Opération » ; à l’écran on dit désormais « opération », et c’est « événement de référence » qui est interdit.
+    expect(q).not.toMatch(/[ée]v[éeè]nements?\s+de\s+r[ée]f[ée]rence/i);
     const p = cards.identityGroupProposals({ assetId: 32, assetName: 'Maison', documentCount: 5 });
     expect(p.map((x) => x.value)).toEqual(['CONFIRM:32', 'REFUSE']);
     expect(p[0].label).toContain('5 documents');

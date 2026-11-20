@@ -162,7 +162,7 @@ export const operationsAcquisitionDateCheck: CoherenceCheck = {
   scope: 'Opérations ACQUISITION actives, réalisées, liées à un bien : sans date de réalisation (lot 85E) ou datées (lot 107C, contre la date d’achat du bien)',
   sources: ['business_operations', 'business_operation_sources', 'business_operation_asset_links', 'assets', 'agenda_items', 'to_process_actions'],
   applicability: 'compte éligible (actif et modifiable) ; bien lié portant une date d’acquisition canonique valide (toute origine)',
-  invariant: 'une acquisition réalisée dont le bien porte une date d’acquisition exploitable a cette date (provenance conservée) et son événement de référence aussi ; une date automatique seule ne crée jamais d’Opération ; lot 107C : la date d’achat du bien (TCO) n’est jamais celle d’une acquisition qui n’est pas l’achat du bien, la saisie de l’utilisateur prime, une contradiction sans autorité est tracée',
+  invariant: 'une acquisition réalisée dont le bien porte une date d’acquisition exploitable a cette date (provenance conservée) et son événement principal aussi ; une date automatique seule ne crée jamais d’Opération ; lot 107C : la date d’achat du bien (TCO) n’est jamais celle d’une acquisition qui n’est pas l’achat du bien, la saisie de l’utilisateur prime, une contradiction sans autorité est tracée',
   anomalies: ['ACQUISITION_DATE_NOT_ENRICHED', 'ACQUISITION_DATE_AMBIGUOUS',
     'ACQUISITION_DATE_CANONICAL_NOT_ENRICHED', 'ACQUISITION_DATE_CANONICAL_CONTRADICTED', 'ACQUISITION_DATE_CONTRADICTS_ASSET', 'ACQUISITION_DATE_UNDETERMINED', 'ACQUISITION_MISATTRIBUTED',
     INVOICE_AFTER_ORDER],

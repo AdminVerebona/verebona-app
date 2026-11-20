@@ -138,7 +138,7 @@ export const documentAgendaLinksCheck: CoherenceCheck = {
   scope: 'liens Document ↔ Agenda du compte portant une provenance automatique (AI_DIRECT, OPERATION_PRINCIPAL) et aucune provenance MANUAL_DIRECT',
   sources: ['agenda_file_links', 'agenda_items', 'asset_files', 'business_operations', 'business_operation_documents', 'business_operation_match_decisions', 'agenda_item_sources'],
   applicability: 'compte éligible (actif et modifiable) ; stock historique et nouveaux liens',
-  invariant: 'une provenance automatique d’un lien Document ↔ Agenda n’existe que tant que sa preuve existe : événement de référence d’un ensemble actif dont le document est membre (OPERATION_PRINCIPAL) ; trace de production propre au couple, origine de l’élément ou document membre de l’ensemble projeté (AI_DIRECT) ; jamais sur un lien détaché par l’utilisateur. Le même bien ou une date proche ne sont jamais des preuves.',
+  invariant: 'une provenance automatique d’un lien Document ↔ Agenda n’existe que tant que sa preuve existe : événement principal d’un ensemble actif dont le document est membre (OPERATION_PRINCIPAL) ; trace de production propre au couple, origine de l’élément ou document membre de l’ensemble projeté (AI_DIRECT) ; jamais sur un lien détaché par l’utilisateur. Le même bien ou une date proche ne sont jamais des preuves.',
   anomalies: ['AUTOMATIC_LINK_UNJUSTIFIED', 'AUTOMATIC_LINK_UNPROVEN', 'CROSS_ACCOUNT_LINK'],
   autoRepairWhen: 'provenance automatique démontrée infondée par une preuve contraire déterministe (relue sous le verrou du compte)',
   forbiddenRepairs: ['retirer une provenance MANUAL_DIRECT ou un lien posé par l’utilisateur', 'retirer un lien sans preuve contraire (lien non prouvé : constat)',

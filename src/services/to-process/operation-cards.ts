@@ -111,7 +111,7 @@ const NOMS: Readonly<Record<string, { meme: string; autre: string }>> = {
   FINANCING: { meme: 'le même financement', autre: 'un autre financement' },
   DISPOSAL: { meme: 'la même vente', autre: 'une autre vente' },
 };
-const NOM_DEFAUT = { meme: 'le même événement', autre: 'un autre événement' };
+const NOM_DEFAUT = { meme: 'la même opération', autre: 'une autre opération' };
 const businessNoun = (type: string | null | undefined) => (type && NOMS[type]) || NOM_DEFAUT;
 
 const borne = (s: string, n: number) => (s.length > n ? `${s.slice(0, n - 1)}…` : s);
@@ -489,7 +489,7 @@ export async function syncOperationCards(accountId: number, needs: OperationCard
       const { agendaItemOfOperations } = await import('./reference-event-card-anchor');
       const itemId = n.fileId === null ? await agendaItemOfOperations(accountId, [n.operationId], null) : null;
       if (n.fileId === null && itemId === null) {
-        console.warn(`[to-process] contradiction d’attribut de l’événement de référence ${n.operationId} (${n.field}/${n.role}) sans objet réel : aucune carte`);
+        console.warn(`[to-process] contradiction d’attribut de l’opération ${n.operationId} (${n.field}/${n.role}) sans objet réel : aucune carte`);
         continue;
       }
       const cible = n.fileId !== null ? { targetType: 'DOCUMENT' as const, targetId: n.fileId } : { targetType: 'AGENDA_ITEM' as const, targetId: itemId! };

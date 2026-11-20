@@ -35,7 +35,7 @@ vi.mock('@/services/exports/export-support-notifier', () => ({ notifySupportOfEx
 type Compte = { id: number; ownerUserId: number };
 type Json = Record<string, any>;
 
-scenario('L114AA-EXPORT-PRET-ET-EVENEMENT-DU-FIL', 'Passage 114AA — dossier d’export prêt annoncé dans la conversation, « cet événement de référence » d’un tour à l’autre, chiffre clé', ({ sql, make }) => {
+scenario('L114AA-EXPORT-PRET-ET-EVENEMENT-DU-FIL', 'Passage 114AA — dossier d’export prêt annoncé dans la conversation, « cette opération » d’un tour à l’autre, chiffre clé', ({ sql, make }) => {
   const compte = async (plan: 'standard' | 'premium' = 'premium'): Promise<Compte> => {
     const a = await make.account({ plan });
     return { id: a.id, ownerUserId: a.ownerUserId };
@@ -171,7 +171,7 @@ scenario('L114AA-EXPORT-PRET-ET-EVENEMENT-DU-FIL', 'Passage 114AA — dossier d�
     expect(cartesDe(await historique(a, filA))).toContainEqual(expect.objectContaining({ id: `export_${g.id}`, status: 'N’est plus disponible', href: null }));
   });
 
-  it('E03 — « cet événement de référence » d’un tour à l’autre : mémorisé, relu, confirmé ; une suppression l’oublie', async () => {
+  it('E03 — « cette opération » d’un tour à l’autre : mémorisé, relu, confirmé ; une suppression l’oublie', async () => {
     const c = await compte('premium');
     await bien(c, 'Clio');
     const conversationId = await fil(c);
@@ -188,11 +188,12 @@ scenario('L114AA-EXPORT-PRET-ET-EVENEMENT-DU-FIL', 'Passage 114AA — dossier d�
     const { loadThreadContext } = await import('@/services/verebona-assistant/core/conversation.service');
     const ctx = await loadThreadContext(c.id, c.ownerUserId, conversationId);
     expect(ctx!.lastReferenceEventId).toBe(ev.id);
-    const p2 = planDe(await preparer(c, 'Relie le fournisseur Garage Martin à cet événement de référence', { conversationId, threadReferenceEventId: ctx!.lastReferenceEventId }));
+    const p2 = planDe(await preparer(c, 'Relie le fournisseur Garage Martin à cette opération', { conversationId, threadReferenceEventId: ctx!.lastReferenceEventId }));
     // L'aperçu NOMME l'événement : l'utilisateur sait sur quoi il s'engage. Et rien n'est écrit avant.
-    expect(p2.preview.summary).toContain('Relier le fournisseur « Garage Martin » à l’événement de référence « Intervention — Vidange »');
+    expect(p2.preview.summary).toContain('Relier le fournisseur « Garage Martin » à l’opération « Intervention — Vidange »');
     expect(p2.preview.summary).toContain('Confirmez-vous ?');
-    expect(JSON.stringify(p2.preview)).not.toMatch(/Opération/);
+    // Règle remplacée (carte #806, décision du PO du 17/11/2026) : la garde interdisait « Opération » ; à l’écran on dit désormais « opération », et c’est « événement de référence » qui est interdit.
+    expect(JSON.stringify(p2.preview)).not.toMatch(/[ée]v[éeè]nements?\s+de\s+r[ée]f[ée]rence/i);
     expect(await sql`SELECT 1 FROM business_operation_suppliers WHERE account_id = ${c.id}`).toHaveLength(0);
     expect(await confirmer(c, p2.plan.planId)).toMatchObject({ ok: true, status: 'EXECUTED' });
     expect(await sql`SELECT 1 FROM business_operation_suppliers WHERE account_id = ${c.id}`).toHaveLength(1);
@@ -200,19 +201,19 @@ scenario('L114AA-EXPORT-PRET-ET-EVENEMENT-DU-FIL', 'Passage 114AA — dossier d�
     // Tour 3 : le pronom seul, pour la seule forme qui ne peut rien désigner d'autre.
     const ctx3 = await loadThreadContext(c.id, c.ownerUserId, conversationId);
     expect(ctx3!.lastReferenceEventId).toBe(ev.id);
-    const p3 = planDe(await preparer(c, 'Corrige le prestataire de cet événement de référence en Garage Martin', { conversationId, threadReferenceEventId: ctx3!.lastReferenceEventId }));
+    const p3 = planDe(await preparer(c, 'Corrige le prestataire de cette opération en Garage Martin', { conversationId, threadReferenceEventId: ctx3!.lastReferenceEventId }));
     expect(p3.plan.actions[0].command).toBe('UPDATE_REFERENCE_EVENT');
     expect(await confirmer(c, p3.plan.planId)).toMatchObject({ ok: true });
     expect((await evenements(c))[0].provider).toBe('Garage Martin');
 
     // Tour 4 : suppression confirmée — le fil OUBLIE l'événement (il n'existe plus).
-    const p4 = planDe(await preparer(c, 'Supprime cet événement de référence', { conversationId, threadReferenceEventId: ev.id }));
+    const p4 = planDe(await preparer(c, 'Supprime cette opération', { conversationId, threadReferenceEventId: ev.id }));
     expect(p4.preview.summary).toContain('Intervention — Vidange');
     expect(await confirmer(c, p4.plan.planId)).toMatchObject({ ok: true });
     expect((await evenements(c))[0].invalide).toBe(true);
     expect(await evenementDuFil(conversationId)).toBeNull();
     // La phrase suivante ne trouve plus rien : la question est posée, rien n'est préparé.
-    expect(await preparer(c, 'Supprime cet événement de référence', { conversationId })).toMatchObject({ kind: 'need_info' });
+    expect(await preparer(c, 'Supprime cette opération', { conversationId })).toMatchObject({ kind: 'need_info' });
   });
 
   it('E04 — cloisonnement du fil et du compte ; interrupteur des actions coupé', async () => {
@@ -231,10 +232,10 @@ scenario('L114AA-EXPORT-PRET-ET-EVENEMENT-DU-FIL', 'Passage 114AA — dossier d�
     const autreFil = await getOrCreateActiveConversation(a.id, a.ownerUserId, 'fr-FR');
     expect(autreFil).not.toBe(filA);
     expect((await loadThreadContext(a.id, a.ownerUserId, autreFil))!.lastReferenceEventId).toBeNull();
-    expect(await preparer(a, 'Supprime cet événement de référence', { conversationId: autreFil })).toMatchObject({ kind: 'need_info' });
+    expect(await preparer(a, 'Supprime cette opération', { conversationId: autreFil })).toMatchObject({ kind: 'need_info' });
 
     // Le COMPTE B ne retrouve jamais l'événement du compte A, même avec son identifiant.
-    expect(await preparer(b, 'Supprime cet événement de référence', { threadReferenceEventId: ev.id })).toMatchObject({ kind: 'need_info' });
+    expect(await preparer(b, 'Supprime cette opération', { threadReferenceEventId: ev.id })).toMatchObject({ kind: 'need_info' });
     expect(await evenements(b)).toHaveLength(0);
     // Le contexte d'un fil du compte A n'est pas lisible depuis le compte B.
     expect(await loadThreadContext(b.id, b.ownerUserId, autreFil)).toBeNull();
@@ -251,7 +252,7 @@ scenario('L114AA-EXPORT-PRET-ET-EVENEMENT-DU-FIL', 'Passage 114AA — dossier d�
       const entree = { accountId: a.id, userId: a.ownerUserId, planType: 'PREMIUM', locale: 'fr-FR', clientRequestId: 'off', conversationId: filA } as never;
       for (const message of [
         'Déclare une intervention « Freins » réalisée le 2 juin 2024 pour la Clio',
-        'Supprime cet événement de référence',
+        'Supprime cette opération',
         'Relie le fournisseur Garage Martin à celui-ci',
         'Génère le dossier complet de la Clio',
       ]) {

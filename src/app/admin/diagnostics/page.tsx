@@ -67,7 +67,7 @@ const SCOPES: ReadonlyArray<{ key: DiagScope; label: string; idLabel: string | n
   { key: 'user', label: 'Filtre : un utilisateur', idLabel: 'Identifiant de l’utilisateur' },
   { key: 'asset', label: 'Filtre : un bien et ses équipements', idLabel: 'Identifiant du bien' },
   { key: 'document', label: 'Filtre : un document', idLabel: 'Identifiant du document' },
-  { key: 'operation', label: 'Filtre : un événement de référence (Opération)', idLabel: 'Identifiant de l’Opération' },
+  { key: 'operation', label: 'Filtre : une opération', idLabel: 'Identifiant de l’Opération' },
 ];
 
 const STATUS_LABELS: Record<string, string> = {

@@ -176,7 +176,8 @@ describe('L100D-A9-UI — écrans de l’app : droits présents, aucun prix ni l
     expect(src).toContain('RESILIATION_CONFIRMATION.title');
     expect(src).toContain('w-full sm:w-auto');
     expect(src).not.toMatch(COMMERCE_RE);
-    expect(src).not.toMatch(/Opération/);
+    // Règle remplacée (carte #806, décision du PO du 17/11/2026) : la garde interdisait « Opération » ; à l’écran on dit désormais « opération », et c’est « événement de référence » qui est interdit.
+    expect(src).not.toMatch(/[ée]v[éeè]nements?\s+de\s+r[ée]f[ée]rence/i);
   });
 
   it('rétractation (app) : aucun montant ; libellés imposés conservés', () => {

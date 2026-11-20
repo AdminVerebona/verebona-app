@@ -424,7 +424,7 @@ describe('L114H-U08 — P1-D et § 6 : issue ACTUELLE d’une couverture pour le
     expect(coverageIssueOf({ qualityState: 'INCOMPLETE_FINAL', retryAttempts: 2, maxRetries: 2, verification: { pagesMissing: [2] } }).reason).toContain('1 page(s) manquante(s)');
   });
 
-  it('aucun texte du BO ne dit « Opération » (règle permanente)', () => {
+  it('aucun texte du BO ne dit « événement de référence » (règle permanente)', () => {
     const textes = JSON.stringify([
       lire('src/services/ai/source-analysis/source-units/coverage-issue.ts').match(/'[^'\n]{12,}'/g),
       reassessmentText({ rulesVersion: 1, available: true, documents: 3, byOutcome: { RESOLVED: 1, ERROR: 1 }, transitions: [], unitsRequalified: 0, alertsClosed: 0, alertsMaintained: 0, alertsOpened: 0, retriesScheduled: 0, retriesCancelled: 0, errors: 1, remaining: 0, openAlerts: 0, totalDurationMs: 0, aiCalls: 0, aiCost: 0, firstAt: null, lastAt: null }),

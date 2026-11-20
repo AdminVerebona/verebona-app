@@ -132,9 +132,9 @@ describe('L109A-U-WIRING — branchements (une seule source de lecture, écritur
     expect(src('src/services/relations/read-contract.ts')).not.toMatch(/INSERT|UPDATE |DELETE /);
   });
 
-  it('libellé visible : jamais « Opération » dans la fiche équipement', () => {
+  it('libellé visible : jamais « événement de référence » dans la fiche équipement', () => {
     const ui = src('src/components/assets/EquipmentDrawer.tsx');
-    expect(ui).toMatch(/Par un événement de référence/);
+    expect(ui).toMatch(/Par une opération/);
     expect(ui.match(/'[^']*Opération[^']*'/g) ?? []).toEqual([]);
   });
 });

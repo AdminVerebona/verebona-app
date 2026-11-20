@@ -20,13 +20,13 @@
  */
 
 /** Titre de la fiche de l'événement de référence (à valider par le PO). */
-export const REFERENCE_EVENT_TITLE = 'Événement de référence';
+export const REFERENCE_EVENT_TITLE = 'Opération';
 /** Rubrique des justificatifs de l'événement de référence (à valider par le PO). */
 export const REFERENCE_EVENT_DOCUMENTS_TITLE = 'Justificatifs';
 /** Lien vers l'élément d'agenda relié, quand il existe (à valider par le PO). */
 export const REFERENCE_EVENT_AGENDA_LINK = 'Ouvrir dans l’agenda';
 /** Message d'une fiche devenue introuvable (à valider par le PO). */
-export const REFERENCE_EVENT_NOT_FOUND = 'Impossible d’ouvrir cet événement de référence : il a peut-être été regroupé ou supprimé.';
+export const REFERENCE_EVENT_NOT_FOUND = 'Impossible d’ouvrir cette opération : elle a peut-être été regroupée ou supprimée.';
 
 /**
  * Faits explicites fournis à T2 (à valider par le PO) — jamais un statut,

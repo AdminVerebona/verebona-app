@@ -37,7 +37,7 @@ describe('L86D-U-01 — pertinence d’une association selon ses preuves (pure)'
     }
   });
 
-  it('OPERATION_PRINCIPAL : fondée seulement sur l’événement de référence d’un ensemble actif dont le document est membre', () => {
+  it('OPERATION_PRINCIPAL : fondée seulement sur l’opération d’un ensemble actif dont le document est membre', () => {
     // Règle remplacée (carte #744) : « porte un fait de l'ensemble » remplace « est le principal ».
     const ok = lien({ provenances: ['OPERATION_PRINCIPAL'], operationId: 3, carriesFact: true, fileMember: true });
     expect(evaluateLinkRelevance(ok)).toMatchObject({ verdict: 'CONSISTENT', justified: [{ provenance: 'OPERATION_PRINCIPAL', basis: 'PRINCIPAL_OF_ENSEMBLE_WITH_MEMBER_DOCUMENT' }] });
@@ -148,7 +148,7 @@ describe('L86D-U-04 — contrat d’affichage (geste, libellés)', async () => {
     expect(v.isGroupingAction('detacher-document')).toBe(true);
     for (const a of ['relier-document', 'retirer-document', 'relier-element', 'retirer-reference']) expect(v.isGroupingAction(a)).toBe(true);
   });
-  it('libellés : détacher n’est pas supprimer ; jamais « Opération » ni « principal »', () => {
+  it('libellés : détacher n’est pas supprimer ; jamais « événement de référence » ni « principal »', () => {
     const L = v.GROUPING_LABELS;
     // Lot 89B : « Retirer l’association » (libellé PO du 25/10).
     expect(L.detachFromItem('Devis')).toBe('Retirer l’association avec « Devis »');
@@ -156,7 +156,8 @@ describe('L86D-U-04 — contrat d’affichage (geste, libellés)', async () => {
     expect(L.removeFromEnsemble('Devis')).toBe('Retirer « Devis » de l’ensemble');
     expect(L.detachedToast).toContain('reste disponible');
     const textes = [L.linkedDocuments, L.detach, L.detachedToast, L.detachFromItem('x'), L.detachItemFromDocument('x'), L.removeFromEnsemble('x')].join(' ');
-    expect(textes).not.toMatch(/opération|principal/i);
+    // Règle remplacée (carte #806, décision du PO du 17/11/2026) : la garde interdisait « Opération » ; à l’écran on dit désormais « opération », et c’est « événement de référence » qui est interdit.
+    expect(textes).not.toMatch(/[ée]v[éeè]nements?\s+de\s+r[ée]f[ée]rence|principal/i);
   });
 });
 

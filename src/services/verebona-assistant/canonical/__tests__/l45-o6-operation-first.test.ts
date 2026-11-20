@@ -122,7 +122,7 @@ describe('O6-01 — coût consolidé d’un bien sans double comptage (C12, C15.
     expect(tous.entries).toEqual([{ operationId: inconnue.id, amountCents: 4000, theme: 'other' }]);
   });
 
-  it('P09 — libellés : jamais « Opération »', () => {
+  it('P09 — libellés : jamais « événement de référence »', () => {
     expect(operationCountLabel({ INTERVENTION: 2, CONTRACT: 1 })).toBe('2 interventions et 1 contrat');
     expect(operationLabel(op({ typeCode: 'CLAIM', claimType: 'DEGAT_DES_EAUX', documents: [] }))).toMatch(/^sinistre « /);
     expect(operationLabel(op({ typeCode: null, technicalLabel: null, documents: [] }))).toBe('dépense');
@@ -154,7 +154,8 @@ describe('O6-05 — agrégat mixte (C15.1) : Opérations + documents non représ
     const notes = mixedExpenseNotes(q, { scopeLabel: 'Polo' }).join(' ');
     expect(notes).toMatch(/Dont 1\s250,00\s€ consolidés \(1 intervention\) et 180,00\s€ lus sur 1 document/);
     expect(notes).toContain('déjà pris en compte dans une intervention');
-    expect(notes).not.toMatch(/op[ée]ration/i);
+    // Règle remplacée (carte #806, décision du PO du 17/11/2026) : la garde interdisait « Opération » ; à l’écran on dit désormais « opération », et c’est « événement de référence » qui est interdit.
+    expect(notes).not.toMatch(/[ée]v[éeè]nements?\s+de\s+r[ée]f[ée]rence/i);
     const src = expenseSumSource(q, { assetIds: [20], scopeLabel: 'Polo' });
     expect(src.content).toContain(`doc-${o.documents[0].fileId}`);
     expect(src.meta).toMatchObject({ operationCount: 1, consolidatedCents: 125000, documentFallbackCents: 18000, representedDocumentCount: 1 });

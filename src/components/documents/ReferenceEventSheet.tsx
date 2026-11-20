@@ -31,7 +31,7 @@ import { CLOSE_ALL_DRAWERS_EVENT } from "@/lib/drawers";
 import { referenceEventHref } from "@/lib/reference-events/reference-event-page";
 
 /** Texte du lien d'ouverture (repris du lot 113X, « Voir l'événement de référence »). */
-export const REFERENCE_EVENT_OPEN_LABEL = "Voir l’événement de référence";
+export const REFERENCE_EVENT_OPEN_LABEL = "Voir l’opération";
 
 /** Lien vers la PAGE ENTIÈRE d'un événement de référence (ligne de dépense, tiroirs du document et de l'Agenda). */
 export function ReferenceEventLink({ operationId, label }: { operationId: number; label?: string | null }) {

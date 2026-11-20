@@ -1073,6 +1073,6 @@ export async function noterEvenementDeReferenceDuFil(
       [p.conversationId, p.accountId, p.userId, JSON.stringify({ lastReferenceEventId: operationId })] as never[],
     );
   } catch (e) {
-    console.warn('[verebona] événement de référence du fil non mémorisé :', (e as Error).message);
+    console.warn('[verebona] opération du fil non mémorisé :', (e as Error).message);
   }
 }

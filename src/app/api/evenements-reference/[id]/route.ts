@@ -56,7 +56,7 @@ export async function GET(req: NextRequest, context: RouteContext) {
   try {
     const { readReferenceEvent } = await import('@/services/documents/business-period-surfaces');
     const reference = await readReferenceEvent(session.currentAccountId, Number(id));
-    if (!reference) return apiError(404, 'NOT_FOUND', 'Événement de référence introuvable.');
+    if (!reference) return apiError(404, 'NOT_FOUND', 'Opération introuvable.');
     return NextResponse.json({ reference }, { headers: { 'Cache-Control': 'private, no-cache' } });
   } catch (err) {
     console.error('[api/evenements-reference/:id] GET', (err as Error).message);

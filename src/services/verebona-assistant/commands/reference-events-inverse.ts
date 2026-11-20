@@ -120,14 +120,14 @@ async function evenementSupprime(
   if (!lookup.findInvalidatedReferenceEvents) return { needInfo: IMPOSSIBLE };
   const { designer } = await import('./reference-events');
   if (!cible.typeCode && cible.words.length === 0 && !cible.date) {
-    return { needInfo: 'Quel événement de référence voulez-vous rétablir ? Donnez son intitulé, sa date complète ou son bien.' };
+    return { needInfo: 'Quelle opération voulez-vous rétablir ? Donnez son intitulé, sa date complète ou son bien.' };
   }
   const trouves = await lookup.findInvalidatedReferenceEvents(input.accountId, cible);
   if (trouves.length === 0) {
-    return { needInfo: 'Je n’ai pas trouvé d’événement de référence supprimé qui corresponde dans votre compte. Lequel voulez-vous rétablir ?' };
+    return { needInfo: 'Je n’ai pas trouvé d’opération supprimée qui corresponde dans votre compte. Laquelle voulez-vous rétablir ?' };
   }
   if (trouves.length > 1) {
-    return { needInfo: `Plusieurs événements de référence supprimés correspondent : ${trouves.slice(0, 5).map(designer).join(' ; ')}. Précisez lequel dans votre demande (intitulé, date complète ou bien).` };
+    return { needInfo: `Plusieurs opérations supprimées correspondent : ${trouves.slice(0, 5).map(designer).join(' ; ')}. Précisez laquelle dans votre demande (intitulé, date complète ou bien).` };
   }
   return { state: trouves[0] };
 }
@@ -148,12 +148,12 @@ async function resolveRestore(
   return {
     actionId, command: 'RESTORE_REFERENCE_EVENT', dependsOn: [], targets: [cibleDe(s)],
     params: { kind: 'reference_event_restore', operationId: s.id, expectedVersion: s.version },
-    preview: `Rétablir l’événement de référence ${designer(s)}.`,
+    preview: `Rétablir l’opération ${designer(s)}.`,
     effects: [
-      `Événement de référence : ${s.label}`,
-      'Il redevient pris en compte (dépenses, réponses de l’assistant), avec ses documents et ses fournisseurs.',
+      `Opération : ${s.label}`,
+      'Elle est de nouveau prise en compte (dépenses, réponses de l’assistant), avec ses documents et ses fournisseurs.',
       'Ses échéances détachées à la suppression ne lui sont PAS rattachées de nouveau : elles sont restées dans l’Agenda, à leur date.',
-      'Pour le supprimer de nouveau, refaites une demande de suppression.',
+      'Pour la supprimer de nouveau, refaites une demande de suppression.',
     ],
   };
 }
@@ -169,7 +169,7 @@ async function resolveDissociation(
   if ('needInfo' in second) return second;
   const a = premier.state;
   const b = second.state;
-  if (a.id === b.id) return { needInfo: 'Ces deux désignations correspondent au même événement de référence : précisez les deux événements à dissocier.' };
+  if (a.id === b.id) return { needInfo: 'Ces deux désignations correspondent à la même opération : précisez les deux opérations à dissocier.' };
   // Le sens de la relation est celui que l'association aurait posé : la façade retire le lien de la paire.
   const r = relationBetween(a, b);
   const from = r.fromOperationId === a.id ? a : b;
@@ -177,10 +177,10 @@ async function resolveDissociation(
   return {
     actionId, command: 'DISSOCIATE_REFERENCE_EVENTS', dependsOn: [], targets: [cibleDe(from), cibleDe(to)],
     params: { kind: 'reference_events_dissociate', fromOperationId: from.id, toOperationId: to.id, expectedVersions: [from.version, to.version] },
-    preview: `Dissocier les événements de référence ${designer(a)} et ${designer(b)}.`,
+    preview: `Dissocier les opérations ${designer(a)} et ${designer(b)}.`,
     effects: [
-      'Seul le lien entre ces deux événements de référence est retiré.',
-      'Les deux événements restent dans votre compte, avec leurs documents, leurs échéances et leurs fournisseurs.',
+      'Seul le lien entre ces deux opérations est retiré.',
+      'Les deux opérations restent dans votre compte, avec leurs documents, leurs échéances et leurs fournisseurs.',
       'Ce retrait est votre décision : une analyse ne les associera plus d’elle-même.',
     ],
   };
@@ -201,12 +201,12 @@ async function resolveDocumentUnlink(
     actionId, command: 'UNLINK_DOCUMENT_REFERENCE_EVENT', dependsOn: [],
     targets: [{ type: 'document', id: d.id, label: d.title }, cibleDe(s)],
     params: { kind: 'reference_event_document_unlink', operationId: s.id, linkedDocumentId: d.id, expectedVersion: s.version, documentVersion: d.version },
-    preview: `Retirer le document « ${d.title} » de l’événement de référence ${designer(s)}.`,
+    preview: `Retirer le document « ${d.title} » de l’opération ${designer(s)}.`,
     effects: [
       `Document : ${d.title}${d.documentDate ? ` du ${formatDateFr(d.documentDate)}` : ''}`,
-      `Événement de référence : ${s.label}`,
+      `Opération : ${s.label}`,
       'Le document reste dans vos documents et garde ses autres rattachements : il n’est pas supprimé.',
-      'Ce qu’il justifiait sur cet événement de référence n’est plus pris en compte ; les montants de l’événement sont recalculés.',
+      'Ce qu’il justifiait sur cette opération n’est plus pris en compte ; les montants de l’opération sont recalculés.',
       'Ce retrait est votre décision : une analyse ne le rattachera plus d’elle-même.',
     ],
   };
@@ -227,10 +227,10 @@ async function resolveSupplierUnlink(
     actionId, command: 'UNLINK_SUPPLIER_REFERENCE_EVENT', dependsOn: [],
     targets: [{ type: 'supplier', id: f.id, label: f.name }, cibleDe(s)],
     params: { kind: 'reference_event_supplier_unlink', operationId: s.id, linkedSupplierId: f.id, expectedVersion: s.version, supplierVersion: f.version },
-    preview: `Retirer le fournisseur « ${f.name} » de l’événement de référence ${designer(s)}.`,
+    preview: `Retirer le fournisseur « ${f.name} » de l’opération ${designer(s)}.`,
     effects: [
       `Fournisseur : ${f.name}`,
-      `Événement de référence : ${s.label}`,
+      `Opération : ${s.label}`,
       'La fiche du fournisseur, ses documents et ses autres liens sont conservés : rien n’est supprimé.',
       'Ce retrait est votre décision : une analyse ne le reliera plus d’elle-même.',
     ],
@@ -257,12 +257,12 @@ async function resolveAgendaLink(
     actionId, command: 'LINK_AGENDA_REFERENCE_EVENT', dependsOn: [],
     targets: [{ type: 'agenda_item', id: item.id, label: item.title }, cibleDe(s)],
     params: { kind: 'reference_event_agenda', operationId: s.id, agendaItemId: item.id, expectedVersion: s.version, agendaItemVersion: item.version },
-    preview: `Rattacher l’échéance « ${item.title} »${item.startDate ? ` du ${formatDateFr(item.startDate)}` : ''} à l’événement de référence ${designer(s)}.`,
+    preview: `Rattacher l’échéance « ${item.title} »${item.startDate ? ` du ${formatDateFr(item.startDate)}` : ''} à l’opération ${designer(s)}.`,
     effects: [
       `Échéance : ${item.title}${item.startDate ? ` du ${formatDateFr(item.startDate)}` : ''}`,
-      `Événement de référence : ${s.label}`,
+      `Opération : ${s.label}`,
       'L’échéance garde son identité, sa date et ses rappels : aucune échéance n’est créée ni copiée.',
-      'Si elle est déjà rattachée à un autre événement de référence, elle est partagée : elle n’est ni déplacée ni dupliquée.',
+      'Si elle est déjà rattachée à une autre opération, elle est partagée : elle n’est ni déplacée ni dupliquée.',
       'Ce rattachement est votre décision : il ne sera pas défait par une analyse.',
     ],
   };
@@ -331,9 +331,9 @@ export const INVERSE_REFERENCE_EVENT_EXECUTORS = {
     const { restoreOperation } = await import('@/services/business-operations/operation-write.facade');
     const r = await restoreOperation(writeContext(ctx, action), { operationId: p.operationId, expectedVersion: etat.version });
     return terminer(ctx, action, translateWriteResult(action, r, {
-      done: `Événement de référence « ${etat.label} » rétabli. Ses documents et ses fournisseurs sont de nouveau pris en compte.`,
-      alreadyDone: `L’événement de référence « ${etat.label} » n’était pas supprimé : rien n’a été modifié.`,
-    }, p.operationId), 'rétablissement d’un événement de référence : il se supprime par une nouvelle demande');
+      done: `Opération « ${etat.label} » rétablie. Ses documents et ses fournisseurs sont de nouveau pris en compte.`,
+      alreadyDone: `L’opération « ${etat.label} » n’était pas supprimée : rien n’a été modifié.`,
+    }, p.operationId), 'rétablissement d’une opération : elle se supprime par une nouvelle demande');
   },
 
   /** Dissocier : `dissociateOperations`. Les deux événements sont relus tels que présentés. */
@@ -347,9 +347,9 @@ export const INVERSE_REFERENCE_EVENT_EXECUTORS = {
     const { dissociateOperations } = await import('@/services/business-operations/operation-write.facade');
     const r = await dissociateOperations(writeContext(ctx, action), { operationAId: p.fromOperationId, operationBId: p.toOperationId });
     return terminer(ctx, action, translateWriteResult(action, r, {
-      done: `Événements de référence « ${from.label} » et « ${to.label} » dissociés. Ils restent tous les deux dans votre compte.`,
-      alreadyDone: `Les événements de référence « ${from.label} » et « ${to.label} » n’étaient pas associés : rien n’a été modifié.`,
-    }, p.fromOperationId), 'dissociation de deux événements de référence', [{ operationId: p.fromOperationId }, { operationId: p.toOperationId }]);
+      done: `Opérations « ${from.label} » et « ${to.label} » dissociées. Elles restent toutes les deux dans votre compte.`,
+      alreadyDone: `Les opérations « ${from.label} » et « ${to.label} » n’étaient pas associées : rien n’a été modifié.`,
+    }, p.fromOperationId), 'dissociation de deux opérations', [{ operationId: p.fromOperationId }, { operationId: p.toOperationId }]);
   },
 
   /** Retirer un document : `unlinkDocument`. Événement ET document relus tels que présentés. */
@@ -365,9 +365,9 @@ export const INVERSE_REFERENCE_EVENT_EXECUTORS = {
     const { unlinkDocument } = await import('@/services/business-operations/operation-write.facade');
     const r = await unlinkDocument(writeContext(ctx, action), { operationId: p.operationId, fileId: p.linkedDocumentId });
     return terminer(ctx, action, translateWriteResult(action, r, {
-      done: `Document « ${doc.title} » retiré de l’événement de référence « ${etat.label} ». Il reste dans vos documents.`,
-      alreadyDone: `Le document « ${doc.title} » n’était pas rattaché à l’événement de référence « ${etat.label} » : rien n’a été modifié.`,
-    }, p.operationId), 'retrait d’un document d’un événement de référence', [{ operationId: p.operationId }]);
+      done: `Document « ${doc.title} » retiré de l’opération « ${etat.label} ». Il reste dans vos documents.`,
+      alreadyDone: `Le document « ${doc.title} » n’était pas rattaché à l’opération « ${etat.label} » : rien n’a été modifié.`,
+    }, p.operationId), 'retrait d’un document d’une opération', [{ operationId: p.operationId }]);
   },
 
   /** Retirer un fournisseur : `unlinkSupplier`. Événement ET fournisseur relus tels que présentés. */
@@ -383,9 +383,9 @@ export const INVERSE_REFERENCE_EVENT_EXECUTORS = {
     const { unlinkSupplier } = await import('@/services/business-operations/operation-write.facade');
     const r = await unlinkSupplier(writeContext(ctx, action), { operationId: p.operationId, supplierId: p.linkedSupplierId });
     return terminer(ctx, action, translateWriteResult(action, r, {
-      done: `Fournisseur « ${f.name} » retiré de l’événement de référence « ${etat.label} ». Sa fiche est conservée.`,
-      alreadyDone: `Le fournisseur « ${f.name} » n’était pas relié à l’événement de référence « ${etat.label} » : rien n’a été modifié.`,
-    }, p.operationId), 'retrait d’un fournisseur d’un événement de référence', [{ operationId: p.operationId }]);
+      done: `Fournisseur « ${f.name} » retiré de l’opération « ${etat.label} ». Sa fiche est conservée.`,
+      alreadyDone: `Le fournisseur « ${f.name} » n’était pas relié à l’opération « ${etat.label} » : rien n’a été modifié.`,
+    }, p.operationId), 'retrait d’un fournisseur d’une opération', [{ operationId: p.operationId }]);
   },
 
   /** Rattacher une échéance : `linkAgendaItem`. Événement ET échéance relus tels que présentés. */
@@ -401,9 +401,9 @@ export const INVERSE_REFERENCE_EVENT_EXECUTORS = {
     const { linkAgendaItem } = await import('@/services/business-operations/operation-write.facade');
     const r = await linkAgendaItem(writeContext(ctx, action), { operationId: p.operationId, agendaItemId: p.agendaItemId });
     return terminer(ctx, action, translateWriteResult(action, r, {
-      done: `Échéance « ${item.title} » rattachée à l’événement de référence « ${etat.label} ». Elle garde sa date et ses rappels.`,
-      alreadyDone: `L’échéance « ${item.title} » était déjà rattachée à l’événement de référence « ${etat.label} » : rien n’a été modifié.`,
-    }, p.operationId), 'rattachement d’une échéance à un événement de référence', [{ operationId: p.operationId }]);
+      done: `Échéance « ${item.title} » rattachée à l’opération « ${etat.label} ». Elle garde sa date et ses rappels.`,
+      alreadyDone: `L’échéance « ${item.title} » était déjà rattachée à l’opération « ${etat.label} » : rien n’a été modifié.`,
+    }, p.operationId), 'rattachement d’une échéance à une opération', [{ operationId: p.operationId }]);
   },
 };
 

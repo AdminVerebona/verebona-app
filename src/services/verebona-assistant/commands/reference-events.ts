@@ -157,16 +157,16 @@ async function evenementDesigne(
       const state = await lookup.getReferenceEventState(accountId, duFil);
       if (state) return { state };
     }
-    return { needInfo: `Quel événement de référence voulez-vous ${pourQuoi} ? Donnez son intitulé, sa date complète ou son bien.` };
+    return { needInfo: `Quelle opération voulez-vous ${pourQuoi} ? Donnez son intitulé, sa date complète ou son bien.` };
   }
-  const introuvable = { needInfo: `Je n’ai pas trouvé cet événement de référence dans votre compte. Lequel voulez-vous ${pourQuoi} ?` };
+  const introuvable = { needInfo: `Je n’ai pas trouvé cette opération dans votre compte. Laquelle voulez-vous ${pourQuoi} ?` };
   const trouves = await lookup.findReferenceEvents(accountId, cible);
   if (trouves.length === 0) return introuvable;
   // Un intitulé exact l'emporte sur ceux qui le contiennent (« Vidange » face à « Vidange et filtres »).
   const exacts = cible.words.length ? trouves.filter((s) => s.technicalLabel !== null && motsDe(s.technicalLabel) === cible.words.join(' ')) : [];
   const retenus = exacts.length === 1 ? exacts : trouves;
   if (retenus.length > 1) {
-    return { needInfo: `Plusieurs événements de référence correspondent : ${retenus.slice(0, 5).map(designer).join(' ; ')}. Précisez lequel dans votre demande (intitulé, date complète ou bien).` };
+    return { needInfo: `Plusieurs opérations correspondent : ${retenus.slice(0, 5).map(designer).join(' ; ')}. Précisez laquelle dans votre demande (intitulé, date complète ou bien).` };
   }
   const state = await lookup.getReferenceEventState(accountId, retenus[0].id);
   return state ? { state } : introuvable;
@@ -203,7 +203,7 @@ export async function comparableEvents(
 }
 
 /** Texte, dit à l'aperçu et au résultat : un événement déclaré n'est pas encore visible sur un écran (limite connue, carte #744). */
-export const NOT_YET_VISIBLE = 'Pour l’instant, un événement de référence enregistré sur votre déclaration n’apparaît sur aucun écran de l’application (ni fiche, ni recherche).';
+export const NOT_YET_VISIBLE = 'Pour l’instant, une opération enregistrée sur votre déclaration n’apparaît sur aucun écran de l’application (ni fiche, ni recherche).';
 
 async function resolveCreation(
   draft: Extract<ReferenceEventDraft, { command: 'CREATE_REFERENCE_EVENT' }>, input: AssistantRequestInput, lookup: CommandLookup, actionId: string,
@@ -224,7 +224,7 @@ async function resolveCreation(
     if (trouves.length === 0) label = draft.fullLabel;
     else bien = trouves[0];
   } else if (draft.assetWords.length || draft.assetFromContext) {
-    const r = await bienDesigne(lookup, input, draft, 'Pour quel bien voulez-vous enregistrer cet événement de référence ?');
+    const r = await bienDesigne(lookup, input, draft, 'Pour quel bien voulez-vous enregistrer cette opération ?');
     if ('needInfo' in r) return r;
     bien = r.bien;
   }
@@ -236,7 +236,7 @@ async function resolveCreation(
   const date = draft.dateText ? declaredDate(draft.dateText, today, draft.status === 'REALIZED') : null;
   if (draft.dateText && !date) return { needInfo: 'Je n’ai pas compris la date. Pouvez-vous l’écrire en entier, par exemple « 12 mars 2025 » ?' };
   if (date && draft.status === 'REALIZED' && date > today) {
-    return { needInfo: 'Un événement qui a eu lieu ne peut pas avoir une date future : corrigez la date, ou dites qu’il est à prévoir.' };
+    return { needInfo: 'Une opération qui a eu lieu ne peut pas avoir une date future : corrigez la date, ou dites qu’elle est à prévoir.' };
   }
   if (!label && !bien && !date) return { needInfo: 'Que voulez-vous enregistrer ? Donnez au moins un intitulé, un bien ou une date.' };
 
@@ -251,7 +251,7 @@ async function resolveCreation(
       kind: 'reference_event_create', declaration: draft.declaration, typeCode: draft.typeCode, status: draft.status,
       eventLabel: label, dateField, eventDate: date, eventAssetIds: assetIds, distinctFrom: memes.map((s) => s.id),
     },
-    preview: `Enregistrer l’événement de référence « ${nom} »${date ? ` du ${formatDateFr(date)}` : ''}${bien ? ` pour ${bien.name}` : ''}.`,
+    preview: `Enregistrer l’opération « ${nom} »${date ? ` du ${formatDateFr(date)}` : ''}${bien ? ` pour ${bien.name}` : ''}.`,
     effects: [
       `Type : ${typeLabel(draft.typeCode)}`,
       `Intitulé : ${label ?? 'aucun'}`,
@@ -259,8 +259,8 @@ async function resolveCreation(
       dateField && date ? `${DATE_FIELD_LABELS[dateField]} : ${formatDateFr(date)}` : 'Date : non précisée (aucune date n’est inventée)',
       `Bien : ${bien ? bien.name : 'aucun'}`,
       ...(memes.length ? [
-        `Attention : ${memes.length > 1 ? 'des événements de référence comparables existent' : 'un événement de référence comparable existe'} déjà : ${memes.slice(0, 5).map(designer).join(' ; ')}.`,
-        'En confirmant, vous indiquez qu’il s’agit d’un autre événement.',
+        `Attention : ${memes.length > 1 ? 'des opérations comparables existent' : 'une opération comparable existe'} déjà : ${memes.slice(0, 5).map(designer).join(' ; ')}.`,
+        'En confirmant, vous indiquez qu’il s’agit d’une autre opération.',
       ] : []),
       ...(draft.typeCode === 'CLAIM' ? [
         'Ce sinistre est une opération distincte de celle de votre contrat d’assurance : rien n’est fusionné, et le contrat, ses cotisations et ses échéances ne sont pas modifiés.',
@@ -330,7 +330,7 @@ async function resolveUpdate(
     // Sans année écrite : une date de réalisation ou de début est passée ; une date prévue ou de fin est à venir. L'aperçu donne la date complète.
     const date = declaredDate(draft.value, today, field === 'realizedDate' || field === 'startDate');
     if (!date) return { needInfo: 'Je n’ai pas compris la date. Pouvez-vous l’écrire en entier, par exemple « 12 mars 2025 » ?' };
-    if (field === 'realizedDate' && date > today) return { needInfo: 'Un événement qui a eu lieu ne peut pas avoir une date future.' };
+    if (field === 'realizedDate' && date > today) return { needInfo: 'Une opération qui a eu lieu ne peut pas avoir une date future.' };
     const debut = field === 'startDate' ? date : s.startDate;
     const fin = field === 'endDate' ? date : s.endDate;
     if (debut && fin && fin < debut) return { needInfo: 'La date de fin ne peut pas précéder la date de début.' };
@@ -345,9 +345,9 @@ async function resolveUpdate(
   return {
     actionId, command: 'UPDATE_REFERENCE_EVENT', dependsOn: [], targets: [cibleDe(s)],
     params: { kind: 'reference_event_update', operationId: s.id, declaration: draft.declaration, change, expectedVersion: s.version },
-    preview: `Modifier ${def.article} de l’événement de référence ${designer(s)} : ${avant} → ${apres}.`,
+    preview: `Modifier ${def.article} de l’opération ${designer(s)} : ${avant} → ${apres}.`,
     effects: [
-      `Événement de référence : ${s.label}`,
+      `Opération : ${s.label}`,
       `${def.label} : ${avant} → ${apres}`,
       ...(protege ? ['Cette correction est enregistrée comme votre décision : elle ne sera pas remplacée par une analyse.'] : []),
       'Pour revenir en arrière, refaites une demande de correction.',
@@ -371,14 +371,14 @@ async function resolveInvalidation(
   return {
     actionId, command: 'INVALIDATE_REFERENCE_EVENT', dependsOn: [], targets: [cibleDe(s)],
     params: { kind: 'reference_event_invalidate', operationId: s.id, expectedVersion: s.version },
-    preview: `Supprimer l’événement de référence ${designer(s)}.`,
+    preview: `Supprimer l’opération ${designer(s)}.`,
     effects: [
-      'Seul cet événement de référence est retiré : il n’est plus pris en compte (dépenses, réponses de l’assistant).',
+      'Seule cette opération est retirée : elle n’est plus prise en compte (dépenses, réponses de l’assistant).',
       conserves.length
         ? `Conservés dans votre compte : ${conserves.join(', ')}, ainsi que ses fournisseurs.`
         : 'Aucun document ni échéance ne lui est rattaché ; ses fournisseurs sont conservés.',
       ...(s.agendaItems ? ['Ses échéances restent dans l’Agenda, à leur date, avec leurs rappels ; elles ne lui sont plus rattachées.'] : []),
-      ...(documents ? ['Ses documents ne sont pas supprimés : une prochaine analyse de ces documents peut faire apparaître un nouvel événement de référence.'] : []),
+      ...(documents ? ['Ses documents ne sont pas supprimés : une prochaine analyse de ces documents peut faire apparaître une nouvelle opération.'] : []),
       'Depuis l’assistant, cette suppression ne s’annule pas.',
     ],
   };
@@ -395,17 +395,17 @@ async function resolveAssociation(
   if ('needInfo' in second) return second;
   const a = premier.state;
   const b = second.state;
-  if (a.id === b.id) return { needInfo: 'Ces deux désignations correspondent au même événement de référence : précisez les deux événements à associer.' };
+  if (a.id === b.id) return { needInfo: 'Ces deux désignations correspondent à la même opération : précisez les deux opérations à associer.' };
   const r = relationBetween(a, b);
   const from = r.fromOperationId === a.id ? a : b;
   const to = r.fromOperationId === a.id ? b : a;
   return {
     actionId, command: 'ASSOCIATE_REFERENCE_EVENTS', dependsOn: [], targets: [cibleDe(from), cibleDe(to)],
     params: { kind: 'reference_events_associate', fromOperationId: from.id, toOperationId: to.id, nature: r.nature, expectedVersions: [from.version, to.version] },
-    preview: `Associer les événements de référence ${designer(a)} et ${designer(b)}.`,
+    preview: `Associer les opérations ${designer(a)} et ${designer(b)}.`,
     effects: [
       relationSentence(r.nature, from.label, to.label),
-      'Ils restent deux événements de référence distincts : rien n’est fusionné.',
+      'Elles restent deux opérations distinctes : rien n’est fusionné.',
       'Aucun document n’est déplacé ; aucun montant, aucune date et aucune échéance ne sont modifiés.',
     ],
   };
@@ -426,12 +426,12 @@ async function resolveDocumentLink(
     actionId, command: 'LINK_DOCUMENT_REFERENCE_EVENT', dependsOn: [],
     targets: [{ type: 'document', id: d.id, label: d.title }, cibleDe(s)],
     params: { kind: 'reference_event_document', operationId: s.id, linkedDocumentId: d.id, expectedVersion: s.version, documentVersion: d.version },
-    preview: `Rattacher le document « ${d.title} » à l’événement de référence ${designer(s)}.`,
+    preview: `Rattacher le document « ${d.title} » à l’opération ${designer(s)}.`,
     effects: [
       `Document : ${d.title}${d.documentDate ? ` du ${formatDateFr(d.documentDate)}` : ''}`,
-      `Événement de référence : ${s.label}`,
+      `Opération : ${s.label}`,
       'Le document reste dans vos documents et garde ses autres rattachements.',
-      'Ce rattachement est votre décision. Il n’ajoute par lui-même aucun montant à cet événement de référence.',
+      'Ce rattachement est votre décision. Il n’ajoute par lui-même aucun montant à cette opération.',
     ],
   };
 }
@@ -455,11 +455,11 @@ async function resolveSupplierLink(
     actionId, command: 'LINK_SUPPLIER_REFERENCE_EVENT', dependsOn: [],
     targets: [{ type: 'supplier', id: f.id, label: f.name }, cibleDe(s)],
     params: { kind: 'reference_event_supplier', operationId: s.id, linkedSupplierId: f.id, role: draft.role, expectedVersion: s.version, supplierVersion: f.version },
-    preview: `Relier le fournisseur « ${f.name} » à l’événement de référence ${designer(s)}.`,
+    preview: `Relier le fournisseur « ${f.name} » à l’opération ${designer(s)}.`,
     effects: [
       `Fournisseur : ${f.name}`,
       `Rôle : ${ROLE_LABELS[draft.role]}`,
-      `Événement de référence : ${s.label}`,
+      `Opération : ${s.label}`,
       'Aucun document, aucun coût et aucune échéance ne sont créés.',
       'Ce lien est votre décision : il ne sera pas modifié par une analyse.',
     ],
@@ -480,7 +480,7 @@ export async function resolveReferenceEventLinkToCreated(
   draft: Extract<ReferenceEventDraft, { command: 'LINK_DOCUMENT_REFERENCE_EVENT' | 'LINK_SUPPLIER_REFERENCE_EVENT' }>,
   input: AssistantRequestInput, lookup: CommandLookup, actionId: string, fromActionId: string,
 ): Promise<Resolution> {
-  const commun = ['Événement de référence : celui que l’action précédente enregistre.',
+  const commun = ['Opération : celle que l’action précédente enregistre.',
     'Si cet enregistrement n’aboutit pas, ce lien n’est pas fait et rien n’est écrit.'];
   if (draft.command === 'LINK_SUPPLIER_REFERENCE_EVENT') {
     const fournisseur = await fournisseurDesigne(lookup, input.accountId, draft.supplierWords, 'relier');
@@ -492,7 +492,7 @@ export async function resolveReferenceEventLinkToCreated(
         kind: 'reference_event_supplier', operationId: DEFERRED_OPERATION_ID, operationFromAction: fromActionId,
         linkedSupplierId: f.id, role: draft.role, expectedVersion: 0, supplierVersion: f.version,
       },
-      preview: `Relier le fournisseur « ${f.name} » à l’événement de référence qui vient d’être enregistré.`,
+      preview: `Relier le fournisseur « ${f.name} » à l’opération qui vient d’être enregistrée.`,
       effects: [`Fournisseur : ${f.name}`, `Rôle : ${ROLE_LABELS[draft.role]}`, ...commun,
         'Aucun document, aucun coût et aucune échéance ne sont créés.',
         'Ce lien est votre décision : il ne sera pas modifié par une analyse.'],
@@ -507,10 +507,10 @@ export async function resolveReferenceEventLinkToCreated(
       kind: 'reference_event_document', operationId: DEFERRED_OPERATION_ID, operationFromAction: fromActionId,
       linkedDocumentId: d.id, expectedVersion: 0, documentVersion: d.version,
     },
-    preview: `Rattacher le document « ${d.title} » à l’événement de référence qui vient d’être enregistré.`,
+    preview: `Rattacher le document « ${d.title} » à l’opération qui vient d’être enregistrée.`,
     effects: [`Document : ${d.title}${d.documentDate ? ` du ${formatDateFr(d.documentDate)}` : ''}`, ...commun,
       'Le document reste dans vos documents et garde ses autres rattachements.',
-      'Ce rattachement est votre décision. Il n’ajoute par lui-même aucun montant à cet événement de référence.'],
+      'Ce rattachement est votre décision. Il n’ajoute par lui-même aucun montant à cette opération.'],
   };
 }
 
@@ -648,7 +648,7 @@ export const REFERENCE_EVENT_EXECUTORS = {
     const { sqlLookup } = await import('./plan.service');
     const memes = await comparableEvents(sqlLookup.findReferenceEvents!, ctx.accountId, { typeCode: p.typeCode, date: p.eventDate, label: p.eventLabel, assetIds: p.eventAssetIds });
     if (memes.some((s) => !p.distinctFrom.includes(s.id))) {
-      return ko(action, 'Un événement de référence comparable est apparu depuis l’aperçu : rien n’a été créé. Refaites votre demande.');
+      return ko(action, 'Une opération comparable est apparue depuis l’aperçu : rien n’a été créé. Refaites votre demande.');
     }
     const { createOperation } = await import('@/services/business-operations/operation-write.facade');
     const r = await createOperation(writeContext(ctx, action), {
@@ -659,11 +659,11 @@ export const REFERENCE_EVENT_EXECUTORS = {
     });
     const nom = p.typeCode ? referenceEventLabel({ typeCode: p.typeCode, technicalLabel: p.eventLabel }) : p.eventLabel ?? 'sans intitulé';
     return terminer(ctx, action, translateWriteResult(action, r, {
-      done: `Événement de référence « ${nom} » enregistré. ${NOT_YET_VISIBLE}`,
-      alreadyDone: 'Cet événement de référence était déjà enregistré (même déclaration) : rien n’a été créé en double.',
+      done: `Opération « ${nom} » enregistrée. ${NOT_YET_VISIBLE}`,
+      alreadyDone: 'Cette opération était déjà enregistrée (même déclaration) : rien n’a été créé en double.',
       // Passage 114Z4 : la version de l'événement CRÉÉ est retenue — une action suivante du même plan
       // (« … puis relie … à celui-ci ») écrit sur l'état que ce plan vient d'établir.
-    }, r.data?.operationId ?? null), 'événement de référence enregistré : il se supprime par une nouvelle demande',
+    }, r.data?.operationId ?? null), 'opération enregistrée : elle se supprime par une nouvelle demande',
     r.data?.operationId ? [{ operationId: r.data.operationId, version: r.data.version }] : []);
   },
 
@@ -683,9 +683,9 @@ export const REFERENCE_EVENT_EXECUTORS = {
             : { attributes: patchOf(c.field, c.value) }),
     });
     return terminer(ctx, action, translateWriteResult(action, r, {
-      done: `Événement de référence « ${etat.label} » corrigé.`,
-      alreadyDone: `Événement de référence « ${etat.label} » : cette valeur était déjà enregistrée, rien n’a été modifié.`,
-    }, p.operationId), 'correction d’un événement de référence : à corriger par une nouvelle demande', [{ operationId: p.operationId, version: r.data?.version }]);
+      done: `Opération « ${etat.label} » corrigée.`,
+      alreadyDone: `Opération « ${etat.label} » : cette valeur était déjà enregistrée, rien n’a été modifié.`,
+    }, p.operationId), 'correction d’une opération : à corriger par une nouvelle demande', [{ operationId: p.operationId, version: r.data?.version }]);
   },
 
   /** W23 — `invalidateOperation` : invalidation logique, jamais une suppression physique. */
@@ -696,9 +696,9 @@ export const REFERENCE_EVENT_EXECUTORS = {
     const { invalidateOperation } = await import('@/services/business-operations/operation-write.facade');
     const r = await invalidateOperation(writeContext(ctx, action), { operationId: p.operationId, expectedVersion: etat.version });
     return terminer(ctx, action, translateWriteResult(action, r, {
-      done: `Événement de référence « ${etat.label} » supprimé. Ses documents, ses échéances et ses fournisseurs sont conservés.`,
-      alreadyDone: `L’événement de référence « ${etat.label} » était déjà supprimé : rien n’a été modifié.`,
-    }, p.operationId), 'suppression d’un événement de référence : elle ne s’annule pas depuis l’assistant');
+      done: `Opération « ${etat.label} » supprimée. Ses documents, ses échéances et ses fournisseurs sont conservés.`,
+      alreadyDone: `L’opération « ${etat.label} » était déjà supprimée : rien n’a été modifié.`,
+    }, p.operationId), 'suppression d’une opération : elle ne s’annule pas depuis l’assistant');
   },
 
   /** W24 — `associateOperations` : les deux événements relus ; relation unique par paire, jamais une fusion. */
@@ -711,9 +711,9 @@ export const REFERENCE_EVENT_EXECUTORS = {
     const { associateOperations } = await import('@/services/business-operations/operation-write.facade');
     const r = await associateOperations(writeContext(ctx, action), { fromOperationId: p.fromOperationId, toOperationId: p.toOperationId, nature: p.nature });
     return terminer(ctx, action, translateWriteResult(action, r, {
-      done: `Événements de référence « ${from.label} » et « ${to.label} » associés. Ils restent distincts.`,
-      alreadyDone: `Les événements de référence « ${from.label} » et « ${to.label} » étaient déjà associés : rien n’a été modifié.`,
-    }, p.fromOperationId), 'association de deux événements de référence', [{ operationId: p.fromOperationId }, { operationId: p.toOperationId }]);
+      done: `Opérations « ${from.label} » et « ${to.label} » associées. Elles restent distinctes.`,
+      alreadyDone: `Les opérations « ${from.label} » et « ${to.label} » étaient déjà associées : rien n’a été modifié.`,
+    }, p.fromOperationId), 'association de deux opérations', [{ operationId: p.fromOperationId }, { operationId: p.toOperationId }]);
   },
 
   /** W25 — `linkDocument` : événement ET document relus tels que présentés. */
@@ -728,9 +728,9 @@ export const REFERENCE_EVENT_EXECUTORS = {
     const { linkDocument } = await import('@/services/business-operations/operation-write.facade');
     const r = await linkDocument(writeContext(ctx, action), { operationId: p.operationId, fileId: p.linkedDocumentId });
     return terminer(ctx, action, translateWriteResult(action, r, {
-      done: `Document « ${doc.title} » rattaché à l’événement de référence « ${etat.label} ».`,
-      alreadyDone: `Le document « ${doc.title} » était déjà rattaché à l’événement de référence « ${etat.label} » : rien n’a été modifié.`,
-    }, p.operationId), 'rattachement d’un document à un événement de référence', [{ operationId: p.operationId }]);
+      done: `Document « ${doc.title} » rattaché à l’opération « ${etat.label} ».`,
+      alreadyDone: `Le document « ${doc.title} » était déjà rattaché à l’opération « ${etat.label} » : rien n’a été modifié.`,
+    }, p.operationId), 'rattachement d’un document à une opération', [{ operationId: p.operationId }]);
   },
 
   /** W26 — `linkSupplier` : événement ET fournisseur relus tels que présentés. */
@@ -745,8 +745,8 @@ export const REFERENCE_EVENT_EXECUTORS = {
     const { linkSupplier } = await import('@/services/business-operations/operation-write.facade');
     const r = await linkSupplier(writeContext(ctx, action), { operationId: p.operationId, supplierId: p.linkedSupplierId, role: p.role });
     return terminer(ctx, action, translateWriteResult(action, r, {
-      done: `Fournisseur « ${fournisseur.name} » relié à l’événement de référence « ${etat.label} ».`,
-      alreadyDone: `Le fournisseur « ${fournisseur.name} » était déjà relié à l’événement de référence « ${etat.label} » : rien n’a été modifié.`,
-    }, p.operationId), 'lien entre un fournisseur et un événement de référence', [{ operationId: p.operationId }]);
+      done: `Fournisseur « ${fournisseur.name} » relié à l’opération « ${etat.label} ».`,
+      alreadyDone: `Le fournisseur « ${fournisseur.name} » était déjà relié à l’opération « ${etat.label} » : rien n’a été modifié.`,
+    }, p.operationId), 'lien entre un fournisseur et une opération', [{ operationId: p.operationId }]);
   },
 };

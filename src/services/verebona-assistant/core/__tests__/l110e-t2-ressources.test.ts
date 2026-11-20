@@ -382,7 +382,8 @@ describe('L110E-U09 — BO : accès contrôlé, charte, aucun journal concurrent
   });
   it('charte Sérénité : aucune couleur brute', () => {
     expect(ui).not.toMatch(/#[0-9a-f]{3,6}\b|rgba?\(|\b(?:bg|text|border)-(?:red|green|blue|gray|slate|amber|white|black)\b/i);
-    expect(ui).not.toMatch(/Opération/);
+    // Règle remplacée (carte #806, décision du PO du 17/11/2026) : la garde interdisait « Opération » ; à l’écran on dit désormais « opération », et c’est « événement de référence » qui est interdit.
+    expect(ui).not.toMatch(/[ée]v[éeè]nements?\s+de\s+r[ée]f[ée]rence/i);
   });
 });
 

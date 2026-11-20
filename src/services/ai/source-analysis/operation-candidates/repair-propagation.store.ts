@@ -167,7 +167,7 @@ export async function propagateRepairToCandidates(p: {
       }));
       if (!cands.some((c) => c.established)) {
         out.decision = 'NO_CANDIDATE';
-        out.reason = 'aucun candidat établi actif : T1 ne crée jamais d’événement de référence';
+        out.reason = 'aucun candidat établi actif : T1 ne crée jamais d’opération';
         await journal(tx, { ...base, decision: 'NO_CANDIDATE', reason: out.reason });
         return;
       }

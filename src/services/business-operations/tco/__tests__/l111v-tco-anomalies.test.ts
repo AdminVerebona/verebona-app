@@ -358,12 +358,13 @@ describe('L111V-U-UI — présentation (desktop et mobile, même composant)', ()
     expect(choix).toContain('Vos choix confirmés (1)');
   });
 
-  it('L111V-U-UI-02 — charte : aucune couleur brute, jamais « Opération » visible ; états de lecture réels (plus de filtre IN_PROGRESS)', () => {
+  it('L111V-U-UI-02 — charte : aucune couleur brute, jamais « événement de référence » visible ; états de lecture réels (plus de filtre IN_PROGRESS)', () => {
     for (const f of ['src/components/assets/tco-decision-actions.tsx', 'src/components/assets/tco-diagnostics.tsx', 'src/components/assets/tco-amount-recovery.tsx']) {
       const src = lire(f);
       const visible = src.replace(/\/\*[\s\S]*?\*\//g, '').replace(/\/\/.*$/gm, '');
       expect(visible).not.toMatch(/#[0-9a-fA-F]{3,6}\b|rgb\(|\b(red|green|blue|amber|orange|yellow)-\d{2,3}\b/);
-      expect(visible).not.toMatch(/[Oo]pération/);
+      // Règle remplacée (carte #806, décision du PO du 17/11/2026) : la garde interdisait « Opération » ; à l’écran on dit désormais « opération », et c’est « événement de référence » qui est interdit.
+      expect(visible).not.toMatch(/[ée]v[éeè]nements?\s+de\s+r[ée]f[ée]rence/i);
     }
     const ui = lire('src/components/assets/TcoSection.tsx');
     expect(ui).toContain('AMOUNT_RECOVERY_PENDING_STATES.has(i.state)');

@@ -72,7 +72,7 @@ describe('L114-U-GUIDE — bloc 38, capacité, conformité BO', () => {
   };
   const applique = async () => LIVRE_T3.replace(REPERE, `${(await bloc()).text}\n\n${REPERE}`);
 
-  it('bloc officiel balisé (T3, insertion avant la ligne repère unique), branche + marqueur, aucun emplacement, jamais « Opération »', async () => {
+  it('bloc officiel balisé (T3, insertion avant la ligne repère unique), branche + marqueur, aucun emplacement, jamais « événement de référence »', async () => {
     const b = await bloc();
     expect(b).toMatchObject({ prompt: 't3', action: 'insert-before', anchor: REPERE });
     const { inspectMasterTemplate } = await import('@/services/ai/prompts/prompt-loader');

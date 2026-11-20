@@ -183,7 +183,7 @@ describe('L113AA-U-T4 — sens d’une date de fin : qualification T1, puis Type
   });
 });
 
-describe('L113AA-U-RESOLUTION — D11 : résolution contextuelle des périodes d’un événement de référence', () => {
+describe('L113AA-U-RESOLUTION — D11 : résolution contextuelle des périodes d’une opération', () => {
   const e = (id: number, fileId: number, start: string | null, end: string | null, o: Partial<import('../resolution').ResolutionEntry> = {}) =>
     ({ id, fileId, kind: 'COVERAGE' as const, start, end, userCorrected: false, qualified: true, relation: null, ...o });
   const statuts = (r: ReturnType<typeof res.resolvePeriods>) => [...r.entries.entries()].map(([id, x]) => [id, x.status, x.byFileId ?? null]);
@@ -260,7 +260,7 @@ describe('L113AA-U-RESOLUTION — D11 : résolution contextuelle des périodes d
 
 describe('L113AA-U-CARD — carte « À traiter » PERIOD-CONFLICT', async () => {
   const cards = await import('../conflict-cards');
-  it('catalogue, publiabilité, producteur, mascotte ; question sans le mot « Opération »', async () => {
+  it('catalogue, publiabilité, producteur, mascotte ; question sans le mot « événement de référence »', async () => {
     const { PROCESSING_RULES, RULE_PRODUCERS } = await import('@/services/to-process/rules-catalog');
     const { PUBLISHABILITY_CONTRACTS } = await import('@/services/to-process/publishability');
     const r = PROCESSING_RULES.find((x) => x.code === cards.PERIOD_CONFLICT_RULE)!;
@@ -268,7 +268,8 @@ describe('L113AA-U-CARD — carte « À traiter » PERIOD-CONFLICT', async () =>
     expect(RULE_PRODUCERS.T3_PERIOD_RESOLUTION.module).toBe('src/services/documents/business-periods/conflict-cards.ts');
     expect(PUBLISHABILITY_CONTRACTS[cards.PERIOD_CONFLICT_RULE]).toMatchObject({ family: 'EVENEMENTS_DE_REFERENCE', cleanup: { by: 'COH-OPS-PERIOD-RESOLUTION' } });
     expect(readFileSync(join(process.cwd(), 'src/services/home/mascot/todo-items.ts'), 'utf8')).toContain("'PERIOD-CONFLICT'");
-    expect(`${cards.PERIOD_CONFLICT_QUESTION} ${cards.PERIOD_CONFLICT_BOTH_LABEL}`).not.toMatch(/Opération/);
+    // Règle remplacée (carte #806, décision du PO du 17/11/2026) : la garde interdisait « Opération » ; à l’écran on dit désormais « opération », et c’est « événement de référence » qui est interdit.
+    expect(`${cards.PERIOD_CONFLICT_QUESTION} ${cards.PERIOD_CONFLICT_BOTH_LABEL}`).not.toMatch(/[ée]v[éeè]nements?\s+de\s+r[ée]f[ée]rence/i);
   });
   it('propositions : chaque période avec SON justificatif, puis « les deux sont justes » ; choix hors carte refusé', () => {
     const docs = [{ fileId: 10, title: 'Attestation A', line: 'Période couverte : du 01/04/2024 au 31/03/2025' }, { fileId: 11, title: 'Attestation B', line: 'Période couverte : du 01/07/2024 au 30/06/2025' }];
@@ -357,12 +358,13 @@ describe('L113AA-U-COH — registres et catalogues', () => {
       expect(readFileSync(join(process.cwd(), f), 'utf8')).toContain('business_period_decisions:');
     }
   });
-  it('textes : nouvelles natures et durée indéterminée ; jamais « Opération » ni « expiré »', () => {
+  it('textes : nouvelles natures et durée indéterminée ; jamais « événement de référence » ni « expiré »', () => {
     expect(lib.BUSINESS_PERIOD_LABELS.CONTRACT).toEqual({ period: 'Période contractuelle', start: 'Date d’effet du contrat', end: 'Fin du contrat' });
     expect(lib.periodLine('CONTRACT', { start: null, end: null, openEnded: true })).toBe('Période contractuelle : durée indéterminée');
     const svc = readFileSync(join(process.cwd(), 'src/services/documents/business-periods/service.ts'), 'utf8');
     const notes = svc.slice(svc.indexOf('export const RESOLUTION_NOTES'), svc.indexOf('} as const;', svc.indexOf('export const RESOLUTION_NOTES')));
-    expect(notes).not.toMatch(/Opération|expiré/);
+    // Règle remplacée (carte #806, décision du PO du 17/11/2026) : la garde interdisait « Opération » ; à l’écran on dit désormais « opération », et c’est « événement de référence » qui est interdit.
+    expect(notes).not.toMatch(/[ée]v[éeè]nements?\s+de\s+r[ée]f[ée]rence|expiré/i);
   });
 });
 

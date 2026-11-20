@@ -101,7 +101,7 @@ describe('L107E-01 — plan : identifiants typés de la carte, rien d’autre', 
     expect(p.proposals[3].target).toEqual({ kind: 'equipement', id: 9 });
   });
 
-  it('candidats d’agenda et événements de référence : seulement ceux OFFERTS par la carte', () => {
+  it('candidats d’agenda et opérations : seulement ceux OFFERTS par la carte', () => {
     const projection = L.planCardLinks(prix({
       ruleCode: 'AGENDA-PROJECTION-MATCH', fieldKey: null, relationKey: 'p',
       proposals: [{ value: 'ITEM:70', label: 'Oui', confidence: 0.6 }, { value: 'ITEM:999', label: 'Faux', confidence: 0.5 }, { value: 'NEW', label: 'Non', confidence: 1, isCurrentValue: true }],
@@ -262,14 +262,15 @@ describe('L107E-06 — présentation compacte, sans répétition', () => {
     expect(m2.nav.map((n) => n.text)).toEqual(['Voir la facture']);
   });
 
-  it('libellés selon l’objet ; jamais le mot « Opération »', () => {
+  it('libellés selon l’objet ; jamais le mot « événement de référence »', () => {
     expect(M.cardLinkText({ kind: 'document', invoice: false })).toBe('Voir le document');
     expect(M.cardLinkText({ kind: 'equipement' })).toBe('Voir la fiche');
     expect(M.cardLinkText({ kind: 'piece' })).toBe('Voir la fiche');
     expect(M.cardLinkText({ kind: 'echeance' })).toBe('Voir l’événement');
-    expect(M.cardLinkText({ kind: 'reference' })).toBe('Voir l’événement de référence');
+    expect(M.cardLinkText({ kind: 'reference' })).toBe('Voir l’opération');
     const textes = JSON.stringify(M.CARD_LINK_TEXT) + lire('src/components/to-process/CardLinks.tsx').replace(/\/\*[\s\S]*?\*\//g, '');
-    expect(textes).not.toMatch(/op[ée]ration/i);
+    // Règle remplacée (carte #806, décision du PO du 17/11/2026) : la garde interdisait « Opération » ; à l’écran on dit désormais « opération », et c’est « événement de référence » qui est interdit.
+    expect(textes).not.toMatch(/[ée]v[éeè]nements?\s+de\s+r[ée]f[ée]rence/i);
   });
 
   it('sans liens (mascotte, ancienne réponse) : rien n’est affiché, la source historique reste', () => {
@@ -371,7 +372,7 @@ describe('L107E-07 — toucher un lien ne décide rien et ouvre la destination n
     expect(toasts.info).toContain('Cette action est déjà traitée.');
   });
 
-  it('destinations : échéance et événement de référence en CONSULTATION, équipement / pièce en tiroir, bien en page (état noté)', async () => {
+  it('destinations : échéance et opération en CONSULTATION, équipement / pièce en tiroir, bien en page (état noté)', async () => {
     expect(O.cardLinkDestination({ kind: 'reference', id: 70, label: 'x' })).toEqual({ type: 'drawer', kind: 'echeance', id: 70 });
     expect(O.cardLinkDestination({ kind: 'asset', id: 1, label: 'x', publicId: 'bad id' })).toBeNull();
     await O.openCardLink(clic().e, 'card-0001', { kind: 'echeance', id: 70, label: 'x' }, 'r:echeance:70', { check: async () => 'ok' });

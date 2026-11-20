@@ -220,7 +220,7 @@ export const T3_LINK_REPAIR_LABELS: Readonly<Record<string, string>> = {
 export const T3_APPLICATION_LABELS: Readonly<Record<string, string>> = {
   RECEIVED: 'Décision reçue, application non encore vérifiée',
   APPLYING: 'Application en cours',
-  APPLIED: 'Application vérifiée sur l’événement de référence',
+  APPLIED: 'Application vérifiée sur l’opération',
   APPLY_FAILED: 'Application sans effet (valeur protégée ou saisie non gérée) : reprise',
 };
 

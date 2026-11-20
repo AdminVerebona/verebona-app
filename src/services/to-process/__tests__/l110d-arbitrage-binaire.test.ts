@@ -39,7 +39,8 @@ const { withoutListedReferences } = await import('@/services/to-process/to-proce
 const { operationCardAnomaly } = await import('@/services/coherence/registry/checks/to-process-families');
 
 const lire = (f: string) => readFileSync(join(process.cwd(), f), 'utf8');
-const SANS_OPERATION = /op[ée]ration/i;
+// Règle remplacée (carte #806, décision du PO du 17/11/2026) : la garde interdisait « Opération » ; à l’écran on dit désormais « opération », et c’est « événement de référence » qui est interdit.
+const SANS_ANCIEN_TERME = /[ée]v[éeè]nements?\s+de\s+r[ée]f[ée]rence/i;
 const doc = (id: number, title: string, date: string | null, typeLabel: string | null = 'Facture') => ({ kind: 'document' as const, id, title, typeLabel, date });
 const evt = (id: number, title: string, date: string | null) => ({ kind: 'event' as const, id, title, typeLabel: 'Événement', date });
 
@@ -56,11 +57,11 @@ describe('L110D-U-01 — une question binaire, libellé métier fiable', () => {
     expect(code).not.toMatch(/IMMOBILIER|compromis|notaire|attestation/i);
   });
 
-  it('repli conforme à la règle permanente : « le même événement de référence » (jamais « la même opération »)', () => {
+  it('règle remplacée (carte #806, décision du PO du 17/11/2026) — repli : « la même opération » (jamais « le même événement de référence »)', () => {
     for (const t of [null, 'OTHER', 'INCONNU']) {
       const q = B.binaryMatchQuestion(t, [doc(1, 'A', null)]);
-      expect(q).toBe('Ce document concerne-t-il le même événement de référence que le document suivant ?');
-      expect(q).not.toMatch(SANS_OPERATION);
+      expect(q).toBe('Ce document concerne-t-il la même opération que le document suivant ?');
+      expect(q).not.toMatch(SANS_ANCIEN_TERME);
     }
   });
 
@@ -68,7 +69,7 @@ describe('L110D-U-01 — une question binaire, libellé métier fiable', () => {
     expect(B.binaryMatchQuestion('INTERVENTION', [evt(9, 'Entretien chaudière', '2026-02-01')])).toBe('Ce document concerne-t-il la même intervention que l’événement suivant ?');
     expect(B.binaryMatchQuestion('INTERVENTION', [doc(1, 'Devis', null), evt(9, 'RDV', null)])).toBe('Ce document concerne-t-il la même intervention que les documents et événements suivants ?');
     expect(B.binaryMatchQuestion('INTERVENTION', [], { provider: 'Garage Martin', date: '2026-06-03' })).toBe('Ce document concerne-t-il la même intervention (« Garage Martin » du 03/06/2026) ?');
-    expect(B.binaryMatchQuestion(null, [])).not.toMatch(SANS_OPERATION);
+    expect(B.binaryMatchQuestion(null, [])).not.toMatch(SANS_ANCIEN_TERME);
     // Aucun titre de document dans la question (les références sont listées à part, sans troncature).
     expect(B.binaryMatchQuestion('ACQUISITION', [doc(1, 'Un titre très long qui ne doit jamais apparaître dans la question', null)])).not.toContain('titre');
   });

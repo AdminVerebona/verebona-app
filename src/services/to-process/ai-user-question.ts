@@ -14,8 +14,9 @@
  * sens. Il CONTRÔLE seulement (`validateAiUserQuestion`, pure) :
  *   · forme : texte, longueur bornée, une question (« ? ») ;
  *   · langue : français ;
- *   · vocabulaire : ni jargon technique (`card-labels.ts`), ni « Opération »
- *     (on dit « événement de référence »), ni nom de traitement ;
+ *   · vocabulaire : ni jargon technique (`card-labels.ts`), ni l'ancien terme
+ *     « événement de référence » (carte #806 §1 : on dit « opération »), ni nom de
+ *     traitement ;
  *   · sécurité : ni e-mail, ni téléphone, ni IBAN, ni lien, ni longue suite
  *     de chiffres, ni valeur masquée (« [ … ] ») ;
  *   · monde fermé : tout libellé CITÉ (« … ») appartient au contexte de la
@@ -84,8 +85,10 @@ const SENSITIVE: readonly RegExp[] = [
 ];
 
 const FORBIDDEN: readonly RegExp[] = [
-  // Règle permanente : jamais « Opération » à l'écran — « événement de référence ».
-  /\bop[ée]rations?\b/iu,
+  // Règle remplacée (carte #806 §1, décision du PO du 17/11/2026) : à l'écran on dit « opération ». L'ANCIEN terme,
+  // « événement de référence » (toutes formes), est refusé : une question qui l'emploie encore (prompt actif sans le
+  // bloc 53 du guide du PO) n'est pas affichée — la formulation du code, qui dit « opération », la remplace.
+  /[ée]v[éeè]nements?\s+de\s+r[ée]f[ée]rence|[ée]l[ée]ments?\s+de\s+r[ée]f[ée]rence/iu,
   /\b(?:prompt|LLM|GPT|json|null|undefined)\b/i,
   /\bIA\b/,
 ];

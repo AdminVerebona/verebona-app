@@ -195,7 +195,8 @@ scenario('L115C', 'Accueil : délais d’échéances calendaires exacts, année 
   it('L115C-E08 — aucun mot « Opération » et aucune couleur brute sur le bloc rendu', async () => {
     as(moi);
     const html = await rendu(await accueil(moi));
-    expect(html).not.toMatch(/Opération/);
+    // Règle remplacée (carte #806, décision du PO du 17/11/2026) : la garde interdisait « Opération » ; à l’écran on dit désormais « opération », et c’est « événement de référence » qui est interdit.
+    expect(html).not.toMatch(/[ée]v[éeè]nements?\s+de\s+r[ée]f[ée]rence/i);
     expect(html).not.toMatch(/#[0-9a-fA-F]{3,6}\b|rgb\(/);
   });
 });

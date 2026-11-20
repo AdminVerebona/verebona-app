@@ -270,14 +270,15 @@ describe('L113X-UI — fiche (desktop et mobile : mêmes composants)', () => {
     expect(ui).toMatch(/\{canEdit && \(\s*<Button\s+ref=\{datesTrigger\}/);
   });
 
-  it('L113X-UI-03 — charte Sérénité : aucune couleur brute ; jamais « Opération » visible', () => {
+  it('L113X-UI-03 — charte Sérénité : aucune couleur brute ; jamais « événement de référence » visible', () => {
     const sansCommentaires = (s: string) => s.replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '').replace(/\{\/\*[\s\S]*?\*\/\}/g, '');
     for (const s of [sheet, lire('src/services/business-operations/tco/undated-expenses.ts')].map(sansCommentaires)) {
       expect(s).not.toMatch(/#[0-9a-fA-F]{3,8}\b/);
       expect(s).not.toMatch(/rgba?\(/);
     }
-    const textes = lire('src/services/business-operations/tco/undated-expenses.ts').match(/'[^']*'|`[^`]*`/g) ?? [];
-    expect(textes.filter((x) => /Op[ée]ration/.test(x))).toEqual([]);
+    const textes = sansCommentaires(lire('src/services/business-operations/tco/undated-expenses.ts')).match(/'[^']*'|`[^`]*`/g) ?? [];
+    // Règle remplacée (carte #806, décision du PO du 17/11/2026) : la garde interdisait « Opération » ; à l’écran on dit désormais « opération », et c’est « événement de référence » qui est interdit.
+    expect(textes.filter((x) => /[ée]v[éeè]nements?\s+de\s+r[ée]f[ée]rence/i.test(x))).toEqual([]);
     expect(sheet.match(/>[^<{]*Op[ée]ration[^<]*</g) ?? []).toEqual([]);
   });
 });

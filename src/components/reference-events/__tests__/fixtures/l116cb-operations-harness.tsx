@@ -77,7 +77,7 @@ function Fiche() {
         actions={{
           correct: () => note('corriger'), remove: () => note('supprimer'), linkAgenda: () => note('rattacher-evenement'),
           unlinkAgenda: (id) => note(`detacher-evenement:${id}`), linkDocument: () => note('rattacher-document'),
-          unlinkDocument: (id) => note(`retirer-document:${id}`), moveDocument: (id) => note(`deplacer-document:${id}`),
+          unlinkDocument: (id) => note(`retirer-document:${id}`),
           linkSupplier: () => note('relier-fournisseur'), unlinkSupplier: (id) => note(`retirer-fournisseur:${id}`),
           associate: () => note('associer'), dissociate: (id) => note(`dissocier:${id}`), split: () => note('scinder'), editNotes: () => note('notes'),
         }}

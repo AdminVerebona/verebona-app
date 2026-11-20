@@ -46,7 +46,7 @@ export const agendaSuppliersCheck: CoherenceCheck = {
   forbiddenRepairs: [
     'retirer ou modifier un lien posé par l’utilisateur',
     'recréer un lien retiré par l’utilisateur',
-    'lier par simple appartenance au même événement de référence ou au même bien',
+    'lier par simple appartenance à la même opération ou au même bien',
     'réparer un lien intercomptes',
     'appeler l’IA ou relire un document',
   ],

@@ -255,7 +255,8 @@ describe('L114C-TCO-U-BC — écarts B et C : trois issues depuis la même dépe
   it('L114C-TCO-U-C03 — texte des compteurs : formulation neutre, accord, jamais « anomalie » ni « erreur »', () => {
     expect(TCO_UNDATED_TEXTS.counters(3, 0)).toBe('Conservation sans date : 3 choix à confirmer, 0 déjà confirmé.');
     expect(TCO_UNDATED_TEXTS.counters(1, 2)).toBe('Conservation sans date : 1 choix à confirmer, 2 déjà confirmés.');
-    expect(TCO_UNDATED_TEXTS.counters(0, 3)).not.toMatch(/anomalie|erreur|Opération/i);
+    // Règle remplacée (carte #806, décision du PO du 17/11/2026) : la garde interdisait « Opération » ; à l’écran on dit désormais « opération », et c’est « événement de référence » qui est interdit.
+    expect(TCO_UNDATED_TEXTS.counters(0, 3)).not.toMatch(/[ée]v[éeè]nements?\s+de\s+r[ée]f[ée]rence|anomalie|erreur/i);
   });
 
   it('L114C-TCO-U-B01 — même dépense du panneau : « Conserver dans le TCO sans date » et « Retirer du TCO » (geste distinct, phrase propre) ; clé de fait et version fournies', () => {
@@ -390,11 +391,12 @@ describe('L114C-TCO-U-COH — contrôle de cohérence et interface', () => {
     expect(refus.slice(refus.indexOf('} catch'))).not.toContain('toast.success');
   });
 
-  it('L114C-TCO-UI-02 — charte Sérénité : aucune couleur brute ajoutée ; jamais « Opération » dans les textes', () => {
+  it('L114C-TCO-UI-02 — charte Sérénité : aucune couleur brute ajoutée ; jamais « événement de référence » dans les textes', () => {
     for (const f of ['src/components/assets/TcoUndatedDatesSheet.tsx', 'src/components/assets/tco-decision-actions.tsx']) {
       expect(lire(f)).not.toMatch(/#[0-9a-fA-F]{6}\b|rgb\(|text-(red|green|blue|amber|orange)-\d/);
     }
     const textes = [TCO_UNDATED_TEXTS.counters(2, 1), TCO_UNDATED_TEXTS.pendingBadge, TCO_UNDATED_TEXTS.removeShared(2), TCO_DECISION_STALE_MESSAGE];
-    for (const t of textes) expect(t).not.toMatch(/Opération/i);
+    // Règle remplacée (carte #806, décision du PO du 17/11/2026) : la garde interdisait « Opération » ; à l’écran on dit désormais « opération », et c’est « événement de référence » qui est interdit.
+    for (const t of textes) expect(t).not.toMatch(/[ée]v[éeè]nements?\s+de\s+r[ée]f[ée]rence/i);
   });
 });

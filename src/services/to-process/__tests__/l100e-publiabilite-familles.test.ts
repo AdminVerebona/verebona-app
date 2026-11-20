@@ -33,7 +33,7 @@ describe('L100E-U-CONTRACT — contrat commun de publication (A7)', () => {
     expect(DECLARED_RULES.filter((c) => !codes.has(c))).toEqual([]);
   });
 
-  it('L100E-U-CONTRACT-02 — les familles du PO sont toutes couvertes : documents, agenda, équipements, fournisseurs, événements de référence', () => {
+  it('L100E-U-CONTRACT-02 — les familles du PO sont toutes couvertes : documents, agenda, équipements, fournisseurs, opérations', () => {
     const familles = new Set(Object.values(PUBLISHABILITY_CONTRACTS).map((c) => c.family));
     for (const f of ['DOCUMENTS', 'AGENDA', 'EQUIPEMENTS', 'FOURNISSEURS', 'EVENEMENTS_DE_REFERENCE'] as const) expect(familles.has(f), f).toBe(true);
     // Toute cible du catalogue a au moins une règle déclarée.
@@ -41,7 +41,8 @@ describe('L100E-U-CONTRACT — contrat commun de publication (A7)', () => {
     for (const t of cibles) expect(PROCESSING_RULES.some((r) => r.targetType === t && PUBLISHABILITY_CONTRACTS[r.code]), t).toBe(true);
     expect(familyOf('OPERATION-MATCH')).toBe('EVENEMENTS_DE_REFERENCE');
     // Jamais le mot « Opération » dans un libellé de famille.
-    for (const l of Object.values(CARD_FAMILY_LABELS)) expect(l).not.toMatch(/op[ée]ration/i);
+    // Règle remplacée (carte #806, décision du PO du 17/11/2026) : la garde interdisait « Opération » ; à l’écran on dit désormais « opération », et c’est « événement de référence » qui est interdit.
+    for (const l of Object.values(CARD_FAMILY_LABELS)) expect(l).not.toMatch(/[ée]v[éeè]nements?\s+de\s+r[ée]f[ée]rence/i);
   });
 
   it('L100E-U-CONTRACT-03 — famille FUTURE sans règle déclarée : signalée par ce test, retenue (jamais montrée en silence)', () => {

@@ -47,9 +47,13 @@ describe('L113S — contrôle d’une question proposée par l’IA (pure)', () 
     expect(validateAiUserQuestion('Does this document belong to the same asset as « Maison » ?', ctx)).toEqual({ ok: false, code: 'NOT_FRENCH' });
   });
 
-  it('Q-05 — vocabulaire : « Opération », nom de traitement, code, date ISO, jargon refusés', () => {
-    expect(validateAiUserQuestion('Ce document concerne-t-il la même opération que « Maison » ?', ctx).ok).toBe(false);
-    expect(validateAiUserQuestion('Ce document concerne-t-il la même opération que « Maison » ?', ctx)).toEqual({ ok: false, code: 'FORBIDDEN_TERM' });
+  // Règle remplacée (carte #806, décision du PO du 17/11/2026) : la question refusée était celle qui disait « opération » ;
+  // c'est désormais l'ancien terme « événement de référence » (toutes formes) qui est refusé, et « opération » est admis.
+  it('Q-05 — vocabulaire : « événement de référence », nom de traitement, code, date ISO, jargon refusés ; « opération » admis', () => {
+    expect(validateAiUserQuestion('Ce document concerne-t-il la même opération que « Maison » ?', ctx)).toEqual({ ok: true, question: 'Ce document concerne-t-il la même opération que « Maison » ?' });
+    for (const ancien of ['le même événement de référence', 'le même Événement de Référence', 'le même evenement de reference', 'ces événements de référence', 'le même élément de référence', 'le même événement de référence']) {
+      expect(validateAiUserQuestion(`Ce document concerne-t-il ${ancien} que « Maison » ?`, ctx), ancien).toEqual({ ok: false, code: 'FORBIDDEN_TERM' });
+    }
     expect(validateAiUserQuestion('Selon T3, ce document concerne-t-il le bien « Maison » ?', ctx)).toEqual({ ok: false, code: 'TECHNICAL_WORDING' });
     expect(validateAiUserQuestion('Ce document (LINK-ASSET) concerne-t-il « Maison » ?', ctx)).toEqual({ ok: false, code: 'TECHNICAL_WORDING' });
     expect(validateAiUserQuestion('Ce document du 2026-03-12 concerne-t-il « Maison » ?', ctx)).toEqual({ ok: false, code: 'TECHNICAL_WORDING' });
@@ -234,7 +238,8 @@ describe('L113S — catalogue : les règles actives classées (formulation)', ()
     expect(parCode.has('AGENDA-NOT-DONE')).toBe(false);
   });
 
-  it('R-03 — aucune question du catalogue ne contient « Opération » ni de jargon', () => {
-    for (const r of PROCESSING_RULES) expect(r.question, r.code).not.toMatch(/\bop[ée]ration/i);
+  it('R-03 — aucune question du catalogue ne contient « événement de référence » ni de jargon', () => {
+    // Règle remplacée (carte #806, décision du PO du 17/11/2026) : la garde interdisait « Opération » ; à l’écran on dit désormais « opération », et c’est « événement de référence » qui est interdit.
+    for (const r of PROCESSING_RULES) expect(r.question, r.code).not.toMatch(/[ée]v[éeè]nements?\s+de\s+r[ée]f[ée]rence/i);
   });
 });

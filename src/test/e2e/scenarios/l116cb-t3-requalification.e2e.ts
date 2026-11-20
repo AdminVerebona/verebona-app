@@ -82,7 +82,7 @@ scenario('L116CB-T', 'Opérations / Agenda #806 volet B §11 (T3) — échéance
     const route = await import('@/app/api/search/route');
     const r = await route.GET(new NextRequest(`http://x/api/search?instant=1&q=${encodeURIComponent(q)}`));
     expect(r.status).toBe(200);
-    return ((await r.json()).results as Json[]).filter((x) => x.category === 'Événement de référence');
+    return ((await r.json()).results as Json[]).filter((x) => x.category === 'Opération');
   }
   /** L'Agenda du compte tel qu'il est enregistré : événements, dates, rappels en file. */
   const agenda = async (compte: AccountRow) => ({

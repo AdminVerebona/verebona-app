@@ -51,7 +51,7 @@ const rendre = (f: ReferenceEventPageView) => renderToStaticMarkup(h(ReferenceEv
 /** Gestes de la page (pour vérifier le geste de la note) — aucun n'est appelé par ces tests. */
 const gestes = {
   correct: () => undefined, remove: () => undefined, linkAgenda: () => undefined, unlinkAgenda: () => undefined,
-  linkDocument: () => undefined, unlinkDocument: () => undefined, moveDocument: () => undefined, linkSupplier: () => undefined,
+  linkDocument: () => undefined, unlinkDocument: () => undefined, linkSupplier: () => undefined,
   unlinkSupplier: () => undefined, associate: () => undefined, dissociate: () => undefined, editNotes: () => undefined,
 };
 const rendreAvecGestes = (f: ReferenceEventPageView) => renderToStaticMarkup(h(ReferenceEventPageContent, { fiche: f, openers, actions: gestes }));
@@ -62,9 +62,10 @@ describe('L114OK-U01 — textes', () => {
     expect(REFERENCE_EVENT_NOTES_LABELS.field).toBe('Notes / Description');
     expect(REFERENCE_EVENT_NOTES_MAX).toBe(NOTES_MAX_LENGTH);
   });
-  it('aucun texte ne dit « Opération », ni un état, ni une progression', () => {
+  it('aucun texte ne dit « événement de référence », ni un état, ni une progression', () => {
     const tous = [...Object.values(REFERENCE_EVENT_SUMMARY_LABELS), ...Object.values(REFERENCE_EVENT_NOTES_LABELS)];
-    for (const t of tous) expect(t, t).not.toMatch(/Opération|Statut|En cours|Envisagé|Annulé|pipeline|étape|progression/i);
+    // Règle remplacée (carte #806, décision du PO du 17/11/2026) : la garde interdisait « Opération » ; à l’écran on dit désormais « opération », et c’est « événement de référence » qui est interdit.
+    for (const t of tous) expect(t, t).not.toMatch(/[ée]v[éeè]nements?\s+de\s+r[ée]f[ée]rence|Statut|En cours|Envisagé|Annulé|pipeline|étape|progression/i);
     for (const t of tous) expect(t.length, t).toBeGreaterThan(0);
   });
   it('la synthèse dit ce qu’elle ne compte pas : devis et prévisions dehors, partage compté une fois', () => {
@@ -201,18 +202,20 @@ describe('L114OK-U05 — rendu de la page (même composant ordinateur et mobile)
     expect(avec).toContain(REFERENCE_EVENT_NOTES_LABELS.edit);
     expect(avec).not.toContain(REFERENCE_EVENT_NOTES_LABELS.empty);
   });
-  it('ni « Opération », ni onglet, ni tiroir, ni état ; cibles tactiles ; jetons de couleur seulement', () => {
+  it('ni « événement de référence », ni onglet, ni tiroir, ni état ; cibles tactiles ; jetons de couleur seulement', () => {
     const html = rendreAvecGestes(fiche({ notes: { text: 'Garantie 2 ans', updatedOn: '2024-04-03' } }));
     expect(html).not.toMatch(/role="tab(list|panel)?"/);
     // Règle remplacée (carte #806) : « jamais "Opération" » — les textes NOUVEAUX de la carte #806 (liste fermée)
     // disent « opération » (décision du PO du 17/11/2026) ; les textes existants restent sous la garde d'origine.
-    expect(sansTextes806(html)).not.toMatch(/Opération|Statut|Envisagé|Annulé/i);
+    // Règle remplacée (carte #806, décision du PO du 17/11/2026) : la garde interdisait « Opération » ; à l’écran on dit désormais « opération », et c’est « événement de référence » qui est interdit.
+    expect(sansTextes806(html)).not.toMatch(/[ée]v[éeè]nements?\s+de\s+r[ée]f[ée]rence|Statut|Envisagé|Annulé/i);
     expect(html).toContain('min-h-[44px]');
     for (const p of ['src/components/reference-events/ReferenceEventPageContent.tsx', 'src/lib/reference-events/reference-event-summary.ts']) {
       const code = visible(lire(p));
       expect(code, p).not.toMatch(/#[0-9a-fA-F]{3,8}\b|rgba?\(|\b(?:text|bg|border)-(?:red|green|blue|gray|slate|amber|yellow|orange|emerald|zinc|neutral)-\d{2,3}\b/);
       expect(code, p).not.toMatch(/\buppercase\b|tracking-wide/);
-      expect(code, p).not.toMatch(/Opération/);
+      // Règle remplacée (carte #806, décision du PO du 17/11/2026) : la garde interdisait « Opération » ; à l’écran on dit désormais « opération », et c’est « événement de référence » qui est interdit.
+      expect(code, p).not.toMatch(/[ée]v[éeè]nements?\s+de\s+r[ée]f[ée]rence/i);
     }
   });
 });

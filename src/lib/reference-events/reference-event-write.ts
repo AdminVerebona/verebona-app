@@ -26,7 +26,7 @@ import type { ReferenceEventDateRole, ReferenceEventRelationDirection } from './
 // ── Gestes ─────────────────────────────────────────────────────────────────
 
 export const REFERENCE_EVENT_GESTURES = [
-  'correct', 'delete', 'restore', 'linkAgenda', 'unlinkAgenda', 'linkDocument', 'unlinkDocument', 'moveDocument',
+  'correct', 'delete', 'restore', 'linkAgenda', 'unlinkAgenda', 'linkDocument', 'unlinkDocument',
   'linkSupplier', 'unlinkSupplier', 'associate', 'dissociate', 'split',
   // Carte #744, travaux D — contenu : la note libre de l'utilisateur, enregistrée ou retirée (deux réussites distinctes).
   'notes', 'notesCleared',
@@ -36,18 +36,17 @@ export type ReferenceEventGesture = (typeof REFERENCE_EVENT_GESTURES)[number];
 /** Message de réussite de chaque geste (une écriture a eu lieu). */
 export const REFERENCE_EVENT_SUCCESS: Readonly<Record<ReferenceEventGesture, string>> = {
   correct: 'Correction enregistrée.',
-  delete: 'Événement de référence supprimé.',
+  delete: 'Opération supprimée.',
   restore: 'Suppression annulée. Les événements de l’Agenda détachés n’ont pas été rattachés de nouveau.',
   linkAgenda: 'Événement rattaché.',
   unlinkAgenda: 'Événement détaché. Il reste dans votre agenda.',
   linkDocument: 'Document rattaché.',
-  unlinkDocument: 'Document retiré de cet événement de référence. Le fichier est conservé.',
-  moveDocument: 'Document déplacé.',
+  unlinkDocument: 'Document retiré de cette opération. Le fichier est conservé.',
   linkSupplier: 'Fournisseur relié.',
-  unlinkSupplier: 'Fournisseur retiré de cet événement de référence. Sa fiche est conservée.',
-  associate: 'Événements de référence associés.',
-  dissociate: 'Événements de référence dissociés.',
-  split: 'Événement de référence scindé. Le nouveau est associé à celui-ci.',
+  unlinkSupplier: 'Fournisseur retiré de cette opération. Sa fiche est conservée.',
+  associate: 'Opérations associées.',
+  dissociate: 'Opérations dissociées.',
+  split: 'Opération scindée. La nouvelle est associée à celle-ci.',
   notes: 'Note enregistrée.',
   notesCleared: 'Note retirée.',
 };
@@ -57,30 +56,36 @@ export const REFERENCE_EVENT_WRITE_MESSAGES: Readonly<Record<OperationWriteCode,
   OK: 'Modification enregistrée.',
   NO_CHANGE: 'Rien n’a changé : c’était déjà enregistré ainsi.',
   NEW_EVIDENCE_AFTER_REFUSAL: 'Ce lien avait été refusé. Il doit d’abord être confirmé dans « À traiter ».',
-  VERSION_MISMATCH: 'Cet événement de référence a été modifié entre-temps. La fiche vient d’être actualisée : vérifiez-la, puis recommencez si besoin.',
+  VERSION_MISMATCH: 'Cette opération a été modifiée entre-temps. La fiche vient d’être actualisée : vérifiez-la, puis recommencez si besoin.',
   IDEMPOTENCY_KEY_REUSED: 'Cette demande a déjà été envoyée. Actualisez la fiche avant de recommencer.',
   INVALID_INPUT: 'La saisie n’est pas valide. Vérifiez les champs, puis réessayez.',
   READ_ONLY_ACCOUNT: 'Votre compte est en lecture seule : cette modification n’est pas possible.',
   NOT_A_MEMBER: 'Vous n’avez pas accès à ce compte.',
   NOT_FOUND_IN_ACCOUNT: 'Cet élément est introuvable dans votre compte.',
-  OPERATION_INACTIVE: 'Cet événement de référence a été supprimé ou regroupé : il ne peut plus être modifié.',
-  REFLEXIVE: 'Un événement de référence ne peut pas être relié à lui-même.',
-  NATURE_TYPE_MISMATCH: 'Ce lien ne correspond pas au type de ces événements de référence. Choisissez « Associé à ».',
+  OPERATION_INACTIVE: 'Cette opération a été supprimée ou regroupée : elle ne peut plus être modifiée.',
+  REFLEXIVE: 'Une opération ne peut pas être reliée à elle-même.',
+  NATURE_TYPE_MISMATCH: 'Ce lien ne correspond pas au type de ces opérations. Choisissez « Associée à ».',
   EVIDENCE_REQUIRED: 'Cette action n’est pas possible ici.',
   USER_REJECTED: 'Ce lien a été refusé : il n’est pas recréé.',
   USER_RELATION_PROTECTED: 'Ce lien a été posé par vous : il n’est pas modifié automatiquement.',
   LINKED_ELSEWHERE: 'Cet événement de l’Agenda est déjà rattaché ailleurs et n’a pas pu être partagé.',
-  NOT_LINKED: 'Ce document n’est pas rattaché à cet événement de référence.',
-  SPLIT_PART_NOT_LINKED: 'Un des éléments choisis n’est plus rattaché à cet événement de référence. La fiche vient d’être actualisée : refaites votre choix.',
-  SPLIT_NOTHING_TO_MOVE: 'Choisissez au moins un élément à déplacer vers le nouvel événement de référence.',
-  TYPE_MISMATCH: 'Ces deux événements de référence ne sont pas de même nature : ils ne peuvent pas être réunis. Rien n’a été modifié.',
+  NOT_LINKED: 'Ce document n’est pas rattaché à cette opération.',
+  SPLIT_PART_NOT_LINKED: 'Un des éléments choisis n’est plus rattaché à cette opération. La fiche vient d’être actualisée : refaites votre choix.',
+  SPLIT_NOTHING_TO_MOVE: 'Choisissez au moins un élément à déplacer vers la nouvelle opération.',
+  TYPE_MISMATCH: 'Ces deux opérations ne sont pas de même nature : elles ne peuvent pas être réunies. Rien n’a été modifié.',
   USER_ONLY: 'Cette action n’est pas possible ici.',
-  TYPE_DETAILS_PRESENT: 'Le type ne peut pas être changé : cet événement de référence porte des informations propres à son type actuel (contrat, financement ou sinistre).',
+  TYPE_DETAILS_PRESENT: 'Le type ne peut pas être changé : cette opération porte des informations propres à son type actuel (contrat, financement ou sinistre).',
   STATUS_TRANSITION_REFUSED: 'Cette action n’est pas possible ici.',
   NOT_RESTORABLE: 'Cette suppression ne peut plus être annulée.',
   DUPLICATE_DECLARATION: 'Cette déclaration est déjà enregistrée.',
   TECHNICAL_FAILURE: 'L’enregistrement n’a pas abouti. Rien n’a été modifié. Réessayez dans un instant.',
 };
+
+/**
+ * Carte #806 §1 (décision du PO du 17/11/2026) : le geste « Déplacer un document vers une autre opération » est
+ * RETIRÉ (écran, API, Assistant). Un ancien client qui appelle encore la route reçoit cette phrase : rien n'est écrit.
+ */
+export const REFERENCE_EVENT_MOVE_REMOVED = 'Le déplacement direct d’un document n’existe plus. Retirez le document de cette opération, puis rattachez-le à l’autre opération.';
 
 /** Requête illisible (corps absent, identifiant invalide) : même phrase que INVALID_INPUT. */
 export const REFERENCE_EVENT_INVALID_REQUEST = REFERENCE_EVENT_WRITE_MESSAGES.INVALID_INPUT;
@@ -407,7 +412,7 @@ export interface ReferenceEventAssociationOption {
 
 /**
  * Liens proposables entre la page (`selfType`) et l'événement de référence
- * choisi (`otherType`) : toujours « Associé à » ; un lien orienté seulement
+ * choisi (`otherType`) : toujours « Associée à » ; un lien orienté seulement
  * quand son origine a le type exigé (intégrité : la façade le recontrôle).
  */
 export function referenceEventAssociationOptions(selfType: string | null, otherType: string | null): ReferenceEventAssociationOption[] {
@@ -427,7 +432,7 @@ export interface ReferenceEventAssociationRequest {
   direction: 'OUTGOING' | 'INCOMING' | 'UNDIRECTED';
 }
 
-/** Lit la demande « associer » ; null : invalide. Défaut : « Associé à ». */
+/** Lit la demande « associer » ; null : invalide. Défaut : « Associée à ». */
 export function parseReferenceEventAssociation(body: unknown): ReferenceEventAssociationRequest | null {
   if (!estObjet(body)) return null;
   const otherId = positiveIdOf(body.otherId);
@@ -437,14 +442,14 @@ export function parseReferenceEventAssociation(body: unknown): ReferenceEventAss
   const n = nature as ReferenceEventAssociationNature;
   const direction = body.direction === undefined ? (n === 'ASSOCIATED' ? 'UNDIRECTED' : 'OUTGOING') : body.direction;
   if (direction !== 'OUTGOING' && direction !== 'INCOMING' && direction !== 'UNDIRECTED') return null;
-  // Un lien orienté a un sens ; « Associé à » n'en a pas.
+  // Un lien orienté a un sens ; « Associée à » n'en a pas.
   if ((n === 'ASSOCIATED') !== (direction === 'UNDIRECTED')) return null;
   return { otherId, nature: n, direction };
 }
 
 // ── Candidats (choix d'un objet à relier) ──────────────────────────────────
 
-export const REFERENCE_EVENT_CANDIDATE_KINDS = ['agenda', 'document', 'supplier', 'reference', 'move-target'] as const;
+export const REFERENCE_EVENT_CANDIDATE_KINDS = ['agenda', 'document', 'supplier', 'reference'] as const;
 export type ReferenceEventCandidateKind = (typeof REFERENCE_EVENT_CANDIDATE_KINDS)[number];
 
 export function isReferenceEventCandidateKind(v: unknown): v is ReferenceEventCandidateKind {
@@ -477,7 +482,7 @@ export interface ReferenceEventTypeOption { code: string; label: string }
 export const REFERENCE_EVENT_WRITE_LABELS = {
   // Corriger
   correct: 'Corriger',
-  correctTitle: 'Corriger cet événement de référence',
+  correctTitle: 'Corriger cette opération',
   correctHint: 'L’ancienne et la nouvelle valeur sont conservées dans l’historique. Aucune justification ne vous est demandée.',
   labelField: 'Intitulé',
   labelPlaceholder: 'Par exemple : Remplacement de la chaudière',
@@ -493,55 +498,54 @@ export const REFERENCE_EVENT_WRITE_LABELS = {
   close: 'Fermer',
   // Supprimer / annuler
   delete: 'Supprimer',
-  deleteTitle: 'Supprimer cet événement de référence ?',
+  deleteTitle: 'Supprimer cette opération ?',
   deleteKept: 'Rien n’est effacé : ses documents, ses fournisseurs et les événements de l’Agenda que vous avez saisis sont conservés. Ces événements sont détachés et restent dans votre agenda, à leur date, avec leurs rappels.',
-  deleteProjected: 'Les événements que Verebona avait ajoutés à votre agenda à partir de cet événement de référence peuvent en être retirés.',
-  deleteUndo: 'Vous pourrez annuler la suppression juste après. L’événement de référence reviendra alors sans ses événements de l’Agenda : ils ne seront pas rattachés de nouveau.',
+  deleteProjected: 'Les événements que Verebona avait ajoutés à votre agenda à partir de cette opération peuvent en être retirés.',
+  deleteUndo: 'Vous pourrez annuler la suppression juste après. L’opération reviendra alors sans ses événements de l’Agenda : ils ne seront pas rattachés de nouveau.',
   deleteConfirm: 'Supprimer',
-  deletedTitle: 'Événement de référence supprimé',
+  deletedTitle: 'Opération supprimée',
   deletedBody: 'Ses documents, ses fournisseurs et vos événements de l’Agenda sont conservés.',
-  deletedUndoHint: 'Si vous annulez, il revient sans ses événements de l’Agenda : ils ne seront pas rattachés de nouveau. Cette possibilité disparaît si vous quittez ou rechargez cette page.',
+  deletedUndoHint: 'Si vous annulez, elle revient sans ses événements de l’Agenda : ils ne seront pas rattachés de nouveau. Cette possibilité disparaît si vous quittez ou rechargez cette page.',
   undoDelete: 'Annuler la suppression',
   // Relier
   addTitle: 'Compléter',
   linkAgenda: 'Rattacher un événement',
   linkDocument: 'Rattacher un document',
   linkSupplier: 'Relier un fournisseur',
-  associate: 'Associer un événement de référence',
+  associate: 'Associer une opération',
   unlinkAgenda: 'Détacher',
   unlinkDocument: 'Retirer',
-  moveDocument: 'Déplacer',
   unlinkSupplier: 'Retirer',
   dissociate: 'Dissocier',
   // Confirmations des retraits
   unlinkAgendaTitle: 'Détacher cet événement ?',
   unlinkAgendaBody: 'Seul le lien est retiré. L’événement reste dans votre agenda, à sa date, avec ses rappels et ses documents. Il ne sera pas rattaché de nouveau automatiquement.',
   unlinkDocumentTitle: 'Retirer ce document ?',
-  unlinkDocumentBody: 'Seul le lien est retiré : le fichier est conservé, ainsi que ses autres rattachements. Il ne sera pas rattaché de nouveau automatiquement à cet événement de référence.',
+  unlinkDocumentBody: 'Seul le lien est retiré : le fichier est conservé, ainsi que ses autres rattachements. Il ne sera pas rattaché de nouveau automatiquement à cette opération.',
   unlinkSupplierTitle: 'Retirer ce fournisseur ?',
   unlinkSupplierBody: 'Seul le lien est retiré : la fiche du fournisseur et ses documents sont conservés. Il ne sera pas relié de nouveau automatiquement.',
   // Scinder (CDC §7, §14 ; AC46)
   split: 'Scinder',
-  splitTitle: 'Scinder cet événement de référence',
-  splitHint: 'Choisissez ce qui appartient à une autre réalité : un second événement de référence est créé et reçoit ce que vous désignez. Rien n’est effacé, rien n’est copié ; les deux restent associés.',
-  splitLabelField: 'Intitulé du nouvel événement de référence',
+  splitTitle: 'Scinder cette opération',
+  splitHint: 'Choisissez ce qui appartient à une autre réalité : une seconde opération est créée et reçoit ce que vous désignez. Rien n’est effacé, rien n’est copié ; les deux restent associées.',
+  splitLabelField: 'Intitulé de la nouvelle opération',
   splitLabelPlaceholder: 'Par exemple : Remplacement du ballon d’eau chaude',
-  splitPartsLegend: 'Ce qui part vers le nouvel événement de référence',
+  splitPartsLegend: 'Ce qui part vers la nouvelle opération',
   splitPartAgenda: 'Événements de l’Agenda',
   splitPartDocument: 'Justificatifs',
   splitPartSupplier: 'Fournisseurs',
-  splitLabelRequired: 'Donnez un intitulé au nouvel événement de référence.',
+  splitLabelRequired: 'Donnez un intitulé à la nouvelle opération.',
   splitNothingChosen: 'Choisissez au moins un élément à déplacer.',
-  splitAllChosen: 'Tout ne peut pas partir : laissez au moins un élément sur cet événement de référence.',
-  splitTypeNote: 'Le nouvel événement de référence reprend le type et les biens de celui-ci. Vous pourrez le corriger ensuite.',
+  splitAllChosen: 'Tout ne peut pas partir : laissez au moins un élément sur cette opération.',
+  splitTypeNote: 'La nouvelle opération reprend le type et les biens de celle-ci. Vous pourrez la corriger ensuite.',
   splitPreviewTitle: 'Avant d’enregistrer',
-  splitPreviewMoved: 'Part vers le nouvel événement de référence',
-  splitPreviewKept: 'Reste sur cet événement de référence',
-  splitPreviewHint: 'Les événements de l’Agenda gardent leur date et leurs rappels ; les fichiers ne sont pas copiés. Les montants d’un justificatif déplacé ne sont pris en compte dans le nouvel événement de référence qu’après la prochaine analyse automatique. Ce que vous séparez ne sera pas regroupé de nouveau automatiquement.',
+  splitPreviewMoved: 'Part vers la nouvelle opération',
+  splitPreviewKept: 'Reste sur cette opération',
+  splitPreviewHint: 'Les événements de l’Agenda gardent leur date et leurs rappels ; les fichiers ne sont pas copiés. Les montants d’un justificatif déplacé ne sont pris en compte dans la nouvelle opération qu’après la prochaine analyse automatique. Ce que vous séparez ne sera pas regroupé de nouveau automatiquement.',
   splitConfirm: 'Scinder',
   splitReview: 'Vérifier',
-  dissociateTitle: 'Dissocier ces deux événements de référence ?',
-  dissociateBody: 'Seul le lien est retiré : les deux événements de référence, leurs documents et leurs événements sont conservés. Ils ne seront pas associés de nouveau automatiquement.',
+  dissociateTitle: 'Dissocier ces deux opérations ?',
+  dissociateBody: 'Seul le lien est retiré : les deux opérations, leurs documents et leurs événements sont conservés. Elles ne seront pas associées de nouveau automatiquement.',
   confirm: 'Confirmer',
   // Choix d'un objet
   pickerSearch: 'Rechercher',
@@ -551,15 +555,13 @@ export const REFERENCE_EVENT_WRITE_LABELS = {
   pickerError: 'La liste n’a pas pu être chargée. Réessayez.',
   pickerLoading: 'Chargement…',
   pickerAgendaTitle: 'Rattacher un événement de votre agenda',
-  pickerAgendaHint: 'L’événement garde sa date, ses rappels et ses documents. S’il est déjà rattaché à un autre événement de référence, il sera partagé entre les deux.',
+  pickerAgendaHint: 'L’événement garde sa date, ses rappels et ses documents. S’il est déjà rattaché à une autre opération, il sera partagé entre les deux.',
   pickerDocumentTitle: 'Rattacher un document',
   pickerDocumentHint: 'Le document reste à sa place. Ses montants ne sont pris en compte ici qu’après la prochaine analyse automatique.',
   pickerSupplierTitle: 'Relier un fournisseur',
   pickerSupplierHint: 'Le fournisseur est relié comme prestataire. Rien d’autre n’est créé.',
-  pickerReferenceTitle: 'Associer un événement de référence',
-  pickerReferenceHint: 'Les deux événements de référence restent distincts : rien n’est fusionné, aucun montant n’est ajouté.',
-  pickerMoveTitle: 'Déplacer ce document vers un autre événement de référence',
-  pickerMoveHint: 'Le fichier n’est pas copié. Il quitte cet événement de référence ; ses montants ne sont pris en compte dans l’autre qu’après la prochaine analyse automatique.',
+  pickerReferenceTitle: 'Associer une opération',
+  pickerReferenceHint: 'Les deux opérations restent distinctes : rien n’est fusionné, aucun montant n’est ajouté.',
   associationNature: 'Nature du lien',
   associateConfirm: 'Associer',
   undatedCandidate: 'Sans date',

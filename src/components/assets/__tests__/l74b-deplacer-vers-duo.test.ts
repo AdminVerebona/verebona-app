@@ -23,7 +23,7 @@ describe('L74B-U01 — confirmation : ce qui part, ce qui reste', () => {
       '1 équipement',
       '2 pièces',
       '2 événements et échéances de l’historique',
-      '1 événement de référence (intervention, sinistre…)', // intégration lot 109 : jamais « opération » à l’écran
+      '1 opération (intervention, sinistre…)', // intégration lot 109 : jamais « opération » à l’écran
       '3 actions « À traiter »',
       '1 fiche fournisseur recopiée (sans coordonnées bancaires)',
     ]);

@@ -130,7 +130,7 @@ describe('L84C-UI — Timeline du bien', () => {
     expect(src).not.toMatch(/Drawer|Sheet/);
   });
 
-  it('L114O-C-UI1 — #744 : événement de référence sans élément d’agenda et sans date — ligne explicite, aucun chevron, aucune date', () => {
+  it('L114O-C-UI1 — #744 : opération sans élément d’agenda et sans date — ligne explicite, aucun chevron, aucune date', () => {
     const seul: TimelineEntry = {
       kind: 'group', itemType: 'operation', id: 'op-12', operationId: 12, title: 'Intervention — Remplacement de la chaudière', effectiveDate: null, dateBasis: null,
       members: [], counters: { events: 0, documents: 0, assets: 1, rooms: 0, equipments: 0 },
@@ -152,7 +152,7 @@ describe('L84C-UI — Timeline du bien', () => {
     expect(sansDate).not.toMatch(/\d{4}/);
   });
 
-  it('L114O-C-UI2 — #744 : mode détaillé — élément partagé rendu UNE fois, un lien par événement de référence (texte existant)', async () => {
+  it('L114O-C-UI2 — #744 : mode détaillé — élément partagé rendu UNE fois, un lien par opération (texte existant)', async () => {
     const partage: TimelineEntry = {
       kind: 'item', ...item('21', '2026-03-21', 'Visite expert'),
       operations: [{ operationId: 11, label: 'Sinistre — Dégât des eaux' }, { operationId: 15, label: 'Intervention — Réparation plafond' }],
@@ -162,10 +162,11 @@ describe('L84C-UI — Timeline du bien', () => {
       expect(html.match(/data-timeline-item="21"/g), v).toHaveLength(1);
       expect(html, v).toContain('data-timeline-reference="11"');
       expect(html, v).toContain('data-timeline-reference="15"');
-      expect(html, v).toContain('Voir l’événement de référence : Sinistre — Dégât des eaux');
-      expect(html, v).toContain('Voir l’événement de référence : Intervention — Réparation plafond');
+      expect(html, v).toContain('Voir l’opération : Sinistre — Dégât des eaux');
+      expect(html, v).toContain('Voir l’opération : Intervention — Réparation plafond');
       expect(html.match(/data-timeline-references=/g), v).toHaveLength(1);
-      expect(html, v).not.toMatch(/op[ée]ration/i);
+      // Règle remplacée (carte #806, décision du PO du 17/11/2026) : la garde interdisait « Opération » ; à l’écran on dit désormais « opération », et c’est « événement de référence » qui est interdit.
+      expect(html, v).not.toMatch(/[ée]v[éeè]nements?\s+de\s+r[ée]f[ée]rence/i);
     }
     // Texte repris à l'identique du lien existant (lot 113X) et de l'Agenda.
     const { TIMELINE_REFERENCE_EVENT_LINK, TIMELINE_UNDATED_LABEL } = await import('@/services/agenda/timeline/labels');
@@ -176,6 +177,7 @@ describe('L84C-UI — Timeline du bien', () => {
   it('L84C-UI8 — aucun mot « Opération » visible', () => {
     const html = [rendre(etat({ expanded: new Set(['op-11']), nextCursor: 'x', rest: 2 })), rendre(etat(), 'mobile'),
       renderToStaticMarkup(h(TimelineModeSwitch, { mode: 'detailed', onChange: () => undefined }))].join('');
-    expect(html).not.toMatch(/op[ée]ration/i);
+    // Règle remplacée (carte #806, décision du PO du 17/11/2026) : la garde interdisait « Opération » ; à l’écran on dit désormais « opération », et c’est « événement de référence » qui est interdit.
+    expect(html).not.toMatch(/[ée]v[éeè]nements?\s+de\s+r[ée]f[ée]rence/i);
   });
 });

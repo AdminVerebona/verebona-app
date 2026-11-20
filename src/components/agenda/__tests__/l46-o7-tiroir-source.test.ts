@@ -30,7 +30,7 @@ describe('O7-UI-01 — tiroir d’un événement projeté (desktop et mobile)', 
     expect(tiroir).toContain('className="w-full sm:max-w-[520px]');
   });
 
-  it('jamais le mot « Opération » dans le texte affiché du tiroir', () => {
+  it('jamais le mot « événement de référence » dans le texte affiché du tiroir', () => {
     const jsxTexte = tiroir.replace(/\/\*[\s\S]*?\*\//g, '').replace(/\/\/.*$/gm, '');
     expect(jsxTexte).not.toMatch(/>[^<{]*Op[ée]ration[^<{]*</);
   });

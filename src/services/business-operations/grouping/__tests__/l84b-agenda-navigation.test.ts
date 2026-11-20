@@ -139,7 +139,8 @@ describe('L84B-U05 — vocabulaire (P1, AC03)', () => {
   const NOUVEAUX_TEXTES_806 = ['pickerGroupingNote'];
   const textes = JSON.stringify(Object.fromEntries(Object.entries(GROUPING_LABELS).filter(([k]) => !NOUVEAUX_TEXTES_806.includes(k))));
   it('aucun libellé visible existant ne contient « Opération » ni « principal » ; les nouveaux textes #806 disent « opération »', () => {
-    expect(textes).not.toMatch(/op[ée]ration/i);
+    // Règle remplacée (carte #806, décision du PO du 17/11/2026) : la garde interdisait « Opération » ; à l’écran on dit désormais « opération », et c’est « événement de référence » qui est interdit.
+    expect(textes).not.toMatch(/[ée]v[éeè]nements?\s+de\s+r[ée]f[ée]rence/i);
     expect(JSON.stringify(GROUPING_LABELS)).not.toMatch(/principal/i);
     expect(GROUPING_LABELS.pickerGroupingNote).toMatch(/opération/);
     expect(GROUPING_LABELS.pickerGroupingNote).not.toMatch(/événement de référence|élément de référence/i);
@@ -167,7 +168,8 @@ describe('L84B-U05 — vocabulaire (P1, AC03)', () => {
       for (const m of [...src.matchAll(/(GROUPING_NOT_DECLARED|ASSOCIATION_REFUSED): \{ status: 409, message: '([^']*)' \}/g)]) expect(nouveaux, m[1]).toContain(m[2]);
     }
     expect(nouveaux).toHaveLength(2);
-    for (const m of nouveaux) expect(m).not.toMatch(/Opération|événement de référence/);
+    // Règle remplacée (carte #806, décision du PO du 17/11/2026) : la garde interdisait « Opération » ; à l’écran on dit désormais « opération », et c’est « événement de référence » qui est interdit.
+    for (const m of nouveaux) expect(m).not.toMatch(/[ée]v[éeè]nements?\s+de\s+r[ée]f[ée]rence|événement de référence/i);
   });
 });
 

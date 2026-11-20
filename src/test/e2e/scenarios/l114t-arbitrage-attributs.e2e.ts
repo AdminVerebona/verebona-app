@@ -119,7 +119,8 @@ scenario('L114T', 'Opérations — arbitrage des contradictions réelles d’att
       target_id: fichiers[1], relation_key: `operationAttribute:${opId}:provider:SUPPLIER`,
       question: 'Ces documents indiquent des prestataires différents pour la même intervention : lequel est le bon ?',
     });
-    expect(carte.question).not.toMatch(/op[ée]ration/i);
+    // Règle remplacée (carte #806, décision du PO du 17/11/2026) : la garde interdisait « Opération » ; à l’écran on dit désormais « opération », et c’est « événement de référence » qui est interdit.
+    expect(carte.question).not.toMatch(/[ée]v[éeè]nements?\s+de\s+r[ée]f[ée]rence/i);
     expect(carte.proposals).toHaveLength(2);
     expect(carte.proposals.at(-1)).toMatchObject({ isCurrentValue: true });
     expect(carte.proposals.at(-1).label).toMatch(/^Plomberie Durand/);

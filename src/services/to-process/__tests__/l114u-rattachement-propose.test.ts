@@ -42,7 +42,8 @@ describe('L114U-Q — question et propositions : neutres, et jamais le mot inter
     expect(q).toBe('« Passage du couvreur » est déjà rattaché à « Réparation de la toiture ». Le justificatif « Devis toiture » '
       + 'le relie aussi à « Dégât des eaux » : faut-il le rattacher à « Dégât des eaux » ?');
     // Règle permanente : jamais « Opération » affiché ; et aucune des deux réponses n'est recommandée.
-    expect(q).not.toMatch(/op[ée]ration/i);
+    // Règle remplacée (carte #806, décision du PO du 17/11/2026) : la garde interdisait « Opération » ; à l’écran on dit désormais « opération », et c’est « événement de référence » qui est interdit.
+    expect(q).not.toMatch(/[ée]v[éeè]nements?\s+de\s+r[ée]f[ée]rence/i);
     expect(q).not.toMatch(/recommand|conseill|probable|sans doute|certainement/i);
   });
 
@@ -61,7 +62,8 @@ describe('L114U-Q — question et propositions : neutres, et jamais le mot inter
     expect(p[1]).toMatchObject({ label: 'Non, ne pas le rattacher', isCurrentValue: true });
     // L'état actuel est celui de l'utilisateur : il n'est pas présenté comme une proposition de l'IA.
     expect(p[1].evidenceIds).toBeUndefined();
-    for (const x of p) expect(x.label).not.toMatch(/op[ée]ration/i);
+    // Règle remplacée (carte #806, décision du PO du 17/11/2026) : la garde interdisait « Opération » ; à l’écran on dit désormais « opération », et c’est « événement de référence » qui est interdit.
+    for (const x of p) expect(x.label).not.toMatch(/[ée]v[éeè]nements?\s+de\s+r[ée]f[ée]rence/i);
     expect(cartes.agendaLinkProposals([])[0].evidenceIds).toEqual([]);
   });
 
@@ -73,7 +75,7 @@ describe('L114U-Q — question et propositions : neutres, et jamais le mot inter
     }
   });
 
-  it('L114U-Q5 — une carte ouverte par COUPLE (événement de référence, événement d’Agenda)', () => {
+  it('L114U-Q5 — une carte ouverte par COUPLE (opération, événement d’Agenda)', () => {
     expect(cartes.agendaLinkKey(3, 9)).toBe('operationAgendaLink:3:9');
     // L'ordre n'est pas interchangeable : ce ne sont pas deux objets de même nature.
     expect(cartes.agendaLinkKey(9, 3)).not.toBe(cartes.agendaLinkKey(3, 9));
@@ -134,7 +136,7 @@ describe('L114U-P — la PREUVE exigée par le PO, lisible dans le code', () => 
     expect([...cartes.SHARED_EVIDENCE_PROVENANCES]).not.toContain('OPERATION_PRINCIPAL');
   });
 
-  it('L114U-P2 — la preuve est UN document, rattaché à l’événement de référence ET lié à l’événement d’Agenda', () => {
+  it('L114U-P2 — la preuve est UN document, rattaché à l’opération ET lié à l’événement d’Agenda', () => {
     const requete = carte.slice(carte.indexOf('export async function sharedJustifications'), carte.indexOf('// ── Proposition'));
     expect(requete).toContain('business_operation_documents');
     expect(requete).toContain('agenda_file_links');
@@ -180,7 +182,8 @@ describe('L114U-D — déclarations : catalogue, producteur, publiabilité, masc
     });
     // L'utilisateur tranche : aucune formulation « l'IA propose », aucune réponse automatique possible.
     expect(regle.formulation.kind).toBe('DETERMINISTIC');
-    expect(regle.question).not.toMatch(/op[ée]ration/i);
+    // Règle remplacée (carte #806, décision du PO du 17/11/2026) : la garde interdisait « Opération » ; à l’écran on dit désormais « opération », et c’est « événement de référence » qui est interdit.
+    expect(regle.question).not.toMatch(/[ée]v[éeè]nements?\s+de\s+r[ée]f[ée]rence/i);
   });
 
   it('L114U-D2 — le producteur désigne un module réel et ses deux points d’entrée existent', () => {
@@ -192,7 +195,7 @@ describe('L114U-D — déclarations : catalogue, producteur, publiabilité, masc
     expect(cartes.resolveOperationAgendaLinkCard).toBeTypeOf('function');
   });
 
-  it('L114U-D3 — publiabilité : famille « événements de référence », prémisse contrôlée dès la création, fermeture déclarée', () => {
+  it('L114U-D3 — publiabilité : famille « opérations », prémisse contrôlée dès la création, fermeture déclarée', () => {
     const c = PUBLISHABILITY_CONTRACTS['AGENDA-LINK'];
     expect(c).toMatchObject({ family: 'EVENEMENTS_DE_REFERENCE', decisions: 'PRODUCTION', atCreation: true });
     expect(c.cleanup).toEqual({ by: PUBLISHABILITY_CHECK_ID, service: 'closeCardsNoLongerUseful' });
@@ -209,7 +212,8 @@ describe('L114U-D — déclarations : catalogue, producteur, publiabilité, masc
   it('L114U-D4 — mascotte : un sujet dit en français, sans le mot interdit', () => {
     const titre = todoTitle('AGENDA-LINK', 'ARBITRATE');
     expect(titre).toBe('Rattachement à confirmer');
-    expect(titre).not.toMatch(/op[ée]ration/i);
+    // Règle remplacée (carte #806, décision du PO du 17/11/2026) : la garde interdisait « Opération » ; à l’écran on dit désormais « opération », et c’est « événement de référence » qui est interdit.
+    expect(titre).not.toMatch(/[ée]v[éeè]nements?\s+de\s+r[ée]f[ée]rence/i);
   });
 
   it('L114U-D5 — passerelle : l’inférence PROPOSE, l’utilisateur écrit (aucune écriture, aucune règle dans la passerelle)', () => {

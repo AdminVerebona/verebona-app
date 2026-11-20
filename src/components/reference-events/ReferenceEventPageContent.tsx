@@ -9,7 +9,7 @@
  * Présentation pure : la page (`/agenda/evenements-reference/[id]`) lit la
  * fiche, fournit les ouvertures et, quand l'écriture est possible, les gestes
  * (`actions` — travaux D « écriture » : corriger, supprimer, rattacher /
- * détacher, associer / dissocier, déplacer un document). Sans `actions`, la
+ * détacher, associer / dissocier ; le déplacement direct d'un document est retiré : carte #806 §1). Sans `actions`, la
  * page est consultée sans rien proposer. Ni tiroir, ni onglets, ni état (« en
  * cours », « réalisé », « annulé »), ni progression. Une rubrique n'est
  * affichée que si elle contient quelque chose. Sans date propre : « Sans
@@ -399,10 +399,7 @@ export function ReferenceEventPageContent({ fiche, openers, actions }: {
                 <Row
                   key={d.fileId}
                   gestes={actions && (
-                    <>
-                      <RowAction label={W.moveDocument} onClick={() => actions.moveDocument(d.fileId, d.title)} testId={`reference-event-move-document-${d.fileId}`} />
-                      <RowAction label={W.unlinkDocument} onClick={() => actions.unlinkDocument(d.fileId, d.title)} testId={`reference-event-unlink-document-${d.fileId}`} />
-                    </>
+                    <RowAction label={W.unlinkDocument} onClick={() => actions.unlinkDocument(d.fileId, d.title)} testId={`reference-event-unlink-document-${d.fileId}`} />
                   )}
                 >
                   <button type="button" className={ROW} onClick={() => openers.openDocument(d.fileId)} aria-label={`Ouvrir le document : ${d.title}`} data-document-nature="MEMBER">

@@ -175,7 +175,8 @@ scenario('L114OC', 'Opérations / Agenda CDC V2.0 — travaux C : Agenda génér
     expect(gVente.counters).toMatchObject({ events: 1 });
     expect(reg[0]).toMatchObject({ kind: 'item', itemType: 'agenda', title: 'Contrôle technique' });
     // Aucun texte affiché ne dit « Opération ».
-    expect([...reg, ...det].map((e) => `${e.title} ${(e.operations ?? []).map((o) => o.label).join(' ')}`).join(' ')).not.toMatch(/op[ée]ration/i);
+    // Règle remplacée (carte #806, décision du PO du 17/11/2026) : la garde interdisait « Opération » ; à l’écran on dit désormais « opération », et c’est « événement de référence » qui est interdit.
+    expect([...reg, ...det].map((e) => `${e.title} ${(e.operations ?? []).map((o) => o.label).join(' ')}`).join(' ')).not.toMatch(/[ée]v[éeè]nements?\s+de\s+r[ée]f[ée]rence/i);
 
     // Lire n'écrit rien : aucun élément d'Agenda créé ou modifié, aucun rappel, aucune carte, aucun lien (AC24, §17).
     expect(await empreinte(d.compte)).toBe(avant);
@@ -183,7 +184,7 @@ scenario('L114OC', 'Opérations / Agenda CDC V2.0 — travaux C : Agenda génér
     expect(await sql<Json[]>`SELECT count(*)::int AS n FROM notification_outbox WHERE account_id = ${d.compte.id}`).toEqual([{ n: 0 }]);
   });
 
-  it('L114OC-E02 — événement de référence sans élément d’agenda et sans date : présent en mode regroupé, hors du flux daté, rien d’inventé', async () => {
+  it('L114OC-E02 — opération sans élément d’agenda et sans date : présent en mode regroupé, hors du flux daté, rien d’inventé', async () => {
     const compte = await make.account({ plan: 'premium' });
     const bien = await make.asset(compte, { category: 'IMMOBILIER', name: 'Maison' });
     const autreBien = await make.asset(compte, { category: 'IMMOBILIER', name: 'Garage' });
@@ -224,7 +225,7 @@ scenario('L114OC', 'Opérations / Agenda CDC V2.0 — travaux C : Agenda génér
     expect(fi.reference).toMatchObject({ id: sansDate, label: 'Intervention — Remplacement de la chaudière', agendaItemId: null, agendaItems: [] });
   });
 
-  it('L114OC-E03 — événement de référence multi-biens : une seule identité, éléments filtrés selon le bien affiché', async () => {
+  it('L114OC-E03 — opération multi-biens : une seule identité, éléments filtrés selon le bien affiché', async () => {
     const compte = await make.account({ plan: 'premium' });
     const maison = await make.asset(compte, { category: 'IMMOBILIER', name: 'Maison' });
     const garage = await make.asset(compte, { category: 'IMMOBILIER', name: 'Garage' });
@@ -302,7 +303,7 @@ scenario('L114OC', 'Opérations / Agenda CDC V2.0 — travaux C : Agenda génér
     expect((await overview(bien.id, `?section=timeline&mode=detailed&cursor=${encodeURIComponent(c)}`)).status).toBe(400);
   });
 
-  it('L114OC-E05 — tiroir d’un élément d’Agenda : chaque événement de référence désigné et ouvrable ; fiche : tous les éléments réels à leur date', async () => {
+  it('L114OC-E05 — tiroir d’un élément d’Agenda : chaque opération désignée et ouvrable ; fiche : tous les éléments réels à leur date', async () => {
     const d = await dpe();
     const autre = await make.account({ plan: 'premium' });
     asUser(d.compte);
@@ -342,7 +343,7 @@ scenario('L114OC', 'Opérations / Agenda CDC V2.0 — travaux C : Agenda génér
     expect((await readAgendaItemsReferenceEvents(d.compte.id, [])).size).toBe(0);
   });
 
-  it('L114OC-E06 — le rôle « principal » ne change plus la Timeline ; événement de référence invalidé : éléments de nouveau individuels', async () => {
+  it('L114OC-E06 — le rôle « principal » ne change plus la Timeline ; opération invalidée : éléments de nouveau individuels', async () => {
     const d = await dpe();
     asUser(d.compte);
     const regAvant = await timeline(d.bien.id, 'grouped');

@@ -136,7 +136,8 @@ describe('L113G-U-CARD — « S’agit-il du même fournisseur ? »', () => {
     }, SUPPLIER_IDENTITY_QUESTION);
     expect(vue.question).toBe(SUPPLIER_IDENTITY_QUESTION);
     expect(vue.proposals.map((p) => p.label)).toEqual(['Oui', 'Non']);
-    expect(JSON.stringify(vue)).not.toMatch(/Opération/);
+    // Règle remplacée (carte #806, décision du PO du 17/11/2026) : la garde interdisait « Opération » ; à l’écran on dit désormais « opération », et c’est « événement de référence » qui est interdit.
+    expect(JSON.stringify(vue)).not.toMatch(/[ée]v[éeè]nements?\s+de\s+r[ée]f[ée]rence/i);
   });
 
   it('contexte de paire reconnu seulement s’il est complet', () => {

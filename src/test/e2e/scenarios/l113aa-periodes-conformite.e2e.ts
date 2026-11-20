@@ -170,7 +170,7 @@ scenario('L113AA', 'Périodes métier — conformité au CDC #724 (#725)', ({ sq
   });
 
   // ══ D11 ══════════════════════════════════════════════════════════════════
-  describe('D11 — résolution contextuelle des périodes d’un événement de référence', () => {
+  describe('D11 — résolution contextuelle des périodes d’une opération', () => {
     let c: AccountRow; let m: { id: number }; let op: number; let docs: Record<string, number>;
     const v2 = (val: string, ...extra: Array<[string, string, (string | null)?, (string | null)?]>) => [['period.relevance', 'coverage=known;contract=undetermined'], ['period.coverage', val, 'principal'], ...extra] as Array<[string, string, (string | null)?, (string | null)?]>;
 
@@ -216,7 +216,8 @@ scenario('L113AA', 'Périodes métier — conformité au CDC #724 (#725)', ({ sq
       expect(carte.trigger_context).toMatchObject({ kind: 'period_conflict', operationId: op, fileIds: [docs['Attestation 2025'], docs['Attestation 2025 bis']] });
       expect(carte.proposals.map((p) => p.value)).toEqual([`KEEP:${docs['Attestation 2025']}`, `KEEP:${docs['Attestation 2025 bis']}`, 'BOTH']);
       expect(carte.proposals[0]).toMatchObject({ evidenceIds: [`file:${docs['Attestation 2025']}`] });
-      expect(JSON.stringify(carte)).not.toMatch(/Opération/);
+      // Règle remplacée (carte #806, décision du PO du 17/11/2026) : la garde interdisait « Opération » ; à l’écran on dit désormais « opération », et c’est « événement de référence » qui est interdit.
+      expect(JSON.stringify(carte)).not.toMatch(/[ée]v[éeè]nements?\s+de\s+r[ée]f[ée]rence/i);
       const h2 = (await (await svc()).readOperationCoverageHistory(c.id, op))!;
       expect(h2.coverages.find((x) => x.fileId === docs['Attestation 2025 bis'])!.resolution).toMatchObject({ status: 'CONFLICT', pendingQuestion: true });
       // Rejoué (passage T3, contrôle) : toujours UNE carte.

@@ -85,9 +85,10 @@ describe('L102D-O05 — écrans et libellés', () => {
     expect(card).toContain('/api/users/me/data-use');
     expect(read('src/app/admin/accounts/[id]/page.tsx')).toContain('<AccountDataUse accountId={account.id} />');
   });
-  it('libellés factuels, sans « Opération », avec la politique publique', () => {
+  it('libellés factuels, sans « événement de référence », avec la politique publique', () => {
     const all = Object.values(IMPROVEMENT_OPT_OUT_TEXT).filter((v) => typeof v === 'string').join(' ');
-    expect(all).not.toMatch(/Opération/);
+    // Règle remplacée (carte #806, décision du PO du 17/11/2026) : la garde interdisait « Opération » ; à l’écran on dit désormais « opération », et c’est « événement de référence » qui est interdit.
+    expect(all).not.toMatch(/[ée]v[éeè]nements?\s+de\s+r[ée]f[ée]rence/i);
     expect(all).toMatch(/entraîner les modèles généraux/);
     expect(privacyPolicyUrl({ NEXT_PUBLIC_PUBLIC_SITE_URL: 'https://preprod.verebona.fr' })).toBe('https://preprod.verebona.fr/legal/confidentialite');
   });

@@ -198,7 +198,7 @@ describe('L85A-U08 — rapport lisible', () => {
     } });
     expect(sim.headline).toBe('Simulation : 1 compte(s) examiné(s), 1 exclu(s) (non actifs) — 3 Opération(s) à purger, 1 conservée(s) (gestes de l’utilisateur).');
     expect(sim.restorable).toBe(false);
-    expect(sim.counters).toEqual(expect.arrayContaining([{ label: '  dont : décision de l’utilisateur (rattaché, refusé, dissocié, événement de référence)', value: 1 }]));
+    expect(sim.counters).toEqual(expect.arrayContaining([{ label: '  dont : décision de l’utilisateur (rattaché, refusé, dissocié, événement principal)', value: 1 }]));
     expect(sim.warnings).toEqual(expect.arrayContaining(['Compte 9 exclu : TRIAL_EXPIRED']));
     const app = summarizeBackfill('operations-v5-rebuild', 'apply', null, { result: {
       ...base, mode: 'APPLY', status: 'succeeded', restorePoint: { backupId: 'bk', finishedAt: null }, coherence: { requested: true, campaignId: 7, accounts: [3] },

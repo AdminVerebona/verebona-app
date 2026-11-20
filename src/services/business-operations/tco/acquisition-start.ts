@@ -110,7 +110,7 @@ export const ACQUISITION_CANDIDATE_REASON_LABELS: Readonly<Record<AcquisitionCan
 export const ACQUISITION_START_BASIS_LABELS: Readonly<Record<AcquisitionStartBasis, string>> = {
   ASSET_USER: 'Date d’achat de la fiche (saisie ou corrigée par l’utilisateur)',
   ASSET_AUTOMATIC: 'Date d’achat de la fiche (renseignée automatiquement, non contredite)',
-  OPERATION: 'Date de réalisation de l’achat du bien (événement de référence)',
+  OPERATION: 'Date de réalisation de l’achat du bien (opération)',
 };
 
 /** Date d'achat canonique lue sur la fiche (`readCanonicalValue`), brute. */

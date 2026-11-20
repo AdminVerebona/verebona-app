@@ -70,7 +70,8 @@ const { BUSINESS_OPERATION_TYPE_CODES } = await import('@/services/business-oper
 
 const TODAY = '2026-11-13';
 const input = { accountId: 1, userId: 2, planType: 'PREMIUM', message: '', clientRequestId: 'x', locale: 'fr-FR' } as never;
-const INTERDIT = /op[ée]ration/i;
+// Règle remplacée (carte #806, décision du PO du 17/11/2026) : le mot interdit était « opération » ; c'est désormais l'ancien terme « événement de référence » (toutes formes).
+const INTERDIT = /[ée]v[éeè]nements?\s+de\s+r[ée]f[ée]rence|[ée]l[ée]ments?\s+de\s+r[ée]f[ée]rence/i;
 
 const etat = (id: number, o: Partial<Etat> = {}): Etat => ({
   id, typeCode: 'INTERVENTION', status: 'REALIZED', label: `Intervention — ${o.technicalLabel ?? 'Vidange'}`, technicalLabel: 'Vidange', provider: null,
@@ -110,7 +111,7 @@ const action = async (phrase: string, l: Lookup = lookup()): Promise<Action> => 
   return a as Action;
 };
 
-describe('L114X-P01 — W21 : déclarer un événement de référence', () => {
+describe('L114X-P01 — W21 : déclarer une opération', () => {
   it('type, intitulé entre guillemets, situation dite, date, bien', () => {
     expect(parseCommand('Déclare une intervention « Vidange » réalisée le 12 mars 2025 pour la Clio', TODAY)).toEqual({
       command: 'CREATE_REFERENCE_EVENT', typeCode: 'INTERVENTION', status: 'REALIZED', dateText: '12 mars 2025', label: 'Vidange', labelQuoted: true,
@@ -126,8 +127,8 @@ describe('L114X-P01 — W21 : déclarer un événement de référence', () => {
     });
   });
 
-  it('« événement de référence » : le type n’est pas dit ; la situation non dite reste à demander', () => {
-    expect(parseCommand('Enregistre un événement de référence « Travaux toiture »', TODAY)).toMatchObject({
+  it('« opération » : le type n’est pas dit ; la situation non dite reste à demander', () => {
+    expect(parseCommand('Enregistre une opération « Travaux toiture »', TODAY)).toMatchObject({
       command: 'CREATE_REFERENCE_EVENT', typeCode: null, status: null, label: 'Travaux toiture', assetWords: [], assetFromContext: false,
     });
   });
@@ -175,15 +176,15 @@ describe('L114X-P03 — W22 à W26 : formes reconnues', () => {
     });
     expect(parseCommand('Change le prestataire de l’intervention Vidange en Garage Martin', TODAY)).toMatchObject({ field: 'provider', value: 'Garage Martin', target: { words: ['vidange'] } });
     expect(parseCommand('Renomme l’intervention Vidange en Vidange et filtres', TODAY)).toMatchObject({ command: 'UPDATE_REFERENCE_EVENT', field: 'label', value: 'Vidange et filtres' });
-    expect(parseCommand('Change le type de l’événement de référence Travaux toiture en intervention', TODAY)).toMatchObject({ field: 'type', value: 'intervention', target: { typeCode: null, words: ['travaux', 'toiture'] } });
+    expect(parseCommand('Change le type de l’opération Travaux toiture en intervention', TODAY)).toMatchObject({ field: 'type', value: 'intervention', target: { typeCode: null, words: ['travaux', 'toiture'] } });
     expect(parseCommand('Mets la date de fin du contrat Assurance auto au 31/12/2026', TODAY)).toMatchObject({ field: 'endDate', value: '31/12/2026', target: { typeCode: 'CONTRACT' } });
     expect(parseCommand('Indique que l’intervention Pneus hiver a eu lieu', TODAY)).toMatchObject({ command: 'UPDATE_REFERENCE_EVENT', field: 'status', value: 'REALIZED', target: { words: ['pneus', 'hiver'] } });
     expect(parseCommand('Corrige le prestataire de l’intervention Vidange', TODAY)).toMatchObject({ field: 'provider', value: null });
   });
 
-  it('W23 : supprimer un événement de référence — jamais l’Agenda, jamais un bien', () => {
+  it('W23 : supprimer une opération — jamais l’Agenda, jamais un bien', () => {
     expect(parseCommand('Supprime l’intervention Vidange de la Clio', TODAY)).toEqual({ command: 'INVALIDATE_REFERENCE_EVENT', target: { typeCode: 'INTERVENTION', words: ['vidange', 'clio'], date: null } });
-    expect(parseCommand('Supprime l’événement de référence Travaux toiture du 2 juin 2024', TODAY)).toEqual({ command: 'INVALIDATE_REFERENCE_EVENT', target: { typeCode: null, words: ['travaux', 'toiture'], date: '2024-06-02' } });
+    expect(parseCommand('Supprime l’opération Travaux toiture du 2 juin 2024', TODAY)).toEqual({ command: 'INVALIDATE_REFERENCE_EVENT', target: { typeCode: null, words: ['travaux', 'toiture'], date: '2024-06-02' } });
     expect(parseCommand('Annule le contrat Assurance auto', TODAY)).toMatchObject({ command: 'INVALIDATE_REFERENCE_EVENT', target: { typeCode: 'CONTRACT' } });
   });
 
@@ -229,7 +230,7 @@ describe('L114X-P04 — non-régression des analyseurs existants', () => {
   it.each([
     'Quelles interventions ai-je faites sur la Clio ?', 'Combien a coûté l’intervention Vidange ?', 'Indique-moi les contrats de la maison',
     'Marque l’entretien de la Clio comme fait', 'Ajoute un contrat d’assurance pour la maison', 'Ajoute une intervention du plombier le 12 mars',
-  ])('pas une commande sur un événement de référence : %s', (q) => {
+  ])('pas une commande sur une opération : %s', (q) => {
     const d = parseCommand(q, TODAY);
     expect(d === null || !d.command.includes('REFERENCE_EVENT')).toBe(true);
   });
@@ -239,7 +240,7 @@ describe('L114X-P05 — non-régression : une phrase qui ne désigne rien de ré
   const demander = (message: string, l: Lookup = lookup()) => prepareCommand({ ...(input as object), message } as never, l);
   const vide = lookup({ etats: [] });
 
-  it('type nommé sans aucun événement de référence correspondant : parcours de réponse normal, comme avant', async () => {
+  it('type nommé sans aucune opération correspondant : parcours de réponse normal, comme avant', async () => {
     // « Fin de contrat » d'un bien (lot 54E) : ces phrases ne sont pas détournées vers un événement de référence.
     for (const m of [
       'Mets la date de fin du contrat au 31/12/2026 pour la maison', 'Supprime le contrat d’assurance de la maison', 'Supprime l’intervention Toiture',
@@ -248,11 +249,11 @@ describe('L114X-P05 — non-régression : une phrase qui ne désigne rien de ré
     ]) expect(await demander(m, vide), m).toBeNull();
     // Le même message devient une commande quand un événement du compte y répond.
     expect(await demander('Supprime le contrat Assurance auto')).toMatchObject({ kind: 'plan' });
-    expect(await demander('Supprime l’intervention de la Clio')).toMatchObject({ kind: 'need_info', message: expect.stringMatching(/^Plusieurs événements de référence correspondent/) });
+    expect(await demander('Supprime l’intervention de la Clio')).toMatchObject({ kind: 'need_info', message: expect.stringMatching(/^Plusieurs opérations correspondent/) });
   });
 
-  it('« événement de référence » dit en toutes lettres : toujours une commande — question précise si rien n’est trouvé', async () => {
-    expect(await demander('Supprime l’événement de référence Toiture', vide)).toEqual({ kind: 'need_info', message: 'Je n’ai pas trouvé cet événement de référence dans votre compte. Lequel voulez-vous supprimer ?' });
+  it('« opération » dit en toutes lettres : toujours une commande — question précise si rien n’est trouvé', async () => {
+    expect(await demander('Supprime l’opération Toiture', vide)).toEqual({ kind: 'need_info', message: 'Je n’ai pas trouvé cette opération dans votre compte. Laquelle voulez-vous supprimer ?' });
   });
 
   // Règle remplacée (carte #807, E05) : « Déclare un sinistre … : jamais une action ». Un sinistre se déclare
@@ -272,7 +273,7 @@ describe('L114X-R01 — W21 : aperçu d’une déclaration', () => {
         kind: 'reference_event_create', typeCode: 'INTERVENTION', status: 'REALIZED', eventLabel: 'Vidange', dateField: 'realizedDate', eventDate: '2024-03-12',
         eventAssetIds: [7], distinctFrom: [], declaration: 'Déclare une intervention « Vidange » réalisée le 12 mars 2024 pour la Clio',
       },
-      preview: 'Enregistrer l’événement de référence « Intervention — Vidange » du 12 mars 2024 pour Clio.',
+      preview: 'Enregistrer l’opération « Intervention — Vidange » du 12 mars 2024 pour Clio.',
     });
     expect(a.effects).toEqual([
       'Type : Intervention', 'Intitulé : Vidange', 'Situation : A eu lieu', 'Date : 12 mars 2024', 'Bien : Clio',
@@ -311,8 +312,8 @@ describe('L114X-R01 — W21 : aperçu d’une déclaration', () => {
   it('événement comparable (même type, même bien, même date) : annoncé, décision « autre événement » figée', async () => {
     const a = await action('Déclare une intervention « Plaquettes » réalisée le 12 mars 2025 pour la Clio');
     expect(a.params).toMatchObject({ distinctFrom: [101] });
-    expect(a.effects.join(' ')).toMatch(/un événement de référence comparable existe déjà : « Intervention — Vidange » du 12 mars 2025 — Clio\./);
-    expect(a.effects).toContain('En confirmant, vous indiquez qu’il s’agit d’un autre événement.');
+    expect(a.effects.join(' ')).toMatch(/une opération comparable existe déjà : « Intervention — Vidange » du 12 mars 2025 — Clio\./);
+    expect(a.effects).toContain('En confirmant, vous indiquez qu’il s’agit d’une autre opération.');
   });
 
   // Règle remplacée (carte #807, E05) : le refus « je ne peux pas enregistrer un sinistre » n'existe plus — la
@@ -333,10 +334,10 @@ describe('L114X-R02 — W22 : corriger', () => {
     expect(a).toMatchObject({
       command: 'UPDATE_REFERENCE_EVENT', targets: [{ type: 'reference_event', id: 101, label: 'Intervention — Vidange' }],
       params: { kind: 'reference_event_update', operationId: 101, change: { field: 'realizedDate', value: '2025-03-14' }, expectedVersion: 3 },
-      preview: 'Modifier la date de l’événement de référence « Intervention — Vidange » du 12 mars 2025 — Clio : 12 mars 2025 → 14 mars 2025.',
+      preview: 'Modifier la date de l’opération « Intervention — Vidange » du 12 mars 2025 — Clio : 12 mars 2025 → 14 mars 2025.',
     });
     expect(a.effects).toEqual([
-      'Événement de référence : Intervention — Vidange', 'Date : 12 mars 2025 → 14 mars 2025',
+      'Opération : Intervention — Vidange', 'Date : 12 mars 2025 → 14 mars 2025',
       'Cette correction est enregistrée comme votre décision : elle ne sera pas remplacée par une analyse.',
       'Pour revenir en arrière, refaites une demande de correction.',
     ]);
@@ -362,7 +363,7 @@ describe('L114X-R02 — W22 : corriger', () => {
   it('refus dits avant tout plan', async () => {
     expect(besoin(await resoudre('Corrige le prestataire de l’intervention Pneus hiver'))).toBe('Quelle valeur voulez-vous enregistrer pour le prestataire de « Intervention — Pneus hiver » ?');
     expect(besoin(await resoudre('Change la date de l’intervention Vidange du 12 mars 2025 au 12 mars 2025'))).toMatch(/c’est déjà le 12 mars 2025/);
-    expect(besoin(await resoudre('Change la date de l’intervention Vidange du 12 mars 2025 au 12 mars 2031'))).toBe('Un événement qui a eu lieu ne peut pas avoir une date future.');
+    expect(besoin(await resoudre('Change la date de l’intervention Vidange du 12 mars 2025 au 12 mars 2031'))).toBe('Une opération qui a eu lieu ne peut pas avoir une date future.');
     expect(besoin(await resoudre('Mets la date de fin du contrat Assurance auto au 31/12/2023'))).toBe('La date de fin ne peut pas précéder la date de début.');
     expect(besoin(await resoudre('Change le type de l’intervention Pneus hiver en bidule'))).toMatch(/^Quel type voulez-vous donner à « Intervention — Pneus hiver » \? Par exemple : achat, intervention, contrat, financement, sinistre, cession\.$/);
     expect(besoin(await resoudre('Indique que l’intervention Vidange du 12 mars 2025 a eu lieu'))).toMatch(/déjà indiqué comme ayant eu lieu/);
@@ -374,22 +375,22 @@ describe('L114X-R03 — W23 : supprimer = invalider ; jamais un choix au hasard'
     const a = await action('Supprime le contrat Assurance auto');
     expect(a).toMatchObject({
       command: 'INVALIDATE_REFERENCE_EVENT', params: { kind: 'reference_event_invalidate', operationId: 203, expectedVersion: 3 },
-      preview: 'Supprimer l’événement de référence « Contrat — Assurance auto » du 1 janvier 2024 — Clio.',
+      preview: 'Supprimer l’opération « Contrat — Assurance auto » du 1 janvier 2024 — Clio.',
     });
     expect(a.effects).toEqual([
-      'Seul cet événement de référence est retiré : il n’est plus pris en compte (dépenses, réponses de l’assistant).',
+      'Seule cette opération est retirée : elle n’est plus prise en compte (dépenses, réponses de l’assistant).',
       'Conservés dans votre compte : 1 document, 2 échéances, ainsi que ses fournisseurs.',
       'Ses échéances restent dans l’Agenda, à leur date, avec leurs rappels ; elles ne lui sont plus rattachées.',
-      'Ses documents ne sont pas supprimés : une prochaine analyse de ces documents peut faire apparaître un nouvel événement de référence.',
+      'Ses documents ne sont pas supprimés : une prochaine analyse de ces documents peut faire apparaître une nouvelle opération.',
       'Depuis l’assistant, cette suppression ne s’annule pas.',
     ]);
   });
 
   it('plusieurs correspondances : question ; intitulé exact : retenu ; inconnu : rien', async () => {
-    expect(besoin(await resoudre('Supprime l’intervention de la Clio'))).toMatch(/^Plusieurs événements de référence correspondent : « Intervention — Vidange » du 12 mars 2025 — Clio ; « Intervention — Vidange et filtres » du 10 mars 2024 — Clio ; /);
+    expect(besoin(await resoudre('Supprime l’intervention de la Clio'))).toMatch(/^Plusieurs opérations correspondent : « Intervention — Vidange » du 12 mars 2025 — Clio ; « Intervention — Vidange et filtres » du 10 mars 2024 — Clio ; /);
     expect((await action('Supprime l’intervention Vidange')).params).toMatchObject({ operationId: 101 });
-    expect(besoin(await resoudre('Supprime l’intervention Toiture'))).toBe('Je n’ai pas trouvé cet événement de référence dans votre compte. Lequel voulez-vous supprimer ?');
-    expect(besoin(await resoudre('Supprime l’événement de référence'))).toMatch(/^Quel événement de référence voulez-vous supprimer \?/);
+    expect(besoin(await resoudre('Supprime l’intervention Toiture'))).toBe('Je n’ai pas trouvé cette opération dans votre compte. Laquelle voulez-vous supprimer ?');
+    expect(besoin(await resoudre('Supprime l’opération'))).toMatch(/^Quelle opération voulez-vous supprimer \?/);
     // Le type nommé borne la recherche : « le contrat Vidange » ne désigne pas une intervention.
     expect(besoin(await resoudre('Supprime le contrat Vidange'))).toMatch(/Je n’ai pas trouvé/);
   });
@@ -401,13 +402,13 @@ describe('L114X-R04 — W24 à W26', () => {
     expect(a.params).toEqual({ kind: 'reference_events_associate', fromOperationId: 201, toOperationId: 202, nature: 'FINANCING', expectedVersions: [3, 3] });
     expect(a.effects).toEqual([
       '« Financement — Prêt auto » sera indiqué comme le financement de « Achat — Clio ».',
-      'Ils restent deux événements de référence distincts : rien n’est fusionné.',
+      'Elles restent deux opérations distinctes : rien n’est fusionné.',
       'Aucun document n’est déplacé ; aucun montant, aucune date et aucune échéance ne sont modifiés.',
     ]);
     const simple = await action('Associe l’intervention Pneus hiver au contrat Assurance auto');
     expect(simple.params).toMatchObject({ nature: 'ASSOCIATED', fromOperationId: 104, toOperationId: 203 });
-    expect(simple.effects[0]).toBe('Les deux événements de référence seront simplement associés.');
-    expect(besoin(await resoudre('Associe l’intervention Pneus hiver à l’intervention Pneus hiver'))).toMatch(/même événement de référence/);
+    expect(simple.effects[0]).toBe('Les deux opérations seront simplement associées.');
+    expect(besoin(await resoudre('Associe l’intervention Pneus hiver à l’intervention Pneus hiver'))).toMatch(/même opération/);
   });
 
   it('nature d’une association : règle structurelle du graphe', () => {
@@ -423,7 +424,7 @@ describe('L114X-R04 — W24 à W26', () => {
     expect(a).toMatchObject({
       command: 'LINK_DOCUMENT_REFERENCE_EVENT', targets: [{ type: 'document', id: 55 }, { type: 'reference_event', id: 101 }],
       params: { kind: 'reference_event_document', operationId: 101, linkedDocumentId: 55, expectedVersion: 3, documentVersion: DOC_ETAT.version },
-      preview: 'Rattacher le document « Facture Norauto » à l’événement de référence « Intervention — Vidange » du 12 mars 2025 — Clio.',
+      preview: 'Rattacher le document « Facture Norauto » à l’opération « Intervention — Vidange » du 12 mars 2025 — Clio.',
     });
     expect(a.effects.join(' ')).toMatch(/Il n’ajoute par lui-même aucun montant/);
     expect(besoin(await resoudre('Rattache le document Devis à l’intervention Vidange'))).toMatch(/Je n’ai pas trouvé ce document/);
@@ -434,7 +435,7 @@ describe('L114X-R04 — W24 à W26', () => {
     expect(a).toMatchObject({
       command: 'LINK_SUPPLIER_REFERENCE_EVENT',
       params: { kind: 'reference_event_supplier', operationId: 101, linkedSupplierId: 31, role: 'INTERVENER', expectedVersion: 3, supplierVersion: FOURNISSEUR_ETAT.version },
-      preview: 'Relier le fournisseur « Garage Martin » à l’événement de référence « Intervention — Vidange » du 12 mars 2025 — Clio.',
+      preview: 'Relier le fournisseur « Garage Martin » à l’opération « Intervention — Vidange » du 12 mars 2025 — Clio.',
     });
     expect(a.effects).toContain('Rôle : Intervenant');
     expect((await action('Relie le fournisseur Garage Martin à l’intervention Vidange')).effects).toContain('Rôle : Prestataire');
@@ -466,7 +467,7 @@ describe('L114X-X01 — exécution : état relu, puis la façade — et elle seu
     const r = await runAction(a, ctx);
     expect(r).toEqual({
       actionId: 'a1', status: 'SUCCESS', entity: { type: 'reference_event', id: 900 },
-      message: `Événement de référence « Intervention — Courroie » enregistré. ${NOT_YET_VISIBLE}`,
+      message: `Opération « Intervention — Courroie » enregistrée. ${NOT_YET_VISIBLE}`,
     });
     expect(base.appels).toEqual([{
       commande: 'createOperation',
@@ -481,16 +482,16 @@ describe('L114X-X01 — exécution : état relu, puis la façade — et elle seu
   it('W21 : même déclaration déjà enregistrée → dit, rien en double ; comparable apparu depuis l’aperçu → rien n’est créé', async () => {
     const a = await action('Déclare une intervention « Courroie » réalisée le 2 juin 2024');
     base.reponse = { status: 'APPLIED', code: 'NO_CHANGE', changed: false, replayed: false, data: { operationId: 77, alreadyExisted: true } };
-    expect(await runAction(a, ctx)).toMatchObject({ status: 'SUCCESS', message: 'Cet événement de référence était déjà enregistré (même déclaration) : rien n’a été créé en double.' });
+    expect(await runAction(a, ctx)).toMatchObject({ status: 'SUCCESS', message: 'Cette opération était déjà enregistrée (même déclaration) : rien n’a été créé en double.' });
     base.appels = [];
     base.ops = [...base.ops, { ...op(etat(300, { technicalLabel: 'Autre', realizedDate: '2024-06-02', assets: [] })) }];
-    expect(await runAction(a, ctx)).toEqual({ actionId: 'a1', status: 'FAILED', message: 'Un événement de référence comparable est apparu depuis l’aperçu : rien n’a été créé. Refaites votre demande.' });
+    expect(await runAction(a, ctx)).toEqual({ actionId: 'a1', status: 'FAILED', message: 'Une opération comparable est apparue depuis l’aperçu : rien n’a été créé. Refaites votre demande.' });
     expect(base.appels).toEqual([]);
   });
 
   it('W22 : updateOperation avec la version présentée ; version changée depuis l’aperçu → la façade n’est pas appelée', async () => {
     const a = await action('Change le prestataire de l’intervention Vidange du 12 mars 2025 en Garage Martin');
-    expect(await runAction(a, ctx)).toMatchObject({ status: 'SUCCESS', message: 'Événement de référence « Intervention — Vidange » corrigé.', entity: { type: 'reference_event', id: 101 } });
+    expect(await runAction(a, ctx)).toMatchObject({ status: 'SUCCESS', message: 'Opération « Intervention — Vidange » corrigée.', entity: { type: 'reference_event', id: 101 } });
     expect(base.appels[0]).toMatchObject({
       commande: 'updateOperation',
       entree: { operationId: 101, expectedVersion: 3, attributes: { provider: 'Garage Martin' }, declaration: 'Change le prestataire de l’intervention Vidange du 12 mars 2025 en Garage Martin' },
@@ -515,22 +516,22 @@ describe('L114X-X01 — exécution : état relu, puis la façade — et elle seu
 
   it('W23 : invalidateOperation — jamais autre chose', async () => {
     const a = await action('Supprime l’intervention Vidange');
-    expect(await runAction(a, ctx)).toMatchObject({ status: 'SUCCESS', message: 'Événement de référence « Intervention — Vidange » supprimé. Ses documents, ses échéances et ses fournisseurs sont conservés.' });
+    expect(await runAction(a, ctx)).toMatchObject({ status: 'SUCCESS', message: 'Opération « Intervention — Vidange » supprimée. Ses documents, ses échéances et ses fournisseurs sont conservés.' });
     expect(base.appels).toEqual([expect.objectContaining({ commande: 'invalidateOperation', entree: { operationId: 101, expectedVersion: 3 } })]);
   });
 
   it('W24 : associateOperations (origine → cible, nature) ; déjà associés : dit', async () => {
     const a = await action('Associe l’achat de la Clio au financement Prêt auto');
     // Règle remplacée (carte #813) : un achat dont l'intitulé dit déjà « Achat … » n'est plus rendu « Achat — Achat … ».
-    expect(await runAction(a, ctx)).toMatchObject({ status: 'SUCCESS', message: 'Événements de référence « Financement — Prêt auto » et « Achat Clio » associés. Ils restent distincts.' });
+    expect(await runAction(a, ctx)).toMatchObject({ status: 'SUCCESS', message: 'Opérations « Financement — Prêt auto » et « Achat Clio » associées. Elles restent distinctes.' });
     expect(base.appels[0]).toMatchObject({ commande: 'associateOperations', entree: { fromOperationId: 201, toOperationId: 202, nature: 'FINANCING' } });
     base.reponse = { status: 'APPLIED', code: 'NO_CHANGE', changed: false, replayed: false };
-    expect((await runAction(a, ctx)).message).toMatch(/étaient déjà associés : rien n’a été modifié\.$/);
+    expect((await runAction(a, ctx)).message).toMatch(/étaient déjà associées : rien n’a été modifié\.$/);
   });
 
   it('W25 : linkDocument ; document modifié ou disparu depuis l’aperçu → la façade n’est pas appelée', async () => {
     const a = await action('Rattache le document Facture Norauto à l’intervention Vidange');
-    expect(await runAction(a, ctx)).toMatchObject({ status: 'SUCCESS', message: 'Document « Facture Norauto » rattaché à l’événement de référence « Intervention — Vidange ».' });
+    expect(await runAction(a, ctx)).toMatchObject({ status: 'SUCCESS', message: 'Document « Facture Norauto » rattaché à l’opération « Intervention — Vidange ».' });
     expect(base.appels[0]).toMatchObject({ commande: 'linkDocument', entree: { operationId: 101, fileId: 55 } });
     base.appels = [];
     vi.spyOn(lectures, 'getDocumentState').mockImplementation(async () => ({ ...DOC_ETAT, version: 'autre' }));
@@ -542,7 +543,7 @@ describe('L114X-X01 — exécution : état relu, puis la façade — et elle seu
 
   it('W26 : linkSupplier avec le rôle annoncé', async () => {
     const a = await action('Relie le fournisseur Garage Martin à l’intervention Vidange comme intervenant');
-    expect(await runAction(a, ctx)).toMatchObject({ status: 'SUCCESS', message: 'Fournisseur « Garage Martin » relié à l’événement de référence « Intervention — Vidange ».' });
+    expect(await runAction(a, ctx)).toMatchObject({ status: 'SUCCESS', message: 'Fournisseur « Garage Martin » relié à l’opération « Intervention — Vidange ».' });
     expect(base.appels[0]).toMatchObject({ commande: 'linkSupplier', entree: { operationId: 101, supplierId: 31, role: 'INTERVENER' } });
     base.reponse = { status: 'APPLIED', code: 'NO_CHANGE', changed: false, replayed: false };
     expect((await runAction(a, ctx)).message).toMatch(/était déjà relié/);
@@ -579,12 +580,12 @@ describe('L114X-X02 — chaque résultat de la façade est traduit', () => {
   beforeEach(() => { base.ops = TOUS.map(op); base.appels = []; base.avancer = false; });
 
   it.each([
-    ['FORBIDDEN', 'OPERATION_INACTIVE', 'REFUSED', /n’est plus actif/],
+    ['FORBIDDEN', 'OPERATION_INACTIVE', 'REFUSED', /n’est plus active/],
     ['FORBIDDEN', 'NOT_FOUND_IN_ACCOUNT', 'REFUSED', /introuvable dans votre compte/],
     ['FORBIDDEN', 'READ_ONLY_ACCOUNT', 'REFUSED', /lecture seule/],
     ['FORBIDDEN', 'TYPE_DETAILS_PRESENT', 'REFUSED', /ne peut pas être changé/],
     ['FORBIDDEN', 'STATUS_TRANSITION_REFUSED', 'REFUSED', /situation/],
-    ['CONFLICT', 'VERSION_MISMATCH', 'FAILED', /modifié depuis l’aperçu/],
+    ['CONFLICT', 'VERSION_MISMATCH', 'FAILED', /modifiée depuis l’aperçu/],
     ['CONFLICT', 'IDEMPOTENCY_KEY_REUSED', 'FAILED', /déjà été traitée/],
     ['ARBITRATION_REQUIRED', 'NEW_EVIDENCE_AFTER_REFUSAL', 'REFUSED', /« À traiter »/],
     ['FAILED', 'TECHNICAL_FAILURE', 'FAILED', /erreur technique/],

@@ -26,7 +26,7 @@ const faits = (over: Partial<PresentationDateFacts>): PresentationDateFacts => (
   typeCode: null, realizedDate: null, firstQuoteDate: null, startDate: null, firstCoverageStart: null, plannedDate: null, ...over,
 });
 
-describe('#744 point F — date de présentation d’un événement de référence (CDC §11)', () => {
+describe('#744 point F — date de présentation d’une opération (CDC §11)', () => {
   it('L114OF-U01 — intervention : premier devis faute de réalisation, réalisation attestée ensuite (AC32)', () => {
     // Devis du 10 mars ; une visite prévue le 20 mars ne déplace pas le repère.
     expect(presentationDateOf(faits({ typeCode: 'INTERVENTION', firstQuoteDate: '2025-03-10', plannedDate: '2025-03-20' })))
@@ -127,9 +127,10 @@ describe('#744 point F — date de présentation d’un événement de référen
     expect(src('services/search/global-search.service.ts')).toContain('${REFERENCE_EVENT_SEARCH_SQL.presentationFacts}');
   });
 
-  it('L114OF-U08 — textes : fondement nommé seulement hors date propre ; jamais « Opération »', () => {
+  it('L114OF-U08 — textes : fondement nommé seulement hors date propre ; jamais « événement de référence »', () => {
     // Règle remplacée (carte #813) : nouveau fondement « Date de commande » (bon de commande d'un achat).
     expect(PRESENTATION_BASIS_LABELS).toEqual({ REALIZED: null, START: null, PLANNED: null, FIRST_QUOTE: 'Premier devis', FIRST_COVERAGE: 'Première couverture connue', FIRST_ORDER: 'Date de commande' });
-    expect(Object.values(PRESENTATION_BASIS_LABELS).join(' ')).not.toMatch(/op[ée]ration/i);
+    // Règle remplacée (carte #806, décision du PO du 17/11/2026) : la garde interdisait « Opération » ; à l’écran on dit désormais « opération », et c’est « événement de référence » qui est interdit.
+    expect(Object.values(PRESENTATION_BASIS_LABELS).join(' ')).not.toMatch(/[ée]v[éeè]nements?\s+de\s+r[ée]f[ée]rence/i);
   });
 });

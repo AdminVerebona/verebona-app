@@ -133,7 +133,8 @@ scenario('L113Y-FOURNISSEUR-DOCUMENTS', 'Fiche fournisseur : une seule rubrique 
     expect(ov.body.assets.items.map((a) => a.id)).toEqual([ids.maison]);
     expect(ov.body.agendaItems.map((i) => i.id)).toEqual([ids.rdv]);
     // Jamais le mot « Opération » dans la réponse affichable.
-    expect(JSON.stringify(ov.body.documents)).not.toMatch(/Opération/);
+    // Règle remplacée (carte #806, décision du PO du 17/11/2026) : la garde interdisait « Opération » ; à l’écran on dit désormais « opération », et c’est « événement de référence » qui est interdit.
+    expect(JSON.stringify(ov.body.documents)).not.toMatch(/[ée]v[éeè]nements?\s+de\s+r[ée]f[ée]rence/i);
   });
 
   it('L113Y-E02 — document commun aux deux chemins (et à deux événements) : une seule fois, direct prioritaire', async () => {

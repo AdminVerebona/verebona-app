@@ -262,7 +262,7 @@ export const DOCUMENT_LINE_REASON_LABELS: Readonly<Record<DocumentLineReason, st
   NOT_OWNERSHIP_COST: 'Achat distinct, non incorporé au coût de possession du bien',
   SOURCE_WITHDRAWN: 'Justificatif retiré de la dépense : montant réévalué depuis le justificatif',
   USER_EXCLUDED: 'Retirée du coût de possession par vous',
-  SAME_FACT_CROSS_SOURCE: 'Même achat qu’une autre source déjà comptée (fiche, justificatif ou événement de référence) : compté une seule fois',
+  SAME_FACT_CROSS_SOURCE: 'Même achat qu’une autre source déjà comptée (fiche, justificatif ou opération) : compté une seule fois',
   COMMERCIAL_ADJUSTMENT_INTEGRATED: 'Remise intégrée au prix net de l’achat : ni un avoir, ni un remboursement',
   PURCHASE_COMPONENT: 'Composante du prix net de l’achat (détail du calcul)',
   GLOBAL_DISCOUNT_NOT_ALLOCATED: 'Remise globale sur plusieurs achats du document : non répartie faute de règle explicite (jamais un avoir)',

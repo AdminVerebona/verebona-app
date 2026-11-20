@@ -147,7 +147,8 @@ scenario('L110D', 'Arbitrage « même réalité » : une question Oui / Non par 
       operationType: 'INTERVENTION', referenceCount: 2, contextFingerprint: expect.stringMatching(/^[0-9a-f]{32}$/),
     });
     expect(carte.trigger_context.references.map((r: Json) => `${r.kind}:${r.id}`)).toEqual([`document:${devis}`, `document:${commande}`]);
-    expect([carte.question, ...carte.proposals_json.map((p: Json) => p.label)].join(' ')).not.toMatch(/op[ée]ration/i);
+    // Règle remplacée (carte #806, décision du PO du 17/11/2026) : la garde interdisait « Opération » ; à l’écran on dit désormais « opération », et c’est « événement de référence » qui est interdit.
+    expect([carte.question, ...carte.proposals_json.map((p: Json) => p.label)].join(' ')).not.toMatch(/[ée]v[éeè]nements?\s+de\s+r[ée]f[ée]rence/i);
 
     // Vue de la file (web et mobile : même réponse) : références consultables, deux boutons, pas de « Autre ».
     const { page, carte: v } = await vue(compte, carte.public_id);
@@ -339,7 +340,7 @@ scenario('L110D', 'Arbitrage « même réalité » : une question Oui / Non par 
     expect(maj.question).toBe('Ce document concerne-t-il la même intervention que les documents suivants ?');
   });
 
-  it('L110D-E2E-06 — types variés (achat, intervention, assurance, abonnement, financement) : libellé du type persisté, aucun codage immobilier ; repli « événement de référence »', async () => {
+  it('L110D-E2E-06 — types variés (achat, intervention, assurance, abonnement, financement) : libellé du type persisté, aucun codage immobilier ; repli « opération »', async () => {
     const compte = await make.account();
     const velo = await make.asset(compte, { category: 'VEHICULE', name: 'Vélo' });
     const cas: Array<{ type: string | null; titre: string; attendu: string }> = [
@@ -348,7 +349,7 @@ scenario('L110D', 'Arbitrage « même réalité » : une question Oui / Non par 
       { type: 'CONTRACT', titre: 'Assurance vélo', attendu: 'le même contrat' },
       { type: 'CONTRACT', titre: 'Abonnement entretien', attendu: 'le même contrat' },
       { type: 'FINANCING', titre: 'Crédit vélo', attendu: 'le même financement' },
-      { type: null, titre: 'Pièce sans type', attendu: 'le même événement de référence' },
+      { type: null, titre: 'Pièce sans type', attendu: 'la même opération' },
     ];
     const { syncOperationCards } = await import('@/services/to-process/operation-cards');
     const { emptyCardNeeds } = await import('@/services/business-operations/consolidation/card-needs');
@@ -365,7 +366,8 @@ scenario('L110D', 'Arbitrage « même réalité » : une question Oui / Non par 
       await syncOperationCards(compte.id, needs);
       const carte = (await ouvertes(compte)).find((x) => x.target_id === nouveau.id)!;
       expect(carte.question, c.titre).toBe(`Ce document concerne-t-il ${c.attendu} que le document suivant ?`);
-      expect(carte.question).not.toMatch(/op[ée]ration/i);
+      // Règle remplacée (carte #806, décision du PO du 17/11/2026) : la garde interdisait « Opération » ; à l’écran on dit désormais « opération », et c’est « événement de référence » qui est interdit.
+      expect(carte.question).not.toMatch(/[ée]v[éeè]nements?\s+de\s+r[ée]f[ée]rence/i);
       expect(carte.trigger_context.references).toEqual([expect.objectContaining({ kind: 'document', id: source, title: c.titre })]);
     }
   });

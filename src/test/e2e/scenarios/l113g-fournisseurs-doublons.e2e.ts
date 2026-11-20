@@ -129,7 +129,8 @@ scenario('L113G', 'Fournisseurs : création automatique, arbitrage des seuls dou
       detected: { id: A.id, name: 'Raynard Traitement du Bois', siren: null, documents: 3 },
       known: { id: B.id, name: 'Raynard Bois', siren: null, documents: 1 },
     });
-    expect(JSON.stringify(carte)).not.toMatch(/Opération/);
+    // Règle remplacée (carte #806, décision du PO du 17/11/2026) : la garde interdisait « Opération » ; à l’écran on dit désormais « opération », et c’est « événement de référence » qui est interdit.
+    expect(JSON.stringify(carte)).not.toMatch(/[ée]v[éeè]nements?\s+de\s+r[ée]f[ée]rence/i);
     // Aucune fusion anticipée, aucun lien déplacé.
     expect((await fiches(c)).map((f) => f.status)).toEqual(['active', 'active']);
     expect((await lien(docs.b))[0].supplier_id).toBe(B.id);

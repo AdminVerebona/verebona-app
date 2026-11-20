@@ -134,7 +134,7 @@ describe('L114U-B-B — branchement : sixième famille du balayage, qui n’écr
     expect(producteurs).toContain('produceReferenceEventActions');
     expect(producteurs).toContain('const FAMILIES = 6;');
     // Une famille en échec n'emporte pas les autres (même filet que les cinq existantes).
-    expect(producteurs).toContain("reportError('événements de référence', accountId, errors, familles)");
+    expect(producteurs).toContain("reportError('opérations', accountId, errors, familles)");
   });
 
   it('L114U-B-B2 — le passage ne décide rien : il appelle les trois passerelles, jamais la façade', () => {

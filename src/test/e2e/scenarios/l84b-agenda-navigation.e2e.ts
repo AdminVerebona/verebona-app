@@ -255,7 +255,7 @@ scenario('L84B', 'Opérations v5 — O-3 : Agenda et navigation (liens manuels, 
 
   // ══ AC07 / AC08 ═══════════════════════════════════════════════════════════
 
-  it('L84B-E04 — AC07 / AC08 : changement d’événement de référence — la propagation suit, le lien précis Rapport ↔ Visite expert reste', async () => {
+  it('L84B-E04 — AC07 / AC08 : changement d’opération — la propagation suit, le lien précis Rapport ↔ Visite expert reste', async () => {
     const c = await contexte();
     const constat = await make.assetFile(c.compte, { assetId: c.maison.id });
     const rapport = await make.assetFile(c.compte, { assetId: c.maison.id });
@@ -314,7 +314,8 @@ scenario('L84B', 'Opérations v5 — O-3 : Agenda et navigation (liens manuels, 
     expect(p.ensemble.assets.map((x: Json) => x.name)).toEqual(['Garage', 'Maison']);
     expect(p.ensemble.rooms).toEqual([{ id: cuisine.id, name: 'Cuisine', assetId: c.maison.id }]);
     expect(p.ensemble.equipments).toEqual([{ id: ballon.id, name: 'Ballon d’eau chaude', assetId: c.maison.id }]);
-    expect(JSON.stringify(p)).not.toMatch(/op[ée]ration/i);
+    // Règle remplacée (carte #806, décision du PO du 17/11/2026) : la garde interdisait « Opération » ; à l’écran on dit désormais « opération », et c’est « événement de référence » qui est interdit.
+    expect(JSON.stringify(p)).not.toMatch(/[ée]v[éeè]nements?\s+de\s+r[ée]f[ée]rence/i);
     // AC28 : secondaire léger — contexte global chiffré et accès au principal, jamais le détail.
     const s = (await vue(visite.id)).body.view;
     expect(s).toEqual({
@@ -345,7 +346,7 @@ scenario('L84B', 'Opérations v5 — O-3 : Agenda et navigation (liens manuels, 
 
   // ══ AC32 ══════════════════════════════════════════════════════════════════
 
-  it('L84B-E06 — AC32 : la suppression de l’événement de référence ne supprime aucun autre objet', async () => {
+  it('L84B-E06 — AC32 : la suppression de l’opération ne supprime aucun autre objet', async () => {
     const c = await contexte();
     const constat = await make.assetFile(c.compte, { assetId: c.maison.id });
     const rapport = await make.assetFile(c.compte, { assetId: c.maison.id });

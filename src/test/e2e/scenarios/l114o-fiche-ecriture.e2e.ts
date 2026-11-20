@@ -24,7 +24,7 @@ import { NextRequest } from 'next/server';
 import { scenario } from '../scenario';
 import type { AccountRow } from '../factories';
 import type { OperationWriteContext } from '@/services/business-operations/operation-write.facade';
-import { REFERENCE_EVENT_SUCCESS, REFERENCE_EVENT_WRITE_MESSAGES } from '@/lib/reference-events/reference-event-write';
+import { REFERENCE_EVENT_MOVE_REMOVED, REFERENCE_EVENT_SUCCESS, REFERENCE_EVENT_WRITE_MESSAGES } from '@/lib/reference-events/reference-event-write';
 
 const session = vi.hoisted(() => ({ currentAccountId: 0, userId: 0 }));
 vi.mock('@/lib/session-service', () => ({
@@ -45,7 +45,7 @@ type Reponse = { status: number; body: Json };
 
 const facade = () => import('@/services/business-operations/operation-write.facade');
 
-scenario('L114OW', 'Opérations / Agenda CDC V2.0 — travaux D : gestes d’écriture de la page de l’événement de référence', ({ sql, make }) => {
+scenario('L114OW', 'Opérations / Agenda CDC V2.0 — travaux D : gestes d’écriture de la page de l’opération', ({ sql, make }) => {
   const user = (c: AccountRow): OperationWriteContext => ({ accountId: c.id, actor: { kind: 'USER', userId: c.ownerUserId, channel: 'UI' } });
   const asUser = (c: AccountRow) => { session.currentAccountId = c.id; session.userId = c.ownerUserId; };
 
@@ -93,7 +93,8 @@ scenario('L114OW', 'Opérations / Agenda CDC V2.0 — travaux D : gestes d’éc
   /** Un refus se dit en phrase : jamais un code brut, jamais le mot interdit. */
   function phrase(r: Reponse, attendu: string): void {
     expect(r.body.message, JSON.stringify(r.body)).toBe(attendu);
-    expect(r.body.message).not.toMatch(/[A-Z]{3,}_[A-Z_]+|Opération|opération/);
+    // Règle remplacée (carte #806, décision du PO du 17/11/2026) : la garde interdisait « Opération » ; à l’écran on dit désormais « opération », et c’est « événement de référence » qui est interdit.
+    expect(r.body.message).not.toMatch(/[ée]v[éeè]nements?\s+de\s+r[ée]f[ée]rence|[A-Z]{3,}_[A-Z_]+/i);
   }
   const journal = (compte: AccountRow, operationId: number) => sql<Json[]>`
     SELECT command, action, relation_kind, origin, channel, actor_user_id, before_json, after_json
@@ -323,7 +324,7 @@ scenario('L114OW', 'Opérations / Agenda CDC V2.0 — travaux D : gestes d’éc
     expect(j.every((x) => x.origin === 'USER' && x.channel === 'UI' && x.actor_user_id === compte.ownerUserId)).toBe(true);
   });
 
-  it('L114OW-E05 — associer / dissocier deux événements de référence : sans sens, orienté, type incompatible, réflexif', async () => {
+  it('L114OW-E05 — associer / dissocier deux opérations : sans sens, orienté, type incompatible, réflexif', async () => {
     const compte = await make.account({ plan: 'premium' });
     const achat = await operation(compte, 'ACQUISITION', { label: 'Achat de la maison' });
     const pret = await operation(compte, 'FINANCING', { label: 'Prêt immobilier' });
@@ -369,36 +370,57 @@ scenario('L114OW', 'Opérations / Agenda CDC V2.0 — travaux D : gestes d’éc
     expect((await page(achat)).fiche!.relations.map((r: Json) => r.operationId).sort()).toEqual([pret, travaux].sort());
   });
 
-  it('L114OW-E06 — déplacer un document vers un autre événement de référence : aucun fichier copié ; document non rattaché refusé', async () => {
+  // Règle remplacée (carte #806, décision du PO du 17/11/2026) : le geste « Déplacer un document vers une autre opération »
+  // est RETIRÉ. L'ancienne route répond par une erreur claire et n'écrit rien ; « Retirer de A » puis « Rattacher à B »
+  // couvrent le besoin, sans copie de fichier.
+  it('L114OW-E06 — déplacement retiré : la route refuse sans rien écrire ; « Retirer » puis « Rattacher » couvrent le besoin', async () => {
     const compte = await make.account({ plan: 'premium' });
     const bien = await make.asset(compte, { category: 'IMMOBILIER', name: 'Maison' });
     const origine = await operation(compte, 'INTERVENTION', { label: 'Salle de bain' });
     const cible = await operation(compte, 'INTERVENTION', { label: 'Cuisine' });
     const facture = await make.assetFile(compte, { assetId: bien.id, name: 'facture-cuisiniste.pdf' });
-    const autreDoc = await make.assetFile(compte, { assetId: bien.id, name: 'notice.pdf' });
     expect(await (await facade()).linkDocument(user(compte), { operationId: origine, fileId: facture.id })).toMatchObject({ status: 'APPLIED' });
     asUser(compte);
     const fichiers = async () => (await sql<Json[]>`SELECT count(*)::int AS n FROM asset_files WHERE account_id = ${compte.id}`)[0].n as number;
     const nb = await fichiers();
 
-    const deplace = await ecrire('PATCH', origine, 'documents', { body: { fileId: facture.id, toId: cible } });
-    expect(deplace.status, JSON.stringify(deplace.body)).toBe(200);
-    expect(deplace.body).toMatchObject({ ok: true, changed: true, message: REFERENCE_EVENT_SUCCESS.moveDocument });
+    // 1. Un ancien client qui appelle encore le déplacement : 410, phrase qui dit quoi faire, RIEN n'est écrit —
+    //    quelle que soit la demande (valide hier, incomplète, vers soi-même).
+    const avant = await empreinte(compte);
+    for (const body of [{ fileId: facture.id, toId: cible }, { fileId: facture.id }, { fileId: facture.id, toId: origine }, {}]) {
+      const refuse = await ecrire('PATCH', origine, 'documents', { body });
+      expect(refuse.status, JSON.stringify(body)).toBe(410);
+      expect(refuse.body).toMatchObject({ code: 'UNSUPPORTED', message: REFERENCE_EVENT_MOVE_REMOVED });
+    }
+    expect(REFERENCE_EVENT_MOVE_REMOVED).toBe('Le déplacement direct d’un document n’existe plus. Retirez le document de cette opération, puis rattachez-le à l’autre opération.');
+    expect(await empreinte(compte)).toBe(avant);
+    expect((await page(origine)).fiche!.documents.map((d: Json) => d.fileId)).toEqual([facture.id]);
+    expect((await page(cible)).fiche!.documents).toEqual([]);
+    // La façade n'expose plus la commande ; aucun candidat « cible de déplacement ».
+    expect((await facade()) as unknown as Record<string, unknown>).not.toHaveProperty('moveDocument');
+    expect((await candidats(origine, 'move-target')).status).toBe(400);
+
+    // 2. « Retirer de A » puis « Rattacher à B » : le document change d'opération, aucun fichier n'est copié.
+    const retire = await ecrire('DELETE', origine, 'documents', { query: `fileId=${facture.id}` });
+    expect(retire.status, JSON.stringify(retire.body)).toBe(200);
+    expect(retire.body).toMatchObject({ ok: true, changed: true, message: REFERENCE_EVENT_SUCCESS.unlinkDocument });
+    const rattache = await ecrire('POST', cible, 'documents', { body: { fileId: facture.id } });
+    expect(rattache.status, JSON.stringify(rattache.body)).toBe(200);
+    expect(rattache.body).toMatchObject({ ok: true, changed: true, message: REFERENCE_EVENT_SUCCESS.linkDocument });
     expect((await page(origine)).fiche!.documents).toEqual([]);
     expect((await page(cible)).fiche!.documents.map((d: Json) => d.fileId)).toEqual([facture.id]);
     expect(await fichiers()).toBe(nb);
-    expect((await journal(compte, cible)).map((x) => x.action)).toEqual(['MOVED']);
+    // Journal : un retrait sur A, un rattachement sur B — plus aucune action « MOVED » hors d'une scission.
+    expect((await journal(compte, origine)).map((x) => x.command)).toContain('unlinkDocument');
+    expect((await journal(compte, cible)).map((x) => x.command)).toEqual(['linkDocument']);
+    expect([...(await journal(compte, origine)), ...(await journal(compte, cible))].map((x) => x.action)).not.toContain('MOVED');
 
-    const avant = await empreinte(compte);
-    const nonLie = await ecrire('PATCH', origine, 'documents', { body: { fileId: autreDoc.id, toId: cible } });
-    expect(nonLie.status).toBe(422);
-    phrase(nonLie, REFERENCE_EVENT_WRITE_MESSAGES.NOT_LINKED);
-    const versSoi = await ecrire('PATCH', cible, 'documents', { body: { fileId: facture.id, toId: cible } });
-    expect(versSoi.status).toBe(422);
-    phrase(versSoi, REFERENCE_EVENT_WRITE_MESSAGES.REFLEXIVE);
-    const sansCible = await ecrire('PATCH', cible, 'documents', { body: { fileId: facture.id } });
-    expect(sansCible.status).toBe(400);
-    expect(await empreinte(compte)).toBe(avant);
+    // 3. L'utilisateur peut revenir en arrière par les mêmes gestes (son retrait ne lui interdit pas de rattacher de nouveau).
+    expect((await ecrire('DELETE', cible, 'documents', { query: `fileId=${facture.id}` })).body).toMatchObject({ ok: true, changed: true });
+    expect((await ecrire('POST', origine, 'documents', { body: { fileId: facture.id } })).body).toMatchObject({ ok: true, changed: true });
+    expect((await page(origine)).fiche!.documents.map((d: Json) => d.fileId)).toEqual([facture.id]);
+    expect((await page(cible)).fiche!.documents).toEqual([]);
+    expect(await fichiers()).toBe(nb);
   });
 
   it('L114OW-E07 — isolation des comptes, compte en lecture seule, candidats bornés au compte', async () => {
@@ -425,7 +447,6 @@ scenario('L114OW', 'Opérations / Agenda CDC V2.0 — travaux D : gestes d’éc
       ['DELETE', 'evenements', { query: `agendaItemId=${rdv}` }],
       ['POST', 'documents', { body: { fileId: doc.id } }],
       ['DELETE', 'documents', { query: `fileId=${doc.id}` }],
-      ['PATCH', 'documents', { body: { fileId: doc.id, toId: voisin } }],
       ['POST', 'fournisseurs', { body: { supplierId: artisan } }],
       ['DELETE', 'fournisseurs', { query: `supplierId=${artisan}` }],
       ['POST', 'associations', { body: { otherId: voisin } }],
@@ -436,6 +457,9 @@ scenario('L114OW', 'Opérations / Agenda CDC V2.0 — travaux D : gestes d’éc
     const avant = await empreinte(compte);
     const avantEtranger = await empreinte(etranger);
     asUser(etranger);
+    // Règle remplacée (carte #806, décision du PO du 17/11/2026) : le déplacement (PATCH documents) est retiré — il
+    // répond 410 à tout compte, sans rien lire ni écrire (les empreintes des deux comptes sont comparées plus bas).
+    expect((await ecrire('PATCH', id, 'documents', { body: { fileId: doc.id, toId: voisin } })).status).toBe(410);
     for (const [m, sous, o] of gestes) {
       const r = await ecrire(m, id, sous, o);
       expect(r.status, `${m} ${sous} depuis un autre compte`).toBe(404);
@@ -453,7 +477,8 @@ scenario('L114OW', 'Opérations / Agenda CDC V2.0 — travaux D : gestes d’éc
       ['POST', 'fournisseurs', { body: { supplierId: artisanEtranger } }],
       ['POST', 'associations', { body: { otherId: opEtrangere } }],
       ['DELETE', 'associations', { query: `otherId=${opEtrangere}` }],
-      ['PATCH', 'documents', { body: { fileId: doc.id, toId: opEtrangere } }],
+      // Règle remplacée (carte #806, décision du PO du 17/11/2026) : le PATCH de déplacement vers une opération d'un autre
+      // compte n'est plus un cas — la méthode est retirée (410, vérifié plus haut et par L114OW-E06).
     ] as const) {
       const r = await ecrire(m, id, sous, o);
       expect(r.status, `${m} ${sous} vers un objet d'un autre compte`).toBe(404);
@@ -475,13 +500,15 @@ scenario('L114OW', 'Opérations / Agenda CDC V2.0 — travaux D : gestes d’éc
     expect((await candidats(id, 'inconnu')).status).toBe(400);
     const types = await candidats(id, 'type');
     expect(types.body.types.map((t: Json) => t.code)).toEqual(['ACQUISITION', 'INTERVENTION', 'CONTRACT', 'FINANCING', 'CLAIM', 'DISPOSAL', 'OTHER']);
-    expect(JSON.stringify(types.body)).not.toMatch(/Opération|opération/);
-    // Une fois reliés, ils ne sont plus proposés ; associés, l'autre événement de référence reste une cible de déplacement.
+    // Règle remplacée (carte #806, décision du PO du 17/11/2026) : la garde interdisait « Opération » ; à l’écran on dit désormais « opération », et c’est « événement de référence » qui est interdit.
+    expect(JSON.stringify(types.body)).not.toMatch(/[ée]v[éeè]nements?\s+de\s+r[ée]f[ée]rence/i);
+    // Une fois reliés, ils ne sont plus proposés. Règle remplacée (carte #806, décision du PO du 17/11/2026) : il n'existe
+    // plus de candidats « cible de déplacement » (`move-target`) — la nature est refusée comme toute nature inconnue.
     expect((await ecrire('POST', id, 'evenements', { body: { agendaItemId: rdv } })).status).toBe(200);
     expect((await ecrire('POST', id, 'associations', { body: { otherId: voisin } })).status).toBe(200);
     expect((await candidats(id, 'agenda')).body.items).toEqual([]);
     expect((await candidats(id, 'reference')).body.items).toEqual([]);
-    expect((await candidats(id, 'move-target')).body.items.map((x: Json) => x.id)).toEqual([voisin]);
+    expect((await candidats(id, 'move-target')).status).toBe(400);
     // La lecture des candidats n'écrit rien.
     const apresLiens = await empreinte(compte);
     await candidats(id, 'document', 'devis');
@@ -494,7 +521,8 @@ scenario('L114OW', 'Opérations / Agenda CDC V2.0 — travaux D : gestes d’éc
     for (const [m, sous, o] of gestes) {
       const r = await ecrire(m, id, sous, o);
       expect(r.status, `${m} ${sous} en lecture seule`).toBe(403);
-      expect(JSON.stringify(r.body)).not.toMatch(/Opération|opération/);
+      // Règle remplacée (carte #806, décision du PO du 17/11/2026) : la garde interdisait « Opération » ; à l’écran on dit désormais « opération », et c’est « événement de référence » qui est interdit.
+      expect(JSON.stringify(r.body)).not.toMatch(/[ée]v[éeè]nements?\s+de\s+r[ée]f[ée]rence/i);
     }
     expect(await empreinte(compte)).toBe(apresLiens);
     expect(await version()).toBe(v);

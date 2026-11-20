@@ -37,7 +37,7 @@ const demande = (over: Partial<AssociateRequest> = {}): AssociateRequest => ({
 });
 
 describe('L114O-01 vocabulaire fermé : code = contraintes CHECK des migrations 1715 à 1717', () => {
-  it('natures, états et origines des relations entre événements de référence', () => {
+  it('natures, états et origines des relations entre opérations', () => {
     expect(M1715).toContain(`CHECK (nature IN (${liste(OPERATION_RELATION_NATURES)}))`);
     expect(M1715).toContain(`CHECK (state IN (${liste(OPERATION_RELATION_STATES)}))`);
     expect(M1715).toContain(`CHECK (origin IN (${liste(GRAPH_ORIGINS)}))`);
@@ -125,7 +125,7 @@ describe('L114O-04 paire et orientation', () => {
   });
 });
 
-describe('L114O-05 associer deux événements de référence (CDC §4, §7, §9 ; AC12 à AC15, AC18)', () => {
+describe('L114O-05 associer deux opérations (CDC §4, §7, §9 ; AC12 à AC15, AC18)', () => {
   it('création : jamais réflexive, jamais sur un événement invalidé ou fusionné, origine typée', () => {
     expect(decideAssociate(demande(), null)).toEqual({ outcome: 'CREATE', ends: { fromOperationId: 1, toOperationId: 2 } });
     expect(decideAssociate(demande({ to: op(1, 'ACQUISITION') }), null)).toEqual({ outcome: 'FORBIDDEN', code: 'REFLEXIVE' });
@@ -250,13 +250,16 @@ describe('L114O-09 gardes d’architecture : un seul écrivain, compte toujours 
       // la fusion elle-même reste celle du dépôt, aucun moteur parallèle) et `setOperationNotes` (note libre de
       // l'utilisateur, travaux D « contenu », migration 1722) s'ajoutent aux 13 commandes du lot B.
       'associateOperations', 'correctOperation', 'createOperation', 'dissociateOperations', 'invalidateOperation', 'linkAgendaItem', 'linkDocument',
-      'linkSupplier', 'mergeOperations', 'moveDocument', 'restoreOperation', 'setOperationNotes', 'splitOperation', 'unlinkAgendaItem',
+      // Règle remplacée (carte #806, décision du PO du 17/11/2026) : `moveDocument` (déplacer un document vers une autre
+      // opération) n'est plus une commande de la façade — retirer puis rattacher ; son corps reste interne à la scission.
+      'linkSupplier', 'mergeOperations', 'restoreOperation', 'setOperationNotes', 'splitOperation', 'unlinkAgendaItem',
       'unlinkDocument', 'unlinkSupplier', 'updateOperation']);
     // Chaque commande livrée est documentée en tête de fichier ; chacune passe par l'exécution commune (droits, verrou, rejeu, journal).
     const entete = facade.slice(0, facade.indexOf('*/'));
     for (const c of commandes) expect(entete, c).toMatch(new RegExp(`\\b${c}\\b`));
     const corps = code(facade);
-    expect((corps.match(/runCommand<[^>]+>\(ctx, /g) ?? []).length).toBe(16);
+    expect((corps.match(/runCommand<[^>]+>\(ctx, /g) ?? []).length).toBe(15);
+    expect(corps).not.toMatch(/export (?:async )?function moveDocument\b/);
     expect(corps).toMatch(/return supplierCommand\(ctx, 'linkSupplier', input\);/);
     expect(corps).toMatch(/return supplierCommand\(ctx, 'unlinkSupplier', input\);/);
     // La scission ne duplique AUCUNE règle : elle réutilise les corps des gestes de la page, dans sa transaction.
@@ -264,7 +267,7 @@ describe('L114O-09 gardes d’architecture : un seul écrivain, compte toujours 
       expect(corps.slice(corps.indexOf("'splitOperation', input, async")), appel).toContain(appel);
     }
     // Commandes réservées à l'utilisateur : refus explicite d'une inférence, avant toute lecture.
-    for (const c of ['createOperation', 'updateOperation', 'invalidateOperation', 'restoreOperation', 'linkDocument', 'unlinkDocument', 'moveDocument', 'splitOperation', 'mergeOperations', 'setOperationNotes']) {
+    for (const c of ['createOperation', 'updateOperation', 'invalidateOperation', 'restoreOperation', 'linkDocument', 'unlinkDocument', 'splitOperation', 'mergeOperations', 'setOperationNotes']) {
       const debut = corps.indexOf(`'${c}', input, async`);
       expect(corps.slice(debut, debut + 200), c).toMatch(/ctx\.actor\.kind !== 'USER'\) return stop\(refused\('FORBIDDEN', 'USER_ONLY'\)\)/);
     }
@@ -315,7 +318,7 @@ describe('L114O-10 migration 1718 : déclaration de l’utilisateur, source dura
     expect(M1718).toMatch(/pg_get_constraintdef\(oid\) NOT LIKE '%USER_DECLARATION%'[\s\S]*DROP CONSTRAINT business_operation_sources_kind_chk;[\s\S]*ADD CONSTRAINT business_operation_sources_kind_chk/);
     for (const v of ['DOCUMENT', 'ASSET_DATA', 'EQUIPMENT_DATA', 'AGENDA', 'CLAIM_FORM', 'USER_ARBITRATION', 'MIGRATION', 'USER_DECLARATION']) expect(M1718).toContain(`'${v}'`);
   });
-  it('la déclaration suit son événement de référence (clé composée) et s’efface avec le compte', () => {
+  it('la déclaration suit son opération (clé composée) et s’efface avec le compte', () => {
     expect(M1718).toMatch(/FOREIGN KEY \(operation_id, account_id\) REFERENCES business_operations\(id, account_id\) ON DELETE CASCADE ON UPDATE CASCADE/);
     expect(M1718).toMatch(/account_id\s+INTEGER\s+NOT NULL REFERENCES accounts\(id\) ON DELETE CASCADE/);
     expect(M1718).toContain(`char_length(btrim(declaration_text)) BETWEEN 1 AND ${DECLARATION_TEXT_MAX}`);
@@ -354,7 +357,7 @@ describe('L114O-11 déclaration, correction et empreinte d’entrée (règles pu
     expect(commandInputHash('associateOperations', { fromOperationId: 1, toOperationId: 3, nature: 'FINANCING', evidence: [{ kind: 'DOCUMENT', ref: '7' }] })).not.toBe(h);
     expect(commandInputHash('associateOperations', { fromOperationId: 1, toOperationId: 2, nature: 'FINANCING', evidence: [] })).not.toBe(h);
   });
-  it('T3 ne réactive pas un événement de référence invalidé par l’utilisateur (garde placée avant toute lecture de sources)', () => {
+  it('T3 ne réactive pas une opération invalidée par l’utilisateur (garde placée avant toute lecture de sources)', () => {
     const c = lire('src/services/business-operations/consolidation/consolidator.ts');
     const debut = c.indexOf('export async function reconsolidateOperation(');
     const garde = c.indexOf('if (op.invalidatedAt !== null && op.invalidationReason === USER_INVALIDATION_REASON) return;', debut);
@@ -363,7 +366,7 @@ describe('L114O-11 déclaration, correction et empreinte d’entrée (règles pu
   });
 });
 
-describe('L114O-12 migration 1722 : notes de l’utilisateur sur un événement de référence (CDC §5, §14 ; AC42)', () => {
+describe('L114O-12 migration 1722 : notes de l’utilisateur sur une opération (CDC §5, §14 ; AC42)', () => {
   it('additive, idempotente, rejouable : colonnes ajoutées sur la table EXISTANTE, aucune table nouvelle', () => {
     for (const col of ['user_notes TEXT', 'user_notes_updated_at TIMESTAMPTZ', 'user_notes_author_user_id INTEGER']) {
       expect(M1722).toContain(`ALTER TABLE business_operations ADD COLUMN IF NOT EXISTS ${col}`);

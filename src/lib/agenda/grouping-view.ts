@@ -116,6 +116,11 @@ export const isGroupingAction = (v: unknown): v is GroupingAction => typeof v ==
  * échéance, rappel…) ; « élément de l'agenda » n'est plus jamais affiché. Les
  * titres et types métier des entrées restent inchangés. Retirer un lien se
  * dit « Dissocier » / « Retirer l'association » — jamais « Supprimer ».
+ *
+ * Carte #806 §1 (décision du PO du 17/11/2026) : l'objet métier se dit « opération ». Dans ce tiroir, l'ancien
+ * « événement de référence » désignait AUTRE CHOSE : l'événement de l'Agenda qui porte l'ensemble (un fait de
+ * l'opération). Pour ne pas le confondre avec l'opération elle-même, il devient « jalon de l'opération » (mot que
+ * la carte autorise là où le texte doit distinguer). Textes À VALIDER PAR LE PO.
  */
 export const GROUPING_LABELS = {
   sectionMain: 'Tout ce qui se rattache à cet événement',
@@ -123,13 +128,13 @@ export const GROUPING_LABELS = {
   sectionAlone: 'Associations',
   partOf: 'Fait partie de',
   openMain: 'Voir l’ensemble',
-  mainBadge: 'Événement de référence',
-  makeMain: 'En faire l’événement de référence',
-  releaseMain: 'Ne plus en faire l’événement de référence',
-  releaseTitle: 'Ne plus en faire l’événement de référence ?',
-  releaseBody: 'Les événements, documents, biens, pièces et équipements restent reliés entre eux : rien n’est supprimé. Verebona ne rétablira pas cet événement de référence de lui-même ; vous pourrez en désigner un autre à tout moment.',
+  mainBadge: 'Jalon de l’opération',
+  makeMain: 'En faire le jalon de l’opération',
+  releaseMain: 'Ne plus en faire le jalon de l’opération',
+  releaseTitle: 'Ne plus en faire le jalon de l’opération ?',
+  releaseBody: 'Les événements, documents, biens, pièces et équipements restent reliés entre eux : rien n’est supprimé. Verebona ne rétablira pas ce jalon de lui-même ; vous pourrez en désigner un autre à tout moment.',
   leave: 'Retirer de cet ensemble',
-  withdrawnNote: 'Aucun événement de référence : vous l’avez retiré.',
+  withdrawnNote: 'Aucun jalon pour cette opération : vous l’avez retiré.',
   categories: {
     elements: 'Étapes et rendez-vous',
     documents: 'Documents',

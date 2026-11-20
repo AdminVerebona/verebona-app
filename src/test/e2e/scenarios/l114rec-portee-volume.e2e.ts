@@ -96,7 +96,7 @@ scenario('L114REC-P', 'Opérations / Agenda CDC V2.0 — recette : portée des s
 
   // ══ AC60 : suppression d'un justificatif ═══════════════════════════════════
 
-  it('L114REC-E07 — suppression d’un justificatif : l’événement de référence, ses autres justificatifs, ses événements d’Agenda et sa relation restent ; aucun lien orphelin ; autre compte intact (AC60, AC44)', async () => {
+  it('L114REC-E07 — suppression d’un justificatif : l’opération, ses autres justificatifs, ses événements d’Agenda et sa relation restent ; aucun lien orphelin ; autre compte intact (AC60, AC44)', async () => {
     const compte = await make.account({ plan: 'premium' });
     const autre = await make.account({ plan: 'premium' });
     const maison = await make.asset(compte, { category: 'IMMOBILIER', name: 'Maison' });
@@ -132,7 +132,7 @@ scenario('L114REC-P', 'Opérations / Agenda CDC V2.0 — recette : portée des s
 
   // ══ AC60 : suppression complète d'un bien ══════════════════════════════════
 
-  it('L114REC-E08 — suppression complète d’un bien : événements de référence détachés, sources désactivées, événement sans preuve invalidé (jamais supprimé), aucun lien orphelin, autre compte intact (AC60)', async () => {
+  it('L114REC-E08 — suppression complète d’un bien : opérations détachées, sources désactivées, événement sans preuve invalidé (jamais supprimé), aucun lien orphelin, autre compte intact (AC60)', async () => {
     const compte = await make.account({ plan: 'premium' });
     const autre = await make.account({ plan: 'premium' });
     const voiture = await make.asset(compte, { category: 'VEHICULE', name: 'Clio' });
@@ -213,7 +213,7 @@ scenario('L114REC-P', 'Opérations / Agenda CDC V2.0 — recette : portée des s
 
   // ══ AC39, AC74 : exhaustivité et volume ════════════════════════════════════
 
-  it('L114REC-E10 — 210 justificatifs et 30 événements d’Agenda sur un même événement de référence, 240 éléments et 40 événements de référence sur le bien : page et Timeline rendent tout, sans limite cachée (AC39, AC74)', async () => {
+  it('L114REC-E10 — 210 justificatifs et 30 événements d’Agenda sur une même opération, 240 éléments et 40 opérations sur le bien : page et Timeline rendent tout, sans limite cachée (AC39, AC74)', async () => {
     const compte = await make.account({ plan: 'premium' });
     const bien = await make.asset(compte, { category: 'IMMOBILIER', name: 'Immeuble' });
     const gros = await evenement(compte, 'INTERVENTION', { label: 'Réhabilitation complète', assetId: bien.id, realized: '2026-06-01' });
@@ -293,7 +293,7 @@ scenario('L114REC-P', 'Opérations / Agenda CDC V2.0 — recette : portée des s
 
   // ══ AC07 : objets autonomes ════════════════════════════════════════════════
 
-  it('L114REC-E11 — justificatif autonome et événement d’Agenda autonome : aucun événement de référence, aucune carte « À traiter », tous deux visibles à leur place (AC07)', async () => {
+  it('L114REC-E11 — justificatif autonome et événement d’Agenda autonome : aucune opération, aucune carte « À traiter », tous deux visibles à leur place (AC07)', async () => {
     const compte = await make.account({ plan: 'premium' });
     const bien = await make.asset(compte, { category: 'IMMOBILIER', name: 'Maison' });
     const f = await make.assetFile(compte, { assetId: bien.id });
@@ -319,7 +319,7 @@ scenario('L114REC-P', 'Opérations / Agenda CDC V2.0 — recette : portée des s
 
   // ══ AC60 : retrait d'un équipement seul ════════════════════════════════════
 
-  it('L114REC-E17 — retrait d’un ÉQUIPEMENT seul (archivage logique par la vraie route) : il quitte la fiche de l’événement de référence, tout le reste est conservé, aucun lien orphelin (AC60)', async () => {
+  it('L114REC-E17 — retrait d’un ÉQUIPEMENT seul (archivage logique par la vraie route) : il quitte la fiche de l’opération, tout le reste est conservé, aucun lien orphelin (AC60)', async () => {
     const compte = await make.account({ plan: 'premium' });
     const bien = await make.asset(compte, { category: 'IMMOBILIER', name: 'Maison' });
     const [equip] = await sql<{ id: number }[]>`
@@ -356,7 +356,7 @@ scenario('L114REC-P', 'Opérations / Agenda CDC V2.0 — recette : portée des s
 
   // ══ AC66, AC73 : rejeu des contrôles de cohérence ══════════════════════════
 
-  it('L114REC-E18 — rejeu des CONTRÔLES de cohérence (orchestrateur réel, mode correctif) : aucune association refusée recréée, aucun événement de référence supprimé ressuscité, aucun lien du graphe réparé de force (AC66, AC73)', async () => {
+  it('L114REC-E18 — rejeu des CONTRÔLES de cohérence (orchestrateur réel, mode correctif) : aucune association refusée recréée, aucune opération supprimée ressuscité, aucun lien du graphe réparé de force (AC66, AC73)', async () => {
     const compte = await make.account({ plan: 'premium' });
     const bien = await make.asset(compte, { category: 'IMMOBILIER', name: 'Maison' });
     const f1 = await make.assetFile(compte, { assetId: bien.id });

@@ -80,10 +80,11 @@ describe('L114-U-CARTE — issue C : contradiction réelle → une carte, valeur
     expect(needsArbitrationCard({ ...attendu.alerting[0], t3: { outcome: 'PENDING' } })).toBe(false);
   });
 
-  it('C-03 — textes de la carte : jamais « Opération » ; toutes les valeurs différentes ; valeur en place en dernier, marquée', () => {
+  it('C-03 — textes de la carte : jamais « événement de référence » ; toutes les valeurs différentes ; valeur en place en dernier, marquée', () => {
     expect(attributeQuestion('provider', 'INTERVENTION')).toBe('Ces documents indiquent des prestataires différents pour la même intervention : lequel est le bon ?');
     expect(attributeQuestion('realizedDate', 'ACQUISITION')).toBe('Ces documents indiquent des dates de réalisation différentes pour le même achat : laquelle est la bonne ?');
-    for (const f of ['plannedDate', 'startDate', 'realizedDate', 'endDate', 'provider'] as const) expect(attributeQuestion(f, null)).not.toMatch(/op[ée]ration/i);
+    // Règle remplacée (carte #806, décision du PO du 17/11/2026) : la garde interdisait « Opération » ; à l’écran on dit désormais « opération », et c’est « événement de référence » qui est interdit.
+    for (const f of ['plannedDate', 'startDate', 'realizedDate', 'endDate', 'provider'] as const) expect(attributeQuestion(f, null)).not.toMatch(/[ée]v[éeè]nements?\s+de\s+r[ée]f[ée]rence/i);
     const p = attributeProposals('provider', [
       { value: 'Plomberie Durand', normalized: 'plomberie durand', title: 'Facture A' },
       { value: 'Chauffage Martin', normalized: 'chauffage martin', title: 'Facture B' },

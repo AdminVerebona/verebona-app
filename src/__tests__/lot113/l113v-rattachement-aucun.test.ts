@@ -132,14 +132,15 @@ describe('L113V — éléments réellement nouveaux (pure)', () => {
     // Ordre : preuve d'abord, puis indices.
     expect(choix.noAssetNewElements({ ...base, eligibleAssetIds: [1, 3, 9, 12, 13], candidateAssetIds: [13], provenAssetIds: [12] }).proposalIds).toEqual([12, 13]);
   });
-  it('L113V-U-04 — la question nomme l’élément nouveau, sans « opération »', () => {
+  it('L113V-U-04 — la question nomme l’élément nouveau, sans « événement de référence »', () => {
     const q = [
       choix.noAssetReexaminationQuestion({ newAssetLabels: ['Maison'], newEvidence: false }),
       choix.noAssetReexaminationQuestion({ newAssetLabels: ['Maison', 'Clio'], newEvidence: false }),
       choix.noAssetReexaminationQuestion({ newAssetLabels: [], newEvidence: true }),
     ];
     expect(q[0]).toBe('Vous avez ajouté « Maison » depuis votre choix « Aucun » : à quel bien rattacher ce document ?');
-    for (const x of q) { expect(x).toMatch(/\?$/); expect(x).not.toMatch(/op[ée]ration/i); }
+    // Règle remplacée (carte #806, décision du PO du 17/11/2026) : la garde interdisait « Opération » ; à l’écran on dit désormais « opération », et c’est « événement de référence » qui est interdit.
+    for (const x of q) { expect(x).toMatch(/\?$/); expect(x).not.toMatch(/[ée]v[éeè]nements?\s+de\s+r[ée]f[ée]rence/i); }
   });
   it('L113V-U-05 — trace lue défensivement', () => {
     expect(choix.parseNoAssetDecision(null)).toBeNull();

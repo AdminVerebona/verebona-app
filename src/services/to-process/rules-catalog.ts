@@ -645,7 +645,7 @@ export const PROCESSING_RULES: readonly ProcessingRule[] = [
     arbitratePriority: 'DO_NEXT',
     completePriority: null,
     allowNotApplicable: false,
-    question: 'Un nouveau justificatif rapproche deux événements de référence que vous aviez choisi de ne pas associer : faut-il les associer ?',
+    question: 'Un nouveau justificatif rapproche deux opérations que vous aviez choisi de ne pas associer : faut-il les associer ?',
     businessImpact: 56,
     producer: 'REFERENCE_EVENT_GRAPH',
     formulation: NO_AI_DECISION,
@@ -661,7 +661,7 @@ export const PROCESSING_RULES: readonly ProcessingRule[] = [
     arbitratePriority: 'DO_NEXT',
     completePriority: null,
     allowNotApplicable: false,
-    question: 'Un justificatif commun relie cet événement à un second événement de référence : faut-il l’y rattacher aussi ?',
+    question: 'Un justificatif commun relie cet événement à une seconde opération : faut-il l’y rattacher aussi ?',
     businessImpact: 54,
     producer: 'REFERENCE_EVENT_AGENDA_LINK',
     formulation: NO_AI_DECISION,
@@ -676,7 +676,7 @@ export const PROCESSING_RULES: readonly ProcessingRule[] = [
     arbitratePriority: 'DO_NEXT',
     completePriority: null,
     allowNotApplicable: false,
-    question: 'Ces deux événements de référence décrivent peut-être la même réalité : est-ce le même, ou deux ?',
+    question: 'Ces deux opérations décrivent peut-être la même réalité : est-ce la même, ou deux ?',
     businessImpact: 66,
     producer: 'REFERENCE_EVENT_MERGE',
     formulation: NO_AI_DECISION,
@@ -693,7 +693,7 @@ export const PROCESSING_RULES: readonly ProcessingRule[] = [
     // Lot 115 (#791, décision du PO du 16/11/2026) : le fait comparé peut être une DATE ou le PRESTATAIRE — ce
     // repli du catalogue ne nomme donc plus les dates seules (texte NOUVEAU, à valider par le PO). La question
     // réellement posée, elle, nomme le fait (`referenceEventFactQuestion`).
-    question: 'Ces deux événements de référence indiquent deux valeurs différentes pour le même fait : laquelle est la bonne ?',
+    question: 'Ces deux opérations indiquent deux valeurs différentes pour le même fait : laquelle est la bonne ?',
     businessImpact: 60,
     producer: 'REFERENCE_EVENT_MERGE',
     formulation: NO_AI_DECISION,

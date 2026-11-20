@@ -132,7 +132,7 @@ scenario('L114O-T', 'Opérations / Agenda CDC V2.0 — traitements et « À trai
 
   // ══ T3 : un refus de l'utilisateur reste un refus ══════════════════════════
 
-  it('L114O-T01 — événement de référence supprimé par l’utilisateur : T3 ne le réactive pas et n’en crée pas un nouveau à partir du même document ; un autre document reste une preuve nouvelle', async () => {
+  it('L114O-T01 — opération supprimée par l’utilisateur : T3 ne le réactive pas et n’en crée pas un nouveau à partir du même document ; un autre document reste une preuve nouvelle', async () => {
     const compte = await make.account({ plan: 'premium' });
     const maison = await make.asset(compte, { category: 'IMMOBILIER', name: 'Maison' });
     const facture = await document(compte, 'Facture ballon d’eau chaude', maison.id);
@@ -182,7 +182,7 @@ scenario('L114O-T', 'Opérations / Agenda CDC V2.0 — traitements et « À trai
     // Le document du fichier supprimé, lui, retire bien sa source (la protection ne vaut que pour un document valide).
   });
 
-  it('L114O-T02 — élément d’Agenda saisi qui fondait un événement de référence supprimé : il reste dans l’Agenda, à sa date ; T3 n’en recrée pas', async () => {
+  it('L114O-T02 — élément d’Agenda saisi qui fondait une opération supprimée : il reste dans l’Agenda, à sa date ; T3 n’en recrée pas', async () => {
     const compte = await make.account({ plan: 'premium' });
     const maison = await make.asset(compte, { category: 'IMMOBILIER', name: 'Maison' });
     const { createAgendaItem } = await import('@/services/agenda/AgendaWriteService');
@@ -242,7 +242,8 @@ scenario('L114O-T', 'Opérations / Agenda CDC V2.0 — traitements et « À trai
     expect(carte).toMatchObject({ target_type: 'DOCUMENT', target_id: acte, relation_key: `operationRelation:${Math.min(pret, achat)}:${Math.max(pret, achat)}`, ouverte: true });
     // Question neutre, sans le mot interdit, qui nomme les deux événements ; deux choix, aucun mis en avant.
     expect(carte.question).toMatch(/^Vous aviez choisi de ne pas associer « .*Prêt immobilier.* » et « .*Achat de la maison.* »\. Un nouveau justificatif les rapproche : faut-il les associer \?$/);
-    expect(carte.question).not.toMatch(/op[ée]ration/i);
+    // Règle remplacée (carte #806, décision du PO du 17/11/2026) : la garde interdisait « Opération » ; à l’écran on dit désormais « opération », et c’est « événement de référence » qui est interdit.
+    expect(carte.question).not.toMatch(/[ée]v[éeè]nements?\s+de\s+r[ée]f[ée]rence/i);
     expect((carte.proposals_json as Json[]).map((p) => [p.value, p.label, p.emphasis ?? null, p.isCurrentValue ?? false])).toEqual([
       ['ASSOCIATE', 'Oui, les associer', 'neutral', false], ['KEEP_SEPARATE', 'Non, ne pas les associer', null, true],
     ]);
@@ -361,7 +362,7 @@ scenario('L114O-T', 'Opérations / Agenda CDC V2.0 — traitements et « À trai
 
   // ══ Les cartes lisent le graphe N↔N, plus le rôle « principal » ════════════
 
-  it('L114O-T05 — cartes : les événements d’un événement de référence sont lus dans le graphe N↔N (aucun rôle « principal »), un événement partagé est cité par ses deux événements de référence, la colonne historique reste intacte', async () => {
+  it('L114O-T05 — cartes : les événements d’une opération sont lus dans le graphe N↔N (aucun rôle « principal »), un événement partagé est cité par ses deux opérations, la colonne historique reste intacte', async () => {
     const compte = await make.account({ plan: 'premium' });
     const autre = await make.account({ plan: 'premium' });
     const maison = await make.asset(compte, { category: 'IMMOBILIER', name: 'Maison' });

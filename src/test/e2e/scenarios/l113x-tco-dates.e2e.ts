@@ -133,7 +133,7 @@ scenario('L113X', 'TCO — une seule alerte « dépenses sans date fiable » et 
     return { asset, quittances, avis, facture, equipmentId: eq.id, intervention, agendaItemId: ev.id };
   }
 
-  it('L113X-E01 — liste exacte des dépenses retenues sans date (= ventilation annuelle), champ métier de chacune, événement de référence', async () => {
+  it('L113X-E01 — liste exacte des dépenses retenues sans date (= ventilation annuelle), champ métier de chacune, opération', async () => {
     const compte = await make.account({ plan: 'premium' });
     const v = await vehicule(compte);
     as(compte);

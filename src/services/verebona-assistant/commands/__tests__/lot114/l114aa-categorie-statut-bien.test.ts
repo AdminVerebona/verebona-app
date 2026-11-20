@@ -282,6 +282,7 @@ describe('L114AA-C05 — exécution : une seule écriture métier', () => {
       await resolveDraft(parseCommand('Change la catégorie de la Clio en moto', TODAY)!, input, lookup()),
       await resolveDraft(parseCommand('Marque la Clio comme vendue', TODAY)!, input, lookup()),
     ]);
-    expect(textes).not.toMatch(/[Oo]pération/);
+    // Règle remplacée (carte #806, décision du PO du 17/11/2026) : la garde interdisait « Opération » ; à l’écran on dit désormais « opération », et c’est « événement de référence » qui est interdit.
+    expect(textes).not.toMatch(/[ée]v[éeè]nements?\s+de\s+r[ée]f[ée]rence/i);
   });
 });

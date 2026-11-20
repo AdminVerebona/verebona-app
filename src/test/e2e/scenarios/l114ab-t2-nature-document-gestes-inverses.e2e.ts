@@ -215,7 +215,7 @@ scenario('L114AB-NATURE-DOCUMENT', 'Passage 114AB — nature d’un document, su
     expect((await liens()).filter((l) => l.state === 'ACTIVE')).toHaveLength(1);
 
     const dis = await faire(c, 'Dissocie le financement Prêt auto de l’achat de la Clio');
-    expect(dis.plan.preview.summary).toMatch(/^Dissocier les événements de référence/);
+    expect(dis.plan.preview.summary).toMatch(/^Dissocier les opérations/);
     expect(dis.conf).toMatchObject({ ok: true, status: 'EXECUTED' });
     expect((await liens()).filter((l) => l.state === 'ACTIVE')).toHaveLength(0);
     // Les deux événements restent.
@@ -224,7 +224,7 @@ scenario('L114AB-NATURE-DOCUMENT', 'Passage 114AB — nature d’un document, su
     // Document rattaché puis retiré : le document reste dans le compte.
     expect((await faire(c, 'Rattache le document Facture Norauto à l’intervention Vidange')).conf).toMatchObject({ ok: true, status: 'EXECUTED' });
     const retrait = await faire(c, 'Retire le document Facture Norauto de l’intervention Vidange');
-    expect(retrait.plan.preview.summary).toMatch(/^Retirer le document « Facture Norauto » de l’événement de référence/);
+    expect(retrait.plan.preview.summary).toMatch(/^Retirer le document « Facture Norauto » de l’opération/);
     expect(retrait.conf).toMatchObject({ ok: true, status: 'EXECUTED' });
     expect((await classement(c)).find((d) => d.id === docId)!.deleted_at).toBeNull();
 
@@ -250,7 +250,7 @@ scenario('L114AB-NATURE-DOCUMENT', 'Passage 114AB — nature d’un document, su
     const supprime = (await evenements(c)).find((e) => e.invalide);
     expect(supprime).toMatchObject({ motif: 'USER_INVALIDATED' });
     const reta = planDe(await demander(c, 'Rétablis l’intervention Vidange'));
-    expect(reta.preview.summary).toMatch(/^Rétablir l’événement de référence « Intervention — Vidange »/);
+    expect(reta.preview.summary).toMatch(/^Rétablir l’opération « Intervention — Vidange »/);
     expect(await confirmer(c, reta.plan.planId)).toMatchObject({ ok: true, status: 'EXECUTED' });
     expect((await evenements(c)).find((e) => e.id === supprime!.id)).toMatchObject({ invalide: false });
     // Rétabli : il n'est plus dans les suppressions, la phrase redevient une réponse normale.

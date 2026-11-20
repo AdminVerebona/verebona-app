@@ -214,7 +214,7 @@ scenario('L85D', 'Lecture seule (routes d’écriture) et « Ajouter un document
 
   // ══ « Ajouter un document » par l'Agenda ══════════════════════════════════
 
-  it('L85D-E04 — « Ajouter un document » depuis un événement : document créé, relié à l’événement et à son ensemble, propagé à l’événement de référence', async () => {
+  it('L85D-E04 — « Ajouter un document » depuis un événement : document créé, relié à l’événement et à son ensemble, propagé à l’opération', async () => {
     const c = await compte('actif');
     const degat = await make.agendaItem(c.compte, { title: 'Dégât des eaux', startDate: '2026-03-12', assetIds: [c.maison.id] });
     const visite = await make.agendaItem(c.compte, { title: 'Visite expert', startDate: '2026-03-21', assetIds: [c.maison.id] });

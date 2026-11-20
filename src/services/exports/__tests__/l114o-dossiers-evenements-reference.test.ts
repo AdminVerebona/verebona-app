@@ -43,8 +43,8 @@ const SANS_EVENEMENT_DE_REFERENCE = [
   'src/services/exports/v12/zip.ts',
 ];
 
-describe('L114OG-U01 — un dossier ne cite jamais un événement de référence supprimé ou regroupé', () => {
-  it('chaque requête des sources de dossier sur les événements de référence écarte l’invalidé et le regroupé', () => {
+describe('L114OG-U01 — un dossier ne cite jamais une opération supprimée ou regroupé', () => {
+  it('chaque requête des sources de dossier sur les opérations écarte l’invalidé et le regroupé', () => {
     for (const p of SOURCES) {
       const src = code(lire(p));
       // Fragments SQL qui nomment la table des événements de référence.
@@ -58,7 +58,7 @@ describe('L114OG-U01 — un dossier ne cite jamais un événement de référence
     }
   });
 
-  it('la seule lecture d’un événement de référence par un dossier passe par un service partagé ou par ce filtre', () => {
+  it('la seule lecture d’une opération par un dossier passe par un service partagé ou par ce filtre', () => {
     // Le dossier « Assurance — sinistre » lit l'événement CLAIM par le service des sinistres (lot 83D),
     // qui écarte lui-même un sinistre invalidé ou regroupé : aucune requête parallèle dans les exports.
     const src = code(lire('src/services/exports/v12/data/source.ts'));
@@ -69,8 +69,8 @@ describe('L114OG-U01 — un dossier ne cite jamais un événement de référence
   });
 });
 
-describe('L114OG-U02 — Vente, Souscription, Dossier complet, Location et ZIP ne lisent aucun événement de référence', () => {
-  it('aucun de ces fichiers ne nomme un événement de référence, un identifiant d’événement de référence ni sa table', () => {
+describe('L114OG-U02 — Vente, Souscription, Dossier complet, Location et ZIP ne lisent aucune opération', () => {
+  it('aucun de ces fichiers ne nomme une opération, un identifiant d’opération ni sa table', () => {
     for (const p of SANS_EVENEMENT_DE_REFERENCE) {
       const src = code(lire(p));
       expect(src, p).not.toMatch(/business_operation|operationId|operation_id|readOperationGraph|business_operation_agenda_links/);

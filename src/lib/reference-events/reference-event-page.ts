@@ -36,7 +36,7 @@ export function referenceEventIdFromParam(v: unknown): number | null {
 }
 
 /** Catégorie des résultats de recherche (décision PO n° 1 : la catégorie porte ce nom). */
-export const REFERENCE_EVENT_SEARCH_CATEGORY = 'Événement de référence' as const;
+export const REFERENCE_EVENT_SEARCH_CATEGORY = 'Opération' as const;
 
 /** Rôles des dates PROPRES d'un événement de référence, dans l'ordre d'affichage. */
 export const REFERENCE_EVENT_DATE_ROLES = ['PLANNED', 'START', 'REALIZED', 'END'] as const;
@@ -49,7 +49,7 @@ export const REFERENCE_EVENT_PAGE_LABELS = {
   back: 'Retour',
   backToAgenda: 'Ouvrir l’agenda',
   datesTitle: 'Dates',
-  dateRoles: { PLANNED: 'Prévu le', START: 'Début', REALIZED: 'Réalisé le', END: 'Fin' } as Readonly<Record<ReferenceEventDateRole, string>>,
+  dateRoles: { PLANNED: 'Prévue le', START: 'Début', REALIZED: 'Réalisée le', END: 'Fin' } as Readonly<Record<ReferenceEventDateRole, string>>,
   providerTitle: 'Prestataire',
   declarationsTitle: 'Votre déclaration',
   declaredOn: 'Déclaré le',
@@ -58,15 +58,15 @@ export const REFERENCE_EVENT_PAGE_LABELS = {
   suppliersTitle: 'Fournisseurs',
   /** Existant (vocabulaire de l'Agenda). */
   eventsTitle: 'Événements',
-  relationsTitle: 'Événements de référence associés',
-  empty: 'Aucun bien, aucun document ni aucun événement n’est encore relié à cet événement de référence.',
-  notFound: 'Cet événement de référence est introuvable dans votre compte.',
-  notFoundHint: 'Il a peut-être été regroupé ou supprimé, ou il appartient à un autre compte.',
+  relationsTitle: 'Opérations associées',
+  empty: 'Aucun bien, aucun document ni aucun événement n’est encore relié à cette opération.',
+  notFound: 'Cette opération est introuvable dans votre compte.',
+  notFoundHint: 'Elle a peut-être été regroupée ou supprimée, ou elle appartient à un autre compte.',
   /** Existants (fiche fournisseur). */
   loadError: 'La fiche n’a pas pu être chargée.',
   loadErrorHint: 'Vérifiez votre connexion puis réessayez.',
   retry: 'Réessayer',
-  shared: 'Partagé avec un autre événement de référence',
+  shared: 'Partagé avec une autre opération',
 } as const;
 
 /** Nature et sens d'une relation, tels que la page les nomme (à valider par le PO). */
@@ -74,13 +74,13 @@ export type ReferenceEventRelationNature = 'FINANCING' | 'CLAIM_REPAIR' | 'ASSOC
 export type ReferenceEventRelationDirection = 'OUTGOING' | 'INCOMING' | 'UNDIRECTED';
 
 const RELATION_LABELS: Readonly<Record<ReferenceEventRelationNature, Readonly<Record<ReferenceEventRelationDirection, string>>>> = {
-  FINANCING: { OUTGOING: 'Finance', INCOMING: 'Financé par', UNDIRECTED: 'Associé à' },
-  CLAIM_REPAIR: { OUTGOING: 'Réparé par', INCOMING: 'Répare le sinistre', UNDIRECTED: 'Associé à' },
-  ASSOCIATED: { OUTGOING: 'Associé à', INCOMING: 'Associé à', UNDIRECTED: 'Associé à' },
-  CLAIM_CONTRACT: { OUTGOING: 'Contrat d’assurance', INCOMING: 'Sinistre déclaré', UNDIRECTED: 'Associé à' },
+  FINANCING: { OUTGOING: 'Finance', INCOMING: 'Financée par', UNDIRECTED: 'Associée à' },
+  CLAIM_REPAIR: { OUTGOING: 'Réparée par', INCOMING: 'Répare le sinistre', UNDIRECTED: 'Associée à' },
+  ASSOCIATED: { OUTGOING: 'Associée à', INCOMING: 'Associée à', UNDIRECTED: 'Associée à' },
+  CLAIM_CONTRACT: { OUTGOING: 'Contrat d’assurance', INCOMING: 'Sinistre déclaré', UNDIRECTED: 'Associée à' },
 };
 
-/** « Financé par », « Finance », « Associé à »… — lu dans les deux sens à partir de la même relation. */
+/** « Financée par », « Finance », « Associée à »… — lu dans les deux sens à partir de la même relation. */
 export function referenceEventRelationLabel(nature: ReferenceEventRelationNature, direction: ReferenceEventRelationDirection): string {
   return RELATION_LABELS[nature][direction];
 }

@@ -93,7 +93,8 @@ describe('L100D-A2 — confirmation après « Déconnecter tous les autres appar
     expect(r.bellBody).toMatch(/Si c’est vous, vous n’avez rien à faire\. Sinon, modifiez dès maintenant votre mot de passe/);
     expect(r.bellBody).not.toMatch(/https?:|offre|tarif|abonnement|€|jeton|token|\d+\.\d+\.\d+\.\d+/i);
     expect(otherSessionsRevokedContent({ at: '2026-10-29T09:05:00.000Z', count: 1 }).bellBody).toContain('1 autre appareil a été déconnecté');
-    expect(r.bellBody).not.toMatch(/Opération/);
+    // Règle remplacée (carte #806, décision du PO du 17/11/2026) : la garde interdisait « Opération » ; à l’écran on dit désormais « opération », et c’est « événement de référence » qui est interdit.
+    expect(r.bellBody).not.toMatch(/[ée]v[éeè]nements?\s+de\s+r[ée]f[ée]rence/i);
   });
 
   it('notification de sécurité : e-mail OBLIGATOIRE (lot 101B : cloche et push supprimés), lien Appareils connectés, gabarit éditable au BO', () => {

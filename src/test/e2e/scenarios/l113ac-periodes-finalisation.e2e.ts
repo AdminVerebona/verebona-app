@@ -140,7 +140,8 @@ scenario('L113AC', 'Périodes métier — finalisation (D11 sur les surfaces, li
       expect(r.answer).toContain('Périodes différentes selon les justificatifs : du 01/04/2025 au 31/03/2026 (justificatif : Attestation 2025 A) ; du 01/07/2025 au 30/06/2026 (justificatif : Attestation 2025 B) — aucune n’est retenue tant que ce point n’est pas tranché');
       expect(r.answer).toContain('Historique (périodes remplacées) : du 01/04/2024 au 31/03/2025 (justificatif : Attestation 2024) — Actualisée par l’avenant « Avenant 2024 »');
       expect(r.answer).toContain('aucune prolongation n’est déduite');
-      expect(r.answer).not.toMatch(/Opération|expir|en cours/i);
+      // Règle remplacée (carte #806, décision du PO du 17/11/2026) : la garde interdisait « Opération » ; à l’écran on dit désormais « opération », et c’est « événement de référence » qui est interdit.
+      expect(r.answer).not.toMatch(/[ée]v[éeè]nements?\s+de\s+r[ée]f[ée]rence|expir|en cours/i);
       expect(ct.coverageSources!.map((s) => s.id).sort()).toEqual(Object.values(d).map((id) => `doc_${id}`).sort());
       // Extraits documentaires T2 : la réserve suit la période.
       const textes = await (await surf()).documentPeriodTexts(c.id, [d['Attestation 2023'], d['Attestation 2024'], d['Attestation 2025 B'], achat]);

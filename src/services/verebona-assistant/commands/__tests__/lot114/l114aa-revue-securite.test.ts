@@ -115,7 +115,7 @@ describe('L114AA-S02 — aucun identifiant venu du modèle', () => {
     expect(etatCarteExport({ id: 7, publicId: 'pub-7', status: 'ready', outputPayload: null, expiresAt: null }, () => ({ statut: 'ready', pdf: null, zip: null }))!.href).toBeNull();
   });
 
-  it('l’événement de référence du fil est un entier du contexte serveur, jamais une valeur du client ni du modèle', () => {
+  it('l’opération du fil est un entier du contexte serveur, jamais une valeur du client ni du modèle', () => {
     const conv = lire('core/conversation.service.ts');
     // Lu comme entier positif, et de toute façon relu dans le compte avant usage.
     expect(conv).toMatch(/lastReferenceEventId: Number\.isInteger\(c\.lastReferenceEventId\) && Number\(c\.lastReferenceEventId\) > 0/);
@@ -135,7 +135,7 @@ describe('L114AA-S03 — état relu avant d’écrire', () => {
     }
   });
 
-  it('les exécuteurs d’événements de référence relisent l’état et exigent la version présentée', () => {
+  it('les exécuteurs d’opérations relisent l’état et exigent la version présentée', () => {
     const src = lire('commands/reference-events.ts');
     // Une fonction unique relit l'état, refuse l'absent et refuse une version différente de l'aperçu.
     expect(src).toMatch(/async function relu\([\s\S]*?getReferenceEventState[\s\S]*?REFERENCE_EVENT_NOT_FOUND[\s\S]*?REFERENCE_EVENT_CHANGED_SINCE_PREVIEW/);
@@ -167,7 +167,7 @@ describe('L114AA-S04 — isolation du compte et du fil', () => {
     expect(src).not.toMatch(/\b(INSERT|UPDATE|DELETE)\b/);
   });
 
-  it('l’événement de référence du fil n’est mémorisé que dans un fil de CET utilisateur', () => {
+  it('l’opération du fil n’est mémorisé que dans un fil de CET utilisateur', () => {
     const src = lire('core/conversation.service.ts');
     const bloc = src.slice(src.indexOf('export async function noterEvenementDeReferenceDuFil'));
     expect(bloc.slice(0, 1200)).toMatch(/UPDATE verebona_conversations[\s\S]*?WHERE id = \$1 AND account_id = \$2 AND user_id = \$3 AND status = 'active'/);

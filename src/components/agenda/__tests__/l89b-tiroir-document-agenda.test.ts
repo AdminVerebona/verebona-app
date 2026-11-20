@@ -74,7 +74,8 @@ describe('L89B-UI03 — libellés d’association centralisés', () => {
     // Lot 103D (wording des associations, décision PO du 31/10) : plus de jargon « élément d’agenda ».
     expect(L.createAgendaItem).toBe('Créer un événement');
     const textes = [L.documentAgendaTitle, L.add.documents, L.detach, L.createAgendaItem, L.associatedToast, L.detachedToast].join(' ');
-    expect(textes).not.toMatch(/opération|principal|Relier|Détacher/i);
+    // Règle remplacée (carte #806, décision du PO du 17/11/2026) : la garde interdisait « Opération » ; à l’écran on dit désormais « opération », et c’est « événement de référence » qui est interdit.
+    expect(textes).not.toMatch(/[ée]v[éeè]nements?\s+de\s+r[ée]f[ée]rence|principal|Relier|Détacher/i);
   });
   it('tiroir document : libellés lus dans GROUPING_LABELS, aucun libellé en dur', () => {
     expect(tiroir).toContain('{GROUPING_LABELS.documentAgendaTitle}');

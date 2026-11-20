@@ -18,18 +18,19 @@ const { checkRulesCatalog, getRule, RULE_PRODUCERS } = await import('../rules-ca
 const { ActionCard } = await import('@/components/to-process/ActionCard');
 const { buildTodoBlock, todoTitle, MAX_TODO_ITEMS } = await import('@/services/home/mascot/todo-items');
 
-const SANS_OPERATION = /op[ée]ration/i;
+// Règle remplacée (carte #806, décision du PO du 17/11/2026) : la garde interdisait « Opération » ; à l’écran on dit désormais « opération », et c’est « événement de référence » qui est interdit.
+const SANS_ANCIEN_TERME = /[ée]v[éeè]nements?\s+de\s+r[ée]f[ée]rence/i;
 const A = { id: 12, label: 'Devis freinage du 03/06/2026' };
 const B = { id: 15, label: 'Facture vidange du 10/04/2026' };
 
-describe('C19 — libellés métier (P09 : jamais « Opération » côté utilisateur)', () => {
+describe('C19 — libellés métier (P09 : jamais « événement de référence » côté utilisateur)', () => {
   it('C19-01 (a) deux rapprochements exacts : « Ce document concerne-t-il la même intervention que … ou que … ? », deux choix', () => {
     const q = cards.matchQuestion('INTERVENTION', 'CERTAIN', [A, B]);
     const p = cards.matchProposals('INTERVENTION', 'CERTAIN', [A, B]);
     expect(q).toBe('Ce document concerne-t-il la même intervention que « Devis freinage du 03/06/2026 » ou que « Facture vidange du 10/04/2026 » ?');
     expect(p.map((x) => x.value)).toEqual(['SAME:12', 'SAME:15']);
     expect(p.every((x) => !x.isCurrentValue)).toBe(true);
-    for (const t of [q, ...p.map((x) => x.label)]) expect(t).not.toMatch(SANS_OPERATION);
+    for (const t of [q, ...p.map((x) => x.label)]) expect(t).not.toMatch(SANS_ANCIEN_TERME);
   });
 
   it('C19-02 (a) verdict M3 incertain sur une seule réalité : « Oui » / « Non, c’est une autre intervention » (état actuel, lot 56A : « Oui » sans accord)', () => {
@@ -41,11 +42,11 @@ describe('C19 — libellés métier (P09 : jamais « Opération » côté utilis
     ]);
     // Tout est affiché (deux propositions + l'état actuel).
     expect(selectDisplayedProposals(cards.matchProposals('INTERVENTION', 'M3', [A, B]))).toHaveLength(3);
-    // Nature inconnue : « le même événement », jamais « Opération ».
-    expect(cards.matchQuestion(null, 'M3', [A])).toMatch(/^Ce document concerne-t-il le même événement que/);
+    // Règle remplacée (carte #806, décision du PO du 17/11/2026) : nature inconnue — « la même opération » (avant : « le même événement »).
+    expect(cards.matchQuestion(null, 'M3', [A])).toMatch(/^Ce document concerne-t-il la même opération que/);
     for (const t of ['CONTRACT', 'CLAIM', 'ACQUISITION', 'FINANCING', 'DISPOSAL', 'OTHER', null]) {
-      expect(cards.matchQuestion(t, 'M3', [A, B])).not.toMatch(SANS_OPERATION);
-      for (const x of cards.matchProposals(t, 'M3', [A, B])) expect(x.label).not.toMatch(SANS_OPERATION);
+      expect(cards.matchQuestion(t, 'M3', [A, B])).not.toMatch(SANS_ANCIEN_TERME);
+      for (const x of cards.matchProposals(t, 'M3', [A, B])) expect(x.label).not.toMatch(SANS_ANCIEN_TERME);
     }
   });
 
@@ -89,7 +90,7 @@ describe('C19 — choix fermés (une requête forgée ne désigne rien hors de l
     expect(checkRulesCatalog()).toEqual([]);
     for (const code of ['OPERATION-MATCH', 'OPERATION-AMOUNT']) {
       expect(getRule(code)).toMatchObject({ targetType: 'DOCUMENT', producer: 'T3_OPERATIONS', arbitratePriority: 'DO_NEXT', completePriority: null, allowNotApplicable: false });
-      expect(getRule(code)!.question).not.toMatch(SANS_OPERATION);
+      expect(getRule(code)!.question).not.toMatch(SANS_ANCIEN_TERME);
     }
     expect(RULE_PRODUCERS.T3_OPERATIONS.module).toBe('src/services/to-process/operation-cards.ts');
     expect(cards.matchRelationKey('op2')).toBe('operationMatch:op2');
@@ -120,14 +121,14 @@ describe('C19 — rendu desktop ET mobile (composants et tokens existants)', () 
     expect(html).toMatch(/flex items-start gap-3 sm:gap-4/);
     // Lot 60A (point 7) : hauteur libre (36 px au moins), libellé sur plusieurs lignes.
     expect(html).toMatch(/class="[^"]*h-auto min-h-9 max-w-full whitespace-normal/);
-    expect(html).not.toMatch(SANS_OPERATION);
+    expect(html).not.toMatch(SANS_ANCIEN_TERME);
   });
 
   it('C19-08 (lot 60A, point 6) : plus de vue Liste — la carte est la seule présentation, mêmes capacités', async () => {
     expect('ActionRow' in (await import('@/components/to-process/ActionCard'))).toBe(false);
     const html = renderToStaticMarkup(h(ActionCard, { action, onChoose: noop, onOpenTarget: noop }));
     expect(html).toContain('Non, c’est une autre intervention');
-    expect(html).not.toMatch(SANS_OPERATION);
+    expect(html).not.toMatch(SANS_ANCIEN_TERME);
   });
 });
 

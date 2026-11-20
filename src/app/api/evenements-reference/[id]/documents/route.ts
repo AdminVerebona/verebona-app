@@ -8,10 +8,11 @@
  *     RETIRER un document (façade `unlinkDocument`) : seul le lien change ; le
  *     fichier, ses liens aux événements de l'Agenda et ses autres
  *     rattachements restent ; le refus est mémorisé.
- *   PATCH  /api/evenements-reference/:id/documents { fileId, toId }
- *     DÉPLACER un document de CET événement de référence vers un autre du
- *     compte (façade `moveDocument`), en une transaction : aucun fichier
- *     copié, aucune composante financière copiée.
+ *   PATCH  /api/evenements-reference/:id/documents
+ *     RETIRÉ — carte #806 §1, décision du PO du 17/11/2026 : le geste « Déplacer
+ *     un document vers une autre opération » n'existe plus (écran, API,
+ *     Assistant). Un ancien client reçoit 410 et une phrase qui dit de retirer
+ *     le document puis de le rattacher ; RIEN n'est lu ni écrit.
  *
  * Garde `refuserSiLectureSeule` (403), compte actif de la session (un
  * identifiant d'un autre compte est « introuvable »), réponse en phrase
@@ -19,7 +20,8 @@
  */
 import { NextRequest, NextResponse } from 'next/server';
 import { refuserSiLectureSeule } from '@/lib/write-access-guard';
-import { positiveIdOf } from '@/lib/reference-events/reference-event-write';
+import { apiError } from '@/lib/api-errors';
+import { positiveIdOf, REFERENCE_EVENT_MOVE_REMOVED } from '@/lib/reference-events/reference-event-write';
 import {
   invalidReferenceEventRequest, openReferenceEventRoute, readJsonBody, referenceEventRouteFailure, referenceEventWriteResponse,
   type ReferenceEventRouteContext,
@@ -58,18 +60,8 @@ export async function DELETE(req: NextRequest, context: ReferenceEventRouteConte
 }
 
 export async function PATCH(req: NextRequest, context: ReferenceEventRouteContext) {
+  // Session et identifiant contrôlés comme pour les autres gestes : un appel sans session reste un 401.
   const scope = await openReferenceEventRoute(req, context);
   if (scope instanceof NextResponse) return scope;
-  const refus = await refuserSiLectureSeule(scope.accountId);
-  if (refus) return refus;
-  const body = await readJsonBody(req);
-  const fileId = positiveIdOf(champ(body, 'fileId'));
-  const toId = positiveIdOf(champ(body, 'toId'));
-  if (fileId === null || toId === null) return invalidReferenceEventRequest();
-  try {
-    const { moveDocument } = await import('@/services/business-operations/operation-write.facade');
-    return referenceEventWriteResponse('moveDocument', await moveDocument(scope.ctx, { fileId, fromOperationId: scope.operationId, toOperationId: toId }));
-  } catch (err) {
-    return referenceEventRouteFailure('PATCH :id/documents', err);
-  }
+  return apiError(410, 'UNSUPPORTED', REFERENCE_EVENT_MOVE_REMOVED);
 }

@@ -159,7 +159,7 @@ scenario('L114REC-M', 'Opérations / Agenda CDC V2.0 — recette : fusion et sci
 
   // ══ AC71 : scission devant la concurrence ══════════════════════════════════
 
-  it('L114REC-E14 — deux scissions simultanées du même événement de référence : une seule s’applique ; panne SQL : rien d’écrit (AC71)', async () => {
+  it('L114REC-E14 — deux scissions simultanées de la même opération : une seule s’applique ; panne SQL : rien d’écrit (AC71)', async () => {
     const compte = await make.account({ plan: 'premium' });
     const maison = await make.asset(compte, { category: 'IMMOBILIER', name: 'Maison' });
     const f1 = await make.assetFile(compte, { assetId: maison.id });
@@ -249,7 +249,7 @@ scenario('L114REC-M', 'Opérations / Agenda CDC V2.0 — recette : fusion et sci
 
   // ══ AC59, AC41 : offre Duo ═════════════════════════════════════════════════
 
-  it('L114REC-E15 — offre Duo : le second membre lit et corrige l’événement de référence de son compte ; un membre retiré ne peut plus écrire ; aucun accès à un autre compte (AC59, AC41)', async () => {
+  it('L114REC-E15 — offre Duo : le second membre lit et corrige l’opération de son compte ; un membre retiré ne peut plus écrire ; aucun accès à un autre compte (AC59, AC41)', async () => {
     const compte = await make.account({ plan: 'premium_duo' });
     const conjoint = await make.user();
     await sql`INSERT INTO account_memberships (account_id, user_id, role, status) VALUES (${compte.id}, ${conjoint.id}, 'member', 'active')`;

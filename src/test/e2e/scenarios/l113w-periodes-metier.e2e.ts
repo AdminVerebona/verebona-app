@@ -65,7 +65,7 @@ const echeance = (assetId: number, start: string, end: string, montant = 3500, o
     financialHints: [fh('REALIZED_COST', montant, { amountScope: 'INSTALLMENT', economicDate: start, periodStart: start, periodEnd: end })],
   });
 
-scenario('L113W', 'Périodes métier transversales (Documents, événements de référence, contrats, dépenses)', ({ sql, make }) => {
+scenario('L113W', 'Périodes métier transversales (Documents, opérations, contrats, dépenses)', ({ sql, make }) => {
   let k: OperationsKit;
   beforeAll(() => { k = operationsKit(sql, make); });
   afterAll(() => { session.currentAccountId = null; });
@@ -103,7 +103,7 @@ scenario('L113W', 'Périodes métier transversales (Documents, événements de r
   // ══ E2E-01 ═══════════════════════════════════════════════════════════════
   describe('assurance à trois attestations', () => {
     let c: AccountRow; let docs: number[]; let op: number;
-    it('L113W-E2E-01 — trois couvertures sur UN événement de référence, chronologiques, chacune liée à sa preuve', async () => {
+    it('L113W-E2E-01 — trois couvertures sur UNE opération, chronologiques, chacune liée à sa preuve', async () => {
       c = await make.account({ plan: 'premium' });
       const m = await maison(c);
       // Ordre d'import quelconque (la plus récente d'abord).
@@ -139,7 +139,8 @@ scenario('L113W', 'Périodes métier transversales (Documents, événements de r
       const ag = await lireAgenda(c, item.id);
       expect(ag.status).toBe(200);
       expect(ag.body.history.coverages.map((x: Json) => x.fileId)).toEqual(docs);
-      expect(JSON.stringify(ag.body)).not.toMatch(/Opération|operationId/);
+      // Règle remplacée (carte #806, décision du PO du 17/11/2026) : la garde interdisait « Opération » ; à l’écran on dit désormais « opération », et c’est « événement de référence » qui est interdit.
+      expect(JSON.stringify(ag.body)).not.toMatch(/[ée]v[éeè]nements?\s+de\s+r[ée]f[ée]rence|operationId/i);
       // Élément sans événement de référence : aucun historique ; autre compte : introuvable.
       const seul = await make.agendaItem(c, { title: 'Rendez-vous' });
       expect((await lireAgenda(c, seul.id)).body.history).toBeNull();

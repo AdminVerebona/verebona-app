@@ -231,7 +231,8 @@ describe('L108J-U08 — « Autre suggestion » supprimé ; trois suggestions ; �
     expect(src).toContain('w-full');
     expect(src).toContain('break-words');
     expect(src).not.toMatch(/#[0-9a-f]{3,6}\b|overflow-x-auto|snap-x/i);
-    expect(src).not.toMatch(/Opération/);
+    // Règle remplacée (carte #806, décision du PO du 17/11/2026) : la garde interdisait « Opération » ; à l’écran on dit désormais « opération », et c’est « événement de référence » qui est interdit.
+    expect(src).not.toMatch(/[ée]v[éeè]nements?\s+de\s+r[ée]f[ée]rence/i);
   });
 
   it('accueil et « Demander à Verebona » lisent la MÊME source (un seul magasin)', () => {

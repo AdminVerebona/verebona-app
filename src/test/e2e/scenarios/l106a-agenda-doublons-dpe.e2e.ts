@@ -310,7 +310,7 @@ scenario('L106A', 'Agenda — représentations équivalentes d’un même DPE (t
     expect(await decisions(c.compte.id)).toEqual([]);
   });
 
-  it('L106A-E2E-09 — représentation rattachée à un événement de référence : jamais fusionnée par le code ; décision T4 ciblée (orchestration existante), sans capacité → file durable, aucune fusion', async () => {
+  it('L106A-E2E-09 — représentation rattachée à une opération : jamais fusionnée par le code ; décision T4 ciblée (orchestration existante), sans capacité → file durable, aucune fusion', async () => {
     const c = await contexte();
     await c.analyser(c.f309, dossier(c.maison.id));
     await c.analyser(c.f316, compromis(c.maison.id));

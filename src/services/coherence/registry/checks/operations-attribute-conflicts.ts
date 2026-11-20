@@ -95,11 +95,11 @@ export const operationsAttributeConflictsCheck: CoherenceCheck = {
   // Version 3 (lot 115, #791, E03) : la déduplication par l'Agenda exige une action EFFECTIVEMENT actionnable.
   version: 3,
   status: 'ACTIVE',
-  title: 'Événements de référence : contradictions d’attributs qualifiées (même attribut, même rôle, même fait) et arbitrage des contradictions réelles demandé',
+  title: 'Opérations : contradictions d’attributs qualifiées (même attribut, même rôle, même fait) et arbitrage des contradictions réelles demandé',
   domain: 'operations',
   level: 'N2',
   objectType: 'business_operation',
-  scope: 'événements de référence actifs dont la provenance porte des contradictions relevées avant les règles 113AQ, ou une contradiction réelle sans carte ni demande d’arbitrage (lot 114)',
+  scope: 'opérations actives dont la provenance porte des contradictions relevées avant les règles 113AQ, ou une contradiction réelle sans carte ni demande d’arbitrage (lot 114)',
   sources: ['business_operations', 'business_operation_sources', 'business_operation_identity_reviews', 'to_process_actions', 'agenda_items'],
   applicability: 'compte éligible (actif et modifiable)',
   invariant: 'toute contradiction d’attribut persistée est qualifiée (divergence légitime, conflit réel tranché ou non, preuves insuffisantes, rattachement douteux) ; aucune valeur n’est écrasée ni inventée',
@@ -112,7 +112,7 @@ export const operationsAttributeConflictsCheck: CoherenceCheck = {
   services: ['business-operations/consolidation/consolidator#reconsolidateOperations', 'business-operations/consolidation/attribute-conflicts#qualifyAttributeConflicts'],
   chain: ['T3', 'PERSISTENCE'],
   triggers: ['BUSINESS_OPERATION_CHANGED'],
-  frequency: 'campagne exhaustive quotidienne + contrôle ciblé après écriture d’un événement de référence',
+  frequency: 'campagne exhaustive quotidienne + contrôle ciblé après écriture d’une opération',
   criticality: 'MEDIUM',
   tests: ['L113AQ-U-QUALIF', 'L113AQ-E2E-REPRISE', 'L114T-E2E-05', 'L115F-E01', 'L115F-E02'],
 

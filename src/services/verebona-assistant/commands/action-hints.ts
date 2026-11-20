@@ -103,7 +103,7 @@ const CLES: ReadonlyArray<readonly [Cle, RegExp]> = [
   ['debut', /^(?:date de debut|debut)$/],
   ['fin', /^(?:date de fin|fin)$/],
   ['prevue', /^date prevue$/],
-  ['evenement', /^(?:evenement de reference|evenement|business_operation)$/],
+  ['evenement', /^(?:evenement de reference|operation|evenement|business_operation)$/],
   ['role', /^(?:role)$/],
 ];
 type Champs = Map<Cle, string | null>;
@@ -157,14 +157,14 @@ const memeBien = (d: { assetWords: string[] }, bien: string | null): boolean => 
 const memeTexte = (a: string | null, b: string | null): boolean => plain(a ?? '').replace(/\s+/g, ' ').trim() === plain(b ?? '').replace(/\s+/g, ' ').trim();
 
 /**
- * Événement de référence désigné, tel qu'il s'écrit dans une formulation directe : la désignation est gardée si
- * elle commence par le nom d'un type du référentiel (« intervention Vidange ») ou par « événement de référence » ;
- * sinon elle est précédée de « événement de référence ».
+ * Opération désignée, telle qu'elle s'écrit dans une formulation directe : la désignation est gardée si elle
+ * commence par le nom d'un type du référentiel (« intervention Vidange »), par « opération » ou par l'ancien terme
+ * « événement de référence » (toujours compris) ; sinon elle est précédée de « opération » (carte #806 §1).
  */
 function evenementDirect(cible: string): string {
   const p = plain(cible);
-  const nomme = p.startsWith('evenement de reference') || [...TYPE_NOUNS.keys()].some((n) => p === n || p.startsWith(`${n} `));
-  const t = nomme ? cible : `événement de référence ${cible}`;
+  const nomme = p.startsWith('evenement de reference') || /^operation\b/.test(p) || [...TYPE_NOUNS.keys()].some((n) => p === n || p.startsWith(`${n} `));
+  const t = nomme ? cible : `opération ${cible}`;
   return /^[aeiouy]/.test(plain(t)) ? `l'${t}` : `la ${t}`;
 }
 
@@ -298,7 +298,7 @@ function evenementDirecte(h: ActionHint): Directe | null {
     // Un intitulé est exigé : sans lui, l'analyseur prendrait le reste de la phrase pour un intitulé.
     if (!intitule) return null;
     return {
-      phrase: `Déclare un ${type ?? 'événement de référence'} « ${intitule} »${situation === 'REALIZED' ? ' réalisée' : situation === 'ENVISAGED' ? ' à prévoir' : ''}`
+      phrase: `Déclare ${type ? `un ${type}` : 'une opération'} « ${intitule} »${situation === 'REALIZED' ? ' réalisée' : situation === 'ENVISAGED' ? ' à prévoir' : ''}`
         + `${date ? (date.jour ? ` ${date.ecrite}` : ` le ${date.ecrite}`) : ''}${bien ? ` pour le ${bien}` : ''}`,
       attendu: 'CREATE_REFERENCE_EVENT',
       verifier: (d) => d.command === 'CREATE_REFERENCE_EVENT' && d.labelQuoted && d.label === intitule && d.status === situation
@@ -433,7 +433,7 @@ function phraseDirecte(h: ActionHint): Directe | null {
     const p = plain(cible);
     if (/^(?:document|fichier)\s/.test(p)) return lienDocumentDirect(h, sansNomObjet(h.targetHint, /^(?:document|fichier)\s+/i));
     if (/^(?:fournisseur|prestataire)\s/.test(p)) return lienFournisseurDirect(h, sansNomObjet(h.targetHint, /^(?:fournisseur|prestataire)\s+/i));
-    if (p.startsWith('evenement de reference') || [...TYPE_NOUNS.keys()].some((n) => p.startsWith(`${n} `))) return evenementDirecte({ ...h, entityType: 'business_operation' });
+    if (p.startsWith('evenement de reference') || /^operation\s/.test(p) || [...TYPE_NOUNS.keys()].some((n) => p.startsWith(`${n} `))) return evenementDirecte({ ...h, entityType: 'business_operation' });
     return null;
   }
   if (h.entityType === 'room' || h.entityType === 'equipment') return lien ? null : structureDirecte(h);

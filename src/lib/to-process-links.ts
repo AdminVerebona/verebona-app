@@ -25,7 +25,7 @@ export const CARD_LINK_TEXT = {
   document: 'Voir le document',
   sheet: 'Voir la fiche',
   event: 'Voir l’événement',
-  reference: 'Voir l’événement de référence',
+  reference: 'Voir l’opération',
   documents: (n: number) => `Voir les justificatifs (${n})`,
   unavailableOne: 'Justificatif plus disponible',
   unavailableMany: (n: number) => `${n} justificatifs plus disponibles`,

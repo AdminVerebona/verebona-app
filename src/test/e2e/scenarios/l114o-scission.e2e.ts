@@ -43,7 +43,7 @@ vi.mock('@/services/verebona-assistant/events/business-events', async (o) => ({
 type Json = Record<string, any>;
 type Reponse = { status: number; body: Json };
 
-scenario('L114OSP', 'Opérations / Agenda CDC V2.0 — scinder un événement de référence (CDC §7, §14, AC46)', ({ sql, make }) => {
+scenario('L114OSP', 'Opérations / Agenda CDC V2.0 — scinder une opération (CDC §7, §14, AC46)', ({ sql, make }) => {
   const user = (c: AccountRow): OperationWriteContext => ({ accountId: c.id, actor: { kind: 'USER', userId: c.ownerUserId, channel: 'UI' } });
   const asUser = (c: AccountRow) => { session.currentAccountId = c.id; session.userId = c.ownerUserId; };
 
@@ -79,7 +79,8 @@ scenario('L114OSP', 'Opérations / Agenda CDC V2.0 — scinder un événement de
   /** Un refus se dit en phrase : jamais un code brut, jamais le mot interdit. */
   function phrase(r: Reponse, attendu: string): void {
     expect(r.body.message, JSON.stringify(r.body)).toBe(attendu);
-    expect(r.body.message).not.toMatch(/[A-Z]{3,}_[A-Z_]+|Opération|opération/);
+    // Règle remplacée (carte #806, décision du PO du 17/11/2026) : la garde interdisait « Opération » ; à l’écran on dit désormais « opération », et c’est « événement de référence » qui est interdit.
+    expect(r.body.message).not.toMatch(/[ée]v[éeè]nements?\s+de\s+r[ée]f[ée]rence|[A-Z]{3,}_[A-Z_]+/i);
   }
   const journal = (compte: AccountRow, operationId: number) => sql<Json[]>`
     SELECT command, action, relation_kind, origin, channel, actor_user_id, other_operation_id, agenda_item_id, file_id, supplier_id, before_json, after_json
@@ -265,7 +266,8 @@ scenario('L114OSP', 'Opérations / Agenda CDC V2.0 — scinder un événement de
     expect((await invalidateOperation(user(compte), { operationId: id })).status).toBe('APPLIED');
     const supprime = await scinder(id, { label: 'Trop tard', agendaItemIds: [rdv] });
     expect([404, 409]).toContain(supprime.status);
-    expect(supprime.body.message).not.toMatch(/[A-Z]{3,}_[A-Z_]+|Opération/);
+    // Règle remplacée (carte #806, décision du PO du 17/11/2026) : la garde interdisait « Opération » ; à l’écran on dit désormais « opération », et c’est « événement de référence » qui est interdit.
+    expect(supprime.body.message).not.toMatch(/[ée]v[éeè]nements?\s+de\s+r[ée]f[ée]rence|[A-Z]{3,}_[A-Z_]+/i);
   });
 
   it('L114OSP-E03 — isolation des comptes et compte en lecture seule : refus, et rien d’écrit nulle part', async () => {
@@ -305,7 +307,8 @@ scenario('L114OSP', 'Opérations / Agenda CDC V2.0 — scinder un événement de
     await sql`DELETE FROM account_subscriptions WHERE account_id = ${compte.id}`;
     const lectureSeule = await scinder(id, { label: 'Interdit', agendaItemIds: [rdv] });
     expect(lectureSeule.status).toBe(403);
-    expect(JSON.stringify(lectureSeule.body)).not.toMatch(/Opération|opération/);
+    // Règle remplacée (carte #806, décision du PO du 17/11/2026) : la garde interdisait « Opération » ; à l’écran on dit désormais « opération », et c’est « événement de référence » qui est interdit.
+    expect(JSON.stringify(lectureSeule.body)).not.toMatch(/[ée]v[éeè]nements?\s+de\s+r[ée]f[ée]rence/i);
     expect(await empreinte(compte)).toBe(avant);
     expect((await page(id)).status).toBe(200);
   });

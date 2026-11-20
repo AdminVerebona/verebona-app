@@ -38,7 +38,7 @@ const understand = (actionIntents: Indice[]) => ({
   output: { mode: 'UNDERSTAND', intent: 'UNSUPPORTED_ACTION', confidence: 'exact', requestedFacts: [], requestedTopics: [], filters: {}, reason: 'e2e', interactionMode: 'ACTION_REQUEST', actionIntents },
 });
 
-scenario('L114Z2-SENS', 'Passage 114Z2 — actions comprises par le sens : pièces, équipements, échéances, événements de référence, rattachements, création d’un bien', ({ sql, make, useRecordings: rejouerSortie }) => {
+scenario('L114Z2-SENS', 'Passage 114Z2 — actions comprises par le sens : pièces, équipements, échéances, opérations, rattachements, création d’un bien', ({ sql, make, useRecordings: rejouerSortie }) => {
   useTargetState({}, { masters: ['T1', 'T2'] });
 
   const compte = async (plan: 'standard' | 'premium' = 'premium'): Promise<Compte> => {
@@ -131,7 +131,7 @@ scenario('L114Z2-SENS', 'Passage 114Z2 — actions comprises par le sens : pièc
     expect((await echeances())[0]).toMatchObject({ id: creee.id, debut: '2031-03-20' });
   });
 
-  it('E03 — événement de référence : déclaré sur la phrase de l’utilisateur ; corrigé ; fournisseur relié ; document rattaché', async () => {
+  it('E03 — opération : déclaré sur la phrase de l’utilisateur ; corrigé ; fournisseur relié ; document rattaché', async () => {
     const c = await compte();
     const clio = await voiture(c, 'Clio');
     const facture = await document(c, clio, 'Facture Norauto');
@@ -146,8 +146,9 @@ scenario('L114Z2-SENS', 'Passage 114Z2 — actions comprises par le sens : pièc
     expect(await plans(c)).toBe(0);
 
     const d = await dire(c, DITE, [indice('CREATE', 'business_operation', 'la Clio', { ...pneus, situation: 'a eu lieu' })]);
-    expect(d.r.commandPlan?.summary).toBe('Enregistrer l’événement de référence « Intervention — Changement des pneus » du 12 mars 2025 pour Clio. Confirmez-vous ?');
-    expect(JSON.stringify(d.r.commandPlan)).not.toMatch(/op[ée]ration/i);
+    expect(d.r.commandPlan?.summary).toBe('Enregistrer l’opération « Intervention — Changement des pneus » du 12 mars 2025 pour Clio. Confirmez-vous ?');
+    // Règle remplacée (carte #806, décision du PO du 17/11/2026) : la garde interdisait « Opération » ; à l’écran on dit désormais « opération », et c’est « événement de référence » qui est interdit.
+    expect(JSON.stringify(d.r.commandPlan)).not.toMatch(/[ée]v[éeè]nements?\s+de\s+r[ée]f[ée]rence/i);
     expect(await evenements(c)).toHaveLength(0);
     expect(await confirmer(c, d.r.commandPlan!.planId)).toMatchObject({ ok: true, status: 'EXECUTED' });
     const [ev] = await evenements(c);
@@ -161,15 +162,15 @@ scenario('L114Z2-SENS', 'Passage 114Z2 — actions comprises par le sens : pièc
     expect(await sql`SELECT 1 FROM business_operation_financial_components WHERE account_id = ${c.id}`).toHaveLength(0);
 
     const p = await dire(c, 'Il nous manque le prestataire du changement des pneus de la Clio, tu peux t’en occuper', [indice('UPDATE', 'business_operation', 'l’intervention Changement des pneus', { prestataire: 'Garage Martin' })]);
-    expect(p.r.commandPlan?.summary).toContain('Modifier le prestataire de l’événement de référence « Intervention — Changement des pneus » du 12 mars 2025 — Clio : (aucun) → Garage Martin.');
+    expect(p.r.commandPlan?.summary).toContain('Modifier le prestataire de l’opération « Intervention — Changement des pneus » du 12 mars 2025 — Clio : (aucun) → Garage Martin.');
     expect((await evenements(c))[0].provider).toBeNull();
     expect(await confirmer(c, p.r.commandPlan!.planId)).toMatchObject({ ok: true, status: 'EXECUTED' });
     expect((await evenements(c))[0].provider).toBe('Garage Martin');
 
     // Deux rattachements compris dans une même phrase : un seul plan, une confirmation, deux réussites.
     const l = await dire(c, 'Il nous manque la facture Norauto et le garage Martin sur le changement des pneus de la Clio, tu peux t’en occuper', [
-      indice('LINK', 'document', 'Facture Norauto', { 'événement de référence': 'l’intervention Changement des pneus' }),
-      indice('LINK', 'supplier', 'Garage Martin', { 'événement de référence': 'l’intervention Changement des pneus' }),
+      indice('LINK', 'document', 'Facture Norauto', { 'opération': 'l’intervention Changement des pneus' }),
+      indice('LINK', 'supplier', 'Garage Martin', { 'opération': 'l’intervention Changement des pneus' }),
     ]);
     expect(l.r.commandPlan?.actions).toHaveLength(2);
     expect(await sql`SELECT 1 FROM business_operation_suppliers WHERE operation_id = ${ev.id}`).toHaveLength(0);
@@ -255,7 +256,7 @@ scenario('L114Z2-SENS', 'Passage 114Z2 — actions comprises par le sens : pièc
     // Événement de référence d'un autre compte : jamais trouvé.
     const { createOperation } = await import('@/services/business-operations/operation-write.facade');
     await createOperation({ accountId: b.id, actor: { kind: 'USER', userId: b.ownerUserId, channel: 'ASSISTANT' } }, { declaration: 'Vidange de la maison', type: { code: 'INTERVENTION' }, status: 'REALIZED', label: 'Vidange', assetIds: [maisonB] });
-    const evt = await dire(a, 'La vidange, finalement, ne la garde pas', [indice('DELETE', 'business_operation', 'l’événement de référence Vidange')]);
+    const evt = await dire(a, 'La vidange, finalement, ne la garde pas', [indice('DELETE', 'business_operation', 'l’opération Vidange')]);
     expect(evt.r.commandPlan ?? null).toBeNull();
     expect((await evenements(b))[0].invalide).toBe(false);
 

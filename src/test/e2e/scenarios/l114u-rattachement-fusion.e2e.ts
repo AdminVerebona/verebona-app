@@ -42,7 +42,7 @@ const facade = () => import('@/services/business-operations/operation-write.faca
 const pontRattachement = () => import('@/services/business-operations/graph/agenda-link-proposal');
 const pontFusion = () => import('@/services/business-operations/graph/merge-proposal');
 
-scenario('L114U', 'Opérations / Agenda CDC V2.0 — rattachement d’Agenda proposé sur pièce, et cartes de fusion entre deux événements de référence', ({ sql, make }) => {
+scenario('L114U', 'Opérations / Agenda CDC V2.0 — rattachement d’Agenda proposé sur pièce, et cartes de fusion entre deux opérations', ({ sql, make }) => {
   const user = (c: AccountRow, userId = c.ownerUserId): OperationWriteContext => ({ accountId: c.id, actor: { kind: 'USER', userId, channel: 'UI' } });
   const t3 = (c: AccountRow): OperationWriteContext => ({ accountId: c.id, actor: { kind: 'AI', treatment: 'T3' } });
   const doc = (ref: number | string) => ({ kind: 'DOCUMENT' as const, ref: String(ref) });
@@ -125,7 +125,8 @@ scenario('L114U', 'Opérations / Agenda CDC V2.0 — rattachement d’Agenda pro
     expect(await nbDocuments(compte)).toBe(1);
     expect(carte.question).toContain('« Passage du couvreur »');
     expect(carte.question).toContain('« Devis toiture »');
-    expect(carte.question).not.toMatch(/op[ée]ration/i);
+    // Règle remplacée (carte #806, décision du PO du 17/11/2026) : la garde interdisait « Opération » ; à l’écran on dit désormais « opération », et c’est « événement de référence » qui est interdit.
+    expect(carte.question).not.toMatch(/[ée]v[éeè]nements?\s+de\s+r[ée]f[ée]rence/i);
     expect((carte.proposals_json as Json[]).map((p) => p.value)).toEqual(['ATTACH', 'KEEP']);
     expect(carte.trigger_context).toMatchObject({ operationId: sinistre, agendaItemId: passage.id, currentOperationId: toiture, evidenceKeys: [`DOCUMENT|${devis}`] });
     // Elle est proposée dans la file du compte, avec la même question.
@@ -230,7 +231,8 @@ scenario('L114U', 'Opérations / Agenda CDC V2.0 — rattachement d’Agenda pro
     const [carte, ...trop] = await cartes(compte, 'REFERENCE-EVENT-MERGE');
     expect(trop).toEqual([]);
     expect(carte).toMatchObject({ target_type: 'DOCUMENT', target_id: facture, ouverte: true, relation_key: `referenceEventMerge:${Math.min(a, b)}:${Math.max(a, b)}` });
-    expect(carte.question).not.toMatch(/\bop[ée]ration/i);
+    // Règle remplacée (carte #806, décision du PO du 17/11/2026) : la garde interdisait « Opération » ; à l’écran on dit désormais « opération », et c’est « événement de référence » qui est interdit.
+    expect(carte.question).not.toMatch(/[ée]v[éeè]nements?\s+de\s+r[ée]f[ée]rence/i);
     expect((carte.proposals_json as Json[]).map((p) => p.value)).toEqual(['MERGE', 'KEEP_DISTINCT']);
     // Identité canonique proposée : le plus ancien des deux (choix par défaut, à valider par le PO).
     expect(carte.trigger_context).toMatchObject({ canonicalOperationId: Math.min(a, b), absorbedOperationId: Math.max(a, b) });
@@ -330,7 +332,8 @@ scenario('L114U', 'Opérations / Agenda CDC V2.0 — rattachement d’Agenda pro
     const [carte, ...trop] = await cartes(compte, 'REFERENCE-EVENT-FACT');
     expect(trop).toEqual([]);
     expect(carte).toMatchObject({ target_type: 'DOCUMENT', target_id: constat, ouverte: true });
-    expect(carte.question).not.toMatch(/\bop[ée]ration/i);
+    // Règle remplacée (carte #806, décision du PO du 17/11/2026) : la garde interdisait « Opération » ; à l’écran on dit désormais « opération », et c’est « événement de référence » qui est interdit.
+    expect(carte.question).not.toMatch(/[ée]v[éeè]nements?\s+de\s+r[ée]f[ée]rence/i);
     expect((carte.proposals_json as Json[]).map((p) => p.value).sort()).toEqual(['FACT:2040-03-10', 'FACT:2040-03-12']);
     // Aucune valeur n'est écrasée avant la réponse.
     expect(await sql<Json[]>`SELECT id::int AS id, realized_date::text AS d FROM business_operations WHERE account_id = ${compte.id} ORDER BY id`)
@@ -429,7 +432,8 @@ scenario('L114U', 'Opérations / Agenda CDC V2.0 — rattachement d’Agenda pro
     expect(carte.relation_key).toBe(`referenceEventFact:${Math.min(sinistre, reparation)}:${Math.max(sinistre, reparation)}:provider`);
     expect(carte.question).toBe('« Sinistre — Dégât des eaux » et « Intervention — Réfection de la salle de bains » '
       + 'indiquent des prestataires différents : lequel est le bon ?');
-    expect(carte.question).not.toMatch(/\bop[ée]ration/i);
+    // Règle remplacée (carte #806, décision du PO du 17/11/2026) : la garde interdisait « Opération » ; à l’écran on dit désormais « opération », et c’est « événement de référence » qui est interdit.
+    expect(carte.question).not.toMatch(/[ée]v[éeè]nements?\s+de\s+r[ée]f[ée]rence/i);
     expect((carte.proposals_json as Json[]).map((p) => p.value).sort()).toEqual(['FACT:Carrelages Bêta', 'FACT:Plomberie Durand']);
     // Aucune valeur n'est écrasée avant la réponse, et la file l'affiche (sujet de la mascotte compris).
     expect(await sql<Json[]>`SELECT provider FROM business_operations WHERE id = ${sinistre}`).toEqual([{ provider: 'Plomberie Durand' }]);

@@ -48,7 +48,8 @@ describe('L113P-UI1 — Timeline : aucun statut d’événement (#715)', () => {
       expect(html, v).not.toContain('data-timeline-status');
       expect(html, v).not.toMatch(/bg-destructive|--badge-todo/);
       expect(html, v).toContain('Achat — Draisienne');
-      expect(html, v).not.toMatch(/Opération/);
+      // Règle remplacée (carte #806, décision du PO du 17/11/2026) : la garde interdisait « Opération » ; à l’écran on dit désormais « opération », et c’est « événement de référence » qui est interdit.
+      expect(html, v).not.toMatch(/[ée]v[éeè]nements?\s+de\s+r[ée]f[ée]rence/i);
     }
   });
 });

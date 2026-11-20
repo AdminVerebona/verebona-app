@@ -536,9 +536,10 @@ describe('L114R-U-R04 — facture traversant deux mois, bornes partielles, péri
 });
 
 describe('L114R-U-TEXTES — textes nouveaux', () => {
-  it('jamais « Opération » ; durée indéterminée distincte de « non renseignée »', () => {
+  it('jamais « événement de référence » ; durée indéterminée distincte de « non renseignée »', () => {
     const textes = [lib.PERIOD_OPEN_ENDED_LABEL, lib.PERIOD_NOT_RELEVANT_MESSAGE, lib.PERIOD_DETAIL_TITLE, lib.EXPENSE_PERIOD_UNDETERMINED, svc.RESOLUTION_NOTES.USER_CORRECTION('x')];
-    expect(textes.join(' ')).not.toMatch(/Opération/i);
+    // Règle remplacée (carte #806, décision du PO du 17/11/2026) : la garde interdisait « Opération » ; à l’écran on dit désormais « opération », et c’est « événement de référence » qui est interdit.
+    expect(textes.join(' ')).not.toMatch(/[ée]v[éeè]nements?\s+de\s+r[ée]f[ée]rence/i);
     expect(lib.PERIOD_OPEN_ENDED_LABEL).not.toContain(lib.NOT_PROVIDED_LABEL);
   });
 });

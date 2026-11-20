@@ -251,7 +251,7 @@ export const WRITE_COMMAND_CATALOG: Record<WriteCommandType, WriteCommandDefinit
     spec: {
       capabilityCode: 'ROOM_CREATE', targetKind: 'room', requiredFields: ['assetId', 'name'], optionalFields: [],
       readBeforeWrite: true, deletePolicy: 'NONE', undoPolicy: 'IRREVERSIBLE',
-      sideEffects: ['réservé aux biens qui ont des pièces et aux offres Premium', 'événements de référence du bien réexaminés'],
+      sideEffects: ['réservé aux biens qui ont des pièces et aux offres Premium', 'opérations du bien réexaminées'],
       successEvent: 'ASSET_UPDATED', retrySafety: 'PLAN_TAKEN_ONCE',
     },
   },
@@ -378,7 +378,7 @@ export const WRITE_COMMAND_CATALOG: Record<WriteCommandType, WriteCommandDefinit
   },
   // Lot 114X (Trello #753, CDC T2 §14.3 W21 – W26, §14.4 « Opérations », X69 – X73) — événements de référence.
   CREATE_REFERENCE_EVENT: {
-    type: 'CREATE_REFERENCE_EVENT', label: 'Enregistrer un événement de référence',
+    type: 'CREATE_REFERENCE_EVENT', label: 'Enregistrer une opération',
     service: 'operation-write.facade.createOperation', requiresWriteAccess: true,
     spec: {
       capabilityCode: 'REFERENCE_EVENT_CREATE', targetKind: 'reference_event',
@@ -389,7 +389,7 @@ export const WRITE_COMMAND_CATALOG: Record<WriteCommandType, WriteCommandDefinit
     },
   },
   UPDATE_REFERENCE_EVENT: {
-    type: 'UPDATE_REFERENCE_EVENT', label: 'Corriger un événement de référence',
+    type: 'UPDATE_REFERENCE_EVENT', label: 'Corriger une opération',
     service: 'operation-write.facade.updateOperation', requiresWriteAccess: true,
     spec: {
       capabilityCode: 'REFERENCE_EVENT_UPDATE', targetKind: 'reference_event',
@@ -400,29 +400,29 @@ export const WRITE_COMMAND_CATALOG: Record<WriteCommandType, WriteCommandDefinit
     },
   },
   INVALIDATE_REFERENCE_EVENT: {
-    type: 'INVALIDATE_REFERENCE_EVENT', label: 'Supprimer un événement de référence',
+    type: 'INVALIDATE_REFERENCE_EVENT', label: 'Supprimer une opération',
     service: 'operation-write.facade.invalidateOperation', requiresWriteAccess: true,
     spec: {
       capabilityCode: 'REFERENCE_EVENT_INVALIDATE', targetKind: 'reference_event',
       requiredFields: ['operationId', 'expectedVersion'], optionalFields: [],
       readBeforeWrite: true, deletePolicy: 'LOGICAL_INVALIDATION', undoPolicy: 'IRREVERSIBLE',
-      sideEffects: ['documents, échéances (détachées, conservées à leur date), fournisseurs et montants conservés', 'une analyse ne réactive pas l’événement retiré par l’utilisateur'],
+      sideEffects: ['documents, échéances (détachées, conservées à leur date), fournisseurs et montants conservés', 'une analyse ne réactive pas l’opération retirée par l’utilisateur'],
       successEvent: 'BUSINESS_OPERATION_INVALIDATED', retrySafety: 'PLAN_TAKEN_ONCE_AND_IDEMPOTENCY_KEY',
     },
   },
   ASSOCIATE_REFERENCE_EVENTS: {
-    type: 'ASSOCIATE_REFERENCE_EVENTS', label: 'Associer deux événements de référence',
+    type: 'ASSOCIATE_REFERENCE_EVENTS', label: 'Associer deux opérations',
     service: 'operation-write.facade.associateOperations', requiresWriteAccess: true,
     spec: {
       capabilityCode: 'REFERENCE_EVENTS_ASSOCIATE', targetKind: 'reference_event',
       requiredFields: ['fromOperationId', 'toOperationId', 'nature', 'expectedVersions'], optionalFields: [],
       readBeforeWrite: true, deletePolicy: 'NONE', undoPolicy: 'IRREVERSIBLE',
-      sideEffects: ['les deux événements restent distincts : aucune fusion', 'aucun document déplacé, aucun montant, aucune date, aucune échéance créés'],
+      sideEffects: ['les deux opérations restent distinctes : aucune fusion', 'aucun document déplacé, aucun montant, aucune date, aucune échéance créés'],
       successEvent: 'GRAPH_HISTORY_ONLY', retrySafety: 'PLAN_TAKEN_ONCE_AND_IDEMPOTENCY_KEY',
     },
   },
   LINK_DOCUMENT_REFERENCE_EVENT: {
-    type: 'LINK_DOCUMENT_REFERENCE_EVENT', label: 'Rattacher un document à un événement de référence',
+    type: 'LINK_DOCUMENT_REFERENCE_EVENT', label: 'Rattacher un document à une opération',
     service: 'operation-write.facade.linkDocument', requiresWriteAccess: true,
     spec: {
       capabilityCode: 'REFERENCE_EVENT_DOCUMENT_LINK', targetKind: 'reference_event',
@@ -433,7 +433,7 @@ export const WRITE_COMMAND_CATALOG: Record<WriteCommandType, WriteCommandDefinit
     },
   },
   LINK_SUPPLIER_REFERENCE_EVENT: {
-    type: 'LINK_SUPPLIER_REFERENCE_EVENT', label: 'Relier un fournisseur à un événement de référence',
+    type: 'LINK_SUPPLIER_REFERENCE_EVENT', label: 'Relier un fournisseur à une opération',
     service: 'operation-write.facade.linkSupplier', requiresWriteAccess: true,
     spec: {
       capabilityCode: 'REFERENCE_EVENT_SUPPLIER_LINK', targetKind: 'reference_event',
@@ -445,7 +445,7 @@ export const WRITE_COMMAND_CATALOG: Record<WriteCommandType, WriteCommandDefinit
   },
   // Passage 114AB (Trello #753) — GESTES INVERSES des événements de référence, par la façade de la carte #744.
   RESTORE_REFERENCE_EVENT: {
-    type: 'RESTORE_REFERENCE_EVENT', label: 'Rétablir un événement de référence',
+    type: 'RESTORE_REFERENCE_EVENT', label: 'Rétablir une opération',
     service: 'operation-write.facade.restoreOperation', requiresWriteAccess: true,
     spec: {
       capabilityCode: 'REFERENCE_EVENT_RESTORE', targetKind: 'reference_event',
@@ -459,29 +459,29 @@ export const WRITE_COMMAND_CATALOG: Record<WriteCommandType, WriteCommandDefinit
     },
   },
   DISSOCIATE_REFERENCE_EVENTS: {
-    type: 'DISSOCIATE_REFERENCE_EVENTS', label: 'Dissocier deux événements de référence',
+    type: 'DISSOCIATE_REFERENCE_EVENTS', label: 'Dissocier deux opérations',
     service: 'operation-write.facade.dissociateOperations', requiresWriteAccess: true,
     spec: {
       capabilityCode: 'REFERENCE_EVENTS_DISSOCIATE', targetKind: 'reference_event',
       requiredFields: ['fromOperationId', 'toOperationId', 'expectedVersions'], optionalFields: [],
       readBeforeWrite: true, deletePolicy: 'NONE', undoPolicy: 'IRREVERSIBLE',
-      sideEffects: ['seul le lien est retiré : les deux événements restent, avec leurs documents et leurs fournisseurs', 'retrait décidé par l’utilisateur : une analyse ne les associe plus d’elle-même'],
+      sideEffects: ['seul le lien est retiré : les deux opérations restent, avec leurs documents et leurs fournisseurs', 'retrait décidé par l’utilisateur : une analyse ne les associe plus d’elle-même'],
       successEvent: 'GRAPH_HISTORY_ONLY', retrySafety: 'PLAN_TAKEN_ONCE_AND_IDEMPOTENCY_KEY',
     },
   },
   UNLINK_DOCUMENT_REFERENCE_EVENT: {
-    type: 'UNLINK_DOCUMENT_REFERENCE_EVENT', label: 'Retirer un document d’un événement de référence',
+    type: 'UNLINK_DOCUMENT_REFERENCE_EVENT', label: 'Retirer un document d’une opération',
     service: 'operation-write.facade.unlinkDocument', requiresWriteAccess: true,
     spec: {
       capabilityCode: 'REFERENCE_EVENT_DOCUMENT_UNLINK', targetKind: 'reference_event',
       requiredFields: ['operationId', 'documentId', 'expectedVersion', 'documentVersion'], optionalFields: [],
       readBeforeWrite: true, deletePolicy: 'NONE', undoPolicy: 'IRREVERSIBLE',
-      sideEffects: ['le document reste dans le compte et garde ses autres rattachements', 'montants de l’événement recalculés par la consolidation'],
+      sideEffects: ['le document reste dans le compte et garde ses autres rattachements', 'montants de l’opération recalculés par la consolidation'],
       successEvent: 'GRAPH_HISTORY_ONLY', retrySafety: 'PLAN_TAKEN_ONCE_AND_IDEMPOTENCY_KEY',
     },
   },
   UNLINK_SUPPLIER_REFERENCE_EVENT: {
-    type: 'UNLINK_SUPPLIER_REFERENCE_EVENT', label: 'Retirer un fournisseur d’un événement de référence',
+    type: 'UNLINK_SUPPLIER_REFERENCE_EVENT', label: 'Retirer un fournisseur d’une opération',
     service: 'operation-write.facade.unlinkSupplier', requiresWriteAccess: true,
     spec: {
       capabilityCode: 'REFERENCE_EVENT_SUPPLIER_UNLINK', targetKind: 'reference_event',
@@ -492,7 +492,7 @@ export const WRITE_COMMAND_CATALOG: Record<WriteCommandType, WriteCommandDefinit
     },
   },
   LINK_AGENDA_REFERENCE_EVENT: {
-    type: 'LINK_AGENDA_REFERENCE_EVENT', label: 'Rattacher une échéance à un événement de référence',
+    type: 'LINK_AGENDA_REFERENCE_EVENT', label: 'Rattacher une échéance à une opération',
     service: 'operation-write.facade.linkAgendaItem', requiresWriteAccess: true,
     spec: {
       capabilityCode: 'REFERENCE_EVENT_AGENDA_LINK', targetKind: 'reference_event',

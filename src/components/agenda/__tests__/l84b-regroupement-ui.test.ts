@@ -38,7 +38,7 @@ const principal: AgendaGroupingView = {
   structuralScope: { allowed: true, housingAssetIds: [5] },
 };
 
-describe('L84B-UI01 — tiroir de l’événement de référence (AC27)', () => {
+describe('L84B-UI01 — tiroir du jalon de l’opération (AC27)', () => {
   const html = rendre(principal);
   it('les cinq catégories du CDC §14.2, dans l’ordre, avec leurs éléments', () => {
     expect(MAIN_CATEGORIES).toEqual(['elements', 'documents', 'biens', 'pieces', 'equipements']);
@@ -47,7 +47,7 @@ describe('L84B-UI01 — tiroir de l’événement de référence (AC27)', () => 
     expect([...ordre].sort((a, b) => a - b)).toEqual(ordre);
     for (const t of ['Visite expert', 'Réparation plafond', 'Rapport d’expertise', 'Devis', 'Maison', 'Cuisine', 'Aucun équipement.']) expect(html).toContain(t);
     expect(html).toContain('data-role="reference"');
-    expect(html).toContain('Événement de référence');
+    expect(html).toContain('Jalon de l’opération');
   });
   it('relier pour chaque catégorie, créer une étape, retirer chaque objet, retirer le rôle', () => {
     for (const k of MAIN_CATEGORIES) expect(html).toContain(`data-testid="regroupement-relier-${k}"`);
@@ -57,7 +57,7 @@ describe('L84B-UI01 — tiroir de l’événement de référence (AC27)', () => 
     expect(html).toContain('aria-label="Dissocier « Visite expert »"');
     // Lot 86D : pour un document, « retirer de l’ensemble » est distingué de « détacher de cet événement ».
     expect(html).toContain('aria-label="Retirer « Rapport d’expertise » de l’ensemble"');
-    expect(html).toContain('Ne plus en faire l’événement de référence');
+    expect(html).toContain('Ne plus en faire le jalon de l’opération');
   });
   it('lien précis signalé (§7.3), lien seulement par l’ensemble sans pastille', () => {
     const rapport = html.slice(html.indexOf('data-testid="regroupement-documents-10"'), html.indexOf('data-testid="regroupement-documents-11"'));
@@ -73,7 +73,7 @@ describe('L84B-UI02 — tiroir d’un élément rattaché : léger (AC28)', () =
     main: { id: 1, title: 'Dégât des eaux', startDate: '2026-03-12' },
     counts: { items: 2, documents: 5, assets: 1, rooms: 1, equipments: 0 },
   });
-  it('contexte global + accès à l’événement de référence, jamais tout l’ensemble', () => {
+  it('contexte global + accès au jalon de l’opération, jamais tout l’ensemble', () => {
     expect(html).toContain('Fait partie de');
     expect(html).toContain('Dégât des eaux');
     expect(html).toContain('2 étapes · 5 documents · 1 bien · 1 pièce');
@@ -82,13 +82,13 @@ describe('L84B-UI02 — tiroir d’un élément rattaché : léger (AC28)', () =
     expect(html).not.toContain('data-testid="regroupement-categorie-');
     expect(html).not.toContain('Retirer «');
   });
-  it('gestes propres : en faire l’événement de référence, retirer de l’ensemble', () => {
-    expect(html).toContain('En faire l’événement de référence');
+  it('gestes propres : en faire le jalon de l’opération, retirer de l’ensemble', () => {
+    expect(html).toContain('En faire le jalon de l’opération');
     expect(html).toContain('Retirer de cet ensemble');
   });
 });
 
-describe('L84B-UI03 / UI04 — élément seul ; ensemble sans événement de référence', () => {
+describe('L84B-UI03 / UI04 — élément seul ; ensemble sans jalon', () => {
   it('élément seul : relier un élément de l’agenda (AC02) ou un document (AC01)', () => {
     const html = rendre({ itemId: 9, role: 'NONE', linkedDocuments: [], main: null, mainWithdrawn: false, ensemble: null, counts: null });
     // Lot 103D (décision PO du 31/10) : rubrique « Associations », « Associer à un autre événement ».
@@ -104,9 +104,9 @@ describe('L84B-UI03 / UI04 — élément seul ; ensemble sans événement de ré
       itemId: 1, role: 'MEMBER', linkedDocuments: [], main: null, mainWithdrawn: true, counts: null,
       ensemble: { items: [{ id: 2, title: 'Visite expert', startDate: '2026-03-21', isMain: false }], documents: [], assets: [], rooms: [], equipments: [] },
     });
-    expect(html).toContain('Aucun événement de référence : vous l’avez retiré.');
+    expect(html).toContain('Aucun jalon pour cette opération : vous l’avez retiré.');
     expect(html).toContain('Visite expert');
-    expect(html).toContain('En faire l’événement de référence');
+    expect(html).toContain('En faire le jalon de l’opération');
   });
 });
 
@@ -129,7 +129,7 @@ describe('L84B-UI05 — accessibilité, mobile', () => {
     expect(src).toContain('<AlertDialogTitle>{L.releaseTitle}</AlertDialogTitle>');
     expect(src).toContain('void agir("retirer-reference")');
   });
-  it('garde d’écriture partagée avant tout geste ; ouverture empilée de l’événement de référence', () => {
+  it('garde d’écriture partagée avant tout geste ; ouverture empilée du jalon de l’opération', () => {
     expect(src).toContain('const autorise = () => { let ok = false; garder(() => { ok = true; }); return ok; };');
     expect(src).toContain('openDrawer({ kind: "echeance", id }, { stack: true })');
   });
@@ -144,7 +144,7 @@ describe('L84B-UI06 — câblage des tiroirs', () => {
     // Lot 86D : en consultation, le regroupement présente les documents de l'élément quel que soit son rôle.
     expect(d).toContain('item.fileLinks.length > 0 && mode === "edit" && groupingRole !== "MAIN"');
   });
-  it('DocumentDrawer : événement de référence et lien précis distingués ; lien manuel vers un élément (AC01)', () => {
+  it('DocumentDrawer : opération et lien précis distingués ; lien manuel vers un élément (AC01)', () => {
     const d = lire('components/assets/DocumentDrawer.tsx');
     expect(d).toContain('/api/documents/${doc.id}/agenda-liens');
     expect(d).toContain('GROUPING_LABELS.mainBadge');

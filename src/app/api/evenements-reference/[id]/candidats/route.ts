@@ -2,7 +2,7 @@
  * Carte #744, travaux D — écriture : CANDIDATS proposés par la page d'un
  * événement de référence (choix d'un objet à relier).
  *
- *   GET /api/evenements-reference/:id/candidats?kind=agenda|document|supplier|reference|move-target&q=<texte>
+ *   GET /api/evenements-reference/:id/candidats?kind=agenda|document|supplier|reference&q=<texte>
  *     → { items: [{ id, title, date, typeCode }], more }
  *       objets DU COMPTE pas encore reliés à cet événement de référence,
  *       filtrés par titre ou nom ; `more` : d'autres résultats existent.

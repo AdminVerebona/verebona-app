@@ -215,15 +215,15 @@ export function inventoryFindings(r: InventoryReport): InventoryFinding[] {
   const out: InventoryFinding[] = [];
   const add = (code: string, severity: InventoryFinding['severity'], count: number, message: string) => { if (count > 0) out.push({ code, severity, count, message }); };
   add('CROSS_ACCOUNT_EVENT', 'BLOQUANT', n(r, 'evenementsOrphelins', 'intercompte'), 'Événement relié à une Opération d’un autre compte : à corriger avant toute migration.');
-  add('USER_PRINCIPAL', 'A_PRESERVER', n(r, 'principal', 'principal_user'), 'Événement de référence désigné par l’utilisateur : la décision doit survivre à l’abandon du rôle.');
-  add('PRINCIPAL_REFUSALS', 'A_PRESERVER', n(r, 'decisions', 'principal_retire'), 'Retrait mémorisé de l’événement de référence : ne jamais le rétablir.');
+  add('USER_PRINCIPAL', 'A_PRESERVER', n(r, 'principal', 'principal_user'), 'Événement principal désigné par l’utilisateur : la décision doit survivre à l’abandon du rôle.');
+  add('PRINCIPAL_REFUSALS', 'A_PRESERVER', n(r, 'decisions', 'principal_retire'), 'Retrait mémorisé de l’événement principal : ne jamais le rétablir.');
   add('USER_REFUSALS', 'A_PRESERVER', n(r, 'decisions', 'refus'), 'Refus utilisateur actifs : aucun lien refusé recréé silencieusement.');
   add('PROJECTION_SUPPRESSIONS', 'A_PRESERVER', n(r, 'decisions', 'projections_supprimees'), 'Projections supprimées par l’utilisateur : ne jamais les recréer.');
   add('PRINCIPAL_ONLY_DOC_LINKS', 'A_PRESERVER', n(r, 'liens', 'liens_doc_uniquement_principal'), 'Liens document ↔ événement qui n’existent que par la propagation au principal : à reporter sur l’Opération avant tout retrait.');
-  add('PENDING_NOTIF_ON_PRINCIPAL', 'A_PRESERVER', n(r, 'notifications', 'en_attente_sur_principal'), 'Rappels en attente sur un événement de référence : à conserver (aucun rappel perdu ni doublé).');
-  add('PRESUMED_TECHNICAL_PRINCIPAL', 'INFO', n(r, 'principal', 'principal_presume_technique'), 'Événements de référence présumés techniques : candidats au retrait APRÈS qualification T4.');
+  add('PENDING_NOTIF_ON_PRINCIPAL', 'A_PRESERVER', n(r, 'notifications', 'en_attente_sur_principal'), 'Rappels en attente sur un événement principal : à conserver (aucun rappel perdu ni doublé).');
+  add('PRESUMED_TECHNICAL_PRINCIPAL', 'INFO', n(r, 'principal', 'principal_presume_technique'), 'Événements principaux présumés techniques : candidats au retrait APRÈS qualification T4.');
   add('OPERATION_WITHOUT_EVENT', 'INFO', n(r, 'operationsSansEvenement', 'sans_evenement'), 'Opérations sans événement : invisibles aujourd’hui dans l’Agenda et la Timeline.');
-  add('OPERATION_WITHOUT_PRINCIPAL', 'INFO', n(r, 'operationsSansEvenement', 'sans_principal'), 'Opérations sans événement de référence : non regroupées dans la Timeline, sans libellé propre.');
+  add('OPERATION_WITHOUT_PRINCIPAL', 'INFO', n(r, 'operationsSansEvenement', 'sans_principal'), 'Opérations sans événement principal : non regroupées dans la Timeline, sans libellé propre.');
   add('ORPHAN_OPERATION_REF', 'INFO', n(r, 'evenementsOrphelins', 'operation_absente') + n(r, 'evenementsOrphelins', 'operation_inactive'), 'Événements reliés à une Opération absente ou inactive.');
   return out;
 }

@@ -125,7 +125,7 @@ export const TCO_UNDATED_TEXTS = {
   saveAll: (n: number) => `Enregistrer les dates (${n})`,
   close: 'Fermer',
   confirmDate: 'Confirmer cette date',
-  reference: 'Voir l’événement de référence',
+  reference: 'Voir l’opération',
   // Carte #769 (écart C) — à valider par le PO.
   counters: (pending: number, confirmed: number): string =>
     `Conservation sans date : ${pending} choix à confirmer, ${confirmed} déjà ${confirmed > 1 ? 'confirmés' : 'confirmé'}.`,
@@ -133,14 +133,14 @@ export const TCO_UNDATED_TEXTS = {
   // Carte #769 (écart B) — à valider par le PO : retrait de plusieurs dépenses indissociables (même clé stable).
   removeShared: (n: number): string =>
     `Retirer du coût de possession les ${n} dépenses de même montant portées par ce justificatif ? Elles ne peuvent pas être retirées séparément. Vous pourrez les ajouter de nouveau.`,
-  noField: 'Cette date ne se saisit pas ici : corrigez-la sur le justificatif ou sur l’événement de référence de la dépense.',
+  noField: 'Cette date ne se saisit pas ici : corrigez-la sur le justificatif ou sur l’opération de la dépense.',
   savedOne: 'Date enregistrée',
   savedMany: (n: number) => `${n} dates enregistrées`,
   origins: {
     ASSET: 'Fiche du bien (date d’achat)',
     EQUIPMENT: 'Fiche de l’équipement (date d’achat)',
     DOCUMENT: 'Justificatif',
-    OPERATION: 'Événement de référence',
+    OPERATION: 'Opération',
   } satisfies Record<TcoUndatedOrigin, string>,
   targets: {
     ASSET_FIELD: 'La date sera enregistrée comme date d’achat sur la fiche du bien.',

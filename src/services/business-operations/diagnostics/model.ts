@@ -185,7 +185,7 @@ const REASONS: Readonly<Record<string, string>> = {
   PROBABLE_WITHOUT_MATCH: 'source probable sans Opération correspondante : pas de création',
   TARGET_OUT_OF_PORTFOLIO: 'bien cible hors du portefeuille actif',
   // Carte #744 : la source fondait un événement de référence supprimé par l'utilisateur — T3 n'en recrée pas.
-  USER_INVALIDATED_REFERENCE_EVENT: 'événement de référence supprimé par l’utilisateur : pas de nouvelle création à partir de la même source',
+  USER_INVALIDATED_REFERENCE_EVENT: 'opération supprimée par l’utilisateur : pas de nouvelle création à partir de la même source',
   MATCH_M0: 'arbitrage utilisateur',
   MATCH_M1: 'référence métier identique',
   MATCH_M2: 'même source documentaire ou même cycle de possession',

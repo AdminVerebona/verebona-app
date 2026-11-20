@@ -25,6 +25,9 @@ import {
 import { backfillDefinition, validateBackfillRequest } from '@/services/admin/ops/backfill/definitions';
 import { summarizeBackfill } from '@/services/admin/ops/backfill/report-format';
 
+/** Carte #806 : la garde de vocabulaire porte sur les textes VISIBLES — les commentaires de code en sont retirés. */
+const sansCommentaires806 = (s: string) => s.replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '').replace(/\{\/\*[\s\S]*?\*\/\}/g, '');
+
 const ROOT = process.cwd();
 const src = (p: string) => readFileSync(join(ROOT, p), 'utf8');
 
@@ -190,12 +193,14 @@ describe('L113AC-U-06 — gardes statiques', () => {
     expect(route).toContain("'BACKFILL_PREREQUISITE_MISSING'");
   });
 
-  it('aucun texte nouveau visible ne dit « Opération »', () => {
+  it('aucun texte nouveau visible ne dit « événement de référence »', () => {
     for (const f of ['src/lib/documents/business-period-surfaces.ts', 'src/services/documents/business-periods/requalification.ts']) {
-      const textes = [...src(f).matchAll(/'([^'\n]*)'|`([^`\n]*)`/g)].map((m) => m[1] ?? m[2]);
-      expect(textes.filter((t) => /Opération/.test(t))).toEqual([]);
+      const textes = [...sansCommentaires806(src(f)).matchAll(/'([^'\n]*)'|`([^`\n]*)`/g)].map((m) => m[1] ?? m[2]);
+      // Règle remplacée (carte #806, décision du PO du 17/11/2026) : la garde interdisait « Opération » ; à l’écran on dit désormais « opération », et c’est « événement de référence » qui est interdit.
+      expect(textes.filter((t) => /[ée]v[éeè]nements?\s+de\s+r[ée]f[ée]rence/i.test(t))).toEqual([]);
     }
     const def = backfillDefinition('business-periods-v2-requalification')!;
-    expect(`${def.label} ${def.description} ${def.warning}`).not.toMatch(/Opération/);
+    // Règle remplacée (carte #806, décision du PO du 17/11/2026) : la garde interdisait « Opération » ; à l’écran on dit désormais « opération », et c’est « événement de référence » qui est interdit.
+    expect(`${def.label} ${def.description} ${def.warning}`).not.toMatch(/[ée]v[éeè]nements?\s+de\s+r[ée]f[ée]rence/i);
   });
 });

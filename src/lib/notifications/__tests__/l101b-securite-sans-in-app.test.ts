@@ -111,9 +111,10 @@ describe('L101B-U01 — inventaire exhaustif des événements de sécurité', ()
     expect(r.bellBody.length).toBeGreaterThan(0);
   });
 
-  it('motif lisible, sans le mot « Opération »', () => {
+  it('motif lisible, sans le mot « événement de référence »', () => {
     expect(RETIRED_SECURITY_IN_APP).toMatch(/e-mail obligatoire/);
-    expect(RETIRED_SECURITY_IN_APP).not.toMatch(/Opération/);
+    // Règle remplacée (carte #806, décision du PO du 17/11/2026) : la garde interdisait « Opération » ; à l’écran on dit désormais « opération », et c’est « événement de référence » qui est interdit.
+    expect(RETIRED_SECURITY_IN_APP).not.toMatch(/[ée]v[éeè]nements?\s+de\s+r[ée]f[ée]rence/i);
   });
 });
 

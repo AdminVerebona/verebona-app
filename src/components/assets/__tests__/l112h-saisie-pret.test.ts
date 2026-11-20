@@ -156,7 +156,8 @@ describe('L112H-U4 — rendu du formulaire', () => {
     expect(html).toContain('Revenir à la valeur du document');
     expect(html).toContain('Lu sur « Offre de prêt PRET-1 ».');
     expect(html).toContain('Les documents se contredisent');
-    expect(html).not.toMatch(/Opération/);
+    // Règle remplacée (carte #806, décision du PO du 17/11/2026) : la garde interdisait « Opération » ; à l’écran on dit désormais « opération », et c’est « événement de référence » qui est interdit.
+    expect(html).not.toMatch(/[ée]v[éeè]nements?\s+de\s+r[ée]f[ée]rence/i);
   });
 
   it('lecture seule : valeurs et origines, aucun champ ni geste', () => {
@@ -167,7 +168,8 @@ describe('L112H-U4 — rendu du formulaire', () => {
     expect(html).toContain('3,1 %');
     expect(html).toContain('Les documents se contredisent (Mensuelle / Trimestrielle)');
     expect(html).toContain('Saisi par vous le 06/11/2026');
-    expect(html).not.toMatch(/Opération/);
+    // Règle remplacée (carte #806, décision du PO du 17/11/2026) : la garde interdisait « Opération » ; à l’écran on dit désormais « opération », et c’est « événement de référence » qui est interdit.
+    expect(html).not.toMatch(/[ée]v[éeè]nements?\s+de\s+r[ée]f[ée]rence/i);
   });
 });
 
@@ -199,6 +201,7 @@ describe('L112H-U6 — intégration fiche du bien', () => {
     expect(feuille).toContain('<FooterPrimaryAction');
     // Aucun texte affiché « Opération » (commentaires exclus).
     const code = feuille.replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '');
-    expect(code).not.toMatch(/Opération/);
+    // Règle remplacée (carte #806, décision du PO du 17/11/2026) : la garde interdisait « Opération » ; à l’écran on dit désormais « opération », et c’est « événement de référence » qui est interdit.
+    expect(code).not.toMatch(/[ée]v[éeè]nements?\s+de\s+r[ée]f[ée]rence/i);
   });
 });

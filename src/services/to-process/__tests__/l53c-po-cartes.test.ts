@@ -81,7 +81,8 @@ describe('PO-D14 — agenda : doute sur l\'événement à relier → carte « À
     const q = agendaProjectionQuestion({ title: 'Remplacement chaudière', date: '2026-03-10', typeCode: 'INTERVENTION' }, cands, 'Facture Martin');
     expect(q).toContain('« Facture Martin »');
     expect(q).toContain('« Remplacement chaudière » du 10/03/2026');
-    expect(q).not.toMatch(/op[ée]ration/i);
+    // Règle remplacée (carte #806, décision du PO du 17/11/2026) : la garde interdisait « Opération » ; à l’écran on dit désormais « opération », et c’est « événement de référence » qui est interdit.
+    expect(q).not.toMatch(/[ée]v[éeè]nements?\s+de\s+r[ée]f[ée]rence/i);
     const props = agendaProjectionProposals(cands);
     expect(isDisplayableArbitration(props)).toBe(true);
     expect(selectDisplayedProposals(props).map((p) => p.value)).toEqual(['ITEM:7', 'ITEM:8', 'NEW']);

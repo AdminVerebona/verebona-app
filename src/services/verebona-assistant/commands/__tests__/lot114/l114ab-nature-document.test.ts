@@ -87,7 +87,7 @@ describe('L114AB-B01 — phrases reconnues (nature d’un document)', () => {
       .toMatchObject({ command: 'UPDATE_DOCUMENT', field: 'notes', clear: true });
   });
 
-  it('non-régression : « change le type de l’intervention … » reste un événement de référence', () => {
+  it('non-régression : « change le type de l’intervention … » reste une opération', () => {
     expect(parseCommand('Change le type de l’intervention Vidange en contrat', TODAY))
       .toMatchObject({ command: 'UPDATE_REFERENCE_EVENT', field: 'type' });
   });
@@ -306,9 +306,10 @@ describe('L114AB-B06 — exécution : une seule écriture métier', () => {
     expect(WRITE_COMMAND_CATALOG.UPDATE_DOCUMENT_CLASSIFICATION.label).toBe('Modifier la nature d’un document');
   });
 
-  it('aucun texte de l’aperçu ne dit « Opération »', async () => {
+  it('aucun texte de l’aperçu ne dit « événement de référence »', async () => {
     const a = await resolveDraft(parseCommand('Change la rubrique du document Facture EDF en Photos et vidéos', TODAY)!, input, lookup());
-    expect(JSON.stringify(a)).not.toMatch(/Op[ée]ration/);
+    // Règle remplacée (carte #806, décision du PO du 17/11/2026) : la garde interdisait « Opération » ; à l’écran on dit désormais « opération », et c’est « événement de référence » qui est interdit.
+    expect(JSON.stringify(a)).not.toMatch(/[ée]v[éeè]nements?\s+de\s+r[ée]f[ée]rence/i);
   });
 });
 
@@ -350,8 +351,9 @@ describe('L114AB-B07 — actions comprises par le sens (bloc PO n° 40, facultat
 });
 
 describe('L114AB-B08 — vocabulaire', () => {
-  it('aucun texte de ce passage ne dit « Opération »', async () => {
+  it('aucun texte de ce passage ne dit « événement de référence »', async () => {
     const a = await resolveDraft(parseCommand('Change la rubrique du document Facture EDF en Photos et vidéos', TODAY)!, input, lookup());
-    expect(JSON.stringify(a)).not.toMatch(/Op[ée]ration/);
+    // Règle remplacée (carte #806, décision du PO du 17/11/2026) : la garde interdisait « Opération » ; à l’écran on dit désormais « opération », et c’est « événement de référence » qui est interdit.
+    expect(JSON.stringify(a)).not.toMatch(/[ée]v[éeè]nements?\s+de\s+r[ée]f[ée]rence/i);
   });
 });

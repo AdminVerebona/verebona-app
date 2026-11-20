@@ -39,7 +39,8 @@ describe('L113AB-U-01 — faits temporels pour T2', () => {
     const t = coverageFactsText(COUV)!;
     expect(t).toBe('Périodes de couverture établies par les justificatifs : du 01/04/2023 au 31/03/2024 (justificatif : Attestation 2023-2024) ; '
       + 'de avril 2024 à mars 2025 (justificatif : Attestation 2024-2025), corrigée par l’utilisateur — ' + T2_NO_EXTENSION);
-    expect(t).not.toMatch(/expir|en cours|dernière période connue|Opération/i);
+    // Règle remplacée (carte #806, décision du PO du 17/11/2026) : la garde interdisait « Opération » ; à l’écran on dit désormais « opération », et c’est « événement de référence » qui est interdit.
+    expect(t).not.toMatch(/[ée]v[éeè]nements?\s+de\s+r[ée]f[ée]rence|expir|en cours|dernière période connue/i);
     expect(coverageFactsText([])).toBeNull();
     expect(documentPeriodsText({ principal: null, secondary: [] })).toBeNull();
     expect(documentPeriodsText({
@@ -66,7 +67,8 @@ describe('L113AB-U-02 — T2 : réponse « contrats »', () => {
     }], scope);
     expect(r.answer).toBe(`Contrat « Assurance habitation » chez Assureur (n° POL-1), depuis le 1 avril 2023 — ${coverageFactsText(COUV)}.`);
     expect(r.sources.map((s) => s.id)).toEqual(['doc_5', 'doc_6']);
-    expect(r.answer).not.toMatch(/jusqu|expir|en cours|Opération/i);
+    // Règle remplacée (carte #806, décision du PO du 17/11/2026) : la garde interdisait « Opération » ; à l’écran on dit désormais « opération », et c’est « événement de référence » qui est interdit.
+    expect(r.answer).not.toMatch(/[ée]v[éeè]nements?\s+de\s+r[ée]f[ée]rence|jusqu|expir|en cours/i);
   });
   it('sans couverture : réponse inchangée (B15)', () => {
     const r = contractsAnswer([base], scope);
@@ -89,7 +91,8 @@ describe('L113AB-U-03 — T2 : source métier d’un contrat', () => {
     const avec = operationBusinessSource(op, 14, 'Maison', COUV);
     expect(avec.endDate).toBeNull();
     expect(avec.source!.content).toBe(`${sans.source!.content} · ${coverageFactsText(COUV)}`);
-    expect(avec.source!.content).not.toMatch(/Opération|expir/i);
+    // Règle remplacée (carte #806, décision du PO du 17/11/2026) : la garde interdisait « Opération » ; à l’écran on dit désormais « opération », et c’est « événement de référence » qui est interdit.
+    expect(avec.source!.content).not.toMatch(/[ée]v[éeè]nements?\s+de\s+r[ée]f[ée]rence|expir/i);
     expect(sans.source!.content).not.toContain('Périodes de couverture');
   });
 });
@@ -123,7 +126,7 @@ describe('L113AB-U-05 — écrans (desktop et mobile, même composant)', () => {
   const periode = lire('src/components/assets/tco-expense-period.tsx');
   const tco = lire('src/components/assets/TcoSection.tsx');
   const drawer = lire('src/components/assets/DocumentDrawer.tsx');
-  it('fiche de l’événement de référence ouverte depuis le tiroir du document (sans agenda) et la ligne de dépense', () => {
+  it('fiche de l’opération ouverte depuis le tiroir du document (sans agenda) et la ligne de dépense', () => {
     // Règle remplacée (carte #806, volet B §7) : le tiroir du document ne montre plus seulement des liens (au plus
     // dix) — `DocumentOperations` liste TOUTES ses opérations, ouvre leur fiche et permet de retirer / rattacher.
     expect(drawer).toContain('<DocumentOperations documentId={doc.id} />');
@@ -137,7 +140,7 @@ describe('L113AB-U-05 — écrans (desktop et mobile, même composant)', () => {
     expect(lire('src/app/(dashboard)/agenda/evenements-reference/[id]/page.tsx')).toContain('fetch(`/api/evenements-reference/${id}/fiche`');
     expect(lire('src/components/reference-events/ReferenceEventPageContent.tsx')).toContain('<CoverageHistoryList');
     expect(tco).toContain('<ReferenceEventLink operationId={l.operationId} />');
-    expect(REFERENCE_EVENT_TITLE).toBe('Événement de référence');
+    expect(REFERENCE_EVENT_TITLE).toBe('Opération');
   });
   it('période facturée de la dépense : lecture groupée, correction par la route du MÊME fait (PeriodRow)', () => {
     expect(periode).toContain('/api/documents/periodes?ids=');
@@ -146,20 +149,21 @@ describe('L113AB-U-05 — écrans (desktop et mobile, même composant)', () => {
     expect(tco).toContain('<TcoExpensePeriod fileId={l.fileId}');
     expect((tco.match(/<LigneDepense key=\{l\.id\} l=\{l\} t=\{t\} periods=\{periodesDepenses\}/g) ?? []).length).toBe(6);
   });
-  it('charte : jetons seulement (aucune couleur brute) ; jamais « Opération » affiché', () => {
+  it('charte : jetons seulement (aucune couleur brute) ; jamais « événement de référence » affiché', () => {
     for (const s of [sheet, periode, lire('src/components/reference-events/ReferenceEventPageContent.tsx')]) {
       // Code seulement (les commentaires citent « #725 »).
       const visibles = s.split('\n').filter((l) => !/^\s*(\*|\/\/|\/\*|import )/.test(l)).map((l) => l.replace(/\{\/\*.*?\*\/\}/g, '')).join('\n');
       expect(visibles).not.toMatch(/#[0-9a-fA-F]{3,8}\b|rgba?\(|\b(?:text|bg|border)-(?:red|green|blue|gray|slate|amber|yellow|orange|emerald|zinc|neutral)-\d{2,3}\b/);
-      expect(visibles).not.toMatch(/Opération/);
+      // Règle remplacée (carte #806, décision du PO du 17/11/2026) : la garde interdisait « Opération » ; à l’écran on dit désormais « opération », et c’est « événement de référence » qui est interdit.
+      expect(visibles).not.toMatch(/[ée]v[éeè]nements?\s+de\s+r[ée]f[ée]rence/i);
     }
-    expect(sheet).toContain('Voir l’événement de référence');
-    expect(TCO_UNDATED_TEXTS.reference).toBe('Voir l’événement de référence');
+    expect(sheet).toContain('Voir l’opération');
+    expect(TCO_UNDATED_TEXTS.reference).toBe('Voir l’opération');
   });
 });
 
-describe('L113AB-U-06 — libellé utilisateur d’un événement de référence', () => {
-  it('nature + libellé technique, sinon premier justificatif, sinon fournisseur ; jamais « Opération »', () => {
+describe('L113AB-U-06 — libellé utilisateur d’une opération', () => {
+  it('nature + libellé technique, sinon premier justificatif, sinon fournisseur ; jamais « événement de référence »', () => {
     expect(referenceEventLabel({ typeCode: 'CONTRACT', technicalLabel: 'Assurance habitation' })).toBe('Contrat — Assurance habitation');
     expect(referenceEventLabel({ typeCode: 'INTERVENTION', technicalLabel: null, firstDocumentTitle: 'Facture chaudière' })).toBe('Intervention — Facture chaudière');
     expect(referenceEventLabel({ typeCode: null, technicalLabel: '  ', provider: 'EDF' })).toBe('Dépense — EDF');

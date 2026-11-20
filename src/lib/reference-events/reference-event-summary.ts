@@ -69,7 +69,7 @@ export type ReferenceEventSummaryKey = (typeof REFERENCE_EVENT_SUMMARY_KEYS)[num
 export const REFERENCE_EVENT_SUMMARY_LABELS = {
   title: 'Synthèse',
   /** Ce que la synthèse est, et ce qu'elle n'est pas (dit une fois, sous les repères). */
-  note: 'Ces repères sont lus dans ce qui est déjà enregistré. Un justificatif ou un événement partagé avec un autre événement de référence n’est compté qu’une seule fois.',
+  note: 'Ces repères sont lus dans ce qui est déjà enregistré. Un justificatif ou un événement partagé avec une autre opération n’est compté qu’une seule fois.',
   spent: 'Total dépensé',
   spentHint: 'Coûts réalisés, moins les remises, remboursements et indemnités. Les devis et les prévisions n’y sont pas comptés.',
   /** Une composante hors EUR sans contre-valeur connue : elle n'est pas convertie (AC54). */
@@ -197,7 +197,7 @@ export const REFERENCE_EVENT_NOTES_LABELS = {
   add: 'Ajouter une note',
   dialogTitle: 'Notes / Description',
   dialogHint: 'Ce texte est le vôtre. Il n’est jamais réécrit par Verebona et n’entre dans aucun calcul.',
-  placeholder: 'Ce que vous voulez retenir de cet événement de référence',
+  placeholder: 'Ce que vous voulez retenir de cette opération',
   updatedOn: 'Modifié le',
   tooLong: `Ce texte ne peut pas dépasser ${NOTES_MAX_LENGTH} caractères.`,
   /** Existant (lot 113Z) : texte qui n'est pas un texte. */

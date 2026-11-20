@@ -22,7 +22,7 @@ import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import {
   REFERENCE_EVENT_ASSOCIATION_NATURES, REFERENCE_EVENT_ASSOCIATION_SOURCE_TYPE, REFERENCE_EVENT_CANDIDATE_KINDS,
-  REFERENCE_EVENT_GESTURES, REFERENCE_EVENT_LABEL_MAX, REFERENCE_EVENT_SUCCESS, REFERENCE_EVENT_WRITE_LABELS as L,
+  REFERENCE_EVENT_GESTURES, REFERENCE_EVENT_LABEL_MAX, REFERENCE_EVENT_MOVE_REMOVED, REFERENCE_EVENT_SUCCESS, REFERENCE_EVENT_WRITE_LABELS as L,
   REFERENCE_EVENT_WRITE_MESSAGES, buildReferenceEventCorrection, expectedVersionOf, isReferenceEventCandidateKind,
   parseReferenceEventAssociation, parseReferenceEventCorrection, positiveIdOf, referenceEventAssociationOptions,
   referenceEventCorrectionForm, referenceEventWriteOutcome,
@@ -69,10 +69,11 @@ describe('L114OW-U01 — textes de l’écran et des réponses', () => {
     for (const geste of REFERENCE_EVENT_GESTURES) expect(REFERENCE_EVENT_SUCCESS[geste], geste).toMatch(/[.…]$/);
   });
 
-  it('aucun texte ne dit « Opération » ; « événement de référence » partout', () => {
+  it('aucun texte ne dit « événement de référence » ; « opération » partout', () => {
     const textes = [...Object.values(REFERENCE_EVENT_WRITE_MESSAGES), ...Object.values(REFERENCE_EVENT_SUCCESS), ...Object.values(L)];
-    for (const t of textes) expect(t, t).not.toMatch(/Opération/);
-    expect(textes.filter((t) => /événement de référence/i.test(t)).length).toBeGreaterThan(10);
+    // Règle remplacée (carte #806, décision du PO du 17/11/2026) : la garde interdisait « Opération » ; à l’écran on dit désormais « opération », et c’est « événement de référence » qui est interdit.
+    for (const t of textes) expect(t, t).not.toMatch(/[ée]v[éeè]nements?\s+de\s+r[ée]f[ée]rence/i);
+    expect(textes.filter((t) => /opération/i.test(t)).length).toBeGreaterThan(10);
   });
 
   it('décision du PO n° 1 : la confirmation AVANT dit ce qui est conservé et que l’Agenda détaché ne revient pas', () => {
@@ -93,7 +94,7 @@ describe('L114OW-U01 — textes de l’écran et des réponses', () => {
   it('chaque retrait est confirmé et dit que seul le lien change', () => {
     for (const t of [L.unlinkAgendaBody, L.unlinkDocumentBody, L.unlinkSupplierBody, L.dissociateBody]) {
       expect(t, t).toMatch(/Seul le lien est retiré/);
-      expect(t, t).toMatch(/pas (rattachés?|reliés?|associés?) de nouveau/);
+      expect(t, t).toMatch(/pas (rattachés?|reliés?|associées?) de nouveau/);
     }
   });
 });
@@ -112,7 +113,7 @@ describe('L114OW-U02 — traduction d’un résultat de la façade', () => {
     const o = referenceEventWriteOutcome('correct', refused('CONFLICT', 'VERSION_MISMATCH', { currentVersion: 7 }));
     expect(o).toMatchObject({ http: 409, ok: false, changed: false, apiCode: 'INVALID_STATE' });
     expect(o.message).toBe(REFERENCE_EVENT_WRITE_MESSAGES.VERSION_MISMATCH);
-    expect(o.message).toMatch(/modifié entre-temps/);
+    expect(o.message).toMatch(/modifiée entre-temps/);
     expect(o.message).not.toMatch(/VERSION_MISMATCH/);
   });
 
@@ -127,7 +128,7 @@ describe('L114OW-U02 — traduction d’un résultat de la façade', () => {
   });
 
   it('panne : 500, rien n’a été modifié, et le dit', () => {
-    const o = referenceEventWriteOutcome('moveDocument', { status: 'FAILED', code: 'TECHNICAL_FAILURE', changed: false });
+    const o = referenceEventWriteOutcome('unlinkDocument', { status: 'FAILED', code: 'TECHNICAL_FAILURE', changed: false });
     expect(o).toMatchObject({ http: 500, ok: false, changed: false, apiCode: 'INTERNAL_ERROR' });
     expect(o.message).toMatch(/Rien n’a été modifié/);
   });
@@ -168,7 +169,7 @@ describe('L114OW-U03 — lecture des demandes (forme et bornes seulement)', () =
     expect(parseReferenceEventCorrection({ label: 'x'.repeat(REFERENCE_EVENT_LABEL_MAX) })?.label).toHaveLength(REFERENCE_EVENT_LABEL_MAX);
   });
 
-  it('association : « Associé à » par défaut, sans sens ; un lien orienté a un sens', () => {
+  it('association : « Associée à » par défaut, sans sens ; un lien orienté a un sens', () => {
     expect(parseReferenceEventAssociation({ otherId: 9 })).toEqual({ otherId: 9, nature: 'ASSOCIATED', direction: 'UNDIRECTED' });
     expect(parseReferenceEventAssociation({ otherId: '9', nature: 'FINANCING' })).toEqual({ otherId: 9, nature: 'FINANCING', direction: 'OUTGOING' });
     expect(parseReferenceEventAssociation({ otherId: 9, nature: 'CLAIM_REPAIR', direction: 'INCOMING' })).toEqual({ otherId: 9, nature: 'CLAIM_REPAIR', direction: 'INCOMING' });
@@ -179,7 +180,10 @@ describe('L114OW-U03 — lecture des demandes (forme et bornes seulement)', () =
   });
 
   it('natures de candidats : celles de l’écran, rien d’autre', () => {
-    expect([...REFERENCE_EVENT_CANDIDATE_KINDS]).toEqual(['agenda', 'document', 'supplier', 'reference', 'move-target']);
+    // Règle remplacée (carte #806, décision du PO du 17/11/2026) : la nature « move-target » (cible du déplacement d'un
+    // document) est retirée avec le geste « Déplacer » ; elle est refusée comme toute nature inconnue.
+    expect([...REFERENCE_EVENT_CANDIDATE_KINDS]).toEqual(['agenda', 'document', 'supplier', 'reference']);
+    expect(isReferenceEventCandidateKind('move-target')).toBe(false);
     for (const k of REFERENCE_EVENT_CANDIDATE_KINDS) expect(isReferenceEventCandidateKind(k)).toBe(true);
     for (const k of ['', 'type', 'asset', 42, null]) expect(isReferenceEventCandidateKind(k), String(k)).toBe(false);
   });
@@ -228,7 +232,7 @@ describe('L114OW-U04 — formulaire « Corriger »', () => {
     expect(parseReferenceEventCorrection(r.body)).toEqual(r.body);
   });
 
-  it('un événement de référence sans rien : le premier intitulé et les premières dates se posent', () => {
+  it('une opération sans rien : le premier intitulé et les premières dates se posent', () => {
     const neuf: ReferenceEventCorrectionCurrent = { version: 2, ownLabel: null, typeCode: null, dates: [] };
     const r = buildReferenceEventCorrection(neuf, { label: 'Chaudière', typeCode: 'INTERVENTION', dates: { PLANNED: '2026-01-05', START: '', REALIZED: '', END: '' } });
     expect(r).toEqual({ ok: true, body: { expectedVersion: 2, label: 'Chaudière', typeCode: 'INTERVENTION', dates: { plannedDate: '2026-01-05' } } });
@@ -248,7 +252,7 @@ describe('L114OW-U05 — natures d’association proposées', () => {
     expect([...REFERENCE_EVENT_ASSOCIATION_NATURES].sort()).toEqual([...OPERATION_RELATION_NATURES].sort());
   });
 
-  it('« Associé à » toujours proposé, sans sens ; un lien orienté seulement quand l’origine a le bon type', () => {
+  it('« Associée à » toujours proposé, sans sens ; un lien orienté seulement quand l’origine a le bon type', () => {
     expect(referenceEventAssociationOptions(null, null)).toEqual([{ nature: 'ASSOCIATED', direction: 'UNDIRECTED' }]);
     expect(referenceEventAssociationOptions('FINANCING', 'ACQUISITION')).toEqual([
       { nature: 'ASSOCIATED', direction: 'UNDIRECTED' }, { nature: 'FINANCING', direction: 'OUTGOING' },
@@ -273,7 +277,10 @@ describe('L114OW-U06 — gardes de code', () => {
       const methodes = [...code.matchAll(/export async function (POST|PATCH|DELETE|PUT)\b/g)].map((m) => m[1]);
       expect(methodes.length, p).toBeGreaterThan(0);
       // Une garde par méthode d'écriture, dans le fichier de route (audit l85d-garde-ecriture-routes).
-      expect(code.match(/refuserSiLectureSeule\(/g)?.length ?? 0, p).toBeGreaterThanOrEqual(methodes.length);
+      // Règle remplacée (carte #806, décision du PO du 17/11/2026) : le PATCH de `documents` (déplacement) est retiré ;
+      // il ne lit ni n'écrit rien et répond 410 — il n'a donc pas de garde d'écriture (vérifié à part ci-dessous).
+      const ecritures = methodes.filter((m) => !(p.endsWith('/documents/route.ts') && m === 'PATCH'));
+      expect(code.match(/refuserSiLectureSeule\(/g)?.length ?? 0, p).toBeGreaterThanOrEqual(ecritures.length);
       // La façade partagée fait l'écriture (chargée à la demande dans la route) : aucune écriture directe ici.
       expect(code, p).toContain("'@/services/business-operations/operation-write.facade'");
       expect(code, p).not.toMatch(/\b(?:INSERT INTO|UPDATE |DELETE FROM)\b/);
@@ -285,13 +292,36 @@ describe('L114OW-U06 — gardes de code', () => {
     }
   });
 
-  it('les quatorze gestes de la carte ont leur route, et chacun sa phrase de réussite', () => {
+  it('règle remplacée (carte #806, décision du PO du 17/11/2026) : le déplacement d’un document n’a plus ni route utilisable, ni commande, ni texte', () => {
+    const route = lire('src/app/api/evenements-reference/[id]/documents/route.ts');
+    const patch = visible(route).slice(visible(route).indexOf('export async function PATCH'));
+    // L'ancien client reçoit une erreur claire (410) qui dit de retirer puis de rattacher ; rien n'est lu ni écrit.
+    expect(patch).toContain("return apiError(410, 'UNSUPPORTED', REFERENCE_EVENT_MOVE_REMOVED);");
+    expect(patch).not.toMatch(/operation-write\.facade|readJsonBody|moveDocument/);
+    expect(REFERENCE_EVENT_MOVE_REMOVED).toMatch(/Retirez le document de cette opération, puis rattachez-le à l’autre opération/);
+    // La façade n'exporte plus la commande ; le corps interne ne sert que la scission.
+    const facade = lire('src/services/business-operations/operation-write.facade.ts');
+    expect(facade).not.toMatch(/export (async )?function moveDocument\b/);
+    expect(facade).not.toMatch(/export interface MoveDocumentInput/);
+    expect(facade.match(/moveDocumentBody\(ctx, g,/g)?.length).toBe(1);
+    // Ni geste, ni libellé, ni nature de candidat, ni bouton.
+    expect((REFERENCE_EVENT_GESTURES as readonly string[])).not.toContain('moveDocument');
+    expect(Object.keys(L)).not.toEqual(expect.arrayContaining(['moveDocument']));
+    expect(JSON.stringify({ ...L, ...REFERENCE_EVENT_SUCCESS })).not.toMatch(/Déplacer|déplacé\./);
+    for (const p of ['src/components/reference-events/ReferenceEventPageContent.tsx', 'src/components/reference-events/ReferenceEventWrite.tsx']) {
+      expect(visible(lire(p)), p).not.toMatch(/moveDocument|move-target|move-document|\/documents"\), \{ fileId, toId/);
+    }
+    expect(visible(lire('src/services/business-operations/graph/reference-event-candidates.ts'))).not.toMatch(/move-target/);
+  });
+
+  it('les treize gestes de la carte ont leur route, et chacun sa phrase de réussite', () => {
     const facade = lire('src/services/business-operations/operation-write.facade.ts');
     const commandes = ROUTES.map((p) => lire(p)).join('\n');
     const attendu: Record<string, string> = {
       correct: 'correctOperation', delete: 'invalidateOperation', restore: 'restoreOperation',
       linkAgenda: 'linkAgendaItem', unlinkAgenda: 'unlinkAgendaItem', linkDocument: 'linkDocument',
-      unlinkDocument: 'unlinkDocument', moveDocument: 'moveDocument', linkSupplier: 'linkSupplier',
+      // Règle remplacée (carte #806, décision du PO du 17/11/2026) : « moveDocument » retiré (retirer, puis rattacher).
+      unlinkDocument: 'unlinkDocument', linkSupplier: 'linkSupplier',
       unlinkSupplier: 'unlinkSupplier', associate: 'associateOperations', dissociate: 'dissociateOperations',
       // Règle complétée (carte #744) : la scission, treizième geste (CDC §7, §14 ; AC46), puis la NOTE LIBRE,
       // quatorzième geste (travaux D « contenu », CDC §5 et §14, AC42) — une seule route et une seule commande,
@@ -328,12 +358,13 @@ describe('L114OW-U06 — gardes de code', () => {
     expect(page).not.toMatch(/localStorage|sessionStorage/);
   });
 
-  it('écran : ordinateur et mobile, charte Sérénité (jetons seulement), cibles tactiles, jamais « Opération »', () => {
+  it('écran : ordinateur et mobile, charte Sérénité (jetons seulement), cibles tactiles, jamais « événement de référence »', () => {
     for (const p of ECRANS) {
       const code = visible(lire(p));
       expect(code, p).not.toMatch(/#[0-9a-fA-F]{3,8}\b|rgba?\(|\b(?:text|bg|border)-(?:red|green|blue|gray|slate|amber|yellow|orange|emerald|zinc|neutral)-\d{2,3}\b/);
       expect(code, p).not.toMatch(/\buppercase\b/);
-      expect(code, p).not.toMatch(/Opération/);
+      // Règle remplacée (carte #806, décision du PO du 17/11/2026) : la garde interdisait « Opération » ; à l’écran on dit désormais « opération », et c’est « événement de référence » qui est interdit.
+      expect(code, p).not.toMatch(/[ée]v[éeè]nements?\s+de\s+r[ée]f[ée]rence/i);
       expect(code, p).not.toMatch(/<Sheet\b|<Tabs\b|<Drawer\b/);
       expect(code, p).toMatch(/min-h-\[44px\]|h-11/);
     }
@@ -357,7 +388,7 @@ describe('L114OW-U07 — page rendue avec ses gestes (même composant ordinateur
   const rien = () => undefined;
   const actions = {
     correct: rien, remove: rien, linkAgenda: rien, unlinkAgenda: rien, linkDocument: rien, unlinkDocument: rien,
-    moveDocument: rien, linkSupplier: rien, unlinkSupplier: rien, associate: rien, dissociate: rien,
+    linkSupplier: rien, unlinkSupplier: rien, associate: rien, dissociate: rien,
   };
   const rendre = (avecGestes: boolean, f = fiche()) =>
     renderToStaticMarkup(h(ReferenceEventPageContent, { fiche: f, openers, ...(avecGestes ? { actions } : {}) }));
@@ -375,15 +406,18 @@ describe('L114OW-U07 — page rendue avec ses gestes (même composant ordinateur
     // Aucun mot interdit, aucun état, aucune fenêtre ouverte d'office.
     // Règle remplacée (carte #806) : « jamais "Opération" » — les textes NOUVEAUX de la carte #806 (liste fermée)
     // disent « opération » (décision du PO du 17/11/2026) ; les textes existants restent sous la garde d'origine.
-    expect(sansTextes806(html)).not.toMatch(/Opération|Statut|En cours|Terminé/i);
+    // Règle remplacée (carte #806, décision du PO du 17/11/2026) : la garde interdisait « Opération » ; à l’écran on dit désormais « opération », et c’est « événement de référence » qui est interdit.
+    expect(sansTextes806(html)).not.toMatch(/[ée]v[éeè]nements?\s+de\s+r[ée]f[ée]rence|Statut|En cours|Terminé/i);
     expect(html).not.toMatch(/role="dialog"/);
   });
 
-  it('chaque ligne porte le geste de son objet (détacher, retirer, déplacer, dissocier)', () => {
+  // Règle remplacée (carte #806, décision du PO du 17/11/2026) : la ligne d'un document ne propose plus « Déplacer ».
+  it('chaque ligne porte le geste de son objet (détacher, retirer, dissocier) ; plus de « Déplacer »', () => {
     const html = rendre(true);
     expect(html).toContain('data-testid="reference-event-unlink-agenda-21"');
     expect(html).toContain('data-testid="reference-event-unlink-document-11"');
-    expect(html).toContain('data-testid="reference-event-move-document-11"');
+    expect(html).not.toContain('reference-event-move-document');
+    expect(html).not.toMatch(/>Déplacer</);
     expect(html).toContain('data-testid="reference-event-unlink-supplier-5"');
     expect(html).toContain('data-testid="reference-event-dissociate-43"');
     // L'ouverture de l'objet reste le geste principal de la ligne.
@@ -394,13 +428,13 @@ describe('L114OW-U07 — page rendue avec ses gestes (même composant ordinateur
   it('sans gestes (consultation) : la page est identique à la livraison en lecture, rien n’est proposé', () => {
     const html = rendre(false);
     expect(html).not.toContain('data-testid="reference-event-page-actions"');
-    for (const t of [L.correct, L.delete, L.linkDocument, L.unlinkDocument, L.moveDocument, L.dissociate]) expect(html, t).not.toContain(t);
+    for (const t of [L.correct, L.delete, L.linkDocument, L.unlinkDocument, L.dissociate]) expect(html, t).not.toContain(t);
     // Le contenu lu reste là.
     expect(html).toContain('data-testid="reference-event-page-documents"');
     expect(html).toContain('Facture de toiture');
   });
 
-  it('un événement de référence vide garde ses gestes : « Compléter » ne dépend pas des rubriques affichées', () => {
+  it('une opération vide garde ses gestes : « Compléter » ne dépend pas des rubriques affichées', () => {
     const nu = fiche({ suppliers: [], documents: [], agendaItems: [], relations: [], dates: [], undated: true, provider: null });
     const html = rendre(true, nu);
     expect(html).toContain('data-testid="reference-event-page-empty"');

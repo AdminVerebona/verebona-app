@@ -109,12 +109,12 @@ describe('L114AA-B01 — mémoire du fil : le dernier événement sur lequel une
   });
 });
 
-describe('L114AA-B02 — « cet événement de référence » vise l’événement du fil', () => {
+describe('L114AA-B02 — « cette opération » vise l’événement du fil', () => {
   it.each([
-    ['Supprime cet événement de référence', 'INVALIDATE_REFERENCE_EVENT'],
-    ['Corrige la date de cet événement de référence : 14 mars 2025', 'UPDATE_REFERENCE_EVENT'],
-    ['Relie le fournisseur Garage Martin à cet événement de référence', 'LINK_SUPPLIER_REFERENCE_EVENT'],
-    ['Rattache le document Facture Norauto à cet événement de référence', 'LINK_DOCUMENT_REFERENCE_EVENT'],
+    ['Supprime cette opération', 'INVALIDATE_REFERENCE_EVENT'],
+    ['Corrige la date de cette opération : 14 mars 2025', 'UPDATE_REFERENCE_EVENT'],
+    ['Relie le fournisseur Garage Martin à cette opération', 'LINK_SUPPLIER_REFERENCE_EVENT'],
+    ['Rattache le document Facture Norauto à cette opération', 'LINK_DOCUMENT_REFERENCE_EVENT'],
   ])('%s → proposition sur l’événement du fil, à confirmer', async (phrase, commande) => {
     const p = await preparer(phrase, { threadReferenceEventId: DU_FIL.id });
     expect(p?.kind).toBe('plan');
@@ -124,21 +124,22 @@ describe('L114AA-B02 — « cet événement de référence » vise l’événeme
     expect(plan.preview.summary).toContain('Intervention — Vidange');
     expect(plan.preview.summary).toContain('Confirmez-vous ?');
     // Jamais le mot interdit.
-    expect(plan.preview.summary).not.toMatch(/Opération/);
+    // Règle remplacée (carte #806, décision du PO du 17/11/2026) : la garde interdisait « Opération » ; à l’écran on dit désormais « opération », et c’est « événement de référence » qui est interdit.
+    expect(plan.preview.summary).not.toMatch(/[ée]v[éeè]nements?\s+de\s+r[ée]f[ée]rence/i);
     // L'identifiant du fil est RELU dans le compte de la session, jamais utilisé tel quel.
     expect(vu.etats).toContainEqual([1, DU_FIL.id]);
   });
 
   it('sans événement dans le fil : la question d’avant, aucun plan', async () => {
-    const p = await preparer('Supprime cet événement de référence');
-    expect(p).toMatchObject({ kind: 'need_info', message: 'Quel événement de référence voulez-vous supprimer ? Donnez son intitulé, sa date complète ou son bien.' });
+    const p = await preparer('Supprime cette opération');
+    expect(p).toMatchObject({ kind: 'need_info', message: 'Quelle opération voulez-vous supprimer ? Donnez son intitulé, sa date complète ou son bien.' });
   });
 
   it('événement du fil devenu introuvable (supprimé depuis, ou hors du compte) : la question, aucun plan', async () => {
     // Identifiant présent dans le contexte du fil, mais absent du compte : il n'est jamais retenu.
-    const p = await preparer('Supprime cet événement de référence', { threadReferenceEventId: 4242 });
+    const p = await preparer('Supprime cette opération', { threadReferenceEventId: 4242 });
     expect(p).toMatchObject({ kind: 'need_info' });
-    expect((p as { message: string }).message).toContain('Quel événement de référence voulez-vous supprimer ?');
+    expect((p as { message: string }).message).toContain('Quelle opération voulez-vous supprimer ?');
     expect(vu.etats).toContainEqual([1, 4242]);
   });
 
@@ -156,7 +157,7 @@ describe('L114AA-B03 — le pronom seul : une seule forme admise', () => {
     expect(p?.kind).toBe('plan');
     const plan = p as Extract<typeof p, { kind: 'plan' }>;
     expect(plan.plan.actions[0]).toMatchObject({ command: 'LINK_SUPPLIER_REFERENCE_EVENT' });
-    expect(plan.preview.summary).toContain('Relier le fournisseur « Garage Martin » à l’événement de référence « Intervention — Vidange »');
+    expect(plan.preview.summary).toContain('Relier le fournisseur « Garage Martin » à l’opération « Intervention — Vidange »');
   });
 
   it('« Rattache le document … à celui-ci » reste le rattachement au BIEN (comportement d’avant)', async () => {
@@ -191,13 +192,13 @@ describe('L114AA-B04 — sans événement dans le fil, une phrase pronominale n�
 
 describe('L114AA-B05 — isolation du compte et du fil', () => {
   it('l’événement du fil est relu avec le compte de la SESSION', async () => {
-    await preparer('Supprime cet événement de référence', { accountId: 99, threadReferenceEventId: DU_FIL.id });
+    await preparer('Supprime cette opération', { accountId: 99, threadReferenceEventId: DU_FIL.id });
     expect(vu.etats).toEqual([[99, DU_FIL.id]]);
     // Compte 99 : la lecture ne rend rien → aucune action n'est préparée sur l'événement du compte 1.
   });
 
   it('un événement du fil d’un autre compte n’aboutit à aucun plan', async () => {
-    const p = await preparer('Supprime cet événement de référence', { accountId: 99, threadReferenceEventId: DU_FIL.id });
+    const p = await preparer('Supprime cette opération', { accountId: 99, threadReferenceEventId: DU_FIL.id });
     expect(p).toMatchObject({ kind: 'need_info' });
   });
 });

@@ -110,7 +110,7 @@ describe('L114Y-H02 — indices reconnus par l’analyseur existant', () => {
 
 describe('L114Y-H03 — indice non pris en charge ou détourné : rien n’est proposé', () => {
   it.each([
-    ['événement de référence', hint({ operation: 'CREATE', entityType: 'business_operation', targetHint: 'vidange' })],
+    ['opération', hint({ operation: 'CREATE', entityType: 'business_operation', targetHint: 'vidange' })],
     ['relation', hint({ operation: 'LINK', entityType: 'relation', targetHint: 'Facture EDF' })],
     // Règle remplacée (carte #753, passage 114Z2) : une échéance, une pièce, un équipement, un événement de référence,
     // un rattachement et la création d'un bien sont désormais pris en charge quand l'indice est COMPLET (voir

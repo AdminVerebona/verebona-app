@@ -60,7 +60,7 @@ describe('L86D-UI01 — « Documents de cet élément », quel que soit son rôl
   });
 });
 
-describe('L86D-UI02 — événement de référence : détacher (lien) et retirer (ensemble) distingués', () => {
+describe('L86D-UI02 — opération : détacher (lien) et retirer (ensemble) distingués', () => {
   const html = rendre({
     itemId: 1, role: 'MAIN', main: null, mainWithdrawn: false, counts: null, linkedDocuments: [docs[0]],
     ensemble: { items: [], documents: [...docs, { id: 12, title: 'Facture', documentDate: null, link: null }], assets: [], rooms: [], equipments: [] },
@@ -85,8 +85,9 @@ describe('L86D-UI03 — accessibilité, mobile, vocabulaire', () => {
     expect(b).toContain('aria-label="Retirer l’association avec « Rapport d’expertise »"');
     expect(b).toContain('size-11 sm:size-8');
   });
-  it('aucun « Opération » ni « principal » visible', () => {
-    expect(html.replace(/<[^>]+>/g, ' ')).not.toMatch(/opération|principal/i);
+  it('aucun « événement de référence » ni « principal » visible', () => {
+    // Règle remplacée (carte #806, décision du PO du 17/11/2026) : la garde interdisait « Opération » ; à l’écran on dit désormais « opération », et c’est « événement de référence » qui est interdit.
+    expect(html.replace(/<[^>]+>/g, ' ')).not.toMatch(/[ée]v[éeè]nements?\s+de\s+r[ée]f[ée]rence|principal/i);
   });
 });
 

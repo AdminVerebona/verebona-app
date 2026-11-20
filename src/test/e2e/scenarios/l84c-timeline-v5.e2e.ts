@@ -118,7 +118,7 @@ scenario('L84C', 'Opérations v5 — O-4 : Timeline regroupée / détaillée, re
   // Règle remplacée (carte #744, lot C) : le groupe est l'événement de référence.
   // Règle remplacée (carte #744, point F) : son repère est la date de présentation du CDC §11 — jamais la date de son plus
   // ancien élément d'agenda. Sans fait daté propre : « sans date », en fin de liste ; ses éléments gardent LEUR date.
-  it('L84C-E01 — AC22 : « regroupée » par défaut ; événement de référence = groupe dépliable ; ses éléments masqués de la liste', async () => {
+  it('L84C-E01 — AC22 : « regroupée » par défaut ; opération = groupe dépliable ; ses éléments masqués de la liste', async () => {
     const d = await degatDesEaux();
     asUser(d.compte);
     const r = await overview(d.bien.id);
@@ -128,7 +128,8 @@ scenario('L84C', 'Opérations v5 — O-4 : Timeline regroupée / détaillée, re
     const g = r.body.timeline[1];
     expect(g).toMatchObject({ kind: 'group', itemType: 'operation', operationId: d.op, effectiveDate: null, dateBasis: null });
     expect(g.members!.map((m) => m.effectiveDate)).toEqual(['2026-04-18', '2026-03-21', '2026-03-12', null]);
-    expect(g.title).not.toMatch(/op[ée]ration/i);
+    // Règle remplacée (carte #806, décision du PO du 17/11/2026) : la garde interdisait « Opération » ; à l’écran on dit désormais « opération », et c’est « événement de référence » qui est interdit.
+    expect(g.title).not.toMatch(/[ée]v[éeè]nements?\s+de\s+r[ée]f[ée]rence/i);
     // Éléments réels présents sur la Timeline de ce bien (l'ancien « principal » compris), triés comme elle.
     expect(ids(g.members!)).toEqual([S(d.reparation), S(d.visite), S(d.principal), S(d.relance)]);
     expect(r.body.timeline[0]).toMatchObject({ kind: 'item', title: 'Contrôle chaudière' });
@@ -184,7 +185,7 @@ scenario('L84C', 'Opérations v5 — O-4 : Timeline regroupée / détaillée, re
 
   // Règle remplacée (carte #744, lot C) : sans « principal », avec un principal non daté, supprimé ou porté par un autre bien,
   // l'événement de référence reste UN groupe ; seul un événement de référence invalidé ne regroupe plus rien.
-  it('L84C-E04 — #744 : principal non daté, absent, supprimé ou hors du bien → un groupe par événement de référence ; invalidé → rien masqué', async () => {
+  it('L84C-E04 — #744 : principal non daté, absent, supprimé ou hors du bien → un groupe par opération ; invalidé → rien masqué', async () => {
     const { compte, bien } = await compteEtBien();
     const garage = await make.asset(compte, { category: 'IMMOBILIER', name: 'Garage' });
     // Principal SANS date : ses éléments liés datés restent visibles à leur date ; il est placé avec les éléments sans date.

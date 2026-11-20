@@ -12,7 +12,7 @@ import { creationRefusedByUserInvalidation, USER_INVALIDATED_SOURCE_REASON, user
 
 const lire = (p: string) => readFileSync(join(process.cwd(), p), 'utf8');
 
-describe('L114O-T3 — un événement de référence supprimé par l’utilisateur n’est pas recréé par T3', () => {
+describe('L114O-T3 — une opération supprimée par l’utilisateur n’est pas recréé par T3', () => {
   it('U-01 — sans refus mémorisé, la création reste permise', () => {
     expect(creationRefusedByUserInvalidation([], 'op1', ['op1'])).toBe(false);
   });

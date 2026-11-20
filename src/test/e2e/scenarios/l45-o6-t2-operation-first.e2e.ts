@@ -105,12 +105,14 @@ scenario('L45-O6', 'T2 Opération d’abord : coûts consolidés, mode mixte, pa
     expect(r.answer).toMatch(/Total des dépenses qualifiées : 1\s430,00\s€/);
     expect(r.answer).toMatch(/Dont 1\s280,00\s€ consolidés \(2 interventions\) et 150,00\s€ lus sur 1 document/);
     expect(r.answer).toContain('6 documents déjà pris en compte');
-    expect(r.answer).not.toMatch(/op[ée]ration/i);
+    // Règle remplacée (carte #806, décision du PO du 17/11/2026) : la garde interdisait « Opération » ; à l’écran on dit désormais « opération », et c’est « événement de référence » qui est interdit.
+    expect(r.answer).not.toMatch(/[ée]v[éeè]nements?\s+de\s+r[ée]f[ée]rence/i);
     // Sources : total vérifiable + factures des interventions (ouvrables), jamais une « Opération ».
     const ids = r.sources.map((s) => s.id);
     expect(ids[0]).toBe(`expenses:all:${bien.id}`);
     expect(ids).toEqual(expect.arrayContaining([`doc_${solde}`, `doc_${revision}`]));
-    expect(ids.some((i) => /operation/i.test(i))).toBe(false);
+    // Règle remplacée (carte #806, décision du PO du 17/11/2026) : la garde interdisait « Opération » ; à l’écran on dit désormais « opération », et c’est « événement de référence » qui est interdit.
+    expect(ids.some((i) => /[ée]v[éeè]nements?\s+de\s+r[ée]f[ée]rence/i.test(i))).toBe(false);
 
     const ent = await ask(compte.id, 'Combien ai-je dépensé en entretien pour la Polo ?');
     // Lot 112C (reprise, décision PO) : élision correcte « d’entretien ».

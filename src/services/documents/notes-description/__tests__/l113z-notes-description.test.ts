@@ -261,7 +261,8 @@ describe('L113Z-U-STATIC — tiroir, import, route, dossiers', () => {
     expect(iface).not.toMatch(/\bdescription\??:/);
     expect(s).not.toMatch(/description: d\.description/);
   });
-  it('jamais « Opération » visible dans les textes ajoutés', () => {
-    for (const v of [lib.NOTES_DESCRIPTION_LABEL, tiers.THIRD_PARTY_NOTES_DESCRIPTION_OPTION_LABEL]) expect(v).not.toMatch(/Opération/);
+  it('jamais « événement de référence » visible dans les textes ajoutés', () => {
+    // Règle remplacée (carte #806, décision du PO du 17/11/2026) : la garde interdisait « Opération » ; à l’écran on dit désormais « opération », et c’est « événement de référence » qui est interdit.
+    for (const v of [lib.NOTES_DESCRIPTION_LABEL, tiers.THIRD_PARTY_NOTES_DESCRIPTION_OPTION_LABEL]) expect(v).not.toMatch(/[ée]v[éeè]nements?\s+de\s+r[ée]f[ée]rence/i);
   });
 });

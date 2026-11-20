@@ -83,7 +83,7 @@ describe('L114AB-I01 — phrases reconnues', () => {
     ['Rattache l’échéance Vidange à l’intervention Vidange', 'LINK_AGENDA_REFERENCE_EVENT'],
     ['Dissocie le financement Prêt auto de l’achat de la Clio', 'DISSOCIATE_REFERENCE_EVENTS'],
     ['Rétablis l’intervention Vidange', 'RESTORE_REFERENCE_EVENT'],
-    ['Restaure l’événement de référence Vidange', 'RESTORE_REFERENCE_EVENT'],
+    ['Restaure l’opération Vidange', 'RESTORE_REFERENCE_EVENT'],
   ])('%s → %s', (phrase, command) => {
     expect(parseCommand(phrase, TODAY)).toMatchObject({ command });
   });
@@ -112,7 +112,7 @@ describe('L114AB-I02 — aperçus : ce qui est conservé est dit', () => {
     const a = await resolveDraft(parseCommand('Retire le document Facture Norauto de l’intervention Vidange', TODAY)!, input, lookup());
     expect(a).toMatchObject({
       command: 'UNLINK_DOCUMENT_REFERENCE_EVENT',
-      preview: 'Retirer le document « Facture Norauto » de l’événement de référence « Intervention — Vidange » du 12 mars 2025 — Clio.',
+      preview: 'Retirer le document « Facture Norauto » de l’opération « Intervention — Vidange » du 12 mars 2025 — Clio.',
       params: { kind: 'reference_event_document_unlink', operationId: 500, linkedDocumentId: 33, expectedVersion: 3, documentVersion: NORAUTO.version },
     });
     expect(effets(a)).toContain('Le document reste dans vos documents et garde ses autres rattachements : il n’est pas supprimé.');
@@ -121,7 +121,7 @@ describe('L114AB-I02 — aperçus : ce qui est conservé est dit', () => {
   it('retirer un fournisseur : sa fiche reste', async () => {
     const a = await resolveDraft(parseCommand('Retire le fournisseur Garage Martin de l’intervention Vidange', TODAY)!, input, lookup());
     expect(a).toMatchObject({
-      preview: 'Retirer le fournisseur « Garage Martin » de l’événement de référence « Intervention — Vidange » du 12 mars 2025 — Clio.',
+      preview: 'Retirer le fournisseur « Garage Martin » de l’opération « Intervention — Vidange » du 12 mars 2025 — Clio.',
       params: { kind: 'reference_event_supplier_unlink', linkedSupplierId: 44, supplierVersion: 'sv1' },
     });
     expect(effets(a)).toContain('La fiche du fournisseur, ses documents et ses autres liens sont conservés : rien n’est supprimé.');
@@ -133,15 +133,15 @@ describe('L114AB-I02 — aperçus : ce qui est conservé est dit', () => {
       command: 'DISSOCIATE_REFERENCE_EVENTS',
       params: { kind: 'reference_events_dissociate', fromOperationId: 501, toOperationId: 502, expectedVersions: [3, 3] },
     });
-    expect(effets(a)).toContain('Seul le lien entre ces deux événements de référence est retiré.');
-    expect(effets(a)).toContain('Les deux événements restent dans votre compte, avec leurs documents, leurs échéances et leurs fournisseurs.');
+    expect(effets(a)).toContain('Seul le lien entre ces deux opérations est retiré.');
+    expect(effets(a)).toContain('Les deux opérations restent dans votre compte, avec leurs documents, leurs échéances et leurs fournisseurs.');
   });
 
   it('rattacher une échéance : elle garde sa date et ses rappels', async () => {
     const a = await resolveDraft(parseCommand('Rattache l’échéance Vidange à l’intervention Vidange', TODAY)!, input, lookup());
     expect(a).toMatchObject({
       command: 'LINK_AGENDA_REFERENCE_EVENT',
-      preview: 'Rattacher l’échéance « Vidange » du 12 mars 2027 à l’événement de référence « Intervention — Vidange » du 12 mars 2025 — Clio.',
+      preview: 'Rattacher l’échéance « Vidange » du 12 mars 2027 à l’opération « Intervention — Vidange » du 12 mars 2025 — Clio.',
       params: { kind: 'reference_event_agenda', operationId: 500, agendaItemId: 90, agendaItemVersion: 'av1' },
     });
     expect(effets(a)).toContain('L’échéance garde son identité, sa date et ses rappels : aucune échéance n’est créée ni copiée.');
@@ -151,13 +151,13 @@ describe('L114AB-I02 — aperçus : ce qui est conservé est dit', () => {
     const a = await resolveDraft(parseCommand('Rétablis l’intervention Vidange', TODAY)!, input, lookup());
     expect(a).toMatchObject({
       command: 'RESTORE_REFERENCE_EVENT',
-      preview: 'Rétablir l’événement de référence « Intervention — Vidange » du 12 mars 2025 — Clio.',
+      preview: 'Rétablir l’opération « Intervention — Vidange » du 12 mars 2025 — Clio.',
       params: { kind: 'reference_event_restore', operationId: 600, expectedVersion: 9 },
     });
     expect(effets(a)).toContain('Ses échéances détachées à la suppression ne lui sont PAS rattachées de nouveau : elles sont restées dans l’Agenda, à leur date.');
   });
 
-  it('aucun aperçu ne dit « Opération »', async () => {
+  it('aucun aperçu ne dit « événement de référence »', async () => {
     for (const phrase of [
       'Retire le document Facture Norauto de l’intervention Vidange',
       'Retire le fournisseur Garage Martin de l’intervention Vidange',
@@ -165,7 +165,8 @@ describe('L114AB-I02 — aperçus : ce qui est conservé est dit', () => {
       'Rétablis l’intervention Vidange',
     ]) {
       const a = await resolveDraft(parseCommand(phrase, TODAY)!, input, lookup());
-      expect(JSON.stringify(a)).not.toMatch(/Op[ée]ration/);
+      // Règle remplacée (carte #806, décision du PO du 17/11/2026) : la garde interdisait « Opération » ; à l’écran on dit désormais « opération », et c’est « événement de référence » qui est interdit.
+      expect(JSON.stringify(a)).not.toMatch(/[ée]v[éeè]nements?\s+de\s+r[ée]f[ée]rence/i);
     }
   });
 });
@@ -173,18 +174,18 @@ describe('L114AB-I02 — aperçus : ce qui est conservé est dit', () => {
 describe('L114AB-I03 — jamais un choix au hasard', () => {
   it('événement introuvable : une question, aucun plan', async () => {
     const a = await resolveDraft(parseCommand('Retire le document Facture Norauto de l’intervention Freins', TODAY)!, input, lookup());
-    expect(besoin(a)).toContain('Je n’ai pas trouvé cet événement de référence dans votre compte.');
+    expect(besoin(a)).toContain('Je n’ai pas trouvé cette opération dans votre compte.');
   });
 
   it('plusieurs événements : la liste et une question', async () => {
     const deux = [VIDANGE, evenement({ id: 503, realizedDate: '2024-06-02' })];
     const a = await resolveDraft(parseCommand('Retire le fournisseur Garage Martin de l’intervention Vidange', TODAY)!, input, lookup({ actifs: deux }));
-    expect(besoin(a)).toContain('Plusieurs événements de référence correspondent');
+    expect(besoin(a)).toContain('Plusieurs opérations correspondent');
   });
 
   it('dissocier deux fois le même événement : c’est dit', async () => {
     const a = await resolveDraft(parseCommand('Dissocie l’intervention Vidange de l’intervention Vidange', TODAY)!, input, lookup());
-    expect(besoin(a)).toBe('Ces deux désignations correspondent au même événement de référence : précisez les deux événements à dissocier.');
+    expect(besoin(a)).toBe('Ces deux désignations correspondent à la même opération : précisez les deux opérations à dissocier.');
   });
 
   it('échéance introuvable ou ambiguë : une question, aucun plan', async () => {
@@ -197,9 +198,9 @@ describe('L114AB-I03 — jamais un choix au hasard', () => {
 
   it('rétablir sans désignation, ou sans suppression correspondante : une question, aucun plan', async () => {
     expect(besoin(await resolveDraft({ command: 'RESTORE_REFERENCE_EVENT', target: { typeCode: null, words: [], date: null, fromContext: true } }, input, lookup())))
-      .toBe('Quel événement de référence voulez-vous rétablir ? Donnez son intitulé, sa date complète ou son bien.');
+      .toBe('Quelle opération voulez-vous rétablir ? Donnez son intitulé, sa date complète ou son bien.');
     expect(besoin(await resolveDraft(parseCommand('Rétablis l’intervention Vidange', TODAY)!, input, lookup({ supprimes: [] }))))
-      .toBe('Je n’ai pas trouvé d’événement de référence supprimé qui corresponde dans votre compte. Lequel voulez-vous rétablir ?');
+      .toBe('Je n’ai pas trouvé d’opération supprimée qui corresponde dans votre compte. Laquelle voulez-vous rétablir ?');
   });
 });
 
@@ -246,7 +247,8 @@ describe('L114AB-I05 — exécution : aucune écriture propre', () => {
     expect(exec.match(/translateWriteResult\(/g)?.length).toBe(5);
     // Le mot interdit est celui qui s'AFFICHE (accentué) ; les identifiants techniques de la façade
     // (`restoreOperation`, `operationId`) ne sont jamais montrés à l'utilisateur.
-    expect(exec).not.toMatch(/Opération/);
+    // Règle remplacée (carte #806, décision du PO du 17/11/2026) : la garde interdisait « Opération » ; à l’écran on dit désormais « opération », et c’est « événement de référence » qui est interdit.
+    expect(exec).not.toMatch(/[ée]v[éeè]nements?\s+de\s+r[ée]f[ée]rence/i);
     // Aucun bouton « Annuler » promis.
     expect(exec).toMatch(/reversible: false/);
   });
@@ -276,7 +278,8 @@ describe('L114AB-I06 — catalogue fermé', () => {
       expect(def.spec?.readBeforeWrite).toBe(true);
       expect(def.spec?.undoPolicy).toBe('IRREVERSIBLE');
       expect(def.spec?.retrySafety).toBe('PLAN_TAKEN_ONCE_AND_IDEMPOTENCY_KEY');
-      expect(def.label).not.toMatch(/Op[ée]ration/);
+      // Règle remplacée (carte #806, décision du PO du 17/11/2026) : la garde interdisait « Opération » ; à l’écran on dit désormais « opération », et c’est « événement de référence » qui est interdit.
+      expect(def.label).not.toMatch(/[ée]v[éeè]nements?\s+de\s+r[ée]f[ée]rence/i);
     }
   });
 

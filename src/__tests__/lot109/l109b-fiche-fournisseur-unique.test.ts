@@ -331,7 +331,7 @@ describe('L109B-STAT — invariants', () => {
     expect(lire('src/app/api/suppliers/[id]/route.ts')).not.toMatch(/\.limit\(50\)/);
   });
 
-  it('STAT-06 documents des événements de référence lus par la section « Documents » (lot 113Y : rubrique unique)', () => {
+  it('STAT-06 documents des opérations lus par la section « Documents » (lot 113Y : rubrique unique)', () => {
     // Lot 113Y (#721) : l'ancienne section séparée (point d'extension 109A) est fusionnée dans la section paginée.
     expect(existsSync(join(process.cwd(), 'src/services/suppliers/supplier-operation-documents.ts'))).toBe(false);
     expect(lire('src/services/suppliers/supplier-detail.service.ts')).toMatch(/VIA_EVENT_DOCUMENTS_SQL/);

@@ -40,7 +40,8 @@ describe('L114O-A-Q — question et propositions : neutres, et jamais le mot int
     expect(q).toBe('Vous aviez choisi de ne pas associer « Prêt immobilier — Maison » et « Achat — Maison ». '
       + 'Un nouveau justificatif les rapproche : faut-il les associer ?');
     // Règle permanente : jamais « Opération » affiché ; et aucune des deux réponses n'est recommandée.
-    expect(q).not.toMatch(/op[ée]ration/i);
+    // Règle remplacée (carte #806, décision du PO du 17/11/2026) : la garde interdisait « Opération » ; à l’écran on dit désormais « opération », et c’est « événement de référence » qui est interdit.
+    expect(q).not.toMatch(/[ée]v[éeè]nements?\s+de\s+r[ée]f[ée]rence/i);
     expect(q).not.toMatch(/recommand|conseill|probable|sans doute/i);
   });
 
@@ -59,7 +60,8 @@ describe('L114O-A-Q — question et propositions : neutres, et jamais le mot int
     expect(p[1]).toMatchObject({ label: 'Non, ne pas les associer', isCurrentValue: true });
     // L'état actuel est celui de l'utilisateur : il n'est pas présenté comme une proposition de l'IA.
     expect(p[1].evidenceIds).toBeUndefined();
-    for (const x of p) expect(x.label).not.toMatch(/op[ée]ration/i);
+    // Règle remplacée (carte #806, décision du PO du 17/11/2026) : la garde interdisait « Opération » ; à l’écran on dit désormais « opération », et c’est « événement de référence » qui est interdit.
+    for (const x of p) expect(x.label).not.toMatch(/[ée]v[éeè]nements?\s+de\s+r[ée]f[ée]rence/i);
     expect(cartes.operationRelationProposals([])[0].evidenceIds).toEqual([]);
   });
 
@@ -132,7 +134,8 @@ describe('L114O-A-D — déclarations : catalogue, producteur, publiabilité, ma
     });
     // L'utilisateur tranche : aucune formulation « l'IA propose », aucune réponse automatique possible.
     expect(regle.formulation.kind).toBe('DETERMINISTIC');
-    expect(regle.question).not.toMatch(/op[ée]ration/i);
+    // Règle remplacée (carte #806, décision du PO du 17/11/2026) : la garde interdisait « Opération » ; à l’écran on dit désormais « opération », et c’est « événement de référence » qui est interdit.
+    expect(regle.question).not.toMatch(/[ée]v[éeè]nements?\s+de\s+r[ée]f[ée]rence/i);
   });
 
   it('L114O-A-D2 — le producteur désigne un module réel et ses deux points d’entrée existent', () => {
@@ -144,7 +147,7 @@ describe('L114O-A-D — déclarations : catalogue, producteur, publiabilité, ma
     expect(cartes.resolveOperationRelationCard).toBeTypeOf('function');
   });
 
-  it('L114O-A-D3 — publiabilité : famille « événements de référence », prémisse contrôlée dès la création et fermeture déclarée', () => {
+  it('L114O-A-D3 — publiabilité : famille « opérations », prémisse contrôlée dès la création et fermeture déclarée', () => {
     const c = PUBLISHABILITY_CONTRACTS['OPERATION-RELATION'];
     expect(c).toMatchObject({ family: 'EVENEMENTS_DE_REFERENCE', decisions: 'PRODUCTION', atCreation: true });
     expect(c.cleanup).toEqual({ by: PUBLISHABILITY_CHECK_ID, service: 'closeCardsNoLongerUseful' });
@@ -161,7 +164,8 @@ describe('L114O-A-D — déclarations : catalogue, producteur, publiabilité, ma
   it('L114O-A-D4 — mascotte : un sujet dit en français, sans le mot interdit', () => {
     const titre = todoTitle('OPERATION-RELATION', 'ARBITRATE');
     expect(titre).toBe('Association à confirmer');
-    expect(titre).not.toMatch(/op[ée]ration/i);
+    // Règle remplacée (carte #806, décision du PO du 17/11/2026) : la garde interdisait « Opération » ; à l’écran on dit désormais « opération », et c’est « événement de référence » qui est interdit.
+    expect(titre).not.toMatch(/[ée]v[éeè]nements?\s+de\s+r[ée]f[ée]rence/i);
   });
 
   it('L114O-A-D5 — passerelle : la demande part de la façade, qui n’est jamais contournée (aucune écriture ici)', () => {

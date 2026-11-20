@@ -133,7 +133,7 @@ const NOMS: Readonly<Record<string, string>> = {
   DISPOSAL: 'la même vente',
 };
 /** Repli : la règle permanente interdit « opération » à l'écran ; « événement » seul désigne l'Agenda (109I). */
-export const BINARY_MATCH_DEFAULT_NOUN = 'le même événement de référence';
+export const BINARY_MATCH_DEFAULT_NOUN = 'la même opération';
 
 export function binaryMatchNoun(type: string | null | undefined): string {
   return (type && NOMS[type]) || BINARY_MATCH_DEFAULT_NOUN;

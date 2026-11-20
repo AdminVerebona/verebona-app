@@ -171,7 +171,7 @@ export const agendaEquivalentRepresentationsCheck: CoherenceCheck = {
       if (plan.unavailable.length) {
         out.set(id, {
           verdict: 'FINDING', anomaly: 'EQUIVALENCE_T4_DECISION_UNAVAILABLE', faultyLink: 'T4',
-          expected: 'décision T4 sur des représentations possiblement équivalentes sans événement de référence', observed: plan.unavailable,
+          expected: 'décision T4 sur des représentations possiblement équivalentes sans événement principal', observed: plan.unavailable,
           detail: { ...detail, aiContract: EQUIVALENCE_T4_CONTRACT, repairChain: 'aucune fusion tant que l’identité n’est pas certaine' },
           inputHash: hashOf({ id, u: plan.unavailable, f: detail.fingerprints }),
         });

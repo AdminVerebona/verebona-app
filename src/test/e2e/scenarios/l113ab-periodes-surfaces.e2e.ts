@@ -54,7 +54,7 @@ const facture = (assetId: number, start: string, end: string, montant: number, o
     financialHints: [fh('REALIZED_COST', montant, { amountScope: (o.scope ?? 'INSTALLMENT') as never, economicDate: start, periodStart: start, periodEnd: end })],
   });
 
-scenario('L113AB', 'Périodes métier — surfaces (événement de référence, dépense, T2, exports)', ({ sql, make }) => {
+scenario('L113AB', 'Périodes métier — surfaces (opération, dépense, T2, exports)', ({ sql, make }) => {
   let k: OperationsKit;
   beforeAll(() => { k = operationsKit(sql, make); });
   afterAll(() => { session.currentAccountId = null; });
@@ -116,7 +116,7 @@ scenario('L113AB', 'Périodes métier — surfaces (événement de référence, 
   // ══ E2E-01 / 02 ══════════════════════════════════════════════════════════
   describe('assurance : trois attestations et des cotisations, sans élément d’agenda', () => {
     let c: AccountRow; let m: { id: number }; let op: number; let att: number[]; let fact: number[];
-    it('L113AB-E2E-01 — fiche de l’événement de référence sans agenda : couvertures chronologiques, sourcées, consultables', async () => {
+    it('L113AB-E2E-01 — fiche de l’opération sans agenda : couvertures chronologiques, sourcées, consultables', async () => {
       c = await make.account({ plan: 'premium' });
       m = await maison(c);
       const a3 = await k.document(c, m.id, [attestation(m.id, '2025-04-01', '2026-03-31')], { type: 'INSURANCE_CERTIFICATE', title: 'Attestation 2025-2026', date: '2025-03-20' });
@@ -147,7 +147,8 @@ scenario('L113AB', 'Périodes métier — surfaces (événement de référence, 
       expect(v.documents.map((d: Json) => d.fileId).sort()).toEqual([...att, ...fact].sort());
       expect(v).toMatchObject({ agendaItemId: null, typeCode: 'CONTRACT' });
       expect(v.label).toMatch(/^Contrat/);
-      expect(JSON.stringify(v)).not.toMatch(/Opération|expir|en cours|dernière période connue/i);
+      // Règle remplacée (carte #806, décision du PO du 17/11/2026) : la garde interdisait « Opération » ; à l’écran on dit désormais « opération », et c’est « événement de référence » qui est interdit.
+      expect(JSON.stringify(v)).not.toMatch(/[ée]v[éeè]nements?\s+de\s+r[ée]f[ée]rence|expir|en cours|dernière période connue/i);
       // Parité stricte avec la lecture du lot 113W (tiroir Agenda / document) et la lecture groupée T2.
       const h = (await (await svc()).readOperationCoverageHistory(c.id, op))!;
       expect(v.coverages).toEqual(JSON.parse(JSON.stringify(h.coverages)));
@@ -174,7 +175,7 @@ scenario('L113AB', 'Périodes métier — surfaces (événement de référence, 
       expect((await GET(new NextRequest('http://x/api/evenements-reference/abc'), { params: Promise.resolve({ id: 'abc' }) })).status).toBe(400);
     });
 
-    it('L113AB-E2E-02 — R15 : correction depuis le document, l’événement de référence puis la dépense — même fait, synchronisé, TCO intact', async () => {
+    it('L113AB-E2E-02 — R15 : correction depuis le document, l’opération puis la dépense — même fait, synchronisé, TCO intact', async () => {
       const tcoAvant = empreinteTco(await tcoDe(c, m.id));
       const compsAvant = await composantes(op);
       const datesAvant = await contratDates(op);
@@ -258,7 +259,8 @@ scenario('L113AB', 'Périodes métier — surfaces (événement de référence, 
       expect(r.answer).toContain('Périodes de couverture établies par les justificatifs : de avril 2023 à mars 2024 (justificatif : Attestation 2023-2024), corrigée par l’utilisateur');
       expect(r.answer).toContain('Périodes différentes selon les justificatifs : du 15/04/2024 au 14/04/2025 (justificatif : Attestation 2024-2025), corrigée par l’utilisateur ; du 01/04/2025 au 31/03/2026 (justificatif : Attestation 2025-2026) — aucune n’est retenue tant que ce point n’est pas tranché');
       expect(r.answer).toContain('aucune prolongation n’est déduite');
-      expect(r.answer).not.toMatch(/jusqu|expir|en cours|Opération/i);
+      // Règle remplacée (carte #806, décision du PO du 17/11/2026) : la garde interdisait « Opération » ; à l’écran on dit désormais « opération », et c’est « événement de référence » qui est interdit.
+      expect(r.answer).not.toMatch(/[ée]v[éeè]nements?\s+de\s+r[ée]f[ée]rence|jusqu|expir|en cours/i);
       expect(r.sources.map((s) => s.id)).toEqual(expect.arrayContaining(att.map((id) => `doc_${id}`)));
       // Source métier (étape sémantique T2) : mêmes faits dans l'extrait.
       const { operationBusinessSource } = await import('@/services/verebona-assistant/canonical/business-sources');

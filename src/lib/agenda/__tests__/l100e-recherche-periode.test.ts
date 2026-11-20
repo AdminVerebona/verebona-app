@@ -87,7 +87,7 @@ describe('L100E-U-A8 — recherche et période de l’agenda', () => {
     expect(renderToStaticMarkup(h(AgendaSearchPeriodNotice, { q: '', state: { period: 'all', suspended: null }, onChoose: () => {} }))).toBe('');
   });
 
-  it('L100E-U-A8-04 — « Mon agenda » et l’onglet Agenda d’un bien branchés ; jamais le mot « Opération »', () => {
+  it('L100E-U-A8-04 — « Mon agenda » et l’onglet Agenda d’un bien branchés ; jamais le mot « événement de référence »', () => {
     const page = lire('src/app/(dashboard)/agenda/page.tsx');
     expect(page).toContain('agendaSearchParams(search, next');
     expect(page).toContain('<AgendaSearchPeriodNotice q={q} state={{ period, suspended: periodeSuspendue }} onChoose={choisirPeriode} />');

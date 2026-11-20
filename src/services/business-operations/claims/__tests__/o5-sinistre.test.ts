@@ -39,7 +39,7 @@ describe('O5-U05 — Q4 indemnité : coût brut jamais diminué, net = brut − 
   });
 });
 
-describe('O5-U06 — P09 : libellés fonctionnels, jamais « Opération »', () => {
+describe('O5-U06 — P09 : libellés fonctionnels, jamais « événement de référence »', () => {
   it('libellé de liste', () => {
     expect(claimLabel({ claimType: 'DEGAT_DES_EAUX', occurredOn: '2026-03-12' })).toBe('Dégât des eaux · 12/03/2026');
     expect(claimLabel({ claimType: 'VOL' })).toBe('Vol ou cambriolage · date à préciser');

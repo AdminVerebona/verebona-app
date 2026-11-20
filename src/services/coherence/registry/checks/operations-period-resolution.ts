@@ -61,11 +61,11 @@ export const operationsPeriodResolutionCheck: CoherenceCheck = {
   // Carte #766 : version 3 (incident technique du réexamen distingué de la divergence ; ordre non prouvé demandé à T3).
   version: 3,
   status: 'ACTIVE',
-  title: 'Événements de référence : périodes de couverture des justificatifs résolues (succession, avenant, rectificatif, divergence)',
+  title: 'Opérations : périodes de couverture des justificatifs résolues (succession, avenant, rectificatif, divergence)',
   domain: 'operations',
   level: 'N2',
   objectType: 'business_operation',
-  scope: 'événements de référence actifs dont au moins deux justificatifs portent une période de couverture',
+  scope: 'opérations actives dont au moins deux justificatifs portent une période de couverture',
   sources: ['business_operations', 'business_operation_documents', 'document_business_periods', 'business_period_decisions', 'business_period_relation_reviews', 'to_process_actions'],
   applicability: 'compte éligible (actif et modifiable)',
   invariant: 'une divergence de périodes que les preuves n’expliquent pas (documents qualifiés par T1) fait l’objet d’une seule question ouverte, jamais redemandée une fois tranchée ; aucune question ne reste ouverte sans divergence ; aucune résolution n’est inventée',
@@ -78,7 +78,7 @@ export const operationsPeriodResolutionCheck: CoherenceCheck = {
   services: ['documents/business-periods/service#operationPeriodResolution', 'documents/business-periods/conflict-cards#syncPeriodConflictCards'],
   chain: ['T1', 'T3', 'PERSISTENCE', 'TO_PROCESS'],
   triggers: ['SOURCE_ANALYZED', 'BUSINESS_OPERATION_CHANGED'],
-  frequency: 'campagne exhaustive quotidienne + contrôle ciblé après analyse ou écriture d’un événement de référence',
+  frequency: 'campagne exhaustive quotidienne + contrôle ciblé après analyse ou écriture d’une opération',
   criticality: 'MEDIUM',
   tests: ['L113AA-U-RESOLUTION', 'L113AA-E2E-D11', 'L113AD-E2E-STOCK', 'L114R-E2E-E07'],
 

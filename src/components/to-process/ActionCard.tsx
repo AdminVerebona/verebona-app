@@ -424,7 +424,7 @@ export function OperationReferences({ cardId, references, navigate }: { cardId: 
       </ul>
       {references.hidden > 0 && (
         <p className="mt-1 text-[11px] text-muted-foreground">
-          et {references.hidden} autre{references.hidden > 1 ? 's' : ''} élément{references.hidden > 1 ? 's' : ''} de cet événement de référence
+          et {references.hidden} autre{references.hidden > 1 ? 's' : ''} élément{references.hidden > 1 ? 's' : ''} de cette opération
         </p>
       )}
     </div>

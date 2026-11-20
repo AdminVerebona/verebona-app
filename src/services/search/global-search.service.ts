@@ -464,7 +464,7 @@ async function referenceEventCandidates(accountId: number, q: ParsedQuery, mode:
   const { referenceEventLabel } = await import('@/services/documents/business-period-surfaces');
   const p = new Params();
   const acc = p.add(accountId); // `$1` : les sous-requêtes de `REFERENCE_EVENT_SEARCH_SQL` s'y réfèrent.
-  if (acc !== '$1') throw new Error('recherche des événements de référence : le compte doit être le premier paramètre');
+  if (acc !== '$1') throw new Error('recherche des opérations : le compte doit être le premier paramètre');
   const propre = anyTokenLike(mode, p, q, ['o.technical_label', 'o.provider'], ['o.technical_label']);
   const declaration = anyTokenLike(mode, p, q, ['d.declaration_text']);
   const reference = anyTokenLike(mode, p, q, ['r.reference_value', 'r.normalized_value']);
@@ -537,7 +537,7 @@ async function referenceEventCandidatesSafe(accountId: number, q: ParsedQuery, m
   try {
     return await referenceEventCandidates(accountId, q, mode);
   } catch (e) {
-    console.error('[search] événements de référence non lus', (e as Error)?.message);
+    console.error('[search] opérations non lues', (e as Error)?.message);
     return [];
   }
 }

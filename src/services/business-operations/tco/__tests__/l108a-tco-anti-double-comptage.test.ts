@@ -93,7 +93,7 @@ describe('L108A — paramètres centralisés et cause racine démontrée', () =>
     expect(t.breakdown).toEqual([expect.objectContaining({ category: 'ACQUISITION', costsCents: MONTANT })]);
   });
 
-  it('L108A-U-RC-02 — T3 : donnée de la fiche (07/03) et facture (06/03) du même achat → deux composantes dans le même événement de référence ; le TCO n’en compte qu’une', async () => {
+  it('L108A-U-RC-02 — T3 : donnée de la fiche (07/03) et facture (06/03) du même achat → deux composantes dans la même opération ; le TCO n’en compte qu’une', async () => {
     const { componentsFromIdentity, consolidateComponents } = await import('../../consolidation/model');
     const { assetDataIdentity } = await import('../../consolidation/asset-data');
     const fiche = assetDataIdentity(BIEN, { nature: 'ACQUISITION', date: D_FICHE, dateBasis: 'FIELD', amountMinor: MONTANT, provider: null, reference: null } as never);
@@ -140,9 +140,9 @@ function scenario(famille: Famille, sources: { fiche?: boolean; facture?: boolea
 describe('L108A-U-MAT — même dépense sur plusieurs sources : toujours UNE contribution, preuves consultables', () => {
   const combinaisons: Array<[string, { fiche?: boolean; facture?: boolean; operation?: boolean }]> = [
     ['fiche + facture', { fiche: true, facture: true }],
-    ['fiche + événement de référence', { fiche: true, operation: true }],
-    ['facture + événement de référence', { facture: true, operation: true }],
-    ['fiche + facture + événement de référence', { fiche: true, facture: true, operation: true }],
+    ['fiche + opération', { fiche: true, operation: true }],
+    ['facture + opération', { facture: true, operation: true }],
+    ['fiche + facture + opération', { fiche: true, facture: true, operation: true }],
   ];
   for (const famille of FAMILLES) {
     for (const [nom, sources] of combinaisons) {
@@ -182,7 +182,7 @@ describe('L108A-U-MAT — même dépense sur plusieurs sources : toujours UNE co
     expect(fOp.summary.acquisitionCents).toBe(0);
   });
 
-  it('copie d’une facture déjà reprise par un événement de référence (même référence, même montant, autre fichier) : comptée une fois, quel que soit l’ordre d’import', () => {
+  it('copie d’une facture déjà reprise par une opération (même référence, même montant, autre fichier) : comptée une fois, quel que soit l’ordre d’import', () => {
     const ref = [{ kind: 'INVOICE', value: 'FA-77' }];
     const c = comp(30_000, { economicDate: D_PIECE });
     const achat = op(13, [c], { documents: [{ fileId: 821, title: 'Facture', role: 'INVOICE', date: D_PIECE }] });
@@ -194,7 +194,7 @@ describe('L108A-U-MAT — même dépense sur plusieurs sources : toujours UNE co
     }
   });
 
-  it('deux événements de référence pour le même achat du bien (fiche consolidée + facture consolidée à part) : un seul compté', () => {
+  it('deux opérations pour le même achat du bien (fiche consolidée + facture consolidée à part) : un seul compté', () => {
     const [cF, cD] = [comp(MONTANT, { economicDate: D_FICHE }), comp(MONTANT, { economicDate: D_PIECE })];
     const deFiche = op(14, [cF], { realizedDate: D_FICHE, sourceKinds: ['ASSET_DATA'] });
     const deFacture = op(15, [cD], { realizedDate: D_PIECE, documents: [{ fileId: 831, title: 'Facture', role: 'INVOICE', date: D_PIECE }] });

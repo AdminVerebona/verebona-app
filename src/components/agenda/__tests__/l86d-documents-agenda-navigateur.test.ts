@@ -112,7 +112,7 @@ describe.skipIf(!EXE)('L86D — documents d’un élément d’agenda : détache
     expect(await tiroirs().count()).toBe(1);
   });
 
-  it('L86D-NAV02 — desktop : détacher au clavier ; événement de référence : « Détacher » et « Retirer de l’ensemble » distincts', async () => {
+  it('L86D-NAV02 — desktop : détacher au clavier ; opération : « Détacher » et « Retirer de l’ensemble » distincts', async () => {
     await ouvrir(false, 'membre');
     const bouton = page.getByRole('button', { name: /^Retirer l’association avec « Rapport d’expertise/ });
     await bouton.focus();

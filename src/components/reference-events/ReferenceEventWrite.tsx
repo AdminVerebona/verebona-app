@@ -5,7 +5,7 @@
  * §19 ; décisions du PO du 15/11/2026) — gestes de la page d'un événement de
  * référence : corriger (intitulé, type, dates), supprimer, rattacher /
  * détacher un événement de l'Agenda, un document, un fournisseur, associer /
- * dissocier un autre événement de référence, déplacer un document, scinder, et
+ * dissocier une autre opération, scinder (le déplacement direct d'un document est retiré : carte #806 §1), et
  * — travaux D « contenu » — écrire ou retirer la NOTE LIBRE
  * (« Notes / Description », migration 1722 ; CDC §5, §14 ; AC42).
  *
@@ -56,7 +56,6 @@ export interface ReferenceEventPageActions {
   unlinkAgenda: (agendaItemId: number, title: string) => void;
   linkDocument: () => void;
   unlinkDocument: (fileId: number, title: string) => void;
-  moveDocument: (fileId: number, title: string) => void;
   linkSupplier: () => void;
   unlinkSupplier: (supplierId: number, name: string) => void;
   associate: () => void;
@@ -289,7 +288,6 @@ const PICK_TEXTS: Readonly<Record<ReferenceEventCandidateKind, { title: string; 
   document: { title: L.pickerDocumentTitle, hint: L.pickerDocumentHint },
   supplier: { title: L.pickerSupplierTitle, hint: L.pickerSupplierHint },
   reference: { title: L.pickerReferenceTitle, hint: L.pickerReferenceHint },
-  "move-target": { title: L.pickerMoveTitle, hint: L.pickerMoveHint },
 };
 
 function PickDialog({ fiche, pick, name, onClose, onPick }: {
@@ -583,7 +581,6 @@ export function useReferenceEventWrite(
       unlinkAgenda: (targetId, name) => ouvrir({ kind: "confirm", confirm: "unlinkAgenda", targetId, name }),
       linkDocument: () => ouvrir({ kind: "pick", pick: "document" }),
       unlinkDocument: (targetId, name) => ouvrir({ kind: "confirm", confirm: "unlinkDocument", targetId, name }),
-      moveDocument: (fileId, name) => ouvrir({ kind: "pick", pick: "move-target", fileId, name }),
       linkSupplier: () => ouvrir({ kind: "pick", pick: "supplier" }),
       unlinkSupplier: (targetId, name) => ouvrir({ kind: "confirm", confirm: "unlinkSupplier", targetId, name }),
       associate: () => ouvrir({ kind: "pick", pick: "reference" }),
@@ -630,7 +627,6 @@ export function useReferenceEventWrite(
           return envoyer(() => apiClient.post<ReferenceEventWriteResponse>(adresse(id, "/associations"), {
             otherId: c.id, nature: o?.nature ?? "ASSOCIATED", direction: o?.direction ?? "UNDIRECTED",
           }));
-        case "move-target": return envoyer(() => apiClient.patch<ReferenceEventWriteResponse>(adresse(id, "/documents"), { fileId, toId: c.id }));
       }
     };
     dialogs = <PickDialog key={`${pick}-${fileId ?? 0}`} fiche={fiche} pick={pick} name={name} onClose={fermer} onPick={onPick} />;

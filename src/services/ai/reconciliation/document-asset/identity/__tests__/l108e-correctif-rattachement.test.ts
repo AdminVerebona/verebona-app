@@ -69,14 +69,14 @@ describe('L108E-U-A1 — toutes les sources T1 persistées, preuve / indice, auc
       ['ADDRESS', 'HINT', 'ADDRESS_ROLE_BILLING'], ['BRAND', 'HINT', 'NOT_DISCRIMINANT'], ['SUPPLIER', 'HINT', 'NOT_DISCRIMINANT'],
     ]);
   });
-  it('cellules d’un tableau (charge utile) lues sans clés techniques ; relation d’événement de référence forte seulement si autorité et certitude', () => {
+  it('cellules d’un tableau (charge utile) lues sans clés techniques ; relation d’opération forte seulement si autorité et certitude', () => {
     expect(payloadCells({ cells: [{ label: 'N° de série', value: 'AB12345' }], confidence: 0.9 })).toEqual(['label : N° de série', 'value : AB12345']);
     expect(strongOperationRelation({ authority: 'DOCUMENT', confidence: 'certain' })).toBe(true);
     expect(strongOperationRelation({ authority: 'USER', confidence: null })).toBe(true);
     expect(strongOperationRelation({ authority: 'INFERENCE', confidence: 'certain' })).toBe(false);
     expect(strongOperationRelation({ authority: 'DOCUMENT', confidence: 'probable' })).toBe(false);
   });
-  it('même événement de référence (autorité forte) : membre à UN saut ; relation faible : jamais', () => {
+  it('même opération (autorité forte) : membre à UN saut ; relation faible : jamais', () => {
     const porteur = input(1, [corps(`Lieu des travaux : ${ADR}`)], [], { operations: [{ operationId: 7, role: 'QUOTE', strong: true }] });
     const fort = input(2, [corps('Facture travaux toiture')], [], { operations: [{ operationId: 7, role: 'INVOICE', strong: true }] });
     const faible = input(3, [corps('Relance')], [], { operations: [{ operationId: 7, role: 'OTHER_EVIDENCE', strong: false }] });

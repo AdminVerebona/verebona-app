@@ -319,12 +319,12 @@ async function buildRegistry(): Promise<PromptContract[]> {
   });
   out.push({
     id: idc.IDENTITY_CONTRACT_VERSION, treatment: 'T3', masterPromptCode: t3, rank: 8,
-    label: 'T3 : identité d’un événement de référence à plusieurs documents', lot: '97A', guideStep: 5,
+    label: 'T3 : identité d’une opération métier à plusieurs documents', lot: '97A', guideStep: 5,
     version: idc.IDENTITY_CONTRACT_VERSION, task: idc.IDENTITY_TASK, operations: await opsOf(t3, idc.IDENTITY_TASK), inputs: [idc.IDENTITY_CONTRACT_VERSION],
     outputs: await outputsOf(t3, idc.IDENTITY_TASK), capabilities: ['identity capability (promptCarriesIdentity)'],
     markers: [`BRANCHE TASK = ${idc.IDENTITY_TASK}`, idc.IDENTITY_CONTRACT_VERSION], validations: ['T3OperationIdentityOutput', 'validateIdentity', 'planIdentity'],
     requires: ['t3-socle'], blockIds: [idc.IDENTITY_CONTRACT_VERSION], expectedExecution: null, killSwitch: 'T3_OPERATION_IDENTITY_ENABLED',
-    impact: 'Un événement de référence qui regroupe à tort plusieurs documents n’est jamais réexaminé (constat IDENTITY_REEVALUATION_UNAVAILABLE).',
+    impact: 'Une opération métier qui regroupe à tort plusieurs documents n’est jamais réexaminée (constat IDENTITY_REEVALUATION_UNAVAILABLE).',
     anomaly: null, coverage: null,
     async check(p) {
       if (idc.promptCarriesIdentity(p.text, branches(p.text))) return ok();
@@ -476,7 +476,7 @@ async function buildRegistry(): Promise<PromptContract[]> {
   const repOutput = plusRecent(Object.entries(T4_EXECUTION_SPEC.outputContracts).filter(([, c]) => c.byTask[REP_TASK]).map(([v]) => v));
   out.push({
     id: repc.REPRESENTATION_CONTRACT_VERSION, treatment: 'T4', masterPromptCode: t4, rank: 9,
-    label: 'T4 : représentation Agenda d’un événement de référence à plusieurs éléments', lot: '97A', guideStep: 6,
+    label: 'T4 : représentation Agenda d’une opération métier à plusieurs éléments', lot: '97A', guideStep: 6,
     version: repc.REPRESENTATION_CONTRACT_VERSION, task: REP_TASK, operations: await opsOf(t4, REP_TASK), inputs: [String(repInput)], outputs: [String(repOutput)],
     capabilities: ['representationCapabilityOf'], markers: [repc.REPRESENTATION_CONTRACT_VERSION], validations: ['T4AgendaRepresentationOutput', 'validateRepresentation', 'planRepresentation'],
     requires: [t4c.T4_INTERVENTION_OUTPUT_CONTRACT], blockIds: [repc.REPRESENTATION_CONTRACT_VERSION],

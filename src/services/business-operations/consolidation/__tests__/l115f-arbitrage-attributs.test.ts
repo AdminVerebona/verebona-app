@@ -397,7 +397,11 @@ describe('L115F-U-PO — bloc 54 du guide, aucun texte de prompt dans le code', 
     // Le numéro de SECTION dépend de l'ordre d'intégration des lots (l'étape 56 de #792 a été intégrée avant) :
     // la règle porte sur la présence du bloc de l'étape 54, pas sur son rang dans le guide.
     expect(guide).toMatch(/^## \d+\. Étape 54 — T3 : arbitrage d'un attribut contradictoire/m);
-    const bloc = guide.slice(guide.indexOf('Étape 54'));
+    // Règle remplacée (carte #806, décision du PO du 17/11/2026) : le bloc 54 est borné à SA section. Les sections
+    // ajoutées ensuite au guide (dont l'étape 53, qui cite le mot « opération » pour le faire adopter) n'en font pas partie.
+    const debut = guide.indexOf('Étape 54');
+    const suite = guide.indexOf('\n## ', debut);
+    const bloc = guide.slice(debut, suite === -1 ? undefined : suite);
     expect(bloc).toContain('PREUVES INCOMPLÈTES ET PREUVE PAR FAIT — contrat t3-attribute-arbitration-v1');
     expect(bloc).toContain('bounds.complete');
     // Aucun contrat nouveau : le marqueur du bloc 38 reste le seul, donc l'arbitrage reste actif sans le bloc 54.

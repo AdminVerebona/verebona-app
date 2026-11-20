@@ -145,7 +145,7 @@ scenario('L114OK', 'Opérations / Agenda CDC V2.0 — travaux D : synthèse, mon
 
     const actifs = await k.actives(compte);
     const interventions = actifs.filter((o) => o.type_code === 'INTERVENTION');
-    expect(interventions.length, 'devis et facture rapprochés : UN seul événement de référence').toBe(1);
+    expect(interventions.length, 'devis et facture rapprochés : UNE seule opération').toBe(1);
     const id = interventions[0].id;
     // Un événement de l'Agenda et un fournisseur relié, par la façade (chemin de production).
     const visite = await element(compte, 'Passage de l’artisan', '2025-04-02', [bien.id]);
@@ -181,7 +181,7 @@ scenario('L114OK', 'Opérations / Agenda CDC V2.0 — travaux D : synthèse, mon
     expect(n).toBe(0);
   });
 
-  it('L114OK-E02 — aucun double compte : un justificatif et un événement partagés entre deux événements de référence comptent une fois sur chaque fiche', async () => {
+  it('L114OK-E02 — aucun double compte : un justificatif et un événement partagés entre deux opérations comptent une fois sur chaque fiche', async () => {
     const compte = await make.account({ plan: 'premium' });
     const bien = await make.asset(compte, { category: 'IMMOBILIER', name: 'Maison' });
     const sinistre = await operation(compte, 'CLAIM', { realized: '2025-05-02', label: 'Dégât des eaux', assetIds: [bien.id] });
@@ -320,7 +320,8 @@ scenario('L114OK', 'Opérations / Agenda CDC V2.0 — travaux D : synthèse, mon
     for (const corps of [{}, { notes: 12 }, { notes: 'x'.repeat(REFERENCE_EVENT_NOTES_MAX + 1) }, { note: 'x' }, { notes: 'x', inconnu: 1 }]) {
       const r = await ecrireNote(id, corps);
       expect(r.status, JSON.stringify(corps)).toBe(400);
-      expect(JSON.stringify(r.body)).not.toMatch(/Opération|opération/);
+      // Règle remplacée (carte #806, décision du PO du 17/11/2026) : la garde interdisait « Opération » ; à l’écran on dit désormais « opération », et c’est « événement de référence » qui est interdit.
+      expect(JSON.stringify(r.body)).not.toMatch(/[ée]v[éeè]nements?\s+de\s+r[ée]f[ée]rence/i);
     }
     expect((await noteEnBase(id)).user_notes).toBe('Garantie 2 ans. Contact : Pierre.');
 

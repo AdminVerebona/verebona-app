@@ -97,12 +97,13 @@ describe('L109I-U01 — libellés partagés (lib/agenda/grouping-view)', () => {
     expect(AGENDA_EVENT_LABELS.count(4)).toBe('4 événements');
     expect(AGENDA_EVENT_LABELS.total(0)).toBe('0 événement');
   });
-  it('aucun libellé partagé ne porte une formulation interdite, ni « Opération »', () => {
+  it('aucun libellé partagé ne porte une formulation interdite, ni « événement de référence »', () => {
     const valeurs = [...Object.values(AGENDA_EVENT_LABELS), ...Object.values(GROUPING_LABELS)]
       .flatMap((v) => (typeof v === 'string' ? [v] : typeof v === 'function' ? [String((v as (n: number) => string)(2))] : Object.values(v as Record<string, string>)));
     for (const v of valeurs) {
       expect(v, v).not.toMatch(FORBIDDEN);
-      expect(v, v).not.toMatch(/Opération/);
+      // Règle remplacée (carte #806, décision du PO du 17/11/2026) : la garde interdisait « Opération » ; à l’écran on dit désormais « opération », et c’est « événement de référence » qui est interdit.
+      expect(v, v).not.toMatch(/[ée]v[éeè]nements?\s+de\s+r[ée]f[ée]rence/i);
     }
   });
 });

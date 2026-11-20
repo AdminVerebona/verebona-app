@@ -93,7 +93,7 @@ describe('L114Z4-D01 — phrases reconnues', () => {
   it.each([
     `${DECLARE} puis relie le fournisseur Garage Martin à celui-ci`,
     `${DECLARE} puis relie le fournisseur Garage Martin à ce dernier`,
-    `${DECLARE} puis relie le fournisseur Garage Martin à cet événement de référence`,
+    `${DECLARE} puis relie le fournisseur Garage Martin à cette opération`,
     `${DECLARE} puis relie le fournisseur Garage Martin à celui-ci comme intervenant`,
   ])('fournisseur : %s', (phrase) => {
     const segments = parseCommands(phrase, TODAY)!;
@@ -113,7 +113,7 @@ describe('L114Z4-D01 — phrases reconnues', () => {
     });
   });
 
-  it('hors d’une phrase à deux actions, « à celui-ci » n’est pas un événement de référence (comportement d’avant)', () => {
+  it('hors d’une phrase à deux actions, « à celui-ci » n’est pas une opération (comportement d’avant)', () => {
     // « Rattache le document X à celui-ci » reste le rattachement au bien de la page ou du fil.
     expect(parseCommands('Rattache le document Facture Norauto à celui-ci', TODAY)![0].draft.command).toBe('UPDATE_DOCUMENT_TARGETS');
     // Règle remplacée (carte #753, passage 114AA) : « Relie le fournisseur … à celui-ci » SEUL rendait `null`.
@@ -146,17 +146,18 @@ describe('L114Z4-D02 — plan : une confirmation, deux actions, la seconde dépe
     expect(p?.kind).toBe('plan');
     const plan = (p as { kind: 'plan'; preview: { summary: string; actions: Array<{ actionId: string; preview: string; effects: string[]; dependsOn: string[] }> } }).preview;
     expect(plan.summary).toBe('Je vais effectuer 2 actions, dans l’ordre indiqué. Confirmez-vous l’ensemble ?');
-    expect(plan.actions[0].preview).toContain('Enregistrer l’événement de référence « Intervention — Vidange »');
-    expect(plan.actions[1].preview).toBe('Relier le fournisseur « Garage Martin » à l’événement de référence qui vient d’être enregistré.');
+    expect(plan.actions[0].preview).toContain('Enregistrer l’opération « Intervention — Vidange »');
+    expect(plan.actions[1].preview).toBe('Relier le fournisseur « Garage Martin » à l’opération qui vient d’être enregistrée.');
     expect(plan.actions[1].effects).toEqual([
       'Fournisseur : Garage Martin', 'Rôle : Prestataire',
-      'Événement de référence : celui que l’action précédente enregistre.',
+      'Opération : celle que l’action précédente enregistre.',
       'Si cet enregistrement n’aboutit pas, ce lien n’est pas fait et rien n’est écrit.',
       'Aucun document, aucun coût et aucune échéance ne sont créés.',
       'Ce lien est votre décision : il ne sera pas modifié par une analyse.',
     ]);
     expect(plan.actions[1].dependsOn).toEqual([plan.actions[0].actionId]);
-    expect(JSON.stringify(plan)).not.toMatch(/op[ée]ration/i);
+    // Règle remplacée (carte #806, décision du PO du 17/11/2026) : la garde interdisait « Opération » ; à l’écran on dit désormais « opération », et c’est « événement de référence » qui est interdit.
+    expect(JSON.stringify(plan)).not.toMatch(/[ée]v[éeè]nements?\s+de\s+r[ée]f[ée]rence/i);
     // Rien n'est écrit par la préparation.
     expect(base.appels).toEqual([]);
   });
@@ -164,7 +165,7 @@ describe('L114Z4-D02 — plan : une confirmation, deux actions, la seconde dépe
   it('document : même plan, l’aperçu nomme le document et dit la dépendance', async () => {
     const p = await preparer(`${DECLARE} puis rattache le document Facture Norauto à celui-ci`);
     const plan = (p as { preview: { actions: Array<{ preview: string; effects: string[] }> } }).preview;
-    expect(plan.actions[1].preview).toBe('Rattacher le document « Facture Norauto » à l’événement de référence qui vient d’être enregistré.');
+    expect(plan.actions[1].preview).toBe('Rattacher le document « Facture Norauto » à l’opération qui vient d’être enregistrée.');
     expect(plan.actions[1].effects[0]).toBe('Document : Facture Norauto du 12 mars 2025');
   });
 
@@ -177,15 +178,15 @@ describe('L114Z4-D02 — plan : une confirmation, deux actions, la seconde dépe
 
 describe('L114Z4-D03 — hors de ce cas, rien ne change', () => {
   it('« à celui-ci » sans déclaration qui précède : la question est posée, aucun plan', async () => {
-    const p = await preparer('Relie le fournisseur Garage Martin à cet événement de référence');
+    const p = await preparer('Relie le fournisseur Garage Martin à cette opération');
     expect(p === null || p.kind === 'need_info').toBe(true);
-    if (p?.kind === 'need_info') expect(p.message).toMatch(/[Qq]uel événement de référence/);
+    if (p?.kind === 'need_info') expect(p.message).toMatch(/[Qq]uel opération/);
   });
 
   it('« et » (actions indépendantes) ne désigne pas l’événement de la première', async () => {
-    const p = await preparer(`${DECLARE} et relie le fournisseur Garage Martin à cet événement de référence`);
+    const p = await preparer(`${DECLARE} et relie le fournisseur Garage Martin à cette opération`);
     expect(p === null || p.kind === 'need_info').toBe(true);
-    if (p?.kind === 'need_info') expect(p.message).toMatch(/événement de référence/);
+    if (p?.kind === 'need_info') expect(p.message).toMatch(/opération/);
   });
 });
 
@@ -205,7 +206,7 @@ describe('L114Z4-D04 — exécution', () => {
     expect(results.map((r) => r.status)).toEqual(['SUCCESS', 'SUCCESS']);
     expect(base.appels.map((a) => a.commande)).toEqual(['createOperation', 'linkSupplier']);
     expect(base.appels[1].entree).toMatchObject({ operationId: 909, supplierId: 31, role: 'PROVIDER' });
-    expect(results[1].message).toBe('Fournisseur « Garage Martin » relié à l’événement de référence « Intervention — Vidange ».');
+    expect(results[1].message).toBe('Fournisseur « Garage Martin » relié à l’opération « Intervention — Vidange ».');
   });
 
   it('document : rattaché à l’événement créé', async () => {

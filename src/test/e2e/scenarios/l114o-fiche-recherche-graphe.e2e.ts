@@ -39,11 +39,11 @@ vi.mock('@/services/verebona-assistant/events/business-events', async (o) => ({
 }));
 
 type Json = Record<string, any>;
-const CATEGORIE = 'Événement de référence';
+const CATEGORIE = 'Opération';
 
 const facade = () => import('@/services/business-operations/operation-write.facade');
 
-scenario('L114OD', 'Opérations / Agenda CDC V2.0 — travaux D : page entière de l’événement de référence et recherche', ({ sql, make }) => {
+scenario('L114OD', 'Opérations / Agenda CDC V2.0 — travaux D : page entière de l’opération et recherche', ({ sql, make }) => {
   const user = (c: AccountRow, channel: 'UI' | 'ASSISTANT' = 'UI'): OperationWriteContext => ({ accountId: c.id, actor: { kind: 'USER', userId: c.ownerUserId, channel } });
   const asUser = (c: AccountRow) => { session.currentAccountId = c.id; session.userId = c.ownerUserId; };
   const href = (id: number) => `/agenda/evenements-reference/${id}`;
@@ -96,7 +96,7 @@ scenario('L114OD', 'Opérations / Agenda CDC V2.0 — travaux D : page entière 
     return r.h;
   }
 
-  it('L114OD-E01 — événement de référence fondé sur une déclaration, sans bien, sans document, sans événement et sans date : trouvé par la recherche, page consultable', async () => {
+  it('L114OD-E01 — opération fondée sur une déclaration, sans bien, sans document, sans événement et sans date : trouvé par la recherche, page consultable', async () => {
     const compte = await make.account({ plan: 'standard' });
     const declaration = 'Je vais faire remplacer la chaudière par un artisan';
     const cree = await (await facade()).createOperation(user(compte, 'ASSISTANT'), { declaration, type: null, status: 'ENVISAGED' });
@@ -124,7 +124,8 @@ scenario('L114OD', 'Opérations / Agenda CDC V2.0 — travaux D : page entière 
     expect(p.fiche!.declarations).toHaveLength(1);
     expect(p.fiche!.declarations[0]).toMatchObject({ text: declaration, channel: 'ASSISTANT', purpose: 'CREATE' });
     // Aucun état interne, jamais le mot interdit.
-    expect(JSON.stringify(p.fiche)).not.toMatch(/ENVISAGED|REALIZED|CANCELLED|"status"|Opération/);
+    // Règle remplacée (carte #806, décision du PO du 17/11/2026) : la garde interdisait « Opération » ; à l’écran on dit désormais « opération », et c’est « événement de référence » qui est interdit.
+    expect(JSON.stringify(p.fiche)).not.toMatch(/[ée]v[éeè]nements?\s+de\s+r[ée]f[ée]rence|ENVISAGED|REALIZED|CANCELLED|"status"/i);
 
     // La lecture n'a rien écrit : aucun événement de l'Agenda fictif, aucun rappel, aucune carte.
     expect(await empreinte(compte)).toBe(avant);
@@ -178,7 +179,8 @@ scenario('L114OD', 'Opérations / Agenda CDC V2.0 — travaux D : page entière 
     expect(cote.relations).toEqual([{ operationId: achat, label: 'Achat de la maison', nature: 'FINANCING', direction: 'OUTGOING' }]);
     expect(cote.agendaItems).toEqual([{ id: echeance, title: 'Fin du prêt', date: '2041-03-15', shared: true }]);
     // Aucun état interne servi (« REALIZED » n'apparaît que comme RÔLE d'une date propre) ; lecture sans écriture.
-    expect(JSON.stringify([fiche, cote])).not.toMatch(/ENVISAGED|CANCELLED|"status"|Opération/);
+    // Règle remplacée (carte #806, décision du PO du 17/11/2026) : la garde interdisait « Opération » ; à l’écran on dit désormais « opération », et c’est « événement de référence » qui est interdit.
+    expect(JSON.stringify([fiche, cote])).not.toMatch(/[ée]v[éeè]nements?\s+de\s+r[ée]f[ée]rence|ENVISAGED|CANCELLED|"status"/i);
     expect(Object.keys(fiche)).not.toContain('status');
     expect(await empreinte(compte)).toBe(avant);
   });

@@ -111,8 +111,8 @@ export async function readReferenceEventCandidates(
     return coupe(rows.map((r) => ({ id: Number(r.id), title: String(r.name ?? ''), date: null, typeCode: null })));
   }
 
-  // Autres événements de référence ACTIFS du compte. `reference` : pas encore associés à celui-ci ;
-  // `move-target` : tous (cible du déplacement d'un document). Le titre est celui de la page (règle unique).
+  // Autres opérations ACTIVES du compte, pas encore associées à celle-ci (`reference`). Le titre est celui de la page
+  // (règle unique). Carte #806 §1 : la nature `move-target` (cible d'un déplacement de document) est retirée.
   const { REFERENCE_EVENT_SEARCH_SQL, referenceEventSearchFactsOf } = await import('./reference-event-page');
   const rows = (await sql.unsafe(
     `SELECT o.id, o.type_code, o.technical_label, o.provider,
@@ -123,12 +123,12 @@ export async function readReferenceEventCandidates(
             ${REFERENCE_EVENT_SEARCH_SQL.firstDocument} AS first_document
        FROM business_operations o
       WHERE o.account_id = $1 AND o.id <> $2 AND o.invalidated_at IS NULL AND o.merged_into_operation_id IS NULL
-        AND ($3::boolean OR NOT EXISTS (
+        AND NOT EXISTS (
               SELECT 1 FROM business_operation_relations r
                WHERE r.account_id = $1 AND r.state = 'ACTIVE'
-                 AND ((r.from_operation_id = $2 AND r.to_operation_id = o.id) OR (r.from_operation_id = o.id AND r.to_operation_id = $2))))
+                 AND ((r.from_operation_id = $2 AND r.to_operation_id = o.id) OR (r.from_operation_id = o.id AND r.to_operation_id = $2)))
       ORDER BY o.id DESC LIMIT ${REFERENCE_SCAN_LIMIT + 1}`,
-    [accountId, operationId, kind === 'move-target'] as never[],
+    [accountId, operationId] as never[],
   )) as unknown as Row[];
   const tronque = rows.length > REFERENCE_SCAN_LIMIT;
   const mots = sansAccent(query).split(/\s+/).filter((m) => m.length > 0);

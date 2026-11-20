@@ -60,7 +60,7 @@ const MIGRATIONS = ['1715_l114o_relations_evenements_reference.sql', '1716_l114o
   // emporterait le déclencheur réel de `public.agenda_items` (la table, elle, n'est pas recréée dans le schéma isolé).
   '1721_l114o_fait_porte_lien_agenda.sql'];
 
-scenario('L114O', 'Opérations / Agenda CDC V2.0 — lot B : graphe canonique (relations entre événements de référence, liens N↔N d’Agenda, façade d’écriture)', ({ sql, make }) => {
+scenario('L114O', 'Opérations / Agenda CDC V2.0 — lot B : graphe canonique (relations entre opérations, liens N↔N d’Agenda, façade d’écriture)', ({ sql, make }) => {
   const user = (c: AccountRow, over: Partial<OperationWriteContext> = {}): OperationWriteContext =>
     ({ accountId: c.id, actor: { kind: 'USER', userId: c.ownerUserId, channel: 'UI' }, ...over });
   const t3 = (c: AccountRow): OperationWriteContext => ({ accountId: c.id, actor: { kind: 'AI', treatment: 'T3' } });
@@ -214,7 +214,8 @@ scenario('L114O', 'Opérations / Agenda CDC V2.0 — lot B : graphe canonique (r
       ['INCOMING', 'FINANCING', pret, 'FINANCING'], ['INCOMING', 'FINANCING', pret2, 'FINANCING'],
     ]);
     expect(deLAchat?.relations[0].other.label).toBe('Financement — Prêt immobilier');
-    expect(JSON.stringify([duPret, deLAchat])).not.toMatch(/Opération|opération/);
+    // Règle remplacée (carte #806, décision du PO du 17/11/2026) : la garde interdisait « Opération » ; à l’écran on dit désormais « opération », et c’est « événement de référence » qui est interdit.
+    expect(JSON.stringify([duPret, deLAchat])).not.toMatch(/[ée]v[éeè]nements?\s+de\s+r[ée]f[ée]rence/i);
 
     // AC51 : aucune composante financière, aucune date, aucun événement, aucun rappel, aucune carte, aucune Opération modifiée.
     expect(await empreinte(compte)).toBe(avant);
@@ -270,7 +271,7 @@ scenario('L114O', 'Opérations / Agenda CDC V2.0 — lot B : graphe canonique (r
     expect((await journal(compte))[1]).toMatchObject({ actor_user_id: compte.ownerUserId, command: 'dissociateOperations', idempotency_key: 'l114o-e03-refus-0001' });
   });
 
-  it('L114O-E04 — élément d’Agenda partagé par deux événements de référence : un seul objet Agenda, à sa date, sans rappel doublé ni « principal »', async () => {
+  it('L114O-E04 — élément d’Agenda partagé par deux opérations : un seul objet Agenda, à sa date, sans rappel doublé ni « principal »', async () => {
     const compte = await make.account({ plan: 'premium' });
     const bien = await make.asset(compte, { category: 'IMMOBILIER', name: 'Maison' });
     const diagnostic = await operation(compte, 'INTERVENTION', { realized: '2020-06-10', label: 'DPE' });
@@ -565,10 +566,14 @@ scenario('L114O', 'Opérations / Agenda CDC V2.0 — lot B : graphe canonique (r
     // Geste réservé à l'utilisateur ; document d'un autre compte introuvable.
     expect(await f.linkDocument(t3(compte), { operationId: a, fileId: fichier.id })).toMatchObject({ status: 'FORBIDDEN', code: 'USER_ONLY' });
     expect(await f.linkDocument(user(compte), { operationId: a, fileId: etranger.id })).toMatchObject({ status: 'FORBIDDEN', code: 'NOT_FOUND_IN_ACCOUNT' });
-    expect(await f.moveDocument(user(compte), { fileId: fichier.id, fromOperationId: b, toOperationId: a })).toMatchObject({ status: 'FORBIDDEN', code: 'NOT_LINKED' });
+    // Règle remplacée (carte #806, décision du PO du 17/11/2026) : la commande autonome `moveDocument` est retirée de la
+    // façade (son corps ne sert plus que la scission).
+    expect(f as unknown as Record<string, unknown>).not.toHaveProperty('moveDocument');
 
-    // Déplacement atomique : une seule appartenance après, aucun fichier copié, lien Document ↔ Agenda intact.
-    expect(await f.moveDocument(user(compte), { fileId: fichier.id, fromOperationId: a, toOperationId: b })).toMatchObject({ status: 'APPLIED', changed: true, data: { operationId: b, fromOperationId: a } });
+    // « Retirer de A » puis « Rattacher à B » : une seule appartenance après, aucun fichier copié, lien Document ↔ Agenda intact.
+    expect(await f.unlinkDocument(user(compte), { operationId: a, fileId: fichier.id })).toMatchObject({ status: 'APPLIED', changed: true });
+    expect(await membres()).toEqual([]);
+    expect(await f.linkDocument(user(compte), { operationId: b, fileId: fichier.id })).toMatchObject({ status: 'APPLIED', changed: true, data: { operationId: b } });
     expect(await membres()).toEqual([{ op: b, origins: ['USER'] }]);
     expect(await sql<Json[]>`SELECT count(*)::int AS n FROM asset_files WHERE account_id = ${compte.id} AND deleted_at IS NULL`).toEqual([{ n: 1 }]);
     expect(await sql<Json[]>`SELECT provenances FROM agenda_file_links WHERE agenda_item_id = ${item} AND asset_file_id = ${fichier.id}`).toEqual([{ provenances: ['MANUAL_DIRECT'] }]);
@@ -582,9 +587,10 @@ scenario('L114O', 'Opérations / Agenda CDC V2.0 — lot B : graphe canonique (r
     expect(await membres()).toEqual([]);
     expect(await sql<Json[]>`SELECT deleted_at IS NULL AS vivant FROM asset_files WHERE id = ${fichier.id}`).toEqual([{ vivant: true }]);
     expect(await sql<Json[]>`SELECT count(*)::int AS n FROM agenda_file_links WHERE agenda_item_id = ${item} AND asset_file_id = ${fichier.id}`).toEqual([{ n: 1 }]);
-    expect((await journal(compte)).map((j) => [j.kind, j.action])).toEqual([['DOCUMENT_LINK', 'CREATED'], ['DOCUMENT_LINK', 'MOVED'], ['DOCUMENT_LINK', 'REJECTED']]);
+    expect((await journal(compte)).map((j) => [j.kind, j.action])).toEqual([['DOCUMENT_LINK', 'CREATED'], ['DOCUMENT_LINK', 'REJECTED'], ['DOCUMENT_LINK', 'CREATED'], ['DOCUMENT_LINK', 'REJECTED']]);
+    // Règle remplacée (carte #806, décision du PO du 17/11/2026) : plus d'action « MOVED » au journal hors d'une scission — un retrait (REJECTED) puis un rattachement (CREATED).
   });
-  it('L114O-E10 — événement de référence créé sur déclaration : sans document, élément d’Agenda, bien ni date ; source durable ; rejeu sans doublon', async () => {
+  it('L114O-E10 — opération créée sur déclaration : sans document, élément d’Agenda, bien ni date ; source durable ; rejeu sans doublon', async () => {
     const compte = await make.account({ plan: 'premium' });
     const autre = await make.account({ plan: 'premium' });
     const bienAutre = await make.asset(autre, { category: 'IMMOBILIER', name: 'Bien d’un autre compte' });
@@ -765,7 +771,7 @@ scenario('L114O', 'Opérations / Agenda CDC V2.0 — lot B : graphe canonique (r
     expect(await empreinte(compte)).toBe(avant);
   });
 
-  it('L114O-E13 — transfert RÉEL d’un bien entre comptes : aucune relation ni lien entre comptes ; la déclaration suit son événement de référence', async () => {
+  it('L114O-E13 — transfert RÉEL d’un bien entre comptes : aucune relation ni lien entre comptes ; la déclaration suit son opération', async () => {
     const a = await make.account({ plan: 'premium' });
     const b = await make.account({ plan: 'premium' });
     const maison = await make.asset(a, { category: 'IMMOBILIER', name: 'Maison transférée' });

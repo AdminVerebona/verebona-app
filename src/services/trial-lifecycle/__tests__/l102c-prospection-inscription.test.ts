@@ -55,7 +55,8 @@ describe('L102C-PRO-02 — mécanisme selon la base légale', () => {
     expect(n.sha256).toMatch(/^[0-9a-f]{64}$/);
     expect(signupNoticeFor(S({ legalBasis: 'soft_opt_in', signupCollection: { enabled: true, softOptInMechanism: 'opt_out_checkbox' } }), url)!.sha256).toBe(n.sha256);
     expect(signupNoticeFor(S({ legalBasis: 'soft_opt_in', signupCollection: { enabled: true, softOptInMechanism: 'opt_out_checkbox' } }), `${url}?v=2`)!.sha256).not.toBe(n.sha256);
-    for (const t of [n.information, n.checkboxLabel, n.help]) expect(t).not.toMatch(/Opération|CGSU|CGVU|article|RGPD/);
+    // Règle remplacée (carte #806, décision du PO du 17/11/2026) : la garde interdisait « Opération » ; à l’écran on dit désormais « opération », et c’est « événement de référence » qui est interdit.
+    for (const t of [n.information, n.checkboxLabel, n.help]) expect(t).not.toMatch(/[ée]v[éeè]nements?\s+de\s+r[ée]f[ée]rence|CGSU|CGVU|article|RGPD/i);
   });
   it('lien Confidentialité : base d’URL configurable', () => {
     expect(privacyPolicyUrl({ PUBLIC_PRIVACY_URL: 'https://legal.example.fr/conf' })).toBe('https://legal.example.fr/conf');

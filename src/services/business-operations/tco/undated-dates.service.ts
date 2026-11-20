@@ -45,7 +45,7 @@ export interface TcoDateEntryResult {
 
 const MESSAGES: Partial<Record<TcoDateEntryOutcome, string>> = {
   NOT_UNDATED: 'Cette dépense a déjà une date ou n’est plus comptée : la liste a été actualisée.',
-  NOT_EDITABLE: 'Cette date ne se saisit pas ici : corrigez-la sur le justificatif ou sur l’événement de référence.',
+  NOT_EDITABLE: 'Cette date ne se saisit pas ici : corrigez-la sur le justificatif ou sur l’opération.',
   CONFLICT: 'Cette date a été renseignée entre-temps : la liste a été actualisée.',
   ERROR: 'La date n’a pas pu être enregistrée. Réessayez.',
   SAVED_STILL_UNDATED: 'La date est enregistrée, mais elle ne suffit pas à dater cette dépense (voir son justificatif).',

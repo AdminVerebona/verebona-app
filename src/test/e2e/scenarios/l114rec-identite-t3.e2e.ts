@@ -113,7 +113,7 @@ scenario('L114REC', 'Opérations / Agenda CDC V2.0 — recette : identité devan
 
   // ══ AC09 / SC-01 : devis, visite, devis ultérieur, facture = UNE réparation ══
 
-  it('L114REC-E01 — devis initial, devis alternatif, visite et facture d’une même réparation : UN seul événement de référence (AC09, SC-01) ; repère au premier devis puis à la réalisation (AC32) ; la visite garde sa date', async () => {
+  it('L114REC-E01 — devis initial, devis alternatif, visite et facture d’une même réparation : UNE seule opération (AC09, SC-01) ; repère au premier devis puis à la réalisation (AC32) ; la visite garde sa date', async () => {
     const compte = await make.account({ plan: 'premium' });
     const clio = await make.asset(compte, { category: 'VEHICULE', name: 'Clio' });
 
@@ -183,7 +183,7 @@ scenario('L114REC', 'Opérations / Agenda CDC V2.0 — recette : identité devan
 
   // ══ AC10 / SC-02 : deux réparations chez le même prestataire ════════════════
 
-  it('L114REC-E02 — deux réparations indépendantes chez le même prestataire : deux événements de référence, aucune fusion, aucune carte sur le seul prestataire (AC10, SC-02)', async () => {
+  it('L114REC-E02 — deux réparations indépendantes chez le même prestataire : deux opérations, aucune fusion, aucune carte sur le seul prestataire (AC10, SC-02)', async () => {
     const compte = await make.account({ plan: 'premium' });
     const clio = await make.asset(compte, { category: 'VEHICULE', name: 'Clio' });
     const f1 = await document(compte, clio.id, [cand({

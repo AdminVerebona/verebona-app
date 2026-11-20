@@ -111,7 +111,7 @@ describe('L106A-U-EQUIVALENCE — représentations équivalentes (pur)', () => {
     expect(f.kept).toContainEqual({ id: 104, why: 'PROTECTED_USER' });
   });
 
-  it('U07 — représentation d’un événement de référence (Opération active, projection) → décision T4, aucune fusion par le code', () => {
+  it('U07 — représentation d’une opération (Opération active, projection) → décision T4, aucune fusion par le code', () => {
     const l = stock();
     l[2] = { ...l[2], operationId: 55, operationActive: true };
     const [d] = decideAsset(l, docs(dossier309, compromis316), maison);

@@ -462,14 +462,14 @@ scenario('L116D-T2-ECARTS', 'Carte #807 — Assistant T2 : écarts résiduels E0
 
     // Anti-doublon : même sinistre redéclaré → annoncé comme comparable, jamais créé en silence.
     const encore = planDe(await demander(c, 'Déclare un sinistre « Dégât des eaux » réalisé le 2 juin 2024 pour la maison'));
-    expect(encore.plan.actions[0].effects.join(' ')).toMatch(/Attention : un événement de référence comparable existe déjà/);
+    expect(encore.plan.actions[0].effects.join(' ')).toMatch(/Attention : une opération comparable existe déjà/);
 
     // Associé au contrat : les deux restent distincts.
     const lien = planDe(await demander(c, 'Associe le sinistre Dégât des eaux au contrat Assurance habitation'));
-    expect(lien.plan.actions[0].effects).toContain('Ils restent deux événements de référence distincts : rien n’est fusionné.');
+    expect(lien.plan.actions[0].effects).toContain('Elles restent deux opérations distinctes : rien n’est fusionné.');
     const assoc = await confirmer(c, lien.plan.planId);
     expect(assoc).toMatchObject({ ok: true, status: 'EXECUTED' });
-    expect(JSON.stringify(assoc)).toMatch(/associés\. Ils restent distincts\./);
+    expect(JSON.stringify(assoc)).toMatch(/associées\. Elles restent distinctes\./);
     ops = await operations(c);
     expect(ops.filter((o) => !o.invalide && o.fusion === null).map((o) => o.type_code)).toEqual(['CONTRACT', 'CLAIM']);
 

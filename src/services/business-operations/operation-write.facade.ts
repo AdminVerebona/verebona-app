@@ -66,7 +66,8 @@
  *   Documents (UTILISATEUR seulement — service unique de regroupement)
  *   linkDocument            W25  rattacher ;
  *   unlinkDocument               retirer (refus mémorisé, fichier conservé) ;
- *   moveDocument                 déplacer vers un autre événement de référence.
+ *   (le déplacement autonome d'un document est retiré — carte #806 §1 : retirer
+ *   puis rattacher ; le corps interne `moveDocumentBody` ne sert plus que la scission).
  *
  *   Fournisseurs (UTILISATEUR seulement — service unique `operation-suppliers`)
  *   linkSupplier            W26  relier un fournisseur du compte, avec son rôle ;
@@ -636,24 +637,18 @@ export function unlinkDocument(ctx: OperationWriteContext, input: DocumentLinkIn
   });
 }
 
-export interface MoveDocumentInput { fileId: number; fromOperationId: number; toOperationId: number; reasonCode?: string }
+interface MoveDocumentInput { fileId: number; fromOperationId: number; toOperationId: number; reasonCode?: string }
 
 /**
- * DÉPLACE un document d'un événement de référence vers un autre (utilisateur
- * seulement), en UNE transaction : retrait de l'origine (refus mémorisé,
- * preuves désactivées, origine recalculée) puis appartenance explicite à la
- * cible. Aucun fichier copié ; aucune composante financière copiée — les
- * montants du document quittent l'origine et ne sont portés par la cible
- * qu'après la consolidation T3 de ce document (limite : fiche de recette).
+ * DÉPLACEMENT d'un document d'une opération vers une autre — BRIQUE INTERNE de la scission, non exposée.
+ *
+ * Carte #806 §1 (décision du PO du 17/11/2026) : la commande autonome `moveDocument` est RETIRÉE de la façade (plus
+ * d'écran, de route ni de commande de l'Assistant) ; l'utilisateur fait « Retirer » puis « Rattacher »
+ * (`unlinkDocument`, `linkDocument`). Seule `splitOperation` appelle encore ce corps, dans SA transaction : retrait de
+ * l'origine (refus mémorisé, preuves désactivées, origine recalculée) puis appartenance explicite à la cible. Aucun
+ * fichier copié ; aucune composante financière copiée — les montants du document quittent l'origine et ne sont
+ * portés par la cible qu'après la consolidation T3 de ce document.
  */
-export function moveDocument(ctx: OperationWriteContext, input: MoveDocumentInput): Promise<OperationWriteResult<DocumentLinkData & { fromOperationId: number }>> {
-  return runCommand<DocumentLinkData & { fromOperationId: number }>(ctx, 'moveDocument', input, async (g, journal) => {
-    if (ctx.actor.kind !== 'USER') return stop(refused('FORBIDDEN', 'USER_ONLY'));
-    return moveDocumentBody(ctx, g, input, journal);
-  });
-}
-
-/** Corps de `moveDocument`, réutilisé TEL QUEL par `splitOperation` (aucune règle dupliquée, CDC §20). */
 async function moveDocumentBody(
   ctx: OperationWriteContext, g: GroupingContext, input: MoveDocumentInput, journal: Journal,
 ): Promise<OperationWriteResult<DocumentLinkData & { fromOperationId: number }>> {

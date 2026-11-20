@@ -25,7 +25,7 @@ vi.mock('@/services/verebona-assistant/events/business-events', async (o) => ({
 type Compte = { id: number; ownerUserId: number };
 type Json = Record<string, any>;
 
-scenario('L114X-EVENEMENTS-REFERENCE', 'Lot 114X — créer, corriger, supprimer, associer un événement de référence, y rattacher un document et un fournisseur depuis l’Assistant', ({ sql, make }) => {
+scenario('L114X-EVENEMENTS-REFERENCE', 'Lot 114X — créer, corriger, supprimer, associer une opération, y rattacher un document et un fournisseur depuis l’Assistant', ({ sql, make }) => {
   const compte = async (): Promise<Compte> => {
     const a = await make.account({ plan: 'premium' });
     return { id: a.id, ownerUserId: a.ownerUserId };
@@ -77,10 +77,11 @@ scenario('L114X-EVENEMENTS-REFERENCE', 'Lot 114X — créer, corriger, supprimer
     const c = await compte();
     const clio = await bien(c, 'Clio');
     const r = planDe(await demander(c, VIDANGE));
-    expect(r.preview.summary).toBe('Enregistrer l’événement de référence « Intervention — Vidange » du 12 mars 2025 pour Clio. Confirmez-vous ?');
+    expect(r.preview.summary).toBe('Enregistrer l’opération « Intervention — Vidange » du 12 mars 2025 pour Clio. Confirmez-vous ?');
     // La limite est dite AVANT l'écriture : rien n'est promis sur un écran.
     expect(r.plan.actions[0].effects.join(' ')).toMatch(/n’apparaît sur aucun écran de l’application \(ni fiche, ni recherche\)/);
-    expect(JSON.stringify(r.preview)).not.toMatch(/op[ée]ration/i);
+    // Règle remplacée (carte #806, décision du PO du 17/11/2026) : la garde interdisait « Opération » ; à l’écran on dit désormais « opération », et c’est « événement de référence » qui est interdit.
+    expect(JSON.stringify(r.preview)).not.toMatch(/[ée]v[éeè]nements?\s+de\s+r[ée]f[ée]rence/i);
     // Rien n'est écrit avant la confirmation.
     expect(await evenements(c)).toHaveLength(0);
     expect(await sql`SELECT 1 FROM business_operation_declarations WHERE account_id = ${c.id}`).toHaveLength(0);
@@ -88,7 +89,7 @@ scenario('L114X-EVENEMENTS-REFERENCE', 'Lot 114X — créer, corriger, supprimer
 
     const conf = await confirmer(c, r.plan.planId);
     expect(conf).toMatchObject({ ok: true, status: 'EXECUTED', undoUntil: null });
-    expect(JSON.stringify(conf)).toMatch(/Événement de référence « Intervention — Vidange » enregistré\. Pour l’instant, un événement de référence enregistré sur votre déclaration n’apparaît sur aucun écran/);
+    expect(JSON.stringify(conf)).toMatch(/Opération « Intervention — Vidange » enregistrée\. Pour l’instant, une opération enregistrée sur votre déclaration n’apparaît sur aucun écran/);
     const [ev] = await evenements(c);
     expect(ev).toMatchObject({ type_code: 'INTERVENTION', status: 'REALIZED', technical_label: 'Vidange', realise: '2025-03-12', planned: null, debut: null, fin: null, provider: null, invalide: false });
     // Source durable : la déclaration (texte, auteur, canal Assistant) et la source de l'événement ; bien lié par l'utilisateur.
@@ -111,10 +112,10 @@ scenario('L114X-EVENEMENTS-REFERENCE', 'Lot 114X — créer, corriger, supprimer
     // X73 — même déclaration redite : l'événement comparable est ANNONCÉ ; à la confirmation, rien n'est créé en double et c'est dit.
     const encore = planDe(await demander(c, VIDANGE));
     expect(encore.plan.actions[0].params).toMatchObject({ distinctFrom: [ev.id] });
-    expect(encore.plan.actions[0].effects.join(' ')).toMatch(/un événement de référence comparable existe déjà : « Intervention — Vidange » du 12 mars 2025 — Clio/);
+    expect(encore.plan.actions[0].effects.join(' ')).toMatch(/une opération comparable existe déjà : « Intervention — Vidange » du 12 mars 2025 — Clio/);
     const redit = await confirmer(c, encore.plan.planId);
     expect(redit).toMatchObject({ ok: true, status: 'EXECUTED' });
-    expect(JSON.stringify(redit)).toMatch(/était déjà enregistré \(même déclaration\) : rien n’a été créé en double/);
+    expect(JSON.stringify(redit)).toMatch(/était déjà enregistrée \(même déclaration\) : rien n’a été créé en double/);
     expect(await evenements(c)).toHaveLength(1);
 
     // Situation non dite : demandée, rien n'est préparé.
@@ -124,7 +125,7 @@ scenario('L114X-EVENEMENTS-REFERENCE', 'Lot 114X — créer, corriger, supprimer
     expect(await demander(c, 'Déclare un sinistre « Bris de glace » réalisé le 2 juin 2024 pour la Clio')).toMatchObject({ kind: 'plan' });
     expect(await evenements(c)).toHaveLength(1);
     // Sans date, sans bien : type nul conservé (« événement de référence »), aucune date inventée.
-    const flou = await faire(c, 'Enregistre un événement de référence « Travaux divers » à prévoir');
+    const flou = await faire(c, 'Enregistre une opération « Travaux divers » à prévoir');
     expect(flou.conf).toMatchObject({ ok: true, status: 'EXECUTED' });
     expect((await evenements(c))[1]).toMatchObject({ type_code: null, status: 'ENVISAGED', technical_label: 'Travaux divers', planned: null, realise: null, debut: null });
   });
@@ -136,7 +137,7 @@ scenario('L114X-EVENEMENTS-REFERENCE', 'Lot 114X — créer, corriger, supprimer
     const [avant] = await evenements(c);
 
     const d = planDe(await demander(c, 'Corrige la date de l’intervention Vidange : 14 mars 2025'));
-    expect(d.preview.summary).toBe('Modifier la date de l’événement de référence « Intervention — Vidange » du 12 mars 2025 — Clio : 12 mars 2025 → 14 mars 2025. Confirmez-vous ?');
+    expect(d.preview.summary).toBe('Modifier la date de l’opération « Intervention — Vidange » du 12 mars 2025 — Clio : 12 mars 2025 → 14 mars 2025. Confirmez-vous ?');
     expect((await evenements(c))[0].realise).toBe('2025-03-12');
     expect(await confirmer(c, d.plan.planId)).toMatchObject({ ok: true, status: 'EXECUTED' });
     let [ev] = await evenements(c);
@@ -161,8 +162,9 @@ scenario('L114X-EVENEMENTS-REFERENCE', 'Lot 114X — créer, corriger, supprimer
     expect((await f.updateOperation({ accountId: c.id, actor: { kind: 'USER', userId: c.ownerUserId, channel: 'UI' } }, { operationId: ev.id, declaration: 'Correction depuis un écran', attributes: { provider: 'Feu Vert' } })).status).toBe('APPLIED');
     const conf = await confirmer(c, p.plan.planId);
     expect(conf).toMatchObject({ ok: true, status: 'FAILED' });
-    expect(JSON.stringify(conf)).toMatch(/Cet événement de référence a été modifié depuis l’aperçu : rien n’a été fait/);
-    expect(JSON.stringify(conf)).not.toMatch(/VERSION_MISMATCH|op[ée]ration/i);
+    expect(JSON.stringify(conf)).toMatch(/Cette opération a été modifiée depuis l’aperçu : rien n’a été fait/);
+    // Règle remplacée (carte #806, décision du PO du 17/11/2026) : la garde interdisait « Opération » ; à l’écran on dit désormais « opération », et c’est « événement de référence » qui est interdit.
+    expect(JSON.stringify(conf)).not.toMatch(/[ée]v[éeè]nements?\s+de\s+r[ée]f[ée]rence|VERSION_MISMATCH/i);
     expect((await evenements(c))[0].provider).toBe('Feu Vert');
   });
 
@@ -179,7 +181,7 @@ scenario('L114X-EVENEMENTS-REFERENCE', 'Lot 114X — créer, corriger, supprimer
     expect((await f.linkAgendaItem(moi, { operationId: ev.id, agendaItemId: item })).status).toBe('APPLIED');
 
     const r = planDe(await demander(c, 'Supprime l’intervention Vidange de la Clio'));
-    expect(r.preview.summary).toMatch(/^Supprimer l’événement de référence « Intervention — Vidange » du 12 mars 2025 — Clio\. Confirmez-vous \?$/);
+    expect(r.preview.summary).toMatch(/^Supprimer l’opération « Intervention — Vidange » du 12 mars 2025 — Clio\. Confirmez-vous \?$/);
     expect(r.plan.actions[0].effects).toContain('Conservés dans votre compte : 1 document, 1 échéance, ainsi que ses fournisseurs.');
     expect(r.plan.actions[0].effects).toContain('Depuis l’assistant, cette suppression ne s’annule pas.');
     expect((await evenements(c))[0].invalide).toBe(false);
@@ -190,7 +192,7 @@ scenario('L114X-EVENEMENTS-REFERENCE', 'Lot 114X — créer, corriger, supprimer
     expect(await sql`SELECT 1 FROM asset_files WHERE id = ${fichier} AND deleted_at IS NULL`).toHaveLength(1);
     expect(await sql<Json[]>`SELECT title, start_date::text AS d FROM agenda_items WHERE id = ${item}`).toEqual([{ title: 'Prochaine vidange', d: '2030-03-12' }]);
     // L'événement supprimé n'est plus trouvé : aucune nouvelle commande ne peut le viser.
-    expect(await demander(c, 'Supprime l’événement de référence Vidange')).toMatchObject({ kind: 'need_info', message: expect.stringMatching(/^Je n’ai pas trouvé cet événement de référence/) });
+    expect(await demander(c, 'Supprime l’opération Vidange')).toMatchObject({ kind: 'need_info', message: expect.stringMatching(/^Je n’ai pas trouvé cette opération/) });
     // Désigné par son type seulement : plus rien n'y répond — ce n'est plus une action (parcours de réponse normal).
     expect(await demander(c, 'Supprime l’intervention Vidange de la Clio')).toBeNull();
     expect(await demander(c, 'Corrige la date de l’intervention Vidange : 15 mars 2025')).toBeNull();
@@ -208,7 +210,7 @@ scenario('L114X-EVENEMENTS-REFERENCE', 'Lot 114X — créer, corriger, supprimer
     // L'ordre de la phrase ne change pas le sens : le financement est l'origine.
     const r = planDe(await demander(c, 'Associe l’achat de la Clio au financement Prêt auto'));
     expect(r.plan.actions[0].params).toMatchObject({ kind: 'reference_events_associate', fromOperationId: pret.id, toOperationId: achat.id, nature: 'FINANCING' });
-    expect(r.plan.actions[0].effects).toContain('Ils restent deux événements de référence distincts : rien n’est fusionné.');
+    expect(r.plan.actions[0].effects).toContain('Elles restent deux opérations distinctes : rien n’est fusionné.');
     expect(await sql`SELECT 1 FROM business_operation_relations WHERE account_id = ${c.id}`).toHaveLength(0);
     expect(await confirmer(c, r.plan.planId)).toMatchObject({ ok: true, status: 'EXECUTED' });
     expect(await sql<Json[]>`SELECT from_operation_id::int AS f, to_operation_id::int AS t, nature, state, origin FROM business_operation_relations WHERE account_id = ${c.id}`)
@@ -219,7 +221,7 @@ scenario('L114X-EVENEMENTS-REFERENCE', 'Lot 114X — créer, corriger, supprimer
 
     const encore = await faire(c, 'Associe le financement Prêt auto à l’achat de la Clio');
     expect(encore.conf).toMatchObject({ ok: true, status: 'EXECUTED' });
-    expect(JSON.stringify(encore.conf)).toMatch(/étaient déjà associés : rien n’a été modifié/);
+    expect(JSON.stringify(encore.conf)).toMatch(/étaient déjà associées : rien n’a été modifié/);
     expect(await sql`SELECT 1 FROM business_operation_relations WHERE account_id = ${c.id}`).toHaveLength(1);
   });
 
@@ -232,7 +234,7 @@ scenario('L114X-EVENEMENTS-REFERENCE', 'Lot 114X — créer, corriger, supprimer
     const garage = await fournisseur(c, 'Garage Martin');
 
     const d = planDe(await demander(c, 'Rattache le document Facture Norauto à l’intervention Vidange'));
-    expect(d.preview.summary).toBe('Rattacher le document « Facture Norauto » à l’événement de référence « Intervention — Vidange » du 12 mars 2025 — Clio. Confirmez-vous ?');
+    expect(d.preview.summary).toBe('Rattacher le document « Facture Norauto » à l’opération « Intervention — Vidange » du 12 mars 2025 — Clio. Confirmez-vous ?');
     expect(await sql`SELECT 1 FROM business_operation_documents WHERE account_id = ${c.id}`).toHaveLength(0);
     expect(await confirmer(c, d.plan.planId)).toMatchObject({ ok: true, status: 'EXECUTED' });
     expect(await sql<Json[]>`SELECT operation_id::int AS op, file_id, active, 'USER' = ANY(origins) AS utilisateur FROM business_operation_documents WHERE account_id = ${c.id}`)
@@ -289,8 +291,8 @@ scenario('L114X-EVENEMENTS-REFERENCE', 'Lot 114X — créer, corriger, supprimer
     for (const m of ['Supprime l’intervention Vidange', 'Corrige la date de l’intervention Vidange : 14 mars 2025', 'Indique que l’intervention Vidange a eu lieu']) {
       expect(await demander(b, m), m).toBeNull();
     }
-    for (const m of ['Supprime l’événement de référence Vidange', 'Renomme l’événement de référence Vidange en Vidange B']) {
-      expect(await demander(b, m), m).toMatchObject({ kind: 'need_info', message: expect.stringMatching(/^Je n’ai pas trouvé cet événement de référence/) });
+    for (const m of ['Supprime l’opération Vidange', 'Renomme l’opération Vidange en Vidange B']) {
+      expect(await demander(b, m), m).toMatchObject({ kind: 'need_info', message: expect.stringMatching(/^Je n’ai pas trouvé cette opération/) });
     }
     // Un plan du compte A ne se confirme pas depuis le compte B.
     const r = planDe(await demander(a, 'Supprime l’intervention Vidange'));
@@ -311,9 +313,10 @@ scenario('L114X-EVENEMENTS-REFERENCE', 'Lot 114X — créer, corriger, supprimer
 
     const r = planDe(await demander(c, `${VIDANGE} puis relie le fournisseur Garage Martin à celui-ci`));
     expect(r.preview.actions).toHaveLength(2);
-    expect(r.preview.actions[1].preview).toBe('Relier le fournisseur « Garage Martin » à l’événement de référence qui vient d’être enregistré.');
+    expect(r.preview.actions[1].preview).toBe('Relier le fournisseur « Garage Martin » à l’opération qui vient d’être enregistrée.');
     expect(r.preview.actions[1].dependsOn).toEqual([r.preview.actions[0].actionId]);
-    expect(JSON.stringify(r.preview)).not.toMatch(/op[ée]ration/i);
+    // Règle remplacée (carte #806, décision du PO du 17/11/2026) : la garde interdisait « Opération » ; à l’écran on dit désormais « opération », et c’est « événement de référence » qui est interdit.
+    expect(JSON.stringify(r.preview)).not.toMatch(/[ée]v[éeè]nements?\s+de\s+r[ée]f[ée]rence/i);
     // Rien n'est écrit avant la confirmation.
     expect(await evenements(c)).toHaveLength(0);
 
@@ -325,7 +328,7 @@ scenario('L114X-EVENEMENTS-REFERENCE', 'Lot 114X — créer, corriger, supprimer
 
     // Même forme pour un document, sur un second événement.
     const d = planDe(await demander(c, 'Déclare une intervention « Freins » réalisée le 2 juin 2024 pour la Clio puis rattache le document Facture Norauto à celui-ci'));
-    expect(d.preview.actions[1].preview).toBe('Rattacher le document « Facture Norauto » à l’événement de référence qui vient d’être enregistré.');
+    expect(d.preview.actions[1].preview).toBe('Rattacher le document « Facture Norauto » à l’opération qui vient d’être enregistrée.');
     expect(await confirmer(c, d.plan.planId)).toMatchObject({ ok: true, status: 'EXECUTED' });
     const freins = (await evenements(c)).find((x) => x.technical_label === 'Freins')!;
     expect(await sql<Json[]>`SELECT file_id::int AS file_id FROM business_operation_documents WHERE operation_id = ${freins.id} AND active`)

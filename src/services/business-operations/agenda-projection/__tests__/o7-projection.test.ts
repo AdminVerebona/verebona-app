@@ -114,7 +114,7 @@ describe('O7-01 — tableau C16 : projection par type (decideProjection)', () =>
     expect(decideProjection(op({ status: 'CANCELLED' }), AUJ)).toMatchObject({ kind: 'NONE', reason: 'CANCELLED' });
     expect(decideProjection(op({ typeCode: 'ACQUISITION', status: 'ENVISAGED' }), AUJ)).toMatchObject({ kind: 'NONE', reason: 'STATUS_NOT_PROJECTED' });
   });
-  it('O7-02 — jamais le mot « Opération » dans un libellé produit (P09)', () => {
+  it('O7-02 — jamais le mot « événement de référence » dans un libellé produit (P09)', () => {
     expect(presentableLabel('Opération de maintenance')).toBeNull();
     expect(desired(op({ technicalLabel: 'Opération d\'entretien', provider: null })).title).toBe('Intervention');
     expect(presentableLabel('x'.repeat(81))).toBeNull();

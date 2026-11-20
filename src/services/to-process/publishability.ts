@@ -78,7 +78,7 @@ export const CARD_FAMILY_LABELS: Readonly<Record<CardFamily, string>> = {
   AGENDA: 'agenda',
   EQUIPEMENTS: 'équipements',
   FOURNISSEURS: 'fournisseurs',
-  EVENEMENTS_DE_REFERENCE: 'événements de référence',
+  EVENEMENTS_DE_REFERENCE: 'opérations',
   BIENS: 'biens et pièces',
 };
 

@@ -12,6 +12,9 @@ import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { describe, expect, it, vi } from 'vitest';
 
+/** Carte #806 : la garde de vocabulaire porte sur les textes VISIBLES — les commentaires de code en sont retirés. */
+const sansCommentaires806 = (s: string) => s.replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '').replace(/\{\/\*[\s\S]*?\*\/\}/g, '');
+
 vi.mock('@/db', () => ({ db: {}, pgClient: {} }));
 
 const lib = await import('@/lib/documents/business-periods');
@@ -51,7 +54,8 @@ describe('L113W-U-LABELS — libellés et dates partielles', () => {
       ...Object.values(lib.BUSINESS_PERIOD_LABELS).flatMap((l) => Object.values(l)),
       lib.COVERAGE_HISTORY_TITLE, lib.COVERAGE_HISTORY_EMPTY, lib.PERIOD_USER_MENTION,
     ].join(' ');
-    expect(textes).not.toMatch(/expir|dernière période connue|en cours|active|Opération|déduit|estimé/i);
+    // Règle remplacée (carte #806, décision du PO du 17/11/2026) : la garde interdisait « Opération » ; à l’écran on dit désormais « opération », et c’est « événement de référence » qui est interdit.
+    expect(textes).not.toMatch(/[ée]v[éeè]nements?\s+de\s+r[ée]f[ée]rence|expir|dernière période connue|en cours|active|déduit|estimé/i);
   });
   it('dates partielles : validation calendaire, ordre, saisie française', () => {
     expect(lib.isPartialDate('2026-02-30')).toBe(false);
@@ -231,11 +235,12 @@ describe('L113W-U-COH — contrôle de cohérence (reprise de l’historique)', 
       expect(readFileSync(join(racine, f), 'utf8')).toContain('document_business_periods:');
     }
   });
-  it('interface : jamais le mot « Opération » ni un statut présumé dans les composants et routes', () => {
+  it('interface : jamais le mot « événement de référence » ni un statut présumé dans les composants et routes', () => {
     const racine = process.cwd();
     for (const f of ['src/components/documents/BusinessPeriods.tsx', 'src/app/api/agenda/[id]/periodes/route.ts', 'src/app/api/documents/[id]/periodes/route.ts']) {
-      const visibles = [...readFileSync(join(racine, f), 'utf8').matchAll(/(['"`])((?:(?!\1).)*)\1/g)].map((x) => x[2]).join(' ');
-      expect(visibles, f).not.toMatch(/\bOpération\b|expiré/);
+      const visibles = [...sansCommentaires806(readFileSync(join(racine, f), 'utf8')).matchAll(/(['"`])((?:(?!\1).)*)\1/g)].map((x) => x[2]).join(' ');
+      // Règle remplacée (carte #806, décision du PO du 17/11/2026) : la garde interdisait « Opération » ; à l’écran on dit désormais « opération », et c’est « événement de référence » qui est interdit.
+      expect(visibles, f).not.toMatch(/[ée]v[éeè]nements?\s+de\s+r[ée]f[ée]rence|expiré/i);
     }
   });
 });

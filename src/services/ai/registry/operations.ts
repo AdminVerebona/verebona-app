@@ -400,7 +400,7 @@ export const AI_OPERATIONS: Record<string, AiOperationDefinition> = {
   // sémantique. Non facturée (traitement de fond).
   t3_period_relation: {
     operationCode: 't3_period_relation', useCaseCode: 'DATA_RECONCILIATION',
-    label: 'T3 master — relation entre deux périodes divergentes d’un événement de référence (TASK=PERIOD_RELATION)',
+    label: 'T3 master — relation entre deux périodes divergentes d’une opération métier (TASK=PERIOD_RELATION)',
     provider: GEMINI, primaryModel: DOC_PRIMARY, fallbackModels: DOC_FALLBACKS,
     promptCode: T3_MASTER, masterPromptCode: T3_MASTER, task: 'PERIOD_RELATION', promptVariables: T3_MASTER_VARIABLES,
     timeoutMs: 30_000, jsonResponse: true, defaultMaxOutputTokens: 800,
@@ -420,7 +420,7 @@ export const AI_OPERATIONS: Record<string, AiOperationDefinition> = {
   // rapprochement sémantique. Non facturée (traitement de fond).
   t3_attribute_arbitration: {
     operationCode: 't3_attribute_arbitration', useCaseCode: 'DATA_RECONCILIATION',
-    label: 'T3 master — arbitrage d’une contradiction d’attribut d’un événement de référence (TASK=ATTRIBUTE_ARBITRATION)',
+    label: 'T3 master — arbitrage d’une contradiction d’attribut d’une opération métier (TASK=ATTRIBUTE_ARBITRATION)',
     provider: GEMINI, primaryModel: DOC_PRIMARY, fallbackModels: DOC_FALLBACKS,
     promptCode: T3_MASTER, masterPromptCode: T3_MASTER, task: 'ATTRIBUTE_ARBITRATION', promptVariables: T3_MASTER_VARIABLES,
     timeoutMs: 30_000, jsonResponse: true, defaultMaxOutputTokens: 800,

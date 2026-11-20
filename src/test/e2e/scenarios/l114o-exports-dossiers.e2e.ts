@@ -212,7 +212,7 @@ scenario('L114OG', 'Opérations / Agenda CDC V2.0 — point G : dossiers Vente, 
     return data;
   }
 
-  it('L114OG-E01 — dossier « Vente » : partages dédoublonnés, aucun événement de référence cité, dossier non élargi', async () => {
+  it('L114OG-E01 — dossier « Vente » : partages dédoublonnés, aucune opération citée, dossier non élargi', async () => {
     const { compte, assetId, partage, echeance, docPartage } = await jeu();
     const data = await verifier('VENTE', compte, assetId, { partage, echeance, docPartage });
     // Le suivi du bien cite l'événement partagé une seule fois.
@@ -221,7 +221,7 @@ scenario('L114OG', 'Opérations / Agenda CDC V2.0 — point G : dossiers Vente, 
     expect(suivi.map((f) => f.title)).not.toContain(T.elementHorsBien);
   });
 
-  it('L114OG-E02 — dossier « Assurance — souscription » : partages dédoublonnés, aucun événement de référence cité', async () => {
+  it('L114OG-E02 — dossier « Assurance — souscription » : partages dédoublonnés, aucune opération citée', async () => {
     const { compte, assetId, partage, echeance, docPartage } = await jeu();
     const data = await verifier('ASSURANCE_SOUSCRIPTION', compte, assetId, { partage, echeance, docPartage });
     const etat = (data.condition ?? []) as Array<{ title: string }>;

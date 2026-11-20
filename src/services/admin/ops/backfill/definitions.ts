@@ -421,7 +421,7 @@ export const BACKFILL_DEFINITIONS: readonly BackfillDefinition[] = [
     order: 16,
     label: 'Propriétés manquantes : rattrapage des biens et équipements jamais examinés',
     command: 'BO uniquement (aucune commande) — aussi lancé automatiquement par la tâche « coherence-control »',
-    description: 'Reprend les biens et équipements qui ont au moins une source (document rattaché, événement de référence, Agenda, preuve) '
+    description: 'Reprend les biens et équipements qui ont au moins une source (document rattaché, opération, Agenda, preuve) '
       + 'et dont les propriétés vides n’ont aucune issue enregistrée récente : objets jamais contrôlés par COH-MISSING-PROPERTIES / '
       + 'COH-MISSING-PROPERTIES-EQUIPMENT (trace « non sélectionné »), ou constat ouvert sans trace depuis 20 h. Chaque objet est contrôlé '
       + 'aussitôt par le contrôle de cohérence, dans le mode de campagne en vigueur (à blanc : aucune écriture ; correctif : arbitrage T3 '
@@ -445,7 +445,7 @@ export const BACKFILL_DEFINITIONS: readonly BackfillDefinition[] = [
       + 'source admise par la matrice d’autorité du prix d’achat, prix lu explicitement sur le document, bien identifié et encore rattaché au '
       + 'document, jamais pour un document multi-biens, un acompte, un dépôt de garantie, une valeur estimée, une devise étrangère ni une '
       + 'facture de travaux. La preuve rejoint ensuite le moteur habituel (arbitrage avec l’acte définitif, cartes « À traiter ») : une valeur '
-      + 'saisie ou corrigée par l’utilisateur n’est jamais remplacée, aucun événement de référence ne devient « réalisé », aucune date '
+      + 'saisie ou corrigée par l’utilisateur n’est jamais remplacée, aucune opération ne devient « réalisée », aucune date '
       + 'd’achat n’est créée. Simuler : liste des prix qui seraient repris et motifs de refus, rien n’est écrit. Appliquer : rejoué, ne '
       + 'reprend rien deux fois. Retour arrière : point de restauration de la base (bloc 0).',
     actions: ['simulate', 'apply'],

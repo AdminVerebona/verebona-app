@@ -63,7 +63,7 @@ const fiche = (over: Partial<ReferenceEventPageView> = {}): ReferenceEventPageVi
 const openers = { openDocument: () => undefined, openAgendaItem: () => undefined, openEquipment: () => undefined, openRoom: () => undefined, onPeriodsSaved: () => undefined };
 const rien = () => undefined;
 const actions = {
-  correct: rien, remove: rien, linkAgenda: rien, unlinkAgenda: rien, linkDocument: rien, unlinkDocument: rien, moveDocument: rien,
+  correct: rien, remove: rien, linkAgenda: rien, unlinkAgenda: rien, linkDocument: rien, unlinkDocument: rien,
   linkSupplier: rien, unlinkSupplier: rien, associate: rien, dissociate: rien,
 };
 const rendre = (f: ReferenceEventPageView, gestes = false) => renderToStaticMarkup(h(ReferenceEventPageContent, { fiche: f, openers, ...(gestes ? { actions } : {}) }));

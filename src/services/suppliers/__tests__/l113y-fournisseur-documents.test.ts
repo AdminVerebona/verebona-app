@@ -108,7 +108,7 @@ describe('contexte discret « Via <événement> » (pure)', () => {
 describe('écran (web, PWA, mobile : même page)', () => {
   const page = lire('src/app/(dashboard)/fournisseurs/[id]/page.tsx');
   const code = sansCommentaires(page);
-  it('plus aucune section ni libellé « Documents des événements de référence »', () => {
+  it('plus aucune section ni libellé « Documents des opérations »', () => {
     expect(code).not.toMatch(/Documents des événements de référence/);
     expect(code).not.toMatch(/supplier-documents-via|documentsViaOperation/);
     expect(code.match(/title="Documents"/g)).toHaveLength(1);
@@ -122,7 +122,7 @@ describe('écran (web, PWA, mobile : même page)', () => {
     expect(code).toMatch(/title="Biens"/);
     expect(code).toMatch(/<SupplierAgendaSection /);
   });
-  it('jamais le mot « Opération » affiché ; aucune couleur brute', () => {
+  it('jamais le mot « événement de référence » affiché ; aucune couleur brute', () => {
     expect(code).not.toMatch(/>[^<]*Opération/);
     expect(code).not.toMatch(/#[0-9a-fA-F]{3,6}\b|rgb\(/);
   });

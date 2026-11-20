@@ -79,7 +79,7 @@ describe('L114Z2-Z02 — échéances de l’Agenda', () => {
   });
 });
 
-describe('L114Z2-Z03 — événements de référence', () => {
+describe('L114Z2-Z03 — opérations', () => {
   it('déclarer (W21) : type, intitulé, situation DITE, date, bien — rien d’inventé', () => {
     expect(un(hint({
       operation: 'CREATE', entityType: 'business_operation', targetHint: 'la Clio',
@@ -106,7 +106,7 @@ describe('L114Z2-Z03 — événements de référence', () => {
       .toMatchObject({ command: 'UPDATE_REFERENCE_EVENT', field: 'provider', value: 'Garage Martin', target: { typeCode: null, words: ['vidange'] } });
     expect(un(hint({ entityType: 'business_operation', targetHint: 'l’intervention Vidange', fieldChanges: [ch('intitulé', 'Vidange et filtres')] })))
       .toMatchObject({ command: 'UPDATE_REFERENCE_EVENT', field: 'label', value: 'Vidange et filtres' });
-    expect(un(hint({ entityType: 'business_operation', targetHint: 'l’événement de référence Toiture', fieldChanges: [ch('type', 'contrat')] })))
+    expect(un(hint({ entityType: 'business_operation', targetHint: 'l’opération Toiture', fieldChanges: [ch('type', 'contrat')] })))
       .toMatchObject({ command: 'UPDATE_REFERENCE_EVENT', field: 'type', value: 'contrat', target: { typeCode: null, words: ['toiture'] } });
     expect(un(hint({ entityType: 'business_operation', targetHint: 'l’intervention Freins', fieldChanges: [ch('situation', 'a eu lieu')] })))
       .toMatchObject({ command: 'UPDATE_REFERENCE_EVENT', field: 'status', value: 'REALIZED' });
@@ -119,7 +119,7 @@ describe('L114Z2-Z03 — événements de référence', () => {
   it('supprimer (W23) et associer (W24)', () => {
     expect(un(hint({ operation: 'DELETE', entityType: 'business_operation', targetHint: 'l’intervention Vidange de la Clio' })))
       .toEqual({ command: 'INVALIDATE_REFERENCE_EVENT', target: { typeCode: 'INTERVENTION', words: ['vidange', 'clio'], date: null } });
-    expect(un(hint({ operation: 'LINK', entityType: 'business_operation', targetHint: 'le financement Prêt auto', fieldChanges: [ch('événement de référence', 'l’achat de la Clio')] })))
+    expect(un(hint({ operation: 'LINK', entityType: 'business_operation', targetHint: 'le financement Prêt auto', fieldChanges: [ch('opération', 'l’achat de la Clio')] })))
       .toEqual({
         command: 'ASSOCIATE_REFERENCE_EVENTS',
         first: { typeCode: 'FINANCING', words: ['pret', 'auto'], date: null }, second: { typeCode: 'ACQUISITION', words: ['clio'], date: null },
@@ -135,25 +135,25 @@ describe('L114Z2-Z04 — rattachements', () => {
       .toMatchObject({ command: 'UPDATE_DOCUMENT_TARGETS', mode: 'detach', assetWords: ['maison'], documentWords: ['garantie'] });
   });
 
-  it('document → événement de référence (W25) ; « ce document » quand il n’est pas désigné', () => {
-    expect(un(hint({ operation: 'LINK', entityType: 'document', targetHint: 'Facture Norauto', fieldChanges: [ch('événement de référence', 'l’intervention Vidange')] })))
+  it('document → opération (W25) ; « ce document » quand il n’est pas désigné', () => {
+    expect(un(hint({ operation: 'LINK', entityType: 'document', targetHint: 'Facture Norauto', fieldChanges: [ch('opération', 'l’intervention Vidange')] })))
       .toEqual({ command: 'LINK_DOCUMENT_REFERENCE_EVENT', documentWords: ['facture', 'norauto'], documentFromContext: false, target: { typeCode: 'INTERVENTION', words: ['vidange'], date: null } });
     expect(un(hint({ operation: 'LINK', entityType: 'document', fieldChanges: [ch('événement', 'la réparation')] })))
       .toMatchObject({ command: 'LINK_DOCUMENT_REFERENCE_EVENT', documentWords: [], documentFromContext: true, target: { typeCode: null, words: ['reparation'] } });
   });
 
-  it('fournisseur → événement de référence (W26) : prestataire par défaut, intervenant s’il est dit', () => {
-    expect(un(hint({ operation: 'LINK', entityType: 'supplier', targetHint: 'le fournisseur Garage Martin', fieldChanges: [ch('événement de référence', 'l’intervention Vidange')] })))
+  it('fournisseur → opération (W26) : prestataire par défaut, intervenant s’il est dit', () => {
+    expect(un(hint({ operation: 'LINK', entityType: 'supplier', targetHint: 'le fournisseur Garage Martin', fieldChanges: [ch('opération', 'l’intervention Vidange')] })))
       .toEqual({ command: 'LINK_SUPPLIER_REFERENCE_EVENT', supplierWords: ['garage', 'martin'], role: 'PROVIDER', target: { typeCode: 'INTERVENTION', words: ['vidange'], date: null } });
-    expect(un(hint({ operation: 'LINK', entityType: 'supplier', targetHint: 'Garage Martin', fieldChanges: [ch('événement de référence', 'l’intervention Vidange'), ch('rôle', 'intervenant')] })))
+    expect(un(hint({ operation: 'LINK', entityType: 'supplier', targetHint: 'Garage Martin', fieldChanges: [ch('opération', 'l’intervention Vidange'), ch('rôle', 'intervenant')] })))
       .toMatchObject({ command: 'LINK_SUPPLIER_REFERENCE_EVENT', role: 'INTERVENER' });
   });
 
   it('« relation » : l’objet rattaché est reconnu au nom qui ouvre sa désignation', () => {
-    const vers = [ch('événement de référence', 'intervention Vidange')];
+    const vers = [ch('opération', 'intervention Vidange')];
     expect(un(hint({ operation: 'LINK', entityType: 'relation', targetHint: 'le document Facture Norauto', fieldChanges: vers }))).toMatchObject({ command: 'LINK_DOCUMENT_REFERENCE_EVENT' });
     expect(un(hint({ operation: 'LINK', entityType: 'relation', targetHint: 'le fournisseur Garage Martin', fieldChanges: vers }))).toMatchObject({ command: 'LINK_SUPPLIER_REFERENCE_EVENT' });
-    expect(un(hint({ operation: 'LINK', entityType: 'relation', targetHint: 'le financement Prêt auto', fieldChanges: [ch('événement de référence', 'achat de la Clio')] })))
+    expect(un(hint({ operation: 'LINK', entityType: 'relation', targetHint: 'le financement Prêt auto', fieldChanges: [ch('opération', 'achat de la Clio')] })))
       .toMatchObject({ command: 'ASSOCIATE_REFERENCE_EVENTS' });
     expect(un(hint({ operation: 'LINK', entityType: 'relation', targetHint: 'le document Garantie', fieldChanges: [ch('bien', 'la Clio')] }))).toMatchObject({ command: 'UPDATE_DOCUMENT_TARGETS', mode: 'attach' });
     // Objet non reconnaissable : rien.
@@ -200,7 +200,7 @@ describe('L114Z2-Z06 — indice incomplet ou détourné : rien n’est proposé'
     ['événement : repasser « à prévoir »', hint({ entityType: 'business_operation', targetHint: 'l’intervention Vidange', fieldChanges: [ch('situation', 'à prévoir')] })],
     ['événement : correction sans désignation', hint({ entityType: 'business_operation', fieldChanges: [ch('date', '2025-03-14')] })],
     ['événement : association sans second événement', hint({ operation: 'LINK', entityType: 'business_operation', targetHint: 'le financement Prêt auto' })],
-    ['événement : dissocier (non pris en charge)', hint({ operation: 'UNLINK', entityType: 'business_operation', targetHint: 'le financement', fieldChanges: [ch('événement de référence', 'achat')] })],
+    ['événement : dissocier (non pris en charge)', hint({ operation: 'UNLINK', entityType: 'business_operation', targetHint: 'le financement', fieldChanges: [ch('opération', 'achat')] })],
     ['document : rattachement sans destination', hint({ operation: 'LINK', entityType: 'document', targetHint: 'Garantie' })],
     ['document : deux destinations', hint({ operation: 'LINK', entityType: 'document', targetHint: 'Garantie', fieldChanges: [ch('bien', 'Clio'), ch('événement', 'Vidange')] })],
     ['document : retirer d’un événement (non pris en charge)', hint({ operation: 'UNLINK', entityType: 'document', targetHint: 'Garantie', fieldChanges: [ch('événement', 'Vidange')] })],
@@ -253,12 +253,13 @@ describe('L114Z2-Z07 — déclaration, catalogue, vocabulaire', () => {
     r.phrases.forEach((p, i) => expect(parseCommand(p, TODAY)).toEqual(r.drafts[i]));
   });
 
-  it('aucune formulation directe ne porte le mot réservé (« événement de référence »)', () => {
+  it('aucune formulation directe ne porte le mot réservé (« opération »)', () => {
     for (const h of [...tous, hint({ entityType: 'business_operation', targetHint: 'Vidange', fieldChanges: [ch('prestataire', 'Garage Martin')] })]) {
-      expect(phrase(h)).not.toMatch(/op[ée]ration/i);
+      // Règle remplacée (carte #806, décision du PO du 17/11/2026) : la garde interdisait « Opération » ; à l’écran on dit désormais « opération », et c’est « événement de référence » qui est interdit.
+      expect(phrase(h)).not.toMatch(/[ée]v[éeè]nements?\s+de\s+r[ée]f[ée]rence/i);
     }
     expect(phrase(hint({ entityType: 'business_operation', targetHint: 'Vidange', fieldChanges: [ch('prestataire', 'Garage Martin')] })))
-      .toBe('Change le prestataire de l\'événement de référence Vidange : Garage Martin');
+      .toBe('Change le prestataire de l\'opération Vidange : Garage Martin');
   });
 
   it('la déclaration conservée d’un événement est la phrase de l’utilisateur, jamais la formulation réécrite', () => {
