@@ -457,8 +457,16 @@ export async function readReferenceEvent(accountId: number, operationId: number)
   };
 }
 
-/** Événements de référence ACTIFS dont un document du compte est membre (au plus 10). */
-export async function referenceEventsOfDocument(accountId: number, fileId: number): Promise<Array<{ id: number; label: string; hasAgenda: boolean; coverageCount: number }> | null> {
+/**
+ * Événements de référence ACTIFS dont un document du compte est membre.
+ *
+ * Carte #806, volet B §7 (règle remplacée) : TOUS — l'ancienne borne de 10 coupait la liste sans le dire (le
+ * tiroir du document doit « afficher et permettre de gérer toutes les opérations auxquelles le document
+ * appartient »). Une opération regroupée dans une autre n'est plus listée (l'opération courante l'est).
+ * `directAgendaItemIds` : événements de l'Agenda de cette opération auxquels le document est AUSSI lié
+ * directement — le tiroir ne présente pas deux fois le même lien.
+ */
+export async function referenceEventsOfDocument(accountId: number, fileId: number): Promise<Array<{ id: number; label: string; hasAgenda: boolean; coverageCount: number; directAgendaItemIds: number[] }> | null> {
   const sql = await sqlClient();
   const [doc] = (await sql.unsafe(
     `SELECT 1 FROM asset_files WHERE id = $1 AND account_id = $2 AND deleted_at IS NULL`, [fileId, accountId] as never[],
@@ -469,16 +477,20 @@ export async function referenceEventsOfDocument(accountId: number, fileId: numbe
             EXISTS (SELECT 1 FROM agenda_items a WHERE a.account_id = o.account_id AND a.business_operation_id = o.id) AS has_agenda
        FROM business_operation_documents d
        JOIN business_operations o ON o.id = d.operation_id AND o.account_id = d.account_id AND o.invalidated_at IS NULL
+        AND o.merged_into_operation_id IS NULL
       WHERE d.account_id = $1 AND d.file_id = $2 AND d.active
-      ORDER BY o.id LIMIT 10`,
+      ORDER BY o.id`,
     [accountId, fileId] as never[],
   )) as unknown as Row[];
   const cov = await readOperationsCoverage(accountId, rows.map((r) => Number(r.id)), sql);
+  const { readDocumentDirectEventsByOperation } = await import('@/services/business-operations/graph/document-links');
+  const directs = await readDocumentDirectEventsByOperation(accountId, fileId, sql);
   return rows.map((r) => ({
     id: Number(r.id),
     label: referenceEventLabel({ typeCode: (r.type_code as string | null) ?? null, technicalLabel: (r.technical_label as string | null) ?? null, provider: (r.provider as string | null) ?? null }),
     hasAgenda: r.has_agenda === true,
     coverageCount: cov.get(Number(r.id))?.length ?? 0,
+    directAgendaItemIds: directs.get(Number(r.id)) ?? [],
   }));
 }
 

@@ -40,12 +40,15 @@
  */
 import { useCallback, useEffect, useState } from "react";
 import dynamic from "next/dynamic";
+import Link from "next/link";
 import { toast } from "sonner";
 import {
   AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
 import { apiClient } from "@/lib/api-client";
-import { openDrawer } from "@/lib/drawers";
+import { CLOSE_ALL_DRAWERS_EVENT, openDrawer } from "@/lib/drawers";
+import { OPERATION_LINK_LABELS as K } from "@/lib/reference-events/operation-links";
+import { referenceEventHref } from "@/lib/reference-events/reference-event-page";
 import { useWriteGuard } from "@/contexts/WriteGuardContext";
 import {
   GROUPING_LABELS as L, LINK_ACTION, groupingActionToast,
@@ -149,6 +152,17 @@ export function AgendaGroupingSection({ itemId, onOpenDocument, onChanged, onRol
       {(view.referenceEvents?.length ?? 0) > 0 && (
         <div className="flex flex-col items-start gap-1" data-testid="agenda-reference-events">
           {(view.referenceEvents ?? []).map((e) => <ReferenceEventLink key={e.id} operationId={e.id} label={e.label} />)}
+          {/* Carte #806 (volet B §7) : opérations ASSOCIÉES (jamais fusionnées) — nommées comme telles, ouvrables. */}
+          {(view.referenceEvents ?? []).flatMap((e) => (e.associated ?? []).map((a) => (
+            <Link key={`${e.id}-${a.id}`} href={referenceEventHref(a.id)} data-associated-operation={a.id}
+              onClick={(ev) => {
+                if (ev.metaKey || ev.ctrlKey || ev.shiftKey || ev.altKey || ev.button !== 0) return;
+                window.dispatchEvent(new CustomEvent(CLOSE_ALL_DRAWERS_EVENT));
+              }}
+              className="inline-flex min-h-[44px] md:min-h-0 min-w-0 items-center gap-1 text-xs text-primary hover:underline text-left">
+              <span className="[overflow-wrap:anywhere]">{`${K.associatedOperation} : ${a.label}`}</span>
+            </Link>
+          )))}
         </div>
       )}
       <GroupingPicker

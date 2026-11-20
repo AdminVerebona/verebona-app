@@ -26,6 +26,7 @@ import { Input } from "@/components/ui/input";
 import { EntityCard, EntityCardList, type EntityCardKind } from "@/components/drawers/EntityCard";
 import { DocumentDateCell } from "@/components/documents/DocumentDateCell";
 import { restoreFocusOnClose } from "@/lib/drawers";
+import { OPERATION_LINK_LABELS as K } from "@/lib/reference-events/operation-links";
 import {
   GROUPING_LABELS as L, REMOVE_ACTION, groupingCountsSummary,
   type AgendaGroupingView, type GroupingAction, type GroupingCandidate, type GroupingCandidateKind,
@@ -70,6 +71,13 @@ interface Row {
   id: number; title: string; meta?: string | null; badge?: string | null; /** Lot 86D : document relié à CET élément (détachable). */ linked?: boolean;
   /** Lot 108D : ligne de document — date du document (colonne de droite, « – » sans date). */
   documentDate?: string | null;
+  /** Carte #806 (volet B §7) : justificatif qui appartient aussi à une autre opération. */
+  shared?: boolean;
+}
+
+/** Carte #806 (volet B §7) — pastille de nature d'un lien documentaire (texte seul, jamais une couleur porteuse de sens). */
+function NatureBadge({ children }: { children: string }) {
+  return <span className="text-[10px] font-semibold px-1.5 py-0.5 rounded-full bg-muted text-muted-foreground" data-document-nature-badge>{children}</span>;
 }
 
 /** Lignes d'une catégorie de l'ensemble (pure). */
@@ -79,7 +87,7 @@ export function categoryRows(view: AgendaGroupingView, kind: GroupingCandidateKi
   switch (kind) {
     case "elements": return e.items.map((i) => ({ id: i.id, title: i.title, meta: fmtDate(i.startDate), badge: i.isMain ? L.mainBadge : null }));
     // Lot 108D : sous-titre = Type seul ; la date du document est la colonne de droite.
-    case "documents": return e.documents.map((d) => ({ id: d.id, title: d.title, meta: d.typeLabel ?? null, documentDate: d.documentDate, badge: d.link === "DIRECT" ? L.directLink : null, linked: d.link !== null }));
+    case "documents": return e.documents.map((d) => ({ id: d.id, title: d.title, meta: d.typeLabel ?? null, documentDate: d.documentDate, badge: d.link === "DIRECT" ? L.directLink : null, linked: d.link !== null, shared: d.shared === true }));
     case "biens": return e.assets.map((a) => ({ id: a.id, title: a.name }));
     case "pieces": return e.rooms.map((r) => ({ id: r.id, title: r.name }));
     case "equipements": return e.equipments.map((q) => ({ id: q.id, title: q.name }));
@@ -115,7 +123,15 @@ export function AgendaGroupingPanel({ view, busy = false, onAction, onPick, onCr
           {view.linkedDocuments.map((d) => (
             <EntityCard key={`doc-${d.id}`} kind="document" id={d.id} title={d.title} icon={<FileText className="w-3.5 h-3.5" />}
               meta={d.typeLabel ?? undefined}
-              badges={<DocumentDateCell value={d.documentDate} className="text-[10px] text-[color:var(--text-muted)]" />}
+              badges={(
+                <>
+                  {/* Carte #806 (volet B §7) : lié directement à CET événement, ou présent parce qu'il appartient à l'opération ; partagé. */}
+                  {d.link === "DIRECT" && d.member !== undefined ? <NatureBadge>{K.directToEvent}</NatureBadge> : null}
+                  {d.link === "GROUP" && d.member ? <NatureBadge>{K.memberOfOperation}</NatureBadge> : null}
+                  {d.shared ? <NatureBadge>{K.shared}</NatureBadge> : null}
+                  <DocumentDateCell value={d.documentDate} className="text-[10px] text-[color:var(--text-muted)]" />
+                </>
+              )}
               onOpen={onOpenDocument ? () => onOpenDocument(d.id) : undefined}
               actions={detachButton(d.id, d.title)} data-testid={`regroupement-document-element-${d.id}`} />
           ))}
@@ -187,6 +203,7 @@ export function AgendaGroupingPanel({ view, busy = false, onAction, onPick, onCr
         badges={row.badge || kind === "documents" ? (
           <>
             {row.badge ? <span className="text-[10px] font-semibold px-1.5 py-0.5 rounded-full bg-[color:var(--accent-soft)] text-[color:var(--accent)]">{row.badge}</span> : null}
+            {kind === "documents" && row.shared ? <NatureBadge>{K.shared}</NatureBadge> : null}
             {kind === "documents" ? <DocumentDateCell value={row.documentDate} className="text-[10px] text-[color:var(--text-muted)]" /> : null}
           </>
         ) : undefined}

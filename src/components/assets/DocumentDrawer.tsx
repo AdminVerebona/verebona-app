@@ -73,7 +73,9 @@ import { NativeCommerceNotice } from '@/components/native/NativeCommerceNotice';
 import { DocumentBusinessPeriodField, DocumentPeriodsDetail, DocumentPeriodsEditFields, useDocumentPeriods, useDocumentPeriodsEdit } from '@/components/documents/BusinessPeriods';
 import { PERIOD_EDIT_SAVE_FAILED } from '@/lib/documents/business-periods';
 // Lot 113AB (#725) : fiche de l'événement de référence consultable sans élément d'agenda.
-import { DocumentReferenceEvents } from '@/components/documents/ReferenceEventSheet';
+// Carte #806 (volet B §7) : toutes les opérations du document, avec « Retirer » et « Rattacher à une opération ».
+import { DocumentOperations } from '@/components/documents/DocumentOperations';
+import { OPERATION_LINK_LABELS } from '@/lib/reference-events/operation-links';
 
 export interface DocumentDrawerItem {
   id: number;
@@ -394,12 +396,13 @@ export function DocumentDrawer({ open, onOpenChange, document: doc, onRefresh, a
 
   // Lot 84B (§14.4) : nature des liens du document avec l'agenda (lien précis, ou par
   // l'ensemble vers son événement de référence) — relue à chaque relecture de la liste.
-  const [agendaLinkInfo, setAgendaLinkInfo] = useState<Map<number, { direct: boolean; viaGroup: boolean; isMain: boolean }>>(new Map());
+  // Carte #806 (volet B §7) : `outsideOperation` — lien direct à un événement qui n'appartient à aucune opération du document.
+  const [agendaLinkInfo, setAgendaLinkInfo] = useState<Map<number, { direct: boolean; viaGroup: boolean; isMain: boolean; outsideOperation?: boolean }>>(new Map());
   const [agendaPickerOpen, setAgendaPickerOpen] = useState(false);
   useEffect(() => {
     if (!open || !doc) return;
     let annule = false;
-    apiClient.get<{ links: Array<{ itemId: number; direct: boolean; viaGroup: boolean; isMain: boolean }> }>(`/api/documents/${doc.id}/agenda-liens`)
+    apiClient.get<{ links: Array<{ itemId: number; direct: boolean; viaGroup: boolean; isMain: boolean; outsideOperation?: boolean }> }>(`/api/documents/${doc.id}/agenda-liens`)
       .then((r) => { if (!annule) setAgendaLinkInfo(new Map((r?.links ?? []).map((l) => [l.itemId, l]))); })
       .catch(() => { if (!annule) setAgendaLinkInfo(new Map()); });
     return () => { annule = true; };
@@ -1726,8 +1729,6 @@ export function DocumentDrawer({ open, onOpenChange, document: doc, onRefresh, a
                       periods={periodesDocument}
                       onOpenDocument={(id) => openDrawer({ kind: 'document', id }, { stack: true })}
                     />
-                    {/* Lot 113AB (#725) : événements de référence du document sans élément d'agenda — leur fiche (couvertures, justificatifs). */}
-                    <DocumentReferenceEvents documentId={doc.id} />
                     {/* Date d'ajout — lot 108D : conservée et visible dans le détail (absente des lignes de liste). */}
                     {(fullData?.uploadedAt ?? doc.uploadedAt) && (
                       <div className="flex items-center justify-between" data-testid="document-detail-added-date">
@@ -1858,6 +1859,10 @@ export function DocumentDrawer({ open, onOpenChange, document: doc, onRefresh, a
                               {agendaLinkInfo.get(item.id)?.direct && agendaLinkInfo.get(item.id)?.viaGroup && (
                                 <span className="shrink-0 text-[10px] font-semibold px-1.5 py-0.5 rounded-full bg-muted text-muted-foreground">{GROUPING_LABELS.directLink}</span>
                               )}
+                              {/* Carte #806 (volet B §7) : lien direct à un événement hors de toute opération du document. */}
+                              {agendaLinkInfo.get(item.id)?.direct && agendaLinkInfo.get(item.id)?.outsideOperation && (
+                                <span className="shrink-0 text-[10px] font-semibold px-1.5 py-0.5 rounded-full bg-muted text-muted-foreground" data-testid={`document-agenda-hors-operation-${item.id}`}>{OPERATION_LINK_LABELS.outsideOperation}</span>
+                              )}
                               {/* Lot 113P (#715) : plus de pastille de statut d'événement. */}
                             </>)}
                           />
@@ -1876,6 +1881,9 @@ export function DocumentDrawer({ open, onOpenChange, document: doc, onRefresh, a
                       <Calendar className="w-3.5 h-3.5" aria-hidden />{GROUPING_LABELS.documentAgendaTitle}
                     </Button>
                   </div>
+
+                  {/* Carte #806 (volet B §7) : TOUTES les opérations du document — ouvrir, retirer (lien seul), rattacher. */}
+                  <DocumentOperations documentId={doc.id} />
 
                   {/* Agenda suggestions from AI */}
                   {agendaSuggestions.length > 0 && (

@@ -30,6 +30,7 @@ import {
 } from '../reference-event-write';
 import { OPERATION_RELATION_NATURES, RELATION_SOURCE_TYPE, applied, refused } from '@/services/business-operations/graph/model';
 import type { ReferenceEventPageView } from '@/services/business-operations/graph/reference-event-page';
+import { sansTextes806 } from './textes-806';
 
 (globalThis as { React?: typeof React }).React = React;
 const { ReferenceEventPageContent } = await import('@/components/reference-events/ReferenceEventPageContent');
@@ -372,7 +373,9 @@ describe('L114OW-U07 — page rendue avec ses gestes (même composant ordinateur
       expect(html, id).toContain(texte);
     }
     // Aucun mot interdit, aucun état, aucune fenêtre ouverte d'office.
-    expect(html).not.toMatch(/Opération|Statut|En cours|Terminé/i);
+    // Règle remplacée (carte #806) : « jamais "Opération" » — les textes NOUVEAUX de la carte #806 (liste fermée)
+    // disent « opération » (décision du PO du 17/11/2026) ; les textes existants restent sous la garde d'origine.
+    expect(sansTextes806(html)).not.toMatch(/Opération|Statut|En cours|Terminé/i);
     expect(html).not.toMatch(/role="dialog"/);
   });
 

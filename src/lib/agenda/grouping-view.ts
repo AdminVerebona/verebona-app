@@ -32,6 +32,13 @@ export interface GroupingDocumentRef {
   typeLabel?: string | null;
   /** Lien de CET élément vers le document : précis (saisi / IA), seulement par l'ensemble, ou aucun. */
   link: 'DIRECT' | 'GROUP' | null;
+  /**
+   * Carte #806 (volet B §7) — nature du lien, pour ne pas confondre : `member`, le document APPARTIENT à une
+   * opération de cet événement ; `shared`, il appartient à plusieurs opérations (justificatif partagé). Absents :
+   * lecture antérieure (aucune pastille).
+   */
+  member?: boolean;
+  shared?: boolean;
 }
 export interface GroupingNamedRef { id: number; name: string; assetId?: number | null }
 
@@ -72,7 +79,7 @@ export interface AgendaGroupingView {
    * plusieurs), chacun ouvrable directement — sans passer par un élément
    * « principal ». Absent ou vide : élément autonome.
    */
-  referenceEvents?: Array<{ id: number; label: string }>;
+  referenceEvents?: Array<{ id: number; label: string; /** Carte #806 (volet B §7) : opérations ASSOCIÉES à celle-ci (jamais fusionnées), ouvrables. */ associated?: Array<{ id: number; label: string }> }>;
   /**
    * Lot 103D (règle `lib/agenda/housing-scope`) : les catégories « Pièces » et
    * « Équipements » n'existent que si au moins un LOGEMENT est rattaché

@@ -49,6 +49,7 @@ import {
 import { hintKey, planDocumentAdjustments } from '../finance/commercial-adjustments';
 import { isOrderDocumentType, isOrderEvidenceWithoutRealization } from '@/services/canonical/registry/order-evidence';
 import { acquisitionLabelFromDesignation } from '@/lib/reference-events/operation-title';
+import { financingEvidenceOf } from './financing-evidence';
 
 // ── Entrées persistées ─────────────────────────────────────────────────────
 
@@ -235,6 +236,11 @@ export interface CandidateIdentity {
    * est celui d'une commande (prévisionnel) : la même dépense n'est jamais comptée deux fois.
    */
   orderWithoutRealization?: true;
+  /**
+   * Carte #806 (volet B §11, T3) : T1 proposait « Financement » SANS preuve d'un prêt, d'un crédit ou d'un leasing
+   * (`financing-evidence.ts`) — le type de cette source est non qualifié. Trace seulement (diagnostic, tests).
+   */
+  financingWithoutEvidence?: true;
   /**
    * Carte #813 (A) : NOM de l'achat dérivé de la désignation extraite du justificatif (« Achat Polisport
    * groovy coussin gris ») — moteur de titrage existant, jamais un texte rédigé. Absent : le résumé du
@@ -430,7 +436,14 @@ export function buildCandidateIdentity(c: CandidateRecord, ctx: IdentityContext)
   const brute = normalizeProvider(p.provider);
   const canon = brute !== null ? ctx.providerCanonical?.get(brute) ?? brute : null;
   const established = c.established && !ajuste.adjustmentOnly;
-  const type = normalizeOperationTypeHint(c.typeHint);
+  // Carte #806 (volet B §11, T3) : « Financement » seulement s'il est PROUVÉ (Type du document, référence de prêt,
+  // capital emprunté — référentiels existants, `financing-evidence.ts`). Une simple « échéance » ne fait pas un prêt :
+  // sans preuve, le type reste non qualifié (jamais « Autre », jamais deviné). Vaut pour le stock, sans réanalyse T1.
+  const typeLu = normalizeOperationTypeHint(c.typeHint);
+  const financementSansPreuve = typeLu === 'FINANCING' && financingEvidenceOf({
+    documentTypeCode: ctx.fileDocumentTypeCode, referenceKinds: refs.map((r) => r.kind), hintRoles: (p.financialHints ?? []).map((h) => h?.role),
+  }) === null;
+  const type = financementSansPreuve ? null : typeLu;
   // Carte #813 (C, D) : un ACHAT lu sur un document classé pièce de commande (référentiel `order-evidence.ts`) n'est pas
   // réalisé du seul fait du rôle persisté (absent, « facture », « autre preuve ») — commande seule ≠ réalisation. Vaut
   // pour le stock, sans nouvelle analyse T1. Rôle et montants inchangés (coût de possession intact, lot 109D) ; la
@@ -452,6 +465,7 @@ export function buildCandidateIdentity(c: CandidateRecord, ctx: IdentityContext)
   return {
     ...(designationLabel ? { designationLabel } : {}),
     ...(commandeSansRealisation ? { orderWithoutRealization: true as const } : {}),
+    ...(financementSansPreuve ? { financingWithoutEvidence: true as const } : {}),
     candidateId: c.id,
     candidateKey: c.candidateKey,
     fileId: c.fileId,

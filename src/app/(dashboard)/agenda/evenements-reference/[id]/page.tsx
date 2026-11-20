@@ -204,6 +204,7 @@ export default function ReferenceEventPage() {
           openDocument: (fileId) => openDrawer({ kind: "document", id: fileId }),
           openAgendaItem: (itemId) => openDrawer({ kind: "echeance", id: itemId }),
           openEquipment: (equipmentId) => openDrawer({ kind: "equipement", id: equipmentId }),
+          openRoom: (roomId) => openDrawer({ kind: "piece", id: roomId }),
           onPeriodsSaved: () => { void load(); },
         }}
       />

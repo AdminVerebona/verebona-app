@@ -1272,7 +1272,7 @@ async function agendaLinkedToOperation(g: GroupingContext, operationId: number, 
  * rien : le moindre refus annule la transaction entière (aucune demi-scission,
  * AC71).
  */
-export function splitOperation(ctx: OperationWriteContext, input: SplitOperationInput): Promise<OperationWriteResult<SplitOperationData>> {
+function splitOperationCommand(ctx: OperationWriteContext, input: SplitOperationInput): Promise<OperationWriteResult<SplitOperationData>> {
   return runCommand<SplitOperationData>(ctx, 'splitOperation', input, async (g, journal) => {
     if (ctx.actor.kind !== 'USER') return stop(refused('FORBIDDEN', 'USER_ONLY'));
     const attrs = normalizeOperationPatch(input?.attributes);
@@ -1408,6 +1408,30 @@ export function splitOperation(ctx: OperationWriteContext, input: SplitOperation
       operationId: faits.id, version: apres.version, newOperationId: cree.id, relationId: rel.id, declarationId,
       movedAgendaItemIds: elements, movedFileIds: fichiers, movedSupplierIds: fournisseurs,
     });
+  });
+}
+
+/**
+ * SCISSION (commande publique). Carte #806, volet B §11 (T3) — REQUALIFICATION : une fois la scission écrite, chaque
+ * justificatif déplacé est redemandé à la consolidation T3 (déclencheur C4 existant `document_moved`, file existante).
+ * Sans cela le justificatif appartenait bien à la nouvelle opération, mais son MONTANT n'y arrivait jamais : il restait
+ * compté une fois, par le repli documentaire, dans le poste du type d'origine. Le passage T3 le rattache par la décision
+ * de l'utilisateur (M0 — confirmé ici, refusé sur l'opération scindée) : aucune IA, aucune fusion (la paire scindée est
+ * protégée, migration 1830). Non bloquant : la scission est acquise même si la demande échoue ; rejouée (idempotence) :
+ * rien n'est redemandé.
+ */
+export function splitOperation(ctx: OperationWriteContext, input: SplitOperationInput): Promise<OperationWriteResult<SplitOperationData>> {
+  return splitOperationCommand(ctx, input).then(async (r) => {
+    const deplaces = r.status === 'APPLIED' && r.changed && !r.replayed ? r.data?.movedFileIds ?? [] : [];
+    if (deplaces.length) {
+      try {
+        const { notifyOperationsEvent } = await import('./consolidation/queue');
+        for (const fileId of deplaces) notifyOperationsEvent(ctx.accountId, { trigger: 'document_moved', fileId });
+      } catch (e) {
+        console.error('[operation-write] requalification T3 après scission non demandée :', (e as Error).message);
+      }
+    }
+    return r;
   });
 }
 

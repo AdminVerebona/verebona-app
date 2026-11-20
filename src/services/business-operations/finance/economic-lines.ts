@@ -62,6 +62,7 @@ import {
 } from '@/services/verebona-assistant/canonical/expense-classes';
 import type { ExclusionReason } from './engine';
 import { resolveEconomicDate, type EconomicDateResolution } from './economic-date';
+import { provenTypeHint } from '../consolidation/financing-evidence';
 import { compositionView, hintKey, planDocumentAdjustments, type PurchaseCompositionView } from './commercial-adjustments';
 import { semanticDraft, semanticEffectFor, semanticPendingTrace, type SemanticDocumentState, type SemanticLineTrace } from './semantic-qualification';
 
@@ -393,7 +394,19 @@ export function qualifyDocumentLines(docs: readonly EconomicDocumentInput[], ctx
   })));
   const copies = new Set(removed);
 
-  for (const d of docs) {
+  for (const brut of docs) {
+    // Carte #806 (volet B §11, T3) : un indice « Financement » SANS preuve d'un prêt, d'un crédit ou d'un leasing
+    // (Type du document, référence de prêt, capital emprunté — `financing-evidence.ts`) n'est pas retenu : la ligne
+    // suit la nature du document (thème), jamais la catégorie « Financement » ni ses échéances présumées honorées.
+    const d: EconomicDocumentInput = brut.candidates.some((c) => typeof c.typeHint === 'string' && c.typeHint.trim().toUpperCase() === 'FINANCING')
+      ? {
+        ...brut,
+        candidates: brut.candidates.map((c) => ({
+          ...c,
+          typeHint: provenTypeHint(c.typeHint, { documentTypeCode: brut.typeCode ?? brut.legacyType, referenceKinds: c.references.map((r) => r.kind), hintRoles: c.hints.map((h) => h.role) }),
+        })),
+      }
+      : brut;
     const supplierKey = normalizeSupplier(d.supplier) ?? normalizeSupplier(d.candidates.find((c) => c.provider)?.provider);
     const invoiceRefs = [...new Set(d.candidates.flatMap((c) => c.references.filter((r) => r.kind === 'INVOICE').map((r) => normalizeRef(r.value)).filter(Boolean)))];
     const eventRefs = eventRefsOf(d.candidates);

@@ -31,6 +31,13 @@ import {
 import { PRESENTATION_BASIS_LABELS, type PresentationDate } from '@/lib/reference-events/presentation-date';
 import { referenceEventPeriodOf, type ReferenceEventNotes, type ReferenceEventSummary } from '@/lib/reference-events/reference-event-summary';
 import type { CoverageEntry } from '@/services/documents/business-periods/service';
+import {
+  OPERATION_FACT_OF_PROVENANCE, operationAmountsOf,
+  type OperationAmount, type OperationFactConflict, type OperationFactSource,
+} from '@/lib/reference-events/operation-facts';
+import {
+  dedupeOperationDocuments, type OperationEventDocument, type OperationRef, type OperationRelatedDocument,
+} from '@/lib/reference-events/operation-links';
 import type { FinancialComponentKind } from '../model';
 import { presentationDateOfRow, presentationFactColumnsSql } from './presentation-date';
 
@@ -84,6 +91,8 @@ export interface ReferenceEventPageView {
   /** Intitulé propre enregistré (null : aucun) — celui que l'utilisateur peut corriger. */
   ownLabel: string | null;
   typeCode: string | null;
+  /** Carte #806 (volet B §8) : nom utilisateur du type (« Intervention », « Contrat »…) ; null : type non qualifié. */
+  typeLabel?: string | null;
   provider: string | null;
   /** Dates PROPRES, chacune avec son rôle ; jamais une date d'événement de l'Agenda ou de document. */
   dates: Array<{ role: ReferenceEventDateRole; date: string }>;
@@ -99,9 +108,26 @@ export interface ReferenceEventPageView {
   declarations: Array<{ id: number; text: string; declaredOn: string | null; channel: ReferenceEventDeclarationChannel; purpose: 'CREATE' | 'UPDATE' }>;
   assets: Array<{ id: number; name: string }>;
   equipments: Array<{ id: number; name: string; assetId: number; assetName: string | null }>;
+  /** Carte #806 (volet B §8) : pièces concernées (lien existant `business_operation_room_links`), avec leur bien. */
+  rooms?: Array<{ id: number; name: string; assetId: number; assetName: string | null }>;
   suppliers: Array<{ id: number; name: string }>;
   coverages: CoverageEntry[];
-  documents: Array<{ fileId: number; title: string; date: string | null }>;
+  /**
+   * Justificatifs qui APPARTIENNENT à l'opération. Carte #806 (volet B §7, AC43) : `sharedWith` — autres opérations
+   * actives qui portent aussi ce justificatif (« justificatif partagé ») ; `directEvents` — événements de CETTE
+   * opération auxquels il est aussi lié directement. Absents : rien de tel (ou lecture d'un appelant antérieur).
+   */
+  documents: Array<{ fileId: number; title: string; date: string | null; sharedWith?: OperationRef[]; directEvents?: Array<{ id: number; title: string }> }>;
+  /**
+   * Carte #806 (volet B §7, AC43) : documents liés DIRECTEMENT à un événement de l'opération, sans lui appartenir.
+   * Jamais un doublon d'un justificatif ; jamais un document que l'utilisateur a retiré de cette opération (AC44).
+   */
+  eventDocuments?: OperationEventDocument[];
+  /**
+   * Carte #806 (volet B §7) : pièces du contrat d'assurance ASSOCIÉ à un sinistre, lues par la relation — ni
+   * copiées, ni rattachées, ni comptées.
+   */
+  relatedDocuments?: OperationRelatedDocument[];
   /** Événements RÉELS de l'Agenda (graphe N↔N), chacun à SA date ; `shared` : relié aussi à un autre événement de référence. */
   agendaItems: Array<{ id: number; title: string; date: string | null; shared: boolean }>;
   /** Événements de référence associés (jamais une fusion), lus dans les deux sens. */
@@ -118,6 +144,15 @@ export interface ReferenceEventPageView {
    * (« Notes / Description », migration 1722) ; null : aucune note.
    */
   notes?: ReferenceEventNotes | null;
+  /**
+   * Carte #806 (volet B §8) — MONTANTS PAR NATURE : les composantes actives du moteur financier existant de CETTE
+   * opération, regroupées (jamais additionnées entre natures). Vide ou absent : la rubrique n'apparaît pas.
+   */
+  amounts?: OperationAmount[];
+  /** Carte #806 (volet B §8) — SOURCE de chaque fait affiché (date, prestataire), quand la consolidation l'a tracée. */
+  factSources?: OperationFactSource[];
+  /** Carte #806 (volet B §8) — VALEURS DIFFÉRENTES relevées pour un même fait, avec leurs justificatifs. */
+  conflicts?: OperationFactConflict[];
 }
 
 /** Colonnes d'un événement de référence qui portent ses dates propres, par rôle. */
@@ -226,13 +261,102 @@ export async function referenceEventSearchFactsOf(r: Row): Promise<ReferenceEven
 }
 
 /**
+ * Carte #806 (volet B §8) — SOURCE de chaque fait et VALEURS DIFFÉRENTES, lues dans `attribute_provenance` (écrit
+ * par la consolidation T3). Deux formes sont lues : le relevé qualifié (lot 113AQ, `{ fields: { <champ>: { sourceId,
+ * value } }, conflicts: [...], divergences: [...] }`) et le relevé brut antérieur (`{ <champ>: { sourceId, value },
+ * conflicts: [...] }`). `conflicts` : écarts à confirmer (ils peuvent donner une question « À traiter ») ;
+ * `divergences` : différences déjà qualifiées (révision, même jour économique, valeur choisie) — consultables.
+ * Chaque source est résolue DANS le compte et DANS l'opération ; un justificatif supprimé n'est pas rendu. Forme
+ * inattendue : rien (jamais une erreur de la fiche).
+ */
+async function readFactProvenance(
+  sql: Sql, accountId: number, operationId: number, brut: unknown,
+  /** Valeur AFFICHÉE de chaque fait : une source n'est dite que si elle porte exactement cette valeur. */
+  courant: Readonly<Partial<Record<OperationFactSource['field'], string | null>>>,
+): Promise<{ sources: OperationFactSource[]; conflicts: OperationFactConflict[] }> {
+  const prov = jsonObject(brut);
+  if (!prov) return { sources: [], conflicts: [] };
+  const entier = (v: unknown): number | null => (typeof v === 'number' && Number.isSafeInteger(v) && v > 0 ? v : null);
+  const voulus = new Set<number>();
+  const parChamp: Array<{ field: OperationFactSource['field']; sourceId: number }> = [];
+  const champs = jsonObject(prov.fields) ?? prov;
+  for (const [cle, field] of Object.entries(OPERATION_FACT_OF_PROVENANCE)) {
+    const trace = jsonObject(champs[cle]);
+    const sourceId = entier(trace?.sourceId);
+    // La valeur affichée a pu être corrigée depuis (par l'utilisateur) : la trace d'une AUTRE valeur ne la justifie
+    // pas — rien n'est dit plutôt qu'une source fausse.
+    if (sourceId !== null && txt(trace?.value) !== null && txt(trace?.value) === (courant[field] ?? null)) { parChamp.push({ field, sourceId }); voulus.add(sourceId); }
+  }
+  const releves: Array<{ field: OperationFactConflict['field']; retained: string | null; pending: boolean; values: Array<{ value: string; sourceIds: number[] }> }> = [];
+  const liste = (v: unknown): unknown[] => (Array.isArray(v) ? (v as unknown[]) : []);
+  const vus = new Set<string>();
+  for (const [c, pending] of [...liste(prov.conflicts).map((x) => [x, true] as const), ...liste(prov.divergences).map((x) => [x, false] as const)]) {
+    const o = jsonObject(c);
+    const field = o && typeof o.field === 'string' ? OPERATION_FACT_OF_PROVENANCE[o.field] : undefined;
+    if (!o || !field || !Array.isArray(o.values)) continue;
+    const values: Array<{ value: string; sourceIds: number[] }> = [];
+    for (const v of o.values as unknown[]) {
+      const x = jsonObject(v);
+      const value = txt(x?.value);
+      if (!value) continue;
+      const sourceIds = (Array.isArray(x?.sourceIds) ? (x?.sourceIds as unknown[]) : []).map(entier).filter((n): n is number => n !== null);
+      for (const n of sourceIds) voulus.add(n);
+      values.push({ value, sourceIds });
+    }
+    // Une seule valeur n'est pas une différence ; le même écart n'est relevé qu'une fois.
+    const cleEcart = `${field}|${values.map((v) => v.value).sort().join('|')}`;
+    if (new Set(values.map((v) => v.value)).size >= 2 && !vus.has(cleEcart)) {
+      vus.add(cleEcart);
+      // « Valeur affichée » : celle que la fiche montre réellement (jamais une valeur retenue autrefois puis corrigée).
+      const affichee = courant[field] ?? null;
+      releves.push({ field, retained: affichee !== null && values.some((v) => v.value === affichee) ? affichee : null, pending, values });
+    }
+  }
+  if (!voulus.size) return { sources: [], conflicts: [] };
+  const rows = (await sql.unsafe(
+    `SELECT s.id, s.source_kind, s.authority, f.id AS file_id, ${documentTitleJsonSql('f')} AS titre
+       FROM business_operation_sources s
+       LEFT JOIN asset_files f ON s.source_kind = 'DOCUMENT' AND f.account_id = s.account_id AND f.deleted_at IS NULL
+            AND f.id = CASE WHEN s.source_entity_key ~ '^[0-9]{1,9}$' THEN s.source_entity_key::int END
+      WHERE s.account_id = $1 AND s.operation_id = $2 AND s.id = ANY($3::bigint[])`,
+    [accountId, operationId, `{${[...voulus].join(',')}}`] as never[],
+  ).catch(() => [])) as unknown as Row[];
+  const parId = new Map(rows.map((r) => [Number(r.id), r]));
+  const fichier = (r: Row | undefined): { fileId: number; title: string } | null => {
+    if (!r || r.file_id === null || r.file_id === undefined) return null;
+    const t = jsonObject(r.titre);
+    return { fileId: Number(r.file_id), title: t ? documentTitleOf(t as DocumentTitleColumns) : 'Document' };
+  };
+  const sources: OperationFactSource[] = [];
+  for (const p of parChamp) {
+    const r = parId.get(p.sourceId);
+    const f = fichier(r);
+    if (f) sources.push({ field: p.field, origin: 'DOCUMENT', fileId: f.fileId, title: f.title });
+    else if (r && (r.source_kind === 'USER_DECLARATION' || r.authority === 'USER')) sources.push({ field: p.field, origin: 'USER', fileId: null, title: null });
+  }
+  const conflicts: OperationFactConflict[] = releves.map((c) => ({
+    field: c.field, retained: c.retained, pending: c.pending,
+    values: c.values.map((v) => {
+      const vus = new Set<number>();
+      const srcs: Array<{ fileId: number; title: string }> = [];
+      for (const n of v.sourceIds) {
+        const f = fichier(parId.get(n));
+        if (f && !vus.has(f.fileId)) { vus.add(f.fileId); srcs.push(f); }
+      }
+      return { value: v.value, sources: srcs };
+    }),
+  }));
+  return { sources, conflicts };
+}
+
+/**
  * PAGE d'un événement de référence ACTIF du compte (ancien identifiant
  * regroupé : redirigé). null : introuvable dans ce compte, ou invalidé sans
  * regroupement.
  */
 export async function readReferenceEventPage(accountId: number, operationId: number): Promise<ReferenceEventPageView | null> {
   if (!Number.isSafeInteger(accountId) || accountId <= 0 || !Number.isSafeInteger(operationId) || operationId <= 0) return null;
-  const { readReferenceEvent } = await import('@/services/documents/business-period-surfaces');
+  const { readReferenceEvent, referenceEventLabel } = await import('@/services/documents/business-period-surfaces');
   const base = await readReferenceEvent(accountId, operationId);
   if (!base) return null;
   const id = base.id;
@@ -251,7 +375,7 @@ export async function readReferenceEventPage(accountId: number, operationId: num
     params,
   )) as unknown as Row[];
   if (!op) return null;
-  const [biens, equipements, fournisseurs, declarations, composantes, nombres, notesRows] = (await Promise.all([
+  const [biens, equipements, fournisseurs, declarations, composantes, nombres, notesRows, pieces, provenanceRows] = (await Promise.all([
     sql.unsafe(
       `SELECT DISTINCT a.id, a.name FROM business_operation_asset_links l
          JOIN assets a ON a.id = l.asset_id AND a.account_id = $1 AND a.deleted_at IS NULL
@@ -296,7 +420,17 @@ export async function readReferenceEventPage(accountId: number, operationId: num
     sql.unsafe(
       `SELECT o.user_notes, to_char(o.user_notes_updated_at AT TIME ZONE 'Europe/Paris', 'YYYY-MM-DD') AS notes_on
          FROM business_operations o WHERE o.account_id = $1 AND o.id = $2`, params).catch(() => []),
-  ])) as unknown as [Row[], Row[], Row[], Row[], Row[], Row[], Row[]];
+    // Carte #806 (volet B §8) : pièces concernées (pièce d'un bien vivant du compte).
+    sql.unsafe(
+      `SELECT DISTINCT s.id, s.name, a.id AS asset_id, a.name AS asset_name FROM business_operation_room_links l
+         JOIN substructures s ON s.id = l.substructure_id
+         JOIN assets a ON a.id = s.asset_id AND a.account_id = $1 AND a.deleted_at IS NULL
+        WHERE l.account_id = $1 AND l.operation_id = $2 AND l.active
+        ORDER BY s.name, s.id`, params).catch(() => []),
+    // Carte #806 (volet B §8) : provenance et valeurs différentes enregistrées par la consolidation (lecture seule).
+    sql.unsafe(
+      `SELECT o.attribute_provenance FROM business_operations o WHERE o.account_id = $1 AND o.id = $2`, params).catch(() => []),
+  ])) as unknown as [Row[], Row[], Row[], Row[], Row[], Row[], Row[], Row[], Row[]];
 
   const dates: ReferenceEventPageView['dates'] = [];
   for (const role of REFERENCE_EVENT_DATE_ROLES) {
@@ -316,8 +450,22 @@ export async function readReferenceEventPage(accountId: number, operationId: num
     }))
     .filter((d) => d.text.trim().length > 0);
   const typeCode = txt(op.type_code);
-  const documents = base.documents;
   const agendaItems = base.agendaItems;
+  // Carte #806 (volet B §7, AC43, AC44) : nature des liens documentaires — lecture calculée, rien n'est écrit.
+  const { readOperationDocumentLinks } = await import('./document-links');
+  const liens = await readOperationDocumentLinks(accountId, id, {
+    typeCode, related: graphe.relations.map((r) => ({ operationId: r.other.operationId, label: r.other.label, typeCode: r.other.typeCode })),
+  });
+  const documents: ReferenceEventPageView['documents'] = base.documents.map((d) => {
+    const sharedWith = liens.sharedWith.get(d.fileId);
+    const directEvents = liens.directEvents.get(d.fileId);
+    return { ...d, ...(sharedWith?.length ? { sharedWith } : {}), ...(directEvents?.length ? { directEvents } : {}) };
+  });
+  // Un document n'est listé qu'une fois : justificatif, sinon lié à un événement, sinon porté par l'opération associée.
+  const { events: eventDocuments, related: relatedDocuments } = dedupeOperationDocuments(documents, liens.eventDocuments, liens.relatedDocuments);
+  const faits = await readFactProvenance(sql, accountId, id, provenanceRows[0]?.attribute_provenance, {
+    PLANNED: day(op.planned_date), START: day(op.start_date), REALIZED: day(op.realized_date), END: day(op.end_date), PROVIDER: txt(op.provider),
+  });
   const fournisseursNoms = fournisseurs.map((s) => String(s.name ?? '')).filter((x) => x.length > 0);
   // MONTANT : la règle EXISTANTE du moteur (net indicatif) — coûts réalisés moins remises, remboursements,
   // indemnités et produits ; les devis n'y entrent pas ; une devise sans contre-valeur connue n'est pas convertie.
@@ -363,6 +511,7 @@ export async function readReferenceEventPage(accountId: number, operationId: num
     }),
     ownLabel: txt(op.technical_label),
     typeCode,
+    typeLabel: typeCode ? referenceEventLabel({ typeCode, technicalLabel: null }) : null,
     provider: txt(op.provider),
     dates,
     presentation,
@@ -370,9 +519,15 @@ export async function readReferenceEventPage(accountId: number, operationId: num
     declarations: decls,
     assets,
     equipments: equipements.map((e) => ({ id: Number(e.id), name: String(e.name ?? ''), assetId: Number(e.asset_id), assetName: txt(e.asset_name) })),
+    rooms: pieces.map((p) => ({ id: Number(p.id), name: String(p.name ?? ''), assetId: Number(p.asset_id), assetName: txt(p.asset_name) })),
     suppliers: fournisseurs.map((s) => ({ id: Number(s.id), name: String(s.name ?? '') })),
     coverages: base.coverages,
     documents,
+    eventDocuments,
+    relatedDocuments,
+    amounts: operationAmountsOf(comps),
+    factSources: faits.sources,
+    conflicts: faits.conflicts,
     agendaItems: agendaItems.map((a) => ({ ...a, shared: partages.get(a.id) === true })),
     relations: graphe.relations.map((r) => ({ operationId: r.other.operationId, label: r.other.label, nature: r.nature, direction: r.direction })),
     summary,

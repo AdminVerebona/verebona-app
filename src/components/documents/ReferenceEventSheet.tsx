@@ -19,15 +19,14 @@
  * dépense, tiroir d'un document, tiroir d'un événement de l'Agenda) — un vrai
  * lien (clic milieu, nouvel onglet, clavier) vers la page. Les tiroirs ouverts
  * sont fermés au départ : la page n'est jamais recouverte.
- * `DocumentReferenceEvents` : liens du tiroir d'un document vers TOUS ses
- * événements de référence (avant #744 : seulement ceux sans événement de
- * l'Agenda ; la page est désormais le point d'arrivée unique).
+ * Carte #806 (volet B §7, règle remplacée) : la liste du tiroir d'un document
+ * (`DocumentReferenceEvents`, des liens seuls, au plus dix) est remplacée par
+ * `components/documents/DocumentOperations.tsx` — TOUTES les opérations du
+ * document, avec « Retirer » et « Rattacher à une opération ».
  * Le mot « Opération » n'apparaît jamais.
  */
-import { useEffect, useState } from "react";
 import Link from "next/link";
 import { Layers } from "lucide-react";
-import { apiClient } from "@/lib/api-client";
 import { CLOSE_ALL_DRAWERS_EVENT } from "@/lib/drawers";
 import { referenceEventHref } from "@/lib/reference-events/reference-event-page";
 
@@ -54,27 +53,5 @@ export function ReferenceEventLink({ operationId, label }: { operationId: number
       <Layers className="w-3 h-3 shrink-0" aria-hidden />
       <span className="truncate">{label ? `${REFERENCE_EVENT_OPEN_LABEL} : ${label}` : REFERENCE_EVENT_OPEN_LABEL}</span>
     </Link>
-  );
-}
-
-/**
- * Tiroir d'un document : liens vers TOUS ses événements de référence (règle
- * remplacée, carte #744 : avant, seulement ceux sans événement de l'Agenda).
- * `hasAgenda` reste servi par la route, il ne filtre plus rien ici.
- */
-export function DocumentReferenceEvents({ documentId }: { documentId: number }) {
-  const [refs, setRefs] = useState<Array<{ id: number; label: string; hasAgenda: boolean; coverageCount: number }>>([]);
-  useEffect(() => {
-    let actif = true;
-    apiClient.get<{ references: typeof refs }>(`/api/documents/${documentId}/evenements-reference`)
-      .then((r) => { if (actif) setRefs(r?.references ?? []); })
-      .catch(() => { if (actif) setRefs([]); });
-    return () => { actif = false; };
-  }, [documentId]);
-  if (!refs.length) return null;
-  return (
-    <div className="flex flex-col items-start gap-1" data-testid="document-reference-events">
-      {refs.map((r) => <ReferenceEventLink key={r.id} operationId={r.id} label={r.label} />)}
-    </div>
   );
 }

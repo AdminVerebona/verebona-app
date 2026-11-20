@@ -25,6 +25,7 @@ import {
 } from '../reference-event-summary';
 import { NOTES_DESCRIPTION_LABEL, NOTES_MAX_LENGTH } from '@/lib/documents/notes-description';
 import type { ReferenceEventPageView } from '@/services/business-operations/graph/reference-event-page';
+import { sansTextes806 } from './textes-806';
 
 (globalThis as { React?: typeof React }).React = React;
 const { ReferenceEventPageContent } = await import('@/components/reference-events/ReferenceEventPageContent');
@@ -203,7 +204,9 @@ describe('L114OK-U05 — rendu de la page (même composant ordinateur et mobile)
   it('ni « Opération », ni onglet, ni tiroir, ni état ; cibles tactiles ; jetons de couleur seulement', () => {
     const html = rendreAvecGestes(fiche({ notes: { text: 'Garantie 2 ans', updatedOn: '2024-04-03' } }));
     expect(html).not.toMatch(/role="tab(list|panel)?"/);
-    expect(html).not.toMatch(/Opération|Statut|Envisagé|Annulé/i);
+    // Règle remplacée (carte #806) : « jamais "Opération" » — les textes NOUVEAUX de la carte #806 (liste fermée)
+    // disent « opération » (décision du PO du 17/11/2026) ; les textes existants restent sous la garde d'origine.
+    expect(sansTextes806(html)).not.toMatch(/Opération|Statut|Envisagé|Annulé/i);
     expect(html).toContain('min-h-[44px]');
     for (const p of ['src/components/reference-events/ReferenceEventPageContent.tsx', 'src/lib/reference-events/reference-event-summary.ts']) {
       const code = visible(lire(p));

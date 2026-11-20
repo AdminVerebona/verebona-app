@@ -28,6 +28,8 @@ import type { ReferenceEventPageView } from '@/services/business-operations/grap
 (globalThis as { React?: typeof React }).React = React;
 const { ReferenceEventPageContent } = await import('@/components/reference-events/ReferenceEventPageContent');
 
+import { TEXTES_806, sansTextes806 } from './textes-806';
+
 const lire = (p: string) => readFileSync(join(process.cwd(), p), 'utf8').replace(/\r\n?/g, '\n');
 /** Code seulement (commentaires et imports retirés). */
 const visible = (s: string) => s.split('\n').filter((l) => !/^\s*(\*|\/\/|\/\*|import )/.test(l)).map((l) => l.replace(/\{\/\*.*?\*\/\}/g, '')).join('\n');
@@ -143,7 +145,12 @@ describe('L114OD-U04 — page entière (même composant desktop et mobile)', () 
   it('ni onglet, ni tiroir, ni état, ni « Opération » ; cibles tactiles ; charte (jetons seulement, pas de petites capitales)', () => {
     const html = rendre(fiche());
     expect(html).not.toMatch(/role="tab(list|panel)?"|role="dialog"/);
-    expect(html).not.toMatch(/Opération|En cours|Expiré|Envisagé|Annulé|Terminé|Statut/i);
+    // Règle remplacée (carte #806) : « jamais "Opération" sur la fiche » — décision du PO du 17/11/2026 (#806 §1), à
+    // l'écran on dit désormais « opération ». Les textes NOUVEAUX de la carte #806 (liste fermée `TEXTES_806`)
+    // l'emploient ; les textes existants ne sont pas renommés ici et restent sous la garde d'origine.
+    expect(sansTextes806(html)).not.toMatch(/Opération|En cours|Expiré|Envisagé|Annulé|Terminé|Statut/i);
+    expect(html).toContain('Appartient à cette opération');
+    for (const t of TEXTES_806) expect(t, t).not.toMatch(/événement de référence|élément de référence/i);
     expect(html).toContain('min-h-[44px]');
     for (const p of ['src/components/reference-events/ReferenceEventPageContent.tsx', 'src/app/(dashboard)/agenda/evenements-reference/[id]/page.tsx', 'src/lib/reference-events/reference-event-page.ts']) {
       const code = visible(lire(p));

@@ -124,13 +124,16 @@ describe('L113AB-U-05 — écrans (desktop et mobile, même composant)', () => {
   const tco = lire('src/components/assets/TcoSection.tsx');
   const drawer = lire('src/components/assets/DocumentDrawer.tsx');
   it('fiche de l’événement de référence ouverte depuis le tiroir du document (sans agenda) et la ligne de dépense', () => {
-    expect(drawer).toContain('<DocumentReferenceEvents documentId={doc.id} />');
+    // Règle remplacée (carte #806, volet B §7) : le tiroir du document ne montre plus seulement des liens (au plus
+    // dix) — `DocumentOperations` liste TOUTES ses opérations, ouvre leur fiche et permet de retirer / rattacher.
+    expect(drawer).toContain('<DocumentOperations documentId={doc.id} />');
+    expect(drawer).not.toContain('DocumentReferenceEvents');
+    expect(lire('src/components/documents/DocumentOperations.tsx')).toContain('href={referenceEventHref(o.id)}');
     // Règle remplacée (carte #744, travaux D — CDC §14, AC41) : la fiche n'est plus un panneau latéral mais la PAGE
     // ENTIÈRE ; le tiroir du document y mène pour TOUS ses événements de référence (plus de filtre « sans agenda »).
     expect(sheet).not.toMatch(/hasAgenda\)|<Sheet\b/);
     expect(sheet).toContain('href={href}');
     expect(sheet).toContain('const href = referenceEventHref(operationId);');
-    expect(sheet).toContain('{refs.map((r) => <ReferenceEventLink key={r.id} operationId={r.id} label={r.label} />)}');
     expect(lire('src/app/(dashboard)/agenda/evenements-reference/[id]/page.tsx')).toContain('fetch(`/api/evenements-reference/${id}/fiche`');
     expect(lire('src/components/reference-events/ReferenceEventPageContent.tsx')).toContain('<CoverageHistoryList');
     expect(tco).toContain('<ReferenceEventLink operationId={l.operationId} />');

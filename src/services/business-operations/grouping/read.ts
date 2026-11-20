@@ -18,6 +18,15 @@ import { operationDisplayHousingAssetIds } from '@/services/agenda/housing-scope
 
 const CANDIDATE_LIMIT = 30;
 
+/**
+ * Carte #806 (volet B §7) — nombre d'opérations ACTIVES qui portent le document `f` (compte `$1`) : au-delà d'une,
+ * le justificatif est « partagé ». Fragment SQL (alias `f` de `asset_files`).
+ */
+const OPS_DU_DOCUMENT_SQL = `(SELECT count(*)::int FROM business_operation_documents bd
+                               JOIN business_operations bo ON bo.id = bd.operation_id AND bo.account_id = bd.account_id
+                                    AND bo.invalidated_at IS NULL AND bo.merged_into_operation_id IS NULL
+                              WHERE bd.account_id = $1 AND bd.file_id = f.id AND bd.active)`;
+
 /** Lot 114O (#744) : `carriesFact` — le lien N↔N porte un fait de l'ensemble (remplace le rôle « principal »). */
 interface ItemCtx { id: number; op: number | null; carriesFact: boolean }
 
@@ -51,9 +60,11 @@ async function ensembleItems(r: GroupingRunner, accountId: number, op: number, e
 
 /** Documents de l'ensemble (appartenance active) + liens directs de l'élément, avec la nature du lien de l'élément. */
 async function ensembleDocuments(r: GroupingRunner, accountId: number, op: number, itemId: number): Promise<GroupingDocumentRef[]> {
-  const x = await r.q<{ id: number; retained_title: string | null; original_filename: string | null; filename: string | null; s3_key: string | null; public_id: string | null; d: string | null; tc: string | null; prov: string[] | null }>(
+  const x = await r.q<{ id: number; retained_title: string | null; original_filename: string | null; filename: string | null; s3_key: string | null; public_id: string | null; d: string | null; tc: string | null; prov: string[] | null; ops: number | null; membre: boolean | null }>(
     `SELECT f.id, f.retained_title, f.web_link_title, f.original_filename, f.filename, f.s3_key, f.public_id::text AS public_id, f.document_date::text AS d, f.document_type_code AS tc,
-            (SELECT l.provenances FROM agenda_file_links l WHERE l.agenda_item_id = $3 AND l.asset_file_id = f.id) AS prov
+            (SELECT l.provenances FROM agenda_file_links l WHERE l.agenda_item_id = $3 AND l.asset_file_id = f.id) AS prov,
+            ${OPS_DU_DOCUMENT_SQL} AS ops,
+            EXISTS (SELECT 1 FROM business_operation_documents d WHERE d.operation_id = $2 AND d.account_id = $1 AND d.file_id = f.id AND d.active) AS membre
        FROM asset_files f
       WHERE f.account_id = $1 AND f.deleted_at IS NULL
         AND (EXISTS (SELECT 1 FROM business_operation_documents d WHERE d.operation_id = $2 AND d.account_id = $1 AND d.file_id = f.id AND d.active)
@@ -62,21 +73,34 @@ async function ensembleDocuments(r: GroupingRunner, accountId: number, op: numbe
   return x.map((y) => {
     const prov = y.prov ?? null;
     const direct = !!prov && prov.some((p) => p === 'MANUAL_DIRECT' || p === 'AI_DIRECT');
-    return { id: Number(y.id), title: titreDoc(y), documentDate: y.d, typeLabel: documentTypeLabelOrNull(y.tc), link: prov === null ? null : direct ? 'DIRECT' as const : 'GROUP' as const };
+    return {
+      id: Number(y.id), title: titreDoc(y), documentDate: y.d, typeLabel: documentTypeLabelOrNull(y.tc), link: prov === null ? null : direct ? 'DIRECT' as const : 'GROUP' as const,
+      member: y.membre === true, shared: Number(y.ops ?? 0) > 1,
+    };
   });
 }
 
 /** Lot 86D : documents reliés à CET élément (agenda_file_links, documents du compte non supprimés), avec la nature du lien. */
 async function itemDocuments(r: GroupingRunner, accountId: number, itemId: number): Promise<GroupingDocumentRef[]> {
-  const x = await r.q<{ id: number; retained_title: string | null; original_filename: string | null; filename: string | null; s3_key: string | null; public_id: string | null; d: string | null; tc: string | null; prov: string[] | null }>(
-    `SELECT f.id, f.retained_title, f.web_link_title, f.original_filename, f.filename, f.s3_key, f.public_id::text AS public_id, f.document_date::text AS d, f.document_type_code AS tc, l.provenances AS prov
+  const x = await r.q<{ id: number; retained_title: string | null; original_filename: string | null; filename: string | null; s3_key: string | null; public_id: string | null; d: string | null; tc: string | null; prov: string[] | null; ops: number | null; membre: boolean | null }>(
+    `SELECT f.id, f.retained_title, f.web_link_title, f.original_filename, f.filename, f.s3_key, f.public_id::text AS public_id, f.document_date::text AS d, f.document_type_code AS tc, l.provenances AS prov,
+            ${OPS_DU_DOCUMENT_SQL} AS ops,
+            EXISTS (SELECT 1 FROM business_operation_agenda_links g
+                      JOIN business_operations go ON go.id = g.operation_id AND go.account_id = g.account_id
+                           AND go.invalidated_at IS NULL AND go.merged_into_operation_id IS NULL
+                      JOIN business_operation_documents gd ON gd.account_id = g.account_id AND gd.operation_id = g.operation_id
+                           AND gd.file_id = f.id AND gd.active
+                     WHERE g.account_id = $1 AND g.agenda_item_id = $2 AND g.state = 'ACTIVE') AS membre
        FROM agenda_file_links l JOIN asset_files f ON f.id = l.asset_file_id AND f.account_id = $1 AND f.deleted_at IS NULL
       WHERE l.agenda_item_id = $2
       ORDER BY f.document_date DESC NULLS LAST, f.id`, [accountId, itemId]);
   return x.map((y) => {
     const prov = y.prov ?? [];
     const direct = prov.length === 0 || prov.some((p) => p === 'MANUAL_DIRECT' || p === 'AI_DIRECT');
-    return { id: Number(y.id), title: titreDoc(y), documentDate: y.d, typeLabel: documentTypeLabelOrNull(y.tc), link: direct ? 'DIRECT' as const : 'GROUP' as const };
+    return {
+      id: Number(y.id), title: titreDoc(y), documentDate: y.d, typeLabel: documentTypeLabelOrNull(y.tc), link: direct ? 'DIRECT' as const : 'GROUP' as const,
+      member: y.membre === true, shared: Number(y.ops ?? 0) > 1,
+    };
   });
 }
 
@@ -99,6 +123,32 @@ async function ensembleTargets(r: GroupingRunner, accountId: number, op: number)
   };
 }
 
+/**
+ * Carte #806 (volet B §7) — opérations ACTIVES associées à chacune des opérations `ids` du compte (relation active
+ * du graphe, quel que soit son sens). Libellé utilisateur existant (`referenceEventLabel`). Lecture seule.
+ */
+async function associatedOperations(r: GroupingRunner, accountId: number, ids: readonly number[]): Promise<Map<number, Array<{ id: number; label: string }>>> {
+  const out = new Map<number, Array<{ id: number; label: string }>>();
+  if (!ids.length) return out;
+  const x = await r.q<{ op: string; id: string; type_code: string | null; technical_label: string | null; provider: string | null }>(
+    `SELECT CASE WHEN rel.from_operation_id = ANY($2::bigint[]) THEN rel.from_operation_id ELSE rel.to_operation_id END AS op,
+            o.id, o.type_code, o.technical_label, o.provider
+       FROM business_operation_relations rel
+       JOIN business_operations o ON o.account_id = rel.account_id AND o.invalidated_at IS NULL AND o.merged_into_operation_id IS NULL
+        AND o.id = CASE WHEN rel.from_operation_id = ANY($2::bigint[]) THEN rel.to_operation_id ELSE rel.from_operation_id END
+      WHERE rel.account_id = $1 AND rel.state = 'ACTIVE'
+        AND (rel.from_operation_id = ANY($2::bigint[]) OR rel.to_operation_id = ANY($2::bigint[]))
+      ORDER BY o.id`, [accountId, intArray([...ids])]);
+  const { referenceEventLabel } = await import('@/services/documents/business-period-surfaces');
+  for (const y of x) {
+    const op = Number(y.op);
+    const liste = out.get(op) ?? [];
+    if (!liste.some((a) => a.id === Number(y.id))) liste.push({ id: Number(y.id), label: referenceEventLabel({ typeCode: y.type_code, technicalLabel: y.technical_label, provider: y.provider }) });
+    out.set(op, liste);
+  }
+  return out;
+}
+
 async function withdrawn(r: GroupingRunner, accountId: number, op: number): Promise<boolean> {
   const [x] = await r.q(`SELECT 1 FROM business_operation_match_decisions WHERE account_id = $1 AND candidate_operation_id = $2
                            AND source_kind = 'PRINCIPAL' AND decision = 'REJECTED' AND active LIMIT 1`, [accountId, op]);
@@ -115,7 +165,13 @@ export async function getAgendaGroupingView(accountId: number, itemId: number, r
   const linkedDocuments = await itemDocuments(r, accountId, itemId);
   // #744 lot C : événements de référence de l'élément, lus dans le graphe canonique (N↔N, sans rôle).
   const { readAgendaItemsReferenceEvents } = await import('../graph/read');
-  const referenceEvents = ((await readAgendaItemsReferenceEvents(accountId, [itemId], r)).get(itemId) ?? []).map((e) => ({ id: e.operationId, label: e.label }));
+  const propres = ((await readAgendaItemsReferenceEvents(accountId, [itemId], r)).get(itemId) ?? []).map((e) => ({ id: e.operationId, label: e.label }));
+  // Carte #806 (volet B §7) : opérations ASSOCIÉES à chacune (relation active du graphe, lue dans les deux sens).
+  const associees = await associatedOperations(r, accountId, propres.map((e) => e.id));
+  const referenceEvents = propres.map((e) => {
+    const a = (associees.get(e.id) ?? []).filter((x) => !propres.some((p) => p.id === x.id));
+    return a.length ? { ...e, associated: a } : e;
+  });
   if (it.op === null) return { itemId, role: 'NONE', main: null, mainWithdrawn: false, ensemble: null, counts: null, linkedDocuments, referenceEvents };
   const op = it.op;
   const items = await ensembleItems(r, accountId, op, itemId);
@@ -226,14 +282,26 @@ interface DocumentAgendaLinkView {
   viaGroup: boolean;
   /** L'élément est l'événement de référence de son ensemble. */
   isMain: boolean;
+  /**
+   * Carte #806, volet B §7 : l'élément n'appartient à AUCUNE des opérations actives du document — le lien est
+   * direct, hors opération (le tiroir du document le dit, et le lien se gère seul).
+   */
+  outsideOperation: boolean;
 }
 
 /** Nature des liens d'un document vers les éléments d'agenda (DocumentDrawer, §14.4). `null` : document absent du compte. */
 export async function getDocumentAgendaLinks(accountId: number, fileId: number, r: GroupingRunner = drizzleRunner(db)): Promise<DocumentAgendaLinkView[] | null> {
   const [f] = await r.q(`SELECT 1 FROM asset_files WHERE id = $1 AND account_id = $2 AND deleted_at IS NULL`, [fileId, accountId]);
   if (!f) return null;
-  const x = await r.q<{ id: number; prov: string[] | null; fact: string | null }>(
-    `SELECT i.id, l.provenances AS prov, g.fact_key AS fact FROM agenda_file_links l
+  const x = await r.q<{ id: number; prov: string[] | null; fact: string | null; dans_operation: boolean | null }>(
+    `SELECT i.id, l.provenances AS prov, g.fact_key AS fact,
+            EXISTS (SELECT 1 FROM business_operation_agenda_links g2
+                      JOIN business_operations o2 ON o2.id = g2.operation_id AND o2.account_id = g2.account_id
+                           AND o2.invalidated_at IS NULL AND o2.merged_into_operation_id IS NULL
+                      JOIN business_operation_documents d2 ON d2.account_id = g2.account_id AND d2.operation_id = g2.operation_id
+                           AND d2.file_id = l.asset_file_id AND d2.active
+                     WHERE g2.account_id = i.account_id AND g2.agenda_item_id = i.id AND g2.state = 'ACTIVE') AS dans_operation
+       FROM agenda_file_links l
        JOIN agenda_items i ON i.id = l.agenda_item_id AND i.account_id = $2
        LEFT JOIN business_operation_agenda_links g ON g.account_id = i.account_id AND g.operation_id = i.business_operation_id
               AND g.agenda_item_id = i.id AND g.state = 'ACTIVE'
@@ -245,6 +313,7 @@ export async function getDocumentAgendaLinks(accountId: number, fileId: number, 
       direct: prov.includes('MANUAL_DIRECT') || prov.includes('AI_DIRECT') || prov.length === 0,
       viaGroup: prov.includes('OPERATION_PRINCIPAL'),
       isMain: y.fact !== null,
+      outsideOperation: y.dans_operation !== true,
     };
   });
 }
