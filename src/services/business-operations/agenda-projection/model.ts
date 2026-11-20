@@ -16,7 +16,12 @@
  *                            date de réalisation, aucune date n'est inventée
  *                            (F-140) : l'événement lié est seulement marqué
  *   CLAIM REALIZED           realized_date → historique « sinistre »
- *   ACQUISITION REALIZED     realized_date → historique d'entrée en possession
+ *   ACQUISITION REALIZED     realized_date → historique d'entrée en possession,
+ *                            intitulé DESCRIPTIF (« Achat Polisport groovy
+ *                            coussin gris », jamais « Achat » nu) — SAUF si
+ *                            la seule preuve est une COMMANDE (carte #813) :
+ *                            un bon de commande, même payé, ne crée aucun
+ *                            événement « Achat », daté ou non
  *   DISPOSAL REALIZED        realized_date → historique de sortie
  *   CONTRACT                 seulement l'échéance explicite (fin du contrat,
  *                            type « contrat » du domaine Agenda) et
@@ -82,6 +87,7 @@ import { natureTokens } from '../consolidation/matching';
 import type { AgendaEventNature } from '@/services/agenda/agenda-functional-key';
 import type { BusinessOperationStatus, BusinessOperationTypeCode } from '../model';
 import { factKeyOf, isDurableRelation, isGlobalEventFact } from '../grouping/model';
+import { acquisitionEventTitle } from '@/lib/reference-events/operation-title';
 
 /** Valeur de `agenda_items.projection_origin` d'un événement GÉNÉRÉ (0318). */
 export const PROJECTION_ORIGIN = 'OPERATION';
@@ -128,6 +134,15 @@ export interface OperationSnapshot {
   claimHistoryEventId: number | null;
   /** DISPOSAL : vente ou transmission (statut du bien). */
   disposalKind: 'SALE' | 'TRANSMISSION' | null;
+  /**
+   * Carte #813 (D) : TOUTES les preuves actives de l'Opération sont des pièces de COMMANDE ou des devis
+   * (source documentaire de rôle ORDER / QUOTE, ou document classé bon de commande au référentiel). Une
+   * commande prouve la commande, jamais la réalisation : aucun événement « Achat » n'en est projeté.
+   * Absent (appelants antérieurs, tests) : non.
+   */
+  orderOnlyEvidence?: boolean;
+  /** Carte #813 (A) : noms des biens liés (ordre des identifiants) — dernier repli du titre d'un achat légitime. */
+  assetNames?: string[];
   /**
    * Lot 76H : documents dont T3 a consolidé TOUTE la preuve d'intervention
    * dans cette Opération — source DOCUMENT active de cette seule Opération
@@ -234,7 +249,9 @@ export type T4RepresentationRole = 'PRINCIPAL' | 'STEP' | 'INDEPENDENT' | 'DUPLI
 // ── Projection attendue ────────────────────────────────────────────────────
 
 type NoProjectionReason =
-  | 'INACTIVE' | 'TYPE_NOT_PROJECTED' | 'NO_ASSET' | 'NO_DATE' | 'STATUS_NOT_PROJECTED' | 'CANCELLED' | 'EQUIVALENT_EXISTS';
+  | 'INACTIVE' | 'TYPE_NOT_PROJECTED' | 'NO_ASSET' | 'NO_DATE' | 'STATUS_NOT_PROJECTED' | 'CANCELLED' | 'EQUIVALENT_EXISTS'
+  /** Carte #813 (D) : achat dont la seule preuve est une commande — aucun événement d'Agenda. */
+  | 'ORDER_ONLY_EVIDENCE';
 
 export interface DesiredProjection {
   /** Clé de projection (`projection_key` des suppressions). */
@@ -371,7 +388,15 @@ export function decideProjection(op: OperationSnapshot, today: string): Projecti
     case 'DISPOSAL': {
       if (op.status !== 'REALIZED') return { kind: 'NONE', reason: 'STATUS_NOT_PROJECTED', keepLinks: true };
       const acq = op.typeCode === 'ACQUISITION';
-      const title = acq ? 'Achat' : op.disposalKind === 'TRANSMISSION' ? 'Transmission' : 'Vente';
+      // Carte #813 (D) — décision centrale : un bon de commande SEUL ne crée aucun événement « Achat », daté
+      // ou non, quel que soit le statut enregistré (commande payée, statut antérieur à la correction T3). Une
+      // projection intacte déjà créée est retirée par le plan (trace restaurable) ; un élément touché par
+      // l'utilisateur reste, lié. Une date distincte et explicite (livraison, retrait) relève des événements
+      // que T4 crée depuis le document, jamais d'un « Achat » par défaut.
+      if (acq && op.orderOnlyEvidence === true) return { kind: 'NONE', reason: 'ORDER_ONLY_EVIDENCE', keepLinks: true };
+      // Carte #813 (A) — règle remplacée : un achat légitime ne s'appelle plus « Achat » nu.
+      const title = acq ? acquisitionEventTitle({ label, provider, assetNames: op.assetNames })
+        : op.disposalKind === 'TRANSMISSION' ? 'Transmission' : 'Vente';
       return { kind: 'PROJECT', desired: { key, nature: 'HISTORICAL', businessType: acq ? 'purchase' : 'sale', date: realise, title, category: 'information', target: 'REALIZED', creatable: true } };
     }
     case 'CONTRACT': {

@@ -57,6 +57,7 @@
  */
 import { currenciesNextToAmount, detectDocumentCurrency, isCurrencyEstablished, UNDETERMINED_CURRENCY } from '@/lib/document-currency';
 import { planDocumentAdjustments } from '@/services/business-operations/finance/commercial-adjustments';
+import { isOrderEvidenceWithoutRealization } from '@/services/canonical/registry/order-evidence';
 import { factFingerprint } from '../source-units/merge';
 import { plat } from '../source-units/text';
 import {
@@ -248,6 +249,12 @@ export interface CandidateGateContext {
   hasExploitableContent: boolean;
   /** Type documentaire V2 retenu (`documentTypeCode`), sinon null. */
   documentTypeCode: string | null;
+  /**
+   * Carte #813 : type canonique de la classification (`canonicalType`, ex.
+   * « BON_COMMANDE ») quand le Type V2 manque — lu SEULEMENT pour reconnaître
+   * une pièce de commande (`order-evidence.ts`). Absent : Type V2 seul.
+   */
+  canonicalType?: string | null;
   /** Identifiants vérifiés en base pour le compte (U9). */
   verifiedIds: { ASSET: ReadonlySet<number>; EQUIPMENT: ReadonlySet<number>; ROOM: ReadonlySet<number> };
   capabilities: { rooms: boolean; equipments: boolean };
@@ -339,6 +346,15 @@ export function gateOperationCandidates(
     // contre-valeur EUR seulement si elle est écrite.
     if (ctx.currencyEvidence) for (const h of c.financialHints) c.adjustments.push(...establishHintCurrency(h, ctx.currencyEvidence));
     if ((role === 'QUOTE' || role === 'ORDER') && c.statusHint === 'REALIZED') { c.statusHint = 'ENVISAGED'; c.adjustments.push('QUOTE_NOT_REALIZED'); }
+    // Carte #813 (C, D) : un ACHAT lu sur un document CLASSÉ pièce de commande (référentiel `order-evidence.ts`) n'est
+    // pas « réalisé » du seul fait que le modèle l'a rendu avec un rôle absent, « facture » ou « autre preuve » :
+    // une commande prouve la commande. Le rôle et les montants proposés ne sont PAS modifiés (coût de possession
+    // inchangé, lot 109D) ; un paiement écrit sur le document reste la preuve existante de la commande payée.
+    if (c.typeHint === 'ACQUISITION' && c.statusHint === 'REALIZED'
+      && isOrderEvidenceWithoutRealization(role, ctx.documentTypeCode ?? ctx.canonicalType ?? null, c.financialHints.some((h) => h.role === 'PAYMENT'))) {
+      c.statusHint = 'ENVISAGED';
+      c.adjustments.push('ORDER_DOCUMENT_NOT_REALIZED');
+    }
 
     // Cibles : monde fermé (U9) et capacités du compte (U7).
     c.targetHints = c.targetHints.flatMap((t) => {

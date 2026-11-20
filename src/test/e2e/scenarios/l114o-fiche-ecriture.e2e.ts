@@ -335,10 +335,11 @@ scenario('L114OW', 'Opérations / Agenda CDC V2.0 — travaux D : gestes d’éc
     expect(finance.status, JSON.stringify(finance.body)).toBe(200);
     expect(finance.body).toMatchObject({ ok: true, changed: true, message: REFERENCE_EVENT_SUCCESS.associate });
     expect((await page(achat)).fiche!.relations).toEqual([{ operationId: pret, label: 'Financement — Prêt immobilier', nature: 'FINANCING', direction: 'INCOMING' }]);
-    expect((await page(pret)).fiche!.relations).toEqual([{ operationId: achat, label: 'Achat — Achat de la maison', nature: 'FINANCING', direction: 'OUTGOING' }]);
+    // Règle remplacée (carte #813) : un achat dont l'intitulé dit déjà « Achat … » n'est plus rendu « Achat — Achat … ».
+    expect((await page(pret)).fiche!.relations).toEqual([{ operationId: achat, label: 'Achat de la maison', nature: 'FINANCING', direction: 'OUTGOING' }]);
     // « Associé à » (défaut, sans sens).
     expect((await ecrire('POST', achat, 'associations', { body: { otherId: travaux } })).body).toMatchObject({ ok: true, changed: true });
-    expect((await page(travaux)).fiche!.relations).toEqual([{ operationId: achat, label: 'Achat — Achat de la maison', nature: 'ASSOCIATED', direction: 'UNDIRECTED' }]);
+    expect((await page(travaux)).fiche!.relations).toEqual([{ operationId: achat, label: 'Achat de la maison', nature: 'ASSOCIATED', direction: 'UNDIRECTED' }]);
     // Ni fusion, ni montant : les trois événements de référence existent toujours, distincts et actifs.
     expect(await sql<Json[]>`SELECT count(*)::int AS n FROM business_operations WHERE account_id = ${compte.id} AND invalidated_at IS NULL AND merged_into_operation_id IS NULL`).toEqual([{ n: 3 }]);
 

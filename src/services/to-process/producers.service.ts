@@ -231,10 +231,17 @@ export function agendaDateAdmissibility(f: AgendaDateFacts, now: Date = new Date
  *   · FAIT établi par les données — nature HISTORICAL du registre (achat,
  *     sinistre, vente…) ou événement PRINCIPAL d'un événement de référence
  *     (lots 83A / 85E) : il n'y a pas d'ambiguïté sur sa réalité, seule la
- *     date manque — question de date antérieure, inchangée.
+ *     date manque — question de date.
+ * Carte #813 (E) — règle remplacée : un fait HISTORIQUE a déjà eu lieu, la
+ * question est posée au passé (« a-t-il eu lieu ») et non plus au présent ;
+ * le présent reste pour l'événement principal qui n'est pas un fait passé
+ * (échéance, intervention prévue). Cette formulation ne justifie aucune
+ * carte : un achat dont la seule preuve est une commande n'a ni événement
+ * ni question (`agenda-projection/model.ts`). Texte à valider par le PO.
  */
 export function agendaDateQuestion(f: { title: string; eventNature?: string | null; operationPrincipal?: boolean }): string {
-  return f.operationPrincipal || f.eventNature === 'HISTORICAL' ? `À quelle date « ${f.title} » a-t-il lieu ?` : SITUATION_QUESTION;
+  if (f.eventNature === 'HISTORICAL') return `À quelle date « ${f.title} » a-t-il eu lieu ?`;
+  return f.operationPrincipal ? `À quelle date « ${f.title} » a-t-il lieu ?` : SITUATION_QUESTION;
 }
 
 /** Lot 114V (#742) : motif (tracé) — situation de l'événement qualifiée, aucune date à réclamer. */

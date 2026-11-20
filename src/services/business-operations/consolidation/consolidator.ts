@@ -54,7 +54,7 @@ import { withBusinessOperationWrite } from '../write';
 import { NON_BUSINESS_DOCUMENT_TYPES } from '@/services/ai/source-analysis/operation-candidates/prepare';
 import { parseRelation, termQualificationOf, type DocumentRelation, type TermQualification } from '@/services/documents/business-periods/t1-v2';
 import {
-  buildCandidateIdentity, consolidateOperationState, hasRecurringPeriod, normalizeProvider,
+  buildCandidateIdentity, consolidateOperationState, sourceLabelOf, hasRecurringPeriod, normalizeProvider,
   type CandidateIdentity, type CandidateRecord, type SourceContribution,
 } from './model';
 import {
@@ -190,11 +190,23 @@ interface FileRow {
   termQualification?: TermQualification | null;
   /** Lot 115 (#791, E05) : relation DÉCLARÉE par le document (avenant, rectificatif, renouvellement), sinon null. */
   documentRelation?: DocumentRelation | null;
+  /** Carte #813 (C) : date du document (date de commande d'un bon de commande) — jamais une date prévue. */
+  documentDate?: string | null;
+  /**
+   * Carte #813 (A) : DÉSIGNATION retenue par le moteur de titrage documentaire (`asset_files.title_basis`,
+   * `document-title.service.ts`) — source du nom d'un achat. null : aucune désignation persistée.
+   */
+  designation?: { subject: string; otherArticles: boolean } | null;
 }
 
 async function loadFile(tx: DbTx, accountId: number, fileId: number): Promise<FileRow | null> {
-  const [f] = await rows<{ id: number; account_id: number; deleted: boolean; asset_id: number | null; document_type_code: string | null; amount_cents: number | string | null }>(tx, sql`
-    SELECT id, account_id, deleted_at IS NOT NULL AS deleted, COALESCE(asset_id, linked_asset_id) AS asset_id, document_type_code, amount_cents
+  const [f] = await rows<{ id: number; account_id: number; deleted: boolean; asset_id: number | null; document_type_code: string | null; amount_cents: number | string | null;
+    document_date: string | null; title_subject: string | null; title_other_subjects: boolean | null }>(tx, sql`
+    SELECT id, account_id, deleted_at IS NOT NULL AS deleted, COALESCE(asset_id, linked_asset_id) AS asset_id, document_type_code, amount_cents,
+           to_char(document_date, 'YYYY-MM-DD') AS document_date,
+           -- Carte #813 : désignation persistée par le moteur de titrage (lecture seule, aucune recomposition ici).
+           CASE WHEN jsonb_typeof(to_jsonb(asset_files) -> 'title_basis') = 'object' THEN NULLIF(btrim(to_jsonb(asset_files) -> 'title_basis' ->> 'subject'), '') END AS title_subject,
+           CASE WHEN jsonb_typeof(to_jsonb(asset_files) -> 'title_basis') = 'object' THEN (to_jsonb(asset_files) -> 'title_basis' ->> 'otherSubjects') = 'true' END AS title_other_subjects
       FROM asset_files WHERE id = ${fileId}`);
   if (!f || Number(f.account_id) !== accountId) return null;
   // Lot 113AA : faits de période T1 persistés (lecture seule, bornée) — qualification du sens des dates.
@@ -209,7 +221,9 @@ async function loadFile(tx: DbTx, accountId: number, fileId: number): Promise<Fi
   // Lot 115 (#791, E05) : relation déclarée par le document (même lecture, aucun accès de plus) — preuve d'un lien de révision.
   const documentRelation = parseRelation(qualif)?.relation ?? null;
   // Lot 109D : montant TTC du document (réconciliation des achats composés, `finance/commercial-adjustments`).
-  return { id: Number(f.id), accountId: Number(f.account_id), deleted: f.deleted, assetId: num(f.asset_id), documentTypeCode: f.document_type_code, amountCents: num(f.amount_cents), termQualification, documentRelation };
+  return { id: Number(f.id), accountId: Number(f.account_id), deleted: f.deleted, assetId: num(f.asset_id), documentTypeCode: f.document_type_code, amountCents: num(f.amount_cents), termQualification, documentRelation,
+    documentDate: f.document_date ?? null,
+    designation: f.title_subject ? { subject: f.title_subject, otherArticles: f.title_other_subjects === true } : null };
 }
 
 interface CandidateRow extends CandidateRecord {
@@ -279,7 +293,7 @@ export async function prepareOperationMatch(accountId: number, candidateId: numb
     if (!file || file.deleted || (file.documentTypeCode && NON_BUSINESS_DOCUMENT_TYPES.has(file.documentTypeCode))) return null;
     const ids = targetIdsOf([c], file.assetId);
     const actx = await loadAssetContext(tx, accountId, ids.assets, ids.equipments, ids.rooms);
-    const identity = buildCandidateIdentity(c, { fileAssetId: file.assetId, fileDocumentTypeCode: file.documentTypeCode, fileTermQualification: file.termQualification, fileDocumentRelation: file.documentRelation, liveAssetIds: actx.live, equipmentAssets: actx.equipments, roomAssets: actx.rooms, providerCanonical: actx.providers,
+    const identity = buildCandidateIdentity(c, { fileAssetId: file.assetId, fileDocumentTypeCode: file.documentTypeCode, fileDocumentDate: file.documentDate ?? null, fileDesignation: file.designation ?? null, fileTermQualification: file.termQualification, fileDocumentRelation: file.documentRelation, liveAssetIds: actx.live, equipmentAssets: actx.equipments, roomAssets: actx.rooms, providerCanonical: actx.providers,
       ...documentIdentityContext(file, await loadActiveCandidatesRead(tx, accountId, c.fileId), todayUtc(), actx) });
     // Lot 53 (D7) : le LOT courant de l'examen progressif (au plus 5 Opérations),
     // à défaut (trace antérieure au lot 53) les Opérations plausibles.
@@ -750,7 +764,7 @@ async function contributionOf(tx: DbTx, accountId: number, s: OpSource, agenda?:
   if (!c || c.confidence === 'conflictual') return null;
   const ids = targetIdsOf([c], file.assetId);
   const actx = await loadAssetContext(tx, accountId, ids.assets, ids.equipments, ids.rooms);
-  const identity = buildCandidateIdentity(c, { fileAssetId: file.assetId, fileDocumentTypeCode: file.documentTypeCode, fileTermQualification: file.termQualification, fileDocumentRelation: file.documentRelation, liveAssetIds: actx.live, equipmentAssets: actx.equipments, roomAssets: actx.rooms, providerCanonical: actx.providers,
+  const identity = buildCandidateIdentity(c, { fileAssetId: file.assetId, fileDocumentTypeCode: file.documentTypeCode, fileDocumentDate: file.documentDate ?? null, fileDesignation: file.designation ?? null, fileTermQualification: file.termQualification, fileDocumentRelation: file.documentRelation, liveAssetIds: actx.live, equipmentAssets: actx.equipments, roomAssets: actx.rooms, providerCanonical: actx.providers,
     ...documentIdentityContext(file, tousCandidats, agenda?.today ?? todayUtc(), actx) });
   // Lot 109D : candidat qui ne porte qu'une remise intégrée au net d'un autre achat du document — jamais une réalité
   // propre (faux avoir historique) : sa source est retirée (tracée), l'Opération n'est maintenue que par ses autres preuves.
@@ -938,10 +952,23 @@ export async function reconsolidateOperation(
   if (retiree && op.provider !== null && !tiersPorte(op.provider) && !retiree.keep.has('provider') && state.provider !== op.provider) {
     attrs.provider = state.provider;
   }
-  const libelles = contributions.filter((c) => !c.identity.agenda && !c.identity.structured).map((c) => c.identity.summary.slice(0, 200)).filter((x) => !!x);
+  // Carte #813 (A) : le libellé d'une source est le nom d'achat dérivé de la désignation de son justificatif
+  // quand il existe (`sourceLabelOf`), sinon le résumé du candidat (règle antérieure).
+  const documentaires = contributions.filter((c) => !c.identity.agenda && !c.identity.structured);
+  const libelles = documentaires.map((c) => sourceLabelOf(c.identity)).filter((x) => !!x);
+  const porteLibelle = (v: string) => contributions.some((c) => c.identity.summary.slice(0, 200) === v || sourceLabelOf(c.identity) === v);
   if (retiree && op.typeCode !== 'CLAIM' && op.technicalLabel !== null && !retiree.keep.has('label')
-    && !contributions.some((c) => c.identity.summary.slice(0, 200) === op.technicalLabel) && libelles.length && libelles[0] !== op.technicalLabel) {
+    && !porteLibelle(op.technicalLabel) && libelles.length && libelles[0] !== op.technicalLabel) {
     attrs.technicalLabel = libelles[0];
+  }
+  // Carte #813 (A) : un ACHAT porte le nom dérivé de la DÉSIGNATION de son premier justificatif qui en a une
+  // (« Achat Polisport groovy coussin gris »). Jamais sur un intitulé que le système n'a pas posé lui-même :
+  // seul un libellé absent, ou encore égal au résumé / au nom d'une source ACTIVE (provenance 78A comprise),
+  // est remplacé — un intitulé corrigé par l'utilisateur ne correspond à aucune source et reste intact.
+  const designe = documentaires.map((c) => c.identity.designationLabel).find((x): x is string => !!x);
+  const libelleSysteme = op.technicalLabel === null || porteLibelle(op.technicalLabel);
+  if (fullyManaged && (state.type ?? op.typeCode) === 'ACQUISITION' && designe && libelleSysteme && !('technicalLabel' in attrs) && op.technicalLabel !== designe) {
+    attrs.technicalLabel = designe;
   }
   changes.track(await repo.updateAttributes(operationId, attrs, retiree && ('provider' in attrs || 'technicalLabel' in attrs) ? 'T3_SOURCE_WITHDRAWN_REEVALUATED' : 'T3_ATTRIBUTES_CONSOLIDATED'));
 
@@ -1015,7 +1042,7 @@ export async function reconsolidateOperation(
   // Lot 78A (§2C, §6) : provenance (source de chaque valeur, contradictions d'attributs) — trace technique.
   const apres = await repo.load(operationId, { allowInactive: true });
   const label = apres.technicalLabel === null ? undefined
-    : contributions.find((c) => c.identity.summary.slice(0, 200) === apres.technicalLabel);
+    : contributions.find((c) => c.identity.summary.slice(0, 200) === apres.technicalLabel || sourceLabelOf(c.identity) === apres.technicalLabel);
   // Lot 113AQ (#750) : le relevé 78A est QUALIFIÉ (même attribut, même rôle, même fait) avant d'être persisté —
   // seules les lignes actives ou non vérifiables restent « contradictions » ; les autres faits restent consultables.
   const qualifiees = state.attributeConflicts.length
@@ -1688,7 +1715,7 @@ export async function previewSeriesGrouping(accountId: number, fileIds: readonly
       const tids = targetIdsOf(actifs, file.assetId);
       const actx = await loadAssetContext(tx, accountId, tids.assets, tids.equipments, tids.rooms);
       for (const c of actifs) {
-        const identity = buildCandidateIdentity(c, { fileAssetId: file.assetId, fileDocumentTypeCode: file.documentTypeCode, fileTermQualification: file.termQualification, fileDocumentRelation: file.documentRelation, liveAssetIds: actx.live, equipmentAssets: actx.equipments, roomAssets: actx.rooms, providerCanonical: actx.providers,
+        const identity = buildCandidateIdentity(c, { fileAssetId: file.assetId, fileDocumentTypeCode: file.documentTypeCode, fileDocumentDate: file.documentDate ?? null, fileDesignation: file.designation ?? null, fileTermQualification: file.termQualification, fileDocumentRelation: file.documentRelation, liveAssetIds: actx.live, equipmentAssets: actx.equipments, roomAssets: actx.rooms, providerCanonical: actx.providers,
           ...documentIdentityContext(file, actifs, todayUtc(), actx) });
         const memeSource = docSources.filter((s) => s.key === c.candidateKey && s.active && !s.opMerged && !s.opInvalidated);
         if (!memeSource.length) continue;
@@ -1799,7 +1826,7 @@ export async function previewOperationDuplicates(accountId: number, operationIds
         const docSources = await loadDocumentSources(tx, accountId, fileId);
         const tids = targetIdsOf([c], file.assetId);
         const actx = await loadAssetContext(tx, accountId, tids.assets, tids.equipments, tids.rooms);
-        const identity = buildCandidateIdentity(c, { fileAssetId: file.assetId, fileDocumentTypeCode: file.documentTypeCode, fileTermQualification: file.termQualification, fileDocumentRelation: file.documentRelation, liveAssetIds: actx.live, equipmentAssets: actx.equipments, roomAssets: actx.rooms, providerCanonical: actx.providers,
+        const identity = buildCandidateIdentity(c, { fileAssetId: file.assetId, fileDocumentTypeCode: file.documentTypeCode, fileDocumentDate: file.documentDate ?? null, fileDesignation: file.designation ?? null, fileTermQualification: file.termQualification, fileDocumentRelation: file.documentRelation, liveAssetIds: actx.live, equipmentAssets: actx.equipments, roomAssets: actx.rooms, providerCanonical: actx.providers,
           ...documentIdentityContext(file, candidatsDoc, todayUtc(), actx) });
         const memeSource = docSources.filter((s) => s.key === c.candidateKey && s.active && !s.opMerged && !s.opInvalidated);
         if (!memeSource.length) continue;
@@ -1993,7 +2020,7 @@ export async function consolidateDocument(accountId: number, fileId: number, opt
       cards.reviewedFiles.push(fileId);
       // Lot 78A (§2A) : identités de tous les candidats actifs du document, et
       // Opérations où chacun a déjà sa source (doublons d'un même document à la réanalyse).
-      const identites = new Map(actifs.map((c) => [c.id, buildCandidateIdentity(c, { fileAssetId: file?.assetId ?? null, fileDocumentTypeCode: file?.documentTypeCode ?? null, fileTermQualification: file?.termQualification ?? null, fileDocumentRelation: file?.documentRelation ?? null, liveAssetIds: actx.live, equipmentAssets: actx.equipments, roomAssets: actx.rooms, providerCanonical: actx.providers,
+      const identites = new Map(actifs.map((c) => [c.id, buildCandidateIdentity(c, { fileAssetId: file?.assetId ?? null, fileDocumentTypeCode: file?.documentTypeCode ?? null, fileDocumentDate: file?.documentDate ?? null, fileDesignation: file?.designation ?? null, fileTermQualification: file?.termQualification ?? null, fileDocumentRelation: file?.documentRelation ?? null, liveAssetIds: actx.live, equipmentAssets: actx.equipments, roomAssets: actx.rooms, providerCanonical: actx.providers,
         ...documentIdentityContext(file, actifs, today, actx) })]));
       const opsDuDocument = new Map<number, CandidateIdentity[]>();
       for (const s of docSources.filter((x) => x.active && !x.opMerged && !x.opInvalidated)) {
@@ -2118,7 +2145,8 @@ export async function consolidateDocument(accountId: number, fileId: number, opt
           const created = await repo.create({
             type: typeInput(s.type), status: s.status,
             plannedDate: s.plannedDate, startDate: s.startDate, realizedDate: s.realizedDate, endDate: s.endDate,
-            provider: s.provider, technicalLabel: identity.summary.slice(0, 200) || null,
+            // Carte #813 (A) : nom d'achat dérivé de la désignation du justificatif, sinon résumé du candidat.
+            provider: s.provider, technicalLabel: sourceLabelOf(identity) || null,
             source: { ...source, matchMethod: null, matchReason: d.reason },
             assets: s.assets.map((a) => ({ assetId: a.assetId, role: s.assets.length === 1 ? 'PRIMARY' : 'CONCERNED', authority: a.authority })),
             equipments: s.equipments.map((e) => ({ equipmentId: e.equipmentId, authority: 'DOCUMENT' as const })),

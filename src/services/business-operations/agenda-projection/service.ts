@@ -48,6 +48,7 @@ import {
 import type { AgendaEventNature } from '@/services/agenda/agenda-functional-key';
 import type { BusinessOperationStatus, BusinessOperationTypeCode } from '../model';
 import { factKeyOf, isGlobalEventFact } from '../grouping/model';
+import { orderDocumentTypeCodes } from '@/services/canonical/registry/order-evidence';
 
 type Row = Record<string, unknown>;
 interface Executor { execute: (q: SQL) => Promise<unknown> }
@@ -97,6 +98,26 @@ export const EXCLUSIVE_FILES_RAW = `
                                AND zs.source_entity_key = xs.source_entity_key AND zs.locator->>'candidateKey' = dc.candidate_key))))), '{}')
   ELSE '{}' END`;
 const EXCLUSIVE_FILES_SQL = sql.raw(EXCLUSIVE_FILES_RAW);
+/**
+ * Carte #813 : types documentaires de COMMANDE du référentiel (`order-evidence.ts`), en tableau SQL littéral.
+ * Constantes du code (codes en majuscules, chiffres et « _ » seulement) : aucune valeur d'utilisateur.
+ */
+const ORDER_TYPE_CODES_RAW = `ARRAY[${orderDocumentTypeCodes().map((c) => `'${c}'`).join(', ') || `''`}]::text[]`;
+/**
+ * Carte #813 (D) — expression SQL booléenne (alias `o` = `business_operations`) : TOUTES les preuves actives de
+ * l'Opération sont des pièces de commande ou des devis. UNE définition, lue par la projection et par la reprise
+ * du stock (`order-only-reprise.ts`).
+ */
+export const ORDER_ONLY_EVIDENCE_RAW = `
+  (EXISTS (SELECT 1 FROM business_operation_sources s WHERE s.operation_id = o.id AND s.account_id = o.account_id AND s.active
+            AND s.source_kind = 'DOCUMENT')
+   AND NOT EXISTS (
+     SELECT 1 FROM business_operation_sources s
+       LEFT JOIN asset_files sf ON s.source_kind = 'DOCUMENT' AND sf.id::text = s.source_entity_key AND sf.account_id = o.account_id
+      WHERE s.operation_id = o.id AND s.account_id = o.account_id AND s.active AND s.source_kind <> 'USER_ARBITRATION'
+        AND NOT (s.source_kind = 'DOCUMENT' AND (s.source_role IN ('ORDER', 'QUOTE')
+                 OR upper(COALESCE(sf.document_type_code, '')) = ANY(${ORDER_TYPE_CODES_RAW})))))`;
+const ORDER_ONLY_EVIDENCE_SQL = sql.raw(ORDER_ONLY_EVIDENCE_RAW);
 
 /** Pool de rapprochement borné par passage (charge). */
 const CANDIDATE_LIMIT = 2000;
@@ -235,6 +256,14 @@ async function loadOperationSnapshots(accountId: number, ids: readonly number[])
                      jsonb_array_elements(CASE WHEN jsonb_typeof(c->'values') = 'array' THEN c->'values' ELSE '[]'::jsonb END) v
                      WHERE c->>'field' = 'realizedDate' AND v->>'value' IS NOT NULL), '{}') AS realized_conflict,
            kd.history_event_id AS claim_history_event_id,
+           -- Carte #813 (D) : toutes les preuves ACTIVES sont des pièces de commande ou des devis (rôle de source
+           -- ORDER / QUOTE, ou document classé bon de commande au référentiel — rôle enregistré antérieur compris).
+           -- Toute autre source est une autre preuve : autre justificatif (facture, preuve de paiement…), fiche du
+           -- bien, élément d'Agenda ou déclaration de l'utilisateur. Une décision d'arbitrage éclaire sans prouver (C5).
+           ${ORDER_ONLY_EVIDENCE_SQL} AS order_only_evidence,
+           COALESCE((SELECT array_agg(a.name ORDER BY a.id) FROM business_operation_asset_links l
+                       JOIN assets a ON a.id = l.asset_id AND a.account_id = o.account_id AND a.deleted_at IS NULL
+                      WHERE l.operation_id = o.id AND l.active), '{}') AS asset_names,
            (SELECT a.status FROM business_operation_asset_links l JOIN assets a ON a.id = l.asset_id
              WHERE l.operation_id = o.id AND l.active ORDER BY (l.link_role = 'PRIMARY') DESC, l.asset_id LIMIT 1) AS primary_asset_status
       FROM business_operations o
@@ -261,6 +290,8 @@ async function loadOperationSnapshots(accountId: number, ids: readonly number[])
     disposalKind: x.primary_asset_status === 'TRANSMIS' ? 'TRANSMISSION' : 'SALE',
     exclusiveFileIds: nums(x.exclusive_file_ids).sort((a, b) => a - b),
     realizedDateConflict: Array.isArray(x.realized_conflict) ? (x.realized_conflict as unknown[]).map(String).sort() : [],
+    orderOnlyEvidence: x.order_only_evidence === true,
+    assetNames: Array.isArray(x.asset_names) ? (x.asset_names as unknown[]).filter((n): n is string => typeof n === 'string' && n.trim().length > 0) : [],
   }));
 }
 
@@ -581,7 +612,12 @@ async function applyAction(
       await garde('retrait');
       const { removeAgendaItemsTraced } = await import('@/services/agenda/agenda-removal-trace');
       const gone = await removeAgendaItemsTraced(pgClient, { accountId, ids: [a.itemId], reason: 'OPERATION_PROJECTION' });
-      if (gone.length) { res.removed++; res.changes++; }
+      if (gone.length) {
+        res.removed++; res.changes++;
+        // Carte #813 (E) : la carte de date « À traiter » de l'élément retiré est réévaluée tout de suite (elle se
+        // ferme : l'élément n'existe plus) — sans attendre le balayage horaire du producteur.
+        opts.dateCards.add(a.itemId);
+      }
       return null;
     }
     case 'DETACH': {

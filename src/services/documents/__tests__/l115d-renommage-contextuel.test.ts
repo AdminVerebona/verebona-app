@@ -162,7 +162,8 @@ describe('L115D-783-U-05 — reprise du stock des titres automatiques', () => {
   });
   it('version des règles relevée : le contrôle COH-DOC-TITLES reprend les titres SYSTÈME antérieurs', async () => {
     // Règle remplacée (carte #783) : version 3 (lot 87D) → 4.
-    expect(DOCUMENT_TITLE_RULE_VERSION).toBe(4);
+    // Règle remplacée (carte #813) : version 4 → 5 (titre « type + désignation » d'un bon de commande).
+    expect(DOCUMENT_TITLE_RULE_VERSION).toBe(5);
     const check = lire('src/services/coherence/registry/checks/document-titles.ts');
     expect(check).toContain("if (s.ruleVersion !== DOCUMENT_TITLE_RULE_VERSION) return { verdict: 'REPAIRABLE', anomaly: 'TITLE_RULES_OUTDATED' };");
     // Aucun titre utilisateur n'est proposé ni réécrit par la reprise.

@@ -23,7 +23,11 @@
  *     défaut, date prévue de l'intervention ;
  *   · CONTRAT : début initial fiable ; à défaut, première couverture connue —
  *     comme REPÈRE seulement : elle n'est jamais écrite comme prise d'effet ;
- *   · ACQUISITION : date réelle de l'achat (réalisation) ;
+ *   · ACQUISITION : date réelle de l'achat (réalisation) ; à défaut (carte
+ *     #813), DATE DE COMMANDE — date du premier bon de commande source, datée
+ *     et sourcée par ce justificatif. C'est un REPÈRE seulement : elle n'est
+ *     jamais écrite comme date de réalisation, de paiement ou de livraison,
+ *     ni comme date d'acquisition du bien, et ne crée aucun événement ;
  *   · autres types et type non qualifié : fait métier propre (réalisation,
  *     sinon début, sinon date prévue).
  *
@@ -41,7 +45,7 @@
  */
 
 /** Faits datés qui peuvent fonder le repère. */
-export const PRESENTATION_DATE_BASES = ['REALIZED', 'FIRST_QUOTE', 'START', 'FIRST_COVERAGE', 'PLANNED'] as const;
+export const PRESENTATION_DATE_BASES = ['REALIZED', 'FIRST_QUOTE', 'START', 'FIRST_COVERAGE', 'PLANNED', 'FIRST_ORDER'] as const;
 export type PresentationDateBasis = (typeof PRESENTATION_DATE_BASES)[number];
 
 /** Types pour lesquels le CDC §11 (ou cette carte) fixe un ordre propre ; les autres suivent `DEFAULT`. */
@@ -54,7 +58,7 @@ type PresentationRuleKey = 'INTERVENTION' | 'CONTRACT' | 'ACQUISITION' | 'DEFAUL
 export const PRESENTATION_DATE_RULES: Readonly<Record<PresentationRuleKey, readonly PresentationDateBasis[]>> = {
   INTERVENTION: ['REALIZED', 'FIRST_QUOTE', 'PLANNED'],
   CONTRACT: ['START', 'FIRST_COVERAGE'],
-  ACQUISITION: ['REALIZED'],
+  ACQUISITION: ['REALIZED', 'FIRST_ORDER'],
   DEFAULT: ['REALIZED', 'START', 'PLANNED'],
 };
 
@@ -79,6 +83,11 @@ export interface PresentationDateFacts {
   firstCoverageStart: string | null;
   /** Date prévue. */
   plannedDate: string | null;
+  /**
+   * Carte #813 : date de COMMANDE — date la plus ancienne des bons de commande (justificatifs sources de
+   * rôle « commande », ou classés bon de commande au référentiel, datés). Absente (appelant antérieur) : aucune.
+   */
+  firstOrderDate?: string | null;
 }
 
 /** Repère rendu : date et fondement, ou « sans date ». */
@@ -106,6 +115,7 @@ const FACT_OF: Readonly<Record<PresentationDateBasis, (f: PresentationDateFacts)
   START: (f) => f.startDate,
   FIRST_COVERAGE: (f) => f.firstCoverageStart,
   PLANNED: (f) => f.plannedDate,
+  FIRST_ORDER: (f) => f.firstOrderDate ?? null,
 };
 
 /** Date de présentation d'un événement de référence (pure ; ne dépend pas de la date du jour). */
@@ -150,4 +160,6 @@ export const PRESENTATION_BASIS_LABELS: Readonly<Record<PresentationDateBasis, s
   PLANNED: null,
   FIRST_QUOTE: 'Premier devis',
   FIRST_COVERAGE: 'Première couverture connue',
+  // Carte #813 (C) : la date du bon de commande est la date de COMMANDE (à valider par le PO).
+  FIRST_ORDER: 'Date de commande',
 };

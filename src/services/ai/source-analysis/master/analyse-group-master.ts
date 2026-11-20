@@ -151,6 +151,8 @@ export async function analyseGroupWithMaster(
   const gate = gateOperationCandidates(analysed.operationCandidates ?? [], {
     hasExploitableContent: a.hasExploitableContent,
     documentTypeCode: a.document.classification?.documentTypeCode ?? null,
+    // Carte #813 : type canonique (« BON_COMMANDE ») lu seulement pour reconnaître une pièce de commande.
+    canonicalType: a.document.classification?.canonicalType ?? null,
     verifiedIds: analysed.verifiedIds,
     capabilities: (() => {
       const caps = analysed.extraction?.capabilities ?? ctx.capabilities;

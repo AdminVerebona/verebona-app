@@ -47,6 +47,8 @@ import {
   type ReferenceKind, type SourceRole, REFERENCE_KINDS, SOURCE_ROLES,
 } from '../model';
 import { hintKey, planDocumentAdjustments } from '../finance/commercial-adjustments';
+import { isOrderDocumentType, isOrderEvidenceWithoutRealization } from '@/services/canonical/registry/order-evidence';
+import { acquisitionLabelFromDesignation } from '@/lib/reference-events/operation-title';
 
 // ── Entrées persistées ─────────────────────────────────────────────────────
 
@@ -113,6 +115,18 @@ interface IdentityContext {
    * de période de couverture (`coverage-document-types.ts`) ne date jamais la fin d'un contrat.
    */
   fileDocumentTypeCode?: string | null;
+  /**
+   * Carte #813 (C) : date du document (`asset_files.document_date`). Lue seulement pour une pièce de
+   * COMMANDE d'un achat : la date du bon est la date de commande — jamais une date prévue de
+   * réalisation, de paiement ou de livraison. Absente : aucune garde.
+   */
+  fileDocumentDate?: string | null;
+  /**
+   * Carte #813 (A) : désignation retenue par le moteur de titrage documentaire pour CE document
+   * (`asset_files.title_basis.subject`). Elle ne nomme un achat que si le document porte UN SEUL
+   * candidat établi (sinon elle ne désigne aucune de ses réalités en particulier). Absente : aucun nom dérivé.
+   */
+  fileDesignation?: { subject: string; otherArticles: boolean } | null;
   /**
    * Lot 113AA (#725, §3 T4) : SENS des dates du document qualifié par T1 (contrat
    * `t1-business-periods-v2`, faits `period.*` persistés). Absent ou non évalué :
@@ -215,6 +229,18 @@ export interface CandidateIdentity {
    * faits distincts.
    */
   documentRelation?: DocumentRelation;
+  /**
+   * Carte #813 (C) : achat lu sur une pièce de COMMANDE sans preuve de réalisation (`order-evidence.ts`) —
+   * la source ne prouve pas la réalisation ; dès qu'une AUTRE source la prouve (facture), son montant
+   * est celui d'une commande (prévisionnel) : la même dépense n'est jamais comptée deux fois.
+   */
+  orderWithoutRealization?: true;
+  /**
+   * Carte #813 (A) : NOM de l'achat dérivé de la désignation extraite du justificatif (« Achat Polisport
+   * groovy coussin gris ») — moteur de titrage existant, jamais un texte rédigé. Absent : le résumé du
+   * candidat reste le libellé (règle antérieure).
+   */
+  designationLabel?: string;
   /**
    * Lot 43 (O4) : identité d'une donnée STRUCTURÉE du bien (source
    * ASSET_DATA, `asset-data.ts`) et non d'un candidat T1 — sa nature et
@@ -343,6 +369,14 @@ const isRole = (v: unknown): v is SourceRole => typeof v === 'string' && (SOURCE
 const isRefKind = (v: unknown): v is ReferenceKind => typeof v === 'string' && (REFERENCE_KINDS as readonly string[]).includes(v);
 const dateOrNull = (v: unknown): string | null => (isIsoDate(v) ? v : null);
 
+/**
+ * Carte #813 (A) : libellé technique qu'une source donne à l'Opération (pur) — nom d'achat dérivé de la
+ * désignation du justificatif quand il existe, sinon le résumé du candidat (règle antérieure), borné.
+ */
+export function sourceLabelOf(id: Pick<CandidateIdentity, 'summary' | 'designationLabel'>): string {
+  return (id.designationLabel ?? id.summary).slice(0, 200);
+}
+
 /** Statut établi par une source : son indice, sinon déduit du rôle (devis / commande → prévu). */
 export function statusOfSource(statusHint: string | null, role: SourceRole | null): BusinessOperationStatus {
   if (isBusinessOperationStatus(statusHint)) {
@@ -397,13 +431,27 @@ export function buildCandidateIdentity(c: CandidateRecord, ctx: IdentityContext)
   const canon = brute !== null ? ctx.providerCanonical?.get(brute) ?? brute : null;
   const established = c.established && !ajuste.adjustmentOnly;
   const type = normalizeOperationTypeHint(c.typeHint);
-  const status = ajuste.paidOrder ? 'REALIZED' : statusOfSource(c.statusHint, role);
+  // Carte #813 (C, D) : un ACHAT lu sur un document classé pièce de commande (référentiel `order-evidence.ts`) n'est pas
+  // réalisé du seul fait du rôle persisté (absent, « facture », « autre preuve ») — commande seule ≠ réalisation. Vaut
+  // pour le stock, sans nouvelle analyse T1. Rôle et montants inchangés (coût de possession intact, lot 109D) ; la
+  // commande PAYÉE (paiement lu sur le document) garde la règle existante.
+  const commandeSansRealisation = type === 'ACQUISITION' && !ajuste.paidOrder
+    && isOrderEvidenceWithoutRealization(role, ctx.fileDocumentTypeCode, brutes.some((h) => h.role === 'PAYMENT'));
+  const statutSource = ajuste.paidOrder ? 'REALIZED' : statusOfSource(c.statusHint, role);
+  const status: BusinessOperationStatus = commandeSansRealisation && statutSource === 'REALIZED' ? 'ENVISAGED' : statutSource;
   // Lot 111S : facture d'achat de la cible prouvée par la fiche (preuve canonique de CE document) — voir le module.
   const corroboration = corroborateAcquisition({
     fileId: c.fileId, established, confidence: c.confidence, type, status, role, assetIds, equipmentIds,
     documentEstablished: (ctx.documentCandidates ?? [c]).filter((x) => x.established).length,
   }, ctx.acquisitionEvidence);
+  // Carte #813 (A) : nom d'un ACHAT depuis la désignation du justificatif, seulement si elle désigne sans
+  // ambiguïté CETTE réalité (un seul candidat établi dans le document).
+  const seulDuDocument = (ctx.documentCandidates ?? [c]).filter((x) => x.fileId === c.fileId && x.established).length <= 1;
+  const designationLabel = (corroboration?.type ?? type) === 'ACQUISITION' && ctx.fileDesignation && seulDuDocument
+    ? acquisitionLabelFromDesignation(ctx.fileDesignation.subject, { otherArticles: ctx.fileDesignation.otherArticles }) : null;
   return {
+    ...(designationLabel ? { designationLabel } : {}),
+    ...(commandeSansRealisation ? { orderWithoutRealization: true as const } : {}),
     candidateId: c.id,
     candidateKey: c.candidateKey,
     fileId: c.fileId,
@@ -424,7 +472,12 @@ export function buildCandidateIdentity(c: CandidateRecord, ctx: IdentityContext)
     ...(roomIds.length ? { roomIds } : {}),
     refs,
     dates: {
-      plannedDate: dateOrNull(t.plannedDate),
+      // Carte #813 (C) : sur une pièce de commande d'un ACHAT, une « date prévue » égale à la date du bon n'est que
+      // la date de commande recopiée — elle reste la date du document (repère « Date de commande »), jamais une
+      // date prévue. Une date DISTINCTE (livraison, retrait annoncés) est conservée.
+      plannedDate: (role === 'ORDER' || isOrderDocumentType(ctx.fileDocumentTypeCode)) && type === 'ACQUISITION'
+        && ctx.fileDocumentDate && dateOrNull(t.plannedDate) === ctx.fileDocumentDate
+        ? null : dateOrNull(t.plannedDate),
       startDate: dateOrNull(t.startDate),
       realizedDate: dateOrNull(t.realizedDate),
       endDate: dateOrNull(t.endDate),
@@ -1260,7 +1313,13 @@ export function consolidateOperationState(
   }
 
   const { components, conflicts: amountConflicts, uncertain } = consolidateComponentsDetailed(
-    srcs.map((s) => ({ sourceId: s.sourceId, components: componentsFromIdentity(s.identity) })), amountChoices);
+    // Carte #813 (C, F) : quand une autre source PROUVE la réalisation (facture concordante), le montant d'une
+    // pièce de commande restée « facture » dans le candidat est celui d'une commande — prévisionnel, comme pour
+    // un rôle ORDER (INV-013) : un seul coût réalisé, jamais deux fois la même dépense. Seule, elle est inchangée.
+    srcs.map((s) => ({
+      sourceId: s.sourceId,
+      components: componentsFromIdentity(realisation.length > 0 && s.identity.orderWithoutRealization ? { ...s.identity, role: 'ORDER' } : s.identity),
+    })), amountChoices);
 
   // Lot 53D (D9) : frais annexes d'un ACHAT (portée FEE) — isolés, jamais
   // additionnés d'office au prix d'achat (inclusion TCO : CDC TCO à venir).

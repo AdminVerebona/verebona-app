@@ -124,7 +124,8 @@ scenario('L85E', 'Acquisition réalisée sans date : enrichissement par la date 
     expect(autres).toEqual([]);
     expect(achat).toMatchObject({ op: o.id, role: 'PRINCIPAL', date: null, modified: false, proj: 'OPERATION' });
     expect(await cartesDate(achat.id)).toEqual([expect.objectContaining({ rule_code: 'DATA-AGENDA-DATE', action_kind: 'COMPLETE', resolu: false })]);
-    expect((await cartesDate(achat.id))[0].question).toMatch(/^À quelle date « .+ » a-t-il lieu \?$/);
+    // Règle remplacée (carte #813) : un fait historique a déjà eu lieu — question au passé.
+    expect((await cartesDate(achat.id))[0].question).toMatch(/^À quelle date « .+ » a-t-il eu lieu \?$/);
     return { compte, clio, op: o.id, achat };
   }
 

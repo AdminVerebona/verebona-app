@@ -69,8 +69,12 @@ describe('L114V-R — « À traiter » : qualification seulement quand elle est 
     expect(prod.agendaDateQuestion({ title: 'Entretien pompe à chaleur', eventNature: 'DEADLINE' })).toBe(SITUATION_QUESTION);
     expect(prod.agendaDateQuestion({ title: 'Entretien pompe à chaleur' })).not.toMatch(/quelle date/i);
     // Fait établi par les données (achat, événement principal d'un événement de référence) : seule la date manque.
-    expect(prod.agendaDateQuestion({ title: 'Achat Clio', eventNature: 'HISTORICAL' })).toBe('À quelle date « Achat Clio » a-t-il lieu ?');
-    expect(prod.agendaDateQuestion({ title: 'Achat Clio', operationPrincipal: true })).toBe('À quelle date « Achat Clio » a-t-il lieu ?');
+    // Règle remplacée (carte #813) : un fait HISTORIQUE a déjà eu lieu — la question est au passé (« a-t-il eu lieu »),
+    // plus au présent ; le présent reste pour l'événement principal qui n'est pas un fait passé.
+    expect(prod.agendaDateQuestion({ title: 'Achat Clio', eventNature: 'HISTORICAL' })).toBe('À quelle date « Achat Clio » a-t-il eu lieu ?');
+    expect(prod.agendaDateQuestion({ title: 'Achat Clio', eventNature: 'HISTORICAL', operationPrincipal: true })).toBe('À quelle date « Achat Clio » a-t-il eu lieu ?');
+    expect(prod.agendaDateQuestion({ title: 'Remplacement chaudière', operationPrincipal: true })).toBe('À quelle date « Remplacement chaudière » a-t-il lieu ?');
+    expect(prod.agendaDateQuestion({ title: 'Achat Clio', eventNature: 'HISTORICAL' })).not.toMatch(/a-t-il lieu/);
   });
 
   it('L114V-R7 — pertinence : une carte de date n’a plus d’intérêt dès que la situation est qualifiée (création, conservation, campagne) ; la date retrouvée à la source n’est jamais écrite sur un élément qualifié', () => {

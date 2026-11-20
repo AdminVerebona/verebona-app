@@ -33,9 +33,17 @@ import {
   type PresentationDate, type PresentationDateBasis, type PresentationDateFacts,
 } from '@/lib/reference-events/presentation-date';
 
+import { orderDocumentTypeCodes } from '@/services/canonical/registry/order-evidence';
+
 type Row = Record<string, unknown>;
 /** Exécuteur SQL paramétré ($1…). */
 export type PresentationQuery = (sql: string, params?: unknown[]) => Promise<Row[]>;
+
+/**
+ * Carte #813 : types documentaires de COMMANDE du référentiel (`order-evidence.ts`), en tableau SQL littéral.
+ * Constantes du code (majuscules, chiffres, « _ ») : aucune valeur d'utilisateur n'entre dans le SQL.
+ */
+const ORDER_TYPE_CODES_SQL = `ARRAY[${orderDocumentTypeCodes().map((c) => `'${c}'`).join(', ') || `''`}]::text[]`;
 
 const JOUR_COMPLET = `'^[0-9]{4}-(0[1-9]|1[0-2])-(0[1-9]|[12][0-9]|3[01])$'`;
 
@@ -68,12 +76,21 @@ export function presentationFactsSql(o: string, acc = '$1'): Readonly<Record<Pre
         AND pdp.status = 'ACTIVE' AND pdp.period_kind = 'COVERAGE'
       WHERE pdd.account_id = ${acc} AND pdd.operation_id = ${o}.id AND pdd.active)`,
     PLANNED: `${o}.planned_date`,
+    // Carte #813 (C) : date de COMMANDE — plus ancienne « date du document » des bons de commande SOURCES ACTIFS
+    // (rôle « commande », ou document classé bon de commande au référentiel quand le rôle enregistré est antérieur).
+    FIRST_ORDER: `(SELECT min(pof.document_date) FROM business_operation_sources pos
+       JOIN asset_files pof ON pof.id = CASE WHEN pos.source_entity_key ~ '^[0-9]{1,9}$' THEN pos.source_entity_key::int END
+        AND pof.account_id = ${acc} AND pof.deleted_at IS NULL
+      WHERE pos.account_id = ${acc} AND pos.operation_id = ${o}.id AND pos.active
+        AND pos.source_kind = 'DOCUMENT'
+        AND (pos.source_role = 'ORDER' OR upper(COALESCE(pof.document_type_code, '')) = ANY(${ORDER_TYPE_CODES_SQL})))`,
   };
 }
 
 /** Colonnes de faits d'une ligne (`pd_type` et `pd_<fait>` en AAAA-MM-JJ). */
 const COLONNE: Readonly<Record<PresentationDateBasis, string>> = {
   REALIZED: 'pd_realized', FIRST_QUOTE: 'pd_first_quote', START: 'pd_start', FIRST_COVERAGE: 'pd_first_coverage', PLANNED: 'pd_planned',
+  FIRST_ORDER: 'pd_first_order',
 };
 
 /**
@@ -94,6 +111,7 @@ export function presentationFactsOfRow(r: Row): PresentationDateFacts {
     realizedDate: presentationDay(r.pd_realized), firstQuoteDate: presentationDay(r.pd_first_quote),
     startDate: presentationDay(r.pd_start), firstCoverageStart: presentationDay(r.pd_first_coverage),
     plannedDate: presentationDay(r.pd_planned),
+    firstOrderDate: presentationDay(r.pd_first_order),
   };
 }
 

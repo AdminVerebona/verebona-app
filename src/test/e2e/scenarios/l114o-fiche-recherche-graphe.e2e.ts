@@ -158,7 +158,8 @@ scenario('L114OD', 'Opérations / Agenda CDC V2.0 — travaux D : page entière 
     expect(p.status).toBe(200);
     const fiche = p.fiche!;
     expect(fiche).toMatchObject({
-      id: achat, redirectedFrom: null, title: 'Achat — Achat de la maison', ownLabel: 'Achat de la maison', typeCode: 'ACQUISITION',
+      // Règle remplacée (carte #813) : un achat dont l'intitulé dit déjà « Achat … » n'est plus rendu « Achat — Achat … ».
+      id: achat, redirectedFrom: null, title: 'Achat de la maison', ownLabel: 'Achat de la maison', typeCode: 'ACQUISITION',
       undated: false, dates: [{ role: 'REALIZED', date: '2021-03-15' }],
       assets: [{ id: bien.id, name: 'Maison de Lyon' }], suppliers: [{ id: notaire, name: 'Étude Dupont' }],
     });
@@ -174,7 +175,7 @@ scenario('L114OD', 'Opérations / Agenda CDC V2.0 — travaux D : page entière 
     expect(fiche.relations).toEqual([{ operationId: pret, label: 'Financement — Prêt immobilier', nature: 'FINANCING', direction: 'INCOMING' }]);
     const cote = (await page(pret)).fiche!;
     expect(cote).toMatchObject({ id: pret, title: 'Financement — Prêt immobilier', undated: true, dates: [], assets: [], documents: [] });
-    expect(cote.relations).toEqual([{ operationId: achat, label: 'Achat — Achat de la maison', nature: 'FINANCING', direction: 'OUTGOING' }]);
+    expect(cote.relations).toEqual([{ operationId: achat, label: 'Achat de la maison', nature: 'FINANCING', direction: 'OUTGOING' }]);
     expect(cote.agendaItems).toEqual([{ id: echeance, title: 'Fin du prêt', date: '2041-03-15', shared: true }]);
     // Aucun état interne servi (« REALIZED » n'apparaît que comme RÔLE d'une date propre) ; lecture sans écriture.
     expect(JSON.stringify([fiche, cote])).not.toMatch(/ENVISAGED|CANCELLED|"status"|Opération/);

@@ -395,6 +395,8 @@ export async function planTitleForDocument(fileId: number, accountId: number, in
   plan: TitlePlan; fingerprint: string; basis: BillingBasis;
   /** Carte #783 : nombre de périodes de faits ÉCARTÉES parce que leur nature ne nomme pas le document. */
   excludedPeriods: number;
+  /** Carte #813 : fournisseur et bien du contexte — discriminants qu'un titre « type + désignation » ne porte plus. */
+  discriminants: string[];
 }> {
   const sqlExcl = await sqlClient();
   const { excluded } = await readTitleFactPeriods(sqlExcl, fileId, accountId, 5);
@@ -409,7 +411,23 @@ export async function planTitleForDocument(fileId: number, accountId: number, in
     const similaires = await loadSimilarTitles(fileId, accountId, plan.title);
     if (similaires.length) plan = planBusinessTitle(inputs.modelTitle, { ...ctx, similarTitles: similaires });
   }
-  return { plan, fingerprint: titleContextFingerprint(plan), basis: billing, excludedPeriods: excluded };
+  const discriminants = [ctx.supplier, ctx.asset?.name].filter((x): x is string => typeof x === 'string' && x.trim().length > 0);
+  return { plan, fingerprint: titleContextFingerprint(plan), basis: billing, excludedPeriods: excluded, discriminants };
+}
+
+/**
+ * Carte #813 — le titre SYSTÈME en place est-il le titre « type + désignation » d'aujourd'hui suivi
+ * SEULEMENT de discriminants que ce titre ne porte plus par défaut (date du bon, fournisseur, bien) ?
+ * Pure. « Bon de commande Polisport groovy coussin gris Alltricks — 12 novembre 2026 » → oui ;
+ * un titre qui dit autre chose (autre sujet, précision inconnue) → non : il n'est pas touché.
+ */
+export function carriesOnlyDroppedDiscriminants(current: string | null | undefined, candidate: string, discriminants: readonly string[]): boolean {
+  const cur = normalizeTitle(current);
+  const cand = normalizeTitle(candidate);
+  if (!cur || !cand || cur === cand || !cur.startsWith(`${cand} `)) return false;
+  const admis = new Set(discriminants.flatMap((d) => normalizeTitle(d).split(' ')).filter(Boolean));
+  const MOIS_TITRE = /^(janvier|fevrier|mars|avril|mai|juin|juillet|aout|septembre|octobre|novembre|decembre|er)$/;
+  return cur.slice(cand.length + 1).split(' ').every((m) => /^\d+(er)?$/.test(m) || MOIS_TITRE.test(m) || admis.has(m));
 }
 
 // ── Lot 87D : données de nommage persistées ─────────────────────────────────
@@ -530,6 +548,11 @@ export function titleBasisRecord(plan: TitlePlan, basis: BillingBasis, supplier:
   return {
     v: 2,
     nature: plan.nature,
+    // Carte #813 : DÉSIGNATION retenue par le moteur (sujet du titre ou d'un fait) — source du nom de l'achat
+    // (opération) consolidé par T3 ; `otherSubjects` : d'autres articles figurent au justificatif.
+    subject: plan.subject ?? null,
+    subjectSource: plan.subjectSource ?? null,
+    otherSubjects: plan.otherSubjects === true,
     supplier: plan.supplier ?? supplier ?? null,
     billedPeriod: basis.billedPeriod,
     principalMonth: basis.principalMonth,
@@ -782,7 +805,7 @@ export async function ensureBusinessTitle(p: {
         const ecrit = await stampChecked(p.fileId, p.accountId, 'NO_ANALYSIS_DATA');
         return fin(valide ? 'NO_CHANGE' : 'INSUFFICIENT_DATA', valide ? 'NO_BETTER_TITLE' : 'NO_ANALYSIS_DATA', null, !valide && ecrit);
       }
-      const { plan, fingerprint: fp, basis, excludedPeriods } = await planTitleForDocument(p.fileId, p.accountId, inputs);
+      const { plan, fingerprint: fp, basis, excludedPeriods, discriminants } = await planTitleForDocument(p.fileId, p.accountId, inputs);
       fingerprint = fp;
       const meta = { record: titleBasisRecord(plan, basis, inputs.ctx.supplier ?? null), convention: plan.convention, key: plan.canonicalKey };
       const cleModifiee = row.title_canonical_key !== plan.canonicalKey;
@@ -844,6 +867,12 @@ export async function ensureBusinessTitle(p: {
         // inchangée — un titre n'est jamais privé d'une période légitime.
         if (!decision.replace && excludedPeriods > 0 && titleCarriesStalePeriod(row.retained_title, candidat)) {
           decision = { replace: true, reason: 'EXCLUDED_PERIOD_REMOVED' };
+        }
+        // Carte #813 : titre « type + désignation » (bon de commande dont le produit est identifié) — le titre
+        // SYSTÈME antérieur portait en plus la date du bon, le fournisseur ou le bien, ajoutés par défaut : il
+        // est recomposé. Seulement si rien d'AUTRE ne suit la désignation (aucune information inconnue perdue).
+        if (!decision.replace && plan.designationOnly && carriesOnlyDroppedDiscriminants(row.retained_title, candidat, discriminants)) {
+          decision = { replace: true, reason: 'DESIGNATION_TITLE_APPLIED' };
         }
       }
       if (!decision.replace) return sansRenommage('NO_CHANGE', 'NO_BETTER_TITLE', (e) => e && contexteModifie);

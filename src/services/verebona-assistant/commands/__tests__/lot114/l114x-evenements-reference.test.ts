@@ -521,7 +521,8 @@ describe('L114X-X01 — exécution : état relu, puis la façade — et elle seu
 
   it('W24 : associateOperations (origine → cible, nature) ; déjà associés : dit', async () => {
     const a = await action('Associe l’achat de la Clio au financement Prêt auto');
-    expect(await runAction(a, ctx)).toMatchObject({ status: 'SUCCESS', message: 'Événements de référence « Financement — Prêt auto » et « Achat — Achat Clio » associés. Ils restent distincts.' });
+    // Règle remplacée (carte #813) : un achat dont l'intitulé dit déjà « Achat … » n'est plus rendu « Achat — Achat … ».
+    expect(await runAction(a, ctx)).toMatchObject({ status: 'SUCCESS', message: 'Événements de référence « Financement — Prêt auto » et « Achat Clio » associés. Ils restent distincts.' });
     expect(base.appels[0]).toMatchObject({ commande: 'associateOperations', entree: { fromOperationId: 201, toOperationId: 202, nature: 'FINANCING' } });
     base.reponse = { status: 'APPLIED', code: 'NO_CHANGE', changed: false, replayed: false };
     expect((await runAction(a, ctx)).message).toMatch(/étaient déjà associés : rien n’a été modifié\.$/);

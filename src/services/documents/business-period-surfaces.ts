@@ -40,6 +40,7 @@
 import type postgres from 'postgres';
 import { documentTitleColumnsSql, documentTitleOf } from '@/lib/documents/document-title-source';
 import { endToken, periodLine, principalLine, type BusinessPeriodKind, type PartialDate, type PeriodBounds } from '@/lib/documents/business-periods';
+import { acquisitionDisplayLabel, startsWithAcquisitionName } from '@/lib/reference-events/operation-title';
 import { principalKind } from './business-periods/model';
 import type { CoverageEntry, PeriodView } from './business-periods/service';
 
@@ -379,6 +380,9 @@ const NOMS: Record<string, string> = {
 /** Libellé utilisateur (pure) : « Contrat — Assurance habitation ». */
 export function referenceEventLabel(o: { typeCode: string | null; technicalLabel: string | null; provider?: string | null; firstDocumentTitle?: string | null }): string {
   const base = NOMS[o.typeCode ?? 'OTHER'] ?? 'Dépense';
+  // Carte #813 : un achat dont l'intitulé enregistré dit déjà « Achat … » (nom dérivé de la désignation du
+  // produit : « Achat Polisport groovy coussin gris ») est rendu tel quel — jamais « Achat — Achat … ».
+  if (o.typeCode === 'ACQUISITION' && o.technicalLabel?.trim() && startsWithAcquisitionName(o.technicalLabel)) return acquisitionDisplayLabel(o.technicalLabel);
   const t = o.technicalLabel?.trim() || o.firstDocumentTitle?.trim() || o.provider?.trim() || null;
   return t ? `${base} — ${t.slice(0, 80)}` : base;
 }

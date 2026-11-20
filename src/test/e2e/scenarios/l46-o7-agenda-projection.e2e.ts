@@ -153,7 +153,8 @@ scenario('L46-O7', 'T4 / Agenda : projection des Opérations (C16), rapprochemen
     const parOp = new Map((await items(compte)).map((i) => [i.op, i]));
     expect(parOp.get(inter)).toMatchObject({ title: 'Vidange', start_date: '2026-03-10', event_nature: 'HISTORICAL', business_type: 'maintenance' });
     expect(parOp.get(sinistre)).toMatchObject({ title: 'Sinistre', start_date: '2026-04-02', event_nature: 'HISTORICAL', business_type: 'claim' });
-    expect(parOp.get(achat)).toMatchObject({ title: 'Achat', start_date: '2021-03-01', event_nature: 'HISTORICAL', business_type: 'purchase' });
+    // Règle remplacée (carte #813) : un achat légitime ne s'appelle plus « Achat » nu (ici, dernier repli : type + bien).
+    expect(parOp.get(achat)).toMatchObject({ title: expect.stringMatching(/^Achat — .+/), start_date: '2021-03-01', event_nature: 'HISTORICAL', business_type: 'purchase' });
     expect(parOp.get(vente)).toMatchObject({ title: 'Vente', start_date: '2026-06-30', event_nature: 'HISTORICAL', business_type: 'sale' });
     expect(parOp.get(contrat)).toMatchObject({ title: 'Fin de contrat — Assur+', start_date: plus(90), event_nature: 'DEADLINE', business_type: 'contract' });
     // F-140 : sans date, rien d'inventé — lot 83A (CDC v5 §11.4, AC17), test corrigé : l'intervention réalisée

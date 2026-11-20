@@ -170,8 +170,14 @@ export function technicalTitleSqlPredicate(col: string): string {
  *     retrouve les titres SYSTÈME d'une version antérieure, les simule, les
  *     réécrit seulement s'ils changent, et ne touche jamais un titre
  *     utilisateur.
+ *   · 5 — carte #813 : titre « type documentaire + désignation » pour un bon de
+ *     commande dont le produit est identifié (« Bon de commande Polisport groovy
+ *     coussin gris ») — ni date du bon, ni fournisseur, ni bien ajoutés par
+ *     défaut ; la désignation retenue est persistée (`title_basis.subject`).
+ *     Le passage de 4 à 5 est la REPRISE du stock par le même contrôle
+ *     COH-DOC-TITLES (titres SYSTÈME seulement, jamais un titre utilisateur).
  */
-export const DOCUMENT_TITLE_RULE_VERSION = 4;
+export const DOCUMENT_TITLE_RULE_VERSION = 5;
 
 const TITLE_QUALITY_REASONS = [
   'TECHNICAL_TITLE', 'GENERIC_TITLE', 'MISSING_SUBJECT', 'MISSING_SUPPLIER', 'MISSING_TARGET', 'MISSING_PERIOD',
@@ -186,7 +192,9 @@ type TitleChangeReason =
   // Lot 87D : convention périodique appliquée ; ancienne typographie (« _ ») normalisée.
   | 'CONVENTION_APPLIED' | 'TYPOGRAPHY_NORMALIZED'
   // Carte #783 : le titre en place portait une période dont la NATURE ne nomme pas le document.
-  | 'EXCLUDED_PERIOD_REMOVED';
+  | 'EXCLUDED_PERIOD_REMOVED'
+  // Carte #813 : titre « type + désignation » — date du bon, fournisseur ou bien ajoutés par défaut retirés.
+  | 'DESIGNATION_TITLE_APPLIED';
 
 /** Ce que le MEILLEUR titre constructible porte (attentes d'un titre suffisant). */
 export interface TitleExpectations {

@@ -93,7 +93,8 @@ describe('#744 point F — date de présentation d’un événement de référen
     expect(e.date).toBe(
       `CASE WHEN f.type = 'INTERVENTION' THEN COALESCE(${liste(PRESENTATION_DATE_RULES.INTERVENTION)}) `
       + `WHEN f.type = 'CONTRACT' THEN COALESCE(${liste(PRESENTATION_DATE_RULES.CONTRACT)}) `
-      + `WHEN f.type = 'ACQUISITION' THEN ${liste(PRESENTATION_DATE_RULES.ACQUISITION)} `
+      // Règle remplacée (carte #813) : ACQUISITION = réalisation, sinon date de commande (deux faits → COALESCE).
+      + `WHEN f.type = 'ACQUISITION' THEN COALESCE(${liste(PRESENTATION_DATE_RULES.ACQUISITION)}) `
       + `ELSE COALESCE(${liste(PRESENTATION_DATE_RULES.DEFAULT)}) END`);
     expect(e.basis).toContain(`WHEN f.type = 'CONTRACT' THEN CASE WHEN f.start IS NOT NULL THEN 'START' WHEN f.first_coverage IS NOT NULL THEN 'FIRST_COVERAGE' END`);
     expect(e.basis).toContain(`ELSE CASE WHEN f.realized IS NOT NULL THEN 'REALIZED' WHEN f.start IS NOT NULL THEN 'START' WHEN f.planned IS NOT NULL THEN 'PLANNED' END END`);
@@ -127,7 +128,8 @@ describe('#744 point F — date de présentation d’un événement de référen
   });
 
   it('L114OF-U08 — textes : fondement nommé seulement hors date propre ; jamais « Opération »', () => {
-    expect(PRESENTATION_BASIS_LABELS).toEqual({ REALIZED: null, START: null, PLANNED: null, FIRST_QUOTE: 'Premier devis', FIRST_COVERAGE: 'Première couverture connue' });
+    // Règle remplacée (carte #813) : nouveau fondement « Date de commande » (bon de commande d'un achat).
+    expect(PRESENTATION_BASIS_LABELS).toEqual({ REALIZED: null, START: null, PLANNED: null, FIRST_QUOTE: 'Premier devis', FIRST_COVERAGE: 'Première couverture connue', FIRST_ORDER: 'Date de commande' });
     expect(Object.values(PRESENTATION_BASIS_LABELS).join(' ')).not.toMatch(/op[ée]ration/i);
   });
 });

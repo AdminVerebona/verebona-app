@@ -64,8 +64,32 @@ describe('O7-01 — tableau C16 : projection par type (decideProjection)', () =>
   it('C16-04b — CLAIM ancré sur un événement de l\'historique (lot 44) : équivalent existant, rien n\'est créé', () => {
     expect(decideProjection(op({ typeCode: 'CLAIM', claimHistoryEventId: 9 }), AUJ)).toEqual({ kind: 'NONE', reason: 'EQUIVALENT_EXISTS', keepLinks: true });
   });
-  it('F-142 / C16-05 — ACQUISITION datée → historique d\'entrée en possession « Achat »', () => {
-    expect(desired(op({ typeCode: 'ACQUISITION', realizedDate: '2021-03-01' }))).toMatchObject({ key: 'ACQUISITION', nature: 'HISTORICAL', businessType: 'purchase', title: 'Achat' });
+  // Règle remplacée (carte #813) : un achat LÉGITIME ne s'appelle plus « Achat » nu — son titre est descriptif
+  // (intitulé de l'opération, sinon prestataire, sinon bien associé).
+  it('F-142 / C16-05 — ACQUISITION datée → historique d\'entrée en possession, titre DESCRIPTIF (jamais « Achat » nu)', () => {
+    const base = { typeCode: 'ACQUISITION' as const, realizedDate: '2021-03-01' };
+    expect(desired(op({ ...base, technicalLabel: 'Achat Polisport groovy coussin gris' })))
+      .toMatchObject({ key: 'ACQUISITION', nature: 'HISTORICAL', businessType: 'purchase', title: 'Achat Polisport groovy coussin gris' });
+    expect(desired(op({ ...base, technicalLabel: 'Vélo électrique' })).title).toBe('Achat — Vélo électrique');
+    expect(desired(op({ ...base, technicalLabel: null, provider: 'Cycles Exemple' })).title).toBe('Achat — Cycles Exemple');
+    expect(desired(op({ ...base, technicalLabel: null, provider: null, assetNames: ['Jean Fourche'] })).title).toBe('Achat — Jean Fourche');
+    // Rien de descriptif (aucun intitulé, aucun prestataire, nom du bien inconnu de l'appelant) : le type seul, dernier repli.
+    expect(desired(op({ ...base, technicalLabel: null, provider: null })).title).toBe('Achat');
+  });
+  it('#813-D — ACQUISITION dont la SEULE preuve est une commande : aucun événement « Achat », daté ou non, quel que soit le statut', () => {
+    const commande = { typeCode: 'ACQUISITION' as const, orderOnlyEvidence: true, technicalLabel: 'Achat Polisport groovy coussin gris' };
+    expect(decideProjection(op({ ...commande, realizedDate: '2026-11-12' }), AUJ)).toEqual({ kind: 'NONE', reason: 'ORDER_ONLY_EVIDENCE', keepLinks: true });
+    expect(decideProjection(op({ ...commande, realizedDate: null }), AUJ)).toEqual({ kind: 'NONE', reason: 'ORDER_ONLY_EVIDENCE', keepLinks: true });
+    expect(decideProjection(op({ ...commande, status: 'ENVISAGED', realizedDate: null, plannedDate: '2026-11-20' }), AUJ)).toMatchObject({ kind: 'NONE' });
+    // Plan : rien n'est créé ; une projection INTACTE déjà créée à tort est retirée ; un élément touché par l'utilisateur reste, lié.
+    expect(plan(op({ ...commande, realizedDate: null }))).toEqual([]);
+    const intacte = item({ id: 201, title: 'Achat', date: null, isAutomatic: true, projected: true, businessOperationId: 10, linkedOperationActive: true, functionalKey: projectionFunctionalKey(10, 'ACQUISITION') });
+    expect(plan(op({ ...commande, realizedDate: null }), { linked: [intacte] })).toEqual([{ kind: 'REMOVE', itemId: 201, reason: 'ORDER_ONLY_EVIDENCE' }]);
+    expect(plan(op({ ...commande, realizedDate: null }), { linked: [{ ...intacte, isAutomaticModified: true }] })).toEqual([]);
+    // Une autre preuve (facture, fiche, déclaration) : la règle T4 existante reprend, avec un titre descriptif.
+    expect(desired(op({ ...commande, orderOnlyEvidence: false, realizedDate: '2026-11-18' }))).toMatchObject({ date: '2026-11-18', title: 'Achat Polisport groovy coussin gris' });
+    // Les autres types ne sont pas concernés par cette garde.
+    expect(decideProjection(op({ orderOnlyEvidence: true }), AUJ).kind).toBe('PROJECT');
   });
   it('F-143 / C16-06 — DISPOSAL datée → historique de sortie (vente, ou transmission)', () => {
     expect(desired(op({ typeCode: 'DISPOSAL', realizedDate: '2026-05-02' }))).toMatchObject({ key: 'DISPOSAL', businessType: 'sale', title: 'Vente', nature: 'HISTORICAL' });

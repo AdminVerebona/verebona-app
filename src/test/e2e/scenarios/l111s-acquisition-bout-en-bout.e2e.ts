@@ -41,6 +41,9 @@ vi.mock('@/services/verebona-assistant/events/business-events', async (o) => ({
 type Json = Record<string, any>;
 const AUJ = '2026-11-05';
 const CHECK = 'COH-OPS-ACQUISITION-DOCUMENT';
+// Règle remplacée (carte #813) : l'événement d'un achat légitime ne s'appelle plus « Achat » nu — il porte l'intitulé
+// descriptif de l'opération (ici le résumé du justificatif, qui dit déjà « Achat … »).
+const TITRE_ACHAT = 'Achat du vélo électrique';
 
 scenario('L111S', 'Acquisition prouvée par un justificatif : Opération, Informations, historique « Achat »', ({ sql, make }) => {
   const k = operationsKit(sql, make);
@@ -116,7 +119,7 @@ scenario('L111S', 'Acquisition prouvée par un justificatif : Opération, Inform
     await projeter(compte, [op.id]);
     const [evt, ...rien] = await evenements(compte);
     expect(rien).toEqual([]);
-    expect(evt).toMatchObject({ title: 'Achat', date: '2024-05-02', op: op.id, nature: 'HISTORICAL', business_type: 'purchase', assets: [velo.id] });
+    expect(evt).toMatchObject({ title: TITRE_ACHAT, date: '2024-05-02', op: op.id, nature: 'HISTORICAL', business_type: 'purchase', assets: [velo.id] });
     expect(evt.files).toContain(f);
     // TCO : prix de fiche (même facture) + Opération = UN achat.
     const { readAssetTco } = await import('@/services/business-operations/tco/service');
@@ -151,7 +154,7 @@ scenario('L111S', 'Acquisition prouvée par un justificatif : Opération, Inform
     expect(autres).toEqual([]);
     expect(op).toMatchObject({ status: 'REALIZED', realized_date: '2024-05-02', active: true });
     expect(await candidat(f)).toMatchObject({ t3_outcome: 'CREATE_NEW', op: op.id, corroboration: expect.objectContaining({ code: 'CANONICAL_ACQUISITION_EVIDENCE', confidence: 'certain' }) });
-    expect(await evenements(compte)).toEqual([expect.objectContaining({ title: 'Achat', date: '2024-05-02', op: op.id })]);
+    expect(await evenements(compte)).toEqual([expect.objectContaining({ title: TITRE_ACHAT, date: '2024-05-02', op: op.id })]);
     expect(await preuveControle(f)).toMatchObject({ last_result: 'REPAIRED' });
     // Sans preuve canonique, un candidat probable reste une abstention justifiée (aucune création).
     const autre = await make.account({ plan: 'premium' });
@@ -173,7 +176,7 @@ scenario('L111S', 'Acquisition prouvée par un justificatif : Opération, Inform
     expect(op).toMatchObject({ realized_date: '2024-05-02' });
     expect((await inspecter(compte, [f])).get(f)).toMatchObject({ verdict: 'REPAIRABLE', anomaly: 'ACQUISITION_EVENT_MISSING' });
     await controler(compte, [f], 'CORRECTIVE');
-    expect(await evenements(compte)).toEqual([expect.objectContaining({ title: 'Achat', date: '2024-05-02', op: op.id })]);
+    expect(await evenements(compte)).toEqual([expect.objectContaining({ title: TITRE_ACHAT, date: '2024-05-02', op: op.id })]);
     expect((await fiche(velo.id, 'acquisitionDate')).v ?? null).toBeNull();
     const [{ controlObjects }, { getCheck }, { pgClient }] = await Promise.all([import('@/services/coherence/engine'), import('@/services/coherence/registry'), import('@/db')]);
     await controlObjects({
@@ -200,7 +203,7 @@ scenario('L111S', 'Acquisition prouvée par un justificatif : Opération, Inform
     const actives = (await acquisitions(compte)).filter((o) => o.active);
     expect(actives).toHaveLength(1);
     expect((await k.liens(actives[0].id)).map((l) => l.asset_id)).toEqual([velo.id]);
-    expect((await evenements(compte)).filter((e) => e.title === 'Achat')).toEqual([expect.objectContaining({ op: actives[0].id, date: '2024-05-02', assets: [velo.id] })]);
+    expect((await evenements(compte)).filter((e) => e.title === TITRE_ACHAT)).toEqual([expect.objectContaining({ op: actives[0].id, date: '2024-05-02', assets: [velo.id] })]);
     expect(['CONSISTENT', 'REPAIRED']).toContain((await preuveControle(f)).last_result);
   });
 
@@ -214,7 +217,7 @@ scenario('L111S', 'Acquisition prouvée par un justificatif : Opération, Inform
     const [op] = await acquisitions(compte);
     expect(op.realized_date).toBe('2024-04-27');
     await projeter(compte);
-    expect(await evenements(compte)).toEqual([expect.objectContaining({ title: 'Achat', date: '2024-04-27' })]);
+    expect(await evenements(compte)).toEqual([expect.objectContaining({ title: TITRE_ACHAT, date: '2024-04-27' })]);
 
     const c2 = await make.account({ plan: 'premium' });
     const b2 = await make.asset(c2, { category: 'OBJET', name: 'Vélo' });
@@ -223,7 +226,7 @@ scenario('L111S', 'Acquisition prouvée par un justificatif : Opération, Inform
     const [o2] = await acquisitions(c2);
     expect(o2).toMatchObject({ status: 'REALIZED', realized_date: null });
     await projeter(c2);
-    expect(await evenements(c2)).toEqual([expect.objectContaining({ title: 'Achat', date: null, op: o2.id })]);
+    expect(await evenements(c2)).toEqual([expect.objectContaining({ title: TITRE_ACHAT, date: null, op: o2.id })]);
   });
 
   // ══ 06 ═══════════════════════════════════════════════════════════════════
@@ -244,7 +247,7 @@ scenario('L111S', 'Acquisition prouvée par un justificatif : Opération, Inform
     expect(actives.length).toBeLessThanOrEqual(1);
     // Aucun double comptage : au plus une composante de coût réalisé active pour l'achat.
     if (actives.length) expect((await k.composantes(actives[0].id)).filter((x) => x.kind === 'REALIZED_COST')).toHaveLength(1);
-    expect((await evenements(compte)).filter((e) => e.title === 'Achat').length).toBeLessThanOrEqual(1);
+    expect((await evenements(compte)).filter((e) => e.title === TITRE_ACHAT).length).toBeLessThanOrEqual(1);
   });
 
   // ══ 07 ═══════════════════════════════════════════════════════════════════
@@ -293,7 +296,7 @@ scenario('L111S', 'Acquisition prouvée par un justificatif : Opération, Inform
     expect(actives).toHaveLength(1);
     expect(await k.coutNet(actives[0].id)).toBe(120000);
     await projeter(compte);
-    expect((await evenements(compte)).filter((e) => e.title === 'Achat')).toHaveLength(1);
+    expect((await evenements(compte)).filter((e) => e.title === TITRE_ACHAT)).toHaveLength(1);
   });
 
   // ══ 09 ═══════════════════════════════════════════════════════════════════
@@ -324,7 +327,7 @@ scenario('L111S', 'Acquisition prouvée par un justificatif : Opération, Inform
     expect(await evenements(compte)).toEqual([]);
     await controler(compte, [f], 'CORRECTIVE');
     expect(await preuveControle(f)).toMatchObject({ last_result: 'REPAIRED' });
-    expect(await evenements(compte)).toEqual([expect.objectContaining({ title: 'Achat', op: op.id, date: '2024-05-02' })]);
+    expect(await evenements(compte)).toEqual([expect.objectContaining({ title: TITRE_ACHAT, op: op.id, date: '2024-05-02' })]);
     expect(await acquisitions(compte)).toHaveLength(1);
   });
 
@@ -376,7 +379,7 @@ scenario('L111S', 'Acquisition prouvée par un justificatif : Opération, Inform
     await passer(compte);
     await controler(compte, [vieux], 'CORRECTIVE');
     expect((await acquisitions(compte)).filter((o) => o.active)).toHaveLength(1);
-    expect((await evenements(compte)).filter((e) => e.title === 'Achat')).toHaveLength(1);
+    expect((await evenements(compte)).filter((e) => e.title === TITRE_ACHAT)).toHaveLength(1);
     expect(await sql`SELECT 1 FROM coherence_repairs WHERE check_id = ${CHECK} AND object_id = ${vieux} AND service = 'requeueDocumentForReread'`).toHaveLength(1);
 
     // Candidats produits mais aucune acquisition retenue (exclusion T1) : constat, jamais de relance.
@@ -427,7 +430,7 @@ scenario('L111S', 'Acquisition prouvée par un justificatif : Opération, Inform
     await controler(compte, [f], 'CORRECTIVE');
     const [op] = await acquisitions(compte);
     expect(op).toMatchObject({ realized_date: '2024-05-02', active: true });
-    expect(await evenements(compte)).toEqual([expect.objectContaining({ title: 'Achat', op: op.id })]);
+    expect(await evenements(compte)).toEqual([expect.objectContaining({ title: TITRE_ACHAT, op: op.id })]);
     const { getEntitlements } = await import('@/services/entitlements.service');
     expect((await getEntitlements(compte.id)).premiumFeatures).toBe(false);
   });

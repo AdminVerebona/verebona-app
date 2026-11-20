@@ -102,6 +102,15 @@ const NATURE_PREFIXES: Array<[string, string]> = ([
 
 /** Natures RÉCURRENTES : le mois (ou la période) distingue les documents successifs. */
 const RECURRING_NATURES = new Set(['Facture', 'Avoir', 'Quittance', 'Avis d’échéance', 'Relevé', 'Reçu', 'Ticket', 'Échéancier', 'Bulletin', 'Devis', 'Bon de commande', 'Bon de livraison']);
+/**
+ * Carte #813 — natures dont le titre est « type documentaire + DÉSIGNATION » dès qu'une désignation est
+ * connue : « Bon de commande Polisport groovy coussin gris », exactement. Ni date du document, ni
+ * fournisseur, ni nom du bien ajoutés par défaut — la date du bon n'est pas une période, le bien est le
+ * rattachement. Sans désignation, les règles générales restent (« Bon de commande Tikamoon — 24 avril
+ * 2021 »). De vrais homonymes sont toujours départagés (date, puis référence) ; une période MÉTIER
+ * réelle (début et fin distincts) reste nommée. Sous-ensemble de `RECURRING_NATURES`.
+ */
+const DESIGNATED_NATURES = new Set(['Bon de commande']);
 /** Natures PONCTUELLES : la date du jour identifie l'événement. */
 const EVENT_NATURES = new Set(['Contrôle technique', 'Constat de sinistre', 'Rapport d’entretien', 'Procès-verbal']);
 
@@ -226,6 +235,18 @@ export interface TitlePlan {
   canonicalKey: string | null;
   /** Lot 99C : représentation temporelle retenue et son fondement (convention périodique seulement). */
   periodChoice?: ResolvedTitlePeriod | null;
+  /**
+   * Carte #813 : origine de la DÉSIGNATION retenue (`subject`) — sujet du titre proposé par l'analyse
+   * (`TITLE`) ou sujet d'un fait extrait (`FACT`) ; null : aucune désignation.
+   */
+  subjectSource?: 'TITLE' | 'FACT' | null;
+  /** Carte #813 : d'autres sujets de faits DISTINCTS existent à côté d'une désignation lue sur un fait (plusieurs articles). */
+  otherSubjects?: boolean;
+  /**
+   * Carte #813 : titre « type + désignation » (`DESIGNATED_NATURES`) — la date du document, le fournisseur
+   * et le bien n'y figurent pas par défaut. Sert à retirer ces discriminants d'un titre SYSTÈME antérieur.
+   */
+  designationOnly?: boolean;
 }
 
 /** Nature du document : tête du titre du modèle, sinon type, sinon « Document ». */
@@ -313,25 +334,34 @@ export function planBusinessTitle(modelTitle: string | null | undefined, ctx: Ti
   const titleSubject = stripped && /\p{L}{3,}/u.test(stripped) && !isReferenceOnlyTitle(`${nature} ${stripped}`) ? stripped : null;
   const contenu = titleSubject ? factSubjects.find((f) => ` ${normalizeTitle(titleSubject)} `.includes(` ${normalizeTitle(f)} `)) : undefined;
   const subject = titleSubject ? (contenu ?? titleSubject) : factSubjects[0] ?? null;
+  // Carte #813 : origine de la désignation, et autres articles éventuels (sujets de faits distincts).
+  const subjectSource: TitlePlan['subjectSource'] = titleSubject ? 'TITLE' : subject ? 'FACT' : null;
+  const otherSubjects = subjectSource === 'FACT'
+    && new Set(factSubjects.map(normalizeTitle).filter((x) => x && x !== normalizeTitle(subject))).size > 0;
+  // Carte #813 : « type + désignation » — ni date, ni fournisseur, ni bien par défaut.
+  const designationOnly = DESIGNATED_NATURES.has(nature) && !!subject;
 
   // Cible : équipement / pièce toujours utiles ; bien seulement s'il discrimine.
   const target = ctx.equipment ? { kind: 'EQUIPMENT' as const, ...ctx.equipment }
     : ctx.room ? { kind: 'ROOM' as const, ...ctx.room }
-      : ctx.asset && (ctx.accountAssetCount ?? 0) >= 2 && !supplier ? { kind: 'ASSET' as const, ...ctx.asset } : null;
+      : ctx.asset && (ctx.accountAssetCount ?? 0) >= 2 && !supplier && !designationOnly ? { kind: 'ASSET' as const, ...ctx.asset } : null;
 
   // Titre du modèle sans nature reconnue en tête (« Abonnement fibre
   // Orange ») : sa formulation est gardée telle quelle comme base.
   const ownWording = !prefixed && !!titleSubject && subject === titleSubject;
   let base = ownWording ? titleSubject! : subject ? `${natureText} ${subject}` : natureText;
   if (target) base = appendDistinct(base, target.name);
-  if (supplier && normalizeTitle(`${base} ${supplier}`).length <= MAX_BASE * 1.2) base = appendDistinct(base, supplier);
+  if (supplier && !designationOnly && normalizeTitle(`${base} ${supplier}`).length <= MAX_BASE * 1.2) base = appendDistinct(base, supplier);
   if (base.length > MAX_BASE) base = base.slice(0, MAX_BASE).replace(/\s+\S*$/, '');
 
   // Période / date (lot 87D : période présentée exactement ; une date utile
   // est donnée AU JOUR — jamais un mois déduit de la date du document).
-  const periodeMetier = presentPeriod(ctx.period);
+  // Carte #813 : pour un titre « type + désignation », seule une période MÉTIER réelle (début et fin
+  // distincts) nomme le document — jamais la date du bon, ni une borne unique copiée de cette date.
+  const periodeReelle = !designationOnly || (!!ctx.period?.start && !!ctx.period?.end && ctx.period.start !== ctx.period.end);
+  const periodeMetier = periodeReelle ? presentPeriod(ctx.period) : null;
   let period = periodeMetier
-    ?? (EVENT_NATURES.has(nature) || RECURRING_NATURES.has(nature) ? dayMonthYear(ctx.documentDate) : null);
+    ?? (!designationOnly && (EVENT_NATURES.has(nature) || RECURRING_NATURES.has(nature)) ? dayMonthYear(ctx.documentDate) : null);
   // Rien d'autre que la nature : la date du document distingue.
   if (!period && !subject && !supplier && !target && !ownWording) period = dayMonthYear(ctx.documentDate);
   if (period && titleHasPeriod(base)) period = null;
@@ -358,14 +388,15 @@ export function planBusinessTitle(modelTitle: string | null | undefined, ctx: Ti
   if (title && !subject && !supplier && !target && !period) title = null;
 
   return {
-    title, nature, subject, supplier, target, period, reference, duplicateResolved,
+    title, nature, subject, supplier: designationOnly ? null : supplier, target, period, reference, duplicateResolved,
     expectations: {
-      nature, subject, supplier,
+      nature, subject, supplier: designationOnly ? null : supplier,
       target: target ? { kind: target.kind, name: target.name } : null,
       period, duplicates: [...(ctx.similarTitles ?? [])],
     },
     convention: null,
     canonicalKey: null,
+    subjectSource, otherSubjects, designationOnly,
   };
 }
 
