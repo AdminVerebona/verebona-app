@@ -14,7 +14,7 @@
  */
 
 const DEFAULT_PERIOD_DAYS = 7;
-const MAX_PERIOD_DAYS = 90;
+export const MAX_PERIOD_DAYS = 90;
 const DAY = /^\d{4}-\d{2}-\d{2}$/;
 
 /** Décalage de Paris (minutes, UTC+x) à un instant donné. */
@@ -71,4 +71,21 @@ export function periodFromQuery(p: { days?: string | null; from?: string | null;
   }
   const n = p.days && /^\d{1,3}$/.test(p.days) ? Math.min(MAX_PERIOD_DAYS, Math.max(1, Number(p.days))) : DEFAULT_PERIOD_DAYS;
   return { from: new Date(now.getTime() - n * 86_400_000), to: new Date(now.getTime() + 1), rule: PERIOD_RULE };
+}
+
+/**
+ * Carte #802 (CA11) — la période SAISIE (`from` / `to`) dépasse-t-elle
+ * `MAX_PERIOD_DAYS` ? (pur). `periodFromQuery` ramène alors le début à
+ * fin − 90 jours : l'écran lit cette période réduite ; l'export diagnostic,
+ * lui, REFUSE avant lancement plutôt que de livrer une période plus étroite
+ * que celle demandée (jamais de fausse complétude).
+ */
+export function periodExceedsMax(p: { from?: string | null; to?: string | null }, now: Date = new Date()): boolean {
+  const from = p.from && DAY.test(p.from) ? p.from : null;
+  const to = p.to && DAY.test(p.to) ? p.to : null;
+  if (!from && !to) return false;
+  let a = from ? parisMidnight(from) : new Date(now.getTime() - DEFAULT_PERIOD_DAYS * 86_400_000);
+  let b = to ? parisMidnight(lendemain(to)) : now;
+  if (b < a) [a, b] = [b, a];
+  return b.getTime() - a.getTime() > MAX_PERIOD_DAYS * 86_400_000;
 }

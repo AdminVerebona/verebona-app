@@ -93,6 +93,75 @@ export function executionFiltersToParams(f: ExecutionScreenFilters): URLSearchPa
   return out;
 }
 
+/** Filtres de la liste des appels tels que la route les applique (carte #802 : partagés avec l'export diagnostic). */
+export interface ExecutionApiFilters {
+  treatment?: 'T1' | 'T2' | 'T3' | 'T4' | 'T6';
+  status?: 'success' | 'error';
+  accountId?: number;
+  model?: string;
+  configVersionId?: number;
+  operationCode?: string;
+  errorsOnly?: boolean;
+  since?: Date;
+  until?: Date;
+  minDurationMs?: number;
+  userId?: number;
+  rank?: 'primary' | 'fallback_1' | 'fallback_2' | 'fallback';
+  jobId?: number;
+  objectType?: string;
+  objectId?: string;
+  trigger?: string;
+  t6Mode?: T6ModeFilter;
+}
+
+const entier = (v: string | null): number | undefined => (v && INT.test(v) ? Number(v) : undefined);
+const instant = (v: string | null): Date | undefined => {
+  if (!v) return undefined;
+  const d = new Date(v);
+  return Number.isNaN(d.getTime()) ? undefined : d;
+};
+const jeton = (v: string | null): string | undefined => (v && TOKEN.test(v) ? v : undefined);
+
+/**
+ * Carte #802 — paramètres d'URL → filtres de la liste des appels (pur).
+ * Traduction UNIQUE, utilisée par `GET /api/admin/ai/executions` et par
+ * l'export diagnostic lancé depuis l'onglet « Appels modèles » : mêmes bornes
+ * (`from` à 00:00 UTC, `to` jusqu'à 23:59:59.999 UTC inclus), mêmes valeurs
+ * acceptées. Tolérante (une valeur illisible est ignorée) : l'export, lui,
+ * REFUSE en amont toute valeur que cette lecture écarterait
+ * (`export-selection.ts`).
+ */
+export function executionApiFilters(p: Params): ExecutionApiFilters {
+  const treatment = p.get('treatment');
+  const status = p.get('status');
+  const rank = p.get('rank');
+  const t6 = p.get('t6Mode');
+  const to = p.get('to');
+  return {
+    treatment: treatment && TREATMENTS.includes(treatment) ? treatment as ExecutionApiFilters['treatment'] : undefined,
+    status: status === 'success' || status === 'error' ? status : undefined,
+    accountId: entier(p.get('accountId')),
+    model: p.get('model') ?? undefined,
+    configVersionId: entier(p.get('configVersionId')),
+    operationCode: p.get('operationCode') ?? undefined,
+    errorsOnly: p.get('errorsOnly') === '1',
+    // `from`/`to` (AAAA-MM-JJ) : forme des liens préfiltrés des alertes et
+    // des coûts (COST-009) ; `to` couvre toute la journée.
+    since: instant(p.get('since')) ?? instant(p.get('from')),
+    until: instant(p.get('until')) ?? (to ? instant(DAY.test(to) ? `${to}T23:59:59.999Z` : to) : undefined),
+    minDurationMs: entier(p.get('minDurationMs')),
+    userId: entier(p.get('userId')),
+    rank: rank && RANKS.includes(rank) ? rank as ExecutionApiFilters['rank'] : undefined,
+    jobId: entier(p.get('jobId')),
+    // LOG-UI-02 : objet et déclencheur.
+    objectType: jeton(p.get('objectType')),
+    objectId: jeton(p.get('objectId')),
+    trigger: jeton(p.get('trigger')),
+    // CDC Mascotte BO-009 : affichée / pré-génération / texte de secours.
+    t6Mode: t6 && (T6_MODES as readonly string[]).includes(t6) ? t6 as T6ModeFilter : undefined,
+  };
+}
+
 /** Période nommée (COST-002, CST-UI-01) → bornes AAAA-MM-JJ. */
 export type CostPeriod = 'today' | 'week' | 'month30' | 'calendarMonth' | 'year' | 'custom';
 

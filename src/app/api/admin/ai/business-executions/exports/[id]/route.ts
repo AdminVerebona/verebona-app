@@ -2,8 +2,10 @@
  * Une génération d'export des exécutions IA — lot 84D (EXP-03, EXP-04, R28, R64).
  *
  *   GET  : suivi (statut, signe de vie, interruption, point de reprise) et,
- *          une fois terminée, le manifeste stocké (fichiers, attendu /
- *          exporté, SHA-256, volumes ZIP) et les fichiers téléchargeables ;
+ *          une fois l'archive UNIQUE assemblée, relue et vérifiée (carte
+ *          #802), le manifeste (fichiers, attendu / exporté, SHA-256) et
+ *          l'archive (nom, taille, empreinte) ; un échec définitif (limite,
+ *          complétude) est rendu avec son code et son message ;
  *   POST { action: 'resume' } : REPRISE d'une génération interrompue à son
  *          dernier point de reprise (droits revérifiés, journalisée) ;
  *          409 si elle est encore en cours ou terminée.
@@ -23,10 +25,14 @@ export async function GET(req: NextRequest, { params }: { params: Promise<{ id: 
     const g = await gen.getGeneration(id).catch(() => null);
     if (!g || g.kind !== 'AI_EXECUTIONS_EXPORT') return NextResponse.json({ error: 'Export introuvable.', code: 'NOT_FOUND' }, { status: 404, headers: NO_STORE });
     const st = await gen.readResumeState<ExportResumeState>(id);
-    const { readExecutionsManifest, executionsDownloadables } = await import('@/services/ai/business-execution/export');
-    const manifest = g.status === 'RUNNING' || !st?.done ? null : await readExecutionsManifest(id).catch(() => null);
+    const { readExecutionsManifest, deliverableArchive } = await import('@/services/ai/business-execution/export');
+    // Carte #802 : rien n'est proposé tant que l'archive unique n'est pas assemblée, relue et vérifiée.
+    const archive = g.status === 'COMPLETE' ? deliverableArchive(st) : null;
+    const manifest = archive ? await readExecutionsManifest(id).catch(() => null) : null;
     return NextResponse.json({
-      generation: g, manifest, downloadables: executionsDownloadables(manifest),
+      generation: g, manifest,
+      archive: archive && manifest ? { fileName: archive.fileName, bytes: archive.bytes, sha256: archive.sha256, entries: archive.entries, zip64: archive.zip64, verifiedAt: archive.verifiedAt } : null,
+      failure: st?.failure ?? null, precontrol: st?.precontrol ?? null, limits: st?.limits ?? null,
       resume: st ? { cursorAt: st.cursorAt, partsWritten: st.nextPart - 1, executionsWritten: st.totals.executions.exported, done: st.done, resumes: st.resumes.length } : null,
       resumable: !!st && !st.done && (g.status !== 'RUNNING' || g.interrupted),
     }, { headers: NO_STORE });

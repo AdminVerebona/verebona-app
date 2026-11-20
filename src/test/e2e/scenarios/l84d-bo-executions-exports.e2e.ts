@@ -66,6 +66,11 @@ const s3 = vi.hoisted(() => {
           r.transformToString = async () => o.body.toString('utf8');
           return { Body: r };
         }
+        case 'HeadObjectCommand': {
+          const o = objects.get(i.Key);
+          if (!o) throw Object.assign(new Error('NotFound'), { name: 'NotFound', $metadata: { httpStatusCode: 404 } });
+          return { ContentLength: o.body.length };
+        }
         case 'DeleteObjectsCommand': for (const x of i.Delete.Objects) objects.delete(x.Key); return {};
         default: throw new Error(`commande S3 non simulée : ${c.constructor.name}`);
       }
@@ -108,7 +113,22 @@ scenario('L84D', 'BO Exécutions & logs et exports des exécutions IA (Pilotage 
   let adminIdsAvant: string | undefined;
   const as = (u: { id: number; email: string }, role: string) => { session.userId = u.id; session.role = role; session.email = u.email; };
 
+  /**
+   * Règle remplacée (carte #802) : les fichiers ne sont plus stockés un par un mais dans UNE archive ZIP
+   * (les parties intermédiaires sont purgées). `extraire` ouvre l'archive d'une génération ; `stored` lit
+   * ensuite un fichier par son chemin DANS l'archive (celui du manifeste).
+   */
+  const extraits = new Map<string, Buffer>();
+  const extraire = async (prefix: string) => {
+    const cle = [...s3.objects.keys()].find((k) => k.startsWith(`${prefix}archive/`) && k.endsWith('.zip'));
+    if (!cle) return null;
+    const zip = await JSZip.loadAsync(s3.objects.get(cle)!.body);
+    for (const n of Object.keys(zip.files)) if (!zip.files[n].dir) extraits.set(`${prefix}${n}`, await zip.files[n].async('nodebuffer'));
+    return zip;
+  };
   const stored = (key: string) => {
+    const x = extraits.get(key);
+    if (x) return x;
     const o = s3.objects.get(key);
     if (!o) throw new Error(`objet absent : ${key}`);
     return key.endsWith('.gz') ? gunzipSync(o.body) : o.body;
@@ -122,6 +142,7 @@ scenario('L84D', 'BO Exécutions & logs et exports des exécutions IA (Pilotage 
     expect(res.status, await res.clone().text()).toBe(202);
     const { generationId, storagePrefix } = await res.json() as { generationId: string; storagePrefix: string };
     await (await svc()).waitForExecutionsExport(generationId);
+    await extraire(storagePrefix);
     return { id: generationId, m: JSON.parse(stored(`${storagePrefix}manifeste.json`).toString('utf8')) as Json, prefix: storagePrefix };
   }
   const execLines = (m: Json, prefix: string) => (m.files as Json[]).filter((f) => f.kind === 'executions').sort((a, b) => a.part - b.part).flatMap((f) => lines(stored(`${prefix}${f.path}`)));
@@ -266,15 +287,18 @@ scenario('L84D', 'BO Exécutions & logs et exports des exécutions IA (Pilotage 
     expect(t.m.period).toMatchObject({ timeZone: 'Europe/Paris', rule: expect.stringContaining('Europe/Paris') });
   });
 
-  it('L84D-E2E-02 — R27 : plus de 500 exécutions exportées sans perte ni doublon, appels corrélés, volumes ZIP fractionnés', async () => {
+  // Règle remplacée (carte #802) : plus de volumes ZIP fractionnés ni de fichiers remis un par un — UNE archive ZIP vérifiée.
+  it('L84D-E2E-02 — R27 : plus de 500 exécutions exportées sans perte ni doublon, appels corrélés, UN SEUL ZIP', async () => {
     as(adminOk, 'ADMIN');
     const { parseJournalFilter } = await import('@/services/ai/business-execution/journal');
     const f = parseJournalFilter(new URLSearchParams(`accountId=${C.id}`));
     const { startExecutionsExport, waitForExecutionsExport } = await svc();
-    const { generationId } = await startExecutionsExport({ id: adminOk.id }, f, { sensitive: false, partRows: 200, sliceMs: 6 * 3600_000, volumeMaxBytes: 2_000 });
+    const { generationId } = await startExecutionsExport({ id: adminOk.id }, f, { sensitive: false, partRows: 200, sliceMs: 6 * 3600_000 });
     await waitForExecutionsExport(generationId);
     const prefix = `admin-exports/ia-executions/${generationId}/`;
-    const m = JSON.parse(stored(`${prefix}manifeste.json`).toString('utf8')) as Json;
+    const zip = await extraire(prefix);
+    expect(zip, 'archive ZIP unique absente').not.toBeNull();
+    const m = JSON.parse(stored(`${prefix}manifest.json`).toString('utf8')) as Json;
     expect(m.status).toBe('COMPLETE');
     const ex = execLines(m, prefix);
     const attendus = await tousLesIds(`accountId=${C.id}`);
@@ -289,7 +313,9 @@ scenario('L84D', 'BO Exécutions & logs et exports des exécutions IA (Pilotage 
     for (const p of m.files as Json[]) {
       if (p.kind === 'documentation') continue;
       const buf = stored(`${prefix}${p.path}`);
-      expect(lines(buf), p.path).toHaveLength(p.exported);
+      // Carte #802 : index.csv (une ligne d'en-tête, puis une ligne par exécution) — les autres fichiers sont des JSONL.
+      if (p.kind === 'index') expect(buf.toString('utf8').split('\n').filter(Boolean), p.path).toHaveLength(p.exported + 1);
+      else expect(lines(buf), p.path).toHaveLength(p.exported);
       expect(p.exported).toBe(p.expected);
       expect(sha(buf), p.path).toBe(p.sha256);
     }
@@ -301,23 +327,20 @@ scenario('L84D', 'BO Exécutions & logs et exports des exécutions IA (Pilotage 
     const f1 = calls.filter((c) => c.businessExecutionId === ids.f1);
     expect(f1.map((c) => c.model).sort()).toEqual(['m-principal', 'm-repli']);
     expect(ex.find((x) => x.id === ids.f1)?.calls).toMatchObject({ calls: 2, failedCalls: 1, costMicros: null });
-    // Volumes ZIP fractionnés : parties entières, manifeste et LISEZMOI dans chacun.
-    expect(m.volumes.length).toBeGreaterThan(1);
-    const union: string[] = [];
-    for (const v of m.volumes as Json[]) {
-      const r = await R.download(req(`/x?volume=${v.index}`), ctx(generationId));
-      expect(r.status).toBe(200);
-      const zip = await JSZip.loadAsync(Buffer.from(await r.arrayBuffer()));
-      const noms = Object.keys(zip.files).filter((n) => !zip.files[n].dir);
-      expect(noms).toContain('manifeste.json');
-      expect(noms).toContain('LISEZMOI.txt');
-      union.push(...noms.filter((n) => n.endsWith('.jsonl.gz')));
-    }
-    expect(union.sort()).toEqual((m.files as Json[]).filter((x) => x.kind !== 'documentation').map((x) => x.path).sort());
-    // Fichier JSONL : URL signée de courte durée ; chemin hors manifeste refusé.
-    const one = await R.download(req(`/x?path=${encodeURIComponent(parts[0].path)}`), ctx(generationId));
+    // UNE archive : index, manifeste, LISEZMOI et toutes les parties ; plus aucun volume, plus aucun fichier intermédiaire stocké.
+    expect(m.volumes).toBeUndefined();
+    const noms = Object.keys(zip!.files).filter((n) => !zip!.files[n].dir);
+    expect(noms).toEqual(expect.arrayContaining(['index.csv', 'manifest.json', 'LISEZMOI.txt']));
+    expect(noms.filter((n) => n.endsWith('.jsonl')).sort()).toEqual((m.files as Json[]).filter((x) => x.kind !== 'documentation' && x.kind !== 'index').map((x) => x.path).sort());
+    expect(m.archive.entries.slice().sort()).toEqual(noms.slice().sort());
+    expect([...s3.objects.keys()].filter((k) => k.startsWith(prefix)).sort()).toEqual([`${prefix}archive/${m.archive.fileName}`, `${prefix}manifeste.json`].sort());
+    // Téléchargement : UNE URL signée de courte durée vers l'archive ; volumes et fichiers séparés refusés (410).
+    const one = await R.download(req('/x'), ctx(generationId));
     expect(one.status).toBe(302);
-    expect((await R.download(req('/x?path=../../autre/secret'), ctx(generationId))).status).toBe(400);
+    expect(one.headers.get('location')).toContain(`${prefix}archive/${m.archive.fileName}`);
+    expect((await R.download(req('/x?volume=1'), ctx(generationId))).status).toBe(410);
+    expect((await R.download(req(`/x?path=${encodeURIComponent(parts[0].path)}`), ctx(generationId))).status).toBe(410);
+    expect((await R.download(req('/x?path=../../autre/secret'), ctx(generationId))).status).toBe(410);
     const lisezmoi = stored(`${prefix}LISEZMOI.txt`).toString('utf8');
     expect(lisezmoi).toContain(`${ex.length} exécution(s) exportée(s) sur ${ex.length} attendue(s)`);
   });
@@ -379,10 +402,11 @@ scenario('L84D', 'BO Exécutions & logs et exports des exécutions IA (Pilotage 
     expect(ok.calls.find((c: Json) => c.id === call.id).echange).toMatchObject({ prompt: 'PROMPT-SECRET-CONTENU-L84D', response: 'REPONSE-SECRETE-L84D', variables: { texte: 'VARIABLE-SECRETE-L84D' } });
     const s = await exporter({ accountId: String(C.id), outcome: 'FAILED', contenusSensibles: true });
     expect(JSON.stringify(callLines(s.m, s.prefix))).toContain('PROMPT-SECRET-CONTENU-L84D');
-    // Droits REVÉRIFIÉS à la remise : l'admin non habilité ne télécharge pas l'export sensible.
+    // Droits REVÉRIFIÉS à la remise : l'admin non habilité ne télécharge pas l'export sensible (règle remplacée, carte #802 : une seule archive).
     as(adminSans, 'ADMIN');
-    expect((await R.download(req('/x?path=manifeste.json'), ctx(s.id))).status).toBe(403);
-    expect((await R.download(req('/x?volume=1'), ctx(s.id))).status).toBe(403);
+    expect((await R.download(req('/x'), ctx(s.id))).status).toBe(403);
+    as(adminOk, 'ADMIN');
+    expect((await R.download(req('/x'), ctx(s.id))).status).toBe(302);
   });
 
   it('L84D-E2E-05 — R28 / R64 : export volumineux interrompu puis repris, sans doublon ni perte ; exécutions postérieures exclues', async () => {
@@ -406,7 +430,7 @@ scenario('L84D', 'BO Exécutions & logs et exports des exécutions IA (Pilotage 
     expect(g1.resume.partsWritten).toBe(1);
     expect(s3.objects.has(`${prefix}manifeste.json`)).toBe(false);
     // Le téléchargement d'un export inachevé est refusé (jamais présenté comme complet).
-    expect((await R.download(req('/x?path=manifeste.json'), ctx(generationId))).status).toBe(404);
+    expect((await R.download(req('/x'), ctx(generationId))).status).toBe(404);
     // 2. Pendant l'arrêt, de nouvelles exécutions apparaissent : elles n'entreront pas (lecture figée).
     const [neuf] = await sql<{ id: number }[]>`INSERT INTO ai_job_queue (treatment, account_id, target_type, target_id, dedupe_key, status, origin, trigger_code, attempts,
         business_result, created_at, started_at, finished_at, payload)
@@ -416,6 +440,7 @@ scenario('L84D', 'BO Exécutions & logs et exports des exécutions IA (Pilotage 
     const r = await R.genPOST(req('/x', { method: 'POST', body: { action: 'resume' } }), ctx(generationId));
     expect(r.status, await r.clone().text()).toBe(202);
     await waitForExecutionsExport(generationId);
+    await extraire(prefix);
     const m = JSON.parse(stored(`${prefix}manifeste.json`).toString('utf8')) as Json;
     expect(m.status).toBe('COMPLETE');
     expect(m.resumes).toHaveLength(1);
@@ -440,6 +465,7 @@ scenario('L84D', 'BO Exécutions & logs et exports des exécutions IA (Pilotage 
     expect(g2.resumable).toBe(true);
     expect((await R.genPOST(req('/x', { method: 'POST', body: { action: 'resume' } }), ctx(id2))).status).toBe(202);
     await waitForExecutionsExport(id2);
+    await extraire(`admin-exports/ia-executions/${id2}/`);
     const m2 = JSON.parse(stored(`admin-exports/ia-executions/${id2}/manifeste.json`).toString('utf8')) as Json;
     expect(m2.status).toBe('COMPLETE');
     expect(execLines(m2, `admin-exports/ia-executions/${id2}/`).map((x) => x.id).sort()).toEqual(attendus);
@@ -467,7 +493,7 @@ scenario('L84D', 'BO Exécutions & logs et exports des exécutions IA (Pilotage 
     // Une relance d'un travail vivant est refusée (aucun doublon) — et journalisée.
     expect((await R.retry(req('/x', { method: 'POST', body: d.relaunch[0].body }), { params: Promise.resolve({ jobId }) })).status).toBe(409);
     const e = await exporter({ accountId: String(C.id), outcome: 'INCOMPLETE' });
-    expect((await R.download(req('/x?path=manifeste.json'), ctx(e.id))).status).toBe(302);
+    expect((await R.download(req('/x'), ctx(e.id))).status).toBe(302);
     expect((await R.unit(req('/x'), ctx(ids.i1))).status).toBe(200);
     as(adminSans, 'ADMIN');
     expect((await R.unit(req('/x?contenus=1'), ctx(ids.i1))).status).toBe(403);
@@ -482,7 +508,7 @@ scenario('L84D', 'BO Exécutions & logs et exports des exécutions IA (Pilotage 
     expect(vu('AI_EXECUTION_RELAUNCH', 'FAILURE', (x) => x.businessExecutionId === ids.f1 && x.code === 'JOB_NOT_FAILED')).toBe(true);
     expect(vu('AI_EXECUTIONS_EXPORT', 'SUCCESS', (x) => x.generationId === e.id && x.phase === 'launched')).toBe(true);
     expect(vu('AI_EXECUTIONS_EXPORT', 'SUCCESS', (x) => x.generationId === e.id && x.phase === 'finished' && x.status === 'COMPLETE')).toBe(true);
-    expect(vu('AI_EXECUTIONS_EXPORT_DOWNLOAD', 'SUCCESS', (x) => x.generationId === e.id && x.path === 'manifeste.json')).toBe(true);
+    expect(vu('AI_EXECUTIONS_EXPORT_DOWNLOAD', 'SUCCESS', (x) => x.generationId === e.id && typeof x.sha256 === 'string' && /\.zip$/.test(x.archive))).toBe(true);
     expect(vu('AI_EXECUTIONS_EXPORT', 'SUCCESS', (x) => x.scope === 'unitaire' && x.executionId === ids.i1)).toBe(true);
     expect(vu('AI_EXECUTIONS_EXPORT', 'DENIED', (x) => x.scope === 'unitaire' && x.code === 'SENSITIVE_CONTENT_FORBIDDEN')).toBe(true);
     expect(journal.some((l) => l.action_type === 'AI_MODEL_OUTPUT_READ' && l.result === 'DENIED' && l.admin_user_id === adminSans.id)).toBe(true);

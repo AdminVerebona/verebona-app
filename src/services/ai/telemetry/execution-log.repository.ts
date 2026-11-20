@@ -41,7 +41,7 @@ import { NOT_CALLED_ERROR_CODES } from '../gateway/fallback-policy';
 
 type Row = Record<string, unknown>;
 
-interface ExecutionFilters {
+export interface ExecutionFilters {
   treatment?: Treatment;
   status?: 'success' | 'error';
   accountId?: number;
@@ -308,10 +308,14 @@ interface ExecutionPage {
   offset: number;
 }
 
-export async function searchExecutions(f: ExecutionFilters = {}): Promise<ExecutionPage> {
-  const limit = Math.min(Math.max(f.limit ?? 50, 1), MAX_LIMIT);
-  const offset = Math.max(f.offset ?? 0, 0);
-
+/**
+ * Carte #802 — filtres de la liste des appels → clause WHERE et paramètres.
+ * UNE SEULE traduction, partagée par la liste (`searchExecutions`) et par
+ * l'export diagnostic lancé depuis l'onglet « Appels modèles » : ce qui est
+ * filtré à l'écran est exactement ce qui est exporté. Alias attendus : `e`
+ * (`ai_usage_event`) et `j` (`EXECUTION_JOB_JOIN`).
+ */
+export function executionWhere(f: Omit<ExecutionFilters, 'limit' | 'offset'>): { where: string; params: unknown[] } {
   // Le traitement est filtré par son code d'usage : la colonne stockée est
   // `use_case_code`, et traduire ici évite d'exposer ce détail à l'appelant.
   const useCaseCode = f.treatment ? TREATMENT_DEFINITIONS[f.treatment].useCaseCode : null;
@@ -361,6 +365,16 @@ export async function searchExecutions(f: ExecutionFilters = {}): Promise<Execut
         AND ($15::text IS NULL OR ${OBJECT_ID} = $15)
         AND ($16::text IS NULL OR j.trigger_code = $16 OR j.origin = $16)
         AND ($17::text IS NULL OR ${t6ModeSql('e')} = $17)`;
+  return { where, params };
+}
+
+/** Jointure du travail de file attendue par `executionWhere` (alias `j`). */
+export const EXECUTION_JOB_JOIN = JOB_JOIN;
+
+export async function searchExecutions(f: ExecutionFilters = {}): Promise<ExecutionPage> {
+  const limit = Math.min(Math.max(f.limit ?? 50, 1), MAX_LIMIT);
+  const offset = Math.max(f.offset ?? 0, 0);
+  const { where, params } = executionWhere(f);
 
   const rows = await pgClient.unsafe(
     `SELECT e.id, e.created_at, e.use_case_code, e.operation_code, e.account_id, e.user_id,

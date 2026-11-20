@@ -119,7 +119,8 @@ describe('L99A-J06 — mobile et câblage de la page', () => {
     expect(page).toContain("{ rows: '0' }");
     expect(page).toMatch(/const openCard[\s\S]*setListeOuverte\(true\)/);
     expect(page).toContain("q.set('liste', listeOuverte ? '1' : '0')");
-    expect(page).toContain("{(vue === 'metier' || tab === 'tech') && (\n        <ExecutionExportsPanel");
+    // Règle remplacée (carte #802) : l'export diagnostic est aussi proposé depuis l'onglet « Appels modèles » (filtres d'appels).
+    expect(page).toContain("{vue === 'metier' || tab === 'tech' ? (\n        <ExecutionExportsPanel scope=\"executions\"");
     expect(route).toContain("p.get('rows') === '0'");
     expect(route).toContain('synthesis: { ...journalSynthesis(proj.rows, f), aiUsage: usage }');
   });

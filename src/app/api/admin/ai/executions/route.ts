@@ -15,39 +15,11 @@
  */
 import { NextRequest, NextResponse } from 'next/server';
 import { searchExecutions } from '@/services/ai/telemetry/execution-log.repository';
-import { isTreatment } from '@/services/ai/config/treatments';
-import { T6_MODES, type T6ModeFilter } from '@/services/ai/telemetry/execution-filters';
+import { executionApiFilters } from '@/services/ai/telemetry/execution-filters';
 import { requireAdminContext, toErrorResponse } from '../config-versions/_shared';
 
 function entier(v: string | null): number | undefined {
   return v && /^\d+$/.test(v) ? Number(v) : undefined;
-}
-
-function date(v: string | null): Date | undefined {
-  if (!v) return undefined;
-  const d = new Date(v);
-  return Number.isNaN(d.getTime()) ? undefined : d;
-}
-
-function endOfDay(v: string | null): Date | undefined {
-  if (!v) return undefined;
-  const d = date(/^\d{4}-\d{2}-\d{2}$/.test(v) ? `${v}T23:59:59.999Z` : v);
-  return d;
-}
-
-/** Identifiant court (type d'objet, id, code de déclencheur) ; sinon ignoré. */
-function token(v: string | null): string | undefined {
-  return v && /^[A-Za-z0-9_.:-]{1,80}$/.test(v) ? v : undefined;
-}
-
-const RANKS = ['primary', 'fallback_1', 'fallback_2', 'fallback'] as const;
-function rank(v: string | null): (typeof RANKS)[number] | undefined {
-  return (RANKS as readonly string[]).includes(v ?? '') ? (v as (typeof RANKS)[number]) : undefined;
-}
-
-/** Mode de génération T6 (BO-009) ; sinon ignoré. */
-function t6Mode(v: string | null): T6ModeFilter | undefined {
-  return (T6_MODES as readonly string[]).includes(v ?? '') ? (v as T6ModeFilter) : undefined;
 }
 
 export async function GET(req: NextRequest) {
@@ -55,32 +27,12 @@ export async function GET(req: NextRequest) {
   if (!guard.ok) return guard.response;
 
   const p = new URL(req.url).searchParams;
-  const treatment = p.get('treatment');
-  const status = p.get('status');
 
   try {
+    // Carte #802 : traduction UNIQUE des filtres (`executionApiFilters`), partagée
+    // avec l'export diagnostic — l'écran et l'export filtrent à l'identique.
     const page = await searchExecutions({
-      treatment: treatment && isTreatment(treatment) ? treatment : undefined,
-      status: status === 'success' || status === 'error' ? status : undefined,
-      accountId: entier(p.get('accountId')),
-      model: p.get('model') ?? undefined,
-      configVersionId: entier(p.get('configVersionId')),
-      operationCode: p.get('operationCode') ?? undefined,
-      errorsOnly: p.get('errorsOnly') === '1',
-      // `from`/`to` (AAAA-MM-JJ) : forme des liens préfiltrés des alertes et
-      // des coûts (COST-009) ; `to` couvre toute la journée.
-      since: date(p.get('since')) ?? date(p.get('from')),
-      until: date(p.get('until')) ?? endOfDay(p.get('to')),
-      minDurationMs: entier(p.get('minDurationMs')),
-      userId: entier(p.get('userId')),
-      rank: rank(p.get('rank')),
-      jobId: entier(p.get('jobId')),
-      // LOG-UI-02 : objet et déclencheur.
-      objectType: token(p.get('objectType')),
-      objectId: token(p.get('objectId')),
-      trigger: token(p.get('trigger')),
-      // CDC Mascotte BO-009 : affichée / pré-génération / texte de secours.
-      t6Mode: t6Mode(p.get('t6Mode')),
+      ...executionApiFilters(p),
       limit: entier(p.get('limit')),
       offset: entier(p.get('offset')),
     });

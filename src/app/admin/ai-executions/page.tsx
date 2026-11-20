@@ -764,10 +764,18 @@ function AiExecutionsScreen() {
       )}
 
       {/* EXP-01 à EXP-05 : export du journal filtré (mêmes exécutions que les cartes et la liste).
-          Lot 99A : disponible aussi en vue synthétique (exports inchangés, liste repliée). */}
-      {(vue === 'metier' || tab === 'tech') && (
-        <ExecutionExportsPanel params={journalParams(jf, vue === 'metier' ? 'BUSINESS' : 'TECHNICAL')}
+          Lot 99A : disponible aussi en vue synthétique (exports inchangés, liste repliée).
+          Carte #802 : export diagnostic en UN SEUL ZIP, avec les filtres ACTIFS de l'écran — journal des
+          exécutions (vue métier, onglet « Exécutions techniques ») ou onglet « Appels modèles » (modèle,
+          opération, rang, job, utilisateur, statut…) ; les autres onglets n'ont pas de traduction : dit en clair. */}
+      {vue === 'metier' || tab === 'tech' ? (
+        <ExecutionExportsPanel scope="executions" params={journalParams(jf, vue === 'metier' ? 'BUSINESS' : 'TECHNICAL')}
           summary={`${vue === 'metier' ? 'exécutions métier' : 'exécutions techniques'}, ${periodLabelOf(jf)}${jf.treatment ? `, ${jf.treatment}` : ''}${jf.outcome ? `, issue ${jf.outcome}` : ''}${jf.origin ? `, origine ${jf.origin}` : ''}${jf.accountId ? `, compte ${jf.accountId}` : ''}`} />
+      ) : tab === 'calls' ? (
+        <ExecutionExportsPanel scope="calls" params={executionFiltersToParams(filters)}
+          summary={`appels modèles filtrés et leurs exécutions${[...executionFiltersToParams(filters)].map(([k, v]) => `, ${k} ${v}`).join('') || ', aucun filtre (tout l’historique en base)'}`} />
+      ) : (
+        <ExecutionExportsPanel scope={tab} params={new URLSearchParams()} summary="" />
       )}
 
       {/* BO-03 : détail d'une exécution (tiroir 81F, desktop et mobile). */}

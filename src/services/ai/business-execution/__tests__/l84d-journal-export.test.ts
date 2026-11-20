@@ -21,7 +21,7 @@ import {
   ALERT_SOURCES, cardCounts, cardJournalFilter, compareJournal, journalFilterFingerprint, journalFilterToParams, matchesJournalFilter, parseJournalFilter,
 } from '../journal';
 import {
-  EXPORT_MIN_SLICE_MS, addToTotals, buildManifest, emptyTotals, executionLine, exportStatus, initialResumeState, partPath, planVolumes, readEnd, sliceAt,
+  EXPORT_MIN_SLICE_MS, addToTotals, buildManifest, emptyTotals, executionLine, exportStatus, initialResumeState, partPath, planArchive, readEnd, sliceAt,
   type ExportFile, type ExportPerimeter,
 } from '../export-model';
 import { causeCode, isCauseUnknown, missingOf, relaunchOptions } from '../detail-model';
@@ -91,7 +91,7 @@ const perimeter = (o: Partial<ExportPerimeter> = {}): ExportPerimeter => ({
   params: { days: '7', nature: 'BUSINESS' }, from: '2026-10-16T10:00:00.000Z', to: '2026-10-23T10:00:00.001Z', rule: 'r', timeZone: 'Europe/Paris',
   treatment: null, outcome: null, nature: 'BUSINESS', origin: null, accountId: null, sensitiveContent: false, fingerprint: 'f', ...o,
 });
-const file = (part: number, kind: ExportFile['kind'], compressed: number): ExportFile => ({
+const file = (part: number, kind: 'executions' | 'appels' | 'diagnostics' | 'documentation', compressed: number): ExportFile => ({
   path: kind === 'documentation' ? 'LISEZMOI.txt' : partPath(kind, part), kind, part: kind === 'documentation' ? null : part, expected: 1, exported: 1,
   bytes: compressed * 3, compressedBytes: compressed, sha256: 'x', status: 'COMPLETE',
 });
@@ -104,15 +104,18 @@ describe('L84D-U-03 — export : tranches, périmètre figé, volumes, statut', 
     expect(s.to.toISOString()).toBe('2026-10-22T12:00:00.000Z');
     expect(initialResumeState(perimeter(), NOW, { sliceMs: 1 }).sliceMs).toBe(EXPORT_MIN_SLICE_MS);
   });
-  it('L84D-U-03 : volumes ZIP — parties entières, ordre conservé, aucun volume au-delà du plafond (sauf partie isolée)', () => {
-    const files = [file(1, 'executions', 40), file(1, 'appels', 30), file(2, 'executions', 50), file(2, 'appels', 10), file(3, 'executions', 200), file(0, 'documentation', 1)];
-    const v = planVolumes(files, 100);
-    expect(v.map((x) => x.files)).toEqual([
-      ['appels/appels.part-0001.jsonl.gz', 'executions/executions.part-0001.jsonl.gz'],
-      ['appels/appels.part-0002.jsonl.gz', 'executions/executions.part-0002.jsonl.gz'],
-      ['executions/executions.part-0003.jsonl.gz'],
+  // Règle remplacée (carte #802) : plus de volumes ZIP — UNE archive, chaque fichier une seule fois, documents en tête.
+  it('L84D-U-03 : archive unique — index, manifeste et LISEZMOI en tête, puis chaque partie une seule fois, dans l’ordre', () => {
+    const files = [file(2, 'executions', 50), file(1, 'executions', 40), file(1, 'appels', 30), file(2, 'appels', 10), file(3, 'executions', 200), file(0, 'documentation', 1)];
+    const doc = (path: string) => ({ path, storedPath: `zip/${path}.gz`, bytes: 3, compressedBytes: 1, sha256: 'd' });
+    const v = planArchive(files, [doc('LISEZMOI.txt'), doc('manifest.json'), doc('index.csv')]);
+    expect(v.map((x) => x.path)).toEqual([
+      'index.csv', 'manifest.json', 'LISEZMOI.txt',
+      'executions/executions.part-0001.jsonl', 'executions/executions.part-0002.jsonl', 'executions/executions.part-0003.jsonl',
+      'appels/appels.part-0001.jsonl', 'appels/appels.part-0002.jsonl',
     ]);
-    expect(v.flatMap((x) => x.files).sort()).toEqual(files.filter((f) => f.kind !== 'documentation').map((f) => f.path).sort());
+    expect(new Set(v.map((x) => x.path)).size).toBe(v.length);
+    expect(v.filter((x) => x.storedPath.endsWith('.jsonl.gz')).map((x) => x.storedPath).sort()).toEqual(files.filter((f) => f.kind !== 'documentation').map((f) => f.path).sort());
   });
   it('L84D-U-03 : statut honnête — interrompu = FAILED, lecture plafonnée = PARTIAL, attendu = exporté = COMPLETE', () => {
     const st = initialResumeState(perimeter(), NOW);
@@ -127,7 +130,8 @@ describe('L84D-U-03 — export : tranches, périmètre figé, volumes, statut', 
     st.totals.calls = { expected: 2, exported: 1 };
     expect(exportStatus(st)).toBe('PARTIAL');
     const m = buildManifest('g', { ...st, totals: { ...st.totals, calls: { expected: 1, exported: 1 } } }, { generatedAt: 'a', finishedAt: 'b', environment: 'test', build: { version: null, commit: null } });
-    expect(m).toMatchObject({ schema: 'verebona.ai-executions-export/1', status: 'COMPLETE', period: { timeZone: 'Europe/Paris', readAt: NOW.toISOString() } });
+    // Règle remplacée (carte #802) : format /2 (archive unique, index CSV, diagnostics, appels autonomes).
+    expect(m).toMatchObject({ schema: 'verebona.ai-executions-export/2', status: 'COMPLETE', period: { timeZone: 'Europe/Paris', readAt: NOW.toISOString() } });
     expect(m.absent.join(' ')).toMatch(/masqué/);
   });
   it('L84D-U-03 : totaux = cartes du même périmètre ; exécutions non finales signalées « en cours »', () => {

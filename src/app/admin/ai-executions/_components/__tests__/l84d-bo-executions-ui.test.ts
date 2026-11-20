@@ -137,23 +137,29 @@ describe('L84D-C-04 — exports (EXP-03, EXP-04, R64)', () => {
   const g = { id: 'g1', status: 'FAILED' as const, interrupted: false, rowsExpected: null, rowsExported: 400, files: 4, error: 'génération interrompue — reprise possible', startedAt: NOW, finishedAt: NOW, heartbeatAt: NOW, perimeter: { days: '7', nature: 'BUSINESS' } };
   it('L84D-C-04 : génération interrompue → « Reprendre la génération » et point de reprise annoncé', () => {
     const html = renderToStaticMarkup(h(ExportGenerationView, {
-      g, onResume: () => {}, detail: { manifest: null, downloadables: [], resumable: true, resume: { cursorAt: NOW, partsWritten: 2, executionsWritten: 400, done: false, resumes: 0 } },
+      g, onResume: () => {}, detail: { manifest: null, archive: null, failure: null, resumable: true, resume: { cursorAt: NOW, partsWritten: 2, executionsWritten: 400, done: false, resumes: 0 } },
     }));
     expect(html).toContain('data-testid="export-resume"');
     expect(html).toContain('reprise après 2 partie(s) écrite(s)');
     expect(html).toContain('400 exécution(s) écrite(s)');
   });
-  it('L84D-C-04 : génération terminée → volumes ZIP, manifeste, fichiers JSONL', () => {
+  // Règle remplacée (carte #802) : plus de volumes ZIP ni de fichiers JSONL — un seul lien « Télécharger le ZIP complet ».
+  it('L84D-C-04 : génération terminée → UN SEUL lien « Télécharger le ZIP complet », manifeste réconcilié', () => {
     const manifest = {
-      status: 'COMPLETE', totals: { executions: { expected: 650, exported: 650 }, calls: { expected: 1300, exported: 1300 }, cards: { failed: 3, incomplete: 2 } },
-      resumes: [{ at: NOW, adminUserId: 1, fromCursor: NOW }], volumes: [{ index: 1, files: ['a'], compressedBytes: 1 }, { index: 2, files: ['b'], compressedBytes: 1 }],
+      status: 'COMPLETE', totals: { executions: { expected: 650, exported: 650 }, calls: { expected: 1300, exported: 1300 }, cards: { failed: 3, incomplete: 2 }, autonomousCalls: { expected: 4, exported: 4 } },
+      resumes: [{ at: NOW, adminUserId: 1, fromCursor: NOW }], omissions: [],
     } as never;
     const html = renderToStaticMarkup(h(ExportGenerationView, {
-      g: { ...g, status: 'COMPLETE', error: null }, detail: { manifest, downloadables: ['executions/executions.part-0001.jsonl.gz', 'manifeste.json'], resumable: false, resume: null },
+      g: { ...g, status: 'COMPLETE', error: null },
+      detail: { manifest, archive: { fileName: 'verebona-diagnostic-executions-ia-g1.zip', bytes: 2048, sha256: 'ab'.repeat(32), entries: 6, zip64: false, verifiedAt: NOW }, failure: null, resumable: false, resume: null },
     }));
-    expect((html.match(/data-testid="export-volume"/g) ?? []).length).toBe(2);
-    expect(html).toContain('ZIP 2/2');
+    expect((html.match(/data-testid="export-download"/g) ?? []).length).toBe(1);
+    expect(html).toContain('Télécharger le ZIP complet');
+    expect(html).toContain('href="/api/admin/ai/business-executions/exports/g1/download"');
+    expect(html).not.toContain('export-volume');
+    expect(html).not.toMatch(/ZIP \d+\/\d+/);
     expect(html).toContain('650 / 650 exécution(s)');
+    expect(html).toContain('4 / 4 appel(s) technique(s) autonome(s)');
     expect(html).toContain('1 reprise(s)');
     expect(html).not.toContain('export-resume');
   });
