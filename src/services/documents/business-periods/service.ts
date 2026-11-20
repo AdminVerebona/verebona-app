@@ -42,10 +42,11 @@ import {
   type BusinessPeriodKind, type PartialDate, type PeriodBounds,
 } from '@/lib/documents/business-periods';
 import {
-  deriveDocumentPeriods, planRefresh, principalKind, PERIOD_FACT_PREFIX,
-  type DesiredPeriod, type PeriodCandidateInput, type PeriodEvidence, type PeriodFactInput, type PeriodInputs, type StoredPeriod,
+  deriveDocumentPeriods, parsePeriodValue, planRefresh, principalKind, qualifyDocumentPeriods, PERIOD_FACT_KEYS, PERIOD_FACT_PREFIX,
+  type DesiredPeriod, type PeriodCandidateInput, type PeriodEvidence, type PeriodFactInput, type PeriodInputs, type PeriodQualification, type StoredPeriod,
 } from './model';
 import { parseRelevance } from './t1-v2';
+import { POINT_DATE_GUARDED_KINDS, singleDayOf, type DocumentPointDate } from './point-date';
 import { resolvePeriods, type EntryResolution, type PeriodConflict, type ResolutionEntry, type UserPeriodDecision } from './resolution';
 import { loadRelationStates, type RelationState } from './relation-review';
 
@@ -116,7 +117,72 @@ export async function loadPeriodInputs(sql: Sql | Tx, accountId: number, fileId:
   return {
     candidates, facts: periodFacts,
     billing: { billedPeriod: basis.billedPeriod, statedMonth: pf.statedMonth, hasBillingBlock: Object.keys(bloc).length > 0 },
+    pointDates: await loadPointDates(sql, accountId, fileId, candidates, periodFacts),
   };
+}
+
+/** Borne des mentions de date lues pour un document (carte #812). */
+const MAX_POINT_DATE_FACTS = 40;
+const jourIso = (v: unknown): string | null => (typeof v === 'string' && /^\d{4}-\d{2}-\d{2}/.test(v) && isPartialDate(v.slice(0, 10)) ? v.slice(0, 10) : null);
+
+/**
+ * Carte #812 — dates PONCTUELLES du document et leurs mentions (lecture seule, bornée, sans IA) :
+ * date du document enregistrée, date du document lue par T1 (analyse de référence) avec son extrait,
+ * date de réalisation des candidats T1 actifs (commande, achat, facture, paiement), et mentions des
+ * autres faits T1 dont la valeur est le jour concerné. Lues SEULEMENT quand un fait de période d'une
+ * nature gardée se réduit à un seul jour (cas rare) : aucune requête de plus pour les autres documents.
+ * Une lecture impossible ne lève pas : sans date ponctuelle connue, la qualification est celle d'avant.
+ */
+export async function loadPointDates(
+  sql: Sql | Tx, accountId: number, fileId: number, candidates: readonly PeriodCandidateInput[], facts: readonly PeriodFactInput[],
+): Promise<DocumentPointDate[]> {
+  const jours = new Set<string>();
+  for (const f of facts) {
+    const kind = f.rawKey ? PERIOD_FACT_KEYS[f.rawKey.trim().toLowerCase()] : undefined;
+    if (!kind || !POINT_DATE_GUARDED_KINDS.includes(kind)) continue;
+    const v = parsePeriodValue(f);
+    const j = v ? singleDayOf(v) : null;
+    if (j) jours.add(j);
+  }
+  if (!jours.size) return [];
+  const out: DocumentPointDate[] = [];
+  for (const c of candidates) {
+    const j = jourIso(asObj(asObj(c.payload).temporalHints).realizedDate);
+    if (j) out.push({ date: j, role: 'OPERATION_DATE' });
+  }
+  const [doc, run, mentions] = await Promise.all([
+    sql.unsafe(
+      `SELECT to_char(document_date, 'YYYY-MM-DD') AS d FROM asset_files WHERE id = $1 AND account_id = $2`, [fileId, accountId] as never[],
+    ).catch(() => []) as unknown as Promise<Row[]>,
+    sql.unsafe(
+      `SELECT raw_response_json AS raw FROM document_analysis_runs
+        WHERE asset_file_id = $1 AND account_id = $2 AND status = 'completed' AND raw_response_json IS NOT NULL
+          AND strpos(raw_response_json, '"documentDate"') > 0
+        ORDER BY is_current_reference DESC, id DESC LIMIT 1`,
+      [fileId, accountId] as never[],
+    ).catch(() => []) as unknown as Promise<Array<{ raw: string }>>,
+    sql.unsafe(
+      `SELECT left(normalized_value, 10) AS d, excerpt FROM document_facts
+        WHERE file_id = $1 AND account_id = $2 AND status = 'active' AND COALESCE(raw_key, fact_key) NOT LIKE $3
+          AND left(normalized_value, 10) = ANY($4::text[]) AND normalized_value ~ '^\\d{4}-\\d{2}-\\d{2}([T ].*)?$'
+        ORDER BY id LIMIT ${MAX_POINT_DATE_FACTS}`,
+      [fileId, accountId, `${PERIOD_FACT_PREFIX}%`, [...jours]] as never[],
+    ).catch(() => []) as unknown as Promise<Row[]>,
+  ]);
+  const enregistree = jourIso(doc[0]?.d);
+  if (enregistree) out.push({ date: enregistree, role: 'DOCUMENT_DATE' });
+  let lue: Record<string, unknown> = {};
+  try { lue = run[0]?.raw ? asObj(asObj(asObj(JSON.parse(run[0].raw)).document).documentDate) : {}; } catch { lue = {}; }
+  const lueJour = jourIso(lue.value);
+  if (lueJour) {
+    const extrait = asObj(lue.evidence).excerpt;
+    out.push({ date: lueJour, role: 'T1_DOCUMENT_DATE', excerpt: typeof extrait === 'string' ? extrait : null });
+  }
+  for (const m of mentions) {
+    const j = jourIso(m.d);
+    if (j) out.push({ date: j, role: 'DATE_FACT', excerpt: (m.excerpt as string | null) ?? null });
+  }
+  return out;
 }
 
 // ── Lecture des faits persistés ─────────────────────────────────────────────
@@ -161,20 +227,64 @@ export interface RefreshResult {
   superseded: number;
   /** Natures corrigées par l'utilisateur, laissées telles quelles. */
   protectedKinds: BusinessPeriodKind[];
+  /** Carte #812 : périodes retirées parce qu'elles n'étaient que la date du document (absent : aucune). */
+  pointDateCopies?: number[];
+  /** Carte #812 : périodes conservées « à réexaminer » (absent : aucune). */
+  pointDateToReview?: number[];
 }
 
 /** Écart entre les faits voulus et les faits enregistrés (lecture seule) — contrôle de cohérence. */
 export async function previewDocumentBusinessPeriods(accountId: number, fileId: number, runner?: Sql): Promise<{
   gone: boolean; desired: DesiredPeriod[]; plan: ReturnType<typeof planRefresh> | null;
+  /** Carte #812 : faits écartés (date du document recopiée), périodes enregistrées qu'ils fondaient, cas « à réexaminer ». */
+  pointDate?: PointDateReport;
 }> {
   const sql = runner ?? await sqlClient();
   const vivant = (await sql.unsafe(
     `SELECT 1 FROM asset_files WHERE id = $1 AND account_id = $2 AND deleted_at IS NULL`, [fileId, accountId] as never[],
   )) as unknown as Row[];
   if (!vivant.length) return { gone: true, desired: [], plan: null };
-  const desired = deriveDocumentPeriods(await loadPeriodInputs(sql, accountId, fileId));
+  const q = qualifyDocumentPeriods(await loadPeriodInputs(sql, accountId, fileId));
   const stored = await activePeriods(sql, accountId, fileId);
-  return { gone: false, desired, plan: planRefresh(stored, desired) };
+  const plan = planRefresh(stored, q.desired, q.review);
+  return { gone: false, desired: q.desired, plan, pointDate: pointDateReport(q, stored, plan) };
+}
+
+/** Carte #812 — motif consigné sur une période retirée parce qu'elle n'était que la date du document. */
+export const POINT_DATE_SUPERSEDED_REASON = 'POINT_DATE_COPY';
+
+/** Carte #812 — rapport « avant / après » d'un document (identifiants et dates seulement, jamais de contenu). */
+export interface PointDateReport {
+  /** Périodes ENREGISTRÉES qui ne sont que la date du document : retirées par la réparation (avant → après : rien). */
+  copies: Array<{ periodId: number; kind: BusinessPeriodKind; start: PartialDate | null; end: PartialDate | null; date: string; roles: string[]; reason: string }>;
+  /** Périodes enregistrées CONSERVÉES « à réexaminer » (même jour qu'une date du document, mention propre). */
+  toReview: Array<{ periodId: number; kind: BusinessPeriodKind; start: PartialDate | null; end: PartialDate | null; date: string; roles: string[] }>;
+  /** Faits T1 écartés à la source (qu'une période ait été enregistrée ou non). */
+  refusedFacts: number;
+}
+
+/** Carte #812 — rapport d'un document depuis sa qualification et son plan (pure). */
+export function pointDateReport(q: PeriodQualification, stored: readonly StoredPeriod[], plan: ReturnType<typeof planRefresh>): PointDateReport {
+  const retires = new Set(plan.supersede);
+  const porte = (s: StoredPeriod, factId: number) => !s.userLocked && (s.evidence?.factIds ?? []).includes(factId);
+  const copies: PointDateReport['copies'] = [];
+  for (const r of q.refused) {
+    for (const s of stored) {
+      if (s.kind === r.kind && retires.has(s.id) && porte(s, r.factId) && !copies.some((x) => x.periodId === s.id)) {
+        copies.push({ periodId: s.id, kind: s.kind, start: s.start, end: s.end, date: r.date, roles: r.roles, reason: r.reason ?? POINT_DATE_SUPERSEDED_REASON });
+      }
+    }
+  }
+  const gardes = new Set(plan.review ?? []);
+  const toReview: PointDateReport['toReview'] = [];
+  for (const r of q.toReview) {
+    for (const s of stored) {
+      if (s.kind === r.kind && gardes.has(s.id) && porte(s, r.factId) && !toReview.some((x) => x.periodId === s.id)) {
+        toReview.push({ periodId: s.id, kind: s.kind, start: s.start, end: s.end, date: r.date, roles: r.roles });
+      }
+    }
+  }
+  return { copies, toReview, refusedFacts: q.refused.length };
 }
 
 /** Lot 113AA : divergences de périodes des événements dont le document est membre, resynchronisées (ne lève jamais). */
@@ -204,10 +314,12 @@ async function refreshDocumentBusinessPeriodsOnce(accountId: number, fileId: num
         `SELECT 1 FROM asset_files WHERE id = $1 AND account_id = $2 AND deleted_at IS NULL`, [fileId, accountId] as never[],
       )) as unknown as Row[];
       if (!vivant.length) return { ...vide, outcome: 'GONE' as const };
-      const desired = deriveDocumentPeriods(await loadPeriodInputs(tx, accountId, fileId));
+      const q = qualifyDocumentPeriods(await loadPeriodInputs(tx, accountId, fileId));
       const stored = await activePeriods(tx, accountId, fileId);
-      const plan = planRefresh(stored, desired);
+      const plan = planRefresh(stored, q.desired, q.review);
       const protectedKinds = [...new Set(stored.filter((s) => s.userLocked).map((s) => s.kind))];
+      const rapport = pointDateReport(q, stored, plan);
+      const copies = rapport.copies.map((x) => x.periodId);
       if (plan.supersede.length) {
         await tx.unsafe(
           `UPDATE document_business_periods SET status = 'SUPERSEDED', superseded_at = now(), updated_at = now()
@@ -215,9 +327,28 @@ async function refreshDocumentBusinessPeriodsOnce(accountId: number, fileId: num
           [accountId, plan.supersede] as never[],
         );
       }
+      if (copies.length) {
+        // Carte #812 — TRACE du retrait (motif et corrélation) : dans un point de reprise, pour qu'une base sans la
+        // migration 1870 garde le retrait lui-même (la période reste en base, SUPERSEDED, jamais supprimée).
+        await tx.savepoint((sp) => sp.unsafe(
+          `UPDATE document_business_periods SET superseded_reason = $3, superseded_correlation_id = $4
+            WHERE account_id = $1 AND id = ANY($2::bigint[]) AND status = 'SUPERSEDED'`,
+          [accountId, copies, POINT_DATE_SUPERSEDED_REASON, opts.correlationId ?? null] as never[],
+        )).catch((e: unknown) => {
+          if ((e as { code?: string })?.code !== '42703') throw e;
+        });
+        console.info(JSON.stringify({
+          event: 'business_period.point_date_copy_removed', accountId, fileId, correlationId: opts.correlationId ?? null,
+          periods: rapport.copies.map((x) => ({ id: x.periodId, kind: x.kind, start: x.start, end: x.end, reason: x.reason, roles: x.roles })),
+        }));
+      }
       for (const d of plan.insert) await insertPeriod(tx, accountId, fileId, d, 'T1', opts.correlationId ?? null);
       const changed = plan.supersede.length + plan.insert.length > 0;
-      return { outcome: changed ? 'UPDATED' as const : 'UNCHANGED' as const, kept: plan.keep.length, inserted: plan.insert.length, superseded: plan.supersede.length, protectedKinds };
+      return {
+        outcome: changed ? 'UPDATED' as const : 'UNCHANGED' as const, kept: plan.keep.length, inserted: plan.insert.length, superseded: plan.supersede.length, protectedKinds,
+        ...(copies.length ? { pointDateCopies: copies } : {}),
+        ...(rapport.toReview.length ? { pointDateToReview: rapport.toReview.map((x) => x.periodId) } : {}),
+      };
     });
   } catch (e) {
     if (tableMissing(e)) return { ...vide, outcome: 'UNAVAILABLE' };

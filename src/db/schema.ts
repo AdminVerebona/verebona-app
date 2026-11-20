@@ -4493,6 +4493,9 @@ export const documentBusinessPeriods = pgTable('document_business_periods', {
   correlationId: text('correlation_id'),
   // Lot 113AA (1590) : durée indéterminée ÉTABLIE (≠ fin inconnue).
   endOpen: boolean('end_open').notNull().default(false),
+  // Carte #812 (1870) : motif et corrélation d'un retrait tracé (POINT_DATE_COPY) ; NULL : retrait ordinaire.
+  supersededReason: text('superseded_reason'),
+  supersededCorrelationId: text('superseded_correlation_id'),
   createdAt: tstz('created_at'),
   updatedAt: tstz('updated_at'),
 }, (t) => ({
@@ -4507,6 +4510,8 @@ export const documentBusinessPeriods = pgTable('document_business_periods', {
   userChk: check('document_business_periods_user_chk', sql`NOT ${t.userLocked} OR ${t.origin} = 'USER'`),
   activeUidx: uniqueIndex('document_business_periods_active_uidx').on(t.fileId, t.periodKind, t.segmentIndex).where(sql`status = 'ACTIVE'`),
   accountIdx: index('document_business_periods_account_idx').on(t.accountId, t.fileId).where(sql`status = 'ACTIVE'`),
+  // Carte #812 (1870) : rapport de la reprise par motif de retrait.
+  supersededReasonIdx: index('document_business_periods_superseded_reason_idx').on(t.accountId, t.supersededReason).where(sql`superseded_reason IS NOT NULL`),
 }));
 
 /**

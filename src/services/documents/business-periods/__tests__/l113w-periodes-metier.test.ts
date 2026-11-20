@@ -216,7 +216,8 @@ describe('L113W-U-COH — contrôle de cohérence (reprise de l’historique)', 
     const ids = COHERENCE_REGISTRY.map((x) => x.id);
     const c = COHERENCE_REGISTRY[ids.indexOf('COH-DOC-BUSINESS-PERIODS')];
     expect(ids.slice(ids.indexOf('COH-SUPPLIER-IDENTITY'), ids.indexOf('COH-DOC-BUSINESS-PERIODS') + 1)).toEqual(['COH-SUPPLIER-IDENTITY', 'COH-DOC-BUSINESS-PERIODS']);
-    expect(c).toMatchObject({ id: 'COH-DOC-BUSINESS-PERIODS', status: 'ACTIVE', version: 1, objectType: 'document' });
+    // Règle remplacée (carte #812) : version 2 — une date ponctuelle du document n'est jamais, à elle seule, une borne de validité.
+    expect(c).toMatchObject({ id: 'COH-DOC-BUSINESS-PERIODS', status: 'ACTIVE', version: 2, objectType: 'document' });
     expect(c.forbiddenRepairs.join(' ')).toMatch(/appeler l’IA/);
     expect(c.forbiddenRepairs.join(' ')).toMatch(/reconduction/);
     expect(c.forbiddenRepairs.join(' ')).toMatch(/corrigée par l’utilisateur/);

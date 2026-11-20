@@ -73,6 +73,7 @@ import {
   type BusinessPeriodKind, type PartialDate, type PeriodBounds,
 } from '@/lib/documents/business-periods';
 import { isOpenEndToken, parseRelation, parseRelevance, type DocumentRelation, type PeriodRelevance } from './t1-v2';
+import { classifyPointDatePeriod, type DocumentPointDate, type PointDateReason, type PointDateRole } from './point-date';
 
 /**
  * Préfixe et clés des faits génériques T1 (contrat `t1-business-periods-v1`) :
@@ -155,6 +156,40 @@ export interface PeriodInputs {
   candidates: readonly PeriodCandidateInput[];
   facts: readonly PeriodFactInput[];
   billing: PeriodBillingInput;
+  /**
+   * Carte #812 — dates PONCTUELLES du document (date du document, date lue par T1, date de l'opération
+   * réalisée) et leurs mentions (`./point-date`). Absentes : aucune date ponctuelle connue, la
+   * qualification est celle d'avant la carte.
+   */
+  pointDates?: readonly DocumentPointDate[];
+}
+
+/** Carte #812 — fait de période T1 écarté ou à réexaminer parce que sa seule borne est une date du document. */
+export interface PointDateFinding {
+  factId: number;
+  kind: BusinessPeriodKind;
+  start: PartialDate | null;
+  end: PartialDate | null;
+  /** Jour recopié et rôle(s) de cette date dans le document. */
+  date: string;
+  roles: PointDateRole[];
+  /** Copie prouvée : motif ; absent : « à réexaminer ». */
+  reason?: PointDateReason;
+}
+
+/** Carte #812 — qualification complète d'un document : périodes voulues, périodes « à réexaminer », faits écartés. */
+export interface PeriodQualification {
+  /** Périodes à enregistrer (inchangé : c'est ce que rend `deriveDocumentPeriods`). */
+  desired: DesiredPeriod[];
+  /**
+   * Périodes « à réexaminer » : même jour qu'une date du document, mention propre. JAMAIS créées ;
+   * CONSERVÉES si elles sont déjà enregistrées à l'identique (`planRefresh`).
+   */
+  review: DesiredPeriod[];
+  /** Faits T1 écartés : copie PROUVÉE de la date du document (jamais qualifiés, retirés du stock). */
+  refused: PointDateFinding[];
+  /** Faits T1 des périodes « à réexaminer ». */
+  toReview: PointDateFinding[];
 }
 
 type Obj = Record<string, unknown>;
@@ -194,8 +229,23 @@ const precisionPair = (v: PartialDate) => ({ start: v, end: v });
 
 /** Périodes voulues d'un document (pure, déterministe, ordre stable). */
 export function deriveDocumentPeriods(inp: PeriodInputs): DesiredPeriod[] {
-  const parNature = new Map<BusinessPeriodKind, Omit<DesiredPeriod, 'segment'>[]>();
-  const ajouter = (p: Omit<DesiredPeriod, 'segment'>) => {
+  return qualifyDocumentPeriods(inp).desired;
+}
+
+type Brouillon = Omit<DesiredPeriod, 'segment'> & { aRevoir?: true };
+
+/**
+ * Carte #812 — qualification d'un document (pure, déterministe, ordre stable) : les périodes voulues,
+ * et ce que la règle « une date du document n'est jamais, à elle seule, une borne » a écarté ou laissé
+ * « à réexaminer » (`./point-date`). `deriveDocumentPeriods` en rend les seules périodes voulues.
+ */
+export function qualifyDocumentPeriods(inp: PeriodInputs): PeriodQualification {
+  const parNature = new Map<BusinessPeriodKind, Brouillon[]>();
+  const refused: PointDateFinding[] = [];
+  const toReview: PointDateFinding[] = [];
+  /** Natures dont un fait T1 n'était que la date du document : la pertinence annoncée par T1 ne vaut plus obligation (2c). */
+  const naturesDateSeule = new Set<BusinessPeriodKind>();
+  const ajouter = (p: Brouillon) => {
     const l = parNature.get(p.kind) ?? [];
     // Carte #766 (E10) : même fait = mêmes bornes ET même modalité de fin (inconnue ≠ durée indéterminée).
     const x = l.find((y) => samePeriodBounds(y, p));
@@ -203,6 +253,8 @@ export function deriveDocumentPeriods(inp: PeriodInputs): DesiredPeriod[] {
       // Même période citée deux fois : une seule ligne, preuves réunies.
       x.evidence = mergeEvidence(x.evidence, p.evidence);
       x.principalHint = x.principalHint || p.principalHint;
+      // Carte #812 : une mention justifiée de la même période la justifie.
+      if (!p.aRevoir) delete x.aRevoir;
     } else l.push(p);
     parNature.set(p.kind, l);
   };
@@ -222,11 +274,25 @@ export function deriveDocumentPeriods(inp: PeriodInputs): DesiredPeriod[] {
     if (rv(kind) === 'NOT_RELEVANT') continue;
     const v = parsePeriodValue(f);
     if (!v) continue;
+    // Carte #812 : une date ponctuelle du document n'est jamais, à elle seule, une borne (aucune règle par type ni fournisseur).
+    const ponctuelle = inp.pointDates?.length
+      ? classifyPointDatePeriod({ kind, bounds: v, excerpt: f.excerpt, pointDates: inp.pointDates, relevance: rv(kind) })
+      : { verdict: 'JUSTIFIED' as const };
+    if (ponctuelle.verdict === 'POINT_DATE_COPY') {
+      refused.push({ factId: f.factId, kind, start: v.start, end: v.end, date: ponctuelle.date, roles: ponctuelle.roles, reason: ponctuelle.reason });
+      naturesDateSeule.add(kind);
+      continue;
+    }
+    if (ponctuelle.verdict === 'TO_REVIEW') {
+      toReview.push({ factId: f.factId, kind, start: v.start, end: v.end, date: ponctuelle.date, roles: ponctuelle.roles });
+      naturesDateSeule.add(kind);
+    }
     naturesT1.add(kind);
     ajouter({
       kind, start: v.start, end: v.end, principalHint: (f.attribute ?? '').trim().toLowerCase() === 'principal',
       basis: 'T1_PERIOD_FACT', evidence: { quote: f.excerpt?.slice(0, 200) ?? null, page: f.page ?? null, factIds: [f.factId], ...qualif },
       ...(v.openEnded ? { openEnded: true } : {}),
+      ...(ponctuelle.verdict === 'TO_REVIEW' ? { aRevoir: true as const } : {}),
     });
   }
 
@@ -283,7 +349,9 @@ export function deriveDocumentPeriods(inp: PeriodInputs): DesiredPeriod[] {
   if (pertinence) {
     for (const kind of BUSINESS_PERIOD_KINDS) {
       const r = rv(kind);
-      if ((r === 'UNKNOWN' || r === 'KNOWN') && !parNature.has(kind)) {
+      // Carte #812 : une nature que T1 ne fondait que sur la date du document n'est pas rendue « non renseignée »
+      // (pertinence indéterminée : aucun champ inventé).
+      if ((r === 'UNKNOWN' || r === 'KNOWN') && !parNature.has(kind) && !naturesDateSeule.has(kind)) {
         ajouter({ kind, start: null, end: null, principalHint: false, basis: 'T1_RELEVANT_UNKNOWN', evidence: { ...qualif } });
       }
     }
@@ -295,15 +363,18 @@ export function deriveDocumentPeriods(inp: PeriodInputs): DesiredPeriod[] {
   // l'Assistant retrouvent le fait BILLING.
 
   const out: DesiredPeriod[] = [];
+  const review: DesiredPeriod[] = [];
   for (const kind of BUSINESS_PERIOD_KINDS) {
     const l = (parNature.get(kind) ?? []).slice()
       // Une période datée rend inutile une ligne « non renseignée » de la même nature.
       .filter((p, _i, all) => p.start !== null || p.end !== null || p.openEnded || all.every((x) => x.start === null && x.end === null && !x.openEnded))
       // Carte #766 (E10) : à bornes égales, la fin inconnue précède la durée indéterminée (ordre stable).
       .sort((a, b) => chronoKey(a).localeCompare(chronoKey(b)) || Number(a.openEnded === true) - Number(b.openEnded === true));
-    l.slice(0, MAX_SEGMENTS_PER_KIND).forEach((p, i) => out.push({ ...p, segment: i }));
+    // Carte #812 : le rang de segment est attribué AVEC les périodes « à réexaminer » (une période déjà enregistrée
+    // garde ainsi son rang, donc son empreinte) ; elles sont rendues à part et ne sont jamais créées.
+    l.slice(0, MAX_SEGMENTS_PER_KIND).forEach(({ aRevoir, ...p }, i) => (aRevoir ? review : out).push({ ...p, segment: i }));
   }
-  return out;
+  return { desired: out, review, refused, toReview };
 }
 
 function mergeEvidence(a: PeriodEvidence, b: PeriodEvidence): PeriodEvidence {
@@ -379,8 +450,10 @@ const SEGMENT_INDEX_LIMIT = 50;
  *     attribués dans l'ordre chronologique : déterministe, donc stable d'une reprise à l'autre).
  * Natures sans fait corrigé : faits identiques conservés, autres remplacés (inchangé).
  */
-export function planRefresh(stored: readonly StoredPeriod[], desired: readonly DesiredPeriod[]): {
+export function planRefresh(stored: readonly StoredPeriod[], desired: readonly DesiredPeriod[], review: readonly DesiredPeriod[] = []): {
   keep: number[]; supersede: number[]; insert: DesiredPeriod[];
+  /** Carte #812 : faits conservés « à réexaminer » (aussi dans `keep`) ; absent s'il n'y en a pas. */
+  review?: number[];
 } {
   const verrous = stored.filter((s) => s.userLocked);
   const auto = stored.filter((s) => !s.userLocked);
@@ -407,5 +480,13 @@ export function planRefresh(stored: readonly StoredPeriod[], desired: readonly D
     const id = parSig.get(periodSignature(d));
     if (id !== undefined) { keep.push(id); parSig.delete(periodSignature(d)); } else insert.push(d);
   }
-  return { keep, supersede: [...parSig.values()], insert };
+  // Carte #812 — période « à réexaminer » (même jour qu'une date du document, mention propre) : jamais créée ;
+  // déjà enregistrée à l'identique, elle est CONSERVÉE (en cas de doute, le fait n'est pas déclaré faux).
+  const aRevoir: number[] = [];
+  for (const d of review) {
+    if (protege(d)) continue;
+    const id = parSig.get(periodSignature(d));
+    if (id !== undefined) { keep.push(id); aRevoir.push(id); parSig.delete(periodSignature(d)); }
+  }
+  return { keep, supersede: [...parSig.values()], insert, ...(aRevoir.length ? { review: aRevoir } : {}) };
 }
