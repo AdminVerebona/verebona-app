@@ -353,7 +353,9 @@ scenario('L110D', 'Arbitrage « même réalité » : une question Oui / Non par 
     const { syncOperationCards } = await import('@/services/to-process/operation-cards');
     const { emptyCardNeeds } = await import('@/services/business-operations/consolidation/card-needs');
     for (const [i, c] of cas.entries()) {
-      const source = await document(compte, velo.id, [cand({ candidateKey: `k${i}`, typeHint: (c.type ?? 'INTERVENTION') as never, provider: `Tiers ${i}`, targetHints: [cible(velo.id)], businessReferences: [{ kind: 'INVOICE', value: `F-${i}` }] })], c.titre, '2026-05-0' + (i + 1));
+      const source = await document(compte, velo.id, [cand({ candidateKey: `k${i}`, typeHint: (c.type ?? 'INTERVENTION') as never, provider: `Tiers ${i}`, targetHints: [cible(velo.id)],
+        // Règle complétée (carte #806, §11) : « Financement » n'est retenu que sur preuve — ici une référence de PRÊT.
+        businessReferences: [{ kind: c.type === 'FINANCING' ? 'LOAN' : 'INVOICE', value: `F-${i}` }] })], c.titre, '2026-05-0' + (i + 1));
       await passer(compte, { operationMatch: false });
       const op = (await sql<{ id: number }[]>`SELECT operation_id::int AS id FROM business_operation_sources WHERE source_entity_key = ${String(source)} AND active`)[0].id;
       if (c.type === null) await sql`UPDATE business_operations SET type_code = NULL WHERE id = ${op}`;
