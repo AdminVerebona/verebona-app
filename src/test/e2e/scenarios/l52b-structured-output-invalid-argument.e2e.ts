@@ -160,7 +160,11 @@ scenario('L52B', 'Structured output : 400 INVALID_ARGUMENT générique rattrapé
     // Mémorisé : modèle + schemaHash (TTL existant).
     expect(schemaRejectedRecently(row.model, contrat.schemaHash)).toBe(true);
     // Aucun contenu documentaire ni schéma dans la trace.
-    expect(JSON.stringify({ a: m.providerAttempts, r: m.providerRequest })).not.toMatch(/chaudière|"properties"|CONTRAT RUNTIME/);
+    // Lot 115 (#784) : la trace porte désormais des MESURES du schéma, dont le NOMBRE de propriétés
+    // (`"properties":183`). La garde vise donc un fragment de schéma (objet `properties`, type, énumération),
+    // jamais la mesure — règle inchangée, motif précisé.
+    const trace = JSON.stringify({ a: m.providerAttempts, r: m.providerRequest });
+    expect(trace).not.toMatch(/chaudière|"properties"\s*:\s*[{\[]|"type"\s*:\s*"object"|"enum"\s*:|CONTRAT RUNTIME/);
 
     // BO › Exécutions IA : tentatives internes, compteurs distincts, diagnostic final.
     const { getExecutionDetail } = await import('@/services/ai/telemetry/execution-log.repository');
