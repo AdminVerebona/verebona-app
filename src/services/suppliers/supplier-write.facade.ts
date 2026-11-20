@@ -14,12 +14,32 @@
  * (lot 109B) — relations historiques conservées, fiche consultable et
  * réactivable. Toutes les écritures sont bornées au compte dans leur SQL.
  */
+import { createHash } from 'crypto';
 import { and, eq, ne } from 'drizzle-orm';
 import { db } from '@/db';
 import { suppliers } from '@/db/schema';
 import { emitBusinessEvent } from '@/services/verebona-assistant/events/business-events';
 import { normalizeName, userFieldDecisionsAfterPatch, type UserFieldDecisions } from './supplier-service';
-import { validateSupplierPatch, type SupplierEditableField } from './supplier-validation';
+import { SUPPLIER_EDITABLE_FIELDS, validateSupplierPatch, type SupplierEditableField } from './supplier-validation';
+
+/**
+ * Carte #807 (E07) — VERSION d'une fiche fournisseur : empreinte de TOUTES ses coordonnées modifiables et de
+ * son statut. Pure. L'IBAN y entre par l'empreinte seulement : la version ne permet pas de le relire, et peut
+ * donc être figée dans une proposition de l'Assistant sans y écrire la valeur bancaire.
+ */
+export function supplierRowVersion(row: Record<string, unknown>): string {
+  const texte = (v: unknown) => (v === null || v === undefined || v === '' ? null : String(v));
+  return createHash('sha256')
+    .update(JSON.stringify([Number(row.id), texte(row.status), ...SUPPLIER_EDITABLE_FIELDS.map((f) => texte(row[f]))]))
+    .digest('hex').slice(0, 32);
+}
+
+/** Version actuelle d'une fiche du compte (non supprimée) ; `null` : fiche absente du compte. */
+export async function readSupplierVersion(accountId: number, supplierId: number): Promise<string | null> {
+  const [row] = await db.select().from(suppliers)
+    .where(and(eq(suppliers.id, supplierId), eq(suppliers.accountId, accountId), ne(suppliers.status, 'deleted'))).limit(1);
+  return row ? supplierRowVersion(row as unknown as Record<string, unknown>) : null;
+}
 
 export interface SupplierCreateInput {
   name: string;
@@ -70,6 +90,8 @@ export async function createSupplierForAccount(p: {
 export type SupplierUpdateResult =
   | { ok: true; changed: SupplierEditableField[] }
   | { ok: false; code: 'NOT_FOUND' }
+  /** Carte #807 (E07) : la fiche a changé depuis la version attendue — RIEN n'a été écrit. */
+  | { ok: false; code: 'CONFLICT' }
   | { ok: false; code: 'INVALID_INPUT'; message: string; field: SupplierEditableField | null };
 
 /**
@@ -80,25 +102,38 @@ export type SupplierUpdateResult =
  */
 export async function updateSupplierForAccount(p: {
   accountId: number; userId: number | null; supplierId: number; body: unknown;
+  /**
+   * Carte #807 (E07) — version attendue (`supplierRowVersion`). Fournie, la fiche est relue SOUS VERROU de ligne
+   * dans la transaction de l'écriture : si elle a changé, rien n'est écrit (`CONFLICT`). Absente (écran de la
+   * fiche) : comportement d'avant, inchangé.
+   */
+  expectedVersion?: string;
 }): Promise<SupplierUpdateResult> {
-  const [existing] = await db.select().from(suppliers)
-    .where(and(eq(suppliers.id, p.supplierId), eq(suppliers.accountId, p.accountId), ne(suppliers.status, 'deleted'))).limit(1);
-  if (!existing) return { ok: false, code: 'NOT_FOUND' };
   const v = validateSupplierPatch(p.body);
-  if (!v.ok) return { ok: false, code: 'INVALID_INPUT', message: v.message, field: v.field };
+  const r = await db.transaction(async (tx): Promise<SupplierUpdateResult> => {
+    const base = tx.select().from(suppliers)
+      .where(and(eq(suppliers.id, p.supplierId), eq(suppliers.accountId, p.accountId), ne(suppliers.status, 'deleted'))).limit(1);
+    const [existing] = p.expectedVersion !== undefined ? await base.for('update') : await base;
+    if (!existing) return { ok: false, code: 'NOT_FOUND' };
+    if (!v.ok) return { ok: false, code: 'INVALID_INPUT', message: v.message, field: v.field };
+    if (p.expectedVersion !== undefined && supplierRowVersion(existing as unknown as Record<string, unknown>) !== p.expectedVersion) {
+      return { ok: false, code: 'CONFLICT' };
+    }
 
-  const updates: Record<string, unknown> = { ...v.updates, updatedAt: new Date() };
-  if (typeof v.updates.name === 'string') updates.normalizedName = normalizeName(v.updates.name);
-  // Lot 111X : protection PAR CHAMP — une saisie ou un effacement volontaire n'est jamais remplacé ni
-  // réintroduit par un document (seul un champ dont la valeur CHANGE est une décision).
-  updates.userFieldDecisions = userFieldDecisionsAfterPatch(
-    existing as unknown as Record<string, unknown>, v.updates, existing.userFieldDecisions as UserFieldDecisions, p.userId ?? null);
+    const updates: Record<string, unknown> = { ...v.updates, updatedAt: new Date() };
+    if (typeof v.updates.name === 'string') updates.normalizedName = normalizeName(v.updates.name);
+    // Lot 111X : protection PAR CHAMP — une saisie ou un effacement volontaire n'est jamais remplacé ni
+    // réintroduit par un document (seul un champ dont la valeur CHANGE est une décision).
+    updates.userFieldDecisions = userFieldDecisionsAfterPatch(
+      existing as unknown as Record<string, unknown>, v.updates, existing.userFieldDecisions as UserFieldDecisions, p.userId ?? null);
 
-  await db.update(suppliers).set(updates as Partial<typeof suppliers.$inferInsert>)
-    .where(and(eq(suppliers.id, p.supplierId), eq(suppliers.accountId, p.accountId)));
-  // CDC Assistant §31.7 : modification d'un fournisseur.
-  await emitBusinessEvent({ type: 'SUPPLIER_CHANGED', accountId: p.accountId, entityId: p.supplierId });
-  return { ok: true, changed: Object.keys(v.updates) as SupplierEditableField[] };
+    await tx.update(suppliers).set(updates as Partial<typeof suppliers.$inferInsert>)
+      .where(and(eq(suppliers.id, p.supplierId), eq(suppliers.accountId, p.accountId)));
+    return { ok: true, changed: Object.keys(v.updates) as SupplierEditableField[] };
+  });
+  // CDC Assistant §31.7 : modification d'un fournisseur (après validation de la transaction).
+  if (r.ok) await emitBusinessEvent({ type: 'SUPPLIER_CHANGED', accountId: p.accountId, entityId: p.supplierId });
+  return r;
 }
 
 /**

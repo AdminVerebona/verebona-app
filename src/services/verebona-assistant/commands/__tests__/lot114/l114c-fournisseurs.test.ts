@@ -149,9 +149,23 @@ describe('L114C-F03 — W19 : modifier une coordonnée', () => {
       .toBe('Le nom d’un fournisseur ne peut pas être vide.');
   });
 
-  it('les coordonnées bancaires ne se modifient jamais depuis l’Assistant', () => {
-    expect(SUPPLIER_COMMAND_FIELDS).toEqual(['name', 'phone', 'email', 'website']);
-    expect(parseCommand('Change l’IBAN du fournisseur Martin : FR76 3000 6000 0112 3456 7890 189', TODAY)).toBeNull();
+  // Règle remplacée (carte #807, E04) : « les coordonnées bancaires ne se modifient jamais depuis l'Assistant ».
+  // L'Assistant couvre désormais les champs réellement modifiables de la fiche — IBAN compris, masqué dans
+  // l'aperçu et soumis à une confirmation renforcée (voir lot116/l116d-*).
+  it('règle remplacée (carte #807) : les champs de la fiche sont modifiables, coordonnées bancaires comprises', () => {
+    expect(SUPPLIER_COMMAND_FIELDS).toEqual([
+      'name', 'phone', 'email', 'website', 'addressLine1', 'addressLine2', 'postalCode', 'city', 'country',
+      'siren', 'siret', 'vatNumber', 'iban', 'ibanHolderName',
+    ]);
+    expect(parseCommand('Change l’IBAN du fournisseur Martin : FR76 3000 6000 0112 3456 7890 189', TODAY))
+      .toEqual({ command: 'UPDATE_SUPPLIER', supplierWords: ['martin'], field: 'iban', value: 'FR76 3000 6000 0112 3456 7890 189', clear: false });
+  });
+});
+
+describe('L114C-F05bis — règle remplacée (carte #807) : l’adresse d’un fournisseur se modifie depuis l’Assistant', () => {
+  it('« Change l’adresse du fournisseur Durand : 3 rue des Lilas » est une commande fournisseur', () => {
+    expect(parseCommand('Change l’adresse du fournisseur Durand : 3 rue des Lilas', TODAY))
+      .toEqual({ command: 'UPDATE_SUPPLIER', supplierWords: ['durand'], field: 'addressLine1', value: '3 rue des Lilas', clear: false });
   });
 });
 
@@ -196,7 +210,8 @@ describe('L114C-F05 — désignation et faux positifs', () => {
     'Quel est le téléphone du fournisseur Durand ?',
     'Donne-moi le téléphone du fournisseur Durand',
     'Ajoute le rappel du fournisseur Durand',
-    'Change l’adresse du fournisseur Durand : 3 rue des Lilas',
+    // Règle remplacée (carte #807, E04) : « Change l'adresse du fournisseur Durand : 3 rue des Lilas » EST
+    // désormais une commande (l'adresse est modifiable depuis l'Assistant) — vérifié ci-dessous.
   ])('« %s » n’est pas une commande fournisseur', (message) => {
     const d = parseCommand(message, TODAY);
     expect(d?.command === 'CREATE_SUPPLIER' || d?.command === 'UPDATE_SUPPLIER' || d?.command === 'ARCHIVE_SUPPLIER').toBe(false);

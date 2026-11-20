@@ -106,6 +106,13 @@ export interface WriteAgendaItemOptions {
    */
   onlyIfUntouched?: boolean;
   /**
+   * Carte #807 (E07) — version attendue d'une MISE À JOUR : horodatage de dernière modification, en
+   * microsecondes (texte), tel que l'appelant l'a présenté. La condition est portée par le WHERE de l'écriture
+   * elle-même : si l'élément a été modifié depuis, 0 ligne est touchée, `AgendaConcurrentUpdateError` est levée
+   * et la transaction entière est annulée (aucun lien écrit).
+   */
+  expectedUpdatedAtMicros?: string;
+  /**
    * D-15 : proposition de statut du bien pour un événement historique
    * « vente » créé (défaut : oui). Faux pour une projection d'Opération
    * (lot 46, O7) : la cession vient déjà de la fiche ou des documents.
@@ -125,6 +132,11 @@ export interface WriteAgendaItemResult {
   protected?: boolean;
   /** Lot 113P : création automatique d'un événement supprimé par l'utilisateur — rien n'a été écrit (`id` = 0). */
   suppressedByUser?: boolean;
+}
+
+/** Carte #807 (E07) : l'élément a été modifié depuis la version attendue — rien n'a été écrit. */
+export class AgendaConcurrentUpdateError extends Error {
+  constructor() { super('Agenda item changed since expected version'); this.name = 'AgendaConcurrentUpdateError'; }
 }
 
 export class AgendaValidationError extends Error {
@@ -413,8 +425,16 @@ export async function writeAgendaItem(
             // Lot 75F (§A) : prévision confirmée par l'utilisateur — protégée.
             sql`${agendaItems.confirmationMode} IS DISTINCT FROM 'USER'`,
           ] : []),
+          ...(opts.expectedUpdatedAtMicros !== undefined
+            ? [sql`(extract(epoch FROM ${agendaItems.updatedAt}) * 1000000)::bigint::text = ${opts.expectedUpdatedAtMicros}`] : []),
         ))
         .returning({ id: agendaItems.id });
+      // Carte #807 (E07) : version attendue non retrouvée alors que l'élément existe — conflit, rien n'est écrit.
+      if (touchees.length === 0 && opts.expectedUpdatedAtMicros !== undefined) {
+        const [present] = await tx.select({ id: agendaItems.id }).from(agendaItems)
+          .where(and(eq(agendaItems.id, itemId), eq(agendaItems.accountId, opts.accountId))).limit(1);
+        if (present) throw new AgendaConcurrentUpdateError();
+      }
       // Élément modifié par l'utilisateur entre le plan et l'écriture : protégé.
       if (opts.onlyIfUntouched && touchees.length === 0) return null;
       // Élément d'un autre compte (ou disparu) : aucun lien n'est écrit.

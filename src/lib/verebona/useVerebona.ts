@@ -42,6 +42,8 @@ export interface VerebonaCommandPlan {
    * rechargement du fil.
    */
   status: VerebonaPlanStatus;
+  /** Carte #807 (E04) : libellé de la case à cocher avant de confirmer (changement bancaire) ; absent : confirmation habituelle. */
+  strongConfirmation?: string;
   /**
    * Fin de la fenêtre « Annuler » d'une action exécutée et réversible
    * (15 minutes, décision produit) ; null ou absent : pas de bouton.
@@ -562,7 +564,7 @@ export function useVerebona(rawPageContext?: Record<string, string>, options: Us
    * Confirmation explicite d'une commande préparée : seul l'identifiant du
    * plan part au serveur, qui exécute ce qui a été présenté — rien d'autre.
    */
-  const decidePlan = useCallback(async (planId: string, decision: 'confirm' | 'cancel' | 'undo') => {
+  const decidePlan = useCallback(async (planId: string, decision: 'confirm' | 'cancel' | 'undo', strongConfirmation = false) => {
     const planStatus = (status: VerebonaPlanStatus, patch: Partial<VerebonaCommandPlan> = {}) => (m: VerebonaMessage): VerebonaMessage => (
       m.commandPlan?.planId === planId ? { ...m, commandPlan: { ...m.commandPlan, ...patch, status } } : m
     );
@@ -570,7 +572,11 @@ export function useVerebona(rawPageContext?: Record<string, string>, options: Us
     const avant = messagesRef.current.find((m) => m.commandPlan?.planId === planId)?.commandPlan?.status ?? 'PENDING_CONFIRMATION';
     // Boutons désactivés pendant l'envoi : un double clic n'envoie qu'une décision.
     setState((s) => ({ ...s, isLoading: true, error: null, messages: s.messages.map(planStatus('DECIDING')) }));
-    const res = await fetch(`/api/verebona/commands/${encodeURIComponent(planId)}/${decision}`, { method: 'POST' }).catch(() => null);
+    // Carte #807 (E04) : l'attestation de vérification (changement bancaire) est le SEUL contenu jamais envoyé.
+    const res = await fetch(`/api/verebona/commands/${encodeURIComponent(planId)}/${decision}`, {
+      method: 'POST',
+      ...(decision === 'confirm' && strongConfirmation ? { headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ strongConfirmation: true }) } : {}),
+    }).catch(() => null);
     const data = res ? await res.json().catch(() => ({})) : {};
     // État final rendu par le serveur (annulée, expirée, exécutée…) ; à
     // défaut (réseau), la proposition redevient utilisable.
@@ -628,7 +634,10 @@ export function useVerebona(rawPageContext?: Record<string, string>, options: Us
         ? `${data.summary}\n${lignes.map((r) => `• ${r.status === 'SUCCESS' ? '✓' : r.status === 'SKIPPED_DEPENDENCY' ? '↷' : '✗'} ${r.message}`).join('\n')}`
         : (data.summary ?? 'Action effectuée.'));
     }
-    setState((s) => ({ ...s, isLoading: false, messages: [...s.messages, { id: newId(), role: 'assistant', content: texte }] }));
+    // Carte #807 (E07) : conflit de version — la proposition relue sur les données actuelles suit l'issue, à confirmer de nouveau.
+    const relue = decision === 'confirm' && res?.ok && data?.refreshedPlan?.planId
+      ? { ...(data.refreshedPlan as Omit<VerebonaCommandPlan, 'status'>), status: 'PENDING_CONFIRMATION' as const } : null;
+    setState((s) => ({ ...s, isLoading: false, messages: [...s.messages, { id: newId(), role: 'assistant', content: texte, ...(relue ? { commandPlan: relue } : {}) }] }));
   }, []);
 
   /** Nouveau fil, sans mémoire des autres. */
@@ -725,7 +734,7 @@ export function useVerebona(rawPageContext?: Record<string, string>, options: Us
     sendFeedback,
     appendLocal,
     answerClarification,
-    confirmPlan: (planId: string) => decidePlan(planId, 'confirm'),
+    confirmPlan: (planId: string, strongConfirmation = false) => decidePlan(planId, 'confirm', strongConfirmation),
     cancelPlan: (planId: string) => decidePlan(planId, 'cancel'),
     /** « Annuler » une action exécutée, dans les 15 minutes (plans réversibles seulement). */
     undoPlan: (planId: string) => decidePlan(planId, 'undo'),

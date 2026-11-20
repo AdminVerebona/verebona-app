@@ -57,7 +57,10 @@ async function traiter(
     return NextResponse.json({ error: { code: 'PLAN_NOT_FOUND', message: 'Cette action n’existe pas ou ne vous appartient pas.', recoverable: false } }, { status: 404 });
   }
   const { planId } = parsed.data;
-  const r = await confirmCommandPlan({ planId, accountId, userId: session.userId });
+  // Carte #807 (E04) : seule attestation admise dans le corps — la case de vérification d'un changement bancaire.
+  // Aucun paramètre de l'action n'est jamais lu ici : ce qui s'exécute reste le plan figé.
+  const corps = await req.json().catch(() => null) as { strongConfirmation?: unknown } | null;
+  const r = await confirmCommandPlan({ planId, accountId, userId: session.userId, strongConfirmation: corps?.strongConfirmation === true });
   if (!r.ok) {
     const status = r.code === 'PLAN_NOT_FOUND' ? 404 : r.code === 'WRITE_REFUSED' ? 403 : 409;
     return NextResponse.json({ error: { code: r.code, message: r.message, recoverable: r.code !== 'WRITE_REFUSED' }, status: r.status ?? null }, { status });
@@ -67,5 +70,7 @@ async function traiter(
   return NextResponse.json({
     planId, status: r.status, summary: r.summary, results: r.results, message: outcomeText(r.summary, r.results),
     undoUntil: r.undoUntil ?? null,
+    // Carte #807 (E07) : proposition relue après un conflit de version — à confirmer de nouveau.
+    refreshedPlan: r.refreshedPlan ?? null,
   });
 }

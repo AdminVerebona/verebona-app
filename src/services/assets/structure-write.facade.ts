@@ -216,8 +216,23 @@ export async function createEquipmentForAccount(session: StructureWriteSession, 
   }, { status: 201 });
 }
 
-/** Modifie un équipement du bien (corps de `PUT /api/assets/[id]/equipments/[equipId]`, après ses contrôles d'accès). */
-export async function updateEquipmentForAccount(session: StructureWriteSession, assetId: number, equipmentId: number, body: any): Promise<NextResponse> {
+/**
+ * Carte #807 (E07) — horodatage de dernière modification d'un équipement, en microsecondes (texte). Chaque
+ * écriture de cette façade le renouvelle : c'est la VERSION que l'Assistant fige à l'aperçu.
+ */
+export const EQUIPMENT_VERSION_SQL = `(extract(epoch FROM updated_at) * 1000000)::bigint::text`;
+
+/**
+ * Modifie un équipement du bien (corps de `PUT /api/assets/[id]/equipments/[equipId]`, après ses contrôles d'accès).
+ *
+ * Carte #807 (E07) — `guard.expectedUpdatedAtMicros` : version attendue. Fournie, elle est exigée DANS
+ * l'instruction d'écriture elle-même (ligne verrouillée par `FOR UPDATE`) : si l'équipement a été modifié
+ * depuis, rien n'est écrit et la réponse est un 409. Absente (écran du bien) : comportement d'avant, inchangé.
+ */
+export async function updateEquipmentForAccount(
+  session: StructureWriteSession, assetId: number, equipmentId: number, body: any,
+  guard: { expectedUpdatedAtMicros?: string } = {},
+): Promise<NextResponse> {
   const { name, type, category, status, substructureId, newAssetId } = body;
   let { purchasePriceCents, estimatedValueCents } = body;
 
@@ -318,12 +333,15 @@ export async function updateEquipmentForAccount(session: StructureWriteSession, 
   // WHERE params
   vals.push(equipmentId); // $p
   vals.push(assetId);     // $p+1
+  // Carte #807 (E07) : version attendue, comparée sous le verrou de ligne de la même instruction.
+  const garde = guard.expectedUpdatedAtMicros !== undefined;
+  if (garde) vals.push(guard.expectedUpdatedAtMicros); // $p+2
 
   // Lot 75G (écart D) : valeurs AVANT modification relues dans la même
   // instruction (verrou de ligne) — le rapprochement n'est relancé que sur
   // un changement EFFECTIF du nom ou du bien parent.
   const rows = await db.$client.unsafe<{ id: number; name: string; status: string; type: string | null; category: string | null; energy_usage: string | null; substructure_id: number | null; asset_id: number; old_name: string; old_asset_id: number }[]>(
-    `WITH avant AS (SELECT id, name AS old_name, asset_id AS old_asset_id FROM equipments WHERE id = $${p} AND asset_id = $${p + 1} FOR UPDATE)
+    `WITH avant AS (SELECT id, name AS old_name, asset_id AS old_asset_id FROM equipments WHERE id = $${p} AND asset_id = $${p + 1}${garde ? ` AND ${EQUIPMENT_VERSION_SQL} = $${p + 2}` : ''} FOR UPDATE)
      UPDATE equipments SET ${sets.join(', ')} FROM avant WHERE equipments.id = avant.id
      RETURNING equipments.id, equipments.name, equipments.status, equipments.type, equipments.category, equipments.energy_usage,
                equipments.substructure_id, equipments.asset_id, avant.old_name, avant.old_asset_id`,
@@ -331,6 +349,10 @@ export async function updateEquipmentForAccount(session: StructureWriteSession, 
   );
 
   if (!rows.length) {
+    if (garde) {
+      const present = await db.$client<{ id: number }[]>`SELECT id FROM equipments WHERE id = ${equipmentId} AND asset_id = ${assetId} LIMIT 1`;
+      if (present.length) return apiError(409, 'INVALID_STATE', 'Equipment changed since expected version');
+    }
     return apiError(404, 'NOT_FOUND', 'Equipment not found');
   }
 

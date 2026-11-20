@@ -42,6 +42,7 @@ import { assetDesignationsIn, assetFamilyLabel, getAssetCategories, getAssetFami
 import { ASSET_STATUSES, ASSET_STATUS_LABELS, normalizeAssetStatus, OUT_OF_PORTFOLIO_ASSET_STATUSES } from '@/lib/asset-status';
 import type { ReferenceEventQuery, ReferenceEventState } from './reference-event-model';
 import type { RubricCode } from '@/lib/referential/v2';
+import { BANKING_CONFIRMATION_LABEL, BANKING_CONFIRMATION_REQUIRED, redactActionsForTrace } from './rich-edits';
 
 /** Validité d'un plan non confirmé. */
 const PLAN_TTL_MS = 15 * 60_000;
@@ -215,6 +216,15 @@ export interface SupplierState {
   version: string;
   /** Relations conservées par l'archivage (totaux de la fiche). */
   links: { documents: number; assets: number; equipments: number; agenda: number };
+  /**
+   * Carte #807 (E04) — autres champs modifiables de la fiche. L'IBAN n'est JAMAIS lu en clair ici : seulement
+   * sa forme masquée et sa présence. Absents pour un appelant qui ne les lit pas.
+   */
+  addressLine1?: string | null; addressLine2?: string | null; postalCode?: string | null; city?: string | null; country?: string | null;
+  siren?: string | null; siret?: string | null; vatNumber?: string | null;
+  ibanMasked?: string | null; hasIban?: boolean; ibanHolderName?: string | null;
+  /** Carte #807 (E07) — version COMPLÈTE de la fiche, exigée sous verrou par la façade d'écriture. */
+  rowVersion?: string;
 }
 
 /** Empreinte d'une fiche fournisseur telle que présentée (pure). */
@@ -228,6 +238,8 @@ export interface AgendaCandidate {
   startDate: string | null;
   /** Empreinte de l'état présenté (titre, date, mise à jour) — recontrôlée à l'exécution. */
   version: string;
+  /** Carte #807 (E07) — horodatage de dernière modification (microsecondes) : version exigée par le service dans son écriture. */
+  updatedAt?: string;
   /** Nombre d'échéances de la même série (1 : échéance isolée). */
   seriesCount: number;
   assetLabel: string | null;
@@ -306,6 +318,7 @@ export const sqlLookup: CommandLookup = {
     )) as unknown as Array<{ id: number; title: string; startDate: string | null; updatedAt: string; seriesCount: number; assetLabel: string | null }>;
     return rows.map((r) => ({
       id: Number(r.id), title: r.title, startDate: r.startDate, seriesCount: Number(r.seriesCount), assetLabel: r.assetLabel,
+      updatedAt: r.updatedAt,
       version: agendaVersion({ id: Number(r.id), title: r.title, startDate: r.startDate, updatedAt: r.updatedAt }),
     }));
   },
@@ -458,9 +471,17 @@ export const sqlLookup: CommandLookup = {
     const d = await getSupplierDetail(accountId, supplierId);
     if (!d) return null;
     const base = { id: d.supplier.id, name: d.supplier.name, status: d.supplier.status, phone: d.supplier.phone, email: d.supplier.email, website: d.supplier.website };
+    // Carte #807 (E04, E07) : champs ajoutés (IBAN masqué par la lecture de la fiche) et version complète de la fiche.
+    const { readSupplierVersion } = await import('@/services/suppliers/supplier-write.facade');
+    const rowVersion = await readSupplierVersion(accountId, supplierId);
+    const f = d.supplier;
     return {
       ...base, version: supplierVersion(base),
       links: { documents: d.documents.total, assets: d.assets.total, equipments: d.equipments.total, agenda: d.agendaItems.length },
+      addressLine1: f.addressLine1, addressLine2: f.addressLine2, postalCode: f.postalCode, city: f.city, country: f.country,
+      siren: f.siren, siret: f.siret, vatNumber: f.vatNumber,
+      ibanMasked: f.ibanMasked, hasIban: f.hasIban, ibanHolderName: f.ibanHolderName,
+      ...(rowVersion ? { rowVersion } : {}),
     };
   },
   async supplierDuplicates(accountId, name) {
@@ -548,6 +569,8 @@ export async function resolveDraft(
   if (draft.command === 'CREATE_SUPPLIER' || draft.command === 'UPDATE_SUPPLIER' || draft.command === 'ARCHIVE_SUPPLIER') {
     return resolveSupplierCommand(draft, input, lookup, actionId);
   }
+  // Carte #807 (E01, W05) : modifier un équipement (mêmes champs que sa fiche).
+  if (draft.command === 'UPDATE_EQUIPMENT') return resolveEquipmentUpdate(draft, input, lookup, actionId);
   if (draft.command === 'CREATE_ROOM' || draft.command === 'CREATE_EQUIPMENT' || draft.command === 'RENAME_ROOM' || draft.command === 'RENAME_EQUIPMENT'
     || draft.command === 'DELETE_ROOM' || draft.command === 'ARCHIVE_EQUIPMENT') {
     return resolveStructureCommand(draft, input, lookup, actionId);
@@ -573,7 +596,9 @@ export async function resolveDraft(
   // Passage 114AB (#753) : gestes INVERSES des événements de référence — résolus dans `reference-events-inverse.ts`.
   if (draft.command === 'RESTORE_REFERENCE_EVENT' || draft.command === 'DISSOCIATE_REFERENCE_EVENTS'
     || draft.command === 'UNLINK_DOCUMENT_REFERENCE_EVENT' || draft.command === 'UNLINK_SUPPLIER_REFERENCE_EVENT'
-    || draft.command === 'LINK_AGENDA_REFERENCE_EVENT') {
+    || draft.command === 'LINK_AGENDA_REFERENCE_EVENT'
+    // Carte #807 (E09) : demande de déplacement d'un document — deux gestes du catalogue (retirer, puis rattacher).
+    || draft.command === 'DOCUMENT_REFERENCE_EVENT_TRANSFER_REQUEST') {
     return (await import('./reference-events-inverse')).resolveInverseReferenceEventCommand(draft, input, lookup, actionId);
   }
 
@@ -1107,6 +1132,64 @@ async function resolveDocumentStructureTargets(
 // ── Lot 114 (#753, W04 – W09) : pièces et équipements d'un bien ────────────
 
 type StructureDraft = Extract<CommandDraft, { command: 'CREATE_ROOM' | 'CREATE_EQUIPMENT' | 'RENAME_ROOM' | 'RENAME_EQUIPMENT' | 'DELETE_ROOM' | 'ARCHIVE_EQUIPMENT' }>;
+
+/** Pièce unique d'un bien désignée par des mots, ou la précision à demander. */
+async function pieceDesignee(lookup: CommandLookup, accountId: number, words: string[], bien: { id: number; name: string }): Promise<{ piece: StructureCandidate } | { needInfo: string }> {
+  const salles = await lookup.findRooms!(accountId, words, bien.id);
+  if (salles.length === 0) return { needInfo: `Je n’ai pas trouvé cette pièce dans ${bien.name}. Dans quelle pièce se trouve cet équipement ?` };
+  const exactes = salles.filter((x) => plain(x.name).split(/[^a-z0-9]+/).filter(Boolean).join(' ') === words.join(' '));
+  const retenues = exactes.length === 1 ? exactes : salles;
+  if (retenues.length > 1) return { needInfo: `Plusieurs pièces correspondent : ${retenues.slice(0, 5).map((x) => x.name).join(', ')}. Précisez laquelle dans votre demande.` };
+  return { piece: retenues[0] };
+}
+
+/**
+ * Carte #807 (E01, W05) — modifier un équipement avec la même couverture que sa fiche : valeurs, pièce et bien
+ * parent. L'équipement, la pièce et le bien sont retrouvés DANS LE COMPTE ; jamais un choix à la place de
+ * l'utilisateur. L'action est construite par `rich-edits.buildEquipmentUpdate` (avant / après, conséquences).
+ */
+async function resolveEquipmentUpdate(
+  draft: Extract<CommandDraft, { command: 'UPDATE_EQUIPMENT' }>, input: AssistantRequestInput, lookup: CommandLookup, actionId: string,
+): Promise<PlannedAction | { needInfo: string }> {
+  const acc = input.accountId;
+  if (!lookup.findRooms || !lookup.findEquipments) return { needInfo: 'Je ne peux pas faire cette modification depuis l’assistant.' };
+  const riches = await import('./rich-edits');
+  const demande = riches.interpretEquipmentValues(draft.values);
+  if ('needInfo' in demande) return demande;
+  const r = await bienDesigne(lookup, input, draft, 'Dans quel bien se trouve cet équipement ?');
+  if ('needInfo' in r) return r;
+  const filtre = draft.assetWords.length || draft.assetFromContext ? r.bien?.id ?? null : null;
+  const trouves = await lookup.findEquipments(acc, draft.targetWords, filtre);
+  if (trouves.length === 0) return { needInfo: 'Je n’ai pas trouvé cet équipement dans votre compte. Quel équipement voulez-vous modifier ?' };
+  const exacts = trouves.filter((x) => plain(x.name).split(/[^a-z0-9]+/).filter(Boolean).join(' ') === draft.targetWords.join(' '));
+  const retenus = exacts.length === 1 ? exacts : trouves;
+  if (retenus.length > 1) return { needInfo: `Plusieurs équipements correspondent : ${retenus.slice(0, 5).map((x) => `${x.name} (${x.assetName})`).join(', ')}. Précisez lequel dans votre demande.` };
+  const state = await riches.readEquipmentFullState(acc, retenus[0].id);
+  if (!state) return { needInfo: 'Je n’ai pas trouvé cet équipement dans votre compte. Quel équipement voulez-vous modifier ?' };
+
+  // Bien parent demandé : un bien du compte, unique.
+  let newAssetId: number | undefined;
+  let bienFinal = { id: state.assetId, name: state.assetName };
+  if (demande.asset) {
+    const mots = plain(demande.asset).split(/[^a-z0-9]+/).filter((w) => w.length >= 3);
+    const biens = await lookup.findAssets(acc, mots);
+    if (biens.length === 0) return { needInfo: 'Je n’ai pas trouvé ce bien dans votre compte. Vers quel bien voulez-vous déplacer cet équipement ?' };
+    if (biens.length > 1) return { needInfo: `Plusieurs biens correspondent : ${biens.slice(0, 5).map((a) => nomBien(a)).join(', ')}. Précisez lequel dans votre demande.` };
+    if (biens[0].id === state.assetId && demande.room === undefined && Object.keys(demande.requested).length === 0) {
+      return { needInfo: `L’équipement « ${state.name} » est déjà dans ${state.assetName}.` };
+    }
+    if (biens[0].id !== state.assetId) { newAssetId = biens[0].id; bienFinal = { id: biens[0].id, name: biens[0].name }; }
+  }
+  // Pièce demandée : cherchée dans le bien FINAL ; « aucune » retire la pièce.
+  let roomId: number | null | undefined;
+  if (demande.room === null) roomId = null;
+  else if (typeof demande.room === 'string') {
+    const p = await pieceDesignee(lookup, acc, plain(demande.room).split(/[^a-z0-9]+/).filter((w) => w.length >= 2 && w !== 'piece'), bienFinal);
+    if ('needInfo' in p) return p;
+    roomId = p.piece.id;
+  }
+  return riches.buildEquipmentUpdate({ accountId: acc, actionId, state, requested: demande.requested, roomId, newAssetId, lookup });
+}
 const memeNom = (a: string, b: string) => plain(a).replace(/\s+/g, ' ').trim() === plain(b).replace(/\s+/g, ' ').trim();
 
 /** Bien désigné par la demande (mots, ou bien du fil / de la page) ; `null` : aucun bien désigné. */
@@ -1166,20 +1249,29 @@ async function resolveStructureCommand(
         effects: [`Pièce : ${draft.name}`, `Bien : ${nomBien(bien)}`],
       };
     }
+    // Carte #807 (E02) : informations de la fiche fournies à la création — transmises telles que validées, jamais
+    // exigées. Une pièce nommée dans la liste (« pièce Cellier ») vaut « dans la pièce Cellier ».
+    let details: import('./catalog').EquipmentRequestedValues | undefined;
+    let lignes: string[] = [];
+    let motsPiece = draft.roomWords;
+    if (draft.command === 'CREATE_EQUIPMENT' && draft.values?.length) {
+      const riches = await import('./rich-edits');
+      const demande = riches.interpretEquipmentValues(draft.values.filter((x) => x.key !== 'name' && x.key !== 'asset'));
+      if ('needInfo' in demande) return demande;
+      if (typeof demande.room === 'string' && !motsPiece.length) motsPiece = plain(demande.room).split(/[^a-z0-9]+/).filter((w) => w.length >= 2 && w !== 'piece');
+      if (Object.keys(demande.requested).length) { details = demande.requested; lignes = riches.equipmentCreationLines(details); }
+    }
     let salle: StructureCandidate | null = null;
-    if (draft.roomWords.length) {
-      const salles = await lookup.findRooms(acc, draft.roomWords, bien.id);
-      if (salles.length === 0) return { needInfo: `Je n’ai pas trouvé cette pièce dans ${nomBien(bien)}. Dans quelle pièce se trouve cet équipement ?` };
-      const exactes = salles.filter((x) => plain(x.name).split(/[^a-z0-9]+/).filter(Boolean).join(' ') === draft.roomWords.join(' '));
-      const retenues = exactes.length === 1 ? exactes : salles;
-      if (retenues.length > 1) return { needInfo: `Plusieurs pièces correspondent : ${retenues.slice(0, 5).map((x) => x.name).join(', ')}. Précisez laquelle dans votre demande.` };
-      salle = retenues[0];
+    if (motsPiece.length) {
+      const p = await pieceDesignee(lookup, acc, motsPiece, { id: bien.id, name: nomBien(bien) });
+      if ('needInfo' in p) return p;
+      salle = p.piece;
     }
     return {
       actionId, command: 'CREATE_EQUIPMENT', dependsOn: [], targets: [{ type: 'asset', id: bien.id, label: nomBien(bien) }],
-      params: { kind: 'equipment_create', equipmentAssetId: bien.id, equipmentName: draft.name, equipmentRoomId: salle?.id ?? null },
+      params: { kind: 'equipment_create', equipmentAssetId: bien.id, equipmentName: draft.name, equipmentRoomId: salle?.id ?? null, ...(details ? { details } : {}) },
       preview: `Créer l’équipement « ${draft.name} » dans ${nomBien(bien)}${salle ? ` (pièce « ${salle.name} »)` : ''}.`,
-      effects: [`Équipement : ${draft.name}`, `Bien : ${nomBien(bien)}`, salle ? `Pièce : ${salle.name}` : 'Pièce : aucune'],
+      effects: [`Équipement : ${draft.name}`, `Bien : ${nomBien(bien)}`, salle ? `Pièce : ${salle.name}` : 'Pièce : aucune', ...lignes],
     };
   }
 
@@ -1553,7 +1645,19 @@ export const SUPPLIER_FIELD_LABELS: Readonly<Record<SupplierCommandField, { labe
   phone: { label: 'Téléphone', article: 'le téléphone' },
   email: { label: 'E-mail', article: 'l’e-mail' },
   website: { label: 'Site web', article: 'le site web' },
+  // Carte #807 (E04) : champs ajoutés — libellés de la fiche fournisseur.
+  addressLine1: { label: 'Adresse', article: 'l’adresse' },
+  addressLine2: { label: 'Complément d’adresse', article: 'le complément d’adresse' },
+  postalCode: { label: 'Code postal', article: 'le code postal' },
+  city: { label: 'Ville', article: 'la ville' },
+  country: { label: 'Pays', article: 'le pays' },
+  siren: { label: 'SIREN', article: 'le SIREN' },
+  siret: { label: 'SIRET', article: 'le SIRET' },
+  vatNumber: { label: 'N° de TVA', article: 'le n° de TVA' },
+  iban: { label: 'IBAN', article: 'l’IBAN' },
+  ibanHolderName: { label: 'Titulaire du compte', article: 'le titulaire du compte' },
 };
+const CHAMPS_FOURNISSEUR_HISTORIQUES: ReadonlySet<SupplierCommandField> = new Set(['name', 'phone', 'email', 'website']);
 const vide = (v: string | null) => (v && v.trim() ? v : '(vide)');
 const pluriel = (n: number, un: string, plusieurs: string) => `${n} ${n > 1 ? plusieurs : un}`;
 
@@ -1628,6 +1732,15 @@ async function resolveSupplierCommand(
     if ('needInfo' in cible) return cible;
     const s = cible.state;
     const def = SUPPLIER_FIELD_LABELS[draft.field];
+    // Carte #807 (E04) : plusieurs champs, ou un champ ajouté (adresse, SIREN, SIRET, TVA, IBAN, titulaire) —
+    // même validation que la fiche, IBAN masqué, confirmation renforcée pour un changement bancaire.
+    if (draft.values || !CHAMPS_FOURNISSEUR_HISTORIQUES.has(draft.field)) {
+      if (!draft.values && !draft.clear && !draft.value) return { needInfo: `Quelle valeur voulez-vous enregistrer pour ${def.article} de « ${s.name} » ?` };
+      const requested: Partial<Record<SupplierCommandField, string | null>> = draft.values
+        ? Object.fromEntries(draft.values.map((x) => [x.key, x.raw])) as Partial<Record<SupplierCommandField, string | null>>
+        : { [draft.field]: draft.clear ? null : draft.value };
+      return (await import('./rich-edits')).buildSupplierUpdate({ actionId, state: s, requested });
+    }
     if (draft.field === 'name' && draft.clear) return { needInfo: 'Le nom d’un fournisseur ne peut pas être vide.' };
     if (!draft.clear && !draft.value) return { needInfo: `Quelle valeur voulez-vous enregistrer pour ${def.article} de « ${s.name} » ?` };
     const v = validateSupplierPatch({ [draft.field]: draft.clear ? '' : draft.value });
@@ -1635,14 +1748,15 @@ async function resolveSupplierCommand(
       return { needInfo: draft.field === 'email' ? 'Cette adresse e-mail ne semble pas valide. Pouvez-vous la vérifier ?' : 'Cette valeur ne peut pas être enregistrée telle quelle. Pouvez-vous la vérifier ?' };
     }
     const nouvelle = (v.updates[draft.field] ?? null) as string | null;
-    const actuelle = s[draft.field];
+    const actuelle = s[draft.field as 'name' | 'phone' | 'email' | 'website'];
     if ((actuelle ?? '') === (nouvelle ?? '')) {
       return { needInfo: nouvelle ? `${def.label} de « ${s.name} » : c’est déjà ${nouvelle}.` : `${def.label} de « ${s.name} » : aucune valeur n’est enregistrée.` };
     }
     return {
       actionId, command: 'UPDATE_SUPPLIER', dependsOn: [],
       targets: [{ type: 'supplier', id: s.id, label: s.name }],
-      params: { kind: 'supplier_update', supplierId: s.id, patch: { [draft.field]: nouvelle }, expectedVersion: s.version },
+      // Carte #807 (E07) : version complète de la fiche, exigée sous verrou par la façade.
+      params: { kind: 'supplier_update', supplierId: s.id, patch: { [draft.field]: nouvelle }, expectedVersion: s.version, ...(s.rowVersion ? { expectedRowVersion: s.rowVersion } : {}) },
       preview: nouvelle
         ? `Modifier ${def.article} du fournisseur « ${s.name} » : ${vide(actuelle)} → ${nouvelle}.`
         : `Effacer ${def.article} du fournisseur « ${s.name} » (${vide(actuelle)}).`,
@@ -1750,6 +1864,13 @@ async function resolveAgendaChange(
     };
   }
 
+  // Carte #807 (E03) : champs du tiroir de l'Agenda nommés dans la demande — même service, mêmes validations.
+  if (draft.values) {
+    const riches = await import('./rich-edits');
+    const demande = await riches.interpretAgendaValues(draft.values, acc, lookup.today(), lookup);
+    if ('needInfo' in demande) return demande;
+    return riches.buildAgendaUpdate({ accountId: acc, actionId, agendaItemId: c.id, patch: demande });
+  }
   const patch: { title?: string; startDate?: string | null } = {};
   if (draft.newDate && draft.newDate !== c.startDate) patch.startDate = draft.newDate;
   if (draft.newTitle && draft.newTitle !== c.title) patch.title = draft.newTitle;
@@ -1760,7 +1881,8 @@ async function resolveAgendaChange(
   ].filter((x): x is string => !!x);
   return {
     actionId, command: 'UPDATE_AGENDA_ITEM', targets, dependsOn: [],
-    params: { kind: 'agenda_update', agendaItemId: c.id, patch, expectedVersion: c.version },
+    // Carte #807 (E07) : version exigée par le service de l'Agenda dans son écriture.
+    params: { kind: 'agenda_update', agendaItemId: c.id, patch, expectedVersion: c.version, ...(c.updatedAt ? { expectedUpdatedAt: c.updatedAt } : {}) },
     preview: patch.startDate !== undefined && patch.title === undefined
       ? `Déplacer l’échéance ${designer(c)} au ${formatDateFr(patch.startDate!)}.`
       : `Modifier l’échéance ${designer(c)} : ${changements.join(' ; ')}.`,
@@ -1849,11 +1971,15 @@ export const hashActions = (payload: string) => createHash('sha256').update(payl
 /** Libellé d'une commande retirée encore présente dans un plan ancien (#715 : « réalisé » / « annulé »). */
 export const RETIRED_COMMAND_LABEL = 'Action retirée';
 
-function toPreview(plan: StoredPlan): CommandPlanPreview {
+/** Carte #807 (E04) : le plan touche-t-il des coordonnées bancaires (confirmation renforcée) ? Pure. */
+const estBancaire = (actions: PlannedAction[]): boolean => actions.some((a) => (a.params as { banking?: boolean } | null)?.banking === true);
+
+function toPreview(plan: Pick<StoredPlan, 'planId' | 'summary' | 'expiresAt' | 'actions'>): CommandPlanPreview {
   return {
     planId: plan.planId,
     summary: plan.summary,
     expiresAt: plan.expiresAt,
+    ...(estBancaire(plan.actions) ? { strongConfirmation: BANKING_CONFIRMATION_LABEL } : {}),
     actions: plan.actions.map((a) => ({
       // #715 (lot 113P) : un plan ancien peut porter une commande retirée (statut d'échéance).
       actionId: a.actionId, label: WRITE_COMMAND_CATALOG[a.command]?.label ?? RETIRED_COMMAND_LABEL,
@@ -1881,7 +2007,41 @@ async function savePlan(plan: StoredPlan, requestId: string | null): Promise<voi
      VALUES ($1, $2, $3, $4, $5, 'PENDING_CONFIRMATION', $6, $7, $8, $9)`,
     [plan.planId, plan.accountId, plan.userId, plan.conversationId, requestId, plan.summary, payload, hashActions(payload), plan.expiresAt] as never[],
   );
-  await tracer(plan.planId, plan.accountId, plan.userId, 'PREPARED', { summary: plan.summary, actions: plan.actions });
+  // Carte #807 (E04) : le journal ne porte jamais un IBAN en clair (forme masquée seulement).
+  await tracer(plan.planId, plan.accountId, plan.userId, 'PREPARED', { summary: plan.summary, actions: redactActionsForTrace(plan.actions) });
+}
+
+/**
+ * Carte #807 (E04) — un plan CLOS (exécuté, annulé, expiré, refusé) ne conserve aucune valeur bancaire : l'IBAN
+ * de son patch est remplacé par sa forme masquée. Balayage borné, idempotent ; ne lève jamais.
+ */
+export async function scrubBankingPayloads(scope: { accountId?: number } = {}): Promise<number> {
+  try {
+    const rows = (await pgClient.unsafe(
+      `SELECT plan_id AS "planId", actions_payload AS payload FROM verebona_command_plans
+        WHERE status NOT IN ('PENDING_CONFIRMATION', 'EXECUTING')
+          AND actions_payload LIKE '%"banking":true%' AND actions_payload NOT LIKE '%"ibanScrubbed":true%'
+          AND ($1::int IS NULL OR account_id = $1::int)
+        LIMIT 100`,
+      [scope.accountId ?? null] as never[],
+    )) as unknown as Array<{ planId: string; payload: string }>;
+    for (const r of rows) {
+      let actions: PlannedAction[];
+      try { actions = JSON.parse(r.payload) as PlannedAction[]; } catch { continue; }
+      const propre = JSON.stringify(redactActionsForTrace(actions).map((a) => {
+        const p = a.params as { kind?: string; banking?: boolean };
+        return p.kind === 'supplier_update' && p.banking ? { ...a, params: { ...a.params, ibanScrubbed: true } } : a;
+      }));
+      await pgClient.unsafe(
+        `UPDATE verebona_command_plans SET actions_payload = $2, params_hash = $3 WHERE plan_id = $1 AND status NOT IN ('PENDING_CONFIRMATION', 'EXECUTING')`,
+        [r.planId, propre, hashActions(propre)] as never[],
+      );
+    }
+    return rows.length;
+  } catch (e) {
+    console.error('[verebona] purge des valeurs bancaires des propositions closes :', (e as Error).message);
+    return 0;
+  }
 }
 
 /**
@@ -1911,19 +2071,25 @@ export async function prepareCommandSegments(
   // Lot 114X (#753, W21 – W26), non-régression : une phrase sur un événement de référence n'est une commande que si
   // elle désigne quelque chose de réel dans le compte (`isReferenceEventCommand`) — sinon le message suit le
   // parcours de réponse normal, comme avant.
-  for (const [i, seg] of segments.entries()) {
-    const d = seg.draft;
-    // Passage 114Z4 : un segment DÉPENDANT d'une déclaration de la même phrase vise l'événement qu'elle
-    // enregistre — il n'a rien à désigner dans le compte.
-    const memePhrase = seg.dependsOnPrevious && segments[i - 1]?.draft.command === 'CREATE_REFERENCE_EVENT';
-    // Passage 114AB : les GESTES INVERSES suivent exactement la même règle de non-régression (un geste sur un
-    // événement supprimé n'est une commande que si le compte en porte un qui réponde à la désignation).
-    if ((d.command === 'CREATE_REFERENCE_EVENT' || d.command === 'UPDATE_REFERENCE_EVENT' || d.command === 'INVALIDATE_REFERENCE_EVENT'
-      || d.command === 'ASSOCIATE_REFERENCE_EVENTS' || d.command === 'LINK_DOCUMENT_REFERENCE_EVENT' || d.command === 'LINK_SUPPLIER_REFERENCE_EVENT'
-      || d.command === 'RESTORE_REFERENCE_EVENT' || d.command === 'DISSOCIATE_REFERENCE_EVENTS'
-      || d.command === 'UNLINK_DOCUMENT_REFERENCE_EVENT' || d.command === 'UNLINK_SUPPLIER_REFERENCE_EVENT'
-      || d.command === 'LINK_AGENDA_REFERENCE_EVENT')
-      && !(await (await import('./reference-events')).isReferenceEventCommand(d, input, lookup, memePhrase))) return null;
+  try {
+    for (const [i, seg] of segments.entries()) {
+      const d = seg.draft;
+      // Passage 114Z4 : un segment DÉPENDANT d'une déclaration de la même phrase vise l'événement qu'elle
+      // enregistre — il n'a rien à désigner dans le compte.
+      const memePhrase = seg.dependsOnPrevious && segments[i - 1]?.draft.command === 'CREATE_REFERENCE_EVENT';
+      // Passage 114AB : les GESTES INVERSES suivent exactement la même règle de non-régression (un geste sur un
+      // événement supprimé n'est une commande que si le compte en porte un qui réponde à la désignation).
+      if ((d.command === 'CREATE_REFERENCE_EVENT' || d.command === 'UPDATE_REFERENCE_EVENT' || d.command === 'INVALIDATE_REFERENCE_EVENT'
+        || d.command === 'ASSOCIATE_REFERENCE_EVENTS' || d.command === 'LINK_DOCUMENT_REFERENCE_EVENT' || d.command === 'LINK_SUPPLIER_REFERENCE_EVENT'
+        || d.command === 'RESTORE_REFERENCE_EVENT' || d.command === 'DISSOCIATE_REFERENCE_EVENTS'
+        || d.command === 'UNLINK_DOCUMENT_REFERENCE_EVENT' || d.command === 'UNLINK_SUPPLIER_REFERENCE_EVENT'
+        || d.command === 'LINK_AGENDA_REFERENCE_EVENT' || d.command === 'DOCUMENT_REFERENCE_EVENT_TRANSFER_REQUEST')
+        && !(await (await import('./reference-events')).isReferenceEventCommand(d, input, lookup, memePhrase))) return null;
+    }
+  } catch (e) {
+    // Carte #807 (E06) : parcours des opérations non abouti — dit tel quel, jamais une décision sur une lecture partielle.
+    if ((e as Error).name !== 'ReferenceEventSearchIncomplete') throw e;
+    return { kind: 'need_info', message: (e as Error).message };
   }
 
   // Construction du plan : chaque segment résolu dans le compte ; « puis »
@@ -1939,24 +2105,35 @@ export async function prepareCommandSegments(
     const versCree = seg.dependsOnPrevious && precedentCree
       && (seg.draft.command === 'LINK_SUPPLIER_REFERENCE_EVENT' || seg.draft.command === 'LINK_DOCUMENT_REFERENCE_EVENT')
       && seg.draft.target.fromContext === true;
-    const r = versCree
-      ? await (await import('./reference-events')).resolveReferenceEventLinkToCreated(
+    let r: Awaited<ReturnType<typeof resolveDraft>>;
+    try {
+      r = await (async () => {
+        return versCree
+          ? await (await import('./reference-events')).resolveReferenceEventLinkToCreated(
         seg.draft as Extract<typeof seg.draft, { command: 'LINK_SUPPLIER_REFERENCE_EVENT' | 'LINK_DOCUMENT_REFERENCE_EVENT' }>,
         input, lookup, `a${i + 1}`, precedent[0])
-      : await resolveDraft(seg.draft, input, lookup, `a${i + 1}`);
+          : await resolveDraft(seg.draft, input, lookup, `a${i + 1}`);
+      })();
+    } catch (e) {
+      // Carte #807 (E06) : parcours des opérations non abouti — dit tel quel, jamais un plan sur une lecture partielle.
+      if ((e as Error).name !== 'ReferenceEventSearchIncomplete') throw e;
+      r = { needInfo: (e as Error).message };
+    }
     if ('needInfo' in r) {
       // Un plan partiellement compris n'est jamais proposé.
       return { kind: 'need_info', message: segments.length > 1 ? `Action ${i + 1} : ${r.needInfo}` : r.needInfo };
     }
     const lot = Array.isArray(r) ? r : [r];
-    if (seg.dependsOnPrevious) for (const a of lot) a.dependsOn = [...precedent];
+    // Carte #807 (E09) : une dépendance interne au lot (« rattacher » après « retirer ») est conservée.
+    if (seg.dependsOnPrevious) for (const a of lot) a.dependsOn = [...new Set([...a.dependsOn, ...precedent])];
     actions.push(...lot);
     precedent = lot.map((a) => a.actionId);
   }
 
   const summary = actions.length === 1
     ? `${actions[0].preview} Confirmez-vous ?`
-    : segments.length === 1
+    // Carte #807 (E09) : une demande traduite en gestes DIFFÉRENTS (retirer, puis rattacher) n'est pas une action en masse.
+    : segments.length === 1 && actions.every((a) => a.command === actions[0].command)
       ? `${actions.length} échéances concernées : chacune sera traitée séparément. Confirmez-vous l’ensemble ?`
       : `Je vais effectuer ${actions.length} actions, dans l’ordre indiqué. Confirmez-vous l’ensemble ?`;
   const plan: StoredPlan = {
@@ -2142,8 +2319,18 @@ export type Confirmation =
       ok: true; status: PlanStatus; results: ActionResult[]; summary: string;
       /** Fin de la fenêtre « Annuler » (undo.service) ; null si le plan n'est pas annulable. */
       undoUntil: string | null;
+      /**
+       * Carte #807 (E07) — CONFLIT : une cible avait changé depuis l'aperçu, rien n'a été écrit pour elle. Les
+       * données ont été relues et l'action est REPROPOSÉE ici (avant / après actualisés) : elle ne s'exécute
+       * qu'après une NOUVELLE confirmation. Absent : aucun conflit, ou action à redemander.
+       */
+      refreshedPlan?: CommandPlanPreview | null;
     }
-  | { ok: false; code: 'PLAN_NOT_FOUND' | 'PLAN_EXPIRED' | 'PLAN_ALREADY_HANDLED' | 'PLAN_INTEGRITY' | 'WRITE_REFUSED'; message: string; status?: PlanStatus };
+  | {
+      ok: false; message: string; status?: PlanStatus;
+      /** `STRONG_CONFIRMATION_REQUIRED` (carte #807, E04) : attestation absente — le plan reste en attente, rien n'est écrit. */
+      code: 'PLAN_NOT_FOUND' | 'PLAN_EXPIRED' | 'PLAN_ALREADY_HANDLED' | 'PLAN_INTEGRITY' | 'WRITE_REFUSED' | 'STRONG_CONFIRMATION_REQUIRED';
+    };
 
 /**
  * Exécution ordonnée d'un plan.
@@ -2207,20 +2394,28 @@ export function summarizeResults(results: ActionResult[]): string {
 }
 
 export async function confirmCommandPlan(
-  p: { planId: string; accountId: number; userId: number },
+  p: {
+    planId: string; accountId: number; userId: number;
+    /** Carte #807 (E04) : l'utilisateur a coché la case de vérification d'un changement bancaire. */
+    strongConfirmation?: boolean;
+  },
   deps: {
     executors?: Partial<Record<PlannedAction['command'], Executor>>;
     canWrite?: (accountId: number) => Promise<{ allowed: boolean; message?: string }>;
   } = {},
 ): Promise<Confirmation> {
   // Prise atomique : propriétaire, en attente, non expiré.
+  // Carte #807 (E04) — CONFIRMATION RENFORCÉE : un plan qui change des coordonnées bancaires n'est PRIS qu'avec
+  // l'attestation explicite de l'utilisateur. La condition est dans la prise elle-même : sans attestation, le
+  // plan reste en attente (confirmable ensuite) et rien n'est écrit.
   const pris = (await pgClient.unsafe(
     `UPDATE verebona_command_plans
         SET status = 'EXECUTING', confirmed_at = now()
       WHERE plan_id = $1 AND account_id = $2 AND user_id = $3
         AND status = 'PENDING_CONFIRMATION' AND expires_at > now()
+        AND ($4::boolean OR actions_payload NOT LIKE '%"banking":true%')
       RETURNING actions_payload, params_hash, summary, conversation_id AS "conversationId", message_id AS "messageId"`,
-    [p.planId, p.accountId, p.userId] as never[],
+    [p.planId, p.accountId, p.userId, p.strongConfirmation === true] as never[],
   )) as unknown as Array<{ actions_payload: string; params_hash: string; summary: string; conversationId: number | null; messageId: number | null }>;
 
   if (!pris[0]) {
@@ -2242,6 +2437,11 @@ export async function confirmCommandPlan(
     if (etat.status === 'CANCELLED') {
       return { ok: false, code: 'PLAN_ALREADY_HANDLED', message: 'Cette action a été annulée : rien n’a été modifié.', status: 'CANCELLED' };
     }
+    // Carte #807 (E04) : encore en attente et non expirée — seule l'attestation de vérification manquait.
+    if (etat.status === 'PENDING_CONFIRMATION' && p.strongConfirmation !== true) {
+      await tracer(p.planId, p.accountId, p.userId, 'STRONG_CONFIRMATION_REQUIRED');
+      return { ok: false, code: 'STRONG_CONFIRMATION_REQUIRED', message: BANKING_CONFIRMATION_REQUIRED, status: 'PENDING_CONFIRMATION' };
+    }
     return { ok: false, code: 'PLAN_ALREADY_HANDLED', message: 'Cette action a déjà été traitée.', status: etat.status };
   }
 
@@ -2250,6 +2450,8 @@ export async function confirmCommandPlan(
       `UPDATE verebona_command_plans SET status = $2, results_json = $3::jsonb, executed_at = now() WHERE plan_id = $1`,
       [p.planId, status, JSON.stringify(results)] as never[],
     );
+    // Carte #807 (E04) : plan clos — aucune valeur bancaire n'y reste.
+    if (pris[0].actions_payload.includes('"banking":true')) await scrubBankingPayloads({ accountId: p.accountId });
   };
 
   await tracer(p.planId, p.accountId, p.userId, 'CONFIRMED');
@@ -2292,11 +2494,56 @@ export async function confirmCommandPlan(
   await tracer(p.planId, p.accountId, p.userId, 'EXECUTED', {
     status, results, undo: { reversible: undo.undoUntil !== null, undoUntil: undo.undoUntil, reasons: undo.reasons },
   });
-  const summary = summarizeResults(results);
-  await recordPlanOutcome(fil, outcomeText(summary, results));
+  // Carte #807 (E07) — CONFLIT de version : les données sont relues et l'action reproposée (nouvel avant /
+  // après). Rien n'est écrit pour elle sans une NOUVELLE confirmation de l'utilisateur.
+  const rafraichi = results.some((r) => r.conflict) ? await replanAfterConflict(fil, actions, results) : null;
+  const summary = rafraichi ? `${summarizeResults(results)} ${CONFLICT_REPLAN_TEXT}` : summarizeResults(results);
+  const messageId = await recordPlanOutcome(fil, outcomeText(summary, results));
+  if (rafraichi && messageId) {
+    // La nouvelle proposition est rattachée au message qui l'annonce : l'historique rechargé la montre.
+    await pgClient.unsafe(`UPDATE verebona_command_plans SET message_id = $2 WHERE plan_id = $1 AND account_id = $3 AND user_id = $4`,
+      [rafraichi.planId, messageId, p.accountId, p.userId] as never[]).catch(() => undefined);
+  }
   // Passage 114AA (#753) : l'événement de référence du FIL — « celui-ci » au tour suivant.
   await noterEvenementDuFil(fil, actions, results);
-  return { ok: true, status, results, summary, undoUntil: undo.undoUntil };
+  return { ok: true, status, results, summary, undoUntil: undo.undoUntil, ...(rafraichi ? { refreshedPlan: toPreview(rafraichi) } : {}) };
+}
+
+/** Texte ajouté à l'issue d'un plan dont une action a été reproposée après un conflit (à valider par le PO). */
+export const CONFLICT_REPLAN_TEXT = 'J’ai relu les données actuelles : voici la proposition mise à jour. Rien ne sera modifié sans votre nouvelle confirmation.';
+
+/**
+ * Carte #807 (E07) — après un conflit de version : chaque action en conflit est RECONSTRUITE sur l'état actuel
+ * du compte (`rich-edits.rebuildAfterConflict`) et enregistrée dans un NOUVEAU plan en attente, propre au même
+ * compte, au même utilisateur et au même fil. `null` : rien à reproposer (commande à redemander, ou plus rien
+ * à changer). Ne lève jamais : un échec laisse l'issue du plan telle quelle.
+ */
+async function replanAfterConflict(
+  fil: { accountId: number; userId: number; conversationId: number | null },
+  actions: PlannedAction[], results: ActionResult[],
+): Promise<StoredPlan | null> {
+  try {
+    const { rebuildAfterConflict } = await import('./rich-edits');
+    const enConflit = new Set(results.filter((r) => r.conflict).map((r) => r.actionId));
+    const refaites: PlannedAction[] = [];
+    for (const a of actions.filter((x) => enConflit.has(x.actionId))) {
+      const r = await rebuildAfterConflict(a, fil.accountId, sqlLookup);
+      if (!r) return null;
+      refaites.push({ ...r, actionId: `a${refaites.length + 1}`, dependsOn: [] });
+    }
+    if (refaites.length === 0) return null;
+    const plan: StoredPlan = {
+      planId: randomUUID(), accountId: fil.accountId, userId: fil.userId, conversationId: fil.conversationId,
+      summary: refaites.length === 1 ? `${refaites[0].preview} Confirmez-vous ?` : `Je vais effectuer ${refaites.length} actions, dans l’ordre indiqué. Confirmez-vous l’ensemble ?`,
+      actions: refaites, expiresAt: new Date(Date.now() + PLAN_TTL_MS).toISOString(),
+    };
+    await savePlan(plan, null);
+    await tracer(plan.planId, fil.accountId, fil.userId, 'REPLANNED_AFTER_CONFLICT', { actions: refaites.length });
+    return plan;
+  } catch (e) {
+    console.error('[verebona] proposition après conflit non préparée :', (e as Error).message);
+    return null;
+  }
 }
 
 export async function defaultCanWrite(accountId: number): Promise<{ allowed: boolean; message?: string }> {
@@ -2343,12 +2590,14 @@ export async function cancelCommandPlan(p: { planId: string; accountId: number; 
     `UPDATE verebona_command_plans SET status = 'CANCELLED', cancelled_at = now()
       WHERE plan_id = $1 AND account_id = $2 AND user_id = $3
         AND status = 'PENDING_CONFIRMATION' AND expires_at > now()
-      RETURNING conversation_id AS "conversationId", message_id AS "messageId"`,
+      RETURNING conversation_id AS "conversationId", message_id AS "messageId", (actions_payload LIKE '%"banking":true%') AS bancaire`,
     [p.planId, p.accountId, p.userId] as never[],
-  )) as unknown as Array<{ conversationId: number | null; messageId: number | null }>;
+  )) as unknown as Array<{ conversationId: number | null; messageId: number | null; bancaire?: boolean }>;
   if (rows[0]) {
     await tracer(p.planId, p.accountId, p.userId, 'CANCELLED');
-    await recordPlanOutcome({ ...p, ...rows[0] }, CANCELLED_MESSAGE);
+    // Carte #807 (E04) : une proposition annulée ne conserve aucune valeur bancaire.
+    if (rows[0].bancaire === true) await scrubBankingPayloads({ accountId: p.accountId });
+    await recordPlanOutcome({ planId: p.planId, accountId: p.accountId, userId: p.userId, conversationId: rows[0].conversationId, messageId: rows[0].messageId }, CANCELLED_MESSAGE);
     return { ok: true, status: 'CANCELLED', alreadyHandled: false, message: CANCELLED_MESSAGE };
   }
 
@@ -2392,10 +2641,12 @@ export async function expirePendingPlans(scope: { accountId?: number; userId?: n
     `UPDATE verebona_command_plans SET status = 'EXPIRED'
       WHERE status = 'PENDING_CONFIRMATION' AND expires_at <= now()
         AND ($1::int IS NULL OR account_id = $1) AND ($2::int IS NULL OR user_id = $2)
-      RETURNING plan_id, account_id, user_id`,
+      RETURNING plan_id, account_id, user_id, (actions_payload LIKE '%"banking":true%') AS bancaire`,
     [scope.accountId ?? null, scope.userId ?? null] as never[],
-  )) as unknown as Array<{ plan_id: string; account_id: number; user_id: number }>;
+  )) as unknown as Array<{ plan_id: string; account_id: number; user_id: number; bancaire?: boolean }>;
   for (const r of rows) await tracer(r.plan_id, r.account_id, r.user_id, 'EXPIRED', { by: 'expiry' });
+  // Carte #807 (E04) : une proposition expirée ne conserve aucune valeur bancaire.
+  if (rows.some((r) => r.bancaire === true)) await scrubBankingPayloads(scope.accountId != null ? { accountId: scope.accountId } : {});
   // Purge quotidienne (sans périmètre) : états antérieurs des annulations
   // dont la fenêtre est close.
   if (scope.accountId == null && scope.userId == null) await purgeExpiredUndoSteps();
@@ -2504,8 +2755,8 @@ export async function findMessageCommandPlan(
 export async function recordPlanOutcome(
   p: { planId: string; accountId: number; userId: number; conversationId: number | null; messageId: number | null },
   content: string,
-): Promise<void> {
-  if (!p.conversationId) return;
+): Promise<number | null> {
+  if (!p.conversationId) return null;
   try {
     const { getAssistantConfig } = await import('../config/assistant-config');
     const expires = new Date(Date.now() + getAssistantConfig().historyDays * 86400_000).toISOString();
@@ -2516,17 +2767,19 @@ export async function recordPlanOutcome(
        SELECT c.id, $2, NULL, 'assistant', 'ready', $4, 'WRITE_COMMAND', 'deterministic', $5, 'fr-FR', $6
          FROM verebona_conversations c
         WHERE c.id = $1 AND c.account_id = $2 AND c.user_id = $3 AND c.status = 'active'
-       RETURNING conversation_id`,
+       RETURNING id`,
       [p.conversationId, p.accountId, p.userId, content, p.messageId, expires] as never[],
-    )) as unknown as unknown[];
+    )) as unknown as Array<{ id: number }>;
     if (rows.length) {
       await pgClient.unsafe(
         `UPDATE verebona_conversations SET last_message_at = now(), updated_at = now() WHERE id = $1`,
         [p.conversationId] as never[],
       );
     }
+    return rows[0] ? Number(rows[0].id) : null;
   } catch (e) {
     console.error('[verebona] issue de commande non enregistrée dans le fil :', (e as Error).message);
+    return null;
   }
 }
 

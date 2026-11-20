@@ -62,6 +62,8 @@ export async function PATCH(
     const body = await request.json().catch(() => null);
     const r = await updateSupplierForAccount({ accountId, userId: session.userId ?? null, supplierId, body });
     if (!r.ok && r.code === 'NOT_FOUND') return apiError(404, 'NOT_FOUND', 'Supplier not found');
+    // Carte #807 (E07) : sans version attendue (cet écran n'en transmet pas), ce cas ne se produit pas.
+    if (!r.ok && r.code === 'CONFLICT') return apiError(409, 'INVALID_STATE', 'Supplier changed');
     if (!r.ok) return apiError(400, 'INVALID_INPUT', r.message, { field: r.field });
 
     // Fiche relue (IBAN masqué) : la réponse n'expose jamais la valeur bancaire.

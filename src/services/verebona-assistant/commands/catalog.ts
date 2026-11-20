@@ -47,6 +47,9 @@ const WRITE_COMMANDS = [
   // Pièces et équipements (W04 – W09) : par la façade métier `structure-write.facade`, la même que les routes.
   // Le retrait d'un équipement est son ARCHIVAGE (règle existante) ; une pièce se supprime.
   'CREATE_ROOM', 'RENAME_ROOM', 'DELETE_ROOM', 'CREATE_EQUIPMENT', 'RENAME_EQUIPMENT', 'ARCHIVE_EQUIPMENT',
+  // Carte #807 (E01, W05) : modification d'un équipement avec la MÊME couverture que sa fiche (marque, modèle,
+  // n° de série, type, statut, montants, pièce, bien parent…), par la même façade métier.
+  'UPDATE_EQUIPMENT',
   // Lot 114F (W02, W27) : nom d'un bien et effacement d'une caractéristique, par le service de la fiche
   // (`asset-details-write.service`), le même que `PATCH /api/assets/[id]/details/[section]`.
   'RENAME_ASSET', 'CLEAR_ASSET_FIELD',
@@ -112,7 +115,9 @@ export const WRITE_COMMAND_CATALOG: Record<WriteCommandType, WriteCommandDefinit
     service: 'AgendaWriteService.updateAgendaItem', requiresWriteAccess: true,
     spec: {
       capabilityCode: 'AGENDA_UPDATE', targetKind: 'agenda_item',
-      requiredFields: ['agendaItemId', 'expectedVersion'], optionalFields: ['title', 'startDate'],
+      // Carte #807 (E03) : mêmes champs que le tiroir de l'Agenda (`AgendaWriteService.updateAgendaItem`).
+      requiredFields: ['agendaItemId', 'expectedVersion'],
+      optionalFields: ['title', 'description', 'startDate', 'startTime', 'endDate', 'endTime', 'noDeadline', 'situation', 'addAssetIds', 'addRoomIds', 'addEquipmentIds', 'addFileIds'],
       readBeforeWrite: true, deletePolicy: 'NONE', undoPolicy: 'IRREVERSIBLE',
       sideEffects: ['rappels de l’échéance recalculés par l’Agenda'], successEvent: 'AGENDA_ITEM_UPDATED', retrySafety: 'PLAN_TAKEN_ONCE',
     },
@@ -273,7 +278,9 @@ export const WRITE_COMMAND_CATALOG: Record<WriteCommandType, WriteCommandDefinit
     type: 'CREATE_EQUIPMENT', label: 'Créer un équipement',
     service: 'structure-write.facade.createEquipmentForAccount', requiresWriteAccess: true,
     spec: {
-      capabilityCode: 'EQUIPMENT_CREATE', targetKind: 'equipment', requiredFields: ['assetId', 'name'], optionalFields: ['roomId'],
+      capabilityCode: 'EQUIPMENT_CREATE', targetKind: 'equipment', requiredFields: ['assetId', 'name'],
+      // Carte #807 (E02) : toutes les informations FOURNIES et permises par la fiche à la création.
+      optionalFields: ['roomId', 'type', 'category', 'status', 'energyUsage', 'purchasePriceCents', 'estimatedValueCents', 'fiche'],
       readBeforeWrite: true, deletePolicy: 'NONE', undoPolicy: 'IRREVERSIBLE',
       sideEffects: ['réservé aux biens qui ont des équipements et aux offres Premium', 'rapprochement des documents, échéances et fournisseurs de l’équipement'],
       successEvent: 'ASSET_UPDATED', retrySafety: 'PLAN_TAKEN_ONCE',
@@ -286,6 +293,22 @@ export const WRITE_COMMAND_CATALOG: Record<WriteCommandType, WriteCommandDefinit
       capabilityCode: 'EQUIPMENT_UPDATE', targetKind: 'equipment', requiredFields: ['equipmentId', 'name', 'expectedVersion'], optionalFields: [],
       readBeforeWrite: true, deletePolicy: 'NONE', undoPolicy: 'IRREVERSIBLE',
       sideEffects: ['rapprochement des documents de l’équipement relancé sous son nouveau nom'],
+      successEvent: 'ASSET_UPDATED', retrySafety: 'PLAN_TAKEN_ONCE',
+    },
+  },
+  // Carte #807 (E01, W05) — modifier un équipement : mêmes champs que sa fiche, avant / après annoncés.
+  UPDATE_EQUIPMENT: {
+    type: 'UPDATE_EQUIPMENT', label: 'Modifier un équipement',
+    service: 'structure-write.facade.updateEquipmentForAccount', requiresWriteAccess: true,
+    spec: {
+      capabilityCode: 'EQUIPMENT_UPDATE', targetKind: 'equipment', requiredFields: ['equipmentId', 'requested', 'expectedVersion', 'expectedUpdatedAt'],
+      optionalFields: ['name', 'type', 'category', 'status', 'energyUsage', 'purchasePriceCents', 'estimatedValueCents', 'fiche', 'roomId', 'newAssetId'],
+      readBeforeWrite: true, deletePolicy: 'NONE', undoPolicy: 'IRREVERSIBLE',
+      sideEffects: [
+        'un seul équipement, jamais une copie : ses documents, ses échéances, ses fournisseurs et son historique le suivent',
+        'changement de bien : la pièce d’origine n’est pas conservée ; le rapprochement de ses documents est relancé',
+        'valeurs saisies protégées des analyses (origine utilisateur)',
+      ],
       successEvent: 'ASSET_UPDATED', retrySafety: 'PLAN_TAKEN_ONCE',
     },
   },
@@ -496,9 +519,52 @@ export const WRITE_COMMAND_CATALOG: Record<WriteCommandType, WriteCommandDefinit
 export const DOCUMENT_COMMAND_FIELDS = ['title', 'date', 'notes'] as const;
 export type DocumentCommandField = (typeof DOCUMENT_COMMAND_FIELDS)[number];
 
-/** Champs d'une fiche fournisseur modifiables depuis l'Assistant (jamais les coordonnées bancaires). */
-export const SUPPLIER_COMMAND_FIELDS = ['name', 'phone', 'email', 'website'] as const;
+/**
+ * Champs d'une fiche fournisseur modifiables depuis l'Assistant.
+ *
+ * Carte #807 (E04, W19) — règle remplacée (carte #807) : « jamais les coordonnées bancaires ». La liste est
+ * désormais celle des champs RÉELLEMENT modifiables de la fiche (`SUPPLIER_EDITABLE_FIELDS`) : adresse,
+ * SIREN, SIRET, n° de TVA, IBAN et titulaire compris. Un changement bancaire est annoncé MASQUÉ et exige une
+ * confirmation renforcée (voir `rich-edits.ts`).
+ */
+export const SUPPLIER_COMMAND_FIELDS = [
+  'name', 'phone', 'email', 'website', 'addressLine1', 'addressLine2', 'postalCode', 'city', 'country',
+  'siren', 'siret', 'vatNumber', 'iban', 'ibanHolderName',
+] as const;
 export type SupplierCommandField = (typeof SUPPLIER_COMMAND_FIELDS)[number];
+
+/** Carte #807 (E01, E02) — informations d'un équipement transmises à la façade (création et modification). */
+export interface EquipmentRequestedValues {
+  name?: string;
+  type?: string | null;
+  category?: string | null;
+  status?: string;
+  energyUsage?: string | null;
+  purchasePriceCents?: number | null;
+  estimatedValueCents?: number | null;
+  /** Fiche de l'équipement (marque, modèle, n° de série…) : clés de `EQUIPMENT_FICHE_FIELDS`. */
+  fiche?: Record<string, string | number | null>;
+}
+
+/** Carte #807 (E03) — champs d'une échéance modifiables depuis l'Assistant : ceux du tiroir de l'Agenda. */
+export interface AgendaRequestedPatch {
+  title?: string;
+  description?: string | null;
+  startDate?: string | null;
+  startTime?: string | null;
+  endDate?: string | null;
+  endTime?: string | null;
+  noDeadline?: boolean;
+  situation?: 'A_EU_LIEU' | 'A_PREVOIR';
+  /**
+   * Liens à AJOUTER (biens, pièces, équipements, documents du compte). La liste complète envoyée au service est
+   * recomposée à l'exécution à partir de l'échéance RELUE : un lien posé entre-temps n'est jamais écrasé.
+   */
+  addAssetIds?: number[];
+  addRoomIds?: number[];
+  addEquipmentIds?: number[];
+  addFileIds?: number[];
+}
 
 /** Paramètres figés d'une action préparée. */
 export type CommandParams =
@@ -511,8 +577,10 @@ export type CommandParams =
       /** Valeur présentée comme « ancienne » : l'exécution refuse si elle a changé depuis. */
       previous: unknown;
     }
-  // UPDATE_AGENDA_ITEM (W16) : seuls le titre et la date sont modifiables depuis l'Assistant.
-  | { kind: 'agenda_update'; agendaItemId: number; patch: { title?: string; startDate?: string | null }; expectedVersion: string }
+  // UPDATE_AGENDA_ITEM (W16) — règle remplacée (carte #807, E03) : « seuls le titre et la date ». Le patch porte
+  // désormais les champs du tiroir de l'Agenda. `expectedUpdatedAt` (plans préparés depuis la carte #807) :
+  // version exigée par le service DANS son écriture (E07) ; absent d'un plan plus ancien, qui garde sa relecture.
+  | { kind: 'agenda_update'; agendaItemId: number; patch: AgendaRequestedPatch; expectedVersion: string; expectedUpdatedAt?: string }
   // DELETE_AGENDA_ITEM (W17) : portée figée à la préparation — une série n'est pas une occurrence.
   | { kind: 'agenda_delete'; agendaItemId: number; scope: 'OCCURRENCE' | 'SERIES'; expectedVersion: string; expectedCount: number }
   // CREATE_ASSET (W01) : famille et catégorie du référentiel des biens, nom donné par l'utilisateur.
@@ -522,7 +590,14 @@ export type CommandParams =
   // CREATE_SUPPLIER (W18) : `distinctFrom` = fiches proches que la confirmation déclare distinctes.
   | { kind: 'supplier_create'; name: string; phone: string | null; email: string | null; website: string | null; distinctFrom: number[] }
   // UPDATE_SUPPLIER (W19) : `null` = effacement volontaire du champ (protégé des documents).
-  | { kind: 'supplier_update'; supplierId: number; patch: Partial<Record<SupplierCommandField, string | null>>; expectedVersion: string }
+  // Carte #807 (E04, E07) : `expectedRowVersion` — version complète de la fiche, exigée SOUS VERROU par la
+  // façade ; `banking` : le plan touche l'IBAN ou son titulaire (confirmation renforcée, traces masquées).
+  | {
+      kind: 'supplier_update'; supplierId: number; patch: Partial<Record<SupplierCommandField, string | null>>; expectedVersion: string;
+      expectedRowVersion?: string; banking?: true;
+      /** Plan clos : l'IBAN du patch a été remplacé par sa forme masquée (aucune valeur bancaire conservée). */
+      ibanScrubbed?: true;
+    }
   // ARCHIVE_SUPPLIER (W20) : archivage — aucune suppression physique.
   | { kind: 'supplier_archive'; supplierId: number; expectedVersion: string }
   // CREATE_WEB_DOCUMENT (W10) : lien http(s) et titre obligatoires, bien facultatif.
@@ -550,7 +625,18 @@ export type CommandParams =
   | { kind: 'room_create'; roomAssetId: number; roomName: string }
   | { kind: 'room_rename'; roomId: number; roomAssetId: number; roomName: string; expectedVersion: string }
   | { kind: 'room_delete'; roomId: number; roomAssetId: number; expectedVersion: string }
-  | { kind: 'equipment_create'; equipmentAssetId: number; equipmentName: string; equipmentRoomId: number | null }
+  // Carte #807 (E02) : `details` — informations fournies à la création (absent : nom et pièce seulement, comme avant).
+  | { kind: 'equipment_create'; equipmentAssetId: number; equipmentName: string; equipmentRoomId: number | null; details?: EquipmentRequestedValues }
+  /**
+   * UPDATE_EQUIPMENT (carte #807, E01) : `requested` = ce que l'utilisateur a demandé (indépendant de l'état) ;
+   * `roomId` / `newAssetId` : pièce (null = aucune) et bien parent après l'action, absents s'ils ne changent pas.
+   * `expectedVersion` : empreinte de l'état présenté ; `expectedUpdatedAt` : version exigée par la façade dans
+   * son instruction d'écriture (E07).
+   */
+  | {
+      kind: 'equipment_update'; equipmentId: number; equipmentAssetId: number; requested: EquipmentRequestedValues;
+      roomId?: number | null; newAssetId?: number; expectedVersion: string; expectedUpdatedAt: string;
+    }
   | { kind: 'equipment_rename'; equipmentId: number; equipmentAssetId: number; equipmentName: string; expectedVersion: string }
   | { kind: 'equipment_archive'; equipmentId: number; equipmentAssetId: number; expectedVersion: string }
   // RENAME_ASSET (W02) : le nom présenté comme « ancien » est figé — s'il a changé, rien n'est écrit.
@@ -607,6 +693,11 @@ export interface ActionResult {
   message: string;
   /** Objet créé ou modifié. */
   entity?: { type: 'agenda_item' | 'asset' | 'supplier' | 'document' | 'room' | 'equipment' | 'reference_event'; id: number } | null;
+  /**
+   * Carte #807 (E07) — l'action a été refusée parce que sa cible a CHANGÉ depuis l'aperçu (conflit de version) :
+   * rien n'a été écrit. Le plan est alors relu sur les données actuelles et reproposé (nouvelle confirmation).
+   */
+  conflict?: true;
 }
 
 export type PlanStatus =
@@ -619,6 +710,12 @@ export type PlanStatus =
 export interface CommandPlanPreview {
   planId: string;
   summary: string;
+  /**
+   * Carte #807 (E04) — CONFIRMATION RENFORCÉE : libellé de la case que l'utilisateur doit cocher avant de
+   * confirmer (changement de coordonnées bancaires). Absent : confirmation habituelle. Le serveur fait foi :
+   * sans cette attestation, la confirmation est refusée et rien n'est écrit.
+   */
+  strongConfirmation?: string;
   actions: Array<{ actionId: string; label: string; preview: string; effects: string[]; dependsOn: string[] }>;
   expiresAt: string;
 }

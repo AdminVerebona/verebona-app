@@ -133,6 +133,8 @@ interface AgendaUpsertOptions {
   client?: WriteAgendaItemOptions['client'];
   /** Mise à jour automatique gardée (voir `writeAgendaItem`) ; défaut : vrai pour une mise à jour AUTOMATIQUE par clé. */
   onlyIfUntouched?: boolean;
+  /** Carte #807 (E07) : version attendue d'une mise à jour (voir `writeAgendaItem`). */
+  expectedUpdatedAtMicros?: string;
 }
 
 type AgendaUpsertResult = WriteAgendaItemResult & {
@@ -317,6 +319,7 @@ export async function upsertAgendaItem(input: AgendaUpsertInput, opts: AgendaUps
     notify: opts.notify,
     purchaseSync: opts.purchaseSync,
     client: opts.client,
+    ...(opts.expectedUpdatedAtMicros !== undefined ? { expectedUpdatedAtMicros: opts.expectedUpdatedAtMicros } : {}),
     // Une mise à jour automatique n'écrase jamais un geste de l'utilisateur,
     // même concurrent (WHERE gardé).
     onlyIfUntouched: opts.onlyIfUntouched ?? (itemId !== undefined && itemId !== input.itemId && input.origin === 'AUTOMATIC'),

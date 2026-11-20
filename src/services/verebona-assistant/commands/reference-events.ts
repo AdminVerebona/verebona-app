@@ -67,19 +67,46 @@ function toState(op: AssistantOperationRead, noms: Map<number, string>): Referen
 }
 
 const PAGE = 500;
-/** Événements de référence ACTIFS du compte qui répondent à la désignation (lecteur canonique, compte borné). */
-export async function sqlFindReferenceEvents(accountId: number, q: ReferenceEventQuery): Promise<ReferenceEventState[]> {
+/** Carte #807 (E06) — temps maximal d'UNE recherche d'opérations dans un compte (parcours complet par curseur). */
+export const REFERENCE_EVENT_SEARCH_BUDGET_MS = 20_000;
+/** Texte dit quand le parcours complet n'a pas pu aboutir dans le temps imparti (à valider par le PO). */
+export const REFERENCE_EVENT_SEARCH_INCOMPLETE = 'Je n’ai pas pu parcourir toutes vos opérations dans le temps imparti, et je ne vous présente pas un résultat partiel. Précisez son type, sa date complète ou son intitulé, puis refaites votre demande : rien n’a été modifié.';
+
+/**
+ * Carte #807 (E06) : le parcours des opérations du compte n'a pas pu être mené à son terme. Jamais un résultat
+ * partiel n'est rendu à sa place — l'appelant le DIT (aucune action préparée ni exécutée sur une lecture tronquée).
+ */
+export class ReferenceEventSearchIncomplete extends Error {
+  constructor() { super(REFERENCE_EVENT_SEARCH_INCOMPLETE); this.name = 'ReferenceEventSearchIncomplete'; }
+}
+
+/**
+ * Événements de référence ACTIFS du compte qui répondent à la désignation (lecteur canonique, compte borné).
+ *
+ * Carte #807 (E06) — règle remplacée (carte #807) : « 10 pages de 500 au plus » (5 000 opérations, au-delà
+ * desquelles une opération restait introuvable sans que rien ne le dise). Le compte est désormais parcouru EN
+ * ENTIER, par curseur stable (identifiant croissant), page après page ; seules les opérations qui répondent
+ * sont gardées en mémoire. Le temps est borné : passé le budget, la recherche échoue EXPLICITEMENT
+ * (`ReferenceEventSearchIncomplete`) au lieu de rendre une liste tronquée.
+ */
+export async function sqlFindReferenceEvents(
+  accountId: number, q: ReferenceEventQuery, opts: { budgetMs?: number; now?: () => number } = {},
+): Promise<ReferenceEventState[]> {
   const { operationReader } = await import('../canonical/operations');
-  const lus: AssistantOperationRead[] = [];
+  const now = opts.now ?? Date.now;
+  const fin = now() + (opts.budgetMs ?? REFERENCE_EVENT_SEARCH_BUDGET_MS);
+  const trouves: ReferenceEventState[] = [];
   let afterId = 0;
-  for (let page = 0; page < 10; page += 1) {
+  for (;;) {
     const lot = await operationReader().listForAssistant(accountId, { ...(q.typeCode ? { typeCodes: [q.typeCode] } : {}), limit: PAGE, afterId });
-    lus.push(...lot);
-    if (lot.length < PAGE) break;
+    if (lot.length) {
+      const noms = await assetNames(accountId, [...new Set(lot.flatMap((o) => o.assetIds))]);
+      trouves.push(...matchReferenceEvents(lot.map((o) => toState(o, noms)), q));
+    }
+    if (lot.length < PAGE) return trouves;
     afterId = lot[lot.length - 1].id;
+    if (now() > fin) throw new ReferenceEventSearchIncomplete();
   }
-  const noms = await assetNames(accountId, [...new Set(lus.flatMap((o) => o.assetIds))]);
-  return matchReferenceEvents(lus.map((o) => toState(o, noms)), q);
 }
 
 /** Un événement de référence ACTIF du compte, avec le nombre d'échéances et de documents rattachés ; `null` : absent, supprimé ou d'un autre compte. */
@@ -183,7 +210,9 @@ async function resolveCreation(
 ): Promise<Resolution> {
   if (!lookup.findReferenceEvents) return { needInfo: IMPOSSIBLE };
   const acc = input.accountId;
-  if (draft.typeCode === 'CLAIM') return { needInfo: 'Depuis l’assistant, je ne peux pas enregistrer un sinistre.' };
+  // Carte #807 (E05, W21) — règle remplacée (carte #807) : « l'Assistant n'enregistre pas de sinistre ». Un
+  // sinistre se déclare comme toute opération : c'est une opération À PART de celle du contrat d'assurance
+  // (jamais fusionnée avec elle), que l'utilisateur peut ensuite lui associer.
 
   // Bien : jamais attribué par proximité — seulement s'il est désigné (mots, ou « ce bien »).
   let bien: { id: number; name: string; city?: string | null } | null = null;
@@ -232,6 +261,10 @@ async function resolveCreation(
       ...(memes.length ? [
         `Attention : ${memes.length > 1 ? 'des événements de référence comparables existent' : 'un événement de référence comparable existe'} déjà : ${memes.slice(0, 5).map(designer).join(' ; ')}.`,
         'En confirmant, vous indiquez qu’il s’agit d’un autre événement.',
+      ] : []),
+      ...(draft.typeCode === 'CLAIM' ? [
+        'Ce sinistre est une opération distincte de celle de votre contrat d’assurance : rien n’est fusionné, et le contrat, ses cotisations et ses échéances ne sont pas modifiés.',
+        'Vous pourrez ensuite l’associer au contrat d’assurance, lui rattacher ses justificatifs et lui relier un prestataire.',
       ] : []),
       'Il est enregistré sur votre déclaration : aucun document, aucune échéance et aucun montant ne sont créés.',
       NOT_YET_VISIBLE,
@@ -490,7 +523,7 @@ export async function resolveReferenceEventLinkToCreated(
 export async function resolveReferenceEventCommand(
   draft: Exclude<ReferenceEventDraft, {
     command: 'RESTORE_REFERENCE_EVENT' | 'DISSOCIATE_REFERENCE_EVENTS' | 'UNLINK_DOCUMENT_REFERENCE_EVENT'
-      | 'UNLINK_SUPPLIER_REFERENCE_EVENT' | 'LINK_AGENDA_REFERENCE_EVENT';
+      | 'UNLINK_SUPPLIER_REFERENCE_EVENT' | 'LINK_AGENDA_REFERENCE_EVENT' | 'DOCUMENT_REFERENCE_EVENT_TRANSFER_REQUEST';
   }>,
   input: AssistantRequestInput, lookup: CommandLookup, actionId: string,
 ): Promise<Resolution> {
@@ -511,7 +544,7 @@ export async function resolveReferenceEventCommand(
  * deviennent une action que si elles désignent quelque chose de réel :
  *   · déclaration IMPLICITE (« j'ai fait … de la Clio hier ») : son bien est un bien du compte (ou le bien de la
  *     page pour « ce bien ») ;
- *   · « Déclare un sinistre … » : jamais une action (l'Assistant n'enregistre pas de sinistre) ;
+ *   · « Déclare un sinistre … » : une action comme les autres déclarations (carte #807, E05) ;
  *   · événement désigné par le NOM D'UN TYPE (« le contrat … », « l'intervention … ») : au moins un événement de
  *     référence du compte y répond. « Mets la date de fin du contrat au … » dans un compte sans événement de ce
  *     type reste donc traité comme avant.
@@ -525,7 +558,7 @@ export async function isReferenceEventCommand(
   draft: ReferenceEventDraft, input: AssistantRequestInput, lookup: CommandLookup, sameSentenceAnaphora = false,
 ): Promise<boolean> {
   if (draft.command === 'CREATE_REFERENCE_EVENT') {
-    if (draft.typeCode === 'CLAIM') return false;
+    // Carte #807 (E05) — règle remplacée (carte #807) : « Déclare un sinistre … » est désormais une action.
     if (!draft.implicit) return true;
     if (draft.assetWords.length) return (await lookup.findAssets(input.accountId, draft.assetWords)).length > 0;
     const id = input.reference?.type === 'asset' ? input.reference.id : Number(input.pageContext?.assetId) || null;
@@ -538,6 +571,8 @@ export async function isReferenceEventCommand(
     if (!lookup.findInvalidatedReferenceEvents) return false;
     return (await lookup.findInvalidatedReferenceEvents(input.accountId, draft.target)).length > 0;
   }
+  // Carte #807 (E09) : demande de déplacement d'un document — une commande dès qu'elle nomme une opération.
+  if (draft.command === 'DOCUMENT_REFERENCE_EVENT_TRANSFER_REQUEST') return true;
   const cibles = draft.command === 'ASSOCIATE_REFERENCE_EVENTS' || draft.command === 'DISSOCIATE_REFERENCE_EVENTS'
     ? [draft.first, draft.second] : [draft.target];
   for (const cible of cibles) {

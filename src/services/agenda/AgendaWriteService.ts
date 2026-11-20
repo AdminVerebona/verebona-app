@@ -211,6 +211,12 @@ export async function updateAgendaItem(
   accountId: number,
   actorUserId: number | null = null,
   clock: AgendaWriteClock = {},
+  /**
+   * Carte #807 (E07) — version attendue (horodatage de dernière modification, microsecondes en texte), exigée
+   * dans l'écriture elle-même : `AgendaConcurrentUpdateError` si l'élément a changé depuis, rien n'est écrit.
+   * Absente (tiroir de l'Agenda) : comportement d'avant, inchangé.
+   */
+  guard: { expectedUpdatedAtMicros?: string } = {},
 ): Promise<AgendaItemFull> {
   const existing = await getAgendaItemById(id, accountId);
   if (!existing) throw new Error('Item not found');
@@ -326,7 +332,10 @@ export async function updateAgendaItem(
         confirmationMode: 'USER',
       } : {},
     },
-  }, { linkMode: 'replace', validate: false });
+  }, {
+    linkMode: 'replace', validate: false,
+    ...(guard.expectedUpdatedAtMicros !== undefined ? { expectedUpdatedAtMicros: guard.expectedUpdatedAtMicros } : {}),
+  });
 
   // Lot 103D : dissociation confirmée — journal avant / après (liens seulement, aucun objet supprimé).
   if (dissocies) {

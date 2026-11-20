@@ -90,12 +90,22 @@ export type ReferenceEventDraft =
   | { command: 'DISSOCIATE_REFERENCE_EVENTS'; first: ReferenceEventTargetDraft; second: ReferenceEventTargetDraft }
   | ({ command: 'UNLINK_DOCUMENT_REFERENCE_EVENT'; target: ReferenceEventTargetDraft } & DocumentTargetDraft)
   | { command: 'UNLINK_SUPPLIER_REFERENCE_EVENT'; supplierWords: string[]; target: ReferenceEventTargetDraft }
-  | { command: 'LINK_AGENDA_REFERENCE_EVENT'; itemWords: string[]; itemDate: string | null; target: ReferenceEventTargetDraft };
+  | { command: 'LINK_AGENDA_REFERENCE_EVENT'; itemWords: string[]; itemDate: string | null; target: ReferenceEventTargetDraft }
+  /**
+   * Carte #807 (E09, décision du PO du 17/11) — DEMANDE de déplacement d'un document d'une opération à une
+   * autre. Ce n'est PAS une commande du catalogue (aucun geste « déplacer ») : la préparation la traduit en deux
+   * gestes existants, « Retirer de A » puis « Rattacher à B ». `from: null` : opération d'origine non dite —
+   * la demande est ambiguë (déplacer ou ajouter ?) et une précision est demandée.
+   */
+  | ({ command: 'DOCUMENT_REFERENCE_EVENT_TRANSFER_REQUEST'; from: ReferenceEventTargetDraft | null; to: ReferenceEventTargetDraft } & DocumentTargetDraft);
 
 const EDR = 'evenement de reference';
 const MOIS = 'janvier|fevrier|mars|avril|mai|juin|juillet|aout|septembre|octobre|novembre|decembre';
 /** Nom de l'objet : « événement de référence », ou le nom d'un type (référentiel) — le plus long d'abord. */
-const N = `(${[EDR, ...[...TYPE_NOUNS.keys()].sort((a, b) => b.length - a.length)].join('|')})`;
+// Carte #807 (décision du PO du 17/11, carte #806) : « opération » est le mot de l'écran — il est compris ici
+// comme « événement de référence » (aucun type dit). Les textes existants ne sont pas renommés par cette carte.
+const OPERATION = 'operation';
+const N = `(${[EDR, OPERATION, ...[...TYPE_NOUNS.keys()].sort((a, b) => b.length - a.length)].join('|')})`;
 const DET = String.raw`(?:l'|le\s+|la\s+|cet\s+|cette\s+|ce\s+|mon\s+|ma\s+)`;
 const DET2 = String.raw`(?:l'|le\s+|la\s+|cet\s+|cette\s+|mon\s+|ma\s+)`;
 /** « à l'… », « au … », « avec le … ». */
@@ -255,6 +265,21 @@ export function parseReferenceEventCommand(message: string, today: string, anaph
     return { command: 'LINK_DOCUMENT_REFERENCE_EVENT', documentWords, documentFromContext: contexte, target: CIBLE_PRECEDENTE };
   }
 
+  // Carte #807 (E09) — « Déplace le document X de l'opération A vers l'opération B » : deux gestes proposés
+  // (retirer, puis rattacher). Sans opération d'origine : demande ambiguë, une précision est demandée.
+  const VERBE_DEPLACER = String.raw`(?:deplace|deplacer|transfere|transferer|bascule|basculer|passe|passer)`;
+  const deplacement = m.match(new RegExp(String.raw`^${VERBE_DEPLACER}\s+(le|la|ce|cet|cette|mon|ma)\s+${DOC}\s*(.*?)(?:^|\s)${DE}${N}\b\s*(.*?)\s+(?:vers|a|sur|dans)\s+${DET}${N}\b\s*(.*)$`));
+  const versSeul = deplacement ? null : m.match(new RegExp(String.raw`^${VERBE_DEPLACER}\s+(le|la|ce|cet|cette|mon|ma)\s+${DOC}\s*(.*?)\s+(?:vers|sur|dans)\s+${DET}${N}\b\s*(.*)$`));
+  const transfert = deplacement ?? versSeul;
+  if (transfert) {
+    const contexte = /^(ce|cet|cette)$/.test(transfert[1]);
+    const documentWords = contexte ? [] : motsDocument(transfert[2]);
+    if (!contexte && documentWords.length === 0) return null;
+    return deplacement
+      ? { command: 'DOCUMENT_REFERENCE_EVENT_TRANSFER_REQUEST', documentWords, documentFromContext: contexte, from: cible(deplacement[3], deplacement[4], today), to: cible(deplacement[5], deplacement[6], today) }
+      : { command: 'DOCUMENT_REFERENCE_EVENT_TRANSFER_REQUEST', documentWords, documentFromContext: contexte, from: null, to: cible(transfert[3], transfert[4], today) };
+  }
+
   // ── Passage 114AB : GESTES INVERSES (W23 à W26 à l'envers) — avant les gestes directs, car ils
   // partagent leurs verbes (« retire », « détache ») et leurs compléments.
 
@@ -369,7 +394,7 @@ export function parseReferenceEventCommand(message: string, today: string, anaph
 
   // W21 — déclarer un événement de référence.
   const declarer = m.match(new RegExp(String.raw`^(?:declare|declarer)\s+(?:une?\s+|l'|le\s+|la\s+)(?:nouveau\s+|nouvelle\s+|nouvel\s+)?${N}\b\s*(.*)$`))
-    ?? m.match(new RegExp(String.raw`^(?:enregistre|enregistrer|ajoute|ajouter|cree|creer)\s+(?:une?\s+|l'|le\s+|la\s+)(?:nouveau\s+|nouvelle\s+|nouvel\s+)?(${EDR})\b\s*(.*)$`));
+    ?? m.match(new RegExp(String.raw`^(?:enregistre|enregistrer|ajoute|ajouter|cree|creer)\s+(?:une?\s+|l'|le\s+|la\s+)(?:nouveau\s+|nouvelle\s+|nouvel\s+)?(${EDR}|${OPERATION})\b\s*(.*)$`));
   if (declarer) {
     const debut = m.length - declarer[2].length;
     return creation(nfc.slice(decalage + debut, decalage + m.length), declarer[2], TYPE_NOUNS.get(declarer[1]) ?? null, null, declaration, false);

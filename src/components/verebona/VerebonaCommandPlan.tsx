@@ -61,7 +61,8 @@ export function VerebonaCommandPlan({
   plan, onConfirm, onCancel, onUndo, disabled,
 }: {
   plan: Plan;
-  onConfirm: (planId: string) => void;
+  /** `strongConfirmation` : la case de vérification (changement bancaire, carte #807) est cochée. */
+  onConfirm: (planId: string, strongConfirmation?: boolean) => void;
   onCancel: (planId: string) => void;
   /** « Annuler » une action exécutée (fenêtre de 15 minutes). */
   onUndo?: (planId: string) => void;
@@ -90,6 +91,11 @@ export function VerebonaCommandPlan({
     return () => clearInterval(t);
   }, [plan]);
 
+  // Carte #807 (E04) — confirmation renforcée : « Confirmer » reste inactif tant que la case n'est pas cochée.
+  // Le serveur fait foi (il refuse une confirmation sans attestation).
+  const [verifie, setVerifie] = useState(false);
+  const renforcee = !!plan.strongConfirmation;
+
   const status: VerebonaPlanStatus = plan.status === 'PENDING_CONFIRMATION' && expiree ? 'EXPIRED' : plan.status;
   const enAttente = status === 'PENDING_CONFIRMATION';
   const limite = heure(plan.expiresAt);
@@ -113,8 +119,15 @@ export function VerebonaCommandPlan({
       </ol>
       {enAttente ? (
         <>
+          {renforcee && (
+            <label className="mt-3 flex items-start gap-2">
+              <input type="checkbox" className="mt-0.5" checked={verifie} disabled={disabled}
+                onChange={(e) => setVerifie(e.target.checked)} />
+              <span>{plan.strongConfirmation}</span>
+            </label>
+          )}
           <div className="mt-3 flex gap-2">
-            <button type="button" disabled={disabled} onClick={() => onConfirm(plan.planId)}
+            <button type="button" disabled={disabled || (renforcee && !verifie)} onClick={() => onConfirm(plan.planId, renforcee && verifie)}
               className="rounded-full bg-primary px-3 py-1 text-primary-foreground disabled:opacity-50">
               Confirmer
             </button>

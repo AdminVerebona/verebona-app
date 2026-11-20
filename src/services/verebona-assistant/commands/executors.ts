@@ -71,6 +71,12 @@ const ok = (a: PlannedAction, message: string, id?: number): ActionResult =>
   ({ actionId: a.actionId, status: 'SUCCESS', message, entity: id ? { type: 'agenda_item', id } : null });
 const ko = (a: PlannedAction, message: string): ActionResult =>
   ({ actionId: a.actionId, status: 'FAILED', message });
+/**
+ * Carte #807 (E07) — refus pour CONFLIT DE VERSION : la cible a changé depuis l'aperçu, rien n'a été écrit. Le
+ * marqueur `conflict` fait relire les données et reproposer l'action (nouvelle confirmation, `plan.service`).
+ */
+const conflit = (a: PlannedAction, message: string): ActionResult =>
+  ({ actionId: a.actionId, status: 'FAILED', message, conflict: true });
 
 export const EXECUTORS: Record<PlannedAction['command'], Executor> = {
   async CREATE_AGENDA_ITEM(action, ctx) {
@@ -335,12 +341,24 @@ export const EXECUTORS: Record<PlannedAction['command'], Executor> = {
     const refus = await refusStructure(ctx.accountId, p.equipmentAssetId, 'equipment');
     if (refus) return refuse(action, refus);
     const { createEquipmentForAccount } = await import('@/services/assets/structure-write.facade');
-    const res = await createEquipmentForAccount({ userId: ctx.userId, currentAccountId: ctx.accountId }, p.equipmentAssetId,
-      { name: p.equipmentName, ...(p.equipmentRoomId ? { substructureId: p.equipmentRoomId } : {}) });
+    // Carte #807 (E02) : informations fournies, transmises telles que la façade de l'écran les reçoit (type,
+    // catégorie, statut, usage énergétique, montants en centimes). Sans `details` : nom et pièce, comme avant.
+    const { fiche, ...colonnes } = p.details ?? {};
+    const session = { userId: ctx.userId, currentAccountId: ctx.accountId };
+    const res = await createEquipmentForAccount(session, p.equipmentAssetId,
+      { name: p.equipmentName, ...(p.equipmentRoomId ? { substructureId: p.equipmentRoomId } : {}), ...colonnes });
     if (res.status !== 201) return ko(action, 'Cet équipement ne peut pas être créé avec ces informations : rien n’a été créé.');
     const cree = await res.json() as { id: number; name: string };
     ctx.recordUndo?.({ actionId: action.actionId, reversible: false, reason: 'équipement créé : il se retire depuis le bien' });
-    return { actionId: action.actionId, status: 'SUCCESS', message: `Équipement « ${cree.name} » créé.`, entity: { type: 'equipment', id: Number(cree.id) } };
+    // Fiche (marque, modèle, n° de série…) : la façade de création ne la reçoit pas — elle est enregistrée par
+    // la façade de MODIFICATION, celle du tiroir, sur l'équipement qui vient d'être créé (un seul équipement).
+    let reserve = '';
+    if (fiche && Object.keys(fiche).length) {
+      const { updateEquipmentForAccount } = await import('@/services/assets/structure-write.facade');
+      const suite = await updateEquipmentForAccount(session, p.equipmentAssetId, Number(cree.id), { fiche });
+      if (suite.status !== 200) reserve = ' Sa fiche (marque, modèle, n° de série…) n’a pas pu être enregistrée : complétez-la depuis le bien.';
+    }
+    return { actionId: action.actionId, status: 'SUCCESS', message: `Équipement « ${cree.name} » créé.${reserve}`, entity: { type: 'equipment', id: Number(cree.id) } };
   },
 
   /** Lot 114 (#753, W05) — équipement renommé par la façade métier (celle de `PUT …/equipments/[equipId]`). */
@@ -360,6 +378,48 @@ export const EXECUTORS: Record<PlannedAction['command'], Executor> = {
     if (res.status !== 200) return ko(action, 'Ce nom ne peut pas être enregistré tel quel : rien n’a été modifié.');
     ctx.recordUndo?.({ actionId: action.actionId, reversible: false, reason: 'équipement renommé : à corriger depuis le bien ou par une nouvelle demande' });
     return { actionId: action.actionId, status: 'SUCCESS', message: `Équipement « ${etat.name} » renommé en « ${p.equipmentName} ».`, entity: { type: 'equipment', id: p.equipmentId } };
+  },
+
+  /**
+   * Carte #807 (E01, W05 ; E07) — équipement modifié par la façade métier (celle de `PUT …/equipments/[equipId]`) :
+   * mêmes validations que le tiroir, origine USER des valeurs, rapprochement relancé sur renommage ou déplacement.
+   *
+   * L'état présenté est relu (empreinte) ; puis la façade exige la version présentée DANS son instruction
+   * d'écriture, sous verrou de ligne : une modification survenue entre la relecture et l'écriture est un
+   * conflit, jamais un écrasement. Bien de destination : compte, disponibilité et offre recontrôlés ici.
+   */
+  async UPDATE_EQUIPMENT(action, ctx) {
+    const p = action.params as Extract<CommandParams, { kind: 'equipment_update' }>;
+    const { readEquipmentFullState, equipmentDiff } = await import('./rich-edits');
+    const etat = await readEquipmentFullState(ctx.accountId, p.equipmentId);
+    if (!etat) return refuse(action, 'Équipement introuvable ou hors de votre compte.');
+    if (etat.version !== p.expectedVersion || etat.assetId !== p.equipmentAssetId) return conflit(action, STRUCTURE_CHANGED_SINCE_PREVIEW);
+    const { sqlLookup } = await import('./plan.service');
+    if (p.newAssetId !== undefined) {
+      if (!(await sqlLookup.getAsset(ctx.accountId, p.newAssetId))) return refuse(action, 'Bien de destination introuvable ou indisponible dans votre compte : rien n’a été modifié.');
+      const refus = await refusStructure(ctx.accountId, p.newAssetId, 'equipment');
+      if (refus) return refuse(action, refus);
+    }
+    // Même garde que la route : modification suspendue au-dessus du quota de biens (GAP-11).
+    const { refuserSiModificationBiensSuspendue } = await import('@/lib/asset-quota-guard');
+    const suspendu = await refuserSiModificationBiensSuspendue(ctx.accountId);
+    if (suspendu) return refuse(action, ((await suspendu.json().catch(() => ({}))) as { message?: string }).message ?? 'Modification non autorisée.');
+    const { body } = equipmentDiff(etat, p.requested, p.roomId, p.newAssetId);
+    if (Object.keys(body).length === 0) return ko(action, 'Cet équipement a déjà ces valeurs : rien n’a été modifié.');
+    const { updateEquipmentForAccount } = await import('@/services/assets/structure-write.facade');
+    const res = await updateEquipmentForAccount({ userId: ctx.userId, currentAccountId: ctx.accountId }, etat.assetId, p.equipmentId, body,
+      { expectedUpdatedAtMicros: p.expectedUpdatedAt });
+    if (res.status === 409) return conflit(action, STRUCTURE_CHANGED_SINCE_PREVIEW);
+    if (res.status === 404) return refuse(action, 'Équipement ou bien introuvable dans votre compte : rien n’a été modifié.');
+    if (res.status !== 200) return ko(action, 'Ces informations ne peuvent pas être enregistrées telles quelles : rien n’a été modifié.');
+    ctx.recordUndo?.({ actionId: action.actionId, reversible: false, reason: 'équipement modifié : à corriger depuis le bien ou par une nouvelle demande' });
+    const nom = typeof body.name === 'string' ? body.name : etat.name;
+    return {
+      actionId: action.actionId, status: 'SUCCESS', entity: { type: 'equipment', id: p.equipmentId },
+      message: p.newAssetId !== undefined
+        ? `Équipement « ${nom} » déplacé. Ses documents, ses échéances et son historique sont conservés.`
+        : `Équipement « ${nom} » modifié.`,
+    };
   },
 
   /** Lot 114 (#753, W06) — équipement retiré = ARCHIVÉ, par la façade métier (celle de `DELETE …/equipments/[equipId]`). */
@@ -535,11 +595,17 @@ export const EXECUTORS: Record<PlannedAction['command'], Executor> = {
     const { sqlLookup } = await import('./plan.service');
     const etat = await sqlLookup.getSupplierState!(ctx.accountId, p.supplierId);
     if (!etat) return refuse(action, 'Fournisseur introuvable ou hors de votre compte.');
-    if (etat.version !== p.expectedVersion) return ko(action, SUPPLIER_CHANGED_SINCE_PREVIEW);
+    if (etat.version !== p.expectedVersion) return conflit(action, SUPPLIER_CHANGED_SINCE_PREVIEW);
     const { updateSupplierForAccount } = await import('@/services/suppliers/supplier-write.facade');
     // Une chaîne vide efface la valeur : même convention que le formulaire de la fiche.
     const body = Object.fromEntries(Object.entries(p.patch).map(([k, v]) => [k, v ?? '']));
-    const r = await updateSupplierForAccount({ accountId: ctx.accountId, userId: ctx.userId, supplierId: p.supplierId, body });
+    // Carte #807 (E07) : version complète de la fiche exigée SOUS VERROU par la façade, dans la transaction de
+    // l'écriture — une modification concurrente (autre membre, autre onglet) est un conflit, jamais un écrasement.
+    const r = await updateSupplierForAccount({
+      accountId: ctx.accountId, userId: ctx.userId, supplierId: p.supplierId, body,
+      ...(p.expectedRowVersion ? { expectedVersion: p.expectedRowVersion } : {}),
+    });
+    if (!r.ok && r.code === 'CONFLICT') return conflit(action, SUPPLIER_CHANGED_SINCE_PREVIEW);
     if (!r.ok) return r.code === 'NOT_FOUND' ? refuse(action, 'Fournisseur introuvable ou hors de votre compte.') : ko(action, 'Cette valeur ne peut pas être enregistrée telle quelle : rien n’a été modifié.');
     ctx.recordUndo?.({ actionId: action.actionId, reversible: false, reason: 'modification d’un fournisseur : à corriger depuis sa fiche ou par une nouvelle demande' });
     const nom = typeof p.patch.name === 'string' ? p.patch.name : etat.name;
@@ -572,12 +638,27 @@ export const EXECUTORS: Record<PlannedAction['command'], Executor> = {
     const p = action.params as Extract<CommandParams, { kind: 'agenda_update' }>;
     const avantEcriture = await readAgendaSnapshot(pgClient, ctx.accountId, p.agendaItemId);
     if (!avantEcriture) return refuse(action, 'Échéance introuvable ou hors de votre compte.');
-    if (agendaVersion(avantEcriture) !== p.expectedVersion) return ko(action, CHANGED_SINCE_PREVIEW);
+    if (agendaVersion(avantEcriture) !== p.expectedVersion) return conflit(action, CHANGED_SINCE_PREVIEW);
+    // Carte #807 (E03) : entrée du service = seulement ce qui CHANGE par rapport à l'échéance relue (champs du
+    // tiroir ; liens : ceux de l'échéance, plus les ajouts demandés — jamais un lien retiré ni écrasé).
+    const { getAgendaItemById } = await import('@/services/agenda/AgendaQueryService');
+    const relue = await getAgendaItemById(p.agendaItemId, ctx.accountId);
+    if (!relue) return refuse(action, 'Échéance introuvable ou hors de votre compte.');
+    const { agendaDiff } = await import('./rich-edits');
+    const { input } = agendaDiff(relue, p.patch);
+    if (Object.keys(input).length === 0) return ko(action, 'Cette échéance a déjà ces valeurs : rien n’a été modifié.');
     const { updateAgendaItem } = await import('@/services/agenda/AgendaWriteService');
-    const item = await updateAgendaItem(p.agendaItemId, {
-      ...(p.patch.title !== undefined ? { title: p.patch.title } : {}),
-      ...(p.patch.startDate !== undefined ? { startDate: p.patch.startDate } : {}),
-    }, ctx.accountId, ctx.userId);
+    const { AgendaConcurrentUpdateError } = await import('@/services/agenda/write-agenda-item');
+    let item: Awaited<ReturnType<typeof updateAgendaItem>>;
+    try {
+      // Carte #807 (E07) : version présentée exigée par le service DANS son écriture (plans préparés depuis
+      // cette carte) — une modification concurrente est un conflit, jamais un écrasement.
+      item = await updateAgendaItem(p.agendaItemId, input, ctx.accountId, ctx.userId, {},
+        p.expectedUpdatedAt ? { expectedUpdatedAtMicros: p.expectedUpdatedAt } : {});
+    } catch (e) {
+      if (e instanceof AgendaConcurrentUpdateError) return conflit(action, CHANGED_SINCE_PREVIEW);
+      throw e;
+    }
     ctx.recordUndo?.({ actionId: action.actionId, reversible: false, reason: 'modification d’une échéance : à corriger depuis l’Agenda ou par une nouvelle demande' });
     await publier([{ type: 'AGENDA_ITEM_UPDATED', accountId: ctx.accountId, entityId: item.id }]);
     return ok(action, `Échéance « ${item.title} » modifiée.`, item.id);

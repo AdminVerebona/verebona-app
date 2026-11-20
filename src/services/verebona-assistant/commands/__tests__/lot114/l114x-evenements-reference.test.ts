@@ -255,9 +255,11 @@ describe('L114X-P05 — non-régression : une phrase qui ne désigne rien de ré
     expect(await demander('Supprime l’événement de référence Toiture', vide)).toEqual({ kind: 'need_info', message: 'Je n’ai pas trouvé cet événement de référence dans votre compte. Lequel voulez-vous supprimer ?' });
   });
 
-  it('« Déclare un sinistre … » : jamais une action (la demande suit le parcours de réponse normal)', async () => {
-    expect(await demander('Déclare un sinistre')).toBeNull();
-    expect(await demander('Déclare un sinistre « Dégât des eaux » réalisé hier pour la maison')).toBeNull();
+  // Règle remplacée (carte #807, E05) : « Déclare un sinistre … : jamais une action ». Un sinistre se déclare
+  // désormais comme toute opération (distincte de celle du contrat d'assurance, jamais fusionnée avec elle).
+  it('règle remplacée (carte #807) : « Déclare un sinistre … » est une action — la situation est demandée si elle n’est pas dite', async () => {
+    expect(await demander('Déclare un sinistre')).toMatchObject({ kind: 'need_info' });
+    expect(await demander('Déclare un sinistre « Dégât des eaux » réalisé hier pour la maison')).not.toBeNull();
   });
 });
 
@@ -313,8 +315,12 @@ describe('L114X-R01 — W21 : aperçu d’une déclaration', () => {
     expect(a.effects).toContain('En confirmant, vous indiquez qu’il s’agit d’un autre événement.');
   });
 
-  it('refus dits avant tout plan : sinistre, rien à enregistrer, bien ambigu', async () => {
-    expect(besoin(await resoudre('Déclare un sinistre « Dégât des eaux » réalisé hier pour la maison'))).toBe('Depuis l’assistant, je ne peux pas enregistrer un sinistre.');
+  // Règle remplacée (carte #807, E05) : le refus « je ne peux pas enregistrer un sinistre » n'existe plus — la
+  // déclaration d'un sinistre prépare un plan, qui dit qu'il reste distinct du contrat d'assurance.
+  it('règle remplacée (carte #807) : un sinistre se déclare ; refus dits avant tout plan : rien à enregistrer, bien ambigu', async () => {
+    const sinistre = await resoudre('Déclare un sinistre « Dégât des eaux » réalisé hier pour la maison');
+    expect(sinistre).toMatchObject({ command: 'CREATE_REFERENCE_EVENT', params: { kind: 'reference_event_create', typeCode: 'CLAIM', status: 'REALIZED' } });
+    expect((sinistre as { effects: string[] }).effects.join(' ')).toMatch(/opération distincte de celle de votre contrat d’assurance : rien n’est fusionné/);
     expect(besoin(await resoudre('Déclare une intervention à prévoir'))).toBe('Que voulez-vous enregistrer ? Donnez au moins un intitulé, un bien ou une date.');
     const deux = lookup({ biens: [{ id: 1, name: 'Vélo cargo' }, { id: 2, name: 'Vélo de route' }] });
     expect(besoin(await resoudre('Déclare une intervention « Révision » réalisée hier pour le vélo', deux))).toMatch(/^Plusieurs biens correspondent : Vélo cargo, Vélo de route/);

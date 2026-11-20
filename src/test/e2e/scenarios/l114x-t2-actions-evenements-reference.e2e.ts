@@ -117,9 +117,12 @@ scenario('L114X-EVENEMENTS-REFERENCE', 'Lot 114X — créer, corriger, supprimer
     expect(JSON.stringify(redit)).toMatch(/était déjà enregistré \(même déclaration\) : rien n’a été créé en double/);
     expect(await evenements(c)).toHaveLength(1);
 
-    // Situation non dite : demandée, rien n'est préparé. Sinistre : refusé, rien n'est préparé.
+    // Situation non dite : demandée, rien n'est préparé.
+    // Règle remplacée (carte #807, E05) : « Sinistre : refusé, rien n'est préparé ». Un sinistre se déclare
+    // désormais comme toute opération — un plan est préparé, et rien n'est écrit sans confirmation.
     expect(await demander(c, 'Déclare une intervention « Freins » le 2 juin 2024 pour la Clio')).toMatchObject({ kind: 'need_info', message: expect.stringMatching(/^Cet événement est-il à prévoir ou a-t-il déjà eu lieu \?/) });
-    expect(await demander(c, 'Déclare un sinistre « Bris de glace » réalisé le 2 juin 2024 pour la Clio')).toBeNull();
+    expect(await demander(c, 'Déclare un sinistre « Bris de glace » réalisé le 2 juin 2024 pour la Clio')).toMatchObject({ kind: 'plan' });
+    expect(await evenements(c)).toHaveLength(1);
     // Sans date, sans bien : type nul conservé (« événement de référence »), aucune date inventée.
     const flou = await faire(c, 'Enregistre un événement de référence « Travaux divers » à prévoir');
     expect(flou.conf).toMatchObject({ ok: true, status: 'EXECUTED' });

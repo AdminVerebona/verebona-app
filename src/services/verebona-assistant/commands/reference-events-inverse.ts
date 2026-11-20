@@ -46,36 +46,55 @@ interface LigneSupprimee {
   version: number; assetIds: number[] | null; assetNames: string[] | null;
 }
 
+const PAGE_SUPPRIMES = 500;
+
 /**
  * Événements de référence SUPPRIMÉS PAR L'UTILISATEUR dans ce compte, qui répondent à la désignation.
  *
  * Seuls ceux-là sont lus : une suppression faite pour une autre raison (preuves retirées, regroupement)
- * n'est pas rétablissable par la façade, et un événement d'un autre compte n'est jamais atteint. Les
- * 500 derniers au plus (limite annoncée dans la fiche de recette).
+ * n'est pas rétablissable par la façade, et un événement d'un autre compte n'est jamais atteint.
+ *
+ * Carte #807 (E06) — règle remplacée (carte #807) : « les 500 derniers au plus ». Toutes les suppressions de
+ * l'utilisateur sont parcourues, par curseur (identifiant décroissant), page après page ; seules celles qui
+ * répondent sont gardées. Temps borné : au-delà, échec EXPLICITE (`ReferenceEventSearchIncomplete`), jamais
+ * une liste tronquée. `onlyId` : lecture directe d'UNE opération supprimée (recontrôle avant écriture).
  */
-export async function sqlFindInvalidatedReferenceEvents(accountId: number, q: ReferenceEventQuery): Promise<ReferenceEventState[]> {
-  const lignes = (await pgClient.unsafe(
-    `SELECT o.id, o.type_code AS "typeCode", o.status, o.technical_label AS "technicalLabel", o.provider,
-            o.planned_date::text AS "plannedDate", o.start_date::text AS "startDate",
-            o.realized_date::text AS "realizedDate", o.end_date::text AS "endDate", o.version,
-            (SELECT array_agg(l.asset_id ORDER BY l.asset_id) FROM business_operation_asset_links l
-              WHERE l.operation_id = o.id AND l.active) AS "assetIds",
-            (SELECT array_agg(a.name ORDER BY a.id) FROM business_operation_asset_links l
-               JOIN assets a ON a.id = l.asset_id AND a.account_id = o.account_id AND a.deleted_at IS NULL
-              WHERE l.operation_id = o.id AND l.active) AS "assetNames"
-       FROM business_operations o
-      WHERE o.account_id = $1 AND o.invalidated_at IS NOT NULL AND o.invalidation_reason = $2
-        AND o.merged_into_operation_id IS NULL
-      ORDER BY o.id DESC LIMIT 500`,
-    [accountId, USER_INVALIDATION_REASON] as never[],
-  )) as unknown as LigneSupprimee[];
-  return matchReferenceEvents(lignes.map(toState), q);
+export async function sqlFindInvalidatedReferenceEvents(
+  accountId: number, q: ReferenceEventQuery, opts: { budgetMs?: number; now?: () => number; onlyId?: number } = {},
+): Promise<ReferenceEventState[]> {
+  const { REFERENCE_EVENT_SEARCH_BUDGET_MS, ReferenceEventSearchIncomplete } = await import('./reference-events');
+  const now = opts.now ?? Date.now;
+  const fin = now() + (opts.budgetMs ?? REFERENCE_EVENT_SEARCH_BUDGET_MS);
+  const trouves: ReferenceEventState[] = [];
+  let avant: number | null = null;
+  for (;;) {
+    const lignes = (await pgClient.unsafe(
+      `SELECT o.id, o.type_code AS "typeCode", o.status, o.technical_label AS "technicalLabel", o.provider,
+              o.planned_date::text AS "plannedDate", o.start_date::text AS "startDate",
+              o.realized_date::text AS "realizedDate", o.end_date::text AS "endDate", o.version,
+              (SELECT array_agg(l.asset_id ORDER BY l.asset_id) FROM business_operation_asset_links l
+                WHERE l.operation_id = o.id AND l.active) AS "assetIds",
+              (SELECT array_agg(a.name ORDER BY a.id) FROM business_operation_asset_links l
+                 JOIN assets a ON a.id = l.asset_id AND a.account_id = o.account_id AND a.deleted_at IS NULL
+                WHERE l.operation_id = o.id AND l.active) AS "assetNames"
+         FROM business_operations o
+        WHERE o.account_id = $1 AND o.invalidated_at IS NOT NULL AND o.invalidation_reason = $2
+          AND o.merged_into_operation_id IS NULL
+          AND ($3::bigint IS NULL OR o.id < $3::bigint) AND ($4::bigint IS NULL OR o.id = $4::bigint)
+        ORDER BY o.id DESC LIMIT ${PAGE_SUPPRIMES}`,
+      [accountId, USER_INVALIDATION_REASON, avant, opts.onlyId ?? null] as never[],
+    )) as unknown as LigneSupprimee[];
+    trouves.push(...matchReferenceEvents(lignes.map(toState), q));
+    if (lignes.length < PAGE_SUPPRIMES) return trouves;
+    avant = Number(lignes[lignes.length - 1].id);
+    if (now() > fin) throw new ReferenceEventSearchIncomplete();
+  }
 }
 
-/** UN événement de référence supprimé par l'utilisateur, dans ce compte ; `null` sinon. */
+/** UN événement de référence supprimé par l'utilisateur, dans ce compte ; `null` sinon (lecture directe, sans plafond). */
 export async function sqlGetInvalidatedReferenceEventState(accountId: number, operationId: number): Promise<ReferenceEventState | null> {
-  const tous = await sqlFindInvalidatedReferenceEvents(accountId, { typeCode: null, words: [], date: null });
-  return tous.find((s) => s.id === operationId) ?? null;
+  const [etat] = await sqlFindInvalidatedReferenceEvents(accountId, { typeCode: null, words: [], date: null }, { onlyId: operationId });
+  return etat ?? null;
 }
 
 function toState(r: LigneSupprimee): ReferenceEventState {
@@ -249,15 +268,43 @@ async function resolveAgendaLink(
   };
 }
 
+/**
+ * Carte #807 (E09, décision du PO du 17/11, carte #806) — « Déplace le document X de l'opération A vers
+ * l'opération B ». Il n'existe PAS de geste « déplacer » : l'Assistant propose les DEUX gestes du catalogue,
+ * dans l'ordre et confirmés ensemble — « Retirer de A », puis « Rattacher à B » (exécuté seulement si le
+ * retrait a réussi). Un seul fichier, jamais une copie ; ses autres rattachements ne sont pas touchés.
+ * Sans opération d'origine nommée, la demande est AMBIGUË (déplacer ou ajouter ?) : une question, aucun plan.
+ */
+async function resolveDocumentTransferRequest(
+  draft: Extract<ReferenceEventDraft, { command: 'DOCUMENT_REFERENCE_EVENT_TRANSFER_REQUEST' }>, input: AssistantRequestInput, lookup: CommandLookup, actionId: string,
+): Promise<PlannedAction[] | { needInfo: string }> {
+  if (!draft.from) {
+    return { needInfo: 'Voulez-vous déplacer ce document (le retirer de son opération actuelle, puis le rattacher à l’autre) ou seulement l’ajouter à cette opération en le laissant aussi dans la première ? Pour le déplacer, écrivez « Déplace le document … de l’opération … vers l’opération … » ; pour l’ajouter, « Rattache le document … à l’opération … ».' };
+  }
+  const retrait = await resolveDocumentUnlink({ command: 'UNLINK_DOCUMENT_REFERENCE_EVENT', documentWords: draft.documentWords, documentFromContext: draft.documentFromContext, target: draft.from }, input, lookup, actionId);
+  if ('needInfo' in retrait) return retrait;
+  const { resolveReferenceEventCommand } = await import('./reference-events');
+  const ajout = await resolveReferenceEventCommand({ command: 'LINK_DOCUMENT_REFERENCE_EVENT', documentWords: draft.documentWords, documentFromContext: draft.documentFromContext, target: draft.to }, input, lookup, `${actionId}b`);
+  if ('needInfo' in ajout) return ajout;
+  const de = (retrait.params as Params<'reference_event_document_unlink'>).operationId;
+  const vers = (ajout.params as Params<'reference_event_document'>).operationId;
+  if (de === vers) return { needInfo: 'Ces deux désignations correspondent à la même opération : précisez l’opération d’origine et l’opération de destination.' };
+  return [
+    { ...retrait, effects: [...retrait.effects, 'Premier des deux gestes de ce déplacement : « Retirer », puis « Rattacher ». Il n’existe pas de geste unique « déplacer ».'] },
+    { ...ajout, dependsOn: [retrait.actionId], effects: [...ajout.effects, 'Second geste : exécuté seulement si le retrait a réussi. C’est le même document : aucun fichier n’est copié.'] },
+  ];
+}
+
 /** Résout un brouillon de geste inverse en action figée — ou dit ce qui manque. */
 export async function resolveInverseReferenceEventCommand(
   draft: Extract<ReferenceEventDraft, {
     command: 'RESTORE_REFERENCE_EVENT' | 'DISSOCIATE_REFERENCE_EVENTS' | 'UNLINK_DOCUMENT_REFERENCE_EVENT'
-      | 'UNLINK_SUPPLIER_REFERENCE_EVENT' | 'LINK_AGENDA_REFERENCE_EVENT';
+      | 'UNLINK_SUPPLIER_REFERENCE_EVENT' | 'LINK_AGENDA_REFERENCE_EVENT' | 'DOCUMENT_REFERENCE_EVENT_TRANSFER_REQUEST';
   }>,
   input: AssistantRequestInput, lookup: CommandLookup, actionId: string,
-): Promise<Resolution> {
+): Promise<Resolution | PlannedAction[]> {
   switch (draft.command) {
+    case 'DOCUMENT_REFERENCE_EVENT_TRANSFER_REQUEST': return resolveDocumentTransferRequest(draft, input, lookup, actionId);
     case 'RESTORE_REFERENCE_EVENT': return resolveRestore(draft, input, lookup, actionId);
     case 'DISSOCIATE_REFERENCE_EVENTS': return resolveDissociation(draft, input, lookup, actionId);
     case 'UNLINK_DOCUMENT_REFERENCE_EVENT': return resolveDocumentUnlink(draft, input, lookup, actionId);

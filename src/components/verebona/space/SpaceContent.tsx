@@ -236,7 +236,7 @@ function Answer({ msg, variant, api }: { msg: VerebonaMessage; variant: SpaceVar
         <VerebonaCommandPlan
           plan={msg.commandPlan}
           disabled={msg.commandPlan.status === 'DECIDING'}
-          onConfirm={(id) => api.guard(() => { void v.confirmPlan(id); })}
+          onConfirm={(id, renforcee) => api.guard(() => { void v.confirmPlan(id, renforcee === true); })}
           onCancel={(id) => { void v.cancelPlan(id); }}
           onUndo={(id) => api.guard(() => { void v.undoPlan(id); })}
         />

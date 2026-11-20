@@ -12,6 +12,10 @@ import { assetDesignationsIn } from '@/lib/asset-taxonomy';
 import { ASSET_STATUSES, ASSET_STATUS_LABELS } from '@/lib/asset-status';
 import { parseReferenceEventCommand, type ReferenceEventDraft } from './reference-event-parser';
 
+import { labelKey, parseLabelledValues, type LabelledValue } from './labelled-values';
+import { AGENDA_LABELS, EQUIPMENT_LABELS, SUPPLIER_LABELS, type AgendaLabelKey, type EquipmentLabelKey } from './rich-edit-labels';
+import type { SupplierCommandField } from './catalog';
+
 export type CommandDraft =
   | {
       command: 'CREATE_AGENDA_ITEM';
@@ -45,6 +49,8 @@ export type CommandDraft =
       /** Nouvelle date (AAAA-MM-JJ) et/ou nouveau titre ; au moins l'un des deux. */
       newDate: string | null;
       newTitle: string | null;
+      /** Carte #807 (E03) : champs du tiroir de l'Agenda nommés dans la demande (« … : description …, heure 14h30 »). */
+      values?: Array<LabelledValue<AgendaLabelKey>>;
     } & AgendaTargetDraft)
   | {
       command: 'CREATE_ASSET';
@@ -83,10 +89,13 @@ export type CommandDraft =
       command: 'UPDATE_SUPPLIER';
       /** Mots du nom du fournisseur visé. */
       supplierWords: string[];
-      field: 'name' | 'phone' | 'email' | 'website';
+      /** Carte #807 (E04) : tout champ modifiable de la fiche (adresse, SIREN, SIRET, TVA, IBAN, titulaire compris). */
+      field: SupplierCommandField;
       /** Nouvelle valeur ; null avec `clear` = effacement demandé ; null sans `clear` = valeur non comprise. */
       value: string | null;
       clear: boolean;
+      /** Carte #807 (E04) : PLUSIEURS champs en une demande (« … : adresse …, code postal …, ville … ») ; prime sur `field`. */
+      values?: Array<LabelledValue<SupplierCommandField>>;
     }
   | { command: 'ARCHIVE_SUPPLIER'; supplierWords: string[] }
   | {
@@ -129,7 +138,14 @@ export type CommandDraft =
       name: string | null;
       /** Équipement : pièce où il se trouve (« dans la pièce Cuisine »), mots de son nom. */
       roomWords: string[];
+      /** Carte #807 (E02) : informations fournies à la création d'un équipement (« … : marque …, modèle … »). */
+      values?: Array<LabelledValue<EquipmentLabelKey>>;
     } & AssetScopeDraft)
+  /**
+   * Carte #807 (E01, W05) — modifier un équipement : champs de sa fiche nommés dans la demande, pièce (`room`)
+   * et bien parent (`asset`) compris. `raw: null` = effacement demandé.
+   */
+  | ({ command: 'UPDATE_EQUIPMENT'; targetWords: string[]; values: Array<LabelledValue<EquipmentLabelKey>> } & AssetScopeDraft)
   | ({ command: 'RENAME_ROOM' | 'RENAME_EQUIPMENT'; targetWords: string[]; newName: string | null } & AssetScopeDraft)
   | ({ command: 'DELETE_ROOM' | 'ARCHIVE_EQUIPMENT'; targetWords: string[] } & AssetScopeDraft)
   /** Lot 114F (W02) — nouveau nom d'un bien, tel qu'écrit ; null : il est alors demandé. */
@@ -325,6 +341,8 @@ function parseAssetFieldUpdate(message: string, today: string): CommandDraft | n
 // ── Lot 114B (#753, W16 / W17) : modifier / supprimer une échéance ─────────
 
 const DELETE_VERB = /\b(supprime|supprimer|efface|effacer|retire|retirer|enleve|enlever)\b/;
+/** Carte #807 : verbes d'une modification à PLUSIEURS champs (« Modifie … : champ valeur, champ valeur »). */
+const VERBE_MODIFIER = String.raw`(?:modifie|modifier|change|changer|corrige|corriger|complete|completer|actualise|actualiser|mets a jour|mettre a jour|renseigne|renseigner)`;
 const MOVE_VERB = /\b(deplace|deplacer|reporte|reporter|decale|decaler|repousse|repousser|avance|avancer)\b/;
 const RENAME_VERB = /\b(renomme|renommer)\b/;
 /** Nom d'échéance, avec son déterminant (« l'échéance », « le rendez-vous », « tous les rappels »). */
@@ -358,6 +376,14 @@ function agendaTarget(zone: string, today: string): AgendaTargetDraft | null {
 function parseAgendaChange(message: string, today: string): CommandDraft | null {
   const m = plain(message).trim();
   if (!AGENDA_TARGET.test(m)) return null;
+  // Carte #807 (E03) : « Modifie l'échéance Vidange du 12 mars : description …, heure de début 14h30, situation a eu lieu ».
+  const riche = m.match(new RegExp(String.raw`^${VERBE_MODIFIER}\s+(.+?)\s*(?::|\bavec\b)\s*(.+)$`));
+  if (riche && AGENDA_TARGET.test(riche[1]) && (riche[1].match(AGENDA_TARGET)?.index ?? 1) === 0) {
+    const cible = agendaTarget(riche[1], today);
+    const nfc = message.normalize('NFC').trim();
+    const values = parseLabelledValues(nfc.slice(nfc.length - riche[2].length), AGENDA_LABELS);
+    if (cible && values) return { command: 'UPDATE_AGENDA_ITEM', newDate: null, newTitle: null, values, ...cible };
+  }
   if (DELETE_VERB.test(m)) {
     const cible = agendaTarget(m, today);
     return cible ? { command: 'DELETE_AGENDA_ITEM', scope: SERIE.test(m) ? 'SERIES' : 'OCCURRENCE', ...cible } : null;
@@ -633,6 +659,8 @@ const CHAMP_FOURNISSEUR: ReadonlyArray<{ re: RegExp; field: 'name' | 'phone' | '
   { re: /^(?:site internet|site web|site)\b/, field: 'website' },
   { re: /^nom\b/, field: 'name' },
 ];
+/** Carte #807 (E04) : champs ajoutés (adresse, identifiants, coordonnées bancaires) — leurs libellés sont ceux de `SUPPLIER_LABELS`. */
+const CHAMPS_FOURNISSEUR_HISTORIQUES: ReadonlySet<string> = new Set(['name', 'phone', 'email', 'website']);
 /** Texte d'origine (accents, casse) entre deux positions du texte normalisé (mêmes longueurs en NFC). */
 const origine = (message: string, from: number, to?: number) => message.normalize('NFC').slice(from, to).trim();
 const motsNom = (s: string) => plain(s).split(/[^a-z0-9]+/).filter((w) => w.length >= 2 && !['le', 'la', 'les', 'du', 'de', 'des', 'mon', 'ma', 'ce', 'cet', 'cette'].includes(w));
@@ -679,13 +707,33 @@ function parseSupplierCommand(message: string): CommandDraft | null {
     return { command: 'UPDATE_SUPPLIER', supplierWords: motsNom(renommer[1]), field: 'name', value: valeur || null, clear: false };
   }
 
+  // Carte #807 (E04) : plusieurs champs en une demande — « Modifie le fournisseur Durand : adresse …, ville … ».
+  const riche = m.match(new RegExp(String.raw`^${VERBE_MODIFIER}\s+(?:le|la|mon|ce)\s+(?:fournisseur|prestataire)\s+(.+?)\s*(?::|\bavec\b)\s*(.+)$`));
+  if (riche) {
+    const values = parseLabelledValues(origine(nfc, decalage + m.length - riche[2].length), SUPPLIER_LABELS);
+    const mots = motsNom(riche[1]);
+    if (values && mots.length) return { command: 'UPDATE_SUPPLIER', supplierWords: mots, field: values[0].key, value: values[0].raw, clear: values[0].raw === null, values };
+  }
+
   // Modifier ou effacer une coordonnée.
   const champ = m.match(/^(modifie|modifier|change|changer|mets|mettre|met|corrige|corriger|remplace|remplacer|actualise|actualiser|renseigne|renseigner|ajoute|ajouter|efface|effacer|supprime|supprimer|retire|retirer|enleve|enlever|vide|vider)\s+(?:le\s+|la\s+|l')\s*(.+?)\s+(?:du|de mon|de ma|de la|de l'|de)\s*(?:fournisseur|prestataire)\s+(.+)$/);
   if (champ) {
-    const def = CHAMP_FOURNISSEUR.find((c) => c.re.test(champ[2]));
-    if (!def) return null;
     const clear = /^(efface|effacer|supprime|supprimer|retire|retirer|enleve|enlever|vide|vider)$/.test(champ[1]);
     const suite = champ[3];
+    // Carte #807 (E04) : un champ ajouté (adresse, SIREN, SIRET, TVA, IBAN, titulaire…) — valeur après « en / par / à / : ».
+    const ajoute = labelKey(champ[2], SUPPLIER_LABELS);
+    if (ajoute && !CHAMPS_FOURNISSEUR_HISTORIQUES.has(ajoute)) {
+      if (clear) return { command: 'UPDATE_SUPPLIER', supplierWords: motsNom(suite), field: ajoute, value: null, clear: true };
+      const coupe = suite.match(/\s+(?:en|par|a|:|=)\s+/);
+      if (!coupe || coupe.index === undefined) return { command: 'UPDATE_SUPPLIER', supplierWords: motsNom(suite), field: ajoute, value: null, clear: false };
+      const debut = decalage + m.indexOf(suite) + coupe.index + coupe[0].length;
+      return {
+        command: 'UPDATE_SUPPLIER', supplierWords: motsNom(suite.slice(0, coupe.index)), field: ajoute, clear: false,
+        value: origine(nfc, debut).replace(/^[«"“]\s*|\s*[»"”]?[\s.!?]*$/g, '') || null,
+      };
+    }
+    const def = CHAMP_FOURNISSEUR.find((c) => c.re.test(champ[2]));
+    if (!def) return null;
     if (clear) return { command: 'UPDATE_SUPPLIER', supplierWords: motsNom(suite), field: def.field, value: null, clear: true };
     const motif = def.field === 'phone' ? TEL : def.field === 'email' ? MAIL : def.field === 'website' ? SITE : null;
     if (motif) {
@@ -937,12 +985,57 @@ function parseStructureCommand(message: string): CommandDraft | null {
   const m = brut.slice(decalage).replace(/[.!?\s]+$/, '');
   if (PIECE_DOCUMENT.test(m)) return null;
   const NOM = '(piece|equipement)';
+  const EQUIP = String.raw`(?:l'|le\s+|mon\s+|cet\s+)equipement`;
+  const cibleEquipement = (zone: string, values: Array<LabelledValue<EquipmentLabelKey>>): CommandDraft | null => {
+    const bien = separerBien(zone);
+    const mots = motsCible(bien.reste);
+    return mots.length && values.length ? { command: 'UPDATE_EQUIPMENT', targetWords: mots, values, assetWords: bien.assetWords, assetFromContext: bien.assetFromContext } : null;
+  };
+
+  // Carte #807 (E01, W05) — « Modifie l'équipement Chaudière de la maison : marque Viessmann, modèle Vitodens 200 ».
+  const riche = m.match(new RegExp(String.raw`^${VERBE_MODIFIER}\s+${EQUIP}\s+(.+?)\s*(?::|\bavec\b)\s*(.+)$`));
+  if (riche) {
+    const values = parseLabelledValues(origine(nfc, decalage + m.length - riche[2].length), EQUIPMENT_LABELS);
+    return values ? cibleEquipement(riche[1], values) : null;
+  }
+  // « Déplace l'équipement Chaudière vers l'appartement » / « … dans la pièce Cellier ».
+  const deplacer = m.match(new RegExp(String.raw`^(?:deplace|deplacer|transfere|transferer|mets|mettre|range|ranger)\s+${EQUIP}\s+(.+)\s+(?:vers|dans|sur)\s+(.+)$`));
+  if (deplacer) {
+    const dest = deplacer[2];
+    const piece = dest.match(/^(?:la\s+|sa\s+)?piece\s+(.+)$/);
+    const debut = decalage + m.length - (piece ? piece[1].length : dest.length);
+    const brutDest = origine(nfc, debut, decalage + m.length);
+    if (piece) {
+      // « … dans la pièce Cellier de la maison » : le complément final situe le bien, pas la pièce.
+      const nomPiece = brutDest.slice(0, separerBien(piece[1]).reste.length).trim();
+      return cibleEquipement(deplacer[1], [{ key: 'room', raw: nomPiece || null }]);
+    }
+    return cibleEquipement(deplacer[1], [{ key: 'asset', raw: brutDest.replace(/^(?:le\s+bien\s+|la\s+|le\s+|l['’]|mon\s+|ma\s+|notre\s+)/i, '').trim() || null }]);
+  }
+  // « Mets la marque de l'équipement Chaudière à Viessmann » ; « Efface le numéro de série de l'équipement Chaudière ».
+  const unChamp = m.match(new RegExp(String.raw`^(mets|mettre|change|changer|modifie|modifier|corrige|corriger|renseigne|renseigner|indique|indiquer|efface|effacer|supprime|supprimer|retire|retirer|vide|vider)\s+(?:le\s+|la\s+|l')\s*(.+?)\s+de\s+${EQUIP}\s+(.+)$`));
+  if (unChamp) {
+    const key = labelKey(unChamp[2], EQUIPMENT_LABELS);
+    if (!key) return null;
+    if (/^(?:efface|effacer|supprime|supprimer|retire|retirer|vide|vider)$/.test(unChamp[1])) return cibleEquipement(unChamp[3], [{ key, raw: null }]);
+    const coupe = [...unChamp[3].matchAll(/\s+(?:a|en|par|:|=)\s+/g)].pop();
+    if (!coupe || coupe.index === undefined) return null;
+    const valeur = sansGuillemets(origine(nfc, decalage + m.length - (unChamp[3].length - coupe.index - coupe[0].length), decalage + m.length));
+    return cibleEquipement(unChamp[3].slice(0, coupe.index), [{ key, raw: valeur || null }]);
+  }
 
   const creer = m.match(new RegExp(`^(?:ajoute|ajouter|cree|creer|enregistre|enregistrer)\\s+(?:une|un|la|le|l')\\s*(?:nouvelle\\s+|nouvel\\s+|nouveau\\s+)?${NOM}\\b\\s*`));
   if (creer) {
     const piece = creer[1] === 'piece';
     let zone = m.slice(creer[0].length);
     let roomWords: string[] = [];
+    // Carte #807 (E02) : informations de la fiche fournies à la création — « … : marque Viessmann, prix d'achat 2 500 € ».
+    let values: Array<LabelledValue<EquipmentLabelKey>> | undefined;
+    const liste = piece ? null : zone.match(/\s*(?::|\bavec\b)\s*(.+)$/);
+    if (liste && liste.index !== undefined) {
+      const lus = parseLabelledValues(origine(nfc, decalage + m.length - liste[1].length, decalage + m.length), EQUIPMENT_LABELS);
+      if (lus) { values = lus; zone = zone.slice(0, liste.index); }
+    }
     // Guillemets : le nom est pris tel quel ; le reste de la phrase situe l'équipement et le bien.
     const cite = nomDonne(message);
     const guillemets = /[«"“]/.test(nfc);
@@ -959,7 +1052,10 @@ function parseStructureCommand(message: string): CommandDraft | null {
       const brutNom = origine(nfc, debut, debut + zone.length).replace(/^(?:nommé|nommée|appelé|appelée)\s+/i, '').replace(/[\s.!?:,]+$/, '').trim();
       name = brutNom || null;
     }
-    return { command: piece ? 'CREATE_ROOM' : 'CREATE_EQUIPMENT', name: name ? name.slice(0, 120) : null, roomWords, assetWords: bien.assetWords, assetFromContext: bien.assetFromContext };
+    return {
+      command: piece ? 'CREATE_ROOM' : 'CREATE_EQUIPMENT', name: name ? name.slice(0, 120) : null, roomWords,
+      assetWords: bien.assetWords, assetFromContext: bien.assetFromContext, ...(values ? { values } : {}),
+    };
   }
 
   const renommer = m.match(new RegExp(`^(?:renomme|renommer)\\s+(?:la|le|l'|ma|mon|cette|cet)\\s*${NOM}\\s+(.+?)\\s+en\\s+(.+)$`));
