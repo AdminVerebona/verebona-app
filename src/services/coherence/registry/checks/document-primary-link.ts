@@ -14,7 +14,8 @@
  *               (décision de l'utilisateur « sans bien »)
  *   REPAIRABLE  PRIMARY_LINK_RECOVERABLE (T3 rattacherait aujourd'hui sans IA :
  *               identifiant d'un seul bien, référence partagée, nom distinctif,
- *               identité de groupe démontrée / attestée / confirmée) ·
+ *               identité de groupe démontrée / attestée / confirmée ; carte #819 :
+ *               bien désigné par l'opération à laquelle le document appartient) ·
  *               PRIMARY_LINK_NOT_EXAMINED (jamais évalué, version du moteur
  *               ou contexte pertinent changés depuis la dernière évaluation)
  *   AMBIGUOUS   PRIMARY_LINK_IDENTITY_TO_CONFIRM (carte groupée) ·
@@ -107,7 +108,8 @@ export const documentPrimaryLinkCheck: CoherenceCheck = {
   objectType: 'document',
   scope: 'tous les documents visibles du compte ; examen détaillé des documents sans bien principal',
   sources: ['asset_files', 'document_asset_links', 'document_asset_resolutions', 'document_extractions', 'document_facts', 'ai_job_queue',
-    'to_process_actions', 'document_identity_groups', 'document_identity_decisions', 'assets'],
+    'to_process_actions', 'document_identity_groups', 'document_identity_decisions', 'assets',
+    'business_operation_sources', 'business_operation_documents', 'business_operation_asset_links'],
   applicability: 'compte éligible (actif et modifiable) ; document visible, analysé, non brouillon / ignoré',
   invariant: 'un document sans bien principal a été examiné par T3 dans le contexte ACTUEL du compte, et rien de démontrable sans IA ne reste non rattaché ; sinon son état (identité à confirmer, décision utilisateur attendue, aucun candidat, traitement en attente ou en échec) est explicite',
   anomalies: ['PRIMARY_LINK_RECOVERABLE', 'PRIMARY_LINK_NOT_EXAMINED', 'PRIMARY_LINK_IDENTITY_TO_CONFIRM', 'PRIMARY_LINK_AWAITING_USER',
@@ -121,7 +123,7 @@ export const documentPrimaryLinkCheck: CoherenceCheck = {
   triggers: ['ASSET_CREATED', 'ASSET_UPDATED', 'ASSET_DELETED', 'SOURCE_ANALYZED', 'DOCUMENT_UPDATED', 'DOCUMENT_UPLOADED'],
   frequency: 'campagne exhaustive quotidienne + contrôle ciblé à chaque création / modification de bien et de document',
   criticality: 'HIGH',
-  tests: ['L105D-U-COH', 'L105D-E2E-G1', 'L105D-E2E-G2', 'L108E-E2E-PANNE'],
+  tests: ['L105D-U-COH', 'L105D-E2E-G1', 'L105D-E2E-G2', 'L108E-E2E-PANNE', 'L116H-E2E-04', 'L116H-E2E-05'],
 
   async listObjects(ctx, accountId, afterId, limit) {
     return idsOf(await rows(ctx.sql, `
@@ -198,19 +200,25 @@ export const documentPrimaryLinkCheck: CoherenceCheck = {
         continue;
       }
       // Contexte ACTUEL : règles déterministes de T3 rejouées (aucune IA).
-      const [{ readAttachmentState }, { computeDocumentAssetContext }, { getResolution }, dec, idd] = await Promise.all([
+      const [{ readAttachmentState }, { computeDocumentAssetContext }, { getResolution }, dec, idd, opi] = await Promise.all([
         import('@/services/ai/reconciliation/document-asset/attachment-state'),
         import('@/services/ai/reconciliation/document-asset/context'),
         import('@/services/ai/reconciliation/document-asset/resolution.repository'),
         import('@/services/ai/reconciliation/document-asset/decision'),
         import('@/services/ai/reconciliation/document-asset/identity/decision'),
+        import('@/services/ai/reconciliation/document-asset/operation-inheritance'),
       ]);
       const etat = await readAttachmentState(accountId, id);
       const resolution = await getResolution(id);
       const c = await computeDocumentAssetContext({ accountId, fileId: id, state: etat, resolution, index: index!, ...(issue ? { identityOutcome: issue } : { identityGraph: null }) });
       const d = dec.decideDeterministic(c.identification, { multiAssetDeclared: c.multiAssetDeclared })
         ?? dec.decideContextualDeterministic(c.candidates, c.identification, { multiAssetDeclared: c.multiAssetDeclared })
-        ?? idd.decideFromIdentity(c.identity ?? null, c.candidates, { multiAssetDeclared: c.multiAssetDeclared, identifiedAssetIds: c.identification.assetIds });
+        ?? idd.decideFromIdentity(c.identity ?? null, c.candidates, { multiAssetDeclared: c.multiAssetDeclared, identifiedAssetIds: c.identification.assetIds })
+        // Carte #819 : « document → opération → bien » — même règle déterministe que T3 DOCUMENT_ASSET (reprise du stock).
+        ?? opi.decideFromOperation(c.operation, c.candidates, {
+          multiAssetDeclared: c.multiAssetDeclared, identifiedAssetIds: c.identification.assetIds,
+          refusedAssetIds: (c.identity?.memberships ?? []).flatMap((m) => m.group.refusedAssetIds), isLiveAsset: (assetId) => c.index.byId.has(assetId),
+        });
       const groupe = c.identity?.group ? { groupKey: c.identity.group.groupKey, groupStatus: c.identity.group.status, via: c.identity.member?.via ?? null } : {};
       if (d && d.kind !== 'ABSTAIN') {
         out.set(id, constat('REPAIRABLE', 'PRIMARY_LINK_RECOVERABLE', {

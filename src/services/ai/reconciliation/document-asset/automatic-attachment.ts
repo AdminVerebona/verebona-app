@@ -25,6 +25,26 @@ export function closeAssetLinkQuestion(accountId: number, fileId: number): Promi
 }
 
 /**
+ * Carte #819 : ferme la question LINK-ASSET ouverte avec un MOTIF TRACÉ dans l'historique de la carte
+ * (`to_process_action_events.details.reason`, ex. « RESOLVED_BY_OPERATION:116 ») — fermeture existante des cartes
+ * LINK-ASSET (OBSOLETE + événement), puis fermeture habituelle de toute autre question sur le même rattachement.
+ * Rend le nombre de questions fermées.
+ */
+export async function closeAssetLinkQuestionWithReason(accountId: number, fileId: number, detail: string): Promise<number> {
+  const rows = (await pgClient.unsafe(
+    `SELECT id FROM to_process_actions
+      WHERE account_id = $1 AND target_type = 'DOCUMENT' AND target_id = $2 AND rule_code = 'LINK-ASSET' AND resolved_at IS NULL ORDER BY id`,
+    [accountId, fileId] as never[],
+  )) as unknown as Array<{ id: number }>;
+  let n = 0;
+  if (rows.length) {
+    const { closeTechnicalLinkCard } = await import('@/services/to-process/identity-group-cards');
+    for (const r of rows) if (await closeTechnicalLinkCard(accountId, Number(r.id), detail)) n += 1;
+  }
+  return n + await closeAssetLinkQuestion(accountId, fileId);
+}
+
+/**
  * Colonne de rattachement principal posée automatiquement (vide, ou déjà
  * automatique). Refusée si l'utilisateur a choisi ou retiré un bien, et
  * (lot 113AM, #739) si la garde d'admission refuse la justification.

@@ -52,6 +52,16 @@
  *     (constat du stock : le TCO ne l'emploie plus ; à revoir en supervision).
  * Campagne exhaustive quotidienne idempotente : après réparation, la date de
  * la fiche concorde avec l'achat → CONSISTENT, aucune seconde écriture.
+ *
+ * Carte #819 (E, F) — reprise du stock « commande → facture » : une acquisition
+ * (datée ou non) qui porte une pièce de commande et UNE facture concordante,
+ * et dont la date enregistrée n'est pas celle de la facture alors que la
+ * consolidation T3 la retiendrait (`previewInvoiceAfterOrder`, simulation
+ * annulée, sans IA) → REPAIRABLE `ACQUISITION_DATE_INVOICE_AFTER_ORDER` :
+ * reconsolidation T3 de l'opération (date de la facture, provenance, historique
+ * avant / après) puis projection T4 (l'événement d'achat existant et intact
+ * suit la date, jamais un second). Une opération qui porte une saisie de
+ * l'utilisateur n'est jamais recalculée : elle n'est pas signalée.
  */
 import type { CoherenceCheck, Inspection, RepairResult } from '../types';
 import { hashOf, idsOf, intArray, rows, type Row } from '../util';
@@ -86,6 +96,9 @@ async function acquisitionsControlees(sql: Parameters<typeof rows>[0], accountId
      WHERE o.account_id = $1 AND ((${SANS_DATE_SQL}) OR (${DATEE_SQL})) ${extra}
      ORDER BY o.id`, [accountId, ...params]));
 }
+
+/** Carte #819 : date principale d'un achat restée à la date de commande alors que la facture concordante est connue. */
+const INVOICE_AFTER_ORDER = 'ACQUISITION_DATE_INVOICE_AFTER_ORDER';
 
 /** Lot 107C : anomalies réparables par la primitive canonique (date d'achat de la fiche). */
 const CANONIQUE = new Set(['ACQUISITION_DATE_CANONICAL_NOT_ENRICHED', 'ACQUISITION_DATE_CANONICAL_CONTRADICTED']);
@@ -151,7 +164,8 @@ export const operationsAcquisitionDateCheck: CoherenceCheck = {
   applicability: 'compte éligible (actif et modifiable) ; bien lié portant une date d’acquisition canonique valide (toute origine)',
   invariant: 'une acquisition réalisée dont le bien porte une date d’acquisition exploitable a cette date (provenance conservée) et son événement de référence aussi ; une date automatique seule ne crée jamais d’Opération ; lot 107C : la date d’achat du bien (TCO) n’est jamais celle d’une acquisition qui n’est pas l’achat du bien, la saisie de l’utilisateur prime, une contradiction sans autorité est tracée',
   anomalies: ['ACQUISITION_DATE_NOT_ENRICHED', 'ACQUISITION_DATE_AMBIGUOUS',
-    'ACQUISITION_DATE_CANONICAL_NOT_ENRICHED', 'ACQUISITION_DATE_CANONICAL_CONTRADICTED', 'ACQUISITION_DATE_CONTRADICTS_ASSET', 'ACQUISITION_DATE_UNDETERMINED', 'ACQUISITION_MISATTRIBUTED'],
+    'ACQUISITION_DATE_CANONICAL_NOT_ENRICHED', 'ACQUISITION_DATE_CANONICAL_CONTRADICTED', 'ACQUISITION_DATE_CONTRADICTS_ASSET', 'ACQUISITION_DATE_UNDETERMINED', 'ACQUISITION_MISATTRIBUTED',
+    INVOICE_AFTER_ORDER],
   autoRepairWhen: 'la réconciliation T3 du bien recalculée (simulation, sans IA) date l’Opération existante avec la date canonique du bien ; lot 107C : l’achat du bien est identifié sans ambiguïté et la date d’achat de la fiche est absente, ou automatique et contredite par la preuve de l’achat',
   forbiddenRepairs: ['créer une Opération depuis une date automatique', 'écraser une date existante', 'choisir entre plusieurs acquisitions du bien',
     'réécrire un événement d’agenda modifié par l’utilisateur', 'créer un second événement Achat', 'appeler l’IA depuis le contrôle',
@@ -159,14 +173,15 @@ export const operationsAcquisitionDateCheck: CoherenceCheck = {
     // Lot 107C.
     'remplacer une date d’achat saisie ou corrigée par l’utilisateur', 'choisir la plus ancienne acquisition', 'dater l’achat par une date de début ou une date planifiée',
     'écrire la date d’achat de la fiche hors de la primitive canonique'],
-  services: ['business-operations/consolidation/asset-data-consolidator#previewAssetDataReconciliation',
+  services: ['business-operations/consolidation/consolidator#previewInvoiceAfterOrder', 'business-operations/consolidation/consolidator#reconsolidateOperations',
+    'business-operations/consolidation/asset-data-consolidator#previewAssetDataReconciliation',
     'business-operations/consolidation/asset-data-consolidator#consolidateAssetData', 'business-operations/agenda-projection/service#projectAccountOperations',
     'business-operations/tco/service#readAssetTco', 'canonical/asset-state#writeCanonicalAssetField'],
   chain: ['T3', 'PERSISTENCE', 'PROJECTION', 'TO_PROCESS'],
   triggers: [OPERATION_CHANGED, ASSET_UPDATED],
   frequency: 'campagne exhaustive quotidienne + contrôle ciblé à chaque écriture d’Opération ou modification du bien',
   criticality: 'MEDIUM',
-  tests: ['L85E-U-01', 'L85E-U-08', 'L85E-E2E-08', 'L85E-E2E-09', 'L107C-U-20', 'L107C-E2E-07', 'L107C-E2E-08'],
+  tests: ['L85E-U-01', 'L85E-U-08', 'L85E-E2E-08', 'L85E-E2E-09', 'L107C-U-20', 'L107C-E2E-07', 'L107C-E2E-08', 'L116H-E2E-04'],
 
   async listObjects(ctx, accountId, afterId, limit) {
     return (await acquisitionsControlees(ctx.sql, accountId, `AND o.id > $2`, [afterId])).slice(0, limit);
@@ -212,7 +227,27 @@ export const operationsAcquisitionDateCheck: CoherenceCheck = {
        ORDER BY l.operation_id, (l.link_role = 'PRIMARY') DESC, a.id`, [accountId, intArray([...vivants])]);
     const { previewAssetDataReconciliation } = await import('@/services/business-operations/consolidation/asset-data-consolidator');
     const RANG: Record<string, number> = { REPAIRABLE: 0, AMBIGUOUS: 1, FINDING: 2, CONSISTENT: 3, GONE: 4 };
+    // Carte #819 : succession commande → facture — préfiltre SQL, puis la règle de consolidation rejouée à blanc.
+    const controlees = ids.filter((id) => datees.has(id) || vivants.has(id));
+    const { orderInvoiceCandidateOperations } = await import('@/services/business-operations/consolidation/order-invoice-reprise');
+    const aVoir = controlees.length ? await orderInvoiceCandidateOperations(accountId, controlees.length, controlees) : [];
+    const factures = aVoir.length
+      ? await (await import('@/services/business-operations/consolidation/consolidator')).previewInvoiceAfterOrder(accountId, aVoir, ctx.today)
+      : new Map<number, import('@/services/business-operations/consolidation/consolidator').InvoiceAfterOrderPreview>();
     for (const id of ids) {
+      const facture = factures.get(id);
+      if (facture?.wouldChange) {
+        out.set(id, {
+          verdict: 'REPAIRABLE', anomaly: INVOICE_AFTER_ORDER, faultyLink: 'T3',
+          expected: { realizedDate: facture.expected, origin: 'INVOICE_DOCUMENT_DATE' }, observed: { realizedDate: facture.stored },
+          detail: {
+            operationId: id, invoiceFileId: facture.invoiceFileId, orderDates: facture.orderDates,
+            repairChain: 'reconsolidation T3 de l’opération (date de la facture), puis projection T4 de l’opération',
+          },
+          inputHash: hashOf({ id, stored: facture.stored, expected: facture.expected, invoice: facture.invoiceFileId }),
+        });
+        continue;
+      }
       if (datees.has(id)) {
         // Un constat par bien lié ; le plus actionnable l'emporte (réparation, puis écart tracé).
         let pire: Inspection = { verdict: 'CONSISTENT' };
@@ -268,6 +303,18 @@ export const operationsAcquisitionDateCheck: CoherenceCheck = {
     const { consolidateAssetData } = await import('@/services/business-operations/consolidation/asset-data-consolidator');
     const { projectAccountOperations } = await import('@/services/business-operations/agenda-projection/service');
     for (const { id, inspection } of items) {
+      if (inspection.anomaly === INVOICE_AFTER_ORDER) {
+        // Carte #819 : mêmes moteurs que l'arrivée d'une facture — reconsolidation T3 (trace avant / après), puis T4.
+        const { reconsolidateOperations } = await import('@/services/business-operations/consolidation/consolidator');
+        const t3 = await reconsolidateOperations(accountId, [id], { today: ctx.today, correlationId: ctx.correlationId });
+        const t4 = await projectAccountOperations(accountId, { operationIds: [id], correlationId: ctx.correlationId, today: ctx.today });
+        out.set(id, {
+          called: true, service: 'reconsolidateOperations+projectAccountOperations', aiCalls: 0,
+          result: { anomaly: inspection.anomaly, t3Changes: t3, t4Changes: t4.changes, t4Updated: t4.updated, t4Created: t4.created },
+          rollbackRef: `business_operation_history:correlation_id=${ctx.correlationId}`,
+        });
+        continue;
+      }
       const assetId = Number((inspection.detail as { assetId?: unknown } | undefined)?.assetId);
       if (!Number.isSafeInteger(assetId)) throw new Error(`bien inconnu pour l’Opération ${id}`);
       if (inspection.anomaly && CANONIQUE.has(inspection.anomaly)) {

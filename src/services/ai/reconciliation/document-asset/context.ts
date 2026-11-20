@@ -46,6 +46,8 @@ import { DOCUMENT_ASSET_RESOLUTION_VERSION } from './version';
 import { documentIdentityFingerprint } from './identity/graph';
 import { identityContextOf, type DocumentIdentityContext } from './identity/decision';
 import { identityGraphOutcomeFor, type IdentityGraphOutcome, type IdentityGraphStatus } from './identity/load';
+import type { OperationAttachment } from './operation-inheritance';
+import { loadOperationAttachment } from './operation-inheritance.store';
 
 /**
  * Version des règles déterministes (identifiants forts, référence partagée,
@@ -97,6 +99,12 @@ export interface DocumentAssetContext {
    */
   identityGraphStatus?: IdentityGraphStatus | 'PROVIDED';
   identityGraphError?: string | null;
+  /**
+   * Carte #819 : bien que les OPÉRATIONS du document lui désignent (appartenance établie, opération active,
+   * un seul bien porté par une autre preuve) — `operation-inheritance.ts`. Absent : contexte construit sans
+   * cette lecture (appelant antérieur) ; statut NONE : le document n'appartient à aucune opération.
+   */
+  operation?: OperationAttachment | null;
 }
 
 /** Empreinte du contexte (pure). */
@@ -111,6 +119,8 @@ export function documentAssetContextFingerprint(p: {
   sourceUnits?: ReadonlyArray<Pick<MatchedSourceUnit, 'unitId' | 'uncertain' | 'assetIds'>>;
   /** Lot 105D : part « identité documentaire » (groupe) — absente : empreinte inchangée. */
   identity?: string | null;
+  /** Carte #819 : part « opération » (bien désigné par l'opération du document) — absente : empreinte inchangée. */
+  operation?: string | null;
 }): string {
   const v = p.versions ?? {
     resolution: DOCUMENT_ASSET_RESOLUTION_VERSION, builder: CANDIDATE_BUILDER_VERSION, rules: DOCUMENT_ASSET_RULES_VERSION,
@@ -130,6 +140,7 @@ export function documentAssetContextFingerprint(p: {
       ? { su: [...p.sourceUnits].map((u) => [u.unitId, u.uncertain, [...u.assetIds].sort((a, b) => a - b)]).sort((a, b) => String(a[0]).localeCompare(String(b[0]))) }
       : {}),
     ...(p.identity ? { id: p.identity } : {}),
+    ...(p.operation ? { op: p.operation } : {}),
   });
   return createHash('sha256').update(payload).digest('hex');
 }
@@ -150,11 +161,16 @@ export async function computeDocumentAssetContext(p: {
   identityGraph?: import('./identity/graph').AccountIdentityGraph | null;
   /** Lot 108E : issue du graphe déjà obtenue pour le passage (statut de panne compris). Prioritaire sur `identityGraph`. */
   identityOutcome?: IdentityGraphOutcome;
+  /** Carte #819 : bien désigné par l'opération, déjà lu (tests, appelant qui vient de le relire) ; à défaut, lu ici. */
+  operation?: OperationAttachment | null;
 }): Promise<DocumentAssetContext> {
   const t1Candidates = p.resolution?.t1Candidates ?? [];
-  const [sources, index] = await Promise.all([
+  const [sources, index, operation] = await Promise.all([
     loadDocumentKnowledgeSources({ accountId: p.accountId, fileId: p.fileId, t1Candidates }),
     p.index ? Promise.resolve(p.index) : loadAccountMatchingIndex(p.accountId),
+    // Carte #819 : relation document → opération → bien, lue dans l'état ACTUEL (jamais mémorisée par index :
+    // elle change pendant un passage, quand le rapprochement d'opération enregistre la relation).
+    p.operation !== undefined ? Promise.resolve(p.operation) : loadOperationAttachment(p.accountId, p.fileId),
   ]);
   // Lot 105D : identité documentaire (graphe du compte mémorisé par index) — lue AVANT les candidats :
   // une adresse citée comme facturation / livraison n'est jamais une preuve pour le bien qui la porte.
@@ -196,7 +212,7 @@ export async function computeDocumentAssetContext(p: {
   const identity = graph ? identityContextOf(graph, p.fileId, identityFp) : null;
   const fingerprint = documentAssetContextFingerprint({
     documentDigest: sources?.digest ?? null, candidates, candidateIdentifiers, matches: build.deterministicMatches,
-    sourceUnits: matchedSourceUnits, identity: identityFp,
+    sourceUnits: matchedSourceUnits, identity: identityFp, operation: operation?.fingerprint ?? null,
   });
   return {
     accountId: p.accountId,
@@ -216,6 +232,7 @@ export async function computeDocumentAssetContext(p: {
     identity,
     identityGraphStatus: issue ? issue.status : 'PROVIDED',
     identityGraphError: issue?.error ?? null,
+    operation,
   };
 }
 

@@ -242,6 +242,16 @@ export interface CandidateIdentity {
    */
   financingWithoutEvidence?: true;
   /**
+   * Carte #819 (E) : la source est une PIÈCE DE COMMANDE d'un achat (rôle « commande », ou document classé pièce
+   * de commande au référentiel `order-evidence.ts`), payée ou non — sa date est la date de COMMANDE.
+   */
+  orderEvidence?: true;
+  /**
+   * Carte #819 (E) : date du DOCUMENT (`asset_files.document_date`) d'une pièce de commande ou d'une facture d'un
+   * ACHAT — seules pièces de la succession commande → facture (`invoiceAfterOrder`). Absente pour toute autre source.
+   */
+  documentDate?: string;
+  /**
    * Carte #813 (A) : NOM de l'achat dérivé de la désignation extraite du justificatif (« Achat Polisport
    * groovy coussin gris ») — moteur de titrage existant, jamais un texte rédigé. Absent : le résumé du
    * candidat reste le libellé (règle antérieure).
@@ -462,10 +472,16 @@ export function buildCandidateIdentity(c: CandidateRecord, ctx: IdentityContext)
   const seulDuDocument = (ctx.documentCandidates ?? [c]).filter((x) => x.fileId === c.fileId && x.established).length <= 1;
   const designationLabel = (corroboration?.type ?? type) === 'ACQUISITION' && ctx.fileDesignation && seulDuDocument
     ? acquisitionLabelFromDesignation(ctx.fileDesignation.subject, { otherArticles: ctx.fileDesignation.otherArticles }) : null;
+  // Carte #819 (E) : pièces de la succession commande → facture d'un ACHAT (date du document conservée pour elles seules).
+  const typeFinal = corroboration?.type ?? type;
+  const pieceDeCommande = typeFinal === 'ACQUISITION' && (role === 'ORDER' || isOrderDocumentType(ctx.fileDocumentTypeCode));
+  const dateDocument = typeFinal === 'ACQUISITION' && (pieceDeCommande || role === 'INVOICE') ? dateOrNull(ctx.fileDocumentDate ?? null) : null;
   return {
     ...(designationLabel ? { designationLabel } : {}),
     ...(commandeSansRealisation ? { orderWithoutRealization: true as const } : {}),
     ...(financementSansPreuve ? { financingWithoutEvidence: true as const } : {}),
+    ...(pieceDeCommande ? { orderEvidence: true as const } : {}),
+    ...(dateDocument ? { documentDate: dateDocument } : {}),
     candidateId: c.id,
     candidateKey: c.candidateKey,
     fileId: c.fileId,
@@ -1021,6 +1037,11 @@ export interface SourceContribution {
 }
 
 export interface ConsolidatedState {
+  /**
+   * Carte #819 (E) : la date de réalisation retenue vient de la règle « commande → facture du même achat »
+   * (`invoiceAfterOrder`) : source (la facture) et date de son document. Absente : règle non appliquée.
+   */
+  invoiceAfterOrder?: InvoiceAfterOrder;
   type: BusinessOperationTypeCode | null;
   status: BusinessOperationStatus;
   /** Une source certaine établit-elle la réalisation ? */
@@ -1157,14 +1178,22 @@ function attributeConflict(
  */
 export function computeProvenance(
   v: Pick<ConsolidatedState, 'plannedDate' | 'startDate' | 'realizedDate' | 'endDate' | 'provider'>, sources: readonly SourceContribution[],
-  /** Lot 86C : relation durable — début / fin justifiés par une source CONTRACTUELLE seulement. */
-  opts: { durable?: boolean } = {},
+  /**
+   * Lot 86C : relation durable — début / fin justifiés par une source CONTRACTUELLE seulement.
+   * Carte #819 : `invoiceAfterOrder` — la date de réalisation vient de la date du document de la facture.
+   */
+  opts: { durable?: boolean; invoiceAfterOrder?: InvoiceAfterOrder | null } = {},
 ): AttributeProvenance {
   const srcs = [...sources].sort((a, b) => a.sourceId - b.sourceId);
   const out: AttributeProvenance = {};
   for (const k of ['plannedDate', 'startDate', 'realizedDate', 'endDate'] as const) {
     const val = v[k];
     if (!val) continue;
+    // Carte #819 (E) : date principale issue de la facture (date de son document) — source et origine tracées.
+    if (k === 'realizedDate' && opts.invoiceAfterOrder && opts.invoiceAfterOrder.date === val) {
+      out[k] = { sourceId: opts.invoiceAfterOrder.sourceId, value: val, origin: INVOICE_DOCUMENT_DATE_ORIGIN };
+      continue;
+    }
     const pool = opts.durable && (k === 'startDate' || k === 'endDate')
       ? srcs.filter((x) => (k === 'endDate' ? contractualEndSource(x.identity) : contractualStartSource(x.identity))) : srcs;
     const s = (k === 'realizedDate' ? srcs.find((x) => x.identity.agenda?.realizedDate === val) : undefined)
@@ -1182,6 +1211,56 @@ export function computeProvenance(
     if (porteuses.length) out.provider = { sourceId: porteuses[0].sourceId, value: v.provider };
   }
   return out;
+}
+
+/** Origine tracée d'une date de réalisation posée par la règle « commande → facture » (provenance 78A). */
+export const INVOICE_DOCUMENT_DATE_ORIGIN = 'INVOICE_DOCUMENT_DATE';
+
+/** Carte #819 (E) : facture qui date un achat d'abord connu par sa commande. */
+export interface InvoiceAfterOrder {
+  /** Source de l'opération : la facture. */
+  sourceId: number;
+  /** Date du document de la facture (AAAA-MM-JJ). */
+  date: string;
+  /** Dates de commande conservées (documents de commande datés), triées. */
+  orderDates: string[];
+}
+
+/**
+ * Carte #819 (E, décision PO du 20/11/2026) — DATE PRINCIPALE d'un achat à l'arrivée de la facture
+ * concordante de sa commande (pure). `null` : la règle ne s'applique pas, la règle existante reste seule.
+ *
+ * Conditions CUMULATIVES (la succession « commande → facture du MÊME achat », rien d'autre) :
+ *   · au moins une pièce de COMMANDE parmi les sources actives de l'opération (`orderEvidence`) ;
+ *   · UNE SEULE facture documentaire (rôle « facture », hors pièce de commande) qui PROUVE la réalisation
+ *     (source certaine, statut réalisé), et dont le document est daté ;
+ *   · aucune autre facture : avec PLUSIEURS factures, une facture d'acompte, ou un montant d'acompte, de
+ *     solde ou d'échéance sur la facture, la règle ne s'applique pas (règles existantes des acomptes et
+ *     des opérations à plusieurs factures inchangées) ;
+ *   · aucune date de réalisation portée par un événement RÉEL de l'utilisateur (Agenda) ni par la fiche du
+ *     bien (donnée structurée) : ces dates propres gardent leurs règles ;
+ *   · la facture n'est pas antérieure à la commande (une facture datée avant sa commande n'est pas la suite
+ *     de cette commande : rien n'est présumé).
+ * Alors la date principale est la DATE DU DOCUMENT de la facture — quelle que soit la date de réalisation
+ * proposée pour elle (souvent la date de commande) et même si la commande, payée, était déjà « réalisée ».
+ * La date de commande reste la date du bon (repère « Date de commande ») ; les dates de paiement et de
+ * livraison (composantes, date prévue) ne sont pas touchées.
+ */
+export function invoiceAfterOrder(sources: readonly SourceContribution[], realisation: readonly SourceContribution[]): InvoiceAfterOrder | null {
+  const commandes = sources.filter((s) => s.identity.orderEvidence === true);
+  if (commandes.length === 0) return null;
+  if (sources.some((s) => s.identity.role === 'DEPOSIT_INVOICE')) return null;
+  if (realisation.some((s) => (s.identity.agenda || s.identity.structured) && s.identity.dates.realizedDate)) return null;
+  const factures = sources.filter((s) => s.identity.role === 'INVOICE' && s.identity.orderEvidence !== true && !s.identity.agenda && !s.identity.structured);
+  if (new Set(factures.map((s) => s.identity.fileId)).size !== 1) return null;
+  const probantes = factures.filter((s) => realisation.some((r) => r.sourceId === s.sourceId) && !!s.identity.documentDate)
+    .sort((a, b) => a.sourceId - b.sourceId);
+  if (probantes.length === 0) return null;
+  if (factures.some((s) => s.identity.hints.some((h) => h.amountScope === 'DEPOSIT' || h.amountScope === 'BALANCE' || h.amountScope === 'INSTALLMENT'))) return null;
+  const date = probantes[0].identity.documentDate!;
+  const orderDates = [...new Set(commandes.map((s) => s.identity.documentDate).filter((d): d is string => !!d))].sort();
+  if (orderDates.some((d) => d > date)) return null;
+  return { sourceId: probantes[0].sourceId, date, orderDates };
 }
 
 const minDate = (v: Array<string | null>): string | null => v.filter((x): x is string => !!x).sort()[0] ?? null;
@@ -1242,6 +1321,8 @@ export function consolidateOperationState(
   const datees = durable ? srcs.filter((s) => contractualStartSource(s.identity)) : srcs;
   // Lot 113W2 : une fin de couverture (attestation, certificat…) ne date jamais la fin du contrat.
   const finsDatees = durable ? srcs.filter((s) => contractualEndSource(s.identity)) : srcs;
+  // Carte #819 (E) : succession commande → facture du même achat (`invoiceAfterOrder`), sinon null.
+  const succession = type === 'ACQUISITION' ? invoiceAfterOrder(srcs, realisation) : null;
   let plannedDate = minDate(all('plannedDate'));
   let startDate = minDate(all('startDate', datees));
   let realizedDate: string | null = null;
@@ -1257,7 +1338,8 @@ export function consolidateOperationState(
       realizedDate = minDate(all('realizedDate', realisation));
       break;
     case 'ACQUISITION':
-      realizedDate = minDate(all('realizedDate', realisation)) ?? economicFallback(realisation, ['REALIZED_COST']);
+      // Carte #819 (E) : à l'arrivée de la facture concordante d'une commande, la date de la facture est la date principale.
+      realizedDate = succession?.date ?? minDate(all('realizedDate', realisation)) ?? economicFallback(realisation, ['REALIZED_COST']);
       break;
     case 'DISPOSAL':
       realizedDate = minDate(all('realizedDate', realisation)) ?? economicFallback(realisation, ['PROCEED', 'REALIZED_COST']);
@@ -1275,8 +1357,12 @@ export function consolidateOperationState(
   const fenetre = transactionWindowDays(type);
   const attributeConflicts: AttributeConflict[] = [];
   for (const k of ['plannedDate', 'startDate', 'realizedDate', 'endDate'] as const) {
-    const liste = k === 'realizedDate' ? realisation : srcs;
-    const conflit = attributeConflict(k, liste, (s) => s.identity.dates[k], fenetre);
+    // Carte #819 (E) : dans la succession commande → facture, la date d'une pièce de commande est la date de COMMANDE
+    // (fait distinct : elle ne concurrence pas la réalisation) et la facture vaut par la date de son document —
+    // aucune contradiction, donc aucune question de date, entre la commande et sa facture.
+    const liste = k === 'realizedDate' ? (succession ? realisation.filter((s) => s.identity.orderEvidence !== true) : realisation) : srcs;
+    const conflit = attributeConflict(k, liste,
+      (s) => (k === 'realizedDate' && succession && s.sourceId === succession.sourceId ? succession.date : s.identity.dates[k]), fenetre);
     if (conflit) attributeConflicts.push(conflit);
   }
   // Lot 115 (#791, E01) : la RÉTENTION ne change pas — seul un écart MATÉRIEL (au-delà de la fenêtre de
@@ -1364,11 +1450,13 @@ export function consolidateOperationState(
   const premiereRef = (kinds: ReferenceKind[]) => references.find((r) => kinds.includes(r.kind))?.value ?? null;
 
   // Lot 78A (§2C, §6) : source qui justifie chaque valeur conservée.
-  const provenance = computeProvenance({ plannedDate, startDate, realizedDate, endDate, provider }, srcs, { durable });
+  const successionRetenue = succession && realizedDate === succession.date ? succession : null;
+  const provenance = computeProvenance({ plannedDate, startDate, realizedDate, endDate, provider }, srcs, { durable, invoiceAfterOrder: successionRetenue });
   const valeurs: Record<ProvenancedField, string | null> = { plannedDate, startDate, realizedDate, endDate, provider };
   for (const c of attributeConflicts) c.retained = valeurs[c.field];
 
   return {
+    ...(successionRetenue ? { invoiceAfterOrder: successionRetenue } : {}),
     type,
     status,
     realizationProven: realisation.length > 0,

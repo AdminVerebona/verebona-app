@@ -174,6 +174,12 @@ export function setT3FaultHookForTests(h: FaultHook | null): void { faultHook = 
 
 const todayUtc = () => new Date().toISOString().slice(0, 10);
 
+/**
+ * Carte #819 (E) — motif d'historique de la date principale d'un achat remplacée par la date de la facture
+ * concordante de sa commande (`business_operation_history.reason_code`, avant / après).
+ */
+export const INVOICE_AFTER_ORDER_REASON = 'T3_INVOICE_DATE_AFTER_ORDER';
+
 /** Compteur des écritures métier d'un passage. */
 export class Changes {
   n = 0;
@@ -876,7 +882,9 @@ export async function reconsolidateOperation(
   const fullyManaged = unmanaged === 0;
   // Lot 78A (§2C, §6) : provenance des valeurs conservées, APRÈS les autorités
   // de la fiche et de l'agenda (une saisie de l'utilisateur prime et se trace).
-  state.provenance = computeProvenance(state, contributions, { durable: isDurableRelationType(state.type) });
+  // Carte #819 (E) : la règle « commande → facture » ne vaut plus si la fiche du bien a daté l'achat entre-temps.
+  if (state.invoiceAfterOrder && state.realizedDate !== state.invoiceAfterOrder.date) delete state.invoiceAfterOrder;
+  state.provenance = computeProvenance(state, contributions, { durable: isDurableRelationType(state.type), invoiceAfterOrder: state.invoiceAfterOrder ?? null });
   // Lot 114 (#750, issues B et C) : arbitrages DURABLES des contradictions réelles — choix de l'utilisateur
   // (carte « À traiter », source USER_ARBITRATION) puis arbitrages T3 à preuve suffisante. La valeur retenue
   // est écrite sur l'événement de référence ; un arbitrage T3 ne s'applique jamais à côté de saisies non
@@ -969,6 +977,12 @@ export async function reconsolidateOperation(
   const libelleSysteme = op.technicalLabel === null || porteLibelle(op.technicalLabel);
   if (fullyManaged && (state.type ?? op.typeCode) === 'ACQUISITION' && designe && libelleSysteme && !('technicalLabel' in attrs) && op.technicalLabel !== designe) {
     attrs.technicalLabel = designe;
+  }
+  // Carte #819 (E) : la date principale passe de la date de commande à la date de la facture — écrite À PART, avec son
+  // motif propre (historique : ancienne valeur, nouvelle valeur, motif ; la source est la provenance 78A, ci-dessous).
+  if (state.invoiceAfterOrder && 'realizedDate' in attrs && attrs.realizedDate === state.invoiceAfterOrder.date && op.realizedDate !== attrs.realizedDate) {
+    changes.track(await repo.updateAttributes(operationId, { realizedDate: attrs.realizedDate }, INVOICE_AFTER_ORDER_REASON));
+    delete attrs.realizedDate;
   }
   changes.track(await repo.updateAttributes(operationId, attrs, retiree && ('provider' in attrs || 'technicalLabel' in attrs) ? 'T3_SOURCE_WITHDRAWN_REEVALUATED' : 'T3_ATTRIBUTES_CONSOLIDATED'));
 
@@ -1978,6 +1992,88 @@ export async function previewContractDates(accountId: number, operationIds: read
   return out;
 }
 
+/** Carte #819 (E, F) — date principale d'un achat recalculée (simulation), face à la date enregistrée. */
+export interface InvoiceAfterOrderPreview {
+  operationId: number;
+  label: string | null;
+  /** Date de réalisation enregistrée. */
+  stored: string | null;
+  /** Date de la facture que la règle « commande → facture » retient. */
+  expected: string;
+  invoiceSourceId: number;
+  invoiceFileId: number | null;
+  /** Dates de commande conservées (dates des bons). */
+  orderDates: string[];
+  /**
+   * Faux : l'opération porte une saisie de l'utilisateur (date ou type corrigés, déclaration, formulaire) — sa date
+   * enregistrée n'est JAMAIS recalculée (même règle que la reconsolidation).
+   */
+  fullyManaged: boolean;
+  /** La reconsolidation écrirait la date de la facture. */
+  wouldChange: boolean;
+}
+
+/**
+ * Carte #819 (E, F) — achats dont la date principale relève de la règle « commande → facture du même achat »
+ * (`invoiceAfterOrder`), recalculés par le modèle de consolidation T3 en LECTURE dans une transaction toujours
+ * annulée, sans IA (même procédé que `previewContractDates`). Sert au rapport à blanc de la reprise : seules les
+ * opérations pour lesquelles la règle s'applique sont rendues.
+ */
+export async function previewInvoiceAfterOrder(accountId: number, operationIds: readonly number[], today: string = todayUtc()): Promise<Map<number, InvoiceAfterOrderPreview>> {
+  const out = new Map<number, InvoiceAfterOrderPreview>();
+  const ids = [...new Set(operationIds)].filter((x) => Number.isSafeInteger(x) && x > 0).sort((a, b) => a - b);
+  if (!ids.length) return out;
+  const { db } = await import('@/db');
+  const ANNULEE = Symbol('simulation annulée');
+  await db.transaction(async (tx) => {
+    await tx.execute(sql`SET LOCAL lock_timeout = '2s'`);
+    const ops = await rows<Row>(tx, sql`
+      SELECT o.id, o.technical_label, o.realized_date::text AS realized_date
+        FROM business_operations o
+       WHERE o.account_id = ${accountId} AND o.id = ANY(${intArray(ids)}::bigint[]) AND o.type_code = 'ACQUISITION'
+         AND o.invalidated_at IS NULL AND o.merged_into_operation_id IS NULL`);
+    for (const o of ops) {
+      const opId = Number(o.id);
+      const srcRows = await rows<Row>(tx, sql`
+        SELECT id, source_kind, source_entity_key, locator->>'candidateKey' AS key,
+               CASE WHEN source_kind = 'ASSET_DATA' THEN locator->>'nature' END AS nature,
+               CASE WHEN source_kind = 'AGENDA' THEN locator->>'agenda' END AS agenda,
+               CASE WHEN source_kind = ${DECISION_SOURCE_KIND} AND locator ? 'decision' THEN locator END AS decision
+          FROM business_operation_sources WHERE operation_id = ${opId} AND account_id = ${accountId} AND active ORDER BY id`);
+      const sources: OpSource[] = srcRows.map((x) => ({
+        id: Number(x.id), kind: String(x.source_kind), entityKey: String(x.source_entity_key), key: (x.key as string | null) ?? null,
+        nature: (x.nature as string | null) ?? null,
+        managed: (x.source_kind === 'DOCUMENT' && x.key !== null) || (x.source_kind === 'ASSET_DATA' && x.nature !== null)
+          || (x.source_kind === 'AGENDA' && x.agenda !== null),
+        decision: (x.decision as Record<string, unknown> | null) ?? null,
+      }));
+      const agendaCtx: AgendaContext = { operationId: opId, operationType: 'ACQUISITION', today, otherSupport: sources.some((x) => x.kind !== 'AGENDA' && x.decision === null) };
+      const contributions: SourceContribution[] = [];
+      for (const src of sources.filter((x) => x.managed)) {
+        const c = await contributionOf(tx, accountId, src, agendaCtx);
+        if (c && 'identity' in c) contributions.push(c);
+      }
+      const probantes = contributions.filter((c) => !isEnrichmentOnly(c));
+      if (!probantes.length) continue;
+      const state = applyAgendaAuthority(applyStructuredAuthority(consolidateOperationState('ACQUISITION', probantes, today), contributions, today), probantes, agendaCtx.otherSupport);
+      const regle = state.invoiceAfterOrder;
+      if (!regle || state.realizedDate !== regle.date) continue;
+      const stored = (o.realized_date as string | null) ?? null;
+      const fullyManaged = sources.filter((x) => !x.managed && x.decision === null).length === 0;
+      const facture = sources.find((x) => x.id === regle.sourceId);
+      out.set(opId, {
+        operationId: opId, label: (o.technical_label as string | null) ?? null, stored, expected: regle.date,
+        invoiceSourceId: regle.sourceId, invoiceFileId: facture && /^[0-9]{1,9}$/.test(facture.entityKey) ? Number(facture.entityKey) : null,
+        orderDates: regle.orderDates, fullyManaged,
+        // Même règle d'écriture que la reconsolidation : une date existante n'est remplacée que si toutes les sources sont gérées par T3.
+        wouldChange: stored !== regle.date && (fullyManaged || stored === null),
+      });
+    }
+    throw ANNULEE;
+  }).catch((e) => { if (e !== ANNULEE) throw e; });
+  return out;
+}
+
 // ── Un document (TRG-001 à TRG-007) ────────────────────────────────────────
 
 /**
@@ -2396,6 +2492,8 @@ interface AccountConsolidationResult {
   identityReviewMarked?: number;
   /** Lot 84E (O-6) : liens directs Document ↔ Équipement posés (documents arrivés dans une Opération liée à un équipement). */
   directLinks?: number;
+  /** Carte #819 (D) : documents sans bien rattachés au bien de leur opération après l'enregistrement de la relation. */
+  operationAssetLinks?: number;
   /** Lot 113AD : réexamen T3 des divergences de périodes (demandes traitées, appels, issues). */
   periodRelation?: import('@/services/documents/business-periods/relation-review').PeriodRelationPhaseResult;
   /** Lot 113AL : arbitrage sémantique T3 des montants non qualifiés du TCO (demandes traitées, appels, issues). */
@@ -2630,6 +2728,24 @@ export async function consolidateAccountOperations(
       if ((await import('@/services/ai/queue/execution-control')).isExecutionCancelled(e)) throw e;
       res.errors++;
       console.error(`[t3-operations] identité sémantique T3 (compte ${accountId}) :`, (e as Error).message);
+    }
+  }
+  // Carte #819 (D) : la relation document – opération vient d'être enregistrée (rapprochement M0 à M3, création) —
+  // les documents SANS bien de ces opérations sont réévalués tout de suite : « document → opération → bien » rattache
+  // le document au bien de son opération, sans IA ni question ; une carte « À quel bien… » ouverte avant le
+  // rapprochement est fermée (résolu par l'opération). Déterministe, borné ; les filets existants (réexamen des cartes
+  // ouvertes, balayage T3, COH-DOC-PRIMARY-LINK) reprennent ce qui resterait.
+  if (changees.size) {
+    try {
+      const { reevaluateOperationDocuments } = await import('@/services/ai/reconciliation/document-asset/operation-inheritance.store');
+      const h = await reevaluateOperationDocuments(accountId, [...changees], { beforeWrite: opts.beforeWrite });
+      if (h.attached.length) res.operationAssetLinks = h.attached.length;
+      // Le bien du document entre dans la version de sa source : reconsolidé dans CE passage (pas de passage de plus).
+      for (const a of h.attached) await passer(a.fileId);
+    } catch (e) {
+      if ((await import('@/services/ai/queue/execution-control')).isExecutionCancelled(e)) throw e;
+      res.errors++;
+      console.error(`[t3-operations] rattachement au bien de l'opération (compte ${accountId}) :`, (e as Error).message);
     }
   }
   // Lot 113AD (#725, D11) : réexamen T3 des divergences de périodes non déclarées (contrat t3-period-relation-v1) —

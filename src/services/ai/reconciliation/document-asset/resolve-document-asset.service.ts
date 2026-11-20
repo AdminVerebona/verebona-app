@@ -100,6 +100,22 @@
  *     réattribué au bien porteur (ni prix ni garantie d'appareil) ;
  *   · C — journal par document enrichi : branche, état du graphe, sources,
  *     appartenances, contrôle croisé, panne, projection, carte avant / après.
+ *
+ * Carte #819 (commande → facture) — RATTACHEMENT HÉRITÉ DE L'OPÉRATION
+ * (`operation-inheritance.ts`) :
+ *   · le contexte lit la relation document → opération → bien ; elle entre
+ *     dans l'empreinte dès qu'elle désigne un bien (contexte « modifié » : ni
+ *     CONFIRMED_NO_CHANGE ni abstention mémorisée réutilisée) ;
+ *   · décision déterministe `OPERATION_ASSET:<opération>` après les
+ *     identifiants et l'identité de groupe, avant toute garde de groupe et
+ *     tout appel au modèle — aucune question quand l'opération répond ;
+ *   · la carte LINK-ASSET ouverte est fermée avec le motif tracé
+ *     « RESOLVED_BY_OPERATION:<opération> » ;
+ *   · ORDRE : relation enregistrée PENDANT l'évaluation → relue juste avant
+ *     d'écrire l'abstention, et l'évaluation est rejouée une fois ; carte
+ *     écrite alors qu'un rattachement vient d'être posé → refermée ; relation
+ *     enregistrée APRÈS → réévaluation `operationOnly` par le rapprochement
+ *     d'opération (déterministe, aucune IA, aucune carte créée).
  * ══════════════════════════════════════════════════════════════════════════
  */
 import { pgClient } from '@/db';
@@ -107,7 +123,7 @@ import { AiGateway } from '../../gateway/ai-gateway';
 import { isExecutionCancelled, type ExecutionGuard } from '../../queue/execution-control';
 import { T3LinkAmbiguityOutput } from '../master/t3-contract';
 import { unlinkDocument } from '@/services/documents/document-asset-links';
-import { attachAutomatically, clearAutomaticPrimaryColumn, closeAssetLinkQuestion } from './automatic-attachment';
+import { attachAutomatically, clearAutomaticPrimaryColumn, closeAssetLinkQuestion, closeAssetLinkQuestionWithReason } from './automatic-attachment';
 import { documentAssetLinkJustification } from './link-justification';
 import { admitDocumentAssetLink, type LinkJustification } from '@/services/documents/document-asset-links/admission';
 import { logLinkRefusal, recordLinkAdmission } from '@/services/documents/document-asset-links/admission-journal';
@@ -143,6 +159,8 @@ import { noteDegraded } from '../../degraded/degraded-mode';
 import { readExplicitNoAssetDecision } from '@/services/to-process/no-asset-decision';
 import type { ExplicitNoAssetDecision } from '@/services/to-process/no-asset-choice';
 import { respectExplicitNoAsset, type RespectNoAssetDeps } from './explicit-no-asset';
+import { decideFromOperation, operationOfReason, RESOLVED_BY_OPERATION } from './operation-inheritance';
+import { loadOperationAttachment } from './operation-inheritance.store';
 
 /** Issue métier d'une exécution (vocabulaire de la file T3). */
 type DocumentAssetOutcome = 'APPLIED' | 'NO_CHANGE' | 'ABSTAIN' | 'SUPERSEDED' | 'TARGET_GONE';
@@ -228,7 +246,9 @@ export interface DocumentAssetEvaluation {
   /** Lot 105D : preuves croisées transmises au modèle (contrat t3-document-asset-cross-v1). */
   crossDocumentSent?: boolean;
   /** Lot 108E (C) : branche de décision effectivement suivie. */
-  branch?: 'DETERMINISTIC' | 'IDENTITY' | 'GROUP_GATE' | 'STRUCTURED' | 'SEMANTIC' | 'MEMORY' | 'TECHNICAL' | 'NONE';
+  branch?: 'DETERMINISTIC' | 'IDENTITY' | 'OPERATION' | 'GROUP_GATE' | 'STRUCTURED' | 'SEMANTIC' | 'MEMORY' | 'TECHNICAL' | 'NONE';
+  /** Carte #819 : bien désigné au document par ses opérations (statut, opération, bien) — journal et diagnostic. */
+  operation?: { status: string; operationId: number | null; targetAssetId: number | null; operationIds: number[] } | null;
   /** Lot 108E (C, A4) : contrôle serveur de la sortie croisée (obligatoire si les preuves ont été transmises). */
   crossDocument?: { required: boolean; present: boolean; reasons: string[]; blocked: boolean } | null;
   /** Lot 108E (C, A5) : état du graphe d'identité pour cette évaluation. */
@@ -312,6 +332,13 @@ interface ResolveDocumentAssetInput {
   identityGraph?: AccountIdentityGraph | null;
   /** Lot 108E : issue du graphe du passage (panne comprise) — prioritaire sur `identityGraph`. */
   identityOutcome?: IdentityGraphOutcome;
+  /**
+   * Carte #819 : réévaluation née de l'enregistrement d'une relation document – opération. DÉTERMINISTE seulement :
+   * rien n'est écrit (ni issue, ni carte) si aucune règle sans IA ne rattache le document ; aucun appel au modèle.
+   */
+  operationOnly?: boolean;
+  /** Carte #819 : la relation à l'opération a déjà été relue avant l'abstention (une seule nouvelle évaluation). */
+  operationRechecked?: boolean;
 }
 
 interface ResolveDocumentAssetResult {
@@ -427,6 +454,10 @@ export function evaluationBase(p: {
       })),
     } : null,
     identityGraph: { status: p.ctx.identityGraphStatus ?? 'PROVIDED', error: p.ctx.identityGraphError ?? null },
+    operation: p.ctx.operation && p.ctx.operation.status !== 'NONE' ? {
+      status: p.ctx.operation.status, operationId: p.ctx.operation.operationId, targetAssetId: p.ctx.operation.targetAssetId,
+      operationIds: p.ctx.operation.operationIds.slice(0, 10),
+    } : null,
     identitySources: (p.ctx.identity?.graph.coverage?.get(p.fileId) as DocumentAssetEvaluation['identitySources'] | undefined) ?? null,
     // Lot 105D : la mémoire IA suit l'évaluation tant qu'elle n'est pas remplacée.
     aiMemory: previousAiMemory(p.resolution),
@@ -460,6 +491,9 @@ export async function resolveDocumentAsset(
   const changed = resolution?.knowledgeRevision != null ? await knowledgeChangedSince(accountId, resolution.knowledgeRevision) : [];
   const base = evaluationBase({ fileId, ctx, resolution, revision, changed, triggerCode: input.triggerCode, reprocessReason: input.reprocessReason });
   const openCard = deps.openAssetLinkAction ?? openAssetLinkActionOf;
+  // Carte #819 : réévaluation par l'opération — sans bien désigné par l'opération, il n'y a rien à réévaluer.
+  const sansEffet = (): ResolveDocumentAssetResult => ({ outcome: 'NO_CHANGE', status: resolution?.lastOutcome ?? null, aiCalled: false });
+  if (input.operationOnly && ctx.operation?.status !== 'TARGET') return sansEffet();
 
   // Lot 113V (#719) : « Aucun » choisi par l'utilisateur et en vigueur — sa décision prime :
   // aucun appel au modèle, aucun rattachement ; réexamen soumis seulement sur un élément nouveau.
@@ -475,6 +509,8 @@ export async function resolveDocumentAsset(
   // Lot 108E (A5) : graphe d'identité en PANNE (≠ coupure) — aucune décision (les garde-fous de rôle d'adresse,
   // de refus et de groupe en dépendent), aucune carte : issue technique, Supervision, relance durable.
   if (identityGraphFailed({ status: ctx.identityGraphStatus as never })) {
+    // Carte #819 : la réévaluation par l'opération ne juge pas sans le graphe (garde-fous de refus) et ne signale pas la panne à sa place.
+    if (input.operationOnly) return sansEffet();
     const cardBefore = input.openActionId ?? await openCard(accountId, fileId);
     return technicalOutcome({
       accountId, fileId, ctx, resolution, revision, g, cardBefore, aiCalled: false, traces: [],
@@ -515,6 +551,17 @@ export async function resolveDocumentAsset(
     decision = decideFromIdentity(ctx.identity ?? null, ctx.candidates, { multiAssetDeclared: ctx.multiAssetDeclared, identifiedAssetIds: ctx.identification.assetIds });
     if (decision) branch = 'IDENTITY';
   }
+  if (!decision) {
+    // Carte #819 : « document → opération → bien » — l'opération à laquelle le document appartient désigne son bien.
+    decision = decideFromOperation(ctx.operation, ctx.candidates, {
+      multiAssetDeclared: ctx.multiAssetDeclared, identifiedAssetIds: ctx.identification.assetIds,
+      refusedAssetIds: (ctx.identity?.memberships ?? []).flatMap((m) => m.group.refusedAssetIds),
+      isLiveAsset: (id) => ctx.index.byId.has(id),
+    });
+    if (decision) branch = 'OPERATION';
+  }
+  // Réévaluation par l'opération : aucune règle sans IA ne rattache — rien n'est écrit, aucune carte, aucun appel.
+  if (input.operationOnly && !decision) return sansEffet();
   let aiCalled = false;
   let pourModele = promptCandidates(ctx.candidates);
   const traces: string[] = [];
@@ -710,6 +757,17 @@ export async function resolveDocumentAsset(
   }
   // Appel réussi : les incidents « modèle » du compte sont résolus (contrôle après correction).
   if (aiCalled && !aiError) void resolveTechnicalFailures(accountId, ['MODEL', 'QUOTA', 'SCHEMA']);
+
+  // Carte #819 (D) : le contexte a pu être construit AVANT que le rapprochement d'opération n'enregistre la relation
+  // (appel au modèle en cours). Relue JUSTE AVANT d'écrire une abstention : si l'opération désigne désormais un
+  // bien, l'évaluation est rejouée une fois sur le contexte actuel — ni abstention obsolète ni carte.
+  if (decision.kind === 'ABSTAIN' && !input.operationRechecked) {
+    const actuelle = await loadOperationAttachment(accountId, fileId);
+    if (actuelle.status === 'TARGET' && actuelle.fingerprint !== (ctx.operation?.fingerprint ?? null)) {
+      console.info(`[t3-document-asset] document ${fileId} : relation à l'opération ${actuelle.operationId} enregistrée pendant l'évaluation — réévaluation.`);
+      return resolveDocumentAsset({ ...input, operationRechecked: true, index: undefined, reprocessReason: 'OPERATION_LINKED' }, deps);
+    }
+  }
 
   // ── 5 / 6. Application ────────────────────────────────────────────────
   await input.guard?.assertActive('T3 DOCUMENT_ASSET — écriture');
@@ -991,6 +1049,16 @@ async function applyDecision(p: {
         },
       });
     }
+    // Carte #819 (D) : contrôle APRÈS la question — un rattachement posé entre la relecture et la carte
+    // (réévaluation par l'opération, choix de l'utilisateur) l'emporte : la carte n'a plus d'objet et l'abstention
+    // n'est pas enregistrée par-dessus le rattachement.
+    const apresCarte = await readAttachmentState(accountId, fileId);
+    if (hasPrimaryAttachment(apresCarte) || hasUserDecision(apresCarte)) {
+      await g('question « À traiter »');
+      await closeAssetLinkQuestion(accountId, fileId);
+      const arret = await stopReason(accountId, fileId, apresCarte, g);
+      if (arret) return arret.outcome === 'NO_CHANGE' ? { ...arret, outcome: 'SUPERSEDED' } : arret;
+    }
     const status = decision.reasonCode === 'NO_CANDIDATE' ? 'NO_CANDIDATE' : 'ABSTAINED';
     const evaluation = fin({ newResolution: status, toProcessAction: effet, result: status });
     await g('état de résolution');
@@ -1006,7 +1074,11 @@ async function applyDecision(p: {
   // Fermer l'éventuelle question AVANT d'écrire : le déclencheur 0257 la
   // fermerait sinon avec un motif « utilisateur ».
   await g('question « À traiter »');
-  const fermees = await closeAssetLinkQuestion(accountId, fileId);
+  // Carte #819 (C) : l'opération répond à la question — carte fermée avec son motif TRACÉ (« résolu par l'opération »).
+  const parOperation = decision.kind === 'APPLY' && decision.method === 'DETERMINISTIC' ? operationOfReason(decision.reason) : null;
+  const fermees = parOperation !== null
+    ? await closeAssetLinkQuestionWithReason(accountId, fileId, `${RESOLVED_BY_OPERATION}:${parOperation}`)
+    : await closeAssetLinkQuestion(accountId, fileId);
   for (const assetId of cibles) {
     await g('lien et colonne de rattachement');
     await attachAutomatically({

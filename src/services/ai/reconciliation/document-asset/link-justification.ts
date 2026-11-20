@@ -14,6 +14,7 @@ import { CITY_POSTAL_CONTEXT, type CandidateSource } from './candidate-builder';
 import type { IdentifierResolution } from './identifiers';
 import type { DocumentAssetCandidate, DocumentAssetDecision } from './decision';
 import type { DocumentIdentityContext } from './identity/decision';
+import { operationOfReason } from './operation-inheritance';
 
 /** Raison posée par le serveur sur un candidat T1 issu d'une correspondance exacte (même texte que T1). */
 const SERVER_IDENTIFIER_REASON = 'identifiant canonique exact (contrôle serveur)';
@@ -101,6 +102,9 @@ export function documentAssetLinkJustification(p: {
   if (p.branch === 'IDENTITY' || p.decision.reason.startsWith('GROUP_IDENTITY')) {
     proofs.push({ kind: 'IDENTITY_GROUP', detail: p.decision.reason, support: identitySupport({ identity: p.identity, targetAssetId: p.assetId, facts: p.facts, texts: p.texts }) });
     proofs.push(...base);
+  } else if (p.decision.method === 'DETERMINISTIC' && operationOfReason(p.decision.reason) !== null) {
+    // Carte #819 : relation STRUCTURELLE persistée document → opération → bien (appartenance établie, bien non ambigu).
+    proofs.push({ kind: 'STRUCTURAL', detail: `OPERATION_MEMBERSHIP:${operationOfReason(p.decision.reason)}` }, ...base);
   } else if (p.decision.method === 'AI') {
     proofs.push({ kind: 'AI_DECISION', detail: p.decision.reason.slice(0, 120), score: p.decision.kind === 'APPLY' ? p.decision.score : null, support: base }, ...base);
   } else {
