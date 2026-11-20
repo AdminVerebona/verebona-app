@@ -26,13 +26,22 @@
  * que ses éléments d'agenda réels. En mode détaillé, chaque élément porte un
  * lien vers chacun de ses événements de référence (`context: 'reference'`).
  * Toutes les ouvertures passent toujours par `onOpenItem`.
+ *
+ * CARTE #806 §6 (lot 116C, seconde partie) — deux précisions de TEXTE, sans
+ * changer la structure de la ligne (même emplacement, même style que la date) :
+ *   · une opération dont le repère est une date DÉDUITE (premier devis,
+ *     première couverture connue, date de commande) le dit devant la date
+ *     (« Premier devis · 12 mars 2024 ») : texte existant de la fiche ;
+ *   · un événement SANS date porte la mention « Sans date » (jusqu'ici seule
+ *     une opération sans date la portait) : il n'est jamais présenté comme
+ *     passé, et aucune date n'est inventée.
  */
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { ChevronDown, ChevronRight } from 'lucide-react';
 import { apiClient } from '@/lib/api-client';
 import { SegmentedControl } from '@/components/documents/v2/DocumentsToolbar';
 import type { TimelineEntry, TimelineMode } from '@/services/agenda/timeline/model';
-import { TIMELINE_MODE_LABELS, TIMELINE_REFERENCE_EVENT_LINK, TIMELINE_UNDATED_LABEL, visibleCounters } from '@/services/agenda/timeline/labels';
+import { TIMELINE_MODE_LABELS, TIMELINE_REFERENCE_EVENT_LINK, TIMELINE_UNDATED_LABEL, timelineDateBasisLabel, visibleCounters } from '@/services/agenda/timeline/labels';
 
 /**
  * Ce qui est demandé à l'écran : un élément d'agenda (`item`, `member`) ou un
@@ -161,8 +170,10 @@ const DOT_CLASS = 'bg-[color:var(--text-muted)]';
 
 interface RowProps {
   item: TimelineRowItem;
-  /** Ligne d'un événement de référence sans date : mention explicite (aucune date inventée). */
+  /** Ligne sans date : mention explicite (aucune date inventée). */
   undatedLabel?: string;
+  /** #806 §6 : fondement d'une date DÉDUITE (opération), affiché devant la date ; absent : date propre. */
+  dateBasisLabel?: string | null;
   variant: 'desktop' | 'mobile';
   readOnly: boolean;
   busy: boolean;
@@ -172,7 +183,7 @@ interface RowProps {
 }
 
 /** Ligne d'un élément : pastille, date, titre (lot 113P : aucune mention d'état). */
-function TimelineRow({ item, undatedLabel, variant, readOnly, busy, onOpen, small, children }: RowProps) {
+function TimelineRow({ item, undatedLabel, dateBasisLabel, variant, readOnly, busy, onOpen, small, children }: RowProps) {
   const dot = small ? 'w-2.5 h-2.5 mt-1.5' : 'w-3.5 h-3.5 mt-1';
   return (
     <div className={`relative flex gap-3 ${variant === 'mobile' ? 'pb-4' : 'pb-5'}`} data-timeline-item={item.id}>
@@ -185,8 +196,8 @@ function TimelineRow({ item, undatedLabel, variant, readOnly, busy, onOpen, smal
           disabled={busy || readOnly}
         >
           {item.effectiveDate ? (
-            <p className="text-[10px] text-muted-foreground leading-none mb-0.5">
-              {formatDate(item.effectiveDate)}
+            <p className="text-[10px] text-muted-foreground leading-none mb-0.5" data-timeline-date-basis={dateBasisLabel ? '' : undefined}>
+              {dateBasisLabel ? `${dateBasisLabel} · ` : ''}{formatDate(item.effectiveDate)}
             </p>
           ) : undatedLabel ? (
             <p className="text-[10px] text-muted-foreground leading-none mb-0.5" data-timeline-undated>
@@ -241,7 +252,7 @@ export function AssetTimelineList({ state, actions, variant, readOnly = false, b
             const refs = entry.operations ?? [];
             return (
               <li key={key(entry.id)}>
-                <TimelineRow item={entry} variant={variant} readOnly={readOnly} busy={busyItemId === entry.id}
+                <TimelineRow item={entry} undatedLabel={TIMELINE_UNDATED_LABEL} variant={variant} readOnly={readOnly} busy={busyItemId === entry.id}
                   onOpen={() => onOpenItem({ itemId: entry.id, context: 'item' })}>
                   {refs.length > 0 && (
                     <ul className="mt-1 list-none p-0 m-0 flex flex-col items-start" data-timeline-references={entry.id}>
@@ -269,7 +280,8 @@ export function AssetTimelineList({ state, actions, variant, readOnly = false, b
           const n = entry.members.length;
           return (
             <li key={key(entry.id)} data-timeline-group={entry.id}>
-              <TimelineRow item={entry} undatedLabel={TIMELINE_UNDATED_LABEL} variant={variant} readOnly={readOnly} busy={busyItemId === entry.id}
+              <TimelineRow item={entry} undatedLabel={TIMELINE_UNDATED_LABEL} dateBasisLabel={timelineDateBasisLabel(entry.dateBasis)}
+                variant={variant} readOnly={readOnly} busy={busyItemId === entry.id}
                 onOpen={() => onOpenItem({ itemId: entry.id, context: 'group', operationId: entry.operationId })}>
                 {counters.length > 0 && (
                   <p className="text-[11px] text-muted-foreground leading-snug mt-1" data-timeline-counters>
@@ -292,7 +304,7 @@ export function AssetTimelineList({ state, actions, variant, readOnly = false, b
                   <ul id={panelId} className="mt-2 ml-0.5 pl-3 border-l border-[color:var(--border-subtle)] list-none">
                     {entry.members.map((m) => (
                       <li key={key(`${entry.id}-${m.id}`)}>
-                        <TimelineRow item={m} variant={variant} readOnly={readOnly} busy={busyItemId === m.id} small
+                        <TimelineRow item={m} undatedLabel={TIMELINE_UNDATED_LABEL} variant={variant} readOnly={readOnly} busy={busyItemId === m.id} small
                           onOpen={() => onOpenItem({ itemId: m.id, context: 'member', groupItemId: entry.id })} />
                       </li>
                     ))}

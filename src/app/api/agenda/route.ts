@@ -4,6 +4,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { structuralLinkRefusal } from '@/services/agenda/housing-scope-http';
 import { SessionService } from '@/lib/session-service';
 import { getAgendaItems, getAgendaItemsWithEquipmentFacet } from '@/services/agenda/AgendaQueryService';
+import { attachReferenceEvents } from '@/services/agenda/agenda-reference-events';
 import { equipmentFilterParam } from '@/lib/filters/equipment-filter';
 import { roomFilterParam } from '@/lib/filters/room-filter';
 import { LOCAL_SEARCH_PARAM, normalizeLocalQuery } from '@/lib/search/local-search';
@@ -44,10 +45,12 @@ export async function GET(req: NextRequest) {
     const q = normalizeLocalQuery(searchParams.get(LOCAL_SEARCH_PARAM)) || undefined;
     const query = { accountId, assetIds, fileId, period, month, year, includeUndated, equipment, piece, q };
     if (searchParams.get('equipmentFacet') === '1') {
-      const { items, equipmentFacet, roomFacet } = await getAgendaItemsWithEquipmentFacet(query);
+      const { items: trouves, equipmentFacet, roomFacet } = await getAgendaItemsWithEquipmentFacet(query);
+      // Carte #806 §6 : chaque élément de la liste porte TOUTES ses opérations (graphe N↔N), une requête pour la page.
+      const items = await attachReferenceEvents(accountId, trouves);
       return NextResponse.json({ items, equipmentFacet, roomFacet }, { headers: { 'Cache-Control': 'private, no-cache' } });
     }
-    const items = await getAgendaItems(query);
+    const items = await attachReferenceEvents(accountId, await getAgendaItems(query));
     return NextResponse.json({ items }, {
       // APP-PERF-22 : pas de réutilisation par le cache HTTP du navigateur
       // (non cloisonné par compte, non invalidé par les écritures).

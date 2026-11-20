@@ -145,8 +145,11 @@ describe('L84C-UI — Timeline du bien', () => {
       expect(html, v).not.toContain('élément lié');
       expect(html, v).not.toMatch(/\d{4}/);
     }
-    // Un élément d'agenda sans date garde son rendu d'avant (aucune mention ajoutée).
-    expect(rendre(etat({ entries: [{ kind: 'item', ...item('13', null, 'Entretien à prévoir') }] }))).not.toContain('Sans date');
+    // Règle remplacée (carte #806) : un élément d'agenda sans date ne restait plus sans aucune mention (« rendu d'avant ») —
+    // il porte désormais la mention explicite « Sans date », comme une opération sans date, et toujours aucune date.
+    const sansDate = rendre(etat({ entries: [{ kind: 'item', ...item('13', null, 'Entretien à prévoir') }] }));
+    expect(sansDate).toMatch(/data-timeline-undated[^>]*>Sans date</);
+    expect(sansDate).not.toMatch(/\d{4}/);
   });
 
   it('L114O-C-UI2 — #744 : mode détaillé — élément partagé rendu UNE fois, un lien par événement de référence (texte existant)', async () => {

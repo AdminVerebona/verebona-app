@@ -68,12 +68,27 @@ import { AGENDA_LINK_RULE, agendaLinkCandidates } from './operation-agenda-link-
 import {
   REFERENCE_EVENT_FACT_RULE, REFERENCE_EVENT_MERGE_RULE, factContradictionCandidates,
 } from './operation-merge-cards';
+import { OPERATION_RELATION_RULE } from './operation-relation-cards';
 import type { ScanErrorDetail } from './producers.service';
 
 type Row = Record<string, unknown>;
 
 /** Règles produites par ce passage (les trois questions du CDC §8 posées automatiquement). */
 export const SWEEP_RULES = [AGENDA_LINK_RULE, REFERENCE_EVENT_MERGE_RULE, REFERENCE_EVENT_FACT_RULE] as const;
+
+/**
+ * Carte #806 §9 (lot 116C, seconde partie) — règles dont les cartes PÉRIMÉES
+ * sont fermées par ce passage : les trois questions qu'il pose, ET la carte
+ * d'ASSOCIATION entre deux opérations (`OPERATION-RELATION` : arbitrage d'une
+ * association refusée, proposition sinistre ↔ assurance du lot 116C). Cette
+ * carte est posée par d'autres passages (façade, consolidation d'un sinistre) ;
+ * jusqu'ici, devenue sans objet (les deux opérations associées ou refusées
+ * depuis la fiche, l'une des deux retirée), elle était seulement MASQUÉE à la
+ * lecture et fermée par le contrôle quotidien. Elle est désormais fermée dans
+ * l'heure, par le MÊME service et la MÊME prémisse déclarée
+ * (`publishability.ts › noLongerUseful`) — aucune règle n'est dupliquée ici.
+ */
+export const STALE_CLOSURE_RULES: readonly string[] = [...SWEEP_RULES, OPERATION_RELATION_RULE];
 
 /** Candidats de doublon examinés au plus par passage et par compte. */
 export const MERGE_CANDIDATES_PER_PASS = 20;
@@ -266,7 +281,9 @@ export async function produceReferenceEventActions(accountId: number): Promise<R
 }
 
 /**
- * Ferme « sans objet » les cartes des trois règles dont la prémisse n'existe
+ * Ferme « sans objet » les cartes des règles `STALE_CLOSURE_RULES` (les trois
+ * questions de ce passage et, depuis la carte #806 §9, la carte d'association
+ * entre deux opérations) dont la prémisse n'existe
  * plus (rattachement fait entre-temps, événement de référence retiré, fusion
  * déjà appliquée, contradiction levée) — MÊME service de fermeture que le
  * contrôle de publiabilité (`closeCardsNoLongerUseful`), jamais une règle
@@ -277,7 +294,7 @@ export async function closeStaleSweepCards(accountId: number): Promise<number> {
   const r = (await pgClient.unsafe(
     `SELECT id FROM to_process_actions
       WHERE account_id = $1 AND resolved_at IS NULL AND rule_code = ANY($2::text[]) ORDER BY id LIMIT 200`,
-    [accountId, `{${SWEEP_RULES.join(',')}}`] as never[],
+    [accountId, `{${STALE_CLOSURE_RULES.join(',')}}`] as never[],
   )) as unknown as Row[];
   const ids = r.map((x) => Number(x.id));
   if (!ids.length) return 0;

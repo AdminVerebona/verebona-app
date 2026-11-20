@@ -35,6 +35,9 @@ import { PLAN_ACTION_LABEL, groupUndated, undatedGroupOf } from '@/lib/agenda/si
 import { LocalSearchField } from '@/components/search/LocalSearchField';
 import { LOCAL_SEARCH_PARAM, localSearchNoResult, readLocalQuery, searchWithLocalQuery } from '@/lib/search/local-search';
 import { AGENDA_EVENT_LABELS } from '@/lib/agenda/grouping-view';
+import Link from 'next/link';
+import { referenceEventHref } from '@/lib/reference-events/reference-event-page';
+import { TIMELINE_REFERENCE_EVENT_LINK } from '@/services/agenda/timeline/labels';
 
 const AgendaItemDrawer = dynamic(
   () => import('@/components/agenda/AgendaItemDrawer').then(m => ({ default: m.AgendaItemDrawer })),
@@ -102,6 +105,27 @@ function AgendaItemRow({ item, onClick, onPlan }: { item: AgendaItemFull; onClic
             </span>
           ))}
         </div>
+        {/*
+          Carte #806 §6 : accès identifiable à la fiche de CHAQUE opération de l'événement, depuis la liste (graphe
+          N↔N : jamais une seule opération choisie arbitrairement). Même texte et même style que le lien de la Timeline
+          détaillée ; le lien ouvre la fiche sans ouvrir le tiroir de l'événement. Aucun lien : événement autonome.
+        */}
+        {(item.referenceEvents?.length ?? 0) > 0 && (
+          <ul className="mt-1 list-none p-0 m-0 flex flex-col items-start" data-agenda-references={item.id}>
+            {item.referenceEvents!.map((r) => (
+              <li key={r.id} className="max-w-full">
+                <Link
+                  href={referenceEventHref(r.id)}
+                  onClick={(e) => e.stopPropagation()}
+                  className="inline-flex max-w-full items-center rounded-[8px] text-[11px] font-semibold text-[color:var(--accent)] hover:bg-[color:var(--accent-soft)] px-1.5 -ml-1.5 text-left min-h-[32px] md:min-h-0 md:py-0.5"
+                  data-agenda-reference={r.id}
+                >
+                  <span className="truncate">{TIMELINE_REFERENCE_EVENT_LINK} : {r.label}</span>
+                </Link>
+              </li>
+            ))}
+          </ul>
+        )}
       </div>
 
       {/* Lot 114V (#742) : « Planifier » — ouvre la modification de CE même événement (sa date), sans rien créer. */}

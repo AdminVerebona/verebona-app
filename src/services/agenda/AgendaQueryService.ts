@@ -120,6 +120,14 @@ export interface AgendaItemFull {
    * les listes et vues compactes (fiche détaillée : `/api/agenda/:id/fournisseurs`).
    */
   supplierNames?: string[];
+  /**
+   * Carte #806 §6 (lot 116C, seconde partie) — TOUTES les opérations actives de
+   * l'élément (graphe N↔N, sans rôle « principal »), pour la LISTE de l'Agenda :
+   * chacune est identifiable et ouvrable depuis la ligne. Renseigné par
+   * `attachReferenceEvents` (`agenda-reference-events.ts`, route `/api/agenda`) ; absent ailleurs. Vide :
+   * élément autonome.
+   */
+  referenceEvents?: Array<{ id: number; label: string }>;
 }
 
 interface AgendaSearchResult {

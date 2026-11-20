@@ -634,6 +634,42 @@ export async function detachCrossAccountGraphInTx(r: GroupingRunner, accountIds:
 // ── Cohérence colonne historique ↔ graphe (réparation déterministe, idempotente) ──
 
 /**
+ * Carte #806 (lot 116C, seconde partie — audit du stock) : POSE le lien du
+ * graphe qui MANQUE à un élément d'Agenda rattaché par la colonne historique.
+ * Moitié « pose » de `resyncLegacyAgendaLinks`, pour UN couple, et seulement
+ * dans le cas CERTAIN :
+ *   · l'élément porte toujours cette opération dans la colonne historique ;
+ *   · l'opération est ACTIVE dans le même compte ;
+ *   · AUCUNE ligne n'existe dans le graphe pour le couple (un lien retiré par
+ *     l'utilisateur n'est jamais rétabli : `ON CONFLICT DO NOTHING`) ;
+ *   · aucun refus actif de l'utilisateur pour ce couple.
+ * N'écrit que la table des liens et le journal ; ne touche ni l'élément, ni sa
+ * date, ni son rôle, ni ses rappels. Rend vrai si le lien a été posé ; rejoué,
+ * rend faux sans rien écrire.
+ */
+export async function restoreMissingLegacyAgendaLink(
+  r: GroupingRunner, accountId: number, p: { agendaItemId: number; operationId: number; reasonCode: string; channel: string; correlationId: string },
+): Promise<boolean> {
+  const cree = await r.q<Row>(
+    `INSERT INTO business_operation_agenda_links (account_id, operation_id, agenda_item_id, state, origin, legacy_column, reason_code)
+     SELECT i.account_id, o.id, i.id, 'ACTIVE', 'MIGRATION', true, $4
+       FROM agenda_items i JOIN business_operations o ON o.id = i.business_operation_id AND o.account_id = i.account_id
+        AND o.invalidated_at IS NULL AND o.merged_into_operation_id IS NULL
+      WHERE i.account_id = $1 AND i.id = $2 AND i.business_operation_id = $3
+        AND NOT EXISTS (SELECT 1 FROM business_operation_match_decisions d
+                         WHERE d.account_id = $1 AND d.candidate_operation_id = o.id AND d.source_kind = 'AGENDA'
+                           AND d.source_entity_key = i.id::text AND d.decision = 'REJECTED' AND d.active)
+     ON CONFLICT (operation_id, agenda_item_id) DO NOTHING
+     RETURNING id`, [accountId, p.agendaItemId, p.operationId, p.reasonCode]);
+  if (!cree.length) return false;
+  await journalGraph(r, accountId, {
+    relationKind: 'AGENDA_LINK', operationId: p.operationId, agendaItemId: p.agendaItemId, action: 'CREATED', origin: 'MIGRATION', channel: p.channel,
+    reasonCode: p.reasonCode, before: null, after: { state: 'ACTIVE', legacyColumn: true }, correlationId: p.correlationId,
+  });
+  return true;
+}
+
+/**
  * Remet le graphe à l'identique de la colonne historique pour UN compte
  * (même règle que le déclencheur 1716, pour les états qu'il n'a pas pu
  * refléter : couple transitoirement entre comptes pendant un transfert).
