@@ -61,7 +61,10 @@ export const COVERAGE_INVENTORY: readonly CoverageEntry[] = [
       // Lot 113AA (#725, D11) : périodes de couverture des justificatifs résolues (succession, avenant, rectificatif, divergence).
       'COH-OPS-PERIOD-RESOLUTION',
       // Lot 113AQ (#750, BO #12) : contradictions d'attributs requalifiées (même attribut, même rôle, même fait).
-      'COH-OPS-ATTRIBUTE-CONFLICTS'],
+      'COH-OPS-ATTRIBUTE-CONFLICTS',
+      // Lot 116C (#806 §4, AC73) : graphe des opérations (liens orphelins ou entre comptes, refus et scissions respectés,
+      // provenance, double comptage) — constat seul, aucune réparation.
+      'COH-OPERATION-GRAPH'],
     // Lot 86C : doublons ENTRE Opérations d'une même relation contractuelle (COH-OPS-IDENTITY v2, réexamen T3)
     // et dates de contrat issues de périodes facturées (COH-OPS-CONTRACT-DATES) — contrôlés et réparés.
     // Lot 85E : acquisition réalisée sans date alors que la date du bien est connue — contrôlée et réparée (T3 du bien puis T4).

@@ -624,7 +624,12 @@ async function loadDecisions(tx: DbTx, accountId: number, fileId: number, candid
 /** Réservé aux tests : la porte unique des fusions automatiques, telle que la lit la consolidation. */
 export const __loadNonMergeableForTests = (tx: DbTx, accountId: number, ids: readonly number[]): Promise<Set<string>> => loadNonMergeable(tx, accountId, ids);
 
-async function loadNonMergeable(tx: DbTx, accountId: number, ids: readonly number[]): Promise<Set<string>> {
+/**
+ * PORTE UNIQUE des fusions automatiques de T3. Lot 116C (#806 §4) : exportée pour que TOUTE voie de consolidation qui
+ * peut fusionner la lise (documents, réexamen rétroactif, simulation du contrôle de cohérence, données saisies du bien
+ * — `asset-data-consolidator.ts`, qui décidait jusqu'ici sans elle).
+ */
+export async function loadNonMergeable(tx: DbTx, accountId: number, ids: readonly number[]): Promise<Set<string>> {
   if (ids.length < 2) return new Set();
   const r = await rows<{ a: string; b: string }>(tx, sql`
     SELECT d1.candidate_operation_id AS a, d2.candidate_operation_id AS b
@@ -656,7 +661,16 @@ async function loadNonMergeable(tx: DbTx, accountId: number, ids: readonly numbe
        WHERE ta.account_id = ${accountId} AND ta.rule_code = 'REFERENCE-EVENT-MERGE'
          AND ta.resolution_reason = 'USER_ARBITRATED' AND te.event = 'RESOLVED_ARBITRATION'
          AND te.new_value->>'kind' = 'KEEP_DISTINCT') p
-     WHERE p.a = ANY(${intArray(ids)}::bigint[]) AND p.b = ANY(${intArray(ids)}::bigint[])`);
+     WHERE p.a = ANY(${intArray(ids)}::bigint[]) AND p.b = ANY(${intArray(ids)}::bigint[])
+    UNION
+    -- Carte #806 §4 (décision du PO ; AC46) : l'utilisateur a SCINDÉ ces deux opérations depuis la fiche. La paire n'est
+    -- plus JAMAIS fusionnée automatiquement, même sur des preuves nouvelles (référence commune, série, verdict M3) ni à
+    -- une reprise ou un nouveau passage. Mémoire durable posée par la scission (migration 1830, reportée par la fusion
+    -- d'une des deux avec une troisième) ; le motif historique reste lu. Seul l'utilisateur les refusionne.
+    SELECT rel.from_operation_id AS a, rel.to_operation_id AS b
+      FROM business_operation_relations rel
+     WHERE rel.account_id = ${accountId} AND (rel.split_apart_at IS NOT NULL OR rel.reason_code = 'USER_SPLIT')
+       AND rel.from_operation_id = ANY(${intArray(ids)}::bigint[]) AND rel.to_operation_id = ANY(${intArray(ids)}::bigint[])`);
   return new Set(r.map((x) => {
     const [a, b] = [Number(x.a), Number(x.b)].sort((m, n) => m - n);
     return `${a}:${b}`;
@@ -2272,6 +2286,15 @@ export async function syncCards(accountId: number, cards: OperationCardNeeds): P
     await syncPeriodConflictCards(accountId, { fileIds: cards.reviewedFiles, operationIds: cards.reviewedOperations });
   } catch (e) {
     console.error(`[t3-operations] divergences de périodes du compte ${accountId} non synchronisées :`, (e as Error).message);
+  }
+  // Lot 116C (#806 §3) : assurance des sinistres réexaminés (ou des sinistres du bien d'un contrat réexaminé) — deux
+  // opérations ASSOCIÉES, jamais fusionnées ; association automatique sur UNE correspondance fiable, question ciblée
+  // sinon, abstention dans le doute. Ne lève jamais ; un sinistre manqué est repris à sa prochaine consolidation.
+  try {
+    const { syncClaimInsuranceAssociations } = await import('../claims/insurance-association');
+    await syncClaimInsuranceAssociations(accountId, { operationIds: cards.reviewedOperations });
+  } catch (e) {
+    console.error(`[t3-operations] assurances des sinistres du compte ${accountId} non recherchées :`, (e as Error).message);
   }
   // Lot 54D (E05) : l'échec n'est plus seulement journalisé — les documents
   // concernés sont marqués (état durable) et repris par le passage T3 suivant

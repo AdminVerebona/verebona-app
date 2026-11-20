@@ -262,20 +262,23 @@ type LinkAgendaPlan =
   | { kind: 'CREATE' }
   | { kind: 'ATTACH'; operationId: number; itemId: number }
   | { kind: 'NOOP'; operationId: number }
-  | { kind: 'MERGE'; canonicalId: number; absorbedId: number };
+  /** Lot 116C (#806 §2) — règle remplacée : « MERGE » (fusion des deux Opérations). Deux opérations existantes sont ASSOCIÉES, jamais fusionnées. */
+  | { kind: 'ASSOCIATE'; operationAId: number; operationBId: number };
 
 /**
  * Les quatre cas du §8.3 (pur). `operationId` : Opération ACTIVE de
- * l'élément, sinon null. Fusion : la plus ancienne Opération est canonique
- * (règle stable, sans jugement sur le contenu).
+ * l'élément, sinon null. Lot 116C (carte #806 §2, AC08) : deux éléments de
+ * deux opérations DIFFÉRENTES ne les fusionnent plus — elles sont associées
+ * (`operationAId` : celle du premier élément, `operationBId` : celle du second).
+ * CREATE n'est qu'un PLAN : la création exige un regroupement déclaré par
+ * l'utilisateur (`linkAgendaItems`).
  */
 export function planLinkAgendaItems(a: { itemId: number; operationId: number | null }, b: { itemId: number; operationId: number | null }): LinkAgendaPlan {
   if (a.operationId === null && b.operationId === null) return { kind: 'CREATE' };
   if (a.operationId !== null && b.operationId === null) return { kind: 'ATTACH', operationId: a.operationId, itemId: b.itemId };
   if (a.operationId === null && b.operationId !== null) return { kind: 'ATTACH', operationId: b.operationId, itemId: a.itemId };
   if (a.operationId === b.operationId) return { kind: 'NOOP', operationId: a.operationId! };
-  const [canonicalId, absorbedId] = [a.operationId!, b.operationId!].sort((x, y) => x - y);
-  return { kind: 'MERGE', canonicalId, absorbedId };
+  return { kind: 'ASSOCIATE', operationAId: a.operationId!, operationBId: b.operationId! };
 }
 
 // ── Fusion : principal conservé (V-Q4 : jamais deux principaux) ─────────────

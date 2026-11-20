@@ -361,6 +361,14 @@ export async function updateAgendaItem(
   const full = await getAgendaItemById(id, accountId);
   if (!full) throw new Error('Item not found after update');
 
+  // Lot 116C (carte #806 §5, AC34) : MÊME FAIT DATÉ — l'utilisateur vient de corriger la date d'un événement qui PORTE
+  // le fait d'une opération (lien N↔N, `fact_key`) : la date correspondante de l'opération est alignée (jamais entre
+  // faits différents, jamais une date effacée, jamais deux dates déjà divergentes). Ne lève jamais.
+  if (input.startDate !== undefined && full.startDate !== existing.startDate) {
+    const { syncAgendaDateToOperations } = await import('@/services/business-operations/graph/fact-date-sync');
+    await syncAgendaDateToOperations({ accountId, agendaItemId: id, previousDate: existing.startDate, newDate: full.startDate, actorUserId });
+  }
+
   // Lot 77A : option « Sans échéance » cochée / retirée (ou retirée par une
   // date) — tracée, puis la règle « À traiter » DATA-AGENDA-DATE est
   // réévaluée IMMÉDIATEMENT pour cet élément (fermeture motivée, ou

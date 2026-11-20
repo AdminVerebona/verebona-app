@@ -167,6 +167,7 @@ describe('L100E-U-COH — COH-TODO-PUBLISHABILITY (nettoyage rétroactif, point 
     // Ajouté en fin de registre au lot 100E ; seuls des contrôles plus récents (lot 101A et suivants) le suivent.
     const ids = COHERENCE_REGISTRY.map((c) => c.id);
     // Lots suivants ajoutés APRÈS (101A, 103E, 103D), sans réordonner l'existant.
+    // Lot 116C (carte #806 §4, AC73) : COH-OPERATION-GRAPH ajouté en fin de registre.
     expect(ids.slice(ids.indexOf(PUBLISHABILITY_CHECK_ID) + 1)).toEqual(['COH-EQUIPMENT-IDENTITY', 'COH-AGENDA-SUPPLIERS', 'COH-AGENDA-STRUCTURAL-HOUSING', /* #715 : COH-AGENDA-HISTORICAL-STATUS retiré */
       // Lot 105D : rattachement principal récupérable (fin de registre).
       'COH-DOC-PRIMARY-LINK',
@@ -201,7 +202,7 @@ describe('L100E-U-COH — COH-TODO-PUBLISHABILITY (nettoyage rétroactif, point 
       // Lot 113AK (#736) : provenance des faits T1 et preuves orphelines, en fin de registre.
       'COH-DOC-FACT-PROVENANCE',
       // Lot 113AQ (#750) : contradictions d'attributs requalifiées, en fin de registre.
-      'COH-OPS-ATTRIBUTE-CONFLICTS']);
+      'COH-OPS-ATTRIBUTE-CONFLICTS', 'COH-OPERATION-GRAPH']);
     const c = getCheck(PUBLISHABILITY_CHECK_ID)!;
     expect(c).toMatchObject({ status: 'ACTIVE', version: 1, objectType: 'to_process_action' });
     expect(c.forbiddenRepairs).toEqual(expect.arrayContaining(['écrire une valeur de l’objet', 'fermer une carte retenue pour cause technique', 'rouvrir une carte fermée par l’utilisateur']));

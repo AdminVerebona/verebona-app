@@ -84,7 +84,8 @@ describe('O9-R02 / F-182 / INV-032 : aucune écriture possible via ces routes (s
   const files = routeFiles(root);
   const rel = (f: string) => relative(root, f).split(sep).join('/');
   it('cinq routes de lecture (lot 61 : diagnostic TCO) + la route L79A ; GET seulement hors exception, garde admin, aucun import d’écriture', () => {
-    expect(files.map(rel).sort()).toEqual(['[id]/identity-reviews/[reviewId]/restore/route.ts', '[id]/route.ts', 'holds/route.ts', 'indicators/route.ts', 'route.ts', 'tco/route.ts']);
+    // Lot 116C (carte #806 §4, AC73) : sixième route de lecture — diagnostic du graphe des opérations (`graph/route.ts`, GET seul).
+    expect(files.map(rel).sort()).toEqual(['[id]/identity-reviews/[reviewId]/restore/route.ts', '[id]/route.ts', 'graph/route.ts', 'holds/route.ts', 'indicators/route.ts', 'route.ts', 'tco/route.ts']);
     for (const f of files) {
       const src = readFileSync(f, 'utf8').replace(/\/\*[\s\S]*?\*\//g, '');
       const methods = [...src.matchAll(/export\s+(?:async\s+)?function\s+(GET|POST|PUT|PATCH|DELETE|HEAD|OPTIONS)\b/g)].map((m) => m[1]);

@@ -267,10 +267,12 @@ interface GroupingPickerProps {
   /** Lot 103D : libellé de la recherche (« Rechercher un événement ») et aide lue par les lecteurs d'écran. */
   searchLabel?: string;
   description?: string;
+  /** Lot 116C (#806 §2) : sens du geste, affiché sous le titre (regrouper ≠ associer). Absent : rien. */
+  note?: string;
 }
 
 /** Tiroir de choix : recherche + liste ; même composant desktop et mobile (plein écran). */
-export function GroupingPicker({ open, title, load, onPick, onClose, createAction, searchLabel = L.search, description = L.pickerHint.elements }: GroupingPickerProps) {
+export function GroupingPicker({ open, title, load, onPick, onClose, createAction, searchLabel = L.search, description = L.pickerHint.elements, note }: GroupingPickerProps) {
   const [q, setQ] = useState("");
   const [items, setItems] = useState<GroupingCandidate[] | null>(null);
   const seq = useRef(0);
@@ -295,6 +297,7 @@ export function GroupingPicker({ open, title, load, onPick, onClose, createActio
         <div className="px-6 pt-6 pb-3 border-b border-[color:var(--border-subtle)]">
           <SheetTitle>{title}</SheetTitle>
           <SheetDescription className="sr-only">{description}</SheetDescription>
+          {note && <p className="mt-2 text-xs text-[color:var(--text-muted)]" data-testid="regroupement-choix-sens">{note}</p>}
           <div className="relative mt-3">
             <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-[color:var(--text-muted)]" aria-hidden />
             <Input value={q} onChange={(e) => setQ(e.target.value)} placeholder={searchLabel} aria-label={searchLabel} className="pl-9 h-11 sm:h-9" />

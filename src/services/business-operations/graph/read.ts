@@ -260,25 +260,50 @@ export async function readAgendaItemsReferenceEvents(
 // ── Mémoire d'une SCISSION (CDC §7, AC46 « refus de refusion ») ────────────
 
 /**
- * Ces deux événements de référence ont-ils été SÉPARÉS par l'utilisateur (une
- * scission depuis la fiche, `splitOperation`) ? La mémoire est le motif
- * `USER_SPLIT` de la relation gardée entre eux, dans un sens ou dans l'autre,
- * quel que soit son état actuel (même dissociés ensuite, la séparation a eu
- * lieu).
+ * Condition SQL « cette relation porte la mémoire d'une scission » (alias de
+ * `business_operation_relations` fourni). Lot 116C (#806 §4, migration 1830) :
+ * la mémoire DURABLE est `split_apart_at` (jamais retirée, reportée par la
+ * fusion) ; le motif `USER_SPLIT` reste lu pour une relation antérieure à la
+ * migration ou écrite sans elle.
+ */
+export const splitApartSql = (alias: string): string => `(${alias}.split_apart_at IS NOT NULL OR ${alias}.reason_code = 'USER_SPLIT')`;
+
+/**
+ * Ces deux opérations ont-elles été SÉPARÉES par l'utilisateur (une scission
+ * depuis la fiche, `splitOperation`) ? La mémoire est portée par la relation
+ * gardée entre elles, dans un sens ou dans l'autre, QUEL QUE SOIT son état
+ * actuel et son motif actuel : dissociées, associées de nouveau, ou relation
+ * reportée par une fusion — la séparation a eu lieu et reste connue.
  *
- * À LIRE AVANT TOUTE REFUSION (fusion automatique de T3, carte « À traiter »
- * proposant de regrouper) : une séparation décidée par l'utilisateur ne
- * s'inverse pas sans lui (CDC §7 : « Mémoriser la séparation ; un rejeu T3
- * n'inverse pas cette décision »). Lecture seule, bornée au compte.
+ * DÉCISION DU PO (carte #806 §4) : une scission manuelle interdit durablement
+ * toute refusion AUTOMATIQUE, même sur des preuves nouvelles. À LIRE AVANT
+ * TOUTE REFUSION automatique (porte unique de T3 `loadNonMergeable`, garde du
+ * dépôt `mergeOperations`, carte « À traiter » proposant de regrouper). Seule
+ * une décision explicite de l'utilisateur fusionne ces deux opérations.
+ * Lecture seule, bornée au compte.
  */
 export async function wasSplitApart(
   accountId: number, operationAId: number, operationBId: number, runner: GroupingRunner = drizzleRunner(db),
 ): Promise<boolean> {
   const [x] = await runner.q<Row>(
-    `SELECT 1 AS ok FROM business_operation_relations
-      WHERE account_id = $1 AND reason_code = 'USER_SPLIT'
-        AND LEAST(from_operation_id, to_operation_id) = LEAST($2::bigint, $3::bigint)
-        AND GREATEST(from_operation_id, to_operation_id) = GREATEST($2::bigint, $3::bigint)
+    `SELECT 1 AS ok FROM business_operation_relations rel
+      WHERE rel.account_id = $1 AND ${splitApartSql('rel')}
+        AND LEAST(rel.from_operation_id, rel.to_operation_id) = LEAST($2::bigint, $3::bigint)
+        AND GREATEST(rel.from_operation_id, rel.to_operation_id) = GREATEST($2::bigint, $3::bigint)
       LIMIT 1`, [accountId, operationAId, operationBId]);
   return !!x;
+}
+
+/** Paires d'opérations du compte séparées par l'utilisateur (`petit:grand`), parmi `ids` — lecture seule. */
+export async function splitApartPairs(
+  accountId: number, operationIds: readonly number[], runner: GroupingRunner = drizzleRunner(db),
+): Promise<Set<string>> {
+  const ids = [...new Set(operationIds)].filter((x) => Number.isSafeInteger(x) && x > 0);
+  if (ids.length < 2) return new Set();
+  const lignes = await runner.q<Row>(
+    `SELECT LEAST(rel.from_operation_id, rel.to_operation_id) AS a, GREATEST(rel.from_operation_id, rel.to_operation_id) AS b
+       FROM business_operation_relations rel
+      WHERE rel.account_id = $1 AND ${splitApartSql('rel')}
+        AND rel.from_operation_id = ANY($2::bigint[]) AND rel.to_operation_id = ANY($2::bigint[])`, [accountId, intArray(ids)]);
+  return new Set(lignes.map((x) => `${n(x.a)}:${n(x.b)}`));
 }

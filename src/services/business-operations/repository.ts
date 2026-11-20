@@ -31,7 +31,7 @@
  */
 import { sql, type SQL } from 'drizzle-orm';
 import { BusinessOperationIntegrityError } from './errors';
-import { reassignGraphOnMerge } from './graph/store';
+import { AUTOMATIC_MERGE_REFUSED_AFTER_SPLIT, reassignGraphOnMerge, recordAiAbstention } from './graph/store';
 import { reassignGroupingOnMerge } from './grouping/merge';
 import { drizzleRunner } from './grouping/runner';
 import type { BusinessOperationEventBuffer } from './events';
@@ -1077,11 +1077,40 @@ export class BusinessOperationRepository {
    * L'état consolidé de la canonique est recalculé par l'appelant (T3).
    * `onStep` : point d'injection de diagnostic (tests de rollback).
    */
-  async mergeOperations(absorbedId: number, canonicalId: number, reasonCode: string, opts: { onStep?: (step: string) => void | Promise<void> } = {}): Promise<boolean> {
+  async mergeOperations(
+    absorbedId: number, canonicalId: number, reasonCode: string,
+    opts: {
+      onStep?: (step: string) => void | Promise<void>;
+      /**
+       * Lot 116C (#806 §4, AC46) — la fusion est la DÉCISION EXPLICITE de l'utilisateur (commande `mergeOperations` de
+       * la façade). Absent ou faux : fusion AUTOMATIQUE — refusée sans rien écrire si l'utilisateur a scindé ces deux
+       * opérations.
+       */
+      userDecision?: boolean;
+    } = {},
+  ): Promise<boolean> {
     if (absorbedId === canonicalId) throw new BusinessOperationIntegrityError('MERGE_SELF', 'Une Opération ne fusionne pas avec elle-même.');
     const absorbed = await this.load(absorbedId, { allowInactive: true, allowMerged: true });
     if (absorbed.mergedIntoOperationId !== null) return false;
     const canonical = await this.load(canonicalId, { allowInactive: true });
+    // Lot 116C (#806 §4, décision du PO ; AC46) — DERNIÈRE GARDE, commune à TOUTES les voies de fusion (les deux de la
+    // consolidation des documents, celle des données saisies du bien, toute voie future) : deux opérations que
+    // l'utilisateur a SCINDÉES ne sont jamais refusionnées automatiquement, même sur des preuves nouvelles. La décision
+    // de T3 l'écarte déjà en amont (`loadNonMergeable`) ; ici rien n'est écrit, l'abstention est tracée UNE fois au
+    // journal du graphe, et la consolidation continue (aucune panne).
+    if (opts.userDecision !== true) {
+      const { wasSplitApart } = await import('./graph/read');
+      const runner = drizzleRunner(this.tx);
+      if (await wasSplitApart(this.accountId, absorbedId, canonicalId, runner)) {
+        const [a, b] = absorbedId < canonicalId ? [absorbedId, canonicalId] : [canonicalId, absorbedId];
+        await recordAiAbstention(runner, this.accountId, {
+          relationKind: 'OPERATION', operationId: a, otherOperationId: b, reasonCode: AUTOMATIC_MERGE_REFUSED_AFTER_SPLIT,
+          situationHash: `split-apart:${a}:${b}`, origin: 'SYSTEM', channel: reasonCode.slice(0, 80),
+          detail: { refusedReason: reasonCode, absorbedOperationId: absorbedId, canonicalOperationId: canonicalId }, correlationId: this.ctx.correlationId,
+        });
+        return false;
+      }
+    }
     if (absorbed.typeCode !== null && canonical.typeCode !== null && absorbed.typeCode !== canonical.typeCode) {
       throw new BusinessOperationIntegrityError('MERGE_TYPE_MISMATCH', `Fusion refusée : ${absorbed.typeCode} ≠ ${canonical.typeCode}.`);
     }

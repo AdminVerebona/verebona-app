@@ -70,13 +70,23 @@ const EVIDENCE_MAX = 20;
 /** Clé de relation stable de la carte : UNE carte ouverte par paire d'événements de référence. */
 export const operationRelationKey = (a: number, b: number): string => `${RELATION}:${pairKey(a, b)}`;
 
+/** Propositions d'association posées sans refus préalable (lot 116C). */
+export type OperationRelationProposalKind = 'CLAIM_INSURANCE';
+
 export interface OperationRelationContext {
   kind: 'operation_relation';
   /** Paire non ordonnée (`petit:grand`). */
   pairKey: string;
-  relationId: number;
-  /** Version de la relation refusée au moment de la question : périmée à la réponse → rien n'est appliqué. */
-  relationVersion: number;
+  /** Relation refusée que la preuve nouvelle rapproche ; `null` : PROPOSITION d'association (aucune relation n'existe encore). */
+  relationId: number | null;
+  /** Version de la relation refusée au moment de la question : périmée à la réponse → rien n'est appliqué ; `null` : proposition. */
+  relationVersion: number | null;
+  /**
+   * Lot 116C (carte #806 §3) — PROPOSITION d'association posée sans refus préalable : un sinistre et un contrat
+   * d'assurance qui peut le concerner, quand la recherche automatique ne trouve pas UNE correspondance fiable.
+   * Absent : arbitrage d'une association refusée (carte #744).
+   */
+  proposal?: OperationRelationProposalKind;
   fromOperationId: number;
   toOperationId: number;
   nature: OperationRelationNature;
@@ -93,7 +103,9 @@ export interface OperationRelationContext {
 export function isOperationRelationContext(c: unknown): c is OperationRelationContext {
   const x = c as Partial<OperationRelationContext> | null;
   return !!x && typeof x === 'object' && x.kind === 'operation_relation' && typeof x.pairKey === 'string'
-    && isPositiveId(x.relationId) && isPositiveId(x.relationVersion) && isPositiveId(x.fromOperationId) && isPositiveId(x.toOperationId)
+    && ((isPositiveId(x.relationId) && isPositiveId(x.relationVersion) && x.proposal === undefined)
+      || (x.proposal === 'CLAIM_INSURANCE' && x.relationId === null && x.relationVersion === null))
+    && isPositiveId(x.fromOperationId) && isPositiveId(x.toOperationId)
     && x.fromOperationId !== x.toOperationId && isOperationRelationNature(x.nature) && Array.isArray(x.evidence) && Array.isArray(x.evidenceKeys);
 }
 
@@ -105,6 +117,14 @@ const g = (s: string) => `« ${borne(s.replace(/\s+/g, ' ').trim())} »`;
 /** Question de la carte (pure) — à valider par le PO. Neutre : aucune des deux réponses n'est suggérée. */
 export function operationRelationQuestion(titleA: string, titleB: string): string {
   return `Vous aviez choisi de ne pas associer ${g(titleA)} et ${g(titleB)}. Un nouveau justificatif les rapproche : faut-il les associer ?`;
+}
+
+/**
+ * Question d'une PROPOSITION sinistre ↔ assurance (pure ; lot 116C, #806 §3) — À VALIDER PAR LE PO. Neutre ; dit
+ * explicitement qu'associer n'est pas une prise en charge par l'assureur.
+ */
+export function claimInsuranceQuestion(claimTitle: string, contractTitle: string): string {
+  return `Faut-il associer ${g(claimTitle)} et ${g(contractTitle)} ? Associer ces deux opérations permet de consulter le contrat d’assurance depuis le sinistre ; cela ne dit pas que l’assureur prend le sinistre en charge.`;
 }
 
 /** Propositions (pures) : associer (jamais mise en avant), ou garder l'état actuel. */
@@ -142,8 +162,14 @@ export interface OperationRelationArbitrationRequest {
   toOperationId: number;
   nature: OperationRelationNature;
   evidence: readonly GraphEvidence[];
-  /** Relation refusée désignée par la façade (`data.relationId` du résultat « arbitrage requis »). */
-  relationId: number;
+  /** Relation refusée désignée par la façade (`data.relationId` du résultat « arbitrage requis ») ; `null` avec `proposal`. */
+  relationId: number | null;
+  /**
+   * Lot 116C (#806 §3) : PROPOSITION sans refus préalable — `fromOperationId` est le sinistre, `toOperationId` le
+   * contrat d'assurance. La question n'est posée que si AUCUNE relation n'existe entre les deux (déjà associés ou
+   * refusés par l'utilisateur : rien n'est demandé).
+   */
+  proposal?: OperationRelationProposalKind;
 }
 
 export interface OperationRelationArbitrationOutcome {
@@ -173,7 +199,8 @@ export async function requestOperationRelationArbitration(accountId: number, req
   try {
     const recues = normalizeEvidence(req?.evidence);
     if (!isPositiveId(accountId) || !req || !isPositiveId(req.fromOperationId) || !isPositiveId(req.toOperationId) || req.fromOperationId === req.toOperationId
-        || !isPositiveId(req.relationId) || !isOperationRelationNature(req.nature) || recues === null || recues.length === 0) {
+        || (req.proposal === undefined ? !isPositiveId(req.relationId) : (req.proposal !== 'CLAIM_INSURANCE' || req.relationId !== null))
+        || !isOperationRelationNature(req.nature) || recues === null || recues.length === 0) {
       return { status: 'NOT_APPLICABLE', reason: 'INVALID_REQUEST' };
     }
     // Isolation : un document ou un élément d'Agenda cité qui n'est pas (ou plus) dans CE compte n'est pas une preuve
@@ -182,15 +209,20 @@ export async function requestOperationRelationArbitration(accountId: number, req
     if (!evidence.length) return { status: 'NOT_APPLICABLE', reason: 'NO_EVIDENCE_IN_ACCOUNT' };
     const paire = pairKey(req.fromOperationId, req.toOperationId);
 
-    // 1. La relation est-elle toujours REFUSÉE, entre ces deux événements, dans CE compte ?
+    // 1. Arbitrage : la relation est-elle toujours REFUSÉE, entre ces deux événements, dans CE compte ?
+    //    Proposition (lot 116C) : AUCUNE relation ne doit exister entre les deux (associés ou refusés : rien à demander).
     const [rel] = (await pgClient.unsafe(
       `SELECT r.id, r.state, r.version FROM business_operation_relations r
-        WHERE r.id = $1 AND r.account_id = $2
+        WHERE ($1::bigint IS NULL OR r.id = $1::bigint) AND r.account_id = $2
           AND LEAST(r.from_operation_id, r.to_operation_id) = LEAST($3::bigint, $4::bigint)
           AND GREATEST(r.from_operation_id, r.to_operation_id) = GREATEST($3::bigint, $4::bigint)`,
       [req.relationId, accountId, req.fromOperationId, req.toOperationId] as never[],
     )) as unknown as Row[];
-    if (!rel || rel.state !== 'REJECTED') return { status: 'NOT_APPLICABLE', reason: 'RELATION_NOT_REFUSED' };
+    if (req.proposal === undefined) {
+      if (!rel || rel.state !== 'REJECTED') return { status: 'NOT_APPLICABLE', reason: 'RELATION_NOT_REFUSED' };
+    } else if (rel && rel.state !== 'REMOVED') {
+      return { status: 'NOT_APPLICABLE', reason: rel.state === 'REJECTED' ? 'USER_REFUSED' : 'ALREADY_ASSOCIATED' };
+    }
     const titres = await referenceEventTitles(accountId, [req.fromOperationId, req.toOperationId]);
     const titreA = titres.get(req.fromOperationId);
     const titreB = titres.get(req.toOperationId);
@@ -246,7 +278,10 @@ export async function requestOperationRelationArbitration(accountId: number, req
 
     const documents = [...new Set(cites)].filter((f) => vivants.has(f)).sort((a, b) => a - b).map((f) => ({ fileId: f, title: vivants.get(f)! }));
     const ctx: OperationRelationContext = {
-      kind: 'operation_relation', pairKey: paire, relationId: Number(rel.id), relationVersion: Number(rel.version),
+      kind: 'operation_relation', pairKey: paire,
+      ...(req.proposal === undefined
+        ? { relationId: Number(rel!.id), relationVersion: Number(rel!.version) }
+        : { relationId: null, relationVersion: null, proposal: req.proposal }),
       fromOperationId: req.fromOperationId, toOperationId: req.toOperationId, nature: req.nature,
       evidence: reunies, evidenceKeys: evidenceSourceKeys(reunies),
       events: [{ operationId: req.fromOperationId, title: titreA }, { operationId: req.toOperationId, title: titreB }],
@@ -256,7 +291,8 @@ export async function requestOperationRelationArbitration(accountId: number, req
     const u = await upsertAction({
       accountId, targetType: ancre.type, targetId: ancre.id, relationKey: operationRelationKey(req.fromOperationId, req.toOperationId),
       actionKind: 'ARBITRATE', ruleCode: OPERATION_RELATION_RULE,
-      question: operationRelationQuestion(titreA, titreB), proposals: operationRelationProposals(documents.map((d) => d.fileId)),
+      question: req.proposal === 'CLAIM_INSURANCE' ? claimInsuranceQuestion(titreA, titreB) : operationRelationQuestion(titreA, titreB),
+      proposals: operationRelationProposals(documents.map((d) => d.fileId)),
       triggerContext: ctx as unknown as Record<string, unknown>,
     });
     if (u.status === 'CREATED') return { status: 'POSTED', ...(u.actionId !== undefined ? { actionId: u.actionId } : {}) };
@@ -315,11 +351,12 @@ export async function resolveOperationRelationCard(
   const r = choix === 'ASSOCIATE'
     ? await facade.associateOperations(contexte, {
       fromOperationId: ctx.fromOperationId, toOperationId: ctx.toOperationId, nature: ctx.nature, evidence: ctx.evidence,
-      expectedVersion: ctx.relationVersion, reasonCode: 'TO_PROCESS_ASSOCIATION_ACCEPTED',
+      ...(ctx.relationVersion !== null ? { expectedVersion: ctx.relationVersion } : {}), reasonCode: 'TO_PROCESS_ASSOCIATION_ACCEPTED',
     })
     : await facade.dissociateOperations(contexte, {
+      // Proposition refusée (lot 116C) : refus durable posé d'avance sur la paire — elle ne sera plus proposée.
       operationAId: ctx.fromOperationId, operationBId: ctx.toOperationId, evidence: ctx.evidence,
-      expectedVersion: ctx.relationVersion, reasonCode: 'TO_PROCESS_ASSOCIATION_REFUSED',
+      ...(ctx.relationVersion !== null ? { expectedVersion: ctx.relationVersion } : {}), reasonCode: 'TO_PROCESS_ASSOCIATION_REFUSED',
     });
 
   if (r.status === 'FAILED') {

@@ -401,8 +401,9 @@ scenario('L114REC-P', 'Opérations / Agenda CDC V2.0 — recette : portée des s
     expect(apresLiens.filter((l) => Number(l.op) === c)).toEqual([]);
     expect(await orphelins(compte)).toEqual([]);
     expect(await audit(compte)).toEqual([]);
-    // CONSTAT (AC73) : le contrôle du GRAPHE (`auditOperationGraph`) n'est enregistré dans AUCUN contrôle de la
-    // campagne — aucune preuve d'un contrôle du graphe n'est produite ici (code à écrire, voir la matrice §5.1).
-    expect(Object.keys(run.results).some((c) => /graph|graphe/i.test(c))).toBe(false);
+    // Règle remplacée (carte #806) : « le contrôle du graphe n'est enregistré dans AUCUN contrôle de la campagne »
+    // (constat AC73 du passage « recette » #744) devient « la campagne produit la PREUVE du contrôle du graphe » —
+    // `COH-OPERATION-GRAPH` raccorde `auditOperationGraph` au registre, en constat seul (aucune réparation).
+    expect(run.results['COH-OPERATION-GRAPH']).toEqual({ CONSISTENT: 1 });
   }, 180000);
 });

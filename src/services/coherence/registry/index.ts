@@ -86,6 +86,8 @@ import { cilDocumentProjectionCheck } from './checks/cil-document-projection';
 import { supplierCoordinatesCheck } from './checks/supplier-coordinates';
 // Lot 113G : identité des fiches fournisseur — doublons réels soumis une fois par paire (fin de registre).
 import { supplierIdentityCheck } from './checks/supplier-identity';
+// Lot 116C (carte #806 §4, AC73) : graphe des opérations — contrôle de lecture `auditOperationGraph` raccordé (fin de registre).
+import { operationGraphCheck } from './checks/operation-graph';
 
 export const COHERENCE_REGISTRY: readonly CoherenceCheck[] = [
   toProcessDocumentFieldsCheck,
@@ -185,6 +187,9 @@ export const COHERENCE_REGISTRY: readonly CoherenceCheck[] = [
   factProvenanceCheck,
   // Lot 113AQ (ticket #750 « T3 / Opérations — faux conflits d'attributs », BO #12) : ajouté EN FIN de registre, après COH-DOC-FACT-PROVENANCE (113AK).
   operationsAttributeConflictsCheck,
+  // Lot 116C (carte #806 §4 « Scissions, T3 et cohérence du graphe », AC73) : ajouté EN FIN de registre, après COH-OPS-ATTRIBUTE-CONFLICTS (113AQ).
+  // Constat seul : aucune fonction de réparation.
+  operationGraphCheck,
 ];
 
 /** Contrôles exécutés par l'orchestrateur (les points d'extension PLANNED sont exclus). */

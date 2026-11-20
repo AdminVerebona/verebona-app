@@ -248,7 +248,8 @@ scenario('L83A', 'Opérations v5 — O-7 : projection Agenda multi-éléments, p
     const a = await make.agendaItem(c.compte, { title: 'Dégât des eaux', startDate: '2026-03-12', assetIds: [c.maison.id] });
     const b = await make.agendaItem(c.compte, { title: 'Visite expert', startDate: '2026-03-21', assetIds: [c.maison.id] });
     const { linkAgendaItems } = await grouping();
-    const { operationId } = await g(c.compte, (ctx) => linkAgendaItems(ctx, { itemA: a.id, itemB: b.id }), c.compte.owner.id);
+    // Règle remplacée (carte #806) : la création d'un regroupement exige qu'il soit DÉCLARÉ (`declaredGrouping`).
+    const { operationId } = await g(c.compte, (ctx) => linkAgendaItems(ctx, { itemA: a.id, itemB: b.id, declaredGrouping: true }), c.compte.owner.id);
     await projeter(c.compte, [operationId]);
     await projeter(c.compte);
     expect(await element(a.id)).toMatchObject({ op: operationId, role: 'RELATED', origin: 'USER' });

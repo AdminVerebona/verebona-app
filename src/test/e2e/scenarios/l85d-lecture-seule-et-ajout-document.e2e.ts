@@ -255,15 +255,16 @@ scenario('L85D', 'Lecture seule (routes d’écriture) et « Ajouter un document
     expect((await sql`SELECT asset_id, is_web_link, web_link_title FROM asset_files WHERE id = ${devisId}`)[0]).toEqual({ asset_id: c.maison.id, is_web_link: true, web_link_title: 'Devis plombier' });
   });
 
-  it('L85D-E05 — « Ajouter un document » depuis un élément seul : l’ensemble est créé (AC01) ; rejoué, rien ne change', async () => {
+  // Règle remplacée (carte #806 §2, AC08) : « depuis un élément seul : l'ensemble est créé (AC01) » devient « depuis un
+  // élément seul : le document est associé à l'événement (lien direct), AUCUN ensemble n'est créé ».
+  it('L85D-E05 — « Ajouter un document » depuis un élément seul : lien direct, aucun ensemble créé (#806 §2) ; rejoué, rien ne change', async () => {
     const c = await compte('actif');
     const seul = await make.agendaItem(c.compte, { title: 'Ramonage', startDate: '2026-10-02', assetIds: [c.maison.id] });
     const facture = await make.assetFile(c.compte, { assetId: c.maison.id });
     expect(await relierCommeLaFenetre(seul.id, [facture.id])).toEqual({ linked: [facture.id], failed: [] });
-    const op = (await element(seul.id)).op as number;
-    expect(op).toBeGreaterThan(0);
-    expect((await sql`SELECT type_code FROM business_operations WHERE id = ${op}`)[0]).toEqual({ type_code: null });
-    expect((await membres(op)).map((m) => m.file_id)).toEqual([facture.id]);
+    expect((await element(seul.id)).op).toBeNull();
+    expect(await sql`SELECT 1 FROM business_operations WHERE account_id = ${c.compte.id}`).toHaveLength(0);
+    expect(await sql`SELECT 1 FROM business_operation_documents WHERE account_id = ${c.compte.id}`).toHaveLength(0);
     expect(await liensDe(seul.id)).toEqual([{ file: facture.id, prov: ['MANUAL_DIRECT'] }]);
     const avant = await empreinte(c.compte);
     expect(await relierCommeLaFenetre(seul.id, [facture.id])).toEqual({ linked: [facture.id], failed: [] });

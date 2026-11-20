@@ -103,12 +103,17 @@ describe('L82D-U04 — propagation des documents vers le principal (§7, P4)', (
 });
 
 describe('L82D-U05 — lien Agenda ↔ Agenda (§8.3)', () => {
-  it('les quatre cas, fusion vers la plus ancienne Opération', () => {
+  // Règle remplacée (carte #806) : « fusion vers la plus ancienne Opération » (lot 82D) devient « deux Opérations
+  // existantes sont ASSOCIÉES, jamais fusionnées par un lien » (#806 §2, AC08).
+  it('les quatre cas ; deux Opérations différentes : association, jamais fusion', () => {
     expect(planLinkAgendaItems({ itemId: 1, operationId: null }, { itemId: 2, operationId: null })).toEqual({ kind: 'CREATE' });
     expect(planLinkAgendaItems({ itemId: 1, operationId: 7 }, { itemId: 2, operationId: null })).toEqual({ kind: 'ATTACH', operationId: 7, itemId: 2 });
     expect(planLinkAgendaItems({ itemId: 1, operationId: null }, { itemId: 2, operationId: 7 })).toEqual({ kind: 'ATTACH', operationId: 7, itemId: 1 });
     expect(planLinkAgendaItems({ itemId: 1, operationId: 7 }, { itemId: 2, operationId: 7 })).toEqual({ kind: 'NOOP', operationId: 7 });
-    expect(planLinkAgendaItems({ itemId: 1, operationId: 9 }, { itemId: 2, operationId: 7 })).toEqual({ kind: 'MERGE', canonicalId: 7, absorbedId: 9 });
+    expect(planLinkAgendaItems({ itemId: 1, operationId: 9 }, { itemId: 2, operationId: 7 })).toEqual({ kind: 'ASSOCIATE', operationAId: 9, operationBId: 7 });
+    // Aucun plan ne fusionne plus.
+    const plans = [[null, null], [7, null], [null, 7], [7, 7], [9, 7], [7, 9]] as const;
+    for (const [x, y] of plans) expect(planLinkAgendaItems({ itemId: 1, operationId: x }, { itemId: 2, operationId: y }).kind).not.toBe('MERGE');
   });
 });
 

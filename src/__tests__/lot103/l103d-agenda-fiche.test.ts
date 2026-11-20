@@ -166,8 +166,14 @@ describe('L103D-U-WORDING — associations Agenda', () => {
     expect(GROUPING_LABELS.dissociateEvent('Contrôle')).toBe('Dissocier « Contrôle »');
   });
   it('aucun « élément de l’agenda » ni « Opération » visible dans ces libellés ; boutons « Associer… » sous « Associations »', () => {
-    const tout = JSON.stringify(GROUPING_LABELS) + GROUPING_LABELS.dissociateEvent('x');
+    // Règle remplacée (carte #806) : « aucun libellé ne contient "Opération" » — décision du PO du 17/11/2026 (#806 §1) :
+    // à l'écran on dit désormais « opération ». Le texte NOUVEAU de la carte #806 (`pickerGroupingNote`, sens du geste)
+    // l'emploie ; les libellés EXISTANTS ne sont pas renommés ici et restent sous la garde d'origine.
+    const { pickerGroupingNote, ...existants } = GROUPING_LABELS;
+    const tout = JSON.stringify(existants) + GROUPING_LABELS.dissociateEvent('x');
     expect(tout).not.toMatch(/[ée]l[ée]ment de l.agenda|[ée]l[ée]ment d.agenda|Relier cet élément|Opération/i);
+    expect(pickerGroupingNote).not.toMatch(/[ée]l[ée]ment de l.agenda|[ée]l[ée]ment d.agenda|Relier cet élément|Opération\b|événement de référence/);
+    expect(pickerGroupingNote).toMatch(/opération/);
     expect(GROUPING_LABELS.add.documents).toMatch(/^Associer/);
     const doc = lire('src/components/assets/DocumentDrawer.tsx');
     expect(doc).toContain('GROUPING_LABELS.documentLinkedEvents');

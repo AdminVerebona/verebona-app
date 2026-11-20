@@ -159,9 +159,9 @@ import {
 } from './model';
 import type { BusinessOperationRepository } from './repository';
 import {
-  activateExtraAgendaLink, attachDeclaration, findActiveDeclaration, findAgendaLink, findRelation, findReplay, insertDeclaration, insertRelation,
-  journalGraph, loadAgendaItemFacts, loadOperationFacts, readOperationNotes, removeExtraAgendaLink, setRelationState, stampAgendaLinkDecision,
-  updateRelation, writeOperationNotes,
+  activateExtraAgendaLink, attachDeclaration, bumpOperationVersion, findActiveDeclaration, findAgendaLink, findRelation, findReplay, insertDeclaration,
+  insertRelation, journalGraph, loadAgendaItemFacts, loadOperationFacts, markRelationSplitApart, readOperationNotes, removeExtraAgendaLink,
+  setRelationState, stampAgendaLinkDecision, updateRelation, writeOperationNotes,
   type GraphJournalEntry,
 } from './graph/store';
 import { parseReferenceEventNotes } from '@/lib/reference-events/reference-event-summary';
@@ -322,48 +322,91 @@ const reason = (v: unknown, defaut: string): string => (typeof v === 'string' &&
  * Une relation par paire : la rejouer ne crée pas de doublon.
  */
 export function associateOperations(ctx: OperationWriteContext, input: AssociateOperationsInput): Promise<OperationWriteResult<OperationRelationData>> {
-  return runCommand<OperationRelationData>(ctx, 'associateOperations', input, async (g, journal) => {
-    const evidence = normalizeEvidence(input?.evidence);
-    if (!input || !isPositiveId(input.fromOperationId) || !isPositiveId(input.toOperationId) || !isOperationRelationNature(input.nature)
-        || evidence === null || !optionalDate(input.validFrom) || !optionalDate(input.validTo)
-        || (input.validFrom && input.validTo && input.validTo < input.validFrom)
-        || (input.expectedVersion !== undefined && !isPositiveId(input.expectedVersion))) {
-      return stop(refused('FORBIDDEN', 'INVALID_INPUT'));
+  return runCommand<OperationRelationData>(ctx, 'associateOperations', input, (g, journal) => associateOperationsBody(ctx, g, input, journal));
+}
+
+/**
+ * ASSOCIE deux opérations DANS UNE ÉCRITURE DE REGROUPEMENT DÉJÀ OUVERTE (lot
+ * 116C, carte #806 §2) : même corps que la commande `associateOperations`
+ * (mêmes gardes, même relation N↔N, même journal du graphe) — aucun second
+ * mécanisme. Sert le geste du tiroir de l'Agenda qui relie deux événements de
+ * deux opérations DIFFÉRENTES (`grouping/service.ts › linkAgendaItems`) : les
+ * opérations sont associées, jamais fusionnées, dans la transaction du geste.
+ *
+ * L'appelant détient la transaction et le verrou des Opérations du compte, et
+ * a déjà contrôlé le droit d'écrire de l'acteur (route du tiroir). Un refus
+ * (réflexive, opération inactive ou d'un autre compte) n'écrit rien et est
+ * rendu tel quel ; une panne remonte et annule la transaction de l'appelant.
+ * Pas de clé d'idempotence ici : l'association est idempotente par nature
+ * (déjà associées → APPLIED sans écriture).
+ */
+export async function associateOperationsInTransaction(
+  ctx: OperationWriteContext, g: GroupingContext, input: AssociateOperationsInput,
+): Promise<OperationWriteResult<OperationRelationData>> {
+  if (!validContext(ctx) || ctx.accountId !== g.accountId) return refused('FORBIDDEN', 'INVALID_INPUT');
+  const entries: Array<Parameters<Journal['push']>[0]> = [];
+  let result: OperationWriteResult<OperationRelationData>;
+  try {
+    result = await associateOperationsBody(ctx, g, input, { push: (e) => { entries.push(e); } });
+  } catch (e) {
+    if (e instanceof CommandOutcome) return e.result as OperationWriteResult<OperationRelationData>;
+    throw e;
+  }
+  if (result.status === 'APPLIED' && result.changed) {
+    for (const entry of entries) {
+      await journalGraph(g.runner, g.accountId, {
+        ...entry, origin: originOf(ctx.actor), channel: channelOf(ctx.actor), actorUserId: userIdOf(ctx.actor), correlationId: g.correlationId,
+        command: 'associateOperations',
+      });
     }
-    if (input.fromOperationId === input.toOperationId) return stop(refused('FORBIDDEN', 'REFLEXIVE'));
-    // Verrous pris dans l'ordre des identifiants (jamais d'interblocage entre deux commandes croisées).
-    const [petit, grand] = input.fromOperationId < input.toOperationId ? [input.fromOperationId, input.toOperationId] : [input.toOperationId, input.fromOperationId];
-    const a = await loadOperationFacts(g.runner, g.accountId, petit);
-    const b = await loadOperationFacts(g.runner, g.accountId, grand);
-    if (!a || !b) return stop(refused('FORBIDDEN', 'NOT_FOUND_IN_ACCOUNT'));
-    const from = a.id === input.fromOperationId ? a : b;
-    const to = a.id === input.fromOperationId ? b : a;
-    const existing = await findRelation(g.runner, g.accountId, from.id, to.id);
-    const origin = originOf(ctx.actor);
-    const d = decideAssociate({ from, to, nature: input.nature, origin, evidence: evidence!, expectedVersion: input.expectedVersion }, existing);
-    const data = (r: { id: number; fromOperationId: number; toOperationId: number; nature: OperationRelationNature; state: OperationRelationState; version: number }): OperationRelationData =>
-      ({ relationId: r.id, fromOperationId: r.fromOperationId, toOperationId: r.toOperationId, nature: r.nature, state: r.state, version: r.version });
-    switch (d.outcome) {
-      case 'FORBIDDEN': return stop(refused('FORBIDDEN', d.code));
-      case 'CONFLICT': return stop(refused('CONFLICT', d.code, { currentVersion: d.currentVersion }));
-      case 'ARBITRATION_REQUIRED': return stop(refused('ARBITRATION_REQUIRED', d.code, { relationId: d.relationId }));
-      case 'NO_CHANGE': return applied(false, data(existing!));
-      default: break;
-    }
-    const write = {
-      ends: d.ends, nature: input.nature, state: 'ACTIVE' as const, origin, reasonCode: reason(input.reasonCode, origin === 'USER' ? 'USER_ASSOCIATION' : 'INFERRED_ASSOCIATION'),
-      evidence: evidence!, evidenceFingerprint: evidenceFingerprint(evidence!), validFrom: input.validFrom ?? null, validTo: input.validTo ?? null,
-      userId: userIdOf(ctx.actor),
-    };
-    const rel = d.outcome === 'CREATE' ? await insertRelation(g.runner, g.accountId, write) : await updateRelation(g.runner, g.accountId, d.relationId, write);
-    journal.push({
-      relationKind: 'OPERATION_RELATION', operationId: rel.fromOperationId, otherOperationId: rel.toOperationId,
-      action: d.outcome === 'CREATE' ? 'CREATED' : d.outcome === 'REACTIVATE' ? 'REACTIVATED' : 'UPDATED', reasonCode: write.reasonCode, evidence: evidence!,
-      before: existing ? { state: existing.state, nature: existing.nature, fromOperationId: existing.fromOperationId, toOperationId: existing.toOperationId, version: existing.version } : null,
-      after: { state: rel.state, nature: rel.nature, fromOperationId: rel.fromOperationId, toOperationId: rel.toOperationId, version: rel.version },
-    });
-    return applied(true, data(rel));
+  }
+  return result;
+}
+
+/** Corps de `associateOperations`, réutilisé TEL QUEL par `associateOperationsInTransaction` (aucune règle dupliquée, CDC §20). */
+async function associateOperationsBody(
+  ctx: OperationWriteContext, g: GroupingContext, input: AssociateOperationsInput, journal: Journal,
+): Promise<OperationWriteResult<OperationRelationData>> {
+  const evidence = normalizeEvidence(input?.evidence);
+  if (!input || !isPositiveId(input.fromOperationId) || !isPositiveId(input.toOperationId) || !isOperationRelationNature(input.nature)
+      || evidence === null || !optionalDate(input.validFrom) || !optionalDate(input.validTo)
+      || (input.validFrom && input.validTo && input.validTo < input.validFrom)
+      || (input.expectedVersion !== undefined && !isPositiveId(input.expectedVersion))) {
+    return stop(refused('FORBIDDEN', 'INVALID_INPUT'));
+  }
+  if (input.fromOperationId === input.toOperationId) return stop(refused('FORBIDDEN', 'REFLEXIVE'));
+  // Verrous pris dans l'ordre des identifiants (jamais d'interblocage entre deux commandes croisées).
+  const [petit, grand] = input.fromOperationId < input.toOperationId ? [input.fromOperationId, input.toOperationId] : [input.toOperationId, input.fromOperationId];
+  const a = await loadOperationFacts(g.runner, g.accountId, petit);
+  const b = await loadOperationFacts(g.runner, g.accountId, grand);
+  if (!a || !b) return stop(refused('FORBIDDEN', 'NOT_FOUND_IN_ACCOUNT'));
+  const from = a.id === input.fromOperationId ? a : b;
+  const to = a.id === input.fromOperationId ? b : a;
+  const existing = await findRelation(g.runner, g.accountId, from.id, to.id);
+  const origin = originOf(ctx.actor);
+  const d = decideAssociate({ from, to, nature: input.nature, origin, evidence: evidence!, expectedVersion: input.expectedVersion }, existing);
+  const data = (r: { id: number; fromOperationId: number; toOperationId: number; nature: OperationRelationNature; state: OperationRelationState; version: number }): OperationRelationData =>
+    ({ relationId: r.id, fromOperationId: r.fromOperationId, toOperationId: r.toOperationId, nature: r.nature, state: r.state, version: r.version });
+  switch (d.outcome) {
+    case 'FORBIDDEN': return stop(refused('FORBIDDEN', d.code));
+    case 'CONFLICT': return stop(refused('CONFLICT', d.code, { currentVersion: d.currentVersion }));
+    case 'ARBITRATION_REQUIRED': return stop(refused('ARBITRATION_REQUIRED', d.code, { relationId: d.relationId }));
+    case 'NO_CHANGE': return applied(false, data(existing!));
+    default: break;
+  }
+  const write = {
+    ends: d.ends, nature: input.nature, state: 'ACTIVE' as const, origin, reasonCode: reason(input.reasonCode, origin === 'USER' ? 'USER_ASSOCIATION' : 'INFERRED_ASSOCIATION'),
+    evidence: evidence!, evidenceFingerprint: evidenceFingerprint(evidence!), validFrom: input.validFrom ?? null, validTo: input.validTo ?? null,
+    userId: userIdOf(ctx.actor),
+  };
+  const rel = d.outcome === 'CREATE' ? await insertRelation(g.runner, g.accountId, write) : await updateRelation(g.runner, g.accountId, d.relationId, write);
+  journal.push({
+    relationKind: 'OPERATION_RELATION', operationId: rel.fromOperationId, otherOperationId: rel.toOperationId,
+    action: d.outcome === 'CREATE' ? 'CREATED' : d.outcome === 'REACTIVATE' ? 'REACTIVATED' : 'UPDATED', reasonCode: write.reasonCode, evidence: evidence!,
+    before: existing ? { state: existing.state, nature: existing.nature, fromOperationId: existing.fromOperationId, toOperationId: existing.toOperationId, version: existing.version } : null,
+    after: { state: rel.state, nature: rel.nature, fromOperationId: rel.fromOperationId, toOperationId: rel.toOperationId, version: rel.version },
   });
+  return applied(true, data(rel));
 }
 
 export interface DissociateOperationsInput {
@@ -803,6 +846,45 @@ export function createOperation(ctx: OperationWriteContext, input: CreateOperati
   });
 }
 
+/**
+ * Lot 116C (carte #806 §5, AC34) — dates d'une opération qui sont le MÊME FAIT qu'un événement porteur de l'Agenda
+ * (réalisation, date prévue : `graph/fact-date-sync.ts`), relevées avant / après une correction de l'utilisateur.
+ */
+interface FactDatesChange {
+  before?: { realizedDate: string | null; plannedDate: string | null };
+  after?: { realizedDate: string | null; plannedDate: string | null };
+}
+
+function factDatesChange(
+  avant: { realizedDate: string | null; plannedDate: string | null }, apres: { realizedDate: string | null; plannedDate: string | null },
+): FactDatesChange {
+  if (avant.realizedDate === apres.realizedDate && avant.plannedDate === apres.plannedDate) return {};
+  return {
+    before: { realizedDate: avant.realizedDate, plannedDate: avant.plannedDate },
+    after: { realizedDate: apres.realizedDate, plannedDate: apres.plannedDate },
+  };
+}
+
+/**
+ * OPÉRATION → AGENDA, APRÈS validation de la commande (lot 116C, #806 §5) : l'événement de l'Agenda qui PORTE le fait
+ * corrigé est aligné s'il montrait la même date. Jamais sur un rejeu ni sur une commande sans écriture ; ne lève
+ * jamais (la correction est déjà enregistrée) ; rien entre faits différents.
+ */
+async function syncFactDatesAfterCommit(
+  ctx: OperationWriteContext, result: OperationWriteResult<OperationData>, dates: FactDatesChange,
+): Promise<OperationWriteResult<OperationData>> {
+  if (result.status !== 'APPLIED' || !result.changed || result.replayed || !result.data || !dates.before || !dates.after) return result;
+  try {
+    const { syncOperationDatesToAgenda } = await import('./graph/fact-date-sync');
+    await syncOperationDatesToAgenda({
+      accountId: ctx.accountId, operationId: result.data.operationId, before: dates.before, after: dates.after, actorUserId: userIdOf(ctx.actor),
+    });
+  } catch (e) {
+    console.error(`[operation-write] date du fait non reportée sur l’Agenda (compte ${ctx.accountId}) :`, (e as Error).message);
+  }
+  return result;
+}
+
 export interface UpdateOperationInput {
   operationId: number;
   /** Déclaration de l'utilisateur qui justifie la correction (texte utile) : enregistrée comme source durable. */
@@ -831,6 +913,7 @@ export interface UpdateOperationInput {
  * Tout ou rien : un refus en cours de commande annule toute la transaction.
  */
 export function updateOperation(ctx: OperationWriteContext, input: UpdateOperationInput): Promise<OperationWriteResult<OperationData>> {
+  const dates: FactDatesChange = {};
   return runCommand<OperationData>(ctx, 'updateOperation', input, async (g, journal) => {
     if (ctx.actor.kind !== 'USER') return stop(refused('FORBIDDEN', 'USER_ONLY'));
     const texte = normalizeDeclarationText(input?.declaration);
@@ -855,6 +938,7 @@ export function updateOperation(ctx: OperationWriteContext, input: UpdateOperati
     const declarationId = await insertDeclaration(g.runner, g.accountId, { purpose: 'UPDATE', channel: channelOf(ctx.actor), userId: userIdOf(ctx.actor), text: texte, fingerprint: declarationFingerprint(texte), operationId: faits.id });
     await repo.addSource(faits.id, { kind: 'USER_DECLARATION', entityKey: declarationId, authority: 'USER', locator: { declaration: 'UPDATE' } }, code);
     const apres = await repo.load(faits.id);
+    Object.assign(dates, factDatesChange(avant, apres));
     const image = (o: typeof avant) => ({
       typeCode: o.typeCode, status: o.status, plannedDate: o.plannedDate, startDate: o.startDate, realizedDate: o.realizedDate, endDate: o.endDate,
       provider: o.provider, label: o.technicalLabel, version: o.version,
@@ -864,7 +948,7 @@ export function updateOperation(ctx: OperationWriteContext, input: UpdateOperati
       evidence: [{ kind: 'USER_DECLARATION', ref: String(declarationId) }], before: image(avant), after: image(apres),
     });
     return applied(true, { operationId: faits.id, version: apres.version, declarationId, typeCode: apres.typeCode, status: apres.status });
-  });
+  }).then((result) => syncFactDatesAfterCommit(ctx, result, dates));
 }
 
 export interface CorrectOperationInput {
@@ -904,6 +988,7 @@ export const PAGE_CORRECTION_DECLARATION = PAGE_CORRECTION_DECLARATION_TEXT;
  * se corrigent pas ici. Rien ne change : APPLIED sans écriture. Tout ou rien.
  */
 export function correctOperation(ctx: OperationWriteContext, input: CorrectOperationInput): Promise<OperationWriteResult<OperationData>> {
+  const dates: FactDatesChange = {};
   return runCommand<OperationData>(ctx, 'correctOperation', input, async (g, journal) => {
     if (ctx.actor.kind !== 'USER') return stop(refused('FORBIDDEN', 'USER_ONLY'));
     const attrs = normalizeOperationPatch(input?.attributes);
@@ -936,6 +1021,7 @@ export function correctOperation(ctx: OperationWriteContext, input: CorrectOpera
       }
     }
     const apres = await repo.load(faits.id);
+    Object.assign(dates, factDatesChange(avant, apres));
     const image = (o: typeof avant) => ({
       typeCode: o.typeCode, plannedDate: o.plannedDate, startDate: o.startDate, realizedDate: o.realizedDate, endDate: o.endDate,
       label: o.technicalLabel, version: o.version,
@@ -945,7 +1031,7 @@ export function correctOperation(ctx: OperationWriteContext, input: CorrectOpera
       evidence: declarationId !== null ? [{ kind: 'USER_DECLARATION', ref: String(declarationId) }] : [], before: image(avant), after: image(apres),
     });
     return applied(true, { operationId: faits.id, version: apres.version, declarationId, typeCode: apres.typeCode, status: apres.status });
-  });
+  }).then((result) => syncFactDatesAfterCommit(ctx, result, dates));
 }
 
 export interface SetOperationNotesInput {
@@ -1290,10 +1376,13 @@ export function splitOperation(ctx: OperationWriteContext, input: SplitOperation
       ends, nature: 'ASSOCIATED', state: 'ACTIVE', origin: 'USER', reasonCode: SPLIT_RELATION_REASON,
       evidence: preuves, evidenceFingerprint: evidenceFingerprint(preuves), userId: userIdOf(ctx.actor),
     });
+    // Lot 116C (#806 §4, AC46) : MÉMOIRE DURABLE de la séparation — elle survit à toute réécriture ultérieure de la relation
+    // (dissociation, nouvelle association, fusion d'une des deux avec une troisième) et interdit toute refusion AUTOMATIQUE.
+    await markRelationSplitApart(g.runner, g.accountId, rel.id, userIdOf(ctx.actor));
     journal.push({
       relationKind: 'OPERATION_RELATION', operationId: rel.fromOperationId, otherOperationId: rel.toOperationId, action: 'CREATED',
       reasonCode: SPLIT_RELATION_REASON, evidence: preuves, before: null,
-      after: { state: rel.state, nature: rel.nature, fromOperationId: rel.fromOperationId, toOperationId: rel.toOperationId, version: rel.version },
+      after: { state: rel.state, nature: rel.nature, fromOperationId: rel.fromOperationId, toOperationId: rel.toOperationId, version: rel.version, splitApart: true },
     });
 
     // 5. L'événement scindé : sa composition est désormais décidée par l'utilisateur (source de protection posée une seule fois).
@@ -1301,7 +1390,14 @@ export function splitOperation(ctx: OperationWriteContext, input: SplitOperation
       `SELECT 1 FROM business_operation_sources WHERE operation_id = $1 AND account_id = $2 AND active AND source_kind = 'USER_DECLARATION' LIMIT 1`,
       [faits.id, g.accountId]);
     if (!protegee) await repo.addSource(faits.id, { kind: 'USER_DECLARATION', entityKey: declarationId, authority: 'USER', locator: { declaration: 'UPDATE', origin: 'SPLIT' } }, code);
-    const apres = await repo.load(faits.id);
+    // Lot 116C (#806 §4 ; règle remplacée : « une scission ne fait pas avancer la version ») : la scission change la
+    // COMPOSITION de l'opération scindée — sa version AVANCE TOUJOURS. Une page lue avant la scission (version attendue
+    // périmée) reçoit un CONFLIT au geste suivant au lieu d'agir sur une composition qu'elle n'a pas vue.
+    let apres = await repo.load(faits.id);
+    if (apres.version <= avant.version) {
+      await bumpOperationVersion(g.runner, g.accountId, faits.id);
+      apres = await repo.load(faits.id);
+    }
     journal.push({
       relationKind: 'OPERATION', operationId: faits.id, otherOperationId: cree.id, action: 'UPDATED', reasonCode: code,
       evidence: preuves,
@@ -1378,7 +1474,9 @@ export function mergeOperations(ctx: OperationWriteContext, input: MergeOperatio
     const { mergeOperations: fusionner, GroupingError } = await import('./grouping/service');
     let fait: boolean;
     try {
-      fait = await fusionner(g, { absorbedId: absorbe.id, canonicalId: canonique.id, reasonCode: code });
+      // Lot 116C (#806 §4) : cette commande EST la décision explicite de l'utilisateur — la seule qui refusionne deux
+      // opérations qu'il a scindées (toute fusion automatique de la paire est refusée par le dépôt).
+      fait = await fusionner(g, { absorbedId: absorbe.id, canonicalId: canonique.id, reasonCode: code, userDecision: true });
     } catch (e) {
       // Types métier différents : refus métier CLAIR, jamais une panne ni une requalification.
       if (e instanceof GroupingError && e.code === 'MERGE_REFUSED') return stop(refused('FORBIDDEN', 'TYPE_MISMATCH'));

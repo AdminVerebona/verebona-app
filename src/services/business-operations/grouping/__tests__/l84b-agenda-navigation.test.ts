@@ -132,10 +132,17 @@ describe('L84B-U04 — mémoire unifiée des décisions : objet PRINCIPAL', () =
 });
 
 describe('L84B-U05 — vocabulaire (P1, AC03)', () => {
-  const textes = JSON.stringify(GROUPING_LABELS);
-  it('aucun libellé visible ne contient « Opération » ni « principal »', () => {
+  // Règle remplacée (carte #806) : « aucun libellé visible ne contient "Opération" » (lot 84B) — décision du PO du
+  // 17/11/2026 (#806 §1) : à l'écran on dit désormais « opération ». Les NOUVEAUX textes de la carte #806 l'emploient
+  // (liste fermée ci-dessous) ; les libellés EXISTANTS ne sont pas renommés ici (renommage en fin de lot) et restent
+  // sous la garde d'origine. « principal » reste interdit partout.
+  const NOUVEAUX_TEXTES_806 = ['pickerGroupingNote'];
+  const textes = JSON.stringify(Object.fromEntries(Object.entries(GROUPING_LABELS).filter(([k]) => !NOUVEAUX_TEXTES_806.includes(k))));
+  it('aucun libellé visible existant ne contient « Opération » ni « principal » ; les nouveaux textes #806 disent « opération »', () => {
     expect(textes).not.toMatch(/op[ée]ration/i);
-    expect(textes).not.toMatch(/principal/i);
+    expect(JSON.stringify(GROUPING_LABELS)).not.toMatch(/principal/i);
+    expect(GROUPING_LABELS.pickerGroupingNote).toMatch(/opération/);
+    expect(GROUPING_LABELS.pickerGroupingNote).not.toMatch(/événement de référence|élément de référence/i);
   });
   it('composants et tiroirs : aucun texte JSX « Opération » / « principal »', () => {
     for (const f of ['src/components/agenda/AgendaGroupingSection.tsx', 'src/components/agenda/AgendaGroupingPanel.tsx', 'src/components/agenda/AgendaItemDrawer.tsx', 'src/components/assets/DocumentDrawer.tsx']) {
@@ -145,12 +152,22 @@ describe('L84B-U05 — vocabulaire (P1, AC03)', () => {
       expect(jsx, f).not.toMatch(/["'`][^"'`]*\b[Pp]rincipal\b[^"'`]*["'`]\s*\}/);
     }
   });
-  it('messages d’erreur des routes : jamais le mot « Opération »', () => {
+  it('messages d’erreur des routes : jamais « principal » ; « opération » seulement dans les deux nouveaux messages #806', () => {
+    // Règle remplacée (carte #806) : « jamais le mot "Opération" » — même décision du PO du 17/11/2026 ; les deux
+    // messages nouveaux (regroupement non déclaré, association refusée) disent « opération », les autres sont inchangés.
+    const nouveaux: string[] = [];
     for (const f of ['src/app/api/agenda/[id]/liens/route.ts', 'src/app/api/documents/[id]/agenda-liens/route.ts']) {
-      const msgs = [...sansCommentaires(code(f)).matchAll(/message: '([^']*)'|error: '([^']*)'/g)].map((x) => x[1] ?? x[2]);
+      const src = sansCommentaires(code(f));
+      const msgs = [...src.matchAll(/message: '([^']*)'|error: '([^']*)'/g)].map((x) => x[1] ?? x[2]);
       expect(msgs.length, f).toBeGreaterThan(0);
-      for (const m of msgs) expect(m, f).not.toMatch(/op[ée]ration|principal/i);
+      for (const m of msgs) {
+        expect(m, f).not.toMatch(/principal/i);
+        if (/op[ée]ration/i.test(m)) nouveaux.push(m);
+      }
+      for (const m of [...src.matchAll(/(GROUPING_NOT_DECLARED|ASSOCIATION_REFUSED): \{ status: 409, message: '([^']*)' \}/g)]) expect(nouveaux, m[1]).toContain(m[2]);
     }
+    expect(nouveaux).toHaveLength(2);
+    for (const m of nouveaux) expect(m).not.toMatch(/Opération|événement de référence/);
   });
 });
 

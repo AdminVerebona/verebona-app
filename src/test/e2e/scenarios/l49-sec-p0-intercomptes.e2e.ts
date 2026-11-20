@@ -498,7 +498,9 @@ scenario('L49-SEC', 'SEC-P0 — isolation intercomptes (matrice A/B)', ({ sql, m
        WHERE l.agenda_item_id = ${item.id} AND f.account_id <> i.account_id`;
     expect(croisees).toHaveLength(0);
     expect(await sql`SELECT 1 FROM agenda_file_links WHERE agenda_item_id = ${item.id}`).toHaveLength(1);
-    // Un seul regroupement, même sous concurrence (verrou de compte du service de regroupement).
-    expect(await sql`SELECT DISTINCT operation_id FROM business_operation_documents WHERE account_id = ${A.acc.id} AND file_id = ${A.fichier} AND active`).toHaveLength(1);
+    // Règle remplacée (carte #806 §2, AC08) : « un seul regroupement, même sous concurrence » devient « AUCUN regroupement
+    // créé par une simple association, même sous concurrence » — un seul lien direct (ci-dessus), aucune appartenance.
+    expect(await sql`SELECT DISTINCT operation_id FROM business_operation_documents WHERE account_id = ${A.acc.id} AND file_id = ${A.fichier} AND active`).toHaveLength(0);
+    expect(await sql`SELECT 1 FROM agenda_items WHERE id = ${item.id} AND business_operation_id IS NOT NULL`).toHaveLength(0);
   });
 });

@@ -4647,6 +4647,10 @@ export const businessOperationRelations = pgTable('business_operation_relations'
   decidedByUserId: integer('decided_by_user_id').references(() => users.id, { onDelete: 'set null' }),
   decidedAt: tstz('decided_at'),
   endedAt: tstzOptional('ended_at'),
+  // Lot 116C (#806 §4, AC46, migration 1830) : MÉMOIRE DURABLE d'une scission décidée par l'utilisateur — jamais retirée
+  // par une écriture ultérieure de la relation ; lue par la porte unique des fusions automatiques de T3.
+  splitApartAt: tstzOptional('split_apart_at'),
+  splitApartByUserId: integer('split_apart_by_user_id').references(() => users.id, { onDelete: 'set null' }),
   createdAt: tstz('created_at'),
   updatedAt: tstz('updated_at'),
 }, (t) => ({

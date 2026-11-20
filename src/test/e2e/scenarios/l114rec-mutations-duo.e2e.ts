@@ -14,7 +14,8 @@
  *                les deux événements de référence restent actifs) ; la même commande rejouée après réparation
  *                s'applique UNE fois
  *   L114REC-E14  AC71 : deux SCISSIONS simultanées du même événement de référence → une seule s'applique (version
- *                attendue) ; panne SQL au milieu d'une scission → rien d'écrit, reprise intègre
+ *                attendue) ; panne SQL au milieu d'une scission → rien d'écrit, reprise intègre ; la version de
+ *                l'opération scindée AVANCE (règle remplacée, carte #806) et une vue périmée reçoit un conflit
  *   L114REC-E16  AC46, AC13 : après une SCISSION, aucune inférence ne redemande de regrouper la paire séparée
  *                (mémoire `USER_SPLIT` lue par la passerelle de fusion) ; aucune carte posée ; une AUTRE paire
  *                reçoit bien la question
@@ -196,11 +197,15 @@ scenario('L114REC-M', 'Opérations / Agenda CDC V2.0 — recette : fusion et sci
        WHERE account_id = ${compte.id} AND state = 'ACTIVE' GROUP BY 1 ORDER BY 1`).map((r) => Number(r.n))).toEqual([1, 1]);
     expect(await audit(compte)).toEqual([]);
 
-    // CONSTAT (signalé au PO, voir la fiche de recette) : une scission ne fait PAS avancer la version de
-    // l'événement scindé — une page ouverte avant la scission peut en demander une seconde avec la même
-    // version attendue. La protection réelle est la vérification FAIT PAR FAIT ci-dessus.
+    // Règle remplacée (carte #806) : « une scission ne fait PAS avancer la version de l'événement scindé » (constat du
+    // passage « recette » #744) devient « la scission fait TOUJOURS avancer la version de l'opération scindée » —
+    // décision de la carte #806 §4. Une page lue avant la scission reçoit un CONFLIT à son geste suivant.
     const [{ version: apres }] = await sql<Json[]>`SELECT version FROM business_operations WHERE id = ${op}`;
-    expect(Number(apres)).toBe(Number(version));
+    expect(Number(apres)).toBeGreaterThan(Number(version));
+    expect(await f.splitOperation(user(compte), {
+      operationId: op, expectedVersion: Number(version), label: 'Scission sur une vue périmée', agendaItemIds: [e1.id], reasonCode: 'L114REC_E14',
+    })).toMatchObject({ status: 'CONFLICT', code: 'VERSION_MISMATCH', data: { currentVersion: Number(apres) } });
+    expect(await etats(compte)).toHaveLength(2);
   });
 
   // ══ AC46, AC13 : la séparation ne se rejoue pas ════════════════════════════

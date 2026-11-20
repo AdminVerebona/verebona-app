@@ -254,13 +254,21 @@ export const PUBLISHABILITY_CONTRACTS: Readonly<Record<string, PublishabilityCon
   },
   // Carte #744 : association refusée rapprochée par une preuve nouvelle — inutile dès que l'un des deux événements de
   // référence est retiré, ou que la relation n'est plus refusée (associée ou retirée entre-temps par l'utilisateur).
+  // Lot 116C (#806 §3) : PROPOSITION sinistre ↔ assurance (contexte `proposal`, aucun refus préalable) — inutile dès
+  // qu'une relation existe entre les deux opérations (associées ou refusées entre-temps par l'utilisateur).
   'OPERATION-RELATION': {
     family: 'EVENEMENTS_DE_REFERENCE', decisions: 'PRODUCTION', reason: 'ASSOCIATION_ALREADY_SETTLED', atCreation: true,
     noLongerUseful: (a) => `(${evenementRetire(a, `${a}.trigger_context->>'fromOperationId'`)}
                           OR ${evenementRetire(a, `${a}.trigger_context->>'toOperationId'`)}
-                          OR NOT EXISTS (SELECT 1 FROM business_operation_relations r
-                                          WHERE r.account_id = ${a}.account_id AND r.id = ${idDe(`${a}.trigger_context->>'relationId'`)}
-                                            AND r.state = 'REJECTED'))`,
+                          OR (${a}.trigger_context->>'proposal' IS NULL
+                              AND NOT EXISTS (SELECT 1 FROM business_operation_relations r
+                                               WHERE r.account_id = ${a}.account_id AND r.id = ${idDe(`${a}.trigger_context->>'relationId'`)}
+                                                 AND r.state = 'REJECTED'))
+                          OR (${a}.trigger_context->>'proposal' IS NOT NULL
+                              AND EXISTS (SELECT 1 FROM business_operation_relations r
+                                           WHERE r.account_id = ${a}.account_id AND r.state IN ('ACTIVE', 'REJECTED')
+                                             AND LEAST(r.from_operation_id, r.to_operation_id) = LEAST(${idDe(`${a}.trigger_context->>'fromOperationId'`)}, ${idDe(`${a}.trigger_context->>'toOperationId'`)})
+                                             AND GREATEST(r.from_operation_id, r.to_operation_id) = GREATEST(${idDe(`${a}.trigger_context->>'fromOperationId'`)}, ${idDe(`${a}.trigger_context->>'toOperationId'`)}))))`,
     cleanup: { by: PUBLISHABILITY_CHECK_ID, service: 'closeCardsNoLongerUseful' },
   },
   // Carte #744 (décision du PO du 16/11/2026) : rattachement d'Agenda SUPPLÉMENTAIRE proposé sur un justificatif

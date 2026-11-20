@@ -171,6 +171,11 @@ export const GROUPING_LABELS = {
     pieces: 'Rechercher',
     equipements: 'Rechercher',
   } satisfies Record<GroupingCandidateKind, string>,
+  /**
+   * Lot 116C (carte #806 §2, AC08) — SENS DU GESTE, affiché dans le choix d'un événement : regrouper (une même
+   * opération) n'est pas associer (deux opérations reliées). Texte À VALIDER PAR LE PO.
+   */
+  pickerGroupingNote: 'Les deux événements seront regroupés dans une même opération ; chacun garde sa date et ses rappels. S’ils appartiennent déjà à deux opérations différentes, celles-ci seront seulement associées : elles ne sont jamais fusionnées.',
   noCandidate: 'Aucun résultat.',
   remove: 'Retirer',
   /** Lot 103D : retrait d'un événement associé (lien seul, jamais l'événement). */

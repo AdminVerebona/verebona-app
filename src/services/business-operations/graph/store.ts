@@ -43,6 +43,19 @@ export async function loadOperationFacts(r: GroupingRunner, accountId: number, o
   return { id: n(o.id), typeCode: (o.type_code as BusinessOperationTypeCode | null) ?? null, active: o.active === true, version: n(o.version) };
 }
 
+/**
+ * Fait AVANCER la version d'une opération du compte (lot 116C, #806 §4) : une
+ * commande qui change sa COMPOSITION sans toucher ses attributs (scission)
+ * périme ainsi toute vue lue avant elle. Rend la nouvelle version ; null :
+ * opération absente du compte.
+ */
+export async function bumpOperationVersion(r: GroupingRunner, accountId: number, operationId: number): Promise<number | null> {
+  const [o] = await r.q<Row>(
+    `UPDATE business_operations SET version = version + 1, updated_at = now() WHERE id = $1 AND account_id = $2 RETURNING version`,
+    [operationId, accountId]);
+  return o ? n(o.version) : null;
+}
+
 export interface AgendaItemFacts { id: number; legacyOperationId: number | null; legacyOperationActive: boolean }
 
 /** Élément d'Agenda DU COMPTE, verrouillé ; null si absent ou d'un autre compte. */
@@ -134,6 +147,23 @@ export async function setRelationState(
   return toRelation(x);
 }
 
+/**
+ * MÉMOIRE DURABLE D'UNE SCISSION (lot 116C, carte #806 §4, AC46 ; migration 1830).
+ * Posée UNE fois par `splitOperation` sur la relation gardée entre l'opération
+ * scindée et la nouvelle ; aucune autre écriture de ce fichier ne la retire
+ * (`updateRelation`, `setRelationState` n'y touchent pas ; la fusion la REPORTE,
+ * `reassignGraphOnMerge`). C'est elle que lit la porte unique des fusions
+ * automatiques de T3 : deux opérations séparées par l'utilisateur ne sont plus
+ * jamais refusionnées sans lui, quelles que soient les preuves nouvelles.
+ * Idempotente : la date de la PREMIÈRE scission est conservée.
+ */
+export async function markRelationSplitApart(r: GroupingRunner, accountId: number, relationId: number, userId: number | null): Promise<void> {
+  await r.q(
+    `UPDATE business_operation_relations
+        SET split_apart_at = COALESCE(split_apart_at, now()), split_apart_by_user_id = COALESCE(split_apart_by_user_id, $3::int), updated_at = now()
+      WHERE id = $1 AND account_id = $2`, [relationId, accountId, userId]);
+}
+
 // ── Liens Opération ↔ élément d'Agenda ─────────────────────────────────────
 
 export interface AgendaLinkSnapshot { id: number; operationId: number; agendaItemId: number; state: 'ACTIVE' | 'REMOVED'; origin: GraphOrigin; legacyColumn: boolean; version: number }
@@ -194,6 +224,17 @@ export async function stampAgendaLinkDecision(
   await r.q(
     `UPDATE business_operation_agenda_links SET origin = 'USER', reason_code = $4, decided_by_user_id = $5, decided_at = now(), updated_at = now()
       WHERE account_id = $1 AND operation_id = $2 AND agenda_item_id = $3`, [accountId, operationId, itemId, p.reasonCode, p.userId]);
+}
+
+/**
+ * Fait AVANCER la version d'un lien ACTIF (lot 116C, #806 §5) : la date du fait qu'il porte vient d'être synchronisée
+ * entre l'opération et l'événement de l'Agenda — le lien lui-même ne change pas. Rend la nouvelle version, ou null.
+ */
+export async function bumpAgendaLinkVersion(r: GroupingRunner, accountId: number, operationId: number, itemId: number): Promise<number | null> {
+  const [x] = await r.q<Row>(
+    `UPDATE business_operation_agenda_links SET version = version + 1, updated_at = now()
+      WHERE account_id = $1 AND operation_id = $2 AND agenda_item_id = $3 AND state = 'ACTIVE' RETURNING version`, [accountId, operationId, itemId]);
+  return x ? n(x.version) : null;
 }
 
 // ── Fait porté par un lien (migration 1721, travaux F de la carte #744) ────
@@ -408,6 +449,12 @@ export interface GraphAbstention {
   correlationId?: string | null;
 }
 
+/**
+ * Motif de l'abstention tracée quand une fusion AUTOMATIQUE est refusée parce que l'utilisateur a scindé les deux
+ * opérations (lot 116C, #806 §4, AC46 ; garde du dépôt `mergeOperations`). Lu par le contrôle de cohérence du graphe.
+ */
+export const AUTOMATIC_MERGE_REFUSED_AFTER_SPLIT = 'ABSTAIN_USER_SPLIT_APART';
+
 export async function recordAiAbstention(r: GroupingRunner, accountId: number, a: GraphAbstention): Promise<boolean> {
   const [deja] = await r.q<Row>(
     `SELECT id FROM business_operation_graph_history
@@ -453,7 +500,7 @@ export async function reassignGraphOnMerge(
   const out = { relationsMoved: 0, relationsMerged: 0, relationsDropped: 0, agendaLinksMoved: 0 };
   const base = { origin: 'SYSTEM' as const, reasonCode: 'OPERATION_MERGED', correlationId: ctx.correlationId ?? null, actorUserId: ctx.actorUserId ?? null };
   const lignes = await r.q<Row>(
-    `SELECT ${RELATION_COLUMNS}, evidence, decided_by_user_id FROM business_operation_relations
+    `SELECT ${RELATION_COLUMNS}, evidence, decided_by_user_id, (split_apart_at IS NOT NULL) AS split_apart FROM business_operation_relations
       WHERE account_id = $1 AND (from_operation_id = $2 OR to_operation_id = $2) ORDER BY id FOR UPDATE`, [accountId, absorbedId]);
   for (const x of lignes) {
     const rel = toRelation(x);
@@ -478,6 +525,16 @@ export async function reassignGraphOnMerge(
       await journalGraph(r, accountId, { ...base, relationKind: 'OPERATION_RELATION', operationId: canonicalId, otherOperationId: autre, action: 'REASSIGNED_ON_MERGE', before: { operationId: absorbedId, state: rel.state }, after: { operationId: canonicalId, state: rel.state } });
       out.relationsMoved++;
       continue;
+    }
+    // Lot 116C (#806 §4, AC46) : la MÉMOIRE D'UNE SCISSION de l'absorbée suit l'identité canonique — la relation qui la
+    // remplace la reçoit (date et auteur d'origine), sinon la séparation décidée par l'utilisateur se perdrait à la fusion.
+    if (x.split_apart === true) {
+      await r.q(
+        `UPDATE business_operation_relations c
+            SET split_apart_at = COALESCE(c.split_apart_at, a.split_apart_at),
+                split_apart_by_user_id = COALESCE(c.split_apart_by_user_id, a.split_apart_by_user_id), updated_at = now()
+           FROM business_operation_relations a
+          WHERE c.id = $1 AND c.account_id = $3 AND a.id = $2 AND a.account_id = $3`, [cible.id, rel.id, accountId]);
     }
     const etat = mergedRelationState(cible.state, rel.state);
     if (etat !== cible.state) {
@@ -607,18 +664,60 @@ export async function resyncLegacyAgendaLinks(r: GroupingRunner, accountId: numb
 
 export type GraphFindingCode =
   | 'RELATION_CROSS_ACCOUNT' | 'RELATION_ON_MERGED_OPERATION' | 'AGENDA_LINK_CROSS_ACCOUNT'
-  | 'LEGACY_LINK_MISSING' | 'LEGACY_LINK_STALE' | 'AGENDA_LINK_ON_MERGED_OPERATION';
+  | 'LEGACY_LINK_MISSING' | 'LEGACY_LINK_STALE' | 'AGENDA_LINK_ON_MERGED_OPERATION'
+  // Lot 116C (#806 §4, AC73) — liens orphelins, intercomptes, refus réactivé, provenance, double comptage.
+  | 'CLAIM_CONTRACT_LINK_CROSS_ACCOUNT' | 'CLAIM_CONTRACT_LINK_ORPHAN'
+  | 'RELATION_REFUSAL_REACTIVATED' | 'AGENDA_LINK_REFUSAL_REACTIVATED' | 'SPLIT_PAIR_REMERGED_AUTOMATICALLY'
+  | 'RELATION_INFERRED_WITHOUT_EVIDENCE' | 'AGENDA_LINK_INFERRED_WITHOUT_EVIDENCE'
+  | 'DOCUMENT_CANDIDATE_ON_TWO_OPERATIONS';
 
-export interface GraphFinding { code: GraphFindingCode; count: number; sample: number[] }
+/** Nature de l'objet désigné par `sample` (lecture du diagnostic au BO). */
+export type GraphFindingObject = 'RELATION' | 'AGENDA_LINK' | 'AGENDA_ITEM' | 'OPERATION' | 'DOCUMENT';
+
+export interface GraphFinding {
+  code: GraphFindingCode;
+  count: number;
+  /** Identifiants des objets en écart (20 au plus) ; leur nature est donnée par `GRAPH_FINDING_OBJECT[code]`. */
+  sample: number[];
+}
+
+/** Nature de l'objet échantillonné par chaque écart. */
+export const GRAPH_FINDING_OBJECT: Readonly<Record<GraphFindingCode, GraphFindingObject>> = {
+  RELATION_CROSS_ACCOUNT: 'RELATION', RELATION_ON_MERGED_OPERATION: 'RELATION',
+  AGENDA_LINK_CROSS_ACCOUNT: 'AGENDA_LINK', AGENDA_LINK_ON_MERGED_OPERATION: 'AGENDA_LINK',
+  LEGACY_LINK_MISSING: 'AGENDA_ITEM', LEGACY_LINK_STALE: 'AGENDA_LINK',
+  CLAIM_CONTRACT_LINK_CROSS_ACCOUNT: 'OPERATION', CLAIM_CONTRACT_LINK_ORPHAN: 'OPERATION',
+  RELATION_REFUSAL_REACTIVATED: 'RELATION', AGENDA_LINK_REFUSAL_REACTIVATED: 'AGENDA_LINK', SPLIT_PAIR_REMERGED_AUTOMATICALLY: 'RELATION',
+  RELATION_INFERRED_WITHOUT_EVIDENCE: 'RELATION', AGENDA_LINK_INFERRED_WITHOUT_EVIDENCE: 'AGENDA_LINK',
+  DOCUMENT_CANDIDATE_ON_TWO_OPERATIONS: 'DOCUMENT',
+};
 
 const SAMPLE = 20;
 
 /**
- * Contrôle d'intégrité du graphe d'UN compte — LECTURE SEULE. Les doublons et
- * les relations réflexives sont impossibles par construction (index unique,
- * CHECK). Rend les écarts restants : relation ou lien actif entre comptes,
- * relation ou lien actif resté sur une Opération fusionnée, colonne
- * historique sans lien du graphe (ou l'inverse). Compte sain : liste vide.
+ * Contrôle d'intégrité du graphe d'UN compte — LECTURE SEULE (aucune écriture,
+ * aucune réparation : un écart est un CONSTAT, lu au BO et par le contrôle de
+ * cohérence `COH-OPERATION-GRAPH`). Les doublons et les relations réflexives
+ * sont impossibles par construction (index unique, CHECK). Compte sain : liste
+ * vide.
+ *
+ * Écarts rendus (lot 114O) : relation ou lien actif entre comptes, relation ou
+ * lien actif resté sur une opération fusionnée, colonne historique sans lien du
+ * graphe (ou l'inverse).
+ *
+ * Lot 116C (carte #806 §4, AC73) :
+ *   · LIENS ORPHELINS / INTERCOMPTES du lien spécialisé Sinistre → contrat
+ *     d'assurance (`business_operation_claim_details.insurance_contract_operation_id`,
+ *     lu comme une relation par `graph/read.ts`) : contrat d'un autre compte, ou
+ *     contrat fusionné ou qui n'est pas un contrat ;
+ *   · RÉACTIVATION D'UN REFUS : relation active d'origine non utilisateur alors
+ *     que la DERNIÈRE décision de l'utilisateur sur la paire est un refus ; lien
+ *     d'Agenda actif d'origine non utilisateur malgré un refus mémorisé ; paire
+ *     SCINDÉE par l'utilisateur puis refusionnée sans sa décision ;
+ *   · PROVENANCE : relation ou lien supplémentaire posé par une inférence sans
+ *     aucune preuve (la façade l'interdit : `EVIDENCE_REQUIRED`) ;
+ *   · DOUBLE COMPTAGE : le MÊME candidat d'un MÊME justificatif est source
+ *     active de deux opérations actives (ses montants seraient portés deux fois).
  */
 export async function auditOperationGraph(r: GroupingRunner, accountId: number): Promise<GraphFinding[]> {
   const mesures: Array<[GraphFindingCode, string]> = [
@@ -645,6 +744,54 @@ export async function auditOperationGraph(r: GroupingRunner, accountId: number):
       `SELECT l.id FROM business_operation_agenda_links l
         WHERE l.account_id = $1 AND l.legacy_column
           AND NOT EXISTS (SELECT 1 FROM agenda_items i WHERE i.id = l.agenda_item_id AND i.account_id = $1 AND i.business_operation_id = l.operation_id)`],
+    // ── Lot 116C : lien spécialisé Sinistre → contrat d'assurance ──
+    ['CLAIM_CONTRACT_LINK_CROSS_ACCOUNT',
+      `SELECT o.id FROM business_operation_claim_details d
+         JOIN business_operations o ON o.id = d.operation_id JOIN business_operations c ON c.id = d.insurance_contract_operation_id
+        WHERE o.account_id = $1 AND c.account_id <> o.account_id`],
+    ['CLAIM_CONTRACT_LINK_ORPHAN',
+      `SELECT o.id FROM business_operation_claim_details d
+         JOIN business_operations o ON o.id = d.operation_id JOIN business_operations c ON c.id = d.insurance_contract_operation_id
+        WHERE o.account_id = $1 AND c.account_id = o.account_id AND o.invalidated_at IS NULL AND o.merged_into_operation_id IS NULL
+          AND (c.merged_into_operation_id IS NOT NULL OR c.type_code IS DISTINCT FROM 'CONTRACT')`],
+    // ── Lot 116C : réactivation d'un refus ──
+    ['RELATION_REFUSAL_REACTIVATED',
+      `SELECT rel.id FROM business_operation_relations rel
+        WHERE rel.account_id = $1 AND rel.state = 'ACTIVE' AND rel.origin <> 'USER'
+          AND (SELECT h.action FROM business_operation_graph_history h
+                WHERE h.account_id = $1 AND h.relation_kind = 'OPERATION_RELATION' AND h.origin = 'USER'
+                  AND LEAST(h.operation_id, h.other_operation_id) = LEAST(rel.from_operation_id, rel.to_operation_id)
+                  AND GREATEST(h.operation_id, h.other_operation_id) = GREATEST(rel.from_operation_id, rel.to_operation_id)
+                ORDER BY h.id DESC LIMIT 1) = 'REJECTED'`],
+    ['AGENDA_LINK_REFUSAL_REACTIVATED',
+      `SELECT l.id FROM business_operation_agenda_links l
+        WHERE l.account_id = $1 AND l.state = 'ACTIVE' AND l.origin <> 'USER'
+          AND EXISTS (SELECT 1 FROM business_operation_match_decisions d
+                       WHERE d.account_id = $1 AND d.candidate_operation_id = l.operation_id AND d.source_kind = 'AGENDA'
+                         AND d.source_entity_key = l.agenda_item_id::text AND d.decision = 'REJECTED' AND d.active)`],
+    ['SPLIT_PAIR_REMERGED_AUTOMATICALLY',
+      `SELECT rel.id FROM business_operation_relations rel
+         JOIN business_operations f ON f.id = rel.from_operation_id JOIN business_operations t ON t.id = rel.to_operation_id
+        WHERE rel.account_id = $1 AND (rel.split_apart_at IS NOT NULL OR rel.reason_code = 'USER_SPLIT')
+          AND (f.merged_into_operation_id = t.id OR t.merged_into_operation_id = f.id)
+          AND NOT EXISTS (SELECT 1 FROM business_operation_graph_history h
+                           WHERE h.account_id = $1 AND h.command = 'mergeOperations' AND h.origin = 'USER' AND h.relation_kind = 'OPERATION'
+                             AND LEAST(h.operation_id, h.other_operation_id) = LEAST(rel.from_operation_id, rel.to_operation_id)
+                             AND GREATEST(h.operation_id, h.other_operation_id) = GREATEST(rel.from_operation_id, rel.to_operation_id))`],
+    // ── Lot 116C : provenance ──
+    ['RELATION_INFERRED_WITHOUT_EVIDENCE',
+      `SELECT rel.id FROM business_operation_relations rel
+        WHERE rel.account_id = $1 AND rel.state = 'ACTIVE' AND rel.origin = 'AI' AND jsonb_array_length(rel.evidence) = 0`],
+    ['AGENDA_LINK_INFERRED_WITHOUT_EVIDENCE',
+      `SELECT l.id FROM business_operation_agenda_links l
+        WHERE l.account_id = $1 AND l.state = 'ACTIVE' AND NOT l.legacy_column AND l.origin = 'AI' AND jsonb_array_length(l.evidence) = 0`],
+    // ── Lot 116C : double comptage ──
+    ['DOCUMENT_CANDIDATE_ON_TWO_OPERATIONS',
+      `SELECT s.source_entity_key::bigint AS id FROM business_operation_sources s
+         JOIN business_operations o ON o.id = s.operation_id AND o.account_id = s.account_id
+        WHERE s.account_id = $1 AND s.active AND s.source_kind = 'DOCUMENT' AND s.locator ? 'candidateKey'
+          AND s.source_entity_key ~ '^[0-9]{1,18}$' AND o.invalidated_at IS NULL AND o.merged_into_operation_id IS NULL
+        GROUP BY s.source_entity_key, s.locator->>'candidateKey' HAVING count(DISTINCT s.operation_id) > 1`],
   ];
   const out: GraphFinding[] = [];
   for (const [code, text] of mesures) {

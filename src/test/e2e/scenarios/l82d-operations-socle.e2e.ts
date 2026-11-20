@@ -327,13 +327,21 @@ scenario('L82D', 'Opérations v5 — socle O-1 : principal, intégrité, provena
 
   // ══ Agenda ↔ Agenda ══════════════════════════════════════════════════════
 
-  it('L82D-E07 — lien Agenda ↔ Agenda (§8.3, AC02, E2E-08 / E2E-09) : création, rattachement, no-op, fusion existante — un seul principal, éléments distincts, idempotent', async () => {
+  // Règles remplacées (carte #806 §2, AC08) : « tout lien entre deux éléments autonomes crée une Opération » devient
+  // « création seulement sur un regroupement DÉCLARÉ par l'utilisateur » ; « deux Opérations liées FUSIONNENT » (et son
+  // refus MERGE_REFUSED sur types incompatibles) devient « deux Opérations existantes sont ASSOCIÉES, jamais fusionnées ».
+  it('L82D-E07 — lien Agenda ↔ Agenda (§8.3, AC02, E2E-08 / E2E-09) : création sur regroupement déclaré, rattachement, no-op ; deux Opérations : association sans fusion — éléments distincts, idempotent', async () => {
     const c = await contexte();
     const { linkAgendaItems, designatePrincipal } = await grouping();
     const degat = await make.agendaItem(c.compte, { title: 'Dégât des eaux', startDate: '2026-03-12' });
     const visite = await make.agendaItem(c.compte, { title: 'Visite expert', startDate: '2026-03-21' });
     const reparation = await make.agendaItem(c.compte, { title: 'Réparation plafond', startDate: '2026-04-18' });
-    const cree = await g(c.compte, (ctx) => linkAgendaItems(ctx, { itemA: degat.id, itemB: visite.id }), c.compte.owner.id);
+    // Simple association de deux éléments autonomes : AUCUNE Opération créée, rien d'écrit.
+    await expect(g(c.compte, (ctx) => linkAgendaItems(ctx, { itemA: degat.id, itemB: visite.id }), c.compte.owner.id)).rejects.toThrow(/GROUPING_NOT_DECLARED/);
+    expect(await k.actives(c.compte)).toEqual([]);
+    expect([await role(degat.id), await role(visite.id)].map((r) => r.op)).toEqual([null, null]);
+    // Regroupement DÉCLARÉ : l'Opération est créée.
+    const cree = await g(c.compte, (ctx) => linkAgendaItems(ctx, { itemA: degat.id, itemB: visite.id, declaredGrouping: true }), c.compte.owner.id);
     expect(cree.case).toBe('CREATE');
     const [op] = await k.actives(c.compte);
     expect(op).toMatchObject({ id: cree.operationId, type_code: null });
@@ -343,25 +351,33 @@ scenario('L82D', 'Opérations v5 — socle O-1 : principal, intégrité, provena
     expect((await sql<Json[]>`SELECT DISTINCT origin FROM business_operation_agenda_links WHERE operation_id = ${op.id} AND state = 'ACTIVE'`)).toEqual([{ origin: 'USER' }]);
     expect(await g(c.compte, (ctx) => linkAgendaItems(ctx, { itemA: visite.id, itemB: reparation.id }))).toEqual({ case: 'ATTACH', operationId: op.id });
     expect(await g(c.compte, (ctx) => linkAgendaItems(ctx, { itemA: degat.id, itemB: reparation.id }))).toEqual({ case: 'NOOP', operationId: op.id });
-    // Deux regroupements, chacun avec son principal, liés par l'utilisateur : fusion existante, un seul principal.
+    // Deux regroupements, chacun avec son porteur, liés par l'utilisateur : ASSOCIÉS, jamais fusionnés.
     const constat = await make.agendaItem(c.compte, { title: 'Constat amiable', startDate: '2026-03-13' });
     const devis = await make.agendaItem(c.compte, { title: 'Devis peintre', startDate: '2026-03-30' });
-    const autre = await g(c.compte, (ctx) => linkAgendaItems(ctx, { itemA: constat.id, itemB: devis.id }));
+    const autre = await g(c.compte, (ctx) => linkAgendaItems(ctx, { itemA: constat.id, itemB: devis.id, declaredGrouping: true }), c.compte.owner.id);
     await g(c.compte, (ctx) => designatePrincipal(ctx, { operationId: op.id, itemId: degat.id, origin: 'T4', reasonCode: 'E2E' }));
     await g(c.compte, (ctx) => designatePrincipal(ctx, { operationId: autre.operationId, itemId: constat.id, origin: 'T4', reasonCode: 'E2E' }));
-    const fusion = await g(c.compte, (ctx) => linkAgendaItems(ctx, { itemA: devis.id, itemB: reparation.id }));
-    expect(fusion).toEqual({ case: 'MERGE', operationId: Math.min(op.id, autre.operationId) });
-    const restants = await sql<Json[]>`SELECT id, operation_role AS role FROM agenda_items WHERE business_operation_id = ${fusion.operationId} ORDER BY id`;
-    expect(restants.map((r) => r.id)).toEqual([degat.id, visite.id, reparation.id, constat.id, devis.id]);
-    // RÈGLE REMPLACÉE (carte #744) : « un seul principal après fusion » devient « au plus un PORTEUR par fait » — lu sur
-    // le lien N↔N. Le porteur de l'Opération absorbée perd son fait, son élément reste membre de plein droit.
-    // Avant : `restants.filter((r) => r.role === 'PRINCIPAL')` valait [degat.id].
-    expect(restants.every((r) => r.role === 'RELATED')).toBe(true);
-    expect((await porteurs(fusion.operationId)).map((p) => p.item)).toEqual([degat.id]);
-    expect((await k.actives(c.compte)).map((o) => o.id)).toEqual([fusion.operationId]);
-    // Rejoué : aucun changement.
-    expect(await g(c.compte, (ctx) => linkAgendaItems(ctx, { itemA: devis.id, itemB: reparation.id }))).toEqual({ case: 'NOOP', operationId: fusion.operationId });
-    // Types incompatibles : refus explicite (qualification = T3, V-Q5), rien n'est écrit.
+    const avantFusions = (await sql<Json[]>`SELECT count(*)::int AS n FROM business_operation_history WHERE account_id = ${c.compte.id} AND event_type = 'MERGED'`)[0].n;
+    const association = await g(c.compte, (ctx) => linkAgendaItems(ctx, { itemA: devis.id, itemB: reparation.id, declaredGrouping: true }), c.compte.owner.id);
+    expect(association).toMatchObject({ case: 'ASSOCIATE', operationId: autre.operationId, associatedOperationId: op.id });
+    // Les DEUX Opérations restent actives, chacune avec ses éléments et son porteur ; aucune fusion tracée.
+    expect((await k.actives(c.compte)).map((o) => o.id).sort((x, y) => x - y)).toEqual([op.id, autre.operationId].sort((x, y) => x - y));
+    expect((await sql<Json[]>`SELECT id FROM agenda_items WHERE business_operation_id = ${op.id} ORDER BY id`).map((r) => r.id)).toEqual([degat.id, visite.id, reparation.id]);
+    expect((await sql<Json[]>`SELECT id FROM agenda_items WHERE business_operation_id = ${autre.operationId} ORDER BY id`).map((r) => r.id)).toEqual([constat.id, devis.id]);
+    expect((await porteurs(op.id)).map((p) => p.item)).toEqual([degat.id]);
+    expect((await porteurs(autre.operationId)).map((p) => p.item)).toEqual([constat.id]);
+    expect((await sql<Json[]>`SELECT count(*)::int AS n FROM business_operation_history WHERE account_id = ${c.compte.id} AND event_type = 'MERGED'`)[0].n).toBe(avantFusions);
+    // Relation N↔N persistante, avec sa provenance : utilisateur, preuves = les deux éléments reliés, tracée au journal du graphe.
+    const [rel] = await sql<Json[]>`
+      SELECT id::int AS id, nature, state, origin, decided_by_user_id, evidence FROM business_operation_relations WHERE account_id = ${c.compte.id}`;
+    expect(rel).toMatchObject({ id: association.relationId, nature: 'ASSOCIATED', state: 'ACTIVE', origin: 'USER', decided_by_user_id: c.compte.owner.id });
+    expect((rel.evidence as Json[]).map((e) => `${e.kind}:${e.ref}`).sort()).toEqual([`AGENDA:${devis.id}`, `AGENDA:${reparation.id}`].sort());
+    expect(await sql`SELECT 1 FROM business_operation_graph_history WHERE account_id = ${c.compte.id} AND relation_kind = 'OPERATION_RELATION' AND action = 'CREATED' AND command = 'associateOperations'`).toHaveLength(1);
+    // Rejoué : aucun changement (une seule relation, aucune nouvelle ligne de journal).
+    expect(await g(c.compte, (ctx) => linkAgendaItems(ctx, { itemA: devis.id, itemB: reparation.id, declaredGrouping: true }), c.compte.owner.id)).toMatchObject({ case: 'ASSOCIATE', relationId: association.relationId });
+    expect(await sql`SELECT 1 FROM business_operation_relations WHERE account_id = ${c.compte.id}`).toHaveLength(1);
+    expect(await sql`SELECT 1 FROM business_operation_graph_history WHERE account_id = ${c.compte.id} AND relation_kind = 'OPERATION_RELATION'`).toHaveLength(1);
+    // Types différents (intervention, contrat) : plus aucun refus de fusion à opposer — les deux Opérations sont associées, inchangées.
     const f1 = await make.assetFile(c.compte, { assetId: c.maison.id });
     const f2 = await make.assetFile(c.compte, { assetId: c.maison.id });
     const opA = await operation(c.compte, c.maison.id, f1.id, 'INTERVENTION');
@@ -371,8 +387,9 @@ scenario('L82D', 'Opérations v5 — socle O-1 : principal, intégrité, provena
     const { attachAgendaItem } = await grouping();
     await g(c.compte, (ctx) => attachAgendaItem(ctx, { operationId: opA, itemId: x.id, origin: 'USER', reasonCode: 'E2E' }));
     await g(c.compte, (ctx) => attachAgendaItem(ctx, { operationId: opB, itemId: y.id, origin: 'USER', reasonCode: 'E2E' }));
-    await expect(g(c.compte, (ctx) => linkAgendaItems(ctx, { itemA: x.id, itemB: y.id }))).rejects.toThrow(/MERGE_REFUSED/);
+    expect(await g(c.compte, (ctx) => linkAgendaItems(ctx, { itemA: x.id, itemB: y.id }), c.compte.owner.id)).toMatchObject({ case: 'ASSOCIATE', operationId: opA, associatedOperationId: opB });
     expect([await role(x.id), await role(y.id)].map((r) => r.op)).toEqual([opA, opB]);
+    expect((await sql<Json[]>`SELECT type_code FROM business_operations WHERE id IN (${opA}, ${opB}) ORDER BY id`).map((o) => o.type_code)).toEqual(['INTERVENTION', 'CONTRACT']);
   });
 
   it('L82D-E08 — décision utilisateur prioritaire (§10, E2E-10) : élément dissocié jamais rattaché à nouveau par T3 / T4 ; regroupement devenu injustifié invalidé, éléments conservés (AC33)', async () => {
@@ -380,7 +397,8 @@ scenario('L82D', 'Opérations v5 — socle O-1 : principal, intégrité, provena
     const { linkAgendaItems, detachAgendaItem, attachAgendaItem } = await grouping();
     const a = await make.agendaItem(c.compte, { title: 'Dégât des eaux' });
     const b = await make.agendaItem(c.compte, { title: 'Visite expert' });
-    const { operationId } = await g(c.compte, (ctx) => linkAgendaItems(ctx, { itemA: a.id, itemB: b.id }));
+    // Règle remplacée (carte #806) : la création exige un regroupement DÉCLARÉ (`declaredGrouping`).
+    const { operationId } = await g(c.compte, (ctx) => linkAgendaItems(ctx, { itemA: a.id, itemB: b.id, declaredGrouping: true }));
     await g(c.compte, (ctx) => detachAgendaItem(ctx, { itemId: b.id, origin: 'USER', reasonCode: 'E2E' }));
     expect(await role(b.id)).toEqual({ op: null, role: null, origin: null });
     expect(await g(c.compte, (ctx) => attachAgendaItem(ctx, { operationId, itemId: b.id, origin: 'T4', reasonCode: 'E2E' }))).toMatchObject({ changed: false, skipped: 'USER_REJECTED' });
@@ -391,7 +409,7 @@ scenario('L82D', 'Opérations v5 — socle O-1 : principal, intégrité, provena
     expect(await sql`SELECT count(*)::int AS n FROM agenda_items WHERE id IN (${a.id}, ${b.id})`).toEqual([{ n: 2 }]);
     // Un nouveau geste explicite de l'utilisateur lève le refus.
     const c2 = await make.agendaItem(c.compte, { title: 'Réparation' });
-    const r = await g(c.compte, (ctx) => linkAgendaItems(ctx, { itemA: b.id, itemB: c2.id }));
+    const r = await g(c.compte, (ctx) => linkAgendaItems(ctx, { itemA: b.id, itemB: c2.id, declaredGrouping: true }));
     expect(r.case).toBe('CREATE');
   });
 

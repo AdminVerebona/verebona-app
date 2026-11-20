@@ -31,6 +31,9 @@ const MESSAGES: Record<string, { status: number; message: string }> = {
   SAME_ITEM: { status: 400, message: 'Un événement ne peut pas être relié à lui-même.' },
   MERGE_REFUSED: { status: 409, message: 'Ces deux événements ne peuvent pas être réunis automatiquement.' },
   LINKED_ELSEWHERE: { status: 409, message: 'Cet événement est déjà relié à un autre ensemble.' },
+  // Lot 116C (carte #806 §2) : regrouper ≠ associer — textes À VALIDER PAR LE PO.
+  GROUPING_NOT_DECLARED: { status: 409, message: 'Ces deux événements ne font partie d’aucune opération. Pour les réunir, demandez explicitement à les regrouper.' },
+  ASSOCIATION_REFUSED: { status: 409, message: 'Ces deux opérations n’ont pas pu être associées.' },
   // Lot 103D : règle « logement rattaché » (lib/agenda/housing-scope) — codes stables, rien n'est écrit.
   AGENDA_STRUCTURAL_LINK_INCOMPATIBLE: { status: 409, message: HOUSING_SCOPE_LABELS.refused },
   AGENDA_HOUSING_REMOVAL_HAS_DEPENDENTS: { status: 409, message: HOUSING_SCOPE_LABELS.dependents },

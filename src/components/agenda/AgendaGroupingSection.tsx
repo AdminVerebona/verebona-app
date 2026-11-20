@@ -156,6 +156,7 @@ export function AgendaGroupingSection({ itemId, onOpenDocument, onChanged, onRol
         title={picker ? L.pickerTitle[picker] : ""}
         searchLabel={picker ? L.pickerSearch[picker] : L.search}
         description={picker ? L.pickerHint[picker] : undefined}
+        note={picker === "elements" ? L.pickerGroupingNote : undefined}
         load={load}
         onClose={() => setPicker(null)}
         onPick={(c) => { const k = picker; setPicker(null); if (k) void agir(LINK_ACTION[k], c.id); }}

@@ -173,7 +173,11 @@ scenario('L86D', 'Documents / Agenda — associations : gestion bidirectionnelle
     expect((await geste(visite.id, 'relier-document', facture.id)).status).toBe(200);
     expect((await geste(autre.id, 'relier-document', devis.id)).status).toBe(200);
     expect(await liensDe(visite.id)).toEqual([{ file: devis.id, prov: ['MANUAL_DIRECT'] }, { file: facture.id, prov: ['MANUAL_DIRECT'] }]);
-    const op = (await element(visite.id)).op as number;
+    // Règle remplacée (carte #806 §2, AC08) : « le premier lien manuel crée l'ensemble de l'élément » devient
+    // « association simple : aucun ensemble n'est créé, les liens directs suffisent ».
+    expect((await element(visite.id)).op).toBeNull();
+    expect((await element(autre.id)).op).toBeNull();
+    expect(await sql`SELECT 1 FROM business_operations WHERE account_id = ${c.compte.id}`).toHaveLength(0);
 
     // Consulter : la vue du tiroir porte les documents de l'élément ; ouvrir = le document est lisible côté document.
     const v = await vue(visite.id);
@@ -187,12 +191,12 @@ scenario('L86D', 'Documents / Agenda — associations : gestion bidirectionnelle
     expect(r.body.changed).toBe(true);
     expect(r.body.view.linkedDocuments.map((d: Json) => d.id)).toEqual([facture.id]);
     expect(await liensDe(visite.id)).toEqual([{ file: facture.id, prov: ['MANUAL_DIRECT'] }]);
-    // Rien d'autre : document, élément, appartenance à l'ensemble, lien du devis avec l'autre élément.
+    // Rien d'autre : document, élément, lien du devis avec l'autre élément ; toujours aucun ensemble.
     expect(await existe('asset_files', devis.id)).toBe(true);
     expect(await existe('agenda_items', visite.id)).toBe(true);
-    expect((await membres(op)).map((m) => m.file_id)).toContain(devis.id);
     expect(await liensDe(autre.id)).toEqual([{ file: devis.id, prov: ['MANUAL_DIRECT'] }]);
-    expect(await element(visite.id)).toMatchObject({ op });
+    expect(await element(visite.id)).toMatchObject({ op: null });
+    expect(await sql`SELECT 1 FROM business_operations WHERE account_id = ${c.compte.id}`).toHaveLength(0);
     // Décision mémorisée sur le LIEN (sans Opération).
     expect(await decisionsLien(c.compte)).toContainEqual({ key: `${visite.id}:${devis.id}`, op: null, decision: 'REJECTED', active: true });
     // Côté document : synchronisé.

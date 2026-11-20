@@ -128,25 +128,31 @@ scenario('L84B', 'Opérations v5 — O-3 : Agenda et navigation (liens manuels, 
 
   // ══ AC01 ══════════════════════════════════════════════════════════════════
 
-  it('L84B-E01 — AC01 : un document lié manuellement à un élément crée ou rejoint le même regroupement (élément seul, élément regroupé, document regroupé)', async () => {
+  // Règle remplacée (carte #806 §2, AC08) : « élément seul, document seul → regroupement CRÉÉ » (lot 84B, AC01) devient
+  // « association simple : le lien direct et le tiroir restent, AUCUNE opération n'est créée ».
+  it('L84B-E01 — AC01 / #806 §2 : un document lié manuellement à un élément — élément seul : lien direct SANS regroupement créé ; élément regroupé ou document regroupé : il rejoint le regroupement existant', async () => {
     const c = await contexte();
-    // 1. Élément seul, document seul → regroupement CRÉÉ (type non qualifié, AC03), lien précis conservé.
+    // 1. Élément seul, document seul → AUCUN regroupement ; lien précis conservé, visible dans le tiroir.
     const devis = await make.assetFile(c.compte, { assetId: c.maison.id });
     const visite = await make.agendaItem(c.compte, { title: 'Visite expert', startDate: '2026-03-21', assetIds: [c.maison.id] });
     const r1 = await geste(visite.id, 'relier-document', devis.id);
     expect(r1.status).toBe(200);
-    const op1 = (await element(visite.id)).op as number;
-    expect(op1).toBeGreaterThan(0);
-    expect(await element(visite.id)).toEqual({ op: op1, role: 'RELATED', origin: 'USER' });
-    expect((await sql`SELECT type_code FROM business_operations WHERE id = ${op1}`)[0]).toEqual({ type_code: null });
-    expect(await membres(op1)).toEqual([{ file_id: devis.id, origins: ['USER'] }]);
+    expect((await element(visite.id)).op).toBeNull();
+    expect((await sql`SELECT count(*)::int AS n FROM business_operations WHERE account_id = ${c.compte.id}`)[0]).toEqual({ n: 0 });
+    expect(await sql`SELECT 1 FROM business_operation_documents WHERE account_id = ${c.compte.id}`).toHaveLength(0);
+    expect(await sql`SELECT 1 FROM business_operation_agenda_links WHERE account_id = ${c.compte.id}`).toHaveLength(0);
     expect(await liensDe(visite.id)).toEqual([{ file: devis.id, prov: ['MANUAL_DIRECT'] }]);
-    expect(r1.body.view).toMatchObject({ role: 'MEMBER', main: null });
-    // Rejoué : aucun second regroupement, rien ne change.
+    // Le tiroir : élément autonome (aucun ensemble), son document associé y figure en lien direct.
+    expect(r1.body.view).toMatchObject({ role: 'NONE', main: null, ensemble: null, linkedDocuments: [expect.objectContaining({ id: devis.id, link: 'DIRECT' })] });
+    expect(r1.body.view.referenceEvents ?? []).toEqual([]);
+    // La décision de l'utilisateur est mémorisée sur le LIEN (jamais sur une opération).
+    expect(await sql`SELECT decision FROM business_operation_match_decisions WHERE account_id = ${c.compte.id} AND active`).toEqual([{ decision: 'CONFIRMED' }]);
+    // Rejoué : toujours aucun regroupement, rien ne change.
     const avant = await empreinte(c.compte);
     expect((await geste(visite.id, 'relier-document', devis.id)).status).toBe(200);
     expect((await empreinte(c.compte)).ops).toEqual(avant.ops);
     expect((await empreinte(c.compte)).liens).toEqual(avant.liens);
+    expect((await empreinte(c.compte)).ops).toEqual([]);
 
     // 2. Élément déjà regroupé (avec principal) → le document REJOINT son regroupement et est propagé au principal.
     const constat = await make.assetFile(c.compte, { assetId: c.maison.id });
@@ -172,17 +178,20 @@ scenario('L84B', 'Opérations v5 — O-3 : Agenda et navigation (liens manuels, 
     expect(await element(courrier.id)).toEqual({ op: op2, role: 'RELATED', origin: 'USER' });
     expect(await liensDe(courrier.id)).toEqual([{ file: constat.id, prov: ['MANUAL_DIRECT'] }]);
     expect(lien.body.links).toEqual(expect.arrayContaining([expect.objectContaining({ itemId: courrier.id, direct: true, viaGroup: false })]));
-    // Aucune nouvelle Opération pour ce cas ; aucune duplication du fichier.
-    expect((await sql`SELECT count(*)::int AS n FROM business_operations WHERE account_id = ${c.compte.id}`)[0]).toEqual({ n: 2 });
+    // Aucune nouvelle Opération pour ce cas (une seule en tout : celle du constat) ; aucune duplication du fichier.
+    expect((await sql`SELECT count(*)::int AS n FROM business_operations WHERE account_id = ${c.compte.id}`)[0]).toEqual({ n: 1 });
     expect((await sql`SELECT count(*)::int AS n FROM asset_files WHERE account_id = ${c.compte.id}`)[0]).toEqual({ n: 3 });
   });
 
   // ══ AC02 ══════════════════════════════════════════════════════════════════
 
-  it('L84B-E02 — AC02 : Agenda ↔ Agenda depuis le tiroir — créer, rattacher, sans effet, fusionner ; aucun élément absorbé', async () => {
+  // Règle remplacée (carte #806 §2, AC08) : « deux regroupements différents → fusion transactionnelle » (lot 84B, AC02)
+  // devient « deux opérations existantes sont ASSOCIÉES par ce geste, jamais fusionnées ».
+  it('L84B-E02 — AC02 / #806 §2 : Agenda ↔ Agenda depuis le tiroir — regrouper (créer), rattacher, sans effet ; deux regroupements : association SANS fusion ; aucun élément absorbé', async () => {
     const c = await contexte();
     const a = await make.agendaItem(c.compte, { title: 'Devis plombier', startDate: '2026-03-15' });
     const b = await make.agendaItem(c.compte, { title: 'Visite expert', startDate: '2026-03-21' });
+    // Le geste du tiroir déclare le regroupement : l'opération est créée.
     const cr = await geste(a.id, 'relier-element', b.id);
     expect(cr.status).toBe(200);
     const op = (await element(a.id)).op as number;
@@ -193,16 +202,21 @@ scenario('L84B', 'Opérations v5 — O-3 : Agenda et navigation (liens manuels, 
     const avant = await empreinte(c.compte);
     expect((await geste(a.id, 'relier-element', d.id)).body.changed).toBe(false);
     expect((await empreinte(c.compte)).items).toEqual(avant.items);
-    // Deux regroupements différents → fusion transactionnelle, tous les éléments restent.
+    // Deux regroupements différents → ASSOCIÉS (relation N↔N de l'utilisateur) ; aucune fusion, chaque élément reste dans le sien.
     const x = await make.agendaItem(c.compte, { title: 'Constat amiable', startDate: '2026-03-12' });
     const y = await make.agendaItem(c.compte, { title: 'Dégât des eaux', startDate: '2026-03-12' });
     await geste(x.id, 'relier-element', y.id);
     const autre = (await element(x.id)).op as number;
     expect(autre).not.toBe(op);
+    const avantAssociation = await empreinte(c.compte);
     expect((await geste(b.id, 'relier-element', y.id)).status).toBe(200);
-    const canon = Math.min(op, autre);
-    for (const it2 of [a, b, d, x, y]) expect((await element(it2.id)).op, String(it2.id)).toBe(canon);
-    expect((await sql`SELECT merged_into_operation_id::int AS m FROM business_operations WHERE id = ${Math.max(op, autre)}`)[0]).toEqual({ m: canon });
+    for (const it2 of [a, b, d]) expect((await element(it2.id)).op, String(it2.id)).toBe(op);
+    for (const it2 of [x, y]) expect((await element(it2.id)).op, String(it2.id)).toBe(autre);
+    expect(await sql`SELECT id::int AS id FROM business_operations WHERE account_id = ${c.compte.id} AND (merged_into_operation_id IS NOT NULL OR invalidated_at IS NOT NULL)`).toEqual([]);
+    expect((await empreinte(c.compte)).items).toEqual(avantAssociation.items);
+    expect(await sql`
+      SELECT LEAST(from_operation_id, to_operation_id)::int AS a, GREATEST(from_operation_id, to_operation_id)::int AS b, nature, state, origin
+        FROM business_operation_relations WHERE account_id = ${c.compte.id}`).toEqual([{ a: Math.min(op, autre), b: Math.max(op, autre), nature: 'ASSOCIATED', state: 'ACTIVE', origin: 'USER' }]);
     expect((await sql`SELECT count(*)::int AS n FROM agenda_items WHERE account_id = ${c.compte.id}`)[0]).toEqual({ n: 5 });
     // Un élément ne se relie pas à lui-même.
     expect((await geste(a.id, 'relier-element', a.id)).status).toBe(400);

@@ -40,12 +40,15 @@ import type { HoldListResult, IndicatorsReport, OperationListResult } from '@/se
 import { HoldsTable, IndicatorsView, OperationsTable, ReadOnlyNotice, t3QueueHref } from './_components/views';
 import { ReconsolidateAccountButton } from './_components/ReconsolidateAccountButton';
 import { TcoDiagnosticView, type TcoDiagnosticResponse } from './_components/TcoDiagnostic';
+import { GraphDiagnosticView, type GraphDiagnosticResponse } from './_components/GraphDiagnostic';
 
 const TABS = [
   { key: 'liste', label: 'Opérations' },
   { key: 'attente', label: 'En attente T3' },
   { key: 'indicateurs', label: 'Indicateurs' },
   { key: 'tco', label: 'Coût de possession' },
+  // Lot 116C (#806 §4, AC73) : diagnostic du graphe des opérations d'un compte.
+  { key: 'graphe', label: 'Graphe' },
 ] as const;
 type TabKey = (typeof TABS)[number]['key'];
 
@@ -113,10 +116,12 @@ function Operations() {
   const indicatorsUrl = tab === 'indicateurs' ? `/api/admin/operations/indicators?${keep(['accountId', 'from', 'to'])}` : null;
   const tcoUrl = tab === 'tco' && accountId && assetId ? `/api/admin/operations/tco?${keep(['accountId', 'assetId'])}` : null;
   const tco = useAdminJson<TcoDiagnosticResponse>(tcoUrl);
+  const graphUrl = tab === 'graphe' && accountId ? `/api/admin/operations/graph?${keep(['accountId'])}` : null;
+  const graph = useAdminJson<GraphDiagnosticResponse>(graphUrl);
   const list = useAdminJson<OperationListResult>(listUrl);
   const holds = useAdminJson<HoldListResult>(holdsUrl);
   const indicators = useAdminJson<IndicatorsReport>(indicatorsUrl);
-  const current = tab === 'liste' ? list : tab === 'attente' ? holds : tab === 'tco' ? tco : indicators;
+  const current = tab === 'liste' ? list : tab === 'attente' ? holds : tab === 'tco' ? tco : tab === 'graphe' ? graph : indicators;
 
   return (
     <div className="space-y-6">
@@ -269,6 +274,14 @@ function Operations() {
             : tco.error ? <EcranEnErreur titre="Diagnostic du coût de possession impossible" message={tco.error} onRetry={tco.reload} />
               : !tco.data ? <Spinner />
                 : <div className={tco.loading ? 'opacity-60' : ''}><TcoDiagnosticView data={tco.data} /></div>}
+        </TabsContent>
+
+        <TabsContent value="graphe" className="pt-4 space-y-3">
+          <p className="text-xs text-muted-foreground">Compte requis. Liens orphelins, liens entre comptes, refus ou scission de l’utilisateur contournés, provenance, double comptage. Lecture seule : aucune réparation.</p>
+          {!accountId ? <p className="text-sm text-muted-foreground">Renseignez le compte.</p>
+            : graph.error ? <EcranEnErreur titre="Diagnostic du graphe impossible" message={graph.error} onRetry={graph.reload} />
+              : !graph.data ? <Spinner />
+                : <div className={graph.loading ? 'opacity-60' : ''}><GraphDiagnosticView data={graph.data} /></div>}
         </TabsContent>
       </Tabs>
     </div>

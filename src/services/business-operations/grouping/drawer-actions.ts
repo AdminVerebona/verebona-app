@@ -58,7 +58,10 @@ export async function applyAgendaDrawerAction(
     const reasonCode = R(action);
     switch (action) {
       case 'relier-element': {
-        const r = await linkAgendaItems(ctx, { itemA: itemId, itemB: target(), reasonCode });
+        // Lot 116C (#806 §2, AC08) : ce geste du tiroir EST la déclaration d'un regroupement — son écran le dit (« Les
+        // deux événements seront regroupés dans une même opération », `pickerGroupingNote`) et son résultat est
+        // l'« ensemble » du tiroir. Deux événements de deux opérations différentes : opérations associées, jamais fusionnées.
+        const r = await linkAgendaItems(ctx, { itemA: itemId, itemB: target(), reasonCode, declaredGrouping: true });
         return { action, changed: r.case !== 'NOOP', operationId: r.operationId, detail: r.case };
       }
       case 'retirer-element': {
@@ -73,6 +76,7 @@ export async function applyAgendaDrawerAction(
         return { action, changed: r.changed, operationId: op };
       }
       case 'relier-document': {
+        // Lot 116C (#806 §2, AC08) : association simple — `operationId` nul quand aucune opération n'est rejointe (lien direct seul).
         const r = await linkDocumentToAgendaItem(ctx, { itemId, fileId: target(), reasonCode });
         return { action, changed: true, operationId: r.operationId, detail: r.case };
       }

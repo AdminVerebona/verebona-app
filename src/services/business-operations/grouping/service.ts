@@ -27,7 +27,8 @@
  *   attachRoom / detachRoom               Pièces (table `substructures`, V-Q6) ;
  *   attachEquipment / detachEquipment     équipements existants (V-Q8) ;
  *   attachAsset / detachAsset             biens ;
- *   linkAgendaItems                       Agenda ↔ Agenda, quatre cas (§8.3) ;
+ *   linkAgendaItems                       Agenda ↔ Agenda, quatre cas (§8.3 ; lot 116C : création sur regroupement
+ *                                         DÉCLARÉ seulement, deux Opérations ASSOCIÉES et jamais fusionnées) ;
  *   mergeOperations                       fusion existante du dépôt ;
  *   recomputePrincipal                    un porteur par fait + propagation (P4, §11.9) ;
  *   recomputeOperation                    membres, porteur, existence (§8.4) ;
@@ -40,7 +41,8 @@
  * l'utilisateur a retiré (décision PRINCIPAL, `principalWithdrawnByUser`).
  *
  * Lot 84B (O-3, interface) : `linkDocumentToAgendaItem` (lien manuel
- * Document ↔ Agenda qui crée ou rejoint l'Opération, §8.1, AC01) et
+ * Document ↔ Agenda qui rejoint l'Opération existante — lot 116C, #806 §2 : il
+ * n'en CRÉE plus, une association n'est pas un regroupement — §8.1, AC01) et
  * `detachDocumentFromAgendaGroup` (document retiré de l'ensemble depuis le
  * tiroir) — appelés par la route `/api/agenda/[id]/liens`. Aucun lien intercomptes (§28) : chaque objet est relu dans
  * le compte, sous le verrou 39101 du compte.
@@ -74,6 +76,8 @@ import { drizzleRunner, intArray, lockGroupingAccount, type GroupingRunner } fro
 type GroupingErrorCode =
   | 'ITEM_NOT_FOUND' | 'OPERATION_NOT_FOUND' | 'OPERATION_INACTIVE' | 'CROSS_ACCOUNT' | 'LINKED_ELSEWHERE'
   | 'SESSION_REQUIRED' | 'SAME_ITEM' | 'MERGE_REFUSED' | 'DOCUMENT_NOT_FOUND' | 'NOT_GROUPED'
+  /** Lot 116C (#806 §2) : création d'opération demandée sans regroupement déclaré ; association de deux opérations refusée par la façade. */
+  | 'GROUPING_NOT_DECLARED' | 'ASSOCIATION_REFUSED'
   /** Lot 86D : retrait automatique d'une provenance MANUAL_DIRECT demandé (refusé). */
   | 'MANUAL_LINK_PROTECTED'
   /** Lot 103D : pièce / équipement dont le bien porteur n'est pas un logement rattaché (refus sans écriture). */
@@ -461,20 +465,37 @@ async function removeFileFromOperationItems(ctx: GroupingContext, operationId: n
 // ── Lien manuel Document ↔ Agenda (§8.1, AC01 — lot 84B) ────────────────
 
 interface LinkDocumentResult {
-  /** CREATE : Opération créée ; JOIN_ITEM : l'élément avait la sienne ; JOIN_DOCUMENT : celle du document est rejointe. */
-  case: 'CREATE' | 'JOIN_ITEM' | 'JOIN_DOCUMENT';
-  operationId: number;
+  /**
+   * LINK_ONLY     association simple : lien direct seul, AUCUNE opération créée ni rejointe (lot 116C, #806 §2) ;
+   * JOIN_ITEM     l'élément avait son opération : le document la rejoint ;
+   * JOIN_DOCUMENT le document avait UNE opération active : l'élément la rejoint.
+   */
+  case: 'LINK_ONLY' | 'JOIN_ITEM' | 'JOIN_DOCUMENT';
+  /** Opération rejointe ; `null` : association simple (aucune appartenance métier démontrée). */
+  operationId: number | null;
   /** Le lien direct (MANUAL_DIRECT) a été créé ou complété. */
   linked: boolean;
 }
 
 /**
  * Lien MANUEL Document ↔ Agenda (geste utilisateur, §8.1, AC01) : le lien
- * direct est conservé (MANUAL_DIRECT) ET le document rejoint l'Opération de
- * l'élément — à défaut l'élément rejoint l'Opération UNIQUE active du
- * document, sinon une Opération est créée (type non qualifié : T3 qualifie,
- * AC03 ; aucun choix entre plusieurs Opérations du document). Le document est
- * ensuite propagé vers le principal (§7.1). Décisions mémorisées (CONFIRMED).
+ * direct est TOUJOURS conservé (MANUAL_DIRECT) et mémorisé.
+ *
+ * Lot 116C (carte #806 §2, CDC « Opérations / Agenda V2.0 » AC08 ; RÈGLE
+ * REMPLACÉE : « sinon une Opération est créée », lot 84B) — ASSOCIER n'est pas
+ * REGROUPER. Relier un document à un événement dit que ce document concerne
+ * cet événement ; cela ne dit pas qu'ils forment une opération :
+ *   · l'événement appartient déjà à une opération : le document la rejoint
+ *     (JOIN_ITEM — appartenance existante, rien n'est créé) ;
+ *   · sinon, le document appartient à UNE opération active : l'événement la
+ *     rejoint (JOIN_DOCUMENT — même raison ; jamais de choix entre plusieurs
+ *     opérations du document) ;
+ *   · sinon : AUCUNE opération n'est créée (LINK_ONLY). Le lien direct et le
+ *     tiroir de l'événement (« Documents associés ») suffisent ; aucune
+ *     appartenance métier n'est démontrée par ce seul lien. Une opération ne
+ *     naît que d'une preuve métier (consolidation T3 du document) ou d'un
+ *     regroupement DÉCLARÉ par l'utilisateur (`linkAgendaItems`).
+ * Aucune fusion n'est jamais faite ici.
  */
 export async function linkDocumentToAgendaItem(ctx: GroupingContext, p: { itemId: number; fileId: number; reasonCode?: string }): Promise<LinkDocumentResult> {
   const { repo } = requireSession(ctx, 'linkDocumentToAgendaItem');
@@ -502,15 +523,14 @@ export async function linkDocumentToAgendaItem(ctx: GroupingContext, p: { itemId
       await attachAgendaItem(ctx, { operationId, itemId: p.itemId, origin: 'USER', reasonCode: reason });
       res = { case: 'JOIN_DOCUMENT', operationId, linked };
     } else {
-      const created = await repo.create({ type: null, status: 'ENVISAGED', source, reasonCode: reason });
-      await attachAgendaItem(ctx, { operationId: created.id, itemId: p.itemId, origin: 'USER', reasonCode: reason });
-      res = { case: 'CREATE', operationId: created.id, linked };
+      // Lot 116C (#806 §2, AC08) : association simple — aucune opération artificielle.
+      res = { case: 'LINK_ONLY', operationId: null, linked };
     }
   }
-  await attachDocument(ctx, { operationId: res.operationId, fileId: p.fileId, reasonCode: reason });
+  if (res.operationId !== null) await attachDocument(ctx, { operationId: res.operationId, fileId: p.fileId, reasonCode: reason });
   // Lot 86D : rattachement explicite — mémorisé sur le lien ; lève un détachement antérieur (§5).
   await recordLinkDecision(ctx.runner, { accountId: ctx.accountId, itemId: p.itemId, fileId: p.fileId, decision: 'CONFIRMED', reasonCode: reason });
-  if (linked) notify(ctx, res.operationId, reason);
+  if (linked && res.operationId !== null) notify(ctx, res.operationId, reason);
   return res;
 }
 
@@ -820,18 +840,50 @@ export async function detachAsset(ctx: GroupingContext, p: { operationId: number
 // ── Agenda ↔ Agenda (§8.2, §8.3) ───────────────────────────────────────────
 
 interface LinkAgendaResult {
-  case: 'CREATE' | 'ATTACH' | 'NOOP' | 'MERGE';
+  /**
+   * CREATE     regroupement DÉCLARÉ de deux événements autonomes : une opération est créée ;
+   * ATTACH     l'un avait son opération : l'autre la rejoint ;
+   * NOOP       déjà dans la même opération ;
+   * ASSOCIATE  chacun a SA propre opération : les deux opérations sont ASSOCIÉES (relation N↔N persistante,
+   *            provenance utilisateur) — jamais fusionnées (lot 116C, #806 §2).
+   */
+  case: 'CREATE' | 'ATTACH' | 'NOOP' | 'ASSOCIATE';
+  /** Opération commune (CREATE, ATTACH, NOOP) ; pour ASSOCIATE : celle du premier événement. */
   operationId: number;
+  /** ASSOCIATE : l'autre opération et la relation posée entre les deux. */
+  associatedOperationId?: number;
+  relationId?: number;
 }
 
 /**
- * Deux éléments associés par l'utilisateur rejoignent la même Opération : la
- * crée (type non qualifié : T3 qualifie, AC03), y rattache le second, ne fait
- * rien, ou FUSIONNE les deux Opérations par la fusion existante. Aucun graphe
- * pair-à-pair : le regroupement est l'Opération. Les éléments restent
- * distincts (aucune absorption) ; le principal reste la décision de T4.
+ * Deux éléments reliés par l'utilisateur (§8.2, §8.3). Les éléments restent
+ * distincts (aucune absorption) ; le fait porté reste la décision de T4.
+ *
+ * Lot 116C (carte #806 §2, CDC « Opérations / Agenda V2.0 » AC08 ; RÈGLES
+ * REMPLACÉES du lot 82D : « crée une Opération » pour tout lien, et « FUSIONNE
+ * les deux Opérations ») — REGROUPER n'est pas ASSOCIER :
+ *   · deux événements autonomes : une opération n'est créée que si
+ *     l'utilisateur DÉCLARE un regroupement réel (`declaredGrouping: true` —
+ *     « ces deux événements font partie d'un même ensemble »). Sans cette
+ *     déclaration : refus `GROUPING_NOT_DECLARED`, rien n'est écrit (une
+ *     simple association ne fabrique pas d'opération) ;
+ *   · l'un a son opération : l'autre la rejoint (rien n'est créé) ;
+ *   · chacun a SA propre opération : les deux opérations ne FUSIONNENT JAMAIS
+ *     par ce geste. Elles sont ASSOCIÉES par la relation N↔N persistante du
+ *     graphe (`business_operation_relations`, nature ASSOCIATED, origine
+ *     utilisateur, preuves : les deux événements reliés), par le corps de la
+ *     commande `associateOperations` de la façade — aucun second mécanisme.
+ *     Une fusion reste une décision explicite et distincte de l'utilisateur
+ *     (commande `mergeOperations` de la façade).
  */
-export async function linkAgendaItems(ctx: GroupingContext, p: { itemA: number; itemB: number; reasonCode?: string }): Promise<LinkAgendaResult> {
+export async function linkAgendaItems(
+  ctx: GroupingContext,
+  p: {
+    itemA: number; itemB: number; reasonCode?: string;
+    /** L'utilisateur DÉCLARE que ces deux événements forment un même ensemble : seule condition d'une création d'opération. */
+    declaredGrouping?: boolean;
+  },
+): Promise<LinkAgendaResult> {
   const { repo } = requireSession(ctx, 'linkAgendaItems');
   const reason = p.reasonCode ?? 'USER_AGENDA_LINK';
   if (p.itemA === p.itemB) throw new GroupingError('SAME_ITEM', 'Un élément ne se relie pas à lui-même.');
@@ -844,6 +896,9 @@ export async function linkAgendaItems(ctx: GroupingContext, p: { itemA: number; 
   let operationId: number;
   switch (plan.kind) {
     case 'CREATE': {
+      if (p.declaredGrouping !== true) {
+        throw new GroupingError('GROUPING_NOT_DECLARED', 'Une simple association entre deux événements autonomes ne crée pas d’opération : le regroupement doit être déclaré.');
+      }
       const created = await repo.create({ type: null, status: 'ENVISAGED', source: source(a.id), reasonCode: reason });
       operationId = created.id;
       await repo.addSource(operationId, source(b.id), reason);
@@ -859,10 +914,22 @@ export async function linkAgendaItems(ctx: GroupingContext, p: { itemA: number; 
     case 'NOOP':
       operationId = plan.operationId;
       break;
-    case 'MERGE':
-      await mergeOperations(ctx, { absorbedId: plan.absorbedId, canonicalId: plan.canonicalId, reasonCode: reason });
-      operationId = plan.canonicalId;
-      break;
+    case 'ASSOCIATE': {
+      // Deux opérations existantes : JAMAIS de fusion par un lien. Relation N↔N du graphe, dans CETTE transaction.
+      if (ctx.actorUserId === null) throw new GroupingError('SESSION_REQUIRED', 'Associer deux opérations exige l’auteur du geste.');
+      const { associateOperationsInTransaction } = await import('../operation-write.facade');
+      const r = await associateOperationsInTransaction(
+        { accountId: ctx.accountId, actor: { kind: 'USER', userId: ctx.actorUserId, channel: 'UI' }, ...(ctx.correlationId ? { correlationId: ctx.correlationId } : {}) },
+        ctx,
+        {
+          fromOperationId: plan.operationAId, toOperationId: plan.operationBId, nature: 'ASSOCIATED', reasonCode: reason,
+          evidence: [{ kind: 'AGENDA', ref: String(a.id) }, { kind: 'AGENDA', ref: String(b.id) }],
+        },
+      );
+      if (r.status !== 'APPLIED' || !r.data) throw new GroupingError('ASSOCIATION_REFUSED', `Association des opérations ${plan.operationAId} et ${plan.operationBId} refusée (${r.code}).`);
+      // Aucun événement ne change d'opération, aucune décision de rattachement n'est posée : seule la relation existe.
+      return { case: 'ASSOCIATE', operationId: plan.operationAId, associatedOperationId: plan.operationBId, relationId: r.data.relationId };
+    }
   }
   for (const id of [a.id, b.id]) {
     await recordGroupingDecision(ctx.runner, { accountId: ctx.accountId, operationId, subject: 'AGENDA', entityId: id, decision: 'CONFIRMED', reasonCode: reason });
@@ -877,10 +944,14 @@ export async function linkAgendaItems(ctx: GroupingContext, p: { itemA: number; 
  * sa part regroupement à `grouping/merge.ts`. Types incompatibles : refus
  * explicite (la qualification relève de T3, V-Q5).
  */
-export async function mergeOperations(ctx: GroupingContext, p: { absorbedId: number; canonicalId: number; reasonCode: string }): Promise<boolean> {
+export async function mergeOperations(
+  ctx: GroupingContext,
+  /** `userDecision` (lot 116C, #806 §4) : fusion décidée EXPLICITEMENT par l'utilisateur — seule voie qui réunit deux opérations qu'il a scindées. */
+  p: { absorbedId: number; canonicalId: number; reasonCode: string; userDecision?: boolean },
+): Promise<boolean> {
   const { repo } = requireSession(ctx, 'mergeOperations');
   try {
-    return await repo.mergeOperations(p.absorbedId, p.canonicalId, p.reasonCode);
+    return await repo.mergeOperations(p.absorbedId, p.canonicalId, p.reasonCode, p.userDecision === true ? { userDecision: true } : {});
   } catch (e) {
     if ((e as { code?: string }).code === 'MERGE_TYPE_MISMATCH') throw new GroupingError('MERGE_REFUSED', (e as Error).message);
     throw e;

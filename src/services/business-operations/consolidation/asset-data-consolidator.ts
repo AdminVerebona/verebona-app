@@ -64,7 +64,7 @@ import {
 } from './asset-data';
 import { emptyCardNeeds, type OperationCardNeeds } from './card-needs';
 import {
-  Changes, loadAssetDataRow, loadMatchableOperations, reconsolidateOperation, syncCards, typeInput, type ConsolidationOptions,
+  Changes, loadAssetDataRow, loadMatchableOperations, loadNonMergeable, reconsolidateOperation, syncCards, typeInput, type ConsolidationOptions,
 } from './consolidator';
 import { decideCandidate, type T3Outcome } from './matching';
 
@@ -221,6 +221,9 @@ async function reconcileAssetDataInSession(
     const d = decideCandidate(identity, {
       operations: ops, confirmed: new Set(), rejected: new Set(),
       assetStatus: new Map([[assetId, perimeterStatus(nature, row.status)]]),
+      // Lot 116C (#806 §4, AC46) : la porte unique des fusions automatiques est lue ICI AUSSI — deux opérations que
+      // l'utilisateur a scindées (ou déclarées distinctes) ne sont jamais réunies par une donnée saisie du bien.
+      nonMergeable: await loadNonMergeable(tx, accountId, ops.map((o) => o.id)),
     });
     const source = {
       kind: 'ASSET_DATA' as const, entityKey: assetId, version, role: null,
