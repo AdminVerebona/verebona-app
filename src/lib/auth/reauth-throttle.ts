@@ -19,11 +19,30 @@
  *     titulaire par ce chemin ;
  *   · réussite : le compteur de l'utilisateur repart à zéro ;
  *   · pause déclenchée : journal AUTH_REAUTH_THROTTLED.
+ *
+ * CARTE #823 (incident du 20/11/2026) — la trace était lancée sans être
+ * attendue (`void logUserActivity`) et toute erreur d'insertion était
+ * absorbée : la réponse pouvait précéder la trace (écriture tardive), ou la
+ * trace ne jamais exister (perte silencieuse). Désormais :
+ *   · les clés utilisateur et IP sont comptées dans UNE transaction ; quand la
+ *     tentative pose la pause, la trace (action, durée CALCULÉE) est écrite
+ *     dans cette même transaction : pause et trace sont validées ensemble,
+ *     avant la réponse, une seule fois par entrée en pause ;
+ *   · une tentative ordinaire, ou refusée par une pause en cours, n'écrit et
+ *     n'attend aucune trace ;
+ *   · trace impossible : l'action reste REFUSÉE et la pause reste appliquée
+ *     (tenue en mémoire par l'instance — aucun verrou n'est validé en base sans
+ *     sa trace) ; la dégradation est signalée dans les journaux
+ *     (`security.reauth_throttle_trace_degraded`) et dans `/api/health`
+ *     (`authRateLimiter`). La protection l'emporte sur la journalisation ;
+ *   · LIMITE : en repli mémoire (PostgreSQL totalement indisponible), aucune
+ *     trace durable ne peut être garantie dans cette base ; seul le signalement
+ *     ci-dessus en témoigne, et la pause n'est connue que de l'instance.
  */
 import { NextResponse, type NextRequest } from 'next/server';
 import { AUTH_LIMITS, authRateLimitEnabled, getAuthRateLimiter, limitKey, rateLimitBody } from './auth-rate-limit';
 import { getClientIp } from './client-ip';
-import { logUserActivity } from '@/lib/audit-logger';
+import { insertUserActivity } from '@/lib/audit-logger';
 
 type ReauthAction = 'change_password' | 'account_deletion' | 'reauth';
 
@@ -44,18 +63,36 @@ export async function reauthBlockedResponse(request: NextRequest, userId: number
   });
 }
 
-/** Mot de passe actuel faux : compté (utilisateur et IP). */
+/**
+ * Mot de passe actuel faux : compté (utilisateur et IP) dans une transaction.
+ * Pause posée par cette tentative : sa trace AUTH_REAUTH_THROTTLED est validée
+ * avec elle (carte #823). Ne lève pas : l'appelant refuse l'action dans tous
+ * les cas (401), que la trace ait pu être écrite ou non.
+ */
 export async function recordReauthFailure(request: NextRequest, userId: number, action: ReauthAction): Promise<void> {
   if (!authRateLimitEnabled()) return;
-  const d = await getAuthRateLimiter().recordFailure(entries(userId, getClientIp(request.headers)));
-  if (d.lockedNow) {
-    void logUserActivity({
+  const d = await getAuthRateLimiter().recordFailureWithLockTrace(
+    entries(userId, getClientIp(request.headers)),
+    (tx, lock) => insertUserActivity({
       activityType: 'AUTH_REAUTH_THROTTLED',
       userId,
       userEmail: '',
-      details: { action, retryAfterSeconds: d.retryAfterSeconds },
+      details: { action, retryAfterSeconds: lock.retryAfterSeconds },
       request,
-    });
+    }, tx),
+  );
+  if (d.lockedNow && d.lockTrace !== 'committed') {
+    // Pause appliquée (mémoire de l'instance) SANS trace durable en base : signalement explicite.
+    // Aucune donnée sensible : ni mot de passe, ni adresse e-mail, ni adresse IP.
+    console.error(JSON.stringify({
+      event: 'security.reauth_throttle_trace_degraded',
+      userId,
+      action,
+      retryAfterSeconds: d.retryAfterSeconds,
+      protection: 'pause tenue en mémoire par cette instance',
+      trace: 'AUTH_REAUTH_THROTTLED non enregistrée en base',
+      cause: d.lockTraceError,
+    }));
   }
 }
 

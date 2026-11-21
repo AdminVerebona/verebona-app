@@ -41,9 +41,35 @@
  * les journaux (une fois par minute) et dans `/api/health`
  * (`authRateLimiter`). La connexion elle-même a besoin de la base : le repli
  * ne fait que garder un contrôle pendant une coupure brève.
+ *
+ * ══════════════════════════════════════════════════════════════════════════
+ * CARTE #823 — PAUSE ET TRACE VALIDÉES ENSEMBLE (réauthentification)
+ *
+ * `recordFailureWithLockTrace` compte un échec sur TOUTES les clés (utilisateur
+ * et IP) dans UNE transaction PostgreSQL. Si la tentative pose un verrou, la
+ * trace d'audit fournie par l'appelant est écrite dans la MÊME transaction :
+ * la pause et sa trace sont validées par le même COMMIT, ou aucune des deux.
+ *   · une tentative ordinaire, ou faite pendant une pause, n'écrit aucune trace
+ *     et n'attend donc aucune insertion d'audit ;
+ *   · deux tentatives simultanées sont sérialisées par clé (verrou consultatif
+ *     transactionnel puis `FOR UPDATE`) : une seule pose le verrou, une seule
+ *     trace par entrée en pause, même si les seuils utilisateur et IP sont
+ *     franchis par la même tentative ;
+ *   · trace impossible (insertion refusée, validation en échec) : RIEN n'est
+ *     validé en base (jamais de verrou PostgreSQL sans sa trace) ; la pause est
+ *     alors TENUE EN MÉMOIRE par l'instance (`heldLocks`, lue par `check`) et
+ *     la dégradation est rendue à l'appelant, qui la signale. La protection
+ *     l'emporte toujours sur la journalisation ;
+ *   · base totalement indisponible : repli mémoire comme ci-dessus. AUCUNE
+ *     trace durable ne peut alors être garantie dans cette base, et la pause
+ *     n'est connue que de l'instance qui l'a posée.
+ * Les autres méthodes (`check` hors verrou tenu, `recordFailure`, `consume`,
+ * `reset`) et donc les autres limiteurs (connexion, MFA, activation, parcours
+ * d'e-mail, OAuth) ne passent pas par ce chemin : comportement inchangé.
  * ══════════════════════════════════════════════════════════════════════════
  */
 import { createHmac } from 'node:crypto';
+import type { Database } from '@/db';
 
 const MIN = 60_000;
 const HOUR = 60 * MIN;
@@ -164,6 +190,44 @@ export interface LimitDecision {
   lockedNow: boolean;
 }
 
+/**
+ * Carte #823 — transaction ouverte par le magasin partagé : l'appelant y écrit
+ * ce qui doit être validé AVEC les compteurs (trace d'audit).
+ */
+export type AuthLimitTx = Pick<Database, 'insert' | 'execute'>;
+
+/**
+ * Carte #823 — où une mise à jour groupée a été appliquée :
+ *   · `shared` : validée dans la base partagée, `beforeCommit` compris ;
+ *   · `memory` : la base partagée n'a RIEN validé (indisponible, écriture ou
+ *     `beforeCommit` en échec) ; appliquée à la mémoire de l'instance, sans
+ *     exécuter `beforeCommit`.
+ */
+export type LimitCommit = 'shared' | 'memory';
+
+/**
+ * Carte #823 — sort de la trace d'un verrou :
+ *   · `none` : aucun verrou posé par cette tentative, aucune trace à écrire ;
+ *   · `committed` : verrou et trace validés par la même transaction ;
+ *   · `not_durable` : verrou tenu en mémoire par l'instance, AUCUNE trace
+ *     durable en base (à signaler par l'appelant).
+ */
+export type LockTraceOutcome = 'none' | 'committed' | 'not_durable';
+
+export interface TracedLimitDecision extends LimitDecision {
+  lockTrace: LockTraceOutcome;
+  /** Cause de la dégradation (message technique tronqué, sans donnée d'entrée) ; `null` sinon. */
+  lockTraceError: string | null;
+}
+
+/** Contexte remis à l'écriture de la trace, calculé DANS la transaction. */
+export interface LockTraceContext {
+  /** Durée de la pause posée (la plus longue si plusieurs clés se verrouillent). */
+  retryAfterSeconds: number;
+  /** Clé qui porte cette pause (diagnostic interne). */
+  blockedKey: string;
+}
+
 // ── Règles pures ────────────────────────────────────────────────────────────
 
 /** Verrou actif ? Rend la durée restante (ms), 0 sinon. */
@@ -213,6 +277,18 @@ export interface AuthLimitStore {
   update(key: string, fn: (rec: LimitRecord | null) => LimitRecord): Promise<LimitRecord>;
   delete(key: string): Promise<void>;
   purge(now: number): Promise<number>;
+  /**
+   * Carte #823 (facultatif) — lecture-modification-écriture ATOMIQUE de
+   * PLUSIEURS clés. `fn` reçoit l'état courant des clés (lignes verrouillées)
+   * et rend les SEULES clés à écrire ; `beforeCommit` s'exécute ensuite dans
+   * la même transaction : s'il lève, rien n'est validé dans la base partagée.
+   * `fn` peut être appelée deux fois (base partagée, puis mémoire en repli).
+   */
+  updateMany?(
+    keys: string[],
+    fn: (recs: Map<string, LimitRecord>) => Map<string, LimitRecord>,
+    beforeCommit?: (tx: AuthLimitTx) => Promise<void>,
+  ): Promise<LimitCommit>;
 }
 
 export class MemoryAuthLimitStore implements AuthLimitStore {
@@ -230,6 +306,14 @@ export class MemoryAuthLimitStore implements AuthLimitStore {
     return next;
   }
   async delete(key: string) { this.rows.delete(key); }
+  /** Carte #823 : aucune base, donc aucune transaction — `beforeCommit` n'est jamais exécuté ici. */
+  async updateMany(keys: string[], fn: (recs: Map<string, LimitRecord>) => Map<string, LimitRecord>): Promise<LimitCommit> {
+    const cur = new Map<string, LimitRecord>();
+    for (const k of keys) { const r = this.rows.get(k); if (r) cur.set(k, { ...r }); }
+    for (const [k, r] of fn(cur)) this.rows.set(k, r);
+    if (this.rows.size > 50_000) void this.purge(Date.now());
+    return 'memory';
+  }
   async purge(now: number) {
     let n = 0;
     for (const [k, r] of this.rows) {
@@ -286,6 +370,50 @@ export class PgAuthLimitStore implements AuthLimitStore {
       return next;
     }) as Promise<LimitRecord>;
   }
+  /**
+   * Carte #823 — toutes les clés dans UNE transaction ; `beforeCommit` (trace
+   * d'audit) y est exécuté APRÈS les écritures et AVANT la validation : une
+   * erreur, où qu'elle survienne, annule tout.
+   *
+   * Sérialisation : verrou consultatif transactionnel par clé, pris dans
+   * l'ordre trié (aucun interblocage entre deux tentatives qui partagent une
+   * clé), puis `FOR UPDATE`. Le verrou consultatif couvre aussi la clé qui
+   * n'a pas encore de ligne — `FOR UPDATE` seul ne verrouille rien dans ce
+   * cas, et deux premières tentatives simultanées n'en comptaient qu'une.
+   * Libéré automatiquement au COMMIT / ROLLBACK.
+   */
+  async updateMany(
+    keys: string[],
+    fn: (recs: Map<string, LimitRecord>) => Map<string, LimitRecord>,
+    beforeCommit?: (tx: AuthLimitTx) => Promise<void>,
+  ): Promise<LimitCommit> {
+    const { db } = await import('@/db');
+    const { sql } = await import('drizzle-orm');
+    const sorted = [...new Set(keys)].sort();
+    await db.transaction(async (tx) => {
+      await tx.execute(sql`SET LOCAL statement_timeout = '3s'`);
+      const recs = new Map<string, LimitRecord>();
+      for (const key of sorted) {
+        await tx.execute(sql`SELECT pg_advisory_xact_lock(hashtextextended(${key}, 823))`);
+        const rows = (await tx.execute(sql`
+          SELECT bucket_key, attempts, window_started_at, locked_until, lock_level, last_locked_at, updated_at
+            FROM auth_rate_limits WHERE bucket_key = ${key} FOR UPDATE`)) as unknown as Row[];
+        if (rows[0]) recs.set(key, toRecord(rows[0]));
+      }
+      for (const [key, next] of fn(recs)) {
+        await tx.execute(sql`
+          INSERT INTO auth_rate_limits (bucket_key, attempts, window_started_at, locked_until, lock_level, last_locked_at, updated_at)
+          VALUES (${key}, ${next.attempts}, ${iso(next.windowStartedAt)}, ${iso(next.lockedUntil)}, ${next.lockLevel},
+                  ${iso(next.lastLockedAt)}, ${iso(next.updatedAt)})
+          ON CONFLICT (bucket_key) DO UPDATE SET
+            attempts = EXCLUDED.attempts, window_started_at = EXCLUDED.window_started_at,
+            locked_until = EXCLUDED.locked_until, lock_level = EXCLUDED.lock_level,
+            last_locked_at = EXCLUDED.last_locked_at, updated_at = EXCLUDED.updated_at`);
+      }
+      if (beforeCommit) await beforeCommit(tx);
+    });
+    return 'shared';
+  }
   async delete(key: string) {
     const sql = await this.sql();
     await sql`DELETE FROM auth_rate_limits WHERE bucket_key = ${key}`;
@@ -303,27 +431,74 @@ export class PgAuthLimitStore implements AuthLimitStore {
   }
 }
 
+/**
+ * Carte #823 — cause technique d'un échec, pour les journaux et `/api/health`.
+ * Drizzle enveloppe l'erreur du pilote dans un message qui reprend la requête
+ * ET ses paramètres (adresse IP, agent utilisateur de la trace) : seule la
+ * cause d'origine (message du pilote ou de PostgreSQL) est retenue.
+ */
+function errorSummary(e: unknown): string {
+  const cause = (e as { cause?: unknown } | null)?.cause;
+  const root = cause instanceof Error ? cause : e;
+  const message = (root as Error | null)?.message;
+  if (typeof message !== 'string' || message.startsWith('Failed query')) return 'erreur inconnue';
+  return message.slice(0, 200);
+}
+
 /** Magasin partagé avec repli mémoire si la base ne répond pas. */
 export class FallbackAuthLimitStore implements AuthLimitStore {
   degradedSince: number | null = null;
   lastError: string | null = null;
   private lastLog = 0;
   constructor(private readonly primary: AuthLimitStore, private readonly fallback: AuthLimitStore = new MemoryAuthLimitStore()) {}
+  private noteFailure(message: string): void {
+    const now = Date.now();
+    this.degradedSince ??= now;
+    this.lastError = message;
+    if (now - this.lastLog > MIN) {
+      this.lastLog = now;
+      console.error('[auth-rate-limit] compteurs partagés indisponibles — repli mémoire de l’instance :', this.lastError);
+    }
+  }
   private async run<T>(op: (s: AuthLimitStore) => Promise<T>): Promise<T> {
     try {
       const r = await op(this.primary);
       this.degradedSince = null;
       return r;
     } catch (e) {
-      const now = Date.now();
-      this.degradedSince ??= now;
-      this.lastError = (e as Error)?.message?.slice(0, 200) ?? 'erreur inconnue';
-      if (now - this.lastLog > MIN) {
-        this.lastLog = now;
-        console.error('[auth-rate-limit] compteurs partagés indisponibles — repli mémoire de l’instance :', this.lastError);
-      }
+      this.noteFailure((e as Error)?.message?.slice(0, 200) ?? 'erreur inconnue');
       return op(this.fallback);
     }
+  }
+  /**
+   * Carte #823 — transaction du magasin partagé ; si elle n'aboutit pas (base
+   * indisponible, écriture ou `beforeCommit` en échec), elle n'a RIEN validé :
+   * la mise à jour est alors appliquée à la mémoire de l'instance, SANS
+   * `beforeCommit`. Jamais de nouvelle écriture hors transaction dans la base
+   * partagée : un verrou n'y est validé qu'avec ce que `beforeCommit` écrit.
+   * Un magasin partagé sans `updateMany` est traité comme indisponible.
+   */
+  async updateMany(
+    keys: string[],
+    fn: (recs: Map<string, LimitRecord>) => Map<string, LimitRecord>,
+    beforeCommit?: (tx: AuthLimitTx) => Promise<void>,
+  ): Promise<LimitCommit> {
+    if (this.primary.updateMany) {
+      try {
+        const r = await this.primary.updateMany(keys, fn, beforeCommit);
+        this.degradedSince = null;
+        return r;
+      } catch (e) {
+        this.noteFailure(errorSummary(e));
+      }
+    }
+    if (this.fallback.updateMany) {
+      await this.fallback.updateMany(keys, fn);
+    } else {
+      const cur = await this.fallback.read(keys);
+      for (const [k, r] of fn(cur)) await this.fallback.update(k, () => r);
+    }
+    return 'memory';
   }
   read(keys: string[]) { return this.run((s) => s.read(keys)); }
   update(key: string, fn: (rec: LimitRecord | null) => LimitRecord) { return this.run((s) => s.update(key, fn)); }
@@ -336,7 +511,41 @@ export class FallbackAuthLimitStore implements AuthLimitStore {
 const ALLOWED: LimitDecision = { allowed: true, retryAfterSeconds: 0, blockedKey: null, lockedNow: false };
 
 export class AuthRateLimiter {
+  /**
+   * Carte #823 — pauses TENUES EN MÉMOIRE par cette instance : verrous calculés
+   * par `recordFailureWithLockTrace` que la base partagée n'a pas validés
+   * (trace impossible ou base indisponible). `check` les applique en plus de
+   * l'état lu : la protection ne dépend pas de la réussite de la trace. Vide
+   * tant qu'aucune dégradation n'a eu lieu — les autres limiteurs n'y écrivent
+   * jamais.
+   */
+  private readonly heldLocks = new Map<string, LimitRecord>();
+  /** Carte #823 — état pour `/api/health` : dernière entrée en pause sans trace durable. */
+  lockTraceDegradedSince: number | null = null;
+  lockTraceFailures = 0;
+  lockTraceLastError: string | null = null;
+
   constructor(readonly store: AuthLimitStore, private readonly clock: () => number = Date.now) {}
+
+  /** État lu, complété par les pauses tenues en mémoire encore actives (carte #823). */
+  private withHeldLocks(recs: Map<string, LimitRecord>, keys: string[], now: number): Map<string, LimitRecord> {
+    if (this.heldLocks.size === 0) return recs;
+    for (const k of keys) {
+      const held = this.heldLocks.get(k);
+      if (!held) continue;
+      if (remainingLockMs(held, now) === 0) { this.heldLocks.delete(k); continue; }
+      if (remainingLockMs(held, now) > remainingLockMs(recs.get(k), now)) recs.set(k, { ...held });
+    }
+    return recs;
+  }
+
+  private holdLock(key: string, rec: LimitRecord, now: number): void {
+    if (this.heldLocks.size >= 10_000) {
+      for (const [k, r] of this.heldLocks) if (remainingLockMs(r, now) === 0) this.heldLocks.delete(k);
+    }
+    const cur = this.heldLocks.get(key);
+    if (!cur || (rec.lockedUntil ?? 0) > (cur.lockedUntil ?? 0)) this.heldLocks.set(key, { ...rec });
+  }
 
   private blocked(recs: Map<string, LimitRecord>, entries: LimitEntry[], now: number): LimitDecision | null {
     let worst: LimitDecision | null = null;
@@ -352,7 +561,8 @@ export class AuthRateLimiter {
   /** Une clé est-elle verrouillée ? Ne compte rien (connexion : avant le contrôle du mot de passe). */
   async check(entries: LimitEntry[]): Promise<LimitDecision> {
     const now = this.clock();
-    const recs = await this.store.read(entries.map((e) => e.key));
+    const keys = entries.map((e) => e.key);
+    const recs = this.withHeldLocks(await this.store.read(keys), keys, now);
     return this.blocked(recs, entries, now) ?? ALLOWED;
   }
 
@@ -376,6 +586,99 @@ export class AuthRateLimiter {
       }
     }
     return { allowed: !lockedNow, retryAfterSeconds: retry, blockedKey, lockedNow };
+  }
+
+  /**
+   * Carte #823 — compte un échec sur chaque clé dans UNE transaction du magasin
+   * partagé. Si la tentative pose un verrou, `writeTrace` est exécutée dans la
+   * même transaction, avec la durée calculée : pause et trace sont validées
+   * ensemble (`lockTrace: 'committed'`), une seule trace par entrée en pause.
+   * Sans verrou posé (tentative ordinaire ou pause déjà en cours), `writeTrace`
+   * n'est pas appelée.
+   *
+   * Ne lève jamais et ne laisse jamais tomber la pause : si la base partagée ne
+   * valide pas (trace refusée, base indisponible), le verrou calculé est tenu
+   * en mémoire par l'instance et `lockTrace` vaut `'not_durable'` — aucune
+   * trace durable n'existe alors en base, l'appelant doit le signaler.
+   */
+  async recordFailureWithLockTrace(
+    entries: LimitEntry[],
+    writeTrace: (tx: AuthLimitTx, lock: LockTraceContext) => Promise<void>,
+  ): Promise<TracedLimitDecision> {
+    const now = this.clock();
+    const keys = entries.map((e) => e.key);
+    type Run = { lockedNow: boolean; retry: number; blockedKey: string | null; locks: Map<string, LimitRecord> };
+    const runs: Run[] = [];
+    const fn = (recs: Map<string, LimitRecord>): Map<string, LimitRecord> => {
+      const cur = this.withHeldLocks(recs, keys, now);
+      const run: Run = { lockedNow: false, retry: 0, blockedKey: null, locks: new Map() };
+      const writes = new Map<string, LimitRecord>();
+      for (const e of entries) {
+        const before = cur.get(e.key) ?? null;
+        const r = applyHit(before, e.policy, now);
+        if (r.record !== before) writes.set(e.key, r.record);
+        if (r.lockedNow) {
+          run.lockedNow = true;
+          run.locks.set(e.key, r.record);
+          const s = Math.ceil(remainingLockMs(r.record, now) / 1000);
+          if (s > run.retry) { run.retry = s; run.blockedKey = e.key; }
+        }
+      }
+      runs.push(run);
+      return writes;
+    };
+    const beforeCommit = async (tx: AuthLimitTx): Promise<void> => {
+      const run = runs[runs.length - 1];
+      if (run?.lockedNow && run.blockedKey) await writeTrace(tx, { retryAfterSeconds: run.retry, blockedKey: run.blockedKey });
+    };
+
+    let commit: LimitCommit = 'memory';
+    let error: string | null = null;
+    try {
+      if (this.store.updateMany) {
+        commit = await this.store.updateMany(keys, fn, beforeCommit);
+      } else {
+        // Magasin sans transaction groupée (injecté par un test) : mêmes règles, clé par clé.
+        const cur = await this.store.read(keys);
+        for (const [k, r] of fn(cur)) await this.store.update(k, () => r);
+      }
+    } catch (e) {
+      error = errorSummary(e);
+    }
+
+    if (commit === 'shared') {
+      const run = runs[runs.length - 1];
+      if (run.lockedNow) { this.lockTraceDegradedSince = null; this.lockTraceLastError = null; }
+      return {
+        allowed: !run.lockedNow, retryAfterSeconds: run.retry, blockedKey: run.blockedKey, lockedNow: run.lockedNow,
+        lockTrace: run.lockedNow ? 'committed' : 'none', lockTraceError: null,
+      };
+    }
+
+    // Rien n'a été validé dans la base partagée. Tout verrou CALCULÉ — à partir
+    // de l'état partagé (transaction annulée) ou de la mémoire — est tenu par
+    // l'instance : la pause s'applique même si la trace n'a pas pu être écrite.
+    let lockedNow = false;
+    let retry = 0;
+    let blockedKey: string | null = null;
+    for (const run of runs) {
+      if (!run.lockedNow) continue;
+      lockedNow = true;
+      for (const [k, rec] of run.locks) this.holdLock(k, rec, now);
+      if (run.retry > retry) { retry = run.retry; blockedKey = run.blockedKey; }
+    }
+    if (lockedNow) {
+      // Le magasin à repli absorbe l'erreur de la base partagée : elle est relue ici.
+      const absorbed = (this.store as unknown as { lastError?: unknown }).lastError;
+      if (error === null && typeof absorbed === 'string') error = absorbed;
+      this.lockTraceDegradedSince ??= Date.now();
+      this.lockTraceFailures += 1;
+      this.lockTraceLastError = error;
+    }
+    return {
+      allowed: !lockedNow, retryAfterSeconds: retry, blockedKey, lockedNow,
+      lockTrace: lockedNow ? 'not_durable' : 'none', lockTraceError: lockedNow ? error : null,
+    };
   }
 
   /**
@@ -465,12 +768,22 @@ export function setAuthRateLimiterForTests(l: AuthRateLimiter | null): void {
 }
 
 /** État pour `/api/health` (mémoire seulement, aucune requête). */
-export function authRateLimiterHealth(): { mode: 'shared' | 'memory-fallback' | 'not_used'; degradedSince: string | null; lastError: string | null } {
-  if (!sharedStore) return { mode: 'not_used', degradedSince: null, lastError: null };
+export function authRateLimiterHealth(): {
+  mode: 'shared' | 'memory-fallback' | 'not_used'; degradedSince: string | null; lastError: string | null;
+  /** Carte #823 : la dernière entrée en pause de cette instance n'a pas de trace durable (depuis quand). */
+  lockTraceDegradedSince: string | null; lockTraceFailures: number; lockTraceLastError: string | null;
+} {
+  const trace = {
+    lockTraceDegradedSince: instance?.lockTraceDegradedSince ? new Date(instance.lockTraceDegradedSince).toISOString() : null,
+    lockTraceFailures: instance?.lockTraceFailures ?? 0,
+    lockTraceLastError: instance?.lockTraceLastError ?? null,
+  };
+  if (!sharedStore) return { mode: 'not_used', degradedSince: null, lastError: null, ...trace };
   return {
     mode: sharedStore.degradedSince ? 'memory-fallback' : 'shared',
     degradedSince: sharedStore.degradedSince ? new Date(sharedStore.degradedSince).toISOString() : null,
     lastError: sharedStore.lastError,
+    ...trace,
   };
 }
 

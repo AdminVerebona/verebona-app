@@ -248,10 +248,30 @@ scenario('L53A', 'Sécurité CDC 18 — D1 anti-force brute, Q21 inscription et 
     const { POST: change } = await import('@/app/api/users/me/change-password/route');
     const essai = (acces: string, currentPassword: string, ip: string) =>
       change(req('/api/users/me/change-password', { cookie: `access_token=${acces}`, ip, body: { currentPassword, newPassword: 'NouveauMdp3!x' } }));
-    for (let i = 0; i < 5; i++) expect((await essai(au, 'Faux-123!', `96.1.${i}.1`)).status).toBe(401);
-    expect((await essai(au, PASSWORD, '96.1.9.1')).status).toBe(429);
+    // Carte #823 : lecture SQL IMMÉDIATE (ni attente, ni sondage, ni relance) — la trace est
+    // validée avec la pause, AVANT la réponse du cinquième échec.
+    const traces = () => sql<{ user_id: number; details: string }[]>`
+      SELECT user_id, details FROM user_activity_log WHERE activity_type = 'AUTH_REAUTH_THROTTLED' AND user_id IN (${u.id}, ${v.id})`;
+    for (let i = 0; i < 4; i++) expect((await essai(au, 'Faux-123!', `96.1.${i}.1`)).status).toBe(401);
+    expect(await traces()).toHaveLength(0); // aucune trace avant l'entrée en pause
+    expect((await essai(au, 'Faux-123!', '96.1.4.1')).status).toBe(401);
+    // Dès le cinquième retour : exactement une trace, bon utilisateur, bonne action, durée positive.
+    const desLeCinquieme = await traces();
+    expect(desLeCinquieme).toHaveLength(1);
+    expect(desLeCinquieme[0].user_id).toBe(u.id);
+    const details = JSON.parse(desLeCinquieme[0].details) as { action: string; retryAfterSeconds: number };
+    expect(details.action).toBe('change_password');
+    expect(details.retryAfterSeconds).toBeGreaterThan(0);
+    // Le BON mot de passe est refusé pendant la pause : 429 avec Retry-After, sans trace supplémentaire.
+    const refus = await essai(au, PASSWORD, '96.1.9.1');
+    expect(refus.status).toBe(429);
+    expect(Number(refus.headers.get('retry-after'))).toBeGreaterThan(0);
+    expect(Number(refus.headers.get('retry-after'))).toBeLessThanOrEqual(details.retryAfterSeconds);
     const [trace] = await sql`SELECT 1 FROM user_activity_log WHERE user_id = ${u.id} AND activity_type = 'AUTH_REAUTH_THROTTLED'`;
     expect(trace).toBeDefined();
+    expect(await traces()).toHaveLength(1);
+    // Un autre utilisateur n'est pas touché, et n'a aucune trace de pause.
     expect((await essai(av, PASSWORD, '96.2.0.1')).status).toBe(200);
+    expect((await traces()).map((t) => t.user_id)).toEqual([u.id]);
   });
 });

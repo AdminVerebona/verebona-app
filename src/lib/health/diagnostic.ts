@@ -111,7 +111,11 @@ export interface HealthCheckResult {
      * `memory-fallback` : base indisponible, repli sur la mémoire de
      * l'instance (avertissement, statut global inchangé).
      */
-    authRateLimiter?: { status: 'ok' | 'warning'; mode: string; degradedSince: string | null; lastError: string | null };
+    authRateLimiter?: {
+      status: 'ok' | 'warning'; mode: string; degradedSince: string | null; lastError: string | null;
+      /** Carte #823 : dernière entrée en pause de l'instance sans trace durable (depuis quand), nombre depuis le démarrage. */
+      lockTraceDegradedSince?: string | null; lockTraceFailures?: number; lockTraceLastError?: string | null;
+    };
     /**
      * Lot 100C (CVE-2026-111497) : runtime Node.js EN SERVICE (`process.version`
      * de ce processus) — distinct de `version`, qui est la version APPLICATIVE.
@@ -305,8 +309,11 @@ export async function buildHealthReport(opts: { detailed: boolean }): Promise<{ 
     const { authRateLimiterHealth } = await import('@/lib/auth/auth-rate-limit');
     const h = authRateLimiterHealth();
     result.checks.authRateLimiter = {
-      status: h.mode === 'memory-fallback' ? 'warning' : 'ok', mode: h.mode, degradedSince: h.degradedSince,
+      // Carte #823 : pause de réauthentification posée sans trace durable → avertissement.
+      status: h.mode === 'memory-fallback' || h.lockTraceDegradedSince ? 'warning' : 'ok', mode: h.mode, degradedSince: h.degradedSince,
       lastError: detailed ? h.lastError : null,
+      lockTraceDegradedSince: h.lockTraceDegradedSince, lockTraceFailures: h.lockTraceFailures,
+      lockTraceLastError: detailed ? h.lockTraceLastError : null,
     };
   } catch {
     /* contrôle indicatif */
