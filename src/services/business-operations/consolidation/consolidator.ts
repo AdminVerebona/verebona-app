@@ -299,7 +299,7 @@ export async function prepareOperationMatch(accountId: number, candidateId: numb
     if (!file || file.deleted || (file.documentTypeCode && NON_BUSINESS_DOCUMENT_TYPES.has(file.documentTypeCode))) return null;
     const ids = targetIdsOf([c], file.assetId);
     const actx = await loadAssetContext(tx, accountId, ids.assets, ids.equipments, ids.rooms);
-    const identity = buildCandidateIdentity(c, { fileAssetId: file.assetId, fileDocumentTypeCode: file.documentTypeCode, fileDocumentDate: file.documentDate ?? null, fileDesignation: file.designation ?? null, fileTermQualification: file.termQualification, fileDocumentRelation: file.documentRelation, liveAssetIds: actx.live, equipmentAssets: actx.equipments, roomAssets: actx.rooms, providerCanonical: actx.providers,
+    const identity = buildCandidateIdentity(c, { fileAssetId: file.assetId, fileDocumentTypeCode: file.documentTypeCode, fileDocumentDate: file.documentDate ?? null, fileDesignation: file.designation ?? null, fileTermQualification: file.termQualification, fileDocumentRelation: file.documentRelation, liveAssetIds: actx.live, equipmentAssets: actx.equipments, roomAssets: actx.rooms, providerCanonical: actx.providers, assetNames: actx.names,
       ...documentIdentityContext(file, await loadActiveCandidatesRead(tx, accountId, c.fileId), todayUtc(), actx) });
     // Lot 53 (D7) : le LOT courant de l'examen progressif (au plus 5 Opérations),
     // à défaut (trace antérieure au lot 53) les Opérations plausibles.
@@ -350,6 +350,8 @@ interface AssetContext {
   providers: ReadonlyMap<string, string>;
   /** Lot 111S : preuves canoniques d'acquisition des biens / équipements du contexte (`acquisition-corroboration.ts`). */
   acquisitionEvidence?: AcquisitionEvidenceIndex;
+  /** Carte #821 : noms des biens vivants du contexte — le bien associé ne nomme jamais un achat (`acquisitionName`). */
+  names: Map<number, string>;
 }
 
 /** Lot 86C : la clé d'un prestataire a-t-elle été remplacée par une clé canonique équivalente ? */
@@ -393,7 +395,7 @@ async function loadProviderEquivalence(tx: DbTx, accountId: number): Promise<Pro
 }
 
 export async function loadAssetContext(tx: DbTx, accountId: number, assetIds: number[], equipmentIds: number[], roomIds: number[] = []): Promise<AssetContext> {
-  const ctx: AssetContext = { live: new Set(), status: new Map(), equipments: new Map(), rooms: new Map(), providers: (await loadProviderEquivalence(tx, accountId)).canonical };
+  const ctx: AssetContext = { live: new Set(), status: new Map(), equipments: new Map(), rooms: new Map(), names: new Map(), providers: (await loadProviderEquivalence(tx, accountId)).canonical };
   // Lot 82D : Pièces (substructures) des biens du compte — cibles ROOM de T1.
   if (roomIds.length) {
     const p = await rows<{ id: number; asset_id: number }>(tx, sql`
@@ -415,11 +417,12 @@ export async function loadAssetContext(tx: DbTx, accountId: number, assetIds: nu
   }
   const ids = [...new Set(assetIds)];
   if (ids.length) {
-    const a = await rows<{ id: number; status: string | null }>(tx, sql`
-      SELECT id, status FROM assets WHERE id = ANY(${intArray(ids)}::int[]) AND account_id = ${accountId} AND deleted_at IS NULL`);
+    const a = await rows<{ id: number; status: string | null; name: string | null }>(tx, sql`
+      SELECT id, status, name FROM assets WHERE id = ANY(${intArray(ids)}::int[]) AND account_id = ${accountId} AND deleted_at IS NULL`);
     for (const x of a) {
       ctx.live.add(Number(x.id));
       ctx.status.set(Number(x.id), x.status ?? 'EN_SERVICE');
+      if (typeof x.name === 'string' && x.name.trim()) ctx.names.set(Number(x.id), x.name.trim());
     }
   }
   // Lot 111S : preuves canoniques d'acquisition (date / prix d'achat) des cibles vivantes, par document.
@@ -770,7 +773,7 @@ async function contributionOf(tx: DbTx, accountId: number, s: OpSource, agenda?:
   if (!c || c.confidence === 'conflictual') return null;
   const ids = targetIdsOf([c], file.assetId);
   const actx = await loadAssetContext(tx, accountId, ids.assets, ids.equipments, ids.rooms);
-  const identity = buildCandidateIdentity(c, { fileAssetId: file.assetId, fileDocumentTypeCode: file.documentTypeCode, fileDocumentDate: file.documentDate ?? null, fileDesignation: file.designation ?? null, fileTermQualification: file.termQualification, fileDocumentRelation: file.documentRelation, liveAssetIds: actx.live, equipmentAssets: actx.equipments, roomAssets: actx.rooms, providerCanonical: actx.providers,
+  const identity = buildCandidateIdentity(c, { fileAssetId: file.assetId, fileDocumentTypeCode: file.documentTypeCode, fileDocumentDate: file.documentDate ?? null, fileDesignation: file.designation ?? null, fileTermQualification: file.termQualification, fileDocumentRelation: file.documentRelation, liveAssetIds: actx.live, equipmentAssets: actx.equipments, roomAssets: actx.rooms, providerCanonical: actx.providers, assetNames: actx.names,
     ...documentIdentityContext(file, tousCandidats, agenda?.today ?? todayUtc(), actx) });
   // Lot 109D : candidat qui ne porte qu'une remise intégrée au net d'un autre achat du document — jamais une réalité
   // propre (faux avoir historique) : sa source est retirée (tracée), l'Opération n'est maintenue que par ses autres preuves.
@@ -784,6 +787,38 @@ async function contributionOf(tx: DbTx, accountId: number, s: OpSource, agenda?:
  * le candidat n'est plus actif est retirée ; sans source active, l'Opération
  * est invalidée (décision PO, C8) et ses composantes deviennent inactives.
  */
+/**
+ * Cartes #813 / #821 — intitulé d'un ACHAT que la consolidation écrirait (pure ; `undefined` : rien à écrire).
+ * Partagée par la consolidation (`reconsolidateOperation`) et son aperçu à blanc (`previewAcquisitionNames`).
+ *
+ * Titre AUTOMATIQUE ou titre de l'UTILISATEUR : un intitulé est « du système » quand il est absent, ou égal au
+ * résumé, au nom d'achat, ou au nom d'achat de la règle antérieure (#813) d'une source ACTIVE gérée par T3, ou
+ * encore égal à la valeur que la provenance (lot 78A) a ENREGISTRÉE comme posée depuis une source (`recordedLabel`).
+ * Tout autre intitulé a été saisi ou corrigé par l'utilisateur : jamais remplacé. Une opération qui porte une saisie
+ * de l'utilisateur (`fullyManaged` faux) n'est jamais recalculée.
+ */
+export function acquisitionLabelDecision(p: {
+  typeCode: string | null; technicalLabel: string | null; fullyManaged: boolean; contributions: readonly SourceContribution[];
+  /** Intitulé que la provenance a enregistré comme posé depuis une source (`attribute_provenance.fields.label.value`). */
+  recordedLabel?: string | null;
+}): string | undefined {
+  if (!p.fullyManaged || p.typeCode !== 'ACQUISITION') return undefined;
+  const documentaires = p.contributions.filter((c) => !c.identity.agenda && !c.identity.structured);
+  const actuel = p.technicalLabel;
+  const porte = (v: string) => p.contributions.some((c) => c.identity.summary.slice(0, 200) === v || sourceLabelOf(c.identity) === v);
+  const ancienNom = (v: string) => documentaires.some((c) => c.identity.supersededDesignationLabel === v) || (!!p.recordedLabel && p.recordedLabel === v);
+  if (!(actuel === null || porte(actuel) || ancienNom(actuel))) return undefined;
+  const designe = documentaires.map((c) => c.identity.designationLabel).find((x): x is string => !!x);
+  if (designe) return designe !== actuel ? designe : undefined;
+  // Aucun nom d'objet : un intitulé du système qu'aucune source ne porte plus (ancien nom #813, fondement retiré)
+  // revient au repli existant — le résumé du premier justificatif.
+  if (actuel !== null && !porte(actuel)) {
+    const repli = documentaires.map((c) => sourceLabelOf(c.identity)).find((x) => !!x);
+    return repli && repli !== actuel ? repli : undefined;
+  }
+  return undefined;
+}
+
 export async function reconsolidateOperation(
   repo: BusinessOperationRepository, tx: DbTx, operationId: number, today: string, changes: Changes = new Changes(),
   cards: OperationCardNeeds = emptyCardNeeds(),
@@ -973,11 +1008,13 @@ export async function reconsolidateOperation(
   // (« Achat Polisport groovy coussin gris »). Jamais sur un intitulé que le système n'a pas posé lui-même :
   // seul un libellé absent, ou encore égal au résumé / au nom d'une source ACTIVE (provenance 78A comprise),
   // est remplacé — un intitulé corrigé par l'utilisateur ne correspond à aucune source et reste intact.
-  const designe = documentaires.map((c) => c.identity.designationLabel).find((x): x is string => !!x);
-  const libelleSysteme = op.technicalLabel === null || porteLibelle(op.technicalLabel);
-  if (fullyManaged && (state.type ?? op.typeCode) === 'ACQUISITION' && designe && libelleSysteme && !('technicalLabel' in attrs) && op.technicalLabel !== designe) {
-    attrs.technicalLabel = designe;
-  }
+  // Carte #821 : ce nom est celui de l'OBJET réellement acheté (désignation, catégorie de dépense, bien dont
+  // l'acquisition est établie) ; un nom que la règle #813 tirait de la même désignation et que la règle courante ne
+  // retient plus (fournisseur, bien associé) est lui aussi un intitulé du système, remis au repli existant (résumé).
+  const nomAchat = acquisitionLabelDecision({
+    typeCode: state.type ?? op.typeCode, technicalLabel: op.technicalLabel, fullyManaged, contributions, recordedLabel: provAvant?.fields?.label?.value ?? null,
+  });
+  if (nomAchat !== undefined && !('technicalLabel' in attrs)) attrs.technicalLabel = nomAchat;
   // Carte #819 (E) : la date principale passe de la date de commande à la date de la facture — écrite À PART, avec son
   // motif propre (historique : ancienne valeur, nouvelle valeur, motif ; la source est la provenance 78A, ci-dessous).
   if (state.invoiceAfterOrder && 'realizedDate' in attrs && attrs.realizedDate === state.invoiceAfterOrder.date && op.realizedDate !== attrs.realizedDate) {
@@ -1729,7 +1766,7 @@ export async function previewSeriesGrouping(accountId: number, fileIds: readonly
       const tids = targetIdsOf(actifs, file.assetId);
       const actx = await loadAssetContext(tx, accountId, tids.assets, tids.equipments, tids.rooms);
       for (const c of actifs) {
-        const identity = buildCandidateIdentity(c, { fileAssetId: file.assetId, fileDocumentTypeCode: file.documentTypeCode, fileDocumentDate: file.documentDate ?? null, fileDesignation: file.designation ?? null, fileTermQualification: file.termQualification, fileDocumentRelation: file.documentRelation, liveAssetIds: actx.live, equipmentAssets: actx.equipments, roomAssets: actx.rooms, providerCanonical: actx.providers,
+        const identity = buildCandidateIdentity(c, { fileAssetId: file.assetId, fileDocumentTypeCode: file.documentTypeCode, fileDocumentDate: file.documentDate ?? null, fileDesignation: file.designation ?? null, fileTermQualification: file.termQualification, fileDocumentRelation: file.documentRelation, liveAssetIds: actx.live, equipmentAssets: actx.equipments, roomAssets: actx.rooms, providerCanonical: actx.providers, assetNames: actx.names,
           ...documentIdentityContext(file, actifs, todayUtc(), actx) });
         const memeSource = docSources.filter((s) => s.key === c.candidateKey && s.active && !s.opMerged && !s.opInvalidated);
         if (!memeSource.length) continue;
@@ -1840,7 +1877,7 @@ export async function previewOperationDuplicates(accountId: number, operationIds
         const docSources = await loadDocumentSources(tx, accountId, fileId);
         const tids = targetIdsOf([c], file.assetId);
         const actx = await loadAssetContext(tx, accountId, tids.assets, tids.equipments, tids.rooms);
-        const identity = buildCandidateIdentity(c, { fileAssetId: file.assetId, fileDocumentTypeCode: file.documentTypeCode, fileDocumentDate: file.documentDate ?? null, fileDesignation: file.designation ?? null, fileTermQualification: file.termQualification, fileDocumentRelation: file.documentRelation, liveAssetIds: actx.live, equipmentAssets: actx.equipments, roomAssets: actx.rooms, providerCanonical: actx.providers,
+        const identity = buildCandidateIdentity(c, { fileAssetId: file.assetId, fileDocumentTypeCode: file.documentTypeCode, fileDocumentDate: file.documentDate ?? null, fileDesignation: file.designation ?? null, fileTermQualification: file.termQualification, fileDocumentRelation: file.documentRelation, liveAssetIds: actx.live, equipmentAssets: actx.equipments, roomAssets: actx.rooms, providerCanonical: actx.providers, assetNames: actx.names,
           ...documentIdentityContext(file, candidatsDoc, todayUtc(), actx) });
         const memeSource = docSources.filter((s) => s.key === c.candidateKey && s.active && !s.opMerged && !s.opInvalidated);
         if (!memeSource.length) continue;
@@ -2076,6 +2113,121 @@ export async function previewInvoiceAfterOrder(accountId: number, operationIds: 
 
 // ── Un document (TRG-001 à TRG-007) ────────────────────────────────────────
 
+/** Carte #821 — intitulé d'un achat tel que la consolidation T3 l'écrirait (aperçu à blanc). */
+export interface AcquisitionNamePreview {
+  operationId: number;
+  /** Intitulé enregistré. */
+  stored: string | null;
+  /** Intitulé que la reconsolidation écrirait (égal à `stored` : rien à faire). */
+  expected: string | null;
+  /** Fondement du nom attendu (désignation, catégorie de dépense, acquisition du bien) ; null : repli existant ou intitulé conservé. */
+  basis: import('@/lib/reference-events/operation-title').AcquisitionNameBasis | null;
+  /** Faux : l'opération porte une saisie de l'utilisateur — son intitulé n'est JAMAIS recalculé. */
+  fullyManaged: boolean;
+  /** L'intitulé enregistré a été posé par le système (absent, résumé ou nom d'une source active, valeur enregistrée par la provenance) — sinon c'est celui de l'utilisateur. */
+  systemLabel: boolean;
+  wouldChange: boolean;
+  /** Source active qui porte l'intitulé attendu (provenance) ; null : aucune. */
+  sourceId: number | null;
+}
+
+/** Carte #821 : motif d'historique d'un intitulé d'achat posé par la reprise (ancienne valeur, nouvelle valeur). */
+export const ACQUISITION_NAME_REASON = 'T3_ACQUISITION_NAME_APPLIED';
+
+/** Carte #821 : intitulé d'UN achat actif d'après ses sources actives (lecture dans la transaction ; null : aucune preuve). */
+async function acquisitionNameFor(tx: DbTx, accountId: number, opId: number, stored: string | null, today: string): Promise<AcquisitionNamePreview | null> {
+  const srcRows = await rows<Row>(tx, sql`
+    SELECT id, source_kind, source_entity_key, locator->>'candidateKey' AS key,
+           CASE WHEN source_kind = 'ASSET_DATA' THEN locator->>'nature' END AS nature,
+           CASE WHEN source_kind = 'AGENDA' THEN locator->>'agenda' END AS agenda,
+           CASE WHEN source_kind = ${DECISION_SOURCE_KIND} AND locator ? 'decision' THEN locator END AS decision
+      FROM business_operation_sources WHERE operation_id = ${opId} AND account_id = ${accountId} AND active ORDER BY id`);
+  const sources: OpSource[] = srcRows.map((x) => ({
+    id: Number(x.id), kind: String(x.source_kind), entityKey: String(x.source_entity_key), key: (x.key as string | null) ?? null,
+    nature: (x.nature as string | null) ?? null,
+    managed: (x.source_kind === 'DOCUMENT' && x.key !== null) || (x.source_kind === 'ASSET_DATA' && x.nature !== null)
+      || (x.source_kind === 'AGENDA' && x.agenda !== null),
+    decision: (x.decision as Record<string, unknown> | null) ?? null,
+  }));
+  const agendaCtx: AgendaContext = { operationId: opId, operationType: 'ACQUISITION', today, otherSupport: sources.some((x) => x.kind !== 'AGENDA' && x.decision === null) };
+  const contributions: SourceContribution[] = [];
+  for (const src of sources.filter((x) => x.managed)) {
+    const c = await contributionOf(tx, accountId, src, agendaCtx);
+    if (c && 'identity' in c) contributions.push(c);
+  }
+  const probantes = contributions.filter((c) => !isEnrichmentOnly(c));
+  if (!probantes.length) return null;
+  const state = consolidateOperationState('ACQUISITION', probantes, today);
+  const fullyManaged = sources.filter((x) => !x.managed && x.decision === null).length === 0;
+  const recordedLabel = (await loadAttributeProvenance(tx, accountId, opId))?.fields?.label?.value ?? null;
+  const decision = acquisitionLabelDecision({ typeCode: state.type ?? 'ACQUISITION', technicalLabel: stored, fullyManaged, contributions, recordedLabel });
+  const expected = decision ?? stored;
+  const porteur = contributions.find((c) => c.identity.designationLabel === expected) ?? contributions.find((c) => sourceLabelOf(c.identity) === expected);
+  return {
+    operationId: opId, stored, expected, basis: contributions.find((c) => c.identity.designationLabel === expected)?.identity.designationBasis ?? null, fullyManaged,
+    systemLabel: stored === null || stored === recordedLabel || contributions.some((c) => c.identity.summary.slice(0, 200) === stored
+      || sourceLabelOf(c.identity) === stored || c.identity.supersededDesignationLabel === stored),
+    wouldChange: decision !== undefined, sourceId: porteur?.sourceId ?? null,
+  };
+}
+
+/**
+ * Carte #821 (stock) — intitulés des ACHATS actifs recalculés par le modèle de consolidation T3 en LECTURE, dans une
+ * transaction toujours annulée, sans IA (même procédé que `previewInvoiceAfterOrder`). Sert au rapport à blanc de la
+ * reprise et au constat : la décision est celle de la consolidation (`acquisitionLabelDecision`), jamais une copie.
+ */
+export async function previewAcquisitionNames(accountId: number, operationIds: readonly number[], today: string = todayUtc()): Promise<Map<number, AcquisitionNamePreview>> {
+  const out = new Map<number, AcquisitionNamePreview>();
+  const ids = [...new Set(operationIds)].filter((x) => Number.isSafeInteger(x) && x > 0).sort((a, b) => a - b);
+  if (!ids.length) return out;
+  const { db } = await import('@/db');
+  const ANNULEE = Symbol('simulation annulée');
+  await db.transaction(async (tx) => {
+    await tx.execute(sql`SET LOCAL lock_timeout = '2s'`);
+    const ops = await rows<Row>(tx, sql`
+      SELECT o.id, o.technical_label FROM business_operations o
+       WHERE o.account_id = ${accountId} AND o.id = ANY(${intArray(ids)}::bigint[]) AND o.type_code = 'ACQUISITION'
+         AND o.invalidated_at IS NULL AND o.merged_into_operation_id IS NULL`);
+    for (const o of ops) {
+      const a = await acquisitionNameFor(tx, accountId, Number(o.id), (o.technical_label as string | null) ?? null, today);
+      if (a) out.set(a.operationId, a);
+    }
+    throw ANNULEE;
+  }).catch((e) => { if (e !== ANNULEE) throw e; });
+  return out;
+}
+
+/**
+ * Carte #821 (stock) — CORRECTION DE LIBELLÉ SEULE : écrit l'intitulé que la consolidation retient pour chaque achat
+ * actif visé, et RIEN d'autre (ni statut, ni dates, ni montants, ni liens, ni sources : ils ne sont pas recalculés
+ * ici). Même décision que la reconsolidation (`acquisitionLabelDecision`) : un intitulé saisi ou corrigé par
+ * l'utilisateur n'est jamais remplacé. Historique : ancienne valeur, nouvelle valeur, motif `ACQUISITION_NAME_REASON`.
+ * Idempotent : un intitulé déjà à jour n'est pas réécrit. Rend les opérations dont l'intitulé a été écrit.
+ */
+export async function applyAcquisitionNames(accountId: number, operationIds: readonly number[], opts: ConsolidationOptions = {}): Promise<number[]> {
+  const ids = [...new Set(operationIds)].filter((x) => Number.isSafeInteger(x) && x > 0).sort((a, b) => a - b);
+  if (!ids.length) return [];
+  await opts.beforeWrite?.('intitulé des achats');
+  const today = opts.today ?? todayUtc();
+  return withBusinessOperationWrite(accountId, async (repo, session) => {
+    const ecrits: number[] = [];
+    for (const id of ids) {
+      const op = await repo.load(id, { allowInactive: true, allowMerged: true });
+      if (op.typeCode !== 'ACQUISITION' || op.invalidatedAt !== null || op.mergedIntoOperationId !== null) continue;
+      const a = await acquisitionNameFor(session.tx, accountId, id, op.technicalLabel, today);
+      if (!a?.wouldChange || a.expected === null || !(await repo.updateAttributes(id, { technicalLabel: a.expected }, ACQUISITION_NAME_REASON))) continue;
+      ecrits.push(id);
+      // Provenance de l'intitulé (lot 78A) tenue à jour : la source qui le porte — rien d'autre n'y est touché.
+      if (a.sourceId !== null && await loadAttributeProvenance(session.tx, accountId, id)) {
+        await session.tx.execute(sql`
+          UPDATE business_operations SET attribute_provenance = jsonb_set(attribute_provenance, '{fields,label}', ${JSON.stringify({ sourceId: a.sourceId, value: a.expected })}::jsonb, true)
+           WHERE id = ${id} AND account_id = ${accountId} AND jsonb_typeof(attribute_provenance -> 'fields') = 'object'`);
+      }
+    }
+    return ecrits;
+  }, { correlationId: opts.correlationId });
+}
+
 /**
  * Consolide les candidats d'UN document, dans UNE transaction sous le verrou
  * du compte (voir l'en-tête). Une erreur d'intégrité (NFR-OP-008) annule la
@@ -2116,7 +2268,7 @@ export async function consolidateDocument(accountId: number, fileId: number, opt
       cards.reviewedFiles.push(fileId);
       // Lot 78A (§2A) : identités de tous les candidats actifs du document, et
       // Opérations où chacun a déjà sa source (doublons d'un même document à la réanalyse).
-      const identites = new Map(actifs.map((c) => [c.id, buildCandidateIdentity(c, { fileAssetId: file?.assetId ?? null, fileDocumentTypeCode: file?.documentTypeCode ?? null, fileDocumentDate: file?.documentDate ?? null, fileDesignation: file?.designation ?? null, fileTermQualification: file?.termQualification ?? null, fileDocumentRelation: file?.documentRelation ?? null, liveAssetIds: actx.live, equipmentAssets: actx.equipments, roomAssets: actx.rooms, providerCanonical: actx.providers,
+      const identites = new Map(actifs.map((c) => [c.id, buildCandidateIdentity(c, { fileAssetId: file?.assetId ?? null, fileDocumentTypeCode: file?.documentTypeCode ?? null, fileDocumentDate: file?.documentDate ?? null, fileDesignation: file?.designation ?? null, fileTermQualification: file?.termQualification ?? null, fileDocumentRelation: file?.documentRelation ?? null, liveAssetIds: actx.live, equipmentAssets: actx.equipments, roomAssets: actx.rooms, providerCanonical: actx.providers, assetNames: actx.names,
         ...documentIdentityContext(file, actifs, today, actx) })]));
       const opsDuDocument = new Map<number, CandidateIdentity[]>();
       for (const s of docSources.filter((x) => x.active && !x.opMerged && !x.opInvalidated)) {

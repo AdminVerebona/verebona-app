@@ -93,6 +93,22 @@ export function corroborateAcquisition(c: CorroborationInput, index: Acquisition
 }
 
 /**
+ * Carte #821 — BIEN dont CE document prouve l'acquisition (pure ; null : simple
+ * rattachement). Mêmes conditions que la corroboration (candidat établi,
+ * réalisé, rôle documentaire d'achat, UNE cible) et même preuve canonique
+ * (`AcquisitionEvidenceIndex`), mais sans exiger un candidat « probable » ou
+ * sans type : sert à NOMMER l'achat du bien lui-même (« Achat <nom du bien> »).
+ * Un équipement désigné n'est jamais rabattu sur son bien parent.
+ */
+export function provenAssetAcquisition(
+  c: Pick<CorroborationInput, 'fileId' | 'established' | 'status' | 'role' | 'assetIds' | 'equipmentIds'>, index: AcquisitionEvidenceIndex | undefined,
+): number | null {
+  if (!index || !c.established || c.status !== 'REALIZED' || !PURCHASE_PROOF_ROLES.has(c.role)) return null;
+  if (c.equipmentIds.length !== 0 || c.assetIds.length !== 1) return null;
+  return index.get(evidenceTargetKey('ASSET', c.assetIds[0]))?.has(c.fileId) ? c.assetIds[0] : null;
+}
+
+/**
  * SQL (paramètres : $1 compte, $2 biens int[], $3 équipements int[]) des
  * preuves canoniques d'acquisition ACTIVES et CERTAINES issues d'un document
  * vivant du compte. `to_jsonb(fe)` : colonnes 0219 lues sans dépendance stricte.

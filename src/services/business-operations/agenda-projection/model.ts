@@ -87,7 +87,7 @@ import { natureTokens } from '../consolidation/matching';
 import type { AgendaEventNature } from '@/services/agenda/agenda-functional-key';
 import type { BusinessOperationStatus, BusinessOperationTypeCode } from '../model';
 import { factKeyOf, isDurableRelation, isGlobalEventFact } from '../grouping/model';
-import { acquisitionEventTitle } from '@/lib/reference-events/operation-title';
+import { ACQUISITION_TYPE_NAME, acquisitionEventTitle } from '@/lib/reference-events/operation-title';
 
 /** Valeur de `agenda_items.projection_origin` d'un événement GÉNÉRÉ (0318). */
 export const PROJECTION_ORIGIN = 'OPERATION';
@@ -141,8 +141,17 @@ export interface OperationSnapshot {
    * Absent (appelants antérieurs, tests) : non.
    */
   orderOnlyEvidence?: boolean;
-  /** Carte #813 (A) : noms des biens liés (ordre des identifiants) — dernier repli du titre d'un achat légitime. */
+  /**
+   * Carte #813 (A) : noms des biens liés (ordre des identifiants). RÈGLE REMPLACÉE (carte #821) : le bien associé
+   * ne nomme plus jamais un achat — ces noms servent seulement à RECONNAÎTRE un intitulé automatique qui ne dit pas
+   * ce qui a été acheté (« Achat — Cupra », `isUninformativePurchaseTitle`).
+   */
   assetNames?: string[];
+  /**
+   * Carte #821 : titres des justificatifs sources de l'Opération (titre retenu et titre proposé par l'analyse) —
+   * le nom d'un justificatif ne désigne pas l'objet acheté (« Achat — Ticket de carburant »). Absent : aucun.
+   */
+  documentTitles?: string[];
   /**
    * Lot 76H : documents dont T3 a consolidé TOUTE la preuve d'intervention
    * dans cette Opération — source DOCUMENT active de cette seule Opération
@@ -395,7 +404,10 @@ export function decideProjection(op: OperationSnapshot, today: string): Projecti
       // que T4 crée depuis le document, jamais d'un « Achat » par défaut.
       if (acq && op.orderOnlyEvidence === true) return { kind: 'NONE', reason: 'ORDER_ONLY_EVIDENCE', keepLinks: true };
       // Carte #813 (A) — règle remplacée : un achat légitime ne s'appelle plus « Achat » nu.
-      const title = acq ? acquisitionEventTitle({ label, provider, assetNames: op.assetNames })
+      // Carte #821 — règle remplacée : l'événement porte l'intitulé de l'opération (objet réellement acheté :
+      // désignation, catégorie de dépense, bien dont l'acquisition est établie) ; sans intitulé descriptif, le libellé
+      // neutre — jamais « Achat — <prestataire> » ni « Achat — <bien associé> ».
+      const title = acq ? acquisitionEventTitle({ label })
         : op.disposalKind === 'TRANSMISSION' ? 'Transmission' : 'Vente';
       return { kind: 'PROJECT', desired: { key, nature: 'HISTORICAL', businessType: acq ? 'purchase' : 'sale', date: realise, title, category: 'information', target: 'REALIZED', creatable: true } };
     }
@@ -897,6 +909,8 @@ export function planOperationProjection(p: PlanInput): ProjectionAction[] {
       return [
         { kind: 'REMOVE', itemId: item.id, reason: 'DUPLICATE_PROJECTION' },
         { kind: 'LINK', itemId: reconnu.item.id, reason: `élément du regroupement : ${reconnu.reason}` },
+        // Carte #821 : le membre qui porte désormais l'achat prend l'intitulé de l'opération (élément automatique intact seulement).
+        ...(op.typeCode === 'ACQUISITION' ? retitleActions(op, reconnu.item) : []),
       ];
     }
     const forts = reconnu.kind === 'certain' ? [reconnu.item] : reconnu.kind === 'probable' ? reconnu.candidates.filter((c) => c.strong).map((c) => c.item) : [];
@@ -973,6 +987,8 @@ export function planOperationProjection(p: PlanInput): ProjectionAction[] {
   const reconnu = membres.length ? matchExistingItem(op, d, membres) : { kind: 'none' as const };
   if (reconnu.kind === 'certain') {
     actions.push({ kind: 'LINK', itemId: reconnu.item.id, reason: `élément du regroupement : ${reconnu.reason}` });
+    // Carte #821 : l'événement automatique intact du justificatif, rattaché par provenance, prend l'intitulé de l'achat.
+    if (op.typeCode === 'ACQUISITION') actions.push(...retitleActions(op, reconnu.item));
     return actions;
   }
   // Lot 87B (CODE-04) : membre seulement SIGNALÉ (même bien, type compatible ou même intitulé, date proche)
@@ -999,6 +1015,8 @@ export function planOperationProjection(p: PlanInput): ProjectionAction[] {
   }
   if (m.kind === 'certain') {
     actions.push({ kind: 'LINK', itemId: m.item.id, reason: m.reason });
+    // Carte #821 : l'événement automatique intact du justificatif, rattaché par provenance, prend l'intitulé de l'achat.
+    if (op.typeCode === 'ACQUISITION') actions.push(...retitleActions(op, m.item));
     return actions;
   }
   if (!d.creatable) return [{ kind: 'ABSTAIN', reason: 'NOT_CREATABLE' }];
@@ -1095,9 +1113,44 @@ function soleProvenance(op: OperationSnapshot, c: AgendaItemSnapshot): boolean {
     && c.originLinkRejected !== true && c.originRefType === 'asset_file' && c.originSoleOperationId === op.id;
 }
 
-/** Lot 76H (§3.5) : intitulé T4 générique d'un élément automatique INTACT → description précise de l'Opération. */
+/**
+ * Carte #821 — intitulé AUTOMATIQUE d'achat qui ne dit pas ce qui a été acheté (pur) : la tête est le nom du type
+ * (« Achat », celui du catalogue d'événements et de `HISTORICAL_TITLES`) et le sujet après « — » est absent, ou
+ * n'est que le nom d'un bien associé, le prestataire, ou le titre d'un justificatif de l'Opération — aucun ne
+ * désigne l'objet de l'achat. Tout autre intitulé (« Achat — Pneus hiver », « Achat du vélo ») est EXPLICITE.
+ */
+export function isUninformativePurchaseTitle(title: string, op: Pick<OperationSnapshot, 'assetNames' | 'provider' | 'documentTitles'>): boolean {
+  const [tete, ...suite] = title.split(' — ');
+  if (normalizeText(tete ?? '') !== normalizeText(ACQUISITION_TYPE_NAME)) return false;
+  const sujet = normalizeText(suite.join(' — '));
+  if (!sujet) return true;
+  return [...(op.assetNames ?? []), op.provider, ...(op.documentTitles ?? [])].some((n) => !!n && normalizeText(n) === sujet);
+}
+
+/**
+ * Carte #821 — intitulé PRÉCIS d'un achat (pur) : l'intitulé de l'Opération quand il dit ce qui a été acheté
+ * (« Achat de carburant ») ; null : rien de plus précis que le type (rien n'est inventé).
+ */
+export function precisePurchaseTitle(op: Pick<OperationSnapshot, 'technicalLabel' | 'assetNames' | 'provider' | 'documentTitles'>): string | null {
+  const titre = acquisitionEventTitle({ label: presentableLabel(op.technicalLabel) });
+  return titre === ACQUISITION_TYPE_NAME || isUninformativePurchaseTitle(titre, op) ? null : titre;
+}
+
+/**
+ * Lot 76H (§3.5) : intitulé T4 générique d'un élément automatique INTACT → description précise de l'Opération.
+ * Carte #821 : même mécanisme pour un ACHAT — l'événement automatique intact produit depuis le justificatif
+ * (« Achat », « Achat — Cupra ») reçoit l'intitulé de l'Opération, SUR L'ÉVÉNEMENT EXISTANT (même identifiant,
+ * renommage journalisé et restaurable). Jamais un élément saisi, modifié, à statut ouvert, ni un intitulé explicite.
+ */
 function retitleActions(op: OperationSnapshot, item: AgendaItemSnapshot): ProjectionAction[] {
-  if (op.typeCode !== 'INTERVENTION' || item.projected || !item.isAutomatic || isTouched(item) || item.pendingStatus) return [];
+  if (item.projected || !item.isAutomatic || isTouched(item) || item.pendingStatus) return [];
+  if (op.typeCode === 'ACQUISITION') {
+    if (item.businessType !== null && !(COMPATIBLE_BUSINESS_TYPES.ACQUISITION ?? []).includes(item.businessType)) return [];
+    if (!isUninformativePurchaseTitle(item.title, op)) return [];
+    const nom = precisePurchaseTitle(op);
+    return nom && nom !== item.title ? [{ kind: 'RETITLE', itemId: item.id, title: nom, from: item.title }] : [];
+  }
+  if (op.typeCode !== 'INTERVENTION') return [];
   if (!isGenericAgendaTitle(item.title)) return [];
   const precis = preciseOperationTitle(op);
   return precis && precis !== item.title ? [{ kind: 'RETITLE', itemId: item.id, title: precis, from: item.title }] : [];

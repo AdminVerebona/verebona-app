@@ -42,8 +42,13 @@ type Json = Record<string, any>;
 const AUJ = '2026-11-05';
 const CHECK = 'COH-OPS-ACQUISITION-DOCUMENT';
 // Règle remplacée (carte #813) : l'événement d'un achat légitime ne s'appelle plus « Achat » nu — il porte l'intitulé
-// descriptif de l'opération (ici le résumé du justificatif, qui dit déjà « Achat … »).
-const TITRE_ACHAT = 'Achat du vélo électrique';
+// descriptif de l'opération.
+// Règle remplacée (carte #821) : quand le justificatif est la preuve canonique de l'acquisition du bien LUI-MÊME (ici la
+// date / le prix d'achat du vélo), l'opération et son événement s'appellent « Achat <nom du bien> » — « Achat Vélo » —,
+// et non plus le résumé rédigé par l'analyse (« Achat du vélo électrique »).
+const TITRE_ACHAT = 'Achat Vélo';
+// Sans preuve canonique d'acquisition de ce justificatif (fiche vide, date de la fiche d'une autre origine) : repli existant, le résumé du justificatif.
+const TITRE_RESUME = 'Achat du vélo électrique';
 
 scenario('L111S', 'Acquisition prouvée par un justificatif : Opération, Informations, historique « Achat »', ({ sql, make }) => {
   const k = operationsKit(sql, make);
@@ -176,7 +181,7 @@ scenario('L111S', 'Acquisition prouvée par un justificatif : Opération, Inform
     expect(op).toMatchObject({ realized_date: '2024-05-02' });
     expect((await inspecter(compte, [f])).get(f)).toMatchObject({ verdict: 'REPAIRABLE', anomaly: 'ACQUISITION_EVENT_MISSING' });
     await controler(compte, [f], 'CORRECTIVE');
-    expect(await evenements(compte)).toEqual([expect.objectContaining({ title: TITRE_ACHAT, date: '2024-05-02', op: op.id })]);
+    expect(await evenements(compte)).toEqual([expect.objectContaining({ title: TITRE_RESUME, date: '2024-05-02', op: op.id })]);
     expect((await fiche(velo.id, 'acquisitionDate')).v ?? null).toBeNull();
     const [{ controlObjects }, { getCheck }, { pgClient }] = await Promise.all([import('@/services/coherence/engine'), import('@/services/coherence/registry'), import('@/db')]);
     await controlObjects({
@@ -217,7 +222,7 @@ scenario('L111S', 'Acquisition prouvée par un justificatif : Opération, Inform
     const [op] = await acquisitions(compte);
     expect(op.realized_date).toBe('2024-04-27');
     await projeter(compte);
-    expect(await evenements(compte)).toEqual([expect.objectContaining({ title: TITRE_ACHAT, date: '2024-04-27' })]);
+    expect(await evenements(compte)).toEqual([expect.objectContaining({ title: TITRE_RESUME, date: '2024-04-27' })]);
 
     const c2 = await make.account({ plan: 'premium' });
     const b2 = await make.asset(c2, { category: 'OBJET', name: 'Vélo' });
@@ -226,7 +231,7 @@ scenario('L111S', 'Acquisition prouvée par un justificatif : Opération, Inform
     const [o2] = await acquisitions(c2);
     expect(o2).toMatchObject({ status: 'REALIZED', realized_date: null });
     await projeter(c2);
-    expect(await evenements(c2)).toEqual([expect.objectContaining({ title: TITRE_ACHAT, date: null, op: o2.id })]);
+    expect(await evenements(c2)).toEqual([expect.objectContaining({ title: TITRE_RESUME, date: null, op: o2.id })]);
   });
 
   // ══ 06 ═══════════════════════════════════════════════════════════════════
@@ -327,7 +332,7 @@ scenario('L111S', 'Acquisition prouvée par un justificatif : Opération, Inform
     expect(await evenements(compte)).toEqual([]);
     await controler(compte, [f], 'CORRECTIVE');
     expect(await preuveControle(f)).toMatchObject({ last_result: 'REPAIRED' });
-    expect(await evenements(compte)).toEqual([expect.objectContaining({ title: TITRE_ACHAT, op: op.id, date: '2024-05-02' })]);
+    expect(await evenements(compte)).toEqual([expect.objectContaining({ title: TITRE_RESUME, op: op.id, date: '2024-05-02' })]);
     expect(await acquisitions(compte)).toHaveLength(1);
   });
 

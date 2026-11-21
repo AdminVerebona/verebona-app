@@ -193,11 +193,15 @@ describe('C813-U-06 — nom de l’OPÉRATION : « Achat » + désignation', () 
     expect(referenceEventLabel({ typeCode: 'CONTRACT', technicalLabel: 'Contrat d’assurance habitation' })).toBe('Contrat — Contrat d’assurance habitation');
     expect(acquisitionDisplayLabel('Acquisition du vélo')).toBe('Acquisition du vélo');
   });
-  it('événement d’achat légitime : intitulé, sinon prestataire, sinon bien — « Achat » nu seulement sans aucun élément', () => {
-    expect(acquisitionEventTitle({ label: `Achat ${DESIGNATION}`, provider: 'Cycles Exemple', assetNames: ['Jean Fourche'] })).toBe(`Achat ${DESIGNATION}`);
-    expect(acquisitionEventTitle({ label: null, provider: 'Cycles Exemple', assetNames: ['Jean Fourche'] })).toBe('Achat — Cycles Exemple');
-    expect(acquisitionEventTitle({ label: null, provider: null, assetNames: ['', 'Jean Fourche'] })).toBe('Achat — Jean Fourche');
-    expect(acquisitionEventTitle({ label: null, provider: null })).toBe('Achat');
+  // Règle remplacée (carte #821) : les replis « Achat — <prestataire> » et « Achat — <bien> » de la carte #813 sont
+  // retirés — ni le fournisseur ni le bien associé ne désignent l'objet de l'achat ; sans intitulé descriptif,
+  // l'événement porte le libellé neutre « Achat ».
+  it('événement d’achat légitime : intitulé de l’opération ; sans intitulé descriptif, libellé neutre — jamais le prestataire ni le bien associé', () => {
+    expect(acquisitionEventTitle({ label: `Achat ${DESIGNATION}` })).toBe(`Achat ${DESIGNATION}`);
+    expect(acquisitionEventTitle({ label: 'Coussin pour siège enfant' })).toBe('Achat — Coussin pour siège enfant');
+    expect(acquisitionEventTitle({ label: null })).toBe('Achat');
+    expect(acquisitionEventTitle({ label: 'Achat' })).toBe('Achat');
+    expect(acquisitionEventTitle({ label: '  ' })).toBe('Achat');
   });
 });
 

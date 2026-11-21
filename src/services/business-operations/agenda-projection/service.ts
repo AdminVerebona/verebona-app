@@ -153,6 +153,12 @@ interface ProjectionRunOptions {
    * écriture (ni élément, ni lien, ni carte, ni journal).
    */
   dryRun?: boolean;
+  /**
+   * Carte #821 : SIMULATION seulement (`dryRun`) — intitulé que la consolidation écrirait pour ces Opérations
+   * (`previewAcquisitionNames`) : le plan simulé est celui d'APRÈS la correction du libellé (rapport à blanc de la
+   * reprise). Ignoré hors simulation : une projection réelle lit toujours l'intitulé enregistré.
+   */
+  labelOverrides?: ReadonlyMap<number, string | null>;
 }
 
 /** Lot 76H : plan d'une Opération rendu par une simulation. */
@@ -264,6 +270,13 @@ async function loadOperationSnapshots(accountId: number, ids: readonly number[])
            COALESCE((SELECT array_agg(a.name ORDER BY a.id) FROM business_operation_asset_links l
                        JOIN assets a ON a.id = l.asset_id AND a.account_id = o.account_id AND a.deleted_at IS NULL
                       WHERE l.operation_id = o.id AND l.active), '{}') AS asset_names,
+           -- Carte #821 : titres des justificatifs sources (titre retenu, titre proposé par l'analyse) — reconnaître un
+           -- intitulé automatique d'achat qui ne porte que le nom d'un justificatif (lecture seule, bornée au compte).
+           COALESCE((SELECT array_agg(DISTINCT t.titre) FROM business_operation_sources s
+                       JOIN asset_files f ON f.id::text = s.source_entity_key AND f.account_id = o.account_id AND f.deleted_at IS NULL
+                       LEFT JOIN document_extractions e ON e.file_id = f.id AND e.account_id = o.account_id
+                       CROSS JOIN LATERAL (VALUES (f.retained_title), (e.title)) AS t(titre)
+                      WHERE s.operation_id = o.id AND s.active AND s.source_kind = 'DOCUMENT' AND NULLIF(btrim(t.titre), '') IS NOT NULL), '{}') AS document_titles,
            (SELECT a.status FROM business_operation_asset_links l JOIN assets a ON a.id = l.asset_id
              WHERE l.operation_id = o.id AND l.active ORDER BY (l.link_role = 'PRIMARY') DESC, l.asset_id LIMIT 1) AS primary_asset_status
       FROM business_operations o
@@ -292,6 +305,7 @@ async function loadOperationSnapshots(accountId: number, ids: readonly number[])
     realizedDateConflict: Array.isArray(x.realized_conflict) ? (x.realized_conflict as unknown[]).map(String).sort() : [],
     orderOnlyEvidence: x.order_only_evidence === true,
     assetNames: Array.isArray(x.asset_names) ? (x.asset_names as unknown[]).filter((n): n is string => typeof n === 'string' && n.trim().length > 0) : [],
+    documentTitles: Array.isArray(x.document_titles) ? (x.document_titles as unknown[]).filter((n): n is string => typeof n === 'string' && n.trim().length > 0) : [],
   }));
 }
 
@@ -732,7 +746,9 @@ async function projectIds(
 ): Promise<void> {
   const { beforeWrite, today, correlationId } = o;
   const opts = o;
-  const ops = await loadOperationSnapshots(accountId, ids);
+  const lues = await loadOperationSnapshots(accountId, ids);
+  const surcharge = opts.dryRun ? opts.labelOverrides : undefined;
+  const ops = surcharge ? lues.map((x) => (surcharge.has(x.id) ? { ...x, technicalLabel: surcharge.get(x.id) ?? null } : x)) : lues;
   const linked = await loadLinkedItems(accountId, ops.map((o) => o.id));
   const suppressions = await loadSuppressions(ops.map((o) => o.id));
   const retraits = await loadPrincipalWithdrawals(accountId, ops.map((o) => o.id));

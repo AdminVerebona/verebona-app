@@ -24,9 +24,18 @@
  *       REMOVE /    événement OBSOLÈTE (Opération invalidée, fusionnée, type
  *       DETACH      plus projeté) — OBSOLETE_EVENT ;
  *       SYNC        date, intitulé, nature ou liens divergents — EVENT_OUT_OF_SYNC ;
+ *       RETITLE     (achats seulement, carte #821) intitulé automatique d'un événement
+ *                   d'achat à remplacer par l'intitulé précis de l'opération — EVENT_OUT_OF_SYNC ;
  *       MARK_DONE   réalisation non propagée — COMPLETION_NOT_PROPAGATED ;
  *       ROLE        rôle principal / lié non appliqué (82D) — EVENT_ROLE_MISMATCH ;
  *       LINK        (hors interventions) événement existant non relié — EVENT_NOT_LINKED.
+ *     Carte #821 — INTITULÉ D'UN ACHAT : avant le plan, l'intitulé de l'opération d'achat est
+ *     comparé à celui que la consolidation T3 retient (`previewAcquisitionNames`, simulation
+ *     annulée, sans IA) : intitulé du système resté au type seul (« Achat ») ou à un nom que
+ *     la règle ne retient plus, alors que les sources disent ce qui a été acheté —
+ *     OPERATION_NAME_NOT_APPLIED, réparé par l'écriture du SEUL intitulé
+ *     (`applyAcquisitionNames`) puis la projection (le titre de l'événement suit). Un intitulé
+ *     saisi ou corrigé par l'utilisateur n'est jamais un écart.
  *     LINK / CONSOLIDATE d'une INTERVENTION : COH-AGENDA-OCCURRENCES (76H) —
  *     une seule chaîne de constat. ABSTAIN avec candidats : AMBIGUOUS (carte
  *     de rapprochement D14 existante, jamais tranchée ici).
@@ -60,16 +69,20 @@ const ANOMALIE_PAR_ACTION: Record<string, string> = {
   MARK_DONE: 'COMPLETION_NOT_PROPAGATED',
   ROLE: 'EVENT_ROLE_MISMATCH',
   LINK: 'EVENT_NOT_LINKED',
+  // Carte #821 : intitulé automatique d'un événement d'achat qui ne dit pas ce qui a été acheté (« Achat ») alors
+  // que l'opération porte un intitulé précis — même constat qu'un intitulé divergent (réparé par la projection).
+  RETITLE: 'EVENT_OUT_OF_SYNC',
 };
 /** Ordre de gravité du constat (le premier présent nomme l'anomalie). */
-const PRIORITE = ['CREATE', 'REMOVE', 'DETACH', 'MARK_DONE', 'SYNC', 'LINK', 'ROLE'];
+const PRIORITE = ['CREATE', 'REMOVE', 'DETACH', 'MARK_DONE', 'SYNC', 'RETITLE', 'LINK', 'ROLE'];
 
 /**
  * Actions d'un plan qui constituent un ÉCART (pure, testée). Intervention :
- * LINK / CONSOLIDATE appartiennent à COH-AGENDA-OCCURRENCES (76H).
+ * LINK / CONSOLIDATE / RETITLE appartiennent à COH-AGENDA-OCCURRENCES (76H).
+ * Carte #821 : RETITLE n'est un écart ici que pour un ACHAT.
  */
 export function projectionGaps(typeCode: string | null, actions: readonly Action[]): Action[] {
-  return actions.filter((a) => a.kind in ANOMALIE_PAR_ACTION && !(a.kind === 'LINK' && typeCode === 'INTERVENTION'));
+  return actions.filter((a) => a.kind in ANOMALIE_PAR_ACTION && !(a.kind === 'LINK' && typeCode === 'INTERVENTION') && !(a.kind === 'RETITLE' && typeCode !== 'ACQUISITION'));
 }
 
 /** Anomalie nommée d'un ensemble d'écarts (pure). */
@@ -78,13 +91,17 @@ export function projectionAnomaly(gaps: readonly Action[]): string | null {
   return k ? ANOMALIE_PAR_ACTION[k] : null;
 }
 
+/** Carte #821 : intitulé d'un achat que la consolidation T3 retient, pas encore enregistré. */
+const NAME_NOT_APPLIED = 'OPERATION_NAME_NOT_APPLIED';
+
 /** Empreinte stable d'un plan (identifiants et natures, jamais de texte libre). */
 const empreintePlan = (actions: readonly Action[]) =>
   actions.map((a) => [a.kind, a.itemId ?? null, (a as { functionalKey?: string }).functionalKey ?? null, a.kind === 'SYNC' ? Object.keys((a as { changes?: object }).changes ?? {}).sort() : null]);
 
 export const agendaOperationProjectionCheck: CoherenceCheck = {
   id: 'COH-AGENDA-OPERATION-PROJECTION',
-  version: 1,
+  // Carte #821 : v2 — intitulé des achats (OPERATION_NAME_NOT_APPLIED) et renommage d'un événement d'achat automatique (RETITLE).
+  version: 2,
   status: 'ACTIVE',
   title: 'Agenda : échéances calculables des Opérations présentes, événements obsolètes retirés (projection T4 rejouée sans IA)',
   domain: 'agenda',
@@ -94,18 +111,20 @@ export const agendaOperationProjectionCheck: CoherenceCheck = {
   sources: ['business_operations', 'business_operation_sources', 'business_operation_contract_details', 'agenda_items', 'business_operation_projection_suppressions'],
   applicability: 'compte éligible ; colonnes 0223 présentes (sinon la projection s’abstient : aucun écart constaté)',
   invariant: 'la représentation Agenda d’une Opération est exactement celle que décide la projection courante (plan simulé vide hors abstentions)',
-  anomalies: ['MISSING_CALCULABLE_EVENT', 'OBSOLETE_EVENT', 'EVENT_OUT_OF_SYNC', 'COMPLETION_NOT_PROPAGATED', 'EVENT_ROLE_MISMATCH', 'EVENT_NOT_LINKED', 'PROJECTION_MATCH_UNCERTAIN'],
-  autoRepairWhen: 'plan de projection certain (actions de la projection courante), appliqué par le même moteur',
+  anomalies: ['MISSING_CALCULABLE_EVENT', 'OBSOLETE_EVENT', 'EVENT_OUT_OF_SYNC', 'COMPLETION_NOT_PROPAGATED', 'EVENT_ROLE_MISMATCH', 'EVENT_NOT_LINKED', 'PROJECTION_MATCH_UNCERTAIN', NAME_NOT_APPLIED],
+  autoRepairWhen: 'plan de projection certain (actions de la projection courante), appliqué par le même moteur ; carte #821 : intitulé d’achat posé par le système que la consolidation T3 remplacerait (jamais un intitulé de l’utilisateur)',
   forbiddenRepairs: [
     'recopier une règle de projection', 'appeler T4 (IA)', 'recréer un événement supprimé par l’utilisateur',
     'modifier un événement touché par l’utilisateur', 'trancher un rapprochement incertain',
+    'remplacer un intitulé d’opération saisi ou corrigé par l’utilisateur', 'recopier la règle de nommage d’un achat',
   ],
-  services: ['business-operations/agenda-projection/service#projectAccountOperations'],
+  services: ['business-operations/agenda-projection/service#projectAccountOperations',
+    'business-operations/consolidation/consolidator#previewAcquisitionNames', 'business-operations/consolidation/consolidator#applyAcquisitionNames'],
   chain: ['T3', 'T4', 'PROJECTION'],
   triggers: ['AGENDA_ITEM_UPDATED', 'SOURCE_ANALYZED'],
   frequency: 'campagne exhaustive quotidienne + contrôle ciblé (agenda, analyse)',
   criticality: 'MEDIUM',
-  tests: ['L83E-E2E-01', 'L83E-E2E-02', 'L83E-U-PROJECTION'],
+  tests: ['L83E-E2E-01', 'L83E-E2E-02', 'L83E-U-PROJECTION', 'C821-U-09', 'L116I-E2E-04'],
 
   async listObjects(ctx, accountId, afterId, limit) {
     return idsOf(await rows(ctx.sql, `SELECT o.id FROM business_operations o WHERE o.account_id = $1 AND o.id > $2 ORDER BY o.id LIMIT $3`, [accountId, afterId, limit]));
@@ -133,8 +152,23 @@ export const agendaOperationProjectionCheck: CoherenceCheck = {
       ? await projectAccountOperations(accountId, { operationIds: enCours, dryRun: true, correlationId: ctx.correlationId, today: ctx.today })
       : { plans: [] as Array<{ operationId: number; typeCode: string | null; decision: string; actions: Action[] }> };
     const plans = new Map((sim.plans ?? []).map((p) => [p.operationId, p]));
+    // Carte #821 : intitulé des achats que la consolidation T3 retient (simulation annulée, sans IA) — règle rejouée, jamais recopiée.
+    const achats = enCours.filter((id) => vivantes.get(id) === 'ACQUISITION');
+    const noms = achats.length
+      ? await (await import('@/services/business-operations/consolidation/consolidator')).previewAcquisitionNames(accountId, achats, ctx.today)
+      : new Map<number, import('@/services/business-operations/consolidation/consolidator').AcquisitionNamePreview>();
     for (const id of ids) {
       if (!vivantes.has(id)) { out.set(id, { verdict: 'GONE' }); continue; }
+      const nom = noms.get(id);
+      if (nom?.wouldChange) {
+        out.set(id, {
+          verdict: 'REPAIRABLE', anomaly: NAME_NOT_APPLIED, faultyLink: 'T3',
+          expected: { technicalLabel: nom.expected, basis: nom.basis }, observed: { technicalLabel: nom.stored },
+          detail: { operationId: id, repairChain: 'écriture du seul intitulé de l’opération (décision de la consolidation T3), puis projection T4 de l’opération' },
+          inputHash: hashOf({ id, stored: nom.stored, expected: nom.expected }),
+        });
+        continue;
+      }
       const p = plans.get(id);
       const actions = (p?.actions ?? []) as Action[];
       const ecarts = projectionGaps(vivantes.get(id) ?? null, actions);
@@ -159,11 +193,16 @@ export const agendaOperationProjectionCheck: CoherenceCheck = {
   async repair(ctx, accountId, items) {
     const out = new Map<number, RepairResult>();
     const { projectAccountOperations } = await import('@/services/business-operations/agenda-projection/service');
-    for (const { id } of items) {
+    for (const { id, inspection } of items) {
+      // Carte #821 : l'intitulé d'abord (écriture du seul intitulé, historique avant / après), puis la projection qui le lit.
+      const renommes = inspection.anomaly === NAME_NOT_APPLIED
+        ? await (await import('@/services/business-operations/consolidation/consolidator')).applyAcquisitionNames(accountId, [id], { today: ctx.today, correlationId: ctx.correlationId })
+        : [];
       const r = await projectAccountOperations(accountId, { operationIds: [id], correlationId: ctx.correlationId, today: ctx.today });
       out.set(id, {
-        called: true, service: 'projectAccountOperations', aiCalls: 0,
-        result: { created: r.created, updated: r.updated, linked: r.linked, removed: r.removed, detached: r.detached, roles: r.roles ?? 0, changes: r.changes, skipped: r.skipped ?? null },
+        called: true, service: inspection.anomaly === NAME_NOT_APPLIED ? 'applyAcquisitionNames+projectAccountOperations' : 'projectAccountOperations', aiCalls: 0,
+        result: {
+          ...(inspection.anomaly === NAME_NOT_APPLIED ? { anomaly: inspection.anomaly, labelsRenamed: renommes.length } : {}), created: r.created, updated: r.updated, linked: r.linked, removed: r.removed, detached: r.detached, roles: r.roles ?? 0, changes: r.changes, skipped: r.skipped ?? null },
         // Retraits : trace 0223 (`agenda_item_removals`, restaurable) ; créations : clé fonctionnelle de l'Opération.
         rollbackRef: `agenda_item_removals:correlation=${ctx.correlationId};agenda_items:business_operation_id=${id}`,
       });

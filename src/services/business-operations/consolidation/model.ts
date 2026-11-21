@@ -37,7 +37,7 @@
  *     plusieurs documents n'est qu'une composante (empreinte sans référence).
  * ══════════════════════════════════════════════════════════════════════════
  */
-import { corroborateAcquisition, type AcquisitionEvidenceIndex, type Corroboration } from './acquisition-corroboration';
+import { corroborateAcquisition, provenAssetAcquisition, type AcquisitionEvidenceIndex, type Corroboration } from './acquisition-corroboration';
 import { createHash } from 'node:crypto';
 import { isCoveragePeriodDocumentType } from '@/lib/referential/v2/coverage-document-types';
 import { dayMatchesBound, type DocumentRelation, type TermQualification } from '@/services/documents/business-periods/t1-v2';
@@ -48,7 +48,8 @@ import {
 } from '../model';
 import { hintKey, planDocumentAdjustments } from '../finance/commercial-adjustments';
 import { isOrderDocumentType, isOrderEvidenceWithoutRealization } from '@/services/canonical/registry/order-evidence';
-import { acquisitionLabelFromDesignation } from '@/lib/reference-events/operation-title';
+import { acquisitionLabelFromDesignation, acquisitionName, type AcquisitionNameBasis } from '@/lib/reference-events/operation-title';
+import { expenseCategoryLabelOfWording } from './acquisition-name';
 import { financingEvidenceOf } from './financing-evidence';
 
 // ── Entrées persistées ─────────────────────────────────────────────────────
@@ -170,6 +171,12 @@ interface IdentityContext {
    * aucune corroboration.
    */
   acquisitionEvidence?: AcquisitionEvidenceIndex;
+  /**
+   * Carte #821 : noms des biens du contexte (bien → nom). Le bien ASSOCIÉ ne nomme jamais un achat : son nom est
+   * retiré de la désignation ; il ne nomme l'achat que si l'acquisition du bien lui-même est établie
+   * (`provenAssetAcquisition`). Absent : aucun nom de bien n'est retiré ni employé.
+   */
+  assetNames?: ReadonlyMap<number, string>;
 }
 
 // ── Identité candidate ─────────────────────────────────────────────────────
@@ -255,8 +262,18 @@ export interface CandidateIdentity {
    * Carte #813 (A) : NOM de l'achat dérivé de la désignation extraite du justificatif (« Achat Polisport
    * groovy coussin gris ») — moteur de titrage existant, jamais un texte rédigé. Absent : le résumé du
    * candidat reste le libellé (règle antérieure).
+   * Carte #821 : c'est le nom de l'OBJET réellement acheté (`acquisitionName`) — désignation, sinon catégorie de
+   * dépense (« Achat de carburant »), sinon bien dont l'acquisition est établie (« Achat Cupra »).
    */
   designationLabel?: string;
+  /** Carte #821 : fondement de `designationLabel` (désignation, catégorie de dépense, acquisition du bien). Trace. */
+  designationBasis?: AcquisitionNameBasis;
+  /**
+   * Carte #821 : nom que la règle de la carte #813 tirait de la même désignation quand la règle courante ne le
+   * retient plus (désignation réduite au fournisseur ou au bien associé : « Achat TotalEnergies »). Un intitulé
+   * enregistré égal à ce nom a été posé par le système — il n'est pas une correction de l'utilisateur.
+   */
+  supersededDesignationLabel?: string;
   /**
    * Lot 43 (O4) : identité d'une donnée STRUCTURÉE du bien (source
    * ASSET_DATA, `asset-data.ts`) et non d'un candidat T1 — sa nature et
@@ -470,14 +487,27 @@ export function buildCandidateIdentity(c: CandidateRecord, ctx: IdentityContext)
   // Carte #813 (A) : nom d'un ACHAT depuis la désignation du justificatif, seulement si elle désigne sans
   // ambiguïté CETTE réalité (un seul candidat établi dans le document).
   const seulDuDocument = (ctx.documentCandidates ?? [c]).filter((x) => x.fileId === c.fileId && x.established).length <= 1;
-  const designationLabel = (corroboration?.type ?? type) === 'ACQUISITION' && ctx.fileDesignation && seulDuDocument
-    ? acquisitionLabelFromDesignation(ctx.fileDesignation.subject, { otherArticles: ctx.fileDesignation.otherArticles }) : null;
-  // Carte #819 (E) : pièces de la succession commande → facture d'un ACHAT (date du document conservée pour elles seules).
+  // Carte #821 : le nom désigne l'OBJET réellement acheté — désignation fiable, sinon catégorie de dépense
+  // (référentiel des dépenses d'usage), sinon bien dont CE document prouve l'acquisition (preuve canonique). Le bien
+  // associé et le fournisseur ne nomment jamais l'achat. La catégorie lue dans le résumé est propre au candidat.
   const typeFinal = corroboration?.type ?? type;
+  const designation = typeFinal === 'ACQUISITION' && ctx.fileDesignation && seulDuDocument ? ctx.fileDesignation : null;
+  const bienAcquis = typeFinal === 'ACQUISITION' && seulDuDocument
+    ? provenAssetAcquisition({ fileId: c.fileId, established, status, role, assetIds, equipmentIds }, ctx.acquisitionEvidence) : null;
+  const nomAchat = typeFinal === 'ACQUISITION' ? acquisitionName({
+    designation: designation?.subject ?? null, otherArticles: designation?.otherArticles === true, summary: c.summary,
+    provider: p.provider ?? null, assetNames: assetIds.map((id) => ctx.assetNames?.get(id) ?? null),
+    acquiredAssetName: bienAcquis !== null ? ctx.assetNames?.get(bienAcquis) ?? null : null,
+    categoryOf: expenseCategoryLabelOfWording,
+  }) : null;
+  const designationLabel = nomAchat?.label ?? null;
+  const nomCarte813 = designation ? acquisitionLabelFromDesignation(designation.subject, { otherArticles: designation.otherArticles }) : null;
+  // Carte #819 (E) : pièces de la succession commande → facture d'un ACHAT (date du document conservée pour elles seules).
   const pieceDeCommande = typeFinal === 'ACQUISITION' && (role === 'ORDER' || isOrderDocumentType(ctx.fileDocumentTypeCode));
   const dateDocument = typeFinal === 'ACQUISITION' && (pieceDeCommande || role === 'INVOICE') ? dateOrNull(ctx.fileDocumentDate ?? null) : null;
   return {
-    ...(designationLabel ? { designationLabel } : {}),
+    ...(designationLabel && nomAchat ? { designationLabel, designationBasis: nomAchat.basis } : {}),
+    ...(nomCarte813 && nomCarte813 !== designationLabel ? { supersededDesignationLabel: nomCarte813 } : {}),
     ...(commandeSansRealisation ? { orderWithoutRealization: true as const } : {}),
     ...(financementSansPreuve ? { financingWithoutEvidence: true as const } : {}),
     ...(pieceDeCommande ? { orderEvidence: true as const } : {}),

@@ -64,16 +64,19 @@ describe('O7-01 — tableau C16 : projection par type (decideProjection)', () =>
   it('C16-04b — CLAIM ancré sur un événement de l\'historique (lot 44) : équivalent existant, rien n\'est créé', () => {
     expect(decideProjection(op({ typeCode: 'CLAIM', claimHistoryEventId: 9 }), AUJ)).toEqual({ kind: 'NONE', reason: 'EQUIVALENT_EXISTS', keepLinks: true });
   });
-  // Règle remplacée (carte #813) : un achat LÉGITIME ne s'appelle plus « Achat » nu — son titre est descriptif
-  // (intitulé de l'opération, sinon prestataire, sinon bien associé).
-  it('F-142 / C16-05 — ACQUISITION datée → historique d\'entrée en possession, titre DESCRIPTIF (jamais « Achat » nu)', () => {
+  // Règle remplacée (carte #813) : un achat LÉGITIME ne s'appelle plus « Achat » nu — son titre est descriptif.
+  // Règle remplacée (carte #821) : le titre est l'intitulé de l'opération (objet réellement acheté) ; les replis
+  // « Achat — <prestataire> » et « Achat — <bien associé> » sont retirés (ni l'un ni l'autre n'est l'objet de
+  // l'achat) : sans intitulé descriptif, libellé neutre « Achat ».
+  it('F-142 / C16-05 — ACQUISITION datée → historique d\'entrée en possession, titre = intitulé de l\'opération ; jamais le prestataire ni le bien associé', () => {
     const base = { typeCode: 'ACQUISITION' as const, realizedDate: '2021-03-01' };
     expect(desired(op({ ...base, technicalLabel: 'Achat Polisport groovy coussin gris' })))
       .toMatchObject({ key: 'ACQUISITION', nature: 'HISTORICAL', businessType: 'purchase', title: 'Achat Polisport groovy coussin gris' });
+    expect(desired(op({ ...base, technicalLabel: 'Achat de carburant', provider: 'TotalEnergies', assetNames: ['Cupra'] })).title).toBe('Achat de carburant');
     expect(desired(op({ ...base, technicalLabel: 'Vélo électrique' })).title).toBe('Achat — Vélo électrique');
-    expect(desired(op({ ...base, technicalLabel: null, provider: 'Cycles Exemple' })).title).toBe('Achat — Cycles Exemple');
-    expect(desired(op({ ...base, technicalLabel: null, provider: null, assetNames: ['Jean Fourche'] })).title).toBe('Achat — Jean Fourche');
-    // Rien de descriptif (aucun intitulé, aucun prestataire, nom du bien inconnu de l'appelant) : le type seul, dernier repli.
+    expect(desired(op({ ...base, technicalLabel: null, provider: 'Cycles Exemple' })).title).toBe('Achat');
+    expect(desired(op({ ...base, technicalLabel: null, provider: null, assetNames: ['Jean Fourche'] })).title).toBe('Achat');
+    expect(desired(op({ ...base, technicalLabel: 'Achat', provider: 'TotalEnergies', assetNames: ['Cupra'] })).title).toBe('Achat');
     expect(desired(op({ ...base, technicalLabel: null, provider: null })).title).toBe('Achat');
   });
   it('#813-D — ACQUISITION dont la SEULE preuve est une commande : aucun événement « Achat », daté ou non, quel que soit le statut', () => {

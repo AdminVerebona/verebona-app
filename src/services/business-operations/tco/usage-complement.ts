@@ -280,6 +280,21 @@ export function usageCategoriesOfText(text: string): UsageCategory[] {
   return (Object.keys(USAGE_LEXICON) as Array<keyof typeof USAGE_LEXICON>).filter((c) => USAGE_LEXICON[c].test(t));
 }
 
+/**
+ * Carte #821 — catégorie d'usage dont le texte est ENTIÈREMENT la formulation
+ * (pure) : « carburant », « sans plomb », « péage ». Même vocabulaire que le
+ * classement lexical (`USAGE_LEXICON`), appliqué au texte ENTIER : un texte
+ * qui dit autre chose en plus (« bouchon de réservoir essence ») ne désigne
+ * pas une catégorie — null. Deux catégories : ambiguë, null. « Autre » n'est
+ * jamais reconnue (classement de l'utilisateur seulement).
+ */
+export function usageCategoryOfWording(text: string | null | undefined): Exclude<UsageCategory, 'OTHER'> | null {
+  const t = normaliser(text);
+  if (!t) return null;
+  const cats = (Object.keys(USAGE_LEXICON) as Array<keyof typeof USAGE_LEXICON>).filter((c) => new RegExp(`^(?:${USAGE_LEXICON[c].source})$`).test(t));
+  return cats.length === 1 ? cats[0] : null;
+}
+
 const RETENUE = (s: string) => s === 'RETAINED_DIRECT' || s === 'RETAINED_CONSOLIDATED';
 const CREDIT = new Set(['REDUCTION', 'REFUND']);
 
