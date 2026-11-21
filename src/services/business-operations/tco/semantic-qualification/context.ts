@@ -97,7 +97,7 @@ export async function loadQualificationContext(sql: Sql, accountId: number, x: {
   const extraits = await excerptsOf(sql, accountId, ids, (f) => (f === x.fileId ? B.maxExcerptsTarget : B.maxExcerptsRelated), montants);
   // Faits T1 persistés, champs corrigés, document commun à plusieurs biens.
   const faits = await q(sql, `
-    SELECT file_id, fact_key, label, COALESCE(value_text, normalized_value) AS value, excerpt FROM document_facts
+    SELECT id, file_id, fact_key, COALESCE(raw_key, fact_key) AS raw_key, label, COALESCE(value_text, normalized_value) AS value, excerpt FROM document_facts
      WHERE account_id = $1 AND file_id = ANY($2::int[]) AND status = 'active' ORDER BY file_id, id LIMIT 200`, [accountId, intArray(ids)]).catch((e) => { if (tableMissing(e)) return [] as Row[]; throw e; });
   const fiches = await q(sql, `
     SELECT f.id, COALESCE((SELECT array_agg(k) FROM jsonb_object_keys(CASE WHEN jsonb_typeof(f.user_edited_fields) = 'object' THEN f.user_edited_fields ELSE '{}'::jsonb END) k), '{}') AS corrected,
@@ -106,15 +106,33 @@ export async function loadQualificationContext(sql: Sql, accountId: number, x: {
       FROM asset_files f WHERE f.account_id = $1 AND f.id = ANY($2::int[])`, [accountId, intArray(ids)]);
   let periodes: Row[] = [];
   try {
-    periodes = await q(sql, `SELECT file_id, period_kind, start_on, end_on FROM document_business_periods WHERE account_id = $1 AND file_id = ANY($2::int[]) AND status = 'ACTIVE' ORDER BY file_id, id LIMIT 60`, [accountId, intArray(ids)]);
+    periodes = await q(sql, `SELECT id, file_id, period_kind, start_on, end_on, end_open, user_locked, origin FROM document_business_periods WHERE account_id = $1 AND file_id = ANY($2::int[]) AND status = 'ACTIVE' ORDER BY file_id, id LIMIT 60`, [accountId, intArray(ids)]);
   } catch (e) { if (!tableMissing(e)) throw e; }
+  // Carte #812 (reprise du 21/11) — une validité qui n'est que la date du document n'est JAMAIS donnée à T3 : ni la
+  // période encore portée par le stock (règle de lecture commune), ni le fait T1 `period.*` que la règle écarte.
+  // Ce n'est pas un filtre d'après les mots : c'est la règle de qualification des périodes, appliquée à la lecture.
+  const ecartes = new Set<number>();
+  {
+    const periodes812 = await import('@/services/documents/business-periods/service');
+    const { POINT_DATE_GUARDED_KINDS } = await import('@/services/documents/business-periods/point-date');
+    const { PERIOD_FACT_KEYS } = await import('@/lib/documents/business-periods');
+    const copies = await periodes812.pointDateCopyIds(sql, accountId, periodes.map((r) => ({
+      id: Number(r.id), fileId: Number(r.file_id), kind: r.period_kind as (typeof POINT_DATE_GUARDED_KINDS)[number],
+      start: txt(r.start_on), end: txt(r.end_on), openEnded: r.end_open === true, userLocked: r.user_locked === true, origin: txt(r.origin),
+    })));
+    if (copies.size) periodes = periodes.filter((r) => !copies.has(Number(r.id)));
+    const gardes = (r: Row) => { const k = PERIOD_FACT_KEYS[String(r.raw_key ?? '').trim().toLowerCase()]; return k !== undefined && POINT_DATE_GUARDED_KINDS.includes(k); };
+    for (const f of new Set(faits.filter(gardes).map((r) => Number(r.file_id)))) {
+      for (const x of await periodes812.pointDateRefusedFacts(sql, accountId, f)) ecartes.add(x.factId);
+    }
+  }
   const fiche = new Map(fiches.map((f) => [Number(f.id), f]));
   const doc = (d: (typeof autresBruts)[number], rel: string): RawQualificationDocument => {
     const f = fiche.get(d.id);
     return {
       id: d.id, type: d.type, title: d.title, date: d.date, provider: d.provider, references: d.references, relation: rel,
       excerpts: extraits.get(d.id) ?? d.excerpts,
-      facts: faits.filter((r) => Number(r.file_id) === d.id).map((r) => ({ key: String(r.fact_key), label: txt(r.label), value: txt(r.value), quote: txt(r.excerpt) })),
+      facts: faits.filter((r) => Number(r.file_id) === d.id && !ecartes.has(Number(r.id))).map((r) => ({ key: String(r.fact_key), label: txt(r.label), value: txt(r.value), quote: txt(r.excerpt) })),
       periods: periodes.filter((r) => Number(r.file_id) === d.id).map((r) => ({ kind: String(r.period_kind), start: txt(r.start_on), end: txt(r.end_on) })),
       userCorrectedFields: (Array.isArray(f?.corrected) ? f!.corrected as unknown[] : []).map(String),
       multiAsset: f?.multi === true, linkedAssetCount: Number(f?.linked ?? 0),

@@ -94,13 +94,22 @@ describe('L116F-U-RULE — une date du document n’est jamais, à elle seule, u
   it('contrat v2 : pertinence non établie par T1 (indéterminée, sans date) → jamais une validité tirée de la date du document', () => {
     expect(verdict({ start: '2026-11-17', end: null }, 'Offre valable à compter du 17/11/2026', { relevance: 'UNDETERMINED' })).toMatchObject({ verdict: 'POINT_DATE_COPY', reason: 'RELEVANCE_NOT_ESTABLISHED' });
     expect(verdict({ start: '2026-11-17', end: null }, 'Offre valable à compter du 17/11/2026', { relevance: 'UNKNOWN' })).toMatchObject({ verdict: 'POINT_DATE_COPY', reason: 'RELEVANCE_NOT_ESTABLISHED' });
-    expect(verdict({ start: '2026-11-17', end: null }, 'Offre valable à compter du 17/11/2026', { relevance: 'KNOWN' })).toMatchObject({ verdict: 'TO_REVIEW' });
+    // Règle remplacée (carte #812, recette du 21/11) : même « pertinente et connue » selon T1, un DÉBUT égal à la date
+    // du document sans rien d'autre n'établit aucune validité (avant : « à réexaminer »).
+    expect(verdict({ start: '2026-11-17', end: null }, 'Offre valable à compter du 17/11/2026', { relevance: 'KNOWN' })).toMatchObject({ verdict: 'POINT_DATE_COPY', reason: 'DOCUMENT_DATE_RESTATED' });
+    expect(verdict({ start: null, end: '2026-11-17' }, 'Offre valable jusqu’au 17/11/2026', { relevance: 'KNOWN' })).toMatchObject({ verdict: 'TO_REVIEW' });
   });
 
-  it('« à réexaminer » : même jour, mention PROPRE citant la date — jamais déclarée fausse', () => {
-    expect(verdict({ start: '2026-11-17', end: null }, 'Offre valable à compter du 17/11/2026')).toEqual({ verdict: 'TO_REVIEW', date: '2026-11-17', roles: ['DOCUMENT_DATE', 'T1_DOCUMENT_DATE', 'OPERATION_DATE'] });
-    // Une mention plus longue que celle de la date du document dit quelque chose de plus : indéterminé, pas faux.
-    expect(verdict({ start: '2026-11-17', end: null }, 'Commande du 17/11/2026, offre valable dès ce jour')).toMatchObject({ verdict: 'TO_REVIEW' });
+  // Règle remplacée (carte #812, recette du 21/11). AVANT : un début seul égal à la date du document, cité dans une
+  // « mention propre », était « à réexaminer » (TO_REVIEW) et la ligne du stock restait affichée. Le PO a tranché par
+  // sa recette : une mention qui ne fait que redire la date du document ne suffit pas — c'est une copie, avec motif.
+  it('début égal à la date du document, mention PROPRE : copie (`DOCUMENT_DATE_RESTATED`) ; seule la FIN SEULE reste « à réexaminer »', () => {
+    const roles = ['DOCUMENT_DATE', 'T1_DOCUMENT_DATE', 'OPERATION_DATE'];
+    expect(verdict({ start: '2026-11-17', end: null }, 'Offre valable à compter du 17/11/2026')).toEqual({ verdict: 'POINT_DATE_COPY', date: '2026-11-17', roles, reason: 'DOCUMENT_DATE_RESTATED' });
+    expect(verdict({ start: '2026-11-17', end: null }, 'Commande du 17/11/2026, offre valable dès ce jour')).toMatchObject({ verdict: 'POINT_DATE_COPY', reason: 'DOCUMENT_DATE_RESTATED' });
+    expect(verdict({ start: '2026-11-17', end: '2026-11-17' }, 'Votre commande du 17/11/2026 est validée')).toMatchObject({ verdict: 'POINT_DATE_COPY', reason: 'DOCUMENT_DATE_RESTATED' });
+    // Non tranché par le PO, inchangé : une FIN SEULE le jour du document, portée par une mention propre.
+    expect(verdict({ start: null, end: '2026-11-17' }, 'Offre valable jusqu’au 17/11/2026')).toEqual({ verdict: 'TO_REVIEW', date: '2026-11-17', roles });
   });
 
   it('justifiée : autre jour, seconde borne, durée indéterminée, date partielle, aucune date du document connue', () => {
@@ -246,20 +255,35 @@ describe('L116F-U-PLAN — critères 6 et 7 : correction de l’utilisateur, sto
     expect(svc.pointDateReport(q, [], rejeu)).toEqual({ copies: [], toReview: [], refusedFacts: 1 });
   });
 
-  it('cas indéterminé : jamais créé par une nouvelle analyse, CONSERVÉ « à réexaminer » s’il est déjà enregistré', () => {
+  // Règle remplacée (carte #812, recette du 21/11). AVANT : le début seul à « mention propre » du stock était
+  // CONSERVÉ « à réexaminer » (keep + review) et restait affiché. APRÈS : il est retiré du stock avec son motif.
+  it('début seul à mention propre (ancien cas « à réexaminer ») : jamais créé, RETIRÉ du stock avec motif', () => {
     const q = qualifier({ facts: [propre], pointDates: COMMANDE });
     expect(q.desired).toEqual([]);
-    expect(q.review).toHaveLength(1);
+    expect(q.review).toEqual([]);
+    expect(q.refused).toMatchObject([{ factId: 2, kind: 'VALIDITY', date: '2026-11-17', reason: 'DOCUMENT_DATE_RESTATED' }]);
     // Nouveau document : rien n'est créé.
     expect(m.planRefresh([], q.desired, q.review)).toEqual({ keep: [], supersede: [], insert: [] });
-    // Stock : conservé, signalé.
+    // Stock : retiré, motif tracé.
     const stock = [enregistree(11, propre)];
     const plan = m.planRefresh(stock, q.desired, q.review);
-    expect(plan).toEqual({ keep: [11], supersede: [], insert: [], review: [11] });
-    expect(svc.pointDateReport(q, stock, plan)).toMatchObject({ copies: [], toReview: [{ periodId: 11, date: '2026-11-17' }] });
-    // Après une nouvelle analyse (autre fait, même contenu), la période d'avant n'a plus sa preuve : elle n'est pas recréée.
+    expect(plan).toEqual({ keep: [], supersede: [11], insert: [] });
+    expect(svc.pointDateReport(q, stock, plan)).toMatchObject({ copies: [{ periodId: 11, date: '2026-11-17', reason: 'DOCUMENT_DATE_RESTATED' }], toReview: [] });
+    // Après une nouvelle analyse (autre fait, même contenu) : toujours retirée, jamais recréée.
     const q2 = qualifier({ facts: [{ ...propre, factId: 99 }], pointDates: COMMANDE });
     expect(m.planRefresh(stock, q2.desired, q2.review)).toEqual({ keep: [], supersede: [11], insert: [] });
+  });
+
+  it('fin seule le jour du document, mention propre (non tranché par le PO) : jamais créée, CONSERVÉE « à réexaminer » si elle est enregistrée', () => {
+    const fin = fait(7, 'period.validity', '/2026-11-17', 'Offre valable jusqu’au 17/11/2026');
+    const q = qualifier({ facts: [fin], pointDates: COMMANDE });
+    expect(q.desired).toEqual([]);
+    expect(q.review).toHaveLength(1);
+    expect(m.planRefresh([], q.desired, q.review)).toEqual({ keep: [], supersede: [], insert: [] });
+    const stock = [enregistree(15, fin, { start: null, end: '2026-11-17' })];
+    const plan = m.planRefresh(stock, q.desired, q.review);
+    expect(plan).toEqual({ keep: [15], supersede: [], insert: [], review: [15] });
+    expect(svc.pointDateReport(q, stock, plan)).toMatchObject({ copies: [], toReview: [{ periodId: 15, date: '2026-11-17' }] });
   });
 
   it('critère 6 — correction de l’utilisateur : jamais retirée ni réécrite, les autres périodes suivent leur règle', () => {

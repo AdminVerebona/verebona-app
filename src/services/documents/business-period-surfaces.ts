@@ -87,7 +87,7 @@ export async function readDocumentPeriodSummaries(accountId: number, fileIds: re
   let rows: Row[] = [];
   try {
     rows = (await sql.unsafe(
-      `SELECT p.id, p.file_id, p.period_kind, p.segment_index, p.start_on, p.end_on, p.end_open, p.principal_hint, p.user_locked
+      `SELECT p.id, p.file_id, p.period_kind, p.segment_index, p.start_on, p.end_on, p.end_open, p.principal_hint, p.user_locked, p.origin
          FROM document_business_periods p
          JOIN asset_files f ON f.id = p.file_id AND f.account_id = p.account_id AND f.deleted_at IS NULL
         WHERE p.account_id = $1 AND p.file_id = ANY($2::int[]) AND p.status = 'ACTIVE'
@@ -98,9 +98,17 @@ export async function readDocumentPeriodSummaries(accountId: number, fileIds: re
     if (tableMissing(e)) return out;
     throw e;
   }
+  // Carte #812 (reprise du 21/11) : la règle vaut À LA LECTURE — une validité qui n'est que la date du document
+  // n'est restituée ni à la dépense, ni à l'Assistant, ni dans un dossier, même si le stock la porte encore.
+  const { pointDateCopyIds } = await import('./business-periods/service');
+  const copies = await pointDateCopyIds(sql, accountId, rows.map((r) => {
+    const v = toView(r);
+    return { id: v.id, fileId: v.fileId, kind: v.kind, start: v.start, end: v.end, openEnded: v.openEnded === true, userLocked: v.userCorrected, origin: typeof r.origin === 'string' ? r.origin : null };
+  }));
   const parFichier = new Map<number, Array<ReturnType<typeof toView>>>();
   for (const r of rows) {
     const v = toView(r);
+    if (copies.has(v.id)) continue;
     parFichier.set(v.fileId, [...(parFichier.get(v.fileId) ?? []), v]);
   }
   for (const [fileId, vs] of parFichier) {

@@ -35,6 +35,18 @@
  * Version nouvelle : la première campagne quotidienne l'exécute À BLANC (rapport), la suivante corrige
  * (règle A6 du moteur). Une période corrigée par l'utilisateur reste hors champ.
  *
+ * REPRISE APRÈS LA RECETTE KO DU 21/11/2026 (version inchangée : 2, pour ne pas requalifier le contrôle) :
+ *   · la règle A6 reste VOULUE ici (décision du PO du lot 100E, non modifiée) — elle implique que ce contrôle
+ *     ne retire rien avant qu'une campagne QUOTIDIENNE l'ait exécuté à blanc JUSQU'À SON TERME (COMPLETE) :
+ *     au mieux la campagne du surlendemain du déploiement, jamais si les campagnes restent partielles ou si
+ *     `COHERENCE_CAMPAIGN_MODE` vaut `dry_run` ; les contrôles ciblés suivent la même qualification ;
+ *   · ce délai ne décide donc plus de ce que l'utilisateur voit : la règle vaut À LA LECTURE
+ *     (`service#pointDateCopyIds`, aucune écriture) et l'exploitant dispose d'une reprise immédiate
+ *     (`scripts/reprise-812-validites-artificielles.ts`, même service de réparation que ce contrôle) ;
+ *   · règle resserrée (`point-date`, motif `DOCUMENT_DATE_RESTATED`) : un DÉBUT égal à la date du document,
+ *     sans rien d'autre, est une copie quelle que soit sa mention ; `BUSINESS_PERIODS_POINT_DATE_TO_REVIEW`
+ *     ne vaut plus que pour une FIN SEULE le jour du document portée par une mention propre.
+ *
  * Interdits : appeler l'IA, écrire une période absente des preuves, prolonger
  * une couverture (reconduction), toucher une correction de l'utilisateur, une
  * date contractuelle (`business_operation_*`), une dépense ou le TCO.
@@ -73,7 +85,7 @@ export const documentBusinessPeriodsCheck: CoherenceCheck = {
   triggers: ['SOURCE_ANALYZED', 'DOCUMENT_UPDATED'],
   frequency: 'campagne exhaustive quotidienne (reprise par lots de l’historique) + contrôle ciblé après analyse ou modification du document',
   criticality: 'MEDIUM',
-  tests: ['L113W-U-MODEL', 'L113W-U-COH', 'L113W-E2E-11', 'L116F-U-COH', 'L116F-E2E-05', 'L116F-E2E-06'],
+  tests: ['L113W-U-MODEL', 'L113W-U-COH', 'L113W-E2E-11', 'L116F-U-COH', 'L116F-E2E-05', 'L116F-E2E-06', 'L116F-E2E-DECATHLON', 'L116F-E2E-11'],
 
   async listObjects(ctx, accountId, afterId, limit) {
     return idsOf(await rows(ctx.sql, `

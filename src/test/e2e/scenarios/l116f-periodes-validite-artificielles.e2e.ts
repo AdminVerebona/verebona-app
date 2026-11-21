@@ -22,8 +22,9 @@
  *   L116F-E2E-05 (critère 6)  correction de l'utilisateur : persistante après une nouvelle
  *                 qualification et après le contrôle de cohérence ; les autres périodes et les autres
  *                 documents ne sont pas touchés ;
- *   L116F-E2E-06 (critère 7)  stock : à blanc (rapport, aucune écriture), correctif (copie prouvée
- *                 retirée et tracée, validité légitime et cas « à réexaminer » conservés), rejoué sans effet ;
+ *   L116F-E2E-06 (critère 7)  stock : à blanc (rapport, aucune écriture), correctif (copies retirées et
+ *                 tracées — y compris le début seul à « mention propre », règle remplacée par la recette
+ *                 du 21/11 —, validité légitime et fin seule « à réexaminer » conservées), rejoué sans effet ;
  *   L116F-E2E-07 (critère 8)  consommateurs : liste, recherche, dossiers / exports, Assistant — aucune
  *                 ligne de validité pour le bon de commande, la validité du devis toujours rendue.
  *
@@ -310,6 +311,9 @@ scenario('L116F', 'Documents — périodes de validité artificielles (#812)', (
     expect(await actives(b.id)).toEqual([]);
   });
 
+  // Règle remplacée (carte #812, recette du 21/11) : le document B (début seul le jour du document, « mention propre »)
+  // était CONSERVÉ « à réexaminer » et sa ligne restait affichée ; il est désormais RETIRÉ avec le motif précis
+  // `DOCUMENT_DATE_RESTATED`. Le cas « à réexaminer » est porté par D (fin seule le jour du document, non tranché).
   it('L116F-E2E-06 — stock : à blanc sans écriture, correctif ciblé et tracé, validités légitimes et cas à réexaminer conservés, rejouable', async () => {
     const c = await make.account({ plan: 'premium' });
     const autre = await make.account({ plan: 'premium' });
@@ -317,12 +321,15 @@ scenario('L116F', 'Documents — périodes de validité artificielles (#812)', (
     // A : copie PROUVÉE (la mention est celle de la date du document).
     const a = await bonDeCommande(c, m.id, { key: 'period.validity', value: '2026-11-17/', excerpt: 'Commande du 17/11/2026' });
     const pa = await stock(c, a.id, { start: '2026-11-17', end: null, factId: a.factId, quote: 'Commande du 17/11/2026' });
-    // B : même jour, mention PROPRE (« valable à compter du… ») — indéterminé : conservé « à réexaminer ».
+    // B : même jour, mention PROPRE (« valable à compter du… ») — règle remplacée : retiré (la mention ne fait que redire la date).
     const b = await bonDeCommande(c, m.id, { key: 'period.validity', value: '2026-11-17/', excerpt: 'Offre valable à compter du 17/11/2026' });
     const pb = await stock(c, b.id, { start: '2026-11-17', end: null, factId: b.factId, quote: 'Offre valable à compter du 17/11/2026' });
     // C : validité légitime (fin écrite).
     const cc = await bonDeCommande(c, m.id, { key: 'period.validity', value: '2026-11-17/2026-12-17', excerpt: 'Valable du 17/11/2026 au 17/12/2026' });
     const pc = await stock(c, cc.id, { start: '2026-11-17', end: '2026-12-17', factId: cc.factId, quote: 'Valable du 17/11/2026 au 17/12/2026' });
+    // D : FIN SEULE le jour du document, mention propre — non tranché par le PO : conservé « à réexaminer ».
+    const d = await bonDeCommande(c, m.id, { key: 'period.validity', value: '/2026-11-17', excerpt: 'Offre valable jusqu’au 17/11/2026' });
+    const pdd = await stock(c, d.id, { start: null, end: '2026-11-17', factId: d.factId, quote: 'Offre valable jusqu’au 17/11/2026' });
     // Autre compte : même défaut, hors du périmètre de la campagne — jamais touché (isolation).
     const m2 = await maison(autre);
     const z = await bonDeCommande(autre, m2.id, { key: 'period.validity', value: '2026-11-17/', excerpt: 'Commande du 17/11/2026' });
@@ -330,29 +337,38 @@ scenario('L116F', 'Documents — périodes de validité artificielles (#812)', (
 
     const etat = async () => (await sql<Json[]>`
       SELECT id::int AS id, status, superseded_reason AS reason FROM document_business_periods WHERE id = ANY(${[pa, pb, pc, pz]}::bigint[]) ORDER BY id`);
+    const etatD = async () => (await sql<Json[]>`SELECT status, superseded_reason AS reason FROM document_business_periods WHERE id = ${pdd}`)[0];
     const avant = await etat();
 
     // À BLANC : rapport, aucune écriture.
     const blanc = await runCoherenceFor(sql, [c.id], { mode: 'DRY_RUN', today: RECETTE_TODAY });
-    expect(blanc.results[CHECK]).toMatchObject({ WOULD_REPAIR: 1, AMBIGUOUS: 1, CONSISTENT: 1 });
+    expect(blanc.results[CHECK]).toMatchObject({ WOULD_REPAIR: 2, AMBIGUOUS: 1, CONSISTENT: 1 });
     expect(await etat()).toEqual(avant);
+    expect(await etatD()).toEqual({ status: 'ACTIVE', reason: null });
     const constatA = await proofOf(sql, c.id, CHECK, a.id);
     expect(constatA?.finding).toMatchObject({ anomaly: 'BUSINESS_PERIODS_POINT_DATE_COPY' });
     expect(JSON.stringify(constatA?.finding)).toContain('SAME_MENTION_AS_POINT_DATE');
     const constatB = await proofOf(sql, c.id, CHECK, b.id);
-    expect(constatB?.finding).toMatchObject({ anomaly: 'BUSINESS_PERIODS_POINT_DATE_TO_REVIEW' });
+    expect(constatB?.finding).toMatchObject({ anomaly: 'BUSINESS_PERIODS_POINT_DATE_COPY' });
+    expect(JSON.stringify(constatB?.finding)).toContain('DOCUMENT_DATE_RESTATED');
+    const constatD = await proofOf(sql, c.id, CHECK, d.id);
+    expect(constatD?.finding).toMatchObject({ anomaly: 'BUSINESS_PERIODS_POINT_DATE_TO_REVIEW' });
 
-    // CORRECTIF : la copie prouvée est retirée (conservée en base, SUPERSEDED, motif tracé) ; B et C restent.
+    // CORRECTIF : les copies sont retirées (conservées en base, SUPERSEDED, motif tracé) ; C et D restent.
     const correctif = await runCoherenceFor(sql, [c.id], { mode: 'CORRECTIVE', today: RECETTE_TODAY });
-    expect(correctif.results[CHECK]).toMatchObject({ REPAIRED: 1, AMBIGUOUS: 1, CONSISTENT: 1 });
+    expect(correctif.results[CHECK]).toMatchObject({ REPAIRED: 2, AMBIGUOUS: 1, CONSISTENT: 1 });
+    expect(await etatD()).toEqual({ status: 'ACTIVE', reason: null });
+    expect((await lignes(c, d.id)).principal).toBe('Fin de validité : 17/11/2026');
+    const details = await sql<Json[]>`SELECT id::int AS id, superseded_detail AS detail FROM document_business_periods WHERE id = ANY(${[pa, pb]}::bigint[]) ORDER BY id`;
+    expect(details).toEqual([{ id: pa, detail: 'SAME_MENTION_AS_POINT_DATE' }, { id: pb, detail: 'DOCUMENT_DATE_RESTATED' }]);
     expect(await etat()).toEqual([
       { id: pa, status: 'SUPERSEDED', reason: 'POINT_DATE_COPY' },
-      { id: pb, status: 'ACTIVE', reason: null },
+      { id: pb, status: 'SUPERSEDED', reason: 'POINT_DATE_COPY' },
       { id: pc, status: 'ACTIVE', reason: null },
       { id: pz, status: 'ACTIVE', reason: null },
     ]);
     expect((await lignes(c, a.id)).principal).toBeNull();
-    expect((await lignes(c, b.id)).principal).toBe('Début de validité : 17/11/2026');
+    expect((await lignes(c, b.id)).principal).toBeNull();
     expect((await lignes(c, cc.id)).principal).toBe('Période de validité : du 17/11/2026 au 17/12/2026');
     // Aucun appel d'IA par la reprise.
     const [{ n: ia }] = await sql<{ n: number }[]>`SELECT COALESCE(sum(ai_calls), 0)::int AS n FROM coherence_repairs WHERE account_id = ${c.id} AND check_id = ${CHECK}`;
@@ -361,11 +377,11 @@ scenario('L116F', 'Documents — périodes de validité artificielles (#812)', (
     // REJOUÉ : plus rien à faire, même état.
     const apres = await etat();
     const rejeu = await runCoherenceFor(sql, [c.id], { mode: 'CORRECTIVE', today: RECETTE_TODAY });
-    expect(rejeu.results[CHECK]).toMatchObject({ AMBIGUOUS: 1, CONSISTENT: 2 });
+    expect(rejeu.results[CHECK]).toMatchObject({ AMBIGUOUS: 1, CONSISTENT: 3 });
     expect(rejeu.results[CHECK].REPAIRED).toBeUndefined();
     expect(await etat()).toEqual(apres);
 
-    // Après une NOUVELLE analyse de B (faits remplacés), la validité indéterminée n'est pas recréée.
+    // Après une NOUVELLE analyse de B (faits remplacés), la validité n'est pas recréée.
     await sql`UPDATE document_facts SET status = 'superseded' WHERE id = ${b.factId}`;
     await faits(c, b.id, [{ key: 'period.validity', value: '2026-11-17/', excerpt: 'Offre valable à compter du 17/11/2026' }]);
     await rafraichir(c, b.id);

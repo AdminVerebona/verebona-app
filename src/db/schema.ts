@@ -4496,6 +4496,8 @@ export const documentBusinessPeriods = pgTable('document_business_periods', {
   // Carte #812 (1870) : motif et corrélation d'un retrait tracé (POINT_DATE_COPY) ; NULL : retrait ordinaire.
   supersededReason: text('superseded_reason'),
   supersededCorrelationId: text('superseded_correlation_id'),
+  // Carte #812, reprise du 21/11 (1871) : motif précis du retrait tracé (DOCUMENT_DATE_RESTATED, NO_OWN_PROOF…).
+  supersededDetail: text('superseded_detail'),
   createdAt: tstz('created_at'),
   updatedAt: tstz('updated_at'),
 }, (t) => ({

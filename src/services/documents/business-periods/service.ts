@@ -46,7 +46,7 @@ import {
   type DesiredPeriod, type PeriodCandidateInput, type PeriodEvidence, type PeriodFactInput, type PeriodInputs, type PeriodQualification, type StoredPeriod,
 } from './model';
 import { parseRelevance } from './t1-v2';
-import { POINT_DATE_GUARDED_KINDS, singleDayOf, type DocumentPointDate } from './point-date';
+import { classifyPointDatePeriod, isPointDateSuspect, POINT_DATE_GUARDED_KINDS, singleDayOf, type DocumentPointDate } from './point-date';
 import { resolvePeriods, type EntryResolution, type PeriodConflict, type ResolutionEntry, type UserPeriodDecision } from './resolution';
 import { loadRelationStates, type RelationState } from './relation-review';
 
@@ -70,7 +70,10 @@ const asObj = (v: unknown): Record<string, unknown> => {
 // ── Entrées (connaissance T1 persistée) ─────────────────────────────────────
 
 /** Entrées du modèle pour un document (lecture seule, bornée). */
-export async function loadPeriodInputs(sql: Sql | Tx, accountId: number, fileId: number): Promise<PeriodInputs> {
+export async function loadPeriodInputs(sql: Sql | Tx, accountId: number, fileId: number, opts: {
+  /** Carte #812 (reprise du 21/11) : jours portés par des périodes ENREGISTRÉES à réexaminer (`pointDateState`). */
+  extraDays?: readonly string[];
+} = {}): Promise<PeriodInputs> {
   const [cands, facts, run] = await Promise.all([
     sql.unsafe(
       `SELECT candidate_key, established, confidence, type_hint, payload FROM document_operation_candidates
@@ -117,7 +120,7 @@ export async function loadPeriodInputs(sql: Sql | Tx, accountId: number, fileId:
   return {
     candidates, facts: periodFacts,
     billing: { billedPeriod: basis.billedPeriod, statedMonth: pf.statedMonth, hasBillingBlock: Object.keys(bloc).length > 0 },
-    pointDates: await loadPointDates(sql, accountId, fileId, candidates, periodFacts),
+    pointDates: await loadPointDates(sql, accountId, fileId, candidates, periodFacts, opts.extraDays ?? []),
   };
 }
 
@@ -132,11 +135,14 @@ const jourIso = (v: unknown): string | null => (typeof v === 'string' && /^\d{4}
  * autres faits T1 dont la valeur est le jour concerné. Lues SEULEMENT quand un fait de période d'une
  * nature gardée se réduit à un seul jour (cas rare) : aucune requête de plus pour les autres documents.
  * Une lecture impossible ne lève pas : sans date ponctuelle connue, la qualification est celle d'avant.
+ * Reprise du 21/11 : `extraDays` — jours de périodes ENREGISTRÉES d'une nature gardée réduites à un seul
+ * jour (le fait T1 qui les fondait a pu disparaître) : leurs dates ponctuelles sont lues de la même façon.
  */
 export async function loadPointDates(
   sql: Sql | Tx, accountId: number, fileId: number, candidates: readonly PeriodCandidateInput[], facts: readonly PeriodFactInput[],
+  extraDays: readonly string[] = [],
 ): Promise<DocumentPointDate[]> {
-  const jours = new Set<string>();
+  const jours = new Set<string>(extraDays.filter((j) => jourIso(j) === j));
   for (const f of facts) {
     const kind = f.rawKey ? PERIOD_FACT_KEYS[f.rawKey.trim().toLowerCase()] : undefined;
     if (!kind || !POINT_DATE_GUARDED_KINDS.includes(kind)) continue;
@@ -244,10 +250,71 @@ export async function previewDocumentBusinessPeriods(accountId: number, fileId: 
     `SELECT 1 FROM asset_files WHERE id = $1 AND account_id = $2 AND deleted_at IS NULL`, [fileId, accountId] as never[],
   )) as unknown as Row[];
   if (!vivant.length) return { gone: true, desired: [], plan: null };
-  const q = qualifyDocumentPeriods(await loadPeriodInputs(sql, accountId, fileId));
   const stored = await activePeriods(sql, accountId, fileId);
+  const { q, plan, report } = await pointDateState(sql, accountId, fileId, stored);
+  return { gone: false, desired: q.desired, plan, pointDate: report };
+}
+
+/**
+ * Carte #812 (reprise après la recette KO du 21/11) — ÉTAT d'un document au regard de la règle « une date du
+ * document n'est jamais, à elle seule, une borne de validité » : qualification, plan et rapport, calculés
+ * par UNE fonction pour l'ÉCRITURE (`refreshDocumentBusinessPeriods` : analyse T1, contrôle de cohérence,
+ * script de reprise), l'INSPECTION (`previewDocumentBusinessPeriods`) et la LECTURE (`pointDateCopyIds`).
+ * Ce que la lecture ne restitue pas est donc exactement ce que la reprise retire (`report.copies`).
+ * Lecture seule, sans IA, bornée au compte.
+ */
+async function pointDateState(sql: Sql | Tx, accountId: number, fileId: number, stored: readonly StoredPeriod[]): Promise<{
+  q: PeriodQualification; plan: ReturnType<typeof planRefresh>; report: PointDateReport;
+}> {
+  const extraDays = stored.filter(isPointDateSuspect).map((s) => singleDayOf(s)).filter((j): j is string => j !== null);
+  const inputs = await loadPeriodInputs(sql, accountId, fileId, { extraDays });
+  const q = qualifyDocumentPeriods(inputs);
   const plan = planRefresh(stored, q.desired, q.review);
-  return { gone: false, desired: q.desired, plan, pointDate: pointDateReport(q, stored, plan) };
+  return { q, plan, report: pointDateReport(q, stored, plan, inputs) };
+}
+
+/** Ligne de période dont la lecture doit vérifier qu'elle n'est pas la date du document recopiée (carte #812). */
+export interface PointDateGuardRow {
+  id: number; fileId: number; kind: BusinessPeriodKind; start: PartialDate | null; end: PartialDate | null;
+  openEnded?: boolean; userLocked: boolean; origin?: string | null;
+}
+/** Documents examinés en parallèle par la règle de lecture (les périodes suspectes sont rares). */
+const POINT_DATE_GUARD_CONCURRENCY = 4;
+
+/**
+ * Carte #812 (reprise du 21/11) — LA RÈGLE À LA LECTURE. Identifiants des périodes ACTIVES qui ne sont que la
+ * date du document recopiée, parmi `rows` : elles ne sont JAMAIS restituées (fiche, listes, recherche,
+ * dossiers et exports, Assistant, contexte T3, titrage), que le contrôle de cohérence ou la reprise soient
+ * passés ou non. Même règle et mêmes entrées que l'écriture (`pointDateState`). N'ÉCRIT RIEN, aucune IA.
+ * Coût : aucune requête quand aucune période n'est suspecte (`isPointDateSuspect` : validité non corrigée,
+ * réduite à un seul jour) ; sinon la relecture des preuves des seuls documents concernés.
+ */
+export async function pointDateCopyIds(sql: Sql | Tx, accountId: number, rows: readonly PointDateGuardRow[]): Promise<Set<number>> {
+  const out = new Set<number>();
+  const fichiers = [...new Set(rows.filter(isPointDateSuspect).map((r) => r.fileId))];
+  for (let i = 0; i < fichiers.length; i += POINT_DATE_GUARD_CONCURRENCY) {
+    await Promise.all(fichiers.slice(i, i + POINT_DATE_GUARD_CONCURRENCY).map(async (fileId) => {
+      const stored = await activePeriods(sql, accountId, fileId);
+      const { report } = await pointDateState(sql, accountId, fileId, stored);
+      for (const c of report.copies) out.add(c.periodId);
+    }));
+  }
+  return out;
+}
+
+/** Carte #812 — `rows` sans les périodes qui ne sont que la date du document (règle de lecture, voir `pointDateCopyIds`). */
+export async function withoutPointDateCopies<T extends PointDateGuardRow>(sql: Sql | Tx, accountId: number, rows: readonly T[]): Promise<T[]> {
+  const copies = await pointDateCopyIds(sql, accountId, rows);
+  return copies.size ? rows.filter((r) => !copies.has(r.id)) : [...rows];
+}
+
+/**
+ * Carte #812 (reprise du 21/11) — faits T1 `period.*` d'un document ÉCARTÉS par la règle (copie de la date du
+ * document) : les consommateurs qui lisent les FAITS (contexte T3, titrage) ne les reprennent pas. Lecture
+ * seule ; le fait lui-même reste dans la connaissance T1, jamais modifié.
+ */
+export async function pointDateRefusedFacts(sql: Sql | Tx, accountId: number, fileId: number): Promise<PeriodQualification['refused']> {
+  return qualifyDocumentPeriods(await loadPeriodInputs(sql, accountId, fileId)).refused;
 }
 
 /** Carte #812 — motif consigné sur une période retirée parce qu'elle n'était que la date du document. */
@@ -264,7 +331,11 @@ export interface PointDateReport {
 }
 
 /** Carte #812 — rapport d'un document depuis sa qualification et son plan (pure). */
-export function pointDateReport(q: PeriodQualification, stored: readonly StoredPeriod[], plan: ReturnType<typeof planRefresh>): PointDateReport {
+export function pointDateReport(
+  q: PeriodQualification, stored: readonly StoredPeriod[], plan: ReturnType<typeof planRefresh>,
+  /** Reprise du 21/11 : dates ponctuelles et faits du document — classe AUSSI une période dont le fait a disparu. */
+  inputs?: Pick<PeriodInputs, 'pointDates' | 'facts'>,
+): PointDateReport {
   const retires = new Set(plan.supersede);
   const porte = (s: StoredPeriod, factId: number) => !s.userLocked && (s.evidence?.factIds ?? []).includes(factId);
   const copies: PointDateReport['copies'] = [];
@@ -273,6 +344,17 @@ export function pointDateReport(q: PeriodQualification, stored: readonly StoredP
       if (s.kind === r.kind && retires.has(s.id) && porte(s, r.factId) && !copies.some((x) => x.periodId === s.id)) {
         copies.push({ periodId: s.id, kind: s.kind, start: s.start, end: s.end, date: r.date, roles: r.roles, reason: r.reason ?? POINT_DATE_SUPERSEDED_REASON });
       }
+    }
+  }
+  // Reprise du 21/11 — « quel que soit l'état du stock » : une période retirée par le plan qu'AUCUN fait écarté ne
+  // porte (fait T1 disparu ou remplacé hors pipeline) est classée DIRECTEMENT, par la même règle, sur ses propres
+  // bornes et sa propre preuve. Jamais une période conservée par le plan (aucun aller-retour possible).
+  if (inputs?.pointDates?.length) {
+    const pertinence = parseRelevance(inputs.facts);
+    for (const s of stored) {
+      if (!retires.has(s.id) || !isPointDateSuspect(s) || copies.some((x) => x.periodId === s.id)) continue;
+      const v = classifyPointDatePeriod({ kind: s.kind, bounds: s, excerpt: s.evidence?.quote ?? null, pointDates: inputs.pointDates, relevance: pertinence?.get(s.kind) ?? null });
+      if (v.verdict === 'POINT_DATE_COPY') copies.push({ periodId: s.id, kind: s.kind, start: s.start, end: s.end, date: v.date, roles: v.roles, reason: v.reason });
     }
   }
   const gardes = new Set(plan.review ?? []);
@@ -314,11 +396,9 @@ async function refreshDocumentBusinessPeriodsOnce(accountId: number, fileId: num
         `SELECT 1 FROM asset_files WHERE id = $1 AND account_id = $2 AND deleted_at IS NULL`, [fileId, accountId] as never[],
       )) as unknown as Row[];
       if (!vivant.length) return { ...vide, outcome: 'GONE' as const };
-      const q = qualifyDocumentPeriods(await loadPeriodInputs(tx, accountId, fileId));
       const stored = await activePeriods(tx, accountId, fileId);
-      const plan = planRefresh(stored, q.desired, q.review);
+      const { plan, report: rapport } = await pointDateState(tx, accountId, fileId, stored);
       const protectedKinds = [...new Set(stored.filter((s) => s.userLocked).map((s) => s.kind))];
-      const rapport = pointDateReport(q, stored, plan);
       const copies = rapport.copies.map((x) => x.periodId);
       if (plan.supersede.length) {
         await tx.unsafe(
@@ -334,6 +414,16 @@ async function refreshDocumentBusinessPeriodsOnce(accountId: number, fileId: num
           `UPDATE document_business_periods SET superseded_reason = $3, superseded_correlation_id = $4
             WHERE account_id = $1 AND id = ANY($2::bigint[]) AND status = 'SUPERSEDED'`,
           [accountId, copies, POINT_DATE_SUPERSEDED_REASON, opts.correlationId ?? null] as never[],
+        )).catch((e: unknown) => {
+          if ((e as { code?: string })?.code !== '42703') throw e;
+        });
+        // Reprise du 21/11 — motif PRÉCIS de chaque retrait (`DOCUMENT_DATE_RESTATED`, `NO_OWN_PROOF`…), pour distinguer
+        // et retrouver les lignes retirées par la règle resserrée (migration 1871 ; son absence est tolérée de même).
+        await tx.savepoint((sp) => sp.unsafe(
+          `UPDATE document_business_periods p SET superseded_detail = x.reason
+             FROM jsonb_to_recordset($2::text::jsonb) AS x(id bigint, reason text)
+            WHERE p.account_id = $1 AND p.id = x.id AND p.status = 'SUPERSEDED'`,
+          [accountId, JSON.stringify(rapport.copies.map((x) => ({ id: x.periodId, reason: x.reason })))] as never[],
         )).catch((e: unknown) => {
           if ((e as { code?: string })?.code !== '42703') throw e;
         });
@@ -443,6 +533,9 @@ export async function readDocumentPeriods(accountId: number, fileId: number): Pr
   if (!doc.length) return null;
   let stored: Array<ReturnType<typeof toStored>> = [];
   try { stored = await activePeriods(sql, accountId, fileId); } catch (e) { if (!tableMissing(e)) throw e; }
+  // Carte #812 (reprise du 21/11) : la règle vaut À LA LECTURE — une validité qui n'est que la date du document
+  // n'est jamais restituée, même si le stock la porte encore (aucune écriture, aucune IA).
+  stored = await withoutPointDateCopies(sql, accountId, stored);
   const kind = principalKind(stored);
   const segments = kind ? stored.filter((s) => s.kind === kind).sort((a, b) => a.segment - b.segment).map(toView) : [];
   const ops = (await sql.unsafe(
@@ -841,7 +934,8 @@ export async function readPrincipalPeriodLines(accountId: number, fileIds: reado
     )) as unknown as Row[];
   } catch (e) { if (!tableMissing(e)) throw e; }
   const parDoc = new Map<number, Array<ReturnType<typeof toStored>>>();
-  for (const x of r) { const s = toStored(x); parDoc.set(s.fileId, [...(parDoc.get(s.fileId) ?? []), s]); }
+  // Carte #812 (reprise du 21/11) : même règle de lecture que la fiche (jamais une validité qui n'est que la date du document).
+  for (const s of await withoutPointDateCopies(sql, accountId, r.map(toStored))) parDoc.set(s.fileId, [...(parDoc.get(s.fileId) ?? []), s]);
   for (const [fileId, stored] of parDoc) {
     const kind = principalKind(stored);
     if (!kind) continue;

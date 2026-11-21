@@ -92,7 +92,8 @@ import {
 import {
   readStoredPeriodDecision, titleEligibleFactPeriods, type QualifiedPeriodBounds,
 } from '@/lib/documents/document-title-period';
-import { isBusinessPeriodKind } from '@/lib/documents/business-periods';
+import { isBusinessPeriodKind, periodKindOfFactKey } from '@/lib/documents/business-periods';
+import { POINT_DATE_GUARDED_KINDS } from './business-periods/point-date';
 import {
   periodFactsOf, planBusinessTitle, titleContextFingerprint, titleInputsFromAnalysis, type BillingBasis, type TitleContext, type TitleInputs, type TitlePlan,
 } from '@/services/ai/source-analysis/document-title';
@@ -291,6 +292,30 @@ async function loadQualifiedPeriodBounds(sql: Sql, fileId: number, accountId: nu
   return rows.filter((r) => isBusinessPeriodKind(r.kind)).map((r) => ({ kind: r.kind as QualifiedPeriodBounds['kind'], start: r.start, end: r.end }));
 }
 
+/**
+ * Carte #812 (reprise après la recette KO du 21/11) — une période de fait d'une nature gardée (validité)
+ * réduite à UN jour ne nomme jamais un document quand ce jour n'est que la date du document : même règle
+ * que la qualification des périodes (`business-periods/service#pointDateRefusedFacts`), appliquée à la
+ * lecture. Sans fait de cette forme (cas général) : aucune lecture de plus. Si la règle ne peut pas être
+ * évaluée, la période d'un seul jour n'est pas retenue (un titre ne s'appuie pas sur une période non vérifiée).
+ */
+async function withoutPointDateFactPeriods<T extends { key: string | null; s: string | null; e: string | null }>(
+  sql: Sql, fileId: number, accountId: number, faits: T[],
+): Promise<T[]> {
+  const garde = (f: T): boolean => {
+    const k = periodKindOfFactKey(f.key);
+    return k !== null && POINT_DATE_GUARDED_KINDS.includes(k) && f.s !== null && f.s === f.e;
+  };
+  if (!faits.some(garde)) return faits;
+  try {
+    const { pointDateRefusedFacts } = await import('./business-periods/service');
+    const refuses = await pointDateRefusedFacts(sql, accountId, fileId);
+    return faits.filter((f) => !(garde(f) && refuses.some((r) => r.kind === periodKindOfFactKey(f.key) && r.date === f.s)));
+  } catch {
+    return faits.filter((f) => !garde(f));
+  }
+}
+
 /** Périodes de faits ÉLIGIBLES au titre (carte #783) : lecture des faits, des natures, puis filtre pur. */
 async function loadTitleFactPeriods(sql: Sql, fileId: number, accountId: number, limit: number): Promise<Array<{ s: string | null; e: string | null }>> {
   return (await readTitleFactPeriods(sql, fileId, accountId, limit)).periods;
@@ -300,10 +325,11 @@ async function loadTitleFactPeriods(sql: Sql, fileId: number, accountId: number,
 async function readTitleFactPeriods(sql: Sql, fileId: number, accountId: number, limit: number): Promise<{
   periods: Array<{ s: string | null; e: string | null }>; excluded: number;
 }> {
-  const [faits, qualifiees] = await Promise.all([
+  const [lus, qualifiees] = await Promise.all([
     sql.unsafe(FACT_PERIODS_SQL, [fileId, accountId, limit] as never[]).catch(() => []) as unknown as Promise<Array<{ key: string | null; s: string | null; e: string | null }>>,
     loadQualifiedPeriodBounds(sql, fileId, accountId),
   ]);
+  const faits = await withoutPointDateFactPeriods(sql, fileId, accountId, lus);
   const retenues = titleEligibleFactPeriods(faits, qualifiees);
   return { periods: retenues.map((f) => ({ s: f.s, e: f.e })), excluded: faits.length - retenues.length };
 }

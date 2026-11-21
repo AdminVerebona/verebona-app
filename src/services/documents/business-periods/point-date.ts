@@ -23,16 +23,40 @@
  *   · Rien n'est supprimé à l'aveugle dans le stock : la PREUVE du fait (son extrait) dit si la copie
  *     est PROUVÉE (`POINT_DATE_COPY` : aucun extrait, extrait qui ne cite pas la date, extrait réduit à
  *     la date, extrait qui est la mention même de la date du document, pertinence non établie par T1)
- *     ou seulement PROBABLE (`TO_REVIEW` : l'extrait cite la date dans une mention propre — peut-être une
- *     vraie clause « valable à compter du… »). Une période déjà enregistrée de cette seconde classe est
- *     CONSERVÉE « à réexaminer » (`planRefresh`), jamais déclarée fausse ; elle n'est simplement plus
- *     créée par une nouvelle analyse.
+ *     ou seulement PROBABLE (`TO_REVIEW` : l'extrait cite la date dans une mention propre). Une période
+ *     déjà enregistrée de cette seconde classe est CONSERVÉE « à réexaminer » (`planRefresh`), jamais
+ *     déclarée fausse ; elle n'est simplement plus créée par une nouvelle analyse. RÈGLE REMPLACÉE
+ *     (recette du 21/11, voir plus bas) : cette classe ne vaut plus que pour une FIN SEULE.
  *
  * Jamais : lire le titre, le type ou le fournisseur ; interpréter le vocabulaire d'un extrait (seuls
  * des jetons de date sont reconnus) ; toucher une période corrigée par l'utilisateur (`planRefresh`).
  * ══════════════════════════════════════════════════════════════════════════
  */
 import { precisionOf, type BusinessPeriodKind, type PeriodBounds } from '@/lib/documents/business-periods';
+
+/*
+ * ══════════════════════════════════════════════════════════════════════════
+ * REPRISE APRÈS LA RECETTE KO DU 21/11/2026 (carte #812) — RÈGLE REMPLACÉE pour le cas « à réexaminer ».
+ *
+ * Comment le code décidait qu'un extrait était une « mention propre » (inchangé, `classifyPointDatePeriod`) :
+ * l'extrait du fait T1 n'est pas vide, il CITE le jour (`excerptCitesDay` : quantième et année parmi ses
+ * nombres), il contient au moins un mot qui n'est ni un nombre ni un mot de calendrier (`excerptWords`), et
+ * la suite de ces mots ne figure pas, d'un seul tenant, dans la mention d'une date ponctuelle du même jour
+ * (`withinWords`). Aucun mot n'est interprété : « Votre commande du 17/11/2026 est validée » est donc une
+ * « mention propre » dès que T1 a cité la date du document par « Commande du 17/11/2026 » — et la ligne du
+ * stock restait affichée. C'est ce que la recette du PO refuse.
+ *
+ * LA RÈGLE RESSERRÉE. Une validité dont le DÉBUT est une date ponctuelle du document et qui ne porte RIEN
+ * D'AUTRE que ce jour — ni fin distincte, ni durée indéterminée DÉCLARÉE (`INDEFINITE`), ni borne différente
+ * de la date du document (début seul, ou début = fin) — n'est jamais qualifiée, quelle que soit sa mention :
+ * une mention qui ne fait que redire la date du document ne suffit pas (`DOCUMENT_DATE_RESTATED`). Elle est
+ * retirée du stock AVEC MOTIF (jamais supprimée), et n'est plus restituée à la lecture.
+ * Une durée ne se lit aujourd'hui que par la FIN que T1 en déduit (« valable 30 jours » → début / fin) : le
+ * fait T1 n'a pas de champ « durée » (proposition faite au PO dans la fiche de recette, non décidée).
+ * Reste « à réexaminer » (inchangé, non tranché par le PO) : la FIN SEULE égale à une date du document,
+ * portée par une mention propre (« offre valable jusqu'au 17/11/2026 » sur un document du 17/11).
+ * ══════════════════════════════════════════════════════════════════════════
+ */
 
 /**
  * Natures pour lesquelles une date ponctuelle du document ne prouve aucune borne. VALIDITÉ seulement
@@ -73,14 +97,22 @@ export type PointDateReason =
   /** L'extrait est la mention même d'une date ponctuelle du document (aucun mot de plus). */
   | 'SAME_MENTION_AS_POINT_DATE'
   /** Contrat v2 : T1 n'a pas établi la pertinence de la nature (indéterminée, ou « sans date »). */
-  | 'RELEVANCE_NOT_ESTABLISHED';
+  | 'RELEVANCE_NOT_ESTABLISHED'
+  /**
+   * Recette du 21/11 : le DÉBUT est la date du document et le fait ne porte rien d'autre (ni fin distincte, ni
+   * durée indéterminée déclarée) — sa mention, même propre, ne fait que redire la date du document.
+   */
+  | 'DOCUMENT_DATE_RESTATED';
 
 export type PointDateVerdict =
   /** Pas une date ponctuelle recopiée : qualification inchangée. */
   | { verdict: 'JUSTIFIED' }
   /** Copie PROUVÉE de la date du document : jamais qualifiée, retirée du stock. */
   | { verdict: 'POINT_DATE_COPY'; date: string; roles: PointDateRole[]; reason: PointDateReason }
-  /** Même jour qu'une date du document, mention propre : jamais créée, conservée « à réexaminer » si elle existe. */
+  /**
+   * FIN SEULE le jour d'une date du document, mention propre : jamais créée, conservée « à réexaminer » si elle
+   * existe. (Règle remplacée, recette du 21/11 : un DÉBUT égal à la date du document n'est plus de cette classe.)
+   */
   | { verdict: 'TO_REVIEW'; date: string; roles: PointDateRole[] };
 
 const isDay = (v: string | null | undefined): v is string => typeof v === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(v);
@@ -167,5 +199,21 @@ export function classifyPointDatePeriod(p: {
   if (!mots.length) return copie('PROOF_IS_THE_DATE');
   // La mention est celle d'une date ponctuelle du document (même extrait, ou extrait compris dedans) : rien de plus.
   if (memes.some((x) => withinWords(mots, excerptWords(x.excerpt)))) return copie('SAME_MENTION_AS_POINT_DATE');
+  // Recette du 21/11 (règle remplacée) : un DÉBUT égal à la date du document, sans rien d'autre que ce jour
+  // (`singleDayOf` : ni fin distincte, ni durée indéterminée déclarée), n'établit aucune validité — même cité
+  // dans une mention propre. Seule la FIN SEULE reste « à réexaminer ».
+  if (p.bounds.start != null) return copie('DOCUMENT_DATE_RESTATED');
   return { verdict: 'TO_REVIEW', date: jour, roles };
+}
+
+/**
+ * Une période ENREGISTRÉE peut-elle n'être que la date du document ? (pure, sans lecture) — filtre d'entrée de
+ * la règle À LA LECTURE (`service#pointDateCopyIds`) : nature gardée, jamais une correction de l'utilisateur,
+ * bornes réduites à un seul jour. Seules ces périodes (rares) demandent la relecture des dates du document ;
+ * toutes les autres sont restituées sans aucune requête de plus.
+ */
+export function isPointDateSuspect(p: { kind: BusinessPeriodKind; start: string | null; end: string | null; openEnded?: boolean; userLocked: boolean; origin?: string | null }): boolean {
+  if (p.userLocked || p.origin === 'USER') return false;
+  if (!POINT_DATE_GUARDED_KINDS.includes(p.kind)) return false;
+  return singleDayOf({ start: p.start, end: p.end, ...(p.openEnded ? { openEnded: true } : {}) }) !== null;
 }
