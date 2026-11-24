@@ -33,7 +33,7 @@
  * répare le titre de l'événement (SYNC, RETITLE).
  */
 import type { AcquisitionNameBasis } from '@/lib/reference-events/operation-title';
-import type { ProjectionAction } from './model';
+import { isTitleOnlyAction, type ProjectionAction } from './model';
 
 type Row = Record<string, unknown>;
 
@@ -100,8 +100,10 @@ export interface PurchaseTitleRepriseReport {
 export function nonTitleActions(actions: readonly ProjectionAction[]): string[] {
   const autres: string[] = [];
   for (const a of actions) {
-    if (a.kind === 'RETITLE' || a.kind === 'SUPPRESSED') continue;
-    if (a.kind === 'SYNC' && Object.keys(a.changes).every((k) => k === 'title')) continue;
+    // Carte #832 (§ 3.C) : UNE seule règle pour « cette action ne change qu'un titre »,
+    // partagée avec le passage « titre seulement » de la projection (`isTitleOnlyAction`).
+    if (isTitleOnlyAction(a)) continue;
+    if (a.kind === 'SUPPRESSED') continue;
     if (a.kind === 'ABSTAIN' && !a.candidates?.length) continue;
     autres.push(a.kind);
   }
@@ -213,11 +215,19 @@ export async function reprisePurchaseTitles(
   const { applyAcquisitionNames } = await import('../consolidation/consolidator');
   const ecrits = await applyAcquisitionNames(accountId, c.operations.filter((x) => x.label.action === 'RENAME').map((x) => x.operationId), { correlationId, ...jour });
   report.labelsRenamed = ecrits.length;
-  // 2. Titre des événements : projection T4 des SEULES opérations dont le plan simulé n'est fait que de changements de titre.
-  const aProjeter = c.operations.filter((x) => x.events.some((e) => e.action === 'RENAME') && !x.otherPendingActions.length).map((x) => x.operationId);
+  // 2. Titre des événements : projection T4 en passage « TITRE SEULEMENT ».
+  //
+  // Carte #832 (§ 3.C) — avant, les opérations dont le plan simulé contenait une AUTRE action
+  // (`otherPendingActions` : un événement à créer, une date à poser, une représentation à décider)
+  // étaient écartées : leur titre trompeur restait tel quel, alors que le corriger est sûr et
+  // indépendant. Désormais toutes les opérations à renommer sont projetées, avec `titleOnly` :
+  // seules les actions qui ne changent qu'un intitulé sont appliquées, les autres écarts restent
+  // entiers pour la projection ordinaire. `otherPendingActions` reste au rapport, comme
+  // information — il ne bloque plus la correction.
+  const aProjeter = c.operations.filter((x) => x.events.some((e) => e.action === 'RENAME')).map((x) => x.operationId);
   if (aProjeter.length) {
     const { projectAccountOperations } = await import('./service');
-    await projectAccountOperations(accountId, { operationIds: aProjeter, correlationId, runId, ...jour });
+    await projectAccountOperations(accountId, { operationIds: aProjeter, correlationId, runId, titleOnly: true, ...jour });
     const voulus = new Map(c.operations.filter((x) => aProjeter.includes(x.operationId)).flatMap((x) => x.events.filter((e) => e.action === 'RENAME').map((e) => [e.itemId, e.after] as const)));
     const { pgClient } = await import('@/db');
     const lus = (await pgClient.unsafe(

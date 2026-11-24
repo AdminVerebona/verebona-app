@@ -42,7 +42,7 @@ import { agendaFunctionalColumnsReady } from '@/services/agenda/agenda-columns';
 import { writeAgendaItem, type AgendaItemValues } from '@/services/agenda/write-agenda-item';
 import {
   PROJECTION_KIND_AGENDA, PROJECTION_ORIGIN, PROJECTION_ORIGIN_REF_TYPE, PROJECTION_ORIGIN_TYPE,
-  decideProjection, isTouched, parseProjectionFunctionalKey, planOperationProjection, projectionKeyOf,
+  decideProjection, isTitleOnlyAction, isTouched, parseProjectionFunctionalKey, planOperationProjection, projectionKeyOf,
   type AgendaItemSnapshot, type ItemSync, type OperationSnapshot, type ProjectionAction,
 } from './model';
 import type { AgendaEventNature } from '@/services/agenda/agenda-functional-key';
@@ -159,6 +159,16 @@ interface ProjectionRunOptions {
    * reprise). Ignoré hors simulation : une projection réelle lit toujours l'intitulé enregistré.
    */
   labelOverrides?: ReadonlyMap<number, string | null>;
+  /**
+   * Carte #832 (§ 3.C) : passage « TITRE SEULEMENT ». Seules les actions qui ne
+   * changent qu'un intitulé sont appliquées (`RETITLE`, `SYNC` dont le seul
+   * changement est le titre, `isTitleOnlyAction`) : aucun événement créé,
+   * supprimé, lié ou redaté, aucune carte « À traiter », aucune propagation de
+   * documents. Sert la reprise des intitulés d'achat, pour qu'un écart de
+   * projection annexe n'empêche plus la correction du titre — les autres
+   * écarts restent entiers, traités par la projection ordinaire.
+   */
+  titleOnly?: boolean;
 }
 
 /** Lot 76H : plan d'une Opération rendu par une simulation. */
@@ -783,6 +793,14 @@ async function projectIds(
       t4Roles: rolesT4.get(op.id),
     });
     for (const action of plan) {
+      // Carte #832 (§ 3.C) : passage « titre seulement ». La reprise des intitulés d'achat
+      // n'appliquait le plan QUE si celui-ci ne contenait aucune autre action
+      // (`otherPendingActions`) : un écart de projection annexe — un événement à créer, une
+      // date à poser, une représentation ambiguë — rendait impossible la correction du titre
+      // seul, pourtant sûre et indépendante. Ici, tout ce qui n'est pas un changement de titre
+      // est écarté AVANT la moindre écriture et AVANT toute carte « À traiter » : les autres
+      // écarts restent entiers, pour la projection ordinaire.
+      if (opts.titleOnly && !isTitleOnlyAction(action)) continue;
       if (action.kind === 'LINK') taken.add(action.itemId);
       // Lot 87B : une demande de décision T4 ne RÉSERVE aucun élément (rien n'est rattaché) : une autre Opération du
       // même document les voit encore comme candidats (et s'abstient de même) — jamais une projection en doublon.
@@ -806,7 +824,9 @@ async function projectIds(
     // seulement pour une Opération qui a (ou vient de recevoir) des éléments d'agenda.
     const representee = linked.some((i) => i.businessOperationId === op.id)
       || plan.some((a) => a.kind === 'CREATE' || a.kind === 'LINK' || a.kind === 'CARRY');
-    if (!opts.dryRun && representee) {
+    // Carte #832 (§ 3.C) : un passage « titre seulement » ne touche QUE des intitulés —
+    // il ne propage aucun document vers l'élément porteur.
+    if (!opts.dryRun && !opts.titleOnly && representee) {
       const { recomputePrincipal } = await import('../grouping/service');
       const r = await grouping(accountId, correlationId, (ctx) => recomputePrincipal(ctx, op.id));
       if (r.added + r.removed > 0) {

@@ -146,7 +146,13 @@ describe('C821-U-03 — le fournisseur, le bien associé et le nom du justificat
     for (const t of ['Achat', 'Achat — Cupra', 'Achat — TotalEnergies', 'Achat — Ticket de carburant', 'Achat — Ticket de carburant TotalEnergies — 20 novembre 2026']) {
       expect(isUninformativePurchaseTitle(t, o), t).toBe(true);
     }
-    for (const t of ['Achat de carburant', 'Achat — Pneus hiver', 'Achat Cupra', 'Plein du 20 novembre', 'Entretien réalisé']) expect(isUninformativePurchaseTitle(t, o), t).toBe(false);
+    for (const t of ['Achat de carburant', 'Achat — Pneus hiver', 'Plein du 20 novembre', 'Entretien réalisé']) expect(isUninformativePurchaseTitle(t, o), t).toBe(false);
+    // Carte #832 : « Achat Cupra » SANS tiret attendait `false` — c'est l'écart constaté le
+    // 22/11/2026. Le nom du bien ne dit pas ce qui a été acheté, avec ou sans ponctuation :
+    // il est désormais insuffisant comme les autres. Une VRAIE acquisition du véhicule garde
+    // pourtant son intitulé, parce que rien n'est renommé sans un intitulé d'Opération plus
+    // précis (`precisePurchaseTitle` rend `null` dans ce cas) — voir `c832-titres-achat-sans-tiret`.
+    expect(isUninformativePurchaseTitle('Achat Cupra', o)).toBe(true);
   });
 });
 

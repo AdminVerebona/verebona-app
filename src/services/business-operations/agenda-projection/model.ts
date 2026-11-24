@@ -684,6 +684,22 @@ export interface ItemSync {
   links?: { assetIds: number[]; equipmentIds: number[]; fileIds?: number[] };
 }
 
+/**
+ * Carte #832 (§ 3.C) — cette action ne change-t-elle QU'UN INTITULÉ (pure) ?
+ *
+ * Règle UNIQUE, partagée par le passage « titre seulement » de la projection
+ * (`service.ts`, option `titleOnly`) et par le rapport de la reprise des
+ * intitulés d'achat (`nonTitleActions`) : un renommage, ou une synchronisation
+ * dont le seul champ est le titre. Tout le reste — création, lien, date,
+ * retrait, détachement, fait porté, représentation à décider — n'en est pas.
+ */
+export function isTitleOnlyAction(a: ProjectionAction): boolean {
+  if (a.kind === 'RETITLE') return true;
+  // Une synchronisation sans changement n'écrit rien : elle n'est pas « autre chose » qu'un titre
+  // (même lecture que le rapport de reprise avant cette carte, parité stricte).
+  return a.kind === 'SYNC' && Object.keys(a.changes).every((k) => k === 'title');
+}
+
 export type ProjectionAction =
   | { kind: 'CREATE'; desired: DesiredProjection; functionalKey: string }
   | { kind: 'SYNC'; itemId: number; changes: ItemSync }
@@ -1114,15 +1130,47 @@ function soleProvenance(op: OperationSnapshot, c: AgendaItemSnapshot): boolean {
 }
 
 /**
+ * Carte #832 (§ 3.B) — SUJET annoncé par un intitulé d'achat (pur).
+ *
+ * `null` : l'intitulé ne commence pas par le nom du type, ce n'est pas un
+ * intitulé d'achat généré (« Plein du 20 novembre »).
+ * `''`   : « Achat » seul, aucun sujet.
+ * sinon  : le sujet normalisé, lu APRÈS le nom du type, que les générateurs
+ *          aient écrit « Achat — Decathlon », « Achat Decathlon » ou
+ *          « Achat  –  Decathlon ». `normalizeText` ramenant toute ponctuation
+ *          à une espace, les trois donnent le même sujet : « decathlon ».
+ */
+export function purchaseTitleSubject(title: string): string | null {
+  const n = normalizeText(title);
+  const type = normalizeText(ACQUISITION_TYPE_NAME);
+  if (!type) return null;
+  if (n === type) return '';
+  // Frontière de mot exigée : « Achatterie » n'est pas un intitulé d'achat.
+  return n.startsWith(`${type} `) ? n.slice(type.length + 1).trim() : null;
+}
+
+/**
  * Carte #821 — intitulé AUTOMATIQUE d'achat qui ne dit pas ce qui a été acheté (pur) : la tête est le nom du type
- * (« Achat », celui du catalogue d'événements et de `HISTORICAL_TITLES`) et le sujet après « — » est absent, ou
- * n'est que le nom d'un bien associé, le prestataire, ou le titre d'un justificatif de l'Opération — aucun ne
- * désigne l'objet de l'achat. Tout autre intitulé (« Achat — Pneus hiver », « Achat du vélo ») est EXPLICITE.
+ * (« Achat », celui du catalogue d'événements et de `HISTORICAL_TITLES`) et le sujet est absent, ou n'est que le
+ * nom d'un bien associé, le prestataire, ou le titre d'un justificatif de l'Opération — aucun ne désigne l'objet
+ * de l'achat. Tout autre intitulé (« Achat — Pneus hiver », « Achat du vélo ») est EXPLICITE.
+ *
+ * Carte #832 (§ 3.B) — LE SÉPARATEUR N'EST PLUS OBLIGATOIRE. La version
+ * précédente découpait sur « ␣—␣ » seulement : « Achat Decathlon » et
+ * « Achat Cupra », écrits SANS tiret par les générateurs d'intitulés, étaient
+ * donc tenus pour explicites et conservés tels quels — c'est l'écart constaté
+ * sur la capture du 22/11/2026. Le sujet est maintenant lu après le nom du
+ * type quelle que soit la ponctuation (`purchaseTitleSubject`).
+ *
+ * Un vrai objet dont le nom coïncide avec celui d'un bien ou d'un prestataire
+ * n'est pas perdu pour autant : cette fonction ne RENOMME rien. Elle ouvre
+ * seulement la porte, et le renommage n'a lieu que si l'Opération, elle,
+ * désigne l'objet (`precisePurchaseTitle` — qui applique la même règle et rend
+ * `null` sinon). Une vraie acquisition du véhicule garde donc « Achat Cupra ».
  */
 export function isUninformativePurchaseTitle(title: string, op: Pick<OperationSnapshot, 'assetNames' | 'provider' | 'documentTitles'>): boolean {
-  const [tete, ...suite] = title.split(' — ');
-  if (normalizeText(tete ?? '') !== normalizeText(ACQUISITION_TYPE_NAME)) return false;
-  const sujet = normalizeText(suite.join(' — '));
+  const sujet = purchaseTitleSubject(title);
+  if (sujet === null) return false;
   if (!sujet) return true;
   return [...(op.assetNames ?? []), op.provider, ...(op.documentTitles ?? [])].some((n) => !!n && normalizeText(n) === sujet);
 }
