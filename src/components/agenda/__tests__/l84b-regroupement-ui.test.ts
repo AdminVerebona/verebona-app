@@ -147,7 +147,11 @@ describe('L84B-UI06 — câblage des tiroirs', () => {
   it('DocumentDrawer : opération et lien précis distingués ; lien manuel vers un élément (AC01)', () => {
     const d = lire('components/assets/DocumentDrawer.tsx');
     expect(d).toContain('/api/documents/${doc.id}/agenda-liens');
-    expect(d).toContain('GROUPING_LABELS.mainBadge');
+    // Règle remplacée (carte #830, règle B) : la carte d'un événement de la fiche du document ne porte plus la vignette
+    // technique « jalon de l'opération » (ni aucune désignation de remplacement) ; l'événement qui représente une
+    // opération affichée dans « Opérations » n'y est d'ailleurs plus répété (règle A). Le lien précis reste distingué.
+    expect(d).not.toContain('GROUPING_LABELS.mainBadge');
+    expect(d).toContain('documentEventsView(linkedAgendaItems, agendaLinksState, shownOpIds)');
     expect(d).toContain('GROUPING_LABELS.directLink');
     expect(d).toContain('data-testid="document-relier-agenda"');
     expect(d).toContain('garder(() => setAgendaPickerOpen(true))');

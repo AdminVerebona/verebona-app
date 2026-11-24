@@ -129,7 +129,8 @@ describe('L113AB-U-05 — écrans (desktop et mobile, même composant)', () => {
   it('fiche de l’opération ouverte depuis le tiroir du document (sans agenda) et la ligne de dépense', () => {
     // Règle remplacée (carte #806, volet B §7) : le tiroir du document ne montre plus seulement des liens (au plus
     // dix) — `DocumentOperations` liste TOUTES ses opérations, ouvre leur fiche et permet de retirer / rattacher.
-    expect(drawer).toContain('<DocumentOperations documentId={doc.id} />');
+    // Attente alignée (carte #830) : la rubrique signale au tiroir les opérations qu'elle affiche (même composant, même place).
+    expect(drawer).toContain('<DocumentOperations key={doc.id} documentId={doc.id} onDisplayedChange={onOpsShown} />');
     expect(drawer).not.toContain('DocumentReferenceEvents');
     expect(lire('src/components/documents/DocumentOperations.tsx')).toContain('href={referenceEventHref(o.id)}');
     // Règle remplacée (carte #744, travaux D — CDC §14, AC41) : la fiche n'est plus un panneau latéral mais la PAGE

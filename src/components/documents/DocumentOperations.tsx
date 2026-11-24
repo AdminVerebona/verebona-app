@@ -132,7 +132,14 @@ function phraseEchec(err: unknown): string | null {
 }
 
 /** Tiroir d'un document : ses opérations, avec leurs gestes. `onChanged` : l'écran relit ses propres listes. */
-export function DocumentOperations({ documentId, onChanged }: { documentId: number; onChanged?: () => void }) {
+export function DocumentOperations({ documentId, onChanged, onDisplayedChange }: {
+  documentId: number; onChanged?: () => void;
+  /**
+   * Carte #830 : opérations que cette rubrique AFFICHE pour ce document (null : lecture en cours ou rubrique démontée) —
+   * le tiroir du document ne répète pas, dans « Événements associés », un événement qu'une de ces opérations représente.
+   */
+  onDisplayedChange?: (documentId: number, operationIds: number[] | null) => void;
+}) {
   const [operations, setOperations] = useState<DocumentOperationRef[] | null>(null);
   const [removing, setRemoving] = useState<number | null>(null);
   const [aRetirer, setARetirer] = useState<DocumentOperationRef | null>(null);
@@ -150,6 +157,12 @@ export function DocumentOperations({ documentId, onChanged }: { documentId: numb
   }, [documentId]);
 
   useEffect(() => { setOperations(null); void charger(); }, [charger]);
+  const signaler = useRef(onDisplayedChange);
+  useEffect(() => { signaler.current = onDisplayedChange; }, [onDisplayedChange]);
+  useEffect(() => {
+    signaler.current?.(documentId, operations ? operations.map((o) => o.id) : null);
+  }, [documentId, operations]);
+  useEffect(() => () => { signaler.current?.(documentId, null); }, [documentId]);
   useEffect(() => {
     const h = () => { void charger(); };
     window.addEventListener(MUTATED_EVENT, h);

@@ -287,14 +287,30 @@ interface DocumentAgendaLinkView {
    * direct, hors opération (le tiroir du document le dit, et le lien se gère seul).
    */
   outsideOperation: boolean;
+  /**
+   * Carte #830 (règle A) : opérations ACTIVES du document (il en est membre actif) dont cet événement PORTE UN FAIT
+   * (`business_operation_agenda_links.fact_key`, lien actif) — l'événement est la représentation de ces opérations dans
+   * l'Agenda, et la fiche du document ne le répète pas quand elle affiche l'une d'elles. Un événement simplement
+   * rattaché à une opération (membre, sans fait porté) ou lié directement au document n'y figure pas : il reste un
+   * événement distinct. Lecture calculée, bornée au compte, rien n'est écrit. Vide : aucun doublon possible.
+   */
+  representedOperationIds: number[];
 }
 
 /** Nature des liens d'un document vers les éléments d'agenda (DocumentDrawer, §14.4). `null` : document absent du compte. */
 export async function getDocumentAgendaLinks(accountId: number, fileId: number, r: GroupingRunner = drizzleRunner(db)): Promise<DocumentAgendaLinkView[] | null> {
   const [f] = await r.q(`SELECT 1 FROM asset_files WHERE id = $1 AND account_id = $2 AND deleted_at IS NULL`, [fileId, accountId]);
   if (!f) return null;
-  const x = await r.q<{ id: number; prov: string[] | null; fact: string | null; dans_operation: boolean | null }>(
+  const x = await r.q<{ id: number; prov: string[] | null; fact: string | null; dans_operation: boolean | null; operations: string | null }>(
     `SELECT i.id, l.provenances AS prov, g.fact_key AS fact,
+            (SELECT string_agg(DISTINCT g3.operation_id::text, ',')
+               FROM business_operation_agenda_links g3
+               JOIN business_operations o3 ON o3.id = g3.operation_id AND o3.account_id = g3.account_id
+                    AND o3.invalidated_at IS NULL AND o3.merged_into_operation_id IS NULL
+               JOIN business_operation_documents d3 ON d3.account_id = g3.account_id AND d3.operation_id = g3.operation_id
+                    AND d3.file_id = l.asset_file_id AND d3.active
+              WHERE g3.account_id = i.account_id AND g3.agenda_item_id = i.id AND g3.state = 'ACTIVE'
+                AND g3.fact_key IS NOT NULL) AS operations,
             EXISTS (SELECT 1 FROM business_operation_agenda_links g2
                       JOIN business_operations o2 ON o2.id = g2.operation_id AND o2.account_id = g2.account_id
                            AND o2.invalidated_at IS NULL AND o2.merged_into_operation_id IS NULL
@@ -314,6 +330,7 @@ export async function getDocumentAgendaLinks(accountId: number, fileId: number, 
       viaGroup: prov.includes('OPERATION_PRINCIPAL'),
       isMain: y.fact !== null,
       outsideOperation: y.dans_operation !== true,
+      representedOperationIds: (y.operations ?? '').split(',').map(Number).filter((n) => Number.isSafeInteger(n) && n > 0).sort((p, q) => p - q),
     };
   });
 }

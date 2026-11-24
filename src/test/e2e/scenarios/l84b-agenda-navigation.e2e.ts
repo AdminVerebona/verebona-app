@@ -333,8 +333,10 @@ scenario('L84B', 'Opérations v5 — O-3 : Agenda et navigation (liens manuels, 
     expect(d).toEqual([
       // Règle complétée (carte #806, volet B §7) : chaque lien dit aussi s'il est « hors opération » — ici les deux
       // événements appartiennent à l'ensemble du document (aucun lien direct hors opération).
-      { itemId: degat.id, direct: false, viaGroup: true, isMain: true, outsideOperation: false },
-      { itemId: visite.id, direct: true, viaGroup: false, isMain: false, outsideOperation: false },
+      // Règle complétée (carte #830) : chaque lien nomme aussi les opérations du document que l'événement REPRÉSENTE
+      // (il en porte un fait) — le jalon représente l'opération, la visite simplement rattachée n'en représente aucune.
+      { itemId: degat.id, direct: false, viaGroup: true, isMain: true, outsideOperation: false, representedOperationIds: [op] },
+      { itemId: visite.id, direct: true, viaGroup: false, isMain: false, outsideOperation: false, representedOperationIds: [] },
     ]);
     // Candidats : objets du compte non encore reliés, filtre.
     const cand = (await vue(degat.id, '?candidats=biens&q=')).body.candidates;

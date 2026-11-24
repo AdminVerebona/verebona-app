@@ -76,6 +76,8 @@ import { PERIOD_EDIT_SAVE_FAILED } from '@/lib/documents/business-periods';
 // Carte #806 (volet B §7) : toutes les opérations du document, avec « Retirer » et « Rattacher à une opération ».
 import { DocumentOperations } from '@/components/documents/DocumentOperations';
 import { OPERATION_LINK_LABELS } from '@/lib/reference-events/operation-links';
+// Carte #830 : un événement déjà représenté par une opération affichée sur la fiche n'y est pas répété (affichage seul).
+import { documentEventsView, type DocumentAgendaLinkFacts, type DocumentAgendaLinksState } from '@/lib/documents/document-event-duplicates';
 
 export interface DocumentDrawerItem {
   id: number;
@@ -397,16 +399,32 @@ export function DocumentDrawer({ open, onOpenChange, document: doc, onRefresh, a
   // Lot 84B (§14.4) : nature des liens du document avec l'agenda (lien précis, ou par
   // l'ensemble vers son événement de référence) — relue à chaque relecture de la liste.
   // Carte #806 (volet B §7) : `outsideOperation` — lien direct à un événement qui n'appartient à aucune opération du document.
-  const [agendaLinkInfo, setAgendaLinkInfo] = useState<Map<number, { direct: boolean; viaGroup: boolean; isMain: boolean; outsideOperation?: boolean }>>(new Map());
+  // Carte #830 (règle A) : `representedOperationIds` — opérations actives du document dont l'événement porte un fait (son jalon).
+  const [agendaLinkInfo, setAgendaLinkInfo] = useState<Map<number, DocumentAgendaLinkFacts>>(new Map());
+  // Carte #830 : état de cette lecture POUR le document affiché (en cours / arrivée / en échec) et opérations que la
+  // rubrique des opérations affiche — tant que l'un des deux manque, le bloc des événements n'est pas rendu (un doublon
+  // n'apparaît jamais un instant avant de disparaître) ; en échec, tous les événements restent affichés.
+  const [agendaLinksLoad, setAgendaLinksLoad] = useState<{ docId: number; status: 'ready' | 'failed' } | null>(null);
+  const [shownOps, setShownOps] = useState<{ docId: number; ids: number[] } | null>(null);
   const [agendaPickerOpen, setAgendaPickerOpen] = useState(false);
   useEffect(() => {
     if (!open || !doc) return;
     let annule = false;
-    apiClient.get<{ links: Array<{ itemId: number; direct: boolean; viaGroup: boolean; isMain: boolean; outsideOperation?: boolean }> }>(`/api/documents/${doc.id}/agenda-liens`)
-      .then((r) => { if (!annule) setAgendaLinkInfo(new Map((r?.links ?? []).map((l) => [l.itemId, l]))); })
-      .catch(() => { if (!annule) setAgendaLinkInfo(new Map()); });
+    const docId = doc.id;
+    apiClient.get<{ links: DocumentAgendaLinkFacts[] }>(`/api/documents/${doc.id}/agenda-liens`)
+      .then((r) => { if (!annule) { setAgendaLinkInfo(new Map((r?.links ?? []).map((l) => [l.itemId, l]))); setAgendaLinksLoad({ docId, status: 'ready' }); } })
+      .catch(() => { if (!annule) { setAgendaLinkInfo(new Map()); setAgendaLinksLoad({ docId, status: 'failed' }); } });
     return () => { annule = true; };
   }, [open, doc?.id, linkedAgendaItems]); // eslint-disable-line react-hooks/exhaustive-deps
+  // Tiroir fermé : rien n'est gardé d'une ouverture à l'autre (la réouverture relit le serveur avant d'afficher).
+  useEffect(() => { if (!open) setAgendaLinksLoad(null); }, [open]);
+  const onOpsShown = useCallback((docId: number, ids: number[] | null) => {
+    setShownOps(ids === null ? null : { docId, ids });
+  }, []);
+  const agendaLinksState: DocumentAgendaLinksState = !doc || agendaLinksLoad?.docId !== doc.id
+    ? { status: 'loading' }
+    : agendaLinksLoad.status === 'failed' ? { status: 'failed' } : { status: 'ready', links: agendaLinkInfo };
+  const shownOpIds = doc && shownOps?.docId === doc.id ? shownOps.ids : null;
   const loadAgendaCandidates = useCallback(async (q: string) => {
     if (!doc) return [];
     const r = await apiClient.get<{ candidates: Array<{ id: number; title: string; meta: string | null }> }>(`/api/documents/${doc.id}/agenda-liens?candidats=1&q=${encodeURIComponent(q)}`);
@@ -1825,13 +1843,21 @@ export function DocumentDrawer({ open, onOpenChange, document: doc, onRefresh, a
                   <DocumentPeriodsDetail documentId={doc.id} periods={periodesDocument} />
 
                   {/* Linked agenda items */}
-                  {linkedAgendaItems.length > 0 && (
+                  {/* Carte #830 (règle A) : un événement qui REPRÉSENTE une opération AFFICHÉE par la rubrique des opérations (il en porte
+                      un fait dans le graphe événement ↔ opération ↔ document — jamais titre ni date) n'est pas répété ici ;
+                      si tous le sont, le bloc entier disparaît — titre, cartes, bouton, espace. Un événement distinct
+                      (lien direct, simple membre de l'opération) reste. Affichage seul : rien n'est modifié en base. */}
+                  {(() => {
+                    const vueEvenements = documentEventsView(linkedAgendaItems, agendaLinksState, shownOpIds);
+                    if (!vueEvenements.ready) return null;
+                    return (<>
+                  {vueEvenements.events.length > 0 && (
                     <div className="pt-2 border-t">
                       <p className="vb-app-label mb-2 flex items-center gap-1">
                         <Calendar className="w-3 h-3" />{GROUPING_LABELS.documentLinkedEvents}
                       </p>
                       <EntityCardList>
-                        {linkedAgendaItems.map(item => (
+                        {vueEvenements.events.map(item => (
                           <EntityCard
                             key={item.id}
                             kind="echeance"
@@ -1853,9 +1879,8 @@ export function DocumentDrawer({ open, onOpenChange, document: doc, onRefresh, a
                             badges={loadingAgendaItem === item.id ? (
                               <Loader2 className="w-3 h-3 animate-spin shrink-0 text-muted-foreground" />
                             ) : (<>
-                              {agendaLinkInfo.get(item.id)?.isMain && agendaLinkInfo.get(item.id)?.viaGroup && (
-                                <span className="shrink-0 text-[10px] font-semibold px-1.5 py-0.5 rounded-full bg-[color:var(--accent-soft)] text-[color:var(--accent)]">{GROUPING_LABELS.mainBadge}</span>
-                              )}
+                              {/* Carte #830 (règle B) : plus de vignette technique « jalon de l'opération » sur la carte
+                                  d'un événement de la fiche du document — et aucune désignation de remplacement. */}
                               {agendaLinkInfo.get(item.id)?.direct && agendaLinkInfo.get(item.id)?.viaGroup && (
                                 <span className="shrink-0 text-[10px] font-semibold px-1.5 py-0.5 rounded-full bg-muted text-muted-foreground">{GROUPING_LABELS.directLink}</span>
                               )}
@@ -1874,16 +1899,20 @@ export function DocumentDrawer({ open, onOpenChange, document: doc, onRefresh, a
                   {/* Lot 84B (§8.1, AC01) : lien manuel vers un élément d'agenda — le document rejoint son ensemble.
                       Lot 89B : « Associer à l'agenda », style neutre ; ouvre la SÉLECTION des éléments existants,
                       ne crée jamais d'élément (la création est l'action distincte du pied du choix). */}
-                  <div className={linkedAgendaItems.length > 0 ? 'pt-1' : 'pt-2 border-t'}>
+                  {vueEvenements.showAssociate && (
+                  <div className={vueEvenements.events.length > 0 ? 'pt-1' : 'pt-2 border-t'} data-testid="document-relier-agenda-zone">
                     <Button type="button" variant="secondary" size="sm" className={`min-h-11 sm:min-h-8 ${ASSOCIATION_BTN}`}
                       data-focus-ring="off"
                       onClick={() => garder(() => setAgendaPickerOpen(true))} data-testid="document-relier-agenda">
                       <Calendar className="w-3.5 h-3.5" aria-hidden />{GROUPING_LABELS.documentAgendaTitle}
                     </Button>
                   </div>
+                  )}
+                    </>);
+                  })()}
 
                   {/* Carte #806 (volet B §7) : TOUTES les opérations du document — ouvrir, retirer (lien seul), rattacher. */}
-                  <DocumentOperations documentId={doc.id} />
+                  <DocumentOperations key={doc.id} documentId={doc.id} onDisplayedChange={onOpsShown} />
 
                   {/* Agenda suggestions from AI */}
                   {agendaSuggestions.length > 0 && (
