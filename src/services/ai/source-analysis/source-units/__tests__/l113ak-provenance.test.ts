@@ -160,7 +160,9 @@ describe('L113AK-U06 — contrôle COH-DOC-FACT-PROVENANCE', () => {
     const ids = COHERENCE_REGISTRY.map((c) => c.id);
     // Lot 113AQ : COH-OPS-ATTRIBUTE-CONFLICTS ajouté ensuite, en fin de registre.
     // Lot 116C (carte #806 §4, AC73) : COH-OPERATION-GRAPH ajouté en fin de registre.
-    expect(ids.slice(ids.indexOf('COH-DOC-FACT-PROVENANCE'))).toEqual(['COH-DOC-FACT-PROVENANCE', 'COH-OPS-ATTRIBUTE-CONFLICTS', 'COH-OPERATION-GRAPH']);
+    // Carte #831 (écart E04) : COH-OPS-FACT-DATE-SYNC ajouté ensuite, en fin de registre.
+    expect(ids.slice(ids.indexOf('COH-DOC-FACT-PROVENANCE'))).toEqual(['COH-DOC-FACT-PROVENANCE', 'COH-OPS-ATTRIBUTE-CONFLICTS', 'COH-OPERATION-GRAPH',
+      'COH-OPS-FACT-DATE-SYNC']);
     const c = COHERENCE_REGISTRY.find((x) => x.id === 'COH-DOC-FACT-PROVENANCE')!;
     expect(c).toMatchObject({ status: 'ACTIVE', objectType: 'document', version: 1 });
     expect(c.forbiddenRepairs.join(' ')).toMatch(/autre document/);

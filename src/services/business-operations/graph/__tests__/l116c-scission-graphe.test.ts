@@ -148,7 +148,10 @@ describe('L116C-G-U — diagnostic lisible du graphe (AC73)', () => {
   it('contrôle du registre : actif, en fin de registre, objet = compte, constat seul (aucune réparation), tous les écarts déclarés', () => {
     const c = getCheck(OPERATION_GRAPH_CHECK_ID)!;
     expect(c).toMatchObject({ status: 'ACTIVE', version: OPERATION_GRAPH_CHECK_VERSION, objectType: 'account', domain: 'operations', criticality: 'HIGH' });
-    expect(COHERENCE_REGISTRY.at(-1)!.id).toBe(OPERATION_GRAPH_CHECK_ID);
+    // Carte #831 (écart E04) : COH-OPS-FACT-DATE-SYNC a été ajouté APRÈS celui-ci, toujours en fin de
+    // registre — ce contrôle n'est donc plus le dernier, mais son rang n'a pas bougé (rien n'a été réordonné).
+    const apres = COHERENCE_REGISTRY.map((x) => x.id);
+    expect(apres.slice(apres.indexOf(OPERATION_GRAPH_CHECK_ID))).toEqual([OPERATION_GRAPH_CHECK_ID, 'COH-OPS-FACT-DATE-SYNC']);
     expect(activeChecks().map((x) => x.id)).toContain(OPERATION_GRAPH_CHECK_ID);
     expect(c.repair).toBeUndefined();
     expect(c.autoRepairWhen).toMatch(/^jamais/);

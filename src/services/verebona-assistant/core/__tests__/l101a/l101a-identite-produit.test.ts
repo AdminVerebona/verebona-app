@@ -132,6 +132,7 @@ describe('L101A-U-COH-IDENTITY — contrôle de cohérence de l’identité prod
     // Lots 103E et 103D : contrôles ajoutés APRÈS (sans réordonner l'existant).
     const ids = COHERENCE_REGISTRY.map((c) => c.id);
     // Lot 116C (carte #806 §4, AC73) : COH-OPERATION-GRAPH ajouté en fin de registre.
+    // Carte #831 (écart E04) : COH-OPS-FACT-DATE-SYNC ajouté ensuite, en fin de registre.
     expect(ids.slice(ids.indexOf('COH-EQUIPMENT-IDENTITY'))).toEqual(['COH-EQUIPMENT-IDENTITY', 'COH-AGENDA-SUPPLIERS', 'COH-AGENDA-STRUCTURAL-HOUSING', /* #715 : COH-AGENDA-HISTORICAL-STATUS retiré */
       // Lot 105D : rattachement principal récupérable (fin de registre).
       'COH-DOC-PRIMARY-LINK',
@@ -166,7 +167,9 @@ describe('L101A-U-COH-IDENTITY — contrôle de cohérence de l’identité prod
       // Lot 113AK (#736) : provenance des faits T1 et preuves orphelines, en fin de registre.
       'COH-DOC-FACT-PROVENANCE',
       // Lot 113AQ (#750) : contradictions d'attributs requalifiées, en fin de registre.
-      'COH-OPS-ATTRIBUTE-CONFLICTS', 'COH-OPERATION-GRAPH']);
+      'COH-OPS-ATTRIBUTE-CONFLICTS', 'COH-OPERATION-GRAPH',
+      // Carte #831 (§ 1, écart E04 ; AC34) : reprise du report de la date du même fait, en fin de registre.
+      'COH-OPS-FACT-DATE-SYNC']);
     expect(COVERAGE_INVENTORY.find((d) => d.domain === 'equipements')!.checks).toContain('COH-EQUIPMENT-IDENTITY');
     expect(equipmentIdentityCheck.forbiddenRepairs.join(' ')).toMatch(/utilisateur/);
   });
