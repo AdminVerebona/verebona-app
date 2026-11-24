@@ -73,8 +73,14 @@ export function AnswerBlocks({ blocks, variant, onCopy }: { blocks: AnswerBlock[
         // réponse (jamais la page) ; les cellules reviennent à la ligne, la première colonne reste lisible.
         if (b.kind === 'table') {
           const cellule = `border-b border-[color:var(--border)] px-2 py-1 align-top ${variant === 'mobile' ? 'text-[14px]' : 'text-[13.5px]'}`;
+          // Carte 801 — `overflow-y-hidden` EXPLICITE, pour que ce bloc ne défile
+          // QUE à l'horizontale, comme l'annonce le commentaire ci-dessus.
+          // Déclarer `overflow-x` seul fait passer `overflow-y` de `visible` à
+          // `auto` calculé : un tableau en `border-collapse` laisse facilement un
+          // reste d'un pixel, et le bloc captait alors le premier cran de molette
+          // destiné au panneau de réponse.
           return (
-            <div key={i} data-answer-block="table" className="-mx-1 max-w-full overflow-x-auto px-1">
+            <div key={i} data-answer-block="table" className="-mx-1 max-w-full overflow-x-auto overflow-y-hidden px-1">
               <table className="w-max min-w-full border-collapse text-left">
                 {b.header && (
                   <thead>

@@ -418,7 +418,15 @@ function AssetsPageContent() {
 
   return (
     <>
-      <div className="space-y-6 w-full max-w-full overflow-x-hidden">
+      {/* Carte 801 — `overflow-x-clip` et NON `hidden` : déclarer `overflow-x`
+          seul fait passer `overflow-y` de `visible` à `auto` CALCULÉ (CSS
+          Overflow 3 § 3). Ce bloc devenait alors un conteneur de défilement
+          vertical : un reste d'un seul pixel (sous-pixel, bordure, marge
+          basse) lui faisait capter le premier cran de molette, qui ne
+          descendait plus jusqu'à `#main-scroll-container`. `clip` rogne de la
+          même façon sans créer de conteneur de défilement — même choix et
+          même raison qu'à `DashboardLayout.tsx` (zone principale). */}
+      <div className="space-y-6 w-full max-w-full overflow-x-clip">
         {/* Warning banner si limite dépassée (cas expiration Premium) */}
         {limiteAtteinte && !isRestricted && (
           <Card className="border-[color:var(--attention-edge)] bg-[color:var(--attention-soft)]">
@@ -478,9 +486,14 @@ function AssetsPageContent() {
 
 
         {/* Classement par famille de bien : Véhicule, Immobilier, Objet.
-            Seules les familles présentes sont proposées (jamais de filtre vide). */}
+            Seules les familles présentes sont proposées (jamais de filtre vide).
+            Carte 801 — `overflow-y-hidden` EXPLICITE : cette rangée ne défile
+            qu'à l'horizontale. Sans cette déclaration, `overflow-y` vaut `auto`
+            calculé, la rangée devient défilable verticalement et capte le
+            premier cran de molette destiné à la page. Aucun changement
+            visuel : elle rognait déjà à la verticale. */}
         {activeAssets.length > 0 && familyCounts.length > 1 && (
-          <div role="group" aria-label="Filtrer par famille de bien" className="-mx-1 flex gap-2 overflow-x-auto px-1 pb-1">
+          <div role="group" aria-label="Filtrer par famille de bien" className="-mx-1 flex gap-2 overflow-x-auto overflow-y-hidden px-1 pb-1">
             {[{ code: 'all', label: 'Toutes les familles', count: activeAssets.length }, ...familyCounts].map((f) => {
               const active = categoryFilter === f.code;
               return (

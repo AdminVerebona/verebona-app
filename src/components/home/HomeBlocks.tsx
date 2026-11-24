@@ -120,14 +120,24 @@ export function HomeCarousel({ label, children, className = '' }: { label: strin
       <button type="button" aria-label={`${label} : suivants`} disabled={!edges.next} onClick={() => scroll(1)} className={`${arrow} right-1`}>
         <ChevronRight className="h-4 w-4" aria-hidden />
       </button>
-      {/* Liste défilante focalisable : défilement au clavier (flèches). */}
+      {/* Liste défilante focalisable : défilement au clavier (flèches).
+          Carte 801 — `overflow-y-hidden` EXPLICITE. Déclarer `overflow-x`
+          seul fait passer `overflow-y` de `visible` à `auto` CALCULÉ (CSS
+          Overflow 3 § 3) : le carrousel devenait un conteneur de défilement
+          vertical et, dès qu'il avait un reste d'un pixel (sous-pixel d'une
+          vignette, repli d'un libellé), il captait le premier cran de
+          molette au lieu de le laisser descendre à `#main-scroll-container`
+          — l'accueil semblait figé au premier cran. `vb-no-scrollbar` ne
+          corrige rien : elle masque la barre, elle ne touche pas à
+          `overflow`. Aucun changement visuel : la liste rognait déjà à la
+          verticale, elle n'était simplement pas censée s'y défiler. */}
       <ul
         ref={ref}
         aria-label={label}
         tabIndex={0}
         onScroll={update}
         onKeyDown={onKeyDown}
-        className={`m-0 flex list-none snap-x snap-mandatory gap-2.5 overflow-x-auto rounded-xl p-0 vb-no-scrollbar md:gap-3 ${FOCUS_RING}`}
+        className={`m-0 flex list-none snap-x snap-mandatory gap-2.5 overflow-x-auto overflow-y-hidden rounded-xl p-0 vb-no-scrollbar md:gap-3 ${FOCUS_RING}`}
       >
         {children}
       </ul>
