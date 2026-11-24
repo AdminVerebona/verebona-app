@@ -249,7 +249,9 @@ scenario('L113AE-T2', 'Lot 113AE (#728) — Standard actif : T2 complet sans dro
     const r = await poser(c, item.label, { pageContext: { route: '/accueil', platform: 'web', suggestionId: item.id, suggestionVersion: s.selection.version } });
     expect(r.status).toBe(200);
     expect(r.answer).not.toMatch(/réservé|disponible avec Premium|font partie de l’offre Premium/);
-    expect(r.answer).not.toMatch(/Coût de possession de Cupra : coût cumulé/);
+    // Règle remplacée (carte #790, relance du 21/11) : le coût de possession n'est plus une phrase unique ; c'est un chiffre clé
+    // (« Chiffre clé : <montant> — coût cumulé documenté de <bien> »), suivi de la ventilation et des limites.
+    expect(r.answer).not.toMatch(/Coût de possession de Cupra : coût cumulé|Chiffre clé|coût cumulé documenté/);
   });
 
   it('AC06 — clarification puis reprise Standard : accès IA conservé ; compte restreint : reprise sans appel', async () => {

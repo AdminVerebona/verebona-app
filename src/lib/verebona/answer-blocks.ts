@@ -54,6 +54,8 @@ const TITRE_MAX = 80;
 /** Un chiffre clé est COURT : au-delà, la ligne est une phrase et reste un paragraphe. */
 const CHIFFRE_MAX = 40;
 const LEGENDE_MAX = 80;
+/** Longueur maximale de la légende d'un chiffre clé (carte #790, relance : lue par les réponses écrites par le code). */
+export const METRIC_CAPTION_MAX = LEGENDE_MAX;
 /** Au-delà, ce ne sont plus des chiffres CLÉS : les lignes suivantes restent des paragraphes. */
 const MAX_CHIFFRES = 3;
 

@@ -20,6 +20,19 @@ function Spans({ spans }: { spans: AnswerSpan[] }) {
   );
 }
 
+const texteDe = (spans: AnswerSpan[]) => spans.map((s) => s.text).join('');
+
+/**
+ * Carte 790 (relance du 21/11/2026) — nom d'une liste pour un lecteur d'écran : l'annonce qui la précède
+ * (« Ventilation : », « Limites : »), sans sa ponctuation. Le texte affiché ne change pas ; sans annonce, pas de nom.
+ */
+function nomDeListe(blocks: AnswerBlock[], i: number): string | undefined {
+  const avant = blocks[i - 1];
+  if (!avant || avant.kind !== 'paragraph') return undefined;
+  const t = texteDe(avant.spans).trim();
+  return /[:：]$/.test(t) ? t.replace(/\s*[:：]$/, '') : undefined;
+}
+
 export function AnswerBlocks({ blocks, variant, onCopy }: { blocks: AnswerBlock[]; variant: 'desktop' | 'mobile'; onCopy?: () => void }) {
   const taille = variant === 'mobile' ? 'text-[15px]' : 'text-[14.5px]';
   return (
@@ -39,7 +52,14 @@ export function AnswerBlocks({ blocks, variant, onCopy }: { blocks: AnswerBlock[
         // de la charte seulement ; même rendu sur ordinateur et sur mobile, la valeur revient à la ligne.
         if (b.kind === 'metric') {
           return (
-            <div key={i} className="my-0.5 flex min-w-0 flex-col gap-0.5 rounded-lg border border-[color:var(--border)] bg-[color:var(--bg-subtle)] px-3 py-2">
+            // Carte 790 (relance) : le chiffre clé est UN groupe nommé (étiquette, valeur, légende lues ensemble).
+            <div
+              key={i}
+              role="group"
+              aria-label={`${ETIQUETTE_CHIFFRE_CLE} : ${texteDe(b.value)}${b.caption ? ` — ${texteDe(b.caption)}` : ''}`}
+              data-answer-block="metric"
+              className="my-0.5 flex min-w-0 flex-col gap-0.5 rounded-lg border border-[color:var(--border)] bg-[color:var(--bg-subtle)] px-3 py-2"
+            >
               {/* Charte Sérénité : casse naturelle, pas de petites capitales, pas d'espacement large. */}
               <span className="text-[12px] font-semibold text-[color:var(--text-muted)]">{ETIQUETTE_CHIFFRE_CLE}</span>
               <strong className={`font-semibold text-[color:var(--text-primary)] ${variant === 'mobile' ? 'text-[20px]' : 'text-[18px]'}`}>
@@ -54,7 +74,7 @@ export function AnswerBlocks({ blocks, variant, onCopy }: { blocks: AnswerBlock[
         if (b.kind === 'table') {
           const cellule = `border-b border-[color:var(--border)] px-2 py-1 align-top ${variant === 'mobile' ? 'text-[14px]' : 'text-[13.5px]'}`;
           return (
-            <div key={i} className="-mx-1 max-w-full overflow-x-auto px-1">
+            <div key={i} data-answer-block="table" className="-mx-1 max-w-full overflow-x-auto px-1">
               <table className="w-max min-w-full border-collapse text-left">
                 {b.header && (
                   <thead>
@@ -82,7 +102,12 @@ export function AnswerBlocks({ blocks, variant, onCopy }: { blocks: AnswerBlock[
         }
         const List = b.ordered ? 'ol' : 'ul';
         return (
-          <List key={i} className={`m-0 flex flex-col gap-1 pl-5 ${b.ordered ? 'list-decimal' : 'list-disc'} marker:text-[color:var(--text-muted)]`}>
+          <List
+            key={i}
+            className={`m-0 flex flex-col gap-1 pl-5 ${b.ordered ? 'list-decimal' : 'list-disc'} marker:text-[color:var(--text-muted)]`}
+            data-answer-block="list"
+            aria-label={nomDeListe(blocks, i)}
+          >
             {b.items.map((it, j) => <li key={j} className="pl-0.5"><Spans spans={it} /></li>)}
           </List>
         );

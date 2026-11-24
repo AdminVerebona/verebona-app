@@ -752,7 +752,9 @@ export async function reconcileAccount(
       [
         ...valeurs,
         ...(niveau >= 1 ? [issue, JSON.stringify(phases)] : []),
-        ...(niveau >= 2 ? [publies.providerCalls, mesures ? publies.cacheResponses : totals.aiCacheHits, totals.decisionsReused + (res.openActions?.aiReused ?? 0)] : []),
+        // Carte #828 (écart B) : `provider_calls` ne reçoit QUE la mesure certifiée — `DECLARED` : NULL (la valeur
+        // déclarative reste dans `ai_requests_declared`, jamais dans un champ d'appels réels).
+        ...(niveau >= 2 ? [publies.providerCallsCertified, mesures ? publies.cacheResponses : totals.aiCacheHits, totals.decisionsReused + (res.openActions?.aiReused ?? 0)] : []),
         ...(niveau >= 3 ? [publies.semantics, publies.declaredRequests, publies.logicalRequests, publies.providerAttempts,
           publies.providerCallsOtherTreatments, JSON.stringify(activite)] : []),
       ] as never[],

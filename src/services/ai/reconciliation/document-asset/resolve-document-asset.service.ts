@@ -155,7 +155,7 @@ import {
 import { resolveProjectionActor, type ProjectionEffect } from './projection-actor';
 import { createHash } from 'node:crypto';
 import { noteAiDecisionReuse } from '../../measure/ai-activity';
-import { noteDegraded } from '../../degraded/degraded-mode';
+import { announceUnprotectedCall } from '../../degraded/degraded-mode';
 import { readExplicitNoAssetDecision } from '@/services/to-process/no-asset-decision';
 import type { ExplicitNoAssetDecision } from '@/services/to-process/no-asset-choice';
 import { respectExplicitNoAsset, type RespectNoAssetDeps } from './explicit-no-asset';
@@ -609,7 +609,9 @@ export async function resolveDocumentAsset(
     // réutilisée (peut-être obsolète) ni enregistrée sous cette signature (réutilisée à tort plus tard). La
     // mémoire précédente reste intacte ; le passage est tracé (les bornes propres au rattachement s'appliquent).
     if (sig === 'unresolved') {
-      noteDegraded({ treatment: 'T3', operationCode: 't3_link_ambiguity', accountId, component: 'CONFIG_SIGNATURE', reason: 'SIGNATURE_UNRESOLVED', impact: 'CALL_WITHOUT_PROTECTION' });
+      // Carte #828 (écart A) : appel ANNONCÉ « sans protection » — admis par la borne commune au moment de l'envoi
+      // (cache des réponses), ou refusé avant tout contact (échec IA : repli existant du rattachement).
+      announceUnprotectedCall({ treatment: 'T3', operationCode: 't3_link_ambiguity', accountId, component: 'CONFIG_SIGNATURE', reason: 'SIGNATURE_UNRESOLVED' });
       return { key: '', reuse: null, cross };
     }
     const key = aiMemoryKey({ fingerprint: ctx.fingerprint, path, aiConfigSignature: sig, crossContract: cross });

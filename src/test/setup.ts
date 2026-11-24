@@ -26,7 +26,9 @@ beforeEach(async () => {
   try { (await import('@/services/ai/gateway/pricing/pricing.repository')).__setVerifiedTestPricesForTests(true); } catch { /* module simulé */ }
   process.env.GEMINI_API_KEY = 'test-key-not-used';
   // Aucun test unitaire ne doit ouvrir de connexion à la base.
-  process.env.AI_IDEMPOTENCY_DISABLED = 'true';
+  // Carte #828 : valeur `test` (échappatoire des jeux de test, honorée seulement quand NODE_ENV=test). La valeur
+  // `true` est désormais le contournement d'urgence de production : tracé, compté et borné.
+  process.env.AI_IDEMPOTENCY_DISABLED = 'test';
   // Lot 49 : contrôle de périmètre des travaux de la file (requête en base)
   // neutralisé en test unitaire ; exercé par les e2e PostgreSQL et par ses
   // propres tests (`job-scope.test.ts`).

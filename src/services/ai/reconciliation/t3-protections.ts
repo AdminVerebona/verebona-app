@@ -25,10 +25,11 @@
  */
 import { randomUUID } from 'crypto';
 import {
-  degradedInstanceState, readDegradedEvents, DEGRADED_COMPONENT_LABELS, DEGRADED_REASON_LABELS, DEGRADED_IMPACT_LABELS,
-  degradedAlertCount, degradedAlertMinutes,
+  degradedInstanceState, readDegradedEvents, readDegradedBudget, DEGRADED_COMPONENT_LABELS, DEGRADED_REASON_LABELS, DEGRADED_IMPACT_LABELS,
+  degradedAlertCount, degradedAlertMinutes, degradedBudgetTimeoutMs,
   type DegradedDurableRow, type DegradedInstanceState,
 } from '../degraded/degraded-mode';
+import { idempotencyCacheSwitch, type IdempotencyCacheSwitch } from '../idempotency/idempotency.service';
 
 export type T3ProtectionLevel = 'ok' | 'warn' | 'error';
 export interface T3ProtectionFinding { code: string; level: T3ProtectionLevel; message: string }
@@ -61,6 +62,17 @@ export interface T3ProtectionFacts {
   instance: DegradedInstanceState;
   /** Code technique borné d'une lecture en échec. */
   probeError: string | null;
+  /** Carte #828 : état précis de la coupure du cache (contournement d'urgence, échappatoire de test, valeur ignorée). */
+  cacheSwitch?: IdempotencyCacheSwitch;
+  /** Carte #828 : table de la borne commune (1940) présente ; `null` : non vérifiable. */
+  sharedBudget1940?: boolean | null;
+  /** Carte #828 : budget commun consommé sur 24 h (toutes instances). */
+  sharedBudget24h?: { admitted: number; refused: number } | null;
+  /**
+   * Carte #828 : contournements d'urgence observés (30 jours, toutes instances) — première et dernière
+   * observation d'un appel émis sous contournement, nombre d'appels.
+   */
+  bypassWindows?: Array<{ component: string; firstAt: string | null; lastAt: string | null; count: number }>;
 }
 
 export interface T3Protections {
@@ -70,8 +82,55 @@ export interface T3Protections {
   findings: T3ProtectionFinding[];
   /** Réglages effectifs (noms de variables d'environnement, valeurs non secrètes). */
   settings: Array<{ name: string; value: string; note: string }>;
-  degraded: { durableAvailable: boolean; last24h: DegradedDurableRow[]; instance: DegradedInstanceState };
+  degraded: {
+    durableAvailable: boolean; last24h: DegradedDurableRow[]; instance: DegradedInstanceState;
+    /** Carte #828 : budget commun des appels sans protection (toutes instances, 24 h) ; `null` : table 1940 absente. */
+    sharedBudget?: { admitted: number; refused: number } | null;
+  };
+  /** Carte #828 : contournements d'urgence actifs sur l'instance qui répond (activation, portée, risque, durée observée). */
+  bypasses?: T3EmergencyBypass[];
 }
+
+/** Carte #828 (écart A) — un contournement d'urgence rendu explicite. */
+export interface T3EmergencyBypass {
+  variable: string;
+  value: string;
+  scope: string;
+  risk: string;
+  /** Première et dernière observation d'un appel émis sous ce contournement (30 jours, toutes instances) ; `null` : aucun appel observé. */
+  firstObservedAt: string | null;
+  lastObservedAt: string | null;
+  callsObserved: number;
+}
+
+/** Contournements d'urgence actifs (pur). */
+export function emergencyBypassesOf(f: Pick<T3ProtectionFacts, 'cacheSwitch' | 'cacheDisabledByEnv' | 'instance' | 'bypassWindows'>): T3EmergencyBypass[] {
+  const fenetre = (component: string) => {
+    const w = (f.bypassWindows ?? []).find((x) => x.component === component);
+    return { firstObservedAt: w?.firstAt ?? null, lastObservedAt: w?.lastAt ?? null, callsObserved: w?.count ?? 0 };
+  };
+  const out: T3EmergencyBypass[] = [];
+  const coupure = f.cacheSwitch ?? (f.cacheDisabledByEnv ? 'EMERGENCY_BYPASS' : 'ACTIVE');
+  if (coupure === 'EMERGENCY_BYPASS') {
+    out.push({
+      variable: 'AI_IDEMPOTENCY_DISABLED', value: 'true',
+      scope: 'tous les traitements IA de toutes les instances qui portent cette variable',
+      risk: 'aucune réponse réutilisée ni partagée : chaque demande part au fournisseur et est facturée ; pour les traitements soumis à la borne, au plus AI_DEGRADED_CALLS_PER_HOUR appels par heure, opération et compte, puis repli sans IA',
+      ...fenetre('RESPONSE_CACHE'),
+    });
+  }
+  if (f.instance.callsPerHour === null) {
+    out.push({
+      variable: 'AI_DEGRADED_CALLS_PER_HOUR', value: 'off',
+      scope: `traitements soumis à la borne (${f.instance.cappedTreatments.join(', ') || 'aucun'})`,
+      risk: 'aucune limite : en mode dégradé, chaque passage peut rappeler le fournisseur sans plafond (appels facturés)',
+      ...fenetre('DEGRADED_CAP'),
+    });
+  }
+  return out;
+}
+
+const dateCourte = (iso: string | null): string => (iso ? iso.slice(0, 16).replace('T', ' ') + ' UTC' : '—');
 
 const ouiNon = (v: boolean | null, oui: string, non: string, inconnu: string): { level: T3ProtectionLevel; message: string } =>
   (v === true ? { level: 'ok', message: oui } : v === false ? { level: 'error', message: non } : { level: 'error', message: inconnu });
@@ -96,10 +155,23 @@ export function evaluateT3Protections(f: T3ProtectionFacts): { status: T3Protect
     : ouiNon(f.cacheColumns0857, 'Migration 0857 appliquée (cache renouvelable, réservation multi-instances).',
       'Migration 0857 ABSENTE : cache par processus seulement, deux instances peuvent appeler pour la même demande.',
       'Migration 0857 non vérifiable (base illisible).'));
-  add('CACHE_ENABLED', f.cacheDisabledByEnv
-    ? { level: 'error', message: 'Cache des réponses DÉSACTIVÉ par configuration (AI_IDEMPOTENCY_DISABLED=true) : aucune réponse réutilisée, aucun partage.' }
-    : { level: 'ok', message: 'Cache des réponses activé.' });
-  if (!f.cacheDisabledByEnv && f.cacheColumns0857) {
+  // Carte #828 (écart A) : la coupure est un CONTOURNEMENT D'URGENCE — portée, risque et durée observée sont dits.
+  const coupure = f.cacheSwitch ?? (f.cacheDisabledByEnv ? 'EMERGENCY_BYPASS' : 'ACTIVE');
+  const contournements = emergencyBypassesOf(f);
+  const duree = (variable: string) => {
+    const b = contournements.find((x) => x.variable === variable);
+    return b && b.callsObserved > 0
+      ? ` ${b.callsObserved} appel(s) émis sous ce contournement sur 30 jours, du ${dateCourte(b.firstObservedAt)} au ${dateCourte(b.lastObservedAt)}.`
+      : ' Aucun appel émis sous ce contournement n’a encore été observé.';
+  };
+  add('CACHE_ENABLED', coupure === 'EMERGENCY_BYPASS'
+    ? { level: 'error', message: 'Cache des réponses COUPÉ par configuration (AI_IDEMPOTENCY_DISABLED=true) — contournement d’urgence : aucune réponse réutilisée, aucun partage ; chaque demande part au fournisseur, tracée, comptée et bornée (AI_DEGRADED_CALLS_PER_HOUR). Portée : toutes les instances qui portent cette variable.' + duree('AI_IDEMPOTENCY_DISABLED') }
+    : coupure === 'TEST_ESCAPE'
+      ? { level: 'error', message: 'Cache des réponses coupé par l’échappatoire des jeux de test (AI_IDEMPOTENCY_DISABLED=test, NODE_ENV=test) : aucune réponse réutilisée, aucune trace, aucune borne.' }
+      : coupure === 'TEST_VALUE_IGNORED'
+        ? { level: 'warn', message: 'AI_IDEMPOTENCY_DISABLED=test est réservé aux jeux de test : valeur IGNORÉE ici, le cache des réponses reste en service. Retirer la variable.' }
+        : { level: 'ok', message: 'Cache des réponses activé.' });
+  if (coupure !== 'EMERGENCY_BYPASS' && coupure !== 'TEST_ESCAPE' && f.cacheColumns0857) {
     add('RESERVATION_USABLE', ouiNon(f.reservationUsable, 'Réservation du cache utilisable (réservation puis libération d’une clé de diagnostic).',
       'Réservation du cache INUTILISABLE (écriture en échec) : appels sans partage, tracés et bornés.',
       'Réservation du cache non vérifiée.'));
@@ -121,6 +193,23 @@ export function evaluateT3Protections(f: T3ProtectionFacts): { status: T3Protect
     'Migration 1860 absente : les passages ne publient pas la mesure des appels réels (ancienne sémantique).');
   avert('MIGRATION_1861', f.degradedTrace1861, 'Migration 1861 appliquée (trace durable des modes dégradés).',
     'Migration 1861 absente : les modes dégradés ne sont tracés que dans le journal applicatif de chaque instance.');
+  // Carte #828 (écart A) : portée RÉELLE de la borne — jamais dite « commune » quand elle ne l'est pas.
+  if (f.sharedBudget1940 !== undefined) {
+    avert('MIGRATION_1940', f.sharedBudget1940, 'Migration 1940 appliquée (borne des appels sans protection commune à toutes les instances).',
+      'Migration 1940 absente : la borne des appels sans protection n’est tenue que PAR INSTANCE (borne réelle = nombre d’instances × budget).');
+  }
+  if (f.instance.callsPerHour === null) {
+    add('DEGRADED_CAP', { level: 'error', message: `Borne des appels sans protection LEVÉE par configuration (AI_DEGRADED_CALLS_PER_HOUR=off) — contournement d’urgence : en mode dégradé, aucun plafond d’appels facturés. Portée : ${f.instance.cappedTreatments.join(', ') || 'aucun traitement'}.` + duree('AI_DEGRADED_CALLS_PER_HOUR') });
+  } else if (f.instance.cappedTreatments.length === 0) {
+    add('DEGRADED_CAP', { level: 'error', message: 'Aucun traitement n’est soumis à la borne des appels sans protection (AI_DEGRADED_CAP_TREATMENTS vide) : en mode dégradé, aucun plafond.' });
+  } else if ((f.instance.sharedUnavailable ?? 0) > 0) {
+    add('DEGRADED_CAP', { level: 'warn', message: `Borne commune injoignable ${f.instance.sharedUnavailable} fois sur cette instance (code ${f.instance.sharedUnavailableCode ?? '—'}) : ces admissions n’ont été bornées que par l’instance.` });
+  } else {
+    add('DEGRADED_CAP', { level: 'ok', message: `Borne des appels sans protection : ${f.instance.callsPerHour} par heure, opération et compte (${f.instance.cappedTreatments.join(', ')})${f.sharedBudget1940 ? ', commune à toutes les instances' : ''}.` });
+  }
+  if (f.sharedBudget24h && f.sharedBudget24h.admitted + f.sharedBudget24h.refused > 0) {
+    add('DEGRADED_BUDGET_24H', { level: 'warn', message: `Appels émis sans protection sur 24 h (toutes instances) : ${f.sharedBudget24h.admitted} admis, ${f.sharedBudget24h.refused} refusé(s) avant contact.` });
+  }
 
   const recents = f.degradedLast24h.reduce((n, r) => n + r.count, 0);
   const refuses = f.degradedLast24h.filter((r) => r.impact === 'CALL_REFUSED').reduce((n, r) => n + r.count, 0);
@@ -147,10 +236,11 @@ export function t3ProtectionSettings(): T3Protections['settings'] {
     { name: 'T3_SWEEP_COVERAGE_HOURS', value: env('T3_SWEEP_COVERAGE_HOURS'), note: 'période de couverture exhaustive (défaut : 24 h)' },
     { name: 'T3_NAMING_VERIFY_HOURS', value: env('T3_NAMING_VERIFY_HOURS'), note: 'relecture de sécurité du nommage (défaut : 24 h)' },
     { name: 'T3_DOCUMENT_NAMING_ENABLED', value: env('T3_DOCUMENT_NAMING_ENABLED'), note: 'harmonisation documentaire (défaut : activée)' },
-    { name: 'AI_IDEMPOTENCY_DISABLED', value: env('AI_IDEMPOTENCY_DISABLED'), note: 'coupure du cache des réponses (défaut : cache actif)' },
+    { name: 'AI_IDEMPOTENCY_DISABLED', value: env('AI_IDEMPOTENCY_DISABLED'), note: 'coupure du cache des réponses (défaut : cache actif ; true = contournement d’urgence tracé, compté et borné ; test = jeux de test seulement, ignoré ailleurs)' },
     { name: 'AI_IDEMPOTENCY_LEASE_SECONDS', value: env('AI_IDEMPOTENCY_LEASE_SECONDS'), note: 'bail d’une réservation, renouvelé pendant l’appel (défaut : 180 s)' },
     { name: 'AI_IDEMPOTENCY_LEASE_MAX_SECONDS', value: env('AI_IDEMPOTENCY_LEASE_MAX_SECONDS'), note: 'durée maximale de renouvellement du bail d’un même appel (défaut : 1800 s)' },
-    { name: 'AI_DEGRADED_CALLS_PER_HOUR', value: env('AI_DEGRADED_CALLS_PER_HOUR'), note: 'appels sans protection admis par heure, par traitement / opération / compte et par instance (défaut : 20 ; off = sans borne)' },
+    { name: 'AI_DEGRADED_CALLS_PER_HOUR', value: env('AI_DEGRADED_CALLS_PER_HOUR'), note: 'appels sans protection admis par heure, par traitement / opération / compte, toutes instances confondues (défaut : 20 ; off = contournement d’urgence, sans borne)' },
+    { name: 'AI_DEGRADED_BUDGET_TIMEOUT_MS', value: env('AI_DEGRADED_BUDGET_TIMEOUT_MS'), note: `délai accordé à la borne commune avant de retomber sur la borne de l’instance (défaut : ${degradedBudgetTimeoutMs({})} ms)` },
     { name: 'AI_DEGRADED_CAP_TREATMENTS', value: env('AI_DEGRADED_CAP_TREATMENTS'), note: 'traitements soumis à la borne (défaut : T3)' },
     { name: 'AI_DEGRADED_ALERT_MINUTES', value: env('AI_DEGRADED_ALERT_MINUTES'), note: `alerte si la dégradation persiste (défaut : ${degradedAlertMinutes({})} min)` },
     { name: 'AI_DEGRADED_ALERT_COUNT', value: env('AI_DEGRADED_ALERT_COUNT'), note: `alerte à partir de ce nombre d’occurrences (défaut : ${degradedAlertCount({})})` },
@@ -172,6 +262,7 @@ export async function readT3ProtectionFacts(sql?: Sql): Promise<T3ProtectionFact
             to_regclass('ai_operation_idempotency') IS NOT NULL AS cache,
             to_regclass('ai_reuse_counters') IS NOT NULL AS reuse,
             to_regclass('ai_degraded_events') IS NOT NULL AS degrade,
+            to_regclass('ai_degraded_call_budget') IS NOT NULL AS budget,
             to_regclass('account_reconciliation_runs_done_idx') IS NOT NULL AS idx0859,
             (SELECT count(*) = 4 FROM information_schema.columns WHERE table_schema = current_schema() AND table_name = 'ai_operation_idempotency'
                AND column_name IN ('state', 'owner_token', 'hit_count', 'renewed_count')) AS cols0857,
@@ -182,7 +273,8 @@ export async function readT3ProtectionFacts(sql?: Sql): Promise<T3ProtectionFact
   const b = (k: string): boolean | null => (s ? s[k] === true : null);
   let memoryReadable: boolean | null = null;
   if (b('memoire')) memoryReadable = (await lire(`SELECT 1 FROM t3_decision_memory LIMIT 1`)) !== null;
-  const cacheDisabledByEnv = process.env.AI_IDEMPOTENCY_DISABLED === 'true';
+  const cacheSwitch = idempotencyCacheSwitch();
+  const cacheDisabledByEnv = cacheSwitch === 'EMERGENCY_BYPASS' || cacheSwitch === 'TEST_ESCAPE';
   let reservationUsable: boolean | null = null;
   if (b('cache') && b('cols0857')) {
     // Réservation réelle d'une clé de diagnostic, aussitôt libérée (jamais une clé métier, jamais une clé réservée).
@@ -197,12 +289,24 @@ export async function readT3ProtectionFacts(sql?: Sql): Promise<T3ProtectionFact
   try { configSignature = await (await import('../gateway/ai-gateway')).AiGateway.effectiveConfigSignature('t3_value_conflict'); } catch { configSignature = 'unresolved'; }
   let durables: DegradedDurableRow[] = [];
   try { durables = (await readDegradedEvents(24)).rows; } catch (e) { probeError = probeError ?? codeDe(e); }
+  // Carte #828 : budget commun consommé et fenêtres observées des contournements d'urgence (lecture seule).
+  let sharedBudget24h: { admitted: number; refused: number } | null = null;
+  try { const bg = await readDegradedBudget(24); sharedBudget24h = bg.available ? { admitted: bg.admitted, refused: bg.refused } : null; } catch (e) { probeError = probeError ?? codeDe(e); }
+  const fenetres = b('degrade') ? await lire<{ component: string; first_at: Date | string | null; last_at: Date | string | null; n: string | number }>(
+    `SELECT component, min(first_at) AS first_at, max(last_at) AS last_at, sum(count)::bigint AS n
+       FROM ai_degraded_events
+      WHERE reason = 'DISABLED_BY_CONFIG' AND component IN ('RESPONSE_CACHE', 'DEGRADED_CAP') AND impact = 'CALL_WITHOUT_PROTECTION'
+        AND last_at >= now() - interval '30 days'
+      GROUP BY component`) : null;
+  const isoDe = (v: Date | string | null) => (v ? new Date(v).toISOString() : null);
   const [{ decisionMemoryDisabled }, { t3SweepPrefilterEnabled }] = await Promise.all([import('./decision-memory/store'), import('./t3-queue')]);
   return {
     memoryTable: b('memoire'), memoryEnabled: !decisionMemoryDisabled(), memoryReadable, cacheTable: b('cache'), cacheColumns0857: b('cols0857'),
     cacheDisabledByEnv, reservationUsable, reuseCounters0858: b('reuse'), runCounters0858: b('cols0858'), sweepIndex0859: b('idx0859'),
     measuredCounters1860: b('cols1860'), degradedTrace1861: b('degrade'), prefilterEnabled: t3SweepPrefilterEnabled(), configSignature,
     degradedLast24h: durables, instance: degradedInstanceState(), probeError,
+    cacheSwitch, sharedBudget1940: b('budget'), sharedBudget24h,
+    bypassWindows: (fenetres ?? []).map((w) => ({ component: w.component, firstAt: isoDe(w.first_at), lastAt: isoDe(w.last_at), count: Number(w.n) || 0 })),
   };
 }
 
@@ -212,7 +316,8 @@ export async function getT3Protections(now: Date = new Date()): Promise<T3Protec
   const { status, findings } = evaluateT3Protections(f);
   return {
     checkedAt: now.toISOString(), status, statusLabel: T3_PROTECTION_STATUS_LABELS[status], findings, settings: t3ProtectionSettings(),
-    degraded: { durableAvailable: f.degradedTrace1861 === true, last24h: f.degradedLast24h, instance: f.instance },
+    degraded: { durableAvailable: f.degradedTrace1861 === true, last24h: f.degradedLast24h, instance: f.instance, sharedBudget: f.sharedBudget24h ?? null },
+    bypasses: emergencyBypassesOf(f),
   };
 }
 

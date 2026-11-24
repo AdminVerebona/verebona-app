@@ -19,9 +19,10 @@ import { createHash, randomUUID } from 'crypto';
 import { pgClient } from '@/db';
 import { AiGatewayError } from '../gateway/errors';
 import {
-  admitDegradedCall, degradedRecently, noteDegraded, technicalCodeOf,
+  admitDegradedCallShared, degradedRecently, noteDegraded, takeAnnouncedUnprotectedCall, technicalCodeOf,
   type DegradedComponent, type DegradedReason, type DegradedScope,
 } from '../degraded/degraded-mode';
+import { currentJobContext } from '../queue/job-context';
 
 /**
  * Clés RÉSERVÉES de `ai_operation_idempotency` — à ne jamais purger.
@@ -161,6 +162,45 @@ export type CacheOutcome =
   | 'SHARED';
 
 /**
+ * Carte #828 (écart A) — état de la coupure du cache des réponses (`AI_IDEMPOTENCY_DISABLED`).
+ *
+ *   · `ACTIVE`            cache en service (défaut) ;
+ *   · `EMERGENCY_BYPASS`  valeur `true` : CONTOURNEMENT D'URGENCE. Chaque demande part au fournisseur, mais elle
+ *                         est désormais tracée (mode dégradé), comptée et bornée comme tout appel sans protection ;
+ *   · `TEST_ESCAPE`       valeur `test`, honorée UNIQUEMENT quand `NODE_ENV=test` : échappatoire des jeux de test
+ *                         (aucune base, aucune trace, aucune borne) ;
+ *   · `TEST_VALUE_IGNORED` valeur `test` hors des tests : IGNORÉE, le cache reste en service (dit au diagnostic).
+ */
+export type IdempotencyCacheSwitch = 'ACTIVE' | 'EMERGENCY_BYPASS' | 'TEST_ESCAPE' | 'TEST_VALUE_IGNORED';
+export function idempotencyCacheSwitch(env: Record<string, string | undefined> = process.env): IdempotencyCacheSwitch {
+  const v = (env.AI_IDEMPOTENCY_DISABLED ?? '').trim().toLowerCase();
+  if (v === 'true') return 'EMERGENCY_BYPASS';
+  if (v === 'test') return env.NODE_ENV === 'test' ? 'TEST_ESCAPE' : 'TEST_VALUE_IGNORED';
+  return 'ACTIVE';
+}
+
+/**
+ * Carte #828 (écart C) — issue RÉELLE de l'écriture d'une réponse dans le cache :
+ *   · `STORED`         la ligne a été insérée ou mise à jour par cet appel ;
+ *   · `ALREADY_READY`  aucune ligne modifiée : une réponse VALIDE d'un autre propriétaire est déjà en cache (elle
+ *                      n'est pas écrasée ; la demande suivante sera servie par elle) ;
+ *   · `LEASE_LOST`     aucune ligne modifiée : une autre instance tient maintenant la réservation (bail perdu) ;
+ *                      la réponse de cet appel n'est PAS en cache ;
+ *   · `NOT_STORED`     aucune ligne modifiée, état non déterminé ;
+ *   · `FAILED`         échec technique de l'écriture.
+ */
+export type CacheWriteOutcome = 'STORED' | 'ALREADY_READY' | 'LEASE_LOST' | 'NOT_STORED' | 'FAILED';
+
+/**
+ * Carte #828 (écart C) — issue de l'écriture du cache portée par une réponse obtenue par un appel réel, quand elle
+ * n'a PAS été conservée par cet appel. `null` : réponse conservée, servie par le cache, ou cache coupé.
+ */
+export function cacheWriteOutcomeOf(value: unknown): Exclude<CacheWriteOutcome, 'STORED'> | null {
+  const v = (value as { cacheWrite?: unknown } | null)?.cacheWrite;
+  return v === 'ALREADY_READY' || v === 'LEASE_LOST' || v === 'NOT_STORED' || v === 'FAILED' ? v : null;
+}
+
+/**
  * Exécutions en cours dans CE processus, par empreinte de clé : un second
  * appel concurrent sur la même clé attend la première exécution au lieu d'en
  * lancer une autre.
@@ -200,8 +240,12 @@ export async function withIdempotency<T>(
   ttlSeconds = DEFAULT_TTL_SECONDS,
   meta: IdempotencyMeta = {},
 ): Promise<T> {
-  // Échappatoire explicite pour les tests et les environnements sans base.
-  if (process.env.AI_IDEMPOTENCY_DISABLED === 'true') return fn();
+  // Carte #828 (écart A) : la coupure du cache n'est plus un chemin silencieux.
+  const coupure = idempotencyCacheSwitch();
+  // Échappatoire des jeux de test (valeur `test`, honorée seulement quand NODE_ENV=test) : ni base, ni trace.
+  if (coupure === 'TEST_ESCAPE') return fn();
+  // Contournement d'urgence (valeur `true`) : chaque demande part au fournisseur — tracée, comptée, bornée.
+  if (coupure === 'EMERGENCY_BYPASS') return appelerSansProtection(fn, meta, 'DISABLED_BY_CONFIG', 'RESPONSE_CACHE');
 
   const cached = await readCached<T>(key);
   if (cached) {
@@ -233,9 +277,15 @@ function marquer<T>(v: T, outcome: CacheOutcome): T {
   return (v && typeof v === 'object' ? { ...v, fromCache: true, cacheOutcome: outcome } : v) as T;
 }
 
-const porteeDe = (meta: IdempotencyMeta): DegradedScope => ({
-  treatment: meta.treatment ?? null, operationCode: meta.operationCode ?? null, accountId: meta.accountId ?? null,
-});
+const porteeDe = (meta: IdempotencyMeta): DegradedScope => {
+  // Carte #828 : un autre traitement déclenché PENDANT un travail soumis à la borne (T4 pendant T3) l'est aussi.
+  let hote: string | null = null;
+  try { hote = currentJobContext()?.treatment ?? null; } catch { hote = null; }
+  return {
+    treatment: meta.treatment ?? null, operationCode: meta.operationCode ?? null, accountId: meta.accountId ?? null,
+    ...(hote && hote !== meta.treatment ? { hostTreatment: hote } : {}),
+  };
+};
 
 /**
  * Carte #811 (P1-C) — appel émis SANS la protection du cache (réservation impossible, base indisponible) : tracé,
@@ -245,7 +295,9 @@ async function appelerSansProtection<T>(
   fn: () => Promise<T>, meta: IdempotencyMeta, reason: DegradedReason, component: DegradedComponent, e?: unknown,
 ): Promise<T> {
   const scope = porteeDe(meta);
-  if (!admitDegradedCall(scope)) {
+  // Une annonce amont en attente pour cette portée est soldée par cette admission (jamais deux fois le budget).
+  takeAnnouncedUnprotectedCall(scope);
+  if (!(await admitDegradedCallShared(scope))) {
     noteDegraded({ ...scope, component, reason, impact: 'CALL_REFUSED', technicalCode: technicalCodeOf(e) });
     throw new AiGatewayError('DEGRADED_CALL_REFUSED', meta.operationCode ?? '?',
       'Protection anti-redondance en mode dégradé et budget d’appels sans protection épuisé pour cette heure : appel non émis, repli sans IA.',
@@ -287,11 +339,12 @@ function renouvelerLeBail(key: string, token: string, bail: number, meta: Idempo
       )) as unknown as unknown[];
       if (rows.length === 0 && !arrete) {
         perdu = true;
-        noteDegraded({ ...porteeDe(meta), component: 'CACHE_RESERVATION', reason: 'LEASE_LOST', impact: 'NO_EXTRA_CALL' });
+        // Carte #828 : une autre instance tient la clé — elle appelle peut-être le fournisseur pour la même demande.
+        noteDegraded({ ...porteeDe(meta), component: 'CACHE_RESERVATION', reason: 'LEASE_LOST', impact: 'DUPLICATE_POSSIBLE' });
         controle.stop();
       }
     } catch (e) {
-      if (!arrete) noteDegraded({ ...porteeDe(meta), component: 'CACHE_RESERVATION', reason: 'LEASE_RENEWAL_FAILED', impact: 'NO_EXTRA_CALL', technicalCode: technicalCodeOf(e) });
+      if (!arrete) noteDegraded({ ...porteeDe(meta), component: 'CACHE_RESERVATION', reason: 'LEASE_RENEWAL_FAILED', impact: 'DUPLICATE_POSSIBLE', technicalCode: technicalCodeOf(e) });
     } finally { enCours = false; }
   };
   const minuteur = setInterval(() => { void tour(); }, Math.max(250, Math.floor((bail * 1000) / 3)));
@@ -326,7 +379,6 @@ async function executerUneFois<T>(
   key: string, fn: () => Promise<T>, ttlSeconds: number, meta: IdempotencyMeta,
 ): Promise<{ value: T; outcome: CacheOutcome }> {
   if (sansReservation && Date.now() - sansReservation.at < 300_000) {
-    noteDegraded({ ...porteeDe(meta), component: 'CACHE_RESERVATION', reason: 'MIGRATION_MISSING', impact: 'NO_EXTRA_CALL', technicalCode: '42703' });
     return executerSansReservation(key, fn, ttlSeconds, meta);
   }
   const token = randomUUID();
@@ -340,14 +392,14 @@ async function executerUneFois<T>(
       if (colonneAbsente(e)) {
         // Colonnes 0857 absentes : le cache fonctionne encore (par processus), seul le partage multi-instances est perdu.
         sansReservation = { at: Date.now() };
-        noteDegraded({ ...porteeDe(meta), component: 'CACHE_RESERVATION', reason: 'MIGRATION_MISSING', impact: 'NO_EXTRA_CALL', technicalCode: '42703' });
         return executerSansReservation(key, fn, ttlSeconds, meta);
       }
       // Base indisponible ou table absente : on dégrade sans bloquer (un appel, ni cache ni partage) — carte #811 :
       // tracé, et BORNÉ par le budget dégradé (jamais une boucle d'appels silencieuse).
       const tableAbsente = (e as { code?: string })?.code === '42P01';
       return {
-        value: await appelerSansProtection(fn, meta, tableAbsente ? 'MIGRATION_MISSING' : 'RESERVATION_FAILED', tableAbsente ? 'RESPONSE_CACHE' : 'CACHE_RESERVATION', e),
+        // Carte #828 (écart C) : la réponse de cet appel n'est pas en cache — c'est dit à l'appelant.
+        value: avecEcriture(await appelerSansProtection(fn, meta, tableAbsente ? 'MIGRATION_MISSING' : 'RESERVATION_FAILED', tableAbsente ? 'RESPONSE_CACHE' : 'CACHE_RESERVATION', e), 'FAILED'),
         outcome: 'CALLED',
       };
     }
@@ -355,11 +407,18 @@ async function executerUneFois<T>(
       // Carte #811 : le résultat précédent n'a pas pu être conservé pour cette portée (écriture en échec) — l'appel
       // qui repart est un appel sans protection : il consomme le budget dégradé, ou il est refusé.
       const scope = porteeDe(meta);
-      if (ecrituresEnEchec.has(cleEcriture(scope)) && degradedRecently(scope) && !admitDegradedCall(scope)) {
+      // Carte #828 : même règle pour un appel qu'un appelant amont a annoncé « sans protection » (signature de
+      // configuration non résolue du rattachement…) — l'admission se fait ICI, au moment où la requête part.
+      const annonce = takeAnnouncedUnprotectedCall(scope);
+      const du: { component: DegradedComponent; reason: DegradedReason } | null =
+        ecrituresEnEchec.has(cleEcriture(scope)) && degradedRecently(scope) ? { component: 'RESPONSE_CACHE', reason: 'WRITE_FAILED' } : annonce;
+      if (du && !(await admitDegradedCallShared(scope))) {
         await liberer(key, token);
-        noteDegraded({ ...scope, component: 'RESPONSE_CACHE', reason: 'WRITE_FAILED', impact: 'CALL_REFUSED' });
+        noteDegraded({ ...scope, component: du.component, reason: du.reason, impact: 'CALL_REFUSED' });
         throw new AiGatewayError('DEGRADED_CALL_REFUSED', meta.operationCode ?? '?',
-          'Cache des réponses non inscriptible et budget d’appels sans protection épuisé pour cette heure : appel non émis, repli sans IA.',
+          du.reason === 'WRITE_FAILED'
+            ? 'Cache des réponses non inscriptible et budget d’appels sans protection épuisé pour cette heure : appel non émis, repli sans IA.'
+            : 'Protection anti-redondance en mode dégradé et budget d’appels sans protection épuisé pour cette heure : appel non émis, repli sans IA.',
           { recoverable: false });
       }
       // Carte #811 : bail renouvelé tant que l'appel dure (un appel plus long que le bail n'est plus doublé).
@@ -373,13 +432,26 @@ async function executerUneFois<T>(
         throw e;
       }
       bailVivant.stop();
+      // Carte #828 (écart C) : l'issue RÉELLE de l'écriture — jamais « en cache » quand aucune ligne n'a été écrite.
       const ecrit = await ecrire(key, token, value, ttlSeconds);
-      if (!ecrit) {
+      if (ecrit.outcome === 'STORED') ecrituresEnEchec.delete(cleEcriture(scope));
+      else if (ecrit.outcome === 'ALREADY_READY') {
+        // Une réponse valide d'un autre propriétaire est en cache : la protection existe (par elle), rien n'est écrasé.
+        ecrituresEnEchec.delete(cleEcriture(scope));
+        noteDegraded({ ...scope, component: 'CACHE_RESERVATION', reason: 'LEASE_LOST', impact: 'DUPLICATE_POSSIBLE' });
+      } else if (ecrit.outcome === 'LEASE_LOST') {
+        // Une autre instance tient la réservation : la réponse de CET appel n'est pas en cache (perte légitime du bail).
+        noteDegraded({ ...scope, component: 'CACHE_RESERVATION', reason: 'LEASE_LOST', impact: 'RESULT_NOT_STORED' });
+      } else {
         ecrituresEnEchec.add(cleEcriture(scope));
-        noteDegraded({ ...scope, component: 'RESPONSE_CACHE', reason: 'WRITE_FAILED', impact: 'RESULT_NOT_STORED' });
-      } else ecrituresEnEchec.delete(cleEcriture(scope));
-      if (r.renewed) void compter('CACHE_RENEWED', meta);
-      return { value, outcome: r.renewed ? 'RENEWED' : 'CALLED' };
+        noteDegraded({ ...scope, component: 'RESPONSE_CACHE', reason: 'WRITE_FAILED', impact: 'RESULT_NOT_STORED', technicalCode: ecrit.technicalCode });
+        // La réponse n'est pas en cache : la réservation est RENDUE (au mieux) — sinon la demande suivante de la même
+        // clé attendrait un bail entier une réponse qui ne viendra jamais, avant de rappeler de toute façon.
+        await liberer(key, token);
+      }
+      // « Renouvelée » n'est compté que si la réponse a réellement remplacé l'entrée expirée.
+      if (r.renewed && ecrit.outcome === 'STORED') void compter('CACHE_RENEWED', meta);
+      return { value: avecEcriture(value, ecrit.outcome), outcome: r.renewed ? 'RENEWED' : 'CALLED' };
     }
     if (r.kind === 'READY') {
       void noteHit(key);
@@ -402,7 +474,7 @@ async function executerUneFois<T>(
       continue;
     }
     // Aucune ligne visible après une réservation refusée (suppression concurrente) : on réessaie, puis on dégrade.
-    if (++vides >= 3) return { value: await appelerSansProtection(fn, meta, 'RESERVATION_FAILED', 'CACHE_RESERVATION'), outcome: 'CALLED' };
+    if (++vides >= 3) return { value: avecEcriture(await appelerSansProtection(fn, meta, 'RESERVATION_FAILED', 'CACHE_RESERVATION'), 'FAILED'), outcome: 'CALLED' };
   }
 }
 
@@ -455,13 +527,22 @@ async function lireEtat(key: string): Promise<string | null> {
 const ecrituresEnEchec = new Set<string>();
 const cleEcriture = (s: DegradedScope) => `${s.treatment ?? ''}|${s.operationCode ?? ''}|${s.accountId ?? 0}`;
 
+/** Carte #828 (écart C) : marque une réponse NON conservée par cet appel (objet seulement ; jamais écrit en cache). */
+function avecEcriture<T>(v: T, outcome: CacheWriteOutcome): T {
+  return (outcome !== 'STORED' && v && typeof v === 'object' && !Array.isArray(v) ? { ...v, cacheWrite: outcome } : v) as T;
+}
+
 /**
- * Réponse écrite READY. Une réservation reprise entre-temps par une autre instance n'est pas écrasée si elle a déjà
- * répondu. Rend faux quand l'écriture a ÉCHOUÉ (carte #811 : le résultat n'est pas conservé, tracé par l'appelant).
+ * Réponse écrite READY. Une réservation reprise entre-temps par une autre instance n'est pas écrasée.
+ *
+ * Carte #828 (écart C) — l'instruction est valide même quand elle ne touche AUCUNE ligne (`ON CONFLICT … DO UPDATE …
+ * WHERE` non satisfait : une autre instance possède la réservation, ou a déjà répondu). Avant : « écrit » était
+ * rendu vrai. Désormais le nombre de lignes réellement écrites est lu (`RETURNING`) et, à zéro, l'état de la ligne
+ * dit pourquoi. Ne lève jamais.
  */
-async function ecrire(key: string, token: string, value: unknown, ttlSeconds: number): Promise<boolean> {
+async function ecrire(key: string, token: string, value: unknown, ttlSeconds: number): Promise<{ outcome: CacheWriteOutcome; technicalCode?: string | null }> {
   try {
-    await pgClient.unsafe(
+    const rows = (await pgClient.unsafe(
       `INSERT INTO ai_operation_idempotency (key_hash, result_json, created_at, expires_at, state, owner_token)
        VALUES ($1, $2::jsonb, now(), now() + ($3 || ' seconds')::interval, 'READY', NULL)
        ON CONFLICT (key_hash) DO UPDATE
@@ -469,13 +550,25 @@ async function ecrire(key: string, token: string, value: unknown, ttlSeconds: nu
              state = 'READY', owner_token = NULL
          WHERE ai_operation_idempotency.owner_token = $4
             OR ai_operation_idempotency.state = 'PENDING' AND ai_operation_idempotency.expires_at <= now()
-            OR ai_operation_idempotency.state = 'READY' AND ai_operation_idempotency.expires_at <= now()`,
+            OR ai_operation_idempotency.state = 'READY' AND ai_operation_idempotency.expires_at <= now()
+       RETURNING 1 AS ok`,
       [key, JSON.stringify(value), String(ttlSeconds), token] as never[],
-    );
-    return true;
+    )) as unknown as unknown[];
+    if (rows.length > 0) return { outcome: 'STORED' };
   } catch (e) {
     console.error('[ai-idempotency] écriture impossible (non bloquant) :', (e as Error).message);
-    return false;
+    return { outcome: 'FAILED', technicalCode: technicalCodeOf(e) };
+  }
+  // Aucune ligne écrite : pourquoi ? (lecture seule ; en échec : « non conservée », jamais « écrite »)
+  try {
+    const [etat] = (await pgClient.unsafe(
+      `SELECT state, (expires_at > now()) AS vivant FROM ai_operation_idempotency WHERE key_hash = $1`, [key] as never[],
+    )) as unknown as Array<{ state: string; vivant: boolean }>;
+    if (etat?.vivant === true && etat.state === 'READY') return { outcome: 'ALREADY_READY' };
+    if (etat?.vivant === true && etat.state === 'PENDING') return { outcome: 'LEASE_LOST' };
+    return { outcome: 'NOT_STORED' };
+  } catch (e) {
+    return { outcome: 'NOT_STORED', technicalCode: technicalCodeOf(e) };
   }
 }
 
@@ -498,23 +591,34 @@ async function noteHit(key: string): Promise<void> {
   } catch { /* colonnes 0857 absentes : compteur ignoré */ }
 }
 
-/** Fonctionnement sans les colonnes 0857 : dédoublonnage par processus, entrée expirée REMPLACÉE. */
+/**
+ * Fonctionnement sans les colonnes 0857 : dédoublonnage par processus, entrée expirée REMPLACÉE.
+ *
+ * Carte #828 (écart A) — sans réservation, deux instances peuvent appeler le fournisseur pour la même demande :
+ * ce chemin n'est PAS protégé et n'est plus présenté comme tel. Chaque appel y est tracé « sans protection » et
+ * consomme le budget dégradé (borne commune) ; budget épuisé : refus avant tout contact, repli sans IA.
+ * Carte #828 (écart C) — l'écriture ne remplace jamais une entrée valide : zéro ligne écrite est constaté.
+ */
 async function executerSansReservation<T>(key: string, fn: () => Promise<T>, ttlSeconds: number, meta: IdempotencyMeta = {}): Promise<{ value: T; outcome: CacheOutcome }> {
-  const value = await fn();
+  const value = await appelerSansProtection(fn, meta, 'MIGRATION_MISSING', 'CACHE_RESERVATION', { code: '42703' });
+  let issue: CacheWriteOutcome = 'FAILED';
   try {
-    await pgClient.unsafe(
+    const rows = (await pgClient.unsafe(
       `INSERT INTO ai_operation_idempotency (key_hash, result_json, expires_at)
        VALUES ($1, $2::jsonb, now() + ($3 || ' seconds')::interval)
        ON CONFLICT (key_hash) DO UPDATE
          SET result_json = EXCLUDED.result_json, created_at = now(), expires_at = EXCLUDED.expires_at
-         WHERE ai_operation_idempotency.expires_at <= now()`,
+         WHERE ai_operation_idempotency.expires_at <= now()
+       RETURNING 1 AS ok`,
       [key, JSON.stringify(value), String(ttlSeconds)] as never[],
-    );
+    )) as unknown as unknown[];
+    // Zéro ligne : une entrée VALIDE existe déjà (écrite par une autre instance entre-temps) — elle n'est pas écrasée.
+    issue = rows.length > 0 ? 'STORED' : 'ALREADY_READY';
   } catch (e) {
     console.error('[ai-idempotency] écriture impossible (non bloquant) :', (e as Error).message);
     noteDegraded({ ...porteeDe(meta), component: 'RESPONSE_CACHE', reason: 'WRITE_FAILED', impact: 'RESULT_NOT_STORED', technicalCode: technicalCodeOf(e) });
   }
-  return { value, outcome: 'CALLED' };
+  return { value: avecEcriture(value, issue), outcome: 'CALLED' };
 }
 
 /**

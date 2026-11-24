@@ -25,7 +25,8 @@ import type { CallCaptureInput } from './call-capture';
 import type { AiAttachment } from '../gateway/types';
 import { writeCostClassification } from '../cost/cost-classification.store';
 import { technicalAccountInContext } from '../qualification/technical-context';
-import { aiCostNatureOf, noteAiUsageEvent } from '../measure/ai-activity';
+import { aiCostNatureOf, noteAiUsageEvent, noteAiUsageEventNotPersisted, type AiUsageEventFact } from '../measure/ai-activity';
+import { noteDegraded, technicalCodeOf } from '../degraded/degraded-mode';
 import { treatmentOfUseCase } from '../config/treatments';
 
 interface CallTrace {
@@ -259,7 +260,10 @@ export async function recordCallTrace(t0: CallTrace): Promise<number | null> {
   // Carte #811 (P1-A) : requêtes RÉELLEMENT émises pour cet événement (relevé de la passerelle au point d'envoi).
   // `null` : appelant sans capture (sonde) — au plus une requête, déduite de l'issue, jamais d'une intention.
   const requetesEmises = t.capture ? t.capture.sent.length : null;
-  noteUsageEventActivity(t, tarif, requetesEmises);
+  // Carte #828 (écart B) : la mesure est alimentée AVANT l'écriture durable — c'est voulu (les requêtes physiques
+  // restent comptées même si la base refuse la ligne) — mais l'échec de l'écriture est désormais porté À PART dans
+  // la mesure (`usageEventsNotPersisted`, `networkRequestsNotPersisted`) : événements comptés ≠ lignes écrites.
+  const fait = noteUsageEventActivity(t, tarif, requetesEmises);
   // Version IA effective et commit déployé (§9.1, GEN-008). Lus ici plutôt
   // que demandés à chaque appelant : une information de traçabilité qu'il
   // faut penser à passer finit par manquer là où elle compte le plus.
@@ -305,6 +309,9 @@ export async function recordCallTrace(t0: CallTrace): Promise<number | null> {
     }
   }
 
+  // Carte #828 (écart B) : l'INSERT est distingué de ses compléments — seule son issue dit si la ligne existe.
+  let insere = false;
+  let idEcrit: number | null = null;
   try {
     const rows = await avecId(db.insert(aiUsageEvent).values({
       accountId: t.accountId,
@@ -378,6 +385,8 @@ export async function recordCallTrace(t0: CallTrace): Promise<number | null> {
       modelRank: t.modelRank ?? (t.usedFallback ? null : 'primary'),
       jobId: t.jobId ?? currentJobContext()?.jobId ?? null,
     } as never), aiUsageEvent.id);
+    insere = true;
+    idEcrit = rows?.[0]?.id ?? null;
     await writeMasterFields('ai_usage_event', rows?.[0]?.id, master);
     const id = rows?.[0]?.id ?? null;
     await writeTracePricing(id, tarif);
@@ -397,11 +406,37 @@ export async function recordCallTrace(t0: CallTrace): Promise<number | null> {
     await captureOf(t, id, execution.id);
     return id;
   } catch (e) {
+    if (insere) {
+      // La ligne EXISTE : seul un complément (tarif figé, classification, exécution métier) a échoué.
+      console.error('[ai-trace] compléments de l\'événement d\'usage non écrits (non bloquant) :', (e as Error).message);
+      await captureOf(t, idEcrit, execution.id);
+      return idEcrit;
+    }
     console.error('[ai-trace] événement d\'usage non écrit (non bloquant) :', (e as Error).message);
+    // Carte #828 (écart B) : perte de persistance tracée DISTINCTEMENT — mesure de l'exécution, journal applicatif
+    // (identifiants et nombres seulement), compteur durable et alerte de supervision. Les requêtes émises ne
+    // deviennent jamais zéro. Aucune seconde écriture n'est tentée (elle pourrait doubler la ligne si la première
+    // a été validée sans que la réponse revienne).
+    noteUsageEventLoss(t, fait, e);
     // La capture reste écrite (sans rattachement) : l'échange n'est pas perdu.
     await captureOf(t, null, execution.id);
     return null;
   }
+}
+
+/** Carte #828 (écart B) — perte d'un événement d'usage : jamais silencieuse, jamais bloquante. */
+function noteUsageEventLoss(t: CallTrace, fait: AiUsageEventFact | null, e: unknown): void {
+  try {
+    const emises = fait?.networkRequests ?? 0;
+    console.error(`[ai-trace] PERTE DE PERSISTANCE d'un événement d'usage — trace ${t.traceId} · opération ${t.operationCode} · modèle ${t.model}`
+      + ` · ${emises} requête(s) émise(s) · jetons ${t.inputTokens}/${t.outputTokens} · code ${technicalCodeOf(e) ?? '—'}`
+      + ' : la ligne ai_usage_event manque ; rapprochement par ai_call_captures (usage_event_id nul) et par la mesure du passage.');
+    if (fait) noteAiUsageEventNotPersisted(fait);
+    noteDegraded({
+      treatment: fait?.treatment ?? null, operationCode: t.operationCode, accountId: t.accountId ?? null,
+      component: 'USAGE_JOURNAL', reason: 'WRITE_FAILED', impact: 'USAGE_EVENT_LOST', technicalCode: technicalCodeOf(e),
+    });
+  } catch { /* jamais bloquant */ }
 }
 
 /**
@@ -410,14 +445,14 @@ export async function recordCallTrace(t0: CallTrace): Promise<number | null> {
  * `ai_usage_event` écrite ensuite : les totaux d'un passage se concilient avec
  * ses événements sources. Synchrone, sans écriture ; ne lève jamais.
  */
-function noteUsageEventActivity(t: CallTrace, tarif: ReturnType<typeof computeTracePricing>, requetesEmises: number | null): void {
+function noteUsageEventActivity(t: CallTrace, tarif: ReturnType<typeof computeTracePricing>, requetesEmises: number | null): AiUsageEventFact | null {
   try {
     const jetons = Math.max(0, t.inputTokens) + Math.max(0, t.outputTokens);
     const emises = requetesEmises ?? (t.status === 'success' || jetons > 0 ? 1 : 0);
     const ref = emises > 0 ? pricingRef(t.provider, tarif.pricedModel ?? t.model) : null;
     let traitement: string | null = null;
     try { traitement = treatmentOfUseCase(t.useCaseCode); } catch { traitement = null; }
-    noteAiUsageEvent({
+    const fait: AiUsageEventFact = {
       traceId: t.traceId, operationCode: t.operationCode, treatment: traitement, model: t.model,
       rank: t.modelRank ?? (t.usedFallback ? null : 'primary'), callKind: t.callKind === 'repair' ? 'repair' : 'analysis',
       status: t.status, networkRequests: emises, inputTokens: t.inputTokens, outputTokens: t.outputTokens, costMicros: tarif.costMicros,
@@ -426,8 +461,10 @@ function noteUsageEventActivity(t: CallTrace, tarif: ReturnType<typeof computeTr
         pricingStatus: tarif.status, failureFamily: t.failure?.family ?? null,
         priceConfirmed: !!ref && ref.verified === true && ref.stale !== true,
       }),
-    });
-  } catch { /* la mesure ne fait jamais échouer une trace */ }
+    };
+    noteAiUsageEvent(fait);
+    return fait;
+  } catch { return null; /* la mesure ne fait jamais échouer une trace */ }
 }
 
 /** Lot 82C : capture de l'appel, rattachée à son événement d'usage. Ne lève jamais. */

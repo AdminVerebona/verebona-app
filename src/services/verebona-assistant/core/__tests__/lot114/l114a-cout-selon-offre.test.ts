@@ -64,7 +64,9 @@ describe('L114A-O02 — Premium : achat et possession, présentés à part', () 
     const r = await tryCanonicalStructured({ port: x.p, accountId: 1, message: Q, resolveScope: scope() }) as Rep;
     expect(r.strategy).toBe('structured.ownership_cost');
     expect(r.answer).toMatch(/Prix d’achat de Vélo cargo : 2[\s  ]?023,00/);
-    expect(r.answer).toMatch(/Coût de possession de Vélo cargo : coût cumulé documenté 2[\s  ]?974,53/);
+    // Règle remplacée (carte #790, relance du 21/11) : le coût de possession n'est plus une phrase à la suite du prix d'achat ;
+    // c'est un chiffre clé (« Chiffre clé : <montant> — coût cumulé documenté de <bien> »), dans son propre bloc.
+    expect(r.answer).toMatch(/\n\nChiffre clé : 2[\s  ]?974,53[\s  ]€ — coût cumulé documenté de Vélo cargo/);
     expect(r.answer).not.toMatch(/4[\s  ]?997/); // 2 023 + 2 974,53 : jamais additionnés
     expect(x.readOwnershipCost).toHaveBeenCalledWith(1, 1);
     expect(x.sumQualifiedExpenses).not.toHaveBeenCalled();

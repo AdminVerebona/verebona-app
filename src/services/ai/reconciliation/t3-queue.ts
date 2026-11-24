@@ -64,7 +64,7 @@ import type { ReconciliationDecision } from './types';
 import { envNumber } from '@/lib/env-number';
 import { OUT_OF_PORTFOLIO_ASSET_STATUSES } from '@/lib/asset-status';
 import {
-  openAiActivity, compactAiActivity, AI_COUNTERS_MEASURED, AI_COUNTERS_DECLARED, type AiActivitySnapshot,
+  openAiActivity, compactAiActivity, certifiedWithoutAiCall, AI_COUNTERS_MEASURED, AI_COUNTERS_DECLARED, type AiActivitySnapshot,
 } from '../measure/ai-activity';
 
 /** Statuts hors portefeuille (constantes du code, jamais une saisie) en littéraux SQL. */
@@ -458,7 +458,10 @@ async function runAsset(job: QueuedJob, p: T3AssetPayload, guard: ExecutionGuard
     detail: {
       ...res.detail, assetId: p.assetId, runId: (run as { runId?: number } | null)?.runId ?? null,
       ...(u.providerCalls !== undefined ? {
-        aiCalls: u.providerCalls, aiCacheResponses: u.aiCacheHits ?? 0, aiDecisionsReused: u.decisionsReused ?? 0, withoutAiCall: u.providerCalls === 0,
+        // Carte #828 (écart B) : « sans appel » n'est affirmé que par une mesure certifiée — demandes déclarées : `null`
+        // (inconnu ≠ zéro). Run sans sémantique (ancien exécutant) : valeur d'avant conservée.
+        aiCalls: u.providerCalls, aiCacheResponses: u.aiCacheHits ?? 0, aiDecisionsReused: u.decisionsReused ?? 0,
+        withoutAiCall: u.aiCountersSemantics ? certifiedWithoutAiCall(u.aiCountersSemantics, u.providerCalls) : u.providerCalls === 0,
         ...(u.aiCountersSemantics ? {
           aiCountersSemantics: u.aiCountersSemantics, aiLogicalRequests: u.aiLogicalRequests ?? 0, aiProviderAttempts: u.aiProviderAttempts ?? 0,
           aiDeclaredRequests: u.aiDeclaredRequests ?? 0, aiCallsOtherTreatments: u.providerCallsOtherTreatments ?? 0,
@@ -568,7 +571,8 @@ async function runAccount(job: QueuedJob, p: T3AccountPayload, guard: ExecutionG
     aiCacheResponses: result.aiCacheResponses ?? result.aiCacheHits ?? 0,
     aiDecisionsReused: result.decisionsReused ?? 0,
     conflictsUnchanged: result.conflictsUnchanged ?? 0,
-    withoutAiCall: appels === 0,
+    // Carte #828 (écart B) : affirmé seulement par la mesure ; demandes déclarées : `null` (inconnu ≠ zéro).
+    withoutAiCall: mesure ? certifiedWithoutAiCall(result.aiCountersSemantics, appels) : null,
     openActionsExamined: result.openActions?.examined ?? 0,
     // Lot 54A (écarts 4, 5) : passage GLOBAL du compte — toutes les cartes
     // ouvertes réexaminées ; vraies tentatives distinguées du simple constat.

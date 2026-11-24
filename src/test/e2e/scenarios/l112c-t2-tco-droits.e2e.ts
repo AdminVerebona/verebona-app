@@ -102,7 +102,9 @@ scenario('L112C-TCO', 'Lot 112C reprise — coût de possession réservé Premiu
       const c = await preparer(offre);
       const { r, answer } = await poser(c, QUESTIONS_TCO[0]);
       expect(r.cascade?.strategy, offre).toBe('structured.ownership_cost');
-      expect(answer, offre).toMatch(/Coût de possession de Cupra : coût cumulé documenté 25[\s\u202f\u00a0]430,00/);
+      // Règle remplacée (carte #790, relance du 21/11) : le coût de possession n'est plus une phrase unique ; c'est un chiffre clé
+      // (« Chiffre clé : <montant> — coût cumulé documenté de <bien> »), suivi de la ventilation et des limites.
+      expect(answer, offre).toMatch(/^Chiffre clé : 25[\s\u202f\u00a0]430,00[\s\u202f\u00a0]€ — coût cumulé documenté de Cupra/);
       expect(answer, offre).not.toMatch(/réservé|disponible avec Premium/);
     }
   });

@@ -475,7 +475,9 @@ scenario('L54D', 'Opérations V1 — écarts E01 à E09, TCO, concordance T2 / T
     const t = await tcoDe(compte, auto.id);
     const r = ownershipCostAnswer({ id: auto.id, name: 'Auto' } as never, t);
     expect(r && 'strategy' in r && r.strategy).toBe('structured.ownership_cost');
-    expect(r && 'answer' in r && r.answer).toMatch(/21\s300,00\s€.*3\s300,00\s€/);
+    // Règle remplacée (carte #790, relance du 21/11) : le total et les postes ne sont plus sur une même ligne —
+    // le total est le chiffre clé, les postes sont les lignes de la ventilation (mêmes montants, même ordre).
+    expect(r && 'answer' in r && r.answer).toMatch(/21\s300,00\s€[\s\S]*3\s300,00\s€/);
     const { TCO_Q } = await import('@/services/verebona-assistant/canonical/structured-answers');
     expect(TCO_Q.test('quel est le cout de possession de ma voiture')).toBe(true);
     expect(TCO_Q.test('combien ai-je depense en entretien')).toBe(false);

@@ -443,6 +443,7 @@ scenario('C802', 'Export diagnostic exhaustif filtré en ZIP unique, plafond exp
     const diags = jsonl(z, 'diagnostics');
     expect(diags.map((d) => d.executionId)).toEqual(execs.map((x) => x.id));
     const { maskForExport } = await import('@/services/admin/diagnostics-export/model');
+    const { networkRequestsOfUsageRows } = await import('@/services/ai/business-execution/export');
     for (const id of [ids.t3, ids.f1, ids.t1, ids.t2, ids.t6, ids.attente]) {
       const u = await (await R.unit(req('/x'), ctx(id))).json() as Json;
       const { executionId, ...diag } = diags.find((d) => d.executionId === id)!;
@@ -456,8 +457,14 @@ scenario('C802', 'Export diagnostic exhaustif filtré en ZIP unique, plafond exp
         expect((unitaire.calls as Json[]).map((c) => c.id)).toContain(ev.intrus);
         unitaire.calls = (unitaire.calls as Json[]).filter((c) => c.id !== ev.intrus);
         unitaire.execution = { ...unitaire.execution, calls: reconstitue.execution!.calls };
-        unitaire.aiUsage = { ...unitaire.aiUsage, providerCalls: reconstitue.calls.length };
+        // Règle remplacée (carte #828, écart B) : `aiUsage.providerCalls` n'est plus le NOMBRE DE LIGNES d'appels
+        // (`calls.length`) mais les requêtes réseau réellement émises ; les lignes sont dites sous leur vrai nom
+        // (`usageEventLines`). À périmètre égal, les compteurs dérivés des appels sont ceux des lignes du ZIP.
+        unitaire.aiUsage = { ...unitaire.aiUsage, ...networkRequestsOfUsageRows(reconstitue.calls as Json[]) };
       }
+      // Carte #828 : dans le ZIP, le diagnostic de chaque exécution se concilie avec SES lignes d'appels (fichier
+      // « appels ») — requêtes réseau, lignes, lignes sans envoi, lignes anciennes indéterminées.
+      expect((diag as { aiUsage: Json }).aiUsage, id).toMatchObject({ ...networkRequestsOfUsageRows(reconstitue.calls as Json[]), providerCallsSemantics: 'NETWORK_REQUESTS_V1' });
       expect(Object.keys(reconstitue).sort(), id).toEqual(Object.keys(unitaire).sort());
       expect(reconstitue, id).toEqual(unitaire);
     }

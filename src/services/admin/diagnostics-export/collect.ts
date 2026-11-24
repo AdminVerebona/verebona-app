@@ -988,13 +988,19 @@ export interface DiagAiUsageDistinct {
    * Carte #811 : `legacySemantics` = passages dont `provider_calls` porte l'ancienne somme des demandes
    * déclarées par les phases (jamais recalculée) ; seuls les autres sont une mesure.
    */
-  t3Runs: { total: number; withoutAiCall: number; withAiCall: number; unmeasured: number; legacySemantics?: number };
+  /**
+   * Carte #828 (écart B) : `withoutAiCall` / `withAiCall` ne comptent QUE les passages à mesure certifiée
+   * (`MEASURED_V1`, `measured`). `declared` = passages `DECLARED` (demandes déclarées, jamais des appels) ;
+   * `legacySemantics` = passages historiques sans sémantique dont la valeur d'origine est conservée ;
+   * `unmeasured` = passages sans aucune valeur. Aucun de ces trois derniers n'entre dans « sans / avec appel ».
+   */
+  t3Runs: { total: number; withoutAiCall: number; withAiCall: number; unmeasured: number; legacySemantics?: number; measured?: number; declared?: number };
   /** Mémoire durable des décisions T3 (0856) : entrées actives, remplacées, réutilisations cumulées. */
   t3DecisionMemory: { available: boolean; active: number; superseded: number; reused: number };
 }
 
 /** Lecture des compteurs distincts (comptes du filtre ; `null` = global). Tables absentes : `available: false`. */
-async function readAiUsageDistinct(q: DiagQuery, accounts: number[] | null): Promise<DiagAiUsageDistinct> {
+export async function readAiUsageDistinct(q: DiagQuery, accounts: number[] | null): Promise<DiagAiUsageDistinct> {
   const f = (col: string) => (accounts === null ? 'TRUE' : `${col} = ANY($1::int[])`);
   const p = accounts === null ? [] : [accounts];
   // Carte #811 (P1-A) : requêtes mesurées avec l'événement ; l'historique sans mesure n'est jamais reconstruit.
@@ -1027,15 +1033,21 @@ async function readAiUsageDistinct(q: DiagQuery, accounts: number[] | null): Pro
     };
   }
   const [r] = await q(`SELECT count(*)::bigint AS total,
-       count(*) FILTER (WHERE (to_jsonb(r) ->> 'provider_calls')::int = 0)::bigint AS sans,
-       count(*) FILTER (WHERE (to_jsonb(r) ->> 'provider_calls')::int > 0)::bigint AS avec,
-       count(*) FILTER (WHERE to_jsonb(r) ->> 'provider_calls' IS NULL)::bigint AS inconnu,
+       count(*) FILTER (WHERE to_jsonb(r) ->> 'ai_counters_semantics' = 'MEASURED_V1'
+                          AND to_jsonb(r) ->> 'provider_calls' IS NOT NULL)::bigint AS mesures,
+       count(*) FILTER (WHERE to_jsonb(r) ->> 'ai_counters_semantics' = 'MEASURED_V1'
+                          AND (to_jsonb(r) ->> 'provider_calls')::int = 0)::bigint AS sans,
+       count(*) FILTER (WHERE to_jsonb(r) ->> 'ai_counters_semantics' = 'MEASURED_V1'
+                          AND (to_jsonb(r) ->> 'provider_calls')::int > 0)::bigint AS avec,
+       count(*) FILTER (WHERE to_jsonb(r) ->> 'ai_counters_semantics' = 'DECLARED')::bigint AS declares,
+       count(*) FILTER (WHERE to_jsonb(r) ->> 'provider_calls' IS NULL
+                          AND to_jsonb(r) ->> 'ai_counters_semantics' IS DISTINCT FROM 'DECLARED')::bigint AS inconnu,
        count(*) FILTER (WHERE to_jsonb(r) ->> 'provider_calls' IS NOT NULL
-                          AND to_jsonb(r) ->> 'ai_counters_semantics' IS DISTINCT FROM 'MEASURED_V1')::bigint AS ancienne
+                          AND to_jsonb(r) ->> 'ai_counters_semantics' IS NULL)::bigint AS ancienne
      FROM account_reconciliation_runs r WHERE ${f('r.account_id')} AND r.status IN ('completed', 'partial')`, p);
   out.t3Runs = {
     total: Number(r?.total ?? 0), withoutAiCall: Number(r?.sans ?? 0), withAiCall: Number(r?.avec ?? 0), unmeasured: Number(r?.inconnu ?? 0),
-    legacySemantics: Number(r?.ancienne ?? 0),
+    legacySemantics: Number(r?.ancienne ?? 0), measured: Number(r?.mesures ?? 0), declared: Number(r?.declares ?? 0),
   };
   if (await existe('t3_decision_memory')) {
     const [m] = await q(`SELECT count(*) FILTER (WHERE status = 'ACTIVE')::bigint AS actives, count(*) FILTER (WHERE status = 'SUPERSEDED')::bigint AS remplacees,
@@ -1055,6 +1067,10 @@ export function usageSummaryLines(u: DiagAiUsageDistinct): Array<[string, string
     ] : []),
     ['Réponses IA servies par le cache (sans appel)', u.reuse.available ? u.reuse.cacheResponses : 'non mesuré (migration 0858 absente)'],
     ['Décisions IA réutilisées (sans appel)', u.reuse.available ? u.reuse.decisionsReused : 'non mesuré (migration 0858 absente)'],
-    ['Passages T3 sans appel IA', `${u.t3Runs.withoutAiCall} / ${u.t3Runs.total}${u.t3Runs.unmeasured ? ` (dont ${u.t3Runs.unmeasured} antérieurs au lot 99A, non mesurés)` : ''}${u.t3Runs.legacySemantics ? ` ; ${u.t3Runs.legacySemantics} passage(s) en ancienne sémantique (demandes déclarées, non recalculées)` : ''}`],
+    // Carte #828 (écart B) : le dénominateur est le nombre de passages MESURÉS ; le reste est dit à part, jamais compté « sans appel ».
+    ['Passages T3 sans appel IA (mesure certifiée)', `${u.t3Runs.withoutAiCall} / ${u.t3Runs.measured ?? u.t3Runs.withoutAiCall + u.t3Runs.withAiCall} mesuré(s), sur ${u.t3Runs.total} passage(s)`
+      + `${u.t3Runs.declared ? ` ; ${u.t3Runs.declared} passage(s) à demandes déclarées (appels réels inconnus)` : ''}`
+      + `${u.t3Runs.legacySemantics ? ` ; ${u.t3Runs.legacySemantics} passage(s) historique(s) en ancienne sémantique (valeur d’origine conservée, appels réels inconnus)` : ''}`
+      + `${u.t3Runs.unmeasured ? ` ; ${u.t3Runs.unmeasured} passage(s) non mesuré(s)` : ''}`],
   ];
 }

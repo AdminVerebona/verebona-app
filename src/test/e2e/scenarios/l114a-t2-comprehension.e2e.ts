@@ -109,7 +109,9 @@ scenario('L114A-T2', 'Lot 114A — cardinalité, coût selon l’offre, nouvelle
     const { r, answer } = await poser(c, 'Combien m’a coûté mon vélo ?');
     expect(r.cascade?.strategy).toBe('structured.ownership_cost');
     expect(answer).toMatch(/Prix d’achat de Vélo cargo : 2\s?023/);
-    expect(answer).toMatch(/Coût de possession de Vélo cargo/);
+    // Règle remplacée (carte #790, relance du 21/11) : le coût de possession n'est plus une phrase unique ; c'est un chiffre clé
+    // (« Chiffre clé : <montant> — coût cumulé documenté de <bien> »), suivi de la ventilation et des limites.
+    expect(answer).toMatch(/\n\nChiffre clé : .* — coût cumulé documenté de Vélo cargo/);
     expect(answer).not.toMatch(/Premium et Premium Duo/);
   });
 

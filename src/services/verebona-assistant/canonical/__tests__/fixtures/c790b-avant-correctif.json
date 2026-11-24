@@ -1,0 +1,970 @@
+{
+ "polo": {
+  "strategy": "structured.ownership_cost",
+  "answer": "Coût de possession de Polo : coût cumulé documenté 2 476,41 € (entretien, réparations et travaux 559,51 €, contrats et assurances 1 115,53 €, autres coûts 801,37 €). Coût annuel moyen de possession non calculé : date d’achat du bien inconnue : renseignez-la sur la fiche pour calculer la moyenne. Coût net estimé non calculé : aucune estimation de valeur admissible postérieure à l’achat (le prix d’achat n’est jamais une valeur actuelle). Ce total peut être incomplet.",
+  "sources": [
+   {
+    "id": "tco:41",
+    "type": "document_extraction",
+    "title": "Coût de possession — Polo",
+    "content": "Coût de possession de Polo : coût cumulé documenté 2 476,41 € (entretien, réparations et travaux 559,51 €, contrats et assurances 1 115,53 €, autres coûts 801,37 €). Coût annuel moyen de possession non calculé : date d’achat du bien inconnue : renseignez-la sur la fiche pour calculer la moyenne. Coût net estimé non calculé : aucune estimation de valeur admissible postérieure à l’achat (le prix d’achat n’est jamais une valeur actuelle). Ce total peut être incomplet.",
+    "relevanceScore": 1,
+    "meta": {
+     "assetId": 41,
+     "assetName": "Polo",
+     "cumulativeCostCents": 247641,
+     "netEstimatedCents": null,
+     "estimatedUsageComplementCents": 0,
+     "totalWithEstimatesCents": 247641,
+     "netFinalCents": null,
+     "status": "INCOMPLETE",
+     "operationCount": 0,
+     "annualAverageCents": null,
+     "financingToDateCents": 0,
+     "documentCount": 7,
+     "includedDocuments": "doc-11 doc-12 doc-13 doc-14 doc-15 doc-16 doc-17"
+    }
+   }
+  ],
+  "claims": [
+   {
+    "claimKey": "ownership_cost",
+    "text": "Coût de possession de Polo : coût cumulé documenté 2 476,41 € (entretien, réparations et travaux 559,51 €, contrats et assurances 1 115,53 €, autres coûts 801,37 €). Coût annuel moyen de possession non calculé : date d’achat du bien inconnue : renseignez-la sur la fiche pour calculer la moyenne. Coût net estimé non calculé : aucune estimation de valeur admissible postérieure à l’achat (le prix d’achat n’est jamais une valeur actuelle). Ce total peut être incomplet.",
+    "sourceIds": [
+     "tco:41"
+    ],
+    "derivation": "calculated"
+   }
+  ],
+  "kind": "exact"
+ },
+ "tco_riche": {
+  "strategy": "structured.ownership_cost",
+  "answer": "Coût de possession de Clio : coût cumulé documenté 23 456,78 € (acquisition 18 500,00 €, entretien, réparations et travaux 3 123,45 €, contrats et assurances 2 100,00 €, financement (intérêts et frais) 433,33 €, avoirs − 200,00 €, remboursements − 150,00 €, indemnités − 350,00 €), depuis l’achat du bien le 15 juin 2021. Coût annuel moyen de possession (hors prix d’achat du bien) : 912,34 € par an. Coût du crédit à date (intérêts, assurance, frais ; capital non compté) : 433,33 € — selon l’échéancier du prêt. Coût total prévisionnel du crédit : 643,33 € (échéancier partiel), non ajouté au coût total. Capital restant dû au 05/10/2026 : 6 400,00 € (Capital restant dû lu sur le tableau d’amortissement) ; ce n’est pas un coût. Valeur estimée 9 000,00 € (estimation du 1 septembre 2026) : coût net estimé 14 456,78 €. Non comptés (devise sans contre-valeur en euros) : 300,00 CHF. Des montants communs à plusieurs biens ne sont pas ventilés et ne sont pas comptés. Résultat partiel. En incluant les estimations de dépenses d’usage (360,00 € estimés à partir de vos forfaits, pour les périodes écoulées sans justificatif suffisant), le coût total de possession estimé est de 23 816,78 €. Forfaits d’usage en cours : 480,00 € par an (prévisionnel, jamais ajouté pour les mois à venir).",
+  "sources": [
+   {
+    "id": "tco:7",
+    "type": "document_extraction",
+    "title": "Coût de possession — Clio",
+    "content": "Coût de possession de Clio : coût cumulé documenté 23 456,78 € (acquisition 18 500,00 €, entretien, réparations et travaux 3 123,45 €, contrats et assurances 2 100,00 €, financement (intérêts et frais) 433,33 €, avoirs − 200,00 €, remboursements − 150,00 €, indemnités − 350,00 €), depuis l’achat du bien le 15 juin 2021. Coût annuel moyen de possession (hors prix d’achat du bien) : 912,34 € par an. Coût du crédit à date (intérêts, assurance, frais ; capital non compté) : 433,33 € — selon l’échéancier du prêt. Coût total prévisionnel du crédit : 643,33 € (échéancier partiel), non ajouté au coût total. Capital restant dû au 05/10/2026 : 6 400,00 € (Capital restant dû lu sur le tableau d’amortissement) ; ce n’est pas un coût. Valeur estimée 9 000,00 € (estimation du 1 septembre 2026) : coût net estimé 14 456,78 €. Non comptés (devise sans contre-valeur en euros) : 300,00 CHF. Des montants communs à plusieurs biens ne sont pas ventilés et ne sont pas comptés. Résultat partiel. En incluant les estimations de dépenses d’usage (360,00 € estimés à partir de vos forfaits, pour les périodes écoulées sans justificatif suffisant), le coût total de possession estimé est de 23 816,78 €. Forfaits d’usage en cours : 480,00 € par an (prévisionnel, jamais ajouté pour les mois à venir).",
+    "relevanceScore": 1,
+    "meta": {
+     "assetId": 7,
+     "assetName": "Clio",
+     "cumulativeCostCents": 2345678,
+     "netEstimatedCents": 1445678,
+     "estimatedUsageComplementCents": 36000,
+     "totalWithEstimatesCents": 2381678,
+     "netFinalCents": null,
+     "status": "PARTIAL",
+     "operationCount": 9,
+     "annualAverageCents": 91234,
+     "financingToDateCents": 43333,
+     "documentCount": 3,
+     "includedDocuments": "doc-31"
+    }
+   }
+  ],
+  "claims": [
+   {
+    "claimKey": "ownership_cost",
+    "text": "Coût de possession de Clio : coût cumulé documenté 23 456,78 € (acquisition 18 500,00 €, entretien, réparations et travaux 3 123,45 €, contrats et assurances 2 100,00 €, financement (intérêts et frais) 433,33 €, avoirs − 200,00 €, remboursements − 150,00 €, indemnités − 350,00 €), depuis l’achat du bien le 15 juin 2021. Coût annuel moyen de possession (hors prix d’achat du bien) : 912,34 € par an. Coût du crédit à date (intérêts, assurance, frais ; capital non compté) : 433,33 € — selon l’échéancier du prêt. Coût total prévisionnel du crédit : 643,33 € (échéancier partiel), non ajouté au coût total. Capital restant dû au 05/10/2026 : 6 400,00 € (Capital restant dû lu sur le tableau d’amortissement) ; ce n’est pas un coût. Valeur estimée 9 000,00 € (estimation du 1 septembre 2026) : coût net estimé 14 456,78 €. Non comptés (devise sans contre-valeur en euros) : 300,00 CHF. Des montants communs à plusieurs biens ne sont pas ventilés et ne sont pas comptés. Résultat partiel. En incluant les estimations de dépenses d’usage (360,00 € estimés à partir de vos forfaits, pour les périodes écoulées sans justificatif suffisant), le coût total de possession estimé est de 23 816,78 €. Forfaits d’usage en cours : 480,00 € par an (prévisionnel, jamais ajouté pour les mois à venir).",
+    "sourceIds": [
+     "tco:7"
+    ],
+    "derivation": "calculated"
+   }
+  ],
+  "kind": "exact"
+ },
+ "tco_cede": {
+  "strategy": "structured.ownership_cost",
+  "answer": "Coût de possession de Clio : coût cumulé documenté 12 000,00 € (acquisition 9 000,00 €, entretien, réparations et travaux 3 000,00 €), depuis le début de la possession le 2 janvier 2019. Après la vente (prix réalisé 5 000,00 €), coût net final : 7 000,00 €.",
+  "sources": [
+   {
+    "id": "tco:7",
+    "type": "document_extraction",
+    "title": "Coût de possession — Clio",
+    "content": "Coût de possession de Clio : coût cumulé documenté 12 000,00 € (acquisition 9 000,00 €, entretien, réparations et travaux 3 000,00 €), depuis le début de la possession le 2 janvier 2019. Après la vente (prix réalisé 5 000,00 €), coût net final : 7 000,00 €.",
+    "relevanceScore": 1,
+    "meta": {
+     "assetId": 7,
+     "assetName": "Clio",
+     "cumulativeCostCents": 1200000,
+     "netEstimatedCents": null,
+     "estimatedUsageComplementCents": 0,
+     "totalWithEstimatesCents": 1200000,
+     "netFinalCents": 700000,
+     "status": "COMPLETE",
+     "operationCount": 0,
+     "annualAverageCents": null,
+     "financingToDateCents": 0,
+     "documentCount": 7,
+     "includedDocuments": "doc-11 doc-12 doc-13 doc-14 doc-15 doc-16 doc-17"
+    }
+   }
+  ],
+  "claims": [
+   {
+    "claimKey": "ownership_cost",
+    "text": "Coût de possession de Clio : coût cumulé documenté 12 000,00 € (acquisition 9 000,00 €, entretien, réparations et travaux 3 000,00 €), depuis le début de la possession le 2 janvier 2019. Après la vente (prix réalisé 5 000,00 €), coût net final : 7 000,00 €.",
+    "sourceIds": [
+     "tco:7"
+    ],
+    "derivation": "calculated"
+   }
+  ],
+  "kind": "exact"
+ },
+ "tco_date_incertaine": {
+  "strategy": "structured.ownership_cost",
+  "answer": "Coût de possession de Polo : coût cumulé documenté 2 476,41 € (entretien, réparations et travaux 559,51 €, contrats et assurances 1 115,53 €, autres coûts 801,37 €). La date d’achat du bien est incertaine (plusieurs dates possibles se contredisent) : le coût moyen annuel n’est pas calculé. Coût net estimé non calculé : aucune estimation de valeur admissible postérieure à l’achat (le prix d’achat n’est jamais une valeur actuelle). Ce total peut être incomplet.",
+  "sources": [
+   {
+    "id": "tco:41",
+    "type": "document_extraction",
+    "title": "Coût de possession — Polo",
+    "content": "Coût de possession de Polo : coût cumulé documenté 2 476,41 € (entretien, réparations et travaux 559,51 €, contrats et assurances 1 115,53 €, autres coûts 801,37 €). La date d’achat du bien est incertaine (plusieurs dates possibles se contredisent) : le coût moyen annuel n’est pas calculé. Coût net estimé non calculé : aucune estimation de valeur admissible postérieure à l’achat (le prix d’achat n’est jamais une valeur actuelle). Ce total peut être incomplet.",
+    "relevanceScore": 1,
+    "meta": {
+     "assetId": 41,
+     "assetName": "Polo",
+     "cumulativeCostCents": 247641,
+     "netEstimatedCents": null,
+     "estimatedUsageComplementCents": 0,
+     "totalWithEstimatesCents": 247641,
+     "netFinalCents": null,
+     "status": "INCOMPLETE",
+     "operationCount": 0,
+     "annualAverageCents": null,
+     "financingToDateCents": 0,
+     "documentCount": 7,
+     "includedDocuments": "doc-11 doc-12 doc-13 doc-14 doc-15 doc-16 doc-17"
+    }
+   }
+  ],
+  "claims": [
+   {
+    "claimKey": "ownership_cost",
+    "text": "Coût de possession de Polo : coût cumulé documenté 2 476,41 € (entretien, réparations et travaux 559,51 €, contrats et assurances 1 115,53 €, autres coûts 801,37 €). La date d’achat du bien est incertaine (plusieurs dates possibles se contredisent) : le coût moyen annuel n’est pas calculé. Coût net estimé non calculé : aucune estimation de valeur admissible postérieure à l’achat (le prix d’achat n’est jamais une valeur actuelle). Ce total peut être incomplet.",
+    "sourceIds": [
+     "tco:41"
+    ],
+    "derivation": "calculated"
+   }
+  ],
+  "kind": "exact"
+ },
+ "verrou_bien": {
+  "strategy": "structured.ownership_cost",
+  "answer": "Le coût de possession est disponible avec Premium et Premium Duo. Pour Polo, vous pouvez consulter vos dépenses documentées, par exemple : « Combien ai-je dépensé en entretien pour Polo ? ».",
+  "sources": [
+   {
+    "id": "product_rule:tco_premium",
+    "type": "product_rule",
+    "title": "Coût de possession — offres Premium",
+    "content": "Le coût de possession est disponible avec Premium et Premium Duo.",
+    "relevanceScore": 1,
+    "meta": {
+     "ruleCode": "tco_premium",
+     "locked": true,
+     "assetId": 41
+    }
+   }
+  ],
+  "claims": [
+   {
+    "claimKey": "ownership_cost_locked",
+    "text": "Le coût de possession est disponible avec Premium et Premium Duo. Pour Polo, vous pouvez consulter vos dépenses documentées, par exemple : « Combien ai-je dépensé en entretien pour Polo ? ».",
+    "sourceIds": [
+     "product_rule:tco_premium"
+    ],
+    "derivation": "direct"
+   }
+  ],
+  "kind": "no_result"
+ },
+ "verrou_sans_bien": {
+  "strategy": "structured.ownership_cost",
+  "answer": "Le coût de possession est disponible avec Premium et Premium Duo. Vos dépenses documentées restent consultables, par bien et par thème (entretien, réparations, travaux…).",
+  "sources": [
+   {
+    "id": "product_rule:tco_premium",
+    "type": "product_rule",
+    "title": "Coût de possession — offres Premium",
+    "content": "Le coût de possession est disponible avec Premium et Premium Duo.",
+    "relevanceScore": 1,
+    "meta": {
+     "ruleCode": "tco_premium",
+     "locked": true
+    }
+   }
+  ],
+  "claims": [
+   {
+    "claimKey": "ownership_cost_locked",
+    "text": "Le coût de possession est disponible avec Premium et Premium Duo. Vos dépenses documentées restent consultables, par bien et par thème (entretien, réparations, travaux…).",
+    "sourceIds": [
+     "product_rule:tco_premium"
+    ],
+    "derivation": "direct"
+   }
+  ],
+  "kind": "no_result"
+ },
+ "paiements": {
+  "strategy": "structured.payments",
+  "answer": "Règlements justifiés pour Clio : 1 100,00 € (2 preuves de paiement : « Virement Garage Martin » et « Reçu carte »). 1 preuve sans montant lisible. Coût documenté pour Clio : 2 292,50 € (total peut-être incomplet). Je n’ai pas de preuve de règlement pour 1 192,50 €.",
+  "sources": [
+   {
+    "id": "doc_51",
+    "type": "document",
+    "title": "Virement Garage Martin",
+    "content": "Preuve de paiement « Virement Garage Martin » · 2026-03-12 · montant réglé : 1 100,00 €",
+    "relevanceScore": 1,
+    "meta": {
+     "fileId": 51,
+     "date": "2026-03-12"
+    }
+   },
+   {
+    "id": "doc_52",
+    "type": "document",
+    "title": "Reçu carte",
+    "content": "Preuve de paiement « Reçu carte » · 2026-04-02 · montant non lisible",
+    "relevanceScore": 1,
+    "meta": {
+     "fileId": 52,
+     "date": "2026-04-02"
+    }
+   },
+   {
+    "id": "expenses:all:7",
+    "type": "document_extraction",
+    "title": "Dépenses pour Clio",
+    "content": "Dépenses qualifiées pour Clio : 2 292,50 € (4 documents) · entretien : 430,00 € (2 documents) · réparations : 1 250,50 € (1 document) · assurance : 612,00 € (1 document) · total incomplet : 2 documents avec montant sans thème, non comptés · doublons (fusion possible) comptés une fois : 1 écarté · exclus (devis, annonces…) : 2 · documents inclus : doc-1 doc-2 doc-3 doc-4",
+    "relevanceScore": 1,
+    "meta": {
+     "theme": null,
+     "totalCents": 229250,
+     "totalEur": 2292.5,
+     "documentCount": 4,
+     "complete": false,
+     "unqualifiedCount": 2,
+     "excludedCount": 2,
+     "year": null,
+     "undatedCount": 0,
+     "duplicateCount": 1,
+     "includedDocuments": "doc-1 doc-2 doc-3 doc-4"
+    }
+   }
+  ],
+  "claims": [
+   {
+    "claimKey": "payments",
+    "text": "Règlements justifiés pour Clio : 1 100,00 € (2 preuves de paiement : « Virement Garage Martin » et « Reçu carte »). 1 preuve sans montant lisible. Coût documenté pour Clio : 2 292,50 € (total peut-être incomplet). Je n’ai pas de preuve de règlement pour 1 192,50 €.",
+    "sourceIds": [
+     "doc_51",
+     "doc_52",
+     "expenses:all:7"
+    ],
+    "derivation": "calculated"
+   }
+  ],
+  "kind": "calc"
+ },
+ "paiements_aucune_preuve": {
+  "strategy": "structured.payments",
+  "answer": "Je n’ai trouvé aucune preuve de paiement pour Clio : je ne peux pas confirmer ce qui a été réglé. Le coût documenté pour Clio est de 2 292,50 € : ce montant ne prouve pas qu’il a été réglé.",
+  "sources": [
+   {
+    "id": "expenses:all:7",
+    "type": "document_extraction",
+    "title": "Dépenses pour Clio",
+    "content": "Dépenses qualifiées pour Clio : 2 292,50 € (4 documents) · entretien : 430,00 € (2 documents) · réparations : 1 250,50 € (1 document) · assurance : 612,00 € (1 document) · total incomplet : 2 documents avec montant sans thème, non comptés · doublons (fusion possible) comptés une fois : 1 écarté · exclus (devis, annonces…) : 2 · documents inclus : doc-1 doc-2 doc-3 doc-4",
+    "relevanceScore": 1,
+    "meta": {
+     "theme": null,
+     "totalCents": 229250,
+     "totalEur": 2292.5,
+     "documentCount": 4,
+     "complete": false,
+     "unqualifiedCount": 2,
+     "excludedCount": 2,
+     "year": null,
+     "undatedCount": 0,
+     "duplicateCount": 1,
+     "includedDocuments": "doc-1 doc-2 doc-3 doc-4"
+    }
+   }
+  ],
+  "claims": [
+   {
+    "claimKey": "payments",
+    "text": "Je n’ai trouvé aucune preuve de paiement pour Clio : je ne peux pas confirmer ce qui a été réglé. Le coût documenté pour Clio est de 2 292,50 € : ce montant ne prouve pas qu’il a été réglé.",
+    "sourceIds": [
+     "expenses:all:7"
+    ],
+    "derivation": "calculated"
+   }
+  ],
+  "kind": "calc"
+ },
+ "sinistres": {
+  "strategy": "structured.claim_status",
+  "answer": "Vous avez 2 sinistres pour Clio : Bris de glace du 10 février 2025 : statut « En cours », déclaré le 12 février 2025 — indemnité reçue : 800,00 € ; coût des réparations : 1 250,00 € ; net après indemnité : 450,00 € et Dégât des eaux du 10 février 2025 : clos, déclaré le 12 février 2025.",
+  "sources": [
+   {
+    "id": "claim:7:61",
+    "type": "asset_field",
+    "title": "Bris de glace",
+    "content": "Bris de glace du 10 février 2025 : statut « En cours », déclaré le 12 février 2025, référence assureur SIN-61 — indemnité reçue : 800,00 € ; coût des réparations : 1 250,00 € ; net après indemnité : 450,00 €",
+    "relevanceScore": 1,
+    "meta": {
+     "assetId": 7,
+     "assetName": "Clio",
+     "date": "2025-02-10",
+     "agendaItemId": null
+    }
+   },
+   {
+    "id": "claim:7:62",
+    "type": "asset_field",
+    "title": "Dégât des eaux",
+    "content": "Dégât des eaux du 10 février 2025 : clos, déclaré le 12 février 2025, référence assureur SIN-62 — aucune indemnité enregistrée",
+    "relevanceScore": 1,
+    "meta": {
+     "assetId": 7,
+     "assetName": "Clio",
+     "date": "2025-02-10",
+     "agendaItemId": null
+    }
+   }
+  ],
+  "claims": [
+   {
+    "claimKey": "claims",
+    "text": "Vous avez 2 sinistres pour Clio : Bris de glace du 10 février 2025 : statut « En cours », déclaré le 12 février 2025 — indemnité reçue : 800,00 € ; coût des réparations : 1 250,00 € ; net après indemnité : 450,00 € et Dégât des eaux du 10 février 2025 : clos, déclaré le 12 février 2025.",
+    "sourceIds": [
+     "claim:7:61",
+     "claim:7:62"
+    ],
+    "derivation": "direct"
+   }
+  ],
+  "kind": "list"
+ },
+ "sinistre_seul": {
+  "strategy": "structured.claim_status",
+  "answer": "Bris de glace du 10 février 2025 : statut « En cours », déclaré le 12 février 2025, référence assureur SIN-61 — indemnité reçue : 800,00 € ; coût des réparations : 1 250,00 € ; net après indemnité : 450,00 €.",
+  "sources": [
+   {
+    "id": "claim:7:61",
+    "type": "asset_field",
+    "title": "Bris de glace",
+    "content": "Bris de glace du 10 février 2025 : statut « En cours », déclaré le 12 février 2025, référence assureur SIN-61 — indemnité reçue : 800,00 € ; coût des réparations : 1 250,00 € ; net après indemnité : 450,00 €",
+    "relevanceScore": 1,
+    "meta": {
+     "assetId": 7,
+     "assetName": "Clio",
+     "date": "2025-02-10",
+     "agendaItemId": null
+    }
+   }
+  ],
+  "claims": [
+   {
+    "claimKey": "claims",
+    "text": "Bris de glace du 10 février 2025 : statut « En cours », déclaré le 12 février 2025, référence assureur SIN-61 — indemnité reçue : 800,00 € ; coût des réparations : 1 250,00 € ; net après indemnité : 450,00 €.",
+    "sourceIds": [
+     "claim:7:61"
+    ],
+    "derivation": "direct"
+   }
+  ],
+  "kind": "exact"
+ },
+ "contrats": {
+  "strategy": "structured.contracts",
+  "answer": "Contrats de Clio : Assurance auto chez Assureur A (n° C-71), du 1 janvier 2025 au 31 décembre 2025 — coûts documentés : 612,00 € et Contrat d’entretien chez Garage Martin (n° C-72), depuis le 1 janvier 2025 — tarif annoncé : 240,00 € (prévisionnel).",
+  "sources": [
+   {
+    "id": "doc_71",
+    "type": "document",
+    "title": "Contrat 71",
+    "content": "Contrat 71",
+    "relevanceScore": 1,
+    "meta": {}
+   },
+   {
+    "id": "doc_72",
+    "type": "document",
+    "title": "Contrat 72",
+    "content": "Contrat 72",
+    "relevanceScore": 1,
+    "meta": {}
+   }
+  ],
+  "claims": [
+   {
+    "claimKey": "contracts",
+    "text": "Contrats de Clio : Assurance auto chez Assureur A (n° C-71), du 1 janvier 2025 au 31 décembre 2025 — coûts documentés : 612,00 € et Contrat d’entretien chez Garage Martin (n° C-72), depuis le 1 janvier 2025 — tarif annoncé : 240,00 € (prévisionnel).",
+    "sourceIds": [
+     "doc_71",
+     "doc_72"
+    ],
+    "derivation": "direct"
+   }
+  ],
+  "kind": "list"
+ },
+ "couts": {
+  "strategy": "structured.operation_cost",
+  "answer": "Coûts correspondants : Réparation de l’embrayage (Garage Martin, 2 mars 2026) : 1 250,50 € et Réparation du toit (Garage Martin) : 3 100,00 € — indemnité reçue : 1 000,00 €, net : 2 100,00 €.",
+  "sources": [
+   {
+    "id": "doc_81",
+    "type": "document",
+    "title": "Facture 81",
+    "content": "Facture 81",
+    "relevanceScore": 1,
+    "meta": {}
+   },
+   {
+    "id": "doc_82",
+    "type": "document",
+    "title": "Facture 82",
+    "content": "Facture 82",
+    "relevanceScore": 1,
+    "meta": {}
+   }
+  ],
+  "claims": [
+   {
+    "claimKey": "operation_cost",
+    "text": "Coûts correspondants : Réparation de l’embrayage (Garage Martin, 2 mars 2026) : 1 250,50 € et Réparation du toit (Garage Martin) : 3 100,00 € — indemnité reçue : 1 000,00 €, net : 2 100,00 €.",
+    "sourceIds": [
+     "doc_81",
+     "doc_82"
+    ],
+    "derivation": "direct"
+   }
+  ],
+  "kind": "list"
+ },
+ "cout_seul": {
+  "strategy": "structured.operation_cost",
+  "answer": "Coût de la réparation de l’embrayage (Garage Martin, 2 mars 2026) : 1 250,50 €.",
+  "sources": [
+   {
+    "id": "doc_81",
+    "type": "document",
+    "title": "Facture 81",
+    "content": "Facture 81",
+    "relevanceScore": 1,
+    "meta": {}
+   }
+  ],
+  "claims": [
+   {
+    "claimKey": "operation_cost",
+    "text": "Coût de la réparation de l’embrayage (Garage Martin, 2 mars 2026) : 1 250,50 €.",
+    "sourceIds": [
+     "doc_81"
+    ],
+    "derivation": "direct"
+   }
+  ],
+  "kind": "exact"
+ },
+ "historique": {
+  "strategy": "structured.operation_history",
+  "answer": "Ce qui a été fait sur Clio :\n• 2 mars 2026 : Remplacement embrayage (Garage Martin) — 1 250,50 €\n• date non précisée : Vidange (Garage Martin) — 99,00 €",
+  "sources": [
+   {
+    "id": "doc_h_22",
+    "type": "document",
+    "title": "Remplacement embrayage",
+    "content": "Remplacement embrayage",
+    "relevanceScore": 1,
+    "meta": {}
+   },
+   {
+    "id": "doc_h_7",
+    "type": "document",
+    "title": "Vidange",
+    "content": "Vidange",
+    "relevanceScore": 1,
+    "meta": {}
+   }
+  ],
+  "claims": [
+   {
+    "claimKey": "history",
+    "text": "Ce qui a été fait sur Clio :\n• 2 mars 2026 : Remplacement embrayage (Garage Martin) — 1 250,50 €\n• date non précisée : Vidange (Garage Martin) — 99,00 €",
+    "sourceIds": [
+     "doc_h_22",
+     "doc_h_7"
+    ],
+    "derivation": "direct"
+   }
+  ],
+  "kind": "list"
+ },
+ "depenses_par_theme": {
+  "strategy": "structured.sum_qualified",
+  "answer": "Dépenses documentées pour Clio, par thème : entretien 430,00 € (2), réparations 1 250,50 € (1) et assurance 612,00 € (1). Total des dépenses qualifiées : 2 292,50 €. Non comptés : 2 documents avec montant ne précisent pas leur nature — le total peut être incomplet. Doublon signalé (fusion possible) écarté : 1 — chaque document n’est compté qu’une fois. Les devis et documents sans valeur de dépense (2) ne sont pas comptés.",
+  "sources": [
+   {
+    "id": "expenses:all:7",
+    "type": "document_extraction",
+    "title": "Dépenses pour Clio",
+    "content": "Dépenses qualifiées pour Clio : 2 292,50 € (4 documents) · entretien : 430,00 € (2 documents) · réparations : 1 250,50 € (1 document) · assurance : 612,00 € (1 document) · total incomplet : 2 documents avec montant sans thème, non comptés · doublons (fusion possible) comptés une fois : 1 écarté · exclus (devis, annonces…) : 2 · documents inclus : doc-1 doc-2 doc-3 doc-4",
+    "relevanceScore": 1,
+    "meta": {
+     "theme": null,
+     "totalCents": 229250,
+     "totalEur": 2292.5,
+     "documentCount": 4,
+     "complete": false,
+     "unqualifiedCount": 2,
+     "excludedCount": 2,
+     "year": null,
+     "undatedCount": 0,
+     "duplicateCount": 1,
+     "includedDocuments": "doc-1 doc-2 doc-3 doc-4"
+    }
+   },
+   {
+    "id": "asset_7",
+    "type": "asset_field",
+    "title": "Clio",
+    "content": "VEHICULE",
+    "relevanceScore": 1,
+    "meta": {
+     "assetId": 7
+    }
+   }
+  ],
+  "claims": [
+   {
+    "claimKey": "sum",
+    "text": "Dépenses documentées pour Clio, par thème : entretien 430,00 € (2), réparations 1 250,50 € (1) et assurance 612,00 € (1). Total des dépenses qualifiées : 2 292,50 €. Non comptés : 2 documents avec montant ne précisent pas leur nature — le total peut être incomplet. Doublon signalé (fusion possible) écarté : 1 — chaque document n’est compté qu’une fois. Les devis et documents sans valeur de dépense (2) ne sont pas comptés.",
+    "sourceIds": [
+     "expenses:all:7",
+     "asset_7"
+    ],
+    "derivation": "calculated"
+   }
+  ],
+  "kind": "calc"
+ },
+ "depenses_un_theme": {
+  "strategy": "structured.sum_qualified",
+  "answer": "Dépenses d’entretien documentées pour Clio : 430,00 € (2 documents). Non comptés : 2 documents avec montant ne précisent pas leur nature — le total peut être incomplet. Doublon signalé (fusion possible) écarté : 1 — chaque document n’est compté qu’une fois. Les devis et documents sans valeur de dépense (2) ne sont pas comptés.",
+  "sources": [
+   {
+    "id": "expenses:maintenance:7",
+    "type": "document_extraction",
+    "title": "Dépenses d’entretien pour Clio",
+    "content": "Dépenses qualifiées d’entretien pour Clio : 430,00 € (2 documents) · entretien : 430,00 € (2 documents) · total incomplet : 2 documents avec montant sans thème, non comptés · doublons (fusion possible) comptés une fois : 1 écarté · exclus (devis, annonces…) : 2 · documents inclus : doc-1 doc-2",
+    "relevanceScore": 1,
+    "meta": {
+     "theme": "maintenance",
+     "totalCents": 43000,
+     "totalEur": 430,
+     "documentCount": 2,
+     "complete": false,
+     "unqualifiedCount": 2,
+     "excludedCount": 2,
+     "year": null,
+     "undatedCount": 0,
+     "duplicateCount": 1,
+     "includedDocuments": "doc-1 doc-2"
+    }
+   },
+   {
+    "id": "asset_7",
+    "type": "asset_field",
+    "title": "Clio",
+    "content": "VEHICULE",
+    "relevanceScore": 1,
+    "meta": {
+     "assetId": 7
+    }
+   }
+  ],
+  "claims": [
+   {
+    "claimKey": "sum",
+    "text": "Dépenses d’entretien documentées pour Clio : 430,00 € (2 documents). Non comptés : 2 documents avec montant ne précisent pas leur nature — le total peut être incomplet. Doublon signalé (fusion possible) écarté : 1 — chaque document n’est compté qu’une fois. Les devis et documents sans valeur de dépense (2) ne sont pas comptés.",
+    "sourceIds": [
+     "expenses:maintenance:7",
+     "asset_7"
+    ],
+    "derivation": "calculated"
+   }
+  ],
+  "kind": "calc"
+ },
+ "depenses_complet": {
+  "strategy": "structured.sum_qualified",
+  "answer": "Dépenses d’entretien documentées pour Clio : 430,00 € (2 documents).",
+  "sources": [
+   {
+    "id": "expenses:maintenance:7",
+    "type": "document_extraction",
+    "title": "Dépenses d’entretien pour Clio",
+    "content": "Dépenses qualifiées d’entretien pour Clio : 430,00 € (2 documents) · entretien : 430,00 € (2 documents) · total complet · documents inclus : doc-1 doc-2",
+    "relevanceScore": 1,
+    "meta": {
+     "theme": "maintenance",
+     "totalCents": 43000,
+     "totalEur": 430,
+     "documentCount": 2,
+     "complete": true,
+     "unqualifiedCount": 0,
+     "excludedCount": 0,
+     "year": null,
+     "undatedCount": 0,
+     "duplicateCount": 0,
+     "includedDocuments": "doc-1 doc-2"
+    }
+   },
+   {
+    "id": "asset_7",
+    "type": "asset_field",
+    "title": "Clio",
+    "content": "VEHICULE",
+    "relevanceScore": 1,
+    "meta": {
+     "assetId": 7
+    }
+   }
+  ],
+  "claims": [
+   {
+    "claimKey": "sum",
+    "text": "Dépenses d’entretien documentées pour Clio : 430,00 € (2 documents).",
+    "sourceIds": [
+     "expenses:maintenance:7",
+     "asset_7"
+    ],
+    "derivation": "calculated"
+   }
+  ],
+  "kind": "calc"
+ },
+ "manquants": {
+  "strategy": "structured.missing_information",
+  "answer": "Informations à compléter : Clio — à renseigner : kilométrage et date d’achat et Maison — à renseigner : prix d’achat ; 1 élément à traiter.",
+  "sources": [
+   {
+    "id": "asset_field:7:mileage",
+    "type": "asset_field",
+    "title": "Kilométrage — Clio",
+    "content": "Kilométrage : non renseigné (information attendue pour ce bien)",
+    "relevanceScore": 1,
+    "meta": {
+     "assetId": 7,
+     "fieldKey": "mileage",
+     "value": null,
+     "missing": true
+    }
+   },
+   {
+    "id": "asset_field:7:acquisitionDate",
+    "type": "asset_field",
+    "title": "Date d’achat — Clio",
+    "content": "Date d’achat : non renseigné (information attendue pour ce bien)",
+    "relevanceScore": 1,
+    "meta": {
+     "assetId": 7,
+     "fieldKey": "acquisitionDate",
+     "value": null,
+     "missing": true
+    }
+   },
+   {
+    "id": "asset_field:9:acquisitionPrice",
+    "type": "asset_field",
+    "title": "Prix d’achat — Maison",
+    "content": "Prix d’achat : non renseigné (information attendue pour ce bien)",
+    "relevanceScore": 1,
+    "meta": {
+     "assetId": 9,
+     "fieldKey": "acquisitionPrice",
+     "value": null,
+     "missing": true
+    }
+   }
+  ],
+  "claims": [
+   {
+    "claimKey": "missing",
+    "text": "Informations à compléter : Clio — à renseigner : kilométrage et date d’achat et Maison — à renseigner : prix d’achat ; 1 élément à traiter.",
+    "sourceIds": [
+     "asset_field:7:mileage",
+     "asset_field:7:acquisitionDate",
+     "asset_field:9:acquisitionPrice"
+    ],
+    "derivation": "calculated"
+   }
+  ],
+  "kind": "list"
+ },
+ "echeances": {
+  "strategy": "structured.upcoming_agenda",
+  "answer": "Échéances dans les 30 prochains jours : « Contrôle technique » (Clio) le 1 décembre 2026 (dans 10 jours) et « Assurance habitation » (Maison) prévue le 15 décembre 2026 (dans 24 jours). Les dates « prévues » sont prévisionnelles : elles seront confirmées par un document.",
+  "sources": [
+   {
+    "id": "agenda_91",
+    "type": "agenda_item",
+    "title": "Contrôle technique",
+    "content": "2026-12-01 · Clio",
+    "relevanceScore": 1,
+    "meta": {
+     "date": "2026-12-01",
+     "forecast": false
+    }
+   },
+   {
+    "id": "agenda_92",
+    "type": "agenda_item",
+    "title": "Assurance habitation",
+    "content": "2026-12-15 · date prévisionnelle · Maison",
+    "relevanceScore": 1,
+    "meta": {
+     "date": "2026-12-15",
+     "forecast": true
+    }
+   }
+  ],
+  "claims": [
+   {
+    "claimKey": "upcoming",
+    "text": "Échéances dans les 30 prochains jours : « Contrôle technique » (Clio) le 1 décembre 2026 (dans 10 jours) et « Assurance habitation » (Maison) prévue le 15 décembre 2026 (dans 24 jours). Les dates « prévues » sont prévisionnelles : elles seront confirmées par un document.",
+    "sourceIds": [
+     "agenda_91",
+     "agenda_92"
+    ],
+    "derivation": "calculated"
+   }
+  ],
+  "kind": "list"
+ },
+ "cout_large_premium": {
+  "strategy": "structured.ownership_cost",
+  "answer": "Prix d’achat de Clio : 18 500,00 € (achat du 15 juin 2021). Le document « Bon de commande » indique 18 700,00 € : la valeur saisie sur la fiche est conservée comme référence. Frais annexes connus, non inclus dans ce prix : 310,00 € « Carte grise ». Coût de possession de Clio : coût cumulé documenté 23 456,78 € (acquisition 18 500,00 €, entretien, réparations et travaux 3 123,45 €, contrats et assurances 2 100,00 €, financement (intérêts et frais) 433,33 €, avoirs − 200,00 €, remboursements − 150,00 €, indemnités − 350,00 €), depuis l’achat du bien le 15 juin 2021. Coût annuel moyen de possession (hors prix d’achat du bien) : 912,34 € par an. Coût du crédit à date (intérêts, assurance, frais ; capital non compté) : 433,33 € — selon l’échéancier du prêt. Coût total prévisionnel du crédit : 643,33 € (échéancier partiel), non ajouté au coût total. Capital restant dû au 05/10/2026 : 6 400,00 € (Capital restant dû lu sur le tableau d’amortissement) ; ce n’est pas un coût. Valeur estimée 9 000,00 € (estimation du 1 septembre 2026) : coût net estimé 14 456,78 €. Non comptés (devise sans contre-valeur en euros) : 300,00 CHF. Des montants communs à plusieurs biens ne sont pas ventilés et ne sont pas comptés. Résultat partiel. En incluant les estimations de dépenses d’usage (360,00 € estimés à partir de vos forfaits, pour les périodes écoulées sans justificatif suffisant), le coût total de possession estimé est de 23 816,78 €. Forfaits d’usage en cours : 480,00 € par an (prévisionnel, jamais ajouté pour les mois à venir).",
+  "sources": [
+   {
+    "id": "operation_9",
+    "type": "document",
+    "title": "Achat",
+    "content": "Achat",
+    "relevanceScore": 1,
+    "meta": {}
+   },
+   {
+    "id": "tco:7",
+    "type": "document_extraction",
+    "title": "Coût de possession — Clio",
+    "content": "Coût de possession de Clio : coût cumulé documenté 23 456,78 € (acquisition 18 500,00 €, entretien, réparations et travaux 3 123,45 €, contrats et assurances 2 100,00 €, financement (intérêts et frais) 433,33 €, avoirs − 200,00 €, remboursements − 150,00 €, indemnités − 350,00 €), depuis l’achat du bien le 15 juin 2021. Coût annuel moyen de possession (hors prix d’achat du bien) : 912,34 € par an. Coût du crédit à date (intérêts, assurance, frais ; capital non compté) : 433,33 € — selon l’échéancier du prêt. Coût total prévisionnel du crédit : 643,33 € (échéancier partiel), non ajouté au coût total. Capital restant dû au 05/10/2026 : 6 400,00 € (Capital restant dû lu sur le tableau d’amortissement) ; ce n’est pas un coût. Valeur estimée 9 000,00 € (estimation du 1 septembre 2026) : coût net estimé 14 456,78 €. Non comptés (devise sans contre-valeur en euros) : 300,00 CHF. Des montants communs à plusieurs biens ne sont pas ventilés et ne sont pas comptés. Résultat partiel. En incluant les estimations de dépenses d’usage (360,00 € estimés à partir de vos forfaits, pour les périodes écoulées sans justificatif suffisant), le coût total de possession estimé est de 23 816,78 €. Forfaits d’usage en cours : 480,00 € par an (prévisionnel, jamais ajouté pour les mois à venir).",
+    "relevanceScore": 1,
+    "meta": {
+     "assetId": 7,
+     "assetName": "Clio",
+     "cumulativeCostCents": 2345678,
+     "netEstimatedCents": 1445678,
+     "estimatedUsageComplementCents": 36000,
+     "totalWithEstimatesCents": 2381678,
+     "netFinalCents": null,
+     "status": "PARTIAL",
+     "operationCount": 9,
+     "annualAverageCents": 91234,
+     "financingToDateCents": 43333,
+     "documentCount": 3,
+     "includedDocuments": "doc-31"
+    }
+   }
+  ],
+  "kind": "calc",
+  "claims": [
+   {
+    "claimKey": "acquisition",
+    "text": "Prix d’achat de Clio : 18 500,00 € (achat du 15 juin 2021). Le document « Bon de commande » indique 18 700,00 € : la valeur saisie sur la fiche est conservée comme référence. Frais annexes connus, non inclus dans ce prix : 310,00 € « Carte grise ».",
+    "sourceIds": [
+     "operation_9"
+    ],
+    "derivation": "direct"
+   },
+   {
+    "claimKey": "ownership_cost",
+    "text": "Coût de possession de Clio : coût cumulé documenté 23 456,78 € (acquisition 18 500,00 €, entretien, réparations et travaux 3 123,45 €, contrats et assurances 2 100,00 €, financement (intérêts et frais) 433,33 €, avoirs − 200,00 €, remboursements − 150,00 €, indemnités − 350,00 €), depuis l’achat du bien le 15 juin 2021. Coût annuel moyen de possession (hors prix d’achat du bien) : 912,34 € par an. Coût du crédit à date (intérêts, assurance, frais ; capital non compté) : 433,33 € — selon l’échéancier du prêt. Coût total prévisionnel du crédit : 643,33 € (échéancier partiel), non ajouté au coût total. Capital restant dû au 05/10/2026 : 6 400,00 € (Capital restant dû lu sur le tableau d’amortissement) ; ce n’est pas un coût. Valeur estimée 9 000,00 € (estimation du 1 septembre 2026) : coût net estimé 14 456,78 €. Non comptés (devise sans contre-valeur en euros) : 300,00 CHF. Des montants communs à plusieurs biens ne sont pas ventilés et ne sont pas comptés. Résultat partiel. En incluant les estimations de dépenses d’usage (360,00 € estimés à partir de vos forfaits, pour les périodes écoulées sans justificatif suffisant), le coût total de possession estimé est de 23 816,78 €. Forfaits d’usage en cours : 480,00 € par an (prévisionnel, jamais ajouté pour les mois à venir).",
+    "sourceIds": [
+     "tco:7"
+    ],
+    "derivation": "calculated"
+   }
+  ]
+ },
+ "cout_large_standard": {
+  "strategy": "structured.acquisition_price",
+  "answer": "Prix d’achat de Clio : 18 500,00 € (achat du 15 juin 2021). Le document « Bon de commande » indique 18 700,00 € : la valeur saisie sur la fiche est conservée comme référence. Frais annexes connus, non inclus dans ce prix : 310,00 € « Carte grise ». Le coût de possession est disponible avec Premium et Premium Duo.",
+  "sources": [
+   {
+    "id": "operation_9",
+    "type": "document",
+    "title": "Achat",
+    "content": "Achat",
+    "relevanceScore": 1,
+    "meta": {}
+   },
+   {
+    "id": "product_rule:tco_premium",
+    "type": "product_rule",
+    "title": "Coût de possession — offres Premium",
+    "content": "Le coût de possession est disponible avec Premium et Premium Duo.",
+    "relevanceScore": 1,
+    "meta": {
+     "ruleCode": "tco_premium",
+     "locked": true,
+     "assetId": 7
+    }
+   }
+  ],
+  "kind": "exact",
+  "claims": [
+   {
+    "claimKey": "acquisition",
+    "text": "Prix d’achat de Clio : 18 500,00 € (achat du 15 juin 2021). Le document « Bon de commande » indique 18 700,00 € : la valeur saisie sur la fiche est conservée comme référence. Frais annexes connus, non inclus dans ce prix : 310,00 € « Carte grise ».",
+    "sourceIds": [
+     "operation_9"
+    ],
+    "derivation": "direct"
+   },
+   {
+    "claimKey": "ownership_cost_locked",
+    "text": "Le coût de possession est disponible avec Premium et Premium Duo.",
+    "sourceIds": [
+     "product_rule:tco_premium"
+    ],
+    "derivation": "direct"
+   }
+  ]
+ },
+ "achat_et_depenses": {
+  "strategy": "structured.acquisition_price",
+  "answer": "Prix d’achat de Clio : 18 500,00 € (achat du 15 juin 2021). Le document « Bon de commande » indique 18 700,00 € : la valeur saisie sur la fiche est conservée comme référence. Frais annexes connus, non inclus dans ce prix : 310,00 € « Carte grise ». Si vous parlez des dépenses depuis l’achat (hors prix d’achat) : 2 292,50 € (entretien 430,00 €, réparations 1 250,50 €, assurance 612,00 €), total peut-être incomplet. Ces deux montants ne s’additionnent pas sans que vous le demandiez.",
+  "sources": [
+   {
+    "id": "operation_9",
+    "type": "document",
+    "title": "Achat",
+    "content": "Achat",
+    "relevanceScore": 1,
+    "meta": {}
+   },
+   {
+    "id": "expenses:all:7",
+    "type": "document_extraction",
+    "title": "Dépenses pour Clio",
+    "content": "Dépenses qualifiées pour Clio : 2 292,50 € (4 documents) · entretien : 430,00 € (2 documents) · réparations : 1 250,50 € (1 document) · assurance : 612,00 € (1 document) · total incomplet : 2 documents avec montant sans thème, non comptés · doublons (fusion possible) comptés une fois : 1 écarté · exclus (devis, annonces…) : 2 · documents inclus : doc-1 doc-2 doc-3 doc-4",
+    "relevanceScore": 1,
+    "meta": {
+     "theme": null,
+     "totalCents": 229250,
+     "totalEur": 2292.5,
+     "documentCount": 4,
+     "complete": false,
+     "unqualifiedCount": 2,
+     "excludedCount": 2,
+     "year": null,
+     "undatedCount": 0,
+     "duplicateCount": 1,
+     "includedDocuments": "doc-1 doc-2 doc-3 doc-4"
+    }
+   }
+  ],
+  "claims": [
+   {
+    "claimKey": "acquisition",
+    "text": "Prix d’achat de Clio : 18 500,00 € (achat du 15 juin 2021). Le document « Bon de commande » indique 18 700,00 € : la valeur saisie sur la fiche est conservée comme référence. Frais annexes connus, non inclus dans ce prix : 310,00 € « Carte grise ». Si vous parlez des dépenses depuis l’achat (hors prix d’achat) : 2 292,50 € (entretien 430,00 €, réparations 1 250,50 €, assurance 612,00 €), total peut-être incomplet. Ces deux montants ne s’additionnent pas sans que vous le demandiez.",
+    "sourceIds": [
+     "operation_9",
+     "expenses:all:7"
+    ],
+    "derivation": "direct"
+   }
+  ],
+  "kind": "exact"
+ },
+ "verrou_question": {
+  "strategy": "structured.ownership_cost",
+  "answer": "Le coût de possession est disponible avec Premium et Premium Duo. Pour Polo, vous pouvez consulter vos dépenses documentées, par exemple : « Combien ai-je dépensé en entretien pour Polo ? ».",
+  "sources": [
+   {
+    "id": "product_rule:tco_premium",
+    "type": "product_rule",
+    "title": "Coût de possession — offres Premium",
+    "content": "Le coût de possession est disponible avec Premium et Premium Duo.",
+    "relevanceScore": 1,
+    "meta": {
+     "ruleCode": "tco_premium",
+     "locked": true,
+     "assetId": 41
+    }
+   }
+  ],
+  "claims": [
+   {
+    "claimKey": "ownership_cost_locked",
+    "text": "Le coût de possession est disponible avec Premium et Premium Duo. Pour Polo, vous pouvez consulter vos dépenses documentées, par exemple : « Combien ai-je dépensé en entretien pour Polo ? ».",
+    "sourceIds": [
+     "product_rule:tco_premium"
+    ],
+    "derivation": "direct"
+   }
+  ],
+  "kind": "no_result"
+ },
+ "polo_question": {
+  "strategy": "structured.ownership_cost",
+  "answer": "Coût de possession de Polo : coût cumulé documenté 2 476,41 € (entretien, réparations et travaux 559,51 €, contrats et assurances 1 115,53 €, autres coûts 801,37 €). Coût annuel moyen de possession non calculé : date d’achat du bien inconnue : renseignez-la sur la fiche pour calculer la moyenne. Coût net estimé non calculé : aucune estimation de valeur admissible postérieure à l’achat (le prix d’achat n’est jamais une valeur actuelle). Ce total peut être incomplet.",
+  "sources": [
+   {
+    "id": "tco:41",
+    "type": "document_extraction",
+    "title": "Coût de possession — Polo",
+    "content": "Coût de possession de Polo : coût cumulé documenté 2 476,41 € (entretien, réparations et travaux 559,51 €, contrats et assurances 1 115,53 €, autres coûts 801,37 €). Coût annuel moyen de possession non calculé : date d’achat du bien inconnue : renseignez-la sur la fiche pour calculer la moyenne. Coût net estimé non calculé : aucune estimation de valeur admissible postérieure à l’achat (le prix d’achat n’est jamais une valeur actuelle). Ce total peut être incomplet.",
+    "relevanceScore": 1,
+    "meta": {
+     "assetId": 41,
+     "assetName": "Polo",
+     "cumulativeCostCents": 247641,
+     "netEstimatedCents": null,
+     "estimatedUsageComplementCents": 0,
+     "totalWithEstimatesCents": 247641,
+     "netFinalCents": null,
+     "status": "INCOMPLETE",
+     "operationCount": 0,
+     "annualAverageCents": null,
+     "financingToDateCents": 0,
+     "documentCount": 7,
+     "includedDocuments": "doc-11 doc-12 doc-13 doc-14 doc-15 doc-16 doc-17"
+    }
+   }
+  ],
+  "claims": [
+   {
+    "claimKey": "ownership_cost",
+    "text": "Coût de possession de Polo : coût cumulé documenté 2 476,41 € (entretien, réparations et travaux 559,51 €, contrats et assurances 1 115,53 €, autres coûts 801,37 €). Coût annuel moyen de possession non calculé : date d’achat du bien inconnue : renseignez-la sur la fiche pour calculer la moyenne. Coût net estimé non calculé : aucune estimation de valeur admissible postérieure à l’achat (le prix d’achat n’est jamais une valeur actuelle). Ce total peut être incomplet.",
+    "sourceIds": [
+     "tco:41"
+    ],
+    "derivation": "calculated"
+   }
+  ],
+  "kind": "exact"
+ }
+}

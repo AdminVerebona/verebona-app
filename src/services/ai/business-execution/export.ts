@@ -31,6 +31,12 @@ import { openReadSession, type ReadSession } from '@/services/admin/account-data
 import { maskForExport, maskText } from '@/services/admin/diagnostics-export/model';
 import { recetteLine } from '@/services/admin/diagnostics-export/recette';
 import { REPORT_COLS, USAGE_COLS } from '@/services/admin/diagnostics-export/trace';
+
+/**
+ * Carte #828 (écart B) — requêtes réseau réellement émises pour l'événement d'usage (`metadata.networkRequests`,
+ * carte #811), ajoutées à chaque ligne d'appel exportée (`network_requests`) ; NULL : ligne antérieure à la mesure.
+ */
+const NETWORK_REQUESTS_COL = `CASE WHEN jsonb_typeof(metadata->'networkRequests') = 'number' THEN (metadata->>'networkRequests')::int END AS network_requests`;
 import { historyExecutionColumnReady } from '../history-reclassification/columns';
 import { isCauseUnknown, missingOf } from './detail-model';
 import { toExecutionDto, type BusinessExecutionDto, type ExecutionCallsDto } from './dto';
@@ -146,7 +152,7 @@ export async function readCallsOf(
     for (const x of lot) for (const t of x.traceIds) traces.set(t, x.id);
     // Lot 89A (P8, MIG-03) : appels historiques rattachés par le reclassement prouvé (0776).
     const hist = await historyExecutionColumnReady(q);
-    const rows = await q(`SELECT ${USAGE_COLS}, business_execution_id${hist ? ', history_execution_id' : ''} FROM ai_usage_event
+    const rows = await q(`SELECT ${USAGE_COLS}, ${NETWORK_REQUESTS_COL}, business_execution_id${hist ? ', history_execution_id' : ''} FROM ai_usage_event
        WHERE business_execution_id = ANY($1::text[]) OR (business_execution_id IS NULL AND (metadata->>'traceId') = ANY($2::text[]))
        ${hist ? 'OR (business_execution_id IS NULL AND history_execution_id = ANY($1::text[]))' : ''}
        ORDER BY id`, [lot.map((x) => x.id), [...traces.keys()]]);
@@ -254,11 +260,12 @@ export async function readUnitDepth(q: ReadSession['q'], xs: readonly Pick<Busin
  * l'IA en compteurs distincts, travaux, rapports, écritures (masqués), notes.
  * Partie commune de l'export unitaire et de la ligne `diagnostics` du groupé.
  */
-export function unitDiagnostics(dto: BusinessExecutionDto, providerCalls: number, depth: UnitDepth, sensitive: boolean): Record<string, unknown> {
+export function unitDiagnostics(dto: BusinessExecutionDto, calls: number | ReadonlyArray<Record<string, unknown>>, depth: UnitDepth, sensitive: boolean): Record<string, unknown> {
   return {
     missing: missingOf(dto), causeUnknown: isCauseUnknown(dto),
-    // Lot 99A (point D) : appels réels (lignes `calls`) / réponses du cache / décisions réutilisées — distincts.
-    aiUsage: aiUsageOfJobs(providerCalls, depth.jobs),
+    // Lot 99A (point D) : appels réels / réponses du cache / décisions réutilisées — distincts.
+    // Carte #828 (écart B) : `providerCalls` = requêtes réseau réellement émises (plus un nombre de lignes).
+    aiUsage: aiUsageOfJobs(calls, depth.jobs),
     jobs: maskForExport(depth.jobs), reports: maskForExport(depth.reports),
     writes: maskForExport(depth.entries),
     notes: [
@@ -284,7 +291,7 @@ export async function buildExecutionUnitExport(id: string, opts: { sensitive: bo
     const calls = (await readCallsOf(s.q, [x], opts.sensitive)).get(x.id) ?? [];
     const dto = toExecutionDto(x, callsSummary(calls));
     const depth = (await readUnitDepth(s.q, [x])).get(x.id)!;
-    const { missing, causeUnknown, ...rest } = unitDiagnostics(dto, calls.length, depth, opts.sensitive);
+    const { missing, causeUnknown, ...rest } = unitDiagnostics(dto, calls.map((c) => c.row), depth, opts.sensitive);
     return {
       format: EXECUTION_UNIT_SCHEMA, readAt: s.info.at, snapshot: { isolation: s.info.isolation, at: s.info.at, snapshot: s.info.snapshot },
       sensitiveContent: opts.sensitive,
@@ -364,7 +371,7 @@ type CallRow = { row: Row; capture: Row | null };
 /** Appels (colonnes du collecteur 77C) par identifiant, avec leur capture. */
 async function readCallsByIds(q: ReadSession['q'], ids: readonly number[], sensitive: boolean): Promise<CallRow[]> {
   if (!ids.length) return [];
-  const rows = await q(`SELECT ${USAGE_COLS}, business_execution_id, to_jsonb(ai_usage_event)->>'history_execution_id' AS history_execution_id,
+  const rows = await q(`SELECT ${USAGE_COLS}, ${NETWORK_REQUESTS_COL}, business_execution_id, to_jsonb(ai_usage_event)->>'history_execution_id' AS history_execution_id,
        metadata->'businessExecutionIds' AS shared_execution_ids FROM ai_usage_event WHERE id = ANY($1::bigint[]) ORDER BY id`, [ids]);
   const caps = await readCapturesOf(q, rows.map((r) => Number(r.id)), sensitive);
   return rows.map((r) => ({ row: r, capture: caps.get(Number(r.id)) ?? null }));
@@ -798,7 +805,7 @@ export async function runExecutionsExport(opts: RunOptions): Promise<ExecutionsM
       const firstCallLine = cs.length ? p.emitted.appels + 1 : null;
       await emit('executions', recetteLine(maskForExport(executionLine(dto)) as Row));
       for (const c of cs) await emit('appels', recetteLine(callLine(x.id, c.row, c.capture, sensitive)));
-      await emit('diagnostics', recetteLine({ executionId: x.id, ...unitDiagnostics(dto, cs.length, depth.get(x.id) ?? { jobs: [], reports: [], entries: [] }, sensitive), ...(extra?.(x) ?? {}) }));
+      await emit('diagnostics', recetteLine({ executionId: x.id, ...unitDiagnostics(dto, cs.map((c) => c.row), depth.get(x.id) ?? { jobs: [], reports: [], entries: [] }, sensitive), ...(extra?.(x) ?? {}) }));
       await emit('index', indexRowOfExecution(dto, {
         file: storedPathOf('executions', p.n), line: p.emitted.executions, diagnostics: storedPathOf('diagnostics', p.n),
         callsFile: storedPathOf('appels', p.n), firstCallLine, calls: cs.length,
@@ -1309,13 +1316,50 @@ export async function purgeOldExecutionsExports(storage?: ExportStorage, now: Da
   return n;
 }
 
+/** Carte #828 — sémantique de `diagnostics.aiUsage.providerCalls` écrite dans chaque export. */
+export const AI_USAGE_PROVIDER_CALLS_SEMANTICS = 'NETWORK_REQUESTS_V1';
+
+/**
+ * Carte #828 (écart B) — requêtes réseau réellement émises d'après les lignes d'événements d'usage (pure).
+ * Même règle que le diagnostic administrateur (`readAiUsageDistinct`) :
+ *   · ligne mesurée (`network_requests` présent)  → sa valeur (0 : refus avant appel, rang non sollicité) ;
+ *   · ligne antérieure à la mesure                → 1 si une réponse ou une consommation la prouve, sinon
+ *     INDÉTERMINÉE (ni comptée, ni exclue : dite à part).
+ */
+export function networkRequestsOfUsageRows(rows: ReadonlyArray<Record<string, unknown>>): {
+  providerCalls: number; usageEventLines: number; usageEventsWithoutSend: number; providerCallsUndetermined: number;
+} {
+  let emises = 0;
+  let sansEnvoi = 0;
+  let indetermines = 0;
+  for (const r of rows) {
+    const brut = r.network_requests;
+    const n = brut === null || brut === undefined || brut === '' ? null : Number(brut);
+    if (n !== null && Number.isFinite(n)) {
+      emises += Math.max(0, Math.floor(n));
+      if (n <= 0) sansEnvoi++;
+    } else if (r.status === 'success' || (Number(r.entree_jetons ?? 0) || 0) + (Number(r.sortie_jetons ?? 0) || 0) > 0) emises += 1;
+    else indetermines++;
+  }
+  return { providerCalls: emises, usageEventLines: rows.length, usageEventsWithoutSend: sansEnvoi, providerCallsUndetermined: indetermines };
+}
+
 /**
  * Lot 99A — usage de l'IA d'une exécution en compteurs DISTINCTS (pure) :
  * appels réels au fournisseur (traces `ai_usage_event` corrélées), réponses
  * servies par le cache et décisions réutilisées (résumé métier des travaux).
+ *
+ * Carte #828 (écart B, export ZIP de la carte #802) — `providerCalls` était le NOMBRE DE LIGNES d'événements
+ * d'usage de l'exécution. Le champ garde son nom et sa place (contrat de l'export inchangé) mais porte désormais
+ * les REQUÊTES RÉSEAU réellement émises ; sa sémantique est écrite à côté (`providerCallsSemantics`), l'ancienne
+ * valeur reste lisible sous son vrai nom (`usageEventLines`), avec les lignes sans envoi et les lignes anciennes
+ * indéterminées. `withoutAiCall` n'est vrai que si aucune requête n'est prouvée ET qu'aucune ligne n'est
+ * indéterminée ; indéterminé : `null` (inconnu ≠ zéro). Appelant historique passant un nombre : valeur reprise
+ * telle quelle, sémantique `USAGE_EVENT_LINES` (jamais présentée comme des requêtes).
  */
-export function aiUsageOfJobs(providerCalls: number, jobs: ReadonlyArray<Record<string, unknown>>): {
-  providerCalls: number; cacheResponses: number; decisionsReused: number; withoutAiCall: boolean;
+export function aiUsageOfJobs(calls: number | ReadonlyArray<Record<string, unknown>>, jobs: ReadonlyArray<Record<string, unknown>>): {
+  providerCalls: number; cacheResponses: number; decisionsReused: number; withoutAiCall: boolean | null;
+  providerCallsSemantics: string; usageEventLines: number; usageEventsWithoutSend: number; providerCallsUndetermined: number;
 } {
   let cache = 0;
   let reutilisees = 0;
@@ -1326,5 +1370,17 @@ export function aiUsageOfJobs(providerCalls: number, jobs: ReadonlyArray<Record<
     cache += Number(d.aiCacheResponses ?? 0) || 0;
     reutilisees += Number(d.aiDecisionsReused ?? 0) || 0;
   }
-  return { providerCalls, cacheResponses: cache, decisionsReused: reutilisees, withoutAiCall: providerCalls === 0 };
+  if (typeof calls === 'number') {
+    return {
+      providerCalls: calls, cacheResponses: cache, decisionsReused: reutilisees, withoutAiCall: calls === 0 ? true : null,
+      providerCallsSemantics: 'USAGE_EVENT_LINES', usageEventLines: calls, usageEventsWithoutSend: 0, providerCallsUndetermined: 0,
+    };
+  }
+  const m = networkRequestsOfUsageRows(calls);
+  return {
+    providerCalls: m.providerCalls, cacheResponses: cache, decisionsReused: reutilisees,
+    withoutAiCall: m.providerCalls > 0 ? false : m.providerCallsUndetermined > 0 ? null : true,
+    providerCallsSemantics: AI_USAGE_PROVIDER_CALLS_SEMANTICS, usageEventLines: m.usageEventLines,
+    usageEventsWithoutSend: m.usageEventsWithoutSend, providerCallsUndetermined: m.providerCallsUndetermined,
+  };
 }

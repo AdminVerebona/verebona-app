@@ -11,6 +11,8 @@
  * identiques que l'IA soit disponible ou non.
  */
 
+import { composeAnswerText } from '@/lib/verebona/answer-compose';
+
 const TZ = 'Europe/Paris';
 
 /** « 2026-11-14 » → « 14 novembre 2026 ». Chaîne vide si la date est invalide. */
@@ -87,6 +89,27 @@ export function formatList(intro: string, items: string[], max = 10): string {
   const shown = items.slice(0, max);
   const rest = items.length - shown.length;
   return `${intro} : ${joinFr(shown)}${rest > 0 ? `, et ${rest} autre${rest > 1 ? 's' : ''}` : ''}.`;
+}
+
+/**
+ * Carte #790 (relance du 21/11/2026, E03) — éléments d'une liste PRÉSENTÉE EN BLOCS : mêmes éléments et même
+ * troncature que `formatList` (au-delà de `max`, le reste est annoncé par un dernier élément).
+ */
+export function listItems(items: readonly string[], max = 10): string[] {
+  const shown = items.slice(0, max);
+  const rest = items.length - shown.length;
+  return rest > 0 ? [...shown, `et ${rest} autre${rest > 1 ? 's' : ''}`] : [...shown];
+}
+
+/**
+ * Carte #790 (relance du 21/11/2026, E03) — liste d'une réponse déterministe, écrite pour être présentée en
+ * BLOCS : une annonce (« Vous avez 3 biens : ») puis un élément par ligne. Règle remplacée : plusieurs éléments
+ * étaient écrits à la suite dans une seule phrase (« A, B et C. »), donc dans un seul paragraphe à l'écran.
+ * Un seul élément reste une phrase (`formatList`, inchangé) : c'est une réponse simple.
+ */
+export function formatListBlocks(intro: string, items: readonly string[], max = 10): string {
+  if (items.length <= 1) return formatList(intro, [...items], max);
+  return composeAnswerText([{ kind: 'list', intro, items: listItems(items, max) }]);
 }
 
 /** Échéance : « Votre assurance habitation arrive à échéance le 14 novembre 2026 (dans 50 jours). » */

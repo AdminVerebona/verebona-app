@@ -29,7 +29,8 @@ describe('Ticket 12 — plusieurs champs demandés', () => {
       understand: H.understood('ACCOUNT_FACT_ASSET', ['acquisitionDate', 'acquisitionPrice'], [{ type: 'asset', value: 'Polo' }]),
     });
     const r = await h.ask(QUESTION);
-    expect(nb(r.answer)).toBe('Pour Polo : date d’achat : 15 juin 2021 ; prix d’achat : 18 500 €.');
+    // Règle remplacée (carte #790, relance du 21/11) : plusieurs valeurs = une liste (une valeur par ligne), plus une phrase unique.
+    expect(nb(r.answer)).toBe('Pour Polo :\n• date d’achat : 15 juin 2021\n• prix d’achat : 18 500 €');
     expect(h.readers.calls).toEqual([{ kind: 'asset', id: 20, key: 'acquisitionDate' }, { kind: 'asset', id: 20, key: 'acquisitionPrice' }]);
     expect(h.readers.calls.some((c) => c.kind === 'document')).toBe(false);
     expect(h.classify).toHaveBeenCalledTimes(1);
@@ -41,14 +42,16 @@ describe('Ticket 12 — plusieurs champs demandés', () => {
       understand: H.understood('ACCOUNT_FACT_ASSET', ['acquisitionDate', 'acquisitionPrice', 'mileage'], [{ type: 'asset', value: 'Polo' }]),
     });
     const r = await h.ask('Donne-moi la date d’achat, le prix et le kilométrage de la Polo.');
-    expect(nb(r.answer)).toBe('Pour Polo : date d’achat : 15 juin 2021 ; prix d’achat : 18 500 € ; kilométrage : 82 000 km.');
+    // Règle remplacée (carte #790, relance du 21/11) : plusieurs valeurs = une liste (une valeur par ligne), plus une phrase unique.
+    expect(nb(r.answer)).toBe('Pour Polo :\n• date d’achat : 15 juin 2021\n• prix d’achat : 18 500 €\n• kilométrage : 82 000 km');
     expect(h.generate).not.toHaveBeenCalled();
   });
 
   it('T2MULTI-AC03 — une valeur absente : date et kilométrage restitués, prix traité séparément', async () => {
     const h = H.harness(H.account({ assets: [{ ...POLO, fields: { acquisitionDate: '2021-06-15', mileage: 82000 } }] }));
     const lu = await answerFromTarget(1, 'x', { ...pageDe(20) }, h.readers, { requestedFacts: ['acquisitionDate', 'acquisitionPrice', 'mileage'], filters: {} });
-    expect(nb(lu!.text)).toBe('Pour ce bien : date d’achat : 15 juin 2021 ; kilométrage : 82 000 km. Non renseigné : prix d’achat.');
+    // Règle remplacée (carte #790, relance du 21/11) : plusieurs valeurs = une liste (une valeur par ligne), plus une phrase unique.
+    expect(nb(lu!.text)).toBe('Pour ce bien :\n• date d’achat : 15 juin 2021\n• kilométrage : 82 000 km\n\nNon renseigné : prix d’achat.');
     expect(lu!.facts!.map((f) => f.status)).toEqual(['VALUE_FOUND', 'MISSING_CANONICAL_VALUE', 'VALUE_FOUND']);
     expect(h.readers.calls).toContainEqual({ kind: 'document', id: 20, key: 'acquisitionPrice' });
   });
@@ -94,7 +97,8 @@ describe('Ticket 12 — plusieurs champs demandés', () => {
     const field = h.readers.field!;
     const readers = { ...h.readers, field: async (a: number, id: number, k: string) => { await new Promise((r) => setTimeout(r, lent[k] ?? 0)); return field(a, id, k); } };
     const lu = await answerFromTarget(1, 'x', pageDe(20), readers, { requestedFacts: ['mileage', 'acquisitionPrice', 'acquisitionDate'], filters: {} });
-    expect(nb(lu!.text)).toBe('Pour ce bien : kilométrage : 82 000 km ; prix d’achat : 18 500 € ; date d’achat : 15 juin 2021.');
+    // Règle remplacée (carte #790, relance du 21/11) : plusieurs valeurs = une liste (une valeur par ligne), plus une phrase unique.
+    expect(nb(lu!.text)).toBe('Pour ce bien :\n• kilométrage : 82 000 km\n• prix d’achat : 18 500 €\n• date d’achat : 15 juin 2021');
     expect(lu!.claims.map((c) => [c.claimKey, c.sourceIds])).toEqual([
       ['field:mileage', ['asset_field:20:mileage']], ['field:acquisitionPrice', ['asset_field:20:acquisitionPrice']], ['field:acquisitionDate', ['asset_field:20:acquisitionDate']],
     ]);
@@ -119,7 +123,8 @@ describe('Ticket 12 — plusieurs champs demandés', () => {
     expect(lu!.facts!.map((f) => [f.requested, f.status])).toEqual([
       ['mileage', 'VALUE_FOUND'], ['champInexistant', 'FIELD_UNAVAILABLE'], ['acquisitionDate', 'VALUE_FOUND'],
     ]);
-    expect(nb(lu!.text)).toBe('Pour ce bien : kilométrage : 82 000 km ; date d’achat : 15 juin 2021.');
+    // Règle remplacée (carte #790, relance du 21/11) : plusieurs valeurs = une liste (une valeur par ligne), plus une phrase unique.
+    expect(nb(lu!.text)).toBe('Pour ce bien :\n• kilométrage : 82 000 km\n• date d’achat : 15 juin 2021');
   });
 
   it('T2MULTI-AC10 — cible ambiguë : UNE clarification pour toute la demande, puis lecture de tous les champs', async () => {
@@ -131,7 +136,8 @@ describe('Ticket 12 — plusieurs champs demandés', () => {
     expect(r.clarification?.resolvedContext?.requestedFacts).toEqual(['acquisitionDate', 'acquisitionPrice']);
     expect(h.readers.calls).toEqual([]);
     const suite = await runAssistant(inputDeReprise({ accountId: 1, userId: 7, planType: 'PREMIUM', locale: 'fr-FR' }, r.clarification!, r.clarification!.candidates[1]), h.ports);
-    expect(nb(suite.answer)).toBe('Pour Polo conjoint : date d’achat : 2 janvier 2019 ; prix d’achat : 9 000 €.');
+    // Règle remplacée (carte #790, relance du 21/11) : plusieurs valeurs = une liste (une valeur par ligne), plus une phrase unique.
+    expect(nb(suite.answer)).toBe('Pour Polo conjoint :\n• date d’achat : 2 janvier 2019\n• prix d’achat : 9 000 €');
     expect(h.saveClarification).toHaveBeenCalledTimes(1);
   });
 
@@ -169,7 +175,8 @@ describe('Ticket 12 — plusieurs champs demandés', () => {
     });
     const r = await h.ask('Donne-moi la date d’achat, le prix et le kilométrage de la Polo.');
     expect(r.answer).not.toMatch(/rien trouvé/);
-    expect(nb(r.answer)).toBe('Pour Polo : kilométrage : 82 000 km. Non renseignés : date d’achat, prix d’achat.');
+    // Règle remplacée (carte #790, relance du 21/11) : la valeur trouvée et les informations non renseignées sont deux paragraphes distincts.
+    expect(nb(r.answer)).toBe('Pour Polo : kilométrage : 82 000 km.\n\nNon renseignés : date d’achat, prix d’achat.');
     expect(r.cascade?.diagnostic).toBeUndefined();
   });
 });

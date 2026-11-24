@@ -58,7 +58,16 @@ export async function GET(req: NextRequest, { params }: Ctx) {
             objects_examined, objects_modified, decisions_applied, conflicts_created, arbitrations_needed,
             errors, ai_calls, details_json,
             -- Lot 99A (0858) : appels réels / réponses cache / décisions réutilisées (NULL : non mesuré).
-            (to_jsonb(r) ->> 'provider_calls')::int AS provider_calls,
+            -- Carte #828 (écart B) : provider_calls n'est rendu que pour une mesure certifiée (MEASURED_V1) ;
+            -- passage historique ou à demandes déclarées : NULL (inconnu, jamais zéro), valeur d'origine à part.
+            CASE WHEN to_jsonb(r) ->> 'ai_counters_semantics' = 'MEASURED_V1'
+                 THEN (to_jsonb(r) ->> 'provider_calls')::int END AS provider_calls,
+            CASE WHEN to_jsonb(r) ->> 'ai_counters_semantics' = 'MEASURED_V1' THEN 'MEASURED'
+                 WHEN to_jsonb(r) ->> 'ai_counters_semantics' = 'DECLARED' THEN 'DECLARED'
+                 ELSE 'UNKNOWN' END AS provider_calls_nature,
+            CASE WHEN to_jsonb(r) ->> 'ai_counters_semantics' IS NULL
+                 THEN (to_jsonb(r) ->> 'provider_calls')::int END AS provider_calls_legacy,
+            (to_jsonb(r) ->> 'ai_requests_declared')::int AS ai_requests_declared,
             (to_jsonb(r) ->> 'ai_cache_hits')::int AS ai_cache_hits,
             (to_jsonb(r) ->> 'decisions_reused')::int AS decisions_reused
        FROM account_reconciliation_runs r WHERE account_id = $1 ORDER BY id DESC LIMIT 20`,

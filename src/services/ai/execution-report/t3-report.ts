@@ -190,6 +190,10 @@ export async function buildT3Entries(rec: T3ExecutionRecorder, p: {
 
   // Données pertinentes NON examinées : faits canoniques des documents du bien sans preuve projetée.
   const pub = rec.aiPublished;
+  // Carte #828 (écart B) : seule la mesure certifiée est un nombre d'appels réels. Sans mesure (`DECLARED`, ou
+  // enregistreur sans relevé), `providerCalls` et `withoutAiCall` valent `null` — inconnu ≠ zéro — et la valeur
+  // déclarative reste lisible sous son nom (`declaredRequests`).
+  const mesure = pub?.semantics === 'MEASURED_V1';
   const examined = rec.fields.map((f) => f.fieldKey);
   const sources: Record<string, unknown> = {
     fieldEvidence: { consulted: true, evidenceCited: evidenceIds.length },
@@ -200,10 +204,11 @@ export async function buildT3Entries(rec: T3ExecutionRecorder, p: {
     // Carte #811 : `providerCalls` = requêtes RÉELLEMENT émises (mesure) ; demandes logiques, tentatives, demandes
     // déclarées, autre traitement et coût à part ; `semantics` dit si la valeur est mesurée ou seulement déclarée.
     aiUsage: {
-      providerCalls: pub?.providerCalls ?? rec.aiCalls, cacheResponses: pub && pub.semantics === 'MEASURED_V1' ? pub.cacheResponses : rec.aiCacheHits,
+      providerCalls: mesure ? pub!.providerCalls : null, providerCallsNature: mesure ? 'MEASURED' : 'DECLARED',
+      cacheResponses: pub && pub.semantics === 'MEASURED_V1' ? pub.cacheResponses : rec.aiCacheHits,
       decisionsReused: rec.decisionsReused,
       userArbitrationsKept: rec.userArbitrationsKept, aiAssistedDecisions: rec.aiAssisted,
-      withoutAiCall: (pub?.providerCalls ?? rec.aiCalls) === 0, reevaluations: rec.reevaluations, conflictsUnchanged: rec.conflictsUnchanged,
+      withoutAiCall: mesure ? pub!.providerCalls === 0 : null, reevaluations: rec.reevaluations, conflictsUnchanged: rec.conflictsUnchanged,
       semantics: pub?.semantics ?? 'DECLARED', logicalRequests: pub?.logicalRequests ?? rec.aiCalls,
       providerAttempts: pub?.providerAttempts ?? rec.aiCalls, declaredRequests: rec.aiCalls,
       providerCallsOtherTreatments: pub?.providerCallsOtherTreatments ?? 0,
@@ -281,7 +286,8 @@ export async function buildT3Entries(rec: T3ExecutionRecorder, p: {
     conflicts: rec.fields.filter((f) => f.decision.action === 'create_conflict').length,
     decisionsIntended: rec.fields.filter((f) => f.decision.action === 'apply' || f.decision.action === 'update').length,
     // Lot 99A : appels réels / réponses cache / décisions réutilisées.
-    aiProviderCalls: pub?.providerCalls ?? rec.aiCalls,
+    // Carte #828 (écart B) : compteur ABSENT quand rien n'est mesuré (jamais la valeur déclarative, jamais zéro).
+    ...(pub?.semantics === 'MEASURED_V1' ? { aiProviderCalls: pub.providerCalls } : {}),
     aiCacheResponses: pub && pub.semantics === 'MEASURED_V1' ? pub.cacheResponses : rec.aiCacheHits,
     aiDecisionsReused: rec.decisionsReused + rec.userArbitrationsKept,
     // Carte #811 : demandes logiques, tentatives ayant émis une requête, demandes déclarées, événements d'usage,

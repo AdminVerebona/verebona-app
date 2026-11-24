@@ -1,0 +1,1 @@
+{"extends":"./tsconfig.json","compilerOptions":{"incremental":false,"tsBuildInfoFile":null},"include":["next-env.d.ts","**/*.d.ts","src/test/**/*.ts","src/test/**/*.tsx"],"exclude":["node_modules",".next","dist","build","mobile"]}

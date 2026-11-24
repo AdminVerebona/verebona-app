@@ -154,7 +154,8 @@ scenario('L29-T2', 'Lot 29 — T2 lecture de données (SQL-first, équipements, 
     const replay = await useRecordings([understand({ intent: 'ACCOUNT_FACT_ASSET', entityHints: [{ type: 'asset', value: 'Polo' }], requestedFacts: ['acquisitionDate', 'acquisitionPrice', 'mileage'] })]);
     const r = await demander(c, 'Donne-moi la date d’achat, le prix et le kilométrage de la Polo.');
     expect(replay.calls.map((x) => x.task)).toEqual(['UNDERSTAND']);
-    expect(r.answer.replace(/[  ]/g, ' ')).toBe('Pour Polo : date d’achat : 15 juin 2021 ; prix d’achat : 18 500 € ; kilométrage : 82 000 km.');
+    // Règle remplacée (carte #790, relance du 21/11) : plusieurs valeurs = une liste (une valeur par ligne), plus une phrase unique.
+    expect(r.answer.replace(/[  ]/g, ' ')).toBe('Pour Polo :\n• date d’achat : 15 juin 2021\n• prix d’achat : 18 500 €\n• kilométrage : 82 000 km');
     expect(r.sources.map((s) => s.id).sort()).toEqual([`asset_field:${polo.id}:acquisitionDate`, `asset_field:${polo.id}:acquisitionPrice`, `asset_field:${polo.id}:mileage`].sort());
   });
 

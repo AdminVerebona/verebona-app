@@ -34,7 +34,7 @@ import { decisionFingerprint, reevaluationReasons, type FingerprintParts } from 
 import type { MemoryEntry, MemoryKey, MemoryOutcome, NewDecision } from './store';
 import type { ReuseEvent } from '../../reuse/reuse-counters';
 import {
-  admitDegradedCall, degradedRecently, noteDegraded, technicalCodeOf,
+  admitDegradedCallShared, degradedRecently, noteDegraded, technicalCodeOf,
   type DegradedComponent, type DegradedEvent, type DegradedReason, type DegradedScope,
 } from '../../degraded/degraded-mode';
 import { measureAiActivity } from '../../measure/ai-activity';
@@ -97,8 +97,11 @@ export interface DecisionMemoryDeps {
   unavailableReason?(): Promise<DegradedReason | null>;
   /** Carte #811 : trace d'un passage en mode dégradé (absent : `degraded/degraded-mode`). */
   noteDegraded?(e: DegradedEvent): void;
-  /** Carte #811 : un appel sans protection peut-il partir ? (absent : budget de `degraded/degraded-mode`). */
-  admitDegradedCall?(scope: DegradedScope): boolean;
+  /**
+   * Carte #811 : un appel sans protection peut-il partir ? Carte #828 : absent, c'est la borne COMMUNE à toutes les
+   * instances (`admitDegradedCallShared`), d'où la promesse admise.
+   */
+  admitDegradedCall?(scope: DegradedScope): boolean | Promise<boolean>;
   /** Carte #811 : la portée a-t-elle été dégradée dans l'heure ? (absent : `degraded/degraded-mode`). */
   degradedRecently?(scope: DegradedScope): boolean;
 }
@@ -174,7 +177,7 @@ export async function reviewAmbiguousField(p: AmbiguousFieldInput, deps: Decisio
   // aucun appel, conflit prudent laissé à l'utilisateur, rien de mémorisé, reprise à un passage suivant.
   const scope: DegradedScope = { treatment: 'T3', operationCode: T3_VALUE_CONFLICT_OPERATION, accountId: p.accountId };
   const tracer = deps.noteDegraded ?? noteDegraded;
-  const admettre = deps.admitDegradedCall ?? admitDegradedCall;
+  const admettre = deps.admitDegradedCall ?? admitDegradedCallShared;
   const recemment = deps.degradedRecently ?? degradedRecently;
   const sansIa = (): AiReviewOutcome => ({
     decision: { ...p.decision, action: 'create_conflict', reasonCode: 'AMBIGUOUS_EVIDENCE', deterministic: true, aiSource: 'FAILED' },
@@ -183,7 +186,7 @@ export async function reviewAmbiguousField(p: AmbiguousFieldInput, deps: Decisio
   const appelDegrade = async (
     component: DegradedComponent, reason: DegradedReason, technicalCode: string | null, idempotencyKey?: string,
   ): Promise<AiReviewOutcome> => {
-    if (!admettre(scope)) {
+    if (!(await admettre(scope))) {
       tracer({ ...scope, component, reason, impact: 'CALL_REFUSED', technicalCode });
       return sansIa();
     }
@@ -257,7 +260,7 @@ export async function reviewAmbiguousField(p: AmbiguousFieldInput, deps: Decisio
   const motifs = force ? ['FORCED'] : reevaluationReasons(active?.parts ?? null, fp.parts);
   // Carte #811 : la dernière décision de cette portée n'a pas pu être mémorisée (écriture en échec dans l'heure)
   // et aucune entrée n'existe pour ce champ — cet appel est peut-être un RAPPEL : il consomme le budget dégradé.
-  if (!force && !active && recemment(scope) && echecsEcriture.has(cleEchec(scope)) && !admettre(scope)) {
+  if (!force && !active && recemment(scope) && echecsEcriture.has(cleEchec(scope)) && !(await admettre(scope))) {
     tracer({ ...scope, component: 'DECISION_MEMORY', reason: 'WRITE_FAILED', impact: 'CALL_REFUSED' });
     return { ...sansIa(), reevaluation: motifs };
   }

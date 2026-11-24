@@ -233,6 +233,8 @@ export const DIAG_TABLE_COVERAGE: Readonly<Record<string, DiagTableCoverage>> = 
   ai_reuse_counters: C('extractions-ia'),
   // Carte #811 (1861) : passages en mode dégradé des protections anti-redondance IA, par jour (codes seulement).
   ai_degraded_events: C('extractions-ia'),
+  // Carte #828 (1940) : budget commun des appels émis sans protection anti-redondance, par heure et par portée (compteurs seulement).
+  ai_degraded_call_budget: C('extractions-ia'),
   // Lot 91D : décisions de T1 sur les valeurs significatives des unités sources (historique SUPERSEDED compris).
   document_value_decisions: C('extractions-ia'),
   // Lot 108K (1090) : progression du réexamen ciblé des décisions T1 par unité (examinée, en échec, trop grande ; sortie T1).

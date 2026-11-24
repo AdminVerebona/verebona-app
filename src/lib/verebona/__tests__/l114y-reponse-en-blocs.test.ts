@@ -202,13 +202,16 @@ describe('L114Y-B06 — rendu', () => {
   it('paragraphes, liste numérotée sémantique, réserve', () => {
     const html = rendre(AIDE);
     expect(html).toContain('<p class="m-0"><span>Pour ajouter un document :</span></p>');
-    expect(html).toMatch(/<ol class="[^"]*list-decimal[^"]*"><li class="pl-0\.5"><span>Ouvrez le bien\.<\/span><\/li>/);
+    // Règle remplacée (carte #790, relance du 21/11) : la liste porte en plus le NOM de son annonce pour un lecteur d'écran
+    // (`aria-label`), et un repère de bloc ; sa classe, ses éléments et son texte sont inchangés.
+    expect(html).toMatch(/<ol class="[^"]*list-decimal[^"]*" data-answer-block="list" aria-label="Pour ajouter un document"><li class="pl-0\.5"><span>Ouvrez le bien\.<\/span><\/li>/);
     expect(html.match(/<li /g)).toHaveLength(3);
     expect(html).toContain('À noter : les formats PDF et image sont acceptés.');
   });
 
   it('liste à puces et montants en gras', () => {
-    expect(rendre(RESULTATS)).toMatch(/<ul class="[^"]*list-disc[^"]*">/);
+    // Règle remplacée (carte #790, relance du 21/11) : la balise de la liste porte aussi son repère de bloc (et son nom s'il y a une annonce).
+    expect(rendre(RESULTATS)).toMatch(/<ul class="[^"]*list-disc[^"]*" data-answer-block="list"[^>]*>/);
     const html = rendre(PREMIUM);
     expect(html.match(/<strong /g)).toHaveLength(2);
     expect(html).toContain('>2 023 €</strong>');

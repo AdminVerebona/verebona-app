@@ -65,7 +65,9 @@ process.env.NEXT_PUBLIC_APP_ENV = process.env.NEXT_PUBLIC_APP_ENV ?? 'local';
 // Décision D-01 : nouveau moteur seul. Plus aucun drapeau de moteur depuis le
 // lot 16b-3 (AI_UNIFIED_SOURCE_ANALYSIS, AI_RECONCILIATION_ENGINE retirés).
 // Idempotence en base désactivée : chaque scénario rejoue ses propres sorties.
-process.env.AI_IDEMPOTENCY_DISABLED = 'true';
+// Carte #828 : valeur `test` (échappatoire des jeux de test, honorée seulement quand NODE_ENV=test) — la valeur
+// `true` est désormais le contournement d'urgence de production : tracé, compté et borné.
+process.env.AI_IDEMPOTENCY_DISABLED = 'test';
 // Lot 86 : le budget de relances T1 du contrôle de cohérence est commun à la plateforme
 // (200 / 24 h, décision PO L83-Q3). Dans une exécution complète, les relances de tous les
 // fichiers précédents s'y cumulaient : un scénario pouvait se voir refuser sa relance selon l'ordre.

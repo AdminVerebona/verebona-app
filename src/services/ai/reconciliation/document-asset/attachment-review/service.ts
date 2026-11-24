@@ -36,7 +36,7 @@
  * ══════════════════════════════════════════════════════════════════════════
  */
 import { pgClient } from '@/db';
-import { noteDegraded } from '../../../degraded/degraded-mode';
+import { announceUnprotectedCall } from '../../../degraded/degraded-mode';
 import { AiGateway } from '../../../gateway/ai-gateway';
 import { isExecutionCancelled, type ExecutionGuard } from '../../../queue/execution-control';
 import { isPermanentFailure, PermanentJobError, type JobBusinessResult } from '../../../queue/queue-policy';
@@ -353,9 +353,11 @@ export async function reviewDocumentAttachment(input: ReviewInput, deps: Attachm
   let status: ReviewStatus = 'REVIEWED';
   // Carte #811 (P1-C) : signature de configuration NON RÉSOLUE — une décision mémorisée sous cette signature n'est
   // jamais réutilisée (on ne peut pas prouver que la configuration est la même) ; le passage est tracé.
+  // Carte #828 (écart A) : l'appel qui suit est ANNONCÉ « sans protection » — il sera admis par la borne commune au
+  // moment de l'envoi (cache des réponses), ou refusé avant tout contact (échec IA : repli existant de la revue).
   const signatureResolue = signature !== 'unresolved';
   if (!signatureResolue) {
-    noteDegraded({ treatment: 'T3', operationCode: ATTACHMENT_REVIEW_OPERATION, accountId: input.accountId, component: 'CONFIG_SIGNATURE', reason: 'SIGNATURE_UNRESOLVED', impact: 'CALL_WITHOUT_PROTECTION' });
+    announceUnprotectedCall({ treatment: 'T3', operationCode: ATTACHMENT_REVIEW_OPERATION, accountId: input.accountId, component: 'CONFIG_SIGNATURE', reason: 'SIGNATURE_UNRESOLVED' });
   }
   if (!forced && signatureResolue && prev?.key === key && reusableDecision(prev.decision)) {
     decision = prev.decision!;

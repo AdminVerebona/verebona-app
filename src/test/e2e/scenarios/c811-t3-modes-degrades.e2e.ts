@@ -301,7 +301,10 @@ scenario('C811-E', 'T3 — modes dégradés : résultat sûr, dégradation visib
     expect(appels).toBe(2);
     // La réponse tardive de l'instance arrêtée n'écrase pas celle du repreneur.
     rendreA({ v: 'tardive', fromCache: false });
-    expect(await pa).toEqual({ v: 'tardive', fromCache: false });
+    // Règle remplacée (carte #828, écart C) : la réponse tardive n'est PAS en cache (celle du repreneur y est déjà) —
+    // c'est désormais dit à l'appelant (`cacheWrite`), au lieu d'un succès d'écriture silencieux. Le résultat métier
+    // de l'appel est préservé.
+    expect(await pa).toEqual({ v: 'tardive', fromCache: false, cacheWrite: 'ALREADY_READY' });
     const [ligne] = await sql<Array<{ state: string; result_json: { v: string } }>>`SELECT state, result_json FROM ai_operation_idempotency WHERE key_hash = ${key}`;
     expect(ligne).toMatchObject({ state: 'READY', result_json: { v: 'reprise' } });
     // Redémarrage : la demande suivante est servie du cache, sans appel.

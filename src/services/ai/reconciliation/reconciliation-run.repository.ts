@@ -68,7 +68,9 @@ export async function closeRun(runId: number, summary: ReconciliationRun): Promi
       WHERE id = $1`,
     [
       ...base,
-      ...(niveau >= 1 ? [summary.providerCalls ?? null, summary.aiCacheHits ?? null, summary.decisionsReused ?? null] : []),
+      // Carte #828 (écart B) : sémantique `DECLARED` — la valeur déclarative n'est jamais écrite dans `provider_calls`
+      // (elle reste dans `ai_requests_declared`) : NULL = « non mesuré », jamais un nombre d'appels réels.
+      ...(niveau >= 1 ? [summary.aiCountersSemantics === 'DECLARED' ? null : summary.providerCalls ?? null, summary.aiCacheHits ?? null, summary.decisionsReused ?? null] : []),
       ...(niveau >= 2 ? [summary.aiCountersSemantics ?? null, summary.aiDeclaredRequests ?? null, summary.aiActivity ? JSON.stringify(summary.aiActivity) : null] : []),
     ] as never[],
   );

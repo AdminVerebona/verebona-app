@@ -95,6 +95,17 @@ export interface AiActivityCounters {
   costEstimatedMicros: number;
   /** (vi) Événements dont le coût est inconnu (requête émise, consommation ou tarif absent). */
   costUnknownEvents: number;
+  /**
+   * Carte #828 (écart B) — événements d'usage constatés par la passerelle mais NON enregistrés dans
+   * `ai_usage_event` (écriture refusée ou en échec). `usageEvents` compte les événements CONSTATÉS ; les lignes
+   * durables attendues sont `usageEvents − usageEventsNotPersisted`.
+   */
+  usageEventsNotPersisted: number;
+  /**
+   * Carte #828 (écart B) — requêtes réellement émises portées par ces événements non enregistrés : elles restent
+   * dans `networkRequests` (vérité physique) et manquent à la somme durable des événements.
+   */
+  networkRequestsNotPersisted: number;
 }
 
 export interface AiModelRankActivity {
@@ -116,6 +127,8 @@ export interface AiActivitySnapshot {
   /** Traces de la passerelle observées (rapprochement avec `ai_usage_event`), bornées. */
   traceIds: string[];
   traceIdsTruncated: boolean;
+  /** Carte #828 : traces dont au moins un événement d'usage n'a PAS été enregistré (bornées) — rapprochement par `ai_call_captures`. */
+  unpersistedTraceIds?: string[];
 }
 
 /** Nature du coût d'un événement d'usage. */
@@ -146,6 +159,7 @@ const zero = (): AiActivityCounters => ({
   logicalRequests: 0, requestsWithoutContact: 0, cacheResponses: 0, sharedResponses: 0, decisionsReused: 0,
   userArbitrationsKept: 0, usageEvents: 0, usageEventsWithoutSend: 0, providerAttempts: 0, repairAttempts: 0,
   networkRequests: 0, inputTokens: 0, outputTokens: 0, costObservedMicros: 0, costEstimatedMicros: 0, costUnknownEvents: 0,
+  usageEventsNotPersisted: 0, networkRequestsNotPersisted: 0,
 });
 
 /** Compteurs à zéro (exporté : valeurs par défaut des consommateurs). */
@@ -161,6 +175,7 @@ class Ledger {
   readonly byModelRank = new Map<string, AiModelRankActivity>();
   readonly traceIds = new Set<string>();
   traceIdsTruncated = false;
+  readonly unpersisted = new Set<string>();
 
   add(d: Delta, dims: { treatment: string | null; operationCode: string | null; phase: string | null }): void {
     const cibles = [
@@ -196,6 +211,7 @@ class Ledger {
       byTreatment: copie(this.byTreatment), byOperation: copie(this.byOperation), byPhase: copie(this.byPhase),
       byModelRank: [...this.byModelRank.values()].map((x) => ({ ...x })),
       traceIds: [...this.traceIds], traceIdsTruncated: this.traceIdsTruncated,
+      ...(this.unpersisted.size ? { unpersistedTraceIds: [...this.unpersisted] } : {}),
     };
   }
 }
@@ -318,6 +334,22 @@ export function noteAiUsageEvent(f: AiUsageEventFact): void {
   }
 }
 
+/**
+ * Carte #828 (écart B) — l'événement d'usage déjà porté dans la mesure (`noteAiUsageEvent`) n'a PAS pu être
+ * enregistré dans `ai_usage_event`. Les requêtes émises ne sont ni effacées ni ramenées à zéro : elles restent
+ * dans `networkRequests` ; la perte de persistance est comptée À PART, pour que le total durable attendu
+ * (`networkRequests − networkRequestsNotPersisted`) se concilie avec les lignes réellement écrites.
+ */
+export function noteAiUsageEventNotPersisted(f: Pick<AiUsageEventFact, 'traceId' | 'operationCode' | 'treatment' | 'networkRequests'>): void {
+  const s = storage.getStore();
+  if (!s || s.ledgers.length === 0) return;
+  const d: Delta = { usageEventsNotPersisted: 1, networkRequestsNotPersisted: Math.max(0, Math.floor(f.networkRequests)) };
+  for (const l of s.ledgers) {
+    l.add(d, { treatment: f.treatment, operationCode: f.operationCode, phase: s.phase });
+    if (f.traceId && l.unpersisted.size < 100) l.unpersisted.add(f.traceId);
+  }
+}
+
 /** Décision réutilisée sans demande (mémoire durable, arbitrage utilisateur). */
 export function noteAiDecisionReuse(p: { kind: 'DECISION_REUSED' | 'USER_ARBITRATION_KEPT'; operationCode: string | null; treatment: string | null; count?: number }): void {
   const s = storage.getStore();
@@ -383,6 +415,56 @@ export interface MeasuredAiCounters {
   cacheResponses: number;
   /** Demandes déclarées par les phases (ancienne sémantique, conservée). */
   declaredRequests: number;
+  /**
+   * Carte #828 (écart B) — requêtes réellement émises CERTIFIÉES par la mesure ; `null` quand la sémantique est
+   * `DECLARED` : la valeur déclarative de `providerCalls` n'est alors JAMAIS écrite dans `provider_calls` ni
+   * exposée comme un nombre d'appels réels.
+   */
+  providerCallsCertified: number | null;
+}
+
+/** Carte #828 (écart B) — nature d'un compteur d'appels lu sur un passage. */
+export type AiCallsNature =
+  /** Mesure certifiée (`MEASURED_V1`) : requêtes réellement émises. */
+  | 'MEASURED'
+  /** Demandes déclarées par les phases, passerelle non observée (`DECLARED`) : jamais un nombre d'appels. */
+  | 'DECLARED'
+  /** Passage antérieur à la mesure (aucune sémantique écrite) : valeur d'origine non prouvable, ni zéro ni appels. */
+  | 'UNKNOWN';
+
+export interface CertifiedProviderCalls {
+  nature: AiCallsNature;
+  /** Requêtes réellement émises ; `null` hors mesure certifiée (inconnu ≠ zéro). */
+  providerCalls: number | null;
+  /** Demandes déclarées, quand elles sont connues à part. */
+  declaredRequests: number | null;
+  /** Valeur d'origine d'un passage historique, conservée, jamais recalculée ni présentée comme réelle. */
+  legacyValue: number | null;
+}
+
+const nombre = (v: unknown): number | null => {
+  if (v === null || v === undefined || v === '') return null;
+  const n = Number(v);
+  return Number.isFinite(n) ? n : null;
+};
+
+/**
+ * Carte #828 (écart B) — lecture UNIQUE des compteurs d'appels d'un passage (pure) : seule une mesure certifiée
+ * rend un nombre d'appels réels. `DECLARED` et l'historique sans sémantique ne sont jamais reconstruits : leur
+ * valeur est rendue à part (`declaredRequests`, `legacyValue`), `providerCalls` reste `null`.
+ */
+export function certifiedProviderCalls(semantics: unknown, providerCalls: unknown, declaredRequests?: unknown): CertifiedProviderCalls {
+  const n = nombre(providerCalls);
+  const d = nombre(declaredRequests);
+  if (semantics === AI_COUNTERS_MEASURED) return { nature: n === null ? 'UNKNOWN' : 'MEASURED', providerCalls: n, declaredRequests: d, legacyValue: null };
+  if (semantics === AI_COUNTERS_DECLARED) return { nature: 'DECLARED', providerCalls: null, declaredRequests: d ?? n, legacyValue: null };
+  return { nature: 'UNKNOWN', providerCalls: null, declaredRequests: d, legacyValue: n };
+}
+
+/** Carte #828 — « sans appel réel » : vrai / faux pour une mesure certifiée, `null` sinon (inconnu ≠ zéro). */
+export function certifiedWithoutAiCall(semantics: unknown, providerCalls: unknown): boolean | null {
+  const c = certifiedProviderCalls(semantics, providerCalls);
+  return c.nature === 'MEASURED' && c.providerCalls !== null ? c.providerCalls === 0 : null;
 }
 
 /**
@@ -402,11 +484,14 @@ export function publishedAiCounters(
       providerAttempts: activity.total.providerAttempts + activity.total.repairAttempts,
       logicalRequests: activity.total.logicalRequests,
       cacheResponses: activity.total.cacheResponses + activity.total.sharedResponses, declaredRequests: declares,
+      providerCallsCertified: activity.total.networkRequests,
     };
   }
   return {
     semantics: AI_COUNTERS_DECLARED, providerCalls: declares, providerCallsOtherTreatments: 0, providerAttempts: declares,
     logicalRequests: declares, cacheResponses: 0, declaredRequests: declares,
+    // Carte #828 : aucune mesure — rien de certifié (jamais la valeur déclarative).
+    providerCallsCertified: null,
   };
 }
 
@@ -416,9 +501,12 @@ export function compactAiActivity(a: AiActivitySnapshot): Record<string, unknown
     logicalRequests: c.logicalRequests, networkRequests: c.networkRequests, providerAttempts: c.providerAttempts,
     repairAttempts: c.repairAttempts, cacheResponses: c.cacheResponses + c.sharedResponses, decisionsReused: c.decisionsReused + c.userArbitrationsKept,
     usageEvents: c.usageEvents, costObservedMicros: c.costObservedMicros, costEstimatedMicros: c.costEstimatedMicros, costUnknownEvents: c.costUnknownEvents,
+    // Carte #828 : perte de persistance dite à part (absente quand il n'y en a pas).
+    ...(c.usageEventsNotPersisted ? { usageEventsNotPersisted: c.usageEventsNotPersisted, networkRequestsNotPersisted: c.networkRequestsNotPersisted } : {}),
   }]));
   return {
     semantics: a.semantics, total: a.total, byTreatment: plat(a.byTreatment), byOperation: plat(a.byOperation), byPhase: plat(a.byPhase),
     byModelRank: a.byModelRank,
+    ...(a.unpersistedTraceIds?.length ? { unpersistedTraceIds: a.unpersistedTraceIds } : {}),
   };
 }

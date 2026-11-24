@@ -109,13 +109,22 @@ export interface T3ProtectionsData {
   degraded: {
     durableAvailable: boolean;
     last24h: Array<{ component: string; reason: string; impact: string; treatment: string; operationCode: string; accounts: number; count: number; firstAt: string | null; lastAt: string | null; technicalCode: string | null }>;
-    instance: { episodes: Array<{ component: string; reason: string; count: number; lastAt: string }>; callsAllowed: number; callsRefused: number; callsPerHour: number | null; cappedTreatments: string[] };
+    instance: {
+      episodes: Array<{ component: string; reason: string; count: number; lastAt: string }>; callsAllowed: number; callsRefused: number; callsPerHour: number | null; cappedTreatments: string[];
+      // Carte #828 : borne commune (toutes instances) et admissions bornées par la seule instance.
+      sharedAdmitted?: number; sharedRefused?: number; sharedUnavailable?: number; sharedUnavailableCode?: string | null; unbounded?: number;
+    };
+    sharedBudget?: { admitted: number; refused: number } | null;
   };
+  /** Carte #828 : contournements d'urgence actifs (activation, portée, risque, durée observée). */
+  bypasses?: Array<{ variable: string; value: string; scope: string; risk: string; firstObservedAt: string | null; lastObservedAt: string | null; callsObserved: number }>;
 }
 
 const COMPOSANT: Record<string, string> = {
   DECISION_MEMORY: 'Mémoire durable des décisions T3', RESPONSE_CACHE: 'Cache temporaire des réponses',
   CACHE_RESERVATION: 'Réservation multi-instances du cache', CONFIG_SIGNATURE: 'Signature de la configuration IA',
+  // Carte #828
+  DEGRADED_CAP: 'Borne des appels sans protection', USAGE_JOURNAL: 'Journal durable des événements d’usage',
 };
 const RAISON: Record<string, string> = {
   DISABLED_BY_CONFIG: 'désactivée par configuration', MIGRATION_MISSING: 'migration absente', READ_FAILED: 'lecture en échec',
@@ -124,7 +133,10 @@ const RAISON: Record<string, string> = {
 };
 const EFFET: Record<string, string> = {
   CALL_WITHOUT_PROTECTION: 'appel émis sans la protection', RESULT_NOT_STORED: 'résultat non conservé (rappel possible)',
-  CALL_REFUSED: 'appel refusé (borne atteinte), repli sans IA', NO_EXTRA_CALL: 'aucun appel supplémentaire',
+  CALL_REFUSED: 'appel refusé (borne atteinte), repli sans IA', NO_EXTRA_CALL: 'aucun appel supplémentaire émis par cette instance',
+  // Carte #828
+  DUPLICATE_POSSIBLE: 'appel simultané d’une autre instance possible (non prouvé absent)',
+  USAGE_EVENT_LOST: 'événement d’usage non enregistré (requêtes émises comptées par la mesure du passage)',
 };
 
 /**
@@ -194,9 +206,15 @@ export function ProtectionsBlock({ data }: { data: T3SupervisionData }) {
             </li>
           ))}
         </ul>
-        <p className="text-xs text-[color:var(--text-muted)] break-words">
-          Borne des appels sans protection : {p.degraded.instance.callsPerHour === null ? 'aucune (désactivée)' : `${p.degraded.instance.callsPerHour} par heure, par traitement / opération / compte et par instance`}
-          {' '}({p.degraded.instance.cappedTreatments.join(', ') || 'aucun traitement'}) · instance qui répond : {p.degraded.instance.callsAllowed} admis, {p.degraded.instance.callsRefused} refusé(s). Vérifié {dt(p.checkedAt)}.
+        {(p.bypasses ?? []).length > 0 && (
+          <ul className="space-y-1" data-testid="t3-contournements-urgence">
+            {(p.bypasses ?? []).map((b) => (
+              <li key={b.variable} className="text-xs text-[color:var(--text-danger)] break-words">{bypassText(b, dt)}</li>
+            ))}
+          </ul>
+        )}
+        <p className="text-xs text-[color:var(--text-muted)] break-words" data-testid="t3-borne-degradee">
+          {degradedCapText(p)} Vérifié {dt(p.checkedAt)}.
         </p>
       </div>
     </div>
@@ -275,6 +293,31 @@ export function formatDuration(ms: number | null): string {
   return `${m} min ${String(s % 60).padStart(2, '0')} s`;
 }
 
+/** Carte #828 — portée RÉELLE de la borne des appels sans protection (pur, testé) : jamais « commune » quand elle ne l'est pas. */
+export function degradedCapText(p: Pick<T3ProtectionsData, 'degraded'>): string {
+  const i = p.degraded.instance;
+  const soumis = i.cappedTreatments.join(', ') || 'aucun traitement';
+  if (i.callsPerHour === null) {
+    return `Borne des appels sans protection : LEVÉE par configuration (contournement d’urgence, ${soumis})${i.unbounded ? ` · ${i.unbounded} appel(s) admis sans borne par l’instance qui répond` : ''}.`;
+  }
+  const commune = p.degraded.sharedBudget !== undefined && p.degraded.sharedBudget !== null;
+  const portee = commune
+    ? 'toutes instances confondues'
+    : 'par instance seulement (borne commune absente : migration 1940)';
+  const total = commune ? ` · 24 h, toutes instances : ${p.degraded.sharedBudget!.admitted} admis, ${p.degraded.sharedBudget!.refused} refusé(s)` : '';
+  const locale = i.sharedUnavailable ? ` · ${i.sharedUnavailable} admission(s) bornée(s) par la seule instance (borne commune injoignable)` : '';
+  return `Borne des appels sans protection : ${i.callsPerHour} par heure, par traitement / opération / compte, ${portee} (${soumis})${total}`
+    + ` · instance qui répond : ${i.callsAllowed} admis, ${i.callsRefused} refusé(s)${locale}.`;
+}
+
+/** Carte #828 — un contournement d'urgence, dit en clair (pur, testé) : variable, portée, risque, durée observée. */
+export function bypassText(b: NonNullable<T3ProtectionsData['bypasses']>[number], dt: (iso: string | null) => string): string {
+  const duree = b.callsObserved > 0 && b.firstObservedAt && b.lastObservedAt
+    ? `${b.callsObserved} appel(s) émis sous ce contournement sur 30 jours, du ${dt(b.firstObservedAt)} au ${dt(b.lastObservedAt)}`
+    : 'aucun appel émis sous ce contournement n’a encore été observé';
+  return `Contournement d’urgence actif — ${b.variable}=${b.value}. Portée : ${b.scope}. Risque : ${b.risk}. Durée observée : ${duree}.`;
+}
+
 /**
  * Carte #811 — texte « appels » d'un travail (pur, testé). Mesuré : requêtes réellement émises, tentatives,
  * demandes logiques, autre traitement. Sans mesure : la valeur est dite « demande(s) déclarée(s) », jamais « appel ».
@@ -287,6 +330,13 @@ export function jobAiText(job: Pick<T3JobSummary, 'aiCalls' | 'aiCountersSemanti
       + `${job.aiProviderAttempts != null ? ` en ${job.aiProviderAttempts} tentative(s)` : ''}`
       + `${job.aiLogicalRequests != null ? ` pour ${job.aiLogicalRequests} demande(s) logique(s)` : ''}`
       + `${job.aiCallsOtherTreatments ? ` dont ${job.aiCallsOtherTreatments} pour un autre traitement que T3` : ''}`;
+  }
+  // Carte #828 (écart B) : demandes DÉCLARÉES par les phases, passerelle non observée — ni « appels », ni
+  // « ancienne sémantique » (le passage est récent) : les appels réels sont inconnus, jamais zéro.
+  if (job.aiCountersSemantics === 'DECLARED') {
+    return n === 0
+      ? ' · aucune demande IA déclarée par les phases (appels réels non mesurés)'
+      : ` · ${n} demande(s) IA déclarée(s) par les phases (appels réels non mesurés : ce n’est pas un nombre d’appels)`;
   }
   return n === 0
     ? ' · aucune demande IA déclarée (ancienne sémantique : appels réels non mesurés)'

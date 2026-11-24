@@ -98,7 +98,9 @@ scenario('L108C', 'TCO — dépenses d’usage : estimation complémentaire max(
     // T2 : coût documenté annoncé tel quel, puis TCO complet estimé avec la part estimée.
     const { ownershipCostAnswer } = await import('@/services/verebona-assistant/canonical/structured-answers');
     const r = ownershipCostAnswer({ id: auto.id, name: 'Voiture' } as never, t as never) as { answer: string; sources: Array<{ meta: Json }> };
-    expect(r.answer).toContain('coût cumulé documenté 10');
+    // Règle remplacée (carte #790, relance du 21/11) : le coût de possession n'est plus une phrase unique ; c'est un chiffre clé
+    // (« Chiffre clé : <montant> — coût cumulé documenté de <bien> »), suivi de la ventilation et des limites.
+    expect(r.answer).toMatch(/^Chiffre clé : 10[\s\u202f\u00a0]\d{3},\d{2}[\s\u202f\u00a0]€ — coût cumulé documenté de Voiture/);
     expect(r.answer).toMatch(/En incluant les estimations de dépenses d’usage \(160,00\s€ estimés/);
     expect(r.sources[0].meta).toMatchObject({ cumulativeCostCents: PRIX + 18_000, estimatedUsageComplementCents: 16_000, totalWithEstimatesCents: PRIX + 34_000 });
   });
