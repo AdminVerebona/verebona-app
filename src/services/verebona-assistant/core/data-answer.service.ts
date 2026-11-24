@@ -60,13 +60,14 @@ import {
   formatDateFr,
   formatDeadline,
   formatDistinctValues,
-  formatList,
+  formatListBlocks,
   formatNoResult,
   formatQuantity,
   formatRelativeDays,
   formatSum,
   joinFr,
 } from './deterministic-format';
+import { composeAnswerText } from '@/lib/verebona/answer-compose';
 import {
   decideDocumentHit,
   decideFacts,
@@ -613,7 +614,7 @@ async function tryStructured(
         // Plusieurs documents également plausibles : pas de statut au hasard,
         // la liste est donnée avec le statut de chacun.
         if (top.length > 1) {
-          const answer = formatList('Statut des documents correspondants', top.slice(0, 5).map((d) => {
+          const answer = formatListBlocks('Statut des documents correspondants', top.slice(0, 5).map((d) => {
             const lib = ANALYSIS_STATUS_LABELS[documentAnalysisStatus(d.analysisState)] ?? 'Analysé ou enregistré';
             return `« ${d.title} » : ${lib.toLowerCase()}`;
           }));
@@ -641,7 +642,9 @@ async function tryStructured(
         enCours.length ? `${enCours.length} ${pl(enCours.length, 'document est', 'documents sont')} en cours d’analyse : ${joinFr(enCours.slice(0, 5).map((d) => `« ${d.title} »`))}. Certaines informations peuvent ne pas être disponibles immédiatement.` : null,
         echecs.length ? `${echecs.length} ${pl(echecs.length, 'document n’a', 'documents n’ont')} pas pu être ${pl(echecs.length, 'analysé', 'analysés')} : ${joinFr(echecs.slice(0, 5).map((d) => `« ${d.title} »`))}.` : null,
       ].filter(Boolean);
-      const answer = parts.length ? parts.join(' ') : 'Aucun document n’est en cours d’analyse : toutes les analyses de vos documents sont terminées.';
+      // Carte #790 recentrée (§1, assemblages composites) — règle remplacée : `parts.join(' ')`. Les analyses en
+      // cours et les analyses en échec sont deux informations distinctes : un paragraphe chacune. Une seule : inchangé.
+      const answer = parts.length ? parts.join('\n\n') : 'Aucun document n’est en cours d’analyse : toutes les analyses de vos documents sont terminées.';
       return { strategy: 'structured.document_status', answer, sources, claims: [claim('document_status', answer, sources, 'direct')], kind: docs.length ? 'list' : 'no_result' };
     }
   }
@@ -660,7 +663,7 @@ async function tryStructured(
       const pour = scope.label ? `pour ${scope.label}` : undefined;
       const answer = rows.length === 0
         ? formatNoResult('aucun export ni dossier généré', pour) + ' Vous pouvez en préparer un depuis l’onglet « Exports » d’un bien.'
-        : formatList(`Exports et dossiers${scope.label ? ` de ${scope.label}` : ''}`, rows.map((r) => {
+        : formatListBlocks(`Exports et dossiers${scope.label ? ` de ${scope.label}` : ''}`, rows.map((r) => {
           const lib = exportCodeLabel(r.exportType);
           return `${lib}${r.assetName && !scope.label ? ` (${r.assetName})` : ''}${r.date ? `, ${formatDateFr(r.date)}` : ''} : ${EXPORT_STATUS_LABELS[r.status] ?? r.status}`;
         }), 10);
@@ -683,7 +686,7 @@ async function tryStructured(
       const docs = await port.listDocuments(accountId, { assetIds: [a.id], limit: 10 });
       const answer = docs.length === 0
         ? formatNoResult('aucun document', `pour ${nom}`)
-        : formatList(`Documents de ${nom}`, docs.map((d) => `« ${d.title} »${d.date ? ` (${formatDateFr(d.date)})` : ''}`), 10);
+        : formatListBlocks(`Documents de ${nom}`, docs.map((d) => `« ${d.title} »${d.date ? ` (${formatDateFr(d.date)})` : ''}`), 10);
       const sources = docs.length ? docs.map((d) => docSource(d.fileId, d.title, d.snippet ?? '')) : [assetSource(a)];
       return { strategy: 'structured.list_documents', answer, sources, claims: [claim('list', answer, sources, 'direct')], kind: docs.length ? 'list' : 'no_result' };
     }
@@ -720,7 +723,7 @@ async function tryStructured(
       if (scope.unresolved) return null;
       if (scope.ambiguous) {
         const parts = await Promise.all(scope.assets.map(async (a) => `${assetDisplayName(a, scope.assets)} : ${await port.countDocuments(accountId, { assetIds: [a.id] })}`));
-        const answer = formatList('Nombre de documents par bien', parts);
+        const answer = formatListBlocks('Nombre de documents par bien', parts);
         const sources = scope.assets.map(assetSource);
         return { strategy: 'structured.count_documents', answer, sources, claims: [claim('count', answer, sources, 'calculated')], kind: 'count' };
       }
@@ -754,7 +757,7 @@ async function tryStructured(
     const list = await port.listAssets(accountId, { rented: true });
     const answer = list.length === 0
       ? formatNoResult('aucun bien dont l’usage est « Mis en location »')
-      : formatList(`Vous avez ${list.length} bien${list.length > 1 ? 's' : ''} mis en location`, list.map((a) => a.name));
+      : formatListBlocks(`Vous avez ${list.length} bien${list.length > 1 ? 's' : ''} mis en location`, list.map((a) => a.name));
     const sources = list.slice(0, 8).map(assetSource);
     return { strategy: 'structured.list_rented', answer, sources, claims: [claim('list', answer, sources, 'direct')], kind: list.length ? 'list' : 'no_result' };
   }
@@ -777,9 +780,16 @@ async function tryStructured(
     const bien = first.assetNames.length ? ` (${joinFr(first.assetNames)})` : '';
     // Une date prévisionnelle n'est jamais présentée comme confirmée.
     const le = (r: AgendaRow) => (r.forecast ? 'prévue le' : 'le');
-    let answer = `Votre prochaine échéance : « ${first.title} »${bien}, ${le(first)} ${formatDateFr(first.date)} (${formatRelativeDays(daysBetween(today, first.date))}).`;
-    if (first.forecast) answer += ' Cette date est prévisionnelle : elle sera confirmée par un document.';
-    if (others.length) answer += ` Ensuite : ${joinFr(others.map((o) => `« ${o.title} » ${le(o)} ${formatDateFr(o.date)}`))}.`;
+    // Carte #790 recentrée (§1, assemblages composites) — règle remplacée : les trois informations étaient
+    // ajoutées à la suite sur une ligne. Le résultat d'abord ; la réserve sur la date prévisionnelle à part ; les
+    // échéances suivantes à part (une par ligne dès qu'il y en a deux). Une seule échéance confirmée : inchangé.
+    const suivantes = others.map((o) => `« ${o.title} » ${le(o)} ${formatDateFr(o.date)}`);
+    const answer = composeAnswerText([
+      { kind: 'paragraph', text: `Votre prochaine échéance : « ${first.title} »${bien}, ${le(first)} ${formatDateFr(first.date)} (${formatRelativeDays(daysBetween(today, first.date))}).` },
+      ...(first.forecast ? [{ kind: 'paragraph' as const, text: 'Cette date est prévisionnelle : elle sera confirmée par un document.' }] : []),
+      ...(suivantes.length > 1 ? [{ kind: 'list' as const, intro: 'Ensuite', items: suivantes }]
+        : suivantes.length === 1 ? [{ kind: 'paragraph' as const, text: `Ensuite : ${suivantes[0]}.` }] : []),
+    ]);
     const sources = rows.map(agendaSource);
     return { strategy: 'structured.next_deadline', answer, sources, claims: [claim('next', answer, sources.slice(0, 1), 'calculated')], kind: 'exact' };
   }
@@ -793,7 +803,7 @@ async function tryStructured(
       if (known.length === 0) return null;
       const answer = known.length === 1
         ? `Vous avez acheté ${known[0].name} le ${formatDateFr(known[0].purchaseDate)}.`
-        : formatList('Dates d’achat enregistrées', known.map((a) => `${a.name} : ${formatDateFr(a.purchaseDate)}`));
+        : formatListBlocks('Dates d’achat enregistrées', known.map((a) => `${a.name} : ${formatDateFr(a.purchaseDate)}`));
       const sources = known.map(assetSource);
       return { strategy: 'structured.purchase_date', answer, sources, claims: [claim('purchase', answer, sources, 'direct')], kind: 'exact' };
     }
@@ -831,7 +841,8 @@ async function tryStructured(
         const first = rows[0];
         const label = `votre ${terms.join(' ')}`;
         const answer = formatDeadline(label, first.date, today) + (first.title && plain(first.title) !== plain(terms.join(' ')) ? ` Événement : « ${first.title} ».` : '')
-          + (first.forecast ? ' Cette date est prévisionnelle, calculée à partir de la récurrence : elle n’est pas encore confirmée.' : '');
+          // Carte #790 recentrée — règle remplacée : la réserve suivait la date sur la même ligne ; elle a son paragraphe.
+          + (first.forecast ? '\n\nCette date est prévisionnelle, calculée à partir de la récurrence : elle n’est pas encore confirmée.' : '');
         const sources = [agendaSource(first)];
         return { strategy: 'structured.deadline_of', answer, sources, claims: [claim('deadline', answer, sources, 'direct')], kind: 'exact' };
       }
@@ -853,7 +864,7 @@ async function tryStructured(
       : toutes;
     const answer = list.length === 0
       ? formatNoResult('aucun bien enregistré')
-      : formatList(`Vous avez ${list.length} bien${list.length > 1 ? 's' : ''}`, list.map((a) => a.name));
+      : formatListBlocks(`Vous avez ${list.length} bien${list.length > 1 ? 's' : ''}`, list.map((a) => a.name));
     const sources = list.slice(0, 8).map(assetSource);
     return { strategy: 'structured.list_assets', answer, sources, claims: [claim('list', answer, sources, 'direct')], kind: list.length ? 'list' : 'no_result' };
   }
@@ -1181,7 +1192,8 @@ export async function answerFromData(p: {
         const autres = facts.filter((f) => f.canonical?.key === r.key && plain(displayValue(f)) !== plain(r.display ?? ''));
         const answer = fieldAnswer(r) + (autres.length && !r.openConflict
           // Lot 33 : signalé sans citer le document (la source reste dans `sources`).
-          ? ` Un document indique une autre valeur (${displayValue(autres[0])}) : la valeur de votre fiche fait foi.`
+          // Carte #790 recentrée — règle remplacée : la réserve suivait la valeur sur la même ligne ; elle a son paragraphe.
+          ? `\n\nUn document indique une autre valeur (${displayValue(autres[0])}) : la valeur de votre fiche fait foi.`
           : '');
         const decision: SufficiencyDecision = { status: 'SUFFICIENT_STRUCTURED', level: 2, score: 1, threshold: p.thresholds.text, detail: 'valeur canonique' };
         attempts.push({ level: 2, strategy: 'retrieval.canonical_field', status: decision.status, score: 1, threshold: decision.threshold });

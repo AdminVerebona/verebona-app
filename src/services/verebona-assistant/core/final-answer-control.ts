@@ -36,6 +36,7 @@
  * ══════════════════════════════════════════════════════════════════════════
  */
 import { getField } from '@/services/canonical/registry';
+import { joinAnswerLines } from '@/lib/verebona/answer-compose';
 import type { Claim } from '../types/sources';
 import { registryLabelRoots, sameRoot, termRoot, type QuestionFocus } from './question-focus';
 
@@ -208,7 +209,10 @@ export function controlFinalAnswer(p: {
     ? p.focus.registryKeys.filter((k) => !admissibles.some((c) => designe(c.text, designation(k)))).map((k) => getField(k)?.label ?? k)
     : [];
   const substantiels = rejected.filter((r) => r.reason !== 'PARASITIC_RESERVE');
-  const texte = p.rebuild ? kept.map((c) => c.text.trim()).join(' ') : null;
+  // Carte #790 (relance, puis carte recentrée du 22/11) : même assemblage que la génération — une affirmation
+  // par paragraphe, une ligne qui porte une forme (puce, chiffre clé, titre, tableau) garde sa ligne — quand la
+  // réponse est reconstruite sur les affirmations admissibles.
+  const texte = p.rebuild ? joinAnswerLines(kept.map((c) => c.text)) : null;
   if (!rejected.length && !missing.length) return { ...vide, verdict: 'PASS', kept };
   // Réserve parasite seule : retirée, la réponse reste complète (pas « partielle »).
   if (!substantiels.length && !missing.length) return { verdict: 'PASS', path: p.path, reasons, rejected, kept, answer: texte, missing };
@@ -217,8 +221,12 @@ export function controlFinalAnswer(p: {
   if (!admissibles.length || (!generation && substantiels.length)) {
     return { verdict: 'REJECTED', path: p.path, reasons: [...reasons, 'NO_ADMISSIBLE_CLAIM'], rejected, kept: [], answer: FINAL_CONTROL_INSUFFICIENT_MESSAGE, missing };
   }
-  const manque = missing.length ? ` Information non trouvée dans vos documents : ${missing.map((x) => x.toLowerCase()).join(', ')}.` : '';
-  return { verdict: 'PARTIAL', path: p.path, reasons, rejected, kept, answer: texte !== null ? `${texte}${manque}` : manque ? `${p.answer}${manque}` : null, missing };
+  const phraseManque = missing.length ? `Information non trouvée dans vos documents : ${missing.map((x) => x.toLowerCase()).join(', ')}.` : '';
+  // Carte #790 recentrée : la mention de ce qui manque suit une réponse d'un seul paragraphe (phrase simple,
+  // comme avant) ; elle forme son propre paragraphe après une réponse en plusieurs blocs — jamais collée au
+  // dernier élément d'une liste ni au dernier paragraphe d'une autre affirmation.
+  const avecManque = (t: string) => (!phraseManque ? t : `${t}${t.includes('\n') ? '\n\n' : ' '}${phraseManque}`);
+  return { verdict: 'PARTIAL', path: p.path, reasons, rejected, kept, answer: texte !== null ? avecManque(texte) : phraseManque ? avecManque(p.answer) : null, missing };
 }
 
 /** Le texte affirme-t-il POSITIVEMENT un règlement (pure, testée) ? */

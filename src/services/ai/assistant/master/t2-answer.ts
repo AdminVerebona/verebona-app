@@ -13,7 +13,8 @@
  *   · `t2AnswerLines` : les trois formats (`claims`, `comparison`,
  *     `timeline`) ramenés à des LIGNES sourcées, contrôlées ensuite comme les
  *     affirmations historiques ; la chronologie garde sa structure
- *     (`events[]`, T2-35) au lieu d'un `join` de phrases.
+ *     (`events[]`, T2-35) au lieu d'un `join` de phrases ; les affirmations
+ *     du format `claims` gardent leur frontière (carte #790 recentrée).
  */
 import type { RetrievedSource } from '@/services/verebona-assistant/types/sources';
 import { T2_MASTER_VARIABLES } from '@/services/ai/registry/operations';
@@ -83,8 +84,13 @@ interface T2AnswerLine {
 
 interface T2AnswerLines {
   lines: T2AnswerLine[];
-  /** `\n` pour une liste (chronologie, comparaison), espace sinon. */
-  separator: '\n' | ' ';
+  /**
+   * Frontière entre deux lignes. `\n` : une ligne par élément (chronologie, comparaison). `\n\n` : une
+   * affirmation par paragraphe (format `claims`) — carte #790 recentrée, §2.B, règle remplacée : l'espace
+   * recollait des affirmations distinctes en un seul bloc. L'assemblage (`joinAnswerLines`) garde dans un même
+   * paragraphe les seules lignes qui forment ensemble une même phrase.
+   */
+  separator: '\n' | '\n\n';
   status: 'answered' | 'insufficient_data';
 }
 
@@ -94,7 +100,7 @@ const frDate = (iso: string) => `${iso.slice(8, 10)}/${iso.slice(5, 7)}/${iso.sl
 export function t2AnswerLines(out: T2AnswerOutput): T2AnswerLines {
   if (out.format === 'claims') {
     return {
-      status: out.status, separator: ' ',
+      status: out.status, separator: '\n\n',
       lines: out.claims.map((c) => ({
         text: c.text, sourceIds: c.sourceIds, factual: c.factual, derivation: c.derivation, support: c.support,
       })),

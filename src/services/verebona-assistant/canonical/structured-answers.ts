@@ -23,8 +23,10 @@ import { listFields, type CanonicalFieldDef } from '@/services/canonical/registr
 import type { Claim, RetrievedSource } from '../types/sources';
 import type { AccountDataPort, AssetRow } from '../core/data-answer.service';
 import {
-  daysBetween, deFr, formatAmountCents, formatDateFr, formatList, formatNoResult, formatRelativeDays, joinFr,
+  daysBetween, deFr, formatAmountCents, formatDateFr, formatListBlocks, formatNoResult, formatRelativeDays, joinFr, listItems,
 } from '../core/deterministic-format';
+import { composeAnswerText, type AnswerPart } from '@/lib/verebona/answer-compose';
+import { METRIC_CAPTION_MAX } from '@/lib/verebona/answer-blocks';
 import { assetFieldSource, assetFieldSourceId, type CanonicalFieldReading } from './field-reader';
 import {
   EXPENSE_THEME_LABELS, expenseThemeOf, expenseSumSource, expenseItemsLabel, mixedExpenseNotes, type QualifiedExpenses,
@@ -243,7 +245,7 @@ export function claimAnswer(claims: ClaimOverview[], scope: ScopeLike, assets: A
   };
   const answer = claims.length === 1
     ? `${ligne(claims[0], true)}.`
-    : formatList(`Vous avez ${claims.length} sinistres${scope.label ? ` pour ${scope.label}` : ''}`, claims.map((c) => ligne(c, false)), 8);
+    : formatListBlocks(`Vous avez ${claims.length} sinistres${scope.label ? ` pour ${scope.label}` : ''}`, claims.map((c) => ligne(c, false)), 8);
   const scopeIds = new Set(scope.assets.map((a) => a.id));
   const sources: RetrievedSource[] = claims.slice(0, SOURCES_MAX).map((c): RetrievedSource | null => {
     const assetId = c.assetIds.find((id) => scopeIds.has(id)) ?? c.assetIds[0] ?? null;
@@ -275,7 +277,7 @@ export function operationCostAnswer(couts: OperationCostRead[], scope: ScopeLike
   };
   const answer = couts.length === 1
     ? `Coût ${de(ligne(couts[0]).lab)} : ${ligne(couts[0]).txt}.`
-    : formatList('Coûts correspondants', couts.map((c) => { const l = ligne(c); return `${l.lab.charAt(0).toUpperCase()}${l.lab.slice(1)} : ${l.txt}`; }), 5);
+    : formatListBlocks('Coûts correspondants', couts.map((c) => { const l = ligne(c); return `${l.lab.charAt(0).toUpperCase()}${l.lab.slice(1)} : ${l.txt}`; }), 5);
   const sources = uniques(couts.map((c) => c.source)).slice(0, SOURCES_MAX);
   const srcs = sources.length ? sources : scope.assets.map(assetSrc);
   return { strategy: 'structured.operation_cost', answer, sources: srcs, claims: [claim('operation_cost', answer, srcs, 'direct')], kind: couts.length === 1 ? 'exact' : 'list' };
@@ -296,7 +298,7 @@ export function contractsAnswer(contrats: ContractOverview[], scope: ScopeLike):
   ].join('');
   const answer = contrats.length === 1
     ? `${ligne(contrats[0])}.`
-    : formatList(`Contrats${scope.label ? ` de ${scope.label}` : ''}`, contrats.map(ligne), 8);
+    : formatListBlocks(`Contrats${scope.label ? ` de ${scope.label}` : ''}`, contrats.map(ligne), 8);
   // Lot 113AB : le document du contrat d'abord, puis les justificatifs des couvertures citées (consultables).
   const sources = uniques(contrats.flatMap((c) => [c.source, ...(c.coverageSources ?? [])])).slice(0, SOURCES_MAX);
   const srcs = sources.length ? sources : scope.assets.map(assetSrc);
@@ -312,7 +314,8 @@ export function historyAnswer(a: AssetRow, entries: AssetHistoryEntry[], theme: 
     e.status ? ` — ${e.status}` : '',
   ].join(''));
   const titre = theme ? `${EXPENSE_THEME_LABELS[theme].charAt(0).toUpperCase()}${EXPENSE_THEME_LABELS[theme].slice(1)} de ${a.name}` : `Ce qui a été fait sur ${a.name}`;
-  const answer = `${titre} :\n${lignes.map((l) => `• ${l}`).join('\n')}`;
+  // Carte #790 (relance) : même texte qu'avant (annonce puis une ligne par entrée), écrit par le composeur commun.
+  const answer = composeAnswerText([{ kind: 'list', intro: titre, items: lignes }]);
   const sources = uniques(entries.map((e) => e.source)).slice(0, 8);
   const srcs = sources.length ? sources : [assetSrc(a)];
   return { strategy: 'structured.operation_history', answer, sources: srcs, claims: [claim('history', answer, srcs, 'direct')], kind: 'list' };
@@ -325,8 +328,15 @@ export function historyAnswer(a: AssetRow, entries: AssetHistoryEntry[], theme: 
  */
 function depuisAchat(t: import('@/services/business-operations/tco/model').TcoResult): string {
   if (!t.period.start) return '';
-  return t.period.startKind === 'POSSESSION' ? `, depuis le début de la possession le ${formatDateFr(t.period.start)}` : `, depuis l’achat du bien le ${formatDateFr(t.period.start)}`;
+  return t.period.startKind === 'POSSESSION' ? `depuis le début de la possession le ${formatDateFr(t.period.start)}` : `depuis l’achat du bien le ${formatDateFr(t.period.start)}`;
 }
+
+/** Carte #790 (relance) — annonce des réserves d'un total de dépenses (texte à valider par le PO). */
+export const EXPENSE_NOTES_INTRO = 'À noter';
+/** Carte #790 (relance) — légende du chiffre principal du coût de possession (vocabulaire de la fiche). */
+export const OWNERSHIP_COST_CAPTION = 'coût cumulé documenté';
+/** Carte #790 (relance) — annonces des parties de la réponse « coût de possession » (textes à valider par le PO). */
+export const OWNERSHIP_COST_SECTIONS = { breakdown: 'Ventilation', indicators: 'Autres indicateurs', limits: 'Limites' } as const;
 
 /**
  * Lot 54D (§4.3) — réponse « coût de possession » : chiffres du service TCO
@@ -334,23 +344,45 @@ function depuisAchat(t: import('@/services/business-operations/tco/model').TcoRe
  * (vérifiable par `claim-support`) ; une couverture incomplète est dite.
  */
 export function ownershipCostAnswer(a: AssetRow, t: import('@/services/business-operations/tco/model').TcoResult): CanonicalLevel1 {
-  const postes = t.breakdown.map((b) => `${b.label.toLowerCase()} ${formatEur(b.costsCents)}`);
-  if (t.reductionsCents) postes.push(`avoirs − ${formatEur(t.reductionsCents)}`);
-  if (t.refundsCents) postes.push(`remboursements − ${formatEur(t.refundsCents)}`);
-  if (t.indemnitiesCents) postes.push(`indemnités − ${formatEur(t.indemnitiesCents)}`);
-  const phrases = [`Coût de possession de ${a.name} : coût cumulé documenté ${formatEur(t.summary.cumulativeCostCents)}${postes.length ? ` (${postes.join(', ')})` : ''}${depuisAchat(t)}.`];
+  // ══════════════════════════════════════════════════════════════════════
+  // CARTE #790, RELANCE DU 21/11/2026 (E03) — LA RÉPONSE DÉCLARE SA STRUCTURE
+  //
+  // Règle remplacée : toutes les phrases étaient assemblées sur une ligne
+  // (`phrases.join(' ')`) — le rendu, qui découpe le TEXTE de la réponse, ne
+  // recevait donc qu'un paragraphe dense. Les MÊMES faits (mêmes montants du
+  // moteur TCO, mêmes phrases de réserve) sont désormais rangés en parties :
+  //   1. le chiffre principal, seul : coût cumulé documenté ;
+  //   2. la ventilation : un poste par ligne (et les avoirs, remboursements,
+  //      indemnités déduits) ;
+  //   3. les autres indicateurs chiffrés (moyenne annuelle, crédit, valeur) ;
+  //   4. les limites : ce qui n'est pas calculé, pas compté, ou incomplet.
+  // Aucun calcul n'est fait ici, aucun montant n'est ajouté ni retiré.
+  // ══════════════════════════════════════════════════════════════════════
+  const postes = t.breakdown.map((b) => `${b.label} : ${formatEur(b.costsCents)}`);
+  if (t.reductionsCents) postes.push(`Avoirs : − ${formatEur(t.reductionsCents)}`);
+  if (t.refundsCents) postes.push(`Remboursements : − ${formatEur(t.refundsCents)}`);
+  if (t.indemnitiesCents) postes.push(`Indemnités : − ${formatEur(t.indemnitiesCents)}`);
+  /** Indicateurs chiffrés, à part du chiffre principal (jamais additionnés à lui). */
+  const indicateurs: string[] = [];
+  /** Limites : ce qui n'est pas calculé, pas compté, ou possiblement incomplet. */
+  const limites: string[] = [];
+  // Point de départ (lot 107C) : dans la légende du chiffre principal s'il y tient, sinon en premier indicateur.
+  const depuis = depuisAchat(t);
+  const legendeCourte = `${OWNERSHIP_COST_CAPTION} de ${a.name}`;
+  const legende = depuis && `${legendeCourte}, ${depuis}`.length <= METRIC_CAPTION_MAX ? `${legendeCourte}, ${depuis}` : legendeCourte;
+  if (depuis && legende === legendeCourte) indicateurs.push(`Coût compté ${depuis}.`);
   // Lot 107C : même date de départ que la fiche (`period.start`, date d'achat du bien) ; contradiction sans autorité dite.
-  if (t.period.startStatus === 'UNDETERMINED') phrases.push('La date d’achat du bien est incertaine (plusieurs dates possibles se contredisent) : le coût moyen annuel n’est pas calculé.');
+  if (t.period.startStatus === 'UNDETERMINED') limites.push('La date d’achat du bien est incertaine (plusieurs dates possibles se contredisent) : le coût moyen annuel n’est pas calculé.');
   // Lot 111F : mêmes définitions que la fiche (`t.indicators`, moteur TCO) — coût annuel moyen HORS prix d'achat,
   // coût du crédit selon l'échéancier, coût net seulement avec une estimation postérieure à l'achat.
   const ind = t.indicators;
   if (ind?.annualAverage.documentedCents != null) {
-    phrases.push(`Coût annuel moyen de possession (hors prix d’achat du bien) : ${formatEur(ind.annualAverage.documentedCents)} par an.`);
+    indicateurs.push(`Coût annuel moyen de possession (hors prix d’achat du bien) : ${formatEur(ind.annualAverage.documentedCents)} par an.`);
   } else if (ind?.annualAverage.unavailableReason && t.period.startStatus !== 'UNDETERMINED') {
-    phrases.push(`Coût annuel moyen de possession non calculé : ${ind.annualAverage.unavailableReason.charAt(0).toLowerCase()}${ind.annualAverage.unavailableReason.slice(1)}`);
+    limites.push(`Coût annuel moyen de possession non calculé : ${ind.annualAverage.unavailableReason.charAt(0).toLowerCase()}${ind.annualAverage.unavailableReason.slice(1)}`);
   }
   if (ind && ind.financing.loans.length && (ind.financing.costToDateCents || ind.financing.remainingCents)) {
-    phrases.push(`Coût du crédit à date (intérêts, assurance, frais ; capital non compté) : ${formatEur(ind.financing.costToDateCents)}${ind.financing.basisLabel ? ` — ${ind.financing.basisLabel}` : ''}.`
+    indicateurs.push(`Coût du crédit à date (intérêts, assurance, frais ; capital non compté) : ${formatEur(ind.financing.costToDateCents)}${ind.financing.basisLabel ? ` — ${ind.financing.basisLabel}` : ''}.`
       + (ind.financing.contractualTotalCents != null ? ` Coût total prévisionnel du crédit : ${formatEur(ind.financing.contractualTotalCents)}${ind.financing.estimated ? ' (échéancier partiel)' : ''}, non ajouté au coût total.` : ''));
   }
   // Lot 112D : capital restant dû — seulement s'il est établi (même résultat que la fiche), jamais un coût ni une estimation.
@@ -359,37 +391,42 @@ export function ownershipCostAnswer(a: AssetRow, t: import('@/services/business-
     const prets = ind.financing.loans.filter((p) => p.outstanding);
     const quand = (d: string | null) => (d ? ` au ${d.slice(8, 10)}/${d.slice(5, 7)}/${d.slice(0, 4)}` : '');
     if (crd.status === 'ESTABLISHED' && crd.cents != null) {
-      phrases.push(prets.length === 1
+      indicateurs.push(prets.length === 1
         ? `Capital restant dû${quand(prets[0].outstanding!.asOf)} : ${formatEur(crd.cents)} (${prets[0].outstanding!.label.replace(/\.$/, '')}) ; ce n’est pas un coût.`
         : `Capital restant dû des ${prets.length} prêts : ${formatEur(crd.cents)} ; ce n’est pas un coût.`);
     } else if (crd.status === 'PARTIAL') {
-      phrases.push(`Capital restant dû établi pour une partie des prêts seulement : ${prets.filter((p) => p.outstanding!.status === 'ESTABLISHED').map((p) => `${p.label} ${formatEur(p.outstanding!.cents ?? 0)}${quand(p.outstanding!.asOf)}`).join(' ; ')}.`);
+      indicateurs.push(`Capital restant dû établi pour une partie des prêts seulement : ${prets.filter((p) => p.outstanding!.status === 'ESTABLISHED').map((p) => `${p.label} ${formatEur(p.outstanding!.cents ?? 0)}${quand(p.outstanding!.asOf)}`).join(' ; ')}.`);
     } else {
-      phrases.push(prets.length === 1 ? prets[0].outstanding!.label : `Capital restant dû non établi pour les ${prets.length} prêts.`);
+      limites.push(prets.length === 1 ? prets[0].outstanding!.label : `Capital restant dû non établi pour les ${prets.length} prêts.`);
     }
   }
   if (t.disposed) {
-    phrases.push(t.summary.netFinalCents != null
-      ? `Après la vente (prix réalisé ${formatEur(t.disposal.realizedPriceCents ?? 0)}), coût net final : ${formatEur(t.summary.netFinalCents)}.`
-      : 'Le prix de cession réalisé n’est pas documenté : le coût net final n’est pas établi.');
+    if (t.summary.netFinalCents != null) indicateurs.push(`Après la vente (prix réalisé ${formatEur(t.disposal.realizedPriceCents ?? 0)}), coût net final : ${formatEur(t.summary.netFinalCents)}.`);
+    else limites.push('Le prix de cession réalisé n’est pas documenté : le coût net final n’est pas établi.');
   } else if (t.summary.currentValue && t.summary.netEstimatedCents != null) {
-    phrases.push(`Valeur estimée ${formatEur(t.summary.currentValue.cents)} (estimation du ${formatDateFr(t.summary.currentValue.date)}) : coût net estimé ${formatEur(t.summary.netEstimatedCents)}.`);
+    indicateurs.push(`Valeur estimée ${formatEur(t.summary.currentValue.cents)} (estimation du ${formatDateFr(t.summary.currentValue.date)}) : coût net estimé ${formatEur(t.summary.netEstimatedCents)}.`);
   } else if (ind?.net.unavailableReason) {
-    phrases.push('Coût net estimé non calculé : aucune estimation de valeur admissible postérieure à l’achat (le prix d’achat n’est jamais une valeur actuelle).');
+    limites.push('Coût net estimé non calculé : aucune estimation de valeur admissible postérieure à l’achat (le prix d’achat n’est jamais une valeur actuelle).');
   }
   // Lot 108A (§C) : l'absence de valeur actuelle n'est pas une anomalie du TCO historique — aucune phrase d'alerte
   // (le coût net estimé est simplement « non calculable », la fiche l'affiche comme tel).
-  if (t.reliability.unconverted.length) phrases.push(`Non comptés (devise sans contre-valeur en euros) : ${t.reliability.unconverted.map((u) => formatMinorAmount(u.amountMinor, u.currency)).join(', ')}.`);
-  if (t.reliability.unallocated.count) phrases.push('Des montants communs à plusieurs biens ne sont pas ventilés et ne sont pas comptés.');
-  if (t.status !== 'COMPLETE') phrases.push(t.status === 'PARTIAL' ? 'Résultat partiel.' : 'Ce total peut être incomplet.');
+  if (t.reliability.unconverted.length) limites.push(`Non comptés (devise sans contre-valeur en euros) : ${t.reliability.unconverted.map((u) => formatMinorAmount(u.amountMinor, u.currency)).join(', ')}.`);
+  if (t.reliability.unallocated.count) limites.push('Des montants communs à plusieurs biens ne sont pas ventilés et ne sont pas comptés.');
+  if (t.status !== 'COMPLETE') limites.push(t.status === 'PARTIAL' ? 'Résultat partiel.' : 'Ce total peut être incomplet.');
   // Lot 108C (TCO-646 §E) : le coût documenté (dépenses réelles) reste annoncé tel quel ; le TCO complet estimé
   // l'ajoute au complément des dépenses d'usage (forfaits, périodes écoulées), en annonçant la part estimée.
   const estime = t.summary.estimatedUsageComplementCents ?? 0;
   if (estime > 0) {
-    phrases.push(`En incluant les estimations de dépenses d’usage (${formatEur(estime)} estimés à partir de vos forfaits, pour les périodes écoulées sans justificatif suffisant), le coût total de possession estimé est de ${formatEur(t.summary.totalWithEstimatesCents)}.`);
+    indicateurs.push(`En incluant les estimations de dépenses d’usage (${formatEur(estime)} estimés à partir de vos forfaits, pour les périodes écoulées sans justificatif suffisant), le coût total de possession estimé est de ${formatEur(t.summary.totalWithEstimatesCents)}.`);
   }
-  if (t.usage.annualEstimateCents) phrases.push(`Forfaits d’usage en cours : ${formatEur(t.usage.annualEstimateCents)} par an (prévisionnel, jamais ajouté pour les mois à venir).`);
-  const answer = phrases.join(' ');
+  if (t.usage.annualEstimateCents) indicateurs.push(`Forfaits d’usage en cours : ${formatEur(t.usage.annualEstimateCents)} par an (prévisionnel, jamais ajouté pour les mois à venir).`);
+  const parts: AnswerPart[] = [
+    { kind: 'metric', value: formatEur(t.summary.cumulativeCostCents), caption: legende },
+    { kind: 'list', intro: OWNERSHIP_COST_SECTIONS.breakdown, items: postes },
+    { kind: 'list', intro: OWNERSHIP_COST_SECTIONS.indicators, items: indicateurs },
+    { kind: 'list', intro: OWNERSHIP_COST_SECTIONS.limits, items: limites },
+  ];
+  const answer = composeAnswerText(parts.filter((p) => p.kind !== 'list' || p.items.length > 0));
   const src: RetrievedSource = {
     id: `tco:${a.id}`, type: 'document_extraction', title: `Coût de possession — ${a.name}`, content: answer.slice(0, 1500), relevanceScore: 1,
     meta: {
@@ -414,9 +451,10 @@ export function ownershipCostAnswer(a: AssetRow, t: import('@/services/business-
  * dépenses documentées restent ouvertes à tous (pure, testée).
  */
 export function ownershipCostLockedAnswer(a: Pick<AssetRow, 'id' | 'name'> | null): CanonicalLevel1 {
-  const pour = a ? ` Pour ${a.name}, vous pouvez consulter vos dépenses documentées, par exemple : « Combien ai-je dépensé en entretien pour ${a.name} ? ».`
-    : ' Vos dépenses documentées restent consultables, par bien et par thème (entretien, réparations, travaux…).';
-  const answer = `${TCO_PREMIUM_MESSAGE}${pour}`;
+  const pour = a ? `Pour ${a.name}, vous pouvez consulter vos dépenses documentées, par exemple : « Combien ai-je dépensé en entretien pour ${a.name} ? ».`
+    : 'Vos dépenses documentées restent consultables, par bien et par thème (entretien, réparations, travaux…).';
+  // Carte #790 (relance) : le message de l'offre, puis ce qui reste consultable — deux paragraphes distincts.
+  const answer = composeAnswerText([{ kind: 'paragraph', text: TCO_PREMIUM_MESSAGE }, { kind: 'paragraph', text: pour }]);
   const src: RetrievedSource = {
     id: 'product_rule:tco_premium', type: 'product_rule', title: 'Coût de possession — offres Premium', content: TCO_PREMIUM_MESSAGE, relevanceScore: 1,
     meta: { ruleCode: 'tco_premium', locked: true, ...(a ? { assetId: a.id } : {}) },
@@ -440,17 +478,22 @@ async function acquisitionAnswer(port: AccountDataPort, accountId: number, a: As
   }
   if (!prix) return null;
   const sources = uniques([src ?? assetSrc(a)]);
-  let answer = `Prix d’achat de ${a.name} : ${prix}${acq?.date ? ` (achat du ${formatDateFr(acq.date)})` : ''}.`;
-  answer += acquisitionSideNotes(acq);
+  // Carte #790 (relance du 21/11/2026) : le prix d'abord, seul ; les écarts et frais annexes, puis le cumul des
+  // dépenses depuis l'achat, chacun dans son paragraphe (mêmes phrases qu'avant, plus jamais sur une seule ligne).
+  const parts: AnswerPart[] = [
+    { kind: 'paragraph', text: `Prix d’achat de ${a.name} : ${prix}${acq?.date ? ` (achat du ${formatDateFr(acq.date)})` : ''}.` },
+    ...acquisitionSideNoteLines(acq).map((text): AnswerPart => ({ kind: 'paragraph', text })),
+  ];
   if (!achatSeul && port.sumQualifiedExpenses) {
     const q = await port.sumQualifiedExpenses(accountId, { assetIds: [a.id], theme: null });
     const hors = q.byTheme.filter((t) => t.theme !== 'purchase' && t.sumCents);
     const somme = hors.reduce((n, t) => n + t.sumCents, 0);
     if (hors.length && somme) {
-      answer += ` Si vous parlez des dépenses depuis l’achat (hors prix d’achat) : ${formatEur(somme)} (${hors.map((t) => `${t.label} ${formatEur(t.sumCents)}`).join(', ')})${q.complete ? '' : ', total peut-être incomplet'}. Ces deux montants ne s’additionnent pas sans que vous le demandiez.`;
+      parts.push({ kind: 'paragraph', text: `Si vous parlez des dépenses depuis l’achat (hors prix d’achat) : ${formatEur(somme)} (${hors.map((t) => `${t.label} ${formatEur(t.sumCents)}`).join(', ')})${q.complete ? '' : ', total peut-être incomplet'}. Ces deux montants ne s’additionnent pas sans que vous le demandiez.` });
       sources.push(expenseSumSource(q, { assetIds: [a.id], scopeLabel: a.name }));
     }
   }
+  const answer = composeAnswerText(parts);
   return { strategy: 'structured.acquisition_price', answer, sources, claims: [claim('acquisition', answer, sources, 'direct')], kind: 'exact' };
 }
 
@@ -460,7 +503,13 @@ async function acquisitionAnswer(port: AccountDataPort, accountId: number, a: As
  * effacé), les frais connus sont cités à part, jamais additionnés.
  */
 export function acquisitionSideNotes(acq: Pick<import('./operations').AcquisitionRead, 'priceCents' | 'documentPrices' | 'fees'> | null | undefined): string {
-  if (!acq) return '';
+  const out = acquisitionSideNoteLines(acq);
+  return out.length ? ` ${out.join(' ')}` : '';
+}
+
+/** Carte #790 (relance) — les mêmes notes, une par élément (chacune devient un paragraphe de la réponse). */
+export function acquisitionSideNoteLines(acq: Pick<import('./operations').AcquisitionRead, 'priceCents' | 'documentPrices' | 'fees'> | null | undefined): string[] {
+  if (!acq) return [];
   const out: string[] = [];
   const titre = (t: string | null) => (t ? ` « ${t.slice(0, 60)} »` : '');
   for (const d of (acq.documentPrices ?? []).slice(0, 2)) {
@@ -470,7 +519,7 @@ export function acquisitionSideNotes(acq: Pick<import('./operations').Acquisitio
   if (fees.length) {
     out.push(`Frais annexes connus, non inclus dans ce prix : ${fees.slice(0, 3).map((f) => `${formatMinorAmount(f.amountMinor, f.currency)}${titre(f.title)}`).join(', ')}.`);
   }
-  return out.length ? ` ${out.join(' ')}` : '';
+  return out;
 }
 
 /** Réponse « payé / réglé » (pure, testée) — preuves de règlement, jamais le coût présenté comme réglé. */
@@ -482,7 +531,9 @@ export function paymentsAnswer(
   const pl = (n: number, a: string, b: string) => (n > 1 ? b : a);
   const cout = q && q.qualifiedSumCents ? q.qualifiedSumCents : 0;
   const costSrc = q && cout ? expenseSumSource(q, { assetIds: ctx.assetIds, scopeLabel: ctx.scopeLabel, year: ctx.year }) : null;
-  let answer: string;
+  // Carte #790 (relance) : ce qui est justifié, puis ce qui est documenté — deux paragraphes (mêmes phrases).
+  const regle: string[] = [];
+  const documente: string[] = [];
   let kind: 'calc' | 'no_result' = 'calc';
   const docs: RetrievedSource[] = pay.proofs.slice(0, SOURCES_MAX).map((p) => ({
     id: `doc_${p.fileId}`, type: 'document', title: p.title,
@@ -491,17 +542,18 @@ export function paymentsAnswer(
   }));
   if (pay.proofs.length) {
     const n = pay.proofs.length;
-    answer = `Règlements justifiés${ctx.pour} : ${formatEur(pay.sumCents)} (${n} preuve${pl(n, '', 's')} de paiement : ${joinFr(pay.proofs.slice(0, 4).map((p) => `« ${p.title} »`))}${n > 4 ? '…' : ''}).`;
-    if (pay.withoutAmount) answer += ` ${pay.withoutAmount} preuve${pl(pay.withoutAmount, '', 's')} sans montant lisible.`;
+    regle.push(`Règlements justifiés${ctx.pour} : ${formatEur(pay.sumCents)} (${n} preuve${pl(n, '', 's')} de paiement : ${joinFr(pay.proofs.slice(0, 4).map((p) => `« ${p.title} »`))}${n > 4 ? '…' : ''}).`);
+    if (pay.withoutAmount) regle.push(`${pay.withoutAmount} preuve${pl(pay.withoutAmount, '', 's')} sans montant lisible.`);
     if (cout) {
-      answer += ` Coût documenté${ctx.pour} : ${formatEur(cout)}${q!.complete ? '' : ' (total peut-être incomplet)'}.`;
-      if (cout > pay.sumCents) answer += ` Je n’ai pas de preuve de règlement pour ${formatEur(cout - pay.sumCents)}.`;
+      documente.push(`Coût documenté${ctx.pour} : ${formatEur(cout)}${q!.complete ? '' : ' (total peut-être incomplet)'}.`);
+      if (cout > pay.sumCents) documente.push(`Je n’ai pas de preuve de règlement pour ${formatEur(cout - pay.sumCents)}.`);
     }
   } else {
-    answer = `Je n’ai trouvé aucune preuve de paiement${ctx.pour} : je ne peux pas confirmer ce qui a été réglé.`;
-    if (cout) answer += ` Le coût documenté${ctx.pour} est de ${formatEur(cout)} : ce montant ne prouve pas qu’il a été réglé.`;
+    regle.push(`Je n’ai trouvé aucune preuve de paiement${ctx.pour} : je ne peux pas confirmer ce qui a été réglé.`);
+    if (cout) documente.push(`Le coût documenté${ctx.pour} est de ${formatEur(cout)} : ce montant ne prouve pas qu’il a été réglé.`);
     else kind = 'no_result';
   }
+  const answer = composeAnswerText([{ kind: 'paragraph', text: regle.join(' ') }, { kind: 'paragraph', text: documente.join(' ') }]);
   const sources = uniques([...docs, costSrc, ...(docs.length || costSrc ? [] : ctx.assets.map(assetSrc))]);
   return { strategy: 'structured.payments', answer, sources, claims: [claim('payments', answer, sources, 'calculated')], kind };
 }
@@ -658,7 +710,7 @@ async function tryCanonicalStructuredInner(p: {
     }))).slice(0, 8);
     const answer = lignes.length === 0
       ? formatNoResult('aucune information manquante', scope.label ? `sur la fiche de ${scope.label}` : 'sur vos fiches')
-      : formatList(scope.label ? `Informations à compléter pour ${scope.label}` : 'Informations à compléter', lignes, 10);
+      : formatListBlocks(scope.label ? `Informations à compléter pour ${scope.label}` : 'Informations à compléter', lignes, 10);
     const srcs = sources.length ? sources : scope.assets.map(assetSrc);
     return { strategy: 'structured.missing_information', answer, sources: srcs, claims: [claim('missing', answer, srcs, 'calculated')], kind: lignes.length ? 'list' : 'no_result' };
   }
@@ -830,7 +882,8 @@ async function tryCanonicalStructuredInner(p: {
         if (!autorise) {
           const reserve = ownershipCostLockedAnswer(a) as Extract<CanonicalLevel1, { strategy: CanonicalStrategy }>;
           const sources = uniques([...achat.sources, ...reserve.sources]);
-          const answer = `${achat.answer} ${TCO_PREMIUM_MESSAGE}`;
+          // Carte #790 (relance) : le prix d'achat, puis la réserve d'offre — deux blocs, jamais une seule ligne.
+          const answer = `${achat.answer}\n\n${TCO_PREMIUM_MESSAGE}`;
           return {
             strategy: 'structured.acquisition_price', answer, sources, kind: 'exact',
             claims: [claim('acquisition', achat.answer, achat.sources, 'direct'), claim('ownership_cost_locked', TCO_PREMIUM_MESSAGE, reserve.sources, 'direct')],
@@ -841,7 +894,8 @@ async function tryCanonicalStructuredInner(p: {
         if (possession && 'strategy' in possession) {
           const sources = uniques([...achat.sources, ...possession.sources]);
           return {
-            strategy: 'structured.ownership_cost', answer: `${achat.answer} ${possession.answer}`, sources, kind: 'calc',
+            // Carte #790 (relance) : le prix d'achat, puis le coût de possession en blocs — présentés à part, jamais additionnés.
+            strategy: 'structured.ownership_cost', answer: `${achat.answer}\n\n${possession.answer}`, sources, kind: 'calc',
             claims: [claim('acquisition', achat.answer, achat.sources, 'direct'), claim('ownership_cost', possession.answer, possession.sources, 'calculated')],
           };
         }
@@ -905,28 +959,49 @@ async function tryCanonicalStructuredInner(p: {
     const exclus = autresExclus > 0 ? ` Les devis et documents sans valeur de dépense (${autresExclus}) ne sont pas comptés.` : '';
     // Lot 45 (C15.1 §33) : provenance et parts non comptées du mode mixte.
     const notes = mixedExpenseNotes(q, { scopeLabel: scope.label, year: year ?? null });
-    const mixte = notes.length ? ` ${notes.join(' ')}` : '';
-    let answer: string;
+    // ════════════════════════════════════════════════════════════════════
+    // Carte #790, relance du 21/11/2026 (E03) — la réponse déclare ses parties : le total (ou la liste par
+    // thème puis le total), et À PART les réserves (non comptés, provenance, doublons écartés, devis exclus).
+    // Règle remplacée : tout était écrit à la suite sur une ligne. Mêmes phrases, mêmes montants.
+    // ════════════════════════════════════════════════════════════════════
+    const reserves = (...xs: string[]): AnswerPart => ({ kind: 'list', intro: EXPENSE_NOTES_INTRO, items: xs.map((x) => x.trim()).filter(Boolean) });
+    let parts: AnswerPart[];
     let kind: 'calc' | 'no_result' = 'calc';
     if (theme) {
       const t = q.byTheme[0];
       if (!t) {
         kind = 'no_result';
-        answer = (q.unqualified.count > 0
-          // Couverture incomplète : aucun total affirmé (T2-24).
-          ? `Je ne peux pas isoler vos dépenses ${deFr(EXPENSE_THEME_LABELS[theme])}${pour} : ${motifs}. ${expenseCompletionHint(sansNature, sansDate)}`
-          : formatNoResult(`aucune dépense ${deFr(EXPENSE_THEME_LABELS[theme])} documentée`, pour.trim() || undefined)) + mixte;
+        parts = [{
+          kind: 'paragraph',
+          text: q.unqualified.count > 0
+            // Couverture incomplète : aucun total affirmé (T2-24).
+            ? `Je ne peux pas isoler vos dépenses ${deFr(EXPENSE_THEME_LABELS[theme])}${pour} : ${motifs}. ${expenseCompletionHint(sansNature, sansDate)}`
+            : formatNoResult(`aucune dépense ${deFr(EXPENSE_THEME_LABELS[theme])} documentée`, pour.trim() || undefined),
+        }, reserves(...notes)];
       } else {
-        answer = `Dépenses ${deFr(t.label)} documentées${pour} : ${formatAmountCents(t.sumCents)} (${expenseItemsLabel(t, q.operations)}).${incomplet}${mixte}${doublons}${exclus}`;
+        parts = [
+          { kind: 'paragraph', text: `Dépenses ${deFr(t.label)} documentées${pour} : ${formatAmountCents(t.sumCents)} (${expenseItemsLabel(t, q.operations)}).` },
+          reserves(incomplet, ...notes, doublons, exclus),
+        ];
       }
     } else if (q.byTheme.length === 0) {
       kind = 'no_result';
-      answer = (q.unqualified.count > 0
-        ? `Je ne peux pas totaliser vos dépenses${pour} : ${motifs}.`
-        : formatNoResult('aucune dépense documentée', pour.trim() || undefined)) + mixte;
+      parts = [{
+        kind: 'paragraph',
+        text: q.unqualified.count > 0
+          ? `Je ne peux pas totaliser vos dépenses${pour} : ${motifs}.`
+          : formatNoResult('aucune dépense documentée', pour.trim() || undefined),
+      }, reserves(...notes)];
     } else {
-      answer = `${formatList(`Dépenses documentées${pour}, par thème`, q.byTheme.map((t) => `${t.label} ${formatAmountCents(t.sumCents)} (${t.count})`))} Total des dépenses qualifiées : ${formatAmountCents(q.qualifiedSumCents)}.${incomplet}${mixte}${doublons}${exclus}`;
+      const lignes = q.byTheme.map((t) => `${t.label} ${formatAmountCents(t.sumCents)} (${t.count})`);
+      const titre = `Dépenses documentées${pour}, par thème`;
+      parts = [
+        lignes.length > 1 ? { kind: 'list', intro: titre, items: listItems(lignes) } : { kind: 'paragraph', text: `${titre} : ${lignes[0]}.` },
+        { kind: 'paragraph', text: `Total des dépenses qualifiées : ${formatAmountCents(q.qualifiedSumCents)}.` },
+        reserves(incomplet, ...notes, doublons, exclus),
+      ];
     }
+    const answer = composeAnswerText(parts.filter((x) => x.kind !== 'list' || x.items.length > 0));
     return { strategy: 'structured.sum_qualified', answer, sources, claims: [claim('sum', answer, sources, 'calculated')], kind };
   }
 
@@ -946,9 +1021,10 @@ async function tryCanonicalStructuredInner(p: {
     }));
     const answer = rows.length === 0
       ? formatNoResult(`aucune échéance ${fenetre}`, scope.label ? `pour ${scope.label}` : undefined)
-      : formatList(`Échéances ${fenetre}${scope.label ? ` pour ${scope.label}` : ''}`, rows.map((r) =>
+      : formatListBlocks(`Échéances ${fenetre}${scope.label ? ` pour ${scope.label}` : ''}`, rows.map((r) =>
         `« ${r.title} »${r.assetNames.length && !scope.label ? ` (${joinFr(r.assetNames)})` : ''} ${r.forecast ? 'prévue le' : 'le'} ${formatDateFr(r.date)} (${formatRelativeDays(daysBetween(today, r.date))})`), 10)
-        + (rows.some((r) => r.forecast) ? ' Les dates « prévues » sont prévisionnelles : elles seront confirmées par un document.' : '');
+        // Carte #790 (relance) : la réserve sur les dates prévisionnelles est un paragraphe à part.
+        + (rows.some((r) => r.forecast) ? `${rows.length > 1 ? '\n\n' : ' '}Les dates « prévues » sont prévisionnelles : elles seront confirmées par un document.` : '');
     const srcs = sources.length ? sources : scope.assets.map(assetSrc);
     return { strategy: 'structured.upcoming_agenda', answer, sources: srcs, claims: [claim('upcoming', answer, srcs, 'calculated')], kind: rows.length ? 'list' : 'no_result' };
   }
@@ -996,11 +1072,15 @@ export function fieldAnswer(r: CanonicalFieldReading): string {
       const nom = e.entityName ?? (e.target.type === 'ROOM' ? 'la pièce' : 'l’équipement');
       return `${e.label} de ${nom} : ${e.display}.`;
     });
-    if (lignes.length) return lignes.join(' ');
+    // Carte #790 recentrée (§1) — règle remplacée : `lignes.join(' ')`. Plusieurs équipements ou pièces : une valeur
+    // par ligne (liste) ; un seul : la phrase d'avant, inchangée.
+    if (lignes.length) return lignes.length > 1 ? composeAnswerText([{ kind: 'list', items: lignes }]) : lignes[0];
   }
   const valeur = r.key === 'acquisitionDate' && r.display
     ? `Vous avez acheté ${r.assetName ?? 'ce bien'} le ${r.display}.`
     : `${r.label} de ${r.assetName ?? 'ce bien'} : ${r.display}.`;
-  const conflit = r.openConflict ? ` Un autre document propose une valeur différente : c’est à arbitrer dans « À traiter » (${r.openConflict.question}).` : '';
+  // Carte #790 recentrée (§1) — règle remplacée : la réserve de conflit suivait la valeur sur la même ligne. La
+  // valeur d'abord, seule ; l'action à mener dans son propre paragraphe. Sans conflit : la phrase d'avant, inchangée.
+  const conflit = r.openConflict ? `\n\nUn autre document propose une valeur différente : c’est à arbitrer dans « À traiter » (${r.openConflict.question}).` : '';
   return `${valeur}${conflit}`;
 }

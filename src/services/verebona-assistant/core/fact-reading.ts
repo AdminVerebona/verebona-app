@@ -26,6 +26,7 @@ import type { CanonicalEntityFieldReading, CanonicalFieldReading } from '../cano
 import type { DocumentFieldFact } from '../canonical/field-document';
 import { dedupeFacts } from '../canonical/field-vocabulary';
 import { TargetReadError } from './t2-diagnostics';
+import { composeAnswerText, type AnswerPart } from '@/lib/verebona/answer-compose';
 
 type FactStatus = 'VALUE_FOUND' | 'MISSING_CANONICAL_VALUE' | 'FIELD_NOT_APPLICABLE' | 'FIELD_UNAVAILABLE';
 
@@ -246,15 +247,22 @@ export async function readFactsOnTarget(
     if (manquants.length === 1) parts.push(`L’information « ${manquants[0].label} » n’est pas renseignée pour ${nom}.`);
     else if (manquants.length > 1) parts.push(`Ces informations ne sont pas renseignées pour ${nom} : ${libelles(manquants)}.`);
     if (sansObjet.length) parts.push(`${sansObjet.length > 1 ? 'Ces informations ne s’appliquent' : `L’information « ${sansObjet[0].label} » ne s’applique`} pas à ${nom}${sansObjet.length > 1 ? ` : ${libelles(sansObjet)}` : ''}.`);
-    text = parts.join(' ') || `Je n’ai pas pu lire ces informations pour ${nom}.`;
+    // Carte #790 recentrée (§1) — règle remplacée : `parts.join(' ')`. « Non renseigné » et « sans objet » sont deux
+    // informations distinctes : un paragraphe chacune (comme dans la réponse à plusieurs valeurs, ci-dessous).
+    text = parts.join('\n\n') || `Je n’ai pas pu lire ces informations pour ${nom}.`;
   } else {
     // Plusieurs champs : une ligne par valeur, dans l'ordre de la demande,
     // puis les champs vides ou sans objet — jamais un « rien trouvé ».
     const lignes = trouves.map((f) => (f.from === 'canonical' && f.display ? `${lowerFirst(f.label)} : ${f.display}` : f.text!.replace(/\.$/, '')));
-    const parts = [`Pour ${nom} : ${lignes.join(' ; ')}.`];
-    if (manquants.length) parts.push(`Non renseigné${manquants.length > 1 ? 's' : ''} : ${libelles(manquants)}.`);
-    if (sansObjet.length) parts.push(`Sans objet pour ce ${target.type === 'asset' ? 'bien' : target.type === 'room' ? 'type de pièce' : 'type d’équipement'} : ${libelles(sansObjet)}.`);
-    text = parts.join(' ');
+    // Carte #790 (relance du 21/11/2026, E03) — règle remplacée : les valeurs étaient écrites à la suite dans une
+    // phrase (« Pour X : a ; b ; c. »). Plusieurs valeurs : une par ligne (liste) ; les informations non renseignées
+    // et sans objet restent des paragraphes à part. Une seule valeur trouvée : la phrase d'avant, inchangée.
+    const parts: AnswerPart[] = [
+      lignes.length > 1 ? { kind: 'list', intro: `Pour ${nom}`, items: lignes } : { kind: 'paragraph', text: `Pour ${nom} : ${lignes.join(' ; ')}.` },
+    ];
+    if (manquants.length) parts.push({ kind: 'paragraph', text: `Non renseigné${manquants.length > 1 ? 's' : ''} : ${libelles(manquants)}.` });
+    if (sansObjet.length) parts.push({ kind: 'paragraph', text: `Sans objet pour ce ${target.type === 'asset' ? 'bien' : target.type === 'room' ? 'type de pièce' : 'type d’équipement'} : ${libelles(sansObjet)}.` });
+    text = composeAnswerText(parts);
   }
 
   // Une affirmation PAR champ, reliée à SA source (§H).

@@ -17,6 +17,7 @@
  * soutenue) rend `null` : l'orchestrateur applique le repli déterministe
  * (« sources seules », §30.3) — jamais d'autre moteur.
  */
+import { joinAnswerLines } from '@/lib/verebona/answer-compose';
 import {
   callWithRepairOrEscalation, canEscalate, classifyModelFailure, escalate, repairInstruction,
   type EscalationReason,
@@ -364,8 +365,8 @@ interface ToGeneratedAnswerOptions {
   verifySupport?: boolean;
   /** Reçoit `CLAIM_UNSUPPORTED:<motif>` (trace sans contenu). */
   supportEvents?: string[];
-  /** Assemblage des lignes : `\n` pour une liste (T2-35), espace sinon. */
-  separator?: ' ' | '\n';
+  /** Assemblage des lignes : `\n` pour une liste (T2-35) ; sinon une affirmation par paragraphe (carte #790 recentrée). */
+  separator?: '\n' | '\n\n';
 }
 
 export function toGeneratedAnswer(
@@ -454,7 +455,13 @@ export function toGeneratedAnswer(
   }));
 
   return {
-    answer: phrases.join(opts.separator ?? ' '),
+    // Carte #790 (relance du 21/11/2026, E03) — règle remplacée : `phrases.join(' ')` écrasait la structure que le
+    // modèle rend dans ses lignes (puces, « Chiffre clé : … », titre, tableau) avant qu'elle n'atteigne le rendu.
+    // Carte #790 recentrée (22/11/2026, §2.B) — règle remplacée : les phrases ordinaires ne se suivent plus dans un
+    // seul paragraphe. Chaque affirmation validée garde sa frontière (un paragraphe), sauf si deux lignes forment
+    // ensemble une même phrase ; une ligne qui porte une forme garde sa ligne. Les affirmations (`claims`), leurs
+    // sources et leur contrôle sont inchangés : seule la frontière écrite dans `answer` change.
+    answer: joinAnswerLines(phrases, opts.separator ?? '\n\n'),
     claims,
     actions: [],
     supportLevel: computeSupportLevel(totalFactuelles, claims.length),

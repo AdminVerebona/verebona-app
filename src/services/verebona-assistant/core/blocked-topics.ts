@@ -205,14 +205,15 @@ export function analyzeScope(message: string): ScopeAnalysis {
   if (allowed.length === 0) {
     return {
       kind: 'FULLY_BLOCKED', parts: sub, allowedText: '',
-      refusal: reasons.map((r) => MESSAGES[r]).join(' '), clarification: null, reasons,
+      // Carte #790 recentrée (§1) — règle remplacée : `join(' ')`. Un refus par motif : un paragraphe chacun.
+      refusal: reasons.map((r) => MESSAGES[r]).join('\n\n'), clarification: null, reasons,
     };
   }
   return {
     kind: 'PARTIALLY_ALLOWED',
     parts: sub,
     allowedText: allowed.map((x) => (/[?.!]$/.test(x.text) ? x.text : `${x.text} ?`)).join(' '),
-    refusal: reasons.map((r) => PARTIAL_MESSAGES[r]).join(' '),
+    refusal: reasons.map((r) => PARTIAL_MESSAGES[r]).join('\n\n'),
     clarification: null,
     reasons,
   };
