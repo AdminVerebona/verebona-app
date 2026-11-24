@@ -77,11 +77,19 @@ describe('L116C-D-U03 — branchements : une seule synchronisation, deux points 
     const facade = lire('src/services/business-operations/operation-write.facade.ts');
     expect(facade.match(/\.then\(\(result\) => syncFactDatesAfterCommit\(ctx, result, dates\)\);/g)).toHaveLength(2);
     expect(facade).toMatch(/result\.status !== 'APPLIED' \|\| !result\.changed \|\| result\.replayed/);
-    // Ni T3, ni T4, ni la projection, ni le contrôle de cohérence n'appellent la synchronisation.
+    // Ni T3, ni T4, ni la projection, ni le moteur de cohérence n'appellent la synchronisation.
     for (const f of [
       'src/services/business-operations/consolidation/consolidator.ts', 'src/services/business-operations/agenda-projection/service.ts',
       'src/services/business-operations/agenda-projection/model.ts', 'src/services/agenda/write-agenda-item.ts', 'src/services/coherence/engine.ts',
     ]) expect(lire(f), f).not.toMatch(/fact-date-sync|syncAgendaDateToOperations|syncOperationDatesToAgenda/);
+    // Carte #831 (écart E04) : le report avait DEUX points d'entrée utilisateur et AUCUN filet — un échec après la
+    // première écriture laissait les deux dates divergentes pour toujours. La carte exige une reprise. Le SEUL
+    // troisième appelant autorisé est donc le contrôle de cohérence dédié, et seulement dans sa réparation : il
+    // rejoue le report par ces mêmes services, avec leurs gardes, au lieu de choisir une date lui-même.
+    const controle = lire('src/services/coherence/registry/checks/operations-fact-date-sync.ts');
+    expect(controle).toMatch(/syncOperationDatesToAgenda/);
+    expect(controle).toMatch(/syncAgendaDateToOperations/);
+    expect(controle.match(/await import\('@\/services\/business-operations\/graph\/fact-date-sync'\)/g)).toHaveLength(1);
   });
   it('la synchronisation n’écrit l’Agenda que par sa primitive, ne crée aucun événement, ne touche que les deux dates du fait', () => {
     const src = lire('src/services/business-operations/graph/fact-date-sync.ts');

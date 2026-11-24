@@ -88,6 +88,8 @@ import { supplierCoordinatesCheck } from './checks/supplier-coordinates';
 import { supplierIdentityCheck } from './checks/supplier-identity';
 // Lot 116C (carte #806 §4, AC73) : graphe des opérations — contrôle de lecture `auditOperationGraph` raccordé (fin de registre).
 import { operationGraphCheck } from './checks/operation-graph';
+// Carte #831 (écart E04) — date du même fait : reprise du report après panne.
+import { operationsFactDateSyncCheck } from './checks/operations-fact-date-sync';
 
 export const COHERENCE_REGISTRY: readonly CoherenceCheck[] = [
   toProcessDocumentFieldsCheck,
@@ -190,6 +192,9 @@ export const COHERENCE_REGISTRY: readonly CoherenceCheck[] = [
   // Lot 116C (carte #806 §4 « Scissions, T3 et cohérence du graphe », AC73) : ajouté EN FIN de registre, après COH-OPS-ATTRIBUTE-CONFLICTS (113AQ).
   // Constat seul : aucune fonction de réparation.
   operationGraphCheck,
+  // Carte #831 (§1, écart E04 ; AC34) : la date du MÊME FAIT reportée d'un affichage à l'autre — reprise après
+  // panne du report, qui n'avait aucun filet. Ajouté EN FIN de registre, après COH-OPERATION-GRAPH (116C).
+  operationsFactDateSyncCheck,
 ];
 
 /** Contrôles exécutés par l'orchestrateur (les points d'extension PLANNED sont exclus). */

@@ -64,7 +64,10 @@ export const COVERAGE_INVENTORY: readonly CoverageEntry[] = [
       'COH-OPS-ATTRIBUTE-CONFLICTS',
       // Lot 116C (#806 §4, AC73) : graphe des opérations (liens orphelins ou entre comptes, refus et scissions respectés,
       // provenance, double comptage) — constat seul, aucune réparation.
-      'COH-OPERATION-GRAPH'],
+      'COH-OPERATION-GRAPH',
+      // Carte #831 (§1, E04 ; AC34) : date du MÊME FAIT des deux côtés (opération et événement porteur) — report rejoué
+      // après une panne, écart voulu laissé intact et tracé.
+      'COH-OPS-FACT-DATE-SYNC'],
     // Lot 86C : doublons ENTRE Opérations d'une même relation contractuelle (COH-OPS-IDENTITY v2, réexamen T3)
     // et dates de contrat issues de périodes facturées (COH-OPS-CONTRACT-DATES) — contrôlés et réparés.
     // Lot 85E : acquisition réalisée sans date alors que la date du bien est connue — contrôlée et réparée (T3 du bien puis T4).
@@ -94,7 +97,10 @@ export const COVERAGE_INVENTORY: readonly CoverageEntry[] = [
       // Lot 103D : pièces / équipements sans logement rattaché (lot 113P : COH-AGENDA-HISTORICAL-STATUS retiré, plus de statut).
       'COH-AGENDA-STRUCTURAL-HOUSING',
       // Lot 106A : représentations équivalentes d'un même fait réalisé, toutes origines (fiche, document, T4, projection).
-      'COH-AGENDA-EQUIVALENT-REPRESENTATIONS'],
+      'COH-AGENDA-EQUIVALENT-REPRESENTATIONS',
+      // Carte #831 (§1, E04 ; AC34) : la date de l'événement qui PORTE le fait d'une opération suit celle de l'opération,
+      // et réciproquement — reprise du report après panne, sans jamais écraser une date voulue.
+      'COH-OPS-FACT-DATE-SYNC'],
     // Lot 83E : les échéances calculables issues des Opérations sont contrôlées (projection rejouée sans IA) ; 83B : invariants O-1.
     gap: {
       what: 'échéances DOCUMENTAIRES décidées par T4 (IA) : décisions non conservées avec leur candidat, rejeu impossible sans IA ; groupes de représentations sans Opération à l’identité INCERTAINE (lot 106A : constat qualifié, en attente du contrat T4 106A-t4-representation-sans-operation — les identités certaines sont réparées)',

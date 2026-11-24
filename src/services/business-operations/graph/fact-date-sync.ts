@@ -58,6 +58,7 @@
  * ══════════════════════════════════════════════════════════════════════════
  */
 import type { BusinessOperationStatus } from '../model';
+import type { GroupingRunner } from '../grouping/runner';
 
 // ── Règle pure ─────────────────────────────────────────────────────────────
 
@@ -107,6 +108,122 @@ export interface FactDateSyncLine {
 /** Motifs du journal du graphe. */
 export const FACT_DATE_SYNC_REASON = 'FACT_DATE_SYNC';
 export const FACT_DATE_SYNC_DIVERGENT_REASON = 'ABSTAIN_FACT_DATE_DIVERGENT';
+/**
+ * Carte #831 (E04) — REPORT IMPOSSIBLE, ÉTAT HONNÊTE.
+ *
+ * L'écriture de départ est déjà enregistrée (correction de l'utilisateur) et
+ * le report vers l'autre affichage a échoué : l'échec est écrit DURABLEMENT
+ * ici, en AJOUT seul (`NO_CHANGE` : rien n'a changé), au lieu d'être
+ * seulement affiché dans la sortie du serveur. La reprise est assurée par le
+ * contrôle de cohérence `COH-OPS-FACT-DATE-SYNC`, qui relit L'ÉTAT des deux
+ * côtés (jamais ce seul journal) et rejoue le report quand l'autre affichage
+ * montre encore la valeur d'avant.
+ */
+export const FACT_DATE_SYNC_FAILED_REASON = 'FACT_DATE_SYNC_FAILED';
+
+/** Message d'erreur borné : ni donnée client, ni secret, ni trace complète. */
+const motifBorne = (e: unknown): string => {
+  const x = e as { code?: unknown; name?: unknown; message?: unknown };
+  const code = typeof x?.code === 'string' && x.code ? x.code : typeof x?.name === 'string' ? x.name : 'ERROR';
+  return `${code}: ${String(x?.message ?? '').slice(0, 160)}`;
+};
+
+/**
+ * Trace durable d'un report impossible, sur une connexion PROPRE (la
+ * transaction du report est annulée quand il y en avait une). Ne lève jamais :
+ * une trace manquante ne doit pas masquer l'écriture déjà faite, et l'écart
+ * reste constaté sur l'état par le contrôle de cohérence.
+ */
+async function traceReportImpossible(p: {
+  accountId: number; operationId: number; agendaItemId: number | null; direction: FactDateSyncDirection;
+  field: SyncedDateField | null; factKey: string | null; before: string | null; after: string | null; actorUserId: number | null; cause: unknown;
+}): Promise<void> {
+  try {
+    const [{ db }, { drizzleRunner }, store] = await Promise.all([
+      import('@/db'), import('../grouping/runner'), import('./store'),
+    ]);
+    await store.journalGraph(drizzleRunner(db), p.accountId, {
+      relationKind: 'AGENDA_LINK', operationId: p.operationId, agendaItemId: p.agendaItemId,
+      action: 'NO_CHANGE', origin: 'SYSTEM', channel: p.direction === 'AGENDA_TO_OPERATION' ? 'AGENDA' : 'OPERATION',
+      actorUserId: p.actorUserId, reasonCode: FACT_DATE_SYNC_FAILED_REASON, evidence: [],
+      before: { factKey: p.factKey, field: p.field, direction: p.direction, sourceBefore: p.before },
+      after: { failed: true, factKey: p.factKey, field: p.field, direction: p.direction, sourceAfter: p.after, cause: motifBorne(p.cause) },
+      inputHash: `fact-date-failed:${p.direction}:${p.operationId}:${p.agendaItemId ?? 0}:${p.field ?? ''}:${p.after ?? ''}`,
+    });
+  } catch {
+    // La trace est un confort de supervision : l'écart lui-même est porté par l'ÉTAT des deux côtés.
+  }
+}
+
+/**
+ * Dernier changement de date DURABLEMENT journalisé d'un côté : l'image avant /
+ * après écrite dans la même transaction que l'écriture elle-même (journal du
+ * graphe pour l'opération, trace d'occurrence pour l'Agenda).
+ */
+export interface FactDateLastChange {
+  before: string | null;
+  after: string | null;
+  /** Horodatage comparable (ISO) du changement. */
+  at: string;
+}
+
+/** Carte #831 (E04) — issue d'un examen de reprise. */
+export type FactDateRepair =
+  /** Les deux affichages montrent la même date : rien à faire. */
+  | { kind: 'CONSISTENT' }
+  /** Le report peut être rejoué : l'autre affichage montre encore la valeur d'avant. */
+  | { kind: 'REPLAY'; direction: FactDateSyncDirection; before: string | null; after: string }
+  /** Les deux côtés ont bougé : aucune écriture, l'abstention tracée reste seule juge. */
+  | { kind: 'DIVERGENT' }
+  /** Aucun changement journalisé n'explique l'écart : constat, jamais d'écriture. */
+  | { kind: 'UNKNOWN' };
+
+/**
+ * REPRISE D'UN REPORT (pure, carte #831 E04).
+ *
+ * Deux affichages du même fait montrent des dates différentes. Lequel a été
+ * corrigé, et l'autre peut-il encore être aligné sans rien écraser ?
+ *
+ *   · le côté SOURCE est celui dont le dernier changement journalisé est le
+ *     plus récent ET dont la valeur d'après est bien ce qu'il montre
+ *     aujourd'hui (preuve que ce changement est le vivant) ;
+ *   · le report n'est rejoué que si l'autre côté montre ENCORE la valeur
+ *     d'avant de ce changement — c'est exactement la garde « même valeur
+ *     avant » du report initial (`decideFactDateSync`) ;
+ *   · sinon les deux ont bougé : DIVERGENT, rien n'est écrit ;
+ *   · sans changement journalisé exploitable : UNKNOWN, rien n'est écrit.
+ *
+ * Un événement d'Agenda SANS date ne reçoit jamais une date d'office (« Sans
+ * échéance » est un choix de l'utilisateur) ; une opération sans date, elle,
+ * peut être complétée — mêmes règles que le report initial.
+ */
+export function decideFactDateRepair(s: {
+  agendaDate: string | null;
+  operationDate: string | null;
+  operationChange: FactDateLastChange | null;
+  agendaChange: FactDateLastChange | null;
+}): FactDateRepair {
+  if (s.agendaDate === s.operationDate) return { kind: 'CONSISTENT' };
+  const vivant = (c: FactDateLastChange | null, montre: string | null) => (c && c.after === montre ? c : null);
+  const op = vivant(s.operationChange, s.operationDate);
+  const ag = vivant(s.agendaChange, s.agendaDate);
+  if (!op && !ag) return { kind: 'UNKNOWN' };
+  const source: FactDateSyncDirection = !ag ? 'OPERATION_TO_AGENDA'
+    : !op ? 'AGENDA_TO_OPERATION'
+      : op.at >= ag.at ? 'OPERATION_TO_AGENDA' : 'AGENDA_TO_OPERATION';
+  const c = (source === 'OPERATION_TO_AGENDA' ? op : ag)!;
+  if (!isFullDate(c.after)) return { kind: 'UNKNOWN' };
+  const cible = source === 'OPERATION_TO_AGENDA' ? s.agendaDate : s.operationDate;
+  const d = decideFactDateSync({
+    sourceBefore: c.before, sourceAfter: c.after, target: cible,
+    // Un événement d'Agenda sans date garde son « Sans échéance » ; une opération sans date peut être complétée.
+    targetMayBeEmpty: source === 'AGENDA_TO_OPERATION',
+  });
+  if (d === 'ALREADY_EQUAL') return { kind: 'CONSISTENT' };
+  if (d === 'SYNC') return { kind: 'REPLAY', direction: source, before: c.before, after: c.after };
+  if (d === 'DIVERGENT') return { kind: 'DIVERGENT' };
+  return { kind: 'UNKNOWN' };
+}
 
 /** Décision d'un report (pure) : `source` vient d'être corrigée de `sourceBefore` à `sourceAfter` ; `target` est l'autre affichage. */
 export function decideFactDateSync(p: { sourceBefore: string | null; sourceAfter: string | null; target: string | null; targetMayBeEmpty: boolean }): 'SYNC' | 'ALREADY_EQUAL' | 'DIVERGENT' | 'NOTHING' {
@@ -138,6 +255,10 @@ export async function syncAgendaDateToOperations(p: {
   if (!isFullDate(p.newDate) || p.newDate === p.previousDate) return out;
   const nouvelle = p.newDate;
   try {
+    // Carte #831 (E04) : la transaction ci-dessous est tout-ou-rien. Les routes
+    // concernées sont relevées AVANT, en lecture seule, pour que l'échec soit
+    // tracé durablement route par route (`traceReportImpossible`) au lieu de
+    // n'exister que dans la sortie du serveur.
     const [{ withGroupingWrite }, { lockGroupingAccount }, store, { declarationFingerprint }, { PAGE_CORRECTION_DECLARATION_TEXT }] = await Promise.all([
       import('../grouping/service'), import('../grouping/runner'), import('./store'), import('./model'), import('./reference-event-page'),
     ]);
@@ -200,9 +321,56 @@ export async function syncAgendaDateToOperations(p: {
     }, { actorUserId: p.actorUserId });
   } catch (e) {
     console.error(`[fact-date-sync] événement ${p.agendaItemId} (compte ${p.accountId}) : date non reportée sur l’opération :`, (e as Error).message);
-    return [{ operationId: 0, agendaItemId: p.agendaItemId, factKey: '', field: 'realizedDate', direction: 'AGENDA_TO_OPERATION', outcome: 'FAILED', before: null, after: null }];
+    // Carte #831 (E04) — ÉTAT HONNÊTE. La transaction est annulée : rien n'a été
+    // reporté. Les routes concernées sont relues sur une connexion propre et
+    // l'échec est écrit durablement pour chacune, avec la valeur d'avant et
+    // celle d'après : le contrôle COH-OPS-FACT-DATE-SYNC rejoue le report tant
+    // que l'opération montre encore la date d'avant. Une erreur ici ne masque
+    // jamais l'événement déjà enregistré.
+    const echecs = await routesPorteusesDeLEvenement(p.accountId, p.agendaItemId);
+    for (const r of echecs) {
+      await traceReportImpossible({
+        accountId: p.accountId, operationId: r.operationId, agendaItemId: p.agendaItemId, direction: 'AGENDA_TO_OPERATION',
+        field: r.field, factKey: r.factKey, before: p.previousDate, after: nouvelle, actorUserId: p.actorUserId, cause: e,
+      });
+    }
+    if (!echecs.length) {
+      return [{ operationId: 0, agendaItemId: p.agendaItemId, factKey: '', field: 'realizedDate', direction: 'AGENDA_TO_OPERATION', outcome: 'FAILED', before: null, after: null }];
+    }
+    return echecs.map((r) => ({
+      operationId: r.operationId, agendaItemId: p.agendaItemId, factKey: r.factKey, field: r.field,
+      direction: 'AGENDA_TO_OPERATION' as const, outcome: 'FAILED' as const, before: null, after: null,
+    }));
   }
   return out;
+}
+
+/**
+ * Routes dont CET événement porte le fait (lecture seule, connexion propre) :
+ * sert à tracer un échec route par route. Rend une liste vide si la lecture
+ * elle-même échoue — on ne remplace jamais une panne par une invention.
+ */
+async function routesPorteusesDeLEvenement(
+  accountId: number, agendaItemId: number,
+): Promise<Array<{ operationId: number; factKey: string; field: SyncedDateField }>> {
+  try {
+    const [{ db }, { drizzleRunner }] = await Promise.all([import('@/db'), import('../grouping/runner')]);
+    const lignes = await drizzleRunner(db).q<Row>(
+      `SELECT l.operation_id, l.fact_key, o.type_code, o.status
+         FROM business_operation_agenda_links l
+         JOIN business_operations o ON o.id = l.operation_id AND o.account_id = l.account_id AND o.invalidated_at IS NULL AND o.merged_into_operation_id IS NULL
+        WHERE l.account_id = $1 AND l.agenda_item_id = $2 AND l.state = 'ACTIVE' AND l.fact_key IS NOT NULL
+        ORDER BY l.operation_id`, [accountId, agendaItemId]);
+    const out: Array<{ operationId: number; factKey: string; field: SyncedDateField }> = [];
+    for (const x of lignes) {
+      const factKey = String(x.fact_key);
+      const field = syncedOperationDateField(texte(x.type_code), texte(x.status), factKey);
+      if (field) out.push({ operationId: n(x.operation_id), factKey, field });
+    }
+    return out;
+  } catch {
+    return [];
+  }
 }
 
 /** Dates d'une opération concernées par la synchronisation (avant ou après une correction). */
@@ -221,31 +389,47 @@ export async function syncOperationDatesToAgenda(p: {
   const out: FactDateSyncLine[] = [];
   const champs = (Object.keys(COLONNE) as SyncedDateField[]).filter((f) => isFullDate(p.after[f]) && p.after[f] !== (p.before[f] ?? null));
   if (!champs.length) return out;
+  let r: GroupingRunner;
+  let store: typeof import('./store');
+  let porteurs: Row[];
   try {
-    const [{ db }, { drizzleRunner }, store, { writeAgendaItem }] = await Promise.all([
-      import('@/db'), import('../grouping/runner'), import('./store'), import('@/services/agenda/write-agenda-item'),
-    ]);
-    const r = drizzleRunner(db);
-    const porteurs = await r.q<Row>(
+    const [{ db }, { drizzleRunner }, s] = await Promise.all([import('@/db'), import('../grouping/runner'), import('./store')]);
+    store = s;
+    r = drizzleRunner(db);
+    porteurs = await r.q<Row>(
       `SELECT l.agenda_item_id, l.fact_key, o.type_code, o.status, o.version, i.start_date::text AS start_date, i.is_automatic
          FROM business_operation_agenda_links l
          JOIN agenda_items i ON i.id = l.agenda_item_id AND i.account_id = l.account_id
          JOIN business_operations o ON o.id = l.operation_id AND o.account_id = l.account_id AND o.invalidated_at IS NULL AND o.merged_into_operation_id IS NULL
         WHERE l.account_id = $1 AND l.operation_id = $2 AND l.state = 'ACTIVE' AND l.fact_key IS NOT NULL
         ORDER BY l.agenda_item_id`, [p.accountId, p.operationId]);
-    for (const x of porteurs) {
-      const agendaItemId = n(x.agenda_item_id);
-      const factKey = String(x.fact_key);
-      const field = syncedOperationDateField(texte(x.type_code), texte(x.status), factKey);
-      if (!field || !champs.includes(field)) continue;
-      const nouvelle = p.after[field] as string;
-      const avant = p.before[field] ?? null;
-      const actuelle = texte(x.start_date);
-      const base = { operationId: p.operationId, agendaItemId, factKey, field, direction: 'OPERATION_TO_AGENDA' as const };
-      // Un événement SANS date n'en reçoit pas d'office (« Sans échéance » est un choix de l'utilisateur).
-      const d = decideFactDateSync({ sourceBefore: avant, sourceAfter: nouvelle, target: actuelle, targetMayBeEmpty: false });
-      if (d === 'NOTHING') continue;
-      if (d === 'ALREADY_EQUAL') { out.push({ ...base, outcome: 'ALREADY_EQUAL', before: actuelle, after: actuelle }); continue; }
+  } catch (e) {
+    // Carte #831 (E04) : les routes ne sont même pas connues — échec tracé pour l'opération, reprise par COH-OPS-FACT-DATE-SYNC.
+    console.error(`[fact-date-sync] opération ${p.operationId} (compte ${p.accountId}) : routes porteuses illisibles :`, (e as Error).message);
+    await traceReportImpossible({
+      accountId: p.accountId, operationId: p.operationId, agendaItemId: null, direction: 'OPERATION_TO_AGENDA',
+      field: null, factKey: null, before: null, after: null, actorUserId: p.actorUserId, cause: e,
+    });
+    out.push({ operationId: p.operationId, agendaItemId: 0, factKey: '', field: 'realizedDate', direction: 'OPERATION_TO_AGENDA', outcome: 'FAILED', before: null, after: null });
+    return out;
+  }
+  for (const x of porteurs) {
+    const agendaItemId = n(x.agenda_item_id);
+    const factKey = String(x.fact_key);
+    const field = syncedOperationDateField(texte(x.type_code), texte(x.status), factKey);
+    if (!field || !champs.includes(field)) continue;
+    const nouvelle = p.after[field] as string;
+    const avant = p.before[field] ?? null;
+    const actuelle = texte(x.start_date);
+    const base = { operationId: p.operationId, agendaItemId, factKey, field, direction: 'OPERATION_TO_AGENDA' as const };
+    // Un événement SANS date n'en reçoit pas d'office (« Sans échéance » est un choix de l'utilisateur).
+    const d = decideFactDateSync({ sourceBefore: avant, sourceAfter: nouvelle, target: actuelle, targetMayBeEmpty: false });
+    if (d === 'NOTHING') continue;
+    if (d === 'ALREADY_EQUAL') { out.push({ ...base, outcome: 'ALREADY_EQUAL', before: actuelle, after: actuelle }); continue; }
+    // Carte #831 (E04) : chaque route est indépendante — une route en échec n'emporte
+    // plus les suivantes, et son échec est écrit durablement (il était seulement
+    // affiché dans la sortie du serveur, donc perdu).
+    try {
       if (d === 'DIVERGENT') {
         await store.recordAiAbstention(r, p.accountId, {
           relationKind: 'AGENDA_LINK', operationId: p.operationId, agendaItemId, reasonCode: FACT_DATE_SYNC_DIVERGENT_REASON,
@@ -257,6 +441,7 @@ export async function syncOperationDatesToAgenda(p: {
       }
       // Primitive unique de l'Agenda : la date seule est écrite ; le rappel de CET événement est réévalué par elle
       // (aucun événement créé, aucun rappel ajouté). Un événement automatique devient « modifié par l'utilisateur ».
+      const { writeAgendaItem } = await import('@/services/agenda/write-agenda-item');
       await writeAgendaItem(
         { itemId: agendaItemId, values: { startDate: nouvelle, dateSource: 'USER', ...(x.is_automatic === true ? { isAutomaticModified: true } : {}), updatedAt: new Date() } },
         { accountId: p.accountId, actorUserId: p.actorUserId, channel: 'MANUAL', notify: false, statusProposal: false },
@@ -269,10 +454,14 @@ export async function syncOperationDatesToAgenda(p: {
         after: { factKey, field, direction: base.direction, operationDate: nouvelle, agendaDate: nouvelle, operationVersion: n(x.version), linkVersion: versionLien },
       });
       out.push({ ...base, outcome: 'SYNCED', before: actuelle, after: nouvelle });
+    } catch (e) {
+      console.error(`[fact-date-sync] opération ${p.operationId} → événement ${agendaItemId} (compte ${p.accountId}) : date non reportée :`, (e as Error).message);
+      await traceReportImpossible({
+        accountId: p.accountId, operationId: p.operationId, agendaItemId, direction: 'OPERATION_TO_AGENDA',
+        field, factKey, before: avant, after: nouvelle, actorUserId: p.actorUserId, cause: e,
+      });
+      out.push({ ...base, outcome: 'FAILED', before: actuelle, after: null });
     }
-  } catch (e) {
-    console.error(`[fact-date-sync] opération ${p.operationId} (compte ${p.accountId}) : date non reportée sur l’Agenda :`, (e as Error).message);
-    out.push({ operationId: p.operationId, agendaItemId: 0, factKey: '', field: 'realizedDate', direction: 'OPERATION_TO_AGENDA', outcome: 'FAILED', before: null, after: null });
   }
   return out;
 }
