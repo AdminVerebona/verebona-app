@@ -39,7 +39,7 @@ import { factsToExtractedFields } from './document-knowledge';
 import type { TableCellRow } from './document-tables';
 import type { ExtractedTableCell, ExtractedField } from '../source-analysis/types';
 import { documentFactsCanonicalReady, documentFactsRawValueAbsenceReady } from '../evidence/canonical-columns';
-import { checkRawValueAbsence } from '../source-analysis/master/raw-value-absence';
+import { checkRawValueAbsence, type RawValueAbsenceCheck } from '../source-analysis/master/raw-value-absence';
 import { sourceLayerReady, writeSourceLayer } from '../source-analysis/source-units/repository';
 import { buildAgendaCandidatesT4 } from '../source-analysis/steps/build-agenda-candidates.step';
 import { operationCandidatesReady, replaceOperationCandidates, type PersistedFactAnchor } from '../source-analysis/operation-candidates/persist';
@@ -91,14 +91,16 @@ export async function persistDocumentKnowledgeDetailed(k: DocumentKnowledge): Pr
   let extractionId = 0;
   let coucheErreur: string | null = null;
   // Contrôle HORS transaction (lecture du catalogue) : colonnes 0218 présentes ?
-  const canonical = k.facts.some(hasCanonicalFactData) || e.multiAsset != null
+  // Carte #863 (B1) : sondé dès qu'un fait existe — un littéral RÉCUPÉRÉ depuis la preuve se conserve dans `raw_value`.
+  const canonical = k.facts.length > 0 || e.multiAsset != null
     ? await documentFactsCanonicalReady() : false;
   if (!canonical && k.facts.some((f) => f.recurrence)) {
     // T4-06 : sans 0218, la récurrence ne peut pas être persistée — signalé.
     console.warn(`[knowledge] fichier ${e.fileId} : récurrence non persistée (migration 0218 absente).`);
   }
   // Carte #838 (B1) : colonne du motif d'absence de littéral (1980) — contrôle HORS transaction, comme 0218.
-  const motifAbsence = canonical ? await documentFactsRawValueAbsenceReady().catch(() => false) : false;
+  // Carte #863 (B1) : sondée pour TOUS les faits (génériques, hors catalogue, sans donnée 0218 compris).
+  const motifAbsence = k.facts.length > 0 ? await documentFactsRawValueAbsenceReady().catch(() => false) : false;
   // Lot 34F : couche A (0295-0297) — contrôle HORS transaction, comme 0218.
   const couche = k.sourceLayer || k.facts.some((f) => f.sourceUnitIds?.length) ? await sourceLayerReady() : false;
   let coucheEcrite = couche;
@@ -243,7 +245,13 @@ export async function persistDocumentKnowledgeDetailed(k: DocumentKnowledge): Pr
         return { ...f, sourceUnitIds: valid };
       });
     }
-    const factIds = await insertFactRows(tx as unknown as SqlTx, e, extractionId, faits, { canonical, provenance: couche, rawValueAbsence: motifAbsence });
+    // Carte #863 (B1) : texte des unités de la couche écrite dans CETTE transaction — un motif « référence d'unité » ou
+    // un littéral récupéré se vérifie sur ce texte exact (jamais sur une unité absente).
+    const textesUnites = k.sourceLayer ? new Map(k.sourceLayer.units.map((u): [string, string | null] => [u.sourceUnitId, u.text ?? u.value ?? null])) : undefined;
+    const motifs: RawValueAbsenceCheck[] = [];
+    const factIds = await insertFactRows(tx as unknown as SqlTx, e, extractionId, faits, {
+      canonical, provenance: couche, rawValueAbsence: motifAbsence, ...(textesUnites ? { unitTexts: textesUnites } : {}), report: motifs,
+    });
 
     // Lot 40 (CDC Opérations V1 C3.2, C9.1) : candidats Opération — anciens
     // supersédés, nouveaux écrits avec des preuves ANCRÉES sur les faits
@@ -315,6 +323,16 @@ export async function persistDocumentKnowledgeDetailed(k: DocumentKnowledge): Pr
       if (ecrits.length) {
         await tx.unsafe(`UPDATE document_facts SET source_unit_ids = NULL WHERE id = ANY($1::bigint[]) AND file_id = $2`, [ecrits, e.fileId] as never[]);
       }
+      // Carte #863 (B1) : un motif « référence d'unité » ne vaut que si l'unité est PERSISTÉE — couche non écrite :
+      // motif recalculé sans unité (citation vérifiée, sinon `UNJUSTIFIED`), jamais un renvoi vers une unité absente.
+      if (motifAbsence) {
+        for (let i = 0; i < faits.length; i++) {
+          if (motifs[i]?.code !== 'SOURCE_UNIT_REFERENCE' || factIds[i] === undefined) continue;
+          const sans = checkRawValueAbsence({ ...faits[i], sourceUnitIds: null, sourceUnitTexts: null });
+          await tx.unsafe(`UPDATE document_facts SET raw_value_absence = $2 WHERE id = $1 AND file_id = $3`,
+            [factIds[i], sans.code ?? 'UNJUSTIFIED', e.fileId] as never[]);
+        }
+      }
     }
     if (rejets.length) {
       console.warn(`[t1-provenance] fichier ${e.fileId} : ${rejets.length} référence(s) d'unité retirée(s) à l'écriture (${[...new Set(rejets.map((r) => r.event.cause))].join(', ')}).`);
@@ -356,17 +374,46 @@ export async function insertFactRows(
   e: Pick<DocumentKnowledge['extraction'], 'accountId' | 'fileId' | 'sourceType' | 'provider' | 'model' | 'promptVersion'>,
   extractionId: number,
   facts: readonly DocumentFactRecord[],
-  opts: { canonical: boolean; provenance: boolean; rawValueAbsence?: boolean },
+  opts: {
+    canonical: boolean; provenance: boolean; rawValueAbsence?: boolean;
+    /** Carte #863 (B1) : texte des unités source (couche écrite par l'appelant) ; absent : relu en base (reprise). */
+    unitTexts?: ReadonlyMap<string, string | null>;
+    /** Carte #863 (B1) : contrôle du littéral de chaque fait, dans l'ordre de `facts` (rempli ici). */
+    report?: RawValueAbsenceCheck[];
+  },
 ): Promise<number[]> {
   const { canonical, provenance: couche } = opts;
   // Carte #838 (B1) : motif d'absence de `raw_value` écrit si la colonne 1980 existe (sondée par l'appelant, ou ici).
-  const motifPret = canonical && (opts.rawValueAbsence ?? await documentFactsRawValueAbsenceReady().catch(() => false));
+  // Carte #863 (B1) : pour TOUS les faits — y compris génériques, hors catalogue et sans donnée 0218.
+  const motifPret = opts.rawValueAbsence ?? await documentFactsRawValueAbsenceReady().catch(() => false);
+  // Carte #863 (B1) : unités PERSISTÉES référencées (reprise : relues dans la même transaction).
+  let textes = opts.unitTexts ?? null;
+  if (!textes && couche && facts.some((f) => f.sourceUnitIds?.length)) {
+    const ids = [...new Set(facts.flatMap((f) => f.sourceUnitIds ?? []))];
+    textes = new Map(((await tx.unsafe(
+      `SELECT source_unit_id, COALESCE(content_text, value_text) AS texte FROM document_source_units
+        WHERE account_id = $1 AND file_id = $2 AND source_unit_id = ANY($3::text[])`,
+      [e.accountId, e.fileId, ids] as never[],
+    ).catch(() => [])) as Array<{ source_unit_id: string; texte: string | null }>).map((r): [string, string | null] => [r.source_unit_id, r.texte]));
+  }
   let nonJustifies = 0;
+  let recuperes = 0;
   // Lot 40 : identifiants des faits écrits, dans l'ordre de `facts` (ancrage
   // des preuves des candidats Opération).
   const ids: number[] = [];
   const idOf = (r: unknown) => Number((r as Array<{ id: number | string }>)[0]?.id);
-  for (const f of facts) {
+  for (const brut of facts) {
+    // Carte #863 (B1) : règle métier AVANT TOUTE persistance (faits génériques et hors catalogue compris) —
+    // littéral conservé exactement ; absent mais récupérable sans ambiguïté depuis la preuve (citation, unité
+    // persistée) : RÉCUPÉRÉ tel qu'écrit ; sinon motif codifié VÉRIFIÉ ; aucun motif vérifiable : `UNJUSTIFIED`.
+    const provBrute = couche && brut.sourceUnitIds?.length ? brut.sourceUnitIds : null;
+    const motif = checkRawValueAbsence({ ...brut, sourceUnitIds: provBrute, sourceUnitTexts: textes });
+    opts.report?.push(motif);
+    if (motif.status === 'UNJUSTIFIED') nonJustifies++;
+    const f: DocumentFactRecord = motif.status === 'RECOVERED'
+      ? { ...brut, rawValue: motif.rawValue, location: { ...(brut.location ?? {}), rawValueSource: motif.from } }
+      : brut;
+    if (motif.status === 'RECOVERED') recuperes++;
     const base = [
       e.accountId, e.fileId, extractionId, f.factKey, f.subject, f.attribute, f.label,
       f.valueText, f.valueNumber, f.valueUnit, json(f.valueJson), f.normalizedValue, f.periodStart, f.periodEnd,
@@ -378,10 +425,6 @@ export async function insertFactRows(
     // Lot 34F (0297) : provenance fait → sourceUnitId[].
     const prov = couche && f.sourceUnitIds?.length ? f.sourceUnitIds : null;
     if (canonical && hasCanonicalFactData(f)) {
-      // Carte #838 (B1) : règle métier AVANT persistance — littéral conservé exactement, sinon motif codifié et
-      // VÉRIFIÉ sur la preuve du fait ; aucun motif vérifiable → `UNJUSTIFIED`, signalé (jamais un null muet).
-      const motif = checkRawValueAbsence({ ...f, sourceUnitIds: prov ?? f.sourceUnitIds ?? null });
-      if (motif.status === 'UNJUSTIFIED') nonJustifies++;
       const avecMotif = motifPret && motif.code !== null;
       const n = prov ? 39 : 38;
       ids.push(idOf(await tx.unsafe(
@@ -403,12 +446,20 @@ export async function insertFactRows(
         ] as never[],
       )));
     } else {
+      // Carte #863 (B1) : fait générique SANS donnée 0218 — motif d'absence écrit lui aussi (jamais un null muet).
+      // Colonnes 0218 absentes : un littéral récupéré ne peut pas être écrit — son emplacement prouvé l'est.
+      const code = motif.code ?? (motif.status === 'RECOVERED' ? (motif.from === 'EXCERPT' ? 'LITERAL_IN_EXCERPT' : 'SOURCE_UNIT_REFERENCE') : null);
+      const avecMotif = motifPret && code !== null;
       ids.push(idOf(await tx.unsafe(
-        `INSERT INTO document_facts (${FACT_INSERT_COLUMNS}${prov ? ', source_unit_ids' : ''}) VALUES (${FACT_INSERT_VALUES}${prov ? ',$24::text[]' : ''})
+        `INSERT INTO document_facts (${FACT_INSERT_COLUMNS}${prov ? ', source_unit_ids' : ''}${avecMotif ? ', raw_value_absence' : ''})
+         VALUES (${FACT_INSERT_VALUES}${prov ? ',$24::text[]' : ''}${avecMotif ? `,$${prov ? 25 : 24}` : ''})
          RETURNING id`,
-        [...base, ...(prov ? [prov] : [])] as never[],
+        [...base, ...(prov ? [prov] : []), ...(avecMotif ? [code] : [])] as never[],
       )));
     }
+  }
+  if (recuperes > 0) {
+    console.info(`[knowledge] fichier ${e.fileId} : ${recuperes} littéral(aux) récupéré(s) exactement depuis la preuve (carte #863, B1).`);
   }
   if (nonJustifies > 0) {
     console.warn(`[knowledge] fichier ${e.fileId} : ${nonJustifies} fait(s) sans valeur littérale ni motif vérifiable `

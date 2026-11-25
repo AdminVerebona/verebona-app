@@ -45,7 +45,7 @@ import {
 } from './output-resolution/provider-schema';
 import {
   decideSchemaUse, reportSchemaOutcome, reportServedModelVersion, schemaHeldRejected, noteSchemaUnsupported, coupleKeyId,
-  generationProfileHashOf,
+  generationProfileHashOf, qualificationStillValid,
   type SchemaCoupleKey, type SchemaDecision,
 } from './schema-compat';
 import { buildRepairPrompt, mergeRepair, repairPassEnabled, REPAIR_MAX_INPUT_CHARS } from './output-resolution/repair-pass';
@@ -53,16 +53,17 @@ import { classifyCallError, failureSignature, isGenericInvalidArgument, isTrunca
 import {
   emptyControlChain, providerFailureCategory,
   type CallDiagnostic, type ProviderCallMetadata, type ProviderAttemptTrace, type ProviderRequestTrace, type AttemptCostStatus,
+  type AttemptDispatch,
 } from './diagnostics/taxonomy';
 import { describeGenerationConfig } from './providers/gemini-generation-config';
 import { describeAttachments, attachmentTransport } from './providers/gemini-files';
 import { subjectRefOfIdempotencyKey, capturedRequestOf, type CallCaptureInput, type CapturedRequest } from '../telemetry/call-capture';
 import { recordCallDiagnostic } from './diagnostics/diagnostic.repository';
 import { getAiProvider } from './providers';
-import { resolvePrompt, resolveMasterPrompt, masterPromptVersionOf, loadMasterTemplate, MasterPromptError } from '../prompts/prompt-loader';
+import { resolvePrompt, resolveMasterPrompt, masterPromptVersionOf, loadMasterTemplate, masterTextFingerprint, MasterPromptError } from '../prompts/prompt-loader';
 import { resolveOperationConfig, composePrompt } from '../config/config-resolver';
 import { recordCallTrace } from '../telemetry/ai-trace.service';
-import { combineCostEvidence, costEvidenceOf } from './cost-evidence';
+import { attemptCost, costEvidenceOf, type CostEvidence } from './cost-evidence';
 import { buildIdempotencyKey, withIdempotency } from '../idempotency/idempotency.service';
 import { treatmentOfUseCase, isTechnicalUseCase, type Treatment } from '../config/treatments';
 import { trackAiLogicalRequest } from '../measure/ai-activity';
@@ -187,6 +188,12 @@ export class AiGateway {
       configVersionId: cfg.configVersionId,
       promptVersionId: configuredMasterText(op.useCaseCode, cfg) ? cfg.masterPromptVersionId ?? null : null,
     });
+    // Carte #863 (B1) : master du DÉPÔT — son EMPREINTE entre dans la version (clé d'idempotence, signature de
+    // configuration) : un prompt modifié ne sert jamais une sortie mise en cache sous l'ancien texte.
+    if (masterVersion.endsWith('@file')) {
+      const texte = await loadMasterTemplate(op.masterPromptCode, op.useCaseCode).catch(() => null);
+      if (texte) masterVersion = `${masterVersion}:${masterTextFingerprint(texte).slice(0, 12)}`;
+    }
     const sig = executionSignature(masterExecutionOf(op.masterPromptCode, op.useCaseCode, cfg));
     if (sig !== 'legacy') masterVersion = `${masterVersion}+${sig}`;
     return masterVersion;
@@ -628,7 +635,8 @@ export class AiGateway {
           throw Object.assign(
             new AiGatewayError(code === 'MODEL_UNAVAILABLE' ? 'MODEL_KNOWN_UNAVAILABLE' : 'MODEL_ADMISSION_UNVERIFIABLE',
               operationCode, message, { recoverable: true }),
-            { aiStage: 'availability_guard' },
+            // Carte #863 (C1) : refus AVANT le départ — jamais compté comme requête modèle.
+            { aiStage: 'availability_guard', gatewayDispatch: 'NOT_SENT_GUARD' as AttemptDispatch },
           );
         };
         const admission = await guardSend({
@@ -796,6 +804,12 @@ export class AiGateway {
       }
     }
     const decisions: FallbackDecision[] = [];
+    /**
+     * Carte #863 (C1, C2) — TOUTES les tentatives de l'exécution (rangs précédents, essais sans schéma,
+     * réparations, échec final), source unique du coût et du nombre de requêtes réelles rendus à l'appelant.
+     */
+    const executionAttempts: ProviderAttemptTrace[] = [];
+    const executionEvidence = (): CostEvidence => costEvidenceOf(executionAttempts);
     /** Échec (ou saut) qui conduit au rang suivant ; `null` : premier modèle à considérer. */
     let previous: { cause: FailureCause; model: string; truncatedAt: number | null } | null = null;
     let lastCause: FailureCause | null = null;
@@ -953,10 +967,17 @@ export class AiGateway {
             generation: built.ok ? { temperature: built.params.temperature } : null,
           }),
         };
-        const schemaDecision: SchemaDecision | null = providerSchema?.schema ? await decideSchemaUse(coupleKey) : null;
+        // Carte #863 (A1) : bail dimensionné sur la durée TOTALE de l'essai (requête avec schéma + nouvel essai éventuel).
+        const budgetEssai = timeoutMs * 2;
+        const schemaDecision: SchemaDecision | null = providerSchema?.schema ? await decideSchemaUse(coupleKey, Date.now(), { callBudgetMs: budgetEssai }) : null;
+        // Carte #863 (A1) : validité du bail revérifiée JUSTE avant l'envoi — un bail échu ne laisse jamais partir le
+        // schéma non qualifié en parallèle du nouveau détenteur (issue rendue sans conclusion, appel en JSON).
+        const bailEchu = Boolean(schemaDecision?.send && (schemaDecision.qualification || schemaDecision.fence?.until)
+          && !qualificationStillValid(schemaDecision, budgetEssai));
+        if (bailEchu && schemaDecision) reportSchemaOutcome(schemaDecision, { kind: 'INCONCLUSIVE' });
         // Schéma non transmissible (contrôle statique) : couple et motif tracés dans la matrice, jamais envoyé.
         if (providerSchema && !providerSchema.schema) noteSchemaUnsupported(coupleKey, providerSchema.omitted ?? 'unknown', getAppVersion());
-        const sendSchema = providerSchema?.schema && schemaDecision?.send ? providerSchema.schema : null;
+        const sendSchema = providerSchema?.schema && schemaDecision?.send && !bailEchu ? providerSchema.schema : null;
         const schemaOutcome = { reported: false };
         const attemptPrompt = `${withContract(!sendSchema)}${notice}`;
         const entree = estimerEntree(model, attemptPrompt, maxOutputTokens ?? null);
@@ -988,9 +1009,12 @@ export class AiGateway {
                 : !providerSchema?.schema ? providerSchema?.omitted ?? 'unknown'
                   // Carte #838 (A1, A2) : qualification réservée par une autre instance, ou mémoire illisible —
                   // motifs distincts d'un refus mémorisé (supervision : jamais comptés comme refus).
-                  : schemaDecision?.why === 'qualification_in_progress' ? 'qualification_in_progress'
-                    : schemaDecision?.why === 'memory_unavailable' ? 'memory_unavailable'
-                      : 'recent_rejection',
+                  : bailEchu ? 'qualification_lease_expired'
+                    : schemaDecision?.why === 'qualification_in_progress' ? 'qualification_in_progress'
+                      : schemaDecision?.why === 'memory_unavailable' ? 'memory_unavailable'
+                        // Carte #863 (A3) : requalification reportée — motif distinct d'un refus mémorisé.
+                        : schemaDecision?.why === 'requalification_deferred' ? 'requalification_deferred'
+                          : 'recent_rejection',
           compat: schemaDecision,
         });
 
@@ -1045,18 +1069,10 @@ export class AiGateway {
         }
 
         // Lot 115 (#784, D1) — chiffrage PAR TENTATIVE (analyse ET réparation, carte #838 C1) : jamais de 0 € supposé.
-        const costOfAttempt = (t: { inputTokens: number | null; outputTokens: number | null; thoughtsTokens: number | null }): { costMicros: number | null; costStatus: AttemptCostStatus } => {
-          const entrees = t.inputTokens ?? 0;
-          const sorties = (t.outputTokens ?? 0) + Math.max(0, t.thoughtsTokens ?? 0);
-          if (entrees === 0 && sorties === 0) {
-            // Consommation explicitement nulle rendue par le fournisseur ≠ absence de mesure.
-            return t.inputTokens === null && t.outputTokens === null
-              ? { costMicros: null, costStatus: 'UNKNOWN' }
-              : { costMicros: 0, costStatus: 'ZERO_REPORTED' };
-          }
-          const micros = calcCostMicros(model, entrees, sorties, op.provider);
-          return micros === null ? { costMicros: null, costStatus: 'NO_PRICE' } : { costMicros: micros, costStatus: 'OBSERVED' };
-        };
+        // Carte #863 (C2) : chiffrage CANONIQUE (`attemptCost`) — une composante absente n'est jamais un zéro
+        // (« 0 + manquant » ≠ zéro prouvé : PARTIAL, minimum), réflexion au tarif de sortie sans double compte.
+        const costOfAttempt = (t: { inputTokens: number | null; outputTokens: number | null; thoughtsTokens: number | null }): { costMicros: number | null; costStatus: AttemptCostStatus } =>
+          attemptCost(t, (entree, sortie) => calcCostMicros(model, entree, sortie, op.provider));
         const schemaProfile = {
           chars: providerSchema?.schema ? JSON.stringify(providerSchema.schema).length : null,
           shape: providerSchema?.shape ?? null,
@@ -1086,6 +1102,8 @@ export class AiGateway {
             trail, providerSchemaHash: psHash, diagnosticRetry: true,
             costOf: costOfAttempt,
             schemaProfile,
+            // Carte #863 (C1) : identité stable des tentatives (exécution, appel logique, phase, modèle, rang).
+            identity: { traceId, callIndex, phase: 'analysis', model, rank: modelRank, parentAttemptId: null },
           });
           // #776 : le fournisseur a répondu à la requête portant le schéma — couple qualifié par un appel RÉEL
           // (jamais par la réussite d'un essai sans schéma).
@@ -1095,9 +1113,11 @@ export class AiGateway {
           // Couple refusé dont la version servie a changé : le refus mémorisé ne commande plus les appels d'aujourd'hui.
           else if (providerSchema?.schema) reportServedModelVersion(coupleKey, servedModelVersion);
           if (soStatus === 'requested_schema' && !sendSchema) {
-            soStatus = schemaDecision?.why === 'qualification_in_progress' ? 'schema_skipped_qualification_in_progress'
-              : schemaDecision?.why === 'memory_unavailable' ? 'schema_skipped_memory_unavailable'
-                : 'schema_skipped_recent_rejection';
+            soStatus = bailEchu ? 'schema_skipped_qualification_lease_expired'
+              : schemaDecision?.why === 'qualification_in_progress' ? 'schema_skipped_qualification_in_progress'
+                : schemaDecision?.why === 'memory_unavailable' ? 'schema_skipped_memory_unavailable'
+                  : schemaDecision?.why === 'requalification_deferred' ? 'schema_skipped_requalification_deferred'
+                    : 'schema_skipped_recent_rejection';
           }
         } catch (raw) {
           // #776 : échec sans conclusion sur le schéma (délai, réseau, quota, 400 non levé par l'essai sans
@@ -1157,11 +1177,15 @@ export class AiGateway {
           const requests = withTrailKinds(sent.slice(attemptFrom), trail);
           const attemptMs = Date.now() - attemptStart;
           const elapsedMs = Date.now() - startedAt;
+          // Carte #863 (C1, C2) : tentatives de ce rang ajoutées à l'exécution ; coût de la ligne = PART CONNUE des
+          // tentatives (`null` : rien de chiffrable — jamais 0 € par défaut ; 0 : aucune requête partie ou zéro prouvé).
+          executionAttempts.push(...trail);
+          const preuveRang = costEvidenceOf(trail);
           const usageId = await recordCallTrace({
             ...baseTrace,
             // COST-005 : aucune réponse → rien de consommé (blocage : jetons réels).
             inputTokens: tokens.input, outputTokens: tokens.output,
-            costMicros: tokens.input || tokens.output ? calcCostMicros(model, tokens.input, tokens.output, op.provider) : 0,
+            costMicros: knownCostOf(preuveRang),
             // Lot 82C (LOG-05, R29) : durée PROPRE de la tentative (corrige le
             // cumul depuis le début de l'exécution) ; temps total à part.
             durationMs: attemptMs, executionElapsedMs: elapsedMs, status: 'error',
@@ -1189,6 +1213,7 @@ export class AiGateway {
           // Elle compte pour le modèle, pas comme échec complet de la chaîne.
           if (isAiGatewayError(e) && !e.recoverable) {
             noteGatewayOutcome({ attempts, chainSucceeded: null });
+            attachCostEvidence(e, executionEvidence());
             throw e;
           }
           continue;
@@ -1197,6 +1222,7 @@ export class AiGateway {
         // ── Sortie reçue : résolution progressive ─────────────────────────
         const analysisDuration = Date.now() - attemptStart;
         const analysisRequests = withTrailKinds(sent.slice(attemptFrom), trail);
+        executionAttempts.push(...trail);
         const repairFrom = sent.length;
         const meta = providerMetaOf(provider.name, model, out.meta, { input: out.inputTokens, output: out.outputTokens }, analysisDuration, maxOutputTokens, soStatus, null);
         // Lot 34D : validation avec le contrat runtime FIGÉ (celui de la génération).
@@ -1227,6 +1253,9 @@ export class AiGateway {
             // chiffrées comme celles de l'analyse, et requête fournisseur décrite sans contenu.
             trace: {
               providerSchemaHash: psHash, costOf: costOfAttempt, schemaProfile,
+              // Carte #863 (C1) : la réparation est un appel logique ENFANT (index suivant), ses tentatives ont pour
+              // parente la dernière tentative de l'analyse.
+              identity: { traceId, callIndex: callIndex + 1, phase: 'repair', model, rank: modelRank, parentAttemptId: trail[trail.length - 1]?.attemptId ?? null },
               providerRequest: providerRequestOf({
                 model, maxOutputTokens, reasoning, jsonResponse: true, sendSchema: schemaReparation, attachments: [],
                 generation: built.ok ? built.params : undefined, psHash, providerSchema,
@@ -1235,8 +1264,9 @@ export class AiGateway {
                 compat: null,
               }),
             },
+            // Carte #863 (A1) : refus constaté en réparation — issue SANS bail, fencée (jamais une écriture inconditionnelle).
             onSchemaRejected: (reason, cRefus) => reportSchemaOutcome(
-              { key: coupleKey, keyId: coupleKeyId(coupleKey), retest: false }, { kind: 'REJECTED', reason },
+              { key: coupleKey, keyId: coupleKeyId(coupleKey), retest: false, fence: { token: null, generation: null, until: null } }, { kind: 'REJECTED', reason },
               { httpStatus: cRefus.httpStatus, providerCode: cRefus.providerErrorCode, appVersion: getAppVersion() },
             ),
             discriminant, traceConfig, contract, schemaRefOf,
@@ -1257,7 +1287,11 @@ export class AiGateway {
         // dans `candidatesTokenCount`) sont facturés par Gemini au tarif de sortie —
         // inclus dans le coût ; `outputTokens` reste la sortie VISIBLE (journal),
         // le raisonnement est tracé à part (`providerMeta.thoughtsTokens`).
-        const costMicros = calcCostMicros(model, out.inputTokens, out.outputTokens + Math.max(0, Number(out.meta?.thoughtsTokens ?? 0) || 0), op.provider);
+        // Carte #863 (C2) : coût de la ligne d'analyse = part CONNUE de ses tentatives (essai refusé inclus) ; sans
+        // tentative tracée (fournisseur sans trace), chiffrage de la sortie comme avant.
+        const preuveAnalyse = costEvidenceOf(trail);
+        const costMicros = trail.length > 0 ? knownCostOf(preuveAnalyse)
+          : calcCostMicros(model, out.inputTokens, out.outputTokens + Math.max(0, Number(out.meta?.thoughtsTokens ?? 0) || 0), op.provider);
         const succeeded = final.ok;
         const elapsedAtTrace = Date.now() - startedAt;
         const diag = buildDiagnostic({
@@ -1344,13 +1378,13 @@ export class AiGateway {
           });
         }
         if (repairRun) {
+          executionAttempts.push(...repairRun.attempts);
           const repairUsage = await recordCallTrace({
             ...baseTrace,
             inputTokens: repairRun.inputTokens, outputTokens: repairRun.outputTokens,
-            // Colonne : comme l'analyse (0 sans consommation rendue, pour le statut tarifaire) ; la NATURE du coût
-            // — dont la part INCONNUE d'une tentative refusée — est portée par `providerAttempts` / `costEvidence`.
-            costMicros: repairRun.inputTokens || repairRun.outputTokens
-              ? calcCostMicros(model, repairRun.inputTokens, repairRun.outputTokens, op.provider) : 0,
+            // Carte #863 (C2) : part CONNUE des requêtes de la réparation (`null` : rien de chiffrable, jamais 0
+            // supposé) ; la NATURE du coût — dont la part inconnue — est portée par `providerAttempts` / `costEvidence`.
+            costMicros: knownCostOf(costEvidenceOf(repairRun.attempts)),
             // Carte #838 (C1) : chaque requête RÉELLEMENT envoyée par la réparation (refus du schéma, essai JSON)
             // est tracée avec sa phase, son HTTP, sa durée, ses jetons et son coût (ou INCONNU).
             providerRequest: repairRun.providerRequest ?? undefined, providerAttempts: repairRun.attempts,
@@ -1387,16 +1421,17 @@ export class AiGateway {
           noteGatewayOutcome({ attempts, chainSucceeded: true });
           const totalIn = out.inputTokens + (repairRun?.inputTokens ?? 0);
           const totalOut = out.outputTokens + (repairRun?.outputTokens ?? 0);
-          const totalCost = (costMicros ?? 0) + (repairRun ? calcCostMicros(model, repairRun.inputTokens, repairRun.outputTokens, op.provider) ?? 0 : 0);
-          // Carte #838 (C2) : `costMicros` reste la part CHIFFRÉE (compatibilité des appelants) ; la nature du coût
-          // de TOUTES les requêtes envoyées (analyse + réparation) dit si ce montant est exhaustif, nul prouvé,
-          // partiel ou inconnu — un coût inconnu n'est jamais présenté comme 0.
-          const preuveCout = combineCostEvidence(costEvidenceOf(trail), repairRun ? costEvidenceOf(repairRun.attempts) : null);
-          const statutCout = costMicros === null && preuveCout.status === 'OBSERVED' ? 'PARTIAL' as const : preuveCout.status;
+          // Carte #863 (C2) : coût de TOUTE l'exécution — rangs précédents en échec, essais sans schéma, réparation —
+          // `costMicros` n'en est que la part CHIFFRÉE (compatibilité des appelants) ; `costStatus` dit si elle est
+          // exhaustive, nulle prouvée, partielle, sans tarif ou inconnue. Sans tentative tracée : chiffrage de la sortie.
+          const preuveCout = executionAttempts.length > 0 ? executionEvidence()
+            : costEvidenceOf([{ costStatus: costMicros === null ? 'NO_PRICE' : 'OBSERVED', costMicros }]);
+          const totalCost = preuveCout.observedMicros;
           return {
             data: final.data as T, provider: provider.name, model, promptVersion, usedFallback,
             inputTokens: totalIn, outputTokens: totalOut,
-            costMicros: totalCost, costStatus: statutCout, costUnknownAttempts: preuveCout.unknownAttempts,
+            costMicros: totalCost, costStatus: preuveCout.status, costUnknownAttempts: preuveCout.unknownAttempts,
+            costEvidence: preuveCout, providerRequests: preuveCout.attempts,
             durationMs: Date.now() - startedAt, traceId, fromCache: false,
             outputRepairs: final.repairs,
             // Lot 111M : plafonds RÉELLEMENT appliqués et métadonnées du fournisseur
@@ -1416,9 +1451,9 @@ export class AiGateway {
         if (!first.ok && first.contractMismatch) {
           attempts.push({ model, succeeded: false });
           noteGatewayOutcome({ attempts, chainSucceeded: null });
-          throw new AiGatewayError('RUNTIME_CONTRACT_MISMATCH', operationCode, first.message, {
+          throw attachCostEvidence(new AiGatewayError('RUNTIME_CONTRACT_MISMATCH', operationCode, first.message, {
             recoverable: false, contractDetail: mismatchDetail(first.contractMismatch),
-          });
+          }), executionEvidence());
         }
 
         // ── Sortie inexploitable : échec de ce modèle ─────────────────────
@@ -1454,12 +1489,15 @@ export class AiGateway {
         modelsConsidered: decisions.length, modelsCalled: attempted, networkRequests: sent.length,
         fallbackRefused: decisions.filter((d) => !ADMITTED_REASONS.has(d.decision)).length,
       };
+      // Carte #863 (C1, C2) : coût et requêtes RÉELLES de toute l'exécution en échec, portés par l'erreur.
+      const preuveEchec = executionEvidence();
       if (chainOutcome({ lastCause, decisions, attempted }) === 'SUSPEND') {
         const cause = lastCause ?? 'UNKNOWN';
         const susp = new AiSuspendedError(operationCode,
           `Exécution suspendue sans écriture : aucun secours admissible après « ${CAUSE_POLICY[cause].label} ». ${failures.join(' — ')}`,
           cause, decisions as unknown as Array<Record<string, unknown>>, lastFailureCode, treatment);
         Object.defineProperty(susp, 'callStats', { value: callStats, enumerable: false, configurable: true });
+        attachCostEvidence(susp, preuveEchec);
         if (lastTransfer) Object.defineProperty(susp, 'transfer', { value: lastTransfer, enumerable: false, configurable: true });
         throw susp;
       }
@@ -1469,6 +1507,7 @@ export class AiGateway {
       Object.defineProperty(err, 'fallbackDecisions', { value: decisions, enumerable: false, configurable: true });
       Object.defineProperty(err, 'failureCause', { value: lastCause ?? null, enumerable: false, configurable: true });
       Object.defineProperty(err, 'callStats', { value: callStats, enumerable: false, configurable: true });
+      attachCostEvidence(err, preuveEchec);
       if (lastTransfer) Object.defineProperty(err, 'transfer', { value: lastTransfer, enumerable: false, configurable: true });
       throw err;
     } finally {
@@ -1506,6 +1545,8 @@ export class AiGateway {
       costOf: (t: { inputTokens: number | null; outputTokens: number | null; thoughtsTokens: number | null }) => { costMicros: number | null; costStatus: AttemptCostStatus };
       schemaProfile?: { chars: number | null; shape: string | null; properties: number | null };
       providerRequest?: ProviderRequestTrace;
+      /** Carte #863 (C1) : identité stable des tentatives de la réparation (appel enfant). */
+      identity?: AttemptIdentity;
     };
   }): Promise<RepairRun | null> {
     const { first } = p;
@@ -1532,11 +1573,17 @@ export class AiGateway {
         maxOutputTokens: p.maxOutputTokens, reasoning: p.reasoning, operationCode: p.operationCode,
         ...(p.generation ? { generation: p.generation } : {}),
         ...(p.traceConfig.task ? { task: p.traceConfig.task } : {}), jsonResponse: true, callKind: 'repair',
-      }, p.providerSchema, (s) => { soStatus = s; }, p.onSchemaRejected, undefined, {
+      }, p.providerSchema, (s) => { soStatus = s; }, p.onSchemaRejected,
+      // Carte #863 (C1) : 400 INVALID_ARGUMENT générique sur la réparation portant le schéma — même règle stricte
+      // que l'analyse (#437, `isGenericInvalidArgument`) : UN essai diagnostique sans schéma, MIME JSON conservé, le
+      // schéma du contrat restant dans le prompt de réparation. Jamais pour un autre motif, jamais en boucle.
+      prompt, {
         trail: attempts,
         providerSchemaHash: p.trace?.providerSchemaHash ?? null,
+        diagnosticRetry: p.providerSchema !== null,
         ...(p.trace?.costOf ? { costOf: p.trace.costOf } : {}),
         ...(p.trace?.schemaProfile ? { schemaProfile: p.trace.schemaProfile } : {}),
+        ...(p.trace?.identity ? { identity: p.trace.identity } : {}),
       });
     } catch (e) {
       const c = classifyCallError(e);
@@ -1705,10 +1752,23 @@ async function callWithSchemaFallback(
     costOf?: (t: { inputTokens: number | null; outputTokens: number | null; thoughtsTokens: number | null }) => { costMicros: number | null; costStatus: AttemptCostStatus };
     /** Lot 115 (#784, A, D1) : profil du schéma transmis, pour corréler un refus réel à une dimension documentée. */
     schemaProfile?: { chars: number | null; shape: string | null; properties: number | null };
+    /** Carte #863 (C1) : identité stable des tentatives (exécution, appel logique, phase, modèle, rang, parent). */
+    identity?: AttemptIdentity;
   } = {},
 ): Promise<ProviderCallOutput> {
   const trail = opts.trail;
-  const note = (a: Omit<ProviderAttemptTrace, 'step'>) => { trail?.push({ step: (trail?.length ?? 0) + 1, ...a }); };
+  const id = opts.identity ?? null;
+  let parent: string | null = id?.parentAttemptId ?? null;
+  const note = (a: Omit<ProviderAttemptTrace, 'step'>) => {
+    const step = (trail?.length ?? 0) + 1;
+    // Carte #863 (C1) : identifiant STABLE (exécution, appel logique, rang de tentative) et corrélation au parent.
+    const attemptId = id ? `${id.traceId}:${id.callIndex}:${step}` : undefined;
+    trail?.push({
+      step, ...a,
+      ...(id ? { attemptId, callIndex: id.callIndex, phase: id.phase, parentAttemptId: parent, model: id.model, rank: id.rank } : {}),
+    });
+    if (attemptId) parent = attemptId;
+  };
   const mime = (structured: boolean, i: ProviderCallInput) => (structured || i.jsonResponse ? 'application/json' : null);
   const chiffrage = (t: { inputTokens: number | null; outputTokens: number | null; thoughtsTokens: number | null }) =>
     (opts.costOf ? opts.costOf(t) : { costMicros: null, costStatus: 'UNKNOWN' as AttemptCostStatus });
@@ -1728,6 +1788,7 @@ async function callWithSchemaFallback(
         ...base, outcome: 'SUCCESS', httpStatus: null, providerErrorCode: null, family: null, durationMs: Date.now() - t0,
         ...jetons, totalTokens: out.meta?.totalTokens ?? null, ...chiffrage(jetons),
         servedModelVersion: out.meta?.modelVersion ?? null, providerErrorExcerpt: null,
+        dispatch: 'SENT',
       });
       return out;
     } catch (e) {
@@ -1742,12 +1803,20 @@ async function callWithSchemaFallback(
       const meta = (e as { providerMeta?: ProviderResponseMeta })?.providerMeta;
       const total = meta?.totalTokens ?? null;
       const pensees = meta?.thoughtsTokens ?? null;
+      // Carte #863 (C1) : départ RÉEL établi au point d'envoi (garde, construction, transfert, réseau sans réponse).
+      const dispatch = dispatchOf(e, c);
+      // Carte #863 (C2) : VENTILATION réelle rendue avec l'erreur (jetons d'entrée / de sortie) — chiffrée ; sinon
+      // coût INCONNU (le total seul n'est jamais ventilé). Une requête non partie n'a aucun coût.
+      const ventilee = errorTokensOf(e);
+      const cout = dispatch !== 'SENT' && dispatch !== 'DEPARTURE_UNPROVEN' ? { costMicros: null, costStatus: 'NOT_SENT' as AttemptCostStatus }
+        : ventilee ? chiffrage({ ...ventilee, thoughtsTokens: pensees }) : { costMicros: null, costStatus: 'UNKNOWN' as AttemptCostStatus };
       note({
         ...base, outcome: 'FAILED', httpStatus: c.httpStatus, providerErrorCode: c.providerErrorCode, family: c.family, durationMs: Date.now() - t0,
-        inputTokens: null, outputTokens: null, thoughtsTokens: pensees, totalTokens: total,
-        costMicros: null, costStatus: 'UNKNOWN',
+        inputTokens: ventilee?.inputTokens ?? null, outputTokens: ventilee?.outputTokens ?? null, thoughtsTokens: pensees, totalTokens: total,
+        ...cout,
         servedModelVersion: meta?.modelVersion ?? null,
         providerErrorExcerpt: attemptErrorExcerpt(c.providerErrorMessage ?? (e instanceof Error ? e.message : String(e))),
+        dispatch,
       });
       throw e;
     }
@@ -1781,6 +1850,54 @@ async function callWithSchemaFallback(
     setStatus('schema_rejected_retried_without');
     return out;
   }
+}
+
+/** Carte #863 (C1) : identité stable des tentatives d'un appel logique. */
+interface AttemptIdentity {
+  traceId: string; callIndex: number; phase: 'analysis' | 'repair'; model: string; rank: string | null; parentAttemptId: string | null;
+}
+
+/**
+ * Carte #863 (C1) — DÉPART RÉEL d'une tentative en échec (pur) : refus de la
+ * garde (marqué par le port `capturing`), erreur locale de construction,
+ * transfert de pièce jointe sans génération, erreur réseau sans réponse
+ * (départ non prouvable) ; sinon la requête est partie (réponse d'erreur du
+ * fournisseur, délai, quota, refus d'authentification…).
+ */
+export function dispatchOf(e: unknown, c: Pick<ClassifiedFailure, 'family' | 'httpStatus'> & { stage?: string | null }): AttemptDispatch {
+  const marque = (e as { gatewayDispatch?: AttemptDispatch } | null)?.gatewayDispatch;
+  if (marque) return marque;
+  if ((e as { aiStage?: string } | null)?.aiStage === 'availability_guard') return 'NOT_SENT_GUARD';
+  if ((!isAiGatewayError(e) && isDeterministicLocalError(e)) || c.stage === 'request_build') return 'NOT_SENT_BUILD';
+  if (c.stage === 'attachment_transfer') return 'TRANSFER_NO_GENERATION';
+  if (c.family === 'NETWORK_ERROR' && (c.httpStatus === null || c.httpStatus === undefined)) return 'DEPARTURE_UNPROVEN';
+  return 'SENT';
+}
+
+/** Carte #863 (C2) : jetons ventilés rendus avec une erreur (entrée et/ou sortie) ; `null` : aucune ventilation. */
+function errorTokensOf(e: unknown): { inputTokens: number | null; outputTokens: number | null } | null {
+  const x = e as { inputTokens?: unknown; outputTokens?: unknown } | null;
+  const i = typeof x?.inputTokens === 'number' && Number.isFinite(x.inputTokens) ? x.inputTokens : null;
+  const o = typeof x?.outputTokens === 'number' && Number.isFinite(x.outputTokens) ? x.outputTokens : null;
+  return i === null && o === null ? null : { inputTokens: i, outputTokens: o };
+}
+
+/**
+ * Carte #863 (C2) : montant d'une ligne d'usage — la part CONNUE ; `null` quand rien n'est chiffrable
+ * (`UNKNOWN`, `NO_PRICE`) : un coût inconnu n'est jamais écrit 0. `NONE` (rien n'est parti) : 0 réel.
+ */
+function knownCostOf(e: CostEvidence): number | null {
+  return e.status === 'UNKNOWN' || e.status === 'NO_PRICE' ? null : e.observedMicros;
+}
+
+/** Carte #863 (C1, C2) : nature du coût et requêtes réelles de l'exécution, portées par une erreur (non énumérables). */
+function attachCostEvidence<E>(err: E, ev: CostEvidence): E {
+  if (err && typeof err === 'object') {
+    try {
+      Object.defineProperty(err, 'costEvidence', { value: ev, enumerable: false, configurable: true });
+    } catch { /* objet gelé : sans preuve de coût */ }
+  }
+  return err;
 }
 
 /**

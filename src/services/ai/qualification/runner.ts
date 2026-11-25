@@ -24,6 +24,7 @@
  * de RÉGLAGE du couple, jamais une indisponibilité du modèle (R45).
  * ══════════════════════════════════════════════════════════════════════════
  */
+import { exhaustiveCostMicros } from '../gateway/cost-evidence';
 import type { AiGatewayRequest, AiGatewayResponse } from '../gateway/types';
 import type { AiJobContext } from '../queue/job-context';
 import type { MasterFileReader } from '../governance/master-corpus/cases';
@@ -187,9 +188,11 @@ export async function runCoupleCases(p: {
           // costCapExempt : plafond du COMPTE technique seulement (C-Q10) — jamais l'enveloppe d'amélioration, réservée ci-dessus.
           firstModelIndex: p.couple.rank, maxModelAttempts: 1, costCapExempt: true, triggerCode: 'qualification',
         }, { ...ctx, improvementAttemptKey: reservationId != null ? idempotencyKey : null });
-        await regler({ sent: !res.fromCache, costMicros: res.fromCache ? 0 : Number.isFinite(res.costMicros) ? res.costMicros : null, traceId: res.traceId });
+        // Carte #863 (C2) : un coût PARTIEL ou INCONNU n'est jamais réglé ni mesuré comme un total (`null` : inconnu).
+        const coutExhaustif = exhaustiveCostMicros(res);
+        await regler({ sent: !res.fromCache, costMicros: res.fromCache ? 0 : coutExhaustif, traceId: res.traceId });
         const vu: Observation = {
-          ...base, durationMs: res.durationMs, costMicros: Number.isFinite(res.costMicros) ? res.costMicros : null, servedModel: res.model,
+          ...base, durationMs: res.durationMs, costMicros: coutExhaustif, servedModel: res.model,
           traceId: res.traceId, observedSha256: outputSha256(res.data),
           matchesHistorical: c.historicalOutput == null ? null : outputSha256(res.data) === outputSha256(c.historicalOutput),
         };

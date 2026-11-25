@@ -6,7 +6,7 @@
  * empreintes.
  */
 import { SCHEMA_COMPAT_POLICY, SCHEMA_COMPAT_STATE_LABELS, type SchemaCompatState } from './policy';
-import { getSchemaCostViews, getSchemaUsageReport, type SchemaCostViews, type SchemaUsageFilters, type SchemaUsageReport } from './supervision';
+import { getSchemaCostDetails, getSchemaCostViews, getSchemaUsageReport, type SchemaCostDetails, type SchemaCostViews, type SchemaUsageFilters, type SchemaUsageReport } from './supervision';
 import { staticSchemaMatrix, isCurrentCouple, coupleRoutingStatus, type CoupleRoutingStatus, type StaticSchemaRow } from './static-matrix';
 
 /** Libellés du statut de routage (BO) — à valider par le PO. */
@@ -53,6 +53,8 @@ export interface SchemaCompatOverview {
   usage: SchemaUsageReport;
   /** Carte #838 (C2) : vues analyse / réparation / total, coût avec sa part inconnue. */
   costViews: SchemaCostViews;
+  /** Carte #863 (C2) : détail parent / enfant des exécutions (paginé ; les totaux des vues n'en dépendent pas). */
+  costDetails: SchemaCostDetails;
   /** Carte #838 (A2) : mode dégradé de la mémoire de CETTE instance (décisions sans schéma faute de lecture). */
   memoryDegraded: ReturnType<typeof import('./index').schemaMemoryDegradedStats> | null;
   /** Matrice mémorisée ; `null` : migration 1710 absente. */
@@ -67,10 +69,11 @@ export interface SchemaCompatOverview {
 
 const iso = (t: number | null): string | null => (t === null ? null : new Date(t).toISOString());
 
-export async function getSchemaCompatOverview(f: SchemaUsageFilters, now: Date = new Date()): Promise<SchemaCompatOverview> {
+export async function getSchemaCompatOverview(f: SchemaUsageFilters & { page?: number }, now: Date = new Date()): Promise<SchemaCompatOverview> {
   const [S, { getAppVersion }] = await Promise.all([import('./store'), import('../../telemetry/execution-context')]);
   const usage = await getSchemaUsageReport(f, now);
   const costViews = await getSchemaCostViews(f, now);
+  const costDetails = await getSchemaCostDetails({ ...f, page: f.page ?? 0 }, now);
   const memoryDegraded = await import('./index').then((m) => m.schemaMemoryDegradedStats()).catch(() => null);
   const rows = await S.listCouples({ operationCode: f.operationCode ?? null, model: f.model ?? null }).catch(() => null);
   let openAlerts: number | null = null;
@@ -87,7 +90,7 @@ export async function getSchemaCompatOverview(f: SchemaUsageFilters, now: Date =
   }
   const t = now.getTime();
   return {
-    usage, costViews, memoryDegraded,
+    usage, costViews, costDetails, memoryDegraded,
     couples: rows === null ? null : rows.map((r) => ({
       keyId: r.keyId, ...r.key, generationProfileHash: r.key.generationProfileHash ?? '-',
       servedModelVersion: r.servedModelVersion ?? null, versionUncertain: r.versionUncertain === true,

@@ -23,9 +23,12 @@ export async function GET(req: NextRequest) {
   const model = /^[A-Za-z0-9._:\/-]{1,120}$/.test(q.get('model') ?? '') ? q.get('model') : null;
   const cv = q.get('contractVersion');
   const contractVersion = cv && /^\d{1,4}$/.test(cv) ? Number(cv) : null;
+  // Carte #863 (C2) : page du détail parent / enfant (les totaux des vues n'en dépendent pas).
+  const pg = q.get('page');
+  const page = pg && /^\d{1,4}$/.test(pg) ? Number(pg) : 0;
   try {
     const { getSchemaCompatOverview } = await import('@/services/ai/gateway/schema-compat/overview');
-    return NextResponse.json(await getSchemaCompatOverview({ days, operationCode, model, contractVersion }));
+    return NextResponse.json(await getSchemaCompatOverview({ days, operationCode, model, contractVersion, page }));
   } catch (e) {
     return toErrorResponse(e, 'GET /api/admin/ai/schema-compatibility');
   }

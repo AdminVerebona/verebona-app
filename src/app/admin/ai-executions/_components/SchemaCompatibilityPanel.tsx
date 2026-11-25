@@ -12,6 +12,16 @@
  * couple (état, motif, prochain essai) et la projection courante de chaque
  * contrat. Compteurs, codes, versions et empreintes seulement.
  * Desktop et mobile : cartes empilées, aucun tableau à défilement horizontal.
+ *
+ * Carte #863 (C2, AC17/AC19) : trois vues de COÛT — « Analyses »,
+ * « Réparations », « Toutes les tentatives » — sur les mêmes filtres (période,
+ * type d'appel, modèle, version du contrat) : appels logiques, requêtes
+ * réellement envoyées, minimum chiffré, inconnues (nombre et part), zéros
+ * prouvés ; lecture indisponible, aucun envoi et coût inconnu sont trois
+ * affichages distincts (jamais « 0 € » pour un coût inconnu) ; détail parent /
+ * enfant paginé avec le coût de chaque tentative. Les indicateurs historiques
+ * sont désignés « analyse seule ». Les raisons de dégradation et de
+ * réservation sont affichées à part des refus et du « non demandé ».
  */
 import { useCallback, useEffect, useState, type ReactNode } from 'react';
 import { toast } from 'sonner';
@@ -26,6 +36,29 @@ interface Counts {
   retests: number; finalSuccess: number; providerRequests: number; inputTokens: number; outputTokens: number; costMicros: number | null; failedAttemptMs: number;
   /** Lot 115 (#784, D1) : tentatives par nature de coût — observé, 0 € explicitement rendu, inconnu. */
   attemptsCostObserved: number; attemptsCostZero: number; attemptsCostUnknown: number;
+  /** Carte #838 (A1, A2) / #863 (A3) : sans schéma pour bail détenu ailleurs, mémoire indisponible, report de requalification. */
+  skippedQualificationInProgress?: number; skippedMemoryUnavailable?: number; skippedRequalificationDeferred?: number;
+  /** Carte #863 (C1) : appels historiques sans détail (requêtes inconnues), tentatives non parties. */
+  callsWithoutRequestDetail?: number; attemptsNotSent?: number;
+}
+/** Carte #863 (C2) : vue de coût d'une famille d'appels (analyses, réparations, toutes tentatives). */
+export interface CostView {
+  calls: number; providerRequests: number; finalSuccess: number;
+  attemptsCostObserved: number; attemptsCostZero: number; attemptsCostUnknown: number; observedCostMicros: number;
+  costStatus: 'OBSERVED' | 'ZERO_REPORTED' | 'PARTIAL' | 'NO_PRICE' | 'UNKNOWN' | 'NONE'; unknownShare: number | null;
+  attemptsCostPartial?: number; attemptsNoPrice?: number; attemptsNotSent?: number; attemptsUnproven?: number;
+  attemptsDispatchUndetermined?: number; callsWithoutDetail?: number;
+}
+export interface CostViews { views: { analysis: CostView; repair: CostView; total: CostView } | null; unavailable: string | null }
+interface DetailAttempt {
+  attemptId: string | null; step: number; kind: string; phase: string | null; parentAttemptId: string | null; dispatch: string | null;
+  outcome: string; httpStatus: number | null; durationMs: number | null; inputTokens: number | null; outputTokens: number | null;
+  thoughtsTokens: number | null; costMicros: number | null; costStatus: string | null; responseSchemaSent: boolean;
+}
+interface DetailCall { usageEventId: number; callKind: 'analysis' | 'repair'; parentCallIndex: number | null; model: string; status: string; costMicros: number | null; attempts: DetailAttempt[] }
+export interface CostDetails {
+  executions: Array<{ traceId: string; operationCode: string; createdAt: string; calls: DetailCall[] }>;
+  page: number; pageSize: number; hasMore: boolean; unavailable: string | null;
 }
 interface Group extends Counts {
   operationCode: string; model: string; contractId: string | null; contractVersion: number | null; schemaHash: string | null;
@@ -59,6 +92,10 @@ interface Overview {
   };
   couples: Couple[] | null; staticMatrix: StaticRow[]; openAlerts: number | null; appVersion: string | null;
   policy: { version: number; firstRetestMs: number; retestAfterQualifiedMs: number; maxRetestMs: number };
+  /** Carte #863 (C2) : vues de coût et détail parent / enfant (absents : serveur antérieur). */
+  costViews?: CostViews; costDetails?: CostDetails;
+  /** Carte #838 / #863 (A2) : décisions sans schéma de cette instance, par cause. */
+  memoryDegraded?: { decisions: number; byCause: Record<string, number>; sharedHealthy: boolean; byWhy?: Record<string, number> } | null;
 }
 interface Bilan {
   examined: number; resolved: Record<string, number>; keptActive: number; keptUndetermined: number; raised: number; unavailable: boolean;
@@ -67,11 +104,132 @@ interface Bilan {
   before: { openAlerts: number | null }; after: { openAlerts: number | null };
   /** Lot 115 (#784, E3) : constat de coordination avec les alertes de couverture T1 (#775), lecture seule. */
   coverageCoordination?: { openCoverageAnomalies: number | null; openCoverageAnomaliesAfter: number | null; unchanged: boolean };
+  /** Carte #863 (D1) : statut fidèle du passage et bilan cumulé du cycle. */
+  checkpoint?: { status: string; cycle: number | null; cycleCompleted: boolean; lastError?: string | null } | null;
+  cycleTotals?: { examined: number; failures: number; retries: number } | null;
 }
+
+/** Carte #863 (D1) : libellés des statuts d'un passage de réévaluation (à valider par le PO). */
+const STATUT_PASSAGE: Record<string, string> = {
+  RAN: 'passage exécuté', LEASE_HELD: 'une autre instance réévalue déjà (rien fait ici)', LEASE_LOST: 'passage interrompu : reprise par une autre instance',
+  INTERRUPTED: 'passage interrompu sur erreur : reprise au dernier point sûr', UNAVAILABLE: 'point de reprise indisponible (migration absente)',
+  NOTHING_TO_DO: 'aucun cycle dû',
+};
 
 const pct = (v: number | null): string => (v === null ? 'non mesurable' : `${(v * 100).toLocaleString('fr-FR', { maximumFractionDigits: 1 })} %`);
 const euros = (micros: number | null): string => (micros === null ? 'non calculable' : `${(micros / 1_000_000).toLocaleString('fr-FR', { minimumFractionDigits: 4, maximumFractionDigits: 4 })} €`);
 const heures = (ms: number): string => `${Math.round(ms / 3_600_000)} h`;
+
+/**
+ * Carte #863 (C2) — montant d'une vue selon la NATURE de son coût : un coût inconnu n'est JAMAIS « 0 € »,
+ * un minimum est dit minimum, un zéro n'est affiché comme tel que s'il est prouvé. Pur.
+ */
+export function costLabel(v: Pick<CostView, 'costStatus' | 'observedCostMicros'>): string {
+  switch (v.costStatus) {
+    case 'NONE': return 'aucun envoi';
+    case 'UNKNOWN': return 'inconnu';
+    case 'NO_PRICE': return 'inconnu (tarif absent)';
+    case 'ZERO_REPORTED': return '0 € (zéro prouvé par le fournisseur)';
+    case 'PARTIAL': return `au moins ${euros(v.observedCostMicros)} (part inconnue)`;
+    default: return `${euros(v.observedCostMicros)} (toutes requêtes chiffrées)`;
+  }
+}
+
+/** Carte #863 (C2) : coût d'UNE tentative (statut individuel). Pur. */
+function attemptCostLabel(a: Pick<DetailAttempt, 'costStatus' | 'costMicros' | 'dispatch'>): string {
+  if (a.dispatch && a.dispatch !== 'SENT' && a.dispatch !== 'DEPARTURE_UNPROVEN') return 'non envoyée (aucun coût)';
+  if (a.dispatch === 'DEPARTURE_UNPROVEN') return 'départ non prouvable · coût inconnu';
+  if (a.costStatus === 'OBSERVED' && a.costMicros !== null) return euros(a.costMicros);
+  if (a.costStatus === 'ZERO_REPORTED') return '0 € (prouvé)';
+  if (a.costStatus === 'PARTIAL' && a.costMicros !== null) return `au moins ${euros(a.costMicros)}`;
+  if (a.costStatus === 'NO_PRICE') return 'inconnu (tarif absent)';
+  return 'inconnu';
+}
+
+export type CostViewTab = 'analysis' | 'repair' | 'total';
+const ONGLETS: ReadonlyArray<[CostViewTab, string]> = [['analysis', 'Analyses'], ['repair', 'Réparations'], ['total', 'Toutes les tentatives']];
+
+/**
+ * Carte #863 (C2) — trois vues de coût (« Analyses », « Réparations », « Toutes les tentatives »), mêmes filtres que
+ * le reste du panneau ; détail parent / enfant de la page courante. Présentation pure (testable sans réseau).
+ */
+export function SchemaCostViewsSection({ costViews, costDetails, initialTab = 'total', onPage }: {
+  costViews: CostViews | undefined; costDetails?: CostDetails; initialTab?: CostViewTab; onPage?: (page: number) => void;
+}) {
+  const [onglet, setOnglet] = useState<CostViewTab>(initialTab);
+  if (!costViews) return null;
+  const v = costViews.views?.[onglet] ?? null;
+  const appels = (costDetails?.executions ?? []).map((x) => ({
+    ...x, calls: x.calls.filter((c) => onglet === 'total' || c.callKind === onglet),
+  })).filter((x) => x.calls.length > 0);
+  return (
+    <div className="rounded-xl border border-[color:var(--border-subtle)] bg-[color:var(--bg-card)] p-4 space-y-2 min-w-0" data-testid="schema-cost-views">
+      <p className="text-sm font-medium text-[color:var(--text-primary)]">Coût des requêtes envoyées</p>
+      <div className="flex flex-wrap gap-2" role="tablist" aria-label="Vue de coût">
+        {ONGLETS.map(([cle, libelle]) => (
+          <Button key={cle} size="sm" variant={onglet === cle ? 'default' : 'outline'} className="min-h-[44px] sm:min-h-0"
+            role="tab" aria-selected={onglet === cle} data-testid={`schema-cost-tab-${cle}`} onClick={() => setOnglet(cle)}>{libelle}</Button>
+        ))}
+      </div>
+      {costViews.unavailable !== null && (
+        <p className="text-sm text-[color:var(--text-warning)] break-words" data-testid="schema-cost-unavailable">
+          Lecture des coûts indisponible ({costViews.unavailable}) : aucun montant n’est affiché plutôt qu’un zéro trompeur.
+        </p>
+      )}
+      {costViews.unavailable === null && v && v.costStatus === 'NONE' && (
+        <p className="text-sm text-[color:var(--text-muted)]" data-testid="schema-cost-none">Aucune requête envoyée sur la période pour ces filtres.</p>
+      )}
+      {costViews.unavailable === null && v && v.costStatus !== 'NONE' && (
+        <div className="space-y-0.5" data-testid={`schema-cost-view-${onglet}`}>
+          <Ligne label="Coût">{costLabel(v)}</Ligne>
+          <Ligne label="Appels logiques">{v.calls} · réussite finale {v.finalSuccess}</Ligne>
+          <Ligne label="Requêtes réellement envoyées">{v.providerRequests}{(v.attemptsDispatchUndetermined ?? 0) > 0 ? ` (dont ${v.attemptsDispatchUndetermined} tracée(s) avant le suivi du départ)` : ''}</Ligne>
+          <Ligne label="Minimum chiffré">{v.costStatus === 'UNKNOWN' || v.costStatus === 'NO_PRICE' ? 'aucun montant chiffrable' : euros(v.observedCostMicros)}</Ligne>
+          <Ligne label="Coût inconnu">{v.attemptsCostUnknown} requête(s) · part {pct(v.unknownShare)}{(v.attemptsCostPartial ?? 0) > 0 ? ` · dont ${v.attemptsCostPartial} partiellement chiffrée(s)` : ''}{(v.attemptsNoPrice ?? 0) > 0 ? ` · dont ${v.attemptsNoPrice} sans tarif` : ''}</Ligne>
+          <Ligne label="Zéros prouvés">{v.attemptsCostZero} requête(s) à 0 € rendu par le fournisseur</Ligne>
+          {((v.attemptsNotSent ?? 0) > 0 || (v.attemptsUnproven ?? 0) > 0 || (v.callsWithoutDetail ?? 0) > 0) && (
+            <Ligne label="Hors requêtes réelles">{v.attemptsNotSent ?? 0} tentative(s) non envoyée(s) (garde, construction, transfert) · {v.attemptsUnproven ?? 0} départ(s) non prouvable(s) · {v.callsWithoutDetail ?? 0} appel(s) historique(s) sans détail (nombre de requêtes inconnu)</Ligne>
+          )}
+        </div>
+      )}
+      {costDetails && costDetails.unavailable === null && appels.length > 0 && (
+        <details>
+          <summary className="cursor-pointer text-xs text-[color:var(--text-secondary)] min-h-[44px] sm:min-h-0 flex items-center">Détail par exécution (page {costDetails.page + 1})</summary>
+          <div className="mt-1 space-y-2">
+            {appels.map((x) => (
+              <div key={x.traceId} className="rounded-lg border border-[color:var(--border-subtle)] p-3 space-y-0.5 min-w-0" data-testid="schema-cost-execution">
+                <p className="text-xs text-[color:var(--text-primary)] break-words">{x.operationCode} · {formatDateTime(x.createdAt)} · exécution {x.traceId.slice(0, 8)}</p>
+                {x.calls.map((c) => (
+                  <div key={c.usageEventId} className={c.callKind === 'repair' ? 'pl-3 border-l border-[color:var(--border-subtle)]' : ''}>
+                    <Ligne label={c.callKind === 'repair' ? `Réparation (enfant de l’appel n° ${c.parentCallIndex ?? '?'})` : 'Analyse'}>
+                      {c.model} · {c.status === 'success' ? 'réussite' : 'échec'} · {c.attempts.length === 0 ? 'détail des requêtes non tracé' : `${c.attempts.length} tentative(s)`}
+                    </Ligne>
+                    {c.attempts.map((a) => (
+                      <p key={a.attemptId ?? `${c.usageEventId}-${a.step}`} className="text-xs text-[color:var(--text-secondary)] break-words" data-testid="schema-cost-attempt">
+                        {a.step}. {a.kind}{a.responseSchemaSent ? ' (schéma)' : ''} · {a.outcome === 'SUCCESS' ? 'réponse' : `échec${a.httpStatus ? ` HTTP ${a.httpStatus}` : ''}`}
+                        {a.durationMs !== null ? ` · ${a.durationMs} ms` : ''} · jetons {a.inputTokens ?? '?'} / {a.outputTokens ?? '?'}{a.thoughtsTokens ? ` + ${a.thoughtsTokens} réflexion` : ''} · {attemptCostLabel(a)}
+                      </p>
+                    ))}
+                  </div>
+                ))}
+              </div>
+            ))}
+          </div>
+        </details>
+      )}
+      {costDetails?.unavailable && <p className="text-xs text-[color:var(--text-warning)] break-words">Détail des exécutions indisponible ({costDetails.unavailable}).</p>}
+      {costDetails && onPage && (costDetails.page > 0 || costDetails.hasMore) && (
+        <div className="flex gap-2">
+          <Button size="sm" variant="outline" className="min-h-[44px] sm:min-h-0" disabled={costDetails.page === 0} onClick={() => onPage(costDetails.page - 1)}>Page précédente</Button>
+          <Button size="sm" variant="outline" className="min-h-[44px] sm:min-h-0" disabled={!costDetails.hasMore} onClick={() => onPage(costDetails.page + 1)}>Page suivante</Button>
+        </div>
+      )}
+      <p className="text-xs text-[color:var(--text-muted)] break-words">
+        Les totaux portent sur toute la période filtrée, indépendamment de la page de détail. « Toutes les tentatives » = analyses + réparations, sans doublon.
+      </p>
+    </div>
+  );
+}
 
 /** Motifs d'état (libellés à valider par le PO). */
 const MOTIF: Record<string, string> = {
@@ -101,6 +259,8 @@ export function SchemaCompatibilityPanel({ initialOperation = '' }: { initialOpe
   const [loading, setLoading] = useState(false);
   const [busy, setBusy] = useState(false);
   const [bilan, setBilan] = useState<Bilan | null>(null);
+  // Carte #863 (C2) : page du détail parent / enfant (les totaux n'en dépendent pas).
+  const [page, setPage] = useState(0);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -109,13 +269,14 @@ export function SchemaCompatibilityPanel({ initialOperation = '' }: { initialOpe
       if (operation) q.set('operation', operation);
       if (model) q.set('model', model);
       if (contractVersion) q.set('contractVersion', contractVersion);
+      if (page > 0) q.set('page', String(page));
       setData(await apiClient.get<Overview>(`/api/admin/ai/schema-compatibility?${q}`));
     } catch {
       toast.error('Suivi des schémas structurés indisponible.');
     } finally {
       setLoading(false);
     }
-  }, [days, operation, model, contractVersion]);
+  }, [days, operation, model, contractVersion, page]);
   useEffect(() => { void load(); }, [load]);
 
   const reevaluer = async () => {
@@ -177,11 +338,15 @@ export function SchemaCompatibilityPanel({ initialOperation = '' }: { initialOpe
               ['Refus HTTP 400 avec schéma', String(t.schemaRefused400), `${pct(t.rates.refusal400Rate)} des requêtes portant le schéma`],
               ['Nouveaux essais sans schéma', String(t.retriesWithoutSchema), `${t.answeredAfterRetry} appel(s) ont abouti ainsi`],
               ['Sans schéma : refus mémorisé', String(t.skippedKnownRejection), `${t.omittedStatic} pour motif statique · ${t.notRequested} non demandé`],
-              ['Réussite finale', `${t.finalSuccess} / ${t.calls}`, 'appels d’analyse ayant sollicité le fournisseur'],
-              ['Requêtes fournisseur réelles', String(t.providerRequests), `${t.rates.requestsPerCall ?? '—'} par appel · ${t.retests} essai(s) de réexamen`],
-              ['Jetons', `${t.inputTokens.toLocaleString('fr-FR')} / ${t.outputTokens.toLocaleString('fr-FR')}`, 'entrée / sortie'],
-              ['Coût confirmé', euros(t.costMicros),
-                `${t.attemptsCostUnknown} tentative(s) au coût inconnu · ${t.attemptsCostZero} à 0 € rendu · ${Math.round(t.failedAttemptMs / 1000)} s dans des requêtes refusées`],
+              // Carte #863 (A1-A3) : réservation, mémoire indisponible et report — jamais confondus avec un refus ou « non demandé ».
+              ['Sans schéma : réservation ou mémoire', String((t.skippedQualificationInProgress ?? 0) + (t.skippedMemoryUnavailable ?? 0) + (t.skippedRequalificationDeferred ?? 0)),
+                `${t.skippedQualificationInProgress ?? 0} essai réservé par une autre instance · ${t.skippedMemoryUnavailable ?? 0} mémoire indisponible · ${t.skippedRequalificationDeferred ?? 0} requalification reportée`],
+              ['Réussite finale (analyse seule)', `${t.finalSuccess} / ${t.calls}`, 'appels d’analyse ayant sollicité le fournisseur'],
+              ['Requêtes fournisseur réelles (analyse seule)', String(t.providerRequests),
+                `${t.rates.requestsPerCall ?? '—'} par appel · ${t.retests} essai(s) de réexamen${(t.callsWithoutRequestDetail ?? 0) > 0 ? ` · ${t.callsWithoutRequestDetail} appel(s) historique(s) sans détail` : ''}`],
+              ['Jetons (analyse seule)', `${t.inputTokens.toLocaleString('fr-FR')} / ${t.outputTokens.toLocaleString('fr-FR')}`, 'entrée / sortie'],
+              ['Coût confirmé (analyse seule)', euros(t.costMicros),
+                `${t.attemptsCostUnknown} tentative(s) au coût inconnu · ${t.attemptsCostZero} à 0 € rendu · ${Math.round(t.failedAttemptMs / 1000)} s dans des requêtes refusées — coût complet : vues ci-dessous`],
               ['Latence', `P50 ${t.durationP50Ms ?? '—'} ms · P95 ${t.durationP95Ms ?? '—'} ms`, 'sur l’ensemble de la période filtrée'],
             ] as const).map(([titre, valeur, detail]) => (
               <div key={titre} className="rounded-lg border border-[color:var(--border-subtle)] p-3 min-w-0">
@@ -194,9 +359,18 @@ export function SchemaCompatibilityPanel({ initialOperation = '' }: { initialOpe
         )}
       </div>
 
+      {/* Carte #863 (C2) : vues de coût Analyses / Réparations / Toutes les tentatives, mêmes filtres. */}
+      {data?.costViews && <SchemaCostViewsSection costViews={data.costViews} costDetails={data.costDetails} onPage={setPage} />}
+      {data?.memoryDegraded && data.memoryDegraded.decisions > 0 && (
+        <p className="text-xs text-[color:var(--text-warning)] break-words" data-testid="schema-memory-degraded">
+          Mode dégradé de cette instance : {data.memoryDegraded.decisions} appel(s) sans schéma faute de mémoire prouvable
+          ({Object.entries(data.memoryDegraded.byCause).map(([c, n]) => `${c} : ${n}`).join(' · ')}) — ni refus, ni « non demandé ».
+        </p>
+      )}
+
       {data && !data.usage.unavailable && (
         <div className="rounded-xl border border-[color:var(--border-subtle)] bg-[color:var(--bg-card)] p-4 space-y-2 min-w-0">
-          <p className="text-sm font-medium text-[color:var(--text-primary)]">Par type d’appel, modèle et contrat</p>
+          <p className="text-sm font-medium text-[color:var(--text-primary)]">Par type d’appel, modèle et contrat (analyse seule)</p>
           {data.usage.groups.length === 0 && <p className="text-sm text-[color:var(--text-muted)]">Aucun appel sur la période.</p>}
           {data.usage.groupsTruncated && (
             <p className="text-xs text-[color:var(--text-secondary)] break-words">
@@ -249,6 +423,15 @@ export function SchemaCompatibilityPanel({ initialOperation = '' }: { initialOpe
           {bilan && (
             <p className="text-xs text-[color:var(--text-secondary)] break-words" data-testid="schema-reevaluation">
               Réévaluation : {bilan.examined} alerte(s) examinée(s) · {bilan.resolved.SCHEMA_ACCEPTED_AGAIN ?? 0} résolue(s) (schéma de nouveau accepté) · {bilan.resolved.SCHEMA_SUPERSEDED ?? 0} résolue(s) (contrat ou schéma remplacé) · {bilan.resolved.SCHEMA_MODEL_WITHDRAWN ?? 0} résolue(s) (modèle retiré du routage et du référentiel) · {bilan.keptActive} conservée(s) (refus toujours actif) · {bilan.keptUndetermined} conservée(s) faute de preuve · {bilan.keptRoutingUnknown} conservée(s) faute de routage établi · {bilan.raised} levée(s){bilan.raiseSkippedRoutingUnknown > 0 ? ` · ${bilan.raiseSkippedRoutingUnknown} non levée(s) faute de routage établi` : ''} · {bilan.couplesScanned} couple(s) parcouru(s){bilan.before.openAlerts !== null && bilan.after.openAlerts !== null ? ` · ouvertes ${bilan.before.openAlerts} → ${bilan.after.openAlerts}` : ''}{bilan.done ? ' · parcours terminé' : ' · parcours à poursuivre (budget du passage atteint)'}{bilan.unavailable ? ' · lecture incomplète' : ''}
+            </p>
+          )}
+          {/* Carte #863 (D1) : statut FIDÈLE du passage (bail détenu, perdu, interrompu, indisponible, terminé) et bilan du cycle. */}
+          {bilan?.checkpoint && (
+            <p className="text-xs text-[color:var(--text-secondary)] break-words" data-testid="schema-reevaluation-status">
+              Statut : {STATUT_PASSAGE[bilan.checkpoint.status] ?? bilan.checkpoint.status}{bilan.checkpoint.cycle !== null ? ` · cycle n° ${bilan.checkpoint.cycle}` : ''}
+              {bilan.checkpoint.cycleCompleted ? ' · cycle terminé' : ' · cycle non terminé'}
+              {bilan.cycleTotals ? ` · cumul du cycle : ${bilan.cycleTotals.examined} examinée(s), ${bilan.cycleTotals.failures} échec(s), ${bilan.cycleTotals.retries} reprise(s)` : ''}
+              {bilan.checkpoint.lastError ? ` · dernière erreur : ${bilan.checkpoint.lastError}` : ''}
             </p>
           )}
           {/* Lot 115 (#784, E3) : coordination avec les alertes de couverture T1 (#775) — constat, jamais une action. */}

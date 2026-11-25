@@ -463,7 +463,29 @@ export interface ProviderRequestTrace {
  *   · `UNKNOWN`       aucune consommation rendue (refus, délai, transfert) — un
  *                     HTTP 400 ne prouve PAS à lui seul 0 € : rien n'est supposé.
  */
-export type AttemptCostStatus = 'OBSERVED' | 'ZERO_REPORTED' | 'NO_PRICE' | 'UNKNOWN';
+/**
+ * Nature du coût d'UNE tentative. Carte #863 (C2) :
+ *   · `OBSERVED`      toutes les composantes facturables rendues et chiffrées ;
+ *   · `ZERO_REPORTED` toutes les composantes facturables EXPLICITEMENT nulles ;
+ *   · `PARTIAL`       une partie seulement rendue (ex. entrée sans sortie) :
+ *                     `costMicros` est un MINIMUM — jamais « 0 + manquant » ;
+ *   · `NO_PRICE`      consommation rendue, tarif autorisé absent ;
+ *   · `UNKNOWN`       aucune consommation rendue (refus, délai…) ;
+ *   · `NOT_SENT`      requête NON partie (garde, construction, transfert sans
+ *                     génération) : aucun coût, exclue des requêtes réelles.
+ */
+export type AttemptCostStatus = 'OBSERVED' | 'ZERO_REPORTED' | 'PARTIAL' | 'NO_PRICE' | 'UNKNOWN' | 'NOT_SENT';
+
+/**
+ * Carte #863 (C1) — DÉPART RÉEL d'une tentative, établi au point d'envoi :
+ *   · `SENT`                   requête modèle partie (réponse ou échec du fournisseur) ;
+ *   · `NOT_SENT_GUARD`         refusée par la garde d'admission (#786) juste avant le départ ;
+ *   · `NOT_SENT_BUILD`         erreur locale de construction de la requête : rien n'est parti ;
+ *   · `TRANSFER_NO_GENERATION` envoi de la pièce jointe échoué : aucune génération sollicitée ;
+ *   · `DEPARTURE_UNPROVEN`     erreur réseau sans réponse : départ non prouvable (état explicite,
+ *                              jamais compté comme requête réelle ni comme non-envoi).
+ */
+export type AttemptDispatch = 'SENT' | 'NOT_SENT_GUARD' | 'NOT_SENT_BUILD' | 'TRANSFER_NO_GENERATION' | 'DEPARTURE_UNPROVEN';
 
 export interface ProviderAttemptTrace {
   /** 1 : tentative initiale ; 2 : nouvel essai sans schéma. */
@@ -518,6 +540,26 @@ export interface ProviderAttemptTrace {
   schemaShape?: string | null;
   /** Propriétés du schéma transmis (dimension citée par la documentation du fournisseur). */
   schemaProperties?: number | null;
+  /**
+   * Carte #863 (C1) — SOURCE UNIQUE par tentative : identifiant STABLE
+   * (`<exécution>:<appel>:<rang de tentative>`), appel logique (`callIndex`),
+   * phase (analyse, réparation), tentative parente (nouvel essai → essai
+   * initial ; réparation → dernière tentative de l'analyse), modèle et rang.
+   * `dispatch` : départ RÉEL établi au point d'envoi (absent : trace antérieure
+   * à la carte — départ non établi, jamais supposé).
+   */
+  attemptId?: string;
+  callIndex?: number;
+  phase?: 'analysis' | 'repair';
+  parentAttemptId?: string | null;
+  model?: string | null;
+  rank?: string | null;
+  dispatch?: AttemptDispatch;
+}
+
+/** Carte #863 (C1) : la tentative est-elle une requête modèle RÉELLEMENT partie ? (`dispatch` absent : non établi). */
+export function attemptWasSent(a: Pick<ProviderAttemptTrace, 'dispatch'>): boolean {
+  return a.dispatch === 'SENT';
 }
 
 /** Nouvel essai du même modèle sans structured output (compteur `structuredOutputRetries`). */

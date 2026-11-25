@@ -33,7 +33,7 @@
  * absente de la base est `NOT_PERSISTED`, avec le motif (étape en échec, ou
  * écartée par l'écriture). Une étape en échec est visible dans `steps`.
  */
-import { readRawValueAbsence } from '../source-analysis/master/raw-value-absence';
+import { literalCoverageOf, readRawValueAbsence } from '../source-analysis/master/raw-value-absence';
 import { currentBusinessExecutionId, currentBusinessExecutionOrigin } from '../business-execution/context';
 import { pgClient } from '@/db';
 import { currentJobContext } from '../queue/job-context';
@@ -426,6 +426,15 @@ export async function buildT1Entries(rec: T1ExecutionRecorder, p: { accountId: n
         inc(r.canonical_key ? 'factsCanonical' : 'factsGeneric');
       }
       c.factsPersisted = (facts ?? []).length;
+      // Carte #863 (B1) : COUVERTURE LITTÉRALE des faits persistés — littéral, absence justifiée, absence NON
+      // justifiée, fait antérieur sans motif. `literalCoverageComplete` vaut 1 seulement si elle est ÉTABLIE (jamais
+      // « complet » avec une absence non justifiée ou un motif non renseigné).
+      if (facts) {
+        const cov = literalCoverageOf(facts.map((r) => ({ rawValue: r.raw_value, rawValueAbsence: r.raw_value_absence })));
+        c.factsLiteral = cov.literal; c.factsLiteralJustifiedAbsence = cov.justified;
+        c.factsLiteralUnjustified = cov.unjustified; c.factsLiteralLegacy = cov.legacy;
+        c.literalCoverageComplete = cov.status === 'COMPLETE' ? 1 : 0;
+      }
       if (facts) {
         faitsRelus = new Set(facts.flatMap((r) => [r.canonical_key, r.raw_key, r.fact_key].filter(Boolean)
           .flatMap((k) => [cleFait(k, r.value_text), cleFait(k, r.normalized_value), cleFait(k, r.raw_value)])));

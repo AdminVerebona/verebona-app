@@ -16,12 +16,33 @@ export function emptyTrace(): AiOperationTrace {
   };
 }
 
+/**
+ * Carte #863 (C2) — nature du coût d'une somme de réponses : un montant n'est exhaustif que si chaque part
+ * l'est ; une part inconnue, partielle ou sans tarif rend la somme PARTIELLE (minimum), jamais complète.
+ */
+function sommeStatut(a: AiOperationTrace['costStatus'], b: AiOperationTrace['costStatus']): AiOperationTrace['costStatus'] {
+  if (!a) return b;
+  if (!b) return a;
+  if (a === 'NONE') return b;
+  if (b === 'NONE') return a;
+  if (a === b) return a;
+  const exhaustifs = new Set(['OBSERVED', 'ZERO_REPORTED']);
+  if (exhaustifs.has(a) && exhaustifs.has(b)) return 'OBSERVED';
+  return 'PARTIAL';
+}
+
+function avecStatut(t: AiOperationTrace, statut: AiOperationTrace['costStatus'], inconnues: number): AiOperationTrace {
+  return statut ? { ...t, costStatus: statut, costUnknownAttempts: inconnues } : t;
+}
+
 export function mergeTrace<T>(
   trace: AiOperationTrace,
   res: AiGatewayResponse<T>,
   operationCode: string,
 ): AiOperationTrace {
-  return {
+  // Carte #863 (C2) : `totalCostMicros` reste la part CHIFFRÉE ; sa nature (exhaustive ou non) l'accompagne.
+  const statut = res.fromCache ? trace.costStatus : sommeStatut(trace.costStatus, res.costStatus);
+  return avecStatut({
     traceIds: [...trace.traceIds, res.traceId],
     operationCodes: [...trace.operationCodes, operationCode],
     totalInputTokens: trace.totalInputTokens + res.inputTokens,
@@ -30,7 +51,7 @@ export function mergeTrace<T>(
     totalDurationMs: trace.totalDurationMs + res.durationMs,
     usedFallback: trace.usedFallback || res.usedFallback,
     models: trace.models.includes(res.model) ? trace.models : [...trace.models, res.model],
-  };
+  }, statut, (trace.costUnknownAttempts ?? 0) + (res.fromCache ? 0 : res.costUnknownAttempts ?? 0));
 }
 
 export function combineTraces(...traces: AiOperationTrace[]): AiOperationTrace {
@@ -46,5 +67,8 @@ export function combineTraces(...traces: AiOperationTrace[]): AiOperationTrace {
     usedFallback: acc.usedFallback || t.usedFallback,
     models: [...new Set([...acc.models, ...t.models])],
   }), emptyTrace());
-  return capacites ? { ...combined, accountCapabilities: capacites } : combined;
+  // Carte #863 (C2) : nature du coût combinée (une part non exhaustive rend la somme partielle).
+  const statut = traces.reduce<AiOperationTrace['costStatus']>((acc, t) => sommeStatut(acc, t.costStatus), undefined);
+  const avec = avecStatut(combined, statut, traces.reduce((n, t) => n + (t.costUnknownAttempts ?? 0), 0));
+  return capacites ? { ...avec, accountCapabilities: capacites } : avec;
 }

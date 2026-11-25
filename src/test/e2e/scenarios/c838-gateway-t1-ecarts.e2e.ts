@@ -293,13 +293,15 @@ scenario('C838', 'Passerelle T1 : qualification réservée, panne mémoire, requ
       VALUES (${compte.id}, ${f.id}, ${ex.id}, 'ancien', 'x', 'certain', 'x', 'ancien')`;
     const lus = await sql<{ fact_key: string; raw_value: string | null; raw_value_absence: string | null }[]>`
       SELECT fact_key, raw_value, raw_value_absence FROM document_facts WHERE extraction_id = ${ex.id} ORDER BY id`;
+    // Règle remplacée (carte #863, B1) : une citation qui ne porte pas la valeur sous une forme VÉRIFIABLE (montant
+    // écrit en toutes lettres) ne justifie plus l'absence — `UNJUSTIFIED` explicite, jamais LITERAL_IN_EXCERPT de convenance.
     expect(lus.map((r) => [r.fact_key, r.raw_value_absence])).toEqual([
-      ['acquisitionPrice', null], ['designation', null], ['acquisitionPrice', 'VISUAL_ONLY'], ['acquisitionPrice', 'LITERAL_IN_EXCERPT'], ['ancien', null],
+      ['acquisitionPrice', null], ['designation', null], ['acquisitionPrice', 'VISUAL_ONLY'], ['acquisitionPrice', 'UNJUSTIFIED'], ['ancien', null],
     ]);
     expect(lus[0].raw_value).toBe('1 234,50 €');
     expect(lus[1].raw_value).toBe(long.slice(0, 2000));
     expect(lus.map((r) => readRawValueAbsence({ rawValue: r.raw_value, rawValueAbsence: r.raw_value_absence }))).toEqual([
-      null, null, 'VISUAL_ONLY', 'LITERAL_IN_EXCERPT', 'LEGACY_UNSPECIFIED',
+      null, null, 'VISUAL_ONLY', 'UNJUSTIFIED', 'LEGACY_UNSPECIFIED',
     ]);
   });
 

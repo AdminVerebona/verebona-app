@@ -68,7 +68,8 @@ describe('idempotence des opérations master', () => {
     version(master(1)); await call({ idempotencyKey: 'k-appelant' });
     version(null); await call({ idempotencyKey: 'k-appelant' });
     expect(keys[0]).toMatch(/^k-appelant:t1_master_v1@cfg21:[0-9a-f]{12}$/);
-    expect(keys[1]).toBe('k-appelant:t1_master_v1@file');
+    // Règle complétée (carte #863, B1) : la version d'un master du dépôt porte son EMPREINTE (prompt versionné).
+    expect(keys[1]).toMatch(/^k-appelant:t1_master_v1@file:[0-9a-f]{12}$/);
   });
 });
 
@@ -91,7 +92,8 @@ describe('idempotence T3 master (lot 13)', () => {
     const master = '{{TASK}} {{FIELD}} {{CURRENT_STATE}} {{EVIDENCES}} {{SUBJECT_CONTEXT}} {{CANDIDATES}} {{RELATION_TYPE}}\n'
       + 'BRANCHE TASK = VALUE_CONFLICT\nBRANCHE TASK = LINK_AMBIGUITY';
     t3(master); await run();
-    expect(keys[0]).toBe('k-t3:t3_master_v1@file');
+    // Règle complétée (carte #863, B1) : empreinte du master du dépôt dans sa version.
+    expect(keys[0]).toMatch(/^k-t3:t3_master_v1@file:[0-9a-f]{12}$/);
     expect(keys[1]).toMatch(/^k-t3:t3_master_v1@cfg33:[0-9a-f]{12}$/);
   });
 });

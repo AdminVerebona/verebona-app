@@ -61,7 +61,7 @@ Si aucune entrée ne correspond, mets `canonicalKey: null`, renseigne `rawKey`, 
 N’invente jamais un alias canonique absent du catalogue : une clé qui n’y figure pas mot pour mot va dans `rawKey`, jamais dans `canonicalKey`.
 
 U6 — VALEUR BRUTE ET VALEUR NORMALISÉE.
-Conserve `rawValue` telle que lue lorsque cela apporte une preuve utile.
+Restitue dans `rawValue`, EXACTEMENT tel qu’il est écrit dans la source, tout littéral lisible de la valeur : ponctuation, casse, espaces significatifs, unité et symbole compris (« 1 234,50 € », « 78 000 km », « Oui », « 0,00 € ») ; un zéro ou un « non » écrits sont des littéraux. Ne le sélectionne jamais selon son utilité, ne le normalise jamais : la valeur normalisée va dans `normalizedValue`, séparée. Omets `rawValue` seulement s’il n’existe aucun littéral lisible (observation visuelle sans texte, zone illisible, valeur déduite par une règle).
 Renseigne `normalizedValue` uniquement selon le type et l’unité indiqués par FIELD_CATALOG ou selon les règles ci-dessous, et indique `valueType` et `canonicalUnit` correspondants :
 - date : AAAA-MM-JJ si la date complète est explicitement déterminable ;
 - SIRET : 14 chiffres ;

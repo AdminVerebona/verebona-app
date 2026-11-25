@@ -147,11 +147,13 @@ describe('P-T1-04 — rattachement tardif sans fuite entre biens (T1-05)', () =>
       ],
     })).toBe(true);
 
-    // Legacy (fait historique, indicateur absent) : ni contrôle de schéma ni UPDATE.
+    // Legacy (fait historique, indicateur absent) : aucun UPDATE de l'indicateur. Règle complétée (carte #863, B1) :
+    // le contrôle du littéral s'applique à TOUT fait avant persistance — la sonde des colonnes (0218, 1980) est donc
+    // faite dès qu'un fait existe ; l'indicateur multi-biens, lui, n'est toujours jamais écrit pour un legacy.
     await persistDocumentKnowledge(buildKnowledgeFromSourceAnalysis(result([
       { fieldKey: 'chaudiere.puissance', value: '24 kW', confidence: 'certain', excerpt: '24 kW' },
     ]), ctx));
-    expect(db.calls.some((c) => c.sql.includes('multi_asset') || c.sql.includes('information_schema'))).toBe(false);
+    expect(db.calls.some((c) => c.sql.includes('multi_asset'))).toBe(false);
 
     await persistDocumentKnowledge(buildKnowledgeFromSourceAnalysis(r, { ...ctx, multiAsset: true }));
     expect(db.calls.find((c) => c.sql.includes('SET multi_asset'))!.params).toEqual([77, true]);
@@ -190,9 +192,12 @@ describe('persistDocumentKnowledge — écriture des colonnes 0218', () => {
       'EQUIPMENT', 7, 'Chaudière', 'certain', 'maintenance', 'DEADLINE',
       JSON.stringify({ frequency: 'monthly', interval: 12, excerpt: 'tous les 12 mois' }), 'MODEL_CANONICAL', null,
     ]);
-    // Le fait historique garde l'INSERT historique.
-    expect(facts[1].sql).not.toMatch(/canonical_key/);
-    expect(facts[1].params).toHaveLength(23);
+    // Règle remplacée (carte #863, B1) : le fait historique sans littéral voit sa valeur (« 24 kW ») PROUVÉE par sa
+    // citation — le littéral est récupéré EXACTEMENT et conservé dans `raw_value` (colonnes 0218), sans clé ni
+    // cible inventées ; avant la carte, il était écrit sans littéral par l'INSERT historique.
+    expect(facts[1].sql).toMatch(/raw_value/);
+    expect(facts[1].params[23]).toBeNull();
+    expect(facts[1].params[25]).toBe('24 kW');
   });
 
   it('0218 absente : le fait est conservé sur les colonnes historiques (jamais perdu), absence signalée', async () => {

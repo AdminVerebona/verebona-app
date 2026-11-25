@@ -183,8 +183,8 @@ describe('C838-A — politique pure', () => {
     expect(C.qualificationDueOf({ ...connue, nextRetestAt: T0 + 10 }, T0 + 10)).toBe('REQUALIFY');
     // Refus : géré par le réexamen (claimRetest), pas par la qualification.
     expect(C.qualificationDueOf(enLigne(C.applySchemaOutcome(null, k, { kind: 'REJECTED', reason: 'EXPLICIT_SCHEMA_REJECTION' }, T0)), T0)).toBeNull();
-    // Politique versionnée (tracée avec chaque état).
-    expect(P.version).toBe(2);
+    // Politique versionnée (tracée avec chaque état). Règle complétée (carte #863) : politique v3.
+    expect(P.version).toBe(3);
     expect(P.qualificationLeaseMs).toBeGreaterThan(0);
   });
 });
@@ -375,7 +375,8 @@ describe('C838-A3 — requalification bornée (version servie incertaine)', () =
     C.__resetSchemaCompatProcessForTests();
     expect(await C.decideSchemaUse(k, echu + 10)).toMatchObject({ send: false, why: 'recent_rejection' });
 
-    // Second couple : essai sans conclusion → report de `inconclusiveRetestMs`, schéma toujours envoyé entre-temps.
+    // Second couple : essai sans conclusion → report de `inconclusiveRetestMs`. Règle remplacée (carte #863, A3) : le
+    // report est OPPOSABLE — aucun schéma entre-temps (JSON + validation locale), puis UN essai réservé à l'échéance.
     const k2 = cle({ model: 'm-2' });
     qualifie(k2, T0, null);
     C.__resetSchemaCompatProcessForTests();
@@ -385,7 +386,7 @@ describe('C838-A3 — requalification bornée (version servie incertaine)', () =
     await C.__flushSchemaCompatWritesForTests();
     expect(base.get(d2.keyId)?.nextRetestAt).toBe(echu + 5 + P.inconclusiveRetestMs);
     C.__resetSchemaCompatProcessForTests();
-    expect(await C.decideSchemaUse(k2, echu + 60_000)).toMatchObject({ send: true, why: 'qualified' });
+    expect(await C.decideSchemaUse(k2, echu + 60_000)).toMatchObject({ send: false, why: 'requalification_deferred' });
     C.__resetSchemaCompatProcessForTests();
     expect(await C.decideSchemaUse(k2, echu + 5 + P.inconclusiveRetestMs)).toMatchObject({ send: true, why: 'requalification_due' });
   });
@@ -474,8 +475,10 @@ describe('C838-C2 — nature du coût : jamais 0 par défaut', () => {
     fake.on('m-b', () => ({ rawText: t1Out({ ok: true }), inputTokens: 0, outputTokens: 0 }));
     const res = await AiGateway.execute(req('zero'));
     expect(traces().map((t) => t.costEvidence?.status)).toEqual(['UNKNOWN', 'ZERO_REPORTED']);
-    expect(res.costStatus).toBe('ZERO_REPORTED');
-    expect(res.costUnknownAttempts).toBe(0);
+    // Règle remplacée (carte #863, C2) : la nature du coût rendue porte sur TOUTE l'exécution — le premier rang
+    // (503, coût inconnu) n'est plus oublié : zéro prouvé + inconnu = PARTIEL, jamais « 0 € prouvé ».
+    expect(res.costStatus).toBe('PARTIAL');
+    expect(res.costUnknownAttempts).toBe(1);
   });
 
   it('C838-C2-03 — échec final de toute la chaîne : chaque tentative envoyée reste comptée, coût INCONNU (jamais 0 €)', async () => {

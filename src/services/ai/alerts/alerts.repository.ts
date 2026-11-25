@@ -60,9 +60,15 @@ interface AiAlert {
   occurrences?: number;
 }
 
+/**
+ * Carte #863 (D1) — exécuteur SQL d'une écriture d'alerte : le client par défaut, ou la TRANSACTION d'un
+ * appelant qui doit lier l'effet à d'autres écritures (curseur de reprise, bail) — tout ou rien.
+ */
+export type AlertSqlRunner = { unsafe: (q: string, p?: never[]) => Promise<unknown> };
+
 /** Rend `true` si l'alerte est nouvelle (première occurrence de la condition). */
-export async function raiseAlert(a: AlertInput): Promise<boolean> {
-  const rows = await pgClient.unsafe(
+export async function raiseAlert(a: AlertInput, run: AlertSqlRunner = pgClient as unknown as AlertSqlRunner): Promise<boolean> {
+  const rows = await run.unsafe(
     `INSERT INTO ai_alerts
        (kind, code, treatment, account_id, severity, message, details, drilldown_href, dedupe_key, config_version_id)
      VALUES ($1, $2, $3, $4, $5, $6, $7::jsonb, $8, $9, $10)
@@ -158,9 +164,12 @@ export async function listAlerts(filters: {
  * Rend l'identifiant et `created` (nouvelle alerte). Migration absente : repli
  * sur `raiseAlert` (clé datée historique), jamais d'échec.
  */
-export async function raiseConditionAlert(a: Omit<AlertInput, 'dedupeKey'> & { conditionKey: string; fallbackDedupeKey: string }): Promise<{ id: number | null; created: boolean }> {
+export async function raiseConditionAlert(
+  a: Omit<AlertInput, 'dedupeKey'> & { conditionKey: string; fallbackDedupeKey: string },
+  run: AlertSqlRunner = pgClient as unknown as AlertSqlRunner,
+): Promise<{ id: number | null; created: boolean }> {
   try {
-    const rows = await pgClient.unsafe(
+    const rows = await run.unsafe(
       `INSERT INTO ai_alerts
          (kind, code, treatment, account_id, severity, message, details, drilldown_href, dedupe_key, config_version_id,
           condition_key, last_seen_at, occurrences)
@@ -183,7 +192,7 @@ export async function raiseConditionAlert(a: Omit<AlertInput, 'dedupeKey'> & { c
     const code = (e as { code?: string }).code;
     // 42703 / 42P10 : colonnes ou index 1521 absents — comportement historique.
     if (code !== '42703' && code !== '42P10') throw e;
-    const created = await raiseAlert({ ...a, dedupeKey: a.fallbackDedupeKey });
+    const created = await raiseAlert({ ...a, dedupeKey: a.fallbackDedupeKey }, run);
     return { id: null, created };
   }
 }
@@ -193,10 +202,13 @@ export async function raiseConditionAlert(a: Omit<AlertInput, 'dedupeKey'> & { c
  * résolution automatique (condition disparue). Idempotent : une alerte déjà
  * résolue n'est pas touchée. Rend le nombre d'alertes résolues.
  */
-export async function resolveAlerts(ids: readonly number[], r: { code: string; reason: string; resolvedBy?: number | null; supersededBy?: number | null }): Promise<number> {
+export async function resolveAlerts(
+  ids: readonly number[], r: { code: string; reason: string; resolvedBy?: number | null; supersededBy?: number | null },
+  run: AlertSqlRunner = pgClient as unknown as AlertSqlRunner,
+): Promise<number> {
   if (ids.length === 0) return 0;
   try {
-    const rows = await pgClient.unsafe(
+    const rows = await run.unsafe(
       `UPDATE ai_alerts SET resolved_at = NOW(), resolved_by = $2, resolution_code = $3, resolution_reason = $4, superseded_by = $5
         WHERE id = ANY($1::int[]) AND resolved_at IS NULL RETURNING id`,
       [[...ids], r.resolvedBy ?? null, r.code.slice(0, 60), r.reason.slice(0, 500), r.supersededBy ?? null] as never[],

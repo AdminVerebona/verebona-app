@@ -112,8 +112,12 @@ export type SchemaCompatReason =
  * se lit dans les traces.
  */
 export const SCHEMA_COMPAT_POLICY = {
-  /** Carte #838 : 2 — premier essai et requalification réservés (bail), dégradation conservatrice en panne de mémoire. */
-  version: 2,
+  /**
+   * Carte #838 : 2 — premier essai et requalification réservés (bail), dégradation conservatrice en panne de mémoire.
+   * Carte #863 : 3 — issues FENCÉES (jeton de bail, génération d'état), report d'une requalification
+   * incertaine OPPOSABLE (JSON sans schéma pendant le report), cache périmé jamais rajeuni.
+   */
+  version: 3,
   /** Premier réexamen après un refus (durée de l'ancienne mémoire locale : 6 h). */
   firstRetestMs: 6 * 3_600_000,
   /** Réexamen après le refus d'un couple qui avait déjà été accepté (refus possiblement propre à une requête). */
@@ -195,6 +199,11 @@ export interface SchemaCoupleState {
   servedVersionAtState?: string | null;
   /** Lot 115 (#784, A3) : le fournisseur n'a pas indiqué la version servie — incertitude MARQUÉE, rien n'est inventé. */
   versionUncertain?: boolean;
+  /**
+   * Carte #863 (A1) : GÉNÉRATION de l'état (incrémentée à chaque transition, migration 2000). Une issue
+   * d'appel sans bail n'est opposable que si elle n'a pas changé depuis la décision. `null` : inconnue.
+   */
+  generation?: number | null;
 }
 
 /**
@@ -209,17 +218,49 @@ export function nextRetestDelayMs(consecutiveRejections: number, everAccepted: b
 }
 
 export type SchemaUse =
-  /** Schéma transmis (couple non testé ou qualifié). */
-  | { send: true; retest: false; why: 'not_tested' | 'qualified' }
+  /** Schéma transmis (couple non testé ou qualifié). Carte #863 (A3) : `requalification_due` — à réserver avant l'envoi. */
+  | { send: true; retest: false; why: 'not_tested' | 'qualified' | 'requalification_due' }
+  /** Carte #863 (A3) : qualification incertaine échue, requalification REPORTÉE après un essai sans conclusion. */
+  | { send: false; retest: false; why: 'requalification_deferred' }
   /** Schéma transmis pour un réexamen DÛ — à réserver avant l'envoi. */
   | { send: true; retest: true; why: 'retest_due' }
   /** Schéma non transmis : refus mémorisé, réexamen non dû ou réservé ailleurs. */
   | { send: false; retest: false; why: 'recent_rejection' | 'retest_in_progress' };
 
+/**
+ * Carte #863 (A3) — VALIDITÉ d'une qualification (pure), formalisée :
+ *   · `VALID`            version servie CONNUE (jamais échue par la règle
+ *                        d'incertitude), ou version incertaine dont la
+ *                        dernière acceptation avec schéma date de moins de
+ *                        `uncertainQualificationTtlMs` ;
+ *   · `EXPIRED_DUE`      fenêtre échue (ou report échu, ou version servie
+ *                        changée) : UN essai de requalification, réservé par
+ *                        bail ; les autres appels partent sans schéma ;
+ *   · `EXPIRED_DEFERRED` requalification REPORTÉE après un essai sans
+ *                        conclusion (`nextRetestAt` futur) : AUCUN schéma
+ *                        pendant le report (JSON + validation locale) — le
+ *                        report n'est plus contourné par un envoi libre.
+ * Seule une acceptation avec schéma (fencée) renouvelle la fenêtre.
+ */
+export type QualifiedValidity = 'VALID' | 'EXPIRED_DUE' | 'EXPIRED_DEFERRED';
+
+export function qualifiedValidityOf(s: SchemaCoupleState, now: number): QualifiedValidity {
+  if (s.nextRetestAt !== null) return s.nextRetestAt <= now ? 'EXPIRED_DUE' : 'EXPIRED_DEFERRED';
+  if (s.versionUncertain === true && s.lastAcceptedAt !== null && s.lastAcceptedAt + SCHEMA_COMPAT_POLICY.uncertainQualificationTtlMs <= now) {
+    return 'EXPIRED_DUE';
+  }
+  return 'VALID';
+}
+
 /** Faut-il transmettre le schéma à ce couple ? (pure) */
 export function schemaUseOf(s: SchemaCoupleState | null, now: number): SchemaUse {
   if (!s || s.state === 'NOT_TESTED' || s.state === 'UNSUPPORTED_BY_CONTRACT') return { send: true, retest: false, why: 'not_tested' };
-  if (s.state === 'QUALIFIED') return { send: true, retest: false, why: 'qualified' };
+  if (s.state === 'QUALIFIED') {
+    const v = qualifiedValidityOf(s, now);
+    if (v === 'VALID') return { send: true, retest: false, why: 'qualified' };
+    if (v === 'EXPIRED_DUE') return { send: true, retest: false, why: 'requalification_due' };
+    return { send: false, retest: false, why: 'requalification_deferred' };
+  }
   if (s.retestClaimedUntil !== null && s.retestClaimedUntil > now) return { send: false, retest: false, why: 'retest_in_progress' };
   if (s.nextRetestAt !== null && s.nextRetestAt > now) return { send: false, retest: false, why: 'recent_rejection' };
   return { send: true, retest: true, why: 'retest_due' };
@@ -250,7 +291,11 @@ function blank(key: SchemaCoupleKey): SchemaCoupleState {
  *   · INCONCLUSIVE → rien n'est déduit ; un réexamen réservé est rendu, avec
  *                    un court report.
  */
-export function applySchemaOutcome(prev: SchemaCoupleState | null, key: SchemaCoupleKey, o: SchemaOutcome, now: number): SchemaCoupleState {
+export function applySchemaOutcome(
+  prev: SchemaCoupleState | null, key: SchemaCoupleKey, o: SchemaOutcome, now: number,
+  /** Carte #863 (A3) : nature de l'essai réservé dont c'est l'issue (`REQUALIFY` sans conclusion → report). */
+  opts: { qualification?: 'FIRST' | 'REQUALIFY' | null } = {},
+): SchemaCoupleState {
   // Lot 115 (#784, A3) : version servie observée lors de ce constat ; absente → incertitude marquée.
   const servie = o.servedModelVersion ?? null;
   const version = { servedModelVersion: servie ?? prev?.servedModelVersion ?? null, servedVersionAtState: servie, versionUncertain: servie === null };
@@ -267,6 +312,8 @@ export function applySchemaOutcome(prev: SchemaCoupleState | null, key: SchemaCo
       lastRejectedAt: now, nextRetestAt: now + nextRetestDelayMs(consecutive, s.lastAcceptedAt !== null), retestClaimedUntil: null,
     };
   }
+  // Carte #863 (A3) : requalification SANS conclusion → report (même règle que `releaseQualification` en base).
+  if (s.state === 'QUALIFIED' && opts.qualification === 'REQUALIFY') return { ...s, nextRetestAt: now + SCHEMA_COMPAT_POLICY.inconclusiveRetestMs };
   if (s.state !== 'NEEDS_RECHECK') return prev ?? s;
   return { ...s, state: 'REJECTED_CONFIRMED', reason: 'RETEST_INCONCLUSIVE', nextRetestAt: now + SCHEMA_COMPAT_POLICY.inconclusiveRetestMs, retestClaimedUntil: null };
 }
@@ -289,6 +336,12 @@ export function applySchemaOutcome(prev: SchemaCoupleState | null, key: SchemaCo
 export function applyServedVersion(prev: SchemaCoupleState | null, servedModelVersion: string | null, now: number): SchemaCoupleState | null {
   if (!prev) return null;
   if (servedModelVersion === null) return prev.versionUncertain === true ? null : { ...prev, versionUncertain: true };
+  if (prev.state === 'QUALIFIED') {
+    // Carte #863 (A3) : une version relevée SANS schéma ne prouve rien — elle est MÉMORISÉE, mais ne lève jamais
+    // l'incertitude d'une qualification (seule une acceptation avec schéma le peut) ; et une version connue n'est
+    // pas invalidée pour autant (lot 115, #784 : aucune requalification forcée, aucun état inventé).
+    return prev.servedModelVersion === servedModelVersion ? null : { ...prev, servedModelVersion };
+  }
   const changement = prev.servedVersionAtState !== null && prev.servedVersionAtState !== undefined && prev.servedVersionAtState !== servedModelVersion;
   const requalification = changement && (prev.state === 'REJECTED_CONFIRMED' || prev.state === 'NEEDS_RECHECK');
   if (!changement && prev.servedModelVersion === servedModelVersion && prev.servedVersionAtState != null && prev.versionUncertain === false) return null;
@@ -317,11 +370,8 @@ export function applyServedVersion(prev: SchemaCoupleState | null, servedModelVe
 export function qualificationDueOf(s: SchemaCoupleState | null, now: number): 'FIRST' | 'REQUALIFY' | null {
   if (!s || s.state === 'NOT_TESTED' || s.state === 'UNSUPPORTED_BY_CONTRACT') return 'FIRST';
   if (s.state !== 'QUALIFIED') return null;
-  if (s.nextRetestAt !== null) return s.nextRetestAt <= now ? 'REQUALIFY' : null;
-  if (s.versionUncertain === true && s.lastAcceptedAt !== null && s.lastAcceptedAt + SCHEMA_COMPAT_POLICY.uncertainQualificationTtlMs <= now) {
-    return 'REQUALIFY';
-  }
-  return null;
+  // Carte #863 (A3) : même règle que `qualifiedValidityOf` (report en cours : rien à réserver, et pas de schéma).
+  return qualifiedValidityOf(s, now) === 'EXPIRED_DUE' ? 'REQUALIFY' : null;
 }
 
 /** Réservation d'un réexamen (pure) : `null` si non dû ou déjà réservé. */

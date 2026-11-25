@@ -163,8 +163,16 @@ interface ExecutionExport {
   };
   errors: Array<{ where: string; code: string | null; message: string | null }>;
   costs: {
+    /** Part CHIFFRÉE des appels — exhaustive seulement si `costCompleteness` vaut `COMPLETE` (carte #863, C2). */
     totalCostMicros: number;
     totalCostUsd: number;
+    /**
+     * Carte #863 (C2) : nature du total — `COMPLETE` (tous les appels chiffrés), `PARTIAL` (minimum : au moins un
+     * appel au coût inconnu), `UNKNOWN` (aucun appel chiffrable : le total n'est PAS un zéro). Absent : export antérieur.
+     */
+    costCompleteness?: 'COMPLETE' | 'PARTIAL' | 'UNKNOWN';
+    /** Carte #863 (C2) : appels dont le coût n'est pas chiffrable (jamais rabattus à 0 sans le dire). */
+    unknownCostCalls?: number;
     inputTokens: number;
     outputTokens: number;
     totalDurationMs: number;
@@ -223,6 +231,7 @@ export function buildExecutionExport(
 
   const somme = (f: (x: ExecutionRow) => number | null) => calls.reduce((t, x) => t + (f(x) ?? 0), 0);
   const totalCostMicros = somme((x) => x.costMicros);
+  const inconnus = calls.filter((x) => x.costMicros === null && !NOT_CALLED_ERROR_CODES.has(x.errorCode ?? '')).length;
 
   return {
     format: EXECUTION_EXPORT_FORMAT,
@@ -267,6 +276,9 @@ export function buildExecutionExport(
     costs: {
       totalCostMicros,
       totalCostUsd: usd(totalCostMicros) ?? 0,
+      // Carte #863 (C2) : un total qui ignore des coûts inconnus est dit partiel (ou inconnu), jamais exhaustif.
+      costCompleteness: inconnus === 0 ? 'COMPLETE' : inconnus === calls.length ? 'UNKNOWN' : 'PARTIAL',
+      unknownCostCalls: inconnus,
       inputTokens: somme((x) => x.inputTokens),
       outputTokens: somme((x) => x.outputTokens),
       // Lot 82C : somme des durées PROPRES des appels (sans double comptage) ;

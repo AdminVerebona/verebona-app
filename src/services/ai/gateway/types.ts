@@ -155,10 +155,18 @@ export interface AiGatewayResponse<T> {
    * `costUnknownAttempts`) ; `UNKNOWN` : rien de chiffrable — jamais 0 prouvé.
    */
   costMicros: number;
-  /** Carte #838 (C2) : nature du coût de toutes les requêtes réellement envoyées. Absent : réponse sans appel (cache). */
-  costStatus?: 'OBSERVED' | 'ZERO_REPORTED' | 'PARTIAL' | 'UNKNOWN' | 'NONE';
+  /**
+   * Carte #838 (C2) : nature du coût de toutes les requêtes réellement envoyées. Absent : réponse sans appel (cache).
+   * Carte #863 (C2) : porte sur TOUTE l'exécution (rangs précédents en échec, essais sans schéma, réparation) ;
+   * `NO_PRICE` : consommation rendue sans tarif autorisé.
+   */
+  costStatus?: 'OBSERVED' | 'ZERO_REPORTED' | 'PARTIAL' | 'NO_PRICE' | 'UNKNOWN' | 'NONE';
   /** Carte #838 (C2) : requêtes envoyées dont le coût n'est pas chiffrable (part inconnue). */
   costUnknownAttempts?: number;
+  /** Carte #863 (C2) : détail de la nature du coût de l'exécution (part connue, inconnues, zéros prouvés, non-envois). */
+  costEvidence?: import('./cost-evidence').CostEvidence;
+  /** Carte #863 (C1) : requêtes modèle RÉELLEMENT parties pendant l'exécution (toutes tentatives). */
+  providerRequests?: number;
   durationMs: number;
   traceId: string;
   /** true si le résultat provient du cache d'idempotence (aucun appel émis). */

@@ -400,6 +400,13 @@ export interface AiOperationTrace {
   totalInputTokens: number;
   totalOutputTokens: number;
   totalCostMicros: number;
+  /**
+   * Carte #863 (C2) : nature du coût de `totalCostMicros` (part chiffrée) — `OBSERVED` / `ZERO_REPORTED` :
+   * exhaustif ; `PARTIAL`, `NO_PRICE`, `UNKNOWN` : jamais un total. Absent : aucune nature relevée (historique).
+   */
+  costStatus?: 'OBSERVED' | 'ZERO_REPORTED' | 'PARTIAL' | 'NO_PRICE' | 'UNKNOWN' | 'NONE';
+  /** Carte #863 (C2) : requêtes réellement envoyées au coût non chiffrable. */
+  costUnknownAttempts?: number;
   totalDurationMs: number;
   usedFallback: boolean;
   models: string[];
