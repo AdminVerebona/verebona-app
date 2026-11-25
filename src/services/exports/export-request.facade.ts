@@ -43,7 +43,8 @@ export type ExportRequestOutcome =
   /** Type inconnu du catalogue des exports. */
   | { kind: 'invalid_type' }
   /** Export de données brutes : ZIP produit dans la requête, prêt à télécharger. */
-  | { kind: 'raw_ready'; code: typeof EXPORT_BRUT_CODE; dto: GenerationDto }
+  /** Carte #843 (E08) : `includedDocumentIds` — documents RÉELLEMENT retenus par le moteur (revalidation à la génération). */
+  | { kind: 'raw_ready'; code: typeof EXPORT_BRUT_CODE; dto: GenerationDto; includedDocumentIds: number[] }
   /** Export de données brutes : la génération a échoué (ligne d'historique en échec, support prévenu). */
   | { kind: 'raw_failed'; code: typeof EXPORT_BRUT_CODE; exportId: number; publicId: string }
   /** Dossier prêt à l'emploi : mis en file (rendu asynchrone par le worker). */
@@ -80,7 +81,7 @@ export async function requestExportForAsset(p: {
  */
 async function generateRawExport(asset: AccessibleAsset, userId: number, body: Record<string, unknown>): Promise<ExportRequestOutcome> {
   const accountId = asset.accountId;
-  const options = (body.options ?? {}) as { customDocIds?: number[]; includePhotos?: boolean; includeEquipments?: boolean };
+  const options = (body.options ?? {}) as { customDocIds?: number[]; customDocIdsCoverWebLinks?: boolean; includePhotos?: boolean; includeEquipments?: boolean };
   const now = new Date();
   const [row] = await db.insert(exportGenerations).values({
     assetId: asset.id,
@@ -119,7 +120,10 @@ async function generateRawExport(asset: AccessibleAsset, userId: number, body: R
       },
       completedAt,
     }).where(eq(exportGenerations.id, row.id)).returning();
-    return { kind: 'raw_ready', code: EXPORT_BRUT_CODE, dto: toGenerationDto(done) };
+    return {
+      kind: 'raw_ready', code: EXPORT_BRUT_CODE, dto: toGenerationDto(done),
+      includedDocumentIds: [...manifest.includedDocuments, ...manifest.includedWebLinks].map((d) => d.id),
+    };
   } catch (error) {
     const technicalMessage = technicalErrorMessage(error);
     console.error('[Exports POST] Export brut échoué :', { exportId: row.id, assetId: asset.id, error });

@@ -277,5 +277,8 @@ export function translateWriteResult<T>(
   }
   const message = r.code === 'OK' || r.code === 'NO_CHANGE' ? WRITE_CODE_TEXT.TECHNICAL_FAILURE : WRITE_CODE_TEXT[r.code];
   const status: ActionResult['status'] = r.status === 'FORBIDDEN' || r.status === 'ARBITRATION_REQUIRED' ? 'REFUSED' : 'FAILED';
+  // Carte #843 (E07) : version périmée constatée par la façade DANS sa transaction — conflit explicite : rien n'est
+  // écrit, les données sont relues et l'action reproposée (nouvelle confirmation, `plan.service`).
+  if (r.status === 'CONFLICT' && r.code === 'VERSION_MISMATCH') return { actionId: action.actionId, status, message, conflict: true };
   return { actionId: action.actionId, status, message };
 }

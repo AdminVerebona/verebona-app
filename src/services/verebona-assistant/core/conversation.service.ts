@@ -33,6 +33,7 @@
  *
  * Utilise les tables verebona_* (voir migration 0100). Câblé sur `@/db` (postgres.js).
  */
+import { maskIbansInText } from '@/lib/security/iban-mask';
 import { timelineColumnReady, timelineForStorage } from './timeline-persistence';
 import { pgClient } from '@/db';
 import { CANONICAL_FIELDS } from '@/services/canonical/registry';
@@ -515,7 +516,9 @@ export async function persistResult(
          RETURNING id`,
         // Reprise après clarification : l'historique montre le CHOIX de
         // l'utilisateur, pas la demande initiale rejouée une seconde fois.
-        [conversationId, input.accountId, input.userId, input.resume?.choiceLabel ?? input.originalMessage ?? input.message,
+        // Carte #843 (E04) : un IBAN tapé dans la demande n'est JAMAIS conservé en clair dans le fil — il y est
+        // remplacé par sa forme masquée lisible (« FR76 •••• •••• 0189 ») : la question reste lisible et à sa place.
+        [conversationId, input.accountId, input.userId, maskIbansInText(input.resume?.choiceLabel ?? input.originalMessage ?? input.message).text,
          result.requestId, input.clientRequestId, input.locale, expires],
       );
       // §28.2 : la réponse est rattachée à la question qui l'a provoquée.

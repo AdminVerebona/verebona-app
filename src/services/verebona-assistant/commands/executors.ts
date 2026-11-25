@@ -224,21 +224,24 @@ export const EXECUTORS: Record<PlannedAction['command'], Executor> = {
   async UPDATE_DOCUMENT_TARGETS(action, ctx) {
     const p = action.params as Extract<CommandParams, { kind: 'document_targets' }>;
     const { sqlLookup, documentTargetsVersion } = await import('./plan.service');
+    // Carte #843 (E07) : version d'écriture relue AVANT l'état présenté, puis exigée dans l'instruction d'écriture.
+    const jeton = await jetonDeVersion('document', ctx.accountId, p.documentId);
     const etat = await sqlLookup.getDocumentState!(ctx.accountId, p.documentId);
     const cibles = etat ? await sqlLookup.getDocumentAssetTargets!(ctx.accountId, p.documentId) : null;
-    if (!etat || !cibles) return refuse(action, 'Document introuvable ou hors de votre compte.');
+    if (!etat || !cibles || !jeton) return refuse(action, 'Document introuvable ou hors de votre compte.');
     // Passage 114AA (W13) : l'empreinte couvre les trois niveaux dès que l'un d'eux porte une pièce ou un
     // équipement — un changement de ce niveau depuis l'aperçu empêche l'écriture, comme pour les biens.
     const relue = documentTargetsVersion(
       etat.version, cibles.chosen.map((a) => a.id), (cibles.rooms ?? []).map((s) => s.id), (cibles.equipments ?? []).map((s) => s.id),
     );
-    if (relue !== p.expectedVersion) return ko(action, DOCUMENT_CHANGED_SINCE_PREVIEW);
+    if (relue !== p.expectedVersion) return conflit(action, DOCUMENT_CHANGED_SINCE_PREVIEW);
     const body: Record<string, unknown> = { fileName: etat.originalFilename || etat.title, documentDate: etat.documentDate, assetIds: p.targetAssetIds };
     // Niveau pièce ou équipement : seule sa liste est envoyée ; les deux autres niveaux gardent leur sélection.
     if (p.level === 'room') body.substructureIds = p.targetStructureIds ?? [];
     if (p.level === 'equipment') body.equipmentIds = p.targetStructureIds ?? [];
     const { updateDocumentForAccount } = await import('@/services/documents/document-write.facade');
-    const res = await updateDocumentForAccount({ userId: ctx.userId, currentAccountId: ctx.accountId }, p.documentId, body);
+    const res = await updateDocumentForAccount({ userId: ctx.userId, currentAccountId: ctx.accountId }, p.documentId, body, { expectedUpdatedAtMicros: jeton });
+    if (res.status === 409 && ((await res.clone().json().catch(() => ({}))) as { error?: string }).error === 'CONFLICT') return conflit(action, DOCUMENT_CHANGED_SINCE_PREVIEW);
     if (res.status === 404) return refuse(action, 'Document ou bien introuvable dans votre compte : rien n’a été modifié.');
     if (res.status === 409) return refuse(action, 'Ce bien ne peut pas recevoir de nouveau document pour le moment : rien n’a été modifié.');
     if (res.status !== 200) return ko(action, 'Ce rattachement ne peut pas être enregistré tel quel : rien n’a été modifié.');
@@ -306,11 +309,19 @@ export const EXECUTORS: Record<PlannedAction['command'], Executor> = {
   async RENAME_ROOM(action, ctx) {
     const p = action.params as Extract<CommandParams, { kind: 'room_rename' }>;
     const { sqlLookup } = await import('./plan.service');
+    // Carte #843 (E07) : version relue avant l'état, puis exigée dans l'instruction d'écriture.
+    const jeton = await jetonDeVersion('room', ctx.accountId, p.roomId);
     const etat = await sqlLookup.getRoomState!(ctx.accountId, p.roomId);
-    if (!etat || etat.assetId !== p.roomAssetId) return refuse(action, 'Pièce introuvable ou hors de votre compte.');
-    if (etat.version !== p.expectedVersion) return ko(action, STRUCTURE_CHANGED_SINCE_PREVIEW);
-    const { renameRoomForAccount } = await import('@/services/assets/structure-write.facade');
-    const row = await renameRoomForAccount(ctx.accountId, etat.assetId, p.roomId, p.roomName);
+    if (!etat || !jeton || etat.assetId !== p.roomAssetId) return refuse(action, 'Pièce introuvable ou hors de votre compte.');
+    if (etat.version !== p.expectedVersion) return conflit(action, STRUCTURE_CHANGED_SINCE_PREVIEW);
+    const { renameRoomForAccount, StructureVersionConflictError } = await import('@/services/assets/structure-write.facade');
+    let row: Awaited<ReturnType<typeof renameRoomForAccount>>;
+    try {
+      row = await renameRoomForAccount(ctx.accountId, etat.assetId, p.roomId, p.roomName, { expectedUpdatedAtMicros: jeton });
+    } catch (e) {
+      if (e instanceof StructureVersionConflictError) return conflit(action, STRUCTURE_CHANGED_SINCE_PREVIEW);
+      throw e;
+    }
     if (!row) return refuse(action, 'Pièce introuvable ou hors de votre compte.');
     ctx.recordUndo?.({ actionId: action.actionId, reversible: false, reason: 'pièce renommée : à corriger depuis le bien ou par une nouvelle demande' });
     return { actionId: action.actionId, status: 'SUCCESS', message: `Pièce « ${etat.name} » renommée en « ${row.name} ».`, entity: { type: 'room', id: p.roomId } };
@@ -323,11 +334,18 @@ export const EXECUTORS: Record<PlannedAction['command'], Executor> = {
   async DELETE_ROOM(action, ctx) {
     const p = action.params as Extract<CommandParams, { kind: 'room_delete' }>;
     const { sqlLookup } = await import('./plan.service');
+    // Carte #843 (E07) : version relue avant l'état, puis exigée dans l'instruction de suppression.
+    const jeton = await jetonDeVersion('room', ctx.accountId, p.roomId);
     const etat = await sqlLookup.getRoomState!(ctx.accountId, p.roomId);
-    if (!etat || etat.assetId !== p.roomAssetId) return refuse(action, 'Pièce introuvable ou hors de votre compte.');
-    if (etat.version !== p.expectedVersion) return ko(action, STRUCTURE_CHANGED_SINCE_PREVIEW);
-    const { deleteRoomForAccount } = await import('@/services/assets/structure-write.facade');
-    if (!(await deleteRoomForAccount(ctx.accountId, etat.assetId, p.roomId))) return refuse(action, 'Pièce introuvable ou hors de votre compte.');
+    if (!etat || !jeton || etat.assetId !== p.roomAssetId) return refuse(action, 'Pièce introuvable ou hors de votre compte.');
+    if (etat.version !== p.expectedVersion) return conflit(action, STRUCTURE_CHANGED_SINCE_PREVIEW);
+    const { deleteRoomForAccount, StructureVersionConflictError } = await import('@/services/assets/structure-write.facade');
+    try {
+      if (!(await deleteRoomForAccount(ctx.accountId, etat.assetId, p.roomId, { expectedUpdatedAtMicros: jeton }))) return refuse(action, 'Pièce introuvable ou hors de votre compte.');
+    } catch (e) {
+      if (e instanceof StructureVersionConflictError) return conflit(action, STRUCTURE_CHANGED_SINCE_PREVIEW);
+      throw e;
+    }
     ctx.recordUndo?.({ actionId: action.actionId, reversible: false, reason: 'suppression définitive d’une pièce' });
     return { actionId: action.actionId, status: 'SUCCESS', message: `Pièce « ${etat.name} » supprimée.`, entity: { type: 'room', id: p.roomId } };
   },
@@ -340,40 +358,43 @@ export const EXECUTORS: Record<PlannedAction['command'], Executor> = {
     const p = action.params as Extract<CommandParams, { kind: 'equipment_create' }>;
     const refus = await refusStructure(ctx.accountId, p.equipmentAssetId, 'equipment');
     if (refus) return refuse(action, refus);
-    const { createEquipmentForAccount } = await import('@/services/assets/structure-write.facade');
-    // Carte #807 (E02) : informations fournies, transmises telles que la façade de l'écran les reçoit (type,
-    // catégorie, statut, usage énergétique, montants en centimes). Sans `details` : nom et pièce, comme avant.
-    const { fiche, ...colonnes } = p.details ?? {};
-    const session = { userId: ctx.userId, currentAccountId: ctx.accountId };
-    const res = await createEquipmentForAccount(session, p.equipmentAssetId,
-      { name: p.equipmentName, ...(p.equipmentRoomId ? { substructureId: p.equipmentRoomId } : {}), ...colonnes });
-    if (res.status !== 201) return ko(action, 'Cet équipement ne peut pas être créé avec ces informations : rien n’a été créé.');
-    const cree = await res.json() as { id: number; name: string };
-    ctx.recordUndo?.({ actionId: action.actionId, reversible: false, reason: 'équipement créé : il se retire depuis le bien' });
-    // Fiche (marque, modèle, n° de série…) : la façade de création ne la reçoit pas — elle est enregistrée par
-    // la façade de MODIFICATION, celle du tiroir, sur l'équipement qui vient d'être créé (un seul équipement).
-    let reserve = '';
-    if (fiche && Object.keys(fiche).length) {
-      const { updateEquipmentForAccount } = await import('@/services/assets/structure-write.facade');
-      const suite = await updateEquipmentForAccount(session, p.equipmentAssetId, Number(cree.id), { fiche });
-      if (suite.status !== 200) reserve = ' Sa fiche (marque, modèle, n° de série…) n’a pas pu être enregistrée : complétez-la depuis le bien.';
+    // Règle remplacée (carte #843, E02) : « création, PUIS fiche par une seconde écriture » — une panne de la
+    // seconde laissait une fiche incomplète annoncée « créée ». Désormais UNE écriture atomique par la façade :
+    // équipement, colonnes, fiche (marque, modèle, n° de série…) et montants, ou RIEN. Offre et quota revérifiés
+    // sous le verrou du bien ; un équipement de même nom apparu entre-temps (double envoi, autre membre) : refus.
+    const { createEquipmentWithDetailsForAccount } = await import('@/services/assets/structure-write.facade');
+    const r = await createEquipmentWithDetailsForAccount({ userId: ctx.userId, currentAccountId: ctx.accountId }, p.equipmentAssetId, {
+      ...(p.details ?? {}), name: p.equipmentName, ...(p.equipmentRoomId ? { substructureId: p.equipmentRoomId } : {}),
+    }, { refuseHomonym: true, sourceId: ctx.planId ? `${ctx.planId}.${action.actionId}` : action.actionId });
+    if (!r.ok) {
+      if (r.code === 'NOT_FOUND') return refuse(action, 'Bien introuvable ou hors de votre compte : rien n’a été créé.');
+      if (r.code === 'FORBIDDEN') return refuse(action, `${r.message} Rien n’a été créé.`);
+      if (r.code === 'DUPLICATE') return refuse(action, `Un équipement « ${p.equipmentName} » existe déjà dans ce bien : rien n’a été créé en double.`);
+      if (r.code === 'INVALID_INPUT') return ko(action, 'Cet équipement ne peut pas être créé avec ces informations : rien n’a été créé.');
+      return ko(action, EQUIPMENT_CREATION_FAILED);
     }
-    return { actionId: action.actionId, status: 'SUCCESS', message: `Équipement « ${cree.name} » créé.${reserve}`, entity: { type: 'equipment', id: Number(cree.id) } };
+    ctx.recordUndo?.({ actionId: action.actionId, reversible: false, reason: 'équipement créé : il se retire depuis le bien' });
+    return { actionId: action.actionId, status: 'SUCCESS', message: `Équipement « ${r.name} » créé.`, entity: { type: 'equipment', id: r.id } };
   },
 
   /** Lot 114 (#753, W05) — équipement renommé par la façade métier (celle de `PUT …/equipments/[equipId]`). */
   async RENAME_EQUIPMENT(action, ctx) {
     const p = action.params as Extract<CommandParams, { kind: 'equipment_rename' }>;
     const { sqlLookup } = await import('./plan.service');
+    // Carte #843 (E07) — règle remplacée : « version relue, PUIS écriture sans garde ». La version d'écriture
+    // (horodatage) est relue AVANT l'état présenté, puis exigée par la façade DANS son instruction d'écriture.
+    const jeton = await jetonDeVersion('equipment', ctx.accountId, p.equipmentId);
     const etat = await sqlLookup.getEquipmentState!(ctx.accountId, p.equipmentId);
-    if (!etat || etat.assetId !== p.equipmentAssetId) return refuse(action, 'Équipement introuvable ou hors de votre compte.');
-    if (etat.version !== p.expectedVersion) return ko(action, STRUCTURE_CHANGED_SINCE_PREVIEW);
+    if (!etat || !jeton || etat.assetId !== p.equipmentAssetId) return refuse(action, 'Équipement introuvable ou hors de votre compte.');
+    if (etat.version !== p.expectedVersion) return conflit(action, STRUCTURE_CHANGED_SINCE_PREVIEW);
     // Même garde que la route : modification suspendue au-dessus du quota de biens (GAP-11).
     const { refuserSiModificationBiensSuspendue } = await import('@/lib/asset-quota-guard');
     const suspendu = await refuserSiModificationBiensSuspendue(ctx.accountId);
     if (suspendu) return refuse(action, ((await suspendu.json().catch(() => ({}))) as { message?: string }).message ?? 'Modification non autorisée.');
     const { updateEquipmentForAccount } = await import('@/services/assets/structure-write.facade');
-    const res = await updateEquipmentForAccount({ userId: ctx.userId, currentAccountId: ctx.accountId }, etat.assetId, p.equipmentId, { name: p.equipmentName });
+    const res = await updateEquipmentForAccount({ userId: ctx.userId, currentAccountId: ctx.accountId }, etat.assetId, p.equipmentId, { name: p.equipmentName },
+      { expectedUpdatedAtMicros: jeton });
+    if (res.status === 409) return conflit(action, STRUCTURE_CHANGED_SINCE_PREVIEW);
     if (res.status === 404) return refuse(action, 'Équipement introuvable ou hors de votre compte.');
     if (res.status !== 200) return ko(action, 'Ce nom ne peut pas être enregistré tel quel : rien n’a été modifié.');
     ctx.recordUndo?.({ actionId: action.actionId, reversible: false, reason: 'équipement renommé : à corriger depuis le bien ou par une nouvelle demande' });
@@ -426,11 +447,18 @@ export const EXECUTORS: Record<PlannedAction['command'], Executor> = {
   async ARCHIVE_EQUIPMENT(action, ctx) {
     const p = action.params as Extract<CommandParams, { kind: 'equipment_archive' }>;
     const { sqlLookup } = await import('./plan.service');
+    // Carte #843 (E07) : version relue avant l'état, puis exigée dans l'instruction d'archivage.
+    const jeton = await jetonDeVersion('equipment', ctx.accountId, p.equipmentId);
     const etat = await sqlLookup.getEquipmentState!(ctx.accountId, p.equipmentId);
-    if (!etat || etat.assetId !== p.equipmentAssetId) return refuse(action, 'Équipement introuvable ou hors de votre compte.');
-    if (etat.version !== p.expectedVersion) return ko(action, STRUCTURE_CHANGED_SINCE_PREVIEW);
-    const { archiveEquipmentForAccount } = await import('@/services/assets/structure-write.facade');
-    if (!(await archiveEquipmentForAccount(ctx.accountId, etat.assetId, p.equipmentId))) return refuse(action, 'Équipement introuvable ou hors de votre compte.');
+    if (!etat || !jeton || etat.assetId !== p.equipmentAssetId) return refuse(action, 'Équipement introuvable ou hors de votre compte.');
+    if (etat.version !== p.expectedVersion) return conflit(action, STRUCTURE_CHANGED_SINCE_PREVIEW);
+    const { archiveEquipmentForAccount, StructureVersionConflictError } = await import('@/services/assets/structure-write.facade');
+    try {
+      if (!(await archiveEquipmentForAccount(ctx.accountId, etat.assetId, p.equipmentId, { expectedUpdatedAtMicros: jeton }))) return refuse(action, 'Équipement introuvable ou hors de votre compte.');
+    } catch (e) {
+      if (e instanceof StructureVersionConflictError) return conflit(action, STRUCTURE_CHANGED_SINCE_PREVIEW);
+      throw e;
+    }
     ctx.recordUndo?.({ actionId: action.actionId, reversible: false, reason: 'équipement archivé' });
     return { actionId: action.actionId, status: 'SUCCESS', message: `Équipement « ${etat.name} » retiré de ${etat.assetName}. Ses documents et ses échéances sont conservés.`, entity: { type: 'equipment', id: p.equipmentId } };
   },
@@ -458,9 +486,11 @@ export const EXECUTORS: Record<PlannedAction['command'], Executor> = {
   async UPDATE_DOCUMENT(action, ctx) {
     const p = action.params as Extract<CommandParams, { kind: 'document_update' }>;
     const { sqlLookup } = await import('./plan.service');
+    // Carte #843 (E07) : version d'écriture relue AVANT l'état présenté, puis exigée dans l'instruction d'écriture.
+    const jeton = await jetonDeVersion('document', ctx.accountId, p.documentId);
     const etat = await sqlLookup.getDocumentState!(ctx.accountId, p.documentId);
-    if (!etat) return refuse(action, 'Document introuvable ou hors de votre compte.');
-    if (etat.version !== p.expectedVersion) return ko(action, DOCUMENT_CHANGED_SINCE_PREVIEW);
+    if (!etat || !jeton) return refuse(action, 'Document introuvable ou hors de votre compte.');
+    if (etat.version !== p.expectedVersion) return conflit(action, DOCUMENT_CHANGED_SINCE_PREVIEW);
     // Nom de fichier et date ACTUELS repris : la route attend l'état complet (une date absente serait effacée).
     const body: Record<string, unknown> = { fileName: etat.originalFilename || etat.title, documentDate: etat.documentDate };
     if (p.documentField === 'date') body.documentDate = p.newValue;
@@ -471,7 +501,8 @@ export const EXECUTORS: Record<PlannedAction['command'], Executor> = {
       else body.retainedTitle = p.newValue;
     }
     const { updateDocumentForAccount } = await import('@/services/documents/document-write.facade');
-    const res = await updateDocumentForAccount({ userId: ctx.userId, currentAccountId: ctx.accountId }, p.documentId, body);
+    const res = await updateDocumentForAccount({ userId: ctx.userId, currentAccountId: ctx.accountId }, p.documentId, body, { expectedUpdatedAtMicros: jeton });
+    if (res.status === 409 && ((await res.clone().json().catch(() => ({}))) as { error?: string }).error === 'CONFLICT') return conflit(action, DOCUMENT_CHANGED_SINCE_PREVIEW);
     if (res.status === 404) return refuse(action, 'Document introuvable ou hors de votre compte.');
     if (res.status !== 200) return ko(action, 'Cette modification ne peut pas être enregistrée telle quelle : rien n’a été modifié.');
     ctx.recordUndo?.({ actionId: action.actionId, reversible: false, reason: 'modification d’un document : à corriger depuis le document ou par une nouvelle demande' });
@@ -486,11 +517,15 @@ export const EXECUTORS: Record<PlannedAction['command'], Executor> = {
   async DELETE_DOCUMENT(action, ctx) {
     const p = action.params as Extract<CommandParams, { kind: 'document_delete' }>;
     const { sqlLookup } = await import('./plan.service');
+    // Carte #843 (E07) : version relue avant l'état, puis exigée SOUS VERROU dans la transaction de la suppression.
+    const jeton = await jetonDeVersion('document', ctx.accountId, p.documentId);
     const etat = await sqlLookup.getDocumentState!(ctx.accountId, p.documentId);
-    if (!etat) return refuse(action, 'Document introuvable ou hors de votre compte.');
-    if (etat.version !== p.expectedVersion) return ko(action, DOCUMENT_CHANGED_SINCE_PREVIEW);
-    const { softDeleteDocument } = await import('@/services/documents/document-write.facade');
-    await softDeleteDocument({ fileId: p.documentId, fileAccountId: ctx.accountId, userId: ctx.userId });
+    if (!etat || !jeton) return refuse(action, 'Document introuvable ou hors de votre compte.');
+    if (etat.version !== p.expectedVersion) return conflit(action, DOCUMENT_CHANGED_SINCE_PREVIEW);
+    const { softDeleteDocumentsGuarded } = await import('@/services/documents/document-write.facade');
+    const issue = await softDeleteDocumentsGuarded({ accountId: ctx.accountId, userId: ctx.userId, documents: [{ fileId: p.documentId, expectedUpdatedAtMicros: jeton }] });
+    if (issue === 'CONFLICT') return conflit(action, DOCUMENT_CHANGED_SINCE_PREVIEW);
+    if (issue === 'NOT_FOUND') return refuse(action, 'Document introuvable ou hors de votre compte.');
     ctx.recordUndo?.({ actionId: action.actionId, reversible: false, reason: 'suppression d’un document' });
     return { actionId: action.actionId, status: 'SUCCESS', message: `Document « ${etat.title} » supprimé.`, entity: { type: 'document', id: p.documentId } };
   },
@@ -541,17 +576,23 @@ export const EXECUTORS: Record<PlannedAction['command'], Executor> = {
   async DELETE_DOCUMENTS(action, ctx) {
     const p = action.params as Extract<CommandParams, { kind: 'documents_delete' }>;
     const { sqlLookup } = await import('./plan.service');
-    const relus: Array<{ id: number; title: string }> = [];
+    const relus: Array<{ id: number; title: string; jeton: string }> = [];
     for (const d of p.documents) {
+      // Carte #843 (E07) : version relue avant l'état de CHAQUE document.
+      const jeton = await jetonDeVersion('document', ctx.accountId, d.documentId);
       const etat = await sqlLookup.getDocumentState!(ctx.accountId, d.documentId);
-      if (!etat) return refuse(action, `« ${d.title} » est introuvable dans votre compte : aucun document n’a été supprimé.`);
+      if (!etat || !jeton) return refuse(action, `« ${d.title} » est introuvable dans votre compte : aucun document n’a été supprimé.`);
       if (etat.version !== d.expectedVersion) {
-        return ko(action, `« ${etat.title} » a été modifié depuis l’aperçu : aucun document n’a été supprimé. Refaites votre demande.`);
+        return conflit(action, `« ${etat.title} » a été modifié depuis l’aperçu : aucun document n’a été supprimé. Refaites votre demande.`);
       }
-      relus.push({ id: etat.id, title: etat.title });
+      relus.push({ id: etat.id, title: etat.title, jeton });
     }
-    const { softDeleteDocument } = await import('@/services/documents/document-write.facade');
-    for (const d of relus) await softDeleteDocument({ fileId: d.id, fileAccountId: ctx.accountId, userId: ctx.userId });
+    // Carte #843 (E07) — règle remplacée : « suppressions successives après relecture ». Désormais UNE transaction :
+    // toutes les versions revérifiées sous verrou, tout ou rien.
+    const { softDeleteDocumentsGuarded } = await import('@/services/documents/document-write.facade');
+    const issue = await softDeleteDocumentsGuarded({ accountId: ctx.accountId, userId: ctx.userId, documents: relus.map((d) => ({ fileId: d.id, expectedUpdatedAtMicros: d.jeton })) });
+    if (issue === 'CONFLICT') return conflit(action, 'Un de ces documents a été modifié depuis l’aperçu : aucun document n’a été supprimé. Refaites votre demande.');
+    if (issue === 'NOT_FOUND') return refuse(action, 'Un de ces documents est introuvable dans votre compte : aucun document n’a été supprimé.');
     ctx.recordUndo?.({ actionId: action.actionId, reversible: false, reason: 'suppression de plusieurs documents' });
     return {
       actionId: action.actionId, status: 'SUCCESS',
@@ -598,12 +639,23 @@ export const EXECUTORS: Record<PlannedAction['command'], Executor> = {
     if (etat.version !== p.expectedVersion) return conflit(action, SUPPLIER_CHANGED_SINCE_PREVIEW);
     const { updateSupplierForAccount } = await import('@/services/suppliers/supplier-write.facade');
     // Une chaîne vide efface la valeur : même convention que le formulaire de la fiche.
-    const body = Object.fromEntries(Object.entries(p.patch).map(([k, v]) => [k, v ?? '']));
+    const body: Record<string, string> = Object.fromEntries(Object.entries(p.patch).map(([k, v]) => [k, v ?? '']));
+    // Carte #843 (E04) : l'IBAN n'est PAS dans la proposition (forme masquée seulement) — il est descellé ici, au
+    // moment de l'écriture, depuis la valeur chiffrée de CETTE proposition. Purgé, échu ou illisible : rien n'est écrit.
+    if (p.ibanSealed) {
+      const { unsealPlanSecret, BANKING_SECRET_GONE } = await import('./plan-secrets');
+      const iban = ctx.planId ? await unsealPlanSecret({ planId: ctx.planId, accountId: ctx.accountId, actionId: action.actionId }) : null;
+      if (!iban) return refuse(action, BANKING_SECRET_GONE);
+      body.iban = iban;
+    }
     // Carte #807 (E07) : version complète de la fiche exigée SOUS VERROU par la façade, dans la transaction de
     // l'écriture — une modification concurrente (autre membre, autre onglet) est un conflit, jamais un écrasement.
+    // Carte #843 (E07) : un plan sans version complète (préparé avant #807) exige la version RELUE à l'instant
+    // (même lecture que l'état contrôlé ci-dessus) — jamais une écriture sans garde.
+    const versionExigee = p.expectedRowVersion ?? etat.rowVersion;
+    if (!versionExigee) return refuse(action, 'Fournisseur introuvable ou hors de votre compte.');
     const r = await updateSupplierForAccount({
-      accountId: ctx.accountId, userId: ctx.userId, supplierId: p.supplierId, body,
-      ...(p.expectedRowVersion ? { expectedVersion: p.expectedRowVersion } : {}),
+      accountId: ctx.accountId, userId: ctx.userId, supplierId: p.supplierId, body, expectedVersion: versionExigee,
     });
     if (!r.ok && r.code === 'CONFLICT') return conflit(action, SUPPLIER_CHANGED_SINCE_PREVIEW);
     if (!r.ok) return r.code === 'NOT_FOUND' ? refuse(action, 'Fournisseur introuvable ou hors de votre compte.') : ko(action, 'Cette valeur ne peut pas être enregistrée telle quelle : rien n’a été modifié.');
@@ -621,9 +673,12 @@ export const EXECUTORS: Record<PlannedAction['command'], Executor> = {
     const { sqlLookup } = await import('./plan.service');
     const etat = await sqlLookup.getSupplierState!(ctx.accountId, p.supplierId);
     if (!etat) return refuse(action, 'Fournisseur introuvable ou hors de votre compte.');
-    if (etat.version !== p.expectedVersion) return ko(action, SUPPLIER_CHANGED_SINCE_PREVIEW);
+    if (etat.version !== p.expectedVersion) return conflit(action, SUPPLIER_CHANGED_SINCE_PREVIEW);
+    if (!etat.rowVersion) return refuse(action, 'Fournisseur introuvable ou hors de votre compte.');
     const { setSupplierArchived } = await import('@/services/suppliers/supplier-write.facade');
-    const r = await setSupplierArchived({ accountId: ctx.accountId, supplierId: p.supplierId });
+    // Carte #843 (E07) : version complète (lue avec l'état contrôlé) exigée SOUS VERROU dans la transaction.
+    const r = await setSupplierArchived({ accountId: ctx.accountId, supplierId: p.supplierId, expectedVersion: etat.rowVersion });
+    if (!r.ok && r.code === 'CONFLICT') return conflit(action, SUPPLIER_CHANGED_SINCE_PREVIEW);
     if (!r.ok) return refuse(action, 'Fournisseur introuvable ou hors de votre compte.');
     ctx.recordUndo?.({ actionId: action.actionId, reversible: false, reason: 'fournisseur archivé : il se réactive depuis sa fiche' });
     return { actionId: action.actionId, status: 'SUCCESS', message: `Fournisseur « ${etat.name} » archivé. Ses documents et ses liens sont conservés.`, entity: { type: 'supplier', id: p.supplierId } };
@@ -653,8 +708,10 @@ export const EXECUTORS: Record<PlannedAction['command'], Executor> = {
     try {
       // Carte #807 (E07) : version présentée exigée par le service DANS son écriture (plans préparés depuis
       // cette carte) — une modification concurrente est un conflit, jamais un écrasement.
+      // Carte #843 (E07) : un plan sans version d'écriture (préparé avant #807) exige celle RELUE ci-dessus avec
+      // l'état contrôlé — jamais une écriture sans garde.
       item = await updateAgendaItem(p.agendaItemId, input, ctx.accountId, ctx.userId, {},
-        p.expectedUpdatedAt ? { expectedUpdatedAtMicros: p.expectedUpdatedAt } : {});
+        { expectedUpdatedAtMicros: p.expectedUpdatedAt ?? avantEcriture.updatedAt });
     } catch (e) {
       if (e instanceof AgendaConcurrentUpdateError) return conflit(action, CHANGED_SINCE_PREVIEW);
       throw e;
@@ -673,7 +730,7 @@ export const EXECUTORS: Record<PlannedAction['command'], Executor> = {
     const p = action.params as Extract<CommandParams, { kind: 'agenda_delete' }>;
     const avantEcriture = await readAgendaSnapshot(pgClient, ctx.accountId, p.agendaItemId);
     if (!avantEcriture) return refuse(action, 'Échéance introuvable ou hors de votre compte.');
-    if (agendaVersion(avantEcriture) !== p.expectedVersion) return ko(action, CHANGED_SINCE_PREVIEW);
+    if (agendaVersion(avantEcriture) !== p.expectedVersion) return conflit(action, CHANGED_SINCE_PREVIEW);
     if (p.scope === 'SERIES') {
       const [{ n }] = (await pgClient.unsafe(
         `SELECT count(*)::int AS n FROM agenda_items s
@@ -685,7 +742,15 @@ export const EXECUTORS: Record<PlannedAction['command'], Executor> = {
       }
     }
     const { deleteAgendaItem } = await import('@/services/agenda/AgendaWriteService');
-    const { deletedIds } = await deleteAgendaItem(p.agendaItemId, ctx.accountId, ctx.userId, { scope: p.scope });
+    const { AgendaConcurrentUpdateError } = await import('@/services/agenda/write-agenda-item');
+    let deletedIds: number[];
+    try {
+      // Carte #843 (E07) : version relue avec l'état contrôlé, exigée SOUS VERROU dans la transaction de suppression.
+      ({ deletedIds } = await deleteAgendaItem(p.agendaItemId, ctx.accountId, ctx.userId, { scope: p.scope, expectedUpdatedAtMicros: avantEcriture.updatedAt }));
+    } catch (e) {
+      if (e instanceof AgendaConcurrentUpdateError) return conflit(action, CHANGED_SINCE_PREVIEW);
+      throw e;
+    }
     ctx.recordUndo?.({ actionId: action.actionId, reversible: false, reason: 'suppression définitive d’une échéance' });
     await publier(deletedIds.map((entityId) => ({ type: 'AGENDA_ITEM_DELETED' as const, accountId: ctx.accountId, entityId })));
     return {
@@ -860,6 +925,26 @@ async function ecrireChampDeBien(
 }
 
 const STRUCTURE_CHANGED_SINCE_PREVIEW = 'Cet élément a été modifié depuis l’aperçu : rien n’a été fait. Refaites votre demande.';
+/** Carte #843 (E02) : panne pendant la création atomique — la transaction est annulée, rien n'est à moitié écrit. */
+export const EQUIPMENT_CREATION_FAILED = 'L’équipement n’a pas pu être créé : rien n’a été enregistré (ni l’équipement, ni sa fiche). Vous pouvez refaire votre demande.';
+
+/**
+ * Carte #843 (E07) — VERSION D'ÉCRITURE d'une cible (horodatage de dernière modification, microsecondes en texte),
+ * bornée au compte. Elle est relue AVANT l'état présenté : si cet état est encore celui de l'aperçu ET que la
+ * façade trouve, dans son instruction d'écriture, la même version, aucune écriture n'a eu lieu entre l'aperçu et
+ * la nôtre. `null` : cible absente du compte.
+ */
+export async function jetonDeVersion(kind: 'equipment' | 'room' | 'document', accountId: number, id: number): Promise<string | null> {
+  const sql = kind === 'equipment'
+    ? `SELECT (extract(epoch FROM e.updated_at) * 1000000)::bigint::text AS v FROM equipments e
+         JOIN assets a ON a.id = e.asset_id AND a.account_id = $2 AND a.deleted_at IS NULL WHERE e.id = $1 AND e.archived_at IS NULL`
+    : kind === 'room'
+      ? `SELECT (extract(epoch FROM r.updated_at) * 1000000)::bigint::text AS v FROM substructures r
+           JOIN assets a ON a.id = r.asset_id AND a.account_id = $2 AND a.deleted_at IS NULL WHERE r.id = $1`
+      : `SELECT (extract(epoch FROM updated_at) * 1000000)::bigint::text AS v FROM asset_files WHERE id = $1 AND account_id = $2 AND deleted_at IS NULL`;
+  const [r] = (await pgClient.unsafe(sql, [id, accountId] as never[])) as unknown as Array<{ v: string | null }>;
+  return r?.v ?? null;
+}
 /** Création d'une pièce ou d'un équipement : bien du compte et contrôles d'offre de la façade métier, relus à l'exécution. */
 async function refusStructure(accountId: number, assetId: number, kind: 'room' | 'equipment'): Promise<string | null> {
   const { sqlLookup } = await import('./plan.service');

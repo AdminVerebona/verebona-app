@@ -19,6 +19,7 @@
  * Ne lève jamais : une trace impossible n'empêche pas une réponse.
  * ══════════════════════════════════════════════════════════════════════════
  */
+import { cachedPromptIdentity, promptDrift, promptSourceOf, runIdentity } from './prompt-instrumentation';
 import { createHash } from 'crypto';
 import { pgClient } from '@/db';
 import { INTENT_CATALOG_VERSION } from '../types/intents';
@@ -54,6 +55,44 @@ interface AiRunRecord extends AiRunContext {
   status: 'ok' | 'error' | 'timeout' | 'cached';
   errorCode?: string | null;
   promptHash: string | null;
+  /**
+   * Carte #843 (E11) — identité NON SENSIBLE du prompt et du code de l'exécution : version servie par la passerelle,
+   * source (BO ou fichier du dépôt) et empreinte du TEXTE effectif, SHA du build servi. Facultatifs (appelants
+   * antérieurs) ; jamais le texte du prompt.
+   */
+  servedPromptVersion?: string | null;
+  promptSource?: string | null;
+  promptFingerprint?: string | null;
+  appCommit?: string | null;
+  /** Carte #843 (E11) : compléter la trace avec l'identité du prompt effectif et du build (à l'écriture). */
+  instrument?: boolean;
+}
+
+/**
+ * Carte #843 (E11) — identité non sensible d'une exécution T2, calculée SANS attente (la trace s'écrit comme avant) :
+ *   · source : lue sur la version SERVIE par la passerelle (`@pv…` version BO, `@cfg…` texte de configuration BO,
+ *     `@file` fichier du dépôt) ;
+ *   · empreinte du texte : celle de l'identité résolue en cache (lecture de la passerelle, 60 s) SI elle désigne la
+ *     même version que celle servie ; sinon `null` et la source est marquée `:DRIFT` (version servie ≠ version
+ *     résolue) — jamais une empreinte qui ne serait pas celle du texte servi. Cache absent : `null` (non connu),
+ *     puis lecture lancée en arrière-plan pour les traces suivantes ;
+ *   · SHA du build servi.
+ * Ne lève jamais.
+ */
+function instrumenter(rec: AiRunRecord): AiRunRecord {
+  if (!rec.instrument) return rec;
+  try {
+    const id = cachedPromptIdentity(rec.operationCode);
+    const servie = rec.servedPromptVersion ?? id?.version ?? null;
+    const derive = id ? promptDrift(servie, id.version) === true : false;
+    const source = servie ? promptSourceOf(servie) : id?.source ?? 'UNKNOWN';
+    return {
+      ...rec, servedPromptVersion: servie, promptSource: derive ? `${source}:DRIFT` : source,
+      promptFingerprint: !derive && id && id.version === servie ? id.fingerprint : null, appCommit: runIdentity(),
+    };
+  } catch {
+    return { ...rec, promptSource: 'UNKNOWN', promptFingerprint: null, appCommit: null };
+  }
 }
 
 /** Empreinte des variables envoyées : prouve ce qui a été envoyé sans le stocker. */
@@ -100,7 +139,47 @@ export function recordAiRun(rec: AiRunRecord): Promise<void> {
   return p;
 }
 
-async function ecrireAiRun(rec: AiRunRecord): Promise<void> {
+/** Carte #843 (E11) : colonnes d'instrumentation (migration 1990) — absentes : écriture d'avant, sans elles. */
+let colonnesE11 = true;
+
+async function ecrireAiRun(brut: AiRunRecord): Promise<void> {
+  const rec = instrumenter(brut);
+  if (colonnesE11 && (rec.promptFingerprint !== undefined || rec.appCommit !== undefined || rec.servedPromptVersion !== undefined)) {
+    try {
+      await ecrireAiRunComplet(rec);
+      return;
+    } catch (e) {
+      if ((e as { code?: string }).code !== '42703') { console.error('[verebona] recordAiRun', (e as Error).message); return; }
+      colonnesE11 = false;
+      console.warn('[verebona] recordAiRun : colonnes d’instrumentation absentes (migration 1990) — trace sans elles.');
+    }
+  }
+  return ecrireAiRunSimple(rec);
+}
+
+async function ecrireAiRunComplet(rec: AiRunRecord): Promise<void> {
+  const alias = rec.modelAlias ?? modelAliasFor(rec.fallbackUsed);
+  await pgClient.unsafe(
+    `INSERT INTO verebona_ai_runs
+       (request_id, account_id, message_id, provider, model_alias, resolved_model_id,
+        route_reason, prompt_id, prompt_version, prompt_hash, schema_version,
+        intent_catalog_version, action_catalog_version, input_tokens, output_tokens,
+        estimated_cost_micros, latency_ms, fallback_used, attempt_number, status, error_code,
+        served_prompt_version, prompt_source, prompt_text_fingerprint, app_commit, expected_model_id)
+     VALUES ($1,$2,$3,'ai-gateway',$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25)`,
+    [
+      rec.requestId, rec.accountId, rec.messageId ?? null,
+      `${alias}:${rec.operationCode}`, rec.resolvedModelId,
+      String(rec.routeReason ?? '').slice(0, 300), rec.promptId, rec.promptVersion, rec.promptHash, RESPONSE_SCHEMA_VERSION,
+      INTENT_CATALOG_VERSION, ACTION_CATALOG_VERSION, rec.inputTokens, rec.outputTokens,
+      rec.costMicros, rec.latencyMs, rec.fallbackUsed, rec.attemptNumber, rec.status, rec.errorCode ?? null,
+      rec.servedPromptVersion ?? null, rec.promptSource ?? null, rec.promptFingerprint ?? null, rec.appCommit ?? null,
+      rec.expectedModelId ?? null,
+    ] as never[],
+  );
+}
+
+async function ecrireAiRunSimple(rec: AiRunRecord): Promise<void> {
   try {
     const alias = rec.modelAlias ?? modelAliasFor(rec.fallbackUsed);
     await pgClient.unsafe(

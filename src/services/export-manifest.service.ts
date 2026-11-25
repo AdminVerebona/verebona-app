@@ -180,6 +180,11 @@ interface BuildManifestOptions {
   variant?: string;
   customSections?: string[];
   customDocIds?: number[];
+  /**
+   * Carte #843 (E08) — export des données brutes : la liste `customDocIds` vaut AUSSI pour les liens web (sélection
+   * fine demandée depuis l'Assistant). Absent (tiroir historique) : liens web toujours joints, comme avant.
+   */
+  customDocIdsCoverWebLinks?: boolean;
   includePhotos?: boolean;     // override par usage
   includeEquipments?: boolean;
 }
@@ -198,7 +203,8 @@ export function buildExportManifest(
 
   // Web links: uniquement pour EXPORT_BRUT
   const includedWebLinks = exportType === 'EXPORT_BRUT'
-    ? snapshot.documents.filter(d => d.isWebLink)
+    ? snapshot.documents.filter(d => d.isWebLink
+      && !(options.customDocIdsCoverWebLinks === true && Array.isArray(options.customDocIds) && !options.customDocIds.includes(d.id)))
     : [];
 
   // Photos: incluses par défaut pour la plupart des usages

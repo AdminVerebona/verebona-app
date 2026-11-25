@@ -253,12 +253,16 @@ describe('L114O-09 gardes d’architecture : un seul écrivain, compte toujours 
       // Règle remplacée (carte #806, décision du PO du 17/11/2026) : `moveDocument` (déplacer un document vers une autre
       // opération) n'est plus une commande de la façade — retirer puis rattacher ; son corps reste interne à la scission.
       'linkSupplier', 'mergeOperations', 'restoreOperation', 'setOperationNotes', 'splitOperation', 'unlinkAgendaItem',
-      'unlinkDocument', 'unlinkSupplier', 'updateOperation']);
+      // Règle complétée (carte #843, E09) : `unlinkThenLinkDocument` — les DEUX gestes « retirer de A » puis « rattacher
+      // à B », confirmés ensemble dans l'Assistant, exécutés dans UNE transaction (B refusé ou en panne : A conservé).
+      // Ce n'est pas le geste « déplacer » retiré par la carte #806 : aucun écran ni route, corps de la scission non utilisé.
+      'unlinkDocument', 'unlinkSupplier', 'unlinkThenLinkDocument', 'updateOperation']);
     // Chaque commande livrée est documentée en tête de fichier ; chacune passe par l'exécution commune (droits, verrou, rejeu, journal).
     const entete = facade.slice(0, facade.indexOf('*/'));
     for (const c of commandes) expect(entete, c).toMatch(new RegExp(`\\b${c}\\b`));
     const corps = code(facade);
-    expect((corps.match(/runCommand<[^>]+>\(ctx, /g) ?? []).length).toBe(15);
+    // Règle complétée (carte #843, E09) : 16 commandes passent par l'exécution commune (`unlinkThenLinkDocument` ajoutée).
+    expect((corps.match(/runCommand<[^>]+>\(ctx, /g) ?? []).length).toBe(16);
     expect(corps).not.toMatch(/export (?:async )?function moveDocument\b/);
     expect(corps).toMatch(/return supplierCommand\(ctx, 'linkSupplier', input\);/);
     expect(corps).toMatch(/return supplierCommand\(ctx, 'unlinkSupplier', input\);/);
@@ -267,7 +271,7 @@ describe('L114O-09 gardes d’architecture : un seul écrivain, compte toujours 
       expect(corps.slice(corps.indexOf("'splitOperation', input, async")), appel).toContain(appel);
     }
     // Commandes réservées à l'utilisateur : refus explicite d'une inférence, avant toute lecture.
-    for (const c of ['createOperation', 'updateOperation', 'invalidateOperation', 'restoreOperation', 'linkDocument', 'unlinkDocument', 'splitOperation', 'mergeOperations', 'setOperationNotes']) {
+    for (const c of ['createOperation', 'updateOperation', 'invalidateOperation', 'restoreOperation', 'linkDocument', 'unlinkDocument', 'unlinkThenLinkDocument', 'splitOperation', 'mergeOperations', 'setOperationNotes']) {
       const debut = corps.indexOf(`'${c}', input, async`);
       expect(corps.slice(debut, debut + 200), c).toMatch(/ctx\.actor\.kind !== 'USER'\) return stop\(refused\('FORBIDDEN', 'USER_ONLY'\)\)/);
     }

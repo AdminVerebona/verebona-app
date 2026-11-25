@@ -306,6 +306,10 @@ export const DIAG_TABLE_COVERAGE: Readonly<Record<string, DiagTableCoverage>> = 
   verebona_command_plans: C('ecritures'),
   verebona_command_events: C('ecritures'),
   verebona_command_undo_steps: C('ecritures'),
+  // Carte #843 (E04) : valeur bancaire transitoire CHIFFRÉE d'une proposition — jamais exportée (aucune ligne).
+  verebona_command_plan_secrets: T('technique', 'valeurs bancaires transitoires chiffrées des propositions de l’Assistant : jamais exportées (#843)'),
+  // Carte #843 (E04) : journal des purges de données sensibles (aucune valeur) — exporté par compte.
+  verebona_sensitive_purge_log: C('ecritures'),
   // ── Corrections utilisateur ──────────────────────────────────────────────
   data_separation_corrections: C('corrections-utilisateur'),
   asset_cost_line_decisions: C('corrections-utilisateur'),

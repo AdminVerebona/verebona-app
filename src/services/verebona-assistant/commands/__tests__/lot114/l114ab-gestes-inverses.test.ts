@@ -244,7 +244,9 @@ describe('L114AB-I05 — exécution : aucune écriture propre', () => {
   });
 
   it('chaque résultat de la façade est traduit en phrase, sans code et sans le mot interdit', () => {
-    expect(exec.match(/translateWriteResult\(/g)?.length).toBe(5);
+    // Règle complétée (carte #843, E09) : 6 traductions — le déplacement atomique (retirer de A puis rattacher à B,
+    // une transaction) traduit aussi le résultat de la façade.
+    expect(exec.match(/translateWriteResult\(/g)?.length).toBe(6);
     // Le mot interdit est celui qui s'AFFICHE (accentué) ; les identifiants techniques de la façade
     // (`restoreOperation`, `operationId`) ne sont jamais montrés à l'utilisateur.
     // Règle remplacée (carte #806, décision du PO du 17/11/2026) : la garde interdisait « Opération » ; à l’écran on dit désormais « opération », et c’est « événement de référence » qui est interdit.

@@ -39,9 +39,19 @@ export const EQUIPMENT_LABELS: ReadonlyArray<LabelDef<EquipmentLabelKey>> = [
 
 export type AgendaLabelKey =
   | 'title' | 'description' | 'startDate' | 'startTime' | 'endDate' | 'endTime' | 'situation' | 'noDeadline'
-  | 'asset' | 'room' | 'equipment' | 'document';
+  | 'asset' | 'room' | 'equipment' | 'document'
+  // Carte #843 (E03) : RETRAIT ciblé d'un lien (« retirer le bien Polo », « sans le document Facture »).
+  | 'removeAsset' | 'removeRoom' | 'removeEquipment' | 'removeDocument';
+
+/** Carte #843 (E03) : verbe (ou « sans ») qui annonce le RETRAIT d'un lien dans une liste « libellé valeur ». */
+const RETRAIT = String.raw`(?:retirer|retire|enlever|enleve|detacher|detache|dissocier|dissocie|supprimer|supprime|sans)\s+(?:le |la |l'|les )?`;
 
 export const AGENDA_LABELS: ReadonlyArray<LabelDef<AgendaLabelKey>> = [
+  // Retraits d'abord : « retirer le bien » n'est pas le libellé « bien ».
+  { key: 'removeEquipment', re: String.raw`${RETRAIT}equipements?` },
+  { key: 'removeDocument', re: String.raw`${RETRAIT}documents?` },
+  { key: 'removeRoom', re: String.raw`${RETRAIT}pieces?` },
+  { key: 'removeAsset', re: String.raw`${RETRAIT}biens?` },
   { key: 'noDeadline', re: String.raw`sans echeance` },
   { key: 'endDate', re: String.raw`date de fin` },
   { key: 'endTime', re: String.raw`heure de fin|horaire de fin` },

@@ -79,7 +79,9 @@ scenario('L114X-EVENEMENTS-REFERENCE', 'Lot 114X — créer, corriger, supprimer
     const r = planDe(await demander(c, VIDANGE));
     expect(r.preview.summary).toBe('Enregistrer l’opération « Intervention — Vidange » du 12 mars 2025 pour Clio. Confirmez-vous ?');
     // La limite est dite AVANT l'écriture : rien n'est promis sur un écran.
-    expect(r.plan.actions[0].effects.join(' ')).toMatch(/n’apparaît sur aucun écran de l’application \(ni fiche, ni recherche\)/);
+    // Règle remplacée (carte #843, E05) : l'opération déclarée a sa fiche et figure dans la liste des opérations (#806).
+    expect(r.plan.actions[0].effects.join(' ')).toMatch(/Vous la retrouverez sur sa fiche et dans la liste des opérations de votre compte/);
+    expect(r.plan.actions[0].effects.join(' ')).not.toMatch(/aucun écran/);
     // Règle remplacée (carte #806, décision du PO du 17/11/2026) : la garde interdisait « Opération » ; à l’écran on dit désormais « opération », et c’est « événement de référence » qui est interdit.
     expect(JSON.stringify(r.preview)).not.toMatch(/[ée]v[éeè]nements?\s+de\s+r[ée]f[ée]rence/i);
     // Rien n'est écrit avant la confirmation.
@@ -89,7 +91,7 @@ scenario('L114X-EVENEMENTS-REFERENCE', 'Lot 114X — créer, corriger, supprimer
 
     const conf = await confirmer(c, r.plan.planId);
     expect(conf).toMatchObject({ ok: true, status: 'EXECUTED', undoUntil: null });
-    expect(JSON.stringify(conf)).toMatch(/Opération « Intervention — Vidange » enregistrée\. Pour l’instant, une opération enregistrée sur votre déclaration n’apparaît sur aucun écran/);
+    expect(JSON.stringify(conf)).toMatch(/Opération « Intervention — Vidange » enregistrée\. Vous la retrouverez sur sa fiche et dans la liste des opérations/);
     const [ev] = await evenements(c);
     expect(ev).toMatchObject({ type_code: 'INTERVENTION', status: 'REALIZED', technical_label: 'Vidange', realise: '2025-03-12', planned: null, debut: null, fin: null, provider: null, invalide: false });
     // Source durable : la déclaration (texte, auteur, canal Assistant) et la source de l'événement ; bien lié par l'utilisateur.

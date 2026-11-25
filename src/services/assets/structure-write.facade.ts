@@ -80,16 +80,44 @@ export async function createRoomForAccount(accountId: number, assetId: number, n
   return newSubstructure;
 }
 
-/** Renomme une pièce du bien ; `null` : pièce absente de ce bien. */
-export async function renameRoomForAccount(accountId: number, assetId: number, roomId: number, name: string):
+/**
+ * Carte #843 (E07) — horodatage de dernière modification d'une PIÈCE, en microsecondes (texte) : version exigée
+ * dans l'instruction d'écriture quand l'appelant la fournit (Assistant). Chaque écriture de la pièce le renouvelle.
+ */
+export const ROOM_VERSION_SQL = `(extract(epoch FROM updated_at) * 1000000)::bigint::text`;
+
+/** Carte #843 (E07) — la cible a changé depuis la version attendue : RIEN n'a été écrit. */
+export class StructureVersionConflictError extends Error {
+  constructor() { super('Structure changed since expected version'); this.name = 'StructureVersionConflictError'; }
+}
+
+/**
+ * Renomme une pièce du bien ; `null` : pièce absente de ce bien.
+ *
+ * Carte #843 (E07) — `guard.expectedUpdatedAtMicros` : version attendue, comparée DANS l'instruction d'écriture.
+ * Pièce présente mais modifiée depuis : `StructureVersionConflictError`, rien n'est écrit. Absente (écran) : inchangé.
+ */
+export async function renameRoomForAccount(accountId: number, assetId: number, roomId: number, name: string,
+  guard: { expectedUpdatedAtMicros?: string } = {}):
   Promise<{ id: number; name: string; asset_id: number } | null> {
-  const rows = await db.$client<{ id: number; name: string; asset_id: number }[]>`
+  const garde = guard.expectedUpdatedAtMicros;
+  const rows = garde === undefined
+    ? await db.$client<{ id: number; name: string; asset_id: number }[]>`
     UPDATE substructures
     SET name = ${name.trim()}, updated_at = NOW()
     WHERE id = ${roomId} AND asset_id = ${assetId}
     RETURNING id, name, asset_id
-  `;
-  if (!rows.length) return null;
+  `
+    : await db.$client.unsafe<{ id: number; name: string; asset_id: number }[]>(
+      `UPDATE substructures SET name = $1, updated_at = NOW()
+        WHERE id = $2 AND asset_id = $3 AND ${ROOM_VERSION_SQL} = $4
+        RETURNING id, name, asset_id`,
+      [name.trim(), roomId, assetId, garde] as never[],
+    );
+  if (!rows.length) {
+    if (garde !== undefined && (await roomExists(assetId, roomId))) throw new StructureVersionConflictError();
+    return null;
+  }
   // CDC Assistant §25.7, §31.7 : pièce modifiée.
   await emitBusinessEvent({ type: 'ASSET_UPDATED', accountId, entityId: assetId });
   return rows[0];
@@ -101,15 +129,29 @@ export async function renameRoomForAccount(accountId: number, assetId: number, r
  * (rattachement à la pièce retiré par la base) ; ses liens d'Agenda et
  * d'événements de référence sont retirés avec elle.
  */
-export async function deleteRoomForAccount(accountId: number, assetId: number, roomId: number): Promise<boolean> {
-  const [deletedSubstructure] = await db
-    .delete(substructures)
-    .where(and(eq(substructures.id, roomId), eq(substructures.assetId, assetId)))
-    .returning();
-  if (!deletedSubstructure) return false;
+export async function deleteRoomForAccount(accountId: number, assetId: number, roomId: number,
+  guard: { expectedUpdatedAtMicros?: string } = {}): Promise<boolean> {
+  const garde = guard.expectedUpdatedAtMicros;
+  // Carte #843 (E07) : version attendue comparée dans l'instruction de suppression elle-même.
+  const supprimees = garde === undefined
+    ? await db.delete(substructures).where(and(eq(substructures.id, roomId), eq(substructures.assetId, assetId))).returning()
+    : await db.$client.unsafe<{ id: number }[]>(
+      `DELETE FROM substructures WHERE id = $1 AND asset_id = $2 AND ${ROOM_VERSION_SQL} = $3 RETURNING id`,
+      [roomId, assetId, garde] as never[],
+    );
+  const [deletedSubstructure] = supprimees;
+  if (!deletedSubstructure) {
+    if (garde !== undefined && (await roomExists(assetId, roomId))) throw new StructureVersionConflictError();
+    return false;
+  }
   // CDC Assistant §25.7, §31.7 : pièce supprimée.
   await emitBusinessEvent({ type: 'ASSET_UPDATED', accountId, entityId: assetId });
   return true;
+}
+
+async function roomExists(assetId: number, roomId: number): Promise<boolean> {
+  const r = await db.$client<{ id: number }[]>`SELECT id FROM substructures WHERE id = ${roomId} AND asset_id = ${assetId} LIMIT 1`;
+  return r.length > 0;
 }
 
 // ══════════════════════════════════════════════════════════════════════════
@@ -214,6 +256,132 @@ export async function createEquipmentForAccount(session: StructureWriteSession, 
     substructureId: newEquipment.substructureId,
     assetId
   }, { status: 201 });
+}
+
+/** Carte #843 (E02) — issue d'une création d'équipement ATOMIQUE (équipement + fiche + montants, ou rien). */
+export type AtomicEquipmentCreation =
+  | { ok: true; id: number; name: string }
+  /** Entrée refusée AVANT toute écriture (nom, statut, montants, pièce, fiche) : rien n'a été créé. */
+  | { ok: false; code: 'INVALID_INPUT'; message: string }
+  /** Bien absent du compte, supprimé, ou n'acceptant pas d'équipement : rien n'a été créé. */
+  | { ok: false; code: 'NOT_FOUND' }
+  /** Refus de l'offre (quota de biens, Premium) revérifié AU MOMENT de l'écriture : rien n'a été créé. */
+  | { ok: false; code: 'FORBIDDEN'; message: string }
+  /** Un équipement de même nom existe déjà dans ce bien (création concurrente, double envoi) : rien n'a été créé. */
+  | { ok: false; code: 'DUPLICATE'; existingId: number }
+  /** Panne pendant l'écriture : la transaction est ANNULÉE — rien n'a été créé, rien n'est à moitié écrit. */
+  | { ok: false; code: 'FAILED' };
+
+const nomNormalise = (s: string) => s.normalize('NFD').replace(/[̀-ͯ]/g, '').toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim();
+
+/**
+ * Carte #843 (E02) — CRÉATION ATOMIQUE d'un équipement AVEC sa fiche (marque, modèle, n° de série…) et ses
+ * montants, pour l'Assistant. Avant #843, l'Assistant créait l'équipement (`createEquipmentForAccount`) puis
+ * écrivait la fiche par une SECONDE écriture (`updateEquipmentForAccount`) : une panne de la seconde laissait
+ * une fiche incomplète, annoncée « créée ».
+ *
+ *   1. TOUTES les entrées sont validées AVANT d'écrire, avec les règles de la création et du tiroir (nom, statut,
+ *      usage énergétique, catégorie, montants en centimes entiers, fiche `parseEquipmentFiche`) ;
+ *   2. UNE transaction : bien du compte verrouillé (`FOR UPDATE` — deux créations simultanées sont sérialisées),
+ *      offre et quota REVÉRIFIÉS à ce moment, homonyme refusé (`refuseHomonym`), pièce du bien contrôlée, ligne
+ *      insérée, fiche et montants écrits par l'écrivain canonique de l'équipement (origine USER) DANS cette
+ *      transaction (`writeCanonicalEntityFieldsInTransaction`) — une valeur refusée par le registre, ou une
+ *      panne, annule TOUT ;
+ *   3. APRÈS validation seulement : rapprochement en file durable, événements, réconciliation (comme l'écran).
+ *
+ * Ne lève jamais : toute panne devient `FAILED` (transaction annulée, rien d'écrit).
+ */
+export async function createEquipmentWithDetailsForAccount(
+  session: StructureWriteSession & { userId: number }, assetId: number, body: Record<string, unknown>,
+  opts: { refuseHomonym?: boolean; sourceId?: string } = {},
+): Promise<AtomicEquipmentCreation> {
+  const name = typeof body.name === 'string' ? body.name.trim() : '';
+  if (!name) return { ok: false, code: 'INVALID_INPUT', message: 'Name is required' };
+  const status = body.status as string | undefined;
+  if (status && !isValidEquipmentStatus(status)) return { ok: false, code: 'INVALID_INPUT', message: 'Invalid equipment status' };
+  const energyUsage = parseEquipmentEnergyUsage(body.energyUsage);
+  if (energyUsage === 'INVALID') return { ok: false, code: 'INVALID_INPUT', message: 'Invalid energy usage' };
+  const categoryValue = parseEquipmentCategory(body.category);
+  if (categoryValue === 'INVALID') return { ok: false, code: 'INVALID_INPUT', message: 'Invalid category' };
+  const ppc = parseEquipmentCents('purchasePriceCents', body.purchasePriceCents, 'strict');
+  const evc = parseEquipmentCents('estimatedValueCents', body.estimatedValueCents, 'strict');
+  if (ppc === 'INVALID' || evc === 'INVALID') return { ok: false, code: 'INVALID_INPUT', message: 'Invalid amount (integer cents expected)' };
+  const fiche = parseEquipmentFiche(body.fiche);
+  if (fiche.errors.length) return { ok: false, code: 'INVALID_INPUT', message: fiche.errors.map((e) => e.message).join(' ') };
+  const substructureId = body.substructureId === undefined || body.substructureId === null ? null : Number(body.substructureId);
+  const type = typeof body.type === 'string' && body.type ? body.type : null;
+
+  // Écritures canoniques demandées : fiche (valeurs non vides) et montants (en euros, comme le tiroir).
+  const after: Record<string, unknown> = Object.fromEntries(Object.entries(fiche.values).filter(([, v]) => v !== null));
+  if (ppc != null) after.acquisitionPrice = ppc / 100;
+  if (evc != null) after.estimatedValue = evc / 100;
+
+  const { pgClient } = await import('@/db');
+  let cree: { id: number; name: string } | null = null;
+  try {
+    const issue = await pgClient.begin(async (tx): Promise<AtomicEquipmentCreation> => {
+      const [bien] = await tx.unsafe<Array<{ id: number; category: string; subtype: string | null }>>(
+        `SELECT id, category, subtype FROM assets WHERE id = $1 AND account_id = $2 AND deleted_at IS NULL FOR UPDATE`,
+        [assetId, session.currentAccountId] as never[],
+      );
+      if (!bien) return { ok: false, code: 'NOT_FOUND' };
+      // Droits de l'offre et quota revérifiés SOUS le verrou du bien, au moment de l'écriture.
+      const refus = await structureCreationRefusal(session.currentAccountId, bien, 'equipment');
+      if (refus) return refus.status === 400 ? { ok: false, code: 'NOT_FOUND' } : { ok: false, code: 'FORBIDDEN', message: refus.message };
+      if (opts.refuseHomonym) {
+        const memes = await tx.unsafe<Array<{ id: number; name: string }>>(
+          `SELECT id, name FROM equipments WHERE asset_id = $1 AND archived_at IS NULL`, [assetId] as never[],
+        );
+        const deja = memes.find((e) => nomNormalise(e.name) === nomNormalise(name));
+        if (deja) return { ok: false, code: 'DUPLICATE', existingId: Number(deja.id) };
+      }
+      if (substructureId !== null) {
+        const [piece] = await tx.unsafe(`SELECT id FROM substructures WHERE id = $1 AND asset_id = $2`, [substructureId, assetId] as never[]);
+        if (!piece) return { ok: false, code: 'INVALID_INPUT', message: 'Substructure not found for this asset' };
+      }
+      const now = new Date().toISOString();
+      const [ligne] = await tx.unsafe<Array<{ id: number; name: string }>>(
+        `INSERT INTO equipments (asset_id, substructure_id, name, type, category, energy_usage, status,
+                                 purchase_price_cents, estimated_value_cents, created_at, updated_at)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $10) RETURNING id, name`,
+        [assetId, substructureId, name, type, categoryValue ?? null, energyUsage ?? null, status || 'EN_SERVICE', ppc ?? null, evc ?? null, now] as never[],
+      );
+      if (Object.keys(after).length) {
+        const { writeCanonicalEntityFieldsInTransaction } = await import('@/services/canonical/entity-state/write-canonical-entity-field');
+        const res = await writeCanonicalEntityFieldsInTransaction(tx as never, {
+          target: { type: 'EQUIPMENT', id: Number(ligne.id) }, accountId: session.currentAccountId, origin: 'USER',
+          actorUserId: session.userId, source: { type: 'assistant_command', id: opts.sourceId ?? null }, emitEvent: false,
+          writes: Object.entries(after).map(([key, value]) => ({ key, value })),
+        });
+        // Une valeur non écrite (clé refusée par le registre, protégée, conflit) n'est JAMAIS passée sous silence :
+        // la création entière est annulée.
+        const nonEcrites = res.fields.filter((f) => f.outcome !== 'written' && f.outcome !== 'unchanged');
+        if (res.notFound || res.schemaNotReady || nonEcrites.length) {
+          throw new Error(`fiche non écrite (${res.notFound ? 'introuvable' : res.schemaNotReady ? 'schéma absent' : nonEcrites.map((f) => f.key).join(', ')})`);
+        }
+      }
+      cree = { id: Number(ligne.id), name: String(ligne.name) };
+      return { ok: true, id: cree.id, name: cree.name };
+    });
+    if (!issue.ok) return issue;
+  } catch (e) {
+    console.error(`[equipments] création atomique annulée (compte ${session.currentAccountId}, bien ${assetId}) :`, (e as Error).message);
+    return { ok: false, code: 'FAILED' };
+  }
+  const fait = cree as unknown as { id: number; name: string };
+  // Après validation : mêmes effets que la création de l'écran (jamais bloquants).
+  try {
+    const { requestEquipmentDocumentSync } = await import('@/services/equipment/equipment-document-queue');
+    await requestEquipmentDocumentSync(session.currentAccountId, fait.id, { reason: 'created' });
+  } catch (e) {
+    console.error(`[equipments] mise en file du rapprochement de l'équipement ${fait.id} impossible :`, (e as Error).message);
+  }
+  await emitBusinessEvent({ type: 'ASSET_UPDATED', accountId: session.currentAccountId, entityId: assetId }).catch(() => undefined);
+  try {
+    const { notifyCoherenceEvent } = await import('@/services/ai/reconciliation/account-reconciliation.service');
+    notifyCoherenceEvent(session.currentAccountId, { event: 'entity_updated', objectType: 'equipment', objectId: fait.id });
+  } catch { /* non bloquant */ }
+  return { ok: true, id: fait.id, name: fait.name };
 }
 
 /**
@@ -419,14 +587,24 @@ export async function updateEquipmentForAccount(
  * documents, échéances et historique conservés) ; `false` : équipement absent
  * de ce bien.
  */
-export async function archiveEquipmentForAccount(accountId: number, assetId: number, equipmentId: number): Promise<boolean> {
+export async function archiveEquipmentForAccount(accountId: number, assetId: number, equipmentId: number,
+  guard: { expectedUpdatedAtMicros?: string } = {}): Promise<boolean> {
   // Logical archival via raw SQL to avoid ORM type issues
   const now = new Date().toISOString();
+  // Carte #843 (E07) : version attendue comparée DANS l'instruction d'archivage (Assistant) ; absente : inchangé.
+  const garde = guard.expectedUpdatedAtMicros;
   const rows = await db.$client.unsafe<{ id: number }[]>(
-    `UPDATE equipments SET archived_at = $1, substructure_id = NULL, updated_at = $2 WHERE id = $3 AND asset_id = $4 RETURNING id`,
-    [now, now, equipmentId, assetId] as any
+    `UPDATE equipments SET archived_at = $1, substructure_id = NULL, updated_at = $2 WHERE id = $3 AND asset_id = $4`
+      + (garde !== undefined ? ` AND archived_at IS NULL AND ${EQUIPMENT_VERSION_SQL} = $5` : '') + ' RETURNING id',
+    (garde !== undefined ? [now, now, equipmentId, assetId, garde] : [now, now, equipmentId, assetId]) as any
   );
-  if (!rows.length) return false;
+  if (!rows.length) {
+    if (garde !== undefined) {
+      const present = await db.$client<{ id: number }[]>`SELECT id FROM equipments WHERE id = ${equipmentId} AND asset_id = ${assetId} LIMIT 1`;
+      if (present.length) throw new StructureVersionConflictError();
+    }
+    return false;
+  }
   // CDC Assistant §25.7, §31.7 : équipement archivé.
   await emitBusinessEvent({ type: 'ASSET_UPDATED', accountId, entityId: assetId });
   return true;

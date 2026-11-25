@@ -291,9 +291,13 @@ async function resolveDocumentTransferRequest(
   if (de === vers) return { needInfo: 'Ces deux désignations correspondent à la même opération : précisez l’opération d’origine et l’opération de destination.' };
   return [
     { ...retrait, effects: [...retrait.effects, 'Premier des deux gestes de ce déplacement : « Retirer », puis « Rattacher ». Il n’existe pas de geste unique « déplacer ».'] },
-    { ...ajout, dependsOn: [retrait.actionId], effects: [...ajout.effects, 'Second geste : exécuté seulement si le retrait a réussi. C’est le même document : aucun fichier n’est copié.'] },
+    // Carte #843 (E09) : les deux gestes sont exécutés ensemble, dans une seule écriture (texte à valider par le PO).
+    { ...ajout, dependsOn: [retrait.actionId], effects: [...ajout.effects, DOCUMENT_TRANSFER_ATOMIC_EFFECT] },
   ];
 }
+
+/** Carte #843 (E09) — conséquence annoncée du second geste d'un déplacement (texte à valider par le PO). */
+export const DOCUMENT_TRANSFER_ATOMIC_EFFECT = 'Second geste : les deux gestes sont faits ensemble. Si le rattachement à cette opération échoue, le retrait est annulé et le document reste rattaché à la première. C’est le même document : aucun fichier n’est copié.';
 
 /** Résout un brouillon de geste inverse en action figée — ou dit ce qui manque. */
 export async function resolveInverseReferenceEventCommand(
@@ -345,7 +349,11 @@ export const INVERSE_REFERENCE_EVENT_EXECUTORS = {
     if ('actionId' in to) return to;
     const { writeContext } = await import('./reference-events');
     const { dissociateOperations } = await import('@/services/business-operations/operation-write.facade');
-    const r = await dissociateOperations(writeContext(ctx, action), { operationAId: p.fromOperationId, operationBId: p.toOperationId });
+    const r = await dissociateOperations(writeContext(ctx, action), {
+      operationAId: p.fromOperationId, operationBId: p.toOperationId,
+      // Carte #843 (E07) : versions relues exigées par la façade DANS sa transaction.
+      expectedOperationVersions: { [p.fromOperationId]: from.version, [p.toOperationId]: to.version },
+    });
     return terminer(ctx, action, translateWriteResult(action, r, {
       done: `Opérations « ${from.label} » et « ${to.label} » dissociées. Elles restent toutes les deux dans votre compte.`,
       alreadyDone: `Les opérations « ${from.label} » et « ${to.label} » n’étaient pas associées : rien n’a été modifié.`,
@@ -363,7 +371,7 @@ export const INVERSE_REFERENCE_EVENT_EXECUTORS = {
     if (doc.version !== p.documentVersion) return ko(action, 'Ce document a été modifié depuis l’aperçu : rien n’a été fait. Refaites votre demande.');
     const { writeContext } = await import('./reference-events');
     const { unlinkDocument } = await import('@/services/business-operations/operation-write.facade');
-    const r = await unlinkDocument(writeContext(ctx, action), { operationId: p.operationId, fileId: p.linkedDocumentId });
+    const r = await unlinkDocument(writeContext(ctx, action), { operationId: p.operationId, fileId: p.linkedDocumentId, expectedOperationVersions: { [p.operationId]: etat.version } });
     return terminer(ctx, action, translateWriteResult(action, r, {
       done: `Document « ${doc.title} » retiré de l’opération « ${etat.label} ». Il reste dans vos documents.`,
       alreadyDone: `Le document « ${doc.title} » n’était pas rattaché à l’opération « ${etat.label} » : rien n’a été modifié.`,
@@ -381,7 +389,7 @@ export const INVERSE_REFERENCE_EVENT_EXECUTORS = {
     if (f.version !== p.supplierVersion) return ko(action, 'Ce fournisseur a été modifié depuis l’aperçu : rien n’a été fait. Refaites votre demande.');
     const { writeContext } = await import('./reference-events');
     const { unlinkSupplier } = await import('@/services/business-operations/operation-write.facade');
-    const r = await unlinkSupplier(writeContext(ctx, action), { operationId: p.operationId, supplierId: p.linkedSupplierId });
+    const r = await unlinkSupplier(writeContext(ctx, action), { operationId: p.operationId, supplierId: p.linkedSupplierId, expectedOperationVersions: { [p.operationId]: etat.version } });
     return terminer(ctx, action, translateWriteResult(action, r, {
       done: `Fournisseur « ${f.name} » retiré de l’opération « ${etat.label} ». Sa fiche est conservée.`,
       alreadyDone: `Le fournisseur « ${f.name} » n’était pas relié à l’opération « ${etat.label} » : rien n’a été modifié.`,
@@ -399,7 +407,7 @@ export const INVERSE_REFERENCE_EVENT_EXECUTORS = {
     if (agendaVersion(item) !== p.agendaItemVersion) return ko(action, 'Cette échéance a été modifiée depuis l’aperçu : rien n’a été fait. Refaites votre demande.');
     const { writeContext } = await import('./reference-events');
     const { linkAgendaItem } = await import('@/services/business-operations/operation-write.facade');
-    const r = await linkAgendaItem(writeContext(ctx, action), { operationId: p.operationId, agendaItemId: p.agendaItemId });
+    const r = await linkAgendaItem(writeContext(ctx, action), { operationId: p.operationId, agendaItemId: p.agendaItemId, expectedOperationVersions: { [p.operationId]: etat.version } });
     return terminer(ctx, action, translateWriteResult(action, r, {
       done: `Échéance « ${item.title} » rattachée à l’opération « ${etat.label} ». Elle garde sa date et ses rappels.`,
       alreadyDone: `L’échéance « ${item.title} » était déjà rattachée à l’opération « ${etat.label} » : rien n’a été modifié.`,
@@ -407,12 +415,69 @@ export const INVERSE_REFERENCE_EVENT_EXECUTORS = {
   },
 };
 
+/**
+ * Carte #843 (E09) — les deux gestes d'un DÉPLACEMENT confirmés ensemble (« Retirer de A », puis « Rattacher à B »,
+ * même document, le second dépendant du premier) sont exécutés ATOMIQUEMENT par la façade (`unlinkThenLinkDocument`,
+ * une transaction) : si le rattachement à B échoue — B supprimée, d'un autre compte, version périmée, panne —, le
+ * retrait de A est annulé avec lui : le document reste rattaché à A. Règle remplacée (#807) : « le second geste
+ * s'exécute seulement si le premier a réussi » — sans retour arrière, une panne du second perdait le lien à A.
+ *
+ * Rend les DEUX résultats, dans l'ordre des actions.
+ */
+export function isDocumentTransferPair(first: PlannedAction, second: PlannedAction | undefined): boolean {
+  if (!second || first.command !== 'UNLINK_DOCUMENT_REFERENCE_EVENT' || second.command !== 'LINK_DOCUMENT_REFERENCE_EVENT') return false;
+  const a = first.params as Params<'reference_event_document_unlink'>;
+  const b = second.params as Params<'reference_event_document'>;
+  return second.dependsOn.includes(first.actionId) && a.linkedDocumentId === b.linkedDocumentId && a.operationId !== b.operationId
+    && !(b as { operationFromAction?: string }).operationFromAction;
+}
+
+export async function executeDocumentTransfer(unlink: PlannedAction, link: PlannedAction, ctx: ExecutionContext): Promise<[ActionResult, ActionResult]> {
+  const pa = unlink.params as Params<'reference_event_document_unlink'>;
+  const pb = link.params as Params<'reference_event_document'>;
+  const sauté = (r: ActionResult): ActionResult => ({
+    actionId: link.actionId, status: 'SKIPPED_DEPENDENCY',
+    message: `${link.preview.replace(/\.$/, '')} — non exécutée : l’action ${unlink.actionId} n’a pas réussi (${r.status === 'REFUSED' ? 'refusée' : 'échec'}).`,
+  });
+  const de = await relu(ctx, unlink, pa.operationId, pa.expectedVersion);
+  if ('actionId' in de) return [de, sauté(de)];
+  const vers = await relu(ctx, link, pb.operationId, pb.expectedVersion);
+  if ('actionId' in vers) return [{ ...vers, actionId: unlink.actionId }, sauté(vers)];
+  const { sqlLookup } = await import('./plan.service');
+  const doc = await sqlLookup.getDocumentState!(ctx.accountId, pa.linkedDocumentId);
+  if (!doc) { const r = refuse(unlink, 'Document introuvable ou hors de votre compte.'); return [r, sauté(r)]; }
+  if (doc.version !== pa.documentVersion || doc.version !== pb.documentVersion) {
+    const r: ActionResult = { ...ko(unlink, 'Ce document a été modifié depuis l’aperçu : rien n’a été fait. Refaites votre demande.'), conflict: true };
+    return [r, sauté(r)];
+  }
+  const { writeContext } = await import('./reference-events');
+  const { unlinkThenLinkDocument } = await import('@/services/business-operations/operation-write.facade');
+  const r = await unlinkThenLinkDocument(writeContext(ctx, unlink), {
+    fileId: pa.linkedDocumentId, fromOperationId: pa.operationId, toOperationId: pb.operationId,
+    expectedOperationVersions: { [pa.operationId]: de.version, [pb.operationId]: vers.version },
+  });
+  if (r.status !== 'APPLIED') {
+    const echec = translateWriteResult(unlink, r, { done: '', alreadyDone: '' });
+    const message = `${echec.message.replace(/\.$/, '')}. Le document « ${doc.title} » reste rattaché à l’opération « ${de.label} » : le déplacement n’a pas eu lieu.`;
+    const premier: ActionResult = { ...echec, message };
+    return [premier, sauté(premier)];
+  }
+  const premier = await terminer(ctx, unlink, { actionId: unlink.actionId, status: 'SUCCESS', entity: { type: 'reference_event', id: pa.operationId },
+    message: `Document « ${doc.title} » retiré de l’opération « ${de.label} ». Il reste dans vos documents.` },
+  'retrait d’un document d’une opération', [{ operationId: pa.operationId }]);
+  const second = await terminer(ctx, link, { actionId: link.actionId, status: 'SUCCESS', entity: { type: 'reference_event', id: pb.operationId },
+    message: `Document « ${doc.title} » rattaché à l’opération « ${vers.label} ».` },
+  'rattachement d’un document à une opération', [{ operationId: pb.operationId }]);
+  return [premier, second];
+}
+
 /** État relu d'un événement ACTIF (même règle que les gestes directs) — réutilisé ici. */
 async function relu(ctx: ExecutionContext, action: PlannedAction, operationId: number, expectedVersion: number): Promise<ReferenceEventState | ActionResult> {
   const { sqlLookup } = await import('./plan.service');
   const etat = await sqlLookup.getReferenceEventState!(ctx.accountId, operationId);
   if (!etat) return refuse(action, REFERENCE_EVENT_NOT_FOUND);
-  if (etat.version !== expectedVersion && etat.version !== ctx.referenceEventVersions?.get(operationId)) return ko(action, REFERENCE_EVENT_CHANGED_SINCE_PREVIEW);
+  // Carte #843 (E07) : conflit EXPLICITE — les données sont relues et l'action reproposée (nouvelle confirmation).
+  if (etat.version !== expectedVersion && etat.version !== ctx.referenceEventVersions?.get(operationId)) return { ...ko(action, REFERENCE_EVENT_CHANGED_SINCE_PREVIEW), conflict: true };
   return etat;
 }
 

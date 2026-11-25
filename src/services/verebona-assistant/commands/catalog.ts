@@ -564,6 +564,14 @@ export interface AgendaRequestedPatch {
   addRoomIds?: number[];
   addEquipmentIds?: number[];
   addFileIds?: number[];
+  /**
+   * Carte #843 (E03) — liens à RETIRER, ciblés un par un. La liste envoyée au service est recomposée à l'exécution
+   * à partir de l'échéance RELUE, moins ces liens-là seulement : les autres liens ne sont jamais touchés.
+   */
+  removeAssetIds?: number[];
+  removeRoomIds?: number[];
+  removeEquipmentIds?: number[];
+  removeFileIds?: number[];
 }
 
 /** Paramètres figés d'une action préparée. */
@@ -597,6 +605,11 @@ export type CommandParams =
       expectedRowVersion?: string; banking?: true;
       /** Plan clos : l'IBAN du patch a été remplacé par sa forme masquée (aucune valeur bancaire conservée). */
       ibanScrubbed?: true;
+      /**
+       * Carte #843 (E04) : l'IBAN du patch est sa forme MASQUÉE ; la valeur est scellée (chiffrée) hors de la
+       * proposition (`plan-secrets`) et descellée seulement au moment de l'écriture.
+       */
+      ibanSealed?: true;
     }
   // ARCHIVE_SUPPLIER (W20) : archivage — aucune suppression physique.
   | { kind: 'supplier_archive'; supplierId: number; expectedVersion: string }

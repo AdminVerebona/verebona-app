@@ -33,6 +33,10 @@ import {
   isDossierEligibleForFamily, type ExportCode,
 } from '@/services/exports/catalog';
 import { debutUtile } from './parser';
+import {
+  documentList, parseExportDocumentFilters, selectExportDocuments, vagueBoundQuestion,
+  type ExportDocumentFilters, type ExportDocumentRow,
+} from './export-selection';
 
 // ── Reconnaissance (pure) ───────────────────────────────────────────────────
 
@@ -56,6 +60,11 @@ export interface ExportDraft {
    *                  un dossier, l'Assistant le DIT et ne lance rien (jamais une consigne ignorée en silence).
    */
   content: { photos?: boolean; equipments?: boolean };
+  /**
+   * Carte #843 (E08, W28) — SÉLECTION DES DOCUMENTS dite par la phrase (nature, période, équipement, rubrique,
+   * documents nommés). Absente : la présélection du service, comme avant.
+   */
+  documents?: ExportDocumentFilters;
 }
 
 /** « sans les photos » / « avec les photos » (et les équipements) : ce que la phrase dit du contenu (pure). */
@@ -126,9 +135,14 @@ export function parseExportRequest(message: string): ExportDraft | null {
   // Sans export reconnu : seulement « exporte … » ou un nom d'export explicite (« prépare un dossier pour la Clio »).
   if (codes.length === 0 && !VERBE_EXPORT.test(m) && !NOM_EXPORT.test(reste)) return null;
 
-  const assetFromContext = /\b(?:ce|cet|cette)\s+[a-z]/.test(reste);
+  // Carte #843 (E08) : filtres documentaires — leurs mots (« factures », « avant le … ») ne désignent pas le bien.
+  const nfc = message.normalize('NFC');
+  const filtres = parseExportDocumentFilters(reste, nfc);
+  let resteBien = reste;
+  for (const [a, b] of [...(filtres?.consumed ?? [])].sort((x, y) => y[0] - x[0])) resteBien = `${resteBien.slice(0, a)} ${' '.repeat(Math.max(0, b - a - 1))}${resteBien.slice(b)}`;
+  const assetFromContext = /\b(?:ce|cet|cette)\s+[a-z]/.test(resteBien);
   const motsExports = new Set(MOTS_PAR_EXPORT.flatMap((e) => [...e.mots]));
-  const sansContexte = reste.replace(/\b(?:ce|cet|cette)\s+[a-z0-9'-]+/g, ' ');
+  const sansContexte = resteBien.replace(/\b(?:ce|cet|cette)\s+[a-z0-9'-]+/g, ' ');
   const assetWords = assetFromContext ? [] : mots(sansContexte)
     .filter((w) => w.length >= 3 && !GENERIQUES.has(w) && !/^\d+$/.test(w) && ![...motsExports].some((x) => memeMot(w, x)))
     .slice(0, 4);
@@ -137,7 +151,12 @@ export function parseExportRequest(message: string): ExportDraft | null {
   const retenus = Object.keys(content).length
     ? assetWords.filter((w) => !/^(?:photos?|equipements?|sans|avec|hors|inclus|incluant)$/.test(w))
     : assetWords;
-  return { codes, zip: /\b(?:zip|fichiers?)\b/.test(reste), assetWords: retenus, assetFromContext, content };
+  const motsDocuments = /^(?:documents?|uniquement|seulement|sauf|hors|anciens?|anciennes?|recents?|recentes?|vieux|vieilles?)$/;
+  return {
+    codes, zip: /\b(?:zip|fichiers?)\b/.test(reste),
+    assetWords: filtres ? retenus.filter((w) => !motsDocuments.test(w)) : retenus,
+    assetFromContext, content, ...(filtres ? { documents: filtres.filters } : {}),
+  };
 }
 
 // ── Exécution ───────────────────────────────────────────────────────────────
@@ -148,7 +167,8 @@ type BienExport = { id: number; name: string; category: string };
 /** Issue de la façade d'export, réduite à ce que l'Assistant en dit (voir `export-request.facade`). */
 export type ExportIssue =
   | { kind: 'invalid_type' }
-  | { kind: 'raw_ready'; downloadHref: string | null }
+  /** Carte #843 (E08) : `includedDocumentIds` — documents RÉELLEMENT retenus par le moteur au moment de la génération. */
+  | { kind: 'raw_ready'; downloadHref: string | null; includedDocumentIds?: number[] }
   | { kind: 'raw_failed'; message: string }
   /**
    * Passage 114AA (#753) : `generationId` identifie la génération mise en file — la carte « En préparation » le
@@ -174,8 +194,14 @@ export interface ExportDeps {
    */
   request(p: {
     accountId: number; userId: number; assetId: number; code: ExportCode; zip: boolean;
-    content: { photos?: boolean; equipments?: boolean };
+    /** Carte #843 (E08) : `documentIds` — documents choisis ; transmis au moteur officiel (`customDocIds`). */
+    content: { photos?: boolean; equipments?: boolean; documentIds?: number[] };
   }): Promise<ExportIssue | null>;
+  /**
+   * Carte #843 (E08) — documents du bien tels que le MOTEUR D'EXPORT les lit (droits de l'utilisateur, documents
+   * non supprimés), pour la sélection. `null` : bien inaccessible.
+   */
+  listDocuments?(p: { accountId: number; userId: number; assetId: number }): Promise<ExportDocumentRow[] | null>;
   /** Durée de conservation d'un export généré, en jours. */
   retentionDays: number;
   /** Message du service quand le bien n'est pas accessible. */
@@ -244,6 +270,9 @@ export async function answerExportRequest(input: AssistantRequestInput, deps: Ex
   if (category == null) return { kind: 'refused', message: deps.assetNotFoundMessage };
   const cible: BienExport = { id: bien.id, name: bien.name, category };
 
+  // Carte #843 (E08) : une SÉLECTION de documents sans export nommé (« Exporte les factures de la maison … ») vise
+  // l'archive des documents : l'export des données brutes (ZIP), ouvert à toutes les offres.
+  if (draft.codes.length === 0 && draft.documents) draft.codes = [EXPORT_BRUT_CODE];
   // ── Export : celui que la phrase nomme ; plusieurs possibles ou aucun → question, avec les exports de CE bien.
   if (draft.codes.length !== 1) {
     const possibles: ExportCode[] = draft.codes.length > 1
@@ -267,10 +296,34 @@ export async function answerExportRequest(input: AssistantRequestInput, deps: Ex
     };
   }
 
+  // Carte #843 (E08) : sélection des documents — lue sur les documents du MOTEUR D'EXPORT, puis transmise à ce même
+  // moteur. Une borne floue (« anciens devis ») : question, rien n'est lancé. Lecture seule : aucune confirmation.
+  let selection: ReturnType<typeof selectExportDocuments> | null = null;
+  if (draft.documents) {
+    const f = draft.documents;
+    if (f.vague) return { kind: 'need_info', code, message: vagueBoundQuestion(f.vague) };
+    const docs = deps.listDocuments ? await deps.listDocuments({ accountId: acc, userId: input.userId, assetId: cible.id }) : null;
+    if (!docs) return { kind: 'refused', message: deps.assetNotFoundMessage, code };
+    const { rubricMatcher } = await import('./export-selection-rubrics');
+    selection = selectExportDocuments(docs.filter((d) => !d.isWebLink), f, {
+      equipmentMatches: equipementCorrespond(f),
+      ...(f.rubricWords ? { rubricMatches: rubricMatcher(f.rubricWords) } : {}),
+    });
+    if (selection.included.length === 0) {
+      return {
+        kind: 'need_info', code,
+        message: `Aucun document de ${cible.name} ne correspond à votre sélection : rien n’a été lancé.${selection.excluded.length ? ` Documents écartés : ${documentList(selection.excluded)}.` : ''}`,
+      };
+    }
+  }
+
   const limite = deps.rateLimited(input.userId);
   if (limite) return { kind: 'refused', message: limite, code };
 
-  const issue = await deps.request({ accountId: acc, userId: input.userId, assetId: cible.id, code, zip: draft.zip, content: draft.content });
+  const issue = await deps.request({
+    accountId: acc, userId: input.userId, assetId: cible.id, code, zip: draft.zip,
+    content: { ...draft.content, ...(selection ? { documentIds: selection.included.map((d) => d.id) } : {}) },
+  });
   if (!issue) return { kind: 'refused', message: deps.assetNotFoundMessage, code };
 
   switch (issue.kind) {
@@ -287,7 +340,7 @@ export async function answerExportRequest(input: AssistantRequestInput, deps: Ex
     case 'raw_ready':
       return {
         kind: 'done', code,
-        message: `L’export « ${label} » de ${cible.name} est prêt. Il reste disponible ${deps.retentionDays} jours dans les exports de ce bien.${phraseContenu(draft.content)}`,
+        message: `L’export « ${label} » de ${cible.name} est prêt. Il reste disponible ${deps.retentionDays} jours dans les exports de ce bien.${phraseContenu(draft.content)}${phraseSelection(selection, issue.includedDocumentIds, false)}`,
         resultGroups: [exportResultGroup({
           id: `asset_${cible.id}`, title: label, subtitle: cible.name, status: CARTE_EXPORT_PRET,
           // Carte identifiée par le BIEN : s'il est supprimé, la relecture de l'historique retire le lien (§19.10).
@@ -301,7 +354,7 @@ export async function answerExportRequest(input: AssistantRequestInput, deps: Ex
         : `Le dossier « ${label} » de ${cible.name} est en cours de préparation.`;
       return {
         kind: 'done', code,
-        message: [`${debut} Vous le retrouverez, dès qu’il sera prêt, dans les exports de ce bien.${phraseContenu(draft.content)}`, ...issue.warnings].join(' '),
+        message: [`${debut} Vous le retrouverez, dès qu’il sera prêt, dans les exports de ce bien.${phraseContenu(draft.content)}${phraseSelection(selection, undefined, true)}`, ...issue.warnings].join(' '),
         resultGroups: [exportResultGroup({
           // Passage 114AA : carte identifiée par la GÉNÉRATION — son état est relu au retour dans la
           // conversation (« En préparation » → « Prêt », avec son lien) sans aucune tâche de fond.
@@ -311,6 +364,33 @@ export async function answerExportRequest(input: AssistantRequestInput, deps: Ex
       };
     }
   }
+}
+
+/** Équipement demandé : nommé (tous ses mots dans le nom de l'équipement du document) ou n'importe lequel. */
+function equipementCorrespond(f: ExportDocumentFilters): ((d: ExportDocumentRow) => boolean) | undefined {
+  if (!f.equipment) return undefined;
+  if ('any' in f.equipment) return (d) => d.equipmentId !== null;
+  const motsDemandes = f.equipment.words;
+  return (d) => d.equipmentId !== null && motsDemandes.every((w) => mots(d.equipmentName ?? '').some((x) => memeMot(x, w)));
+}
+
+/**
+ * Carte #843 (E08) : ce que la réponse dit des documents (textes à valider par le PO) — INCLUS et EXCLUS, avec le
+ * motif de chaque exclusion. Revalidation : un document choisi que le moteur n'a PAS retenu à la génération
+ * (supprimé ou devenu inaccessible entre-temps) est dit tel quel, jamais compté comme inclus.
+ */
+function phraseSelection(sel: ReturnType<typeof selectExportDocuments> | null, retenus: number[] | undefined, dossier: boolean): string {
+  if (!sel) return '';
+  const perdus = retenus ? sel.included.filter((d) => !retenus.includes(d.id)) : [];
+  const inclus = retenus ? sel.included.filter((d) => retenus.includes(d.id)) : sel.included;
+  const exclus = [...sel.excluded, ...perdus.map((doc) => ({ doc, reason: 'supprimé ou devenu inaccessible avant la génération' }))];
+  const parts = [
+    dossier
+      ? `Documents choisis (${inclus.length}), retenus s’ils sont toujours disponibles et admis par ce dossier au moment de sa préparation : ${documentList(inclus.map((doc) => ({ doc })))}.`
+      : `Documents inclus (${inclus.length}) : ${documentList(inclus.map((doc) => ({ doc })))}.`,
+    ...(exclus.length ? [`Documents exclus (${exclus.length}) : ${documentList(exclus)}.`] : []),
+  ];
+  return ` ${parts.join(' ')}`;
 }
 
 // ── Accès de production ─────────────────────────────────────────────────────
@@ -350,9 +430,12 @@ export async function sqlExportDeps(): Promise<ExportDeps> {
       // Passage 114AB (W28) : le contenu demandé est transmis dans `options`, le champ du tiroir historique —
       // le service en fait la sélection (`choicesFromLegacyOptions`). Rien n'est posé qui n'ait été dit : sans
       // consigne, `options` n'est pas envoyé et les présélections du service s'appliquent, comme avant.
-      const options: Record<string, boolean> = {
+      const options: Record<string, unknown> = {
         ...(content.photos !== undefined ? { includePhotos: content.photos } : {}),
         ...(content.equipments !== undefined ? { includeEquipments: content.equipments } : {}),
+        // Carte #843 (E08) : documents choisis → `customDocIds` du moteur officiel ; pour l'export des données brutes,
+        // la liste vaut aussi pour les liens web (sinon ils seraient joints quel que soit le choix).
+        ...(content.documentIds ? { customDocIds: content.documentIds, customDocIdsCoverWebLinks: true } : {}),
       };
       const issue = await facade.requestExportForAsset({
         asset, userId,
@@ -363,11 +446,38 @@ export async function sqlExportDeps(): Promise<ExportDeps> {
       });
       switch (issue.kind) {
         case 'invalid_type': return { kind: 'invalid_type' };
-        case 'raw_ready': return { kind: 'raw_ready', downloadHref: safeExportDownloadHref(issue.dto.downloadZipUrl) };
+        case 'raw_ready': return {
+          kind: 'raw_ready', downloadHref: safeExportDownloadHref(issue.dto.downloadZipUrl),
+          ...(issue.includedDocumentIds ? { includedDocumentIds: issue.includedDocumentIds } : {}),
+        };
         case 'raw_failed': return { kind: 'raw_failed', message: errors.EXPORT_ERROR_MESSAGES.GENERATION_FAILED };
         case 'queued': return { kind: 'queued', reused: issue.reused, warnings: issue.warnings.map((w) => w.message), generationId: issue.dto.id };
         case 'refused': return { kind: 'refused', status: issue.status, message: issue.message };
       }
+    },
+    async listDocuments({ accountId, userId, assetId }) {
+      // Même contrôle d'accès que la génération, même lecture que le moteur (snapshot de l'export brut).
+      const asset = await access.findAccessibleAssetForExport({ userId, currentAccountId: accountId }, assetId);
+      if (!asset) return null;
+      const { buildExportAssetSnapshot } = await import('@/services/exports/export-snapshot-source');
+      const snap = await buildExportAssetSnapshot(asset.id, userId, { accountId }, 'EXPORT_BRUT');
+      const ids = snap.documents.map((d) => d.id);
+      const complements = ids.length ? (await pgClient.unsafe(
+        `SELECT f.id, f.rubric_code AS "rubricCode", e.name AS "equipmentName"
+           FROM asset_files f LEFT JOIN equipments e ON e.id = f.equipment_id
+          WHERE f.id = ANY($1::int[]) AND f.account_id = $2`,
+        [ids, accountId] as never[],
+      )) as unknown as Array<{ id: number; rubricCode: string | null; equipmentName: string | null }> : [];
+      const parId = new Map(complements.map((c) => [Number(c.id), c]));
+      return snap.documents.map((d) => ({
+        id: d.id,
+        title: d.retainedTitle || d.webLinkTitle || d.originalFilename || `Document n° ${d.id}`,
+        date: d.documentDate ? String(d.documentDate).slice(0, 10) : null,
+        typeCode: d.documentTypeCode ?? null, legacyType: d.documentType ?? null,
+        equipmentId: d.equipmentId ?? null, equipmentName: parId.get(d.id)?.equipmentName ?? null,
+        rubricCodes: [parId.get(d.id)?.rubricCode, ...(d.cilRubricCodes ?? [])].filter((x): x is string => !!x),
+        isWebLink: d.isWebLink,
+      }));
     },
     retentionDays: storage.EXPORT_RETENTION_DAYS,
     assetNotFoundMessage: errors.EXPORT_ERROR_MESSAGES.ASSET_NOT_FOUND,

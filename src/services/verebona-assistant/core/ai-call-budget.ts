@@ -163,6 +163,9 @@ export async function executeWithinBudget<T>(
         costMicros: res.fromCache ? 0 : res.costMicros, latencyMs: res.durationMs,
         attemptNumber: tentative, status: res.fromCache ? 'cached' : 'ok',
         promptHash: hashPromptVariables(req.promptVariables),
+        // Carte #843 (E11) : version SERVIE par la passerelle ; identité du prompt effectif et SHA du build ajoutés
+        // à l'écriture de la trace (hors du chemin de la réponse).
+        servedPromptVersion: res.promptVersion ?? null, instrument: true,
       });
     }
     return res;
@@ -177,6 +180,7 @@ export async function executeWithinBudget<T>(
         inputTokens: 0, outputTokens: 0, costMicros: null, latencyMs: Date.now() - debut,
         attemptNumber: tentative, status: /TIMEOUT/i.test(String(code)) ? 'timeout' : 'error',
         errorCode: String(code), promptHash: hashPromptVariables(req.promptVariables),
+        servedPromptVersion: null, instrument: true,
       });
     }
     throw e;

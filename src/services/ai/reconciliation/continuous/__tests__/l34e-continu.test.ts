@@ -118,7 +118,9 @@ describe('déclenchement événementiel + réconciliation compte (orchestration 
     expect(src('src/services/assets/asset-write.facade.ts')).toMatch(/event: 'asset_updated', objectType: 'asset'/);
     expect(src('src/app/api/assets/route.ts')).toMatch(/createAssetForAccount\(/);
     // Lot 114 (#753, W04 – W09) : règle déplacée — le corps de la route est dans la façade métier `structure-write.facade` (partagée avec l'Assistant).
-    expect(src('src/services/assets/structure-write.facade.ts').match(/event: 'entity_updated', objectType: 'equipment'/g)).toHaveLength(2);
+    // Règle complétée (carte #843, E02) : trois chemins émettent l'événement — création de l'écran, modification, et
+    // création ATOMIQUE de l'Assistant (équipement + fiche dans une transaction, événement après validation).
+    expect(src('src/services/assets/structure-write.facade.ts').match(/event: 'entity_updated', objectType: 'equipment'/g)).toHaveLength(3);
     expect(src('src/app/api/assets/[id]/equipments/route.ts')).toContain('createEquipmentForAccount');
     expect(src('src/app/api/assets/[id]/equipments/[equipId]/route.ts')).toContain('updateEquipmentForAccount');
   });

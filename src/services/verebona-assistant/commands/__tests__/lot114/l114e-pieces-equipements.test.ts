@@ -199,7 +199,9 @@ describe('L114E-S06 — faux positifs, façade, fiches', () => {
     expect(eq).toContain('updateEquipmentForAccount');
     expect(eq).toContain('archiveEquipmentForAccount');
     const ex = lire('src/services/verebona-assistant/commands/executors.ts');
-    for (const fn of ['createRoomForAccount', 'renameRoomForAccount', 'deleteRoomForAccount', 'createEquipmentForAccount', 'updateEquipmentForAccount', 'archiveEquipmentForAccount']) expect(ex).toContain(fn);
+    // Règle complétée (carte #843, E02) : la création depuis l'Assistant passe par la variante ATOMIQUE de la même façade
+    // (`createEquipmentWithDetailsForAccount` : équipement + fiche + montants dans une transaction, ou rien).
+    for (const fn of ['createRoomForAccount', 'renameRoomForAccount', 'deleteRoomForAccount', 'createEquipmentWithDetailsForAccount', 'updateEquipmentForAccount', 'archiveEquipmentForAccount']) expect(ex).toContain(fn);
     expect(ex).not.toMatch(/(INSERT INTO|UPDATE|DELETE FROM)\s+(substructures|equipments)/);
   });
   it('fiches : pièce supprimée (contenu détaché), équipement archivé (liens conservés)', () => {

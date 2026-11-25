@@ -280,7 +280,10 @@ describe('L114X-R01 — W21 : aperçu d’une déclaration', () => {
       'Il est enregistré sur votre déclaration : aucun document, aucune échéance et aucun montant ne sont créés.',
       NOT_YET_VISIBLE, 'Vous pourrez le corriger ou le supprimer depuis l’assistant.',
     ]);
-    expect(NOT_YET_VISIBLE).toMatch(/n’apparaît sur aucun écran/);
+    // Règle remplacée (carte #843, E05) : « n'apparaît sur aucun écran » était obsolète depuis la carte #806 (fiche et
+    // liste des opérations) — le texte dit désormais où la retrouver, sans jamais affirmer qu'elle est invisible.
+    expect(NOT_YET_VISIBLE).toMatch(/sur sa fiche et dans la liste des opérations/);
+    expect(NOT_YET_VISIBLE).not.toMatch(/aucun écran/);
   });
 
   it('situation non dite : demandée, jamais déduite de la date', async () => {
@@ -508,7 +511,8 @@ describe('L114X-X01 — exécution : état relu, puis la façade — et elle seu
     }
     base.appels = [];
     base.ops = base.ops.map((o) => (o.id === 101 ? { ...o, version: 4 } : o));
-    expect(await runAction(a, ctx)).toEqual({ actionId: 'a1', status: 'FAILED', message: modele.REFERENCE_EVENT_CHANGED_SINCE_PREVIEW });
+    // Règle complétée (carte #843, E07) : un CONFLIT explicite (`conflict: true`) — relecture et nouvelle proposition.
+    expect(await runAction(a, ctx)).toEqual({ actionId: 'a1', status: 'FAILED', message: modele.REFERENCE_EVENT_CHANGED_SINCE_PREVIEW, conflict: true });
     base.ops = base.ops.filter((o) => o.id !== 101);
     expect(await runAction(a, ctx)).toEqual({ actionId: 'a1', status: 'REFUSED', message: modele.REFERENCE_EVENT_NOT_FOUND });
     expect(base.appels).toEqual([]);
@@ -565,7 +569,7 @@ describe('L114X-X01 — exécution : état relu, puis la façade — et elle seu
     // Sans écriture de ce plan : l'événement modifié ailleurs depuis l'aperçu (version 5 ≠ 3) est refusé, rien n'est appelé.
     base.appels = [];
     const autre = await executeActions((await plan()).slice(2), { ...ctx, referenceEventVersions: new Map() });
-    expect(autre).toEqual([{ actionId: 'a3', status: 'FAILED', message: modele.REFERENCE_EVENT_CHANGED_SINCE_PREVIEW }]);
+    expect(autre).toEqual([{ actionId: 'a3', status: 'FAILED', message: modele.REFERENCE_EVENT_CHANGED_SINCE_PREVIEW, conflict: true }]);
     expect(base.appels).toEqual([]);
   });
 

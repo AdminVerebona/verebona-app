@@ -273,13 +273,7 @@ export async function writeCanonicalEntityFields(
 
   let out = vide(input.target);
   await run.begin(async (t) => {
-    const row = await loadEntityRow(t, input.target, input.accountId, true);
-    if (!row) { out = vide(input.target, { notFound: true }); return; }
-    const plan = planEntityWrites(row, input.writes, ctx);
-    if (plan.changed) await persist(t, row, plan);
-    await journal(t, input, row.assetId, plan.results);
-    if (tracer) await traceAutomatic(t, input, row.assetId, plan.results);
-    out = { target: input.target, assetId: row.assetId, skipped: false, notFound: false, fields: plan.results };
+    out = await ecrireDansLaTransaction(t, input, ctx, tracer);
   });
   if (out.assetId && input.emitEvent !== false && out.fields.some((f) => f.outcome === 'written')) {
     await emettre(input.accountId, out.assetId);
@@ -296,6 +290,33 @@ export async function writeCanonicalEntityFields(
     }
   }
   return out;
+}
+
+/** Corps transactionnel commun (ligne verrouillée, plan, persistance, journal, trace automatique). */
+async function ecrireDansLaTransaction(
+  t: SqlRunner, input: WriteCanonicalEntityFieldsInput, ctx: { origin: CanonicalOrigin; now: string }, tracer: boolean,
+): Promise<CanonicalEntityWriteResult> {
+  const row = await loadEntityRow(t, input.target, input.accountId, true);
+  if (!row) return vide(input.target, { notFound: true });
+  const plan = planEntityWrites(row, input.writes, ctx);
+  if (plan.changed) await persist(t, row, plan);
+  await journal(t, input, row.assetId, plan.results);
+  if (tracer) await traceAutomatic(t, input, row.assetId, plan.results);
+  return { target: input.target, assetId: row.assetId, skipped: false, notFound: false, fields: plan.results };
+}
+
+/**
+ * Carte #843 (E02) — même écriture que `writeCanonicalEntityFields`, mais DANS la transaction de l'appelant
+ * (création d'un équipement et de sa fiche, indivisibles) : aucune transaction propre, aucun événement publié,
+ * aucune mise en file — l'appelant les fait APRÈS validation de SA transaction. Lève toute erreur (l'appelant
+ * annule tout) ; `schemaNotReady` si la migration 0227 est absente (rien n'est écrit).
+ */
+export async function writeCanonicalEntityFieldsInTransaction(
+  t: SqlRunner, input: WriteCanonicalEntityFieldsInput,
+): Promise<CanonicalEntityWriteResult> {
+  if (!(await entityCanonicalColumnsReady())) return vide(input.target, { skipped: true, schemaNotReady: true });
+  const tracer = !isHumanOrigin(input.origin) && (await aiFieldUpdatesTargetReady());
+  return ecrireDansLaTransaction(t, input, { origin: input.origin, now: new Date().toISOString() }, tracer);
 }
 
 /** Clés canoniques d'un équipement exploitées par le rapprochement documentaire. */

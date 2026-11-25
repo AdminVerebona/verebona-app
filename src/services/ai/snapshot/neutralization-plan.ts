@@ -316,6 +316,21 @@ export const NEUTRALIZATION_PLAN: readonly NeutralizationStep[] = [
     verify: `SELECT count(*) FROM withdrawal_requests WHERE stripe_subscription_id IS NOT NULL`,
     tables: ['withdrawal_requests'],
   },
+  {
+    // Carte #843 (E04) : valeurs bancaires TRANSITOIRES des propositions de l'Assistant (chiffrées, migration 1990).
+    id: 'assistant_plan_secrets',
+    family: 'secrets',
+    label: 'Purger les valeurs bancaires transitoires des propositions de l’Assistant',
+    risk:
+      'Une proposition de changement d’IBAN encore ouverte en production garde sa nouvelle valeur, chiffrée avec une '
+      + 'clé de production : copiée en préproduction, elle y resterait déchiffrable si la clé était partagée, et '
+      + 'confirmable sur un fournisseur réel.',
+    sql: `UPDATE verebona_command_plan_secrets
+             SET sealed_value = NULL, purged_at = now(), purge_reason = 'SNAPSHOT_NEUTRALIZATION'
+           WHERE sealed_value IS NOT NULL`,
+    verify: `SELECT count(*) FROM verebona_command_plan_secrets WHERE sealed_value IS NOT NULL`,
+    tables: ['verebona_command_plan_secrets'],
+  },
 
   // ── SNP-010 : effets externes différés — ce qui partirait À LA RÉOUVERTURE.
   {

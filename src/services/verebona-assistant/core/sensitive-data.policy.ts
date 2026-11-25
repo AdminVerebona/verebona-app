@@ -47,6 +47,7 @@
  * Aucun contenu n'est journalisé : le rapport ne porte que des compteurs
  * par catégorie et les identifiants des sources exclues.
  */
+import { replaceIbansInText } from '@/lib/security/iban-mask';
 import type { RetrievedSource } from '../types/sources';
 
 type SensitiveCategory = 'identity' | 'bank' | 'medical' | 'thirdParty' | 'secret';
@@ -145,6 +146,12 @@ export function maskSensitiveText(text: string, necessity: SensitiveNecessity = 
   }
   // Coordonnées bancaires : jamais nécessaires au modèle.
   t = remplacer(t, IBAN, 'bank', counts);
+  // Carte #843 (E04) : IBAN écrit en minuscules ou en casse mêlée (clé de contrôle juste) — masqué aussi.
+  {
+    const r = replaceIbansInText(t, () => MASKS.bank);
+    t = r.text;
+    counts.bank += r.count;
+  }
   t = remplacer(t, CARTE, 'bank', counts);
 
   if (!necessity.thirdParty) {

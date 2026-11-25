@@ -202,8 +202,17 @@ export async function comparableEvents(
   });
 }
 
-/** Texte, dit à l'aperçu et au résultat : un événement déclaré n'est pas encore visible sur un écran (limite connue, carte #744). */
-export const NOT_YET_VISIBLE = 'Pour l’instant, une opération enregistrée sur votre déclaration n’apparaît sur aucun écran de l’application (ni fiche, ni recherche).';
+/**
+ * Texte dit à l'aperçu et au résultat : OÙ retrouver une opération déclarée.
+ *
+ * Carte #843 (E05) — règle remplacée : « une opération enregistrée sur votre déclaration n'apparaît sur aucun écran
+ * (ni fiche, ni recherche) ». C'était vrai avant la carte #806 ; ce n'est plus le cas : toute opération ACTIVE du
+ * compte — déclarée dans l'Assistant comprise — a sa fiche (`/agenda/evenements-reference/[id]`) et figure dans la
+ * liste des opérations (`/agenda/evenements-reference`, lecture `readOperationList` : opérations actives, sans
+ * filtre d'origine), et ses documents la montrent (« Opérations » du document). Nom conservé (imports existants).
+ * Texte à valider par le PO (coordination #831).
+ */
+export const NOT_YET_VISIBLE = 'Vous la retrouverez sur sa fiche et dans la liste des opérations de votre compte ; vous pourrez la corriger ou la supprimer depuis sa fiche ou depuis l’assistant.';
 
 async function resolveCreation(
   draft: Extract<ReferenceEventDraft, { command: 'CREATE_REFERENCE_EVENT' }>, input: AssistantRequestInput, lookup: CommandLookup, actionId: string,
@@ -636,7 +645,8 @@ async function relu(ctx: ExecutionContext, action: PlannedAction, operationId: n
   const { sqlLookup } = await import('./plan.service');
   const etat = await sqlLookup.getReferenceEventState!(ctx.accountId, operationId);
   if (!etat) return refuse(action, REFERENCE_EVENT_NOT_FOUND);
-  if (etat.version !== expectedVersion && etat.version !== ctx.referenceEventVersions?.get(operationId)) return ko(action, REFERENCE_EVENT_CHANGED_SINCE_PREVIEW);
+  // Carte #843 (E07) : conflit EXPLICITE — les données sont relues et l'action reproposée (nouvelle confirmation).
+  if (etat.version !== expectedVersion && etat.version !== ctx.referenceEventVersions?.get(operationId)) return { ...ko(action, REFERENCE_EVENT_CHANGED_SINCE_PREVIEW), conflict: true };
   return etat;
 }
 const estResultat = (v: ReferenceEventState | ActionResult): v is ActionResult => 'actionId' in v;
@@ -709,7 +719,11 @@ export const REFERENCE_EVENT_EXECUTORS = {
     const to = await relu(ctx, action, p.toOperationId, p.expectedVersions[1]);
     if (estResultat(to)) return to;
     const { associateOperations } = await import('@/services/business-operations/operation-write.facade');
-    const r = await associateOperations(writeContext(ctx, action), { fromOperationId: p.fromOperationId, toOperationId: p.toOperationId, nature: p.nature });
+    // Carte #843 (E07) : versions relues ci-dessus exigées par la façade DANS sa transaction.
+    const r = await associateOperations(writeContext(ctx, action), {
+      fromOperationId: p.fromOperationId, toOperationId: p.toOperationId, nature: p.nature,
+      expectedOperationVersions: { [p.fromOperationId]: from.version, [p.toOperationId]: to.version },
+    });
     return terminer(ctx, action, translateWriteResult(action, r, {
       done: `Opérations « ${from.label} » et « ${to.label} » associées. Elles restent distinctes.`,
       alreadyDone: `Les opérations « ${from.label} » et « ${to.label} » étaient déjà associées : rien n’a été modifié.`,
@@ -726,7 +740,7 @@ export const REFERENCE_EVENT_EXECUTORS = {
     if (!doc) return refuse(action, 'Document introuvable ou hors de votre compte.');
     if (doc.version !== p.documentVersion) return ko(action, 'Ce document a été modifié depuis l’aperçu : rien n’a été fait. Refaites votre demande.');
     const { linkDocument } = await import('@/services/business-operations/operation-write.facade');
-    const r = await linkDocument(writeContext(ctx, action), { operationId: p.operationId, fileId: p.linkedDocumentId });
+    const r = await linkDocument(writeContext(ctx, action), { operationId: p.operationId, fileId: p.linkedDocumentId, expectedOperationVersions: { [p.operationId]: etat.version } });
     return terminer(ctx, action, translateWriteResult(action, r, {
       done: `Document « ${doc.title} » rattaché à l’opération « ${etat.label} ».`,
       alreadyDone: `Le document « ${doc.title} » était déjà rattaché à l’opération « ${etat.label} » : rien n’a été modifié.`,
@@ -743,7 +757,7 @@ export const REFERENCE_EVENT_EXECUTORS = {
     if (!fournisseur) return refuse(action, 'Fournisseur introuvable ou hors de votre compte.');
     if (fournisseur.version !== p.supplierVersion) return ko(action, 'Ce fournisseur a été modifié depuis l’aperçu : rien n’a été fait. Refaites votre demande.');
     const { linkSupplier } = await import('@/services/business-operations/operation-write.facade');
-    const r = await linkSupplier(writeContext(ctx, action), { operationId: p.operationId, supplierId: p.linkedSupplierId, role: p.role });
+    const r = await linkSupplier(writeContext(ctx, action), { operationId: p.operationId, supplierId: p.linkedSupplierId, role: p.role, expectedOperationVersions: { [p.operationId]: etat.version } });
     return terminer(ctx, action, translateWriteResult(action, r, {
       done: `Fournisseur « ${fournisseur.name} » relié à l’opération « ${etat.label} ».`,
       alreadyDone: `Le fournisseur « ${fournisseur.name} » était déjà relié à l’opération « ${etat.label} » : rien n’a été modifié.`,

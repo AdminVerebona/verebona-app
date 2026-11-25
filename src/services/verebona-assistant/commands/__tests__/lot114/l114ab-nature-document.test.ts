@@ -287,7 +287,9 @@ describe('L114AB-B06 — exécution : une seule écriture métier', () => {
 
   it('la suppression multiple relit TOUT avant de supprimer quoi que ce soit', () => {
     const relecture = multiple.indexOf('getDocumentState');
-    const suppression = multiple.indexOf('softDeleteDocument({');
+    // Règle complétée (carte #843, E07) : les suppressions passent par `softDeleteDocumentsGuarded` — UNE transaction,
+    // versions revérifiées sous verrou, tout ou rien (même façade, mêmes effets que `softDeleteDocument`).
+    const suppression = multiple.indexOf('softDeleteDocumentsGuarded({');
     expect(relecture).toBeGreaterThan(-1);
     expect(suppression).toBeGreaterThan(relecture);
     expect(multiple).toMatch(/aucun document n’a été supprimé/);

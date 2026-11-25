@@ -207,7 +207,10 @@ describe('L114AA-D05 — exécution : une seule écriture métier', () => {
   it('l’état est relu et l’empreinte des trois niveaux recontrôlée avant d’écrire', () => {
     expect(lier).toMatch(/const relue = documentTargetsVersion\(/);
     expect(lier).toMatch(/\(cibles\.rooms \?\? \[\]\)\.map\(\(s\) => s\.id\), \(cibles\.equipments \?\? \[\]\)\.map\(\(s\) => s\.id\)/);
-    expect(lier).toMatch(/if \(relue !== p\.expectedVersion\) return ko\(action, DOCUMENT_CHANGED_SINCE_PREVIEW\)/);
+    // Règle complétée (carte #843, E07) : l'écart est un CONFLIT explicite (relecture, nouvelle proposition) et la
+    // version relue est exigée en plus DANS l'instruction d'écriture de la façade.
+    expect(lier).toMatch(/if \(relue !== p\.expectedVersion\) return conflit\(action, DOCUMENT_CHANGED_SINCE_PREVIEW\)/);
+    expect(lier).toMatch(/updateDocumentForAccount\([^)]*body, \{ expectedUpdatedAtMicros: jeton \}\)/);
   });
 
   it('la fiche de la commande déclare les champs du niveau pièce / équipement', () => {

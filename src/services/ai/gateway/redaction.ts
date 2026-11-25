@@ -1,4 +1,5 @@
 import { createHash } from 'crypto';
+import { replaceIbansInText } from '@/lib/security/iban-mask';
 
 /**
  * Masquage avant transmission au fournisseur — CDC §5.6 (minimisation) et
@@ -17,7 +18,9 @@ const PATTERNS: Array<{ re: RegExp; replacement: string }> = [
 ];
 
 export function redact(input: string): string {
-  return PATTERNS.reduce((acc, p) => acc.replace(p.re, p.replacement), input);
+  // Carte #843 (E04) : IBAN en minuscules ou casse mêlée (clé de contrôle juste) masqué aussi — AVANT le motif des
+  // cartes, qui sinon en masquerait une partie et laisserait le reste en clair.
+  return PATTERNS.reduce((acc, p) => acc.replace(p.re, p.replacement), replaceIbansInText(input, () => '[IBAN_MASQUE]').text);
 }
 
 /**
@@ -27,10 +30,13 @@ export function redact(input: string): string {
  */
 export function redactWithReport(input: string): { text: string; masks: Record<string, number> } {
   const masks: Record<string, number> = {};
+  // Carte #843 (E04) : IBAN (majuscules, ou minuscules / casse mêlée à clé de contrôle juste) masqué en premier.
+  const r = replaceIbansInText(input, () => '[IBAN_MASQUE]');
+  if (r.count) masks['[IBAN_MASQUE]'] = r.count;
   const text = PATTERNS.reduce((acc, p) => acc.replace(p.re, () => {
     masks[p.replacement] = (masks[p.replacement] ?? 0) + 1;
     return p.replacement;
-  }), input);
+  }), r.text);
   return { text, masks };
 }
 

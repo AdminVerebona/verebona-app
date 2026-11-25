@@ -51,6 +51,11 @@ export type CommandDraft =
       newTitle: string | null;
       /** Carte #807 (E03) : champs du tiroir de l'Agenda nommés dans la demande (« … : description …, heure 14h30 »). */
       values?: Array<LabelledValue<AgendaLabelKey>>;
+      /**
+       * Carte #843 (E03) : la demande vise TOUTE LA SÉRIE (« toute la série », « tous les rappels … »). L'Agenda ne sait
+       * pas modifier une série : la préparation le DIT, rien n'est proposé (jamais une occurrence modifiée en silence).
+       */
+      seriesScope?: true;
     } & AgendaTargetDraft)
   | {
       command: 'CREATE_ASSET';
@@ -369,6 +374,27 @@ function agendaTarget(zone: string, today: string): AgendaTargetDraft | null {
 }
 
 /**
+ * Carte #843 (E03) : « Retire le bien Polo de l'échéance Vidange », « Détache le document Facture du rappel
+ * Entretien » — RETRAIT CIBLÉ d'un lien d'une échéance (jamais la suppression de l'échéance, ni celle de l'objet :
+ * « retire » désignait avant la suppression de l'échéance ; « détache le document » un rattachement à un bien).
+ * Analysé AVANT les pièces, équipements et documents : l'échéance nommée en fin de phrase fait foi. Pure.
+ */
+export function parseAgendaLinkRemoval(message: string, today: string): CommandDraft | null {
+  const m = plain(message).trim();
+  const retrait = m.match(/^(?:retire|retirer|enleve|enlever|detache|detacher|dissocie|dissocier|supprime|supprimer)\s+(?:le lien (?:vers|avec)\s+)?(?:(le bien|la piece|l'equipement|le document)\s+)(.+?)\s+(?:de\s+l'|de\s+la\s+|du\s+|des\s+|de\s+)((?:echeance|rappel|rendez-vous|rdv|evenement|entretien|controle|revision)s?\b.*)$/);
+  if (retrait) {
+    const cible = agendaTarget(retrait[3], today);
+    const nfc = message.normalize('NFC').trim();
+    // Nom de l'objet repris du message d'origine (accents, casse) : même position que dans la forme sans accent.
+    const debutNom = m.indexOf(retrait[2], m.indexOf(retrait[1]) + retrait[1].length);
+    const nom = nfc.slice(debutNom, debutNom + retrait[2].length).replace(/^[«"“]\s*|\s*[»"”]$/g, '').trim();
+    const key: AgendaLabelKey = retrait[1] === 'le bien' ? 'removeAsset' : retrait[1] === 'la piece' ? 'removeRoom' : retrait[1] === "l'equipement" ? 'removeEquipment' : 'removeDocument';
+    if (cible && nom) return { command: 'UPDATE_AGENDA_ITEM', newDate: null, newTitle: null, values: [{ key, raw: nom }], ...cible, ...(SERIE.test(retrait[3]) ? { seriesScope: true as const } : {}) };
+  }
+  return null;
+}
+
+/**
  * « Supprime l'échéance vidange du 12 mars », « supprime toute la série des
  * rappels vidange », « reporte le contrôle technique de la Clio au 20 mars »,
  * « renomme l'échéance vidange en révision annuelle » (pure, testée).
@@ -378,11 +404,13 @@ function parseAgendaChange(message: string, today: string): CommandDraft | null 
   if (!AGENDA_TARGET.test(m)) return null;
   // Carte #807 (E03) : « Modifie l'échéance Vidange du 12 mars : description …, heure de début 14h30, situation a eu lieu ».
   const riche = m.match(new RegExp(String.raw`^${VERBE_MODIFIER}\s+(.+?)\s*(?::|\bavec\b)\s*(.+)$`));
-  if (riche && AGENDA_TARGET.test(riche[1]) && (riche[1].match(AGENDA_TARGET)?.index ?? 1) === 0) {
+  // Carte #843 (E03) : « Modifie toute la série des rappels Vidange : … » — la cible commence par la série.
+  const zoneRiche = riche ? riche[1].replace(/^(?:toute la serie|la serie|serie entiere)\s+(?:des\s+|du\s+|de la\s+|de l'|de\s+)?/, '') : '';
+  if (riche && AGENDA_TARGET.test(zoneRiche) && (zoneRiche.match(AGENDA_TARGET)?.index ?? 1) === 0) {
     const cible = agendaTarget(riche[1], today);
     const nfc = message.normalize('NFC').trim();
     const values = parseLabelledValues(nfc.slice(nfc.length - riche[2].length), AGENDA_LABELS);
-    if (cible && values) return { command: 'UPDATE_AGENDA_ITEM', newDate: null, newTitle: null, values, ...cible };
+    if (cible && values) return { command: 'UPDATE_AGENDA_ITEM', newDate: null, newTitle: null, values, ...cible, ...(SERIE.test(riche[1]) ? { seriesScope: true as const } : {}) };
   }
   if (DELETE_VERB.test(m)) {
     const cible = agendaTarget(m, today);
@@ -395,7 +423,7 @@ function parseAgendaChange(message: string, today: string): CommandDraft | null 
     // Le nouveau titre est repris du message d'origine (accents, casse).
     const original = message.normalize('NFC').split(/\s+en\s+/i).slice(1).join(' en ').replace(/[\s.!?]+$/, '').replace(/^[«"“']\s*|\s*[»"”']$/g, '').trim();
     if (!cible || !original) return null;
-    return { command: 'UPDATE_AGENDA_ITEM', newDate: null, newTitle: capitalize(original), ...cible };
+    return { command: 'UPDATE_AGENDA_ITEM', newDate: null, newTitle: capitalize(original), ...cible, ...(SERIE.test(m.slice(0, coupe)) ? { seriesScope: true as const } : {}) };
   }
   if (MOVE_VERB.test(m)) {
     // La NOUVELLE date suit le dernier « au / à / pour le » ; ce qui précède désigne l'échéance.
@@ -404,7 +432,7 @@ function parseAgendaChange(message: string, today: string): CommandDraft | null 
     const newDate = parseDateFr(m.slice(sep.index), today);
     const cible = agendaTarget(m.slice(0, sep.index), today);
     if (!cible || !newDate) return null;
-    return { command: 'UPDATE_AGENDA_ITEM', newDate, newTitle: null, ...cible };
+    return { command: 'UPDATE_AGENDA_ITEM', newDate, newTitle: null, ...cible, ...(SERIE.test(m.slice(0, sep.index)) ? { seriesScope: true as const } : {}) };
   }
   return null;
 }
@@ -1106,6 +1134,12 @@ export function parseCommand(message: string, today: string, options: ParseComma
   if (!INTERROGATIF.test(m) && !LECTURE_MOI.test(m)) {
     const evenement = parseReferenceEventCommand(message, today, options.referenceEventAnaphora === true, options.referenceEventThreadAnaphora === true);
     if (evenement) return evenement;
+  }
+
+  // ── Carte #843 (E03) : retrait CIBLÉ d'un lien d'une échéance — avant fournisseurs, pièces, équipements et documents.
+  if (!INTERROGATIF.test(m) && !LECTURE_MOI.test(m)) {
+    const retrait = parseAgendaLinkRemoval(message, today);
+    if (retrait) return retrait;
   }
 
   // ── Fournisseurs (lot 114) : avant les biens — « ajoute le fournisseur … » ne crée jamais un bien.

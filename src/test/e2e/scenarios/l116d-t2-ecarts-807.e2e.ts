@@ -280,7 +280,11 @@ scenario('L116D-T2-ECARTS', 'Carte #807 — Assistant T2 : écarts résiduels E0
     // Plan clos : l'IBAN n'y reste pas ; les traces et le fil ne le portent pas davantage.
     const [clos] = await sql<Json[]>`SELECT actions_payload, results_json FROM verebona_command_plans WHERE plan_id = ${r.plan.planId}`;
     expect(String(clos.actions_payload)).not.toContain(IBAN);
-    expect(String(clos.actions_payload)).toContain('"ibanScrubbed":true');
+    // Règle remplacée (carte #843, E04) : « l'IBAN est retiré de la proposition à sa clôture » (`ibanScrubbed`). Il n'y
+    // est plus JAMAIS, même en attente : la proposition porte `ibanSealed` (forme masquée) et la valeur chiffrée,
+    // conservée à part, est PURGÉE à la clôture.
+    expect(String(clos.actions_payload)).toContain('"ibanSealed":true');
+    expect(await sql<Json[]>`SELECT sealed_value, purge_reason FROM verebona_command_plan_secrets WHERE plan_id = ${r.plan.planId}`).toEqual([{ sealed_value: null, purge_reason: 'EXECUTED' }]);
     expect(JSON.stringify(clos.results_json)).not.toContain(IBAN);
     expect(await traces()).not.toContain(IBAN);
 
@@ -402,7 +406,7 @@ scenario('L116D-T2-ECARTS', 'Carte #807 — Assistant T2 : écarts résiduels E0
     expect(clio).toBeGreaterThan(0);
   });
 
-  it('T08 — E07 : le risque est reproduit sur le chemin SANS version (plan d’avant la carte), et fermé avec version', async () => {
+  it('T08 — E07 : chemin SANS version (plan d’avant #807) : risque reproduit par #807, désormais fermé (#843) ; et fermé avec version', async () => {
     const c = await compte('premium_duo');
     const id = await fournisseur(c, { name: 'Garage Martin', phone: '0102030405' });
     const jouer = async (avecVersion: boolean) => {
@@ -423,10 +427,12 @@ scenario('L116D-T2-ECARTS', 'Carte #807 — Assistant T2 : écarts résiduels E0
       });
       return { conf: await enCours!, phone: (await ligneFournisseur(id)).phone as string };
     };
-    // Sans version : la relecture de A précède la validation de B, puis l'écriture de A ÉCRASE celle de B.
+    // Règle remplacée (carte #843, E07) : « sans version, l'écriture de A ÉCRASE celle de B » (risque reproduit par #807).
+    // Un plan d'avant #807 (sans version complète) exige désormais la version RELUE à l'exécution, dans la transaction
+    // de l'écriture : le risque est fermé aussi sur ce chemin — conflit, la valeur de B est conservée.
     const avant = await jouer(false);
-    expect(avant.conf).toMatchObject({ ok: true, status: 'EXECUTED' });
-    expect(avant.phone).toBe('06 11 22 33 44');
+    expect(avant.conf).toMatchObject({ ok: true, status: 'FAILED', results: [{ conflict: true }] });
+    expect(avant.phone).toBe('0499887766');
     // Avec version (plans préparés depuis cette carte) : conflit, la valeur de B est conservée.
     const apres = await jouer(true);
     expect(apres.conf).toMatchObject({ ok: true, status: 'FAILED', results: [{ conflict: true }] });

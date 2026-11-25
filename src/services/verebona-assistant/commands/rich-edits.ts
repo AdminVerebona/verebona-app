@@ -343,7 +343,20 @@ export async function interpretAgendaValues(
       if (!code) return { needInfo: `${SITUATION_FIELD_LABEL} : ${Object.values(SITUATION_LABELS).map((l) => `« ${l} »`).join(' ou ')} ?` };
       patch.situation = code; continue;
     }
-    if (!raw) return { needInfo: 'Depuis l’assistant, je peux ajouter un lien à une échéance, pas en retirer. Retirez-le depuis l’Agenda.' };
+    // Carte #843 (E03) — règle remplacée : « je peux ajouter un lien, pas en retirer ». Un lien se RETIRE en le
+    // nommant (« retirer le bien Polo ») ; « bien aucun » reste ambigu (lequel ?) : question, rien n'est retiré.
+    if (key === 'removeAsset' || key === 'removeRoom' || key === 'removeEquipment' || key === 'removeDocument') {
+      if (!raw) return { needInfo: AGENDA_REMOVE_WHICH };
+      const r = key === 'removeAsset' ? unSeul(await lookup.findAssets(accountId, mots(raw)), (a) => a.name, 'le bien', raw)
+        : key === 'removeRoom' ? unSeul(await lookup.findRooms!(accountId, mots(raw), null), (x) => x.name, 'la pièce', raw)
+          : key === 'removeEquipment' ? unSeul(await lookup.findEquipments!(accountId, mots(raw), null), (x) => x.name, 'l’équipement', raw)
+            : unSeul(await lookup.findDocuments!(accountId, mots(raw)), (d) => d.title, 'le document', raw);
+      if ('needInfo' in r) return r;
+      const cle = key === 'removeAsset' ? 'removeAssetIds' : key === 'removeRoom' ? 'removeRoomIds' : key === 'removeEquipment' ? 'removeEquipmentIds' : 'removeFileIds';
+      patch[cle] = [...(patch[cle] ?? []), r.id];
+      continue;
+    }
+    if (!raw) return { needInfo: AGENDA_REMOVE_WHICH };
     if (key === 'asset') {
       const r = unSeul(await lookup.findAssets(accountId, mots(raw)), (a) => a.name, 'le bien', raw);
       if ('needInfo' in r) return r;
@@ -366,6 +379,13 @@ export async function interpretAgendaValues(
   return patch;
 }
 
+/** Carte #843 (E03) : lien à retirer non désigné (texte à valider par le PO). */
+export const AGENDA_REMOVE_WHICH = 'Quel lien voulez-vous retirer de cette échéance ? Nommez-le, par exemple « retirer le bien Polo » ou « retirer le document Facture ».';
+/** Carte #843 (E03) : retrait qui laisserait un document, une pièce ou un équipement d'un bien retiré (texte à valider par le PO). */
+export const AGENDA_REMOVE_INCOHERENT = 'Ce retrait laisserait sur l’échéance un document, une pièce ou un équipement du bien retiré : retirez-les aussi dans la même demande (par exemple « retirer le bien Maison, retirer le document Facture »), ou gardez ce bien. Rien n’a été modifié.';
+/** Carte #843 (E03) : modification d'une SÉRIE demandée — non disponible dans l'Agenda (texte à valider par le PO). */
+export const AGENDA_SERIES_UPDATE_UNSUPPORTED = 'L’Agenda ne permet pas de modifier toute une série d’un seul geste : je ne peux modifier qu’une échéance à la fois (les autres de la série ne changent pas). Pour toute la série, supprimez-la puis recréez-la, ou modifiez chaque échéance. Rien n’a été modifié.';
+
 /** Échéance telle que le tiroir de l'Agenda la montre (lecture du service de l'Agenda, compte borné). */
 type AgendaEtat = NonNullable<Awaited<ReturnType<typeof import('@/services/agenda/AgendaQueryService').getAgendaItemById>>>;
 
@@ -378,7 +398,7 @@ export interface AgendaWriteInput {
 }
 
 /** Écart entre une échéance et le patch demandé (pure, testée) : entrée du service de l'Agenda et lignes de l'aperçu. */
-export function agendaDiff(item: AgendaEtat, patch: AgendaRequestedPatch, noms: { assets?: string[]; rooms?: string[]; equipments?: string[]; files?: string[] } = {}): {
+export function agendaDiff(item: AgendaEtat, patch: AgendaRequestedPatch, noms: AgendaLinkNames = {}): {
   input: AgendaWriteInput; lines: string[];
 } {
   const input: AgendaWriteInput = {};
@@ -402,23 +422,33 @@ export function agendaDiff(item: AgendaEtat, patch: AgendaRequestedPatch, noms: 
     input.situation = patch.situation;
     lines.push(`${SITUATION_FIELD_LABEL} : ${situation ? SITUATION_LABELS[situation] : 'non précisée'} → ${SITUATION_LABELS[patch.situation]}`);
   }
-  // Liens : AJOUTS seulement — la liste complète transmise est celle de l'échéance, plus les ajouts.
-  const ajouter = (cle: 'assetIds' | 'substructureIds' | 'equipmentIds' | 'fileIds', libelle: string, actuels: number[], ajouts: number[] | undefined, nomsAjoutes: string[] | undefined) => {
+  // Liens : la liste complète transmise est celle de l'échéance RELUE, plus les ajouts, moins les retraits CIBLÉS
+  // (carte #843, E03) — un lien qui n'est ni ajouté ni retiré n'est jamais touché.
+  const ajuster = (cle: 'assetIds' | 'substructureIds' | 'equipmentIds' | 'fileIds', libelle: string, actuels: number[],
+    ajouts: number[] | undefined, retraits: number[] | undefined, nomsAjoutes: string[] | undefined, nomsRetires: string[] | undefined) => {
     const nouveaux = (ajouts ?? []).filter((id) => !actuels.includes(id));
-    if (!nouveaux.length) return;
-    input[cle] = [...actuels, ...nouveaux];
-    lines.push(`${libelle} ajouté${nouveaux.length > 1 ? 's' : ''} : ${(nomsAjoutes ?? nouveaux.map(String)).join(', ')}`);
+    const retires = (retraits ?? []).filter((id) => actuels.includes(id));
+    if (!nouveaux.length && !retires.length) return;
+    input[cle] = [...actuels.filter((id) => !retires.includes(id)), ...nouveaux];
+    if (nouveaux.length) lines.push(`${libelle} ajouté${nouveaux.length > 1 ? 's' : ''} : ${(nomsAjoutes ?? nouveaux.map(String)).join(', ')}`);
+    if (retires.length) lines.push(`${libelle} retiré${retires.length > 1 ? 's' : ''} : ${(nomsRetires ?? retires.map(String)).join(', ')}`);
   };
-  ajouter('assetIds', 'Bien', item.assetLinks.map((l) => l.assetId), patch.addAssetIds, noms.assets);
-  ajouter('substructureIds', 'Pièce', item.roomLinks.map((l) => l.substructureId), patch.addRoomIds, noms.rooms);
-  ajouter('equipmentIds', 'Équipement', item.equipmentLinks.map((l) => l.equipmentId), patch.addEquipmentIds, noms.equipments);
-  ajouter('fileIds', 'Document', item.fileLinks.map((l) => l.assetFileId), patch.addFileIds, noms.files);
+  ajuster('assetIds', 'Bien', item.assetLinks.map((l) => l.assetId), patch.addAssetIds, patch.removeAssetIds, noms.assets, noms.removedAssets);
+  ajuster('substructureIds', 'Pièce', item.roomLinks.map((l) => l.substructureId), patch.addRoomIds, patch.removeRoomIds, noms.rooms, noms.removedRooms);
+  ajuster('equipmentIds', 'Équipement', item.equipmentLinks.map((l) => l.equipmentId), patch.addEquipmentIds, patch.removeEquipmentIds, noms.equipments, noms.removedEquipments);
+  ajuster('fileIds', 'Document', item.fileLinks.map((l) => l.assetFileId), patch.addFileIds, patch.removeFileIds, noms.files, noms.removedFiles);
   return { input, lines };
 }
 
-async function nomsDesLiens(accountId: number, patch: AgendaRequestedPatch, item: AgendaEtat): Promise<{ assets?: string[]; rooms?: string[]; equipments?: string[]; files?: string[] }> {
-  const lire = async (ids: number[] | undefined, actuels: number[], sql: string): Promise<string[] | undefined> => {
-    const nouveaux = (ids ?? []).filter((id) => !actuels.includes(id));
+/** Noms des liens ajoutés et retirés, pour les lignes de l'aperçu. */
+export interface AgendaLinkNames {
+  assets?: string[]; rooms?: string[]; equipments?: string[]; files?: string[];
+  removedAssets?: string[]; removedRooms?: string[]; removedEquipments?: string[]; removedFiles?: string[];
+}
+
+async function nomsDesLiens(accountId: number, patch: AgendaRequestedPatch, item: AgendaEtat): Promise<AgendaLinkNames> {
+  const lire = async (ids: number[] | undefined, actuels: number[], sql: string, retrait = false): Promise<string[] | undefined> => {
+    const nouveaux = (ids ?? []).filter((id) => (retrait ? actuels.includes(id) : !actuels.includes(id)));
     if (!nouveaux.length) return undefined;
     const rows = (await pgClient.unsafe(sql, [nouveaux, accountId] as never[])) as unknown as Array<{ id: number; name: string }>;
     return nouveaux.map((id) => rows.find((r) => Number(r.id) === id)?.name ?? `n° ${id}`);
@@ -428,6 +458,10 @@ async function nomsDesLiens(accountId: number, patch: AgendaRequestedPatch, item
     rooms: await lire(patch.addRoomIds, item.roomLinks.map((l) => l.substructureId), `SELECT r.id, r.name FROM substructures r JOIN assets a ON a.id = r.asset_id AND a.account_id = $2 WHERE r.id = ANY($1::int[])`),
     equipments: await lire(patch.addEquipmentIds, item.equipmentLinks.map((l) => l.equipmentId), `SELECT e.id, e.name FROM equipments e JOIN assets a ON a.id = e.asset_id AND a.account_id = $2 WHERE e.id = ANY($1::int[])`),
     files: await lire(patch.addFileIds, item.fileLinks.map((l) => l.assetFileId), `SELECT id, coalesce(retained_title, web_link_title, original_filename) AS name FROM asset_files WHERE id = ANY($1::int[]) AND account_id = $2 AND deleted_at IS NULL`),
+    removedAssets: await lire(patch.removeAssetIds, item.assetLinks.map((l) => l.assetId), `SELECT id, name FROM assets WHERE id = ANY($1::int[]) AND account_id = $2`, true),
+    removedRooms: await lire(patch.removeRoomIds, item.roomLinks.map((l) => l.substructureId), `SELECT r.id, r.name FROM substructures r JOIN assets a ON a.id = r.asset_id AND a.account_id = $2 WHERE r.id = ANY($1::int[])`, true),
+    removedEquipments: await lire(patch.removeEquipmentIds, item.equipmentLinks.map((l) => l.equipmentId), `SELECT e.id, e.name FROM equipments e JOIN assets a ON a.id = e.asset_id AND a.account_id = $2 WHERE e.id = ANY($1::int[])`, true),
+    removedFiles: await lire(patch.removeFileIds, item.fileLinks.map((l) => l.assetFileId), `SELECT id, coalesce(retained_title, web_link_title, original_filename) AS name FROM asset_files WHERE id = ANY($1::int[]) AND account_id = $2`, true),
   };
 }
 
@@ -444,6 +478,33 @@ export async function buildAgendaUpdate(p: { accountId: number; actionId: string
   if (!item || !cliche) return { needInfo: 'Je n’ai pas trouvé cette échéance dans votre Agenda. Indiquez son titre exact ou sa date.' };
   const { lines } = agendaDiff(item, p.patch, await nomsDesLiens(p.accountId, p.patch, item));
   const quand = item.startDate ? ` du ${formatDateFr(item.startDate)}` : '';
+  // Carte #843 (E03) : un lien à retirer qui n'est pas posé sur CETTE échéance — dit, jamais un succès inventé.
+  const absents = [
+    ...(p.patch.removeAssetIds ?? []).filter((id) => !item.assetLinks.some((l) => l.assetId === id)),
+    ...(p.patch.removeRoomIds ?? []).filter((id) => !item.roomLinks.some((l) => l.substructureId === id)),
+    ...(p.patch.removeEquipmentIds ?? []).filter((id) => !item.equipmentLinks.some((l) => l.equipmentId === id)),
+    ...(p.patch.removeFileIds ?? []).filter((id) => !item.fileLinks.some((l) => l.assetFileId === id)),
+  ];
+  if (absents.length) return { needInfo: `Ce lien n’est pas posé sur l’échéance « ${item.title} »${quand} : rien à retirer. Rien n’a été modifié.` };
+  // Carte #843 (E03) : un RETRAIT qui rendrait les liens incohérents (document, pièce ou équipement d'un bien qui
+  // n'est plus lié) est dit AVANT toute proposition — mêmes règles que le tiroir de l'Agenda (`validateAgendaWrite`),
+  // jamais un échec découvert à la confirmation.
+  const retraits = (p.patch.removeAssetIds?.length ?? 0) + (p.patch.removeRoomIds?.length ?? 0) + (p.patch.removeEquipmentIds?.length ?? 0) + (p.patch.removeFileIds?.length ?? 0);
+  if (retraits) {
+    const { input } = agendaDiff(item, p.patch);
+    const { validateAgendaWrite } = await import('@/services/agenda/write-agenda-item');
+    try {
+      await validateAgendaWrite({ startDate: item.startDate, startTime: item.startTime, endDate: item.endDate, endTime: item.endTime }, {
+        assetIds: input.assetIds ?? item.assetLinks.map((l) => l.assetId),
+        fileIds: input.fileIds ?? item.fileLinks.map((l) => l.assetFileId),
+        substructureIds: input.substructureIds ?? item.roomLinks.map((l) => l.substructureId),
+        equipmentIds: input.equipmentIds ?? item.equipmentLinks.map((l) => l.equipmentId),
+      }, p.accountId);
+    } catch (e) {
+      if (/appartient à un bien non sélectionné/.test((e as Error).message)) return { needInfo: AGENDA_REMOVE_INCOHERENT };
+      throw e;
+    }
+  }
   if (lines.length === 0) return { needInfo: `L’échéance « ${item.title} »${quand} a déjà ces valeurs : rien à modifier.` };
   const [{ n }] = (await pgClient.unsafe(
     `SELECT CASE WHEN i.series_key IS NULL THEN 1 ELSE (SELECT count(*)::int FROM agenda_items s WHERE s.account_id = i.account_id AND s.series_key = i.series_key) END AS n
@@ -457,6 +518,7 @@ export async function buildAgendaUpdate(p: { accountId: number; actionId: string
     preview: `Modifier l’échéance « ${item.title} »${quand} : ${lines.join(' ; ')}.`,
     effects: [
       ...lines,
+      ...(lines.some((l) => / retirés? : /.test(l)) ? ['Seuls les liens nommés sont retirés : les autres liens de l’échéance, l’échéance elle-même et les objets retirés (bien, pièce, équipement, document) sont conservés.'] : []),
       ...(Number(n) > 1 ? [`Seule cette échéance est modifiée : les ${Number(n) - 1} autres de la série ne changent pas.`] : []),
       'Les rappels de cette échéance sont recalculés par l’Agenda.',
     ],
@@ -562,6 +624,10 @@ export async function rebuildAfterConflict(action: PlannedAction, accountId: num
     if (state) r = await buildSupplierUpdate({ actionId: action.actionId, state, requested: p.patch });
   } else if ('kind' in p && p.kind === 'agenda_update') {
     r = await buildAgendaUpdate({ accountId, actionId: action.actionId, agendaItemId: p.agendaItemId, patch: p.patch });
+  } else {
+    // Carte #843 (E07) : anciennes voies (renommage, archivage, suppression, documents, opérations et liens).
+    const { rebuildLegacyAfterConflict } = await import('./conflict-rebuild');
+    return rebuildLegacyAfterConflict(action, accountId, lookup);
   }
   return r && !('needInfo' in r) ? r : null;
 }

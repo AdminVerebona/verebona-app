@@ -32,6 +32,8 @@ import { findAssetField } from './asset-fields';
 import { parseCommand, type CommandDraft } from './parser';
 import type { WriteCommandType } from './catalog';
 import { exportLabel, parseExportRequest, type ExportAnswer } from './export-request';
+import { labelKey, type LabelDef } from './labelled-values';
+import { AGENDA_LABELS, EQUIPMENT_LABELS, SUPPLIER_LABELS } from './rich-edit-labels';
 import { TYPE_NOUNS } from './reference-event-model';
 import { assetDesignationsIn } from '@/lib/asset-taxonomy';
 
@@ -179,7 +181,97 @@ function situationDe(v: string | null): 'REALIZED' | 'ENVISAGED' | null {
 /** Longueur gardée de la phrase de l'utilisateur dans une déclaration (le point d'écriture borne le texte entier). */
 const DECLARATION_MAX = 1000;
 
-type Directe = { phrase: string; attendu: WriteCommandType; verifier?: (d: CommandDraft) => boolean };
+type Directe = { phrase: string; attendu: WriteCommandType | 'DOCUMENT_REFERENCE_EVENT_TRANSFER_REQUEST'; verifier?: (d: CommandDraft) => boolean };
+
+// ── Carte #843 (formulations libres) : gestes ajoutés par les cartes #807 / #843, accessibles par le sens ─────────
+// Même règle que tous les indices : réécriture en formulation DIRECTE, analyseur existant, commande attendue, puis
+// contrôle que chaque mot compris vient de la partie de l'indice qui le porte. Au moindre écart : indice écarté,
+// et la demande suit le parcours déjà en place (question, aide) — jamais un plan sur une cible devinée.
+
+/** Valeurs d'un indice nommées par les LIBELLÉS d'une fiche (marque, modèle, adresse…), dans l'ordre ; `null` sinon. */
+function valeursLibellees<K extends string>(h: ActionHint, defs: ReadonlyArray<LabelDef<K>>, interdits: ReadonlySet<string> = new Set()): Array<{ key: K; libelle: string; valeur: string | null }> | null {
+  const out: Array<{ key: K; libelle: string; valeur: string | null }> = [];
+  for (const c of h.fieldChanges) {
+    const key = labelKey(c.fieldHint, defs);
+    if (!key || interdits.has(key) || out.some((x) => x.key === key)) return null;
+    const v = c.value === null ? null : texte(valeur(c.value, c.unit), 200);
+    if (c.value !== null && v === null) return null;
+    out.push({ key, libelle: plain(c.fieldHint).replace(/\s+/g, ' ').trim(), valeur: v });
+  }
+  return out.length ? out : null;
+}
+const listeLibellee = (vals: ReadonlyArray<{ libelle: string; valeur: string | null }>): string =>
+  vals.map((v) => `${v.libelle} ${v.valeur === null ? 'aucun' : `« ${v.valeur} »`}`).join(', ');
+
+/** E01 / E02 — équipement : création ou modification de plusieurs champs de sa fiche (marque, modèle, n° de série…). */
+function equipementRicheDirect(h: ActionHint): Directe | null {
+  const cible = sansNomObjet(h.targetHint, /^[eé]quipements?\s+/i);
+  if (!cible) return null;
+  const vals = valeursLibellees(h, EQUIPMENT_LABELS, new Set(['name', 'room', 'asset']));
+  if (!vals) return null;
+  if (h.operation === 'UPDATE') {
+    return {
+      phrase: `Modifie l'équipement ${cible} : ${listeLibellee(vals)}`, attendu: 'UPDATE_EQUIPMENT',
+      verifier: (d) => d.command === 'UPDATE_EQUIPMENT' && issusDe(d.targetWords, cible, true) && d.values.length === vals.length
+        && d.values.every((x, i) => x.key === vals[i].key && memeTexte(x.raw, vals[i].valeur)),
+    };
+  }
+  return null;
+}
+
+/** E03 — échéance : retrait CIBLÉ d'un lien, ou plusieurs champs du tiroir (description, heures, situation…). */
+function echeanceRicheDirecte(h: ActionHint): Directe | null {
+  const cible = sansNomObjet(h.targetHint, /^(?:[eé]ch[eé]ances?|rappels?|rendez-vous|rdv)\s+/i);
+  if (!cible) return null;
+  if (h.operation === 'UNLINK' && h.fieldChanges.length === 1) {
+    const c = champsDe(h, ['bien', 'piece', 'equipement']) ?? (/^(?:document|fichier)$/.test(plain(h.fieldChanges[0].fieldHint).trim()) ? new Map<Cle, string | null>([['nom', h.fieldChanges[0].value]]) : null);
+    if (!c) return null;
+    const [cle, v] = [...c.entries()][0];
+    const nom = designation(v ?? null);
+    if (!nom) return null;
+    const objet = cle === 'bien' ? 'le bien' : cle === 'piece' ? 'la pièce' : cle === 'equipement' ? "l'équipement" : 'le document';
+    const key = cle === 'bien' ? 'removeAsset' : cle === 'piece' ? 'removeRoom' : cle === 'equipement' ? 'removeEquipment' : 'removeDocument';
+    return {
+      phrase: `Retire ${objet} ${nom} de l'échéance ${cible}`, attendu: 'UPDATE_AGENDA_ITEM',
+      verifier: (d) => d.command === 'UPDATE_AGENDA_ITEM' && !d.seriesScope && (d.values?.length ?? 0) === 1 && d.values![0].key === key
+        && memeTexte(d.values![0].raw, nom) && issusDe(d.itemWords, cible),
+    };
+  }
+  if (h.operation !== 'UPDATE') return null;
+  const vals = valeursLibellees(h, AGENDA_LABELS, new Set(['asset', 'room', 'equipment', 'document', 'removeAsset', 'removeRoom', 'removeEquipment', 'removeDocument']));
+  if (!vals || vals.every((v) => v.key === 'title' || v.key === 'startDate')) return null;
+  return {
+    phrase: `Modifie l'échéance ${cible} : ${listeLibellee(vals)}`, attendu: 'UPDATE_AGENDA_ITEM',
+    verifier: (d) => d.command === 'UPDATE_AGENDA_ITEM' && !d.seriesScope && (d.values?.length ?? 0) === vals.length && issusDe(d.itemWords, cible),
+  };
+}
+
+/** E04 — fournisseur : coordonnées de la fiche (adresse, SIREN, SIRET, TVA…). JAMAIS les coordonnées bancaires par le sens. */
+function fournisseurRicheDirect(h: ActionHint, cible: string): Directe | null {
+  if (h.operation !== 'UPDATE') return null;
+  const vals = valeursLibellees(h, SUPPLIER_LABELS, new Set(['iban', 'ibanHolderName']));
+  if (!vals || (vals.length === 1 && vals[0].key === 'name')) return null;
+  return {
+    phrase: `Modifie le fournisseur ${cible} : ${listeLibellee(vals)}`, attendu: 'UPDATE_SUPPLIER',
+    verifier: (d) => d.command === 'UPDATE_SUPPLIER' && issusDe(d.supplierWords, cible, true) && (d.values?.length ?? 1) === vals.length
+      && !(d.values ?? []).some((x) => x.key === 'iban' || x.key === 'ibanHolderName'),
+  };
+}
+
+/** E09 — document d'une opération vers une autre : « déplacer » (origine dite) ; sans origine, la question est posée. */
+function deplacementDocumentDirect(h: ActionHint, doc: string | null): Directe | null {
+  if (h.operation !== 'LINK' || !doc || h.fieldChanges.length !== 2) return null;
+  const origine = h.fieldChanges.find((c) => /^(?:origine|depuis|operation d'origine|ancienne operation|de)$/.test(plain(c.fieldHint).trim()));
+  const vers = h.fieldChanges.find((c) => /^(?:evenement de reference|operation|evenement|destination|vers|nouvelle operation)$/.test(plain(c.fieldHint).trim()));
+  const de = designation(origine?.value ?? null);
+  const a = designation(vers?.value ?? null);
+  if (!de || !a) return null;
+  return {
+    phrase: `Déplace le document ${doc} de ${evenementDirect(de)} vers ${evenementDirect(a)}`, attendu: 'DOCUMENT_REFERENCE_EVENT_TRANSFER_REQUEST',
+    verifier: (d) => d.command === 'DOCUMENT_REFERENCE_EVENT_TRANSFER_REQUEST' && issusDe(d.documentWords, doc, true) && !!d.from
+      && issusDe(d.from.words, de) && issusDe(d.to.words, a),
+  };
+}
 
 /** Pièce ou équipement d'un bien (W04 – W09). */
 function structureDirecte(h: ActionHint): Directe | null {
@@ -431,13 +523,19 @@ function phraseDirecte(h: ActionHint): Directe | null {
   if (h.entityType === 'relation') {
     if (!lien || !cible) return null;
     const p = plain(cible);
-    if (/^(?:document|fichier)\s/.test(p)) return lienDocumentDirect(h, sansNomObjet(h.targetHint, /^(?:document|fichier)\s+/i));
+    if (/^(?:document|fichier)\s/.test(p)) {
+      const doc = sansNomObjet(h.targetHint, /^(?:document|fichier)\s+/i);
+      return deplacementDocumentDirect(h, doc) ?? lienDocumentDirect(h, doc);
+    }
     if (/^(?:fournisseur|prestataire)\s/.test(p)) return lienFournisseurDirect(h, sansNomObjet(h.targetHint, /^(?:fournisseur|prestataire)\s+/i));
     if (p.startsWith('evenement de reference') || /^operation\s/.test(p) || [...TYPE_NOUNS.keys()].some((n) => p.startsWith(`${n} `))) return evenementDirecte({ ...h, entityType: 'business_operation' });
     return null;
   }
-  if (h.entityType === 'room' || h.entityType === 'equipment') return lien ? null : structureDirecte(h);
-  if (h.entityType === 'agenda_item') return lien ? null : echeanceDirecte(h);
+  if (h.entityType === 'room' || h.entityType === 'equipment') {
+    if (lien) return null;
+    return structureDirecte(h) ?? (h.entityType === 'equipment' ? equipementRicheDirect(h) : null);
+  }
+  if (h.entityType === 'agenda_item') return (lien ? null : echeanceDirecte(h)) ?? echeanceRicheDirecte(h);
   if (h.entityType === 'business_operation') return evenementDirecte(h);
 
   if (h.entityType === 'asset') {
@@ -481,11 +579,14 @@ function phraseDirecte(h: ActionHint): Directe | null {
       const v = valeur(c.value, null);
       return v ? { phrase: `Renomme le fournisseur ${cible} en ${v}`, attendu: 'UPDATE_SUPPLIER', verifier: (d) => d.command === 'UPDATE_SUPPLIER' && d.field === 'name' } : null;
     }
-    return null;
+    return fournisseurRicheDirect(h, sansNomObjet(h.targetHint, /^(?:fournisseur|prestataire)\s+/i) ?? cible);
   }
 
   if (h.entityType === 'document') {
-    if (lien) return lienDocumentDirect(h, sansNomObjet(h.targetHint, /^(?:document|fichier)\s+/i));
+    if (lien) {
+      const doc = sansNomObjet(h.targetHint, /^(?:document|fichier)\s+/i);
+      return deplacementDocumentDirect(h, doc) ?? lienDocumentDirect(h, doc);
+    }
     const doc = cible ? `le document ${cible}` : 'ce document';
     if (h.operation === 'DELETE' && h.fieldChanges.length === 0) return { phrase: `Supprime ${doc}`, attendu: 'DELETE_DOCUMENT' };
     if (h.operation === 'UPDATE' && h.fieldChanges.length === 1 && c && estNom(c.fieldHint)) {
@@ -517,10 +618,14 @@ function phraseDirecte(h: ActionHint): Directe | null {
  */
 export function exportSentenceFromHint(h: ActionHint): string | null {
   if (h.operation !== 'EXPORT' || h.entityType !== 'export') return null;
-  const nature = h.fieldChanges.map((c) => c.value ?? c.fieldHint).join(' ').replace(/[.!?«»"“”]/g, ' ').replace(/\s+/g, ' ').trim();
+  // Carte #843 (E08) : la SÉLECTION de documents dite par l'utilisateur (« les factures, sans les devis avant le … »)
+  // est reprise telle quelle dans la formulation directe : le même analyseur la lit (bornes floues → question).
+  const estSelection = (c: { fieldHint: string }) => /^(?:documents?|selection|filtres?|inclure|exclure|periode|contenu)$/.test(plain(c.fieldHint).trim());
+  const nature = h.fieldChanges.filter((c) => !estSelection(c)).map((c) => c.value ?? c.fieldHint).join(' ').replace(/[.!?«»"“”]/g, ' ').replace(/\s+/g, ' ').trim();
+  const selection = h.fieldChanges.filter(estSelection).map((c) => texte(c.value, 200)).filter((x): x is string => !!x).join(', ');
   const codes = nature ? parseExportRequest(`Exporte ${nature}`)?.codes ?? [] : [];
   const cible = designation(h.targetHint);
-  const phrase = `Exporte ${codes.length === 1 ? exportLabel(codes[0]) : 'le dossier'} de ${cible ? `le bien ${cible}` : 'ce bien'}`;
+  const phrase = `Exporte ${codes.length === 1 ? exportLabel(codes[0]) : selection ? 'les données brutes' : 'le dossier'} de ${cible ? `le bien ${cible}` : 'ce bien'}${selection ? ` avec ${selection}` : ''}`;
   return parseExportRequest(phrase) ? phrase : null;
 }
 

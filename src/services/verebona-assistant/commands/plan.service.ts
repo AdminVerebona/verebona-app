@@ -1815,6 +1815,11 @@ async function resolveAgendaChange(
   const acc = input.accountId;
   if (!lookup.findAgendaItems) return { needInfo: 'Je ne peux pas faire cette modification depuis l’assistant.' };
   const verbe = draft.command === 'DELETE_AGENDA_ITEM' ? 'supprimer' : 'modifier';
+  // Carte #843 (E03) : modifier TOUTE UNE SÉRIE n'existe pas dans l'Agenda — limite dite honnêtement, rien proposé.
+  if (draft.command === 'UPDATE_AGENDA_ITEM' && draft.seriesScope) {
+    const { AGENDA_SERIES_UPDATE_UNSUPPORTED } = await import('./rich-edits');
+    return { needInfo: AGENDA_SERIES_UPDATE_UNSUPPORTED };
+  }
 
   // Bien désigné : il restreint la recherche, il ne remplace jamais l'échéance.
   let assetIds: number[] = [];
@@ -1999,14 +2004,53 @@ export async function tracer(planId: string, accountId: number, userId: number |
   }
 }
 
+/** Carte #843 (E04) : la valeur bancaire d'une proposition ne peut pas être protégée — la proposition n'est pas enregistrée. */
+export class BankingSecretUnavailableError extends Error {
+  constructor() { super('BANKING_SECRET_UNAVAILABLE'); this.name = 'BankingSecretUnavailableError'; }
+}
+
 async function savePlan(plan: StoredPlan, requestId: string | null): Promise<void> {
+  // Carte #843 (E04) — règle remplacée : « l'IBAN reste en clair dans la proposition jusqu'à sa clôture ». La valeur
+  // est désormais SCELLÉE hors de la proposition (chiffrée, `plan-secrets`) ; la proposition n'en garde que la forme
+  // masquée. Proposition et valeur chiffrée sont enregistrées dans la MÊME transaction. Impossible de sceller
+  // (trousseau, migration 1990 absente) : rien n'est enregistré — jamais de repli en clair.
+  const { carriesClearIban, sealPlanActions } = await import('./plan-secrets');
+  let secrets: Array<{ actionId: string; field: 'iban'; sealed: string }> = [];
+  if (plan.actions.some(carriesClearIban)) {
+    try {
+      const scelle = await sealPlanActions(plan.planId, plan.actions);
+      plan.actions = scelle.actions;
+      secrets = scelle.secrets;
+    } catch (e) {
+      console.error('[verebona] valeur bancaire non scellée, proposition non enregistrée :', (e as Error).message.split(':')[0]);
+      throw new BankingSecretUnavailableError();
+    }
+  }
   const payload = JSON.stringify(plan.actions);
-  await pgClient.unsafe(
-    `INSERT INTO verebona_command_plans
-       (plan_id, account_id, user_id, conversation_id, request_id, status, summary, actions_payload, params_hash, expires_at)
-     VALUES ($1, $2, $3, $4, $5, 'PENDING_CONFIRMATION', $6, $7, $8, $9)`,
-    [plan.planId, plan.accountId, plan.userId, plan.conversationId, requestId, plan.summary, payload, hashActions(payload), plan.expiresAt] as never[],
-  );
+  const inserer = async (run: { unsafe: (q: string, p: never[]) => Promise<unknown> }) => {
+    await run.unsafe(
+      `INSERT INTO verebona_command_plans
+         (plan_id, account_id, user_id, conversation_id, request_id, status, summary, actions_payload, params_hash, expires_at)
+       VALUES ($1, $2, $3, $4, $5, 'PENDING_CONFIRMATION', $6, $7, $8, $9)`,
+      [plan.planId, plan.accountId, plan.userId, plan.conversationId, requestId, plan.summary, payload, hashActions(payload), plan.expiresAt] as never[],
+    );
+    for (const x of secrets) {
+      await run.unsafe(
+        `INSERT INTO verebona_command_plan_secrets (plan_id, account_id, action_id, field, sealed_value, expires_at) VALUES ($1, $2, $3, $4, $5, $6)`,
+        [plan.planId, plan.accountId, x.actionId, x.field, x.sealed, plan.expiresAt] as never[],
+      );
+    }
+  };
+  if (secrets.length) {
+    try {
+      await pgClient.begin(async (tx) => { await inserer(tx as never); });
+    } catch (e) {
+      console.error('[verebona] proposition bancaire non enregistrée :', (e as { code?: string }).code ?? (e as Error).message);
+      throw new BankingSecretUnavailableError();
+    }
+  } else {
+    await inserer(pgClient as never);
+  }
   // Carte #807 (E04) : le journal ne porte jamais un IBAN en clair (forme masquée seulement).
   await tracer(plan.planId, plan.accountId, plan.userId, 'PREPARED', { summary: plan.summary, actions: redactActionsForTrace(plan.actions) });
 }
@@ -2021,6 +2065,8 @@ export async function scrubBankingPayloads(scope: { accountId?: number } = {}): 
       `SELECT plan_id AS "planId", actions_payload AS payload FROM verebona_command_plans
         WHERE status NOT IN ('PENDING_CONFIRMATION', 'EXECUTING')
           AND actions_payload LIKE '%"banking":true%' AND actions_payload NOT LIKE '%"ibanScrubbed":true%'
+          -- Carte #843 (E04) : une proposition scellée ne porte aucun IBAN en clair (purge par \`plan-secrets\`).
+          AND actions_payload NOT LIKE '%"ibanSealed":true%'
           AND ($1::int IS NULL OR account_id = $1::int)
         LIMIT 100`,
       [scope.accountId ?? null] as never[],
@@ -2036,12 +2082,43 @@ export async function scrubBankingPayloads(scope: { accountId?: number } = {}): 
         `UPDATE verebona_command_plans SET actions_payload = $2, params_hash = $3 WHERE plan_id = $1 AND status NOT IN ('PENDING_CONFIRMATION', 'EXECUTING')`,
         [r.planId, propre, hashActions(propre)] as never[],
       );
+      const { logPurge } = await import('./plan-secrets');
+      await logPurge({ accountId: scope.accountId ?? null, scope: 'PLAN_PAYLOAD', targetId: r.planId, outcome: 'PURGED' });
     }
     return rows.length;
   } catch (e) {
-    console.error('[verebona] purge des valeurs bancaires des propositions closes :', (e as Error).message);
+    // Carte #843 (E04) — règle remplacée : « échec absorbé ». Un échec est désormais journalisé (`FAILED`) et
+    // repris par le balayage quotidien, qui le compte dans son reste à purger.
+    const code = (e as { code?: string }).code ?? 'ERREUR';
+    console.error('[verebona] PURGE_BANCAIRE_ECHEC (propositions closes) :', code);
+    const { logPurge } = await import('./plan-secrets');
+    await logPurge({ accountId: scope.accountId ?? null, scope: 'PLAN_PAYLOAD', outcome: 'FAILED', detail: { code } });
     return 0;
   }
+}
+
+/**
+ * Carte #843 (E04) — clôture d'une proposition : sa valeur bancaire scellée est PURGÉE (tracée), et une proposition
+ * d'avant #843 qui porterait encore un IBAN en clair est nettoyée par l'ancien balayage. Ne lève jamais.
+ */
+async function purgerProposition(planId: string, accountId: number, reason: string, payload: string): Promise<void> {
+  if (payload.includes('"ibanSealed":true')) {
+    const { purgePlanSecrets } = await import('./plan-secrets');
+    await purgePlanSecrets({ planId, accountId, reason });
+  }
+  if (payload.includes('"banking":true')) await scrubBankingPayloads({ accountId });
+}
+
+/** Action dont l'IBAN scellé est rendu en clair, EN MÉMOIRE (reconstruction après conflit) ; `null` : valeur perdue. */
+async function avecIbanDescelle(a: PlannedAction, planId: string | undefined, accountId: number): Promise<PlannedAction | null> {
+  const p = a.params as { kind?: string; ibanSealed?: true; patch?: Record<string, unknown> };
+  if (p.kind !== 'supplier_update' || !p.ibanSealed) return a;
+  if (!planId) return null;
+  const { unsealPlanSecret } = await import('./plan-secrets');
+  const iban = await unsealPlanSecret({ planId, accountId, actionId: a.actionId });
+  if (!iban) return null;
+  const { ibanSealed: _s, ...reste } = a.params as Record<string, unknown>;
+  return { ...a, params: { ...reste, patch: { ...p.patch, iban } } as unknown as PlannedAction['params'] };
 }
 
 /**
@@ -2145,7 +2222,13 @@ export async function prepareCommandSegments(
     actions,
     expiresAt: new Date(now.getTime() + PLAN_TTL_MS).toISOString(),
   };
-  await savePlan(plan, null);
+  try {
+    await savePlan(plan, null);
+  } catch (e) {
+    if (!(e instanceof BankingSecretUnavailableError)) throw e;
+    const { BANKING_SECRET_UNAVAILABLE } = await import('./plan-secrets');
+    return { kind: 'need_info', message: BANKING_SECRET_UNAVAILABLE };
+  }
   return { kind: 'plan', plan, preview: toPreview(plan) };
 }
 
@@ -2364,8 +2447,27 @@ export async function executeActions(
 ): Promise<ActionResult[]> {
   const byId = new Map<string, ActionResult>();
   const results: ActionResult[] = [];
-  for (const a of actions) {
+  // Carte #843 (E09) : déplacement d'un document entre deux opérations (retirer de A, puis rattacher à B) — les
+  // deux gestes sont exécutés ENSEMBLE, dans une transaction (`executeDocumentTransfer`), avec les exécuteurs réels.
+  const inverses = await import('./reference-events-inverse');
+  const atomiques = new Map<string, ActionResult>();
+  for (const [i, a] of actions.entries()) {
+    const deja = atomiques.get(a.actionId);
+    if (deja) { byId.set(a.actionId, deja); results.push(deja); continue; }
     const bloquante = a.dependsOn.find((d) => byId.get(d)?.status !== 'SUCCESS');
+    const suivante = actions[i + 1];
+    if (!bloquante && executors.UNLINK_DOCUMENT_REFERENCE_EVENT === EXECUTORS.UNLINK_DOCUMENT_REFERENCE_EVENT
+      && executors.LINK_DOCUMENT_REFERENCE_EVENT === EXECUTORS.LINK_DOCUMENT_REFERENCE_EVENT
+      && inverses.isDocumentTransferPair(a, suivante) && suivante.dependsOn.every((d) => d === a.actionId || byId.get(d)?.status === 'SUCCESS')) {
+      const [r1, r2] = await inverses.executeDocumentTransfer(a, suivante, ctx).catch((e: Error) => {
+        const echec: ActionResult = { actionId: a.actionId, status: 'FAILED', message: `Une erreur technique est survenue : rien n’a été écrit (${e.message}).` };
+        return [echec, { actionId: suivante.actionId, status: 'SKIPPED_DEPENDENCY', message: `${suivante.preview.replace(/\.$/, '')} — non exécutée : l’action ${a.actionId} n’a pas réussi.` }] as [ActionResult, ActionResult];
+      });
+      atomiques.set(suivante.actionId, r2);
+      byId.set(a.actionId, r1);
+      results.push(r1);
+      continue;
+    }
     const r: ActionResult = bloquante
       ? { actionId: a.actionId, status: 'SKIPPED_DEPENDENCY', message: `${a.preview.replace(/\.$/, '')} — non exécutée : l’action ${bloquante} n’a pas réussi.` }
       : await runAction(cibleDifferee(a, byId), ctx, executors);
@@ -2430,6 +2532,8 @@ export async function confirmCommandPlan(
       if (etat.status === 'PENDING_CONFIRMATION') {
         await pgClient.unsafe(`UPDATE verebona_command_plans SET status = 'EXPIRED' WHERE plan_id = $1 AND status = 'PENDING_CONFIRMATION'`, [p.planId] as never[]);
         await tracer(p.planId, p.accountId, p.userId, 'EXPIRED');
+        // Carte #843 (E04) : proposition expirée — sa valeur bancaire éventuelle est purgée (tracée).
+        await purgerProposition(p.planId, p.accountId, 'EXPIRED', '"ibanSealed":true');
         await recordPlanOutcome({ ...p, conversationId: etat.conversationId ?? null, messageId: etat.messageId ?? null }, EXPIRED_MESSAGE);
       }
       return { ok: false, code: 'PLAN_EXPIRED', message: EXPIRED_MESSAGE, status: 'EXPIRED' };
@@ -2450,8 +2554,9 @@ export async function confirmCommandPlan(
       `UPDATE verebona_command_plans SET status = $2, results_json = $3::jsonb, executed_at = now() WHERE plan_id = $1`,
       [p.planId, status, JSON.stringify(results)] as never[],
     );
-    // Carte #807 (E04) : plan clos — aucune valeur bancaire n'y reste.
-    if (pris[0].actions_payload.includes('"banking":true')) await scrubBankingPayloads({ accountId: p.accountId });
+    // Carte #807 (E04) : plan clos — aucune valeur bancaire n'y reste. Carte #843 : valeur scellée PURGÉE (tracée ;
+    // un échec est journalisé et repris par le balayage, jamais silencieux).
+    await purgerProposition(p.planId, p.accountId, status, pris[0].actions_payload);
   };
 
   await tracer(p.planId, p.accountId, p.userId, 'CONFIRMED');
@@ -2489,14 +2594,16 @@ export async function confirmCommandPlan(
     deps.executors,
   );
   const status = planStatusFrom(results);
+  // Carte #807 (E07) — CONFLIT de version : les données sont relues et l'action reproposée (nouvel avant /
+  // après). Rien n'est écrit pour elle sans une NOUVELLE confirmation de l'utilisateur. Carte #843 : reproposée
+  // AVANT la clôture de ce plan (une valeur bancaire scellée est reprise dans la nouvelle proposition, puis purgée
+  // de celle-ci).
+  const rafraichi = results.some((r) => r.conflict) ? await replanAfterConflict({ ...fil, planId: p.planId }, actions, results) : null;
   await fin(status, results);
   const undo = await armUndo(p, results, captures);
   await tracer(p.planId, p.accountId, p.userId, 'EXECUTED', {
     status, results, undo: { reversible: undo.undoUntil !== null, undoUntil: undo.undoUntil, reasons: undo.reasons },
   });
-  // Carte #807 (E07) — CONFLIT de version : les données sont relues et l'action reproposée (nouvel avant /
-  // après). Rien n'est écrit pour elle sans une NOUVELLE confirmation de l'utilisateur.
-  const rafraichi = results.some((r) => r.conflict) ? await replanAfterConflict(fil, actions, results) : null;
   const summary = rafraichi ? `${summarizeResults(results)} ${CONFLICT_REPLAN_TEXT}` : summarizeResults(results);
   const messageId = await recordPlanOutcome(fil, outcomeText(summary, results));
   if (rafraichi && messageId) {
@@ -2519,14 +2626,18 @@ export const CONFLICT_REPLAN_TEXT = 'J’ai relu les données actuelles : voici 
  * à changer). Ne lève jamais : un échec laisse l'issue du plan telle quelle.
  */
 async function replanAfterConflict(
-  fil: { accountId: number; userId: number; conversationId: number | null },
+  fil: { accountId: number; userId: number; conversationId: number | null; planId?: string },
   actions: PlannedAction[], results: ActionResult[],
 ): Promise<StoredPlan | null> {
   try {
     const { rebuildAfterConflict } = await import('./rich-edits');
     const enConflit = new Set(results.filter((r) => r.conflict).map((r) => r.actionId));
     const refaites: PlannedAction[] = [];
-    for (const a of actions.filter((x) => enConflit.has(x.actionId))) {
+    for (const a0 of actions.filter((x) => enConflit.has(x.actionId))) {
+      // Carte #843 (E04) : la valeur bancaire scellée de l'ancienne proposition est reprise (en mémoire seulement)
+      // pour être revalidée et scellée de nouveau dans la nouvelle proposition.
+      const a = await avecIbanDescelle(a0, fil.planId, fil.accountId);
+      if (!a) return null;
       const r = await rebuildAfterConflict(a, fil.accountId, sqlLookup);
       if (!r) return null;
       refaites.push({ ...r, actionId: `a${refaites.length + 1}`, dependsOn: [] });
@@ -2595,8 +2706,8 @@ export async function cancelCommandPlan(p: { planId: string; accountId: number; 
   )) as unknown as Array<{ conversationId: number | null; messageId: number | null; bancaire?: boolean }>;
   if (rows[0]) {
     await tracer(p.planId, p.accountId, p.userId, 'CANCELLED');
-    // Carte #807 (E04) : une proposition annulée ne conserve aucune valeur bancaire.
-    if (rows[0].bancaire === true) await scrubBankingPayloads({ accountId: p.accountId });
+    // Carte #807 (E04) : une proposition annulée ne conserve aucune valeur bancaire (carte #843 : purge tracée).
+    if (rows[0].bancaire === true) await purgerProposition(p.planId, p.accountId, 'CANCELLED', '"ibanSealed":true "banking":true');
     await recordPlanOutcome({ planId: p.planId, accountId: p.accountId, userId: p.userId, conversationId: rows[0].conversationId, messageId: rows[0].messageId }, CANCELLED_MESSAGE);
     return { ok: true, status: 'CANCELLED', alreadyHandled: false, message: CANCELLED_MESSAGE };
   }
@@ -2619,6 +2730,7 @@ export async function cancelCommandPlan(p: { planId: string; accountId: number; 
       )) as unknown as unknown[];
       if (passe.length) {
         await tracer(p.planId, p.accountId, p.userId, 'EXPIRED');
+        await purgerProposition(p.planId, p.accountId, 'EXPIRED', '"ibanSealed":true');
         await recordPlanOutcome({ ...p, conversationId: etat.conversationId, messageId: etat.messageId }, EXPIRED_MESSAGE);
         return { ok: true, status: 'EXPIRED', alreadyHandled: false, message: EXPIRED_MESSAGE };
       }
@@ -2645,8 +2757,8 @@ export async function expirePendingPlans(scope: { accountId?: number; userId?: n
     [scope.accountId ?? null, scope.userId ?? null] as never[],
   )) as unknown as Array<{ plan_id: string; account_id: number; user_id: number; bancaire?: boolean }>;
   for (const r of rows) await tracer(r.plan_id, r.account_id, r.user_id, 'EXPIRED', { by: 'expiry' });
-  // Carte #807 (E04) : une proposition expirée ne conserve aucune valeur bancaire.
-  if (rows.some((r) => r.bancaire === true)) await scrubBankingPayloads(scope.accountId != null ? { accountId: scope.accountId } : {});
+  // Carte #807 (E04) : une proposition expirée ne conserve aucune valeur bancaire (carte #843 : purge tracée).
+  for (const r of rows.filter((x) => x.bancaire === true)) await purgerProposition(r.plan_id, r.account_id, 'EXPIRED', '"ibanSealed":true "banking":true');
   // Purge quotidienne (sans périmètre) : états antérieurs des annulations
   // dont la fenêtre est close.
   if (scope.accountId == null && scope.userId == null) await purgeExpiredUndoSteps();

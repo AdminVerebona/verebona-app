@@ -796,7 +796,20 @@ export const SCHEDULED_TASKS: readonly ScheduledTaskDef[] = [
         const n = await expirePendingPlans();
         if (n) note += ` ; assistant : ${n} proposition(s) expirée(s)`;
       } catch { /* non bloquant */ }
+      // Carte #843 (E04) : purge des valeurs bancaires transitoires et masquage des IBAN de l'historique. Un reste à
+      // purger ou une purge en échec n'est JAMAIS silencieux : la tâche est signalée en erreur (supervision BO).
+      let purgeSensible: string | null = null;
+      try {
+        const { sweepSensitiveData } = await import('@/services/verebona-assistant/commands/plan-secrets');
+        const s = await sweepSensitiveData();
+        if (s.purged || s.messagesMasked) note += ` ; assistant : ${s.purged} valeur(s) bancaire(s) purgée(s), ${s.messagesMasked} message(s) masqué(s)`;
+        if (!s.purgeOk || s.backlog !== 0) purgeSensible = `assistant : purge des valeurs bancaires incomplète (reste ${s.backlog})`;
+      } catch (e) {
+        purgeSensible = `assistant : purge des valeurs bancaires en échec (${(e as Error).message})`;
+      }
+      if (purgeSensible) note += ` ; ${purgeSensible}`;
       if (r.storageUnavailable) return { note, error: note };
+      if (purgeSensible) return { note, error: purgeSensible };
       if (r.filesRetained > 0 && r.filesDeletedFromDB === 0) return { note, error: r.errors[0] ?? note };
       return { note };
     },

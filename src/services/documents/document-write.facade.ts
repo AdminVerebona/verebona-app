@@ -14,11 +14,11 @@
  * déjà lu. Rend la réponse HTTP de la route (statut et JSON inchangés).
  */
 import { NextResponse } from 'next/server';
-import { emitBusinessEvent } from '@/services/verebona-assistant/events/business-events';
+import { emitBusinessEvent, emitBusinessEvents } from '@/services/verebona-assistant/events/business-events';
 import { hasProjectableKnowledge, projectDocumentKnowledgeToAsset } from '@/services/ai/knowledge/document-knowledge.service';
 import { db } from '@/db';
 import { assetFiles, adminAuditLog, assets, documentTypes } from '@/db/schema';
-import { eq, and, isNull } from 'drizzle-orm';
+import { eq, and, isNull, inArray, sql } from 'drizzle-orm';
 import { isKnownStorageDocumentCode } from '@/lib/referential/document-codes';
 import { analyzeFileSources } from '@/services/ai/source-analysis/entrypoint';
 import { onDocumentEditedByUser } from '@/services/to-process/document-rule-bridge';
@@ -43,8 +43,19 @@ function cible(v: unknown): number | null | undefined {
 /** Session de l'appelant : utilisateur et compte actif (déjà contrôlés). */
 export interface DocumentWriteSession { userId: number; currentAccountId: number }
 
+/**
+ * Carte #843 (E07) — horodatage de dernière modification d'un document, en microsecondes (texte) : la VERSION
+ * que l'Assistant relit à l'exécution et exige ensuite dans l'instruction d'écriture (`guard`).
+ */
+export const DOCUMENT_VERSION_SQL = `(extract(epoch FROM updated_at) * 1000000)::bigint::text`;
+
 /** `body` : corps JSON de la requête, validé champ par champ ci-dessous (inchangé par l'extraction). */
-export async function updateDocumentForAccount(session: DocumentWriteSession, documentId: number, body: any): Promise<NextResponse> {
+export async function updateDocumentForAccount(session: DocumentWriteSession, documentId: number, body: any,
+  /**
+   * Carte #843 (E07) — version attendue (`DOCUMENT_VERSION_SQL`), exigée dans l'instruction d'écriture de la
+   * transaction : document modifié depuis, réponse 409 et RIEN n'est écrit. Absente (tiroir) : comportement inchangé.
+   */
+  guard: { expectedUpdatedAtMicros?: string } = {}): Promise<NextResponse> {
   const { userId } = session;
   // Lot 113Z (#723) : `description` n'est plus lue ici — c'est la description
   // T1 (interne), jamais écrite par l'édition utilisateur ; un client
@@ -340,11 +351,13 @@ export async function updateDocumentForAccount(session: DocumentWriteSession, do
     ...(updateData.equipmentId ? [ownedSql('equipment', updateData.equipmentId, session.currentAccountId)] : []),
   ];
   const accountIdEcriture = session.currentAccountId;
+  const garde = guard.expectedUpdatedAtMicros !== undefined
+    ? [sql`(extract(epoch FROM ${assetFiles.updatedAt}) * 1000000)::bigint::text = ${guard.expectedUpdatedAtMicros}`] : [];
   const ecrit = await db.transaction(async (tx) => {
     const lignes = await tx
       .update(assetFiles)
       .set(updateData)
-      .where(and(eq(assetFiles.id, documentId), eq(assetFiles.accountId, accountIdEcriture), ...cibles))
+      .where(and(eq(assetFiles.id, documentId), eq(assetFiles.accountId, accountIdEcriture), isNull(assetFiles.deletedAt), ...cibles, ...garde))
       .returning({ id: assetFiles.id });
     // Lot 113Z : reprise en main de « Notes / Description », même transaction que la note.
     if (lignes.length > 0 && notesEcrites) await markNotesUserOwned(tx, accountIdEcriture, documentId);
@@ -363,6 +376,12 @@ export async function updateDocumentForAccount(session: DocumentWriteSession, do
     return lignes;
   });
   if (ecrit.length === 0) {
+    // Carte #843 (E07) : document présent mais modifié depuis la version attendue — conflit, rien n'est écrit.
+    if (garde.length) {
+      const [present] = await db.select({ id: assetFiles.id }).from(assetFiles)
+        .where(and(eq(assetFiles.id, documentId), eq(assetFiles.accountId, accountIdEcriture), isNull(assetFiles.deletedAt))).limit(1);
+      if (present) return NextResponse.json({ error: 'CONFLICT', message: 'Document modifié depuis la version attendue' }, { status: 409 });
+    }
     // Cible devenue étrangère ou supprimée entre le contrôle et l'écriture.
     return NextResponse.json({ error: 'NOT_FOUND', message: 'Document non trouvé' }, { status: 404 });
   }
@@ -805,6 +824,39 @@ export async function updateDocumentClassificationForAccount(
  * `DOCUMENT_DELETED`, preuves du document retirées et biens touchés
  * réconciliés (CDC 15 T3-03, ne lève jamais).
  */
+/**
+ * Carte #843 (E07) — suppression logique de PLUSIEURS documents d'un compte, TOUT OU RIEN, avec la version de
+ * chacun exigée SOUS VERROU dans UNE transaction : un seul document disparu ou modifié depuis sa version attendue
+ * et AUCUN n'est supprimé. Puis, après validation, les mêmes effets que `softDeleteDocument` (événement, preuves
+ * retirées, fiches réconciliées). `DELETED` : tous supprimés.
+ */
+export async function softDeleteDocumentsGuarded(p: {
+  accountId: number; userId: number; documents: ReadonlyArray<{ fileId: number; expectedUpdatedAtMicros: string }>;
+}): Promise<'DELETED' | 'NOT_FOUND' | 'CONFLICT'> {
+  const ids = p.documents.map((d) => d.fileId);
+  if (ids.length === 0) return 'NOT_FOUND';
+  const issue = await db.transaction(async (tx): Promise<'DELETED' | 'NOT_FOUND' | 'CONFLICT'> => {
+    const lignes = await tx.select({ id: assetFiles.id, v: sql<string>`(extract(epoch FROM ${assetFiles.updatedAt}) * 1000000)::bigint::text` })
+      .from(assetFiles)
+      .where(and(inArray(assetFiles.id, ids), eq(assetFiles.accountId, p.accountId), isNull(assetFiles.deletedAt)))
+      .for('update');
+    if (lignes.length !== ids.length) return 'NOT_FOUND';
+    for (const d of p.documents) {
+      if (String(lignes.find((l) => l.id === d.fileId)?.v) !== d.expectedUpdatedAtMicros) return 'CONFLICT';
+    }
+    const now = new Date();
+    await tx.update(assetFiles).set({ deletedAt: now, updatedAt: now })
+      .where(and(inArray(assetFiles.id, ids), eq(assetFiles.accountId, p.accountId)));
+    return 'DELETED';
+  });
+  if (issue !== 'DELETED') return issue;
+  // Une seule émission groupée (jamais une par document dans une boucle, §31.7).
+  await emitBusinessEvents(ids.map((fileId) => ({ type: 'DOCUMENT_DELETED' as const, accountId: p.accountId, entityId: fileId })));
+  const { onDocumentsDeleted } = await import('@/services/ai/evidence/document-evidence-lifecycle');
+  await onDocumentsDeleted({ accountId: p.accountId, userId: p.userId, fileIds: ids });
+  return 'DELETED';
+}
+
 export async function softDeleteDocument(p: { fileId: number; fileAccountId: number | null; userId: number }): Promise<typeof assetFiles.$inferSelect> {
   const now = new Date();
   const [deletedFile] = await db

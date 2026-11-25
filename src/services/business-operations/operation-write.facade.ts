@@ -68,6 +68,10 @@
  *   unlinkDocument               retirer (refus mémorisé, fichier conservé) ;
  *   (le déplacement autonome d'un document est retiré — carte #806 §1 : retirer
  *   puis rattacher ; le corps interne `moveDocumentBody` ne sert plus que la scission).
+ *   unlinkThenLinkDocument       carte #843 (E09) : les DEUX gestes « retirer de A » puis
+ *                                « rattacher à B », confirmés ensemble dans l'Assistant,
+ *                                exécutés dans UNE transaction — B refusé ou en panne : A
+ *                                est conservé (aucun geste « déplacer » réintroduit).
  *
  *   Fournisseurs (UTILISATEUR seulement — service unique `operation-suppliers`)
  *   linkSupplier            W26  relier un fournisseur du compte, avec son rôle ;
@@ -301,6 +305,8 @@ export interface AssociateOperationsInput {
   validTo?: string | null;
   /** Version attendue de la relation existante (carte « À traiter », écran) : périmée → CONFLICT. */
   expectedVersion?: number;
+  /** Carte #843 (E07) : versions attendues des deux opérations (Assistant). */
+  expectedOperationVersions?: ExpectedOperationVersions;
   reasonCode?: string;
 }
 
@@ -316,6 +322,26 @@ export interface OperationRelationData {
 const ISO_DATE = /^\d{4}-\d{2}-\d{2}$/;
 const optionalDate = (v: unknown): v is string | null | undefined => v === undefined || v === null || (typeof v === 'string' && ISO_DATE.test(v) && !Number.isNaN(Date.parse(v)));
 const reason = (v: unknown, defaut: string): string => (typeof v === 'string' && /^[A-Z0-9_]{3,80}$/.test(v) ? v : defaut);
+
+/**
+ * Carte #843 (E07) — VERSIONS ATTENDUES des événements de référence touchés par un geste de LIEN (document,
+ * fournisseur, élément d'Agenda, relation entre opérations), relues SOUS le verrou des Opérations du compte et de
+ * la ligne (`loadOperationFacts … FOR UPDATE`), dans la transaction de l'écriture : un événement modifié depuis →
+ * CONFLICT VERSION_MISMATCH, rien n'est écrit. Facultatives (écrans, T3, T4 : comportement inchangé) ; l'Assistant
+ * les transmet toujours. Identifiant d'opération → version.
+ */
+export type ExpectedOperationVersions = Readonly<Record<string, number>>;
+
+async function garderVersions(g: GroupingContext, attendues: ExpectedOperationVersions | undefined): Promise<void> {
+  if (attendues === undefined) return;
+  if (!attendues || typeof attendues !== 'object') stop(refused('FORBIDDEN', 'INVALID_INPUT'));
+  for (const [id, version] of Object.entries(attendues).sort(([a], [b]) => Number(a) - Number(b))) {
+    if (!isPositiveId(Number(id)) || !isPositiveId(version)) stop(refused('FORBIDDEN', 'INVALID_INPUT'));
+    const faits = await loadOperationFacts(g.runner, g.accountId, Number(id));
+    if (!faits) stop(refused('FORBIDDEN', 'NOT_FOUND_IN_ACCOUNT'));
+    if (faits!.version !== version) stop(refused('CONFLICT', 'VERSION_MISMATCH', { currentVersion: faits!.version }));
+  }
+}
 
 /**
  * ASSOCIE deux événements de référence distincts du compte. Ne fusionne rien,
@@ -376,6 +402,7 @@ async function associateOperationsBody(
     return stop(refused('FORBIDDEN', 'INVALID_INPUT'));
   }
   if (input.fromOperationId === input.toOperationId) return stop(refused('FORBIDDEN', 'REFLEXIVE'));
+  await garderVersions(g, input.expectedOperationVersions);
   // Verrous pris dans l'ordre des identifiants (jamais d'interblocage entre deux commandes croisées).
   const [petit, grand] = input.fromOperationId < input.toOperationId ? [input.fromOperationId, input.toOperationId] : [input.toOperationId, input.fromOperationId];
   const a = await loadOperationFacts(g.runner, g.accountId, petit);
@@ -414,6 +441,8 @@ export interface DissociateOperationsInput {
   operationAId: number;
   operationBId: number;
   expectedVersion?: number;
+  /** Carte #843 (E07) : versions attendues des deux opérations (Assistant). */
+  expectedOperationVersions?: ExpectedOperationVersions;
   /** Preuves connues au moment du refus (une même preuve ne sera pas reproposée). */
   evidence?: GraphEvidence[];
   reasonCode?: string;
@@ -431,6 +460,7 @@ export function dissociateOperations(ctx: OperationWriteContext, input: Dissocia
     if (!input || !isPositiveId(input.operationAId) || !isPositiveId(input.operationBId) || evidence === null
         || (input.expectedVersion !== undefined && !isPositiveId(input.expectedVersion))) return stop(refused('FORBIDDEN', 'INVALID_INPUT'));
     if (input.operationAId === input.operationBId) return stop(refused('FORBIDDEN', 'REFLEXIVE'));
+    await garderVersions(g, input.expectedOperationVersions);
     const [petit, grand] = input.operationAId < input.operationBId ? [input.operationAId, input.operationBId] : [input.operationBId, input.operationAId];
     const a = await loadOperationFacts(g.runner, g.accountId, petit);
     const b = await loadOperationFacts(g.runner, g.accountId, grand);
@@ -470,6 +500,8 @@ export interface AgendaLinkInput {
   agendaItemId: number;
   evidence?: GraphEvidence[];
   reasonCode?: string;
+  /** Carte #843 (E07) : version attendue de l'opération (Assistant), contrôlée dans la transaction. */
+  expectedOperationVersions?: ExpectedOperationVersions;
 }
 
 export interface AgendaLinkData {
@@ -512,6 +544,7 @@ async function linkAgendaItemBody(
 ): Promise<OperationWriteResult<AgendaLinkData>> {
   const evidence = normalizeEvidence(input?.evidence);
   if (!input || !isPositiveId(input.operationId) || !isPositiveId(input.agendaItemId) || evidence === null) return stop(refused('FORBIDDEN', 'INVALID_INPUT'));
+  await garderVersions(g, input.expectedOperationVersions);
   const op = await loadOperationFacts(g.runner, g.accountId, input.operationId);
   const item = op ? await loadAgendaItemFacts(g.runner, g.accountId, input.agendaItemId) : null;
   if (!op || !item) return stop(refused('FORBIDDEN', 'NOT_FOUND_IN_ACCOUNT'));
@@ -566,6 +599,7 @@ async function unlinkAgendaItemBody(
 ): Promise<OperationWriteResult<AgendaLinkData>> {
   const evidence = normalizeEvidence(input?.evidence);
   if (!input || !isPositiveId(input.operationId) || !isPositiveId(input.agendaItemId) || evidence === null) return stop(refused('FORBIDDEN', 'INVALID_INPUT'));
+  await garderVersions(g, input.expectedOperationVersions);
   const op = await loadOperationFacts(g.runner, g.accountId, input.operationId);
   const item = op ? await loadAgendaItemFacts(g.runner, g.accountId, input.agendaItemId) : null;
   if (!op || !item) return stop(refused('FORBIDDEN', 'NOT_FOUND_IN_ACCOUNT'));
@@ -593,7 +627,11 @@ async function unlinkAgendaItemBody(
 
 // ── 3. Documents (gestes de l'utilisateur, délégués au regroupement existant) ──
 
-export interface DocumentLinkInput { operationId: number; fileId: number; reasonCode?: string }
+export interface DocumentLinkInput {
+  operationId: number; fileId: number; reasonCode?: string;
+  /** Carte #843 (E07) : version attendue de l'opération (Assistant), contrôlée dans la transaction. */
+  expectedOperationVersions?: ExpectedOperationVersions;
+}
 export interface DocumentLinkData { operationId: number; fileId: number }
 
 async function documentInAccount(g: GroupingContext, fileId: number): Promise<boolean> {
@@ -606,6 +644,7 @@ export function linkDocument(ctx: OperationWriteContext, input: DocumentLinkInpu
   return runCommand<DocumentLinkData>(ctx, 'linkDocument', input, async (g, journal) => {
     if (ctx.actor.kind !== 'USER') return stop(refused('FORBIDDEN', 'USER_ONLY'));
     if (!input || !isPositiveId(input.operationId) || !isPositiveId(input.fileId)) return stop(refused('FORBIDDEN', 'INVALID_INPUT'));
+    await garderVersions(g, input.expectedOperationVersions);
     const op = await loadOperationFacts(g.runner, g.accountId, input.operationId);
     if (!op || !(await documentInAccount(g, input.fileId))) return stop(refused('FORBIDDEN', 'NOT_FOUND_IN_ACCOUNT'));
     if (!op.active) return stop(refused('FORBIDDEN', 'OPERATION_INACTIVE'));
@@ -627,6 +666,7 @@ export function unlinkDocument(ctx: OperationWriteContext, input: DocumentLinkIn
   return runCommand<DocumentLinkData>(ctx, 'unlinkDocument', input, async (g, journal) => {
     if (ctx.actor.kind !== 'USER') return stop(refused('FORBIDDEN', 'USER_ONLY'));
     if (!input || !isPositiveId(input.operationId) || !isPositiveId(input.fileId)) return stop(refused('FORBIDDEN', 'INVALID_INPUT'));
+    await garderVersions(g, input.expectedOperationVersions);
     const op = await loadOperationFacts(g.runner, g.accountId, input.operationId);
     if (!op || !(await documentInAccount(g, input.fileId))) return stop(refused('FORBIDDEN', 'NOT_FOUND_IN_ACCOUNT'));
     const code = reason(input.reasonCode, 'USER_DOCUMENT_UNLINK');
@@ -634,6 +674,48 @@ export function unlinkDocument(ctx: OperationWriteContext, input: DocumentLinkIn
     const changed = await detachDocument(g, { operationId: op.id, fileId: input.fileId, reasonCode: code });
     if (changed) journal.push({ relationKind: 'DOCUMENT_LINK', operationId: op.id, fileId: input.fileId, action: 'REJECTED', reasonCode: code, before: { membership: true }, after: null });
     return applied(changed, { operationId: op.id, fileId: input.fileId });
+  });
+}
+
+/**
+ * Carte #843 (E09) — les DEUX gestes du catalogue « retirer le document de l'opération A » puis « le rattacher à
+ * l'opération B », confirmés ENSEMBLE par l'utilisateur dans l'Assistant, exécutés dans UNE transaction (verrou des
+ * Opérations du compte) : mêmes règles et même journal que `unlinkDocument` puis `linkDocument`, et rien de plus.
+ * Si le rattachement à B est refusé (opération supprimée, d'un autre compte, version périmée) ou tombe en panne,
+ * la transaction est ANNULÉE : le document reste rattaché à A (CDC §19 : aucune demi-écriture).
+ *
+ * Ce n'est PAS le geste « déplacer » retiré par la carte #806 : aucun écran ni route ne l'appelle, l'Assistant
+ * présente toujours deux gestes (« Retirer », puis « Rattacher »), et le corps interne de la scission n'est pas
+ * utilisé. Un seul document, jamais copié ; ses autres rattachements (biens, Agenda, autres opérations) intacts.
+ */
+export interface UnlinkThenLinkDocumentInput {
+  fileId: number; fromOperationId: number; toOperationId: number;
+  /** Versions attendues des deux opérations (relues à l'exécution par l'Assistant). */
+  expectedOperationVersions?: ExpectedOperationVersions;
+}
+export function unlinkThenLinkDocument(ctx: OperationWriteContext, input: UnlinkThenLinkDocumentInput): Promise<OperationWriteResult<DocumentLinkData & { fromOperationId: number }>> {
+  return runCommand<DocumentLinkData & { fromOperationId: number }>(ctx, 'unlinkThenLinkDocument', input, async (g, journal) => {
+    if (ctx.actor.kind !== 'USER') return stop(refused('FORBIDDEN', 'USER_ONLY'));
+    if (!input || !isPositiveId(input.fileId) || !isPositiveId(input.fromOperationId) || !isPositiveId(input.toOperationId)) return stop(refused('FORBIDDEN', 'INVALID_INPUT'));
+    if (input.fromOperationId === input.toOperationId) return stop(refused('FORBIDDEN', 'REFLEXIVE'));
+    await garderVersions(g, input.expectedOperationVersions);
+    const [petit, grand] = input.fromOperationId < input.toOperationId ? [input.fromOperationId, input.toOperationId] : [input.toOperationId, input.fromOperationId];
+    const a = await loadOperationFacts(g.runner, g.accountId, petit);
+    const b = await loadOperationFacts(g.runner, g.accountId, grand);
+    if (!a || !b || !(await documentInAccount(g, input.fileId))) return stop(refused('FORBIDDEN', 'NOT_FOUND_IN_ACCOUNT'));
+    const cible = a.id === input.toOperationId ? a : b;
+    if (!cible.active) return stop(refused('FORBIDDEN', 'OPERATION_INACTIVE'));
+    const [membre] = await g.runner.q(
+      `SELECT 1 FROM business_operation_documents WHERE account_id = $1 AND operation_id = $2 AND file_id = $3 AND active`, [g.accountId, input.fromOperationId, input.fileId]);
+    if (!membre) return stop(refused('FORBIDDEN', 'NOT_LINKED'));
+    const { attachDocument, detachDocument } = await import('./grouping/service');
+    // 1er geste : retirer de A (refus mémorisé, preuves de CE document sur A désactivées, A recalculée).
+    const retire = await detachDocument(g, { operationId: input.fromOperationId, fileId: input.fileId, reasonCode: 'USER_DOCUMENT_UNLINK' });
+    if (retire) journal.push({ relationKind: 'DOCUMENT_LINK', operationId: input.fromOperationId, fileId: input.fileId, action: 'REJECTED', reasonCode: 'USER_DOCUMENT_UNLINK', before: { membership: true }, after: null });
+    // 2nd geste : rattacher à B (appartenance explicite de l'utilisateur). Une erreur ici annule AUSSI le 1er geste.
+    const ajoute = await attachDocument(g, { operationId: input.toOperationId, fileId: input.fileId, reasonCode: 'USER_DOCUMENT_LINK' });
+    if (ajoute) journal.push({ relationKind: 'DOCUMENT_LINK', operationId: input.toOperationId, fileId: input.fileId, action: 'CREATED', reasonCode: 'USER_DOCUMENT_LINK', before: null, after: { membership: 'USER' } });
+    return applied(retire || ajoute, { operationId: input.toOperationId, fileId: input.fileId, fromOperationId: input.fromOperationId });
   });
 }
 
@@ -675,7 +757,11 @@ async function moveDocumentBody(
 
 /** Rôles qu'un utilisateur peut donner à un fournisseur (référentiel du service `operation-suppliers`). */
 export type OperationSupplierRoleInput = 'PROVIDER' | 'DOCUMENT_ISSUER' | 'INTERVENER' | 'BRAND';
-export interface SupplierLinkInput { operationId: number; supplierId: number; role?: OperationSupplierRoleInput; reasonCode?: string }
+export interface SupplierLinkInput {
+  operationId: number; supplierId: number; role?: OperationSupplierRoleInput; reasonCode?: string;
+  /** Carte #843 (E07) : version attendue de l'opération (Assistant), contrôlée dans la transaction. */
+  expectedOperationVersions?: ExpectedOperationVersions;
+}
 export interface SupplierLinkData { operationId: number; supplierId: number; role: string; status: 'ACTIVE' | 'REMOVED' | 'REJECTED' }
 
 interface SupplierLinkRow { role: string; origin: string; status: string }
@@ -708,6 +794,7 @@ async function supplierBody(
   const { USER_OPERATION_SUPPLIER_ROLES, decideOperationSupplierInTx } = await import('@/services/relations/operation-suppliers');
   if (!input || !isPositiveId(input.operationId) || !isPositiveId(input.supplierId)
       || (input.role !== undefined && !(USER_OPERATION_SUPPLIER_ROLES as readonly string[]).includes(input.role))) return stop(refused('FORBIDDEN', 'INVALID_INPUT'));
+  await garderVersions(g, input.expectedOperationVersions);
   const op = await loadOperationFacts(g.runner, g.accountId, input.operationId);
   if (!op || !(await supplierInAccount(g, input.supplierId))) return stop(refused('FORBIDDEN', 'NOT_FOUND_IN_ACCOUNT'));
   if (!op.active) return stop(refused('FORBIDDEN', 'OPERATION_INACTIVE'));

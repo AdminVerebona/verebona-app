@@ -11,7 +11,7 @@ import {
   agendaItems, agendaAssetLinks, agendaFileLinks, agendaRoomLinks, agendaEquipmentLinks,
   agendaDataConflicts, agendaItemSources, energyWorks, impactQueue,
 } from '@/db/schema';
-import { eq, and } from 'drizzle-orm';
+import { eq, and, sql } from 'drizzle-orm';
 import { getAgendaItemById, type AgendaItemFull } from './AgendaQueryService';
 import { validateAgendaWrite, syncPurchaseDate, AgendaValidationError, AgendaStructuralLinkError, type AgendaItemValues,
 } from './write-agenda-item';
@@ -540,20 +540,33 @@ async function detachSafely(
  */
 export async function deleteAgendaItem(
   id: number, accountId: number, actorUserId: number | null = null,
-  opts: { scope?: AgendaDeletionScope } = {},
+  opts: {
+    scope?: AgendaDeletionScope;
+    /**
+     * Carte #843 (E07) — version attendue de l'élément désigné (horodatage de dernière modification, microsecondes
+     * en texte), contrôlée SOUS VERROU dans la transaction qui le supprime, AVANT toute autre suppression de la
+     * série : modifié depuis, `AgendaConcurrentUpdateError` et rien n'est supprimé. Absente (Agenda) : inchangé.
+     */
+    expectedUpdatedAtMicros?: string;
+  } = {},
 ): Promise<{ deletedIds: number[] }> {
   const existing = await getAgendaItemById(id, accountId);
   if (!existing) throw new Error('Item not found');
   // Lot 113P (#715) : récurrence — suppression de CETTE occurrence (défaut) ou
   // de TOUTE LA SÉRIE (même `series_key`, même compte), demandée explicitement.
   const scope: AgendaDeletionScope = opts.scope === 'SERIES' && existing.seriesKey ? 'SERIES' : 'OCCURRENCE';
-  const ids = scope === 'SERIES'
+  const serie = scope === 'SERIES'
     ? (await db.select({ id: agendaItems.id }).from(agendaItems)
       .where(and(eq(agendaItems.accountId, accountId), eq(agendaItems.seriesKey, existing.seriesKey!)))).map((r) => r.id)
     : [id];
+  // L'élément désigné d'abord : c'est lui qui porte la version attendue.
+  const ids = [...serie.filter((x) => x === id), ...serie.filter((x) => x !== id)];
   const operations = new Map<number, number | null>();
   for (const x of ids) operations.set(x, await linkedOperationId(accountId, x));
-  for (const x of ids) await deleteOneAgendaItem(x, accountId, actorUserId, operations.get(x) ?? null, scope);
+  for (const x of ids) {
+    await deleteOneAgendaItem(x, accountId, actorUserId, operations.get(x) ?? null, scope,
+      x === id ? opts.expectedUpdatedAtMicros : undefined);
+  }
   // Lot 46 (O7, C4 TRG-014) : suppression utilisateur d'un élément lié → T3.
   for (const x of ids) await notifyLinkedOperation(accountId, x, true, operations.get(x) ?? null);
   return { deletedIds: ids };
@@ -562,8 +575,19 @@ export async function deleteAgendaItem(
 /** Suppression d'UN élément (transaction unique), trace d'exclusion comprise. */
 async function deleteOneAgendaItem(
   id: number, accountId: number, actorUserId: number | null, operationId: number | null, scope: AgendaDeletionScope,
+  expectedUpdatedAtMicros?: string,
 ): Promise<void> {
   await db.transaction(async tx => {
+    // Carte #843 (E07) : version attendue relue SOUS VERROU de ligne, dans la transaction de la suppression.
+    if (expectedUpdatedAtMicros !== undefined) {
+      const [ligne] = await tx.select({ v: sql<string>`(extract(epoch FROM ${agendaItems.updatedAt}) * 1000000)::bigint::text` })
+        .from(agendaItems).where(and(eq(agendaItems.id, id), eq(agendaItems.accountId, accountId))).for('update');
+      if (!ligne) throw new Error('Item not found');
+      if (String(ligne.v) !== expectedUpdatedAtMicros) {
+        const { AgendaConcurrentUpdateError } = await import('./write-agenda-item');
+        throw new AgendaConcurrentUpdateError();
+      }
+    }
     // 00. Lot 113P (#715) : TRACE PERSISTANTE D'EXCLUSION (`agenda_item_removals`,
     //     USER_DELETED / USER_DELETED_SERIES) écrite AVANT la suppression, dans la
     //     même transaction (image des liens encore lisible) : aucune réanalyse

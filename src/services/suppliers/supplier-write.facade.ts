@@ -141,14 +141,28 @@ export async function updateSupplierForAccount(p: {
  * historiques (documents, biens, équipements, Agenda) sont CONSERVÉES ; la
  * fiche reste consultable et affiche « Archivé » (lot 109B).
  */
-export async function setSupplierArchived(p: { accountId: number; supplierId: number; restore?: boolean }):
-  Promise<{ ok: true; status: 'active' | 'archived' } | { ok: false; code: 'NOT_FOUND' }> {
-  const [existing] = await db.select({ id: suppliers.id, status: suppliers.status }).from(suppliers)
-    .where(and(eq(suppliers.id, p.supplierId), eq(suppliers.accountId, p.accountId))).limit(1);
-  if (!existing || existing.status === 'deleted') return { ok: false, code: 'NOT_FOUND' };
+export async function setSupplierArchived(p: {
+  accountId: number; supplierId: number; restore?: boolean;
+  /**
+   * Carte #843 (E07) — version attendue (`supplierRowVersion`). Fournie, la fiche est relue SOUS VERROU de ligne
+   * dans la transaction de l'écriture : modifiée depuis, rien n'est écrit (`CONFLICT`). Absente (écran) : inchangé.
+   */
+  expectedVersion?: string;
+}): Promise<{ ok: true; status: 'active' | 'archived' } | { ok: false; code: 'NOT_FOUND' } | { ok: false; code: 'CONFLICT' }> {
   const status = p.restore === true ? 'active' : 'archived';
-  await db.update(suppliers).set({ status, updatedAt: new Date() })
-    .where(and(eq(suppliers.id, p.supplierId), eq(suppliers.accountId, p.accountId)));
+  const r = await db.transaction(async (tx): Promise<{ ok: true } | { ok: false; code: 'NOT_FOUND' } | { ok: false; code: 'CONFLICT' }> => {
+    const base = tx.select().from(suppliers)
+      .where(and(eq(suppliers.id, p.supplierId), eq(suppliers.accountId, p.accountId))).limit(1);
+    const [existing] = p.expectedVersion !== undefined ? await base.for('update') : await base;
+    if (!existing || existing.status === 'deleted') return { ok: false, code: 'NOT_FOUND' };
+    if (p.expectedVersion !== undefined && supplierRowVersion(existing as unknown as Record<string, unknown>) !== p.expectedVersion) {
+      return { ok: false, code: 'CONFLICT' };
+    }
+    await tx.update(suppliers).set({ status, updatedAt: new Date() })
+      .where(and(eq(suppliers.id, p.supplierId), eq(suppliers.accountId, p.accountId)));
+    return { ok: true };
+  });
+  if (!r.ok) return r;
   // CDC Assistant §31.7 : fournisseur archivé.
   await emitBusinessEvent({ type: 'SUPPLIER_CHANGED', accountId: p.accountId, entityId: p.supplierId });
   return { ok: true, status };

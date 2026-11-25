@@ -395,6 +395,7 @@ export const RECETTE_EXCLUDED: Readonly<Record<string, string>> = {
   verebona_ai_runs: 'assistant T2 (journal)', verebona_assistant_setting_requests: 'assistant T2 (réglages)', verebona_assistant_settings: 'assistant T2 (réglages)',
   verebona_cache_versions: 'assistant T2 (technique)', verebona_claim_sources: 'assistant T2', verebona_clarification_events: 'assistant T2',
   verebona_command_events: 'assistant T2', verebona_command_plans: 'assistant T2', verebona_command_undo_steps: 'assistant T2',
+  verebona_command_plan_secrets: 'assistant T2 (valeurs bancaires transitoires chiffrées, #843)', verebona_sensitive_purge_log: 'assistant T2 (journal des purges, #843)',
   verebona_conversations: 'assistant T2 (conversations)', verebona_fact_revalidations: 'assistant T2', verebona_feedback: 'assistant T2',
   verebona_help_entries: 'assistant T2 (aide)', verebona_message_actions: 'assistant T2', verebona_message_claims: 'assistant T2',
   verebona_message_sources: 'assistant T2', verebona_messages: 'assistant T2 (messages)', verebona_presented_entities: 'assistant T2',
