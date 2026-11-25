@@ -52,8 +52,16 @@ beforeEach(() => {
   serverCacheClear();
 });
 
-async function ouvrir(userId: number, sid: string, over: Partial<SessionClientInfo> = {}, now = T0) {
-  return recordSession({ sid, userId, client: client(over), authMethod: 'password', registeredVia: 'LOGIN', refreshTokenHash: `h-${sid}`, expiresAt: in30d(now), now });
+// Sans horloge de scénario explicite, l'expiration part de la plus tardive de
+// T0 et de l'horloge réelle : plusieurs tests (révocation, §18.4, REAUTH-06)
+// s'appuient sur `new Date()` du code. Avec une expiration figée à T0 + 30 j,
+// les sessions de test étaient expirées à partir du 25/11/2026 et la
+// révocation ne les trouvait plus (bombe à retardement du test, pas du code).
+// Avec une horloge explicite (purge, liste), l'expiration reste déterministe.
+async function ouvrir(userId: number, sid: string, over: Partial<SessionClientInfo> = {}, at?: Date) {
+  const now = at ?? T0;
+  const expiresAt = at ? in30d(at) : in30d(new Date(Math.max(T0.getTime(), Date.now())));
+  return recordSession({ sid, userId, client: client(over), authMethod: 'password', registeredVia: 'LOGIN', refreshTokenHash: `h-${sid}`, expiresAt, now });
 }
 
 describe('L92-CLIENT appareil décrit sans fingerprinting (§20.2, §37, CDC 12 §25)', () => {
@@ -227,7 +235,8 @@ describe('L92-ISSUE fonction d’émission unique', () => {
     // Une seule fenêtre « Confirmez votre identité ».
     // (texte affiché : ligne JSX seule ou chaîne — pas les commentaires)
     const ui = files.filter((f) => f.endsWith('.tsx') && /^\s*Confirmez votre identité\s*$|['"`]Confirmez votre identité/m.test(readFileSync(f, 'utf8')));
-    expect(ui.map((f) => f.slice(f.indexOf('src/')))).toEqual(['src/components/account/security/ReauthProvider.tsx']);
+    // Chemin relatif à la racine du dépôt (indépendant d'un « src/ » dans le chemin absolu).
+    expect(ui.map((f) => f.slice(process.cwd().length + 1).split('\\').join('/'))).toEqual(['src/components/account/security/ReauthProvider.tsx']);
   });
 });
 
