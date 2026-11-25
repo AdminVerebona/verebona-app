@@ -132,8 +132,10 @@ scenario('L114J', 'Schémas de sortie : mémoire partagée des refus, réexamen 
     // profil de génération, version de modèle servie (courante et au moment de l'état) et marque
     // d'incertitude. Ce sont des empreintes, des versions et un booléen : l'interdiction visée
     // (aucun contenu de document, de prompt ni de schéma) reste entièrement tenue.
+    // Règle complétée (carte #838, A1, migration 1980) : trois colonnes ADDITIVES du bail de qualification
+    // (jeton opaque, échéance, compteur) — toujours aucun contenu.
     const [ligne] = await sql`SELECT * FROM ai_schema_compatibility WHERE key_id = ${keyId}`;
-    expect(Object.keys(ligne).sort()).toEqual(['accepted_count', 'adapter_version', 'app_version', 'consecutive_rejections', 'contract_id', 'contract_version', 'created_at', 'first_rejected_at', 'generation_profile_hash', 'id', 'key_id', 'last_accepted_at', 'last_http_status', 'last_provider_code', 'last_rejected_at', 'model', 'next_retest_at', 'operation_code', 'policy_version', 'provider', 'provider_schema_hash', 'reason_code', 'rejection_count', 'retest_claimed_until', 'retest_count', 'schema_hash', 'served_model_version', 'served_version_at_state', 'state', 'updated_at', 'version_uncertain']);
+    expect(Object.keys(ligne).sort()).toEqual(['accepted_count', 'adapter_version', 'app_version', 'consecutive_rejections', 'contract_id', 'contract_version', 'created_at', 'first_rejected_at', 'generation_profile_hash', 'id', 'key_id', 'last_accepted_at', 'last_http_status', 'last_provider_code', 'last_rejected_at', 'model', 'next_retest_at', 'operation_code', 'policy_version', 'provider', 'provider_schema_hash', 'qualification_attempts', 'qualification_claim_token', 'qualification_claimed_until', 'reason_code', 'rejection_count', 'retest_claimed_until', 'retest_count', 'schema_hash', 'served_model_version', 'served_version_at_state', 'state', 'updated_at', 'version_uncertain']);
   });
 
   it('E2E-L114J-02 (AC04, AC06, AC17, AC18) — T1 : refus mémorisé en base, connu après redémarrage, supervision et alerte, réexamen accepté', async () => {

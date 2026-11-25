@@ -145,6 +145,14 @@ interface CallTrace {
   providerRequest?: ProviderRequestTrace;
   providerAttempts?: ProviderAttemptTrace[];
   /**
+   * Carte #838 (C2) — nature du coût des requêtes RÉELLEMENT envoyées par cet
+   * appel (`OBSERVED`, `ZERO_REPORTED`, `PARTIAL`, `UNKNOWN`, `NONE`), part
+   * chiffrée et part inconnue : un 400 sans consommation n'est jamais 0 €.
+   */
+  costEvidence?: { status: string; attempts: number; observedMicros: number; unknownAttempts: number; zeroReportedAttempts: number; observedAttempts: number };
+  /** Carte #838 (C1) : index de l'appel d'analyse PARENT d'une réparation (corrélation, aucun double compte). */
+  parentCallIndex?: number;
+  /**
    * Lot 113R (carte #717) — échec de TRANSFERT de la pièce jointe (réponse du
    * fournisseur structurée, masquée, bornée), figé avec CET appel : une
    * reprise ou une réussite ultérieure ne l'écrase jamais.
@@ -356,6 +364,8 @@ export async function recordCallTrace(t0: CallTrace): Promise<number | null> {
         ...(t.structuredContext ? { structuredContext: t.structuredContext } : {}),
         ...(t.providerRequest ? { providerRequest: t.providerRequest } : {}),
         ...(t.providerAttempts?.length ? { providerAttempts: t.providerAttempts.slice(0, 5) } : {}),
+        ...(t.costEvidence ? { costEvidence: t.costEvidence } : {}),
+        ...(t.parentCallIndex !== undefined ? { parentCallIndex: t.parentCallIndex } : {}),
         ...(t.transfer ? { transfer: t.transfer } : {}),
         // Lot 34C : tentative du JOB de file pendant laquelle l'appel a eu
         // lieu — BO › Exécutions IA regroupe la cascade de modèles par

@@ -112,7 +112,8 @@ export type SchemaCompatReason =
  * se lit dans les traces.
  */
 export const SCHEMA_COMPAT_POLICY = {
-  version: 1,
+  /** Carte #838 : 2 — premier essai et requalification réservés (bail), dégradation conservatrice en panne de mémoire. */
+  version: 2,
   /** Premier réexamen après un refus (durée de l'ancienne mémoire locale : 6 h). */
   firstRetestMs: 6 * 3_600_000,
   /** Réexamen après le refus d'un couple qui avait déjà été accepté (refus possiblement propre à une requête). */
@@ -123,6 +124,23 @@ export const SCHEMA_COMPAT_POLICY = {
   retestLeaseMs: 10 * 60_000,
   /** Report après un réexamen sans conclusion. */
   inconclusiveRetestMs: 30 * 60_000,
+  /**
+   * Carte #838 (A1) — durée du BAIL d'un essai de qualification (premier essai
+   * d'un couple jamais testé, ou requalification). Au-delà, une instance
+   * arrêtée en plein essai ne bloque plus personne : le bail est reprenable.
+   * Courte : un essai dure au plus le délai d'appel du fournisseur.
+   */
+  qualificationLeaseMs: 5 * 60_000,
+  /**
+   * Carte #838 (A3) — VALIDITÉ d'une qualification constatée sans que le
+   * fournisseur indique la version réellement servie (`versionUncertain`).
+   * Passé ce délai depuis la dernière acceptation mémorisée, UN essai de
+   * requalification est dû (réservé : une seule instance) ; une qualification
+   * à version CONNUE n'expire pas par cette règle (aucune invalidation
+   * abusive). Les acceptations d'appels réels renouvellent la fenêtre : seule
+   * une qualification incertaine restée sans appel réel la dépasse.
+   */
+  uncertainQualificationTtlMs: 24 * 3_600_000,
 } as const;
 
 /** Identité d'un couple (ce qui a été transmis). */
@@ -282,6 +300,28 @@ export function applyServedVersion(prev: SchemaCoupleState | null, servedModelVe
   };
   if (!requalification) return s;
   return { ...s, reason: 'SERVED_VERSION_CHANGED', nextRetestAt: now, retestClaimedUntil: null };
+}
+
+/**
+ * Carte #838 (A1, A3) — un ESSAI DE QUALIFICATION est-il dû pour ce couple ?
+ * (pure). Le schéma ne part alors qu'avec un BAIL partagé (`claimQualification`) :
+ *   · `FIRST`     couple jamais testé (absent, `NOT_TESTED`, statique) — le
+ *                 premier envoi est lui-même un essai, réservé à UNE instance ;
+ *   · `REQUALIFY` couple `QUALIFIED` dont la qualification est échue :
+ *                 report explicite échu (`nextRetestAt`, après un essai sans
+ *                 conclusion) ou version servie INCERTAINE et dernière
+ *                 acceptation plus ancienne que `uncertainQualificationTtlMs`.
+ *                 Une qualification à version connue n'est jamais échue ici ;
+ *   · `null`      rien à réserver (refus et réexamens : `claimRetestOf`).
+ */
+export function qualificationDueOf(s: SchemaCoupleState | null, now: number): 'FIRST' | 'REQUALIFY' | null {
+  if (!s || s.state === 'NOT_TESTED' || s.state === 'UNSUPPORTED_BY_CONTRACT') return 'FIRST';
+  if (s.state !== 'QUALIFIED') return null;
+  if (s.nextRetestAt !== null) return s.nextRetestAt <= now ? 'REQUALIFY' : null;
+  if (s.versionUncertain === true && s.lastAcceptedAt !== null && s.lastAcceptedAt + SCHEMA_COMPAT_POLICY.uncertainQualificationTtlMs <= now) {
+    return 'REQUALIFY';
+  }
+  return null;
 }
 
 /** Réservation d'un réexamen (pure) : `null` si non dû ou déjà réservé. */

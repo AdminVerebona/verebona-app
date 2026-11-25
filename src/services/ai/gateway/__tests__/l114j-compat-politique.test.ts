@@ -107,7 +107,9 @@ describe('L114J-POL — transitions', () => {
   });
 
   it('L114J-POL-09 — politique versionnée et bornée (paramètres centralisés)', () => {
-    expect(P.version).toBe(1);
+    // Règle complétée (carte #838, A1–A3) : politique v2 — premier essai et requalification réservés par bail,
+    // dégradation conservatrice en panne de mémoire. Le numéro est tracé avec chaque état.
+    expect(P.version).toBe(2);
     expect(P.firstRetestMs).toBe(6 * 3_600_000);
     expect(P.maxRetestMs).toBeGreaterThan(P.firstRetestMs);
     expect(P.retestLeaseMs).toBeLessThan(P.firstRetestMs);

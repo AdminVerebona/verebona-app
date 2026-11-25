@@ -541,8 +541,13 @@ async function runEvaluators(): Promise<void> {
   // Lot 114 (carte #776, travail 11) : réévaluation quotidienne des alertes de compatibilité de SCHÉMA (clôture
   // des seules alertes dont la cause a disparu) — passage réservé en base comme les autres évaluateurs : aucune
   // tâche planifiée de plus, aucun appel fournisseur, aucune écriture sur les documents (domaine de la carte #775).
-  await run('schema_compat_alerts', 86_400 - 600, async () =>
-    (await import('../gateway/schema-compat/alerts')).reevaluateSchemaCompatAlerts());
+  // Carte #838 (D1) : MÊME passage (aucun second ordonnanceur), désormais sous POINT DE REPRISE DURABLE — réservé
+  // toutes les 15 min, il ne fait rien tant qu'aucun cycle n'est dû ou interrompu : un nouveau cycle complet au plus
+  // une fois par jour, et un cycle interrompu (arrêt, déploiement) reprend au dernier curseur sûr, sans paramètre.
+  await run('schema_compat_alerts', 900, async () => {
+    const A = await import('../gateway/schema-compat/alerts');
+    return A.reevaluateSchemaCompatAlerts({ checkpoint: { cyclePeriodMs: A.REEVAL_CYCLE_PERIOD_MS } });
+  });
 }
 
 // ── Pool d'exécution borné ─────────────────────────────────────────────────

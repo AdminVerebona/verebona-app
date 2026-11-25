@@ -545,6 +545,8 @@ export const DIAG_TABLE_COVERAGE: Readonly<Record<string, DiagTableCoverage>> = 
   ai_model_operational_history: T('technique', 'état opérationnel des modèles : historique des contrôles (#771)'),
   // Lot 114 (#776) : compatibilité des schémas de sortie par couple (empreintes et compteurs, aucun contenu).
   ai_schema_compatibility: T('technique', 'compatibilité des schémas de sortie transmis au fournisseur IA (#776)'),
+  // Carte #838 (D1) : point de reprise durable de la réévaluation des alertes de compatibilité (curseur, bail, cycle).
+  ai_schema_compat_reeval_checkpoints: T('technique', 'compatibilité des schémas : point de reprise de la réévaluation des alertes (#838)'),
   ai_model_price_changes: T('referentiels', 'tarifs des modèles'),
   ai_model_price_status: T('referentiels', 'tarifs des modèles'),
   ai_model_pricing: T('referentiels', 'tarifs des modèles'),

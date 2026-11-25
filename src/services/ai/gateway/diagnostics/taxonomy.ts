@@ -427,6 +427,10 @@ export interface ProviderRequestTrace {
     generationProfileHash?: string;
     /** Lot 115 (#784, A3) : dernière version de modèle SERVIE connue pour ce couple ; `null` : jamais observée. */
     servedModelVersion?: string | null;
+    /** Carte #838 (A1, A3) : essai de qualification RÉSERVÉ porté par cet appel (`FIRST`, `REQUALIFY`) ; `null` : aucun. */
+    qualification?: 'FIRST' | 'REQUALIFY' | null;
+    /** Carte #838 (A2) : cause du mode dégradé (mémoire partagée illisible) ; `null` : décision prouvée. */
+    degradedCause?: string | null;
   };
   /**
    * Lot 115 (#784, §A) — PROFIL DE COMPLEXITÉ du schéma transmis (propriétés,

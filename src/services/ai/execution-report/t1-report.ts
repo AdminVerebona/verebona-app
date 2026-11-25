@@ -33,6 +33,7 @@
  * absente de la base est `NOT_PERSISTED`, avec le motif (étape en échec, ou
  * écartée par l'écriture). Une étape en échec est visible dans `steps`.
  */
+import { readRawValueAbsence } from '../source-analysis/master/raw-value-absence';
 import { currentBusinessExecutionId, currentBusinessExecutionOrigin } from '../business-execution/context';
 import { pgClient } from '@/db';
 import { currentJobContext } from '../queue/job-context';
@@ -416,6 +417,10 @@ export async function buildT1Entries(rec: T1ExecutionRecorder, p: { accountId: n
             provenance: r.evidence_origin, targetLabel: r.target_entity_label, targetConfidence: r.target_confidence,
             sourceUnitIds: r.source_unit_ids, projectionOrigin: r.projection_origin, projectionRule: r.projection_rule,
             semanticEvent: r.semantic_event_type,
+            // Carte #838 (B1) : valeur littérale lue et motif CODIFIÉ de son absence (`LEGACY_UNSPECIFIED` : fait
+            // antérieur à la carte, motif non renseigné — jamais inventé).
+            rawValue: r.raw_value ?? null,
+            rawValueAbsence: readRawValueAbsence({ rawValue: r.raw_value, rawValueAbsence: r.raw_value_absence }),
           },
         });
         inc(r.canonical_key ? 'factsCanonical' : 'factsGeneric');

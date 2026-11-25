@@ -148,7 +148,17 @@ export interface AiGatewayResponse<T> {
   usedFallback: boolean;
   inputTokens: number;
   outputTokens: number;
+  /**
+   * Coût CHIFFRÉ des requêtes envoyées (analyse + réparation). Carte #838
+   * (C2) : ce n'est un total exhaustif que si `costStatus` vaut `OBSERVED`
+   * ou `ZERO_REPORTED` ; `PARTIAL` : minimum (part inconnue :
+   * `costUnknownAttempts`) ; `UNKNOWN` : rien de chiffrable — jamais 0 prouvé.
+   */
   costMicros: number;
+  /** Carte #838 (C2) : nature du coût de toutes les requêtes réellement envoyées. Absent : réponse sans appel (cache). */
+  costStatus?: 'OBSERVED' | 'ZERO_REPORTED' | 'PARTIAL' | 'UNKNOWN' | 'NONE';
+  /** Carte #838 (C2) : requêtes envoyées dont le coût n'est pas chiffrable (part inconnue). */
+  costUnknownAttempts?: number;
   durationMs: number;
   traceId: string;
   /** true si le résultat provient du cache d'idempotence (aucun appel émis). */

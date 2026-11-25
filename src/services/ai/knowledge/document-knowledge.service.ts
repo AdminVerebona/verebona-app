@@ -38,7 +38,8 @@ import type { DocumentKnowledge, DocumentFactRecord } from './document-knowledge
 import { factsToExtractedFields } from './document-knowledge';
 import type { TableCellRow } from './document-tables';
 import type { ExtractedTableCell, ExtractedField } from '../source-analysis/types';
-import { documentFactsCanonicalReady } from '../evidence/canonical-columns';
+import { documentFactsCanonicalReady, documentFactsRawValueAbsenceReady } from '../evidence/canonical-columns';
+import { checkRawValueAbsence } from '../source-analysis/master/raw-value-absence';
 import { sourceLayerReady, writeSourceLayer } from '../source-analysis/source-units/repository';
 import { buildAgendaCandidatesT4 } from '../source-analysis/steps/build-agenda-candidates.step';
 import { operationCandidatesReady, replaceOperationCandidates, type PersistedFactAnchor } from '../source-analysis/operation-candidates/persist';
@@ -96,6 +97,8 @@ export async function persistDocumentKnowledgeDetailed(k: DocumentKnowledge): Pr
     // T4-06 : sans 0218, la récurrence ne peut pas être persistée — signalé.
     console.warn(`[knowledge] fichier ${e.fileId} : récurrence non persistée (migration 0218 absente).`);
   }
+  // Carte #838 (B1) : colonne du motif d'absence de littéral (1980) — contrôle HORS transaction, comme 0218.
+  const motifAbsence = canonical ? await documentFactsRawValueAbsenceReady().catch(() => false) : false;
   // Lot 34F : couche A (0295-0297) — contrôle HORS transaction, comme 0218.
   const couche = k.sourceLayer || k.facts.some((f) => f.sourceUnitIds?.length) ? await sourceLayerReady() : false;
   let coucheEcrite = couche;
@@ -240,7 +243,7 @@ export async function persistDocumentKnowledgeDetailed(k: DocumentKnowledge): Pr
         return { ...f, sourceUnitIds: valid };
       });
     }
-    const factIds = await insertFactRows(tx as unknown as SqlTx, e, extractionId, faits, { canonical, provenance: couche });
+    const factIds = await insertFactRows(tx as unknown as SqlTx, e, extractionId, faits, { canonical, provenance: couche, rawValueAbsence: motifAbsence });
 
     // Lot 40 (CDC Opérations V1 C3.2, C9.1) : candidats Opération — anciens
     // supersédés, nouveaux écrits avec des preuves ANCRÉES sur les faits
@@ -353,9 +356,12 @@ export async function insertFactRows(
   e: Pick<DocumentKnowledge['extraction'], 'accountId' | 'fileId' | 'sourceType' | 'provider' | 'model' | 'promptVersion'>,
   extractionId: number,
   facts: readonly DocumentFactRecord[],
-  opts: { canonical: boolean; provenance: boolean },
+  opts: { canonical: boolean; provenance: boolean; rawValueAbsence?: boolean },
 ): Promise<number[]> {
   const { canonical, provenance: couche } = opts;
+  // Carte #838 (B1) : motif d'absence de `raw_value` écrit si la colonne 1980 existe (sondée par l'appelant, ou ici).
+  const motifPret = canonical && (opts.rawValueAbsence ?? await documentFactsRawValueAbsenceReady().catch(() => false));
+  let nonJustifies = 0;
   // Lot 40 : identifiants des faits écrits, dans l'ordre de `facts` (ancrage
   // des preuves des candidats Opération).
   const ids: number[] = [];
@@ -372,12 +378,18 @@ export async function insertFactRows(
     // Lot 34F (0297) : provenance fait → sourceUnitId[].
     const prov = couche && f.sourceUnitIds?.length ? f.sourceUnitIds : null;
     if (canonical && hasCanonicalFactData(f)) {
+      // Carte #838 (B1) : règle métier AVANT persistance — littéral conservé exactement, sinon motif codifié et
+      // VÉRIFIÉ sur la preuve du fait ; aucun motif vérifiable → `UNJUSTIFIED`, signalé (jamais un null muet).
+      const motif = checkRawValueAbsence({ ...f, sourceUnitIds: prov ?? f.sourceUnitIds ?? null });
+      if (motif.status === 'UNJUSTIFIED') nonJustifies++;
+      const avecMotif = motifPret && motif.code !== null;
+      const n = prov ? 39 : 38;
       ids.push(idOf(await tx.unsafe(
         `INSERT INTO document_facts (${FACT_INSERT_COLUMNS},
            canonical_key, raw_key, raw_value, value_type, canonical_unit,
            target_type, target_entity_id, target_entity_label, target_confidence,
-           semantic_event_type, semantic_event_nature, recurrence, projection_origin, projection_rule${prov ? ', source_unit_ids' : ''}
-         ) VALUES (${FACT_INSERT_VALUES},$24,$25,$26,$27,$28,$29,$30,$31,$32,$33,$34,$35::jsonb,$36,$37${prov ? ',$38::text[]' : ''})
+           semantic_event_type, semantic_event_nature, recurrence, projection_origin, projection_rule${prov ? ', source_unit_ids' : ''}${avecMotif ? ', raw_value_absence' : ''}
+         ) VALUES (${FACT_INSERT_VALUES},$24,$25,$26,$27,$28,$29,$30,$31,$32,$33,$34,$35::jsonb,$36,$37${prov ? ',$38::text[]' : ''}${avecMotif ? `,$${n}` : ''})
          RETURNING id`,
         [
           ...base,
@@ -387,6 +399,7 @@ export async function insertFactRows(
           f.recurrence ? json(f.recurrence) : null,
           f.projectionOrigin ?? null, f.projectionRule ?? null,
           ...(prov ? [prov] : []),
+          ...(avecMotif ? [motif.code] : []),
         ] as never[],
       )));
     } else {
@@ -396,6 +409,10 @@ export async function insertFactRows(
         [...base, ...(prov ? [prov] : [])] as never[],
       )));
     }
+  }
+  if (nonJustifies > 0) {
+    console.warn(`[knowledge] fichier ${e.fileId} : ${nonJustifies} fait(s) sans valeur littérale ni motif vérifiable `
+      + '(raw_value_absence = UNJUSTIFIED) — conservés et signalés (carte #838, B1).');
   }
   return ids;
 }

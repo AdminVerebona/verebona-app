@@ -157,6 +157,129 @@ export interface SchemaAlertReevaluation {
    * modifie aucune. C'est ce que dit ce bilan, mesure à l'appui.
    */
   coverageCoordination: CoverageCoordination;
+  /**
+   * Carte #838 (D1) — POINT DE REPRISE DURABLE (passage avec `checkpoint`) :
+   * `null` : passage manuel à curseur explicite (comportement antérieur).
+   */
+  checkpoint: SchemaAlertCheckpointReport | null;
+}
+
+/** Carte #838 (D1) — bilan du point de reprise d'un passage. */
+export interface SchemaAlertCheckpointReport {
+  scope: string;
+  /**
+   * `RAN`                passage exécuté (cycle repris ou commencé) ;
+   * `LEASE_HELD`         une autre instance tient le bail : rien fait ici ;
+   * `NOTHING_TO_DO`      aucun cycle interrompu et le prochain n'est pas dû ;
+   * `UNAVAILABLE`        table de la migration 1980 absente : passage complet
+   *                      sans point de reprise (comportement antérieur, signalé) ;
+   * `LEASE_LOST`         bail repris par une autre instance en cours de route
+   *                      (le présent passage s'est arrêté, rien n'est doublé).
+   */
+  status: 'RAN' | 'LEASE_HELD' | 'NOTHING_TO_DO' | 'UNAVAILABLE' | 'LEASE_LOST';
+  cycle: number | null;
+  /** Le passage a REPRIS un cycle interrompu (curseur non nul ou phase avancée). */
+  resumed: boolean;
+  /** Curseur d'alerte et phase au départ du passage. */
+  startedFrom: { phase: string; alertCursor: number; coupleCursor: string | null } | null;
+  /** Le périmètre avait changé : point de reprise invalidé (cycle recommencé au début). */
+  invalidated: boolean;
+  /** Le cycle s'est terminé : curseur remis à zéro. */
+  cycleCompleted: boolean;
+}
+
+/** Carte #838 (D1) — périmètre du point de reprise (un seul : ce code d'alerte). */
+export const SCHEMA_ALERT_CHECKPOINT_SCOPE = 'schema_compat_alerts';
+/** Version de l'algorithme de parcours : la changer invalide les points de reprise (curseur non transposable). */
+const REEVAL_ALGO_VERSION = 1;
+/** Durée du bail du point de reprise (renouvelée à chaque page). */
+export const REEVAL_CHECKPOINT_LEASE_MS = 10 * 60_000;
+/** Un nouveau cycle complet est dû au plus une fois par jour (le passage quotidien des évaluateurs). */
+export const REEVAL_CYCLE_PERIOD_MS = 86_400_000 - 600_000;
+
+function checkpointFingerprint(): string {
+  return `${SCHEMA_COMPAT_ALERT_CODE}|algo:${REEVAL_ALGO_VERSION}|page:${PAGE}`;
+}
+
+type CheckpointRow = {
+  phase: string; alertCursor: number; coupleCursor: string | null; cycle: number; lastCompletedAt: number | null; fingerprint: string;
+};
+
+const ckRow = (r: Row): CheckpointRow => ({
+  phase: String(r.phase), alertCursor: Number(r.alert_cursor ?? 0), coupleCursor: r.couple_cursor == null ? null : String(r.couple_cursor),
+  cycle: Number(r.cycle ?? 0), lastCompletedAt: r.last_completed_at == null ? null : new Date(String(r.last_completed_at)).getTime(),
+  fingerprint: String(r.scope_fingerprint),
+});
+
+const ckIso = (t: number): string => new Date(t).toISOString();
+
+/**
+ * Bail du point de reprise : UNE instance à la fois, bail échu reprenable
+ * (instance arrêtée). `undefined` : table absente (migration 1980).
+ */
+async function claimCheckpoint(scope: string, token: string, now: number, leaseMs: number): Promise<CheckpointRow | null | undefined> {
+  try {
+    const rows = (await pgClient.unsafe(
+      `INSERT INTO ai_schema_compat_reeval_checkpoints AS c (scope, scope_fingerprint, phase, lease_token, lease_expires_at, updated_at)
+       VALUES ($1, $2, 'IDLE', $3, $4::timestamptz + ($5::bigint * interval '1 millisecond'), $4::timestamptz)
+       ON CONFLICT (scope) DO UPDATE SET lease_token = EXCLUDED.lease_token, lease_expires_at = EXCLUDED.lease_expires_at,
+         updated_at = EXCLUDED.updated_at, resumes = c.resumes + CASE WHEN c.phase IN ('ALERTS', 'COUPLES') THEN 1 ELSE 0 END
+        WHERE c.lease_expires_at IS NULL OR c.lease_expires_at <= $4::timestamptz
+       RETURNING phase, alert_cursor, couple_cursor, cycle, last_completed_at, scope_fingerprint`,
+      [scope, checkpointFingerprint(), token, ckIso(now), leaseMs] as never[],
+    )) as unknown as Row[];
+    return rows[0] ? ckRow(rows[0]) : null;
+  } catch (e) {
+    const code = (e as { code?: string } | null)?.code;
+    if (code === '42P01' || code === '42703') return undefined;
+    throw e;
+  }
+}
+
+/** Écriture FENCÉE du point de reprise (seul le détenteur du bail écrit). `false` : bail perdu. */
+async function writeCheckpoint(scope: string, token: string, now: number, leaseMs: number, set: {
+  phase?: string; alertCursor?: number; coupleCursor?: string | null; examined?: number; newCycle?: boolean; invalidate?: boolean;
+  complete?: boolean; release?: boolean; report?: unknown;
+}): Promise<boolean> {
+  const rows = (await pgClient.unsafe(
+    `UPDATE ai_schema_compat_reeval_checkpoints SET
+        phase = COALESCE($4::text, phase),
+        alert_cursor = COALESCE($5::bigint, alert_cursor),
+        couple_cursor = CASE WHEN $6::boolean THEN $7::text ELSE couple_cursor END,
+        examined_in_cycle = CASE WHEN $8::boolean THEN 0 ELSE examined_in_cycle END + COALESCE($9::bigint, 0),
+        cycle = cycle + CASE WHEN $8::boolean THEN 1 ELSE 0 END,
+        cycle_started_at = CASE WHEN $8::boolean THEN $3::timestamptz ELSE cycle_started_at END,
+        invalidations = invalidations + CASE WHEN $10::boolean THEN 1 ELSE 0 END,
+        scope_fingerprint = $11,
+        last_completed_at = CASE WHEN $12::boolean THEN $3::timestamptz ELSE last_completed_at END,
+        last_report = COALESCE($13::jsonb, last_report),
+        lease_token = CASE WHEN $14::boolean THEN NULL ELSE lease_token END,
+        lease_expires_at = CASE WHEN $14::boolean THEN NULL ELSE $3::timestamptz + ($15::bigint * interval '1 millisecond') END,
+        updated_at = $3::timestamptz
+      WHERE scope = $1 AND lease_token = $2
+      RETURNING scope`,
+    [
+      scope, token, ckIso(now), set.phase ?? null, set.alertCursor ?? null, set.coupleCursor !== undefined, set.coupleCursor ?? null,
+      set.newCycle === true || set.invalidate === true, set.examined ?? null, set.invalidate === true, checkpointFingerprint(),
+      set.complete === true, set.report === undefined ? null : JSON.stringify(set.report), set.release === true, leaseMs,
+    ] as never[],
+  )) as unknown as Row[];
+  return rows.length > 0;
+}
+
+/** Carte #838 (D1) — état du point de reprise (BO, recette). `null` : absent ou illisible. */
+export async function readSchemaAlertCheckpoint(scope = SCHEMA_ALERT_CHECKPOINT_SCOPE): Promise<Record<string, unknown> | null> {
+  try {
+    const rows = (await pgClient.unsafe(
+      `SELECT scope, scope_fingerprint, phase, alert_cursor, couple_cursor, cycle, cycle_started_at, last_completed_at,
+              examined_in_cycle, lease_expires_at, resumes, invalidations, updated_at
+         FROM ai_schema_compat_reeval_checkpoints WHERE scope = $1`,
+      [scope] as never[],
+    )) as unknown as Row[];
+    return rows[0] ?? null;
+  } catch {
+    return null;
+  }
 }
 
 /** Constat de coordination avec les alertes de couverture T1 (#775) — lecture seule. */
@@ -247,6 +370,22 @@ export async function reevaluateSchemaCompatAlerts(
      * tests). Par défaut, la configuration résolue de l'opération.
      */
     readChain?: (operationCode: string) => Promise<readonly string[]>;
+    /**
+     * Carte #838 (D1) — POINT DE REPRISE DURABLE : le passage reprend AU
+     * DERNIER CURSEUR SÛR enregistré (aucun paramètre manuel), sous bail (une
+     * instance à la fois), et remet le curseur à zéro en fin de cycle. Un
+     * nouveau cycle ne commence que s'il est dû (`cyclePeriodMs` depuis la fin
+     * du précédent ; 0 : dès qu'aucun n'est en cours). Ignoré si `fromAlertId`
+     * est fourni (curseur explicite : comportement antérieur).
+     */
+    checkpoint?: { scope?: string; cyclePeriodMs?: number; leaseMs?: number; token?: string };
+    /**
+     * Carte #838 (D1) — observateur de progression, appelé après CHAQUE page
+     * enregistrée (supervision, recette : un arrêt brutal y est simulé). Une
+     * erreur levée ici interrompt le passage comme un arrêt du processus : le
+     * bail reste posé jusqu'à son échéance, le curseur sûr est conservé.
+     */
+    onProgress?: (p: { phase: 'ALERTS' | 'COUPLES'; alertCursor: number; examined: number }) => void | Promise<void>;
   } = {},
 ): Promise<SchemaAlertReevaluation> {
   const out: SchemaAlertReevaluation = {
@@ -258,6 +397,66 @@ export async function reevaluateSchemaCompatAlerts(
       openCoverageAnomalies: null, openCoverageAnomaliesAfter: null, unchanged: true,
       evaluator: 'schema_compat_alerts', coverageFamily: [],
     },
+    checkpoint: null,
+  };
+  // ── Carte #838 (D1) : bail et point de reprise durable ─────────────────────
+  const ck = opts.checkpoint && opts.fromAlertId === undefined ? opts.checkpoint : null;
+  const scope = ck?.scope ?? SCHEMA_ALERT_CHECKPOINT_SCOPE;
+  const leaseMs = ck?.leaseMs ?? REEVAL_CHECKPOINT_LEASE_MS;
+  const jeton = ck ? (ck.token ?? (await import('crypto')).randomUUID()) : '';
+  let tenu = false;
+  let depart: CheckpointRow | null = null;
+  if (ck) {
+    const now = Date.now();
+    const row = await claimCheckpoint(scope, jeton, now, leaseMs);
+    out.checkpoint = { scope, status: 'RAN', cycle: null, resumed: false, startedFrom: null, invalidated: false, cycleCompleted: false };
+    if (row === undefined) {
+      // Retour arrière (migration 1980 absente) : passage complet, sans reprise — signalé, jamais silencieux. Le
+      // rythme d'un cycle reste borné par la réservation des évaluateurs (un cycle par période, comme avant #838).
+      out.checkpoint.status = 'UNAVAILABLE';
+      const periode = ck.cyclePeriodMs ?? 0;
+      if (periode > 0) {
+        const { claimEvaluatorRun } = await import('../../alerts/alerts.repository');
+        if (!(await claimEvaluatorRun(`${scope}:cycle-sans-reprise`, Math.round(periode / 1000)).catch(() => false))) {
+          out.checkpoint.status = 'NOTHING_TO_DO';
+          return out;
+        }
+      }
+    } else if (row === null) {
+      out.checkpoint.status = 'LEASE_HELD';
+      return out;
+    } else {
+      tenu = true;
+      depart = row;
+      if (row.fingerprint !== checkpointFingerprint() && (row.phase === 'ALERTS' || row.phase === 'COUPLES')) {
+        // Périmètre modifié : le curseur n'est plus transposable — invalidation CONTRÔLÉE (cycle recommencé).
+        await writeCheckpoint(scope, jeton, now, leaseMs, { phase: 'ALERTS', alertCursor: 0, coupleCursor: null, invalidate: true });
+        out.checkpoint.invalidated = true;
+        depart = { ...row, phase: 'ALERTS', alertCursor: 0, coupleCursor: null, cycle: row.cycle + 1 };
+      } else if (row.phase !== 'ALERTS' && row.phase !== 'COUPLES') {
+        const periode = ck.cyclePeriodMs ?? 0;
+        if (row.lastCompletedAt !== null && row.lastCompletedAt > now - periode) {
+          await writeCheckpoint(scope, jeton, now, leaseMs, { release: true });
+          out.checkpoint.status = 'NOTHING_TO_DO';
+          out.checkpoint.cycle = row.cycle;
+          out.done = true;
+          return out;
+        }
+        await writeCheckpoint(scope, jeton, now, leaseMs, { phase: 'ALERTS', alertCursor: 0, coupleCursor: null, newCycle: true });
+        depart = { ...row, phase: 'ALERTS', alertCursor: 0, coupleCursor: null, cycle: row.cycle + 1 };
+      } else {
+        out.checkpoint.resumed = row.alertCursor > 0 || row.phase === 'COUPLES' || row.coupleCursor !== null;
+      }
+      out.checkpoint.cycle = depart.cycle;
+      out.checkpoint.startedFrom = { phase: depart.phase, alertCursor: depart.alertCursor, coupleCursor: depart.coupleCursor };
+    }
+  }
+  /** Progression FENCÉE : bail perdu → arrêt immédiat, sans rien doubler. */
+  const progression = async (set: Parameters<typeof writeCheckpoint>[4]): Promise<boolean> => {
+    if (!tenu) return true;
+    const ok = await writeCheckpoint(scope, jeton, Date.now(), leaseMs, set);
+    if (!ok) { tenu = false; if (out.checkpoint) out.checkpoint.status = 'LEASE_LOST'; }
+    return ok;
   };
   const [S, M] = await Promise.all([import('./store'), import('./static-matrix')]);
   // Bilan AVANT (carte #784, §E2) : jamais une remise à zéro, un constat.
@@ -284,19 +483,28 @@ export async function reevaluateSchemaCompatAlerts(
     routage.set(k, s);
     return s;
   };
-  let cursor = Math.max(0, Math.floor(opts.fromAlertId ?? 0));
+  let cursor = Math.max(0, Math.floor(opts.fromAlertId ?? depart?.alertCursor ?? 0));
+  const phaseAlertes = depart === null || depart.phase === 'ALERTS';
   try {
     // Parcours PAGINÉ et EXHAUSTIF des alertes non résolues, par identifiant
     // croissant (ordre stable : une résolution ne déplace pas une ligne). Le
     // curseur est la DONNÉE elle-même — une interruption ne perd aucun travail
     // et n'en refait aucun : les alertes déjà résolues ne sont plus relues.
     for (;;) {
-      if (out.examined >= budget) { out.resumeFromAlertId = cursor; break; }
+      if (!phaseAlertes) break;
+      if (out.examined >= budget) {
+        out.resumeFromAlertId = cursor;
+        // Carte #838 (D1) : budget épuisé — curseur sûr enregistré et bail rendu : le passage suivant reprend
+        // ICI, sans paramètre manuel. Sans point de reprise : comportement antérieur (levées puis bilan).
+        if (tenu) { await progression({ alertCursor: cursor, release: true }); return finish(); }
+        break;
+      }
       const rows = (await pgClient.unsafe(
         `SELECT id, details FROM ai_alerts WHERE code = $1 AND resolved_at IS NULL AND id > $2 ORDER BY id LIMIT $3`,
         [SCHEMA_COMPAT_ALERT_CODE, cursor, Math.min(PAGE, budget - out.examined)] as never[],
       )) as unknown as Row[];
       if (rows.length === 0) { out.done = true; break; }
+      const avantPage = out.examined;
       for (const r of rows) {
         cursor = Number(r.id);
         out.examined++;
@@ -324,15 +532,21 @@ export async function reevaluateSchemaCompatAlerts(
         out.keptActive++;
         ouvertes.add(keyId);
       }
+      // Carte #838 (D1) : page ENTIÈREMENT traitée → curseur sûr durable (les résolutions sont idempotentes :
+      // un arrêt avant cette écriture ne fait que rejouer la page, sans doublon ni perte).
+      if (!(await progression({ alertCursor: cursor, examined: out.examined - avantPage }))) return finish();
+      await opts.onProgress?.({ phase: 'ALERTS', alertCursor: cursor, examined: out.examined });
     }
+    if (!phaseAlertes) out.done = true;
+    if (tenu && phaseAlertes && !(await progression({ phase: 'COUPLES', coupleCursor: null }))) return finish();
     // Couple refusé, toujours transmis, sans alerte ouverte : alerte levée (une fois).
     // Lot 115 (carte #784, §B1 et §E2) : PARCOURS EXHAUSTIF de la mémoire, page par page et par
     // `key_id` — la lecture bornée aux 2 000 refus les plus récents omettait les refus anciens, qui
     // restaient donc sans alerte. Un refus ancien est désormais traité comme un refus récent.
-    let apres: string | null = null;
+    let apres: string | null = depart?.phase === 'COUPLES' ? depart.coupleCursor : null;
     for (;;) {
       const page = await S.scanCouples({ states: ['REJECTED_CONFIRMED', 'NEEDS_RECHECK'], afterKeyId: apres });
-      if (page === null) { out.unavailable = true; return out; }
+      if (page === null) { out.unavailable = true; if (tenu) await progression({ release: true }); return out; }
       if (page.length === 0) break;
       for (const c of page) {
         out.couplesScanned++;
@@ -348,21 +562,36 @@ export async function reevaluateSchemaCompatAlerts(
         if (statut !== 'ACTIVE') { if (statut === 'UNKNOWN') out.raiseSkippedRoutingUnknown++; continue; }
         if (await raiseSchemaIncompatibilityAlert(c)) out.raised++;
       }
+      if (!(await progression({ coupleCursor: apres }))) { out.done = false; return finish(); }
     }
   } catch (e) {
     const code = (e as { code?: string } | null)?.code;
     if (code !== '42P01' && code !== '42703') throw e;
     out.unavailable = true;
+    // Rien de conclu : bail rendu, curseur sûr conservé (reprise au même point).
+    if (tenu) await progression({ release: true }).catch(() => false);
+    tenu = false;
   }
-  out.after.openAlerts = await countOpenAlerts();
-  // §E3 : les lacunes de couverture T1 réellement actives sont INTACTES — une réussite en mode JSON après un
-  // refus de schéma ne doit jamais en masquer une seule, et ce passage ne les touche pas.
-  out.coverageCoordination.openCoverageAnomaliesAfter = await countOpenCoverageAnomalies(familleCouverture);
-  out.coverageCoordination.unchanged = out.coverageCoordination.openCoverageAnomalies === null
-    || out.coverageCoordination.openCoverageAnomalies === out.coverageCoordination.openCoverageAnomaliesAfter;
-  if (!out.coverageCoordination.unchanged) {
-    console.warn('[schema-compat] coordination #775 : le nombre d’anomalies de couverture T1 ouvertes a changé '
-      + 'pendant ce passage (il ne les touche pas — un passage de #775 a pu tourner en parallèle).');
+  return finish();
+
+  async function finish(): Promise<SchemaAlertReevaluation> {
+    out.after.openAlerts = await countOpenAlerts();
+    // §E3 : les lacunes de couverture T1 réellement actives sont INTACTES — une réussite en mode JSON après un
+    // refus de schéma ne doit jamais en masquer une seule, et ce passage ne les touche pas.
+    out.coverageCoordination.openCoverageAnomaliesAfter = await countOpenCoverageAnomalies(familleCouverture);
+    out.coverageCoordination.unchanged = out.coverageCoordination.openCoverageAnomalies === null
+      || out.coverageCoordination.openCoverageAnomalies === out.coverageCoordination.openCoverageAnomaliesAfter;
+    if (!out.coverageCoordination.unchanged) {
+      console.warn('[schema-compat] coordination #775 : le nombre d’anomalies de couverture T1 ouvertes a changé '
+        + 'pendant ce passage (il ne les touche pas — un passage de #775 a pu tourner en parallèle).');
+    }
+    // Carte #838 (D1) : fin de cycle → curseur remis à zéro, bilan conservé, bail rendu.
+    if (tenu && out.done && out.checkpoint) {
+      const bilan = { examined: out.examined, resolved: out.resolved, keptActive: out.keptActive, raised: out.raised, couplesScanned: out.couplesScanned };
+      if (await progression({ phase: 'DONE', alertCursor: 0, coupleCursor: null, complete: true, release: true, report: bilan })) {
+        out.checkpoint.cycleCompleted = true;
+      }
+    }
+    return out;
   }
-  return out;
 }

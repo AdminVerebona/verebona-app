@@ -106,6 +106,12 @@ export interface DocumentFactRecord {
   projectionOrigin?: string | null;
   projectionRule?: string | null;
   /**
+   * Carte #838 (B1, migration 1980) — motif CODIFIÉ de l'absence de `rawValue`
+   * (`master/raw-value-absence.ts`), validé avant persistance. Absent : calculé
+   * à l'écriture ; un motif proposé par l'amont n'est retenu que vérifié.
+   */
+  rawValueAbsence?: string | null;
+  /**
    * Lot 34F (0297) — provenance : unités de la source (`document_source_units`)
    * qui prouvent le fait. Absent : fait historique ou sans unité retrouvée.
    */

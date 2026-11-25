@@ -397,3 +397,111 @@ export async function releaseRetest(keyId: string, now: number): Promise<boolean
     throw e;
   }
 }
+
+// ── Carte #838 (A1, A3) — BAIL DE QUALIFICATION d'un couple ─────────────────
+
+/** Nature d'un essai de qualification réservé. */
+export type QualificationKind = 'FIRST' | 'REQUALIFY';
+
+/**
+ * Issue d'une demande de bail :
+ *   · `claimed`     cette instance tient le bail (`token`) jusqu'à `until` ;
+ *   · `busy`        une autre instance le tient (ou l'essai n'est plus dû) ;
+ *   · `unsupported` colonnes de la migration 1980 absentes (retour arrière) :
+ *                   l'appelant revient au comportement antérieur, signalé.
+ * Une panne de lecture/écriture LÈVE : l'appelant la distingue d'un refus.
+ */
+export type QualificationClaim =
+  | { status: 'claimed'; token: string; until: number; attempts: number }
+  | { status: 'busy'; until: number | null }
+  | { status: 'unsupported' };
+
+/**
+ * Réserve ATOMIQUEMENT l'essai de qualification d'un couple (instruction
+ * unique, à l'échelle de la clé exacte du couple — aucun verrou global) :
+ *   · `FIRST`     couple jamais testé (absent, `NOT_TESTED` ou statique) :
+ *                 la ligne est créée `NOT_TESTED` si besoin, bail posé ;
+ *   · `REQUALIFY` couple `QUALIFIED` dont la requalification est DUE
+ *                 (`next_retest_at` échu, ou qualification à version servie
+ *                 incertaine plus ancienne que `uncertainTtlMs`).
+ * Un bail échu (instance arrêtée) est reprenable ; un bail vivant ne l'est pas.
+ */
+export async function claimQualification(
+  key: SchemaCoupleKey, kind: QualificationKind, now: number,
+  opts: { leaseMs?: number; uncertainTtlMs?: number; token?: string } = {},
+): Promise<QualificationClaim> {
+  const P = SCHEMA_COMPAT_POLICY;
+  const token = opts.token ?? (await import('crypto')).randomUUID();
+  const leaseMs = opts.leaseMs ?? P.qualificationLeaseMs;
+  try {
+    const rows = await pgClient.unsafe(
+      `INSERT INTO ai_schema_compatibility AS t
+         (key_id, provider, model, operation_code, contract_id, contract_version, schema_hash, provider_schema_hash, adapter_version,
+          generation_profile_hash, state, policy_version, updated_at,
+          qualification_claim_token, qualification_claimed_until, qualification_attempts)
+       SELECT $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, 'NOT_TESTED', $14, $12::timestamptz,
+              $11, $12::timestamptz + ($13::bigint * interval '1 millisecond'), 1
+        WHERE $15::text = 'FIRST'
+       ON CONFLICT (key_id) DO UPDATE SET
+         qualification_claim_token = EXCLUDED.qualification_claim_token,
+         qualification_claimed_until = EXCLUDED.qualification_claimed_until,
+         qualification_attempts = t.qualification_attempts + 1,
+         updated_at = EXCLUDED.updated_at
+        WHERE (t.qualification_claimed_until IS NULL OR t.qualification_claimed_until <= $12::timestamptz)
+          AND t.state IN ('NOT_TESTED', 'UNSUPPORTED_BY_CONTRACT')
+       RETURNING qualification_claim_token, qualification_claimed_until, qualification_attempts`,
+      [...identity(key), token, iso(now), leaseMs, P.version, kind] as never[],
+    );
+    let r = (rows as unknown as Row[])[0];
+    if (!r && kind === 'REQUALIFY') {
+      const up = await pgClient.unsafe(
+        `UPDATE ai_schema_compatibility AS t SET
+            qualification_claim_token = $2, qualification_claimed_until = $3::timestamptz + ($4::bigint * interval '1 millisecond'),
+            qualification_attempts = t.qualification_attempts + 1, updated_at = $3::timestamptz
+          WHERE t.key_id = $1 AND t.state = 'QUALIFIED'
+            AND (t.qualification_claimed_until IS NULL OR t.qualification_claimed_until <= $3::timestamptz)
+            AND ((t.next_retest_at IS NOT NULL AND t.next_retest_at <= $3::timestamptz)
+                 OR (t.next_retest_at IS NULL AND t.version_uncertain AND t.last_accepted_at IS NOT NULL
+                     AND t.last_accepted_at <= $3::timestamptz - ($5::bigint * interval '1 millisecond')))
+          RETURNING qualification_claim_token, qualification_claimed_until, qualification_attempts`,
+        [coupleKeyId(key), token, iso(now), leaseMs, opts.uncertainTtlMs ?? P.uncertainQualificationTtlMs] as never[],
+      );
+      r = (up as unknown as Row[])[0];
+    }
+    if (r && String(r.qualification_claim_token) === token) {
+      return { status: 'claimed', token, until: ms(r.qualification_claimed_until) ?? now + leaseMs, attempts: Number(r.qualification_attempts) };
+    }
+    const cur = (await pgClient.unsafe(
+      `SELECT qualification_claimed_until FROM ai_schema_compatibility WHERE key_id = $1`, [coupleKeyId(key)] as never[],
+    )) as unknown as Row[];
+    return { status: 'busy', until: ms(cur[0]?.qualification_claimed_until) };
+  } catch (e) {
+    if (absent(e)) return { status: 'unsupported' };
+    throw e;
+  }
+}
+
+/**
+ * Rend le bail de qualification (FENCING : seul le détenteur du jeton le
+ * rend). `inconclusive` : l'essai n'a rien établi (délai, réseau, quota) —
+ * une requalification est alors reportée de `inconclusiveRetestMs` (jamais à
+ * chaque requête) ; un premier essai redevient simplement prenable.
+ * Rend `true` si le bail était encore tenu par ce jeton.
+ */
+export async function releaseQualification(keyId: string, token: string, now: number, inconclusive: boolean): Promise<boolean> {
+  try {
+    const rows = await pgClient.unsafe(
+      `UPDATE ai_schema_compatibility SET
+          qualification_claim_token = NULL, qualification_claimed_until = NULL, updated_at = $3::timestamptz,
+          next_retest_at = CASE WHEN $4::boolean AND state = 'QUALIFIED'
+                                THEN $3::timestamptz + ($5::bigint * interval '1 millisecond') ELSE next_retest_at END
+        WHERE key_id = $1 AND qualification_claim_token = $2
+        RETURNING key_id`,
+      [keyId, token, iso(now), inconclusive, SCHEMA_COMPAT_POLICY.inconclusiveRetestMs] as never[],
+    );
+    return (rows as unknown as Row[]).length > 0;
+  } catch (e) {
+    if (absent(e)) return false;
+    throw e;
+  }
+}

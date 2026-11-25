@@ -61,6 +61,8 @@ const sonde = (table: 'document_facts' | 'document_extractions' | 'field_evidenc
   });
 
 const sondes = {
+  // Carte #838 (B1) : motif codifié de l'absence de valeur littérale (migration 1980).
+  motifAbsence: sonde('document_facts', ['raw_value_absence'], '1980'),
   faits: sonde('document_facts', DOCUMENT_FACTS_CANONICAL_COLUMNS, '0218'),
   extractions: sonde('document_extractions', DOCUMENT_EXTRACTIONS_CANONICAL_COLUMNS, '0218'),
   preuves: sonde('field_evidence', FIELD_EVIDENCE_CANONICAL_COLUMNS, '0219'),
@@ -74,6 +76,15 @@ export async function documentFactsCanonicalReady(): Promise<boolean> {
   const faits = await sondes.faits();
   const extractions = await sondes.extractions();
   return faits && extractions;
+}
+
+/**
+ * Carte #838 (B1) : colonne `document_facts.raw_value_absence` (1980) présente ?
+ * Absente (retour arrière) : le motif n'est pas écrit — le contrôle reste
+ * appliqué et signalé dans les journaux. Ne lève jamais : illisible = absent.
+ */
+export function documentFactsRawValueAbsenceReady(): Promise<boolean> {
+  return sondes.motifAbsence();
 }
 
 /** Colonnes 0219 présentes sur `field_evidence` ? Ne lève jamais : illisible = absent. */

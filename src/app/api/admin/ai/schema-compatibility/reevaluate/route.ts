@@ -18,7 +18,9 @@ export async function POST(req: NextRequest) {
   if (!guard.ok) return guard.response;
   try {
     const { reevaluateSchemaCompatAlerts } = await import('@/services/ai/gateway/schema-compat/alerts');
-    const bilan = await reevaluateSchemaCompatAlerts();
+    // Carte #838 (D1) : même point de reprise que le passage automatique — reprend un cycle interrompu, ou en
+    // commence un s'il n'y en a pas en cours ; une instance qui tient déjà le bail est signalée (`LEASE_HELD`).
+    const bilan = await reevaluateSchemaCompatAlerts({ checkpoint: { cyclePeriodMs: 0 } });
     // Trace serveur (compteurs seulement) ; chaque résolution porte son motif sur l'alerte elle-même.
     console.info(`[schema-compat] réévaluation demandée au BO (admin ${guard.ctx.adminUserId}) :`, JSON.stringify(bilan));
     return NextResponse.json(bilan);

@@ -65,6 +65,14 @@ export interface SchemaUsageCounts {
   omittedStatic: number;
   /** Appels sans schéma : non demandé pour l'opération, ou sorties structurées coupées. */
   notRequested: number;
+  /**
+   * Carte #838 (A1) : appels partis en JSON sans schéma parce qu'une AUTRE
+   * instance tenait le bail de qualification du couple (jamais un refus).
+   * Facultatif pour les appelants antérieurs ; toujours renseigné par la lecture.
+   */
+  skippedQualificationInProgress?: number;
+  /** Carte #838 (A2) : appels partis en JSON sans schéma, mémoire partagée illisible (mode dégradé). */
+  skippedMemoryUnavailable?: number;
   /** Appels de réexamen (essai réservé d'un couple refusé). */
   retests: number;
   /** Appels dont le résultat final est une réussite. */
@@ -146,6 +154,52 @@ export interface SchemaUsageReport {
   unavailable: string | null;
 }
 
+/**
+ * Carte #838 (C2) — requêtes fournisseur et coût d'une famille d'appels.
+ * `costStatus` : `OBSERVED` (tout chiffré), `ZERO_REPORTED` (zéro prouvé par
+ * le fournisseur), `PARTIAL` (montant MINIMUM, part inconnue comptée),
+ * `UNKNOWN` (rien de chiffrable), `NONE` (aucune requête).
+ */
+export interface SchemaCostView {
+  /** Appels (lignes d'usage) de la famille. */
+  calls: number;
+  /** Requêtes fournisseur RÉELLEMENT envoyées (tentatives internes comprises). */
+  providerRequests: number;
+  finalSuccess: number;
+  attemptsCostObserved: number;
+  attemptsCostZero: number;
+  attemptsCostUnknown: number;
+  /** Somme des coûts chiffrés (micro-unités) — un minimum si `costStatus` vaut `PARTIAL`. */
+  observedCostMicros: number;
+  costStatus: 'OBSERVED' | 'ZERO_REPORTED' | 'PARTIAL' | 'UNKNOWN' | 'NONE';
+  /** Part des requêtes au coût inconnu (0 à 1) ; `null` : aucune requête. */
+  unknownShare: number | null;
+}
+
+const EMPTY_COST_VIEW: SchemaCostView = {
+  calls: 0, providerRequests: 0, finalSuccess: 0, attemptsCostObserved: 0, attemptsCostZero: 0, attemptsCostUnknown: 0,
+  observedCostMicros: 0, costStatus: 'NONE', unknownShare: null,
+};
+
+/** Vue de coût à partir de compteurs (pure). Jamais 0 € « prouvé » quand une part est inconnue. */
+export function schemaCostViewOf(c: Omit<SchemaCostView, 'costStatus' | 'unknownShare'>): SchemaCostView {
+  const tentatives = c.attemptsCostObserved + c.attemptsCostZero + c.attemptsCostUnknown;
+  const costStatus: SchemaCostView['costStatus'] = tentatives === 0 ? 'NONE'
+    : c.attemptsCostUnknown === tentatives ? 'UNKNOWN'
+      : c.attemptsCostUnknown > 0 ? 'PARTIAL'
+        : c.attemptsCostObserved === 0 ? 'ZERO_REPORTED' : 'OBSERVED';
+  return { ...c, costStatus, unknownShare: tentatives > 0 ? Math.round((c.attemptsCostUnknown / tentatives) * 10_000) / 10_000 : null };
+}
+
+/** Somme de deux vues (pure) : le total « toutes tentatives ». */
+export function addSchemaCostViews(a: SchemaCostView, b: SchemaCostView): SchemaCostView {
+  return schemaCostViewOf({
+    calls: a.calls + b.calls, providerRequests: a.providerRequests + b.providerRequests, finalSuccess: a.finalSuccess + b.finalSuccess,
+    attemptsCostObserved: a.attemptsCostObserved + b.attemptsCostObserved, attemptsCostZero: a.attemptsCostZero + b.attemptsCostZero,
+    attemptsCostUnknown: a.attemptsCostUnknown + b.attemptsCostUnknown, observedCostMicros: a.observedCostMicros + b.observedCostMicros,
+  });
+}
+
 const ratio = (n: number, d: number): number | null => (d > 0 ? Math.round((n / d) * 10_000) / 10_000 : null);
 
 /** Taux d'un ensemble de compteurs (pure). Dénominateur nul : `null`, jamais 0. */
@@ -161,14 +215,16 @@ export function schemaUsageRates(c: Pick<SchemaUsageCounts, 'calls' | 'schemaSen
 
 const ZERO: SchemaUsageCounts = {
   calls: 0, schemaSent: 0, schemaAccepted: 0, schemaRefused400: 0, schemaFailedOther: 0, retriesWithoutSchema: 0, answeredAfterRetry: 0,
-  skippedKnownRejection: 0, omittedStatic: 0, notRequested: 0, retests: 0, finalSuccess: 0, providerRequests: 0, inputTokens: 0, outputTokens: 0,
+  skippedKnownRejection: 0, omittedStatic: 0, notRequested: 0, skippedQualificationInProgress: 0, skippedMemoryUnavailable: 0,
+  retests: 0, finalSuccess: 0, providerRequests: 0, inputTokens: 0, outputTokens: 0,
   costMicros: 0, attemptsCostObserved: 0, attemptsCostZero: 0, attemptsCostUnknown: 0, failedAttemptMs: 0,
 };
 
 type NumericKey = Exclude<keyof SchemaUsageCounts, 'costMicros'>;
 const NUMERIC_KEYS: readonly NumericKey[] = [
   'calls', 'schemaSent', 'schemaAccepted', 'schemaRefused400', 'schemaFailedOther', 'retriesWithoutSchema', 'answeredAfterRetry',
-  'skippedKnownRejection', 'omittedStatic', 'notRequested', 'retests', 'finalSuccess', 'providerRequests', 'inputTokens', 'outputTokens',
+  'skippedKnownRejection', 'omittedStatic', 'notRequested', 'skippedQualificationInProgress', 'skippedMemoryUnavailable',
+  'retests', 'finalSuccess', 'providerRequests', 'inputTokens', 'outputTokens',
   'attemptsCostObserved', 'attemptsCostZero', 'attemptsCostUnknown', 'failedAttemptMs',
 ];
 
@@ -176,7 +232,7 @@ const NUMERIC_KEYS: readonly NumericKey[] = [
 export function sumSchemaUsage(groups: readonly SchemaUsageCounts[]): SchemaUsageCounts {
   const t: SchemaUsageCounts = { ...ZERO };
   for (const g of groups) {
-    for (const k of NUMERIC_KEYS) t[k] += g[k];
+    for (const k of NUMERIC_KEYS) t[k] = (t[k] ?? 0) + (g[k] ?? 0);
     t.costMicros = t.costMicros === null || g.costMicros === null ? null : t.costMicros + g.costMicros;
   }
   return t;
@@ -190,7 +246,8 @@ function countsOf(r: Row): SchemaUsageCounts {
   return {
     calls: n(r.calls), schemaSent: n(r.schema_sent), schemaAccepted: n(r.schema_accepted), schemaRefused400: n(r.schema_refused_400),
     schemaFailedOther: n(r.schema_failed_other), retriesWithoutSchema: n(r.retries_without_schema), answeredAfterRetry: n(r.answered_after_retry),
-    skippedKnownRejection: n(r.skipped_known_rejection), omittedStatic: n(r.omitted_static), notRequested: n(r.not_requested), retests: n(r.retests),
+    skippedKnownRejection: n(r.skipped_known_rejection), omittedStatic: n(r.omitted_static), notRequested: n(r.not_requested),
+    skippedQualificationInProgress: n(r.skipped_qualification), skippedMemoryUnavailable: n(r.skipped_memory_unavailable), retests: n(r.retests),
     finalSuccess: n(r.final_success), providerRequests: n(r.provider_requests), inputTokens: n(r.input_tokens), outputTokens: n(r.output_tokens),
     costMicros: n(r.cost_unknown) > 0 ? null : n(r.cost_micros),
     attemptsCostObserved: n(r.attempts_cost_observed), attemptsCostZero: n(r.attempts_cost_zero), attemptsCostUnknown: n(r.attempts_cost_unknown),
@@ -210,8 +267,10 @@ const AGG = `
   COUNT(*) FILTER (WHERE pr->>'responseSchemaSent' = 'true' AND a0->>'outcome' = 'FAILED' AND COALESCE(a0->>'httpStatus', '') <> '400')::int AS schema_failed_other,
   COUNT(*) FILTER (WHERE pr->>'schemaOmittedReason' = 'recent_rejection')::int AS skipped_known_rejection,
   COUNT(*) FILTER (WHERE pr->>'schemaOmittedReason' = ANY($5::text[]))::int AS omitted_static,
+  COUNT(*) FILTER (WHERE pr->>'schemaOmittedReason' = 'qualification_in_progress')::int AS skipped_qualification,
+  COUNT(*) FILTER (WHERE pr->>'schemaOmittedReason' = 'memory_unavailable')::int AS skipped_memory_unavailable,
   COUNT(*) FILTER (WHERE pr->>'responseSchemaSent' <> 'true'
-                     AND COALESCE(pr->>'schemaOmittedReason', 'not_requested') <> 'recent_rejection'
+                     AND COALESCE(pr->>'schemaOmittedReason', 'not_requested') NOT IN ('recent_rejection', 'qualification_in_progress', 'memory_unavailable')
                      AND NOT (COALESCE(pr->>'schemaOmittedReason', '') = ANY($5::text[])))::int AS not_requested`;
 
 /**
@@ -332,4 +391,81 @@ export async function getSchemaUsageReport(
     base.unavailable = String((e as Error)?.message ?? e).slice(0, 200);
   }
   return base;
+}
+
+/**
+ * Carte #838 (C2, AC17/AC19) — vues SÉPARÉES « analyse seule »,
+ * « réparation » et « total toutes tentatives », sur les mêmes filtres que le
+ * rapport d'usage. Les réparations ne sont jamais cachées (le rapport
+ * d'usage historique reste « analyse seule », ses compteurs sont inchangés) ;
+ * chaque vue porte la nature de son coût : part chiffrée, part INCONNUE
+ * (un refus HTTP 400 sans consommation rendue n'est jamais 0 €). Lecture
+ * impossible : `views: null` et la raison — jamais des zéros.
+ */
+export interface SchemaCostViews {
+  views: { analysis: SchemaCostView; repair: SchemaCostView; total: SchemaCostView } | null;
+  unavailable: string | null;
+}
+
+export async function getSchemaCostViews(
+  f: SchemaUsageFilters, now: Date = new Date(),
+  run?: (sql: string, params: unknown[]) => Promise<Row[]>,
+): Promise<SchemaCostViews> {
+  const days = Math.min(Math.max(Math.floor(f.days) || 7, 1), 90);
+  const from = new Date(now.getTime() - days * 86_400_000);
+  const exec = run ?? (async (sql: string, params: unknown[]) => (await import('../../telemetry/observability.repository')).readOnlyObservabilityQuery(sql, params));
+  const params = [from.toISOString(), now.toISOString(), f.operationCode || null, f.model || null, f.contractVersion == null ? null : String(f.contractVersion)];
+  try {
+    // Carte #838 (C2) — vues « analyse » / « réparation » / « total » sur les MÊMES filtres, réparations
+    // comprises (y compris celles tracées avant la carte, sans description de requête : une requête, coût
+    // déduit de la ligne). Une tentative sans consommation rendue est INCONNUE, jamais 0 €.
+    const vues = await exec(
+      `SELECT call_kind, COUNT(*)::int AS calls, COALESCE(SUM(n_req), 0)::int AS provider_requests,
+              COUNT(*) FILTER (WHERE status = 'success')::int AS final_success,
+              COALESCE(SUM(n_obs), 0)::int AS attempts_observed, COALESCE(SUM(n_zero), 0)::int AS attempts_zero,
+              COALESCE(SUM(n_unk), 0)::int AS attempts_unknown, COALESCE(SUM(obs_micros), 0)::bigint AS observed_micros
+         FROM (
+           SELECT y.call_kind, y.status,
+                  CASE WHEN y.n_att > 0 THEN y.n_att ELSE 1 END AS n_req,
+                  CASE WHEN y.n_att > 0 THEN (SELECT COUNT(*) FROM jsonb_array_elements(y.att) a WHERE a->>'costStatus' = 'OBSERVED')
+                       WHEN (y.input_tokens > 0 OR y.output_tokens > 0) AND y.cost_micros IS NOT NULL THEN 1 ELSE 0 END AS n_obs,
+                  CASE WHEN y.n_att > 0 THEN (SELECT COUNT(*) FROM jsonb_array_elements(y.att) a WHERE a->>'costStatus' = 'ZERO_REPORTED')
+                       ELSE 0 END AS n_zero,
+                  CASE WHEN y.n_att > 0 THEN (SELECT COUNT(*) FROM jsonb_array_elements(y.att) a
+                                                WHERE COALESCE(a->>'costStatus', 'UNKNOWN') NOT IN ('OBSERVED', 'ZERO_REPORTED'))
+                       WHEN (y.input_tokens > 0 OR y.output_tokens > 0) AND y.cost_micros IS NOT NULL THEN 0 ELSE 1 END AS n_unk,
+                  CASE WHEN y.n_att > 0 THEN (SELECT COALESCE(SUM((a->>'costMicros')::numeric), 0) FROM jsonb_array_elements(y.att) a
+                                                WHERE a->>'costStatus' IN ('OBSERVED', 'ZERO_REPORTED') AND a->>'costMicros' IS NOT NULL)
+                       WHEN (y.input_tokens > 0 OR y.output_tokens > 0) AND y.cost_micros IS NOT NULL THEN y.cost_micros ELSE 0 END AS obs_micros
+             FROM (
+               SELECT COALESCE(e.metadata->>'callKind', 'analysis') AS call_kind, e.status, e.input_tokens, e.output_tokens, e.cost_micros,
+                      CASE WHEN jsonb_typeof(e.metadata->'providerAttempts') = 'array' THEN e.metadata->'providerAttempts' ELSE '[]'::jsonb END AS att,
+                      CASE WHEN jsonb_typeof(e.metadata->'providerAttempts') = 'array' THEN jsonb_array_length(e.metadata->'providerAttempts') ELSE 0 END AS n_att
+                 FROM ai_usage_event e
+                WHERE e.created_at >= $1::timestamptz AND e.created_at < $2::timestamptz
+                  AND (e.metadata ? 'providerRequest' OR e.metadata->>'callKind' = 'repair')
+                  AND COALESCE(e.metadata->>'callKind', 'analysis') IN ('analysis', 'repair')
+                  AND ($3::text IS NULL OR COALESCE(e.operation_code, e.operation_type) = $3)
+                  AND ($4::text IS NULL OR e.model = $4)
+                  AND ($5::text IS NULL OR e.metadata->'runtimeContract'->>'contractVersion' = $5)
+             ) y
+         ) z
+        GROUP BY call_kind`,
+      params,
+    );
+    const vue = (kind: string): SchemaCostView => {
+      const r = vues.find((v) => String(v.call_kind) === kind);
+      if (!r) return { ...EMPTY_COST_VIEW };
+      return schemaCostViewOf({
+        calls: n(r.calls), providerRequests: n(r.provider_requests), finalSuccess: n(r.final_success),
+        attemptsCostObserved: n(r.attempts_observed), attemptsCostZero: n(r.attempts_zero), attemptsCostUnknown: n(r.attempts_unknown),
+        observedCostMicros: n(r.observed_micros),
+      });
+    };
+    const analyse = vue('analysis');
+    const reparation = vue('repair');
+    return { views: { analysis: analyse, repair: reparation, total: addSchemaCostViews(analyse, reparation) }, unavailable: null };
+  } catch (e) {
+    return { views: null, unavailable: String((e as Error)?.message ?? e).slice(0, 200) };
+  }
 }
