@@ -225,9 +225,18 @@ scenario('L114Q', 'Sondes de modèles : verdict par accès, propagation jusqu’
     expect(JSON.stringify(s.body)).not.toContain(CLE);
 
     // Alerte : une seule, de condition, usages regroupés.
+    //
+    // **Règle remplacée (carte #786, écart D02)** : la clé de condition était
+    // `ai:active-model:<modèle>:<accès>`. Une alerte était donc commune à toutes les CAPACITÉS d'un même
+    // accès, et pouvait être abaissée ou résolue par le succès d'une autre capacité que celle qui a été
+    // refusée. Elle porte désormais aussi la capacité éprouvée — isolation par accès ET par capacité,
+    // aucune résolution transversale.
     const a = await alertes();
     expect(a).toHaveLength(1);
-    expect(a[0]).toMatchObject({ severity: 'warning', resolved_at: null, condition_key: `ai:active-model:${REFUSE}:clé …${(await empreinte()).slice(0, 8)}` });
+    expect(a[0]).toMatchObject({
+      severity: 'warning', resolved_at: null,
+      condition_key: `ai:active-model:${REFUSE}:clé …${(await empreinte()).slice(0, 8)}:text_generation`,
+    });
     expect(a[0].details).toMatchObject({ model: REFUSE, counts: { models: 1, usages: 5 }, diagnostic: { httpStatus: 404, providerCode: 'NOT_FOUND' } });
     expect(JSON.stringify(a)).not.toContain(CLE);
 

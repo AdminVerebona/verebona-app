@@ -139,6 +139,14 @@ scenario('L115I', 'IA — admission des envois : aucune requête ordinaire vers 
     const { fallbackContext, invalidateFallbackStatusCache } = await F();
     invalidateFallbackStatusCache();
     expect([...(await fallbackContext().knownUnavailable()).keys()]).toContain(REFUSE);
+    // #786 (A01) — la route SAINE est lue de façon FIABLE avant la panne : c'est CETTE lecture qui lui donne
+    // un dernier verdict fiable. Règle remplacée : l'instance portait un unique booléen « une lecture fiable
+    // a eu lieu », si bien qu'avoir lu UNE route suffisait à servir « inconnu non bloquant » pour TOUTES les
+    // autres — y compris une route jamais lue. Le cache est désormais indexé par route complète, donc une
+    // route doit avoir été lue POUR ELLE-MÊME pour être servie pendant une panne (cf. la route jamais lue
+    // éprouvée ci-dessous).
+    await controler({ model: SAIN, echec: false, checkId: 'e02-sain-route' });
+    expect((await guardSend({ model: SAIN, point: 'gateway_send' })).admitted).toBe(true);
 
     // APRÈS : état partagé illisible (panne réelle) — l'interdiction est CONSERVÉE, rien n'est réactivé.
     await avecEtatIllisible(async () => {
@@ -154,6 +162,13 @@ scenario('L115I', 'IA — admission des envois : aucune requête ordinaire vers 
       expect(lu).toContain(REFUSE);
       // Et une route lue fiablement comme saine reste admise (l'inconnu n'exclut rien).
       expect((await guardSend({ model: SAIN, point: 'gateway_send' })).admitted).toBe(true);
+      // #786 (A01) — mais une route JAMAIS lue par cette instance ne part pas pendant la panne : rien ne
+      // permet de conclure, donc l'admission est INVÉRIFIABLE. Le modèle n'est pour autant pas déclaré
+      // retiré — c'est l'envoi qui est suspendu, pas la route qui est exclue.
+      const jamaisLue = await guardSend({ model: 'e2e-jamais-lu-l115i', point: 'gateway_send' });
+      expect(jamaisLue.admitted).toBe(false);
+      if (!jamaisLue.admitted) expect(jamaisLue.code).toBe('ADMISSION_UNVERIFIABLE');
+      expect([...(await fallbackContext().knownUnavailable()).keys()]).not.toContain('e2e-jamais-lu-l115i');
     });
     expect(admissionMetrics().servedFromLastReliable).toBeGreaterThanOrEqual(1);
   });
@@ -266,8 +281,14 @@ scenario('L115I', 'IA — admission des envois : aucune requête ordinaire vers 
     expect(await etat(REFUSE)).toMatchObject({ probe_lease_owner: 'instance-D' });
     await releaseProbeLease({ model: REFUSE, secret: CLE, owner: 'instance-D' });
     expect(await etat(REFUSE)).toMatchObject({ probe_lease_owner: null });
-    // Route inconnue : rien à dédupliquer, la sonde part.
-    expect(await acquireProbeLease({ model: 'e2e-inconnu-l115i', secret: CLE, owner: 'instance-A' })).toMatchObject({ acquired: true, reason: 'no_state' });
+    // Route JAMAIS SONDÉE : la ligne d'état est créée puis RÉSERVÉE, atomiquement — la sonde part réservée.
+    //
+    // **Règle remplacée (carte #786, écart B03)** : l'absence de ligne rendait `{ acquired: true,
+    // reason: 'no_state' }` SANS aucune réservation. Deux instances arrivant ensemble sur un modèle nouveau
+    // obtenaient donc toutes les deux « réservé » et sondaient toutes les deux. L'écart exigeait « plus
+    // jamais `acquired: true, reason: 'no_state'` sans réservation » : `no_state` ne subsiste que comme REFUS,
+    // quand la ligne n'a pu être ni lue ni créée.
+    expect(await acquireProbeLease({ model: 'e2e-inconnu-l115i', secret: CLE, owner: 'instance-A' })).toMatchObject({ acquired: true, reason: 'acquired' });
     // État illisible : AUCUNE sonde (pas de rafale pendant une panne).
     await avecEtatIllisible(async () => {
       expect(await acquireProbeLease({ model: REFUSE, secret: CLE, owner: 'instance-A' })).toMatchObject({ acquired: false, reason: 'unreadable' });

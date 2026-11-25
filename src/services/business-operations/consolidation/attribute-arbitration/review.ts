@@ -397,7 +397,49 @@ const valueOf = async (x: Exec, accountId: number, operationId: number, field: C
 };
 
 /** Carte #836 (écart E09) : motif précis d'une application non constatée (trace, BO, journal). */
-export type ApplicationCheckReason = 'OPERATION_GONE' | 'VALUE_NOT_WRITTEN' | 'PROVENANCE_MISMATCH' | 'CONFLICT_STILL_OPEN';
+export type ApplicationCheckReason =
+  | 'OPERATION_GONE' | 'VALUE_NOT_WRITTEN' | 'PROVENANCE_MISMATCH' | 'CONFLICT_STILL_OPEN'
+  | 'PROTECTED_OR_UNMANAGED_VALUE';
+
+/**
+ * Carte #836 (écart E09) — POURQUOI la valeur décidée n'a pas été écrite : la
+ * cause SPÉCIFIQUE, quand il y en a une (lecture seule, sans IA).
+ *
+ * **Règle remplacée (carte #836, E09)** : le contrôle en base rendait
+ * `VALUE_NOT_WRITTEN` dès que la valeur lue différait de la valeur attendue — y
+ * compris lorsqu'elle en différait PARCE QU'ELLE EST PROTÉGÉE (saisie de
+ * l'utilisateur, rétablissement BO, import) ou parce que l'événement porte une
+ * source que T3 ne gère pas (formulaire, migration : la consolidation n'y
+ * applique jamais un arbitrage T3). Le constat générique masquait donc le motif
+ * précis et actionnable, `PROTECTED_OR_UNMANAGED_VALUE`, qui est celui que la
+ * trace, le BO et le journal doivent porter. `VALUE_NOT_WRITTEN` ne couvre plus
+ * que l'échec d'écriture INEXPLIQUÉ.
+ *
+ * Trois preuves, de la plus précise à la plus générale :
+ *   1. la ligne de contradiction du MÊME champ et du MÊME rôle porte une
+ *      protection (`protection: USER | ADMIN | IMPORT`) ;
+ *   2. une source ACTIVE de l'événement porte une autorité protégée ;
+ *   3. une source ACTIVE n'est pas gérée par T3 (hors décision d'arbitrage) —
+ *      l'événement n'est pas « entièrement géré », et aucun arbitrage T3 n'y est
+ *      écrit.
+ */
+async function nonEcriturePrecisee(
+  x: Exec, accountId: number, d: { operationId: number; field: ConflictField; role: string },
+  conflicts: readonly QualifiedAttributeConflict[],
+): Promise<'VALUE_NOT_WRITTEN' | 'PROTECTED_OR_UNMANAGED_VALUE'> {
+  if (conflicts.some((c) => c && c.field === d.field && c.role === d.role && !!c.protection)) {
+    return 'PROTECTED_OR_UNMANAGED_VALUE';
+  }
+  const [s] = await rows(x, sql`
+    SELECT bool_or(s.authority IN ('USER', 'ADMIN', 'IMPORT')) AS protegee,
+           bool_or(NOT ((s.source_kind = 'DOCUMENT' AND s.locator ? 'candidateKey')
+                     OR (s.source_kind = 'ASSET_DATA' AND s.locator ? 'nature')
+                     OR (s.source_kind = 'AGENDA' AND s.locator ? 'agenda'))
+                   AND NOT (s.source_kind = 'USER_ARBITRATION' AND s.locator ? 'decision')) AS hors_gestion
+      FROM business_operation_sources s
+     WHERE s.operation_id = ${d.operationId} AND s.account_id = ${accountId} AND s.active`);
+  return s?.protegee === true || s?.hors_gestion === true ? 'PROTECTED_OR_UNMANAGED_VALUE' : 'VALUE_NOT_WRITTEN';
+}
 
 /**
  * Carte #836 (écart E09) — CONTRÔLE EN BASE d'une application, avant tout
@@ -410,8 +452,11 @@ export type ApplicationCheckReason = 'OPERATION_GONE' | 'VALUE_NOT_WRITTEN' | 'P
  *     empreinte (attribut, rôle, valeurs) ne doit plus être une contradiction
  *     ouverte. Ligne disparue : l'écriture a bien eu lieu, plus rien à trancher.
  * Lecture seule, sans IA, rejouable à l'identique.
+ *
+ * Exportée pour son test unitaire : c'est ELLE qui nomme le motif écrit dans la
+ * trace, le BO et le journal, et ce motif doit être éprouvé sans base.
  */
-async function verifyApplication(
+export async function verifyApplication(
   x: Exec, accountId: number, d: { id: number; operationId: number; field: ConflictField; role: string; fingerprint: string },
   expected: string,
 ): Promise<{ applied: boolean; value: string | null; reason?: ApplicationCheckReason }> {
@@ -423,11 +468,13 @@ async function verifyApplication(
       FROM business_operations o WHERE o.id = ${d.operationId} AND o.account_id = ${accountId}`);
   if (!o) return { applied: false, value: null, reason: 'OPERATION_GONE' };
   const value = (o.courant as string | null) ?? null;
+  const lignes = (Array.isArray(o.conflicts) ? o.conflicts : []) as QualifiedAttributeConflict[];
   if (o.active !== true) return { applied: false, value, reason: 'OPERATION_GONE' };
-  if (value !== expected) return { applied: false, value, reason: 'VALUE_NOT_WRITTEN' };
+  // La cause SPÉCIFIQUE (protection, source hors gestion) est prioritaire sur le constat générique.
+  if (value !== expected) return { applied: false, value, reason: await nonEcriturePrecisee(x, accountId, d, lignes) };
   const prov = (o.provenance as string | null) ?? null;
   if (prov !== null && prov !== expected) return { applied: false, value, reason: 'PROVENANCE_MISMATCH' };
-  const ouvertes = (Array.isArray(o.conflicts) ? o.conflicts : []) as QualifiedAttributeConflict[];
+  const ouvertes = lignes;
   const encore = ouvertes.some((c) => c && c.field === d.field && c.role === d.role && Array.isArray(c.values)
     && lineFingerprint(d.operationId, c) === d.fingerprint);
   return encore ? { applied: false, value, reason: 'CONFLICT_STILL_OPEN' } : { applied: true, value };
@@ -794,6 +841,8 @@ export async function runAttributeArbitrationPhase(accountId: number, opts: {
       // de la seule colonne. Les deux écritures de trace sont réunies en une (atomicité de l'état durable).
       const controle = await verifyApplication(x, accountId, r, r.value);
       const appliquee = controle.applied;
+      // Le contrôle NOMME lui-même la cause — protection, source hors gestion, événement disparu, provenance
+      // discordante, contradiction encore ouverte. Le repli n'est plus qu'une sécurité de typage.
       const motif = controle.reason ?? 'PROTECTED_OR_UNMANAGED_VALUE';
       if (appliquee && controle.value !== r.before) out.applied++;
       if (!appliquee) out.applyFailed = (out.applyFailed ?? 0) + 1;

@@ -328,17 +328,59 @@ function schemaAnterieur(e: unknown): boolean {
 
 /** Colonnes de la migration 1815 présentes ? `null` : pas encore constaté. */
 let colonnes1815: boolean | null = null;
-/** Une écriture a-t-elle dû retomber sur un schéma antérieur dans ce processus ? */
-let schemaDegradeMotif: string | null = null;
+
+/**
+ * #786 (A03) — MOTIFS DE SCHÉMA INCOMPLET, par migration.
+ *
+ * **Règle remplacée (carte #786, A03)** : un unique drapeau de processus
+ * (`schemaDegradeMotif`), posé par n'importe quel échec — y compris le `catch`
+ * d'une lecture ou d'une écriture de DONNÉES — et JAMAIS effacé. Une table
+ * momentanément illisible (bascule de schéma, panne, renommage pendant une
+ * recette) condamnait donc tout le reste du processus à se croire sur un schéma
+ * incomplet : `operationalRefusalInTx` rendait `unverifiable` sur une base
+ * parfaitement migrée, et promotion, activation et import étaient refusés à
+ * tort.
+ *
+ * Désormais : seule une OBSERVATION DE `information_schema` conclut « migration
+ * absente », et elle est EFFACÉE dès qu'une observation montre la colonne
+ * présente. Un échec de lecture ou d'écriture de données est un signal
+ * DISTINCT (« vérification impossible maintenant »), jamais un verdict sur les
+ * migrations.
+ */
+const motifsSchema = new Map<string, string>();
+
+/**
+ * #786 (A03) — une ÉCRITURE a échoué avec un code de schéma (`42703`, `42P10`,
+ * `42P01`). Signal fort — rien n'a été publié, et la décision du moment doit
+ * être refusée — mais NON autoritaire : une écriture n'observe pas le
+ * catalogue. Il est effacé dès que `information_schema` montre les colonnes
+ * présentes (les observations en cache sont invalidées par le même `catch`,
+ * pour que la question soit réellement reposée).
+ */
+let ecritureSchemaMotif: string | null = null;
+
+/**
+ * #786 (D01) — « lecture impossible MAINTENANT » : une lecture de données a
+ * échoué (base indisponible, délai, table en bascule). Affiché à part par le
+ * BO : il ne se confond jamais avec « migration non appliquée ».
+ */
+let lectureImpossibleMotif: string | null = null;
 
 /**
  * #786 (E01) — le schéma de l'état opérationnel est-il COMPLET ? Une migration
  * critique absente est SIGNALÉE (journal, BO) et rend l'admission prudente :
  * jamais un repli silencieux vers un schéma qui perdrait l'isolation par
  * accès, l'ordre des contrôles ou l'historique.
+ *
+ * `degradedReason` : lacune de MIGRATION (observation de `information_schema`,
+ * ou écriture refusée par le schéma). `unreadableReason` : lecture impossible
+ * à l'instant — deux faits distincts, jamais confondus.
  */
-export function operationalSchemaState(): { complete: boolean | null; degradedReason: string | null } {
-  return { complete: colonnes1815, degradedReason: schemaDegradeMotif };
+export function operationalSchemaState(): {
+  complete: boolean | null; degradedReason: string | null; unreadableReason: string | null;
+} {
+  const observe = [...motifsSchema.entries()].sort(([a], [b]) => a.localeCompare(b))[0]?.[1] ?? null;
+  return { complete: colonnes1815, degradedReason: observe ?? ecritureSchemaMotif, unreadableReason: lectureImpossibleMotif };
 }
 
 /** Réservé aux tests : oublie l'état constaté du schéma. */
@@ -346,7 +388,59 @@ export function __resetOperationalSchemaState(): void {
   colonnes1815 = null;
   colonnes1816 = null;
   colonnes1950 = null;
-  schemaDegradeMotif = null;
+  motifsSchema.clear();
+  ecritureSchemaMotif = null;
+  lectureImpossibleMotif = null;
+}
+
+/**
+ * #786 (A03) — OBSERVATION d'une colonne dans `information_schema` : la seule
+ * autorité pour conclure « migration absente ».
+ *   · `presente`     — réponse définitive, mise en cache (une migration
+ *                      appliquée ne se déapplique pas) ;
+ *   · `absente`      — réponse définitive aussi : la colonne n'est pas là, la
+ *                      migration manque, et c'est nommé ;
+ *   · `indecidable`  — la SONDE a échoué (base indisponible, délai). Rien n'est
+ *                      mis en cache et AUCUNE migration n'est déclarée
+ *                      absente : la question sera reposée au prochain appel.
+ */
+type ObservationColonne = 'presente' | 'absente' | 'indecidable';
+
+async function observerColonne(requete: string): Promise<ObservationColonne> {
+  try {
+    const rows = (await pgClient.unsafe(requete)) as unknown as Row[];
+    return rows.length > 0 ? 'presente' : 'absente';
+  } catch {
+    return 'indecidable';
+  }
+}
+
+/**
+ * Applique une observation : met en cache ce qui est DÉFINITIF, pose ou efface
+ * le motif de la migration, et rend la valeur à servir pour CET appel (prudente
+ * quand la sonde a échoué : le code n'utilise pas des colonnes dont il ne sait
+ * rien, mais il ne grave pas ce doute).
+ */
+function retenirObservation(
+  migration: string, obs: ObservationColonne, motif: string, memoriser: (v: boolean) => void,
+): boolean {
+  if (obs === 'presente') {
+    memoriser(true);
+    motifsSchema.delete(migration);
+    // Une observation du catalogue montrant la colonne présente périme le signal d'écriture (non autoritaire).
+    if (motifsSchema.size === 0) ecritureSchemaMotif = null;
+    return true;
+  }
+  if (obs === 'absente') {
+    memoriser(false);
+    if (!motifsSchema.has(migration)) {
+      motifsSchema.set(migration, motif);
+      console.warn(`[model-operational] ${motif}.`);
+    }
+    return false;
+  }
+  // Sonde en échec : ni cache, ni motif — seulement de la prudence, pour cet appel.
+  return false;
 }
 
 /** #786 (E05) : la capacité fait-elle partie de la clé (migration 1816) ? `null` : pas encore constaté. */
@@ -361,21 +455,15 @@ let colonnes1816: boolean | null = null;
  */
 async function has1816(): Promise<boolean> {
   if (colonnes1816 !== null) return colonnes1816;
-  try {
-    const rows = (await pgClient.unsafe(
+  return retenirObservation(
+    '1816',
+    await observerColonne(
       `SELECT 1 FROM information_schema.columns
         WHERE table_name = 'ai_model_operational_status' AND column_name = 'provider_project' LIMIT 1`,
-    )) as unknown as Row[];
-    colonnes1816 = rows.length > 0;
-    if (!colonnes1816) {
-      schemaDegradeMotif = schemaDegradeMotif
-        ?? 'migration 1816 non appliquée : verdict par capacité et dimension « projet » indisponibles';
-      console.warn(`[model-operational] ${schemaDegradeMotif}.`);
-    }
-  } catch {
-    colonnes1816 = false;
-  }
-  return colonnes1816;
+    ),
+    'migration 1816 non appliquée : verdict par capacité et dimension « projet » indisponibles',
+    (v) => { colonnes1816 = v; },
+  );
 }
 
 /**
@@ -412,40 +500,38 @@ let colonnes1950: boolean | null = null;
  */
 async function has1950(): Promise<boolean> {
   if (colonnes1950 !== null) return colonnes1950;
-  try {
-    const rows = (await pgClient.unsafe(
+  return retenirObservation(
+    '1950',
+    await observerColonne(
       `SELECT 1 FROM information_schema.columns
         WHERE table_name = 'ai_model_operational_status' AND column_name = 'probe_lease_generation' LIMIT 1`,
-    )) as unknown as Row[];
-    colonnes1950 = rows.length > 0;
-    if (!colonnes1950) {
-      schemaDegradeMotif = schemaDegradeMotif
-        ?? 'migration 1950 non appliquée : jeton de clôture du bail de sonde (fencing) indisponible';
-      console.warn(`[model-operational] ${schemaDegradeMotif}.`);
-    }
-  } catch {
-    colonnes1950 = false;
-  }
-  return colonnes1950;
+    ),
+    'migration 1950 non appliquée : jeton de clôture du bail de sonde (fencing) indisponible',
+    (v) => { colonnes1950 = v; },
+  );
 }
 
-/** Les colonnes 1815 existent-elles ? (une lecture par processus ; prudent en cas d'échec) */
+/**
+ * Les colonnes 1815 existent-elles ? Une observation DÉFINITIVE est mise en
+ * cache (une par processus) ; une sonde en échec ne l'est pas — elle rend
+ * seulement cet appel prudent.
+ *
+ * **Règle remplacée (carte #786, A03)** : `catch { colonnes1815 = false }`
+ * gravait un NÉGATIF sur une erreur passagère. Une fois posé, `acquireProbeLease`
+ * rendait `unreadable` et `recordOperationalCheck` perdait ses colonnes
+ * étendues — DÉFINITIVEMENT, sur un schéma pourtant complet.
+ */
 async function has1815(): Promise<boolean> {
   if (colonnes1815 !== null) return colonnes1815;
-  try {
-    const rows = (await pgClient.unsafe(
+  return retenirObservation(
+    '1815',
+    await observerColonne(
       `SELECT 1 FROM information_schema.columns
         WHERE table_name = 'ai_model_operational_status' AND column_name = 'check_id' LIMIT 1`,
-    )) as unknown as Row[];
-    colonnes1815 = rows.length > 0;
-    if (!colonnes1815) {
-      schemaDegradeMotif = 'migration 1815 non appliquée : identifiant de contrôle, contexte d’accès et dernier résultat non conservés';
-      console.warn(`[model-operational] ${schemaDegradeMotif}.`);
-    }
-  } catch {
-    colonnes1815 = false;
-  }
-  return colonnes1815;
+    ),
+    'migration 1815 non appliquée : identifiant de contrôle, contexte d’accès et dernier résultat non conservés',
+    (v) => { colonnes1815 = v; },
+  );
 }
 
 /** Incrémente la clé de version partagée dans la transaction du verdict. */
@@ -563,7 +649,9 @@ export async function recordOperationalCheck(p: {
   const transaction = async (sql: SqlRunner): Promise<RecordedOperationalState> => {
     await sql.unsafe(`SELECT pg_advisory_xact_lock(hashtext($1))`, [`ai-model-operational:${p.model}:${fp}:${capability}`] as never[]);
     const row = capaciteEtat === null ? undefined : ((await sql.unsafe(
-      `SELECT ok, check_status, error, suspect_since, error_kind, observed_at, failure_count, state_version, next_probe_at${
+      // `checked_at` est l'instant de PUBLICATION du verdict en vigueur (posé par `NOW()`, horloge de la BASE) —
+      // à ne pas confondre avec `observed_at`, l'instant d'ENVOI du contrôle qui le fonde (#786, B02).
+      `SELECT ok, check_status, error, suspect_since, error_kind, observed_at, checked_at, failure_count, state_version, next_probe_at${
   bail ? ', probe_lease_generation, probe_lease_until' : ''}
          FROM ai_model_operational_status
         WHERE provider = 'gemini' AND model = $1 AND key_fingerprint = $2${parCapacite ? ' AND capability = $3' : ''}`,
@@ -573,6 +661,17 @@ export async function recordOperationalCheck(p: {
     const version = Number(row?.state_version ?? 0);
     /** Instant d'ENVOI retenu, recalé sur l'horloge de la base dans les deux sens (#786, B02). */
     let envoye = observedAt;
+    /**
+     * #786 (B02) — MÊME instant d'envoi, projeté sur l'horloge de la BASE par l'écart MESURÉ, appliqué
+     * intégralement (et non seulement au-delà de la tolérance).
+     *
+     * Il ne sert qu'à UNE comparaison : l'envoi a-t-il eu lieu avant la PUBLICATION du verdict en vigueur
+     * (`checked_at`, posé par `NOW()`) ? Les deux instants sont alors lus sur la même horloge — celle de la
+     * base — ce qui est la condition pour que la comparaison veuille dire quelque chose. L'instant CONSERVÉ
+     * reste `envoye` : son recalage obéit, lui, à la tolérance d'horloge (un envoi n'est pas redaté pour
+     * quelques millisecondes d'écart).
+     */
+    let envoiSurHorlogeBase = observedAt;
     const historise = async (
       etat: { checkStatus: CheckStatus | null; ok: boolean | null }, applied: boolean, v: number, discardedReason: string | null = null,
     ) => {
@@ -659,6 +758,7 @@ export async function recordOperationalCheck(p: {
     if (basesNow) {
       const baseMs = new Date(String(basesNow)).getTime();
       const ecartMs = now.getTime() - baseMs;
+      envoiSurHorlogeBase = new Date(observedAt.getTime() - ecartMs);
       if (Math.abs(ecartMs) > CLOCK_SKEW_TOLERANCE_MS) {
         envoye = new Date(observedAt.getTime() - ecartMs);
         console.info(`[model-operational] ${p.model} : instant d'envoi recalé de ${Math.round(-ecartMs / 1000)} s sur l'horloge de la base (écart mesuré du worker).`);
@@ -731,9 +831,45 @@ export async function recordOperationalCheck(p: {
      * Règle complétée (carte #786, B02) : seul le cas `status === 'ok'` après un refus était écarté. Pour
      * tous les autres, l'issue dépendait de l'ordre d'arrivée — ce n'était pas un arbitrage, c'était une
      * course.
+     *
+     * ══════════════════════════════════════════════════════════════════════════
+     * CE QUE « CONCURRENT » VEUT DIRE — **règle remplacée (carte #786, B02)**
+     *
+     * L'arbitrage ne s'appliquait qu'à la proximité des instants d'ENVOI
+     * (`observed_at`). Or `observed_at` est l'instant où le contrôle qui fonde
+     * l'état est PARTI, pas celui où son verdict a été PUBLIÉ : tout contrôle
+     * envoyé moins d'une seconde après le départ du précédent était donc traité
+     * comme concurrent et, s'il améliorait la disponibilité, ÉCARTÉ. Une sonde
+     * de rétablissement lancée juste après un refus ne levait jamais ce refus —
+     * et sur une base réelle, où les étapes s'enchaînent en quelques dizaines de
+     * millisecondes, c'était systématique.
+     *
+     * Deux résultats ne sont réellement CONCURRENTS que s'ils étaient tous deux
+     * EN VOL au même moment, c'est-à-dire si le nouveau est parti AVANT la
+     * publication du verdict en vigueur (`checked_at`). Un contrôle parti APRÈS
+     * ce commit lui est strictement postérieur : il s'applique, quelle que soit
+     * la proximité des horloges — aucune marge n'est ajoutée APRÈS la
+     * publication, ce serait recréer le défaut.
+     *
+     * La comparaison porte sur des instants COMPARABLES : `checked_at` vient de
+     * l'horloge de la base (`NOW()`), et l'instant d'envoi y est projeté par
+     * l'écart mesuré juste au-dessus (`envoiSurHorlogeBase`).
+     *
+     * `checked_at` absent (ligne d'un schéma antérieur) : on ne peut pas
+     * trancher, donc on reste PRUDENT — le résultat est traité comme concurrent
+     * et l'arbitrage monotone s'applique.
+     *
+     * La garantie de la carte est intacte : deux workers dont les contrôles
+     * partent tous deux avant la première publication restent arbitrés par le
+     * rang de prudence, donc un refus confirmé n'est jamais levé par un résultat
+     * qui ne lui est pas strictement postérieur, et le verdict final ne dépend
+     * pas de l'ordre dans lequel ils commitent.
+     * ══════════════════════════════════════════════════════════════════════════
      */
+    const publieA = row?.checked_at == null ? null : new Date(String(row.checked_at));
+    const enVolEnsemble = publieA === null || envoiSurHorlogeBase.getTime() <= publieA.getTime();
     const rangDePrudence = (ok: boolean | null): number => (ok === false ? 2 : ok === null ? 1 : 0);
-    if (row && prev && ecartMsOrdre !== null && Math.abs(ecartMsOrdre) <= ORDER_EQUALITY_WINDOW_MS) {
+    if (row && prev && ecartMsOrdre !== null && Math.abs(ecartMsOrdre) <= ORDER_EQUALITY_WINDOW_MS && enVolEnsemble) {
       const futur = nextOperationalState(prev, p.outcome, now);
       if (rangDePrudence(futur.ok) < rangDePrudence(prev.ok)) {
         await historise({ checkStatus: prev.checkStatus, ok: prev.ok }, false, version, 'equal_instant');
@@ -817,7 +953,23 @@ export async function recordOperationalCheck(p: {
     const motif = schemaAnterieur(e)
       ? `schéma incomplet (${code ?? 'colonne ou table absente'}) : migration critique 1692 / 1815 / 1816 non appliquée`
       : `écriture ou commit en échec (${code ?? 'erreur'})`;
-    if (schemaAnterieur(e)) schemaDegradeMotif = schemaDegradeMotif ?? motif;
+    /**
+     * #786 (A03) — l'écriture a été refusée par le SCHÉMA : signal posé à part (`ecritureSchemaMotif`) et
+     * observations du catalogue INVALIDÉES, pour que la question « cette migration est-elle appliquée ? » soit
+     * réellement reposée à `information_schema` — la seule autorité — au prochain appel.
+     *
+     * **Règle remplacée (carte #786, A03)** : le motif était gravé dans un drapeau de processus jamais effacé.
+     * Une table momentanément illisible rendait donc tout le processus réputé « migration non appliquée », et
+     * `operationalRefusalInTx` refusait promotions, activations et imports sur une base pourtant complète.
+     */
+    if (schemaAnterieur(e)) {
+      ecritureSchemaMotif = ecritureSchemaMotif ?? motif;
+      colonnes1815 = null;
+      colonnes1816 = null;
+      colonnes1950 = null;
+    } else {
+      lectureImpossibleMotif = motif;
+    }
     console.warn(`[model-operational] ${p.model} (${accessLabel(fp)}) : AUCUN verdict publié — ${motif}. `
       + `Reprise idempotente possible avec le même identifiant de contrôle (${checkId}). Détail : `
       + sanitizeProviderError((e as Error).message, p.secret));
@@ -918,9 +1070,15 @@ export async function operationalRefusalInTx(
   // #786 (A03) : une MIGRATION CRITIQUE absente (1692 / 1815 / 1816) rend le contrôle final impossible —
   // la promotion, l'activation et l'import sont REFUSÉS, et la candidate comme les preuves sont conservées.
   // Jamais un repli silencieux vers un schéma qui perdrait l'isolation par accès, l'ordre ou l'historique.
+  //
+  // **Règle remplacée (carte #786, A03)** : le contrôle lisait un DRAPEAU de processus, que n'importe quel
+  // échec de lecture ou d'écriture de données avait pu poser et que rien n'effaçait — une base complète était
+  // donc déclarée incomplète. Il OBSERVE désormais `information_schema`, la seule autorité : ce qui disparaît
+  // est la fausse détection, pas la détection.
   if (await dimensionInstrumentee()) {
+    const complet = (await has1815()) && (await has1816());
     const schema = operationalSchemaState();
-    if (schema.complete === false || schema.degradedReason !== null) {
+    if (!complet || schema.degradedReason !== null) {
       return { kind: 'unverifiable', detail: `schéma de disponibilité incomplet — ${schema.degradedReason ?? 'migration critique non appliquée'}` };
     }
   }
@@ -1186,12 +1344,25 @@ export async function readPublishedVerdict(
       [model, fp] as never[],
     )) as unknown as Row[];
   } catch (e) {
-    // Colonnes 1692 absentes : le schéma ne tient ni l'isolation par accès, ni l'ordre, ni l'historique.
-    // Signalé, et lecture déclarée NON fiable : l'admission devient prudente (jamais un repli silencieux).
+    /**
+     * #786 (A03, D01) — LECTURE DE DONNÉES IMPOSSIBLE : la lecture est déclarée NON fiable, et c'est tout ce
+     * qu'elle démontre. L'admission devient prudente (l'appelant retombe sur son dernier verdict fiable, ou
+     * suspend l'envoi) et le BO affiche « vérification impossible ».
+     *
+     * **Règle remplacée (carte #786, A03)** : ce `catch` POSAIT « migration 1692 non appliquée » — un drapeau
+     * de processus jamais effacé — dès qu'une erreur portait un code de schéma (`42703` / `42P10` / `42P01`).
+     * Une table momentanément illisible (bascule, panne, renommage) condamnait donc tout le processus : le
+     * contrôle final de disponibilité rendait `unverifiable`, et promotion, activation et import étaient
+     * refusés sur une base parfaitement migrée. Un échec de lecture de données n'OBSERVE pas le catalogue : il
+     * ne peut pas conclure qu'une migration manque. Seule `information_schema` le peut (`has1815` / `has1816` /
+     * `has1950`), et c'est elle qui bloque — en nommant la lacune — quand une migration critique est
+     * réellement absente.
+     */
+    const code = (e as { code?: string } | null)?.code ?? null;
+    lectureImpossibleMotif = `état de disponibilité illisible (${code ?? 'erreur'})`;
     if (schemaAnterieur(e)) {
-      schemaDegradeMotif = schemaDegradeMotif
-        ?? 'migration 1692 non appliquée : état par accès, ordre des contrôles et historique indisponibles';
-      console.warn(`[model-operational] ${schemaDegradeMotif}.`);
+      console.warn(`[model-operational] état de disponibilité illisible (${code}) : lecture non fiable — `
+        + 'la présence des migrations critiques reste établie par information_schema, jamais par cet échec.');
     }
     return unknownVerdict(model, false);
   }

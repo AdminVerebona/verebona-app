@@ -221,6 +221,34 @@ export function selectDisplayedProposals(proposals: ActionProposal[], ruleCode: 
  * Rendues seulement pour les règles qui déclarent une exception d'affichage
  * (`DISPLAYED_PROPOSALS_MAX_BY_RULE`) : AUCUNE autre carte ne change.
  */
+/**
+ * Carte #836 (écart E06) — JEU DE PROPOSITIONS CONSERVÉ par la carte (pur).
+ *
+ * L'écart E06 exigeait qu'une contradiction d'attribut à treize valeurs réelles
+ * rende TOUTES ses valeurs sélectionnables : il faut donc que la carte les
+ * CONSERVE, et que la pagination se fasse à la lecture
+ * (`selectDisplayedProposals` + `overflowProposals`).
+ *
+ * **Règle remplacée (carte #836, E06)** : le jeu complet a été conservé pour
+ * TOUTES les règles. Or ce qui est stocké porte, pour d'autres familles, une
+ * sémantique propre : sur `LINK-ASSET`, c'est « les candidats que la carte a
+ * retenus », et `buildAssetLinkChoices` marque `suggested: true` tout candidat
+ * stocké qui reste un bien éligible. Conserver le jeu complet y faisait
+ * ressurgir en « suggéré » un candidat que la carte avait justement écarté
+ * (Peugeot, confiance 0,4) — alors que la carte #836 impose « AUCUNE autre
+ * carte ne change ».
+ *
+ * Le jeu complet n'est donc conservé que pour les règles qui DÉCLARENT une
+ * exception d'affichage (`DISPLAYED_PROPOSALS_MAX_BY_RULE`, soit la seule
+ * contradiction d'attribut d'un événement de référence). Toutes les autres
+ * retrouvent EXACTEMENT leur stockage d'avant : les propositions affichées.
+ */
+export function storedProposals(proposals: ActionProposal[], ruleCode: string | null = null): ActionProposal[] {
+  return ruleCode !== null && DISPLAYED_PROPOSALS_MAX_BY_RULE[ruleCode] !== undefined
+    ? proposals
+    : selectDisplayedProposals(proposals, ruleCode);
+}
+
 export function overflowProposals(proposals: ActionProposal[], ruleCode: string | null = null): ActionProposal[] {
   if (ruleCode === null || DISPLAYED_PROPOSALS_MAX_BY_RULE[ruleCode] === undefined) return [];
   return proposals

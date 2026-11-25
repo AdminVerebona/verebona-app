@@ -35,7 +35,7 @@ import type {
   ResolutionReason,
   TargetType,
 } from './action-model';
-import { isDisplayableArbitration, sanitizeArbitrationProposals, selectDisplayedProposals } from './action-model';
+import { isDisplayableArbitration, sanitizeArbitrationProposals, selectDisplayedProposals, storedProposals } from './action-model';
 import { getRule, priorityForRule } from './rules-catalog';
 import { admitToDoFirst, resolvePriority } from './priority';
 import { loadDoFirst } from './priority-scheduler.service';
@@ -168,10 +168,11 @@ async function upsertActionOnce(input: UpsertActionInput): Promise<UpsertActionR
   // jour d'un arbitrage — propositions équivalentes à la valeur actuelle
   // écartées (clé canonique, normaliseurs métier), doublons fusionnés.
   const brutes = input.proposals ?? [];
-  const proposals = input.actionKind === 'ARBITRATE'
+  /** Jeu RÉEL et complet des propositions de ce passage (doublons fusionnés, équivalentes écartées). */
+  const reelles = input.actionKind === 'ARBITRATE'
     ? sanitizeArbitrationProposals(brutes, input.fieldKey ?? null)
     : brutes;
-  if (input.actionKind === 'ARBITRATE' && !isDisplayableArbitration(proposals, input.fieldKey ?? null)) {
+  if (input.actionKind === 'ARBITRATE' && !isDisplayableArbitration(reelles, input.fieldKey ?? null)) {
     // Aucune véritable alternative : rien n'est créé NI fermé — une carte
     // existante n'est jamais déclarée résolue sur une proposition mal choisie
     // (le moteur ou le rattrapage la réévaluent).
@@ -204,7 +205,19 @@ async function upsertActionOnce(input: UpsertActionInput): Promise<UpsertActionR
   // perdue pour de bon. La carte conserve désormais TOUTES ses propositions réelles (identifiants stables) ;
   // c'est la LECTURE qui pagine (`selectDisplayedProposals` + `overflowProposals`). L'empreinte du contexte,
   // elle, reste calculée sur les propositions affichées : aucune carte des autres règles n'est remuée.
-  const displayed = selectDisplayedProposals(proposals, input.ruleCode);
+  //
+  // **Règle corrigée (carte #836, E06)** : ce jeu complet était conservé pour TOUTES les règles. Le jeu
+  // stocké porte pourtant, ailleurs, sa propre sémantique — sur `LINK-ASSET`, « les candidats que la carte a
+  // retenus » (`buildAssetLinkChoices` les marque « suggérés ») — et une carte d'une autre famille changeait
+  // donc de contenu, contre la contrainte explicite de la carte. Seules les règles qui DÉCLARENT une
+  // exception d'affichage conservent tout (`storedProposals`) ; les autres stockent ce qu'elles stockaient.
+  const displayed = selectDisplayedProposals(reelles, input.ruleCode);
+  /**
+   * Jeu CONSERVÉ par la carte : TOUTES les valeurs réelles pour les règles qui déclarent une exception
+   * d'affichage (la contradiction d'attribut d'un événement de référence, E06), et exactement ce qu'elles
+   * conservaient avant pour toutes les autres (`storedProposals`).
+   */
+  const proposals = storedProposals(reelles, input.ruleCode);
   const contextHash = computeTriggerContextHash({
     ruleCode: input.ruleCode,
     actionKind: input.actionKind,
