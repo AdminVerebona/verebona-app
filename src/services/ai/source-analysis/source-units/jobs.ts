@@ -45,11 +45,13 @@ import {
   SOURCE_LAYER_VERSION, type CoveredSourceUnit, type SourceLayer, type T1CoverageDiagnostics, type UnresolvedFactRecord,
 } from './types';
 import { verificationAutoRetryDue } from './verification-followup';
-import { decideRequeueRight, decideRetry, releaseUnschedulablePending, retryFactsOf, retryLimits } from './retry-policy';
+import { decideRequeueAdmission, decideRetry, releaseUnschedulablePending, retryFactsOf, retryLimits } from './retry-policy';
 import {
-  openRequeueRequest, recordRequeueProgress, requeueEvidenceFingerprint, requeueRequestKey,
-  type RequeueRequestRecord,
+  claimRequeueRequest, markRequeueStep, noteKnownRequest, readRequeueRequest, requeueActionOf, requeueEvidenceFingerprint, requeueRequestKey,
+  requeueRequestsReady, RequeueIdentityUnavailableError,
+  type RequeueClaim, type RequeueRequestRecord, type RequeueRequestState, type RequeueSteps,
 } from './requeue-identity';
+import { loadEvidenceDependencies } from './evidence-version';
 import type { RequeueOrigin } from './retry-policy';
 import type { T1EnqueueOutcome, T1EnqueueStatus } from '../queue/t1-handler';
 import { partitionUnitRefs, relinkFromStored, type StoredUnitView } from './provenance-integrity';
@@ -447,7 +449,17 @@ export interface RequeueResult {
    *          TERMINÉ dont le résultat est acquis, et aucune preuve n'a changé
    *          depuis : la rejouer refarait à l'identique. Rien n'est consommé.
    */
-  status: T1EnqueueStatus | 'NOT_ADMISSIBLE' | 'IDENTICAL_REQUEST_ALIVE' | 'ALREADY_SATISFIED';
+  status: T1EnqueueStatus | 'NOT_ADMISSIBLE' | 'IDENTICAL_REQUEST_ALIVE' | 'ALREADY_SATISFIED'
+    /**
+     * Carte #837 (A3) : la MÊME demande canonique est tenue par une autre exécution (bail vivant) — rien n'est
+     * réservé, enfilé, consommé ni écrit par cet appel.
+     */
+    | 'IDENTICAL_REQUEST_IN_PROGRESS'
+    /**
+     * Carte #837 (A2) : le travail était déjà TERMINÉ à l'inspection — jamais « en file » (`queued` faux) ;
+     * `businessResult` dit s'il a réussi au sens métier.
+     */
+    | 'COMPLETED';
   /** Un travail vivant du document est CONFIRMÉ (créé, ou déjà présent) — seule condition de « REQUEUED_T1 ». */
   queued: boolean;
   jobId: number | null;
@@ -457,6 +469,10 @@ export interface RequeueResult {
   attemptConsumed: boolean;
   /** Code consigné sur la couverture (`last_retry_result`). */
   result: string;
+  /** Carte #837 (A2) : résultat métier du travail terminé (`COMPLETED`, `ALREADY_SATISFIED`). */
+  businessResult?: string | null;
+  /** Carte #837 (B2) : étapes dont l'écriture n'a PAS été confirmée (jamais absorbées en silence). */
+  traceErrors?: string[];
 }
 
 /** Écritures de la couverture après une demande de mise en file (pure, testée). */
@@ -529,28 +545,50 @@ function lireEmpreinteReverification(v: unknown): string | null {
 }
 
 /**
- * Lot 115H (#785, § 2) — demande d'identité DÉJÀ CONNUE : que faire ?
+ * Carte #837 (A2) — un travail TERMINÉ n'est un résultat ACQUIS que si son
+ * résultat MÉTIER le dit (pure). `DONE` seul ne prouve rien : un travail clos
+ * en `FAILED` métier, `SUPERSEDED`, `TARGET_GONE`, `ABSTAIN` ou sans résultat
+ * consigné n'a pas satisfait la demande.
+ */
+export function doneJobSatisfies(businessResult: string | null | undefined): boolean {
+  return businessResult === 'APPLIED' || businessResult === 'NO_CHANGE';
+}
+
+/** Libellé court d'un motif de refus d'admission (journaux, jamais de contenu). */
+const MOTIF_REFUS: Record<string, string> = {
+  RETRIES_DISABLED: 'remise en file T1 refusée : les reprises sont désactivées',
+  RETRY_CAP_REACHED: 'remise en file T1 refusée : plafond de reprises atteint',
+  SOURCE_NOT_AVAILABLE: 'remise en file T1 refusée : fichier source absent ou supprimé (non relisible)',
+  NOTHING_TO_RETRY: 'remise en file T1 refusée : le document est complet, aucune action utile',
+  ACCOUNT_NOT_ELIGIBLE: 'remise en file T1 refusée : compte non éligible au traitement',
+  AI_TREATMENT_BLOCKED: 'remise en file T1 refusée : traitement T1 suspendu ou arrêté',
+  ACCOUNT_AI_BUDGET_REACHED: 'remise en file T1 refusée : plafond de coût IA du compte atteint',
+  IDENTITY_UNAVAILABLE: 'remise en file T1 refusée : identité des demandes indisponible (migrations 1805 / 1970)',
+};
+
+/**
+ * Lot 115H (#785, § 2), complété par la carte #837 (A2) — demande d'identité
+ * DÉJÀ CONNUE (`CONFIRMED` ou `OBSERVED`) : que faire ?
  *
- * `null` : rien à court-circuiter (la demande repart normalement, avec sa
- * réservation). Sinon l'issue est rendue telle quelle : aucun enfilement, aucun
- * passage supplémentaire, aucune consommation. L'état RÉEL du travail est lu en
- * base (compte, document, travail, statut) : la seule existence d'un
- * identifiant ne vaut jamais « travail vivant ».
+ * `null` : la demande repart (re-réservation, dans ses bornes). Sinon l'issue
+ * est rendue telle quelle : aucun enfilement, aucune consommation.
+ *   · travail VIVANT (`PENDING` / `RUNNING` — seuls états vivants) : constaté ;
+ *   · travail `DONE` dont le résultat MÉTIER est acquis (`APPLIED`,
+ *     `NO_CHANGE`) et preuves inchangées (l'empreinte est dans l'identité) :
+ *     `ALREADY_SATISFIED`, jamais « en file » ;
+ *   · `DONE` en échec métier (ou sans résultat), `FAILED`, `CANCELLED`, aucun
+ *     travail : décision EXPLICITE de reprise (consignée), jamais un acquis.
  */
 async function courtCircuitDemandeConnue(p: {
-  fileId: number; accountId: number; origin: string; demande: RequeueRequestRecord; origine: RequeueOrigin; cle: string;
+  fileId: number; accountId: number; origin: string; demande: RequeueRequestRecord; origine: RequeueOrigin;
 }): Promise<RequeueResult | null> {
   const { demande } = p;
-  // Réservation acquise mais suite inaboutie : la demande REPREND sa réservation (voir plus bas), pas de court-circuit.
-  if (demande.state === 'RESERVED') return null;
-  // Refusée, rendue ou récupérée : la demande peut être refaite (les bornes seront recontrôlées).
-  if (demande.state === 'REFUSED' || demande.state === 'RELEASED' || demande.state === 'RECOVERED') return null;
   const { inspectCorrelatedJob } = await import('../../queue/job-queue.repository');
   const travail = await inspectCorrelatedJob({
     treatment: 'T1', accountId: p.accountId, targetType: 'asset_file', targetId: p.fileId, jobId: demande.jobId,
   });
   if (travail.state === 'ALIVE') {
-    await recordRequeueProgress({ requestId: demande.id, steps: { inspected: true }, state: 'OBSERVED', jobId: travail.jobId, reason: 'IDENTICAL_REQUEST_ALIVE' });
+    await noteKnownRequest({ requestId: demande.id, fromState: demande.state, toState: 'OBSERVED', jobId: travail.jobId, reason: 'IDENTICAL_REQUEST_ALIVE' });
     console.info(`[t1-requeue] document ${p.fileId} (${p.origin}, ${p.origine}) : demande identique déjà servie par le travail `
       + `${travail.jobId} (${travail.status}) — constatée, aucun passage supplémentaire, aucune reprise consommée.`);
     return {
@@ -558,20 +596,69 @@ async function courtCircuitDemandeConnue(p: {
       attemptConsumed: false, result: 'REQUEUE_IDENTICAL_ALIVE',
     };
   }
-  if (travail.state === 'DONE') {
-    // Travail TERMINÉ, résultat acquis, et aucune preuve n'a changé (l'empreinte est dans l'identité) : rejouer
-    // refarait la même confrontation. Rien n'est consommé, aucune reprise n'est promise.
-    await recordRequeueProgress({ requestId: demande.id, steps: { inspected: true }, jobId: travail.jobId, reason: 'ALREADY_SATISFIED' });
+  if (travail.state === 'DONE' && doneJobSatisfies(travail.businessResult)) {
+    await noteKnownRequest({ requestId: demande.id, fromState: demande.state, jobId: travail.jobId, reason: 'ALREADY_SATISFIED' });
     console.info(`[t1-requeue] document ${p.fileId} (${p.origin}, ${p.origine}) : demande identique déjà servie par le travail `
-      + `${travail.jobId} terminé${travail.businessResult ? ` (${travail.businessResult})` : ''} — non rejouée (preuves inchangées).`);
+      + `${travail.jobId} terminé (${travail.businessResult}) — non rejouée (preuves inchangées).`);
     return {
       status: 'ALREADY_SATISFIED', queued: false, jobId: travail.jobId, reason: 'ALREADY_SATISFIED',
-      attemptConsumed: false, result: 'REQUEUE_ALREADY_SATISFIED',
+      attemptConsumed: false, result: 'REQUEUE_ALREADY_SATISFIED', businessResult: travail.businessResult,
     };
   }
-  // Travail échoué, annulé ou disparu : la MÊME demande a droit à une nouvelle tentative, dans ses bornes.
-  await recordRequeueProgress({ requestId: demande.id, steps: { inspected: true }, reason: `travail précédent ${travail.state}` });
+  // DONE en échec métier, FAILED, CANCELLED ou disparu : la MÊME demande a droit à une nouvelle tentative, dans ses bornes.
+  const motif = travail.state === 'DONE' ? `travail précédent DONE, résultat métier ${travail.businessResult ?? 'absent'} (non acquis)` : `travail précédent ${travail.state}`;
+  await noteKnownRequest({ requestId: demande.id, fromState: demande.state, reason: motif });
+  console.info(`[t1-requeue] document ${p.fileId} (${p.origin}, ${p.origine}) : ${motif} — nouvelle tentative examinée dans ses bornes.`);
   return null;
+}
+
+/** Attente maximale de la clôture d'une demande identique tenue par une autre exécution (carte #837, A3). */
+const REQUEUE_IN_PROGRESS_WAIT_MS = 10_000;
+
+/** Fencing perdu à la clôture d'une demande (carte #837, B3/B2) : la transaction est annulée. */
+class RequeueLeaseLostError extends Error {
+  constructor(id: number) {
+    super(`demande de reprise ${id} : bail perdu avant la clôture — rien n'est compté par cette exécution`);
+    this.name = 'RequeueLeaseLostError';
+  }
+}
+
+/**
+ * Carte #837 (D1) — SUITE D'UNE CAMPAGNE, consignée par l'exécution elle-même
+ * (corrélation explicite, immuable). Table absente : avertissement, la suite
+ * reste comptée « non corrélée » au bilan — jamais 0.
+ */
+export async function recordCampaignFollowUp(p: {
+  campaignRef: string; accountId: number; fileId: number; kind: 'TEXT_REPAIR' | 'SOURCE_REREAD' | 'REQUEUE_T1';
+  requestId?: number | null; jobId?: number | null; businessExecutionId?: string | null;
+  calls?: number | null; callsFailed?: number | null; costMicros?: number | null; costUnknownCalls?: number | null;
+  result?: string | null; businessSuccess?: boolean | null; unitsAttempted?: number | null; unitsRepaired?: number | null;
+  residualUnits?: number | null; qualityBefore?: string | null; qualityAfter?: string | null;
+}): Promise<boolean> {
+  try {
+    const { pgClient } = await import('@/db');
+    await pgClient.unsafe(
+      `/* c837:followup */ INSERT INTO t1_campaign_followups
+         (campaign_ref, account_id, file_id, kind, request_id, job_id, business_execution_id, calls, calls_failed, cost_micros,
+          cost_unknown_calls, result, business_success, units_attempted, units_repaired, residual_units, quality_before, quality_after)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18)`,
+      [p.campaignRef, p.accountId, p.fileId, p.kind, p.requestId ?? null, p.jobId ?? null, p.businessExecutionId ?? null,
+        p.calls ?? null, p.callsFailed ?? null, p.costMicros ?? null, p.costUnknownCalls ?? null, p.result ?? null,
+        p.businessSuccess ?? null, p.unitsAttempted ?? null, p.unitsRepaired ?? null, p.residualUnits ?? null,
+        p.qualityBefore ?? null, p.qualityAfter ?? null] as never[],
+    );
+    return true;
+  } catch (e) {
+    console.warn(`[t1-campaign] suite ${p.kind} du document ${p.fileId} (${p.campaignRef}) non consignée :`, (e as Error).message);
+    return false;
+  }
+}
+
+/** Campagne de réévaluation qui a programmé la reprise de cette couverture (carte #837, D1) ; null : aucune. */
+export function campaignRefOf(verification: unknown): string | null {
+  const v = (typeof verification === 'string' ? JSON.parse(verification) : verification) as { scheduledBy?: { origin?: unknown } } | null;
+  const o = v?.scheduledBy?.origin;
+  return typeof o === 'string' && o.startsWith('t1-coverage-reassessment:') ? o : null;
 }
 
 /**
@@ -581,24 +668,29 @@ async function courtCircuitDemandeConnue(p: {
  * la reprise manuelle du BO et le contrôle de cohérence (`result`).
  *
  * ══════════════════════════════════════════════════════════════════════════
- * LOT 114H (Trello #775, P1-B) — PLUS DE REJEU FICTIF
+ * LOT 114H (Trello #775, P1-B) — PLUS DE REJEU FICTIF : l'issue RÉELLE de la
+ * file est lue, la présence du travail est RELUE en base, et la couverture
+ * n'est écrite « remise en file » que si un travail vivant est confirmé.
  *
- * Règle remplacée : quelle que soit la réponse de la file, la couverture
- * recevait `retry_attempts = attempt`, `next_retry_at = NULL` et le résultat
- * demandé (« REQUEUED_T1 ») ; les appelants de la reprise planifiée ignoraient
- * le booléen rendu. Un refus consommait donc une reprise, effaçait l'échéance
- * et s'affichait comme une remise en file réussie.
+ * LOT 115H (Trello #785, § 1, § 2, § 4) — droit contrôlé et réservé AVANT tout
+ * enfilement ; identité persistante de la demande ; reprise après panne.
  *
- * Désormais : l'issue RÉELLE de la file est lue (`enqueueFileAnalysesDetailed`),
- * la présence du travail est RELUE en base après la mise en file, et la
- * couverture n'est écrite « remise en file » que si un travail vivant du
- * document est confirmé. Voir `requeueCoverageUpdate` pour chaque issue.
- * Refus définitif, ou transitoire répété jusqu'au plafond : anomalie de
- * Supervision (`ai:t1-requeue:<document>`), résolue à la prochaine mise en
- * file confirmée. La mise en file et l'écriture de la couverture ne peuvent
- * pas partager une transaction (la file a la sienne) : si le processus
- * s'arrête entre les deux, le bail de la ligne expire et la reprise suivante
- * constate le travail vivant (ALREADY_RUNNING) — aucune reprise comptée deux fois.
+ * CARTE TRELLO #837 — RÉSIDUS DU LOT 115H
+ *   A1  ADMISSION COMMUNE avant tout enfilement : fichier présent et non
+ *       supprimé, action utile, compte éligible, traitement T1 non suspendu,
+ *       plafond de coût IA du compte, puis plafond de reprises sous verrou.
+ *       Refus = aucun travail, aucune consommation, motif consigné.
+ *   A2  Seuls PENDING / RUNNING sont VIVANTS. Un travail déjà `DONE` à
+ *       l'inspection n'est plus rendu « en file » : son résultat MÉTIER est
+ *       lu, et la demande est close `COMPLETED` (succès ou échec métier).
+ *   A3  IDENTITÉ CANONIQUE (compte, document, action, preuves) et réservation
+ *       ATOMIQUE sous bail ; migration 1805 / 1970 absente = refus visible.
+ *   A4  Un refus DÉFINITIF retire l'échéance (plus de « reprise programmée »
+ *       fictive, plus de boucle du planificateur) ; l'échéance historique est
+ *       conservée dans la trace. Un refus TEMPORAIRE garde la demande due.
+ *   B2  Étapes confirmées sous jeton ; consommation (compteur) et clôture de
+ *       la demande dans UNE transaction ; erreurs de trace rendues
+ *       (`traceErrors`), jamais absorbées.
  * ══════════════════════════════════════════════════════════════════════════
  */
 export async function requeueDocumentForRereadDetailed(p: {
@@ -607,83 +699,92 @@ export async function requeueDocumentForRereadDetailed(p: {
   scheduled?: boolean;
   env?: Record<string, string | undefined>;
   /**
-   * Lot 115H (#785, § 1) : origine de la demande, consignée avec le refus.
-   * Déduite de `origin` si elle n'est pas donnée. Aucune origine n'a de
-   * privilège : la règle du droit est la même pour toutes.
+   * Lot 115H (#785, § 1) : origine de la demande — PROVENANCE seulement (carte
+   * #837, A3 : elle ne fait plus partie de l'identité). Aucune origine n'a de
+   * privilège : la règle d'admission est la même pour toutes.
    */
   requestedBy?: RequeueOrigin;
-  /**
-   * Lot 115H (#785, § 2) : identité IMPOSÉE de la demande. Absente, l'identité
-   * est déduite de l'origine et de l'empreinte des preuves du document : deux
-   * demandes identiques se retrouvent (idempotence), une demande portée par une
-   * preuve nouvelle est distincte. Une action du BO qui veut explicitement sa
-   * propre demande peut en imposer une.
-   */
+  /** Identité IMPOSÉE de la demande (action distincte justifiée par l'appelant). */
   requestKey?: string;
+  /** Carte #837 (D1) : campagne de réévaluation à l'origine de la reprise (corrélation explicite). */
+  campaignRef?: string | null;
 }): Promise<RequeueResult> {
   const { pgClient } = await import('@/db');
-  // ══════════════════════════════════════════════════════════════════════
-  // LOT 115H (Trello #785, § 1) — LE DROIT EST CONTRÔLÉ ET RÉSERVÉ AVANT
-  // TOUT ENFILEMENT
-  //
-  // Règle remplacée : la file était sollicitée d'abord (`enqueueFileAnalyses…`)
-  // et le plafond n'intervenait qu'ensuite, dans le traitement de certains
-  // refus — une demande du BO était donc acceptée, et un travail T1 créé, à
-  // plafond ZÉRO ou déjà consommé. Le droit est maintenant jugé par la règle
-  // commune (`decideRequeueRight`) et RÉSERVÉ dans la même instruction que son
-  // contrôle, avant le moindre enfilement, pour toutes les origines.
-  //
-  // La réservation est atomique et filtrée par le compte : deux demandes
-  // simultanées (deux clics, BO + planificateur, deux processus) ne peuvent pas
-  // réserver la même et dernière reprise. Elle rend aussi le compteur EXACT en
-  // cas d'arrêt juste après l'enfilement : la tentative est déjà comptée, au
-  // lieu d'être perdue. Quand l'issue de la file dit qu'aucune reprise ne doit
-  // être consommée (travail déjà vivant, refus transitoire toléré), la
-  // réservation est RELÂCHÉE plus bas, à la valeur même qu'elle avait.
-  // ══════════════════════════════════════════════════════════════════════
   const limites = retryLimits(p.env);
   const origine: RequeueOrigin = p.requestedBy ?? (p.scheduled ? 'SCHEDULER' : 'OTHER');
+  const action = requeueActionOf(p.origin);
+  // Faits d'admission ET preuves, lus ensemble et filtrés par le compte (codes et compteurs seulement).
   const [etat] = (await pgClient.unsafe(
-    // Lot 115H (#785, § 2) : les PREUVES du document sont lues avec les tentatives — ce sont elles qui
-    // distinguent « demande identique » de « demande réellement distincte » (codes et compteurs seulement).
     `SELECT c.retry_attempts, c.quality_state, c.anomalies, c.unresolved_units, c.uncertain_units, c.failed_units,
             c.layer_version, to_jsonb(c) ->> 'source_verification' AS source_verification,
-            to_jsonb(c) -> 'verification' AS verification,
-            (SELECT x.source_sha256 FROM document_raw_extracts x WHERE x.file_id = c.file_id AND x.account_id = c.account_id) AS source_sha256
-       FROM document_extraction_coverage c WHERE c.file_id = $1 AND c.account_id = $2`,
+            to_jsonb(c) -> 'verification' AS verification, (c.file_id IS NOT NULL) AS has_coverage,
+            (SELECT x.source_sha256 FROM document_raw_extracts x WHERE x.file_id = f.id AND x.account_id = $2) AS source_sha256,
+            (af.id IS NOT NULL) AS file_present, (af.deleted_at IS NULL) AS file_alive,
+            ${processingEligibleSql('$2::int')} AS account_eligible
+       FROM (SELECT $1::int AS id) f
+       LEFT JOIN asset_files af ON af.id = f.id AND af.account_id = $2
+       LEFT JOIN document_extraction_coverage c ON c.file_id = f.id AND c.account_id = $2`,
     [p.fileId, p.accountId] as never[],
   ).catch(() => [])) as unknown as Array<{
     retry_attempts: number | null; quality_state: string | null; anomalies: string[] | null;
     unresolved_units: number | null; uncertain_units: number | null; failed_units: number | null;
     layer_version: number | null; source_verification: string | null; verification: unknown; source_sha256: string | null;
+    has_coverage?: boolean | null; file_present?: boolean | null; file_alive?: boolean | null; account_eligible?: boolean | null;
   }>;
+  const ligne = etat !== undefined && (etat.has_coverage ?? etat.retry_attempts != null) === true;
+  const tentativesLues = ligne ? Number(etat!.retry_attempts ?? 0) || 0 : Math.max(0, p.attempt - 1);
+
+  /** Écrit un REFUS (aucune consommation) sur la couverture — carte #837 (A4) : échéance retirée si le refus est définitif. */
+  const refuser = async (motif: string, temporary: boolean, attemptsSeen: number): Promise<RequeueResult> => {
+    const resultat = `REQUEUE_NOT_ADMISSIBLE:${motif}`;
+    // Demande PLANIFIÉE (la ligne est sous le bail de la tâche) : refus DÉFINITIF → l'échéance est RETIRÉE (sinon le
+    // bail expirait et le planificateur reprenait le document en boucle, affiché « reprise programmée ») ; refus
+    // TEMPORAIRE → la demande reste due, une heure plus tard. Demande MANUELLE (BO, cohérence) : l'échéance n'est
+    // pas touchée — elle peut porter une continuation légitime ; l'affichage ne la présente comme « reprise
+    // programmée » que si une reprise est encore admissible (`scheduleAdmissible`), et la tâche la rejuge à son tour.
+    const garder = !p.scheduled;
+    const prochaine = temporary && p.scheduled ? new Date(Date.now() + 3_600_000).toISOString() : null;
+    await pgClient.unsafe(
+      `UPDATE document_extraction_coverage
+          SET last_retry_at = NOW(), last_retry_result = $3, last_error = $4, updated_at = NOW(),
+              verification = jsonb_set(coalesce(verification, '{}'::jsonb), '{requeue}',
+                $5::jsonb || jsonb_build_object('previousNextRetryAt', to_jsonb(next_retry_at)), true),
+              next_retry_at = CASE WHEN $6::boolean THEN next_retry_at ELSE $7::timestamptz END
+        WHERE file_id = $1 AND account_id = $2`,
+      [p.fileId, p.accountId, resultat, MOTIF_REFUS[motif] ?? `remise en file T1 refusée : ${motif}`,
+        JSON.stringify({
+          status: 'NOT_ADMISSIBLE', reason: motif, temporary, jobId: null, origin: p.origin, requestedBy: origine, action,
+          at: new Date().toISOString(), attemptConsumed: false, maxRetries: limites.maxRetries, retryAttempts: attemptsSeen,
+        }), garder, prochaine] as never[],
+    ).catch(() => undefined);
+    console.warn(`[t1-requeue] fichier ${p.fileId} (${p.origin}, ${origine}) : demande REFUSÉE avant tout enfilement — ${motif} `
+      + `(${attemptsSeen} reprise(s) consommée(s), plafond ${limites.maxRetries}${temporary ? ', cause temporaire' : ''}).`);
+    return { status: 'NOT_ADMISSIBLE', queued: false, jobId: null, reason: motif, attemptConsumed: false, result: resultat };
+  };
+
   // ══════════════════════════════════════════════════════════════════════
-  // LOT 115H (Trello #785, § 2) — UNE DEMANDE IDENTIQUE NE CRÉE PAS DE
-  // PASSAGE SUPPLÉMENTAIRE, ET UNE DEMANDE DISTINCTE A SA PROPRE IDENTITÉ
-  //
-  // Règle complétée : `ALREADY_RUNNING` ne consommait aucune reprise (acquis
-  // du lot 114H, conservé), mais la file POSAIT `coalesce_requested` sur le
-  // travail en cours — un PASSAGE SUPPLÉMENTAIRE naissait à sa clôture : une
-  // seconde analyse complète du même document, payée par personne et absente
-  // des compteurs. Des clics répétés, ou BO + planificateur, ou deux
-  // exécutants, en empilaient autant.
-  //
-  // Désormais la demande porte une IDENTITÉ persistante (compte, document,
-  // origine, empreinte des preuves — `t1_requeue_requests`) :
-  //   · identité déjà servie par un travail VIVANT : le travail est constaté
-  //     (`IDENTICAL_REQUEST_ALIVE`), sans enfilement, sans passage
-  //     supplémentaire, sans consommation ;
-  //   · identité déjà servie par un travail TERMINÉ dont le résultat est acquis,
-  //     preuves inchangées : `ALREADY_SATISFIED` — la confrontation identique
-  //     n'est pas rejouée ;
-  //   · identité restée RÉSERVÉE (arrêt entre deux écritures) : la réservation
-  //     acquise est REPRISE, jamais doublée ;
-  //   · preuve ou source réellement nouvelle : l'empreinte change, donc
-  //     l'identité — droit réservé et consommation exacte, et ce n'est pas
-  //     présenté comme une simple absence de doublon.
-  // L'enfilement demande désormais `OBSERVE_ONLY` : la coalescence légitime des
-  // AUTRES traitements (T3, T4) reste inchangée.
+  // CARTE #837 (A3) — MIGRATION 1805 / 1970 OBLIGATOIRE : FAIL-CLOSED VISIBLE
+  // Règle remplacée : sans la table des demandes, la reprise continuait SANS
+  // identité persistante (double réservation inter-origines, reprise après
+  // panne non garantie). Elle est maintenant REFUSÉE, avec un motif nommé, une
+  // trace sur la couverture et une anomalie de Supervision.
   // ══════════════════════════════════════════════════════════════════════
+  const indisponible = async (): Promise<RequeueResult> => {
+    console.error(`[t1-requeue] fichier ${p.fileId} : ${MOTIF_REFUS.IDENTITY_UNAVAILABLE}.`);
+    try {
+      const { reportAnomaly } = await import('@/services/admin/anomaly.service');
+      await reportAnomaly({
+        domain: 'ai', fingerprint: 'ai:t1-requeue-identity-unavailable', accountId: null,
+        title: 'Remises en file T1 refusées : identité des demandes indisponible (migrations 1805 / 1970 non appliquées)',
+        detail: { fileId: p.fileId, origin: p.origin }, materialKey: 'IDENTITY_UNAVAILABLE',
+      } as never);
+    } catch { /* la Supervision ne fait jamais échouer le refus */ }
+    return refuser('IDENTITY_UNAVAILABLE', true, tentativesLues);
+  };
+  if (!(await requeueRequestsReady())) return indisponible();
+
+  // Carte #837 (C2) : empreinte VERSIONNÉE de toutes les dépendances lues, en plus des codes et compteurs.
+  const dependances = await loadEvidenceDependencies(pgClient as never, p.accountId, p.fileId);
   const empreinte = requeueEvidenceFingerprint({
     qualityState: etat?.quality_state ?? null, anomalies: etat?.anomalies ?? null,
     verificationReason: lireMotifVerification(etat?.verification),
@@ -693,79 +794,90 @@ export async function requeueDocumentForRereadDetailed(p: {
     failedUnits: etat?.failed_units ?? null,
     reverificationFingerprint: lireEmpreinteReverification(etat?.verification),
     sourceSha256: etat?.source_sha256 ?? null, layerVersion: etat?.layer_version ?? null,
+    dependencies: dependances.fingerprint,
   });
-  const cle = requeueRequestKey({ origin: p.origin, requestedBy: origine, evidenceFingerprint: empreinte, explicit: p.requestKey ?? null });
-  const demande = await openRequeueRequest({
-    accountId: p.accountId, fileId: p.fileId, requestKey: cle, origin: p.origin, requestedBy: origine, evidenceFingerprint: empreinte,
+  const cle = requeueRequestKey({ action, evidenceFingerprint: empreinte, explicit: p.requestKey ?? null });
+
+  // ══════════════════════════════════════════════════════════════════════
+  // CARTE #837 (A1) — ADMISSION COMMUNE (toutes origines, aucun privilège)
+  // ══════════════════════════════════════════════════════════════════════
+  let traitementOk = true;
+  try {
+    const { isTreatmentRunnable } = await import('../../queue/runnable-guard');
+    traitementOk = await isTreatmentRunnable('T1');
+  } catch { /* garde illisible : même politique que la passerelle (échec ouvert documenté) */ }
+  let budgetAtteint = false;
+  try {
+    const { costCapReachedFor } = await import('../../gateway/account-cost-cap');
+    budgetAtteint = (await costCapReachedFor(p.accountId)) !== null;
+  } catch { /* idem : plafond non vérifiable → la passerelle tranchera à l'appel */ }
+  const blocage = decideRequeueAdmission({
+    filePresent: etat?.file_present ?? null, fileAlive: etat?.file_alive ?? null, accountEligible: etat?.account_eligible ?? null,
+    treatmentRunnable: traitementOk, costCapReached: budgetAtteint, qualityState: ligne ? etat?.quality_state ?? null : null, action,
   });
-  if (demande && !demande.fresh) {
-    const court = await courtCircuitDemandeConnue({ ...p, demande, origine, cle });
-    if (court) return court;
+
+  let prise: RequeueClaim | null = null;
+  let attendu: RequeueRequestState | null = null;
+  // Une AUTRE exécution tient la même demande (bail vivant, quelques secondes) : on attend sa clôture, puis on CONSTATE
+  // son issue (travail vivant, terminé…) — jamais un second travail, jamais une seconde consommation.
+  const finAttente = Date.now() + REQUEUE_IN_PROGRESS_WAIT_MS;
+  try {
+    for (let tour = 0; tour < 200 && prise === null; tour++) {
+      const connue = await readRequeueRequest({ accountId: p.accountId, fileId: p.fileId, requestKey: cle });
+      if (connue && (connue.state === 'CONFIRMED' || connue.state === 'OBSERVED')) {
+        const court = await courtCircuitDemandeConnue({ fileId: p.fileId, accountId: p.accountId, origin: p.origin, demande: connue, origine });
+        if (court) return court;
+        attendu = connue.state;
+      }
+      if (connue && connue.state === 'RESERVED' && connue.leaseAlive) {
+        if (Date.now() >= finAttente) { prise = { kind: 'IN_PROGRESS', requestId: connue.id }; break; }
+        await new Promise((r) => setTimeout(r, 100));
+        continue;
+      }
+      const c = await claimRequeueRequest({
+        accountId: p.accountId, fileId: p.fileId, requestKey: cle, origin: p.origin, requestedBy: origine, evidenceFingerprint: empreinte,
+        maxRetries: limites.maxRetries, hasCoverage: ligne, callerAttempts: Math.max(0, p.attempt - 1),
+        admissionBlock: blocage ? { code: blocage.block, temporary: blocage.temporary } : null, expectedState: attendu,
+        campaignRef: p.campaignRef ?? null,
+      });
+      if (c.kind === 'IN_PROGRESS' && Date.now() < finAttente) { await new Promise((r) => setTimeout(r, 100)); continue; }
+      if (c.kind !== 'CHANGED') prise = c;
+    }
+  } catch (e) {
+    if (e instanceof RequeueIdentityUnavailableError) return indisponible();
+    throw e;
   }
-  // Ligne de couverture ABSENTE (document sans couche A relue, contrôle de cohérence) : il n'y a rien à réserver,
-  // et les tentatives ne peuvent pas être lues. Le droit est alors jugé sur le numéro de tentative que
-  // l'appelant a lui-même calculé — jamais accordé sans contrôle.
-  const ligne = etat !== undefined;
-  const tentatives = ligne ? Number(etat.retry_attempts ?? 0) || 0 : Math.max(0, p.attempt - 1);
-  const droit = decideRequeueRight({ retryAttempts: tentatives }, limites);
-  /**
-   * Lot 115H (#785, § 4) : réservation DÉJÀ acquise par cette même demande avant un arrêt — elle est REPRISE,
-   * jamais doublée. Le compteur reste donc exact quelle que soit la frontière où le traitement s'est arrêté.
-   */
-  const reservationReprise = demande !== null && !demande.fresh && demande.state === 'RESERVED'
-    && demande.steps.reserved === true && demande.reservedAttempt !== null;
-  // Réservation CONDITIONNELLE : la ligne n'est modifiée que si le plafond le permet encore.
-  const reserve = reservationReprise
-    ? [{ n: demande!.reservedAttempt as number }]
-    : droit.allowed && ligne
-    ? ((await pgClient.unsafe(
-        // `origin` n'est PAS touchée ici : elle ne passe à « RETRY » qu'avec la consommation réelle (ci-dessous),
-        // pour qu'une réservation relâchée ne laisse aucune trace d'une reprise qui n'a pas eu lieu.
-        `UPDATE document_extraction_coverage
-            SET retry_attempts = retry_attempts + 1, updated_at = NOW()
-          WHERE file_id = $1 AND account_id = $2 AND retry_attempts < $3::int
-          RETURNING retry_attempts AS n`,
-        [p.fileId, p.accountId, limites.maxRetries] as never[],
-      )) as unknown as Array<{ n: number }>)
-    : [];
-  if (!reservationReprise && (!droit.allowed || (ligne && reserve.length === 0))) {
-    const motif = droit.block ?? 'RETRY_CAP_REACHED';
-    const resultat = `REQUEUE_NOT_ADMISSIBLE:${motif}`;
-    if (demande) await recordRequeueProgress({ requestId: demande.id, state: 'REFUSED', reason: motif });
-    // Refus EXPLICITE : rien n'est consommé, aucune échéance n'est posée ni retirée (aucune reprise promise),
-    // et l'origine de la demande refusée est consignée.
-    await pgClient.unsafe(
-      `UPDATE document_extraction_coverage
-          SET last_retry_at = NOW(), last_retry_result = $3, last_error = $4, updated_at = NOW(),
-              verification = jsonb_set(coalesce(verification, '{}'::jsonb), '{requeue}', $5::jsonb, true)
-        WHERE file_id = $1 AND account_id = $2`,
-      [p.fileId, p.accountId, resultat,
-        motif === 'RETRIES_DISABLED' ? 'remise en file T1 refusée : les reprises sont désactivées'
-          : 'remise en file T1 refusée : plafond de reprises atteint',
-        JSON.stringify({
-          status: 'NOT_ADMISSIBLE', reason: motif, jobId: null, origin: p.origin, requestedBy: origine,
-          at: new Date().toISOString(), attemptConsumed: false, maxRetries: limites.maxRetries, retryAttempts: tentatives,
-        })] as never[],
-    ).catch(() => undefined);
-    console.warn(`[t1-requeue] fichier ${p.fileId} (${p.origin}, ${origine}) : demande REFUSÉE avant tout enfilement — ${motif} `
-      + `(${tentatives} reprise(s) consommée(s), plafond ${limites.maxRetries}).`);
-    return { status: 'NOT_ADMISSIBLE', queued: false, jobId: null, reason: motif, attemptConsumed: false, result: resultat };
+  if (prise === null || prise.kind === 'IN_PROGRESS') {
+    // Une AUTRE exécution tient la MÊME demande (bail vivant) : rien n'est réservé, enfilé ni écrit ici.
+    console.info(`[t1-requeue] document ${p.fileId} (${p.origin}, ${origine}) : demande identique en cours de traitement par une autre exécution — rien n'est doublé.`);
+    return {
+      status: 'IDENTICAL_REQUEST_IN_PROGRESS', queued: false, jobId: null, reason: 'REQUEST_IN_PROGRESS',
+      attemptConsumed: false, result: 'REQUEUE_IDENTICAL_IN_PROGRESS',
+    };
   }
-  /** Valeur de la réservation : la relâcher consiste à revenir à `tentatives`. `-1` : aucune ligne, rien à relâcher. */
-  const reserveeA = reserve.length > 0 ? Number(reserve[0].n) : -1;
-  if (demande) {
-    await recordRequeueProgress({
-      requestId: demande.id, steps: { reserved: true }, state: 'RESERVED',
-      reservedAttempt: reserveeA >= 0 ? reserveeA : null,
-    });
-  }
+  if (prise.kind === 'REFUSED') return refuser(prise.block, prise.temporary, prise.attemptsBefore);
+  if (prise.kind !== 'RESERVED') throw new Error('issue de réservation inattendue');
+  const reservation = prise;
+
+  // ══════════════════════════════════════════════════════════════════════
+  // CARTE #837 (B2) — ÉTAPES CONFIRMÉES SOUS JETON ; ERREURS RENDUES
+  // ══════════════════════════════════════════════════════════════════════
+  const traceErrors: string[] = [];
+  const etape = async (steps: RequeueSteps, extra: { jobId?: number | null; reason?: string | null } = {}) => {
+    const nom = Object.keys(steps).join('+');
+    try {
+      if (!(await markRequeueStep({ requestId: reservation.requestId, leaseToken: reservation.leaseToken, steps, ...extra }))) traceErrors.push(`${nom}:LEASE_LOST`);
+    } catch (e) {
+      traceErrors.push(`${nom}:${String((e as Error).message ?? e).slice(0, 120)}`);
+      console.error(`[t1-requeue] demande ${reservation.requestId} : étape « ${nom} » non consignée :`, (e as Error).message);
+    }
+  };
+
   let issue: T1EnqueueOutcome;
   try {
     const { enqueueFileAnalysesDetailed } = await import('../queue/t1-handler');
     // Lot 83C (R22) : relecture = reprise ciblée de la dernière exécution du document.
-    // Lot 115H (#785, § 2) : `OBSERVE_ONLY` — une demande identique CONSTATE le travail en cours et ne demande
-    // PAS de passage supplémentaire à sa clôture (plus de seconde analyse gratuite). La coalescence des autres
-    // traitements est inchangée.
+    // Lot 115H (#785, § 2) : `OBSERVE_ONLY` — aucune demande de passage supplémentaire à la clôture d'un travail en cours.
     const issues = await enqueueFileAnalysesDetailed([p.fileId], p.accountId, {
       origin: p.origin, billable: false, processingVisibility: 'TECHNICAL', resume: true, onRunning: 'OBSERVE_ONLY',
     });
@@ -773,18 +885,13 @@ export async function requeueDocumentForRereadDetailed(p: {
   } catch (e) {
     issue = { fileId: p.fileId, status: 'REJECTED_TRANSIENT', jobId: null, reason: 'ENQUEUE_ERROR', error: String((e as Error).message ?? e).slice(0, 300) };
   }
-  if (demande) await recordRequeueProgress({ requestId: demande.id, steps: { enqueued: true }, jobId: issue.jobId, reason: issue.reason });
+  await etape({ enqueued: true }, { jobId: issue.jobId, reason: issue.reason });
   // ══════════════════════════════════════════════════════════════════════
-  // LOT 115H (#785, § 2) — CONTRÔLE FINAL EN BASE : COMPTE, DOCUMENT,
-  // DEMANDE / TRAVAIL ET ÉTAT RÉEL
-  //
-  // Règle remplacée : la relecture acceptait `id = <rendu> OR status IN
-  // ('PENDING','RUNNING')` — la seule EXISTENCE de l'identifiant rendu valait
-  // « travail vivant », même pour un travail déjà terminé, échoué ou annulé
-  // entre les deux lectures. `inspectCorrelatedJob` distingue maintenant
-  // travail VIVANT, travail TERMINÉ au résultat acquis, travail ÉCHOUÉ ou
-  // ANNULÉ, et absence de travail.
+  // CONTRÔLE FINAL EN BASE (lot 115H § 2) — carte #837 (A2) : seuls PENDING /
+  // RUNNING sont vivants ; un `DONE` est QUALIFIÉ par son résultat métier.
   // ══════════════════════════════════════════════════════════════════════
+  /** Travail déjà terminé à l'inspection (carte #837, A2) : né de CETTE demande ou seulement constaté. */
+  let termine: { own: boolean; businessResult: string | null; success: boolean } | null = null;
   if (issue.status === 'ACCEPTED' || issue.status === 'ALREADY_RUNNING') {
     const { inspectCorrelatedJob } = await import('../../queue/job-queue.repository');
     const travail = await inspectCorrelatedJob({
@@ -793,13 +900,14 @@ export async function requeueDocumentForRereadDetailed(p: {
     if (travail.state === 'NONE') {
       issue = { fileId: p.fileId, status: 'REJECTED_TRANSIENT', jobId: null, reason: 'JOB_NOT_FOUND_AFTER_ENQUEUE' };
     } else if (travail.state === 'FAILED' || travail.state === 'CANCELLED') {
-      // Le travail créé a déjà échoué (ou été annulé) : la demande n'est PAS confirmée — jamais présentée comme
-      // une remise en file réussie. La reprise suivante retentera dans ses bornes.
       issue = { fileId: p.fileId, status: 'REJECTED_TRANSIENT', jobId: travail.jobId, reason: `JOB_${travail.state}_AFTER_ENQUEUE` };
+    } else if (travail.state === 'DONE') {
+      termine = { own: issue.status === 'ACCEPTED', businessResult: travail.businessResult, success: doneJobSatisfies(travail.businessResult) };
+      issue = { ...issue, jobId: travail.jobId };
     } else if (issue.jobId === null) {
       issue = { ...issue, jobId: travail.jobId };
     }
-    if (demande) await recordRequeueProgress({ requestId: demande.id, steps: { inspected: true }, jobId: travail.jobId });
+    await etape({ inspected: true }, { jobId: travail.jobId });
   }
   const [avant] = (await pgClient.unsafe(
     `SELECT to_jsonb(c) -> 'verification' -> 'requeue' ->> 'transientRefusals' AS refus FROM document_extraction_coverage c WHERE c.file_id = $1 AND c.account_id = $2`,
@@ -809,46 +917,83 @@ export async function requeueDocumentForRereadDetailed(p: {
     status: issue.status, attempt: p.attempt, result: p.result, reason: issue.reason, maxRetries: jobSettings(p.env).maxRetries,
     transientRefusals: Number(avant?.refus ?? 0) || 0, scheduled: p.scheduled === true, nowMs: Date.now(),
   });
+  if (termine) {
+    // Le travail a DÉJÀ écrit sa couverture : l'échéance n'est pas réécrite ; le résultat dit l'issue MÉTIER.
+    maj.nextRetryAt = 'KEEP';
+    maj.result = termine.own
+      ? (termine.success ? 'REQUEUE_COMPLETED' : 'REQUEUE_COMPLETED_BUSINESS_FAILED')
+      : (termine.success ? 'REQUEUE_OBSERVED_COMPLETED' : 'REQUEUE_OBSERVED_BUSINESS_FAILED');
+  }
   const garder = maj.nextRetryAt === 'KEEP';
-  // Lot 115H (#785, § 1) : la reprise est DÉJÀ réservée (incrémentée) — la règle de consommation de 114H
-  // (`requeueCoverageUpdate`) est conservée telle quelle, et décide seulement si la réservation est TENUE
-  // ou RENDUE. Le relâchement RETIRE exactement ce que cette demande avait pris (`- 1`, jamais sous zéro) :
-  // deux demandes simultanées réservent chacune la leur, et celle qui ne consomme pas rend la sienne — ni
-  // double consommation, ni tentative oubliée, quel que soit l'ordre des deux écritures.
-  await pgClient.unsafe(
-    `UPDATE document_extraction_coverage
-        SET retry_attempts = CASE WHEN $3::boolean THEN GREATEST(retry_attempts, $4::int)
-                                  WHEN $8::boolean THEN GREATEST(0, retry_attempts - 1)
-                                  ELSE retry_attempts END,
-            next_retry_at = CASE WHEN $5::boolean THEN next_retry_at ELSE $6::timestamptz END,
-            origin = CASE WHEN $3::boolean THEN 'RETRY' ELSE origin END,
-            last_error = $7, updated_at = NOW()
-      WHERE file_id = $1 AND account_id = $2`,
-    [p.fileId, p.accountId, maj.consumeAttempt, p.attempt, garder, garder || maj.nextRetryAt === null ? null : (maj.nextRetryAt as Date).toISOString(),
-      maj.lastError, reserveeA >= 0] as never[],
-  );
-  // Colonnes 0329 (dernière reprise, diagnostics) : écrites si présentes — issue exacte de la demande, sans contenu.
-  await pgClient.unsafe(
+  const queued = !termine && (issue.status === 'ACCEPTED' || issue.status === 'ALREADY_RUNNING');
+  const etatFinal: RequeueRequestState = maj.consumeAttempt ? 'CONFIRMED' : queued || termine ? 'OBSERVED' : 'RELEASED';
+  // ══════════════════════════════════════════════════════════════════════
+  // CARTE #837 (B2) — CONSOMMATION ET CLÔTURE DE LA DEMANDE DANS UNE SEULE
+  // TRANSACTION, sous le jeton de la réservation. Règle de consommation du lot
+  // 114H inchangée (`requeueCoverageUpdate`) : la réservation est TENUE ou
+  // RENDUE. Jeton perdu (bail expiré et demande reprise ou restituée) : rien
+  // n'est compté ici, la transaction est annulée.
+  // ══════════════════════════════════════════════════════════════════════
+  try {
+    await pgClient.begin(async (tx) => {
+      const t = tx as unknown as { unsafe: (q: string, v?: never[]) => Promise<unknown> };
+      const fin = (await t.unsafe(
+        `/* c837:req-final */ UPDATE t1_requeue_requests
+            SET state = $3, attempt_consumed = $4, job_id = COALESCE($5::bigint, job_id), reason = $6,
+                steps = steps || '{"counted":true}'::jsonb, lease_token = NULL, lease_expires_at = NULL, updated_at = NOW()
+          WHERE id = $1 AND lease_token = $2::uuid AND state = 'RESERVED'
+          RETURNING id`,
+        [reservation.requestId, reservation.leaseToken, etatFinal, maj.consumeAttempt, issue.jobId, termine ? `DONE:${termine.businessResult ?? 'NONE'}` : issue.reason] as never[],
+      )) as unknown[];
+      if (fin.length === 0) throw new RequeueLeaseLostError(reservation.requestId);
+      await t.unsafe(
+        `UPDATE document_extraction_coverage
+            SET retry_attempts = CASE WHEN $3::boolean THEN GREATEST(retry_attempts, $4::int)
+                                      WHEN $8::boolean THEN GREATEST(0, retry_attempts - 1)
+                                      ELSE retry_attempts END,
+                next_retry_at = CASE WHEN $5::boolean THEN next_retry_at ELSE $6::timestamptz END,
+                origin = CASE WHEN $3::boolean THEN 'RETRY' ELSE origin END,
+                last_error = $7, updated_at = NOW()
+          WHERE file_id = $1 AND account_id = $2`,
+        [p.fileId, p.accountId, maj.consumeAttempt, p.attempt, garder, garder || maj.nextRetryAt === null ? null : (maj.nextRetryAt as Date).toISOString(),
+          maj.lastError, reservation.reservedAttempt !== null] as never[],
+      );
+    });
+  } catch (e) {
+    if (!(e instanceof RequeueLeaseLostError)) throw e;
+    console.error(`[t1-requeue] fichier ${p.fileId} : ${e.message}.`);
+    return {
+      status: issue.status, queued: false, jobId: issue.jobId, reason: 'REQUEST_LEASE_LOST', attemptConsumed: false,
+      result: 'REQUEUE_LEASE_LOST', traceErrors: [...traceErrors, 'counted:LEASE_LOST'],
+    };
+  }
+  // Diagnostic (colonnes 0329) : issue exacte de la demande, sans contenu ; l'étape n'est notée que si l'écriture a eu lieu.
+  const diagnostique = await pgClient.unsafe(
     `UPDATE document_extraction_coverage
         SET last_retry_at = NOW(), last_retry_result = $3,
             verification = jsonb_set(coalesce(verification, '{}'::jsonb), '{requeue}', $4::jsonb, true)
       WHERE file_id = $1 AND account_id = $2`,
     [p.fileId, p.accountId, maj.result, JSON.stringify({
-      status: issue.status, reason: issue.reason, jobId: issue.jobId, origin: p.origin, at: new Date().toISOString(),
-      transientRefusals: maj.transientRefusals, attemptConsumed: maj.consumeAttempt,
+      status: termine ? 'COMPLETED' : issue.status, reason: issue.reason, jobId: issue.jobId, origin: p.origin, requestedBy: origine,
+      at: new Date().toISOString(), transientRefusals: maj.transientRefusals, attemptConsumed: maj.consumeAttempt,
+      requestId: reservation.requestId, ...(termine ? { businessResult: termine.businessResult, businessSuccess: termine.success } : {}),
     })] as never[],
-  ).catch(() => undefined);
-  const queued = issue.status === 'ACCEPTED' || issue.status === 'ALREADY_RUNNING';
-  if (demande) {
-    // Lot 115H (#785, § 4) : la frontière « compté » est franchie — l'état final de la demande dit si la
-    // réservation a été TENUE (consommation) ou RENDUE, et la récupération après panne n'a plus rien à faire.
-    await recordRequeueProgress({
-      requestId: demande.id, steps: { counted: true, diagnosed: true },
-      state: maj.consumeAttempt ? 'CONFIRMED' : queued ? 'OBSERVED' : 'RELEASED',
-      attemptConsumed: maj.consumeAttempt, reason: issue.reason,
+  ).then(() => true).catch((e: Error) => { traceErrors.push(`diagnosed:${e.message.slice(0, 120)}`); return false; });
+  if (diagnostique) {
+    await pgClient.unsafe(
+      `/* c837:req-diag */ UPDATE t1_requeue_requests SET steps = steps || '{"diagnosed":true}'::jsonb WHERE id = $1 AND state = $2 RETURNING id`,
+      [reservation.requestId, etatFinal] as never[],
+    ).catch((e: Error) => { traceErrors.push(`diagnosed:${e.message.slice(0, 120)}`); });
+  }
+  // Carte #837 (D1) : suite de campagne corrélée explicitement (demande → travail).
+  if (p.campaignRef && issue.jobId !== null && (maj.consumeAttempt || termine?.own)) {
+    await recordCampaignFollowUp({
+      campaignRef: p.campaignRef, accountId: p.accountId, fileId: p.fileId, kind: 'REQUEUE_T1', requestId: reservation.requestId, jobId: issue.jobId,
+      result: maj.result, businessSuccess: termine ? termine.success : null, qualityBefore: etat?.quality_state ?? null,
     });
   }
-  if (!queued) console.warn(`[t1-requeue] fichier ${p.fileId} (${p.origin}) : remise en file T1 non confirmée — ${issue.status}${issue.reason ? ` (${issue.reason})` : ''}`);
+  if (!queued && !termine) console.warn(`[t1-requeue] fichier ${p.fileId} (${p.origin}) : remise en file T1 non confirmée — ${issue.status}${issue.reason ? ` (${issue.reason})` : ''}`);
+  if (traceErrors.length) console.error(`[t1-requeue] demande ${reservation.requestId} : trace incomplète (${traceErrors.join(', ')}) — reprise par la récupération des réservations.`);
   // Supervision : une vraie erreur est visible ; elle se résout à la prochaine mise en file confirmée.
   try {
     const { autoResolveAnomaly, reportAnomaly } = await import('@/services/admin/anomaly.service');
@@ -859,13 +1004,17 @@ export async function requeueDocumentForRereadDetailed(p: {
         detail: { fileId: p.fileId, status: issue.status, reason: issue.reason, origin: p.origin, attempt: p.attempt },
         materialKey: `${issue.status}:${issue.reason ?? ''}`,
       });
-    } else if (queued) {
-      await autoResolveAnomaly(requeueFingerprint(p.fileId), { origin: 't1_requeue', cause: `mise en file T1 confirmée (${issue.status})` });
+    } else if (queued || termine?.success) {
+      await autoResolveAnomaly(requeueFingerprint(p.fileId), { origin: 't1_requeue', cause: `mise en file T1 confirmée (${termine ? 'travail terminé' : issue.status})` });
     }
   } catch { /* la Supervision ne fait jamais échouer une reprise */ }
-  return { status: issue.status, queued, jobId: issue.jobId, reason: queued ? null : issue.reason, attemptConsumed: maj.consumeAttempt, result: maj.result };
+  return {
+    status: termine ? 'COMPLETED' : issue.status, queued, jobId: issue.jobId, reason: queued ? null : termine ? `DONE:${termine.businessResult ?? 'NONE'}` : issue.reason,
+    attemptConsumed: maj.consumeAttempt, result: maj.result,
+    ...(termine ? { businessResult: termine.businessResult } : {}),
+    ...(traceErrors.length ? { traceErrors } : {}),
+  };
 }
-
 /**
  * Forme historique (booléen) de `requeueDocumentForRereadDetailed`, gardée pour le contrôle de cohérence.
  * Lot 114H (#775) : `true` signifie désormais « un travail vivant du document est confirmé » (créé OU déjà
@@ -914,10 +1063,12 @@ async function retryDocument(p: {
   if (p.qualityState === 'VERIFICATION_INCOMPLETE' && !p.textOnly) {
     const cov = await loadDocumentCoverage(p.fileId, p.accountId);
     const raison = ((cov?.verification ?? {}) as { verificationReason?: string | null }).verificationReason ?? null;
+    // Carte #837 (D1) : campagne de réévaluation qui a programmé cette reprise (corrélation explicite des suites).
+    const campagneVerif = campaignRefOf(cov?.verification);
     // Lot 114H (#775) : `maxRetries = 0` désactive toute reprise automatique (`verificationAutoRetryDue` : 0 < 0 faux).
     if (verificationAutoRetryDue({ qualityState: p.qualityState, verificationReason: raison, retryAttempts: p.attempt - 1, maxRetries: p.maxRetries })) {
       // Lot 114H (#775, P1-B) : « REQUEUED_T1 » seulement si la file confirme un travail vivant.
-      const rq = await requeueDocumentForRereadDetailed({ fileId: p.fileId, accountId: p.accountId, attempt: p.attempt, origin: 't1-completeness-retry', result: 'REQUEUED_T1', scheduled: true, env: p.env });
+      const rq = await requeueDocumentForRereadDetailed({ fileId: p.fileId, accountId: p.accountId, attempt: p.attempt, origin: 't1-completeness-retry', result: 'REQUEUED_T1', scheduled: true, env: p.env, campaignRef: campagneVerif });
       return issue(rq.queued ? 'requeued' : 'not_queued', rq.result);
     }
     // Lot 54G (point 2) : une observation NEEDS_SOURCE (image, scan) a une VRAIE reprise :
@@ -951,6 +1102,8 @@ async function retryDocument(p: {
   const units = reconcileCoverage(stored.map(toCovered), { ...(await loadStoredReconciliationInput(sqlR, p.accountId, p.fileId)), stage: 'STORED' });
   const couverture = await loadDocumentCoverage(p.fileId, p.accountId);
   const diag = storedDiagnostics(couverture?.verification);
+  // Carte #837 (D1) : campagne de réévaluation qui a programmé cette reprise (corrélation explicite des suites).
+  const campagne = campaignRefOf(couverture?.verification);
   // ══════════════════════════════════════════════════════════════════════
   // LOT 114H (Trello #775, P1-A) — GARDE D'ENTRÉE : la règle unique décide
   //
@@ -969,7 +1122,7 @@ async function retryDocument(p: {
   // Lacune de pages, ou page manquante (omission objectivée) : seule une relecture du fichier peut la combler → file T1.
   // Lot 114H (#775) : la page manquante n'avait AUCUNE action — la reprise tournait à vide ; elle suit la lacune de pages.
   if (entree.actions.includes('REQUEUE_T1') && !p.textOnly) {
-    const rq = await requeueDocumentForRereadDetailed({ fileId: p.fileId, accountId: p.accountId, attempt: p.attempt, origin: 't1-completeness-retry', result: 'REQUEUED_T1', scheduled: true, env: p.env });
+    const rq = await requeueDocumentForRereadDetailed({ fileId: p.fileId, accountId: p.accountId, attempt: p.attempt, origin: 't1-completeness-retry', result: 'REQUEUED_T1', scheduled: true, env: p.env, campaignRef: campagne });
     return issue(rq.queued ? 'requeued' : 'not_queued', rq.result);
   }
 
@@ -1204,6 +1357,37 @@ async function retryDocument(p: {
   });
   const { recordT1Completeness } = await import('./monitoring');
   await recordT1Completeness({ accountId: p.accountId, fileId: p.fileId, report, persisted: true }).catch(() => undefined);
+  // ══════════════════════════════════════════════════════════════════════
+  // CARTE #837 (D1, D2) — SUITES D'UNE CAMPAGNE, CORRÉLÉES ET QUALIFIÉES
+  // Chaque famille réellement exécutée (réparation textuelle, relecture du
+  // fichier) consigne SES appels, SON coût rendu (inconnu compté à part) et
+  // son issue MÉTIER : unités réellement couvertes après la passe, résidus
+  // encore présents. Une suite sans unité réparée n'est pas un succès.
+  // ══════════════════════════════════════════════════════════════════════
+  if (campagne && (textuelle || relecture)) {
+    const residus = report.unresolvedUnits + report.uncertainUnits + report.failedUnits;
+    const { currentBusinessExecutionId } = await import('../../business-execution/context');
+    const executionId = currentBusinessExecutionId();
+    if (textuelle) {
+      await recordCampaignFollowUp({
+        campaignRef: campagne, accountId: p.accountId, fileId: p.fileId, kind: 'TEXT_REPAIR', businessExecutionId: executionId,
+        calls: cout.textCalls, callsFailed: cout.textCallsFailed, costMicros: cout.textCostMicros, costUnknownCalls: cout.textCostUnknownCalls,
+        result: resultatTexte, businessSuccess: majs.some((u) => tentees.has(u.sourceUnitId) && u.status === 'COVERED'),
+        unitsAttempted: attempted.length, unitsRepaired: majs.filter((u) => tentees.has(u.sourceUnitId) && u.status === 'COVERED').length,
+        residualUnits: residus, qualityBefore: p.qualityState ?? null, qualityAfter: report.qualityState,
+      });
+    }
+    if (relecture) {
+      // La passerelle ne rend pas le coût d'une relecture du fichier à cet endroit : INCONNU pour chaque appel émis.
+      await recordCampaignFollowUp({
+        campaignRef: campagne, accountId: p.accountId, fileId: p.fileId, kind: 'SOURCE_REREAD', businessExecutionId: executionId,
+        calls: cout.rereadCalls, callsFailed: cout.rereadCallsFailed, costMicros: null, costUnknownCalls: cout.rereadCalls,
+        result: resultatRelecture, businessSuccess: relecture.resolved.length > 0,
+        unitsAttempted: relecture.attempted.length, unitsRepaired: relecture.resolved.length,
+        residualUnits: residus, qualityBefore: p.qualityState ?? null, qualityAfter: report.qualityState,
+      });
+    }
+  }
   // Bien rattaché : preuves, T3 et T4 depuis les faits persistés (même chemin que le rattachement tardif).
   if (p.assetId && nouveaux.some((f) => f.canonicalKey)) {
     const { projectDocumentKnowledgeToAsset } = await import('../../knowledge/document-knowledge.service');

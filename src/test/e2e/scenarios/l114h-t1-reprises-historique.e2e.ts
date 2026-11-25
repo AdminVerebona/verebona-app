@@ -181,10 +181,12 @@ scenario('L114H', 'T1 — reprises bornées, remise en file réelle, réévaluat
     await ecrire(inactif, h, [couverte(1)], pdf([2]));
     await sql`UPDATE accounts SET is_active = false WHERE id = ${inactif.id}`;
     const refus = await jobs.requeueDocumentForRereadDetailed({ fileId: h, accountId: inactif.id, attempt: 1, origin: 't1-completeness-retry', result: 'REQUEUED_T1', scheduled: true });
-    expect(refus).toMatchObject({ status: 'ACCOUNT_NOT_ELIGIBLE', queued: false, attemptConsumed: false, result: 'REQUEUE_ACCOUNT_NOT_ELIGIBLE' });
+    // Carte #837 (A1) : l'éligibilité est jugée par le POINT D'ADMISSION COMMUN, avant tout enfilement (la file n'est
+    // plus sollicitée pour découvrir le refus) — cause TEMPORAIRE : rien consommé, la demande planifiée reste due.
+    expect(refus).toMatchObject({ status: 'NOT_ADMISSIBLE', reason: 'ACCOUNT_NOT_ELIGIBLE', queued: false, attemptConsumed: false, result: 'REQUEUE_NOT_ADMISSIBLE:ACCOUNT_NOT_ELIGIBLE' });
     expect(await travaux(h)).toEqual([]);
     const ch = await couverture(h);
-    expect(ch).toMatchObject({ attempts: 0, result: 'REQUEUE_ACCOUNT_NOT_ELIGIBLE' });
+    expect(ch).toMatchObject({ attempts: 0, result: 'REQUEUE_NOT_ADMISSIBLE:ACCOUNT_NOT_ELIGIBLE' });
     expect(ch.next).not.toBeNull();
     expect(await jobs.requeueDocumentForReread({ fileId: h, accountId: inactif.id, attempt: 1, origin: 'coherence-control', result: 'REQUEUED_T1_COHERENCE' })).toBe(false);
     // La tâche planifiée ne prend pas ce compte : rien n'est consommé tant qu'il n'est pas réactivé.

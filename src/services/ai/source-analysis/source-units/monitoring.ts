@@ -15,7 +15,7 @@
  *     analyse complète).
  */
 import type { T1CompletenessReport, T1QualityState } from './types';
-import { COVERAGE_ISSUES, coverageIssueOf, type CoverageIssue, type CoverageIssueInput, type CoverageIssueView } from './coverage-issue';
+import { COVERAGE_ISSUES, coverageIssueOf, splitHistoricalAndCurrent, type AnalysisReportRef, type CoverageCurrentFace, type CoverageHistoricalFace, type CoverageIssue, type CoverageIssueInput, type CoverageIssueView } from './coverage-issue';
 
 /** Empreinte de l'anomalie de Supervision « analyse T1 incomplète » d'un document. */
 export const completenessFingerprint = (fileId: number) => `ai:t1-completeness:${fileId}`;
@@ -148,6 +148,9 @@ interface CompletenessDocumentRow {
   nextRetryAt?: string | null;
   /** Lot 114H (#775, § 6) : issue ACTUELLE (recalculée à la lecture), motif vérifiable et prochaine action réelle. */
   issue?: CoverageIssueView;
+  /** Carte #837 (D4) : état consigné par le rapport d'exécution d'origine (immuable), distinct de l'état actuel. */
+  historical?: CoverageHistoricalFace;
+  current?: CoverageCurrentFace;
 }
 
 interface CompletenessOverview {
@@ -188,19 +191,42 @@ interface CompletenessOverview {
    * ══════════════════════════════════════════════════════════════════════
    */
   byIssue?: Record<CoverageIssue, number>;
-  /** Documents réellement classés par issue (= tous ceux de la période). */
+  /** Documents réellement classés par issue. */
   byIssueScanned?: number;
-  /** Conservé pour les appelants : toujours `false` depuis le lot 115H (aucun plafond). */
+  /**
+   * Carte #837 (D3) : `true` dès que le classement n'est PAS exhaustif (échéance,
+   * erreur SQL, écart avec le total de la période). Jamais `false` après une
+   * lecture tronquée.
+   */
   byIssueTruncated?: boolean;
+  /** Carte #837 (D3) : statut du classement — `INCOMPLETE` porte sa cause et sa progression. */
+  byIssueStatus?: 'COMPLETE' | 'INCOMPLETE';
+  byIssueIncomplete?: IssueScanIncomplete | null;
+  /** Documents de la période (agrégat SQL, même instantané que le classement). */
+  byIssueExpected?: number | null;
+}
+
+/** Carte #837 (D3) : pourquoi et où le classement s'est arrêté (reprise possible au curseur). */
+export interface IssueScanIncomplete {
+  cause: 'TIME_BUDGET' | 'SQL_ERROR' | 'COUNT_MISMATCH';
+  scanned: number;
+  expected: number | null;
+  /** Curseur de reprise (`updatedAt`, `fileId`) du dernier document classé. */
+  cursor: { updatedAt: string; fileId: number } | null;
+  error?: string;
 }
 
 /**
  * Taille d'une PAGE de lecture des issues (technique, pas une borne de total) :
-  * la période est parcourue en entier, page par page.
+ * la période est parcourue en entier, page par page.
  */
 const ISSUE_SCAN_PAGE = 2_000;
-/** Pages au plus (garde-fou de boucle : 2 000 × 5 000 = 10 millions de documents). */
-const ISSUE_SCAN_MAX_PAGES = 5_000;
+/**
+ * Carte #837 (D3) : budget de TEMPS du classement (pas un plafond de documents).
+ * Dépassé : le rapport est déclaré INCOMPLETE avec sa progression — jamais un
+ * total présenté comme exhaustif.
+ */
+const ISSUE_SCAN_BUDGET_MS = 25_000;
 
 /** Lot 54G (§6) — totaux des diagnostics de couverture réelle sur la période. */
 interface T1DiagnosticsTotals {
@@ -233,45 +259,127 @@ function diagnosticsTotalsSql(): string {
 }
 
 /**
- * Lot 115H (#785, § 6) — état courant de TOUS les documents de la période, lu
- * par pages de clé (`updated_at`, `file_id`) : aucun document n'est écarté par
- * un plafond, et aucun n'est lu deux fois (pagination par clé, pas par OFFSET).
- * Ne lève jamais : une période illisible rend une liste vide.
+ * Lot 115H (#785, § 6), complété par la carte #837 (D3) — CLASSEMENT PAR ISSUE
+ * de TOUS les documents de la période.
+ *
+ * Règle remplacée : les lignes étaient toutes MATÉRIALISÉES en mémoire, la
+ * boucle s'arrêtait en silence à 5 000 pages, et une erreur SQL rendait une
+ * liste PARTIELLE tandis que le rapport annonçait `byIssueTruncated = false`.
+ *
+ * Désormais :
+ *   · une seule transaction en lecture seule, isolation REPEATABLE READ : le
+ *     total (agrégat SQL) et les pages sont lus sur le MÊME instantané — ni
+ *     document sauté ni compté deux fois même si la couverture change pendant
+ *     la lecture ;
+ *   · pagination par CLÉ (`updated_at`, `file_id`), agrégation page par page
+ *     (aucune liste en mémoire), aucun plafond de pages ;
+ *   · échéance de temps, erreur SQL au milieu, ou nombre classé ≠ total :
+ *     `INCOMPLETE` avec la cause, la progression et le curseur de reprise.
+ * Ne lève jamais.
  */
-async function lireIssuesDeLaPeriode(since: string): Promise<CoverageIssueInput[]> {
-  const { pgClient } = await import('@/db');
-  const out: CoverageIssueInput[] = [];
-  let curseurDate: string | null = null;
-  let curseurFichier = 0;
-  for (let page = 0; page < ISSUE_SCAN_MAX_PAGES; page++) {
-    let rows: Array<CoverageIssueInput & { updatedAt: string; fileId: number }>;
-    try {
-      rows = (await pgClient.unsafe(
-        `SELECT c.file_id AS "fileId", c.updated_at AS "updatedAt",
-                c.quality_state AS "qualityState", c.anomalies, c.next_retry_at AS "nextRetryAt", c.retry_attempts AS "retryAttempts",
-                to_jsonb(c) ->> 'source_verification' AS "sourceVerification", to_jsonb(c) -> 'verification' AS verification,
-                to_jsonb(c) ->> 'last_retry_result' AS "lastRetryResult"
-           FROM document_extraction_coverage c
-          WHERE c.updated_at >= $1
-            AND ($2::timestamptz IS NULL OR (c.updated_at, c.file_id) < ($2::timestamptz, $3::int))
-          ORDER BY c.updated_at DESC, c.file_id DESC
-          LIMIT $4`,
-        [since, curseurDate, curseurFichier, ISSUE_SCAN_PAGE] as never[],
-      )) as unknown as Array<CoverageIssueInput & { updatedAt: string; fileId: number }>;
-    } catch {
-      return out;
+async function lireRapportsOrigine(docs: ReadonlyArray<{ fileId: number; accountId: number }>): Promise<Map<number, AnalysisReportRef>> {
+  const out = new Map<number, AnalysisReportRef>();
+  if (docs.length === 0) return out;
+  try {
+    const { pgClient } = await import('@/db');
+    const rows = (await pgClient.unsafe(
+      `SELECT DISTINCT ON (r.file_id) r.file_id, r.id, r.created_at, cov.value AS cov_value, cov.links AS cov_links
+         FROM ai_execution_reports r
+         JOIN jsonb_to_recordset($1::jsonb) AS d(file_id int, account_id int) ON d.file_id = r.file_id AND d.account_id = r.account_id
+         LEFT JOIN LATERAL (
+           SELECT e.value, e.links FROM ai_execution_report_entries e
+            WHERE e.report_id = COALESCE(r.entries_report_id, r.id) AND e.section = 'COVERAGE' LIMIT 1
+         ) cov ON TRUE
+        WHERE r.treatment = 'T1'
+        ORDER BY r.file_id, r.created_at DESC, r.id DESC`,
+      [JSON.stringify(docs.map((d) => ({ file_id: d.fileId, account_id: d.accountId })))] as never[],
+    )) as unknown as Array<Record<string, unknown>>;
+    for (const r of rows) {
+      const brut = r.cov_value;
+      const valeur = typeof brut === 'string' && brut.startsWith('"') ? JSON.parse(brut) as unknown : brut;
+      const liens = (typeof r.cov_links === 'string' ? JSON.parse(r.cov_links) : r.cov_links) as { anomalies?: unknown[] } | null;
+      out.set(Number(r.file_id), {
+        reportId: Number(r.id), createdAt: r.created_at as string | Date | null,
+        qualityState: typeof valeur === 'string' ? valeur : null,
+        anomalies: Array.isArray(liens?.anomalies) ? liens!.anomalies.map(String) : null,
+      });
     }
-    if (rows.length === 0) break;
-    out.push(...rows);
-    const dernier = rows[rows.length - 1];
-    curseurDate = new Date(dernier.updatedAt).toISOString();
-    curseurFichier = Number(dernier.fileId);
-    if (rows.length < ISSUE_SCAN_PAGE) break;
+  } catch (e) {
+    console.warn('[t1-completeness] rapports d’exécution d’origine illisibles (face historique indisponible) :', (e as Error).message);
   }
   return out;
 }
 
-export async function getT1CompletenessOverview(opts: { days?: number; limit?: number; anomaly?: string | null } = {}): Promise<CompletenessOverview> {
+async function classerIssuesDeLaPeriode(since: string, maxRetries: number, opts: {
+  budgetMs?: number; pageSize?: number; cursor?: { updatedAt: string; fileId: number } | null;
+} = {}): Promise<{ byIssue: Record<CoverageIssue, number>; scanned: number; expected: number | null; incomplete: IssueScanIncomplete | null }> {
+  const { pgClient } = await import('@/db');
+  const byIssue = Object.fromEntries(COVERAGE_ISSUES.map((i) => [i, 0])) as Record<CoverageIssue, number>;
+  const fin = Date.now() + Math.max(1, opts.budgetMs ?? ISSUE_SCAN_BUDGET_MS);
+  const taille = Math.max(1, Math.trunc(opts.pageSize ?? ISSUE_SCAN_PAGE));
+  let scanned = 0;
+  let expected: number | null = null;
+  let curseur: { updatedAt: string; fileId: number } | null = opts.cursor ?? null;
+  let incomplete: IssueScanIncomplete | null = null;
+  const objet = (v: unknown): Record<string, unknown> | null => (typeof v === 'string' ? JSON.parse(v) : v) as Record<string, unknown> | null;
+  try {
+    await pgClient.begin('isolation level repeatable read read only', async (tx) => {
+      const t = tx as unknown as { unsafe: (q: string, p?: never[]) => Promise<unknown> };
+      const [n] = (await t.unsafe(
+        `SELECT COUNT(*)::int AS n FROM document_extraction_coverage c
+          WHERE c.updated_at >= $1 AND ($2::timestamptz IS NULL OR (c.updated_at, c.file_id) < ($2::timestamptz, $3::int))`,
+        [since, curseur?.updatedAt ?? null, curseur?.fileId ?? 0] as never[],
+      )) as Array<{ n: number }>;
+      expected = Number(n?.n ?? 0);
+      for (;;) {
+        if (Date.now() > fin) {
+          incomplete = { cause: 'TIME_BUDGET', scanned, expected, cursor: curseur };
+          return;
+        }
+        let rows: Array<CoverageIssueInput & { updatedAt: string; fileId: number }>;
+        try {
+          rows = (await t.unsafe(
+            // Curseur EXACT (texte, microsecondes) : un passage par `Date` tronquait à la milliseconde et faisait
+            // sauter tous les documents écrits dans la même milliseconde (lecture arrêtée en silence — carte #837, D3).
+            `SELECT c.file_id AS "fileId", c.updated_at::text AS "updatedAt",
+                    c.quality_state AS "qualityState", c.anomalies, c.next_retry_at AS "nextRetryAt", c.retry_attempts AS "retryAttempts",
+                    to_jsonb(c) ->> 'source_verification' AS "sourceVerification", to_jsonb(c) -> 'verification' AS verification,
+                    to_jsonb(c) ->> 'last_retry_result' AS "lastRetryResult"
+               FROM document_extraction_coverage c
+              WHERE c.updated_at >= $1
+                AND ($2::timestamptz IS NULL OR (c.updated_at, c.file_id) < ($2::timestamptz, $3::int))
+              ORDER BY c.updated_at DESC, c.file_id DESC
+              LIMIT $4`,
+            [since, curseur?.updatedAt ?? null, curseur?.fileId ?? 0, taille] as never[],
+          )) as Array<CoverageIssueInput & { updatedAt: string; fileId: number }>;
+        } catch (e) {
+          incomplete = { cause: 'SQL_ERROR', scanned, expected, cursor: curseur, error: String((e as Error).message ?? e).slice(0, 200) };
+          return;
+        }
+        for (const r of rows) byIssue[coverageIssueOf({ ...r, verification: objet(r.verification), maxRetries }).issue]++;
+        scanned += rows.length;
+        if (rows.length > 0) {
+          const dernier = rows[rows.length - 1];
+          curseur = { updatedAt: String(dernier.updatedAt), fileId: Number(dernier.fileId) };
+        }
+        if (rows.length < taille) return;
+      }
+    });
+  } catch (e) {
+    incomplete ??= { cause: 'SQL_ERROR', scanned, expected, cursor: curseur, error: String((e as Error).message ?? e).slice(0, 200) };
+  }
+  if (!incomplete && expected !== null && scanned !== expected) incomplete = { cause: 'COUNT_MISMATCH', scanned, expected, cursor: curseur };
+  if (incomplete) {
+    console.warn(`[t1-completeness] classement par issue INCOMPLET (${incomplete.cause}) : ${scanned}/${expected ?? '?'} document(s).`);
+  }
+  return { byIssue, scanned, expected, incomplete };
+}
+
+export async function getT1CompletenessOverview(opts: {
+  days?: number; limit?: number; anomaly?: string | null;
+  /** Carte #837 (D3) : budget de temps du classement par issue, taille de page (recette) et curseur de reprise. */
+  issueScan?: { budgetMs?: number; pageSize?: number; cursor?: { updatedAt: string; fileId: number } | null };
+} = {}): Promise<CompletenessOverview> {
   const days = Math.min(Math.max(opts.days ?? 7, 1), 90);
   const empty: CompletenessOverview = {
     days, byQuality: { COMPLETE: 0, COMPLETE_WITH_UNRESOLVED: 0, VERIFICATION_INCOMPLETE: 0, INCOMPLETE_RETRYABLE: 0, INCOMPLETE_FINAL: 0 },
@@ -281,7 +389,9 @@ export async function getT1CompletenessOverview(opts: { days?: number; limit?: n
   if (!(await sourceLayerReady())) return { ...empty, unavailable: true };
   const { pgClient } = await import('@/db');
   const since = new Date(Date.now() - days * 86_400_000).toISOString();
-  const [agg, anomalies, rows, verifs, totaux, pourIssues] = await Promise.all([
+  const { maxCompletenessRetries } = await import('./repository');
+  const plafond = maxCompletenessRetries();
+  const [agg, anomalies, rows, verifs, totaux, classement] = await Promise.all([
     pgClient.unsafe(
       `SELECT quality_state AS q, COUNT(*)::int AS n, AVG(coverage_ratio)::float8 AS avg, SUM(repair_pass_count)::int AS repairs
          FROM document_extraction_coverage WHERE updated_at >= $1 GROUP BY quality_state`,
@@ -318,9 +428,9 @@ export async function getT1CompletenessOverview(opts: { days?: number; limit?: n
     ) as unknown as Promise<Array<{ v: string; n: number }>>,
     (pgClient.unsafe(diagnosticsTotalsSql(), [since] as never[]) as unknown as Promise<Array<Record<string, number>>>)
       .catch(() => [] as Array<Record<string, number>>),
-    // Lot 114H (#775), complété par le lot 115H (#785, § 6) : état courant de CHAQUE document de la période
-    // (codes et compteurs), lu EXHAUSTIVEMENT par pages — aucun plafond de total.
-    lireIssuesDeLaPeriode(since),
+    // Lot 114H (#775), lot 115H (#785, § 6) et carte #837 (D3) : état courant de CHAQUE document de la période,
+    // classé page par page sur un instantané cohérent — exhaustif, ou déclaré INCOMPLETE avec sa cause.
+    classerIssuesDeLaPeriode(since, plafond, opts.issueScan ?? {}),
   ]);
   const out = { ...empty, byQuality: { ...empty.byQuality } };
   let total = 0;
@@ -334,19 +444,28 @@ export async function getT1CompletenessOverview(opts: { days?: number; limit?: n
   out.averageCoverage = total > 0 ? Math.round((somme / total) * 10_000) / 10_000 : null;
   for (const a of anomalies) out.byAnomaly[a.code] = Number(a.n);
   for (const v of verifs) out.bySourceVerification[v.v] = Number(v.n);
-  const { maxCompletenessRetries } = await import('./repository');
-  out.maxRetries = maxCompletenessRetries();
+  out.maxRetries = plafond;
   const objet = (v: unknown): Record<string, unknown> | null => (typeof v === 'string' ? JSON.parse(v) : v) as Record<string, unknown> | null;
-  out.rows = rows.map((r) => ({
-    ...r, coverageRatio: Number(r.coverageRatio),
-    issue: coverageIssueOf({ ...r, verification: objet(r.verification), maxRetries: out.maxRetries }),
-  }));
-  const byIssue = Object.fromEntries(COVERAGE_ISSUES.map((i) => [i, 0])) as Record<CoverageIssue, number>;
-  for (const r of pourIssues) byIssue[coverageIssueOf({ ...r, verification: objet(r.verification), maxRetries: out.maxRetries }).issue]++;
-  out.byIssue = byIssue;
-  out.byIssueScanned = pourIssues.length;
-  // Lot 115H (#785, § 6) : plus aucun plafond — le total EST le nombre de documents de la période.
-  out.byIssueTruncated = false;
+  // Carte #837 (D4) : rapport d'exécution d'ORIGINE (immuable) de chaque document listé — la face historique est
+  // LUE, jamais reconstituée depuis la couverture actuelle. Rapport ou table absents : face « indisponible ».
+  const rapports = await lireRapportsOrigine(rows.map((r) => ({ fileId: Number(r.fileId), accountId: Number(r.accountId) })));
+  out.rows = rows.map((r) => {
+    const faces = splitHistoricalAndCurrent({
+      ...r, verification: objet(r.verification), maxRetries: out.maxRetries, analysisReport: rapports.get(Number(r.fileId)) ?? null,
+    });
+    return {
+      ...r, coverageRatio: Number(r.coverageRatio),
+      issue: coverageIssueOf({ ...r, verification: objet(r.verification), maxRetries: out.maxRetries }),
+      historical: faces.historical, current: faces.current,
+    };
+  });
+  out.byIssue = classement.byIssue;
+  out.byIssueScanned = classement.scanned;
+  out.byIssueExpected = classement.expected;
+  // Carte #837 (D3) : jamais « exhaustif » après une lecture tronquée ou en erreur.
+  out.byIssueStatus = classement.incomplete ? 'INCOMPLETE' : 'COMPLETE';
+  out.byIssueIncomplete = classement.incomplete;
+  out.byIssueTruncated = classement.incomplete !== null;
   if (totaux[0]) {
     out.totals = Object.fromEntries(Object.entries(totaux[0]).map(([k, v]) => [k, Number(v ?? 0)])) as unknown as T1DiagnosticsTotals;
   }

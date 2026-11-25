@@ -246,6 +246,56 @@ export function decideRequeueRight(b: Pick<RetryBudget, 'retryAttempts'>, limits
 }
 
 /**
+ * ══════════════════════════════════════════════════════════════════════════
+ * CARTE TRELLO #837 (A1) — POINT D'ADMISSION COMMUN, AVANT TOUT ENFILEMENT
+ *
+ * Règle complétée : `decideRequeueRight` ne jugeait que le plafond de reprises
+ * du document. Le reste (fichier encore présent et relisible, compte éligible,
+ * traitement T1 non suspendu, budget IA du compte, utilité de l'action) était
+ * contrôlé — pour partie — À L'EXÉCUTION : un travail était créé et un droit
+ * réservé alors qu'aucune action utile ni autorisée ne pouvait s'exécuter.
+ *
+ * Cette fonction PURE rassemble ces conditions pour TOUTES les origines (BO,
+ * planificateur, cohérence, re-vérification) : elle rend le motif du refus
+ * (`null` : admissible, le plafond étant ensuite jugé sous verrou). Aucune
+ * origine n'a de privilège ; seule l'ACTION demandée change ce qui est utile :
+ *   · `COMPLETENESS_REREAD` n'a pas d'objet sur un document COMPLET ;
+ *   · `COHERENCE_REEXTRACT` (décidée par le contrôle de cohérence sur une
+ *     preuve qui lui est propre) reste utile quel que soit l'état de couverture.
+ * `temporary` : cause qui se lève d'elle-même (compte réactivé, budget du mois
+ * suivant, traitement réactivé) — la demande reste due ; sinon le refus est
+ * définitif tant que les preuves ne changent pas.
+ * ══════════════════════════════════════════════════════════════════════════
+ */
+export interface RequeueAdmissionFacts {
+  /** Le fichier existe pour ce compte (false : introuvable ; undefined : non lu). */
+  filePresent?: boolean | null;
+  /** Le fichier n'est pas supprimé. */
+  fileAlive?: boolean | null;
+  /** Compte éligible au traitement (lot 82A). */
+  accountEligible?: boolean | null;
+  /** Traitement T1 autorisé à appeler l'IA (arrêt d'urgence, suspension). */
+  treatmentRunnable?: boolean | null;
+  /** Plafond de coût IA du compte atteint pour la période. */
+  costCapReached?: boolean | null;
+  /** État de qualité actuel (null : aucune couverture). */
+  qualityState?: string | null;
+  action: 'COMPLETENESS_REREAD' | 'COHERENCE_REEXTRACT';
+}
+
+export type RequeueAdmissionBlock =
+  | 'SOURCE_NOT_AVAILABLE' | 'ACCOUNT_NOT_ELIGIBLE' | 'AI_TREATMENT_BLOCKED' | 'ACCOUNT_AI_BUDGET_REACHED' | 'NOTHING_TO_RETRY';
+
+export function decideRequeueAdmission(f: RequeueAdmissionFacts): { block: RequeueAdmissionBlock; temporary: boolean } | null {
+  if (f.filePresent === false || f.fileAlive === false) return { block: 'SOURCE_NOT_AVAILABLE', temporary: false };
+  if (f.action === 'COMPLETENESS_REREAD' && f.qualityState === 'COMPLETE') return { block: 'NOTHING_TO_RETRY', temporary: false };
+  if (f.accountEligible === false) return { block: 'ACCOUNT_NOT_ELIGIBLE', temporary: true };
+  if (f.treatmentRunnable === false) return { block: 'AI_TREATMENT_BLOCKED', temporary: true };
+  if (f.costCapReached === true) return { block: 'ACCOUNT_AI_BUDGET_REACHED', temporary: true };
+  return null;
+}
+
+/**
  * SYNCHRONISE les unités avec l'absence de reprise automatique (carte § 2.4) —
  * à n'appeler que si `decision.automatic` est faux. Pure et idempotente.
  *   · unité PENDING : l'attente n'est plus annoncée. Jamais « épuisée »

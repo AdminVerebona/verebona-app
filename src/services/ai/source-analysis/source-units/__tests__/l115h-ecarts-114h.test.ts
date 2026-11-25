@@ -11,61 +11,31 @@
  */
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
-/** Ligne simulée de `t1_requeue_requests` (lot 115H, § 2 et § 4). */
-interface DemandeSimulee {
-  id: number; account_id: number; file_id: number; request_key: string; state: string;
-  reserved_attempt: number | null; attempt_consumed: boolean; job_id: number | null; reason: string | null;
-  steps: Record<string, boolean>;
-}
+import { creerSimulateurDemandes, type DemandeSimulee } from './fixtures/c837-requeue-sim';
 
-const etat = vi.hoisted(() => {
-  const store = { lignes: [] as DemandeSimulee[], seq: 0 };
-  return {
-    ecritures: [] as Array<{ q: string; params: unknown[] }>,
-    /** Ligne de couverture servie aux lectures (`null` : document sans couche A relue). */
-    couverture: null as { retryAttempts: number } | null,
-    /** Sollicitations RÉELLES de la file T1 : une demande refusée n'en produit aucune. */
-    misesEnFile: [] as Array<{ fileIds: number[]; accountId: number; onRunning?: string }>,
-    file: { status: 'ACCEPTED', jobId: 501, reason: null } as { status: string; jobId: number | null; reason: string | null },
-    travaux: [{ id: 501, status: 'PENDING', business_result: null }] as Array<{ id: number; status: string; business_result: string | null }>,
-    anomalies: [] as Array<{ action: string; fingerprint: string }>,
-    /** Migration 1805 appliquée ? (par défaut non : le § 1 doit tenir seul) */
-    identiteDisponible: false,
-    /** Preuves servies par la lecture initiale (carte #785, § 2) : les changer rend la demande DISTINCTE. */
-    preuves: {} as Record<string, unknown>,
-    demandesStore: store,
-    /** Base simulée de `t1_requeue_requests` : insertion conditionnelle, lecture, avancement. */
-    demandes(x: string, params: unknown[]): DemandeSimulee[] {
-      if (/^INSERT INTO t1_requeue_requests/.test(x)) {
-        const [account_id, file_id, request_key, , , ] = params as [number, number, string, string, string, string];
-        if (store.lignes.some((l) => l.account_id === account_id && l.file_id === file_id && l.request_key === request_key)) return [];
-        const ligne: DemandeSimulee = {
-          id: ++store.seq, account_id, file_id, request_key, state: 'RESERVED',
-          reserved_attempt: null, attempt_consumed: false, job_id: null, reason: null, steps: {},
-        };
-        store.lignes.push(ligne);
-        return [ligne];
-      }
-      if (/^SELECT id, state, reserved_attempt/.test(x)) {
-        const [account_id, file_id, request_key] = params as [number, number, string];
-        return store.lignes.filter((l) => l.account_id === account_id && l.file_id === file_id && l.request_key === request_key);
-      }
-      if (/^UPDATE t1_requeue_requests SET steps = steps \|\| \$2::jsonb/.test(x)) {
-        const ligne = store.lignes.find((l) => l.id === Number(params[0]));
-        if (ligne) {
-          Object.assign(ligne.steps, JSON.parse(String(params[1])) as Record<string, boolean>);
-          if (params[2] != null) ligne.state = String(params[2]);
-          if (params[3] != null) ligne.job_id = Number(params[3]);
-          if (params[4] != null) ligne.reason = String(params[4]);
-          if (params[5] != null) ligne.reserved_attempt = Number(params[5]);
-          if (params[6] != null) ligne.attempt_consumed = params[6] === true;
-        }
-        return [];
-      }
-      return [];
-    },
-  };
-});
+const etat = vi.hoisted(() => ({
+  ecritures: [] as Array<{ q: string; params: unknown[] }>,
+  /** Ligne de couverture servie aux lectures (`null` : document sans couche A relue). */
+  couverture: null as { retryAttempts: number } | null,
+  /** Sollicitations RÉELLES de la file T1 : une demande refusée n'en produit aucune. */
+  misesEnFile: [] as Array<{ fileIds: number[]; accountId: number; onRunning?: string }>,
+  file: { status: 'ACCEPTED', jobId: 501, reason: null } as { status: string; jobId: number | null; reason: string | null },
+  travaux: [{ id: 501, status: 'PENDING', business_result: null }] as Array<{ id: number; status: string; business_result: string | null }>,
+  anomalies: [] as Array<{ action: string; fingerprint: string }>,
+  /**
+   * Migrations 1805 / 1970 appliquées ? Carte #837 (A3) : elles sont OBLIGATOIRES pour la remise en file —
+   * leur absence est un refus visible (testé à part).
+   */
+  identiteDisponible: true,
+  /** La file simulée crée le travail accepté (carte #837). */
+  creerTravail: false,
+  /** Preuves servies par la lecture initiale (carte #785, § 2) : les changer rend la demande DISTINCTE. */
+  preuves: {} as Record<string, unknown>,
+  /** Carte #837 (C2) : empreinte servie pour CHAQUE famille de dépendances (faits, décisions…). */
+  deps: 'h0',
+  /** Double en mémoire de `t1_requeue_requests` (posé après les imports). */
+  sim: null as null | { store: { lignes: DemandeSimulee[]; seq: number }; traiter: (x: string, p: unknown[]) => unknown[] | undefined },
+}));
 
 const requete = vi.hoisted(() => async (q: string, params: unknown[] = []) => {
   const x = q.replace(/\s+/g, ' ').trim();
@@ -83,7 +53,10 @@ const requete = vi.hoisted(() => async (q: string, params: unknown[] = []) => {
   }
   // Migration 1805 absente par défaut : aucune identité persistante (le code retombe sur le § 1 seul).
   if (/to_regclass\('t1_requeue_requests'\)/.test(x)) return [{ ok: etat.identiteDisponible }];
-  if (/t1_requeue_requests/.test(x)) return etat.demandes(x, params);
+  if (/c837:evidence-tables/.test(x)) return [];
+  if (/c837:evidence-deps/.test(x)) return [{ h: etat.deps, n: 1 }];
+  const simule = etat.sim?.traiter(x, params);
+  if (simule !== undefined) return simule;
   // Réservation CONDITIONNELLE du droit : la ligne n'est rendue que si le plafond le permet encore.
   if (/SET retry_attempts = retry_attempts \+ 1, updated_at = NOW\(\)/.test(x)) {
     const c = etat.couverture;
@@ -100,7 +73,13 @@ const requete = vi.hoisted(() => async (q: string, params: unknown[] = []) => {
     }
     return [];
   }
-  if (/FROM ai_job_queue/.test(x)) return etat.travaux;
+  if (/FROM ai_job_queue/.test(x)) {
+    // Même sélection que `inspectCorrelatedJob` : le travail désigné, ou un travail vivant ; vivant d'abord.
+    const vise = params[4] == null ? null : Number(params[4]);
+    const vivant = (t: { status: string }) => t.status === 'PENDING' || t.status === 'RUNNING';
+    return etat.travaux.filter((t) => vise === null || t.id === vise || vivant(t))
+      .sort((a, b) => Number(vivant(b)) - Number(vivant(a)) || b.id - a.id).slice(0, 1);
+  }
   if (/'requeue' ->> 'transientRefusals'/.test(x)) return [{ refus: '0' }];
   return [];
 });
@@ -113,6 +92,10 @@ vi.mock('../../queue/t1-handler', async (orig) => ({
   ...(await orig<typeof import('../../queue/t1-handler')>()),
   enqueueFileAnalysesDetailed: async (fileIds: number[], accountId: number, options: { onRunning?: string }) => {
     etat.misesEnFile.push({ fileIds, accountId, onRunning: options?.onRunning });
+    // Carte #837 : la file CRÉE réellement le travail accepté (sinon le contrôle final ne le trouve pas).
+    if (etat.creerTravail && etat.file.status === 'ACCEPTED' && etat.file.jobId !== null && !etat.travaux.some((t) => t.id === etat.file.jobId)) {
+      etat.travaux.push({ id: etat.file.jobId, status: 'PENDING', business_result: null });
+    }
     return fileIds.map((fileId) => ({ fileId, ...etat.file }));
   },
 }));
@@ -121,6 +104,7 @@ vi.mock('@/services/admin/anomaly.service', () => ({
   autoResolveAnomaly: async (fingerprint: string) => { etat.anomalies.push({ action: 'resolve', fingerprint }); return true; },
 }));
 
+etat.sim = creerSimulateurDemandes({ couverture: () => etat.couverture });
 const jobs = await import('../jobs');
 const jobsRetry = await import('../retry-policy');
 const { decideRequeueRight, retryLimits } = jobsRetry;
@@ -153,10 +137,12 @@ beforeEach(async () => {
   etat.file = { status: 'ACCEPTED', jobId: 501, reason: null };
   etat.travaux = [{ id: 501, status: 'PENDING', business_result: null }];
   etat.anomalies = [];
-  etat.identiteDisponible = false;
+  etat.identiteDisponible = true;
+  etat.creerTravail = false;
   etat.preuves = {};
-  etat.demandesStore.lignes = [];
-  etat.demandesStore.seq = 0;
+  etat.deps = 'h0';
+  etat.sim!.store.lignes = [];
+  etat.sim!.store.seq = 0;
   (await import('../requeue-identity')).resetRequeueRequestsReadyCache();
 });
 
@@ -230,10 +216,14 @@ describe('L115H-U02 — § 1 : aucune origine n’enfile avant que son droit soi
     expect(etat.couverture).toEqual({ retryAttempts: 1 });
   });
 
-  it('deux demandes simultanées sur la DERNIÈRE reprise : une seule réserve, l’autre est refusée sans enfiler', async () => {
+  // Carte #837 (A3) : la MÊME demande métier portée par le BO puis par le planificateur a désormais UNE identité —
+  // la seconde CONSTATE le travail vivant (aucune consommation). Le cas « plafond » est donc prouvé avec deux
+  // demandes réellement DISTINCTES (preuves différentes) sur la dernière reprise.
+  it('deux demandes DISTINCTES sur la DERNIÈRE reprise : une seule réserve, l’autre est refusée sans enfiler', async () => {
     etat.couverture = { retryAttempts: 1 };
     const env = { T1_COMPLETENESS_MAX_RETRIES: '2' };
     const a = await demander({ requestedBy: 'BO', attempt: 2, env });
+    etat.preuves = { unresolved_units: 7 };
     const b = await demander({ requestedBy: 'SCHEDULER', attempt: 2, scheduled: true, env });
     expect([a.status, b.status]).toEqual(['ACCEPTED', 'NOT_ADMISSIBLE']);
     expect(b.reason).toBe('RETRY_CAP_REACHED');
@@ -274,10 +264,38 @@ describe('L115H-U02 — § 1 : aucune origine n’enfile avant que son droit soi
       fileId: FICHIER, accountId: COMPTE, attempt: 1, origin: 'coherence-control', result: 'REQUEUED_T1_COHERENCE', requestedBy: 'COHERENCE',
     })).toBe(true);
     etat.couverture = { retryAttempts: 9 };
+    // Preuve différente : demande distincte (sinon la même demande constaterait le travail vivant — carte #837, A3).
+    etat.preuves = { unresolved_units: 5 };
     etat.misesEnFile = [];
     expect(await jobs.requeueDocumentForReread({
       fileId: FICHIER, accountId: COMPTE, attempt: 10, origin: 'coherence-control', result: 'REQUEUED_T1_COHERENCE', requestedBy: 'COHERENCE',
     })).toBe(false);
+    expect(etat.misesEnFile).toEqual([]);
+  });
+
+  it('carte #837 (A3) : migrations 1805 / 1970 ABSENTES — refus VISIBLE (fail-closed), aucun enfilement, aucune consommation', async () => {
+    etat.identiteDisponible = false;
+    const r = await demander({ requestedBy: 'BO', env: { T1_COMPLETENESS_MAX_RETRIES: '2' } });
+    expect(r).toMatchObject({ status: 'NOT_ADMISSIBLE', queued: false, reason: 'IDENTITY_UNAVAILABLE', attemptConsumed: false });
+    expect(etat.misesEnFile).toEqual([]);
+    expect(etat.couverture).toEqual({ retryAttempts: 0 });
+    expect(resultat()).toBe('REQUEUE_NOT_ADMISSIBLE:IDENTITY_UNAVAILABLE');
+    // Visible en Supervision.
+    expect(etat.anomalies).toContainEqual({ action: 'report', fingerprint: 'ai:t1-requeue-identity-unavailable' });
+  });
+
+  it('carte #837 (A1) : refus d’admission (compte non éligible) AVANT tout enfilement — aucune réservation, demande tracée', async () => {
+    etat.preuves = { account_eligible: false, file_present: true, file_alive: true };
+    const r = await demander({ requestedBy: 'SCHEDULER', scheduled: true, env: { T1_COMPLETENESS_MAX_RETRIES: '2' } });
+    expect(r).toMatchObject({ status: 'NOT_ADMISSIBLE', reason: 'ACCOUNT_NOT_ELIGIBLE', attemptConsumed: false });
+    expect(etat.misesEnFile).toEqual([]);
+    expect(etat.couverture).toEqual({ retryAttempts: 0 });
+    expect(etat.sim!.store.lignes[0]).toMatchObject({ state: 'REFUSED', reason: 'ACCOUNT_NOT_ELIGIBLE' });
+    // Cause TEMPORAIRE d'une demande planifiée : elle reste due (échéance reposée), jamais une promesse fictive.
+    expect(trace()).toMatchObject({ status: 'NOT_ADMISSIBLE', reason: 'ACCOUNT_NOT_ELIGIBLE', temporary: true });
+    etat.preuves = { file_present: true, file_alive: false };
+    const supprime = await demander({ requestedBy: 'BO', env: { T1_COMPLETENESS_MAX_RETRIES: '2' } });
+    expect(supprime).toMatchObject({ status: 'NOT_ADMISSIBLE', reason: 'SOURCE_NOT_AVAILABLE' });
     expect(etat.misesEnFile).toEqual([]);
   });
 
@@ -381,10 +399,12 @@ describe('L115H-U04 — § 2 : la file ne reçoit plus de passage supplémentair
       { sourceSha256: 'cc' }, { reverificationFingerprint: 'zz' }, { pagesMissing: [1, 2, 3] },
       { unresolvedUnits: 4 }, { qualityState: 'INCOMPLETE_FINAL' }, { layerVersion: 5 },
     ]) expect(requeueEvidenceFingerprint({ ...base, ...diff })).not.toBe(a);
-    // L'identité porte l'origine ET l'empreinte ; une identité imposée l'emporte.
-    expect(requeueRequestKey({ origin: 'o', requestedBy: 'BO', evidenceFingerprint: a }))
-      .not.toBe(requeueRequestKey({ origin: 'o', requestedBy: 'SCHEDULER', evidenceFingerprint: a }));
-    expect(requeueRequestKey({ origin: 'o', requestedBy: 'BO', evidenceFingerprint: a, explicit: ' choisie ' })).toBe('choisie');
+    // Carte #837 (A3) : l'identité est CANONIQUE — action + empreinte ; le canal n'en fait plus partie.
+    expect(requeueRequestKey({ action: 'COMPLETENESS_REREAD', evidenceFingerprint: a }))
+      .toBe(`COMPLETENESS_REREAD:${a}`);
+    expect(requeueRequestKey({ action: 'COMPLETENESS_REREAD', evidenceFingerprint: a }))
+      .not.toBe(requeueRequestKey({ action: 'COHERENCE_REEXTRACT', evidenceFingerprint: a }));
+    expect(requeueRequestKey({ action: 'COMPLETENESS_REREAD', evidenceFingerprint: a, explicit: ' choisie ' })).toBe('choisie');
   });
 
   it('demande IDENTIQUE déjà servie par un travail VIVANT : constatée, aucun enfilement, aucune consommation', async () => {
@@ -406,19 +426,36 @@ describe('L115H-U04 — § 2 : la file ne reçoit plus de passage supplémentair
     // Aucun enfilement supplémentaire : donc aucun passage supplémentaire, aucun appel masqué.
     expect(etat.misesEnFile).toHaveLength(1);
     expect(etat.couverture).toEqual({ retryAttempts: 1 });
-    expect(etat.demandesStore.lignes).toHaveLength(1);
-    expect(etat.demandesStore.lignes[0]).toMatchObject({ state: 'OBSERVED', job_id: 501, attempt_consumed: true });
+    expect(etat.sim!.store.lignes).toHaveLength(1);
+    expect(etat.sim!.store.lignes[0]).toMatchObject({ state: 'OBSERVED', job_id: 501, attempt_consumed: true });
   });
 
   it('demande identique déjà servie par un travail TERMINÉ : non rejouée (preuves inchangées), rien de consommé', async () => {
     etat.identiteDisponible = true;
     const env = { T1_COMPLETENESS_MAX_RETRIES: '2' };
     await demander({ requestedBy: 'SCHEDULER', scheduled: true, env });
-    etat.travaux = [{ id: 501, status: 'DONE', business_result: 'DONE' }];
+    // Carte #837 (A2) : « acquis » exige un résultat MÉTIER réussi.
+    etat.travaux = [{ id: 501, status: 'DONE', business_result: 'APPLIED' }];
     const bis = await demander({ requestedBy: 'SCHEDULER', scheduled: true, env });
     expect(bis).toMatchObject({ status: 'ALREADY_SATISFIED', queued: false, attemptConsumed: false, result: 'REQUEUE_ALREADY_SATISFIED' });
     expect(etat.misesEnFile).toHaveLength(1);
     expect(etat.couverture).toEqual({ retryAttempts: 1 });
+  });
+
+  it('carte #837 (A2) : travail TERMINÉ en ÉCHEC MÉTIER — jamais « acquis » : nouvelle tentative explicite, dans ses bornes', async () => {
+    const env = { T1_COMPLETENESS_MAX_RETRIES: '2' };
+    await demander({ requestedBy: 'SCHEDULER', scheduled: true, env });
+    etat.travaux = [{ id: 501, status: 'DONE', business_result: 'FAILED' }];
+    etat.file = { status: 'ACCEPTED', jobId: 502, reason: null };
+    etat.creerTravail = true;
+    const bis = await demander({ requestedBy: 'BO', env });
+    expect(bis).toMatchObject({ status: 'ACCEPTED', queued: true, attemptConsumed: true });
+    expect(etat.misesEnFile).toHaveLength(2);
+    expect(etat.couverture).toEqual({ retryAttempts: 2 });
+    // Même demande canonique, DEUX cycles : le premier est conservé dans l'historique.
+    expect(etat.sim!.store.lignes).toHaveLength(1);
+    expect(etat.sim!.store.lignes[0]).toMatchObject({ cycles: 2, state: 'CONFIRMED' });
+    expect(etat.sim!.store.lignes[0].history).toHaveLength(1);
   });
 
   it('travail ÉCHOUÉ entre deux contrôles : la demande n’est PAS confirmée (jamais « remise en file réussie »)', async () => {
@@ -447,23 +484,26 @@ describe('L115H-U04 — § 2 : la file ne reçoit plus de passage supplémentair
     expect(autre.attemptConsumed).toBe(true);
     expect(etat.misesEnFile).toHaveLength(2);
     expect(etat.couverture).toEqual({ retryAttempts: 2 });
-    expect(etat.demandesStore.lignes).toHaveLength(2);
+    expect(etat.sim!.store.lignes).toHaveLength(2);
   });
 
   it('réservation ACQUISE avant un arrêt : elle est REPRISE, jamais doublée (compteur exact)', async () => {
     etat.identiteDisponible = true;
     // Une demande a réservé la reprise 1 puis le processus s'est arrêté (aucune étape au-delà).
-    etat.demandesStore.lignes.push({
+    etat.sim!.store.lignes.push({
       id: 1, account_id: COMPTE, file_id: FICHIER, request_key: 'BO:t1-completeness-retry:peu-importe',
       state: 'RESERVED', reserved_attempt: 1, attempt_consumed: false, job_id: null, reason: null, steps: { reserved: true },
+      // Carte #837 : ligne antérieure à la migration 1970 (aucun bail) — considérée à bail expiré, donc reprise.
+      origin: 't1-completeness-retry', requested_by: 'BO', evidence_fingerprint: null, lease_token: null, lease_expires_at: null,
+      cycles: 1, history: [], campaign_ref: null, updated_at: Date.now(),
     });
-    etat.demandesStore.seq = 1;
+    etat.sim!.store.seq = 1;
     etat.couverture = { retryAttempts: 1 };
     const r = await demander({ requestedBy: 'BO', requestKey: 'BO:t1-completeness-retry:peu-importe', env: { T1_COMPLETENESS_MAX_RETRIES: '2' } });
     expect(r.status).toBe('ACCEPTED');
     // La réservation n'est PAS reprise une seconde fois : le compteur reste à 1 (consommation de celle déjà prise).
     expect(etat.couverture).toEqual({ retryAttempts: 1 });
-    expect(etat.demandesStore.lignes[0]).toMatchObject({ state: 'CONFIRMED', attempt_consumed: true });
+    expect(etat.sim!.store.lignes[0]).toMatchObject({ state: 'CONFIRMED', attempt_consumed: true });
   });
 });
 
@@ -537,9 +577,11 @@ describe('L115H-U06 — § 4 : la réconciliation enregistrée ne peut pas écra
     const { readFileSync } = await import('node:fs');
     const camp = readFileSync('src/services/ai/source-analysis/source-units/historical-reassessment.ts', 'utf8');
     expect(camp).toContain('lease_owner = EXCLUDED.lease_owner');
-    expect(camp).toContain("marquerEtape({ ...p, steps: { reverified: true } })");
-    expect(camp).toContain("marquerEtape({ ...p, steps: { reconciled: true } })");
-    expect(camp).toContain("marquerEtape({ ...p, steps: { alerted: true } })");
+    // Carte #837 (B3/B4) : chaque étape est consignée SOUS LE JETON du titulaire, avec son résultat.
+    expect(camp).toContain('etape({ reverified: true');
+    expect(camp).toContain('etape({ reconciled: true, reconciliation: rec })');
+    expect(camp).toContain('etape({ alerted: true, alerts })');
+    expect(camp).toContain('lease_owner = $5 AND lease_expires_at > NOW()');
     // Une étape acquise n'est pas refaite.
     expect(camp).toContain('if (!steps.reverified && reverificationDue(');
   });
@@ -578,7 +620,7 @@ describe('L115H-U07 — § 5 : rattrapage permanent de tout le stock', () => {
     // été incrémentée ET enregistrée — et incrémenter la version fait reprendre tout le stock.
     expect(T1_RULES_VERSION_SIGNATURES[T1_COVERAGE_RULES_VERSION]).toBe(t1AlertConditionsSignature());
     // Les versions antérieures restent enregistrées (l'historique ne se réécrit pas).
-    expect(Object.keys(T1_RULES_VERSION_SIGNATURES).map(Number).sort()).toEqual([1, 2]);
+    expect(Object.keys(T1_RULES_VERSION_SIGNATURES).map(Number).sort()).toEqual([1, 2, 3]);
     expect(T1_COVERAGE_RULES_VERSION).toBeGreaterThan(1);
   });
 
@@ -645,14 +687,15 @@ describe('L115H-U08 — § 6 : familles d’alertes, séparation des vues, bilan
 
   it('rapport historique immuable et état actuel sont LUS séparément, sans statut contradictoire', async () => {
     const { splitHistoricalAndCurrent } = await import('../coverage-issue');
+    // Carte #837 (D4) : la face historique vient du RAPPORT D'EXÉCUTION d'origine, plus des champs de couverture.
     const r = splitHistoricalAndCurrent({
       qualityState: 'INCOMPLETE_RETRYABLE', anomalies: ['COVERAGE_INCOMPLETE'], retryAttempts: 2, maxRetries: 2,
-      nextRetryAt: null, lastRetryResult: 'REQUEUE_NOT_ADMISSIBLE:RETRY_CAP_REACHED', reportedAt: '2026-11-10T08:00:00.000Z',
+      nextRetryAt: null, lastRetryResult: 'REQUEUE_NOT_ADMISSIBLE:RETRY_CAP_REACHED',
+      analysisReport: { reportId: 7206, createdAt: '2026-11-10T08:00:00.000Z', qualityState: 'INCOMPLETE_RETRYABLE', anomalies: ['COVERAGE_INCOMPLETE'] },
       verification: { pagesMissing: [4] },
     });
-    // Le rapport garde ce que l'analyse avait conclu — il n'est pas réécrit par l'état actuel.
     expect(r.historical).toEqual({
-      qualityState: 'INCOMPLETE_RETRYABLE', anomalies: ['COVERAGE_INCOMPLETE'], reportedAt: '2026-11-10T08:00:00.000Z', retryAttempts: 2,
+      source: 'ANALYSIS_REPORT', reportId: 7206, qualityState: 'INCOMPLETE_RETRYABLE', anomalies: ['COVERAGE_INCOMPLETE'], reportedAt: '2026-11-10T08:00:00.000Z',
     });
     // L'état actuel dit la vérité d'aujourd'hui : plus aucune reprise, donc pas « reprise programmée ».
     expect(r.current).toMatchObject({ issue: 'CAP_REACHED', retryScheduled: false, lastRetryResult: 'REQUEUE_NOT_ADMISSIBLE:RETRY_CAP_REACHED' });
@@ -663,10 +706,12 @@ describe('L115H-U08 — § 6 : familles d’alertes, séparation des vues, bilan
     const { readFileSync } = await import('node:fs');
     const mon = readFileSync('src/services/ai/source-analysis/source-units/monitoring.ts', 'utf8');
     expect(mon).not.toContain('ISSUE_SCAN_CAP');
+    // Carte #837 (D3) : plus de plafond SILENCIEUX de pages ; un classement tronqué est déclaré INCOMPLETE.
+    expect(mon).not.toContain('ISSUE_SCAN_MAX_PAGES');
     expect(mon).toContain('ISSUE_SCAN_PAGE');
     // Pagination par CLÉ (pas par OFFSET) : aucun document lu deux fois, aucun sauté.
     expect(mon).toContain('(c.updated_at, c.file_id) < ($2::timestamptz, $3::int)');
-    expect(mon).toContain('out.byIssueTruncated = false;');
+    expect(mon).toContain('out.byIssueTruncated = classement.incomplete !== null;');
     // Le libellé du BO reste tolérant à une lecture antérieure qui annoncerait encore une troncature.
     const panneau = readFileSync('src/app/admin/ai-executions/_components/T1CompletenessPanel.tsx', 'utf8');
     expect(panneau).toContain('byIssueScanned');

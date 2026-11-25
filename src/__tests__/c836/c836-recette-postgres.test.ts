@@ -37,7 +37,9 @@ const SQL = readFileSync(`${DOSSIER}/${FICHIER}`, 'utf8');
 describe('C836-U-MIGRATION — additive, idempotente, non destructive (E09)', () => {
   it('numérotée APRÈS la dernière migration du dépôt, et après celles qu’elle complète', () => {
     const numeros = readdirSync(DOSSIER).filter((f) => /^\d+_.*\.sql$/.test(f)).map((f) => Number(f.split('_')[0]));
-    expect(Math.max(...numeros)).toBe(1960);
+    // Carte #837 : des migrations PLUS RÉCENTES peuvent suivre (1970…) — la 1960 reste unique et postérieure à
+    // celles qu'elle complète ; l'égalité stricte au maximum du dépôt cassait toute livraison suivante.
+    expect(Math.max(...numeros)).toBeGreaterThanOrEqual(1960);
     expect(numeros.filter((n) => n === 1960)).toHaveLength(1);
     // Les migrations réutilisées existent toujours (aucune réécriture de l'histoire).
     const fichiers = readdirSync(DOSSIER);

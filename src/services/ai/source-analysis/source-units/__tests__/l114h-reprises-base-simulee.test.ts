@@ -44,11 +44,19 @@ const etat = vi.hoisted(() => ({
   refusTransitoires: 0,
   reparations: [] as Array<{ units: string[] }>,
   anomalies: [] as Array<{ action: string; fingerprint: string }>,
+  /** Carte #837 : double en mémoire de `t1_requeue_requests` (migrations 1805 + 1970 désormais OBLIGATOIRES). */
+  sim: null as null | { store: { lignes: unknown[]; seq: number }; traiter: (x: string, p: unknown[]) => unknown[] | undefined },
 }));
 
 const requete = vi.hoisted(() => async (q: string, params: unknown[] = []) => {
   const x = q.replace(/\s+/g, ' ').trim();
   etat.ecritures.push({ q: x, params });
+  // Carte #837 (A3) : migrations 1805 / 1970 présentes (obligatoires pour la remise en file) — double en mémoire.
+  if (/to_regclass\('t1_requeue_requests'\)/.test(x)) return [{ ok: true }];
+  if (/c837:evidence-tables/.test(x)) return [];
+  if (/c837:evidence-deps/.test(x)) return [{ h: 'h0', n: 0 }];
+  const simule = etat.sim?.traiter(x, params);
+  if (simule !== undefined) return simule;
   // Sondes de schéma : couche A, diagnostics (0329) et provenance (1665) présents.
   if (/to_regclass\('document_source_units'\)/.test(x)) return [{ a: true, b: true, c: true, d: true }];
   if (/information_schema\.columns/.test(x) && /repair_state/.test(x)) return [{ n: 5 }];
@@ -79,8 +87,6 @@ const requete = vi.hoisted(() => async (q: string, params: unknown[] = []) => {
       }]
       : [];
   }
-  // Carte #785 (§ 2) : migration 1805 absente dans cette base simulée — le § 1 doit tenir seul.
-  if (/to_regclass\('t1_requeue_requests'\)/.test(x)) return [{ ok: false }];
   if (/SET retry_attempts = retry_attempts \+ 1, updated_at = NOW\(\)/.test(x)) {
     const c = etat.couverture;
     if (!c || Number(c.retryAttempts) >= Number(params[2])) return [];
@@ -88,7 +94,12 @@ const requete = vi.hoisted(() => async (q: string, params: unknown[] = []) => {
     return [{ n: c.retryAttempts }];
   }
   // Remise en file : travail vivant relu, refus transitoires déjà subis.
-  if (/FROM ai_job_queue/.test(x)) return etat.travaux;
+  if (/FROM ai_job_queue/.test(x)) {
+    const vise = params[4] == null ? null : Number(params[4]);
+    const vivant = (t: { status: string }) => t.status === 'PENDING' || t.status === 'RUNNING';
+    return etat.travaux.filter((t) => vise === null || t.id === vise || vivant(t))
+      .sort((a, b) => Number(vivant(b)) - Number(vivant(a)) || b.id - a.id).slice(0, 1);
+  }
   if (/'requeue' ->> 'transientRefusals'/.test(x)) return [{ refus: String(etat.refusTransitoires) }];
   return [];
 });
@@ -133,6 +144,8 @@ vi.mock('@/services/account-capabilities.service', () => ({ getAccountCapabiliti
 vi.mock('../../master/rubric-rules', () => ({ loadAssetFamilies: async () => [] }));
 vi.mock('../../steps/analyze-document.step', () => ({ callAnalyzeDocument: async () => { throw new Error('appel modèle interdit dans ce test'); } }));
 
+const { creerSimulateurDemandes } = await import('./fixtures/c837-requeue-sim');
+etat.sim = creerSimulateurDemandes({ couverture: () => (etat.couverture ? { retryAttempts: Number(etat.couverture.retryAttempts) } : null) });
 const jobs = await import('../jobs');
 const repo = await import('../repository');
 const { buildCompletenessReport } = await import('../coverage');
@@ -194,6 +207,7 @@ const reporter = () => {
 beforeEach(() => {
   etat.ecritures = []; etat.couverture = null; etat.unites = []; etat.file = { status: 'ACCEPTED', jobId: 501, reason: null }; etat.travaux = [{ id: 501, status: 'PENDING', business_result: null }];
   etat.misesEnFile = []; etat.refusTransitoires = 0; etat.reparations = []; etat.anomalies = [];
+  etat.sim!.store.lignes = []; etat.sim!.store.seq = 0;
   repo.__resetCoverageProvenanceProbeForTests();
 });
 

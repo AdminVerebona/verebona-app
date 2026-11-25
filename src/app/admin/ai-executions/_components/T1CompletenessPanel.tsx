@@ -29,6 +29,9 @@ interface Row {
   nextRetryAt?: string | null;
   /** Lot 114H (#775) : issue actuelle (recalculée), motif vérifiable et prochaine action réelle. */
   issue?: { issue: CoverageIssue; label: string; reason: string; nextAction: string; actionable: boolean };
+  /** Carte #837 (D4) : état consigné par le rapport d'exécution d'origine (immuable) — jamais reconstitué. */
+  historical?: { source: 'ANALYSIS_REPORT' | 'UNAVAILABLE'; reportId: number | null; qualityState: string | null; anomalies: string[]; reportedAt: string | null };
+  current?: { changedSinceAnalysis: boolean | null; retryScheduled: boolean };
 }
 interface Diagnostics {
   verificationReason?: string | null;
@@ -60,6 +63,10 @@ interface Overview {
   /** Lot 115H (#785, § 6) : documents réellement classés — le balayage est exhaustif, plus aucun plafond. */
   byIssueScanned?: number;
   byIssueTruncated?: boolean;
+  /** Carte #837 (D3) : classement exhaustif ou INCOMPLET (cause, progression). */
+  byIssueStatus?: 'COMPLETE' | 'INCOMPLETE';
+  byIssueIncomplete?: { cause: string; scanned: number; expected: number | null } | null;
+  byIssueExpected?: number | null;
 }
 
 /** Lot 114H (#775, P1-C) : bilan cumulé de la réévaluation automatique du stock (compteurs seulement). */
@@ -69,6 +76,13 @@ export interface ReassessmentReport {
   unitsRequalified: number; alertsClosed: number; alertsMaintained: number; alertsOpened: number;
   retriesScheduled: number; retriesCancelled: number; errors: number; remaining: number; openAlerts: number;
   totalDurationMs: number; aiCalls: number; aiCost: number; firstAt: string | null; lastAt: string | null;
+  /** Carte #837 (D1, D2) : suites corrélées explicitement et succès métier. */
+  repairsScheduled?: number; repairsCompleted?: number;
+  repairs?: { executed: number; businessSucceeded: number; businessFailed: number; unknown: number; unitsRepaired: number; residualsRemaining: number };
+  followUps?: {
+    correlation: 'EXPLICIT' | 'UNAVAILABLE'; requests: number; jobs: number; calls: number; costMicros: number;
+    callsWithUnknownCost: number; jobsWithUnknownCalls: number; uncorrelatedDocumentCalls: number; callsByKind: Record<string, number>;
+  };
 }
 
 /** Issues d'une réévaluation — libellés BO (textes nouveaux, à valider par le PO). */
@@ -92,9 +106,27 @@ export function reassessmentText(r: ReassessmentReport | null | undefined): stri
     `Réévaluation du stock sans IA (règles v${r.rulesVersion}) : ${r.documents} document(s) examiné(s)${issues ? ` — ${issues}` : ''} · ${r.remaining} restant(s)`,
     `Unités requalifiées sur preuve : ${r.unitsRequalified} · reprises ciblées programmées : ${r.retriesScheduled} · échéances retirées (plus de reprise admissible) : ${r.retriesCancelled}`,
     `Alertes de Supervision : ${r.alertsClosed} close(s) (cause disparue) · ${r.alertsMaintained} maintenue(s) · ${r.alertsOpened} ouverte(s) · ${r.openAlerts} encore active(s)`,
-    `Durée cumulée : ${Math.round(r.totalDurationMs / 1000)} s · appels IA : ${r.aiCalls} · coût IA : ${r.aiCost}`
+    // Carte #837 (D1) : la passe DÉTERMINISTE (0 appel) est isolée de ses SUITES ; un coût inconnu est dit inconnu.
+    `Durée cumulée : ${Math.round(r.totalDurationMs / 1000)} s · passe déterministe : ${r.aiCalls} appel IA, coût ${r.aiCost}`
       + `${r.lastAt ? ` · dernier passage ${new Date(r.lastAt).toLocaleString('fr-FR')}` : ''}`,
   ];
+  const f = r.followUps;
+  if (f) {
+    lignes.push(f.correlation === 'UNAVAILABLE'
+      ? 'Suites IA de la campagne : non corrélables (migration 1970 absente) — coût INCONNU, jamais 0.'
+      : `Suites IA corrélées : ${f.requests} demande(s) · ${f.jobs} travail(aux) · ${f.calls} appel(s)`
+        + `${Object.keys(f.callsByKind).length ? ` (${Object.entries(f.callsByKind).map(([k, n]) => `${k} ${n}`).join(', ')})` : ''}`
+        + ` · coût rendu ${f.costMicros}`
+        + `${f.callsWithUnknownCost ? ` · ${f.callsWithUnknownCost} appel(s) au coût INCONNU` : ''}`
+        + `${f.jobsWithUnknownCalls ? ` · ${f.jobsWithUnknownCalls} travail(aux) aux appels non attribuables (INCONNU)` : ''}`
+        + `${f.uncorrelatedDocumentCalls ? ` · ${f.uncorrelatedDocumentCalls} appel(s) du document non rattaché(s) (exclus)` : ''}`);
+  }
+  const rp = r.repairs;
+  if (rp) {
+    lignes.push(`Réparations : ${r.repairsScheduled ?? 0} programmée(s) · ${rp.executed} exécutée(s) · ${rp.businessSucceeded} réussie(s) (succès métier prouvé)`
+      + ` · ${rp.businessFailed} sans succès métier · ${rp.unknown} issue inconnue · ${rp.unitsRepaired} unité(s) réparée(s)`
+      + ` · ${rp.residualsRemaining} document(s) avec résidus restants`);
+  }
   if (r.transitions.length > 0) lignes.push(`États avant → après : ${r.transitions.slice(0, 8).map((t) => `${t.from} → ${t.to} (${t.documents})`).join(' · ')}`);
   return lignes;
 }
@@ -105,13 +137,34 @@ export function reassessmentText(r: ReassessmentReport | null | undefined): stri
  * documents classés est annoncé. `truncated` reste accepté (une lecture
  * antérieure au lot 115H peut encore le rendre) : le code en est tolérant.
  */
-export function issuesText(byIssue: Record<string, number> | undefined | null, truncated?: boolean, scanned?: number): string {
+export function issuesText(byIssue: Record<string, number> | undefined | null, truncated?: boolean, scanned?: number,
+  incomplete?: { cause: string; scanned: number; expected: number | null } | null): string {
   if (!byIssue) return '';
   const parts = COVERAGE_ISSUES.filter((i) => (byIssue[i] ?? 0) > 0).map((i) => `${byIssue[i]} ${COVERAGE_ISSUE_LABEL[i]}`);
-  if (!parts.length) return '';
-  const portee = truncated ? ' (documents les plus récents)'
-    : typeof scanned === 'number' ? ` (sur ${scanned} document(s) de la période, total exhaustif)` : '';
-  return `État actuel : ${parts.join(' · ')}${portee}`;
+  if (!parts.length && !incomplete) return '';
+  // Carte #837 (D3) : jamais « total exhaustif » après une lecture tronquée — cause et progression affichées.
+  const portee = incomplete
+    ? ` — CLASSEMENT INCOMPLET (${INCOMPLETE_CAUSE[incomplete.cause] ?? incomplete.cause} : ${incomplete.scanned}/${incomplete.expected ?? '?'} document(s) classé(s))`
+    : truncated ? ' — CLASSEMENT INCOMPLET (lecture tronquée)'
+      : typeof scanned === 'number' ? ` (sur ${scanned} document(s) de la période, total exhaustif)` : '';
+  return `État actuel : ${parts.join(' · ') || 'aucun document classé'}${portee}`;
+}
+
+/** Carte #837 (D3) : causes d'un classement incomplet (textes nouveaux, à valider par le PO). */
+const INCOMPLETE_CAUSE: Record<string, string> = {
+  TIME_BUDGET: 'durée de lecture dépassée',
+  SQL_ERROR: 'erreur de lecture',
+  COUNT_MISMATCH: 'écart avec le total de la période',
+};
+
+/** Carte #837 (D4) : état consigné à l'analyse (rapport immuable) vs état actuel (pure). */
+export function historicalText(r: Pick<Row, 'historical' | 'current' | 'qualityState'>): string {
+  const h = r.historical;
+  if (!h) return '';
+  if (h.source === 'UNAVAILABLE' || !h.qualityState) return 'À l’analyse : rapport d’exécution d’origine indisponible (état historique non reconstitué).';
+  const q = QUALITY_LABEL[h.qualityState as Quality] ?? h.qualityState;
+  return `À l’analyse (rapport n° ${h.reportId}${h.reportedAt ? ` du ${new Date(h.reportedAt).toLocaleString('fr-FR')}` : ''}) : ${q}`
+    + `${r.current?.changedSinceAnalysis ? ` — état actuel différent : ${QUALITY_LABEL[r.qualityState] ?? r.qualityState}` : ''}`;
 }
 
 const QUALITY_LABEL: Record<Quality, string> = {
@@ -236,8 +289,8 @@ export function T1CompletenessPanel({ days = 7 }: { days?: number }) {
   const relancer = (fileId: number) => {
     setReprises((x) => ({ ...x, [fileId]: 'en cours…' }));
     // Lot 114H (#775, P1-B) : l'écran dit l'issue réelle — relancée, déjà en file, ou refusée (motif du serveur).
-    apiClient.post<{ ok: boolean; queued: boolean; alreadyRunning?: boolean }>('/api/admin/ai/t1-completeness/retry', { fileId })
-      .then((r) => setReprises((x) => ({ ...x, [fileId]: !r.queued ? ECHEC_REPRISE : r.alreadyRunning ? 'analyse déjà en file' : 'analyse relancée' })))
+    apiClient.post<{ ok: boolean; queued: boolean; alreadyRunning?: boolean; completed?: boolean }>('/api/admin/ai/t1-completeness/retry', { fileId })
+      .then((r) => setReprises((x) => ({ ...x, [fileId]: r.completed ? 'analyse relancée et terminée' : !r.queued ? ECHEC_REPRISE : r.alreadyRunning ? 'analyse déjà en file' : 'analyse relancée' })))
       .catch((e: unknown) => {
         const motif = (e as { serverMessage?: string } | null)?.serverMessage;
         setRefus((x) => ({ ...x, [fileId]: motif ?? '' }));
@@ -299,8 +352,8 @@ export function T1CompletenessPanel({ days = 7 }: { days?: number }) {
         {data.averageCoverage !== null && ` · couverture moyenne ${Math.round(data.averageCoverage * 100)} %`}
         {` · ${data.repairPasses} passe(s) de réparation ciblée`}
       </p>
-      {issuesText(data.byIssue, data.byIssueTruncated, data.byIssueScanned) && (
-        <p className="text-xs text-[color:var(--text-secondary)] break-words" data-testid="t1-completeness-issues">{issuesText(data.byIssue, data.byIssueTruncated, data.byIssueScanned)}</p>
+      {issuesText(data.byIssue, data.byIssueTruncated, data.byIssueScanned, data.byIssueIncomplete) && (
+        <p className="text-xs text-[color:var(--text-secondary)] break-words" data-testid="t1-completeness-issues">{issuesText(data.byIssue, data.byIssueTruncated, data.byIssueScanned, data.byIssueIncomplete)}</p>
       )}
       {reevaluation}
       {totalsText(data.totals).length > 0 && (
@@ -341,6 +394,7 @@ export function T1CompletenessPanel({ days = 7 }: { days?: number }) {
                   {` · Motif : ${r.issue.reason} · Prochaine action : ${r.issue.nextAction}`}
                 </span>
               )}
+              {historicalText(r) && <span className="block break-words text-[color:var(--text-muted)]" data-testid="t1-coverage-historical">{historicalText(r)}</span>}
               {diagnosticsText(r) && <span className="block break-words text-[color:var(--text-muted)]">{diagnosticsText(r)}</span>}
               <button type="button" onClick={() => setDetail(detail === r.fileId ? null : r.fileId)}
                 className="mt-0.5 text-xs rounded border border-[color:var(--border-subtle)] px-2 py-0.5 text-[color:var(--text-secondary)]">

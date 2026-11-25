@@ -165,6 +165,10 @@ async function reconcileStoredPass(p: {
 }): Promise<StoredReconciliationResult> {
   const { pgClient } = await import('@/db');
   const sql = pgClient as unknown as Sql;
+  // Carte #837 (B4) : VERSION DES PREUVES lue AVANT les données confrontées — faits, décisions, candidats, tableaux,
+  // ancrages, extraction. La garde `updated_at` de la couverture ne les englobe pas : elle est complétée ci-dessous.
+  const { loadEvidenceDependencies } = await import('./evidence-version');
+  const preuvesLues = p.apply ? await loadEvidenceDependencies(sql, p.accountId, p.fileId) : null;
   const stored = await loadAllDocumentSourceUnits(p.fileId, { accountId: p.accountId });
   const cov = await loadDocumentCoverage(p.fileId, p.accountId);
   if (stored.length === 0 || !cov) {
@@ -220,7 +224,7 @@ async function reconcileStoredPass(p: {
     normalisation: diag.normalisation, sourceReread: diag.sourceReread,
   });
   if (report.diagnostics) {
-    const d = report.diagnostics as T1CoverageDiagnostics & { continuationRuns?: number };
+    const d = report.diagnostics as T1CoverageDiagnostics & { continuationRuns?: number; scheduledBy?: Record<string, unknown> };
     if (diag.repairPropagation) d.repairPropagation = diag.repairPropagation;
     if (diag.coverageRepair) d.coverageRepair = diag.coverageRepair;
     if (diag.continuationRuns) d.continuationRuns = diag.continuationRuns;
@@ -258,6 +262,11 @@ async function reconcileStoredPass(p: {
   const anomaliesApres = [...report.anomalies].sort();
   const stateChanged = report.qualityState !== cov.qualityState || anomaliesAvant.join('|') !== anomaliesApres.join('|')
     || programmeeAvant !== (prochaine !== null);
+  // Carte #837 (D1) : une reprise NOUVELLEMENT programmée par une campagne de réévaluation porte la référence de
+  // la campagne — la suite exécutée s'y rattache EXPLICITEMENT (jamais par simple proximité de dates).
+  if (report.diagnostics && prochaine !== null && !programmeeAvant && p.origin.startsWith('t1-coverage-reassessment:')) {
+    (report.diagnostics as T1CoverageDiagnostics & { scheduledBy?: Record<string, unknown> }).scheduledBy = { origin: p.origin, at: new Date().toISOString() };
+  }
   const retry = {
     anomaliesBefore: anomaliesAvant, anomaliesAfter: anomaliesApres, scheduledBefore: programmeeAvant, scheduledAfter: prochaine !== null,
     pendingReleased, actions: [...regle.actions], blocked: regle.blocked, stateChanged,
@@ -266,6 +275,20 @@ async function reconcileStoredPass(p: {
   if (!p.apply) return { outcome: 'SIMULATED', requalified, before, after, retry };
 
   await pgClient.begin(async (tx) => {
+    // ══════════════════════════════════════════════════════════════════
+    // CARTE #837 (B4) — CONTRÔLE DE VERSION DES PREUVES AVANT TOUTE ÉCRITURE
+    // Une preuve (fait, décision, candidat, cellule, ancrage, texte) changée
+    // depuis la lecture, même sans réécriture de la couverture, fait refuser
+    // l'écriture : relecture et recalcul (une fois), puis report explicite
+    // (`CONFLICT_DEFERRED`). Jamais un état calculé sur des preuves périmées.
+    // ══════════════════════════════════════════════════════════════════
+    if (preuvesLues) {
+      const maintenant = await loadEvidenceDependencies(tx as unknown as Sql, p.accountId, p.fileId);
+      if (maintenant.fingerprint !== preuvesLues.fingerprint) {
+        const { CoverageVersionConflictError: Conflit } = await import('./repository');
+        throw new Conflit(p.fileId, `preuves ${preuvesLues.fingerprint}`, `preuves ${maintenant.fingerprint}`);
+      }
+    }
     await writeSourceLayer(tx as never, {
       accountId: p.accountId, fileId: p.fileId, extractionId: cov.extractionId ?? null, origin: 'RETRY',
       layer: { layerVersion: SOURCE_LAYER_VERSION, units: majs, unresolvedFacts: unresolved, report, retryable: report.qualityState === 'INCOMPLETE_RETRYABLE' },

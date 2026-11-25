@@ -307,7 +307,10 @@ describe('L114H-U05 — R5 : issue RÉELLE d’une remise en file T1 et écritur
     // servie, preuves inchangées). Les trois sortent toujours de la MÊME branche de refus.
     const route = lire('src/app/api/admin/ai/t1-completeness/retry/route.ts');
     expect(route).toContain("'NOT_ADMISSIBLE'");
-    expect(route).toContain("'ALREADY_SATISFIED' : 'NOT_QUEUED'");
+    // Carte #837 (A2, A3) : deux codes encore — `IN_PROGRESS` (même demande tenue ailleurs) et `BUSINESS_FAILED`.
+    expect(route).toContain("'ALREADY_SATISFIED'");
+    expect(route).toContain("'IN_PROGRESS'");
+    expect(route).toContain("'BUSINESS_FAILED' : 'NOT_QUEUED'");
     expect(route).toContain("requestedBy: 'BO'");
   });
 });
@@ -446,7 +449,8 @@ describe('L114H-U09 — BO : bilan de la réévaluation, issues, effet sur les r
     expect(l[0]).toContain('2 devenue(s) complète(s)');
     expect(l[0]).not.toContain('en erreur');
     expect(l.join('\n')).toContain('3 close(s) (cause disparue) · 1 maintenue(s)');
-    expect(l.join('\n')).toContain('appels IA : 0');
+    // Carte #837 (D1) : la passe DÉTERMINISTE est isolée (0 appel) de ses suites, affichées à part.
+    expect(l.join('\n')).toContain('passe déterministe : 0 appel IA');
     expect(l.join('\n')).toContain('COMPLETE_WITH_UNRESOLVED → COMPLETE (2)');
     expect(reassessmentText({ ...bilan, available: false })).toEqual([]);
     expect(reassessmentText(null)).toEqual([]);
@@ -469,9 +473,10 @@ describe('L114H-U09 — BO : bilan de la réévaluation, issues, effet sur les r
     for (const interdit of ['callAnalyzeDocument', 'runRepairPass', 'gateway/', 'analyze-document.step', 'enqueueFileAnalyses', 'retryDocument', 'repairDocumentSourceUnits']) {
       expect(source).not.toContain(interdit);
     }
-    // Tâche planifiée déclarée, au démarrage, relancée tant qu'il reste des documents ; jamais concurrente de la reprise.
+    // Tâche planifiée déclarée ; carte #837 (C1, C4) : rattrapage PÉRIODIQUE permanent (toutes les heures), plus
+    // seulement « au démarrage puis tant qu'il reste des documents » ; jamais concurrente de la reprise.
     const catalogue = lire('src/services/scheduling/scheduled-tasks.catalog.ts');
-    expect(catalogue).toMatch(/code: 't1-coverage-reassessment',[\s\S]{0,200}schedule: \{ kind: 'startup'/);
+    expect(catalogue).toMatch(/code: 't1-coverage-reassessment',[\s\S]{0,600}schedule: \{ kind: 'interval', everyMs: HOUR \}/);
     expect(catalogue.match(/code: 't1-completeness-retry'/g)).toHaveLength(1);
   });
 

@@ -310,9 +310,12 @@ scenario('L115H', 'T1 — demandes exactes, interruptions, rattrapage et bilan (
     // UN seul travail, et son drapeau de passage supplémentaire n'a JAMAIS été posé.
     expect(jobs).toHaveLength(1);
     expect(jobs[0].coalesce).toBe(false);
-    // Le planificateur, lui, porte une identité propre : il réserve et consomme sa reprise, sans second travail vivant.
+    // Carte #837 (A3) : le planificateur porte la MÊME demande canonique (le canal n'est qu'une provenance) — il
+    // CONSTATE le travail vivant, ne réserve ni ne consomme rien, et aucun second travail ne naît.
     const planif = await demander(f, c, { requestedBy: 'SCHEDULER', scheduled: true });
     expect(planif.queued).toBe(true);
+    expect(planif).toMatchObject({ status: 'IDENTICAL_REQUEST_ALIVE', attemptConsumed: false });
+    expect(Number((await couverture(f)).attempts)).toBe(1);
     expect((await travaux(f)).filter((j) => j.status === 'PENDING' || j.status === 'RUNNING')).toHaveLength(1);
     expect((await travaux(f)).every((j) => j.coalesce === false)).toBe(true);
 
@@ -325,10 +328,10 @@ scenario('L115H', 'T1 — demandes exactes, interruptions, rattrapage et bilan (
 
     // L'identité de chaque demande est en base, avec ses frontières franchies.
     const d = await demandes(f);
-    expect(d.length).toBeGreaterThanOrEqual(2);
-    // Deux demandes ont RÉELLEMENT consommé (le BO, puis le planificateur) ; les autres n'ont rien consommé.
-    expect(d.filter((x) => x.attempt_consumed === true).length).toBeGreaterThanOrEqual(1);
-    expect(d.filter((x) => x.attempt_consumed === false).length).toBeGreaterThanOrEqual(1);
+    // Carte #837 (A3) : UNE seule demande canonique (BO, clics, deux exécutants, planificateur), UNE consommation.
+    expect(d).toHaveLength(1);
+    expect(d[0]).toMatchObject({ attempt_consumed: true });
+    expect(String(d[0].request_key)).toMatch(/^COMPLETENESS_REREAD:/);
     expect(replay.calls).toHaveLength(0);
   });
 
@@ -508,14 +511,15 @@ scenario('L115H', 'T1 — demandes exactes, interruptions, rattrapage et bilan (
     // La passe déterministe reste à coût nul, et ses SUITES sont comptées à part.
     expect(bilan.aiCalls).toBe(0);
     expect(bilan.aiCost).toBe(0);
-    expect(bilan.followUps.calls).toBeGreaterThanOrEqual(2);
-    expect(bilan.followUps.costMicros).toBeGreaterThanOrEqual(1234);
-    // Coût INCONNU : compté comme inconnu, jamais comme zéro.
-    expect(bilan.followUps.callsWithUnknownCost).toBeGreaterThanOrEqual(1);
-    expect(Object.keys(bilan.followUps.callsByKind).sort()).toEqual(['t1_analyze_document', 't1_repair_units']);
-    // Corrélation : la demande de reprise et son travail sont rattachés à la campagne.
-    expect(bilan.followUps.requests).toBeGreaterThanOrEqual(1);
-    expect(bilan.followUps.jobs).toBeGreaterThanOrEqual(1);
+    // Règle remplacée (carte #837, D1) : ces deux appels étaient IMPUTÉS à la campagne par simple jointure document +
+    // date. Ils ne sont rattachés à AUCUNE suite de la campagne (la demande du BO précède la campagne et ne porte pas
+    // sa référence) : ils sont comptés « non rattachés », hors des totaux de la campagne. La corrélation explicite
+    // (campagne → demande → travail → appel) est prouvée par le scénario C837.
+    expect(bilan.followUps.correlation).toBe('EXPLICIT');
+    expect(bilan.followUps.calls).toBe(0);
+    expect(bilan.followUps.costMicros).toBe(0);
+    expect(bilan.followUps.uncorrelatedDocumentCalls).toBeGreaterThanOrEqual(2);
+    expect(bilan.followUps.requests).toBe(0);
     // Une réparation PROGRAMMÉE n'est pas une réparation ACCOMPLIE : les deux compteurs existent séparément.
     expect(typeof bilan.repairsScheduled).toBe('number');
     expect(typeof bilan.repairsCompleted).toBe('number');
@@ -524,6 +528,7 @@ scenario('L115H', 'T1 — demandes exactes, interruptions, rattrapage et bilan (
     // Compteurs par issue du BO : balayage exhaustif, troncature toujours fausse.
     const vue = await getT1CompletenessOverview({ days: 1 });
     expect(vue.byIssueTruncated).toBe(false);
+    expect(vue.byIssueStatus).toBe('COMPLETE');
     expect(vue.byIssueScanned).toBeGreaterThanOrEqual(1);
     expect(Object.values(vue.byIssue ?? {}).reduce((a, b) => a + b, 0)).toBe(vue.byIssueScanned);
     expect(replay.calls).toHaveLength(0);

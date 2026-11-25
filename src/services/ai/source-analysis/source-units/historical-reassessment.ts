@@ -58,14 +58,14 @@
  * le stock est alors réévalué de nouveau, automatiquement.
  * ══════════════════════════════════════════════════════════════════════════
  */
-import { createHash } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { processingEligibleSql } from '@/services/account/processing-eligibility';
 
 /**
  * Version des règles de couverture / d'alerte T1 appliquées au stock.
  *   1 — lot 114H (#775) : règles 113AN + 114G + règle unique des reprises.
  */
-export const T1_COVERAGE_RULES_VERSION = 2;
+export const T1_COVERAGE_RULES_VERSION = 3;
 
 /**
  * ══════════════════════════════════════════════════════════════════════════
@@ -101,6 +101,54 @@ export const T1_RULES_VERSION_SIGNATURES: Readonly<Record<number, string>> = {
   // Version 1 : inventaire du lot 114H (complétude, perte de normalisation) — signature reconstituée.
   1: 'e83f8cdd7f71969ba22cf5c85183671f',
   2: 'f1ff0b8354239dc2e562b8e5183100c4',
+  // Version 3 (carte #837) : inventaire des familles INCHANGÉ — ce sont les PRÉDICATS qui changent (voir ci-dessous).
+  3: 'f1ff0b8354239dc2e562b8e5183100c4',
+};
+
+/**
+ * ══════════════════════════════════════════════════════════════════════════
+ * CARTE TRELLO #837 (C3) — LA GARDE PORTE SUR LE CODE RÉEL DES PRÉDICATS
+ *
+ * Règle complétée : `t1AlertConditionsSignature()` ne hachait que les
+ * MÉTADONNÉES de l'inventaire (code, préfixe, « recontrôlée », ce qu'elle
+ * couvre). Modifier la LOGIQUE d'une condition (`alertDecisionOf`,
+ * `decideRetry`, issue de couverture…) sans toucher à l'inventaire passait
+ * la CI : le stock restait évalué sur l'ancienne condition.
+ *
+ * `T1_RULES_PREDICATE_SIGNATURES` enregistre, pour chaque version LIVRÉE,
+ * l'empreinte du CODE (corps sans commentaires ni mise en forme, via le
+ * compilateur TypeScript) de chaque prédicat listé dans
+ * `T1_RULE_PREDICATES`. Le test de livraison recalcule cette empreinte sur
+ * les sources : toute modification matérielle d'un prédicat le fait échouer
+ * tant que `T1_COVERAGE_RULES_VERSION` n'a pas été incrémentée ET la nouvelle
+ * empreinte enregistrée — et incrémenter la version relance le cycle complet
+ * du stock (journal par version).
+ *
+ * Histoire : 3 — carte #837 (admission commune, DONE métier, échéance
+ * admissible, empreinte des preuves exhaustive).
+ * ══════════════════════════════════════════════════════════════════════════
+ */
+export const T1_RULE_PREDICATES: ReadonlyArray<{ file: string; fn: string }> = [
+  { file: 'src/services/ai/source-analysis/source-units/historical-reassessment.ts', fn: 'alertDecisionOf' },
+  { file: 'src/services/ai/source-analysis/source-units/historical-reassessment.ts', fn: 'reassessmentOutcomeOf' },
+  { file: 'src/services/ai/source-analysis/source-units/historical-reassessment.ts', fn: 'reassessmentCompletionOf' },
+  { file: 'src/services/ai/source-analysis/source-units/historical-reassessment.ts', fn: 'refusExplicite' },
+  { file: 'src/services/ai/source-analysis/source-units/retry-policy.ts', fn: 'retryFactsOf' },
+  { file: 'src/services/ai/source-analysis/source-units/retry-policy.ts', fn: 'decideRetry' },
+  { file: 'src/services/ai/source-analysis/source-units/retry-policy.ts', fn: 'decideRequeueRight' },
+  { file: 'src/services/ai/source-analysis/source-units/retry-policy.ts', fn: 'decideRequeueAdmission' },
+  { file: 'src/services/ai/source-analysis/source-units/retry-policy.ts', fn: 'releaseUnschedulablePending' },
+  { file: 'src/services/ai/source-analysis/source-units/retry-policy.ts', fn: 'settleLayerRetry' },
+  { file: 'src/services/ai/source-analysis/source-units/coverage-issue.ts', fn: 'coverageIssueOf' },
+  { file: 'src/services/ai/source-analysis/source-units/coverage-issue.ts', fn: 'scheduleAdmissible' },
+  { file: 'src/services/ai/source-analysis/source-units/coverage-reconciliation.ts', fn: 'residualPolicyOf' },
+  { file: 'src/services/ai/source-analysis/source-units/coverage.ts', fn: 'buildCompletenessReport' },
+  { file: 'src/services/ai/source-analysis/source-units/verification-followup.ts', fn: 'verificationAutoRetryDue' },
+];
+
+/** Empreinte du code des prédicats, par version LIVRÉE (carte #837, C3). Recalculée par le test de livraison. */
+export const T1_RULES_PREDICATE_SIGNATURES: Readonly<Record<number, string>> = {
+  3: '7db94b50502681cdc57f0bd1ff56f58b',
 };
 
 /** Empreinte des conditions d'alerte T1 en vigueur (pure, stable d'une exécution à l'autre). */
@@ -362,6 +410,16 @@ export interface ReassessmentPassResult {
   reservationsConfirmed: number;
   /** Lot 115H (#785, § 5) : la fin du stock a été atteinte pendant ce passage (le curseur repart à zéro). */
   fullCycle: boolean;
+  /** Carte #837 (C1) : documents contrôlés dont l'empreinte EXHAUSTIVE des preuves est inchangée (aucun rejeu, aucune écriture). */
+  unchangedEvidence: number;
+  /** Carte #837 (C1) : documents à issue terminale dont l'empreinte a été recalculée par le balayage permanent. */
+  evidenceChecked: number;
+  /** … dont l'empreinte avait CHANGÉ (preuve nouvelle sans réécriture de la couverture) : réévalués. */
+  evidenceChanged: number;
+  /** Le balayage des empreintes a atteint la fin du stock pendant ce passage. */
+  evidenceSweepComplete: boolean;
+  /** Carte #837 (B1) : restitutions de droit CONFIRMÉES en base par la récupération des réservations. */
+  reservationsRestituted: number;
   errors: number;
   alertsClosed: number; alertsMaintained: number; alertsOpened: number;
   /** Alertes sans document éligible examinées (document supprimé, couverture complète…). */
@@ -492,6 +550,11 @@ async function decideDocumentAlerts(p: {
  */
 async function evidenceFingerprintOf(accountId: number, fileId: number, cov: Row): Promise<{ fingerprint: string; sourceSha: string | null }> {
   const { requeueEvidenceFingerprint } = await import('./requeue-identity');
+  // Carte #837 (C2) : TOUTES les dépendances lues (faits, décisions, candidats, tableaux, ancrages, extraction, texte
+  // original), versionnées — une modification qui laisse les compteurs égaux change l'empreinte.
+  const { loadEvidenceDependencies } = await import('./evidence-version');
+  const { pgClient: client } = await import('@/db');
+  const dependances = await loadEvidenceDependencies(client as never, accountId, fileId);
   const d = (typeof cov.verification === 'string' ? JSON.parse(cov.verification) : cov.verification) as Record<string, unknown> | null;
   let sha: string | null = null;
   try {
@@ -514,20 +577,22 @@ async function evidenceFingerprintOf(accountId: number, fileId: number, cov: Row
     failedUnits: Number(cov.failedUnits ?? 0),
     reverificationFingerprint: typeof rev === 'string' ? rev : null,
     sourceSha256: sha, layerVersion: Number(cov.layerVersion ?? 0),
+    dependencies: dependances.fingerprint,
   });
   return { fingerprint, sourceSha: sha };
 }
 
 /** Libère le bail du document et consigne la cause du report (jamais bloquant). */
-async function libererBail(p: { accountId: number; fileId: number }, avecBail: boolean, cause: string): Promise<void> {
+async function libererBail(p: { accountId: number; fileId: number }, avecBail: boolean, cause: string, owner: string): Promise<void> {
   if (!avecBail) return;
   try {
     const { pgClient } = await import('@/db');
+    // Carte #837 (B3) : seul le TITULAIRE du bail (jeton unique) peut le libérer — jamais un ancien titulaire.
     await pgClient.unsafe(
       `UPDATE t1_coverage_reassessments
           SET lease_owner = NULL, lease_expires_at = NULL, outcome = 'DEFERRED', deferred_cause = $4, updated_at = NOW()
-        WHERE file_id = $1 AND account_id = $2 AND rules_version = $3`,
-      [p.fileId, p.accountId, T1_COVERAGE_RULES_VERSION, cause] as never[],
+        WHERE file_id = $1 AND account_id = $2 AND rules_version = $3 AND lease_owner = $5`,
+      [p.fileId, p.accountId, T1_COVERAGE_RULES_VERSION, cause, owner] as never[],
     );
   } catch (e) {
     console.warn(`[t1-coverage-reassessment] bail du document ${p.fileId} non libéré (non bloquant) :`, (e as Error).message);
@@ -624,7 +689,7 @@ const etapesDe = (v: unknown): ReassessmentSteps => {
  */
 async function reserverDocument(p: {
   accountId: number; fileId: number; owner: string; fingerprint: string; before: CoverageSnapshot | null;
-}): Promise<{ steps: ReassessmentSteps; stateBefore: CoverageSnapshot | null } | null> {
+}): Promise<{ steps: ReassessmentSteps; rawSteps: Record<string, unknown>; stateBefore: CoverageSnapshot | null } | null> {
   const { pgClient } = await import('@/db');
   const rows = (await pgClient.unsafe(
     `INSERT INTO t1_coverage_reassessments
@@ -639,32 +704,46 @@ async function reserverDocument(p: {
                       THEN '{}'::jsonb ELSE t1_coverage_reassessments.steps END,
        evidence_fingerprint = EXCLUDED.evidence_fingerprint,
        attempts = t1_coverage_reassessments.attempts + 1, updated_at = NOW()
+     -- Carte #837 (B3) : bail STRICTEMENT exclusif — le titulaire est un jeton UNIQUE par exécution et par document ;
+     -- plus de reprise « par le même propriétaire » (deux campagnes du même processus partageaient l'identité).
      WHERE t1_coverage_reassessments.lease_owner IS NULL
         OR t1_coverage_reassessments.lease_expires_at IS NULL
         OR t1_coverage_reassessments.lease_expires_at < NOW()
-        OR t1_coverage_reassessments.lease_owner = EXCLUDED.lease_owner
      RETURNING state_before, steps`,
     [p.accountId, p.fileId, T1_COVERAGE_RULES_VERSION, JSON.stringify(p.before ?? {}), p.fingerprint, p.owner, REASSESSMENT_LEASE_MINUTES] as never[],
   )) as unknown as Row[];
   if (!rows[0]) return null;
   const initial = (typeof rows[0].state_before === 'string' ? JSON.parse(rows[0].state_before) : rows[0].state_before) as CoverageSnapshot | null;
+  const brutes = (typeof rows[0].steps === 'string' ? JSON.parse(rows[0].steps) : rows[0].steps) as Record<string, unknown> | null;
   return {
     steps: etapesDe(rows[0].steps),
+    rawSteps: brutes && typeof brutes === 'object' ? brutes : {},
     stateBefore: initial && typeof initial === 'object' && 'qualityState' in initial ? initial : p.before,
   };
 }
 
-/** Consigne une étape franchie (cumulative) — jamais bloquant. */
-async function marquerEtape(p: { accountId: number; fileId: number; steps: ReassessmentSteps }): Promise<void> {
+/**
+ * Consigne une étape franchie (cumulative) ET renouvelle le bail — carte #837
+ * (B3, B4) : écriture CONDITIONNÉE par le jeton du titulaire et un bail non
+ * expiré (fencing), CONFIRMÉE par `RETURNING`. `false` : le bail est perdu (ou
+ * l'écriture a échoué) — l'appelant s'arrête sans rien déclarer acquis.
+ * `detail` : résultat de l'étape (réconciliation, alertes), relu à la reprise.
+ */
+async function marquerEtape(p: { accountId: number; fileId: number; steps: ReassessmentSteps & Record<string, unknown>; owner: string }): Promise<boolean> {
   try {
     const { pgClient } = await import('@/db');
-    await pgClient.unsafe(
-      `UPDATE t1_coverage_reassessments SET steps = steps || $4::jsonb, updated_at = NOW()
-        WHERE file_id = $1 AND account_id = $2 AND rules_version = $3`,
-      [p.fileId, p.accountId, T1_COVERAGE_RULES_VERSION, JSON.stringify(p.steps)] as never[],
-    );
+    const r = (await pgClient.unsafe(
+      `UPDATE t1_coverage_reassessments
+          SET steps = steps || $4::jsonb, lease_expires_at = NOW() + make_interval(mins => $6), updated_at = NOW()
+        WHERE file_id = $1 AND account_id = $2 AND rules_version = $3 AND lease_owner = $5 AND lease_expires_at > NOW()
+        RETURNING file_id`,
+      [p.fileId, p.accountId, T1_COVERAGE_RULES_VERSION, JSON.stringify(p.steps), p.owner, REASSESSMENT_LEASE_MINUTES] as never[],
+    )) as unknown as Row[];
+    if (r.length === 0) console.warn(`[t1-coverage-reassessment] document ${p.fileId} : bail perdu — étape non consignée, traitement arrêté.`);
+    return r.length > 0;
   } catch (e) {
-    console.warn(`[t1-coverage-reassessment] étape du document ${p.fileId} non consignée (non bloquant) :`, (e as Error).message);
+    console.error(`[t1-coverage-reassessment] étape du document ${p.fileId} non consignée :`, (e as Error).message);
+    return false;
   }
 }
 
@@ -672,26 +751,37 @@ async function marquerEtape(p: { accountId: number; fileId: number; steps: Reass
  * Réévalue UN document (voir l'en-tête) et journalise. Idempotente : rejouée
  * sur un document déjà à jour, elle n'écrit rien d'autre que le journal.
  * Sans appel IA. Ne lève pas : une erreur est journalisée (`ERROR`).
+ *
+ * Carte #837 :
+ *   B3  le titulaire du bail est un JETON UNIQUE par exécution et par document
+ *       (`owner` n'est plus qu'un libellé) ; chaque étape, la libération et la
+ *       clôture du journal sont conditionnées par ce jeton et un bail vivant ;
+ *       un bail perdu arrête le traitement (`DEFERRED` / `LEASE_LOST`), sans
+ *       succès fictif ni réécriture par un ancien titulaire ;
+ *   B4  une étape ACQUISE n'est jamais refaite : réconciliation et alertes
+ *       relisent leur résultat consigné à la reprise ; une étape échouée
+ *       n'est jamais marquée acquise ;
+ *   C1  l'empreinte consignée au journal est celle des preuves APRÈS
+ *       traitement : un document inchangé n'est pas rejoué (`SAME_EVIDENCE`),
+ *       une preuve nouvelle — même sans réécriture de la couverture — l'est.
  */
-export async function reassessDocumentCoverage(p: { accountId: number; fileId: number; owner?: string }): Promise<DocumentReassessment> {
+export async function reassessDocumentCoverage(p: { accountId: number; fileId: number; owner?: string; campaignRef?: string }): Promise<DocumentReassessment> {
   const debut = Date.now();
   const { loadDocumentCoverage } = await import('./repository');
-  const titulaire = p.owner ?? `t1-reassessment:${process.pid}`;
+  const titulaire = `${p.owner ?? `t1-reassessment:${process.pid}`}#${randomUUID()}`;
+  const ref = { accountId: p.accountId, fileId: p.fileId };
   let before: CoverageSnapshot | null = null;
   try {
     const cov0 = await loadDocumentCoverage(p.fileId, p.accountId);
     before = snapshotOf(cov0 as unknown as Row | null);
     if (!cov0 || !before) {
-      return await journaliser({ ...p, outcome: 'UNCHANGED', before: null, after: null, alerts: [], detail: { skipped: 'NO_COVERAGE' }, durationMs: Date.now() - debut });
+      return await journaliser({ ...ref, outcome: 'UNCHANGED', before: null, after: null, alerts: [], detail: { skipped: 'NO_COVERAGE' }, durationMs: Date.now() - debut });
     }
-    // Lot 115H (#785, § 5) : l'empreinte des PREUVES, en plus de la version de règle — « déjà traité pour vN »
-    // n'est « encore à jour » que si cette empreinte est inchangée.
     const { fingerprint: empreinte, sourceSha } = await evidenceFingerprintOf(p.accountId, p.fileId, cov0 as unknown as Row);
-    // Lot 115H (#785, § 4) : réservation du document et étapes acquises (reprise après panne entre deux écritures).
     const avecBail = await reassessmentLeaseReady();
     if (avecBail) {
-      // Lot 115H (#785, § 5) : une confrontation RIGOUREUSEMENT IDENTIQUE (même version de règle, même empreinte de
-      // preuves, issue terminale) n'est jamais rejouée — ni appel, ni écriture, ni journal.
+      // Confrontation RIGOUREUSEMENT IDENTIQUE (même version, même empreinte des preuves APRÈS le dernier traitement,
+      // issue terminale) : jamais rejouée — ni écriture, ni journal (lot 115H § 5, carte #837 C1).
       const { pgClient } = await import('@/db');
       const [deja] = (await pgClient.unsafe(
         `SELECT outcome FROM t1_coverage_reassessments
@@ -701,98 +791,116 @@ export async function reassessDocumentCoverage(p: { accountId: number; fileId: n
       ).catch(() => [])) as unknown as Row[];
       if (deja) {
         return {
-          ...p, outcome: String(deja.outcome) as ReassessmentOutcome, before, after: before, alerts: [],
+          ...ref, outcome: String(deja.outcome) as ReassessmentOutcome, before, after: before, alerts: [],
           detail: { skipped: 'SAME_EVIDENCE' }, durationMs: Date.now() - debut, evidenceFingerprint: empreinte, steps: {},
         };
       }
     }
     let steps: ReassessmentSteps = {};
+    let acquis: Record<string, unknown> = {};
+    const differe = (cause: string, extra: Record<string, unknown> = {}): DocumentReassessment => ({
+      ...ref, outcome: 'DEFERRED', before, after: null, alerts: [], detail: { deferred: cause, ...extra },
+      durationMs: Date.now() - debut, deferredCause: cause, evidenceFingerprint: empreinte, steps,
+    });
     if (avecBail) {
       const reserve = await reserverDocument({ accountId: p.accountId, fileId: p.fileId, owner: titulaire, fingerprint: empreinte, before });
       if (!reserve) {
-        // Tenu par une AUTRE campagne : report explicite, aucune écriture, aucune perte (l'autre le traite).
         console.info(`[t1-coverage-reassessment] fichier ${p.fileId} : tenu par une autre campagne — différé.`);
-        return {
-          ...p, outcome: 'DEFERRED', before, after: null, alerts: [], detail: { deferred: 'LEASE_HELD' },
-          durationMs: Date.now() - debut, deferredCause: 'LEASE_HELD', evidenceFingerprint: empreinte, steps: {},
-        };
+        return differe('LEASE_HELD');
       }
       steps = reserve.steps;
-      // L'avant INITIAL du cycle est conservé : une reprise ne le remplace pas par un état déjà modifié.
+      acquis = reserve.rawSteps;
       if (reserve.stateBefore) before = reserve.stateBefore;
     }
-    // 1. Re-vérification déterministe des pages (texte original persisté) — seulement quand elle est due.
-    //    Lot 115H (#785, § 4) : étape déjà acquise d'un cycle interrompu → non refaite.
+    /** Étape consignée sous le jeton ; `false` : bail perdu → arrêt sans rien déclarer acquis. */
+    const etape = async (s: ReassessmentSteps & Record<string, unknown>) => !avecBail || marquerEtape({ ...ref, steps: s, owner: titulaire });
+    // 1. Re-vérification déterministe des pages — étape acquise d'un cycle interrompu → non refaite.
     const { reverificationDue, reverifyStoredCoverage } = await import('./stored-reverification');
     let reverification: Record<string, unknown> | null = null;
-    // Lot 115H (#785, § 5) : l'empreinte de la source est passée — une preuve nouvelle suffit, à version constante.
     if (!steps.reverified && reverificationDue({ qualityState: cov0.qualityState, verification: cov0.verification, sourceSha256: sourceSha })) {
-      const rv = await reverifyStoredCoverage({ accountId: p.accountId, fileId: p.fileId });
+      const rv = await reverifyStoredCoverage({ accountId: p.accountId, fileId: p.fileId, campaignRef: p.campaignRef ?? `t1-coverage-reassessment:v${T1_COVERAGE_RULES_VERSION}` });
       reverification = {
         result: rv.result, reason: rv.reason, qualityBefore: rv.qualityBefore, qualityAfter: rv.qualityAfter,
         pagesVerified: rv.pagesVerified?.length ?? 0, pagesMissing: rv.pagesMissing ?? [], pagesUnverifiable: rv.pagesUnverifiable?.length ?? 0,
         requeued: rv.requeued ?? false,
       };
     }
-    if (avecBail) await marquerEtape({ ...p, steps: { reverified: true } });
-    // 2. Réconciliation sans IA et règle unique des reprises (écrit seulement si quelque chose change).
-    const { reconcileStoredDocumentCoverage } = await import('./stored-reconciliation');
-    const rec = await reconcileStoredDocumentCoverage({
-      accountId: p.accountId, fileId: p.fileId, apply: true, origin: `t1-coverage-reassessment:v${T1_COVERAGE_RULES_VERSION}`,
-    });
-    if (rec.outcome === 'CONFLICT_DEFERRED') {
-      // Lot 115H (#785, § 4) : une couche plus récente (analyse, reprise, action du BO) est passée — elle est
-      // PRÉSERVÉE, rien n'est écrit, et le document est explicitement différé. Jamais un succès fictif.
-      await libererBail(p, avecBail, 'WRITE_CONFLICT');
-      return {
-        ...p, outcome: 'DEFERRED', before, after: null, alerts: [], detail: { deferred: 'WRITE_CONFLICT', reconciliation: rec.outcome },
-        durationMs: Date.now() - debut, deferredCause: 'WRITE_CONFLICT', evidenceFingerprint: empreinte, steps,
+    if (!steps.reverified && !(await etape({ reverified: true, ...(reverification ? { reverification } : {}) }))) return differe('LEASE_LOST', { step: 'reverified' });
+    if (steps.reverified && acquis.reverification && typeof acquis.reverification === 'object') reverification = acquis.reverification as Record<string, unknown>;
+    // 2. Réconciliation sans IA et règle unique des reprises — carte #837 (B4) : étape ACQUISE → relue, jamais refaite.
+    type Rec = Pick<Awaited<ReturnType<typeof import('./stored-reconciliation').reconcileStoredDocumentCoverage>>, 'outcome' | 'retry'> & {
+      requalifiedCount: number; requalifiedByRule: Record<string, number>; afterQuality: string | null;
+    };
+    let rec: Rec;
+    const consignee = acquis.reconciliation as Partial<Rec> | undefined;
+    if (steps.reconciled && consignee && typeof consignee === 'object' && typeof consignee.outcome === 'string') {
+      rec = {
+        outcome: consignee.outcome, retry: consignee.retry, requalifiedCount: Number(consignee.requalifiedCount ?? 0),
+        requalifiedByRule: (consignee.requalifiedByRule ?? {}) as Record<string, number>, afterQuality: consignee.afterQuality ?? null,
       };
+    } else {
+      const { reconcileStoredDocumentCoverage } = await import('./stored-reconciliation');
+      const r = await reconcileStoredDocumentCoverage({
+        accountId: p.accountId, fileId: p.fileId, apply: true, origin: p.campaignRef ?? `t1-coverage-reassessment:v${T1_COVERAGE_RULES_VERSION}`,
+      });
+      const parRegle: Record<string, number> = {};
+      for (const q of r.requalified) parRegle[q.rule ?? 'unknown'] = (parRegle[q.rule ?? 'unknown'] ?? 0) + 1;
+      rec = { outcome: r.outcome, retry: r.retry, requalifiedCount: r.requalified.length, requalifiedByRule: parRegle, afterQuality: r.after.qualityState };
+      if (rec.outcome === 'CONFLICT_DEFERRED') {
+        // Couche ou PREUVES plus récentes (analyse, reprise, BO, faits) : préservées, rien n'est écrit, report explicite.
+        await libererBail(ref, avecBail, 'WRITE_CONFLICT', titulaire);
+        return differe('WRITE_CONFLICT', { reconciliation: rec.outcome });
+      }
+      if (!(await etape({ reconciled: true, reconciliation: rec }))) return differe('LEASE_LOST', { step: 'reconciled' });
     }
-    if (avecBail) await marquerEtape({ ...p, steps: { reconciled: true } });
     const cov1 = await loadDocumentCoverage(p.fileId, p.accountId);
     const after = snapshotOf(cov1 as unknown as Row | null) ?? before;
-    // 3. Alertes de Supervision du document, sur l'état RECALCULÉ (famille par famille — lot 115H, § 6).
-    const alerts = await decideDocumentAlerts({ accountId: p.accountId, fileId: p.fileId, after, coverage: cov1 as unknown as Row | null });
-    if (avecBail) await marquerEtape({ ...p, steps: { alerted: true } });
-    const parRegle: Record<string, number> = {};
-    for (const q of rec.requalified) parRegle[q.rule ?? 'unknown'] = (parRegle[q.rule ?? 'unknown'] ?? 0) + 1;
+    // 3. Alertes de Supervision sur l'état RECALCULÉ — carte #837 (B4) : étape acquise → décisions relues, jamais rejouées.
+    let alerts: AlertDecision[];
+    if (steps.alerted && Array.isArray(acquis.alerts)) {
+      alerts = acquis.alerts as AlertDecision[];
+    } else {
+      // Renouvellement ATOMIQUE du bail AVANT d'agir sur la Supervision : un titulaire expiré ne touche à aucune alerte.
+      if (!(await etape({}))) return differe('LEASE_LOST', { step: 'before-alerts' });
+      alerts = await decideDocumentAlerts({ accountId: p.accountId, fileId: p.fileId, after, coverage: cov1 as unknown as Row | null });
+      if (!(await etape({ alerted: true, alerts }))) return differe('LEASE_LOST', { step: 'alerted', alerts });
+    }
     const written = rec.outcome === 'APPLIED' || (reverification !== null && reverification.result !== 'SKIPPED');
-    // ══════════════════════════════════════════════════════════════════
-    // LOT 115H (#785, § 3) — CONFIRMATION : l'action décidée est-elle EN BASE ?
-    // ══════════════════════════════════════════════════════════════════
     const confirmation = reassessmentCompletionOf({
       reconciliation: rec.outcome,
       scheduledDecided: rec.retry?.scheduledAfter ?? after.retryScheduled,
       scheduledPersisted: after.retryScheduled,
-      qualityDecided: rec.outcome === 'UNCHANGED' ? null : rec.after.qualityState,
+      qualityDecided: rec.outcome === 'UNCHANGED' ? null : rec.afterQuality,
       qualityPersisted: after.qualityState,
       explicitRefusal: refusExplicite(after.lastRetryResult),
       noActionReason: rec.retry?.blocked ?? null,
     });
     const outcome: ReassessmentOutcome = confirmation.complete
-      ? reassessmentOutcomeOf({ before, after, requalified: rec.requalified.length, written })
+      ? reassessmentOutcomeOf({ before, after, requalified: rec.requalifiedCount, written })
       : 'UNCONFIRMED';
     if (!confirmation.complete) {
       console.warn(`[t1-coverage-reassessment] fichier ${p.fileId} : traitement NON journalisé comme achevé — ${confirmation.reason}`);
     }
+    // Carte #837 (C1) : l'empreinte consignée est celle des preuves APRÈS traitement (sinon le recalcul lui-même
+    // ferait « changer » le document et le ferait rejouer au passage suivant).
+    const empreinteApres = cov1 ? (await evidenceFingerprintOf(p.accountId, p.fileId, cov1 as unknown as Row)).fingerprint : empreinte;
     return await journaliser({
-      ...p, outcome, before, after, alerts, durationMs: Date.now() - debut,
-      evidenceFingerprint: empreinte, steps,
+      ...ref, outcome, before, after, alerts, durationMs: Date.now() - debut,
+      evidenceFingerprint: empreinteApres, steps, owner: avecBail ? titulaire : undefined,
       detail: {
-        reconciliation: rec.outcome, requalified: rec.requalified.length, requalifiedByRule: parRegle,
+        reconciliation: rec.outcome, requalified: rec.requalifiedCount, requalifiedByRule: rec.requalifiedByRule,
         ...(rec.retry ? { retry: { pendingReleased: rec.retry.pendingReleased, actions: rec.retry.actions, blocked: rec.retry.blocked, scheduledBefore: rec.retry.scheduledBefore, scheduledAfter: rec.retry.scheduledAfter } } : {}),
         ...(reverification ? { reverification } : {}),
-        // Lot 115H (#785, § 3) : la preuve que « achevé » n'est pas un mot — l'action retrouvée en base, ou le motif.
         completion: { complete: confirmation.complete, reason: confirmation.reason },
+        evidenceBefore: empreinte,
         aiCalls: 0,
       },
     });
   } catch (e) {
     const error = String((e as Error).message ?? e).slice(0, 500);
     console.error(`[t1-coverage-reassessment] fichier ${p.fileId} :`, error);
-    return journaliser({ ...p, outcome: 'ERROR', before, after: null, alerts: [], detail: {}, durationMs: Date.now() - debut, error }).catch(() => ({
-      ...p, outcome: 'ERROR' as const, before, after: null, alerts: [], detail: {}, durationMs: Date.now() - debut, error,
+    return journaliser({ ...ref, outcome: 'ERROR', before, after: null, alerts: [], detail: {}, durationMs: Date.now() - debut, error, owner: titulaire }).catch(() => ({
+      ...ref, outcome: 'ERROR' as const, before, after: null, alerts: [], detail: {}, durationMs: Date.now() - debut, error,
     }));
   }
 }
@@ -803,10 +911,14 @@ export async function reassessDocumentCoverage(p: { accountId: number; fileId: n
  * Lot 115H (#785, § 3 et § 4) : la ligne existe déjà quand un bail a été pris
  * (l'avant INITIAL y a été consigné AVANT la première écriture) ; la clôture
  * n'écrase donc PAS `state_before`. Une ligne NON TERMINALE (erreur, non
- * confirmée, différée) peut être complétée au passage suivant : c'est ce qui
- * garantit la reprise sans perte de traçabilité. Le bail est relâché ici.
+ * confirmée, différée) peut être complétée au passage suivant.
+ *
+ * Carte #837 (B3) : avec bail, la clôture n'est écrite QUE par le titulaire
+ * (jeton) d'un bail non expiré — ou, sans titulaire (report du parcours), sur
+ * une ligne libre. Écriture refusée : le document est rendu `DEFERRED`
+ * (`LEASE_LOST`), jamais un succès fictif.
  */
-async function journaliser(r: DocumentReassessment): Promise<DocumentReassessment> {
+async function journaliser(r: DocumentReassessment & { owner?: string }): Promise<DocumentReassessment> {
   const { pgClient } = await import('@/db');
   const avecBail = await reassessmentLeaseReady();
   const colonnes = avecBail ? ', evidence_fingerprint, steps, deferred_cause, lease_owner, lease_expires_at' : '';
@@ -815,13 +927,20 @@ async function journaliser(r: DocumentReassessment): Promise<DocumentReassessmen
     ? `, evidence_fingerprint = EXCLUDED.evidence_fingerprint, steps = t1_coverage_reassessments.steps || EXCLUDED.steps,
          deferred_cause = EXCLUDED.deferred_cause, lease_owner = NULL, lease_expires_at = NULL`
     : '';
-  // `state_before` n'est écrasé que s'il est vide : l'avant INITIAL du cycle est la référence.
+  // Fencing (carte #837, B3) : titulaire vivant, ou ligne libre / bail expiré pour une écriture sans titulaire.
+  const garde = avecBail
+    ? ` AND (CASE WHEN $15::text IS NOT NULL
+                  THEN t1_coverage_reassessments.lease_owner = $15 AND t1_coverage_reassessments.lease_expires_at > NOW()
+                  ELSE t1_coverage_reassessments.lease_owner IS NULL OR t1_coverage_reassessments.lease_expires_at IS NULL
+                       OR t1_coverage_reassessments.lease_expires_at <= NOW() END)`
+    : '';
   const params: unknown[] = [
     r.accountId, r.fileId, T1_COVERAGE_RULES_VERSION, r.outcome, JSON.stringify(r.before ?? {}), JSON.stringify(r.after ?? {}),
     JSON.stringify(r.alerts), JSON.stringify(r.detail), r.error ?? null, Math.max(0, Math.trunc(r.durationMs)),
   ];
   if (avecBail) params.push(r.evidenceFingerprint ?? null, JSON.stringify(r.steps ?? {}), r.deferredCause ?? null);
-  await pgClient.unsafe(
+  // `state_before` n'est écrasé que s'il est vide : l'avant INITIAL du cycle est la référence.
+  const lignes = (await pgClient.unsafe(
     `INSERT INTO t1_coverage_reassessments (account_id, file_id, rules_version, outcome, state_before, state_after, alerts, detail, error, duration_ms${colonnes})
      VALUES ($1, $2, $3, $4, $5::jsonb, $6::jsonb, $7::jsonb, $8::jsonb, $9, $10${valeurs})
      ON CONFLICT (file_id, rules_version) DO UPDATE SET
@@ -832,9 +951,14 @@ async function journaliser(r: DocumentReassessment): Promise<DocumentReassessmen
        detail = EXCLUDED.detail, error = EXCLUDED.error, duration_ms = EXCLUDED.duration_ms,
        -- L'essai a DÉJÀ été compté par la réservation du document (lot 115H) : la clôture ne le compte pas deux fois.
        attempts = t1_coverage_reassessments.attempts${avecBail ? '' : ' + 1'}, updated_at = NOW()${majBail}
-     WHERE t1_coverage_reassessments.outcome = ANY($${avecBail ? 14 : 11}::text[])`,
-    [...params, [...NON_TERMINAL_OUTCOMES]] as never[],
-  );
+     WHERE (t1_coverage_reassessments.outcome = ANY($${avecBail ? 14 : 11}::text[])${avecBail && r.owner ? ' OR t1_coverage_reassessments.lease_owner = $15' : ''})${garde}
+     RETURNING file_id`,
+    [...params, [...NON_TERMINAL_OUTCOMES], ...(avecBail ? [r.owner ?? null] : [])] as never[],
+  )) as unknown as Row[];
+  if (avecBail && r.owner && Array.isArray(lignes) && lignes.length === 0 && r.outcome !== 'ERROR') {
+    console.warn(`[t1-coverage-reassessment] document ${r.fileId} : bail perdu avant la clôture — issue ${r.outcome} NON journalisée (différé).`);
+    return { ...r, outcome: 'DEFERRED', deferredCause: 'LEASE_LOST', detail: { ...r.detail, deferred: 'LEASE_LOST', intendedOutcome: r.outcome } };
+  }
   return r;
 }
 
@@ -856,7 +980,7 @@ export async function reassessmentCursorsReady(): Promise<boolean> {
 }
 
 /** Natures de parcours bornées par un curseur durable. */
-export type ReassessmentCursorKind = 'documents' | 'alerts';
+export type ReassessmentCursorKind = 'documents' | 'alerts' | 'evidence';
 
 /**
  * Position de reprise du parcours. Sans elle, chaque passage repartait du DÉBUT
@@ -904,7 +1028,7 @@ export async function runCoverageReassessment(opts: {
   const debut = Date.now();
   const res: ReassessmentPassResult = {
     rulesVersion: T1_COVERAGE_RULES_VERSION, examined: 0, byOutcome: {}, deferred: 0, deferredByCause: {},
-    unconfirmed: 0, reservationsRecovered: 0, reservationsConfirmed: 0, fullCycle: false, errors: 0,
+    unconfirmed: 0, reservationsRecovered: 0, reservationsConfirmed: 0, fullCycle: false, unchangedEvidence: 0, evidenceChecked: 0, evidenceChanged: 0, evidenceSweepComplete: false, reservationsRestituted: 0, errors: 0,
     alertsClosed: 0, alertsMaintained: 0, alertsOpened: 0, orphanAlertsExamined: 0, retriesScheduled: 0, retriesCancelled: 0,
     aiCalls: 0, durationMs: 0, more: false,
   };
@@ -929,6 +1053,7 @@ export async function runCoverageReassessment(opts: {
     const rec = await recoverRequeueReservations({ accountId: opts.accountId });
     res.reservationsRecovered = rec.released;
     res.reservationsConfirmed = rec.confirmed;
+    res.reservationsRestituted = rec.restituted;
   }
 
   // ══════════════════════════════════════════════════════════════════════
@@ -968,6 +1093,7 @@ export async function runCoverageReassessment(opts: {
             (j.deferred_cause = 'ACCOUNT_INELIGIBLE' AND NOT (${processingEligibleSql('c.account_id')}))
             OR (j.deferred_cause = 'ANALYSIS_RUNNING' AND (af.analysis_state = 'ANALYZING' OR af.analysis_state = 'UPLOADED'))))`
     : '';
+  const avecEmpreinte = await reassessmentLeaseReady();
   const vus = new Set<number>();
   /** Documents DIFFÉRÉS pendant ce passage : leurs alertes ne sont pas décidées sur un état encore à recalculer. */
   const differes = new Set<number>();
@@ -1035,6 +1161,8 @@ export async function runCoverageReassessment(opts: {
       }
       const d = await reassessDocumentCoverage({ accountId: Number(r.account_id), fileId: Number(r.file_id) });
       vus.add(Number(r.file_id));
+      // Carte #837 (C1) : preuves identiques à la dernière confrontation — contrôlé, rien rejoué, rien écrit.
+      if (d.detail.skipped === 'SAME_EVIDENCE') { res.unchangedEvidence++; continue; }
       res.examined++;
       res.byOutcome[d.outcome] = (res.byOutcome[d.outcome] ?? 0) + 1;
       if (d.outcome === 'ERROR') { res.errors++; res.more = true; }
@@ -1066,6 +1194,73 @@ export async function runCoverageReassessment(opts: {
     if (n + 1 >= (opts.maxBatches ?? 10_000)) res.more = true;
   }
   res.fullCycle = tourComplet;
+
+  // ══════════════════════════════════════════════════════════════════════
+  // CARTE #837 (C1) — BALAYAGE DES EMPREINTES : UNE PREUVE NOUVELLE N'EST
+  // PLUS ÉCARTÉE AVANT D'AVOIR ÉTÉ EXAMINÉE
+  //
+  // Règle complétée : le parcours A écarte un document à issue TERMINALE dès
+  // que `c.updated_at <= j.updated_at` — AVANT tout calcul d'empreinte. Une
+  // preuve nouvelle dans une AUTRE table (fait, décision, candidat, cellule,
+  // texte original) ne réécrit pas la couverture et passait donc inaperçue.
+  //
+  // Ces documents sont maintenant REVUS par un balayage permanent, à curseur
+  // durable (`evidence`) : l'empreinte EXHAUSTIVE des preuves est recalculée
+  // et comparée à celle du journal — identique → rien n'est rejoué ni écrit
+  // (`SAME_EVIDENCE`) ; différente → le document est réévalué, à version de
+  // règle constante, sans redémarrage ni consultation du BO. Le balayage est
+  // borné par l'échéance du passage (jamais par un plafond silencieux : son
+  // curseur et sa progression sont rendus), et reprend où il s'était arrêté.
+  // ══════════════════════════════════════════════════════════════════════
+  if (avecEmpreinte && avecCurseur && tourComplet) {
+    let apresEmpreinte = await lireCurseur('evidence');
+    const departEmpreinte = apresEmpreinte;
+    let reprisEmpreinte = false;
+    for (;;) {
+      if (opts.deadline && Date.now() > opts.deadline) { res.more = true; break; }
+      const lignes = (await pgClient.unsafe(
+        `SELECT c.file_id, c.account_id FROM document_extraction_coverage c
+           JOIN asset_files af ON af.id = c.file_id AND af.account_id = c.account_id AND af.deleted_at IS NULL
+           JOIN t1_coverage_reassessments j ON j.file_id = c.file_id AND j.account_id = c.account_id AND j.rules_version = $3
+          WHERE c.file_id > $1 AND c.quality_state = ANY($2::text[]) AND ($5::int IS NULL OR c.account_id = $5)
+            AND NOT (j.outcome = ANY($6::text[]))
+            AND (af.analysis_state IS DISTINCT FROM 'ANALYZING' AND af.analysis_state IS DISTINCT FROM 'UPLOADED')
+            AND ${processingEligibleSql('c.account_id')}
+          ORDER BY c.file_id LIMIT $4`,
+        [apresEmpreinte, [...REASSESSED_QUALITY_STATES], T1_COVERAGE_RULES_VERSION, lot + 1, opts.accountId ?? null, [...NON_TERMINAL_OUTCOMES]] as never[],
+      )) as unknown as Array<{ file_id: number; account_id: number }>;
+      for (const l of lignes.slice(0, lot)) {
+        if (opts.deadline && Date.now() > opts.deadline) { res.more = true; break; }
+        apresEmpreinte = Number(l.file_id);
+        if (vus.has(apresEmpreinte) || differes.has(apresEmpreinte)) continue;
+        res.evidenceChecked++;
+        const d = await reassessDocumentCoverage({ accountId: Number(l.account_id), fileId: Number(l.file_id) });
+        // Empreinte inchangée : rien n'a été décidé ici — ses alertes restent examinées par le parcours B, comme avant.
+        if (d.detail.skipped === 'SAME_EVIDENCE') { res.unchangedEvidence++; continue; }
+        vus.add(apresEmpreinte);
+        // Preuve NOUVELLE : le document a été réévalué (compté comme tel).
+        res.evidenceChanged++;
+        res.examined++;
+        res.byOutcome[d.outcome] = (res.byOutcome[d.outcome] ?? 0) + 1;
+        if (d.outcome === 'ERROR') res.errors++;
+        if (d.outcome === 'UNCONFIRMED') res.unconfirmed++;
+        if (d.outcome === 'DEFERRED') {
+          res.deferred++;
+          differes.add(apresEmpreinte);
+          if (d.deferredCause) res.deferredByCause[d.deferredCause] = (res.deferredByCause[d.deferredCause] ?? 0) + 1;
+        }
+        compter(d.alerts);
+      }
+      if (res.more && opts.deadline && Date.now() > opts.deadline) { await ecrireCurseur('evidence', apresEmpreinte, false); break; }
+      await ecrireCurseur('evidence', apresEmpreinte, false);
+      if (lignes.length <= lot) {
+        await ecrireCurseur('evidence', 0, true);
+        res.evidenceSweepComplete = true;
+        if (departEmpreinte > 0 && !reprisEmpreinte) { reprisEmpreinte = true; apresEmpreinte = 0; continue; }
+        break;
+      }
+    }
+  }
 
   // ── B. Alertes T1 ouvertes dont le document n'a pas été examiné ci-dessus ─
   //    (document supprimé, couverture complète, compte non éligible) : décision sur l'état COURANT.
@@ -1187,22 +1382,47 @@ export interface ReassessmentReport {
   unresolved: number;
   /** Réparations PROGRAMMÉES par le recalcul (une réparation programmée n'est pas une réparation accomplie). */
   repairsScheduled: number;
-  /** Réparations réellement ACCOMPLIES depuis : une reprise confirmée dont le travail est terminé. */
+  /**
+   * Carte #837 (D2) : réparations ACCOMPLIES = suites dont le SUCCÈS MÉTIER est
+   * prouvé (unités réellement couvertes après la passe, ou travail T1 terminé
+   * `APPLIED`). Un travail `DONE` en échec métier n'en est pas une.
+   */
   repairsCompleted: number;
+  /** Carte #837 (D2) : du programmé au réparé, sans confusion (documents distincts, sauf mention). */
+  repairs: {
+    /** Suites exécutées (réparation, relecture, travail T1 terminé). */
+    executed: number;
+    /** Succès métier prouvé. */
+    businessSucceeded: number;
+    /** Exécutée mais sans succès métier (échec, aucune unité réparée, DONE métier KO). */
+    businessFailed: number;
+    /** Issue encore inconnue (travail vivant, résultat métier absent). */
+    unknown: number;
+    /** Unités réellement couvertes par les suites (somme). */
+    unitsRepaired: number;
+    /** Documents des suites dont la couverture ACTUELLE porte encore des résidus. */
+    residualsRemaining: number;
+  };
   followUps: {
-    /** Demandes de reprise nées de la campagne (identité persistante). */
+    /** Carte #837 (D1) : `EXPLICIT` — chaque suite est rattachée par sa référence de campagne ; `UNAVAILABLE` : migration 1970 absente. */
+    correlation: 'EXPLICIT' | 'UNAVAILABLE';
+    /** Demandes de reprise nées de la campagne (référence de campagne explicite). */
     requests: number;
     requestsByState: Record<string, number>;
     /** Travaux T1 corrélés à ces demandes, par état réel. */
     jobs: number;
     jobsByState: Record<string, number>;
-    /** Appels de fournisseur rattachés aux documents de la campagne, par famille de réparation. */
+    /** Appels des suites, par famille (réparation JSON ciblée, relecture du fichier, analyse complète). */
     callsByKind: Record<string, number>;
     calls: number;
-    /** Coût RÉEL consolidé des suites (micro-euros) — jamais celui de la passe déterministe. */
+    /** Coût RÉEL rendu des suites (micro-unités) — jamais celui de la passe déterministe. */
     costMicros: number;
     /** Appels dont la passerelle n'a pas rendu de coût : INCONNU, jamais compté zéro. */
     callsWithUnknownCost: number;
+    /** Travaux T1 de la campagne clos sans fenêtre d'exécution consignée : appels non attribuables, INCONNU. */
+    jobsWithUnknownCalls: number;
+    /** Appels sur les documents de la campagne NON rattachés à une suite (attribution non prouvée — exclus des totaux). */
+    uncorrelatedDocumentCalls: number;
   };
   /** Un plafond a-t-il tronqué un total de ce bilan ? (toujours faux : les totaux sont agrégés en base) */
   truncated: false;
@@ -1215,7 +1435,11 @@ export async function getCoverageReassessmentReport(rulesVersion: number = T1_CO
     firstAt: null, lastAt: null,
     examined: 0, deferred: 0, deferredByCause: {}, unconfirmed: 0, reconciled: 0, verified: 0, unverifiable: 0, unresolved: 0,
     repairsScheduled: 0, repairsCompleted: 0,
-    followUps: { requests: 0, requestsByState: {}, jobs: 0, jobsByState: {}, callsByKind: {}, calls: 0, costMicros: 0, callsWithUnknownCost: 0 },
+    repairs: { executed: 0, businessSucceeded: 0, businessFailed: 0, unknown: 0, unitsRepaired: 0, residualsRemaining: 0 },
+    followUps: {
+      correlation: 'UNAVAILABLE', requests: 0, requestsByState: {}, jobs: 0, jobsByState: {}, callsByKind: {}, calls: 0, costMicros: 0,
+      callsWithUnknownCost: 0, jobsWithUnknownCalls: 0, uncorrelatedDocumentCalls: 0,
+    },
     truncated: false,
   };
   if (!(await reassessmentJournalReady())) return vide;
@@ -1271,7 +1495,8 @@ export async function getCoverageReassessmentReport(rulesVersion: number = T1_CO
     unverifiable: Number(byOutcome.UNVERIFIABLE ?? 0),
     unresolved: Number(byOutcome.STILL_UNRESOLVED ?? 0) + Number(byOutcome.FINAL_GAP ?? 0),
     repairsScheduled: Number(byOutcome.REPAIR_SCHEDULED ?? 0),
-    repairsCompleted: suites.repairsCompleted,
+    repairsCompleted: suites.repairs.businessSucceeded,
+    repairs: suites.repairs,
     followUps: suites.followUps,
     truncated: false,
   };
@@ -1296,70 +1521,132 @@ async function reportDeferredByCause(rulesVersion: number): Promise<Record<strin
 /**
  * ══════════════════════════════════════════════════════════════════════════
  * LOT 115H (Trello #785, § 6) — CAMPAGNE → DEMANDES → TRAVAUX → APPELS → COÛTS
+ * Carte Trello #837 (D1, D2) — CORRÉLATION EXPLICITE ET SUCCÈS MÉTIER
  *
- * Consolidation de ce que la campagne a DÉCLENCHÉ, pour les documents de cette
- * version. Trois précautions :
- *   · une réparation PROGRAMMÉE n'est pas une réparation ACCOMPLIE :
- *     `repairsCompleted` ne compte que les demandes confirmées dont le travail
- *     corrélé est réellement terminé ;
- *   · les familles de réparation sont séparées (réparation JSON ciblée,
- *     couverture, relecture du fichier, analyse complète) : aucun double
- *     comptage ;
- *   · un appel dont la passerelle n'a pas rendu de coût est compté comme
- *     INCONNU, jamais comme zéro.
- * Tolérant à l'absence de la migration 1805 et de la table des appels.
+ * Règles remplacées :
+ *   D1  les appels étaient rattachés à la campagne par JOINTURE
+ *       document ↔ appel et `e.created_at >= j.created_at` : n'importe quel
+ *       appel ultérieur sur le document (nouvelle analyse demandée par
+ *       l'utilisateur, autre traitement) était imputé à la campagne ;
+ *   D2  `repairsCompleted` comptait les demandes CONFIRMED dont le travail
+ *       était `DONE`, sans lire le résultat métier ni la lacune.
+ *
+ * Désormais :
+ *   · demandes : `t1_requeue_requests.campaign_ref` = la campagne ;
+ *   · suites exécutées : `t1_campaign_followups` (écrites par l'exécution
+ *     elle-même : appels, coût RENDU, coût inconnu, issue métier, unités
+ *     réparées) ;
+ *   · travaux T1 complets : appels de l'exécution métier PORTÉE par le
+ *     travail (`payload.businessExecution.id`), bornés à la fenêtre
+ *     d'exécution du travail ; travail sans exécution portée : INCONNU ;
+ *   · appels du document NON rattachés : comptés à part, jamais imputés.
+ * Inconnu ≠ 0, partout.
  * ══════════════════════════════════════════════════════════════════════════
  */
-async function reportFollowUps(rulesVersion: number): Promise<{ repairsCompleted: number; followUps: ReassessmentReport['followUps'] }> {
-  const vide = { requests: 0, requestsByState: {}, jobs: 0, jobsByState: {}, callsByKind: {}, calls: 0, costMicros: 0, callsWithUnknownCost: 0 };
-  const { pgClient } = await import('@/db');
-  const q = async (sql: string, params: unknown[]): Promise<Row[]> =>
-    ((await pgClient.unsafe(sql, params as never[]).catch(() => [])) as unknown as Row[]);
-  const { requeueRequestsReady } = await import('./requeue-identity');
-  // Documents de la campagne = le périmètre de corrélation (jointure par document, filtrée par compte en base).
-  const perimetre = `SELECT j.file_id, j.account_id FROM t1_coverage_reassessments j WHERE j.rules_version = $1`;
-  const [appels] = [await q(
-    // Appels de fournisseur rattachés aux documents de la campagne, APRÈS leur réévaluation : les suites.
-    `SELECT COALESCE(e.operation_type, '?') AS kind, COUNT(*)::int AS n,
-            COALESCE(SUM(e.cost_micros) FILTER (WHERE e.cost_micros IS NOT NULL), 0)::float8 AS cout,
-            COUNT(*) FILTER (WHERE e.cost_micros IS NULL)::int AS inconnus
-       FROM ai_usage_event e
-       JOIN t1_coverage_reassessments j ON j.file_id = e.asset_file_id AND j.account_id = e.account_id AND j.rules_version = $1
-      WHERE e.created_at >= j.created_at
-      GROUP BY 1`,
-    [rulesVersion],
-  )];
-  const callsByKind: Record<string, number> = {};
-  let calls = 0;
-  let costMicros = 0;
-  let inconnus = 0;
-  for (const a of appels) {
-    callsByKind[String(a.kind)] = Number(a.n);
-    calls += Number(a.n);
-    costMicros += Number(a.cout ?? 0);
-    inconnus += Number(a.inconnus ?? 0);
-  }
-  if (!(await requeueRequestsReady())) {
-    return { repairsCompleted: 0, followUps: { ...vide, callsByKind, calls, costMicros, callsWithUnknownCost: inconnus } };
-  }
-  const [parEtat, parTravail, [accomplies]] = await Promise.all([
-    q(`SELECT r.state, COUNT(*)::int AS n FROM t1_requeue_requests r
-        WHERE (r.file_id, r.account_id) IN (${perimetre}) GROUP BY 1`, [rulesVersion]),
-    q(`SELECT jq.status, COUNT(DISTINCT jq.id)::int AS n FROM ai_job_queue jq
-        JOIN t1_requeue_requests r ON r.job_id = jq.id
-        WHERE (r.file_id, r.account_id) IN (${perimetre}) GROUP BY 1`, [rulesVersion]),
-    q(`SELECT COUNT(DISTINCT r.file_id)::int AS n FROM t1_requeue_requests r
-        JOIN ai_job_queue jq ON jq.id = r.job_id AND jq.status = 'DONE'
-        WHERE r.state = 'CONFIRMED' AND (r.file_id, r.account_id) IN (${perimetre})`, [rulesVersion]),
-  ]);
-  const requestsByState: Record<string, number> = {};
-  let requests = 0;
-  for (const r of parEtat) { requestsByState[String(r.state)] = Number(r.n); requests += Number(r.n); }
-  const jobsByState: Record<string, number> = {};
-  let jobs = 0;
-  for (const r of parTravail) { jobsByState[String(r.status)] = Number(r.n); jobs += Number(r.n); }
-  return {
-    repairsCompleted: Number(accomplies?.n ?? 0),
-    followUps: { requests, requestsByState, jobs, jobsByState, callsByKind, calls, costMicros, callsWithUnknownCost: inconnus },
+async function reportFollowUps(rulesVersion: number): Promise<{ repairs: ReassessmentReport['repairs']; followUps: ReassessmentReport['followUps'] }> {
+  const campagne = `t1-coverage-reassessment:v${rulesVersion}`;
+  const repairs: ReassessmentReport['repairs'] = { executed: 0, businessSucceeded: 0, businessFailed: 0, unknown: 0, unitsRepaired: 0, residualsRemaining: 0 };
+  const followUps: ReassessmentReport['followUps'] = {
+    correlation: 'UNAVAILABLE', requests: 0, requestsByState: {}, jobs: 0, jobsByState: {}, callsByKind: {}, calls: 0, costMicros: 0,
+    callsWithUnknownCost: 0, jobsWithUnknownCalls: 0, uncorrelatedDocumentCalls: 0,
   };
+  const { pgClient } = await import('@/db');
+  const q = async (sql: string, params: unknown[]): Promise<Row[]> => (await pgClient.unsafe(sql, params as never[])) as unknown as Row[];
+  const { requeueRequestsReady } = await import('./requeue-identity');
+  let pret = false;
+  try {
+    pret = (await requeueRequestsReady()) && ((await q(`SELECT to_regclass('t1_campaign_followups') IS NOT NULL AS ok`, []))[0]?.ok === true);
+  } catch { pret = false; }
+  if (!pret) return { repairs, followUps };
+  followUps.correlation = 'EXPLICIT';
+  const [parEtat, parTravail, suites, travaux, resultats, nonCorreles] = await Promise.all([
+    q(`SELECT r.state, COUNT(*)::int AS n FROM t1_requeue_requests r WHERE r.campaign_ref = $1 GROUP BY 1`, [campagne]),
+    q(`SELECT jq.status, COUNT(DISTINCT jq.id)::int AS n FROM t1_requeue_requests r
+         JOIN ai_job_queue jq ON jq.id = r.job_id AND jq.account_id = r.account_id
+        WHERE r.campaign_ref = $1 GROUP BY 1`, [campagne]),
+    // Suites consignées par leur exécution : appels et coûts RENDUS, issue métier.
+    q(`SELECT kind, COUNT(*)::int AS n, COALESCE(SUM(calls), 0)::int AS calls,
+              COALESCE(SUM(cost_micros), 0)::float8 AS cout, COALESCE(SUM(cost_unknown_calls), 0)::int AS inconnus,
+              COUNT(*) FILTER (WHERE calls IS NULL)::int AS appels_inconnus
+         FROM t1_campaign_followups WHERE campaign_ref = $1 AND kind <> 'REQUEUE_T1' GROUP BY 1`, [campagne]),
+    // Travaux T1 complets de la campagne : appels de l'exécution métier PORTÉE, dans la fenêtre du travail.
+    q(`SELECT jq.id,
+              COALESCE(jq.payload -> 'businessExecution' ->> 'id', 'T1:job:' || jq.id) AS exec_id,
+              (jq.started_at IS NULL AND jq.status IN ('DONE', 'FAILED')) AS fenetre_inconnue,
+              (SELECT COUNT(*)::int FROM ai_usage_event e
+                WHERE e.business_execution_id = COALESCE(jq.payload -> 'businessExecution' ->> 'id', 'T1:job:' || jq.id) AND e.account_id = jq.account_id
+                  AND jq.started_at IS NOT NULL AND e.created_at >= jq.started_at AND e.created_at <= COALESCE(jq.finished_at, NOW())) AS n,
+              (SELECT COALESCE(SUM(e.cost_micros), 0)::float8 FROM ai_usage_event e
+                WHERE e.business_execution_id = COALESCE(jq.payload -> 'businessExecution' ->> 'id', 'T1:job:' || jq.id) AND e.account_id = jq.account_id
+                  AND jq.started_at IS NOT NULL AND e.created_at >= jq.started_at AND e.created_at <= COALESCE(jq.finished_at, NOW())
+                  AND e.cost_micros IS NOT NULL) AS cout,
+              (SELECT COUNT(*)::int FROM ai_usage_event e
+                WHERE e.business_execution_id = COALESCE(jq.payload -> 'businessExecution' ->> 'id', 'T1:job:' || jq.id) AND e.account_id = jq.account_id
+                  AND jq.started_at IS NOT NULL AND e.created_at >= jq.started_at AND e.created_at <= COALESCE(jq.finished_at, NOW())
+                  AND e.cost_micros IS NULL) AS inconnus,
+              jq.status, jq.business_result
+         FROM ai_job_queue jq
+        WHERE jq.id IN (SELECT r.job_id FROM t1_requeue_requests r WHERE r.campaign_ref = $1 AND r.job_id IS NOT NULL AND r.attempt_consumed)`,
+      [campagne]),
+    // Issue métier par DOCUMENT (une suite réussie suffit) et résidus actuels.
+    q(`WITH s AS (
+         SELECT f.account_id, f.file_id, bool_or(f.business_success) AS ok, bool_or(f.business_success IS NULL) AS inconnu,
+                COALESCE(SUM(f.units_repaired), 0)::int AS unites
+           FROM t1_campaign_followups f WHERE f.campaign_ref = $1 AND f.kind <> 'REQUEUE_T1' GROUP BY 1, 2
+         UNION ALL
+         SELECT r.account_id, r.file_id, bool_or(jq.status = 'DONE' AND jq.business_result = 'APPLIED'),
+                bool_or(jq.status IN ('PENDING', 'RUNNING') OR (jq.status = 'DONE' AND jq.business_result IS NULL)), 0
+           FROM t1_requeue_requests r JOIN ai_job_queue jq ON jq.id = r.job_id AND jq.account_id = r.account_id
+          WHERE r.campaign_ref = $1 AND r.attempt_consumed GROUP BY 1, 2
+       ), d AS (
+         SELECT account_id, file_id, bool_or(ok) AS ok, bool_or(inconnu) AS inconnu, SUM(unites)::int AS unites FROM s GROUP BY 1, 2
+       )
+       SELECT COUNT(*)::int AS executees,
+              COUNT(*) FILTER (WHERE ok)::int AS reussies,
+              COUNT(*) FILTER (WHERE NOT ok AND NOT inconnu)::int AS echouees,
+              COUNT(*) FILTER (WHERE NOT ok AND inconnu)::int AS inconnues,
+              COALESCE(SUM(unites), 0)::int AS unites,
+              COUNT(*) FILTER (WHERE EXISTS (SELECT 1 FROM document_extraction_coverage c
+                 WHERE c.file_id = d.file_id AND c.account_id = d.account_id
+                   AND (c.unresolved_units + c.uncertain_units + c.failed_units) > 0))::int AS residus
+         FROM d`, [campagne]),
+    // Appels du document NON rattachés à une suite (attribution non prouvée) : visibles, jamais imputés.
+    q(`SELECT COUNT(*)::int AS n FROM ai_usage_event e
+         JOIN t1_coverage_reassessments j ON j.file_id = e.asset_file_id AND j.account_id = e.account_id AND j.rules_version = $2
+        WHERE e.created_at >= j.created_at
+          AND NOT EXISTS (SELECT 1 FROM t1_campaign_followups f WHERE f.campaign_ref = $1 AND f.business_execution_id IS NOT NULL
+                           AND f.business_execution_id = e.business_execution_id AND f.account_id = e.account_id)
+          AND NOT EXISTS (SELECT 1 FROM t1_requeue_requests r JOIN ai_job_queue jq ON jq.id = r.job_id
+                           WHERE r.campaign_ref = $1 AND COALESCE(jq.payload -> 'businessExecution' ->> 'id', 'T1:job:' || jq.id) = e.business_execution_id
+                             AND jq.account_id = e.account_id AND jq.started_at IS NOT NULL
+                             AND e.created_at >= jq.started_at AND e.created_at <= COALESCE(jq.finished_at, NOW()))`,
+      [campagne, rulesVersion]).catch(() => [{ n: null }] as Row[]),
+  ]);
+  for (const r of parEtat) { followUps.requestsByState[String(r.state)] = Number(r.n); followUps.requests += Number(r.n); }
+  for (const r of parTravail) { followUps.jobsByState[String(r.status)] = Number(r.n); followUps.jobs += Number(r.n); }
+  for (const r of suites) {
+    followUps.callsByKind[String(r.kind)] = Number(r.calls);
+    followUps.calls += Number(r.calls);
+    followUps.costMicros += Number(r.cout ?? 0);
+    followUps.callsWithUnknownCost += Number(r.inconnus ?? 0);
+  }
+  for (const t of travaux) {
+    // Travail clos sans début consigné : la fenêtre de ses appels est inconnue → INCONNU, jamais 0.
+    if (t.fenetre_inconnue === true) { followUps.jobsWithUnknownCalls++; continue; }
+    followUps.callsByKind.FULL_ANALYSIS = (followUps.callsByKind.FULL_ANALYSIS ?? 0) + Number(t.n ?? 0);
+    followUps.calls += Number(t.n ?? 0);
+    followUps.costMicros += Number(t.cout ?? 0);
+    followUps.callsWithUnknownCost += Number(t.inconnus ?? 0);
+  }
+  const [r0] = resultats;
+  if (r0) {
+    repairs.executed = Number(r0.executees ?? 0);
+    repairs.businessSucceeded = Number(r0.reussies ?? 0);
+    repairs.businessFailed = Number(r0.echouees ?? 0);
+    repairs.unknown = Number(r0.inconnues ?? 0);
+    repairs.unitsRepaired = Number(r0.unites ?? 0);
+    repairs.residualsRemaining = Number(r0.residus ?? 0);
+  }
+  followUps.uncorrelatedDocumentCalls = Number(nonCorreles[0]?.n ?? 0);
+  return { repairs, followUps };
 }

@@ -129,7 +129,11 @@ export interface ReverificationOutcome {
  * Idempotente : une même empreinte n'est jamais rejouée ; aucune écriture sur
  * un document dont la couverture a changé entre-temps (garde optimiste).
  */
-export async function reverifyStoredCoverage(p: { accountId: number; fileId: number; maxRetries?: number }): Promise<ReverificationOutcome> {
+export async function reverifyStoredCoverage(p: {
+  accountId: number; fileId: number; maxRetries?: number;
+  /** Carte #837 (D1) : campagne de réévaluation à l'origine de la re-vérification (corrélation des suites). */
+  campaignRef?: string | null;
+}): Promise<ReverificationOutcome> {
   const { pgClient } = await import('@/db');
   const { loadAllDocumentSourceUnits, loadDocumentCoverage, loadUnresolvedDocumentFacts, maxCompletenessRetries } = await import('./repository');
   const skip = (reason: string, q: string | null = null): ReverificationOutcome => ({ fileId: p.fileId, result: 'SKIPPED', reason, qualityBefore: q, qualityAfter: q });
@@ -233,6 +237,7 @@ export async function reverifyStoredCoverage(p: { accountId: number; fileId: num
       fileId: p.fileId, accountId: p.accountId, attempt: cov.retryAttempts + 1, origin: 't1-coverage-reverify', result: 'REQUEUED_T1_PAGES_MISSING', scheduled: true,
       // Lot 115H (#785, § 1) : même règle de droit que les autres origines (le service la contrôle avant d'enfiler).
       requestedBy: 'REVERIFICATION',
+      campaignRef: p.campaignRef ?? null,
     })).queued;
   }
   if (apres === 'INCOMPLETE_FINAL' && avant !== 'INCOMPLETE_FINAL') {

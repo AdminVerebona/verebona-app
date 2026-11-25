@@ -141,6 +141,8 @@ export const FILE_SCOPED_TABLES: ReadonlyArray<readonly [table: string, column: 
   ['t1_coverage_reassessments', 'file_id'],
   // Lot 115H (#785) : identité et réservation des demandes de reprise T1 du document (1805) — suivent le document.
   ['t1_requeue_requests', 'file_id'],
+  // Carte #837 (D1) : suites corrélées des campagnes T1 (account_id suit le document).
+  ['t1_campaign_followups', 'file_id'],
 ];
 
 /** Tables des données du BIEN (colonne `asset_id`) qui suivent le bien. */

@@ -54,8 +54,8 @@
  *                                   qu'il reste des documents     document (idempotent) — 0295
  *   t1-completeness-retry           toutes les 15 min             tentatives comptées par document,
  *                                                                 `next_retry_at` (0295)
- *   t1-coverage-reassessment        au démarrage, puis /h tant    journal par document × version des
- *                                   qu'il reste des documents     règles (1705, unique) ; aucun appel IA ;
+ *   t1-coverage-reassessment        toutes les heures (#837 :     journal par document × version des
+ *                                   rattrapage permanent)         règles (1705, unique) ; aucun appel IA ;
  *                                   (lot 114H, #775)              ne traite pas un document tenu par
  *                                                                 `t1-completeness-retry` (échéance proche)
  *   ai-catalog-sync                 chaque jour à 7 h 15 (85C)    bail `ai-catalog-sync` (même
@@ -607,7 +607,11 @@ export const SCHEDULED_TASKS: readonly ScheduledTaskDef[] = [
     // N'exécute aucune réparation : une lacune réparable est seulement programmée pour `t1-completeness-retry`.
     code: 't1-coverage-reassessment',
     label: 'IA : réévaluation de la couverture T1 du stock et des alertes (sans IA)',
-    schedule: { kind: 'startup', delayMs: 9 * MIN, retryMs: HOUR },
+    // Carte #837 (C1, C4) : RATTRAPAGE PÉRIODIQUE PERMANENT — toutes les heures, et plus seulement « au démarrage
+    // puis tant qu'il reste des documents ». Une preuve nouvelle après un cycle complet (fait, décision, candidat,
+    // texte original) est rattrapée sans redémarrage ni consultation du BO ; un document inchangé n'est pas rejoué
+    // (empreinte exhaustive des preuves), curseurs durables : aucune famine.
+    schedule: { kind: 'interval', everyMs: HOUR },
     timeoutMs: 10 * MIN,
     run: async ({ deadline }) => {
       const { runCoverageReassessment } = await import('@/services/ai/source-analysis/source-units/historical-reassessment');
