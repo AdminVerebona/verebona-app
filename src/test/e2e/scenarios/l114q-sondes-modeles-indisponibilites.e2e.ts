@@ -288,9 +288,9 @@ scenario('L114Q', 'Sondes de modèles : verdict par accès, propagation jusqu’
     const avantRefus = new Date(new Date(quand[0].t).getTime() - 60_000);
     const refus = classifyProbeFailure(refus15389(REFUSE), { model: REFUSE });
     const resultats = await Promise.all([
-      recordOperationalCheck({ model: REFUSE, secret: CLE, outcome: { status: 'ok' }, source: 'provider_test', observedAt: avantRefus }),
-      recordOperationalCheck({ model: REFUSE, secret: CLE, outcome: { status: 'ok' }, source: 'catalog_refresh', observedAt: avantRefus }),
-      recordOperationalCheck({ model: REFUSE, secret: CLE, outcome: refus, source: 'gateway_call', observedAt: new Date() }),
+      recordOperationalCheck({ model: REFUSE, secret: CLE, outcome: { status: 'ok' }, source: 'provider_test', checkId: 'l114q-sondes-modeles-indisponibilites-291', observedAt: avantRefus }),
+      recordOperationalCheck({ model: REFUSE, secret: CLE, outcome: { status: 'ok' }, source: 'catalog_refresh', checkId: 'l114q-sondes-modeles-indisponibilites-292', observedAt: avantRefus }),
+      recordOperationalCheck({ model: REFUSE, secret: CLE, outcome: refus, source: 'gateway_call', checkId: 'l114q-sondes-modeles-indisponibilites-293', observedAt: new Date() }),
     ]);
     expect(resultats.slice(0, 2).every((x) => x.stale === true && x.ok === false)).toBe(true);
     expect(await etat(REFUSE)).toMatchObject({ ok: false, check_status: 'failed_confirmed', failure_count: 1 });
@@ -302,7 +302,7 @@ scenario('L114Q', 'Sondes de modèles : verdict par accès, propagation jusqu’
 
   it('L114Q-E05 (R02) — le même modèle répond avec une autre clé : verdict de la clé active intact, aucune exclusion globale', async () => {
     const { recordOperationalCheck, loadOperationalStatuses } = await O();
-    await recordOperationalCheck({ model: REFUSE, secret: AUTRE_CLE, outcome: { status: 'ok' }, source: 'provider_test' });
+    await recordOperationalCheck({ model: REFUSE, secret: AUTRE_CLE, outcome: { status: 'ok' }, source: 'provider_test', checkId: 'l114q-sondes-modeles-indisponibilites-305' });
     expect((await etat(REFUSE))?.ok).toBe(false);
     expect((await etat(REFUSE, AUTRE_CLE))?.ok).toBe(true);
     expect((await loadOperationalStatuses(CLE)).get(REFUSE)?.ok).toBe(false);
@@ -336,12 +336,12 @@ scenario('L114Q', 'Sondes de modèles : verdict par accès, propagation jusqu’
       Object.assign(new Error('{"error":{"code":503,"status":"UNAVAILABLE","message":"overloaded"}}'), { status: 503 }),
     ];
     for (const err of transitoires) {
-      expect(await fallbackContext().reportRefusal({ model: cible, error: err, httpStatus: (err as { status?: number }).status ?? null, sentAt: new Date() })).toBeNull();
+      expect(await fallbackContext().reportRefusal({ model: cible, error: err, httpStatus: (err as { status?: number }).status ?? null, sentAt: new Date() , checkId: 'l114q-sondes-modeles-indisponibilites-339'})).toBeNull();
     }
     expect((await etat(cible))?.ok).toBe(true);
     expect(await versionPartagee()).toBe(v0);
 
-    const signal = await fallbackContext().reportRefusal({ model: cible, error: refus15389(cible), httpStatus: 404, sentAt: new Date() });
+    const signal = await fallbackContext().reportRefusal({ model: cible, error: refus15389(cible), httpStatus: 404, sentAt: new Date() , checkId: 'l114q-sondes-modeles-indisponibilites-344'});
     expect(signal).toBe('recorded');
     expect(await etat(cible)).toMatchObject({ ok: false, check_status: 'failed_confirmed', source: 'gateway_call', http_status: 404, provider_code: 'NOT_FOUND' });
     expect(await versionPartagee()).toBe(v0 + 1);

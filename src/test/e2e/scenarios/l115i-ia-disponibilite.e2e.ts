@@ -75,7 +75,8 @@ scenario('L115I', 'IA — admission des envois : aucune requête ordinaire vers 
     return recordOperationalCheck({
       model: p.model, secret: cle, source: p.source ?? 'catalog_refresh',
       outcome: p.echec === false ? { status: 'ok' } : classifyProbeFailure(refus404(p.model), { model: p.model }),
-      ...(p.checkId ? { checkId: p.checkId } : {}),
+      // #786 (B02) : l'identifiant de contrôle est désormais OBLIGATOIRE — figé à la source avant l'envoi.
+      checkId: p.checkId ?? `e2e:${p.model}:${crypto.randomUUID()}`,
       ...(p.observedAt ? { observedAt: p.observedAt } : {}),
       ...(p.now ? { now: p.now } : {}),
       ...(p.accessFingerprint ? { accessFingerprint: p.accessFingerprint } : {}),

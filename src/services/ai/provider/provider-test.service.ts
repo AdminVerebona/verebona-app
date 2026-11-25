@@ -29,6 +29,7 @@ import { recordCallTrace } from '../telemetry/ai-trace.service';
 import type { TestDetail } from './credential.repository';
 import { calcCostMicros } from '../gateway/cost-catalog';
 import { buildGenerationConfig } from '../gateway/providers/gemini-generation-config';
+import { keyFingerprint } from './access-identity';
 import {
   PROBE_MAX_OUTPUT_TOKENS, PROBE_PROMPT, PROBE_REASONING, PROBE_TIMEOUT_MS,
   classifyProbeFailure, classifyProbeResponse, sanitizeProviderError, type ProbeOutcome,
@@ -154,14 +155,29 @@ export async function testProviderKey(
       }
     }
 
+    // #786 (A02 / E04 / E05) : contexte d'envoi FIGÉ AVANT toute garde et avant la requête — instant d'envoi,
+    // identifiant stable du contrôle, et EMPREINTE de la clé RÉELLEMENT TESTÉE. C'est cette empreinte qui est
+    // transmise à la garde ET à l'enregistrement : la clé active n'est jamais relue sur ce chemin.
+    const envoiLe = new Date();
+    const checkId = `provider_test:${crypto.randomUUID()}`;
+    const accessFingerprint = keyFingerprint(secret);
+
     // Lot 115 (carte #786, E03) : MÊME garde de disponibilité que les traitements, à la frontière de l'envoi.
     // « Tester la clé » n'est pas une sonde de rétablissement : il n'envoie rien vers une route confirmée
     // indisponible (l'authentification et le catalogue ci-dessus restent vérifiés).
+    //
+    // Règle remplacée (carte #786, A02) : la garde était interrogée SANS la clé testée, et relisait donc le
+    // verdict de la clé ACTIVE. Le verdict de A pouvait ainsi autoriser ou bloquer un départ sur B. La
+    // décision porte désormais exclusivement sur l'accès testé (`access.fingerprint`, jamais le secret).
     {
       const A = await import('./operational-admission');
-      const adm = await A.guardSend({ model, point: 'provider_key_test' });
-      if (!adm.admitted) {
-        detail.error = `Génération de test non envoyée : ${adm.label}${adm.verdict.error ? ` (${adm.verdict.error})` : ''}.`;
+      const adm = await A.guardSend({ model, point: 'provider_key_test', access: { fingerprint: accessFingerprint } });
+      const depart = adm.admitted ? await A.confirmDeparture(adm) : null;
+      if (!adm.admitted || (depart && !depart.departed)) {
+        const refus = adm.admitted ? depart! : adm;
+        const label = 'label' in refus ? refus.label : '';
+        const erreur = 'verdict' in refus ? refus.verdict.error : null;
+        detail.error = `Génération de test non envoyée : ${label}${erreur ? ` (${erreur})` : ''}.`;
         await trace(accountId, userId, model, false, Date.now() - started, detail.error);
         return { ok: false, detail };
       }
@@ -169,9 +185,6 @@ export async function testProviderKey(
 
     // 2. Génération minimale — la seule qui prouve que le modèle est servi.
     generationSent = true;
-    // #786 (E04 / E05) : instant d'ENVOI, identifiant stable du contrôle et accès effectif, figés AVANT la requête.
-    const envoiLe = new Date();
-    const checkId = `provider_test:${crypto.randomUUID()}`;
     const generation = await fetch(
       `${MODELS_ENDPOINT}/${encodeURIComponent(model)}:generateContent?key=${encodeURIComponent(secret)}`,
       {
@@ -194,7 +207,7 @@ export async function testProviderKey(
       // panne du modèle (non concluant, état conservé).
       await recordOperational(model, secret, classifyProbeFailure(texte || `HTTP ${generation.status}`, {
         model, secret, httpStatus: generation.status,
-      }), { observedAt: envoiLe, checkId, httpStatus: generation.status });
+      }), { observedAt: envoiLe, checkId, accessFingerprint, httpStatus: generation.status });
       return { ok: false, detail };
     }
 
@@ -208,7 +221,7 @@ export async function testProviderKey(
     const texteGenere = (reponse.candidates?.[0]?.content?.parts ?? [])
       .filter((x) => typeof x.text === 'string' && x.thought !== true).map((x) => x.text).join('');
     // Réponse vide : non concluant (lot 49), jamais une indisponibilité.
-    await recordOperational(model, secret, classifyProbeResponse(texteGenere), { observedAt: envoiLe, checkId });
+    await recordOperational(model, secret, classifyProbeResponse(texteGenere), { observedAt: envoiLe, checkId, accessFingerprint });
     const usage = reponse.usageMetadata;
     await trace(accountId, userId, model, true, Date.now() - started, undefined, {
       inputTokens: Number(usage?.promptTokenCount ?? 0),
@@ -226,15 +239,19 @@ export async function testProviderKey(
  * Enregistre l'issue du test de clé. Lot 115 (#786, E04) : l'instant d'ENVOI et l'identifiant stable du
  * contrôle sont ceux figés avant la requête — un résultat ancien reçu tard ne lève plus un refus récent, et le
  * rejouer ne compte pas pour une seconde sonde.
+ *
+ * #786 (A02) : l'EMPREINTE de la clé testée est figée avant la requête et transmise telle quelle. Le résultat
+ * est attribué à l'accès qui a envoyé, jamais à la clé qui serait active à la réception (rotation en vol).
  */
 async function recordOperational(
   model: string, secret: string, outcome: ProbeOutcome,
-  ordre?: { observedAt: Date; checkId: string; httpStatus?: number | null },
+  ordre: { observedAt: Date; checkId: string; accessFingerprint: string; httpStatus?: number | null },
 ): Promise<void> {
   const { recordOperationalCheck } = await import('./model-operational.service');
   await recordOperationalCheck({
     model, secret, outcome, source: 'provider_test',
-    ...(ordre ? { observedAt: ordre.observedAt, checkId: ordre.checkId, httpStatus: ordre.httpStatus ?? null } : {}),
+    observedAt: ordre.observedAt, checkId: ordre.checkId, accessFingerprint: ordre.accessFingerprint,
+    httpStatus: ordre.httpStatus ?? null,
   });
 }
 

@@ -61,6 +61,8 @@ interface AiCatalogSyncResult {
     providerIncident?: string | null;
     /** #786 (E08) : état de disponibilité illisible — aucun décompte opposable, aucune résolution d'alerte. */
     stateUnreadable?: boolean;
+    /** #786 (D01) : provenance de l'instantané de disponibilité (`fresh`, `last_reliable`, `none`). */
+    completeness?: 'fresh' | 'last_reliable' | 'none';
   };
   pricing: Pick<PricingSyncResult, 'status' | 'sourceRead' | 'error'> & {
     known: number; unknown: number; changed: number;
@@ -321,18 +323,29 @@ export async function syncAiCatalog(
       result.anomalies = A.detectActiveModelAnomalies(await A.loadActiveChains(), ctx, await A.loadSecoursContext());
       // Lot 114 (carte #771, B01 / B05) : diagnostics toujours lus — surveillance des sondes et incident global.
       const diagnostics = await loadOperationalDiagnostics(secret ?? null);
-      await A.raiseActiveModelAlerts(result.anomalies, now, deps.raiseAlert, diagnostics);
-      // #786 (E08) : une lecture NON fiable de l'état ne vaut ni décompte, ni rétablissement.
+      /**
+       * #786 (D02) — LA FIABILITÉ EST CONTRÔLÉE AVANT TOUTE ALERTE.
+       *
+       * Règle remplacée (carte #786, D02) : les alertes étaient levées et actualisées, PUIS `operationalReliable`
+       * était contrôlé pour décider des résolutions. Une lecture partielle pouvait donc abaisser une criticité
+       * ou remplacer une alerte avant qu'on sache qu'elle n'était pas fiable. L'ordre est inversé : le
+       * périmètre est établi d'abord, et création, actualisation, abaissement comme résolution n'ont lieu
+       * qu'après une lecture fiable et complète.
+       */
       const fiable = ctx.operationalReliable !== false;
+      const perimetre = A.perimeterOf(diagnostics, fiable);
       const veille = A.operationalWatchOf(diagnostics, fiable);
       result.operational.verdicts = veille.counts;
       result.operational.providerIncident = veille.providerIncident?.kind ?? null;
       if (!fiable) result.operational.stateUnreadable = true;
+      // #786 (D01) : provenance de l'instantané — « lu à l'instant », « dernier état fiable » ou « rien de su ».
+      result.operational.completeness = ctx.operationalCompleteness ?? 'fresh';
+      await A.raiseActiveModelAlerts(result.anomalies, now, deps.raiseAlert, diagnostics, perimetre);
       if (!deps.raiseAlert) {
         // #771 (B03 / B04) : résolution automatique après rétablissement ; incident global séparé des modèles.
-        // #786 (E08) : résolution SEULEMENT sur lecture complète et fiable (erreur de base ≠ rétablissement).
-        await A.resolveRecoveredModelAlerts(result.anomalies, fiable);
-        if (fiable) await A.reconcileProviderIncidentAlert(veille);
+        // #786 (D02) : résolution SEULEMENT sur lecture complète et fiable, et seulement pour les accès LUS.
+        await A.resolveRecoveredModelAlerts(result.anomalies, perimetre, diagnostics);
+        await A.reconcileProviderIncidentAlert(veille, perimetre);
       }
     } catch (e) {
       console.warn('[ai-catalog-sync] contrôle des modèles actifs impossible :', (e as Error).message);

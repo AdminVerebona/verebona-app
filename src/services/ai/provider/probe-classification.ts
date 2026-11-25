@@ -307,6 +307,15 @@ export function reinterpretLegacyState(row: { ok: boolean | null; checkStatus: C
 export const PROBE_CAPABILITY = 'text_generation' as const;
 export const PROBE_ENDPOINT = 'generateContent' as const;
 
+/**
+ * #786 (C01) — VERSION du point d'accès du fournisseur, composante de
+ * l'identité canonique d'une route (`operational-admission.routeKeyOf`) et
+ * figée avec chaque contrôle. Définie ICI, à côté du point d'accès, pour
+ * qu'aucun module n'en ait sa propre copie : l'identité de route et l'écriture
+ * du verdict parlent de la même version.
+ */
+export const ROUTE_API_VERSION = 'v1beta' as const;
+
 // ── Lot 115 (carte #786, E05) : la capacité fait partie de la CLÉ ───────────
 
 /**

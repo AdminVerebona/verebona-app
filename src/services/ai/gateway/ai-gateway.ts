@@ -18,7 +18,7 @@ import {
   type CoupleQualification, type FailureCause, type FallbackDecision,
 } from './fallback-policy';
 import { fallbackContext, noteKnownUnavailableSkipped, type CoupleQualificationView, type OperationalHint } from './fallback-context';
-import { guardSend } from '../provider/operational-admission';
+import { confirmDeparture, guardSend } from '../provider/operational-admission';
 import type { OperationalCapability } from '../provider/probe-classification';
 import { activeAccessFingerprint } from '../provider/model-operational.service';
 import { isModelExcluded } from '../config/routing-overlay';
@@ -586,21 +586,61 @@ export class AiGateway {
     // juste avant chaque envoi : un verdict publié par une autre instance
     // PENDANT la tentative précédente est opposable tout de suite. Les
     // requêtes DÉJÀ parties finissent ; aucune nouvelle ne part.
+    //
     // ══════════════════════════════════════════════════════════════════════
+    // CARTE #786 (B01) — LA GARDE EST LA DERNIÈRE CHOSE AVANT LE DÉPART
+    //
+    // Règle remplacée (carte #786, B01) : l'ordre était « garde, PUIS
+    // construction de la capture (`capturedRequestOf`, `sent.push`), PUIS
+    // `provider.call` ». Entre la lecture du verdict et le départ réseau
+    // s'intercalait donc du travail, et un verdict publié pendant ce
+    // laps-là laissait partir une requête interdite.
+    //
+    // Deux corrections, dans cet ordre :
+    //   1. la capture est construite AVANT la garde — plus aucune
+    //      instruction, plus aucun `await`, ne s'intercale entre la garde et
+    //      `provider.call` ;
+    //   2. CONFIRMATION DE DÉPART (`confirmDeparture`) : la garde a relevé la
+    //      VERSION publiée de l'état opérationnel, incrémentée dans la
+    //      transaction qui publie un verdict. Juste avant le départ, si elle
+    //      a changé, le verdict est RELU et la route refusée si elle est
+    //      devenue indisponible. Aucune transaction de base n'est ouverte
+    //      pendant la génération.
+    // La fenêtre résiduelle irréductible qui subsiste, et ce qui la borne,
+    // sont documentés sur `confirmDeparture` (operational-admission.ts).
+    // ══════════════════════════════════════════════════════════════════════
+    /**
+     * #786 (A02, C01, D03) — CONTEXTE D'ENVOI de la tentative COURANTE, figé avant la requête et lu par le
+     * port `capturing` : l'EMPREINTE de l'accès qui envoie (jamais la clé) et l'identifiant stable de la
+     * tentative. La garde porte ainsi sur la route exacte, et le journal des départs corrèle
+     * garde → départ réel → verdict → worker.
+     */
+    const contexteEnvoi: { accessFingerprint: string | null; checkId: string | null } = { accessFingerprint: null, checkId: null };
     const capturing: AiProvider = {
       name: provider.name,
       isConfigured: () => provider.isConfigured(),
       call: async (i: ProviderCallInput) => {
-        const admission = await guardSend({ model: i.model, point: 'gateway_send', capability: capaciteAppel });
-        if (!admission.admitted) {
-          const message = `${i.model} : ${admission.label}.`;
+        // (1) Capture construite AVANT la garde : aucun travail entre la garde et le départ réseau.
+        const entry = capturedRequestOf(i, psHash);
+        const refuser = (code: 'MODEL_UNAVAILABLE' | 'ADMISSION_UNVERIFIABLE', label: string): never => {
+          const message = `${i.model} : ${label}.`;
           throw Object.assign(
-            new AiGatewayError(admission.code === 'MODEL_UNAVAILABLE' ? 'MODEL_KNOWN_UNAVAILABLE' : 'MODEL_ADMISSION_UNVERIFIABLE',
+            new AiGatewayError(code === 'MODEL_UNAVAILABLE' ? 'MODEL_KNOWN_UNAVAILABLE' : 'MODEL_ADMISSION_UNVERIFIABLE',
               operationCode, message, { recoverable: true }),
             { aiStage: 'availability_guard' },
           );
-        }
-        const entry = capturedRequestOf(i, psHash);
+        };
+        const admission = await guardSend({
+          model: i.model, point: 'gateway_send', capability: capaciteAppel,
+          ...(contexteEnvoi.accessFingerprint ? { access: { fingerprint: contexteEnvoi.accessFingerprint } } : {}),
+          checkId: contexteEnvoi.checkId,
+        });
+        if (!admission.admitted) refuser(admission.code, admission.label);
+        // (2) Confirmation de départ : dernière lecture de version, puis départ immédiat. Une requête refusée
+        // ici n'est JAMAIS relevée dans `sent` : aucun coût, aucun appel fictif pour un saut (#786, D03).
+        const depart = await confirmDeparture(admission);
+        if (!depart.departed) refuser(depart.code, depart.label);
+        // #786 (D03) : `sent` ne contient que les requêtes RÉELLEMENT parties — « autorisé » n'y suffit pas.
         sent.push(entry);
         try {
           const o = await provider.call(i);
@@ -924,6 +964,9 @@ export class AiGateway {
         // une rotation de clé est attribué à cet accès, jamais à la nouvelle clé. `null` : accès inconnu.
         const accesEnvoi = await activeAccessFingerprint();
         const checkIdEnvoi = `gateway_call:${traceId}:${callIndex}`;
+        // #786 : le port `capturing` lit ce contexte juste avant la garde (accès figé, tentative corrélée).
+        contexteEnvoi.accessFingerprint = accesEnvoi;
+        contexteEnvoi.checkId = checkIdEnvoi;
         const attemptFrom = sent.length;
         // Sortie du fournisseur conservée hors du try : si la VALIDATION échoue,
         // les jetons ont été consommés et facturés — COST-005 exige de garder

@@ -64,8 +64,12 @@ export interface ProviderRefusalReport {
   model: string; error: unknown; httpStatus: number | null; sentAt: Date;
   /** #786 (E05) : accès qui a ENVOYÉ la requête (empreinte figée au départ), jamais celui actif à la réception. */
   accessFingerprint?: string | null;
-  /** #786 (E04) : identifiant stable de ce constat, figé au départ. */
-  checkId?: string | null;
+  /**
+   * #786 (E04, B02) : identifiant stable de ce constat, figé AU DÉPART de la
+   * requête et OBLIGATOIRE — c'est lui qui rend l'écriture du verdict
+   * idempotente. Règle remplacée (carte #786, B02) : il était facultatif.
+   */
+  checkId: string;
   /**
    * #786 (E05) : CAPACITÉ (et modalité) réellement sollicitée par la requête
    * refusée. La portée du verdict en est déduite par la règle documentée
@@ -221,10 +225,13 @@ function lancerSondeBornee(model: string, now: number, immediate = false): boole
       const bail = await O.acquireProbeLease({ model, secret, owner, immediate });
       if (!bail.acquired) {
         console.info(`[fallback] recontrôle de ${model} non lancé : ${bail.reason} (réservation partagée, #786).`);
+        // #786 (D03) : sonde NON ENVOYÉE, comptée comme telle — jamais « tout sain » faute de sonde.
+        try { (await import('../provider/operational-admission')).noteProbeNotSent(); } catch { /* mesures absentes */ }
         return;
       }
       try {
-        await probeUnderReservation(model, secret);
+        // #786 (B03) : le jeton de clôture du bail accompagne le résultat jusqu'à l'écriture.
+        await probeUnderReservation(model, secret, bail.generation);
       } finally {
         await O.releaseProbeLease({ model, secret, owner });
       }
@@ -241,34 +248,39 @@ const PROBE_OWNER_ID = Math.random().toString(36).slice(2, 10);
 
 /**
  * Sonde de rétablissement sous réservation (#786, E06) : la sonde EXISTANTE
- * (génération minimale, sans donnée utilisateur). Un succès probant lève le
- * blocage de disponibilité, MARQUE les qualifications du modèle comme
- * obsolètes, puis relance TOUT DE SUITE la campagne ciblée du modèle rétabli
- * (bornée, sous la MÊME réservation de route : une seule instance la mène ;
- * dédupliquée par la marque, que le résultat efface). Un résultat non
- * concluant ne lève rien et ne relance rien.
+ * (génération minimale, sans donnée utilisateur), sous le bail que l'appelant
+ * vient d'obtenir — une seule instance la mène. Un résultat non concluant ne
+ * lève rien.
  *
- * Règle complétée (carte #786, E06) : la campagne attendait le passage
- * planifié suivant. Elle part maintenant immédiatement ; ce qu'elle ne finit
- * pas (budget, non concluant) reste marqué et le passage planifié EXISTANT le
- * reprend — aucun second ordonnanceur, aucune réanalyse.
+ * ──────────────────────────────────────────────────────────────────────────
+ * #786 (C02) — LA REQUALIFICATION N'EST PLUS ÉMISE ICI.
+ *
+ * Ce chemin marquait les qualifications obsolètes et relançait la campagne
+ * ciblée — mais LUI SEUL. Un rétablissement constaté par l'actualisation du
+ * catalogue, par « Tester la clé », par une qualification ou par un appel réel
+ * ne requalifiait rien.
+ *
+ * L'obligation est donc émise depuis l'UNIQUE POINT D'ÉCRITURE du verdict
+ * (`model-operational.service.recordOperationalCheck`), à chaque transition
+ * PERSISTÉE `failed_confirmed → ok`, quelle que soit la source. La duplication
+ * est retirée ici : elle est devenue redondante, et deux émetteurs auraient
+ * fait deux campagnes.
+ *
+ * CE QUI RESTE ICI, et qui n'est pas redondant : la RÉCUPÉRATION APRÈS RANG
+ * SAUTÉ — la sonde bornée, réservée et dédupliquée qui part justement parce
+ * que le routage a sauté ce rang. C'est elle qui déclenche le rétablissement ;
+ * c'est l'écriture du verdict qui en tire les conséquences.
+ * ──────────────────────────────────────────────────────────────────────────
  */
-async function probeUnderReservation(model: string, secret: string): Promise<void> {
+async function probeUnderReservation(model: string, secret: string, leaseGeneration: number | null): Promise<void> {
   const { probeModels } = await import('../provider/model-operational.service');
-  const [r] = await probeModels([model], secret, { source: 'recovery_check' });
-  if (!r?.ok) return;
-  try {
-    const Q = await import('../provider/model-qualification.service');
-    await Q.markRequalificationRequired([model], secret,
-      'modèle rétabli après une indisponibilité confirmée (#786) : qualifications antérieures à requalifier');
-    // Le cache de disponibilité est vidé AVANT la campagne : ses épreuves passent la garde d'admission avec
-    // le verdict rétabli, et non avec le refus que la sonde vient de lever.
-    invalidateFallbackStatusCache();
-    const bilan = await Q.runTargetedRequalification([model], secret, { max: 1 });
-    if (bilan.attempted.length === 0) {
-      console.info(`[fallback] campagne ciblée de ${model} non lancée (${bilan.skipped.map((s) => s.reason).join(', ') || 'rien à reprendre'}) : reprise au passage planifié.`);
-    }
-  } catch { /* marquage ou campagne non bloquants : le passage planifié les reprend */ }
+  const [r] = await probeModels([model], secret, {
+    source: 'recovery_check',
+    ...(leaseGeneration === null ? {} : { leaseGeneration }),
+  });
+  // Le cache de disponibilité est vidé dès que la sonde a conclu au rétablissement : les épreuves de la
+  // campagne ciblée (lancée par le point d'écriture) passent la garde avec le verdict rétabli.
+  if (r?.ok) invalidateFallbackStatusCache();
 }
 
 /**
@@ -332,13 +344,25 @@ async function defaultReportRefusal(p: ProviderRefusalReport): Promise<RefusalSi
     const etat = await withTimeout(O.recordOperationalCheck({
       model: p.model, secret, outcome: d.outcome, source: 'gateway_call', observedAt: p.sentAt,
       httpStatus: p.httpStatus ?? codes.httpStatus, providerCode: codes.providerCode,
-      // #786 : accès de l'envoi et identifiant stable du constat.
+      // #786 : accès de l'envoi et identifiant stable du constat (obligatoire, figé au départ).
+      checkId: p.checkId,
       ...(p.accessFingerprint ? { accessFingerprint: p.accessFingerprint } : {}),
-      ...(p.checkId ? { checkId: p.checkId } : {}),
       // #786 (E05) : capacité sollicitée par la requête refusée (la portée est déduite de la classification).
       ...(p.capability ? { capability: p.capability } : {}),
     }), LOOKUP_TIMEOUT_MS, null);
     invalidateFallbackStatusCache();
+    /**
+     * #786 (A03) — « enregistré » n'est annoncé que si le verdict est RÉELLEMENT PUBLIÉ.
+     *
+     * Règle complétée (carte #786, A03) : un état seulement CALCULÉ (écriture ou commit en échec, migration
+     * critique absente) était rendu comme un refus enregistré. La passerelle en concluait que la route était
+     * désormais exclue pour toutes les instances, alors que rien n'avait été écrit. Un état `not_persisted`
+     * rend donc `null` : rien n'est annoncé, et la reprise idempotente (même `checkId`) publiera le verdict.
+     */
+    if (etat && etat.persistence === 'not_persisted') {
+      console.warn(`[fallback] ${p.model} : refus NON publié (${etat.notPersistedReason ?? 'persistance en échec'}) — aucun verdict annoncé, reprise idempotente attendue.`);
+      return null;
+    }
     return etat && etat.ok === false ? 'recorded' : null;
   } catch {
     return null;

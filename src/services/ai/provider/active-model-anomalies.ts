@@ -108,6 +108,8 @@ function secoursDecision(treatment: Treatment, model: string, secours: SecoursCo
 const PERTE: ReadonlySet<UnusableReason> = new Set<UnusableReason>([
   'NOT_LISTED', 'PROVIDER_UNAVAILABLE', 'NO_GENERATE_CONTENT', 'NOT_OPERATIONAL', 'NOT_QUALIFIED',
   'CAPABILITY_MISSING', 'RETIRED', 'FORBIDDEN', 'EXPERIMENTAL',
+  // #786 (C03) : `OPERATIONAL_PROOF_MISSING` n'y figure PAS — un modèle nouveau pas encore éprouvé n'est pas
+  // un modèle PERDU. L'inconnu n'est jamais une indisponibilité, et il ne lève aucune alerte d'exploitation.
 ]);
 
 const RANK_LABELS: Readonly<Record<ChainRank, string>> = {
@@ -418,6 +420,81 @@ type RaiseFn = (a: import('../alerts/alerts.repository').AlertInput) => Promise<
 export const ACTIVE_MODEL_ALERT_CODE = 'ai_active_model_unavailable';
 export const PROVIDER_AUTH_ALERT_CODE = 'ai_provider_auth_failure';
 
+// ── #786 (D02) : UNE ALERTE PAR MODÈLE **ET** ACCÈS **ET** CAPACITÉ ────────
+
+/** Accès ou capacité que la lecture n'a pas renseigné : dit comme tel, jamais fusionné avec une valeur. */
+const ACCES_INCONNU = 'acces-inconnu';
+const CAPACITE_INCONNUE = 'capacite-inconnue';
+
+/**
+ * #786 (D02) — PÉRIMÈTRE d'une alerte de disponibilité : le modèle, l'ACCÈS et
+ * la CAPACITÉ. C'est l'unité d'incident, et rien d'autre.
+ *
+ * Règle remplacée (carte #786, D02) : la clé de condition portait le modèle et
+ * l'accès, mais les alertes journalières antérieures étaient remplacées sur le
+ * seul nom de MODÈLE, et `resolveRecoveredModelAlerts` résolvait par MODÈLE.
+ * Un succès sur l'accès B pouvait donc clore l'incident de l'accès A, et un
+ * refus propre à une capacité clore celui d'une autre.
+ */
+export interface AlertScope {
+  model: string;
+  /** Accès pseudonymisé (jamais la clé) ; `acces-inconnu` si la lecture ne le dit pas. */
+  access: string;
+  /** Capacité éprouvée ; `capacite-inconnue` si la lecture ne la dit pas. */
+  capability: string;
+}
+
+/** Périmètre d'alerte d'un groupe (pur) : aucune dimension devinée. */
+export function alertScopeOf(g: Pick<UnavailableModelGroup, 'model' | 'diagnostic'>): AlertScope {
+  return {
+    model: g.model,
+    access: g.diagnostic.access ?? ACCES_INCONNU,
+    capability: g.diagnostic.capability ?? CAPACITE_INCONNUE,
+  };
+}
+
+/** Clé de condition d'une alerte, SÉRIALISATION PURE du périmètre (#786, D02). */
+export function alertScopeKey(s: AlertScope): string {
+  return `ai:active-model:${s.model}:${s.access}:${s.capability}`;
+}
+
+/** Périmètre d'alerte porté par une alerte ouverte (`details.scope`), ou déduit des champs historiques. */
+function scopeOfAlertDetails(details: unknown): AlertScope | null {
+  const d = (details ?? null) as { model?: unknown; scope?: { model?: unknown; access?: unknown; capability?: unknown } } | null;
+  if (d?.scope && typeof d.scope.model === 'string') {
+    return {
+      model: d.scope.model,
+      access: typeof d.scope.access === 'string' ? d.scope.access : ACCES_INCONNU,
+      capability: typeof d.scope.capability === 'string' ? d.scope.capability : CAPACITE_INCONNUE,
+    };
+  }
+  // Alerte antérieure au lot : seul le modèle est connu — son accès et sa capacité restent INCONNUS, et une
+  // lecture qui ne couvre pas « inconnu » ne peut donc pas la résoudre.
+  return typeof d?.model === 'string' ? { model: d.model, access: ACCES_INCONNU, capability: CAPACITE_INCONNUE } : null;
+}
+
+/**
+ * #786 (D01, D02) — PÉRIMÈTRE RÉELLEMENT LU, qui conditionne toute création,
+ * actualisation, abaissement ou résolution d'alerte.
+ *   · `reliable` — la lecture de l'état de disponibilité ET des chaînes a
+ *     abouti. `false` : rien n'est levé, rien n'est abaissé, rien n'est résolu
+ *     (une erreur de base n'est pas un rétablissement) ;
+ *   · `accesses` — accès pseudonymisés RÉELLEMENT couverts par la lecture. Une
+ *     alerte portant sur un autre accès n'est JAMAIS touchée : la vue n'est pas
+ *     exhaustive, et l'absence d'incident sur B ne dit rien de A.
+ */
+export interface AlertPerimeter {
+  reliable: boolean;
+  accesses: readonly string[];
+}
+
+/** Périmètre lu à partir des diagnostics : les accès qu'ils couvrent effectivement. */
+export function perimeterOf(diagnostics: ReadonlyMap<string, OperationalDiagnostic>, reliable: boolean): AlertPerimeter {
+  const accesses = new Set<string>();
+  for (const d of diagnostics.values()) accesses.add(d.access ?? ACCES_INCONNU);
+  return { reliable, accesses: [...accesses].sort() };
+}
+
 /**
  * Lève l'alerte d'exploitation (`ai_alerts`) : UNE par modèle, quel que soit
  * le nombre d'usages ; `details.usages` les porte tous (traitement, rang,
@@ -436,12 +513,24 @@ export async function raiseActiveModelAlerts(
   now: Date = new Date(),
   raise?: RaiseFn,
   diagnostics?: ReadonlyMap<string, OperationalDiagnostic>,
+  /**
+   * #786 (D01, D02) : périmètre RÉELLEMENT LU. `reliable: false` — aucune
+   * alerte n'est créée ni actualisée : une vue partielle ne doit ni inventer un
+   * incident, ni abaisser une criticité établie. Absent : réputé fiable
+   * (appelants de test qui injectent `raise`).
+   */
+  perimeter?: AlertPerimeter,
 ): Promise<number> {
   if (anomalies.length === 0) return 0;
+  if (perimeter && !perimeter.reliable) {
+    console.warn('[active-model-anomalies] alertes non levées ni actualisées : lecture incomplète du périmètre de disponibilité (#786, D01).');
+    return 0;
+  }
   const R = raise ? null : await import('../alerts/alerts.repository');
   let n = 0;
   for (const g of groupAnomaliesByModel(anomalies, diagnostics)) {
-    const jour = `ai:active-model:${g.model}:${now.toISOString().slice(0, 10)}`;
+    const scope = alertScopeOf(g);
+    const jour = `ai:active-model:${g.model}:${scope.access}:${scope.capability}:${now.toISOString().slice(0, 10)}`;
     const alerte = {
       kind: 'anomaly' as const,
       code: ACTIVE_MODEL_ALERT_CODE,
@@ -450,6 +539,9 @@ export async function raiseActiveModelAlerts(
       message: groupMessage(g),
       details: {
         model: g.model,
+        // #786 (D02) : PÉRIMÈTRE exact de l'incident — modèle + accès + capacité. C'est lui, et lui seul, qui
+        // décide plus tard si cette alerte peut être actualisée ou résolue (aucune résolution transversale).
+        scope,
         reasons: g.reasons,
         usages: g.usages.map((u) => ({
           treatment: u.treatment, rank: u.rank, source: u.source, fallbackAvailable: u.fallbackAvailable,
@@ -474,17 +566,25 @@ export async function raiseActiveModelAlerts(
       continue;
     }
     try {
-      const r = await R!.raiseConditionAlert({
-        ...alerte, conditionKey: `ai:active-model:${g.model}:${g.diagnostic.access ?? 'acces-inconnu'}`, fallbackDedupeKey: jour,
-      });
+      const r = await R!.raiseConditionAlert({ ...alerte, conditionKey: alertScopeKey(scope), fallbackDedupeKey: jour });
       if (r.created) {
         n++;
-        // Alertes journalières antérieures du même modèle : remplacées par l'alerte de condition (jamais supprimées).
+        /**
+         * Alertes journalières antérieures : remplacées par l'alerte de condition (jamais supprimées).
+         *
+         * #786 (D02) : le remplacement porte sur le MÊME PÉRIMÈTRE — modèle, accès ET capacité. Il portait sur
+         * le seul nom de modèle : l'alerte de l'accès A était alors remplacée par celle de l'accès B, et son
+         * incident disparaissait de l'écran sans qu'aucun rétablissement n'ait eu lieu.
+         */
         if (r.id !== null) {
-          const anciennes = (await R!.listUnresolvedAlerts([ACTIVE_MODEL_ALERT_CODE]))
-            .filter((a) => a.id !== r.id && (a.details as { model?: unknown } | null)?.model === g.model);
+          const cle = alertScopeKey(scope);
+          const anciennes = (await R!.listUnresolvedAlerts([ACTIVE_MODEL_ALERT_CODE])).filter((a) => {
+            if (a.id === r.id) return false;
+            const s = scopeOfAlertDetails(a.details);
+            return s !== null && alertScopeKey(s) === cle;
+          });
           await R!.resolveAlerts(anciennes.map((a) => a.id), {
-            code: 'SUPERSEDED', reason: 'Remplacée par l’alerte de condition du même modèle (#771).', supersededBy: r.id,
+            code: 'SUPERSEDED', reason: 'Remplacée par l’alerte de condition du même modèle, accès et capacité (#771, #786).', supersededBy: r.id,
           });
         }
       }
@@ -501,27 +601,47 @@ export async function raiseActiveModelAlerts(
 export async function resolveRecoveredModelAlerts(
   anomalies: readonly ActiveModelAnomaly[],
   /**
-   * Lot 115 (carte #786, E08) : la détection repose-t-elle sur une lecture COMPLÈTE ET FIABLE ?
-   * `false` — état opérationnel illisible, chaînes non lues : AUCUNE alerte n'est résolue ni abaissée (une
-   * erreur de base n'est pas un rétablissement). Règle complétée, carte #786.
+   * Lot 115 (carte #786, D01 / D02) : PÉRIMÈTRE réellement lu.
+   *   · `reliable: false` — état opérationnel illisible, chaînes non lues :
+   *     AUCUNE alerte n'est résolue ni abaissée (une erreur de base n'est pas
+   *     un rétablissement) ;
+   *   · `accesses` — seuls les accès RÉELLEMENT couverts par la lecture
+   *     peuvent voir leurs alertes résolues. Un accès hors de la lecture n'est
+   *     pas « rétabli » : il n'a simplement pas été regardé.
+   * Un booléen est encore accepté (appelants historiques) : il vaut alors
+   * « périmètre complet », comportement du lot 115I.
    */
-  reliable = true,
+  perimeter: AlertPerimeter | boolean = true,
+  /** Diagnostics de la lecture : ils portent l'accès et la capacité de chaque anomalie. */
+  diagnostics?: ReadonlyMap<string, OperationalDiagnostic>,
 ): Promise<number> {
-  if (!reliable) {
+  const p: AlertPerimeter = typeof perimeter === 'boolean' ? { reliable: perimeter, accesses: [] } : perimeter;
+  if (!p.reliable) {
     console.warn('[active-model-anomalies] résolution automatique suspendue : lecture incomplète de l’état de disponibilité (#786).');
     return 0;
   }
   try {
     const R = await import('../alerts/alerts.repository');
-    const enAnomalie = new Set(anomalies.map((a) => a.model));
+    /**
+     * #786 (D02) — AUCUNE RÉSOLUTION TRANSVERSALE.
+     *
+     * Règle remplacée (carte #786, D02) : la résolution comparait le seul nom de MODÈLE. Un succès sur
+     * l'accès B — ou sur une autre capacité — résolvait donc l'incident de l'accès A, alors que A n'avait
+     * pas été éprouvé. La comparaison porte désormais sur le PÉRIMÈTRE COMPLET (modèle + accès + capacité),
+     * et une alerte dont l'accès n'était PAS dans la lecture est laissée intacte.
+     */
+    const enAnomalie = new Set(groupAnomaliesByModel(anomalies, diagnostics).map((g) => alertScopeKey(alertScopeOf(g))));
+    // Périmètre vide (appelant historique) : tous les accès sont réputés couverts, comme au lot 115I.
+    const couvert = (acces: string): boolean => p.accesses.length === 0 || p.accesses.includes(acces);
     const ouvertes = await R.listUnresolvedAlerts([ACTIVE_MODEL_ALERT_CODE]);
     const retablies = ouvertes.filter((a) => {
-      const model = (a.details as { model?: unknown } | null)?.model;
-      return typeof model === 'string' && !enAnomalie.has(model);
+      const s = scopeOfAlertDetails(a.details);
+      return s !== null && couvert(s.access) && !enAnomalie.has(alertScopeKey(s));
     });
     return await R.resolveAlerts(retablies.map((a) => a.id), {
       code: 'MODEL_AVAILABLE_AGAIN',
-      reason: 'Le modèle n’est plus en anomalie dans les chaînes actives (rétabli ou remplacé) — résolution automatique.',
+      reason: 'Ce modèle, pour CET accès et CETTE capacité, n’est plus en anomalie dans les chaînes actives '
+        + '(rétabli ou retiré des usages) — résolution automatique sur lecture complète.',
     });
   } catch {
     return 0;
@@ -628,7 +748,20 @@ export function operationalWatchOf(
  * accès tant qu'il dure, résolue dès qu'un modèle répond. Distincte des indisponibilités de modèles et des
  * alertes tarifaires (#770), qu'elle ne touche pas. Ne lève jamais.
  */
-export async function reconcileProviderIncidentAlert(watch: OperationalWatch): Promise<'raised' | 'resolved' | null> {
+export async function reconcileProviderIncidentAlert(
+  watch: OperationalWatch,
+  /**
+   * #786 (D02) : PÉRIMÈTRE réellement lu. Sans lui, la réconciliation résolvait
+   * TOUTES les alertes AUTH ouvertes dès qu'aucun incident n'apparaissait dans
+   * la veille courante — or cette veille ne couvre qu'un accès. L'incident d'un
+   * accès non regardé était donc clos sans preuve.
+   */
+  perimeter?: AlertPerimeter,
+): Promise<'raised' | 'resolved' | null> {
+  if (perimeter && !perimeter.reliable) {
+    console.warn('[active-model-anomalies] incident fournisseur non réconcilié : lecture incomplète du périmètre (#786, D02).');
+    return null;
+  }
   try {
     const R = await import('../alerts/alerts.repository');
     const inc = watch.providerIncident;
@@ -637,16 +770,29 @@ export async function reconcileProviderIncidentAlert(watch: OperationalWatch): P
         kind: 'anomaly', code: PROVIDER_AUTH_ALERT_CODE, treatment: null, severity: 'critical',
         message: `Incident global du fournisseur IA (${inc.kindLabel}) : ${pluriel(inc.models.length, 'sonde n’a', 'sondes n’ont')} rien pu conclure. `
           + 'Aucun modèle n’est déclaré indisponible pour ce motif : vérifiez la clé et le projet dans BO › Fournisseur.',
-        details: { kind: inc.kind, error: inc.error, checkedAt: inc.checkedAt, access: inc.access, models: inc.models },
+        details: { kind: inc.kind, error: inc.error, checkedAt: inc.checkedAt, access: inc.access ?? ACCES_INCONNU, models: inc.models },
         drilldownHref: '/admin/ai-config',
-        conditionKey: `ai:provider-auth:gemini:${inc.access ?? 'acces-inconnu'}`,
-        fallbackDedupeKey: `ai:provider-auth:gemini:${inc.checkedAt.slice(0, 10)}`,
+        conditionKey: `ai:provider-auth:gemini:${inc.access ?? ACCES_INCONNU}`,
+        fallbackDedupeKey: `ai:provider-auth:gemini:${inc.access ?? ACCES_INCONNU}:${inc.checkedAt.slice(0, 10)}`,
       });
       return r.created ? 'raised' : null;
     }
+    /**
+     * #786 (D02) — RÉSOLUTION LIMITÉE AUX ACCÈS RÉELLEMENT LUS.
+     *
+     * Un modèle a répondu : l'incident global est levé POUR L'ACCÈS qui a répondu, et pour lui seul. Les
+     * alertes AUTH des autres accès sont laissées ouvertes — la veille courante ne les couvre pas, et une
+     * absence d'incident dans une vue partielle n'est pas une preuve de rétablissement.
+     */
     const ouvertes = await R.listUnresolvedAlerts([PROVIDER_AUTH_ALERT_CODE]);
-    const n = await R.resolveAlerts(ouvertes.map((a) => a.id), {
-      code: 'PROVIDER_ACCESS_RESTORED', reason: 'Un modèle a répondu depuis l’incident — résolution automatique.',
+    const couverts = perimeter?.accesses ?? null;
+    const resolubles = couverts === null ? ouvertes : ouvertes.filter((a) => {
+      const acces = (a.details as { access?: unknown } | null)?.access;
+      return typeof acces === 'string' ? couverts.includes(acces) : couverts.includes(ACCES_INCONNU);
+    });
+    const n = await R.resolveAlerts(resolubles.map((a) => a.id), {
+      code: 'PROVIDER_ACCESS_RESTORED',
+      reason: 'Un modèle a répondu depuis l’incident, SUR CET ACCÈS — résolution automatique (les autres accès restent ouverts).',
     });
     return n > 0 ? 'resolved' : null;
   } catch {

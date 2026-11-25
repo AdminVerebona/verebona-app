@@ -42,6 +42,13 @@ function envSecret(): string | null {
   return process.env.GEMINI_API_KEY || process.env.GOOGLE_AI_API_KEY || null;
 }
 
+/**
+ * EMPREINTE non réversible d'une clé et accès pseudonymisé : définis dans
+ * `access-identity` (module pur, sans aucune dépendance) et réexportés ici,
+ * à côté de la clé qu'ils désignent — #786 (A01, A02).
+ */
+export { keyFingerprint, accessLabel } from './access-identity';
+
 /** Remplace la source — réservé aux tests. */
 export function setProviderSecretResolver(resolver: Resolver | null): void {
   injectedResolver = resolver;

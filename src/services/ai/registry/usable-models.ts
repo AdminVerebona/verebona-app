@@ -73,7 +73,14 @@ export type UnusableReason =
   | 'RETIRED'
   | 'NOT_OPERATIONAL'
   /** Lot 114 (#770) : pas de tarif officiel vérifié et applicable. */
-  | 'PRICING_NOT_VERIFIED';
+  | 'PRICING_NOT_VERIFIED'
+  /**
+   * Lot 115 (carte #786, C03) : modèle ou accès NOUVEAU dont aucune génération
+   * n'a encore réussi SUR CET ACCÈS — il n'est donc pas candidat exécutable.
+   * Ce n'est PAS une indisponibilité : l'inconnu ne retire aucun modèle, et ce
+   * motif ne s'applique jamais à un modèle déjà configuré ni au registre.
+   */
+  | 'OPERATIONAL_PROOF_MISSING';
 
 /** Libellés courts, en français (sélecteurs et messages du BO). */
 const UNUSABLE_REASON_LABELS: Readonly<Record<UnusableReason, string>> = {
@@ -92,6 +99,8 @@ const UNUSABLE_REASON_LABELS: Readonly<Record<UnusableReason, string>> = {
   RETIRED: 'retiré',
   NOT_OPERATIONAL: 'non opérationnel avec la clé active',
   PRICING_NOT_VERIFIED: 'tarif officiel non vérifié',
+  // #786 (C03) — texte à valider par le PO : dit « pas encore éprouvé », jamais « indisponible ».
+  OPERATIONAL_PROOF_MISSING: 'modèle nouveau : aucune génération encore réussie avec cet accès (sonde attendue)',
 };
 
 export interface ProviderModelState {
@@ -133,6 +142,22 @@ export interface UsableModelsContext {
    * telle lecture. Absent : réputé fiable (contextes de test construits à la main).
    */
   operationalReliable?: boolean;
+  /**
+   * Lot 115 (carte #786, D01) : d'où vient `operational` — `fresh` (lu à
+   * l'instant), `last_reliable` (lecture impossible : dernier état fiable
+   * connu, interdictions conservées) ou `none` (rien de su, surtout pas
+   * « sain »). Absent : réputé `fresh` (contextes de test construits à la main).
+   */
+  operationalCompleteness?: 'fresh' | 'last_reliable' | 'none';
+  /**
+   * Lot 115 (carte #786, C03) — modèles DÉJÀ CONFIGURÉS dans une chaîne
+   * effective (principal ou repli d'un traitement, ou d'une variante par
+   * opération). Ils ne sont PAS « nouveaux » : l'exigence de preuve de
+   * génération ne leur est pas opposée. Absent : aucune chaîne lue — l'exigence
+   * n'est alors opposée à personne (une base neuve ne doit pas rendre toute
+   * l'IA non exécutable).
+   */
+  configuredModels?: ReadonlySet<string>;
   /** Qualification automatique AVEC LA CLÉ ACTIVE, par modèle (vide : aucune). */
   qualifications?: ReadonlyMap<string, QualificationState>;
   /** AAAA-MM-JJ (dates de retrait). */
@@ -266,6 +291,61 @@ function qualificationReasons(
   return { reasons: [...reasons], source: q ? (historique ? 'historical' : 'auto') : declared ? 'historical' : 'none' };
 }
 
+/**
+ * ══════════════════════════════════════════════════════════════════════════
+ * LOT 115 (carte #786, C03) — PREUVE DE GÉNÉRATION AVANT CANDIDATURE
+ *
+ * Exigence : un modèle (et un accès) NOUVEAU n'est candidat exécutable
+ * qu'après une génération RÉUSSIE sur l'accès exact. Le catalogue du
+ * fournisseur dit qu'un modèle existe ; le registre dit qu'on le connaît ; le
+ * tarif dit qu'on peut le payer — aucun des trois ne dit qu'il RÉPOND. Le
+ * 18/09/2026, `gemini-2.5-flash-lite` était listé, tarifé, et refusait toute
+ * génération aux comptes récents.
+ *
+ * ──────────────────────────────────────────────────────────────────────────
+ * RESTRICTION DÉLIBÉRÉE, ET POURQUOI
+ *
+ * L'exigence porte sur les modèles et accès **NOUVEAUX** — ceux qui se
+ * présentent à la candidature. Elle ne porte PAS sur les modèles déjà
+ * configurés comme principal ou repli d'un traitement, ni sur ceux du
+ * registre embarqué.
+ *
+ * Sans cette restriction, une base NEUVE (aucune ligne d'état opérationnel,
+ * aucune sonde encore passée) rendrait d'un coup TOUS les modèles non
+ * exécutables : plus aucune route admissible, toute l'IA à l'arrêt, et aucune
+ * sonde pour en sortir puisque les sondes elles-mêmes seraient refusées.
+ * C'est une régression critique, et c'est exactement ce que l'invariant de la
+ * carte interdit : un état INCONNU ne retire jamais un modèle.
+ *
+ * D'où la séparation explicite :
+ *   · INCONNU HISTORIQUE — modèle déjà configuré, ou déclaré au registre :
+ *     l'absence de preuve est un trou de connaissance, pas une
+ *     indisponibilité. Il reste exécutable, et la sonde le renseignera ;
+ *   · NOUVEAU — ni configuré, ni déclaré : il n'a aucun passé dans
+ *     l'application. L'absence de preuve le laisse hors candidature, le temps
+ *     qu'une génération aboutisse sur CET accès.
+ *
+ * Le motif rendu (`OPERATIONAL_PROOF_MISSING`) n'est JAMAIS une
+ * indisponibilité : il est distinct de `NOT_OPERATIONAL`, il ne compte pas
+ * comme une perte de modèle (voir `PERTE` dans `active-model-anomalies`), et
+ * il disparaît dès la première génération réussie.
+ *
+ * Tarif vérifié (#770) et qualification technique restent des conditions
+ * DISTINCTES ET CUMULATIVES : celle-ci ne remplace ni l'une ni l'autre.
+ * ══════════════════════════════════════════════════════════════════════════
+ */
+function proofMissing(model: string, declared: DeclaredModel | undefined, ctx: UsableModelsContext): boolean {
+  // Aucune chaîne lue : l'exigence n'est opposée à personne (base neuve, contexte de test).
+  if (ctx.configuredModels === undefined) return false;
+  // Inconnu HISTORIQUE : déjà configuré, ou connu du registre — jamais concerné.
+  if (ctx.configuredModels.has(model) || declared !== undefined) return false;
+  // NOUVEAU : une génération doit avoir RÉUSSI sur cet accès. Un état absent, inconnu ou non concluant ne
+  // suffit pas ; un refus est déjà traité par `NOT_OPERATIONAL` (inutile d'empiler deux fois le même motif).
+  const op = ctx.operational.get(model);
+  if (op && !op.ok) return false;
+  return op?.ok !== true;
+}
+
 /** Éligibilité d'UN modèle pour UN traitement, avec tous ses motifs de refus. */
 export function evaluateModelForTreatment(treatment: Treatment, model: string, ctx: UsableModelsContext): ModelEligibility {
   const declared = (ctx.declared ?? DECLARED_MODELS).find((m) => m.model === model);
@@ -291,6 +371,7 @@ export function evaluateModelForTreatment(treatment: Treatment, model: string, c
 
   const op = ctx.operational.get(model);
   if (op && !op.ok) reasons.push('NOT_OPERATIONAL');
+  if (proofMissing(model, declared, ctx)) reasons.push('OPERATIONAL_PROOF_MISSING');
 
   // F — lot 114 (#770) : tarif officiel vérifié et applicable, sinon exclu.
   const price = ctx.price(model);
@@ -381,8 +462,22 @@ export async function loadUsableModelsContext(): Promise<UsableModelsContext> {
   let environment: UsableModelsContext['environment'] = 'production';
   try { environment = getAiEnvironment(); } catch { /* prudence */ }
   const secret = await secrets.getProviderSecret('gemini').catch(() => null);
-  // #786 (E08) : lecture FIABLE ou non de l'état opérationnel (jamais « tout sain » faute de lecture).
+  // #786 (E08, D01) : lecture FIABLE ou non de l'état opérationnel, et sa PROVENANCE. Une lecture impossible
+  // rend le dernier instantané fiable : jamais « tout sain » faute de lecture.
   const instantane = await loadOperationalSnapshot(secret);
+  /**
+   * #786 (C03) : modèles DÉJÀ CONFIGURÉS (chaînes effectives et variantes par opération) — ils ne sont pas
+   * « nouveaux », l'exigence de preuve de génération ne leur est pas opposée. Lecture impossible : la
+   * dimension reste ABSENTE, et l'exigence n'est alors opposée à personne (une base neuve ne doit pas rendre
+   * toute l'IA non exécutable).
+   */
+  let configuredModels: ReadonlySet<string> | undefined;
+  try {
+    const { loadActiveChains } = await import('../provider/active-model-anomalies');
+    configuredModels = new Set((await loadActiveChains()).map((c) => c.model));
+  } catch {
+    configuredModels = undefined;
+  }
   return {
     environment,
     catalog: {
@@ -406,6 +501,8 @@ export async function loadUsableModelsContext(): Promise<UsableModelsContext> {
     },
     operational: instantane.statuses,
     operationalReliable: instantane.reliable,
+    operationalCompleteness: instantane.completeness ?? 'fresh',
+    ...(configuredModels ? { configuredModels } : {}),
     qualifications: await loadQualifications(secret),
     today: new Date().toISOString().slice(0, 10),
   };

@@ -150,7 +150,7 @@ describe('L115I-U10 — règle de portée d’un refus (E05, R09)', () => {
 
 describe('L115I-U11 — un verdict par capacité (E05, R09)', () => {
   it('refus d’une capacité : les autres restent admises, et seule elle est refusée', async () => {
-    await O.recordOperationalCheck({ model: MODELE, secret: CLE, outcome: refusParametre, source: 'qualification', capability: 'structured_output' });
+    await O.recordOperationalCheck({ model: MODELE, secret: CLE, outcome: refusParametre, source: 'qualification', checkId: 'l115i-portee-capacite-relance-153', capability: 'structured_output' });
     expect((await O.readPublishedVerdict(MODELE, CLE, 'structured_output')).state).toBe('unavailable');
     expect((await O.readPublishedVerdict(MODELE, CLE, 'text_generation')).state).toBe('unknown');
     expect((await O.readPublishedVerdict(MODELE, CLE, 'multimodal')).state).toBe('unknown');
@@ -167,7 +167,7 @@ describe('L115I-U11 — un verdict par capacité (E05, R09)', () => {
   });
 
   it('refus de la capacité de BASE : opposable à toutes les capacités, et la portée est DITE', async () => {
-    await O.recordOperationalCheck({ model: MODELE, secret: CLE, outcome: refusModele, source: 'catalog_refresh' });
+    await O.recordOperationalCheck({ model: MODELE, secret: CLE, outcome: refusModele, source: 'catalog_refresh', checkId: 'l115i-portee-capacite-relance-170' });
     const v = await O.readPublishedVerdict(MODELE, CLE, 'multimodal');
     expect(v).toMatchObject({ state: 'unavailable', askedCapability: 'multimodal', scopeExtendedFromBase: true });
     A.__enableAdmissionDbForTests(true);
@@ -182,15 +182,15 @@ describe('L115I-U11 — un verdict par capacité (E05, R09)', () => {
 
   it('un refus de portée modèle reçu alors que la MODALITÉ était éprouvée est retenu sur la base', async () => {
     // Une requête multimodale reçoit « modèle retiré » : la preuve porte sur le modèle, pas sur la modalité.
-    await O.recordOperationalCheck({ model: MODELE, secret: CLE, outcome: refusModele, source: 'gateway_call', capability: 'multimodal' });
+    await O.recordOperationalCheck({ model: MODELE, secret: CLE, outcome: refusModele, source: 'gateway_call', checkId: 'l115i-portee-capacite-relance-185', capability: 'multimodal' });
     expect(db.etats.has(`${MODELE}|${O.keyFingerprint(CLE)}|text_generation`)).toBe(true);
     expect(db.etats.has(`${MODELE}|${O.keyFingerprint(CLE)}|multimodal`)).toBe(false);
     expect((await O.readPublishedVerdict(MODELE, CLE, 'text_generation')).state).toBe('unavailable');
   });
 
   it('un succès sur une capacité ne lève pas le refus d’une autre, et les décomptes restent fidèles', async () => {
-    await O.recordOperationalCheck({ model: MODELE, secret: CLE, outcome: refusParametre, source: 'qualification', capability: 'structured_output' });
-    await O.recordOperationalCheck({ model: MODELE, secret: CLE, outcome: { status: 'ok' }, source: 'catalog_refresh' });
+    await O.recordOperationalCheck({ model: MODELE, secret: CLE, outcome: refusParametre, source: 'qualification', checkId: 'l115i-portee-capacite-relance-192', capability: 'structured_output' });
+    await O.recordOperationalCheck({ model: MODELE, secret: CLE, outcome: { status: 'ok' }, source: 'catalog_refresh', checkId: 'l115i-portee-capacite-relance-193' });
     expect((await O.readPublishedVerdict(MODELE, CLE, 'text_generation')).state).toBe('healthy');
     expect((await O.readPublishedVerdict(MODELE, CLE, 'structured_output')).state).toBe('unavailable');
     // Lecture d'ensemble (listes, BO, alertes) : jamais « tout sain » parce qu'une capacité répond.
@@ -202,7 +202,7 @@ describe('L115I-U11 — un verdict par capacité (E05, R09)', () => {
   });
 
   it('le contrôle final d’une activation refuse sur n’importe quelle capacité refusée, et la nomme', async () => {
-    await O.recordOperationalCheck({ model: MODELE, secret: CLE, outcome: refusParametre, source: 'qualification', capability: 'structured_output' });
+    await O.recordOperationalCheck({ model: MODELE, secret: CLE, outcome: refusParametre, source: 'qualification', checkId: 'l115i-portee-capacite-relance-205', capability: 'structured_output' });
     const tx = { unsafe: async (q: string, p?: never[]) => (await import('@/db')).pgClient.unsafe(q, p) };
     expect(await O.operationalRefusalInTx(tx, MODELE, CLE)).toMatchObject({ kind: 'refused', capability: 'structured_output' });
   });
@@ -212,9 +212,9 @@ describe('L115I-U12 — migration 1816 absente (E05)', () => {
   it('contrôle hors capacité de base : historisé avec sa capacité, verdict de base NI écrasé NI étendu', async () => {
     db.schema1816 = false;
     O.__resetOperationalSchemaState();
-    await O.recordOperationalCheck({ model: MODELE, secret: CLE, outcome: { status: 'ok' }, source: 'catalog_refresh' });
+    await O.recordOperationalCheck({ model: MODELE, secret: CLE, outcome: { status: 'ok' }, source: 'catalog_refresh', checkId: 'l115i-portee-capacite-relance-215' });
     const etat = await O.recordOperationalCheck({
-      model: MODELE, secret: CLE, outcome: refusParametre, source: 'qualification', capability: 'structured_output',
+      model: MODELE, secret: CLE, outcome: refusParametre, source: 'qualification', checkId: 'l115i-portee-capacite-relance-216', capability: 'structured_output',
     });
     expect(etat.stale).toBe(true);
     expect(db.historique.at(-1)).toMatchObject({ capability: 'structured_output', applied: false, discarded: 'capability_scope_unsupported' });
@@ -239,7 +239,7 @@ describe('L115I-U13 — dimension « projet du fournisseur » (E05)', () => {
   });
 
   it('la colonne reste vide : le diagnostic ne rattache jamais un projet supposé', async () => {
-    await O.recordOperationalCheck({ model: MODELE, secret: CLE, outcome: refusModele, source: 'catalog_refresh' });
+    await O.recordOperationalCheck({ model: MODELE, secret: CLE, outcome: refusModele, source: 'catalog_refresh', checkId: 'l115i-portee-capacite-relance-242' });
     expect((await O.loadOperationalDiagnostics(CLE)).get(MODELE)?.providerProject).toBeNull();
   });
 });
@@ -341,7 +341,7 @@ describe('L115I-U15 — campagne ciblée immédiate au rétablissement (E06, R11
   });
 
   it('route non admissible : la campagne ne force rien et le dit (jamais une sonde de récupération)', async () => {
-    await O.recordOperationalCheck({ model: MODELE, secret: CLE, outcome: refusModele, source: 'catalog_refresh' });
+    await O.recordOperationalCheck({ model: MODELE, secret: CLE, outcome: refusModele, source: 'catalog_refresh', checkId: 'l115i-portee-capacite-relance-344' });
     const appels: string[] = [];
     A.__enableAdmissionDbForTests(true);
     try {
@@ -385,14 +385,14 @@ describe('L115I-U16 — contrôle final des activations (E03, R10)', () => {
   const tx = () => ({ unsafe: async (q: string, p?: never[]) => (await import('@/db')).pgClient.unsafe(q, p) });
 
   it('réactivation d’une configuration HISTORIQUE portant un modèle refusé : refus BLOCKED_MODEL_UNAVAILABLE', async () => {
-    await O.recordOperationalCheck({ model: MODELE, secret: CLE, outcome: refusModele, source: 'catalog_refresh' });
+    await O.recordOperationalCheck({ model: MODELE, secret: CLE, outcome: refusModele, source: 'catalog_refresh', checkId: 'l115i-portee-capacite-relance-388' });
     const refus = await AV.activationAvailabilityRefusal(tx(), [REPLI, MODELE], 'Activation annulée');
     expect(refus).toMatchObject({ code: 'BLOCKED_MODEL_UNAVAILABLE', model: MODELE });
     expect(refus?.message).toMatch(/Activation annulée dans la transaction/);
   });
 
   it('IMPORT d’une configuration portant un modèle refusé : même refus, message propre au geste', async () => {
-    await O.recordOperationalCheck({ model: MODELE, secret: CLE, outcome: refusModele, source: 'catalog_refresh' });
+    await O.recordOperationalCheck({ model: MODELE, secret: CLE, outcome: refusModele, source: 'catalog_refresh', checkId: 'l115i-portee-capacite-relance-395' });
     const refus = await AV.activationAvailabilityRefusal(tx(), AV.chainModelsOf([{ primaryModel: MODELE, fallback1: REPLI }]), 'Import annulé');
     expect(refus).toMatchObject({ code: 'BLOCKED_MODEL_UNAVAILABLE', model: MODELE });
     expect(refus?.message).toMatch(/Import annulé dans la transaction/);
@@ -405,7 +405,7 @@ describe('L115I-U16 — contrôle final des activations (E03, R10)', () => {
   });
 
   it('rien ne s’oppose : aucune entrave (chaîne saine, doublons et valeurs vides ignorés)', async () => {
-    await O.recordOperationalCheck({ model: MODELE, secret: CLE, outcome: { status: 'ok' }, source: 'catalog_refresh' });
+    await O.recordOperationalCheck({ model: MODELE, secret: CLE, outcome: { status: 'ok' }, source: 'catalog_refresh', checkId: 'l115i-portee-capacite-relance-408' });
     expect(AV.chainModelsOf([{ primaryModel: MODELE, fallback1: null }, { primaryModel: MODELE, fallback2: REPLI }]))
       .toEqual([MODELE, REPLI]);
     expect(await AV.activationAvailabilityRefusal(tx(), [MODELE], 'Activation annulée')).toBeNull();

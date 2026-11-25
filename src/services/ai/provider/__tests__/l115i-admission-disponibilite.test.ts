@@ -138,7 +138,7 @@ describe('L115I-U01 — politique de validité d’une route (E06, R12)', () => 
 
 describe('L115I-U02 — panne de lecture : dernier verdict fiable conservé (E01, R01)', () => {
   it('cache chaud contenant un refus, puis base inaccessible : l’interdiction tient, zéro envoi', async () => {
-    await O.recordOperationalCheck({ model: MODELE, secret: CLE, outcome: C.classifyProbeFailure(refus404(), { model: MODELE }), source: 'catalog_refresh' });
+    await O.recordOperationalCheck({ model: MODELE, secret: CLE, outcome: C.classifyProbeFailure(refus404(), { model: MODELE }), source: 'catalog_refresh', checkId: 'l115i-admission-disponibilite-141' });
     A.__enableAdmissionDbForTests(true);
     try {
       // Lecture fiable : la route est refusée, le verdict est mémorisé.
@@ -155,14 +155,27 @@ describe('L115I-U02 — panne de lecture : dernier verdict fiable conservé (E01
   });
 
   it('lecture en erreur : l’instantané n’est PAS « aucune indisponibilité » (règle remplacée, carte #786)', async () => {
-    await O.recordOperationalCheck({ model: MODELE, secret: CLE, outcome: C.classifyProbeFailure(refus404(), { model: MODELE }), source: 'catalog_refresh' });
+    await O.recordOperationalCheck({ model: MODELE, secret: CLE, outcome: C.classifyProbeFailure(refus404(), { model: MODELE }), source: 'catalog_refresh', checkId: 'l115i-admission-disponibilite-158' });
     const bon = await O.loadOperationalSnapshot(CLE);
     expect(bon.reliable).toBe(true);
     expect([...bon.statuses.keys()]).toEqual([MODELE]);
     db.panne = true;
     const mauvais = await O.loadOperationalSnapshot(CLE);
     expect(mauvais.reliable).toBe(false);
-    expect(mauvais.statuses.size).toBe(0);
+    /**
+     * Règle complétée (carte #786, D01) : la lecture impossible rendait une table VIDE. Le BO et l'API
+     * `catalog-status` recalculaient alors les anomalies sur ce vide et montraient « tout sain », alors
+     * qu'aucun rétablissement n'avait eu lieu. Le DERNIER INSTANTANÉ FIABLE est désormais rendu — avec
+     * `reliable: false` et sa PROVENANCE, pour qu'aucun appelant ne le confonde avec une lecture fraîche.
+     */
+    expect(mauvais.completeness).toBe('last_reliable');
+    expect([...mauvais.statuses.keys()]).toEqual([MODELE]);
+    expect(mauvais.statuses.get(MODELE)?.ok).toBe(false); // l'interdiction tient, jamais « ok »
+    // Démarrage à FROID (aucun instantané fiable connu) : rien n'est su, et surtout rien n'est « sain ».
+    O.__resetOperationalSnapshotMemory();
+    const froid = await O.loadOperationalSnapshot(CLE);
+    expect(froid).toMatchObject({ reliable: false, completeness: 'none' });
+    expect(froid.statuses.size).toBe(0);
   });
 
   it('une route lue FIABLEMENT comme absente reste admise pendant la panne (l’inconnu n’exclut rien)', async () => {
@@ -196,7 +209,7 @@ describe('L115I-U03 — cache froid et admission invérifiable (E01, R02)', () =
   it('migration critique absente : signalée, et l’admission devient prudente (pas de repli silencieux)', async () => {
     db.schema1815 = false;
     O.__resetOperationalSchemaState();
-    await O.recordOperationalCheck({ model: MODELE, secret: CLE, outcome: { status: 'ok' }, source: 'catalog_refresh' });
+    await O.recordOperationalCheck({ model: MODELE, secret: CLE, outcome: { status: 'ok' }, source: 'catalog_refresh', checkId: 'l115i-admission-disponibilite-199' });
     expect(O.operationalSchemaState()).toMatchObject({ complete: false, degradedReason: expect.stringMatching(/1815/) });
   });
 });
@@ -279,14 +292,50 @@ describe('L115I-U06 — ordre : dates égales, horloge décalée (E04, R07)', ()
     expect(db.historique.at(-1)).toMatchObject({ applied: false, discarded: 'equal_instant', checkId: 'o-2' });
   });
 
+  /**
+   * Règle complétée (carte #786, B02) : l'écart d'horloge est désormais MESURÉ entre l'horloge du worker
+   * (`now`, son heure au moment de l'enregistrement) et celle de la base, puis l'instant d'envoi est DÉPLACÉ
+   * de cet écart — dans les deux sens. Le test fournit donc `now`, sans quoi l'instant d'envoi et l'heure du
+   * worker seraient sur deux échelles de temps différentes (il s'appuyait auparavant sur la seule comparaison
+   * `observedAt` / heure de la base, qui ne corrigeait que l'avance).
+   */
   it('horloge d’un worker en AVANCE : l’instant d’envoi est ramené à l’heure de la base, jamais extrapolé', async () => {
     db.now = '2026-11-16T10:00:00.000Z';
-    const futur = new Date('2026-11-16T12:00:00.000Z'); // worker en avance de 2 h
-    await O.recordOperationalCheck({ model: MODELE, secret: CLE, outcome: C.classifyProbeFailure(refus404(), { model: MODELE }), source: 'catalog_refresh', observedAt: futur, checkId: 'h-1' });
+    // Worker en avance de 2 h : il croit qu'il est 12 h 00 et date son envoi de 12 h 00.
+    const horlogeWorker = new Date('2026-11-16T12:00:00.000Z');
+    await O.recordOperationalCheck({
+      model: MODELE, secret: CLE, outcome: C.classifyProbeFailure(refus404(), { model: MODELE }),
+      source: 'catalog_refresh', observedAt: horlogeWorker, now: horlogeWorker, checkId: 'h-1',
+    });
     expect(db.etats.get(`${MODELE}|${O.keyFingerprint(CLE)}`)).toMatchObject({ observed_at: db.now });
     // Un contrôle réellement postérieur (heure de la base) reste, lui, pris en compte.
-    const r = await O.recordOperationalCheck({ model: MODELE, secret: CLE, outcome: { status: 'ok' }, source: 'recovery_check', observedAt: new Date('2026-11-16T10:00:01.000Z'), checkId: 'h-2' });
+    const r = await O.recordOperationalCheck({
+      model: MODELE, secret: CLE, outcome: { status: 'ok' }, source: 'recovery_check',
+      observedAt: new Date('2026-11-16T10:00:05.000Z'), now: new Date('2026-11-16T10:00:05.000Z'), checkId: 'h-2',
+    });
     expect(r.ok).toBe(true);
+  });
+
+  /**
+   * #786 (B02) — horloge d'un worker en RETARD : corrigée elle aussi (elle ne l'était pas). Un résultat
+   * réellement postérieur au verdict en vigueur n'est plus écarté à tort parce que son worker est en retard.
+   */
+  it('horloge d’un worker en RETARD : l’instant d’envoi est recalé, et le résultat n’est pas écarté à tort', async () => {
+    db.now = '2026-11-16T10:00:00.000Z';
+    // Refus publié par un worker à l'heure (son horloge est celle de la base) : envoi daté 09 h 00.
+    await O.recordOperationalCheck({
+      model: MODELE, secret: CLE, outcome: C.classifyProbeFailure(refus404(), { model: MODELE }),
+      source: 'catalog_refresh', observedAt: new Date('2026-11-16T09:00:00.000Z'), now: new Date(db.now), checkId: 'rt-1',
+    });
+    // Worker en retard de 2 h : il croit qu'il est 08 h 00 alors que la base est à 10 h 00 — son envoi,
+    // daté 07 h 59 sur SA montre, est en réalité postérieur au refus de 09 h 00 (heure de la base).
+    const r = await O.recordOperationalCheck({
+      model: MODELE, secret: CLE, outcome: { status: 'ok' }, source: 'recovery_check',
+      observedAt: new Date('2026-11-16T07:59:00.000Z'), now: new Date('2026-11-16T08:00:00.000Z'), checkId: 'rt-2',
+    });
+    expect(r.stale).toBeUndefined();
+    expect(r.ok).toBe(true);
+    expect(db.etats.get(`${MODELE}|${O.keyFingerprint(CLE)}`)).toMatchObject({ ok: true, observed_at: '2026-11-16T09:59:00.000Z' });
   });
 
   it('un contrôle envoyé AVANT le verdict en vigueur est écarté avec son motif', async () => {

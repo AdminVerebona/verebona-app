@@ -25,10 +25,11 @@ import { z } from 'zod';
 import { requireAdminContext, toErrorResponse } from '../config-versions/_shared';
 import { acknowledgeAnnouncedModels, bannerText, listAnnouncedModels } from '@/services/ai/provider/new-models.service';
 import {
-  anomalyMessage, detectActiveModelAnomalies, groupAnomaliesByModel, loadActiveChains, loadSecoursContext, operationalWatchOf, unavailableBannerTitle,
+  anomalyMessage, detectActiveModelAnomalies, groupAnomaliesByModel, loadActiveChains, loadSecoursContext, operationalWatchOf,
+  perimeterOf, unavailableBannerTitle,
 } from '@/services/ai/provider/active-model-anomalies';
 import { loadOperationalDiagnostics, operationalProjectDimension, operationalSchemaState } from '@/services/ai/provider/model-operational.service';
-import { admissionMetrics, SEND_POINTS } from '@/services/ai/provider/operational-admission';
+import { admissionMetrics, departureJournal, SEND_POINTS } from '@/services/ai/provider/operational-admission';
 import { OPERATIONAL_CAPABILITIES, OPERATIONAL_CAPABILITY_LABELS } from '@/services/ai/provider/probe-classification';
 import { loadUsableModelsContext } from '@/services/ai/registry/usable-models';
 import { getCatalogState } from '@/services/ai/provider/model-catalog.service';
@@ -59,6 +60,29 @@ export async function GET(req: NextRequest) {
       // #771 (B01 / B04) : états suspect / inconclusive et incident global, séparés des indisponibilités confirmées.
       operationalWatch: operationalWatchOf(diagnostics, ctx.operationalReliable !== false),
       /**
+       * Lot 115 (carte #786, D01) — COMPLÉTUDE de la lecture, affichée À PART de l'état lui-même. Le BO ne
+       * doit jamais confondre « tout va bien » et « je n'ai pas pu vérifier » :
+       *   · `reliable: false` — l'état de disponibilité n'a pas pu être lu. Les anomalies et la criticité
+       *     affichées sont celles du DERNIER ÉTAT FIABLE (les interdictions connues sont conservées, aucune
+       *     n'est recalculée à la baisse) et `label` dit « vérification impossible » ;
+       *   · `source` — d'où vient l'instantané : lu à l'instant, dernier état fiable, ou rien de su ;
+       *   · `accesses` — accès RÉELLEMENT couverts par la lecture : hors d'eux, rien n'est conclu.
+       * Règle remplacée (carte #786, D01) : les anomalies et bandeaux étaient recalculés sur un contexte
+       * vide, et une indisponibilité prouvée disparaissait de l'écran.
+       */
+      operationalCompleteness: {
+        reliable: ctx.operationalReliable !== false,
+        source: ctx.operationalCompleteness ?? 'fresh',
+        accesses: perimeterOf(diagnostics, ctx.operationalReliable !== false).accesses,
+        label: ctx.operationalReliable !== false
+          ? 'état de disponibilité lu de façon fiable et complète'
+          : ctx.operationalCompleteness === 'none'
+            ? 'vérification impossible : état de disponibilité illisible et aucun état fiable connu de cette instance '
+              + '— rien n’est conclu, et rien n’est déclaré sain'
+            : 'vérification impossible : état de disponibilité illisible — le DERNIER ÉTAT FIABLE est affiché, '
+              + 'les interdictions connues restent appliquées, aucune anomalie n’est recalculée à la baisse',
+      },
+      /**
        * Lot 115 (carte #786, E08) : MESURES fidèles de l'admission des envois — envois autorisés et refusés par
        * motif et par point d'envoi, sondes autorisées, verdicts servis depuis le dernier état fiable. Aucun coût
        * ni appel fictif n'y est compté : un envoi refusé n'a jamais eu lieu. Décomptes de CETTE instance.
@@ -66,6 +90,13 @@ export async function GET(req: NextRequest) {
       admission: {
         metrics: admissionMetrics(),
         sendPoints: SEND_POINTS,
+        /**
+         * Lot 115 (carte #786, D03) — JOURNAL CORRÉLÉ des derniers départs : route, identifiant de contrôle,
+         * version publiée lue juste avant le départ, worker, et issue (parti, ou ANNULÉ parce qu'un verdict a
+         * été publié entre la garde et le réseau). C'est ce qui distingue « autorisé » de « réellement parti » :
+         * un `allowed` n'est pas une preuve de requête partie, et une absence de sonde n'est pas un état sain.
+         */
+        departures: departureJournal(),
         // Migration critique absente : signalée, jamais remplacée par un repli silencieux.
         schema: operationalSchemaState(),
         /**

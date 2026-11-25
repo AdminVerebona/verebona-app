@@ -313,10 +313,16 @@ async function defaultProbe(model: string, treatment?: Treatment, rank = 0): Pro
   // route confirmée indisponible (le rétablissement de la route a sa propre sonde, bornée et réservée). Rien
   // n'est conclu sur le modèle : la sonde est simplement « non envoyée ».
   {
-    const { guardSend } = await import('../provider/operational-admission');
+    const { guardSend, confirmDeparture } = await import('../provider/operational-admission');
     const adm = await guardSend({ model, point: 'breaker_probe' });
     if (!adm.admitted) {
       console.info(`[circuit-breaker] sonde ${model} non envoyée : ${adm.label}.`);
+      return false;
+    }
+    // #786 (B01) : confirmation de départ — un verdict publié entre la garde et l'envoi arrête la sonde.
+    const depart = await confirmDeparture(adm);
+    if (!depart.departed) {
+      console.info(`[circuit-breaker] sonde ${model} non envoyée : ${depart.label}.`);
       return false;
     }
   }

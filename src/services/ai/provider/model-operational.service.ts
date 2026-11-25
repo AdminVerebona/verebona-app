@@ -99,8 +99,8 @@
  *     connaît aucun, il n'est donc jamais inventé ni fusionné avec l'accès
  *     (`operationalProjectDimension`).
  */
-import { createHash } from 'node:crypto';
 import { pgClient } from '@/db';
+import { accessLabel, keyFingerprint } from './access-identity';
 import {
   PROBE_CAPABILITY, PROBE_ENDPOINT, PROBE_MAX_OUTPUT_TOKENS, PROBE_PROMPT, PROBE_REASONING, PROBE_TIMEOUT_MS,
   GLOBAL_PROBE_KINDS, PROBE_ERROR_KIND_LABELS, classifyProbeFailure, classifyProbeResponse, nextOperationalState, nextProbeDelayMs, probeErrorCodeOf, providerCodesOf,
@@ -178,15 +178,18 @@ async function environnementCourant(): Promise<string | null> {
   }
 }
 
-/** Accès pseudonymisé affiché (8 premiers caractères de l'empreinte, non réversible). */
-export function accessLabel(fingerprint: string): string {
-  return `clé …${fingerprint.slice(0, 8)}`;
-}
-
-/** Empreinte non réversible d'une clé (jamais la clé elle-même). */
-export function keyFingerprint(secret: string): string {
-  return createHash('sha256').update(secret).digest('hex').slice(0, 16);
-}
+/**
+ * Empreinte non réversible d'une clé, et accès pseudonymisé affiché.
+ *
+ * #786 (A01) : DÉFINIS dans `access-identity` — module PUR, sans aucune
+ * dépendance (ni base de données, ni classification), pour que l'identité de
+ * route et le test de clé puissent figer l'empreinte de l'accès avant l'envoi
+ * sans charger la persistance, et qu'aucun harnais de test simulant la
+ * persistance ou le résolveur de clé ne puisse en priver le code. Réexportés
+ * ici : tous les appelants historiques continuent de les lire au même endroit,
+ * et il n'existe qu'UNE définition dans le dépôt.
+ */
+export { keyFingerprint, accessLabel };
 
 /**
  * #786 (E05) — empreinte de l'accès ACTIF, à figer AVANT un envoi : le
@@ -238,7 +241,82 @@ export interface RecordedOperationalState extends NextOperationalState {
   changed?: boolean;
   /** Prochain recontrôle au plus tôt d'un modèle confirmé indisponible. */
   nextProbeAt?: string | null;
+  /**
+   * #786 (A03) — RÉSULTAT CALCULÉ ≠ VERDICT PUBLIÉ. La distinction est
+   * explicite et opposable :
+   *   · `published`     — la transaction a été COMMITTÉE : cet état est le
+   *                       verdict publié, opposable, et les autres instances
+   *                       le verront par la clé de version partagée ;
+   *   · `not_persisted` — l'écriture ou le commit a ÉCHOUÉ (base
+   *                       indisponible, table ou colonne absente, délai SQL,
+   *                       crash). L'état rendu n'est qu'un CALCUL local :
+   *                       aucun verdict n'est annoncé publié, et aucun
+   *                       appelant ne doit en tirer une décision de promotion,
+   *                       d'activation ou d'import.
+   * Règle remplacée (carte #786, A03) : un échec d'écriture journalisait puis
+   * rendait un état indiscernable d'un verdict publié.
+   */
+  persistence: 'published' | 'not_persisted';
+  /** #786 (A03) : motif, quand rien n'a été publié (journal, BO ; jamais de secret). */
+  notPersistedReason?: string | null;
+  /**
+   * #786 (C02) — transition `failed_confirmed → ok` RÉELLEMENT PERSISTÉE :
+   * c'est elle, et elle seule, qui oblige à requalifier, quelle que soit la
+   * source du contrôle.
+   */
+  recovered?: boolean;
 }
+
+/**
+ * #786 (A03) — l'état rendu est-il un VERDICT PUBLIÉ sur lequel une décision
+ * (promotion, activation, import, affichage opposable au BO) peut se fonder ?
+ * Un état seulement calculé ne décide de rien.
+ */
+export function isPublishedVerdict(state: Pick<RecordedOperationalState, 'persistence'>): boolean {
+  return state.persistence === 'published';
+}
+
+/**
+ * #786 (B02) — TOLÉRANCE d'écart entre l'horloge d'un worker et celle de la
+ * base. Au-delà, l'instant d'envoi du contrôle est RECALÉ sur l'horloge de la
+ * base, DANS LES DEUX SENS (avance comme retard), par la mesure de l'écart au
+ * moment de l'enregistrement.
+ *
+ * Soixante secondes : au-dessous, l'écart est du même ordre que la latence
+ * d'un appel et le recalage apporterait plus de bruit que d'ordre ; au-dessus,
+ * c'est une horloge réellement désynchronisée. Valeur à valider par le PO.
+ *
+ * Le recalage DÉPLACE l'instant d'envoi de l'écart mesuré — il ne l'écrase pas
+ * par « maintenant » : un succès réellement ancien reste ancien, et ne peut
+ * donc pas lever un refus plus récent (c'était le risque de B02).
+ */
+export const CLOCK_SKEW_TOLERANCE_MS = 60_000;
+
+/**
+ * #786 (B02) — FENÊTRE D'ÉGALITÉ de l'ordre : deux instants d'envoi plus
+ * proches que cela ne sont PAS ordonnables, et l'arbitrage déterministe des
+ * « instants égaux » s'applique.
+ *
+ * Pourquoi une fenêtre, et pas une égalité stricte à la milliseconde : le
+ * recalage sur l'horloge de la base repose sur un écart MESURÉ au moment de
+ * l'enregistrement. Deux résultats réellement partis au même instant, mais
+ * enregistrés à quelques millisecondes d'intervalle, sont donc projetés sur
+ * des instants très légèrement différents. Avec une égalité stricte, le second
+ * serait déclaré « hors ordre » — l'ordre resterait suspendu à la précision
+ * des horloges, ce que la carte demande précisément d'éliminer.
+ *
+ * Une seconde : très au-dessus du bruit de mesure, très au-dessous du délai
+ * réel entre deux contrôles d'une même route (la confirmation attend 2 s, le
+ * recontrôle au moins une heure). Valeur à valider par le PO.
+ */
+export const ORDER_EQUALITY_WINDOW_MS = 1_000;
+
+/**
+ * #786 (B03) — sources de contrôle qui sont des SONDES réservées : leur
+ * résultat doit porter le jeton de clôture (`leaseGeneration`) du bail sous
+ * lequel la sonde est partie.
+ */
+const PROBE_SOURCES: ReadonlySet<OperationalSource> = new Set<OperationalSource>(['catalog_refresh', 'recovery_check']);
 
 /** Schéma antérieur à la migration 1692 (colonne, contrainte ou table absente). */
 function schemaAnterieur(e: unknown): boolean {
@@ -267,6 +345,7 @@ export function operationalSchemaState(): { complete: boolean | null; degradedRe
 export function __resetOperationalSchemaState(): void {
   colonnes1815 = null;
   colonnes1816 = null;
+  colonnes1950 = null;
   schemaDegradeMotif = null;
 }
 
@@ -322,6 +401,34 @@ export function operationalProjectDimension(): { known: false; label: string; mi
   };
 }
 
+/** #786 (B03) : la génération de bail fait-elle partie du schéma (migration 1950) ? `null` : pas encore constaté. */
+let colonnes1950: boolean | null = null;
+
+/**
+ * #786 (B03) — la RÉSERVATION DE SONDE porte-t-elle un jeton de clôture
+ * (`probe_lease_generation`, migration 1950) ? Tant qu'elle ne l'est pas, le
+ * fencing n'est pas opposable : c'est signalé, et la réservation reste celle
+ * du lot 115I (bail borné sans jeton).
+ */
+async function has1950(): Promise<boolean> {
+  if (colonnes1950 !== null) return colonnes1950;
+  try {
+    const rows = (await pgClient.unsafe(
+      `SELECT 1 FROM information_schema.columns
+        WHERE table_name = 'ai_model_operational_status' AND column_name = 'probe_lease_generation' LIMIT 1`,
+    )) as unknown as Row[];
+    colonnes1950 = rows.length > 0;
+    if (!colonnes1950) {
+      schemaDegradeMotif = schemaDegradeMotif
+        ?? 'migration 1950 non appliquée : jeton de clôture du bail de sonde (fencing) indisponible';
+      console.warn(`[model-operational] ${schemaDegradeMotif}.`);
+    }
+  } catch {
+    colonnes1950 = false;
+  }
+  return colonnes1950;
+}
+
 /** Les colonnes 1815 existent-elles ? (une lecture par processus ; prudent en cas d'échec) */
 async function has1815(): Promise<boolean> {
   if (colonnes1815 !== null) return colonnes1815;
@@ -362,22 +469,19 @@ export async function readOperationalVersion(): Promise<number | null> {
   } catch { return null; }
 }
 
-/** Écriture au format antérieur à 1692 (une ligne par modèle) — repli, jamais d'échec. */
-async function ecrireFormatAnterieur(p: { model: string; fp: string; next: NextOperationalState; error: string | null; source: OperationalSource }): Promise<void> {
-  await pgClient.unsafe(
-    `INSERT INTO ai_model_operational_status
-       (provider, model, key_fingerprint, ok, error, source, checked_at, check_status, error_kind, suspect_since, last_ok_at)
-     VALUES ('gemini', $1, $2, $3, $4, $5, NOW(), $6, $7, $8, CASE WHEN $9::boolean THEN NOW() ELSE NULL END)
-     ON CONFLICT (provider, model) DO UPDATE SET
-       ok = EXCLUDED.ok, error = EXCLUDED.error, source = EXCLUDED.source, checked_at = NOW(),
-       check_status = EXCLUDED.check_status, error_kind = EXCLUDED.error_kind, suspect_since = EXCLUDED.suspect_since,
-       last_ok_at = CASE WHEN $9::boolean THEN NOW()
-                         WHEN ai_model_operational_status.key_fingerprint = EXCLUDED.key_fingerprint THEN ai_model_operational_status.last_ok_at
-                         ELSE NULL END,
-       key_fingerprint = EXCLUDED.key_fingerprint`,
-    [p.model, p.fp, p.next.ok, p.error, p.source, p.next.checkStatus, p.next.errorKind, p.next.suspectSince, p.next.healthy] as never[],
-  );
-}
+/**
+ * #786 (A03) — L'ÉCRITURE AU FORMAT ANTÉRIEUR À 1692 EST SUPPRIMÉE.
+ *
+ * `ecrireFormatAnterieur` écrivait, en repli d'une erreur de schéma, une ligne
+ * par `(provider, model)` : la clé n'y portait PAS l'accès. Le verdict d'une
+ * clé écrasait donc celui d'une autre, l'ordre des contrôles et l'historique
+ * étaient perdus, et l'état ainsi écrit était rendu comme s'il était publié.
+ *
+ * Désormais : aucun repli silencieux. Une migration critique absente est
+ * SIGNALÉE (`operationalSchemaState`), l'état est rendu `not_persisted`, et
+ * l'admission comme l'activation sont refusées faute de contrôle possible —
+ * la candidate et les preuves sont conservées.
+ */
 
 /**
  * Enregistre l'issue d'un contrôle (best effort : ne lève jamais) et rend le
@@ -399,11 +503,23 @@ export async function recordOperationalCheck(p: {
   /** #771 : instant d'envoi du contrôle, appel technique tracé, codes du fournisseur. */
   observedAt?: Date; probeCallId?: number | null; httpStatus?: number | null; providerCode?: string | null;
   /**
-   * #786 (E04) : identifiant STABLE du contrôle, figé à la source. Rejouer le
-   * même identifiant ne change rien (ni état, ni compteur, ni échéance, ni
-   * ligne d'historique) : un même échec reçu deux fois n'est pas deux sondes.
+   * #786 (E04, B02) : identifiant STABLE du contrôle, figé à la source AVANT
+   * l'envoi, et OBLIGATOIRE. Rejouer le même identifiant ne change rien (ni
+   * état, ni compteur `failure_count`, ni `next_probe_at`, ni `state_version`,
+   * ni ligne d'historique, ni alerte) : un même échec reçu deux fois n'est pas
+   * deux sondes, et une reprise après échec de commit n'en fabrique pas une.
+   *
+   * Règle remplacée (carte #786, B02) : il était facultatif, et les appelants
+   * qui l'omettaient n'étaient donc pas idempotents.
    */
-  checkId?: string | null;
+  checkId: string;
+  /**
+   * #786 (B03) : JETON DE CLÔTURE (fencing) du bail sous lequel la sonde est
+   * partie, tel que `acquireProbeLease` l'a rendu. Exigé des sources de sonde
+   * quand un bail est en cours : un résultat produit par un détenteur dont le
+   * bail a été repris par un autre worker est REJETÉ et historisé comme écarté.
+   */
+  leaseGeneration?: number | null;
   /**
    * #786 (E05) : empreinte de l'accès qui a ENVOYÉ le contrôle, figée au
    * départ. Une rotation de clé en vol n'attribue plus le résultat à la
@@ -421,7 +537,7 @@ export async function recordOperationalCheck(p: {
 }): Promise<RecordedOperationalState> {
   const fp = p.accessFingerprint ?? keyFingerprint(p.secret);
   const now = p.now ?? new Date();
-  const checkId = p.checkId ?? null;
+  const checkId = p.checkId;
   const environment = await environnementCourant();
   const observedAt = p.observedAt ?? now;
   const brut = p.outcome.status === 'ok' ? null : p.outcome.error;
@@ -431,9 +547,10 @@ export async function recordOperationalCheck(p: {
   const definitive = p.outcome.status === 'failed' ? p.outcome.definitive : null;
   const kind = p.outcome.status === 'ok' ? null : p.outcome.kind;
 
-  // Colonnes 1815 / 1816 présentes ? (lu hors transaction : une requête échouée l'avorterait)
+  // Colonnes 1815 / 1816 / 1950 présentes ? (lu hors transaction : une requête échouée l'avorterait)
   const etendu = await has1815();
   const parCapacite = await has1816();
+  const bail = await has1950();
   // #786 (E05) : portée du verdict — capacité éprouvée, ou capacité de BASE pour un refus de portée modèle.
   const { capability } = refusalCapabilityScope(p.outcome, p.capability ?? BASE_CAPABILITY);
   /**
@@ -446,33 +563,59 @@ export async function recordOperationalCheck(p: {
   const transaction = async (sql: SqlRunner): Promise<RecordedOperationalState> => {
     await sql.unsafe(`SELECT pg_advisory_xact_lock(hashtext($1))`, [`ai-model-operational:${p.model}:${fp}:${capability}`] as never[]);
     const row = capaciteEtat === null ? undefined : ((await sql.unsafe(
-      `SELECT ok, check_status, error, suspect_since, error_kind, observed_at, failure_count, state_version, next_probe_at
+      `SELECT ok, check_status, error, suspect_since, error_kind, observed_at, failure_count, state_version, next_probe_at${
+  bail ? ', probe_lease_generation, probe_lease_until' : ''}
          FROM ai_model_operational_status
         WHERE provider = 'gemini' AND model = $1 AND key_fingerprint = $2${parCapacite ? ' AND capability = $3' : ''}`,
       (parCapacite ? [p.model, fp, capaciteEtat] : [p.model, fp]) as never[],
     )) as unknown as Row[])[0];
     const prev = row ? toKnown(row) : p.prev ?? null;
     const version = Number(row?.state_version ?? 0);
-    /** Instant d'ENVOI retenu : une horloge de worker en AVANCE sur la base est ramenée à l'heure de la base (E04). */
+    /** Instant d'ENVOI retenu, recalé sur l'horloge de la base dans les deux sens (#786, B02). */
     let envoye = observedAt;
     const historise = async (
       etat: { checkStatus: CheckStatus | null; ok: boolean | null }, applied: boolean, v: number, discardedReason: string | null = null,
     ) => {
+      // Colonnes fixes, puis celles de 1815, puis le jeton de bail de 1950 (#786, B03) : l'historique dit
+      // SOUS QUEL BAIL le contrôle est parti, donc pourquoi un résultat tardif a été écarté.
+      const colonnes = ['provider', 'model', 'key_fingerprint', 'capability', 'endpoint', 'source', 'outcome', 'definitive',
+        'error_kind', 'http_status', 'provider_code', 'error', 'check_status', 'ok_after', 'applied', 'state_version',
+        'probe_call_id', 'observed_at'];
+      const valeurs: unknown[] = [p.model, fp, capability, PROBE_ENDPOINT, p.source, p.outcome.status, definitive, kind,
+        httpStatus, providerCode, brut ? sanitizeProviderError(brut, p.secret) : null, etat.checkStatus, etat.ok, applied, v,
+        p.probeCallId ?? null, envoye.toISOString()];
+      if (etendu) {
+        colonnes.push('check_id', 'environment', 'api_version', 'discarded_reason');
+        valeurs.push(checkId, environment, PROBE_API_VERSION, discardedReason);
+      }
+      if (bail) {
+        colonnes.push('probe_lease_generation');
+        valeurs.push(p.leaseGeneration ?? null);
+      }
+      // `provider` est la première colonne, et sa valeur est littérale : les paramètres commencent donc à $1
+      // pour la deuxième colonne.
+      const placeholders = ["'gemini'", ...valeurs.map((_, i) => `$${i + 1}`)];
       await sql.unsafe(
-        `INSERT INTO ai_model_operational_history
-           (provider, model, key_fingerprint, capability, endpoint, source, outcome, definitive, error_kind, http_status, provider_code,
-            error, check_status, ok_after, applied, state_version, probe_call_id, observed_at${etendu ? ', check_id, environment, api_version, discarded_reason' : ''})
-         VALUES ('gemini', $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17${etendu ? ', $18, $19, $20, $21' : ''})`,
-        [p.model, fp, capability, PROBE_ENDPOINT, p.source, p.outcome.status, definitive, kind, httpStatus, providerCode,
-         brut ? sanitizeProviderError(brut, p.secret) : null, etat.checkStatus, etat.ok, applied, v, p.probeCallId ?? null, envoye.toISOString(),
-         ...(etendu ? [checkId, environment, PROBE_API_VERSION, discardedReason] : [])] as never[],
+        `INSERT INTO ai_model_operational_history (${colonnes.join(', ')}) VALUES (${placeholders.join(', ')})`,
+        valeurs as never[],
       );
     };
-    /** État rendu sans rien changer (contrôle écarté ou déjà enregistré). */
+    /**
+     * État rendu sans rien changer (contrôle écarté ou déjà enregistré). La transaction est bien COMMITTÉE :
+     * le verdict en vigueur est donc le verdict publié — simplement, ce contrôle ne l'a pas modifié.
+     */
     const inchange = (stale: boolean): RecordedOperationalState => ({
       ...(prev as KnownOperationalState), error: row?.error == null ? null : String(row.error),
       errorKind: (row?.error_kind == null ? null : String(row.error_kind)) as ProbeErrorKind | null,
       healthy: false, ...(stale ? { stale: true } : {}), changed: false, nextProbeAt: iso(row?.next_probe_at),
+      persistence: 'published',
+    });
+    /** État en vigueur rendu tel quel, avec le motif d'écart du contrôle reçu. */
+    const conserve = (stale: boolean): RecordedOperationalState => ({
+      ...(prev as KnownOperationalState), error: row?.error == null ? null : String(row.error),
+      errorKind: (row?.error_kind == null ? null : String(row.error_kind)) as ProbeErrorKind | null,
+      healthy: false, ...(stale ? { stale: true } : {}), changed: false, nextProbeAt: iso(row?.next_probe_at),
+      persistence: 'published',
     });
 
     // #786 (E05) : capacité hors base alors que la clé n'en porte pas (migration 1816 absente) — le contrôle est
@@ -482,12 +625,14 @@ export async function recordOperationalCheck(p: {
       return {
         ok: prev?.ok ?? null, checkStatus: prev?.checkStatus ?? null, suspectSince: prev?.suspectSince ?? null,
         error: null, errorKind: null, healthy: false, changed: false, stale: true, nextProbeAt: null,
+        persistence: 'published',
       };
     }
 
-    // #786 (E04) : REJEU — ce contrôle (identifiant stable) est déjà enregistré pour cette route et cet accès.
-    // Rien n'est réécrit : ni état, ni compteur, ni échéance, ni seconde ligne d'historique.
-    if (etendu && checkId && row && prev) {
+    // #786 (E04, B02) : REJEU — ce contrôle (identifiant stable) est déjà enregistré pour cette route et cet
+    // accès. Rien n'est réécrit : ni état, ni compteur `failure_count`, ni `next_probe_at`, ni `state_version`,
+    // ni seconde ligne d'historique, ni alerte. C'est ce qui rend la reprise après échec de commit sûre.
+    if (etendu) {
       const deja = (await sql.unsafe(
         `SELECT 1 FROM ai_model_operational_history
           WHERE provider = 'gemini' AND model = $1 AND key_fingerprint = $2 AND check_id = $3 LIMIT 1`,
@@ -496,30 +641,104 @@ export async function recordOperationalCheck(p: {
       if (deja.length > 0) return inchange(false);
     }
 
-    // #786 (E04) : horloge du worker en avance sur la base — l'instant d'envoi est ramené, jamais extrapolé.
+    /**
+     * #786 (B02) — ORDRE INDÉPENDANT DES HORLOGES DE WORKERS.
+     *
+     * L'écart entre l'horloge de ce worker et celle de la base est MESURÉ ici
+     * (`now` est l'heure du worker au moment de l'enregistrement). Au-delà de la
+     * tolérance, l'instant d'envoi est DÉPLACÉ de cet écart — dans les deux sens.
+     *
+     * Règle remplacée (carte #786, B02) : seule une AVANCE de plus de 60 s était
+     * corrigée, et en écrasant l'instant d'envoi par « maintenant ». Un worker en
+     * RETARD faisait donc paraître un résultat récent plus ancien qu'il n'était
+     * (écarté à tort), et l'écrasement pouvait rendre un vieux succès « récent ».
+     * Le déplacement, lui, conserve l'ÂGE réel du résultat : un succès ancien
+     * reste ancien et ne peut pas lever un refus plus récent.
+     */
     const basesNow = ((await sql.unsafe(`SELECT now() AS t`).catch(() => [])) as unknown as Row[])[0]?.t;
-    if (basesNow && observedAt.getTime() > new Date(String(basesNow)).getTime() + 60_000) {
-      envoye = new Date(String(basesNow));
-      console.info(`[model-operational] ${p.model} : instant d'envoi ramené à l'heure de la base (horloge du worker en avance).`);
+    if (basesNow) {
+      const baseMs = new Date(String(basesNow)).getTime();
+      const ecartMs = now.getTime() - baseMs;
+      if (Math.abs(ecartMs) > CLOCK_SKEW_TOLERANCE_MS) {
+        envoye = new Date(observedAt.getTime() - ecartMs);
+        console.info(`[model-operational] ${p.model} : instant d'envoi recalé de ${Math.round(-ecartMs / 1000)} s sur l'horloge de la base (écart mesuré du worker).`);
+      }
+      // BORNE DURE : un envoi ne peut pas être dans le futur de la base au-delà de la tolérance — il serait
+      // alors daté par une horloge que le recalage n'a pas suffi à corriger. Il est ramené à l'heure de la
+      // base, jamais extrapolé. En DEÇA de la tolérance, l'horloge du worker est acceptée telle quelle :
+      // la ramener ferait croire à une égalité d'instants là où il n'y en a pas.
+      if (envoye.getTime() > baseMs + CLOCK_SKEW_TOLERANCE_MS) envoye = new Date(baseMs);
     }
 
-    // Hors ordre : ce contrôle a été ENVOYÉ avant celui qui fonde l'état en vigueur — écarté, état inchangé.
+    /**
+     * #786 (B03) — FENCING : le bail de sonde a-t-il été repris par un autre worker ?
+     *
+     * `probe_lease_generation` est incrémentée à chaque réservation. Un résultat
+     * dont le jeton est INFÉRIEUR à la génération en cours vient d'un détenteur
+     * dépassé : il est REJETÉ et historisé (`lease_fenced`), sans rien changer.
+     *
+     * Une source de sonde qui ne présente AUCUN jeton alors qu'un bail est en
+     * cours est rejetée de la même façon (`lease_missing`) : son résultat n'est
+     * pas celui du détenteur. Hors bail en cours, une sonde non réservée (test
+     * unitaire, appel injecté) reste enregistrée — rien à clôturer.
+     */
+    if (bail && row) {
+      const generation = Number(row.probe_lease_generation ?? 0);
+      const bailActif = row.probe_lease_until != null && Date.parse(String(row.probe_lease_until)) > Date.now();
+      const jeton = p.leaseGeneration ?? null;
+      if (jeton !== null && generation > jeton) {
+        await historise({ checkStatus: prev?.checkStatus ?? null, ok: prev?.ok ?? null }, false, version, 'lease_fenced');
+        console.info(`[model-operational] ${p.model} (${accessLabel(fp)}) : résultat rejeté — bail de sonde repris (jeton ${jeton} < génération ${generation}).`);
+        return conserve(true);
+      }
+      if (jeton === null && bailActif && PROBE_SOURCES.has(p.source)) {
+        await historise({ checkStatus: prev?.checkStatus ?? null, ok: prev?.ok ?? null }, false, version, 'lease_missing');
+        console.info(`[model-operational] ${p.model} (${accessLabel(fp)}) : résultat de sonde rejeté — aucun jeton de bail alors qu'une réservation est en cours.`);
+        return conserve(true);
+      }
+    }
+
+    // Hors ordre : ce contrôle a été ENVOYÉ STRICTEMENT avant celui qui fonde l'état en vigueur (au-delà de la
+    // fenêtre d'égalité) — écarté, état inchangé.
     const enVigueur = row?.observed_at == null ? null : new Date(String(row.observed_at));
-    if (row && prev && enVigueur && envoye.getTime() < enVigueur.getTime()) {
+    const ecartMsOrdre = enVigueur === null ? null : envoye.getTime() - enVigueur.getTime();
+    if (row && prev && ecartMsOrdre !== null && ecartMsOrdre < -ORDER_EQUALITY_WINDOW_MS) {
       await historise({ checkStatus: prev.checkStatus, ok: prev.ok }, false, version, 'out_of_order');
-      return {
-        ...prev, error: row.error == null ? null : String(row.error),
-        errorKind: (row.error_kind == null ? null : String(row.error_kind)) as ProbeErrorKind | null,
-        healthy: false, stale: true, changed: false, nextProbeAt: iso(row.next_probe_at),
-      };
+      return conserve(true);
     }
 
-    // #786 (E04) : instant d'envoi ÉGAL à celui du verdict en vigueur — l'ordre n'est pas tranchable par les
-    // dates. Un refus confirmé est conservé (il ne peut pas être levé par un résultat qui ne lui est pas
-    // postérieur) ; le résultat est historisé comme écarté.
-    if (row && prev && prev.ok === false && enVigueur && envoye.getTime() === enVigueur.getTime() && p.outcome.status === 'ok') {
-      await historise({ checkStatus: prev.checkStatus, ok: prev.ok }, false, version, 'equal_instant');
-      return inchange(true);
+    /**
+     * #786 (B02) — INSTANT D'ENVOI ÉGAL à celui du verdict en vigueur, à la fenêtre d'égalité près
+     * (`ORDER_EQUALITY_WINDOW_MS`).
+     *
+     * L'ordre n'est pas tranchable par les dates : il faut un arbitrage qui ne dépende PAS de l'ordre
+     * d'arrivée des workers. Celui retenu porte sur les VERDICTS, et il est monotone :
+     *
+     *   un résultat n'est appliqué, à instant égal, que s'il ne REND PAS la route plus disponible
+     *   qu'elle ne l'est déjà.
+     *
+     * Soit le rang de prudence : refusé (2) > inconnu (1) > sain (0). Le résultat s'applique si
+     * `rang(nouveau) >= rang(en vigueur)`, et il est sinon historisé comme écarté (`equal_instant`).
+     *
+     * Conséquences, toutes voulues :
+     *   · un refus confirmé n'est JAMAIS levé par un résultat qui ne lui est pas STRICTEMENT postérieur —
+     *     succès, suspicion ou non concluant à instant égal le laissent intact ;
+     *   · un non concluant reçu à instant égal sur une route refusée s'applique quand même (rang égal) :
+     *     c'est ce qui tient à jour le DERNIER RÉSULTAT reçu, à part du verdict retenu ;
+     *   · une DÉGRADATION à instant égal s'applique (prudence) ;
+     *   · quel que soit l'ordre dans lequel deux workers commitent, le VERDICT final est le même.
+     *
+     * Règle complétée (carte #786, B02) : seul le cas `status === 'ok'` après un refus était écarté. Pour
+     * tous les autres, l'issue dépendait de l'ordre d'arrivée — ce n'était pas un arbitrage, c'était une
+     * course.
+     */
+    const rangDePrudence = (ok: boolean | null): number => (ok === false ? 2 : ok === null ? 1 : 0);
+    if (row && prev && ecartMsOrdre !== null && Math.abs(ecartMsOrdre) <= ORDER_EQUALITY_WINDOW_MS) {
+      const futur = nextOperationalState(prev, p.outcome, now);
+      if (rangDePrudence(futur.ok) < rangDePrudence(prev.ok)) {
+        await historise({ checkStatus: prev.checkStatus, ok: prev.ok }, false, version, 'equal_instant');
+        return conserve(true);
+      }
     }
 
     // Réception idempotente (E06) : les appels réels encore en vol au moment du verdict rapportent le même
@@ -528,11 +747,7 @@ export async function recordOperationalCheck(p: {
     // un recontrôle NOUVEAU qui échoue de nouveau garde, lui, son effet (échéance doublée, A06).
     if (row && prev && prev.ok === false && p.source === 'gateway_call' && p.outcome.status === 'failed') {
       await historise({ checkStatus: prev.checkStatus, ok: prev.ok }, false, version, 'already_opposable');
-      return {
-        ...prev, error: row.error == null ? null : String(row.error),
-        errorKind: (row.error_kind == null ? null : String(row.error_kind)) as ProbeErrorKind | null,
-        healthy: false, changed: false, nextProbeAt: iso(row.next_probe_at),
-      };
+      return conserve(false);
     }
 
     const next = nextOperationalState(prev, p.outcome, now);
@@ -573,7 +788,10 @@ export async function recordOperationalCheck(p: {
     );
     await historise({ checkStatus: next.checkStatus, ok: next.ok }, true, version + 1);
     if (changed) await bumpOperationalVersion(sql, `${p.source}:${next.ok === false ? 'indisponible' : next.ok ? 'sain' : 'inconnu'}`);
-    return { ...next, error, changed, nextProbeAt };
+    // #786 (C02) : la transition `failed_confirmed → ok` est RELEVÉE ICI, dans l'unique point d'écriture, et
+    // seulement si elle est réellement persistée — c'est elle qui obligera à requalifier, quelle que soit la source.
+    const recovered = prev?.ok === false && next.ok === true;
+    return { ...next, error, changed, nextProbeAt, persistence: 'published', ...(recovered ? { recovered: true } : {}) };
   };
 
   let etat: RecordedOperationalState;
@@ -581,32 +799,89 @@ export async function recordOperationalCheck(p: {
     const client = pgClient as unknown as SqlRunner & { begin?: <T>(fn: (tx: SqlRunner) => Promise<T>) => Promise<T> };
     etat = typeof client.begin === 'function' ? await client.begin((tx) => transaction(tx)) : await transaction(client);
   } catch (e) {
+    /**
+     * #786 (A03) — ÉCHEC D'ÉCRITURE OU DE COMMIT : RIEN N'EST PUBLIÉ.
+     *
+     * Aucun repli vers le format antérieur à 1692 (il écrasait les autres accès) ; aucun verdict annoncé
+     * publié. L'état rendu est marqué `not_persisted` : un appelant qui en dépend pour une décision
+     * (promotion, activation, import, BO) doit REFUSER et conserver la candidate et les preuves.
+     *
+     * La reprise est IDEMPOTENTE : le `checkId` figé à la source est la clé de déduplication (index unique
+     * 1815). Rejouer ce contrôle après le rétablissement de la base publie le verdict UNE fois, et ne compte
+     * pas pour une seconde sonde.
+     */
     const prev = p.prev !== undefined ? p.prev : await readKnown(p.model, fp);
     const next = nextOperationalState(prev, p.outcome, now);
     const error = next.error ? sanitizeProviderError(next.error, p.secret) : null;
-    if (schemaAnterieur(e)) {
-      // Migration 1692 non appliquée : format antérieur (une ligne par modèle), sans historique ni ordre.
-      try {
-        await ecrireFormatAnterieur({ model: p.model, fp, next, error, source: p.source });
-      } catch (e2) {
-        console.warn('[model-operational] état non enregistré :', sanitizeProviderError((e2 as Error).message, p.secret));
-      }
-    } else {
-      // Table absente (migrations 0273 / 0335 non appliquées) ou base
-      // indisponible : l'état reste inconnu, ce qui n'écarte aucun modèle.
-      console.warn('[model-operational] état non enregistré :', sanitizeProviderError((e as Error).message, p.secret));
-    }
-    return { ...next, error, changed: false };
+    const code = (e as { code?: string } | null)?.code ?? null;
+    const motif = schemaAnterieur(e)
+      ? `schéma incomplet (${code ?? 'colonne ou table absente'}) : migration critique 1692 / 1815 / 1816 non appliquée`
+      : `écriture ou commit en échec (${code ?? 'erreur'})`;
+    if (schemaAnterieur(e)) schemaDegradeMotif = schemaDegradeMotif ?? motif;
+    console.warn(`[model-operational] ${p.model} (${accessLabel(fp)}) : AUCUN verdict publié — ${motif}. `
+      + `Reprise idempotente possible avec le même identifiant de contrôle (${checkId}). Détail : `
+      + sanitizeProviderError((e as Error).message, p.secret));
+    return { ...next, error, changed: false, persistence: 'not_persisted', notPersistedReason: motif };
   }
   if (etat.changed) {
     // Cette instance n'attend pas la relecture de la clé de version (#771, P03).
     try { (await import('../gateway/fallback-context')).invalidateFallbackStatusCache(); } catch { /* cache absent */ }
   }
+  // #786 (C02) : OBLIGATION DE REQUALIFICATION, émise depuis l'unique point d'écriture, à chaque transition
+  // persistée `failed_confirmed → ok`, QUELLE QUE SOIT LA SOURCE. Hors transaction, idempotente, reprenable.
+  if (etat.recovered) await emettreRequalification(p.model, p.secret, p.source);
   // #771 (B05) : journal de propagation — sans secret ni donnée de compte.
   if (etat.changed || etat.stale) {
     console.info(`[model-operational] ${p.model} (${accessLabel(fp)}, ${OPERATIONAL_CAPABILITY_LABELS[capability]}) : ${etat.stale ? 'contrôle écarté (antérieur au verdict en vigueur, hors ordre ou hors portée)' : `état retenu → ${etat.ok === false ? 'indisponible confirmé' : etat.ok ? 'sain (blocage de disponibilité levé)' : 'inconnu'}`} — source ${p.source}${p.probeCallId ? `, appel ${p.probeCallId}` : ''}${etat.nextProbeAt ? `, prochain contrôle ${etat.nextProbeAt}` : ''}.`);
   }
   return etat;
+}
+
+/**
+ * #786 (C02) — REQUALIFICATION UNIVERSELLE après un retour à sain.
+ *
+ * Émise depuis l'UNIQUE point d'écriture du verdict (`recordOperationalCheck`),
+ * à chaque transition PERSISTÉE `failed_confirmed → ok`, quelle que soit la
+ * source : `provider_test`, `catalog_refresh`, `qualification`, `gateway_call`,
+ * `recovery_check`.
+ *
+ * Règle remplacée (carte #786, C02) : seul le chemin de récupération après rang
+ * sauté (`fallback-context.probeUnderReservation`) marquait et relançait. Un
+ * rétablissement constaté par le catalogue ou par « Tester la clé » laissait
+ * donc des qualifications historiques en place, et une ancienne candidate
+ * pouvait redevenir sélectionnable sans épreuve.
+ *
+ * IDEMPOTENTE ET REPRENABLE : `markRequalificationRequired` ne marque que les
+ * qualifications NON encore marquées (`requalification_required_at IS NULL`) —
+ * un rejeu ou un crash ne produit donc ni second marquage, ni seconde campagne.
+ * La campagne ciblée est dédupliquée par cette même marque, que son résultat
+ * efface ; ce qu'elle ne finit pas reste marqué et le passage planifié
+ * EXISTANT le reprend.
+ *
+ * Un succès ne lève QUE la disponibilité : aucune activation d'ancienne
+ * candidate, aucune substitution de principal ou de repli, et le tarif (#770)
+ * comme la qualification restent des conditions distinctes et cumulatives.
+ * Hors transaction, et jamais bloquant.
+ */
+async function emettreRequalification(model: string, secret: string, source: OperationalSource): Promise<void> {
+  try {
+    const Q = await import('./model-qualification.service');
+    const marquees = await Q.markRequalificationRequired([model], secret,
+      `modèle rétabli après une indisponibilité confirmée (#786, source ${source}) : qualifications antérieures à requalifier`);
+    // Le cache de disponibilité est vidé AVANT la campagne : ses épreuves passent la garde avec le verdict
+    // rétabli, et non avec le refus que le contrôle vient de lever.
+    try { (await import('../gateway/fallback-context')).invalidateFallbackStatusCache(); } catch { /* cache absent */ }
+    if (marquees === 0) {
+      // Déjà marqué (rejeu, autre worker) : aucune seconde campagne — la marque est la déduplication.
+      return;
+    }
+    const bilan = await Q.runTargetedRequalification([model], secret, { max: 1 });
+    if (bilan.attempted.length === 0) {
+      console.info(`[model-operational] campagne ciblée de ${model} non lancée (${bilan.skipped.map((s) => s.reason).join(', ') || 'rien à reprendre'}) : reprise au passage planifié.`);
+    }
+  } catch {
+    /* marquage ou campagne non bloquants : la marque subsiste et le passage planifié les reprend */
+  }
 }
 
 /**
@@ -640,6 +915,15 @@ export async function operationalRefusalInTx(
   if (secret === undefined) return { kind: 'unverifiable', detail: 'clé active du fournisseur illisible' };
   // Aucune clé active configurée : aucune route n'existe pour cet accès, il n'y a rien à contrôler.
   if (!secret) return { kind: 'clear' };
+  // #786 (A03) : une MIGRATION CRITIQUE absente (1692 / 1815 / 1816) rend le contrôle final impossible —
+  // la promotion, l'activation et l'import sont REFUSÉS, et la candidate comme les preuves sont conservées.
+  // Jamais un repli silencieux vers un schéma qui perdrait l'isolation par accès, l'ordre ou l'historique.
+  if (await dimensionInstrumentee()) {
+    const schema = operationalSchemaState();
+    if (schema.complete === false || schema.degradedReason !== null) {
+      return { kind: 'unverifiable', detail: `schéma de disponibilité incomplet — ${schema.degradedReason ?? 'migration critique non appliquée'}` };
+    }
+  }
   try {
     await sql.unsafe(`SAVEPOINT l114q_disponibilite`);
     const rows = (await sql.unsafe(
@@ -659,10 +943,42 @@ export async function operationalRefusalInTx(
     };
   } catch (e) {
     await sql.unsafe(`ROLLBACK TO SAVEPOINT l114q_disponibilite`).catch(() => undefined);
-    // Table absente (migrations 0273 / 0335 jamais appliquées) : l'état n'est pas tenu, il n'y a rien à
-    // contrôler. Toute autre erreur rend le contrôle final impossible.
-    if ((e as { code?: string } | null)?.code === '42P01') return { kind: 'clear' };
-    return { kind: 'unverifiable', detail: `état de disponibilité illisible dans la transaction (${(e as { code?: string } | null)?.code ?? 'erreur'})` };
+    const code = (e as { code?: string } | null)?.code ?? null;
+    /**
+     * #786 (A03) — TABLE OU COLONNE ABSENTE (`42P01`, `42703`).
+     *
+     * Règle remplacée (carte #786, A03) : `42P01` rendait `clear` (« rien ne s'oppose »), et une promotion ou
+     * une activation passait donc alors que la table critique était absente — contrôle final impossible
+     * confondu avec contrôle final favorable.
+     *
+     * Désormais, la réponse dépend de la seule question qui vaille : la dimension « disponibilité » est-elle
+     * INSTRUMENTÉE dans ce processus ?
+     *   · OUI  — la table devrait exister : le contrôle final est IMPOSSIBLE (`unverifiable`). La promotion et
+     *            l'activation sont refusées, la candidate et les preuves conservées ;
+     *   · NON  — aucune base n'est branchée (test unitaire) : il n'y a RIEN à contrôler, et bloquer
+     *            l'application serait le pire choix. `clear` est conservé.
+     */
+    if (code === '42P01' || code === '42703') {
+      return (await dimensionInstrumentee())
+        ? { kind: 'unverifiable', detail: `état de disponibilité absent du schéma (${code}) : migration critique non appliquée` }
+        : { kind: 'clear' };
+    }
+    return { kind: 'unverifiable', detail: `état de disponibilité illisible dans la transaction (${code ?? 'erreur'})` };
+  }
+}
+
+/**
+ * #786 (A03) — la dimension « disponibilité » est-elle INSTRUMENTÉE dans ce
+ * processus ? Elle ne l'est pas en test unitaire sans base (convention de
+ * `db/index.ts` : aucune connexion). Source unique :
+ * `operational-admission.admissionActive()` — jamais une seconde règle locale.
+ * Ne lève jamais ; en cas de doute, répond « instrumentée » (prudence).
+ */
+async function dimensionInstrumentee(): Promise<boolean> {
+  try {
+    return (await import('./operational-admission')).admissionActive();
+  } catch {
+    return true;
   }
 }
 
@@ -755,7 +1071,7 @@ export async function loadOperationalStatuses(activeSecret?: string | null): Pro
  */
 export async function loadOperationalSnapshot(
   activeSecret?: string | null,
-): Promise<{ reliable: boolean; statuses: Map<string, OperationalStatus> }> {
+): Promise<OperationalSnapshot> {
   const statuses = new Map<string, OperationalStatus>();
   try {
     for (const { row: r } of lignesParModele(await rowsForActiveKey(activeSecret))) {
@@ -770,9 +1086,51 @@ export async function loadOperationalSnapshot(
       });
     }
   } catch {
-    return { reliable: false, statuses: new Map() };
+    /**
+     * #786 (D01) — LECTURE IMPOSSIBLE : le DERNIER INSTANTANÉ FIABLE est rendu, avec `reliable: false`.
+     *
+     * Règle remplacée (carte #786, D01) : une table VIDE était rendue. Le BO et l'API `catalog-status`
+     * recalculaient alors les anomalies sur ce vide et affichaient « tout sain », alors qu'aucun
+     * rétablissement n'avait eu lieu — une indisponibilité prouvée disparaissait de l'écran.
+     *
+     * Les interdictions déjà connues sont donc conservées, et `completeness` dit d'où vient l'instantané :
+     * un appelant ne peut pas confondre « lu à l'instant » et « dernier état fiable connu ».
+     */
+    return dernierInstantaneFiable !== null
+      ? { reliable: false, statuses: new Map(dernierInstantaneFiable.statuses), completeness: 'last_reliable', readAt: dernierInstantaneFiable.readAt }
+      : { reliable: false, statuses: new Map(), completeness: 'none', readAt: null };
   }
-  return { reliable: true, statuses };
+  dernierInstantaneFiable = { statuses: new Map(statuses), readAt: new Date().toISOString() };
+  return { reliable: true, statuses, completeness: 'fresh', readAt: dernierInstantaneFiable.readAt };
+}
+
+/**
+ * #786 (D01) — PROVENANCE de l'instantané rendu, pour que le BO l'affiche sans
+ * jamais confondre deux choses différentes :
+ *   · `fresh`         — lu à l'instant, fiable et complet ;
+ *   · `last_reliable` — lecture IMPOSSIBLE : dernier état fiable connu de cette
+ *                       instance (« vérification impossible », interdictions
+ *                       conservées) ;
+ *   · `none`          — lecture impossible et aucun état fiable connu : rien
+ *                       n'est su, et surtout rien n'est « sain ».
+ */
+export type OperationalCompleteness = 'fresh' | 'last_reliable' | 'none';
+
+export interface OperationalSnapshot {
+  reliable: boolean;
+  statuses: Map<string, OperationalStatus>;
+  /** #786 (D01) : INDICATEUR DE COMPLÉTUDE (absent sur les contextes construits à la main en test). */
+  completeness?: OperationalCompleteness;
+  /** Instant de la lecture fiable dont vient cet instantané. */
+  readAt?: string | null;
+}
+
+/** Dernier instantané lu de façon FIABLE par cette instance (aucun TTL : la mémoire des interdictions). */
+let dernierInstantaneFiable: { statuses: Map<string, OperationalStatus>; readAt: string } | null = null;
+
+/** Réservé aux tests : oublie le dernier instantané fiable (démarrage à froid). */
+export function __resetOperationalSnapshotMemory(): void {
+  dernierInstantaneFiable = null;
 }
 
 /**
@@ -791,16 +1149,28 @@ export async function readPublishedVerdict(
    * AUTRE capacité ne l'est pas.
    */
   capability: OperationalCapability = BASE_CAPABILITY,
+  /**
+   * #786 (A02) : EMPREINTE de l'accès à lire, figée avant l'envoi. Quand elle
+   * est fournie, elle fait foi — la clé active n'est PAS relue, et le verdict
+   * rendu est celui de l'accès qui va réellement envoyer. Le secret n'a alors
+   * pas besoin de circuler jusqu'ici.
+   */
+  accessFingerprint?: string | null,
 ): Promise<PublishedVerdict> {
-  let secret: string | null;
-  try {
-    secret = activeSecret === undefined ? await (await import('./provider-secret')).getProviderSecret('gemini') : activeSecret;
-  } catch {
-    return unknownVerdict(model, false);
+  let fp: string;
+  if (accessFingerprint != null && accessFingerprint !== '') {
+    fp = accessFingerprint;
+  } else {
+    let secret: string | null;
+    try {
+      secret = activeSecret === undefined ? await (await import('./provider-secret')).getProviderSecret('gemini') : activeSecret;
+    } catch {
+      return unknownVerdict(model, false, capability);
+    }
+    // Aucune clé active : aucune route n'est joignable de toute façon — rien à vérifier.
+    if (!secret) return unknownVerdict(model, true, capability);
+    fp = keyFingerprint(secret);
   }
-  // Aucune clé active : aucune route n'est joignable de toute façon — rien à vérifier.
-  if (!secret) return unknownVerdict(model, true);
-  const fp = keyFingerprint(secret);
   const etendu = await has1815();
   const colonnes = etendu
     ? `ok, check_status, error, suspect_since, checked_at, confirmed_at, next_probe_at, capability, endpoint,
@@ -835,6 +1205,8 @@ export async function readPublishedVerdict(
   const r = refusBase ? ligneBase : demandee ?? (capability === BASE_CAPABILITY ? ligneBase : null);
   const base = {
     ...unknownVerdict(model, true), access: accessLabel(fp),
+    // #786 (A01) : l'accès RÉELLEMENT lu, pour que le verdict soit indexé par route exacte (jamais la clé).
+    accessFingerprint: fp,
     askedCapability: capability,
     ...(refusBase && capability !== BASE_CAPABILITY ? { scopeExtendedFromBase: true as const } : {}),
   };
@@ -863,9 +1235,22 @@ export async function readPublishedVerdict(
 /** Issue d'une demande de réservation de recontrôle. */
 export interface ProbeLease {
   acquired: boolean;
+  /**
+   * #786 (B03) : `no_state` ne vaut PLUS réservation. Une route jamais sondée
+   * est désormais créée puis réservée atomiquement (`acquired`), ou laissée à
+   * son détenteur (`held_elsewhere`) ; `no_state` ne subsiste que comme REFUS
+   * quand la ligne d'état n'a pu être ni lue ni créée.
+   */
   reason: 'acquired' | 'no_state' | 'held_elsewhere' | 'not_due' | 'unreadable';
   /** Fin du bail (quand il est obtenu). */
   until: string | null;
+  /**
+   * #786 (B03) : JETON DE CLÔTURE du bail (fencing token) — la génération
+   * attribuée à CE détenteur. À transmettre à `recordOperationalCheck` :
+   * un résultat dont le jeton est dépassé est rejeté. `null` : migration 1950
+   * non appliquée (le fencing n'est alors pas opposable, et c'est signalé).
+   */
+  generation: number | null;
 }
 
 /** Durée par défaut d'un bail de recontrôle (à valider par le PO). */
@@ -887,41 +1272,92 @@ export const PROBE_LEASE_MS = 120_000;
 export async function acquireProbeLease(p: {
   model: string; secret?: string | null; owner: string; leaseMs?: number; immediate?: boolean;
 }): Promise<ProbeLease> {
-  if (!(await has1815())) return { acquired: false, reason: 'unreadable', until: null };
+  const refus = (reason: ProbeLease['reason'], until: string | null = null): ProbeLease =>
+    ({ acquired: false, reason, until, generation: null });
+  if (!(await has1815())) return refus('unreadable');
   let secret: string | null;
   try {
     secret = p.secret === undefined ? await (await import('./provider-secret')).getProviderSecret('gemini') : p.secret;
   } catch {
-    return { acquired: false, reason: 'unreadable', until: null };
+    return refus('unreadable');
   }
-  if (!secret) return { acquired: false, reason: 'unreadable', until: null };
+  if (!secret) return refus('unreadable');
   const fp = keyFingerprint(secret);
   const ms = Math.max(1_000, p.leaseMs ?? PROBE_LEASE_MS);
   // #786 (E05) : la sonde éprouve la capacité de BASE — la réservation porte sur sa ligne, jamais sur les autres.
-  const capacite = await has1816() ? ' AND capability = $6' : '';
+  const parCapacite = await has1816();
+  const capacite = parCapacite ? ' AND capability = $6' : '';
+  // #786 (B03) : jeton de clôture — incrémenté dans l'UPDATE qui attribue le bail, et rendu au détenteur.
+  const jeton = await has1950();
+  const setGeneration = jeton ? ', probe_lease_generation = ai_model_operational_status.probe_lease_generation + 1' : '';
+  const retourGeneration = jeton ? ', probe_lease_generation' : '';
+  /** UNE seule tentative : `UPDATE` conditionnel, donc un seul détenteur possible. */
+  const tenter = async (): Promise<Row | undefined> => ((await pgClient.unsafe(
+    `UPDATE ai_model_operational_status
+        SET probe_lease_owner = $3, probe_lease_until = now() + ($4 || ' milliseconds')::interval, probe_lease_at = now()${setGeneration}
+      WHERE provider = 'gemini' AND model = $1 AND key_fingerprint = $2${capacite}
+        AND (probe_lease_until IS NULL OR probe_lease_until <= now())
+        AND ($5::boolean OR next_probe_at IS NULL OR next_probe_at <= now())
+      RETURNING probe_lease_until${retourGeneration}`,
+    [p.model, fp, p.owner.slice(0, 100), String(ms), Boolean(p.immediate), ...(parCapacite ? [BASE_CAPABILITY] : [])] as never[],
+  )) as unknown as Row[])[0];
+  const obtenu = (r: Row): ProbeLease => ({
+    acquired: true, reason: 'acquired', until: iso(r.probe_lease_until),
+    generation: r.probe_lease_generation == null ? null : Number(r.probe_lease_generation),
+  });
   try {
-    const rows = (await pgClient.unsafe(
-      `UPDATE ai_model_operational_status
-          SET probe_lease_owner = $3, probe_lease_until = now() + ($4 || ' milliseconds')::interval, probe_lease_at = now()
-        WHERE provider = 'gemini' AND model = $1 AND key_fingerprint = $2${capacite}
-          AND (probe_lease_until IS NULL OR probe_lease_until <= now())
-          AND ($5::boolean OR next_probe_at IS NULL OR next_probe_at <= now())
-        RETURNING probe_lease_until`,
-      [p.model, fp, p.owner.slice(0, 100), String(ms), Boolean(p.immediate), ...(capacite ? [BASE_CAPABILITY] : [])] as never[],
-    )) as unknown as Row[];
-    if (rows[0]) return { acquired: true, reason: 'acquired', until: iso(rows[0].probe_lease_until) };
+    const premier = await tenter();
+    if (premier) return obtenu(premier);
     // Refus : la ligne existe-t-elle, et pourquoi n'a-t-elle pas été prise ?
     const etat = (await pgClient.unsafe(
       `SELECT next_probe_at, probe_lease_until FROM ai_model_operational_status
-        WHERE provider = 'gemini' AND model = $1 AND key_fingerprint = $2${capacite ? ' AND capability = $3' : ''}`,
-      (capacite ? [p.model, fp, BASE_CAPABILITY] : [p.model, fp]) as never[],
+        WHERE provider = 'gemini' AND model = $1 AND key_fingerprint = $2${parCapacite ? ' AND capability = $3' : ''}`,
+      (parCapacite ? [p.model, fp, BASE_CAPABILITY] : [p.model, fp]) as never[],
     )) as unknown as Row[];
-    if (!etat[0]) return { acquired: true, reason: 'no_state', until: null };
-    const bail = etat[0].probe_lease_until == null ? 0 : Date.parse(String(etat[0].probe_lease_until));
-    if (bail > Date.now()) return { acquired: false, reason: 'held_elsewhere', until: iso(etat[0].probe_lease_until) };
-    return { acquired: false, reason: 'not_due', until: null };
+    if (etat[0]) {
+      const bail = etat[0].probe_lease_until == null ? 0 : Date.parse(String(etat[0].probe_lease_until));
+      if (bail > Date.now()) return refus('held_elsewhere', iso(etat[0].probe_lease_until));
+      return refus('not_due');
+    }
+    /**
+     * #786 (B03) — ROUTE JAMAIS SONDÉE : la ligne d'état est CRÉÉE, puis la réservation est RETENTÉE.
+     *
+     * Règle remplacée (carte #786, B03) : l'absence de ligne rendait
+     * `{ acquired: true, reason: 'no_state' }` SANS aucune réservation. Deux
+     * instances arrivant ensemble sur un modèle nouveau obtenaient donc toutes
+     * les deux « réservé » et sondaient toutes les deux.
+     *
+     * L'`INSERT ... ON CONFLICT DO NOTHING` est ATOMIQUE : si deux instances
+     * l'exécutent, l'une crée la ligne et l'autre ne fait rien — puis toutes
+     * deux retentent l'`UPDATE` conditionnel, que l'une seule gagne. Exactement
+     * un détenteur, même pour une route neuve.
+     *
+     * La ligne créée est NEUTRE : état INCONNU (`ok` NULL, aucun `check_status`,
+     * aucune erreur, aucune échéance). Elle ne retire aucun modèle, ne fabrique
+     * aucun verdict et n'invente aucune preuve — elle n'existe que pour porter
+     * la réservation. C'est le contrôle qui suivra qui écrira le verdict.
+     */
+    await pgClient.unsafe(
+      `INSERT INTO ai_model_operational_status
+         (provider, model, key_fingerprint, capability, endpoint, ok, error, source, checked_at, check_status, observed_at,
+          environment, api_version, state_version)
+       VALUES ('gemini', $1, $2, $3, $4, NULL, NULL, $5, NOW(), NULL, NULL, $6, $7, 0)
+       ON CONFLICT DO NOTHING`,
+      [p.model, fp, BASE_CAPABILITY, PROBE_ENDPOINT, 'catalog_refresh', await environnementCourant(), PROBE_API_VERSION] as never[],
+    );
+    const second = await tenter();
+    if (second) return obtenu(second);
+    // La ligne existe maintenant, mais une autre instance tient le bail : une seule sonde part.
+    const apres = (await pgClient.unsafe(
+      `SELECT probe_lease_until FROM ai_model_operational_status
+        WHERE provider = 'gemini' AND model = $1 AND key_fingerprint = $2${parCapacite ? ' AND capability = $3' : ''}`,
+      (parCapacite ? [p.model, fp, BASE_CAPABILITY] : [p.model, fp]) as never[],
+    )) as unknown as Row[];
+    if (apres[0]) return refus('held_elsewhere', iso(apres[0].probe_lease_until));
+    // Ligne ni lue ni créée : rien n'est réservé, donc rien ne part (aucune rafale non bornée).
+    return refus('no_state');
   } catch {
-    return { acquired: false, reason: 'unreadable', until: null };
+    return refus('unreadable');
   }
 }
 
@@ -1068,6 +1504,13 @@ export async function probeModels(
     reserve?: boolean;
     /** #786 (E07) : geste manuel — l'échéance partagée est ignorée, la réservation reste exigée. */
     immediate?: boolean;
+    /**
+     * #786 (B03) : jeton de clôture d'un bail DÉJÀ obtenu par l'appelant
+     * (`fallback-context` réserve la route puis appelle cette fonction). Sans
+     * lui, le résultat serait rejeté comme « sans jeton alors qu'un bail est en
+     * cours ». Incompatible avec `reserve` : celui-ci obtient son propre jeton.
+     */
+    leaseGeneration?: number | null;
   } = {},
 ): Promise<ProbeResult[]> {
   const call: ProbeCall = deps.call ?? (async (model: string) => {
@@ -1085,44 +1528,55 @@ export async function probeModels(
   // #786 (E05) : l'accès est celui qui a ENVOYÉ la sonde (empreinte figée au départ du passage), jamais celui
   // qui serait actif à la réception — une rotation de clé en vol n'attribue plus le résultat à la nouvelle clé.
   const accessFingerprint = keyFingerprint(secret);
-  const enregistrer = (model: string, c: Controle) => recordOperationalCheck({
+  /**
+   * #786 (B03) : le JETON DE CLÔTURE du bail accompagne le résultat jusqu'à l'écriture. Si le bail a été
+   * repris par un autre worker pendant la sonde, le résultat est rejeté et historisé — jamais appliqué.
+   */
+  const enregistrer = (model: string, c: Controle, leaseGeneration: number | null) => recordOperationalCheck({
     model, secret, outcome: c.outcome, source, observedAt: c.observedAt, probeCallId: c.probeCallId,
     httpStatus: c.httpStatus, providerCode: c.providerCode, checkId: c.checkId, accessFingerprint,
+    ...(leaseGeneration === null ? {} : { leaseGeneration }),
   });
   const owner = `${process.pid}:probeModels`;
   const sonder = async (model: string): Promise<ProbeResult> => {
-    // #786 (E07) : réservation ATOMIQUE partagée — une seule instance sonde la route à son échéance.
+    // #786 (E07) : réservation ATOMIQUE partagée — une seule instance sonde la route à son échéance, y
+    // compris sur une route JAMAIS sondée (la ligne d'état est créée puis réservée, #786 B03).
     if (deps.reserve) {
       const bail = await acquireProbeLease({ model, secret, owner, immediate: deps.immediate });
       if (!bail.acquired) {
         console.info(`[model-operational] sonde de ${model} non envoyée : ${bail.reason} (réservation partagée, #786).`);
+        // #786 (D03) : une sonde NON ENVOYÉE est comptée comme telle — jamais confondue avec un état sain.
+        try { (await import('./operational-admission')).noteProbeNotSent(); } catch { /* mesures absentes */ }
         return { model, ok: false, error: null, transient: true, checkStatus: 'inconclusive', notSent: true };
       }
       try {
-        return await sonderSansReservation(model);
+        return await sonderSansReservation(model, bail.generation);
       } finally {
         await releaseProbeLease({ model, secret, owner });
       }
     }
-    return sonderSansReservation(model);
+    // Bail déjà tenu par l'appelant : son jeton accompagne le résultat (#786, B03).
+    return sonderSansReservation(model, deps.leaseGeneration ?? null);
   };
-  const sonderSansReservation = async (model: string): Promise<ProbeResult> => {
+  const sonderSansReservation = async (model: string, leaseGeneration: number | null): Promise<ProbeResult> => {
     if (incidentGlobal) {
       // Sonde NON ENVOYÉE : le dernier contrôle du modèle est noté non concluant pour le motif global (état
       // retenu inchangé, aucun appel tracé) — le BO montre que rien n'a été conclu, jamais un modèle fautif.
+      try { (await import('./operational-admission')).noteProbeNotSent(); } catch { /* mesures absentes */ }
       const etat = await recordOperationalCheck({
         model, secret, outcome: incidentGlobal, source, accessFingerprint,
         checkId: `probe-not-sent:${crypto.randomUUID()}`,
+        ...(leaseGeneration === null ? {} : { leaseGeneration }),
       });
       return { model, ok: false, error: etat.error, transient: true, checkStatus: 'inconclusive', notSent: true };
     }
     const premier = await controle(model, secret, call, traced);
     if (premier.outcome.status === 'inconclusive' && GLOBAL_PROBE_KINDS.has(premier.outcome.kind)) incidentGlobal = premier.outcome;
-    let etat = await enregistrer(model, premier);
+    let etat = await enregistrer(model, premier, leaseGeneration);
     if (etat.checkStatus === 'suspect' && !etat.stale) {
       // Second contrôle : seul un échec répété confirme l'indisponibilité.
       if (pause > 0) await new Promise((r) => setTimeout(r, pause));
-      etat = await enregistrer(model, await controle(model, secret, call, traced));
+      etat = await enregistrer(model, await controle(model, secret, call, traced), leaseGeneration);
     }
     return {
       model,

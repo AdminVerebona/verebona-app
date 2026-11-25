@@ -175,10 +175,10 @@ describe('L114Q-U02 — erreurs transitoires, globales et 404 (R04, S04, S05)', 
     expect(o).toMatchObject({ status: 'inconclusive', kind });
     expect(C.probeErrorCodeOf(o)).toBe(code);
     // Modèle antérieurement sain : il le reste ; modèle jamais contrôlé : il reste inconnu (pas de `ok` inventé).
-    await O.recordOperationalCheck({ model: 'm-sain', secret: CLE, outcome: { status: 'ok' }, source: 'catalog_refresh' });
-    const apres = await O.recordOperationalCheck({ model: 'm-sain', secret: CLE, outcome: o, source: 'catalog_refresh' });
+    await O.recordOperationalCheck({ model: 'm-sain', secret: CLE, outcome: { status: 'ok' }, source: 'catalog_refresh', checkId: 'l114q-sondes-indisponibilites-178' });
+    const apres = await O.recordOperationalCheck({ model: 'm-sain', secret: CLE, outcome: o, source: 'catalog_refresh', checkId: 'l114q-sondes-indisponibilites-179' });
     expect(apres).toMatchObject({ ok: true, checkStatus: 'inconclusive', changed: false });
-    const inconnu = await O.recordOperationalCheck({ model: 'm-neuf', secret: CLE, outcome: o, source: 'catalog_refresh' });
+    const inconnu = await O.recordOperationalCheck({ model: 'm-neuf', secret: CLE, outcome: o, source: 'catalog_refresh', checkId: 'l114q-sondes-indisponibilites-181' });
     expect(inconnu.ok).toBeNull();
     expect((await O.loadOperationalStatuses(CLE)).has('m-neuf')).toBe(false);
     expect([...db.etats.values()].some((r) => r.ok === false)).toBe(false);
@@ -192,7 +192,7 @@ describe('L114Q-U02 — erreurs transitoires, globales et 404 (R04, S04, S05)', 
   });
 
   it('404 présumé définitif mais non explicite : suspect, puis confirmation par une SECONDE sonde bornée', async () => {
-    await O.recordOperationalCheck({ model: 'm-sain', secret: CLE, outcome: { status: 'ok' }, source: 'catalog_refresh' });
+    await O.recordOperationalCheck({ model: 'm-sain', secret: CLE, outcome: { status: 'ok' }, source: 'catalog_refresh', checkId: 'l114q-sondes-indisponibilites-195' });
     let appels = 0;
     const nu = () => Object.assign(new Error('Not Found'), { status: 404 });
     expect(C.classifyProbeFailure(nu(), { model: 'm-sain' })).toMatchObject({ status: 'failed', kind: 'model_not_found', definitive: false });
@@ -226,7 +226,7 @@ describe('L114Q-U03 — robustesse de la sonde (R05, S01)', () => {
     expect(C.classifyProbeFailure(new SyntaxError('Unexpected token < in JSON at position 0'), { model: 'modele-x-9' })).toMatchObject({ status: 'inconclusive', kind: 'probe_error' });
     expect(C.classifyProbeResponse('')).toMatchObject({ status: 'inconclusive', kind: 'empty_response' });
     // Sonde incompatible, deux passages de suite sur un modèle sain : toujours sain, un seul appel par passage.
-    await O.recordOperationalCheck({ model: 'modele-x-9', secret: CLE, outcome: { status: 'ok' }, source: 'catalog_refresh' });
+    await O.recordOperationalCheck({ model: 'modele-x-9', secret: CLE, outcome: { status: 'ok' }, source: 'catalog_refresh', checkId: 'l114q-sondes-indisponibilites-229' });
     let appels = 0;
     for (let i = 0; i < 2; i++) await O.probeModels(['modele-x-9'], CLE, { call: async () => { appels++; throw paramModele; }, confirmDelayMs: 0 });
     expect(appels).toBe(2);
@@ -262,7 +262,7 @@ describe('L114Q-U05 — un verdict par accès (R02, S06)', () => {
   it('refus avec la clé active ; le même modèle répond avec une autre clé : ni effacement, ni exclusion globale', async () => {
     await O.probeModels([MODELE], CLE, { call: async () => { throw erreur15389(); }, confirmDelayMs: 0 });
     // « Tester la clé » avec une autre clé (avant rotation) : le modèle y répond.
-    await O.recordOperationalCheck({ model: MODELE, secret: AUTRE_CLE, outcome: { status: 'ok' }, source: 'provider_test' });
+    await O.recordOperationalCheck({ model: MODELE, secret: AUTRE_CLE, outcome: { status: 'ok' }, source: 'provider_test', checkId: 'l114q-sondes-indisponibilites-265' });
     expect((await O.loadOperationalStatuses(CLE)).get(MODELE)?.ok).toBe(false);       // verdict de la clé active conservé
     expect((await O.loadOperationalStatuses(AUTRE_CLE)).get(MODELE)?.ok).toBe(true);   // pas d'exclusion pour l'autre accès
     expect(db.etats.size).toBe(2);
@@ -278,30 +278,30 @@ describe('L114Q-U06 — persistance ordonnée (R06, P02, S02)', () => {
 
   it('une réponse ANCIENNE n’efface pas un refus plus récent (sondes simultanées, retours hors ordre)', async () => {
     // Sonde A envoyée à 06:15:00 (lente) ; sonde B envoyée à 06:15:44, refus reçu et écrit d'abord.
-    await O.recordOperationalCheck({ model: MODELE, secret: CLE, outcome: refus(), source: 'catalog_refresh', observedAt: t('06:15:44') });
-    const tardive = await O.recordOperationalCheck({ model: MODELE, secret: CLE, outcome: { status: 'ok' }, source: 'provider_test', observedAt: t('06:15:00') });
+    await O.recordOperationalCheck({ model: MODELE, secret: CLE, outcome: refus(), source: 'catalog_refresh', checkId: 'l114q-sondes-indisponibilites-281', observedAt: t('06:15:44') });
+    const tardive = await O.recordOperationalCheck({ model: MODELE, secret: CLE, outcome: { status: 'ok' }, source: 'provider_test', checkId: 'l114q-sondes-indisponibilites-282', observedAt: t('06:15:00') });
     expect(tardive).toMatchObject({ ok: false, checkStatus: 'failed_confirmed', stale: true, changed: false });
     expect(etat(MODELE)).toMatchObject({ ok: false, check_status: 'failed_confirmed', state_version: 1 });
     expect(db.version).toBe(1); // aucune invalidation pour un contrôle écarté
     expect(db.historique.map((x) => [x.outcome, x.applied])).toEqual([['failed', true], ['ok', false]]);
     // Un succès POSTÉRIEUR au refus réhabilite (preuve) : état sain, blocage levé, version incrémentée.
-    const preuve = await O.recordOperationalCheck({ model: MODELE, secret: CLE, outcome: { status: 'ok' }, source: 'recovery_check', observedAt: t('09:00:00') });
+    const preuve = await O.recordOperationalCheck({ model: MODELE, secret: CLE, outcome: { status: 'ok' }, source: 'recovery_check', checkId: 'l114q-sondes-indisponibilites-288', observedAt: t('09:00:00') });
     expect(preuve).toMatchObject({ ok: true, checkStatus: 'ok', changed: true });
     expect(etat(MODELE)).toMatchObject({ ok: true, failure_count: 0, next_probe_at: null, confirmed_at: null });
     expect(db.version).toBe(2);
   });
 
   it('une indisponibilité confirmée ne redevient pas disponible sur une erreur de recontrôle ; rejeu sans effet', async () => {
-    await O.recordOperationalCheck({ model: MODELE, secret: CLE, outcome: refus(), source: 'catalog_refresh', observedAt: t('06:15:44') });
+    await O.recordOperationalCheck({ model: MODELE, secret: CLE, outcome: refus(), source: 'catalog_refresh', checkId: 'l114q-sondes-indisponibilites-295', observedAt: t('06:15:44') });
     const echeance = etat(MODELE)?.next_probe_at;
     for (const o of [C.classifyProbeResponse(''), C.classifyProbeFailure(Object.assign(new Error('overloaded'), { status: 503 }))]) {
-      const r = await O.recordOperationalCheck({ model: MODELE, secret: CLE, outcome: o, source: 'catalog_refresh', observedAt: t('07:00:00') });
+      const r = await O.recordOperationalCheck({ model: MODELE, secret: CLE, outcome: o, source: 'catalog_refresh', checkId: 'l114q-sondes-indisponibilites-298', observedAt: t('07:00:00') });
       expect(r).toMatchObject({ ok: false, checkStatus: 'inconclusive', changed: false });
     }
     expect(etat(MODELE)).toMatchObject({ ok: false, next_probe_at: echeance, failure_count: 1 });
     // Refus rapporté par des appels réels encore en vol : réception idempotente (ni échéance repoussée, ni version).
     for (let i = 0; i < 3; i++) {
-      await O.recordOperationalCheck({ model: MODELE, secret: CLE, outcome: refus(), source: 'gateway_call', observedAt: t('07:30:00') });
+      await O.recordOperationalCheck({ model: MODELE, secret: CLE, outcome: refus(), source: 'gateway_call', checkId: 'l114q-sondes-indisponibilites-304', observedAt: t('07:30:00') });
     }
     expect(etat(MODELE)).toMatchObject({ ok: false, failure_count: 1, next_probe_at: echeance });
     expect(db.version).toBe(1);
@@ -309,11 +309,21 @@ describe('L114Q-U06 — persistance ordonnée (R06, P02, S02)', () => {
   });
 
   it('base momentanément inaccessible : rien n’est inventé, rien n’est réactivé, aucune exception', async () => {
-    await O.recordOperationalCheck({ model: MODELE, secret: CLE, outcome: refus(), source: 'catalog_refresh' });
+    await O.recordOperationalCheck({ model: MODELE, secret: CLE, outcome: refus(), source: 'catalog_refresh', checkId: 'l114q-sondes-indisponibilites-312' });
+    // Cache CHAUD (R01) : l'instance a lu l'interdiction de façon fiable AVANT la panne.
+    expect((await O.loadOperationalStatuses(CLE)).get(MODELE)?.ok).toBe(false);
     db.panne = true;
-    const r = await O.recordOperationalCheck({ model: MODELE, secret: CLE, outcome: { status: 'ok' }, source: 'catalog_refresh' });
+    const r = await O.recordOperationalCheck({ model: MODELE, secret: CLE, outcome: { status: 'ok' }, source: 'catalog_refresh', checkId: 'l114q-sondes-indisponibilites-314' });
     expect(r.changed).toBe(false);
-    expect((await O.loadOperationalStatuses(CLE)).size).toBe(0); // illisible : inconnu, jamais « ok »
+    // #786 (A03) : aucun verdict n'est annoncé publié quand l'écriture a échoué.
+    expect(r.persistence).toBe('not_persisted');
+    /**
+     * Règle complétée (carte #786, D01) : la lecture illisible rendait une table VIDE, indiscernable d'une
+     * lecture fiable sans aucune indisponibilité. Elle rend désormais le DERNIER ÉTAT FIABLE — l'interdiction
+     * connue tient, et elle n'est jamais remplacée par « ok » faute de lecture.
+     */
+    const pendantPanne = await O.loadOperationalStatuses(CLE);
+    expect(pendantPanne.get(MODELE)?.ok).toBe(false);
     db.panne = false;
     expect(etat(MODELE)).toMatchObject({ ok: false, check_status: 'failed_confirmed' }); // état canonique intact
   });
@@ -329,9 +339,9 @@ describe('L114Q-U07 — recontrôle borné d’un modèle refusé (A06)', () => 
   it('chaque recontrôle en échec repousse l’échéance ; la passerelle ne relance aucune sonde avant elle', async () => {
     const now = new Date('2026-11-13T06:15:44Z');
     const refus = C.classifyProbeFailure(erreur15389(), { model: MODELE });
-    const a = await O.recordOperationalCheck({ model: MODELE, secret: CLE, outcome: refus, source: 'catalog_refresh', now });
+    const a = await O.recordOperationalCheck({ model: MODELE, secret: CLE, outcome: refus, source: 'catalog_refresh', checkId: 'l114q-sondes-indisponibilites-332', now });
     expect(a.nextProbeAt).toBe('2026-11-13T07:15:44.000Z');
-    const b = await O.recordOperationalCheck({ model: MODELE, secret: CLE, outcome: refus, source: 'recovery_check', now: new Date('2026-11-13T07:20:00Z') });
+    const b = await O.recordOperationalCheck({ model: MODELE, secret: CLE, outcome: refus, source: 'recovery_check', checkId: 'l114q-sondes-indisponibilites-334', now: new Date('2026-11-13T07:20:00Z') });
     expect(b.nextProbeAt).toBe('2026-11-13T09:20:00.000Z');
     expect(etat(MODELE)).toMatchObject({ failure_count: 2 });
     // Sans base autorisée en test unitaire, la passerelle ne sonde jamais ; l'échéance est portée par l'indice lu.
@@ -346,11 +356,11 @@ describe('L114Q-U08 — contrôle final de disponibilité dans une transaction (
     // lecture impossible vaut `unverifiable` (la promotion est alors refusée par prudence).
     const tx = { unsafe: (await import('@/db')).pgClient.unsafe as (q: string, p?: never[]) => Promise<unknown> };
     expect(await O.operationalRefusalInTx(tx, MODELE, CLE)).toEqual({ kind: 'clear' }); // jamais contrôlé
-    await O.recordOperationalCheck({ model: MODELE, secret: CLE, outcome: C.classifyProbeFailure(erreur15389(), { model: MODELE }), source: 'catalog_refresh' });
+    await O.recordOperationalCheck({ model: MODELE, secret: CLE, outcome: C.classifyProbeFailure(erreur15389(), { model: MODELE }), source: 'catalog_refresh', checkId: 'l114q-sondes-indisponibilites-349' });
     expect(await O.operationalRefusalInTx(tx, MODELE, CLE)).toMatchObject({ kind: 'refused', error: `HTTP 404 NOT_FOUND — ${MESSAGE_15389}`, checkedAt: expect.any(String) });
     expect(await O.operationalRefusalInTx(tx, MODELE, AUTRE_CLE)).toEqual({ kind: 'clear' });
     expect(await O.operationalRefusalInTx(tx, MODELE, null)).toEqual({ kind: 'clear' });
-    await O.recordOperationalCheck({ model: 'm-suspect', secret: CLE, outcome: { status: 'failed', kind: 'model_not_found', error: 'HTTP 404', definitive: false }, source: 'catalog_refresh' });
+    await O.recordOperationalCheck({ model: 'm-suspect', secret: CLE, outcome: { status: 'failed', kind: 'model_not_found', error: 'HTTP 404', definitive: false }, source: 'catalog_refresh', checkId: 'l114q-sondes-indisponibilites-353' });
     expect(await O.operationalRefusalInTx(tx, 'm-suspect', CLE)).toEqual({ kind: 'clear' });
     db.panne = true;
     expect(await O.operationalRefusalInTx(tx, MODELE, CLE)).toMatchObject({ kind: 'unverifiable' });
@@ -428,9 +438,9 @@ describe('L114Q-U09 — BO et alertes (R10, B01 à B04)', () => {
 
   it('suspect et inconclusive affichés à part des indisponibilités ; décompte jamais « tout est sain » faute de sonde', async () => {
     expect(A.operationalWatchOf(new Map()).summary).toMatch(/Aucun modèle contrôlé/);
-    await O.recordOperationalCheck({ model: 'm-ok', secret: CLE, outcome: { status: 'ok' }, source: 'catalog_refresh' });
-    await O.recordOperationalCheck({ model: 'm-suspect', secret: CLE, outcome: { status: 'failed', kind: 'model_not_found', error: 'HTTP 404 NOT_FOUND', definitive: false }, source: 'qualification' });
-    await O.recordOperationalCheck({ model: 'm-quota', secret: CLE, outcome: { status: 'inconclusive', kind: 'quota', error: 'HTTP 429 RESOURCE_EXHAUSTED — Quota exceeded' }, source: 'catalog_refresh' });
+    await O.recordOperationalCheck({ model: 'm-ok', secret: CLE, outcome: { status: 'ok' }, source: 'catalog_refresh', checkId: 'l114q-sondes-indisponibilites-431' });
+    await O.recordOperationalCheck({ model: 'm-suspect', secret: CLE, outcome: { status: 'failed', kind: 'model_not_found', error: 'HTTP 404 NOT_FOUND', definitive: false }, source: 'qualification', checkId: 'l114q-sondes-indisponibilites-432' });
+    await O.recordOperationalCheck({ model: 'm-quota', secret: CLE, outcome: { status: 'inconclusive', kind: 'quota', error: 'HTTP 429 RESOURCE_EXHAUSTED — Quota exceeded' }, source: 'catalog_refresh', checkId: 'l114q-sondes-indisponibilites-433' });
     const veille = A.operationalWatchOf(await O.loadOperationalDiagnostics(CLE));
     expect(veille.providerIncident).toBeNull();
     expect(veille.suspect.map((e) => e.model)).toEqual(['m-suspect']);
@@ -471,7 +481,7 @@ describe('L114Q-U10 — refus d’un appel réel : décision commune aux sondes 
     ];
     for (const [e, s] of riens) expect(await d(e, s)).toBeNull();
     // Le lecteur par défaut n'écrit jamais en test unitaire (aucune base) : rien n'est modifié.
-    expect(await F.fallbackContext().reportRefusal({ model: MODELE, error: erreur15389(), httpStatus: 404, sentAt: new Date() })).toBeNull();
+    expect(await F.fallbackContext().reportRefusal({ model: MODELE, error: erreur15389(), httpStatus: 404, sentAt: new Date() , checkId: 'l114q-sondes-indisponibilites-474'})).toBeNull();
     expect(db.etats.size).toBe(0);
   });
 });

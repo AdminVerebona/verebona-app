@@ -295,7 +295,13 @@ describe('T11-AC09 à T11-AC15 — BO, regroupement, alerte, configuration', () 
     expect(await A.raiseActiveModelAlerts(anomalies, new Date('2026-10-12T09:00:00Z'), raise, diagnostics)).toBe(1);
     expect(raise).toHaveBeenCalledTimes(1);
     const alerte = raise.mock.calls[0][0] as { dedupeKey: string; severity: string; treatment: unknown; details: { usages: Array<Record<string, unknown>>; diagnostic: Record<string, unknown> } };
-    expect(alerte.dedupeKey).toBe('ai:active-model:gemini-3.6-flash:2026-10-12');
+    // Règle complétée (carte #786, D02) : la clé d'alerte porte le PÉRIMÈTRE complet — modèle + ACCÈS +
+    // CAPACITÉ. Un succès sur l'accès B ne peut donc plus remplacer ni résoudre l'incident de l'accès A.
+    // Ce diagnostic de test ne renseigne ni l'un ni l'autre : les deux dimensions restent dites INCONNUES,
+    // jamais fusionnées avec une valeur.
+    expect(alerte.dedupeKey).toBe('ai:active-model:gemini-3.6-flash:acces-inconnu:capacite-inconnue:2026-10-12');
+    expect((alerte.details as unknown as { scope: unknown }).scope)
+      .toEqual({ model: 'gemini-3.6-flash', access: 'acces-inconnu', capability: 'capacite-inconnue' });
     expect(alerte.treatment).toBeNull();
     expect(alerte.details.usages).toHaveLength(5);
     // Règle complétée (carte #786, E08) : chaque usage dit aussi si son unité de routage n'a plus AUCUNE
@@ -307,8 +313,9 @@ describe('T11-AC09 à T11-AC15 — BO, regroupement, alerte, configuration', () 
     // Même fenêtre : même clé (dédupliquée par `raiseAlert`) ; jour suivant : nouvelle clé.
     await A.raiseActiveModelAlerts(anomalies, new Date('2026-10-12T22:00:00Z'), raise);
     await A.raiseActiveModelAlerts(anomalies, new Date('2026-10-13T09:00:00Z'), raise);
+    const cle = 'ai:active-model:gemini-3.6-flash:acces-inconnu:capacite-inconnue';
     expect(raise.mock.calls.map((c) => (c[0] as { dedupeKey: string }).dedupeKey)).toEqual([
-      'ai:active-model:gemini-3.6-flash:2026-10-12', 'ai:active-model:gemini-3.6-flash:2026-10-12', 'ai:active-model:gemini-3.6-flash:2026-10-13',
+      `${cle}:2026-10-12`, `${cle}:2026-10-12`, `${cle}:2026-10-13`,
     ]);
   });
 
@@ -361,7 +368,7 @@ describe('T11-AC16 — aucun secret fournisseur', () => {
   it('T11-AC16 — journaux : un échec d’écriture ne journalise pas le secret ; l’état écrit est nettoyé', async () => {
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
     db.fail = new Error(`connexion refusée pour ${SECRET}`);
-    await O.recordOperationalCheck({ model: 'gemini-3.6-flash', secret: SECRET, outcome: { status: 'inconclusive', kind: 'network', error: `boom ${SECRET}` }, source: 'catalog_refresh' });
+    await O.recordOperationalCheck({ model: 'gemini-3.6-flash', secret: SECRET, outcome: { status: 'inconclusive', kind: 'network', error: `boom ${SECRET}` }, source: 'catalog_refresh', checkId: 'l49-sondes-modeles-364' });
     expect(JSON.stringify(warn.mock.calls)).not.toContain(SECRET);
     db.fail = null;
     await O.probeModels(['gemini-3.6-flash'], SECRET, { call: async () => { throw new Error(`HTTP 503 UNAVAILABLE ?key=${SECRET}`); }, confirmDelayMs: 0 });

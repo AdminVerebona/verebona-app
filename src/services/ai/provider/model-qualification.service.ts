@@ -374,13 +374,17 @@ export async function runTargetedRequalification(
     const tarif = await splitByPricing(aReprendre);
     for (const u of tarif.unpriced) out.skipped.push({ model: u.model, reason: 'unpriced' });
     const call = opts.call ?? defaultQualificationCall(secret);
-    const { guardSend } = await import('./operational-admission');
+    const { guardSend, confirmDeparture } = await import('./operational-admission');
     for (const model of tarif.priced) {
       if (out.attempted.length >= max || Date.now() > fin) { out.skipped.push({ model, reason: 'budget' }); continue; }
       // E03 : une qualification n'est PAS une sonde de récupération — la route doit être admissible avant la
       // première épreuve, et chaque épreuve repasse la garde au port d'appel. Refus : la campagne le DIT.
-      const admission = await guardSend({ model, point: 'qualification_trial' });
+      // #786 (A02) : la garde porte sur l'accès avec lequel la campagne va RÉELLEMENT envoyer (le secret
+      // reçu en paramètre), jamais sur la clé active relue.
+      const admission = await guardSend({ model, point: 'qualification_trial', access: { secret } });
       if (!admission.admitted) { out.skipped.push({ model, reason: 'refused' }); continue; }
+      // #786 (B01) : confirmation de départ avant la première épreuve de cette route.
+      if (!(await confirmDeparture(admission)).departed) { out.skipped.push({ model, reason: 'refused' }); continue; }
       out.attempted.push(model);
       try {
         const r = await qualifyModel(model, call, { secret, capabilities: capabilitiesOf(model) });
@@ -497,7 +501,12 @@ export function defaultQualificationCall(secret?: string | null): QualificationC
     await (await import('../gateway/pricing/pricing-guard')).assertModelPricingVerified(input.model);
     // Lot 115 (carte #786, E03) : garde de disponibilité AVANT CHAQUE épreuve — une qualification n'est pas une
     // sonde de récupération. Un refus publié entre la sélection des modèles et cette épreuve l'arrête ici.
-    await (await import('./operational-admission')).assertSendAdmissible({ model: input.model, point: 'qualification_trial' });
+    // #786 (A02) : garde ET confirmation de départ sur l'accès réellement employé par cette épreuve. Sans
+    // secret explicite, la clé active fait foi (comportement d'avant la carte).
+    await (await import('./operational-admission')).assertSendAdmissible({
+      model: input.model, point: 'qualification_trial',
+      ...(secret != null && secret !== '' ? { access: { secret } } : {}),
+    });
     try {
       const r = await getAiProvider().call(input);
       await traceTechnicalCall('model_qualification_probe', input.model, true, Date.now() - started,
