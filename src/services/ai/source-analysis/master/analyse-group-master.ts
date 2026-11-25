@@ -118,6 +118,14 @@ export async function analyseGroupWithMaster(
     return undefined;
   });
 
+  // Carte #839 : identité de l'émetteur (contrat t1-supplier-identity-v1) — exploitée par le titre SEULEMENT si le
+  // prompt T1 effectif porte le contrat et que c'est cette version qui a répondu ; conservée dans tous les cas.
+  let identityContract: { carried: boolean; reason: string } | undefined;
+  if (analysed.analysis.document.supplier?.identity) {
+    const { supplierIdentityCapability, identityContractFor } = await import('../supplier-identity/contract');
+    identityContract = identityContractFor(await supplierIdentityCapability(), analysed.promptVersion);
+  }
+
   const result = toSourceAnalysisResult({
     input,
     groupIndices,
@@ -133,6 +141,9 @@ export async function analyseGroupWithMaster(
     rubric,
     warnings: analysed.warnings,
     trace: combineTraces(groupTrace, analysed.trace),
+    ...(identityContract ? {
+      supplierIdentity: { contract: identityContract, sourceText: input.extractedContent ?? null, transcription: analysed.analysis.transcription ?? null },
+    } : {}),
   });
 
   result.warnings.push(...identite.warnings);

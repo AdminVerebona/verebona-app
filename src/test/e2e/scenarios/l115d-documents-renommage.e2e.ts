@@ -164,7 +164,8 @@ scenario('L115D-TITRE', 'Renommage contextuel : la garantie ne nomme pas une fac
     const apres = await titre(a.id);
     expect(apres.retained_title).not.toMatch(/2028/);
     // Règle remplacée (carte #813) : version des règles de titre 4 → 5.
-    expect(apres.rule_version).toBe(5);
+    // Règle remplacée (carte #839) : version 5 → 6 (identité prouvée, éligibilité temporelle commune, aucune coupe).
+    expect(apres.rule_version).toBe(6);
     // Idempotence : un second passage ne répare plus rien et ne renomme rien.
     const second = await runCoherenceFor(sql, [c.id], { mode: 'CORRECTIVE' });
     expect(second.results['COH-DOC-TITLES']?.REPAIRED ?? 0).toBe(0);

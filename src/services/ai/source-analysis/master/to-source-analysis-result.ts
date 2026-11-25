@@ -21,6 +21,7 @@ import type {
 import type { ProjectedFact, T1AnalyzeDocumentOutput, T1Confidence, T1Evidence } from './t1-contract';
 import type { ProjectionWarning, ProjectionWarningCode } from '../projection/document-projection';
 import { documentEntryOf } from '../projection/rules';
+import { verifiedSupplierIdentity, type SupplierIdentityVerificationInput } from '../supplier-identity/verify';
 
 type Meta<T> = { value: T; confidence: T1Confidence; evidence: T1Evidence } | undefined;
 
@@ -142,6 +143,12 @@ interface MasterResultInput {
   rubric?: SourceAnalysisResult['document']['rubric'];
   warnings: AnalysisWarning[];
   trace: AiOperationTrace;
+  /**
+   * Carte #839 — contexte du contrôle de l'identité de l'émetteur (`document.supplier.identity`) :
+   * état du contrat dans le prompt effectif et textes de la source. Absent : identité conservée mais
+   * marquée `CONTRACT_NOT_CARRIED` (jamais exploitée par le titre).
+   */
+  supplierIdentity?: Omit<SupplierIdentityVerificationInput, 'supplierName'>;
 }
 
 /** Assemble le `SourceAnalysisResult` historique depuis l'analyse master projetée. */
@@ -164,7 +171,19 @@ export function toSourceAnalysisResult(p: MasterResultInput): SourceAnalysisResu
       amountCents: toEvidence(d.amountCents),
       supplier: d.supplier
         ? {
-            value: { name: d.supplier.name, ...(d.supplier.siret ? { siret: d.supplier.siret } : {}), ...(d.supplier.contacts ? { contacts: d.supplier.contacts } : {}), supplierId: null },
+            value: {
+              name: d.supplier.name, ...(d.supplier.siret ? { siret: d.supplier.siret } : {}), ...(d.supplier.contacts ? { contacts: d.supplier.contacts } : {}), supplierId: null,
+              // Carte #839 : entrée maître `document.supplier.identity` → résultat projeté `supplier.value.identity`
+              // (mapping EXPLICITE, preuve contrôlée contre le texte de la source ; `name` inchangé).
+              ...(d.supplier.identity ? {
+                identity: verifiedSupplierIdentity(d.supplier.identity, {
+                  supplierName: d.supplier.name,
+                  sourceText: p.supplierIdentity?.sourceText ?? p.input.extractedContent ?? null,
+                  transcription: p.supplierIdentity?.transcription ?? p.analysis.transcription ?? null,
+                  contract: p.supplierIdentity?.contract ?? { carried: false, reason: 'NOT_EVALUATED' },
+                }),
+              } : {}),
+            },
             confidence: d.supplier.confidence,
             excerpt: d.supplier.evidence?.excerpt ?? '',
             location: {},

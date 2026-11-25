@@ -25,6 +25,7 @@ import {
 } from '@/lib/documents/document-title-convention';
 import { DOCUMENT_TITLE_RULE_VERSION, titleCarriesStalePeriod, titlePeriodMarkers } from '@/lib/documents/document-title-rules';
 import { planBusinessTitle, titleInputsFromAnalysis, type BillingBasis } from '@/services/ai/source-analysis/document-title';
+import { verifiedSupplierIdentity } from '@/services/ai/source-analysis/supplier-identity/verify';
 
 const lire = (p: string) => readFileSync(join(process.cwd(), p), 'utf8');
 
@@ -112,18 +113,26 @@ describe('L115D-783-U-03 — titre composé : avant / après', () => {
 });
 
 describe('L115D-783-U-04 — fournisseur du titre (bloc PO 52, facultatif)', () => {
-  const resultat = (identity: unknown) => ({ document: { supplier: { value: { name: 'CONFORAMA FRANCE SA CHASSE S/R', identity } } } });
+  // Carte #839 : l'identité n'est plus injectée telle quelle — elle passe par la projection RÉELLE
+  // (`verifiedSupplierIdentity`, contrôle de la preuve contre le texte de la source), comme en production.
+  const NOM = 'CONFORAMA FRANCE SA CHASSE S/R';
+  const TEXTE = 'FACTURE\nCONFORAMA FRANCE SA — Magasin de Chasse S/R\nTable FAR CI606025BK';
+  const resultat = (identity: unknown, o: { carried?: boolean; texte?: string } = {}) => ({
+    document: { supplier: { value: { name: NOM, ...(identity ? { identity: verifiedSupplierIdentity(identity as never, {
+      supplierName: NOM, transcription: o.texte ?? TEXTE, contract: { carried: o.carried ?? true, reason: 'CARRIED' },
+    }) } : {}) } } },
+  });
   it('rubrique absente : le nom lu aujourd’hui, inchangé (tolérance au bloc non collé)', () => {
     expect(supplierIdentityFromAnalysis(resultat(undefined))).toBeNull();
     expect(supplierIdentityFromAnalysis(null)).toBeNull();
-    expect(titleInputsFromAnalysis(resultat(undefined) as never).ctx.supplier).toBe('CONFORAMA FRANCE SA CHASSE S/R');
+    expect(titleInputsFromAnalysis(resultat(undefined) as never).ctx.supplier).toBe(NOM);
     // La casse est seule normalisée (règle 87D inchangée) : aucune troncature, aucun mot retiré.
-    expect(presentSupplier('CONFORAMA FRANCE SA CHASSE S/R')).toBe('Conforama France SA Chasse S/R');
+    expect(presentSupplier(NOM)).toBe('Conforama France SA Chasse S/R');
   });
   it('rubrique prouvée : l’enseigne, jamais l’établissement ni l’adresse', () => {
     const id = {
       legalName: 'Conforama France SA', tradeName: 'Conforama', establishment: 'Chasse S/R',
-      confidence: 'certain', evidence: { quote: 'CONFORAMA FRANCE SA — Magasin de Chasse S/R' },
+      confidence: 'certain', evidence: { excerpt: 'CONFORAMA FRANCE SA — Magasin de Chasse S/R' },
     };
     expect(supplierIdentityFromAnalysis(resultat(id))).toEqual({
       legalName: 'Conforama France SA', tradeName: 'Conforama', establishment: 'Chasse S/R',
@@ -133,13 +142,16 @@ describe('L115D-783-U-04 — fournisseur du titre (bloc PO 52, facultatif)', () 
     // Sans enseigne : la raison sociale (aucune troncature inventée).
     expect(titleInputsFromAnalysis(resultat({ ...id, tradeName: null }) as never).ctx.supplier).toBe('Conforama France SA');
     // L'établissement seul ne nomme jamais : rubrique inexploitable → nom d'aujourd'hui.
-    expect(titleInputsFromAnalysis(resultat({ ...id, legalName: null, tradeName: null }) as never).ctx.supplier)
-      .toBe('CONFORAMA FRANCE SA CHASSE S/R');
+    expect(titleInputsFromAnalysis(resultat({ ...id, legalName: null, tradeName: null }) as never).ctx.supplier).toBe(NOM);
   });
-  it('rubrique hésitante, sans preuve, ou coupée par la variable d’environnement : aucun effet', () => {
-    const base = { legalName: 'Conforama France SA', tradeName: 'Conforama', evidence: { quote: 'CONFORAMA' } };
+  it('rubrique hésitante, sans preuve, non vérifiable, hors contrat ou coupée par la variable d’environnement : aucun effet', () => {
+    const base = { legalName: 'Conforama France SA', tradeName: 'Conforama', evidence: { excerpt: 'CONFORAMA FRANCE SA' } };
     expect(supplierIdentityFromAnalysis(resultat({ ...base, confidence: 'probable' }))).toBeNull();
     expect(supplierIdentityFromAnalysis(resultat({ ...base, confidence: 'certain', evidence: {} }))).toBeNull();
+    // Citation non vide mais introuvable dans le texte de la source : jamais une preuve.
+    expect(supplierIdentityFromAnalysis(resultat({ ...base, confidence: 'certain' }, { texte: 'Autre document' }))).toBeNull();
+    // Prompt T1 effectif sans le contrat : identité conservée, jamais exploitée.
+    expect(supplierIdentityFromAnalysis(resultat({ ...base, confidence: 'certain' }, { carried: false }))).toBeNull();
     expect(supplierIdentityFromAnalysis(resultat({ ...base, confidence: 'certain' }), { T1_SUPPLIER_IDENTITY_ENABLED: '0' })).toBeNull();
     expect(supplierTitleName(null, 'Orange')).toBe('Orange');
     expect(supplierTitleName(null, '  ')).toBeNull();
@@ -155,15 +167,17 @@ describe('L115D-783-U-05 — reprise du stock des titres automatiques', () => {
     // Un titre périodique inchangé, ou enrichi, n’est jamais recomposé par cette règle.
     expect(titleCarriesStalePeriod('Facture Homiris — Février 2026', 'Facture Homiris — Février 2026 (n° 94741361)')).toBe(false);
     expect(titleCarriesStalePeriod('Facture Homiris', 'Facture Homiris — Février 2026')).toBe(false);
-    // La règle ne sert QUE lorsqu'une période a été écartée par sa nature (garde du service).
+    // Règle remplacée (carte #839) : la garde ne se contente plus d'« au moins une période écartée » — chaque
+    // repère retiré doit être une borne de la garantie exclue, et aucune date légitime (test c839-*).
     const svc = lire('src/services/documents/document-title.service.ts');
-    expect(svc).toContain("if (!decision.replace && excludedPeriods > 0 && titleCarriesStalePeriod(row.retained_title, candidat)) {");
+    expect(svc).toContain('if (!decision.replace && titleRemovesOnlyExcludedBounds(row.retained_title, candidat, excludedBoundDays, legitimateDays)) {');
     expect(svc).toContain("decision = { replace: true, reason: 'EXCLUDED_PERIOD_REMOVED' };");
   });
   it('version des règles relevée : le contrôle COH-DOC-TITLES reprend les titres SYSTÈME antérieurs', async () => {
     // Règle remplacée (carte #783) : version 3 (lot 87D) → 4.
     // Règle remplacée (carte #813) : version 4 → 5 (titre « type + désignation » d'un bon de commande).
-    expect(DOCUMENT_TITLE_RULE_VERSION).toBe(5);
+    // Règle remplacée (carte #839) : version 5 → 6 (identité prouvée, éligibilité temporelle commune, aucune coupe).
+    expect(DOCUMENT_TITLE_RULE_VERSION).toBe(6);
     const check = lire('src/services/coherence/registry/checks/document-titles.ts');
     expect(check).toContain("if (s.ruleVersion !== DOCUMENT_TITLE_RULE_VERSION) return { verdict: 'REPAIRABLE', anomaly: 'TITLE_RULES_OUTDATED' };");
     // Aucun titre utilisateur n'est proposé ni réécrit par la reprise.
@@ -180,14 +194,16 @@ describe('L115D-783-U-05 — reprise du stock des titres automatiques', () => {
 describe('L115D-783-U-06 — service de nommage : la nature des périodes est LUE', () => {
   const svc = lire('src/services/documents/document-title.service.ts');
   it('les périodes de faits passent par le filtre pur, avec leur clé et les natures qualifiées', () => {
-    expect(svc).toContain('titleEligibleFactPeriods(faits, qualifiees)');
+    // Carte #839 : le filtre reçoit aussi l'état de la qualification (lisible ou non).
+    expect(svc).toContain('titleEligibleFactPeriods(faits, qualifiees.periods, { qualificationAvailable: qualifiees.available })');
     expect(svc).toContain("COALESCE(raw_key, fact_key) AS key");
     expect(svc).toContain('FROM document_business_periods');
     // Les deux lectures du nommage (contexte du compte et données de facturation) passent par le filtre.
-    expect((svc.match(/loadTitleFactPeriods\(sql, fileId, accountId/g) ?? []).length).toBe(2);
+    expect((svc.match(/\n {4}(?:load|read)TitleFactPeriods\(sql, fileId, accountId/g) ?? []).length).toBe(2);
     expect(svc).not.toMatch(/period_start IS NOT NULL AND period_end IS NOT NULL\s*\n\s*LIMIT/);
-    // La lecture des natures ne lève jamais (table absente : comportement d'avant).
-    expect(svc).toContain('.catch(() => [])) as unknown as Array<{ kind: string; start: string | null; end: string | null }>');
+    // Règle remplacée (carte #839) : une lecture des natures en échec n'est plus « aucune nature » — elle rend
+    // `available: false` et le point de décision commun s'abstient (jamais d'exception propagée).
+    expect(svc).toContain('return { available: false, periods: [] };');
   });
   it('aucune règle ne dépend d’un fournisseur, d’une marque ou d’un modèle particulier', () => {
     for (const f of ['src/services/documents/document-title.service.ts', 'src/lib/documents/document-title-period.ts', 'src/services/ai/source-analysis/document-title.ts']) {

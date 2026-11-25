@@ -30,6 +30,10 @@
 import { createHash } from 'node:crypto';
 import { pgClient } from '@/db';
 import { isValidBusinessTitle } from '@/lib/documents/document-title-rules';
+import { isBusinessPeriodKind } from '@/lib/documents/business-periods';
+import {
+  DERIVED_QUALIFICATION_BASES, excludedOnlyBoundDays, titlePeriodDecision, titlePeriodEvidence, type QualifiedPeriodBounds,
+} from '@/lib/documents/document-title-period';
 import { T1_SETTLED_STATES } from '../document-asset/question-gate';
 import { isDiscriminantReference, REFERENCE_KEYS } from '../document-asset/matching-index';
 import type { KnownDocumentData, NameOrigin } from './guards';
@@ -498,10 +502,11 @@ export async function loadDocDetails(accountId: number, ids: readonly number[]):
  * mêmes que celles présentées au modèle, jamais le reste du texte).
  */
 export async function loadKnownData(accountId: number, doc: NamingDoc, opts: { transmittedPassages?: readonly string[] } = {}): Promise<KnownDocumentData> {
-  const [faits, ext, ops, histo] = await Promise.all([
+  const [faits, ext, ops, histo, qualifiees] = await Promise.all([
     pgClient.unsafe(
       `SELECT COALESCE(value_text, normalized_value, value_number::text) AS v, normalized_value AS nv, label,
-              to_char(period_start, 'YYYY-MM-DD') AS ps, to_char(period_end, 'YYYY-MM-DD') AS pe
+              to_char(period_start, 'YYYY-MM-DD') AS ps, to_char(period_end, 'YYYY-MM-DD') AS pe,
+              COALESCE(raw_key, fact_key) AS k
          FROM document_facts WHERE account_id = $1 AND file_id = $2 AND status = 'active' ORDER BY id LIMIT 10000`,
       [accountId, doc.id] as never[],
     ) as unknown as Promise<Row[]>,
@@ -523,8 +528,26 @@ export async function loadKnownData(accountId: number, doc: NamingDoc, opts: { t
        UNION SELECT old_title FROM document_title_events WHERE account_id = $1 AND file_id = $2 AND outcome = 'UPDATED' AND old_title IS NOT NULL`,
       [accountId, doc.id] as never[],
     ).catch(() => []) as unknown as Promise<Row[]>,
+    // Carte #839 : NATURE des périodes (lot 113W) — même point de décision que le titre T1 ; lecture en échec : illisible.
+    (pgClient.unsafe(
+      `SELECT period_kind AS kind, start_on AS start, end_on AS "end", basis, origin
+         FROM document_business_periods WHERE account_id = $1 AND file_id = $2 AND status = 'ACTIVE' ORDER BY id LIMIT 40`,
+      [accountId, doc.id] as never[],
+    ) as unknown as Promise<Row[]>).then((r) => ({ available: true, rows: r }), () => ({ available: false, rows: [] as Row[] })),
   ]);
   const e = ext[0];
+  const periodesFaits = faits.filter((f) => f.ps || f.pe).map((f) => ({ s: s(f.ps), e: s(f.pe), key: s(f.k) }));
+  const natures = titlePeriodEvidence(
+    periodesFaits,
+    qualifiees.rows.filter((r) => isBusinessPeriodKind(String(r.kind))).map((r) => ({
+      kind: r.kind as QualifiedPeriodBounds['kind'], start: s(r.start), end: s(r.end),
+      ...(r.origin !== 'USER' && DERIVED_QUALIFICATION_BASES.includes(String(r.basis ?? '')) ? { derived: true } : {}),
+    })),
+    qualifiees.available,
+  );
+  // Seules les périodes ÉLIGIBLES justifient une date d'un nom proposé (une garantie, jamais).
+  const eligibles = periodesFaits.filter((f) => titlePeriodDecision({ start: f.s, end: f.e, provenance: 'T3_PROPOSAL', key: f.key }, natures).eligible);
+  const datesDoc = [doc.documentDate, s(e?.d)].filter((x): x is string => !!x);
   const textes = [
     doc.extractionTitle, doc.supplier, doc.assetName, doc.originalName,
     s(e?.title), s(e?.description), s(e?.supplier_name), s(e?.txt),
@@ -534,10 +557,11 @@ export async function loadKnownData(accountId: number, doc: NamingDoc, opts: { t
     ...(opts.transmittedPassages ?? []),
   ].filter((t): t is string => !!t && t.trim().length > 0);
   return {
-    dates: [doc.documentDate, s(e?.d)].filter((x): x is string => !!x),
-    periods: faits.filter((f) => f.ps || f.pe).map((f) => ({ start: s(f.ps), end: s(f.pe) })),
+    dates: datesDoc,
+    periods: eligibles.map((f) => ({ start: f.s, end: f.e })),
     amountsCents: [doc.amountCents, n(e?.amount_cents)].filter((x): x is number => x != null),
     texts: textes,
+    excludedDays: excludedOnlyBoundDays(natures, [...datesDoc, ...eligibles.flatMap((f) => [f.s, f.e])]),
   };
 }
 

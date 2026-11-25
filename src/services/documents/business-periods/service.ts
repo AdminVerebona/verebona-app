@@ -114,7 +114,14 @@ export async function loadPeriodInputs(sql: Sql | Tx, accountId: number, fileId:
   // Les périodes de faits génériques ne sont pas une période facturée (jamais devinée).
   const { DocumentTitleService } = await import('@/services/documents/document-title.service');
   const { periodFactsOf } = await import('@/services/ai/source-analysis/document-title');
-  const basis = DocumentTitleService.billingBasisFrom({ candidatePayloads: candidates.map((c) => c.payload), factPeriods: [], analysisResult: resultat, issueDate: null });
+  // Carte #839 : même point de décision que le titre — une période de nature exclue (garantie, établie par
+  // les faits T1 `period.*`) rendue à tort par un repli (`billingPeriod`, `financialHints`) n'est jamais
+  // qualifiée « facturation ». La garantie reste qualifiée par son propre fait (WARRANTY).
+  const { titlePeriodEvidence } = await import('@/lib/documents/document-title-period');
+  const natures = titlePeriodEvidence(periodFacts.map((f) => ({ s: f.periodStart, e: f.periodEnd, key: f.rawKey })), [], true);
+  const basis = DocumentTitleService.billingBasisFrom({
+    candidatePayloads: candidates.map((c) => c.payload), factPeriods: [], analysisResult: resultat, issueDate: null, periodEvidence: natures,
+  });
   const pf = periodFactsOf(basis);
   const bloc = asObj(asObj(asObj(resultat).document).billingPeriod);
   return {

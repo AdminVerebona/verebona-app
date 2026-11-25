@@ -122,8 +122,9 @@ describe('TITLE2-AC8 — reprise du stock : version des règles', () => {
   // Règle remplacée (carte #783) : la version des règles de titre passe de 3 (lot 87D) à 4 — la
   // reprise du stock des titres automatiques se fait par ce changement de version, comme au lot 87D.
   // Règle remplacée (carte #813) : version 4 → 5 (titre « type + désignation » d'un bon de commande).
-  it('DOCUMENT_TITLE_RULE_VERSION = 5 (carte #813) ; le contrôle ciblé reprend tout titre SYSTEM d’une version antérieure, plus seulement les titres techniques', () => {
-    expect(DOCUMENT_TITLE_RULE_VERSION).toBe(5);
+  // Règle remplacée (carte #839) : version 5 → 6 (identité de l'émetteur prouvée, éligibilité temporelle commune, aucune coupe).
+  it('DOCUMENT_TITLE_RULE_VERSION = 6 (carte #839) ; le contrôle ciblé reprend tout titre SYSTEM d’une version antérieure, plus seulement les titres techniques', () => {
+    expect(DOCUMENT_TITLE_RULE_VERSION).toBe(6);
     const sql = TITLE_SWEEP_SQL.replace(/\s+/g, ' ');
     expect(sql).toContain('f.title_rule_version IS DISTINCT FROM $4::int');
     expect(sql).toContain("f.title_source = 'SYSTEM'");

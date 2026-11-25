@@ -53,7 +53,7 @@
 import { createHash } from 'node:crypto';
 import { resolveDocumentType } from '@/services/canonical/registry/catalogs';
 import {
-  DOCUMENT_TITLE_RULE_VERSION, normalizeTitle, titleHasPeriod, type TitleExpectations,
+  DOCUMENT_TITLE_MAX_LENGTH, DOCUMENT_TITLE_RULE_VERSION, normalizeTitle, titleHasPeriod, type TitleExpectations,
 } from '@/lib/documents/document-title-rules';
 import {
   canonicalTitleKey, composePeriodicTitle, disambiguatorFor, formatTitleDate, PERIODIC_NATURES,
@@ -247,6 +247,10 @@ export interface TitlePlan {
    * et le bien n'y figurent pas par défaut. Sert à retirer ces discriminants d'un titre SYSTÈME antérieur.
    */
   designationOnly?: boolean;
+  /** Carte #839 : informations accessoires retirées pour tenir dans la limite (ordre `TITLE_REDUCTION_ORDER`). */
+  reduced?: Array<'supplier' | 'target' | 'period' | 'reference'>;
+  /** Carte #839 : l'identifiant central (ou le titre périodique) dépasse seul la limite — aucun titre proposé. */
+  tooLong?: boolean;
 }
 
 /** Nature du document : tête du titre du modèle, sinon type, sinon « Document ». */
@@ -308,12 +312,23 @@ function appendDistinct(base: string, phrase: string | null | undefined): string
   return mots.length ? `${base} ${mots.join(' ')}` : base;
 }
 
-const MAX_TITLE = 120;
-const MAX_BASE = 90;
+/**
+ * Carte #839 — longueur maximale d'un titre automatique, commune à T3 (`NAMING_MAX_LENGTH`). Plus
+ * aucune coupe (`slice`) : au-delà, les informations ACCESSOIRES sont retirées dans cet ordre —
+ * fournisseur, puis cible (bien / équipement / pièce), puis période ou date, puis référence — sans
+ * jamais toucher à l'identifiant CENTRAL (nature + désignation : modèle, référence produit). Si
+ * l'identifiant central seul dépasse la limite, aucun titre n'est proposé (`tooLong`) : le titre en
+ * place est conservé, rien n'est inventé ni coupé.
+ */
+const MAX_TITLE = DOCUMENT_TITLE_MAX_LENGTH;
+/** Ordre de retrait des informations accessoires (documenté, testé). */
+export const TITLE_REDUCTION_ORDER = ['supplier', 'target', 'period', 'reference'] as const;
+type Accessoire = (typeof TITLE_REDUCTION_ORDER)[number];
 
 /**
  * Meilleur titre constructible (pure). `title` null : aucune donnée
- * exploitable (ni sujet, ni fournisseur, ni cible, ni date).
+ * exploitable (ni sujet, ni fournisseur, ni cible, ni date), ou identifiant
+ * central plus long que la limite (`tooLong`).
  */
 export function planBusinessTitle(modelTitle: string | null | undefined, ctx: TitleContext): TitlePlan {
   const { nature, natureText, rest, prefixed } = natureOf(modelTitle, ctx.typeCode);
@@ -349,10 +364,16 @@ export function planBusinessTitle(modelTitle: string | null | undefined, ctx: Ti
   // Titre du modèle sans nature reconnue en tête (« Abonnement fibre
   // Orange ») : sa formulation est gardée telle quelle comme base.
   const ownWording = !prefixed && !!titleSubject && subject === titleSubject;
-  let base = ownWording ? titleSubject! : subject ? `${natureText} ${subject}` : natureText;
-  if (target) base = appendDistinct(base, target.name);
-  if (supplier && !designationOnly && normalizeTitle(`${base} ${supplier}`).length <= MAX_BASE * 1.2) base = appendDistinct(base, supplier);
-  if (base.length > MAX_BASE) base = base.slice(0, MAX_BASE).replace(/\s+\S*$/, '');
+  // Identifiant CENTRAL (carte #839) : nature + désignation, jamais réduit.
+  const central = ownWording ? titleSubject! : subject ? `${natureText} ${subject}` : natureText;
+  const fournisseur = supplier && !designationOnly ? supplier : null;
+  const baseDe = (avecCible: boolean, avecFournisseur: boolean) => {
+    let b = central;
+    if (avecCible && target) b = appendDistinct(b, target.name);
+    if (avecFournisseur && fournisseur) b = appendDistinct(b, fournisseur);
+    return b;
+  };
+  const base = baseDe(true, true);
 
   // Période / date (lot 87D : période présentée exactement ; une date utile
   // est donnée AU JOUR — jamais un mois déduit de la date du document).
@@ -367,36 +388,59 @@ export function planBusinessTitle(modelTitle: string | null | undefined, ctx: Ti
   if (period && titleHasPeriod(base)) period = null;
 
   const hasData = !!(subject || supplier || target || period || ctx.documentDate);
-  const compose = (p: string | null, ref: string | null) => [base, p, ref].filter(Boolean).join(TITLE_SEPARATOR).slice(0, MAX_TITLE).trim();
+  const tooLong = central.trim().length > MAX_TITLE;
+  /**
+   * Composition dans la limite (carte #839) : tout est gardé si cela tient ; sinon les accessoires
+   * sont retirés dans l'ordre `TITLE_REDUCTION_ORDER`. Rend le titre et ce qui a été GARDÉ.
+   */
+  const compose = (p: string | null, ref: string | null) => {
+    const garde: Record<Accessoire, boolean> = { supplier: !!fournisseur, target: !!target, period: !!p, reference: !!ref };
+    const assembler = () => [baseDe(garde.target, garde.supplier), garde.period ? p : null, garde.reference ? ref : null].filter(Boolean).join(TITLE_SEPARATOR).trim();
+    let t = assembler();
+    for (const a of TITLE_REDUCTION_ORDER) {
+      if (t.length <= MAX_TITLE) break;
+      if (garde[a]) { garde[a] = false; t = assembler(); }
+    }
+    return t.length <= MAX_TITLE ? { title: t, garde } : null;
+  };
 
   // Doublons du compte : discriminant métier plutôt que « (2) ».
   const similaires = new Set((ctx.similarTitles ?? []).map(normalizeTitle));
   let reference: string | null = null;
   let duplicateResolved = false;
-  let title = hasData ? compose(period, null) : null;
-  if (title && similaires.has(normalizeTitle(title))) {
+  let essai = hasData && !tooLong ? compose(period, null) : null;
+  if (essai && similaires.has(normalizeTitle(essai.title))) {
     const options: Array<[string | null, string | null]> = [];
     if (!period) options.push([dayMonthYear(ctx.documentDate), null]);
     options.push([period ?? dayMonthYear(ctx.documentDate), null]);
     if (ctx.reference) options.push([period, ctx.reference]);
     for (const [p, r] of options) {
       const t = compose(p, r);
-      if (t && !similaires.has(normalizeTitle(t))) { title = t; period = p; reference = r; duplicateResolved = true; break; }
+      if (t && !similaires.has(normalizeTitle(t.title))) { essai = t; period = p; reference = r; duplicateResolved = true; break; }
     }
   }
+  const garde = essai?.garde ?? { supplier: !!fournisseur, target: !!target, period: !!period, reference: !!reference };
+  const reduced = TITLE_REDUCTION_ORDER.filter((a) => ({ supplier: !!fournisseur, target: !!target, period: !!period, reference: !!reference })[a] && !garde[a]);
+  const keptSupplier = garde.supplier ? fournisseur : null;
+  const keptTarget = garde.target ? target : null;
+  if (!garde.period) period = null;
+  if (!garde.reference) reference = null;
+  let title = essai?.title ?? null;
   // Rien qu'une nature (« Document », « Facture ») : pas un titre.
-  if (title && !subject && !supplier && !target && !period) title = null;
+  if (title && !subject && !keptSupplier && !keptTarget && !period) title = null;
 
   return {
-    title, nature, subject, supplier: designationOnly ? null : supplier, target, period, reference, duplicateResolved,
+    title, nature, subject, supplier: keptSupplier, target: keptTarget, period, reference, duplicateResolved,
     expectations: {
-      nature, subject, supplier: designationOnly ? null : supplier,
-      target: target ? { kind: target.kind, name: target.name } : null,
+      nature, subject, supplier: keptSupplier,
+      target: keptTarget ? { kind: keptTarget.kind, name: keptTarget.name } : null,
       period, duplicates: [...(ctx.similarTitles ?? [])],
     },
     convention: null,
     canonicalKey: null,
     subjectSource, otherSubjects, designationOnly,
+    ...(reduced.length ? { reduced } : {}),
+    ...(tooLong ? { tooLong: true } : {}),
   };
 }
 
@@ -420,8 +464,13 @@ function periodicPlan(nature: string, supplier: string | null, ctx: TitleContext
   const canonicalKey = canonicalTitleKey(nature, fournisseur, period ?? '');
   const self: DisambiguationMember = { id: ctx.selfId ?? 0, invoiceReferences: b.invoiceReferences, issueDate: b.issueDate };
   const reference = disambiguatorFor(self, ctx.periodicSiblings ?? []);
-  const title = composePeriodicTitle({ nature, supplier: fournisseur, period, disambiguator: reference }).slice(0, MAX_TITLE).trim();
+  // Carte #839 : jamais coupé — un titre périodique au-delà de la limite (fournisseur démesuré) n'est
+  // pas proposé (`tooLong`) ; le titre en place est conservé.
+  const compose = composePeriodicTitle({ nature, supplier: fournisseur, period, disambiguator: reference }).trim();
+  const tooLong = compose.length > MAX_TITLE;
+  const title = tooLong ? null : compose;
   return {
+    ...(tooLong ? { tooLong: true } : {}),
     title, nature, subject: null, supplier: fournisseur, target: null, period, reference, duplicateResolved: reference !== null,
     expectations: { nature, subject: null, supplier: fournisseur, target: null, period, duplicates: [] },
     convention: TITLE_CONVENTION_PERIODIC,

@@ -32,6 +32,9 @@ export const T1_MASTER_PROMPT_CODE = 't1_master_v1';
  * principal de rattachement décidés par T1, contrat `t1-billing-period-v1`,
  * demande `87D-mois-principal-factures` — une sortie v6 reste une v7 valide :
  * bloc ABSENT = contrat non porté, aucun adaptateur).
+ * Carte #839 : `document.supplier.identity` facultatif (même régime que
+ * `supplier.contacts`, lot 111X) — ajout ADDITIF sans changement de version :
+ * toute sortie v7 antérieure reste valide telle quelle.
  * Affichée « t1_analyze_document@v7 ».
  */
 export const T1_ANALYZE_DOCUMENT_CONTRACT_VERSION = 7;
@@ -363,6 +366,28 @@ export const t1BillingPeriod = z.object({
 });
 export type T1BillingPeriod = z.infer<typeof t1BillingPeriod>;
 
+// ── Identité de l'émetteur (carte #783, réparée par la carte #839, contrat t1-supplier-identity-v1) ──
+//
+// Bloc PO 52 (facultatif) : T1 DISTINGUE, avec sa preuve, la raison sociale,
+// l'enseigne et l'établissement de l'émetteur. Schéma CANONIQUE unique :
+// la citation est `evidence.excerpt` (même nom que toutes les autres preuves
+// du contrat) ; l'ancienne forme du bloc 52 (`evidence.quote`) est acceptée
+// par la lecture tolérante, qui la range dans `excerpt` (`tolerant-output.ts`).
+// L'adresse reste dans `contacts` (étape 19). Facultatif et additif : une
+// sortie sans `identity` reste une sortie v7 valide (aucun adaptateur).
+
+export const t1SupplierIdentity = z.object({
+  /** Raison sociale telle qu'écrite (« Conforama France SA »). */
+  legalName: z.string().min(1).max(200).nullable().optional(),
+  /** Enseigne commerciale (« Conforama »). */
+  tradeName: z.string().min(1).max(200).nullable().optional(),
+  /** Magasin / agence / établissement émetteur, tel qu'écrit — jamais dans un titre. */
+  establishment: z.string().min(1).max(200).nullable().optional(),
+  confidence,
+  evidence: t1Evidence.default({}),
+});
+export type T1SupplierIdentity = z.infer<typeof t1SupplierIdentity>;
+
 // ── Branche GROUP_UPLOAD ────────────────────────────────────────────────────
 export const T1GroupUploadOutput = z.object({
   task: z.literal('GROUP_UPLOAD'),
@@ -400,6 +425,14 @@ export const T1AnalyzeDocumentOutput = z.object({
         city: z.string().max(120).nullable().optional(),
         country: z.string().max(80).nullable().optional(),
       }).optional(),
+      /**
+       * Carte #839 (contrat facultatif `t1-supplier-identity-v1`, étape 52 du
+       * guide des prompts) : identité DÉCOMPOSÉE de l'émetteur avec sa preuve.
+       * ABSENT = contrat non porté : le titre garde le nom lu (`name`).
+       * Projetée vers `document.supplier.value.identity` après contrôle de la
+       * preuve contre le texte de la source (`master/supplier-identity.ts`).
+       */
+      identity: t1SupplierIdentity.optional(),
     }).optional(),
     /** Montant DOCUMENTAIRE, toujours en centimes — distinct des montants métier. */
     amountCents: meta(z.number().int()).optional(),

@@ -35,7 +35,7 @@
 import { z } from 'zod';
 import { normalizeDateValue } from '@/services/canonical/registry';
 import {
-  T1AnalyzeDocumentOutput, t1BillingPeriod, t1Fact, t1OperationCandidate, t1Table, t1ValueDecision, type T1Fact, T1_PRINCIPAL_MONTH_BASES,
+  T1AnalyzeDocumentOutput, t1BillingPeriod, t1SupplierIdentity, t1Fact, t1OperationCandidate, t1Table, t1ValueDecision, type T1Fact, T1_PRINCIPAL_MONTH_BASES,
   T1_MAX_OPERATION_CANDIDATES, T1_MAX_VALUE_DECISIONS, T1_VALUE_DECISIONS, T1_VALUE_KINDS, T1_OPERATION_TYPES, T1_OPERATION_STATUSES, T1_SOURCE_ROLES, T1_REFERENCE_KINDS,
   T1_EXCLUSION_REASONS, T1_FINANCIAL_ROLES, T1_AMOUNT_SCOPES,
 } from './t1-contract';
@@ -204,6 +204,37 @@ function prepare(brut: unknown): unknown {
     return out;
   };
 
+  /**
+   * Carte #839 — `document.supplier.identity` : chaînes vides → null ; citation de l'ancienne forme
+   * du bloc 52 (`evidence.quote`) rangée dans `evidence.excerpt` (nom canonique du contrat) ; confiance
+   * en minuscules (`uncertain` → `probable`). Nom trop long ou rubrique non conforme : rubrique retirée
+   * seule, original conservé dans `_normalisation.originals`.
+   */
+  const normaliserIdentite = (s: Obj) => {
+    const id = s.identity;
+    if (id === null || id === undefined) { delete s.identity; return; }
+    if (!isObj(id)) { garder('REMOVED', 'document.supplier.identity', structuredClone(id), null); delete s.identity; return; }
+    const original = structuredClone(id);
+    for (const k of ['legalName', 'tradeName', 'establishment'] as const) {
+      if (id[k] === undefined || (typeof id[k] === 'string' && (id[k] as string).trim() === '')) id[k] = null;
+      else if (typeof id[k] === 'string') id[k] = (id[k] as string).trim().replace(/\s+/g, ' ');
+    }
+    if (typeof id.confidence === 'string') {
+      const conf = id.confidence.trim().toLowerCase();
+      id.confidence = conf === 'uncertain' ? 'probable' : conf;
+    }
+    if (id.evidence === undefined || id.evidence === null) id.evidence = {};
+    if (isObj(id.evidence)) {
+      const ev = id.evidence;
+      if (vide(ev.excerpt) && !vide(ev.quote)) ev.excerpt = (ev.quote as string).slice(0, 2000);
+      delete ev.quote;
+    }
+    if (!t1SupplierIdentity.safeParse(id).success) {
+      garder('REMOVED', 'document.supplier.identity', original, null);
+      delete s.identity;
+    }
+  };
+
   // ── Parcours générique : preuves, pages, scores ──────────────────────────
   const walk = (node: unknown, path: string): void => {
     if (Array.isArray(node)) { node.forEach((x, i) => walk(x, `${path}[${i}]`)); return; }
@@ -263,6 +294,9 @@ function prepare(brut: unknown): unknown {
           if (siret) garder('REMOVED', 'document.supplier.siret', s.siret, null);
           s.siret = null;
         } else s.siret = siret;
+        // Carte #839 (contrat t1-supplier-identity-v1) : identité retirée SEULE si elle est mal formée
+        // (original conservé), jamais l'échec de toute la sortie ; aucun nom n'est raccourci (il serait faux).
+        if ('identity' in s) normaliserIdentite(s);
       }
     }
     // Lot 97A (contrat t1-billing-period-v1) : bloc mal formé retiré SEUL (conservé dans les originaux),

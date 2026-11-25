@@ -334,7 +334,8 @@ describe('RTC-T1 — audit document.title / description / documentDate / supplie
 
   it('document.supplier : { name, siret, confidence, evidence } côté fournisseur et validation', () => {
     // Lot 111X : `contacts` FACULTATIF (coordonnées de l'émetteur, contrat t1-supplier-contacts-v1, étape 19 du guide PO).
-    expect(Object.keys(props(document.supplier)).sort()).toEqual(['confidence', 'contacts', 'evidence', 'name', 'siret']);
+    // Carte #839 : `identity` FACULTATIF (identité de l'émetteur, contrat t1-supplier-identity-v1, étape 52 du guide PO).
+    expect(Object.keys(props(document.supplier)).sort()).toEqual(['confidence', 'contacts', 'evidence', 'identity', 'name', 'siret']);
     expect(Object.keys(props(props(document.supplier).evidence)).sort()).toEqual([...EVIDENCE_KEYS].sort());
   });
 

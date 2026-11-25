@@ -83,14 +83,15 @@
  */
 import {
   DOCUMENT_TITLE_RULE_VERSION, evaluateBusinessTitle, isValidBusinessTitle, normalizeTitle, shouldReplaceSystemTitle,
-  titleCarriesStalePeriod, titleHasPhrase,
+  titleHasPhrase, titleRemovesOnlyExcludedBounds,
   type TitleEvaluation, type TitleIdentifiers,
 } from '@/lib/documents/document-title-rules';
 import {
   billedPeriodFromAnalysis, hasLegacyTitleTypography, principalMonthFromAnalysis, type DisambiguationMember,
 } from '@/lib/documents/document-title-convention';
 import {
-  readStoredPeriodDecision, titleEligibleFactPeriods, type QualifiedPeriodBounds,
+  DERIVED_QUALIFICATION_BASES, excludedOnlyBoundDays, readStoredPeriodDecision, titleEligibleFactPeriods, titlePeriodDecision, titlePeriodEvidence,
+  type QualifiedPeriodBounds, type TitlePeriodEvidence,
 } from '@/lib/documents/document-title-period';
 import { isBusinessPeriodKind, periodKindOfFactKey } from '@/lib/documents/business-periods';
 import { POINT_DATE_GUARDED_KINDS } from './business-periods/point-date';
@@ -278,18 +279,30 @@ const FACT_PERIODS_SQL = `SELECT DISTINCT COALESCE(raw_key, fact_key) AS key, to
 
 /**
  * Carte #783 — périodes métier QUALIFIÉES du document (lot 113W, `document_business_periods`) :
- * elles donnent la NATURE de bornes portées par un fait sans clé `period.*` exploitable. Table
- * absente (migration 1560 non appliquée) ou lecture en échec : aucune nature connue, comportement
- * d'avant la carte.
+ * elles donnent la NATURE de bornes portées par un fait sans clé `period.*` exploitable.
+ * Carte #839 : une lecture en échec (table absente, erreur) n'est plus confondue avec « aucune
+ * période qualifiée » — `available: false`, et le point de décision commun s'abstient alors de
+ * nommer avec une période dont la nature n'est pas établie (`titlePeriodDecision`).
+ * Défaut LATENT corrigé (carte #839) : `start_on` / `end_on` sont du TEXTE (dates éventuellement
+ * partielles, migration 1560) — l'ancien `to_char(start_on, …)` échouait TOUJOURS et l'échec était
+ * absorbé : les natures qualifiées n'avaient jamais été lues. Elles le sont telles quelles ; une borne
+ * partielle (« 2026-11 ») ne correspond à aucune borne de fait au jour près (aucun effet).
  */
-async function loadQualifiedPeriodBounds(sql: Sql, fileId: number, accountId: number): Promise<QualifiedPeriodBounds[]> {
-  const rows = (await sql.unsafe(
-    `SELECT period_kind AS kind, to_char(start_on, 'YYYY-MM-DD') AS start, to_char(end_on, 'YYYY-MM-DD') AS "end"
-       FROM document_business_periods
-      WHERE file_id = $1 AND account_id = $2 AND status = 'ACTIVE' ORDER BY id LIMIT 40`,
-    [fileId, accountId] as never[],
-  ).catch(() => [])) as unknown as Array<{ kind: string; start: string | null; end: string | null }>;
-  return rows.filter((r) => isBusinessPeriodKind(r.kind)).map((r) => ({ kind: r.kind as QualifiedPeriodBounds['kind'], start: r.start, end: r.end }));
+async function loadQualifiedPeriodBounds(sql: Sql, fileId: number, accountId: number): Promise<{ available: boolean; periods: QualifiedPeriodBounds[] }> {
+  try {
+    const rows = (await sql.unsafe(
+      `SELECT period_kind AS kind, start_on AS start, end_on AS "end", basis, origin
+         FROM document_business_periods
+        WHERE file_id = $1 AND account_id = $2 AND status = 'ACTIVE' ORDER BY id LIMIT 40`,
+      [fileId, accountId] as never[],
+    )) as unknown as Array<{ kind: string; start: string | null; end: string | null; basis: string | null; origin: string | null }>;
+    return { available: true, periods: rows.filter((r) => isBusinessPeriodKind(r.kind)).map((r) => ({
+      kind: r.kind as QualifiedPeriodBounds['kind'], start: r.start, end: r.end,
+      ...(r.origin !== 'USER' && DERIVED_QUALIFICATION_BASES.includes(r.basis ?? '') ? { derived: true } : {}),
+    })) };
+  } catch {
+    return { available: false, periods: [] };
+  }
 }
 
 /**
@@ -321,17 +334,23 @@ async function loadTitleFactPeriods(sql: Sql, fileId: number, accountId: number,
   return (await readTitleFactPeriods(sql, fileId, accountId, limit)).periods;
 }
 
-/** Idem, en rendant AUSSI le nombre de périodes écartées par leur nature (carte #783). */
+/**
+ * Idem, en rendant AUSSI le nombre de périodes écartées par leur nature (carte #783) et, carte #839, la
+ * NATURE établie des bornes du document (`evidence`) : elle sert au point de décision commun
+ * (`titlePeriodDecision`) pour le repli `document.billingPeriod`, les `financialHints` et la reprise.
+ */
 async function readTitleFactPeriods(sql: Sql, fileId: number, accountId: number, limit: number): Promise<{
-  periods: Array<{ s: string | null; e: string | null }>; excluded: number;
+  periods: Array<{ s: string | null; e: string | null }>; excluded: number; evidence: TitlePeriodEvidence;
 }> {
   const [lus, qualifiees] = await Promise.all([
     sql.unsafe(FACT_PERIODS_SQL, [fileId, accountId, limit] as never[]).catch(() => []) as unknown as Promise<Array<{ key: string | null; s: string | null; e: string | null }>>,
     loadQualifiedPeriodBounds(sql, fileId, accountId),
   ]);
   const faits = await withoutPointDateFactPeriods(sql, fileId, accountId, lus);
-  const retenues = titleEligibleFactPeriods(faits, qualifiees);
-  return { periods: retenues.map((f) => ({ s: f.s, e: f.e })), excluded: faits.length - retenues.length };
+  const evidence = titlePeriodEvidence(faits, qualifiees.periods, qualifiees.available);
+  // Même point de décision (`titlePeriodDecision`) que les replis et T3, via le filtre des faits.
+  const retenues = titleEligibleFactPeriods(faits, qualifiees.periods, { qualificationAvailable: qualifiees.available });
+  return { periods: retenues.map((f) => ({ s: f.s, e: f.e })), excluded: faits.length - retenues.length, evidence };
 }
 
 /**
@@ -421,12 +440,24 @@ export async function planTitleForDocument(fileId: number, accountId: number, in
   plan: TitlePlan; fingerprint: string; basis: BillingBasis;
   /** Carte #783 : nombre de périodes de faits ÉCARTÉES parce que leur nature ne nomme pas le document. */
   excludedPeriods: number;
+  /**
+   * Carte #839 : jours ISO qui sont des bornes d'une période de nature EXCLUE (garantie) et d'aucune
+   * période retenue ni de la date du document — seuls repères qu'`EXCLUDED_PERIOD_REMOVED` peut retirer.
+   */
+  excludedBoundDays: string[];
+  /** Carte #839 : dates légitimes du document (émission, bornes des périodes retenues) — jamais retirées. */
+  legitimateDays: string[];
   /** Carte #813 : fournisseur et bien du contexte — discriminants qu'un titre « type + désignation » ne porte plus. */
   discriminants: string[];
 }> {
   const sqlExcl = await sqlClient();
-  const { excluded } = await readTitleFactPeriods(sqlExcl, fileId, accountId, 5);
+  const { excluded, evidence, periods: retenues } = await readTitleFactPeriods(sqlExcl, fileId, accountId, 5);
   const billing = await loadBillingBasis(fileId, accountId, inputs.ctx.documentDate ?? null);
+  const legitimateDays = [
+    inputs.ctx.documentDate ?? null, billing.issueDate, billing.billedPeriod?.start ?? null, billing.billedPeriod?.end ?? null,
+    ...retenues.flatMap((r) => [r.s, r.e]),
+  ].filter((d): d is string => !!d);
+  const excludedBoundDays = excludedOnlyBoundDays(evidence, legitimateDays);
   const ctx: TitleContext = { ...inputs.ctx, ...(await loadTitleAccountContext(fileId, accountId)), selfId: fileId, billing };
   let plan = planBusinessTitle(inputs.modelTitle, ctx);
   if (plan.convention === 'PERIODIC' && plan.canonicalKey) {
@@ -438,7 +469,7 @@ export async function planTitleForDocument(fileId: number, accountId: number, in
     if (similaires.length) plan = planBusinessTitle(inputs.modelTitle, { ...ctx, similarTitles: similaires });
   }
   const discriminants = [ctx.supplier, ctx.asset?.name].filter((x): x is string => typeof x === 'string' && x.trim().length > 0);
-  return { plan, fingerprint: titleContextFingerprint(plan), basis: billing, excludedPeriods: excluded, discriminants };
+  return { plan, fingerprint: titleContextFingerprint(plan), basis: billing, excludedPeriods: excluded, excludedBoundDays, legitimateDays, discriminants };
 }
 
 /**
@@ -474,7 +505,16 @@ export function billingBasisFrom(p: {
   factPeriods: ReadonlyArray<{ s: string | null; e: string | null }>;
   analysisResult: unknown;
   issueDate: string | null;
+  /**
+   * Carte #839 — nature établie des bornes du document (`readTitleFactPeriods`) : les replis
+   * `financialHints` et `document.billingPeriod` passent par le MÊME point de décision que les faits
+   * (`titlePeriodDecision`) — une garantie n'y devient jamais période facturée. Absent (appel pur
+   * historique) : aucun filtre supplémentaire.
+   */
+  periodEvidence?: TitlePeriodEvidence | null;
 }): BillingBasis {
+  const admise = (start: string, end: string, provenance: 'FINANCIAL_HINT' | 'T1_BILLING_PERIOD') =>
+    !p.periodEvidence || titlePeriodDecision({ start, end, provenance }, p.periodEvidence).eligible;
   const refs = new Map<string, string>();
   const echeances = new Map<string, { start: string; end: string }>();
   const couts = new Map<string, { start: string; end: string }>();
@@ -487,7 +527,7 @@ export function billingBasisFrom(p: {
     for (const h of Array.isArray(c.financialHints) ? c.financialHints as Array<Record<string, unknown>> : []) {
       const start = isoDay(h?.periodStart);
       const end = isoDay(h?.periodEnd);
-      if (!start || !end) continue;
+      if (!start || !end || !admise(start, end, 'FINANCIAL_HINT')) continue;
       if (h.amountScope === 'INSTALLMENT') echeances.set(`${start}|${end}`, { start, end });
       else if (h.role === 'REALIZED_COST' || h.role === 'FORECAST_COST') couts.set(`${start}|${end}`, { start, end });
     }
@@ -496,15 +536,20 @@ export function billingBasisFrom(p: {
   const unique = <T>(m: Map<string, T>): T | null => (m.size === 1 ? [...m.values()][0] : null);
   // Lot 99C : la période facturée de T1 (`document.billingPeriod`, 97A) n'est lue qu'à défaut de
   // TOUTE autre période (jamais pour trancher une ambiguïté entre échéances, coûts ou faits).
-  const t1 = echeances.size === 0 && couts.size === 0 && faits.size === 0 ? billedPeriodFromAnalysis(p.analysisResult) : null;
+  // Carte #839 : et seulement si sa NATURE ne l'exclut pas (garantie rendue à tort comme période facturée).
+  const t1Lu = billedPeriodFromAnalysis(p.analysisResult);
+  const t1Exclue = !!t1Lu && !admise(t1Lu.start, t1Lu.end, 'T1_BILLING_PERIOD');
+  const t1 = echeances.size === 0 && couts.size === 0 && faits.size === 0 && t1Lu && !t1Exclue ? t1Lu : null;
   const billedPeriod = unique(echeances) ? { ...unique(echeances)!, source: 'T1_INSTALLMENT' as const }
     : echeances.size === 0 && unique(couts) ? { ...unique(couts)!, source: 'T1_COST_PERIOD' as const }
       : echeances.size === 0 && couts.size === 0 && unique(faits) ? { ...unique(faits)!, source: 'T1_FACT' as const }
         : t1 ? { start: t1.start, end: t1.end, source: 'T1_BILLING_PERIOD' as const }
           : null;
+  // Carte #839 : un mois principal T1 dont la période facturée a été écartée par sa nature n'est pas retenu non plus.
+  const principalMonth = t1Exclue ? null : principalMonthFromAnalysis(p.analysisResult);
   return {
     billedPeriod,
-    principalMonth: principalMonthFromAnalysis(p.analysisResult),
+    principalMonth,
     invoiceReferences: [...refs.values()].sort((a, b) => refKey(a).localeCompare(refKey(b))),
     issueDate: isoDay(p.issueDate),
   };
@@ -542,7 +587,8 @@ async function loadBillingBasis(fileId: number, accountId: number, issueDate: st
       [fileId, accountId] as never[],
     ).catch(() => []) as unknown as Promise<Array<{ payload: unknown }>>,
     // Carte #783 : périodes de faits filtrées par leur NATURE (une garantie ne nomme pas un document).
-    loadTitleFactPeriods(sql, fileId, accountId, 5),
+    // Carte #839 : avec la nature établie des bornes, appliquée aussi aux replis (hints, billingPeriod).
+    readTitleFactPeriods(sql, fileId, accountId, 5),
     // Mois principal (point d'extension) : le résultat n'est relu que s'il porte le bloc.
     sql.unsafe(
       `SELECT raw_response_json AS raw FROM document_analysis_runs
@@ -556,7 +602,7 @@ async function loadBillingBasis(fileId: number, accountId: number, issueDate: st
   let resultat: unknown = null;
   try { resultat = run[0]?.raw ? JSON.parse(run[0].raw) : null; } catch { resultat = null; }
   const payloads = cands.map((c) => (typeof c.payload === 'string' ? safeJson(c.payload) : c.payload));
-  const basis = billingBasisFrom({ candidatePayloads: payloads, factPeriods: faits, analysisResult: resultat, issueDate });
+  const basis = billingBasisFrom({ candidatePayloads: payloads, factPeriods: faits.periods, analysisResult: resultat, issueDate, periodEvidence: faits.evidence });
   return decision ? { ...basis, periodDecision: decision } : basis;
 }
 const safeJson = (s: string): unknown => { try { return JSON.parse(s); } catch { return null; } };
@@ -650,21 +696,38 @@ async function persistNamingMetadata(fileId: number, accountId: number, record: 
   return rows.length > 0;
 }
 
+/** Carte #839 : l'événement d'un titre écrit n'a pas pu être journalisé — l'écriture du titre est annulée. */
+export class TitleEventNotRecordedError extends Error {
+  constructor(cause: string) { super(`TITLE_EVENT_NOT_RECORDED: ${cause}`.slice(0, 300)); this.name = 'TitleEventNotRecordedError'; }
+}
+
+const INSERT_TITLE_EVENT_SQL = `INSERT INTO document_title_events (account_id, file_id, origin, outcome, reason, old_title, new_title,
+                                          rule_version, context_fingerprint, trigger_reason)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)`;
+const titleEventParams = (accountId: number, r: Pick<EnsureTitleResult, 'fileId' | 'origin' | 'outcome' | 'reason' | 'oldTitle' | 'newTitle' | 'trigger' | 'contextFingerprint'>) =>
+  [accountId, r.fileId, r.origin, r.outcome, r.reason, r.oldTitle, r.newTitle, DOCUMENT_TITLE_RULE_VERSION, r.contextFingerprint ?? null, r.trigger ?? null] as never[];
+
 /**
  * Écrit un titre SYSTÈME sous contrôle de concurrence : n'aboutit que si le
  * document a toujours le titre `expectedTitle` et la source SYSTEM. Retire
  * la marque historique `user_edited_fields.retainedTitle` (la source du titre
  * fait foi). Rend `true` si la ligne a été modifiée.
+ *
+ * Carte #839 : `event` fourni → l'événement `document_title_events` (UPDATED) est écrit dans la MÊME
+ * transaction que le titre. Si sa journalisation échoue, la transaction est annulée (le titre n'est
+ * PAS écrit) et `TitleEventNotRecordedError` est levée : aucun titre écrit sans événement.
  */
 export async function persistTitle(p: {
   fileId: number; accountId: number; expectedTitle: string | null; newTitle: string;
   contextFingerprint?: string | null; ruleVersion?: number;
   /** Lot 87D : données de nommage, convention et clé du groupe canonique (même écriture). */
   metadata?: { record: Record<string, unknown>; convention: string | null; key: string | null } | null;
+  /** Carte #839 : événement à journaliser atomiquement avec l'écriture. */
+  event?: Pick<EnsureTitleResult, 'origin' | 'reason' | 'trigger'> | null;
 }): Promise<boolean> {
   const sql = await sqlClient();
   const meta = p.metadata ?? null;
-  const rows = (await sql.unsafe(
+  const ecrire = async (tx: Pick<Sql, 'unsafe'>) => (await tx.unsafe(
     `UPDATE asset_files
         SET retained_title = $3, title_source = 'SYSTEM', title_checked_at = now(), updated_at = now(),
             title_rule_version = $5::int, title_context_fingerprint = $6,
@@ -680,7 +743,21 @@ export async function persistTitle(p: {
     [p.fileId, p.accountId, p.newTitle, p.expectedTitle, p.ruleVersion ?? DOCUMENT_TITLE_RULE_VERSION, p.contextFingerprint ?? null,
       meta !== null, meta ? JSON.stringify(meta.record) : null, meta?.convention ?? null, meta?.key ?? null] as never[],
   )) as unknown as Array<{ id: number }>;
-  return rows.length > 0;
+  if (!p.event) return (await ecrire(sql)).length > 0;
+  const ev = p.event;
+  return sql.begin(async (tx) => {
+    const rows = await ecrire(tx as unknown as Pick<Sql, 'unsafe'>);
+    if (rows.length === 0) return false;
+    try {
+      await (tx as unknown as Pick<Sql, 'unsafe'>).unsafe(INSERT_TITLE_EVENT_SQL, titleEventParams(p.accountId, {
+        fileId: p.fileId, origin: ev.origin, outcome: 'UPDATED', reason: ev.reason, oldTitle: p.expectedTitle, newTitle: p.newTitle,
+        trigger: ev.trigger ?? null, contextFingerprint: p.contextFingerprint ?? null,
+      }));
+    } catch (e) {
+      throw new TitleEventNotRecordedError((e as Error).message ?? 'ERROR');
+    }
+    return true;
+  }) as unknown as Promise<boolean>;
 }
 
 /**
@@ -723,7 +800,11 @@ export async function isHarmonizedDocumentTitle(fileId: number, accountId: numbe
   return isHarmonizedTitle(await sqlClient(), fileId, accountId, title);
 }
 
-/** Événement d'observabilité (ne lève jamais). */
+/**
+ * Événement d'observabilité (ne lève jamais). Carte #839 : un titre ÉCRIT est journalisé dans la
+ * transaction de son écriture (`persistTitle({ event })`) ; `persist` ne concerne plus ici que les
+ * issues sans écriture de titre (refus, données insuffisantes, échec).
+ */
 async function trace(accountId: number, r: EnsureTitleResult, persist: boolean): Promise<void> {
   const ligne = `[document-title] ${r.origin} fichier ${r.fileId} : ${r.outcome}${r.reason ? ` (${r.reason})` : ''}`
     + (r.trigger ? ` [${r.trigger}]` : '')
@@ -733,13 +814,7 @@ async function trace(accountId: number, r: EnsureTitleResult, persist: boolean):
   if (!persist) return;
   try {
     const sql = await sqlClient();
-    await sql.unsafe(
-      `INSERT INTO document_title_events (account_id, file_id, origin, outcome, reason, old_title, new_title,
-                                          rule_version, context_fingerprint, trigger_reason)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)`,
-      [accountId, r.fileId, r.origin, r.outcome, r.reason, r.oldTitle, r.newTitle,
-       DOCUMENT_TITLE_RULE_VERSION, r.contextFingerprint ?? null, r.trigger ?? null] as never[],
-    );
+    await sql.unsafe(INSERT_TITLE_EVENT_SQL, titleEventParams(accountId, r));
   } catch (e) {
     console.error(`[document-title] événement non journalisé (fichier ${r.fileId}) :`, (e as Error).message);
   }
@@ -831,7 +906,7 @@ export async function ensureBusinessTitle(p: {
         const ecrit = await stampChecked(p.fileId, p.accountId, 'NO_ANALYSIS_DATA');
         return fin(valide ? 'NO_CHANGE' : 'INSUFFICIENT_DATA', valide ? 'NO_BETTER_TITLE' : 'NO_ANALYSIS_DATA', null, !valide && ecrit);
       }
-      const { plan, fingerprint: fp, basis, excludedPeriods, discriminants } = await planTitleForDocument(p.fileId, p.accountId, inputs);
+      const { plan, fingerprint: fp, basis, excludedBoundDays, legitimateDays, discriminants } = await planTitleForDocument(p.fileId, p.accountId, inputs);
       fingerprint = fp;
       const meta = { record: titleBasisRecord(plan, basis, inputs.ctx.supplier ?? null), convention: plan.convention, key: plan.canonicalKey };
       const cleModifiee = row.title_canonical_key !== plan.canonicalKey;
@@ -857,6 +932,8 @@ export async function ensureBusinessTitle(p: {
       };
 
       if (!candidat) {
+        // Carte #839 : identifiant central plus long que la limite — aucun titre coupé, le titre en place reste.
+        if (plan.tooLong) return sansRenommage(valide ? 'NO_CHANGE' : 'INSUFFICIENT_DATA', 'TITLE_TOO_LONG', (e) => e && (!valide || contexteModifie));
         if (valide) return sansRenommage('NO_CHANGE', 'NO_BETTER_TITLE', (e) => e && contexteModifie);
         return sansRenommage('INSUFFICIENT_DATA', 'NO_TITLE_FROM_DATA', (e) => e);
       }
@@ -887,11 +964,11 @@ export async function ensureBusinessTitle(p: {
         if (!decision.replace && valide && hasLegacyTitleTypography(row.retained_title) && !titleLosesInformation(row.retained_title!, candidat, plan)) {
           decision = { replace: true, reason: 'TYPOGRAPHY_NORMALIZED' };
         }
-        // Carte #783 : une période a été ÉCARTÉE parce que sa nature ne nomme pas le document
-        // (bornes de garantie d'une facture d'achat) et le titre en place la porte encore : le
-        // titre est recomposé. Hors de ce cas, la règle « jamais de perte de période » est
-        // inchangée — un titre n'est jamais privé d'une période légitime.
-        if (!decision.replace && excludedPeriods > 0 && titleCarriesStalePeriod(row.retained_title, candidat)) {
+        // Carte #783, précisée par la carte #839 : le titre en place porte encore des repères temporels
+        // que le candidat ne porte plus, et CHACUN d'eux est une borne d'une période de nature exclue
+        // (garantie) sans être une date légitime du document (émission, période retenue) : le titre
+        // est recomposé. Hors de ce cas PROUVÉ, la règle « jamais de perte de période » est inchangée.
+        if (!decision.replace && titleRemovesOnlyExcludedBounds(row.retained_title, candidat, excludedBoundDays, legitimateDays)) {
           decision = { replace: true, reason: 'EXCLUDED_PERIOD_REMOVED' };
         }
         // Carte #813 : titre « type + désignation » (bon de commande dont le produit est identifié) — le titre
@@ -904,8 +981,12 @@ export async function ensureBusinessTitle(p: {
       if (!decision.replace) return sansRenommage('NO_CHANGE', 'NO_BETTER_TITLE', (e) => e && contexteModifie);
 
       await p.guard?.assertActive('titre du document');
-      if (await persistTitle({ fileId: p.fileId, accountId: p.accountId, expectedTitle: row.retained_title, newTitle: candidat, contextFingerprint: fp, metadata: meta })) {
-        return fin('UPDATED', decision.reason, candidat, true, evaluation);
+      // Carte #839 : titre et événement UPDATED écrits dans la même transaction (journal durable).
+      if (await persistTitle({
+        fileId: p.fileId, accountId: p.accountId, expectedTitle: row.retained_title, newTitle: candidat, contextFingerprint: fp, metadata: meta,
+        event: { origin: p.origin, reason: decision.reason, trigger },
+      })) {
+        return fin('UPDATED', decision.reason, candidat, false, evaluation);
       }
       // Le document a changé entre la lecture et l'écriture.
       const apres = await readRow(sql, p.fileId, p.accountId);

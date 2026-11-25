@@ -188,30 +188,42 @@ const texte = (v: unknown): string | null => {
   return s ? s.slice(0, 200) : null;
 };
 
+/** Forme de comparaison (sans accents, casse, ponctuation ni espaces). */
+const plat = (s: string): string => s.normalize('NFD').replace(/[̀-ͯ]/g, '').toLowerCase().replace(/[^a-z0-9]/g, '');
+
 /**
- * Carte #783 — identité de l'émetteur lue dans le résultat PERSISTÉ d'une analyse T1 (rubrique
- * facultative `document.supplier.identity`, bloc PO 52). Tolérante par construction : rubrique
- * absente → `null` et comportement d'avant. Retenue SEULEMENT si la confiance est « certain », si
- * une preuve est citée et si au moins l'enseigne ou la raison sociale est lisible — une rubrique
- * incomplète, hésitante ou sans preuve n'a aucun effet (y compris si un modèle l'inventait sans le
- * bloc). Pure.
+ * Identité de l'émetteur lue dans le résultat PERSISTÉ d'une analyse T1 — carte #783, réparée par la
+ * carte #839 : la rubrique de la sortie maître (`document.supplier.identity`, bloc PO 52) est projetée
+ * vers `document.supplier.value.identity` avec le CONTRÔLE SERVEUR de sa preuve
+ * (`source-analysis/supplier-identity/verify.ts`). Retenue SEULEMENT si :
+ *   · la coupure `T1_SUPPLIER_IDENTITY_ENABLED=0` n'est pas posée ;
+ *   · le contrôle a conclu `VERIFIED` (contrat porté par le prompt qui a répondu, confiance « certain »,
+ *     citation retrouvée dans le texte de la source, nom cohérent avec le fournisseur lu) ;
+ *   · le nom retenu figure dans la citation (revérifié ici).
+ * Seuls les noms PROUVÉS sont rendus (enseigne non prouvée → null). Rubrique absente, non contrôlée
+ * (résultat antérieur à la carte #839), ambiguë ou sans preuve → `null` : comportement d'avant. Pure.
  */
 export function supplierIdentityFromAnalysis(raw: unknown, env?: Record<string, string | undefined>): SupplierIdentity | null {
   if (!supplierIdentityEnabled(env)) return null;
   const doc = (raw && typeof raw === 'object' ? (raw as { document?: unknown }).document : null) as Record<string, unknown> | null;
   const sup = doc && typeof doc === 'object' ? doc.supplier as Record<string, unknown> | undefined : undefined;
   if (!sup || typeof sup !== 'object') return null;
-  const inner = (sup.value && typeof sup.value === 'object' ? sup.value as Record<string, unknown> : sup);
-  const id = inner.identity && typeof inner.identity === 'object' ? inner.identity as Record<string, unknown> : null;
+  const inner = sup.value && typeof sup.value === 'object' ? sup.value as Record<string, unknown> : null;
+  const id = inner?.identity && typeof inner.identity === 'object' ? inner.identity as Record<string, unknown> : null;
   if (!id) return null;
   if (id.confidence !== 'certain') return null;
+  const v = id.verification && typeof id.verification === 'object' ? id.verification as Record<string, unknown> : null;
+  const contrat = v?.contract && typeof v.contract === 'object' ? v.contract as Record<string, unknown> : null;
+  if (v?.status !== 'VERIFIED' || contrat?.carried !== true) return null;
+  const prouve = v.proven && typeof v.proven === 'object' ? v.proven as Record<string, unknown> : {};
   const ev = id.evidence && typeof id.evidence === 'object' ? id.evidence as Record<string, unknown> : null;
-  const quote = texte(ev?.quote);
-  if (!quote) return null;
-  const legalName = texte(id.legalName);
-  const tradeName = texte(id.tradeName);
+  const quote = typeof ev?.quote === 'string' ? ev.quote.trim() : '';
+  if (plat(quote).length < 3) return null;
+  const dansCitation = (nom: string | null) => !!nom && plat(nom).length >= 2 && plat(quote).includes(plat(nom));
+  const legalName = prouve.legalName === true && dansCitation(texte(id.legalName)) ? texte(id.legalName) : null;
+  const tradeName = prouve.tradeName === true && dansCitation(texte(id.tradeName)) ? texte(id.tradeName) : null;
   if (!legalName && !tradeName) return null;
-  return { legalName, tradeName, establishment: texte(id.establishment), quote };
+  return { legalName, tradeName, establishment: texte(id.establishment), quote: quote.slice(0, 200) };
 }
 
 /**

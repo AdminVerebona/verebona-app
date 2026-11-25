@@ -356,6 +356,41 @@ export interface SupplierCandidate {
   supplierId?: number | null;
   /** Lot 111X : coordonnées de l'émetteur lues par T1 (contrat facultatif `t1-supplier-contacts-v1`). */
   contacts?: Partial<Record<'phone' | 'email' | 'website' | 'vatNumber' | 'iban' | 'addressLine1' | 'postalCode' | 'city' | 'country', string | null>>;
+  /**
+   * Carte #839 : identité DÉCOMPOSÉE de l'émetteur rendue par T1 (`document.supplier.identity`
+   * de la sortie maître, contrat facultatif `t1-supplier-identity-v1`, bloc PO 52), conservée
+   * TELLE QUELLE avec sa preuve et le résultat du contrôle serveur. Ne modifie ni `name`, ni le
+   * référentiel fournisseurs : seul le titre automatique la lit (`supplierIdentityFromAnalysis`).
+   */
+  identity?: SupplierIdentityRecord;
+}
+
+/** Carte #839 — motifs du contrôle serveur d'une identité de l'émetteur. */
+export type SupplierIdentityCheck =
+  | 'CONTRACT_NOT_CARRIED' | 'LOW_CONFIDENCE' | 'NO_QUOTE' | 'NO_SOURCE_TEXT' | 'QUOTE_NOT_IN_SOURCE'
+  | 'TRADE_NAME_NOT_IN_QUOTE' | 'LEGAL_NAME_NOT_IN_QUOTE' | 'NO_PROVEN_NAME' | 'INCONSISTENT_WITH_SUPPLIER_NAME';
+
+/** Carte #839 — identité de l'émetteur persistée (`raw_response_json`) : valeurs lues, preuve, contrôle. */
+export interface SupplierIdentityRecord {
+  legalName: string | null;
+  tradeName: string | null;
+  establishment: string | null;
+  confidence: EvidenceConfidence;
+  /** Citation du document (`evidence.excerpt` de la sortie maître ; `quote` : forme persistée commune aux blocs T1). */
+  evidence: { quote: string | null; page: number | null };
+  /** Contrôle SERVEUR de la preuve (jamais une décision du modèle). */
+  verification: {
+    /** VERIFIED : au moins un nom (enseigne ou raison sociale) prouvé par une citation retrouvée dans le texte de la source. */
+    status: 'VERIFIED' | 'UNVERIFIED';
+    /** Texte où la citation a été retrouvée : contenu préextrait de la source, sinon transcription T1. */
+    textOrigin: 'SOURCE_TEXT' | 'T1_TRANSCRIPTION' | null;
+    /** Noms PROUVÉS (présents dans la citation retrouvée). */
+    proven: { tradeName: boolean; legalName: boolean };
+    /** Motifs (vide : aucun écart). */
+    checks: SupplierIdentityCheck[];
+    /** Contrat et état du prompt T1 effectif au moment de l'analyse. */
+    contract: { id: 't1-supplier-identity-v1'; carried: boolean; reason: string };
+  };
 }
 
 /** Trace technique de l'analyse — rattachement usage / opérations (§5.5). */

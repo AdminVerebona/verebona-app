@@ -25,10 +25,10 @@
  * montant, d'une référence ou d'une adresse, jamais un contenu attendu.
  * ══════════════════════════════════════════════════════════════════════════
  */
-import { isValidBusinessTitle, normalizeTitle, type TitleIdentifiers } from '@/lib/documents/document-title-rules';
+import { DOCUMENT_TITLE_MAX_LENGTH, isValidBusinessTitle, normalizeTitle, type TitleIdentifiers } from '@/lib/documents/document-title-rules';
 
-/** Longueur maximale d'un nom harmonisé (caractères). */
-export const NAMING_MAX_LENGTH = 120;
+/** Longueur maximale d'un nom harmonisé (caractères) — carte #839 : la MÊME que celle des titres automatiques. */
+export const NAMING_MAX_LENGTH = DOCUMENT_TITLE_MAX_LENGTH;
 const NAMING_MIN_LENGTH = 3;
 
 /** Origine du nom EN PLACE (dérivée, jamais stockée : voir migration 0450). */
@@ -49,7 +49,9 @@ export type RenameRefusal =
   | 'DISCRIMINANT_REMOVED'
   | 'INFORMATION_INVENTED'
   | 'RECENTLY_HARMONIZED'
-  | 'NAME_COLLISION';
+  | 'NAME_COLLISION'
+  // Carte #839 : le nom proposé reprend une borne de garantie (nature exclue du titre), absente des dates légitimes.
+  | 'EXCLUDED_PERIOD_PROPOSED';
 
 /** Libellés du reporting (BO). */
 export const RENAME_REFUSAL_LABEL: Record<RenameRefusal, string> = {
@@ -68,6 +70,7 @@ export const RENAME_REFUSAL_LABEL: Record<RenameRefusal, string> = {
   INFORMATION_INVENTED: 'Information absente du nom actuel et des données du document',
   RECENTLY_HARMONIZED: 'Document déjà harmonisé récemment, sans nouvelle information',
   NAME_COLLISION: 'Même nom qu’un autre document de la famille',
+  EXCLUDED_PERIOD_PROPOSED: 'Le nom proposé reprend une période qui ne nomme pas le document (garantie)',
 };
 
 // ── Informations discriminantes ─────────────────────────────────────────────
@@ -176,6 +179,12 @@ export interface KnownDocumentData {
   amountsCents: number[];
   /** Textes du document (titre d'extraction, fournisseur, faits, extrait, bien, nom déposé…). */
   texts: string[];
+  /**
+   * Carte #839 : jours ISO qui ne sont QUE des bornes d'une période de nature exclue du titre
+   * (garantie), établie par le point de décision commun (`titlePeriodDecision`) — jamais une date
+   * légitime du document. `periods` ne porte alors que les périodes éligibles.
+   */
+  excludedDays?: string[];
 }
 
 interface Known { dates: DateToken[]; amounts: Set<number>; refs: string; words: Set<string>; periods: Array<{ s: number; e: number }> }
@@ -228,9 +237,12 @@ export function lostDiscriminants(oldName: string, newName: string, known: Known
   const a = extractDiscriminants(oldName);
   const b = extractDiscriminants(newName);
   const k = knownOf({ ...known, texts: [] });
+  const exclus = (known.excludedDays ?? []).map(isoToken).filter((x): x is DateToken => !!x);
   const perdus: string[] = [];
   for (const t of a.dates) {
     if (b.dates.some((c) => covers(c, t))) continue;
+    // Carte #839 : retirer une borne de garantie (nature exclue du titre) n'est pas une perte.
+    if (exclus.some((c) => covers(c, t)) && !k.dates.some((c) => covers(c, t))) continue;
     // Jour retiré du nom mais conservé par la date du document.
     if (t.d !== null && b.dates.some((c) => c.y === t.y && c.m === t.m && c.d === null) && k.dates.some((c) => covers(c, t))) continue;
     perdus.push(`date ${dateKey(t)}`);
@@ -265,6 +277,27 @@ export function inventedDiscriminants(oldName: string, newName: string, known: K
   const motsAncien = new Set(normalizeTitle(oldName).split(' '));
   for (const w of b.address) if (!motsAncien.has(w) && !k.words.has(w)) inventes.push(`adresse « ${w} »`);
   return [...new Set(inventes)];
+}
+
+/**
+ * Carte #839 — dates du nom PROPOSÉ qui ne viennent que d'une période de nature exclue du titre
+ * (garantie) : couvertes par une borne exclue (`known.excludedDays`) et par AUCUNE date ni période
+ * légitime du document. Pure. Une proposition T3 qui les reprend est refusée, même si le nom en place
+ * les portait déjà (titre antérieur à la règle).
+ */
+export function excludedPeriodDates(newName: string, known: KnownDocumentData): string[] {
+  const exclus = (known.excludedDays ?? []).map(isoToken).filter((x): x is DateToken => !!x);
+  if (exclus.length === 0) return [];
+  const k = knownOf({ ...known, texts: [] });
+  const out: string[] = [];
+  for (const t of extractDiscriminants(newName).dates) {
+    if (!exclus.some((c) => covers(c, t))) continue;
+    if (k.dates.some((c) => covers(c, t))) continue;
+    if (t.m !== null && k.periods.some((p) => monthIndex(t.y, t.m!) >= p.s && monthIndex(t.y, t.m!) <= p.e)) continue;
+    if (t.m === null && t.d === null && t.q === null && k.periods.some((p) => Math.floor(p.s / 12) <= t.y && Math.floor(p.e / 12) >= t.y)) continue;
+    out.push(`date ${dateKey(t)}`);
+  }
+  return [...new Set(out)];
 }
 
 /** Deux noms équivalents (casse, accents, ponctuation, espaces) — pure. */
@@ -337,6 +370,8 @@ export function judgeProposal(p: NamingProposal, ctx: {
   if (p.confidence === 'conflictual') return { accept: false, code: 'LOW_CONFIDENCE' };
   if (doc.origin === 'UNKNOWN' && p.confidence !== 'certain') return { accept: false, code: 'UNKNOWN_ORIGIN_LOW_CONFIDENCE' };
   const known = ctx.known ?? { dates: [], periods: [], amountsCents: [], texts: [] };
+  const garantie = excludedPeriodDates(nom, known);
+  if (garantie.length) return { accept: false, code: 'EXCLUDED_PERIOD_PROPOSED', detail: garantie.join(', ') };
   const perdus = lostDiscriminants(doc.name, nom, known, doc.ids ?? {});
   if (perdus.length) return { accept: false, code: 'DISCRIMINANT_REMOVED', detail: perdus.join(', ') };
   const inventes = inventedDiscriminants(doc.name, nom, known);

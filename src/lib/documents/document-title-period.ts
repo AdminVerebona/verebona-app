@@ -66,7 +66,18 @@ export const periodKindIdentifiesDocument = (kind: BusinessPeriodKind | null | u
 /** Bornes d'une période (jour ISO), telles que lues des faits ou des périodes qualifiées. */
 export interface TitleFactPeriod { s: string | null; e: string | null; key?: string | null }
 /** Période métier QUALIFIÉE d'un document (`document_business_periods`, lot 113W). */
-export interface QualifiedPeriodBounds { kind: BusinessPeriodKind; start: string | null; end: string | null }
+export interface QualifiedPeriodBounds {
+  kind: BusinessPeriodKind; start: string | null; end: string | null;
+  /**
+   * Carte #839 : période qualifiée DÉDUITE d'un repli du nommage (`T1_BILLING_PERIOD`, `T1_COST_PERIOD`,
+   * `T1_INSTALLMENT`) — elle n'établit pas INDÉPENDAMMENT sa nature et ne peut donc pas « blanchir » une
+   * borne de garantie rendue par ce même repli.
+   */
+  derived?: boolean;
+}
+
+/** Fondements (lot 113W) d'une période qualifiée déduite des replis du nommage, non indépendante. */
+export const DERIVED_QUALIFICATION_BASES: readonly string[] = ['T1_BILLING_PERIOD', 'T1_COST_PERIOD', 'T1_INSTALLMENT'];
 
 const boundsKey = (s: string | null | undefined, e: string | null | undefined) => `${s ?? ''}|${e ?? ''}`;
 
@@ -80,18 +91,97 @@ const boundsKey = (s: string | null | undefined, e: string | null | undefined) =
  */
 export function titleEligibleFactPeriods<T extends TitleFactPeriod>(
   factPeriods: readonly T[], qualified: readonly QualifiedPeriodBounds[] = [],
+  opts: { qualificationAvailable?: boolean } = {},
 ): T[] {
-  const exclues = new Set<string>();
-  const admises = new Set<string>();
+  const ctx = titlePeriodEvidence(factPeriods, qualified, opts.qualificationAvailable ?? true);
+  return factPeriods.filter((f) => titlePeriodDecision({ start: f.s, end: f.e, provenance: 'FACT', key: f.key ?? null }, ctx).eligible);
+}
+
+// ── Carte #839 : POINT DE DÉCISION COMMUN de l'éligibilité temporelle d'un titre ──
+
+/**
+ * Provenance d'une période candidate à nommer un document :
+ *   FACT              période d'un fait T1 persisté (`document_facts`, clé éventuelle) ;
+ *   T1_BILLING_PERIOD repli `document.billingPeriod` du run T1 (contrat 97A) ;
+ *   FINANCIAL_HINT    `financialHints[].periodStart / periodEnd` d'un candidat Opération ;
+ *   T3_PROPOSAL       dates d'un nom proposé par T3 (harmonisation du nommage).
+ */
+export type TitlePeriodProvenance = 'FACT' | 'T1_BILLING_PERIOD' | 'FINANCIAL_HINT' | 'T3_PROPOSAL';
+
+/** Ce que le nommage sait de la NATURE des périodes d'un document (lecture seule). */
+export interface TitlePeriodEvidence {
+  /** Lecture des périodes qualifiées (`document_business_periods`) aboutie ? Faux : qualification ILLISIBLE. */
+  qualificationAvailable: boolean;
+  /** Bornes dont une nature EXCLUE est établie (qualification ou clé de fait `period.warranty`). */
+  excluded: ReadonlyArray<{ start: string | null; end: string | null; kind: BusinessPeriodKind }>;
+  /** Bornes dont une nature ADMISE est établie indépendamment (BILLING, COVERAGE…). */
+  admitted: ReadonlySet<string>;
+}
+
+export type TitlePeriodRefusal = 'EXCLUDED_KIND' | 'MATCHES_EXCLUDED_BOUNDS' | 'QUALIFICATION_UNAVAILABLE';
+
+/**
+ * Nature établie des bornes d'un document (pure) : périodes qualifiées (lot 113W) ET clés des faits
+ * T1 (`period.*`). Une même borne peut être exclue (garantie) et admise (vraie période facturée
+ * établie indépendamment) : elle reste alors admise.
+ */
+export function titlePeriodEvidence(
+  factPeriods: readonly TitleFactPeriod[], qualified: readonly QualifiedPeriodBounds[], qualificationAvailable: boolean,
+): TitlePeriodEvidence {
+  const excluded: Array<{ start: string | null; end: string | null; kind: BusinessPeriodKind }> = [];
+  const admitted = new Set<string>();
+  const poser = (kind: BusinessPeriodKind, start: string | null, end: string | null) => {
+    if (periodKindIdentifiesDocument(kind)) admitted.add(boundsKey(start, end));
+    else excluded.push({ start, end, kind });
+  };
   for (const q of qualified) {
-    (periodKindIdentifiesDocument(q.kind) ? admises : exclues).add(boundsKey(q.start, q.end));
+    // Une période DÉDUITE d'un repli n'admet rien (elle n'est pas indépendante) ; exclue, elle exclut.
+    if (q.derived && periodKindIdentifiesDocument(q.kind)) continue;
+    poser(q.kind, q.start, q.end);
   }
-  return factPeriods.filter((f) => {
+  for (const f of factPeriods) {
     const kind = periodKindOfFactKey(f.key);
-    if (kind) return periodKindIdentifiesDocument(kind);
-    const k = boundsKey(f.s, f.e);
-    return !exclues.has(k) || admises.has(k);
-  });
+    if (kind) poser(kind, f.s, f.e);
+  }
+  return { qualificationAvailable, excluded, admitted };
+}
+
+/**
+ * Carte #839 — UNE période peut-elle nommer le document ? (pure) — point de décision COMMUN aux faits,
+ * au repli `document.billingPeriod`, aux `financialHints` et aux propositions T3, fondé sur la
+ * NATURE (clé de fait, période qualifiée), la PROVENANCE et les BORNES :
+ *   1. nature portée par la clé du fait : exclue (garantie) → jamais ; admise → oui ;
+ *   2. sinon, bornes d'une période de nature exclue ET d'aucune nature admise → jamais
+ *      (une garantie ne devient jamais période facturée, quelle que soit la voie) ;
+ *   3. sinon, qualification ILLISIBLE (lecture en échec) → abstention : la période ambiguë ne nomme
+ *      pas (le fait n'est pas supprimé ; seule la représentation dans le titre s'abstient) ;
+ *   4. sinon : comportement d'avant (période sans nature connue conservée).
+ * Le TYPE documentaire intervient en aval, inchangé : convention périodique des seules natures
+ * récurrentes (`PERIODIC_NATURES`), titre « type + désignation » des bons de commande (#813).
+ */
+export function titlePeriodDecision(
+  c: { start: string | null; end: string | null; provenance: TitlePeriodProvenance; key?: string | null },
+  ev: TitlePeriodEvidence,
+): { eligible: true; reason: null } | { eligible: false; reason: TitlePeriodRefusal } {
+  const kind = periodKindOfFactKey(c.key ?? null);
+  if (kind) return periodKindIdentifiesDocument(kind) ? { eligible: true, reason: null } : { eligible: false, reason: 'EXCLUDED_KIND' };
+  const k = boundsKey(c.start, c.end);
+  if (ev.excluded.some((x) => boundsKey(x.start, x.end) === k) && !ev.admitted.has(k)) return { eligible: false, reason: 'MATCHES_EXCLUDED_BOUNDS' };
+  if (!ev.qualificationAvailable && !ev.admitted.has(k)) return { eligible: false, reason: 'QUALIFICATION_UNAVAILABLE' };
+  return { eligible: true, reason: null };
+}
+
+/**
+ * Carte #839 — jours (ISO) qui sont des bornes d'une période de nature exclue et d'AUCUNE période
+ * admise ni date légitime (`legitimate` : date du document, bornes des périodes retenues). Pure.
+ * Sert aux garde-fous qui comparent des DATES (proposition T3, reprise d'un titre en place).
+ */
+export function excludedOnlyBoundDays(ev: TitlePeriodEvidence, legitimate: ReadonlyArray<string | null | undefined> = []): string[] {
+  const admis = new Set<string>([...ev.admitted].flatMap((k) => k.split('|')).filter(Boolean));
+  for (const d of legitimate) if (d) admis.add(d.slice(0, 10));
+  const out = new Set<string>();
+  for (const x of ev.excluded) for (const d of [x.start, x.end]) if (d && !admis.has(d.slice(0, 10))) out.add(d.slice(0, 10));
+  return [...out].sort();
 }
 
 /** Représentations possibles de la période dans un titre. */

@@ -176,8 +176,24 @@ export function technicalTitleSqlPredicate(col: string): string {
  *     défaut ; la désignation retenue est persistée (`title_basis.subject`).
  *     Le passage de 4 à 5 est la REPRISE du stock par le même contrôle
  *     COH-DOC-TITLES (titres SYSTÈME seulement, jamais un titre utilisateur).
+ *   · 6 — carte #839 : (a) l'identité de l'émetteur rendue par T1 (bloc 52) atteint enfin le titre,
+ *     après contrôle serveur de sa preuve ; (b) point de décision temporel COMMUN — la garantie
+ *     n'entre plus dans un titre par le repli `document.billingPeriod`, les `financialHints` ou une
+ *     proposition T3, et une qualification illisible fait s'abstenir ; (c) plus aucune coupe
+ *     destructrice (`slice(0, 90/120)`) : réduction ordonnée des informations accessoires
+ *     (`DOCUMENT_TITLE_MAX_LENGTH`). Le passage de 5 à 6 est la REPRISE du stock par COH-DOC-TITLES
+ *     (`TITLE_RULES_OUTDATED`) : un titre tronqué par la v5 a la même empreinte de contexte, seule la
+ *     version des règles permet de le retrouver. Titres SYSTÈME seulement, jamais un titre utilisateur.
  */
-export const DOCUMENT_TITLE_RULE_VERSION = 5;
+export const DOCUMENT_TITLE_RULE_VERSION = 6;
+
+/**
+ * Carte #839 — longueur maximale d'un titre AUTOMATIQUE (caractères), commune au moteur T1/T3
+ * (`planBusinessTitle`) et à l'harmonisation T3 (`NAMING_MAX_LENGTH`). Un titre qui la dépasse est
+ * RÉDUIT par retrait ordonné d'informations accessoires, jamais coupé au milieu d'un mot, d'un
+ * modèle ou d'une référence.
+ */
+export const DOCUMENT_TITLE_MAX_LENGTH = 120;
 
 const TITLE_QUALITY_REASONS = [
   'TECHNICAL_TITLE', 'GENERIC_TITLE', 'MISSING_SUBJECT', 'MISSING_SUPPLIER', 'MISSING_TARGET', 'MISSING_PERIOD',
@@ -251,6 +267,38 @@ export function titlePeriodMarkers(title: string | null | undefined): string[] {
 export function titleCarriesStalePeriod(current: string | null | undefined, candidate: string | null | undefined): boolean {
   const attendus = new Set(titlePeriodMarkers(candidate));
   return titlePeriodMarkers(current).some((m) => !attendus.has(m));
+}
+
+const MOIS_LISTE = MOIS.split('|');
+
+/** Repères (forme `titlePeriodMarkers`) sous lesquels un jour ISO peut apparaître dans un titre. Pure. */
+function markersOfDay(iso: string): string[] {
+  const r = /^(\d{4})-(\d{2})-(\d{2})/.exec(iso);
+  if (!r) return [];
+  const [y, m, d] = [r[1], Number(r[2]), Number(r[3])];
+  if (m < 1 || m > 12) return [];
+  const mm = String(m).padStart(2, '0');
+  const dd = String(d).padStart(2, '0');
+  return [`${MOIS_LISTE[m - 1]} ${y}`, `${d} ${m} ${y}`, `${dd} ${mm} ${y}`, `${d} ${mm} ${y}`, `${dd} ${m} ${y}`, `${y} ${mm}`];
+}
+
+/**
+ * Carte #839 — `EXCLUDED_PERIOD_REMOVED` PROUVÉ (pure) : le titre en place porte des repères
+ * temporels que le candidat ne porte plus, et CHACUN d'eux correspond à une borne d'une période de
+ * nature exclue (garantie : `excludedDays`) sans correspondre à aucune date légitime
+ * (`legitimateDays` : date du document, bornes des périodes retenues). Sinon : faux — une date
+ * métier légitime n'est jamais retirée par cette règle.
+ */
+export function titleRemovesOnlyExcludedBounds(
+  current: string | null | undefined, candidate: string | null | undefined,
+  excludedDays: readonly string[], legitimateDays: readonly (string | null | undefined)[] = [],
+): boolean {
+  const attendus = new Set(titlePeriodMarkers(candidate));
+  const retires = titlePeriodMarkers(current).filter((m) => !attendus.has(m));
+  if (retires.length === 0 || excludedDays.length === 0) return false;
+  const exclus = new Set(excludedDays.flatMap(markersOfDay));
+  const legitimes = new Set(legitimateDays.filter((d): d is string => !!d).flatMap(markersOfDay));
+  return retires.every((m) => exclus.has(m) && !legitimes.has(m));
 }
 
 /** Tous les mots significatifs de `phrase` figurent-ils dans le titre ? */
