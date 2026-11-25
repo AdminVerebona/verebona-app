@@ -21,6 +21,20 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { z } from 'zod';
 
 const h = vi.hoisted(() => ({ traces: [] as Array<Record<string, unknown>> }));
+// Test unitaire HERMÉTIQUE : aucune connexion réelle, quelle que soit `DATABASE_URL`.
+// Sans ce double, la passerelle (tarifs, idempotence, admission, disjoncteur…) ouvrait de
+// vraies connexions : instantanément refusées sans base, mais bloquées jusqu'au
+// `connect_timeout` (20 s) quand `DATABASE_URL` vise une base injoignable — les 20 requêtes
+// concurrentes de C838-A1-01 dépassaient alors les 30 s. Toute lecture échoue tout de suite,
+// comme sans base : la mémoire partagée du test reste le magasin simulé ci-dessous.
+vi.mock('@/db', async (orig) => {
+  const coupure = () => new Error('base indisponible (test unitaire isolé, carte #838)');
+  const horsBase: unknown = new Proxy(function horsBase() { /* double */ }, {
+    get: (_t, p) => (p === 'then' ? (_ok: unknown, ko: (e: Error) => void) => ko(coupure()) : horsBase),
+    apply: () => horsBase,
+  });
+  return { ...(await orig<typeof import('@/db')>()), db: horsBase, pgClient: horsBase };
+});
 vi.mock('../diagnostics/diagnostic.repository', async (orig) => ({
   ...(await orig<typeof import('../diagnostics/diagnostic.repository')>()),
   recordCallDiagnostic: vi.fn(async () => undefined),
