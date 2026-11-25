@@ -55,6 +55,7 @@ import { NON_BUSINESS_DOCUMENT_TYPES } from '@/services/ai/source-analysis/opera
 import { parseRelation, termQualificationOf, type DocumentRelation, type TermQualification } from '@/services/documents/business-periods/t1-v2';
 import {
   buildCandidateIdentity, consolidateOperationState, sourceLabelOf, hasRecurringPeriod, normalizeProvider,
+  providerAuthorityUpdate,
   type CandidateIdentity, type CandidateRecord, type SourceContribution,
 } from './model';
 import {
@@ -80,7 +81,7 @@ import {
   splitArbitratedConflicts, type IdentityReviewEntry,
 } from './identity-review';
 import { computeProvenance, isDurableRelationType, type AttributeProvenance, type ComponentEvidence } from './model';
-import { loadAttributeReviews, requestAttributeReviews } from './attribute-arbitration/review';
+import { loadAttributeReviews, regularizeEvidenceKeys, requestAttributeReviews } from './attribute-arbitration/review';
 import {
   ATTRIBUTE_CONFLICT_RULES, ATTRIBUTE_CONFLICT_RULES_VERSION, attributeChoiceKey, attributeSubjectKey, CONFLICT_FIELDS, markAdminArbitrated,
   needsArbitrationCard, qualifyAttributeConflicts, resolveAttributeChoices, type AttributeChoice, type ConflictField, type QualificationContext,
@@ -928,12 +929,15 @@ export async function reconsolidateOperation(
   const t3Reviews = await loadAttributeReviews(tx, accountId, operationId);
   for (const c of t3Reviews.choices) attributeChoices.set(attributeChoiceKey(c.field, c.role), c);
   for (const d of decisions) {
-    const v = d.decision as { decision?: unknown; field?: unknown; role?: unknown; normalized?: unknown; known?: unknown };
+    const v = d.decision as { decision?: unknown; field?: unknown; role?: unknown; normalized?: unknown; known?: unknown; evidenceKey?: unknown };
     if (v.decision === 'ATTRIBUTE' && typeof v.field === 'string' && (CONFLICT_FIELDS as readonly string[]).includes(v.field)
       && typeof v.role === 'string' && typeof v.normalized === 'string' && Array.isArray(v.known)) {
       attributeChoices.set(attributeChoiceKey(v.field as ConflictField, v.role), {
         field: v.field as ConflictField, role: v.role, normalized: v.normalized,
         known: (v.known as unknown[]).filter((x): x is string => typeof x === 'string'), by: 'USER', sourceId: d.id,
+        // Carte #836 (écart E07) : périmètre matériel des preuves AU MOMENT de la réponse (absent pour une
+        // décision antérieure : aucune question nouvelle n'est posée au déploiement).
+        ...(typeof v.evidenceKey === 'string' && v.evidenceKey ? { evidenceKey: v.evidenceKey } : {}),
       });
     }
   }
@@ -983,6 +987,22 @@ export async function reconsolidateOperation(
     else if (agendaDates && (k === 'plannedDate' || k === 'realizedDate') && state[k] !== null) attrs[k] = state[k];
   }
   if (op.provider === null && state.provider) attrs.provider = state.provider;
+  // Carte #836 (écart E04) — **règle complétée** : un prestataire DÉJÀ en place n'est plus conservé par
+  // défaut. Il est remplacé quand une source active porte une valeur de rôle STRICTEMENT plus autoritaire
+  // du même fait (la facture du fournisseur contre la banque d'une preuve de paiement, l'office notarial
+  // d'un acte). Jamais une valeur protégée (saisie, rétablissement BO, import), jamais à rang égal (la
+  // contradiction va alors à l'arbitrage), jamais à côté de saisies non gérées par T3 (`fullyManaged`).
+  let providerPlusAutoritaire: string | null = null;
+  // Une décision de l'utilisateur sur le prestataire INTERDIT toute mise à jour d'office — même si elle ne
+  // couvre plus le relevé actuel (une preuve nouvelle lui vaut une question ciblée, jamais un écrasement).
+  const prestataireTranche = [...attributeChoices.values()].some((c) => c.field === 'provider' && c.by === 'USER');
+  if (op.provider !== null && fullyManaged && !arbitres.has('provider') && !prestataireTranche) {
+    const maj = providerAuthorityUpdate(op.provider, contributions, (id) => sources.find((s) => s.id === id)?.authority ?? null);
+    if (maj) {
+      attrs.provider = maj.value;
+      providerPlusAutoritaire = maj.reasonCode;
+    }
+  }
   // Lot 114 (#750) : valeur ARBITRÉE (utilisateur, ou T3 à preuve suffisante) — écrite même à côté d'une valeur existante.
   for (const k of arbitres) attrs[k] = state[k];
   // Lot 78A (§5) : le retrait d'une source (séparation d'un rattachement
@@ -1020,6 +1040,12 @@ export async function reconsolidateOperation(
   if (state.invoiceAfterOrder && 'realizedDate' in attrs && attrs.realizedDate === state.invoiceAfterOrder.date && op.realizedDate !== attrs.realizedDate) {
     changes.track(await repo.updateAttributes(operationId, { realizedDate: attrs.realizedDate }, INVOICE_AFTER_ORDER_REASON));
     delete attrs.realizedDate;
+  }
+  // Carte #836 (écart E04) : la mise à jour contrôlée du prestataire porte SON motif (historique :
+  // ancienne valeur, nouvelle valeur, motif) — jamais confondue avec une consolidation ordinaire.
+  if (providerPlusAutoritaire !== null && 'provider' in attrs) {
+    changes.track(await repo.updateAttributes(operationId, { provider: attrs.provider }, providerPlusAutoritaire));
+    delete attrs.provider;
   }
   changes.track(await repo.updateAttributes(operationId, attrs, retiree && ('provider' in attrs || 'technicalLabel' in attrs) ? 'T3_SOURCE_WITHDRAWN_REEVALUATED' : 'T3_ATTRIBUTES_CONSOLIDATED'));
 
@@ -1096,6 +1122,14 @@ export async function reconsolidateOperation(
     : contributions.find((c) => c.identity.summary.slice(0, 200) === apres.technicalLabel || sourceLabelOf(c.identity) === apres.technicalLabel);
   // Lot 113AQ (#750) : le relevé 78A est QUALIFIÉ (même attribut, même rôle, même fait) avant d'être persisté —
   // seules les lignes actives ou non vérifiables restent « contradictions » ; les autres faits restent consultables.
+  // Carte #836 (écart E09) : CONTRÔLE EN BASE des valeurs — la qualification lit ce que l'événement de
+  // référence porte VRAIMENT après écriture (`apres`, relu dans la transaction), et non la seule décision
+  // enregistrée. Sans ce contrôle, une décision T3 jamais appliquée (panne, échec SQL, valeur protégée)
+  // était lue comme « conflit réel tranché ».
+  qualifCtx.persisted = {
+    plannedDate: apres.plannedDate ?? null, startDate: apres.startDate ?? null, realizedDate: apres.realizedDate ?? null,
+    endDate: apres.endDate ?? null, provider: apres.provider ?? null,
+  };
   const qualifiees = state.attributeConflicts.length
     ? qualifyAttributeConflicts(state.attributeConflicts, qualifCtx)
     : { alerting: [], divergences: [] };
@@ -1107,6 +1141,9 @@ export async function reconsolidateOperation(
   // Lot 114 (#750, issue B) : lignes à soumettre à l'examen T3 (bloc 38 actif) — aucune carte tant que l'examen est attendu.
   const attendues = await requestAttributeReviews(tx, accountId, operationId, conflits.open, t3Reviews, fichierDe);
   for (const c of conflits.open) if (attendues.has(attributeSubjectKey(c))) c.t3 = { outcome: 'PENDING' };
+  // Carte #836 (écart E07) : les empreintes historiques (`evidence_key IS NULL`) reçoivent le périmètre
+  // matériel CONSTATÉ — sans IA, sans réouverture : toute évolution ULTÉRIEURE sera détectée.
+  await regularizeEvidenceKeys(tx, accountId, operationId, [...conflits.open, ...qualifiees.divergences], t3Reviews);
   await writeAttributeProvenance(tx, accountId, operationId, {
     ...state.provenance, ...(label && apres.technicalLabel ? { label: { sourceId: label.sourceId, value: apres.technicalLabel } } : {}),
   }, conflits.open.map(courant), conflits.arbitrated.map((c) => courant(markAdminArbitrated(c))), qualifiees.divergences.map(courant));
@@ -1119,11 +1156,17 @@ export async function reconsolidateOperation(
   // autres cas (élément daté, élément sans rapport, carte déjà fermée), la contradiction devenait INVISIBLE. La
   // déduplication n'a lieu que si une action d'Agenda est **effectivement actionnable** sur le MÊME sujet (même
   // événement, même attribut, même rôle, mêmes alternatives).
-  const dateParAgenda = conflits.open.some((c) => c.field === 'realizedDate' && needsArbitrationCard(c))
+  //
+  // Carte #836 (écart E03) — **règle complétée** : la déduplication est bornée au RÔLE DE DATE que l'Agenda
+  // porte réellement, l'enregistrement de la RÉALISATION. Deux dates de rôles différents sur la même
+  // opération (paiement, période facturée, validité d'un devis) ne sont jamais départagées par une carte de
+  // date d'Agenda : leur arbitrage reste porté par l'opération, et le contrôle de cohérence le réclame.
+  const parAgenda = (c: QualifiedAttributeConflict) => c.field === 'realizedDate' && c.role === 'REALIZATION';
+  const dateParAgenda = conflits.open.some((c) => parAgenda(c) && needsArbitrationCard(c))
     && await agendaDateArbitrationCovers(tx, accountId, operationId,
-      conflits.open.filter((c) => c.field === 'realizedDate' && needsArbitrationCard(c)).flatMap((c) => c.values.map((v) => v.normalized)));
+      conflits.open.filter((c) => parAgenda(c) && needsArbitrationCard(c)).flatMap((c) => c.values.map((v) => v.normalized)));
   for (const c of conflits.open) {
-    if (!needsArbitrationCard(c) || (c.field === 'realizedDate' && dateParAgenda)) continue;
+    if (!needsArbitrationCard(c) || (parAgenda(c) && dateParAgenda)) continue;
     const options = c.values.map((v) => ({
       value: v.value, normalized: v.normalized,
       fileIds: [...new Set(v.sourceIds.map((id) => fichierDe.get(id)).filter((f): f is number => f !== undefined))],
@@ -1131,8 +1174,40 @@ export async function reconsolidateOperation(
     // Lot 115 (#791, E06) : sans document associable (sources structurées, imports, pièce supprimée), la carte est
     // portée par un ÉVÉNEMENT RÉEL de l'Agenda de cet événement de référence — jamais par un document inventé.
     const fileId = fichierDe.get(Math.max(...c.values.flatMap((v) => v.sourceIds).filter((id) => fichierDe.has(id)), -1)) ?? null;
-    cards.attribute.push({ operationId, fileId, field: c.field, role: c.role, reasonCode: c.reasonCode, options, retained: apres[c.field] ?? null });
+    cards.attribute.push({
+      operationId, fileId, field: c.field, role: c.role, reasonCode: c.reasonCode, options, retained: apres[c.field] ?? null,
+      ...(c.evidenceKey !== undefined ? { evidenceKey: c.evidenceKey } : {}),
+    });
   }
+  // Carte #836 (écart E08) — CHAÎNE DE RÉPARATION d'un rattachement encore ACTIF et objectivement erroné.
+  //
+  // Le lot 115 (#791) ne refermait la boucle que pour un justificatif DÉJÀ parti (valeurs dérivées
+  // recalculées, `pendingLinkRepairs`) : un document que T3 déclare étranger mais qui reste une source
+  // active laissait un doute ouvert SANS SUITE — rien ne réparait, rien ne demandait rien. Aucune
+  // dissociation n'est pour autant décidée ici (ni fusion, ni scission : la décision du PO manque, et une
+  // séparation spéculative est interdite). Le mauvais rattachement devient ACTIONNABLE, par la question
+  // existante « ce document concerne-t-il la même réalité ? » : la réponse « Non » enregistre une décision
+  // durable qui retire CETTE relation seulement (les autres faits du document, et ses autres rattachements,
+  // sont préservés), reconsolide l'opération et le document (valeurs dérivées, Agenda, coût de possession,
+  // exports suivent les événements publiés), avec l'historique avant / après — et la reprise est idempotente
+  // (une seule carte par document et par candidat, refermée dès que le doute n'a plus lieu).
+  const etrangers = [...new Set(conflits.open
+    .filter((c) => c.reasonCode === 'T3_LINK_ERROR_SUSPECTED' && c.foreignFileId !== undefined)
+    .map((c) => c.foreignFileId!))];
+  for (const fileId of etrangers) {
+    const [actif] = await rows<{ key: string | null }>(tx, sql`
+      SELECT s.locator ->> 'candidateKey' AS key FROM business_operation_sources s
+       WHERE s.account_id = ${accountId} AND s.operation_id = ${operationId} AND s.active
+         AND s.source_kind = 'DOCUMENT' AND s.source_entity_key = ${String(fileId)}
+       ORDER BY s.id DESC LIMIT 1`);
+    // Source déjà partie : la réparation des valeurs dérivées est celle du lot 115 (aucune carte à poser).
+    if (!actif?.key) continue;
+    cards.match.push({ fileId, candidateKey: actif.key, basis: 'CERTAIN', operationIds: [operationId], typeHint: state.type });
+  }
+  // `reviewedFiles` n'est PAS touché ici : le balayage de fermeture des cartes d'un document appartient au
+  // passage de CE document (sinon la carte d'un autre candidat du même justificatif serait fermée à tort).
+  // La carte posée ici se referme donc par le chemin habituel — réponse de l'utilisateur, ou passage du
+  // document qui ne la reconduit plus.
   // Lot 55B (E) : dernière réconciliation RÉELLEMENT effectuée (ni historique, ni version).
   await repo.markReconciled(operationId);
 }

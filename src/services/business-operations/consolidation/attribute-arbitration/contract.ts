@@ -70,6 +70,26 @@ export interface RawArbitrationDocument {
   excerpts: string[];
 }
 
+/**
+ * Carte #836 (écart E02) — INVENTAIRE des preuves, établi AVANT la sélection
+ * (`DocumentCollectionInventory`, `semantic/load.ts`). Les limites de coût (4
+ * valeurs, 6 documents, 8 extraits, 6 références, 12 unités par document) ne
+ * changent pas : ce qu'elles écartent est désormais COMPTÉ, si bien que la
+ * couverture est prouvée ou refusée, jamais présumée.
+ */
+export interface RawArbitrationInventory {
+  /** Documents demandés et absents (supprimés, hors compte, fenêtre en échec). */
+  documentsMissing: number;
+  /** Fenêtres de collecte en échec (pagination rompue). */
+  failedWindows: number;
+  /** Unités documentaires inventoriées et transmises, tous documents retenus confondus. */
+  units?: { total: number; kept: number };
+  /** Références d'identité inventoriées et transmises. */
+  references?: { total: number; kept: number };
+  /** L'inventaire des unités n'a pas pu être établi : la couverture ne peut pas être prouvée. */
+  unitsUnknown?: boolean;
+}
+
 export interface RawArbitrationContext {
   today: string;
   /** Attribut canonique (plannedDate, startDate, realizedDate, endDate, provider). */
@@ -79,6 +99,15 @@ export interface RawArbitrationContext {
   operation: { typeCode: string | null; label: string | null };
   values: RawArbitrationValue[];
   documents: RawArbitrationDocument[];
+  /**
+   * Carte #836 (écart E02) : inventaire de la collecte. Le constructeur ne
+   * juge que ce qu'on lui donne : c'est le SERVICE qui doit inventorier (la
+   * phase d'arbitrage le fait toujours, `review.ts`) et qui déclare un
+   * inventaire IMPOSSIBLE (`unitsUnknown`) — alors aucun verdict n'est reçu.
+   * Absent (cas de corpus, contrôles du contrat) : rien n'a été écarté en
+   * amont, les seules bornes à prouver sont celles du contexte.
+   */
+  inventory?: RawArbitrationInventory;
 }
 
 // ── Entrée (variables des six emplacements du master T3, aucun nouveau) ────
@@ -97,7 +126,11 @@ export interface ArbitrationInput {
   operation: { type: string | null; label: string | null };
   values: ArbitrationValueInput[];
   documents: ArbitrationDocumentInput[];
-  bounds: { complete: boolean; droppedValues: number; droppedDocuments: number; droppedExcerpts: number };
+  bounds: {
+    complete: boolean; droppedValues: number; droppedDocuments: number; droppedExcerpts: number;
+    /** Carte #836 (écart E02) : unités documentaires et références INVENTORIÉES mais non transmises. */
+    droppedUnits?: number; droppedReferences?: number;
+  };
 }
 
 /** Correspondance des références opaques (jamais transmise au modèle). */
@@ -115,8 +148,14 @@ export interface ArbitrationScope {
    * condition de TOUT verdict, et non plus du seul `RESOLVED`.
    */
   complete: boolean;
-  /** Lot 115 (#791, E02) : ce qui manque à la couverture (trace, jamais affiché). */
-  incomplete?: 'VALUES_DROPPED' | 'DOCUMENTS_DROPPED' | 'EXCERPTS_DROPPED' | 'VALUE_WITHOUT_DOCUMENT' | 'DOCUMENT_NOT_LOADED';
+  /**
+   * Lot 115 (#791, E02) : ce qui manque à la couverture (trace, jamais
+   * affiché). Carte #836 (écart E02) : les manques INVENTORIÉS en amont de la
+   * sélection s'y ajoutent — unités documentaires et références écartées par
+   * les limites de coût, collecte paginée rompue, inventaire indisponible.
+   */
+  incomplete?: 'VALUES_DROPPED' | 'DOCUMENTS_DROPPED' | 'EXCERPTS_DROPPED' | 'VALUE_WITHOUT_DOCUMENT' | 'DOCUMENT_NOT_LOADED'
+    | 'UNITS_DROPPED' | 'REFERENCES_DROPPED' | 'COLLECTION_INTERRUPTED' | 'INVENTORY_UNKNOWN';
 }
 
 const borne = (s: string, n: number) => (s.length > n ? s.slice(0, n) : s);
@@ -157,19 +196,38 @@ export function buildArbitrationInput(raw: RawArbitrationContext): { input: Arbi
   });
   const droppedValues = toutes.length - valeurs.length;
   const droppedDocuments = fichiers.length - retenus.length;
+  // Carte #836 (écart E02) : ce que les limites de COÛT ont écarté EN AMONT de la sélection — unités
+  // documentaires (la treizième unité d'un document peut porter la contradiction décisive) et références
+  // d'identité (la septième référence peut être celle du même fait). Compté, donc jamais confondu avec
+  // l'exhaustivité ; les limites, elles, ne changent pas.
+  const inv = raw.inventory;
+  const droppedUnits = inv?.units ? Math.max(0, inv.units.total - inv.units.kept) : 0;
+  const droppedReferences = Math.max(
+    inv?.references ? inv.references.total - inv.references.kept : 0,
+    documents.reduce((n, d) => n + Math.max(0, (raw.documents.find((x) => x.id === scope.documents[d.ref])?.references.length ?? 0) - B.maxReferences), 0),
+  );
   // Lot 115 (#791, E02) : la couverture est prouvée ou elle ne l'est pas — et le motif est tracé.
   const manque: ArbitrationScope['incomplete'] | undefined = droppedValues > 0 ? 'VALUES_DROPPED'
     : droppedDocuments > 0 ? 'DOCUMENTS_DROPPED'
       : nonCharges > 0 ? 'DOCUMENT_NOT_LOADED'
         : values.some((v) => v.documents.length === 0 && !v.protectedByUser) ? 'VALUE_WITHOUT_DOCUMENT'
-          : extraitsRetires > 0 ? 'EXCERPTS_DROPPED' : undefined;
+          : extraitsRetires > 0 ? 'EXCERPTS_DROPPED'
+            : inv?.unitsUnknown === true ? 'INVENTORY_UNKNOWN'
+              : (inv?.failedWindows ?? 0) > 0 || (inv?.documentsMissing ?? 0) > 0 ? 'COLLECTION_INTERRUPTED'
+                : droppedUnits > 0 ? 'UNITS_DROPPED'
+                  : droppedReferences > 0 ? 'REFERENCES_DROPPED' : undefined;
   scope.complete = manque === undefined;
   if (manque) scope.incomplete = manque;
   return {
     input: {
       contractVersion: ATTRIBUTE_ARBITRATION_CONTRACT_VERSION, task: ATTRIBUTE_ARBITRATION_TASK, today: raw.today,
       attribute: { field: raw.field, role: raw.role }, operation: { type: raw.operation.typeCode, label: raw.operation.label },
-      values, documents, bounds: { complete: scope.complete, droppedValues, droppedDocuments, droppedExcerpts: extraitsRetires },
+      values,
+      documents,
+      bounds: {
+        complete: scope.complete, droppedValues, droppedDocuments, droppedExcerpts: extraitsRetires,
+        ...(droppedUnits > 0 ? { droppedUnits } : {}), ...(droppedReferences > 0 ? { droppedReferences } : {}),
+      },
     },
     scope,
   };

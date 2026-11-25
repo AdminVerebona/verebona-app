@@ -71,6 +71,14 @@ export interface ActionView {
   ruleCode: string;
   question: string;
   proposals: ActionProposalView[];
+  /**
+   * Carte #836 (écart E06) — alternatives RÉELLES au-delà de la première page
+   * (contradiction d'attribut d'un événement de référence seulement) :
+   * déroulées à la demande, mêmes identifiants stables, même parcours de
+   * réponse. Absentes pour toutes les autres cartes : rien ne change pour
+   * elles.
+   */
+  moreProposals?: ActionProposalView[];
   /** Lot 28 — « À compléter » saisissable sur la carte (sinon : le tiroir). */
   inputType?: 'date' | 'text' | null;
   target: {
@@ -235,6 +243,49 @@ export const isSituationQualificationCard = (action: Pick<ActionView, 'ruleCode'
   action.ruleCode === 'DATA-AGENDA-DATE' && action.actionKind === 'COMPLETE' && action.targetType === 'AGENDA_ITEM' && action.question === SITUATION_QUESTION;
 
 /**
+ * Carte #836 (écart E06) — LES AUTRES VALEURS RÉELLES, à la demande.
+ *
+ * Une contradiction d'attribut d'un événement de référence peut opposer
+ * treize valeurs, chacune portée par un justificatif du compte. La carte
+ * n'en montrait que les premières (règle de lisibilité §8.5, complétée à cinq
+ * par le lot 115) : les suivantes n'étaient atteignables d'AUCUNE façon, donc
+ * impossibles à choisir. Elles sont déroulées ici, à la demande, avec les
+ * MÊMES identifiants stables et le MÊME parcours de réponse (`onChoose`, route
+ * `/resolve`) : aucune valeur n'est inventée, aucune n'est perdue, et la carte
+ * reste lisible d'abord. Rien n'est affiché pour les cartes sans alternatives
+ * supplémentaires : toutes les autres sont inchangées.
+ */
+function MoreChoices({ action, onChoose, busy }: { action: ActionView; onChoose: Handlers['onChoose']; busy?: boolean }) {
+  const [ouvert, setOuvert] = useState(false);
+  const autres = action.moreProposals ?? [];
+  if (!autres.length) return null;
+  if (!ouvert) {
+    return (
+      <Button size="sm" variant="outline" disabled={busy} onClick={() => setOuvert(true)} className="h-9" data-more-proposals="toggle">
+        {`Voir les ${autres.length} autres valeurs`}
+      </Button>
+    );
+  }
+  return (
+    <>
+      {autres.map((proposal, index) => (
+        <Button
+          key={`${action.publicId}-autre-${index}`}
+          size="sm"
+          variant="default"
+          disabled={busy}
+          onClick={() => onChoose(action, proposal)}
+          className={PROPOSAL_BUTTON_CLASS}
+          data-more-proposals="choice"
+        >
+          <span data-proposal-label className="min-w-0 [overflow-wrap:anywhere]">{proposal.label}</span>
+        </Button>
+      ))}
+    </>
+  );
+}
+
+/**
  * Contrôles de résolution. Les zones tactiles restent à 36 px de haut au
  * moins et les propositions passent à la ligne plutôt que de se tronquer
  * (§16.1).
@@ -299,6 +350,8 @@ function Controls({ action, onChoose, onOpenTarget, busy }: { action: ActionView
           </span>
         </Button>
       ))}
+      {/* Carte #836 (écart E06) : les alternatives réelles au-delà de la première page, déroulées à la demande. */}
+      <MoreChoices action={action} onChoose={onChoose} busy={busy} />
       {/* Lot 110D : question binaire (Oui / Non) — aucun troisième bouton. */}
       {action.choiceMode !== 'BINARY' && (
         <Button

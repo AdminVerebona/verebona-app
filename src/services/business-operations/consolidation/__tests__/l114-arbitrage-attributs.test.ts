@@ -146,9 +146,12 @@ describe('L114-U-DECISION — décision durable, application, réouverture motiv
     expect(r.alerting).toEqual([expect.objectContaining({ reasonCode: 'DECIDED_VALUE_WITHDRAWN', qualification: 'REAL_CONFLICT_UNRESOLVED' })]);
   });
 
-  it('D-05 — arbitrage T3 certain : tranché, tracé « T3 », sans protection utilisateur ; doute de rattachement : jamais appliqué', () => {
+  it('D-05 — arbitrage T3 certain ET APPLIQUÉ (contrôle en base) : tranché, tracé « T3 », sans protection utilisateur ; doute de rattachement : jamais appliqué', () => {
     const known = normDe(relever(FACTURES()));
-    const r = relever(FACTURES(), { choices: choix('T3', MARTIN, known) });
+    // Carte #836 (écart E09) : la valeur retenue doit être CELLE QUE L'OPÉRATION PORTE. Le contrôle en base
+    // (`persisted`) est désormais la condition de la qualification « tranchée » — `DECIDED` n'y suffit plus
+    // (voir c836-e09-application-verifiee.test.ts pour le contre-exemple rouge).
+    const r = relever(FACTURES(), { choices: choix('T3', MARTIN, known), persisted: { provider: 'Chauffage Martin' } });
     expect(r.divergences).toEqual([expect.objectContaining({ qualification: 'REAL_CONFLICT_RESOLVED', reasonCode: 'T3_ARBITRATED', resolution: { by: 'T3', value: 'Chauffage Martin', reviewId: 5 } })]);
     expect(r.divergences[0].protection).toBeUndefined();
     expect(resolveAttributeChoices(r.state.attributeConflicts, r.ctx)).toEqual([expect.objectContaining({ by: 'T3', value: 'Chauffage Martin' })]);

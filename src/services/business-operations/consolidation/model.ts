@@ -388,6 +388,56 @@ export function canonicalProvider(srcs: readonly SourceContribution[]): string |
   return [...porteuses].sort((a, b) => providerRoleRank(a.identity) - providerRoleRank(b.identity) || a.sourceId - b.sourceId)[0].identity.provider;
 }
 
+/** Autorités PROTÉGÉES : une valeur qu'elles portent n'est jamais remplacée par un traitement. */
+const AUTORITES_PROTEGEES: ReadonlySet<string> = new Set(['USER', 'ADMIN', 'IMPORT']);
+
+/**
+ * Carte #836 (écart E04) — MISE À JOUR CONTRÔLÉE du prestataire déjà en place
+ * (pure).
+ *
+ * **Règle complétée** : le lot 115 (#791) a donné au choix du prestataire une
+ * hiérarchie d'autorité sémantique (`canonicalProvider`) invariante à l'ordre
+ * d'ingestion — mais seulement pour un prestataire ABSENT. Un prestataire déjà
+ * enregistré était conservé (« prestataire seulement s'il manque ») : une
+ * opération dont le prestataire était la BANQUE d'une preuve de paiement ou
+ * l'office notarial d'un acte le restait, même après l'arrivée de la facture
+ * du fournisseur — preuve directe, du même fait, et plus autoritaire.
+ *
+ * Cette fonction rend la valeur à écrire, et seulement dans ce cas précis :
+ *   · une source ACTIVE porte une valeur de rôle STRICTEMENT plus autoritaire
+ *     que celle qui porte la valeur en place (facturant / cocontractant avant
+ *     exécutant, partie au sinistre, rédacteur d'acte, intermédiaire de
+ *     paiement, rôle non établi) ;
+ *   · la valeur en place n'est portée par AUCUNE autorité protégée (saisie de
+ *     l'utilisateur, rétablissement BO, import) ni par une saisie d'Agenda.
+ * À rang ÉGAL — deux factures, deux fournisseurs — rien n'est décidé ici : la
+ * contradiction reste entière et c'est l'arbitrage (carte « À traiter » ou T3)
+ * qui tranche. Aucune valeur n'est inventée : seules celles que portent les
+ * sources actives sont candidates.
+ */
+export function providerAuthorityUpdate(
+  current: string,
+  srcs: readonly SourceContribution[],
+  authorityOf: (sourceId: number) => string | null = () => null,
+): { value: string; reasonCode: string } | null {
+  const porteuses = srcs.filter((s) => !!s.identity.provider);
+  const meme = (v: string | null | undefined) => normalizeProvider(v) === normalizeProvider(current);
+  const enPlace = porteuses.filter((s) => meme(s.identity.provider));
+  // Plus aucune source active ne porte la valeur : c'est la règle du RETRAIT (78A §5), pas celle-ci.
+  if (!enPlace.length) return null;
+  // Jamais d'écrasement d'une valeur protégée.
+  if (enPlace.some((s) => AUTORITES_PROTEGEES.has(authorityOf(s.sourceId) ?? '') || !!s.identity.agenda
+    || providerRoleRank(s.identity) === PROVIDER_ROLE_RANK[SEMANTIC_USER_ROLE])) return null;
+  const rangCourant = Math.min(...enPlace.map((s) => providerRoleRank(s.identity)));
+  const meilleure = [...porteuses]
+    .sort((a, b) => providerRoleRank(a.identity) - providerRoleRank(b.identity) || a.sourceId - b.sourceId)[0];
+  const valeur = meilleure?.identity.provider;
+  if (!valeur || meme(valeur)) return null;
+  // Pas STRICTEMENT plus autoritaire : la contradiction va à l'arbitrage, jamais à une décision d'office.
+  if (providerRoleRank(meilleure.identity) >= rangCourant) return null;
+  return { value: valeur, reasonCode: 'T3_PROVIDER_MORE_AUTHORITATIVE' };
+}
+
 const SUFFIXES_JURIDIQUES = /\b(sas|sasu|sarl|eurl|sa|sci|snc|ag|gmbh|ltd|llc|inc|bv|nv|spa|srl)\b/g;
 
 /** Prestataire normalisé pour la comparaison (jamais pour l'affichage). */

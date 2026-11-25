@@ -234,6 +234,19 @@ export function attributeQuestion(field: AttributeField, type: string | null): s
  * que l'écran montre — jamais une troncature propre à cette carte. Le contexte
  * de la carte, lui, porte toutes les valeurs avec leurs provenances, et la
  * réponse accepte n'importe laquelle d'entre elles.
+ *
+ * Carte #836 (écart E06) — **règle remplacée** : le plafond de douze
+ * propositions tronquait la CONSTRUCTION (`slice`). Au-delà de douze valeurs
+ * réelles — treize dates portées par treize justificatifs, par exemple — la
+ * treizième n'était plus une proposition : elle n'existait nulle part, donc
+ * elle n'était pas sélectionnable, et le choix de l'utilisateur était
+ * impossible. Aucune valeur réelle n'est désormais retirée : chacune devient
+ * une proposition, avec un identifiant STABLE (`ATTRIBUTE:<forme de
+ * comparaison>`) qui ne dépend ni du rang, ni de la page, ni de l'ordre
+ * d'arrivée. Le plafond reste une règle d'AFFICHAGE : il devient la taille de
+ * PAGE de la carte (`attributeProposalPages`), et la page suivante reste
+ * atteignable. Les valeurs au-delà de la page restent donc visibles ET
+ * choisissables, et l'API les accepte (`parseOperationCardChoice`).
  */
 export const ATTRIBUTE_PROPOSALS_MAX = 12;
 
@@ -245,11 +258,29 @@ export function attributeProposals(
   const vues = new Set<string>();
   const distinctes = options.filter((o) => (vues.has(o.normalized) ? false : (vues.add(o.normalized), true)));
   const enPlace = distinctes.find((o) => retained !== null && o.value === retained) ?? null;
-  const autres = distinctes.filter((o) => o !== enPlace).slice(0, ATTRIBUTE_PROPOSALS_MAX - (enPlace ? 1 : 0));
+  const autres = distinctes.filter((o) => o !== enPlace);
   return [
     ...autres.map((o, i) => ({ value: `ATTRIBUTE:${o.normalized}`, label: lib(o), confidence: Math.max(0.1, 0.6 - i * 0.1) })),
     ...(enPlace ? [{ value: `ATTRIBUTE:${enPlace.normalized}`, label: lib(enPlace), confidence: 1, isCurrentValue: true }] : []),
   ];
+}
+
+/**
+ * Carte #836 (écart E06) — VERSION de l'ensemble des choix présentés (pure,
+ * stable, bornée). Elle entre dans le contexte de la carte et dans la décision
+ * durable de l'utilisateur : l'API sait ainsi sur QUEL ensemble d'alternatives
+ * la réponse a été donnée (une option forgée est refusée parce qu'elle n'est
+ * pas dans l'ensemble ; un ensemble devenu autre est tracé avec la décision).
+ * Ne dépend ni de l'ordre d'arrivée, ni des documents, ni de l'horodatage :
+ * deux balayages identiques donnent la même version.
+ */
+export function attributeOptionsVersion(
+  field: AttributeField, role: string, options: ReadonlyArray<{ normalized: string }>,
+): string {
+  const cle = `${field}|${role}|${[...new Set(options.map((o) => o.normalized))].sort().join('\u0001')}`;
+  let h = 0x811c9dc5;
+  for (let i = 0; i < cle.length; i++) { h ^= cle.charCodeAt(i); h = Math.imul(h, 0x01000193) >>> 0; }
+  return `v${h.toString(16).padStart(8, '0')}:${new Set(options.map((o) => o.normalized)).size}`;
 }
 
 // ── Lectures ────────────────────────────────────────────────────────────────
@@ -507,6 +538,10 @@ export async function syncOperationCards(accountId: number, needs: OperationCard
           optionCount: n.options.length,
           documents: [...new Set(n.options.flatMap((o) => o.fileIds))].map((f) => ({ fileId: f, title: titres.get(f) ?? 'Document' })),
           ...(n.fileId === null ? { anchor: 'AGENDA_ITEM' as const } : {}),
+          // Carte #836 (écart E06) : VERSION de l'ensemble des choix, et (écart E07) périmètre MATÉRIEL des
+          // preuves présenté — tous deux enregistrés avec la réponse de l'utilisateur.
+          optionsVersion: attributeOptionsVersion(n.field, n.role, n.options),
+          ...(n.evidenceKey !== undefined ? { evidenceKey: n.evidenceKey } : {}),
         },
       });
       compter(r.status);
@@ -550,7 +585,14 @@ interface MatchCtx { kind: 'operation_match'; candidateKey: string; basis: 'CERT
 interface AmountCtx { kind: 'operation_amount'; operationId: number; fingerprint: string; options: Array<{ amountMinor: number; currency: string }> }
 interface ExclusionCtx { kind: 'operation_asset_exclusion'; operationId: number; assetId: number; fileIds: number[] }
 interface CurrencyCtx { kind: 'operation_currency'; operationId: number; fingerprint: string; amountMinor: number; candidates: string[] }
-interface AttributeCtx { kind: 'operation_attribute'; operationId: number; field: AttributeField; role: string; options: Array<{ value: string; normalized: string }> }
+interface AttributeCtx {
+  kind: 'operation_attribute'; operationId: number; field: AttributeField; role: string;
+  options: Array<{ value: string; normalized: string }>;
+  /** Carte #836 (écart E06) : version de l'ensemble des choix présentés. */
+  optionsVersion?: string;
+  /** Carte #836 (écart E07) : périmètre matériel des preuves présenté avec la question. */
+  evidenceKey?: string;
+}
 
 /** Choix reçu (pur) ; `null` : invalide (une requête forgée ne désigne rien hors de la carte). */
 export function parseOperationCardChoice(ruleCode: string, value: unknown, ctx: unknown):
@@ -562,8 +604,12 @@ export function parseOperationCardChoice(ruleCode: string, value: unknown, ctx: 
   if (typeof value !== 'string' || !ctx || typeof ctx !== 'object') return null;
   if (ruleCode === OPERATION_ATTRIBUTE_RULE) {
     // Lot 114 (#750) : seule une valeur PRÉSENTÉE par la carte peut être retenue (jamais une valeur forgée).
+    // Carte #836 (écart E06) : l'ensemble présenté porte TOUTES les valeurs réelles — une alternative de la
+    // deuxième page est donc légitime, et une option forgée (valeur absente de l'ensemble, ensemble dont la
+    // version ne correspond pas à ses propres options) reste refusée.
     const c = ctx as AttributeCtx;
-    if (!value.startsWith('ATTRIBUTE:') || !Array.isArray(c.options)) return null;
+    if (!value.startsWith('ATTRIBUTE:') || !Array.isArray(c.options) || !c.options.length) return null;
+    if (typeof c.optionsVersion === 'string' && c.optionsVersion !== attributeOptionsVersion(c.field, c.role, c.options)) return null;
     const o = c.options.find((x) => x && x.normalized === value.slice('ATTRIBUTE:'.length));
     return o ? { kind: 'ATTRIBUTE', normalized: o.normalized, value: o.value } : null;
   }
@@ -722,7 +768,15 @@ export async function resolveOperationCard(
       for (const x of anciennes) await repo.deactivateSource(Number(x.id), 'USER_DECISION_REPLACED');
       previous.sourceId = await repo.addSource(opId, {
         kind: 'USER_ARBITRATION', entityKey: action.id, authority: 'USER', confidence: 'certain',
-        locator: { decision: 'ATTRIBUTE', field: a.field, role: a.role, normalized: choice.normalized, value: choice.value, known: a.options.map((o) => o.normalized) },
+        locator: {
+          decision: 'ATTRIBUTE', field: a.field, role: a.role, normalized: choice.normalized, value: choice.value,
+          known: a.options.map((o) => o.normalized),
+          // Carte #836 (écarts E06 et E07) : version de l'ensemble présenté, et périmètre matériel des preuves
+          // au moment de la réponse. Une preuve matériellement NOUVELLE vaudra à l'utilisateur une question
+          // ciblée (`USER_DECISION_EVIDENCE_CHANGED`) — jamais un écrasement de son choix.
+          ...(typeof a.optionsVersion === 'string' ? { optionsVersion: a.optionsVersion } : {}),
+          ...(typeof a.evidenceKey === 'string' ? { evidenceKey: a.evidenceKey } : {}),
+        },
       }, 'USER_ATTRIBUTE_CHOSEN');
       const { reconsolidateOperation } = await import('@/services/business-operations/consolidation/consolidator');
       await reconsolidateOperation(repo, session.tx, opId, now.toISOString().slice(0, 10), undefined, needs);

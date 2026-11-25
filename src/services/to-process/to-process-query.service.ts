@@ -40,7 +40,7 @@ import type {
   ActionProposal,
   TargetType,
 } from './action-model';
-import { selectDisplayedProposals } from './action-model';
+import { overflowProposals, selectDisplayedProposals } from './action-model';
 import { getRule } from './rules-catalog';
 import { sortActions, type OrderMode } from './priority';
 import { presentCardLabels, targetFallbackLabel } from './card-labels';
@@ -124,6 +124,15 @@ export interface ToProcessActionView {
   assetChoices?: AssetLinkChoicesView;
   /** Lot 113G — « S’agit-il du même fournisseur ? » : les DEUX fiches de la paire (relues à l'affichage). */
   supplierPair?: SupplierPairView;
+  /**
+   * Carte #836 (écart E06) — alternatives RÉELLES au-delà de la première page
+   * d'affichage, pour les seules règles qui déclarent une exception
+   * (`DISPLAYED_PROPOSALS_MAX_BY_RULE` : contradiction d'attribut d'un
+   * événement de référence). Mêmes identifiants stables que les propositions
+   * affichées : l'écran les déroule, l'API les accepte, et plus aucune valeur
+   * réelle n'est impossible à choisir. Absent pour toutes les autres cartes.
+   */
+  moreProposals?: ActionProposal[];
 }
 
 /** Périmètre d'une carte groupée lu dans son contexte (pure, borné). */
@@ -229,7 +238,11 @@ export async function getToProcessPage(
     // jamais « #id », contexte de source reformulé ou retiré, valeurs brutes
     // formatées. Même vue pour la page, la pastille, l'accueil et la mascotte ;
     // les lignes enregistrées ne sont pas réécrites.
-    return presentCardLabels({
+    // Carte #836 (écart E06) : les libellés sont recalculés sur TOUTES les propositions, puis la première
+    // page est affichée et les alternatives suivantes sont rendues à part (`moreProposals`) — mêmes
+    // identifiants stables. Pour toute règle sans exception d'affichage déclarée, `moreProposals` est vide :
+    // la carte est exactement celle d'avant.
+    const vue = presentCardLabels({
       publicId: row.publicId,
       targetType: row.targetType as TargetType,
       targetId: row.targetId,
@@ -239,7 +252,7 @@ export async function getToProcessPage(
       priority: row.priority as ActionPriority,
       ruleCode: row.ruleCode,
       question: row.question,
-      proposals: selectDisplayedProposals(proposals, row.ruleCode),
+      proposals,
       allowNotApplicable: getRule(row.ruleCode)?.allowNotApplicable ?? false,
       inputType: cardInputType(row.ruleCode, row.targetType, row.fieldKey ?? row.relationKey),
       activeSince: row.activeSince.toISOString(),
@@ -248,6 +261,8 @@ export async function getToProcessPage(
       },
       ...(scope ? { scope } : {}),
     }, getRule(row.ruleCode)?.question ?? null, { aiQuestion: isAiQuestion(row.questionSource) });
+    const suite = overflowProposals(vue.proposals, row.ruleCode);
+    return { ...vue, proposals: selectDisplayedProposals(vue.proposals, row.ruleCode), ...(suite.length ? { moreProposals: suite } : {}) };
   });
 
   // Lot 110D : questions « même réalité » binaires — références ACTUELLES de

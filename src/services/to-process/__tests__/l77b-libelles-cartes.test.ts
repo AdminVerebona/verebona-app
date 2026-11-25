@@ -319,7 +319,10 @@ describe('L77B-05 — producteurs : plus de repli technique dans le code des car
 
   it('la file applique la politique de libellés à la lecture (page, pastille, accueil, mascotte)', () => {
     const src = read('src/services/to-process/to-process-query.service.ts');
-    expect(src).toMatch(/return presentCardLabels\(\{/);
+    // Carte #836 (écart E06) : la politique de libellés s'applique toujours à la lecture, sur TOUTES les
+    // propositions — la vue produite est ensuite paginée (`moreProposals`), d'où l'affectation intermédiaire.
+    expect(src).toMatch(/presentCardLabels\(\{/);
+    expect(src).toMatch(/return \{ \.\.\.vue, proposals: selectDisplayedProposals\(vue\.proposals, row\.ruleCode\)/);
     expect(src).toMatch(/byType\.get\('AGENDA_ITEM'\)/);
   });
 });

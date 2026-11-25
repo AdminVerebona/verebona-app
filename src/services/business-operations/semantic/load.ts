@@ -162,10 +162,103 @@ async function loadRestorables(sql: Sql, accountId: number, operationId: number)
   });
 }
 
-export async function loadDocuments(sql: Sql, accountId: number, fileIds: readonly number[]): Promise<RawDocument[]> {
+/** Nombre de documents lus par FENÊTRE (collecte bornée, carte #836 écart E02). */
+const DOCUMENTS_WINDOW = 20;
+/** Références d'identité transmises par document (limite de coût, inventoriée). */
+const DOCUMENT_REFERENCES_KEPT = 10;
+
+/**
+ * Carte #836 (écart E02) — INVENTAIRE d'une collecte de documents : ce qui a
+ * été demandé, ce qui a été réellement chargé, ce qui manque, et ce que les
+ * limites de COÛT ont écarté (unités documentaires, références). Rempli par
+ * `loadDocuments` quand l'appelant le demande.
+ *
+ * Avant : les unités et les références étaient écartées en silence AVANT tout
+ * contrôle d'exhaustivité ; la treizième unité d'un document ou la septième
+ * référence pouvait porter la contradiction décisive sans que le contrôle
+ * `scope.complete` puisse le savoir. Compter et transmettre sont désormais
+ * deux choses distinctes : les limites de coût ne bougent pas, mais ce qu'elles
+ * laissent de côté est TRACÉ, et la couverture ne peut plus être présumée.
+ */
+export interface DocumentCollectionInventory {
+  requested: number[];
+  loaded: number[];
+  /** Demandés et absents : document supprimé, hors du compte, fenêtre en échec. */
+  missing: number[];
+  /** Unités documentaires inventoriées et transmises, par document. */
+  units: Map<number, { total: number; kept: number }>;
+  /** Références d'identité inventoriées et transmises, par document. */
+  references: Map<number, { total: number; kept: number }>;
+  /** Fenêtres de collecte parcourues et fenêtres en échec (pagination rompue). */
+  windows: number;
+  failedWindows: number;
+  /** L'inventaire des unités n'a pas pu être établi (sonde en échec) : la couverture ne peut pas être prouvée. */
+  unitsUnknown?: boolean;
+}
+
+/** Inventaire vide (à passer à `loadDocuments` pour le faire remplir). */
+export function emptyDocumentInventory(): DocumentCollectionInventory {
+  return { requested: [], loaded: [], missing: [], units: new Map(), references: new Map(), windows: 0, failedWindows: 0 };
+}
+
+export async function loadDocuments(
+  sql: Sql, accountId: number, fileIds: readonly number[], inventory?: DocumentCollectionInventory,
+): Promise<RawDocument[]> {
   const ids = [...new Set(fileIds)].filter((x) => Number.isSafeInteger(x) && x > 0);
+  if (inventory) inventory.requested = [...ids];
   if (!ids.length) return [];
-  const r = await sql.unsafe<Row[]>(`
+  // Carte #836 (écart E02) : collecte par FENÊTRES BORNÉES. Une fenêtre en échec (coupure, document
+  // supprimé entre-temps) est COMPTÉE au lieu d'être avalée : la pagination rompue devient visible, et la
+  // couverture des preuves ne peut plus être présumée complète.
+  const fenetres: number[][] = [];
+  for (let i = 0; i < ids.length; i += DOCUMENTS_WINDOW) fenetres.push(ids.slice(i, i + DOCUMENTS_WINDOW));
+  const r: Row[] = [];
+  for (const f of fenetres) {
+    if (inventory) inventory.windows++;
+    try {
+      r.push(...(await lireDocuments(sql, accountId, f)));
+    } catch (e) {
+      // Une fenêtre en échec n'est TOLÉRÉE que si l'appelant tient un inventaire : il saura alors que la
+      // couverture n'est pas prouvée (carte #836, E02). Sans inventaire (contexte T4), l'échec remonte comme
+      // avant : aucun appelant ne reçoit un contexte amputé sans le savoir.
+      if (!inventory) throw e;
+      inventory.failedWindows++;
+      console.warn('[semantic] fenêtre de documents non lue :', (e as Error).message);
+    }
+  }
+  const charges = r.map((x) => Number(x.id));
+  if (inventory) {
+    inventory.loaded = charges;
+    inventory.missing = ids.filter((x) => !charges.includes(x));
+  }
+  let excerpts = new Map<number, string[]>();
+  try {
+    const [{ db }, { sourceUnitExcerpts, sourceUnitCounts }] = await Promise.all([import('@/db'), import('../consolidation/m3-context')]);
+    excerpts = await sourceUnitExcerpts(db as never, accountId, charges);
+    if (inventory) {
+      // Inventaire AVANT sélection : combien d'unités existent, combien sont transmises.
+      const compte = await sourceUnitCounts(db as never, accountId, charges);
+      for (const id of charges) inventory.units.set(id, compte.get(id) ?? { total: 0, kept: 0 });
+    }
+  } catch (e) {
+    if (inventory) inventory.unitsUnknown = true;
+    console.warn('[semantic] extraits documentaires indisponibles :', (e as Error).message);
+  }
+  return r.map((x) => {
+    const toutes = ((x.refs as Array<{ kind?: string; value?: string }>) ?? []).filter((y) => y?.kind && y?.value);
+    const references = toutes.slice(0, DOCUMENT_REFERENCES_KEPT).map((y) => ({ kind: String(y.kind), value: String(y.value) }));
+    if (inventory) inventory.references.set(Number(x.id), { total: toutes.length, kept: references.length });
+    return {
+      id: Number(x.id), type: txt(x.document_type_code), title: txt(x.title), date: txt(x.date), provider: txt(x.provider),
+      amounts: x.amount_cents == null ? [] : [{ kind: 'DOCUMENT_AMOUNT', amountMinor: Number(x.amount_cents), currency: 'EUR', date: txt(x.date), periodStart: null, periodEnd: null }],
+      references, excerpts: excerpts.get(Number(x.id)) ?? [], operationIds: nums(x.op_ids),
+    };
+  });
+}
+
+/** Une fenêtre de documents (même lecture qu'avant la carte #836 : aucun champ nouveau). */
+async function lireDocuments(sql: Sql, accountId: number, ids: readonly number[]): Promise<Row[]> {
+  return sql.unsafe<Row[]>(`
     SELECT f.id, f.document_type_code, COALESCE(f.retained_title, f.original_filename) AS title, f.document_date::text AS date, f.amount_cents,
            (SELECT c.payload ->> 'provider' FROM document_operation_candidates c WHERE c.account_id = f.account_id AND c.file_id = f.id AND c.status = 'ACTIVE'
              AND c.payload ->> 'provider' IS NOT NULL ORDER BY c.id LIMIT 1) AS provider,
@@ -176,19 +269,6 @@ export async function loadDocuments(sql: Sql, accountId: number, fileIds: readon
                       WHERE s.account_id = f.account_id AND s.active AND s.source_kind = 'DOCUMENT' AND s.source_entity_key = f.id::text
                         AND o.invalidated_at IS NULL AND o.merged_into_operation_id IS NULL), '{}') AS op_ids
       FROM asset_files f WHERE f.account_id = $1 AND f.id = ANY($2::int[]) AND f.deleted_at IS NULL ORDER BY f.id`, [accountId, intArray(ids)] as never[]);
-  let excerpts = new Map<number, string[]>();
-  try {
-    const [{ db }, { sourceUnitExcerpts }] = await Promise.all([import('@/db'), import('../consolidation/m3-context')]);
-    excerpts = await sourceUnitExcerpts(db as never, accountId, ids);
-  } catch (e) {
-    console.warn('[semantic] extraits documentaires indisponibles :', (e as Error).message);
-  }
-  return r.map((x) => ({
-    id: Number(x.id), type: txt(x.document_type_code), title: txt(x.title), date: txt(x.date), provider: txt(x.provider),
-    amounts: x.amount_cents == null ? [] : [{ kind: 'DOCUMENT_AMOUNT', amountMinor: Number(x.amount_cents), currency: 'EUR', date: txt(x.date), periodStart: null, periodEnd: null }],
-    references: ((x.refs as Array<{ kind?: string; value?: string }>) ?? []).filter((y) => y?.kind && y?.value).slice(0, 10).map((y) => ({ kind: String(y.kind), value: String(y.value) })),
-    excerpts: excerpts.get(Number(x.id)) ?? [], operationIds: nums(x.op_ids),
-  }));
 }
 
 async function loadDecisions(sql: Sql, accountId: number, operationId: number, itemIds: readonly number[]): Promise<RawUserDecisions> {

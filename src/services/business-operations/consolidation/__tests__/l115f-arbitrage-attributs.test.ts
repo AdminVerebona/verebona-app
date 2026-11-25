@@ -88,11 +88,18 @@ describe('L115F-U-E01 — détection sans seuil de jours (E01)', () => {
 
   // Règle remplacée (décision PO du 16/11, carte #791) : deux dates du MÊME JOUR ÉCONOMIQUE
   // (`SAME_DATE_DAYS`) sont relevées mais consultables — aucune question posée. Au-delà, contradiction.
-  it('deux dates d’ACQUISITION du même jour économique (2 jours) : relevées, consultables, aucune carte ; au-delà de la tolérance, contradiction', () => {
-    const acte = (over: Partial<CandidateIdentity>) => cand({ type: 'ACQUISITION', role: 'SALE_DOCUMENT', refs: [ref('ORDER', 'A-1')], ...over });
+  // Carte #836 (écart E01) — **règle complétée** : la tolérance du même jour économique garde SON domaine
+  // (deux PIÈCES différentes d'une même transaction : l'acte et l'attestation), mais elle n'efface plus une
+  // contradiction du MÊME attribut, MÊME rôle, MÊME nature de pièce, MÊME référence, MÊME période et MÊME
+  // révision. Deux ACTES de la même vente qui se contredisent de deux jours sont donc un conflit, comme à
+  // sept jours (voir c836-arbitrage-attributs.test.ts, bloc C836-U-E01).
+  it('deux PIÈCES différentes d’une même transaction à 2 jours (acte, attestation) : relevées, consultables, aucune carte ; au-delà de la tolérance, contradiction', () => {
+    const piece = (role: CandidateIdentity['role'], over: Partial<CandidateIdentity>) =>
+      cand({ type: 'ACQUISITION', role, refs: [ref('ORDER', 'A-1')], ...over });
     const deux = (a: string, b: string) => relever('ACQUISITION', [
-      src(1, acte({ dates: d({ realizedDate: a }) })),
-      src(2, acte({ candidateId: 2, fileId: 11, dates: d({ realizedDate: b }) })),
+      src(1, piece('SALE_DOCUMENT', { dates: d({ realizedDate: a }) })),
+      // Nature de pièce DIFFÉRENTE (attestation de la même vente), même rôle sémantique de date.
+      src(2, piece('REPORT', { candidateId: 2, fileId: 11, dates: d({ realizedDate: b }) })),
     ]);
     const proche = deux('2026-03-12', '2026-03-14');
     expect(proche.state.realizedDate).toBe('2026-03-12');
@@ -199,19 +206,33 @@ describe('L115F-U-E05 — révision successive PROUVÉE (E05)', () => {
     expect(ligne(chevauche, 'provider')[0].qualification).toBe('REAL_CONFLICT_UNRESOLVED');
   });
 
-  it('devis alternatifs SIMULTANÉS (deux documents) : légitime ; deux dates contradictoires du MÊME devis : la contradiction suit son cours', () => {
-    const devis = (id: number, fileId: number, prevue: string) => src(id, cand({
-      candidateId: id, fileId, role: 'QUOTE', status: 'ENVISAGED', dates: d({ plannedDate: prevue }),
+  // Carte #836 (écart E05) — **règle complétée** : deux identifiants de documents ne prouvent plus deux
+  // offres. Des OFFRES CONCURRENTES se prouvent (tiers différents, ou références de devis distinctes) ;
+  // le MÊME devis en deux PDF contradictoires reste une contradiction à trancher.
+  it('offres distinctes PROUVÉES (références de devis différentes) : légitime ; même devis en deux PDF, ou deux dates du MÊME devis : la contradiction suit son cours', () => {
+    const devis = (id: number, fileId: number, prevue: string, over: Partial<CandidateIdentity> = {}) => src(id, cand({
+      candidateId: id, fileId, role: 'QUOTE', status: 'ENVISAGED', dates: d({ plannedDate: prevue }), ...over,
     }));
-    const alternatifs = relever('INTERVENTION', [devis(1, 10, '2026-02-10'), devis(2, 11, '2026-03-10')]);
+    const alternatifs = relever('INTERVENTION', [
+      devis(1, 10, '2026-02-10', { refs: [ref('QUOTE', 'DEV-1')] }),
+      devis(2, 11, '2026-03-10', { refs: [ref('QUOTE', 'DEV-2')] }),
+    ]);
     expect(alternatifs.alerting).toEqual([]);
     expect(ligne(alternatifs, 'plannedDate').map((c) => c.reasonCode)).toEqual(['QUOTE_REVISION']);
+    // Deux PDF, AUCUNE preuve d'offres distinctes : la contradiction n'est plus certifiée « légitime ».
+    const sansPreuve = relever('INTERVENTION', [devis(1, 10, '2026-02-10'), devis(2, 11, '2026-03-10')]);
+    expect(ligne(sansPreuve, 'plannedDate')[0].reasonCode).not.toBe('QUOTE_REVISION');
     const memeDevis = relever('INTERVENTION', [devis(1, 10, '2026-02-10'), devis(2, 10, '2026-03-10')]);
     expect(ligne(memeDevis, 'plannedDate')[0].reasonCode).not.toBe('QUOTE_REVISION');
-    // Devis CORRIGÉ (rectificatif déclaré) : légitime, même porté par le même document.
+    // Devis CORRIGÉ (rectificatif déclaré) : légitime quand la relation lie DEUX PIÈCES — carte #836 (E05),
+    // règle complétée : déclarée sur la pièce qui porte AUSSI l'autre valeur, elle n'explique rien (un même
+    // document qui affirme deux dates n'est pas sa propre révision).
     const corrige = relever('INTERVENTION', [devis(1, 10, '2026-02-10'),
-      src(2, cand({ candidateId: 2, fileId: 10, role: 'QUOTE', status: 'ENVISAGED', dates: d({ plannedDate: '2026-03-10' }), documentRelation: 'RECTIFICATION' }))]);
+      src(2, cand({ candidateId: 2, fileId: 11, role: 'QUOTE', status: 'ENVISAGED', dates: d({ plannedDate: '2026-03-10' }), documentRelation: 'RECTIFICATION' }))]);
     expect(ligne(corrige, 'plannedDate').map((c) => c.reasonCode)).toEqual(['QUOTE_REVISION']);
+    const memeDevisRectifie = relever('INTERVENTION', [devis(1, 10, '2026-02-10'),
+      src(2, cand({ candidateId: 2, fileId: 10, role: 'QUOTE', status: 'ENVISAGED', dates: d({ plannedDate: '2026-03-10' }), documentRelation: 'RECTIFICATION' }))]);
+    expect(ligne(memeDevisRectifie, 'plannedDate')[0].reasonCode).not.toBe('QUOTE_REVISION');
   });
 });
 
@@ -339,10 +360,17 @@ describe('L115F-U-E06 — toutes les alternatives exposées (E06)', () => {
     expect(p.every((x) => x.confidence > 0)).toBe(true);
   });
 
-  it('plafond de sûreté : jamais plus de douze propositions, la valeur en place toujours présente', () => {
+  // Carte #836 (écart E06) — **règle remplacée** : le plafond de douze ne tronque plus la CONSTRUCTION
+  // (au-delà, une valeur réelle n'était plus sélectionnable NULLE PART). Il reste une règle d'AFFICHAGE
+  // (taille de page) ; toutes les valeurs réelles sont construites, avec leurs identifiants stables.
+  it('vingt valeurs réelles : VINGT propositions construites (plus de troncature), la valeur en place toujours présente et en dernier', () => {
     const p = attributeProposals('realizedDate', valeurs(20), '2026-03-01');
-    expect(p).toHaveLength(ATTRIBUTE_PROPOSALS_MAX);
-    expect(p.at(-1)).toMatchObject({ isCurrentValue: true });
+    expect(p).toHaveLength(20);
+    expect(p.at(-1)).toMatchObject({ value: 'ATTRIBUTE:2026-03-01', isCurrentValue: true });
+    expect(new Set(p.map((x) => x.value)).size).toBe(20);
+    // Le plafond reste celui de l'AFFICHAGE : la première page, plus la valeur en place.
+    expect(ATTRIBUTE_PROPOSALS_MAX).toBe(12);
+    expect(selectDisplayedProposals(p, OPERATION_ATTRIBUTE_RULE)).toHaveLength(displayedProposalsMax(OPERATION_ATTRIBUTE_RULE) + 1);
   });
 
   it('À L’ÉCRAN : plus de deux alternatives pour une contradiction d’attribut, la valeur en place toujours là (règle §8.5 complétée, carte #791)', () => {

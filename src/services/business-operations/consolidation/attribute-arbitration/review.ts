@@ -92,7 +92,17 @@ export function __resetArbitrationTableProbeForTests(): void { tablePrete = null
  * examen par une pièce de plus : la rouvrir reviendrait à défaire l'écriture
  * en attendant un nouveau verdict (choix par défaut n° 4, à valider).
  */
-interface ExaminedLine { evidenceKey: string | null; resolved: boolean }
+interface ExaminedLine {
+  evidenceKey: string | null;
+  resolved: boolean;
+  /**
+   * Carte #836 (écart E09) : une décision a retenu une valeur dont l'effet
+   * n'est pas encore constaté (reçue, en cours, échec repris, escaladée). La
+   * ligne n'est alors PAS renvoyée à l'IA : ce qui manque est l'application,
+   * pas un verdict (et un nouveau verdict effacerait la décision en attente).
+   */
+  applicationPending: boolean;
+}
 
 export interface LoadedAttributeReviews {
   /** Valeurs retenues par T3 (RESOLVED certain), à appliquer sous les protections. */
@@ -102,16 +112,28 @@ export interface LoadedAttributeReviews {
   /** Empreintes déjà demandées ou examinées, et le périmètre de preuves de chacune. */
   fingerprints: Map<string, ExaminedLine>;
   ready: boolean;
+  /**
+   * Carte #836 (écart E07) : empreintes dont le périmètre matériel n'a JAMAIS
+   * été mémorisé (`evidence_key IS NULL`, examens antérieurs au lot 115). Elles
+   * étaient tolérées — donc jamais réexaminées, quelle que soit la preuve
+   * nouvelle. Elles sont régularisées : UN réexamen, puis le périmètre est
+   * écrit et vingt scans identiques ne relancent plus rien.
+   */
+  unkeyed: Set<string>;
 }
 
 /** Arbitrages et examens T3 de l'événement (table absente : aucun — la contradiction réelle va à la carte). */
 export async function loadAttributeReviews(x: Exec, accountId: number, operationId: number): Promise<LoadedAttributeReviews> {
-  const out: LoadedAttributeReviews = { choices: [], reviews: new Map(), fingerprints: new Map(), ready: false };
+  const out: LoadedAttributeReviews = { choices: [], reviews: new Map(), fingerprints: new Map(), ready: false, unkeyed: new Set() };
   if (!(await arbitrationTableReady(x))) return out;
   out.ready = true;
+  await arbitrationStateColumnsReady(x);
   const r = await rows(x, sql`
-    SELECT id, field, role, fingerprint, presented_values, status, outcome, retained_normalized, confidence, attempts,
+    SELECT id, field, role, fingerprint, presented_values, status, outcome, retained_normalized, confidence, attempts, foreign_file_id,
            to_jsonb(business_operation_attribute_arbitrations) ->> 'evidence_key' AS evidence_key,
+           -- Carte #836 (E09) : état DURABLE de l'application (colonnes 1785 / 1960 ; absentes : état inconnu).
+           to_jsonb(business_operation_attribute_arbitrations) ->> 'application_state' AS application_state,
+           applied_at IS NOT NULL AS applied,
            (requested_at > now() - make_interval(hours => ${ATTRIBUTE_ARBITRATION_MAX_WAIT_HOURS})) AS fresh
       FROM business_operation_attribute_arbitrations
      WHERE account_id = ${accountId} AND operation_id = ${operationId} AND status NOT IN ('OBSOLETE', 'UNAVAILABLE')
@@ -128,14 +150,35 @@ export async function loadAttributeReviews(x: Exec, accountId: number, operation
     // Lot 115 (#791, E07) : périmètre matériel soumis (colonne 1785 ; absente ou nulle : inconnu, toléré).
     const evidenceKey = typeof l.evidence_key === 'string' && l.evidence_key ? l.evidence_key : null;
     const resolved = certain && l.outcome === 'RESOLVED' && typeof l.retained_normalized === 'string';
-    out.fingerprints.set(String(l.fingerprint), { evidenceKey, resolved });
+    // Carte #836 (E09) : état durable d'application — `UNTRACKED` quand la migration 1785 n'est pas passée
+    // ou que la ligne lui est antérieure (seul le contrôle en base décide alors).
+    const applicationState = ((): AttributeChoice['application'] => {
+      const s = typeof l.application_state === 'string' ? l.application_state : null;
+      if (s === 'APPLIED') return 'APPLIED';
+      if (s === 'APPLY_FAILED') return 'FAILED';
+      if (s === 'ESCALATED') return 'ESCALATED';
+      if (s === 'RECEIVED' || s === 'APPLYING') return 'PENDING';
+      return l.applied === true ? 'APPLIED' : 'UNTRACKED';
+    })();
+    const applicationPending = resolved && applicationState !== 'APPLIED' && applicationState !== 'UNTRACKED';
+    out.fingerprints.set(String(l.fingerprint), { evidenceKey, resolved, applicationPending });
+    // Empreinte historique jamais mémorisée : à régulariser (seulement si la colonne existe, et jamais
+    // pour une demande encore en attente — celle-là n'a rien examiné).
+    if (evidenceKey === null && status !== 'PENDING' && colonnes1785 === true) out.unkeyed.add(String(l.fingerprint));
     // Le constat le plus récent d'un sujet remplace le précédent (valeurs différentes : autre empreinte).
     out.choices = out.choices.filter((c) => attributeChoiceKey(c.field, c.role) !== cle);
     out.reviews.delete(cle);
-    const examen = (outcome: AttributeReview['outcome']): AttributeReview =>
-      ({ field, role, known, reviewId, outcome, ...(evidenceKey ? { evidenceKey } : {}) });
+    const etranger = l.foreign_file_id == null ? undefined : Number(l.foreign_file_id);
+    const examen = (outcome: AttributeReview['outcome']): AttributeReview => ({
+      field, role, known, reviewId, outcome, ...(evidenceKey ? { evidenceKey } : {}),
+      // Carte #836 (écart E08) : document déclaré étranger — porté jusqu'au producteur de cartes.
+      ...(outcome === 'LINK_ERROR' && etranger !== undefined ? { foreignFileId: etranger } : {}),
+    });
     if (resolved) {
-      out.choices.push({ field, role, normalized: String(l.retained_normalized), known, by: 'T3', reviewId });
+      // Carte #836 (E09) : la valeur retenue est TOUJOURS proposée à l'écriture (reprise idempotente), mais
+      // son état d'application voyage avec elle : la qualification ne fermera la contradiction qu'après le
+      // contrôle en base (`choiceApplication`).
+      out.choices.push({ field, role, normalized: String(l.retained_normalized), known, by: 'T3', reviewId, application: applicationState });
     } else if (certain && (l.outcome === 'DISTINCT_FACTS' || l.outcome === 'UNDECIDABLE' || l.outcome === 'LINK_ERROR')) {
       out.reviews.set(cle, examen(l.outcome === 'DISTINCT_FACTS' ? 'LEGITIMATE_DIFFERENCE' : l.outcome));
     } else if ((status === 'PENDING' || (status === 'AI_FAILED' && Number(l.attempts ?? 0) < ATTRIBUTE_ARBITRATION_MAX_ATTEMPTS)) && l.fresh === true) {
@@ -176,10 +219,25 @@ export async function requestAttributeReviews(
    * scans ni sur une pièce équivalente. Une valeur déjà RETENUE n'est jamais
    * remise en examen (elle serait défaite en attendant un nouveau verdict).
    */
+  /**
+   * Carte #836 (écart E07) — **règle remplacée** : une valeur déjà RETENUE
+   * n'était plus jamais réexaminée (`deja.resolved`), et une empreinte
+   * historique `evidence_key = NULL` était tolérée sans fin — une facture
+   * rectificative pouvait donc rester sans effet pour toujours. Désormais :
+   *   · une ÉVOLUTION MATÉRIELLE du périmètre (autorité, référence, période,
+   *     révision, identité, contradiction) rouvre l'examen, même à valeur
+   *     textuelle égale, et même si une valeur avait été retenue ;
+   *   · une empreinte historique NULL donne droit à UN réexamen, après quoi le
+   *     périmètre est mémorisé : vingt scans identiques ne relancent rien ;
+   *   · une décision dont l'APPLICATION est encore en cours ou escaladée n'est
+   *     jamais renvoyée à l'IA (c'est l'application qui manque, pas l'avis) ;
+   *   · sans empreinte calculable, aucun rejeu.
+   */
   const aExaminer = (c: QualifiedAttributeConflict): boolean => {
     const deja = loaded.fingerprints.get(lineFingerprint(operationId, c));
     if (deja === undefined) return true;
-    if (deja.resolved || deja.evidenceKey === null || c.evidenceKey === undefined) return false;
+    if (deja.applicationPending || c.evidenceKey === undefined) return false;
+    if (deja.evidenceKey === null) return loaded.unkeyed.has(lineFingerprint(operationId, c));
     return deja.evidenceKey !== c.evidenceKey;
   };
   const candidates = open.filter((c) => eligibleForArbitration(c) && aExaminer(c));
@@ -206,10 +264,16 @@ export async function requestAttributeReviews(
         ON CONFLICT (account_id, fingerprint) DO UPDATE
            SET status = 'PENDING', presented_values = EXCLUDED.presented_values, file_ids = EXCLUDED.file_ids, evidence_key = EXCLUDED.evidence_key,
                requested_at = now(), updated_at = now(), attempts = 0, retry_at = NULL, error = NULL
+        -- Carte #836 (E07) : une ÉVOLUTION MATÉRIELLE du périmètre rouvre l'examen, y compris celui qui avait
+        -- retenu une valeur (règle remplacée : il était figé). Jamais sur un périmètre identique, jamais sur une
+        -- demande déjà en attente, et jamais tant que l'APPLICATION d'une décision reste à faire (E09).
          WHERE business_operation_attribute_arbitrations.status IN ('OBSOLETE', 'UNAVAILABLE')
             OR (business_operation_attribute_arbitrations.evidence_key IS DISTINCT FROM EXCLUDED.evidence_key
                 AND business_operation_attribute_arbitrations.status NOT IN ('PENDING')
-                AND NOT (business_operation_attribute_arbitrations.status = 'DECIDED' AND business_operation_attribute_arbitrations.outcome = 'RESOLVED'))
+                AND NOT (business_operation_attribute_arbitrations.status = 'DECIDED'
+                         AND business_operation_attribute_arbitrations.outcome = 'RESOLVED'
+                         AND business_operation_attribute_arbitrations.applied_at IS NULL
+                         AND COALESCE(business_operation_attribute_arbitrations.application_state, 'APPLIED') <> 'APPLIED'))
         RETURNING id`)
       : await rows(x, sql`
         INSERT INTO business_operation_attribute_arbitrations (account_id, operation_id, field, role, fingerprint, presented_values, file_ids, status, contract_version)
@@ -223,6 +287,38 @@ export async function requestAttributeReviews(
     if (r.length) out.add(attributeSubjectKey(c));
   }
   return out;
+}
+
+/**
+ * Carte #836 (écart E07) — RÉGULARISATION des empreintes historiques.
+ *
+ * Les examens antérieurs au lot 115 n'ont pas mémorisé le périmètre matériel
+ * de leurs preuves (`evidence_key IS NULL`). `reviewCovers` les tolérait : leur
+ * verdict couvrait la ligne POUR TOUJOURS, quelle que soit la preuve nouvelle.
+ * Cette écriture leur donne pour référence le périmètre CONSTATÉ aujourd'hui :
+ * rien n'est rouvert maintenant (le verdict rendu portait sur ces preuves-là,
+ * c'est la seule information dont on dispose), mais toute évolution matérielle
+ * ULTÉRIEURE est désormais détectée. Idempotente (`evidence_key IS NULL`),
+ * bornée à l'événement, sans aucun appel à l'IA. Les lignes encore ouvertes et
+ * éligibles sont, elles, réellement réexaminées (`aExaminer`).
+ */
+export async function regularizeEvidenceKeys(
+  x: Exec, accountId: number, operationId: number, lines: readonly QualifiedAttributeConflict[], loaded: LoadedAttributeReviews,
+): Promise<number> {
+  if (!loaded.ready || !loaded.unkeyed.size) return 0;
+  let n = 0;
+  for (const c of lines) {
+    if (c.evidenceKey === undefined) continue;
+    const fp = lineFingerprint(operationId, c);
+    if (!loaded.unkeyed.has(fp)) continue;
+    await x.execute(sql`
+      UPDATE business_operation_attribute_arbitrations
+         SET evidence_key = ${c.evidenceKey}, updated_at = now()
+       WHERE account_id = ${accountId} AND operation_id = ${operationId} AND fingerprint = ${fp} AND evidence_key IS NULL`);
+    loaded.unkeyed.delete(fp);
+    n++;
+  }
+  return n;
 }
 
 /** Prédicat SQL « le compte a une demande d'arbitrage à traiter » (balayage horaire du passage T3). */
@@ -258,12 +354,18 @@ async function complete(x: Exec, id: number, r: {
   applicationState?: 'RECEIVED' | 'APPLYING' | 'APPLIED' | 'APPLY_FAILED';
 }): Promise<void> {
   const appele = r.called === true;
-  if (r.applicationState && await arbitrationStateColumnsReady(x)) {
-    await x.execute(sql`UPDATE business_operation_attribute_arbitrations SET application_state = ${r.applicationState} WHERE id = ${id}`);
-  }
+  // Carte #836 (écart E09) : l'état d'application est écrit dans LA MÊME instruction que la décision —
+  // **règle remplacée** (deux UPDATE successifs laissaient, en cas de panne entre les deux, une décision
+  // sans état). Une décision REÇUE rouvre le budget de reprises de son application.
+  const etat = r.applicationState && await arbitrationStateColumnsReady(x)
+    ? sql`application_state = ${r.applicationState},
+          application_attempts = CASE WHEN ${r.applicationState === 'RECEIVED'} THEN 0 ELSE application_attempts END,
+          application_error = CASE WHEN ${r.applicationState === 'RECEIVED'} THEN NULL ELSE application_error END,
+          applied_at = CASE WHEN ${r.applicationState === 'RECEIVED'} THEN NULL ELSE applied_at END,`
+    : sql``;
   await x.execute(sql`
     UPDATE business_operation_attribute_arbitrations
-       SET status = ${r.status}, outcome = COALESCE(${r.outcome ?? null}, outcome),
+       SET ${etat} status = ${r.status}, outcome = COALESCE(${r.outcome ?? null}, outcome),
            retained_value = ${r.retainedValue ?? null}, retained_normalized = ${r.retainedNormalized ?? null}, foreign_file_id = ${r.foreignFileId ?? null},
            confidence = COALESCE(${r.confidence ?? null}, confidence), evidence = COALESCE(${json(r.evidence)}::jsonb, evidence),
            reason = COALESCE(${r.reason ? r.reason.slice(0, 300) : null}, reason), ai_output = COALESCE(${json(r.aiOutput)}::jsonb, ai_output),
@@ -294,6 +396,43 @@ const valueOf = async (x: Exec, accountId: number, operationId: number, field: C
   return (o?.v as string | null) ?? null;
 };
 
+/** Carte #836 (écart E09) : motif précis d'une application non constatée (trace, BO, journal). */
+export type ApplicationCheckReason = 'OPERATION_GONE' | 'VALUE_NOT_WRITTEN' | 'PROVENANCE_MISMATCH' | 'CONFLICT_STILL_OPEN';
+
+/**
+ * Carte #836 (écart E09) — CONTRÔLE EN BASE d'une application, avant tout
+ * « appliqué ». **Règle remplacée** : l'effet était jugé sur la seule colonne
+ * de l'attribut (`valueOf`). Le contrôle porte maintenant sur :
+ *   · le COMPTE et l'événement (actif, non fusionné, non invalidé) ;
+ *   · le CHAMP et la VALEUR réellement persistés ;
+ *   · la PROVENANCE écrite pour ce champ (78A) ;
+ *   · le BON FAIT et la BONNE PÉRIODE : la ligne de provenance de la même
+ *     empreinte (attribut, rôle, valeurs) ne doit plus être une contradiction
+ *     ouverte. Ligne disparue : l'écriture a bien eu lieu, plus rien à trancher.
+ * Lecture seule, sans IA, rejouable à l'identique.
+ */
+async function verifyApplication(
+  x: Exec, accountId: number, d: { id: number; operationId: number; field: ConflictField; role: string; fingerprint: string },
+  expected: string,
+): Promise<{ applied: boolean; value: string | null; reason?: ApplicationCheckReason }> {
+  const [o] = await rows(x, sql`
+    SELECT (o.invalidated_at IS NULL AND o.merged_into_operation_id IS NULL) AS active,
+           ${sql.raw(COLONNE[d.field])}::text AS courant,
+           to_jsonb(o) -> 'attribute_provenance' -> 'fields' -> ${d.field} ->> 'value' AS provenance,
+           to_jsonb(o) -> 'attribute_provenance' -> 'conflicts' AS conflicts
+      FROM business_operations o WHERE o.id = ${d.operationId} AND o.account_id = ${accountId}`);
+  if (!o) return { applied: false, value: null, reason: 'OPERATION_GONE' };
+  const value = (o.courant as string | null) ?? null;
+  if (o.active !== true) return { applied: false, value, reason: 'OPERATION_GONE' };
+  if (value !== expected) return { applied: false, value, reason: 'VALUE_NOT_WRITTEN' };
+  const prov = (o.provenance as string | null) ?? null;
+  if (prov !== null && prov !== expected) return { applied: false, value, reason: 'PROVENANCE_MISMATCH' };
+  const ouvertes = (Array.isArray(o.conflicts) ? o.conflicts : []) as QualifiedAttributeConflict[];
+  const encore = ouvertes.some((c) => c && c.field === d.field && c.role === d.role && Array.isArray(c.values)
+    && lineFingerprint(d.operationId, c) === d.fingerprint);
+  return encore ? { applied: false, value, reason: 'CONFLICT_STILL_OPEN' } : { applied: true, value };
+}
+
 export interface AttributeArbitrationPhaseResult {
   processed: number;
   aiCalls: number;
@@ -306,6 +445,14 @@ export interface AttributeArbitrationPhaseResult {
   resumed?: number;
   /** Lot 115 (#791, E09) : décisions dont l'application a été vérifiée SANS effet (valeur protégée, saisie non gérée). */
   applyFailed?: number;
+  /**
+   * Carte #836 (écart E09) : applications dont le plafond de reprises est
+   * ÉPUISÉ — escalade explicite (la contradiction reste visible et actionnable,
+   * jamais un blocage silencieux).
+   */
+  escalated?: number;
+  /** Carte #836 (écart E07) : empreintes historiques régularisées (aucun appel IA). */
+  regularized?: number;
   /**
    * Lot 115 (#791, E08) : verdicts « document étranger » dont la séparation a
    * EU LIEU et dont les valeurs dérivées viennent d'être réparées (une seule
@@ -323,16 +470,60 @@ export interface AttributeArbitrationPhaseResult {
  * valeur retenue est relue par la consolidation (idempotente), puis l'effet
  * est VÉRIFIÉ sur l'événement.
  */
-async function pendingApplications(x: Exec, accountId: number, limit: number): Promise<Array<{ id: number; operationId: number; field: ConflictField; value: string }>> {
+interface PendingApplication { id: number; operationId: number; field: ConflictField; role: string; fingerprint: string; value: string }
+
+async function pendingApplications(x: Exec, accountId: number, limit: number): Promise<PendingApplication[]> {
+  if (!(await arbitrationStateColumnsReady(x))) return [];
+  // Carte #836 (écart E09) — **règle remplacée** : la reprise était un simple SELECT, et la tentative n'était
+  // comptée qu'au moment de l'écriture groupée. Deux passages concurrents (deux workers) pouvaient donc
+  // réserver la MÊME ligne. La reprise RÉSERVE maintenant ses lignes en une seule instruction atomique
+  // (`FOR UPDATE SKIP LOCKED`) qui porte l'état durable APPLYING et incrémente la tentative : un arrêt
+  // brutal laisse une trace reprise au passage suivant, jamais un « appliqué » faux ni un doublon de travail.
+  const r = await rows(x, sql`
+    UPDATE business_operation_attribute_arbitrations a
+       SET application_state = 'APPLYING', application_attempts = a.application_attempts + 1, updated_at = now()
+     WHERE a.id IN (
+       SELECT s.id FROM business_operation_attribute_arbitrations s
+        WHERE s.account_id = ${accountId} AND s.status = 'DECIDED' AND s.outcome = 'RESOLVED' AND s.retained_value IS NOT NULL
+          AND s.application_state IN ('RECEIVED', 'APPLYING', 'APPLY_FAILED') AND s.applied_at IS NULL
+          AND s.application_attempts < ${ATTRIBUTE_ARBITRATION_MAX_ATTEMPTS}
+        ORDER BY s.id LIMIT ${limit} FOR UPDATE SKIP LOCKED)
+    RETURNING a.id, a.operation_id, a.field, a.role, a.fingerprint, a.retained_value`);
+  return r.map((l) => ({
+    id: Number(l.id), operationId: Number(l.operation_id), field: String(l.field) as ConflictField, role: String(l.role),
+    fingerprint: String(l.fingerprint), value: String(l.retained_value),
+  }));
+}
+
+/**
+ * Carte #836 (écart E09) — ESCALADE EXPLICITE des applications épuisées.
+ *
+ * Le plafond de reprises existait sans gestion de son épuisement : passé trois
+ * tentatives, la ligne sortait silencieusement de la file de reprise et
+ * personne n'était averti — un faux « résolu » était remplacé par un blocage
+ * muet. Ces lignes passent désormais à l'état durable `ESCALATED` : la
+ * contradiction reste visible et actionnable (carte « À traiter », motif
+ * `T3_APPLICATION_ESCALATED`), l'opération est reconsolidée, et le journal
+ * porte le constat (aucune donnée du client : identifiants seulement).
+ * Idempotente : une ligne déjà escaladée n'est plus reprise.
+ */
+async function escalateExhaustedApplications(x: Exec, accountId: number, limit: number): Promise<Array<{ id: number; operationId: number; field: ConflictField }>> {
   if (!(await arbitrationStateColumnsReady(x))) return [];
   const r = await rows(x, sql`
-    SELECT id, operation_id, field, retained_value
-      FROM business_operation_attribute_arbitrations
-     WHERE account_id = ${accountId} AND status = 'DECIDED' AND outcome = 'RESOLVED' AND retained_value IS NOT NULL
-       AND application_state IN ('RECEIVED', 'APPLYING', 'APPLY_FAILED') AND applied_at IS NULL
-       AND application_attempts < ${ATTRIBUTE_ARBITRATION_MAX_ATTEMPTS}
-     ORDER BY id LIMIT ${limit}`);
-  return r.map((l) => ({ id: Number(l.id), operationId: Number(l.operation_id), field: String(l.field) as ConflictField, value: String(l.retained_value) }));
+    UPDATE business_operation_attribute_arbitrations a
+       SET application_state = 'ESCALATED',
+           application_error = COALESCE(a.application_error, 'APPLICATION_ATTEMPTS_EXHAUSTED'),
+           validation = COALESCE(a.validation, '{}'::jsonb) || jsonb_build_object('applicationEscalated', jsonb_build_object(
+             'attempts', a.application_attempts, 'at', to_char(now(), 'YYYY-MM-DD"T"HH24:MI:SSOF'))),
+           updated_at = now()
+     WHERE a.id IN (
+       SELECT s.id FROM business_operation_attribute_arbitrations s
+        WHERE s.account_id = ${accountId} AND s.status = 'DECIDED' AND s.outcome = 'RESOLVED' AND s.retained_value IS NOT NULL
+          AND s.application_state IN ('RECEIVED', 'APPLYING', 'APPLY_FAILED') AND s.applied_at IS NULL
+          AND s.application_attempts >= ${ATTRIBUTE_ARBITRATION_MAX_ATTEMPTS}
+        ORDER BY s.id LIMIT ${limit} FOR UPDATE SKIP LOCKED)
+    RETURNING a.id, a.operation_id, a.field`);
+  return r.map((l) => ({ id: Number(l.id), operationId: Number(l.operation_id), field: String(l.field) as ConflictField }));
 }
 
 /**
@@ -399,9 +590,11 @@ export async function runAttributeArbitrationPhase(accountId: number, opts: {
   const demandes = await pendingRequests(x, accountId, opts.limit ?? REQUESTS_PER_PASS);
   // Lot 115 (#791, E09) : d'abord les applications inachevées du compte (aucun appel IA).
   const reprises = await pendingApplications(x, accountId, opts.limit ?? REQUESTS_PER_PASS);
+  // Carte #836 (E09) : puis celles dont le plafond de reprises est épuisé — escalade explicite.
+  const escalades = await escalateExhaustedApplications(x, accountId, opts.limit ?? REQUESTS_PER_PASS);
   // Lot 115 (#791, E08) : puis les valeurs dérivées à réparer après une séparation déjà décidée (aucun appel IA).
   const reparations = await pendingLinkRepairs(x, accountId, opts.limit ?? REQUESTS_PER_PASS);
-  if (!demandes.length && !reprises.length && !reparations.length) return out;
+  if (!demandes.length && !reprises.length && !escalades.length && !reparations.length) return out;
   const now = opts.now ?? (() => new Date());
   const decider = opts.decider ?? deciderMod.arbitrationDecider();
   const parJour = opts.dailyMax ?? m3.operationMatchCallsPerDay();
@@ -409,14 +602,27 @@ export async function runAttributeArbitrationPhase(accountId: number, opts: {
   const compter = (s: string) => { out.outcomes[s] = (out.outcomes[s] ?? 0) + 1; };
   const touchees = new Set<number>();
   /** Arbitrages RESOLVED de ce passage : valeur avant, à comparer après la reconsolidation. */
-  const resolus: Array<{ id: number; operationId: number; field: ConflictField; before: string | null; value: string }> = [];
+  const resolus: Array<{ id: number; operationId: number; field: ConflictField; role: string; fingerprint: string; before: string | null; value: string; claimed: boolean }> = [];
 
   // Lot 115 (#791, E09) : les reprises entrent dans le même cycle « appliquer puis VÉRIFIER » que les décisions du passage.
   for (const r of reprises) {
-    resolus.push({ id: r.id, operationId: r.operationId, field: r.field, before: await valueOf(x, accountId, r.operationId, r.field), value: r.value });
+    resolus.push({
+      id: r.id, operationId: r.operationId, field: r.field, role: r.role, fingerprint: r.fingerprint,
+      before: await valueOf(x, accountId, r.operationId, r.field), value: r.value, claimed: true,
+    });
     touchees.add(r.operationId);
   }
   if (reprises.length) out.resumed = reprises.length;
+
+  // Carte #836 (E09) : escalade — la contradiction redevient visible et actionnable, et le constat est journalisé.
+  for (const e of escalades) {
+    touchees.add(e.operationId);
+    console.warn(JSON.stringify({
+      event: 't3.attribute_arbitration.application_escalated', accountId, operationId: e.operationId, reviewId: e.id,
+      field: e.field, attempts: ATTRIBUTE_ARBITRATION_MAX_ATTEMPTS,
+    }));
+  }
+  if (escalades.length) out.escalated = escalades.length;
 
   // Lot 115 (#791, E08) : la séparation a eu lieu (source partie) — les valeurs dérivées de l'événement sont
   // recalculées par la reconsolidation ciblée ci-dessous, et la propagation est celle du dépôt (événements
@@ -437,7 +643,7 @@ export async function runAttributeArbitrationPhase(accountId: number, opts: {
     }
     out.unavailable = cap.contractState ?? cap.reason;
   } else {
-    const { loadDocuments } = await import('../../semantic/load');
+    const { emptyDocumentInventory, loadDocuments } = await import('../../semantic/load');
     for (const d of demandes) {
       const etat = await currentLine(x, accountId, d);
       if (!etat) {
@@ -450,8 +656,20 @@ export async function runAttributeArbitrationPhase(accountId: number, opts: {
       // Budget : plafonds existants du rapprochement sémantique — la demande reste en attente.
       if (out.aiCalls >= parPassage || (await callsLastDay(x, accountId)) >= parJour) { compter('DEFERRED_BUDGET'); break; }
       const fichiers = [...new Set(d.values.flatMap((v) => v.fileIds))];
-      const docs = await loadDocuments(pgClient, accountId, fichiers);
+      // Carte #836 (écart E02) : INVENTAIRE de la collecte (documents demandés / chargés / manquants,
+      // unités documentaires et références comptées AVANT la sélection, fenêtres parcourues et en échec).
+      // Les limites de coût ne changent pas ; ce qu'elles écartent est tracé, et la couverture est prouvée
+      // ou refusée — jamais présumée.
+      const inventaire = emptyDocumentInventory();
+      const docs = await loadDocuments(pgClient, accountId, fichiers, inventaire);
+      const somme = (m: Map<number, { total: number; kept: number }>) => [...m.values()]
+        .reduce((a, v) => ({ total: a.total + v.total, kept: a.kept + v.kept }), { total: 0, kept: 0 });
       const b = contract.buildArbitrationInput({
+        inventory: {
+          documentsMissing: inventaire.missing.length, failedWindows: inventaire.failedWindows,
+          units: somme(inventaire.units), references: somme(inventaire.references),
+          ...(inventaire.unitsUnknown ? { unitsUnknown: true } : {}),
+        },
         today: todayParis(now()), field: d.field, role: d.role, operation: { typeCode: etat.type, label: etat.label },
         values: d.values.map((v) => ({ value: v.value, normalized: v.normalized, fileIds: v.fileIds, held: etat.current !== null && v.value === etat.current, userProtected: v.userProtected })),
         documents: docs.map((doc) => ({ id: doc.id, type: doc.type, title: doc.title, date: doc.date, provider: doc.provider, references: doc.references, excerpts: doc.excerpts })),
@@ -462,7 +680,17 @@ export async function runAttributeArbitrationPhase(accountId: number, opts: {
       if (!b.scope.complete) {
         await complete(x, d.id, {
           status: 'INCOMPLETE', reason: `CONTEXT_INCOMPLETE:${b.scope.incomplete ?? 'BOUNDS'}`,
-          validation: { complete: false, missing: b.scope.incomplete ?? 'BOUNDS', bounds: b.input.bounds, documents: fichiers.length, loaded: docs.length },
+          validation: {
+            complete: false, missing: b.scope.incomplete ?? 'BOUNDS', bounds: b.input.bounds,
+            documents: fichiers.length, loaded: docs.length,
+            // Carte #836 (écart E02) : l'inventaire est TRACÉ (omissions, versions, couverture) — aucune donnée du client.
+            inventory: {
+              requested: inventaire.requested.length, loaded: inventaire.loaded.length, missing: inventaire.missing.length,
+              windows: inventaire.windows, failedWindows: inventaire.failedWindows,
+              units: somme(inventaire.units), references: somme(inventaire.references),
+              ...(inventaire.unitsUnknown ? { unitsUnknown: true } : {}),
+            },
+          },
         });
         touchees.add(d.operationId);
         compter('INCOMPLETE');
@@ -506,7 +734,10 @@ export async function runAttributeArbitrationPhase(accountId: number, opts: {
       } else if (v.effect.outcome === 'RESOLVED') {
         // Lot 115 (#791, E09) : décision REÇUE — « appliqué » ne sera écrit qu'après vérification de l'effet.
         await complete(x, d.id, { ...base, status: 'DECIDED', retainedValue: v.effect.value, retainedNormalized: v.effect.normalized, applicationState: 'RECEIVED' });
-        resolus.push({ id: d.id, operationId: d.operationId, field: d.field, before: etat.current, value: v.effect.value });
+        resolus.push({
+          id: d.id, operationId: d.operationId, field: d.field, role: d.role, fingerprint: d.fingerprint,
+          before: etat.current, value: v.effect.value, claimed: false,
+        });
         compter('DECIDED_RESOLVED');
       } else {
         const etranger = v.effect.outcome === 'LINK_ERROR' ? v.effect.foreignFileId : null;
@@ -533,11 +764,16 @@ export async function runAttributeArbitrationPhase(accountId: number, opts: {
     const traceEtat = await arbitrationStateColumnsReady(x);
     // Lot 115 (#791, E09) : APPLICATION EN COURS, écrite AVANT la reconsolidation — une panne, un échec SQL ou
     // un arrêt laisse une trace durable, reprise (idempotente) au passage suivant, jamais un « appliqué » faux.
-    if (traceEtat && resolus.length) {
+    // Carte #836 (E09) : les reprises ont DÉJÀ réservé leur ligne (`pendingApplications`) — seules les
+    // décisions nouvelles de ce passage sont à marquer, et seulement si elles n'ont pas déjà abouti
+    // (rejeu idempotent, concurrence entre workers).
+    const aMarquer = resolus.filter((r) => !r.claimed).map((r) => r.id);
+    if (traceEtat && aMarquer.length) {
       await x.execute(sql`
         UPDATE business_operation_attribute_arbitrations
            SET application_state = 'APPLYING', application_attempts = application_attempts + 1, updated_at = now()
-         WHERE id = ANY(${intArray(resolus.map((r) => r.id))}::bigint[])`);
+         WHERE id = ANY(${intArray(aMarquer)}::bigint[]) AND applied_at IS NULL
+           AND application_state IN ('RECEIVED', 'APPLYING', 'APPLY_FAILED')`);
     }
     const { reconsolidateOperations } = await import('../consolidator');
     await reconsolidateOperations(accountId, out.operations, { correlationId: 't3-attribute-arbitration' });
@@ -553,24 +789,23 @@ export async function runAttributeArbitrationPhase(accountId: number, opts: {
          WHERE id = ${r.id} AND account_id = ${accountId}`);
     }
     for (const r of resolus) {
-      // Application VÉRIFIÉE : la valeur est relue sur l'événement de référence (jamais déduite de la décision).
-      const apres = await valueOf(x, accountId, r.operationId, r.field);
-      const appliquee = apres === r.value;
-      if (appliquee && apres !== r.before) out.applied++;
+      // Carte #836 (E09) : application VÉRIFIÉE par un CONTRÔLE EN BASE complet (compte, événement actif,
+      // champ, valeur, provenance, même fait et même période) — jamais déduite de la décision, et jamais
+      // de la seule colonne. Les deux écritures de trace sont réunies en une (atomicité de l'état durable).
+      const controle = await verifyApplication(x, accountId, r, r.value);
+      const appliquee = controle.applied;
+      const motif = controle.reason ?? 'PROTECTED_OR_UNMANAGED_VALUE';
+      if (appliquee && controle.value !== r.before) out.applied++;
       if (!appliquee) out.applyFailed = (out.applyFailed ?? 0) + 1;
       await x.execute(sql`
         UPDATE business_operation_attribute_arbitrations
-           SET value_before = ${r.before}, value_after = ${apres}, applied_at = CASE WHEN ${appliquee} THEN now() ELSE NULL END,
-               validation = validation || ${JSON.stringify({ applied: appliquee, ...(appliquee ? {} : { notApplied: 'PROTECTED_OR_UNMANAGED_VALUE' }) })}::jsonb,
+           SET value_before = ${r.before}, value_after = ${controle.value},
+               applied_at = CASE WHEN ${appliquee} THEN now() ELSE NULL END,
+               validation = validation || ${JSON.stringify({ applied: appliquee, ...(appliquee ? {} : { notApplied: motif }) })}::jsonb,
+               ${traceEtat ? sql`application_state = ${appliquee ? 'APPLIED' : 'APPLY_FAILED'},
+                              application_error = ${appliquee ? null : motif},` : sql``}
                updated_at = now()
-         WHERE id = ${r.id}`);
-      if (traceEtat) {
-        await x.execute(sql`
-          UPDATE business_operation_attribute_arbitrations
-             SET application_state = ${appliquee ? 'APPLIED' : 'APPLY_FAILED'},
-                 application_error = ${appliquee ? null : 'PROTECTED_OR_UNMANAGED_VALUE'}, updated_at = now()
-           WHERE id = ${r.id}`);
-      }
+         WHERE id = ${r.id} AND account_id = ${accountId}`);
     }
   }
   return out;

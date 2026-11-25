@@ -119,6 +119,10 @@ export const REASON_TEXTS: Readonly<Record<string, string>> = {
   T3_UNDECIDABLE: 'T3 a reconnu le même fait et des preuves de même autorité : aucun arbitrage sûr, la question est posée à l’utilisateur.',
   T3_LINK_ERROR_SUSPECTED: 'T3 signale, preuve citée, qu’un document semble étranger à l’événement : le rattachement doit être examiné avant toute comparaison.',
   NEW_EVIDENCE_AFTER_DECISION: 'Une valeur nouvelle est apparue après une décision : la contradiction est rouverte, la valeur décidée reste en place.',
+  // Carte #836 (écarts E09 et E07) — textes nouveaux, à valider par le PO.
+  T3_APPLICATION_NOT_VERIFIED: 'L’arbitrage T3 a retenu une valeur, mais le contrôle en base ne constate pas son effet sur l’opération (application reçue, en cours, ou écriture sans effet) : la contradiction reste ouverte, et l’application est reprise.',
+  T3_APPLICATION_ESCALATED: 'L’arbitrage T3 a retenu une valeur que les reprises d’application n’ont pas réussi à écrire (plafond épuisé) : escalade — la contradiction reste ouverte et l’utilisateur peut trancher.',
+  USER_DECISION_EVIDENCE_CHANGED: 'Une preuve matériellement nouvelle (autorité, référence, période, révision, identité) est apparue depuis la réponse de l’utilisateur : sa valeur reste en place et protégée, et la question lui est posée à nouveau.',
   DECIDED_VALUE_WITHDRAWN: 'La source de la valeur décidée n’est plus active alors que les autres valeurs se contredisent encore : contradiction rouverte.',
   [LEGACY_REASON]: 'Relevé antérieur aux règles 113AQ : ni rôle ni qualification conservés ; recontrôle requis (reconsolidation de l’Opération).',
   CHECK_FAILED: 'Le dernier contrôle de l’Opération n’a pas pu s’achever (erreur technique T3) : verdict non vérifiable.',
@@ -222,6 +226,8 @@ export const T3_APPLICATION_LABELS: Readonly<Record<string, string>> = {
   APPLYING: 'Application en cours',
   APPLIED: 'Application vérifiée sur l’opération',
   APPLY_FAILED: 'Application sans effet (valeur protégée ou saisie non gérée) : reprise',
+  // Carte #836 (écart E09) — texte nouveau, à valider par le PO.
+  ESCALATED: 'Application impossible après toutes les reprises : escaladée (la contradiction reste à trancher)',
 };
 
 export interface DiagnosticValue {

@@ -59,6 +59,41 @@ const M3_EXCERPT_MAX_CHARS = 160;
  * Le modèle y trouve les indices que T1 n'a pas structurés (numéro
  * d'abonné, formule, adresse d'installation…) ; aucune règle serveur.
  */
+/** Unités documentaires ÉLIGIBLES aux extraits (même périmètre que `sourceUnitExcerpts`) — fragment unique. */
+const UNITES_ELIGIBLES = sql`
+  u.coverage_status IN ('COVERED', 'UNCERTAIN', 'UNRESOLVED')
+  AND u.kind IN ('LABEL_VALUE', 'FORM_FIELD', 'TABLE_ROW', 'TEXT_BLOCK')
+  AND (COALESCE(btrim(u.content_text), '') <> '' OR COALESCE(btrim(u.value_text), '') <> '')`;
+
+/**
+ * Carte #836 (écart E02) — INVENTAIRE des unités documentaires d'un document,
+ * AVANT toute sélection.
+ *
+ * `sourceUnitExcerpts` borne les extraits transmis au modèle à douze par
+ * document : c'est une limite de COÛT, et elle reste. Mais rien ne disait
+ * combien d'unités existaient : la treizième unité d'une facture pouvait
+ * porter la contradiction décisive sans que personne — ni le code, ni T3 — ne
+ * sache qu'elle avait été écartée, et un verdict « faits distincts » pouvait
+ * être rendu sur ce contexte tronqué en se croyant complet. Cette lecture
+ * compte TOUTES les unités éligibles, par document : la couverture est alors
+ * prouvée ou elle ne l'est pas (`scope.complete`), et la limite de coût n'est
+ * plus confondue avec l'exhaustivité. Lecture seule, bornée au compte.
+ */
+export async function sourceUnitCounts(r: Runner, accountId: number, fileIds: readonly number[]): Promise<Map<number, { total: number; kept: number }>> {
+  const out = new Map<number, { total: number; kept: number }>();
+  const ids = [...new Set(fileIds)].filter((x) => Number.isSafeInteger(x) && x > 0);
+  if (!ids.length) return out;
+  const u = await rows<{ file_id: number; total: number }>(r, sql`
+    SELECT u.file_id, count(*)::int AS total FROM document_source_units u
+     WHERE u.account_id = ${accountId} AND u.file_id = ANY(${intArray(ids)}::int[]) AND ${UNITES_ELIGIBLES}
+     GROUP BY u.file_id`);
+  for (const x of u) {
+    const total = Number(x.total ?? 0);
+    out.set(Number(x.file_id), { total, kept: Math.min(total, M3_EXCERPTS_PER_DOCUMENT) });
+  }
+  return out;
+}
+
 export async function sourceUnitExcerpts(r: Runner, accountId: number, fileIds: readonly number[]): Promise<Map<number, string[]>> {
   const out = new Map<number, string[]>();
   const ids = [...new Set(fileIds)].filter((x) => Number.isSafeInteger(x) && x > 0);
@@ -68,10 +103,7 @@ export async function sourceUnitExcerpts(r: Runner, accountId: number, fileIds: 
       SELECT u.file_id, u.label, u.value_text, u.content_text,
              row_number() OVER (PARTITION BY u.file_id ORDER BY u.salient DESC, u.page NULLS LAST, u.ordinal, u.id) AS n
         FROM document_source_units u
-       WHERE u.account_id = ${accountId} AND u.file_id = ANY(${intArray(ids)}::int[])
-         AND u.coverage_status IN ('COVERED', 'UNCERTAIN', 'UNRESOLVED')
-         AND u.kind IN ('LABEL_VALUE', 'FORM_FIELD', 'TABLE_ROW', 'TEXT_BLOCK')
-         AND (COALESCE(btrim(u.content_text), '') <> '' OR COALESCE(btrim(u.value_text), '') <> '')
+       WHERE u.account_id = ${accountId} AND u.file_id = ANY(${intArray(ids)}::int[]) AND ${UNITES_ELIGIBLES}
     ) x WHERE x.n <= ${M3_EXCERPTS_PER_DOCUMENT} ORDER BY x.file_id, x.n`);
   for (const x of u) {
     const lv = [x.label, x.value_text].filter((v) => v && String(v).trim()).join(' : ');

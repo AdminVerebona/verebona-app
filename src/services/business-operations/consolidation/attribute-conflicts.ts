@@ -134,6 +134,13 @@ export interface QualifiedAttributeConflict {
    * couvre plus ; vingt scans identiques ne le changent pas.
    */
   evidenceKey?: string;
+  /**
+   * Carte #836 (écart E08) : document déclaré ÉTRANGER par T3 sur cette ligne.
+   * Porté jusqu'au producteur de cartes : tant que ce document est une source
+   * ACTIVE, la question du rattachement est POSÉE (action exploitable), au lieu
+   * d'un doute qui reste ouvert sans suite.
+   */
+  foreignFileId?: number;
 }
 
 export interface QualificationContext {
@@ -148,6 +155,26 @@ export interface QualificationContext {
   choices?: ReadonlyMap<string, AttributeChoice>;
   /** Lot 114 (#750) : examens T3 sans arbitrage (différence légitime, abstention…) par `attributeReviewKey`. */
   reviews?: ReadonlyMap<string, AttributeReview>;
+  /**
+   * Carte #836 (écart E09) — valeurs RELUES SUR L'ÉVÉNEMENT DE RÉFÉRENCE
+   * après écriture, dans la transaction de consolidation (`repo.load`), pour
+   * chacun des attributs arbitrables. C'est le CONTRÔLE EN BASE sans lequel
+   * aucune décision T3 n'est dite « résolue ».
+   *
+   * **Règle remplacée** (lot 114, #750) : une ligne `business_operation_
+   * attribute_arbitrations` à `status = 'DECIDED'` suffisait à qualifier la
+   * contradiction `REAL_CONFLICT_RESOLVED` / `T3_ARBITRATED` — y compris
+   * lorsque l'écriture avait échoué (`application_state = 'APPLY_FAILED'`),
+   * lorsqu'elle n'avait jamais eu lieu (`RECEIVED`, panne entre la décision et
+   * la reconsolidation) ou lorsque la valeur en base était autre. Désormais
+   * « décidé » ne vaut jamais « appliqué » : la qualification lit la valeur
+   * RÉELLEMENT persistée (champ, valeur, même fait / même rôle par le groupe
+   * comparé, compte par la transaction, provenance par `provenance`).
+   *
+   * Absent pour un attribut : le contrôle est IMPOSSIBLE, donc la contradiction
+   * reste ouverte (jamais un faux « résolu »).
+   */
+  persisted?: Partial<Record<ConflictField, string | null>>;
 }
 
 /**
@@ -167,6 +194,19 @@ export interface AttributeChoice {
   sourceId?: number;
   /** Arbitrage T3 (`business_operation_attribute_arbitrations`). */
   reviewId?: number;
+  /**
+   * Carte #836 (écart E09) : état DURABLE de l'application de la décision T3
+   * (`application_state`, migration 1785 puis 1960). `UNTRACKED` : ligne
+   * antérieure à la migration 1785, ou migration non passée — l'état durable
+   * est inconnu, et seul le contrôle en base décide (voir `choiceApplication`).
+   */
+  application?: 'UNTRACKED' | 'PENDING' | 'FAILED' | 'APPLIED' | 'ESCALATED';
+  /**
+   * Carte #836 (écart E07) : périmètre MATÉRIEL des preuves au moment de la
+   * décision (`evidenceScopeKeyOf`). Absent : décision antérieure à la carte
+   * #836 (aucune question nouvelle posée au déploiement).
+   */
+  evidenceKey?: string;
 }
 
 /** Lot 114 (#750, issue B) — examen T3 d'une ligne qui n'a PAS retenu de valeur. */
@@ -177,6 +217,14 @@ export interface AttributeReview {
   known: string[];
   outcome: 'LEGITIMATE_DIFFERENCE' | 'UNDECIDABLE' | 'LINK_ERROR' | 'ABSTAINED' | 'FAILED' | 'PENDING';
   reviewId?: number;
+  /**
+   * Carte #836 (écart E08) : document que T3 déclare ÉTRANGER à l'événement de
+   * référence (`LINK_ERROR`), preuve citée. Tant qu'il en est une source
+   * ACTIVE, le mauvais rattachement doit devenir ACTIONNABLE (question « ce
+   * document concerne-t-il la même réalité ? ») : c'est le seul chemin de
+   * réparation qui ne décide ni fusion, ni scission, ni dissociation.
+   */
+  foreignFileId?: number;
   /**
    * Lot 115 (#791, E02, E07) : périmètre MATÉRIEL des preuves SOUMISES à cet
    * examen. Absent (examen antérieur au lot 115) : toléré, la couverture reste
@@ -321,10 +369,71 @@ function provenRevision(items: readonly Item[]): boolean {
   const vus = new Set<string>();
   for (const s of effets.values()) for (const d of s) { if (vus.has(d)) return false; vus.add(d); }
   if (effets.size < 2) return false;
-  // Preuve 1 : relation déclarée par un des documents comparés.
-  if (items.some((i) => !!i.identity?.documentRelation)) return true;
+  // Preuve 1 : relation déclarée qui LIE les deux assertions comparées (carte #836, E05).
+  if (relationBridgesValues(items)) return true;
   // Preuve 2 : périodes contractuelles qualifiées disjointes entre deux valeurs différentes.
   return disjointContractTerms(items);
+}
+
+/**
+ * Carte #836 (écart E05) — la relation DÉCLARÉE (avenant, rectificatif,
+ * renouvellement) lie-t-elle SPÉCIFIQUEMENT les deux assertions comparées ?
+ *
+ * **Règle remplacée** (lot 115, #791) : une relation déclarée par n'importe
+ * quelle source du groupe prouvait la succession, y compris quand la pièce qui
+ * la déclare porte ELLE-MÊME les deux valeurs contradictoires — un seul
+ * document affirmant deux dates incompatibles était alors certifié « révision
+ * successive ». Une relation est désormais une preuve de succession seulement
+ * si la pièce qui la déclare porte une des valeurs comparées ET qu'une AUTRE
+ * pièce porte une valeur DIFFÉRENTE : la succession va d'une assertion à
+ * l'autre, et non d'un document à lui-même. Aucun avenant n'est jamais
+ * supposé : seule la relation réellement déclarée par T1 est lue.
+ */
+function relationBridgesValues(items: readonly Item[]): boolean {
+  const docsDe = new Map<string, Set<number>>();
+  for (const it of items) {
+    const s = docsDe.get(it.normalized) ?? new Set<number>();
+    if (it.identity?.fileId !== undefined) s.add(it.identity.fileId);
+    docsDe.set(it.normalized, s);
+  }
+  for (const it of items) {
+    if (!it.identity?.documentRelation) continue;
+    const declarant = it.identity.fileId;
+    for (const [n, docs] of docsDe) {
+      if (n === it.normalized) continue;
+      if ([...docs].some((f) => f !== declarant)) return true;
+    }
+  }
+  return false;
+}
+
+/**
+ * Carte #836 (écart E05) — les deux assertions sont-elles portées par des
+ * OFFRES véritablement distinctes ? Deux identifiants de documents ne le
+ * prouvent pas (le même devis peut être déposé en deux exemplaires). Preuves
+ * admises : des références d'identité toutes présentes et DISJOINTES entre les
+ * valeurs, ou des tiers (prestataires) tous présents et différents — deux
+ * offres concurrentes. Sinon : rien n'est prouvé.
+ */
+function distinctOfferIdentity(items: readonly Item[]): boolean {
+  const disjointes = (par: Map<string, Set<string>>): boolean => {
+    const ens = [...par.values()];
+    if (ens.length < 2 || ens.some((s) => s.size === 0)) return false;
+    for (let i = 0; i < ens.length; i++) for (let j = i + 1; j < ens.length; j++) if ([...ens[i]].some((x) => ens[j].has(x))) return false;
+    return true;
+  };
+  const refsDe = new Map<string, Set<string>>();
+  const tiersDe = new Map<string, Set<string>>();
+  for (const it of items) {
+    const r = refsDe.get(it.normalized) ?? new Set<string>();
+    for (const x of refsOf(it.identity)) r.add(x);
+    refsDe.set(it.normalized, r);
+    const t = tiersDe.get(it.normalized) ?? new Set<string>();
+    const p = normalizeProvider(it.identity?.provider ?? null);
+    if (p) t.add(p);
+    tiersDe.set(it.normalized, t);
+  }
+  return disjointes(refsDe) || disjointes(tiersDe);
 }
 
 /** Bornes d'une période contractuelle qualifiée par T1, en jour comparable (préfixe AAAA[-MM[-JJ]]). */
@@ -360,9 +469,18 @@ function disjointContractTerms(items: readonly Item[]): boolean {
  * contradictoires portées par le MÊME document, en revanche, ne sont pas une
  * révision : la contradiction suit son cours au lieu d'être certifiée
  * « légitime ». Une relation déclarée (rectificatif, avenant) suffit aussi.
+ *
+ * Carte #836 (écart E05) — **règle complétée**, deux fois :
+ *   · la relation déclarée ne court-circuite plus le contrôle des pièces :
+ *     deux dates du MÊME document ne sont une révision que si la relation lie
+ *     réellement deux pièces (`relationBridgesValues`) ;
+ *   · deux identifiants de documents ne PROUVENT pas deux devis. Il faut une
+ *     preuve qui sépare les offres : références de devis distinctes ou tiers
+ *     différents (`distinctOfferIdentity`), relation déclarée, ou périodes de
+ *     validité disjointes. Le MÊME devis déposé en deux PDF contradictoires
+ *     reste donc une contradiction à trancher.
  */
 function provenQuoteAlternatives(items: readonly Item[]): boolean {
-  if (items.some((i) => !!i.identity?.documentRelation)) return true;
   const parValeur = new Map<string, Set<number>>();
   for (const it of items) {
     const f = it.identity?.fileId;
@@ -375,7 +493,8 @@ function provenQuoteAlternatives(items: readonly Item[]): boolean {
   if (ens.length < 2) return false;
   // Aucun document commun entre deux valeurs : des devis distincts les portent.
   for (let i = 0; i < ens.length; i++) for (let j = i + 1; j < ens.length; j++) if ([...ens[i]].some((f) => ens[j].has(f))) return false;
-  return true;
+  // … et une preuve sépare bien les deux offres (carte #836, E05).
+  return distinctOfferIdentity(items) || relationBridgesValues(items) || disjointContractTerms(items);
 }
 
 const SINGLE_FACT: ReadonlySet<string> = new Set(['ACQUISITION', 'DISPOSAL', 'CLAIM']);
@@ -410,6 +529,82 @@ function choiceState(choice: AttributeChoice | undefined, its: readonly Item[]):
   if (!choice) return 'NONE';
   if (!its.every((i) => choice.known.includes(i.normalized))) return 'NEW_EVIDENCE';
   return its.some((i) => i.normalized === choice.normalized) ? 'COVERED' : 'VALUE_WITHDRAWN';
+}
+
+/**
+ * Carte #836 (écart E09) — état de l'arbitrage DURABLE face au contrôle en
+ * base. `VERIFIED` est le SEUL état qui ferme la contradiction.
+ *
+ *   VERIFIED               la valeur retenue est celle réellement persistée sur
+ *                          l'événement (décision de l'utilisateur : sa valeur
+ *                          est protégée et écrite dans la même transaction) ;
+ *   NOT_VERIFIED           la décision T3 existe mais son effet n'est pas
+ *                          constaté en base (reçue, en cours, échec d'écriture,
+ *                          valeur discordante, contrôle impossible) : la
+ *                          contradiction RESTE visible et actionnable ;
+ *   ESCALATED              le plafond de reprises d'application est épuisé :
+ *                          escalade EXPLICITE (jamais un blocage silencieux) ;
+ *   USER_EVIDENCE_CHANGED  carte #836 (écart E07) : le périmètre matériel des
+ *                          preuves a changé depuis la réponse de l'utilisateur.
+ *                          Sa valeur n'est JAMAIS écrasée — une question ciblée
+ *                          est posée.
+ */
+export type ChoiceApplicationState = 'VERIFIED' | 'NOT_VERIFIED' | 'ESCALATED' | 'USER_EVIDENCE_CHANGED';
+
+/**
+ * Carte #836 (écart E09) — contrôle en base d'un arbitrage (pur) : la valeur
+ * retenue est-elle celle que l'événement de référence porte VRAIMENT ?
+ * `persisted` est la valeur relue après écriture ; `undefined` (contrôle
+ * impossible) ne vaut jamais « appliqué ».
+ */
+export function choiceApplication(
+  choix: AttributeChoice, retainedValue: string, persisted: string | null | undefined, evidenceKey: string,
+): ChoiceApplicationState {
+  if (choix.by === 'USER') {
+    // La valeur de l'utilisateur est écrite et protégée dans la même transaction (acquis #750) : aucune
+    // vérification différée. Seule une preuve matériellement NOUVELLE justifie de lui reposer la question.
+    return choix.evidenceKey !== undefined && choix.evidenceKey !== evidenceKey ? 'USER_EVIDENCE_CHANGED' : 'VERIFIED';
+  }
+  const ecrite = persisted !== undefined && persisted !== null
+    && (persisted === retainedValue
+      || (choix.field === 'provider' ? normalizeConflictProvider(persisted) : normalizeConflictDate(persisted)) === choix.normalized);
+  if (ecrite) return 'VERIFIED';
+  return choix.application === 'ESCALATED' ? 'ESCALATED' : 'NOT_VERIFIED';
+}
+
+/**
+ * Carte #836 (écart E01) — deux valeurs INCOMPATIBLES portées par la MÊME
+ * assertion : même attribut, même rôle sémantique, même nature de pièce, même
+ * autorité, même référence d'identité, même période d'effet et même révision
+ * déclarée. Alors rien ne peut rendre la différence légitime : ce sont deux
+ * affirmations contradictoires du même fait.
+ *
+ * C'est la borne du domaine de la tolérance du MÊME JOUR ÉCONOMIQUE
+ * (`SAME_DATE_DAYS`, décision PO du 16/11, carte #791) : elle vaut pour deux
+ * PIÈCES DIFFÉRENTES d'une même transaction (l'acte du 30/06 et l'attestation
+ * du 02/07), jamais pour deux assertions identiques en tous points qui se
+ * contredisent de deux jours.
+ */
+export function sameAssertionContradicted(items: ReadonlyArray<{
+  normalized: string; identity: CandidateIdentity | null; src: Pick<ConflictValueSource, 'role' | 'documentRole' | 'authority'>;
+}>): boolean {
+  const parAssertion = new Map<string, Set<string>>();
+  for (const it of items) {
+    const i = it.identity;
+    // Identité MATÉRIELLE de l'assertion : une référence d'identité, ou la même pièce. Sans l'une ni
+    // l'autre, rien ne prouve que les deux valeurs affirment le même fait — la tolérance garde son effet.
+    const identite = refsOf(i).sort().join('+') || (i?.fileId !== undefined ? `file:${i.fileId}` : '');
+    if (!identite) continue;
+    const cle = [
+      identite, it.src.role, it.src.documentRole ?? '-', it.src.authority ?? '-', i?.documentRelation ?? '-',
+      i?.dates.startDate ?? '-', i?.dates.endDate ?? '-',
+    ].join('|');
+    const s = parAssertion.get(cle) ?? new Set<string>();
+    s.add(it.normalized);
+    parAssertion.set(cle, s);
+  }
+  for (const s of parAssertion.values()) if (s.size >= 2) return true;
+  return false;
 }
 
 /**
@@ -465,11 +660,32 @@ export function qualifyAttributeConflicts(raw: readonly RawAttributeConflict[], 
       } else if (choix && etat === 'COVERED') {
         // Lot 114 (#750) : contradiction tranchée par la carte « À traiter » ou par l'arbitrage T3 (preuve suffisante).
         const valeur = its.find((i) => i.normalized === choix.normalized)!.value;
-        e = {
-          ...base(role, its), qualification: 'REAL_CONFLICT_RESOLVED', reasonCode: choix.by === 'USER' ? 'USER_ARBITRATED' : 'T3_ARBITRATED', impact: [],
-          resolution: { by: choix.by, value: valeur, ...(choix.sourceId !== undefined ? { sourceId: choix.sourceId } : {}), ...(choix.reviewId !== undefined ? { reviewId: choix.reviewId } : {}) },
-          ...(choix.by === 'USER' ? { protection: 'USER' as const } : {}),
-        };
+        const resolution = {
+          by: choix.by, value: valeur,
+          ...(choix.sourceId !== undefined ? { sourceId: choix.sourceId } : {}), ...(choix.reviewId !== undefined ? { reviewId: choix.reviewId } : {}),
+        } as const;
+        // Carte #836 (écarts E09 et E07) — **règle remplacée** : `DECIDED` ne ferme plus rien. La valeur
+        // retenue doit être CELLE QUE L'ÉVÉNEMENT PORTE (contrôle en base, `ctx.persisted`) ; et une décision
+        // de l'utilisateur rendue sur d'AUTRES preuves matérielles donne lieu à une question ciblée.
+        const application = choiceApplication(choix, valeur, ctx.persisted?.[c.field], evidenceKey);
+        if (application === 'VERIFIED') {
+          e = {
+            ...base(role, its), qualification: 'REAL_CONFLICT_RESOLVED', reasonCode: choix.by === 'USER' ? 'USER_ARBITRATED' : 'T3_ARBITRATED', impact: [],
+            resolution, ...(choix.by === 'USER' ? { protection: 'USER' as const } : {}),
+          };
+        } else if (application === 'USER_EVIDENCE_CHANGED') {
+          // La valeur de l'utilisateur reste écrite et protégée (`resolveAttributeChoices` l'applique toujours) :
+          // la carte lui POSE la question, elle ne défait rien.
+          e = {
+            ...base(role, its), qualification: 'REAL_CONFLICT_UNRESOLVED', reasonCode: 'USER_DECISION_EVIDENCE_CHANGED', impact,
+            resolution, protection: 'USER',
+          };
+        } else {
+          e = {
+            ...base(role, its), qualification: 'REAL_CONFLICT_UNRESOLVED',
+            reasonCode: application === 'ESCALATED' ? 'T3_APPLICATION_ESCALATED' : 'T3_APPLICATION_NOT_VERIFIED', impact, resolution,
+          };
+        }
       } else if (choix && etat !== 'NONE') {
         // Nouvelle preuve contradictoire (ou valeur retenue retirée) APRÈS une décision : réouverture motivée.
         e = {
@@ -481,19 +697,30 @@ export function qualifyAttributeConflicts(raw: readonly RawAttributeConflict[], 
         // Lot 114 (#750, issue B) : T3 a établi, preuves citées, que les valeurs portent sur des faits distincts.
         e = { ...base(role, its), qualification: 'LEGITIMATE_DIFFERENCE', reasonCode: 'T3_DISTINCT_FACTS', impact: [], ...(examine.reviewId !== undefined ? { resolution: { by: 'T3' as const, reviewId: examine.reviewId } } : {}) };
       } else if (examine?.outcome === 'LINK_ERROR') {
-        e = { ...base(role, its), qualification: 'SOURCE_LINK_ERROR_SUSPECTED', reasonCode: 'T3_LINK_ERROR_SUSPECTED', impact };
+        e = {
+          ...base(role, its), qualification: 'SOURCE_LINK_ERROR_SUSPECTED', reasonCode: 'T3_LINK_ERROR_SUSPECTED', impact,
+          // Carte #836 (écart E08) : le document désigné voyage avec la ligne — le mauvais rattachement doit
+          // devenir une action exploitable tant qu'il est encore une source active.
+          ...(examine.foreignFileId !== undefined ? { foreignFileId: examine.foreignFileId } : {}),
+        };
       } else if (DURABLE.has(ctx.type ?? '') && provenRevision(its)) {
         e = { ...base(role, its), qualification: 'LEGITIMATE_DIFFERENCE', reasonCode: 'SUCCESSIVE_REVISION', impact: [] };
       } else if ((role === 'QUOTE_PLANNED' || role.startsWith('QUOTE_VALIDITY') || role === 'QUOTE') && provenQuoteAlternatives(its)) {
         // Deux devis DISTINCTS (ou un devis qui déclare rectifier) ne contredisent pas la réalisation : seules
         // la commande / la facture engagent. Lot 115 (#791, E05) : deux exemplaires du MÊME devis, si.
         e = { ...base(role, its), qualification: 'LEGITIMATE_DIFFERENCE', reasonCode: 'QUOTE_REVISION', impact: [] };
-      } else if (c.sameEconomicDay === true) {
+      } else if (c.sameEconomicDay === true && !sameAssertionContradicted(its)) {
         // Décision PO du 16/11 (carte #791) : deux dates qui désignent le même JOUR ÉCONOMIQUE au sens
         // du référentiel existant (`SAME_DATE_DAYS` : acte du 30/06 et attestation du 02/07 d'un même
         // achat) ne posent aucune question à l'utilisateur — la date de la source fondatrice est
         // retenue (règle de rétention inchangée) et la différence reste consultable dans la fiche.
         // Au-delà de la tolérance, et pour un contrat ou un financement, la contradiction est entière.
+        //
+        // Carte #836 (écart E01) — **règle complétée** : la tolérance garde SON domaine (deux PIÈCES
+        // différentes d'une même transaction) mais n'efface plus une contradiction du MÊME attribut, du
+        // MÊME rôle, de la MÊME nature de pièce, de la MÊME référence, de la MÊME période et de la MÊME
+        // révision (`sameAssertionContradicted`) : deux assertions identiques en tous points qui se
+        // contredisent de deux jours restent un conflit, comme à sept jours ou à sept ans.
         e = { ...base(role, its), qualification: 'LEGITIMATE_DIFFERENCE', reasonCode: 'SAME_ECONOMIC_DAY', impact: [] };
       } else if (sharedReference(its)) {
         e = { ...base(role, its), qualification: 'REAL_CONFLICT_UNRESOLVED', reasonCode: 'SAME_REFERENCE', impact };

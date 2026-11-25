@@ -41,6 +41,16 @@
  * présence : partout ailleurs, la contradiction restait invisible ET hors du
  * contrôle. Seule une action d'Agenda EFFECTIVEMENT ACTIONNABLE, sur le même
  * sujet et les mêmes alternatives, déduplique.
+ *
+ * Version 4 (carte #836, écarts E03 et E06) — deux règles remplacées :
+ *   · E06 : la détection exigeait une ligne de source DOCUMENT active portant
+ *     un candidat T1. Une opération 100 % structurée (fiche du bien), issue
+ *     d'un import, ou dont le justificatif a été supprimé, n'était donc jamais
+ *     contrôlée : sa contradiction réelle pouvait rester SANS CARTE sans que
+ *     rien ne le signale. Toute source ACTIVE compte désormais ;
+ *   · E03 : la déduplication par l'Agenda est bornée au RÔLE DE DATE que
+ *     l'Agenda porte (la réalisation) — deux dates de rôles différents ne sont
+ *     jamais départagées par une carte de date d'Agenda.
  */
 import type { CoherenceCheck, Inspection, RepairResult } from '../types';
 import { idsOf, intArray, rows } from '../util';
@@ -56,10 +66,15 @@ const LEGACY_SQL = `o.account_id = $1 AND o.invalidated_at IS NULL AND o.merged_
 const ARBITRABLE_LINE_SQL = `c->>'qualification' = 'REAL_CONFLICT_UNRESOLVED'
   AND jsonb_typeof(c->'impact') = 'array' AND jsonb_array_length(c->'impact') > 0 AND NOT (c ? 't3')
   AND (SELECT count(DISTINCT v->>'normalized') FROM jsonb_array_elements(CASE WHEN jsonb_typeof(c->'values') = 'array' THEN c->'values' ELSE '[]'::jsonb END) v) >= 2
+  -- Carte #836 (écart E06) — règle remplacée : la détection exigeait une ligne de source DOCUMENT ACTIVE
+  -- portant un candidat T1. Une opération 100 % STRUCTURÉE (fiche du bien), issue d'un IMPORT ou dont le
+  -- justificatif a été supprimé n'entrait donc JAMAIS dans le contrôle : sa contradiction réelle pouvait
+  -- rester sans carte « À traiter » sans que rien ne le signale. Toute source ACTIVE compte désormais —
+  -- document, donnée structurée, import, saisie — et la carte absente est bien détectée.
   AND EXISTS (SELECT 1 FROM jsonb_array_elements(CASE WHEN jsonb_typeof(c->'values') = 'array' THEN c->'values' ELSE '[]'::jsonb END) v,
                      jsonb_array_elements_text(CASE WHEN jsonb_typeof(v->'sourceIds') = 'array' THEN v->'sourceIds' ELSE '[]'::jsonb END) sid
                 JOIN business_operation_sources s ON s.id = sid::bigint AND s.operation_id = o.id AND s.account_id = o.account_id
-               WHERE s.active AND s.source_kind = 'DOCUMENT' AND s.locator ? 'candidateKey')
+               WHERE s.active)
   AND NOT EXISTS (SELECT 1 FROM to_process_actions a
                    WHERE a.account_id = o.account_id AND a.rule_code = 'OPERATION-ATTRIBUTE'
                      AND a.relation_key = 'operationAttribute:' || o.id || ':' || (c->>'field') || ':' || (c->>'role')
@@ -68,7 +83,10 @@ const ARBITRABLE_LINE_SQL = `c->>'qualification' = 'REAL_CONFLICT_UNRESOLVED'
   -- sur la date de réalisation — une contradiction pouvait donc rester invisible ET hors du contrôle. Seule une
   -- action d'Agenda EFFECTIVEMENT ACTIONNABLE (carte DATA-AGENDA-DATE ouverte, de nature ARBITRATE, portée par un
   -- élément PORTEUR d'un fait de cet événement, dont les propositions couvrent toutes les alternatives) déduplique.
-  AND NOT (c->>'field' = 'realizedDate' AND EXISTS (
+  -- Carte #836 (écart E03) : la déduplication par l'Agenda ne vaut que pour le RÔLE DE DATE que l'Agenda
+  -- porte réellement (l'enregistrement de la RÉALISATION). Deux dates de rôles différents (paiement,
+  -- période facturée, validité d'un devis) ne sont jamais départagées par une carte de date d'Agenda.
+  AND NOT (c->>'field' = 'realizedDate' AND c->>'role' = 'REALIZATION' AND EXISTS (
              SELECT 1 FROM to_process_actions a
                JOIN agenda_items i ON i.id = a.target_id AND i.account_id = a.account_id
               WHERE a.account_id = o.account_id AND a.target_type = 'AGENDA_ITEM' AND a.rule_code = 'DATA-AGENDA-DATE'
@@ -92,8 +110,9 @@ const IN_SCOPE_SQL = `((${LEGACY_SQL}) OR (${MISSING_ARBITRATION_SQL}))`;
 
 export const operationsAttributeConflictsCheck: CoherenceCheck = {
   id: OPERATIONS_ATTRIBUTE_CONFLICTS_CHECK_ID,
-  // Version 3 (lot 115, #791, E03) : la déduplication par l'Agenda exige une action EFFECTIVEMENT actionnable.
-  version: 3,
+  // Version 4 (carte #836, E03 et E06) : toute source ACTIVE compte (opérations structurées et imports
+  // détectés, cartes absentes vues), et la déduplication par l'Agenda est bornée au rôle de date qu'il porte.
+  version: 4,
   status: 'ACTIVE',
   title: 'Opérations : contradictions d’attributs qualifiées (même attribut, même rôle, même fait) et arbitrage des contradictions réelles demandé',
   domain: 'operations',
@@ -114,7 +133,7 @@ export const operationsAttributeConflictsCheck: CoherenceCheck = {
   triggers: ['BUSINESS_OPERATION_CHANGED'],
   frequency: 'campagne exhaustive quotidienne + contrôle ciblé après écriture d’une opération',
   criticality: 'MEDIUM',
-  tests: ['L113AQ-U-QUALIF', 'L113AQ-E2E-REPRISE', 'L114T-E2E-05', 'L115F-E01', 'L115F-E02'],
+  tests: ['L113AQ-U-QUALIF', 'L113AQ-E2E-REPRISE', 'L114T-E2E-05', 'L115F-E01', 'L115F-E02', 'C836-U-E06', 'C836-U-E03'],
 
   async listObjects(ctx, accountId, afterId, limit) {
     return idsOf(await rows(ctx.sql, `SELECT o.id FROM business_operations o WHERE ${IN_SCOPE_SQL} AND o.id > $2 ORDER BY o.id LIMIT $3`, [accountId, afterId, limit]));

@@ -185,11 +185,16 @@ describe('L113AQ-U-QUALIF — qualification (AC02–AC07, AC11, AC12)', () => {
     expect(sans.alerting[0]).toMatchObject({ qualification: 'INSUFFICIENT_EVIDENCE', reasonCode: 'FACT_IDENTITY_NOT_ESTABLISHED' });
   });
 
-  it('AC06 — devis révisé (deux devis, dates prévues éloignées) : la révision ne contredit rien', () => {
-    const r = relever('INTERVENTION', [
-      src(1, cand({ role: 'QUOTE', status: 'ENVISAGED', dates: d({ plannedDate: '2023-01-10' }) })),
-      src(2, cand({ candidateId: 2, fileId: 11, role: 'QUOTE', status: 'ENVISAGED', dates: d({ plannedDate: '2024-06-10' }) })),
-    ]);
+  it('AC06 — devis révisé (deux devis PROUVÉS distincts, dates prévues éloignées) : la révision ne contredit rien', () => {
+    // Carte #836 (écart E05) — **règle complétée** : deux identifiants de documents ne prouvent plus deux
+    // devis (le même devis peut être déposé en deux exemplaires). Il faut une preuve qui sépare les offres :
+    // ici des RÉFÉRENCES de devis distinctes. Sans aucune preuve, la contradiction est maintenue — c'est le
+    // contre-exemple rouge de c836-e05-preuve-de-succession.test.ts.
+    const devis = (id: number, fileId: number, prevue: string, reference: string) => src(id, cand({
+      candidateId: id, fileId, role: 'QUOTE', status: 'ENVISAGED', dates: d({ plannedDate: prevue }),
+      refs: [ref('QUOTE', reference)],
+    }));
+    const r = relever('INTERVENTION', [devis(1, 10, '2023-01-10', 'DEV-1'), devis(2, 11, '2024-06-10', 'DEV-2')]);
     expect(r.alerting).toEqual([]);
     expect(r.divergences[0]).toMatchObject({ reasonCode: 'QUOTE_REVISION' });
   });

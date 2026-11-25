@@ -73,10 +73,23 @@ export interface AttributeCardNeed {
   /** Rôle sémantique comparé (même fait). */
   role: string;
   reasonCode: string;
-  /** TOUTES les valeurs réellement différentes (y compris au-delà de la troisième), avec leurs documents. */
+  /**
+   * TOUTES les valeurs réellement différentes (y compris au-delà de la
+   * troisième), avec leurs documents. Carte #836 (écart E06) : aucune n'est
+   * retirée ici, et aucune n'est retirée à la construction des propositions —
+   * seul l'AFFICHAGE est paginé (identifiants stables), si bien que toute
+   * valeur réelle reste sélectionnable.
+   */
   options: Array<{ value: string; normalized: string; fileIds: number[] }>;
   /** Valeur actuellement portée par l'événement de référence (jamais écrasée avant la réponse). */
   retained: string | null;
+  /**
+   * Carte #836 (écarts E06 et E07) : périmètre MATÉRIEL des preuves présenté à
+   * la question (`evidenceScopeKeyOf`) — enregistré avec la réponse de
+   * l'utilisateur. Une preuve matériellement nouvelle lui vaudra une question
+   * ciblée au lieu d'un écrasement silencieux de son choix.
+   */
+  evidenceKey?: string;
 }
 
 export interface OperationCardNeeds {

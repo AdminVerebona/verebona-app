@@ -204,3 +204,27 @@ export function selectDisplayedProposals(proposals: ActionProposal[], ruleCode: 
     .slice(0, displayedProposalsMax(ruleCode));
   return [...candidates, ...current.slice(0, 1)];
 }
+
+/**
+ * Carte #836 (écart E06) — ALTERNATIVES AU-DELÀ DE LA PREMIÈRE PAGE (pure).
+ *
+ * `selectDisplayedProposals` borne l'affichage : c'est une règle de LISIBILITÉ,
+ * et elle reste. Mais une alternative hors de la borne n'était atteignable
+ * d'AUCUNE façon : une contradiction à treize valeurs réelles n'offrait que
+ * six boutons, et les sept autres valeurs — toutes portées par un justificatif
+ * du compte — ne pouvaient pas être choisies. Cette fonction rend les
+ * suivantes, dans le MÊME ordre (confiance décroissante) et avec les MÊMES
+ * identifiants stables, pour que l'écran puisse les dérouler (« Voir les N
+ * autres valeurs ») sans jamais réinventer un choix : la carte propose tout ce
+ * que la donnée contient, et l'API n'accepte que ce que la carte a présenté.
+ *
+ * Rendues seulement pour les règles qui déclarent une exception d'affichage
+ * (`DISPLAYED_PROPOSALS_MAX_BY_RULE`) : AUCUNE autre carte ne change.
+ */
+export function overflowProposals(proposals: ActionProposal[], ruleCode: string | null = null): ActionProposal[] {
+  if (ruleCode === null || DISPLAYED_PROPOSALS_MAX_BY_RULE[ruleCode] === undefined) return [];
+  return proposals
+    .filter((p) => !p.isCurrentValue)
+    .sort((a, b) => b.confidence - a.confidence)
+    .slice(displayedProposalsMax(ruleCode));
+}

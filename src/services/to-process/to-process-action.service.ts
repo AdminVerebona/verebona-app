@@ -197,6 +197,13 @@ async function upsertActionOnce(input: UpsertActionInput): Promise<UpsertActionR
   const dataKey = fieldKey ?? relationKey!;
   const now = new Date();
   // Lot 115 (#791, E06) : la borne d'affichage peut être propre à la règle (exception déclarée, §8.5).
+  //
+  // Carte #836 (écart E06) — **règle remplacée** : la carte ne CONSERVAIT que les propositions AFFICHÉES.
+  // Une alternative hors de la première page n'existait donc nulle part après l'écriture : ni l'écran, ni la
+  // file, ni la fiche ne pouvaient la proposer, et la treizième valeur d'une contradiction d'attribut était
+  // perdue pour de bon. La carte conserve désormais TOUTES ses propositions réelles (identifiants stables) ;
+  // c'est la LECTURE qui pagine (`selectDisplayedProposals` + `overflowProposals`). L'empreinte du contexte,
+  // elle, reste calculée sur les propositions affichées : aucune carte des autres règles n'est remuée.
   const displayed = selectDisplayedProposals(proposals, input.ruleCode);
   const contextHash = computeTriggerContextHash({
     ruleCode: input.ruleCode,
@@ -311,7 +318,7 @@ async function upsertActionOnce(input: UpsertActionInput): Promise<UpsertActionR
     await db
       .update(toProcessActions)
       .set({
-        proposalsJson: displayed,
+        proposalsJson: proposals,
         // Même donnée, autre règle de même nature : la carte porte la règle et la question actuelles.
         ...(existing.ruleCode !== input.ruleCode ? { ruleCode: input.ruleCode } : {}),
         ...(questionChangee ? { question } : {}),
@@ -474,7 +481,7 @@ async function upsertActionOnce(input: UpsertActionInput): Promise<UpsertActionR
         priority: finalPriority,
         question: input.question ?? rule.question,
         ...(input.questionSource ? { questionSource: input.questionSource as never } : {}),
-        proposalsJson: displayed,
+        proposalsJson: proposals,
         dueDate: input.dueDate ?? null,
         activeSince: now,
         lastSeenAt: now,
