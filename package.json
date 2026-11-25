@@ -41,6 +41,7 @@
     "dev:prod": "npm run env:prod && next dev --turbopack",
     "test": "vitest",
     "test:run": "vitest --run",
+    "test:horloge-decalee": "node scripts/test-horloge-decalee.mjs",
     "test:coverage": "vitest --run --coverage",
     "test:e2e": "vitest --run --config vitest.e2e.config.ts",
     "test:e2e:ia-promotion": "vitest --run --config vitest.e2e.config.ts src/test/e2e/scenarios/l105b-promotion-ia.e2e.ts src/test/e2e/scenarios/l99b-conformite-prompts.e2e.ts src/test/e2e/scenarios/l86a-qualification-couples.e2e.ts src/test/e2e/scenarios/l100b-corpus-certification.e2e.ts src/test/e2e/scenarios/l103g-compte-technique.e2e.ts src/test/e2e/scenarios/l113i-amelioration-ia.e2e.ts",

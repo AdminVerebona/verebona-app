@@ -166,7 +166,10 @@ scenario('C838', 'Passerelle T1 : qualification réservée, panne mémoire, requ
     await purger();
     const compat = await C();
     const store = await S();
-    const t0 = Date.UTC(2026, 10, 25, 10, 0, 0);
+    // Ancré sur l'horloge RÉELLE : la fin du scénario passe par la passerelle, qui date ses décisions avec
+    // `Date.now()`. Une date en dur (ancienne version : 25/11/2026 10:00 UTC) faisait expirer le délai de
+    // réexamen du refus dès l'après-midi : `retest_due` au lieu de `recent_rejection` (bombe à retardement).
+    const t0 = Date.now() - 60_000;
     const refuse = cle('modele-838-refuse');
     const qualif = cle('modele-838-qualifie');
     await store.recordRejection(refuse, REFUS, t0);
@@ -331,7 +334,9 @@ scenario('C838', 'Passerelle T1 : qualification réservée, panne mémoire, requ
     expect(rep.parentCallIndex).toBe(0);
     // Vues séparées sur les traces RÉELLES (lecture SQL réelle) : la réparation est visible, sa part inconnue aussi.
     const { getSchemaCostViews, getSchemaUsageReport } = await import('@/services/ai/gateway/schema-compat/supervision');
-    const v = await getSchemaCostViews({ days: 1, operationCode: T1_TEST_OPERATION }, new Date(Date.now() + 60_000));
+    // Fenêtre bornée sur l'horloge de la BASE (les traces sont datées par `now()` SQL), pas sur l'horloge JS.
+    const [{ fin }] = await sql<{ fin: Date }[]>`SELECT now() + interval '1 minute' AS fin`;
+    const v = await getSchemaCostViews({ days: 1, operationCode: T1_TEST_OPERATION }, new Date(fin));
     expect(v.unavailable).toBeNull();
     expect(v.views!.repair.calls).toBeGreaterThanOrEqual(1);
     expect(v.views!.repair.attemptsCostUnknown).toBeGreaterThanOrEqual(1);
@@ -339,7 +344,7 @@ scenario('C838', 'Passerelle T1 : qualification réservée, panne mémoire, requ
     expect(v.views!.total.providerRequests).toBe(v.views!.analysis.providerRequests + v.views!.repair.providerRequests);
     expect(['PARTIAL', 'UNKNOWN']).toContain(v.views!.total.costStatus);
     // Le rapport historique « analyse seule » ne compte pas la réparation comme un appel d'analyse.
-    const u = await getSchemaUsageReport({ days: 1, operationCode: T1_TEST_OPERATION }, new Date(Date.now() + 60_000));
+    const u = await getSchemaUsageReport({ days: 1, operationCode: T1_TEST_OPERATION }, new Date(fin));
     expect(u.totals.calls).toBe(v.views!.analysis.calls);
   });
 

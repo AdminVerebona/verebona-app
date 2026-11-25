@@ -15,6 +15,10 @@
 import { inject, beforeAll, beforeEach, afterAll } from 'vitest';
 import { cloneE2eDatabase, derivedDatabaseName, dropE2eDatabasesWithPrefix, withDatabase } from './db-bootstrap';
 import { restoreProcessEnv } from './isolation';
+import { installTestClockOffset } from '../clock-offset';
+
+// Horloge décalée (détection des tests à date en dur, voir clock-offset.ts) : inactive sans TEST_CLOCK_OFFSET_DAYS.
+installTestClockOffset();
 
 const ORIGINE = Symbol.for('verebona.e2e.envOrigine');
 const g = globalThis as unknown as Record<symbol, Record<string, string | undefined> | undefined>;

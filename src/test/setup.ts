@@ -5,6 +5,10 @@
  * par défaut et toute tentative d'appel réseau doit échouer bruyamment.
  */
 import { beforeEach, afterEach, vi } from 'vitest';
+import { installTestClockOffset } from '@/test/clock-offset';
+
+// Horloge décalée (détection des tests à date en dur, voir clock-offset.ts) : inactive sans TEST_CLOCK_OFFSET_DAYS.
+installTestClockOffset();
 import { setAiProvider, FakeProvider } from '@/services/ai/gateway/providers';
 import { __setJobScopeCheckForTests } from '@/services/ai/queue/job-scope';
 import { __setT3EnqueueTraceWriterForTests } from '@/services/ai/queue/t3-enqueue-trace';
