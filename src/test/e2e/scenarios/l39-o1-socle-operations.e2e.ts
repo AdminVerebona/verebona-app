@@ -35,7 +35,8 @@ const MIG = join(process.cwd(), 'src/db/migrations');
 // `l114or-abandon-role-non-regression.e2e.ts`.
 // Règle complétée (carte #744) : 1722 ajoute les colonnes « Notes / Description » de l'utilisateur à
 // `business_operations` — le schéma de référence du socle les porte donc aussi.
-const FICHIERS_O1 = readdirSync(MIG).filter((f) => /^(03(1[6-9]|2[0135]|79)|0609|0656|0684|0736|0744|0836|1415|1718|1722)_.*\.sql$/.test(f)).sort();
+// Carte #859 : 2010 ajoute `business_operations.title_provenance` (et son déclencheur).
+const FICHIERS_O1 = readdirSync(MIG).filter((f) => /^(03(1[6-9]|2[0135]|79)|0609|0656|0684|0736|0744|0836|1415|1718|1722|2010)_.*\.sql$/.test(f)).sort();
 
 const svc = () => import('@/services/business-operations/write');
 const lifecycle = () => import('@/services/business-operations/asset-lifecycle');

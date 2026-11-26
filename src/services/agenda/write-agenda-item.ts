@@ -49,6 +49,7 @@ import { liftLinkRejections, recordGroupingDecision, recordLinkDecision } from '
 import { drizzleRunner } from '@/services/business-operations/grouping/runner';
 import { AGENDA_HOUSING_REMOVAL_HAS_DEPENDENTS, AGENDA_STRUCTURAL_LINK_INCOMPATIBLE, HOUSING_SCOPE_LABELS } from '@/lib/agenda/housing-scope';
 import { agendaItemAssetIds, logStructuralLinkDecision, planStructuralLinks } from './housing-scope.service';
+import { declareTitleWrite, type TitleWriteDeclaration } from '@/services/business-operations/title-provenance';
 
 type ItemInsert = typeof agendaItems.$inferInsert;
 
@@ -118,6 +119,13 @@ export interface WriteAgendaItemOptions {
    * (lot 46, O7) : la cession vient déjà de la fiche ou des documents.
    */
   statusProposal?: boolean;
+  /**
+   * Carte #859 : origine DÉCLARÉE d'une écriture du titre (SYSTEM : moteur ; USER : choix explicite de
+   * l'utilisateur), tracée par le déclencheurs 2010 / 2011 dans la MÊME instruction que la ligne (`title_provenance`).
+   * Absente : règles par défaut du déclencheur (élément saisi → USER, élément automatique intact → SYSTEM,
+   * élément déjà modifié → INCONNU). Un titre inchangé n'est jamais tracé USER (sauf geste explicite).
+   */
+  titleDeclaration?: TitleWriteDeclaration;
 }
 
 export interface WriteAgendaItemResult {
@@ -410,14 +418,16 @@ export async function writeAgendaItem(
     // la transaction et AVANT toute écriture — refus entier sinon.
     await assertAgendaRefsInAccount(opts.accountId, input.links, input.sources, tx as unknown as SqlExecutor);
     let itemId: number;
+    // Carte #859 : déclaration de l'origine du titre pour la seule instruction de la ligne (déclencheurs 2010 / 2011).
+    const ligne = <T>(write: () => Promise<T>): Promise<T> => (opts.titleDeclaration ? declareTitleWrite(tx, opts.titleDeclaration, write) : write());
     if (creation) {
-      const [inserted] = await tx.insert(agendaItems)
+      const [inserted] = await ligne(() => tx.insert(agendaItems)
         .values({ ...(input.values as AgendaItemValues), accountId: opts.accountId } as ItemInsert)
-        .returning({ id: agendaItems.id });
+        .returning({ id: agendaItems.id }));
       itemId = inserted.id;
     } else {
       itemId = input.itemId!;
-      const touchees = await tx.update(agendaItems).set(input.values as never)
+      const touchees = await ligne(() => tx.update(agendaItems).set(input.values as never)
         .where(and(
           eq(agendaItems.id, itemId), eq(agendaItems.accountId, opts.accountId),
           ...(opts.onlyIfUntouched ? [
@@ -428,7 +438,7 @@ export async function writeAgendaItem(
           ...(opts.expectedUpdatedAtMicros !== undefined
             ? [sql`(extract(epoch FROM ${agendaItems.updatedAt}) * 1000000)::bigint::text = ${opts.expectedUpdatedAtMicros}`] : []),
         ))
-        .returning({ id: agendaItems.id });
+        .returning({ id: agendaItems.id }));
       // Carte #807 (E07) : version attendue non retrouvée alors que l'élément existe — conflit, rien n'est écrit.
       if (touchees.length === 0 && opts.expectedUpdatedAtMicros !== undefined) {
         const [present] = await tx.select({ id: agendaItems.id }).from(agendaItems)

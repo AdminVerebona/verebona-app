@@ -551,6 +551,8 @@ export const DIAG_TABLE_COVERAGE: Readonly<Record<string, DiagTableCoverage>> = 
   ai_schema_compatibility: T('technique', 'compatibilité des schémas de sortie transmis au fournisseur IA (#776)'),
   // Carte #838 (D1) : point de reprise durable de la réévaluation des alertes de compatibilité (curseur, bail, cycle).
   ai_schema_compat_reeval_checkpoints: T('technique', 'compatibilité des schémas : point de reprise de la réévaluation des alertes (#838)'),
+  // Carte #863 (A1) : journal des issues d'appels portant le schéma, opposables ou écartées par le fencing (codes et dates, aucun contenu).
+  ai_schema_compat_observations: T('technique', 'compatibilité des schémas : observations historiques des issues de qualification (#863)'),
   ai_model_price_changes: T('referentiels', 'tarifs des modèles'),
   ai_model_price_status: T('referentiels', 'tarifs des modèles'),
   ai_model_pricing: T('referentiels', 'tarifs des modèles'),

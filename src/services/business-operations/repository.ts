@@ -36,6 +36,7 @@ import { reassignGroupingOnMerge } from './grouping/merge';
 import { drizzleRunner } from './grouping/runner';
 import type { BusinessOperationEventBuffer } from './events';
 import type { DbTx } from './lock';
+import { declareTitleWrite, type TitleWriteDeclaration } from './title-provenance';
 import {
   ASSET_LINK_ROLES, AUTHORITIES, CLAIM_FILE_STATUSES, CONFIDENCES, CONTRACT_PERIODICITIES, EVIDENCE_ROLES,
   FINANCIAL_COMPONENT_KINDS, MATCH_METHODS, REFERENCE_KINDS, SOURCE_KEY_TABLE, SOURCE_KINDS, SOURCE_ROLES,
@@ -116,6 +117,24 @@ interface CreateOperationInput extends OperationDatesInput {
   assets?: AssetLinkInput[];
   equipments?: EquipmentLinkInput[];
   reasonCode: string;
+  /**
+   * Carte #859 : origine du titre posé (tracée par le déclencheur 2010 dans la même instruction). Absente : déduite
+   * de la première source — déclaration de l'utilisateur (USER), tout autre moteur (SYSTEM).
+   */
+  titleOrigin?: TitleWriteDeclaration;
+}
+
+/** Carte #859 : natures de source dont l'intitulé initial est GÉNÉRÉ par un moteur (document, donnée du bien, Agenda). */
+const SYSTEM_TITLE_SOURCE_KINDS: ReadonlySet<string> = new Set(['DOCUMENT', 'ASSET_DATA', 'AGENDA']);
+
+/** Carte #859 : options d'une mise à jour d'attributs. */
+interface UpdateAttributesOptions {
+  /**
+   * Origine DÉCLARÉE de l'écriture de l'intitulé (déclencheur 2010). Absente : l'écriture n'est pas déclarée — la
+   * provenance par champ est effacée et la décision se replie sur l'historique (jamais une provenance fausse).
+   * Sans effet si l'intitulé ne change pas (aucune fausse provenance USER pour un titre inchangé).
+   */
+  titleOrigin?: TitleWriteDeclaration;
 }
 
 interface FinancialComponentInput {
@@ -280,7 +299,12 @@ export class BusinessOperationRepository {
     if (!input.source) throw new BusinessOperationIntegrityError('SOURCE_REQUIRED', 'Une Opération n\'existe jamais sans source (INV-FINAL-006).');
     const dates = Object.fromEntries(DATE_FIELDS.map(([k]) => [k, optionalDate(input[k], k)])) as Record<(typeof DATE_FIELDS)[number][0], string | null>;
 
-    const [ins] = await rows<{ id: string }>(this.tx, sql`
+    // Carte #859 : origine du titre déclarée pour le déclencheur 2010 (même instruction que l'insertion).
+    // Source d'une autre nature (formulaire, migration…) : non déclarée — repli sur l'historique, jamais présumée.
+    const origine: TitleWriteDeclaration | null = input.titleOrigin ?? (input.source.kind === 'USER_DECLARATION'
+      ? { origin: 'USER', reason: input.reasonCode, actorUserId: this.ctx.actorUserId, channel: 'USER_DECLARATION' }
+      : SYSTEM_TITLE_SOURCE_KINDS.has(input.source.kind) ? { origin: 'SYSTEM', reason: input.reasonCode, channel: input.source.kind } : null);
+    const inserer = () => rows<{ id: string }>(this.tx, sql`
       INSERT INTO business_operations
         (account_id, type_code, status, technical_label, provider,
          planned_date, start_date, realized_date, end_date)
@@ -288,6 +312,7 @@ export class BusinessOperationRepository {
               ${input.provider ?? null}, ${dates.plannedDate}::date, ${dates.startDate}::date,
               ${dates.realizedDate}::date, ${dates.endDate}::date)
       RETURNING id`);
+    const [ins] = origine ? await declareTitleWrite(this.tx, origine, inserer) : await inserer();
     const id = Number(ins.id);
     const sourceId = await this.insertSource(id, input.source);
     // Une cible sans provenance explicite est apportée par la première source (C10, provenance).
@@ -339,7 +364,7 @@ export class BusinessOperationRepository {
   }
 
   /** Dates métier, prestataire, libellé technique : seuls les champs fournis et réellement changés. */
-  async updateAttributes(id: number, input: OperationDatesInput, reasonCode: string): Promise<boolean> {
+  async updateAttributes(id: number, input: OperationDatesInput, reasonCode: string, opts: UpdateAttributesOptions = {}): Promise<boolean> {
     const op = await this.load(id);
     const before: Record<string, unknown> = {};
     const after: Record<string, unknown> = {};
@@ -361,7 +386,10 @@ export class BusinessOperationRepository {
       sets.push(sql`${sql.identifier(col)} = ${v}`);
     }
     if (sets.length === 0) return false;
-    await this.tx.execute(sql`UPDATE business_operations SET ${sql.join(sets, sql`, `)}, version = version + 1, updated_at = now() WHERE id = ${id}`);
+    const ecrire = () => this.tx.execute(sql`UPDATE business_operations SET ${sql.join(sets, sql`, `)}, version = version + 1, updated_at = now() WHERE id = ${id}`);
+    // Carte #859 : intitulé réellement modifié et origine déclarée — tracée dans la même instruction (déclencheur 2010).
+    if ('technical_label' in after && opts.titleOrigin) await declareTitleWrite(this.tx, opts.titleOrigin, ecrire);
+    else await ecrire();
     await this.history(id, 'UPDATED', reasonCode, before, after);
     this.emit('BUSINESS_OPERATION_UPDATED', id, reasonCode);
     return true;

@@ -88,6 +88,7 @@ import type { AgendaEventNature } from '@/services/agenda/agenda-functional-key'
 import type { BusinessOperationStatus, BusinessOperationTypeCode } from '../model';
 import { factKeyOf, isDurableRelation, isGlobalEventFact } from '../grouping/model';
 import { ACQUISITION_TYPE_NAME, acquisitionEventTitle } from '@/lib/reference-events/operation-title';
+import { agendaTitleAuthority, type TitleAuthorityDecision } from '../title-provenance';
 
 /** Valeur de `agenda_items.projection_origin` d'un événement GÉNÉRÉ (0318). */
 export const PROJECTION_ORIGIN = 'OPERATION';
@@ -196,6 +197,17 @@ export interface AgendaItemSnapshot {
    * prévision confirmée par l'utilisateur : jamais absorbé.
    */
   pendingStatus?: boolean;
+  /**
+   * Carte #859 : mêmes gardes que `pendingStatus` SANS la confirmation d'une prévision par l'utilisateur (une
+   * décision sur la DATE, jamais sur le titre) — « à qualifier », prévision à confirmer, consolidation restaurée.
+   * Absent : `pendingStatus` (instantané de test).
+   */
+  pendingHold?: boolean;
+  /**
+   * Carte #859 : autorité sur le CHAMP titre (SYSTEM / USER / INCONNU, motif, preuve — `title-provenance.ts`).
+   * Absente (instantané de test) : déduite des seuls indicateurs (`agendaTitleAuthority` sans provenance).
+   */
+  titleAuthority?: TitleAuthorityDecision;
   /** Lot 76H : champ d'origine (date lue dans un champ explicite du document). */
   originFieldKey?: string | null;
   /** Lot 76H : sources documentaires de l'élément (`agenda_item_sources`). */
@@ -444,6 +456,18 @@ export const establishedRealizedDate = (op: Pick<OperationSnapshot, 'realizedDat
 /** Lot 113P (#715) : plus de statut d'événement — touché = saisi ou modifié par l'utilisateur. */
 export const isTouched = (i: Pick<AgendaItemSnapshot, 'isAutomatic' | 'isAutomaticModified'>): boolean =>
   !i.isAutomatic || i.isAutomaticModified;
+
+/**
+ * Carte #859 — autorité sur le TITRE d'un élément (pure), indépendante des autres champs : un élément automatique
+ * dont seule la date a été corrigée garde un titre SYSTEM. Celle lue en base (`titleAuthority`) prime ; à défaut,
+ * les seuls indicateurs (élément saisi → USER, jamais modifié → SYSTEM, modifié sans trace du champ → INCONNU).
+ */
+export const itemTitleAuthority = (i: Pick<AgendaItemSnapshot, 'title' | 'isAutomatic' | 'isAutomaticModified' | 'titleAuthority'>): TitleAuthorityDecision =>
+  i.titleAuthority ?? agendaTitleAuthority({ title: i.title, isAutomatic: i.isAutomatic, isAutomaticModified: i.isAutomaticModified });
+
+/** Carte #859 : le titre d'un événement d'ACHAT peut-il être amélioré automatiquement ? (titre SYSTEM prouvé seulement). */
+export const purchaseTitleRenamable = (i: Pick<AgendaItemSnapshot, 'title' | 'isAutomatic' | 'isAutomaticModified' | 'titleAuthority'>): boolean =>
+  i.isAutomatic && itemTitleAuthority(i).authority === 'SYSTEM';
 
 // ── Rapprochement (C16.1) ──────────────────────────────────────────────────
 
@@ -1081,7 +1105,8 @@ function occupiedSlotActions(p: PlanInput, d: DesiredProjection, fk: string, ite
 
   if (item.projected && !isTouched(item)) {
     const changes: ItemSync = {};
-    if (item.title !== d.title) changes.title = d.title;
+    // Carte #859 : le titre d'un achat ne se synchronise que s'il est SYSTEM (provenance du champ).
+    if (item.title !== d.title && (op.typeCode !== 'ACQUISITION' || purchaseTitleRenamable(item))) changes.title = d.title;
     // Lot 83A (§11.7, §11.8) : la date établie est posée ; sans date établie, l'occurrence
     // planifiée garde sa date (F-140) mais un historique projeté perd la date qui n'est plus
     // établie (source retirée, dates contradictoires) — jamais une date conservée sans preuve.
@@ -1191,17 +1216,36 @@ export function precisePurchaseTitle(op: Pick<OperationSnapshot, 'technicalLabel
  * renommage journalisé et restaurable). Jamais un élément saisi, modifié, à statut ouvert, ni un intitulé explicite.
  */
 function retitleActions(op: OperationSnapshot, item: AgendaItemSnapshot): ProjectionAction[] {
+  if (op.typeCode === 'ACQUISITION') return purchaseRetitleActions(op, item);
   if (item.projected || !item.isAutomatic || isTouched(item) || item.pendingStatus) return [];
-  if (op.typeCode === 'ACQUISITION') {
-    if (item.businessType !== null && !(COMPATIBLE_BUSINESS_TYPES.ACQUISITION ?? []).includes(item.businessType)) return [];
-    if (!isUninformativePurchaseTitle(item.title, op)) return [];
-    const nom = precisePurchaseTitle(op);
-    return nom && nom !== item.title ? [{ kind: 'RETITLE', itemId: item.id, title: nom, from: item.title }] : [];
-  }
   if (op.typeCode !== 'INTERVENTION') return [];
   if (!isGenericAgendaTitle(item.title)) return [];
   const precis = preciseOperationTitle(op);
   return precis && precis !== item.title ? [{ kind: 'RETITLE', itemId: item.id, title: precis, from: item.title }] : [];
+}
+
+/**
+ * Carte #859 — renommage d'un événement d'ACHAT (pur), décidé sur la provenance du SEUL champ titre : la correction
+ * d'une date, d'un lien ou d'une description par l'utilisateur ne bloque plus l'amélioration d'un titre SYSTEM ; un
+ * titre USER, un élément saisi ou une provenance INCONNUE ne sont jamais renommés. Les gardes indépendantes restent :
+ * « à qualifier », prévision à confirmer, consolidation restaurée (`pendingHold`), type d'événement incompatible.
+ *   · DOCUMENT (élément non projeté, action RETITLE) : intitulé non informatif seulement (#821, #832) ;
+ *   · OPERATION (projection de l'opération déjà rattachée, modifiée par l'utilisateur — l'élément intact est
+ *     synchronisé par SYNC) : action RETITLE, TITRE SEUL — jamais la date ni un autre champ.
+ * Écriture : `retitleAgendaItem`, gardes revérifiées dans le WHERE (provenance du titre, valeur attendue, compte,
+ * rattachement, opération d'achat active).
+ */
+function purchaseRetitleActions(op: OperationSnapshot, item: AgendaItemSnapshot): ProjectionAction[] {
+  if (!purchaseTitleRenamable(item) || (item.pendingHold ?? item.pendingStatus)) return [];
+  if (item.businessType !== null && !(COMPATIBLE_BUSINESS_TYPES.ACQUISITION ?? []).includes(item.businessType)) return [];
+  if (item.projected) {
+    // Projection intacte : SYNC ; projection d'une AUTRE opération : jamais.
+    if (!isTouched(item) || item.businessOperationId !== op.id) return [];
+  } else if (!isUninformativePurchaseTitle(item.title, op)) {
+    return [];
+  }
+  const nom = precisePurchaseTitle(op);
+  return nom && nom !== item.title ? [{ kind: 'RETITLE', itemId: item.id, title: nom, from: item.title }] : [];
 }
 
 // ── Anti-boucle (C16.2, C4) ────────────────────────────────────────────────

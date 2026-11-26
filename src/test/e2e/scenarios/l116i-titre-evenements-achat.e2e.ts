@@ -209,13 +209,13 @@ scenario('L116I', 'Événements d’achat : le titre désigne l’objet réellem
     }
     return {
       evenements: await lignes(sql<Json[]>`
-        SELECT to_jsonb(i) - 'title' - 'updated_at' - 'projection_correlation_id' AS e FROM agenda_items i WHERE i.account_id = ${compte.id} ORDER BY i.id`),
+        SELECT to_jsonb(i) - 'title' - 'title_provenance' - 'updated_at' - 'projection_correlation_id' AS e FROM agenda_items i WHERE i.account_id = ${compte.id} ORDER BY i.id`),
       liensBiens: await lignes(sql<Json[]>`SELECT l.agenda_item_id, l.asset_id FROM agenda_asset_links l JOIN agenda_items i ON i.id = l.agenda_item_id WHERE i.account_id = ${compte.id} ORDER BY 1, 2`),
       liensDocuments: await lignes(sql<Json[]>`SELECT l.agenda_item_id, l.asset_file_id FROM agenda_file_links l JOIN agenda_items i ON i.id = l.agenda_item_id WHERE i.account_id = ${compte.id} ORDER BY 1, 2`),
       sourcesAgenda: await lignes(sql<Json[]>`SELECT count(*)::int AS n FROM agenda_item_sources s JOIN agenda_items i ON i.id = s.agenda_item_id WHERE i.account_id = ${compte.id}`),
       liensOperations: await lignes(sql<Json[]>`SELECT to_jsonb(l) - 'updated_at' AS l FROM business_operation_agenda_links l WHERE l.account_id = ${compte.id} ORDER BY l.id`),
       operations: await lignes(sql<Json[]>`
-        SELECT (to_jsonb(o) - 'technical_label' - 'version' - 'updated_at' - 'last_reconciled_at') #- '{attribute_provenance,fields,label}' AS o
+        SELECT (to_jsonb(o) - 'technical_label' - 'title_provenance' - 'version' - 'updated_at' - 'last_reconciled_at') #- '{attribute_provenance,fields,label}' AS o
           FROM business_operations o WHERE o.account_id = ${compte.id} ORDER BY o.id`),
       sources: await lignes(sql<Json[]>`SELECT id, operation_id, source_kind, source_entity_key, source_role, authority, active FROM business_operation_sources WHERE account_id = ${compte.id} ORDER BY id`),
       liensBiensOperations: await lignes(sql<Json[]>`SELECT operation_id, asset_id, link_role, active FROM business_operation_asset_links WHERE account_id = ${compte.id} ORDER BY operation_id, asset_id`),
@@ -314,7 +314,8 @@ scenario('L116I', 'Événements d’achat : le titre désigne l’objet réellem
     expect((await evenements(compte)).find((e) => e.id === evtB.id)).toMatchObject({ title: 'Achat — Cupra', date: '2026-10-02', op: opB.id, origine: null, auto: true });
     await titrer(compte, fB);
 
-    // C. Achat dont l'utilisateur a MODIFIÉ l'événement (titre gardé « Achat », date corrigée) : jamais touché.
+    // C. Achat dont l'utilisateur a MODIFIÉ l'événement (titre renvoyé inchangé « Achat », date corrigée).
+    //    Carte #859 : la correction de la DATE ne protège plus le titre — titre SYSTEM du champ, amélioré ; date intacte.
     const fC = await ticket(compte, cupra.id, { sansTitre: true, station: 'Avia', date: '2026-09-05', cents: 4800 });
     await chaine(compte);
     const opC = (await actifs(compte)).find((o) => ![opA.id, opB.id].includes(o.id))!;
@@ -362,28 +363,30 @@ scenario('L116I', 'Événements d’achat : le titre désigne l’objet réellem
       events: [{ itemId: evtB.id, before: 'Achat — Cupra', after: NOM_CARBURANT, action: 'RENAME', origin: 'DOCUMENT' }], otherPendingActions: [],
     });
     // C : l'utilisateur a corrigé la date depuis l'Agenda — l'opération porte sa saisie (source « déclaration de
-    // l'utilisateur ») : ni son intitulé ni son événement ne sont repris (règle existante : jamais recalculée).
+    // l'utilisateur »). Carte #859 (défaut déclaré : « une correction de la date peut empêcher toute amélioration
+    // ultérieure du titre ») : ni l'intitulé ni le titre n'ont été choisis par l'utilisateur — tous deux SYSTEM, repris.
     expect((await k.sources(opC.id)).filter((x) => x.active).map((x) => x.source_kind).sort()).toEqual(['DOCUMENT', 'USER_DECLARATION']);
     expect(parOp.get(opC.id)).toMatchObject({
-      label: { before: 'Achat', after: 'Achat', action: 'KEEP_USER_INPUT' },
-      events: [{ itemId: evtC.id, before: 'Achat', after: 'Achat', action: 'KEEP_USER_TITLE', origin: 'OPERATION_PROJECTION' }],
+      label: { before: 'Achat', after: NOM_CARBURANT, action: 'RENAME', titleAuthority: { authority: 'SYSTEM' } },
+      events: [{ itemId: evtC.id, before: 'Achat', after: NOM_CARBURANT, action: 'RENAME', origin: 'OPERATION_PROJECTION', titleAuthority: { authority: 'SYSTEM' } }],
     });
     // D : intitulé corrigé par l'utilisateur — ni l'opération ni son événement ne sont repris (aucun titre à corriger : non listée).
-    expect(parOp.get(opD.id)?.label.action ?? 'KEEP_USER_LABEL').toBe('KEEP_USER_LABEL');
+    expect(parOp.get(opD.id)?.label).toMatchObject({ action: 'KEEP_USER_LABEL', titleAuthority: { authority: 'USER' }, blockedExpected: NOM_CARBURANT });
     expect(parOp.get(opD.id)?.events.some((e) => e.action === 'RENAME') ?? false).toBe(false);
     // E : l'intitulé de l'opération est corrigé ; le titre explicite de l'événement n'est pas un titre à renommer.
     expect(parOp.get(opE.id)).toMatchObject({ label: { action: 'RENAME', after: NOM_CARBURANT }, events: [] });
-    expect(blanc).toMatchObject({ labelsToRename: 3, eventsToRename: 2 });
+    expect(blanc).toMatchObject({ labelsToRename: 4, eventsToRename: 3, keptUnknown: 0 });
     expect(await photo(compte, [cupra.id])).toEqual(avant);
     expect((await evenements(compte)).map((e) => e.title)).toEqual(avantListe.map((e) => e.title));
     expect((await actifs(compte)).map((o) => o.label)).toEqual(['Achat', 'Achat', 'Achat', 'Plein des vacances', 'Achat']);
     expect(emis).toEqual([]);
     // Le contrôle de cohérence existant fait le MÊME constat (règle de consolidation rejouée à blanc) : intitulé du système
-    // à corriger pour A, B et E ; rien pour C (saisie de l'utilisateur) ni D (intitulé de l'utilisateur). À blanc : aucune écriture.
+    // à corriger pour A, B, C (carte #859 : sa date corrigée ne protège plus l'intitulé) et E ; rien pour D (intitulé de
+    // l'utilisateur). À blanc : aucune écriture.
     const constats = await inspecter(compte, [opA.id, opB.id, opC.id, opD.id, opE.id]);
     expect(constats.get(opA.id)).toMatchObject({ verdict: 'REPAIRABLE', anomaly: 'OPERATION_NAME_NOT_APPLIED', expected: { technicalLabel: NOM_CARBURANT, basis: 'CATEGORY' }, observed: { technicalLabel: 'Achat' } });
-    expect([opB.id, opE.id].map((id) => constats.get(id)?.anomaly)).toEqual(['OPERATION_NAME_NOT_APPLIED', 'OPERATION_NAME_NOT_APPLIED']);
-    expect([opC.id, opD.id].map((id) => constats.get(id)?.anomaly ?? null)).toEqual([null, null]);
+    expect([opB.id, opC.id, opE.id].map((id) => constats.get(id)?.anomaly)).toEqual(['OPERATION_NAME_NOT_APPLIED', 'OPERATION_NAME_NOT_APPLIED', 'OPERATION_NAME_NOT_APPLIED']);
+    expect(constats.get(opD.id)?.anomaly ?? null).toBeNull();
     await controler(compte, [opA.id, opB.id, opC.id, opD.id, opE.id], 'DRY_RUN');
     expect(await photo(compte, [cupra.id])).toEqual(avant);
     expect((await evenements(compte)).map((e) => e.title)).toEqual(avantListe.map((e) => e.title));
@@ -392,23 +395,24 @@ scenario('L116I', 'Événements d’achat : le titre désigne l’objet réellem
     // ── RÉEL ─────────────────────────────────────────────────────────────────
     const historiqueAvant = await k.historique(compte);
     const reel = await reprisePurchaseTitles(compte.id, { apply: true, today: AUJ });
-    expect(reel).toMatchObject({ applied: true, labelsRenamed: 3, eventsRenamed: 2 });
+    expect(reel).toMatchObject({ applied: true, labelsRenamed: 4, eventsRenamed: 3 });
     const apresListe = await evenements(compte);
-    // Même NOMBRE d'événements, mêmes IDENTIFIANTS ; seuls les deux titres automatiques ont changé.
+    // Même NOMBRE d'événements, mêmes IDENTIFIANTS ; seuls les trois titres SYSTEM ont changé.
     expect(apresListe.map((e) => e.id)).toEqual(avantListe.map((e) => e.id));
     const titres = new Map(apresListe.map((e) => [e.id, e.title]));
     expect(titres.get(evtA.id)).toBe(NOM_CARBURANT);
     expect(titres.get(evtB.id)).toBe(NOM_CARBURANT);
-    expect(titres.get(evtC.id)).toBe('Achat'); // modifié par l'utilisateur
+    expect(titres.get(evtC.id)).toBe(NOM_CARBURANT); // carte #859 : seule sa date avait été corrigée — titre SYSTEM amélioré
+    expect((await evenements(compte)).find((e) => e.id === evtC.id)).toMatchObject({ date: '2026-09-06', modifie: true }); // date de l'utilisateur intacte
     expect(titres.get(evtD.id)).toBe(avantListe.find((e) => e.id === evtD.id)!.title); // opération corrigée par l'utilisateur
     expect(titres.get(evtE.id)).toBe('Achat — Pneus hiver'); // titre explicite
-    expect((await actifs(compte)).map((o) => [o.id, o.label])).toEqual([[opA.id, NOM_CARBURANT], [opB.id, NOM_CARBURANT], [opC.id, 'Achat'], [opD.id, 'Plein des vacances'], [opE.id, NOM_CARBURANT]]);
+    expect((await actifs(compte)).map((o) => [o.id, o.label])).toEqual([[opA.id, NOM_CARBURANT], [opB.id, NOM_CARBURANT], [opC.id, NOM_CARBURANT], [opD.id, 'Plein des vacances'], [opE.id, NOM_CARBURANT]]);
     // TOUT LE RESTE est identique : dates, types, statuts, montants, coût de possession, relations, cartes, rappels, notifications, retraits.
     expect(await photo(compte, [cupra.id])).toEqual(avant);
     // Aucune notification ni création d'événement émise par le renommage.
     expect(emis.filter((t) => /AGENDA_ITEM_CREATED|AGENDA_ITEM_DELETED|NOTIFICATION/.test(t))).toEqual([]);
     // Traces : historique de l'opération (ancien intitulé, nouvel intitulé, motif) ; renommage de l'événement du document journalisé.
-    expect(await k.historique(compte)).toBe(historiqueAvant + 3);
+    expect(await k.historique(compte)).toBe(historiqueAvant + 4);
     expect(await sql<Json[]>`SELECT reason_code, before_json ->> 'technical_label' AS avant, after_json ->> 'technical_label' AS apres FROM business_operation_history WHERE account_id = ${compte.id} AND operation_id = ${opA.id} ORDER BY id DESC LIMIT 1`)
       .toEqual([{ reason_code: 'T3_ACQUISITION_NAME_APPLIED', avant: 'Achat', apres: NOM_CARBURANT }]);
     expect(await sql<Json[]>`SELECT kind, detail ->> 'from' AS de, detail ->> 'to' AS vers, run_id IS NOT NULL AS execution FROM agenda_intervention_consolidations WHERE account_id = ${compte.id} AND principal_item_id = ${evtB.id}`)
@@ -416,8 +420,9 @@ scenario('L116I', 'Événements d’achat : le titre désigne l’objet réellem
     // Surfaces : fiche, Timeline, Agenda — même intitulé ; Cupra reste le bien associé.
     expect((await page(compte, opA.id))).toMatchObject({ title: NOM_CARBURANT });
     expect((await page(compte, opA.id)).assets.map((a) => a.name)).toEqual(['Cupra']);
-    // Timeline de la Cupra : cinq opérations ; trois portent « Achat de carburant », celle de l'utilisateur son intitulé, celle qu'il a datée « Achat ».
-    expect((await timeline(compte, cupra.id)).filter((e) => e.kind === 'group').map((e) => e.title).sort()).toEqual(['Achat', 'Achat — Plein des vacances', NOM_CARBURANT, NOM_CARBURANT, NOM_CARBURANT].sort());
+    // Timeline de la Cupra : cinq opérations ; quatre portent « Achat de carburant » (dont celle dont l'utilisateur n'a corrigé
+    // que la date — carte #859), celle de l'utilisateur son intitulé.
+    expect((await timeline(compte, cupra.id)).filter((e) => e.kind === 'group').map((e) => e.title).sort()).toEqual(['Achat — Plein des vacances', NOM_CARBURANT, NOM_CARBURANT, NOM_CARBURANT, NOM_CARBURANT].sort());
     expect((await agenda(compte)).filter((a) => [evtA.id, evtB.id].includes(Number(a.id))).map((a) => a.title)).toEqual([NOM_CARBURANT, NOM_CARBURANT]);
 
     // Après la reprise : le contrôle de cohérence ne voit plus aucun écart sur ces opérations.
@@ -428,7 +433,7 @@ scenario('L116I', 'Événements d’achat : le titre désigne l’objet réellem
     const encore = await reprisePurchaseTitles(compte.id, { apply: true, today: AUJ });
     expect(encore).toMatchObject({ labelsToRename: 0, eventsToRename: 0, labelsRenamed: 0, eventsRenamed: 0 });
     expect(await photo(compte, [cupra.id])).toEqual(apres);
-    expect(await k.historique(compte)).toBe(historiqueAvant + 3);
+    expect(await k.historique(compte)).toBe(historiqueAvant + 4);
     expect((await evenements(compte)).map((e) => [e.id, e.title])).toEqual(apresListe.map((e) => [e.id, e.title]));
     // BORNE : une opération par appel, par curseur — même résultat qu'en une fois.
     const page1 = await reprisePurchaseTitles(compte.id, { today: AUJ, limit: 1 });

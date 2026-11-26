@@ -21,19 +21,28 @@
  * écarts relèvent des moteurs habituels, pas d'une correction de libellé.
  *
  * JAMAIS : un intitulé saisi ou corrigé par l'utilisateur (opération), un
- * événement saisi ou modifié par l'utilisateur, un titre explicite ; aucune
+ * titre d'événement choisi par l'utilisateur ou un événement saisi, un titre
+ * de provenance INCONNUE, un titre explicite ; aucune
  * création, aucune suppression, aucune date, aucun statut, aucun montant,
  * aucune relation, aucune notification, aucun appel à un fournisseur d'IA.
  *
  * À BLANC par défaut (`apply` absent) : rapport avant / après, aucune écriture.
  * BORNÉE : `limit` opérations par appel, par curseur (`afterOperationId` →
  * `nextAfterOperationId`). IDEMPOTENTE : un second passage ne trouve plus rien.
+ * Carte #859 — PROVENANCE DU TITRE PAR CHAMP (`title-provenance.ts`) : la même
+ * décision d'autorité que la consolidation et la projection. Une correction de
+ * date (ou d'un autre champ) ne bloque plus l'amélioration d'un titre SYSTEM ;
+ * chaque titre conservé porte son ÉTAT (USER confirmé, provenance INCONNUE,
+ * SYSTEM sans meilleur nom) et le MOTIF précis — aucune carte « À traiter »
+ * n'est créée pour la seule incertitude de provenance.
+ *
  * DURABLE sans ce service : toute reconsolidation T3 d'un achat applique le
  * même intitulé, et le contrôle quotidien COH-AGENDA-OPERATION-PROJECTION
  * répare le titre de l'événement (SYNC, RETITLE).
  */
 import type { AcquisitionNameBasis } from '@/lib/reference-events/operation-title';
 import { isTitleOnlyAction, type ProjectionAction } from './model';
+import { AGENDA_TITLE_EVIDENCE_COLUMNS_SQL, agendaTitleAuthorityOfRow, type TitleAuthorityDecision } from '../title-provenance';
 
 type Row = Record<string, unknown>;
 
@@ -48,10 +57,13 @@ export interface PurchaseTitleRepriseEvent {
   after: string;
   /**
    * RENAME : titre automatique remplacé par l'intitulé de l'opération ;
-   * KEEP_USER_TITLE : événement saisi ou modifié par l'utilisateur — jamais touché ;
-   * KEEP_NO_PRECISE_NAME : titre automatique « Achat », mais rien de fiable ne dit ce qui a été acheté.
+   * KEEP_USER_TITLE : titre choisi par l'utilisateur, ou événement saisi — jamais touché ;
+   * KEEP_UNKNOWN_PROVENANCE : provenance du titre inconnue ou contradictoire (carte #859) — rien n'est écrit ;
+   * KEEP_NO_PRECISE_NAME : titre SYSTEM « Achat », mais rien de fiable ne dit ce qui a été acheté.
    */
-  action: 'RENAME' | 'KEEP_USER_TITLE' | 'KEEP_NO_PRECISE_NAME';
+  action: 'RENAME' | 'KEEP_USER_TITLE' | 'KEEP_UNKNOWN_PROVENANCE' | 'KEEP_NO_PRECISE_NAME';
+  /** Carte #859 : provenance du CHAMP titre (état, motif précis, preuve lue). */
+  titleAuthority: TitleAuthorityDecision;
   /** Chemin de création de l'événement : projection de l'opération, décision T4 du justificatif, saisie. */
   origin: 'OPERATION_PROJECTION' | 'DOCUMENT' | 'USER';
 }
@@ -65,10 +77,16 @@ export interface PurchaseTitleRepriseOperation {
     basis: AcquisitionNameBasis | null;
     /**
      * RENAME : intitulé du système remplacé ; KEEP_USER_LABEL : intitulé saisi ou corrigé par l'utilisateur, conservé ;
-     * KEEP_USER_INPUT : l'opération porte une saisie de l'utilisateur (date ou type corrigés, déclaration, formulaire) —
-     * la consolidation ne recalcule jamais ses attributs, intitulé compris ; UP_TO_DATE : rien à faire.
+     * KEEP_UNKNOWN_PROVENANCE : provenance de l'intitulé inconnue ou contradictoire — conservé, motif au rapport ;
+     * UP_TO_DATE : intitulé SYSTEM déjà à jour, ou aucun meilleur nom.
+     * Carte #859 : l'ancien KEEP_USER_INPUT (opération portant une correction de DATE ou de type) n'existe plus — une
+     * saisie d'un autre champ ne protège plus l'intitulé.
      */
-    action: 'RENAME' | 'KEEP_USER_LABEL' | 'KEEP_USER_INPUT' | 'UP_TO_DATE';
+    action: 'RENAME' | 'KEEP_USER_LABEL' | 'KEEP_UNKNOWN_PROVENANCE' | 'UP_TO_DATE';
+    /** Carte #859 : provenance du CHAMP intitulé (null : opération sans preuve active, non recalculée). */
+    titleAuthority: TitleAuthorityDecision | null;
+    /** Carte #859 : nom que la règle retiendrait si l'intitulé était SYSTEM — bloqué par sa seule provenance ; null : rien de bloqué. */
+    blockedExpected: string | null;
   };
   events: PurchaseTitleRepriseEvent[];
   /** Autres écarts de projection de cette opération (aucun rapport avec le titre) : son Agenda n'est pas touché par la reprise. */
@@ -85,6 +103,8 @@ export interface PurchaseTitleRepriseReport {
   labelsToRename: number;
   eventsToRename: number;
   keptUser: number;
+  /** Carte #859 : intitulés et titres conservés faute de provenance établie (aucune écriture, aucune carte). */
+  keptUnknown: number;
   /** Un reste existe au-delà de la borne : relancer avec `afterOperationId = nextAfterOperationId`. */
   remaining: boolean;
   nextAfterOperationId: number | null;
@@ -133,7 +153,8 @@ async function constat(accountId: number, afterId: number, limit: number, today?
   const plans = new Map((sim.plans ?? []).map((p) => [p.operationId, p.actions]));
   const items = (await pgClient.unsafe(
     `SELECT i.id, i.business_operation_id AS op, i.title, i.start_date::text AS date, i.is_automatic,
-            COALESCE(i.is_automatic_modified, false) AS modified, (i.projection_origin IS NOT DISTINCT FROM 'OPERATION') AS projected
+            COALESCE(i.is_automatic_modified, false) AS modified, (i.projection_origin IS NOT DISTINCT FROM 'OPERATION') AS projected,
+            ${AGENDA_TITLE_EVIDENCE_COLUMNS_SQL('i')}
        FROM agenda_items i
       WHERE i.account_id = $1 AND i.business_operation_id = ANY($2::bigint[])
       ORDER BY i.id`, [accountId, `{${ids.join(',')}}`] as never[])) as unknown as Row[];
@@ -166,19 +187,25 @@ async function constat(accountId: number, afterId: number, limit: number, today?
     for (const i of items.filter((x) => Number(x.op) === id)) {
       const itemId = Number(i.id);
       const before = String(i.title ?? '');
-      const touche = i.is_automatic !== true || i.modified === true;
+      // Carte #859 : même décision d'autorité que la projection (provenance du CHAMP titre).
+      const titleAuthority = agendaTitleAuthorityOfRow(i);
       const origin: PurchaseTitleRepriseEvent['origin'] = i.is_automatic !== true ? 'USER' : i.projected === true ? 'OPERATION_PROJECTION' : 'DOCUMENT';
-      const base = { itemId, date: (i.date as string | null) ?? null, before, origin };
+      const base = { itemId, date: (i.date as string | null) ?? null, before, origin, titleAuthority };
       const voulu = titres.get(itemId);
-      if (voulu !== undefined && voulu !== before && !touche) events.push({ ...base, after: voulu, action: 'RENAME' });
-      else if (isUninformativePurchaseTitle(before, c)) events.push({ ...base, after: before, action: touche ? 'KEEP_USER_TITLE' : 'KEEP_NO_PRECISE_NAME' });
+      const garde = titleAuthority.authority === 'USER' ? 'KEEP_USER_TITLE' as const
+        : titleAuthority.authority === 'UNKNOWN' ? 'KEEP_UNKNOWN_PROVENANCE' as const : 'KEEP_NO_PRECISE_NAME' as const;
+      if (voulu !== undefined && voulu !== before && titleAuthority.authority === 'SYSTEM') events.push({ ...base, after: voulu, action: 'RENAME' });
+      else if (isUninformativePurchaseTitle(before, c)) events.push({ ...base, after: before, action: garde });
     }
     const renomme = !!nom?.wouldChange;
+    const autorite = nom?.titleAuthority ?? null;
     const label: PurchaseTitleRepriseOperation['label'] = {
       before: nom?.stored ?? null, after: nom?.expected ?? null, basis: renomme ? nom?.basis ?? null : null,
-      action: renomme ? 'RENAME' : nom && !nom.systemLabel ? 'KEEP_USER_LABEL' : nom && !nom.fullyManaged ? 'KEEP_USER_INPUT' : 'UP_TO_DATE',
+      action: renomme ? 'RENAME' : autorite?.authority === 'USER' ? 'KEEP_USER_LABEL' : autorite?.authority === 'UNKNOWN' ? 'KEEP_UNKNOWN_PROVENANCE' : 'UP_TO_DATE',
+      titleAuthority: autorite, blockedExpected: nom?.blockedExpected ?? null,
     };
-    if (renomme || events.length) operations.push({ operationId: id, label, events, otherPendingActions: events.some((e) => e.action === 'RENAME') ? autres : [] });
+    // Carte #859 : un intitulé dont SEULE la provenance (USER, INCONNUE) empêche l'amélioration est rendu, avec son motif.
+    if (renomme || events.length || !!nom?.blockedExpected) operations.push({ operationId: id, label, events, otherPendingActions: events.some((e) => e.action === 'RENAME') ? autres : [] });
   }
   return { examined: ids.length, operations, remaining, nextAfterOperationId: remaining ? ids[ids.length - 1] : null };
 }
@@ -200,7 +227,8 @@ export async function reprisePurchaseTitles(
     accountId, applied: false, ...c,
     labelsToRename: c.operations.filter((x) => x.label.action === 'RENAME').length,
     eventsToRename: tous.filter((e) => e.action === 'RENAME').length,
-    keptUser: tous.filter((e) => e.action === 'KEEP_USER_TITLE').length + c.operations.filter((x) => x.label.action === 'KEEP_USER_LABEL' || x.label.action === 'KEEP_USER_INPUT').length,
+    keptUser: tous.filter((e) => e.action === 'KEEP_USER_TITLE').length + c.operations.filter((x) => x.label.action === 'KEEP_USER_LABEL').length,
+    keptUnknown: tous.filter((e) => e.action === 'KEEP_UNKNOWN_PROVENANCE').length + c.operations.filter((x) => x.label.action === 'KEEP_UNKNOWN_PROVENANCE').length,
     labelsRenamed: 0, eventsRenamed: 0,
   };
   if (!o.apply || (!report.labelsToRename && !report.eventsToRename)) return report;

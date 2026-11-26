@@ -42,19 +42,21 @@ async function main() {
   const rapports: PurchaseTitleRepriseReport[] = [];
   for (const c of comptes) {
     let apres = 0;
-    const total = { examines: 0, intitules: 0, evenements: 0, conserves: 0, intitulesEcrits: 0, evenementsEcrits: 0 };
+    const total = { examines: 0, intitules: 0, evenements: 0, conserves: 0, inconnus: 0, intitulesEcrits: 0, evenementsEcrits: 0 };
     let nonTraite: string | null = null;
     for (;;) {
       const r = await reprisePurchaseTitles(c, { apply, afterOperationId: apres });
       if (r.operations.length) rapports.push(r);
       total.examines += r.examined; total.intitules += r.labelsToRename; total.evenements += r.eventsToRename; total.conserves += r.keptUser;
+      total.inconnus += r.keptUnknown; // Carte #859 : provenance du titre inconnue — conservé, motif au rapport.
       total.intitulesEcrits += r.labelsRenamed; total.evenementsEcrits += r.eventsRenamed;
       nonTraite = r.skipped ?? nonTraite;
       if (!r.remaining || r.nextAfterOperationId === null) break;
       apres = r.nextAfterOperationId;
     }
     console.log(`[reprise-821] compte ${c} : ${total.examines} achat(s) examiné(s), ${total.intitules} intitulé(s) d'opération à corriger, `
-      + `${total.evenements} événement(s) à renommer, ${total.conserves} conservé(s) (saisis ou modifiés par l'utilisateur)`
+      + `${total.evenements} événement(s) à renommer, ${total.conserves} conservé(s) (titre choisi par l'utilisateur), `
+      + `${total.inconnus} conservé(s) (provenance du titre inconnue — motif au rapport)`
       + (apply ? ` — intitulés corrigés ${total.intitulesEcrits}, événements renommés ${total.evenementsEcrits}${nonTraite ? ` (non traité : ${nonTraite})` : ''}` : ' (à blanc)'));
   }
   const chemin = arg('report') ?? 'reprise-821.json';

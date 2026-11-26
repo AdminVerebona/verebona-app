@@ -135,6 +135,8 @@ interface AgendaUpsertOptions {
   onlyIfUntouched?: boolean;
   /** Carte #807 (E07) : version attendue d'une mise à jour (voir `writeAgendaItem`). */
   expectedUpdatedAtMicros?: string;
+  /** Carte #859 : origine déclarée de l'écriture du titre (voir `writeAgendaItem`). */
+  titleDeclaration?: WriteAgendaItemOptions['titleDeclaration'];
 }
 
 type AgendaUpsertResult = WriteAgendaItemResult & {
@@ -320,6 +322,7 @@ export async function upsertAgendaItem(input: AgendaUpsertInput, opts: AgendaUps
     purchaseSync: opts.purchaseSync,
     client: opts.client,
     ...(opts.expectedUpdatedAtMicros !== undefined ? { expectedUpdatedAtMicros: opts.expectedUpdatedAtMicros } : {}),
+    ...(opts.titleDeclaration ? { titleDeclaration: opts.titleDeclaration } : {}),
     // Une mise à jour automatique n'écrase jamais un geste de l'utilisateur,
     // même concurrent (WHERE gardé).
     onlyIfUntouched: opts.onlyIfUntouched ?? (itemId !== undefined && itemId !== input.itemId && input.origin === 'AUTOMATIC'),

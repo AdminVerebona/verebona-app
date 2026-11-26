@@ -51,6 +51,7 @@ import { USER_INVALIDATION_REASON } from '../model';
 import { creationRefusedByUserInvalidation, USER_INVALIDATED_SOURCE_REASON, userInvalidatedSourceSql } from './user-invalidation';
 import type { BusinessOperationRepository } from '../repository';
 import { withBusinessOperationWrite } from '../write';
+import { loadOperationTitleAuthority, type TitleAuthorityDecision } from '../title-provenance';
 import { NON_BUSINESS_DOCUMENT_TYPES } from '@/services/ai/source-analysis/operation-candidates/prepare';
 import { parseRelation, termQualificationOf, type DocumentRelation, type TermQualification } from '@/services/documents/business-periods/t1-v2';
 import {
@@ -790,25 +791,29 @@ async function contributionOf(tx: DbTx, accountId: number, s: OpSource, agenda?:
  */
 /**
  * Cartes #813 / #821 — intitulé d'un ACHAT que la consolidation écrirait (pure ; `undefined` : rien à écrire).
- * Partagée par la consolidation (`reconsolidateOperation`) et son aperçu à blanc (`previewAcquisitionNames`).
+ * Partagée par la consolidation (`reconsolidateOperation`), son aperçu à blanc (`previewAcquisitionNames`) et la
+ * reprise (`applyAcquisitionNames`) : UNE seule décision.
  *
- * Titre AUTOMATIQUE ou titre de l'UTILISATEUR : un intitulé est « du système » quand il est absent, ou égal au
- * résumé, au nom d'achat, ou au nom d'achat de la règle antérieure (#813) d'une source ACTIVE gérée par T3, ou
- * encore égal à la valeur que la provenance (lot 78A) a ENREGISTRÉE comme posée depuis une source (`recordedLabel`).
- * Tout autre intitulé a été saisi ou corrigé par l'utilisateur : jamais remplacé. Une opération qui porte une saisie
- * de l'utilisateur (`fullyManaged` faux) n'est jamais recalculée.
+ * Carte #859 — l'AUTORITÉ sur l'intitulé est celle du CHAMP (`title-provenance.ts`) : seul un intitulé SYSTEM
+ * prouvé est amélioré, même si une autre donnée de l'opération (date, statut, lien, montant…) a été corrigée par
+ * l'utilisateur. Un intitulé USER n'est jamais remplacé, même s'il est égal à un résumé documentaire ou à une
+ * ancienne valeur générée ; une provenance INCONNUE ne l'est pas davantage (abstention motivée au diagnostic).
+ * Ni la garde globale « toutes les sources gérées par T3 » ni une égalité de chaînes ne décident plus de
+ * l'autorité ; elles gardent leur rôle pour les autres attributs.
+ *
+ * Règle de NOMMAGE inchangée : le nom d'objet du premier justificatif qui en a un ; à défaut, un intitulé qu'aucune
+ * source ne porte plus (ancien nom #813, fondement retiré) revient au repli existant — le résumé du premier
+ * justificatif.
  */
 export function acquisitionLabelDecision(p: {
-  typeCode: string | null; technicalLabel: string | null; fullyManaged: boolean; contributions: readonly SourceContribution[];
-  /** Intitulé que la provenance a enregistré comme posé depuis une source (`attribute_provenance.fields.label.value`). */
-  recordedLabel?: string | null;
+  typeCode: string | null; technicalLabel: string | null; contributions: readonly SourceContribution[];
+  /** Autorité sur le champ intitulé (provenance par champ, `loadOperationTitleAuthority`). */
+  authority: Pick<TitleAuthorityDecision, 'authority'>;
 }): string | undefined {
-  if (!p.fullyManaged || p.typeCode !== 'ACQUISITION') return undefined;
+  if (p.typeCode !== 'ACQUISITION' || p.authority.authority !== 'SYSTEM') return undefined;
   const documentaires = p.contributions.filter((c) => !c.identity.agenda && !c.identity.structured);
   const actuel = p.technicalLabel;
   const porte = (v: string) => p.contributions.some((c) => c.identity.summary.slice(0, 200) === v || sourceLabelOf(c.identity) === v);
-  const ancienNom = (v: string) => documentaires.some((c) => c.identity.supersededDesignationLabel === v) || (!!p.recordedLabel && p.recordedLabel === v);
-  if (!(actuel === null || porte(actuel) || ancienNom(actuel))) return undefined;
   const designe = documentaires.map((c) => c.identity.designationLabel).find((x): x is string => !!x);
   if (designe) return designe !== actuel ? designe : undefined;
   // Aucun nom d'objet : un intitulé du système qu'aucune source ne porte plus (ancien nom #813, fondement retiré)
@@ -1020,7 +1025,12 @@ export async function reconsolidateOperation(
   const documentaires = contributions.filter((c) => !c.identity.agenda && !c.identity.structured);
   const libelles = documentaires.map((c) => sourceLabelOf(c.identity)).filter((x) => !!x);
   const porteLibelle = (v: string) => contributions.some((c) => c.identity.summary.slice(0, 200) === v || sourceLabelOf(c.identity) === v);
+  // Carte #859 : autorité sur l'intitulé d'un ACHAT, lue au niveau du CHAMP dans cette transaction (verrou du compte :
+  // une correction de l'utilisateur ne peut pas s'intercaler entre la décision et l'écriture).
+  const achat = (state.type ?? op.typeCode) === 'ACQUISITION';
+  const autoriteTitre = achat ? await loadOperationTitleAuthority(tx, accountId, operationId) : null;
   if (retiree && op.typeCode !== 'CLAIM' && op.technicalLabel !== null && !retiree.keep.has('label')
+    && (!achat || autoriteTitre?.authority === 'SYSTEM')
     && !porteLibelle(op.technicalLabel) && libelles.length && libelles[0] !== op.technicalLabel) {
     attrs.technicalLabel = libelles[0];
   }
@@ -1031,9 +1041,10 @@ export async function reconsolidateOperation(
   // Carte #821 : ce nom est celui de l'OBJET réellement acheté (désignation, catégorie de dépense, bien dont
   // l'acquisition est établie) ; un nom que la règle #813 tirait de la même désignation et que la règle courante ne
   // retient plus (fournisseur, bien associé) est lui aussi un intitulé du système, remis au repli existant (résumé).
-  const nomAchat = acquisitionLabelDecision({
-    typeCode: state.type ?? op.typeCode, technicalLabel: op.technicalLabel, fullyManaged, contributions, recordedLabel: provAvant?.fields?.label?.value ?? null,
-  });
+  // Carte #859 : la garde globale `fullyManaged` ne décide plus de l'intitulé d'un achat — sa provenance si.
+  const nomAchat = autoriteTitre ? acquisitionLabelDecision({
+    typeCode: state.type ?? op.typeCode, technicalLabel: op.technicalLabel, contributions, authority: autoriteTitre,
+  }) : undefined;
   if (nomAchat !== undefined && !('technicalLabel' in attrs)) attrs.technicalLabel = nomAchat;
   // Carte #819 (E) : la date principale passe de la date de commande à la date de la facture — écrite À PART, avec son
   // motif propre (historique : ancienne valeur, nouvelle valeur, motif ; la source est la provenance 78A, ci-dessous).
@@ -1047,7 +1058,13 @@ export async function reconsolidateOperation(
     changes.track(await repo.updateAttributes(operationId, { provider: attrs.provider }, providerPlusAutoritaire));
     delete attrs.provider;
   }
-  changes.track(await repo.updateAttributes(operationId, attrs, retiree && ('provider' in attrs || 'technicalLabel' in attrs) ? 'T3_SOURCE_WITHDRAWN_REEVALUATED' : 'T3_ATTRIBUTES_CONSOLIDATED'));
+  const motifAttrs = retiree && ('provider' in attrs || 'technicalLabel' in attrs) ? 'T3_SOURCE_WITHDRAWN_REEVALUATED' : 'T3_ATTRIBUTES_CONSOLIDATED';
+  // Carte #859 : intitulé posé par T3 — provenance SYSTEM du champ, même instruction (déclencheur 2010).
+  const porteurNom = typeof attrs.technicalLabel === 'string'
+    ? contributions.find((c) => c.identity.designationLabel === attrs.technicalLabel || sourceLabelOf(c.identity) === attrs.technicalLabel) : undefined;
+  changes.track(await repo.updateAttributes(operationId, attrs, motifAttrs, {
+    titleOrigin: { origin: 'SYSTEM', reason: motifAttrs, channel: 'T3', evidence: porteurNom ? `source:${porteurNom.sourceId}` : null },
+  }));
 
   // Lot 53 (retour PO Q17) : un bien retiré du sinistre par l'utilisateur n'est
   // jamais relié à nouveau automatiquement ; un document non arbitré qui le
@@ -2197,10 +2214,20 @@ export interface AcquisitionNamePreview {
   expected: string | null;
   /** Fondement du nom attendu (désignation, catégorie de dépense, acquisition du bien) ; null : repli existant ou intitulé conservé. */
   basis: import('@/lib/reference-events/operation-title').AcquisitionNameBasis | null;
-  /** Faux : l'opération porte une saisie de l'utilisateur — son intitulé n'est JAMAIS recalculé. */
+  /**
+   * Faux : l'opération porte une saisie de l'utilisateur (date, type, déclaration, formulaire). Carte #859 : simple
+   * information — cette garde globale ne protège plus l'intitulé, sa provenance (`titleAuthority`) si.
+   */
   fullyManaged: boolean;
-  /** L'intitulé enregistré a été posé par le système (absent, résumé ou nom d'une source active, valeur enregistrée par la provenance) — sinon c'est celui de l'utilisateur. */
+  /** Carte #859 : l'intitulé enregistré est un titre SYSTEM prouvé (`titleAuthority.authority === 'SYSTEM'`). */
   systemLabel: boolean;
+  /** Carte #859 : autorité sur le champ intitulé (état, motif, preuve) — la même que celle de la consolidation. */
+  titleAuthority: TitleAuthorityDecision;
+  /**
+   * Carte #859 (diagnostic) : nom que la règle de nommage retiendrait si l'intitulé était SYSTEM, quand sa provenance
+   * (USER ou INCONNUE) l'interdit ; null : rien n'est bloqué par la provenance.
+   */
+  blockedExpected: string | null;
   wouldChange: boolean;
   /** Source active qui porte l'intitulé attendu (provenance) ; null : aucune. */
   sourceId: number | null;
@@ -2234,14 +2261,17 @@ async function acquisitionNameFor(tx: DbTx, accountId: number, opId: number, sto
   if (!probantes.length) return null;
   const state = consolidateOperationState('ACQUISITION', probantes, today);
   const fullyManaged = sources.filter((x) => !x.managed && x.decision === null).length === 0;
-  const recordedLabel = (await loadAttributeProvenance(tx, accountId, opId))?.fields?.label?.value ?? null;
-  const decision = acquisitionLabelDecision({ typeCode: state.type ?? 'ACQUISITION', technicalLabel: stored, fullyManaged, contributions, recordedLabel });
+  // Carte #859 : autorité du CHAMP, relue dans la transaction (en réel : sous le verrou du compte, juste avant l'écriture).
+  const lu = await loadOperationTitleAuthority(tx, accountId, opId);
+  const titleAuthority: TitleAuthorityDecision = { authority: lu.authority, reason: lu.reason, evidence: lu.evidence };
+  const decision = acquisitionLabelDecision({ typeCode: state.type ?? 'ACQUISITION', technicalLabel: stored, contributions, authority: titleAuthority });
   const expected = decision ?? stored;
   const porteur = contributions.find((c) => c.identity.designationLabel === expected) ?? contributions.find((c) => sourceLabelOf(c.identity) === expected);
   return {
     operationId: opId, stored, expected, basis: contributions.find((c) => c.identity.designationLabel === expected)?.identity.designationBasis ?? null, fullyManaged,
-    systemLabel: stored === null || stored === recordedLabel || contributions.some((c) => c.identity.summary.slice(0, 200) === stored
-      || sourceLabelOf(c.identity) === stored || c.identity.supersededDesignationLabel === stored),
+    systemLabel: titleAuthority.authority === 'SYSTEM', titleAuthority,
+    blockedExpected: titleAuthority.authority === 'SYSTEM' ? null
+      : acquisitionLabelDecision({ typeCode: state.type ?? 'ACQUISITION', technicalLabel: stored, contributions, authority: { authority: 'SYSTEM' } }) ?? null,
     wouldChange: decision !== undefined, sourceId: porteur?.sourceId ?? null,
   };
 }
@@ -2290,7 +2320,11 @@ export async function applyAcquisitionNames(accountId: number, operationIds: rea
       const op = await repo.load(id, { allowInactive: true, allowMerged: true });
       if (op.typeCode !== 'ACQUISITION' || op.invalidatedAt !== null || op.mergedIntoOperationId !== null) continue;
       const a = await acquisitionNameFor(session.tx, accountId, id, op.technicalLabel, today);
-      if (!a?.wouldChange || a.expected === null || !(await repo.updateAttributes(id, { technicalLabel: a.expected }, ACQUISITION_NAME_REASON))) continue;
+      // Carte #859 : décision recalculée SOUS le verrou du compte (une correction de l'utilisateur postérieure à la
+      // simulation gagne toujours) ; écriture déclarée SYSTEM (provenance du champ, même instruction).
+      if (!a?.wouldChange || a.expected === null || !(await repo.updateAttributes(id, { technicalLabel: a.expected }, ACQUISITION_NAME_REASON, {
+        titleOrigin: { origin: 'SYSTEM', reason: ACQUISITION_NAME_REASON, channel: 'REPRISE', evidence: a.sourceId !== null ? `source:${a.sourceId}` : null },
+      }))) continue;
       ecrits.push(id);
       // Provenance de l'intitulé (lot 78A) tenue à jour : la source qui le porte — rien d'autre n'y est touché.
       if (a.sourceId !== null && await loadAttributeProvenance(session.tx, accountId, id)) {

@@ -49,6 +49,7 @@ import type { AgendaEventNature } from '@/services/agenda/agenda-functional-key'
 import type { BusinessOperationStatus, BusinessOperationTypeCode } from '../model';
 import { factKeyOf, isGlobalEventFact } from '../grouping/model';
 import { orderDocumentTypeCodes } from '@/services/canonical/registry/order-evidence';
+import { AGENDA_TITLE_EVIDENCE_COLUMNS_SQL, agendaTitleAuthorityOfRow } from '../title-provenance';
 
 type Row = Record<string, unknown>;
 interface Executor { execute: (q: SQL) => Promise<unknown> }
@@ -332,6 +333,13 @@ const itemColumnsSql = (journal: boolean) => sql.raw(`
    ${journal ? `OR EXISTS (SELECT 1 FROM agenda_intervention_consolidations k
                  WHERE k.account_id = i.account_id AND k.restored_at IS NOT NULL
                    AND (k.absorbed_item_id = i.id OR (k.kind <> 'ABSORB' AND k.principal_item_id = i.id)))` : ''}) AS pending_status,
+  -- Carte #859 : mêmes gardes sans la confirmation d'une prévision (décision sur la DATE, pas sur le titre).
+  (COALESCE(i.requires_qualification, false) OR i.occurrence_nature IS NOT DISTINCT FROM 'FORECAST'
+   ${journal ? `OR EXISTS (SELECT 1 FROM agenda_intervention_consolidations k
+                 WHERE k.account_id = i.account_id AND k.restored_at IS NOT NULL
+                   AND (k.absorbed_item_id = i.id OR (k.kind <> 'ABSORB' AND k.principal_item_id = i.id)))` : ''}) AS pending_hold,
+  -- Carte #859 : preuves de la provenance du CHAMP titre.
+  ${AGENDA_TITLE_EVIDENCE_COLUMNS_SQL('i')},
   i.origin_field_key,
   -- Lot 114O (#744) : FAIT PORTÉ par le lien N↔N avec l'Opération de l'élément, et origine du lien
   -- (remplace le rôle de l'élément et son auteur, plus lus).
@@ -396,6 +404,8 @@ function toItem(x: Row): AgendaItemSnapshot {
     equipmentIds: nums(x.equipment_ids),
     fileIds: nums(x.file_ids),
     pendingStatus: x.pending_status === true,
+    pendingHold: x.pending_hold === true,
+    titleAuthority: agendaTitleAuthorityOfRow(x),
     originFieldKey: txt(x.origin_field_key),
     sourceCount: Number(x.source_count ?? 0),
     carriedFact: txt(x.carried_fact),
@@ -551,6 +561,8 @@ async function applyAction(
       }, {
         accountId, channel: 'T4', linkMode: 'replace', notify: itemId === undefined, statusProposal: false,
         ...(itemId !== undefined ? { onlyIfUntouched: true } : {}),
+        // Carte #859 : titre GÉNÉRÉ par la projection — provenance SYSTEM du champ.
+        titleDeclaration: { origin: 'SYSTEM', reason: 'T4_PROJECTION_CREATED', channel: 'T4', evidence: `operation:${op.id}` },
       });
       // Élément de même clé déjà présent (reprise après échec) : adopté.
       const existant = await itemIdByKey(accountId, a.functionalKey);
@@ -584,7 +596,10 @@ async function applyAction(
         ...(c.links ? { links: { ...c.links, substructureIds: [] } } : {}),
         semantics: { businessType: c.businessType ?? null, nature: c.nature ?? null },
         functionalKey: c.functionalKey ?? null,
-      }, { accountId, channel: 'T4', linkMode: 'replace', onlyIfUntouched: true, notify: false, statusProposal: false });
+      }, {
+        accountId, channel: 'T4', linkMode: 'replace', onlyIfUntouched: true, notify: false, statusProposal: false,
+        ...(c.title !== undefined ? { titleDeclaration: { origin: 'SYSTEM' as const, reason: 'T4_PROJECTION_SYNC', channel: 'T4', evidence: `operation:${op.id}` } } : {}),
+      });
       if (!w.protected) {
         res.updated++; res.changes++;
         if (c.businessOperationId !== undefined) await attachProjected(op, a.itemId, opts.fact, opts.correlationId, 'T4_PROJECTION_SYNC');

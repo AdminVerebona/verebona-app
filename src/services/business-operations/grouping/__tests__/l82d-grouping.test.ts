@@ -242,7 +242,10 @@ describe('L82D-U10 — 76H : jamais le principal, ni une étape rattachée par l
   it('ABSORBABLE_ROLE_SQL est appliqué à l’absorption, pas au changement d’intitulé du principal', () => {
     const src = readFileSync(join(process.cwd(), 'src/services/business-operations/agenda-projection/consolidation.ts'), 'utf8');
     expect(src).toMatch(/AND \$\{ABSORBABLE_SQL\} \$\{ABSORBABLE_ROLE_SQL\}/);
-    expect(src).toMatch(/i\.title = \$5 AND \$\{ABSORBABLE_SQL\}\s*\n\s*RETURNING/);
+    // Carte #859 : le renommage d'un ACHAT est gardé par la provenance du titre (`PURCHASE_RETITLE_SQL`) ; les autres
+    // types gardent `ABSORBABLE_SQL` seul — jamais `ABSORBABLE_ROLE_SQL` dans le changement d'intitulé.
+    expect(src).toMatch(/i\.title = \$5\s*\n\s*AND \(CASE WHEN \$\{ACQUISITION_OF_ITEM_SQL\} THEN \(\$\{PURCHASE_RETITLE_SQL\}\) ELSE \(\$\{ABSORBABLE_SQL\}\) END\)\s*\n\s*RETURNING/);
+    expect(src).not.toMatch(/PURCHASE_RETITLE_SQL = `[^`]*ABSORBABLE_ROLE_SQL/);
     // Règle remplacée (carte #744) : la condition est lue sur le LIEN N↔N (fait porté, origine du lien).
     expect(src).toMatch(/business_operation_agenda_links g[\s\S]*g\.fact_key IS NOT NULL OR g\.origin = 'USER'/);
   });

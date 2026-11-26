@@ -173,6 +173,7 @@ import { parseReferenceEventNotes } from '@/lib/reference-events/reference-event
 import type { GroupingContext } from './grouping/service';
 import type { RoleOrigin } from './grouping/model';
 import { PAGE_CORRECTION_DECLARATION_TEXT, PAGE_SPLIT_DECLARATION_TEXT } from './graph/reference-event-page';
+import type { TitleWriteDeclaration } from './title-provenance';
 
 // ── Contexte ───────────────────────────────────────────────────────────────
 
@@ -321,6 +322,11 @@ export interface OperationRelationData {
 
 const ISO_DATE = /^\d{4}-\d{2}-\d{2}$/;
 const optionalDate = (v: unknown): v is string | null | undefined => v === undefined || v === null || (typeof v === 'string' && ISO_DATE.test(v) && !Number.isNaN(Date.parse(v)));
+/** Carte #859 : déclaration d'un intitulé choisi par l'utilisateur (auteur, canal, motif) — provenance du champ. */
+const userTitleOrigin = (ctx: OperationWriteContext, code: string): TitleWriteDeclaration => ({
+  origin: 'USER', reason: code, actorUserId: userIdOf(ctx.actor), channel: channelOf(ctx.actor),
+});
+
 const reason = (v: unknown, defaut: string): string => (typeof v === 'string' && /^[A-Z0-9_]{3,80}$/.test(v) ? v : defaut);
 
 /**
@@ -1015,7 +1021,9 @@ export function updateOperation(ctx: OperationWriteContext, input: UpdateOperati
     if (input.type !== undefined) changed = (await repo.setType(faits.id, input.type, code)) || changed;
     if (input.status !== undefined) changed = (await repo.setStatus(faits.id, input.status, { reasonCode: code })) || changed;
     const champs = { ...attrs, ...(label ? { technicalLabel: label } : {}) };
-    if (Object.keys(champs).length) changed = (await repo.updateAttributes(faits.id, champs, code)) || changed;
+    // Carte #859 : un intitulé RÉELLEMENT modifié est tracé comme choix de l'utilisateur (provenance du champ) ;
+    // un intitulé renvoyé inchangé ne crée aucune provenance.
+    if (Object.keys(champs).length) changed = (await repo.updateAttributes(faits.id, champs, code, { titleOrigin: userTitleOrigin(ctx, code) })) || changed;
     if (!changed) return applied(false, { operationId: faits.id, version: avant.version, declarationId: null, typeCode: avant.typeCode, status: avant.status });
     const declarationId = await insertDeclaration(g.runner, g.accountId, { purpose: 'UPDATE', channel: channelOf(ctx.actor), userId: userIdOf(ctx.actor), text: texte, fingerprint: declarationFingerprint(texte), operationId: faits.id });
     await repo.addSource(faits.id, { kind: 'USER_DECLARATION', entityKey: declarationId, authority: 'USER', locator: { declaration: 'UPDATE' } }, code);
@@ -1087,7 +1095,7 @@ export function correctOperation(ctx: OperationWriteContext, input: CorrectOpera
     let factsChanged = false;
     if (input.type !== undefined) factsChanged = (await repo.setType(faits.id, input.type, code)) || factsChanged;
     if (Object.keys(attrs).length) factsChanged = (await repo.updateAttributes(faits.id, attrs, code)) || factsChanged;
-    const labelChanged = label ? await repo.updateAttributes(faits.id, { technicalLabel: label }, code) : false;
+    const labelChanged = label ? await repo.updateAttributes(faits.id, { technicalLabel: label }, code, { titleOrigin: userTitleOrigin(ctx, code) }) : false;
     if (!factsChanged && !labelChanged) return applied(false, { operationId: faits.id, version: avant.version, declarationId: null, typeCode: avant.typeCode, status: avant.status });
     let declarationId: number | null = null;
     if (factsChanged) {

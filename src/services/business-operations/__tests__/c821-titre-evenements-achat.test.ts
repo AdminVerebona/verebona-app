@@ -231,9 +231,15 @@ describe('C821-U-05 — T3 : nom porté par l’identité du candidat', () => {
 });
 
 describe('C821-U-06 — T3 : intitulé du système remplacé, intitulé de l’utilisateur jamais touché', () => {
+  // Carte #859 : l'autorité est celle du CHAMP intitulé (SYSTEM / USER / INCONNU, `title-provenance.ts`), plus la garde
+  // globale `fullyManaged` ni l'égalité avec un résumé ou une valeur enregistrée (`recordedLabel`) — défauts déclarés
+  // par la carte. Les attentes sur la règle de NOMMAGE (#813, #821) sont inchangées.
+  const SYSTEM = { authority: 'SYSTEM' as const };
+  const USER = { authority: 'USER' as const };
+  const INCONNU = { authority: 'UNKNOWN' as const };
   const source = contribution(buildCandidateIdentity(persiste(), ctxT3(designation('de carburant TotalEnergies'))));
   const decision = (technicalLabel: string | null, over: Partial<Parameters<typeof acquisitionLabelDecision>[0]> = {}) =>
-    acquisitionLabelDecision({ typeCode: 'ACQUISITION', technicalLabel, fullyManaged: true, contributions: [source], ...over });
+    acquisitionLabelDecision({ typeCode: 'ACQUISITION', technicalLabel, authority: SYSTEM, contributions: [source], ...over });
   it('intitulé absent, égal au résumé (« Achat ») ou à l’ancien nom (#813) : remplacé par « Achat de carburant »', () => {
     expect(decision(null)).toBe('Achat de carburant');
     expect(decision('Achat')).toBe('Achat de carburant');
@@ -242,27 +248,27 @@ describe('C821-U-06 — T3 : intitulé du système remplacé, intitulé de l’u
   it('déjà à jour : rien à écrire (idempotence)', () => {
     expect(decision('Achat de carburant')).toBeUndefined();
   });
-  it('intitulé saisi ou corrigé par l’utilisateur (aucune source ne le porte), ou opération portant une saisie : jamais remplacé', () => {
-    expect(decision('Plein du départ en vacances')).toBeUndefined();
-    expect(decision('Achat', { fullyManaged: false })).toBeUndefined();
-    expect(decision(null, { fullyManaged: false })).toBeUndefined();
+  it('intitulé de l’utilisateur (même égal au résumé « Achat ») ou de provenance inconnue : jamais remplacé', () => {
+    expect(decision('Plein du départ en vacances', { authority: USER })).toBeUndefined();
+    expect(decision('Achat', { authority: USER })).toBeUndefined();
+    expect(decision('Achat de carburant TotalEnergies', { authority: USER })).toBeUndefined();
+    expect(decision('Achat', { authority: INCONNU })).toBeUndefined();
+    expect(decision(null, { authority: INCONNU })).toBeUndefined();
   });
-  it('intitulé que la provenance a ENREGISTRÉ comme posé depuis une source (même si plus aucune source ne le porte) : du système, remplacé', () => {
-    expect(decision('Achat carburant Total', { recordedLabel: 'Achat carburant Total' })).toBe('Achat de carburant');
-    expect(decision('Plein du départ en vacances', { recordedLabel: 'Achat' })).toBeUndefined(); // corrigé depuis par l'utilisateur
-    // Fondement retiré (plus de nom d'objet) : retour au repli existant, le résumé.
+  it('intitulé SYSTEM qu’aucune source ne porte plus : amélioré ; fondement retiré (plus de nom d’objet) : repli existant, le résumé', () => {
+    expect(decision('Achat carburant Total')).toBe('Achat de carburant');
     const sansNom = contribution(buildCandidateIdentity(persiste({ summary: 'Achat' }), ctxT3()));
-    expect(acquisitionLabelDecision({ typeCode: 'ACQUISITION', technicalLabel: 'Achat Cupra', fullyManaged: true, contributions: [sansNom], recordedLabel: 'Achat Cupra' })).toBe('Achat');
-    expect(acquisitionLabelDecision({ typeCode: 'ACQUISITION', technicalLabel: 'Achat Cupra', fullyManaged: true, contributions: [sansNom], recordedLabel: null })).toBeUndefined();
+    expect(acquisitionLabelDecision({ typeCode: 'ACQUISITION', technicalLabel: 'Achat Cupra', authority: SYSTEM, contributions: [sansNom] })).toBe('Achat');
+    expect(acquisitionLabelDecision({ typeCode: 'ACQUISITION', technicalLabel: 'Achat Cupra', authority: INCONNU, contributions: [sansNom] })).toBeUndefined();
   });
   it('autre type que l’achat : la règle ne s’applique pas', () => {
     expect(decision('Achat', { typeCode: 'INTERVENTION' })).toBeUndefined();
   });
   it('ancien nom (#813) sans nom d’objet aujourd’hui (« Achat TotalEnergies ») : retour au repli existant, le résumé', () => {
     const tiers = contribution(buildCandidateIdentity(persiste({ summary: 'Ticket de caisse' }), ctxT3(designation('TotalEnergies'))));
-    expect(acquisitionLabelDecision({ typeCode: 'ACQUISITION', technicalLabel: 'Achat TotalEnergies', fullyManaged: true, contributions: [tiers] })).toBe('Ticket de caisse');
-    expect(acquisitionLabelDecision({ typeCode: 'ACQUISITION', technicalLabel: 'Ticket de caisse', fullyManaged: true, contributions: [tiers] })).toBeUndefined();
-    expect(acquisitionLabelDecision({ typeCode: 'ACQUISITION', technicalLabel: 'Mon plein', fullyManaged: true, contributions: [tiers] })).toBeUndefined();
+    expect(acquisitionLabelDecision({ typeCode: 'ACQUISITION', technicalLabel: 'Achat TotalEnergies', authority: SYSTEM, contributions: [tiers] })).toBe('Ticket de caisse');
+    expect(acquisitionLabelDecision({ typeCode: 'ACQUISITION', technicalLabel: 'Ticket de caisse', authority: SYSTEM, contributions: [tiers] })).toBeUndefined();
+    expect(acquisitionLabelDecision({ typeCode: 'ACQUISITION', technicalLabel: 'Mon plein', authority: USER, contributions: [tiers] })).toBeUndefined();
   });
 });
 

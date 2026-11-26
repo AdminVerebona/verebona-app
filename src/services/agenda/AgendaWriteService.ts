@@ -335,6 +335,11 @@ export async function updateAgendaItem(
   }, {
     linkMode: 'replace', validate: false,
     ...(guard.expectedUpdatedAtMicros !== undefined ? { expectedUpdatedAtMicros: guard.expectedUpdatedAtMicros } : {}),
+    // Carte #859 : un titre RÉELLEMENT changé par l'utilisateur (ou un membre Duo) est tracé USER sur le champ ;
+    // une sauvegarde qui renvoie le titre inchangé (correction de date, de description…) ne crée aucune fausse
+    // provenance USER — le titre automatique reste améliorable.
+    ...(input.title !== undefined && input.title !== existing.title
+      ? { titleDeclaration: { origin: 'USER' as const, reason: 'USER_AGENDA_TITLE_EDIT', actorUserId, channel: 'AGENDA' } } : {}),
   });
 
   // Lot 103D : dissociation confirmée — journal avant / après (liens seulement, aucun objet supprimé).

@@ -38,6 +38,7 @@ import type postgres from 'postgres';
 import { pgClient } from '@/db';
 import { removeAgendaItemsTraced } from '@/services/agenda/agenda-removal-trace';
 import { postgresRunner } from '../grouping/runner';
+import { AGENDA_TITLE_SYSTEM_SQL, declareTitleWritePg } from '../title-provenance';
 
 type Sql = postgres.Sql;
 type Tx = postgres.TransactionSql;
@@ -383,8 +384,31 @@ export async function retitleEquivalentInTx(tx: Tx, p: {
 }
 
 /**
+ * Carte #859 — garde d'écriture du SEUL renommage d'un événement d'ACHAT (alias `i`) : titre SYSTEM prouvé au
+ * niveau du champ (`AGENDA_TITLE_SYSTEM_SQL`, indépendant d'une correction de date ou d'un autre champ), gardes
+ * INDÉPENDANTES conservées — « à qualifier », prévision à confirmer, consolidation restaurée. Projection de
+ * l'opération (OPERATION) comme événement du justificatif (DOCUMENT). `ABSORBABLE_SQL` n'est pas assoupli : il
+ * reste la garde des fusions, absorptions et des renommages des autres types.
+ */
+export const PURCHASE_RETITLE_SQL = `
+  ${AGENDA_TITLE_SYSTEM_SQL('i')}
+  AND NOT COALESCE(i.requires_qualification, false)
+  AND i.occurrence_nature IS DISTINCT FROM 'FORECAST'
+  AND NOT EXISTS (SELECT 1 FROM agenda_intervention_consolidations k
+                   WHERE k.account_id = i.account_id AND k.restored_at IS NOT NULL
+                     AND (k.absorbed_item_id = i.id OR (k.kind <> 'ABSORB' AND k.principal_item_id = i.id)))`;
+
+/** Carte #859 : l'Opération de l'élément est un ACHAT actif du même compte (alias `i`). */
+const ACQUISITION_OF_ITEM_SQL = `EXISTS (SELECT 1 FROM business_operations ro
+   WHERE ro.id = i.business_operation_id AND ro.account_id = i.account_id AND ro.type_code = 'ACQUISITION'
+     AND ro.invalidated_at IS NULL AND ro.merged_into_operation_id IS NULL)`;
+
+/**
  * Intitulé générique d'un élément T4 automatique INTACT → description précise
  * de l'Opération (garde SQL complète, journal). Rend vrai si écrit.
+ * Carte #859 : pour un ACHAT, la garde est celle de la provenance du TITRE (`PURCHASE_RETITLE_SQL`) — revérifiée
+ * avec le compte, le rattachement à l'opération et l'ancienne valeur dans le WHERE même de l'écriture : une
+ * édition concurrente du titre par l'utilisateur rend l'action caduque. Écriture déclarée SYSTEM (déclencheur 2010).
  */
 export async function retitleAgendaItem(p: {
   accountId: number; operationId: number; itemId: number; title: string; from: string; origin: ConsolidationOrigin; runId?: string | null; correlationId?: string | null;
@@ -392,12 +416,14 @@ export async function retitleAgendaItem(p: {
   if (!(await consolidationJournalReady(sql))) return false;
   return sql.begin(async (tx) => {
     await tx`SELECT pg_advisory_xact_lock(${AGENDA_CONSOLIDATION_LOCK_SPACE}::int, ${p.accountId}::int)`;
-    const r = await tx.unsafe<Row[]>(
+    const declaration = { origin: 'SYSTEM' as const, reason: 'OPERATION_PRECISE_TITLE', channel: p.origin === 'REPRISE' ? 'REPRISE' : 'T4', evidence: `operation:${p.operationId}` };
+    const r = await declareTitleWritePg(tx as never, declaration, () => tx.unsafe<Row[]>(
       `UPDATE agenda_items i SET title = $4, updated_at = now()
-        WHERE i.id = $1 AND i.account_id = $2 AND i.business_operation_id = $3 AND i.title = $5 AND ${ABSORBABLE_SQL}
+        WHERE i.id = $1 AND i.account_id = $2 AND i.business_operation_id = $3 AND i.title = $5
+          AND (CASE WHEN ${ACQUISITION_OF_ITEM_SQL} THEN (${PURCHASE_RETITLE_SQL}) ELSE (${ABSORBABLE_SQL}) END)
         RETURNING i.id`,
       [p.itemId, p.accountId, p.operationId, p.title, p.from] as never[],
-    );
+    ));
     if (!r.length) return false;
     await journal(tx, { ...p, principalId: p.itemId, absorbedIds: [], linkPrincipal: false, reason: 'OPERATION_PRECISE_TITLE' }, 'RETITLE', null, { from: p.from, to: p.title });
     await tx.unsafe(
@@ -461,10 +487,12 @@ export async function restoreConsolidationLineInTx(
   {
       await tx`SELECT pg_advisory_xact_lock(${AGENDA_CONSOLIDATION_LOCK_SPACE}::int, ${accountId}::int)`;
       if (l.kind === 'RETITLE') {
-        await tx.unsafe(
-          `UPDATE agenda_items SET title = $3, updated_at = now() WHERE id = $1 AND account_id = $2 AND title = $4
-              AND is_automatic AND NOT COALESCE(is_automatic_modified, false)`,
-          [principal, accountId, String(d.from ?? ''), String(d.to ?? '')] as never[]);
+        // Carte #859 : jamais par-dessus un titre choisi depuis par l'utilisateur — titre SYSTEM prouvé et valeur
+        // attendue revérifiés (même règle que le renommage) ; restauration déclarée SYSTEM.
+        await declareTitleWritePg(tx as never, { origin: 'SYSTEM', reason: 'RETITLE_RESTORED', channel: 'RESTORE', evidence: `consolidation:${journalId}` }, () => tx.unsafe(
+          `UPDATE agenda_items i SET title = $3, updated_at = now() WHERE i.id = $1 AND i.account_id = $2 AND i.title = $4
+              AND ${AGENDA_TITLE_SYSTEM_SQL('i')} AND (NOT COALESCE(i.is_automatic_modified, false) OR ${ACQUISITION_OF_ITEM_SQL})`,
+          [principal, accountId, String(d.from ?? ''), String(d.to ?? '')] as never[]));
       } else if (l.kind === 'LINK') {
         // Lot 82D : retour arrière par le service de regroupement (rôle et propagation retirés, puis lien antérieur rétabli s'il vaut encore).
         const { attachAgendaItem, detachAgendaItem, runnerContext } = await import('../grouping/service');
