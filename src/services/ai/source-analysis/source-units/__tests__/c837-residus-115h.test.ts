@@ -164,8 +164,9 @@ describe('C837-U06 — C3 : la garde de version porte sur le code réel des pré
     expect(predicatesSignature(T1_RULE_PREDICATES, lire).signature).toBe(predicatesSignature(T1_RULE_PREDICATES).signature);
   });
   it('version courante incrémentée par cette livraison, historique conservé', () => {
-    expect(T1_COVERAGE_RULES_VERSION).toBe(3);
-    expect(Object.keys(T1_RULES_VERSION_SIGNATURES).map(Number)).toEqual([1, 2, 3]);
+    // Carte #853 : nouvelle livraison des règles de couverture (par occurrence) → version 4, historique 1–3 conservé.
+    expect(T1_COVERAGE_RULES_VERSION).toBe(4);
+    expect(Object.keys(T1_RULES_VERSION_SIGNATURES).map(Number)).toEqual([1, 2, 3, 4]);
   });
 });
 

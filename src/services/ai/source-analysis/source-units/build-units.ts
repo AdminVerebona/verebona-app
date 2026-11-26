@@ -60,7 +60,8 @@ function decouper(line: string, max: number): string[] {
 class Builder {
   readonly units: SourceUnit[] = [];
   private readonly compteurs = new Map<string, number>();
-  private readonly vus = new Set<string>();
+  /** Contenu déjà lu (page, nature, texte) → segment de sa PREMIÈRE lecture. */
+  private readonly vus = new Map<string, number>();
 
   private next(page: number, kind: string): number {
     const k = `${page}:${kind}`;
@@ -73,12 +74,17 @@ class Builder {
     this.units.push({ ...u, ordinal: this.units.length });
   }
 
-  /** Unité de texte ; un contenu identique sur la même page (recouvrement de lots) n'est pas dupliqué. */
+  /**
+   * Unité de texte ; un contenu identique sur la même page LU PAR UN AUTRE SEGMENT (recouvrement de lots) n'est
+   * pas dupliqué. Carte #853 (P1-01 #835, R1) — règle complétée : une ligne répétée DANS le même segment (deux
+   * prestations « Vidange : 120 € » sur la même page) est une SECONDE occurrence, jamais fusionnée avec la première.
+   */
   text(page: number, kind: 'TEXT_BLOCK' | 'LABEL_VALUE' | 'FORM_FIELD', text: string, origin: SourceUnitOrigin,
     extra: { label?: string; value?: string; checked?: boolean | null; segment: number }): void {
     const cle = `${page}:${kind}:${plat(text)}`;
-    if (plat(text) && this.vus.has(cle)) return;
-    this.vus.add(cle);
+    const segmentVu = this.vus.get(cle);
+    if (plat(text) && segmentVu !== undefined && segmentVu !== extra.segment) return;
+    if (segmentVu === undefined) this.vus.set(cle, extra.segment);
     const n = this.next(page, kind);
     const id = kind === 'TEXT_BLOCK' ? `page:${page}:block:${n}` : kind === 'LABEL_VALUE' ? `page:${page}:field:${n}` : `page:${page}:form:${n}`;
     this.push({

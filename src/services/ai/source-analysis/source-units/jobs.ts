@@ -1279,7 +1279,9 @@ async function retryDocument(p: {
   majs = resolveTableParents(majs);
   // Lot 113AN : réconciliation APRÈS l'ajout des faits (relus en base) et des décisions — faits relus d'une
   // autre unité, valeurs déjà structurées, répétitions ; jamais une promotion sans preuve.
-  majs = reconcileCoverage(majs, { ...(await loadStoredReconciliationInput(sqlR, p.accountId, p.fileId)), stage: attempted.length > 0 ? 'REPAIR' : 'STORED' });
+  // Carte #853 : contrôle par OCCURRENCE, registre conservé pour les totaux du rapport.
+  const registre: NonNullable<Parameters<typeof reconcileCoverage>[1]['ledger']> = new Map();
+  majs = reconcileCoverage(majs, { ...(await loadStoredReconciliationInput(sqlR, p.accountId, p.fileId)), stage: attempted.length > 0 ? 'REPAIR' : 'STORED', ledger: registre });
   const progression = attempted.some((id) => units.find((u) => u.sourceUnitId === id)?.repairState === 'PENDING') && failed.size === 0;
   // Lot 114H (#775) : rien d'admissible à l'entrée → rien n'a été tenté, aucune tentative consommée.
   const consomme = admissible && (!(continuation && progression) || relecture !== null);
@@ -1343,7 +1345,7 @@ async function retryDocument(p: {
       ...(ajout.linkage ? { linkage: { ...ajout.linkage, ...liensPasse } } : { linkage: liensPasse }),
     };
     if (diag.coverageRepair) report.diagnostics.coverageRepair = diag.coverageRepair;
-    report.diagnostics.reconciliation = reconciliationSummary(majs, 'STORED');
+    report.diagnostics.reconciliation = reconciliationSummary(majs, 'STORED', registre);
     report.diagnostics.residualPolicies = residualCounts(majs);
   }
   // Lot 109K (COR-02) : diagnostic de la propagation de CETTE reprise (sinon le précédent est conservé).

@@ -16,12 +16,46 @@ import { apiClient } from '@/lib/api-client';
 interface UnitRow {
   unitId: string; kind: string; page: number | null; status: string; reason: string | null; factCount: number;
   repairState: string | null; repairAttempts: number; residualPolicy: string | null;
-  provenance: { rule: string; sources: string[]; refs: string[]; previous: { status: string; reason: string | null }; stage: string } | null;
+  provenance: {
+    rule: string; sources: string[]; refs: string[]; previous: { status: string; reason: string | null }; stage: string;
+    occurrences?: OccurrenceCountsView | null; details?: OccurrenceDetailView[] | null;
+  } | null;
+  /** Carte #853 : contrôle courant par occurrence (absent : serveur antérieur ou contrôle indisponible). */
+  occurrences?: { mode: string; counts: OccurrenceCountsView; details: OccurrenceDetailView[] } | null;
   valueKinds: Record<string, number>; textLength: number;
+}
+/** Carte #853 (R3) : compteurs d'occurrences (unités ≠ occurrences). */
+export interface OccurrenceCountsView {
+  total: number; structured: number; preserved: number; notRetained: number; undetermined: number;
+  uncertain: number; unresolved: number; failed: number; excluded: number; units?: number;
+}
+/** Carte #853 (R4) : une occurrence — identité, position, issue, preuve exacte ou motif ; jamais la valeur. */
+export interface OccurrenceDetailView {
+  id: string; nature: string; at: number; outcome: string;
+  proof: { source: string; ref: string } | null; reason: string | null; recallOf?: string;
+}
+/**
+ * Carte #853 (AC15) — totaux par OCCURRENCE (texte pur, testé) : la somme des issues vaut le total ; une valeur
+ * inconnue n'est jamais affichée comme zéro.
+ */
+export function occurrenceCountsText(c: OccurrenceCountsView | null | undefined): string {
+  if (!c) return 'Occurrences : contrôle indisponible';
+  const parts = [
+    `${c.structured} structurée(s)`, `${c.preserved} conservée(s) autrement`, `${c.notRetained} non retenue(s)`,
+    `${c.undetermined} indéterminée(s)`, `${c.uncertain} incertaine(s)`, `${c.unresolved} non résolue(s)`, `${c.failed} en échec`,
+  ];
+  return `${c.total} occurrence(s)${c.units !== undefined ? ` dans ${c.units} unité(s)` : ''} : ${parts.join(' · ')}${c.excluded > 0 ? ` · ${c.excluded} exclue(s) (non informatives)` : ''}`;
+}
+/** Carte #853 (AC15) — détail des occurrences d'une unité (texte pur, testé). */
+export function occurrenceDetailsText(details: readonly OccurrenceDetailView[] | null | undefined): string {
+  if (!details || details.length === 0) return '';
+  return details.map((x) => `${x.nature}@${x.at} ${x.outcome}${x.proof ? ` ← ${x.proof.ref}` : ''}${x.reason ? ` (${x.reason})` : ''}${x.recallOf ? ` = rappel de ${x.recallOf}` : ''}`).join(' · ');
 }
 interface Detail {
   fileId: number; qualityState: string;
   totals: { total: number; covered: number; nonInformational: number; uncertain: number; unresolved: number; failed: number; requalified: number };
+  /** Carte #853 (R3) : totaux par occurrence du contrôle courant (absent : serveur antérieur). */
+  occurrenceTotals?: OccurrenceCountsView | null;
   coverageRepair: {
     passes: number; calls: number; selected: number; attempted: number; resolved: number; factsAdded: number;
     factsConfirmed: number; decisions: number; skipped: string | null;
@@ -270,6 +304,9 @@ export function T1CompletenessUnits({ fileId }: { fileId: number }) {
         {t.total} unité(s) · {t.covered} couverte(s) · {t.nonInformational} non informative(s) · {t.uncertain} incertaine(s) ·{' '}
         {t.unresolved} non résolue(s) · {t.failed} en échec · {t.requalified} requalifiée(s) sur preuve
       </p>
+      {d.occurrenceTotals !== undefined && (
+        <p className="text-xs text-[color:var(--text-secondary)] break-words" data-testid="t1-occurrence-totals">{occurrenceCountsText(d.occurrenceTotals)}</p>
+      )}
       <p className="text-xs text-[color:var(--text-muted)] break-words">{coverageRepairText(d.coverageRepair)}</p>
       {d.repairSteps && <p className="text-xs text-[color:var(--text-muted)] break-words">{deferredRepairText(d.repairSteps)}</p>}
       {d.schema && !d.schema.ready && (
@@ -342,7 +379,7 @@ export function T1CompletenessUnits({ fileId }: { fileId: number }) {
           <thead>
             <tr className="text-left text-[color:var(--text-muted)]">
               <th className="pr-2">Unité</th><th className="pr-2">Nature</th><th className="pr-2">État</th><th className="pr-2">Motif</th>
-              <th className="pr-2">Réparation</th><th className="pr-2">Politique / provenance</th><th>Valeurs</th>
+              <th className="pr-2">Réparation</th><th className="pr-2">Politique / provenance</th><th className="pr-2">Valeurs</th><th>Occurrences</th>
             </tr>
           </thead>
           <tbody>
@@ -361,7 +398,15 @@ export function T1CompletenessUnits({ fileId }: { fileId: number }) {
                     </span>
                   )}
                 </td>
-                <td>{Object.entries(u.valueKinds).map(([k, n]) => `${k}×${n}`).join(' ') || '–'}</td>
+                <td className="pr-2">{Object.entries(u.valueKinds).map(([k, n]) => `${k}×${n}`).join(' ') || '–'}</td>
+                <td className="break-words">
+                  {u.occurrences ? (
+                    <>
+                      <span className="block">{occurrenceCountsText(u.occurrences.counts)}</span>
+                      <span className="block text-[color:var(--text-muted)] font-mono">{occurrenceDetailsText(u.occurrences.details)}</span>
+                    </>
+                  ) : '–'}
+                </td>
               </tr>
             ))}
           </tbody>

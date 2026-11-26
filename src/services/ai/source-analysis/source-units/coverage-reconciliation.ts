@@ -52,6 +52,11 @@ import { unitOfCell } from './build-units';
 import { allSignificantValues, plat } from './text';
 import { contactValueRepresented, contactValuesOf, repairIneligibility } from './coverage';
 import { contentRoots, valueFormsOf } from '../value-decisions/validate';
+import {
+  addOccurrenceCounts, cellOccurrencesOf, countOutcomes, emptyOccurrenceCounts, equivalentOccurrences, MAX_OCCURRENCE_DETAILS,
+  propositionOccurrencesOf, roleConflict, roleTagsOf, valueOccurrencesOf,
+  type ExcludedOccurrence, type OccurrenceCounts, type OccurrenceDetail, type OccurrenceOutcome, type SourceOccurrence,
+} from './occurrences';
 import type { CoverageStatus, CoveredSourceUnit } from './types';
 
 /** Origine de la donnée qui couvre une unité requalifiée. */
@@ -72,6 +77,15 @@ export interface CoverageProvenance {
   /** Valeurs de l'unité : total, représentées, non retenues (motif), indéterminées. */
   values: { total: number; represented: number; notRetained: number; undetermined: number };
   stage: ReconciliationStage;
+  /**
+   * Carte #853 (P1-01 #835, R3/R4) : compteurs PAR OCCURRENCE (total = structurées + conservées + non retenues
+   * + indéterminées + incertaines + non résolues + échecs ; exclues à part) et détail de chaque occurrence
+   * (identité, position, issue, preuve exacte ou motif — jamais la valeur). Absents : provenance antérieure.
+   */
+  occurrences?: OccurrenceCounts;
+  details?: OccurrenceDetail[];
+  /** Détails non gardés (au-delà de `MAX_OCCURRENCE_DETAILS`), toujours comptés dans `occurrences`. */
+  detailsOmitted?: number;
 }
 
 /** Fait vu par la réconciliation (sortie T1 en cours, ou fait persisté). */
@@ -114,6 +128,21 @@ export interface ReconciliationInput {
   values?: readonly ReconciliationValue[];
   decisions?: readonly ReconciliationDecision[];
   stage: ReconciliationStage;
+  /**
+   * Carte #853 (R2) : fidélité de la transcription d'une page (`faithfulPagesOf`) — preuve de CONSERVATION d'une
+   * proposition sans valeur. Absente : non prouvée (une proposition non portée par un fait reste INCERTAINE).
+   */
+  faithfulPage?: (page: number | null) => boolean;
+  /** Carte #853 (R3/R4) : registre rempli, unité par unité, des compteurs et du détail des occurrences. */
+  ledger?: Map<string, UnitOccurrenceLedger>;
+}
+
+/** Carte #853 : bilan des occurrences d'une unité (registre de la réconciliation, BO, rapport). */
+export interface UnitOccurrenceLedger {
+  counts: OccurrenceCounts;
+  details: OccurrenceDetail[];
+  /** Mode de contrôle appliqué à l'unité. */
+  mode: 'COVERED_CHECK' | 'ROW_CHECK' | 'RECONCILE' | 'STATUS_ONLY';
 }
 
 /**
@@ -122,6 +151,25 @@ export interface ReconciliationInput {
  * comparaison de TOUTES les coordonnées du passage à la connaissance persistée (`reconcileContactUnit`).
  */
 const RECONCILABLE_REASONS = new Set(['not_extracted', 'not_structured', 'fact_dropped', 'values_partially_structured']);
+
+/**
+ * Carte #853 (R3) : motifs de COUVERTURE posés par `computeCoverage` qui sont CONTRÔLÉS occurrence par occurrence
+ * (unités de texte). Règle remplacée : seul `fact` l'était. Les autres motifs (« metadata », « entity ») ne
+ * prouvaient pas davantage chaque valeur du passage.
+ */
+const CONTROLLED_COVERED_REASONS = new Set(['fact', 'metadata', 'entity']);
+
+/**
+ * Carte #853 (R4) : motifs PRODUITS par la réconciliation elle-même. Une unité qui porte l'un d'eux ET une
+ * provenance est RECALCULÉE depuis son état d'origine (`previous`) avec les règles et les preuves courantes —
+ * c'est ainsi qu'un faux COVERED historique (règles antérieures) est requalifié sans réanalyse. Un état posé
+ * depuis par une autre étape (réparation : `fact`, `table_verified`…) n'est jamais rembobiné.
+ */
+const RECONCILIATION_REASONS = new Set([
+  'values_structured', 'duplicate', 'overlap', 'fact_excerpt', 'table_transcription', 'value_decision', 'value_decision_not_retained',
+  'value_undetermined', 'values_partially_structured', 'occurrence_unverifiable', 'table_rows_unresolved', 'table_rows_uncertain',
+  'preserved_passage',
+]);
 
 /**
  * Lot 114G (Trello #760, P2-05) — valeurs structurées d'un candidat Opération (références métier, montants,
@@ -216,30 +264,86 @@ function cellPlats(u: CoveredSourceUnit): string[] {
 
 interface Representation { source: CoverageEvidenceSource; ref: string }
 
+/** Rôles (lexique) et racines des libellés d'une preuve. */
+const libellesDe = (labels: ReadonlyArray<string | null | undefined>) => labels.filter((l): l is string => typeof l === 'string' && l.length > 0).join(' ');
+
+/** Candidat de preuve d'une occurrence (une même preuve n'explique qu'UNE information, sauf rappel démontré). */
+interface ProofCandidate {
+  /** Clé d'usage : la même clé n'explique deux occurrences que si elles sont équivalentes (ou explicitement citées). */
+  key: string;
+  source: CoverageEvidenceSource;
+  ref: string;
+  outcome: OccurrenceOutcome;
+  score: number;
+  /** Unités EXPLICITEMENT citées par la preuve (rappel explicite d'un même fait sur plusieurs unités). */
+  explicitUnits?: ReadonlySet<string>;
+  /** Décision de valeur (compteur « décidées »). */
+  decision?: boolean;
+  /** Unités qui sont le MÊME passage relu (recouvrement de segments, même page). */
+  samePassage?: ReadonlySet<string>;
+}
+
+interface OccurrenceResolution { outcome: OccurrenceOutcome; proof: Representation | null; reason: string | null; recallOf?: string; decision?: boolean }
+
+interface Plan<U extends CoveredSourceUnit> {
+  u: U;
+  mode: UnitOccurrenceLedger['mode'];
+  occs: SourceOccurrence[];
+  excluded: ExcludedOccurrence[];
+  res: Map<string, OccurrenceResolution>;
+  /** Rappels plausibles non démontrés (appliqués seulement faute de preuve propre). */
+  fallback: Map<string, OccurrenceResolution>;
+  /** Unité de texte non résolue : ancrages au niveau de l'unité (règles 113AN). */
+  cite: Array<{ f: ReconciliationFact }>;
+  recouvrement?: CoveredSourceUnit;
+  twin?: CoveredSourceUnit;
+  ligne?: { u: CoveredSourceUnit };
+  /** Résultat final (null : unité rendue telle quelle). */
+  out?: U;
+}
+
 /**
- * Réconcilie les unités NON RÉSOLUES avec les données réellement structurées
- * (voir l'en-tête). Rend les unités (requalifiées avec leur provenance) dans
- * le même ordre ; les autres sont rendues telles quelles.
+ * Réconcilie les unités avec les données réellement structurées (voir l'en-tête), OCCURRENCE PAR OCCURRENCE
+ * (carte #853). Rend les unités (requalifiées avec leur provenance) dans le même ordre ; les autres sont rendues
+ * telles quelles.
  */
-export function reconcileCoverage<U extends CoveredSourceUnit>(units: readonly U[], input: ReconciliationInput): U[] {
+export function reconcileCoverage<U extends CoveredSourceUnit>(unitsIn: readonly U[], input: ReconciliationInput): U[] {
+  // Carte #853 (R4) : un état produit par une réconciliation antérieure est recalculé depuis son origine.
+  const units = unitsIn.map((u): U => {
+    const pv = u.coverageProvenance;
+    if (!pv || !RECONCILIATION_REASONS.has(u.reason ?? '') || (pv.previous.status === u.status && pv.previous.reason === u.reason)) return u;
+    return { ...u, status: pv.previous.status, reason: pv.previous.reason };
+  });
   const textes = units.filter((u) => TEXT_KINDS.has(u.kind) && u.text);
   const formesUnite = new Map<string, string[]>();
   for (const u of units) if ((TEXT_KINDS.has(u.kind) || u.kind === 'TABLE_ROW') && u.text) formesUnite.set(u.sourceUnitId, unitValueForms(u.text));
   const platUnite = new Map(textes.map((u) => [u.sourceUnitId, plat(u.text!)]));
-  const lignes = units.filter((u) => u.kind === 'TABLE_ROW' && u.status === 'COVERED').map((u) => ({ u, forms: rowForms(u), roots: contentRoots(u.text) }));
   const pagesTableau = new Map<string, [number, number]>();
-  for (const t of units) if (t.kind === 'TABLE') pagesTableau.set(t.sourceUnitId, [t.page ?? 1, Number(t.payload.pageEnd ?? t.page ?? 1)]);
+  const tableIncertaine = new Map<string, boolean>();
+  for (const t of units) {
+    if (t.kind !== 'TABLE') continue;
+    pagesTableau.set(t.sourceUnitId, [t.page ?? 1, Number(t.payload.pageEnd ?? t.page ?? 1)]);
+    tableIncertaine.set(t.sourceUnitId, t.payload.uncertain === true);
+  }
   const pageDe = new Map(units.map((u) => [u.sourceUnitId, u.page]));
-  const faits = input.facts.map((f) => ({
-    f,
-    forms: structuredValueForms(f.values),
-    roots: new Set(f.labels.flatMap((l) => (l ? [...contentRoots(String(l).replace(/[._]/g, ' '))] : []))),
-    ex: f.excerpt ? plat(f.excerpt) : '',
-    // Pages du fait : celle de sa preuve et celles de ses unités (une preuve sans page vaut pour toute page).
-    pages: new Set<number | null>(f.unitIds.length > 0 && f.page === null
-      ? f.unitIds.map((id) => pageDe.get(unitOfCell(id)) ?? null)
-      : [f.page, ...f.unitIds.map((id) => pageDe.get(unitOfCell(id)) ?? null)]),
-  }));
+  const faits = input.facts.map((f) => {
+    const libelles = libellesDe(f.labels);
+    return {
+      f,
+      forms: structuredValueForms(f.values),
+      roots: new Set(f.labels.flatMap((l) => (l ? [...contentRoots(String(l).replace(/[._]/g, ' '))] : []))),
+      // Carte #853 : rôle porté par le libellé ou la clé du fait (HT, TTC, franchise, échéance…), et racines de sa valeur.
+      tags: roleTagsOf(libelles),
+      valueRoots: new Set([...f.values.flatMap((v) => (typeof v === 'string' ? [...contentRoots(v.replace(/[._]/g, ' '))] : []))]),
+      unites: new Set(f.unitIds.map(unitOfCell)),
+      cellules: new Set(f.unitIds),
+      ex: f.excerpt ? plat(f.excerpt) : '',
+      // Pages du fait : celle de sa preuve et celles de ses unités (une preuve sans page vaut pour toute page).
+      pages: new Set<number | null>(f.unitIds.length > 0 && f.page === null
+        ? f.unitIds.map((id) => pageDe.get(unitOfCell(id)) ?? null)
+        : [f.page, ...f.unitIds.map((id) => pageDe.get(unitOfCell(id)) ?? null)]),
+    };
+  });
   // Lot 115F (#792, écart P2-05) : valeur structurée hors faits ANCRÉE sur les unités réellement citées par ses
   // preuves (et sur LEURS pages) ; sans preuve ancrée, son rapprochement reste celui d'une valeur unique du document.
   const autres = (input.values ?? []).map((v) => {
@@ -249,20 +353,22 @@ export function reconcileCoverage<U extends CoveredSourceUnit>(units: readonly U
       pages: new Set<number | null>(ids.length > 0 ? ids.map((id) => pageDe.get(id) ?? null) : [v.page]),
     };
   });
+  const refAutre = (x: (typeof autres)[number]) => `${x.v.source === 'METADATA' ? 'meta' : 'candidate'}:${x.v.ref}`;
   const valeurAncree = (x: (typeof autres)[number], u: CoveredSourceUnit) =>
     x.unites.size > 0 ? x.unites.has(u.sourceUnitId) : [...x.pages].some((pg) => pageOk(pg, u.page));
-  const decisions = new Map<string, Map<string, ReconciliationDecision>>();
+  // Carte #853 (R2) : décisions indexées par unité ET forme, en LISTE — une décision n'explique qu'une occurrence
+  // (règle remplacée : une Map par forme propageait une décision à toutes les occurrences de même valeur).
+  const decisions = new Map<string, ReconciliationDecision[]>();
   for (const d of input.decisions ?? []) {
     if (!d.kind || !d.normalizedValue) continue;
     const id = unitOfCell(d.sourceUnitId);
-    const m = decisions.get(id) ?? new Map<string, ReconciliationDecision>();
-    m.set(`${d.kind}:${d.normalizedValue}`, d);
-    decisions.set(id, m);
+    decisions.set(id, [...(decisions.get(id) ?? []), d]);
   }
   // Unités de texte porteuses de chaque forme (unicité d'une valeur sur la page ou dans le document).
   const parForme = new Map<string, CoveredSourceUnit[]>();
   for (const x of textes) for (const f of formesUnite.get(x.sourceUnitId) ?? []) parForme.set(f, [...(parForme.get(f) ?? []), x]);
   const porteurs = (form: string, page: number | null | 'doc') => (parForme.get(form) ?? []).filter((x) => page === 'doc' || pageOk(x.page, page)).length;
+  const fidele = input.faithfulPage ?? (() => false);
 
   // Lot 115F (#792, écart P2-06) : connaissance persistée du document gardée PAR ORIGINE et PAR RÉFÉRENCE
   // (fait, métadonnée, candidat) — règle remplacée : la comparaison se faisait sur un agrégat global de toutes
@@ -279,73 +385,385 @@ export function reconcileCoverage<U extends CoveredSourceUnit>(units: readonly U
     })),
   ];
 
-  return units.map((u) => {
-    // ════════════════════════════════════════════════════════════════════
-    // LOT 114G (Trello #760, P1-01) — UNITÉ « COUVERTE » À PLUSIEURS VALEURS
-    //
-    // `computeCoverage` déclare une unité COVERED/fact dès qu'UN fait lui est
-    // lié. Un bloc « Montant TTC 120,00 € — HT 100,00 € — acompte 30,00 € »
-    // dont seule la première valeur est structurée restait donc couvert, et
-    // la réconciliation ne regardait que les unités NON RÉSOLUES. Chaque
-    // valeur significative (montant, date, identifiant) d'une unité couverte
-    // par un fait doit maintenant être expliquée : décision valide de T1, fait
-    // rattaché à l'unité, ou donnée structurée ancrée (mêmes ancrages que
-    // ci-dessous — jamais une simple égalité de nombre). Sinon l'unité devient
-    // NON RÉSOLUE `values_partially_structured` (réparation ciblée possible),
-    // ou INCERTAINE si une valeur est déclarée indéterminée. Une unité à une
-    // seule valeur, ou dont toutes les valeurs sont expliquées, n'est jamais
-    // dégradée.
-    // ════════════════════════════════════════════════════════════════════
-    if (u.status === 'COVERED' && u.reason === 'fact' && TEXT_KINDS.has(u.kind) && u.text) {
-      const sig = [...new Set(allSignificantValues(u.text).map((v) => `${v.kind}:${v.normalized}`))];
+  // ── 1. Plans : mode de contrôle et inventaire des occurrences de chaque unité ──
+  const plans: Array<Plan<U>> = units.map((u) => {
+    const plan: Plan<U> = { u, mode: 'STATUS_ONLY', occs: [], excluded: [], res: new Map(), fallback: new Map(), cite: [] };
+    if (u.kind === 'TABLE_ROW' && u.status === 'COVERED' && u.reason === 'table') {
+      plan.mode = 'ROW_CHECK';
+      const c = cellOccurrencesOf(u, (vs) => structuredValueForms(vs));
+      plan.occs = c.occurrences;
+      plan.excluded = c.excluded;
+    } else if (TEXT_KINDS.has(u.kind) && u.text && u.status === 'COVERED' && CONTROLLED_COVERED_REASONS.has(u.reason ?? '')) {
+      plan.mode = 'COVERED_CHECK';
+      plan.occs = [...valueOccurrencesOf(u), ...propositionOccurrencesOf(u)].sort((a, b) => a.start - b.start);
+    } else if (TEXT_KINDS.has(u.kind) && u.text && u.status === 'UNRESOLVED' && RECONCILABLE_REASONS.has(u.reason ?? '')) {
+      plan.mode = 'RECONCILE';
+      plan.occs = [...valueOccurrencesOf(u, { numbers: true }), ...propositionOccurrencesOf(u)].sort((a, b) => a.start - b.start);
+      const p = platUnite.get(u.sourceUnitId) ?? '';
+      plan.cite = p.length >= MIN_CITATION ? faits.filter((x) => x.ex && x.ex.includes(p) && [...x.pages].some((pg) => pageOk(pg, u.page))) : [];
+      const segment = (x: CoveredSourceUnit) => (x.location as { segment?: unknown }).segment ?? null;
+      plan.recouvrement = p.length >= MIN_CITATION * 2 ? textes.find((x) => {
+        if (x.sourceUnitId === u.sourceUnitId || x.status !== 'COVERED' || x.page !== u.page || segment(x) === segment(u)) return false;
+        const q = platUnite.get(x.sourceUnitId) ?? '';
+        return q.length >= MIN_CITATION * 2 && (q.includes(p) || p.includes(q));
+      }) : undefined;
       // ────────────────────────────────────────────────────────────────
-      // Lot 115F (Trello #792, écart P1-01) — règle complétée : le contrôle
-      // par valeur ne s'appliquait qu'à partir de DEUX valeurs significatives.
-      // Une unité à UNE seule valeur restait donc COVERED/fact même quand le
-      // fait qui l'avait rattachée (extrait inclus dans le passage, libellé
-      // commun) ne portait PAS cette valeur. Toute valeur doit être
-      // expliquée, y compris lorsqu'il n'y en a qu'une ; une unité sans
-      // valeur significative (texte non exploitable) n'est jamais dégradée.
+      // Carte #853 (R1, AC04) — règle complétée : un texte IDENTIQUE à une
+      // unité couverte n'est le rappel de la même information que s'il est
+      // démontré : même page (même passage relu par un autre segment), ou
+      // passage qui ne porte que des IDENTIFIANTS (une référence désigne le
+      // même objet où qu'elle soit rappelée) ou aucune valeur. Un montant ou
+      // une date répétés sur une autre page peuvent être une autre
+      // information (autre période, autre facture) : ils doivent porter leur
+      // PROPRE preuve. Le jumeau doit lui-même rester couvert (étape 5).
       // ────────────────────────────────────────────────────────────────
-      if (sig.length === 0) return u;
-      const decs = decisions.get(u.sourceUnitId) ?? new Map<string, ReconciliationDecision>();
-      const libelle = u.label ? contentRoots(u.label) : new Set<string>();
-      const pu = platUnite.get(u.sourceUnitId) ?? '';
-      const reps: Representation[] = [];
-      let structurees = 0; let nonRetenues = 0; let indeterminees = 0;
-      for (const form of sig) {
-        const d = decs.get(form);
-        if (d) {
-          reps.push({ source: 'VALUE_DECISION', ref: `decision:${d.ref}` });
-          if (d.decision === 'UNDETERMINED') indeterminees++; else if (d.decision === 'NOT_RETAINED') nonRetenues++; else structurees++;
+      const identifiantsSeuls = plan.occs.every((o) => o.nature === 'IDENTIFIER');
+      plan.twin = textes.find((x) => x.sourceUnitId !== u.sourceUnitId && x.kind === u.kind && x.status === 'COVERED'
+        && platUnite.get(x.sourceUnitId) === p && (x.page === u.page || identifiantsSeuls));
+    } else {
+      // Unités non contrôlées ici : bilan d'après leur état (compteurs complets, sans preuve nouvelle).
+      if (TEXT_KINDS.has(u.kind) && u.text) plan.occs = [...valueOccurrencesOf(u), ...propositionOccurrencesOf(u)];
+      else if (u.kind === 'TABLE_ROW') { const c = cellOccurrencesOf(u, (vs) => structuredValueForms(vs)); plan.occs = c.occurrences; plan.excluded = c.excluded; }
+    }
+    return plan;
+  });
+  const parId = new Map(plans.map((pl) => [pl.u.sourceUnitId, pl]));
+
+  // ── Allocation des preuves (une preuve = une information, sauf rappel démontré) ──
+  const usages = new Map<string, SourceOccurrence[]>();
+  // ════════════════════════════════════════════════════════════════════
+  // Carte #853 (R1/R2) — UNE PREUVE = UNE INFORMATION. Une preuve déjà
+  // utilisée n'explique une autre occurrence que si la correspondance est
+  // DÉMONTRÉE :
+  //   · même passage relu par un autre segment (même page) — c'est la même
+  //     occurrence, jamais un double compte ;
+  //   · référence (identifiant) rappelée — elle désigne le même objet.
+  // Un simple rappel PLAUSIBLE (même valeur et même rôle local, ou fait
+  // dont l'extrait se retrouve à l'identique dans plusieurs unités) n'est
+  // PAS démontré : deux lignes « Filtre 12 € » peuvent être deux achats.
+  // L'occurrence est alors INCERTAINE (`recall_not_demonstrated`) — ni
+  // couverte, ni présentée comme une omission certaine ; une décision
+  // explicite de T1 sur cette occurrence (« rappel du fait n ») la prouve.
+  // ════════════════════════════════════════════════════════════════════
+  const utilisable = (c: ProofCandidate, o: SourceOccurrence): { ok: boolean; recallOf?: string; uncertain?: boolean } => {
+    const avant = usages.get(c.key);
+    if (!avant || avant.length === 0) return { ok: true };
+    if (c.samePassage && avant.every((a) => a.unitId !== o.unitId && c.samePassage!.has(a.unitId))) return { ok: true, recallOf: avant[0].id };
+    if (o.nature === 'IDENTIFIER' && avant.every((a) => a.form === o.form)) return { ok: true, recallOf: avant[0].id };
+    const plausible = avant.every((a) => equivalentOccurrences(a, o))
+      || (c.explicitUnits !== undefined && c.explicitUnits.has(o.unitId) && avant.every((a) => a.unitId !== o.unitId && c.explicitUnits!.has(a.unitId)));
+    return plausible ? { ok: true, recallOf: avant[0].id, uncertain: true } : { ok: false };
+  };
+  const recouvre = (a: ReadonlySet<string>, b: ReadonlySet<string>) => [...a].filter((w) => b.has(w)).length;
+
+  /** Candidats de preuve d'une occurrence de VALEUR (phase EXPLICIT : ancrage à l'unité ; WEAK : ancrages 113AN). */
+  const candidats = (pl: Plan<U>, o: SourceOccurrence, phase: 'EXPLICIT' | 'WEAK'): ProofCandidate[] => {
+    const u = pl.u;
+    const out: ProofCandidate[] = [];
+    const formes = new Set(o.forms);
+    const porteForme = (forms: ReadonlySet<string>) => o.forms.some((f) => forms.has(f));
+    if (phase === 'EXPLICIT') {
+      for (const d of decisions.get(u.sourceUnitId) ?? []) {
+        if (!formes.has(`${d.kind}:${d.normalizedValue}`)) continue;
+        const outcome: OccurrenceOutcome = d.decision === 'UNDETERMINED' ? 'UNDETERMINED' : d.decision === 'NOT_RETAINED' ? 'NOT_RETAINED' : 'STRUCTURED';
+        out.push({ key: `decision:${d.ref}`, source: 'VALUE_DECISION', ref: `decision:${d.ref}`, outcome, score: 400, decision: true });
+      }
+      if (pl.ligne && o.form) {
+        const cells = Array.isArray(pl.ligne.u.payload.cells) ? (pl.ligne.u.payload.cells as Array<{ column?: unknown; value?: unknown; normalized?: unknown }>) : [];
+        for (const c of cells) {
+          if (!porteForme(structuredValueForms([c.value, c.normalized]))) continue;
+          // Même ligne relue (texte ↔ tableau) : une cellule explique UNE occurrence de CETTE unité.
+          out.push({ key: `${pl.ligne.u.sourceUnitId}:cell:${Number(c.column ?? 0) + 1}|${u.sourceUnitId}`, source: 'TABLE', ref: `unit:${pl.ligne.u.sourceUnitId}`, outcome: 'STRUCTURED', score: 300 });
+        }
+      }
+      for (const x of faits) {
+        const lie = pl.mode === 'ROW_CHECK' ? (x.cellules.has(o.id) || x.unites.has(u.sourceUnitId)) : x.unites.has(u.sourceUnitId);
+        if (!lie || !porteForme(x.forms) || roleConflict(o, x.tags)) continue;
+        out.push({ key: `fact:${x.f.ref}|${o.form}`, source: 'FACT', ref: `fact:${x.f.ref}`, outcome: 'STRUCTURED', score: 200 + 10 * recouvre(o.role, x.roots) + (x.cellules.has(o.id) ? 50 : 0), explicitUnits: x.unites });
+      }
+      for (const x of autres) {
+        const lie = x.unites.has(u.sourceUnitId) || (x.v.source === 'METADATA' && u.reason === 'metadata' && pl.mode === 'COVERED_CHECK');
+        if (!lie || !porteForme(x.forms)) continue;
+        out.push({ key: `${refAutre(x)}|${o.form}`, source: x.v.source, ref: refAutre(x), outcome: 'STRUCTURED', score: 150, explicitUnits: x.unites.size > 0 ? x.unites : undefined });
+      }
+      // Cellule CONSERVÉE avec son rôle (en-tête de colonne ou de ligne) dans une table non incertaine, persistée et lue par T2 / T3.
+      if (pl.mode === 'ROW_CHECK' && o.cell && (o.cell.header || o.cell.rowHeader) && !tableIncertaine.get(u.parentUnitId ?? '')) {
+        out.push({ key: `cell:${o.id}`, source: 'TABLE', ref: `cell:${o.id}`, outcome: 'PRESERVED', score: 100 });
+      }
+      return out;
+    }
+    if (pl.mode === 'ROW_CHECK' || !o.form) return out;
+    const pu = platUnite.get(u.sourceUnitId) ?? '';
+    const libelle = u.label ? contentRoots(u.label) : new Set<string>();
+    const ancreGlobal = pl.mode === 'RECONCILE' && (pl.cite.length > 0 || pl.recouvrement !== undefined);
+    for (const x of faits) {
+      if (!porteForme(x.forms) || roleConflict(o, x.tags)) continue;
+      const surPage = [...x.pages].some((pg) => pageOk(pg, u.page));
+      const unicite = o.forms.some((f) => u.page !== null && x.pages.has(u.page) && porteurs(f, u.page) === 1);
+      const parLibelle = libelle.size > 0 && [...libelle].some((w) => x.roots.has(w));
+      const ok = pl.mode === 'COVERED_CHECK'
+        // Fait dont l'extrait CITE l'unité, ou de même libellé, ou seule unité de la page à porter la valeur.
+        ? (pu.length >= MIN_CITATION && x.ex.includes(pu)) || (surPage && (parLibelle || unicite))
+        : surPage && (ancreGlobal || pl.cite.some((c) => c.f === x.f) || parLibelle || unicite);
+      if (!ok) continue;
+      // Même passage relu par un autre segment : la même occurrence, jamais deux informations (aucun double compte).
+      out.push({
+        key: `fact:${x.f.ref}|${o.form}`, source: 'FACT', ref: `fact:${x.f.ref}`, outcome: 'STRUCTURED', score: 60 + 10 * recouvre(o.role, x.roots), explicitUnits: x.unites,
+        ...(pl.recouvrement ? { samePassage: new Set([u.sourceUnitId, pl.recouvrement.sourceUnitId]) } : {}),
+      });
+    }
+    if (pl.mode === 'COVERED_CHECK') {
+      // Ligne de tableau structurée de la même page qui porte TOUTES les valeurs significatives de l'unité.
+      const sig = pl.occs.filter((y) => y.nature !== 'PROPOSITION' && y.form).map((y) => y.form!);
+      for (const l of lignes) {
+        if (!pageOk(l.u.page, u.page) || !porteForme(l.forms) || !sig.every((g) => l.forms.has(g))) continue;
+        out.push({ key: `rowcopy:${l.u.sourceUnitId}|${o.form}|${u.sourceUnitId}`, source: 'TABLE', ref: `unit:${l.u.sourceUnitId}`, outcome: 'STRUCTURED', score: 40 });
+      }
+    }
+    for (const x of autres) {
+      if (!porteForme(x.forms) || !valeurAncree(x, u)) continue;
+      if (!(x.unites.has(u.sourceUnitId) || ancreGlobal || o.forms.some((f) => porteurs(f, 'doc') === 1))) continue;
+      out.push({ key: `${refAutre(x)}|${o.form}`, source: x.v.source, ref: refAutre(x), outcome: 'STRUCTURED', score: 30, explicitUnits: x.unites.size > 0 ? x.unites : undefined });
+    }
+    return out;
+  };
+
+  /** Alloue les preuves aux occurrences de valeur libres des plans donnés (paires triées par force d'ancrage, puis ordre de lecture). */
+  const allouer = (liste: ReadonlyArray<Plan<U>>, phase: 'EXPLICIT' | 'WEAK') => {
+    for (const pl of liste) {
+      const paires: Array<{ o: SourceOccurrence; c: ProofCandidate; i: number }> = [];
+      let i = 0;
+      for (const o of pl.occs) {
+        if (o.nature === 'PROPOSITION' || pl.res.has(o.id)) continue;
+        for (const c of candidats(pl, o, phase)) paires.push({ o, c, i: i++ });
+      }
+      paires.sort((a, b) => b.c.score - a.c.score || a.o.start - b.o.start || a.i - b.i);
+      for (const p of paires) {
+        if (pl.res.has(p.o.id)) continue;
+        const us = utilisable(p.c, p.o);
+        if (!us.ok) continue;
+        // Choix entre plusieurs occurrences libres de même valeur ET de même force d'ancrage : rattachement NON
+        // discriminé — compté (une seule occurrence expliquée), jamais présenté comme démontré pour l'une précise.
+        const rivale = paires.some((q) => q.c.key === p.c.key && q.o.id !== p.o.id && q.c.score === p.c.score && !pl.res.has(q.o.id)
+          && !equivalentOccurrences(q.o, p.o));
+        // Rappel seulement PLAUSIBLE : gardé en dernier recours — une preuve propre (décision, autre fait) reste prioritaire.
+        if (us.uncertain) {
+          if (!pl.fallback.has(p.o.id)) pl.fallback.set(p.o.id, { outcome: 'UNCERTAIN', proof: { source: p.c.source, ref: p.c.ref }, reason: 'recall_not_demonstrated', ...(us.recallOf ? { recallOf: us.recallOf } : {}) });
           continue;
         }
-        const f = faits.find((x) => x.forms.has(form) && (
-          // Fait rattaché à CETTE unité (provenance), ou dont l'extrait la cite, ou de même libellé,
-          // ou seule unité de la page à porter la valeur.
-          x.f.unitIds.some((id) => unitOfCell(id) === u.sourceUnitId)
-          || (pu.length >= MIN_CITATION && x.ex.includes(pu))
-          || ([...x.pages].some((pg) => pageOk(pg, u.page)) && (
-            (libelle.size > 0 && [...libelle].some((w) => x.roots.has(w)))
-            || (u.page !== null && x.pages.has(u.page) && porteurs(form, u.page) === 1)))));
-        if (f) { structurees++; reps.push({ source: 'FACT', ref: `fact:${f.f.ref}` }); continue; }
-        const l = lignes.find((x) => pageOk(x.u.page, u.page) && x.forms.has(form) && sig.every((g) => x.forms.has(g)));
-        if (l) { structurees++; reps.push({ source: 'TABLE', ref: `unit:${l.u.sourceUnitId}` }); continue; }
-        const o = autres.find((x) => x.forms.has(form) && valeurAncree(x, u) && (x.unites.has(u.sourceUnitId) || porteurs(form, 'doc') === 1));
-        if (o) { structurees++; reps.push({ source: o.v.source, ref: `${o.v.source === 'METADATA' ? 'meta' : 'candidate'}:${o.v.ref}` }); continue; }
+        pl.res.set(p.o.id, {
+          outcome: p.c.outcome, proof: { source: p.c.source, ref: p.c.ref }, decision: p.c.decision,
+          reason: us.recallOf ? 'recall_of_same_information' : rivale ? 'occurrence_not_discriminated' : null,
+          ...(us.recallOf ? { recallOf: us.recallOf } : {}),
+        });
+        usages.set(p.c.key, [...(usages.get(p.c.key) ?? []), p.o]);
       }
-      const expliquees = structurees + nonRetenues + indeterminees;
-      if (expliquees === sig.length && indeterminees === 0) return u;
-      const provenance: CoverageProvenance = {
-        rule: expliquees === sig.length ? 'value_decision_undetermined' : 'covered_unit_values_partially_structured',
-        sources: [...new Set(reps.map((r) => r.source))], refs: [...new Set(reps.map((r) => r.ref))].slice(0, MAX_REFS),
-        previous: u.coverageProvenance?.previous ?? { status: u.status, reason: u.reason },
-        values: { total: sig.length, represented: structurees, notRetained: nonRetenues, undetermined: indeterminees }, stage: input.stage,
-      };
-      return expliquees === sig.length
-        ? { ...u, status: 'UNCERTAIN', reason: 'value_undetermined', coverageProvenance: provenance }
-        : { ...u, status: 'UNRESOLVED', reason: 'values_partially_structured', coverageProvenance: provenance };
     }
+  };
+
+  /** Rappels plausibles retenus faute de mieux : occurrence INCERTAINE, jamais couverte. */
+  const repli = (pl: Plan<U>) => { for (const [id, r] of pl.fallback) if (!pl.res.has(id)) pl.res.set(id, r); };
+
+  /** Propositions sans valeur : portées par un fait qui les cite, sinon conservées (page fidèle), sinon incertaines. */
+  const propositions = (pl: Plan<U>) => {
+    for (const o of pl.occs) {
+      if (o.nature !== 'PROPOSITION' || pl.res.has(o.id)) continue;
+      const seuil = Math.max(1, Math.ceil(o.role.size * 0.3));
+      const f = faits.find((x) => o.flat && x.ex.includes(o.flat) && [...x.pages].some((pg) => pageOk(pg, pl.u.page))
+        && recouvre(o.role, new Set([...x.valueRoots, ...x.roots])) >= seuil);
+      if (f) { pl.res.set(o.id, { outcome: 'STRUCTURED', proof: { source: 'FACT', ref: `fact:${f.f.ref}` }, reason: null }); continue; }
+      pl.res.set(o.id, fidele(pl.u.page)
+        ? { outcome: 'PRESERVED', proof: { source: 'UNIT', ref: `unit:${pl.u.sourceUnitId}` }, reason: 'passage_preserved_layer_a' }
+        : { outcome: 'UNCERTAIN', proof: null, reason: 'transcription_unverified' });
+    }
+  };
+
+  /** Bilan d'une unité (registre et provenance). */
+  const bilan = (pl: Plan<U>): { counts: OccurrenceCounts; details: OccurrenceDetail[]; omitted: number } => {
+    const outcomes: OccurrenceOutcome[] = [];
+    const details: OccurrenceDetail[] = [];
+    for (const o of pl.occs) {
+      const r = pl.res.get(o.id) ?? { outcome: 'UNRESOLVED' as const, proof: null, reason: 'no_proof' };
+      outcomes.push(r.outcome);
+      details.push({
+        id: o.id, nature: o.nature, at: o.cell ? o.cell.column : o.start, outcome: r.outcome, proof: r.proof, reason: r.reason,
+        ...(r.recallOf ? { recallOf: r.recallOf } : {}),
+      });
+    }
+    for (const x of pl.excluded) details.push({ id: x.id, nature: 'CELL', at: Number(x.id.slice(x.id.lastIndexOf(':') + 1)) - 1, outcome: 'EXCLUDED', proof: null, reason: x.reason });
+    return { counts: countOutcomes(outcomes, pl.excluded.length), details: details.slice(0, MAX_OCCURRENCE_DETAILS), omitted: Math.max(0, details.length - MAX_OCCURRENCE_DETAILS) };
+  };
+
+  const provenanceDe = (pl: Plan<U>, rule: string, extra: Representation[] = []): CoverageProvenance => {
+    const b = bilan(pl);
+    const reps = [...extra, ...[...pl.res.values()].flatMap((r) => (r.proof ? [r.proof] : []))];
+    const valeurs = pl.occs.filter((o) => o.nature !== 'PROPOSITION');
+    const issue = (o: SourceOccurrence) => pl.res.get(o.id)?.outcome ?? 'UNRESOLVED';
+    return {
+      rule, sources: [...new Set(reps.map((r) => r.source))], refs: [...new Set(reps.map((r) => r.ref))].slice(0, MAX_REFS),
+      previous: pl.u.coverageProvenance?.previous ?? { status: pl.u.status, reason: pl.u.reason },
+      values: {
+        total: valeurs.length,
+        represented: valeurs.filter((o) => issue(o) === 'STRUCTURED' || issue(o) === 'PRESERVED').length,
+        notRetained: valeurs.filter((o) => issue(o) === 'NOT_RETAINED').length,
+        undetermined: valeurs.filter((o) => issue(o) === 'UNDETERMINED').length,
+      },
+      stage: input.stage,
+      occurrences: b.counts, details: b.details, ...(b.omitted > 0 ? { detailsOmitted: b.omitted } : {}),
+    };
+  };
+
+  // ── 2. Lignes de tableau : chaque cellule informative prouvée (preuve propre ou conservation avec rôle) ──
+  const lignesPlans = plans.filter((pl) => pl.mode === 'ROW_CHECK');
+  allouer(lignesPlans, 'EXPLICIT');
+  for (const pl of lignesPlans) repli(pl);
+  for (const pl of lignesPlans) {
+    const b = bilan(pl).counts;
+    // ────────────────────────────────────────────────────────────────────
+    // Carte #853 (R3, AC06) — règle remplacée : toute ligne d'un tableau non
+    // incertain était COVERED/table sans confrontation de ses cellules. Une
+    // cellule informative sans rôle (en-tête perdu) ni preuve propre laisse
+    // la ligne NON RÉSOLUE ; une décision indéterminée la rend INCERTAINE.
+    // Une ligne dont toutes les cellules sont conservées avec leur rôle reste
+    // couverte SANS exiger un fait par cellule.
+    // ────────────────────────────────────────────────────────────────────
+    if (b.unresolved > 0) pl.out = { ...pl.u, status: 'UNRESOLVED', reason: 'values_partially_structured', coverageProvenance: provenanceDe(pl, 'table_row_cells_unproven') };
+    else if (b.undetermined > 0) pl.out = { ...pl.u, status: 'UNCERTAIN', reason: 'value_undetermined', coverageProvenance: provenanceDe(pl, 'value_decision_undetermined') };
+  }
+  // Lignes de tableau qui PROUVENT un texte (transcription de la même ligne) : seulement celles restées couvertes.
+  const ligneCouverte = (pl: Plan<U> | undefined) => pl !== undefined && (pl.out ?? pl.u).status === 'COVERED';
+  const lignes = units.filter((u) => u.kind === 'TABLE_ROW' && u.status === 'COVERED' && (parId.get(u.sourceUnitId)?.mode !== 'ROW_CHECK' || ligneCouverte(parId.get(u.sourceUnitId))))
+    .map((u) => ({ u, forms: rowForms(u), roots: contentRoots(u.text) }));
+
+  // ── 3. Unités de texte non résolues : ancrages au niveau de l'unité (113AN) ──
+  const reconcilier = plans.filter((pl) => pl.mode === 'RECONCILE');
+  const differees: Array<Plan<U>> = [];
+  for (const pl of reconcilier) {
+    const u = pl.u;
+    const p = platUnite.get(u.sourceUnitId) ?? '';
+    const valeurs = pl.occs.filter((o) => o.nature !== 'PROPOSITION');
+    if (pl.twin || (valeurs.length === 0 && (pl.cite.length > 0 || pl.recouvrement))) { differees.push(pl); continue; }
+    if (valeurs.length === 0) continue;
+    // Ligne de tableau qui porte TOUTES les valeurs de l'unité (mots communs, même page).
+    const formes = valeurs.map((o) => o.form!);
+    const motsUnite = contentRoots(u.text);
+    pl.ligne = lignes.find((l) => {
+      const parent = pagesTableau.get(l.u.parentUnitId ?? '');
+      const memePage = pageOk(l.u.page, u.page) || (parent !== undefined && u.page !== null && u.page >= parent[0] && u.page <= parent[1]);
+      if (!memePage || !formes.every((f) => l.forms.has(f))) return false;
+      if (motsUnite.size === 0) return true;
+      return [...motsUnite].filter((w) => l.roots.has(w)).length / motsUnite.size >= ROW_WORDS_RATIO;
+    });
+    // Lignes de tableau TRANSCRITES dans l'unité (toutes leurs cellules y figurent) : si, une fois leurs cellules
+    // retirées, l'unité ne porte plus aucun chiffre, ses valeurs sont exactement celles de ces lignes structurées.
+    const transcrites = lignes.filter((l) => {
+      const parent = pagesTableau.get(l.u.parentUnitId ?? '');
+      const memePage = pageOk(l.u.page, u.page) || (parent !== undefined && u.page !== null && u.page >= parent[0] && u.page <= parent[1]);
+      const cellules = cellPlats(l.u);
+      return memePage && cellules.length >= 2 && cellules.every((c) => p.includes(c));
+    });
+    if (!pl.ligne && transcrites.length > 0) {
+      let reste = p;
+      for (const c of transcrites.flatMap((l) => cellPlats(l.u)).sort((a, b) => b.length - a.length)) reste = reste.split(c).join('');
+      if (!/\d/.test(reste)) {
+        for (const o of valeurs) pl.res.set(o.id, { outcome: 'STRUCTURED', proof: { source: 'TABLE', ref: `unit:${transcrites[0].u.sourceUnitId}` }, reason: 'table_transcription' });
+        propositions(pl);
+        pl.out = finaliserReconcile(pl, transcrites.map((l) => ({ source: 'TABLE' as const, ref: `unit:${l.u.sourceUnitId}` })), 'table_transcription');
+      }
+    }
+  }
+
+  // ── 4. Allocation : ancrages EXPLICITES d'abord (toutes unités), puis ancrages 113AN ──
+  const valeursAPreuver = plans.filter((pl) => (pl.mode === 'COVERED_CHECK' || pl.mode === 'RECONCILE') && pl.out === undefined && !differees.includes(pl));
+  allouer(valeursAPreuver, 'EXPLICIT');
+  allouer(valeursAPreuver, 'WEAK');
+  for (const pl of valeursAPreuver) { repli(pl); propositions(pl); }
+
+  function finaliserReconcile(pl: Plan<U>, extra: Representation[], forcee?: string): U | undefined {
+    const valeurs = pl.occs.filter((o) => o.nature !== 'PROPOSITION');
+    const b = bilan(pl).counts;
+    const expliquees = b.structured + b.preserved + b.notRetained + b.undetermined;
+    const requalifier = (status: CoverageStatus, reason: string, rule: string): U => ({ ...pl.u, status, reason, coverageProvenance: provenanceDe(pl, rule, extra) });
+    if (forcee) return requalifier('COVERED', forcee, forcee);
+    if (b.total === 0) return undefined;
+    if (b.unresolved === 0) {
+      // Carte #853 (AC07) : passage sans valeur dont chaque proposition utile est conservée fidèlement (ou portée par un fait).
+      if (valeurs.length === 0) return b.uncertain === 0 ? requalifier('COVERED', 'preserved_passage', 'propositions_preserved') : undefined;
+      if (b.undetermined > 0) return requalifier('UNCERTAIN', 'value_undetermined', 'value_decision_undetermined');
+      if (b.uncertain > 0) return expliquees > 0 ? requalifier('UNCERTAIN', 'occurrence_unverifiable', 'occurrence_unverifiable') : undefined;
+      if (b.structured + b.preserved === 0) return requalifier('COVERED', 'value_decision_not_retained', 'value_decision_not_retained');
+      const decidees = valeurs.filter((o) => pl.res.get(o.id)?.decision).length;
+      const reps = [...pl.res.values()].flatMap((r) => (r.proof ? [r.proof] : []));
+      const rule = valeurs.length > 0 && decidees === valeurs.length ? 'value_decision'
+        : pl.ligne && reps.every((r) => r.source === 'TABLE' || r.source === 'VALUE_DECISION') ? 'table_transcription'
+          : pl.recouvrement ? 'same_passage_other_segment' : pl.cite.length > 0 ? 'cited_by_fact_excerpt' : 'values_structured';
+      const reason = rule === 'value_decision' ? 'value_decision' : rule === 'table_transcription' ? 'table_transcription'
+        : rule === 'same_passage_other_segment' ? 'overlap' : rule === 'cited_by_fact_excerpt' ? 'fact_excerpt' : 'values_structured';
+      return requalifier('COVERED', reason, rule);
+    }
+    // Une partie seulement des occurrences est représentée : NON RÉSOLUE, motif précis (réparation ciblée possible).
+    if (expliquees > 0) return requalifier('UNRESOLVED', 'values_partially_structured', 'values_partially_structured');
+    return undefined;
+  }
+
+  // ── 5. Statut de chaque unité contrôlée ──
+  for (const pl of valeursAPreuver) {
+    if (pl.mode === 'RECONCILE') {
+      pl.out = finaliserReconcile(pl, pl.recouvrement ? [{ source: 'UNIT', ref: `unit:${pl.recouvrement.sourceUnitId}` }] : []);
+      continue;
+    }
+    // ══════════════════════════════════════════════════════════════════
+    // LOT 114G (Trello #760, P1-01) / LOT 115F (#792) — UNITÉ « COUVERTE »
+    // CARTE #853 (P1-01 #835) — règle remplacée : chaque VALEUR DISTINCTE
+    // devait être expliquée ; c'est désormais chaque OCCURRENCE (deux
+    // prestations à 120 € = deux occurrences, une preuve chacune), et aussi
+    // chaque proposition utile sans valeur, quel que soit le motif de
+    // couverture (fait, métadonnée, entité). Priorité des états : une
+    // occurrence non résolue → NON RÉSOLUE ; sinon une indéterminée → INCERTAINE
+    // (`value_undetermined`) ; sinon une non vérifiable → INCERTAINE
+    // (`occurrence_unverifiable`) ; sinon l'unité reste COUVERTE.
+    // ══════════════════════════════════════════════════════════════════
+    if (pl.occs.length === 0) continue;
+    const b = bilan(pl).counts;
+    if (b.unresolved > 0) pl.out = { ...pl.u, status: 'UNRESOLVED', reason: 'values_partially_structured', coverageProvenance: provenanceDe(pl, 'covered_unit_values_partially_structured') };
+    else if (b.undetermined > 0) pl.out = { ...pl.u, status: 'UNCERTAIN', reason: 'value_undetermined', coverageProvenance: provenanceDe(pl, 'value_decision_undetermined') };
+    else if (b.uncertain > 0) pl.out = { ...pl.u, status: 'UNCERTAIN', reason: 'occurrence_unverifiable', coverageProvenance: provenanceDe(pl, 'covered_unit_occurrence_unverifiable') };
+  }
+
+  // ── 6. Répétitions et passages relus : le jumeau doit RESTER couvert (aucune preuve circulaire) ──
+  const finalDe = (x: CoveredSourceUnit) => { const q = parId.get(x.sourceUnitId); return q ? (q.out ?? q.u) : x; };
+  for (const pl of differees) {
+    const jumeau = pl.twin && finalDe(pl.twin).status === 'COVERED' ? pl.twin : undefined;
+    if (jumeau) {
+      for (const o of pl.occs) pl.res.set(o.id, { outcome: 'STRUCTURED', proof: { source: 'UNIT', ref: `unit:${jumeau.sourceUnitId}` }, reason: 'recall_of_same_information', recallOf: `${jumeau.sourceUnitId}@${o.start}` });
+      pl.out = { ...pl.u, status: 'COVERED', reason: 'duplicate', coverageProvenance: provenanceDe(pl, 'duplicate_of_covered_unit', [{ source: 'UNIT', ref: `unit:${jumeau.sourceUnitId}` }]) };
+      continue;
+    }
+    if (pl.recouvrement && finalDe(pl.recouvrement).status !== 'COVERED') pl.recouvrement = undefined;
+    const valeurs = pl.occs.filter((o) => o.nature !== 'PROPOSITION');
+    if (valeurs.length === 0) {
+      propositions(pl);
+      const b = bilan(pl).counts;
+      if (b.uncertain > 0 || b.unresolved > 0) continue;
+      if (pl.cite.length > 0) {
+        pl.out = { ...pl.u, status: 'COVERED', reason: 'fact_excerpt', coverageProvenance: provenanceDe(pl, 'cited_by_fact_excerpt', pl.cite.map((x) => ({ source: 'FACT' as const, ref: `fact:${x.f.ref}` }))) };
+      } else if (pl.recouvrement) {
+        pl.out = { ...pl.u, status: 'COVERED', reason: 'overlap', coverageProvenance: provenanceDe(pl, 'same_passage_other_segment', [{ source: 'UNIT', ref: `unit:${pl.recouvrement.sourceUnitId}` }]) };
+      }
+      continue;
+    }
+    // Jumeau dégradé : l'unité est jugée sur SES preuves.
+    allouer([pl], 'EXPLICIT');
+    allouer([pl], 'WEAK');
+    repli(pl);
+    propositions(pl);
+    pl.out = finaliserReconcile(pl, pl.recouvrement ? [{ source: 'UNIT', ref: `unit:${pl.recouvrement.sourceUnitId}` }] : []);
+  }
+
+  // ── 7. Coordonnées de contact (lot 114G / 115F), inchangées ──
+  for (const pl of plans) {
+    const u = pl.u;
+    if (!(u.status === 'UNRESOLVED' && u.reason === 'values_not_structured' && TEXT_KINDS.has(u.kind) && u.text)) continue;
     // ════════════════════════════════════════════════════════════════════
     // LOT 114G (Trello #760, P2-06) — COORDONNÉES DE CONTACT, SANS IA
     //
@@ -364,141 +782,87 @@ export function reconcileCoverage<U extends CoveredSourceUnit>(units: readonly U
     // (total = coordonnées lues, représentées = coordonnées prouvées). Une
     // coordonnée non prouvée laisse l'unité NON RÉSOLUE, avec son décompte.
     // ════════════════════════════════════════════════════════════════════
-    if (u.status === 'UNRESOLVED' && u.reason === 'values_not_structured' && TEXT_KINDS.has(u.kind) && u.text) {
-      const coords = contactValuesOf(u.text);
-      if (coords.length === 0) return u;
-      const reps: Representation[] = [];
-      let prouvees = 0;
-      for (const c of coords) {
-        // Preuve ancrée d'abord (fait rattaché à CETTE unité), sinon toute donnée persistée qui porte la coordonnée.
-        const k = connaissance.find((x) => x.unites.has(u.sourceUnitId) && contactValueRepresented(c.form, x.values))
-          ?? connaissance.find((x) => contactValueRepresented(c.form, x.values));
-        if (!k) continue;
-        prouvees++;
-        reps.push({ source: k.source, ref: k.ref });
-      }
-      const compte = { total: coords.length, represented: prouvees, notRetained: 0, undetermined: 0 };
-      const provenance: CoverageProvenance = {
-        rule: prouvees === coords.length ? 'contact_values_structured' : 'contact_values_partially_structured',
-        sources: [...new Set(reps.map((r) => r.source))], refs: [...new Set(reps.map((r) => r.ref))].slice(0, MAX_REFS),
-        previous: u.coverageProvenance?.previous ?? { status: u.status, reason: u.reason },
-        values: compte, stage: input.stage,
-      };
-      return prouvees === coords.length
-        ? { ...u, status: 'COVERED', reason: 'values_structured', coverageProvenance: provenance }
-        : { ...u, coverageProvenance: provenance };
-    }
-    if (u.status !== 'UNRESOLVED' || !RECONCILABLE_REASONS.has(u.reason ?? '') || !TEXT_KINDS.has(u.kind) || !u.text) return u;
-    const p = platUnite.get(u.sourceUnitId) ?? '';
-    const forms = formesUnite.get(u.sourceUnitId) ?? [];
-    const decs = decisions.get(u.sourceUnitId) ?? new Map<string, ReconciliationDecision>();
-    // Requalification répétée (reprise) : l'état d'ORIGINE est conservé.
-    const previous = u.coverageProvenance?.previous ?? { status: u.status, reason: u.reason };
-    const requalifier = (status: CoverageStatus, reason: string, rule: string, reps: Representation[], counts: CoverageProvenance['values']): U => ({
-      ...u, status, reason,
-      coverageProvenance: {
-        rule, sources: [...new Set(reps.map((r) => r.source))], refs: [...new Set(reps.map((r) => r.ref))].slice(0, MAX_REFS),
-        previous, values: counts, stage: input.stage,
-      },
-    });
-
-    // ── Ancrages au niveau de l'unité ──
-    const cite = p.length >= MIN_CITATION ? faits.filter((x) => x.ex && x.ex.includes(p) && [...x.pages].some((pg) => pageOk(pg, u.page))) : [];
-    const repetition = textes.find((x) => x.sourceUnitId !== u.sourceUnitId && x.kind === u.kind && x.status === 'COVERED' && platUnite.get(x.sourceUnitId) === p);
-    const segment = (x: CoveredSourceUnit) => (x.location as { segment?: unknown }).segment ?? null;
-    const recouvrement = p.length >= MIN_CITATION * 2 ? textes.find((x) => {
-      if (x.sourceUnitId === u.sourceUnitId || x.status !== 'COVERED' || x.page !== u.page || segment(x) === segment(u)) return false;
-      const q = platUnite.get(x.sourceUnitId) ?? '';
-      return q.length >= MIN_CITATION * 2 && (q.includes(p) || p.includes(q));
-    }) : undefined;
-
-    if (repetition) {
-      return requalifier('COVERED', 'duplicate', 'duplicate_of_covered_unit', [{ source: 'UNIT', ref: `unit:${repetition.sourceUnitId}` }],
-        { total: forms.length, represented: forms.length, notRetained: 0, undetermined: 0 });
-    }
-    if (forms.length === 0) {
-      if (cite.length > 0) {
-        return requalifier('COVERED', 'fact_excerpt', 'cited_by_fact_excerpt', cite.map((x) => ({ source: 'FACT' as const, ref: `fact:${x.f.ref}` })),
-          { total: 0, represented: 0, notRetained: 0, undetermined: 0 });
-      }
-      if (recouvrement) {
-        return requalifier('COVERED', 'overlap', 'same_passage_other_segment', [{ source: 'UNIT', ref: `unit:${recouvrement.sourceUnitId}` }],
-          { total: 0, represented: 0, notRetained: 0, undetermined: 0 });
-      }
-      return u;
-    }
-
-    // ── Chaque valeur : décision de T1, sinon donnée structurée ancrée ──
-    const libelle = u.label ? contentRoots(u.label) : new Set<string>();
-    const ancreGlobal = cite.length > 0 || recouvrement !== undefined;
+    const coords = contactValuesOf(u.text);
+    if (coords.length === 0) continue;
     const reps: Representation[] = [];
-    if (recouvrement) reps.push({ source: 'UNIT', ref: `unit:${recouvrement.sourceUnitId}` });
-    let structurees = 0;
-    let nonRetenues = 0;
-    let indeterminees = 0;
-    let decidees = 0;
-    // Ligne de tableau qui porte TOUTES les valeurs de l'unité (mots communs, même page).
-    const motsUnite = contentRoots(u.text);
-    const ligne = lignes.find((l) => {
-      const parent = pagesTableau.get(l.u.parentUnitId ?? '');
-      const memePage = pageOk(l.u.page, u.page) || (parent !== undefined && u.page !== null && u.page >= parent[0] && u.page <= parent[1]);
-      if (!memePage || !forms.every((f) => l.forms.has(f))) return false;
-      if (motsUnite.size === 0) return true;
-      return [...motsUnite].filter((w) => l.roots.has(w)).length / motsUnite.size >= ROW_WORDS_RATIO;
-    });
-    // Lignes de tableau TRANSCRITES dans l'unité (toutes leurs cellules y figurent) : si, une fois leurs cellules
-    // retirées, l'unité ne porte plus aucun chiffre, ses valeurs sont exactement celles de ces lignes structurées.
-    const transcrites = lignes.filter((l) => {
-      const parent = pagesTableau.get(l.u.parentUnitId ?? '');
-      const memePage = pageOk(l.u.page, u.page) || (parent !== undefined && u.page !== null && u.page >= parent[0] && u.page <= parent[1]);
-      const cellules = cellPlats(l.u);
-      return memePage && cellules.length >= 2 && cellules.every((c) => p.includes(c));
-    });
-    if (!ligne && transcrites.length > 0) {
-      let reste = p;
-      for (const c of transcrites.flatMap((l) => cellPlats(l.u)).sort((a, b) => b.length - a.length)) reste = reste.split(c).join('');
-      if (!/\d/.test(reste)) {
-        return requalifier('COVERED', 'table_transcription', 'table_transcription', transcrites.map((l) => ({ source: 'TABLE' as const, ref: `unit:${l.u.sourceUnitId}` })),
-          { total: forms.length, represented: forms.length, notRetained: 0, undetermined: 0 });
-      }
+    let prouvees = 0;
+    for (const c of coords) {
+      // Preuve ancrée d'abord (fait rattaché à CETTE unité), sinon toute donnée persistée qui porte la coordonnée.
+      const k = connaissance.find((x) => x.unites.has(u.sourceUnitId) && contactValueRepresented(c.form, x.values))
+        ?? connaissance.find((x) => contactValueRepresented(c.form, x.values));
+      if (!k) continue;
+      prouvees++;
+      reps.push({ source: k.source, ref: k.ref });
     }
-    for (const form of forms) {
-      const d = decs.get(form);
-      if (d) {
-        decidees++;
-        reps.push({ source: 'VALUE_DECISION', ref: `decision:${d.ref}` });
-        if (d.decision === 'UNDETERMINED') indeterminees++;
-        else if (d.decision === 'NOT_RETAINED') nonRetenues++;
-        else structurees++;
+    const compte = { total: coords.length, represented: prouvees, notRetained: 0, undetermined: 0 };
+    const provenance: CoverageProvenance = {
+      rule: prouvees === coords.length ? 'contact_values_structured' : 'contact_values_partially_structured',
+      sources: [...new Set(reps.map((r) => r.source))], refs: [...new Set(reps.map((r) => r.ref))].slice(0, MAX_REFS),
+      previous: u.coverageProvenance?.previous ?? { status: u.status, reason: u.reason },
+      values: compte, stage: input.stage,
+    };
+    pl.out = prouvees === coords.length
+      ? { ...u, status: 'COVERED', reason: 'values_structured', coverageProvenance: provenance }
+      : { ...u, coverageProvenance: provenance };
+  }
+
+  // ── 8. Tableau parent : aucune table « couverte » ne masque une ligne non résolue ou incertaine ──
+  const enfants = new Map<string, U[]>();
+  for (const pl of plans) {
+    const x = pl.out ?? pl.u;
+    if (x.kind === 'TABLE_ROW' && x.parentUnitId) enfants.set(x.parentUnitId, [...(enfants.get(x.parentUnitId) ?? []), x]);
+  }
+  for (const pl of plans) {
+    const t = pl.u;
+    if (t.kind !== 'TABLE' || t.status !== 'COVERED' || t.reason !== 'table') continue;
+    const l = enfants.get(t.sourceUnitId) ?? [];
+    const nonResolues = l.filter((x) => x.status === 'UNRESOLVED').length;
+    const incertaines = l.filter((x) => x.status === 'UNCERTAIN').length;
+    if (nonResolues + incertaines === 0) continue;
+    pl.out = {
+      ...t, status: nonResolues > 0 ? 'UNRESOLVED' : 'UNCERTAIN', reason: nonResolues > 0 ? 'table_rows_unresolved' : 'table_rows_uncertain',
+      coverageProvenance: {
+        rule: nonResolues > 0 ? 'table_rows_unresolved' : 'table_rows_uncertain', sources: ['TABLE'],
+        refs: l.filter((x) => x.status === 'UNRESOLVED' || x.status === 'UNCERTAIN').map((x) => `unit:${x.sourceUnitId}`).slice(0, MAX_REFS),
+        previous: t.coverageProvenance?.previous ?? { status: t.status, reason: t.reason },
+        values: { total: 0, represented: 0, notRetained: 0, undetermined: 0 }, stage: input.stage,
+      },
+    };
+  }
+
+  // ── 9. Registre des occurrences (toutes unités inventoriées) ──
+  if (input.ledger) {
+    for (const pl of plans) {
+      if (pl.occs.length === 0 && pl.excluded.length === 0) continue;
+      const x = pl.out ?? pl.u;
+      if (pl.mode === 'STATUS_ONLY' || (pl.mode === 'RECONCILE' && pl.res.size === 0)) {
+        // Bilan d'après l'état : aucune preuve nouvelle — une unité non contrôlée n'est jamais déclarée prouvée par ce registre.
+        const issue: OccurrenceOutcome = x.status === 'COVERED' ? 'STRUCTURED' : x.status === 'FAILED' ? 'FAILED'
+          : x.status === 'UNCERTAIN' ? 'UNCERTAIN' : x.status === 'NON_INFORMATIONAL' ? 'UNRESOLVED' : 'UNRESOLVED';
+        if (x.status === 'NON_INFORMATIONAL') {
+          input.ledger.set(x.sourceUnitId, { mode: pl.mode, counts: countOutcomes([], pl.occs.length + pl.excluded.length), details: [] });
+          continue;
+        }
+        input.ledger.set(x.sourceUnitId, {
+          mode: pl.mode, counts: countOutcomes(pl.occs.map(() => issue), pl.excluded.length),
+          details: pl.occs.slice(0, MAX_OCCURRENCE_DETAILS).map((o) => ({
+            id: o.id, nature: o.nature, at: o.cell ? o.cell.column : o.start, outcome: issue, proof: null, reason: `unit_status:${x.status}/${x.reason ?? '-'}`,
+          })),
+        });
         continue;
       }
-      if (ligne) { structurees++; reps.push({ source: 'TABLE', ref: `unit:${ligne.u.sourceUnitId}` }); continue; }
-      const f = faits.find((x) => x.forms.has(form) && [...x.pages].some((pg) => pageOk(pg, u.page)) && (
-        ancreGlobal || cite.includes(x)
-        || (libelle.size > 0 && [...libelle].some((w) => x.roots.has(w)))
-        || (u.page !== null && x.pages.has(u.page) && porteurs(form, u.page) === 1)));
-      if (f) { structurees++; reps.push({ source: 'FACT', ref: `fact:${f.f.ref}` }); continue; }
-      const o = autres.find((x) => x.forms.has(form) && valeurAncree(x, u)
-        && (x.unites.has(u.sourceUnitId) || ancreGlobal || porteurs(form, 'doc') === 1));
-      if (o) { structurees++; reps.push({ source: o.v.source, ref: `${o.v.source === 'METADATA' ? 'meta' : 'candidate'}:${o.v.ref}` }); continue; }
+      const b = bilan(pl);
+      input.ledger.set(x.sourceUnitId, { mode: pl.mode, counts: b.counts, details: b.details });
     }
-    const counts = { total: forms.length, represented: structurees, notRetained: nonRetenues, undetermined: indeterminees };
-    const expliquees = structurees + nonRetenues + indeterminees;
-    if (expliquees === forms.length) {
-      if (indeterminees > 0) return requalifier('UNCERTAIN', 'value_undetermined', 'value_decision_undetermined', reps, counts);
-      if (structurees === 0) return requalifier('COVERED', 'value_decision_not_retained', 'value_decision_not_retained', reps, counts);
-      const rule = decidees === forms.length ? 'value_decision' : ligne && reps.every((r) => r.source === 'TABLE' || r.source === 'VALUE_DECISION') ? 'table_transcription'
-        : recouvrement ? 'same_passage_other_segment' : cite.length > 0 ? 'cited_by_fact_excerpt' : 'values_structured';
-      const reason = rule === 'value_decision' ? 'value_decision' : rule === 'table_transcription' ? 'table_transcription'
-        : rule === 'same_passage_other_segment' ? 'overlap' : rule === 'cited_by_fact_excerpt' ? 'fact_excerpt' : 'values_structured';
-      return requalifier('COVERED', reason, rule, reps, counts);
-    }
-    if (expliquees > 0) {
-      // Une partie seulement des valeurs est représentée : NON RÉSOLUE, motif précis (réparation ciblée possible).
-      return requalifier('UNRESOLVED', 'values_partially_structured', 'values_partially_structured', reps, counts);
-    }
-    return u;
-  });
+  }
+  return plans.map((pl) => pl.out ?? pl.u);
+}
+
+/** Carte #853 : totaux d'occurrences d'un registre (rapport de complétude, BO). */
+export function occurrenceTotals(ledger: ReadonlyMap<string, UnitOccurrenceLedger>): OccurrenceCounts & { units: number } {
+  let t = emptyOccurrenceCounts();
+  for (const l of ledger.values()) t = addOccurrenceCounts(t, l.counts);
+  return { ...t, units: ledger.size };
 }
 
 // ── Politique explicite des unités restantes ────────────────────────────────
@@ -571,9 +935,16 @@ export interface ReconciliationSummary {
   partiallyStructured: number;
   undetermined: number;
   stage: ReconciliationStage;
+  /**
+   * Carte #853 (R3) : totaux PAR OCCURRENCE des unités inventoriées (unités ≠ occurrences) — `total` = structurées
+   * + conservées + non retenues + indéterminées + incertaines + non résolues + échecs ; exclues à part.
+   * Absent : registre non fourni (diagnostic antérieur).
+   */
+  occurrences?: OccurrenceCounts & { units: number };
 }
 
-export function reconciliationSummary(units: readonly CoveredSourceUnit[], stage: ReconciliationStage): ReconciliationSummary {
+export function reconciliationSummary(units: readonly CoveredSourceUnit[], stage: ReconciliationStage,
+  ledger?: ReadonlyMap<string, UnitOccurrenceLedger>): ReconciliationSummary {
   const byRule: Record<string, number> = {};
   let requalified = 0;
   for (const u of units) {
@@ -588,6 +959,7 @@ export function reconciliationSummary(units: readonly CoveredSourceUnit[], stage
     requalified, byRule, stage,
     partiallyStructured: units.filter((u) => u.status === 'UNRESOLVED' && u.reason === 'values_partially_structured').length,
     undetermined: units.filter((u) => u.status === 'UNCERTAIN' && u.reason === 'value_undetermined').length,
+    ...(ledger ? { occurrences: occurrenceTotals(ledger) } : {}),
   };
 }
 

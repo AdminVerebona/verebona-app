@@ -222,11 +222,19 @@ scenario('L115F', 'T1 — écarts résiduels 114G : liens exacts, couverture par
     expect(diag.sourceReread).toMatchObject({ calls: 0, callsFailed: 0 });
     expect(diag.calls).toBeGreaterThanOrEqual(diag.textRepair.calls);
 
-    // Reprise rejouée : plus rien à réparer, aucun fait ni aucune unité dupliqués.
+    // Reprise rejouée : aucun fait ni aucune unité dupliqués.
+    // Carte #853 (P1-01 #835, AC04) — ASSERTION ADAPTÉE : « 0 appel » reposait sur la promotion de la page 1 par
+    // la règle « texte identique à une unité couverte ». La page 1 porte le MÊME montant sur une AUTRE page, sans
+    // équivalence démontrée (le fait réparé ne cite que la page 2) : ce n'est plus une couverture, c'est un résidu
+    // réel. La reprise rejouée ne vise donc QUE ce résidu (jamais la page 2 déjà prouvée), dans ses bornes.
     const faitsAvant = await faitsActifs(f);
     const unitesAvant = await unites(f);
+    const page1 = unitesAvant.find((u) => u.page === 1 && u.kind === 'LABEL_VALUE' && u.status !== 'COVERED')!;
+    expect(page1).toBeDefined();
     const r2 = await reprendre(c, f, []);
-    expect(r2.calls).toBe(0);
+    expect(r2.calls).toBeLessThanOrEqual(1);
+    expect([...r2.attempted]).not.toContain(page2.id);
+    if (r2.calls > 0) expect([...r2.attempted]).toEqual([page1.id]);
     expect(await faitsActifs(f)).toEqual(faitsAvant);
     expect((await unites(f)).map((u) => u.id)).toEqual(unitesAvant.map((u) => u.id));
   });

@@ -215,6 +215,79 @@ export function allSignificantValues(text: string | null | undefined): Significa
   return [...base, ...cueIdentifiers(text).filter((v) => !vus.has(`IDENTIFIER:${v.normalized}`)).map(({ context: _c, ...v }) => v)];
 }
 
+/** Carte #853 (P1-01 #835, R1) : occurrence d'une valeur significative, avec sa POSITION dans le texte. */
+export interface SignificantOccurrence extends SignificantValue {
+  /** Début / fin (exclue) de la forme brute dans le texte de l'unité. */
+  start: number;
+  end: number;
+}
+
+/**
+ * Carte #853 (P1-01 #835, R1) — TOUTES les occurrences des valeurs significatives d'un texte, dans l'ordre de
+ * lecture, avec leur position (pure, déterministe). Règle remplacée : `allSignificantValues` dédoublonne par
+ * forme (`kind:normalized`) — deux prestations distinctes à 120 € devenaient UNE valeur à expliquer. Ici, deux
+ * occurrences de même valeur restent DEUX occurrences ; seules les lectures CHEVAUCHANTES d'un même passage
+ * (une date relue comme identifiant, un identifiant désigné relu par la règle générale) sont fusionnées :
+ * priorité date > montant > identifiant, la première lecture d'une zone l'emporte.
+ */
+export function significantValueOccurrences(text: string | null | undefined): SignificantOccurrence[] {
+  if (!text) return [];
+  const brut: Array<SignificantOccurrence & { prio: number }> = [];
+  const zonesDates: Array<[number, number]> = [];
+  for (const m of text.matchAll(DATE_NUM)) {
+    const i = m.index ?? 0;
+    zonesDates.push([i, i + m[0].length]);
+    const iso = m[3] ? isoValide(+m[3], +m[2], +m[1]) : isoValide(+m[4], +m[5], +m[6]);
+    if (iso) brut.push({ kind: 'DATE', raw: m[0], normalized: iso, start: i, end: i + m[0].length, prio: 0 });
+  }
+  for (const m of text.matchAll(DATE_MOIS)) {
+    const i = m.index ?? 0;
+    zonesDates.push([i, i + m[0].length]);
+    const mois = MOIS[m[2].toLowerCase().normalize('NFC')] ?? MOIS[m[2].toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g, '')];
+    const iso = mois ? isoValide(+m[3], mois, +m[1]) : null;
+    if (iso) brut.push({ kind: 'DATE', raw: m[0], normalized: iso, start: i, end: i + m[0].length, prio: 0 });
+  }
+  const dansUneDate = (i: number) => zonesDates.some(([a, b]) => i >= a && i < b);
+  for (const m of text.matchAll(MONTANT_DEVISE)) {
+    const i = m.index ?? 0;
+    if (dansUneDate(i)) continue;
+    const c = amountToCents(m[1], m[2] ?? m[3] ?? null);
+    const raw = m[0].trim();
+    if (c !== null && c > 0) brut.push({ kind: 'AMOUNT', raw, normalized: String(c), start: i, end: i + raw.length, prio: 1 });
+  }
+  for (const m of text.matchAll(IDENTIFIANT_G)) {
+    const i = m.index ?? 0;
+    if (dansUneDate(i)) continue;
+    const c = compactIdentifier(m[0]);
+    if (c.length >= 6 && /[A-Z]/.test(c) && /\d/.test(c)) brut.push({ kind: 'IDENTIFIER', raw: m[0], normalized: c, start: i, end: i + m[0].length, prio: 2 });
+  }
+  for (const v of cueIdentifierOccurrences(text)) brut.push({ ...v, prio: 3 });
+  brut.sort((a, b) => a.prio - b.prio || a.start - b.start);
+  const gardees: SignificantOccurrence[] = [];
+  for (const o of brut) {
+    if (gardees.some((g) => o.start < g.end && g.start < o.end)) continue;
+    gardees.push({ kind: o.kind, raw: o.raw, normalized: o.normalized, start: o.start, end: o.end });
+  }
+  return gardees.sort((a, b) => a.start - b.start);
+}
+
+/** Identifiants désignés par un libellé, AVEC leur position (même règle que `cueIdentifiers`, sans dédoublonnage). */
+function cueIdentifierOccurrences(text: string): SignificantOccurrence[] {
+  const out: SignificantOccurrence[] = [];
+  const dates = [...text.matchAll(DATE_NUM), ...text.matchAll(DATE_MOIS)].map((m) => [m.index ?? 0, (m.index ?? 0) + m[0].length] as const);
+  for (const m of text.matchAll(CUE_IDENTIFIANT)) {
+    const raw = m[2].replace(/[.\-/]+$/, '');
+    const debut = (m.index ?? 0) + m[0].length - m[2].length;
+    if (dates.some(([a, b]) => debut >= a && debut < b)) continue;
+    if (DEVISE_APRES.test(text.slice(debut + raw.length))) continue;
+    if (TEL.test(raw) && /^[\d\s.+-]+$/.test(raw)) continue;
+    const c = compactIdentifier(raw);
+    if (c.length < 6 || !/\d/.test(c)) continue;
+    out.push({ kind: 'IDENTIFIER', raw, normalized: c, start: debut, end: debut + raw.length });
+  }
+  return out;
+}
+
 /**
  * Lot 108K (§B) — CONTEXTE d'une occurrence : texte de l'unité sans ses
  * valeurs significatives ni chiffres, en forme de comparaison (pure). Deux

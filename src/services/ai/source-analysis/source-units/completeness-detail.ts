@@ -9,7 +9,8 @@
  * existants (diagnostic, rapport d'exécution).
  */
 import { coverageSchemaStatus, loadAllDocumentSourceUnits, loadDocumentCoverage } from './repository';
-import { unitValueForms } from './coverage-reconciliation';
+import { occurrenceTotals, unitValueForms, type UnitOccurrenceLedger } from './coverage-reconciliation';
+import type { OccurrenceCounts, OccurrenceDetail } from './occurrences';
 import type { CoverageStatus, T1CoverageDiagnostics } from './types';
 
 export interface CompletenessUnitRow {
@@ -23,7 +24,16 @@ export interface CompletenessUnitRow {
   repairAttempts: number;
   residualPolicy: string | null;
   /** Requalification (règle, sources, références, état d'avant) — null : état d'origine. */
-  provenance: { rule: string; sources: string[]; refs: string[]; previous: { status: string; reason: string | null }; stage: string } | null;
+  provenance: {
+    rule: string; sources: string[]; refs: string[]; previous: { status: string; reason: string | null }; stage: string;
+    /** Carte #853 : compteurs et détail PAR OCCURRENCE enregistrés avec la requalification (absents : provenance antérieure). */
+    occurrences?: OccurrenceCounts | null; details?: OccurrenceDetail[] | null;
+  } | null;
+  /**
+   * Carte #853 (R4, AC15) : contrôle COURANT par occurrence (sans IA, rien n'est écrit) — identité, position,
+   * issue, preuve exacte ou motif ; jamais la valeur. null : unité non inventoriée ou contrôle indisponible.
+   */
+  occurrences?: { mode: UnitOccurrenceLedger['mode']; counts: OccurrenceCounts; details: OccurrenceDetail[] } | null;
   /** Valeurs repérées par nature (montant, date, identifiant, nombre) — jamais la valeur. */
   valueKinds: Record<string, number>;
   textLength: number;
@@ -34,6 +44,8 @@ export interface CompletenessDetail {
   accountId: number;
   qualityState: string;
   totals: { total: number; covered: number; nonInformational: number; uncertain: number; unresolved: number; failed: number; requalified: number };
+  /** Carte #853 (R3) : totaux PAR OCCURRENCE du contrôle courant (unités ≠ occurrences). null : contrôle indisponible. */
+  occurrenceTotals?: (OccurrenceCounts & { units: number }) | null;
   coverageRepair: T1CoverageDiagnostics['coverageRepair'] | null;
   reconciliation: T1CoverageDiagnostics['reconciliation'] | null;
   residualPolicies: Record<string, number>;
@@ -120,6 +132,13 @@ export async function loadCompletenessDetail(fileId: number, opts: CompletenessU
   if (!cov) return null;
   const stored = await loadAllDocumentSourceUnits(fileId, { accountId: cov.accountId });
   const v = (cov.verification ?? {}) as Partial<T1CoverageDiagnostics>;
+  // Carte #853 : contrôle courant par occurrence (simulation sans IA, aucune écriture). Panne : null, jamais un zéro.
+  const registre = new Map<string, UnitOccurrenceLedger>();
+  const controle = await (async () => {
+    const [{ pgClient }, { toCovered }, { reconcileStoredUnits }] = await Promise.all([import('@/db'), import('./jobs'), import('./stored-reconciliation')]);
+    await reconcileStoredUnits(pgClient as never, { accountId: cov.accountId, fileId, units: stored.map(toCovered), ledger: registre });
+    return true;
+  })().catch(() => false);
   const rows: CompletenessUnitRow[] = stored.map((u) => {
     const pv = (typeof u.coverageProvenance === 'string' ? JSON.parse(u.coverageProvenance) : u.coverageProvenance) ?? null;
     const valueKinds: Record<string, number> = {};
@@ -130,7 +149,11 @@ export async function loadCompletenessDetail(fileId: number, opts: CompletenessU
     return {
       unitId: u.sourceUnitId, kind: u.kind, page: u.page, status: u.coverageStatus, reason: u.coverageReason, factCount: u.factCount,
       repairState: u.repairState ?? null, repairAttempts: u.repairAttempts, residualPolicy: u.residualPolicy ?? null,
-      provenance: pv ? { rule: pv.rule, sources: pv.sources ?? [], refs: pv.refs ?? [], previous: pv.previous, stage: pv.stage } : null,
+      provenance: pv ? {
+        rule: pv.rule, sources: pv.sources ?? [], refs: pv.refs ?? [], previous: pv.previous, stage: pv.stage,
+        occurrences: pv.occurrences ?? null, details: pv.details ?? null,
+      } : null,
+      occurrences: controle && registre.has(u.sourceUnitId) ? registre.get(u.sourceUnitId)! : null,
       valueKinds, textLength: (u.text ?? '').length,
     };
   });
@@ -142,6 +165,7 @@ export async function loadCompletenessDetail(fileId: number, opts: CompletenessU
       unresolved: n('UNRESOLVED'), failed: n('FAILED'),
       requalified: rows.filter((r) => r.provenance && (r.provenance.previous.status !== r.status || r.provenance.previous.reason !== r.reason)).length,
     },
+    occurrenceTotals: controle ? occurrenceTotals(registre) : null,
     coverageRepair: v.coverageRepair ?? null,
     reconciliation: v.reconciliation ?? null,
     residualPolicies: v.residualPolicies ?? {},

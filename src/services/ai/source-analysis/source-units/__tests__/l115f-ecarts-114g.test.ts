@@ -107,17 +107,38 @@ describe('L115F-É01 — P1-01 : une seule valeur suffit pour exiger une preuve'
     expect(`${page2.status}/${page2.reason}`).toMatch(/^UNRESOLVED\//);
   });
 
-  it('répétition LITTÉRALE d’une unité couverte : règle antérieure conservée, et sa provenance nomme l’unité jumelle', () => {
+  // ══════════════════════════════════════════════════════════════════════
+  // Carte #853 (P1-01 #835, AC04) — ASSERTION ADAPTÉE. Ce test encodait la
+  // règle 113AN « texte identique à une unité couverte ⇒ répétition
+  // couverte », y compris pour un MONTANT répété sur une autre page. La carte
+  // #853 déclare ce cas défectueux : « même passage sur deux pages sans
+  // équivalence ⇒ pas de promotion » (deux factures, deux périodes peuvent
+  // porter le même total). La règle reste vraie pour un passage relu sur la
+  // MÊME page, pour une référence (identifiant seul) rappelée, et dès que la
+  // preuve cite EXPLICITEMENT les deux unités (rappel du même fait).
+  // ══════════════════════════════════════════════════════════════════════
+  it('répétition LITTÉRALE d’un montant sur une autre page : plus de promotion sans équivalence (#853) ; rappel justifié par une décision ou référence rappelée : couverts', () => {
     const LIGNE = 'Total TTC : 120,00 EUR';
     const u = unites(`${LIGNE}\f\n${LIGNE}`);
     const champs = u.filter((x) => x.kind === 'LABEL_VALUE');
     const cov = apres(u, [{ excerpt: LIGNE, page: 1, values: ['120.00'], labels: ['total_ttc'], unitIds: [champs[0].sourceUnitId] }]);
     const page2 = cov.find((x) => x.page === 2 && x.kind === 'LABEL_VALUE')!;
-    // Texte strictement identique d'une unité de même nature déjà COUVERTE : la valeur EST expliquée,
-    // et le rattachement est ancré sur l'unité jumelle (jamais un rapprochement par valeur globale).
-    expect(`${page2.status}/${page2.reason}`).toBe('COVERED/duplicate');
-    expect(page2.coverageProvenance).toMatchObject({
-      rule: 'duplicate_of_covered_unit', sources: ['UNIT'], refs: [`unit:${champs[0].sourceUnitId}`],
+    expect(`${page2.status}/${page2.reason}`).toBe('UNRESOLVED/not_extracted');
+    // Le même fait rattaché aux DEUX unités : rappel plausible, non démontré → la seconde est INCERTAINE (jamais
+    // couverte par le même fait) ; une décision de T1 sur cette occurrence la prouve — un seul fait, deux occurrences.
+    const lies = [{ excerpt: LIGNE, page: null, values: ['120.00'], labels: ['total_ttc'], unitIds: champs.map((c) => c.sourceUnitId) }];
+    expect(apres(u, lies).filter((x) => x.kind === 'LABEL_VALUE').map((x) => `${x.status}/${x.reason}`)).toEqual(['COVERED/fact', 'UNCERTAIN/occurrence_unverifiable']);
+    const rappel = apres(u, lies, { decisions: [{ ref: 'd1', sourceUnitId: champs[1].sourceUnitId, kind: 'AMOUNT', normalizedValue: '12000', decision: 'STRUCTURED' }] });
+    expect(rappel.filter((x) => x.kind === 'LABEL_VALUE').map((x) => `${x.status}/${x.reason}`)).toEqual(['COVERED/fact', 'COVERED/fact']);
+    // Référence seule rappelée sur chaque page : la répétition littérale reste couverte, provenance = unité jumelle.
+    const REF = 'Reference client : AB123456';
+    const r = unites(`${REF}\f\n${REF}`);
+    const refs = r.filter((x) => x.kind === 'LABEL_VALUE');
+    const covRef = apres(r, [{ excerpt: REF, page: 1, values: ['AB123456'], labels: ['reference_client'], unitIds: [refs[0].sourceUnitId] }]);
+    const ref2 = covRef.find((x) => x.page === 2 && x.kind === 'LABEL_VALUE')!;
+    expect(`${ref2.status}/${ref2.reason}`).toBe('COVERED/duplicate');
+    expect(ref2.coverageProvenance).toMatchObject({
+      rule: 'duplicate_of_covered_unit', sources: ['UNIT'], refs: [`unit:${refs[0].sourceUnitId}`],
     });
   });
 

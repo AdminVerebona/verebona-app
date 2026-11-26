@@ -64,8 +64,10 @@ import { processingEligibleSql } from '@/services/account/processing-eligibility
 /**
  * Version des règles de couverture / d'alerte T1 appliquées au stock.
  *   1 — lot 114H (#775) : règles 113AN + 114G + règle unique des reprises.
+ *   4 — carte #853 (P1-01 #835) : complétude par OCCURRENCE (valeurs, propositions, cellules) — le stock, y
+ *       compris les documents COMPLETE, est réévalué sans IA pour requalifier les faux COVERED historiques.
  */
-export const T1_COVERAGE_RULES_VERSION = 3;
+export const T1_COVERAGE_RULES_VERSION = 4;
 
 /**
  * ══════════════════════════════════════════════════════════════════════════
@@ -103,6 +105,8 @@ export const T1_RULES_VERSION_SIGNATURES: Readonly<Record<number, string>> = {
   2: 'f1ff0b8354239dc2e562b8e5183100c4',
   // Version 3 (carte #837) : inventaire des familles INCHANGÉ — ce sont les PRÉDICATS qui changent (voir ci-dessous).
   3: 'f1ff0b8354239dc2e562b8e5183100c4',
+  // Version 4 (carte #853) : inventaire des familles INCHANGÉ — prédicat de couverture par occurrence ajouté.
+  4: 'f1ff0b8354239dc2e562b8e5183100c4',
 };
 
 /**
@@ -125,7 +129,9 @@ export const T1_RULES_VERSION_SIGNATURES: Readonly<Record<number, string>> = {
  * du stock (journal par version).
  *
  * Histoire : 3 — carte #837 (admission commune, DONE métier, échéance
- * admissible, empreinte des preuves exhaustive).
+ * admissible, empreinte des preuves exhaustive) ; 4 — carte #853 (couverture
+ * par occurrence, `reconcileCoverage` ajouté aux prédicats gardés, documents
+ * COMPLETE réévalués).
  * ══════════════════════════════════════════════════════════════════════════
  */
 export const T1_RULE_PREDICATES: ReadonlyArray<{ file: string; fn: string }> = [
@@ -144,11 +150,14 @@ export const T1_RULE_PREDICATES: ReadonlyArray<{ file: string; fn: string }> = [
   { file: 'src/services/ai/source-analysis/source-units/coverage-reconciliation.ts', fn: 'residualPolicyOf' },
   { file: 'src/services/ai/source-analysis/source-units/coverage.ts', fn: 'buildCompletenessReport' },
   { file: 'src/services/ai/source-analysis/source-units/verification-followup.ts', fn: 'verificationAutoRetryDue' },
+  // Carte #853 : la couverture PAR OCCURRENCE est une condition d'état de couverture — sa logique est gardée.
+  { file: 'src/services/ai/source-analysis/source-units/coverage-reconciliation.ts', fn: 'reconcileCoverage' },
 ];
 
 /** Empreinte du code des prédicats, par version LIVRÉE (carte #837, C3). Recalculée par le test de livraison. */
 export const T1_RULES_PREDICATE_SIGNATURES: Readonly<Record<number, string>> = {
   3: '7db94b50502681cdc57f0bd1ff56f58b',
+  4: '512d0ef1dcdc018856d47db97eadce1b',
 };
 
 /** Empreinte des conditions d'alerte T1 en vigueur (pure, stable d'une exécution à l'autre). */
@@ -157,8 +166,13 @@ export function t1AlertConditionsSignature(): string {
   return createHash('sha256').update(parts.join('\u0001')).digest('hex').slice(0, 32);
 }
 
-/** États de qualité réévalués (carte § 4.1). */
-export const REASSESSED_QUALITY_STATES = ['COMPLETE_WITH_UNRESOLVED', 'VERIFICATION_INCOMPLETE', 'INCOMPLETE_RETRYABLE', 'INCOMPLETE_FINAL'] as const;
+/**
+ * États de qualité réévalués (carte § 4.1).
+ * Carte #853 (R4, AC14) — règle complétée : `COMPLETE` est réévalué aussi. Un faux COVERED historique (contrôle par
+ * valeur distincte, ligne de tableau non confrontée) se trouve précisément dans un document déclaré complet ; sans
+ * IA, borné et journalisé par version comme le reste du stock — un document resté COMPLETE est `UNCHANGED`.
+ */
+export const REASSESSED_QUALITY_STATES = ['COMPLETE', 'COMPLETE_WITH_UNRESOLVED', 'VERIFICATION_INCOMPLETE', 'INCOMPLETE_RETRYABLE', 'INCOMPLETE_FINAL'] as const;
 
 /** Essais au plus d'un document en erreur, par version. */
 export const REASSESSMENT_MAX_ATTEMPTS = 3;
@@ -267,7 +281,8 @@ export function reassessmentOutcomeOf(p: {
   before: CoverageSnapshot; after: CoverageSnapshot; requalified: number; written: boolean;
 }): ReassessmentOutcome {
   const { before, after } = p;
-  if (after.qualityState === 'COMPLETE') return 'RESOLVED';
+  // Carte #853 : un document déjà COMPLETE, confirmé tel quel, n'est pas « résolu » par la campagne.
+  if (after.qualityState === 'COMPLETE') return before.qualityState === 'COMPLETE' && !p.written && p.requalified === 0 ? 'UNCHANGED' : 'RESOLVED';
   if (after.qualityState === 'INCOMPLETE_FINAL') return before.qualityState === 'INCOMPLETE_FINAL' && !p.written ? 'UNCHANGED' : 'FINAL_GAP';
   if (after.qualityState === 'INCOMPLETE_RETRYABLE') return after.retryScheduled ? 'REPAIR_SCHEDULED' : 'STILL_UNRESOLVED';
   const identique = !p.written && before.qualityState === after.qualityState && before.retryScheduled === after.retryScheduled

@@ -18,7 +18,11 @@
  * même état). Ne crée ni fait, ni décision, ni lien : seuls l'état de
  * couverture, sa provenance et la politique des unités restantes changent.
  */
-import { candidateReconciliationValue, reconcileCoverage, reconciliationSummary, residualCounts, withResidualPolicies, type ReconciliationInput } from './coverage-reconciliation';
+import {
+  candidateReconciliationValue, reconcileCoverage, reconciliationSummary, residualCounts, withResidualPolicies,
+  type ReconciliationInput, type UnitOccurrenceLedger,
+} from './coverage-reconciliation';
+import { faithfulPagesFromDiagnostics } from './occurrences';
 import { buildCompletenessReport } from './coverage';
 import { decideRetry, releaseUnschedulablePending, retryFactsOf, retryLimits } from './retry-policy';
 import {
@@ -58,11 +62,18 @@ export async function loadStoredReconciliationInput(sql: Sql, accountId: number,
   const nonConfirmees = await unconfirmedDecisionIds(sql, accountId, fileId).catch(() => null);
   const decisions = nonConfirmees === null ? [] : (await loadActiveValueDecisions(sql as never, accountId, [fileId]).catch(() => []))
     .filter((d) => d.validity === 'VALID' && d.sourceUnitId && !nonConfirmees.has(d.id));
+  // Carte #853 (R2) : fidélité de la transcription par page, lue sur la vérification PERSISTÉE de la source
+  // (conservation d'une proposition sans valeur). Illisible ou absente : non prouvée.
+  const [cov] = (await sql.unsafe(
+    `SELECT verification FROM document_extraction_coverage WHERE account_id = $1 AND file_id = $2`,
+    [accountId, fileId] as never[],
+  ).catch(() => [])) as Row[];
   const page = (loc: unknown) => {
     const l = (typeof loc === 'string' ? JSON.parse(loc) : loc) as { page?: unknown } | null;
     return typeof l?.page === 'number' ? l.page : null;
   };
   return {
+    faithfulPage: faithfulPagesFromDiagnostics(cov?.verification ?? null),
     facts: faits.map((f) => ({
       ref: `db:${Number(f.id)}`,
       unitIds: Array.isArray(f.source_unit_ids) ? (f.source_unit_ids as unknown[]).map(String) : [],
@@ -85,9 +96,13 @@ export async function loadStoredReconciliationInput(sql: Sql, accountId: number,
 }
 
 /** Réconciliation EN MÉMOIRE d'unités persistées (reprise ciblée) ; politiques posées. */
-export async function reconcileStoredUnits<U extends CoveredSourceUnit>(sql: Sql, p: { accountId: number; fileId: number; units: readonly U[] }): Promise<U[]> {
+export async function reconcileStoredUnits<U extends CoveredSourceUnit>(sql: Sql, p: {
+  accountId: number; fileId: number; units: readonly U[];
+  /** Carte #853 : registre des occurrences (rempli si fourni). */
+  ledger?: Map<string, UnitOccurrenceLedger>;
+}): Promise<U[]> {
   const input = await loadStoredReconciliationInput(sql, p.accountId, p.fileId);
-  return withResidualPolicies(reconcileCoverage(p.units, { ...input, stage: 'STORED' }));
+  return withResidualPolicies(reconcileCoverage(p.units, { ...input, stage: 'STORED', ...(p.ledger ? { ledger: p.ledger } : {}) }));
 }
 
 /** Requalification d'une unité (simulation ou application) — identifiants et codes seulement. */
@@ -182,7 +197,8 @@ async function reconcileStoredPass(p: {
   }
   const { toCovered, storedDiagnostics } = await import('./jobs');
   const units = stored.map(toCovered);
-  let majs = await reconcileStoredUnits(sql, { accountId: p.accountId, fileId: p.fileId, units });
+  const registre = new Map<string, UnitOccurrenceLedger>();
+  let majs = await reconcileStoredUnits(sql, { accountId: p.accountId, fileId: p.fileId, units, ledger: registre });
   const requalified: StoredRequalification[] = [];
   majs.forEach((u, i) => {
     const a = units[i];
@@ -233,7 +249,7 @@ async function reconcileStoredPass(p: {
     if (diag.repairPropagation) d.repairPropagation = diag.repairPropagation;
     if (diag.coverageRepair) d.coverageRepair = diag.coverageRepair;
     if (diag.continuationRuns) d.continuationRuns = diag.continuationRuns;
-    d.reconciliation = reconciliationSummary(majs, 'STORED');
+    d.reconciliation = reconciliationSummary(majs, 'STORED', registre);
     d.residualPolicies = residualCounts(majs);
   }
   const after = { covered: report.coveredUnits, unresolved: report.unresolvedUnits, uncertain: report.uncertainUnits, qualityState: report.qualityState };

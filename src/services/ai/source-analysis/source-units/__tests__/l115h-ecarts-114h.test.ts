@@ -620,7 +620,8 @@ describe('L115H-U07 — § 5 : rattrapage permanent de tout le stock', () => {
     // été incrémentée ET enregistrée — et incrémenter la version fait reprendre tout le stock.
     expect(T1_RULES_VERSION_SIGNATURES[T1_COVERAGE_RULES_VERSION]).toBe(t1AlertConditionsSignature());
     // Les versions antérieures restent enregistrées (l'historique ne se réécrit pas).
-    expect(Object.keys(T1_RULES_VERSION_SIGNATURES).map(Number).sort()).toEqual([1, 2, 3]);
+    // Carte #853 : version 4 ajoutée (couverture par occurrence) — les versions antérieures restent enregistrées.
+    expect(Object.keys(T1_RULES_VERSION_SIGNATURES).map(Number).sort()).toEqual([1, 2, 3, 4]);
     expect(T1_COVERAGE_RULES_VERSION).toBeGreaterThan(1);
   });
 

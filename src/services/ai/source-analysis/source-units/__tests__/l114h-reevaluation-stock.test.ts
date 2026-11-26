@@ -181,11 +181,15 @@ describe('L114H-S01 — R7 : gros stock, pagination, point de reprise, idempoten
     expect((await runCoverageReassessment({})).examined).toBe(5);
   });
 
-  it('documents complets ou supprimés : hors inventaire', async () => {
+  // Carte #853 (P1-01 #835, R4/AC14) — ASSERTION ADAPTÉE : un document COMPLETE était « hors inventaire ». Or un
+  // faux COVERED historique se trouve précisément dans un document déclaré complet : la carte exige sa
+  // requalification par le rattrapage #837 (sans IA, borné, journalisé par version). Le document supprimé reste,
+  // lui, hors inventaire.
+  it('documents supprimés : hors inventaire ; documents complets : réexaminés depuis la version 4 (#853)', async () => {
     base.docs = [doc(1, { qualityState: 'COMPLETE' }), doc(2, { deleted: true }), doc(3, { qualityState: 'VERIFICATION_INCOMPLETE' }), doc(4, { qualityState: 'INCOMPLETE_FINAL' }), doc(5, { qualityState: 'INCOMPLETE_RETRYABLE' })];
     const r = await runCoverageReassessment({});
-    expect(base.reconciliations.map((x) => x.fileId)).toEqual([3, 4, 5]);
-    expect(r.examined).toBe(3);
+    expect(base.reconciliations.map((x) => x.fileId)).toEqual([1, 3, 4, 5]);
+    expect(r.examined).toBe(4);
   });
 });
 
@@ -286,10 +290,13 @@ describe('L114H-S03 — R6 : alertes closes seulement si la cause a disparu', ()
       alerte(13, 'ai:t1-completeness:999'), alerte(14, 'ai:schema-compat:t1'), alerte(15, 'ai:t1-requeue:2'),
     ];
     const r = await runCoverageReassessment({});
-    expect(r).toMatchObject({ examined: 0, orphanAlertsExamined: 5, alertsClosed: 4, alertsMaintained: 1 });
+    // Carte #853 — ASSERTION ADAPTÉE : les documents 2 et 3 (COMPLETE) sont désormais EXAMINÉS par la campagne
+    // (rattrapage des faux COVERED) ; leurs alertes sont décidées sur ce passage, et non plus comme alertes
+    // orphelines. Les décisions d'alerte sont INCHANGÉES (4 closes, 1 maintenue, autre domaine intouché).
+    expect(r).toMatchObject({ examined: 2, orphanAlertsExamined: 2, alertsClosed: 4, alertsMaintained: 1 });
     expect(base.anomalies.map((a) => [a.id, a.status])).toEqual([[10, 'resolved'], [11, 'resolved'], [12, 'open'], [13, 'resolved'], [14, 'open'], [15, 'resolved']]);
     expect(base.anomalies[0].cause).toContain('document supprimé');
-    expect(base.journal).toEqual([]);
+    expect(base.journal.map((j) => j.fileId)).toEqual([2, 3]);
   });
 });
 

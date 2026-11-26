@@ -25,9 +25,10 @@ import {
 } from './types';
 import {
   reconcileCoverage, reconciliationSummary, residualCounts, withResidualPolicies,
-  type ReconciliationDecision, type ReconciliationFact, type ReconciliationStage, type ReconciliationValue,
+  type ReconciliationDecision, type ReconciliationFact, type ReconciliationStage, type ReconciliationValue, type UnitOccurrenceLedger,
   candidateReconciliationValue,
 } from './coverage-reconciliation';
+import { faithfulPagesOf } from './occurrences';
 import { factContextOf, validateValueDecisions, type AnchoredValueDecision, type PreparedValueDecision } from '../value-decisions/validate';
 import type { AnchoredOperationCandidate } from '../operation-candidates/prepare';
 import { factLabel } from '../master/fact-evidence';
@@ -442,10 +443,11 @@ export function normalisationBalance(draft: Pick<SourceLayerDraft, 'unresolved' 
 }
 
 function coverageOf(draft: SourceLayerDraft, facts: readonly T1Fact[], decisions: readonly PreparedValueDecision[], stage: ReconciliationStage,
-  candidates: readonly AnchoredOperationCandidate[] = draft.candidates): CoveredSourceUnit[] {
+  candidates: readonly AnchoredOperationCandidate[] = draft.candidates, ledger?: Map<string, UnitOccurrenceLedger>): CoveredSourceUnit[] {
   // Lot 113AN : réconciliation des unités NON RÉSOLUES avec ce qui est réellement structuré (provenance tracée).
+  // Carte #853 : contrôle PAR OCCURRENCE ; fidélité des pages = vérification de la source de CETTE analyse.
   return reconcileCoverage(baseCoverageOf(draft, facts), {
-    stage,
+    stage, faithfulPage: faithfulPagesOf(draft.extras.verification ?? null), ...(ledger ? { ledger } : {}),
     facts: facts.map((f, i): ReconciliationFact => ({
       ref: (f as T1Fact & { t1FactRef?: string }).t1FactRef ?? `index:${i}`,
       unitIds: unitsOfFact(draft, f),
@@ -511,7 +513,8 @@ export function finalizeSourceLayer(draft: SourceLayerDraft, p: {
       visualPage: f.visualEvidence?.page ?? null, values: [f.rawValue, f.value], labels: [f.rawKey, f.label, f.attribute],
     });
   }
-  const reconciliee = coverageOf(draft, p.analysisFacts, p.valueDecisions ?? [], 'ANALYSIS', p.candidates ?? draft.candidates);
+  const registre = new Map<string, UnitOccurrenceLedger>();
+  const reconciliee = coverageOf(draft, p.analysisFacts, p.valueDecisions ?? [], 'ANALYSIS', p.candidates ?? draft.candidates, registre);
   // Lot 113AN : politique EXPLICITE de chaque unité restante (jamais une clôture silencieuse).
   const cov = withResidualPolicies(withRepairStates(reconciliee, {
     attempted: draft.attempted, pending: draft.pending, cap: repairAttemptCap(),
@@ -556,7 +559,8 @@ export function finalizeSourceLayer(draft: SourceLayerDraft, p: {
   });
   if (report.diagnostics) {
     report.diagnostics.coverageRepair = { ...draft.repairDiag };
-    report.diagnostics.reconciliation = reconciliationSummary(cov, 'ANALYSIS');
+    // Carte #853 (R3) : totaux par OCCURRENCE à côté des compteurs d'unités.
+    report.diagnostics.reconciliation = reconciliationSummary(cov, 'ANALYSIS', registre);
     report.diagnostics.residualPolicies = residualCounts(cov);
   }
   const warnings: AnalysisWarning[] = [];
