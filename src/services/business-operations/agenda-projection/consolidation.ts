@@ -434,6 +434,65 @@ export async function retitleAgendaItem(p: {
   }) as Promise<boolean>;
 }
 
+/**
+ * Carte #860 (§ 3.B) — résultat d'une écriture du titre seul : WRITTEN (écrit), GUARD_REFUSED (une garde revérifiée
+ * dans le WHERE a refusé : titre édité, légitimité changée, représentation modifiée, autre compte…), JOURNAL_MISSING
+ * (journal 0591 absent : aucun renommage sans trace restaurable).
+ */
+export type TitleOnlyWriteOutcome = 'WRITTEN' | 'GUARD_REFUSED' | 'JOURNAL_MISSING';
+
+/**
+ * Carte #860 (§ 3.B) — garde d'écriture du TITRE extrait d'une synchronisation (alias `i`) : projection de
+ * l'Opération restée INTACTE (mêmes notions que `onlyIfUntouched` de la SYNC ordinaire), titre SYSTEM et gardes
+ * indépendantes de la carte #859 (`PURCHASE_RETITLE_SQL`, réutilisée telle quelle : provenance du champ, « à
+ * qualifier », prévision, consolidation restaurée), Opération active du même compte. Paramètres positionnels de
+ * `writeProjectionTitleOnly`.
+ */
+const PROJECTION_TITLE_ONLY_SQL = `
+  i.id = $1 AND i.account_id = $2 AND i.business_operation_id = $3 AND i.title = $5
+  AND i.projection_origin = 'OPERATION' AND i.is_automatic AND NOT COALESCE(i.is_automatic_modified, false)
+  AND i.confirmation_mode IS DISTINCT FROM 'USER'
+  AND i.functional_key IS NOT DISTINCT FROM $6::text
+  AND i.business_type IS NOT DISTINCT FROM $7::text
+  AND i.event_nature IS NOT DISTINCT FROM $8::text
+  AND EXISTS (SELECT 1 FROM business_operations ro WHERE ro.id = i.business_operation_id AND ro.account_id = i.account_id
+               AND ro.invalidated_at IS NULL AND ro.merged_into_operation_id IS NULL)
+  AND ${PURCHASE_RETITLE_SQL}`;
+
+/**
+ * Carte #860 (§ 3.B) — écrivain DÉDIÉ du seul titre d'une projection d'Opération, extrait d'une SYNC (mixte ou
+ * non) en mode « titre seulement ». La SYNC ordinaire (`writeAgendaItem`) écrit AUSSI `projection_origin`,
+ * `projection_correlation_id`, `updated_at`, et relance la résolution de `event_nature` / `business_type` /
+ * `functional_key` (replis `COALESCE`) : filtrer l'objet des changements ne suffit donc pas. Ici : UNE instruction
+ * qui n'écrit que `title` et `updated_at` (horodatage technique ; le déclencheur 2011 tient `title_provenance`,
+ * déclarée SYSTEM), sous le verrou du compte (39102), toutes les gardes revérifiées dans le WHERE — compte,
+ * rattachement, Opération active, projection intacte, valeur attendue, représentation inchangée (clé, type,
+ * nature), titre SYSTEM (#859). Journal 0591 RETITLE (restaurable, `restoreAgendaConsolidations`) et trace
+ * `TITLE_FROM_OPERATION` dans la même transaction. Aucun lien, aucune carte, aucun rappel, aucune notification.
+ */
+export async function writeProjectionTitleOnly(p: {
+  accountId: number; operationId: number; itemId: number; title: string; from: string;
+  expected: { functionalKey: string | null; businessType: string | null; nature: string | null };
+  origin: ConsolidationOrigin; runId?: string | null; correlationId?: string | null;
+}, sql: Sql = pgClient): Promise<TitleOnlyWriteOutcome> {
+  if (!(await consolidationJournalReady(sql))) return 'JOURNAL_MISSING';
+  return sql.begin(async (tx) => {
+    await tx`SELECT pg_advisory_xact_lock(${AGENDA_CONSOLIDATION_LOCK_SPACE}::int, ${p.accountId}::int)`;
+    const declaration = { origin: 'SYSTEM' as const, reason: 'T4_PROJECTION_TITLE_ONLY', channel: p.origin === 'REPRISE' ? 'REPRISE' : 'T4', evidence: `operation:${p.operationId}` };
+    const r = await declareTitleWritePg(tx as never, declaration, () => tx.unsafe<Row[]>(
+      `UPDATE agenda_items i SET title = $4, updated_at = now() WHERE ${PROJECTION_TITLE_ONLY_SQL} RETURNING i.id`,
+      [p.itemId, p.accountId, p.operationId, p.title, p.from, p.expected.functionalKey, p.expected.businessType, p.expected.nature] as never[],
+    ));
+    if (!r.length) return 'GUARD_REFUSED' as const;
+    await journal(tx, { ...p, principalId: p.itemId, absorbedIds: [], linkPrincipal: false, reason: 'OPERATION_TITLE_ONLY' }, 'RETITLE', null, { from: p.from, to: p.title, source: 'SYNC' });
+    await tx.unsafe(
+      `INSERT INTO agenda_occurrence_events (agenda_item_id, account_id, event_type, detail_json) VALUES ($1, $2, 'TITLE_FROM_OPERATION', $3::text::jsonb)`,
+      [p.itemId, p.accountId, JSON.stringify({ from: p.from, to: p.title, operationId: p.operationId, source: 'SYNC_TITLE_ONLY' })] as never[],
+    );
+    return 'WRITTEN' as const;
+  }) as Promise<TitleOnlyWriteOutcome>;
+}
+
 // ── Restauration ────────────────────────────────────────────────────────────
 
 export interface RestoreResult {

@@ -724,6 +724,150 @@ export function isTitleOnlyAction(a: ProjectionAction): boolean {
   return a.kind === 'SYNC' && Object.keys(a.changes).every((k) => k === 'title');
 }
 
+// ── Carte #860 : sélection des SEULS titres exécutables (mode « titre seulement ») ──
+
+/**
+ * Carte #860 (§ 3.B) — changement de titre EXTRAIT d'un plan normal : renommage (RETITLE) ou titre d'une
+ * synchronisation (SYNC, mixte ou non). Le reste de la SYNC n'est JAMAIS exécuté en mode « titre seulement » : il
+ * reste au plan informatif (`deferred`), pour la projection ordinaire.
+ */
+export interface TitleOnlyCandidate {
+  itemId: number;
+  /** Titre prévu par le plan normal. */
+  title: string;
+  /** Titre lu au moment du plan (valeur attendue revérifiée à l'écriture). */
+  from: string;
+  /** Action d'origine : RETITLE (écrivain `retitleAgendaItem`) ou titre d'une SYNC (écrivain dédié au titre). */
+  source: 'RETITLE' | 'SYNC';
+  /** SYNC : clé fonctionnelle, type et nature lus au plan — revérifiés à l'écriture (représentation inchangée). */
+  expected?: { functionalKey: string | null; businessType: string | null; nature: string | null };
+}
+
+/** Carte #860 : motif stable d'un titre prévu par le plan mais NON isolable (abstention motivée, aucune écriture). */
+export type TitleOnlyRefusalReason =
+  /** L'élément n'est pas (encore) rattaché à cette Opération : le titre suppose un rattachement à venir. */
+  | 'ITEM_NOT_LINKED_TO_OPERATION'
+  /** Le plan rattache (ou fait porter le fait par) cet élément : le titre dépend de ce rattachement. */
+  | 'TITLE_DEPENDS_ON_ATTACHMENT'
+  /** Le plan retire ou détache cet élément : son titre n'a plus d'objet. */
+  | 'TITLE_DEPENDS_ON_REMOVAL'
+  /** Représentation ambiguë (décision T4 / carte de rapprochement) qui concerne cet élément. */
+  | 'TITLE_DEPENDS_ON_REPRESENTATION'
+  /** Le titre accompagne une requalification du type d'événement, de sa nature ou de sa clé de projection. */
+  | 'TITLE_DEPENDS_ON_TYPE_CORRECTION' | 'TITLE_DEPENDS_ON_NATURE_CORRECTION' | 'TITLE_DEPENDS_ON_KEY_CHANGE'
+  /** Événement saisi par l'utilisateur. */
+  | 'MANUAL_ITEM'
+  /** Titre USER ou de provenance INCONNUE (carte #859). */
+  | 'TITLE_NOT_SYSTEM'
+  /** Synchronisation d'une projection qui n'est plus intacte. */
+  | 'PROJECTION_MODIFIED'
+  /** Statut ouvert à l'utilisateur (« à qualifier », prévision à confirmer, consolidation restaurée). */
+  | 'ITEM_PENDING_STATUS'
+  /** Opération inactive (fusionnée, invalidée). */
+  | 'OPERATION_INACTIVE'
+  /** Le titre a changé depuis le plan (valeur attendue différente). */
+  | 'TITLE_CHANGED_SINCE_PLAN'
+  /** Deux titres différents prévus pour le même élément dans le même plan. */
+  | 'CONFLICTING_TITLES';
+
+export interface TitleOnlySelection {
+  /** Titres exécutables en mode « titre seulement ». */
+  executable: TitleOnlyCandidate[];
+  /** Titres prévus mais non isolables, avec motif (aucune écriture). */
+  refused: Array<Omit<TitleOnlyCandidate, 'expected'> & { reason: TitleOnlyRefusalReason; authority?: TitleAuthorityDecision }>;
+  /**
+   * Actions du plan normal NON exécutées en mode « titre seulement » (informatives) : toutes les actions autres que
+   * les titres, et le RESTE d'une SYNC mixte (sans son titre). Les titres refusés restent dans leur action d'origine.
+   */
+  deferred: ProjectionAction[];
+}
+
+/**
+ * Carte #860 (§ 3.B, § 3.C) — RÈGLE UNIQUE de sélection des titres exécutables en mode « titre seulement »,
+ * partagée par la simulation, la projection `titleOnly` et la reprise des intitulés d'achat (pure).
+ *
+ * Un titre prévu par le plan normal (RETITLE, ou titre d'une SYNC — même mixte) n'est exécutable que si :
+ *   · l'événement existe et est déjà rattaché à CETTE Opération, active (jamais un candidat que le plan prévoit de
+ *     rattacher, jamais un élément que le plan retire, détache ou soumet à une décision de représentation) ;
+ *   · le changement est INDÉPENDANT : une SYNC qui requalifie aussi le type, la nature, la clé ou l'appartenance
+ *     n'en livre pas le titre (il décrit une autre représentation) ; date, catégorie et liens ne s'y opposent pas —
+ *     ils restent en attente ;
+ *   · l'événement est automatique, de titre SYSTEM prouvé (carte #859, `itemTitleAuthority`), sans statut ouvert ;
+ *     une SYNC ne vise qu'une projection INTACTE.
+ * Les mêmes gardes sont revérifiées atomiquement à l'écriture (WHERE de l'écrivain).
+ */
+export function selectTitleOnlyActions(p: {
+  op: Pick<OperationSnapshot, 'id' | 'active'>;
+  plan: readonly ProjectionAction[];
+  linked: readonly AgendaItemSnapshot[];
+}): TitleOnlySelection {
+  const out: TitleOnlySelection = { executable: [], refused: [], deferred: [] };
+  const rattaches = new Set<number>();
+  const retires = new Set<number>();
+  const ambigus = new Set<number>();
+  for (const a of p.plan) {
+    // Un fait porté (CARRY) sur l'emplacement déjà rattaché qualifie la relation sans changer de représentation : le
+    // titre en reste indépendant. Un LINK, lui, fait d'un candidat ou d'un membre la représentation de l'Opération.
+    if (a.kind === 'LINK') rattaches.add(a.itemId);
+    if (a.kind === 'REMOVE' || a.kind === 'DETACH') retires.add(a.itemId);
+    if (a.kind === 'REPRESENTATION_REQUIRED') for (const id of a.itemIds) ambigus.add(id);
+    if (a.kind === 'ABSTAIN') {
+      if (a.candidates?.length && a.itemId !== undefined) ambigus.add(a.itemId);
+      for (const c of a.candidates ?? []) ambigus.add(c.itemId);
+    }
+  }
+  const proposes: Array<{ c: TitleOnlyCandidate; sync?: ItemSync }> = [];
+  for (const a of p.plan) {
+    if (a.kind === 'RETITLE') {
+      proposes.push({ c: { itemId: a.itemId, title: a.title, from: a.from, source: 'RETITLE' } });
+      continue;
+    }
+    if (a.kind === 'SYNC') {
+      const { title, ...reste } = a.changes;
+      if (Object.keys(reste).length) out.deferred.push({ kind: 'SYNC', itemId: a.itemId, changes: reste });
+      if (title === undefined) continue;
+      const item = p.linked.find((i) => i.id === a.itemId);
+      proposes.push({ c: { itemId: a.itemId, title, from: item?.title ?? '', source: 'SYNC' }, sync: a.changes });
+      continue;
+    }
+    out.deferred.push(a);
+  }
+  const vus = new Map<number, string>();
+  for (const { c, sync } of proposes) {
+    const refuse = (reason: TitleOnlyRefusalReason, authority?: TitleAuthorityDecision) =>
+      out.refused.push({ itemId: c.itemId, title: c.title, from: c.from, source: c.source, reason, ...(authority ? { authority } : {}) });
+    if (vus.has(c.itemId)) {
+      if (vus.get(c.itemId) !== c.title) {
+        // Deux titres pour un même élément : aucun n'est exécuté.
+        out.executable = out.executable.filter((x) => x.itemId !== c.itemId);
+        refuse('CONFLICTING_TITLES');
+      }
+      continue;
+    }
+    vus.set(c.itemId, c.title);
+    const item = p.linked.find((i) => i.id === c.itemId);
+    if (!p.op.active) { refuse('OPERATION_INACTIVE'); continue; }
+    if (!item || item.businessOperationId !== p.op.id) { refuse('ITEM_NOT_LINKED_TO_OPERATION'); continue; }
+    if (retires.has(c.itemId)) { refuse('TITLE_DEPENDS_ON_REMOVAL'); continue; }
+    if (rattaches.has(c.itemId) || sync?.businessOperationId !== undefined) { refuse('TITLE_DEPENDS_ON_ATTACHMENT'); continue; }
+    if (ambigus.has(c.itemId)) { refuse('TITLE_DEPENDS_ON_REPRESENTATION'); continue; }
+    if (sync?.businessType !== undefined) { refuse('TITLE_DEPENDS_ON_TYPE_CORRECTION'); continue; }
+    if (sync?.nature !== undefined) { refuse('TITLE_DEPENDS_ON_NATURE_CORRECTION'); continue; }
+    if (sync?.functionalKey !== undefined) { refuse('TITLE_DEPENDS_ON_KEY_CHANGE'); continue; }
+    if (!item.isAutomatic) { refuse('MANUAL_ITEM'); continue; }
+    const autorite = itemTitleAuthority(item);
+    if (autorite.authority !== 'SYSTEM') { refuse('TITLE_NOT_SYSTEM', autorite); continue; }
+    if (c.source === 'SYNC' && (!item.projected || isTouched(item))) { refuse('PROJECTION_MODIFIED'); continue; }
+    if (item.pendingHold ?? item.pendingStatus) { refuse('ITEM_PENDING_STATUS'); continue; }
+    if (item.title !== c.from) { refuse('TITLE_CHANGED_SINCE_PLAN'); continue; }
+    if (c.title === c.from) continue; // aucun changement effectif : rien à écrire
+    out.executable.push(c.source === 'SYNC'
+      ? { ...c, expected: { functionalKey: item.functionalKey, businessType: item.businessType, nature: item.nature } }
+      : c);
+  }
+  return out;
+}
+
 export type ProjectionAction =
   | { kind: 'CREATE'; desired: DesiredProjection; functionalKey: string }
   | { kind: 'SYNC'; itemId: number; changes: ItemSync }

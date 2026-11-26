@@ -156,6 +156,8 @@ describe('C832-U-04 — passage « titre seulement » : une seule règle, et plu
   const titre = (over: Partial<Extract<ProjectionAction, { kind: 'SYNC' }>['changes']>): ProjectionAction =>
     ({ kind: 'SYNC', itemId: 1, changes: over as Extract<ProjectionAction, { kind: 'SYNC' }>['changes'] });
 
+  // Carte #860 : inchangé — une SYNC mixte, PRISE EN ENTIER, n'est toujours pas une action « titre seulement » (elle
+  // ne s'exécute jamais en ce mode) ; son titre indépendant en est désormais EXTRAIT (`selectTitleOnlyActions`).
   it('seules un renommage et une synchronisation du seul titre ne changent qu’un intitulé', () => {
     expect(isTitleOnlyAction({ kind: 'RETITLE', itemId: 1, title: 'Achat de carburant', from: 'Achat' })).toBe(true);
     expect(isTitleOnlyAction(titre({ title: 'Achat de carburant' }))).toBe(true);
@@ -177,7 +179,13 @@ describe('C832-U-04 — passage « titre seulement » : une seule règle, et plu
   it('la projection expose le passage « titre seulement », et la reprise l’emploie sans écarter les opérations à écart annexe', () => {
     const service = lire('src/services/business-operations/agenda-projection/service.ts');
     expect(service).toMatch(/titleOnly\?: boolean/);
-    expect(service).toMatch(/if \(opts\.titleOnly && !isTitleOnlyAction\(action\)\) continue;/);
+    // Carte #860 : le filtre « action entière de titre » (`if (opts.titleOnly && !isTitleOnlyAction(action)) continue;`)
+    // écartait en bloc une SYNC mixte {titre, date} et laissait ABSTAIN hors du filtre alimenter la clôture des cartes.
+    // Il est remplacé par la sélection UNIQUE des titres exécutables, qui EXTRAIT le titre indépendant d'une SYNC mixte
+    // sans exécuter le reste (couvert par `c860-titre-seul-isole.test.ts`). La règle « titre seulement » reste unique.
+    expect(service).toMatch(/if \(opts\.titleOnly\) \{/);
+    expect(service).toMatch(/selectTitleOnlyActions\(\{ op, plan, linked:/);
+    expect(service).not.toMatch(/opts\.titleOnly && !isTitleOnlyAction/);
     // Un passage « titre seulement » ne propage pas les documents vers l'élément porteur.
     expect(service).toMatch(/!opts\.dryRun && !opts\.titleOnly && representee/);
     const reprise = lire('src/services/business-operations/agenda-projection/purchase-title-reprise.ts');

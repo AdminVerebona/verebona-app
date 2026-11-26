@@ -36,12 +36,21 @@
  * SYSTEM sans meilleur nom) et le MOTIF précis — aucune carte « À traiter »
  * n'est créée pour la seule incertitude de provenance.
  *
+ * Carte #860 — PARITÉ SIMULATION / APPLICATION : le constat et l'application
+ * passent par la MÊME sélection des titres exécutables (`selectTitleOnlyActions`,
+ * via `projectAccountOperations({ titleOnly })`, simulée puis réelle). Le titre
+ * d'une SYNC mixte (titre + date…) est annoncé puis écrit s'il est indépendant et
+ * éligible ; sinon l'événement est rendu `KEEP_TITLE_NOT_ISOLABLE` avec son motif.
+ * Les compteurs écrits (`eventsRenamed`) sont ceux du RÉSULTAT RÉEL des écritures
+ * (`titleWrites`) : un titre refusé par une garde ou en échec n'est jamais compté.
+ *
  * DURABLE sans ce service : toute reconsolidation T3 d'un achat applique le
  * même intitulé, et le contrôle quotidien COH-AGENDA-OPERATION-PROJECTION
  * répare le titre de l'événement (SYNC, RETITLE).
  */
 import type { AcquisitionNameBasis } from '@/lib/reference-events/operation-title';
 import { isTitleOnlyAction, type ProjectionAction } from './model';
+import type { TitleOnlyOutcome } from './service';
 import { AGENDA_TITLE_EVIDENCE_COLUMNS_SQL, agendaTitleAuthorityOfRow, type TitleAuthorityDecision } from '../title-provenance';
 
 type Row = Record<string, unknown>;
@@ -59,9 +68,13 @@ export interface PurchaseTitleRepriseEvent {
    * RENAME : titre automatique remplacé par l'intitulé de l'opération ;
    * KEEP_USER_TITLE : titre choisi par l'utilisateur, ou événement saisi — jamais touché ;
    * KEEP_UNKNOWN_PROVENANCE : provenance du titre inconnue ou contradictoire (carte #859) — rien n'est écrit ;
-   * KEEP_NO_PRECISE_NAME : titre SYSTEM « Achat », mais rien de fiable ne dit ce qui a été acheté.
+   * KEEP_NO_PRECISE_NAME : titre SYSTEM « Achat », mais rien de fiable ne dit ce qui a été acheté ;
+   * KEEP_TITLE_NOT_ISOLABLE (carte #860) : un meilleur titre est prévu par la projection, mais il n'est pas
+   *   indépendant (rattachement à venir, représentation à décider, requalification…) — motif `titleOnlyReason`.
    */
-  action: 'RENAME' | 'KEEP_USER_TITLE' | 'KEEP_UNKNOWN_PROVENANCE' | 'KEEP_NO_PRECISE_NAME';
+  action: 'RENAME' | 'KEEP_USER_TITLE' | 'KEEP_UNKNOWN_PROVENANCE' | 'KEEP_NO_PRECISE_NAME' | 'KEEP_TITLE_NOT_ISOLABLE';
+  /** Carte #860 : motif de non-isolement du titre prévu (`selectTitleOnlyActions`) ; absent : sans objet. */
+  titleOnlyReason?: string;
   /** Carte #859 : provenance du CHAMP titre (état, motif précis, preuve lue). */
   titleAuthority: TitleAuthorityDecision;
   /** Chemin de création de l'événement : projection de l'opération, décision T4 du justificatif, saisie. */
@@ -110,7 +123,13 @@ export interface PurchaseTitleRepriseReport {
   nextAfterOperationId: number | null;
   /** Écritures effectives (0 à blanc). */
   labelsRenamed: number;
+  /** Carte #860 : titres d'événement RÉELLEMENT écrits (résultat relu, jamais le seul plan). */
   eventsRenamed: number;
+  /**
+   * Carte #860 : résultat réel de chaque titre tenté par l'application (identifiant, titre avant / après effectif,
+   * titre prévu, statut RENAMED / REFUSED / FAILED / NOT_ISOLABLE, motif). Absent à blanc.
+   */
+  titleWrites?: TitleOnlyOutcome[];
   /** Identifiant de l'exécution (journal des renommages restaurables). */
   runId?: string;
   skipped?: string;
@@ -146,11 +165,13 @@ async function constat(accountId: number, afterId: number, limit: number, today?
   const noms = await previewAcquisitionNames(accountId, ids, today);
   const { projectAccountOperations } = await import('./service');
   const { isUninformativePurchaseTitle } = await import('./model');
+  // Carte #860 : simulation du passage « titre seulement » — même sélection des titres exécutables que l'application.
   const sim = await projectAccountOperations(accountId, {
-    operationIds: ids, dryRun: true, ...(today ? { today } : {}),
+    operationIds: ids, dryRun: true, titleOnly: true, ...(today ? { today } : {}),
     labelOverrides: new Map([...noms.values()].filter((n) => n.wouldChange).map((n) => [n.operationId, n.expected])),
   });
   const plans = new Map((sim.plans ?? []).map((p) => [p.operationId, p.actions]));
+  const selection = sim.titleOnly ?? [];
   const items = (await pgClient.unsafe(
     `SELECT i.id, i.business_operation_id AS op, i.title, i.start_date::text AS date, i.is_automatic,
             COALESCE(i.is_automatic_modified, false) AS modified, (i.projection_origin IS NOT DISTINCT FROM 'OPERATION') AS projected,
@@ -176,10 +197,13 @@ async function constat(accountId: number, afterId: number, limit: number, today?
   for (const id of ids) {
     const nom = noms.get(id);
     const actions = plans.get(id) ?? [];
+    // Carte #860 : seuls les titres EXÉCUTABLES de la sélection unique sont annoncés (plus « tout SYNC contenant un
+    // titre ») ; les titres prévus mais non isolables sont rendus avec leur motif.
     const titres = new Map<number, string>();
-    for (const a of actions) {
-      if (a.kind === 'RETITLE') titres.set(a.itemId, a.title);
-      if (a.kind === 'SYNC' && a.changes.title !== undefined) titres.set(a.itemId, a.changes.title);
+    const nonIsoles = new Map<number, string>();
+    for (const t of selection.filter((x) => x.operationId === id)) {
+      if (t.status === 'PLANNED') titres.set(t.itemId, t.plannedTitle);
+      else if (t.status === 'NOT_ISOLABLE' && t.reason) nonIsoles.set(t.itemId, t.reason);
     }
     const autres = nonTitleActions(actions);
     const c = ctx.get(id) ?? { provider: null, assetNames: [], documentTitles: [] };
@@ -194,8 +218,10 @@ async function constat(accountId: number, afterId: number, limit: number, today?
       const voulu = titres.get(itemId);
       const garde = titleAuthority.authority === 'USER' ? 'KEEP_USER_TITLE' as const
         : titleAuthority.authority === 'UNKNOWN' ? 'KEEP_UNKNOWN_PROVENANCE' as const : 'KEEP_NO_PRECISE_NAME' as const;
+      const motif = nonIsoles.get(itemId);
       if (voulu !== undefined && voulu !== before && titleAuthority.authority === 'SYSTEM') events.push({ ...base, after: voulu, action: 'RENAME' });
-      else if (isUninformativePurchaseTitle(before, c)) events.push({ ...base, after: before, action: garde });
+      else if (motif !== undefined && titleAuthority.authority === 'SYSTEM') events.push({ ...base, after: before, action: 'KEEP_TITLE_NOT_ISOLABLE', titleOnlyReason: motif });
+      else if (motif !== undefined || isUninformativePurchaseTitle(before, c)) events.push({ ...base, after: before, action: garde, ...(motif !== undefined ? { titleOnlyReason: motif } : {}) });
     }
     const renomme = !!nom?.wouldChange;
     const autorite = nom?.titleAuthority ?? null;
@@ -205,7 +231,7 @@ async function constat(accountId: number, afterId: number, limit: number, today?
       titleAuthority: autorite, blockedExpected: nom?.blockedExpected ?? null,
     };
     // Carte #859 : un intitulé dont SEULE la provenance (USER, INCONNUE) empêche l'amélioration est rendu, avec son motif.
-    if (renomme || events.length || !!nom?.blockedExpected) operations.push({ operationId: id, label, events, otherPendingActions: events.some((e) => e.action === 'RENAME') ? autres : [] });
+    if (renomme || events.length || !!nom?.blockedExpected) operations.push({ operationId: id, label, events, otherPendingActions: events.some((e) => e.action === 'RENAME' || e.action === 'KEEP_TITLE_NOT_ISOLABLE') ? autres : [] });
   }
   return { examined: ids.length, operations, remaining, nextAfterOperationId: remaining ? ids[ids.length - 1] : null };
 }
@@ -255,12 +281,11 @@ export async function reprisePurchaseTitles(
   const aProjeter = c.operations.filter((x) => x.events.some((e) => e.action === 'RENAME')).map((x) => x.operationId);
   if (aProjeter.length) {
     const { projectAccountOperations } = await import('./service');
-    await projectAccountOperations(accountId, { operationIds: aProjeter, correlationId, runId, titleOnly: true, ...jour });
-    const voulus = new Map(c.operations.filter((x) => aProjeter.includes(x.operationId)).flatMap((x) => x.events.filter((e) => e.action === 'RENAME').map((e) => [e.itemId, e.after] as const)));
-    const { pgClient } = await import('@/db');
-    const lus = (await pgClient.unsafe(
-      `SELECT id, title FROM agenda_items WHERE account_id = $1 AND id = ANY($2::bigint[])`, [accountId, `{${[...voulus.keys()].join(',')}}`] as never[])) as unknown as Row[];
-    report.eventsRenamed = lus.filter((r) => voulus.get(Number(r.id)) === String(r.title ?? '')).length;
+    const r = await projectAccountOperations(accountId, { operationIds: aProjeter, correlationId, runId, titleOnly: true, ...jour });
+    // Carte #860 : résultat RÉEL des écritures (titre relu) — jamais un titre seulement prévu, refusé ou en échec.
+    report.titleWrites = r.titleOnly ?? [];
+    report.eventsRenamed = report.titleWrites.filter((t) => t.status === 'RENAMED').length;
+    if (r.skipped) report.skipped = r.skipped;
   }
   report.applied = true;
   report.runId = runId;

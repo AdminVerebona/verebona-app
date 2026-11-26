@@ -42,8 +42,8 @@ import { agendaFunctionalColumnsReady } from '@/services/agenda/agenda-columns';
 import { writeAgendaItem, type AgendaItemValues } from '@/services/agenda/write-agenda-item';
 import {
   PROJECTION_KIND_AGENDA, PROJECTION_ORIGIN, PROJECTION_ORIGIN_REF_TYPE, PROJECTION_ORIGIN_TYPE,
-  decideProjection, isTitleOnlyAction, isTouched, parseProjectionFunctionalKey, planOperationProjection, projectionKeyOf,
-  type AgendaItemSnapshot, type ItemSync, type OperationSnapshot, type ProjectionAction,
+  decideProjection, isTouched, parseProjectionFunctionalKey, planOperationProjection, projectionKeyOf, selectTitleOnlyActions,
+  type AgendaItemSnapshot, type ItemSync, type OperationSnapshot, type ProjectionAction, type TitleOnlySelection,
 } from './model';
 import type { AgendaEventNature } from '@/services/agenda/agenda-functional-key';
 import type { BusinessOperationStatus, BusinessOperationTypeCode } from '../model';
@@ -161,15 +161,46 @@ interface ProjectionRunOptions {
    */
   labelOverrides?: ReadonlyMap<number, string | null>;
   /**
-   * Carte #832 (§ 3.C) : passage « TITRE SEULEMENT ». Seules les actions qui ne
-   * changent qu'un intitulé sont appliquées (`RETITLE`, `SYNC` dont le seul
-   * changement est le titre, `isTitleOnlyAction`) : aucun événement créé,
-   * supprimé, lié ou redaté, aucune carte « À traiter », aucune propagation de
-   * documents. Sert la reprise des intitulés d'achat, pour qu'un écart de
-   * projection annexe n'empêche plus la correction du titre — les autres
-   * écarts restent entiers, traités par la projection ordinaire.
+   * Carte #832 (§ 3.C) : passage « TITRE SEULEMENT ». Sert la reprise des
+   * intitulés d'achat, pour qu'un écart de projection annexe n'empêche plus la
+   * correction du titre — les autres écarts restent entiers, traités par la
+   * projection ordinaire.
+   *
+   * Carte #860 — ISOLATION STRICTE : seuls les titres sélectionnés par la règle
+   * unique `selectTitleOnlyActions` (RETITLE, ou titre EXTRAIT d'une SYNC même
+   * mixte — le reste de la SYNC n'est jamais exécuté) sont écrits, par des
+   * écrivains qui n'écrivent que le titre (`retitleAgendaItem`,
+   * `writeProjectionTitleOnly`). Jamais : création, retrait, lien, détachement,
+   * date, fait porté, absorption, propagation de documents, nettoyage des
+   * orphelines (`all` compris), synchronisation / clôture des cartes de
+   * rapprochement « À traiter », réévaluation des cartes de date, rappel,
+   * notification. Résultat réel par titre dans `titleOnly` (rendu aussi en
+   * simulation : titres prévus et motifs de refus).
    */
   titleOnly?: boolean;
+}
+
+/**
+ * Carte #860 (§ 3.C) — résultat d'UN titre en mode « titre seulement » :
+ *   PLANNED      simulation : titre exécutable, écrit par un passage réel si rien ne change d'ici là ;
+ *   RENAMED      écrit (titre relu = titre prévu) ;
+ *   REFUSED      refusé à l'écriture par une garde revérifiée (édition concurrente, légitimité changée…) ;
+ *   FAILED       erreur technique de l'écriture (rien n'est compté) ;
+ *   NOT_ISOLABLE titre prévu par le plan normal mais non indépendant / non éligible (motif), aucune écriture.
+ */
+export interface TitleOnlyOutcome {
+  operationId: number;
+  itemId: number;
+  source: 'RETITLE' | 'SYNC';
+  /** Titre lu au plan et titre prévu. */
+  plannedFrom: string;
+  plannedTitle: string;
+  /** Titre effectif avant / après (relu après l'écriture ; simulation : prévu). */
+  before: string;
+  after: string | null;
+  status: 'PLANNED' | 'RENAMED' | 'REFUSED' | 'FAILED' | 'NOT_ISOLABLE';
+  /** Motif de refus, d'échec ou de non-isolement (null : écrit / prévu). */
+  reason: string | null;
 }
 
 /** Lot 76H : plan d'une Opération rendu par une simulation. */
@@ -213,6 +244,8 @@ export interface ProjectionRunResult {
   lastOperationId?: number | null;
   /** Lot 83A : éléments dont la carte de date (DATA-AGENDA-DATE) a été réévaluée (créés sans date, date posée ou retirée). */
   dateCards?: number;
+  /** Carte #860 : résultat réel (ou prévu, en simulation) de chaque titre d'un passage « titre seulement ». */
+  titleOnly?: TitleOnlyOutcome[];
   /** Écritures effectives (0 = no-op). */
   changes: number;
   /** Lot 83A (C-Q10) : compte non éligible aux traitements métier — aucune projection. */
@@ -740,7 +773,8 @@ export async function projectAccountOperations(accountId: number, opts: Projecti
     // Lot 54D (E07) : passage COMPLET par pages sur curseur stable, jusqu'à
     // épuisement. Interrompu (garde), le travail est rejoué : les pages déjà
     // projetées n'écrivent plus rien (idempotence), rien n'est omis.
-    if (!opts.dryRun) await cleanupOrphans(accountId, res, beforeWrite);
+    // Carte #860 (§ 2.C) : JAMAIS de nettoyage des orphelines (retraits, détachements) en mode « titre seulement ».
+    if (!opts.dryRun && !opts.titleOnly) await cleanupOrphans(accountId, res, beforeWrite);
     res.pages = 0;
     res.lastOperationId = null;
     let curseur = 0;
@@ -759,7 +793,8 @@ export async function projectAccountOperations(accountId: number, opts: Projecti
     await projectIds(accountId, ids, res, { ...opts, beforeWrite, today, correlationId });
   }
   if (res.changes > 0) {
-    console.info(JSON.stringify({ event: 't4.operation_projection', accountId, correlationId, ...res }));
+    const { titleOnly: titres, ...compteurs } = res;
+    console.info(JSON.stringify({ event: 't4.operation_projection', accountId, correlationId, ...compteurs, ...(titres ? { titleOnly: titres.length } : {}) }));
   }
   return res;
 }
@@ -807,15 +842,21 @@ async function projectIds(
       principalWithdrawn: retraits.has(op.id),
       t4Roles: rolesT4.get(op.id),
     });
+    if (opts.titleOnly) {
+      // Carte #832 (§ 3.C) / carte #860 (§ 3.A, § 3.B) : passage « titre seulement ». Le plan normal est calculé
+      // (même état de passage que la simulation : un LINK réserve son élément pour les Opérations suivantes), puis
+      // la règle UNIQUE `selectTitleOnlyActions` en extrait les SEULS titres exécutables — titre d'une SYNC mixte
+      // compris, sans le reste de la SYNC. Rien d'autre n'est appliqué ni compté : ni ABSTAIN (aucun besoin de
+      // carte « À traiter » n'est constitué), ni représentation à décider, ni propagation de documents.
+      for (const action of plan) if (action.kind === 'LINK') taken.add(action.itemId);
+      const selection = selectTitleOnlyActions({ op, plan, linked: linked.filter((i) => i.businessOperationId === op.id) });
+      await applyTitleOnly(op, selection, res, { dryRun: opts.dryRun === true, beforeWrite, correlationId, runId: opts.runId ?? null });
+      if (opts.dryRun && plan.length) {
+        (res.plans ??= []).push({ operationId: op.id, typeCode: op.typeCode, decision: decision.kind === 'PROJECT' ? 'PROJECT' : decision.reason, actions: plan });
+      }
+      continue;
+    }
     for (const action of plan) {
-      // Carte #832 (§ 3.C) : passage « titre seulement ». La reprise des intitulés d'achat
-      // n'appliquait le plan QUE si celui-ci ne contenait aucune autre action
-      // (`otherPendingActions`) : un écart de projection annexe — un événement à créer, une
-      // date à poser, une représentation ambiguë — rendait impossible la correction du titre
-      // seul, pourtant sûre et indépendante. Ici, tout ce qui n'est pas un changement de titre
-      // est écarté AVANT la moindre écriture et AVANT toute carte « À traiter » : les autres
-      // écarts restent entiers, pour la projection ordinaire.
-      if (opts.titleOnly && !isTitleOnlyAction(action)) continue;
       if (action.kind === 'LINK') taken.add(action.itemId);
       // Lot 87B : une demande de décision T4 ne RÉSERVE aucun élément (rien n'est rattaché) : une autre Opération du
       // même document les voit encore comme candidats (et s'abstient de même) — jamais une projection en doublon.
@@ -840,7 +881,8 @@ async function projectIds(
     const representee = linked.some((i) => i.businessOperationId === op.id)
       || plan.some((a) => a.kind === 'CREATE' || a.kind === 'LINK' || a.kind === 'CARRY');
     // Carte #832 (§ 3.C) : un passage « titre seulement » ne touche QUE des intitulés —
-    // il ne propage aucun document vers l'élément porteur.
+    // il ne propage aucun document vers l'élément porteur. (Carte #860 : ce chemin n'est plus
+    // atteint en mode « titre seulement » — branche dédiée ci-dessus ; garde conservée par défense.)
     if (!opts.dryRun && !opts.titleOnly && representee) {
       const { recomputePrincipal } = await import('../grouping/service');
       const r = await grouping(accountId, correlationId, (ctx) => recomputePrincipal(ctx, op.id));
@@ -853,13 +895,63 @@ async function projectIds(
       (res.plans ??= []).push({ operationId: op.id, typeCode: op.typeCode, decision: decision.kind === 'PROJECT' ? 'PROJECT' : decision.reason, actions: plan });
     }
   }
-  if (opts.dryRun) return;
+  // Carte #860 (§ 2.A) : en mode « titre seulement », ni synchronisation ni clôture des cartes de rapprochement
+  // (`syncAgendaProjectionCards` fermerait, faute de besoin, des cartes encore légitimes — PROJECTION_RESOLVED), ni
+  // réévaluation des cartes de date : aucun besoin n'a été constitué, aucun n'est reconstitué artificiellement.
+  if (opts.dryRun || opts.titleOnly) return;
   {
     const { syncAgendaProjectionCards } = await import('@/services/to-process/agenda-projection-cards');
     const r = await syncAgendaProjectionCards(accountId, besoins, ops.map((x) => x.id));
     res.matchCards = (res.matchCards ?? 0) + r.created + r.updated;
   }
   await refreshDateCards(accountId, [...dateCards], res, correlationId);
+}
+
+/**
+ * Carte #860 (§ 3.B, § 3.C) — applique (ou simule) les SEULS titres sélectionnés d'une Opération et rend le résultat
+ * RÉEL de chacun : écrivain `retitleAgendaItem` (RETITLE, gardes #859 inchangées) ou `writeProjectionTitleOnly`
+ * (titre extrait d'une SYNC). Le titre est relu après l'écriture : un titre refusé par une garde, une écriture en
+ * échec ou un titre devenu obsolète n'est jamais compté comme renommé. Seuls `retitled` et `changes` comptent.
+ */
+async function applyTitleOnly(
+  op: OperationSnapshot, sel: TitleOnlySelection, res: ProjectionRunResult,
+  o: { dryRun: boolean; beforeWrite: (w: string) => Promise<void> | void; correlationId: string | null; runId: string | null },
+): Promise<void> {
+  const rapport = (res.titleOnly ??= []);
+  for (const r of sel.refused) {
+    rapport.push({ operationId: op.id, itemId: r.itemId, source: r.source, plannedFrom: r.from, plannedTitle: r.title, before: r.from, after: r.from, status: 'NOT_ISOLABLE', reason: r.reason });
+  }
+  for (const c of sel.executable) {
+    const base = { operationId: op.id, itemId: c.itemId, source: c.source, plannedFrom: c.from, plannedTitle: c.title, before: c.from };
+    if (o.dryRun) { rapport.push({ ...base, after: c.title, status: 'PLANNED', reason: null }); continue; }
+    // Garde du travail de file : une interruption voulue (bail perdu) se propage, comme pour toute écriture.
+    await o.beforeWrite('T4 projection — titre seul');
+    let issue: import('./consolidation').TitleOnlyWriteOutcome | null = null;
+    let erreur: string | null = null;
+    try {
+      const { consolidationJournalReady, retitleAgendaItem, writeProjectionTitleOnly } = await import('./consolidation');
+      const origin = o.runId ? 'REPRISE' as const : 'PROJECTION' as const;
+      if (c.source === 'RETITLE') {
+        const ecrit = await retitleAgendaItem({ accountId: op.accountId, operationId: op.id, itemId: c.itemId, title: c.title, from: c.from, origin, runId: o.runId, correlationId: o.correlationId });
+        issue = ecrit ? 'WRITTEN' : (await consolidationJournalReady()) ? 'GUARD_REFUSED' : 'JOURNAL_MISSING';
+      } else {
+        issue = await writeProjectionTitleOnly({
+          accountId: op.accountId, operationId: op.id, itemId: c.itemId, title: c.title, from: c.from,
+          expected: c.expected ?? { functionalKey: null, businessType: null, nature: null }, origin, runId: o.runId, correlationId: o.correlationId,
+        });
+      }
+    } catch (e) {
+      erreur = (e as Error).message;
+    }
+    const [lu] = await rows<{ title: string }>(db, sql`SELECT title FROM agenda_items WHERE id = ${c.itemId} AND account_id = ${op.accountId}`);
+    const after = lu ? String(lu.title ?? '') : null;
+    const ok = erreur === null && issue === 'WRITTEN' && after === c.title;
+    const status: TitleOnlyOutcome['status'] = erreur !== null ? 'FAILED' : ok ? 'RENAMED' : 'REFUSED';
+    const reason = erreur !== null ? `WRITE_FAILED: ${erreur}` : ok ? null : issue === 'WRITTEN' ? 'TITLE_NOT_APPLIED' : issue;
+    rapport.push({ ...base, after, status, reason });
+    if (ok) { res.retitled = (res.retitled ?? 0) + 1; res.changes++; }
+    else console.info(JSON.stringify({ event: 't4.operation_projection_title_only', accountId: op.accountId, operationId: op.id, itemId: c.itemId, status, reason }));
+  }
 }
 
 /**

@@ -1,8 +1,0 @@
-#863 (correctif) — Diagnostic : déclarer ai_schema_compat_observations au registre de couverture
-
-- coverage.ts : table de la migration 2000 classée « technique » (codes et dates, aucun contenu, sans account_id)
-- recette-catalog.ts : libellé de recette correspondant
-- Corrige test:e2e:diagnostic (l88a E01/E02/E07, l91a E01/E03/E04 : section « Tables non classées » PARTIAL)
-
-Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
-Claude-Session: https://claude.ai/code/session_019ggU7MXUBqUca4xK9QPZ4q
