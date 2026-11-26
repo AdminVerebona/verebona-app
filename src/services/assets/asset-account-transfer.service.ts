@@ -129,6 +129,8 @@ export const FILE_SCOPED_TABLES: ReadonlyArray<readonly [table: string, column: 
   ['document_value_decisions', 'file_id'],
   // Lot 108K : progression du réexamen ciblé des décisions T1 par unité (1090) — suit le document.
   ['document_value_review_units', 'file_id'],
+  // Carte #854 : réceptions des décisions T1 des réparations différées (2012) — suivent le document.
+  ['document_value_decision_receipts', 'file_id'],
   // Lot 108B : récupération du montant du justificatif (état, preuve, provenance, 1045) — suit le document.
   ['document_amount_recoveries', 'file_id'],
   // Lot 109K : journal de propagation des réparations T1 vers les candidats et T3 (1145) — suit le document.

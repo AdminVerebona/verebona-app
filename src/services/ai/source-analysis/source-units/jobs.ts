@@ -64,7 +64,7 @@ import type { ProjectedFact, T1AnalyzeDocumentOutput, T1Fact } from '../master/t
 import type { RepairPropagationOutcome } from '../operation-candidates/repair-propagation.store';
 
 import { FactRefs, KnownFacts, LocalLinks, factCoreIdentity, type FactIdentityInput } from './repair-identity';
-import type { AnchoredValueDecision } from '../value-decisions/validate';
+import type { RepairCallEnvelope, RepairReceivedDecision } from './repair';
 type Row = Record<string, unknown>;
 const num = (v: unknown, def: number) => {
   const n = Number(v);
@@ -1056,6 +1056,21 @@ async function retryDocument(p: {
 }): Promise<DocumentRetryOutcome> {
   const { pgClient } = await import('@/db');
   const issue = (outcome: DocumentRetryOutcome['outcome'], result: string): DocumentRetryOutcome => ({ outcome, calls: 0, attempted: [], newFacts: 0, result });
+  // ══════════════════════════════════════════════════════════════════════
+  // CARTE #854 (R4) — REPRISE SANS IA DES DÉCISIONS D'UNE PASSE ANTÉRIEURE
+  // Manifeste resté en attente (arrêt entre les faits et les décisions),
+  // incident réessayable, écriture non confirmée : réévalués sur le contexte
+  // persisté avec le contrat FIGÉ de leur appel, écrits sans doublon, relus,
+  // AVANT toute sélection d'unités — une décision prouvée n'est jamais
+  // redemandée au modèle. Bornée (`RECEIPT_RECOVERY_MAX`), jamais de boucle.
+  // ══════════════════════════════════════════════════════════════════════
+  const decisionsMod = await import('./repair-decisions');
+  const repriseDecisions = await decisionsMod.recoverDecisionReceipts({ accountId: p.accountId, fileId: p.fileId, extractionId: p.extractionId, assetId: p.assetId })
+    .catch((e: Error) => {
+      if (e instanceof decisionsMod.DecisionPassCrashSimulated) throw e;
+      console.error(`[t1-completeness-retry] reprise des décisions du fichier ${p.fileId} impossible :`, e.message);
+      return null;
+    });
 
   // Lot 53 (D19) : vérification incomplète — seule une cause transitoire
   // (source illisible) justifie une relecture automatique du fichier ; sinon
@@ -1146,8 +1161,9 @@ async function retryDocument(p: {
   // Lot 114G (#760, P1-02 / P1-03) : liens locaux fait ↔ unité et décisions de valeur de la passe de
   // réparation — jusqu'ici perdus par la reprise différée (seuls faits et compteurs étaient repris).
   let liensLocaux: Map<T1Fact, string[]> | undefined;
-  let decisionsRecues: AnchoredValueDecision[] = [];
-  let decisionsEcartees = { schemaInvalid: 0, unitNotFound: 0 };
+  // Carte #854 (R1, R3) : enveloppe de contrat de CHAQUE appel et décisions REÇUES (retenues et rejetées avant validation).
+  let enveloppes: RepairCallEnvelope[] = [];
+  let decisionsRecues: RepairReceivedDecision[] = [];
   // Lot 115F (#792, écart P1-03) : liens explicites par identifiant cité, et associations ambiguës refusées.
   let liensPasse = { byCitedId: 0, ambiguous: 0 };
   // ══════════════════════════════════════════════════════════════════════
@@ -1201,8 +1217,9 @@ async function retryDocument(p: {
       notAttempted = r.notAttempted;
       liensLocaux = r.links;
       liensPasse = { byCitedId: r.linksByCitedId, ambiguous: r.linksAmbiguous };
-      decisionsRecues = r.decisions;
-      decisionsEcartees = r.decisionsDropped;
+      // Passe sans journal de réception (double de test, version antérieure) : aucune décision reçue, jamais une erreur.
+      decisionsRecues = r.received ?? [];
+      enveloppes = r.envelopes ?? [];
       cout.textCalls = r.calls;
       cout.textCallsFailed = r.callsFailed;
       cout.textCostMicros = r.costMicros;
@@ -1216,16 +1233,17 @@ async function retryDocument(p: {
     ? await appendRepairedFacts({ ...p, facts, linker, localLinks: liensLocaux, propagationOrigin: p.textOnly ? 'coherence-control' : 't1-completeness-retry' })
     : { inserted: [], all: [] };
   const nouveaux = ajout.inserted;
-  // Lot 114G (#760, P1-02) : décisions de valeur de la réparation — validées, rattachées, persistées
-  // (idempotent) AVANT la réconciliation qui suit, laquelle les relit en base.
-  const decisionsDiag = await persistRepairDecisions({
-    accountId: p.accountId, fileId: p.fileId, extractionId: p.extractionId, decisions: decisionsRecues,
-    units, facts, factIdsByRef: ajout.factIdsByRef ?? new Map(),
+  // Lot 114G (#760, P1-02) puis carte #854 : décisions de valeur de la réparation — APRÈS le commit des faits,
+  // manifeste, contrat de leur appel, contexte persisté, écriture transactionnelle, relecture exacte — AVANT la
+  // réconciliation qui suit, laquelle ne relit que les décisions CONFIRMÉES.
+  const passId = `rp:${p.fileId}:${p.attempt}:${(await import('crypto')).randomUUID().slice(0, 8)}`;
+  const decisionsDiag = await decisionsMod.persistRepairDecisions({
+    accountId: p.accountId, fileId: p.fileId, extractionId: p.extractionId, assetId: p.assetId, passId,
+    passOrigin: p.textOnly ? 'coherence-control' : continuation ? 'continuation' : 't1-completeness-retry',
+    received: decisionsRecues, envelopes: enveloppes, units, factIdsByRef: ajout.factIdsByRef ?? new Map(),
   });
-  // Décisions écartées dès la passe (mal formées, unité ciblée introuvable) : comptées, jamais silencieuses.
-  decisionsDiag.received += decisionsEcartees.schemaInvalid + decisionsEcartees.unitNotFound;
-  if (decisionsEcartees.schemaInvalid) decisionsDiag.skipped.SCHEMA_INVALID = decisionsEcartees.schemaInvalid;
-  if (decisionsEcartees.unitNotFound) decisionsDiag.skipped.UNIT_NOT_IN_TARGET_ZONE = decisionsEcartees.unitNotFound;
+  const decisionsIncompletes = decisionsDiag.state === 'INCOMPLETE' || repriseDecisions?.state === 'INCOMPLETE';
+  const decisionsReprenables = Boolean(decisionsDiag.retryable || repriseDecisions?.retryable);
   // Couverture : faits de la réparation, y compris ceux déjà écrits par une reprise interrompue (TC11).
   const couvertes = new Set(ajout.all.flatMap((f) => f.sourceUnitIds ?? []).map((id) => id.replace(/:cell:\d+$/, '')));
   // Lignes de tableau incertaines : promues seulement si chaque cellule renseignée est confirmée (DEV-02).
@@ -1311,6 +1329,8 @@ async function retryDocument(p: {
     (report.diagnostics as T1CoverageDiagnostics & { deferredRepair?: Record<string, unknown> }).deferredRepair = {
       calls, attemptedUnits: attempted.length, newFacts: nouveaux.length,
       decisions: decisionsDiag,
+      // Carte #854 (R4) : reprise SANS IA de réceptions antérieures (null : rien à reprendre).
+      ...(repriseDecisions ? { decisionsRecovery: repriseDecisions } : {}),
       // Lot 115F (#792, écart P2-10) : appels de CETTE reprise par famille, échecs et coût rendu
       // (`costUnknownCalls` : appels dont le coût n'a pas été rendu — inconnu, jamais zéro).
       textRepair: {
@@ -1334,7 +1354,9 @@ async function retryDocument(p: {
   // Unités en attente avec progression : continuation rapprochée ; sinon délai croissant.
   // Lot 54G (point 2) : relecture du fichier encore due (NEEDS_SOURCE, tentatives restantes) : reprise programmée.
   // Lot 114H (#775, P1-A) : une échéance n'existe QUE si la règle unique admet une action automatique.
-  const prochaine = !suite.automatic ? null
+  // Carte #854 (R4) : décisions non confirmées mais reprenables SANS IA — reprise rapprochée de la seule persistance
+  // (aucune tentative IA consommée à l'entrée sans action admissible, règle 114H ; reprises bornées par réception).
+  const prochaine = !suite.automatic ? (decisionsIncompletes && decisionsReprenables ? new Date(Date.now() + 5 * 60_000) : null)
     : new Date(Date.now() + (progression && suite.actions.includes('CONTINUATION') ? 5 * 60_000 : retryDelayMs(tentativesStockees + 1)));
   const resultatTexte = !admissible ? `RETRY_NOT_ADMISSIBLE:${entree.blocked ?? 'NOTHING_TO_RETRY'}`
     : attempted.length === 0 ? 'NOTHING_TO_REPAIR'
@@ -1343,8 +1365,10 @@ async function retryDocument(p: {
     : relecture.failed && relecture.resolved.length === 0 ? 'SOURCE_REREAD_FAILED'
       : relecture.resolved.length === relecture.attempted.length ? `SOURCE_REREAD_RESOLVED_${relecture.resolved.length}`
         : `SOURCE_REREAD_PARTIAL_${relecture.resolved.length}_OF_${relecture.attempted.length}`;
-  const resultat = resultatRelecture && attempted.length === 0 ? resultatRelecture
+  const resultatBase = resultatRelecture && attempted.length === 0 ? resultatRelecture
     : resultatRelecture ? `${resultatRelecture}+${resultatTexte}` : resultatTexte;
+  // Carte #854 (R4) : passe aux décisions non confirmées — jamais un succès de persistance (motifs au diagnostic).
+  const resultat = decisionsIncompletes ? `${resultatBase}+DECISIONS_INCOMPLETE` : resultatBase;
   await pgClient.begin(async (tx) => {
     await writeSourceLayer(tx as never, {
       accountId: p.accountId, fileId: p.fileId, extractionId: p.extractionId, origin: 'RETRY',
@@ -1397,112 +1421,12 @@ async function retryDocument(p: {
   return { outcome: report.qualityState === 'INCOMPLETE_FINAL' ? 'final' : 'repaired', calls, attempted, newFacts: nouveaux.length, result: resultat };
 }
 
-/** Lot 114G (#760, P1-02) : bilan des décisions de valeur d'une reprise différée. */
-export interface RepairDecisionsDiag {
-  received: number; valid: number; invalid: number; persisted: number;
-  /** Décisions non exploitées, par motif (contrat non porté, table absente, écriture impossible, rejets de validation). */
-  skipped: Record<string, number>;
-  /** Lot 115F (#792, écart P1-02) : version de prompt qui a produit les décisions (celle de l'appel). */
-  promptVersion?: string | null;
-  /** La version de l'appel diffère de celle de l'analyse d'origine (jamais bloquant). */
-  contractVersionChanged?: boolean;
-  /** Clés de candidats ACTIFS du document fournies à la validation (contexte réellement persisté). */
-  candidateKeys?: number;
-  /** Décisions RELUES en base après écriture (actives, VALIDES) — `null` : relecture impossible. */
-  rereadActive?: number | null;
-}
-
 /**
- * Lot 114G (Trello #760, P1-02) — DÉCISIONS DE VALEUR D'UNE RÉPARATION DIFFÉRÉE.
- *
- * `runRepairPass()` rend des décisions (STRUCTURED, COMPONENT_OR_CONTEXT,
- * NOT_RETAINED, UNDETERMINED) ; l'analyse initiale les conserve depuis 113AN,
- * la reprise manuelle ou planifiée les perdait. Elles suivent ici le MÊME
- * chemin : validation (`validateValueDecisions`, contrat effectif), rattachement
- * à l'unité et aux faits persistés, écriture idempotente (`insertValueDecisions`).
- * Une décision invalide est écrite comme telle (jamais une justification),
- * comme à l'analyse. Ne lève jamais : une écriture impossible est comptée.
+ * Lot 114G (#760, P1-02) puis carte #854 (P1-02 de #835) : décisions de valeur des reprises différées —
+ * contrat figé PAR APPEL, validation sur les connaissances PERSISTÉES, persistance des décisions ET des rejets
+ * (journal 2012), relecture EXACTE, reprise sans IA. Voir `repair-decisions.ts`.
  */
-export async function persistRepairDecisions(p: {
-  accountId: number; fileId: number; extractionId: number | null;
-  decisions: readonly AnchoredValueDecision[];
-  units: readonly CoveredSourceUnit[];
-  facts: readonly T1Fact[];
-  factIdsByRef: ReadonlyMap<string, readonly number[]>;
-}): Promise<RepairDecisionsDiag> {
-  const diag: RepairDecisionsDiag = { received: p.decisions.length, valid: 0, invalid: 0, persisted: 0, skipped: {} };
-  const ecarter = (motif: string, n: number) => { if (n > 0) diag.skipped[motif] = (diag.skipped[motif] ?? 0) + n; };
-  if (p.decisions.length === 0) return diag;
-  try {
-    const [{ valueDecisionsCapability, repairDecisionContract }, { validateValueDecisions, factContextOf }, { insertValueDecisions, valueDecisionsTableReady }, { pgClient }] = await Promise.all([
-      import('../value-decisions/contract'), import('../value-decisions/validate'), import('../value-decisions/store'), import('@/db'),
-    ]);
-    const ext = ((await pgClient.unsafe(
-      `SELECT prompt_version FROM document_extractions WHERE file_id = $1 AND account_id = $2`, [p.fileId, p.accountId] as never[],
-    )) as unknown as Row[])[0];
-    // Lot 115F (#792, écart P1-02) : le contrat jugé est celui de l'APPEL qui vient d'être fait (version effective),
-    // pas celui de l'analyse d'origine ; la version enregistrée est celle qui a produit les décisions.
-    const contrat = repairDecisionContract(await valueDecisionsCapability(), ext?.prompt_version == null ? null : String(ext.prompt_version));
-    const promptVersion = contrat.promptVersion;
-    diag.promptVersion = promptVersion;
-    diag.contractVersionChanged = contrat.versionChanged;
-    if (!contrat.carried) {
-      ecarter('CONTRACT_NOT_CARRIED', p.decisions.length);
-      return diag;
-    }
-    if (!(await valueDecisionsTableReady())) { ecarter('TABLE_MISSING', p.decisions.length); return diag; }
-    // Seuls les faits réellement PERSISTÉS (nouveaux ou déjà présents) peuvent justifier une décision.
-    const gardes = (p.facts as Array<T1Fact & { t1FactRef?: string }>).filter((f) => f.t1FactRef && p.factIdsByRef.has(f.t1FactRef));
-    // ══════════════════════════════════════════════════════════════════════
-    // LOT 115F (Trello #792, écart P1-02) — VALIDATION CONTRE LE CONTEXTE PERSISTÉ
-    //
-    // Règle remplacée : `candidateKeys: new Set()` — aucun candidat connu, donc
-    // toute décision COMPONENT_OR_CONTEXT rattachée à un candidat de
-    // l'événement de référence était déclarée INVALIDE (`LINK_MISSING`), alors
-    // que le candidat existe et est ACTIF en base. Les clés réellement
-    // persistées du document sont maintenant chargées (table absente : aucune
-    // clé, jamais une erreur).
-    // ══════════════════════════════════════════════════════════════════════
-    const candidats = ((await pgClient.unsafe(
-      `SELECT candidate_key FROM document_operation_candidates
-        WHERE account_id = $1 AND file_id = $2 AND status = 'ACTIVE' ORDER BY id`,
-      [p.accountId, p.fileId] as never[],
-    ).catch(() => [])) as unknown as Row[]).map((c) => String(c.candidate_key));
-    diag.candidateKeys = candidats.length;
-    const preparees = validateValueDecisions(p.decisions, {
-      units: p.units,
-      keptFactRefs: new Set(gardes.map((f) => f.t1FactRef!)),
-      candidateKeys: new Set(candidats),
-      facts: factContextOf(gardes as never, p.units),
-    });
-    diag.valid = preparees.filter((d) => d.validity === 'VALID').length;
-    diag.invalid = preparees.length - diag.valid;
-    for (const d of preparees) if (d.validity === 'INVALID') ecarter(`INVALID:${d.invalidReason ?? 'UNKNOWN'}`, 1);
-    if (preparees.length === 0) return diag;
-    await pgClient.begin(async (tx) => {
-      diag.persisted = await insertValueDecisions(tx as never, {
-        accountId: p.accountId, fileId: p.fileId, extractionId: p.extractionId, analysisRunId: null, promptVersion,
-        factIds: p.factIdsByRef,
-      }, preparees);
-    });
-    // Lot 115F (#792, écart P1-02) : décisions RELUES après le commit — « écrite » n'est plus déduite du
-    // compte rendu de l'écriture. Relecture impossible : `null` (jamais une erreur, jamais un faux succès).
-    diag.rereadActive = await (async () => {
-      try {
-        const { loadActiveValueDecisions } = await import('../value-decisions/store');
-        const relues = await loadActiveValueDecisions(pgClient as never, p.accountId, [p.fileId]);
-        return relues.filter((d) => d.validity === 'VALID').length;
-      } catch (e) {
-        console.warn(`[t1-completeness-retry] relecture des décisions du fichier ${p.fileId} impossible :`, (e as Error).message);
-        return null;
-      }
-    })();
-  } catch (e) {
-    ecarter('WRITE_FAILED', p.decisions.length);
-    console.error(`[t1-completeness-retry] décisions de valeur du fichier ${p.fileId} non écrites :`, (e as Error).message);
-  }
-  return diag;
-}
+export { persistRepairDecisions, recoverDecisionReceipts, type RepairDecisionsDiag } from './repair-decisions';
 
 /**
  * Lot 83B (C-Q7, cas « valeur présente dans l'extract, absente de T1, unité
@@ -1832,4 +1756,73 @@ export async function appendRepairedFacts(p: {
   // Après commit des faits : la propagation ne peut jamais les emporter (elle ne lève pas).
   const propagation = await propagateRepairToCandidates({ accountId: p.accountId, fileId: p.fileId, beforeFactIds: avant, origin: p.propagationOrigin ?? 't1-repair' });
   return { inserted: neufs, all: projection.facts, propagation, factIdsByRef, linkage };
+}
+
+/**
+ * Carte #854 (R2) — RÉSOLUTION DES FAITS CITÉS PAR LES DÉCISIONS vers les faits
+ * PERSISTÉS du document (lecture seule, aucune écriture, aucun appel IA).
+ *
+ * Les faits de la réponse cités par une décision (y compris un fait hors de
+ * la zone ciblée, ou un rappel d'un fait ancien) passent par la MÊME
+ * projection que l'écriture des faits (`appendRepairedFacts`), puis sont
+ * rapprochés des faits ACTIFS du bon compte et du bon document
+ * (`resolveFactReference` : identité exacte, sinon clé + valeur + cible ;
+ * plusieurs : ambigu ; aucun : inconnu). Une erreur SQL LÈVE (jamais un
+ * ensemble vide) : l'appelant rend la décision « non évaluée », réessayable.
+ */
+export async function resolvePersistedFactRefs(p: {
+  accountId: number; fileId: number; assetId: number | null; facts: ReadonlyArray<T1Fact & { t1FactRef?: string }>;
+}): Promise<Map<string, import('./repair-identity').FactReferenceResolution>> {
+  const out = new Map<string, import('./repair-identity').FactReferenceResolution>();
+  const facts = p.facts.filter((f) => f.t1FactRef);
+  if (facts.length === 0) return out;
+  const [{ projectDocumentFacts }, { toFact }, { projectedFactToExtractedField }, step, registry, { resolveFactReference }] = await Promise.all([
+    import('../projection/document-projection'),
+    import('../../knowledge/document-knowledge'),
+    import('../steps/persist-evidence.step'),
+    import('../steps/analyze-document.step'),
+    import('@/services/canonical/registry'),
+    import('./repair-identity'),
+  ]);
+  const { pgClient } = await import('@/db');
+  const ext = ((await pgClient.unsafe(
+    `SELECT id, document_type_code, to_char(document_date, 'YYYY-MM-DD') AS document_date FROM document_extractions WHERE file_id = $1 AND account_id = $2`,
+    [p.fileId, p.accountId] as never[],
+  )) as unknown as Row[])[0];
+  const verif = await step.verifyAll({ entities: { assets: [], rooms: [], equipments: [], suppliers: [], multiAsset: false } } as never, facts as T1Fact[], p.accountId);
+  if (p.assetId) verif.verifiedIds.ASSET.add(p.assetId);
+  const famille = p.assetId
+    ? ((await pgClient.unsafe(`SELECT category FROM assets WHERE id = $1 AND account_id = $2`, [p.assetId, p.accountId] as never[])) as unknown as Row[])[0]?.category
+    : null;
+  const projection = projectDocumentFacts({
+    document: {
+      ...(ext?.document_date ? { documentDate: { value: String(ext.document_date), confidence: 'certain', evidence: {} } } : {}),
+      ...(ext?.document_type_code ? { classification: { documentTypeCode: String(ext.document_type_code), confidence: 1, evidence: {} } } : {}),
+    },
+    entities: { assets: [], rooms: [], equipments: [], suppliers: [], multiAsset: false },
+    facts: facts as T1Fact[],
+  }, {
+    knownAssetId: p.assetId, documentAssetId: p.assetId,
+    assetFamilies: new Map(p.assetId ? [[p.assetId, registry.toAssetFamily(famille == null ? null : String(famille))]] : []),
+    verifiedIds: verif.verifiedIds,
+  });
+  const rows = ((await pgClient.unsafe(
+    `SELECT f.id::float8 AS id, coalesce(to_jsonb(f)->>'canonical_key', f.fact_key) AS key, f.value_text AS value, f.excerpt,
+            to_jsonb(f)->>'target_type' AS "targetType", to_jsonb(f)->>'target_entity_id' AS "targetEntityId"
+       FROM document_facts f WHERE f.file_id = $1 AND f.account_id = $2 AND f.status = 'active'`,
+    [p.fileId, p.accountId] as never[],
+  )) as unknown as Array<FactIdentityInput & { id: number }>).map((r) => ({
+    ...r, id: Number(r.id), targetEntityId: r.targetEntityId == null ? null : Number(r.targetEntityId),
+  }));
+  const refs = new FactRefs(facts);
+  for (const f of projection.facts) {
+    const ref = refs.take(f);
+    if (!ref || out.has(ref)) continue;
+    const r = toFact(projectedFactToExtractedField(f));
+    out.set(ref, resolveFactReference({
+      key: r.canonicalKey ?? r.factKey, value: r.valueText, excerpt: r.evidenceOrigin === 'VISUAL_ANALYSIS' ? null : r.excerpt,
+      targetType: r.targetType ?? null, targetEntityId: r.targetEntityId ?? null,
+    }, rows));
+  }
+  return out;
 }

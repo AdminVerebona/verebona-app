@@ -67,7 +67,20 @@ export interface DecisionWriteContext {
  * n'est pas réécrite. Rend le nombre de lignes écrites (doublons exclus).
  */
 export async function insertValueDecisions(tx: Tx, c: DecisionWriteContext, decisions: readonly PreparedValueDecision[], opts: { replaceKeys?: boolean } = {}): Promise<number> {
-  if (decisions.length === 0) return 0;
+  return (await insertValueDecisionsDetailed(tx, c, decisions, opts)).inserted;
+}
+
+/**
+ * Carte #854 (R3) — même écriture, issue PAR DÉCISION : empreinte → ligne
+ * active (identifiant), nouvellement écrite ou déjà présente (rejeu
+ * identique : aucun doublon). Une empreinte sans ligne active après
+ * l'écriture est rendue absente (jamais un succès supposé).
+ */
+export async function insertValueDecisionsDetailed(
+  tx: Tx, c: DecisionWriteContext, decisions: readonly PreparedValueDecision[], opts: { replaceKeys?: boolean } = {},
+): Promise<{ inserted: number; rows: Map<string, { id: number; inserted: boolean }> }> {
+  const rows = new Map<string, { id: number; inserted: boolean }>();
+  if (decisions.length === 0) return { inserted: 0, rows };
   const lignesFp = decisions.map((d) => decisionFingerprint(c.fileId, d));
   // Une valeur, une décision ACTIVE : celles des mêmes valeurs (unité, nature, forme normalisée) sont supersédées
   // (historique), sauf la décision identique déjà active (rejeu idempotent, aucun doublon).
@@ -102,10 +115,20 @@ export async function insertValueDecisions(tx: Tx, c: DecisionWriteContext, deci
          "factIds" jsonb, refs jsonb, keys jsonb, validity text, invalid text, dfp text
        )
      ON CONFLICT (file_id, decision_fp) WHERE status = 'ACTIVE' DO NOTHING
-     RETURNING 1`,
+     RETURNING id::float8 AS id, decision_fp AS fp`,
     [c.accountId, c.fileId, c.extractionId, c.analysisRunId, T1_VALUE_DECISIONS_CONTRACT, c.promptVersion ?? '', json(lignes), c.aiTraceId ?? null] as never[],
-  )) as unknown[];
-  return r.length;
+  )) as Array<{ id: number; fp: string }>;
+  for (const x of r) rows.set(String(x.fp), { id: Number(x.id), inserted: true });
+  const deja = [...new Set(lignesFp)].filter((fp) => !rows.has(fp));
+  if (deja.length > 0) {
+    const ex = (await tx.unsafe(
+      `SELECT id::float8 AS id, decision_fp AS fp FROM document_value_decisions
+        WHERE file_id = $1 AND account_id = $2 AND status = 'ACTIVE' AND decision_fp = ANY($3::text[])`,
+      [c.fileId, c.accountId, deja] as never[],
+    )) as Array<{ id: number; fp: string }>;
+    for (const x of ex) rows.set(String(x.fp), { id: Number(x.id), inserted: false });
+  }
+  return { inserted: r.length, rows };
 }
 
 /** Décision active telle que la lit le contrôle (aucun contenu au-delà de la valeur et du motif). */

@@ -11,7 +11,7 @@
  * et n°5 (chaque appel rattaché à un usage et à une opération).
  */
 import { randomUUID } from 'crypto';
-import type { AiGatewayRequest, AiGatewayResponse } from './types';
+import type { AiGatewayRequest, AiGatewayResponse, PromptContractEvidence } from './types';
 import { AiGatewayError, AiSuspendedError, isAiGatewayError, isDeterministicLocalError, type AiErrorCode, type GatewayCallStats } from './errors';
 import {
   admitCandidate, causeOfFailure, chainOutcome, decisionOf, CAUSE_POLICY, ADMISSION_LABELS, ADMITTED_REASONS, NO_GENERATION_STAGES,
@@ -60,7 +60,7 @@ import { describeAttachments, attachmentTransport } from './providers/gemini-fil
 import { subjectRefOfIdempotencyKey, capturedRequestOf, type CallCaptureInput, type CapturedRequest } from '../telemetry/call-capture';
 import { recordCallDiagnostic } from './diagnostics/diagnostic.repository';
 import { getAiProvider } from './providers';
-import { resolvePrompt, resolveMasterPrompt, masterPromptVersionOf, loadMasterTemplate, masterTextFingerprint, MasterPromptError } from '../prompts/prompt-loader';
+import { resolvePrompt, resolveMasterPrompt, masterPromptVersionOf, loadMasterTemplate, masterTextFingerprint, MasterPromptError, promptContractMarkersOf } from '../prompts/prompt-loader';
 import { resolveOperationConfig, composePrompt } from '../config/config-resolver';
 import { recordCallTrace } from '../telemetry/ai-trace.service';
 import { attemptCost, costEvidenceOf, type CostEvidence } from './cost-evidence';
@@ -411,6 +411,10 @@ export class AiGateway {
         ? technique.text
         : composePrompt(configuration.promptPreamble, technique.text);
     }
+
+    // Carte #854 (R1) : contrat du prompt maître RÉELLEMENT utilisé par cet appel, figé ici, avant tout envoi.
+    const promptContract = master && isMasterOperation(op)
+      ? await promptContractEvidenceOf(op.masterPromptCode, op.useCaseCode, configuration, promptVersion) : undefined;
 
     // Mode JSON natif : choix de l'appel, sinon déclaration de l'opération.
     const jsonResponse = req.jsonResponse ?? op.jsonResponse ?? false;
@@ -1444,6 +1448,8 @@ export class AiGateway {
             },
             // Lot 54G : originaux des champs retirés — en mémoire pour l'appelant, jamais tracés.
             ...(final.pruned?.length ? { prunedValues: final.pruned } : {}),
+            // Carte #854 (R1) : contrat du prompt consommé par CET appel (repris tel quel par le cache d'idempotence).
+            ...(promptContract ? { promptContract } : {}),
           };
         }
 
@@ -1679,6 +1685,31 @@ function sansSortieBrute(useCaseCode: string): boolean {
  * Texte master administré : version active « Prompts maîtres » du BO, sinon
  * texte porté par la version de configuration (D-03).
  */
+/**
+ * Carte #854 (R1) — preuve du contrat du master consommé : texte BRUT
+ * effectivement utilisé (version de configuration, sinon fichier du dépôt),
+ * son empreinte et ses marqueurs. Texte illisible : empreinte et marqueurs
+ * `null` (contrat non prouvé, jamais deviné). Ne lève pas.
+ */
+async function promptContractEvidenceOf(
+  masterPromptCode: string, useCaseCode: Parameters<typeof treatmentOfUseCase>[0],
+  cfg: { promptArchitecture?: string; masterPromptText?: string | null; masterPromptVersionId?: number | null; configVersionId?: number | null },
+  promptVersion: string,
+): Promise<PromptContractEvidence> {
+  const configured = configuredMasterText(useCaseCode, cfg);
+  const texteConfig = configured?.trim() ? configured : null;
+  const texte = texteConfig ?? await loadMasterTemplate(masterPromptCode, useCaseCode).catch(() => null);
+  return {
+    masterPromptCode, promptVersion,
+    source: texteConfig ? (cfg.masterPromptVersionId != null ? 'version' : 'config') : 'file',
+    textFingerprint: texte ? masterTextFingerprint(texte).slice(0, 16) : null,
+    configVersionId: cfg.configVersionId ?? null,
+    promptVersionId: texteConfig ? cfg.masterPromptVersionId ?? null : null,
+    markers: texte ? promptContractMarkersOf(texte) : null,
+    resolvedAt: new Date().toISOString(),
+  };
+}
+
 function configuredMasterText(
   _useCaseCode: Parameters<typeof treatmentOfUseCase>[0],
   cfg: { promptArchitecture?: string; masterPromptText?: string | null; masterPromptVersionId?: number | null },

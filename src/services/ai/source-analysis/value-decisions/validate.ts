@@ -44,6 +44,12 @@ export interface AnchoredValueDecision {
   origin: ValueDecisionOrigin;
   /** Élément mal formé écarté par la lecture tolérante (jamais une justification). */
   schemaInvalid?: boolean;
+  /**
+   * Carte #854 (R1) : appel qui a produit la décision (rang 1… dans la passe) et rang de la décision dans la
+   * réponse de cet appel — chaque décision reste reliée à SON appel malgré regroupement, reprise ou repli.
+   */
+  callIndex?: number;
+  ordinal?: number;
 }
 
 export const VALUE_DECISION_REJECTIONS = [
@@ -52,6 +58,8 @@ export const VALUE_DECISION_REJECTIONS = [
   // Lot 108K (ticket 91D bis, §A) : motif générique / tautologique, motif sans rapport démontrable avec la valeur et
   // son unité, rattachement à un fait sans relation cohérente avec la valeur.
   'REASON_GENERIC', 'REASON_UNRELATED', 'LINK_INCOHERENT',
+  // Carte #854 (R2) : référence résolue vers PLUSIEURS faits persistés (jamais de premier résultat choisi).
+  'LINK_AMBIGUOUS',
 ] as const;
 export type ValueDecisionRejection = (typeof VALUE_DECISION_REJECTIONS)[number];
 
@@ -71,6 +79,8 @@ export interface PreparedValueDecision {
   relatedCandidateKeys: string[];
   validity: 'VALID' | 'INVALID';
   invalidReason: ValueDecisionRejection | null;
+  /** Carte #854 (R3) : rang de la décision REÇUE (entrée de `validateValueDecisions`) dont provient cette ligne. */
+  inputIndex?: number;
 }
 
 /** Unités dont le contrôle lit les valeurs (même liste que COH-DOC-EXTRACT-CHAIN). */
@@ -164,14 +174,18 @@ export interface ValidationContext {
 }
 
 /** Validation (pure) — voir l'en-tête. Une ligne par unité ; doublons exacts retirés. */
-export function validateValueDecisions(decisions: readonly AnchoredValueDecision[], ctx: ValidationContext): PreparedValueDecision[] {
+export function validateValueDecisions(
+  decisions: readonly AnchoredValueDecision[], ctx: ValidationContext,
+  /** Carte #854 (R3) : doublons exacts retirés, rendus à l'appelant (une réception n'est jamais perdue en silence). */
+  report?: { duplicates: PreparedValueDecision[] },
+): PreparedValueDecision[] {
   const lues = ctx.units.filter((u) => UNITES_LUES.has(u.kind) && unitTextOf(u));
   const parId = new Map(lues.map((u) => [u.sourceUnitId, u]));
   const linker = new SourceUnitLinker(ctx.units);
   const out: PreparedValueDecision[] = [];
-  for (const d of decisions) {
+  for (const [inputIndex, d] of decisions.entries()) {
     const base = {
-      origin: d.origin, kind: d.kind, rawValue: d.value, decision: d.decision, reason: d.reason.trim(), confidence: d.confidence,
+      inputIndex, origin: d.origin, kind: d.kind, rawValue: d.value, decision: d.decision, reason: d.reason.trim(), confidence: d.confidence,
       evidence: d.evidence, relatedFactRefs: d.relatedFactRefs.filter((r) => ctx.keptFactRefs.has(r)),
       relatedCandidateKeys: d.relatedCandidateKeys.filter((k) => ctx.candidateKeys.has(k)),
     };
@@ -245,6 +259,7 @@ export function validateValueDecisions(decisions: readonly AnchoredValueDecision
     if (new Set(l.map((p) => p.decision)).size > 1) for (const p of l) { p.validity = 'INVALID'; p.invalidReason = 'CONFLICTING_DECISIONS'; }
     else for (const p of l.slice(1)) retirees.add(p);
   }
+  if (report) report.duplicates.push(...retirees);
   return out.filter((p) => !retirees.has(p));
 }
 

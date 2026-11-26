@@ -133,6 +133,7 @@ export const RECETTE_TABLES: Readonly<Record<string, { domain: Exclude<RecetteDo
   document_unresolved_facts: { domain: 'extraits-ia', description: 'Faits T1 non résolus.' },
   document_candidate_repair_propagations: { domain: 'extraits-ia', description: 'Propagation des réparations T1 vers les candidats du document et T3 (faits nouveaux, catégories, décision, supersession, statut T3) — lot 109K.' },
   document_value_review_units: { domain: 'extraits-ia', description: 'Progression du réexamen ciblé des décisions T1, unité par unité (examinée, en échec, trop grande ; statut de la sortie T1 du lot ; lots, tentatives, provenance) — lot 108K.' },
+  document_value_decision_receipts: { domain: 'extraits-ia', description: 'Réceptions des décisions T1 sur les valeurs lors des réparations différées : appel, contrat réellement consommé (version, empreinte), issue (valide, invalide, rejetée, non évaluée) avec motif, lien à la décision persistée, relecture exacte, reprises sans IA — carte #854.' },
   document_value_decisions: { domain: 'extraits-ia', description: 'Décisions T1 sur les valeurs significatives des unités sources (structurée, composante ou contexte, non retenue avec motif, indéterminée ; provenance, rattachements, validité, historique) — lot 91D.' },
   document_analysis_runs: { domain: 'extraits-ia', description: 'Analyses de documents (exécutions).' },
   document_analysis_proposals: { domain: 'extraits-ia', description: 'Propositions issues des analyses.' },

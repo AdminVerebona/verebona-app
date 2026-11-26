@@ -51,8 +51,13 @@ export async function loadStoredReconciliationInput(sql: Sql, accountId: number,
     [accountId, fileId] as never[],
   ).catch(() => [])) as Row[];
   const { loadActiveValueDecisions } = await import('../value-decisions/store');
-  const decisions = (await loadActiveValueDecisions(sql as never, accountId, [fileId]).catch(() => []))
-    .filter((d) => d.validity === 'VALID' && d.sourceUnitId);
+  // Carte #854 (R4) : une décision écrite par une réparation différée mais JAMAIS confirmée par relecture exacte
+  // ne justifie aucune couverture. Journal illisible : AUCUNE décision n'est retenue pour ce calcul (comme une
+  // lecture des décisions en échec) — prudence, jamais un COVERED fondé sur une décision non confirmée.
+  const { unconfirmedDecisionIds } = await import('../value-decisions/receipts');
+  const nonConfirmees = await unconfirmedDecisionIds(sql, accountId, fileId).catch(() => null);
+  const decisions = nonConfirmees === null ? [] : (await loadActiveValueDecisions(sql as never, accountId, [fileId]).catch(() => []))
+    .filter((d) => d.validity === 'VALID' && d.sourceUnitId && !nonConfirmees.has(d.id));
   const page = (loc: unknown) => {
     const l = (typeof loc === 'string' ? JSON.parse(loc) : loc) as { page?: unknown } | null;
     return typeof l?.page === 'number' ? l.page : null;

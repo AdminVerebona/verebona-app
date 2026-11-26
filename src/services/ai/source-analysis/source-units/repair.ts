@@ -40,6 +40,7 @@ import { repairBounds, retryLimits } from './retry-policy';
 import type { CoveredSourceUnit, SourceUnit } from './types';
 import { unitOfCell } from './build-units';
 import type { AnchoredValueDecision } from '../value-decisions/validate';
+import { decisionContractOfCall, type CallDecisionContract, type CallPromptEvidence } from '../value-decisions/contract';
 
 const REPAIR_MAX_UNITS = 120;
 const REPAIR_MAX_CHARS = 24_000;
@@ -103,8 +104,49 @@ export type RepairCall = (p: {
    * Lot 115F (Trello #792, écart P2-10) : issue de l'appel telle que la passerelle la rend — le COÛT en
    * micro-unités de CET appel. Absent ou non numérique : coût INCONNU pour cet appel, jamais compté zéro.
    */
-  res?: { costMicros?: number | null } | null;
+  res?: {
+    costMicros?: number | null;
+    /** Carte #854 (R1) : identité de l'appel et contrat du prompt RÉELLEMENT consommé (passerelle). */
+    traceId?: string | null; provider?: string | null; model?: string | null; usedFallback?: boolean; fromCache?: boolean;
+    providerRequests?: number; promptContract?: CallPromptEvidence | null;
+  } | null;
+  /** Carte #854 (R1, AC08) : statut du champ `valueDecisions` de la sortie (présent / vide / absent / mal formé). */
+  valueDecisionsPass?: { status?: string } | null;
 }>;
+
+/**
+ * Carte #854 (R1) — ENVELOPPE IMMUABLE D'UN APPEL de la passe : identité
+ * (rang dans la passe, trace de la passerelle — jamais inventée), réponse
+ * retenue (modèle, repli, cache, requêtes fournisseur), contrat consommé et
+ * décisions reçues BRUTES (avant tout filtrage). Appel en échec : `failed`,
+ * décisions inconnues (incident, jamais « zéro »).
+ */
+export interface RepairCallEnvelope {
+  callIndex: number;
+  callRef: string | null;
+  provider: string | null;
+  model: string | null;
+  usedFallback: boolean | null;
+  fromCache: boolean | null;
+  providerRequests: number | null;
+  contract: CallDecisionContract;
+  /** Décisions reçues brutes (null : appel en échec, inconnu). */
+  rawDecisions: number | null;
+  /** Statut du champ `valueDecisions` (ABSENT / EMPTY / PRESENT / …), si rendu. */
+  decisionsField: string | null;
+  failed: boolean;
+}
+
+/** Carte #854 (R3) : décision REÇUE, reliée à son appel, retenue ou rejetée avant validation (motif). */
+export interface RepairReceivedDecision {
+  callIndex: number;
+  ordinal: number;
+  decision: AnchoredValueDecision;
+  /** Rejet avant validation (élément mal formé, unité hors de la zone ciblée). */
+  preRejected: 'SCHEMA_INVALID' | 'UNIT_NOT_IN_TARGET_ZONE' | null;
+  /** Faits de la RÉPONSE cités par la décision (empreinte → fait rendu), y compris hors zone : résolus vers les faits persistés. */
+  refFacts: Array<T1Fact & { t1FactRef?: string }>;
+}
 
 interface RepairPassResult {
   /** Faits prouvés par une unité ciblée (page renseignée). */
@@ -155,6 +197,10 @@ interface RepairPassResult {
   callsFailed: number;
   costMicros: number;
   costUnknownCalls: number;
+  /** Carte #854 (R1) : une enveloppe par appel émis, dans l'ordre. */
+  envelopes: RepairCallEnvelope[];
+  /** Carte #854 (R3) : toutes les décisions REÇUES, dans l'ordre (retenues et rejetées avant validation). */
+  received: RepairReceivedDecision[];
 }
 
 export async function runRepairPass(p: {
@@ -171,7 +217,7 @@ export async function runRepairPass(p: {
   const res: RepairPassResult = {
     facts: [], attempted: [], failed: new Map(), calls: 0, outOfScope: 0, notAttempted: [], links: new Map(),
     linksAmbiguous: 0, linksByCitedId: 0, decisions: [], decisionsDropped: { schemaInvalid: 0, unitNotFound: 0 },
-    callsFailed: 0, costMicros: 0, costUnknownCalls: 0,
+    callsFailed: 0, costMicros: 0, costUnknownCalls: 0, envelopes: [], received: [],
   };
   const { batches, left } = batchRepairUnits(p.units, p.maxCalls);
   res.notAttempted = left.map((u) => u.sourceUnitId);
@@ -179,6 +225,7 @@ export async function runRepairPass(p: {
   for (const lot of batches) {
     res.attempted.push(...lot.map((u) => u.sourceUnitId));
     const texte = repairContent(lot);
+    const callIndex = res.calls + 1;
     try {
       res.calls++;
       const r = await p.call({
@@ -197,6 +244,17 @@ export async function runRepairPass(p: {
       // Lot 115F (#792, écart P2-10) : coût de CET appel tel que la passerelle le rend ; non rendu → inconnu, jamais zéro.
       const cout = r.res?.costMicros;
       if (typeof cout === 'number' && Number.isFinite(cout)) res.costMicros += cout; else res.costUnknownCalls++;
+      // Carte #854 (R1) : contrat et identité de CET appel, figés avant toute lecture de ses décisions.
+      const brutes = r.valueDecisions ?? [];
+      res.envelopes.push({
+        callIndex, callRef: r.res?.traceId ?? null, provider: r.res?.provider ?? null, model: r.res?.model ?? null,
+        usedFallback: r.res?.usedFallback ?? null, fromCache: r.res?.fromCache ?? null,
+        providerRequests: typeof r.res?.providerRequests === 'number' ? r.res.providerRequests : null,
+        contract: decisionContractOfCall(r.res?.promptContract ?? null),
+        rawDecisions: brutes.length, decisionsField: r.valueDecisionsPass?.status ?? (r.valueDecisions == null ? 'ABSENT' : null), failed: false,
+      });
+      // Faits de la réponse, par empreinte (avant le filtre de zone) : une décision peut citer un fait déjà connu.
+      const faitsRendus = new Map((r.output.facts as Array<T1Fact & { t1FactRef?: string }>).filter((f) => f.t1FactRef).map((f) => [f.t1FactRef!, f]));
       const { output } = enforceT1Capabilities(r.output, p.capabilities);
       const linker = new SourceUnitLinker(lot);
       const parId = new Map(lot.map((u) => [u.sourceUnitId, u]));
@@ -249,18 +307,23 @@ export async function runRepairPass(p: {
         if (!parCite && ids.length > 1) res.linksAmbiguous++;
         else res.links.set(repare, ids);
       }
-      for (const d of r.valueDecisions ?? []) {
-        if (d.schemaInvalid) { res.decisionsDropped.schemaInvalid++; continue; }
+      for (const [ordinal, d] of brutes.entries()) {
+        const refFacts = d.relatedFactRefs.map((ref) => faitsRendus.get(ref)).filter((f): f is T1Fact & { t1FactRef?: string } => f !== undefined);
+        const recu = (decision: AnchoredValueDecision, preRejected: RepairReceivedDecision['preRejected']) =>
+          res.received.push({ callIndex, ordinal, decision: { ...decision, callIndex, ordinal }, preRejected, refFacts });
+        if (d.schemaInvalid) { res.decisionsDropped.schemaInvalid++; recu(d, 'SCHEMA_INVALID'); continue; }
         const cite = d.sourceUnitId ? d.sourceUnitId.replace(/^\[|\]$/g, '').trim() : null;
         const excerpt = (d.evidence?.excerpt ?? '').replace(PREFIXE, '').trim();
         const id = cite && parId.has(unitOfCell(cite)) ? unitOfCell(cite)
           : excerpt ? linker.link({ excerpt, provenance: 'TEXT_EXTRACTION' })[0] ?? null : null;
         const unite = id ? parId.get(id) : undefined;
-        if (!unite) { res.decisionsDropped.unitNotFound++; continue; }
-        res.decisions.push({
-          ...d, sourceUnitId: unite.sourceUnitId,
+        if (!unite) { res.decisionsDropped.unitNotFound++; recu(d, 'UNIT_NOT_IN_TARGET_ZONE'); continue; }
+        const ancree: AnchoredValueDecision = {
+          ...d, sourceUnitId: unite.sourceUnitId, callIndex, ordinal,
           evidence: { ...(d.evidence ?? {}), ...(excerpt ? { excerpt } : {}), ...(unite.page ? { page: unite.page } : {}) },
-        });
+        };
+        res.decisions.push(ancree);
+        recu(ancree, null);
       }
     } catch (e) {
       if (isExecutionCancelled(e) || isCostCapReached(e)) throw e;
@@ -268,6 +331,15 @@ export async function runRepairPass(p: {
       // une tentative réussie ni une absence d'appel ; son coût n'est pas rendu, donc il reste inconnu.
       res.callsFailed++;
       res.costUnknownCalls++;
+      // Carte #854 (R1, AC08) : appel en échec — décisions INCONNUES (incident), jamais « zéro décision reçue ».
+      const deja = res.envelopes.find((x) => x.callIndex === callIndex);
+      if (deja) deja.failed = true;
+      else {
+        res.envelopes.push({
+          callIndex, callRef: null, provider: null, model: null, usedFallback: null, fromCache: null, providerRequests: null,
+          contract: decisionContractOfCall(null), rawDecisions: null, decisionsField: null, failed: true,
+        });
+      }
       const retryable = !isDefinitiveGatewayFailure(e);
       for (const u of lot) res.failed.set(u.sourceUnitId, { reason: `repair_failed:${retryable ? 'retryable' : 'final'}`, retryable });
       console.warn(`[t1-repair] passe ${p.pass} en échec (${lot.length} unité(s)) :`, (e as Error).message);

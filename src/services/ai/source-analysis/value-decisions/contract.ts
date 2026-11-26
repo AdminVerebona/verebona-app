@@ -58,6 +58,74 @@ export function repairDecisionContract(cap: Pick<ValueDecisionsCapability, 'carr
   };
 }
 
+// ══════════════════════════════════════════════════════════════════════════
+// CARTE #854 (R1, P1-02 de #835) — CONTRAT FIGÉ PAR APPEL
+//
+// Règle remplacée : les décisions d'une reprise différée étaient jugées, à la
+// persistance, sur `valueDecisionsCapability()` — config ACTIVE relue (cache
+// 60 s) APRÈS l'appel. Analyse sous A, appel sous B, activation de C pendant
+// le traitement : ni A ni C ne prouvent B. Désormais chaque appel porte la
+// preuve du prompt qu'il a RÉELLEMENT consommé (`res.promptContract`, figée
+// par la passerelle avant l'envoi) ; ses décisions sont validées selon CE
+// contrat, jamais selon le prompt actif relu ni celui de l'analyse initiale.
+//   · preuve absente / texte illisible : `EVIDENCE_MISSING` — rien n'est
+//     accepté, aucune version de repli n'est inventée ;
+//   · marqueur absent : `MARKER_MISSING` ; famille connue mais version non
+//     supportée (`t1-value-decisions-v2`…) : `UNSUPPORTED_VERSION` ;
+//   · coupure d'urgence (`T1_VALUE_DECISIONS_ENABLED=0`) : persistance
+//     SUSPENDUE et dite (`persistenceSuspended`), contrat inchangé.
+// ══════════════════════════════════════════════════════════════════════════
+
+/** Versions du contrat dont le validateur serveur sait juger les décisions. */
+export const SUPPORTED_VALUE_DECISIONS_CONTRACTS: readonly string[] = [T1_VALUE_DECISIONS_CONTRACT];
+const FAMILLE_CONTRAT = /^t1-value-decisions-v\d+$/;
+
+/** Preuve du prompt consommé, telle que la rend la passerelle (`AiGatewayResponse.promptContract`). */
+export interface CallPromptEvidence {
+  promptVersion: string;
+  textFingerprint: string | null;
+  configVersionId?: number | null;
+  promptVersionId?: number | null;
+  markers: readonly string[] | null;
+  source?: string;
+}
+
+export type CallContractState = 'CARRIED' | 'MARKER_MISSING' | 'UNSUPPORTED_VERSION' | 'EVIDENCE_MISSING';
+
+/** Contrat des décisions d'UN appel (pur, immuable une fois calculé). */
+export interface CallDecisionContract {
+  state: CallContractState;
+  /** Version du contrat portée et supportée (null sinon). */
+  contractVersion: string | null;
+  /** Versions de la famille portées par le texte (supportées ou non). */
+  markersFound: string[];
+  promptVersion: string | null;
+  promptFingerprint: string | null;
+  configVersionId: number | null;
+  /** Coupure d'urgence active : contrat inchangé, persistance suspendue. */
+  persistenceSuspended: boolean;
+}
+
+/** Contrat d'un appel d'après la preuve figée par la passerelle (pure). */
+export function decisionContractOfCall(
+  evidence: CallPromptEvidence | null | undefined, env: Record<string, string | undefined> = process.env,
+): CallDecisionContract {
+  const suspendu = !valueDecisionsEnabled(env);
+  if (!evidence || !evidence.promptVersion || !evidence.textFingerprint || !Array.isArray(evidence.markers)) {
+    return {
+      state: 'EVIDENCE_MISSING', contractVersion: null, markersFound: [], promptVersion: evidence?.promptVersion ?? null,
+      promptFingerprint: evidence?.textFingerprint ?? null, configVersionId: evidence?.configVersionId ?? null, persistenceSuspended: suspendu,
+    };
+  }
+  const famille = evidence.markers.filter((m) => FAMILLE_CONTRAT.test(m));
+  const supporte = famille.find((m) => SUPPORTED_VALUE_DECISIONS_CONTRACTS.includes(m)) ?? null;
+  return {
+    state: supporte ? 'CARRIED' : famille.length > 0 ? 'UNSUPPORTED_VERSION' : 'MARKER_MISSING',
+    contractVersion: supporte, markersFound: famille, promptVersion: evidence.promptVersion, promptFingerprint: evidence.textFingerprint,
+    configVersionId: evidence.configVersionId ?? null, persistenceSuspended: suspendu,
+  };
+}
+
 export interface ValueDecisionsCapability {
   /** Contrat porté par la version effective (et non coupé). */
   carried: boolean;

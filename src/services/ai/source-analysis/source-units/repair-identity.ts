@@ -163,3 +163,27 @@ export class KnownFacts {
     return this.parIdentite.get(factCoreIdentity(f)) ?? null;
   }
 }
+
+/**
+ * Carte #854 (R2) — RÉFÉRENCE d'une décision de valeur vers un fait PERSISTÉ.
+ *
+ * Un fait de la réponse cité par une décision (`relatedFactIndexes`) est
+ * résolu vers le fait ACTIF du document qui EST ce fait : identité complète
+ * (clé, valeur, cible, extrait) ; à défaut, clé + valeur + cible (même fait
+ * relu dans un autre passage — un rappel du contrat). Plusieurs faits
+ * candidats : AMBIGU (jamais le premier) ; aucun : inconnu. Jamais la seule
+ * valeur, jamais la seule clé. Pure.
+ */
+export type FactReferenceResolution = { id: number } | { ambiguous: number[] } | null;
+
+export function resolveFactReference(f: FactIdentityInput, rows: ReadonlyArray<FactIdentityInput & { id: number }>): FactReferenceResolution {
+  const unique = (ids: number[]): FactReferenceResolution => {
+    const l = [...new Set(ids)];
+    return l.length === 1 ? { id: l[0] } : l.length > 1 ? { ambiguous: l.sort((a, b) => a - b) } : null;
+  };
+  if (!plat(f.key) || !plat(f.value)) return null;
+  const exacts = rows.filter((r) => factCoreIdentity(r) === factCoreIdentity(f)).map((r) => r.id);
+  if (exacts.length > 0) return unique(exacts);
+  const cible = (x: FactIdentityInput) => `${x.targetType ?? ''}:${x.targetEntityId ?? ''}`;
+  return unique(rows.filter((r) => plat(r.key) === plat(f.key) && plat(r.value) === plat(f.value) && cible(r) === cible(f)).map((r) => r.id));
+}

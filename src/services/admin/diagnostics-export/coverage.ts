@@ -241,6 +241,8 @@ export const DIAG_TABLE_COVERAGE: Readonly<Record<string, DiagTableCoverage>> = 
   document_value_decisions: C('extractions-ia'),
   // Lot 108K (1090) : progression du réexamen ciblé des décisions T1 par unité (examinée, en échec, trop grande ; sortie T1).
   document_value_review_units: C('extractions-ia'),
+  // Carte #854 : réceptions des décisions de valeur T1 des réparations différées (appel, contrat, issue, relecture).
+  document_value_decision_receipts: C('extractions-ia'),
   // Lot 109K (1145) : propagation des réparations T1 vers les candidats et T3 (décision, faits, catégories, statut T3).
   document_candidate_repair_propagations: C('extractions-ia'),
   t6_evaluation_runs: C('extractions-ia'),
@@ -743,6 +745,8 @@ export const DIAG_LOGICAL_REFERENCES: readonly DiagLogicalReference[] = [
   { from: 'document_value_decisions', column: 'analysis_run_id', to: 'document_analysis_runs', role: 'décision T1 sur une valeur → analyse' },
   { from: 'document_value_decisions', column: 'related_fact_ids', to: 'document_facts', kind: 'pg-array', role: 'décision T1 sur une valeur → faits rattachés' },
   { from: 'document_value_review_units', column: 'extraction_id', to: 'document_extractions', role: 'réexamen T1 d’une unité → extraction' },
+  { from: 'document_value_decision_receipts', column: 'extraction_id', to: 'document_extractions', role: 'réception d’une décision T1 → extraction' },
+  { from: 'document_value_decision_receipts', column: 'decision_id', to: 'document_value_decisions', role: 'réception d’une décision T1 → décision persistée' },
   { from: 'document_candidate_repair_propagations', column: 'candidate_id', to: 'document_operation_candidates', role: 'propagation d’une réparation T1 → version du candidat' },
   { from: 'document_extractions', column: 'file_id', to: 'asset_files', role: 'extraction → document' },
   { from: 'document_extractions', column: 'analysis_run_id', to: 'document_analysis_runs', role: 'extraction → analyse' },
@@ -880,7 +884,7 @@ const CALL_TRACES = ['ai_usage_event', 'ai_call_diagnostics', 'ai_call_captures'
  */
 export const DIAG_AI_OPERATION_COVERAGE: Readonly<Record<string, DiagAiOperationCoverage>> = {
   t1_group_upload: { treatment: 'T1', tables: [...CALL_TRACES, 'document_lots', 'document_lot_items', 'document_analysis_runs'] },
-  t1_analyze_document: { treatment: 'T1', tables: [...CALL_TRACES, 'document_raw_extracts', 'document_source_units', 'document_extractions', 'document_facts', 'document_tables', 'document_table_cells', 'document_unresolved_facts', 'document_extraction_coverage', 'document_operation_candidates', 'document_value_decisions', 'document_value_review_units', 'document_candidate_repair_propagations', 'field_evidence', 'ai_execution_reports', 'ai_execution_report_entries'] },
+  t1_analyze_document: { treatment: 'T1', tables: [...CALL_TRACES, 'document_raw_extracts', 'document_source_units', 'document_extractions', 'document_facts', 'document_tables', 'document_table_cells', 'document_unresolved_facts', 'document_extraction_coverage', 'document_operation_candidates', 'document_value_decisions', 'document_value_review_units', 'document_value_decision_receipts', 'document_candidate_repair_propagations', 'field_evidence', 'ai_execution_reports', 'ai_execution_report_entries'] },
   collect_evidence: { treatment: 'T1', tables: [...CALL_TRACES, 'field_evidence'] },
   compare_values: { treatment: 'T3', tables: [...CALL_TRACES, 'reconciliation_runs', 'reconciliation_decisions', 'inconsistency_registry', 'canonical_field_writes'] },
   t3_value_conflict: { treatment: 'T3', tables: [...CALL_TRACES, 'reconciliation_decisions', 'inconsistency_registry', 'canonical_field_writes', 'ai_execution_reports', 'ai_execution_report_entries', 't3_decision_memory', 'ai_reuse_counters'] },

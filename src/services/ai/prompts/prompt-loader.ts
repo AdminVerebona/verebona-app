@@ -477,6 +477,18 @@ export function masterTextFingerprint(text: string): string {
   return createHash('sha256').update(text.replace(/\r\n?/g, '\n')).digest('hex');
 }
 
+/**
+ * Carte #854 (R1) — MARQUEURS DE CONTRAT portés par le texte d'un master
+ * (« t1-value-decisions-v1 », « t1-billing-period-v1 »…) : forme
+ * `t<traitement>-<nom>-v<version>`. Lus sur le texte BRUT effectivement
+ * utilisé par l'appel (jamais sur le rendu, qui contient le document), triés,
+ * dédoublonnés, bornés. Pure.
+ */
+export function promptContractMarkersOf(text: string | null | undefined): string[] {
+  if (typeof text !== 'string' || text === '') return [];
+  return [...new Set(text.match(/\bt\d+(?:-[a-z]+)+-v\d+\b/g) ?? [])].sort().slice(0, 40);
+}
+
 /** Charge, contrôle et rend le prompt maître d'une branche. Lève `MasterPromptError`. */
 export async function resolveMasterPrompt(input: ResolveMasterPromptInput): Promise<ResolvedMasterPrompt> {
   const { masterPromptCode, task } = input;

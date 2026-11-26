@@ -37,7 +37,9 @@ interface Detail {
     coverageRepair: { calls: number; attempted: number; resolved: number; skipped: string | null } | null;
     deferredRepair: {
       calls?: number; attemptedUnits?: number; newFacts?: number;
-      decisions?: { received: number; valid: number; invalid: number; persisted: number };
+      decisions?: { received: number; valid: number; invalid: number; persisted: number } & DecisionLedger;
+      /** Carte #854 (R4) : reprise SANS IA de réceptions antérieures. */
+      decisionsRecovery?: { received: number; valid: number; invalid: number; persisted: number } & DecisionLedger;
       linkage?: { local: number; relinked: number; duplicates: number };
       /** Lot 115F (#792, écart P2-10) : appels, échecs et coût de la famille « reprise différée (texte ciblé) ». */
       textRepair?: { calls: number; callsFailed: number; costMicros: number; costUnknownCalls: number };
@@ -48,6 +50,42 @@ interface Detail {
   };
   schema?: { ready: boolean; missing: string[] };
 }
+/**
+ * Carte #854 (R4) — bilan RÉCONCILIABLE des décisions d'une passe (absent d'un diagnostic écrit avant la carte :
+ * rien n'est inventé). Inconnu ≠ 0.
+ */
+export interface DecisionLedger {
+  state?: 'NONE' | 'CONFIRMED' | 'INCOMPLETE'; retryable?: boolean; recovery?: boolean;
+  rejected?: number; notEvaluated?: number; alreadyPresent?: number; newlyWritten?: number;
+  confirmed?: number; missing?: number; divergent?: number; unconfirmed?: number; unexpected?: number;
+  skipped?: Record<string, number>;
+  calls?: Array<{ callIndex: number; callRef: string | null; contractState: string; contractVersion: string | null; promptVersion: string | null; promptFingerprint: string | null; received: number | null; failed: boolean; persistenceSuspended?: boolean }>;
+  journal?: string;
+  balanced?: boolean;
+}
+const ETAT_DECISIONS: Record<string, string> = {
+  NONE: 'aucune décision reçue', CONFIRMED: 'toutes relues conformes', INCOMPLETE: 'INCOMPLÈTE — reprise de la persistance nécessaire',
+};
+const CONTRAT_LABEL: Record<string, string> = {
+  CARRIED: 'contrat porté', MARKER_MISSING: 'contrat absent du prompt', UNSUPPORTED_VERSION: 'version de contrat non supportée',
+  EVIDENCE_MISSING: 'contrat non prouvé (preuve de l’appel absente)',
+};
+
+/** Carte #854 (R4) — décisions d'une passe en clair : réconciliation, écritures, relecture, contrat par appel (pure). */
+export function decisionLedgerText(label: string, d: ({ received: number; valid: number; invalid: number; persisted: number } & DecisionLedger) | undefined): string {
+  if (!d || d.state === undefined) return '';
+  const n = (v: number | undefined) => (v === undefined ? 'inconnu' : String(v));
+  const motifs = Object.entries(d.skipped ?? {}).sort(([a], [b]) => a.localeCompare(b)).map(([m, k]) => `${m} ×${k}`).join(', ');
+  const appels = (d.calls ?? []).map((c) => `appel ${c.callIndex}${c.failed ? ' en échec (décisions inconnues)' : ''} : ${CONTRAT_LABEL[c.contractState] ?? c.contractState}`
+    + `${c.contractVersion ? ` ${c.contractVersion}` : ''}${c.promptVersion ? `, prompt ${c.promptVersion}` : ''}${c.promptFingerprint ? ` (empreinte ${c.promptFingerprint})` : ''}`
+    + `${c.received === null ? '' : `, ${c.received} reçue(s)`}${c.persistenceSuspended ? ', persistance suspendue (coupure d’urgence)' : ''}${c.callRef ? `, trace ${c.callRef}` : ''}`).join(' ; ');
+  return ` ${label} : ${d.received} reçue(s) = ${d.valid} acceptée(s) + ${d.invalid} rejetée(s) à la validation + ${n(d.rejected)} rejetée(s) avant validation + ${n(d.notEvaluated)} non évaluée(s) (incident)`
+    + `${d.balanced === false ? ' — ÉCART DE RÉCONCILIATION' : ''} ; écriture : ${n(d.newlyWritten)} nouvelle(s), ${n(d.alreadyPresent)} déjà présente(s)`
+    + ` ; relecture exacte : ${n(d.confirmed)} conforme(s), ${n(d.missing)} manquante(s), ${n(d.divergent)} divergente(s), ${n(d.unconfirmed)} non vérifiable(s)`
+    + `${d.unexpected ? `, ${d.unexpected} inattendue(s)` : ''} ; état : ${ETAT_DECISIONS[d.state] ?? d.state}${d.retryable ? ' (reprise sans IA programmée)' : ''}`
+    + `${motifs ? ` ; motifs : ${motifs}` : ''}${appels ? ` ; ${appels}` : ''}.`;
+}
+
 const PAGE = 100;
 const ETATS = ['UNRESOLVED', 'UNCERTAIN', 'FAILED', 'COVERED', 'NON_INFORMATIONAL'] as const;
 /** Lot 115F (#792, écart P2-09) : origines d'une preuve de requalification (codes stables de la provenance). */
@@ -176,7 +214,9 @@ export function deferredRepairText(r: Detail['repairSteps']): string {
     : `Reprise différée : ${r.retryAttempts} tentative(s) consommée(s)${r.lastRetryResult ? `, dernier résultat ${r.lastRetryResult}` : ', aucune reprise exécutée'}.`;
   const relecture = r.sourceReread && r.sourceReread.runs > 0
     ? ` Relectures du fichier : ${r.sourceReread.runs} (${r.sourceReread.resolved} unité(s) levée(s), ${r.sourceReread.failed} en échec).` : ' Relectures du fichier : aucune.';
-  return reprise + texteCible + relecture;
+  // Carte #854 (R4) : bilan réconciliable des décisions et de leur reprise sans IA (diagnostics postérieurs à la carte).
+  const decisions = decisionLedgerText('Décisions de valeur (journal)', d?.decisions) + decisionLedgerText('Reprise sans IA des décisions', d?.decisionsRecovery);
+  return reprise + texteCible + relecture + decisions;
 }
 
 /** Lot 114G (#760, P2-09) — « 101–200 sur 1 240 (1 240 dans la liste) » (pure). */

@@ -198,6 +198,31 @@ export interface AiGatewayResponse<T> {
    * estimée. Absent : réponse servie par le cache.
    */
   generation?: AiGenerationApplied;
+  /**
+   * Carte #854 (R1) — CONTRAT DU PROMPT RÉELLEMENT UTILISÉ par cet appel
+   * (opération master seulement) : version, source, empreinte du texte brut
+   * du master envoyé, version de configuration et marqueurs de contrat qu'il
+   * porte. Figé à la résolution du prompt, AVANT l'envoi : un changement du BO
+   * ou du cache ensuite n'a aucun effet rétroactif. Absent : opération hors
+   * master, ou réponse mise en cache avant cette carte (contrat non prouvé).
+   */
+  promptContract?: PromptContractEvidence;
+}
+
+/** Carte #854 (R1) : preuve du contrat du prompt maître consommé par un appel (aucun contenu du compte). */
+export interface PromptContractEvidence {
+  masterPromptCode: string;
+  /** Version tracée (`…@file`, `…@cfg<id>:<empreinte>`, `…@pv<id>:<empreinte>`). */
+  promptVersion: string;
+  source: 'file' | 'config' | 'version';
+  /** Empreinte SHA-256 (16 hex) du texte BRUT du master envoyé ; null : texte illisible (contrat non prouvé). */
+  textFingerprint: string | null;
+  configVersionId: number | null;
+  promptVersionId: number | null;
+  /** Marqueurs de contrat portés par ce texte (`promptContractMarkersOf`) ; null : texte illisible. */
+  markers: string[] | null;
+  /** Horodatage de la résolution du prompt (ISO). */
+  resolvedAt: string;
 }
 
 export interface AiGenerationApplied {
