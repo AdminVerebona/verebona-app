@@ -789,7 +789,10 @@ export async function listCguvReferential(): Promise<ReferentialRow[]> {
     effectiveAt: legalDocumentVersions.effectiveAt,
     changeSummary: legalDocumentVersions.changeSummary,
     hasArchive: sql<boolean>`(${legalDocumentVersions.htmlContent} IS NOT NULL)`,
-    acceptances: sql<number>`(SELECT count(*)::int FROM legal_acceptances la WHERE la.legal_document_version_id = ${legalDocumentVersions.id})`,
+    // #851 : référence QUALIFIÉE. Sans jointure, Drizzle rend `${legalDocumentVersions.id}`
+    // par `"id"` dans la liste SELECT, résolu dans la sous-requête sur `legal_acceptances.id` :
+    // le compteur comptait les acceptations dont l'identifiant égalait celui de leur version.
+    acceptances: sql<number>`(SELECT count(*)::int FROM legal_acceptances la WHERE la.legal_document_version_id = ${legalDocumentVersions}.${sql.identifier('id')})`,
   }).from(legalDocumentVersions)
     .where(and(eq(legalDocumentVersions.documentType, DOCUMENT_TYPE_CGVU), sql`${legalDocumentVersions.status} <> 'DRAFT'`))
     .orderBy(desc(legalDocumentVersions.publishedAt));

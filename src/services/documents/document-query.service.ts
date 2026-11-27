@@ -44,7 +44,7 @@ import {
   type DocumentQuery,
   type DocumentView,
 } from './document-query.contract';
-import { OTHER_ASSET_IDS_SQL, documentInAssetsCondition } from './asset-document-scope';
+import { ASSET_FILES_COLUMN_SQL, OTHER_ASSET_IDS_SQL, documentInAssetsCondition } from './asset-document-scope';
 import { documentOfEquipmentsCondition } from '@/services/equipments/equipment-filter-scope';
 
 /**
@@ -198,10 +198,12 @@ async function loadAssociations(fileIds: number[]) {
       otherAssetIds: OTHER_ASSET_IDS_SQL,
       equipmentId: assetFiles.equipmentId,
       // Lot 111I : équipements liés (liens N-N PRIMARY / SECONDARY actifs), en plus de la colonne principale.
+      // #851 : références à `asset_files` qualifiées — requête sans jointure, un nom nu
+      // (`"id"`, `"equipment_id"`) désignait la colonne de `document_asset_links`.
       otherEquipmentIds: sql<number[]>`(SELECT COALESCE(array_agg(DISTINCT dal.equipment_id ORDER BY dal.equipment_id), '{}'::int[])
         FROM document_asset_links dal
-       WHERE dal.file_id = ${assetFiles.id} AND dal.status = 'ACTIVE' AND dal.equipment_id IS NOT NULL
-         AND dal.link_role IN ('PRIMARY', 'SECONDARY') AND dal.equipment_id IS DISTINCT FROM ${assetFiles.equipmentId})`,
+       WHERE dal.file_id = ${ASSET_FILES_COLUMN_SQL('id')} AND dal.status = 'ACTIVE' AND dal.equipment_id IS NOT NULL
+         AND dal.link_role IN ('PRIMARY', 'SECONDARY') AND dal.equipment_id IS DISTINCT FROM ${ASSET_FILES_COLUMN_SQL('equipment_id')})`,
     })
     .from(assetFiles)
     .where(inArray(assetFiles.id, fileIds));

@@ -238,34 +238,63 @@ async function loadLinks(itemIds: number[]) {
   };
 }
 
+/**
+ * #851 — regroupe des lignes par `agendaItemId`, en conservant l'ordre de
+ * lecture (équivalent exact de `lignes.filter((l) => l.agendaItemId === id)`
+ * pour chaque identifiant, en un seul passage).
+ */
+export function groupByAgendaItem<T extends { agendaItemId: number | null }>(lignes: readonly T[]): Map<number, T[]> {
+  const parElement = new Map<number, T[]>();
+  for (const l of lignes) {
+    // Sans élément (`null`) : jamais égal à un identifiant, comme avec `filter`.
+    if (l.agendaItemId === null) continue;
+    const groupe = parElement.get(l.agendaItemId);
+    if (groupe) groupe.push(l);
+    else parElement.set(l.agendaItemId, [l]);
+  }
+  return parElement;
+}
+
 async function enrichItems(rows: typeof agendaItems.$inferSelect[]): Promise<AgendaItemFull[]> {
   if (rows.length === 0) return [];
 
   const ids = rows.map(r => r.id);
-  const { assetLinks, fileLinks, roomLinks, equipLinks } = await loadLinks(ids);
-  const natures = await loadEventNatures(ids);
+  // #851 : trois lectures indépendantes, lancées ensemble (avant : l'une après
+  // l'autre, trois allers-retours successifs vers la base).
+  const [{ assetLinks, fileLinks, roomLinks, equipLinks }, natures, conflicts] = await Promise.all([
+    loadLinks(ids),
+    loadEventNatures(ids),
+    // Load pending conflicts for attention flags
+    db.select({
+      id: agendaDataConflicts.id,
+      agendaItemId: agendaDataConflicts.agendaItemId,
+      requiresQualification: agendaDataConflicts.requiresQualification,
+      currentDecision: agendaDataConflicts.currentDecision,
+    })
+    .from(agendaDataConflicts)
+    .where(
+      and(
+        inArray(agendaDataConflicts.agendaItemId, ids),
+        eq(agendaDataConflicts.currentDecision, 'pending')
+      )
+    ),
+  ]);
 
-  // Load pending conflicts for attention flags
-  const conflicts = await db.select({
-    id: agendaDataConflicts.id,
-    agendaItemId: agendaDataConflicts.agendaItemId,
-    requiresQualification: agendaDataConflicts.requiresQualification,
-    currentDecision: agendaDataConflicts.currentDecision,
-  })
-  .from(agendaDataConflicts)
-  .where(
-    and(
-      inArray(agendaDataConflicts.agendaItemId, ids),
-      eq(agendaDataConflicts.currentDecision, 'pending')
-    )
-  );
+  // #851 : liens regroupés UNE fois par élément (avant : un `filter` de chaque
+  // liste pour chaque élément — 3 000 éléments × 4 500 liens, ≈ 115 ms par
+  // appel mesurés). Même contenu et même ordre que `filter` (ordre de lecture).
+  const assetsBy = groupByAgendaItem(assetLinks);
+  const filesBy = groupByAgendaItem(fileLinks);
+  const roomsBy = groupByAgendaItem(roomLinks);
+  const equipsBy = groupByAgendaItem(equipLinks);
+  const conflictsBy = groupByAgendaItem(conflicts);
 
   return rows.map(item => {
-    const itemAssets = assetLinks.filter(l => l.agendaItemId === item.id);
-    const itemFiles = fileLinks.filter(l => l.agendaItemId === item.id);
-    const itemRooms = roomLinks.filter(l => l.agendaItemId === item.id);
-    const itemEquips = equipLinks.filter(l => l.agendaItemId === item.id);
-    const itemConflicts = conflicts.filter(c => c.agendaItemId === item.id);
+    const itemAssets = assetsBy.get(item.id) ?? [];
+    const itemFiles = filesBy.get(item.id) ?? [];
+    const itemRooms = roomsBy.get(item.id) ?? [];
+    const itemEquips = equipsBy.get(item.id) ?? [];
+    const itemConflicts = conflictsBy.get(item.id) ?? [];
 
     const signaux = {
       eventNature: natures?.get(item.id)?.nature ?? null,

@@ -50,18 +50,37 @@ export function documentWithoutAssetCondition(): SQL {
 }
 
 /**
+ * #851 — colonne de `asset_files` TOUJOURS qualifiée (`"asset_files"."col"`).
+ *
+ * Dans la liste SELECT d'une requête Drizzle SANS jointure, `${assetFiles.id}`
+ * est rendu sans nom de table (`"id"`). Dans une sous-requête corrélée, ce nom
+ * nu est résolu sur la table la plus proche qui a la colonne : `"id"` devenait
+ * `document_asset_links.id`, `"account_id"` devenait `assets.account_id`.
+ * Mesure (audit #851, compte de 4 000 documents) : la sous-requête lisait
+ * TOUTE la table des liens et TOUS les biens de la plateforme pour chaque
+ * document — 3,7 s pour l'accueil (11 s avec 20 000 biens sur la plateforme) —
+ * et rattachait des documents à des biens qui n'étaient pas les leurs.
+ * Qualifiée, la référence désigne la ligne externe quel que soit le contexte
+ * (avec ou sans jointure ; `asset_files` n'est jamais aliasée par Drizzle).
+ */
+const fichier = (colonne: 'id' | 'asset_id' | 'linked_asset_id' | 'account_id' | 'equipment_id'): SQL =>
+  sql`${assetFiles}.${sql.identifier(colonne)}`;
+export const ASSET_FILES_COLUMN_SQL = fichier;
+
+/**
  * Expression Drizzle : biens AUTRES que le bien principal (`asset_id`)
  * auxquels le document est rattaché (colonne `linked_asset_id`, liens
  * PRIMARY / SECONDARY ACTIFS vers un bien non supprimé), triés. `int[]`.
+ * Utilisable avec ou sans jointure (#851 : références qualifiées).
  */
 export const OTHER_ASSET_IDS_SQL: SQL<number[]> = sql<number[]>`(
   SELECT COALESCE(array_agg(DISTINCT o.id ORDER BY o.id), '{}'::int[])
     FROM (
-      SELECT ${assetFiles.linkedAssetId} AS id
+      SELECT ${fichier('linked_asset_id')} AS id
       UNION
       SELECT dal.asset_id FROM document_asset_links dal
-       WHERE dal.file_id = ${assetFiles.id} AND dal.status = 'ACTIVE' AND dal.asset_id IS NOT NULL
+       WHERE dal.file_id = ${fichier('id')} AND dal.status = 'ACTIVE' AND dal.asset_id IS NOT NULL
          AND dal.link_role IN ${sql.raw(ROLES_SQL)}
     ) o
-   WHERE o.id IS NOT NULL AND o.id IS DISTINCT FROM ${assetFiles.assetId}
-     AND EXISTS (SELECT 1 FROM assets x WHERE x.id = o.id AND x.account_id = ${assetFiles.accountId} AND x.deleted_at IS NULL))`;
+   WHERE o.id IS NOT NULL AND o.id IS DISTINCT FROM ${fichier('asset_id')}
+     AND EXISTS (SELECT 1 FROM assets x WHERE x.id = o.id AND x.account_id = ${fichier('account_id')} AND x.deleted_at IS NULL))`;
