@@ -5,11 +5,14 @@ import { calendarAdditions, deadlines } from '@/db/schema';
 import { eq, and } from 'drizzle-orm';
 import { apiError } from '@/lib/api-errors';
 import { SessionService } from '@/lib/session-service';
+import { refuserSiRequeteSurBienTransmis } from '@/lib/asset-read-only-guard';
 
 export async function POST(
   request: NextRequest,
   { params }: { params: Promise<{ id: string }> }
 ) {
+  // #849 (complément, A2) : bien TRANSMIS — consultation seule (garde centrale).
+  { const refusTransmis = await refuserSiRequeteSurBienTransmis(request, { params }, { kind: 'deadline' }); if (refusTransmis) return refusTransmis; }
   try {
     const { id: idStr } = await params;
     const id = parseInt(idStr);

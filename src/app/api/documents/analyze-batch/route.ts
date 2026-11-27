@@ -8,8 +8,11 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { getSession } from '@/lib/auth-guards';
 import { refuserSiPasDIA } from '@/lib/write-access-guard';
+import { refuserSiRequeteSurBienTransmis } from '@/lib/asset-read-only-guard';
 
 export async function POST(request: NextRequest) {
+  // #849 (complément, A2) : bien TRANSMIS — consultation seule (garde centrale).
+  { const refusTransmis = await refuserSiRequeteSurBienTransmis(request, undefined, { body: { fileIds: 'document' } }); if (refusTransmis) return refusTransmis; }
   try {
     const session = await getSession(request);
     const accountId = session.currentAccountId;

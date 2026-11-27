@@ -60,6 +60,7 @@ export const REFERENCE_EVENT_WRITE_MESSAGES: Readonly<Record<OperationWriteCode,
   IDEMPOTENCY_KEY_REUSED: 'Cette demande a déjà été envoyée. Actualisez la fiche avant de recommencer.',
   INVALID_INPUT: 'La saisie n’est pas valide. Vérifiez les champs, puis réessayez.',
   READ_ONLY_ACCOUNT: 'Votre compte est en lecture seule : cette modification n’est pas possible.',
+  ASSET_READ_ONLY: 'Ce bien est transmis : il est en consultation seule. Remettez-le en service pour le modifier.',
   NOT_A_MEMBER: 'Vous n’avez pas accès à ce compte.',
   NOT_FOUND_IN_ACCOUNT: 'Cet élément est introuvable dans votre compte.',
   OPERATION_INACTIVE: 'Cette opération a été supprimée ou regroupée : elle ne peut plus être modifiée.',
@@ -116,7 +117,7 @@ export function referenceEventWriteOutcome(gesture: ReferenceEventGesture, r: Pi
   if (r.status === 'FAILED') return { http: 500, ok: false, changed: false, message: REFERENCE_EVENT_WRITE_MESSAGES.TECHNICAL_FAILURE, apiCode: 'INTERNAL_ERROR' };
   if (r.status === 'CONFLICT' || r.status === 'ARBITRATION_REQUIRED') return { http: 409, ok: false, changed: false, message: texte, apiCode: 'INVALID_STATE' };
   if (r.code === 'NOT_FOUND_IN_ACCOUNT') return { http: 404, ok: false, changed: false, message: texte, apiCode: 'NOT_FOUND' };
-  if (r.code === 'READ_ONLY_ACCOUNT' || r.code === 'NOT_A_MEMBER') return { http: 403, ok: false, changed: false, message: texte, apiCode: 'FORBIDDEN' };
+  if (r.code === 'READ_ONLY_ACCOUNT' || r.code === 'NOT_A_MEMBER' || r.code === 'ASSET_READ_ONLY') return { http: 403, ok: false, changed: false, message: texte, apiCode: 'FORBIDDEN' };
   if (r.code === 'OPERATION_INACTIVE' || r.code === 'NOT_RESTORABLE') return { http: 409, ok: false, changed: false, message: texte, apiCode: 'INVALID_STATE' };
   return { http: 422, ok: false, changed: false, message: texte, apiCode: 'INVALID_INPUT' };
 }

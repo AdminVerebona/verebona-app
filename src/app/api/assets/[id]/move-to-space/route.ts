@@ -16,6 +16,7 @@
  */
 import { NextRequest, NextResponse } from 'next/server';
 import { SessionService } from '@/lib/session-service';
+import { refuserSiRequeteSurBienTransmis } from '@/lib/asset-read-only-guard';
 import {
   listMoveTargets,
   moveAssetToSpace,
@@ -53,6 +54,8 @@ function reponse(r: MoveResult): NextResponse {
 }
 
 export async function POST(request: NextRequest, ctx: Ctx) {
+  // #849 (complément, A2) : bien TRANSMIS — consultation seule (garde centrale).
+  { const refusTransmis = await refuserSiRequeteSurBienTransmis(request, ctx, { kind: 'asset' }); if (refusTransmis) return refusTransmis; }
   let session;
   try {
     session = await SessionService.getSession(request);

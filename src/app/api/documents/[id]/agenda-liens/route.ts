@@ -17,6 +17,7 @@ import { SessionService } from '@/lib/session-service';
 import { refuserSiLectureSeule } from '@/lib/write-access-guard';
 import { emitBusinessEvent } from '@/services/verebona-assistant/events/business-events';
 import { AGENDA_EVENT_LABELS } from '@/lib/agenda/grouping-view';
+import { refuserSiRequeteSurBienTransmis } from '@/lib/asset-read-only-guard';
 
 type RouteContext = { params: Promise<{ id: string }> };
 
@@ -57,6 +58,8 @@ export async function GET(req: NextRequest, context: RouteContext) {
 }
 
 export async function POST(req: NextRequest, context: RouteContext) {
+  // #849 (complément, A2) : bien TRANSMIS — consultation seule (garde centrale).
+  { const refusTransmis = await refuserSiRequeteSurBienTransmis(req, context, { kind: 'document' }); if (refusTransmis) return refusTransmis; }
   try {
     const c = await compte(req, context);
     if (c instanceof NextResponse) return c;
@@ -87,6 +90,8 @@ export async function POST(req: NextRequest, context: RouteContext) {
 
 /** Lot 86D (ticket « Documents / Agenda » §2) : détachement individuel depuis le tiroir du document. */
 export async function DELETE(req: NextRequest, context: RouteContext) {
+  // #849 (complément, A2) : bien TRANSMIS — consultation seule (garde centrale).
+  { const refusTransmis = await refuserSiRequeteSurBienTransmis(req, context, { kind: 'document' }); if (refusTransmis) return refusTransmis; }
   try {
     const c = await compte(req, context);
     if (c instanceof NextResponse) return c;

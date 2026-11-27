@@ -16,6 +16,7 @@ import { refuserSiLectureSeule } from '@/lib/write-access-guard';
 import { db } from '@/db';
 import { documentAnalysisRuns, documentAnalysisProposals } from '@/db/schema';
 import { eq, and } from 'drizzle-orm';
+import { refuserSiRequeteSurBienTransmis } from '@/lib/asset-read-only-guard';
 
 export async function GET(
   request: NextRequest,
@@ -66,6 +67,8 @@ export async function PATCH(
   request: NextRequest,
   { params }: { params: Promise<{ id: string }> }
 ) {
+  // #849 (complément, A2) : bien TRANSMIS — consultation seule (garde centrale).
+  { const refusTransmis = await refuserSiRequeteSurBienTransmis(request, { params }, { kind: 'document' }); if (refusTransmis) return refusTransmis; }
   try {
     const session = await getSession(request);
     const { id: rawId } = await params;

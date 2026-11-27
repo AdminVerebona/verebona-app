@@ -2,11 +2,14 @@ import { NextRequest, NextResponse } from 'next/server';
 import { SessionService } from '@/lib/session-service';
 import { refuserSiLectureSeule } from '@/lib/write-access-guard';
 import { resolveConflict } from '@/services/agenda/AgendaConflictService';
+import { refuserSiRequeteSurBienTransmis } from '@/lib/asset-read-only-guard';
 
 /** `params` est une promesse depuis Next.js 15 — cf. `../../[id]/route.ts`. */
 type RouteContext = { params: Promise<{ id: string }> };
 
 export async function PATCH(req: NextRequest, context: RouteContext) {
+  // #849 (complément, A2) : bien TRANSMIS — consultation seule (garde centrale).
+  { const refusTransmis = await refuserSiRequeteSurBienTransmis(req, context, { kind: 'agendaConflict' }); if (refusTransmis) return refusTransmis; }
   try {
     let session;
     try {

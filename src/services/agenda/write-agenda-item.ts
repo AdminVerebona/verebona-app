@@ -81,6 +81,11 @@ export interface WriteAgendaItemOptions {
   actorUserId?: number | null;
   /** Chemin appelant : agenda manuel (fiche, assistant) ou T4. */
   channel: 'MANUAL' | 'T4';
+  /**
+   * #849 (complément) : écriture permise sur un bien TRANSMIS — SEULEMENT la projection de la cession établie
+   * par le passage même du bien à « Transmis » (Opération DISPOSAL). Jamais ailleurs.
+   */
+  allowTransmittedAsset?: boolean;
   /** Liaisons : `replace` (agenda manuel : l'état complet) ou `add` (T4). */
   linkMode?: 'replace' | 'add';
   /** Contrôles de dates et de cohérence des liens (agenda manuel). */
@@ -391,6 +396,26 @@ export async function writeAgendaItem(
   }
 
   const creation = input.itemId === undefined;
+  // #849 (complément, A2) : aucune écriture d'Agenda (création, modification, T4 ou manuelle) qui vise
+  // seulement des biens TRANSMIS, ni qui rattache un bien transmis — abstention journalisée (élément
+  // « protégé », rien d'écrit ; la route renvoie déjà ASSET_READ_ONLY à l'utilisateur).
+  if (!opts.allowTransmittedAsset) {
+    const { abstentionSiLectureSeule, uneCibleEnLectureSeule } = await import('@/lib/asset-read-only-guard');
+    const l = input.links;
+    const rattache = await uneCibleEnLectureSeule(opts.accountId, [
+      ...(l?.assetIds ?? []).map((id) => ({ kind: 'asset' as const, id })),
+      ...(l?.substructureIds ?? []).map((id) => ({ kind: 'room' as const, id })),
+      ...(l?.equipmentIds ?? []).map((id) => ({ kind: 'equipment' as const, id })),
+    ]);
+    const existant = !creation && input.itemId ? await abstentionSiLectureSeule(opts.accountId, { kind: 'agenda', id: input.itemId }, `agenda-${opts.channel}`) : false;
+    if (rattache || existant) {
+      if (rattache) console.info(JSON.stringify({ event: 'asset_read_only.skip', treatment: `agenda-${opts.channel}`, accountId: opts.accountId, target: rattache.kind, id: rattache.id }));
+      return {
+        id: input.itemId ?? 0, created: false, protected: true, nature: semantics.nature, businessType: semantics.businessType,
+        notifiable: false, functionalKey: input.functionalKey ?? null,
+      };
+    }
+  }
   // Lot 113P (#715) : une création AUTOMATIQUE ne recrée jamais un événement que
   // l'utilisateur a supprimé (trace `agenda_item_removals` USER_DELETED*) — la
   // suppression prévaut sur toute réanalyse. Une création manuelle n'est jamais bloquée.

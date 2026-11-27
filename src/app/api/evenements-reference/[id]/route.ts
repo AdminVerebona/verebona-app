@@ -37,6 +37,7 @@ import { SessionService } from '@/lib/session-service';
 import { apiError } from '@/lib/api-errors';
 import { refuserSiLectureSeule } from '@/lib/write-access-guard';
 import { expectedVersionOf, parseReferenceEventCorrection } from '@/lib/reference-events/reference-event-write';
+import { refuserSiRequeteSurBienTransmis } from '@/lib/asset-read-only-guard';
 import {
   invalidReferenceEventRequest, openReferenceEventRoute, readJsonBody, referenceEventRouteFailure, referenceEventWriteResponse,
 } from '../_shared/write-route';
@@ -65,6 +66,8 @@ export async function GET(req: NextRequest, context: RouteContext) {
 }
 
 export async function PATCH(req: NextRequest, context: RouteContext) {
+  // #849 (complément, A2) : bien TRANSMIS — consultation seule (garde centrale).
+  { const refusTransmis = await refuserSiRequeteSurBienTransmis(req, context, { kind: 'operation' }); if (refusTransmis) return refusTransmis; }
   const scope = await openReferenceEventRoute(req, context);
   if (scope instanceof NextResponse) return scope;
   const refus = await refuserSiLectureSeule(scope.accountId);
@@ -91,6 +94,8 @@ export async function PATCH(req: NextRequest, context: RouteContext) {
 }
 
 export async function DELETE(req: NextRequest, context: RouteContext) {
+  // #849 (complément, A2) : bien TRANSMIS — consultation seule (garde centrale).
+  { const refusTransmis = await refuserSiRequeteSurBienTransmis(req, context, { kind: 'operation' }); if (refusTransmis) return refusTransmis; }
   const scope = await openReferenceEventRoute(req, context);
   if (scope instanceof NextResponse) return scope;
   const refus = await refuserSiLectureSeule(scope.accountId);

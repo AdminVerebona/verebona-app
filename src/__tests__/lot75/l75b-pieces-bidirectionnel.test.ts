@@ -26,6 +26,8 @@ vi.mock('@/lib/session-service', () => ({
 }));
 vi.mock('@/lib/write-access-guard', () => ({ refuserSiLectureSeule: vi.fn(async () => null) }));
 vi.mock('@/lib/asset-quota-guard', () => ({ refuserSiModificationBiensSuspendue: vi.fn(async () => null) }));
+// #849 (complément) : garde « bien transmis » neutre ici (base simulée) ; couverte par c849b-bien-transmis-ecritures.e2e.ts.
+vi.mock('@/lib/asset-read-only-guard', () => ({ refuserSiRequeteSurBienTransmis: vi.fn(async () => null) }));
 vi.mock('@/services/verebona-assistant/events/business-events', () => ({ emitBusinessEvent: vi.fn(async () => {}) }));
 const svc = vi.hoisted(() => ({
   getRoomInAccount: vi.fn(),

@@ -25,6 +25,8 @@ const getInfos = vi.fn();
 const updateInfos = vi.fn();
 const emitted: unknown[] = [];
 
+// #849 (complément) : garde « bien transmis » neutre ici (base simulée) ; couverte par c849b-bien-transmis-ecritures.e2e.ts.
+vi.mock('@/lib/asset-read-only-guard', () => ({ refuserSiRequeteSurBienTransmis: vi.fn(async () => null) }));
 vi.mock('@/lib/session-service', () => ({
   SessionService: {
     getSession: async () => {

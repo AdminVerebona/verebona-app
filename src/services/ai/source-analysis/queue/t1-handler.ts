@@ -354,6 +354,13 @@ export function registerSourceAnalysisHandler(): void {
       return;
     }
 
+    // #849 (complément, A2) : document des seuls biens TRANSMIS — consultation seule : T1 s'abstient
+    // (motif journalisé, travail clos sans erreur ; les autres fichiers du compte ne sont pas concernés).
+    {
+      const { abstentionSiLectureSeule } = await import('@/lib/asset-read-only-guard');
+      if (await abstentionSiLectureSeule(job.accountId, { kind: 'document', id: fileId }, 'T1')) return;
+    }
+
     const { analyzeFileSources } = await import('../entrypoint');
     // La garde suit l'exécution jusque dans le pipeline : après un rollback,
     // un arrêt d'urgence ou une désactivation, aucun résultat de cette

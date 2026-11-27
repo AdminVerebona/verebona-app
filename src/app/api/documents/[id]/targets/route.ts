@@ -17,6 +17,7 @@ import { refuserSiLectureSeule } from '@/lib/write-access-guard';
 import { applyDocumentTargets, readDocumentTargets, type TargetsExecutor } from '@/services/documents/document-targets/service';
 import { selectionFromBody, TargetSelectionError } from '@/services/documents/document-targets/plan';
 import { documentTargetsErrorResponse } from '@/services/documents/document-targets/route-support';
+import { refuserSiRequeteSurBienTransmis } from '@/lib/asset-read-only-guard';
 
 type Ctx = { params: Promise<{ id: string }> };
 
@@ -88,9 +89,13 @@ async function write(request: NextRequest, ctx: Ctx, mode: 'replace' | 'add') {
 }
 
 export async function PUT(request: NextRequest, ctx: Ctx) {
+  // #849 (complément, A2) : bien TRANSMIS — consultation seule (garde centrale).
+  { const refusTransmis = await refuserSiRequeteSurBienTransmis(request, ctx, { kind: 'document' }); if (refusTransmis) return refusTransmis; }
   return write(request, ctx, 'replace');
 }
 
 export async function POST(request: NextRequest, ctx: Ctx) {
+  // #849 (complément, A2) : bien TRANSMIS — consultation seule (garde centrale).
+  { const refusTransmis = await refuserSiRequeteSurBienTransmis(request, ctx, { kind: 'document' }); if (refusTransmis) return refusTransmis; }
   return write(request, ctx, 'add');
 }

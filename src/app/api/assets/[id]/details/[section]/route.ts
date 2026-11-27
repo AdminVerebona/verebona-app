@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { emitBusinessEvent } from '@/services/verebona-assistant/events/business-events';
 import { apiError } from '@/lib/api-errors';
 import { SessionService } from '@/lib/session-service';
+import { refuserSiRequeteSurBienTransmis } from '@/lib/asset-read-only-guard';
 import {
   ALL_DETAIL_SECTIONS, AssetDetailsError, familySections, loadWritableAsset, updateAssetDetails,
 } from '@/services/asset-details-write.service';
@@ -18,6 +19,8 @@ export async function PATCH(
   request: NextRequest,
   { params }: { params: Promise<{ id: string; section: string }> }
 ) {
+  // #849 (complément, A2) : bien TRANSMIS — consultation seule (garde centrale).
+  { const refusTransmis = await refuserSiRequeteSurBienTransmis(request, { params }, { kind: 'asset' }); if (refusTransmis) return refusTransmis; }
   try {
     const { id, section } = await params;
     const assetId = parseInt(id);

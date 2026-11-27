@@ -6,11 +6,14 @@ import { eq, and, isNull } from 'drizzle-orm';
 import { apiError } from '@/lib/api-errors';
 import { SessionService } from '@/lib/session-service';
 import { refuserSiLectureSeule } from '@/lib/write-access-guard';
+import { refuserSiRequeteSurBienTransmis } from '@/lib/asset-read-only-guard';
 
 export async function PATCH(
   request: NextRequest,
   { params }: { params: Promise<{ id: string }> }
 ) {
+  // #849 (complément, A2) : bien TRANSMIS — consultation seule (garde centrale).
+  { const refusTransmis = await refuserSiRequeteSurBienTransmis(request, { params }, { kind: 'asset' }); if (refusTransmis) return refusTransmis; }
   try {
     const { id } = await params;
     const assetId = parseInt(id);

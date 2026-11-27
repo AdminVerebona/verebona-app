@@ -22,6 +22,7 @@ import { parsePaginationParams, buildPaginationResponse, getCursorId } from '@/l
 import { apiError } from '@/lib/api-errors';
 import { SessionService } from '@/lib/session-service';
 import { refuserSiLectureSeule } from '@/lib/write-access-guard';
+import { refuserSiRequeteSurBienTransmis } from '@/lib/asset-read-only-guard';
 
 const VALID_DEADLINE_TYPES = ['ENTRETIEN', 'CONTROLE_TECHNIQUE', 'ASSURANCE', 'GARANTIE', 'ADMINISTRATIF', 'AUTRE'] as const;
 
@@ -152,6 +153,8 @@ export async function GET(request: NextRequest) {
 }
 
 export async function POST(request: NextRequest) {
+  // #849 (complément, A2) : bien TRANSMIS — consultation seule (garde centrale).
+  { const refusTransmis = await refuserSiRequeteSurBienTransmis(request, undefined, { query: { name: 'id', kind: 'deadline' }, body: { assetId: 'asset', substructureId: 'room', equipmentId: 'equipment' } }); if (refusTransmis) return refusTransmis; }
   try {
     let session: Awaited<ReturnType<typeof SessionService.tryGetSession>>;
     try {
@@ -230,6 +233,8 @@ export async function POST(request: NextRequest) {
 }
 
 export async function PUT(request: NextRequest) {
+  // #849 (complément, A2) : bien TRANSMIS — consultation seule (garde centrale).
+  { const refusTransmis = await refuserSiRequeteSurBienTransmis(request, undefined, { query: { name: 'id', kind: 'deadline' }, body: { assetId: 'asset', substructureId: 'room', equipmentId: 'equipment' } }); if (refusTransmis) return refusTransmis; }
   try {
     let session: Awaited<ReturnType<typeof SessionService.tryGetSession>>;
     try {
@@ -299,6 +304,8 @@ export async function PUT(request: NextRequest) {
 }
 
 export async function DELETE(request: NextRequest) {
+  // #849 (complément, A2) : bien TRANSMIS — consultation seule (garde centrale).
+  { const refusTransmis = await refuserSiRequeteSurBienTransmis(request, undefined, { query: { name: 'id', kind: 'deadline' }, body: { assetId: 'asset', substructureId: 'room', equipmentId: 'equipment' } }); if (refusTransmis) return refusTransmis; }
   try {
     let session: Awaited<ReturnType<typeof SessionService.tryGetSession>>;
     try {

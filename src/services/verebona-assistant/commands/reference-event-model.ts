@@ -241,6 +241,7 @@ export const WRITE_CODE_TEXT: Readonly<Record<Exclude<OperationWriteCode, 'OK' |
   TYPE_MISMATCH: 'Ces deux opérations ne sont pas de même nature : elles ne peuvent pas être réunies ; rien n’a été écrit.',
   INVALID_INPUT: 'Ces informations ne peuvent pas être enregistrées telles quelles : rien n’a été écrit.',
   READ_ONLY_ACCOUNT: 'Votre compte est en lecture seule : rien n’a été écrit.',
+  ASSET_READ_ONLY: 'Ce bien est transmis (consultation seule) : remettez-le en service depuis sa fiche — rien n’a été écrit.',
   NOT_A_MEMBER: 'Vous n’avez pas accès à ce compte : rien n’a été écrit.',
   NOT_FOUND_IN_ACCOUNT: 'Un des éléments de cette action est introuvable dans votre compte : rien n’a été écrit.',
   OPERATION_INACTIVE: 'Cette opération n’est plus active (elle a été supprimée ou regroupée avec une autre) : rien n’a été écrit.',

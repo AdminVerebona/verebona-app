@@ -7,6 +7,7 @@ import { refuserSiLectureSeule } from '@/lib/write-access-guard';
 import { AccountService } from '@/services/account-service';
 import { createWebDocumentForAccount, type WebDocumentInput } from '@/services/documents/document-write.facade';
 import { NotesIntentUnavailableError, NOTES_INTENT_UNAVAILABLE_MESSAGE } from '@/services/documents/notes-description/store';
+import { refuserSiRequeteSurBienTransmis } from '@/lib/asset-read-only-guard';
 
 export const dynamic = 'force-dynamic';
 
@@ -45,6 +46,8 @@ export async function GET(request: NextRequest) {
 }
 
 export async function POST(request: NextRequest) {
+  // #849 (complément, A2) : bien TRANSMIS — consultation seule (garde centrale).
+  { const refusTransmis = await refuserSiRequeteSurBienTransmis(request, undefined, { body: { assetId: 'asset' } }); if (refusTransmis) return refusTransmis; }
   try {
     let session;
     try { session = await getSession(request); }

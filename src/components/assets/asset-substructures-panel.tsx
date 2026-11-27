@@ -19,12 +19,18 @@ interface AssetSubstructuresPanelProps {
   assetId: number;
   substructures: Substructure[];
   onRefresh: () => void;
+  /**
+   * #849 (A2) : bien TRANSMIS — consultation seule : aucun bouton « Ajouter », aucun tiroir
+   * d'édition ; la liste reste lisible (le serveur refuse de toute façon les écritures).
+   */
+  readOnly?: boolean;
 }
 
 export function AssetSubstructuresPanel({
   assetId,
   substructures,
   onRefresh,
+  readOnly = false,
 }: AssetSubstructuresPanelProps) {
   const [drawerRoom, setDrawerRoom] = useState<RoomDrawerItem | null>(null);
   const [isDrawerOpen, setIsDrawerOpen] = useState(false);
@@ -68,7 +74,7 @@ export function AssetSubstructuresPanel({
               {sorted.length} pièce{sorted.length !== 1 ? 's' : ''}
             </p>
           </div>
-          {sorted.length > 0 && (
+          {!readOnly && sorted.length > 0 && (
             <Button variant="outline" size="sm" onClick={handleAdd} className="btn-add px-4">
               <Plus className="btn-add-plus-icon w-4 h-4 mr-2" />
               Ajouter
@@ -82,8 +88,7 @@ export function AssetSubstructuresPanel({
             iconClassName="bg-[color:var(--accent-soft)]"
             title="Aucune pièce définie"
             description="Ex: Salon, Chambre 1, Cuisine, Salle de bain…"
-            actionLabel="Ajouter une pièce"
-            onAction={handleAdd}
+            {...(readOnly ? {} : { actionLabel: "Ajouter une pièce", onAction: handleAdd })}
             actionVariant="outline"
             actionSize="sm"
             actionGuide="add-room"
@@ -94,8 +99,10 @@ export function AssetSubstructuresPanel({
               {sorted.map((sub) => (
                 <button
                   key={sub.id}
-                  onClick={() => handleRowClick(sub)}
-                  className="w-full flex items-center gap-3 p-3 rounded-lg border bg-card hover:bg-accent/50 transition-colors text-left"
+                  onClick={readOnly ? undefined : () => handleRowClick(sub)}
+                  disabled={readOnly}
+                  aria-disabled={readOnly}
+                  className={`w-full flex items-center gap-3 p-3 rounded-lg border bg-card transition-colors text-left ${readOnly ? 'cursor-default' : 'hover:bg-accent/50'}`}
                 >
                   <GripVertical className="w-4 h-4 text-muted-foreground/40 flex-shrink-0" />
                   <div className="w-7 h-7 rounded bg-primary/10 flex items-center justify-center flex-shrink-0">
@@ -109,13 +116,13 @@ export function AssetSubstructuresPanel({
         )}
       </div>
 
-      <RoomDrawer
+      {!readOnly && <RoomDrawer
         open={isDrawerOpen}
         onOpenChange={setIsDrawerOpen}
         assetId={assetId}
         room={drawerRoom}
         onRefresh={onRefresh}
-      />
+      />}
     </>
   );
 }

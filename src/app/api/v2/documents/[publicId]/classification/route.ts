@@ -25,6 +25,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { SessionService } from '@/lib/session-service';
 import { refuserSiLectureSeule } from '@/lib/write-access-guard';
 import { updateDocumentClassificationForAccount } from '@/services/documents/document-write.facade';
+import { refuserSiRequeteSurBienTransmis } from '@/lib/asset-read-only-guard';
 
 export const dynamic = 'force-dynamic';
 
@@ -32,6 +33,8 @@ export async function PATCH(
   req: NextRequest,
   context: { params: Promise<{ publicId: string }> },
 ) {
+  // #849 (complément, A2) : bien TRANSMIS — consultation seule (garde centrale).
+  { const refusTransmis = await refuserSiRequeteSurBienTransmis(req, context, { kind: 'documentPublicId', param: 'publicId' }); if (refusTransmis) return refusTransmis; }
   let session;
   try {
     session = await SessionService.getSession(req);

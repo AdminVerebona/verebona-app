@@ -284,6 +284,8 @@ export type OperationWriteCode =
   | 'OK' | 'NO_CHANGE'
   | 'NEW_EVIDENCE_AFTER_REFUSAL'
   | 'VERSION_MISMATCH' | 'IDEMPOTENCY_KEY_REUSED'
+  // #849 : l'opération, le document, l'élément d'Agenda ou le bien visé appartient à un bien TRANSMIS (consultation seule).
+  | 'ASSET_READ_ONLY'
   | 'INVALID_INPUT' | 'READ_ONLY_ACCOUNT' | 'NOT_A_MEMBER' | 'NOT_FOUND_IN_ACCOUNT' | 'OPERATION_INACTIVE' | 'REFLEXIVE'
   | 'NATURE_TYPE_MISMATCH' | 'EVIDENCE_REQUIRED' | 'USER_REJECTED' | 'USER_RELATION_PROTECTED' | 'LINKED_ELSEWHERE' | 'NOT_LINKED'
   // Scission (carte #744, CDC §7, AC46) : un fait désigné n'est plus rattaché à l'événement scindé ; aucune part à déplacer.

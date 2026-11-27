@@ -7,10 +7,13 @@ import { emitBusinessEvent } from '@/services/verebona-assistant/events/business
 import { SessionService } from '@/lib/session-service';
 import { refuserSiLectureSeule } from '@/lib/write-access-guard';
 import { confirmForecastOccurrence } from '@/services/agenda/AgendaWriteService';
+import { refuserSiRequeteSurBienTransmis } from '@/lib/asset-read-only-guard';
 
 type RouteContext = { params: Promise<{ id: string }> };
 
 export async function POST(req: NextRequest, context: RouteContext) {
+  // #849 (complément, A2) : bien TRANSMIS — consultation seule (garde centrale).
+  { const refusTransmis = await refuserSiRequeteSurBienTransmis(req, context, { kind: 'agenda' }); if (refusTransmis) return refusTransmis; }
   let session;
   try { session = await SessionService.getSession(req); }
   catch (e) { return SessionService.handleSessionError(e); }

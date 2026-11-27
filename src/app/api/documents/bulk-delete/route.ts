@@ -5,8 +5,11 @@ import { assetFiles } from '@/db/schema';
 import { eq, and, inArray, isNull } from 'drizzle-orm';
 import { getSession } from '@/lib/auth-guards';
 import { refuserSiLectureSeule } from '@/lib/write-access-guard';
+import { refuserSiRequeteSurBienTransmis } from '@/lib/asset-read-only-guard';
 
 export async function POST(request: NextRequest) {
+  // #849 (complément, A2) : bien TRANSMIS — consultation seule (garde centrale).
+  { const refusTransmis = await refuserSiRequeteSurBienTransmis(request, undefined, { body: { documentIds: 'document' } }); if (refusTransmis) return refusTransmis; }
   try {
     const session = await getSession(request);
     const { userId } = session;

@@ -593,6 +593,8 @@ async function applyAction(
         links, semantics: { businessType: d.businessType, nature: d.nature }, functionalKey: a.functionalKey,
       }, {
         accountId, channel: 'T4', linkMode: 'replace', notify: itemId === undefined, statusProposal: false,
+        // #849 : seule la cession (passage à « Transmis ») se projette sur un bien transmis.
+        allowTransmittedAsset: op.typeCode === 'DISPOSAL',
         ...(itemId !== undefined ? { onlyIfUntouched: true } : {}),
         // Carte #859 : titre GÉNÉRÉ par la projection — provenance SYSTEM du champ.
         titleDeclaration: { origin: 'SYSTEM', reason: 'T4_PROJECTION_CREATED', channel: 'T4', evidence: `operation:${op.id}` },
@@ -630,7 +632,7 @@ async function applyAction(
         semantics: { businessType: c.businessType ?? null, nature: c.nature ?? null },
         functionalKey: c.functionalKey ?? null,
       }, {
-        accountId, channel: 'T4', linkMode: 'replace', onlyIfUntouched: true, notify: false, statusProposal: false,
+        accountId, channel: 'T4', linkMode: 'replace', onlyIfUntouched: true, notify: false, statusProposal: false, allowTransmittedAsset: op.typeCode === 'DISPOSAL',
         ...(c.title !== undefined ? { titleDeclaration: { origin: 'SYSTEM' as const, reason: 'T4_PROJECTION_SYNC', channel: 'T4', evidence: `operation:${op.id}` } } : {}),
       });
       if (!w.protected) {
@@ -646,7 +648,7 @@ async function applyAction(
       await garde('date établie');
       const w = await writeAgendaItem({
         itemId: a.itemId, values: { startDate: a.date, dateSource: 'EXPLICIT_DATE', updatedAt: new Date() },
-      }, { accountId, channel: 'T4', onlyIfUntouched: true, notify: false, statusProposal: false });
+      }, { accountId, channel: 'T4', onlyIfUntouched: true, notify: false, statusProposal: false, allowTransmittedAsset: op.typeCode === 'DISPOSAL' });
       if (!w.protected) {
         res.updated++; res.changes++;
         opts.dateCards.add(a.itemId);

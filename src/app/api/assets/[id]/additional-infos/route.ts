@@ -54,6 +54,7 @@ import { toExportFamily } from '@/services/exports/catalog';
 import { emitBusinessEvent } from '@/services/verebona-assistant/events/business-events';
 import { canCreateDossiers } from '@/services/entitlements.service';
 import { DOSSIER_PREPARATION_PREMIUM_MESSAGE } from '@/lib/entitlements/dossier-rights';
+import { refuserSiRequeteSurBienTransmis } from '@/lib/asset-read-only-guard';
 
 type Ctx = { params: Promise<{ id: string }> };
 
@@ -103,6 +104,8 @@ export async function GET(request: NextRequest, { params }: Ctx) {
 }
 
 export async function PATCH(request: NextRequest, { params }: Ctx) {
+  // #849 (complément, A2) : bien TRANSMIS — consultation seule (garde centrale).
+  { const refusTransmis = await refuserSiRequeteSurBienTransmis(request, { params }, { kind: 'asset' }); if (refusTransmis) return refusTransmis; }
   try {
     const session = await SessionService.getSession(request);
     const assetId = parseAssetId((await params).id);

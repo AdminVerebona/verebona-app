@@ -17,6 +17,11 @@ interface AssetEquipmentsPanelProps {
   equipments: Equipment[];
   substructures: Substructure[];
   onRefresh: () => void;
+  /**
+   * #849 (A2) : bien TRANSMIS — consultation seule : aucun bouton « Ajouter », aucun tiroir
+   * d'édition ; la liste reste lisible (le serveur refuse de toute façon les écritures).
+   */
+  readOnly?: boolean;
 }
 
 const STATUS_LABELS: Record<string, string> = {
@@ -39,6 +44,7 @@ export function AssetEquipmentsPanel({
   equipments,
   substructures,
   onRefresh,
+  readOnly = false,
 }: AssetEquipmentsPanelProps) {
   const [selectedEq, setSelectedEq] = useState<EquipmentDrawerItem | null>(null);
   const [isDrawerOpen, setIsDrawerOpen] = useState(false);
@@ -119,7 +125,7 @@ export function AssetEquipmentsPanel({
               {equipments.length} équipement{equipments.length !== 1 ? 's' : ''}
             </p>
           </div>
-          {equipments.length > 0 && (
+          {!readOnly && equipments.length > 0 && (
             <Button variant="outline" size="sm" onClick={handleAdd} className="btn-add px-4">
               <Plus className="btn-add-plus-icon w-4 h-4 mr-2" />
               Ajouter
@@ -133,8 +139,7 @@ export function AssetEquipmentsPanel({
             iconClassName="bg-[color:var(--accent-soft)]"
             title="Aucun équipement répertorié"
             description="Ex: Chaudière, Moteur, Pompe à chaleur, Alarme…"
-            actionLabel="Ajouter un équipement"
-            onAction={handleAdd}
+            {...(readOnly ? {} : { actionLabel: "Ajouter un équipement", onAction: handleAdd })}
             actionVariant="outline"
             actionSize="sm"
             actionGuide="add-equipment"
@@ -153,8 +158,10 @@ export function AssetEquipmentsPanel({
                     {group.items.map(eq => (
                       <button
                         key={eq.id}
-                        onClick={() => handleRowClick(eq)}
-                        className="w-full flex items-center gap-3 p-3 rounded-lg border bg-card hover:bg-accent/50 transition-colors text-left"
+                        onClick={readOnly ? undefined : () => handleRowClick(eq)}
+                        disabled={readOnly}
+                  aria-disabled={readOnly}
+                  className={`w-full flex items-center gap-3 p-3 rounded-lg border bg-card transition-colors text-left ${readOnly ? 'cursor-default' : 'hover:bg-accent/50'}`}
                       >
                         <div className="w-7 h-7 rounded bg-primary/10 flex items-center justify-center flex-shrink-0">
                           <Settings className="w-3.5 h-3.5 text-primary" />
@@ -179,7 +186,7 @@ export function AssetEquipmentsPanel({
         )}
       </div>
 
-      <EquipmentDrawer
+      {!readOnly && <EquipmentDrawer
         open={isDrawerOpen}
         onOpenChange={setIsDrawerOpen}
         assetId={assetId}
@@ -187,7 +194,7 @@ export function AssetEquipmentsPanel({
         equipment={selectedEq}
         substructures={drawerSubstructures}
         onRefresh={onRefresh}
-      />
+      />}
     </>
   );
 }

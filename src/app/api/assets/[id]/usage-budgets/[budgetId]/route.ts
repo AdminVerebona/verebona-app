@@ -18,6 +18,7 @@ import {
   deleteUsageBudget, parseEffectiveFrom, parseUsageBudgetDeleteMode, updateUsageBudget, UsageBudgetError,
 } from '@/services/business-operations/tco/usage-budgets.service';
 import { parseUsageBudgetBody } from '@/services/business-operations/tco/dto';
+import { refuserSiRequeteSurBienTransmis } from '@/lib/asset-read-only-guard';
 
 type Ctx = { params: Promise<{ id: string; budgetId: string }> };
 
@@ -38,6 +39,8 @@ async function garde(request: NextRequest, params: Ctx['params']): Promise<Garde
 }
 
 export async function PATCH(request: NextRequest, { params }: Ctx) {
+  // #849 (complément, A2) : bien TRANSMIS — consultation seule (garde centrale).
+  { const refusTransmis = await refuserSiRequeteSurBienTransmis(request, { params }, { kind: 'asset' }); if (refusTransmis) return refusTransmis; }
   try {
     const g = await garde(request, params);
     if ('response' in g) return g.response;
@@ -58,6 +61,8 @@ export async function PATCH(request: NextRequest, { params }: Ctx) {
 }
 
 export async function DELETE(request: NextRequest, { params }: Ctx) {
+  // #849 (complément, A2) : bien TRANSMIS — consultation seule (garde centrale).
+  { const refusTransmis = await refuserSiRequeteSurBienTransmis(request, { params }, { kind: 'asset' }); if (refusTransmis) return refusTransmis; }
   try {
     const g = await garde(request, params);
     if ('response' in g) return g.response;

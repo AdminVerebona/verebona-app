@@ -9,11 +9,14 @@ import { assetFiles } from '@/db/schema';
 import { eq, and } from 'drizzle-orm';
 import { getSession } from '@/lib/auth-guards';
 import { refuserSiPasDIA } from '@/lib/write-access-guard';
+import { refuserSiRequeteSurBienTransmis } from '@/lib/asset-read-only-guard';
 
 export async function POST(
   request: NextRequest,
   { params }: { params: Promise<{ id: string }> }
 ) {
+  // #849 (complément, A2) : bien TRANSMIS — consultation seule (garde centrale).
+  { const refusTransmis = await refuserSiRequeteSurBienTransmis(request, { params }, { kind: 'document' }); if (refusTransmis) return refusTransmis; }
   try {
     const session = await getSession(request);
     const { id: rawId } = await params;

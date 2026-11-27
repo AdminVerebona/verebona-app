@@ -160,6 +160,12 @@ export interface MatchContext {
   /** Statut des biens cibles (périmètre T3, point 7 du lot). */
   assetStatus: ReadonlyMap<number, string>;
   /**
+   * #849 (complément) : source portée par la FICHE du bien (ASSET_DATA) — la cession établie par le passage
+   * même du bien à TRANSMIS reste consolidée ; toute autre source (document, Agenda) s'abstient sur un bien
+   * transmis (consultation seule).
+   */
+  fromAssetData?: boolean;
+  /**
    * Couples d'Opérations (`min:max`) qu'une décision utilisateur sépare
    * (une source CONFIRMED sur l'une, REJECTED sur l'autre) : jamais fusionnés.
    */
@@ -656,6 +662,13 @@ export function decideCandidate(c: CandidateIdentity, ctx: MatchContext): Candid
 
   if (!c.established) return res('NO_OPERATION', 'NOT_ESTABLISHED');
   if (c.confidence === 'conflictual') return res('HOLD_UNRESOLVED', 'CONFLICTUAL');
+  // #849 (complément, A2) : cible(s) toutes TRANSMISES — aucune création ni aucun
+  // enrichissement (abstention), sauf la CESSION elle-même (acte de vente, frais
+  // de vente) : elle documente la transmission (point 7, même exception que la
+  // projection T4 et la donnée ASSET_DATA). Motif existant « hors portefeuille ».
+  if (!ctx.fromAssetData && c.type !== 'DISPOSAL' && c.assetIds.length > 0 && c.assetIds.every((a) => ctx.assetStatus.get(a) === 'TRANSMIS')) {
+    return res('HOLD_UNRESOLVED', 'TARGET_OUT_OF_PORTFOLIO');
+  }
 
   const bornesAcq = ctx.operations.filter((o) => o.typeCode === 'DISPOSAL' && !o.invalidated);
   const bornesCes = ctx.operations.filter((o) => o.typeCode === 'ACQUISITION' && !o.invalidated);

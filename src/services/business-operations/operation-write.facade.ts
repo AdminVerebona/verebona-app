@@ -217,6 +217,26 @@ export async function checkOperationWriteAccess(accountId: number, userId: numbe
 
 // ── Exécution commune ──────────────────────────────────────────────────────
 
+/**
+ * #849 (complément) — cibles d'une commande, lues dans son entrée (pure, testée) : opérations (`operationId`,
+ * `fromOperationId`, `toOperationId`, `operationIds`, `targetOperationId`, `sourceOperationIds`), document
+ * (`fileId`), élément d'Agenda (`agendaItemId`), biens (`assetId`, `assetIds`).
+ */
+export function readOnlyTargetsOf(input: unknown): import('@/lib/asset-read-only-guard').ReadOnlyTarget[] {
+  const o = (input ?? {}) as Record<string, unknown>;
+  const ids = (v: unknown): number[] => (Array.isArray(v) ? v : v === undefined || v === null ? [] : [v])
+    .map(Number).filter((n) => Number.isSafeInteger(n) && n > 0);
+  type K = import('@/lib/asset-read-only-guard').ReadOnlyTargetKind;
+  const out: Array<{ kind: K; id: number }> = [];
+  for (const k of ['operationId', 'fromOperationId', 'toOperationId', 'operationIds', 'targetOperationId', 'sourceOperationIds', 'canonicalOperationId']) {
+    for (const id of ids(o[k])) out.push({ kind: 'operation', id });
+  }
+  for (const id of ids(o.fileId)) out.push({ kind: 'document', id });
+  for (const id of ids(o.agendaItemId)) out.push({ kind: 'agenda', id });
+  for (const k of ['assetId', 'assetIds']) for (const id of ids(o[k])) out.push({ kind: 'asset', id });
+  return out;
+}
+
 /** Sortie d'une commande SANS écriture : annule la transaction et rend le résultat tel quel. */
 class CommandOutcome extends Error {
   constructor(readonly result: OperationWriteResult<unknown>) { super('operation-write : commande sans écriture'); }
@@ -251,6 +271,17 @@ async function runCommand<T>(
     if (actor.kind === 'USER') {
       const refus = await checkOperationWriteAccess(accountId, actor.userId);
       if (refus) return refused('FORBIDDEN', refus);
+    }
+    // #849 (complément, A2) : garde centrale — aucune commande (utilisateur, Assistant, T3, T4, système)
+    // n'écrit sur une opération, un document, un élément d'Agenda ou un bien d'un bien TRANSMIS.
+    // Traitement automatique : abstention journalisée (refus métier, jamais une panne).
+    {
+      const { uneCibleEnLectureSeule } = await import('@/lib/asset-read-only-guard');
+      const bloque = await uneCibleEnLectureSeule(accountId, readOnlyTargetsOf(input));
+      if (bloque) {
+        if (actor.kind !== 'USER') console.info(JSON.stringify({ event: 'asset_read_only.skip', treatment: command, accountId, target: bloque.kind, id: bloque.id }));
+        return refused('FORBIDDEN', 'ASSET_READ_ONLY');
+      }
     }
     const { withGroupingWrite } = await import('./grouping/service');
     const { lockGroupingAccount } = await import('./grouping/runner');

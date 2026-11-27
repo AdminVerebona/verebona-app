@@ -24,6 +24,7 @@ import { resolveUploadDocumentDate } from '@/services/documents/upload-document-
 import { isValidBusinessTitle } from '@/lib/documents/document-title-rules';
 import { validateNotesInput } from '@/lib/documents/notes-description';
 import { markNotesUserOwned, NotesIntentUnavailableError, NOTES_INTENT_UNAVAILABLE_MESSAGE } from '@/services/documents/notes-description/store';
+import { refuserSiRequeteSurBienTransmis } from '@/lib/asset-read-only-guard';
 
 type LigneFichier = typeof assetFiles.$inferSelect;
 
@@ -69,6 +70,8 @@ async function reprendreMiseEnFile(f: LigneFichier, userId: number): Promise<voi
 }
 
 export async function POST(request: NextRequest) {
+  // #849 (complément, A2) : bien TRANSMIS — consultation seule (garde centrale).
+  { const refusTransmis = await refuserSiRequeteSurBienTransmis(request, undefined, { body: { fileId: 'document', fileIds: 'document', assetId: 'asset', substructureId: 'room' } }); if (refusTransmis) return refusTransmis; }
   try {
     const session = await resolveDepotSession(request);
     const { userId } = session;

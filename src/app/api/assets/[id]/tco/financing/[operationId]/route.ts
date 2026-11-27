@@ -26,10 +26,13 @@ import { notFound, parsePositiveId, writableAssetOr } from '@/services/assets/as
 import { AssetNotFoundForTcoError, readAssetTco } from '@/services/business-operations/tco/service';
 import { toTcoDto } from '@/services/business-operations/tco/dto';
 import { LoanTermsError, parseLoanTermsBody, saveLoanTerms } from '@/services/business-operations/financing/loan-terms-decisions';
+import { refuserSiRequeteSurBienTransmis } from '@/lib/asset-read-only-guard';
 
 type Ctx = { params: Promise<{ id: string; operationId: string }> };
 
 export async function PUT(request: NextRequest, { params }: Ctx) {
+  // #849 (complément, A2) : bien TRANSMIS — consultation seule (garde centrale).
+  { const refusTransmis = await refuserSiRequeteSurBienTransmis(request, { params }, { kind: 'asset' }); if (refusTransmis) return refusTransmis; }
   try {
     const session = await SessionService.getSession(request);
     const p = await params;

@@ -414,6 +414,11 @@ export default function AssetDetailPage() {
                 { value: 'details',  label: 'Informations', icon: Info },
                 { value: 'documents', label: 'Documents',   icon: FileText },
                 { value: 'agenda',   label: 'Historique',   icon: CalendarDays },
+                // #849 (complément, A2) : pièces et équipements consultables, sans aucune action d'écriture.
+                ...(showRoomsAndEquipments ? [
+                  { value: 'rooms',       label: 'Pièces',       icon: LayoutGrid },
+                  { value: 'equipments',  label: 'Équipements',  icon: Settings },
+                ] : []),
                 { value: 'exports',  label: 'Exports',      icon: Download },
               ] : [
                 { value: 'overview',   label: 'Aperçu',        icon: LayoutDashboard },
@@ -468,6 +473,7 @@ export default function AssetDetailPage() {
                   assetId={asset.id}
                   substructures={(asset.substructures ?? []) as any}
                   onRefresh={handleRefresh}
+                  readOnly={isReadOnly}
                 />
               </TabsContent>
 
@@ -478,6 +484,7 @@ export default function AssetDetailPage() {
                   equipments={((asset.equipments ?? []).filter((e: any) => !e.archivedAt)) as any}
                   substructures={(asset.substructures ?? []) as any}
                   onRefresh={handleRefresh}
+                  readOnly={isReadOnly}
                 />
               </TabsContent>
             </>

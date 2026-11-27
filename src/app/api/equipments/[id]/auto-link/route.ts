@@ -4,12 +4,15 @@ import { refuserSiLectureSeule } from '@/lib/write-access-guard';
 import { apiError } from '@/lib/api-errors';
 import { runEquipmentAutoLink } from '@/services/equipment/equipment-auto-link.service';
 import { equipmentInAccount } from '@/services/security/account-ownership';
+import { refuserSiRequeteSurBienTransmis } from '@/lib/asset-read-only-guard';
 
 // POST /api/equipments/[id]/auto-link — AI auto-linking for equipment
 export async function POST(
   request: NextRequest,
   { params }: { params: Promise<{ id: string }> }
 ) {
+  // #849 (complément, A2) : bien TRANSMIS — consultation seule (garde centrale).
+  { const refusTransmis = await refuserSiRequeteSurBienTransmis(request, { params }, { kind: 'equipment' }); if (refusTransmis) return refusTransmis; }
   try {
     const session = await SessionService.getSession(request);
     if (!session) return apiError(401, 'UNAUTHORIZED', 'Authentication required');

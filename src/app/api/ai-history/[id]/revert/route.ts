@@ -26,11 +26,14 @@ import { refuserSiLectureSeule } from '@/lib/write-access-guard';
 import { db } from '@/db';
 import { aiFieldUpdates, assets } from '@/db/schema';
 import { eq, and } from 'drizzle-orm';
+import { refuserSiRequeteSurBienTransmis } from '@/lib/asset-read-only-guard';
 
 export async function POST(
   request: NextRequest,
   { params }: { params: Promise<{ id: string }> }
 ) {
+  // #849 (complément, A2) : bien TRANSMIS — consultation seule (garde centrale).
+  { const refusTransmis = await refuserSiRequeteSurBienTransmis(request, { params }, { kind: 'aiFieldUpdate' }); if (refusTransmis) return refusTransmis; }
   try {
     const session = await getSession(request);
     const accountId = session.currentAccountId;

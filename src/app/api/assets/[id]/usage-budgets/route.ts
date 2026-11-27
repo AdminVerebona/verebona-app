@@ -13,10 +13,13 @@ import { canUsePremiumFeature } from '@/services/entitlements.service';
 import { notFound, parsePositiveId, writableAssetOr } from '@/services/assets/asset-route-helpers';
 import { createUsageBudget, UsageBudgetError } from '@/services/business-operations/tco/usage-budgets.service';
 import { parseUsageBudgetBody } from '@/services/business-operations/tco/dto';
+import { refuserSiRequeteSurBienTransmis } from '@/lib/asset-read-only-guard';
 
 type Ctx = { params: Promise<{ id: string }> };
 
 export async function POST(request: NextRequest, { params }: Ctx) {
+  // #849 (complément, A2) : bien TRANSMIS — consultation seule (garde centrale).
+  { const refusTransmis = await refuserSiRequeteSurBienTransmis(request, { params }, { kind: 'asset' }); if (refusTransmis) return refusTransmis; }
   try {
     const session = await SessionService.getSession(request);
     const assetId = parsePositiveId((await params).id);

@@ -25,6 +25,7 @@ import { emitBusinessEvent } from '@/services/verebona-assistant/events/business
 import { SessionService } from '@/lib/session-service';
 import { refuserSiLectureSeule } from '@/lib/write-access-guard';
 import { resolveErrorMessage } from '@/lib/to-process-resolve-errors';
+import { refuserSiRequeteSurBienTransmis } from '@/lib/asset-read-only-guard';
 import {
   markNotApplicable,
   resolveArbitration,
@@ -47,6 +48,8 @@ export async function POST(
   req: NextRequest,
   context: { params: Promise<{ publicId: string }> },
 ) {
+  // #849 (complément, A2) : bien TRANSMIS — consultation seule (garde centrale).
+  { const refusTransmis = await refuserSiRequeteSurBienTransmis(req, context, { kind: 'toProcessCard', param: 'publicId' }); if (refusTransmis) return refusTransmis; }
   let session;
   try {
     session = await SessionService.getSession(req);

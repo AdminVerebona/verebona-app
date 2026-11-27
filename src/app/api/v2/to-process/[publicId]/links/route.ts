@@ -18,6 +18,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { z } from 'zod';
 import { SessionService } from '@/lib/session-service';
 import { checkCardLink } from '@/services/to-process/card-links';
+import { refuserSiRequeteSurBienTransmis } from '@/lib/asset-read-only-guard';
 
 export const dynamic = 'force-dynamic';
 
@@ -29,6 +30,8 @@ const Body = z.object({
 });
 
 export async function POST(req: NextRequest, context: { params: Promise<{ publicId: string }> }) {
+  // #849 (complément, A2) : bien TRANSMIS — consultation seule (garde centrale).
+  { const refusTransmis = await refuserSiRequeteSurBienTransmis(req, context, { kind: 'toProcessCard', param: 'publicId' }); if (refusTransmis) return refusTransmis; }
   let session;
   try {
     session = await SessionService.getSession(req);

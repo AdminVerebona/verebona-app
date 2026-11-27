@@ -11,8 +11,11 @@ import { NextRequest, NextResponse } from 'next/server';
 import { apiError } from '@/lib/api-errors';
 import { associateEquipmentsToRoom } from '@/services/rooms/room-scope.service';
 import { resolveRoomRoute, roomRouteError, signalRoomChange } from '@/services/rooms/room-route';
+import { refuserSiRequeteSurBienTransmis } from '@/lib/asset-read-only-guard';
 
 export async function POST(request: NextRequest, { params }: { params: Promise<{ id: string }> }) {
+  // #849 (complément, A2) : bien TRANSMIS — consultation seule (garde centrale).
+  { const refusTransmis = await refuserSiRequeteSurBienTransmis(request, { params }, { kind: 'room' }); if (refusTransmis) return refusTransmis; }
   const ctx = await resolveRoomRoute(request, (await params).id, { write: true });
   if (ctx instanceof Response) return ctx;
   const body = await request.json().catch(() => null) as { equipmentIds?: unknown; confirmReassign?: unknown } | null;

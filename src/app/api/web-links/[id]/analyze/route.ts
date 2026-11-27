@@ -19,11 +19,14 @@ import { SessionService } from '@/lib/session-service';
 import { ensureMigrations } from '@/db';
 import { analyzeWebLinkSource } from '@/services/ai/source-analysis';
 import { refuserSiPasDIA } from '@/lib/write-access-guard';
+import { refuserSiRequeteSurBienTransmis } from '@/lib/asset-read-only-guard';
 
 export async function POST(
   req: NextRequest,
   { params }: { params: Promise<{ id: string }> },
 ) {
+  // #849 (complément, A2) : bien TRANSMIS — consultation seule (garde centrale).
+  { const refusTransmis = await refuserSiRequeteSurBienTransmis(req, { params }, { kind: 'document' }); if (refusTransmis) return refusTransmis; }
   let session;
   try {
     session = await SessionService.getSession(req);

@@ -14,11 +14,14 @@
  */
 import { NextRequest, NextResponse } from 'next/server';
 import { getSession } from '@/lib/auth-guards';
+import { refuserSiRequeteSurBienTransmis } from '@/lib/asset-read-only-guard';
 
 /** Motif renvoyé (et tracé) : la confirmation est faite dans l'interface. */
 const UPLOAD_NOTIFICATION_RETIRED_REASON = 'ui_confirmation';
 
 export async function POST(request: NextRequest) {
+  // #849 (complément, A2) : bien TRANSMIS — consultation seule (garde centrale).
+  { const refusTransmis = await refuserSiRequeteSurBienTransmis(request, undefined, { body: { fileId: 'document', fileIds: 'document' } }); if (refusTransmis) return refusTransmis; }
   try { await getSession(request); }
   catch { return NextResponse.json({ error: 'AUTH_REQUIRED' }, { status: 401 }); }
   return NextResponse.json({ emitted: false, count: 0, reason: UPLOAD_NOTIFICATION_RETIRED_REASON }, { status: 202 });

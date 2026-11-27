@@ -19,6 +19,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { refuserSiLectureSeule } from '@/lib/write-access-guard';
 import { expectedVersionOf } from '@/lib/reference-events/reference-event-write';
 import { parseReferenceEventNotes } from '@/lib/reference-events/reference-event-summary';
+import { refuserSiRequeteSurBienTransmis } from '@/lib/asset-read-only-guard';
 import {
   invalidReferenceEventRequest, openReferenceEventRoute, readJsonBody, referenceEventRouteFailure, referenceEventWriteResponse,
 } from '../../_shared/write-route';
@@ -26,6 +27,8 @@ import {
 type RouteContext = { params: Promise<{ id: string }> };
 
 export async function PUT(req: NextRequest, context: RouteContext) {
+  // #849 (complément, A2) : bien TRANSMIS — consultation seule (garde centrale).
+  { const refusTransmis = await refuserSiRequeteSurBienTransmis(req, context, { kind: 'operation' }); if (refusTransmis) return refusTransmis; }
   const scope = await openReferenceEventRoute(req, context);
   if (scope instanceof NextResponse) return scope;
   const refus = await refuserSiLectureSeule(scope.accountId);

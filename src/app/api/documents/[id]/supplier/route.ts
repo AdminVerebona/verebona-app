@@ -8,6 +8,7 @@ import { refuserSiLectureSeule } from '@/lib/write-access-guard';
 import { apiError } from '@/lib/api-errors';
 import { onDocumentEditedByUser } from '@/services/to-process/document-rule-bridge';
 import { requestOperationSupplierResync } from '@/services/relations/operation-suppliers';
+import { refuserSiRequeteSurBienTransmis } from '@/lib/asset-read-only-guard';
 
 // GET /api/documents/[id]/supplier — lot 109B : fournisseur(s) RATTACHÉ(S) au
 // document (relation persistée `document_suppliers`, du compte, non supprimés),
@@ -69,6 +70,8 @@ export async function PUT(
   request: NextRequest,
   { params }: { params: Promise<{ id: string }> }
 ) {
+  // #849 (complément, A2) : bien TRANSMIS — consultation seule (garde centrale).
+  { const refusTransmis = await refuserSiRequeteSurBienTransmis(request, { params }, { kind: 'document' }); if (refusTransmis) return refusTransmis; }
   try {
     const session = await SessionService.getSession(request);
     if (!session) return apiError(401, 'UNAUTHORIZED', 'Authentication required');
@@ -149,6 +152,8 @@ export async function DELETE(
   request: NextRequest,
   { params }: { params: Promise<{ id: string }> }
 ) {
+  // #849 (complément, A2) : bien TRANSMIS — consultation seule (garde centrale).
+  { const refusTransmis = await refuserSiRequeteSurBienTransmis(request, { params }, { kind: 'document' }); if (refusTransmis) return refusTransmis; }
   try {
     const session = await SessionService.getSession(request);
     if (!session) return apiError(401, 'UNAUTHORIZED', 'Authentication required');

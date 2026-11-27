@@ -18,6 +18,7 @@ import { refuserSiLectureSeule } from '@/lib/write-access-guard';
 import { agendaTimeBucket } from '@/lib/agenda/agenda-suppliers-rules';
 import { todayParisDateStr } from '@/lib/notifications/time-paris';
 import { AGENDA_EVENT_LABELS } from '@/lib/agenda/grouping-view';
+import { refuserSiRequeteSurBienTransmis } from '@/lib/asset-read-only-guard';
 
 type RouteContext = { params: Promise<{ id: string }> };
 
@@ -72,6 +73,8 @@ export async function GET(req: NextRequest, context: RouteContext) {
 }
 
 export async function POST(req: NextRequest, context: RouteContext) {
+  // #849 (complément, A2) : bien TRANSMIS — consultation seule (garde centrale).
+  { const refusTransmis = await refuserSiRequeteSurBienTransmis(req, context, { body: { agendaItemId: 'agenda' } }); if (refusTransmis) return refusTransmis; }
   try {
     const c = await contexte(req, context);
     if (c instanceof NextResponse) return c;

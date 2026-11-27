@@ -23,6 +23,7 @@ import { AssetNotFoundForTcoError, readAssetTco } from '@/services/business-oper
 import { TCO_PREMIUM_MESSAGE, toTcoDto } from '@/services/business-operations/tco/dto';
 import { parseTcoDatesBody } from '@/services/business-operations/tco/undated-expenses';
 import { readTcoUndatedReferences, saveTcoUndatedDates } from '@/services/business-operations/tco/undated-dates.service';
+import { refuserSiRequeteSurBienTransmis } from '@/lib/asset-read-only-guard';
 
 type Ctx = { params: Promise<{ id: string }> };
 
@@ -51,6 +52,8 @@ export async function GET(request: NextRequest, { params }: Ctx) {
 }
 
 export async function POST(request: NextRequest, { params }: Ctx) {
+  // #849 (complément, A2) : bien TRANSMIS — consultation seule (garde centrale).
+  { const refusTransmis = await refuserSiRequeteSurBienTransmis(request, { params }, { kind: 'asset' }); if (refusTransmis) return refusTransmis; }
   try {
     const session = await SessionService.getSession(request);
     const assetId = parsePositiveId((await params).id);

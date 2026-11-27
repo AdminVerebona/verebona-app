@@ -19,12 +19,15 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { refuserSiLectureSeule } from '@/lib/write-access-guard';
 import { parseReferenceEventAssociation, positiveIdOf } from '@/lib/reference-events/reference-event-write';
+import { refuserSiRequeteSurBienTransmis } from '@/lib/asset-read-only-guard';
 import {
   invalidReferenceEventRequest, openReferenceEventRoute, readJsonBody, referenceEventRouteFailure, referenceEventWriteResponse,
   type ReferenceEventRouteContext,
 } from '../../_shared/write-route';
 
 export async function POST(req: NextRequest, context: ReferenceEventRouteContext) {
+  // #849 (complément, A2) : bien TRANSMIS — consultation seule (garde centrale).
+  { const refusTransmis = await refuserSiRequeteSurBienTransmis(req, context, { kind: 'operation' }); if (refusTransmis) return refusTransmis; }
   const scope = await openReferenceEventRoute(req, context);
   if (scope instanceof NextResponse) return scope;
   const refus = await refuserSiLectureSeule(scope.accountId);
@@ -42,6 +45,8 @@ export async function POST(req: NextRequest, context: ReferenceEventRouteContext
 }
 
 export async function DELETE(req: NextRequest, context: ReferenceEventRouteContext) {
+  // #849 (complément, A2) : bien TRANSMIS — consultation seule (garde centrale).
+  { const refusTransmis = await refuserSiRequeteSurBienTransmis(req, context, { kind: 'operation' }); if (refusTransmis) return refusTransmis; }
   const scope = await openReferenceEventRoute(req, context);
   if (scope instanceof NextResponse) return scope;
   const refus = await refuserSiLectureSeule(scope.accountId);

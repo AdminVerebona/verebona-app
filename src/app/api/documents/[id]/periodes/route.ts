@@ -26,6 +26,7 @@ import { SessionService } from '@/lib/session-service';
 import { apiError } from '@/lib/api-errors';
 import { refuserSiLectureSeule } from '@/lib/write-access-guard';
 import { isBusinessPeriodKind, isPartialDate, PERIOD_INVALID_MESSAGE, PERIOD_NOT_RELEVANT_MESSAGE } from '@/lib/documents/business-periods';
+import { refuserSiRequeteSurBienTransmis } from '@/lib/asset-read-only-guard';
 
 type RouteContext = { params: Promise<{ id: string }> };
 
@@ -59,6 +60,8 @@ export async function GET(req: NextRequest, context: RouteContext) {
 const borne = (v: unknown): string | null | undefined => (v === null || v === undefined || v === '' ? null : isPartialDate(v) ? v : undefined);
 
 export async function PUT(req: NextRequest, context: RouteContext) {
+  // #849 (complément, A2) : bien TRANSMIS — consultation seule (garde centrale).
+  { const refusTransmis = await refuserSiRequeteSurBienTransmis(req, context, { kind: 'document' }); if (refusTransmis) return refusTransmis; }
   const c = await contexte(req, context);
   if (c instanceof NextResponse) return c;
   const refus = await refuserSiLectureSeule(c.accountId);

@@ -221,6 +221,7 @@ async function reconcileAssetDataInSession(
     const d = decideCandidate(identity, {
       operations: ops, confirmed: new Set(), rejected: new Set(),
       assetStatus: new Map([[assetId, perimeterStatus(nature, row.status)]]),
+      fromAssetData: true,
       // Lot 116C (#806 §4, AC46) : la porte unique des fusions automatiques est lue ICI AUSSI — deux opérations que
       // l'utilisateur a scindées (ou déclarées distinctes) ne sont jamais réunies par une donnée saisie du bien.
       nonMergeable: await loadNonMergeable(tx, accountId, ops.map((o) => o.id)),

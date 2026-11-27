@@ -6,11 +6,14 @@ import { apiError } from '@/lib/api-errors';
 import { SessionService } from '@/lib/session-service';
 import { refuserSiLectureSeule } from '@/lib/write-access-guard';
 import { deleteRoomForAccount, renameRoomForAccount } from '@/services/assets/structure-write.facade';
+import { refuserSiRequeteSurBienTransmis } from '@/lib/asset-read-only-guard';
 
 export async function PUT(
   request: NextRequest,
   { params }: { params: Promise<{ id: string; subId: string }> }
 ) {
+  // #849 (complément, A2) : bien TRANSMIS — consultation seule (garde centrale).
+  { const refusTransmis = await refuserSiRequeteSurBienTransmis(request, { params }, { kind: 'asset' }); if (refusTransmis) return refusTransmis; }
   try {
     const { id, subId } = await params;
     const assetId = parseInt(id);
@@ -70,6 +73,8 @@ export async function DELETE(
   request: NextRequest,
   { params }: { params: Promise<{ id: string; subId: string }> }
 ) {
+  // #849 (complément, A2) : bien TRANSMIS — consultation seule (garde centrale).
+  { const refusTransmis = await refuserSiRequeteSurBienTransmis(request, { params }, { kind: 'asset' }); if (refusTransmis) return refusTransmis; }
   try {
     const { id, subId } = await params;
     const assetId = parseInt(id);

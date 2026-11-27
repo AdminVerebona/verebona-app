@@ -7,8 +7,11 @@ import { NextRequest, NextResponse } from 'next/server';
 import { apiError } from '@/lib/api-errors';
 import { dissociateEquipmentFromRoom } from '@/services/rooms/room-scope.service';
 import { parseId, resolveRoomRoute, roomRouteError, signalRoomChange } from '@/services/rooms/room-route';
+import { refuserSiRequeteSurBienTransmis } from '@/lib/asset-read-only-guard';
 
 export async function DELETE(request: NextRequest, { params }: { params: Promise<{ id: string; equipmentId: string }> }) {
+  // #849 (complément, A2) : bien TRANSMIS — consultation seule (garde centrale).
+  { const refusTransmis = await refuserSiRequeteSurBienTransmis(request, { params }, { kind: 'room' }); if (refusTransmis) return refusTransmis; }
   const p = await params;
   const ctx = await resolveRoomRoute(request, p.id, { write: true });
   if (ctx instanceof Response) return ctx;

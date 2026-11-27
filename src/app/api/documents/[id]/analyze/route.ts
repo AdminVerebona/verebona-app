@@ -49,6 +49,7 @@ import { canConsumeAnalysis } from '@/services/commercial-model.service';
 import { refuserSiPasDIA } from '@/lib/write-access-guard';
 import { appVersionFromUserAgent, launchOriginOf, newIncidentRef } from '@/lib/ai/analysis-launch';
 import { readClientContext } from '@/lib/mobile/client-context';
+import { refuserSiRequeteSurBienTransmis } from '@/lib/asset-read-only-guard';
 
 function sseEvent(data: Record<string, unknown>): string {
   return `data: ${JSON.stringify(data)}\n\n`;
@@ -92,6 +93,8 @@ export async function POST(
   request: NextRequest,
   { params }: { params: Promise<{ id: string }> }
 ) {
+  // #849 (complément, A2) : bien TRANSMIS — consultation seule (garde centrale).
+  { const refusTransmis = await refuserSiRequeteSurBienTransmis(request, { params }, { kind: 'document' }); if (refusTransmis) return refusTransmis; }
   // Consommer le body avant le début du streaming (il ne peut être lu qu'une fois).
   // Lot 0 : l'ancien flag `skipNotification` est retiré — cette route ne crée plus
   // de notification par fichier (cf. CDC §7.2).
