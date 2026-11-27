@@ -45,6 +45,14 @@ if (process.env.NODE_ENV !== 'test') {
 // client `postgres(...)` créé ailleurs doit reproduire cette configuration
 // (le plus sûr : `drizzle(autreClient)`, cf. `openOpsClient`), sinon le JSON
 // est enregistré comme un scalaire chaîne.
+// Tests unitaires SANS base : chaque connexion refusée allonge le délai de la
+// suivante (repli exponentiel du pilote, jusqu'à 20 s, compteur partagé par
+// tout le processus). Un test qui traverse une écriture « au mieux » prenait
+// ainsi de 0 à 30 s selon les échecs déjà accumulés, d'où des dépassements de
+// délai aléatoires. Sans base à attendre, le refus doit être immédiat. Hors
+// test, et en test avec une base (e2e), le repli du pilote reste inchangé.
+const unreachableDatabaseTestOptions =
+  process.env.NODE_ENV === 'test' && !connectionString ? { backoff: () => 0 } : {};
 const client = postgres(connectionString, {
   max: poolConfig.max,
   idle_timeout: poolConfig.idleTimeoutS,
@@ -59,6 +67,7 @@ const client = postgres(connectionString, {
   connection: {
     application_name: resolveApplicationName(poolConfig.role),
   },
+  ...unreachableDatabaseTestOptions,
 });
 // Mesures du pool (APP-PERF-01 §MESURES, lot 24) : attente d'acquisition et
 // temps SQL, séparés, agrégés sans requête ni paramètre (`pool-metrics.ts`).
