@@ -109,7 +109,7 @@ export const assets = pgTable('assets', {
   assetTypeSubcategoryId: integer('asset_type_subcategory_id').references(() => assetTypeSubcategories.id, { onDelete: 'set null' }),
   objectCategory: text('object_category'),
   objectDetails: text('object_details'),
-  archivedReason: text('archived_reason'), // NULL | 'user' | 'transmitted'
+  archivedReason: text('archived_reason'), // NULL | 'user' | 'transmitted' (#849 : conservé, motif historique)
 
   // « Bien mis en location » (is_rented*, 0128) : retiré en 0160 au profit de
   // l'usage LOCATIF (« Mis en location ») de key_characteristics. Les colonnes
@@ -130,8 +130,8 @@ export const assets = pgTable('assets', {
   publicIdIdx: index('assets_public_id_idx').on(table.publicId),
   scopeCheck: check('assets_scope_check', sql`${table.scope} IN ('personal', 'duo')`),
   lockStateCheck: check('assets_lock_state_check', sql`${table.lockState} IN ('NONE', 'SOFT', 'HARD')`),
-  // Lot 32 (PO-Q11, migration 0278) : liste officielle `@/lib/asset-status`.
-  statusCheck: check('assets_status_check', sql`${table.status} IN ('EN_SERVICE', 'VENDU', 'TRANSMIS', 'ARCHIVED')`),
+  // Carte #849 (migration 2013) : deux statuts, liste officielle `@/lib/asset-status`.
+  statusCheck: check('assets_status_check', sql`${table.status} IN ('EN_SERVICE', 'TRANSMIS')`),
 }));
 
 /**

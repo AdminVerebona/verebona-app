@@ -103,7 +103,7 @@ export async function loadEligibleLinkAssets(accountId: number): Promise<Eligibl
   const rows = (await pgClient.unsafe(
     `SELECT a.id, a.name FROM assets a
       WHERE a.account_id = $1 AND a.deleted_at IS NULL
-        AND a.status IS DISTINCT FROM 'ARCHIVED' AND COALESCE(a.lock_state, 'NONE') = 'NONE'
+        AND a.status IS DISTINCT FROM 'TRANSMIS' AND COALESCE(a.lock_state, 'NONE') = 'NONE' -- #849 : bien transmis non modifiable
       ORDER BY lower(a.name), a.id
       LIMIT $2`,
     [accountId, ASSET_LINK_CHOICES_MAX] as never[],

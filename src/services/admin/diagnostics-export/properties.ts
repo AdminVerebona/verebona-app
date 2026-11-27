@@ -126,8 +126,8 @@ async function projectApi(json: Row): Promise<ApiProjection> {
   const family = toExportFamily(category) ?? 'OBJET';
   const uiFamily: DetailsUiFamily = category === 'IMMOBILIER' || category === 'VEHICULE' ? category : 'OBJET';
   if (json.deleted_at) return { status: 404, motif: 'bien supprimé : la route répond 404 (NOT_FOUND)', family, uiFamily, sections: {} };
-  if (json.status === 'ARCHIVED' || (json.lock_state && json.lock_state !== 'NONE')) {
-    return { status: 403, motif: `bien ${json.status === 'ARCHIVED' ? 'archivé' : 'verrouillé par l’offre'} : la route répond 403 (ASSET_UNAVAILABLE), l’écran n’affiche aucune valeur`, family, uiFamily, sections: {} };
+  if (json.lock_state && json.lock_state !== 'NONE') { // #849 : bien TRANSMIS consultable
+    return { status: 403, motif: `bien verrouillé par l’offre : la route répond 403 (ASSET_UNAVAILABLE), l’écran n’affiche aucune valeur`, family, uiFamily, sections: {} };
   }
   let kc: Record<string, unknown> = {};
   try { kc = json.key_characteristics ? JSON.parse(String(json.key_characteristics)) as Record<string, unknown> : {}; } catch { kc = {}; }

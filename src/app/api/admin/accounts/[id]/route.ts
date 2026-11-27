@@ -20,6 +20,7 @@ import { loadAccountPendingDeletion } from '@/services/admin/account-deletion-st
 import { getAdminRestrictedState } from '@/services/account/restricted-state.service';
 import { pgClient } from '@/db';
 import { duoOfAccount } from '@/services/account/membership.service';
+import { QUOTA_COUNTED_ASSET_STATUS } from '@/lib/asset-status';
 
 
 export async function GET(
@@ -199,7 +200,8 @@ export async function GET(
     const [assetCount] = await db
       .select({ n: sql<number>`count(*)::int` })
       .from(assets)
-      .where(and(eq(assets.accountId, accountId), isNull(assets.deletedAt)));
+      // #849 : quota des biens ACTIFS (EN_SERVICE non supprimés).
+      .where(and(eq(assets.accountId, accountId), isNull(assets.deletedAt), eq(assets.status, QUOTA_COUNTED_ASSET_STATUS)));
     const [documentCount] = await db
       .select({ n: sql<number>`count(*)::int` })
       .from(assetFiles)

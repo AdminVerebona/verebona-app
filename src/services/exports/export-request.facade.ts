@@ -38,15 +38,26 @@ import type { ThresholdAlert } from '@/services/exports/v12/thresholds';
 
 type GenerationDto = ReturnType<typeof toGenerationDto>;
 
+/** #849 (C2) : archive complète produite — à vérifier par le client après téléchargement. */
+export interface RawArchiveInfo {
+  scope: 'complete';
+  sha256: string;
+  size: number;
+  status: 'COMPLETE';
+  categories: Record<string, { expected: number; exported: number; excluded: number; missing: number }>;
+}
+
 /** Issue d'une demande d'export, indépendante du transport (route HTTP ou Assistant). */
 export type ExportRequestOutcome =
   /** Type inconnu du catalogue des exports. */
   | { kind: 'invalid_type' }
   /** Export de données brutes : ZIP produit dans la requête, prêt à télécharger. */
   /** Carte #843 (E08) : `includedDocumentIds` — documents RÉELLEMENT retenus par le moteur (revalidation à la génération). */
-  | { kind: 'raw_ready'; code: typeof EXPORT_BRUT_CODE; dto: GenerationDto; includedDocumentIds: number[] }
+  /** Carte #849 (C2) : `archive` — ZIP COMPLET (portée `complete`) : empreinte SHA-256, taille, inventaire par catégorie. */
+  | { kind: 'raw_ready'; code: typeof EXPORT_BRUT_CODE; dto: GenerationDto; includedDocumentIds: number[]; archive?: RawArchiveInfo }
   /** Export de données brutes : la génération a échoué (ligne d'historique en échec, support prévenu). */
-  | { kind: 'raw_failed'; code: typeof EXPORT_BRUT_CODE; exportId: number; publicId: string }
+  /** #849 (C2) : `errorCode` EXPORT_INCOMPLETE (pièces illisibles / absentes, détail dans `missing`), ARCHIVE_TOO_LARGE… */
+  | { kind: 'raw_failed'; code: typeof EXPORT_BRUT_CODE; exportId: number; publicId: string; errorCode?: string; missing?: Array<{ category: string; id: number; motif: string }> }
   /** Dossier prêt à l'emploi : mis en file (rendu asynchrone par le worker). */
   | { kind: 'queued'; code: ExportCode; dto: GenerationDto; warnings: ThresholdAlert[]; reused: boolean; replaced: ReplacedGeneration[] }
   /** Dossier refusé par un contrôle synchrone (éligibilité, offre, dossier désactivé, seuils, plafond…). */
@@ -81,7 +92,9 @@ export async function requestExportForAsset(p: {
  */
 async function generateRawExport(asset: AccessibleAsset, userId: number, body: Record<string, unknown>): Promise<ExportRequestOutcome> {
   const accountId = asset.accountId;
-  const options = (body.options ?? {}) as { customDocIds?: number[]; customDocIdsCoverWebLinks?: boolean; includePhotos?: boolean; includeEquipments?: boolean };
+  const options = (body.options ?? {}) as { customDocIds?: number[]; customDocIdsCoverWebLinks?: boolean; includePhotos?: boolean; includeEquipments?: boolean; complete?: boolean };
+  // #849 (C1) : ZIP COMPLET — même moteur, portée `complete` (onglet Exports, fenêtre de suppression), toutes offres.
+  const complete = options.complete === true || body.scope === 'complete';
   const now = new Date();
   const [row] = await db.insert(exportGenerations).values({
     assetId: asset.id,
@@ -104,13 +117,37 @@ async function generateRawExport(asset: AccessibleAsset, userId: number, body: R
     // X-02 (lot 16) : source canonique.
     const snapshot = await buildExportAssetSnapshot(asset.id, userId, { accountId }, 'EXPORT_BRUT');
     const manifest = buildExportManifest('EXPORT_BRUT', snapshot, { ...options, requestedOutputs: ['ZIP'] });
-    const zipBuffer = await buildExportZip(manifest, snapshot, null, isPremium);
-    const zipKey = buildExportS3Key(accountId, asset.id, row.id, 'export_brut.zip');
+    let zipBuffer: Buffer;
+    let archive: RawArchiveInfo | undefined;
+    if (complete) {
+      const { buildCompleteAssetArchive } = await import('@/services/exports/complete-archive');
+      const { readStorageObject, buildRecapForSnapshot } = await import('@/services/export-zip.service');
+      let tco: unknown = null;
+      try {
+        const { readAssetTco } = await import('@/services/business-operations/tco/service');
+        tco = await readAssetTco(accountId, asset.id);
+      } catch (e) {
+        console.warn('[Exports POST] TCO non calculable pour l’archive complète :', { assetId: asset.id, error: (e as Error).message });
+      }
+      const res = await buildCompleteAssetArchive({
+        accountId, assetId: asset.id, readObject: readStorageObject,
+        recapTxt: buildRecapForSnapshot({ ...snapshot, photos: snapshot.photos }), tco,
+      });
+      if (res.status !== 'COMPLETE' || !res.buffer || !res.sha256) {
+        const { ExportIncompleteError } = await import('@/services/export-zip.service');
+        throw new ExportIncompleteError(res.manifest.missing);
+      }
+      zipBuffer = res.buffer;
+      archive = { scope: 'complete', sha256: res.sha256, size: res.buffer.length, status: 'COMPLETE', categories: res.manifest.categories };
+    } else {
+      zipBuffer = await buildExportZip(manifest, snapshot, null, isPremium);
+    }
+    const zipKey = buildExportS3Key(accountId, asset.id, row.id, complete ? 'archive_complete.zip' : 'export_brut.zip');
     await uploadExportFile(zipBuffer, zipKey, 'application/zip');
     const completedAt = new Date();
     const [done] = await db.update(exportGenerations).set({
       status: 'ready',
-      outputPayload: JSON.stringify({ zipS3Key: zipKey, zipSize: zipBuffer.length }),
+      outputPayload: JSON.stringify({ zipS3Key: zipKey, zipSize: zipBuffer.length, ...(archive ? { scope: 'complete', zipSha256: archive.sha256, categories: archive.categories } : {}) }),
       fileKey: zipKey,
       fileSizeBytes: zipBuffer.length,
       expiresAt: new Date(completedAt.getTime() + EXPORT_RETENTION_DAYS * 86_400_000),
@@ -123,8 +160,15 @@ async function generateRawExport(asset: AccessibleAsset, userId: number, body: R
     return {
       kind: 'raw_ready', code: EXPORT_BRUT_CODE, dto: toGenerationDto(done),
       includedDocumentIds: [...manifest.includedDocuments, ...manifest.includedWebLinks].map((d) => d.id),
+      ...(archive ? { archive } : {}),
     };
   } catch (error) {
+    // #849 (C2) : export incomplet ou trop volumineux — échec VISIBLE, détail des manquants conservé.
+    const { ExportIncompleteError } = await import('@/services/export-zip.service');
+    const { CompleteArchiveError } = await import('@/services/exports/complete-archive');
+    const errorCode = error instanceof ExportIncompleteError ? 'EXPORT_INCOMPLETE'
+      : error instanceof CompleteArchiveError ? error.code : 'GENERATION_FAILED';
+    const missing = error instanceof ExportIncompleteError ? error.missing : undefined;
     const technicalMessage = technicalErrorMessage(error);
     console.error('[Exports POST] Export brut échoué :', { exportId: row.id, assetId: asset.id, error });
     const supportEmailSent = await notifySupportOfExportFailure({
@@ -133,9 +177,15 @@ async function generateRawExport(asset: AccessibleAsset, userId: number, body: R
     await db.update(exportGenerations).set({
       status: 'failed',
       errorCode: 'GENERATION_FAILED',
-      errorPayload: JSON.stringify({ code: 'GENERATION_FAILED', message: EXPORT_ERROR_MESSAGES.GENERATION_FAILED, technicalMessage, supportEmailSent }),
+      errorPayload: JSON.stringify({
+        code: 'GENERATION_FAILED', message: EXPORT_ERROR_MESSAGES.GENERATION_FAILED, technicalMessage, supportEmailSent,
+        ...(errorCode !== 'GENERATION_FAILED' ? { detailCode: errorCode } : {}), ...(missing ? { missing } : {}),
+      }),
       completedAt: new Date(),
     }).where(eq(exportGenerations.id, row.id));
-    return { kind: 'raw_failed', code: EXPORT_BRUT_CODE, exportId: row.id, publicId: row.publicId };
+    return {
+      kind: 'raw_failed', code: EXPORT_BRUT_CODE, exportId: row.id, publicId: row.publicId,
+      ...(errorCode !== 'GENERATION_FAILED' ? { errorCode } : {}), ...(missing ? { missing } : {}),
+    };
   }
 }

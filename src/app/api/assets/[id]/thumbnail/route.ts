@@ -164,7 +164,7 @@ export async function PUT(
     }
 
     // Au-dessus du quota après un changement d'offre : modification suspendue (GAP-11).
-    const refusQuota = await refuserSiModificationBiensSuspendue(session.currentAccountId);
+    const refusQuota = await refuserSiModificationBiensSuspendue(session.currentAccountId, assetId);
     if (refusQuota) return refusQuota;
 
     const bucket = S3_BUCKET!;

@@ -11,6 +11,7 @@ import { eq, and, inArray, sql } from 'drizzle-orm';
 import { alias } from 'drizzle-orm/pg-core';
 import { computeAttentionFlags, type AttentionFlag } from './AgendaDomainService';
 import { agendaFunctionalColumnsReady } from './agenda-columns';
+import { agendaItemHiddenByTransmittedAssetsSql } from './transmitted-scope';
 import { listAgendaItemIdsForSource } from './agenda-source-links';
 import {
   countItemsByEquipment, filterItemsByEquipment, listEquipmentsOfAssets,
@@ -419,6 +420,9 @@ async function loadRoomScope(params: AgendaQueryParams): Promise<{ rooms: AssetR
   return { rooms, byRoom: await agendaItemIdsByRoom(params.accountId, rooms.map((r) => r.id)) };
 }
 
+/** #849 (A2) : élément visible dans l'Agenda courant (ne vise pas que des biens transmis). */
+const visibleHorsTransmis = () => sql.raw(`NOT ${agendaItemHiddenByTransmittedAssetsSql('agenda_items')}`);
+
 async function queryAgenda(
   params: AgendaQueryParams,
   withFacets: boolean,
@@ -520,10 +524,12 @@ async function getAgendaItemsInScope(params: AgendaQueryParams, extraIds: readon
       and(eq(agendaItems.accountId, accountId), inArray(agendaItems.id, ids))
     );
   } else {
+    // #849 (A2) : Agenda courant du compte — éléments des seuls biens TRANSMIS masqués
+    // (consultables depuis la fiche du bien : branche `assetIds` ci-dessus).
     rows = await db.select().from(agendaItems).where(
       searchIds
-        ? and(eq(agendaItems.accountId, accountId), inArray(agendaItems.id, searchIds))
-        : eq(agendaItems.accountId, accountId),
+        ? and(eq(agendaItems.accountId, accountId), inArray(agendaItems.id, searchIds), visibleHorsTransmis())
+        : and(eq(agendaItems.accountId, accountId), visibleHorsTransmis()),
     );
   }
 
@@ -667,7 +673,8 @@ export async function searchAgendaItems(query: string, accountId: number): Promi
  * 2-pass priority algorithm per plan §2.7
  */
 export async function getHomepageAgendaItems(accountId: number): Promise<AgendaItemFull[]> {
-  const rows = await db.select().from(agendaItems).where(eq(agendaItems.accountId, accountId));
+  // #849 (A2) : rien d'un bien transmis sur l'accueil.
+  const rows = await db.select().from(agendaItems).where(and(eq(agendaItems.accountId, accountId), visibleHorsTransmis()));
 
   const enriched = await enrichItems(rows);
   const now = new Date();

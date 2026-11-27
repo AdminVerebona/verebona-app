@@ -100,9 +100,10 @@ describe('L114F-F01 — W02 : renommer un bien', () => {
 
   it('même nom : aucune écriture préparée ; bien archivé ou verrouillé par l’offre : refus avant tout plan', async () => {
     expect(besoin(await resolveDraft(parseCommand('Renomme la Clio en Clio', TODAY)!, input, lookup()))).toBe('Ce bien s’appelle déjà « Clio ».');
-    const archive = lookup({ biens: [{ ...CLIO, status: 'ARCHIVED' }] });
+    // Carte #849 : le statut en consultation seule est TRANSMIS (ARCHIVED converti par la migration 2013).
+    const archive = lookup({ biens: [{ ...CLIO, status: 'TRANSMIS' }] });
     expect(besoin(await resolveDraft(parseCommand('Renomme la Clio en Twingo', TODAY)!, input, archive)))
-      .toBe('Clio n’est pas modifiable actuellement (bien archivé ou verrouillé par votre offre).');
+      .toBe('Clio n’est pas modifiable actuellement (bien transmis ou verrouillé par votre offre).');
     const verrou = lookup({ biens: [{ ...CLIO, lockState: 'LOCKED_BY_PLAN' }] });
     expect(besoin(await resolveDraft(parseCommand('Renomme la Clio en Twingo', TODAY)!, input, verrou))).toMatch(/n’est pas modifiable actuellement/);
   });
@@ -146,7 +147,7 @@ describe('L114F-F02 — W27 : effacer une caractéristique d’un bien', () => {
       .toBe('« Kilométrage » ne s’applique pas à Maison.');
     expect(besoin(await resolveDraft(parseCommand('Efface la date d’achat du vélo', TODAY)!, input, lookup())))
       .toBe('Plusieurs biens correspondent : Vélo cargo, Vélo de route. Précisez lequel dans votre demande.');
-    expect(besoin(await resolveDraft(parseCommand('Efface la date d’achat de la Clio', TODAY)!, input, lookup({ biens: [{ ...CLIO, status: 'ARCHIVED' }] }))))
+    expect(besoin(await resolveDraft(parseCommand('Efface la date d’achat de la Clio', TODAY)!, input, lookup({ biens: [{ ...CLIO, status: 'TRANSMIS' }] }))))
       .toMatch(/n’est pas modifiable actuellement/);
   });
 });

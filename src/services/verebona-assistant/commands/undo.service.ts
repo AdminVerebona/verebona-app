@@ -365,9 +365,9 @@ async function defaireEtape(
   const cur = await readAssetSnapshot(t, ctx.accountId, s.targetId, true);
   if (!cur) throw new UndoConflict(s.label, true);
   verifier(assetVersion(cur));
-  // Même garde que la fiche : un bien archivé ou verrouillé par l'offre
-  // n'est pas modifiable, pas même pour défaire.
-  if (cur.status === 'ARCHIVED' || (cur.lockState && cur.lockState !== 'NONE')) throw new UndoConflict(s.label, false);
+  // Même garde que la fiche : un bien transmis (#849, consultation seule) ou
+  // verrouillé par l'offre n'est pas modifiable, pas même pour défaire.
+  if (cur.status === 'TRANSMIS' || cur.status === 'ARCHIVED' || (cur.lockState && cur.lockState !== 'NONE')) throw new UndoConflict(s.label, false);
   await t.unsafe(
     `UPDATE assets SET key_characteristics = $3, registration_number = $4, updated_at = now()
       WHERE id = $1 AND account_id = $2`,

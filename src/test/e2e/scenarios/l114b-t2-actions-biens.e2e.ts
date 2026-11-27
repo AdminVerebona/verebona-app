@@ -134,9 +134,11 @@ scenario('L114B-BIENS', 'Lot 114B — créer et supprimer un bien depuis l’Ass
     expect(JSON.stringify(conf)).toMatch(/La catégorie de ce bien a changé depuis l’aperçu : rien n’a été écrit/);
     expect((await lire(clio)).subtype).toBe('Camion');
 
-    // Archivage : jamais depuis l'assistant.
-    expect(await demander(c, 'Marque la Clio comme archivée'))
-      .toMatchObject({ kind: 'need_info', message: 'L’archivage d’un bien ne se fait pas depuis l’assistant : ouvrez la fiche de Clio.' });
+    // Carte #849 — règle remplacée : plus de statut « Archivé » ; « archivée » est comprise comme une sortie du
+    // portefeuille (Transmis), présentée en aperçu et soumise à confirmation — jamais écrite sans elle.
+    expect(planDe(await demander(c, 'Marque la Clio comme archivée')).preview.summary)
+      .toBe('Modifier « Statut » de Clio : En service → Transmis. Confirmez-vous ?');
+    expect((await lire(clio)).status).toBe('EN_SERVICE');
 
     // Cloisonnement : le bien d'un autre compte n'est jamais atteint.
     expect(await demander(autre, 'Change la catégorie de la Clio en moto')).toMatchObject({ kind: 'need_info' });
@@ -145,10 +147,11 @@ scenario('L114B-BIENS', 'Lot 114B — créer et supprimer un bien depuis l’Ass
     // Statut : le bien sort du portefeuille actif, rien n'est supprimé — et l'assistant ne le retrouve plus
     // ensuite par son nom (règle existante `core/asset-availability`, annoncée dans l'aperçu).
     const s = planDe(await demander(c, 'Marque la Clio comme vendue'));
-    expect(s.preview.summary).toBe('Modifier « Statut » de Clio : En service → Vendu. Confirmez-vous ?');
+    // Carte #849 : « vendue » = sortie du portefeuille → Transmis (deux statuts officiels).
+    expect(s.preview.summary).toBe('Modifier « Statut » de Clio : En service → Transmis. Confirmez-vous ?');
     expect(s.plan.actions[0].effects).toContain('L’assistant ne le retrouvera plus par son nom : pour revenir en arrière, passez par sa fiche.');
     expect(await confirmer(c, s.plan.planId)).toMatchObject({ ok: true, status: 'EXECUTED' });
-    expect(await lire(clio)).toMatchObject({ status: 'VENDU', deleted_at: null, name: 'Clio', subtype: 'Camion' });
+    expect(await lire(clio)).toMatchObject({ status: 'TRANSMIS', deleted_at: null, name: 'Clio', subtype: 'Camion' });
     expect(await demander(c, 'Marque la Clio comme transmise'))
       .toMatchObject({ kind: 'need_info', message: expect.stringMatching(/^Je n’ai pas trouvé ce bien dans votre compte\./) });
   });

@@ -199,7 +199,7 @@ scenario('L113AK', 'T1 / preuves : liens vers unités sources et preuves orpheli
     const ailleurs = await make.account({ plan: 'premium' });
     const vivant = await make.asset(c, { name: 'Bien #31' });
     const archive = await make.asset(c, { name: 'Bien vendu' });
-    await sql`UPDATE assets SET status = 'VENDU' WHERE id = ${archive.id}`;
+    await sql`UPDATE assets SET status = 'TRANSMIS' /* #849 : VENDU retiré */ WHERE id = ${archive.id}`;
     const supprime = await make.asset(c, { name: 'Ancien bien #6' });
     await sql`UPDATE assets SET deleted_at = now() WHERE id = ${supprime.id}`;
     const parti = await make.asset(c, { name: 'Ancien bien #9' });

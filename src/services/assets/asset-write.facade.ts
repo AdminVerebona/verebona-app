@@ -10,7 +10,7 @@
  *
  * Aucune règle nouvelle. Les messages et codes de refus sont ceux de la route.
  */
-import { and, count, eq } from 'drizzle-orm';
+import { and, eq } from 'drizzle-orm';
 import { db } from '@/db';
 import { assets, accounts as accountsTable } from '@/db/schema';
 import { emitBusinessEvent } from '@/services/verebona-assistant/events/business-events';
@@ -20,13 +20,14 @@ import { getFeatureFlags, canCreateAsset } from '@/lib/feature-flags';
 import { canCreateAsset as canCreateAssetEntitlement } from '@/services/entitlements.service';
 import { trackFunnelEvent } from '@/services/funnel-analytics.service';
 import { deleteAssetCompletely, getAssetDeletionSummary, type AssetDeletionSummary } from './asset-deletion.service';
+import { countQuotaAssetsIn, lockAssetQuota } from './asset-quota-lock';
 import { isValidObjectCategory } from '@/types/domain';
 import type { PlanType } from '@/types/domain';
 import type { ErrorCode } from '@/lib/api-errors';
 
 // Lot 30 : familles du référentiel (`asset-taxonomy`) — proposées + anciennes encore stockées.
 export const VALID_ASSET_CATEGORIES: readonly string[] = ACCEPTED_ASSET_CATEGORY_CODES;
-// Lot 32 (PO-Q11) : liste officielle — la même que la contrainte en base (migration 0278).
+// #849 : liste officielle (EN_SERVICE, TRANSMIS) — la même que la contrainte en base (migration 2013).
 export const VALID_ASSET_STATUSES: readonly string[] = ASSET_STATUSES;
 export const VALID_OBJECT_CATEGORIES: readonly string[] = getAssetCategories('OBJECT').map((c) => c.value);
 
@@ -61,7 +62,7 @@ const refus = (status: number, code: ErrorCode, message: string, details?: Recor
  * elle-même. Sert à l'Assistant avant de proposer un plan (CDC §10.1 : les
  * quotas s'appliquent avant confirmation ET à l'exécution).
  */
-export async function checkAssetCreationAllowed(accountId: number): Promise<{ ok: true } | AssetWriteRefusal> {
+export async function checkAssetCreationAllowed(accountId: number, runner: Pick<typeof db, 'execute'> = db): Promise<{ ok: true } | AssetWriteRefusal> {
   const [account] = await db
     .select({ id: accountsTable.id, planType: accountsTable.planType, featureFlags: accountsTable.featureFlags })
     .from(accountsTable)
@@ -70,8 +71,9 @@ export async function checkAssetCreationAllowed(accountId: number): Promise<{ ok
   if (!account) return refus(404, 'ACCOUNT_NOT_FOUND', 'Account not found');
 
   const features = getFeatureFlags(account.planType as PlanType, account.featureFlags);
-  const [assetCountResult] = await db.select({ count: count() }).from(assets).where(eq(assets.accountId, accountId));
-  const currentAssetCount = assetCountResult?.count || 0;
+  // #849 (A2) : quota des biens ACTIFS — seuls les biens EN_SERVICE non supprimés comptent
+  // (décompte central ; sous le verrou du quota quand `runner` est la transaction de création).
+  const currentAssetCount = await countQuotaAssetsIn(runner, accountId);
 
   // CDC tarification §8.2 : quota de biens contrôlé côté serveur à partir des
   // droits effectifs (essai / Standard / Premium / Duo / restreint).
@@ -128,8 +130,6 @@ export async function createAssetForAccount(
   ctx: { accountId: number; userId: number },
   body: CreateAssetInput,
 ): Promise<{ ok: true; asset: typeof assets.$inferSelect } | AssetWriteRefusal> {
-  const droit = await checkAssetCreationAllowed(ctx.accountId);
-  if (!droit.ok) return droit;
   const valide = validateNewAsset(body);
   if (!valide.ok) return valide;
 
@@ -157,7 +157,16 @@ export async function createAssetForAccount(
     if (objectDetails) insertData.objectDetails = typeof objectDetails === 'string' ? objectDetails : JSON.stringify(objectDetails);
   }
 
-  const newAsset = await db.insert(assets).values(insertData as typeof assets.$inferInsert).returning();
+  // #849 (A2) : quota contrôlé et bien inséré sous le MÊME verrou du compte — deux créations
+  // (ou une création et une remise en service) simultanées ne dépassent jamais le quota.
+  const issue = await db.transaction(async (tx) => {
+    await lockAssetQuota(tx, ctx.accountId);
+    const droit = await checkAssetCreationAllowed(ctx.accountId, tx);
+    if (!droit.ok) return droit;
+    return { ok: true as const, rows: await tx.insert(assets).values(insertData as typeof assets.$inferInsert).returning() };
+  });
+  if (!issue.ok) return issue;
+  const newAsset = issue.rows;
 
   // CDC §17 : activation — premier bien enregistré (dédoublonné en base).
   void trackFunnelEvent({ event: 'first_asset_added', accountId: ctx.accountId });
@@ -179,7 +188,8 @@ export async function createAssetForAccount(
 /**
  * Décompte de ce que la suppression emportera, pour un bien DU COMPTE —
  * `null` si le bien n'existe pas ou appartient à un autre compte (sans les
- * distinguer). Même décompte que la boîte de suppression de la fiche.
+ * distinguer). Même inventaire (et même empreinte) que la boîte de
+ * suppression de la fiche (#849).
  */
 export async function readAssetDeletionSummary(accountId: number, assetId: number): Promise<(AssetDeletionSummary & { name: string }) | null> {
   const [asset] = await db.select({ id: assets.id, name: assets.name })
@@ -190,20 +200,32 @@ export async function readAssetDeletionSummary(accountId: number, assetId: numbe
 
 /**
  * Suppression définitive d'un bien DÉJÀ contrôlé (compte, écriture permise) :
- * le bien et tout son contenu, puis le retrait des preuves sur les autres
- * biens et l'événement métier. Suite de `DELETE /api/assets`, déplacée sans
- * changement. Aucune option de conservation partielle n'existe.
+ * ce qui lui appartient exclusivement est supprimé, le partagé conservé et
+ * détaché (#849), puis le retrait des preuves sur les autres biens et
+ * l'événement métier. `expectedFingerprint` : empreinte de l'inventaire
+ * confirmé — écart → `AssetDeletionInventoryChangedError` (rien supprimé).
  */
 export async function deleteAssetForAccount(
   ctx: { accountId: number; userId: number },
   asset: { id: number; thumbnailUrl?: string | null },
-): Promise<{ blobsScheduled: number }> {
-  const { blobsScheduled, fileIds } = await deleteAssetCompletely(asset);
+  opts: { expectedFingerprint?: string | null } = {},
+): Promise<{ blobsScheduled: number; alreadyDeleted?: boolean }> {
+  const { blobsScheduled, fileIds, rehomedToAssetIds, alreadyDeleted } = await deleteAssetCompletely(asset, { expectedFingerprint: opts.expectedFingerprint ?? null });
+  if (alreadyDeleted) return { blobsScheduled: 0, alreadyDeleted: true };
   // CDC 15 T3-03 : preuves des documents emportés retirées sur les AUTRES
   // biens (documents multi-biens), qui sont réconciliés (ne lève jamais).
   {
     const { onAssetDeleted } = await import('@/services/ai/evidence/document-evidence-lifecycle');
     await onAssetDeleted({ accountId: ctx.accountId, userId: ctx.userId, assetId: asset.id, fileIds: fileIds ?? [] });
+  }
+  // #849 : biens qui reçoivent un document conservé — cohérence recontrôlée (différée, dédupliquée).
+  if (rehomedToAssetIds?.length) {
+    try {
+      const { notifyCoherenceEvent } = await import('@/services/ai/reconciliation/account-reconciliation.service');
+      for (const id of rehomedToAssetIds) notifyCoherenceEvent(ctx.accountId, { event: 'asset_updated', objectType: 'asset', objectId: id });
+    } catch (e) {
+      console.error('[asset-deletion] réconciliation des biens conservataires non notifiée :', (e as Error).message);
+    }
   }
   // CDC Assistant §25.7 : événement métier (caches de l'assistant, §31.4).
   await emitBusinessEvent({ type: 'ASSET_DELETED', accountId: ctx.accountId, entityId: asset.id });

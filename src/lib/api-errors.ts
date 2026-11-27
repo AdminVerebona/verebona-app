@@ -70,6 +70,12 @@ export type ErrorCode =
     | 'ASSET_QUOTA_REACHED'
     // Quota déjà franchi — écriture suspendue, lecture et export préservés.
     | 'ASSET_QUOTA_EXCEEDED'
+    // #849 : bien TRANSMIS — consultation seule (réactiver avant d'écrire).
+    | 'ASSET_READ_ONLY'
+    // #849 : suppression définitive — inventaire changé depuis la confirmation.
+    | 'DELETION_INVENTORY_CHANGED'
+    // #849 : suppression définitive — inventaire absent / illisible (aucune suppression aveugle).
+    | 'DELETION_INVENTORY_REQUIRED'
     | 'DOCUMENT_QUOTA_REACHED'
     | 'USER_QUOTA_REACHED'
     | 'PREMIUM_REQUIRED'

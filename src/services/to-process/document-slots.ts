@@ -309,7 +309,7 @@ async function assetWritableOfAccount(client: SlotClient, accountId: number, ass
     .from(assets)
     .where(and(
       eq(assets.id, assetId), eq(assets.accountId, accountId), isNull(assets.deletedAt),
-      sql`${assets.status} IS DISTINCT FROM 'ARCHIVED'`, sql`COALESCE(${assets.lockState}, 'NONE') = 'NONE'`,
+      sql`${assets.status} IS DISTINCT FROM 'TRANSMIS'`, sql`COALESCE(${assets.lockState}, 'NONE') = 'NONE'`, // #849 : transmis en lecture seule
     ))
     .limit(1);
   return !!a;

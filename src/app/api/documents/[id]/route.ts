@@ -33,6 +33,12 @@ export async function PUT(
       );
     }
 
+    // #849 (A2) : document des seuls biens TRANSMIS — consultation seule.
+    {
+      const { refuserSiDocumentDeBienTransmis } = await import('@/lib/asset-read-only-guard');
+      const refusTransmis = await refuserSiDocumentDeBienTransmis(documentId, session.currentAccountId);
+      if (refusTransmis) return refusTransmis;
+    }
     const body = await request.json();
     return await updateDocumentForAccount({ userId: session.userId, currentAccountId: session.currentAccountId }, documentId, body);
   } catch (error) {

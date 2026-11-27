@@ -106,7 +106,7 @@ export async function POST(
     }
 
     // Au-dessus du quota après un changement d'offre : modification suspendue (GAP-11).
-    const refusQuota = await refuserSiModificationBiensSuspendue(session.currentAccountId);
+    const refusQuota = await refuserSiModificationBiensSuspendue(session.currentAccountId, assetId);
     if (refusQuota) return refusQuota;
 
     // Gestion des pièces : Premium et Premium Duo (essai compris). Le client

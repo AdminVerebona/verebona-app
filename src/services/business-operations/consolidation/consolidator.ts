@@ -71,7 +71,7 @@ import { applyCurrencyChoices, type AmountChoice, type CurrencyChoice, type Side
 import { OPERATION_MATCH_MAX_CANDIDATES, m3Resolution, type OperationMatchVerdict } from '@/services/ai/reconciliation/master/operation-match';
 import { emptyCardNeeds, type OperationCardNeeds } from './card-needs';
 import { operationMatchContext, type StoredM3 } from './m3-context';
-import { applyStructuredAuthority, assetDataContribution, isEnrichmentOnly, type AssetDataRow } from './asset-data';
+import { applyStructuredAuthority, assetDataContribution, isEnrichmentOnly, legacyArchivedFlagSql, type AssetDataRow } from './asset-data';
 import { agendaContribution, applyAgendaAuthority } from './agenda-source';
 import { loadAgendaSourceItem } from './agenda-source-read';
 import { applyAssetExclusions, exclusionsTableReady, loadActiveExclusions } from './asset-exclusions';
@@ -723,10 +723,12 @@ const withdrawReason = (kind: string, agendaReason?: string): string =>
 /**
  * Ligne du bien d'une source ASSET_DATA (lot 43), relue dans la transaction :
  * `row_to_json` porte `status_changed_at` (0322) sans le déclarer à Drizzle.
+ * #849 : + drapeau `c849_legacy_archived` (ancien ARCHIVED converti : aucune cession).
  */
 export async function loadAssetDataRow(tx: DbTx, accountId: number, assetId: number): Promise<AssetDataRow | null> {
   const [r] = await rows<{ r: AssetDataRow | string }>(tx, sql`
-    SELECT row_to_json(a.*) AS r FROM assets a WHERE a.id = ${assetId} AND a.account_id = ${accountId} AND a.deleted_at IS NULL`);
+    SELECT (row_to_json(a.*)::jsonb || jsonb_build_object('c849_legacy_archived', ${sql.raw(legacyArchivedFlagSql('a'))})) AS r
+      FROM assets a WHERE a.id = ${assetId} AND a.account_id = ${accountId} AND a.deleted_at IS NULL`);
   if (!r) return null;
   return typeof r.r === 'string' ? JSON.parse(r.r) as AssetDataRow : r.r;
 }

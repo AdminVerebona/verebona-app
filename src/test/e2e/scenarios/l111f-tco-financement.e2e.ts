@@ -232,7 +232,7 @@ scenario('L111F', 'TCO — coût annuel hors achat, financement selon l’éché
       businessReferences: [ref('CONTRACT', 'VENTE-1')], temporalHints: { realizedDate: '2026-06-01' },
       financialHints: [fh('PROCEED', 45_000_000, { economicDate: '2026-06-01' }), fh('REALIZED_COST', 1_000_000, { amountScope: 'FEE', economicDate: '2026-06-01' })],
     })], { type: 'SALE_DEED', title: 'Acte de vente', date: '2026-06-01' });
-    await sql`UPDATE assets SET status = 'VENDU' WHERE id = ${bien.id}`;
+    await sql`UPDATE assets SET status = 'TRANSMIS' /* #849 : VENDU retiré */ WHERE id = ${bien.id}`;
     await passer(compte);
     const t = await tco(compte, bien.id);
     expect(t.disposed).toBe(true);

@@ -88,7 +88,7 @@ scenario('L113A-RATTACHEMENT', 'À traiter : boutons des biens pour rattacher un
     const archive = await make.asset(compte, { category: 'IMMOBILIER', name: 'Ancien studio' });
     const verrou = await make.asset(compte, { category: 'VEHICULE', name: 'Clio verrouillée' });
     const supprime = await make.asset(compte, { category: 'OBJET', name: 'Vélo supprimé' });
-    await sql`UPDATE assets SET status = 'ARCHIVED' WHERE id = ${archive.id}`;
+    await sql`UPDATE assets SET status = 'TRANSMIS' WHERE /* #849 : ARCHIVED retiré → TRANSMIS (consultation seule) */ id = ${archive.id}`;
     await sql`UPDATE assets SET lock_state = 'SOFT' WHERE id = ${verrou.id}`;
     await sql`UPDATE assets SET deleted_at = now() WHERE id = ${supprime.id}`;
     return { compte, maison, appart, auto, archive, verrou, supprime };
@@ -205,7 +205,7 @@ scenario('L113A-RATTACHEMENT', 'À traiter : boutons des biens pour rattacher un
   it('L113A-E2E-06 — aucun bien éligible : état EMPTY ; « Annuler » rouvre la même carte', async () => {
     const compte = await make.account();
     const archive = await make.asset(compte, { category: 'IMMOBILIER', name: 'Seul bien archivé' });
-    await sql`UPDATE assets SET status = 'ARCHIVED' WHERE id = ${archive.id}`;
+    await sql`UPDATE assets SET status = 'TRANSMIS' WHERE /* #849 : ARCHIVED retiré → TRANSMIS (consultation seule) */ id = ${archive.id}`;
     const doc = await document(compte, 'Garantie orpheline');
     const id = await carteRattachement(compte, doc);
     expect((await carte(compte, id))?.assetChoices).toEqual({ status: 'EMPTY', items: [] });

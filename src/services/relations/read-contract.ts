@@ -41,6 +41,7 @@
 import { documentTitleColumnsSql, documentTitleOf } from '@/lib/documents/document-title-source';
 import { documentTypeLabelOrNull } from '@/lib/referential/user-facing-labels';
 import type { GroupingRunner } from '@/services/business-operations/grouping/runner';
+import { assetOpenableSql } from '@/lib/asset-status';
 
 export const RELATIONS_CONTRACT_VERSION = 'relations-v1';
 export const RELATIONS_DEFAULT_PAGE_SIZE = 50;
@@ -162,7 +163,8 @@ async function defaultRunner(): Promise<GroupingRunner> {
 }
 const runnerOf = async (r?: GroupingRunner) => r ?? defaultRunner();
 
-const BIEN_DISPONIBLE = (a: string) => `(${a}.status IS DISTINCT FROM 'ARCHIVED' AND coalesce(${a}.lock_state, 'NONE') = 'NONE')`;
+// #849 : un bien TRANSMIS s'ouvre en consultation — seul le verrou de l'offre ferme la fiche.
+const BIEN_DISPONIBLE = (a: string) => assetOpenableSql(a);
 /** Opération active (ni invalidée, ni absorbée) du compte $1. */
 const OP_ACTIVE = (o: string) => `${o}.account_id = $1 AND ${o}.invalidated_at IS NULL AND ${o}.merged_into_operation_id IS NULL`;
 /** Document consultable du compte $1. */

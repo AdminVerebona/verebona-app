@@ -45,6 +45,7 @@
 import { sql, type SQL, type AnyColumn } from 'drizzle-orm';
 
 /** Statuts exclus de la résolution standard de T2. */
+// #849 : liste officielle des statuts hors portefeuille (TRANSMIS) + anciennes valeurs encore lisibles.
 export const ASSISTANT_EXCLUDED_ASSET_STATUSES = ['ARCHIVED', 'TRANSMIS', 'VENDU'] as const;
 /** Statut d'un bien sans statut renseigné (valeur par défaut de la colonne). */
 export const DEFAULT_ASSET_STATUS = 'EN_SERVICE';

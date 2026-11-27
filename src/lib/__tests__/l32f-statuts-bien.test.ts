@@ -19,25 +19,33 @@ import { isAssetAvailableForAssistant, ASSISTANT_EXCLUDED_ASSET_STATUSES } from 
 const read = (rel: string) => readFileSync(join(process.cwd(), rel), 'utf8');
 
 describe('PO-Q11 — liste officielle', () => {
-  it('quatre statuts, et seulement eux', () => {
-    expect([...ASSET_STATUSES].sort()).toEqual(['ARCHIVED', 'EN_SERVICE', 'TRANSMIS', 'VENDU']);
-    expect(ASSET_STATUSES.map(assetStatusLabel)).toEqual(['En service', 'Vendu', 'Transmis', 'Archivé']);
+  // Carte #849 (arbitrages PO du 25/11/2026) — règle remplacée : la liste officielle du lot 32 (quatre
+  // statuts EN_SERVICE / VENDU / TRANSMIS / ARCHIVED) est réduite à DEUX statuts ; VENDU et ARCHIVED sont
+  // convertis en TRANSMIS (migration 2013, trace idempotente). Les assertions ci-dessous encodaient la
+  // liste à quatre valeurs, déclarée défectueuse par la carte : elles sont adaptées, même portée.
+  it('deux statuts, et seulement eux (#849)', () => {
+    expect([...ASSET_STATUSES].sort()).toEqual(['EN_SERVICE', 'TRANSMIS']);
+    expect(ASSET_STATUSES.map(assetStatusLabel)).toEqual(['En service', 'Transmis']);
   });
 
-  it('anciennes valeurs lisibles, converties comme la migration 0278', () => {
+  it('anciennes valeurs lisibles, converties comme les migrations 0278 et 2013', () => {
     for (const v of ['EN_MAINTENANCE', 'HORS_SERVICE', 'EN_PANNE', 'EN_REPARATION', 'INACTIF']) expect(normalizeAssetStatus(v)).toBe('EN_SERVICE');
-    expect(normalizeAssetStatus('DETRUIT')).toBe('ARCHIVED');
+    for (const v of ['DETRUIT', 'VENDU', 'vendu', 'ARCHIVED']) expect(normalizeAssetStatus(v)).toBe('TRANSMIS');
     expect(normalizeAssetStatus(null)).toBe('EN_SERVICE');
-    expect(normalizeAssetStatus('vendu')).toBe('VENDU');
     const migration = read('src/db/migrations/0278_asset_status_official_list.sql');
-    for (const ancien of Object.keys(LEGACY_ASSET_STATUS_MAP)) expect(migration, ancien).toContain(`'${ancien}'`);
+    for (const ancien of ['EN_MAINTENANCE', 'HORS_SERVICE', 'EN_PANNE', 'EN_REPARATION', 'INACTIF', 'DETRUIT']) {
+      expect(LEGACY_ASSET_STATUS_MAP[ancien], ancien).toBeDefined();
+      expect(migration, ancien).toContain(`'${ancien}'`);
+    }
     expect(migration).toMatch(/SET status = 'ARCHIVED'[\s\S]*WHERE status = 'DETRUIT'/);
     expect(migration).toMatch(/WHERE status IN \('EN_MAINTENANCE', 'HORS_SERVICE', 'EN_PANNE', 'EN_REPARATION', 'INACTIF'\)/);
+    expect(read('src/db/migrations/2013_c849_statuts_bien_deux_valeurs.sql'))
+      .toMatch(/UPDATE assets SET status = 'TRANSMIS' WHERE status IN \('VENDU', 'ARCHIVED', 'DETRUIT'\)/);
   });
 
-  it('contrainte en base = liste officielle (migration 0278 et schéma Drizzle)', () => {
+  it('contrainte en base = liste officielle (migration 2013 et schéma Drizzle)', () => {
     const liste = ASSET_STATUSES.map((s) => `'${s}'`).join(', ');
-    expect(read('src/db/migrations/0278_asset_status_official_list.sql')).toContain(`CHECK (status IN (${liste})) NOT VALID`);
+    expect(read('src/db/migrations/2013_c849_statuts_bien_deux_valeurs.sql')).toContain(`CHECK (status IN (${liste})) NOT VALID`);
     expect(read('src/db/schema.ts')).toContain(`${'${table.status}'} IN (${liste})`);
   });
 
@@ -46,16 +54,16 @@ describe('PO-Q11 — liste officielle', () => {
     expect(api).toContain('const VALID_STATUSES: readonly string[] = ASSET_STATUSES;');
     expect(api).not.toMatch(/'EN_PANNE'|'DETRUIT'|'INACTIF'/);
     const fiche = read('src/services/asset-details-write.service.ts');
-    expect(fiche).toContain("ASSET_STATUSES.filter((s) => s !== 'ARCHIVED')");
+    expect(fiche).toContain('const VALID_STATUSES: readonly string[] = ASSET_STATUSES;');
   });
 
-  it('interface : badges et filtres depuis la liste officielle ; vendu sorti du portefeuille mais modifiable', () => {
+  it('interface : badges et filtres depuis la liste officielle ; transmis sorti du portefeuille et en consultation seule', () => {
+    expect(isOutOfPortfolioStatus('TRANSMIS')).toBe(true);
     expect(isOutOfPortfolioStatus('VENDU')).toBe(true);
     expect(isOutOfPortfolioStatus('EN_PANNE')).toBe(false);
-    expect(isReadOnlyAssetStatus('VENDU')).toBe(false);
     expect(isReadOnlyAssetStatus('TRANSMIS')).toBe(true);
-    expect(isReadOnlyAssetStatus('ARCHIVED')).toBe(true);
-    expect(assetStatusBadgeVariant('VENDU')).toBe('sold');
+    expect(isReadOnlyAssetStatus('EN_SERVICE')).toBe(false);
+    expect(assetStatusBadgeVariant('TRANSMIS')).toBe('sold');
     expect(assetStatusBadgeVariant('HORS_SERVICE')).toBe('active');
     // Lot 65A : `components/dashboard/AssetCard.tsx` supprimé (aucun écran ne l'utilisait).
     for (const f of ['src/app/(dashboard)/assets/page.tsx', 'src/app/(dashboard)/assets/[id]/page.tsx']) {
@@ -63,7 +71,7 @@ describe('PO-Q11 — liste officielle', () => {
       expect(src, f).toContain("from '@/lib/asset-status'");
       expect(src, f).not.toMatch(/'EN_PANNE'|'EN_REPARATION'|'DETRUIT'|'INACTIF'|'HORS_SERVICE'|'EN_MAINTENANCE'/);
     }
-    expect(read('src/app/(dashboard)/assets/page.tsx')).toContain('Afficher les biens vendus, transmis ou archivés');
+    expect(read('src/app/(dashboard)/assets/page.tsx')).toContain('Biens transmis');
   });
 
   it('exports : libellé officiel, ancienne valeur exportée sous son statut officiel', () => {
@@ -72,14 +80,15 @@ describe('PO-Q11 — liste officielle', () => {
     expect(src).not.toContain("EN_PANNE: 'En panne'");
   });
 
-  it('assistant : VENDU exclu comme ARCHIVED / TRANSMIS (bien cédé, sorti du portefeuille)', () => {
-    expect(new Set(ASSISTANT_EXCLUDED_ASSET_STATUSES)).toEqual(new Set(OUT_OF_PORTFOLIO_ASSET_STATUSES));
+  it('assistant : bien transmis (et anciennes valeurs) exclu de la résolution standard', () => {
+    for (const s of OUT_OF_PORTFOLIO_ASSET_STATUSES) expect(new Set(ASSISTANT_EXCLUDED_ASSET_STATUSES).has(s)).toBe(true);
+    expect(isAssetAvailableForAssistant({ status: 'TRANSMIS' })).toBe(false);
     expect(isAssetAvailableForAssistant({ status: 'VENDU' })).toBe(false);
     expect(isAssetAvailableForAssistant({ status: 'VENDU' }, { includeArchived: true })).toBe(true);
     expect(isAssetAvailableForAssistant({ status: 'EN_SERVICE' })).toBe(true);
   });
 
-  it('accueil et listes : biens vendus exclus par défaut comme transmis / archivés', () => {
+  it('accueil et listes : biens transmis exclus par défaut', () => {
     expect(read('src/services/home/HomeSummaryService.ts')).toContain('notInArray(assets.status, [...OUT_OF_PORTFOLIO_ASSET_STATUSES])');
     expect(read('src/app/api/assets/route.ts')).toContain('notInArray(assets.status, [...OUT_OF_PORTFOLIO_ASSET_STATUSES])');
   });

@@ -2,85 +2,123 @@
  * deleteAssetCompletely : les objets de stockage (fichiers, versions, exports,
  * vignette) sont mis en file de purge DANS la transaction et AVANT la
  * suppression du bien, dont la cascade efface les références.
+ *
+ * Carte #849 — test réécrit sur la nouvelle implémentation (plan unique
+ * `asset-deletion-plan`, SQL dans la transaction) : l'ancien test simulait la
+ * chaîne Drizzle `select().from().where()` de l'implémentation remplacée. Les
+ * invariants sont CONSERVÉS (purge programmée avant la suppression du bien,
+ * clés dédoublonnées, `temp` et clés encore référencées exclues, clé
+ * étrangère `asset_transmissions` libérée, bien supprimé en dernier) ; sont
+ * ajoutés : verrou de la ligne, empreinte d'inventaire exigée, bien déjà
+ * supprimé, éléments partagés détachés et non purgés.
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { PgDialect } from 'drizzle-orm/pg-core';
 
+const dialect = new PgDialect();
 const ops: string[] = [];
-let inserted: Array<{ storagePath: string; fileId: null }> = [];
-let selectResults: Record<string, unknown[][]> = {};
+let lignes: Record<string, unknown[]> = {};
+let plan: Record<string, unknown> | null = null;
 
-vi.mock('@/db', async () => {
-  const { getTableName } = await vi.importActual<typeof import('drizzle-orm')>('drizzle-orm');
-  const chain = (onResolve: () => unknown) => {
-    const c: Record<string, unknown> = {};
-    for (const m of ['where', 'limit', 'set']) c[m] = () => c;
-    c.then = (res: (v: unknown) => unknown, rej: (e: unknown) => unknown) =>
-      Promise.resolve().then(onResolve).then(res, rej);
-    return c;
-  };
+vi.mock('@/db', () => {
   const tx = {
-    select: () => ({
-      from: (t: never) => {
-        const name = getTableName(t);
-        return chain(() => {
-          if (name === 'rooms' || name === 'substructures') return [];
-          ops.push(`select:${name}`);
-          return (selectResults[name] ?? []).shift() ?? [];
-        });
-      },
-    }),
-    insert: (t: never) => ({
-      values: (v: typeof inserted) => chain(() => { ops.push(`insert:${getTableName(t)}`); inserted = v; }),
-    }),
-    update: (t: never) => chain(() => ops.push(`update:${getTableName(t)}`)),
-    delete: (t: never) => chain(() => ops.push(`delete:${getTableName(t)}`)),
+    execute: async (q: never) => {
+      const { sql: texte, params } = dialect.sqlToQuery(q);
+      const t = texte.replace(/\s+/g, ' ').trim();
+      ops.push(t);
+      for (const [motif, res] of Object.entries(lignes)) if (t.includes(motif)) return typeof res === 'function' ? (res as (p: unknown[]) => unknown)(params) : res;
+      return [];
+    },
+    delete: () => ({ where: async () => { ops.push('DELETE FROM assets'); } }),
   };
-  return { db: { transaction: async (fn: (t: typeof tx) => unknown) => fn(tx) } };
+  return { db: { transaction: async (fn: (t: typeof tx) => unknown) => fn(tx), execute: tx.execute } };
 });
+vi.mock('@/lib/s3-config', () => ({ isS3Configured: () => false, getS3Bucket: () => null }));
+vi.mock('../asset-deletion-plan', async (o) => ({
+  ...(await o<object>()),
+  planAssetDeletion: async () => plan,
+}));
+vi.mock('@/services/business-operations/asset-lifecycle', () => ({
+  retireDeletedAssetFromOperationsInTx: async () => { ops.push('retire-operations'); return { events: [] }; },
+  supersedeDeletedAssetComponentsInTx: async () => { ops.push('supersede-components'); return []; },
+  deleteExclusiveOperationsInTx: async () => { ops.push('delete-operations'); return 0; },
+}));
+vi.mock('@/services/business-operations/events', () => ({ publishBusinessOperationEvents: async () => undefined }));
 
-const { deleteAssetCompletely } = await import('../asset-deletion.service');
+const { deleteAssetCompletely, AssetDeletionInventoryChangedError } = await import('../asset-deletion.service');
+const { deletionPlanFingerprint } = await import('../asset-deletion-plan');
+
+const planVide = (over: Record<string, unknown> = {}) => ({
+  assetId: 5, accountId: 1,
+  exclusiveFileIds: [], sharedFiles: [], documentFileIds: [], versionIds: [], photoIds: [], substructureIds: [], equipmentIds: [],
+  exclusiveDeadlineIds: [], sharedDeadlineIds: [], exclusiveEventIds: [], sharedEventIds: [],
+  exclusiveAgendaItemIds: [], sharedAgendaItemIds: [], exclusiveOperationIds: [], sharedOperationIds: [],
+  expenseComponentIds: [], sharedOperationExpenseIds: [], exportIds: [],
+  ...over,
+});
+const insertions = () => ops.filter((o) => o.startsWith('INSERT INTO pending_blob_deletions'));
+const indexDe = (debut: string) => ops.findIndex((o) => o.startsWith(debut));
 
 beforeEach(() => {
   ops.length = 0;
-  inserted = [];
-  selectResults = {};
+  lignes = { 'FOR UPDATE': [{ id: 5, account_id: 1, thumbnail_url: null }] };
+  plan = planVide();
 });
 
 describe('deleteAssetCompletely', () => {
-  it('programme la purge de tous les objets puis supprime le bien', async () => {
-    selectResults = {
-      asset_files: [
-        [{ id: 1, s3Key: 'f/1.pdf' }, { id: 2, s3Key: 'temp' }, { id: 3, s3Key: 'f/shared.pdf' }, { id: 4, s3Key: null }],
-        // Garde-fou : f/shared.pdf encore référencé par un fichier qui survit.
-        [{ s3Key: 'f/shared.pdf' }],
-      ],
-      document_versions: [[{ s3Key: 'f/1.v1.pdf' }]],
-      export_generation: [[{ outputPayload: JSON.stringify({ pdfS3Key: 'exports/1/5/9/x.pdf' }) }]],
-      pending_blob_deletions: [[{ storagePath: 'f/1.v1.pdf' }]], // déjà en file
+  it('programme la purge des objets EXCLUSIFS puis supprime le bien en dernier', async () => {
+    plan = planVide({ exclusiveFileIds: [1, 2, 3, 4], versionIds: [9], sharedFiles: [{ id: 6, newAssetId: 8 }] });
+    lignes = {
+      'FOR UPDATE': [{ id: 5, account_id: 1, thumbnail_url: null }],
+      'SELECT s3_key FROM asset_files WHERE id = ANY': [{ s3_key: 'f/1.pdf' }, { s3_key: 'temp' }, { s3_key: 'f/shared.pdf' }, { s3_key: null }],
+      'SELECT s3_key FROM document_versions WHERE id = ANY': [{ s3_key: 'f/1.v1.pdf' }],
+      'SELECT output_payload FROM export_generation': [{ output_payload: JSON.stringify({ pdfS3Key: 'exports/1/5/9/x.pdf' }) }],
+      // Garde-fou : f/shared.pdf encore référencé par un fichier qui SURVIT ; la version déjà en file.
+      'SELECT s3_key AS k FROM asset_files': [{ k: 'f/shared.pdf' }],
+      'SELECT storage_path AS k FROM pending_blob_deletions': [{ k: 'f/1.v1.pdf' }],
     };
-
     const result = await deleteAssetCompletely({ id: 5, thumbnailUrl: 'verebona/u_1/a_5/thumbnail/t.webp' });
 
-    expect(inserted.map((r) => r.storagePath).sort()).toEqual(
-      ['exports/1/5/9/x.pdf', 'f/1.pdf', 'verebona/u_1/a_5/thumbnail/t.webp'].sort(),
-    );
-    expect(inserted.every((r) => r.fileId === null)).toBe(true);
     expect(result.blobsScheduled).toBe(3);
-    expect(ops.indexOf('insert:pending_blob_deletions')).toBeLessThan(ops.indexOf('delete:assets'));
-    expect(ops).toContain('update:asset_transmissions');
-    expect(ops[ops.length - 1]).toBe('delete:assets');
-    // D-G : documents, événements et échéances rattachés à une PIÈCE du bien seulement
-    // (substructure_id, asset_id NULL) supprimés explicitement — la clé est ON DELETE SET NULL.
-    for (const t of ['asset_files', 'events', 'deadlines']) {
-      expect(ops.indexOf(`delete:${t}`)).toBeGreaterThan(-1);
-      expect(ops.indexOf(`delete:${t}`)).toBeLessThan(ops.indexOf('delete:assets'));
-    }
+    expect(insertions()).toHaveLength(3);
+    expect(result.fileIds).toEqual([1, 2, 3, 4]);
+    expect(result.rehomedToAssetIds).toEqual([8]);
+    expect(ops[0]).toMatch(/FOR UPDATE$/);
+    const supprBien = indexDe('DELETE FROM assets');
+    expect(supprBien).toBe(ops.length - 1);
+    for (const i of insertions().map((x) => ops.indexOf(x))) expect(i).toBeLessThan(supprBien);
+    expect(indexDe('UPDATE asset_transmissions SET duplicated_asset_id = NULL')).toBeGreaterThan(-1);
+    // Partagé : détaché (confié à l'autre bien) AVANT toute suppression ; exclusifs supprimés explicitement.
+    expect(indexDe('UPDATE asset_files f SET')).toBeGreaterThan(-1);
+    expect(indexDe('UPDATE asset_files f SET')).toBeLessThan(indexDe('DELETE FROM asset_files'));
+    expect(indexDe('DELETE FROM asset_files')).toBeLessThan(supprBien);
+    expect(ops.indexOf('supersede-components')).toBeLessThan(ops.indexOf('retire-operations'));
+    expect(ops.indexOf('retire-operations')).toBeLessThan(ops.indexOf('delete-operations'));
+    expect(ops.indexOf('delete-operations')).toBeLessThan(supprBien);
   });
 
   it('bien sans fichier : aucune programmation, le bien est supprimé', async () => {
     const result = await deleteAssetCompletely({ id: 6, thumbnailUrl: null });
     expect(result.blobsScheduled).toBe(0);
-    expect(ops).not.toContain('insert:pending_blob_deletions');
-    expect(ops).toContain('delete:assets');
+    expect(insertions()).toEqual([]);
+    expect(indexDe('DELETE FROM assets')).toBe(ops.length - 1);
+  });
+
+  it('#849 : empreinte de l’inventaire différente → rien n’est écrit, erreur dédiée', async () => {
+    plan = planVide({ exclusiveFileIds: [1] });
+    await expect(deleteAssetCompletely({ id: 5 }, { expectedFingerprint: 'perimee' })).rejects.toBeInstanceOf(AssetDeletionInventoryChangedError);
+    expect(ops.filter((o) => /^(INSERT|UPDATE|DELETE)/.test(o))).toEqual([]);
+  });
+
+  it('#849 : empreinte identique → suppression ; bien déjà supprimé (double clic) → rien', async () => {
+    plan = planVide({ exclusiveFileIds: [1] });
+    const fp = deletionPlanFingerprint(plan as never);
+    const ok = await deleteAssetCompletely({ id: 5 }, { expectedFingerprint: fp });
+    expect(ok.alreadyDeleted).toBeUndefined();
+    ops.length = 0;
+    lignes = {};
+    const deja = await deleteAssetCompletely({ id: 5 }, { expectedFingerprint: fp });
+    expect(deja).toMatchObject({ alreadyDeleted: true, blobsScheduled: 0 });
+    expect(ops.filter((o) => /^(INSERT|UPDATE|DELETE)/.test(o))).toEqual([]);
   });
 });

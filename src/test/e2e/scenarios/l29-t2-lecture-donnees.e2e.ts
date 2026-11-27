@@ -162,9 +162,9 @@ scenario('L29-T2', 'Lot 29 — T2 lecture de données (SQL-first, équipements, 
   it('T2ARCH-E2E — findAssets / listAssets / catalogue / revalidation : même règle (ARCHIVED, TRANSMIS, VENDU, supprimé exclus)', async () => {
     const c = await compte();
     const ids: Record<string, number> = {};
-    // Lot 32 (PO-Q11) : statuts officiels (contrainte 0278) — VENDU exclu comme
-    // ARCHIVED / TRANSMIS ; seul EN_SERVICE (non supprimé) reste candidat.
-    for (const [st, del] of [['EN_SERVICE', false], ['VENDU', false], ['ARCHIVED', false], ['TRANSMIS', false], ['EN_SERVICE', true]] as const) {
+    // Carte #849 : deux statuts officiels (contrainte 2013) — VENDU / ARCHIVED n'existent plus (convertis en
+    // TRANSMIS) ; TRANSMIS exclu ; seul EN_SERVICE (non supprimé) reste candidat.
+    for (const [st, del] of [['EN_SERVICE', false], ['TRANSMIS', false], ['EN_SERVICE', true]] as const) {
       ids[`${st}${del ? '_DEL' : ''}`] = (await bien(c, `Polo ${st.toLowerCase()}${del ? ' sup' : ''}`, { status: st, deleted: del, kc: { mileage: 1000 } })).id;
     }
     const { accountDataRepository } = await import('@/services/verebona-assistant/core/account-data.repository');
@@ -176,21 +176,19 @@ scenario('L29-T2', 'Lot 29 — T2 lecture de données (SQL-first, équipements, 
     const { listAvailableAssets } = await import('@/services/verebona-assistant/core/target-lookup.repository');
     expect((await listAvailableAssets(c.id)).map((a) => a.id).sort((a, b) => a - b)).toEqual(attendus);
     const { candidatToujoursValide } = await import('@/services/verebona-assistant/core/clarification.service');
-    expect(await candidatToujoursValide(c.id, 'asset', { id: `asset_${ids.ARCHIVED}`, entityId: ids.ARCHIVED, label: 'x' })).toBe(false);
     expect(await candidatToujoursValide(c.id, 'asset', { id: `asset_${ids.TRANSMIS}`, entityId: ids.TRANSMIS, label: 'x' })).toBe(false);
-    expect(await candidatToujoursValide(c.id, 'asset', { id: `asset_${ids.VENDU}`, entityId: ids.VENDU, label: 'x' })).toBe(false);
     expect(await candidatToujoursValide(c.id, 'asset', { id: `asset_${ids.EN_SERVICE}`, entityId: ids.EN_SERVICE, label: 'x' })).toBe(true);
     // Bout en bout : une Polo active + une Polo archivée de même nom → la Polo active, sans clarification.
     const d = await compte();
     await bien(d, 'Polo', { kc: { mileage: 82000 } });
-    await bien(d, 'Polo', { status: 'ARCHIVED', kc: { mileage: 150000 } });
+    await bien(d, 'Polo', { status: 'TRANSMIS', kc: { mileage: 150000 } });
     const replay = await useRecordings([]);
     const r = await demander(d, 'Quel est le kilométrage de la Polo ?');
     expect(r.clarification).toBeNull();
     expect(r.answer).toMatch(/82\s000 km/);
     expect(replay.calls).toHaveLength(0);
     // Page d'un bien archivé : rejetée, aucune lecture.
-    const arch = await bien(d, 'Clio', { status: 'ARCHIVED', kc: { mileage: 5 } });
+    const arch = await bien(d, 'Clio', { status: 'TRANSMIS', kc: { mileage: 5 } });
     const pg = await demander(d, 'Quel est son kilométrage ?', { pageContext: { assetId: String(arch.id), route: `/assets/${arch.id}` } });
     expect(pg.cascade?.diagnostic).toBe('TARGET_UNAVAILABLE');
   });

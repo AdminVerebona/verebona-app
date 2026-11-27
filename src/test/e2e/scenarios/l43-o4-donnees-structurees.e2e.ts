@@ -157,11 +157,17 @@ scenario('L43-O4', 'Migration structurée et données de vente : fiche du bien �
 
   // ══ Cession ══════════════════════════════════════════════════════════════
 
-  it('O4-E05 / F-019 / F-124 / F-125 / Q5 / C7.6 — passage à VENDU avec date et prix réalisés → DISPOSAL, PROCEED ; date du statut posée par la base', async () => {
+  // Carte #849 (arbitrages PO du 25/11/2026) — règles remplacées dans les trois cas suivants : VENDU n'est plus un
+  // statut (converti en TRANSMIS) ; le passage à TRANSMIS est direct et le bien transmis est en CONSULTATION SEULE
+  // (la fiche refuse toute écriture, « Remettre en service » est une action dédiée sous quota). La date et le prix de
+  // vente réalisés se saisissent donc AVANT la sortie du portefeuille ; un prix saisi fait de la cession une vente
+  // chiffrée (PROCEED), sans prix c'est une transmission.
+
+  it('O4-E05 / F-019 / F-124 / F-125 / #849 — passage à TRANSMIS, date et prix réalisés saisis avant → DISPOSAL, PROCEED ; date du statut posée par la base', async () => {
     const compte = await make.account({ plan: 'premium' });
     const clio = await make.asset(compte);
     expect((await etatBien(clio.id)).status_changed_at).toBeNull();
-    await fiche(compte, clio.id, { status: 'VENDU' });
+    await fiche(compte, clio.id, { status: 'TRANSMIS' });
     const apres = await etatBien(clio.id);
     expect(apres.status_changed_at).not.toBeNull();
     // Sans date de vente : repli « passage au statut » (C11.1), sans prix.
@@ -170,24 +176,27 @@ scenario('L43-O4', 'Migration structurée et données de vente : fiche du bien �
     const jour = new Intl.DateTimeFormat('fr-CA', { timeZone: 'Europe/Paris' }).format(new Date(apres.status_changed_at!));
     expect(op).toMatchObject({ type_code: 'DISPOSAL', status: 'REALIZED', realized_date: jour });
     expect(await composantes(op.id)).toEqual([]);
-    // Fenêtre « Vente enregistrée » : date et prix réalisés (route de la fiche).
-    await fiche(compte, clio.id, { saleDate: '2026-09-30', salePrice: 12000 });
-    await reconcilier(compte, clio.id);
-    const ops = await operations(compte);
-    expect(ops).toHaveLength(1);
-    expect(ops[0]).toMatchObject({ id: op.id, realized_date: '2026-09-30' });
-    expect(await composantes(op.id)).toEqual([{ kind: 'PROCEED', amount_minor: 1200000, currency: 'EUR', sources: ['ASSET_DATA'] }]);
+    // Bien transmis : consultation seule — la fiche refuse la saisie (plus de fenêtre « Vente enregistrée »).
+    await expect(fiche(compte, clio.id, { saleDate: '2026-09-30', salePrice: 12000 })).rejects.toMatchObject({ code: 'ASSET_UNAVAILABLE' });
+    // Vente connue AVANT la sortie du portefeuille : date et prix réalisés repris par la cession.
+    const megane = await make.asset(compte);
+    await fiche(compte, megane.id, { saleDate: '2026-09-30', salePrice: 12000 });
+    await fiche(compte, megane.id, { status: 'TRANSMIS' });
+    await reconcilier(compte, megane.id);
+    const vente = (await operations(compte)).find((o) => o.id !== op.id)!;
+    expect(vente).toMatchObject({ type_code: 'DISPOSAL', realized_date: '2026-09-30' });
+    expect(await composantes(vente.id)).toEqual([{ kind: 'PROCEED', amount_minor: 1200000, currency: 'EUR', sources: ['ASSET_DATA'] }]);
     // Prix souhaité (informations commerciales) : jamais un produit réalisé (C18).
-    expect(await sql`SELECT 1 FROM business_operation_financial_components WHERE operation_id = ${op.id} AND kind <> 'PROCEED'`).toHaveLength(0);
+    expect(await sql`SELECT 1 FROM business_operation_financial_components WHERE operation_id = ${vente.id} AND kind <> 'PROCEED'`).toHaveLength(0);
     await invariants(compte);
   });
 
-  it('O4-E06 / Q5 — TRANSMIS → DISPOSAL sans prix (même si un prix est saisi)', async () => {
+  it('O4-E06 / Q5 / #849 — TRANSMIS sans prix → DISPOSAL sans montant (transmission)', async () => {
     const compte = await make.account({ plan: 'premium' });
     const vase = await make.asset(compte, { category: 'OBJECT', keyCharacteristics: {} });
     await sql`UPDATE assets SET object_category = 'ART' WHERE id = ${vase.id}`;
+    await fiche(compte, vase.id, { saleDate: '2026-08-01' });
     await fiche(compte, vase.id, { status: 'TRANSMIS' });
-    await fiche(compte, vase.id, { saleDate: '2026-08-01', salePrice: 5000 });
     await reconcilier(compte, vase.id);
     const [op, ...autres] = await operations(compte);
     expect(autres).toEqual([]);
@@ -195,11 +204,12 @@ scenario('L43-O4', 'Migration structurée et données de vente : fiche du bien �
     expect(await composantes(op.id)).toEqual([]);
   });
 
-  it('O4-E07 / F-042 / TRG-010 — VENDU + acte de vente : une Cession ; retour en service : la donnée se retire, la vente prouvée reste', async () => {
+  it('O4-E07 / F-042 / TRG-010 / #849 — TRANSMIS (vente chiffrée) + acte de vente : une Cession ; remise en service : la donnée se retire, la vente prouvée reste', async () => {
     const compte = await make.account({ plan: 'premium' });
     const clio = await make.asset(compte);
-    await fiche(compte, clio.id, { status: 'VENDU' });
+    const { reactivateAsset } = await import('@/services/assets/asset-reactivation.service');
     await fiche(compte, clio.id, { saleDate: '2026-09-28', salePrice: 12000 });
+    await fiche(compte, clio.id, { status: 'TRANSMIS' });
     await reconcilier(compte, clio.id);
     const acte = await document(compte, clio.id, [cand({ typeHint: 'DISPOSAL', sourceRoleHint: 'SALE_DOCUMENT', summary: 'Acte de vente', targetHints: [cible(clio.id)],
       temporalHints: { realizedDate: '2026-09-28' }, financialHints: [fh('PROCEED', 1200000)] })]);
@@ -207,7 +217,7 @@ scenario('L43-O4', 'Migration structurée et données de vente : fiche du bien �
     const [op, ...autres] = await operations(compte);
     expect(autres).toEqual([]);
     expect(await composantes(op.id)).toEqual([{ kind: 'PROCEED', amount_minor: 1200000, currency: 'EUR', sources: ['ASSET_DATA', 'DOCUMENT'] }]);
-    await fiche(compte, clio.id, { status: 'EN_SERVICE' });
+    expect(await reactivateAsset({ accountId: compte.id, userId: compte.ownerUserId, assetId: clio.id })).toEqual({ ok: true, alreadyActive: false });
     const r = await reconcilier(compte, clio.id);
     expect(r.natures.find((n) => n.nature === 'DISPOSAL')).toMatchObject({ outcome: 'WITHDRAWN' });
     expect((await operations(compte))[0]).toMatchObject({ id: op.id, invalidated_at: null });
@@ -215,14 +225,14 @@ scenario('L43-O4', 'Migration structurée et données de vente : fiche du bien �
     expect(await composantes(op.id)).toEqual([{ kind: 'PROCEED', amount_minor: 1200000, currency: 'EUR', sources: ['DOCUMENT'] }]);
     // Sans document : la Cession seulement saisie est invalidée.
     const autre = await make.asset(compte);
-    await fiche(compte, autre.id, { status: 'VENDU' });
+    await fiche(compte, autre.id, { status: 'TRANSMIS' });
     await reconcilier(compte, autre.id);
-    await fiche(compte, autre.id, { status: 'EN_SERVICE' });
+    await reactivateAsset({ accountId: compte.id, userId: compte.ownerUserId, assetId: autre.id });
     await reconcilier(compte, autre.id);
     const seule = (await operations(compte)).find((o) => o.id !== op.id)!;
     expect(seule.invalidated_at).not.toBeNull();
-    // Revendu : la même Cession est réactivée (même source), pas une seconde.
-    await fiche(compte, autre.id, { status: 'VENDU' });
+    // Transmis de nouveau : la même Cession est réactivée (même source), pas une seconde.
+    await fiche(compte, autre.id, { status: 'TRANSMIS' });
     await reconcilier(compte, autre.id);
     expect((await operations(compte)).filter((o) => o.id !== op.id)).toEqual([expect.objectContaining({ id: seule.id, invalidated_at: null })]);
     void acte;
@@ -266,7 +276,7 @@ scenario('L43-O4', 'Migration structurée et données de vente : fiche du bien �
     const b = await make.asset(compte, { category: 'IMMOBILIER', keyCharacteristics: { insurer: 'GMF', insuranceContractNumber: 'G-42' } });
     const c = await make.asset(compte);
     // Vendu avant le lot : aucune date de passage au statut connue.
-    await sql`UPDATE assets SET status = 'VENDU' WHERE id = ${c.id}`;
+    await sql`UPDATE assets SET status = 'TRANSMIS' WHERE id = ${c.id}`; // #849 : ancien VENDU → TRANSMIS
     await sql`UPDATE assets SET status_changed_at = NULL WHERE id = ${c.id}`;
     const d = await make.asset(compte, { keyCharacteristics: { acquisitionPrice: 900, acquisitionPrice__origin: 'RECONCILIATION' } });
     const tables = async () => (await sql<{ n: number }[]>`
@@ -350,8 +360,8 @@ scenario('L43-O4', 'Migration structurée et données de vente : fiche du bien �
       // Statut par la carte « À traiter » ASSET-STATUS (même écrivain que la résolution).
       const { ASSET_STATUS_WRITER } = await import('@/services/to-process/agenda-status-cards');
       const { db } = await import('@/db');
-      await ASSET_STATUS_WRITER.write(db as never, clio.id, compte.id, 'VENDU');
-      await ASSET_STATUS_WRITER.afterCommit!({ accountId: compte.id, targetId: clio.id, value: 'VENDU', previousValue: 'EN_SERVICE', userId: null });
+      await ASSET_STATUS_WRITER.write(db as never, clio.id, compte.id, 'TRANSMIS'); // #849 : VENDU retiré
+      await ASSET_STATUS_WRITER.afterCommit!({ accountId: compte.id, targetId: clio.id, value: 'TRANSMIS', previousValue: 'EN_SERVICE', userId: null });
       for (let i = 0; i < 50 && (await evenements()).flatMap((j) => j.events).length < 2; i++) await new Promise((res) => setTimeout(res, 100));
       jobs = await evenements();
       expect(jobs).toHaveLength(1);

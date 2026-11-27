@@ -16,7 +16,7 @@
  * commutateur `CANONICAL_WRITE_MODE` et chemins historique / observation
  * supprimés (comportement de l'ancien `enabled`).
  */
-import { ASSET_STATUSES } from '@/lib/asset-status';
+import { ASSET_READ_ONLY_MESSAGE, ASSET_STATUSES, isReadOnlyAssetStatus } from '@/lib/asset-status';
 import { db } from '@/db';
 import { assets } from '@/db/schema';
 import { eq, and, isNull } from 'drizzle-orm';
@@ -58,9 +58,10 @@ const ATOMIC_FIELDS: Record<string, string> = {
   registrationNumber: 'registrationNumber',
 };
 
-// Lot 32 (PO-Q11) : statuts officiels saisissables depuis la fiche (ARCHIVED
-// relève du parcours d'archivage).
-const VALID_STATUSES: readonly string[] = ASSET_STATUSES.filter((s) => s !== 'ARCHIVED');
+// Carte #849 : deux statuts officiels. Un bien TRANSMIS est en lecture seule
+// (refusé plus bas) : son retour EN_SERVICE passe par « Remettre en service »
+// (contrôle atomique du quota, `asset-reactivation.service`).
+const VALID_STATUSES: readonly string[] = ASSET_STATUSES;
 
 type AssetDetailsErrorCode =
   | 'NOT_FOUND' | 'ASSET_UNAVAILABLE' | 'SECTION_NOT_APPLICABLE' | 'VALIDATION_ERROR' | 'WRITE_BLOCKED'
@@ -72,7 +73,7 @@ export class AssetDetailsError extends Error {
     public code: AssetDetailsErrorCode,
     message: string,
     public details: {
-      reason?: 'ARCHIVED' | 'LOCKED_BY_PLAN';
+      reason?: 'TRANSMIS' | 'LOCKED_BY_PLAN';
       fields?: DetailFieldError[];
       /** Refus des droits (quota dépassé, compte restreint) — GAP-11. */
       writeBlocked?: { code: string; limit?: number };
@@ -95,10 +96,11 @@ export async function loadWritableAsset(assetId: number, accountId: number) {
     .where(and(eq(assets.id, assetId), eq(assets.accountId, accountId), isNull(assets.deletedAt)))
     .limit(1);
   if (!assetRow) throw new AssetDetailsError('NOT_FOUND', 'Asset not found');
-  if (assetRow.status === 'ARCHIVED' || (assetRow.lockState && assetRow.lockState !== 'NONE')) {
-    const reason = assetRow.status === 'ARCHIVED' ? 'ARCHIVED' : 'LOCKED_BY_PLAN';
-    throw new AssetDetailsError('ASSET_UNAVAILABLE', reason === 'ARCHIVED'
-      ? 'Ce bien est archivé.'
+  // #849 : bien TRANSMIS = consultation seule stricte (garde serveur).
+  if (isReadOnlyAssetStatus(assetRow.status) || (assetRow.lockState && assetRow.lockState !== 'NONE')) {
+    const reason = isReadOnlyAssetStatus(assetRow.status) ? 'TRANSMIS' : 'LOCKED_BY_PLAN';
+    throw new AssetDetailsError('ASSET_UNAVAILABLE', reason === 'TRANSMIS'
+      ? ASSET_READ_ONLY_MESSAGE
       : 'Ce bien est verrouillé par votre offre actuelle.', { reason });
   }
   // Au-dessus du quota (changement d'offre) : consultation et export
@@ -280,12 +282,12 @@ function touchesOperationData(fields: Record<string, unknown>, family: AssetFami
  */
 async function recontroleCoherence(accountId: number, assetId: number, fields: Record<string, unknown>, family: AssetFamily): Promise<void> {
   // Lot 41 (C4 TRG-009 / TRG-010) : le statut du bien décide du périmètre T3 des
-  // Opérations (CESSION d'un bien VENDU, création interdite sur un bien sorti).
+  // Opérations (CESSION d'un bien TRANSMIS — #849 —, création interdite sur un bien sorti).
   // Lot 43 (TRG-008 à TRG-010) : achat, vente réalisée, assurance — données
   // structurées qui établissent une Opération (sources ASSET_DATA).
   if ('status' in fields || touchesOperationData(fields, family)) {
     const { notifyOperationsEvent } = await import('@/services/business-operations/consolidation/queue');
-    notifyOperationsEvent(accountId, { trigger: fields.status === 'VENDU' || fields.status === 'TRANSMIS' ? 'asset_disposed' : 'asset_updated', assetId });
+    notifyOperationsEvent(accountId, { trigger: fields.status === 'TRANSMIS' ? 'asset_disposed' : 'asset_updated', assetId });
   }
   const { hasCoherenceImpact } = await import('@/services/ai/reconciliation/coherence-impact');
   if (await hasCoherenceImpact(accountId, assetId, Object.keys(fields))) {
@@ -320,10 +322,10 @@ async function writeSectionCanonical(
     mutate: ({ row, kc, results }) => {
       // Relecture sous verrou : le bien a pu être archivé ou verrouillé.
       const lockState = row.lock_state as string | null | undefined;
-      if (row.status === 'ARCHIVED' || (lockState && lockState !== 'NONE')) {
-        const reason = row.status === 'ARCHIVED' ? 'ARCHIVED' : 'LOCKED_BY_PLAN';
-        throw new AssetDetailsError('ASSET_UNAVAILABLE', reason === 'ARCHIVED'
-          ? 'Ce bien est archivé.'
+      if (isReadOnlyAssetStatus(row.status as string | null) || (lockState && lockState !== 'NONE')) {
+        const reason = isReadOnlyAssetStatus(row.status as string | null) ? 'TRANSMIS' : 'LOCKED_BY_PLAN';
+        throw new AssetDetailsError('ASSET_UNAVAILABLE', reason === 'TRANSMIS'
+          ? ASSET_READ_ONLY_MESSAGE
           : 'Ce bien est verrouillé par votre offre actuelle.', { reason });
       }
       const conflit = results.find((r) => r.outcome === 'conflict');

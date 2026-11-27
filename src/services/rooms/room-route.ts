@@ -33,7 +33,7 @@ export async function resolveRoomRoute(
   if (opts.write) {
     const refus = await refuserSiLectureSeule(accountId);
     if (refus) return refus;
-    const quota = await refuserSiModificationBiensSuspendue(accountId);
+    const quota = await refuserSiModificationBiensSuspendue(accountId, room.assetId);
     if (quota) return quota;
   }
   return { accountId, room };

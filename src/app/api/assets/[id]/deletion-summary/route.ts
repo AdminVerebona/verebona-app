@@ -9,10 +9,15 @@ import { getAssetDeletionSummary } from '@/services/assets/asset-deletion.servic
 /**
  * GET /api/assets/[id]/deletion-summary
  *
- * Décompte de ce que la suppression du bien emportera (documents, photos,
- * échéances, événements, pièces, équipements), affiché par DeleteAssetDialog
- * AVANT confirmation. Même contrôle de propriété que DELETE /api/assets :
- * le bien doit appartenir au compte courant.
+ * Inventaire de la suppression définitive (carte #849, B1) : ce qui sera
+ * SUPPRIMÉ (documents et versions, photos, pièces, équipements, échéances,
+ * événements, éléments d'Agenda, Opérations, dépenses, exports) et ce qui sera
+ * CONSERVÉ car lié aussi à un autre bien, avec l'EMPREINTE de cet inventaire
+ * — à renvoyer à `DELETE /api/assets?id=…&inventory=…` (exigée). Affiché par
+ * DeleteAssetDialog AVANT confirmation ; inventaire en échec → 500, la
+ * fenêtre bloque la suppression (jamais de décompte trompeur). Même contrôle
+ * de propriété que DELETE /api/assets : le bien doit appartenir au compte
+ * courant.
  */
 export async function GET(
   request: NextRequest,

@@ -158,13 +158,12 @@ scenario('L114REC-P', 'Opérations / Agenda CDC V2.0 — recette : portée des s
     // Le bien, son équipement, ses documents et ses éléments d'Agenda sont partis.
     expect(await sql`SELECT 1 FROM assets WHERE id = ${voiture.id}`).toHaveLength(0);
     expect(await sql`SELECT 1 FROM equipments WHERE id = ${equip.id}`).toHaveLength(0);
-    // CONSTAT (décision du PO attendue, voir la fiche de recette) : l'élément d'Agenda du bien SURVIT à la
-    // suppression du bien — seul son lien au bien part. Le modèle unifié `agenda_items` n'est pas emporté par la
-    // cascade (contrairement aux tables historiques `deadlines` / `events`) : aucune référence pendante, mais
-    // l'élément reste dans l'Agenda sans aucun bien.
-    expect(await sql`SELECT 1 FROM agenda_items WHERE id = ${elementVoiture.id}`).toHaveLength(1);
+    // Carte #849 (B2) — constat remplacé par la décision PO (« élément d'Agenda du bien survit sans bien ») :
+    // l'élément d'Agenda qui n'appartenait qu'au bien supprimé est SUPPRIMÉ avec lui ; aucune référence pendante.
+    expect(await sql`SELECT 1 FROM agenda_items WHERE id = ${elementVoiture.id}`).toHaveLength(0);
     expect(await sql`SELECT 1 FROM agenda_asset_links WHERE agenda_item_id = ${elementVoiture.id}`).toHaveLength(0);
-    // L'événement de référence n'est jamais SUPPRIMÉ : il est détaché, ses sources désactivées, et invalidé faute de preuve.
+    // L'événement de référence RELIÉ à celui d'un autre bien n'est pas supprimé (#849 : l'historique de l'autre bien
+    // reste identique) : il est détaché, ses sources désactivées, et invalidé faute de preuve.
     const [etatA] = await sql<Json[]>`
       SELECT invalidated_at IS NOT NULL AS invalide, invalidation_reason AS motif FROM business_operations WHERE id = ${a}`;
     expect(etatA).toMatchObject({ invalide: true });

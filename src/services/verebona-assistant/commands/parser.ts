@@ -591,6 +591,11 @@ function statutDemande(valeur: string): string | null {
     const base = plain(ASSET_STATUS_LABELS[code]);
     if (v === base || v === `${base}e` || v === `${base}s` || v === `${base}es` || v === plain(code).replace(/_/g, ' ')) return code;
   }
+  // #849 : « vendu », « cédé », « archivé » — anciens statuts retirés : sortie du portefeuille = Transmis
+  // (aperçu « En service → Transmis » soumis à confirmation ; la vente reste une Opération de cession).
+  for (const ancien of ['vendu', 'cede', 'archive']) {
+    if (v === ancien || v === `${ancien}e` || v === `${ancien}s` || v === `${ancien}es`) return 'TRANSMIS';
+  }
   return null;
 }
 

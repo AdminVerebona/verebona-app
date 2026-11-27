@@ -31,7 +31,10 @@ const CLIO = bien(7, 'Clio', 'VEHICULE', { subtype: 'Voiture' });
 const MAISON = bien(5, 'Maison', 'IMMOBILIER', { subtype: 'Maison' });
 const SANS_CATEGORIE = bien(6, 'Dépendance', 'IMMOBILIER', { subtype: null });
 const CARGO = bien(8, 'Vélo cargo', 'OBJECT', { objectCategory: 'LEISURE_SPORT' });
-const VENDU = bien(10, 'Twingo', 'VEHICULE', { subtype: 'Voiture', status: 'VENDU' });
+// Carte #849 — règles remplacées dans ce fichier : deux statuts (EN_SERVICE, TRANSMIS) ; « vendu » et « archivé »
+// sont compris comme une sortie du portefeuille (TRANSMIS, aperçu soumis à confirmation) ; un bien TRANSMIS est en
+// consultation seule (sa remise en service passe par sa fiche, quota contrôlé). Fixture : ancien VENDU → TRANSMIS.
+const VENDU = bien(10, 'Twingo', 'VEHICULE', { subtype: 'Voiture', status: 'TRANSMIS' });
 
 const lookup = (biens: Asset[] = [CLIO, MAISON, SANS_CATEGORIE, CARGO, VENDU]): Lookup => ({
   today: () => TODAY,
@@ -55,9 +58,9 @@ describe('L114AA-C01 — phrases reconnues', () => {
   });
 
   it.each([
-    ['Change le statut de la Clio en vendu', 'VENDU'],
-    ['Mets le statut de la Clio à vendue', 'VENDU'],
-    ['Marque la Clio comme vendue', 'VENDU'],
+    ['Change le statut de la Clio en vendu', 'TRANSMIS'],
+    ['Mets le statut de la Clio à vendue', 'TRANSMIS'],
+    ['Marque la Clio comme vendue', 'TRANSMIS'],
     ['Indique la Clio comme transmise', 'TRANSMIS'],
     ['Change le statut de la Clio en en service', 'EN_SERVICE'],
   ])('statut — %s', (phrase, code) => {
@@ -70,7 +73,7 @@ describe('L114AA-C01 — phrases reconnues', () => {
     expect(parseCommand('Change la catégorie de ce bien en appartement', TODAY))
       .toEqual({ command: 'UPDATE_ASSET_CATEGORY', requestedCategory: 'appartement', assetWords: [], assetFromContext: true });
     expect(parseCommand('Marque ce bien comme vendu', TODAY))
-      .toEqual({ command: 'UPDATE_ASSET_STATUS', requestedStatus: 'VENDU', assetWords: [], assetFromContext: true });
+      .toEqual({ command: 'UPDATE_ASSET_STATUS', requestedStatus: 'TRANSMIS', assetWords: [], assetFromContext: true });
     expect(parseCommand('Change la catégorie de en moto', TODAY)).toBeNull();
   });
 
@@ -123,9 +126,9 @@ describe('L114AA-C02 — catégorie : référentiel seulement', () => {
   });
 
   it('une formulation utilisateur du référentiel est acceptée (« auto » = Voiture)', async () => {
-    const a = await resolveDraft(parseCommand('Change la catégorie de la Twingo en auto', TODAY)!, input, lookup());
+    const a = await resolveDraft(parseCommand('Change la catégorie de la Clio en auto', TODAY)!, input, lookup());
     // Déjà « Voiture » : c'est dit, rien n'est préparé.
-    expect(besoin(a)).toBe('La catégorie de Twingo est déjà « Voiture ».');
+    expect(besoin(a)).toBe('La catégorie de Clio est déjà « Voiture ».');
   });
 
   it('catégorie d’une AUTRE famille : refusée, les catégories possibles sont listées', async () => {
@@ -154,14 +157,15 @@ describe('L114AA-C03 — statut : référentiel seulement, archivage exclu', () 
     const a = await resolveDraft(parseCommand('Marque la Clio comme vendue', TODAY)!, input, lookup());
     expect(a).toMatchObject({
       command: 'UPDATE_ASSET_STATUS', targets: [{ type: 'asset', id: 7, label: 'Clio' }],
-      params: { kind: 'asset_status', classifiedAssetId: 7, statusValue: 'VENDU', expectedStatus: 'EN_SERVICE' },
-      preview: 'Modifier « Statut » de Clio : En service → Vendu.',
+      params: { kind: 'asset_status', classifiedAssetId: 7, statusValue: 'TRANSMIS', expectedStatus: 'EN_SERVICE' },
+      preview: 'Modifier « Statut » de Clio : En service → Transmis.',
     });
     expect(effets(a)).toEqual([
       'Bien : Clio',
-      'Statut : En service → Vendu',
+      'Statut : En service → Transmis',
       'Ce bien sort du portefeuille actif : il n’apparaît plus par défaut dans vos listes et vos compteurs.',
       'Ses documents, ses échéances et son historique sont conservés : rien n’est supprimé.',
+      'Il devient consultable seulement : pour le modifier à nouveau, utilisez « Remettre en service » depuis sa fiche.',
       'L’assistant ne le retrouvera plus par son nom : pour revenir en arrière, passez par sa fiche.',
     ]);
   });
@@ -171,18 +175,15 @@ describe('L114AA-C03 — statut : référentiel seulement, archivage exclu', () 
    * VENDU ou TRANSMIS n'est plus une cible de l'assistant (règle existante `core/asset-availability`) — il n'est
    * donc pas joignable par son nom en préproduction. Limite dite dans la fiche de recette.
    */
-  it('retour au portefeuille actif : l’effet le dit', async () => {
+  it('#849 : retour au portefeuille actif d’un bien transmis — action dédiée de la fiche (quota), jamais un plan de l’assistant', async () => {
     const a = await resolveDraft(parseCommand('Change le statut de la Twingo en en service', TODAY)!, input, lookup());
-    expect(a).toMatchObject({ params: { statusValue: 'EN_SERVICE', expectedStatus: 'VENDU' }, preview: 'Modifier « Statut » de Twingo : Vendu → En service.' });
-    expect(effets(a)).toContain('Ce bien revient dans le portefeuille actif.');
-    expect(effets(a)).toContain('Pour revenir en arrière, refaites une demande.');
+    expect(besoin(a)).toBe('Twingo n’est pas modifiable actuellement (bien transmis ou verrouillé par votre offre).');
   });
 
-  it('archiver n’est pas proposé depuis l’assistant', async () => {
+  it('#849 : aucun statut « Archivé » — « archivée » est comprise comme une sortie du portefeuille (Transmis), à confirmer', async () => {
     const d = parseCommand('Marque la Clio comme archivée', TODAY)!;
-    expect(d).toMatchObject({ command: 'UPDATE_ASSET_STATUS', requestedStatus: 'ARCHIVED' });
-    expect(besoin(await resolveDraft(d, input, lookup())))
-      .toBe('L’archivage d’un bien ne se fait pas depuis l’assistant : ouvrez la fiche de Clio.');
+    expect(d).toMatchObject({ command: 'UPDATE_ASSET_STATUS', requestedStatus: 'TRANSMIS' });
+    expect(await resolveDraft(d, input, lookup())).toMatchObject({ preview: 'Modifier « Statut » de Clio : En service → Transmis.' });
   });
 });
 
@@ -193,19 +194,19 @@ describe('L114AA-C04 — jamais un choix au hasard', () => {
     const velos = [bien(8, 'Vélo cargo', 'VEHICULE', { subtype: 'Vélo' }), bien(9, 'Vélo de route', 'VEHICULE', { subtype: 'Vélo' })];
     expect(besoin(await resolveDraft(parseCommand('Marque le vélo comme vendu', TODAY)!, input, lookup(velos))))
       .toMatch(/^Plusieurs biens correspondent : /);
-    const archive = [bien(7, 'Clio', 'VEHICULE', { subtype: 'Voiture', status: 'ARCHIVED' })];
+    const archive = [bien(7, 'Clio', 'VEHICULE', { subtype: 'Voiture', status: 'TRANSMIS' })];
     expect(besoin(await resolveDraft(parseCommand('Marque la Clio comme vendue', TODAY)!, input, lookup(archive))))
-      .toBe('Clio n’est pas modifiable actuellement (bien archivé ou verrouillé par votre offre).');
+      .toBe('Clio n’est pas modifiable actuellement (bien transmis ou verrouillé par votre offre).');
   });
 
   it('statut non compris : la question liste les statuts proposés', async () => {
     expect(besoin(await resolveDraft(parseCommand('Change le statut de la Clio en prioritaire', TODAY)!, input, lookup())))
-      .toBe('Quel statut voulez-vous donner à Clio ? Par exemple : en service, vendu, transmis.');
+      .toBe('Quel statut voulez-vous donner à Clio ? Par exemple : en service, transmis.');
   });
 
   it('statut déjà en place, catégorie déjà en place : c’est dit, rien n’est préparé', async () => {
-    expect(besoin(await resolveDraft(parseCommand('Marque la Twingo comme vendue', TODAY)!, input, lookup())))
-      .toBe('Le statut de Twingo est déjà « Vendu ».');
+    expect(besoin(await resolveDraft(parseCommand('Change le statut de la Clio en en service', TODAY)!, input, lookup())))
+      .toBe('Le statut de Clio est déjà « En service ».');
     expect(besoin(await resolveDraft(parseCommand('Change la catégorie de la Maison en maison', TODAY)!, input, lookup())))
       .toBe('La catégorie de Maison est déjà « Maison ».');
   });
@@ -224,7 +225,7 @@ describe('L114AA-C06 — actions comprises par le sens (bloc PO n° 40, facultat
     expect(un(hint({ fieldChanges: [ch('catégorie de bien', 'appartement')] })))
       .toEqual({ command: 'UPDATE_ASSET_CATEGORY', requestedCategory: 'appartement', assetWords: [], assetFromContext: true });
     expect(un(hint({ targetHint: 'la Clio', fieldChanges: [ch('statut', 'vendu')] })))
-      .toEqual({ command: 'UPDATE_ASSET_STATUS', requestedStatus: 'VENDU', assetWords: ['clio'], assetFromContext: false });
+      .toEqual({ command: 'UPDATE_ASSET_STATUS', requestedStatus: 'TRANSMIS', assetWords: ['clio'], assetFromContext: false });
   });
 
   it('indices écartés : famille, statut hors référentiel, valeur absente, plusieurs champs', async () => {

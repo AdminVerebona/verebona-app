@@ -229,3 +229,55 @@ async function historiser(
     VALUES (${accountId}, ${operationId}, ${eventType}, ${reasonCode}, ${session.actorUserId},
             ${JSON.stringify(before)}::jsonb, ${JSON.stringify(after)}::jsonb, ${session.correlationId})`);
 }
+
+/**
+ * Carte #849 (B2) — Opérations parmi `ids` RÉFÉRENCÉES par un élément qui survit à la suppression d'un bien :
+ * Opération hors de `ids` qui les absorbe (fusion), leur est reliée (relation du graphe, quel que soit son état —
+ * l'historique de l'autre Opération reste identique) ou, tant que l'ancienne colonne existe (avant « Finaliser »
+ * du lot 84A), qui les a pour parent ; élément d'Agenda conservé qui les projette. Lecture. Une Opération ainsi
+ * référencée est CONSERVÉE (détachée du bien, invalidée faute de preuve), jamais supprimée.
+ */
+export async function operationsReferencedBySurvivorsInTx(
+  tx: Pick<DbTx, 'execute'>, ids: readonly number[], deletedAgendaItemIds: readonly number[],
+): Promise<number[]> {
+  if (!ids.length) return [];
+  const liste = `'{${ids.map((x) => Math.trunc(Number(x))).join(',')}}'::bigint[]`;
+  const agenda = `'{${deletedAgendaItemIds.map((x) => Math.trunc(Number(x))).join(',')}}'::int[]`;
+  const [{ present: parentPresent }] = (await tx.execute(sql.raw(LEGACY_PARENT_COLUMN_PROBE_SQL))) as unknown as Array<{ present: boolean }>;
+  const parent = parentPresent ? `OR o2.parent_operation_id = x.id` : '';
+  const r = (await tx.execute(sql.raw(`
+    SELECT DISTINCT x.id FROM unnest(${liste}) AS x(id)
+     WHERE EXISTS (SELECT 1 FROM business_operations o2
+                    WHERE (o2.merged_into_operation_id = x.id ${parent}) AND NOT (o2.id = ANY(${liste})))
+        OR EXISTS (SELECT 1 FROM agenda_items i WHERE i.business_operation_id = x.id AND NOT (i.id = ANY(${agenda})))
+        OR EXISTS (SELECT 1 FROM business_operation_relations r
+                    WHERE (r.from_operation_id = x.id AND NOT (r.to_operation_id = ANY(${liste})))
+                       OR (r.to_operation_id = x.id AND NOT (r.from_operation_id = ANY(${liste}))))`))) as unknown as Array<{ id: unknown }>;
+  return r.map((x) => Number(x.id));
+}
+
+/**
+ * Carte #849 (B2) — suppression définitive d'un bien, volet Opérations, APRÈS le retrait historisé
+ * (`retireDeletedAssetFromOperationsInTx`) : ventilations au bien d'une Opération CONSERVÉE retirées (remplacées,
+ * historisées — jamais reportées sur les autres biens) ; Opérations qui ne visaient que lui SUPPRIMÉES (dépenses,
+ * preuves, liens et historique par la cascade). À appeler AVANT le retrait (ventilations) puis après (suppression) :
+ * voir `deleteAssetCompletely`.
+ */
+export async function supersedeDeletedAssetComponentsInTx(
+  tx: DbTx, p: { accountId: number; componentIds: readonly number[] },
+): Promise<BusinessOperationEvent[]> {
+  if (!p.componentIds.length) return [];
+  const { events } = await withBusinessOperationWriteInTx(tx, [p.accountId], async (session) => {
+    const repo = session.repository(p.accountId);
+    for (const id of p.componentIds) await repo.supersedeFinancialComponent(id, 'ASSET_DELETED');
+    return null;
+  });
+  return events;
+}
+
+export async function deleteExclusiveOperationsInTx(tx: DbTx, p: { accountId: number; operationIds: readonly number[] }): Promise<number> {
+  if (!p.operationIds.length) return 0;
+  const liste = `'{${p.operationIds.map((x) => Math.trunc(Number(x))).join(',')}}'::bigint[]`;
+  const r = (await tx.execute(sql.raw(`DELETE FROM business_operations WHERE account_id = ${Math.trunc(p.accountId)} AND id = ANY(${liste}) RETURNING 1`))) as unknown as unknown[];
+  return r.length;
+}

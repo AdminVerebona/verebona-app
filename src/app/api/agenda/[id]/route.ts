@@ -63,6 +63,13 @@ export async function PUT(req: NextRequest, context: RouteContext) {
     if (refus) return refus;
 
     const { suppliers: suppliersBody, ...body } = await req.json();
+    // #849 (A2) : élément des seuls biens TRANSMIS, ou nouveau lien vers l'un d'eux : refusé.
+    {
+      const { refuserEcritureAgendaBienTransmis } = await import('@/services/agenda/transmitted-scope');
+      const b = (body ?? {}) as Record<string, unknown>;
+      const refusTransmis = await refuserEcritureAgendaBienTransmis({ accountId, itemId: id, assetIds: b.assetIds, equipmentIds: b.equipmentIds, substructureIds: b.substructureIds });
+      if (refusTransmis) return refusTransmis;
+    }
     // Lot 103E : « Fournisseur / intervenant » — validé AVANT toute écriture (élément du compte requis).
     const fournisseurs = await preparerFournisseurs(accountId, suppliersBody, id);
     if (fournisseurs instanceof NextResponse) return fournisseurs;
@@ -108,6 +115,13 @@ export async function DELETE(req: NextRequest, context: RouteContext) {
     // (essai échu, impayé, résilié, rétractation), comme `PUT` ci-dessus.
     const refus = await refuserSiLectureSeule(accountId);
     if (refus) return refus;
+
+    // #849 (A2) : élément des seuls biens TRANSMIS — historique en consultation seule.
+    {
+      const { refuserEcritureAgendaBienTransmis } = await import('@/services/agenda/transmitted-scope');
+      const refusTransmis = await refuserEcritureAgendaBienTransmis({ accountId, itemId: id });
+      if (refusTransmis) return refusTransmis;
+    }
 
     // Lot 113P (#715) : récurrence — `?scope=series` supprime TOUTE la série (sinon : cet événement seul).
     const scope = new URL(req.url).searchParams.get('scope') === 'series' ? 'SERIES' as const : 'OCCURRENCE' as const;

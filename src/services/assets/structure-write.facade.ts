@@ -43,12 +43,13 @@ export interface StructureWriteSession { userId: number | null; currentAccountId
  * fonctionnalité Premium. `null` : permis ; sinon le refus de l'offre.
  */
 export async function structureCreationRefusal(
-  accountId: number, asset: { category: string; subtype?: string | null }, kind: 'room' | 'equipment',
+  accountId: number, asset: { id?: number; category: string; subtype?: string | null }, kind: 'room' | 'equipment',
 ): Promise<{ status: number; code: string; message: string } | null> {
   if (!assetSupportsStructuralFeatures(asset)) {
     return { status: 400, code: 'FORBIDDEN', message: kind === 'room' ? 'Ce type de bien ne supporte pas la gestion des pièces' : 'Ce type de bien ne supporte pas la gestion des équipements' };
   }
-  const refusQuota = await refuserSiModificationBiensSuspendue(accountId);
+  // #849 : bien TRANSMIS (consultation seule) refusé avant le quota.
+  const refusQuota = await refuserSiModificationBiensSuspendue(accountId, asset.id ?? null);
   if (refusQuota) {
     const j = await refusQuota.clone().json().catch(() => ({})) as { code?: string; message?: string };
     return { status: 403, code: j.code ?? 'ASSET_QUOTA_EXCEEDED', message: j.message ?? 'Modification non autorisée' };

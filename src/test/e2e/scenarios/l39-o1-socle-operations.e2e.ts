@@ -502,7 +502,11 @@ scenario('L39-O1', 'Socle des Opérations : schéma, intégrité, concurrence, �
 
   // ── Suppression d'un bien / d'un compte ──────────────────────────────────
 
-  it('F-187 / F-064 / B27 suppression d’un bien : liens retirés et historisés, mono-bien sans source invalidée, multi-biens et Opération encore prouvée survivent', async () => {
+  // Carte #849 (B2) — règle remplacée (lot 39, B27 « mono-bien sans source invalidée, Opération encore prouvée
+  // survit ») : la suppression définitive d'un bien SUPPRIME les Opérations qui ne visent que lui (dépenses,
+  // preuves et historique compris), qu'une autre preuve sans bien les soutienne ou non ; une Opération liée
+  // AUSSI à un autre bien survit, détachée et historisée (inchangé).
+  it('F-187 / F-064 / B27 / #849 suppression d’un bien : Opérations du seul bien supprimées, multi-biens survit détachée et historisée', async () => {
     const { compte, biens, doc } = await base(make, { assets: 2 });
     const [garage, maison] = biens;
     const docMaison = await make.assetFile(compte, { assetId: maison.id });
@@ -517,15 +521,17 @@ scenario('L39-O1', 'Socle des Opérations : schéma, intégrité, concurrence, �
 
     const etat = async (id: number) => (await sql<{ inval: string | null; reason: string | null }[]>`
       SELECT invalidated_at::text AS inval, invalidation_reason AS reason FROM business_operations WHERE id = ${id}`)[0];
-    expect((await etat(monoDoc)).reason).toBe('ASSET_DELETED_NO_SOURCE');
+    expect(await etat(monoDoc)).toBeUndefined();
+    expect(await etat(monoProuvee)).toBeUndefined();
+    for (const t of ['business_operation_sources', 'business_operation_asset_links', 'business_operation_history']) {
+      const [{ n }] = await sql.unsafe<{ n: number }[]>(`SELECT count(*)::int AS n FROM ${t} WHERE operation_id = ANY($1::bigint[])`, [[monoDoc, monoProuvee]] as never[]);
+      expect({ t, n }).toEqual({ t, n: 0 });
+    }
     expect((await etat(multi)).inval).toBeNull();
-    expect((await etat(monoProuvee)).inval).toBeNull();
     const liens = await sql<{ asset_id: number; active: boolean }[]>`SELECT asset_id, active FROM business_operation_asset_links WHERE operation_id = ${multi}`;
     expect(liens).toEqual([{ asset_id: maison.id, active: true }]);
-    const h = await sql<{ e: string }[]>`SELECT event_type AS e FROM business_operation_history WHERE operation_id = ${monoDoc} ORDER BY id`;
-    expect(h.map((x) => x.e)).toEqual(['CREATED', 'TARGET_CHANGED', 'SOURCE_REMOVED', 'INVALIDATED']);
-    const [{ n }] = await sql<{ n: number }[]>`SELECT count(*)::int AS n FROM business_operation_sources WHERE operation_id = ${monoDoc} AND active`;
-    expect(n).toBe(0);
+    const h = await sql<{ e: string }[]>`SELECT event_type AS e FROM business_operation_history WHERE operation_id = ${multi} ORDER BY id`;
+    expect(h.map((x) => x.e)).toContain('TARGET_CHANGED');
   });
 
   it('F-186 / INV-060 suppression du compte : Opérations et lignes filles supprimées par la cascade, sans orphelin', async () => {

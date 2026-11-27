@@ -15,6 +15,7 @@ import { canAddDocument } from '@/services/entitlements.service';
 import { SessionService } from '@/lib/session-service';
 import { s3Client, S3_BUCKET, S3_REGION } from '@/lib/s3-client';
 import { checkAccountStorageQuota, storageQuotaExceededResponse } from '@/lib/storage-quota';
+import { ASSET_READ_ONLY_MESSAGE, isReadOnlyAssetStatus } from '@/lib/asset-status';
 
 // ══════════════════════════════════════════════════════════════════════════
 // LIMITES DE TAILLE ET DE NOMBRE : `@/lib/upload-limits` (APP-PERF-28)
@@ -215,6 +216,13 @@ export async function POST(request: NextRequest) {
           return NextResponse.json(
             { error: 'ASSET_NOT_FOUND', message: 'Bien introuvable ou accès refusé' },
             { status: 404 }
+          );
+        }
+        // #849 (A2) : aucune nouvelle pièce sur un bien TRANSMIS (consultation seule).
+        if (isReadOnlyAssetStatus(asset[0].status)) {
+          return NextResponse.json(
+            { error: 'ASSET_READ_ONLY', code: 'ASSET_READ_ONLY', message: ASSET_READ_ONLY_MESSAGE },
+            { status: 403 }
           );
         }
       }

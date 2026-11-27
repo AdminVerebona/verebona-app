@@ -254,7 +254,7 @@ scenario('L34-TEMP', 'Lot 34 — T2 : demandes d’actions temporelles → donn�
   it('Isolation — autre compte, bien archivé, document supprimé : jamais lus', async () => {
     const c = await compte();
     const polo = await bien(c, 'Polo');
-    const vieille = await bien(c, 'Vieille Clio', 'ARCHIVED');
+    const vieille = await bien(c, 'Vieille Clio', 'TRANSMIS' /* #849 : ARCHIVED retiré */);
     const ok = await echeance(c, [polo], 'Visible', J);
     await echeance(c, [vieille], 'Bien archivé', J);
     await aTraiter(c, { type: 'ASSET', id: vieille }, 'registrationNumber');

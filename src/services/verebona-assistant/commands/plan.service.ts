@@ -39,7 +39,7 @@ import { plain } from '../core/routing-text';
 import { undatedLabel } from '@/lib/agenda/no-deadline';
 import { DEFAULT_NEW_SITUATION } from '@/lib/agenda/situation';
 import { assetDesignationsIn, assetFamilyLabel, getAssetCategories, getAssetFamily, normalizeAssetCategory, toAssetFamilyCode } from '@/lib/asset-taxonomy';
-import { ASSET_STATUSES, ASSET_STATUS_LABELS, normalizeAssetStatus, OUT_OF_PORTFOLIO_ASSET_STATUSES } from '@/lib/asset-status';
+import { ASSET_STATUSES, ASSET_STATUS_LABELS, isReadOnlyAssetStatus, normalizeAssetStatus, OUT_OF_PORTFOLIO_ASSET_STATUSES, type AssetStatus } from '@/lib/asset-status';
 import type { ReferenceEventQuery, ReferenceEventState } from './reference-event-model';
 import type { RubricCode } from '@/lib/referential/v2';
 import { BANKING_CONFIRMATION_LABEL, BANKING_CONFIRMATION_REQUIRED, redactActionsForTrace } from './rich-edits';
@@ -614,6 +614,12 @@ export const DELETION_NOUNS: ReadonlyArray<{ key: string; one: string; many: str
   { key: 'photos', one: 'photo', many: 'photos' },
   { key: 'rooms', one: 'pièce', many: 'pièces' },
   { key: 'equipments', one: 'équipement', many: 'équipements' },
+  // #849 : inventaire complet de la suppression définitive.
+  { key: 'documentVersions', one: 'version de document', many: 'versions de documents' },
+  { key: 'agendaItems', one: 'événement planifié', many: 'événements planifiés' },
+  { key: 'operations', one: 'Opération', many: 'Opérations' },
+  { key: 'expenses', one: 'dépense', many: 'dépenses' },
+  { key: 'exports', one: 'export', many: 'exports' },
 ];
 /** « 12 documents, 1 échéance » — éléments à zéro omis (pure). */
 export function deletionCounts(summary: Record<string, number>): string[] {
@@ -739,15 +745,20 @@ async function resolveAssetDeletion(
   if (!resume) return { needInfo: 'Je n’ai pas trouvé ce bien dans votre compte. Quel bien voulez-vous supprimer ?' };
   const comptes = countsOnly(resume);
   const contenu = deletionCounts(comptes);
+  // #849 : empreinte de l'inventaire présenté — exigée à l'exécution (rattachement survenu entre-temps : rien n'est supprimé).
+  const empreinte = typeof (resume as Record<string, unknown>).fingerprint === 'string' ? String((resume as Record<string, unknown>).fingerprint) : null;
+  const conserves = (resume as { shared?: Record<string, number> }).shared ?? null;
+  const nbConserves = conserves ? Object.values(conserves).reduce((a, b) => a + Number(b ?? 0), 0) : 0;
   return {
     actionId, command: 'DELETE_ASSET', dependsOn: [],
     targets: [{ type: 'asset', id: bien.id, label: nomBien(bien) }],
-    params: { kind: 'asset_delete', assetId: bien.id, expectedSummary: comptes },
+    params: { kind: 'asset_delete', assetId: bien.id, expectedSummary: comptes, ...(empreinte ? { expectedFingerprint: empreinte } : {}) },
     preview: `Supprimer définitivement le bien « ${nomBien(bien)} »${contenu.length ? ` et tout ce qui lui est rattaché : ${contenu.join(', ')}` : ''}.`,
     effects: [
       'Le bien et tout ce qui lui est rattaché seront supprimés définitivement.',
       contenu.length ? `Supprimés avec le bien : ${contenu.join(', ')}.` : 'Aucun document, échéance ni autre élément n’est rattaché à ce bien.',
-      'Pour garder un document, téléchargez-le avant de supprimer le bien.',
+      ...(nbConserves > 0 ? [`Les éléments liés aussi à un autre bien sont conservés (${nbConserves}) : seule leur relation à ce bien disparaît.`] : []),
+      'Pour garder une copie, exportez le ZIP complet depuis la fiche du bien avant de le supprimer.',
       'Cette action est irréversible.',
     ],
   };
@@ -755,7 +766,7 @@ async function resolveAssetDeletion(
 
 // ── Lot 114F (#753, W02 / W27 / W13) : renommer un bien, effacer une caractéristique, rattacher un document ──
 
-const BIEN_NON_MODIFIABLE = (nom: string) => `${nom} n’est pas modifiable actuellement (bien archivé ou verrouillé par votre offre).`;
+const BIEN_NON_MODIFIABLE = (nom: string) => `${nom} n’est pas modifiable actuellement (bien transmis ou verrouillé par votre offre).`;
 
 /** Bien visé par une commande sur sa fiche : désigné, sinon celui du fil / de la page ; jamais choisi au hasard. */
 async function bienAModifier(
@@ -768,7 +779,8 @@ async function bienAModifier(
   if (!r.bien) return { needInfo: question };
   const asset = await lookup.getAssetState(input.accountId, r.bien.id);
   if (!asset) return { needInfo: `Je n’ai pas trouvé ce bien dans votre compte. ${question}` };
-  if (asset.status === 'ARCHIVED' || (asset.lockState && asset.lockState !== 'NONE')) return { needInfo: BIEN_NON_MODIFIABLE(nomBien(asset)) };
+  // #849 : un bien TRANSMIS est en consultation seule (« Remettre en service » depuis sa fiche).
+  if (isReadOnlyAssetStatus(asset.status) || (asset.lockState && asset.lockState !== 'NONE')) return { needInfo: BIEN_NON_MODIFIABLE(nomBien(asset)) };
   return { asset };
 }
 
@@ -805,8 +817,8 @@ async function resolveAssetRename(
 const CATEGORIE_LABEL = 'Catégorie de bien';
 const STATUT_LABEL = 'Statut';
 
-/** Statuts proposés par l'assistant : ceux du référentiel, sauf l'archivage (parcours propre, depuis la fiche). */
-const STATUTS_PROPOSES = ASSET_STATUSES.filter((s) => s !== 'ARCHIVED');
+/** Statuts proposés par l'assistant : ceux du référentiel (#849 : En service, Transmis). */
+const STATUTS_PROPOSES: readonly AssetStatus[] = ASSET_STATUSES;
 const listeStatuts = () => STATUTS_PROPOSES.map((s) => ASSET_STATUS_LABELS[s].toLowerCase()).join(', ');
 
 /**
@@ -920,8 +932,8 @@ function resolveObjectCategory(
 
 /**
  * Passage 114AA (W02) — STATUT d'un bien : un statut du référentiel (`lib/asset-status`), écrit par le service
- * de la fiche. L'archivage n'est pas proposé (il a son propre parcours, depuis la fiche) ; un bien déjà archivé
- * ou verrouillé est refusé plus haut, comme pour toute modification.
+ * de la fiche. #849 : deux statuts (En service, Transmis) ; un bien déjà transmis (consultation seule) ou
+ * verrouillé est refusé plus haut, comme pour toute modification — sa remise en service passe par sa fiche.
  */
 async function resolveAssetStatus(
   draft: Extract<CommandDraft, { command: 'UPDATE_ASSET_STATUS' }>, input: AssistantRequestInput, lookup: CommandLookup, actionId: string,
@@ -929,10 +941,10 @@ async function resolveAssetStatus(
   const cible = await bienAModifier(lookup, input, draft, `Pour quel bien voulez-vous changer « ${STATUT_LABEL} » ?`);
   if ('needInfo' in cible) return cible;
   const asset = cible.asset;
-  if (draft.requestedStatus === 'ARCHIVED') {
-    return { needInfo: `L’archivage d’un bien ne se fait pas depuis l’assistant : ouvrez la fiche de ${nomBien(asset)}.` };
-  }
-  const demande = STATUTS_PROPOSES.find((s) => s === draft.requestedStatus);
+  // #849 : deux statuts. Une demande « vendu » ou « archivé » (anciennes valeurs) vise la sortie du
+  // portefeuille : TRANSMIS ; la vente elle-même reste une Opération de cession.
+  const requis = draft.requestedStatus ? normalizeAssetStatus(draft.requestedStatus) : null;
+  const demande = STATUTS_PROPOSES.find((s) => s === requis);
   if (!demande) return { needInfo: `Quel statut voulez-vous donner à ${nomBien(asset)} ? Par exemple : ${listeStatuts()}.` };
   const actuel = normalizeAssetStatus(asset.status);
   if (actuel === demande) return { needInfo: `Le statut de ${nomBien(asset)} est déjà « ${ASSET_STATUS_LABELS[demande]} ».` };
@@ -950,6 +962,7 @@ async function resolveAssetStatus(
             'Ce bien sort du portefeuille actif : il n’apparaît plus par défaut dans vos listes et vos compteurs.',
             'Ses documents, ses échéances et son historique sont conservés : rien n’est supprimé.',
             // Règle existante de l'assistant : un bien sorti du portefeuille n'est plus une cible (asset-availability).
+            'Il devient consultable seulement : pour le modifier à nouveau, utilisez « Remettre en service » depuis sa fiche.',
             'L’assistant ne le retrouvera plus par son nom : pour revenir en arrière, passez par sa fiche.',
           ]
         : [
@@ -1932,8 +1945,8 @@ async function resolveAssetFieldUpdate(
 
   const asset = await lookup.getAssetState(input.accountId, assetId);
   if (!asset) return { needInfo: 'Je n’ai pas trouvé ce bien dans votre compte.' };
-  if (asset.status === 'ARCHIVED' || (asset.lockState && asset.lockState !== 'NONE')) {
-    return { needInfo: `${nomBien(asset)} n’est pas modifiable actuellement (bien archivé ou verrouillé par votre offre).` };
+  if (isReadOnlyAssetStatus(asset.status) || (asset.lockState && asset.lockState !== 'NONE')) {
+    return { needInfo: `${nomBien(asset)} n’est pas modifiable actuellement (bien transmis ou verrouillé par votre offre).` };
   }
   const section = def.sections[familyOf(asset.category)];
   if (!section) return { needInfo: `« ${def.label} » ne s’applique pas à ${nomBien(asset)}.` };

@@ -341,7 +341,7 @@ scenario('L41-O3a', 'Consolidation T3 déterministe : candidats T1 → Opératio
   it('F-017 / F-101 / point 7 — acte de vente sur bien VENDU : DISPOSAL + PROCEED ; une facture d\'entretien nouvelle sur ce bien reste HOLD (hors périmètre)', async () => {
     const compte = await make.account();
     const auto = await make.asset(compte);
-    await sql`UPDATE assets SET status = 'VENDU' WHERE id = ${auto.id}`;
+    await sql`UPDATE assets SET status = 'TRANSMIS' /* #849 : VENDU retiré */ WHERE id = ${auto.id}`;
     await document(compte, auto.id, [cand({ typeHint: 'DISPOSAL', sourceRoleHint: 'SALE_DOCUMENT', provider: 'M. Acheteur', targetHints: [cible(auto.id)], temporalHints: { realizedDate: '2026-09-01' }, financialHints: [fh('PROCEED', 1000000, { economicDate: '2026-09-01' })] })]);
     const entretien = await document(compte, auto.id, [cand({ targetHints: [cible(auto.id)], financialHints: [fh('REALIZED_COST', 20000)] })]);
     await passer(compte);

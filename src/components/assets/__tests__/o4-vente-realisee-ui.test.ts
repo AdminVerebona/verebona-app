@@ -11,6 +11,14 @@
  * O4-UI-03 déclenchement : seulement une carte de STATUT de bien résolue vers
  *          VENDU / TRANSMIS ; même fenêtre dans la file et la mascotte.
  * O4-UI-04 écriture : valeurs saisies seulement, prix en euros, date ISO.
+ *
+ * Carte #849 (arbitrages PO du 25/11/2026) — règles remplacées : VENDU n'est
+ * plus un statut (converti en TRANSMIS) ; le passage à TRANSMIS est DIRECT,
+ * sans fenêtre demandant date, prix ou cause (`saleDetailsPrompt` → null).
+ * La fiche d'un bien transmis affiche la date ET le prix de vente réalisés
+ * s'ils sont connus (historique d'un ancien VENDU conservé). Le formulaire
+ * (`SaleDetailsForm`) reste rendu fidèlement depuis l'ancien modèle
+ * (`legacySaleDetailsPrompt`), mais n'est plus déclenché.
  */
 import * as React from 'react';
 import { createElement as h } from 'react';
@@ -27,7 +35,7 @@ const { AssetDetailSection, visibleFields } = await import('../AssetDetailSectio
 const { getCommonFields } = await import('../AssetDetailsTab');
 const { SaleDetailsForm } = await import('../SaleDetailsDialog');
 const { saleFollowUpFor } = await import('@/components/to-process/useToProcessResolution');
-const { saleDetailsPatch, saleDetailsPrompt, withoutSaleFields } = await import('@/lib/assets/sale-fields');
+const { saleDetailsPatch, saleDetailsPrompt, legacySaleDetailsPrompt, withoutSaleFields } = await import('@/lib/assets/sale-fields');
 
 const lire = (p: string) => readFileSync(resolve(__dirname, '..', '..', '..', p), 'utf8').replace(/\r\n?/g, '\n');
 
@@ -40,8 +48,8 @@ function fiche(status: string, data: Record<string, unknown> = {}) {
 }
 
 describe('O4-UI-01 fiche du bien : vente réalisée selon le statut (desktop et mobile)', () => {
-  it('VENDU : date de vente et prix de vente réalisé, distincts du prix d\'achat', () => {
-    const html = fiche('VENDU');
+  it('TRANSMIS (ancien VENDU compris, #849) : date de vente et prix de vente réalisé, distincts du prix d\'achat', () => {
+    const html = fiche('TRANSMIS');
     expect(html).toContain('Date de vente / cession');
     expect(html).toContain('Prix de vente réalisé (€)');
     expect(html).toContain('30 septembre 2026');
@@ -50,10 +58,8 @@ describe('O4-UI-01 fiche du bien : vente réalisée selon le statut (desktop et 
     expect(html).not.toContain('Prix souhaité');
   });
 
-  it('TRANSMIS : date seule (cession sans prix)', () => {
-    const html = fiche('TRANSMIS');
-    expect(html).toContain('Date de vente / cession');
-    expect(html).not.toContain('Prix de vente réalisé');
+  it('#849 : VENDU n\'est plus un statut — lu comme TRANSMIS, jamais une case à part', () => {
+    expect(visibleFields(getCommonFields('VEHICULE'), { status: 'VENDU' }).map((f) => f.key)).not.toContain('saleDate');
   });
 
   it('en service : aucun champ de vente', () => {
@@ -64,9 +70,9 @@ describe('O4-UI-01 fiche du bien : vente réalisée selon le statut (desktop et 
   });
 
   it('même composant desktop / mobile : grille responsive (1 colonne sur mobile), toutes familles', () => {
-    expect(fiche('VENDU')).toMatch(/grid grid-cols-1 sm:grid-cols-2/);
+    expect(fiche('TRANSMIS')).toMatch(/grid grid-cols-1 sm:grid-cols-2/);
     for (const famille of ['IMMOBILIER', 'VEHICULE', 'OBJECT']) {
-      expect(visibleFields(getCommonFields(famille), { status: 'VENDU' }).map((f) => f.key), famille).toEqual(expect.arrayContaining(['saleDate', 'salePrice']));
+      expect(visibleFields(getCommonFields(famille), { status: 'TRANSMIS' }).map((f) => f.key), famille).toEqual(expect.arrayContaining(['saleDate', 'salePrice']));
     }
     // La route de la fiche renvoie les deux clés dans la section commune (sections construites par
     // `services/assets/details-sections.ts` depuis le lot 88A : même fonction pour la route et le diagnostic).
@@ -76,7 +82,7 @@ describe('O4-UI-01 fiche du bien : vente réalisée selon le statut (desktop et 
 
 describe('O4-UI-02 fenêtre « Vente enregistrée » / « Transmission enregistrée »', () => {
   const rendu = (status: 'VENDU' | 'TRANSMIS') => renderToStaticMarkup(h(SaleDetailsForm, {
-    followUp: { assetId: 7, assetName: 'Clio', prompt: saleDetailsPrompt(status)! }, onSubmit: () => undefined, onSkip: () => undefined,
+    followUp: { assetId: 7, assetName: 'Clio', prompt: legacySaleDetailsPrompt(status)! }, onSubmit: () => undefined, onSkip: () => undefined,
   }));
 
   it('vente : date et prix réalisés, facultatifs (« Plus tard »), mise en page mobile d\'abord', () => {
@@ -103,9 +109,9 @@ describe('O4-UI-03 déclenchement après une carte « À traiter »', () => {
     ruleCode: 'ASSET-STATUS', question: 'Ce bien a-t-il été vendu ?', proposals: [], target: { label: 'Clio', assetName: 'Clio' }, ...over,
   }) as never;
 
-  it('statut résolu vers VENDU / TRANSMIS → fenêtre ; autre valeur ou autre carte → rien', () => {
-    expect(saleFollowUpFor(carte(), 'VENDU')).toMatchObject({ assetId: 7, assetName: 'Clio', prompt: { status: 'VENDU', askPrice: true } });
-    expect(saleFollowUpFor(carte(), 'TRANSMIS')).toMatchObject({ prompt: { status: 'TRANSMIS', askPrice: false } });
+  it('#849 : passage à TRANSMIS DIRECT — aucune fenêtre demandant date, prix ou cause', () => {
+    expect(saleFollowUpFor(carte(), 'VENDU')).toBeNull();
+    expect(saleFollowUpFor(carte(), 'TRANSMIS')).toBeNull();
     expect(saleFollowUpFor(carte(), 'EN_SERVICE')).toBeNull();
     expect(saleFollowUpFor(carte({ fieldKey: 'insuranceExpiry' }), 'VENDU')).toBeNull();
     expect(saleFollowUpFor(carte({ targetType: 'DOCUMENT' }), 'VENDU')).toBeNull();
@@ -120,14 +126,14 @@ describe('O4-UI-03 déclenchement après une carte « À traiter »', () => {
 
 describe('O4-UI-04 écriture vers la fiche', () => {
   it('valeurs saisies seulement, prix en euros, virgule acceptée ; rien saisi → aucune écriture', () => {
-    const vente = saleDetailsPrompt('VENDU')!;
+    const vente = legacySaleDetailsPrompt('VENDU')!;
     expect(saleDetailsPatch(vente, { date: '2026-09-30', price: '12 000,50' })).toEqual({ fields: { saleDate: '2026-09-30', salePrice: 12000.5 } });
     expect(saleDetailsPatch(vente, { date: '', price: '9000' })).toEqual({ fields: { salePrice: 9000 } });
     expect(saleDetailsPatch(vente, { date: '', price: '' })).toBeNull();
     expect(saleDetailsPatch(vente, { date: '', price: '-3' })).toEqual({ error: 'Prix invalide : Valeur négative non acceptée.' });
     // Transmission : un prix n'est jamais envoyé.
-    expect(saleDetailsPatch(saleDetailsPrompt('TRANSMIS')!, { date: '2026-08-01', price: '5000' })).toEqual({ fields: { saleDate: '2026-08-01' } });
-    expect(saleDetailsPrompt('EN_SERVICE')).toBeNull();
+    expect(saleDetailsPatch(legacySaleDetailsPrompt('TRANSMIS')!, { date: '2026-08-01', price: '5000' })).toEqual({ fields: { saleDate: '2026-08-01' } });
+    for (const st of ['EN_SERVICE', 'TRANSMIS', 'VENDU']) expect(saleDetailsPrompt(st)).toBeNull();
   });
 
   it('transmission acceptée : la vente réalisée de l\'émetteur n\'est pas copiée chez le destinataire', () => {

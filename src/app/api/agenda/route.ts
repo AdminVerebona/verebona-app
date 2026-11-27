@@ -85,6 +85,12 @@ export async function POST(req: NextRequest) {
     if (!title || typeof title !== 'string' || !title.trim()) {
       return NextResponse.json({ error: 'title est requis' }, { status: 400 });
     }
+    // #849 (A2) : aucun rattachement à un bien TRANSMIS (consultation seule).
+    {
+      const { refuserEcritureAgendaBienTransmis } = await import('@/services/agenda/transmitted-scope');
+      const refusTransmis = await refuserEcritureAgendaBienTransmis({ accountId, assetIds, equipmentIds, substructureIds });
+      if (refusTransmis) return refusTransmis;
+    }
 
     // Lot 103E : « Fournisseur / intervenant » (facultatif) — validé AVANT toute écriture :
     // une sélection invalide ne crée ni l'élément, ni une fiche, ni un lien.

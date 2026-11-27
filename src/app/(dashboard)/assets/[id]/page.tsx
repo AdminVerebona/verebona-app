@@ -264,19 +264,39 @@ export default function AssetDetailPage() {
     setRefreshTrigger(prev => prev + 1);
   }, []);
 
-  const handleArchive = useCallback(async () => {
+  // #849 (B1) : suppression définitive — l'empreinte de l'inventaire confirmé est exigée par le serveur.
+  const handleArchive = useCallback(async (inventory: string) => {
     if (!asset) return;
     setIsArchiving(true);
     try {
-      await apiClient.delete(`/api/assets?id=${asset.id}`);
-      toast.success('Bien supprimé');
+      await apiClient.delete(`/api/assets?id=${asset.id}&inventory=${encodeURIComponent(inventory)}`);
+      toast.success('Bien supprimé définitivement');
       apiClient.clearCache();
       router.replace('/assets');
     } catch (err: any) {
-      toast.error(err?.message ?? 'Erreur lors de la suppression');
+      toast.error(err?.code === 'DELETION_INVENTORY_CHANGED'
+        ? 'Le contenu du bien a changé depuis l’affichage : rien n’a été supprimé. Rouvrez la fenêtre pour vérifier le nouvel inventaire.'
+        : (err?.message ?? 'Erreur lors de la suppression'));
       setIsArchiving(false);
     }
   }, [asset, router]);
+
+  // #849 (A2) : « Remettre en service » — refus clair si le quota de biens actifs est plein.
+  const [isReactivating, setIsReactivating] = useState(false);
+  const handleReactivate = useCallback(async () => {
+    if (!asset || isReactivating) return;
+    setIsReactivating(true);
+    try {
+      await apiClient.post(`/api/assets/${asset.id}/reactivate`, {});
+      toast.success('Bien remis en service');
+      apiClient.clearCache();
+      setRefreshTrigger(prev => prev + 1);
+    } catch (err: any) {
+      toast.error(err?.message ?? 'La remise en service a échoué.');
+    } finally {
+      setIsReactivating(false);
+    }
+  }, [asset, isReactivating]);
 
   const handleTabChange = useCallback((tab: string) => {
     // Lot 97C (§7.2) : la recherche locale d'un onglet (`q`) n'est jamais
@@ -291,7 +311,7 @@ export default function AssetDetailPage() {
   );
 
   const showRoomsAndEquipments = useMemo(() => asset ? assetSupportsRooms(asset) : false, [asset]);
-  // Lot 32 (PO-Q11) : transmis / archivé en consultation seule (`asset-status`).
+  // #849 : bien TRANSMIS en consultation seule (`asset-status`) ; suppression définitive toujours possible.
   const isReadOnly = isReadOnlyAssetStatus(asset?.status);
 
   const planType: 'freemium' | 'premium' = useMemo(() => {
@@ -326,8 +346,20 @@ export default function AssetDetailPage() {
       <div className="space-y-4">
         {/* Header */}
         {isReadOnly && (
-          <div className="rounded-lg bg-muted/50 border border-border px-4 py-2.5 text-sm text-muted-foreground">
-            Ce bien est {assetStatusLabel(asset.status).toLowerCase()} — consultation uniquement, sans modification possible.
+          <div className="rounded-lg bg-muted/50 border border-border px-4 py-2.5 text-sm text-muted-foreground flex flex-wrap items-center gap-2 justify-between" data-testid="asset-transmitted-banner">
+            <span>
+              Ce bien est {assetStatusLabel(asset.status).toLowerCase()} : consultation seule, hors de votre portefeuille actif et de votre quota de biens.
+              Ses documents, son historique et ses exports restent accessibles.
+            </span>
+            {/* #849 (A2) : « Remettre en service » — action dédiée, quota de biens actifs contrôlé côté serveur. */}
+            <button
+              type="button"
+              onClick={() => void handleReactivate()}
+              disabled={isReactivating}
+              className="rounded-md border border-border bg-background px-3 py-1.5 text-sm font-medium text-foreground hover:bg-muted disabled:opacity-50"
+            >
+              {isReactivating ? 'Remise en service…' : 'Remettre en service'}
+            </button>
           </div>
         )}
         <div className="flex items-start gap-4">
@@ -377,8 +409,12 @@ export default function AssetDetailPage() {
           <div className="flex items-center gap-2 min-w-0">
             <AdaptiveTabsList
               tabs={isReadOnly ? [
+                // #849 (A2) : bien transmis — consultation des documents, de l'historique et des exports.
                 { value: 'overview', label: 'Aperçu',       icon: LayoutDashboard },
                 { value: 'details',  label: 'Informations', icon: Info },
+                { value: 'documents', label: 'Documents',   icon: FileText },
+                { value: 'agenda',   label: 'Historique',   icon: CalendarDays },
+                { value: 'exports',  label: 'Exports',      icon: Download },
               ] : [
                 { value: 'overview',   label: 'Aperçu',        icon: LayoutDashboard },
                 { value: 'details',    label: 'Informations',  icon: Info },
@@ -483,9 +519,9 @@ export default function AssetDetailPage() {
         onOpenChange={setShowArchiveConfirm}
         assetId={asset.id}
         assetName={asset.name}
-        onConfirm={() => {
+        onConfirm={(inventory) => {
           setShowArchiveConfirm(false);
-          handleArchive();
+          void handleArchive(inventory);
         }}
       />
     </>

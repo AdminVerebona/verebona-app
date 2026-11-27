@@ -459,7 +459,7 @@ async function readRights(accountId: number): Promise<MascotRights> {
   const [ent, [c]] = await Promise.all([
     getEntitlements(accountId),
     rows(
-      `SELECT (SELECT COUNT(*) FROM assets WHERE account_id = $1)::int AS assets,
+      `SELECT (SELECT COUNT(*) FROM assets WHERE account_id = $1 AND deleted_at IS NULL AND status = 'EN_SERVICE')::int AS assets, -- #849 : quota des biens actifs
               (SELECT COUNT(*) FROM asset_files
                 WHERE account_id = $1 AND deleted_at IS NULL
                   AND COALESCE(upload_status, 'COMPLETED') = 'COMPLETED')::int AS documents`,

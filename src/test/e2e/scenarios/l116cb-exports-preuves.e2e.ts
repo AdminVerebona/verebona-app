@@ -17,8 +17,8 @@
  *   L116CB-X07  ASSISTANT et ARCHIVE : « Exporte les données brutes de … » produit la MÊME archive que la route de
  *               l'écran (mêmes entrées) ; son récapitulatif cite chaque pièce une seule fois ; aucune pièce d'une
  *               opération associée portée par un autre bien, ni d'un autre compte ; le bien d'un autre compte est
- *               introuvable. LIMITE : le stockage objet est simulé — les fichiers binaires des pièces ne sont pas
- *               téléchargés dans l'atelier ; la preuve porte sur les entrées et le récapitulatif de l'archive.
+ *               introuvable. LIMITE : le stockage objet est simulé (lecture et dépôt, #849) ; la preuve porte sur les
+ *               entrées et le récapitulatif de l'archive.
  */
 import { expect, it, vi } from 'vitest';
 import { NextRequest } from 'next/server';
@@ -44,6 +44,12 @@ vi.mock('@/services/export-upload.service', async (o) => ({
   uploadExportFile: async (buffer: Buffer, key: string) => { h.depots.push({ key, buffer: Buffer.from(buffer) }); return key; },
 }));
 vi.mock('@/services/exports/export-support-notifier', () => ({ notifySupportOfExportFailure: async () => true }));
+// Carte #849 (C2) : une pièce illisible fait désormais ÉCHOUER l'export (plus d'omission silencieuse) — le
+// stockage objet est donc simulé en LECTURE aussi : chaque pièce rend un contenu dérivé de sa clé.
+vi.mock('@/lib/s3-client', async (o) => ({
+  ...(await o<object>()),
+  s3Client: { send: async (cmd: { input?: { Key?: string } }) => ({ Body: (async function* corps() { yield new TextEncoder().encode(`contenu ${cmd?.input?.Key ?? ''}`); })() }) },
+}));
 vi.mock('@/lib/session-service', () => ({
   SessionService: {
     getSession: async () => ({ userId: h.session.userId, currentAccountId: h.session.currentAccountId }),

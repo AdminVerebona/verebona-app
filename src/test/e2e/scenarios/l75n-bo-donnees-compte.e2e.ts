@@ -62,7 +62,7 @@ scenario('L75N', 'BO Données du compte : six catégories, tiroir, copie, export
     const maison = await make.asset(A, { category: 'IMMOBILIER', name: 'Maison principale', keyCharacteristics: { address1: '12 rue des Lilas', address1__origin: 'USER' } });
     ids.asset = maison.id;
     ids.assetArchived = (await make.asset(A, { category: 'VEHICULE', name: 'Ancienne voiture' })).id;
-    await sql`UPDATE assets SET status = 'ARCHIVED' WHERE id = ${ids.assetArchived}`;
+    await sql`UPDATE assets SET status = 'TRANSMIS' WHERE /* #849 : ARCHIVED retiré → TRANSMIS (consultation seule) */ id = ${ids.assetArchived}`;
     ids.assetDeleted = (await make.asset(A, { category: 'OBJET', name: 'Bien supprimé' })).id;
     await sql`UPDATE assets SET deleted_at = now() WHERE id = ${ids.assetDeleted}`;
 

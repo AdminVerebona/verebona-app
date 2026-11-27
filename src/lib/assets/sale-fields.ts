@@ -20,16 +20,19 @@
 
 import { MONEY_INPUT, parseNumberInput } from '@/lib/number-input';
 
-/** Statuts d'un bien sorti par une cession (vente ou transmission). */
-const DISPOSAL_ASSET_STATUSES = ['VENDU', 'TRANSMIS'] as const;
+/** Statuts d'un bien sorti par une cession — #849 : TRANSMIS seul (VENDU retiré du référentiel). */
+const DISPOSAL_ASSET_STATUSES = ['TRANSMIS'] as const;
 
 export function isDisposalStatus(status: unknown): boolean {
   return typeof status === 'string' && (DISPOSAL_ASSET_STATUSES as readonly string[]).includes(status);
 }
 
-/** Le prix de vente réalisé n'a de sens que pour une vente (TRANSMIS = sans prix). */
+/**
+ * #849 : le prix de vente réalisé (historique d'un ancien VENDU, ou cession
+ * connue) reste affiché pour un bien TRANSMIS — jamais exigé.
+ */
 export function salePriceApplies(status: unknown): boolean {
-  return status === 'VENDU';
+  return status === 'TRANSMIS';
 }
 
 export interface SaleDetailsPrompt {
@@ -41,8 +44,22 @@ export interface SaleDetailsPrompt {
   askPrice: boolean;
 }
 
-/** Fenêtre à proposer après un passage de statut (null : aucune). */
+/**
+ * Fenêtre à proposer après un passage de statut (null : aucune).
+ *
+ * Carte #849 (A3) — règle remplacée (lot 43) : le passage manuel à TRANSMIS
+ * est DIRECT, sans fenêtre demandant date, prix ou cause. La vente reste une
+ * Opération de cession (date, prix, justificatifs si connus). Plus aucune
+ * fenêtre n'est proposée ; le modèle ci-dessous reste lisible pour les
+ * anciennes valeurs, jamais déclenché.
+ */
 export function saleDetailsPrompt(status: unknown): SaleDetailsPrompt | null {
+  void status;
+  return null;
+}
+
+/** Ancien modèle de la fenêtre (lot 43), conservé pour référence — jamais proposé depuis #849. */
+export function legacySaleDetailsPrompt(status: unknown): SaleDetailsPrompt | null {
   if (status === 'VENDU') {
     return {
       status, askPrice: true, dateLabel: 'Date de vente',

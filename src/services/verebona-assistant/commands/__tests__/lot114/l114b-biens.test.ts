@@ -87,10 +87,15 @@ describe('L114B-B03 — W03 : supprimer un bien', () => {
     expect(d).toEqual({ command: 'DELETE_ASSET', assetWords: ['clio'], assetFromContext: false });
     const a = await resolveDraft(d, input, lookup()) as { params: object; preview: string; effects: string[]; targets: unknown[] };
     expect(a.targets).toEqual([{ type: 'asset', id: 7, label: 'Clio' }]);
-    expect(a.params).toEqual({ kind: 'asset_delete', assetId: 7, expectedSummary: { documents: 12, deadlines: 1, events: 0, photos: 3, rooms: 0, equipments: 2 } });
+    // Carte #849 : inventaire complet (versions, éléments d'agenda, Opérations, dépenses, exports) — zéros ici ;
+    // la copie se fait par le ZIP complet de la fiche (l'ancien conseil « téléchargez le document » est remplacé).
+    expect(a.params).toEqual({ kind: 'asset_delete', assetId: 7, expectedSummary: {
+      documents: 12, deadlines: 1, events: 0, photos: 3, rooms: 0, equipments: 2,
+      documentVersions: 0, agendaItems: 0, operations: 0, expenses: 0, exports: 0,
+    } });
     expect(a.preview).toBe('Supprimer définitivement le bien « Clio » et tout ce qui lui est rattaché : 12 documents, 1 échéance, 3 photos, 2 équipements.');
     expect(a.effects).toContain('Cette action est irréversible.');
-    expect(a.effects).toContain('Pour garder un document, téléchargez-le avant de supprimer le bien.');
+    expect(a.effects).toContain('Pour garder une copie, exportez le ZIP complet depuis la fiche du bien avant de le supprimer.');
     expect(a.effects.join(' ')).not.toMatch(/conserv/);
   });
 

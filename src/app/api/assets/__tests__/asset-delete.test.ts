@@ -22,7 +22,8 @@ vi.mock('@/lib/session-service', () => ({
     handleSessionError: () => new Response(null, { status: 401 }),
   },
 }));
-vi.mock('@/services/assets/asset-deletion.service', () => ({ deleteAssetCompletely, getAssetDeletionSummary }));
+class AssetDeletionInventoryChangedError extends Error { inventory = { documents: 13 } }
+vi.mock('@/services/assets/asset-deletion.service', () => ({ deleteAssetCompletely, getAssetDeletionSummary, AssetDeletionInventoryChangedError }));
 vi.mock('@/services/entitlements.service', () => ({}));
 // Lot 85D : la suppression passe par la garde de lecture seule — compte actif ici (le refus est éprouvé par l'e2e L85D-E03).
 vi.mock('@/lib/write-access-guard', () => ({ refuserSiLectureSeule: async () => null }));
@@ -42,10 +43,26 @@ beforeEach(() => {
 });
 
 describe('DELETE /api/assets', () => {
-  it('supprime tout, même si un ancien client transmet keepDocuments/keepEvents', async () => {
-    const res = await DELETE(del('id=5&keepDocuments=true&keepEvents=true'));
+  // Carte #849 (B1) — règle remplacée : la suppression « à l'aveugle » (sans inventaire affiché et confirmé)
+  // est refusée ; l'empreinte de l'inventaire est exigée puis transmise au service (revérifiée sous verrou).
+  it('#849 : sans empreinte d’inventaire confirmé → 428, rien n’est supprimé', async () => {
+    const res = await DELETE(del('id=5'));
+    expect(res.status).toBe(428);
+    expect((await res.json()).code).toBe('DELETION_INVENTORY_REQUIRED');
+    expect(deleteAssetCompletely).not.toHaveBeenCalled();
+  });
+
+  it('#849 : inventaire changé depuis l’affichage → 409 avec le nouvel inventaire', async () => {
+    deleteAssetCompletely.mockImplementationOnce(async () => { throw new AssetDeletionInventoryChangedError('changé'); });
+    const res = await DELETE(del('id=5&inventory=fp1'));
+    expect(res.status).toBe(409);
+    expect(await res.json()).toMatchObject({ code: 'DELETION_INVENTORY_CHANGED', details: { inventory: { documents: 13 } } });
+  });
+
+  it('supprime selon l’inventaire confirmé, même si un ancien client transmet keepDocuments/keepEvents', async () => {
+    const res = await DELETE(del('id=5&keepDocuments=true&keepEvents=true&inventory=fp1'));
     expect(res.status).toBe(200);
-    expect(deleteAssetCompletely).toHaveBeenCalledWith(assetRow);
+    expect(deleteAssetCompletely).toHaveBeenCalledWith(assetRow, { expectedFingerprint: 'fp1' });
     const body = await res.json();
     expect(body.options).toBeUndefined();
     expect(body.blobsScheduled).toBe(2);
@@ -53,7 +70,7 @@ describe('DELETE /api/assets', () => {
 
   it('refuse le bien d\'un autre compte', async () => {
     assetRow = { id: 5, accountId: 99, thumbnailUrl: null };
-    const res = await DELETE(del('id=5'));
+    const res = await DELETE(del('id=5&inventory=fp1'));
     expect(res.status).toBe(403);
     expect(deleteAssetCompletely).not.toHaveBeenCalled();
   });

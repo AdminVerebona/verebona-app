@@ -76,7 +76,7 @@ async function loadProductRuleData(accountId: number, now: Date = new Date()): P
     getEntitlements(accountId, now),
     getTrialState(accountId, now),
     pgClient.unsafe(
-      `SELECT (SELECT count(*)::int FROM assets WHERE account_id = $1 AND deleted_at IS NULL) AS assets,
+      `SELECT (SELECT count(*)::int FROM assets WHERE account_id = $1 AND deleted_at IS NULL AND status = 'EN_SERVICE') AS assets, -- #849 : biens actifs
               (SELECT count(*)::int FROM asset_files WHERE account_id = $1 AND deleted_at IS NULL) AS documents,
               (SELECT count(*)::int FROM account_memberships WHERE account_id = $1 AND status = 'active') AS users`,
       [accountId] as never[],

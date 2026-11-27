@@ -272,7 +272,7 @@ export function AssetOverviewTab({ assetId, onTabChange, readOnly = false }: Pro
   const [data, setData] = useState<OverviewData | null>(null);
   /** Motif d'indisponibilité — distinct d'un échec technique. */
   const [motifIndisponible, setMotifIndisponible] =
-    useState<'ARCHIVED' | 'LOCKED' | 'ERREUR' | null>(null);
+    useState<'LOCKED' | 'ERREUR' | null>(null);
   const [loading, setLoading] = useState(true);
   const [drawerItem, setDrawerItem] = useState<AgendaItemFull | null>(null);
   const [drawerOpen, setDrawerOpen] = useState(false);
@@ -308,7 +308,8 @@ export function AssetOverviewTab({ assetId, onTabChange, readOnly = false }: Pro
       // `details`.
       const err = e as { status?: number; details?: { reason?: string } };
       if (err?.status === 403) {
-        setMotifIndisponible(err.details?.reason === 'ARCHIVED' ? 'ARCHIVED' : 'LOCKED');
+        // #849 : un bien TRANSMIS se consulte (GET autorisé) — seul le verrou de l'offre reste.
+        setMotifIndisponible('LOCKED');
       } else {
         console.error('[overview] chargement impossible :', e);
         setMotifIndisponible('ERREUR');
@@ -369,16 +370,9 @@ export function AssetOverviewTab({ assetId, onTabChange, readOnly = false }: Pro
   }
 
   if (!data) {
-    // Trois situations, trois suites différentes : réactiver, choisir une
-    // offre, ou réessayer. Un message unique les envoyait toutes au même
+    // Deux situations, deux suites différentes (#849 : un bien transmis se
+    // consulte) : choisir une offre, ou réessayer. Un message unique les envoyait toutes au même
     // endroit — nulle part.
-    if (motifIndisponible === 'ARCHIVED') {
-      return (
-        <p className="text-muted-foreground text-sm">
-          Ce bien est archivé. Réactivez-le pour consulter sa vue d&apos;ensemble.
-        </p>
-      );
-    }
     if (motifIndisponible === 'LOCKED') {
       return (
         <p className="text-muted-foreground text-sm">

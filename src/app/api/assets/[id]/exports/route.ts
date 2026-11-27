@@ -119,7 +119,8 @@ export async function POST(
         return NextResponse.json({ error: 'INVALID_EXPORT_TYPE', code: 'INVALID_EXPORT_TYPE', message: EXPORT_ERROR_MESSAGES.INVALID_EXPORT_TYPE }, { status: 400 });
       case 'raw_ready': {
         const dto = issue.dto;
-        return NextResponse.json({ exportId: dto.id, publicId: dto.publicId, status: dto.status, generationStatus: dto.generationStatus, downloadUrl: dto.downloadUrl, downloadZipUrl: dto.downloadZipUrl, pollUrl: dto.pollUrl });
+        // #849 (C2) : archive complète — empreinte et taille, vérifiées par le client après téléchargement.
+        return NextResponse.json({ exportId: dto.id, publicId: dto.publicId, status: dto.status, generationStatus: dto.generationStatus, downloadUrl: dto.downloadUrl, downloadZipUrl: dto.downloadZipUrl, pollUrl: dto.pollUrl, ...(issue.archive ? { archive: issue.archive } : {}) });
       }
       case 'raw_failed':
         return NextResponse.json({
@@ -131,6 +132,8 @@ export async function POST(
           errorMessage: EXPORT_ERROR_MESSAGES.GENERATION_FAILED,
           code: 'GENERATION_FAILED',
           message: EXPORT_ERROR_MESSAGES.GENERATION_FAILED,
+          // #849 (C2) : export incomplet — jamais « prêt » ; détail des éléments manquants.
+          ...(issue.errorCode ? { detailCode: issue.errorCode, details: { detailCode: issue.errorCode, missing: issue.missing ?? [] } } : {}),
         }, { status: 500 });
       case 'refused':
         // `details` : lu par le client (`ApiClientError.details`) — blocages de seuil, pièces ZIP (ALT-002).

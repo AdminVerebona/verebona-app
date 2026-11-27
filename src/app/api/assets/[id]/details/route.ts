@@ -42,9 +42,10 @@ export async function GET(
 
     if (!assetRow) return apiError(404, 'NOT_FOUND', 'Asset not found');
 
-    if (assetRow.status === 'ARCHIVED' || assetRow.lockState && assetRow.lockState !== 'NONE') {
+    // #849 : un bien TRANSMIS se consulte (GET) ; seul le verrou de l'offre ferme la fiche.
+    if (assetRow.lockState && assetRow.lockState !== 'NONE') {
       return NextResponse.json(
-        { error: 'ASSET_UNAVAILABLE', reason: assetRow.status === 'ARCHIVED' ? 'ARCHIVED' : 'LOCKED_BY_PLAN' },
+        { error: 'ASSET_UNAVAILABLE', reason: 'LOCKED_BY_PLAN' },
         { status: 403 }
       );
     }

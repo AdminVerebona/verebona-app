@@ -83,7 +83,25 @@ export const OPERATION_ASSET_DATA_KEYS: ReadonlySet<string> = new Set([
 const NON_OWNERSHIP_VEHICLE = new Set(['LLD', 'LOA', 'PRET_GRATUIT']);
 
 /** Ligne `assets` lue pour les Opérations (row_to_json : `status_changed_at` présent après 0322). */
-export type AssetDataRow = AssetRowJson & { status?: string | null; status_changed_at?: string | null; deleted_at?: string | null };
+export type AssetDataRow = AssetRowJson & {
+  status?: string | null; status_changed_at?: string | null; deleted_at?: string | null;
+  /** #849 : ancien ARCHIVED converti en TRANSMIS par la migration 2013, statut inchangé depuis (`legacyArchivedFlagSql`). */
+  c849_legacy_archived?: boolean | null;
+};
+
+/**
+ * #849 — expression SQL du drapeau `c849_legacy_archived` pour une ligne
+ * `assets` d'alias `a` : trace de la migration 2013 d'un ancien ARCHIVED
+ * (ou DETRUIT) et aucun changement de statut depuis (date de statut
+ * conservée par le déclencheur, antérieure à la trace).
+ */
+export function legacyArchivedFlagSql(a: string): string {
+  return `EXISTS (SELECT 1 FROM canonical_field_writes w
+                   WHERE w.asset_id = ${a}.id AND w.source_type = 'MIGRATION' AND w.source_id = '2013_c849_statuts_bien'
+                     AND w.old_value->>'status' IN ('ARCHIVED', 'DETRUIT')
+                     AND ${a}.status = 'TRANSMIS'
+                     AND (${a}.status_changed_at IS NULL OR ${a}.status_changed_at <= w.created_at))`;
+}
 
 interface AssetDataFact {
   nature: AssetDataNature;
@@ -97,7 +115,7 @@ interface AssetDataFact {
   provider: string | null;
   /** N° de contrat d'assurance — CONTRACT. */
   reference: string | null;
-  /** Cession : vente (VENDU) ou transmission (TRANSMIS). */
+  /** Cession : vente (prix réalisé connu) ou transmission (sans prix) — #849. */
   disposalKind?: 'SALE' | 'TRANSMISSION';
   /**
    * Lot 85E — ACQUISITION, lecture d'ENRICHISSEMENT seulement : date
@@ -190,18 +208,24 @@ export function assetDataFacts(row: AssetDataRow, opts: { enrichment?: boolean }
   }
 
   const statut = String(row.status ?? '').toUpperCase();
-  if (statut === 'VENDU' || statut === 'TRANSMIS') {
+  // Carte #849 : deux statuts — TRANSMIS porte toute sortie du portefeuille
+  // (VENDU retiré, converti par la migration 2013). Un prix de vente réalisé
+  // SAISI (historique d'un ancien VENDU, ou cession connue) fait de la
+  // cession une VENTE chiffrée ; sinon une transmission sans prix (Q5). Un
+  // ancien ARCHIVED converti sans changement de statut depuis
+  // (`c849_legacy_archived`) n'établit AUCUNE cession : pas de faux acte.
+  if ((statut === 'VENDU' || statut === 'TRANSMIS') && row.c849_legacy_archived !== true) {
     const saisie = jour(humanValue(row, 'saleDate'));
     const repli = parisDay(row.status_changed_at ?? null);
+    const prixVente = centimes(humanValue(row, 'salePrice'));
     out.DISPOSAL = {
       nature: 'DISPOSAL',
       date: saisie ?? repli,
       dateBasis: saisie ? 'FIELD' : repli ? 'STATUS_CHANGE' : null,
-      // Q5 : une transmission est une cession sans prix.
-      amountMinor: statut === 'VENDU' ? centimes(humanValue(row, 'salePrice')) : null,
+      amountMinor: prixVente,
       provider: null,
       reference: null,
-      disposalKind: statut === 'VENDU' ? 'SALE' : 'TRANSMISSION',
+      disposalKind: statut === 'VENDU' || prixVente !== null ? 'SALE' : 'TRANSMISSION',
     };
   }
 

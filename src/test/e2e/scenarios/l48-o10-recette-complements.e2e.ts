@@ -179,7 +179,7 @@ scenario('L48-O10b', 'Recette Opérations V1 : cas C29 complémentaires et « Re
 
   it('F-102 / F-101 — frais de vente (facture d’agence citant l’acte) : REALIZED_COST de la même cession que le prix de vente', async () => {
     const { compte, bien } = await nouveauCompte();
-    await sql`UPDATE assets SET status = 'VENDU' WHERE id = ${bien.id}`;
+    await sql`UPDATE assets SET status = 'TRANSMIS' /* #849 : VENDU retiré */ WHERE id = ${bien.id}`;
     const base = { typeHint: 'DISPOSAL' as const, targetHints: [cible(bien.id)], temporalHints: { realizedDate: '2026-09-01' } };
     await k.document(compte, bien.id, [cand({ ...base, sourceRoleHint: 'SALE_DOCUMENT', summary: 'Acte de vente', provider: 'Étude notariale', businessReferences: [ref('OTHER', 'ACTE-102')], financialHints: [fh('PROCEED', 25000000, { economicDate: '2026-09-01' })] })], { type: 'WORKS_INVOICE' });
     await k.passer(compte);

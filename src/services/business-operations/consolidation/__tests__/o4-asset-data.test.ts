@@ -69,10 +69,15 @@ describe('O4 — réalités établies par la fiche (C2, garde anti-blanchiment)'
     expect(assetDataFacts(bien({}, { status: 'VENDU' })).DISPOSAL).toMatchObject({ date: null, dateBasis: null });
   });
 
-  it('O4-04 / Q5 TRANSMIS : cession SANS prix, même si un prix traîne sur la fiche', () => {
+  // Carte #849 — règle remplacée (Q5 « TRANSMIS = cession sans prix ») : VENDU est converti en TRANSMIS
+  // (migration 2013) ; le prix de vente réalisé SAISI d'un bien transmis (historique d'un ancien VENDU, ou
+  // cession connue) est conservé : la cession reste une VENTE chiffrée — sans prix, une transmission.
+  it('O4-04 / #849 TRANSMIS : prix de vente saisi → vente chiffrée ; sans prix → transmission sans prix', () => {
     const f = assetDataFacts(bien({ ...humain('saleDate', '2026-08-01'), ...humain('salePrice', 5000) }, { status: 'TRANSMIS' }));
-    expect(f.DISPOSAL).toMatchObject({ date: '2026-08-01', amountMinor: null, disposalKind: 'TRANSMISSION' });
-    expect(assetDataIdentity(7, f.DISPOSAL!).hints).toEqual([]);
+    expect(f.DISPOSAL).toMatchObject({ date: '2026-08-01', amountMinor: 500000, disposalKind: 'SALE' });
+    const g = assetDataFacts(bien(humain('saleDate', '2026-08-01'), { status: 'TRANSMIS' }));
+    expect(g.DISPOSAL).toMatchObject({ date: '2026-08-01', amountMinor: null, disposalKind: 'TRANSMISSION' });
+    expect(assetDataIdentity(7, g.DISPOSAL!).hints).toEqual([]);
   });
 
   it('O4-05 / Q6 / C23.1 CONTRACT seulement si l\'assureur ET le n° de contrat sont saisis', () => {

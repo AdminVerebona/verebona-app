@@ -82,8 +82,8 @@ const AssetCardWithThumbnail = React.memo(function AssetCardWithThumbnail({
   const [isNavigating, setIsNavigating] = useState(false);
   const Icon = getAssetIcon(asset.category, asset.subtype, asset.name);
   const { signedUrl, isLoading: thumbnailLoading } = useThumbnailUrl(asset.id, displayThumbnailKey(asset));
-  // Lot 32 (PO-Q11) : statuts officiels. Vendu / transmis / archivé = sorti
-  // du portefeuille (grisé) ; transmis / archivé = consultation seule.
+  // #849 : deux statuts officiels. Transmis = sorti du portefeuille (grisé),
+  // consultation seule, hors quota de biens.
   const isOutOfPortfolio = isOutOfPortfolioStatus(asset.status);
   const isArchived = isReadOnlyAssetStatus(asset.status);
   const isLocked = asset.lockState && asset.lockState !== 'NONE';
@@ -189,7 +189,7 @@ const AssetCardWithThumbnail = React.memo(function AssetCardWithThumbnail({
     </div>
   );
 
-  // Sorti du portefeuille (vendu, transmis, archivé) : grisé mais consultable.
+  // Sorti du portefeuille (#849 : transmis) : grisé mais consultable.
   if (isOutOfPortfolio && !isLocked) {
     return (
       <div className="relative group" onClick={handleClick} style={{ cursor: 'pointer' }}>
@@ -290,7 +290,7 @@ function AssetsPageContent() {
 
   const ARCHIVED_STATUSES: readonly string[] = OUT_OF_PORTFOLIO_ASSET_STATUSES;
 
-  // Active assets = non archivés/transmis — utilisés pour les compteurs freemium
+  // Biens actifs (#849 : EN_SERVICE) — seuls comptés dans le quota de biens
   const activeAssets = useMemo(
     () => (Array.isArray(assets) ? assets : []).filter(a => !ARCHIVED_STATUSES.includes(a.status)),
     [assets]
@@ -300,7 +300,7 @@ function AssetsPageContent() {
   const filteredAssets = useMemo(() => {
     let filtered = Array.isArray(assets) ? assets : [];
 
-    // Masquer les archivés/transmis par défaut
+    // Masquer les biens transmis par défaut (filtre « Biens transmis »)
     if (!showArchived) {
       filtered = filtered.filter(a => !ARCHIVED_STATUSES.includes(a.status));
     }
@@ -352,16 +352,19 @@ function AssetsPageContent() {
     setShowAssetDialog(true);
   }, [checkCanCreateAsset, activeAssets.length, isRestricted, entitlements]);
 
-  const handleDeleteAsset = useCallback(async (id: number) => {
+  // #849 (B1) : l'empreinte de l'inventaire affiché et confirmé est exigée par le serveur.
+  const handleDeleteAsset = useCallback(async (id: number, inventory: string) => {
     setIsDeleting(true);
     try {
-      await apiClient.delete(`/api/assets?id=${id}`);
+      await apiClient.delete(`/api/assets?id=${id}&inventory=${encodeURIComponent(inventory)}`);
       setAssets((prev) => prev.filter(a => a.id !== id));
       setDeleteTarget(null);
     } catch (error) {
       console.error('Error deleting asset:', error);
       // L'échec était silencieux : le bien restait affiché sans explication.
-      toast.error('La suppression du bien a échoué. Veuillez réessayer.');
+      toast.error((error as { code?: string })?.code === 'DELETION_INVENTORY_CHANGED'
+        ? 'Le contenu du bien a changé depuis l’affichage : rien n’a été supprimé. Rouvrez la fenêtre pour vérifier le nouvel inventaire.'
+        : 'La suppression du bien a échoué. Veuillez réessayer.');
     } finally {
       setIsDeleting(false);
     }
@@ -561,7 +564,7 @@ function AssetsPageContent() {
           assetId={deleteTarget?.id ?? 0}
           assetName={deleteTarget?.name ?? ''}
           isLoading={isDeleting}
-          onConfirm={() => { if (deleteTarget) void handleDeleteAsset(deleteTarget.id); }}
+          onConfirm={(inventory) => { if (deleteTarget) void handleDeleteAsset(deleteTarget.id, inventory); }}
         />
 
         {/* Fenêtre de refus — extraite dans `WriteBlockedDialog`.
@@ -613,7 +616,7 @@ function AssetsPageContent() {
                     )}
                   </div>
                   <span className="text-sm text-foreground" onClick={() => setPendingShowArchived(!pendingShowArchived)}>
-                    Afficher les biens vendus, transmis ou archivés
+                    Biens transmis
                   </span>
                 </label>
               </div>

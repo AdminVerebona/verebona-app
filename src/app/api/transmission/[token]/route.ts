@@ -883,7 +883,9 @@ export async function POST(
         notifyOperationsEvent(source.accountId, { trigger: 'asset_disposed', assetId: row.assetId });
       }
     } catch (err) {
-      console.error(`[Transmission] Archivage du bien source ${row.assetId} impossible :`, err);
+      // #849 (A3) : bascule en échec APRÈS acceptation — signalée pour reprise ; le bien source reste
+      // EN SERVICE (rien ne prétend qu'il est sorti du portefeuille). La copie du destinataire est acquise.
+      console.error(JSON.stringify({ event: 'transmission.source_status_switch_failed', assetId: row.assetId, transmissionId: row.id, error: (err as Error)?.message?.slice(0, 300) }));
     }
   }
 

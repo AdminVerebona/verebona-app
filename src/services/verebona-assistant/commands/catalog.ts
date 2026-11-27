@@ -594,7 +594,7 @@ export type CommandParams =
   // CREATE_ASSET (W01) : famille et catégorie du référentiel des biens, nom donné par l'utilisateur.
   | { kind: 'asset_create'; category: string; subtype: string | null; objectCategory: string | null; name: string }
   // DELETE_ASSET (W03) : le décompte présenté est figé — s'il change, rien n'est supprimé.
-  | { kind: 'asset_delete'; assetId: number; expectedSummary: Record<string, number> }
+  | { kind: 'asset_delete'; assetId: number; expectedSummary: Record<string, number>; expectedFingerprint?: string }
   // CREATE_SUPPLIER (W18) : `distinctFrom` = fiches proches que la confirmation déclare distinctes.
   | { kind: 'supplier_create'; name: string; phone: string | null; email: string | null; website: string | null; distinctFrom: number[] }
   // UPDATE_SUPPLIER (W19) : `null` = effacement volontaire du champ (protégé des documents).

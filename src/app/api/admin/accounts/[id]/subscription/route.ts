@@ -14,6 +14,7 @@ import {
 } from '@/db/schema';
 import { and, count, desc, eq, isNull, or } from 'drizzle-orm';
 import { requireAdmin } from '@/lib/auth-guards';
+import { QUOTA_COUNTED_ASSET_STATUS } from '@/lib/asset-status';
 
 /**
  * GET /api/admin/accounts/[id]/subscription
@@ -66,10 +67,11 @@ export async function GET(
       .limit(1);
 
     // Consommation reelle
+    // #849 : quota des biens ACTIFS (EN_SERVICE non supprimés).
     const [assetRow] = await db
       .select({ value: count() })
       .from(assets)
-      .where(and(eq(assets.accountId, accountId), isNull(assets.deletedAt)));
+      .where(and(eq(assets.accountId, accountId), isNull(assets.deletedAt), eq(assets.status, QUOTA_COUNTED_ASSET_STATUS)));
 
     const [docRow] = await db
       .select({ value: count() })

@@ -237,10 +237,10 @@ scenario('L114Z2-SENS', 'Passage 114Z2 — actions comprises par le sens : pièc
     expect(faux.r.commandPlan).toBeFalsy();
     expect(await plans(c)).toBe(avant);
     const st = await dire(c, 'Il nous manque la bonne situation de la Clio, elle est vendue, tu peux t’en occuper', [indice('UPDATE', 'asset', 'la Clio', { statut: 'vendu' })]);
-    expect(st.r.commandPlan?.summary).toBe('Modifier « Statut » de Clio : En service → Vendu. Confirmez-vous ?');
+    expect(st.r.commandPlan?.summary).toBe('Modifier « Statut » de Clio : En service → Transmis. Confirmez-vous ?');
     expect(await confirmer(c, st.r.commandPlan!.planId)).toMatchObject({ ok: true, status: 'EXECUTED' });
     const apres = (await sql<Json[]>`SELECT status, deleted_at FROM assets WHERE id = ${clio}`)[0];
-    expect(apres).toMatchObject({ status: 'VENDU', deleted_at: null });
+    expect(apres).toMatchObject({ status: 'TRANSMIS', deleted_at: null }); // #849 : « vendu » → Transmis
   });
 
   it('E05 — deux comptes cloisonnés ; interrupteur coupé ; indice incomplet : aucun plan, rien d’écrit', async () => {

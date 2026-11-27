@@ -74,7 +74,7 @@ export async function PUT(
     }
 
     // Au-dessus du quota après un changement d'offre : modification suspendue (GAP-11).
-    const refusQuota = await refuserSiModificationBiensSuspendue(session.currentAccountId);
+    const refusQuota = await refuserSiModificationBiensSuspendue(session.currentAccountId, assetId);
     if (refusQuota) return refusQuota;
 
     // Lot 114 (#753, W05) : modification par la façade métier — la même que l'Assistant Verebona (validations,

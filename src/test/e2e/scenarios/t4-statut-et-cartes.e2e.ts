@@ -135,16 +135,17 @@ scenario('T4-L14-STATUT', 'Statut des échéances et cartes « À traiter »', (
     const [carte] = (await cartes(compte.id, bien.id, 'ASSET')).filter((c) => !c.resolved_at);
     expect(carte.rule_code).toBe('ASSET-STATUS');
     const [{ p }] = await sql<{ p: Array<{ value: string }> }[]>`SELECT proposals_json AS p FROM to_process_actions WHERE public_id = ${carte.public_id}`;
-    // Lot 32 (PO-Q11) : contrainte 0278 = liste officielle — VENDU admis.
-    expect(p.map((x) => x.value)).toEqual(['VENDU', 'TRANSMIS', 'EN_SERVICE']);
+    // Carte #849 — règle remplacée (lot 32, PO-Q11) : contrainte 2013 = deux statuts — vente → TRANSMIS.
+    expect(p.map((x) => x.value)).toEqual(['TRANSMIS', 'EN_SERVICE']);
     const [{ s: avant }] = await sql<{ s: string }[]>`SELECT status AS s FROM assets WHERE id = ${bien.id}`;
     expect(avant).toBe('EN_SERVICE');
 
     expect(await resolve.resolveArbitration(compte.id, carte.public_id, 'ARCHIVED')).toMatchObject({ ok: false, error: 'INVALID_VALUE' });
     // Ancienne valeur hors liste officielle : refus propre, rien d'écrit.
     expect(await resolve.resolveArbitration(compte.id, carte.public_id, 'EN_PANNE')).toMatchObject({ ok: false, error: 'INVALID_VALUE' });
-    expect(await resolve.resolveArbitration(compte.id, carte.public_id, 'VENDU')).toMatchObject({ ok: true, previousValue: 'EN_SERVICE' });
-    expect((await sql<{ s: string }[]>`SELECT status AS s FROM assets WHERE id = ${bien.id}`)[0].s).toBe('VENDU');
+    expect(await resolve.resolveArbitration(compte.id, carte.public_id, 'VENDU')).toMatchObject({ ok: false });
+    expect(await resolve.resolveArbitration(compte.id, carte.public_id, 'TRANSMIS')).toMatchObject({ ok: true, previousValue: 'EN_SERVICE' });
+    expect((await sql<{ s: string }[]>`SELECT status AS s FROM assets WHERE id = ${bien.id}`)[0].s).toBe('TRANSMIS');
     expect(await resolve.undoArbitration(compte.id, carte.public_id, 'EN_SERVICE')).toMatchObject({ ok: true });
     expect((await sql<{ s: string }[]>`SELECT status AS s FROM assets WHERE id = ${bien.id}`)[0].s).toBe('EN_SERVICE');
 

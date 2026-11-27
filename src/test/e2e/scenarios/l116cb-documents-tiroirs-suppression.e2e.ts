@@ -28,11 +28,11 @@
  *               sont retirées, l'opération est RECALCULÉE et garde ses autres preuves ; une opération qui n'avait que
  *               ce document est invalidée (jamais supprimée) ; le coût de possession ne compte plus la pièce ; avant
  *               la purge rien n'est détruit ; après la purge définitive : aucune référence orpheline
- *   L116CB-D07  AC60 — CONSTAT (aucun changement de comportement : le devenir des opérations d'un bien supprimé n'est
- *               PAS décidé) : à la suppression complète d'un bien, l'opération qui ne tenait qu'à lui est invalidée
- *               (jamais supprimée) ; l'opération multi-biens et l'opération déclarée par l'utilisateur SURVIVENT, la
- *               seconde sans aucun bien ; les événements de l'Agenda du bien survivent sans bien ; l'autre bien, ses
- *               pièces, ses dossiers d'export, la recherche et la liste restent justes ; aucun rappel n'est créé
+ *   L116CB-D07  AC60 — constat remplacé par la décision de la carte #849 (B2) : à la suppression définitive d'un
+ *               bien, ce qui ne tenait QU'À LUI est supprimé (opération fondée sur sa facture, opération déclarée
+ *               pour lui seul, événement de l'Agenda du seul bien) ; l'opération multi-biens et l'événement commun
+ *               SURVIVENT, liés à l'autre bien ; l'autre bien, ses pièces, ses dossiers d'export, la recherche et
+ *               la liste restent justes ; aucun rappel n'est créé
  */
 import { expect, it, vi } from 'vitest';
 import { NextRequest } from 'next/server';
@@ -493,7 +493,7 @@ scenario('L116CB-D', 'Opérations / Agenda #806 volet B §7 — documents, tiroi
   }, 180000);
   // ══ AC60 : suppression d'un bien — constat, aucune décision ══════════════
 
-  it('L116CB-D07 — AC60, constat : suppression complète d’un bien — ce qui est invalidé, ce qui survit sans bien, ce qui reste juste pour l’autre bien (aucun comportement modifié)', async () => {
+  it('L116CB-D07 — AC60 / #849 : suppression définitive d’un bien — l’exclusif supprimé, le partagé survit, l’autre bien reste juste', async () => {
     const compte = await make.account({ plan: 'premium' });
     const autre = await make.account({ plan: 'premium' });
     const voiture = await make.asset(compte, { category: 'VEHICULE', name: 'Clio 806B' });
@@ -539,26 +539,21 @@ scenario('L116CB-D', 'Opérations / Agenda #806 volet B §7 — documents, tiroi
     const { deleteAssetCompletely } = await import('@/services/assets/asset-deletion.service');
     await deleteAssetCompletely({ id: voiture.id, thumbnailUrl: null });
 
-    // (1) INVALIDÉE, jamais supprimée : la ligne existe, avec son motif ; sa fiche n'est plus consultable.
-    const [etatRevision] = await sql<Json[]>`SELECT invalidated_at IS NOT NULL AS invalidee, invalidation_reason AS motif FROM business_operations WHERE id = ${revision}`;
-    expect(etatRevision.invalidee).toBe(true);
-    expect(String(etatRevision.motif)).toContain('ASSET_DELETED');
+    // (1) #849 — règle remplacée (« invalidée, jamais supprimée ») : l'opération du seul bien est SUPPRIMÉE.
+    expect(await sql`SELECT 1 FROM business_operations WHERE id = ${revision}`).toHaveLength(0);
     expect(await fiche(revision)).toBeNull();
     // (2) MULTI-BIENS : elle survit, liée à la maison seule, avec sa pièce et son événement commun.
     const vueMulti = (await fiche(multirisque))!;
     expect(vueMulti.assets.map((a: Json) => a.id)).toEqual([maison.id]);
     expect(vueMulti.documents.map((d: Json) => d.fileId)).toEqual([contratCommun]);
     expect(vueMulti.agendaItems.map((a: Json) => a.id)).toEqual([echeance]);
-    // (3) DÉCLARÉE : elle survit SANS AUCUN BIEN (sa déclaration la fonde) — c'est le cas à trancher.
-    const vuePeinture = (await fiche(peinture))!;
-    expect(vuePeinture.assets).toEqual([]);
-    expect(vuePeinture.declarations.map((d: Json) => d.text)).toEqual(['Faire repeindre la Clio 806B']);
-    // ÉVÉNEMENTS : aucun n'est supprimé ; celui de la voiture seule reste dans l'Agenda SANS BIEN ; le commun garde la maison.
+    // (3) DÉCLARÉE pour la voiture seule : « cas à trancher » tranché par #849 — supprimée avec le bien.
+    expect(await sql`SELECT 1 FROM business_operations WHERE id = ${peinture}`).toHaveLength(0);
+    // ÉVÉNEMENTS : celui de la voiture seule est supprimé avec elle ; le commun garde la maison ; celui de la maison intact.
     const liensBiens = async (itemId: number) => (await sql<{ asset_id: number }[]>`SELECT asset_id FROM agenda_asset_links WHERE agenda_item_id = ${itemId} ORDER BY asset_id`).map((l) => l.asset_id);
-    expect(await sql`SELECT 1 FROM agenda_items WHERE id IN (${controle}, ${echeance}, ${ramonage})`).toHaveLength(3);
-    expect(await liensBiens(controle)).toEqual([]);
+    expect(await sql`SELECT 1 FROM agenda_items WHERE id = ${controle}`).toHaveLength(0);
+    expect(await sql`SELECT 1 FROM agenda_items WHERE id IN (${echeance}, ${ramonage})`).toHaveLength(2);
     expect(await liensBiens(echeance)).toEqual([maison.id]);
-    expect(await sql<Json[]>`SELECT to_char(start_date, 'YYYY-MM-DD') AS d FROM agenda_items WHERE id = ${controle}`).toEqual([{ d: '2026-03-01' }]);
     // Les pièces de la voiture sont parties avec elle ; celles de la maison sont intactes.
     expect(await sql`SELECT 1 FROM asset_files WHERE id = ${factureVoiture} AND deleted_at IS NULL`).toHaveLength(0);
     expect(await sql`SELECT 1 FROM asset_files WHERE id = ${contratCommun} AND deleted_at IS NULL`).toHaveLength(1);
@@ -567,8 +562,7 @@ scenario('L116CB-D', 'Opérations / Agenda #806 volet B §7 — documents, tiroi
     expect(await dossierMaison()).toEqual(maisonAvant);
     const route = await import('@/app/api/evenements-reference/route');
     const liste = await (await route.GET(new NextRequest('http://x/api/evenements-reference'))).json() as Json;
-    expect(liste.items.map((i: Json) => i.id).sort((a: number, b: number) => a - b)).toEqual([multirisque, peinture].sort((a, b) => a - b));
-    expect(liste.items.find((i: Json) => i.id === peinture).assets).toEqual([]);
+    expect(liste.items.map((i: Json) => i.id)).toEqual([multirisque]);
     expect((await sql<{ n: number }[]>`SELECT count(*)::int AS n FROM notification_outbox WHERE account_id = ${compte.id}`)[0].n).toBe(rappelsAvant);
     expect(await sql`SELECT 1 FROM business_operation_asset_links l WHERE l.account_id = ${compte.id} AND l.active AND NOT EXISTS (SELECT 1 FROM assets a WHERE a.id = l.asset_id)`).toHaveLength(0);
     const { auditOperationGraph } = await import('@/services/business-operations/graph/store');

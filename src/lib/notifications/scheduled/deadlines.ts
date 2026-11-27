@@ -50,6 +50,7 @@ import { sql } from 'drizzle-orm';
 import { db, pgClient } from '@/db';
 import { emit } from '../event-service';
 import { resolveRecipients } from '../recipient-resolver';
+import { agendaItemHiddenByTransmittedAssetsSql } from '@/services/agenda/transmitted-scope';
 import {
   DEADLINE_REMINDER_DATE_CHANGE_COOLDOWN_MS, DEADLINE_REMINDER_KEY_PREFIX, DEADLINE_REMINDER_STUCK_AFTER_MS,
   DEADLINE_REMINDER_WRITE_DELAY_MS, LEGACY_DEADLINE_KEY_PREFIX,
@@ -116,13 +117,16 @@ async function coverForRecipient(accountId: number, userId: number, o: {
            AND NOT EXISTS (SELECT 1 FROM agenda_items i WHERE i.id = r.agenda_item_id AND i.account_id = r.account_id
                             AND i.start_date = r.due_date AND i.home_category = 'action'
                             -- Lot 114V (#742) : « A eu lieu » — le rappel en file est annulé (plus rien à venir).
-                            AND i.situation IS DISTINCT FROM 'A_EU_LIEU')`);
+                            AND i.situation IS DISTINCT FROM 'A_EU_LIEU'
+                            -- #849 (A2) : élément des seuls biens TRANSMIS — rappel en file annulé.
+                            AND NOT ${sql.raw(agendaItemHiddenByTransmittedAssetsSql('i'))})`);
 
       const candidats = rows<{ id: number; due: string; nature: string | null }>(await tx.execute(sql`
         SELECT i.id, to_char(i.start_date, 'YYYY-MM-DD') AS due, i.occurrence_nature AS nature
           FROM agenda_items i
          WHERE i.account_id = ${accountId} AND i.home_category = 'action'
            AND i.situation IS DISTINCT FROM 'A_EU_LIEU'
+           AND NOT ${sql.raw(agendaItemHiddenByTransmittedAssetsSql('i'))}
            AND i.start_date BETWEEN ${today}::date AND ${last}::date
            AND (${idsCsv}::text IS NULL OR i.id = ANY(string_to_array(${idsCsv}::text, ',')::int[]))
            AND (i.start_date > ${today}::date OR i.start_time IS NULL OR i.start_time > ${clock}::time)

@@ -714,6 +714,7 @@ export function computeTco(input: TcoInput): TcoResult {
 
   // Cession effective : Opération DISPOSAL réalisée (date), sinon fiche.
   const cessions = ops.filter((o) => o.typeCode === 'DISPOSAL' && o.status === 'REALIZED');
+  // #849 : TRANSMIS porte toute sortie du portefeuille (VENDU converti par la migration 2013).
   const disposedStatus = input.assetStatus === 'VENDU' || input.assetStatus === 'TRANSMIS';
   const disposed = cessions.length > 0 || disposedStatus;
   const dateCessionOp = latest(cessions.map((o) => o.realizedDate ?? o.startDate));

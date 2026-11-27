@@ -28,6 +28,7 @@
  * reçoit aucun NOUVEAU lien (`ASSET_LOCKED`) ; ses liens existants restent.
  */
 import { sql, type SQL } from 'drizzle-orm';
+import { assetWritableSql } from '@/lib/asset-status';
 import {
   currentSelection, diffLinks, levelChanged, linkKey, principalColumns, provenanceOf, resolveSelection, assertSelectionKnown,
   isAttaching, TargetSelectionError,
@@ -79,7 +80,7 @@ async function readActiveLinks(x: TargetsExecutor, accountId: number, fileId: nu
 
 /**
  * Catalogue des cibles DU COMPTE nécessaires (identifiants demandés et
- * actuels). Biens non supprimés ; `writable` : ni archivé, ni verrouillé.
+ * actuels). Biens non supprimés ; `writable` : ni transmis (#849), ni verrouillé.
  */
 async function readCatalog(x: TargetsExecutor, accountId: number, ids: { assets: number[]; rooms: number[]; equipments: number[] }): Promise<TargetCatalog> {
   const eq = ids.equipments.length ? await q(x, sql`
@@ -96,7 +97,7 @@ async function readCatalog(x: TargetsExecutor, accountId: number, ids: { assets:
      WHERE s.id = ANY(${intArray(roomIds)})`) : [];
   const assetIds = [...new Set([...ids.assets, ...eq.map((e) => Number(e.asset_id)), ...rooms.map((r) => Number(r.asset_id))])];
   const assets = assetIds.length ? await q(x, sql`
-    SELECT a.id, a.name, (a.status IS DISTINCT FROM 'ARCHIVED' AND COALESCE(a.lock_state, 'NONE') = 'NONE') AS writable
+    SELECT a.id, a.name, ${sql.raw(assetWritableSql('a'))} AS writable
       FROM assets a WHERE a.account_id = ${accountId} AND a.deleted_at IS NULL AND a.id = ANY(${intArray(assetIds)})`) : [];
   return {
     assets: new Map(assets.map((a) => [Number(a.id), { id: Number(a.id), name: String(a.name ?? ''), writable: a.writable === true }])),
@@ -190,7 +191,7 @@ export const TARGET_OPTIONS_MAX_ASSETS = 200;
 /** Cibles proposées : biens non supprimés du compte (archivés ou verrouillés signalés), pièces et équipements de chacun. */
 export async function listTargetOptions(x: TargetsExecutor, accountId: number): Promise<TargetOptionGroup[]> {
   const assets = await q(x, sql`
-    SELECT a.id, a.name, a.category, (a.status IS DISTINCT FROM 'ARCHIVED' AND COALESCE(a.lock_state, 'NONE') = 'NONE') AS writable
+    SELECT a.id, a.name, a.category, ${sql.raw(assetWritableSql('a'))} AS writable
       FROM assets a WHERE a.account_id = ${accountId} AND a.deleted_at IS NULL
      ORDER BY lower(a.name), a.id LIMIT ${TARGET_OPTIONS_MAX_ASSETS}`);
   const ids = assets.map((a) => Number(a.id));

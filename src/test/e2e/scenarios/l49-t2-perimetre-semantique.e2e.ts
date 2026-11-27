@@ -110,7 +110,7 @@ scenario('L49-T2SEM', 'Lot 49 — T2 : périmètre sémantique, STRONG / WEAK, o
     expect(await candidatToujoursValide(b.id, 'business_source', cand)).toBe(false);
     // Sans bien de reprise : une opération liée à un bien n'est jamais relue.
     expect(await readBusinessSource(a.id, `operation:${opId}`, { assetIds: [] })).toBeNull();
-    await sql`UPDATE assets SET status = 'ARCHIVED' WHERE id = ${cupra.id}`;
+    await sql`UPDATE assets SET status = 'TRANSMIS' WHERE /* #849 : ARCHIVED retiré → TRANSMIS (consultation seule) */ id = ${cupra.id}`;
     expect(await candidatToujoursValide(a.id, 'business_source', cand)).toBe(false);
     // Aucun bien disponible : les opérations du bien archivé ne sont pas exposées.
     const { listBusinessSources } = await import('@/services/verebona-assistant/canonical/business-sources');

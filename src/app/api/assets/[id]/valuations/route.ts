@@ -102,7 +102,7 @@ export async function POST(
     if (!assetRow) return apiError(404, 'NOT_FOUND', 'Asset not found');
 
     // Au-dessus du quota après un changement d'offre : modification suspendue (GAP-11).
-    const refusQuota = await refuserSiModificationBiensSuspendue(session.currentAccountId);
+    const refusQuota = await refuserSiModificationBiensSuspendue(session.currentAccountId, assetId);
     if (refusQuota) return refusQuota;
 
     let body: { value?: number | null; date?: string | null; mode?: string | null; source?: 'USER' | 'AI' };

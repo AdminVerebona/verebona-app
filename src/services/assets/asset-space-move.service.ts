@@ -317,7 +317,7 @@ async function run(p: MoveRequest, o: { mode: 'preview' } | { mode: 'apply'; fin
       // 5. Quotas du compte cible APRÈS déplacement (mêmes règles de
       //    décompte que l'affichage et les gardes de création).
       const [{ n: biens }] = await rows<{ n: number }>(tx, sql`
-        SELECT count(*)::int AS n FROM assets WHERE account_id = ${p.targetAccountId} AND deleted_at IS NULL`);
+        SELECT count(*)::int AS n FROM assets WHERE account_id = ${p.targetAccountId} AND deleted_at IS NULL AND status = 'EN_SERVICE'`); // #849 : biens actifs
       const [{ n: docs }] = await rows<{ n: number }>(tx, sql`
         SELECT count(*)::int AS n FROM asset_files
          WHERE account_id = ${p.targetAccountId} AND deleted_at IS NULL AND (upload_status = 'COMPLETED' OR upload_status IS NULL)`);

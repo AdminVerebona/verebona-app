@@ -55,7 +55,7 @@ scenario('L32-T2U', 'Lot 32 — T2 UNDERSTAND, fallback général de compréhens
     const maison = await bien(c, 'Maison Lyon', { category: 'IMMOBILIER', subtype: 'Maison' });
     const polo = await bien(c, 'Polo');
     const cupra = await bien(c, 'Cupra');
-    await bien(c, 'Clio', { status: 'ARCHIVED' });
+    await bien(c, 'Clio', { status: 'TRANSMIS' /* #849 : ARCHIVED retiré */ });
     await fichier(c, cupra.id, 'Assurance Cupra');
     const replay = await useRecordings([]);
     // Un fil existe (la clarification y est enregistrée, comme dans l'application).

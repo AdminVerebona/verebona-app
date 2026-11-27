@@ -7,17 +7,20 @@
  * STATUT DU BIEN (ASSET-STATUS, D-15)
  *
  * Un événement historique « vente » créé (manuel ou T4, `writeAgendaItem`)
- * ne change jamais le statut du bien : il le PROPOSE. Lot 32 (PO-Q11) :
- * statuts officiels EN_SERVICE, VENDU, TRANSMIS, ARCHIVED (`asset-status`) —
- * ARCHIVED relève du parcours d'archivage, jamais d'une carte :
- *   · sale  (Vente / transmission) → VENDU, TRANSMIS ;
+ * ne change jamais le statut du bien : il le PROPOSE (#849 : toujours soumis
+ * à confirmation explicite, même si le document paraît certain). Carte #849 :
+ * deux statuts officiels EN_SERVICE, TRANSMIS (`asset-status`) :
+ *   · sale  (Vente / transmission) → TRANSMIS (la vente reste une Opération
+ *     de cession) ;
  *   · claim (Sinistre)             → aucune carte : la liste officielle n'a
  *     plus de statut « en réparation » ni « détruit » (« pas besoin de
  *     maintenance etc. »).
  * Le statut actuel est présenté comme valeur actuelle ; déjà égal à l'une
  * des propositions, aucune carte. Écrivain `ASSET_STATUS_WRITER` : bien du
- * compte, non supprimé, ni archivé ni verrouillé ; valeur de la liste ;
- * annulation = statut précédent restauré (colonne jamais nulle).
+ * compte, non supprimé, ni transmis ni verrouillé ; valeur de la liste ;
+ * annulation = statut précédent restauré (colonne jamais nulle) — un retour
+ * EN_SERVICE d'un bien transmis contrôle le quota de biens actifs sous verrou
+ * (#849 : jamais de dépassement par une annulation).
  * ══════════════════════════════════════════════════════════════════════════
  */
 import { and, eq, isNull, sql } from 'drizzle-orm';
@@ -42,13 +45,12 @@ const ASSET_STATUS_FIELD = 'status';
 // ── Statut du bien (D-15) ───────────────────────────────────────────────────
 
 /**
- * Statuts qu'une carte peut poser : la liste officielle (lot 32, PO-Q11) hors
- * ARCHIVED (parcours d'archivage). La contrainte `assets_status_check` est
- * alignée sur cette liste (migration 0278) ; `allowedAssetStatuses` la relit
- * en base par sécurité (base pas encore migrée : valeurs non admises jamais
- * proposées).
+ * Statuts qu'une carte peut poser : la liste officielle (#849 : EN_SERVICE,
+ * TRANSMIS). La contrainte `assets_status_check` est alignée sur cette liste
+ * (migration 2013) ; `allowedAssetStatuses` la relit en base par sécurité
+ * (base pas encore migrée : valeurs non admises jamais proposées).
  */
-export const USER_SETTABLE_ASSET_STATUSES = ASSET_STATUSES.filter((s) => s !== 'ARCHIVED');
+export const USER_SETTABLE_ASSET_STATUSES: readonly string[] = ASSET_STATUSES;
 
 /**
  * Correspondance D-15, par ordre de préférence ; les deux premières valeurs
@@ -56,9 +58,9 @@ export const USER_SETTABLE_ASSET_STATUSES = ASSET_STATUSES.filter((s) => s !== '
  * (aucun statut officiel ne le décrit).
  */
 export const ASSET_STATUS_BY_EVENT: Readonly<Record<string, ReadonlyArray<{ value: string; label: string; confidence: number }>>> = {
+  // #849 : une seule sortie du portefeuille — Transmis (vendu, donné, hérité…).
   sale: [
-    { value: 'VENDU', label: 'Vendu', confidence: 0.8 },
-    { value: 'TRANSMIS', label: 'Transmis (donné, hérité…)', confidence: 0.6 },
+    { value: 'TRANSMIS', label: 'Transmis (vendu, donné, hérité…)', confidence: 0.8 },
   ],
 };
 
@@ -72,7 +74,7 @@ let admisCache: { values: Set<string>; at: number } | null = null;
  */
 async function allowedAssetStatuses(client: DbClient = db): Promise<Set<string>> {
   if (admisCache && Date.now() - admisCache.at < 5 * 60_000) return admisCache.values;
-  let values = new Set<string>([...USER_SETTABLE_ASSET_STATUSES, 'ARCHIVED']);
+  let values = new Set<string>([...USER_SETTABLE_ASSET_STATUSES]);
   try {
     const rows = await (client as unknown as typeof db).execute(sql`
       SELECT pg_get_constraintdef(oid) AS def FROM pg_constraint
@@ -87,11 +89,24 @@ async function allowedAssetStatuses(client: DbClient = db): Promise<Set<string>>
   return values;
 }
 
-/** Bien modifiable du compte : existant, non supprimé, ni archivé ni verrouillé. */
-async function writableAsset(client: DbClient, assetId: number, accountId: number): Promise<{ status: string } | null> {
+/**
+ * Bien modifiable du compte : existant, non supprimé, ni transmis ni
+ * verrouillé. #849 : un bien TRANSMIS n'admet que son retour EN_SERVICE, et
+ * seulement si le quota de biens actifs le permet — décompte sous le verrou
+ * du quota du compte, pris dans la transaction de la résolution / annulation.
+ */
+async function writableAsset(client: DbClient, assetId: number, accountId: number, value?: unknown): Promise<{ status: string } | null> {
   const [a] = await client.select({ status: assets.status, lockState: assets.lockState }).from(assets)
     .where(and(eq(assets.id, assetId), eq(assets.accountId, accountId), isNull(assets.deletedAt))).limit(1);
-  if (!a || a.status === 'ARCHIVED' || (a.lockState && a.lockState !== 'NONE')) return null;
+  if (!a || (a.lockState && a.lockState !== 'NONE')) return null;
+  if (a.status === 'TRANSMIS' || a.status === 'ARCHIVED') {
+    if (value !== 'EN_SERVICE') return null;
+    const { countQuotaAssetsIn, lockAssetQuota } = await import('@/services/assets/asset-quota-lock');
+    const { canCreateAsset } = await import('@/services/entitlements.service');
+    const runner = client as unknown as Parameters<typeof lockAssetQuota>[0];
+    await lockAssetQuota(runner, accountId);
+    if (!(await canCreateAsset(accountId, await countQuotaAssetsIn(runner, accountId))).allowed) return null;
+  }
   return { status: a.status };
 }
 
@@ -100,7 +115,7 @@ export const ASSET_STATUS_WRITER: FieldWriter = {
   fieldKey: ASSET_STATUS_FIELD,
   validate: (v) => typeof v === 'string' && (USER_SETTABLE_ASSET_STATUSES as readonly string[]).includes(v),
   // Bien du compte, modifiable, et valeur admise par la contrainte en base.
-  check: async (client, assetId, accountId, value) => (await writableAsset(client, assetId, accountId)) !== null
+  check: async (client, assetId, accountId, value) => (await writableAsset(client, assetId, accountId, value)) !== null
     && (await allowedAssetStatuses(client)).has(value as string),
   read: async (client, assetId, accountId) => {
     const [a] = await client.select({ v: assets.status }).from(assets)
@@ -121,7 +136,7 @@ export const ASSET_STATUS_WRITER: FieldWriter = {
 async function notifyAssetStatusChanged(accountId: number, assetId: number, status: unknown): Promise<void> {
   try {
     const { notifyOperationsEvent } = await import('@/services/business-operations/consolidation/queue');
-    notifyOperationsEvent(accountId, { trigger: status === 'VENDU' || status === 'TRANSMIS' ? 'asset_disposed' : 'asset_updated', assetId });
+    notifyOperationsEvent(accountId, { trigger: status === 'TRANSMIS' ? 'asset_disposed' : 'asset_updated', assetId });
   } catch (e) {
     console.error(`[to-process] statut du bien ${assetId} : Opérations non notifiées :`, (e as Error).message);
   }

@@ -126,6 +126,12 @@ export async function DELETE(
     if (!isAdmin && file.accountId !== accountId) {
       return accessErrorResponse('not-found', requestId, { code: 'FILE_NOT_FOUND', message: 'Document introuvable ou supprimé.' });
     }
+    // #849 (A2) : document des seuls biens TRANSMIS — consultation seule.
+    if (!isAdmin) {
+      const { refuserSiDocumentDeBienTransmis } = await import('@/lib/asset-read-only-guard');
+      const refusTransmis = await refuserSiDocumentDeBienTransmis(fileId, accountId);
+      if (refusTransmis) return refusTransmis;
+    }
 
     // Check if already deleted
     if (file.deletedAt) {

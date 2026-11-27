@@ -3,22 +3,24 @@ import { emitBusinessEvent } from '@/services/verebona-assistant/events/business
 import { normalizeAssetCategory } from '@/lib/asset-taxonomy';
 import { db } from '@/db';
 import { assets } from '@/db/schema';
-import { eq, like, and, lt, desc, count, isNull, notInArray } from 'drizzle-orm';
+import { eq, like, and, lt, desc, isNull, notInArray } from 'drizzle-orm';
 import { parsePaginationParams, buildPaginationResponse, getCursorId } from '@/lib/pagination';
 import { apiError } from '@/lib/api-errors';
 import { SessionService } from '@/lib/session-service';
 import { canModifyAssets } from '@/services/entitlements.service';
 import { refuserSiLectureSeule } from '@/lib/write-access-guard';
 import { checkAssetCreationAllowed, createAssetForAccount, deleteAssetForAccount } from '@/services/assets/asset-write.facade';
+import { AssetDeletionInventoryChangedError } from '@/services/assets/asset-deletion.service';
 import { effectiveThumbnailUrl, loadDefaultAssetPhotos } from '@/services/assets/default-asset-photo';
 import { isValidObjectCategory } from '@/types/domain';
 import { ACCEPTED_ASSET_CATEGORY_CODES, getAssetCategories } from '@/lib/asset-taxonomy';
-import { ASSET_STATUSES, OUT_OF_PORTFOLIO_ASSET_STATUSES } from '@/lib/asset-status';
+import { ASSET_READ_ONLY_MESSAGE, ASSET_STATUSES, OUT_OF_PORTFOLIO_ASSET_STATUSES, isReadOnlyAssetStatus } from '@/lib/asset-status';
+import { countQuotaAssetsIn } from '@/services/assets/asset-quota-lock';
 
 // Lot 30 : familles du référentiel (`asset-taxonomy`) — proposées + anciennes encore stockées.
 const VALID_CATEGORIES: readonly string[] = ACCEPTED_ASSET_CATEGORY_CODES;
-// Lot 32 (PO-Q11) : liste officielle EN_SERVICE, VENDU, TRANSMIS, ARCHIVED —
-// la même que la contrainte en base (migration 0278).
+// Carte #849 : deux statuts officiels EN_SERVICE, TRANSMIS — la même liste que
+// la contrainte en base (migration 2013).
 const VALID_STATUSES: readonly string[] = ASSET_STATUSES;
 const VALID_OBJECT_CATEGORIES: readonly string[] = getAssetCategories('OBJECT').map((c) => c.value);
 
@@ -120,8 +122,8 @@ export async function GET(request: NextRequest) {
         conditions.push(eq(assets.status, status));
       }
     } else if (!includeArchived) {
-      // Par défaut, les biens sortis du portefeuille (vendus, transmis,
-      // archivés) n'apparaissent ni dans la liste ni dans les sélecteurs.
+      // Par défaut, les biens sortis du portefeuille (#849 : transmis)
+      // n'apparaissent ni dans la liste ni dans les sélecteurs.
       conditions.push(notInArray(assets.status, [...OUT_OF_PORTFOLIO_ASSET_STATUSES]));
     }
 
@@ -247,14 +249,16 @@ export async function PUT(request: NextRequest) {
       // La lecture, l'export et la suppression restent ouverts — c'est par la
       // que l'utilisateur redescend sous sa limite.
       // ══════════════════════════════════════════════════════════════════════
-      const [assetCountRow] = await db
-        .select({ value: count() })
-        .from(assets)
-        .where(and(eq(assets.accountId, session.currentAccountId), isNull(assets.deletedAt)));
+      // #849 (A2) : bien TRANSMIS = consultation seule stricte — toute écriture
+      // refusée (« Remettre en service » : POST /api/assets/[id]/reactivate).
+      if (isReadOnlyAssetStatus(existingAsset[0].status)) {
+        return apiError(403, 'ASSET_READ_ONLY', ASSET_READ_ONLY_MESSAGE, { status: 'TRANSMIS' });
+      }
 
+      // #849 : quota des biens ACTIFS (EN_SERVICE non supprimés), décompte central.
       const modifyDecision = await canModifyAssets(
         session.currentAccountId,
-        assetCountRow?.value ?? 0,
+        await countQuotaAssetsIn(db, session.currentAccountId),
       );
       if (!modifyDecision.allowed) {
         return apiError(
@@ -387,7 +391,7 @@ export async function PUT(request: NextRequest) {
     // établies par les données structurées du bien réévaluées.
     if (session.currentAccountId && [status, purchaseDate, purchasePriceCents, keyCharacteristics].some((v) => v !== undefined)) {
       const { notifyOperationsEvent } = await import('@/services/business-operations/consolidation/queue');
-      notifyOperationsEvent(session.currentAccountId, { trigger: status === 'VENDU' || status === 'TRANSMIS' ? 'asset_disposed' : 'asset_updated', assetId });
+      notifyOperationsEvent(session.currentAccountId, { trigger: status === 'TRANSMIS' ? 'asset_disposed' : 'asset_updated', assetId });
     }
     return NextResponse.json(updatedAsset[0], { status: 200 });
   } catch (error) {
@@ -455,17 +459,34 @@ export async function DELETE(request: NextRequest) {
     const refus = await refuserSiLectureSeule(session.currentAccountId);
     if (refus) return refus;
 
+    // #849 (B1) : aucune suppression AVEUGLE — l'empreinte de l'inventaire affiché et
+    // confirmé (GET …/deletion-summary) est exigée, puis recalculée sous verrou.
+    const inventory = searchParams.get('inventory')?.trim() || null;
+    if (!inventory) {
+      return apiError(428, 'DELETION_INVENTORY_REQUIRED',
+        'L’inventaire du bien doit être affiché et confirmé avant sa suppression définitive : rien n’a été supprimé.');
+    }
+
     // Lot 114B (#753, M21) : suppression définitive par la façade métier, partagée avec l'Assistant.
-    const { blobsScheduled } = await deleteAssetForAccount(
-      { accountId: existingAsset[0].accountId!, userId: session.userId },
-      existingAsset[0],
-    );
+    let resultat: Awaited<ReturnType<typeof deleteAssetForAccount>>;
+    try {
+      resultat = await deleteAssetForAccount(
+        { accountId: existingAsset[0].accountId!, userId: session.userId },
+        existingAsset[0],
+        { expectedFingerprint: inventory },
+      );
+    } catch (e) {
+      if (e instanceof AssetDeletionInventoryChangedError) {
+        return apiError(409, 'DELETION_INVENTORY_CHANGED', e.message, { inventory: e.inventory as unknown as Record<string, unknown> });
+      }
+      throw e;
+    }
 
     return NextResponse.json(
       {
-        message: 'Asset deleted successfully',
+        message: resultat.alreadyDeleted ? 'Asset already deleted or does not exist' : 'Asset deleted successfully',
         assetId,
-        blobsScheduled,
+        blobsScheduled: resultat.blobsScheduled,
       },
       { status: 200 }
     );
@@ -504,6 +525,11 @@ export async function PATCH(request: NextRequest) {
     // Lot 85D : statut ou nom modifié — refusé en lecture seule.
     const refus = await refuserSiLectureSeule(session.currentAccountId);
     if (refus) return refus;
+    // #849 (A2) : bien TRANSMIS en consultation seule — « Remettre en service » est une action dédiée
+    // (POST /api/assets/[id]/reactivate, quota contrôlé).
+    if (isReadOnlyAssetStatus(existing.status)) {
+      return apiError(403, 'ASSET_READ_ONLY', ASSET_READ_ONLY_MESSAGE, { status: 'TRANSMIS' });
+    }
 
     let body: Record<string, unknown>;
     try {

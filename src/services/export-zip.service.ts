@@ -1,6 +1,11 @@
 /**
  * Service d'assemblage ZIP pour les exports
  *
+ * Carte #849 (C2) : plus aucune pièce ignorée en silence — un objet du
+ * stockage absent ou illisible fait ÉCHOUER la génération
+ * (`ExportIncompleteError`), jamais un ZIP incomplet présenté comme prêt. Le
+ * ZIP COMPLET d'un bien (portée `complete`) : `exports/complete-archive.ts`.
+ *
  * Export brut — `isPremium` vaut `isPremiumPlan(accounts.plan_type)`, vrai pour
  * toute offre (Standard, Premium, Premium Duo) : le ZIP structuré est donc
  * celui de tous les abonnés ; le ZIP à plat ne sert qu'à un compte sans offre
@@ -27,22 +32,51 @@ import { occupancyUsageLabel } from '@/lib/assets/occupancy';
 import { displayDocumentTitle } from '@/lib/documents/document-title-rules';
 import { downloadFilename, makeUniqueNamer } from '@/lib/download-filename';
 
-async function downloadFromS3(s3Key: string, bucket?: string | null): Promise<Buffer | null> {
-  try {
-    const command = new GetObjectCommand({
-      Bucket: bucket || S3_BUCKET,
-      Key: s3Key,
-    });
-    const response = await s3Client.send(command);
-    if (!response.Body) return null;
-    const chunks: Uint8Array[] = [];
-    const stream = response.Body as AsyncIterable<Uint8Array>;
-    for await (const chunk of stream) chunks.push(chunk);
-    return Buffer.concat(chunks);
-  } catch (err) {
-    console.error('[ExportZip] Failed to download from S3:', s3Key, err);
-    return null;
+/**
+ * Carte #849 (C2) : lecture STRICTE d'un objet du stockage — lève si l'objet
+ * est absent, vide ou illisible (motif dans le message). Plus aucun « objet
+ * illisible → ignoré » : un ZIP incomplet n'est jamais présenté comme prêt.
+ */
+export async function readStorageObject(s3Key: string, bucket?: string | null): Promise<Buffer> {
+  const command = new GetObjectCommand({
+    Bucket: bucket || S3_BUCKET,
+    Key: s3Key,
+  });
+  const response = await s3Client.send(command);
+  if (!response.Body) throw new Error(`objet vide ou absent (${s3Key})`);
+  const chunks: Uint8Array[] = [];
+  const stream = response.Body as AsyncIterable<Uint8Array>;
+  for await (const chunk of stream) chunks.push(chunk);
+  return Buffer.concat(chunks);
+}
+
+/** #849 (C2) : pièces attendues absentes ou illisibles — la génération échoue (jamais « prête »). */
+export class ExportIncompleteError extends Error {
+  readonly code = 'EXPORT_INCOMPLETE' as const;
+  constructor(public readonly missing: Array<{ category: string; id: number; motif: string }>) {
+    super(`Export incomplet : ${missing.length} élément(s) attendu(s) illisible(s) ou absent(s) du stockage.`);
+    this.name = 'ExportIncompleteError';
   }
+}
+
+/** Collecteur des manquants d'une génération (sélection du tiroir, dossiers). */
+function strictReader() {
+  const missing: Array<{ category: string; id: number; motif: string }> = [];
+  return {
+    missing,
+    async read(category: string, id: number, s3Key: string, bucket?: string | null): Promise<Buffer | null> {
+      try {
+        return await readStorageObject(s3Key, bucket);
+      } catch (err) {
+        console.error('[ExportZip] objet illisible :', s3Key, err);
+        missing.push({ category, id, motif: 'OBJET_ILLISIBLE' });
+        return null;
+      }
+    },
+    assertComplete() {
+      if (missing.length) throw new ExportIncompleteError(missing);
+    },
+  };
 }
 
 function sanitizeFilename(name: string): string {
@@ -266,15 +300,21 @@ function buildRecapTxt(snapshot: AssetSnapshot): string {
   return lines.join('\n');
 }
 
+/** #849 : récapitulatif lisible du bien (repris par l'archive complète). */
+export function buildRecapForSnapshot(snapshot: AssetSnapshot): string {
+  return buildRecapTxt(snapshot);
+}
+
 // ─── Export brut STANDARD : ZIP à plat (fichiers seuls) ───────────────────────
 
 async function buildFlatZip(snapshot: AssetSnapshot): Promise<Buffer> {
   const zip = new JSZip();
   const uniqueName = makeUniqueNamer();
+  const lecteur = strictReader();
 
   const addFile = async (doc: DocumentRef) => {
     if (!doc.s3Key || doc.isWebLink) return;
-    const buf = await downloadFromS3(doc.s3Key, doc.s3Bucket);
+    const buf = await lecteur.read('documents', doc.id, doc.s3Key, doc.s3Bucket);
     if (!buf) return;
     zip.file(uniqueName(documentEntryName(doc)), buf);
   };
@@ -282,6 +322,7 @@ async function buildFlatZip(snapshot: AssetSnapshot): Promise<Buffer> {
   for (const doc of snapshot.documents) {
     await addFile(doc);
   }
+  lecteur.assertComplete();
 
   return Buffer.from(await zip.generateAsync({ type: 'nodebuffer', compression: 'DEFLATE' }));
 }
@@ -304,6 +345,10 @@ function brutView(manifest: ExportManifest, snapshot: AssetSnapshot): AssetSnaps
 async function buildStructuredZip(manifest: ExportManifest, fullSnapshot: AssetSnapshot): Promise<Buffer> {
   const zip = new JSZip();
   const snapshot = brutView(manifest, fullSnapshot);
+  const lecteur = strictReader();
+  // #849 : une pièce attendue sans objet de stockage est un MANQUANT, jamais ignorée.
+  for (const d of snapshot.documents) if (!d.isWebLink && !d.s3Key) lecteur.missing.push({ category: 'documents', id: d.id, motif: 'OBJET_SANS_CLE' });
+  for (const ph of snapshot.photos) if (!ph.s3Key) lecteur.missing.push({ category: 'photos', id: ph.id, motif: 'OBJET_SANS_CLE' });
 
   // recap_donnees.txt en racine
   zip.file('recap_donnees.txt', buildRecapTxt(snapshot));
@@ -321,8 +366,8 @@ async function buildStructuredZip(manifest: ExportManifest, fullSnapshot: AssetS
     for (const [folderName, docs] of Object.entries(grouped)) {
       for (const doc of docs) {
         if (!doc.s3Key) continue;
-        const buf = await downloadFromS3(doc.s3Key, doc.s3Bucket);
-        if (!buf) continue;
+        const buf = await lecteur.read('documents', doc.id, doc.s3Key, doc.s3Bucket);
+        if (!buf) continue; // manquant consigné : la génération échoue plus bas (#849)
         zip.file(uniqueName(documentEntryName(doc), `documents/${folderName}`), buf);
       }
     }
@@ -337,12 +382,13 @@ async function buildStructuredZip(manifest: ExportManifest, fullSnapshot: AssetS
     let idx = 1;
     for (const photo of sorted) {
       if (!photo.s3Key) continue;
-      const buf = await downloadFromS3(photo.s3Key, photo.s3Bucket);
-      if (!buf) continue;
+      const buf = await lecteur.read('photos', photo.id, photo.s3Key, photo.s3Bucket);
+      if (!buf) continue; // manquant consigné : la génération échoue plus bas (#849)
       const filename = `photo_${idx++}${photo.isPrimary ? '_principale' : ''}.jpg`;
       photosFolder.file(filename, buf);
     }
   }
+  lecteur.assertComplete();
 
   return Buffer.from(await zip.generateAsync({ type: 'nodebuffer', compression: 'DEFLATE' }));
 }
@@ -381,14 +427,16 @@ export async function buildExportZip(
       grouped[folder].push(doc);
     }
     const uniqueName = makeUniqueNamer();
+    const lecteur = strictReader();
     for (const [folderName, docs] of Object.entries(grouped)) {
       for (const doc of docs) {
         if (!doc.s3Key) continue;
-        const buf = await downloadFromS3(doc.s3Key, doc.s3Bucket);
-        if (!buf) continue;
+        const buf = await lecteur.read('documents', doc.id, doc.s3Key, doc.s3Bucket);
+        if (!buf) continue; // manquant consigné : la génération échoue plus bas (#849)
         docsFolder.file(uniqueName(documentEntryName(doc), folderName), buf);
       }
     }
+    lecteur.assertComplete();
   }
 
   return Buffer.from(await zip.generateAsync({ type: 'nodebuffer', compression: 'DEFLATE' }));

@@ -142,7 +142,7 @@ scenario('L100E-A-TRAITER-FAMILLES', '« À traiter » : publiabilité de toutes
     const f = await make.assetFile(compte, { assetId: vivant.id });
     // Statut du bien proposé (« vendu ? ») : l'utilisateur le change lui-même ensuite.
     expect((await upsert({ accountId: compte.id, targetType: 'ASSET', targetId: vivant.id, fieldKey: 'status', actionKind: 'ARBITRATE', ruleCode: 'ASSET-STATUS',
-      proposals: [{ value: 'VENDU', label: 'Vendu', confidence: 0.8 }, { value: 'EN_SERVICE', label: 'Inchangé : en service', confidence: 0, isCurrentValue: true }] })).status).toBe('CREATED');
+      proposals: [{ value: 'TRANSMIS', label: 'Transmis', confidence: 0.8 }, { value: 'EN_SERVICE', label: 'Inchangé : en service', confidence: 0, isCurrentValue: true }] })).status).toBe('CREATED');
     // Événement de référence fusionné depuis : délégué au contrôle de sa famille.
     const [{ id: op }] = await sql<{ id: number }[]>`INSERT INTO business_operations (account_id, status) VALUES (${compte.id}, 'REALIZED') RETURNING id`;
     const [{ id: op2 }] = await sql<{ id: number }[]>`INSERT INTO business_operations (account_id, status) VALUES (${compte.id}, 'REALIZED') RETURNING id`;
@@ -160,7 +160,7 @@ scenario('L100E-A-TRAITER-FAMILLES', '« À traiter » : publiabilité de toutes
     await sql`UPDATE agenda_items SET start_date = '2026-12-02' WHERE id = ${item.id}`;
     await sql`UPDATE equipments SET asset_id = ${vivant.id} WHERE id = ${eq}`;
     await sql`UPDATE supplier_review_items SET status = 'resolved', resolved_at = now() WHERE supplier_id = ${fr}`;
-    await sql`UPDATE assets SET status = 'VENDU' WHERE id = ${vivant.id}`;
+    await sql`UPDATE assets SET status = 'TRANSMIS' WHERE id = ${vivant.id}`; // #849 : VENDU retiré
     await sql`UPDATE business_operations SET merged_into_operation_id = ${op2}, invalidated_at = now(), invalidation_reason = 'MERGED' WHERE id = ${op}`;
     // Réévaluation AVANT AFFICHAGE : plus rien à demander (la carte « technique » reste retenue, invisible).
     expect(await vu(compte)).toEqual({ regles: [], total: 0, pastille: 0 });
@@ -202,7 +202,7 @@ scenario('L100E-A-TRAITER-FAMILLES', '« À traiter » : publiabilité de toutes
     // Valeurs de l'UTILISATEUR intactes (aucune écriture de l'objet).
     expect((await sql`SELECT to_char(start_date, 'YYYY-MM-DD') AS d FROM agenda_items WHERE id = ${item.id}`)[0].d).toBe('2026-12-02');
     expect((await sql`SELECT asset_id AS a FROM equipments WHERE id = ${eq}`)[0].a).toBe(vivant.id);
-    expect((await sql`SELECT status AS s FROM assets WHERE id = ${vivant.id}`)[0].s).toBe('VENDU');
+    expect((await sql`SELECT status AS s FROM assets WHERE id = ${vivant.id}`)[0].s).toBe('TRANSMIS');
     // « Non applicable » jamais rouvert ; blocage technique jamais fermé par le nettoyage (retenté par sa famille).
     expect(await ferme(cGarde.id)).toEqual({ open: false, reason: 'NOT_APPLICABLE' });
     const cTechnique = (await carteDe('AGENDA_ITEM', technique.id, 'DATA-AGENDA-DATE'))!;

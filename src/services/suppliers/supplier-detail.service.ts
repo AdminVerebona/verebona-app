@@ -59,6 +59,7 @@
 import { pgClient } from '@/db';
 import { documentTitleColumnsSql, documentTitleOf } from '@/lib/documents/document-title-source';
 import { documentTypeLabelOrNull } from '@/lib/referential/user-facing-labels';
+import { assetOpenableSql } from '@/lib/asset-status';
 import {
   SUPPLIER_SECTION_PAGE_MAX, SUPPLIER_SECTION_PAGE_SIZE, SUPPLIER_VIA_EVENT_ROLES, maskIban, supplierViaEventContext, type SupplierSection,
 } from '@/lib/suppliers/supplier-fiche-config';
@@ -153,7 +154,8 @@ export interface SupplierDetail {
 }
 
 /** Bien ouvrable : ni archivé, ni verrouillé par l'offre (règle de la fiche bien). */
-const BIEN_DISPONIBLE = (a: string) => `(${a}.status IS DISTINCT FROM 'ARCHIVED' AND coalesce(${a}.lock_state, 'NONE') = 'NONE')`;
+// #849 : un bien TRANSMIS s'ouvre en consultation — seul le verrou de l'offre ferme la fiche.
+const BIEN_DISPONIBLE = (a: string) => assetOpenableSql(a);
 
 const jour = (v: unknown): string | null => {
   if (v == null) return null;

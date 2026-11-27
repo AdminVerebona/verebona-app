@@ -62,7 +62,7 @@ scenario('L71D-SRCH', 'Lot 71D — équipements et pièces recherchés et propos
     c = { id: a.id, ownerUserId: a.ownerUserId };
     ids.lyon = await bien(c, 'Maison Lyon');
     ids.annecy = await bien(c, 'Maison Annecy');
-    ids.archive = await bien(c, 'Chalet archivé', 'ARCHIVED');
+    ids.archive = await bien(c, 'Chalet archivé', 'TRANSMIS' /* #849 : ARCHIVED retiré */);
     ids.supprime = await bien(c, 'Studio supprimé');
     await sql`UPDATE assets SET deleted_at = now() WHERE id = ${ids.supprime}`;
 

@@ -217,7 +217,8 @@ describe('L113A — carte « À quel bien rattacher ce document ? »', () => {
     const slots = lire('src/services/to-process/document-slots.ts');
     const check = slots.slice(slots.indexOf('export const ASSET_LINK_SLOT'), slots.indexOf('async read(client, accountId, fileId)', slots.indexOf('export const ASSET_LINK_SLOT')));
     expect(check).toMatch(/assetWritableOfAccount/);
-    expect(slots).toMatch(/IS DISTINCT FROM 'ARCHIVED'/);
+    // #849 : le statut en lecture seule est désormais TRANSMIS (ARCHIVED retiré du référentiel, migration 2013).
+    expect(slots).toMatch(/IS DISTINCT FROM 'TRANSMIS'/);
     // Écriture automatique (T3) inchangée.
     const debut = slots.indexOf('export const ASSET_LINK_SLOT');
     const auto = slots.slice(slots.indexOf('async writeAuto', debut), slots.indexOf('async writeUser', debut));

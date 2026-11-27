@@ -286,7 +286,16 @@ export const EXECUTORS: Record<PlannedAction['command'], Executor> = {
       [p.assetId, ctx.accountId] as never[],
     )) as unknown as Array<{ id: number; thumbnailUrl: string | null }>;
     if (!bien) return refuse(action, 'Bien introuvable ou hors de votre compte.');
-    await deleteAssetForAccount({ accountId: ctx.accountId, userId: ctx.userId }, bien);
+    // #849 : empreinte de l'inventaire présenté recalculée sous verrou — écart → rien n'est supprimé.
+    const { AssetDeletionInventoryChangedError } = await import('@/services/assets/asset-deletion.service');
+    try {
+      await deleteAssetForAccount({ accountId: ctx.accountId, userId: ctx.userId }, bien, { expectedFingerprint: p.expectedFingerprint ?? null });
+    } catch (e) {
+      if (e instanceof AssetDeletionInventoryChangedError) {
+        return ko(action, `Le contenu de « ${resume.name} » a changé depuis l’aperçu : rien n’a été supprimé. Refaites votre demande.`);
+      }
+      throw e;
+    }
     ctx.recordUndo?.({ actionId: action.actionId, reversible: false, reason: 'suppression définitive d’un bien' });
     return { actionId: action.actionId, status: 'SUCCESS', message: `Bien « ${resume.name} » supprimé définitivement, avec tout son contenu.`, entity: null };
   },
@@ -389,7 +398,7 @@ export const EXECUTORS: Record<PlannedAction['command'], Executor> = {
     if (etat.version !== p.expectedVersion) return conflit(action, STRUCTURE_CHANGED_SINCE_PREVIEW);
     // Même garde que la route : modification suspendue au-dessus du quota de biens (GAP-11).
     const { refuserSiModificationBiensSuspendue } = await import('@/lib/asset-quota-guard');
-    const suspendu = await refuserSiModificationBiensSuspendue(ctx.accountId);
+    const suspendu = await refuserSiModificationBiensSuspendue(ctx.accountId, etat.assetId); // #849 : bien transmis refusé
     if (suspendu) return refuse(action, ((await suspendu.json().catch(() => ({}))) as { message?: string }).message ?? 'Modification non autorisée.');
     const { updateEquipmentForAccount } = await import('@/services/assets/structure-write.facade');
     const res = await updateEquipmentForAccount({ userId: ctx.userId, currentAccountId: ctx.accountId }, etat.assetId, p.equipmentId, { name: p.equipmentName },
@@ -423,7 +432,7 @@ export const EXECUTORS: Record<PlannedAction['command'], Executor> = {
     }
     // Même garde que la route : modification suspendue au-dessus du quota de biens (GAP-11).
     const { refuserSiModificationBiensSuspendue } = await import('@/lib/asset-quota-guard');
-    const suspendu = await refuserSiModificationBiensSuspendue(ctx.accountId);
+    const suspendu = await refuserSiModificationBiensSuspendue(ctx.accountId, etat.assetId); // #849 : bien transmis refusé
     if (suspendu) return refuse(action, ((await suspendu.json().catch(() => ({}))) as { message?: string }).message ?? 'Modification non autorisée.');
     const { body } = equipmentDiff(etat, p.requested, p.roomId, p.newAssetId);
     if (Object.keys(body).length === 0) return ko(action, 'Cet équipement a déjà ces valeurs : rien n’a été modifié.');
