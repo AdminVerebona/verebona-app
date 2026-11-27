@@ -207,6 +207,9 @@ const STEP_UP_ALLOWED_DIRS = [
   'src/app/api/users/me/security/', 'src/app/api/users/me/password/', 'src/app/api/users/me/change-password/',
   'src/app/api/users/me/email-change/', 'src/app/api/users/me/deletion/', 'src/app/api/users/me/sessions/',
   'src/app/api/users/me/auth-identities/', 'src/lib/auth/', 'src/services/account/voluntary-deletion.service.ts',
+  // Carte #876 : opération de SÉCURITÉ réservée au SUPER_ADMIN (exemption MFA des comptes de revue des stores) —
+  // réauthentification forte exigée par la carte ; aucune fonction métier.
+  'src/app/api/admin/accounts/[id]/app-review/route.ts',
 ];
 describe('L110B-ARCH-4 aucun step-up pour une fonction métier', () => {
   it('requireFreshReauth / getReauthState / requireReauth / requireSecurityStepUp uniquement dans les opérations de sécurité', () => {

@@ -1152,6 +1152,10 @@ export const accounts = pgTable('accounts', {
   // Lot 103G (0960) : marqueur d'identité technique — 'AI_QUALIFICATION_CORPUS'
   // pour le seul compte de mesure du corpus, NULL pour tout compte client.
   technicalKind: text('technical_kind'),
+  // Carte #876 (migration 2020) : qualification « compte de revue » des stores —
+  // NULL = compte client (défaut), 'APPLE' | 'GOOGLE'. Indépendante de l'offre ;
+  // posée uniquement par un SUPER_ADMIN au BO (`services/admin/app-review`).
+  appReviewKind: text('app_review_kind'),
   createdAt: tstz('created_at'),
   updatedAt: tstz('updated_at'),
 }, (table) => ({
@@ -1164,6 +1168,45 @@ export const accounts = pgTable('accounts', {
   subscriptionStatusCheck: check('accounts_subscription_status_check', sql`${table.subscriptionStatus} IN ('NONE','TRIALING','ACTIVE','CANCELED','PAST_DUE','EXPIRED','WITHDRAWN')`),
   unpaidStartedAtIdx: index('accounts_unpaid_started_at_idx').on(table.unpaidStartedAt).where(sql`unpaid_started_at IS NOT NULL`),
   pendingCheckoutIdx: index('accounts_pending_checkout_idx').on(table.checkoutNextCheckAt).where(sql`checkout_session_id IS NOT NULL`),
+}));
+
+/**
+ * Carte #876 (migration 2020) : identités autorisées à l'exemption de
+ * l'obligation GLOBALE de double authentification, sur un compte de revue
+ * Apple / Google. Au plus une autorisation active par identité. La ligne ne
+ * suffit pas : la décision (`lib/auth/mfa/app-review.ts`) revérifie rôle,
+ * statut, qualification et appartenances à chaque requête.
+ */
+export const appReviewMfaExemptions = pgTable('app_review_mfa_exemptions', {
+  id: serial('id').primaryKey(),
+  userId: integer('user_id').notNull().references(() => users.id, { onDelete: 'cascade' }),
+  accountId: integer('account_id').notNull().references(() => accounts.id, { onDelete: 'cascade' }),
+  grantedBy: integer('granted_by').references(() => users.id, { onDelete: 'set null' }),
+  grantedReason: text('granted_reason').notNull(),
+  grantedAt: tstz('granted_at'),
+  revokedAt: tstzOptional('revoked_at'),
+  revokedBy: integer('revoked_by').references(() => users.id, { onDelete: 'set null' }),
+  revokedReason: text('revoked_reason'),
+}, (table) => ({
+  activeUniq: uniqueIndex('app_review_mfa_exemptions_active_uniq').on(table.userId).where(sql`revoked_at IS NULL`),
+  accountIdx: index('app_review_mfa_exemptions_account_idx').on(table.accountId),
+  reasonCheck: check('app_review_mfa_exemptions_reason_chk', sql`length(btrim(${table.grantedReason})) > 0`),
+  revokeCheck: check('app_review_mfa_exemptions_revoke_chk', sql`${table.revokedAt} IS NULL OR ${table.revokedReason} IS NOT NULL`),
+}));
+
+/** Carte #876 (migration 2020) : historique auditable des comptes de revue (aucun secret). */
+export const appReviewEvents = pgTable('app_review_events', {
+  id: bigserial('id', { mode: 'number' }).primaryKey(),
+  accountId: integer('account_id').notNull().references(() => accounts.id, { onDelete: 'cascade' }),
+  userId: integer('user_id').references(() => users.id, { onDelete: 'set null' }),
+  event: text('event').notNull(),
+  reviewKind: text('review_kind'),
+  reason: text('reason'),
+  actorId: integer('actor_id').references(() => users.id, { onDelete: 'set null' }),
+  createdAt: tstz('created_at'),
+}, (table) => ({
+  accountIdx: index('app_review_events_account_idx').on(table.accountId, table.createdAt.desc()),
+  eventCheck: check('app_review_events_event_chk', sql`${table.event} IN ('ACCOUNT_QUALIFIED', 'ACCOUNT_UNQUALIFIED', 'EXEMPTION_GRANTED', 'EXEMPTION_REVOKED', 'DEMO_RIGHTS_GRANTED')`),
 }));
 
 export const accountMemberships = pgTable('account_memberships', {

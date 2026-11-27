@@ -48,6 +48,7 @@ import { formatBytes, formatDate, formatDateTime, formatMoney } from '@/lib/admi
 import { EcranEnErreur } from '@/components/admin/EcranEnErreur';
 import { AccountWithdrawals } from './_components/AccountWithdrawals';
 import { AccountDataUse } from './_components/AccountDataUse';
+import { AccountAppReview } from './_components/AccountAppReview';
 import { AccountDocuments } from './_components/AccountDocuments';
 import { AccountDataSection } from './_components/account-data/AccountDataSection';
 import { ReconsolidateAccountButton } from '../../operations/_components/ReconsolidateAccountButton';
@@ -645,6 +646,8 @@ export default function AccountDetailPage() {
           <AccountWithdrawals accountId={account.id} />
           {/* Lot 102D : opposition à l'utilisation des données pour l'amélioration. */}
           <AccountDataUse accountId={account.id} />
+          {/* Carte #876 : compte de revue Apple / Google (qualification, exemption MFA ciblée). */}
+          <AccountAppReview accountId={account.id} />
 
           {/* ── Changement exceptionnel d'offre (ACC-A06) ── */}
           <section className="rounded-xl border border-[color:var(--border-warning)] bg-[color:var(--bg-warning)] overflow-hidden">

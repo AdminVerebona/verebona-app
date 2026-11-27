@@ -55,6 +55,11 @@ export async function concludePrimaryAuthentication(
     const { sid } = await issueSession(request, response, {
       kind: 'open', method: input.method, replaceCurrent: true, deviceId, subject: input.subject,
     });
+    // Carte #876 : identité de revue exemptée de l'obligation globale — session
+    // de NIVEAU 1 (aucune preuve forte fabriquée), connexion journalisée.
+    if (requirement.exempt) {
+      auditMfa(request, 'MFA_APP_REVIEW_EXEMPTION_APPLIED', input.subject.id, { primary: input.method, reviewKind: requirement.reviewKind, sid, aal: 1 });
+    }
     return { kind: 'session', sid };
   }
   const step = (await countStrongMethods(input.subject.id)) > 0 ? 'challenge' : 'enroll';

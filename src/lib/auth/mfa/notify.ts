@@ -45,7 +45,8 @@ export async function notifyMfaEvent(userId: number, event: MfaSecurityEvent): P
 /** Journal d'audit (aucune valeur secrète). */
 export function auditMfa(
   request: NextRequest | undefined,
-  activityType: 'MFA_CHALLENGE_STARTED' | 'MFA_SUCCESS' | 'MFA_FACTOR_ADDED' | 'MFA_FACTOR_REMOVED' | 'MFA_RECOVERY_CODES_REGENERATED' | 'MFA_RECOVERY_USED' | 'MFA_PASSKEY_COUNTER_REGRESSION',
+  activityType: 'MFA_CHALLENGE_STARTED' | 'MFA_SUCCESS' | 'MFA_FACTOR_ADDED' | 'MFA_FACTOR_REMOVED' | 'MFA_RECOVERY_CODES_REGENERATED' | 'MFA_RECOVERY_USED' | 'MFA_PASSKEY_COUNTER_REGRESSION'
+    | 'MFA_APP_REVIEW_EXEMPTION_APPLIED',
   userId: number,
   details: Record<string, unknown>,
 ): void {

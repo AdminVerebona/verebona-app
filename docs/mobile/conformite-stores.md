@@ -58,6 +58,9 @@ documents), l'app en est le compagnon ; les abonnements se prennent sur le site 
 ## 5. Préparation de la revue (PO)
 
 - Compte de démonstration **déjà abonné** (pas de parcours d'achat à montrer), avec biens et documents.
+  Carte #876 : comptes de revue Apple / Google distincts, droits Premium Duo durables sans facturation, exemption
+  **ciblée** de l'obligation globale de double authentification (accès sans code ponctuel), provisionnement et
+  révocation : [`docs/exploitation/c876-comptes-revue-stores.md`](../exploitation/c876-comptes-revue-stores.md).
 - Notes de revue : service en ligne, abonnement sur le site (3.1.3(f)), liste des fonctions natives, où
   trouver la suppression de compte.
 - Captures et vidéo de l'app de production (après recette de production).

@@ -189,7 +189,9 @@ export type AdminActionType =
   // Lot 109L : tarif IA saisi / validé manuellement (sourcé) ou retrait vérifié — avant / après, preuve.
   | 'AI_PRICING_UPDATE'
   // Lot 110B : obligation de double authentification (utilisateurs / administrateurs) — avant / après.
-  | 'MFA_ENFORCEMENT_UPDATE';
+  | 'MFA_ENFORCEMENT_UPDATE'
+  // Carte #876 : comptes de revue Apple / Google (qualification, exemption MFA, droits de démonstration) — SUPER_ADMIN.
+  | 'APP_REVIEW_UPDATE';
 
 export type AdminTargetType = 'ACCOUNT' | 'USER' | 'EXPORT_TEMPLATE' | 'COMMUNICATION_CHANNEL' | 'ANOMALY' | 'GDPR_REQUEST'
   | 'ASSISTANT_SETTING' | 'ASSISTANT_REQUEST' | 'NOTIFICATION' | 'AI_CACHE' | 'AI_METRICS'

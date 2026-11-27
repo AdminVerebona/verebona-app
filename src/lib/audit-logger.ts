@@ -27,7 +27,10 @@ type ActivityType = 'LOGIN_SUCCESS' | 'LOGIN_FAILED' | 'EMAIL_CHANGE' | 'PROFILE
   // Lot 110B (MFA, ticket §7) : authentifications fortes, échecs, facteurs,
   // récupération, réglage d'obligation — jamais un code, un secret ni une clé.
   'MFA_CHALLENGE_STARTED' | 'MFA_SUCCESS' | 'MFA_FAILED' | 'MFA_THROTTLED' | 'MFA_FACTOR_ADDED' | 'MFA_FACTOR_REMOVED' |
-  'MFA_RECOVERY_CODES_REGENERATED' | 'MFA_RECOVERY_USED' | 'MFA_ENFORCEMENT_CHANGED' | 'MFA_PASSKEY_COUNTER_REGRESSION';
+  'MFA_RECOVERY_CODES_REGENERATED' | 'MFA_RECOVERY_USED' | 'MFA_ENFORCEMENT_CHANGED' | 'MFA_PASSKEY_COUNTER_REGRESSION' |
+  // Carte #876 : connexion d'une identité de revue Apple / Google exemptée de
+  // l'obligation GLOBALE (session de niveau 1) — surveillance des accès.
+  'MFA_APP_REVIEW_EXEMPTION_APPLIED';
 
 export interface LogActivityParams {
   activityType: ActivityType;

@@ -619,6 +619,9 @@ export const DIAG_TABLE_EXCLUSIONS: Readonly<Record<string, { category: DiagExcl
   mfa_challenges: { category: 'SECURITE', motif: 'double authentification : défis à usage unique' },
   mfa_pending_auth: { category: 'SECURITE', motif: 'double authentification : contextes de connexion provisoires' },
   mfa_enforcement_settings: { category: 'SECURITE', motif: 'double authentification : réglage d’obligation (BO)' },
+  // Carte #876 : exemptions MFA des comptes de revue des stores et leur historique (contrôle d'accès, BO SUPER_ADMIN).
+  app_review_mfa_exemptions: { category: 'SECURITE', motif: 'double authentification : exemptions des comptes de revue des stores' },
+  app_review_events: { category: 'SECURITE', motif: 'comptes de revue des stores : historique des exemptions et qualifications (BO)' },
   // Lot 96A (CDC 18 §11.3) : empreintes des liens de changement d'adresse principale.
   email_change_requests: { category: 'SECURITE', motif: 'demandes de changement d’adresse (empreintes de liens)' },
   // Lot 100D (A3) : étiquette HMAC de l'adresse d'origine (transition des appareils reconnus, 180 jours au plus).
