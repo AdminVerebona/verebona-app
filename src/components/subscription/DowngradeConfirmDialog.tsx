@@ -15,6 +15,7 @@ import { AlertTriangle, Loader2 } from 'lucide-react';
 import { useEntitlements } from '@/hooks/useEntitlements';
 import { apiClient } from '@/lib/api-client';
 import { toast } from 'sonner';
+import { readThrownError } from '@/lib/thrown-error';
 
 interface DowngradeConfirmDialogProps {
   open: boolean;
@@ -81,8 +82,8 @@ export function DowngradeConfirmDialog({
       toast.success("Le changement d'offre a bien été enregistré.");
       onOpenChange(false);
       onConfirmed();
-    } catch (err: any) {
-      toast.error(err?.message || 'Une erreur est survenue. Veuillez réessayer.');
+    } catch (err: unknown) {
+      toast.error(readThrownError(err).message || 'Une erreur est survenue. Veuillez réessayer.');
     } finally {
       setIsLoading(false);
     }

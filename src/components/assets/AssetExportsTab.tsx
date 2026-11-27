@@ -30,6 +30,7 @@ import {
   isDossierCode, isDossierEligibleForFamily, type DossierCode,
 } from '@/services/exports/catalog';
 import type { CatalogDossier, ExportCatalog } from '@/services/exports/export-catalog.service';
+import { readThrownError } from '@/lib/thrown-error';
 
 /**
  * Codes envoyés à `POST /api/assets/[id]/exports` : les six dossiers V12
@@ -369,8 +370,8 @@ export function AssetExportsTab({ assetId, assetCategory, planType, thumbnailUrl
       await apiClient.post(`/api/assets/${assetId}/exports/${exportId}/retry`, {});
       await loadExports();
       toast.success('Regénération lancée');
-    } catch (err: any) {
-      toast.error(err?.message ?? 'Erreur lors de la relance');
+    } catch (err: unknown) {
+      toast.error(readThrownError(err).message ?? 'Erreur lors de la relance');
     } finally {
       setRetrying(null);
     }
@@ -383,8 +384,8 @@ export function AssetExportsTab({ assetId, assetCategory, planType, thumbnailUrl
       toast.success('Fichier supprimé');
       setDeleteConfirm(null);
       await loadExports();
-    } catch (err: any) {
-      toast.error(err?.message ?? 'Erreur lors de la suppression');
+    } catch (err: unknown) {
+      toast.error(readThrownError(err).message ?? 'Erreur lors de la suppression');
     } finally {
       setDeleting(null);
     }
@@ -401,8 +402,8 @@ export function AssetExportsTab({ assetId, assetCategory, planType, thumbnailUrl
       await apiClient.delete(`/api/assets/${assetId}/transmission/${transmissionId}`);
       toast.success('Transmission annulée');
       await loadTransmissions();
-    } catch (err: any) {
-      toast.error(err?.message ?? 'Erreur lors de l\'annulation');
+    } catch (err: unknown) {
+      toast.error(readThrownError(err).message ?? 'Erreur lors de l\'annulation');
     } finally {
       setCancellingId(null);
     }

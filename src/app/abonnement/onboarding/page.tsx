@@ -11,6 +11,7 @@ import { useBillingCatalog } from '@/hooks/useBillingCatalog';
 import { ImmediateStartConsent } from '@/components/billing/ImmediateStartConsent';
 import { IMMEDIATE_START_FIELD } from '@/lib/legal/immediate-start';
 import { billingMention, findOffer, offerAmount, periodSuffix, priceConfirmationFromError, type CatalogOffer } from '@/lib/billing/catalog-client';
+import { readThrownError } from '@/lib/thrown-error';
 
 function OnboardingContent() {
   const searchParams = useSearchParams();
@@ -72,13 +73,13 @@ function OnboardingContent() {
         setError(data.message || 'Impossible de démarrer la session de paiement.');
         setLoading(false);
       }
-    } catch (err: any) {
+    } catch (err: unknown) {
       const confirmation = priceConfirmationFromError(err);
       if (confirmation) {
         setConfirmedOffer(confirmation.offer);
         setPriceChanged(true);
       } else {
-        setError(err?.message || 'Une erreur est survenue lors de la création de la session de paiement.');
+        setError(readThrownError(err).message || 'Une erreur est survenue lors de la création de la session de paiement.');
       }
       setLoading(false);
     }

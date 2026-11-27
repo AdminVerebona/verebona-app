@@ -17,6 +17,7 @@ import { toast } from 'sonner';
 import { apiClient } from '@/lib/api-client';
 import { useWriteGuard } from '@/contexts/WriteGuardContext';
 import { RoomAssociations } from './RoomAssociations';
+import { readThrownError } from '@/lib/thrown-error';
 
 export interface RoomDrawerItem {
   id: number;
@@ -114,8 +115,8 @@ export function RoomDrawer({ open, onOpenChange, assetId, room, onRefresh }: Pro
       }
       onRefresh();
       onOpenChange(false);
-    } catch (err: any) {
-      toast.error(err?.message ?? 'Erreur lors de la sauvegarde');
+    } catch (err: unknown) {
+      toast.error(readThrownError(err).message ?? 'Erreur lors de la sauvegarde');
     } finally {
       setIsSaving(false);
     }
@@ -129,8 +130,8 @@ export function RoomDrawer({ open, onOpenChange, assetId, room, onRefresh }: Pro
       toast.success('Pièce supprimée');
       onOpenChange(false);
       onRefresh();
-    } catch (err: any) {
-      toast.error(err?.message ?? 'Erreur lors de la suppression');
+    } catch (err: unknown) {
+      toast.error(readThrownError(err).message ?? 'Erreur lors de la suppression');
     } finally {
       setIsDeleting(false);
       setShowDeleteConfirm(false);

@@ -141,7 +141,8 @@ export function normalizeToSchema(value: unknown, schema: ZodType, report: Outpu
   return v;
 }
 
-function structuredCloneSafe<T>(v: T): T {
+/** Copie profonde ; repli JSON pour une valeur que `structuredClone` refuse (fonction, symbole…). */
+export function structuredCloneSafe<T>(v: T): T {
   try { return structuredClone(v); } catch { return JSON.parse(JSON.stringify(v)) as T; }
 }
 

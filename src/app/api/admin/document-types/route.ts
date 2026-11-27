@@ -9,6 +9,7 @@ import { db } from '@/db';
 import { documentTypes, documentTypeAssetAssociations, documentTypeExportAssociations, assetTypes, assetTypeSubcategories } from '@/db/schema';
 import { eq, like, or, and } from 'drizzle-orm';
 import { requireAdmin } from '@/lib/auth-guards';
+import { readThrownError } from '@/lib/thrown-error';
 
 export async function GET(request: NextRequest) {
   try {
@@ -105,12 +106,13 @@ export async function GET(request: NextRequest) {
     );
 
     return NextResponse.json(documentTypesWithAssociations, { status: 200 });
-  } catch (error: any) {
-    if (error.message === 'Admin access required') {
+  } catch (error: unknown) {
+    const failure = readThrownError(error);
+    if (failure.message === 'Admin access required') {
       return NextResponse.json({ error: 'Admin access required', code: 'FORBIDDEN' }, { status: 403 });
     }
     console.error('GET error:', error);
-    return NextResponse.json({ error: 'Internal server error: ' + error.message }, { status: 500 });
+    return NextResponse.json({ error: 'Internal server error: ' + failure.message }, { status: 500 });
   }
 }
 

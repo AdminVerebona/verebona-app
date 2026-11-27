@@ -71,7 +71,7 @@ export async function PATCH(
 
     const costCap = await getAccountCostCapStatus(accountId, { withSpent: true }).catch(() => null);
     return NextResponse.json({ success: true, costCap });
-  } catch (error: any) {
+  } catch (error: unknown) {
     console.error('[PATCH /api/admin/ai/accounts/[accountId]/quota]', error);
     return NextResponse.json({ error: 'Erreur serveur' }, { status: 500 });
   }

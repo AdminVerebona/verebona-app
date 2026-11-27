@@ -119,7 +119,7 @@ export async function PATCH(
     }
 
     return NextResponse.json({ ok: true });
-  } catch (err: any) {
+  } catch (err: unknown) {
     console.error('[CIL resolutions PATCH]', err);
     return NextResponse.json({ error: 'INTERNAL_ERROR' }, { status: 500 });
   }
@@ -151,7 +151,7 @@ export async function DELETE(
       ));
 
     return NextResponse.json({ ok: true });
-  } catch (err: any) {
+  } catch (err: unknown) {
     console.error('[CIL resolutions DELETE]', err);
     return NextResponse.json({ error: 'INTERNAL_ERROR' }, { status: 500 });
   }

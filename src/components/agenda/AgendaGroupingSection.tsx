@@ -57,6 +57,7 @@ import {
 import { AGENDA_HOUSING_REMOVAL_HAS_DEPENDENTS, HOUSING_SCOPE_LABELS } from "@/lib/agenda/housing-scope";
 import { AgendaGroupingPanel, GroupingPicker } from "@/components/agenda/AgendaGroupingPanel";
 import { ReferenceEventLink } from "@/components/documents/ReferenceEventSheet";
+import { readThrownError } from "@/lib/thrown-error";
 
 export { AgendaGroupingPanel, GroupingPicker, MAIN_CATEGORIES, categoryRows, visibleMainCategories } from "@/components/agenda/AgendaGroupingPanel";
 
@@ -115,14 +116,15 @@ export function AgendaGroupingSection({ itemId, onOpenDocument, onChanged, onRol
       toast.success(groupingActionToast(action));
       window.dispatchEvent(new CustomEvent("agenda-mutated"));
       onChanged?.();
-    } catch (err: any) {
+    } catch (err: unknown) {
+      const failure = readThrownError(err);
       // Lot 103D : bien retiré dont des pièces / équipements dépendent — explication et confirmation.
-      if (err?.code === AGENDA_HOUSING_REMOVAL_HAS_DEPENDENTS && action === "retirer-bien" && targetId && !dissocier) {
-        const d = (err?.details ?? {}) as { substructureIds?: number[]; equipmentIds?: number[] };
+      if (failure.code === AGENDA_HOUSING_REMOVAL_HAS_DEPENDENTS && action === "retirer-bien" && targetId && !dissocier) {
+        const d = (failure.details ?? {}) as { substructureIds?: number[]; equipmentIds?: number[] };
         setDissociation({ assetId: targetId, rooms: (d.substructureIds ?? []).length, equipments: (d.equipmentIds ?? []).length });
         return;
       }
-      if (err?.status !== 403) toast.error(err?.serverMessage || err?.message || "Ce geste n’a pas abouti");
+      if (failure.status !== 403) toast.error(failure.serverMessage || failure.message || "Ce geste n’a pas abouti");
     } finally {
       setBusy(false);
     }

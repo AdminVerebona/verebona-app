@@ -160,7 +160,7 @@ export async function GET(request: NextRequest) {
     });
   } catch (error) {
     console.error('GET error:', error);
-    return apiError(500, 'INTERNAL_ERROR', 'Internal server error: ' + (error as Error).message);
+    return apiError(500, 'INTERNAL_ERROR', 'Internal server error');
   }
 }
 
@@ -193,7 +193,7 @@ export async function POST(request: NextRequest) {
     return NextResponse.json(cree.asset, { status: 201 });
   } catch (error) {
     console.error('POST error:', error);
-    return apiError(500, 'INTERNAL_ERROR', 'Internal server error: ' + (error as Error).message);
+    return apiError(500, 'INTERNAL_ERROR', 'Internal server error');
   }
 }
 
@@ -396,7 +396,7 @@ export async function PUT(request: NextRequest) {
     return NextResponse.json(updatedAsset[0], { status: 200 });
   } catch (error) {
     console.error('PUT error:', error);
-    return apiError(500, 'INTERNAL_ERROR', 'Internal server error: ' + (error as Error).message);
+    return apiError(500, 'INTERNAL_ERROR', 'Internal server error');
   }
 }
 
@@ -492,7 +492,7 @@ export async function DELETE(request: NextRequest) {
     );
   } catch (error) {
     console.error('DELETE error:', error);
-    return apiError(500, 'INTERNAL_ERROR', 'Internal server error: ' + (error as Error).message);
+    return apiError(500, 'INTERNAL_ERROR', 'Internal server error');
   }
 }
 

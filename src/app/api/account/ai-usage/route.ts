@@ -10,6 +10,7 @@ import { eq, and, isNull, ne, sql } from 'drizzle-orm';
 import { SessionService } from '@/lib/session-service';
 import { getEntitlements } from '@/services/entitlements.service';
 import { getAnalysisQuotaState } from '@/services/commercial-model.service';
+import { readThrownError } from '@/lib/thrown-error';
 
 /**
  * ══════════════════════════════════════════════════════════════════════════
@@ -115,8 +116,9 @@ export async function GET(request: NextRequest) {
       assetsPercent,
       documentsPercent,
     });
-  } catch (error: any) {
-    if (error?.message === 'AUTH_REQUIRED' || error?.message === 'INVALID_TOKEN') {
+  } catch (error: unknown) {
+    const failure = readThrownError(error);
+    if (failure.message === 'AUTH_REQUIRED' || failure.message === 'INVALID_TOKEN') {
       return NextResponse.json({ error: 'Non authentifié' }, { status: 401 });
     }
     console.error('[GET /api/account/ai-usage]', error);

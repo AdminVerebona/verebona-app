@@ -13,6 +13,7 @@
  */
 import type { ZodType } from 'zod';
 import type { OutputRepairStep } from '../diagnostics/taxonomy';
+import { structuredCloneSafe } from './normalize';
 import { describe, descAt } from './schema-introspect';
 import { genericPath, jsonPath, valueAt } from '../diagnostics/classify';
 import { redact } from '../redaction';
@@ -157,6 +158,5 @@ export function pruneInvalidFields(
 }
 
 function copie(v: unknown): unknown {
-  if (v === undefined) return null;
-  try { return structuredClone(v); } catch { return JSON.parse(JSON.stringify(v)) as unknown; }
+  return v === undefined ? null : structuredCloneSafe(v);
 }

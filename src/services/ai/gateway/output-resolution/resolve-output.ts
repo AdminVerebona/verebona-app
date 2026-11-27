@@ -31,7 +31,7 @@ import { redact, previewForLog } from '../redaction';
 import { parseModelOutput } from './json-repair';
 import { applyCompatAdapters } from './contracts';
 import { applyFieldCompatMappings } from './compat-mappings';
-import { normalizeToSchema } from './normalize';
+import { normalizeToSchema, structuredCloneSafe } from './normalize';
 import { describe } from './schema-introspect';
 import { pruneInvalidFields, splitPipe, type PrunedFieldValue } from './field-validation';
 import { findUnknownFields, unknownFieldIssue, noteIgnoredUnknown, type UnknownField } from './unknown-fields';
@@ -338,10 +338,6 @@ export function resolveOutput(input: ResolveInput): Resolution {
     ],
     optionalPaths: [...new Set(inconnusTous.flatMap((u) => u.absentOptional))],
   });
-}
-
-function structuredCloneSafe<T>(v: T): T {
-  try { return structuredClone(v); } catch { return JSON.parse(JSON.stringify(v)) as T; }
 }
 
 function truncatedByTokens(p: ResolveInput['provider']): boolean {

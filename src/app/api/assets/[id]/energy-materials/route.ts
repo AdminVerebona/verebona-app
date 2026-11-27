@@ -86,7 +86,7 @@ export async function POST(
     // CDC Assistant §25.7, §31.7.
     if (asset.accountId != null) await emitBusinessEvent({ type: 'ASSET_UPDATED', accountId: asset.accountId, entityId: assetId });
     return NextResponse.json({ material: created });
-  } catch (err: any) {
+  } catch (err: unknown) {
     console.error('[energy-materials POST]', err);
     return NextResponse.json({ error: 'INTERNAL_ERROR' }, { status: 500 });
   }

@@ -19,6 +19,7 @@ import { apiClient } from '@/lib/api-client';
 import { changedDetailFields, todayParis } from '@/lib/asset-detail-rules';
 import { toast } from 'sonner';
 import { useWriteGuard } from '@/contexts/WriteGuardContext';
+import { readThrownError } from '@/lib/thrown-error';
 
 export interface FieldDef {
   key: string;
@@ -228,8 +229,8 @@ export function AssetDetailSection({
       setDirty(false);
       setOpen(true);
       onRefresh();
-    } catch (err: any) {
-      toast.error(err?.message ?? 'Erreur lors de l\'enregistrement');
+    } catch (err: unknown) {
+      toast.error(readThrownError(err).message ?? 'Erreur lors de l\'enregistrement');
     } finally {
       setIsSaving(false);
     }

@@ -32,6 +32,7 @@ import { DEFAULT_NEW_SITUATION, type AgendaSituation } from "@/lib/agenda/situat
 import { AgendaSuppliersField, EMPTY_SUPPLIERS_SELECTION, suppliersPayload, type AgendaSuppliersSelection } from "@/components/agenda/AgendaSuppliersSection";
 import { toggleNoDeadline, withDateEntry, type AgendaDateFormState } from "@/lib/agenda/no-deadline";
 import { AGENDA_EVENT_LABELS } from "@/lib/agenda/grouping-view";
+import { readThrownError } from "@/lib/thrown-error";
 
 interface Asset {
   id: number;
@@ -286,14 +287,15 @@ export function CreateAgendaItemDrawer({
       reset();
       onMutated();
       onClose();
-    } catch (err: any) {
+    } catch (err: unknown) {
+      const failure = readThrownError(err);
       // Refus de droits : la fenêtre partagée est déjà ouverte par
       // `api-client`. Le tiroir se ferme pour la laisser lisible.
-      if (err?.status === 403 && isWriteBlockedCode(err?.code)) {
+      if (failure.status === 403 && isWriteBlockedCode(failure.code)) {
         handleClose();
         return;
       }
-      setError(err?.message || "Erreur lors de la création");
+      setError(failure.message || "Erreur lors de la création");
     } finally {
       setSaving(false);
     }

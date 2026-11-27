@@ -6,6 +6,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { pgClient, ensureMigrations } from '@/db';
 import { requireAdmin } from '@/lib/auth-guards';
 import { SessionService } from '@/lib/session-service';
+import { readThrownError } from '@/lib/thrown-error';
 
 export async function GET(request: NextRequest) {
   try {
@@ -108,8 +109,8 @@ export async function GET(request: NextRequest) {
 
     return NextResponse.json({ logs, stats, page, limit, total: stats.totalCount ?? 0 });
 
-  } catch (error: any) {
+  } catch (error: unknown) {
     console.error('[GET /api/admin/ai/search-logs]', error);
-    return NextResponse.json({ error: 'Erreur serveur', detail: error?.message }, { status: 500 });
+    return NextResponse.json({ error: 'Erreur serveur', detail: readThrownError(error).message }, { status: 500 });
   }
 }

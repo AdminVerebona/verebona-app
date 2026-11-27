@@ -10,8 +10,8 @@ const order: string[] = [];
 let request: Record<string, unknown>;
 vi.mock('@/db', () => ({
   db: {
-    select: () => ({ from: (t: { _name?: string }) => ({ where: () => ({ limit: async () => (order.push('select'), [request]) }) }) }),
-    update: (t: unknown) => ({ set: (v: Record<string, unknown>) => ({ where: async () => { if ('subscriptionStatus' in v) order.push(`compte:${v.subscriptionStatus}`); if ('status' in v && v.status === 'readonly') order.push('droits:readonly'); if ('failureCode' in v) order.push(`demande:${v.failureCode}`); } }) }),
+    select: () => ({ from: () => ({ where: () => ({ limit: async () => (order.push('select'), [request]) }) }) }),
+    update: () => ({ set: (v: Record<string, unknown>) => ({ where: async () => { if ('subscriptionStatus' in v) order.push(`compte:${v.subscriptionStatus}`); if ('status' in v && v.status === 'readonly') order.push('droits:readonly'); if ('failureCode' in v) order.push(`demande:${v.failureCode}`); } }) }),
   },
 }));
 vi.mock('@/lib/stripe', () => ({ getStripeServer: () => { order.push('stripe'); throw new Error('Stripe indisponible'); } }));

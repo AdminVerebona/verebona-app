@@ -5,6 +5,7 @@ import { accounts } from '@/db/schema';
 import { eq } from 'drizzle-orm';
 import { getSession } from '@/lib/auth-guards';
 import { resolveOwnedSessionAccount } from '@/services/account/membership.service';
+import { readThrownError } from '@/lib/thrown-error';
 
 // Initialize Stripe
 const getStripe = () => {
@@ -61,10 +62,10 @@ export async function POST(request: NextRequest) {
       .where(eq(accounts.id, account.id));
 
     return NextResponse.json({ success: true, message: 'La résiliation a été prise en compte.' });
-  } catch (error: any) {
+  } catch (error: unknown) {
     console.error('[Cancel Subscription] Error:', error);
     return NextResponse.json(
-      { error: error.message || 'Une erreur est survenue lors de la résiliation.' },
+      { error: readThrownError(error).message || 'Une erreur est survenue lors de la résiliation.' },
       { status: 500 }
     );
   }

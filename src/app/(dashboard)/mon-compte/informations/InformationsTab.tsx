@@ -30,6 +30,7 @@ import { useNativeCommerceHidden } from '@/hooks/useNativeCommerceHidden';
 import { NativeCommerceNotice } from '@/components/native/NativeCommerceNotice';
 import { voluntaryDelayLabel } from '@/lib/account-lifecycle/retention-policy';
 import { DISPLAY_NAME_HELP, DISPLAY_NAME_LABEL, DISPLAY_NAME_MAX_LENGTH, DISPLAY_NAME_PLACEHOLDER, validateDisplayName } from '@/lib/auth/display-name';
+import { readThrownError } from '@/lib/thrown-error';
 
 
 interface UserProfile {
@@ -253,8 +254,8 @@ function InformationsTabContent({ beforeDangerZone }: { beforeDangerZone?: React
       apiClient.clearCache();
       await refetchSession();
       toast.success("Profil mis à jour");
-    } catch (error: any) {
-      toast.error(error.message || "Erreur lors de la mise à jour");
+    } catch (error: unknown) {
+      toast.error(readThrownError(error).message || "Erreur lors de la mise à jour");
     } finally {
       setSavingProfile(false);
     }

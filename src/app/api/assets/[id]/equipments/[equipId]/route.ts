@@ -81,9 +81,9 @@ export async function PUT(
     // origine USER, cartes « À traiter », rapprochement après renommage ou déplacement, événements).
     const body = await request.json();
     return await updateEquipmentForAccount({ userId: session.userId ?? null, currentAccountId: session.currentAccountId }, assetId, equipmentId, body);
-  } catch (error: any) {
-    console.error('PUT equipment error:', error?.message ?? error);
-    return NextResponse.json({ error: 'INTERNAL_ERROR', detail: error?.message ?? String(error) }, { status: 500 });
+  } catch (error: unknown) {
+    console.error('PUT equipment error:', error);
+    return NextResponse.json({ error: 'INTERNAL_ERROR' }, { status: 500 });
   }
 }
 

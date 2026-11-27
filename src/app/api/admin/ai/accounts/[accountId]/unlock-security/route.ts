@@ -70,7 +70,7 @@ export async function POST(
     });
 
     return NextResponse.json({ success: true, unlockedCount: activeLocks.length });
-  } catch (error: any) {
+  } catch (error: unknown) {
     console.error('[POST /api/admin/ai/accounts/[accountId]/unlock-security]', error);
     return NextResponse.json({ error: 'Erreur serveur' }, { status: 500 });
   }

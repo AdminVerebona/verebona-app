@@ -36,6 +36,7 @@ import {
 import {
   ROOM_ASSOCIATIONS_CHANGED, notifyRoomAssociationsChanged, type RoomAssociationsChangedDetail,
 } from '@/lib/rooms/room-associations';
+import { readThrownError } from '@/lib/thrown-error';
 
 /** Fiche saisie (lot 20, D-D) : valeurs du formulaire, en texte. */
 type FicheForm = Record<string, string>;
@@ -445,8 +446,8 @@ export function EquipmentDrawer({ open, onOpenChange, assetId, equipment: eq, su
       }
       onRefresh();
       onOpenChange(false);
-    } catch (err: any) {
-      toast.error(err?.message ?? 'Erreur lors de la sauvegarde');
+    } catch (err: unknown) {
+      toast.error(readThrownError(err).message ?? 'Erreur lors de la sauvegarde');
     } finally {
       setIsSaving(false);
     }
@@ -460,8 +461,8 @@ export function EquipmentDrawer({ open, onOpenChange, assetId, equipment: eq, su
       toast.success('Équipement supprimé');
       onOpenChange(false);
       onRefresh();
-    } catch (err: any) {
-      toast.error(err?.message ?? "Erreur lors de l'archivage");
+    } catch (err: unknown) {
+      toast.error(readThrownError(err).message ?? "Erreur lors de l'archivage");
     } finally {
       setIsArchiving(false);
       setShowArchiveConfirm(false);

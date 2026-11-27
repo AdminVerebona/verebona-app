@@ -17,6 +17,7 @@ import {
   AlertDialogCancel,
   AlertDialogAction,
 } from '@/components/ui/alert-dialog';
+import { readThrownError } from '@/lib/thrown-error';
 
 /** Lot 73B : DECLINED — la personne invitée a refusé (réinvitation possible). */
 type InvitationStatus = 'NONE' | 'PENDING' | 'EXPIRED' | 'ACTIVE_MEMBER' | 'DECLINED';
@@ -145,11 +146,12 @@ export function DuoInvitationPanel() {
       setEmailInput('');
       setInviteOther(false);
       await fetchStatus();
-    } catch (error: any) {
-      if (error?.message?.includes('SLOT_ALREADY_TAKEN')) {
+    } catch (error: unknown) {
+      const failure = readThrownError(error);
+      if (failure.message?.includes('SLOT_ALREADY_TAKEN')) {
         toast.error('Un 2e utilisateur est déjà actif sur ce compte Duo.');
       } else {
-        toast.error(error?.message || 'Une erreur est survenue.');
+        toast.error(failure.message || 'Une erreur est survenue.');
       }
     } finally {
       setSending(false);
@@ -163,8 +165,8 @@ export function DuoInvitationPanel() {
       const res = await apiClient.post<SendResponse>('/api/duo/invitation', { email: data.inviteEmail, resend: true });
       announce(res, 'Invitation renvoyée.');
       await fetchStatus();
-    } catch (error: any) {
-      toast.error(error?.message || 'Une erreur est survenue.');
+    } catch (error: unknown) {
+      toast.error(readThrownError(error).message || 'Une erreur est survenue.');
     } finally {
       setSending(false);
     }
@@ -179,8 +181,8 @@ export function DuoInvitationPanel() {
       const res = await apiClient.post<SendResponse>('/api/duo/invitation', { email: data.inviteEmail });
       announce(res, 'Invitation envoyée de nouveau.');
       await fetchStatus();
-    } catch (error: any) {
-      toast.error(error?.message || 'Une erreur est survenue.');
+    } catch (error: unknown) {
+      toast.error(readThrownError(error).message || 'Une erreur est survenue.');
     } finally {
       setSending(false);
     }
@@ -202,8 +204,8 @@ export function DuoInvitationPanel() {
       toast.success('Invitation annulée.');
       setShowCancelDialog(false);
       await fetchStatus();
-    } catch (error: any) {
-      toast.error(error?.message || 'Une erreur est survenue.');
+    } catch (error: unknown) {
+      toast.error(readThrownError(error).message || 'Une erreur est survenue.');
     } finally {
       setCancelling(false);
     }
@@ -218,8 +220,8 @@ export function DuoInvitationPanel() {
       toast.success('Le second utilisateur a été retiré du Duo.');
       setShowRemoveDialog(false);
       await fetchStatus();
-    } catch (error: any) {
-      toast.error(error?.message || 'Une erreur est survenue.');
+    } catch (error: unknown) {
+      toast.error(readThrownError(error).message || 'Une erreur est survenue.');
     } finally {
       setRemoving(false);
     }

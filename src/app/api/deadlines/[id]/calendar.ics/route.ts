@@ -75,8 +75,8 @@ export async function GET(
       },
     });
 
-  } catch (error: any) {
+  } catch (error: unknown) {
     console.error('ICS generation error:', error);
-    return apiError(500, 'INTERNAL_ERROR', 'Internal server error: ' + error.message);
+    return apiError(500, 'INTERNAL_ERROR', 'Internal server error');
   }
 }

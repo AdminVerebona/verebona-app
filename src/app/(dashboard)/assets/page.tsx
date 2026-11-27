@@ -41,6 +41,7 @@ import { displayThumbnailKey } from '@/lib/assets/display-thumbnail';
 import { WriteBlockedDialog } from '@/components/premium/WriteBlockedDialog';
 import { useNativeCommerceHidden } from '@/hooks/useNativeCommerceHidden';
 import { NativeCommerceNotice } from '@/components/native/NativeCommerceNotice';
+import { readThrownError } from '@/lib/thrown-error';
 
 // ⚡ Lazy load AssetFormDialog
 const AssetFormDialog = dynamic(
@@ -61,6 +62,9 @@ interface Asset {
   effectiveThumbnailUrl?: string | null;
   lockState?: 'NONE' | 'PENDING_MOVE' | 'PENDING_DELETE';
 }
+
+// Biens sortis du portefeuille (#849 : TRANSMIS) : hors quota, masqués par défaut.
+const ARCHIVED_STATUSES: readonly string[] = OUT_OF_PORTFOLIO_ASSET_STATUSES;
 
 // ⚡ Utility function mémoïsée en dehors du composant
 const formatDate = (dateStr?: string) => {
@@ -271,10 +275,10 @@ function AssetsPageContent() {
       
       const assetsList = Array.isArray(data) ? data : (data.data || []);
       setAssets(assetsList);
-    } catch (error: any) {
+    } catch (error: unknown) {
       console.error('Error loading assets:', error);
       setError('Erreur lors du chargement des données.');
-      setErrorCode(error.code || null);
+      setErrorCode(readThrownError(error).code || null);
       setAssets([]);
       
     } finally {
@@ -287,8 +291,6 @@ function AssetsPageContent() {
       loadAssets();
     }
   }, [user, loadAssets]);
-
-  const ARCHIVED_STATUSES: readonly string[] = OUT_OF_PORTFOLIO_ASSET_STATUSES;
 
   // Biens actifs (#849 : EN_SERVICE) — seuls comptés dans le quota de biens
   const activeAssets = useMemo(
@@ -375,6 +377,9 @@ function AssetsPageContent() {
     const asset = assets.find((a) => a.id === id);
     setDeleteTarget({ id, name: asset?.name ?? 'ce bien' });
   }, [assets]);
+
+  // Référence stable : une fonction recréée à chaque rendu annulerait le `React.memo` des cartes.
+  const openLimitModal = useCallback(() => setShowLimitModal(true), []);
 
   if (isSessionLoading || isLoading || isFeaturesLoading) {
     return (
@@ -547,7 +552,7 @@ function AssetsPageContent() {
                   <AssetCardWithThumbnail
                     asset={asset}
                     onDelete={openDeleteDialog}
-                    onLockedClick={() => setShowLimitModal(true)}
+                    onLockedClick={openLimitModal}
                   />
                 </div>
               ))}

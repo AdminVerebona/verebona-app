@@ -51,6 +51,7 @@ import { AgendaCoverageHistory } from "@/components/documents/BusinessPeriods";
 // Lot 103E : « Fournisseur / intervenant » — composant dédié (consultation et modification).
 import { AgendaSuppliersField, AgendaSuppliersView, suppliersPayload, type AgendaSuppliersSelection } from "@/components/agenda/AgendaSuppliersSection";
 import { AGENDA_EVENT_LABELS } from "@/lib/agenda/grouping-view";
+import { readThrownError } from "@/lib/thrown-error";
 
 // Lot 113P (#715, décision PO du 06/11/2026) : plus de statut d'événement —
 // ni badge d'en-tête, ni sélecteur « Statut », ni ton « retard / à confirmer ».
@@ -333,14 +334,15 @@ export function AgendaItemDrawer({ item: itemProp, open, onClose, onMutated, onO
       setDirty(false);
       dispatchAgendaMutated();
       onMutated();
-    } catch (err: any) {
+    } catch (err: unknown) {
+      const failure = readThrownError(err);
       // Lot 103D : logement retiré alors que des pièces / équipements y restent associés — confirmation.
-      if (err?.code === AGENDA_HOUSING_REMOVAL_HAS_DEPENDENTS && !dissociateIncompatible) {
-        const inc = (err?.details ?? {}) as { substructureIds?: number[]; equipmentIds?: number[] };
+      if (failure.code === AGENDA_HOUSING_REMOVAL_HAS_DEPENDENTS && !dissociateIncompatible) {
+        const inc = (failure.details ?? {}) as { substructureIds?: number[]; equipmentIds?: number[] };
         setDissociation({ rooms: (inc.substructureIds ?? []).length, equipments: (inc.equipmentIds ?? []).length });
         return;
       }
-      const msg = err?.serverMessage || err?.message || "Erreur lors de la sauvegarde";
+      const msg = failure.serverMessage || failure.message || "Erreur lors de la sauvegarde";
       setSaveError(msg);
       if (
         msg.includes("temporelle") ||
@@ -361,8 +363,8 @@ export function AgendaItemDrawer({ item: itemProp, open, onClose, onMutated, onO
       toast.success("Date confirmée");
       dispatchAgendaMutated();
       onMutated();
-    } catch (err: any) {
-      if (err?.status !== 403) toast.error("La confirmation n’a pas abouti");
+    } catch (err: unknown) {
+      if (readThrownError(err).status !== 403) toast.error("La confirmation n’a pas abouti");
     }
   };
 
@@ -381,12 +383,13 @@ export function AgendaItemDrawer({ item: itemProp, open, onClose, onMutated, onO
     try {
       await apiClient.delete(`/api/agenda/${item.id}${scope === "series" ? "?scope=series" : ""}`);
       confirmDeleted();
-    } catch (err: any) {
+    } catch (err: unknown) {
+      const failure = readThrownError(err);
       // 404 : l'élément n'existe déjà plus côté serveur — deuxième clic,
       // ou suppression faite depuis un autre onglet. Le geste de
       // l'utilisateur a abouti ; le traiter en échec le laisserait devant
       // une ligne fantôme jusqu'au prochain rechargement.
-      if (err?.status === 404) {
+      if (failure.status === 404) {
         confirmDeleted();
         return;
       }
@@ -394,10 +397,10 @@ export function AgendaItemDrawer({ item: itemProp, open, onClose, onMutated, onO
       // rend une violation de contrainte diagnosticable sans ouvrir les
       // journaux.
       // 403 de droits : la fenêtre de fin d'essai est déjà ouverte (api-client).
-      if (err?.status !== 403) {
+      if (failure.status !== 403) {
         console.error("[agenda] suppression échouée", err);
         toast.error(
-          err?.serverMessage || err?.message || "Erreur lors de la suppression",
+          failure.serverMessage || failure.message || "Erreur lors de la suppression",
         );
       }
     } finally {

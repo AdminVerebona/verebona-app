@@ -34,6 +34,7 @@ import {
   priceConfirmationFromError,
   type PriceConfirmationPayload,
 } from '@/lib/billing/catalog-client';
+import { readThrownError } from '@/lib/thrown-error';
 
 interface BillingInfo {
   plan_type: string;
@@ -390,9 +391,9 @@ export default function OffresPage() {
       } else {
         toast.error(data.message || 'Impossible de démarrer le paiement.');
       }
-    } catch (error: any) {
+    } catch (error: unknown) {
       if (demanderConfirmation(priceConfirmationFromError(error), (rev) => startCheckout(planId, rev))) return;
-      toast.error(error.message || 'Une erreur est survenue.');
+      toast.error(readThrownError(error).message || 'Une erreur est survenue.');
     } finally {
       setCheckoutLoading(null);
       setImmediateStartFor(null);

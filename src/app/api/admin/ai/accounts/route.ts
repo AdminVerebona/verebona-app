@@ -8,6 +8,7 @@ import { pgClient } from '@/db';
 import { accounts, users, aiOperation, aiSecurityLock, accountAnalysisCounters } from '@/db/schema';
 import { eq, sql, and, like, isNull } from 'drizzle-orm';
 import { requireAdmin } from '@/lib/auth-guards';
+import { readThrownError } from '@/lib/thrown-error';
 
 export async function GET(request: NextRequest) {
   try {
@@ -139,8 +140,8 @@ export async function GET(request: NextRequest) {
     });
 
     return NextResponse.json({ accounts: result, page, limit });
-  } catch (error: any) {
-    if (error?.message === 'INSUFFICIENT_PERMISSIONS') {
+  } catch (error: unknown) {
+    if (readThrownError(error).message === 'INSUFFICIENT_PERMISSIONS') {
       return NextResponse.json({ error: 'Accès refusé' }, { status: 403 });
     }
     console.error('[GET /api/admin/ai/accounts]', error);

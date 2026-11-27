@@ -161,6 +161,7 @@ import { apiClient } from '@/lib/api-client';
 import type { AssetDetail } from '@/types/asset-detail';
 import { ThumbnailEditDrawer } from '@/components/assets/ThumbnailEditDrawer';
 import { assetStatusLabel, isReadOnlyAssetStatus } from '@/lib/asset-status';
+import { readThrownError } from '@/lib/thrown-error';
 
 // Lazy-load all tab components — only the active tab's code is fetched
 const AssetOverviewTab = dynamic(() => import('@/components/assets/AssetOverviewTab').then(m => ({ default: m.AssetOverviewTab })), { ssr: false, loading: () => <TabSkeleton /> });
@@ -210,9 +211,12 @@ export default function AssetDetailPage() {
     displayThumbnailKey(asset)
   );
 
-  const loadAsset = useCallback(async (id: number) => {
+  // `shareInFlightRead` : le premier chargement rejoint la lecture de préchauffage encore en
+  // cours (un seul appel réseau, audit #851 R4). Un rechargement demandé après une écriture
+  // n'en partage aucune : une lecture partie avant l'écriture rendrait l'état d'avant.
+  const loadAsset = useCallback(async (id: number, shareInFlightRead: boolean) => {
     try {
-      const data = await apiClient.get<AssetDetail>(`/api/assets?id=${id}`);
+      const data = await apiClient.get<AssetDetail>(`/api/assets?id=${id}`, { dedupe: shareInFlightRead });
       // For archived/transmitted, allow read-only access — do NOT redirect
       if (data.lockState && data.lockState !== 'NONE') {
         toast.info('Ce bien est verrouillé');
@@ -220,16 +224,17 @@ export default function AssetDetailPage() {
         return;
       }
       setAsset(data);
-    } catch (error: any) {
-      console.error('loadAsset error:', error?.status, error?.code, error?.message, error);
-      if (error?.status === 403 || error?.code === 'ASSET_UNAVAILABLE') {
+    } catch (error: unknown) {
+      const failure = readThrownError(error);
+      console.error('loadAsset error:', failure.status, failure.code, failure.message, error);
+      if (failure.status === 403 || failure.code === 'ASSET_UNAVAILABLE') {
         toast.info('Ce bien n\'est pas accessible');
         router.replace('/assets');
-      } else if (error?.status === 404) {
+      } else if (failure.status === 404) {
         toast.info('Ce bien n\'existe pas');
         router.replace('/assets');
       } else {
-        toast.error(`Erreur (${error?.status ?? 0}): ${error?.code ?? error?.message ?? 'inconnue'}`);
+        toast.error(`Erreur (${failure.status ?? 0}): ${failure.code ?? failure.message ?? 'inconnue'}`);
       }
     } finally {
       setIsLoading(false);
@@ -249,9 +254,9 @@ export default function AssetDetailPage() {
   useEffect(() => {
     if (!isPending && user && params.id) {
       setIsLoading(true);
-      loadAsset(parseInt(params.id as string));
+      loadAsset(parseInt(params.id as string), refreshTrigger === 0);
     }
-  }, [params.id, user, isPending, refreshTrigger]);
+  }, [params.id, user, isPending, refreshTrigger, loadAsset]);
 
   useEffect(() => {
     if (asset) {
@@ -273,10 +278,11 @@ export default function AssetDetailPage() {
       toast.success('Bien supprimé définitivement');
       apiClient.clearCache();
       router.replace('/assets');
-    } catch (err: any) {
-      toast.error(err?.code === 'DELETION_INVENTORY_CHANGED'
+    } catch (err: unknown) {
+      const failure = readThrownError(err);
+      toast.error(failure.code === 'DELETION_INVENTORY_CHANGED'
         ? 'Le contenu du bien a changé depuis l’affichage : rien n’a été supprimé. Rouvrez la fenêtre pour vérifier le nouvel inventaire.'
-        : (err?.message ?? 'Erreur lors de la suppression'));
+        : (failure.message ?? 'Erreur lors de la suppression'));
       setIsArchiving(false);
     }
   }, [asset, router]);
@@ -291,8 +297,8 @@ export default function AssetDetailPage() {
       toast.success('Bien remis en service');
       apiClient.clearCache();
       setRefreshTrigger(prev => prev + 1);
-    } catch (err: any) {
-      toast.error(err?.message ?? 'La remise en service a échoué.');
+    } catch (err: unknown) {
+      toast.error(readThrownError(err).message ?? 'La remise en service a échoué.');
     } finally {
       setIsReactivating(false);
     }
@@ -471,7 +477,7 @@ export default function AssetDetailPage() {
               <TabsContent value="rooms" className="mt-4">
                 <AssetSubstructuresPanel
                   assetId={asset.id}
-                  substructures={(asset.substructures ?? []) as any}
+                  substructures={asset.substructures ?? []}
                   onRefresh={handleRefresh}
                   readOnly={isReadOnly}
                 />
@@ -481,7 +487,7 @@ export default function AssetDetailPage() {
                 <AssetEquipmentsPanel
                   assetId={asset.id}
                   assetName={asset.name}
-                  equipments={((asset.equipments ?? []).filter((e: any) => !e.archivedAt)) as any}
+                  equipments={((asset.equipments ?? []).filter((e) => !e.archivedAt)) as any}
                   substructures={(asset.substructures ?? []) as any}
                   onRefresh={handleRefresh}
                   readOnly={isReadOnly}

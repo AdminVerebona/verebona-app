@@ -10,6 +10,7 @@ import { isNull } from 'drizzle-orm';
 import { eq, sql, and, desc } from 'drizzle-orm';
 import { requireAdmin } from '@/lib/auth-guards';
 import { SUBSCRIPTION_LIMITS } from '@/lib/subscription-limits';
+import { readThrownError } from '@/lib/thrown-error';
 
 const ANALYSIS_QUOTAS: Record<string, { yearly: number; trial: number }> = {
   standard:    { yearly: 50,     trial: 10 },
@@ -260,8 +261,8 @@ export async function GET(
       searchLogs,
       searchStats,
     });
-  } catch (error: any) {
-    if (error?.message === 'INSUFFICIENT_PERMISSIONS') {
+  } catch (error: unknown) {
+    if (readThrownError(error).message === 'INSUFFICIENT_PERMISSIONS') {
       return NextResponse.json({ error: 'Accès refusé' }, { status: 403 });
     }
     console.error('[GET /api/admin/ai/accounts/[accountId]]', error);

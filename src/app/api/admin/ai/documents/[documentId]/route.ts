@@ -7,6 +7,7 @@ import { db } from '@/db';
 import { assetFiles, accounts, aiOperation, aiPipelineStep, aiAnalysisVersion } from '@/db/schema';
 import { eq, desc, asc } from 'drizzle-orm';
 import { requireAdmin } from '@/lib/auth-guards';
+import { readThrownError } from '@/lib/thrown-error';
 
 export async function GET(
   request: NextRequest,
@@ -80,8 +81,8 @@ export async function GET(
       })),
       totalCostMicros,
     });
-  } catch (error: any) {
-    if (error?.message === 'INSUFFICIENT_PERMISSIONS') {
+  } catch (error: unknown) {
+    if (readThrownError(error).message === 'INSUFFICIENT_PERMISSIONS') {
       return NextResponse.json({ error: 'Accès refusé' }, { status: 403 });
     }
     console.error('[GET /api/admin/ai/documents/[documentId]]', error);

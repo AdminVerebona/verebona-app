@@ -292,7 +292,8 @@ export async function planAssetDeletion(runner: Runner, assetId: number): Promis
     exclusifs = exclusifs.filter((id) => !gardes.has(id));
   }
   const exclusiveOperationIds = exclusifs;
-  const sharedOperationIds = ops.map((o) => num(o.id)).filter((id) => !exclusiveOperationIds.includes(id));
+  const exclusiveOperationIdSet = new Set(exclusiveOperationIds);
+  const sharedOperationIds = ops.map((o) => num(o.id)).filter((id) => !exclusiveOperationIdSet.has(id));
   const exclusiveExpenseIds = exclusiveOperationIds.length
     ? (await rows<{ id: number }>(runner, sql.raw(`
         SELECT id FROM business_operation_financial_components

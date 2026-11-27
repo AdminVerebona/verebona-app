@@ -13,6 +13,7 @@ import { Upload, Check, ImageIcon, X } from 'lucide-react';
 import { FooterPrimaryAction } from '@/components/ui/footer-primary-action';
 import { toast } from 'sonner';
 import { cn } from '@/lib/utils';
+import { readThrownError } from '@/lib/thrown-error';
 
 interface AssetFilePhoto {
   id: number;
@@ -114,8 +115,8 @@ export function ThumbnailEditDrawer({ open, onClose, assetId, currentThumbnailUr
       toast.success('Vignette mise à jour');
       onUpdated(data.thumbnailUrl, data.signedUrl);
       onClose();
-    } catch (e: any) {
-      toast.error(e.message ?? 'Erreur lors de l\'upload');
+    } catch (e: unknown) {
+      toast.error(readThrownError(e).message ?? 'Erreur lors de l\'upload');
     } finally {
       setUploading(false);
     }
@@ -144,8 +145,8 @@ export function ThumbnailEditDrawer({ open, onClose, assetId, currentThumbnailUr
       toast.success('Vignette mise à jour');
       onUpdated(data.thumbnailUrl, data.signedUrl);
       onClose();
-    } catch (e: any) {
-      toast.error(e.message ?? 'Erreur');
+    } catch (e: unknown) {
+      toast.error(readThrownError(e).message ?? 'Erreur');
     } finally {
       setSaving(false);
     }

@@ -5,6 +5,7 @@ import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
 import { CheckCircle2, XCircle, AlertCircle, RefreshCw } from 'lucide-react';
+import { readThrownError } from '@/lib/thrown-error';
 
 export default function DiagnosticPage() {
   const [diagnostics, setDiagnostics] = useState<any>(null);
@@ -54,9 +55,9 @@ export default function DiagnosticPage() {
           const errorData = await meResponse.json();
           results.apis.usersMe.error = errorData;
         }
-      } catch (e: any) {
+      } catch (e: unknown) {
         results.apis.usersMe = {
-          error: e.message,
+          error: readThrownError(e).message,
           status: 'FETCH_ERROR'
         };
       }
@@ -83,9 +84,9 @@ export default function DiagnosticPage() {
           const errorData = await dashboardResponse.json();
           results.apis.dashboard.error = errorData;
         }
-      } catch (e: any) {
+      } catch (e: unknown) {
         results.apis.dashboard = {
-          error: e.message,
+          error: readThrownError(e).message,
           status: 'FETCH_ERROR'
         };
       }
@@ -129,8 +130,8 @@ export default function DiagnosticPage() {
         }
       }
 
-    } catch (e: any) {
-      results.error = e.message;
+    } catch (e: unknown) {
+      results.error = readThrownError(e).message;
     }
 
     setDiagnostics(results);

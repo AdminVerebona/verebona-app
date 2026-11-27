@@ -78,6 +78,7 @@ import { DocumentOperations } from '@/components/documents/DocumentOperations';
 import { OPERATION_LINK_LABELS } from '@/lib/reference-events/operation-links';
 // Carte #830 : un événement déjà représenté par une opération affichée sur la fiche n'y est pas répété (affichage seul).
 import { documentEventsView, type DocumentAgendaLinkFacts, type DocumentAgendaLinksState } from '@/lib/documents/document-event-duplicates';
+import { readThrownError } from '@/lib/thrown-error';
 
 export interface DocumentDrawerItem {
   id: number;
@@ -453,8 +454,9 @@ export function DocumentDrawer({ open, onOpenChange, document: doc, onRefresh, a
       toast.success(GROUPING_LABELS.associatedToast);
       window.dispatchEvent(new CustomEvent('agenda-mutated'));
       await rechargerElementsAgenda();
-    } catch (err: any) {
-      if (err?.status !== 403) toast.error(err?.serverMessage || err?.message || 'Le lien n’a pas pu être créé');
+    } catch (err: unknown) {
+      const failure = readThrownError(err);
+      if (failure.status !== 403) toast.error(failure.serverMessage || failure.message || 'Le lien n’a pas pu être créé');
     }
   };
   // Lot 86D (ticket « Documents / Agenda » §2) : détacher ce document d'UN élément d'agenda —
@@ -469,8 +471,9 @@ export function DocumentDrawer({ open, onOpenChange, document: doc, onRefresh, a
       toast.success(GROUPING_LABELS.detachedToast);
       window.dispatchEvent(new CustomEvent('agenda-mutated'));
       await rechargerElementsAgenda();
-    } catch (err: any) {
-      if (err?.status !== 403) toast.error(err?.serverMessage || err?.message || 'Le lien n’a pas pu être retiré');
+    } catch (err: unknown) {
+      const failure = readThrownError(err);
+      if (failure.status !== 403) toast.error(failure.serverMessage || failure.message || 'Le lien n’a pas pu être retiré');
     } finally {
       setDetachingAgendaId(null);
     }
@@ -919,8 +922,8 @@ export function DocumentDrawer({ open, onOpenChange, document: doc, onRefresh, a
       toast.success('Document mis à jour');
       setIsEditing(false);
       onRefresh();
-    } catch (err: any) {
-      toast.error(err?.message ?? 'Erreur lors de la sauvegarde');
+    } catch (err: unknown) {
+      toast.error(readThrownError(err).message ?? 'Erreur lors de la sauvegarde');
     } finally {
       setIsSaving(false);
     }
@@ -1208,8 +1211,8 @@ export function DocumentDrawer({ open, onOpenChange, document: doc, onRefresh, a
       window.dispatchEvent(new CustomEvent('document-deleted', { detail: { fileId: doc.id } }));
       onOpenChange(false);
       onRefresh();
-    } catch (err: any) {
-      toast.error(err?.message ?? 'Erreur lors de la suppression');
+    } catch (err: unknown) {
+      toast.error(readThrownError(err).message ?? 'Erreur lors de la suppression');
     } finally {
       setIsDeleting(false);
       setShowDeleteConfirm(false);

@@ -57,6 +57,7 @@ import {
   PERIOD_USER_MENTION, orderedBounds, parsePartialInput, partialToInput, periodEditBounds, periodEditChanged,
   type BusinessPeriodKind, type PartialDate, type PeriodEditBounds,
 } from "@/lib/documents/business-periods";
+import { readThrownError } from "@/lib/thrown-error";
 
 /** Événement de fenêtre : une période a changé (les tiroirs ouverts se relisent). */
 export const BUSINESS_PERIODS_MUTATED = "business-periods-mutated";
@@ -121,8 +122,9 @@ function PeriodEditor({ fileId, period, onDone }: { fileId: number; period: Peri
       toast.success(PERIOD_SAVED_TOAST);
       window.dispatchEvent(new CustomEvent(BUSINESS_PERIODS_MUTATED, { detail: { fileId } }));
       onDone(true);
-    } catch (err: any) {
-      if (err?.status !== 403) setErreur(err?.serverMessage || PERIOD_INVALID_MESSAGE);
+    } catch (err: unknown) {
+      const failure = readThrownError(err);
+      if (failure.status !== 403) setErreur(failure.serverMessage || PERIOD_INVALID_MESSAGE);
     } finally {
       setBusy(false);
     }

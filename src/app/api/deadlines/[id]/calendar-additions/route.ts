@@ -109,8 +109,8 @@ export async function POST(
       return NextResponse.json({ success: true, action: 'created' }, { status: 201 });
     }
 
-  } catch (error: any) {
+  } catch (error: unknown) {
     console.error('Track calendar addition error:', error);
-    return apiError(500, 'INTERNAL_ERROR', 'Internal server error: ' + error.message);
+    return apiError(500, 'INTERNAL_ERROR', 'Internal server error');
   }
 }

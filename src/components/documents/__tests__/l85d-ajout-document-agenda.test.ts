@@ -158,7 +158,7 @@ describe('L85D-UI06 — tiroir d’un élément d’agenda (desktop et mobile : 
   });
   it('un refus de droits (403) n’ajoute pas de message d’erreur par-dessus la fenêtre habituelle', () => {
     // #715 : une écriture de moins (statut retiré) — enregistrement et suppression.
-    expect(src.match(/if \(err\?\.status !== 403\)/g)?.length).toBeGreaterThanOrEqual(2);
+    expect(src.match(/if \((?:failure|readThrownError\(err\))\.status !== 403\)/g)?.length).toBeGreaterThanOrEqual(2);
   });
   it('même tiroir sur mobile : aucune variante mobile séparée des écritures d’agenda', () => {
     for (const f of ['src/components/mobile/mobile-actions-sheet.tsx', 'src/components/mobile/add-forms.tsx']) {

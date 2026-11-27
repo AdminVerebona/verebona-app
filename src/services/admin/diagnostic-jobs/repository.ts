@@ -362,7 +362,6 @@ export async function claimNextDiagnosticJobDetailed(workerId: string, commit: s
     const running = await tx<Raw[]>`
       SELECT id, cancel_requested, coalesce(perimeter->>'scope', target_type, 'global') = 'global' AS is_global FROM admin_export_generations
        WHERE kind = 'TECH_DIAGNOSTIC' AND mode = ${DIAG_JOB_MODE} AND status = 'RUNNING' AND locked_until > now()`;
-    const globalRunning = running.some((r) => r.is_global === true);
     const stopping = running.some((r) => r.cancel_requested === true && r.is_global === true);
     // Lot 111Q : voie commune (DIAG_JOB_GLOBAL_CONCURRENCY) + places réservées aux ciblés
     // (DIAG_JOB_TARGETED_CONCURRENCY). Un global en cours, annulé, en cours d'arrêt ou orphelin

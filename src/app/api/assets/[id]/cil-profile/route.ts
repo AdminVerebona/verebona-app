@@ -35,7 +35,7 @@ export async function GET(
       .limit(1);
 
     return NextResponse.json({ profile: profile ?? null });
-  } catch (err: any) {
+  } catch (err: unknown) {
     console.error('[CIL profile GET]', err);
     return NextResponse.json({ error: 'INTERNAL_ERROR' }, { status: 500 });
   }
@@ -118,7 +118,7 @@ export async function POST(
     // CDC Assistant §25.7, §31.7.
     if (asset.accountId != null) await emitBusinessEvent({ type: 'ASSET_UPDATED', accountId: asset.accountId, entityId: assetId });
     return NextResponse.json({ profile: updated });
-  } catch (err: any) {
+  } catch (err: unknown) {
     console.error('[CIL profile POST]', err);
     return NextResponse.json({ error: 'INTERNAL_ERROR' }, { status: 500 });
   }

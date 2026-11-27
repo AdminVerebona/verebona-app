@@ -146,9 +146,9 @@ export async function GET(request: NextRequest) {
 
     return NextResponse.json(paginatedResponse, { status: 200 });
 
-  } catch (error: any) {
+  } catch (error: unknown) {
     console.error('GET error:', error);
-    return apiError(500, 'INTERNAL_ERROR', 'Internal server error: ' + error.message);
+    return apiError(500, 'INTERNAL_ERROR', 'Internal server error');
   }
 }
 
@@ -226,9 +226,9 @@ export async function POST(request: NextRequest) {
 
     return NextResponse.json(newDeadline, { status: 201 });
 
-  } catch (error: any) {
+  } catch (error: unknown) {
     console.error('POST error:', error);
-    return apiError(500, 'INTERNAL_ERROR', 'Internal server error: ' + error.message);
+    return apiError(500, 'INTERNAL_ERROR', 'Internal server error');
   }
 }
 
@@ -297,9 +297,9 @@ export async function PUT(request: NextRequest) {
 
     return NextResponse.json(updatedRow, { status: 200 });
 
-  } catch (error: any) {
+  } catch (error: unknown) {
     console.error('PUT error:', error);
-    return apiError(500, 'INTERNAL_ERROR', 'Internal server error: ' + error.message);
+    return apiError(500, 'INTERNAL_ERROR', 'Internal server error');
   }
 }
 
@@ -343,8 +343,8 @@ export async function DELETE(request: NextRequest) {
 
     return NextResponse.json({ message: 'Deadline deleted successfully' }, { status: 200 });
 
-  } catch (error: any) {
+  } catch (error: unknown) {
     console.error('DELETE error:', error);
-    return apiError(500, 'INTERNAL_ERROR', 'Internal server error: ' + error.message);
+    return apiError(500, 'INTERNAL_ERROR', 'Internal server error');
   }
 }
