@@ -19,6 +19,7 @@ import {
 import {
   APP_UPDATE_REQUIRED_STATUS, appUpdateRequiredBody, evaluateCompatibility, isExemptFromVersionGate, readMobileServerConfig,
 } from '@/lib/mobile/mobile-config';
+import { applySearchIndexingPolicy, effectiveRequestHost, resolveSearchIndexing } from '@/lib/seo/search-indexing';
 
 /** Lot 97 : refus contrôlé d'une application mobile trop ancienne, ou null. */
 function mobileVersionGate(request: NextRequest, pathname: string): NextResponse | null {
@@ -100,6 +101,50 @@ function nativeCommerceGate(request: NextRequest, pathname: string): NextRespons
  * ══════════════════════════════════════════════════════════════════════════
  */
 export async function middleware(request: NextRequest) {
+  const response = isInAccessControlScope(request.nextUrl.pathname)
+    ? await accessControl(request)
+    : NextResponse.next();
+  // Carte #873 : hors production, TOUTE réponse (page servie, redirection vers
+  // /login, 401/403 JSON, fichier de `public/`, 404) porte
+  // `X-Robots-Tag: noindex, nofollow`. En production sur l'hôte public :
+  // aucune directive ajoutée (comportement d'avant). `NEXT_PUBLIC_APP_ENV` est
+  // figée au build — chaque application Scalingo construit avec ses propres
+  // variables ; l'hôte ne peut qu'ajouter le noindex (`lib/seo/search-indexing`).
+  return applySearchIndexingPolicy(response, resolveSearchIndexing({
+    appEnv: process.env.NEXT_PUBLIC_APP_ENV,
+    host: effectiveRequestHost(request.headers),
+  }));
+}
+
+/**
+ * Carte #873 : le matcher couvre désormais toutes les routes (directive
+ * d'indexation), mais les contrôles d'accès ci-dessous (version mobile,
+ * commerce natif, session, CSRF, JWT) restent limités EXACTEMENT au périmètre
+ * de l'ancien matcher — mêmes préfixes, même sémantique que `/x/:path*`
+ * (le préfixe seul ou suivi de `/…`). Aucune route jusque-là hors middleware
+ * ne voit son comportement changer.
+ */
+export const ACCESS_CONTROL_PREFIXES: readonly string[] = [
+  '/api',
+  '/accueil',
+  '/assets',
+  '/agenda',
+  '/documents',
+  '/dashboard',
+  '/mon-compte',
+  '/fournisseurs',
+  '/compte-en-suppression',
+  // Lot 97B : pages commerciales — seule la vue de l'app est redirigée
+  // (`nativeCommerceGate`) ; un navigateur passe sans aucun effet.
+  '/abonnement',
+  '/retractation',
+];
+
+export function isInAccessControlScope(pathname: string): boolean {
+  return ACCESS_CONTROL_PREFIXES.some((p) => pathname === p || pathname.startsWith(p + '/'));
+}
+
+async function accessControl(request: NextRequest): Promise<NextResponse> {
   const { pathname } = request.nextUrl;
 
   // Lot 97B : pages et opérations commerciales jamais dans l'app (Web inchangé).
@@ -404,21 +449,14 @@ export async function middleware(request: NextRequest) {
   return NextResponse.next();
 }
 
-// Configure which routes to run middleware on
+// Configure which routes to run middleware on.
+//
+// Carte #873 : toutes les routes, pour poser la directive d'indexation hors
+// production (pages publiques /login, inscription, mot de passe oublié, routes
+// profondes, 404, fichiers de `public/`, optimiseur d'images). Seuls les
+// fragments de build `/_next/static/…` (JS/CSS aux noms hachés, non indexables)
+// et le rechargement à chaud du développement sont exclus. Les contrôles
+// d'accès gardent leur périmètre d'origine : `ACCESS_CONTROL_PREFIXES`.
 export const config = {
-  matcher: [
-    '/api/:path*',
-    '/accueil/:path*',
-    '/assets/:path*',
-    '/agenda/:path*',
-    '/documents/:path*',
-    '/dashboard/:path*',
-    '/mon-compte/:path*',
-    '/fournisseurs/:path*',
-    '/compte-en-suppression/:path*',
-    // Lot 97B : pages commerciales — seule la vue de l'app est redirigée
-    // (`nativeCommerceGate`) ; un navigateur passe sans aucun effet.
-    '/abonnement/:path*',
-    '/retractation/:path*',
-  ],
+  matcher: ['/((?!_next/static/|_next/webpack-hmr).*)'],
 };

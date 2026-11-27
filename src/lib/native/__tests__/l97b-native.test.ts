@@ -167,7 +167,7 @@ describe('L97B-COM — middleware : navigation directe et API', () => {
     new NextRequest(`http://localhost:3000${path}`, { method, headers: { origin: 'http://localhost:3000', ...headers } });
 
   it('vue de l’app → écran d’information (offres, gestion, paiement, rétractation)', async () => {
-    const { middleware, config } = await import('@/middleware');
+    const { middleware, config, isInAccessControlScope } = await import('@/middleware');
     for (const p of ['/mon-compte/offres', '/mon-compte/abonnement/gerer/7', '/abonnement/checkout?plan=premium']) {
       const res = await middleware(req(p, { 'user-agent': UA_IOS }));
       expect(res.status, p).toBe(307);
@@ -175,7 +175,11 @@ describe('L97B-COM — middleware : navigation directe et API', () => {
     }
     // Lot 100D (décision PO A9) : la rétractation est servie dans l'app (droit de l'utilisateur).
     expect((await middleware(req('/retractation', { 'user-agent': UA_IOS }))).headers.get('x-middleware-next')).toBe('1');
-    expect(config.matcher).toEqual(expect.arrayContaining(['/abonnement/:path*', '/retractation/:path*']));
+    // Carte #873 : matcher global ; les pages commerciales restent dans le périmètre des contrôles d'accès.
+    for (const p of ['/abonnement', '/abonnement/checkout', '/retractation']) {
+      expect(config.matcher.some((m) => new RegExp(`^${m}$`).test(p)), p).toBe(true);
+      expect(isInAccessControlScope(p), p).toBe(true);
+    }
   });
 
   it('navigateur : inchangé (aucune redirection vers l’écran de l’app)', async () => {

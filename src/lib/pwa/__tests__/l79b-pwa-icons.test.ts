@@ -256,10 +256,15 @@ describe('L79B-CACHE — nouveaux noms, cache HTTP et service worker', () => {
     expect(deleted.sort()).toEqual(['verebona-static-v5.1.0', 'verebona-v5.1.0']);
   });
 
-  it('L79B-CACHE-04 — les icônes ne sont pas derrière le middleware d’authentification', () => {
-    const mw = read('src/middleware.ts');
-    const matcher = mw.slice(mw.indexOf('matcher: ['));
-    expect(matcher).not.toMatch(/'\/pwa|'\/:path\*'|'\/\(\.\*\)'/);
+  it('L79B-CACHE-04 — les icônes ne sont pas derrière le middleware d’authentification', async () => {
+    // Carte #873 : le matcher couvre toutes les routes (directive d'indexation
+    // hors production) ; les contrôles d'accès, eux, n'incluent jamais `/pwa`.
+    const { middleware, isInAccessControlScope } = await import('@/middleware');
+    expect(isInAccessControlScope('/pwa/icon-192-v79b.png')).toBe(false);
+    expect(read('src/middleware.ts')).not.toMatch(/'\/pwa'/);
+    const res = await middleware(new NextRequest('http://localhost:3000/pwa/icon-192-v79b.png'));
+    expect(res.headers.get('x-middleware-next')).toBe('1');
+    expect(res.headers.get('location')).toBeNull();
   });
 });
 

@@ -163,7 +163,8 @@ describe('L116CB-L06 — page et route', () => {
     expect(OPERATION_LIST_ROUTE).toBe('/agenda/evenements-reference');
     for (const menu of ['src/components/shell/AppSidebar.tsx', 'src/components/mobile/bottom-navigation.tsx']) expect(lire(menu), menu).not.toContain('evenements-reference');
     expect(lire('src/components/reference-events/ReferenceEventPageContent.tsx')).toContain('href={OPERATION_NAV_ROUTES.operations}');
-    expect(lire('src/middleware.ts')).toContain("'/agenda/:path*'");
+    // Carte #873 : matcher global ; `/agenda` reste dans le périmètre des contrôles d'accès.
+    expect(lire('src/middleware.ts')).toMatch(/ACCESS_CONTROL_PREFIXES[^=]*=\s*\[[^\]]*'\/agenda',/);
   });
   it('route : lecture seule, compte actif de la session, aucune écriture', () => {
     const route = lire('src/app/api/evenements-reference/route.ts');

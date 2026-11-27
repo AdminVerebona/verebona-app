@@ -11,7 +11,7 @@ import { existsSync } from 'node:fs';
 import { join } from 'node:path';
 import { describe, it, expect } from 'vitest';
 import { NextRequest } from 'next/server';
-import { middleware, config } from '@/middleware';
+import { middleware, config, isInAccessControlScope } from '@/middleware';
 import { generateAccessToken } from '@/lib/jwt';
 
 const ORIGIN = 'http://localhost:3000';
@@ -36,8 +36,13 @@ describe('emplacement', () => {
   });
 
   it('le matcher couvre l’API et les pages protégées', () => {
-    expect(config.matcher).toContain('/api/:path*');
-    expect(config.matcher).toContain('/accueil/:path*');
+    // Carte #873 : matcher global (directive d'indexation) ; les contrôles
+    // d'accès gardent le périmètre de l'ancien matcher.
+    const couvert = (p: string) => config.matcher.some((m) => new RegExp(`^${m}$`).test(p));
+    for (const p of ['/api/assets', '/accueil', '/accueil/x']) {
+      expect(couvert(p), p).toBe(true);
+      expect(isInAccessControlScope(p), p).toBe(true);
+    }
   });
 });
 

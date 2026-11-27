@@ -249,7 +249,9 @@ describe('L114OD-U07 — gardes de code', () => {
   });
   it('la page hérite de la protection de session des pages de l’Agenda', () => {
     const mw = lire('src/middleware.ts');
-    expect(mw).toContain("'/agenda/:path*'");
+    // Carte #873 : matcher global ; `/agenda` reste dans le périmètre des contrôles d'accès.
+    expect(mw).toMatch(/ACCESS_CONTROL_PREFIXES[^=]*=\s*\[[^\]]*'\/agenda',/);
+    expect(mw).toContain("pathname === p || pathname.startsWith(p + '/')");
     expect(mw).toMatch(/'\/agenda',[\s\S]*pathname\.startsWith\(route \+ '\/'\)/);
   });
 });

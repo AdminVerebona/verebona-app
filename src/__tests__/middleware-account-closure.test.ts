@@ -6,7 +6,7 @@
  */
 import { describe, it, expect } from 'vitest';
 import { NextRequest } from 'next/server';
-import { middleware, config } from '@/middleware';
+import { middleware, config, isInAccessControlScope } from '@/middleware';
 import { generateAccessToken } from '@/lib/jwt';
 import { SessionService } from '@/lib/session-service';
 import {
@@ -40,7 +40,9 @@ describe('pages', () => {
   it('l’écran lui-même est servi (sans boucle) et fait partie du matcher', async () => {
     const cookie = await cookieFor('PENDING_DELETION');
     expect(passes(await middleware(req('/compte-en-suppression', { cookie })))).toBe(true);
-    expect(config.matcher).toContain('/compte-en-suppression/:path*');
+    // Carte #873 : matcher global ; l'écran reste dans le périmètre des contrôles d'accès.
+    expect(config.matcher.some((m) => new RegExp(`^${m}$`).test('/compte-en-suppression'))).toBe(true);
+    expect(isInAccessControlScope('/compte-en-suppression')).toBe(true);
   });
 
   it('sans session : renvoi à la connexion, retour prévu sur l’écran', async () => {
