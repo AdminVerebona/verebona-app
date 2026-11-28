@@ -146,7 +146,10 @@ describe('C790B-POL — « Quel est le coût de possession de Polo ? » : l’at
 
   it('texte à plat exact (copie, lecteur d’écran, exports, journal) — par la fonction et par la question', () => {
     expect(nb(APRES.polo.answer)).toBe(ATTENDU);
-    expect(APRES.polo_question).toEqual(APRES.polo);
+    // Carte #880 (R03) : la question porte en plus la trace de lecture métier — la RÉPONSE reste identique.
+    const { reading, ...reponse } = APRES.polo_question as typeof APRES.polo_question & { reading?: Record<string, unknown> };
+    expect(reponse).toEqual(APRES.polo);
+    expect(reading).toMatchObject({ reading: 'OWNERSHIP_COST', outcome: 'ANSWERED', strategyExecuted: 'structured.ownership_cost', assetResolution: 'NAME' });
     expect(POLO.name).toBe('Polo');
     expect(POLO_MONTANTS.entretien + POLO_MONTANTS.contrats + POLO_MONTANTS.autres).toBe(POLO_MONTANTS.total);
   });

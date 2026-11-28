@@ -292,12 +292,17 @@ export async function buildExecutionUnitExport(id: string, opts: { sensitive: bo
     const dto = toExecutionDto(x, callsSummary(calls));
     const depth = (await readUnitDepth(s.q, [x])).get(x.id)!;
     const { missing, causeUnknown, ...rest } = unitDiagnostics(dto, calls.map((c) => c.row), depth, opts.sensitive);
+    // Carte #880 (E03, R03) : demande, réponse et trace de cascade d'une exécution T2 (contenus selon l'habilitation).
+    const assistant = x.treatment === 'T2' && x.objectId
+      ? await (await import('./t2-exchange')).readT2Exchange(s.q as never, x.objectId, opts.sensitive)
+      : undefined;
     return {
       format: EXECUTION_UNIT_SCHEMA, readAt: s.info.at, snapshot: { isolation: s.info.isolation, at: s.info.at, snapshot: s.info.snapshot },
       sensitiveContent: opts.sensitive,
       execution: executionLine(dto), missing, causeUnknown,
       calls: calls.map((c) => callLine(x.id, c.row, c.capture, opts.sensitive)),
       ...rest,
+      ...(assistant ? { assistant } : {}),
     };
   } finally {
     if (own) await (s as ReadSession & { close(): Promise<void> }).close().catch(() => undefined);

@@ -336,6 +336,13 @@ export interface DataAnswerOutcome {
    */
   semanticScope?: { resolved: false; strategyCandidate: string; terms: string[]; assetIds: number[] };
   /**
+   * Carte #880 (R02, R03) : motif DIAGNOSTIQUÉ d'une réponse structurée sans
+   * valeur (cible introuvable, indisponible, lecture en erreur) et trace de la
+   * lecture métier (besoin, résolution du bien, issue fonctionnelle).
+   */
+  diagnostic?: import('./t2-diagnostics').T2Diagnostic;
+  businessReading?: import('../canonical/structured-answers').BusinessReadingTrace;
+  /**
    * Lot 101A (C, D, I) : périmètre EXACT du retrieval des faits (objet résolu,
    * bien, ou compte entier en repli explicite) et verdict de CHAQUE candidat
    * (objet et propriété source, score, motif de sélection ou de rejet).
@@ -492,6 +499,8 @@ interface AssetScope {
    * que pour COLLECTION (`aggregateAllowed`).
    */
   cardinality: ScopeCardinality;
+  /** Carte #880 (R03) : méthode de résolution du bien (trace, aucun contenu). */
+  resolvedBy?: 'CLARIFICATION' | 'NAME' | 'PAGE_CONTEXT' | null;
 }
 
 /** Mots du message qui désignent réellement l'un des biens retenus (nom ou catégorie). */
@@ -515,7 +524,7 @@ async function resolveAssetScope(
   if (resolvedAssetId) {
     const a = (await port.listAssets(accountId)).find((x) => x.id === resolvedAssetId);
     return a
-      ? { assets: [a], ambiguous: false, unresolved: false, label: a.name, cardinality: 'SINGLE' }
+      ? { assets: [a], ambiguous: false, unresolved: false, label: a.name, cardinality: 'SINGLE', resolvedBy: 'CLARIFICATION' }
       : { assets: [], ambiguous: false, unresolved: true, label: null, cardinality: 'UNKNOWN' };
   }
   const candidates = assetWords(message);
@@ -525,23 +534,28 @@ async function resolveAssetScope(
       const best = Math.max(...found.map((a) => a.matched ?? 1));
       const top = found.filter((a) => (a.matched ?? 1) === best);
       const cardinality = detectScopeCardinality(message, designationWords(candidates, top));
-      return { assets: top, ambiguous: top.length > 1, unresolved: false, label: top.length === 1 ? top[0].name : null, cardinality };
+      return { assets: top, ambiguous: top.length > 1, unresolved: false, label: top.length === 1 ? top[0].name : null, cardinality, resolvedBy: 'NAME' };
     }
   }
   // « cet appartement » depuis la fiche d'un bien : le contexte de page tranche.
   if (pageAssetId && /\b(ce|cet|cette|ici)\b/.test(plain(message))) {
     const all = await port.listAssets(accountId);
     const a = all.find((x) => x.id === pageAssetId);
-    if (a) return { assets: [a], ambiguous: false, unresolved: false, label: a.name, cardinality: 'SINGLE' };
+    if (a) return { assets: [a], ambiguous: false, unresolved: false, label: a.name, cardinality: 'SINGLE', resolvedBy: 'PAGE_CONTEXT' };
   }
   return { assets: [], ambiguous: false, unresolved: candidates.length > 0, label: null, cardinality: candidates.length > 0 ? 'UNKNOWN' : 'GLOBAL' };
 }
 
 // ── Niveau 1 : réponses structurées ────────────────────────────────────────
 
-type Level1 = { strategy: DataAnswerStrategy; answer: string; sources: RetrievedSource[]; claims: Claim[]; kind: Parameters<typeof decideStructured>[0] } | null;
+type Level1 = {
+  strategy: DataAnswerStrategy; answer: string; sources: RetrievedSource[]; claims: Claim[]; kind: Parameters<typeof decideStructured>[0];
+  /** Carte #880 : motif diagnostiqué et trace de lecture métier (`canonical/structured-answers`). */
+  diagnostic?: import('./t2-diagnostics').T2Diagnostic;
+  reading?: import('../canonical/structured-answers').BusinessReadingTrace;
+} | null;
 /** Plusieurs biens également plausibles pour une demande qui n'en vise qu'un. */
-type Ambiguous = { ambiguous: AssetRow[]; reason: string };
+type Ambiguous = { ambiguous: AssetRow[]; reason: string; reading?: import('../canonical/structured-answers').BusinessReadingTrace };
 
 /**
  * Demande de liste des documents d'un bien (« montre-moi les documents de ma
@@ -1022,8 +1036,8 @@ export async function answerFromData(p: {
   const l1r = await tryStructured(p.port, p.accountId, p.message, p.pageAssetId ?? null, p.resolvedAssetId ?? null, p.pageDocumentId ?? null);
   if (l1r && 'ambiguous' in l1r) {
     const decision: SufficiencyDecision = { status: 'INSUFFICIENT', level: 1, score: 0, threshold: p.thresholds.database, reason: 'AMBIGUOUS_TARGET', detail: `${l1r.ambiguous.length} biens` };
-    attempts.push({ level: 1, strategy: 'none', status: decision.status, score: 0, threshold: decision.threshold, reason: decision.reason });
-    return { ...noAnswer(decision), ambiguity: { kind: 'asset', reason: l1r.reason, candidates: l1r.ambiguous } };
+    attempts.push({ level: 1, strategy: l1r.reading?.strategyCandidate ?? 'none', status: decision.status, score: 0, threshold: decision.threshold, reason: decision.reason });
+    return { ...noAnswer(decision), ambiguity: { kind: 'asset', reason: l1r.reason, candidates: l1r.ambiguous }, ...(l1r.reading ? { businessReading: l1r.reading } : {}) };
   }
   if (l1r && 'scopeUnresolved' in l1r) {
     // Lot 49 : aucun repli plus large (ni somme brute, ni recherche de faits
@@ -1045,9 +1059,14 @@ export async function answerFromData(p: {
   const l1 = l1r && !('scopeUnresolved' in l1r) ? l1r : null;
   if (l1) {
     const decision = decideStructured(l1.kind, p.thresholds);
-    attempts.push({ level: 1, strategy: l1.strategy, status: decision.status, score: decision.score, threshold: decision.threshold, reason: decision.reason });
-    if (decision.status === 'SUFFICIENT_STRUCTURED' || decision.status === 'CONFLICTING') {
-      return { handled: true, answer: l1.answer, sources: l1.sources, claims: l1.claims, decision, strategy: l1.strategy, attempts, contextSources };
+    attempts.push({ level: 1, strategy: l1.strategy, status: decision.status, score: decision.score, threshold: decision.threshold, reason: decision.reason ?? l1.reading?.outcome });
+    // Carte #880 : un diagnostic métier (cible introuvable, lecture en erreur) EST la réponse — jamais une
+    // escalade vers une recherche documentaire, même si le seuil force l'escalade des valeurs exactes.
+    if (decision.status === 'SUFFICIENT_STRUCTURED' || decision.status === 'CONFLICTING' || l1.diagnostic) {
+      return {
+        handled: true, answer: l1.answer, sources: l1.sources, claims: l1.claims, decision, strategy: l1.strategy, attempts, contextSources,
+        ...(l1.diagnostic ? { diagnostic: l1.diagnostic } : {}), ...(l1.reading ? { businessReading: l1.reading } : {}),
+      };
     }
     contextSources.push(...l1.sources);
   } else {

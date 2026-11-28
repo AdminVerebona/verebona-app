@@ -502,6 +502,14 @@ export interface CascadeTrace {
    */
   diagnostic?: import('../core/t2-diagnostics').T2Diagnostic;
   /**
+   * Carte #880 (R03) : LECTURE MÉTIER déterministe (coût de possession) —
+   * besoin reconnu, stratégie candidate et exécutée, méthode de résolution du
+   * bien et identifiant, issue FONCTIONNELLE (répondu, réservé à l'offre,
+   * clarification, cible introuvable, indisponible, lecture en erreur), motif
+   * de l'absence d'appel IA. Codes et identifiants seulement.
+   */
+  businessReading?: import('../canonical/structured-answers').BusinessReadingTrace;
+  /**
    * Lot 32 : état EXPLICITE de la compréhension (`core/understanding-status`).
    * `initialStatus` / `reasons` : évaluation du déterministe ; `status` : état
    * final ; `resolvedBy` : qui a complété la compréhension (déterministe, fil,

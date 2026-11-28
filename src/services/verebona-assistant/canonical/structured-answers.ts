@@ -41,8 +41,33 @@ import { semanticResidue, textMatchesTerms } from '../core/semantic-scope';
 import { plain } from '../core/routing-text';
 import { asksSettlement } from '../core/question-focus';
 import { TCO_PREMIUM_MESSAGE } from '@/services/business-operations/tco/dto';
+import { stripOutsideNames, wholeWords } from './phrase-strip';
+import { diagnosticMessage, type T2Diagnostic } from '../core/t2-diagnostics';
 
-interface ScopeLike { assets: AssetRow[]; ambiguous: boolean; unresolved: boolean; label: string | null; cardinality?: ScopeCardinality }
+interface ScopeLike {
+  assets: AssetRow[]; ambiguous: boolean; unresolved: boolean; label: string | null; cardinality?: ScopeCardinality;
+  /** Carte #880 (R03) : comment le bien a été résolu (trace, aucun contenu). */
+  resolvedBy?: 'CLARIFICATION' | 'NAME' | 'PAGE_CONTEXT' | null;
+}
+
+/**
+ * Carte #880 (R03) — trace d'une LECTURE MÉTIER (codes et identifiants, aucun
+ * contenu) : besoin reconnu, stratégie candidate et exécutée, méthode de
+ * résolution du bien, issue FONCTIONNELLE (distincte du succès technique),
+ * motif de l'absence d'appel IA. Portée par `CascadeTrace.businessReading`.
+ */
+export interface BusinessReadingTrace {
+  reading: 'OWNERSHIP_COST';
+  strategyCandidate: 'structured.ownership_cost';
+  strategyExecuted: 'structured.ownership_cost' | null;
+  /** Forme de la question : EXPLICITE (« coût de possession », « TCO ») ou large (« au total »). */
+  phrasing: 'EXPLICIT' | 'BROAD';
+  assetResolution: 'CLARIFICATION' | 'NAME' | 'PAGE_CONTEXT' | 'SINGLE_ASSET' | 'AMBIGUOUS' | 'NOT_FOUND' | 'NONE';
+  assetId: number | null;
+  outcome: 'ANSWERED' | 'LOCKED' | 'CLARIFICATION' | 'TARGET_NOT_FOUND' | 'TARGET_UNAVAILABLE' | 'READ_ERROR' | 'NO_ASSET';
+  /** Pourquoi aucun modèle n'a été appelé : la lecture déterministe a conclu. */
+  aiCall: 'NOT_NEEDED_DETERMINISTIC';
+}
 
 type CanonicalStrategy =
   | 'structured.asset_field' | 'structured.upcoming_agenda' | 'structured.missing_information' | 'structured.sum_qualified'
@@ -53,8 +78,13 @@ type CanonicalStrategy =
   | 'structured.ownership_cost';
 
 type CanonicalLevel1 =
-  | { strategy: CanonicalStrategy; answer: string; sources: RetrievedSource[]; claims: Claim[]; kind: 'exact' | 'list' | 'calc' | 'no_result' | 'conflict' }
-  | { ambiguous: AssetRow[]; reason: string }
+  | {
+    strategy: CanonicalStrategy; answer: string; sources: RetrievedSource[]; claims: Claim[]; kind: 'exact' | 'list' | 'calc' | 'no_result' | 'conflict';
+    /** Carte #880 : motif DIAGNOSTIQUÉ d'une réponse sans valeur (`core/t2-diagnostics`). */
+    diagnostic?: T2Diagnostic;
+    reading?: BusinessReadingTrace;
+  }
+  | { ambiguous: AssetRow[]; reason: string; reading?: BusinessReadingTrace }
   | ScopeUnresolved
   | null;
 
@@ -167,7 +197,8 @@ const COUNT = /\b(combien|nombre)\b/;
 /** Question sur un sinistre (état, indemnité, dossier). */
 export const CLAIM_Q = /\bsinistres?\b/;
 const CLAIM_ASK = /\b(ou en (est|sont)|statut|etat|avancement|indemni\w*|rembourse\w*|dossiers?|suivi|quels?|quelles?|mes|mon|combien|ai-je|declare\w*|expert\w*)\b/;
-const CLAIM_STRIP = /sinistres?|o[uù] en (est|sont)|statut|[ée]tat|avancement|indemni\w*|rembours\w*|dossiers?|suivi|d[ée]clar\w*|expert\w*/gi;
+// Carte #880 (R01) : mots ENTIERS seulement — jamais une sous-chaîne d'un nom de bien.
+const CLAIM_STRIP = wholeWords(/sinistres?|o[uù] en (est|sont)|statut|[ée]tat|avancement|indemni\w*|rembours\w*|dossiers?|suivi|d[ée]clar\w*|expert\w*/);
 
 /**
  * Historique d'un bien (« qu'est-ce qui a été fait sur la Polo ? », « quelles
@@ -176,7 +207,8 @@ const CLAIM_STRIP = /sinistres?|o[uù] en (est|sont)|statut|[ée]tat|avancement|
 export const HISTORY_Q = /(qu'?est-ce qu'?(il|on) a ete fait|qu'?est-ce qui a ete (fait|realise)|ce qui a ete (fait|realise)|que s'?est-il passe|qu'?a-t-on fait|quel(le)?s? (interventions?|reparations?|travaux|entretiens?|operations?)\b(?! (prevue?s?|a venir|prochaine?s?))|historique des (interventions|reparations|travaux|entretiens|depenses)|(interventions?|travaux|reparations?) (realise(e)?s?|faite?s?|effectue(e)?s?) (sur|dans|a|au|pour))/;
 /** Une question sur l'avenir (« prévus », « à faire ») n'est pas un historique : Agenda / actions. */
 const HISTORY_NOT = /\b(prevue?s?|a venir|prochaine?s?|planifie\w*|futur\w*|dois|devrai\w*|faut|a faire|a prevoir)\b/;
-const HISTORY_STRIP = /qu['’]?est-ce qu['’]?(il|on) a [ée]t[ée] fait|qu['’]?est-ce qui a [ée]t[ée] (fait|r[ée]alis[ée])|ce qui a [ée]t[ée] (fait|r[ée]alis[ée])|que s['’]?est-il pass[ée]|qu['’]?a-t-on fait|historique|interventions?|r[ée]parations?|travaux|entretiens?|op[ée]rations?|r[ée]alis[ée]e?s?|faite?s?|effectu[ée]e?s?|quel(le)?s?/gi;
+// Carte #880 (R01) : mots ENTIERS seulement — jamais une sous-chaîne d'un nom de bien.
+const HISTORY_STRIP = wholeWords(/qu['’]?est-ce qu['’]?(il|on) a [ée]t[ée] fait|qu['’]?est-ce qui a [ée]t[ée] (fait|r[ée]alis[ée])|ce qui a [ée]t[ée] (fait|r[ée]alis[ée])|que s['’]?est-il pass[ée]|qu['’]?a-t-on fait|historique|interventions?|r[ée]parations?|travaux|entretiens?|op[ée]rations?|r[ée]alis[ée]e?s?|faite?s?|effectu[ée]e?s?|quel(le)?s?/);
 
 /**
  * Lot 54D (§4.3) : question de COÛT DE POSSESSION d'un bien (« combien m'a
@@ -189,7 +221,30 @@ export function isOwnershipCostQuestion(message: string): boolean {
   const m = plain(message);
   return TCO_Q.test(m) && !expenseThemeOf(message) && !/\b(19|20)\d{2}\b/.test(m);
 }
-const TCO_STRIP = /co[uû]ts? (total|totaux|global|globaux|complet|r[ée]el) de (possession|d[ée]tention)|co[uû]ts? annuels?( moyens?)?|co[uû]ts? nets?( estim[ée]s?)?|co[uû]ts? de (possession|d[ée]tention)|tco|co[uû]t total|co[uû]t global|au total|combien|m['’]?a|co[uû]t[ée]?|me|de|d['’]|poss[ée]der|avoir|quel|est|le|la|mon|ma/gi;
+// Carte #880 (R01) : mots ENTIERS seulement — jamais une sous-chaîne d'un nom de bien.
+/**
+ * Carte #880 (R02) : forme EXPLICITE d'une question de coût de possession —
+ * « coût (total) de possession / détention », « coût annuel / net de
+ * possession », « TCO ». Elle vise toujours UN bien : une désignation
+ * introuvable est un diagnostic (« bien non identifié »), jamais une
+ * recherche documentaire. Les formes larges (« combien m'a coûté … au
+ * total ») gardent la barrière sémantique (#419) et la compréhension.
+ */
+export const TCO_EXPLICIT_Q = /\b(couts? (total|totaux|global|globaux|complet|reel) de (possession|detention)|couts? (annuels? (moyens? )?|nets? (estimes? )?)?de (possession|detention)|tco)\b/;
+export function isExplicitOwnershipCostQuestion(message: string): boolean {
+  return isOwnershipCostQuestion(message) && TCO_EXPLICIT_Q.test(plain(message));
+}
+const TCO_STRIP = wholeWords(/co[uû]ts? (total|totaux|global|globaux|complet|r[ée]el) de (possession|d[ée]tention)|co[uû]ts? annuels?( moyens?)?|co[uû]ts? nets?( estim[ée]s?)?|co[uû]ts? de (possession|d[ée]tention)|tco|co[uû]t total|co[uû]t global|au total|combien|m['’]?a|co[uû]t[ée]?|me|de|d['’]|poss[ée]der|avoir|quel|est|le|la|mon|ma/);
+
+/**
+ * Carte #880 : désignation d'un bien introuvable, telle que l'utilisateur l'a
+ * écrite (mots de la question déjà retirés, mots ENTIERS) — pour le message
+ * « bien non identifié ». Jamais une sous-chaîne de nom.
+ */
+function designationOf(reste: string): string | null {
+  const t = reste.replace(/[?!.…,;:«»"“”]+/g, ' ').replace(/\s+/g, ' ').trim();
+  return t ? t.slice(0, 60) : null;
+}
 
 /** « payé / réglé » (C15) — distinct de « coûté / dépensé » (F-132, F-133). */
 export const PAID = /\b(paye|payee|payes|payees|payer|regle|reglee|regles|reglees|regler|acquitte(e|es|s)?|verse|versee|versees)\b/;
@@ -197,19 +252,30 @@ export const PAID = /\b(paye|payee|payes|payees|payer|regle|reglee|regles|reglee
 const BROAD_COST = /\b(coute|coutee?s?|couter)\b/;
 const COST_WORDS = /\b(coute|coutee|coutes|cout|couts|depense\w*)\b/;
 const PAID_YESNO = /\b(a-t-(il|elle) ete|ont-(ils|elles) ete|est-(il|elle)|sont-(ils|elles)|deja)\b/;
-const PAID_STRIP = /pay[ée]e?s?|payer|r[ée]gl[ée]e?s?|r[ée]gler|acquitt[ée]e?s?|vers[ée]e?s?|combien|ai-je|j['’]ai|deja|déjà|a-t-(il|elle)|est-(il|elle)|[ée]t[ée]/gi;
+// Carte #880 (R01) : mots ENTIERS seulement — jamais une sous-chaîne d'un nom de bien.
+const PAID_STRIP = wholeWords(/pay[ée]e?s?|payer|r[ée]gl[ée]e?s?|r[ée]gler|acquitt[ée]e?s?|vers[ée]e?s?|combien|ai-je|j['’]ai|deja|déjà|a-t-(il|elle)|est-(il|elle)|[ée]t[ée]/);
 
 /** Question sur un contrat (assurance, abonnement, entretien, location). */
 export const CONTRACT_Q = /\b(contrats?|polices? d'assurance)\b|\b(assurances?|abonnements?)\b.*\b(quel|quelle|quels|quelles|mes|ai-je|en cours|souscrit\w*)\b|\b(quel|quelle|quels|quelles|mes)\b.*\b(assurances?|abonnements?)\b/;
 const CONTRACT_ASK = /\b(quel|quelle|quels|quelles|mes|ai-je|en cours|souscrit\w*|liste|qui|aupres de qui|chez qui)\b/;
 const CONTRACT_NOT = /\b(expire\w*|expiration|echeance\w*|renouvel\w*|fin de|combien|retrouve\w*|montre|affiche|ouvre|cherche\w*|resilie\w*|comment)\b/;
-const CONTRACT_STRIP = /contrats?|polices?|assurances?|abonnements?|en cours|souscrits?|aupr[eè]s de qui|chez qui|quel(le)?s?/gi;
+// Carte #880 (R01) : mots ENTIERS seulement — jamais une sous-chaîne d'un nom de bien.
+const CONTRACT_STRIP = wholeWords(/contrats?|polices?|assurances?|abonnements?|en cours|souscrits?|aupr[eè]s de qui|chez qui|quel(le)?s?/);
 
 /**
  * Lot 49 : noms GÉNÉRIQUES d'une dépense (pièce, frais, intervention) — ils
  * désignent la dépense elle-même, jamais un sujet précis.
  */
 const MOTS_DEPENSE = ['facture', 'factures', 'document', 'documents', 'frais', 'intervention', 'interventions', 'operation', 'operations', 'achats'];
+
+/**
+ * Carte #880 (R01) : autres prétraitements des stratégies déterministes —
+ * mêmes listes qu'avant, en mots ENTIERS (informations manquantes, thème de
+ * dépense, échéances).
+ */
+const MISSING_STRIP = wholeWords(/informations?|manqu\w*|incompl\w*|compl[eé]ter|renseign\w*/);
+const THEME_STRIP = wholeWords(`${Object.values(EXPENSE_THEME_LABELS).map(esc).join('|')}|entretien|revision|reparations?|travaux|assurances?|achat`);
+const AGENDA_STRIP = wholeWords(/[ée]ch[ée]ances?|rendez-vous|[ée]v[ée]nements?|rappels?|bient[ôo]t|arrivent|prochaine?s?|[àa] venir/);
 
 const SOURCES_MAX = 6;
 const uniques = (xs: Array<RetrievedSource | null | undefined>): RetrievedSource[] => {
@@ -649,6 +715,10 @@ export async function tryCanonicalStructured(p: {
   let dernier: ScopeLike | null = null;
   const r = await tryCanonicalStructuredInner({ ...p, resolveScope: async (t) => (dernier = await p.resolveScope(t)) });
   if (!r || !('strategy' in r)) return r;
+  // Carte #880 : un DIAGNOSTIC (cible introuvable, indisponible, lecture en erreur) ne sert aucune valeur —
+  // la barrière, qui empêche de servir une donnée hors sujet, ne s'y applique pas (sinon « Maisonnette »
+  // introuvable redevenait un périmètre non résolu, puis une recherche documentaire vide).
+  if (r.diagnostic) return r;
   // Lot 114A (#753, CDC T2 §11.1) — garde transversale : aucune stratégie de
   // totalisation ne sert un agrégat sur des biens concurrents d'une demande
   // au singulier, quelle que soit la branche qui l'a produit.
@@ -672,6 +742,11 @@ async function tryCanonicalStructuredInner(p: {
   const { port, accountId, message } = p;
   const m = plain(message);
   const today = port.today();
+  // Carte #880 (R01) : noms des biens du compte, lus au plus une fois — un mot d'un NOM (« Ferme du Suivi »)
+  // n'est jamais retiré, même s'il est aussi un mot de la question (« suivi »).
+  let nomsDuCompte: Promise<string[]> | null = null;
+  const noms = () => (nomsDuCompte ??= Promise.resolve(port.listAssets ? port.listAssets(accountId) : []).then((l) => (l ?? []).map((a) => a.name)).catch(() => []));
+  const sansMotsDeQuestion = async (texte: string, re: RegExp) => stripOutsideNames(texte, re, await noms());
   /** Résidu sémantique d'une stratégie candidate (lot 49) : ce qu'elle ne consomme pas. */
   const residu = (scope: ScopeLike, consumed: readonly string[] = []) =>
     semanticResidue(message, { assetNames: scope.assets.map((a) => a.name), consumed: [...expenseThemeWords(message), ...MOTS_DEPENSE, ...consumed] });
@@ -691,7 +766,7 @@ async function tryCanonicalStructuredInner(p: {
 
   // ── Informations manquantes (T2-04) ────────────────────────────────────
   if (MISSING.test(m) && port.listMissingInformation) {
-    const reste = message.replace(/informations?|manqu\w*|incompl\w*|compl[eé]ter|renseign\w*/gi, ' ');
+    const reste = await sansMotsDeQuestion(message, MISSING_STRIP);
     const scope = await p.resolveScope(reste);
     if (scope.ambiguous) return { ambiguous: scope.assets, reason: 'MISSING_INFO_MULTIPLE_ASSETS' };
     if (scope.unresolved) return null;
@@ -725,31 +800,96 @@ async function tryCanonicalStructuredInner(p: {
   // ══════════════════════════════════════════════════════════════════════
 
   // ── Lot 54D (§4.3) : coût de possession d'un bien → service TCO ─────────
+  // ══════════════════════════════════════════════════════════════════════
+  // CARTE #880 (E01, E02, R01, R02) — LE BESOIN TCO EST CONSERVÉ JUSQU'À LA
+  // RÉPONSE
+  //
+  // Règle remplacée : le nom du bien était résolu sur un texte ALTÉRÉ
+  // (« ison ? » pour « Maison ») et tout ce qui n'était pas « un bien trouvé +
+  // TCO lu » (cible introuvable, erreur de lecture avalée par
+  // `catch(() => null)`) laissait la cascade continuer jusqu'à la recherche
+  // documentaire vide — « Je n'ai rien trouvé ».
+  //
+  // Désormais (mots ENTIERS retirés, texte du nom intact) :
+  //   · bien unique + droit : le moteur TCO partagé avec la fiche (mêmes
+  //     montants, ventilation, limites), seul ;
+  //   · hors offre : message Premium / Premium Duo, AUCUN montant (inchangé) ;
+  //   · plusieurs biens : clarification ;
+  //   · question EXPLICITE sans bien désigné : le bien unique du compte, sinon
+  //     clarification parmi les biens ;
+  //   · question EXPLICITE, désignation introuvable : « bien non identifié » ;
+  //   · bien supprimé / inaccessible : « plus disponible » ;
+  //   · erreur de lecture : « lecture impossible » (jamais « aucune donnée ») ;
+  //   chacun tracé (`reading`, `diagnostic`). Les formes LARGES (« combien
+  //   m'a coûté … au total ») gardent leur parcours (barrière #419,
+  //   compréhension) quand la cible n'est pas résolue.
+  // ══════════════════════════════════════════════════════════════════════
   if (isOwnershipCostQuestion(message) && port.readOwnershipCost) {
-    const scope = await p.resolveScope(message.replace(TCO_STRIP, ' '));
+    const explicite = isExplicitOwnershipCostQuestion(message);
+    const reste = await sansMotsDeQuestion(message, TCO_STRIP);
+    const scope = await p.resolveScope(reste);
+    const lecture = (o: Partial<BusinessReadingTrace> & Pick<BusinessReadingTrace, 'outcome'>): BusinessReadingTrace => ({
+      reading: 'OWNERSHIP_COST', strategyCandidate: 'structured.ownership_cost', strategyExecuted: null,
+      phrasing: explicite ? 'EXPLICIT' : 'BROAD', assetResolution: 'NONE', assetId: null, aiCall: 'NOT_NEEDED_DETERMINISTIC', ...o,
+    });
+    const resolution = (): BusinessReadingTrace['assetResolution'] => scope.resolvedBy ?? 'NAME';
     // Lot 112C (reprise) — DROITS : le TCO est réservé Premium / Premium Duo / essai (même règle que la
     // fiche). Hors offre : réponse sans AUCUN montant, avant toute lecture TCO et sans clarification de
     // bien ; une question qui n'est pas un coût de possession (barrière) reste traitée comme avant.
     if (port.ownershipCostAllowed && !(await port.ownershipCostAllowed(accountId))) {
       const b = structuredScopeBarrier('structured.ownership_cost', message, scope.assets.map((a) => a.name));
-      if (!b.semanticScopeResolved) return nonResolu('structured.ownership_cost', b.unresolvedSemanticTerms, scope);
-      return ownershipCostLockedAnswer(scope.assets.length === 1 && !scope.ambiguous ? scope.assets[0] : null);
+      if (!b.semanticScopeResolved && !explicite) return nonResolu('structured.ownership_cost', b.unresolvedSemanticTerms, scope);
+      const cible = scope.assets.length === 1 && !scope.ambiguous ? scope.assets[0] : null;
+      return { ...ownershipCostLockedAnswer(cible) as CanonicalAnswer, reading: lecture({ outcome: 'LOCKED', strategyExecuted: 'structured.ownership_cost', assetResolution: cible ? resolution() : 'NONE', assetId: cible?.id ?? null }) };
     }
-    if (scope.ambiguous) return { ambiguous: scope.assets, reason: 'TCO_MULTIPLE_ASSETS' };
-    if (!scope.unresolved && scope.assets.length === 1) {
-      const a = scope.assets[0];
+    if (scope.ambiguous) return { ambiguous: scope.assets, reason: 'TCO_MULTIPLE_ASSETS', reading: lecture({ outcome: 'CLARIFICATION', assetResolution: 'AMBIGUOUS' }) };
+    let cible: AssetRow | null = !scope.unresolved && scope.assets.length === 1 ? scope.assets[0] : null;
+    let par: BusinessReadingTrace['assetResolution'] = cible ? resolution() : 'NONE';
+    if (!cible && explicite) {
+      const biens = await port.listAssets(accountId).catch(() => null);
+      if (!biens) {
+        const answer = diagnosticMessage('TECHNICAL_READ_FAILURE');
+        return { strategy: 'structured.ownership_cost', answer, sources: [], claims: [claim('ownership_cost_unavailable', answer, [], 'direct')], kind: 'no_result', diagnostic: 'TECHNICAL_READ_FAILURE', reading: lecture({ outcome: 'READ_ERROR', assetResolution: scope.unresolved ? 'NOT_FOUND' : 'NONE' }) };
+      }
+      if (scope.unresolved) {
+        // Désignation introuvable : diagnostic explicite (texte original, jamais tronqué), aucune recherche.
+        const designation = designationOf(reste);
+        const answer = [diagnosticMessage('TARGET_NOT_FOUND', { kind: 'asset', designation }),
+          biens.length ? `Vos biens : ${joinFr(biens.slice(0, 8).map((x) => x.name))}${biens.length > 8 ? '…' : ''}.` : null].filter(Boolean).join(' ');
+        const srcs = biens.slice(0, 8).map(assetSrc);
+        return { strategy: 'structured.ownership_cost', answer, sources: srcs, claims: [claim('ownership_cost_target', answer, srcs, 'direct')], kind: 'no_result', diagnostic: 'TARGET_NOT_FOUND', reading: lecture({ outcome: 'TARGET_NOT_FOUND', assetResolution: 'NOT_FOUND' }) };
+      }
+      if (biens.length > 1) return { ambiguous: biens.slice(0, 12), reason: 'TCO_ASSET_REQUIRED', reading: lecture({ outcome: 'CLARIFICATION', assetResolution: 'AMBIGUOUS' }) };
+      if (biens.length === 1) { cible = biens[0]; par = 'SINGLE_ASSET'; }
+      else {
+        const answer = 'Aucun bien actif n’est enregistré dans votre compte : le coût de possession se calcule pour un bien. Ajoutez un bien pour le suivre.';
+        return { strategy: 'structured.ownership_cost', answer, sources: [], claims: [claim('ownership_cost_target', answer, [], 'direct')], kind: 'no_result', diagnostic: 'TARGET_NOT_FOUND', reading: lecture({ outcome: 'NO_ASSET' }) };
+      }
+    }
+    if (cible) {
+      const a = cible;
       // Lot 54E (#419 écart 7) : barrière transversale AVANT exécution —
       // « combien m'a coûté internet au total ? » n'est pas le coût du bien.
       const b = structuredScopeBarrier('structured.ownership_cost', message, [a.name]);
       if (!b.semanticScopeResolved) return nonResolu('structured.ownership_cost', b.unresolvedSemanticTerms, scope);
-      const tco = await port.readOwnershipCost(accountId, a.id).catch(() => null);
-      if (tco) return ownershipCostAnswer(a, tco);
+      const lu = await port.readOwnershipCost(accountId, a.id).then((t) => ({ t }), (e: unknown) => ({ e }));
+      if ('t' in lu && lu.t) {
+        return { ...ownershipCostAnswer(a, lu.t) as CanonicalAnswer, reading: lecture({ outcome: 'ANSWERED', strategyExecuted: 'structured.ownership_cost', assetResolution: par, assetId: a.id }) };
+      }
+      // Bien devenu indisponible (supprimé, autre compte) ou lecture en erreur : états DISTINCTS, dits tels quels.
+      const indisponible = 'e' in lu && (lu.e as Error | undefined)?.name === 'AssetNotFoundForTcoError';
+      if ('e' in lu) console.error('[verebona] lecture TCO impossible', { accountId, assetId: a.id, error: (lu.e as Error | undefined)?.name ?? String(lu.e) });
+      const diagnostic: T2Diagnostic = indisponible ? 'TARGET_UNAVAILABLE' : 'TECHNICAL_READ_FAILURE';
+      const answer = indisponible ? diagnosticMessage('TARGET_UNAVAILABLE')
+        : `${diagnosticMessage('TECHNICAL_READ_FAILURE')} Le coût de possession de ${a.name} reste consultable depuis sa fiche.`;
+      const srcs = indisponible ? [] : [assetSrc(a)];
+      return { strategy: 'structured.ownership_cost', answer, sources: srcs, claims: [claim('ownership_cost_unavailable', answer, srcs, 'direct')], kind: 'no_result', diagnostic, reading: lecture({ outcome: indisponible ? 'TARGET_UNAVAILABLE' : 'READ_ERROR', strategyExecuted: 'structured.ownership_cost', assetResolution: par, assetId: a.id }) };
     }
   }
 
   // ── Sinistres : « où en est mon sinistre ? », indemnité ───────────────
   if (CLAIM_Q.test(m) && CLAIM_ASK.test(m) && !/\bcomment\b/.test(m) && port.readClaims) {
-    const reste = message.replace(CLAIM_STRIP, ' ');
+    const reste = await sansMotsDeQuestion(message, CLAIM_STRIP);
     const scope = await p.resolveScope(reste);
     if (!scope.unresolved) {
       const pre = avantLecture('structured.claim_status', scope);
@@ -766,7 +906,7 @@ async function tryCanonicalStructuredInner(p: {
 
   // ── Historique d'un bien : « qu'est-ce qui a été fait sur la Polo ? » ──
   if (HISTORY_Q.test(m) && !HISTORY_NOT.test(m) && port.readAssetHistory) {
-    const reste = message.replace(HISTORY_STRIP, ' ');
+    const reste = await sansMotsDeQuestion(message, HISTORY_STRIP);
     const scope = await p.resolveScope(reste);
     if (scope.ambiguous) return { ambiguous: scope.assets, reason: 'HISTORY_MULTIPLE_ASSETS' };
     if (!scope.unresolved && scope.assets.length === 1) {
@@ -789,7 +929,7 @@ async function tryCanonicalStructuredInner(p: {
   // Une échéance (« quand expire… ») reste à l'Agenda (C15) ; une recherche
   // explicite du document, à la recherche documentaire (pont, F-130).
   if (CONTRACT_Q.test(m) && CONTRACT_ASK.test(m) && !CONTRACT_NOT.test(m) && port.readContracts) {
-    const reste = message.replace(CONTRACT_STRIP, ' ');
+    const reste = await sansMotsDeQuestion(message, CONTRACT_STRIP);
     const scope = await p.resolveScope(reste);
     if (scope.ambiguous) return { ambiguous: scope.assets, reason: 'CONTRACT_MULTIPLE_ASSETS' };
     if (!scope.unresolved) {
@@ -812,8 +952,7 @@ async function tryCanonicalStructuredInner(p: {
   if (PAID.test(m) && !COST_WORDS.test(m) && (COUNT.test(m) || PAID_YESNO.test(m)) && (port.readPayments || port.readAcquisition)) {
     const theme = expenseThemeOf(message);
     const year = Number(m.match(/\b(20\d{2})\b/)?.[1]) || undefined;
-    const reste = message.replace(PAID_STRIP, ' ')
-      .replace(theme ? new RegExp(Object.values(EXPENSE_THEME_LABELS).join('|') + '|entretien|revision|reparations?|travaux|assurances?|achat', 'gi') : /$^/, ' ');
+    const reste = theme ? await sansMotsDeQuestion(await sansMotsDeQuestion(message, PAID_STRIP), THEME_STRIP) : await sansMotsDeQuestion(message, PAID_STRIP);
     const scope = await p.resolveScope(reste);
     if (scope.unresolved) return null;
     if (scope.ambiguous) return { ambiguous: scope.assets, reason: 'PAID_MULTIPLE_ASSETS' };
@@ -889,7 +1028,17 @@ async function tryCanonicalStructuredInner(p: {
             claims: [claim('acquisition', achat.answer, achat.sources, 'direct'), claim('ownership_cost_locked', TCO_PREMIUM_MESSAGE, reserve.sources, 'direct')],
           };
         }
-        const tco = port.readOwnershipCost ? await port.readOwnershipCost(accountId, a.id).catch(() => null) : null;
+        // Carte #880 (R02) : une lecture TCO en erreur n'est plus avalée en silence — le prix d'achat (fiable)
+        // est conservé et la limite est dite.
+        let tcoEnErreur = false;
+        const tco = port.readOwnershipCost ? await port.readOwnershipCost(accountId, a.id).catch((e: unknown) => {
+          tcoEnErreur = (e as Error | undefined)?.name !== 'AssetNotFoundForTcoError';
+          if (tcoEnErreur) console.error('[verebona] lecture TCO impossible', { accountId, assetId: a.id, error: (e as Error | undefined)?.name ?? String(e) });
+          return null;
+        }) : null;
+        if (!tco && tcoEnErreur) {
+          return { ...achat, answer: `${achat.answer}\n\nLe coût de possession de ${a.name} n’a pas pu être lu pour le moment ; il reste consultable depuis la fiche du bien.` };
+        }
         const possession = tco ? ownershipCostAnswer(a, tco) : null;
         if (possession && 'strategy' in possession) {
           const sources = uniques([...achat.sources, ...possession.sources]);
@@ -907,7 +1056,7 @@ async function tryCanonicalStructuredInner(p: {
   // ── Dépenses qualifiées (T2-24) ────────────────────────────────────────
   if (SPEND.test(m) && (COUNT.test(m) || /\b(total|somme)\b/.test(m)) && port.sumQualifiedExpenses) {
     const theme = expenseThemeOf(message);
-    const reste = theme ? message.replace(new RegExp(Object.values(EXPENSE_THEME_LABELS).join('|') + '|entretien|revision|reparations?|travaux|assurances?|achat', 'gi'), ' ') : message;
+    const reste = theme ? await sansMotsDeQuestion(message, THEME_STRIP) : message;
     const scope = await p.resolveScope(reste);
     // Lot 45 (C15 « coût d'une opération précise », F-127) : « combien a
     // coûté la réparation du TOIT ? » — l'intervention désignée par son
@@ -1008,7 +1157,7 @@ async function tryCanonicalStructuredInner(p: {
   // ── Échéances à venir, fenêtre (T2-15) ─────────────────────────────────
   const upcoming = upcomingAgendaRequest(message);
   if (upcoming && !COUNT.test(m) && port.listUpcomingAgenda) {
-    const reste = message.replace(/[ée]ch[ée]ances?|rendez-vous|[ée]v[ée]nements?|rappels?|bient[ôo]t|arrivent|prochaine?s?|[àa] venir/gi, ' ');
+    const reste = await sansMotsDeQuestion(message, AGENDA_STRIP);
     const scope = await p.resolveScope(reste);
     if (scope.ambiguous) return { ambiguous: scope.assets, reason: 'UPCOMING_MULTIPLE_ASSETS' };
     if (scope.unresolved) return null;
@@ -1032,7 +1181,7 @@ async function tryCanonicalStructuredInner(p: {
   // ── Champ d'un bien (T2-22, T2-23, T2-32) ──────────────────────────────
   const champ = findReadableField(message) ?? purchaseQuestion(message);
   if (champ && isFieldQuestion(message) && port.readAssetField) {
-    const reste = plain(message).replace(new RegExp(esc(champ.phrase), 'g'), ' ');
+    const reste = await sansMotsDeQuestion(plain(message), wholeWords(esc(champ.phrase), 'g'));
     const scope = await p.resolveScope(reste);
     if (scope.ambiguous) return { ambiguous: scope.assets, reason: 'FIELD_MULTIPLE_ASSETS' };
     if (scope.unresolved || scope.assets.length !== 1) return null;

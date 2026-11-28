@@ -1912,6 +1912,8 @@ export async function runAssistant(
 
       if (data) {
         trace.attempts.push(...data.attempts);
+        // Carte #880 (R03) : lecture métier (besoin, résolution du bien, issue fonctionnelle).
+        if (data.businessReading) trace.businessReading = data.businessReading;
         // Lot 101A (C, D, I) : périmètre exact et verdict de chaque candidat.
         if (data.retrieval) trace.retrieval = data.retrieval;
         // Lot 111K : ce que la question demande et l'adéquation des preuves
@@ -2024,6 +2026,9 @@ export async function runAssistant(
           // Listes et document retrouvé : cartes de résultats (§22.2, §22.3).
           if (CARD_STRATEGIES.has(data.strategy)) base.resultGroups = buildResultGroups(data.sources);
           if (data.documentState) trace.escalationReasons.push(`DOCUMENT:${data.documentState.kind}`);
+          // Carte #880 (R02, R03) : motif DIAGNOSTIQUÉ de la réponse (cible introuvable, indisponible,
+          // lecture en erreur) — distinct d'une recherche vide, jamais une erreur d'infrastructure.
+          if (data.diagnostic) trace.diagnostic = data.diagnostic;
           trace.fallbackUsed = false;
           return finalize(base, machine, 'deterministic', data.answer, data.claims, resolvedData, actions, ports, input,
             data.decision.status === 'CONFLICTING' ? 'conflicting' : data.documentState ? 'insufficient' : 'supported');
