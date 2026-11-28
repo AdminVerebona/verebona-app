@@ -166,7 +166,10 @@ describe('C876-ARCH identification par état serveur seulement, aucune décision
   });
   it('seuls la politique MFA et le service BO lisent les exemptions (aucun composant client)', () => {
     const lecteurs = walk(join(ROOT, 'src'))
-      .filter((f) => /app_review_mfa_exemptions|APP_REVIEW_FACTS_SQL|appReviewEligibility/.test(readFileSync(f, 'utf8')))
+      // ACCÈS réels (requête SQL, jointure, décision, déclaration Drizzle) — pas une simple
+      // mention : les inventaires (archive de diagnostic, export de recette) nomment la table
+      // pour l'EXCLURE, sans jamais la lire.
+      .filter((f) => /(FROM|JOIN|UPDATE|INSERT INTO)\s+app_review_mfa_exemptions\b|pgTable\('app_review_mfa_exemptions'|APP_REVIEW_FACTS_(SQL|JOIN)|appReviewEligibility\(/.test(readFileSync(f, 'utf8')))
       .map((f) => f.slice(ROOT.length + 1).split('\\').join('/'))
       .sort();
     expect(lecteurs).toEqual([
@@ -175,6 +178,14 @@ describe('C876-ARCH identification par état serveur seulement, aucune décision
       'src/lib/auth/mfa/policy.ts',
       'src/services/admin/app-review.service.ts',
     ]);
+  });
+  it('inventaires : les tables sont EXCLUES de l’archive de diagnostic et de l’export de recette (sécurité)', () => {
+    for (const f of ['src/services/admin/diagnostics-export/coverage.ts', 'src/services/admin/diagnostics-export/recette-catalog.ts']) {
+      const src = read(f);
+      expect(src).toMatch(/app_review_mfa_exemptions:\s*(\{ category: 'SECURITE'|'sécurité)/);
+      expect(src).toMatch(/app_review_events:\s*(\{ category: 'SECURITE'|'sécurité)/);
+      expect(src).not.toMatch(/(FROM|JOIN)\s+app_review_/);
+    }
   });
   it('aucune route utilisateur n’écrit la qualification ni l’exemption (BO seul)', () => {
     const ecrivains = walk(join(ROOT, 'src', 'app'))
