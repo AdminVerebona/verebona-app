@@ -312,6 +312,9 @@ export const RECETTE_EXCLUDED: Readonly<Record<string, string>> = {
   mfa_challenges: 'sécurité : défis de double authentification',
   mfa_pending_auth: 'sécurité : contextes de connexion provisoires',
   mfa_enforcement_settings: 'sécurité : réglage d’obligation de la double authentification',
+  // Carte #876 : comptes de revue des stores — exemptions MFA (contrôle d'accès) et leur historique.
+  app_review_mfa_exemptions: 'sécurité : exemptions de double authentification des comptes de revue des stores',
+  app_review_events: 'sécurité : historique des comptes de revue des stores (qualifications, exemptions)',
   email_change_requests: 'sécurité : demandes de changement d’adresse (empreintes de liens)',
   device_trust_legacy_accounts: 'sécurité : appareils reconnus, étiquettes de transition (empreintes)',
   auth_transactions: 'sécurité : transactions OAuth Google / Apple',
