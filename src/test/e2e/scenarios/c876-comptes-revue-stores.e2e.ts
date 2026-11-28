@@ -1,7 +1,8 @@
 /**
- * Carte #876 — comptes de revue Apple / Google : exemption CIBLÉE de
- * l'obligation globale de double authentification. PostgreSQL 16 réel
- * (migration 2020), VRAIES routes de connexion et de session.
+ * Cartes #876 / #879 — dispense CIBLÉE de l'obligation globale de double
+ * authentification, posée par un ADMIN depuis la fiche compte, SANS
+ * qualification Apple / Google (#879). PostgreSQL 16 réel (migration 2020),
+ * VRAIES routes de connexion et de session. Acteur : ADMIN (pas SUPER_ADMIN).
  *
  *   C876-LOGIN   MFA globale active : l'identité de revue autorisée se
  *                connecte par e-mail + mot de passe depuis un appareil neuf,
@@ -72,21 +73,23 @@ scenario('C876', 'Comptes de revue Apple / Google : exemption MFA ciblée', ({ s
   const payloadOf = async (app: Appareil) => (await import('@/lib/jwt')).verifyAccessToken(app.jar.get('access_token')!);
   const login = async (app: Appareil, email: string, password = PASSWORD) => call(app, R.login, 'POST', '/api/auth/login', { email, password });
 
-  async function compteDeRevue(kind: 'APPLE' | 'GOOGLE') {
-    const admin = await identite('SUPER_ADMIN');
+  /** #879 : compte STANDARD (aucune qualification), dispense directe par un ADMIN. */
+  async function compteDeRevue() {
+    const admin = await identite('ADMIN');
     const owner = await identite();
     const acc = await make.account({ owner, plan: null });
     const s = await svc();
-    await s.qualifyAccount(acc.id, kind, admin.id, 'Revue des stores — test e2e');
     await s.grantExemption(acc.id, owner.id, admin.id, 'Revue des stores — titulaire');
     return { admin, owner, acc };
   }
 
   it('C876-LOGIN : appareil neuf, e-mail + mot de passe, sans code, session AAL1, routes privées ; client ordinaire inchangé', async () => {
     await obligation(hier());
-    const { owner, acc } = await compteDeRevue('APPLE');
+    const { owner, acc } = await compteDeRevue();
     const { mfaRequirementFor } = await import('@/lib/auth/mfa/policy');
-    expect(await mfaRequirementFor(owner.id)).toMatchObject({ required: false, enforced: true, exempt: true, reviewKind: 'APPLE' });
+    expect(await mfaRequirementFor(owner.id)).toMatchObject({ required: false, enforced: true, exempt: true, reviewKind: null });
+    // Aucune qualification, aucune offre modifiée par la dispense.
+    expect((await sql`SELECT app_review_kind, plan_type FROM accounts WHERE id = ${acc.id}`)[0]).toMatchObject({ app_review_kind: null });
 
     const tel = new Appareil();
     const mauvais = await login(tel, owner.email, 'MauvaisMotDePasse1!');
@@ -110,7 +113,7 @@ scenario('C876', 'Comptes de revue Apple / Google : exemption MFA ciblée', ({ s
       if (!journal.length) await new Promise((r) => setTimeout(r, 25));
     }
     expect(journal.length).toBeGreaterThanOrEqual(1);
-    expect(JSON.stringify(journal[0].details)).toContain('APPLE');
+    expect(JSON.stringify(journal[0].details)).toMatch(/aal\W+1/);
 
     // Client ordinaire : soumis à la MFA (étape d'enrôlement, aucune session complète).
     const client = await identite();
@@ -122,9 +125,9 @@ scenario('C876', 'Comptes de revue Apple / Google : exemption MFA ciblée', ({ s
     expect(acc.id).toBeGreaterThan(0);
   });
 
-  it('C876-REVOKE : révocation → sessions coupées, nouvelle connexion soumise à la règle normale ; retrait de qualification idem', async () => {
+  it('C876-REVOKE : rétablissement → sessions coupées, règle normale ; qualification facultative SANS effet sur la dispense (#879)', async () => {
     await obligation(hier());
-    const { admin, owner, acc } = await compteDeRevue('GOOGLE');
+    const { admin, owner, acc } = await compteDeRevue();
     const tel = new Appareil();
     expect((await login(tel, owner.email)).status).toBe(200);
     expect((await call(tel, R.me, 'GET', '/api/users/me')).status).toBe(200);
@@ -139,20 +142,24 @@ scenario('C876', 'Comptes de revue Apple / Google : exemption MFA ciblée', ({ s
     const neuf = new Appareil();
     expect(await (await login(neuf, owner.email)).json()).toMatchObject({ mfaRequired: true });
 
-    // Réautorisation puis retrait de la qualification : exemptions révoquées.
+    // Nouvelle dispense, puis qualification / retrait facultatifs : la dispense
+    // n'en dépend pas (#879) — ni révoquée, ni élargie.
     await s.grantExemption(acc.id, owner.id, admin.id, 'Nouvelle revue Google');
     const { mfaRequirementFor } = await import('@/lib/auth/mfa/policy');
     expect((await mfaRequirementFor(owner.id)).exempt).toBe(true);
+    await s.qualifyAccount(acc.id, 'GOOGLE', admin.id, 'Libellé compte de revue');
+    expect(await mfaRequirementFor(owner.id)).toMatchObject({ exempt: true, reviewKind: 'GOOGLE' });
     const u = await s.unqualifyAccount(acc.id, admin.id, 'Compte de revue retiré');
-    expect(u.revokeSessionsOf).toEqual([owner.id]);
-    expect(await mfaRequirementFor(owner.id)).toMatchObject({ required: true, exempt: false });
-    const ev = await sql<{ event: string }[]>`SELECT event FROM app_review_events WHERE account_id = ${acc.id} ORDER BY id`;
-    expect(ev.map((e) => e.event)).toEqual(['ACCOUNT_QUALIFIED', 'EXEMPTION_GRANTED', 'EXEMPTION_REVOKED', 'EXEMPTION_GRANTED', 'EXEMPTION_REVOKED', 'ACCOUNT_UNQUALIFIED']);
+    expect(u.revokeSessionsOf).toEqual([]);
+    expect(await mfaRequirementFor(owner.id)).toMatchObject({ required: false, exempt: true, reviewKind: null });
+    const ev = await sql<{ event: string; actor_id: number }[]>`SELECT event, actor_id FROM app_review_events WHERE account_id = ${acc.id} ORDER BY id`;
+    expect(ev.map((e) => e.event)).toEqual(['EXEMPTION_GRANTED', 'EXEMPTION_REVOKED', 'EXEMPTION_GRANTED', 'ACCOUNT_QUALIFIED', 'ACCOUNT_UNQUALIFIED']);
+    expect(ev.every((e) => Number(e.actor_id) === admin.id)).toBe(true);
   });
 
-  it('C876-SCOPE : invité non autorisé, accès à un compte réel, rôle changé, facteur enrôlé → aucune exemption', async () => {
+  it('C876-SCOPE : invité non autorisé, accès à un autre compte, statut / rôle changés, facteur enrôlé → aucune dispense', async () => {
     await obligation(hier());
-    const { admin, owner, acc } = await compteDeRevue('APPLE');
+    const { admin, owner, acc } = await compteDeRevue();
     const { mfaRequirementFor } = await import('@/lib/auth/mfa/policy');
     const s = await svc();
 
@@ -164,13 +171,19 @@ scenario('C876', 'Comptes de revue Apple / Google : exemption MFA ciblée', ({ s
     await s.grantExemption(acc.id, invite.id, admin.id, 'Seconde identité Duo Apple');
     expect((await mfaRequirementFor(invite.id)).exempt).toBe(true);
 
-    // Accès à un compte client réel : exemption suspendue aussitôt, et refusée à l'autorisation.
+    // Accès à un AUTRE compte (quel qu'il soit) : dispense suspendue aussitôt, et refusée à l'autorisation.
     const reel = await make.account();
     await sql`INSERT INTO account_memberships (account_id, user_id, role, status) VALUES (${reel.id}, ${invite.id}, 'member', 'active')`;
     expect(await mfaRequirementFor(invite.id)).toMatchObject({ required: true, exempt: false });
     await s.revokeExemption(acc.id, invite.id, admin.id, 'Accès à un compte réel détecté');
     await expect(s.grantExemption(acc.id, invite.id, admin.id, 'Nouvelle tentative')).rejects.toMatchObject({ code: 'OTHER_ACCOUNT_ACCESS' });
 
+    // Suspension : dispense perdue ; réactivation : retrouvée (la ligne n'a pas changé).
+    await sql`UPDATE users SET status = 'SUSPENDED' WHERE id = ${owner.id}`;
+    expect(await mfaRequirementFor(owner.id)).toMatchObject({ required: true, exempt: false });
+    await sql`UPDATE users SET status = 'ACTIVE' WHERE id = ${owner.id}`;
+    // Retrait de l'adhésion de l'invité au compte : dispense perdue (déjà révoquée ici) ;
+    // le titulaire retiré de son compte : plus aucun droit actif.
     // Changement de rôle : exemption perdue (obligation administrateurs).
     await sql`UPDATE users SET role = 'ADMIN' WHERE id = ${owner.id}`;
     expect(await mfaRequirementFor(owner.id)).toMatchObject({ required: true, exempt: false });
@@ -188,10 +201,41 @@ scenario('C876', 'Comptes de revue Apple / Google : exemption MFA ciblée', ({ s
     expect(await mfaRequirementFor(owner.id)).toMatchObject({ required: false, enforced: false, exempt: false });
   });
 
-  it('C876-BO : refus (compte facturé, administrateur, technique, déjà qualifié) ; droits Premium Duo durables sans facturation', async () => {
+  it('C879-AVANT : dispense enregistrée AVANT l’activation globale → affichée « sans effet actuel », puis effective à l’activation', async () => {
+    await obligation(null);
+    const { owner, acc } = await compteDeRevue();
+    const s = await svc();
+    const client = await identite();
+    await make.account({ owner: client });
+    let view = await s.loadAppReviewView(acc.id);
+    expect(view.mfaEnforcement.users).toBe(false);
+    expect(view.users.find((u) => u.id === owner.id)).toMatchObject({ state: 'INACTIVE_POLICY', effective: false });
+    expect(view.users.find((u) => u.id === owner.id)?.diagnostic).toMatch(/sans effet tant que l’obligation globale/);
+
+    await obligation(hier());
+    view = await s.loadAppReviewView(acc.id);
+    expect(view.users.find((u) => u.id === owner.id)).toMatchObject({ state: 'EFFECTIVE', effective: true, diagnostic: null });
+    const { mfaRequirementFor } = await import('@/lib/auth/mfa/policy');
+    expect(await mfaRequirementFor(owner.id)).toMatchObject({ required: false, exempt: true });
+    expect(await mfaRequirementFor(client.id)).toMatchObject({ required: true, exempt: false });
+    // Deux comptes de revue distincts, non qualifiés : chacun sa dispense, aucune croisée.
+    const second = await compteDeRevue();
+    expect(await mfaRequirementFor(second.owner.id)).toMatchObject({ exempt: true });
+    await expect(s.grantExemption(acc.id, second.owner.id, second.admin.id, 'Croisement interdit')).rejects.toMatchObject({ code: 'NO_ACCESS' });
+
+    // Facteur enrôlé : « non effective », avec explication.
+    await sql`INSERT INTO user_mfa_state (user_id, enabled_at, last_method, updated_at) VALUES (${owner.id}, now(), 'totp', now())
+              ON CONFLICT (user_id) DO UPDATE SET enabled_at = now()`;
+    view = await s.loadAppReviewView(acc.id);
+    expect(view.users.find((u) => u.id === owner.id)).toMatchObject({ state: 'NOT_EFFECTIVE', mfaEnrolled: true });
+    expect(view.users.find((u) => u.id === owner.id)?.diagnostic).toMatch(/ne dispense pas d’un facteur configuré/);
+    await sql`DELETE FROM user_mfa_state WHERE user_id = ${owner.id}`;
+  });
+
+  it('C876-BO : refus (compte facturé, administrateur, technique, déjà qualifié) ; droits Premium Duo durables sans facturation, DISTINCTS de la dispense', async () => {
     await obligation(hier());
     const s = await svc();
-    const admin = await identite('SUPER_ADMIN');
+    const admin = await identite('ADMIN');
 
     const facture = await make.account();
     await sql`UPDATE accounts SET stripe_customer_id = ${`cus_${uid('x')}`} WHERE id = ${facture.id}`;
@@ -209,7 +253,11 @@ scenario('C876', 'Comptes de revue Apple / Google : exemption MFA ciblée', ({ s
 
     const owner = await identite();
     const acc = await make.account({ owner, plan: null });
-    await expect(s.grantExemption(acc.id, owner.id, admin.id, 'Avant qualification')).rejects.toMatchObject({ code: 'NOT_QUALIFIED' });
+    // #879 : dispense SANS qualification — n'attribue AUCUN droit ni offre.
+    await s.grantExemption(acc.id, owner.id, admin.id, 'Dispense sans qualification');
+    expect((await sql`SELECT plan_type, app_review_kind FROM accounts WHERE id = ${acc.id}`)[0]).toMatchObject({ app_review_kind: null });
+    expect((await sql`SELECT plan_type FROM accounts WHERE id = ${acc.id}`)[0].plan_type).not.toBe('PREMIUM_DUO');
+    await expect(s.grantDemoRights(acc.id, admin.id, 'Droits sans qualification')).rejects.toMatchObject({ code: 'NOT_QUALIFIED' });
     await s.qualifyAccount(acc.id, 'GOOGLE', admin.id, 'Compte de revue Google');
     await expect(s.qualifyAccount(acc.id, 'APPLE', admin.id, 'Autre store')).rejects.toMatchObject({ code: 'OTHER_QUALIFICATION' });
     await expect(s.grantExemption(acc.id, adm.id, admin.id, 'Administrateur')).rejects.toMatchObject({ code: 'ROLE_NOT_ELIGIBLE' });
@@ -225,7 +273,7 @@ scenario('C876', 'Comptes de revue Apple / Google : exemption MFA ciblée', ({ s
 
     const view = await s.loadAppReviewView(acc.id);
     expect(view.account).toMatchObject({ kind: 'GOOGLE', kindLabel: 'Compte de revue Google', billed: false });
-    expect(view.events.map((x) => x.event)).toEqual(['DEMO_RIGHTS_GRANTED', 'ACCOUNT_QUALIFIED']);
+    expect(view.events.map((x) => x.event)).toEqual(['DEMO_RIGHTS_GRANTED', 'ACCOUNT_QUALIFIED', 'EXEMPTION_GRANTED']);
     // Comptes clients existants : inchangés (qualification NULL).
     expect((await sql`SELECT COUNT(*)::int AS n FROM accounts WHERE app_review_kind IS NOT NULL AND id <> ${acc.id} AND id NOT IN (
       SELECT account_id FROM app_review_events WHERE event = 'ACCOUNT_QUALIFIED')`)[0].n).toBe(0);

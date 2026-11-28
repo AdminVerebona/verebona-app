@@ -49,15 +49,15 @@ describe('C876-ELIG décision pure : toutes les conditions, sinon aucune exempti
       expect(appReviewEligibility(reviewer({ status }))).toEqual({ exempt: false, reason: 'STATUS_NOT_ACTIVE' });
     }
   });
-  it('compte non (ou plus) qualifié, valeur inattendue : pas d’exemption', () => {
+  it('#879 : compte NON qualifié (compte standard) — dispense effective, sans qualification Apple / Google', () => {
     for (const k of [null, 'CLIENT', 'apple', 'AI_QUALIFICATION_CORPUS']) {
-      expect(appReviewEligibility(reviewer({ exemptionAccountKind: k }))).toEqual({ exempt: false, reason: 'ACCOUNT_NOT_QUALIFIED' });
+      expect(appReviewEligibility(reviewer({ exemptionAccountKind: k }))).toEqual({ exempt: true, kind: null, accountId: 42 });
     }
   });
   it('appartenance retirée / quittée : pas d’exemption', () => {
     expect(appReviewEligibility(reviewer({ hasAccessToExemptionAccount: false }))).toEqual({ exempt: false, reason: 'NO_ACCESS_TO_REVIEW_ACCOUNT' });
   });
-  it('accès à un compte client réel ou d’un autre store (invitation acceptée…) : exemption suspendue ; état inconnu : aucune', () => {
+  it('accès à un AUTRE compte, quel qu’il soit (invitation acceptée…) : dispense suspendue ; état inconnu : aucune', () => {
     expect(appReviewEligibility(reviewer({ foreignAccessibleAccounts: 1 }))).toEqual({ exempt: false, reason: 'OTHER_ACCOUNT_ACCESS' });
     expect(appReviewEligibility(reviewer({ foreignAccessibleAccounts: -1 }))).toEqual({ exempt: false, reason: 'OTHER_ACCOUNT_ACCESS' });
     expect(appReviewEligibility(reviewer({ foreignAccessibleAccounts: Number.NaN }))).toEqual({ exempt: false, reason: 'OTHER_ACCOUNT_ACCESS' });
@@ -87,12 +87,18 @@ describe('C876-POLICY décision MFA centrale (obligation globale neutralisée po
   it('client existant / nouveau, obligation active : MFA requise (inchangé)', async () => {
     state = { role: 'USER', enabledAt: null, settings: ON };
     expect(await mfaRequirementFor(1, now)).toMatchObject({ required: true, enforced: true, exempt: false, reviewKind: null });
+    // #879 : identité non dispensée d'un compte NON qualifié : politique normale.
+    state = { role: 'USER', enabledAt: null, settings: ON, appReview: reviewer({ exemptionAccountId: null, exemptionAccountKind: null }) };
+    expect(await mfaRequirementFor(1, now)).toMatchObject({ required: true, exempt: false });
     state = { role: 'USER', enabledAt: null, settings: ON, appReview: null };
     expect(await mfaRequirementFor(1, now)).toMatchObject({ required: true, exempt: false });
   });
   it('identité de revue autorisée, obligation active : MFA non requise, exemption tracée', async () => {
     state = { role: 'USER', enabledAt: null, settings: ON, appReview: reviewer() };
     expect(await mfaRequirementFor(1, now)).toEqual({ required: false, enrolled: false, enforced: true, exempt: true, reviewKind: 'APPLE', role: 'USER' });
+    // #879 : compte standard, sans qualification : même dispense, libellé de store absent.
+    state = { role: 'USER', enabledAt: null, settings: ON, appReview: reviewer({ exemptionAccountKind: null }) };
+    expect(await mfaRequirementFor(1, now)).toEqual({ required: false, enrolled: false, enforced: true, exempt: true, reviewKind: null, role: 'USER' });
   });
   it('obligation inactive : aucune exemption utile (comportement inchangé, MFA non requise)', async () => {
     state = { role: 'USER', enabledAt: null, settings: OFF, appReview: reviewer() };
@@ -115,7 +121,7 @@ describe('C876-POLICY décision MFA centrale (obligation globale neutralisée po
     expect(await mfaRequirementFor(1, now)).toMatchObject({ required: true, exempt: false });
   });
   it('révocation, retrait de qualification, appartenance changée : règle normale réimposée', async () => {
-    for (const f of [null, reviewer({ exemptionAccountKind: null }), reviewer({ hasAccessToExemptionAccount: false }), reviewer({ foreignAccessibleAccounts: 2 }), reviewer({ status: 'SUSPENDED' })]) {
+    for (const f of [null, reviewer({ hasAccessToExemptionAccount: false }), reviewer({ foreignAccessibleAccounts: 2 }), reviewer({ status: 'SUSPENDED' })]) {
       state = { role: 'USER', enabledAt: null, settings: ON, appReview: f };
       expect(await mfaRequirementFor(1, now)).toMatchObject({ required: true, exempt: false });
     }
@@ -199,6 +205,26 @@ describe('C876-ARCH identification par état serveur seulement, aucune décision
     expect(m).toMatch(/app_review_kind IN \('APPLE', 'GOOGLE'\)\) NOT VALID/);
     expect(m).not.toMatch(/\bUPDATE\s+\w+\s+SET\b|DELETE\s+FROM|DROP TABLE|DROP COLUMN|INSERT INTO|TRUNCATE/i);
     expect(m).toMatch(/CREATE UNIQUE INDEX IF NOT EXISTS app_review_mfa_exemptions_active_uniq\s+ON app_review_mfa_exemptions \(user_id\) WHERE revoked_at IS NULL/);
+  });
+  it('#879 : la décision ne dépend plus de la qualification ; confinement au SEUL compte de l’autorisation', () => {
+    const src = read('src/lib/auth/mfa/app-review.ts').replace(/\/\*[\s\S]*?\*\//g, '');
+    expect(src).toContain('AND x.id <> e.account_id');
+    expect(src).not.toMatch(/IS DISTINCT FROM ra\.app_review_kind/);
+    expect(src).not.toContain('ACCOUNT_NOT_QUALIFIED');
+    const svc = read('src/services/admin/app-review.service.ts');
+    const grant = svc.slice(svc.indexOf('export async function grantExemption'), svc.indexOf('export async function revokeExemption'));
+    expect(grant).not.toContain('NOT_QUALIFIED');
+    expect(grant).not.toMatch(/applyPlanChange|account_subscriptions|plan_type|role =|UPDATE users/);
+    const unq = svc.slice(svc.indexOf('export async function unqualifyAccount'), svc.indexOf('export async function grantExemption'));
+    expect(unq).not.toContain('app_review_mfa_exemptions');
+  });
+  it('#879 : administrateur ACTIF (ADMIN ; SUPER_ADMIN historique) — jamais un USER ni un rôle inconnu', async () => {
+    const { canManageAppReview } = await import('@/services/admin/app-review.service');
+    expect(canManageAppReview('ADMIN', 'ACTIVE')).toBe(true);
+    expect(canManageAppReview('SUPER_ADMIN', 'ACTIVE')).toBe(true);
+    for (const [r, st] of [['ADMIN', 'SUSPENDED'], ['ADMIN', null], ['USER', 'ACTIVE'], ['admin', 'ACTIVE'], ['', 'ACTIVE'], [null, 'ACTIVE']] as const) {
+      expect(canManageAppReview(r, st)).toBe(false);
+    }
   });
   it('décision : exemption seulement sur l’obligation globale, jamais sur un facteur enrôlé', () => {
     const src = read('src/lib/auth/mfa/policy.ts');

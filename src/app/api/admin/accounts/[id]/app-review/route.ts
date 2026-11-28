@@ -1,21 +1,25 @@
 /**
- * BO › Fiche compte › « Compte de revue des stores » (carte #876).
+ * BO › Fiche compte › « Double authentification » et « Compte de revue des
+ * stores » (cartes #876, #879).
  *
- * GET  : qualification technique du compte (« Compte client » par défaut,
- *        « Compte de revue Apple / Google »), identités ayant un droit actif,
- *        autorisations d'exemption (effective ou motif d'inéligibilité),
- *        historique. Tout administrateur (lecture seule).
+ * GET  : identités ayant un droit actif, dispense de l'obligation globale de
+ *        double authentification (politique générale par défaut ; dispense
+ *        enregistrée, état effectif, motif de non-effectivité — y compris
+ *        obligation globale inactive), qualification facultative du compte,
+ *        droits de démonstration, historique. Tout administrateur.
  *
- * POST { action, kind?, userId?, reason, confirm } — SUPER_ADMIN SEULEMENT,
- *        rôle RELU EN BASE, et, dans cet ordre :
+ * POST { action, kind?, userId?, reason, confirm } — ADMINISTRATEUR (#879 :
+ *        rôle ADMIN ; SUPER_ADMIN historique accepté comme par
+ *        `requireAdmin`), rôle ET statut RELUS EN BASE, et, dans cet ordre :
  *          1. session de niveau 2 (authentification forte) ;
  *          2. réauthentification FORTE fraîche (clé d'accès ou application
  *             d'authentification, `getReauthState`), CONSOMMÉE : une preuve
  *             par opération ;
  *          3. phrase « CONFIRMER » et motif (10 caractères au moins).
- *        Actions : qualify | unqualify | grant | revoke | demo_rights
- *        (`services/admin/app-review.service.ts`). Révocation ou retrait :
- *        sessions des identités concernées révoquées aussitôt. Journal BO
+ *        Actions : grant | revoke (dispense, SANS qualification préalable) ;
+ *        qualify | unqualify | demo_rights (compte de revue, facultatif)
+ *        (`services/admin/app-review.service.ts`). Rétablissement de la
+ *        politique générale : sessions de l'identité révoquées aussitôt. Journal BO
  *        (avant / après) + historique `app_review_events`.
  *
  * Aucun secret n'est reçu ni renvoyé : les identifiants des comptes de revue
@@ -27,9 +31,8 @@ import { SessionService } from '@/lib/session-service';
 import { consumeReauthProof, reauthRequiredResponse, requireFreshReauth } from '@/lib/auth/reauth';
 import { logAdminAction } from '@/lib/admin-audit';
 import { isAppReviewKind } from '@/lib/auth/mfa/app-review';
-import { readMfaEnforcementSettings } from '@/lib/auth/mfa/policy';
 import {
-  AppReviewAdminError, APP_REVIEW_ACTIONS, APP_REVIEW_CONFIRMATION, APP_REVIEW_MANAGER_ROLE, APP_REVIEW_REASON_MIN_LENGTH,
+  AppReviewAdminError, APP_REVIEW_ACTIONS, APP_REVIEW_CONFIRMATION, APP_REVIEW_REASON_MIN_LENGTH, canManageAppReview,
   grantDemoRights, type AppReviewAction, grantExemption, loadAppReviewView, normalizeReason,
   qualifyAccount, revokeExemption, unqualifyAccount, type AppReviewChange,
 } from '@/services/admin/app-review.service';
@@ -46,10 +49,11 @@ function parseAccountId(raw: string): number | null {
 const fail = (status: number, code: string, message: string) =>
   NextResponse.json({ error: code, code, message }, { status, headers: NO_STORE });
 
-async function dbRole(userId: number): Promise<string | null> {
+/** Rôle et statut de l'administrateur, relus en base (jamais déduits du jeton). */
+async function dbActor(userId: number): Promise<{ role: string | null; status: string | null }> {
   const { pgClient } = await import('@/db');
-  const [r] = await pgClient<{ role: string }[]>`SELECT role FROM users WHERE id = ${userId}`;
-  return r?.role ?? null;
+  const [r] = await pgClient<{ role: string; status: string }[]>`SELECT role, status FROM users WHERE id = ${userId}`;
+  return { role: r?.role ?? null, status: r?.status ?? null };
 }
 
 export async function GET(request: NextRequest, context: { params: Promise<{ id: string }> }) {
@@ -62,16 +66,14 @@ export async function GET(request: NextRequest, context: { params: Promise<{ id:
   const accountId = parseAccountId((await context.params).id);
   if (!accountId) return fail(400, 'INVALID_ACCOUNT_ID', 'Identifiant de compte invalide.');
   try {
-    const [view, session, role, settings] = await Promise.all([
-      loadAppReviewView(accountId), SessionService.getSession(request), dbRole(adminId), readMfaEnforcementSettings(),
+    const [view, session, actor] = await Promise.all([
+      loadAppReviewView(accountId), SessionService.getSession(request), dbActor(adminId),
     ]);
-    const now = Date.now();
     return NextResponse.json({
       ...view,
-      mfaEnforcement: { users: !!settings.users && settings.users.getTime() <= now },
       viewer: {
-        role,
-        canManage: role === APP_REVIEW_MANAGER_ROLE && session.aal === 2,
+        role: actor.role,
+        canManage: canManageAppReview(actor.role, actor.status) && session.aal === 2,
         strongSession: session.aal === 2,
       },
       confirmation: APP_REVIEW_CONFIRMATION,
@@ -102,15 +104,16 @@ export async function POST(request: NextRequest, context: { params: Promise<{ id
     return fail(status, code, message);
   };
 
-  // 1. Rôle relu en base : SUPER_ADMIN exclusivement (jamais déduit du jeton).
-  let role: string | null;
+  // 1. Rôle ET statut relus en base : administrateur actif (jamais déduit du jeton).
+  //    Erreur de lecture : refus (état inconnu = refus).
+  let actor: { role: string | null; status: string | null };
   try {
-    role = await dbRole(adminId);
+    actor = await dbActor(adminId);
   } catch (error) {
     console.error('[admin/accounts/app-review] rôle :', (error as Error)?.message ?? error);
     return fail(503, 'SESSION_UNAVAILABLE', 'Vérification impossible. Réessayez.');
   }
-  if (role !== APP_REVIEW_MANAGER_ROLE) return deny('SUPER_ADMIN_REQUIRED', 'Réservé au rôle SUPER_ADMIN.');
+  if (!canManageAppReview(actor.role, actor.status)) return deny('ADMIN_REQUIRED', 'Réservé à un administrateur actif.');
 
   // 2. Entrées (aucun secret attendu).
   if (!action) return fail(400, 'INVALID_ACTION', 'Action inconnue.');

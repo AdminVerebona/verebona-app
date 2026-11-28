@@ -1,28 +1,30 @@
 /**
- * Comptes de revue Apple / Google — administration BO (carte #876).
+ * Fiche compte (BO) — dispense de l'obligation globale de double
+ * authentification par identité, et compte de revue des stores (#876, #879).
  *
  * ══════════════════════════════════════════════════════════════════════════
- * OPÉRATIONS (toutes réservées au SUPER_ADMIN — contrôle dans la route :
- * session de niveau 2, réauthentification FORTE fraîche consommée, phrase de
- * confirmation, motif obligatoire) :
+ * OPÉRATIONS (administrateur : rôle ADMIN — SUPER_ADMIN historique accepté
+ * comme partout au BO —, rôle ET statut relus en base ; contrôles dans la
+ * route : session de niveau 2, réauthentification FORTE fraîche consommée,
+ * phrase de confirmation, motif obligatoire) :
  *
- *   · qualify     : « Compte client » → « Compte de revue Apple / Google ».
- *                   Refusée sur un compte facturé (identifiant Stripe), sur
- *                   le compte technique du corpus IA, sur un compte dont un
- *                   utilisateur est administrateur. Aucune donnée modifiée
- *                   en dehors de la qualification.
- *   · unqualify   : retour à « Compte client » ; TOUTES les exemptions actives
- *                   du compte sont révoquées et les sessions de leurs
- *                   identités coupées.
- *   · grant       : autorise UNE identité (rôle USER, active, droit actif sur
- *                   le compte, aucun autre compte accessible hors revue du
- *                   même store). Jamais héritée par un invité Duo.
- *   · revoke      : révocation immédiate + révocation de toutes les sessions
- *                   de l'identité (la décision MFA, relue sans cache à chaque
- *                   requête, réimpose déjà la règle normale).
- *   · demo_rights : droits Premium Duo DURABLES sans facturation (statut
- *                   actif, aucun essai, aucun identifiant Stripe) — compte de
- *                   revue non facturé seulement.
+ *   « Double authentification » (#879 — AUCUNE qualification nécessaire) :
+ *   · grant       : dispense UNE identité (rôle USER, active, droit actif sur
+ *                   le compte, aucun autre compte accessible). Jamais héritée
+ *                   par un invité Duo actuel ou futur. Aucun effet sur l'offre,
+ *                   la facturation, le rôle ni la qualification.
+ *   · revoke      : « Rétablir la politique générale » — immédiat, toutes les
+ *                   sessions de l'identité révoquées.
+ *
+ *   « Compte de revue des stores » (facultatif, indépendant de la dispense) :
+ *   · qualify     : libellé « Compte de revue Apple / Google ». Refusée sur
+ *                   un compte facturé (Stripe), le compte technique du corpus
+ *                   IA, un compte dont un utilisateur est administrateur.
+ *   · unqualify   : retour à « Compte client » — les dispenses ne sont PLUS
+ *                   touchées (#879 : elles ne dépendent pas de la qualification).
+ *   · demo_rights : droits Premium Duo DURABLES sans facturation — compte
+ *                   qualifié et non facturé seulement ; jamais attribués
+ *                   implicitement par une dispense.
  *
  * Chaque opération écrit l'historique `app_review_events` (motif, auteur,
  * date) dans la MÊME transaction ; la route écrit en plus le journal BO.
@@ -47,8 +49,15 @@ export const APP_REVIEW_REASON_MIN_LENGTH = 10;
 export const APP_REVIEW_CONFIRMATION = 'CONFIRMER';
 export const APP_REVIEW_ACTIONS = ['qualify', 'unqualify', 'grant', 'revoke', 'demo_rights'] as const;
 export type AppReviewAction = (typeof APP_REVIEW_ACTIONS)[number];
-/** Seul rôle habilité à modifier (carte #876 §2) — relu en base, jamais déduit du jeton. */
-export const APP_REVIEW_MANAGER_ROLE = 'SUPER_ADMIN';
+/**
+ * Rôles habilités à modifier (#879, GEN-002) : l'ADMIN opérationnel ; le
+ * SUPER_ADMIN historique reste accepté comme par `requireAdmin`. Relus en
+ * base avec le statut, jamais déduits du jeton.
+ */
+export const APP_REVIEW_MANAGER_ROLES: readonly string[] = ['ADMIN', 'SUPER_ADMIN'];
+export function canManageAppReview(role: string | null | undefined, status: string | null | undefined): boolean {
+  return !!role && APP_REVIEW_MANAGER_ROLES.includes(role) && status === 'ACTIVE';
+}
 
 export function normalizeReason(raw: unknown): string | null {
   if (typeof raw !== 'string') return null;
@@ -105,13 +114,13 @@ async function eligibilityOf(db: Tx, userId: number): Promise<AppReviewEligibili
   return r && r.review_account_id != null ? appReviewEligibility(appReviewFactsFromRow(r)) : { exempt: false, reason: 'NO_EXEMPTION' };
 }
 
-/** Comptes accessibles par l'identité, autres que `accountId`, pas de la qualification `kind`. */
-async function foreignAccountsOf(db: Tx, userId: number, kind: AppReviewKind): Promise<number> {
+/** Comptes accessibles par l'identité AUTRES que `accountId` (même définition que la décision MFA). */
+async function foreignAccountsOf(db: Tx, userId: number, accountId: number): Promise<number> {
   const [r] = await db.unsafe<{ n: number }[]>(`
     SELECT COUNT(*)::int AS n FROM accounts x
      WHERE (x.owner_user_id = $1
             OR x.id IN (SELECT account_id FROM account_memberships WHERE user_id = $1 AND status IN ('active', 'ACTIVE')))
-       AND x.app_review_kind IS DISTINCT FROM $2`, [userId, kind] as never[]);
+       AND x.id <> $2`, [userId, accountId] as never[]);
   return r?.n ?? 0;
 }
 
@@ -128,9 +137,18 @@ export interface AppReviewView {
     id: number; name: string; kind: AppReviewKind | null; kindLabel: string; technical: boolean; billed: boolean;
     planType: string; subscriptionStatus: string; rights: { planCode: string | null; status: string | null };
   };
+  /** Obligation globale de double authentification en vigueur pour les utilisateurs. */
+  mfaEnforcement: { users: boolean };
   users: Array<{
     id: number; email: string; firstName: string | null; role: string; status: string; access: string; mfaEnrolled: boolean;
     exemption: { id: number; accountId: number; grantedAt: string; grantedBy: number | null; reason: string } | null;
+    /**
+     * POLICY : politique générale (aucune dispense) ; EFFECTIVE : dispense
+     * appliquée ; INACTIVE_POLICY : dispense enregistrée et éligible, sans
+     * effet tant que l'obligation globale n'est pas en vigueur ; NOT_EFFECTIVE :
+     * dispense enregistrée mais non appliquée (`diagnostic`).
+     */
+    state: 'POLICY' | 'EFFECTIVE' | 'INACTIVE_POLICY' | 'NOT_EFFECTIVE';
     effective: boolean; diagnostic: string | null;
   }>;
   exemptions: Array<{ id: number; userId: number; email: string | null; grantedAt: string; grantedBy: number | null; grantedReason: string; revokedAt: string | null; revokedBy: number | null; revokedReason: string | null }>;
@@ -146,19 +164,28 @@ export async function loadAppReviewView(accountId: number): Promise<AppReviewVie
   const active = await pgClient.unsafe<{ id: number; user_id: number; account_id: number; granted_at: Date; granted_by: number | null; granted_reason: string }[]>(`
     SELECT id, user_id, account_id, granted_at, granted_by, granted_reason FROM app_review_mfa_exemptions
      WHERE revoked_at IS NULL AND user_id = ANY($1::int[])`, [members.map((m) => m.id)] as never[]);
+  const { readMfaEnforcementSettings } = await import('@/lib/auth/mfa/policy');
+  const settings = await readMfaEnforcementSettings();
+  const enforcedUsers = !!settings.users && settings.users.getTime() <= Date.now();
   const users: AppReviewView['users'] = [];
   for (const m of members) {
     const ex = active.find((x) => Number(x.user_id) === Number(m.id)) ?? null;
     const el = ex ? await eligibilityOf(pgClient, m.id) : null;
-    const effective = !!el?.exempt && Number(ex?.account_id) === accountId && !m.mfa_enrolled;
+    const here = !!ex && Number(ex.account_id) === accountId;
+    const eligible = here && !!el?.exempt && !m.mfa_enrolled;
+    const state: AppReviewView['users'][number]['state'] = !ex ? 'POLICY'
+      : eligible ? (enforcedUsers ? 'EFFECTIVE' : 'INACTIVE_POLICY')
+      : 'NOT_EFFECTIVE';
     users.push({
       id: Number(m.id), email: m.email, firstName: m.first_name, role: m.role, status: m.status, access: m.access, mfaEnrolled: !!m.mfa_enrolled,
       exemption: ex ? { id: Number(ex.id), accountId: Number(ex.account_id), grantedAt: iso(ex.granted_at)!, grantedBy: ex.granted_by, reason: ex.granted_reason } : null,
-      effective,
+      state,
+      effective: state === 'EFFECTIVE',
       diagnostic: !ex ? null
-        : Number(ex.account_id) !== accountId ? 'Autorisation active sur un autre compte de revue.'
+        : !here ? `Dispense enregistrée sur un autre compte (#${Number(ex.account_id)}).`
         : el && !el.exempt ? APP_REVIEW_INELIGIBILITY_LABELS[el.reason]
-        : m.mfa_enrolled ? 'Un facteur est enrôlé : la double authentification reste exigée (aucune exemption).'
+        : m.mfa_enrolled ? 'Un facteur est déjà enrôlé : la dispense de l’obligation globale ne dispense pas d’un facteur configuré (double authentification toujours exigée).'
+        : !enforcedUsers ? 'Dispense enregistrée : sans effet tant que l’obligation globale n’est pas en vigueur (la double authentification reste facultative pour tous).'
         : null,
     });
   }
@@ -176,6 +203,7 @@ export async function loadAppReviewView(accountId: number): Promise<AppReviewVie
       technical: a.technical_kind != null, billed: isBilled(a), planType: a.plan_type, subscriptionStatus: a.subscription_status,
       rights: { planCode: a.sub_plan_code, status: a.sub_status },
     },
+    mfaEnforcement: { users: enforcedUsers },
     users,
     exemptions: exemptions.map((e) => ({
       id: Number(e.id), userId: Number(e.user_id), email: e.email, grantedAt: iso(e.granted_at)!, grantedBy: e.granted_by, grantedReason: e.granted_reason,
@@ -187,7 +215,7 @@ export async function loadAppReviewView(accountId: number): Promise<AppReviewVie
   };
 }
 
-// ── Écritures (SUPER_ADMIN, contrôles de la route faits en amont) ───────────
+// ── Écritures (administrateur, contrôles de la route faits en amont) ───────
 
 export interface AppReviewChange {
   before: Record<string, unknown>;
@@ -218,44 +246,42 @@ export async function unqualifyAccount(accountId: number, actorId: number, reaso
     const tx = t as unknown as Tx;
     const a = await loadAccount(tx, accountId, true);
     if (!a.app_review_kind) throw new AppReviewAdminError('NOT_QUALIFIED', 'Le compte est déjà un compte client.');
-    const revoked = await tx<{ user_id: number }[]>`
-      UPDATE app_review_mfa_exemptions SET revoked_at = now(), revoked_by = ${actorId}, revoked_reason = ${`Retrait de la qualification : ${reason}`}
-       WHERE account_id = ${accountId} AND revoked_at IS NULL RETURNING user_id`;
-    for (const r of revoked) {
-      await recordEvent(tx, { accountId, userId: Number(r.user_id), event: 'EXEMPTION_REVOKED', kind: a.app_review_kind, reason: `Retrait de la qualification : ${reason}`, actorId });
-    }
+    // #879 : les dispenses de double authentification sont INDÉPENDANTES de la
+    // qualification — ni révoquées ni modifiées ici (« Rétablir la politique
+    // générale » par identité). Les droits de démonstration ne sont pas retirés.
     await tx`UPDATE accounts SET app_review_kind = NULL, updated_at = now() WHERE id = ${accountId}`;
     await recordEvent(tx, { accountId, event: 'ACCOUNT_UNQUALIFIED', kind: a.app_review_kind, reason, actorId });
-    return { before: { appReviewKind: a.app_review_kind }, after: { appReviewKind: null, exemptionsRevoked: revoked.length }, revokeSessionsOf: revoked.map((r) => Number(r.user_id)) };
+    return { before: { appReviewKind: a.app_review_kind }, after: { appReviewKind: null }, revokeSessionsOf: [] };
   });
 }
 
 export async function grantExemption(accountId: number, userId: number, actorId: number, reason: string): Promise<AppReviewChange> {
   return pgClient.begin(async (t) => {
     const tx = t as unknown as Tx;
+    // #879 : aucune qualification préalable ; la qualification éventuelle n'est
+    // qu'un libellé de l'historique. Aucun effet sur l'offre ni la facturation.
     const a = await loadAccount(tx, accountId, true);
-    if (!isAppReviewKind(a.app_review_kind)) throw new AppReviewAdminError('NOT_QUALIFIED', 'Qualifiez d’abord le compte « compte de revue Apple / Google ».');
-    const kind = a.app_review_kind;
+    const kind = isAppReviewKind(a.app_review_kind) ? a.app_review_kind : null;
     const [u] = await tx<{ id: number; role: string; status: string; mfa_enrolled: boolean }[]>`
       SELECT u.id, u.role, u.status, (m.enabled_at IS NOT NULL) AS mfa_enrolled
         FROM users u LEFT JOIN user_mfa_state m ON m.user_id = u.id WHERE u.id = ${userId} FOR UPDATE OF u`;
     if (!u) throw new AppReviewAdminError('USER_NOT_FOUND', 'Utilisateur introuvable.', 404);
-    if (u.role !== 'USER') throw new AppReviewAdminError('ROLE_NOT_ELIGIBLE', 'Un administrateur ne peut jamais être exempté de la double authentification.');
+    if (u.role !== 'USER') throw new AppReviewAdminError('ROLE_NOT_ELIGIBLE', 'Seule une identité utilisateur (USER) peut être dispensée : jamais un administrateur ni un rôle inconnu.');
     if (u.status !== 'ACTIVE') throw new AppReviewAdminError('STATUS_NOT_ACTIVE', 'Identité non active (suspendue, clôturée ou adresse non vérifiée).');
     const members = await accountUsers(tx, accountId);
-    if (!members.some((m) => Number(m.id) === userId)) throw new AppReviewAdminError('NO_ACCESS', 'Cette identité n’a pas de droit actif sur ce compte de revue.');
-    if ((await foreignAccountsOf(tx, userId, kind)) > 0) {
-      throw new AppReviewAdminError('OTHER_ACCOUNT_ACCESS', 'Cette identité accède à un autre compte (client ou autre store) : exemption impossible.');
+    if (!members.some((m) => Number(m.id) === userId)) throw new AppReviewAdminError('NO_ACCESS', 'Cette identité n’a pas de droit actif sur ce compte.');
+    if ((await foreignAccountsOf(tx, userId, accountId)) > 0) {
+      throw new AppReviewAdminError('OTHER_ACCOUNT_ACCESS', 'Cette identité accède aussi à un autre compte : dispense impossible (elle reste confinée à un seul compte).');
     }
     const [existing] = await tx<{ account_id: number }[]>`SELECT account_id FROM app_review_mfa_exemptions WHERE user_id = ${userId} AND revoked_at IS NULL`;
-    if (existing) throw new AppReviewAdminError('ALREADY_GRANTED', 'Cette identité a déjà une autorisation active.');
+    if (existing) throw new AppReviewAdminError('ALREADY_GRANTED', 'Cette identité est déjà dispensée.');
     await tx`
       INSERT INTO app_review_mfa_exemptions (user_id, account_id, granted_by, granted_reason, granted_at)
       VALUES (${userId}, ${accountId}, ${actorId}, ${reason}, now())`;
     await recordEvent(tx, { accountId, userId, event: 'EXEMPTION_GRANTED', kind, reason, actorId });
     return {
       before: { exemption: null }, after: { exemption: { userId, accountId, kind } }, revokeSessionsOf: [],
-      ...(u.mfa_enrolled ? { warning: 'Un facteur est déjà enrôlé pour cette identité : la double authentification reste exigée (l’exemption ne supprime jamais un facteur).' } : {}),
+      ...(u.mfa_enrolled ? { warning: 'Un facteur est déjà enrôlé pour cette identité : la dispense de l’obligation globale ne dispense pas d’un facteur configuré (double authentification toujours exigée, aucun facteur supprimé).' } : {}),
     };
   });
 }
@@ -267,7 +293,7 @@ export async function revokeExemption(accountId: number, userId: number, actorId
     const rows = await tx<{ id: number }[]>`
       UPDATE app_review_mfa_exemptions SET revoked_at = now(), revoked_by = ${actorId}, revoked_reason = ${reason}
        WHERE user_id = ${userId} AND account_id = ${accountId} AND revoked_at IS NULL RETURNING id`;
-    if (!rows.length) throw new AppReviewAdminError('NO_ACTIVE_EXEMPTION', 'Aucune autorisation active pour cette identité sur ce compte.', 404);
+    if (!rows.length) throw new AppReviewAdminError('NO_ACTIVE_EXEMPTION', 'Aucune dispense active pour cette identité sur ce compte.', 404);
     await recordEvent(tx, { accountId, userId, event: 'EXEMPTION_REVOKED', kind: a.app_review_kind, reason, actorId });
     return { before: { exemption: { userId, accountId } }, after: { exemption: null }, revokeSessionsOf: [userId] };
   });

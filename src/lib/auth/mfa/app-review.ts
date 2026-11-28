@@ -1,6 +1,8 @@
 /**
- * Comptes de revue Apple / Google — exemption CIBLÉE de l'obligation globale
- * de double authentification (carte #876, complément de #672 / lot 110B).
+ * Exemption CIBLÉE de l'obligation globale de double authentification, par
+ * identité, posée par un administrateur depuis la fiche compte du BO
+ * (cartes #876 et #879, complément de #672 / lot 110B). Usage prévu : comptes
+ * de revue des stores (Apple / Google) — sans qualification préalable (#879).
  *
  * ══════════════════════════════════════════════════════════════════════════
  * RÈGLE (module PUR : aucune lecture ici, les faits viennent de `policy.ts`,
@@ -13,20 +15,24 @@
  *
  * Elle n'existe que si TOUTES les conditions sont vraies, sinon aucune
  * exemption (fail closed — état inconnu, ligne absente, valeur inattendue) :
- *   1. une autorisation ACTIVE (non révoquée) pour CETTE identité, posée par
- *      un SUPER_ADMIN au BO (`app_review_mfa_exemptions`) ;
+ *   1. une autorisation ACTIVE (non révoquée) pour CETTE identité et CE
+ *      compte, posée par un administrateur au BO (`app_review_mfa_exemptions`) ;
  *   2. l'identité a le rôle `USER` exactement — jamais ADMIN / SUPER_ADMIN,
  *      ni un rôle inconnu ; un changement de rôle la fait perdre aussitôt ;
  *   3. l'identité est au statut `ACTIVE` ;
- *   4. le compte de l'autorisation est qualifié « compte de revue »
- *      (`accounts.app_review_kind` = APPLE | GOOGLE) ;
- *   5. l'identité a un droit ACTIF sur ce compte (adhésion active ou
+ *   4. l'identité a un droit ACTIF sur ce compte (adhésion active ou
  *      titulaire — même définition que `account-access.ts`) ;
- *   6. AUCUN autre compte accessible par l'identité n'est un compte client ou
- *      un compte de revue d'un autre store : une identité exemptée ne peut
- *      atteindre aucune donnée réelle (invitation acceptée ailleurs, ajout à un
- *      compte client, retrait de la qualification → exemption perdue dès la
- *      requête suivante).
+ *   5. AUCUN AUTRE compte n'est accessible par l'identité (titulaire ou
+ *      adhésion active, quel qu'il soit) : l'exemption reste confinée au seul
+ *      compte de l'autorisation — invitation acceptée ailleurs, ajout à un
+ *      autre compte → exemption suspendue dès la requête suivante.
+ *
+ * #879 : la qualification « compte de revue Apple / Google »
+ * (`accounts.app_review_kind`) n'est PLUS une condition ; elle reste un
+ * libellé facultatif du BO (et la condition des droits de démonstration).
+ * Les autorisations antérieures n'en sont pas élargies : sous #876, aucune ne
+ * pouvait être active sur un compte non qualifié, et le confinement à un seul
+ * compte est au moins aussi strict que l'ancienne règle « même store ».
  *
  * Identification par identifiants internes et état serveur SEULEMENT : jamais
  * par e-mail, domaine, user-agent, appareil, IP, en-tête ou secret partagé.
@@ -54,11 +60,11 @@ export interface AppReviewFacts {
   status: string | null;
   /** Autorisation active de cette identité : compte visé, `null` sinon. */
   exemptionAccountId: number | null;
-  /** Qualification du compte de l'autorisation (`null` = compte client). */
+  /** Qualification facultative du compte (libellé du journal, jamais une condition). */
   exemptionAccountKind: string | null;
   /** Droit actif de l'identité sur le compte de l'autorisation. */
   hasAccessToExemptionAccount: boolean;
-  /** Comptes accessibles par l'identité qui ne sont PAS de la même qualification de revue. */
+  /** Comptes accessibles par l'identité AUTRES que celui de l'autorisation (-1 = inconnu). */
   foreignAccessibleAccounts: number;
 }
 
@@ -66,12 +72,11 @@ export type AppReviewIneligibility =
   | 'NO_EXEMPTION'
   | 'ROLE_NOT_ELIGIBLE'
   | 'STATUS_NOT_ACTIVE'
-  | 'ACCOUNT_NOT_QUALIFIED'
   | 'NO_ACCESS_TO_REVIEW_ACCOUNT'
   | 'OTHER_ACCOUNT_ACCESS';
 
 export type AppReviewEligibility =
-  | { exempt: true; kind: AppReviewKind; accountId: number }
+  | { exempt: true; kind: AppReviewKind | null; accountId: number }
   | { exempt: false; reason: AppReviewIneligibility };
 
 /** Décision pure (testée) : l'identité bénéficie-t-elle de l'exemption ? */
@@ -79,10 +84,9 @@ export function appReviewEligibility(f: AppReviewFacts | null | undefined): AppR
   if (!f || !Number.isInteger(f.exemptionAccountId) || (f.exemptionAccountId as number) <= 0) return { exempt: false, reason: 'NO_EXEMPTION' };
   if (f.role !== 'USER') return { exempt: false, reason: 'ROLE_NOT_ELIGIBLE' };
   if (f.status !== 'ACTIVE') return { exempt: false, reason: 'STATUS_NOT_ACTIVE' };
-  if (!isAppReviewKind(f.exemptionAccountKind)) return { exempt: false, reason: 'ACCOUNT_NOT_QUALIFIED' };
   if (f.hasAccessToExemptionAccount !== true) return { exempt: false, reason: 'NO_ACCESS_TO_REVIEW_ACCOUNT' };
   if (!(Number.isInteger(f.foreignAccessibleAccounts) && f.foreignAccessibleAccounts === 0)) return { exempt: false, reason: 'OTHER_ACCOUNT_ACCESS' };
-  return { exempt: true, kind: f.exemptionAccountKind, accountId: f.exemptionAccountId as number };
+  return { exempt: true, kind: isAppReviewKind(f.exemptionAccountKind) ? f.exemptionAccountKind : null, accountId: f.exemptionAccountId as number };
 }
 
 /** Libellés BO des motifs d'inéligibilité (diagnostic, aucun secret). */
@@ -90,9 +94,8 @@ export const APP_REVIEW_INELIGIBILITY_LABELS: Readonly<Record<AppReviewIneligibi
   NO_EXEMPTION: 'Aucune autorisation active.',
   ROLE_NOT_ELIGIBLE: 'Rôle non éligible (administrateur ou rôle inconnu) : exemption impossible.',
   STATUS_NOT_ACTIVE: 'Identité non active (suspendue, clôturée ou non vérifiée).',
-  ACCOUNT_NOT_QUALIFIED: 'Le compte n’est plus qualifié « compte de revue ».',
-  NO_ACCESS_TO_REVIEW_ACCOUNT: 'L’identité n’a plus de droit actif sur le compte de revue.',
-  OTHER_ACCOUNT_ACCESS: 'L’identité accède à un autre compte (client ou autre store) : exemption suspendue.',
+  NO_ACCESS_TO_REVIEW_ACCOUNT: 'L’identité n’a plus de droit actif sur ce compte.',
+  OTHER_ACCOUNT_ACCESS: 'L’identité accède aussi à un autre compte : dispense suspendue (elle reste confinée à un seul compte).',
 };
 
 /**
@@ -114,7 +117,7 @@ export const APP_REVIEW_FACTS_SQL = `
     SELECT COUNT(*)::int FROM accounts x
      WHERE (x.owner_user_id = u.id
             OR x.id IN (SELECT am2.account_id FROM account_memberships am2 WHERE am2.user_id = u.id AND am2.status IN ('active', 'ACTIVE')))
-       AND x.app_review_kind IS DISTINCT FROM ra.app_review_kind
+       AND x.id <> e.account_id
   ) END AS review_foreign_accounts`;
 
 export const APP_REVIEW_FACTS_JOIN = `

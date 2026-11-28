@@ -22,9 +22,9 @@
  * (migration non appliquée) : aucune obligation (aucun facteur ne peut
  * exister), avertissement unique.
  *
- * Carte #876 — COMPTES DE REVUE APPLE / GOOGLE : l'obligation GLOBALE ne
- * s'applique pas à une identité explicitement autorisée par un SUPER_ADMIN
- * sur un compte de revue (`app-review.ts`, faits lus dans la MÊME requête,
+ * Cartes #876 / #879 — DISPENSE CIBLÉE : l'obligation GLOBALE ne s'applique
+ * pas à une identité USER explicitement dispensée par un administrateur depuis
+ * la fiche compte, confinée à ce compte (`app-review.ts`, faits lus dans la MÊME requête,
  * sans cache). `required = enrolled || (enforced && !exempt)` : un facteur
  * enrôlé reste TOUJOURS exigé, aucune preuve forte n'est fabriquée. Tables de
  * la migration 2020 absentes : aucune exemption (jamais un « non requis »

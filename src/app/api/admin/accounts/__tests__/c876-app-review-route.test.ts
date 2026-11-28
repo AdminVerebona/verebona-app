@@ -1,17 +1,23 @@
 /**
- * Carte #876 — BO « Compte de revue des stores » : garde de la route.
+ * Cartes #876 / #879 — BO fiche compte « Double authentification » : garde de
+ * la route.
  *
- * Modification réservée au SUPER_ADMIN (rôle RELU EN BASE), en session de
- * niveau 2, avec une réauthentification FORTE fraîche consommée, un motif et
- * la phrase de confirmation. Un ADMIN, un client, une session de niveau 1 ou
- * une preuve faible sont refusés AVANT toute écriture. Révocation : sessions
- * de l'identité révoquées aussitôt, journal BO écrit.
+ * #879 : modification par un ADMINISTRATEUR ACTIF (ADMIN — SUPER_ADMIN
+ * historique accepté), rôle ET statut RELUS EN BASE, en session de niveau 2,
+ * avec une réauthentification FORTE fraîche consommée, un motif et la phrase
+ * de confirmation. Un client, un rôle inconnu / retiré, un administrateur
+ * suspendu, une session de niveau 1 ou une preuve faible / absente / expirée /
+ * rejouée sont refusés AVANT toute écriture. Rétablissement : sessions de
+ * l'identité révoquées aussitôt, journal BO écrit. Fixtures ADMIN par défaut.
  */
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { NextRequest, NextResponse } from 'next/server';
 
 const etat = vi.hoisted(() => ({
-  role: 'SUPER_ADMIN' as string | null,
+  role: 'ADMIN' as string | null,
+  status: 'ACTIVE' as string | null,
+  dbFails: false,
+  consumeOk: true,
   aal: 2 as 1 | 2,
   reauth: { ok: true as boolean, assurance: 2 as number | undefined },
   consumed: [] as string[],
@@ -29,13 +35,16 @@ vi.mock('@/lib/session-service', () => ({
   SessionService: { getSession: async () => ({ userId: 7, role: 'ADMIN', aal: etat.aal, sid: 's7' }) },
 }));
 vi.mock('@/db', () => ({
-  pgClient: Object.assign(async () => (etat.role ? [{ role: etat.role }] : []), {}),
+  pgClient: Object.assign(async () => {
+    if (etat.dbFails) throw new Error('ECONNREFUSED');
+    return etat.role ? [{ role: etat.role, status: etat.status }] : [];
+  }, {}),
 }));
 vi.mock('@/lib/auth/reauth', () => ({
   requireFreshReauth: async () => etat.reauth.ok
     ? { ok: true, session: { userId: 7, aal: etat.aal, sid: 's7' }, proof: { id: 'p1', assurance: etat.reauth.assurance } }
     : { ok: false, response: NextResponse.json({ code: 'REAUTH_REQUIRED' }, { status: 403 }) },
-  consumeReauthProof: async (id: string, action: string) => { etat.consumed.push(`${id}:${action}`); return true; },
+  consumeReauthProof: async (id: string, action: string) => { etat.consumed.push(`${id}:${action}`); return etat.consumeOk; },
   reauthRequiredResponse: (code: string, opts: { mfa?: boolean } = {}) => NextResponse.json({ code, stepUp: opts.mfa ? 'MFA_STEP_UP_REQUIRED' : undefined }, { status: 403 }),
 }));
 vi.mock('@/lib/admin-audit', () => ({ logAdminAction: async (e: Record<string, unknown>) => { etat.audits.push(e); } }));
@@ -48,7 +57,7 @@ vi.mock('@/services/admin/app-review.service', async () => {
     AppReviewAdminError,
     APP_REVIEW_ACTIONS: ['qualify', 'unqualify', 'grant', 'revoke', 'demo_rights'],
     APP_REVIEW_CONFIRMATION: 'CONFIRMER',
-    APP_REVIEW_MANAGER_ROLE: 'SUPER_ADMIN',
+    canManageAppReview: (r: string | null, st: string | null) => (r === 'ADMIN' || r === 'SUPER_ADMIN') && st === 'ACTIVE',
     APP_REVIEW_REASON_MIN_LENGTH: 10,
     normalizeReason: (r: unknown) => (typeof r === 'string' && r.trim().length >= 10 ? r.trim() : null),
     loadAppReviewView: async () => ({ account: { id: 3 }, users: [], exemptions: [], events: [] }),
@@ -65,28 +74,46 @@ const ctx = { params: Promise.resolve({ id: '3' }) };
 const post = (body: unknown) => POST(new NextRequest('http://x/api/admin/accounts/3/app-review', { method: 'POST', body: JSON.stringify(body) }), ctx);
 const OK = { action: 'grant', userId: 11, reason: 'Revue App Store 1.4.0', confirm: 'CONFIRMER' };
 
-describe('C876-ROUTE garde SUPER_ADMIN + preuve forte', () => {
+describe('C879-ROUTE garde administrateur actif + preuve forte', () => {
   beforeEach(() => {
-    etat.role = 'SUPER_ADMIN'; etat.aal = 2; etat.reauth = { ok: true, assurance: 2 };
+    etat.role = 'ADMIN'; etat.status = 'ACTIVE'; etat.dbFails = false; etat.consumeOk = true; etat.aal = 2; etat.reauth = { ok: true, assurance: 2 };
     etat.consumed.length = 0; etat.calls.length = 0; etat.revoked.length = 0; etat.audits.length = 0;
   });
 
-  it('ADMIN (non SUPER_ADMIN) : 403 SUPER_ADMIN_REQUIRED, rien d’écrit, refus journalisé', async () => {
-    etat.role = 'ADMIN';
+  it('#879 : ADMIN actif en AAL2 — dispense DIRECTE, sans SUPER_ADMIN ni qualification', async () => {
     const r = await post(OK);
-    expect(r.status).toBe(403);
-    expect((await r.json()).code).toBe('SUPER_ADMIN_REQUIRED');
-    expect(etat.calls).toEqual([]);
-    expect(etat.audits[0]).toMatchObject({ action: 'APP_REVIEW_UPDATE', result: 'DENIED' });
+    expect(r.status).toBe(200);
+    expect(etat.calls).toEqual([{ fn: 'grant', args: [3, 11, 7, 'Revue App Store 1.4.0'] }]);
+    expect(etat.calls.some((c) => c.fn === 'qualify' || c.fn === 'demo_rights')).toBe(false);
   });
-  it('client (USER) ou rôle introuvable : refusé', async () => {
-    for (const role of ['USER', null]) {
-      etat.role = role;
-      expect((await post(OK)).status).toBe(403);
+  it('SUPER_ADMIN historique : accepté comme par requireAdmin', async () => {
+    etat.role = 'SUPER_ADMIN';
+    expect((await post(OK)).status).toBe(200);
+  });
+  it('client (USER), rôle inconnu / retiré, administrateur suspendu : 403 ADMIN_REQUIRED, rien d’écrit, refus journalisé', async () => {
+    for (const [role, status] of [['USER', 'ACTIVE'], ['MODERATOR', 'ACTIVE'], [null, null], ['ADMIN', 'SUSPENDED'], ['ADMIN', null]] as const) {
+      etat.role = role; etat.status = status;
+      const r = await post(OK);
+      expect(r.status).toBe(403);
+      expect((await r.json()).code).toBe('ADMIN_REQUIRED');
     }
     expect(etat.calls).toEqual([]);
+    expect(etat.consumed).toEqual([]);
+    expect(etat.audits.every((a) => a.result === 'DENIED')).toBe(true);
   });
-  it('SUPER_ADMIN en session de niveau 1 : 403 STRONG_AUTH_REQUIRED avant toute confirmation', async () => {
+  it('erreur serveur à la relecture du rôle : 503, aucune écriture (état inconnu = refus)', async () => {
+    etat.dbFails = true;
+    expect((await post(OK)).status).toBe(503);
+    expect(etat.calls).toEqual([]);
+  });
+  it('preuve expirée ou déjà consommée (rejeu) : refus, aucune écriture', async () => {
+    etat.consumeOk = false;
+    const r = await post(OK);
+    expect(r.status).toBe(403);
+    expect((await r.json()).code).toBe('REAUTH_EXPIRED');
+    expect(etat.calls).toEqual([]);
+  });
+  it('ADMIN en session de niveau 1 : 403 STRONG_AUTH_REQUIRED avant toute confirmation', async () => {
     etat.aal = 1;
     const r = await post(OK);
     expect(r.status).toBe(403);
@@ -127,19 +154,16 @@ describe('C876-ROUTE garde SUPER_ADMIN + preuve forte', () => {
     expect((await r.json()).sessionsRevoked).toBe(1);
     expect(etat.revoked).toEqual([11]);
   });
-  it('retour à « Compte client » : sessions de toutes les identités exemptées révoquées', async () => {
+  it('retour à « Compte client » : sessions révoquées pour les identités renvoyées par le service', async () => {
     await post({ action: 'unqualify', reason: 'Fin de la revue 1.4.0', confirm: 'CONFIRMER' });
     expect(etat.revoked).toEqual([11, 12]);
   });
-  it('lecture : tout administrateur ; modification annoncée seulement pour SUPER_ADMIN en niveau 2', async () => {
-    etat.role = 'ADMIN';
-    let b = await (await GET(new NextRequest('http://x/api/admin/accounts/3/app-review'), ctx)).json();
-    expect(b.viewer).toMatchObject({ role: 'ADMIN', canManage: false });
-    etat.role = 'SUPER_ADMIN'; etat.aal = 1;
-    b = await (await GET(new NextRequest('http://x/api/admin/accounts/3/app-review'), ctx)).json();
-    expect(b.viewer).toMatchObject({ canManage: false, strongSession: false });
-    etat.aal = 2;
-    b = await (await GET(new NextRequest('http://x/api/admin/accounts/3/app-review'), ctx)).json();
-    expect(b.viewer).toMatchObject({ canManage: true });
+  it('lecture : modification annoncée pour un ADMIN actif en niveau 2 seulement (cohérence API / UI)', async () => {
+    const get = async () => (await GET(new NextRequest('http://x/api/admin/accounts/3/app-review'), ctx)).json();
+    expect((await get()).viewer).toMatchObject({ role: 'ADMIN', canManage: true, strongSession: true });
+    etat.aal = 1;
+    expect((await get()).viewer).toMatchObject({ canManage: false, strongSession: false });
+    etat.aal = 2; etat.status = 'SUSPENDED';
+    expect((await get()).viewer).toMatchObject({ canManage: false });
   });
 });
